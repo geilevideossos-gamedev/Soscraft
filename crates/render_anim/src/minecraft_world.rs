@@ -21,6 +21,8 @@ use minecraftoss_core::registries::{DataPaths, Registries};
 
 const VIEW_DISTANCE: i32 = 8;
 const TICK_SECONDS: f64 = 1.0 / 20.0;
+const CROUCHED_BELOW_VIEW_HEIGHT: f32 = 52.0;
+const CRAWLING_BELOW_VIEW_HEIGHT: f32 = 30.0;
 /// Blocks on a side of the light volume MW2 models are lit from.
 pub const LIGHT_VOLUME: i32 = 64;
 /// Chunk sections fade in over this long, as the viewer's default option.
@@ -599,9 +601,9 @@ fn update(
         player.yaw = f64::from(mc_yaw);
         player.pitch = f64::from(ps.viewangles[0]);
         player.selected = entities.selected;
-        player.crouching = ps.pm_flags & playerstate_iw4::pm_flags::CROUCH != 0;
-        player.swimming = ps.pm_flags & playerstate_iw4::pm_flags::PRONE != 0;
-        let sneaking = player.crouching || player.swimming;
+        player.crouching = ps.view_height_current < CROUCHED_BELOW_VIEW_HEIGHT;
+        player.swimming = ps.view_height_current < CRAWLING_BELOW_VIEW_HEIGHT;
+        let sneaking = ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
         let eye_block = player.eye();
         let look = {
             let (yaw, pitch) = (f64::from(mc_yaw).to_radians(), f64::from(ps.viewangles[0]).to_radians());
