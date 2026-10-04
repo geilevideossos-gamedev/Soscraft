@@ -20,6 +20,7 @@ pub struct McStack {
     pub weapon: Option<u32>,
     /// Durability left of the item's maximum, for a damaged tool.
     pub durability: Option<f32>,
+    pub name: Option<String>,
 }
 
 /// A slot of the inventory screen.

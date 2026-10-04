@@ -727,6 +727,34 @@ fn update(
                     let pitch = sound.pitch + sounds.random() * sound.pitch_spread;
                     sounds.play(&world.packs, &sound.event, Some(Vec3::from_array(sim::voxel::to_map(origin, centre))), sound.volume, pitch);
                 }
+            } else if let Some(stack) = held.as_ref()
+                && let Some(outcome) = minecraft_terrain::bottle::bottle_use(&player, &world.scene, stack)
+            {
+                use minecraft_terrain::bottle::{self, BottleUse};
+                hand.swing = Some(0.0);
+                let (result, heard) = match outcome {
+                    BottleUse::Block { pos, block, result, sounds: events } => {
+                        write_blocks(world, shapes, shape_ids, entities, vec![(pos, block.and_then(|b| scene_block(&b)))]);
+                        let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
+                        (Some(result), events.into_iter().map(|event| (event, Some(centre))).collect())
+                    }
+                    BottleUse::Fill { result } => (Some(result), vec![(bottle::FILL_SOUND, None)]),
+                    BottleUse::Drink => {
+                        hand.swing = None;
+                        survival.start_using(bottle::drink(entities.selected, stack));
+                        (None, Vec::new())
+                    }
+                };
+                if let Some(result) = result
+                    && let Some(rest) = bottle::filled_result(&mut entities.inventory, entities.selected, result)
+                {
+                    entities.world_items.toss(rest, eye_block, mc_yaw, ps.viewangles[0]);
+                }
+                if let Some(sounds) = sounds.as_mut() {
+                    for (event, at) in heard {
+                        sounds.play(&world.packs, event, at.map(|centre| Vec3::from_array(sim::voxel::to_map(origin, centre))), 1.0, 1.0);
+                    }
+                }
             } else if let Some((stack, kind)) = held.as_ref().and_then(|s| minecraft_terrain::thrown::Throwable::of(&s.id).map(|k| (s, k))) {
                 let pearl = kind == minecraft_terrain::thrown::Throwable::EnderPearl;
                 let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
@@ -782,18 +810,7 @@ fn update(
                     minecraft_terrain::placing::obstructed(*pos, &boxes, &bodies)
                 });
                 if let Some(pos) = placed.filter(|_| !blocked) {
-                    let positions: Vec<_> = writes.iter().map(|(p, _)| *p).collect();
-                    for (at, block) in writes {
-                        let state = block.as_ref().and_then(|b| world.stream.states.state_of(b));
-                        let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, &world.registries.blocks, state));
-                        sim::voxel::set_block_shape(at.0, at.1, at.2, shape);
-                        world.scene.set(at, block);
-                    }
-                    world.stream.record_edits(&world.scene, &positions);
-                    world.stream.mark_edited(&world.scene, &positions);
-                    for &at in &positions {
-                        entities.placed(&world.scene, at);
-                    }
+                    write_blocks(world, shapes, shape_ids, entities, writes);
                     hand.swing = Some(0.0);
                     if let Some(block) = minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned()
                         && let (Some(sounds), Some(kind)) = (sounds.as_mut(), world.scene.sound_type(&block))
@@ -1273,6 +1290,31 @@ fn shape_id(
         shape_ids.insert(key, id);
         id
     })
+}
+
+fn write_blocks(
+    world: &mut Loaded,
+    shapes: &mut HashMap<BlockStateId, u16>,
+    shape_ids: &mut HashMap<(Vec<[u32; 6]>, u8), u16>,
+    entities: &mut crate::minecraft_entities::Entities,
+    writes: Vec<((i32, i32, i32), Option<minecraft_terrain::scene::Block>)>,
+) {
+    let positions: Vec<_> = writes.iter().map(|(p, _)| *p).collect();
+    for (at, block) in writes {
+        let state = block.as_ref().and_then(|b| world.stream.states.state_of(b));
+        let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, &world.registries.blocks, state));
+        sim::voxel::set_block_shape(at.0, at.1, at.2, shape);
+        world.scene.set(at, block);
+    }
+    world.stream.record_edits(&world.scene, &positions);
+    world.stream.mark_edited(&world.scene, &positions);
+    for &at in &positions {
+        if minecraft_terrain::scene::Scene::block(&world.scene, at).is_some() {
+            entities.placed(&world.scene, at);
+        } else {
+            entities.broke(&world.scene, &[at]);
+        }
+    }
 }
 
 fn scene_block(block: &minecraftoss_player::Block) -> Option<minecraft_terrain::scene::Block> {

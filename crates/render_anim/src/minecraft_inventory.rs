@@ -234,6 +234,11 @@ impl InventoryUi {
             .language
             .get_or_insert_with(|| minecraft_terrain::item_icons::language(packs).unwrap_or_default());
         let mut stacks = Vec::new();
+        let water = minecraft_terrain::bottle::is_water_bottle;
+        let water_name = language
+            .get(minecraft_terrain::bottle::WATER_NAME_KEY)
+            .cloned()
+            .unwrap_or_else(|| "Water Bottle".to_owned());
         let mut convert = |stack: &Option<ItemStack>| {
             stack.as_ref().map(|s| {
                 stacks.push(s.id.clone());
@@ -242,6 +247,7 @@ impl InventoryUi {
                     count: s.count,
                     weapon: weapon_of(s),
                     durability: None,
+                    name: water(s).then(|| water_name.clone()),
                 }
             })
         };

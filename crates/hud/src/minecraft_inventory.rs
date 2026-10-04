@@ -304,7 +304,7 @@ fn stack_name(
     match stack.weapon {
         Some(weapon) => crate::weapon_name::localized_weapon_name(weapon, weapons, strings, gaps)
             .unwrap_or_else(|| "Weapon".to_owned()),
-        None => ui.names.get(&stack.id).cloned().unwrap_or_else(|| stack.id.clone()),
+        None => stack.name.clone().or_else(|| ui.names.get(&stack.id).cloned()).unwrap_or_else(|| stack.id.clone()),
     }
 }
 

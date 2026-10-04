@@ -1158,9 +1158,7 @@ impl Drop for ServerHandle {
 fn make_stack(recipes: &minecraftoss_player::crafting::RecipeBook, item: &str, count: i32, components: Option<&str>) -> minecraftoss_player::inventory::ItemStack {
     let mut stack = minecraftoss_player::inventory::ItemStack::new(item, count.clamp(0, 255) as u8);
     stack.components = components.and_then(|c| serde_json::from_str(c).ok());
-    if stack.components.is_none() {
-        stack.max = stack.max.min(recipes.max_stack(item));
-    }
+    stack.max = stack.max.min(recipes.max_stack(item));
     stack
 }
 

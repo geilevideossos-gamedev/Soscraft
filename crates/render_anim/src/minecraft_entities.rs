@@ -237,9 +237,7 @@ impl Entities {
             let make_stack = |item: &str, count: i32| {
                 let mut stack = ItemStack::new(item, count.clamp(0, 255) as u8);
                 stack.components = components.as_deref().and_then(|c| serde_json::from_str(c).ok());
-                if stack.components.is_none() {
-                    stack.max = stack.max.min(recipes.max_stack(item));
-                }
+                stack.max = stack.max.min(recipes.max_stack(item));
                 stack
             };
             let taken = match self.inventory.add_item(make_stack(&item, count), self.selected) {
@@ -280,9 +278,7 @@ impl Entities {
             .map(|item: ServerItem| {
                 let mut stack = ItemStack::new(&item.item, item.count.clamp(0, 255) as u8);
                 stack.components = item.components.as_deref().and_then(|c| serde_json::from_str(c).ok());
-                if stack.components.is_none() {
-                    stack.max = stack.max.min(recipes.max_stack(&item.item));
-                }
+                stack.max = stack.max.min(recipes.max_stack(&item.item));
                 ItemEntity {
                     entity_id: mirrored(item.id),
                     stack,

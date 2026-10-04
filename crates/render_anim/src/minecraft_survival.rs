@@ -243,6 +243,12 @@ impl Survival {
         self.eating.is_some()
     }
 
+    pub(crate) fn start_using(&mut self, using: FoodUse) {
+        if self.eating.is_none() {
+            self.eating = Some(using);
+        }
+    }
+
     pub(crate) fn stop_eating(&mut self) {
         self.eating = None;
     }
