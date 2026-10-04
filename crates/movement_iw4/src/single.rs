@@ -126,6 +126,10 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
             == 0;
     }
     let sprint_change = update_sprint(ps, cmd, context.old_buttons, sprint);
+    if water.wet() && ps.pm_flags & pm_flags::SPRINTING != 0 {
+        ps.last_sprint_start = cmd.server_time;
+        ps.sprint_start_max_length = context.sprint.weapon_max_sprint_time;
+    }
     let previous_stance = ps.pm_flags & 3;
     update_stance_flags(
         ps,
@@ -211,6 +215,7 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
     }
 
     drop_timers(ps, &pml);
+    let mut swam = false;
 
     {
         let mut ladder_backend = CollisionLadderBackend { collision, bounds };
@@ -254,6 +259,7 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
             );
         } else if water.wet() {
             crate::water_move(ps, &mut pml, cmd, water, bounds, collision);
+            swam = true;
         } else if pml.walking == 0 {
             air_move(ps, &pml, cmd, context.air, bounds, collision);
         } else {
@@ -285,7 +291,9 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
         );
     }
 
-    end_tick_velocity(ps, &pml);
+    if !swam {
+        end_tick_velocity(ps, &pml);
+    }
     PmoveResult {
         pml,
         bounds,

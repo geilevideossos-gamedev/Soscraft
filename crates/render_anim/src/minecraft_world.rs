@@ -524,6 +524,11 @@ fn update(
     // volume. A fall of more than three blocks lands with the block's fall
     // sound and the player's (`LivingEntity.causeFallDamage`).
     let on_ground = alive && ps.ground_entity_num != playerstate_iw4::ENTITYNUM_NONE;
+    let (hull_mins, hull_maxs) = sim::voxel::player_hull(ps);
+    let water = sim::voxel::water(ps.origin, hull_mins, hull_maxs, ps.view_height_current);
+    if water.wet() {
+        steps.air_peak = None;
+    }
     if let Some(last) = steps.last.filter(|_| alive) {
         let horizontal = ((feet[0] - last[0]).hypot(feet[2] - last[2]) * 0.6) as f32;
         let block_at = |dy: f64| {
@@ -594,12 +599,7 @@ fn update(
     let hand_ticks = (hand.clock / TICK_SECONDS) as u32;
     hand.clock -= f64::from(hand_ticks) * TICK_SECONDS;
     hand.pearl_cooldown = hand.pearl_cooldown.saturating_sub(hand_ticks);
-    let (hull_mins, hull_maxs) = sim::voxel::player_hull(ps);
-    let water = sim::voxel::water(ps.origin, hull_mins, hull_maxs, ps.view_height_current);
     if alive {
-        if water.wet() {
-            steps.air_peak = None;
-        }
         let motion = crate::minecraft_survival::Motion {
             feet,
             on_ground,
