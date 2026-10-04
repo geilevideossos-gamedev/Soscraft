@@ -51,7 +51,7 @@ You don't need Minecraft installed. The first time the game starts, it downloads
 | Q | | Drop the selected item |
 | Left click (block or empty hand) | Right trigger | Mine or punch |
 | Right click (holding a block) | Left trigger | Place the block |
-| Right click on a crafting table | Left trigger | Open the 3x3 crafting grid |
+| Right click on a crafting table (not holding a gun) | Left trigger | Open the 3x3 crafting grid |
 | Crouch + right click on a crafting table | Crouch + left trigger | Place the held block against it |
 | J | Click both sticks in | Skate 3 mode (not while the inventory is open) |
 
@@ -66,9 +66,9 @@ In the inventory and on the crafting table:
 | Drag with a stack | Hold A and move | Share the stack out over the slots |
 | Double click | | Gather matching items onto the held stack |
 | 1–9 over a slot | | Swap it with that hotbar slot |
-| Click outside the window | | Drop the held stack |
+| Click outside the window | | Drop the held stack (right click: one item) |
 
-Items left in the crafting grid go back into the inventory when it closes, and drop at your feet if there is no room.
+When the inventory or crafting table closes, the stack you are holding and anything left in the crafting grid go back into the inventory; what does not fit is thrown out in front of you, as Q does.
 
 To try recipes without gathering everything first, set `IW4L_MINECRAFT_KIT` (in the shell or in `.env` next to `iw4l.exe`) to a list of items, for example `IW4L_MINECRAFT_KIT=minecraft:oak_log*16,minecraft:milk_bucket*3`. They are put in the backpack when the world starts.
 
