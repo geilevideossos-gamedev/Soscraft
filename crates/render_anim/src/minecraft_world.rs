@@ -443,6 +443,10 @@ fn update(
 
     // Every spawn lands on the Minecraft spawn once its ground exists.
     let alive = ps.pm_type == 0;
+    let dead = matches!(
+        ps.pm_type,
+        playerstate_iw4::PM_TYPE_SPECTATOR | playerstate_iw4::PM_TYPE_INTERMISSION | playerstate_iw4::PM_TYPE_DEAD | playerstate_iw4::PM_TYPE_DEAD_LINKED
+    );
     let spawn_chunk = ((origin[0].floor() as i32) >> 4, (origin[2].floor() as i32) >> 4);
     if alive && !*was_alive && world.scene.generated_chunk(spawn_chunk).is_some() {
         // Retried each frame until the authority has the player to move.
@@ -450,10 +454,10 @@ fn update(
             diag::info!(World, "Minecraft spawn: moved to the world spawn");
             *was_alive = true;
         }
-    } else if !alive {
+    } else if dead {
         *was_alive = false;
     }
-    if !alive {
+    if dead {
         survival.respawn();
     } else if !sim::voxel::player_damage_pending()
         && let Some(health) = authority.0.player(local.0).map(|p| (p.health, p.max_health))
@@ -560,8 +564,7 @@ fn update(
             if let Some(peak) = steps.air_peak.take() {
                 let fall = peak - feet[1];
                 let landed_on = under.as_ref().map(|(_, b)| b.id.key());
-                let sneaking = ps.view_height_current < CROUCHED_BELOW_VIEW_HEIGHT;
-                survival.fall(fall, crate::minecraft_survival::landing_multiplier(landed_on.as_deref(), sneaking));
+                survival.fall(fall, landed_on.as_deref());
                 if fall > 3.0
                     && let Some(sounds) = sounds.as_mut()
                 {

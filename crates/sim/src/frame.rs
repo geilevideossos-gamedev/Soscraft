@@ -419,6 +419,13 @@ impl FrameWorld<'_> {
         };
         if blocked {
             ps.pm_flags |= playerstate_iw4::pm_flags::SPRINT_BLOCKED;
+            movement_iw4::end_sprint(
+                ps,
+                &playerstate_iw4::UserCmd {
+                    server_time: ps.command_time,
+                    ..Default::default()
+                },
+            );
         } else {
             ps.pm_flags &= !playerstate_iw4::pm_flags::SPRINT_BLOCKED;
         }

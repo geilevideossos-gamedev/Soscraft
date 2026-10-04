@@ -184,8 +184,8 @@ impl Survival {
         self.last_health = health;
     }
 
-    pub(crate) fn fall(&mut self, distance: f64, multiplier: f32) -> bool {
-        let damage = fall_damage(distance, multiplier);
+    pub(crate) fn fall(&mut self, distance: f64, landed_on: Option<&str>) -> bool {
+        let damage = landing_damage(distance, landed_on);
         damage > 0
             && self
                 .status
@@ -330,12 +330,14 @@ pub(crate) fn fall_damage(distance: f64, multiplier: f32) -> i32 {
         .max(0.0) as i32
 }
 
-pub(crate) fn landing_multiplier(block: Option<&str>, sneaking: bool) -> f32 {
+pub(crate) fn landing_damage(distance: f64, block: Option<&str>) -> i32 {
     match block {
-        Some("minecraft:hay_block" | "minecraft:honey_block") => 0.2,
-        Some(bed) if bed.ends_with("_bed") => 0.5,
-        Some("minecraft:slime_block") if !sneaking => 0.0,
-        _ => 1.0,
+        Some("minecraft:slime_block") => 0,
+        Some("minecraft:hay_block" | "minecraft:honey_block") => fall_damage(distance, 0.2),
+        Some(soft) if soft.ends_with("_bed") || soft == "minecraft:shelf_mushroom" => {
+            fall_damage(distance * 0.5, 1.0)
+        }
+        _ => fall_damage(distance, 1.0),
     }
 }
 
@@ -454,7 +456,7 @@ mod tests {
     #[test]
     fn minecraft_damage_reaches_mw2_health_five_to_a_heart_point() {
         let mut survival = fresh();
-        assert!(survival.fall(10.0, 1.0));
+        assert!(survival.fall(10.0, Some("minecraft:stone")));
         assert!((survival.status.health - 13.0).abs() < 1e-6);
         assert_eq!(
             survival.settle(100, 100),
@@ -515,28 +517,11 @@ mod tests {
         assert_eq!(fall_damage(3.9, 1.0), 0);
         assert_eq!(fall_damage(4.0, 1.0), 1);
         assert_eq!(fall_damage(23.5, 1.0), 20);
-        assert_eq!(
-            fall_damage(13.0, landing_multiplier(Some("minecraft:hay_block"), false)),
-            2
-        );
-        assert_eq!(
-            fall_damage(13.0, landing_multiplier(Some("minecraft:red_bed"), false)),
-            5
-        );
-        assert_eq!(
-            fall_damage(
-                13.0,
-                landing_multiplier(Some("minecraft:slime_block"), false)
-            ),
-            0
-        );
-        assert_eq!(
-            fall_damage(
-                13.0,
-                landing_multiplier(Some("minecraft:slime_block"), true)
-            ),
-            10
-        );
+        assert_eq!(landing_damage(13.0, Some("minecraft:hay_block")), 2);
+        assert_eq!(landing_damage(13.0, Some("minecraft:red_bed")), 3);
+        assert_eq!(landing_damage(7.0, Some("minecraft:red_bed")), 0);
+        assert_eq!(landing_damage(13.0, Some("minecraft:slime_block")), 0);
+        assert_eq!(landing_damage(13.0, None), 10);
     }
 
     #[test]
