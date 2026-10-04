@@ -356,7 +356,10 @@ fn publish_client_action_input(
             && pad.pressed(RightThumb)
             && (pad.just_pressed(LeftThumb) || pad.just_pressed(RightThumb))
     });
-    if !skate.input_blocked && !inventory_open && (keys.just_pressed(KeyCode::KeyJ) || sticks_clicked) {
+    if !skate.input_blocked
+        && !inventory_open
+        && (keys.just_pressed(KeyCode::KeyJ) || sticks_clicked)
+    {
         skate.toggle_requested = true;
     }
     let modal_captured = console.open
