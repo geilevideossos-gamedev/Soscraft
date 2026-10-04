@@ -16,9 +16,9 @@ use minecraftoss_player::inventory::{Inventory, ItemStack};
 
 /// Items that are MW2 guns: `iw4:weapon/<weapon index>`.
 const WEAPON_PREFIX: &str = "iw4:weapon/";
-/// Icon cells: 32 pixels (a 16-pixel item at GUI scale 2), 16 to a row.
+/// Icon cells: 32 pixels (a 16-pixel item at GUI scale 2), 32 to a row.
 const ICON: u32 = 32;
-const ATLAS: u32 = ICON * 16;
+const ATLAS: u32 = ICON * 32;
 
 pub(crate) fn weapon_of(stack: &ItemStack) -> Option<u32> {
     stack.id.strip_prefix(WEAPON_PREFIX)?.parse().ok()
@@ -59,7 +59,7 @@ impl InventoryUi {
         let keep = |stack: &Option<ItemStack>| {
             stack.as_ref().is_none_or(|s| weapon_of(s).is_none_or(|w| owned.contains(&w)))
         };
-        for slot in inventory.slots.iter_mut().chain(inventory.crafting.iter_mut()) {
+        for slot in inventory.slots.iter_mut().chain(inventory.crafting.iter_mut()).chain(inventory.workbench.iter_mut()) {
             if !keep(slot) {
                 *slot = None;
             }
@@ -71,6 +71,7 @@ impl InventoryUi {
             .slots
             .iter()
             .chain(inventory.crafting.iter())
+            .chain(inventory.workbench.iter())
             .chain(std::iter::once(&inventory.cursor))
             .filter_map(|s| s.as_ref().and_then(weapon_of))
             .collect();
@@ -229,6 +230,8 @@ impl InventoryUi {
             }
             let cell = self.cells.len() as u32;
             if cell >= (ATLAS / ICON) * (ATLAS / ICON) {
+                diag::warn!(World, "Minecraft item icon atlas full: no icon for `{id}`");
+                self.failed.insert(id);
                 continue;
             }
             match minecraft_terrain::item_icons::item_icon(packs, &id, ICON as usize) {
