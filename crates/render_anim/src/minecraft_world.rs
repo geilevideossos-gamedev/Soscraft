@@ -324,7 +324,7 @@ fn update(
         Query<&bevy::input::gamepad::Gamepad>,
         Option<Res<frame::ActivePad>>,
     ),
-    hud_input: Option<Res<frame::HudInputView>>,
+    (hud_input, settings): (Option<Res<frame::HudInputView>>, Option<Res<frame::GameSettings>>),
 ) {
     let pad = active_pad.and_then(|active| active.0).and_then(|entity| gamepads.get(entity).ok());
     for _ in torn_down.read() {
@@ -936,8 +936,10 @@ fn update(
         sound_queue.0.append(&mut sounds.queued);
     }
     // The minimap's picture, and its corners on the map.
-    ui.minimap = minimap
-        .update(time.delta_secs_f64(), feet, &world.scene, &world.packs, &world.atlas, &mut images)
+    let minimap_shown = settings.as_deref().is_none_or(|s| s.minimap_shown(true));
+    ui.minimap = minimap_shown
+        .then(|| minimap.update(time.delta_secs_f64(), feet, &world.scene, &world.packs, &world.atlas, &mut images))
+        .flatten()
         .map(|(image, [bx, bz])| {
             let corner = |x: i32, z: i32| {
                 let p = sim::voxel::to_map(origin, [f64::from(x), feet[1], f64::from(z)]);

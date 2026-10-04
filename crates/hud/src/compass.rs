@@ -100,6 +100,12 @@ fn catalog_compass(catalog: &MenuCatalog) -> Option<CatalogCompass<'_>> {
     })
 }
 
+type MinecraftMinimap<'w> = (
+    Option<Res<'w, frame::MinecraftUi>>,
+    Option<Res<'w, frame::GameSettings>>,
+    Option<Res<'w, frame::LaunchIdentity>>,
+);
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn update_compass(
     surface: Res<crate::surface::Hud2dSurface>,
@@ -116,7 +122,7 @@ pub(crate) fn update_compass(
     mut pass: ResMut<HudTessPass>,
     view: Option<Res<frame::ViewSubject>>,
     local_vars: Res<crate::playercard::UiLocalVars>,
-    minecraft: Option<Res<frame::MinecraftUi>>,
+    (minecraft, settings, identity): MinecraftMinimap,
     hud_input: Option<Res<frame::HudInputView>>,
 ) {
     take_fire_pings(
@@ -130,7 +136,9 @@ pub(crate) fn update_compass(
         .wrapping_sub(local_vars.int("ui_show_killedBy"))
         < 4000;
     let ui_active = hud_input.is_some_and(|i| i.script_menu_open);
-    if !surface.is_ready() || killed_by_showing || ui_active || view.is_some_and(|v| v.in_killcam())
+    let minecraft_map = identity.is_some_and(|i| assets::minecraft_map::is_minecraft_load(&i.zone));
+    let hidden = !settings.is_none_or(|s| s.minimap_shown(minecraft_map));
+    if !surface.is_ready() || killed_by_showing || ui_active || hidden || view.is_some_and(|v| v.in_killcam())
     {
         hide(&mut pass);
         return;

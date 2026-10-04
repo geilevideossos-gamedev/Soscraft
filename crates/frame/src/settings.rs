@@ -51,6 +51,7 @@ pub struct GameSettings {
     pub pad_vibration: bool,
     pub pad_deadzone_left: f32,
     pub pad_deadzone_right: f32,
+    pub minecraft_minimap: bool,
 
     pub revision: u64,
 }
@@ -83,6 +84,7 @@ impl Default for GameSettings {
             pad_vibration: true,
             pad_deadzone_left: 0.12,
             pad_deadzone_right: 0.12,
+            minecraft_minimap: false,
             revision: 0,
         }
     }
@@ -104,6 +106,10 @@ impl GameSettings {
     }
 
     pub const PAD_LAYOUT_CUSTOM: u8 = 255;
+
+    pub fn minimap_shown(&self, minecraft_map: bool) -> bool {
+        !minecraft_map || self.minecraft_minimap
+    }
 
     pub fn touch(&mut self) {
         self.revision = self.revision.wrapping_add(1);
@@ -147,5 +153,19 @@ impl GameSettings {
         if self.player_name.is_empty() {
             self.player_name = "Player".to_owned();
         }
+    }
+}
+
+#[cfg(test)]
+mod minimap_tests {
+    use super::GameSettings;
+
+    #[test]
+    fn the_minimap_hides_on_minecraft_maps_until_turned_on() {
+        let mut settings = GameSettings::default();
+        assert!(settings.minimap_shown(false));
+        assert!(!settings.minimap_shown(true));
+        settings.minecraft_minimap = true;
+        assert!(settings.minimap_shown(true));
     }
 }

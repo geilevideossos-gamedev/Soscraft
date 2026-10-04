@@ -322,7 +322,11 @@ pub(crate) fn update_minecraft_hud(
     mut gaps: ResMut<HudPresentationGaps>,
     mut pass: ResMut<HudTessPass>,
     (gamepads, active_pad, devices): (Query<&Gamepad>, Option<Res<frame::ActivePad>>, Option<Res<frame::InputDevices>>),
-    (menus, hud_input): (Res<crate::menus::ScriptMenus>, Option<Res<frame::HudInputView>>),
+    (menus, hud_input, mut settings): (
+        Res<crate::menus::ScriptMenus>,
+        Option<Res<frame::HudInputView>>,
+        Option<ResMut<frame::GameSettings>>,
+    ),
 ) {
     let Some(mut ui) = ui else {
         pass.minecraft = TessJob::Hide;
@@ -418,6 +422,13 @@ pub(crate) fn update_minecraft_hud(
         }
         if keys.just_pressed(KeyCode::KeyQ) {
             ui.drop_selected = Some(ctrl);
+        }
+        if !blocked
+            && keys.just_pressed(KeyCode::KeyM)
+            && let Some(settings) = settings.as_mut()
+        {
+            settings.minecraft_minimap = !settings.minecraft_minimap;
+            settings.touch();
         }
         canvas.k = 1.15;
         draw_hotbar(&mut canvas, &mut ui, weapons, strings, &mut gaps, time.delta_secs());

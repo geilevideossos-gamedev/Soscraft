@@ -375,6 +375,7 @@ fn serialize_settings(settings: &frame::GameSettings, binds: &KeyBinds) -> Strin
         format!("pad_vibration={}", settings.pad_vibration),
         format!("pad_deadzone_left={:.2}", settings.pad_deadzone_left),
         format!("pad_deadzone_right={:.2}", settings.pad_deadzone_right),
+        format!("minecraft_minimap={}", settings.minecraft_minimap),
         "unbindall".to_owned(),
     ];
     lines.extend(binds.list_lines());
@@ -476,6 +477,7 @@ fn parse_settings(source: &str, settings: &mut frame::GameSettings, binds: &mut 
             "pad_vibration" => parse_into(value, &mut settings.pad_vibration),
             "pad_deadzone_left" => parse_into(value, &mut settings.pad_deadzone_left),
             "pad_deadzone_right" => parse_into(value, &mut settings.pad_deadzone_right),
+            "minecraft_minimap" => parse_into(value, &mut settings.minecraft_minimap),
             _ => warn!("ignored unknown setting `{key}`"),
         }
     }
@@ -569,6 +571,7 @@ pub(crate) fn native_menu_settings(
             "ui_pad_vibration" => settings.pad_vibration = value == "1",
             "ui_pad_deadzone_left" => parse_into(value, &mut settings.pad_deadzone_left),
             "ui_pad_deadzone_right" => parse_into(value, &mut settings.pad_deadzone_right),
+            "ui_mc_minimap" => settings.minecraft_minimap = value == "1",
             _ => continue,
         }
         settings.sanitize();
@@ -626,4 +629,21 @@ pub(crate) fn native_menu_settings(
         "ui_pad_deadzone_right",
         settings.pad_deadzone_right.to_string(),
     );
+    dvars.set("ui_mc_minimap", if settings.minecraft_minimap { "1" } else { "0" });
+}
+
+#[cfg(test)]
+mod minimap_tests {
+    use super::*;
+
+    #[test]
+    fn the_minecraft_minimap_choice_survives_a_restart() {
+        let mut settings = frame::GameSettings::default();
+        assert!(!settings.minecraft_minimap);
+        settings.minecraft_minimap = true;
+        let saved = serialize_settings(&settings, &KeyBinds::default());
+        let mut loaded = frame::GameSettings::default();
+        parse_settings(&saved, &mut loaded, &mut KeyBinds::default());
+        assert!(loaded.minecraft_minimap);
+    }
 }
