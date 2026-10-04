@@ -614,7 +614,7 @@ fn update(
         }
         if buttons.pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, false) {
             for _ in 0..hand_ticks {
-                if let Some(hit) = player.target(&world.scene, 4.5) {
+                if let Some(hit) = player.target(&minecraft_terrain::doors::Outlined(&world.scene), 4.5) {
                     // A hand mines as vanilla's `getDestroyProgress`: a
                     // block's hardness times thirty ticks.
                     all_events.push(sim::voxel::VoxelEvent::Shot {
@@ -645,14 +645,45 @@ fn update(
                     world.stream.states.state_of(&minecraft_terrain::scene::Block { id, properties: Default::default() }).is_some()
                 })
             });
+            let used = if table.is_none() && !(player.crouching && held.is_some()) {
+                let facing = minecraft_terrain::doors::facing(f64::from(mc_yaw));
+                player
+                    .target(&minecraft_terrain::doors::Outlined(&world.scene), 5.0)
+                    .map(|hit| hit.pos)
+                    .filter(|&pos| entities.use_block(&world.scene, pos, facing))
+            } else {
+                None
+            };
             if let Some(pos) = table {
                 if use_pressed {
                     open_table = Some(pos);
                     hand.swing = Some(0.0);
                 }
+            } else if let Some(pos) = used {
+                hand.swing = Some(0.0);
+                if let Some(block) = minecraftoss_player::World::block(&world.scene, pos)
+                    && let Some(sound) = minecraft_terrain::doors::toggle_sound(&block)
+                    && let Some(sounds) = sounds.as_mut()
+                {
+                    let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
+                    let pitch = sound.pitch + sounds.random() * sound.pitch_spread;
+                    sounds.play(&world.packs, &sound.event, Some(Vec3::from_array(sim::voxel::to_map(origin, centre))), sound.volume, pitch);
+                }
             } else if placeable {
                 let mut staged = minecraft_terrain::placing::Staged::new(&world.scene);
-                let placed = player.place_selected(&mut staged, &mut entities.inventory, minecraftoss_player::GameMode::Survival);
+                let opening = held.as_ref().filter(|stack| minecraft_terrain::doors::Opening::of(&stack.id).is_some());
+                let placed = match opening {
+                    Some(stack) => minecraft_terrain::doors::place(&player, &mut staged, &stack.id).inspect(|_| {
+                        let slot = &mut entities.inventory.slots[entities.selected];
+                        if let Some(left) = slot.as_mut() {
+                            left.count -= 1;
+                            if left.count == 0 {
+                                *slot = None;
+                            }
+                        }
+                    }),
+                    None => player.place_selected(&mut staged, &mut entities.inventory, minecraftoss_player::GameMode::Survival),
+                };
                 let writes: Vec<_> = staged
                     .into_writes()
                     .into_iter()
@@ -853,9 +884,19 @@ fn update(
                     })
                 });
                 sim::voxel::set_block_shape(pos.0, pos.1, pos.2, shape);
+                let before = minecraftoss_player::World::block(&world.scene, pos);
                 world.scene.set(pos, block);
+                if let (Some(before), Some(after)) = (before, minecraftoss_player::World::block(&world.scene, pos))
+                    && minecraft_terrain::doors::powered_toggle(&before, &after)
+                    && let (Some(sound), Some(sounds)) = (minecraft_terrain::doors::toggle_sound(&before), sounds.as_mut())
+                {
+                    let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
+                    let pitch = sound.pitch + sounds.random() * sound.pitch_spread;
+                    sounds.play(&world.packs, &sound.event, Some(at(centre)), sound.volume, pitch);
+                }
                 positions.push(pos);
             }
+            world.stream.record_edits(&world.scene, &positions);
             world.stream.mark_edited(&world.scene, &positions);
         }
         for (amount, from) in hits {

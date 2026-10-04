@@ -326,6 +326,10 @@ impl Entities {
         self.server.player_edit(scene, pos, PlayerEdit::Place);
     }
 
+    pub(crate) fn use_block(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32), facing: &'static str) -> bool {
+        self.server.use_block(scene, pos, facing)
+    }
+
     /// Client ticks run so far.
     pub(crate) fn client_ticks(&self) -> u64 {
         self.ticks

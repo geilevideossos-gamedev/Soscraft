@@ -678,6 +678,28 @@ impl ServerSim {
             PlayerEdit::Break => update::ALL,
         };
         self.level.set_block(at, target, flags, update::LIMIT);
+        if matches!(edit, PlayerEdit::Place) {
+            self.power_placed_opening(at, block);
+        }
+    }
+
+    fn power_placed_opening(&mut self, at: minecraftoss_core::BlockPos, block: Option<&Block>) {
+        let Some(block) = block else { return };
+        let path = block.id.path.as_str();
+        let door = path.ends_with("_door") && !path.ends_with("_trapdoor");
+        if !(door || path.ends_with("_trapdoor") || path.ends_with("_fence_gate")) {
+            return;
+        }
+        let other = if block.properties.get("half").map(String::as_str) == Some("upper") { at.y - 1 } else { at.y + 1 };
+        let signal = self.level.has_neighbor_signal(at) || (door && self.level.has_neighbor_signal(minecraftoss_core::BlockPos::new(at.x, other, at.z)));
+        if !signal {
+            return;
+        }
+        let blocks = &self.level.registries().blocks;
+        let state = self.level.block(at);
+        if let Some(state) = blocks.with_property(state, "powered", "true").and_then(|s| blocks.with_property(s, "open", "true")) {
+            self.level.set_block(at, state, update::CLIENTS | 8, update::LIMIT);
+        }
     }
 
     /// `useWithoutItem` on a simulated block; false when not simulated.
@@ -2431,5 +2453,75 @@ mod tests {
         let age: i32 = grown.properties.get("age").and_then(|a| a.parse().ok()).unwrap_or(0);
         assert!((2..=5).contains(&age), "bone meal adds 2 to 5 ages: {age}");
         assert!(!server.bone_meal((8, 200, 8), "up"), "farmland does not take bone meal");
+    }
+
+    fn door_world() -> Option<(ServerSim, HandcraftedScene)> {
+        let paths = DataPaths::discover().ok()?;
+        let registries = Arc::new(Registries::load(&paths).ok()?);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).ok()?)).ok()?);
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).ok()?);
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states.clone(), "minecraft:overworld");
+        let mut scene = HandcraftedScene::streamed(states);
+        for x in -1..=1 {
+            for z in -1..=1 {
+                let chunk = map.load_now(ChunkPos::new(x, z));
+                server.load_chunk(&chunk);
+                scene.insert_chunk(chunk);
+            }
+        }
+        scene.set((8, 199, 8), Some(Block::new("minecraft:stone")));
+        server.player_edit(&scene, (8, 199, 8), PlayerEdit::Place);
+        Some((server, scene))
+    }
+
+    fn place_door(server: &mut ServerSim, scene: &mut HandcraftedScene, id: &str) -> std::collections::HashMap<BlockPos, Option<Block>> {
+        for (y, half) in [(200, "lower"), (201, "upper")] {
+            let block = Block::new(id).with("facing", "north").with("half", half).with("hinge", "left").with("open", "false").with("powered", "false");
+            scene.set((8, y, 8), Some(block));
+            server.player_edit(scene, (8, y, 8), PlayerEdit::Place);
+        }
+        server.take_changes().into_iter().collect()
+    }
+
+    fn open(changes: &std::collections::HashMap<BlockPos, Option<Block>>, pos: BlockPos) -> Option<bool> {
+        changes.get(&pos)?.as_ref().map(|b| b.properties.get("open").map(String::as_str) == Some("true"))
+    }
+
+    #[test]
+    fn a_door_opens_both_halves_and_breaking_one_takes_both() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place_door(&mut server, &mut scene, "minecraft:oak_door");
+        assert!(server.use_block((8, 200, 8), "north"));
+        let opened: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(open(&opened, (8, 200, 8)), Some(true));
+        assert_eq!(open(&opened, (8, 201, 8)), Some(true));
+        scene.set((8, 201, 8), None);
+        server.player_edit(&scene, (8, 201, 8), PlayerEdit::Break);
+        let broken: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(broken.get(&(8, 200, 8)), Some(&None));
+    }
+
+    #[test]
+    fn an_iron_door_ignores_hands_but_opens_on_redstone() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place_door(&mut server, &mut scene, "minecraft:iron_door");
+        assert!(!server.use_block((8, 200, 8), "north"));
+        scene.set((9, 200, 8), Some(Block::new("minecraft:redstone_block")));
+        server.player_edit(&scene, (9, 200, 8), PlayerEdit::Place);
+        let powered: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(open(&powered, (8, 200, 8)), Some(true));
+        assert_eq!(open(&powered, (8, 201, 8)), Some(true));
+    }
+
+    #[test]
+    fn a_door_placed_beside_power_opens_at_once() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        scene.set((9, 200, 8), Some(Block::new("minecraft:redstone_block")));
+        server.player_edit(&scene, (9, 200, 8), PlayerEdit::Place);
+        server.take_changes();
+        let placed = place_door(&mut server, &mut scene, "minecraft:iron_door");
+        assert_eq!(open(&placed, (8, 200, 8)), Some(true));
+        assert_eq!(open(&placed, (8, 201, 8)), Some(true));
     }
 }
