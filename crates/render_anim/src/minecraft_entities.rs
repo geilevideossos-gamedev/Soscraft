@@ -128,6 +128,10 @@ impl Entities {
         } else {
             diag::warn!(World, "Minecraft data JAR not found: no loot or recipes");
         }
+        if let Ok(kit) = std::env::var("IW4L_MINECRAFT_KIT") {
+            let given = minecraft_terrain::crafting::give_kit(&mut inventory, &kit);
+            diag::info!(World, "Minecraft kit: {given} stacks from IW4L_MINECRAFT_KIT");
+        }
         Self {
             server,
             world: EntityWorld::default(),
