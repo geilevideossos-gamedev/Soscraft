@@ -184,13 +184,18 @@ impl Survival {
         self.last_health = health;
     }
 
-    pub(crate) fn fall(&mut self, distance: f64, landed_on: Option<&str>) -> bool {
-        let damage = landing_damage(distance, landed_on);
-        damage > 0
+    pub(crate) fn fall(&mut self, distance: f64, landed_on: Option<&str>, crouching: bool) -> i32 {
+        let damage = landing_damage(distance, landed_on, crouching);
+        if damage > 0
             && self
                 .status
                 .hurt(damage as f32, Armor::default(), 0.0)
                 .is_some()
+        {
+            damage
+        } else {
+            0
+        }
     }
 
     pub(crate) fn hurt(&mut self, damage: f32, armor: Armor, from: Option<[f64; 3]>) -> bool {
@@ -330,9 +335,38 @@ pub(crate) fn fall_damage(distance: f64, multiplier: f32) -> i32 {
         .max(0.0) as i32
 }
 
-pub(crate) fn landing_damage(distance: f64, block: Option<&str>) -> i32 {
+pub(crate) fn breaks_fall(block: &str) -> bool {
+    matches!(
+        block,
+        "minecraft:ladder"
+            | "minecraft:vine"
+            | "minecraft:scaffolding"
+            | "minecraft:cobweb"
+            | "minecraft:powder_snow"
+            | "minecraft:sweet_berry_bush"
+            | "minecraft:weeping_vines"
+            | "minecraft:weeping_vines_plant"
+            | "minecraft:twisting_vines"
+            | "minecraft:twisting_vines_plant"
+            | "minecraft:cave_vines"
+            | "minecraft:cave_vines_plant"
+            | "minecraft:water"
+            | "minecraft:bubble_column"
+    )
+}
+
+pub(crate) fn fall_sound(damage: i32) -> &'static str {
+    if damage > 4 {
+        "minecraft:entity.player.big_fall"
+    } else {
+        "minecraft:entity.player.small_fall"
+    }
+}
+
+pub(crate) fn landing_damage(distance: f64, block: Option<&str>, crouching: bool) -> i32 {
     match block {
-        Some("minecraft:slime_block") => 0,
+        Some("minecraft:slime_block") if !crouching => 0,
+        Some(soft) if breaks_fall(soft) => 0,
         Some("minecraft:hay_block" | "minecraft:honey_block") => fall_damage(distance, 0.2),
         Some(soft) if soft.ends_with("_bed") || soft == "minecraft:shelf_mushroom" => {
             fall_damage(distance * 0.5, 1.0)
@@ -456,7 +490,7 @@ mod tests {
     #[test]
     fn minecraft_damage_reaches_mw2_health_five_to_a_heart_point() {
         let mut survival = fresh();
-        assert!(survival.fall(10.0, Some("minecraft:stone")));
+        assert_eq!(survival.fall(10.0, Some("minecraft:stone"), false), 7);
         assert!((survival.status.health - 13.0).abs() < 1e-6);
         assert_eq!(
             survival.settle(100, 100),
@@ -517,11 +551,13 @@ mod tests {
         assert_eq!(fall_damage(3.9, 1.0), 0);
         assert_eq!(fall_damage(4.0, 1.0), 1);
         assert_eq!(fall_damage(23.5, 1.0), 20);
-        assert_eq!(landing_damage(13.0, Some("minecraft:hay_block")), 2);
-        assert_eq!(landing_damage(13.0, Some("minecraft:red_bed")), 3);
-        assert_eq!(landing_damage(7.0, Some("minecraft:red_bed")), 0);
-        assert_eq!(landing_damage(13.0, Some("minecraft:slime_block")), 0);
-        assert_eq!(landing_damage(13.0, None), 10);
+        assert_eq!(landing_damage(13.0, Some("minecraft:hay_block"), false), 2);
+        assert_eq!(landing_damage(13.0, Some("minecraft:honey_block"), false), 2);
+        assert_eq!(landing_damage(13.0, Some("minecraft:red_bed"), false), 3);
+        assert_eq!(landing_damage(7.0, Some("minecraft:red_bed"), false), 0);
+        assert_eq!(landing_damage(13.0, Some("minecraft:slime_block"), false), 0);
+        assert_eq!(landing_damage(13.0, Some("minecraft:slime_block"), true), 10);
+        assert_eq!(landing_damage(13.0, None, false), 10);
     }
 
     #[test]
@@ -584,6 +620,29 @@ mod tests {
         assert!((fighter.status.food.exhaustion - 0.205).abs() < 1e-6);
         fighter.observe(80, 100);
         assert!((fighter.status.food.exhaustion - 0.305).abs() < 1e-6);
+    }
+
+    #[test]
+    fn an_eight_block_drop_onto_grass_costs_five() {
+        let grass = Some("minecraft:grass_block");
+        assert_eq!(landing_damage(8.0, grass, false), 5);
+        for soft in [
+            "minecraft:water",
+            "minecraft:scaffolding",
+            "minecraft:ladder",
+            "minecraft:vine",
+            "minecraft:cobweb",
+            "minecraft:powder_snow",
+        ] {
+            assert_eq!(landing_damage(8.0, Some(soft), false), 0, "{soft}");
+        }
+        let mut survival = fresh();
+        assert_eq!(survival.fall(8.0, grass, false), 5);
+        assert!((survival.status.health - 15.0).abs() < 1e-6);
+        assert_eq!(survival.settle(100, 100).damage.map(|d| d.0), Some(25));
+        assert_eq!(fall_sound(5), "minecraft:entity.player.big_fall");
+        assert_eq!(fall_sound(4), "minecraft:entity.player.small_fall");
+        assert!(!breaks_fall("minecraft:grass_block"));
     }
 
     #[test]

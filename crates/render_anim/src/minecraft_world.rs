@@ -562,16 +562,21 @@ fn update(
                 }
             }
         }
+        let caught = [-0.01, -1.0]
+            .into_iter()
+            .any(|dy| block_at(dy).is_some_and(|(_, b)| crate::minecraft_survival::breaks_fall(&b.id.key())));
         if on_ground {
-            if let Some(peak) = steps.air_peak.take() {
+            if let Some(peak) = steps.air_peak.take().filter(|_| !caught) {
                 let fall = peak - feet[1];
                 let landed_on = under.as_ref().map(|(_, b)| b.id.key());
-                survival.fall(fall, landed_on.as_deref());
-                if fall > 3.0
+                let crouching = ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
+                let damage = survival.fall(fall, landed_on.as_deref(), crouching);
+                if damage > 0
                     && let Some(sounds) = sounds.as_mut()
                 {
-                    let event = if fall > 7.0 { "minecraft:entity.player.big_fall" } else { "minecraft:entity.player.small_fall" };
-                    sounds.play(&world.packs, event, None, 1.0, 1.0);
+                    sounds.play(&world.packs, crate::minecraft_survival::fall_sound(damage), None, 1.0, 1.0);
+                    let voice = (sounds.random() - sounds.random()) * 0.2 + 1.0;
+                    sounds.play(&world.packs, "minecraft:entity.player.hurt", None, 1.0, voice);
                     if let Some((pos, block)) = under.as_ref()
                         && let Some(kind) = world.scene.sound_type(block)
                     {
@@ -579,6 +584,8 @@ fn update(
                     }
                 }
             }
+        } else if caught {
+            steps.air_peak = Some(feet[1]);
         } else {
             steps.air_peak = Some(steps.air_peak.map_or(feet[1], |p| p.max(feet[1])));
         }
