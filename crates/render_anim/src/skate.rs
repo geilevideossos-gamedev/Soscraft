@@ -334,6 +334,7 @@ fn update(
     mut mode: ResMut<SkateMode>,
     mut host: ResMut<Host>,
     (gamepads, active): (Query<&bevy::input::gamepad::Gamepad>, Option<Res<frame::ActivePad>>),
+    minecraft: Option<Res<frame::MinecraftUi>>,
 ) {
     let Some(authority) = authority.as_deref_mut() else {
         return;
@@ -376,7 +377,10 @@ fn update(
     // kind it is, converted to the Xbox layout the skate input expects.
     let pad = active.and_then(|active| active.0).and_then(|entity| gamepads.get(entity).ok());
     host.pad_packet = host.pad_packet.wrapping_add(1);
-    let input = pad.map_or_else(InputFrame::neutral, |pad| pad_frame(pad, host.pad_packet));
+    let screen_open = minecraft.as_deref().is_some_and(|ui| ui.active && ui.inventory_open);
+    let input = pad.map_or_else(InputFrame::neutral, |pad| {
+        if screen_open { InputFrame::from_pad(0, [0; 2], [0; 2], [0; 2], host.pad_packet) } else { pad_frame(pad, host.pad_packet) }
+    });
     mode.controller = input.controller();
     host.previous_buttons = input.buttons();
 
