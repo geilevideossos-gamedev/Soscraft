@@ -128,6 +128,7 @@ impl InventoryUi {
             }
         }
         thrown.extend(inventory.take_pending_drops());
+        let _ = inventory.take_stat_events();
         if let Some(slot) = ui.select.take() {
             *selected = slot.min(frame::minecraft_ui::MC_HOTBAR - 1);
         }

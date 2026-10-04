@@ -107,8 +107,14 @@ impl Entities {
         let mut loot = None;
         if let Some(jar) = jar {
             server.load_loot(jar.clone(), seed as u64);
-            match minecraftoss_player::crafting::RecipeBook::from_jar(&jar) {
-                Ok(recipes) => {
+            let catalog = minecraft_terrain::crafting::find_item_catalog(assets::minecraft_map::root().as_deref(), &jar);
+            match minecraft_terrain::crafting::load_recipes(&jar, catalog.as_deref()) {
+                Ok((recipes, catalog_error)) => {
+                    match (catalog_error, catalog.as_deref()) {
+                        (Some(error), _) => diag::warn!(World, "Minecraft item catalog unavailable, stacks of 64 and no crafting remainders: {error:#}"),
+                        (None, Some(path)) => diag::info!(World, "Minecraft recipes: {} with the item catalog {}", recipes.count(), path.display()),
+                        (None, None) => {}
+                    }
                     let recipes = std::sync::Arc::new(recipes);
                     server.set_recipe_book(recipes.clone());
                     inventory.recipes = recipes;
@@ -241,6 +247,7 @@ impl Entities {
             });
             self.world_items.note_pickup(snapshot, target, transfer);
         }
+        let _ = self.world_items.take_pickup_transfers();
         let Some(snapshot) = self.server_snapshot.take() else {
             self.world_items.entities = previous.into_values().collect();
             self.world_items.entities.sort_by_key(|e| e.entity_id);
