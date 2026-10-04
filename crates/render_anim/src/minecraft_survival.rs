@@ -525,6 +525,68 @@ mod tests {
     }
 
     #[test]
+    fn sprinting_spends_saturation_and_then_food() {
+        let mut runner = fresh();
+        for i in 0..1000 {
+            runner.tick(&Motion {
+                feet: [f64::from(i) * 0.25, 0.0, 0.0],
+                on_ground: true,
+                sprinting: true,
+                ..Motion::default()
+            });
+        }
+        assert_eq!(runner.status.food.saturation, 0.0);
+        assert_eq!(runner.status.food.level, 19);
+        let mut walker = fresh();
+        for i in 0..1000 {
+            walker.tick(&standing([f64::from(i) * 0.25, 0.0, 0.0]));
+        }
+        assert_eq!(walker.status.food.saturation, 5.0);
+        assert_eq!(walker.status.food.exhaustion, 0.0);
+    }
+
+    #[test]
+    fn jumps_swims_hits_and_wounds_all_cost_food() {
+        let mut jumper = fresh();
+        jumper.status.food.saturation = 0.0;
+        for i in 0..126 {
+            jumper.tick(&Motion {
+                on_ground: true,
+                sprinting: true,
+                jumping: i % 2 == 0,
+                ..Motion::default()
+            });
+        }
+        assert_eq!(jumper.status.food.level, 17);
+        let mut hopper = fresh();
+        for i in 0..10 {
+            hopper.tick(&Motion {
+                on_ground: true,
+                jumping: i % 2 == 0,
+                ..Motion::default()
+            });
+        }
+        assert!((hopper.status.food.exhaustion - 0.25).abs() < 1e-5);
+        let mut swimmer = fresh();
+        for i in 0..100 {
+            swimmer.tick(&Motion {
+                feet: [f64::from(i) * 0.2, 0.0, 0.0],
+                in_water: true,
+                eye_in_water: true,
+                ..Motion::default()
+            });
+        }
+        assert!((swimmer.status.food.exhaustion - 0.198).abs() < 1e-4);
+        let mut fighter = fresh();
+        fighter.exhaust(ATTACK_EXHAUSTION);
+        fighter.exhaust(MINE_EXHAUSTION);
+        fighter.hurt(2.0, Armor::default(), None);
+        assert!((fighter.status.food.exhaustion - 0.205).abs() < 1e-6);
+        fighter.observe(80, 100);
+        assert!((fighter.status.food.exhaustion - 0.305).abs() < 1e-6);
+    }
+
+    #[test]
     fn a_fed_player_heals_every_four_seconds() {
         let mut survival = fresh();
         survival.observe(50, 100);
