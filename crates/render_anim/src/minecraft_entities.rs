@@ -19,7 +19,7 @@ use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::items::{ItemEntity, WorldItems};
 use minecraftoss_player::loot::LootBook;
 use minecraftoss_player::rng::XoroshiroRandom;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use minecraft_terrain::pack::PackStack;
 use minecraft_terrain::poof_particles::PoofParticles;
 use minecraft_terrain::portal_particles::PortalParticles;
@@ -33,6 +33,7 @@ const HEALTH_SCALE: f32 = 20.0 / 100.0;
 const PLAYER: u64 = 0;
 /// `Player.getEyeHeight` standing.
 const EYE_HEIGHT: f32 = 1.62;
+const SERVER_ITEM: u32 = 1 << 31;
 
 pub(crate) struct Entities {
     server: ServerHandle,
@@ -52,7 +53,6 @@ pub(crate) struct Entities {
     /// Item entities as the client shows them: the server's, and drops the
     /// client spawned that the server has not taken yet.
     pub(crate) world_items: WorldItems,
-    server_item_ids: HashSet<u32>,
     /// Client drops handed to the server: the command count that sent each.
     server_handed: HashMap<u32, (u64, ItemEntity)>,
     /// Stacks the server let the player pick up, not yet in the inventory.
@@ -140,7 +140,6 @@ impl Entities {
             inventory,
             selected: 0,
             world_items: WorldItems::default(),
-            server_item_ids: HashSet::new(),
             server_handed: HashMap::new(),
             server_picked: Vec::new(),
             server_snapshot: None,
@@ -193,7 +192,7 @@ impl Entities {
         let entities = std::mem::take(&mut self.world_items.entities);
         let to_hand: Vec<ItemEntity> = entities
             .iter()
-            .filter(|e| !self.server_item_ids.contains(&e.entity_id) && !self.server_handed.contains_key(&e.entity_id))
+            .filter(|e| e.entity_id & SERVER_ITEM == 0 && !self.server_handed.contains_key(&e.entity_id))
             .cloned()
             .collect();
         for entity in &to_hand {
@@ -234,8 +233,8 @@ impl Entities {
                 continue;
             }
             let transfer = make_stack(&item, taken);
-            let snapshot = previous.get(&(id as u32)).cloned().unwrap_or_else(|| ItemEntity {
-                entity_id: id as u32,
+            let snapshot = previous.get(&mirrored(id)).cloned().unwrap_or_else(|| ItemEntity {
+                entity_id: mirrored(id),
                 stack: transfer.clone(),
                 position: DVec3::from_array(position),
                 previous_position: DVec3::from_array(position),
@@ -264,7 +263,7 @@ impl Entities {
                     stack.max = stack.max.min(recipes.max_stack(&item.item));
                 }
                 ItemEntity {
-                    entity_id: item.id as u32,
+                    entity_id: mirrored(item.id),
                     stack,
                     position: DVec3::from_array(item.position),
                     previous_position: DVec3::from_array(item.previous_position),
@@ -276,7 +275,6 @@ impl Entities {
                 }
             })
             .collect();
-        self.server_item_ids = self.world_items.entities.iter().map(|e| e.entity_id).collect();
         let handled = self.server_handled;
         self.server_handed.retain(|_, (sent, _)| *sent > handled);
         for (_, entity) in self.server_handed.values() {
@@ -637,6 +635,10 @@ impl Entities {
         }
         out
     }
+}
+
+fn mirrored(id: i32) -> u32 {
+    id as u32 | SERVER_ITEM
 }
 
 /// The viewer's `server_bob_offset`: a server item's bob phase from its id.
