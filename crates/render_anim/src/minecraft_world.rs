@@ -650,54 +650,46 @@ fn update(
                     open_table = Some(pos);
                     hand.swing = Some(0.0);
                 }
-            } else if placeable
-                && let Some(pos) = player.place_selected(
-                    &mut world.scene,
-                    &mut entities.inventory,
-                    minecraftoss_player::GameMode::Survival,
-                )
-            {
-                // Not into the player's own box.
-                let [fx, fy, fz] = feet;
-                let inside = (fx - 0.3) < f64::from(pos.0 + 1)
-                    && (fx + 0.3) > f64::from(pos.0)
-                    && fy < f64::from(pos.1 + 1)
-                    && (fy + 1.8) > f64::from(pos.1)
-                    && (fz - 0.3) < f64::from(pos.2 + 1)
-                    && (fz + 0.3) > f64::from(pos.2);
-                let block = minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned();
-                if inside {
-                    world.scene.set(pos, None);
-                    entities.inventory.slots[entities.selected] = held;
-                } else if let Some(block) = block {
-                    let state = world.stream.states.state_of(&block);
-                    let blocks = &world.registries.blocks;
-                    let shape = state.map_or(0, |state| {
-                        *shapes.entry(state).or_insert_with(|| {
-                            let boxes = blocks.collision_boxes(state);
-                            if boxes.is_empty() {
-                                return 0;
-                            }
-                            let key: Vec<[u32; 6]> = boxes.iter().map(|b| b.map(|v| (v as f32).to_bits())).collect();
-                            if let Some(&id) = shape_ids.get(&key) {
-                                return id;
-                            }
-                            let boxes32 = boxes.iter().map(|b| b.map(|v| v as f32)).collect();
-                            let id = sim::voxel::add_shapes(vec![boxes32]).unwrap_or(0);
-                            shape_ids.insert(key, id);
-                            id
-                        })
-                    });
-                    sim::voxel::set_block_shape(pos.0, pos.1, pos.2, shape);
-                    world.stream.record_edits(&world.scene, &[pos]);
-                    world.stream.mark_edited(&world.scene, &[pos]);
-                    entities.placed(&world.scene, pos);
+            } else if placeable {
+                let mut staged = minecraft_terrain::placing::Staged::new(&world.scene);
+                let placed = player.place_selected(&mut staged, &mut entities.inventory, minecraftoss_player::GameMode::Survival);
+                let writes: Vec<_> = staged
+                    .into_writes()
+                    .into_iter()
+                    .map(|(pos, block)| (pos, block.and_then(|b| scene_block(&b))))
+                    .collect();
+                let bodies = obstacles(ps, authority.0.player(local.0), entities);
+                let blocked = writes.iter().any(|(pos, block)| {
+                    let boxes = block
+                        .as_ref()
+                        .and_then(|b| world.stream.states.state_of(b))
+                        .map_or_else(Vec::new, |state| world.registries.blocks.collision_boxes(state));
+                    minecraft_terrain::placing::obstructed(*pos, &boxes, &bodies)
+                });
+                if let Some(pos) = placed.filter(|_| !blocked) {
+                    let positions: Vec<_> = writes.iter().map(|(p, _)| *p).collect();
+                    for (at, block) in writes {
+                        let state = block.as_ref().and_then(|b| world.stream.states.state_of(b));
+                        let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, &world.registries.blocks, state));
+                        sim::voxel::set_block_shape(at.0, at.1, at.2, shape);
+                        world.scene.set(at, block);
+                    }
+                    world.stream.record_edits(&world.scene, &positions);
+                    world.stream.mark_edited(&world.scene, &positions);
+                    for &at in &positions {
+                        entities.placed(&world.scene, at);
+                    }
                     hand.swing = Some(0.0);
-                    if let (Some(sounds), Some(kind)) = (sounds.as_mut(), world.scene.sound_type(&block)) {
+                    if let Some(block) = minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned()
+                        && let (Some(sounds), Some(kind)) = (sounds.as_mut(), world.scene.sound_type(&block))
+                    {
                         let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
                         let at = Vec3::from_array(sim::voxel::to_map(origin, centre));
                         sounds.play(&world.packs, &kind.place, Some(at), (kind.volume + 1.0) / 2.0, kind.pitch * 0.8);
                     }
+                } else {
+                    entities.inventory.slots[entities.selected] = held;
+                    hand.place_delay = 0;
                 }
             }
         }
@@ -1115,6 +1107,48 @@ fn update(
         }
         view.light_volume = Some(Arc::new((corner, data)));
     }
+}
+
+fn shape_id(
+    shapes: &mut HashMap<BlockStateId, u16>,
+    shape_ids: &mut HashMap<Vec<[u32; 6]>, u16>,
+    blocks: &minecraftoss_core::BlockRegistry,
+    state: BlockStateId,
+) -> u16 {
+    *shapes.entry(state).or_insert_with(|| {
+        let boxes = blocks.collision_boxes(state);
+        if boxes.is_empty() {
+            return 0;
+        }
+        let key: Vec<[u32; 6]> = boxes.iter().map(|b| b.map(|v| (v as f32).to_bits())).collect();
+        if let Some(&id) = shape_ids.get(&key) {
+            return id;
+        }
+        let boxes32 = boxes.iter().map(|b| b.map(|v| v as f32)).collect();
+        let id = sim::voxel::add_shapes(vec![boxes32]).unwrap_or(0);
+        shape_ids.insert(key, id);
+        id
+    })
+}
+
+fn scene_block(block: &minecraftoss_player::Block) -> Option<minecraft_terrain::scene::Block> {
+    Some(minecraft_terrain::scene::Block {
+        id: minecraft_terrain::pack::ResourceId::parse(&block.id).ok()?,
+        properties: block.properties.clone(),
+    })
+}
+
+fn obstacles(
+    predicted: &playerstate_iw4::PlayerState,
+    authority: Option<&playerstate_iw4::PlayerState>,
+    entities: &crate::minecraft_entities::Entities,
+) -> Vec<[f64; 6]> {
+    let ps = authority.unwrap_or(predicted);
+    let (mins, maxs) = sim::voxel::player_hull(ps);
+    sim::voxel::body_box(ps.origin, mins, maxs)
+        .into_iter()
+        .chain(entities.boxes().into_iter().map(|(_, b)| b))
+        .collect()
 }
 
 fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {

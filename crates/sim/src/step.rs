@@ -405,6 +405,10 @@ fn run_players_system(ecs: &mut World) {
                 if ps.shellshock_time.wrapping_add(ps.shellshock_duration) < level_time {
                     ps.pm_flags &= !playerstate_iw4::pm_flags::SHELLSHOCKED;
                 }
+                let (hull_mins, hull_maxs) = crate::voxel::player_hull(ps);
+                if crate::voxel::active() && let Some(origin) = crate::voxel::push_out(ps.origin, hull_mins, hull_maxs) {
+                    ps.origin = origin;
+                }
                 let moved_from = ps.origin;
                 let result = pmove(
                     ps,

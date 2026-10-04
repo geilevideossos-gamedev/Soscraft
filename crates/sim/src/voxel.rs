@@ -659,3 +659,212 @@ pub(crate) fn trace(
         ..trace_iw4::Trace::default()
     }
 }
+
+pub const HULL_HALF_WIDTH: f32 = 15.0;
+const PUSH_GAP: f64 = 1e-3;
+const STEP_OUT: f64 = 1.05;
+const SIDE_OUT: f64 = 1.0;
+const CLIMB_OUT: f64 = 3.0;
+
+pub fn player_hull(ps: &playerstate_iw4::PlayerState) -> ([f32; 3], [f32; 3]) {
+    let height = match movement_iw4::stance_surface_type(ps) {
+        movement_iw4::StanceSurface::Stand => movement_iw4::STAND_MAXS_Z,
+        movement_iw4::StanceSurface::Prone => movement_iw4::PRONE_MAXS_Z,
+        movement_iw4::StanceSurface::Crouch | movement_iw4::StanceSurface::LastStand => movement_iw4::CROUCH_MAXS_Z,
+    };
+    (
+        [-HULL_HALF_WIDTH, -HULL_HALF_WIDTH, 0.0],
+        [HULL_HALF_WIDTH, HULL_HALF_WIDTH, height],
+    )
+}
+
+fn block_bounds(mins: [f32; 3], maxs: [f32; 3]) -> ([f64; 3], [f64; 3]) {
+    let s = f64::from(BLOCK);
+    (
+        [f64::from(mins[0]) / s, f64::from(mins[2]) / s, -f64::from(maxs[1]) / s],
+        [f64::from(maxs[0]) / s, f64::from(maxs[2]) / s, -f64::from(mins[1]) / s],
+    )
+}
+
+pub fn body_box(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> Option<[f64; 6]> {
+    let world = WORLD.read().ok()?;
+    let at = to_block(world.as_ref()?.origin, origin);
+    let (lo, hi) = block_bounds(mins, maxs);
+    Some([at[0] + lo[0], at[1] + lo[1], at[2] + lo[2], at[0] + hi[0], at[1] + hi[1], at[2] + hi[2]])
+}
+
+pub fn boxes_meet(a: [f64; 6], b: [f64; 6]) -> bool {
+    (0..3).all(|k| a[k] < b[k + 3] && b[k] < a[k + 3])
+}
+
+pub(crate) fn push_out(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> Option<[f32; 3]> {
+    let guard = WORLD.read().ok()?;
+    let world = guard.as_ref()?;
+    let at = to_block(world.origin, origin);
+    let (lo, hi) = block_bounds(mins, maxs);
+    let body_lo = std::array::from_fn(|k| at[k] + lo[k]);
+    let body_hi = std::array::from_fn(|k| at[k] + hi[k]);
+    let d = world.way_out(body_lo, body_hi)?;
+    Some(to_map(world.origin, std::array::from_fn(|k| at[k] + d[k])))
+}
+
+impl VoxelWorld {
+    fn overlapping(&self, lo: [f64; 3], hi: [f64; 3]) -> Vec<[f64; 6]> {
+        const INSIDE: f64 = 1e-4;
+        let mut out = Vec::new();
+        for y in lo[1].floor() as i32 - 1..=hi[1].floor() as i32 {
+            for z in lo[2].floor() as i32 - 1..=hi[2].floor() as i32 {
+                for x in lo[0].floor() as i32 - 1..=hi[0].floor() as i32 {
+                    for shape in self.shape_at(x, y, z) {
+                        let cell = [f64::from(x), f64::from(y), f64::from(z)];
+                        let b: [f64; 6] = std::array::from_fn(|k| cell[k % 3] + f64::from(shape[k]));
+                        if (0..3).all(|k| b[k + 3] - lo[k] > INSIDE && hi[k] - b[k] > INSIDE) {
+                            out.push(b);
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn escape(&self, lo: [f64; 3], hi: [f64; 3], axis: usize, sign: f64, limit: f64) -> Option<f64> {
+        let mut d = 0.0;
+        loop {
+            let l: [f64; 3] = std::array::from_fn(|k| if k == axis { lo[k] + sign * d } else { lo[k] });
+            let h: [f64; 3] = std::array::from_fn(|k| if k == axis { hi[k] + sign * d } else { hi[k] });
+            let inside = self.overlapping(l, h);
+            if inside.is_empty() {
+                return Some(d);
+            }
+            let need = inside
+                .iter()
+                .map(|b| if sign > 0.0 { b[axis + 3] - lo[axis] } else { hi[axis] - b[axis] })
+                .fold(f64::MIN, f64::max)
+                + PUSH_GAP;
+            if need <= d || need > limit {
+                return None;
+            }
+            d = need;
+        }
+    }
+
+    fn way_out(&self, lo: [f64; 3], hi: [f64; 3]) -> Option<[f64; 3]> {
+        if self.overlapping(lo, hi).is_empty() {
+            return None;
+        }
+        let along = |axis: usize, sign: f64, d: f64| {
+            let mut v = [0.0; 3];
+            v[axis] = sign * d;
+            v
+        };
+        let mut best = self.escape(lo, hi, 1, 1.0, STEP_OUT).map(|d| (d, along(1, 1.0, d)));
+        for (axis, sign) in [(0, 1.0), (0, -1.0), (2, 1.0), (2, -1.0)] {
+            if let Some(d) = self.escape(lo, hi, axis, sign, SIDE_OUT)
+                && best.is_none_or(|(b, _)| d < b)
+            {
+                best = Some((d, along(axis, sign, d)));
+            }
+        }
+        best.map(|(_, v)| v).or_else(|| self.escape(lo, hi, 1, 1.0, CLIMB_OUT).map(|d| along(1, 1.0, d)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FULL: [f32; 6] = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+    const FENCE: [f32; 6] = [0.375, 0.0, 0.375, 0.625, 1.5, 0.625];
+
+    fn world(blocks: &[([i32; 3], u16)]) -> VoxelWorld {
+        let mut chunk = VoxelChunk { min_y: -16, height: 64, shapes: vec![0; 64 * 256] };
+        for &([x, y, z], shape) in blocks {
+            chunk.shapes[(((y + 16) * 16 + z) * 16 + x) as usize] = shape;
+        }
+        let mut chunks = HashMap::new();
+        chunks.insert((0, 0), chunk);
+        VoxelWorld { brushes: 0, origin: [0.0; 3], chunks, shapes: vec![Vec::new(), vec![FULL], vec![FENCE]] }
+    }
+
+    fn body(feet: [f64; 3], height: f64) -> ([f64; 3], [f64; 3]) {
+        let half = f64::from(HULL_HALF_WIDTH / BLOCK);
+        ([feet[0] - half, feet[1], feet[2] - half], [feet[0] + half, feet[1] + height, feet[2] + half])
+    }
+
+    #[test]
+    fn a_body_clear_of_blocks_is_left_alone() {
+        let w = world(&[([4, 0, 4], 1)]);
+        let (lo, hi) = body([4.5, 1.0 + 1e-3, 4.5], 70.0 / 36.0);
+        assert_eq!(w.way_out(lo, hi), None);
+    }
+
+    #[test]
+    fn a_body_sunk_into_a_block_below_is_lifted_onto_it() {
+        let w = world(&[([4, 0, 4], 1)]);
+        let (lo, hi) = body([4.5, 0.9, 4.5], 70.0 / 36.0);
+        let d = w.way_out(lo, hi).expect("a way out");
+        assert_eq!((d[0], d[2]), (0.0, 0.0));
+        assert!((0.9 + d[1] - (1.0 + PUSH_GAP)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_lift_blocked_overhead_goes_sideways_instead() {
+        let w = world(&[([4, 0, 4], 1), ([4, 2, 4], 1), ([4, 3, 4], 1)]);
+        let (lo, hi) = body([4.3, 0.95, 4.5], 1.2);
+        let d = w.way_out(lo, hi).expect("a way out");
+        assert_eq!(d[1], 0.0);
+        assert!(d[0] < 0.0);
+        assert!(w.overlapping(std::array::from_fn(|k| lo[k] + d[k]), std::array::from_fn(|k| hi[k] + d[k])).is_empty());
+    }
+
+    #[test]
+    fn the_shortest_way_out_wins() {
+        let w = world(&[([5, 1, 4], 1), ([5, 2, 4], 1)]);
+        let (lo, hi) = body([4.62, 1.0, 4.5], 70.0 / 36.0);
+        let d = w.way_out(lo, hi).expect("a way out");
+        assert!(d[0] < 0.0 && d[0] > -0.1);
+        assert_eq!((d[1], d[2]), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_fence_taller_than_its_cell_still_counts() {
+        let w = world(&[([4, 0, 4], 2)]);
+        let (lo, hi) = body([4.5, 1.2, 4.5], 70.0 / 36.0);
+        assert_eq!(w.overlapping(lo, hi).len(), 1);
+        let d = w.way_out(lo, hi).expect("a way out");
+        assert!((1.2 + d[1] - (1.5 + PUSH_GAP)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_body_walled_in_is_not_moved() {
+        let mut blocks = Vec::new();
+        for y in 0..6 {
+            for x in 3..6 {
+                for z in 3..6 {
+                    blocks.push(([x, y, z], 1));
+                }
+            }
+        }
+        let w = world(&blocks);
+        let (lo, hi) = body([4.5, 1.0, 4.5], 70.0 / 36.0);
+        assert_eq!(w.way_out(lo, hi), None);
+    }
+
+    #[test]
+    fn touching_boxes_do_not_meet() {
+        assert!(!boxes_meet([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], [1.0, 0.0, 0.0, 2.0, 1.0, 1.0]));
+        assert!(boxes_meet([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], [0.99, 0.5, 0.5, 2.0, 1.0, 1.0]));
+    }
+
+    #[test]
+    fn the_hull_follows_the_stance() {
+        let mut ps = playerstate_iw4::PlayerState::ZERO;
+        ps.view_height_target = movement_iw4::view_height::STAND;
+        assert_eq!(player_hull(&ps).1[2], 70.0);
+        ps.view_height_target = movement_iw4::view_height::CROUCH;
+        assert_eq!(player_hull(&ps).1[2], 50.0);
+        ps.view_height_target = movement_iw4::view_height::PRONE;
+        assert_eq!(player_hull(&ps).1[2], 30.0);
+    }
+}
