@@ -20,6 +20,8 @@ pub const CROUCH_MAXS_Z: f32 = 50.0;
 
 pub const PRONE_MAXS_Z: f32 = 30.0;
 
+pub const STANCE_HEIGHTS: [f32; 3] = [STAND_MAXS_Z, CROUCH_MAXS_Z, PRONE_MAXS_Z];
+
 const EV_STANCE_FORCE_STAND: i32 = 6;
 
 const EV_STANCE_FORCE_CROUCH: i32 = 7;
@@ -109,21 +111,21 @@ pub fn update_stance_flags<C: CollisionBackend>(
     } else if crouch_btn {
         if (ps.pm_flags & pm_flags::PRONE) == 0 {
             ps.pm_flags |= pm_flags::CROUCH;
-        } else if !stance_hull_allsolid(collision, origin, bounds, CROUCH_MAXS_Z) {
+        } else if !stance_hull_allsolid(collision, origin, bounds, bounds.heights[1]) {
             ps.pm_flags = (ps.pm_flags & !pm_flags::PRONE) | pm_flags::CROUCH;
         } else if !stance_held {
             add_predictable_event(ps, EV_STANCE_FORCE_PRONE, 2);
         }
     } else if (ps.pm_flags & pm_flags::PRONE) != 0 {
-        if !stance_hull_allsolid(collision, origin, bounds, STAND_MAXS_Z) {
+        if !stance_hull_allsolid(collision, origin, bounds, bounds.heights[0]) {
             ps.pm_flags &= !(pm_flags::PRONE | pm_flags::CROUCH);
-        } else if !stance_hull_allsolid(collision, origin, bounds, CROUCH_MAXS_Z) {
+        } else if !stance_hull_allsolid(collision, origin, bounds, bounds.heights[1]) {
             ps.pm_flags = (ps.pm_flags & !pm_flags::PRONE) | pm_flags::CROUCH;
         } else if !stance_held {
             add_predictable_event(ps, EV_STANCE_FORCE_PRONE, 1);
         }
     } else if (ps.pm_flags & pm_flags::CROUCH) != 0 {
-        if !stance_hull_allsolid(collision, origin, bounds, STAND_MAXS_Z) {
+        if !stance_hull_allsolid(collision, origin, bounds, bounds.heights[0]) {
             ps.pm_flags &= !pm_flags::CROUCH;
         } else if !stance_held {
             add_predictable_event(ps, EV_STANCE_FORCE_CROUCH, 1);
@@ -131,27 +133,27 @@ pub fn update_stance_flags<C: CollisionBackend>(
     }
 }
 
-pub fn sync_stance_tail(ps: &mut PlayerState) -> f32 {
+pub fn sync_stance_tail(ps: &mut PlayerState, heights: [f32; 3]) -> f32 {
     match stance_surface_type(ps) {
         StanceSurface::Prone => {
             ps.e_flags = (ps.e_flags & !eflags::DUCK) | eflags::PRONE;
             ps.pm_flags = (ps.pm_flags & !pm_flags::CROUCH) | pm_flags::PRONE;
-            PRONE_MAXS_Z
+            heights[2]
         }
         StanceSurface::Crouch => {
             ps.e_flags = (ps.e_flags & !eflags::PRONE) | eflags::DUCK;
             ps.pm_flags = (ps.pm_flags & !pm_flags::PRONE) | pm_flags::CROUCH;
-            CROUCH_MAXS_Z
+            heights[1]
         }
         StanceSurface::LastStand => {
             ps.e_flags = (ps.e_flags & !eflags::DUCK) | eflags::PRONE;
             ps.pm_flags = (ps.pm_flags & !pm_flags::CROUCH) | pm_flags::PRONE;
-            CROUCH_MAXS_Z
+            heights[1]
         }
         StanceSurface::Stand => {
             ps.e_flags &= !(eflags::DUCK | eflags::PRONE);
             ps.pm_flags &= !(pm_flags::PRONE | pm_flags::CROUCH);
-            STAND_MAXS_Z
+            heights[0]
         }
     }
 }

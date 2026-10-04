@@ -329,7 +329,7 @@ fn run_players_system(ecs: &mut World) {
             let (melee_delay_ms, melee_charge_delay_ms) = facts
                 .map(|f| (f.melee_delay_ms, f.melee_charge_delay_ms))
                 .unwrap_or((0, 0));
-            let context = pmove_context(
+            let mut context = pmove_context(
                 old_buttons,
                 scales,
                 ads_allowed,
@@ -349,6 +349,9 @@ fn run_players_system(ecs: &mut World) {
                     .and_then(|m| m.shellshock.as_ref())
                     .is_some_and(|shock| shock.movement),
             );
+            if crate::voxel::active() {
+                context.bounds = crate::voxel::move_bounds(context.bounds);
+            }
             crate::script::player_commands(world.ecs(), id.0, cmd.buttons, old_buttons);
             let mut cmd = *cmd;
             crate::script_player::constrain_cmd(&mut world, *id, &mut cmd);
@@ -489,7 +492,7 @@ fn run_players_system(ecs: &mut World) {
                 }
             }
             world.set_pmove_walking(*id, walking);
-            world.link_player_area(*id, linked_bounds);
+            world.link_player_area(*id, crate::voxel::area_bounds(linked_bounds));
 
             let shots = advance_weapon_command(&mut world, tick, *id, cmd, delta.min(200));
             for shot in shots {
@@ -2131,6 +2134,7 @@ fn pmove_context(
             mins: [-15.0, -15.0, 0.0],
             maxs: [15.0, 15.0, 70.0],
             tracemask: 0x0281_0011,
+            heights: movement_iw4::STANCE_HEIGHTS,
         },
         view_angles: ViewAngleClamp {
             pitch_up: 85.0,

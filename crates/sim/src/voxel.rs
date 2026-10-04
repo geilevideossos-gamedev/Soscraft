@@ -692,7 +692,8 @@ fn trace_in(world: &VoxelWorld, start: [f32; 3], end: [f32; 3], mins: [f32; 3], 
     }
 }
 
-pub const HULL_HALF_WIDTH: f32 = 15.0;
+pub const HULL_HALF_WIDTH: f32 = 0.3 * BLOCK;
+pub const STANCE_HEIGHTS: [f32; 3] = [1.8 * BLOCK, 1.5 * BLOCK, movement_iw4::PRONE_MAXS_Z];
 pub const DAMAGE_PER_HARDNESS: f32 = 160.0;
 const PUSH_GAP: f64 = 1e-3;
 const STEP_OUT: f64 = 1.05;
@@ -701,14 +702,37 @@ const CLIMB_OUT: f64 = 3.0;
 
 pub fn player_hull(ps: &playerstate_iw4::PlayerState) -> ([f32; 3], [f32; 3]) {
     let height = match movement_iw4::stance_surface_type(ps) {
-        movement_iw4::StanceSurface::Stand => movement_iw4::STAND_MAXS_Z,
-        movement_iw4::StanceSurface::Prone => movement_iw4::PRONE_MAXS_Z,
-        movement_iw4::StanceSurface::Crouch | movement_iw4::StanceSurface::LastStand => movement_iw4::CROUCH_MAXS_Z,
+        movement_iw4::StanceSurface::Stand => STANCE_HEIGHTS[0],
+        movement_iw4::StanceSurface::Prone => STANCE_HEIGHTS[2],
+        movement_iw4::StanceSurface::Crouch | movement_iw4::StanceSurface::LastStand => STANCE_HEIGHTS[1],
     };
     (
         [-HULL_HALF_WIDTH, -HULL_HALF_WIDTH, 0.0],
         [HULL_HALF_WIDTH, HULL_HALF_WIDTH, height],
     )
+}
+
+pub fn move_bounds(bounds: movement_iw4::MoveBounds) -> movement_iw4::MoveBounds {
+    movement_iw4::MoveBounds {
+        mins: [-HULL_HALF_WIDTH, -HULL_HALF_WIDTH, bounds.mins[2]],
+        maxs: [HULL_HALF_WIDTH, HULL_HALF_WIDTH, STANCE_HEIGHTS[0]],
+        heights: STANCE_HEIGHTS,
+        ..bounds
+    }
+}
+
+pub fn area_bounds(bounds: movement_iw4::MoveBounds) -> movement_iw4::MoveBounds {
+    if bounds.heights != STANCE_HEIGHTS {
+        return bounds;
+    }
+    let stance = STANCE_HEIGHTS.iter().position(|&h| h == bounds.maxs[2]).unwrap_or(0);
+    let (mins, maxs) = (crate::bullet_collision::PLAYER_MINS, crate::bullet_collision::PLAYER_MAXS);
+    movement_iw4::MoveBounds {
+        mins: [mins[0], mins[1], bounds.mins[2]],
+        maxs: [maxs[0], maxs[1], movement_iw4::STANCE_HEIGHTS[stance]],
+        heights: movement_iw4::STANCE_HEIGHTS,
+        ..bounds
+    }
 }
 
 fn block_bounds(mins: [f32; 3], maxs: [f32; 3]) -> ([f64; 3], [f64; 3]) {
@@ -975,6 +999,47 @@ mod tests {
     }
 
     #[test]
+    fn a_vanilla_sized_body_fits_trapdoor_gaps() {
+        const OPEN: [f32; 6] = [0.0, 0.0, 0.0, 0.1875, 1.0, 1.0];
+        const TOP: [f32; 6] = [0.0, 0.8125, 0.0, 1.0, 1.0, 1.0];
+        let mut blocks = vec![([4, 4, 4], 5), ([10, 0, 10], 1), ([10, 2, 10], 6), ([10, 3, 10], 1)];
+        for x in 2..=6 {
+            for z in 2..=6 {
+                if (x, z) != (4, 4) {
+                    blocks.push(([x, 4, z], 1));
+                }
+            }
+        }
+        let mut w = world(&blocks);
+        w.shapes.extend([vec![OPEN], vec![TOP]]);
+        w.fluids.extend([0, 0]);
+        let mw2 = movement_iw4::MoveBounds {
+            mins: [-15.0, -15.0, 0.0],
+            maxs: [15.0, 15.0, 70.0],
+            tracemask: 0,
+            heights: movement_iw4::STANCE_HEIGHTS,
+        };
+        let vanilla = move_bounds(mw2);
+        assert!((vanilla.maxs[0] - 10.8).abs() < 1e-4 && (vanilla.maxs[2] - 64.8).abs() < 1e-4);
+        assert!((vanilla.heights[1] - 54.0).abs() < 1e-4);
+        let drop = |b: movement_iw4::MoveBounds| {
+            let (high, low) = (to_map([0.0; 3], [4.6, 6.0, 4.5]), to_map([0.0; 3], [4.6, 2.0, 4.5]));
+            trace_in(&w, high, low, b.mins, b.maxs).fraction
+        };
+        assert_eq!(drop(vanilla), 1.0);
+        assert!(drop(mw2) < 1.0);
+        let stand = |b: movement_iw4::MoveBounds| {
+            let at = to_map([0.0; 3], [10.5, 1.01, 10.5]);
+            trace_in(&w, at, at, b.mins, b.maxs).startsolid
+        };
+        assert_eq!(stand(vanilla), 0);
+        assert_eq!(stand(mw2), 1);
+        let crouched = movement_iw4::MoveBounds { maxs: [vanilla.maxs[0], vanilla.maxs[1], STANCE_HEIGHTS[1]], ..vanilla };
+        assert_eq!(area_bounds(crouched).maxs, [15.0, 15.0, 50.0]);
+        assert_eq!(area_bounds(mw2), mw2);
+    }
+
+    #[test]
     fn a_body_clear_of_blocks_is_left_alone() {
         let w = world(&[([4, 0, 4], 1)]);
         let (lo, hi) = body([4.5, 1.0 + 1e-3, 4.5], 70.0 / 36.0);
@@ -1003,7 +1068,7 @@ mod tests {
     #[test]
     fn the_shortest_way_out_wins() {
         let w = world(&[([5, 1, 4], 1), ([5, 2, 4], 1)]);
-        let (lo, hi) = body([4.62, 1.0, 4.5], 70.0 / 36.0);
+        let (lo, hi) = body([4.75, 1.0, 4.5], 70.0 / 36.0);
         let d = w.way_out(lo, hi).expect("a way out");
         assert!(d[0] < 0.0 && d[0] > -0.1);
         assert_eq!((d[1], d[2]), (0.0, 0.0));
@@ -1063,10 +1128,11 @@ mod tests {
     fn the_hull_follows_the_stance() {
         let mut ps = playerstate_iw4::PlayerState::ZERO;
         ps.view_height_target = movement_iw4::view_height::STAND;
-        assert_eq!(player_hull(&ps).1[2], 70.0);
+        assert_eq!(player_hull(&ps).1[2], STANCE_HEIGHTS[0]);
         ps.view_height_target = movement_iw4::view_height::CROUCH;
-        assert_eq!(player_hull(&ps).1[2], 50.0);
+        assert_eq!(player_hull(&ps).1[2], STANCE_HEIGHTS[1]);
         ps.view_height_target = movement_iw4::view_height::PRONE;
         assert_eq!(player_hull(&ps).1[2], 30.0);
+        assert_eq!(player_hull(&ps).1[0], 0.3 * BLOCK);
     }
 }

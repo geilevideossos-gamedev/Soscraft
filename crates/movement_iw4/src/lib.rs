@@ -94,7 +94,7 @@ pub use sprint::{
     sprint_start_interfering_buttons, sprint_time_remaining, update_sprint,
 };
 pub use stance::{
-    CROUCH_MAXS_Z, PRONE_MAXS_Z, STAND_MAXS_Z, StanceChange, StanceSurface, stance_speed_scale,
+    CROUCH_MAXS_Z, PRONE_MAXS_Z, STAND_MAXS_Z, STANCE_HEIGHTS, StanceChange, StanceSurface, stance_speed_scale,
     stance_surface_type, sync_stance_tail, update_stance_flags, update_stance_target,
     update_view_height, view_height, view_height_lerp_duration,
 };

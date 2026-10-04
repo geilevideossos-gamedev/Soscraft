@@ -27,6 +27,7 @@ pub struct MoveBounds {
     pub mins: [f32; 3],
     pub maxs: [f32; 3],
     pub tracemask: u32,
+    pub heights: [f32; 3],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -159,7 +160,7 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
         || sprint_change == crate::SprintResult::Started;
     update_view_height(ps, &pml, cmd);
     let mut bounds = context.bounds;
-    bounds.maxs[2] = sync_stance_tail(ps);
+    bounds.maxs[2] = sync_stance_tail(ps, bounds.heights);
 
     update_ads_frac(ps, pml.msec, context.ads_frac);
     crate::breath::update_hold_breath(ps, cmd.buttons, pml.msec, context.can_hold_breath);
