@@ -1092,6 +1092,135 @@ mod tests {
     }
 
     #[test]
+    fn dragging_over_grid_cells_shares_the_carried_stack() {
+        let mut inv = inventory();
+        inv.cursor = stack(&inv, "minecraft:oak_log", 9);
+        let targets = [
+            Spot::Grid(0),
+            Spot::Grid(4),
+            Spot::Grid(8),
+            Spot::Player(20),
+            Spot::Grid(4),
+            Spot::Result,
+        ];
+        spread(&mut inv, Grid::Table, &targets, false);
+        for cell in [0, 4, 8] {
+            assert_eq!(count_of(&inv.workbench[cell]), 2);
+        }
+        assert_eq!(count_of(&inv.slots[20]), 2);
+        assert_eq!(count_of(&inv.cursor), 1);
+
+        let mut inv = inventory();
+        inv.cursor = stack(&inv, "minecraft:oak_log", 3);
+        spread(&mut inv, Grid::Table, &[Spot::Grid(1), Spot::Grid(2)], true);
+        assert_eq!(count_of(&inv.workbench[1]), 1);
+        assert_eq!(count_of(&inv.workbench[2]), 1);
+        assert_eq!(count_of(&inv.cursor), 1);
+    }
+
+    #[test]
+    fn dragging_ignores_slots_the_screen_does_not_show() {
+        let mut inv = inventory();
+        inv.cursor = stack(&inv, "minecraft:oak_log", 4);
+        spread(
+            &mut inv,
+            Grid::Table,
+            &[Spot::Player(40), Spot::Grid(1)],
+            false,
+        );
+        assert_eq!(count_of(&inv.workbench[1]), 4);
+        assert!(inv.slots[40].is_none());
+
+        let mut inv = inventory();
+        inv.cursor = stack(&inv, "minecraft:oak_log", 4);
+        spread(
+            &mut inv,
+            Grid::Inventory,
+            &[Spot::Grid(4), Spot::Player(40)],
+            false,
+        );
+        assert_eq!(count_of(&inv.slots[40]), 4);
+        assert!(inv.crafting.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn left_drag_over_more_slots_than_items_gives_one_each_and_leaves_no_empty_stacks() {
+        let mut inv = inventory();
+        inv.cursor = stack(&inv, "minecraft:dirt", 2);
+        let targets: Vec<Spot> = (9..14).map(Spot::Player).collect();
+        spread(&mut inv, Grid::Inventory, &targets, false);
+        assert_eq!(count_of(&inv.slots[9]), 1);
+        assert_eq!(count_of(&inv.slots[10]), 1);
+        assert!(inv.slots[11..14].iter().all(Option::is_none));
+        assert!(inv.cursor.is_none());
+        assert!(inv.slots.iter().flatten().all(|stack| stack.count > 0));
+    }
+
+    #[test]
+    fn closing_returns_the_cursor_and_both_grids_to_the_inventory() {
+        let mut inv = inventory();
+        inv.cursor = stack(&inv, "minecraft:dirt", 3);
+        put(&mut inv, Grid::Inventory, &[2], "minecraft:oak_log", 2);
+        put(&mut inv, Grid::Table, &[5], "minecraft:stone", 7);
+        assert!(has_loose_items(&inv));
+        assert!(close(&mut inv, 0).is_empty());
+        assert_eq!(id_of(&inv.slots[0]), Some("minecraft:dirt"));
+        assert_eq!(id_of(&inv.slots[1]), Some("minecraft:oak_log"));
+        assert_eq!(id_of(&inv.slots[2]), Some("minecraft:stone"));
+        assert!(!has_loose_items(&inv));
+    }
+
+    #[test]
+    fn closing_fills_the_selected_slot_first() {
+        let mut inv = inventory();
+        inv.slots[0] = stack(&inv, "minecraft:oak_log", 10);
+        inv.slots[6] = stack(&inv, "minecraft:oak_log", 10);
+        inv.cursor = stack(&inv, "minecraft:oak_log", 5);
+        assert!(close(&mut inv, 6).is_empty());
+        assert_eq!(count_of(&inv.slots[6]), 15);
+        assert_eq!(count_of(&inv.slots[0]), 10);
+    }
+
+    #[test]
+    fn closing_a_full_inventory_hands_back_what_does_not_fit() {
+        let mut inv = inventory();
+        fill(&mut inv, "minecraft:dirt");
+        inv.slots[4] = stack(&inv, "minecraft:oak_log", 62);
+        inv.cursor = stack(&inv, "minecraft:oak_log", 3);
+        put(&mut inv, Grid::Table, &[0], "minecraft:stone", 7);
+        let thrown = close(&mut inv, 0);
+        assert_eq!(total(&thrown, "minecraft:oak_log"), 1);
+        assert_eq!(total(&thrown, "minecraft:stone"), 7);
+        assert_eq!(count_of(&inv.slots[4]), 64);
+        assert!(!has_loose_items(&inv));
+    }
+
+    #[test]
+    fn closing_also_hands_back_remainders_waiting_to_drop() {
+        let mut inv = inventory();
+        fill(&mut inv, "minecraft:dirt");
+        put(
+            &mut inv,
+            Grid::Inventory,
+            &[0, 1, 2, 3],
+            "minecraft:honey_bottle",
+            2,
+        );
+        assert!(take(&mut inv, Grid::Inventory));
+        let thrown = close(&mut inv, 0);
+        assert_eq!(total(&thrown, "minecraft:honey_block"), 1);
+        assert_eq!(total(&thrown, "minecraft:honey_bottle"), 4);
+        assert_eq!(total(&thrown, "minecraft:glass_bottle"), 4);
+        for id in [
+            "minecraft:honey_block",
+            "minecraft:honey_bottle",
+            "minecraft:glass_bottle",
+        ] {
+            assert_eq!(inv.count(id), 0);
+        }
+    }
+
+    #[test]
     fn the_item_catalog_sets_stack_limits_and_remainders() {
         let mut inv = inventory();
         assert_eq!(inv.recipes.max_stack("minecraft:bucket"), 16);
