@@ -96,7 +96,8 @@ struct HandState {
     pearl_cooldown: u32,
     recent: Vec<((i32, i32, i32), f64)>,
     attack_ticks: u32,
-    attack_slot: Option<usize>,
+    attack_item: Option<String>,
+    miss_time: u32,
 }
 
 /// The player's walk, for vanilla's step and fall sounds.
@@ -603,6 +604,13 @@ fn update(
     let hand_ticks = (hand.clock / TICK_SECONDS) as u32;
     hand.clock -= f64::from(hand_ticks) * TICK_SECONDS;
     hand.pearl_cooldown = hand.pearl_cooldown.saturating_sub(hand_ticks);
+    hand.miss_time = hand.miss_time.saturating_sub(hand_ticks);
+    hand.attack_ticks = hand.attack_ticks.saturating_add(hand_ticks);
+    let main_hand = entities.as_ref().and_then(|e| e.inventory.slots[e.selected].as_ref().map(|s| s.id.clone()));
+    if hand.attack_item != main_hand {
+        hand.attack_item = main_hand;
+        hand.attack_ticks = 0;
+    }
     if alive {
         let motion = crate::minecraft_survival::Motion {
             feet,
@@ -647,20 +655,30 @@ fn update(
             let (yaw, pitch) = (f64::from(mc_yaw).to_radians(), f64::from(ps.viewangles[0]).to_radians());
             glam::DVec3::new(-yaw.sin() * pitch.cos(), -pitch.sin(), yaw.cos() * pitch.cos())
         };
-        hand.attack_ticks = hand.attack_ticks.saturating_add(hand_ticks);
-        if hand.attack_slot != Some(entities.selected) {
-            hand.attack_slot = Some(entities.selected);
-            hand.attack_ticks = 0;
+        let attack_held = buttons.pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, false);
+        if !attack_held {
+            hand.miss_time = 0;
         }
-        if buttons.just_pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, true) {
+        let busy = survival.eating().is_some() || hand.miss_time > 0;
+        if (buttons.just_pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, true)) && !busy {
             hand.swing = Some(0.0);
             let held = entities.inventory.slots[entities.selected].clone();
             let (damage, speed) = entities.inventory.recipes.attack_attributes(held.as_ref());
             let damage = (damage + survival.status.attack_damage_modifier()).max(0.0);
             let strength = crate::minecraft_survival::attack_strength(hand.attack_ticks, speed);
-            hand.attack_ticks = 0;
-            if entities.punch(eye_block, look, mc_yaw, damage, strength) {
+            let sprinting = ps.pm_flags & playerstate_iw4::pm_flags::SPRINTING != 0;
+            let falling = steps.air_peak.is_some_and(|peak| peak > feet[1]);
+            let blow = crate::minecraft_entities::Blow {
+                sprinting,
+                can_critical: falling && !on_ground && !water.wet() && !sprinting,
+                can_sweep: on_ground && !sprinting && held.as_ref().is_some_and(|s| s.id.ends_with("_sword")),
+            };
+            if entities.punch(eye_block, look, mc_yaw, damage, strength, blow) {
+                hand.attack_ticks = 0;
                 survival.exhaust(crate::minecraft_survival::ATTACK_EXHAUSTION);
+            } else if player.target(&minecraft_terrain::doors::Outlined(&world.scene), 4.5).is_none() {
+                hand.attack_ticks = 0;
+                hand.miss_time = 10;
             }
         }
         for _ in 0..hand_ticks {
@@ -688,7 +706,7 @@ fn update(
                 }
             }
         }
-        if buttons.pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, false) {
+        if attack_held && !busy {
             for _ in 0..hand_ticks {
                 if let Some(hit) = player.target(&minecraft_terrain::doors::Outlined(&world.scene), 4.5) {
                     // A hand mines as vanilla's `getDestroyProgress`: a

@@ -37,6 +37,12 @@ const SERVER_ITEM: u32 = 1 << 31;
 type Hits = Vec<(f32, Option<[f64; 3]>)>;
 type Changes = Vec<((i32, i32, i32), Option<Block>)>;
 
+pub(crate) struct Blow {
+    pub sprinting: bool,
+    pub can_critical: bool,
+    pub can_sweep: bool,
+}
+
 pub(crate) struct Entities {
     server: ServerHandle,
     /// The mobs the player tracks, as of the last server tick.
@@ -314,7 +320,7 @@ impl Entities {
         mesh
     }
 
-    pub(crate) fn punch(&mut self, eye: DVec3, look: DVec3, yaw: f32, attack_damage: f64, strength: f32) -> bool {
+    pub(crate) fn punch(&mut self, eye: DVec3, look: DVec3, yaw: f32, attack_damage: f64, strength: f32, blow: Blow) -> bool {
         let Some((hit, _)) = self.world.mob_on_ray(eye, look, 3.0) else {
             return false;
         };
@@ -324,9 +330,9 @@ impl Entities {
             yaw,
             attack_damage,
             strength,
-            sprinting: false,
-            can_critical: false,
-            can_sweep: false,
+            sprinting: blow.sprinting,
+            can_critical: blow.can_critical,
+            can_sweep: blow.can_sweep,
         };
         self.server.mob_action(hit, Some(attack), &self.inventory.clone(), self.selected, false);
         true
