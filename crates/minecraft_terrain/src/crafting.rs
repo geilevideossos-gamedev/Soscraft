@@ -232,7 +232,15 @@ pub fn spread(inventory: &mut Inventory, grid: Grid, targets: &[Spot], right: bo
     inventory.distribute_crafting(&indices, right, grid == Grid::Table);
 }
 
-pub fn gather(inventory: &mut Inventory, grid: Grid, right: bool) {
+pub fn gather(inventory: &mut Inventory, grid: Grid, target: Spot, right: bool) {
+    let occupied = match target {
+        Spot::Player(index) => inventory.slots.get(index).is_none_or(Option::is_some),
+        Spot::Grid(cell) => cells(inventory, grid).get(cell).is_none_or(Option::is_some),
+        Spot::Result => true,
+    };
+    if occupied {
+        return;
+    }
     let Some(mut carried) = inventory.cursor.take() else {
         return;
     };

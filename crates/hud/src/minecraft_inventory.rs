@@ -664,7 +664,7 @@ fn handle_clicks(
                 && input.last_click.is_some_and(|(last, at)| last == slot && now - at < 0.25)
                 && ui.cursor.is_some()
             {
-                ui.clicks.push(McClick::Gather { right: false });
+                ui.clicks.push(McClick::Gather { slot, right: false });
                 input.last_click = None;
                 continue;
             }

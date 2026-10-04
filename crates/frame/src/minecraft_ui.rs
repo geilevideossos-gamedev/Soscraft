@@ -48,7 +48,7 @@ pub enum McClick {
     /// A click outside the window: throws the carried stack (or one of it).
     Outside { right: bool },
     /// A double click: gathers matching stacks onto the carried one.
-    Gather { right: bool },
+    Gather { slot: McSlot, right: bool },
     /// A number key over a slot: swaps it with that hotbar slot.
     Swap { slot: McSlot, hotbar: usize },
     /// A drag across slots with a carried stack: shares it out.
