@@ -68,7 +68,7 @@ pub(crate) struct Entities {
     /// volume, pitch.
     pub(crate) sounds: Vec<(String, DVec3, f32, f32)>,
     random: minecraftoss_player::rng::LegacyRandom,
-    thrown: Vec<(String, [f64; 3], [f64; 3])>,
+    thrown: Vec<(String, [f64; 3], [f64; 3], i32)>,
     pub(crate) pearl_landings: Vec<DVec3>,
 }
 
@@ -649,7 +649,11 @@ impl Entities {
         }
         minecraft_terrain::thrown::append_sprites(
             &mut out.items,
-            self.thrown.iter().map(|(item, previous, now)| (item.as_str(), DVec3::from_array(*previous).lerp(DVec3::from_array(*now), f64::from(partial)))),
+            self.thrown
+                .iter()
+                .map(|(item, previous, now, age)| (item.as_str(), DVec3::from_array(*previous).lerp(DVec3::from_array(*now), f64::from(partial)), *age))
+                .filter(|(_, at, age)| minecraft_terrain::thrown::shown(*age, *at, camera))
+                .map(|(item, at, _)| (item, at)),
             atlas,
             forward,
             light,

@@ -146,7 +146,7 @@ pub struct EntitySnapshot {
     pub tnt: Vec<ServerTnt>,
     pub falling: Vec<ServerFallingBlock>,
     pub orbs: Vec<ServerOrb>,
-    pub thrown: Vec<(String, [f64; 3], [f64; 3])>,
+    pub thrown: Vec<(String, [f64; 3], [f64; 3], i32)>,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -653,12 +653,15 @@ impl ServerSim {
         std::mem::take(&mut self.pearl_landings)
     }
 
-    pub fn thrown_view(&self) -> Vec<(String, [f64; 3], [f64; 3])> {
-        self.thrown.iter().map(|t| (t.item.clone(), t.previous.to_array(), t.position().to_array())).collect()
+    pub fn thrown_view(&self) -> Vec<(String, [f64; 3], [f64; 3], i32)> {
+        self.thrown.iter().map(|t| (t.item.clone(), t.previous.to_array(), t.position().to_array(), t.age())).collect()
     }
 
     pub fn tick_thrown(&mut self, thrower: Option<[f64; 3]>) {
         use crate::thrown::Throwable;
+        if thrower.is_none() {
+            self.thrown.retain(|t| t.kind != Throwable::EnderPearl);
+        }
         if self.thrown.is_empty() {
             return;
         }
@@ -677,7 +680,7 @@ impl ServerSim {
                 match t.kind {
                     Throwable::Egg => {
                         for _ in 0..crate::thrown::chicks(t.random()) {
-                            hatched.push((landed.at.to_array(), t.yaw(), crate::thrown::chick_variant(&t.item)));
+                            hatched.push((crate::thrown::hatch_point(landed.at, landed.before).to_array(), t.yaw(), crate::thrown::chick_variant(&t.item)));
                         }
                     }
                     Throwable::EnderPearl => pearl_landings.push(landed.before.to_array()),
@@ -687,7 +690,7 @@ impl ServerSim {
             thrown.retain(crate::thrown::Thrown::alive);
         }
         for (mob, velocity, seed) in struck {
-            crate::thrown::hurt(&mut self.mobs, mob, velocity, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
+            crate::thrown::hurt(&mut self.mobs, mob, velocity, 0, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
         }
         for (at, yaw, variant) in hatched {
             if let Ok(nbt) = minecraftoss_core::snbt::parse_compound(&format!("{{Age:-24000,variant:\"{variant}\"}}")) {
@@ -2588,12 +2591,23 @@ mod tests {
         server.throw(thrown_down("minecraft:ender_pearl", 3));
         let mut landings = Vec::new();
         for _ in 0..20 {
-            server.tick_thrown(None);
+            server.tick_thrown(Some([40.0, 250.0, 40.0]));
             landings.extend(server.take_pearl_landings());
         }
         assert_eq!(landings.len(), 1);
         assert!(landings[0][1] >= 200.0 && landings[0][1] < 202.0, "{landings:?}");
         assert!(server.thrown_view().is_empty());
+    }
+
+    #[test]
+    fn a_pearl_vanishes_when_its_thrower_is_dead() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.throw(thrown_down("minecraft:ender_pearl", 3));
+        server.throw(thrown_down("minecraft:snowball", 4));
+        server.tick_thrown(None);
+        let left: Vec<String> = server.thrown_view().into_iter().map(|t| t.0).collect();
+        assert_eq!(left, vec!["minecraft:snowball".to_owned()]);
+        assert!(server.take_pearl_landings().is_empty());
     }
 
     #[test]

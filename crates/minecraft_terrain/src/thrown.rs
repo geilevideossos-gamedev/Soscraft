@@ -1,4 +1,6 @@
 use glam::{DVec3, Vec2, Vec3};
+use minecraftoss_entities::health::DamageResult;
+use minecraftoss_entities::monster_ai::Target;
 use minecraftoss_entities::movement::Body;
 use minecraftoss_entities::potion::{Potion, PotionTarget, ThrownPotion};
 use minecraftoss_entities::world::{DamageSourceKind, EntityWorld};
@@ -16,6 +18,11 @@ pub const PEARL_DAMAGE: f32 = 5.0;
 pub const PEARL_COOLDOWN: u32 = 20;
 const OWNER: u64 = u64::MAX;
 const KNOCKBACK: f64 = 0.4;
+const THROWN: &str = "minecraft:thrown";
+const PLAYER_TARGET: u64 = u64::MAX / 2;
+const HIDDEN_TICKS: i32 = 2;
+const HIDDEN_NEAR: f64 = 12.25;
+const CHICK_NUDGE: f64 = 0.25;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Throwable {
@@ -137,6 +144,10 @@ impl Thrown {
 
     pub fn yaw(&self) -> f32 {
         self.flight.yaw
+    }
+
+    pub fn age(&self) -> i32 {
+        self.flight.tick_count
     }
 
     pub fn random(&mut self) -> &mut LegacyRandom {
@@ -299,32 +310,73 @@ fn knockback(body: &mut Body, random: &mut LegacyRandom, power: f64, mut xd: f64
     body.needs_sync = true;
 }
 
-pub fn hurt(world: &mut EntityWorld, id: u64, velocity: DVec3, random: &mut LegacyRandom) -> bool {
+pub fn hurt(
+    world: &mut EntityWorld,
+    id: u64,
+    velocity: DVec3,
+    player: u64,
+    random: &mut LegacyRandom,
+) -> bool {
     if let Some(e) = world.enderman_mut(id) {
         e.dodge_pending = true;
         return false;
     }
+    let by = Some(Target::Player(player));
+    let time = world.game_time();
     let projectile = DamageSourceKind::Projectile;
+    let blame =
+        |hit: &DamageResult, tick: i32| hit.applied.then_some((Target::Player(player), tick));
     let (hit, resists) = if let Some(e) = world.bat_mut(id) {
         (e.hurt(0.0), false)
     } else if let Some(e) = world.zombie_mut(id) {
-        (e.hurt(0.0), false)
+        let hit = e.hurt(0.0);
+        if let (Some(ai), Some(blamed)) = (e.ai.as_deref_mut(), blame(&hit, e.tick_count)) {
+            ai.state.hurt_by = Some(blamed);
+        }
+        (hit, false)
     } else if let Some(e) = world.skeleton_mut(id) {
-        (e.hurt(0.0), false)
+        let hit = e.hurt(0.0);
+        if let (Some(ai), Some(blamed)) = (e.ai.as_deref_mut(), blame(&hit, e.tick_count)) {
+            ai.state.hurt_by = Some(blamed);
+        }
+        (hit, false)
     } else if let Some(e) = world.creeper_mut(id) {
-        (e.hurt(0.0), false)
+        let hit = e.hurt(0.0);
+        if let Some(blamed) = blame(&hit, e.tick_count) {
+            e.ai.state.hurt_by = Some(blamed);
+        }
+        (hit, false)
     } else if let Some(e) = world.spider_mut(id) {
-        (e.hurt(0.0), false)
+        let hit = e.hurt(0.0);
+        if let Some(blamed) = blame(&hit, e.tick_count) {
+            e.ai.state.hurt_by = Some(blamed);
+        }
+        (hit, false)
     } else if let Some(e) = world.slime_mut(id) {
-        (e.hurt(0.0), false)
+        let hit = e.hurt(0.0);
+        if let Some(blamed) = blame(&hit, e.tick_count) {
+            e.ai.state.hurt_by = Some(blamed);
+        }
+        (hit, false)
     } else if let Some(e) = world.witch_mut(id) {
-        (e.hurt(0.0, false, false), false)
+        let hit = e.hurt(0.0, false, false);
+        if let Some(blamed) = blame(&hit, e.tick_count) {
+            e.ai.state.hurt_by = Some(blamed);
+        }
+        (hit, false)
     } else if let Some(e) = world.iron_golem_mut(id) {
-        (e.hurt(0.0), true)
+        let hit = e.hurt(0.0);
+        if let Some(blamed) = blame(&hit, e.tick_count) {
+            e.ai.state.hurt_by = Some(blamed);
+        }
+        (hit, true)
     } else if let Some(e) = world.wolf_mut(id) {
-        (e.hurt(0.0), false)
+        (e.hurt_from(0.0, THROWN, by, time), false)
     } else if let Some(e) = world.villager_mut(id) {
-        (e.hurt(0.0), false)
+        (
+            e.hurt_from(0.0, THROWN, Some(PLAYER_TARGET + player), time),
+            false,
+        )
     } else if let Some(e) = world.cow_mut(id) {
         (e.hurt(0.0, projectile), false)
     } else if let Some(e) = world.sheep_mut(id) {
@@ -336,12 +388,28 @@ pub fn hurt(world: &mut EntityWorld, id: u64, velocity: DVec3, random: &mut Lega
     } else {
         return false;
     };
+    if hit.applied {
+        world.villager_hurt_by(id, PLAYER_TARGET + player);
+    }
     if hit.applied && hit.full && !resists {
         if let Some(body) = world.body_mut(id) {
             knockback(body, random, KNOCKBACK, -velocity.x, -velocity.z);
         }
     }
     hit.applied
+}
+
+pub fn shown(age: i32, at: DVec3, camera: DVec3) -> bool {
+    age >= HIDDEN_TICKS || at.distance_squared(camera) >= HIDDEN_NEAR
+}
+
+pub fn hatch_point(at: DVec3, before: DVec3) -> DVec3 {
+    let back = before - at;
+    if back.length_squared() < 1.0e-12 {
+        at
+    } else {
+        at + back.normalize() * CHICK_NUDGE
+    }
 }
 
 pub fn texture(item: &str) -> Option<ResourceId> {
@@ -542,6 +610,22 @@ mod tests {
         assert!((hatched - 1.0 / 8.0).abs() < 0.005, "{hatched}");
         assert!((fours - 1.0 / 256.0).abs() < 0.001, "{fours}");
         assert!(rolls.iter().all(|&n| matches!(n, 0 | 1 | 4)));
+    }
+
+    #[test]
+    fn a_fresh_throw_is_not_drawn_in_the_throwers_face() {
+        let camera = DVec3::new(0.0, 70.0, 0.0);
+        assert!(!shown(1, DVec3::new(0.0, 70.0, 0.5), camera));
+        assert!(shown(2, DVec3::new(0.0, 70.0, 0.5), camera));
+        assert!(shown(1, DVec3::new(0.0, 70.0, 4.0), camera));
+    }
+
+    #[test]
+    fn chicks_hatch_off_the_face_the_egg_struck() {
+        let at = DVec3::new(5.0, 64.5, 2.0);
+        let hatched = hatch_point(at, DVec3::new(4.0, 64.5, 2.0));
+        assert!((hatched.x - 4.75).abs() < 1e-9);
+        assert_eq!(hatch_point(at, at), at);
     }
 
     #[test]
