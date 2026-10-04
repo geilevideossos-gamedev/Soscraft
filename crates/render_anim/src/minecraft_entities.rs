@@ -66,6 +66,8 @@ pub(crate) struct Entities {
     /// volume, pitch.
     pub(crate) sounds: Vec<(String, DVec3, f32, f32)>,
     random: minecraftoss_player::rng::LegacyRandom,
+    thrown: Vec<(String, [f64; 3], [f64; 3])>,
+    pub(crate) pearl_landings: Vec<DVec3>,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -153,7 +155,21 @@ impl Entities {
             seed,
             sounds: Vec::new(),
             random: minecraftoss_player::rng::LegacyRandom::new((seed ^ 0x1735) as u64),
+            thrown: Vec::new(),
+            pearl_landings: Vec::new(),
         }
+    }
+
+    pub(crate) fn throw(&mut self, item: &str, eye: DVec3, yaw: f32, pitch: f32, motion: DVec3, on_ground: bool) -> bool {
+        let Some(thrown) = minecraft_terrain::thrown::Thrown::throw(item, eye, yaw, pitch, motion, on_ground, &mut self.random) else {
+            return false;
+        };
+        self.server.throw(thrown);
+        true
+    }
+
+    pub(crate) fn random_float(&mut self) -> f32 {
+        self.random.next_float()
     }
 
     pub(crate) fn load_chunk(&mut self, chunk: &std::sync::Arc<minecraftoss_core::Chunk>) {
@@ -445,7 +461,15 @@ impl Entities {
         for output in self.server.poll() {
             self.server_handled = output.handled;
             if let Some(snapshot) = output.entities {
+                self.thrown = snapshot.thrown.clone();
                 self.server_snapshot = Some(snapshot);
+            }
+            for landing in output.pearl_landings {
+                let at = DVec3::from_array(landing);
+                for _ in 0..16 {
+                    self.portal.emit_enderman(at, 0.6, 1.8);
+                }
+                self.pearl_landings.push(at);
             }
             self.server_picked.extend(output.picked);
             changes.extend(output.changes);
@@ -628,6 +652,13 @@ impl Entities {
             out.items.vertices.extend(items.vertices);
             out.items.indices.extend(items.indices.iter().map(|i| i + base));
         }
+        minecraft_terrain::thrown::append_sprites(
+            &mut out.items,
+            self.thrown.iter().map(|(item, previous, now)| (item.as_str(), DVec3::from_array(*previous).lerp(DVec3::from_array(*now), f64::from(partial)))),
+            atlas,
+            forward,
+            light,
+        );
         self.poof.append_mesh(&mut out.items, atlas, forward, partial, light);
         self.portal.append_mesh(&mut out.items, atlas, forward, partial, light);
         let held: Vec<_> =
@@ -643,6 +674,10 @@ impl Entities {
         }
         out
     }
+}
+
+pub(crate) fn mw2_damage(health: f32) -> i32 {
+    (health / HEALTH_SCALE).round() as i32
 }
 
 fn mirrored(id: i32) -> u32 {

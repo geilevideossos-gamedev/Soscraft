@@ -46,6 +46,8 @@ pub struct ServerSim {
     take_xp_delay: i32,
     /// The client was asked to close its trading screen.
     merchant_closing: bool,
+    thrown: Vec<crate::thrown::Thrown>,
+    pearl_landings: Vec<[f64; 3]>,
 }
 
 /// What a player's hit or use on a mob did, for the client to present.
@@ -144,6 +146,7 @@ pub struct EntitySnapshot {
     pub tnt: Vec<ServerTnt>,
     pub falling: Vec<ServerFallingBlock>,
     pub orbs: Vec<ServerOrb>,
+    pub thrown: Vec<(String, [f64; 3], [f64; 3])>,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -209,6 +212,8 @@ impl ServerSim {
             explosions: Vec::new(),
             take_xp_delay: 0,
             merchant_closing: false,
+            thrown: Vec::new(),
+            pearl_landings: Vec::new(),
         }
     }
 
@@ -640,6 +645,57 @@ impl ServerSim {
         std::mem::take(&mut self.explosions)
     }
 
+    pub fn throw(&mut self, thrown: crate::thrown::Thrown) {
+        self.thrown.push(thrown);
+    }
+
+    pub fn take_pearl_landings(&mut self) -> Vec<[f64; 3]> {
+        std::mem::take(&mut self.pearl_landings)
+    }
+
+    pub fn thrown_view(&self) -> Vec<(String, [f64; 3], [f64; 3])> {
+        self.thrown.iter().map(|t| (t.item.clone(), t.previous.to_array(), t.position().to_array())).collect()
+    }
+
+    pub fn tick_thrown(&mut self, thrower: Option<[f64; 3]>) {
+        use crate::thrown::Throwable;
+        if self.thrown.is_empty() {
+            return;
+        }
+        let targets = crate::thrown::targets(&self.mobs);
+        let owner = thrower.map(|f| (glam::DVec3::new(f[0] - 0.3, f[1], f[2] - 0.3), glam::DVec3::new(f[0] + 0.3, f[1] + 1.8, f[2] + 0.3)));
+        let mut struck = Vec::new();
+        let mut hatched = Vec::new();
+        {
+            let Self { level, states, mob_tables, thrown, pearl_landings, .. } = self;
+            let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
+            for t in thrown.iter_mut() {
+                let Some(landed) = t.tick(&world, &targets, owner) else { continue };
+                if let Some(mob) = landed.mob {
+                    struck.push((mob, landed.velocity, t.random().next_long()));
+                }
+                match t.kind {
+                    Throwable::Egg => {
+                        for _ in 0..crate::thrown::chicks(t.random()) {
+                            hatched.push((landed.at.to_array(), t.yaw(), crate::thrown::chick_variant(&t.item)));
+                        }
+                    }
+                    Throwable::EnderPearl => pearl_landings.push(landed.before.to_array()),
+                    Throwable::Snowball => {}
+                }
+            }
+            thrown.retain(crate::thrown::Thrown::alive);
+        }
+        for (mob, velocity, seed) in struck {
+            crate::thrown::hurt(&mut self.mobs, mob, velocity, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
+        }
+        for (at, yaw, variant) in hatched {
+            if let Ok(nbt) = minecraftoss_core::snbt::parse_compound(&format!("{{Age:-24000,variant:\"{variant}\"}}")) {
+                let _ = self.summon("minecraft:chicken", at, Some(&nbt), yaw);
+            }
+        }
+    }
+
     /// The mobs a player at `position` tracks (`ChunkMap.TrackedEntity`:
     /// within `range` blocks horizontally).
     pub fn tracked_mobs(&self, position: [f64; 3], range: f64) -> minecraftoss_entities::world::EntityWorld {
@@ -869,6 +925,7 @@ pub enum Command {
     Merchant { op: MerchantOp, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, feet: [f64; 3] },
     /// One server tick, with the player's state for it.
     Tick(Box<TickInput>),
+    Throw(Box<crate::thrown::Thrown>),
 }
 
 /// The client state a server tick reads.
@@ -930,6 +987,7 @@ pub struct Output {
     pub summoned: Vec<Result<String, String>>,
     /// Positions where bone meal was used.
     pub bone_meal_used: Vec<BlockPos>,
+    pub pearl_landings: Vec<[f64; 3]>,
     /// How many commands the server has handled so far.
     pub handled: u64,
     /// The last tick's phases, light solves and total milliseconds.
@@ -1063,6 +1121,10 @@ impl ServerHandle {
         self.send(Command::MobAction { hit, attack, inventory: Box::new(inventory.clone()), selected, infinite });
     }
 
+    pub fn throw(&mut self, thrown: crate::thrown::Thrown) {
+        self.send(Command::Throw(Box::new(thrown)));
+    }
+
     /// Outputs the server has produced since the last call.
     pub fn poll(&mut self) -> Vec<Output> {
         let mut outputs = std::mem::take(&mut self.waited);
@@ -1140,6 +1202,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::Merchant { op, inventory, selected, feet } => {
                     out.merchant.push(sim.merchant(op, *inventory, selected, feet));
                 }
+                Command::Throw(thrown) => sim.throw(*thrown),
                 Command::Tick(input) => {
                     let started = std::time::Instant::now();
                     let input = *input;
@@ -1175,6 +1238,8 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     let held = input.pickup.as_ref().and_then(|(_, inventory, selected)| inventory.slots.get(*selected).and_then(Option::as_ref).map(|s| s.id.clone()));
                     sim.mobs.set_player_main_hand(0, held.as_deref());
                     sim.tick_mobs(&input.mob_players, input.bright_outside);
+                    sim.tick_thrown(input.players.first().copied());
+                    out.pearl_landings.extend(sim.take_pearl_landings());
                     sim.spawn_trade_experience();
                     out.merchant.extend(sim.check_merchant(&input.mob_players));
                     out.player_hits.extend(sim.mobs.take_player_hits());
@@ -1198,7 +1263,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     }
                     // After the items, one experience orb.
                     out.orbs_taken.extend(sim.take_experience(pickup_feet));
-                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs() });
+                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown: sim.thrown_view() });
                     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
                     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), started.elapsed().as_secs_f64() * 1000.0));
                 }
@@ -2512,6 +2577,40 @@ mod tests {
         let powered: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
         assert_eq!(open(&powered, (8, 200, 8)), Some(true));
         assert_eq!(open(&powered, (8, 201, 8)), Some(true));
+    }
+
+    fn thrown_down(item: &str, seed: u64) -> crate::thrown::Thrown {
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(seed);
+        crate::thrown::Thrown::throw(item, glam::DVec3::new(8.5, 203.0, 8.5), 0.0, 90.0, glam::DVec3::ZERO, true, &mut random).expect("a throwable")
+    }
+
+    #[test]
+    fn a_pearl_reports_where_the_player_lands() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.throw(thrown_down("minecraft:ender_pearl", 3));
+        let mut landings = Vec::new();
+        for _ in 0..20 {
+            server.tick_thrown(None);
+            landings.extend(server.take_pearl_landings());
+        }
+        assert_eq!(landings.len(), 1);
+        assert!(landings[0][1] >= 200.0 && landings[0][1] < 202.0, "{landings:?}");
+        assert!(server.thrown_view().is_empty());
+    }
+
+    #[test]
+    fn eggs_now_and_then_hatch_baby_chickens() {
+        let Some((mut server, _)) = door_world() else { return };
+        let before = server.mobs.chickens().len();
+        for seed in 0..64 {
+            server.throw(thrown_down("minecraft:brown_egg", seed));
+        }
+        for _ in 0..20 {
+            server.tick_thrown(None);
+        }
+        let chickens: Vec<_> = server.mobs.chickens().iter().skip(before).collect();
+        assert!(!chickens.is_empty());
+        assert!(chickens.iter().all(|c| c.chicken.age.ticks < 0));
     }
 
     #[test]

@@ -92,6 +92,7 @@ struct HandState {
     /// Ticks until another placement while the button is held
     /// (`rightClickDelay`).
     place_delay: u32,
+    pearl_cooldown: u32,
 }
 
 /// The player's walk, for vanilla's step and fall sounds.
@@ -590,6 +591,7 @@ fn update(
     hand.clock += dt_hand;
     let hand_ticks = (hand.clock / TICK_SECONDS) as u32;
     hand.clock -= f64::from(hand_ticks) * TICK_SECONDS;
+    hand.pearl_cooldown = hand.pearl_cooldown.saturating_sub(hand_ticks);
     let menu_captured = hud_input.as_deref().is_some_and(|input| input.console_open || input.script_menu_open);
     let mut open_table = None;
     if let Some(entities) = entities.as_mut()
@@ -668,6 +670,30 @@ fn update(
                     let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
                     let pitch = sound.pitch + sounds.random() * sound.pitch_spread;
                     sounds.play(&world.packs, &sound.event, Some(Vec3::from_array(sim::voxel::to_map(origin, centre))), sound.volume, pitch);
+                }
+            } else if let Some((stack, kind)) = held.as_ref().and_then(|s| minecraft_terrain::thrown::Throwable::of(&s.id).map(|k| (s, k))) {
+                let pearl = kind == minecraft_terrain::thrown::Throwable::EnderPearl;
+                let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
+                let motion = glam::DVec3::new(f64::from(ps.velocity[0]), f64::from(ps.velocity[2]), -f64::from(ps.velocity[1]))
+                    / (f64::from(sim::voxel::BLOCK) * 20.0);
+                if !(pearl && hand.pearl_cooldown > 0)
+                    && entities.throw(&stack.id, glam::DVec3::from_array(eye), mc_yaw, ps.viewangles[0], motion, on_ground)
+                {
+                    let slot = &mut entities.inventory.slots[entities.selected];
+                    if let Some(left) = slot.as_mut() {
+                        left.count -= 1;
+                        if left.count == 0 {
+                            *slot = None;
+                        }
+                    }
+                    if pearl {
+                        hand.pearl_cooldown = minecraft_terrain::thrown::PEARL_COOLDOWN;
+                    }
+                    hand.swing = Some(0.0);
+                    let pitch = minecraft_terrain::thrown::throw_pitch(entities.random_float());
+                    if let Some(sounds) = sounds.as_mut() {
+                        sounds.play(&world.packs, kind.sound(), None, 0.5, pitch);
+                    }
                 }
             } else if placeable {
                 let mut staged = minecraft_terrain::placing::Staged::new(&world.scene);
@@ -901,6 +927,17 @@ fn update(
         }
         for (amount, from) in hits {
             sim::voxel::push_player_damage(local.0.0, amount, from.map(|b| sim::voxel::to_map(origin, b)));
+        }
+        for landing in std::mem::take(&mut entities.pearl_landings) {
+            if !alive {
+                continue;
+            }
+            authority.0.teleport(local.0, sim::voxel::to_map(origin, landing.to_array()));
+            sim::voxel::push_player_damage(local.0.0, crate::minecraft_entities::mw2_damage(minecraft_terrain::thrown::PEARL_DAMAGE), None);
+            steps.air_peak = None;
+            if let Some(sounds) = sounds.as_mut() {
+                sounds.play(&world.packs, "minecraft:entity.player.teleport", Some(at(landing.to_array())), 1.0, 1.0);
+            }
         }
         // The inventory: MW2 guns as items, the HUD's clicks, the hotbar's
         // gun, and what the HUD shows.
