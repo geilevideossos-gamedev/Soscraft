@@ -360,10 +360,24 @@ pub fn toggle_sound(block: &Block) -> Option<Sound> {
             .and_then(|n| n.parse::<i32>().ok())
             .map_or(0, |n| (n + 1) % 25);
         let instrument = block.property("instrument").unwrap_or("harp");
+        let (event, pitch) = match instrument {
+            "custom_head" => return None,
+            "dragon" => (
+                "minecraft:block.note_block.imitate.ender_dragon".to_owned(),
+                1.0,
+            ),
+            head if head_instrument(head) => {
+                (format!("minecraft:block.note_block.imitate.{head}"), 1.0)
+            }
+            _ => (
+                format!("minecraft:block.note_block.{instrument}"),
+                2.0_f32.powf((note - 12) as f32 / 12.0),
+            ),
+        };
         return Some(Sound {
-            event: format!("minecraft:block.note_block.{instrument}"),
+            event,
             volume: 3.0,
-            pitch: 2.0_f32.powf((note - 12) as f32 / 12.0),
+            pitch,
             pitch_spread: 0.0,
         });
     }
@@ -379,6 +393,24 @@ pub fn toggle_sound(block: &Block) -> Option<Sound> {
         });
     }
     None
+}
+
+fn head_instrument(instrument: &str) -> bool {
+    matches!(
+        instrument,
+        "zombie" | "skeleton" | "creeper" | "dragon" | "wither_skeleton" | "piglin" | "custom_head"
+    )
+}
+
+pub fn note_plays(block: &Block, above: Option<&Block>) -> bool {
+    let path = block.id.rsplit(':').next().unwrap_or(&block.id);
+    let air = above.is_none_or(|b| {
+        matches!(
+            b.id.as_str(),
+            "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air"
+        )
+    });
+    path != "note_block" || air || head_instrument(block.property("instrument").unwrap_or("harp"))
 }
 
 fn button_set(path: &str, id: &str) -> &'static str {
@@ -701,6 +733,29 @@ mod tests {
         let played = toggle_sound(&note).expect("a note");
         assert_eq!(played.event, "minecraft:block.note_block.bell");
         assert!((played.pitch - 1.0).abs() < 1e-6);
+        let dragon = Block::new("minecraft:note_block")
+            .with("note", "3")
+            .with("instrument", "dragon");
+        let roar = toggle_sound(&dragon).expect("a dragon roar");
+        assert_eq!(
+            (roar.event.as_str(), roar.pitch),
+            ("minecraft:block.note_block.imitate.ender_dragon", 1.0)
+        );
+        let zombie = dragon.clone().with("instrument", "zombie");
+        assert_eq!(
+            toggle_sound(&zombie).map(|s| s.event).as_deref(),
+            Some("minecraft:block.note_block.imitate.zombie")
+        );
+        assert!(toggle_sound(&dragon.clone().with("instrument", "custom_head")).is_none());
+        let stone = Block::new("minecraft:stone");
+        assert!(note_plays(&note, None));
+        assert!(note_plays(&note, Some(&Block::new("minecraft:cave_air"))));
+        assert!(!note_plays(&note, Some(&stone)));
+        assert!(note_plays(
+            &zombie,
+            Some(&Block::new("minecraft:zombie_head"))
+        ));
+        assert!(note_plays(&Block::new("minecraft:lever"), Some(&stone)));
         let pressed = Block::new("minecraft:oak_button").with("powered", "true");
         let released = pressed.clone().with("powered", "false");
         assert_eq!(

@@ -94,7 +94,7 @@ struct HandState {
     /// (`rightClickDelay`).
     place_delay: u32,
     pearl_cooldown: u32,
-    recent: Vec<((i32, i32, i32), f64)>,
+    recent: Vec<((i32, i32, i32), minecraftoss_player::Block, f64)>,
     attack_ticks: u32,
     attack_item: Option<String>,
     miss_time: u32,
@@ -756,6 +756,7 @@ fn update(
             } else if let Some(pos) = used {
                 hand.swing = Some(0.0);
                 if let Some(block) = minecraftoss_player::World::block(&world.scene, pos)
+                    && minecraft_terrain::doors::note_plays(&block, minecraftoss_player::World::block(&world.scene, (pos.0, pos.1 + 1, pos.2)).as_ref())
                     && let Some(sound) = minecraft_terrain::doors::toggle_sound(&block)
                     && let Some(sounds) = sounds.as_mut()
                 {
@@ -855,9 +856,10 @@ fn update(
                 });
                 if let Some(pos) = placed.filter(|_| !blocked) {
                     let now = time.elapsed_secs_f64();
-                    hand.recent.retain(|(_, at)| now - at < RECENT_PLACE_SECONDS);
-                    hand.recent.extend(writes.iter().map(|(p, _)| (*p, now)));
+                    hand.recent.retain(|(_, _, at)| now - at < RECENT_PLACE_SECONDS);
+                    let written: Vec<_> = writes.iter().map(|(p, _)| *p).collect();
                     write_blocks(world, shapes, shape_ids, entities, writes);
+                    hand.recent.extend(written.into_iter().filter_map(|p| minecraftoss_player::World::block(&world.scene, p).map(|b| (p, b, now))));
                     hand.swing = Some(0.0);
                     if let Some(block) = minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned()
                         && let (Some(sounds), Some(kind)) = (sounds.as_mut(), world.scene.sound_type(&block))
@@ -1024,11 +1026,13 @@ fn update(
                 world.scene.set(pos, block);
                 if let (Some(before), Some(after)) = (before, minecraftoss_player::World::block(&world.scene, pos))
                     && let Some(sound) = minecraft_terrain::doors::release_sound(&before, &after).or_else(|| {
-                        let placed_here = hand.recent.iter().any(|(p, at)| *p == pos && time.elapsed_secs_f64() - at < RECENT_PLACE_SECONDS);
-                        minecraft_terrain::doors::powered_toggle(&before, &after)
-                            .then(|| minecraft_terrain::doors::toggle_sound(&before))
-                            .flatten()
-                            .filter(|_| !placed_here)
+                        let toggled = minecraft_terrain::doors::powered_toggle(&before, &after);
+                        let now = time.elapsed_secs_f64();
+                        let placed = hand.recent.iter().position(|(p, b, at)| *p == pos && *b == before && now - at < RECENT_PLACE_SECONDS).filter(|_| toggled);
+                        if let Some(index) = placed {
+                            hand.recent.swap_remove(index);
+                        }
+                        toggled.then(|| minecraft_terrain::doors::toggle_sound(&before)).flatten().filter(|_| placed.is_none())
                     })
                     && let Some(sounds) = sounds.as_mut()
                 {
