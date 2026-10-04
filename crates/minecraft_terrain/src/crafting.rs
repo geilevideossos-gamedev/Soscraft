@@ -211,10 +211,15 @@ pub fn spread(inventory: &mut Inventory, grid: Grid, targets: &[Spot], right: bo
             }
             _ => continue,
         };
+        let room = match armor_slot(index) {
+            Some(name) if inventory.recipes.equipment_slot(carried) != Some(name) => continue,
+            Some(_) => 1,
+            None => max,
+        };
         let fits = target.is_some_and(|target| {
             target
                 .as_ref()
-                .is_none_or(|stack| stack.same_item(carried) && stack.count < max)
+                .is_none_or(|stack| stack.same_item(carried) && stack.count < room)
         });
         if fits && !indices.contains(&index) {
             indices.push(index);
@@ -225,6 +230,49 @@ pub fn spread(inventory: &mut Inventory, grid: Grid, targets: &[Spot], right: bo
         return;
     }
     inventory.distribute_crafting(&indices, right, grid == Grid::Table);
+}
+
+pub fn gather(inventory: &mut Inventory, grid: Grid, right: bool) {
+    let Some(mut carried) = inventory.cursor.take() else {
+        return;
+    };
+    let max = limit(&inventory.recipes, &carried);
+    let mut order: Vec<Spot> = (0..grid.size()).map(Spot::Grid).collect();
+    if grid == Grid::Inventory {
+        order.extend([39, 38, 37, 36].map(Spot::Player));
+    }
+    order.extend((HOTBAR..STORAGE).chain(0..HOTBAR).map(Spot::Player));
+    if grid == Grid::Inventory {
+        order.push(Spot::Player(40));
+    }
+    if right {
+        order.reverse();
+    }
+    for pass in 0..2 {
+        for spot in &order {
+            if carried.count >= max {
+                break;
+            }
+            let slot = match *spot {
+                Spot::Player(index) => &mut inventory.slots[index],
+                Spot::Grid(cell) => &mut cells_mut(inventory, grid)[cell],
+                Spot::Result => continue,
+            };
+            let Some(stack) = slot.as_mut() else {
+                continue;
+            };
+            if !stack.same_item(&carried) || (pass == 0 && stack.count >= max) {
+                continue;
+            }
+            let moved = stack.count.min(max - carried.count);
+            stack.count -= moved;
+            carried.count += moved;
+            if stack.count == 0 {
+                *slot = None;
+            }
+        }
+    }
+    inventory.cursor = Some(carried);
 }
 
 pub fn swap(inventory: &mut Inventory, grid: Grid, cell: Option<usize>, hotbar: usize) -> bool {
@@ -365,6 +413,16 @@ fn take_into_cursor(inventory: &mut Inventory, grid: Grid) -> bool {
     match grid {
         Grid::Inventory => inventory.take_crafting_output(false),
         Grid::Table => inventory.take_workbench_output(false),
+    }
+}
+
+fn armor_slot(index: usize) -> Option<&'static str> {
+    match index {
+        36 => Some("feet"),
+        37 => Some("legs"),
+        38 => Some("chest"),
+        39 => Some("head"),
+        _ => None,
     }
 }
 

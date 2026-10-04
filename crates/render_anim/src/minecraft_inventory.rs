@@ -137,7 +137,7 @@ impl InventoryUi {
                         thrown.push(stack);
                     }
                 }
-                McClick::Gather { right } => inventory.pickup_all(right),
+                McClick::Gather { right } => crafting::gather(inventory, grid, right),
                 McClick::Swap { slot: McSlot::Inventory(index), hotbar } => inventory.number_swap(index, hotbar),
                 McClick::Swap { slot, hotbar } => {
                     match spot(slot, grid) {
