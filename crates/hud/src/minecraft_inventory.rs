@@ -86,7 +86,7 @@ pub(crate) struct MinecraftRaster;
 pub(crate) struct ScreenInput {
     last_click: Option<(McSlot, f64)>,
     /// A drag of the carried stack: the button and the slots crossed.
-    drag: Option<(bool, Vec<usize>)>,
+    drag: Option<(bool, Vec<McSlot>)>,
 }
 
 struct Canvas<'a> {
@@ -250,7 +250,13 @@ fn stack_at<'a>(ui: &'a MinecraftUi, slot: McSlot) -> Option<&'a McStack> {
         McSlot::Inventory(i) => ui.slots.get(i)?.as_ref(),
         McSlot::Crafting(i) => ui.crafting.get(i)?.as_ref(),
         McSlot::Result => ui.result.as_ref(),
+        McSlot::Workbench(i) => ui.workbench.get(i)?.as_ref(),
+        McSlot::WorkbenchResult => ui.workbench_result.as_ref(),
     }
+}
+
+fn is_result(slot: McSlot) -> bool {
+    matches!(slot, McSlot::Result | McSlot::WorkbenchResult)
 }
 
 fn stack_name(
@@ -410,10 +416,11 @@ fn handle_clicks(
     }
     // A drag keeps collecting the slots it crosses.
     if let Some((_, slots)) = input.drag.as_mut()
-        && let Some(McSlot::Inventory(index)) = hovered
-        && !slots.contains(&index)
+        && let Some(slot) = hovered
+        && !is_result(slot)
+        && !slots.contains(&slot)
     {
-        slots.push(index);
+        slots.push(slot);
     }
     for (button, right) in [(MouseButton::Left, false), (MouseButton::Right, true)] {
         if buttons.just_pressed(button) {
@@ -425,6 +432,7 @@ fn handle_clicks(
             };
             if !right
                 && !shift
+                && !is_result(slot)
                 && input.last_click.is_some_and(|(last, at)| last == slot && now - at < 0.25)
                 && ui.cursor.is_some()
             {
@@ -434,8 +442,8 @@ fn handle_clicks(
             }
             input.last_click = Some((slot, now));
             match slot {
-                McSlot::Inventory(index) if ui.cursor.is_some() && !shift => {
-                    input.drag = Some((right, vec![index]));
+                McSlot::Inventory(_) | McSlot::Crafting(_) | McSlot::Workbench(_) if ui.cursor.is_some() && !shift => {
+                    input.drag = Some((right, vec![slot]));
                 }
                 _ => ui.clicks.push(McClick::Slot { slot, right, shift }),
             }
@@ -449,8 +457,8 @@ fn handle_clicks(
             }
             if slots.len() > 1 {
                 ui.clicks.push(McClick::Spread { slots, right });
-            } else if let Some(&index) = slots.first() {
-                ui.clicks.push(McClick::Slot { slot: McSlot::Inventory(index), right, shift: false });
+            } else if let Some(&slot) = slots.first() {
+                ui.clicks.push(McClick::Slot { slot, right, shift: false });
             }
         }
     }
@@ -571,9 +579,8 @@ fn draw_inventory(
     // The slots.
     for (slot, x, y, size) in layout() {
         let hover = hovered == Some(slot);
-        let is_result = slot == McSlot::Result;
         canvas.fill(x, y, size, size, if hover { SLOT_HOVER } else { SLOT }, c);
-        canvas.frame(x, y, size, size, if hover { HIGHLIGHT } else if is_result { [ACCENT[0], ACCENT[1], ACCENT[2], 0.55] } else { SLOT_EDGE }, c);
+        canvas.frame(x, y, size, size, if hover { HIGHLIGHT } else if is_result(slot) { [ACCENT[0], ACCENT[1], ACCENT[2], 0.55] } else { SLOT_EDGE }, c);
         if let McSlot::Inventory(i) = slot
             && i < 9
             && i == ui.selected

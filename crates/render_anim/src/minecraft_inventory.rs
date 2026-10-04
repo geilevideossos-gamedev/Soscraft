@@ -9,9 +9,11 @@ use bevy::asset::RenderAssetUsages;
 use bevy::image::ImageSampler;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use frame::{McClick, McSlot, McStack, MinecraftUi};
+use frame::{McClick, McScreen, McSlot, McStack, MinecraftUi};
 use glam::DVec3;
+use minecraft_terrain::crafting::{self, Grid, Spot};
 use minecraft_terrain::pack::PackStack;
+use minecraft_terrain::scene::BlockPos;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 
 /// Items that are MW2 guns: `iw4:weapon/<weapon index>`.
@@ -41,6 +43,7 @@ pub(crate) struct InventoryUi {
     /// The gun last asked for, until the player state holds it.
     pending_weapon: Option<u32>,
     last_selected: Option<usize>,
+    table: Option<BlockPos>,
 }
 
 /// What the player holds and where it looks, for throwing items.
@@ -99,18 +102,22 @@ impl InventoryUi {
     ) -> Vec<ItemStack> {
         let mut thrown = Vec::new();
         for click in std::mem::take(&mut ui.clicks) {
+            let grid = if self.table.is_some() { Grid::Table } else { Grid::Inventory };
             match click {
                 McClick::Slot { slot: McSlot::Inventory(index), right, shift } => {
-                    if let Some(stack) = inventory.click(Some(index), right, shift) {
+                    if shift && grid == Grid::Table {
+                        crafting::quick_move_into_table(inventory, index);
+                    } else if let Some(stack) = inventory.click(Some(index), right, shift) {
                         thrown.push(stack);
                     }
                 }
-                McClick::Slot { slot: McSlot::Crafting(index), right, shift } => {
-                    inventory.click_crafting_slot(index, right, shift);
-                }
-                McClick::Slot { slot: McSlot::Result, shift, .. } => {
-                    inventory.take_crafting_output(shift);
-                }
+                McClick::Slot { slot, right, shift } => match spot(slot, grid) {
+                    Some(Spot::Grid(cell)) => crafting::click_cell(inventory, grid, cell, right, shift),
+                    Some(Spot::Result) => {
+                        crafting::click_result(inventory, grid, shift);
+                    }
+                    _ => {}
+                },
                 McClick::Outside { right } => {
                     if let Some(stack) = inventory.click(None, right, false) {
                         thrown.push(stack);
@@ -118,16 +125,30 @@ impl InventoryUi {
                 }
                 McClick::Gather { right } => inventory.pickup_all(right),
                 McClick::Swap { slot: McSlot::Inventory(index), hotbar } => inventory.number_swap(index, hotbar),
-                McClick::Swap { .. } => {}
-                McClick::Spread { slots, right } => inventory.distribute(&slots, right),
+                McClick::Swap { slot, hotbar } => {
+                    match spot(slot, grid) {
+                        Some(Spot::Grid(cell)) => crafting::swap(inventory, grid, Some(cell), hotbar),
+                        Some(Spot::Result) => crafting::swap(inventory, grid, None, hotbar),
+                        _ => false,
+                    };
+                }
+                McClick::Spread { slots, right } => {
+                    let spots: Vec<Spot> = slots.into_iter().filter_map(|slot| spot(slot, grid)).collect();
+                    crafting::spread(inventory, grid, &spots, right);
+                }
                 McClick::Close => {
-                    thrown.extend(inventory.settle_crafting());
-                    if let Some(rest) = inventory.settle_cursor() {
-                        thrown.push(rest);
-                    }
+                    self.table = None;
+                    thrown.extend(crafting::close(inventory, *selected));
                 }
             }
         }
+        if !ui.inventory_open {
+            self.table = None;
+            if crafting::has_loose_items(inventory) {
+                thrown.extend(crafting::close(inventory, *selected));
+            }
+        }
+        ui.screen = if self.table.is_some() { McScreen::CraftingTable } else { McScreen::Inventory };
         thrown.extend(inventory.take_pending_drops());
         let _ = inventory.take_stat_events();
         if let Some(slot) = ui.select.take() {
@@ -207,8 +228,12 @@ impl InventoryUi {
             })
         };
         ui.slots = inventory.slots.iter().take(frame::minecraft_ui::MC_INVENTORY_SLOTS).map(&mut convert).collect();
+        let table_open = ui.inventory_open && self.table.is_some();
+        let small_open = ui.inventory_open && self.table.is_none();
         ui.crafting = std::array::from_fn(|i| convert(&inventory.crafting[i]));
-        ui.result = convert(&inventory.crafting_output());
+        ui.result = if small_open { convert(&crafting::output(inventory, Grid::Inventory)) } else { None };
+        ui.workbench = std::array::from_fn(|i| convert(&inventory.workbench[i]));
+        ui.workbench_result = if table_open { convert(&crafting::output(inventory, Grid::Table)) } else { None };
         ui.cursor = convert(&inventory.cursor);
         if ui.selected != selected {
             let name = inventory.slots[selected]
@@ -280,6 +305,17 @@ impl InventoryUi {
             }
             ui.icons = self.handle.clone();
         }
+    }
+}
+
+fn spot(slot: McSlot, grid: Grid) -> Option<Spot> {
+    match slot {
+        McSlot::Inventory(index) => Some(Spot::Player(index)),
+        McSlot::Crafting(cell) if grid == Grid::Inventory => Some(Spot::Grid(cell)),
+        McSlot::Result if grid == Grid::Inventory => Some(Spot::Result),
+        McSlot::Workbench(cell) if grid == Grid::Table => Some(Spot::Grid(cell)),
+        McSlot::WorkbenchResult if grid == Grid::Table => Some(Spot::Result),
+        _ => None,
     }
 }
 

@@ -28,6 +28,15 @@ pub enum McSlot {
     Inventory(usize),
     Crafting(usize),
     Result,
+    Workbench(usize),
+    WorkbenchResult,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum McScreen {
+    #[default]
+    Inventory,
+    CraftingTable,
 }
 
 /// What the player did on the inventory screen, applied with vanilla's
@@ -43,7 +52,7 @@ pub enum McClick {
     /// A number key over a slot: swaps it with that hotbar slot.
     Swap { slot: McSlot, hotbar: usize },
     /// A drag across slots with a carried stack: shares it out.
-    Spread { slots: Vec<usize>, right: bool },
+    Spread { slots: Vec<McSlot>, right: bool },
     /// The screen closed: the carried stack and the crafting grid go back.
     Close,
 }
@@ -57,11 +66,15 @@ pub struct MinecraftUi {
     pub loading_world: bool,
     /// The inventory screen is open (the HUD's to change).
     pub inventory_open: bool,
+    pub screen: McScreen,
+    pub screen_opened: bool,
     /// The selected hotbar slot.
     pub selected: usize,
     pub slots: Vec<Option<McStack>>,
     pub crafting: [Option<McStack>; 4],
     pub result: Option<McStack>,
+    pub workbench: [Option<McStack>; 9],
+    pub workbench_result: Option<McStack>,
     /// The stack on the cursor.
     pub cursor: Option<McStack>,
     /// Item icons: one atlas, and each item's rectangle in it (s0 t0 s1 t1).
