@@ -125,11 +125,13 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
             .allsolid
             == 0;
     }
-    let sprint_change = update_sprint(ps, cmd, context.old_buttons, sprint);
+    let sprint_cmd = crate::swim::sprint_cmd(ps, cmd, water, &mut sprint);
+    let sprint_change = update_sprint(ps, &sprint_cmd, context.old_buttons, sprint);
     let previous_stance = ps.pm_flags & 3;
+    let mut swim_stance = crate::swim::stance_cmd(ps, cmd, water);
     update_stance_flags(
         ps,
-        cmd,
+        swim_stance.as_mut().unwrap_or(&mut *cmd),
         collision,
         context.bounds,
         context.weapon_blocks_prone,

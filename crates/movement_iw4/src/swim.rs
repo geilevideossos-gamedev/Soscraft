@@ -1,4 +1,4 @@
-use playerstate_iw4::{ENTITYNUM_NONE, PlayerState, UserCmd, pm_flags};
+use playerstate_iw4::{ENTITYNUM_NONE, PlayerState, UserCmd, buttons, pm_flags};
 
 use crate::{CollisionBackend, GroundTraceInput, MoveBounds, Pml, step_slide_move};
 
@@ -22,6 +22,7 @@ const LOOK_STEEP: f32 = -0.2;
 const LOOK_PULL: f32 = 0.06;
 const LOOK_PULL_STEEP: f32 = 0.085;
 const BUTTON_JUMP: u32 = 0x400;
+const BUTTON_SPRINT: u32 = 0x2;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct WaterSample {
@@ -46,6 +47,40 @@ pub(crate) fn hold_sprint(ps: &mut PlayerState, water: WaterSample, msec: i32) {
     if water.wet() && ps.pm_flags & pm_flags::SPRINTING != 0 {
         ps.last_sprint_start = ps.last_sprint_start.wrapping_add(msec);
     }
+}
+
+pub(crate) fn sprint_cmd(
+    ps: &mut PlayerState,
+    cmd: &UserCmd,
+    water: WaterSample,
+    sprint: &mut crate::SprintContext,
+) -> UserCmd {
+    let mut out = *cmd;
+    if !water.wet() {
+        return out;
+    }
+    out.buttons &= !(BUTTON_JUMP | buttons::CROUCH | buttons::PRONE);
+    ps.sprint_button_up_required = 0;
+    if ps.pm_flags & pm_flags::SPRINTING != 0 && !swimming(ps, water) {
+        crate::end_sprint(ps, cmd);
+        ps.sprint_button_up_required = 0;
+    }
+    if ps.pm_flags & pm_flags::SPRINTING != 0 {
+        sprint.sprint_forever = true;
+    } else {
+        sprint.min_sprint_time_seconds = -1.0;
+        if !water.eye {
+            out.buttons &= !BUTTON_SPRINT;
+        }
+    }
+    out
+}
+
+pub(crate) fn stance_cmd(ps: &PlayerState, cmd: &UserCmd, water: WaterSample) -> Option<UserCmd> {
+    (water.wet() && ps.pm_flags & pm_flags::SPRINTING != 0).then(|| UserCmd {
+        buttons: cmd.buttons & !(buttons::CROUCH | buttons::PRONE),
+        ..*cmd
+    })
 }
 
 #[must_use]
@@ -95,7 +130,8 @@ pub fn water_move<C: CollisionBackend>(
     let ticks = pml.frametime / TICK_SECONDS;
     let sprinting = ps.pm_flags & pm_flags::SPRINTING != 0;
     let jumping = cmd.buttons & BUTTON_JUMP != 0;
-    let diving = ps.pm_flags & (pm_flags::CROUCH | pm_flags::PRONE) != 0;
+    let diving = ps.pm_flags & (pm_flags::CROUCH | pm_flags::PRONE) != 0
+        || cmd.buttons & (buttons::CROUCH | buttons::PRONE) != 0;
     let shallow = water.depth <= SHALLOW * WATER_BLOCK;
     let on_ground = pml.walking != 0;
     let mut v = [
@@ -274,6 +310,76 @@ mod tests {
         assert!(!swimming(&ps, wading));
         ps.pm_flags &= !pm_flags::SPRINTING;
         assert!(!swimming(&ps, under));
+    }
+
+    #[test]
+    fn shift_starts_a_swim_once_the_eyes_go_under() {
+        let context = crate::SprintContext {
+            weapon_max_sprint_time: 4000,
+            sprint_forever: false,
+            min_sprint_time_seconds: 1.0,
+            sprint_delay_seconds: 0.0,
+            sprint_forward_minimum: 105,
+            stand_up_clear: true,
+            sprint_recharge_pause_seconds: 0.0,
+        };
+        let step = |ps: &mut PlayerState, cmd: UserCmd, water: WaterSample| {
+            let mut sprint = context;
+            let swim = sprint_cmd(ps, &cmd, water, &mut sprint);
+            crate::update_sprint(ps, &swim, BUTTON_SPRINT, sprint)
+        };
+        let surface = WaterSample {
+            depth: 60.0,
+            eye: false,
+            head: true,
+        };
+        let under = WaterSample {
+            depth: 70.0,
+            eye: true,
+            head: true,
+        };
+        let wading = WaterSample {
+            depth: 20.0,
+            eye: false,
+            head: false,
+        };
+        let mut ps = PlayerState::ZERO;
+        ps.sprint_button_up_required = 1;
+        ps.sprint_delay = 1;
+        ps.last_sprint_start = 1000;
+        ps.last_sprint_end = 4900;
+        ps.sprint_start_max_length = 4000;
+        let held = UserCmd {
+            server_time: 5000,
+            buttons: BUTTON_SPRINT | BUTTON_JUMP,
+            forwardmove: 127,
+            ..UserCmd::default()
+        };
+        assert_eq!(step(&mut ps, held, surface), crate::SprintResult::Unchanged);
+        assert_eq!(ps.pm_flags & pm_flags::SPRINTING, 0);
+        assert_eq!(step(&mut ps, held, under), crate::SprintResult::Started);
+        assert!(swimming(&ps, under));
+        let dive = UserCmd {
+            server_time: 9000,
+            buttons: BUTTON_SPRINT | buttons::CROUCH,
+            ..held
+        };
+        assert_eq!(step(&mut ps, dive, surface), crate::SprintResult::Unchanged);
+        assert!(swimming(&ps, surface));
+        let stance = stance_cmd(&ps, &dive, surface).expect("a swim stance");
+        assert_eq!(stance.buttons & buttons::CROUCH, 0);
+        assert!(stance_cmd(&ps, &dive, WaterSample::default()).is_none());
+        assert_eq!(step(&mut ps, dive, wading), crate::SprintResult::Unchanged);
+        assert_eq!(ps.pm_flags & pm_flags::SPRINTING, 0);
+        assert_eq!(ps.sprint_button_up_required, 0);
+        let mut dry = PlayerState::ZERO;
+        dry.sprint_button_up_required = 1;
+        let mut sprint = context;
+        let same = sprint_cmd(&mut dry, &held, WaterSample::default(), &mut sprint);
+        assert_eq!(
+            (same, sprint, dry.sprint_button_up_required),
+            (held, context, 1)
+        );
     }
 
     #[test]
