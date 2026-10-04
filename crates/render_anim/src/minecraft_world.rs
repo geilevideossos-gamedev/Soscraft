@@ -588,7 +588,6 @@ fn update(
     hand.clock += dt_hand;
     let hand_ticks = (hand.clock / TICK_SECONDS) as u32;
     hand.clock -= f64::from(hand_ticks) * TICK_SECONDS;
-    let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
     let menu_captured = hud_input.as_deref().is_some_and(|input| input.console_open || input.script_menu_open);
     let mut open_table = None;
     if let Some(entities) = entities.as_mut()
@@ -600,8 +599,9 @@ fn update(
         player.yaw = f64::from(mc_yaw);
         player.pitch = f64::from(ps.viewangles[0]);
         player.selected = entities.selected;
-        player.crouching = ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
-        player.pos = glam::DVec3::from_array(eye) - glam::DVec3::Y * player.eye_height();
+        player.crouching = ps.pm_flags & playerstate_iw4::pm_flags::CROUCH != 0;
+        player.swimming = ps.pm_flags & playerstate_iw4::pm_flags::PRONE != 0;
+        let sneaking = player.crouching || player.swimming;
         let eye_block = player.eye();
         let look = {
             let (yaw, pitch) = (f64::from(mc_yaw).to_radians(), f64::from(ps.viewangles[0]).to_radians());
@@ -637,7 +637,7 @@ fn update(
                 .target(&world.scene, 5.0)
                 .map(|hit| hit.pos)
                 .filter(|&pos| minecraft_terrain::scene::Scene::block(&world.scene, pos).is_some_and(minecraft_terrain::crafting::is_crafting_table))
-                .filter(|_| minecraft_terrain::crafting::opens_table(player.crouching, held.is_some()));
+                .filter(|_| minecraft_terrain::crafting::opens_table(sneaking, held.is_some()));
             let placeable = held.as_ref().is_some_and(|stack| {
                 let id = if stack.id == "minecraft:redstone" { "minecraft:redstone_wire" } else { stack.id.as_str() };
                 minecraft_terrain::pack::ResourceId::parse(id).is_ok_and(|id| {
@@ -766,6 +766,7 @@ fn update(
         entities.drop_blocks(&broken);
     }
 
+    let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
     let (pitch, yaw) = (ps.viewangles[0].to_radians(), ps.viewangles[1].to_radians());
     let map_forward = [pitch.cos() * yaw.cos(), pitch.cos() * yaw.sin(), -pitch.sin()];
     let forward = glam::Vec3::new(map_forward[0], map_forward[2], -map_forward[1]);
