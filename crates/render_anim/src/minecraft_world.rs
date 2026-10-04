@@ -320,6 +320,7 @@ fn update(
         Query<&bevy::input::gamepad::Gamepad>,
         Option<Res<frame::ActivePad>>,
     ),
+    hud_input: Option<Res<frame::HudInputView>>,
 ) {
     let pad = active_pad.and_then(|active| active.0).and_then(|entity| gamepads.get(entity).ok());
     for _ in torn_down.read() {
@@ -587,15 +588,20 @@ fn update(
     hand.clock += dt_hand;
     let hand_ticks = (hand.clock / TICK_SECONDS) as u32;
     hand.clock -= f64::from(hand_ticks) * TICK_SECONDS;
+    let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
+    let menu_captured = hud_input.as_deref().is_some_and(|input| input.console_open || input.script_menu_open);
     if let Some(entities) = entities.as_mut()
         && ui.holding_item
         && !ui.inventory_open
+        && !menu_captured
     {
         let mut player = minecraftoss_player::Player::new(glam::DVec3::from_array(feet));
         player.yaw = f64::from(mc_yaw);
         player.pitch = f64::from(ps.viewangles[0]);
         player.selected = entities.selected;
-        let eye_block = glam::DVec3::from_array(feet) + glam::DVec3::Y * 1.62;
+        player.crouching = ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
+        player.pos = glam::DVec3::from_array(eye) - glam::DVec3::Y * player.eye_height();
+        let eye_block = player.eye();
         let look = {
             let (yaw, pitch) = (f64::from(mc_yaw).to_radians(), f64::from(ps.viewangles[0]).to_radians());
             glam::DVec3::new(-yaw.sin() * pitch.cos(), -pitch.sin(), yaw.cos() * pitch.cos())
@@ -624,11 +630,20 @@ fn update(
             || ((buttons.pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, false)) && hand.place_delay == 0);
         if place {
             hand.place_delay = 4;
-            if let Some(pos) = player.place_selected(
-                &mut world.scene,
-                &mut entities.inventory,
-                minecraftoss_player::GameMode::Survival,
-            ) {
+            let held = entities.inventory.slots[entities.selected].clone();
+            let placeable = held.as_ref().is_some_and(|stack| {
+                let id = if stack.id == "minecraft:redstone" { "minecraft:redstone_wire" } else { stack.id.as_str() };
+                minecraft_terrain::pack::ResourceId::parse(id).is_ok_and(|id| {
+                    world.stream.states.state_of(&minecraft_terrain::scene::Block { id, properties: Default::default() }).is_some()
+                })
+            });
+            if placeable
+                && let Some(pos) = player.place_selected(
+                    &mut world.scene,
+                    &mut entities.inventory,
+                    minecraftoss_player::GameMode::Survival,
+                )
+            {
                 // Not into the player's own box.
                 let [fx, fy, fz] = feet;
                 let inside = (fx - 0.3) < f64::from(pos.0 + 1)
@@ -640,12 +655,7 @@ fn update(
                 let block = minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned();
                 if inside {
                     world.scene.set(pos, None);
-                    if let Some(block) = block {
-                        let _ = entities.inventory.add_item(
-                            minecraftoss_player::inventory::ItemStack::new(block.id.key(), 1),
-                            entities.selected,
-                        );
-                    }
+                    entities.inventory.slots[entities.selected] = held;
                 } else if let Some(block) = block {
                     let state = world.stream.states.state_of(&block);
                     let blocks = &world.registries.blocks;
@@ -744,7 +754,6 @@ fn update(
         entities.drop_blocks(&broken);
     }
 
-    let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
     let (pitch, yaw) = (ps.viewangles[0].to_radians(), ps.viewangles[1].to_radians());
     let map_forward = [pitch.cos() * yaw.cos(), pitch.cos() * yaw.sin(), -pitch.sin()];
     let forward = glam::Vec3::new(map_forward[0], map_forward[2], -map_forward[1]);
