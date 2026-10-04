@@ -7,9 +7,11 @@ use std::collections::HashMap;
 use asset_core::{AssetNamespace, AssetRef};
 use asset_game::{FontDef, MenuCatalog};
 use assets::{PreparedLocalizedStrings, PreparedWeapons};
+use bevy::input::gamepad::{Gamepad, GamepadButton};
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
-use frame::{McClick, McScreen, McSlot, McStack, MinecraftUi};
+use frame::minecraft_ui::MC_HOTBAR;
+use frame::{McClick, McScreen, McSlot, McStack, MinecraftUi, PromptStyle};
 use hud_iw4::{normalized_text_scale as r_normalized_text_scale, ui_text_height};
 
 use crate::chrome::ui_text_width;
@@ -54,6 +56,9 @@ const BOX: [f32; 4] = [-73.0, -100.0, 62.0, 86.0];
 const TABLE_BOX: [f32; 4] = [-74.0, -93.0, 144.0, 78.0];
 const TABLE_GRID: [f32; 2] = [-66.0, -86.0];
 const TABLE_RESULT: [f32; 3] = [38.0, -66.0, 24.0];
+const REPEAT_DELAY: f64 = 0.4;
+const REPEAT_EVERY: f64 = 0.12;
+const STICK: f32 = 0.6;
 
 /// Where each slot of the screen sits (x, y, size).
 fn layout(screen: McScreen) -> Vec<(McSlot, f32, f32, f32)> {
@@ -99,6 +104,24 @@ pub(crate) struct ScreenInput {
     drag: Option<(bool, Vec<McSlot>)>,
     open: bool,
     screen: McScreen,
+    focus: Option<McSlot>,
+    repeat: Option<(Nav, f64)>,
+    pad_pointer: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Nav {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Buttons {
+    pressed: [bool; 2],
+    released: [bool; 2],
+    quick: bool,
 }
 
 struct Canvas<'a> {
@@ -298,6 +321,8 @@ pub(crate) fn update_minecraft_hud(
     (mut hud_images, mut images): (ResMut<HudImages>, ResMut<Assets<Image>>),
     mut gaps: ResMut<HudPresentationGaps>,
     mut pass: ResMut<HudTessPass>,
+    (gamepads, active_pad, devices): (Query<&Gamepad>, Option<Res<frame::ActivePad>>, Option<Res<frame::InputDevices>>),
+    (menus, hud_input): (Res<crate::menus::ScriptMenus>, Option<Res<frame::HudInputView>>),
 ) {
     let Some(mut ui) = ui else {
         pass.minecraft = TessJob::Hide;
@@ -318,14 +343,28 @@ pub(crate) fn update_minecraft_hud(
     let now = time.elapsed_secs_f64();
     let window = windows.single().ok();
     let mouse = window.and_then(Window::cursor_position);
+    let blocked = menus.captures_input() || hud_input.as_ref().is_some_and(|input| input.console_open);
+    let pad = active_pad
+        .as_deref()
+        .and_then(|active| active.0)
+        .and_then(|entity| gamepads.get(entity).ok())
+        .filter(|_| !blocked && devices.as_ref().is_none_or(|devices| devices.focused));
+    let prompts = devices.as_ref().filter(|devices| devices.pad_prompts && pad.is_some()).map(|devices| devices.style);
+    let pad_pointer = prompts.is_some();
+    let held = pad.and_then(pad_direction);
+    let pad_just = |button: GamepadButton| pad.is_some_and(|pad| pad.just_pressed(button));
 
     // Opening and closing, and the hotbar's keys.
     let open_before = ui.inventory_open;
-    if keys.just_pressed(KeyCode::KeyE) || (ui.inventory_open && keys.just_pressed(KeyCode::Escape)) {
+    if !blocked && (keys.just_pressed(KeyCode::KeyE) || (ui.inventory_open && keys.just_pressed(KeyCode::Escape))) {
         ui.inventory_open = !ui.inventory_open && !keys.just_pressed(KeyCode::Escape);
-        if ui.inventory_open {
-            ui.screen = McScreen::Inventory;
-        }
+    } else if ui.inventory_open && (menus.captures_input() || pad_just(GamepadButton::East)) {
+        ui.inventory_open = false;
+    } else if !ui.inventory_open && pad_just(GamepadButton::DPadUp) {
+        ui.inventory_open = true;
+    }
+    if ui.inventory_open && !open_before {
+        ui.screen = McScreen::Inventory;
     }
     if open_before && !ui.inventory_open {
         ui.clicks.push(McClick::Close);
@@ -385,13 +424,41 @@ pub(crate) fn update_minecraft_hud(
         ui.character_box = None;
     } else {
         for _ in wheel.read() {}
-        let hovered = mouse.and_then(|m| hovered_slot(&surface, m, ui.screen));
-        let inside = mouse.is_some_and(|m| over_panel(&surface, m));
-        if !opened {
-            handle_clicks(&mut ui, &mut input, &buttons, hovered, inside, shift, digit, now);
+        let slots = layout(ui.screen);
+        let mouse_hovered = mouse.and_then(|m| hovered_slot(&surface, m, ui.screen));
+        if opened {
+            input.focus = None;
+            input.repeat = held.map(|nav| (nav, f64::INFINITY));
         }
+        if pad_pointer && !input.pad_pointer {
+            input.focus = mouse_hovered.or(input.focus);
+        }
+        input.pad_pointer = pad_pointer;
+        if !input.focus.is_some_and(|focus| slots.iter().any(|slot| slot.0 == focus)) {
+            input.focus = Some(McSlot::Inventory(ui.selected.min(MC_HOTBAR - 1)));
+        }
+        if let Some(nav) = repeat_step(&mut input.repeat, held, now)
+            && let Some(from) = input.focus
+        {
+            input.focus = neighbour(&slots, from, nav).or(Some(from));
+        }
+        let hovered = if pad_pointer { input.focus } else { mouse_hovered };
+        let inside = pad_pointer || mouse.is_some_and(|m| over_panel(&surface, m));
+        if opened || blocked {
+            input.drag = None;
+        } else {
+            handle_clicks(&mut ui, &mut input, screen_buttons(&buttons, pad), hovered, inside, shift, digit, now);
+        }
+        let pointer = if pad_pointer {
+            hovered.and_then(|focus| slots.iter().find(|slot| slot.0 == focus)).map(|&(_, x, y, size)| {
+                let r = surface.apply_rect((x + size) * K, y * K, 0.0, 0.0, CENTER, CENTER);
+                Vec2::new(r.x, r.y)
+            })
+        } else {
+            mouse
+        };
         canvas.k = K;
-        draw_inventory(&mut canvas, &mut ui, weapons, strings, &mut gaps, hovered, mouse);
+        draw_inventory(&mut canvas, &mut ui, weapons, strings, &mut gaps, hovered, pointer, prompts);
         if ui.screen == McScreen::CraftingTable {
             ui.character_box = None;
         } else {
@@ -399,7 +466,7 @@ pub(crate) fn update_minecraft_hud(
             let b = surface.apply_rect(BOX[0] * K, BOX[1] * K, BOX[2] * K, BOX[3] * K, CENTER, CENTER);
             let centre = [b.x + b.w * 0.5, b.y + b.h * 0.36];
             ui.character_box = Some([b.x + b.w * 0.5, b.y + b.h * 0.5, b.w, b.h]);
-            if let Some(m) = mouse {
+            if let Some(m) = pointer {
                 ui.gaze = [(m.x - centre[0]) / (b.h * 0.5), (m.y - centre[1]) / (b.h * 0.5)];
             }
         }
@@ -421,6 +488,130 @@ fn hovered_slot(surface: &crate::surface::Hud2dSurface, mouse: Vec2, screen: McS
     })
 }
 
+fn neighbour(slots: &[(McSlot, f32, f32, f32)], from: McSlot, nav: Nav) -> Option<McSlot> {
+    let centre = |&(_, x, y, size): &(McSlot, f32, f32, f32)| Vec2::new(x + size * 0.5, y + size * 0.5);
+    let origin = centre(slots.iter().find(|slot| slot.0 == from)?);
+    let dir = match nav {
+        Nav::Up => Vec2::NEG_Y,
+        Nav::Down => Vec2::Y,
+        Nav::Left => Vec2::NEG_X,
+        Nav::Right => Vec2::X,
+    };
+    slots
+        .iter()
+        .filter(|slot| slot.0 != from)
+        .filter_map(|slot| {
+            let delta = centre(slot) - origin;
+            let along = delta.dot(dir);
+            let across = delta.perp_dot(dir).abs();
+            (along > 1.0 && across <= along * 1.5).then_some((along + 2.0 * across, slot.0))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, slot)| slot)
+}
+
+fn pad_direction(pad: &Gamepad) -> Option<Nav> {
+    let dpad = [
+        (GamepadButton::DPadUp, Nav::Up),
+        (GamepadButton::DPadDown, Nav::Down),
+        (GamepadButton::DPadLeft, Nav::Left),
+        (GamepadButton::DPadRight, Nav::Right),
+    ];
+    if let Some(&(_, nav)) = dpad.iter().find(|(button, _)| pad.pressed(*button)) {
+        return Some(nav);
+    }
+    let stick = pad.left_stick();
+    if stick.x.abs().max(stick.y.abs()) < STICK {
+        return None;
+    }
+    Some(if stick.x.abs() > stick.y.abs() {
+        if stick.x > 0.0 { Nav::Right } else { Nav::Left }
+    } else if stick.y > 0.0 {
+        Nav::Up
+    } else {
+        Nav::Down
+    })
+}
+
+fn repeat_step(repeat: &mut Option<(Nav, f64)>, held: Option<Nav>, now: f64) -> Option<Nav> {
+    let Some(nav) = held else {
+        *repeat = None;
+        return None;
+    };
+    match *repeat {
+        Some((last, next)) if last == nav => {
+            if now < next {
+                return None;
+            }
+            *repeat = Some((nav, now + REPEAT_EVERY));
+        }
+        _ => *repeat = Some((nav, now + REPEAT_DELAY)),
+    }
+    Some(nav)
+}
+
+fn screen_buttons(mouse: &ButtonInput<MouseButton>, pad: Option<&Gamepad>) -> Buttons {
+    let pressed = |button: GamepadButton| pad.is_some_and(|pad| pad.just_pressed(button));
+    let released = |button: GamepadButton| pad.is_some_and(|pad| pad.just_released(button));
+    Buttons {
+        pressed: [
+            mouse.just_pressed(MouseButton::Left) || pressed(GamepadButton::South),
+            mouse.just_pressed(MouseButton::Right) || pressed(GamepadButton::West),
+        ],
+        released: [
+            mouse.just_released(MouseButton::Left) || released(GamepadButton::South),
+            mouse.just_released(MouseButton::Right) || released(GamepadButton::West),
+        ],
+        quick: pressed(GamepadButton::North),
+    }
+}
+
+fn pad_label(style: PromptStyle, button: GamepadButton) -> &'static str {
+    match (style, button) {
+        (PromptStyle::Xbox, GamepadButton::South) => "A",
+        (PromptStyle::Xbox, GamepadButton::East) => "B",
+        (PromptStyle::Xbox, GamepadButton::West) => "X",
+        (PromptStyle::Xbox, GamepadButton::North) => "Y",
+        (PromptStyle::PlayStation, GamepadButton::South) => "×",
+        (PromptStyle::PlayStation, GamepadButton::East) => "○",
+        (PromptStyle::PlayStation, GamepadButton::West) => "□",
+        (PromptStyle::PlayStation, GamepadButton::North) => "△",
+        (PromptStyle::Generic, GamepadButton::South) => "SOUTH",
+        (PromptStyle::Generic, GamepadButton::East) => "EAST",
+        (PromptStyle::Generic, GamepadButton::West) => "WEST",
+        (PromptStyle::Generic, GamepadButton::North) => "NORTH",
+        _ => "",
+    }
+}
+
+fn draw_pad_legend(canvas: &mut Canvas<'_>, style: PromptStyle, carrying: bool, on_result: bool) {
+    let c = (CENTER, CENTER);
+    let px = 5.5;
+    let entries = [
+        (GamepadButton::South, if carrying && !on_result { "PLACE" } else { "TAKE" }),
+        (GamepadButton::West, if carrying { "PLACE ONE" } else { "SPLIT" }),
+        (GamepadButton::North, if on_result { "CRAFT ALL" } else { "QUICK MOVE" }),
+        (GamepadButton::East, "CLOSE"),
+    ];
+    let width = |canvas: &Canvas<'_>, text: &str| {
+        canvas.fonts.get(FONT_SMALL).map_or(0.0, |def| ui_text_width(def, text, px / ui_text_height(1.0)))
+    };
+    let total = entries
+        .iter()
+        .map(|&(button, action)| width(canvas, pad_label(style, button)) + 3.0 + width(canvas, action) + 10.0)
+        .sum::<f32>()
+        + 6.0;
+    let (x, y) = (-total * 0.5, PANEL_Y + PANEL_H + 6.0);
+    canvas.fill(x, y, total, 12.0, [0.02, 0.025, 0.028, 0.90], c);
+    canvas.frame(x, y, total, 12.0, EDGE, c);
+    canvas.fill(x, y, 2.0, 12.0, ACCENT, c);
+    let mut at = x + 8.0;
+    for (button, action) in entries {
+        at += canvas.text(FONT_SMALL, at, y + 3.25, px, ACCENT, pad_label(style, button), false, c) + 3.0;
+        at += canvas.text(FONT_SMALL, at, y + 3.25, px, TEXT, action, false, c) + 10.0;
+    }
+}
+
 fn over_panel(surface: &crate::surface::Hud2dSurface, mouse: Vec2) -> bool {
     let r = surface.apply_rect(PANEL_X * K, PANEL_Y * K, PANEL_W * K, PANEL_H * K, CENTER, CENTER);
     mouse.x >= r.x && mouse.x < r.x + r.w && mouse.y >= r.y && mouse.y < r.y + r.h
@@ -434,7 +625,7 @@ fn over_panel(surface: &crate::surface::Hud2dSurface, mouse: Vec2) -> bool {
 fn handle_clicks(
     ui: &mut MinecraftUi,
     input: &mut ScreenInput,
-    buttons: &ButtonInput<MouseButton>,
+    buttons: Buttons,
     hovered: Option<McSlot>,
     inside: bool,
     shift: bool,
@@ -452,8 +643,15 @@ fn handle_clicks(
     {
         slots.push(slot);
     }
-    for (button, right) in [(MouseButton::Left, false), (MouseButton::Right, true)] {
-        if buttons.just_pressed(button) {
+    if buttons.quick
+        && input.drag.is_none()
+        && let Some(slot) = hovered
+    {
+        ui.clicks.push(McClick::Slot { slot, right: false, shift: true });
+        input.last_click = None;
+    }
+    for (button, right) in [(0, false), (1, true)] {
+        if buttons.pressed[button] {
             let Some(slot) = hovered else {
                 if !inside {
                     ui.clicks.push(McClick::Outside { right });
@@ -478,7 +676,7 @@ fn handle_clicks(
                 _ => ui.clicks.push(McClick::Slot { slot, right, shift }),
             }
         }
-        if buttons.just_released(button)
+        if buttons.released[button]
             && let Some((drag_right, slots)) = input.drag.take()
         {
             if drag_right != right {
@@ -558,6 +756,7 @@ fn draw_inventory(
     gaps: &mut HudPresentationGaps,
     hovered: Option<McSlot>,
     mouse: Option<Vec2>,
+    prompts: Option<PromptStyle>,
 ) {
     let c = (CENTER, CENTER);
     // Dim the world around the panel; the character window stays clear.
@@ -592,7 +791,8 @@ fn draw_inventory(
     canvas.fill(PANEL_X, PANEL_Y + HEADER_H - 1.0, PANEL_W, 1.0, [ACCENT[0], ACCENT[1], ACCENT[2], 0.85], c);
     canvas.fill(PANEL_X, PANEL_Y, 3.0, HEADER_H, ACCENT, c);
     canvas.text(FONT_TITLE, PANEL_X + 9.0, PANEL_Y + 5.0, 10.0, HIGHLIGHT, if table { "CRAFTING TABLE" } else { "INVENTORY" }, false, c);
-    canvas.text(FONT_SMALL, PANEL_X + PANEL_W - 8.0, PANEL_Y + 7.5, 6.0, TEXT_DIM, "SURVIVAL  //  E TO CLOSE", true, c);
+    let close = prompts.map_or("E", |style| pad_label(style, GamepadButton::East));
+    canvas.text(FONT_SMALL, PANEL_X + PANEL_W - 8.0, PANEL_Y + 7.5, 6.0, TEXT_DIM, &format!("SURVIVAL  //  {close} TO CLOSE"), true, c);
     canvas.frame(PANEL_X, PANEL_Y, PANEL_W, PANEL_H, EDGE, c);
     canvas.brackets(PANEL_X - 2.0, PANEL_Y - 2.0, PANEL_W + 4.0, PANEL_H + 4.0, 8.0, [ACCENT[0], ACCENT[1], ACCENT[2], 0.9], c);
 
@@ -624,6 +824,9 @@ fn draw_inventory(
         let hover = hovered == Some(slot);
         canvas.fill(x, y, size, size, if hover { SLOT_HOVER } else { SLOT }, c);
         canvas.frame(x, y, size, size, if hover { HIGHLIGHT } else if is_result(slot) { [ACCENT[0], ACCENT[1], ACCENT[2], 0.55] } else { SLOT_EDGE }, c);
+        if hover && prompts.is_some() {
+            canvas.brackets(x - 2.0, y - 2.0, size + 4.0, size + 4.0, 4.0, ACCENT, c);
+        }
         if let McSlot::Inventory(i) = slot
             && i < 9
             && i == ui.selected
@@ -647,6 +850,10 @@ fn draw_inventory(
             let w = canvas.fonts.get(FONT_SMALL).map_or(0.0, |def| ui_text_width(def, label, px / ui_text_height(1.0)));
             canvas.text(FONT_SMALL, x + (size - w) * 0.5, y + (size - px) * 0.5 - 0.5, px, [1.0, 1.0, 1.0, 0.22], label, false, c);
         }
+    }
+
+    if let Some(style) = prompts {
+        draw_pad_legend(canvas, style, ui.cursor.is_some(), hovered.is_some_and(is_result));
     }
 
     // The carried stack follows the mouse; otherwise the hovered item's card.
