@@ -16,6 +16,7 @@ Modern Warfare 2, Skate 3 and Minecraft in one game, all running on
 - Shoot blocks to break them. Harder blocks take more bullets, scaled by each gun's real MW2 damage and range. Knife them too. Grenades blow up like TNT.
 - Broken blocks drop items that you pick up.
 - A Minecraft inventory and hotbar restyled in MW2's look. Your guns sit in the hotbar as items, and your MW2 character stands in the inventory window.
+- Vanilla crafting: the 2x2 grid in the inventory, and a 3x3 grid when you use a crafting table. Shaped, shapeless and mirrored recipes come from Minecraft 26.3's own data, and buckets and bottles come back from the recipes that use them.
 - Hold a block to place it. With an empty hand you punch and mine with your bare MW2 hands.
 - Minecraft's block, mob and footstep sounds.
 - Unlimited ammo and grenades. The Intervention, SPAS-12 and UMP45 are always in your inventory. No time or score limit.
@@ -45,11 +46,31 @@ You don't need Minecraft installed. The first time the game starts, it downloads
 | Mouse / WASD | Sticks | MW2 movement and shooting |
 | 1–9, mouse wheel | D-pad left / right | Select a hotbar slot |
 | | Y | Swap between the first two hotbar slots |
-| E | | Open or close the inventory |
+| E | D-pad up | Open the inventory |
+| E or Esc | B | Close the inventory or crafting table |
 | Q | | Drop the selected item |
 | Left click (block or empty hand) | Right trigger | Mine or punch |
 | Right click (holding a block) | Left trigger | Place the block |
-| J | Click both sticks in | Skate 3 mode |
+| Right click on a crafting table | Left trigger | Open the 3x3 crafting grid |
+| Crouch + right click on a crafting table | Crouch + left trigger | Place the held block against it |
+| J | Click both sticks in | Skate 3 mode (not while the inventory is open) |
+
+In the inventory and on the crafting table:
+
+| Keyboard and mouse | Controller | Action |
+| --- | --- | --- |
+| Mouse | D-pad / left stick | Point at a slot |
+| Left click | A | Take, put down or swap a stack; take the crafted item |
+| Right click | X | Take half, or put down one |
+| Shift + left click | Y | Move a stack across; on the result, craft as many as fit |
+| Drag with a stack | Hold A and move | Share the stack out over the slots |
+| Double click | | Gather matching items onto the held stack |
+| 1–9 over a slot | | Swap it with that hotbar slot |
+| Click outside the window | | Drop the held stack |
+
+Items left in the crafting grid go back into the inventory when it closes, and drop at your feet if there is no room.
+
+To try recipes without gathering everything first, set `IW4L_MINECRAFT_KIT` (in the shell or in `.env` next to `iw4l.exe`) to a list of items, for example `IW4L_MINECRAFT_KIT=minecraft:oak_log*16,minecraft:milk_bucket*3`. They are put in the backpack when the world starts.
 
 More about skating in [docs/SKATE.md](docs/SKATE.md).
 
