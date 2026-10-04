@@ -69,7 +69,8 @@ pub(crate) fn gun_lines(facts: &WeaponBodyFacts) -> Vec<(String, Tone)> {
         }
         return out;
     }
-    let pellets = if facts.shots_per_fire > 1 {
+    let spread = facts.weap_class == weapon_iw4::WEAPCLASS_SPREAD;
+    let pellets = if spread && facts.shots_per_fire > 1 {
         format!(" x{} PELLETS", facts.shots_per_fire)
     } else {
         String::new()
@@ -79,20 +80,22 @@ pub(crate) fn gun_lines(facts: &WeaponBodyFacts) -> Vec<(String, Tone)> {
     } else {
         facts.damage
     };
-    let damage = if min != facts.damage {
+    let (near, far) = (facts.max_damage_range, facts.min_damage_range);
+    let falloff = min != facts.damage && near < far;
+    let damage = if falloff {
         format!("DAMAGE {} - {}{pellets}", facts.damage, min)
     } else {
         format!("DAMAGE {}{pellets}", facts.damage)
     };
     out.push((damage, Tone::Plain));
-    let (near, far) = (facts.max_damage_range, facts.min_damage_range);
-    if far > 0.0 {
-        let range = if near > 0.0 && near < far && min != facts.damage {
-            format!("RANGE {} - {} BLOCKS", blocks(near), blocks(far))
-        } else {
-            format!("RANGE {} BLOCKS", blocks(far))
-        };
-        out.push((range, Tone::Plain));
+    if spread && far > 0.0 {
+        out.push((format!("RANGE {} BLOCKS", blocks(far)), Tone::Plain));
+    }
+    if falloff {
+        out.push((
+            format!("FALLOFF {} - {} BLOCKS", blocks(near), blocks(far)),
+            Tone::Plain,
+        ));
     }
     let body = facts
         .location_damage_mult
@@ -159,14 +162,34 @@ mod tests {
     fn a_rifle_shows_its_falloff_range_and_block_damage() {
         let lines: Vec<String> = gun_lines(&rifle()).into_iter().map(|l| l.0).collect();
         assert_eq!(lines[0], "DAMAGE 40 - 30");
-        assert_eq!(lines[1], "RANGE 28 - 50 BLOCKS");
+        assert_eq!(lines[1], "FALLOFF 28 - 50 BLOCKS");
         assert_eq!(lines[2], "BLOCK DAMAGE 0.25 PER HIT");
         assert_eq!(lines[3], "DIRT 2 HITS  STONE 6 HITS");
     }
 
     #[test]
+    fn a_rifle_without_falloff_has_no_range_line() {
+        let sniper = WeaponBodyFacts {
+            damage: 98,
+            min_damage: 98,
+            ..rifle()
+        };
+        let lines: Vec<String> = gun_lines(&sniper).into_iter().map(|l| l.0).collect();
+        assert_eq!(lines[0], "DAMAGE 98");
+        assert!(lines[1].starts_with("BLOCK DAMAGE"));
+        let flat = WeaponBodyFacts {
+            max_damage_range: 1800.0,
+            ..rifle()
+        };
+        let lines: Vec<String> = gun_lines(&flat).into_iter().map(|l| l.0).collect();
+        assert_eq!(lines[0], "DAMAGE 40");
+        assert!(lines[1].starts_with("BLOCK DAMAGE"));
+    }
+
+    #[test]
     fn a_shotgun_counts_pellets() {
         let shotgun = WeaponBodyFacts {
+            weap_class: weapon_iw4::WEAPCLASS_SPREAD,
             shots_per_fire: 8,
             damage: 20,
             min_damage: 20,
@@ -176,6 +199,7 @@ mod tests {
         let lines: Vec<String> = gun_lines(&shotgun).into_iter().map(|l| l.0).collect();
         assert_eq!(lines[0], "DAMAGE 20 x8 PELLETS");
         assert_eq!(lines[1], "RANGE 11 BLOCKS");
+        assert!(lines[2].starts_with("BLOCK DAMAGE"));
     }
 
     #[test]
