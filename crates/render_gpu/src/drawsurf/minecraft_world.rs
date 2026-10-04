@@ -135,7 +135,7 @@ struct TerrainGpu {
     bind: Option<BindGroup>,
     sections: HashMap<[i32; 3], SectionGpu>,
     visible: Vec<[i32; 3]>,
-    pipelines: HashMap<(TextureFormat, u32), [RenderPipeline; 11]>,
+    pipelines: HashMap<(TextureFormat, u32), [RenderPipeline; 12]>,
 }
 
 pub(super) fn register(app: &mut App) {
@@ -500,7 +500,7 @@ fn draw_terrain(
     let (target, depth, extracted_view, msaa) = view.into_inner();
     let format = target.main_texture_format();
     let samples = msaa.map_or(1, Msaa::samples);
-    let [sky, opaque, translucent, clouds, crack, entity, entity_culled, entity_translucent, shadow, backdrop, hand] = gpu
+    let [sky, opaque, translucent, clouds, crack, entity, entity_culled, entity_translucent, shadow, backdrop, hand, sections] = gpu
         .pipelines
         .entry((format, samples))
         .or_insert_with(|| pipelines(&device, &registry, format, samples))
@@ -519,7 +519,7 @@ fn draw_terrain(
     let (depth_min, depth_max) = reverse_z_viewport_depth(GFX_DEPTH_RANGE_SCENE);
     pass.set_viewport(vp.x as f32, vp.y as f32, vp.z as f32, vp.w as f32, depth_min, depth_max);
     pass.set_bind_group(0, &bind, &[]);
-    pass.set_render_pipeline(&opaque);
+    pass.set_render_pipeline(&sections);
     for pos in &gpu.visible {
         let Some(section) = gpu.sections.get(pos) else {
             continue;
@@ -531,6 +531,7 @@ fn draw_terrain(
         pass.set_index_buffer(section.indices.slice(..), IndexFormat::Uint32);
         pass.draw_indexed(0..section.transparent_start, 0, 0..1);
     }
+    pass.set_render_pipeline(&opaque);
     if let Some((vertices, indices, count)) = gpu.particles.as_ref() {
         pass.set_vertex_buffer(0, vertices.slice(..));
         pass.set_index_buffer(indices.slice(..), IndexFormat::Uint32);
@@ -960,7 +961,7 @@ fn pipelines(
     registry: &ExactPipelineRegistry,
     format: TextureFormat,
     samples: u32,
-) -> [RenderPipeline; 11] {
+) -> [RenderPipeline; 12] {
     let shader = unsafe {
         device.create_shader_module(ShaderModuleDescriptor {
             label: Some("iw4l_minecraft_terrain"),
@@ -1191,5 +1192,6 @@ fn pipelines(
         ),
         make("backdrop_vertex", "backdrop_fragment", &backdrop_buffers, true, CompareFunction::GreaterEqual, None, None),
         make("hand_vertex", "hand_fragment", &buffers, true, CompareFunction::GreaterEqual, None, None),
+        make("vertex", "opaque", &buffers, true, CompareFunction::GreaterEqual, None, Some(bevy::render::render_resource::Face::Back)),
     ]
 }

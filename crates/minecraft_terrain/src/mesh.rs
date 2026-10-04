@@ -1998,6 +1998,9 @@ fn fluid_quad(
         &mut mesh.indices
     };
     indices.extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
+    if !water {
+        indices.extend_from_slice(&[start, start + 2, start + 1, start, start + 3, start + 2]);
+    }
     mesh.faces += 1;
 }
 thread_local! {
@@ -2975,6 +2978,7 @@ mod tests {
         )
         .unwrap();
         assert!(!transparent.is_empty());
+        assert_eq!(transparent.len(), water.faces * 6);
         assert!(water.vertices.iter().all(|v| v.position[1] <= 4.0 / 9.0));
         let mut lava = ChunkMesh::default();
         let mut transparent = Vec::new();
@@ -2991,6 +2995,10 @@ mod tests {
         assert!(transparent.is_empty());
         assert!(lava.vertices.iter().all(|v| v.block_light >= 14.0));
         assert!(lava.vertices.iter().any(|v| v.block_light == 15.0));
+        assert_eq!(lava.indices.len(), lava.faces * 12);
+        for quad in lava.indices.chunks(12) {
+            assert_eq!([quad[6], quad[7], quad[8]], [quad[0], quad[2], quad[1]]);
+        }
     }
     #[test]
     fn boundary_neighbors_hide_shared_face() {
