@@ -17,4 +17,14 @@ pub trait CollisionBackend {
     }
 
     fn touch_entity(&self, _entity: i32) {}
+
+    fn water(
+        &self,
+        _origin: [f32; 3],
+        _mins: [f32; 3],
+        _maxs: [f32; 3],
+        _view_height: f32,
+    ) -> crate::WaterSample {
+        crate::WaterSample::default()
+    }
 }

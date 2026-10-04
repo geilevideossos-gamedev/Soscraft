@@ -108,6 +108,14 @@ pub struct MinecraftUi {
     /// The minimap's picture of the world and the map points of its
     /// north-west and south-east corners.
     pub minimap: Option<(Handle<Image>, [f32; 2], [f32; 2])>,
+    pub vitals: Option<McVitals>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct McVitals {
+    pub air: i32,
+    pub max_air: i32,
+    pub eye_in_water: bool,
 }
 
 /// The player's own MW2 body, drawn standing in the inventory's character

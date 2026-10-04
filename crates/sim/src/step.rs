@@ -1858,6 +1858,14 @@ impl CollisionBackend for ClipBackend<'_> {
         let with_models = clip_move_to_model_brushes(with_bmodels, self.model_brushes, input);
         clip_move_to_players(with_models, self.bodies, self.self_entnum, input)
     }
+
+    fn water(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], view_height: f32) -> movement_iw4::WaterSample {
+        if crate::voxel::active_for(self.brushes) {
+            crate::voxel::water(origin, mins, maxs, view_height)
+        } else {
+            movement_iw4::WaterSample::default()
+        }
+    }
 }
 
 impl movement_iw4::MantleCapsuleTrace for ClipBackend<'_> {

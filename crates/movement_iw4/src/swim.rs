@@ -1,0 +1,272 @@
+use playerstate_iw4::{ENTITYNUM_NONE, PlayerState, UserCmd, pm_flags};
+
+use crate::{CollisionBackend, GroundTraceInput, MoveBounds, Pml, step_slide_move};
+
+pub const WATER_BLOCK: f32 = 36.0;
+const TICK_SECONDS: f32 = 0.05;
+const PER_TICK: f32 = WATER_BLOCK / TICK_SECONDS;
+const SWIM_SPEED: f32 = 0.02;
+const INPUT_SCALE: f32 = 0.98;
+const WATER_DRAG: f32 = 0.8;
+const SPRINT_DRAG: f32 = 0.9;
+const VERTICAL_DRAG: f32 = 0.8;
+const SINK_GRAVITY: f32 = 0.005;
+const RISE: f32 = 0.04;
+const DIVE: f32 = 0.04;
+const GROUND_JUMP: f32 = 0.42;
+const SHALLOW: f32 = 0.4;
+const GROUND_JUMP_DELAY_MS: i32 = 500;
+const LEAP: f32 = 0.3;
+const LEAP_CLEARANCE: f32 = 0.6;
+const LOOK_STEEP: f32 = -0.2;
+const LOOK_PULL: f32 = 0.06;
+const LOOK_PULL_STEEP: f32 = 0.085;
+const BUTTON_JUMP: u32 = 0x400;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WaterSample {
+    pub depth: f32,
+    pub eye: bool,
+    pub head: bool,
+}
+
+impl WaterSample {
+    #[must_use]
+    pub fn wet(&self) -> bool {
+        self.depth > 0.0
+    }
+}
+
+#[must_use]
+pub fn swimming(ps: &PlayerState, water: WaterSample) -> bool {
+    ps.pm_flags & pm_flags::SPRINTING != 0 && (water.eye || water.head)
+}
+
+#[must_use]
+pub fn settle(value: f32, target: f32, keep: f32, ticks: f32) -> f32 {
+    target + (value - target) * libm::powf(keep, ticks)
+}
+
+#[must_use]
+pub fn swim_push(forward: [f32; 2], right: [f32; 2], forwardmove: i8, rightmove: i8) -> [f32; 2] {
+    let along = f32::from(forwardmove) / 127.0 * INPUT_SCALE;
+    let across = f32::from(rightmove) / 127.0 * INPUT_SCALE;
+    let length = libm::sqrtf(along * along + across * across);
+    if length < 1.0e-4 {
+        return [0.0; 2];
+    }
+    let scale = SWIM_SPEED / length.max(1.0);
+    let flat = |v: [f32; 2]| {
+        let n = libm::sqrtf(v[0] * v[0] + v[1] * v[1]);
+        if n > 0.0 {
+            [v[0] / n, v[1] / n]
+        } else {
+            [0.0; 2]
+        }
+    };
+    let (forward, right) = (flat(forward), flat(right));
+    [
+        (forward[0] * along + right[0] * across) * scale,
+        (forward[1] * along + right[1] * across) * scale,
+    ]
+}
+
+#[must_use]
+pub fn vertical_pull(look_up: f32, lift: f32, pull: f32, gravity: f32) -> (f32, f32) {
+    let keep = VERTICAL_DRAG * (1.0 - pull);
+    let target = (lift + pull * look_up - (1.0 - pull) * gravity) / (1.0 - keep);
+    (target, keep)
+}
+
+pub fn water_move<C: CollisionBackend>(
+    ps: &mut PlayerState,
+    pml: &mut Pml,
+    cmd: &UserCmd,
+    water: WaterSample,
+    bounds: MoveBounds,
+    collision: &C,
+) {
+    let ticks = pml.frametime / TICK_SECONDS;
+    let sprinting = ps.pm_flags & pm_flags::SPRINTING != 0;
+    let jumping = cmd.buttons & BUTTON_JUMP != 0;
+    let diving = ps.pm_flags & (pm_flags::CROUCH | pm_flags::PRONE) != 0;
+    let shallow = water.depth <= SHALLOW * WATER_BLOCK;
+    let on_ground = pml.walking != 0;
+    let mut v = [
+        ps.velocity[0] / PER_TICK,
+        ps.velocity[1] / PER_TICK,
+        ps.velocity[2] / PER_TICK,
+    ];
+
+    let mut lift = 0.0;
+    if jumping && on_ground && shallow {
+        if cmd.server_time.wrapping_sub(ps.jump_time) >= GROUND_JUMP_DELAY_MS {
+            v[2] = GROUND_JUMP;
+            ps.jump_time = cmd.server_time;
+            ps.ground_entity_num = ENTITYNUM_NONE;
+            pml.walking = 0;
+            pml.ground_plane = 0;
+            pml.almost_ground_plane = 0;
+        }
+    } else if jumping {
+        lift += RISE;
+    }
+    if diving {
+        lift -= DIVE;
+    }
+
+    let push = swim_push(
+        [pml.forward[0], pml.forward[1]],
+        [pml.right[0], pml.right[1]],
+        cmd.forwardmove,
+        cmd.rightmove,
+    );
+    let drag = if sprinting { SPRINT_DRAG } else { WATER_DRAG };
+    v[0] = settle(v[0], push[0] / (1.0 - drag), drag, ticks);
+    v[1] = settle(v[1], push[1] / (1.0 - drag), drag, ticks);
+
+    let look_up = pml.forward[2];
+    let pull = if swimming(ps, water) && (look_up <= 0.0 || jumping || water.head) {
+        if look_up < LOOK_STEEP {
+            LOOK_PULL_STEEP
+        } else {
+            LOOK_PULL
+        }
+    } else {
+        0.0
+    };
+    let gravity = if sprinting { 0.0 } else { SINK_GRAVITY };
+    let (target, keep) = vertical_pull(look_up, lift, pull, gravity);
+    v[2] = settle(v[2], target, keep, ticks);
+
+    ps.velocity = [v[0] * PER_TICK, v[1] * PER_TICK, v[2] * PER_TICK];
+    let start = ps.origin;
+    step_slide_move(
+        ps,
+        pml,
+        collision,
+        bounds.mins,
+        bounds.maxs,
+        bounds.tracemask,
+        None,
+    );
+
+    let wanted = [
+        v[0] * PER_TICK * pml.frametime,
+        v[1] * PER_TICK * pml.frametime,
+    ];
+    let moved = [ps.origin[0] - start[0], ps.origin[1] - start[1]];
+    let wanted_length = libm::sqrtf(wanted[0] * wanted[0] + wanted[1] * wanted[1]);
+    let moved_length = libm::sqrtf(moved[0] * moved[0] + moved[1] * moved[1]);
+    if wanted_length > 0.01 && moved_length < wanted_length * 0.9 {
+        let raised = [
+            ps.origin[0] + v[0] * WATER_BLOCK,
+            ps.origin[1] + v[1] * WATER_BLOCK,
+            start[2] + LEAP_CLEARANCE * WATER_BLOCK,
+        ];
+        let free = collision
+            .trace(GroundTraceInput {
+                start: raised,
+                end: raised,
+                mins: bounds.mins,
+                maxs: bounds.maxs,
+                tracemask: bounds.tracemask,
+            })
+            .startsolid
+            == 0;
+        if free
+            && !collision
+                .water(raised, bounds.mins, bounds.maxs, ps.view_height_current)
+                .wet()
+        {
+            ps.velocity[2] = LEAP * PER_TICK;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn steady(push: f32, drag: f32, ticks: f32, frames: u32) -> f32 {
+        let mut v = 0.0;
+        for _ in 0..frames {
+            v = settle(v, push / (1.0 - drag), drag, ticks);
+        }
+        v
+    }
+
+    #[test]
+    fn swimming_reaches_vanilla_speeds() {
+        let push = swim_push([1.0, 0.0], [0.0, -1.0], 127, 0)[0];
+        assert!((push - 0.0196).abs() < 1e-6);
+        let swim = steady(push, WATER_DRAG, 1.0, 200);
+        assert!((swim - 0.098).abs() < 1e-4, "{swim}");
+        let sprint = steady(push, SPRINT_DRAG, 1.0, 400);
+        assert!((sprint - 0.196).abs() < 1e-4, "{sprint}");
+    }
+
+    #[test]
+    fn many_short_frames_land_where_one_tick_does() {
+        let push = 0.0196;
+        let one = settle(0.05, push / 0.2, WATER_DRAG, 1.0);
+        let mut five = 0.05;
+        for _ in 0..5 {
+            five = settle(five, push / 0.2, WATER_DRAG, 0.2);
+        }
+        assert!((one - five).abs() < 1e-6);
+        let vanilla = WATER_DRAG * 0.05 + push;
+        assert!((one - vanilla).abs() < 1e-6);
+    }
+
+    #[test]
+    fn diagonal_input_is_not_faster() {
+        let straight = swim_push([1.0, 0.0], [0.0, -1.0], 127, 0);
+        let diagonal = swim_push([1.0, 0.0], [0.0, -1.0], 127, 127);
+        let length = |v: [f32; 2]| libm::sqrtf(v[0] * v[0] + v[1] * v[1]);
+        assert!(length(diagonal) <= SWIM_SPEED + 1e-6);
+        assert!(length(diagonal) > length(straight));
+        assert_eq!(swim_push([1.0, 0.0], [0.0, -1.0], 0, 0), [0.0; 2]);
+    }
+
+    #[test]
+    fn idle_players_sink_slowly_and_jumping_rises() {
+        let (sink, keep) = vertical_pull(0.0, 0.0, 0.0, SINK_GRAVITY);
+        assert!((sink + 0.025).abs() < 1e-6);
+        assert!((keep - VERTICAL_DRAG).abs() < 1e-6);
+        let (rise, _) = vertical_pull(0.0, RISE, 0.0, SINK_GRAVITY);
+        assert!((rise - 0.175).abs() < 1e-5, "{rise}");
+        let (dive, _) = vertical_pull(0.0, -DIVE, 0.0, SINK_GRAVITY);
+        assert!(dive < sink);
+    }
+
+    #[test]
+    fn a_vanilla_tick_of_vertical_motion_is_matched() {
+        let (lift, pull, look, gravity) = (RISE, LOOK_PULL_STEEP, -0.7, SINK_GRAVITY);
+        let moving = 0.1_f32;
+        let after_drag = VERTICAL_DRAG * moving - gravity;
+        let vanilla = after_drag + lift + (look - after_drag) * pull;
+        let (target, keep) = vertical_pull(look, lift, pull, gravity);
+        assert!((settle(moving, target, keep, 1.0) - vanilla).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sprint_swimming_needs_the_head_or_eyes_under() {
+        let mut ps = PlayerState::ZERO;
+        ps.pm_flags |= pm_flags::SPRINTING;
+        let under = WaterSample {
+            depth: 60.0,
+            eye: true,
+            head: true,
+        };
+        let wading = WaterSample {
+            depth: 20.0,
+            eye: false,
+            head: false,
+        };
+        assert!(swimming(&ps, under));
+        assert!(!swimming(&ps, wading));
+        ps.pm_flags &= !pm_flags::SPRINTING;
+        assert!(!swimming(&ps, under));
+    }
+}

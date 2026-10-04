@@ -105,7 +105,14 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
     mantle::clear_hint(ps);
 
     let _ads = update_ads_intent(ps, cmd, context.old_buttons, context.ads_intent);
+    let water = collision.water(
+        ps.origin,
+        context.bounds.mins,
+        context.bounds.maxs,
+        ps.view_height_current,
+    );
     let mut sprint = context.sprint;
+    sprint.sprint_forever |= water.wet();
     if ps.pm_flags & 3 != 0 {
         sprint.stand_up_clear = collision
             .trace(GroundTraceInput {
@@ -245,6 +252,8 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
                 bounds.tracemask,
                 collision,
             );
+        } else if water.wet() {
+            crate::water_move(ps, &mut pml, cmd, water, bounds, collision);
         } else if pml.walking == 0 {
             air_move(ps, &pml, cmd, context.air, bounds, collision);
         } else {

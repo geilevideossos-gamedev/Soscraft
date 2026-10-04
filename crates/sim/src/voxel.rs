@@ -35,6 +35,7 @@ pub struct VoxelWorld {
     /// Collision boxes of each shape id, in block space `[min, max]`; id 0 is
     /// empty.
     shapes: Vec<Vec<[f32; 6]>>,
+    fluids: Vec<u8>,
 }
 
 static WORLD: RwLock<Option<VoxelWorld>> = RwLock::new(None);
@@ -315,6 +316,7 @@ pub fn activate(brushes: &[SimBrush], origin: [f64; 3], shapes: Vec<Vec<[f32; 6]
             brushes: brushes.as_ptr() as usize,
             origin,
             chunks: HashMap::new(),
+            fluids: vec![0; shapes.len()],
             shapes,
         });
     }
@@ -335,8 +337,21 @@ pub fn add_shapes(more: Vec<Vec<[f32; 6]>>) -> Option<u16> {
     let mut world = WORLD.write().ok()?;
     let world = world.as_mut()?;
     let first = world.shapes.len() as u16;
+    world.fluids.extend(std::iter::repeat_n(0, more.len()));
     world.shapes.extend(more);
     Some(first)
+}
+
+pub const WATER: u8 = 0x10;
+pub const FLUID_AMOUNT: u8 = 0x0f;
+
+pub fn add_fluid_shape(boxes: Vec<[f32; 6]>, fluid: u8) -> Option<u16> {
+    let mut world = WORLD.write().ok()?;
+    let world = world.as_mut()?;
+    let id = world.shapes.len() as u16;
+    world.shapes.push(boxes);
+    world.fluids.push(fluid);
+    Some(id)
 }
 
 pub fn set_chunk(x: i32, z: i32, chunk: VoxelChunk) {
@@ -768,6 +783,67 @@ impl VoxelWorld {
         }
         best.map(|(_, v)| v).or_else(|| self.escape(lo, hi, 1, 1.0, CLIMB_OUT).map(|d| along(1, 1.0, d)))
     }
+
+    fn fluid_at(&self, x: i32, y: i32, z: i32) -> u8 {
+        let Some(chunk) = self.chunks.get(&(x >> 4, z >> 4)) else {
+            return 0;
+        };
+        let ly = y - chunk.min_y;
+        if ly < 0 || ly >= chunk.height {
+            return 0;
+        }
+        let id = chunk.shapes.get(((ly * 16 + (z & 15)) * 16 + (x & 15)) as usize).copied().unwrap_or(0);
+        self.fluids.get(usize::from(id)).copied().unwrap_or(0)
+    }
+
+    fn water_top(&self, x: i32, y: i32, z: i32) -> Option<f64> {
+        let fluid = self.fluid_at(x, y, z);
+        if fluid & WATER == 0 {
+            return None;
+        }
+        let covered = self.fluid_at(x, y + 1, z) & WATER != 0;
+        Some(f64::from(y) + if covered { 1.0 } else { f64::from(fluid & FLUID_AMOUNT) / 9.0 })
+    }
+
+    fn water_sample(&self, at: [f64; 3], lo: [f64; 3], hi: [f64; 3], eye_height: f64) -> movement_iw4::WaterSample {
+        const SHRINK: f64 = 0.001;
+        const EYE_DROP: f64 = 0.111_111_11;
+        const HEAD: f64 = 0.9;
+        let min: [f64; 3] = std::array::from_fn(|k| at[k] + lo[k] + SHRINK);
+        let max: [f64; 3] = std::array::from_fn(|k| at[k] + hi[k] - SHRINK);
+        let mut depth = 0.0f64;
+        for x in min[0].floor() as i32..max[0].ceil() as i32 {
+            for y in min[1].floor() as i32..max[1].ceil() as i32 {
+                for z in min[2].floor() as i32..max[2].ceil() as i32 {
+                    if let Some(top) = self.water_top(x, y, z)
+                        && top >= min[1]
+                    {
+                        depth = depth.max(top - min[1]);
+                    }
+                }
+            }
+        }
+        let (x, z) = (at[0].floor() as i32, at[2].floor() as i32);
+        let eye_y = at[1] + eye_height - EYE_DROP;
+        let eye = self.water_top(x, eye_y.floor() as i32, z).is_some_and(|top| top > eye_y);
+        let head = self.fluid_at(x, (at[1] + HEAD).floor() as i32, z) & WATER != 0;
+        movement_iw4::WaterSample {
+            depth: (depth * f64::from(BLOCK)) as f32,
+            eye,
+            head,
+        }
+    }
+}
+
+pub fn water(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], view_height: f32) -> movement_iw4::WaterSample {
+    let Ok(guard) = WORLD.read() else {
+        return movement_iw4::WaterSample::default();
+    };
+    let Some(world) = guard.as_ref() else {
+        return movement_iw4::WaterSample::default();
+    };
+    let (lo, hi) = block_bounds(mins, maxs);
+    world.water_sample(to_block(world.origin, origin), lo, hi, f64::from(view_height / BLOCK))
 }
 
 #[cfg(test)]
@@ -784,7 +860,68 @@ mod tests {
         }
         let mut chunks = HashMap::new();
         chunks.insert((0, 0), chunk);
-        VoxelWorld { brushes: 0, origin: [0.0; 3], chunks, shapes: vec![Vec::new(), vec![FULL], vec![FENCE]] }
+        VoxelWorld {
+            brushes: 0,
+            origin: [0.0; 3],
+            chunks,
+            shapes: vec![Vec::new(), vec![FULL], vec![FENCE], Vec::new(), Vec::new()],
+            fluids: vec![0, 0, 0, WATER | 8, WATER | 4],
+        }
+    }
+
+    const SOURCE: u16 = 3;
+    const FLOWING: u16 = 4;
+
+    fn pool(depth: i32) -> VoxelWorld {
+        let mut blocks = Vec::new();
+        for x in 0..16 {
+            for z in 0..16 {
+                blocks.push(([x, 0, z], 1));
+                for y in 1..=depth {
+                    blocks.push(([x, y, z], SOURCE));
+                }
+            }
+        }
+        world(&blocks)
+    }
+
+    fn sample(w: &VoxelWorld, feet: [f64; 3], eye: f64) -> movement_iw4::WaterSample {
+        let half = f64::from(HULL_HALF_WIDTH / BLOCK);
+        w.water_sample(feet, [-half, 0.0, -half], [half, 70.0 / 36.0, half], eye)
+    }
+
+    #[test]
+    fn standing_in_a_deep_pool_is_wet_to_the_eyes() {
+        let w = pool(3);
+        let s = sample(&w, [8.5, 1.0, 8.5], 60.0 / 36.0);
+        assert!(s.eye && s.head);
+        assert!((f64::from(s.depth) / 36.0 - (3.0 - 1.001)).abs() < 1e-4, "{s:?}");
+    }
+
+    #[test]
+    fn a_surface_source_is_eight_ninths_deep() {
+        let w = pool(1);
+        let s = sample(&w, [8.5, 1.0, 8.5], 60.0 / 36.0);
+        assert!(!s.eye && s.head);
+        assert!((f64::from(s.depth) / 36.0 - (8.0 / 9.0 - 0.001)).abs() < 1e-4, "{s:?}");
+    }
+
+    #[test]
+    fn flowing_water_is_shallower_and_dry_land_is_dry() {
+        let w = world(&[([4, 0, 4], 1), ([4, 1, 4], FLOWING)]);
+        let s = sample(&w, [4.5, 1.0, 4.5], 60.0 / 36.0);
+        assert!((f64::from(s.depth) / 36.0 - (4.0 / 9.0 - 0.001)).abs() < 1e-4, "{s:?}");
+        let dry = sample(&w, [10.5, 1.0, 10.5], 60.0 / 36.0);
+        assert_eq!(dry, movement_iw4::WaterSample::default());
+    }
+
+    #[test]
+    fn the_eyes_go_under_just_below_the_surface() {
+        let w = pool(2);
+        let low = sample(&w, [8.5, 1.0, 8.5], 0.9);
+        assert!(low.eye);
+        let high = sample(&w, [8.5, 2.0, 8.5], 1.0);
+        assert!(!high.eye);
     }
 
     fn body(feet: [f64; 3], height: f64) -> ([f64; 3], [f64; 3]) {

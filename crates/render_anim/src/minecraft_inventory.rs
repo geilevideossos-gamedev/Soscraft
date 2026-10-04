@@ -301,6 +301,26 @@ impl InventoryUi {
                 }
             }
         }
+        for name in HUD_SPRITES {
+            let key = format!("gui:{name}");
+            if self.cells.contains_key(&key) || self.failed.contains(&key) {
+                continue;
+            }
+            let cell = self.cells.len() as u32;
+            let Some(sprite) = gui_sprite(packs, name).filter(|_| cell < (ATLAS / ICON) * (ATLAS / ICON)) else {
+                diag::warn!(World, "Minecraft HUD sprite `{name}` unavailable");
+                self.failed.insert(key);
+                continue;
+            };
+            let atlas = self.atlas.get_or_insert_with(|| image::RgbaImage::new(ATLAS, ATLAS));
+            let (x, y) = ((cell % (ATLAS / ICON)) * ICON, (cell / (ATLAS / ICON)) * ICON);
+            let (w, h) = (sprite.width().min(ICON), sprite.height().min(ICON));
+            image::imageops::replace(atlas, &sprite, i64::from(x), i64::from(y));
+            let size = ATLAS as f32;
+            ui.icon_rects.insert(key.clone(), [x as f32 / size, y as f32 / size, (x + w) as f32 / size, (y + h) as f32 / size]);
+            self.cells.insert(key, cell);
+            self.dirty = true;
+        }
         if self.dirty
             && let Some(atlas) = self.atlas.as_ref()
         {
@@ -324,6 +344,14 @@ impl InventoryUi {
             ui.icons = self.handle.clone();
         }
     }
+}
+
+const HUD_SPRITES: [&str; 3] = ["hud/air", "hud/air_bursting", "hud/air_empty"];
+
+fn gui_sprite(packs: &PackStack, name: &str) -> Option<image::RgbaImage> {
+    let id = minecraft_terrain::pack::ResourceId::parse(&format!("minecraft:gui/sprites/{name}")).ok()?;
+    let bytes = packs.texture(&id).ok()??;
+    Some(image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).ok()?.to_rgba8())
 }
 
 fn spot(slot: McSlot, grid: Grid) -> Option<Spot> {

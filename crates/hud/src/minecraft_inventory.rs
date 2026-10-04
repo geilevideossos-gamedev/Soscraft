@@ -741,7 +741,40 @@ fn draw_hotbar(
             let w = canvas.fonts.get(FONT_TITLE).map_or(0.0, |def| {
                 ui_text_width(def, &text, px / ui_text_height(1.0))
             });
-            canvas.text(FONT_TITLE, -w * 0.5, y - 17.0, px, [HIGHLIGHT[0], HIGHLIGHT[1], HIGHLIGHT[2], fade], &text, false, align);
+            canvas.text(FONT_TITLE, -w * 0.5, vitals_rows(y).2, px, [HIGHLIGHT[0], HIGHLIGHT[1], HIGHLIGHT[2], fade], &text, false, align);
+        }
+    }
+    draw_vitals(canvas, ui, x0, width, y, align);
+}
+
+const VITALS_ICON: f32 = 11.0;
+const VITALS_PITCH: f32 = 9.75;
+
+fn vitals_rows(hotbar_y: f32) -> (f32, f32, f32) {
+    let first = hotbar_y - 5.0 - VITALS_ICON;
+    let second = first - VITALS_ICON - 2.0;
+    (first, second, second - 13.0)
+}
+
+fn vitals_backing(canvas: &mut Canvas<'_>, x: f32, y: f32, w: f32, align: (i32, i32)) {
+    canvas.fill(x - 2.0, y - 1.5, w + 4.0, VITALS_ICON + 3.0, [0.04, 0.03, 0.02, 0.45], align);
+    canvas.frame(x - 2.0, y - 1.5, w + 4.0, VITALS_ICON + 3.0, EDGE, align);
+}
+
+fn draw_vitals(canvas: &mut Canvas<'_>, ui: &MinecraftUi, x0: f32, width: f32, hotbar_y: f32, align: (i32, i32)) {
+    let Some(vitals) = ui.vitals.as_ref() else {
+        return;
+    };
+    let (_, second, _) = vitals_rows(hotbar_y);
+    let row_width = VITALS_PITCH * 9.0 + VITALS_ICON;
+    let right = x0 + width;
+    if let Some(row) = crate::minecraft_vitals::bubbles(vitals.air, vitals.max_air, vitals.eye_in_water) {
+        vitals_backing(canvas, right - row_width, second, row_width, align);
+        for (i, bubble) in row.iter().enumerate() {
+            if let Some(rect) = bubble.sprite().and_then(|key| ui.icon_rects.get(key)) {
+                let x = right - VITALS_ICON - i as f32 * VITALS_PITCH;
+                canvas.quad(x, second, VITALS_ICON, VITALS_ICON, [1.0; 4], ICONS, *rect, align);
+            }
         }
     }
 }

@@ -124,10 +124,11 @@ struct Runtime {
     sounds: Option<crate::minecraft_sounds::Sounds>,
     inventory_ui: crate::minecraft_inventory::InventoryUi,
     entities: Option<crate::minecraft_entities::Entities>,
+    survival: crate::minecraft_survival::Survival,
     /// Shape id of each block state already seen.
     shapes: HashMap<BlockStateId, u16>,
     /// Boxes of each shape id, to reuse an id for a repeated shape.
-    shape_ids: HashMap<Vec<[u32; 6]>, u16>,
+    shape_ids: HashMap<(Vec<[u32; 6]>, u8), u16>,
     was_alive: bool,
 }
 
@@ -421,6 +422,7 @@ fn update(
         hand,
         minimap,
         steps,
+        survival,
         ..
     } = &mut *runtime;
     let Some(world) = world.as_mut() else {
@@ -471,21 +473,7 @@ fn update(
                         ids[((y as usize * 16) + z) * 16 + x] = id;
                         continue;
                     }
-                    let id = *shapes.entry(state).or_insert_with(|| {
-                        let boxes = blocks.collision_boxes(state);
-                        if boxes.is_empty() {
-                            return 0;
-                        }
-                        let key: Vec<[u32; 6]> =
-                            boxes.iter().map(|b| b.map(|v| (v as f32).to_bits())).collect();
-                        if let Some(&id) = shape_ids.get(&key) {
-                            return id;
-                        }
-                        let boxes32 = boxes.iter().map(|b| b.map(|v| v as f32)).collect();
-                        let id = sim::voxel::add_shapes(vec![boxes32]).unwrap_or(0);
-                        shape_ids.insert(key, id);
-                        id
-                    });
+                    let id = shape_id(shapes, shape_ids, blocks, state);
                     last = Some((state, id));
                     ids[((y as usize * 16) + z) * 16 + x] = id;
                 }
@@ -592,6 +580,31 @@ fn update(
     let hand_ticks = (hand.clock / TICK_SECONDS) as u32;
     hand.clock -= f64::from(hand_ticks) * TICK_SECONDS;
     hand.pearl_cooldown = hand.pearl_cooldown.saturating_sub(hand_ticks);
+    let (hull_mins, hull_maxs) = sim::voxel::player_hull(ps);
+    let water = sim::voxel::water(ps.origin, hull_mins, hull_maxs, ps.view_height_current);
+    if !alive {
+        survival.respawn();
+    } else {
+        if water.wet() {
+            steps.air_peak = None;
+        }
+        for _ in 0..hand_ticks {
+            let breath = survival.breathe(water.eye);
+            if breath.drowned {
+                sim::voxel::push_player_damage(local.0.0, crate::minecraft_entities::mw2_damage(crate::minecraft_survival::DROWN_DAMAGE), None);
+            }
+            if let Some(sounds) = sounds.as_mut() {
+                if breath.drowned {
+                    sounds.play(&world.packs, "minecraft:entity.player.hurt_drown", None, 1.0, 1.0);
+                }
+                if let Some(popped) = breath.popped {
+                    let (volume, pitch) = crate::minecraft_survival::pop_sound(popped);
+                    sounds.play(&world.packs, "minecraft:ui.hud.bubble_pop", None, volume, pitch);
+                }
+            }
+        }
+    }
+    ui.vitals = alive.then(|| survival.vitals());
     let menu_captured = hud_input.as_deref().is_some_and(|input| input.console_open || input.script_menu_open);
     let mut open_table = None;
     if let Some(entities) = entities.as_mut()
@@ -893,22 +906,7 @@ fn update(
             let mut positions = Vec::with_capacity(changes.len());
             for (pos, block) in changes {
                 let state = block.as_ref().and_then(|b| world.stream.states.state_of(b));
-                let shape = state.map_or(0, |state| {
-                    *shapes.entry(state).or_insert_with(|| {
-                        let boxes = blocks.collision_boxes(state);
-                        if boxes.is_empty() {
-                            return 0;
-                        }
-                        let key: Vec<[u32; 6]> = boxes.iter().map(|b| b.map(|v| (v as f32).to_bits())).collect();
-                        if let Some(&id) = shape_ids.get(&key) {
-                            return id;
-                        }
-                        let boxes32 = boxes.iter().map(|b| b.map(|v| v as f32)).collect();
-                        let id = sim::voxel::add_shapes(vec![boxes32]).unwrap_or(0);
-                        shape_ids.insert(key, id);
-                        id
-                    })
-                });
+                let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, blocks, state));
                 sim::voxel::set_block_shape(pos.0, pos.1, pos.2, shape);
                 let before = minecraftoss_player::World::block(&world.scene, pos);
                 world.scene.set(pos, block);
@@ -1189,21 +1187,26 @@ fn update(
 
 fn shape_id(
     shapes: &mut HashMap<BlockStateId, u16>,
-    shape_ids: &mut HashMap<Vec<[u32; 6]>, u16>,
+    shape_ids: &mut HashMap<(Vec<[u32; 6]>, u8), u16>,
     blocks: &minecraftoss_core::BlockRegistry,
     state: BlockStateId,
 ) -> u16 {
     *shapes.entry(state).or_insert_with(|| {
         let boxes = blocks.collision_boxes(state);
-        if boxes.is_empty() {
+        let fluid = blocks
+            .state(state)
+            .fluid
+            .filter(|f| matches!(f.kind, minecraftoss_core::block::FluidKind::Water))
+            .map_or(0, |f| sim::voxel::WATER | f.amount.min(sim::voxel::FLUID_AMOUNT));
+        if boxes.is_empty() && fluid == 0 {
             return 0;
         }
-        let key: Vec<[u32; 6]> = boxes.iter().map(|b| b.map(|v| (v as f32).to_bits())).collect();
+        let key = (boxes.iter().map(|b| b.map(|v| (v as f32).to_bits())).collect::<Vec<[u32; 6]>>(), fluid);
         if let Some(&id) = shape_ids.get(&key) {
             return id;
         }
         let boxes32 = boxes.iter().map(|b| b.map(|v| v as f32)).collect();
-        let id = sim::voxel::add_shapes(vec![boxes32]).unwrap_or(0);
+        let id = sim::voxel::add_fluid_shape(boxes32, fluid).unwrap_or(0);
         shape_ids.insert(key, id);
         id
     })
