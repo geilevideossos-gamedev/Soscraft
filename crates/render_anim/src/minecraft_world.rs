@@ -366,6 +366,7 @@ fn update(
                 view.celestial = Some(world.celestial.clone());
                 view.crack_texture = Some(world.crack_texture.clone());
                 runtime.mining = Default::default();
+                runtime.minimap = Default::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
                 runtime.entities = Some(crate::minecraft_entities::Entities::new(&world.stream, world.seed));
                 runtime.day = DayCycle::default();

@@ -172,7 +172,7 @@ pub(crate) fn update_compass(
                 north_yaw: MINECRAFT_NORTH_YAW,
             })
         });
-    let Some(drawable) = block_world.or_else(|| resolve(compass.as_deref(), &mut hud_images, &mut gaps)) else {
+    let Some(drawable) = block_world.or_else(|| (!minecraft_map).then(|| resolve(compass.as_deref(), &mut hud_images, &mut gaps)).flatten()) else {
         hide(&mut pass);
         return;
     };
