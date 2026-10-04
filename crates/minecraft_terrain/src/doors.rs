@@ -115,7 +115,7 @@ pub fn replaceable(block: Option<&Block>) -> bool {
     })
 }
 
-fn sturdy_top(world: &impl World, pos: Pos) -> bool {
+pub fn sturdy_top(world: &impl World, pos: Pos) -> bool {
     world
         .collision_boxes(pos)
         .iter()
@@ -164,11 +164,12 @@ pub fn door(
     id: &str,
     yaw: f64,
     click: DVec3,
+    sturdy: &dyn Fn(Pos) -> bool,
 ) -> Option<(Block, Block)> {
     if pos.1 >= world.max_y() || !replaceable(world.block(above(pos)).as_ref()) {
         return None;
     }
-    if !sturdy_top(world, (pos.0, pos.1 - 1, pos.2)) {
+    if !sturdy((pos.0, pos.1 - 1, pos.2)) {
         return None;
     }
     let facing = facing(yaw);
@@ -228,14 +229,19 @@ pub fn fence_gate(world: &impl World, pos: Pos, id: &str, yaw: f64) -> Block {
         .with("powered", "false")
 }
 
-pub fn place(player: &Player, world: &mut impl World, id: &str) -> Option<Pos> {
+pub fn place(
+    player: &Player,
+    world: &mut impl World,
+    id: &str,
+    sturdy: &dyn Fn(Pos) -> bool,
+) -> Option<Pos> {
     let opening = Opening::of(id)?;
     let hit = player.target(world, 5.0)?;
     let (dx, dy, dz) = hit.face.offset();
     let pos = (hit.pos.0 + dx, hit.pos.1 + dy, hit.pos.2 + dz);
     match opening {
         Opening::Door => {
-            let (lower, upper) = door(world, pos, id, player.yaw, hit.point)?;
+            let (lower, upper) = door(world, pos, id, player.yaw, hit.point, sturdy)?;
             let placed = player.place_target_with(world, lower)?;
             world.set_block(above(placed), Some(upper));
             Some(placed)
@@ -339,20 +345,65 @@ pub fn toggle_sound(block: &Block) -> Option<Sound> {
             pitch_spread: 0.0,
         });
     }
-    if path.ends_with("_button") && !flag("powered") {
-        let set = if path.starts_with("stone_") || path.starts_with("polished_blackstone_") {
-            "stone"
-        } else {
-            wood_set(&block.id)
-        };
+    if path == "comparator" {
+        let subtract = block.property("mode") != Some("subtract");
         return Some(Sound {
-            event: format!("minecraft:block.{set}_button.click_on"),
+            event: "minecraft:block.comparator.click".to_owned(),
+            volume: 0.3,
+            pitch: if subtract { 0.55 } else { 0.5 },
+            pitch_spread: 0.0,
+        });
+    }
+    if path == "note_block" {
+        let note = block
+            .property("note")
+            .and_then(|n| n.parse::<i32>().ok())
+            .map_or(0, |n| (n + 1) % 25);
+        let instrument = block.property("instrument").unwrap_or("harp");
+        return Some(Sound {
+            event: format!("minecraft:block.note_block.{instrument}"),
+            volume: 3.0,
+            pitch: 2.0_f32.powf((note - 12) as f32 / 12.0),
+            pitch_spread: 0.0,
+        });
+    }
+    if path.ends_with("_button") && !flag("powered") {
+        return Some(Sound {
+            event: format!(
+                "minecraft:block.{}_button.click_on",
+                button_set(path, &block.id)
+            ),
             volume: 1.0,
             pitch: 1.0,
             pitch_spread: 0.0,
         });
     }
     None
+}
+
+fn button_set(path: &str, id: &str) -> &'static str {
+    if path.starts_with("stone_") || path.starts_with("polished_blackstone_") {
+        "stone"
+    } else {
+        wood_set(id)
+    }
+}
+
+pub fn release_sound(before: &Block, after: &Block) -> Option<Sound> {
+    let path = after.id.rsplit(':').next().unwrap_or(&after.id);
+    let released = before.id == after.id
+        && path.ends_with("_button")
+        && before.property("powered") == Some("true")
+        && after.property("powered") == Some("false");
+    released.then(|| Sound {
+        event: format!(
+            "minecraft:block.{}_button.click_off",
+            button_set(path, &after.id)
+        ),
+        volume: 1.0,
+        pitch: 1.0,
+        pitch_spread: 0.0,
+    })
 }
 
 pub fn powered_toggle(before: &Block, after: &Block) -> bool {
@@ -409,8 +460,15 @@ mod tests {
     #[test]
     fn a_door_places_both_halves_facing_the_player() {
         let world = floor();
-        let (lower, upper) = door(&world, (0, 1, 0), OAK, 180.0, DVec3::new(0.2, 1.0, 0.5))
-            .expect("room for a door");
+        let (lower, upper) = door(
+            &world,
+            (0, 1, 0),
+            OAK,
+            180.0,
+            DVec3::new(0.2, 1.0, 0.5),
+            &|p| sturdy_top(&world, p),
+        )
+        .expect("room for a door");
         assert_eq!(lower.property("facing"), Some("north"));
         assert_eq!(lower.property("half"), Some("lower"));
         assert_eq!(upper.property("half"), Some("upper"));
@@ -421,11 +479,41 @@ mod tests {
     #[test]
     fn a_door_needs_room_above_and_ground_below() {
         let mut world = floor();
-        assert!(door(&world, (0, 2, 0), OAK, 0.0, DVec3::new(0.5, 2.0, 0.5)).is_none());
+        assert!(
+            door(
+                &world,
+                (0, 2, 0),
+                OAK,
+                0.0,
+                DVec3::new(0.5, 2.0, 0.5),
+                &|p| sturdy_top(&world, p)
+            )
+            .is_none()
+        );
         world.set_block((0, 2, 0), Some(Block::new("minecraft:dirt")));
-        assert!(door(&world, (0, 1, 0), OAK, 0.0, DVec3::new(0.5, 1.0, 0.5)).is_none());
+        assert!(
+            door(
+                &world,
+                (0, 1, 0),
+                OAK,
+                0.0,
+                DVec3::new(0.5, 1.0, 0.5),
+                &|p| sturdy_top(&world, p)
+            )
+            .is_none()
+        );
         world.set_block((0, 2, 0), Some(Block::new("minecraft:short_grass")));
-        assert!(door(&world, (0, 1, 0), OAK, 0.0, DVec3::new(0.5, 1.0, 0.5)).is_some());
+        assert!(
+            door(
+                &world,
+                (0, 1, 0),
+                OAK,
+                0.0,
+                DVec3::new(0.5, 1.0, 0.5),
+                &|p| sturdy_top(&world, p)
+            )
+            .is_some()
+        );
     }
 
     #[test]
@@ -521,7 +609,9 @@ mod tests {
         let mut player = Player::new(DVec3::new(0.5, 1.0, 3.5));
         player.yaw = 180.0;
         player.pitch = 35.0;
-        let placed = place(&player, &mut world, OAK).expect("a door is placed");
+        let support = Blocks(world.0.clone());
+        let placed = place(&player, &mut world, OAK, &|p| sturdy_top(&support, p))
+            .expect("a door is placed");
         let upper = world.block(above(placed)).expect("an upper half");
         assert_eq!(upper.property("half"), Some("upper"));
         assert_eq!(
@@ -595,6 +685,31 @@ mod tests {
             toggle_sound(&Block::new("minecraft:oak_button").with("powered", "true")).is_none()
         );
         assert!(toggle_sound(&Block::new("minecraft:stone")).is_none());
+    }
+
+    #[test]
+    fn comparators_click_note_blocks_play_and_buttons_click_off() {
+        let compare = Block::new("minecraft:comparator").with("mode", "compare");
+        let click = toggle_sound(&compare).expect("a comparator click");
+        assert_eq!(
+            (click.event.as_str(), click.pitch),
+            ("minecraft:block.comparator.click", 0.55)
+        );
+        let note = Block::new("minecraft:note_block")
+            .with("note", "11")
+            .with("instrument", "bell");
+        let played = toggle_sound(&note).expect("a note");
+        assert_eq!(played.event, "minecraft:block.note_block.bell");
+        assert!((played.pitch - 1.0).abs() < 1e-6);
+        let pressed = Block::new("minecraft:oak_button").with("powered", "true");
+        let released = pressed.clone().with("powered", "false");
+        assert_eq!(
+            release_sound(&pressed, &released)
+                .map(|s| s.event)
+                .as_deref(),
+            Some("minecraft:block.wooden_button.click_off")
+        );
+        assert!(release_sound(&released, &pressed).is_none());
     }
 
     #[test]

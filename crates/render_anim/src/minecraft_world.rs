@@ -23,6 +23,7 @@ const VIEW_DISTANCE: i32 = 8;
 const TICK_SECONDS: f64 = 1.0 / 20.0;
 const CROUCHED_BELOW_VIEW_HEIGHT: f32 = 52.0;
 const CRAWLING_BELOW_VIEW_HEIGHT: f32 = 30.0;
+const RECENT_PLACE_SECONDS: f64 = 1.0;
 /// Blocks on a side of the light volume MW2 models are lit from.
 pub const LIGHT_VOLUME: i32 = 64;
 /// Chunk sections fade in over this long, as the viewer's default option.
@@ -93,6 +94,7 @@ struct HandState {
     /// (`rightClickDelay`).
     place_delay: u32,
     pearl_cooldown: u32,
+    recent: Vec<((i32, i32, i32), f64)>,
     attack_ticks: u32,
     attack_slot: Option<usize>,
 }
@@ -705,7 +707,7 @@ fn update(
             hand.place_delay = 4;
             let held = entities.inventory.slots[entities.selected].clone();
             let table = player
-                .target(&world.scene, 5.0)
+                .target(&minecraft_terrain::doors::Outlined(&world.scene), 5.0)
                 .map(|hit| hit.pos)
                 .filter(|&pos| minecraft_terrain::scene::Scene::block(&world.scene, pos).is_some_and(minecraft_terrain::crafting::is_crafting_table))
                 .filter(|_| minecraft_terrain::crafting::opens_table(player.crouching, held.is_some()));
@@ -794,10 +796,18 @@ fn update(
             } else if let Some(stack) = held.as_ref().filter(|s| !placeable && minecraftoss_player::food::catalog().contains_key(&s.id)) {
                 survival.start_eating(entities.selected, stack);
             } else if placeable {
-                let mut staged = minecraft_terrain::placing::Staged::new(&world.scene);
+                let outlined = minecraft_terrain::doors::Outlined(&world.scene);
+                let mut staged = minecraft_terrain::placing::Staged::new(&outlined);
                 let opening = held.as_ref().filter(|stack| minecraft_terrain::doors::Opening::of(&stack.id).is_some());
+                let sturdy = |below: (i32, i32, i32)| {
+                    minecraft_terrain::scene::Scene::block(&world.scene, below)
+                        .and_then(|b| world.stream.states.state_of(b))
+                        .is_some_and(|state| {
+                            world.registries.blocks.is_face_sturdy(state, minecraftoss_core::pos::Direction::Up, minecraftoss_core::SupportType::Full)
+                        })
+                };
                 let placed = match opening {
-                    Some(stack) => minecraft_terrain::doors::place(&player, &mut staged, &stack.id).inspect(|_| {
+                    Some(stack) => minecraft_terrain::doors::place(&player, &mut staged, &stack.id, &sturdy).inspect(|_| {
                         let slot = &mut entities.inventory.slots[entities.selected];
                         if let Some(left) = slot.as_mut() {
                             left.count -= 1;
@@ -822,6 +832,9 @@ fn update(
                     minecraft_terrain::placing::obstructed(*pos, &boxes, &bodies)
                 });
                 if let Some(pos) = placed.filter(|_| !blocked) {
+                    let now = time.elapsed_secs_f64();
+                    hand.recent.retain(|(_, at)| now - at < RECENT_PLACE_SECONDS);
+                    hand.recent.extend(writes.iter().map(|(p, _)| (*p, now)));
                     write_blocks(world, shapes, shape_ids, entities, writes);
                     hand.swing = Some(0.0);
                     if let Some(block) = minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned()
@@ -988,8 +1001,14 @@ fn update(
                 let before = minecraftoss_player::World::block(&world.scene, pos);
                 world.scene.set(pos, block);
                 if let (Some(before), Some(after)) = (before, minecraftoss_player::World::block(&world.scene, pos))
-                    && minecraft_terrain::doors::powered_toggle(&before, &after)
-                    && let (Some(sound), Some(sounds)) = (minecraft_terrain::doors::toggle_sound(&before), sounds.as_mut())
+                    && let Some(sound) = minecraft_terrain::doors::release_sound(&before, &after).or_else(|| {
+                        let placed_here = hand.recent.iter().any(|(p, at)| *p == pos && time.elapsed_secs_f64() - at < RECENT_PLACE_SECONDS);
+                        minecraft_terrain::doors::powered_toggle(&before, &after)
+                            .then(|| minecraft_terrain::doors::toggle_sound(&before))
+                            .flatten()
+                            .filter(|_| !placed_here)
+                    })
+                    && let Some(sounds) = sounds.as_mut()
                 {
                     let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
                     let pitch = sound.pitch + sounds.random() * sound.pitch_spread;
