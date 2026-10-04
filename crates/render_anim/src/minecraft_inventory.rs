@@ -346,7 +346,31 @@ impl InventoryUi {
     }
 }
 
-const HUD_SPRITES: [&str; 3] = ["hud/air", "hud/air_bursting", "hud/air_empty"];
+const HUD_SPRITES: [&str; 23] = [
+    "hud/air",
+    "hud/air_bursting",
+    "hud/air_empty",
+    "hud/heart/container",
+    "hud/heart/container_blinking",
+    "hud/heart/full",
+    "hud/heart/half",
+    "hud/heart/full_blinking",
+    "hud/heart/half_blinking",
+    "hud/heart/poisoned_full",
+    "hud/heart/poisoned_half",
+    "hud/heart/poisoned_full_blinking",
+    "hud/heart/poisoned_half_blinking",
+    "hud/heart/absorbing_full",
+    "hud/heart/absorbing_half",
+    "hud/heart/absorbing_full_blinking",
+    "hud/heart/absorbing_half_blinking",
+    "hud/food_empty",
+    "hud/food_half",
+    "hud/food_full",
+    "hud/food_empty_hunger",
+    "hud/food_half_hunger",
+    "hud/food_full_hunger",
+];
 
 fn gui_sprite(packs: &PackStack, name: &str) -> Option<image::RgbaImage> {
     let id = minecraft_terrain::pack::ResourceId::parse(&format!("minecraft:gui/sprites/{name}")).ok()?;

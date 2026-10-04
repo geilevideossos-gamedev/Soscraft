@@ -1035,8 +1035,8 @@ fn preflight_match_install(
     }
     // A Minecraft world has no time or score limit.
     if assets::minecraft_map::is_minecraft_load(zone) {
-        for limit in ["timelimit", "scorelimit"] {
-            let name = format!("scr_{gametype}_{limit}");
+        let limits = ["timelimit", "scorelimit"].map(|limit| format!("scr_{gametype}_{limit}"));
+        for name in limits.into_iter().chain(["scr_player_healthregentime".to_owned()]) {
             match script_dvars.iter_mut().find(|(set, _)| set.eq_ignore_ascii_case(&name)) {
                 Some((_, set)) => *set = "0".into(),
                 None => script_dvars.push((name, "0".into())),

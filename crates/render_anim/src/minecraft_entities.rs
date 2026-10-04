@@ -34,6 +34,8 @@ const PLAYER: u64 = 0;
 /// `Player.getEyeHeight` standing.
 const EYE_HEIGHT: f32 = 1.62;
 const SERVER_ITEM: u32 = 1 << 31;
+type Hits = Vec<(f32, Option<[f64; 3]>)>;
+type Changes = Vec<((i32, i32, i32), Option<Block>)>;
 
 pub(crate) struct Entities {
     server: ServerHandle,
@@ -92,7 +94,6 @@ pub(crate) struct MobMeshes {
 pub(crate) struct PlayerView {
     pub feet: [f64; 3],
     pub alive: bool,
-    /// MW2 health, 0..100.
     pub health: f32,
     pub yaw: f32,
     pub pitch: f32,
@@ -386,7 +387,7 @@ impl Entities {
         day_ticks: i64,
         bright_outside: bool,
         player: &PlayerView,
-    ) -> (Vec<((i32, i32, i32), Option<Block>)>, Vec<(i32, Option<[f64; 3]>)>) {
+    ) -> (Changes, Hits) {
         self.clock += dt;
         let ticked = self.clock >= TICK_SECONDS;
         if ticked {
@@ -446,7 +447,7 @@ impl Entities {
                 mob_vitals: vec![(
                     PLAYER,
                     minecraftoss_entities::monster_ai::PlayerVitals {
-                        health: player.health * HEALTH_SCALE,
+                        health: player.health,
                         ..Default::default()
                     },
                 )],
@@ -495,7 +496,7 @@ impl Entities {
                     PlayerHitKind::Melee { attacker, .. } => Some(attacker.to_array()),
                     _ => None,
                 };
-                hits.push(((hit.damage / HEALTH_SCALE).round() as i32, from));
+                hits.push((hit.damage, from));
             }
         }
         if ticked {
@@ -674,10 +675,6 @@ impl Entities {
         }
         out
     }
-}
-
-pub(crate) fn mw2_damage(health: f32) -> i32 {
-    (health / HEALTH_SCALE).round() as i32
 }
 
 fn mirrored(id: i32) -> u32 {

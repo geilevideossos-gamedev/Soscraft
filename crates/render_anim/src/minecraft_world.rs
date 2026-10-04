@@ -449,6 +449,13 @@ fn update(
     } else if !alive {
         *was_alive = false;
     }
+    if !alive {
+        survival.respawn();
+    } else if !sim::voxel::player_damage_pending()
+        && let Some(health) = authority.0.player(local.0).map(|p| (p.health, p.max_health))
+    {
+        survival.observe(health.0, health.1);
+    }
 
     let feet = sim::voxel::to_block(origin, ps.origin);
     let block = (
@@ -543,6 +550,9 @@ fn update(
         if on_ground {
             if let Some(peak) = steps.air_peak.take() {
                 let fall = peak - feet[1];
+                let landed_on = under.as_ref().map(|(_, b)| b.id.key());
+                let sneaking = ps.view_height_current < CROUCHED_BELOW_VIEW_HEIGHT;
+                survival.fall(fall, crate::minecraft_survival::landing_multiplier(landed_on.as_deref(), sneaking));
                 if fall > 3.0
                     && let Some(sounds) = sounds.as_mut()
                 {
@@ -582,17 +592,20 @@ fn update(
     hand.pearl_cooldown = hand.pearl_cooldown.saturating_sub(hand_ticks);
     let (hull_mins, hull_maxs) = sim::voxel::player_hull(ps);
     let water = sim::voxel::water(ps.origin, hull_mins, hull_maxs, ps.view_height_current);
-    if !alive {
-        survival.respawn();
-    } else {
+    if alive {
         if water.wet() {
             steps.air_peak = None;
         }
+        let motion = crate::minecraft_survival::Motion {
+            feet,
+            on_ground,
+            sprinting: ps.pm_flags & playerstate_iw4::pm_flags::SPRINTING != 0,
+            jumping: ps.pm_flags & playerstate_iw4::pm_flags::JUMPING != 0,
+            in_water: water.wet(),
+            eye_in_water: water.eye,
+        };
         for _ in 0..hand_ticks {
-            let breath = survival.breathe(water.eye);
-            if breath.drowned {
-                sim::voxel::push_player_damage(local.0.0, crate::minecraft_entities::mw2_damage(crate::minecraft_survival::DROWN_DAMAGE), None);
-            }
+            let breath = survival.tick(&motion);
             if let Some(sounds) = sounds.as_mut() {
                 if breath.drowned {
                     sounds.play(&world.packs, "minecraft:entity.player.hurt_drown", None, 1.0, 1.0);
@@ -604,8 +617,11 @@ fn update(
             }
         }
     }
-    ui.vitals = alive.then(|| survival.vitals());
     let menu_captured = hud_input.as_deref().is_some_and(|input| input.console_open || input.script_menu_open);
+    let use_held = buttons.pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, false);
+    if survival.eating().is_some() && !(use_held && ui.holding_item && !ui.inventory_open && !menu_captured) {
+        survival.stop_eating();
+    }
     let mut open_table = None;
     if let Some(entities) = entities.as_mut()
         && ui.holding_item
@@ -625,7 +641,34 @@ fn update(
         };
         if buttons.just_pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, true) {
             hand.swing = Some(0.0);
-            entities.punch(eye_block, look, mc_yaw);
+            if entities.punch(eye_block, look, mc_yaw) {
+                survival.exhaust(crate::minecraft_survival::ATTACK_EXHAUSTION);
+            }
+        }
+        for _ in 0..hand_ticks {
+            if survival.eating().is_none() {
+                break;
+            }
+            let roll = entities.random_float();
+            let bite = survival.chew(&mut entities.inventory, entities.selected, || roll);
+            let (sound, finished) = match bite {
+                crate::minecraft_survival::Bite::Nothing => continue,
+                crate::minecraft_survival::Bite::Chew(sound) => (sound, None),
+                crate::minecraft_survival::Bite::Done { sound, overflow, fed } => (sound, Some((overflow, fed))),
+            };
+            let (r1, r2) = (entities.random_float(), entities.random_float());
+            if let Some(sounds) = sounds.as_mut() {
+                let volume = if r1 < 0.5 { 0.5 } else { 1.0 };
+                sounds.play(&world.packs, &sound, None, volume, (r1 - r2) * 0.2 + 1.0);
+            }
+            if let Some((overflow, fed)) = finished {
+                if let Some(sounds) = sounds.as_mut().filter(|_| fed) {
+                    sounds.play(&world.packs, "minecraft:entity.player.burp", None, 0.5, r2 * 0.1 + 0.9);
+                }
+                if let Some(stack) = overflow {
+                    entities.world_items.toss(stack, eye_block, mc_yaw, ps.viewangles[0]);
+                }
+            }
         }
         if buttons.pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, false) {
             for _ in 0..hand_ticks {
@@ -708,6 +751,8 @@ fn update(
                         sounds.play(&world.packs, kind.sound(), None, 0.5, pitch);
                     }
                 }
+            } else if let Some(stack) = held.as_ref().filter(|s| !placeable && minecraftoss_player::food::catalog().contains_key(&s.id)) {
+                survival.start_eating(entities.selected, stack);
             } else if placeable {
                 let mut staged = minecraft_terrain::placing::Staged::new(&world.scene);
                 let opening = held.as_ref().filter(|stack| minecraft_terrain::doors::Opening::of(&stack.id).is_some());
@@ -823,6 +868,7 @@ fn update(
             }
         }
     }
+    survival.exhaust(crate::minecraft_survival::MINE_EXHAUSTION * broken.iter().filter(|(.., blast)| !blast).count() as f32);
     if let Some(entities) = entities.as_mut() {
         let positions: Vec<_> = broken.iter().map(|(pos, ..)| *pos).collect();
         entities.broke(&world.scene, &positions);
@@ -893,7 +939,7 @@ fn update(
         let player = crate::minecraft_entities::PlayerView {
             feet,
             alive,
-            health: ps.health as f32,
+            health: survival.status.health,
             yaw: mc_yaw,
             pitch: ps.viewangles[0],
         };
@@ -923,20 +969,37 @@ fn update(
             world.stream.record_edits(&world.scene, &positions);
             world.stream.mark_edited(&world.scene, &positions);
         }
+        let armor = crate::minecraft_survival::armor(&entities.inventory);
         for (amount, from) in hits {
-            sim::voxel::push_player_damage(local.0.0, amount, from.map(|b| sim::voxel::to_map(origin, b)));
+            survival.hurt(amount, armor, from);
         }
         for landing in std::mem::take(&mut entities.pearl_landings) {
             if !alive {
                 continue;
             }
             authority.0.teleport(local.0, sim::voxel::to_map(origin, landing.to_array()));
-            sim::voxel::push_player_damage(local.0.0, crate::minecraft_entities::mw2_damage(minecraft_terrain::thrown::PEARL_DAMAGE), None);
+            survival.hurt(minecraft_terrain::thrown::PEARL_DAMAGE, minecraftoss_player::survival::Armor::default(), None);
             steps.air_peak = None;
             if let Some(sounds) = sounds.as_mut() {
                 sounds.play(&world.packs, "minecraft:entity.player.teleport", Some(at(landing.to_array())), 1.0, 1.0);
             }
         }
+        if alive
+            && !sim::voxel::player_damage_pending()
+            && let Some(player) = authority.0.player(local.0).copied()
+        {
+            let settle = survival.settle(player.health, player.max_health);
+            if let Some(health) = settle.set {
+                authority.0.set_health(local.0, health);
+            }
+            if let Some((amount, from)) = settle.damage {
+                sim::voxel::push_player_damage(local.0.0, amount, from.map(|b| sim::voxel::to_map(origin, b)));
+            }
+            if let Some(blocked) = survival.sprint_change(player.pm_flags & playerstate_iw4::pm_flags::SPRINT_BLOCKED != 0) {
+                authority.0.set_sprint_blocked(local.0, blocked);
+            }
+        }
+        ui.vitals = alive.then(|| survival.vitals());
         // The inventory: MW2 guns as items, the HUD's clicks, the hotbar's
         // gun, and what the HUD shows.
         let owned: Vec<u32> = ps

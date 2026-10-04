@@ -765,9 +765,39 @@ fn draw_vitals(canvas: &mut Canvas<'_>, ui: &MinecraftUi, x0: f32, width: f32, h
     let Some(vitals) = ui.vitals.as_ref() else {
         return;
     };
-    let (_, second, _) = vitals_rows(hotbar_y);
+    let (first, second, _) = vitals_rows(hotbar_y);
     let row_width = VITALS_PITCH * 9.0 + VITALS_ICON;
     let right = x0 + width;
+    let px = VITALS_ICON / 9.0;
+    let (rows, row_height) = crate::minecraft_vitals::heart_rows(vitals);
+    let stacked = (rows.saturating_sub(1)) as f32 * row_height * px;
+    vitals_backing(canvas, x0, first - stacked, row_width, align);
+    if stacked > 0.0 {
+        canvas.fill(x0 - 2.0, first - stacked + VITALS_ICON + 1.5, row_width + 4.0, stacked, [0.04, 0.03, 0.02, 0.45], align);
+    }
+    for heart in crate::minecraft_vitals::hearts(vitals) {
+        let x = x0 + heart.column as f32 * VITALS_PITCH;
+        let y = first - heart.row as f32 * row_height * px - heart.lift * px;
+        for layer in &heart.layers {
+            if let Some(rect) = ui.icon_rects.get(*layer) {
+                canvas.quad(x, y, VITALS_ICON, VITALS_ICON, [1.0; 4], ICONS, *rect, align);
+            }
+        }
+    }
+    vitals_backing(canvas, right - row_width, first, row_width, align);
+    for (j, drumstick) in crate::minecraft_vitals::drumsticks(vitals).iter().enumerate() {
+        let x = right - VITALS_ICON - j as f32 * VITALS_PITCH;
+        let y = first + drumstick.shake * px;
+        for layer in std::iter::once(drumstick.empty).chain(drumstick.fill) {
+            if let Some(rect) = ui.icon_rects.get(layer) {
+                canvas.quad(x, y, VITALS_ICON, VITALS_ICON, [1.0; 4], ICONS, *rect, align);
+            }
+        }
+    }
+    let saturation = crate::minecraft_vitals::saturation_share(vitals) * (row_width + 4.0);
+    if saturation > 0.0 {
+        canvas.fill(right + 2.0 - saturation, first + VITALS_ICON + 0.5, saturation, 1.0, ACCENT, align);
+    }
     if let Some(row) = crate::minecraft_vitals::bubbles(vitals.air, vitals.max_air, vitals.eye_in_water) {
         vitals_backing(canvas, right - row_width, second, row_width, align);
         for (i, bubble) in row.iter().enumerate() {

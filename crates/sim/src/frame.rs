@@ -405,6 +405,26 @@ impl FrameWorld<'_> {
         true
     }
 
+    pub fn set_health(&mut self, id: ClientId, health: i32) -> bool {
+        let Some(ps) = self.player_mut(id).filter(|ps| ps.pm_type == 0 && ps.health > 0) else {
+            return false;
+        };
+        ps.health = health.clamp(1, ps.max_health.max(1));
+        true
+    }
+
+    pub fn set_sprint_blocked(&mut self, id: ClientId, blocked: bool) -> bool {
+        let Some(ps) = self.player_mut(id) else {
+            return false;
+        };
+        if blocked {
+            ps.pm_flags |= playerstate_iw4::pm_flags::SPRINT_BLOCKED;
+        } else {
+            ps.pm_flags &= !playerstate_iw4::pm_flags::SPRINT_BLOCKED;
+        }
+        true
+    }
+
     pub fn set_viewangles(&mut self, id: ClientId, viewangles: [f32; 3]) -> bool {
         let Some(ps) = self.player_mut(id) else {
             return false;

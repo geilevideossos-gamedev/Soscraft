@@ -279,6 +279,14 @@ impl SimWorld {
         self.frame().teleport(id, origin)
     }
 
+    pub fn set_health(&mut self, id: ClientId, health: i32) -> bool {
+        self.frame().set_health(id, health)
+    }
+
+    pub fn set_sprint_blocked(&mut self, id: ClientId, blocked: bool) -> bool {
+        self.frame().set_sprint_blocked(id, blocked)
+    }
+
     pub fn set_viewangles(&mut self, id: ClientId, viewangles: [f32; 3]) -> bool {
         self.frame().set_viewangles(id, viewangles)
     }

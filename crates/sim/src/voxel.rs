@@ -283,6 +283,10 @@ pub fn push_player_damage(client: u32, amount: i32, from: Option<[f32; 3]>) {
     }
 }
 
+pub fn player_damage_pending() -> bool {
+    PLAYER_DAMAGE.lock().is_ok_and(|damage| !damage.is_empty())
+}
+
 pub(crate) fn take_player_damage() -> Vec<(u32, i32, Option<[f32; 3]>)> {
     PLAYER_DAMAGE.lock().map(|mut d| std::mem::take(&mut *d)).unwrap_or_default()
 }

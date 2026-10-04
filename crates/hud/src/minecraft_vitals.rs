@@ -45,9 +45,259 @@ pub(crate) fn bubbles(air: i32, max_air: i32, eye_in_water: bool) -> Option<[Bub
     }))
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Heart {
+    pub(crate) column: usize,
+    pub(crate) row: usize,
+    pub(crate) lift: f32,
+    pub(crate) layers: Vec<&'static str>,
+}
+
+fn noise(tick: u64, index: usize) -> u64 {
+    let mut x = tick.wrapping_mul(312_871) ^ (index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    x ^ (x >> 33)
+}
+
+fn heart_sprite(poisoned: bool, absorbing: bool, blinking: bool, half: bool) -> &'static str {
+    match (absorbing, poisoned, blinking, half) {
+        (true, _, false, false) => "gui:hud/heart/absorbing_full",
+        (true, _, false, true) => "gui:hud/heart/absorbing_half",
+        (true, _, true, false) => "gui:hud/heart/absorbing_full_blinking",
+        (true, _, true, true) => "gui:hud/heart/absorbing_half_blinking",
+        (false, true, false, false) => "gui:hud/heart/poisoned_full",
+        (false, true, false, true) => "gui:hud/heart/poisoned_half",
+        (false, true, true, false) => "gui:hud/heart/poisoned_full_blinking",
+        (false, true, true, true) => "gui:hud/heart/poisoned_half_blinking",
+        (false, false, false, false) => "gui:hud/heart/full",
+        (false, false, false, true) => "gui:hud/heart/half",
+        (false, false, true, false) => "gui:hud/heart/full_blinking",
+        (false, false, true, true) => "gui:hud/heart/half_blinking",
+    }
+}
+
+pub(crate) fn heart_rows(v: &frame::McVitals) -> (usize, f32) {
+    let health = v.health.ceil();
+    let max = v.max_health.max(health).max(v.display_health as f32);
+    let rows = ((max + v.absorption.ceil()) / 2.0 / 10.0).ceil().max(1.0);
+    (rows as usize, (10.0 - (rows - 2.0)).max(3.0))
+}
+
+pub(crate) fn hearts(v: &frame::McVitals) -> Vec<Heart> {
+    let health = v.health.ceil() as i32;
+    let max = v.max_health.max(health as f32).max(v.display_health as f32);
+    let absorption = v.absorption.ceil() as i32;
+    let containers = (max / 2.0).ceil() as i32;
+    let extra = (absorption as f32 / 2.0).ceil() as i32;
+    let low = health + absorption <= 4;
+    let mut out = Vec::new();
+    for l in (0..(containers + extra).max(0)).rev() {
+        let mut lift = 0.0;
+        if low {
+            lift -= (noise(v.tick, l as usize) % 2) as f32;
+        }
+        if l < containers && l == v.regen_index {
+            lift += 2.0;
+        }
+        let container = if v.blink {
+            "gui:hud/heart/container_blinking"
+        } else {
+            "gui:hud/heart/container"
+        };
+        let mut layers = vec![container];
+        let q = l * 2;
+        if l >= containers {
+            let r = q - containers * 2;
+            if r < absorption {
+                layers.push(heart_sprite(false, true, false, r + 1 == absorption));
+            }
+        }
+        if v.blink && q < v.display_health {
+            layers.push(heart_sprite(
+                v.poisoned,
+                false,
+                true,
+                q + 1 == v.display_health,
+            ));
+        }
+        if q < health {
+            layers.push(heart_sprite(v.poisoned, false, false, q + 1 == health));
+        }
+        out.push(Heart {
+            column: (l % 10) as usize,
+            row: (l / 10) as usize,
+            lift,
+            layers,
+        });
+    }
+    out
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Drumstick {
+    pub(crate) shake: f32,
+    pub(crate) empty: &'static str,
+    pub(crate) fill: Option<&'static str>,
+}
+
+pub(crate) fn drumsticks(v: &frame::McVitals) -> [Drumstick; 10] {
+    let food = i32::from(v.food);
+    let (empty, half, full) = if v.hunger {
+        (
+            "gui:hud/food_empty_hunger",
+            "gui:hud/food_half_hunger",
+            "gui:hud/food_full_hunger",
+        )
+    } else {
+        (
+            "gui:hud/food_empty",
+            "gui:hud/food_half",
+            "gui:hud/food_full",
+        )
+    };
+    let shaking = v.saturation <= 0.0 && v.tick.is_multiple_of(food as u64 * 3 + 1);
+    std::array::from_fn(|j| {
+        let j2 = j as i32 * 2 + 1;
+        Drumstick {
+            shake: if shaking {
+                (noise(v.tick, 100 + j) % 3) as f32 - 1.0
+            } else {
+                0.0
+            },
+            empty,
+            fill: if j2 < food {
+                Some(full)
+            } else if j2 == food {
+                Some(half)
+            } else {
+                None
+            },
+        }
+    })
+}
+
+pub(crate) fn saturation_share(v: &frame::McVitals) -> f32 {
+    (v.saturation / 20.0).clamp(0.0, 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn vitals(health: f32, food: u8) -> frame::McVitals {
+        frame::McVitals {
+            health,
+            max_health: 20.0,
+            food,
+            saturation: 5.0,
+            display_health: health.ceil() as i32,
+            regen_index: -1,
+            ..frame::McVitals::default()
+        }
+    }
+
+    fn fill(heart: &Heart) -> Option<&'static str> {
+        heart.layers.get(1).copied()
+    }
+
+    #[test]
+    fn twenty_health_is_ten_full_hearts() {
+        let row = hearts(&vitals(20.0, 20));
+        assert_eq!(row.len(), 10);
+        assert!(row.iter().all(|h| fill(h) == Some("gui:hud/heart/full")));
+        assert!(row.iter().all(|h| h.layers[0] == "gui:hud/heart/container"));
+    }
+
+    #[test]
+    fn odd_health_ends_on_a_half_heart() {
+        let row = hearts(&vitals(7.0, 20));
+        let full = row
+            .iter()
+            .filter(|h| fill(h) == Some("gui:hud/heart/full"))
+            .count();
+        let half: Vec<_> = row
+            .iter()
+            .filter(|h| fill(h) == Some("gui:hud/heart/half"))
+            .collect();
+        assert_eq!(full, 3);
+        assert_eq!(half.len(), 1);
+        assert_eq!(half[0].column, 3);
+        assert_eq!(row.iter().filter(|h| fill(h).is_none()).count(), 6);
+    }
+
+    #[test]
+    fn absorption_adds_golden_hearts_on_a_second_row() {
+        let mut v = vitals(20.0, 20);
+        v.absorption = 4.0;
+        let all = hearts(&v);
+        assert_eq!(all.len(), 12);
+        let golden: Vec<_> = all.iter().filter(|h| h.row == 1).collect();
+        assert_eq!(golden.len(), 2);
+        assert!(
+            golden
+                .iter()
+                .all(|h| fill(h) == Some("gui:hud/heart/absorbing_full"))
+        );
+        assert_eq!(heart_rows(&v).0, 2);
+    }
+
+    #[test]
+    fn poison_turns_the_hearts_green_and_low_health_shakes() {
+        let mut v = vitals(3.0, 20);
+        v.poisoned = true;
+        let row = hearts(&v);
+        assert!(
+            row.iter()
+                .any(|h| fill(h) == Some("gui:hud/heart/poisoned_half"))
+        );
+        let shakes = (0..50u64).any(|tick| {
+            v.tick = tick;
+            hearts(&v).iter().any(|h| h.lift != 0.0)
+        });
+        assert!(shakes);
+    }
+
+    #[test]
+    fn regeneration_lifts_one_heart() {
+        let mut v = vitals(20.0, 20);
+        v.regen_index = 4;
+        let lifted: Vec<_> = hearts(&v).into_iter().filter(|h| h.lift > 0.0).collect();
+        assert_eq!(lifted.len(), 1);
+        assert_eq!(lifted[0].column, 4);
+    }
+
+    #[test]
+    fn food_fills_from_the_right_with_halves() {
+        let row = drumsticks(&vitals(20.0, 7));
+        assert_eq!(
+            row.iter()
+                .filter(|d| d.fill == Some("gui:hud/food_full"))
+                .count(),
+            3
+        );
+        assert_eq!(row[3].fill, Some("gui:hud/food_half"));
+        assert_eq!(row[4].fill, None);
+        assert_eq!(row[0].fill, Some("gui:hud/food_full"));
+    }
+
+    #[test]
+    fn the_hunger_effect_greens_the_food_bar() {
+        let mut v = vitals(20.0, 20);
+        v.hunger = true;
+        assert!(
+            drumsticks(&v)
+                .iter()
+                .all(|d| d.empty == "gui:hud/food_empty_hunger")
+        );
+    }
+
+    #[test]
+    fn saturation_fills_a_share_of_twenty() {
+        let mut v = vitals(20.0, 20);
+        v.saturation = 5.0;
+        assert!((saturation_share(&v) - 0.25).abs() < 1e-6);
+    }
 
     #[test]
     fn full_air_on_land_shows_nothing() {

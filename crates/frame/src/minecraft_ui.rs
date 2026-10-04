@@ -116,6 +116,17 @@ pub struct McVitals {
     pub air: i32,
     pub max_air: i32,
     pub eye_in_water: bool,
+    pub health: f32,
+    pub max_health: f32,
+    pub absorption: f32,
+    pub food: u8,
+    pub saturation: f32,
+    pub poisoned: bool,
+    pub hunger: bool,
+    pub regen_index: i32,
+    pub blink: bool,
+    pub display_health: i32,
+    pub tick: u64,
 }
 
 /// The player's own MW2 body, drawn standing in the inventory's character
