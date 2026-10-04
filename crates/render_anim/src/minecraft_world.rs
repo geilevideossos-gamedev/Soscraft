@@ -603,7 +603,6 @@ fn update(
         player.selected = entities.selected;
         player.crouching = ps.view_height_current < CROUCHED_BELOW_VIEW_HEIGHT;
         player.swimming = ps.view_height_current < CRAWLING_BELOW_VIEW_HEIGHT;
-        let sneaking = ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
         let eye_block = player.eye();
         let look = {
             let (yaw, pitch) = (f64::from(mc_yaw).to_radians(), f64::from(ps.viewangles[0]).to_radians());
@@ -639,7 +638,7 @@ fn update(
                 .target(&world.scene, 5.0)
                 .map(|hit| hit.pos)
                 .filter(|&pos| minecraft_terrain::scene::Scene::block(&world.scene, pos).is_some_and(minecraft_terrain::crafting::is_crafting_table))
-                .filter(|_| minecraft_terrain::crafting::opens_table(sneaking, held.is_some()));
+                .filter(|_| minecraft_terrain::crafting::opens_table(player.crouching, held.is_some()));
             let placeable = held.as_ref().is_some_and(|stack| {
                 let id = if stack.id == "minecraft:redstone" { "minecraft:redstone_wire" } else { stack.id.as_str() };
                 minecraft_terrain::pack::ResourceId::parse(id).is_ok_and(|id| {
