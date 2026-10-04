@@ -91,6 +91,20 @@ impl InventoryUi {
         }
     }
 
+    pub(crate) fn table(&self) -> Option<BlockPos> {
+        self.table
+    }
+
+    pub(crate) fn open_table(&mut self, ui: &mut MinecraftUi, pos: BlockPos) {
+        if ui.inventory_open {
+            return;
+        }
+        self.table = Some(pos);
+        ui.inventory_open = true;
+        ui.screen = McScreen::CraftingTable;
+        ui.screen_opened = true;
+    }
+
     /// Applies the HUD's clicks, selection and drops with vanilla's rules.
     /// Stacks thrown out of the inventory are returned, except guns, which
     /// stay.

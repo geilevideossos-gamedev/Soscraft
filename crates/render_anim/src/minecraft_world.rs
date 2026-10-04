@@ -590,6 +590,7 @@ fn update(
     hand.clock -= f64::from(hand_ticks) * TICK_SECONDS;
     let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
     let menu_captured = hud_input.as_deref().is_some_and(|input| input.console_open || input.script_menu_open);
+    let mut open_table = None;
     if let Some(entities) = entities.as_mut()
         && ui.holding_item
         && !ui.inventory_open
@@ -626,18 +627,29 @@ fn update(
             }
         }
         hand.place_delay = hand.place_delay.saturating_sub(hand_ticks);
-        let place = (buttons.just_pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, true))
+        let use_pressed = buttons.just_pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, true);
+        let place = use_pressed
             || ((buttons.pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, false)) && hand.place_delay == 0);
         if place {
             hand.place_delay = 4;
             let held = entities.inventory.slots[entities.selected].clone();
+            let table = player
+                .target(&world.scene, 5.0)
+                .map(|hit| hit.pos)
+                .filter(|&pos| minecraft_terrain::scene::Scene::block(&world.scene, pos).is_some_and(minecraft_terrain::crafting::is_crafting_table))
+                .filter(|_| minecraft_terrain::crafting::opens_table(player.crouching, held.is_some()));
             let placeable = held.as_ref().is_some_and(|stack| {
                 let id = if stack.id == "minecraft:redstone" { "minecraft:redstone_wire" } else { stack.id.as_str() };
                 minecraft_terrain::pack::ResourceId::parse(id).is_ok_and(|id| {
                     world.stream.states.state_of(&minecraft_terrain::scene::Block { id, properties: Default::default() }).is_some()
                 })
             });
-            if placeable
+            if let Some(pos) = table {
+                if use_pressed {
+                    open_table = Some(pos);
+                    hand.swing = Some(0.0);
+                }
+            } else if placeable
                 && let Some(pos) = player.place_selected(
                     &mut world.scene,
                     &mut entities.inventory,
@@ -868,9 +880,18 @@ fn update(
         if !alive {
             ui.inventory_open = false;
         }
+        if inventory_ui.table().is_some_and(|pos| {
+            !minecraft_terrain::crafting::within_table_reach(eye, pos)
+                || !minecraft_terrain::scene::Scene::block(&world.scene, pos).is_some_and(minecraft_terrain::crafting::is_crafting_table)
+        }) {
+            ui.inventory_open = false;
+        }
         inventory_ui.sync_weapons(&mut entities.inventory, &owned);
         let mut selected = entities.selected;
         let thrown = inventory_ui.apply_input(&mut ui, &mut entities.inventory, &mut selected);
+        if let Some(pos) = open_table {
+            inventory_ui.open_table(&mut ui, pos);
+        }
         let thrower = crate::minecraft_inventory::Thrower {
             eye: glam::DVec3::from_array(eye),
             yaw: mc_yaw,
