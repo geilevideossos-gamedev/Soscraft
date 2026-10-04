@@ -770,7 +770,8 @@ impl VoxelWorld {
     }
 
     fn way_out(&self, lo: [f64; 3], hi: [f64; 3]) -> Option<[f64; 3]> {
-        if self.overlapping(lo, hi).is_empty() {
+        let inside = self.overlapping(lo, hi);
+        if inside.is_empty() {
             return None;
         }
         let along = |axis: usize, sign: f64, d: f64| {
@@ -778,7 +779,13 @@ impl VoxelWorld {
             v[axis] = sign * d;
             v
         };
-        let mut best = self.escape(lo, hi, 1, 1.0, STEP_OUT).map(|d| (d, along(1, 1.0, d)));
+        let middle = (lo[1] + hi[1]) * 0.5;
+        let ceiling = inside.iter().any(|b| b[1] > middle);
+        let mut best = if ceiling {
+            self.escape(lo, hi, 1, -1.0, SIDE_OUT).map(|d| (d, along(1, -1.0, d)))
+        } else {
+            self.escape(lo, hi, 1, 1.0, STEP_OUT).map(|d| (d, along(1, 1.0, d)))
+        };
         for (axis, sign) in [(0, 1.0), (0, -1.0), (2, 1.0), (2, -1.0)] {
             if let Some(d) = self.escape(lo, hi, axis, sign, SIDE_OUT)
                 && best.is_none_or(|(b, _)| d < b)
@@ -786,7 +793,8 @@ impl VoxelWorld {
                 best = Some((d, along(axis, sign, d)));
             }
         }
-        best.map(|(_, v)| v).or_else(|| self.escape(lo, hi, 1, 1.0, CLIMB_OUT).map(|d| along(1, 1.0, d)))
+        best.map(|(_, v)| v)
+            .or_else(|| self.escape(lo, hi, 1, 1.0, CLIMB_OUT).filter(|_| !ceiling).map(|d| along(1, 1.0, d)))
     }
 
     fn fluid_at(&self, x: i32, y: i32, z: i32) -> u8 {
@@ -990,6 +998,26 @@ mod tests {
         }
         let w = world(&blocks);
         let (lo, hi) = body([4.5, 1.0, 4.5], 70.0 / 36.0);
+        assert_eq!(w.way_out(lo, hi), None);
+    }
+
+    #[test]
+    fn a_head_in_the_ceiling_goes_down_not_through_it() {
+        let w = world(&[([4, 0, 4], 1), ([4, 3, 4], 1)]);
+        let (lo, hi) = body([4.5, 1.2, 4.5], 70.0 / 36.0);
+        let d = w.way_out(lo, hi).expect("a way out");
+        assert!(d[1] < 0.0 && d[1] > -0.2, "{d:?}");
+        let mut tunnel = Vec::new();
+        for z in 0..9 {
+            for x in 3..=5 {
+                tunnel.push(([x, -1, z], 1));
+                tunnel.push(([x, 1, z], 1));
+            }
+            tunnel.push(([3, 0, z], 1));
+            tunnel.push(([5, 0, z], 1));
+        }
+        let w = world(&tunnel);
+        let (lo, hi) = body([4.5, 0.0, 4.5], 50.0 / 36.0);
         assert_eq!(w.way_out(lo, hi), None);
     }
 

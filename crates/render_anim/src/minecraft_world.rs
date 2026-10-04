@@ -813,7 +813,7 @@ fn update(
                     .into_iter()
                     .map(|(pos, block)| (pos, block.and_then(|b| scene_block(&b))))
                     .collect();
-                let bodies = obstacles(ps, authority.0.player(local.0), entities);
+                let bodies = obstacles(ps, &authority.0, local.0, entities);
                 let blocked = writes.iter().any(|(pos, block)| {
                     let boxes = block
                         .as_ref()
@@ -1340,15 +1340,26 @@ fn scene_block(block: &minecraftoss_player::Block) -> Option<minecraft_terrain::
 
 fn obstacles(
     predicted: &playerstate_iw4::PlayerState,
-    authority: Option<&playerstate_iw4::PlayerState>,
+    authority: &sim::SimWorld,
+    local: sim::ClientId,
     entities: &crate::minecraft_entities::Entities,
 ) -> Vec<[f64; 6]> {
-    let ps = authority.unwrap_or(predicted);
-    let (mins, maxs) = sim::voxel::player_hull(ps);
-    sim::voxel::body_box(ps.origin, mins, maxs)
-        .into_iter()
-        .chain(entities.boxes().into_iter().map(|(_, b)| b))
-        .collect()
+    let hull = |ps: &playerstate_iw4::PlayerState| {
+        let (mins, maxs) = sim::voxel::player_hull(ps);
+        sim::voxel::body_box(ps.origin, mins, maxs)
+    };
+    let mut out: Vec<[f64; 6]> = authority.player(local).map_or_else(|| hull(predicted), hull).into_iter().collect();
+    authority.visit_players(|id, ps| {
+        let standing = matches!(
+            ps.pm_type,
+            0 | playerstate_iw4::PM_TYPE_NORMAL_LINKED | playerstate_iw4::PM_TYPE_LAST_STAND
+        );
+        if id != local && standing {
+            out.extend(hull(ps));
+        }
+    });
+    out.extend(entities.boxes().into_iter().map(|(_, b)| b));
+    out
 }
 
 fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
