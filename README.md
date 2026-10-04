@@ -17,10 +17,16 @@ Modern Warfare 2, Skate 3 and Minecraft in one game, all running on
 - Broken blocks drop items that you pick up.
 - A Minecraft inventory and hotbar restyled in MW2's look. Your guns sit in the hotbar as items, and your MW2 character stands in the inventory window.
 - Vanilla crafting: the 2x2 grid in the inventory, and a 3x3 grid when you use a crafting table. Shaped, shapeless and mirrored recipes come from Minecraft 26.3's own data, and buckets and bottles come back from the recipes that use them.
-- Hold a block to place it. With an empty hand you punch and mine with your bare MW2 hands.
+- Hold a block to place it. With an empty hand you punch and mine with your bare MW2 hands. Placing never traps you inside a block, and if you ever end up in one you are pushed out.
+- Survival as in vanilla: 20 health in hearts, hunger and saturation, natural regeneration when well fed, starvation, fall damage, and drowning with air bubbles. MW2 bullets and Minecraft mobs take from the same hearts, and MW2's own health regeneration is off on this map. Eat and drink by holding right click.
+- Swimming as in vanilla: you sink slowly, swim up with jump, dive with crouch, and sprint to swim fast.
+- Doors, trapdoors, fence gates, levers and buttons placed and used as in vanilla (iron doors only open by redstone).
+- Snowballs, eggs (that sometimes hatch chicks) and ender pearls to throw.
+- Glass bottles fill from water, water bottles fill cauldrons, turn dirt to mud or are drunk.
+- Item tooltips show damage: MW2 damage, range and block-breaking strength for guns, attack damage and speed for Minecraft weapons and tools.
 - Minecraft's block, mob and footstep sounds.
 - Unlimited ammo and grenades. The Intervention, SPAS-12 and UMP45 are always in your inventory. No time or score limit.
-- The minimap shows the Minecraft world around you.
+- A minimap of the Minecraft world, hidden by default: M or Options > Advanced Video > Minecraft Minimap shows it.
 - Skate 3 mode works here too, with full block collision.
 
 You don't need Minecraft installed. The first time the game starts, it downloads Minecraft 26.3's own files (textures, sounds, world data) straight from Mojang's official servers, the same way the Minecraft launcher does. That's about 125 MB, into `iw4l-artifacts/minecraft-26.3`. After that it plays offline. Nothing from Minecraft is included in this repository.
@@ -53,6 +59,12 @@ You don't need Minecraft installed. The first time the game starts, it downloads
 | Right click (holding a block) | Left trigger | Place the block |
 | Right click on a crafting table (not holding a gun) | Left trigger | Open the 3x3 crafting grid |
 | Crouch + right click on a crafting table | Crouch + left trigger | Place the held block against it |
+| Right click on a door, trapdoor, fence gate, lever or button | Left trigger | Use it |
+| Right click (snowball, egg, ender pearl) | Left trigger | Throw it |
+| Hold right click (food, water bottle) | Hold left trigger | Eat or drink |
+| Right click with a glass bottle on water | Left trigger | Fill it |
+| Jump / crouch / sprint in water | Jump / crouch / sprint | Swim up / dive / swim fast |
+| M | | Show or hide the minimap |
 | J | Click both sticks in | Skate 3 mode (not while the inventory is open) |
 
 In the inventory and on the crafting table:
@@ -71,6 +83,8 @@ In the inventory and on the crafting table:
 When the inventory or crafting table closes, the stack you are holding and anything left in the crafting grid go back into the inventory; what does not fit is thrown out in front of you, as Q does.
 
 To try recipes without gathering everything first, set `IW4L_MINECRAFT_KIT` (in the shell or in `.env` next to `iw4l.exe`) to a list of items, for example `IW4L_MINECRAFT_KIT=minecraft:oak_log*16,minecraft:milk_bucket*3`. They are put in the backpack when the world starts.
+
+Hover an item in the inventory to see its damage. Your health is the row of hearts above the hotbar, with food and its saturation line on the right; air bubbles appear above the food under water.
 
 More about skating in [docs/SKATE.md](docs/SKATE.md).
 
