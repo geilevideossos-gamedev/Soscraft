@@ -232,16 +232,24 @@ pub fn swap(inventory: &mut Inventory, grid: Grid, cell: Option<usize>, hotbar: 
         return false;
     }
     let Some(index) = cell else {
-        if inventory.slots[hotbar].is_some() || output(inventory, grid).is_none() {
+        if inventory.slots[hotbar].is_some() {
             return false;
         }
+        let Some(result) = output(inventory, grid) else {
+            return false;
+        };
         let carried = inventory.cursor.take();
+        let mut placed = result.clone();
+        placed.max = limit(&inventory.recipes, &placed);
+        let mut slots = inventory.slots.clone();
+        slots[hotbar] = Some(placed);
+        let before = std::mem::replace(&mut inventory.slots, slots);
         let taken = take_into_cursor(inventory, grid);
         if taken {
-            inventory.slots[hotbar] = inventory.cursor.take();
-            if let Some(stack) = inventory.slots[hotbar].clone() {
-                inventory.notice_item_changed(&stack);
-            }
+            inventory.cursor = None;
+            inventory.notice_item_changed(&result);
+        } else {
+            inventory.slots = before;
         }
         inventory.cursor = carried;
         return taken;
@@ -874,6 +882,22 @@ mod tests {
         inv.cursor = Some(ItemStack::new("minecraft:wooden_pickaxe", 1));
         assert!(!take(&mut inv, Grid::Table));
         assert_eq!(count_of(&inv.workbench[4]), 1);
+    }
+
+    #[test]
+    fn a_number_key_craft_keeps_its_remainders_beside_the_result() {
+        let mut inv = inventory();
+        put(
+            &mut inv,
+            Grid::Inventory,
+            &[0, 1, 2, 3],
+            "minecraft:honey_bottle",
+            2,
+        );
+        assert!(swap(&mut inv, Grid::Inventory, None, 0));
+        assert_eq!(id_of(&inv.slots[0]), Some("minecraft:honey_block"));
+        assert_eq!(inv.count("minecraft:glass_bottle"), 4);
+        assert!(inv.take_pending_drops().is_empty());
     }
 
     #[test]
