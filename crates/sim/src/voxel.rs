@@ -680,6 +680,7 @@ pub(crate) fn trace(
 }
 
 pub const HULL_HALF_WIDTH: f32 = 15.0;
+pub const DAMAGE_PER_HARDNESS: f32 = 160.0;
 const PUSH_GAP: f64 = 1e-3;
 const STEP_OUT: f64 = 1.05;
 const SIDE_OUT: f64 = 1.0;

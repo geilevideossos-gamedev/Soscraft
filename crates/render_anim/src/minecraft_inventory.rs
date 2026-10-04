@@ -248,6 +248,7 @@ impl InventoryUi {
                     weapon: weapon_of(s),
                     durability: None,
                     name: water(s).then(|| water_name.clone()),
+                    attack: main_hand_attack(&inventory.recipes, s),
                 }
             })
         };
@@ -377,6 +378,16 @@ const HUD_SPRITES: [&str; 23] = [
     "hud/food_half_hunger",
     "hud/food_full_hunger",
 ];
+
+fn main_hand_attack(recipes: &minecraftoss_player::crafting::RecipeBook, stack: &ItemStack) -> Option<[f32; 2]> {
+    let attack = |m: &minecraftoss_player::item_catalog::AttributeModifier| {
+        m.in_main_hand() && matches!(m.attribute.as_str(), "minecraft:attack_damage" | "minecraft:attack_speed")
+    };
+    recipes.item_modifiers(stack).iter().any(attack).then(|| {
+        let (damage, speed) = recipes.attack_attributes(Some(stack));
+        [damage as f32, speed as f32]
+    })
+}
 
 fn gui_sprite(packs: &PackStack, name: &str) -> Option<image::RgbaImage> {
     let id = minecraft_terrain::pack::ResourceId::parse(&format!("minecraft:gui/sprites/{name}")).ok()?;

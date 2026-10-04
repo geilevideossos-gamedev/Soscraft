@@ -18,7 +18,7 @@ type BlockPos = (i32, i32, i32);
 
 /// Bullet damage that mines a block of hardness 1 in four shots: a 40-damage
 /// bullet (an ACR up close) breaks dirt, of hardness 0.5, on the second.
-const DAMAGE_PER_HARDNESS: f32 = 160.0;
+const DAMAGE_PER_HARDNESS: f32 = sim::voxel::DAMAGE_PER_HARDNESS;
 /// TNT's explosion power.
 const TNT_POWER: f32 = 4.0;
 /// Progress on a block no longer being shot is forgotten after this long.

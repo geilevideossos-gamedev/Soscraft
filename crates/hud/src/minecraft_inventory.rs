@@ -946,15 +946,40 @@ fn draw_inventory(
     let Some(stack) = stack_at(ui, slot).cloned() else { return };
     let name = stack_name(&stack, ui, weapons, strings, gaps).to_uppercase();
     let sub = if stack.weapon.is_some() { "PRIMARY WEAPON".to_owned() } else { stack.id.clone() };
+    let lines = tooltip_lines(&stack, weapons);
     let title_px = 8.0;
     let sub_px = 5.5;
+    let line_h = 7.0;
     let title_w = canvas.fonts.get(FONT_TITLE).map_or(60.0, |def| ui_text_width(def, &name, title_px / ui_text_height(1.0)));
-    let sub_w = canvas.fonts.get(FONT_SMALL).map_or(60.0, |def| ui_text_width(def, &sub, sub_px / ui_text_height(1.0)));
-    let w = title_w.max(sub_w) + 14.0;
-    let (x, y) = (vx + 10.0, vy - 22.0);
-    canvas.fill(x, y, w, 22.0, [0.02, 0.025, 0.028, 0.94], c);
-    canvas.frame(x, y, w, 22.0, EDGE, c);
-    canvas.fill(x, y, 2.0, 22.0, ACCENT, c);
+    let small_w = |text: &str| canvas.fonts.get(FONT_SMALL).map_or(60.0, |def| ui_text_width(def, text, sub_px / ui_text_height(1.0)));
+    let sub_w = small_w(&sub);
+    let lines_w = lines.iter().map(|(line, _)| small_w(line)).fold(0.0, f32::max);
+    let w = title_w.max(sub_w).max(lines_w) + 14.0;
+    let h = 22.0 + if lines.is_empty() { 0.0 } else { 2.0 + lines.len() as f32 * line_h };
+    let (x, y) = (vx + 10.0, vy - h);
+    canvas.fill(x, y, w, h, [0.02, 0.025, 0.028, 0.94], c);
+    canvas.frame(x, y, w, h, EDGE, c);
+    canvas.fill(x, y, 2.0, h, ACCENT, c);
     canvas.text(FONT_TITLE, x + 7.0, y + 3.0, title_px, HIGHLIGHT, &name, false, c);
     canvas.text(FONT_SMALL, x + 7.0, y + 13.5, sub_px, TEXT_DIM, &sub, false, c);
+    for (i, (line, tone)) in lines.iter().enumerate() {
+        let color = match tone {
+            crate::minecraft_tooltip::Tone::Plain => TEXT,
+            crate::minecraft_tooltip::Tone::Header => TEXT_DIM,
+            crate::minecraft_tooltip::Tone::Value => VANILLA_GREEN,
+        };
+        canvas.text(FONT_SMALL, x + 7.0, y + 22.0 + 2.0 + i as f32 * line_h, sub_px, color, line, false, c);
+    }
+}
+
+const VANILLA_GREEN: [f32; 4] = [0.33, 0.85, 0.33, 1.0];
+
+fn tooltip_lines(stack: &McStack, weapons: Option<&PreparedWeapons>) -> Vec<(String, crate::minecraft_tooltip::Tone)> {
+    match (stack.weapon, stack.attack) {
+        (Some(weapon), _) => weapons
+            .and_then(|reg| reg.0.facts_of(weapon))
+            .map_or_else(Vec::new, |facts| crate::minecraft_tooltip::gun_lines(&facts)),
+        (None, Some(attack)) => crate::minecraft_tooltip::attack_lines(attack),
+        (None, None) => Vec::new(),
+    }
 }

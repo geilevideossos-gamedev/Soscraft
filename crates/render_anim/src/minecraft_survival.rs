@@ -319,6 +319,11 @@ impl Survival {
     }
 }
 
+pub(crate) fn attack_strength(ticks_since_attack: u32, attack_speed: f64) -> f32 {
+    let delay = 20.0 / attack_speed.max(1.0e-4);
+    ((f64::from(ticks_since_attack) + 0.5) / delay).clamp(0.0, 1.0) as f32
+}
+
 pub(crate) fn fall_damage(distance: f64, multiplier: f32) -> i32 {
     ((distance + 1.0e-6 - SAFE_FALL) * f64::from(multiplier))
         .floor()
@@ -493,6 +498,15 @@ mod tests {
             survival.settle(20, 100).damage,
             Some((20, Some([1.0, 2.0, 3.0])))
         );
+    }
+
+    #[test]
+    fn a_sword_recharges_in_twelve_and_a_half_ticks_and_a_fist_in_five() {
+        assert!(attack_strength(0, 1.6) < 0.1);
+        assert!(attack_strength(11, 1.6) < 1.0);
+        assert_eq!(attack_strength(12, 1.6), 1.0);
+        assert_eq!(attack_strength(5, 4.0), 1.0);
+        assert!(attack_strength(4, 4.0) < 1.0);
     }
 
     #[test]

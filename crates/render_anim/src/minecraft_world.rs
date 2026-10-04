@@ -93,6 +93,8 @@ struct HandState {
     /// (`rightClickDelay`).
     place_delay: u32,
     pearl_cooldown: u32,
+    attack_ticks: u32,
+    attack_slot: Option<usize>,
 }
 
 /// The player's walk, for vanilla's step and fall sounds.
@@ -639,9 +641,19 @@ fn update(
             let (yaw, pitch) = (f64::from(mc_yaw).to_radians(), f64::from(ps.viewangles[0]).to_radians());
             glam::DVec3::new(-yaw.sin() * pitch.cos(), -pitch.sin(), yaw.cos() * pitch.cos())
         };
+        hand.attack_ticks = hand.attack_ticks.saturating_add(hand_ticks);
+        if hand.attack_slot != Some(entities.selected) {
+            hand.attack_slot = Some(entities.selected);
+            hand.attack_ticks = 0;
+        }
         if buttons.just_pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, true) {
             hand.swing = Some(0.0);
-            if entities.punch(eye_block, look, mc_yaw) {
+            let held = entities.inventory.slots[entities.selected].clone();
+            let (damage, speed) = entities.inventory.recipes.attack_attributes(held.as_ref());
+            let damage = (damage + survival.status.attack_damage_modifier()).max(0.0);
+            let strength = crate::minecraft_survival::attack_strength(hand.attack_ticks, speed);
+            hand.attack_ticks = 0;
+            if entities.punch(eye_block, look, mc_yaw, damage, strength) {
                 survival.exhaust(crate::minecraft_survival::ATTACK_EXHAUSTION);
             }
         }

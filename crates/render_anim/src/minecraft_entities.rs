@@ -314,9 +314,7 @@ impl Entities {
         mesh
     }
 
-    /// A fist on the mob the player looks at within reach (one damage, as
-    /// an empty hand deals).
-    pub(crate) fn punch(&mut self, eye: DVec3, look: DVec3, yaw: f32) -> bool {
+    pub(crate) fn punch(&mut self, eye: DVec3, look: DVec3, yaw: f32, attack_damage: f64, strength: f32) -> bool {
         let Some((hit, _)) = self.world.mob_on_ray(eye, look, 3.0) else {
             return false;
         };
@@ -324,8 +322,8 @@ impl Entities {
             player_id: PLAYER,
             position: eye - DVec3::Y * f64::from(EYE_HEIGHT),
             yaw,
-            attack_damage: 1.0,
-            strength: 1.0,
+            attack_damage,
+            strength,
             sprinting: false,
             can_critical: false,
             can_sweep: false,
