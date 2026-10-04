@@ -77,7 +77,7 @@ pub(crate) fn sprint_cmd(
 }
 
 pub(crate) fn stance_cmd(ps: &PlayerState, cmd: &UserCmd, water: WaterSample) -> Option<UserCmd> {
-    (water.wet() && ps.pm_flags & pm_flags::SPRINTING != 0).then(|| UserCmd {
+    (water.wet() && ps.pm_flags & pm_flags::SPRINTING != 0).then_some(UserCmd {
         buttons: cmd.buttons & !(buttons::CROUCH | buttons::PRONE),
         ..*cmd
     })
