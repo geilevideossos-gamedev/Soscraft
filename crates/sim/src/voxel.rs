@@ -604,6 +604,15 @@ pub(crate) fn trace(
     let Some(world) = guard.as_ref() else {
         return open;
     };
+    trace_in(world, start, end, mins, maxs)
+}
+
+fn trace_in(world: &VoxelWorld, start: [f32; 3], end: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> trace_iw4::Trace {
+    let open = trace_iw4::Trace {
+        fraction: 1.0,
+        endpos: end,
+        ..trace_iw4::Trace::default()
+    };
     let s = f64::from(BLOCK);
     let a = to_block(world.origin, start);
     let b = to_block(world.origin, end);
@@ -654,6 +663,8 @@ pub(crate) fn trace(
             allsolid: u8::from(end_solid),
             contents: SOLID,
             surface_flags: STONE_SURFACE,
+            hit_type: trace_iw4::HITTYPE_ENTITY,
+            hit_id: trace_iw4::ENTITYNUM_WORLD,
             ..trace_iw4::Trace::default()
         };
     }
@@ -675,6 +686,8 @@ pub(crate) fn trace(
         contents: SOLID,
         surface_flags: STONE_SURFACE,
         walkable: u8::from(n[1] > 0.7),
+        hit_type: trace_iw4::HITTYPE_ENTITY,
+        hit_id: trace_iw4::ENTITYNUM_WORLD,
         ..trace_iw4::Trace::default()
     }
 }
@@ -940,6 +953,25 @@ mod tests {
     fn body(feet: [f64; 3], height: f64) -> ([f64; 3], [f64; 3]) {
         let half = f64::from(HULL_HALF_WIDTH / BLOCK);
         ([feet[0] - half, feet[1], feet[2] - half], [feet[0] + half, feet[1] + height, feet[2] + half])
+    }
+
+    #[test]
+    fn blocks_are_world_ground_for_movement() {
+        let w = world(&[([4, 0, 4], 1)]);
+        let (mins, maxs) = ([-15.0, -15.0, 0.0], [15.0, 15.0, 70.0]);
+        let above = to_map([0.0; 3], [4.5, 1.0 + 0.25 / 36.0, 4.5]);
+        let below = to_map([0.0; 3], [4.5, 1.0 - 0.25 / 36.0, 4.5]);
+        let ground = trace_in(&w, above, below, mins, maxs);
+        assert!(ground.fraction < 1.0);
+        assert_eq!(ground.walkable, 1);
+        assert_eq!((ground.hit_type, ground.hit_id), (trace_iw4::HITTYPE_ENTITY, trace_iw4::ENTITYNUM_WORLD));
+        let sunk = to_map([0.0; 3], [4.5, 0.5, 4.5]);
+        let inside = trace_in(&w, sunk, sunk, mins, maxs);
+        assert_eq!(inside.startsolid, 1);
+        assert_eq!((inside.hit_type, inside.hit_id), (trace_iw4::HITTYPE_ENTITY, trace_iw4::ENTITYNUM_WORLD));
+        let (high, low) = (to_map([0.0; 3], [10.5, 5.0, 10.5]), to_map([0.0; 3], [10.5, 4.0, 10.5]));
+        let air = trace_in(&w, high, low, mins, maxs);
+        assert_eq!((air.fraction, air.hit_type), (1.0, 0));
     }
 
     #[test]
