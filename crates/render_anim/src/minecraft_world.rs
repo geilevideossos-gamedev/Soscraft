@@ -703,9 +703,9 @@ fn update(
             }
         }
         hand.place_delay = hand.place_delay.saturating_sub(hand_ticks);
-        let use_pressed = buttons.just_pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, true);
-        let place = use_pressed
-            || ((buttons.pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, false)) && hand.place_delay == 0);
+        let idle = survival.eating().is_none();
+        let use_pressed = idle && (buttons.just_pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, true));
+        let place = use_pressed || (idle && use_held && hand.place_delay == 0);
         if place {
             hand.place_delay = 4;
             let held = entities.inventory.slots[entities.selected].clone();
