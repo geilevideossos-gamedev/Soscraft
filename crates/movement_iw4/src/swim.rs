@@ -42,6 +42,12 @@ pub fn swimming(ps: &PlayerState, water: WaterSample) -> bool {
     ps.pm_flags & pm_flags::SPRINTING != 0 && (water.eye || water.head)
 }
 
+pub(crate) fn hold_sprint(ps: &mut PlayerState, water: WaterSample, msec: i32) {
+    if water.wet() && ps.pm_flags & pm_flags::SPRINTING != 0 {
+        ps.last_sprint_start = ps.last_sprint_start.wrapping_add(msec);
+    }
+}
+
 #[must_use]
 pub fn settle(value: f32, target: f32, keep: f32, ticks: f32) -> f32 {
     target + (value - target) * libm::powf(keep, ticks)
@@ -268,5 +274,53 @@ mod tests {
         assert!(!swimming(&ps, wading));
         ps.pm_flags &= !pm_flags::SPRINTING;
         assert!(!swimming(&ps, under));
+    }
+
+    #[test]
+    fn water_pauses_the_sprint_budget_without_refilling_it() {
+        let context = crate::SprintContext {
+            weapon_max_sprint_time: 4000,
+            sprint_forever: false,
+            min_sprint_time_seconds: 1.0,
+            sprint_delay_seconds: 0.0,
+            sprint_forward_minimum: 105,
+            stand_up_clear: true,
+            sprint_recharge_pause_seconds: 0.0,
+        };
+        let wet = WaterSample {
+            depth: 20.0,
+            eye: false,
+            head: false,
+        };
+        let mut ps = PlayerState::ZERO;
+        ps.pm_flags |= pm_flags::SPRINTING;
+        ps.last_sprint_start = 1000;
+        ps.sprint_start_max_length = 4000;
+        let mut cmd = UserCmd {
+            server_time: 4900,
+            buttons: 0x2,
+            forwardmove: 127,
+            ..UserCmd::default()
+        };
+        for _ in 0..100 {
+            cmd.server_time += 20;
+            hold_sprint(&mut ps, wet, 20);
+            crate::update_sprint(&mut ps, &cmd, 0x2, context);
+        }
+        assert!(ps.pm_flags & pm_flags::SPRINTING != 0);
+        assert_eq!(ps.sprint_start_max_length, 4000);
+        let mut dry = 0;
+        while ps.pm_flags & pm_flags::SPRINTING != 0 {
+            cmd.server_time += 20;
+            hold_sprint(&mut ps, WaterSample::default(), 20);
+            crate::update_sprint(&mut ps, &cmd, 0x2, context);
+            dry += 20;
+        }
+        assert_eq!(dry, 100);
+        let mut idle = ps;
+        idle.pm_flags &= !pm_flags::SPRINTING;
+        let start = idle.last_sprint_start;
+        hold_sprint(&mut idle, wet, 20);
+        assert_eq!(idle.last_sprint_start, start);
     }
 }
