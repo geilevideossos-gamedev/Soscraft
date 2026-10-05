@@ -18,9 +18,12 @@ Modern Warfare 2, Skate 3 and Minecraft in one game, all running on
 - A Minecraft inventory and hotbar restyled in MW2's look. Your guns sit in the hotbar as items, and your MW2 character stands in the inventory window.
 - Vanilla crafting: the 2x2 grid in the inventory, and a 3x3 grid when you use a crafting table. Shaped, shapeless and mirrored recipes come from Minecraft 26.3's own data, and buckets and bottles come back from the recipes that use them.
 - Hold a block to place it. With an empty hand you punch and mine with your bare MW2 hands. Placing never traps you inside a block, and if you ever end up in one you are pushed out.
-- Survival as in vanilla: 20 health in hearts, hunger and saturation, natural regeneration when well fed, starvation, fall damage, and drowning with air bubbles. MW2 bullets and Minecraft mobs take from the same hearts, and MW2's own health regeneration is off on this map. Eat and drink by holding right click.
-- Swimming as in vanilla: you sink slowly, swim up with jump, dive with crouch, and sprint to swim fast.
+- Survival as in vanilla: 20 health in hearts, hunger and saturation, natural regeneration when well fed, starvation, fall damage, drowning with air bubbles, and experience levels. MW2 bullets and Minecraft mobs take from the same hearts, and MW2's own health regeneration is off on this map. Eat and drink by holding right click.
+- You move with vanilla's body size (0.6 blocks wide, 1.8 tall, 1.5 crouched), so you fit through the same gaps as in vanilla.
+- Swimming as in vanilla: you sink slowly, swim up with jump, dive with crouch, and sprint (Shift) to swim fast once your eyes are under.
+- Blocks that lose their support break with their drops, as in vanilla: torches, plants, doors, signs, rails, sugar cane, cactus and bamboo columns, and scaffolding past its reach. Sand and gravel fall.
 - Doors, trapdoors, fence gates, levers and buttons placed and used as in vanilla (iron doors only open by redstone).
+- Chests (single and large), barrels, furnaces, smokers, blast furnaces, brewing stands, stonecutters, smithing tables, grindstones, anvils and enchanting tables open with their vanilla screens and rules. Chests in dungeons, villages and other structures hold their loot.
 - Snowballs, eggs (that sometimes hatch chicks) and ender pearls to throw.
 - Glass bottles fill from water, water bottles fill cauldrons, turn dirt to mud or are drunk.
 - Item tooltips show damage: MW2 damage, range and block-breaking strength for guns, attack damage and speed for Minecraft weapons and tools.
@@ -60,6 +63,7 @@ You don't need Minecraft installed. The first time the game starts, it downloads
 | Right click on a crafting table (not holding a gun) | Left trigger | Open the 3x3 crafting grid |
 | Crouch + right click on a crafting table | Crouch + left trigger | Place the held block against it |
 | Right click on a door, trapdoor, fence gate, lever or button | Left trigger | Use it |
+| Right click on a chest, barrel, furnace, brewing stand, stonecutter, smithing table, grindstone, anvil or enchanting table | Left trigger | Open its screen (crouch with an item to place against it) |
 | Right click (snowball, egg, ender pearl) | Left trigger | Throw it |
 | Hold right click (food, water bottle) | Hold left trigger | Eat or drink |
 | Right click with a glass bottle on water | Left trigger | Fill it |
@@ -78,13 +82,15 @@ In the inventory and on the crafting table:
 | Drag with a stack | Hold A and move | Share the stack out over the slots |
 | Double click | | Gather matching items onto the held stack |
 | 1–9 over a slot | | Swap it with that hotbar slot |
+| Click a cut or an offer, mouse wheel to scroll | RB / LB, RT to enchant | Stonecutter cuts, enchanting table offers |
+| Type, Backspace | | Anvil: the item's new name |
 | Click outside the window | | Drop the held stack (right click: one item) |
 
 When the inventory or crafting table closes, the stack you are holding and anything left in the crafting grid go back into the inventory; what does not fit is thrown out in front of you, as Q does.
 
 To try recipes without gathering everything first, set `IW4L_MINECRAFT_KIT` (in the shell or in `.env` next to `iw4l.exe`) to a list of items, for example `IW4L_MINECRAFT_KIT=minecraft:oak_log*16,minecraft:milk_bucket*3`. They are put in the backpack when the world starts.
 
-Hover an item in the inventory to see its damage. Your health is the row of hearts above the hotbar, with food and its saturation line on the right; air bubbles appear above the food under water.
+Hover an item in the inventory to see its damage. Your health is the row of hearts above the hotbar, with food and its saturation line on the right; air bubbles appear above the food under water. Experience is the green line along the top of the hotbar, with your level between the hearts and the food.
 
 More about skating in [docs/SKATE.md](docs/SKATE.md).
 
