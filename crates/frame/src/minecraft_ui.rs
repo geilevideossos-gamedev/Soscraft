@@ -45,6 +45,20 @@ pub enum McScreen {
         rows: u8,
     },
     Furnace,
+    Brewing,
+    Stonecutter,
+    Smithing,
+    Grindstone,
+    Anvil,
+    Enchanting,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct McChoice {
+    pub icon: Option<McStack>,
+    pub label: String,
+    pub cost: u32,
+    pub enabled: bool,
 }
 
 /// What the player did on the inventory screen, applied with vanilla's
@@ -63,6 +77,8 @@ pub enum McClick {
     Spread { slots: Vec<McSlot>, right: bool },
     /// The screen closed: the carried stack and the crafting grid go back.
     Close,
+    Choose(usize),
+    Rename(String),
 }
 
 #[derive(Resource, Default)]
@@ -87,6 +103,10 @@ pub struct MinecraftUi {
     pub output: Option<McStack>,
     pub progress: [f32; 2],
     pub screen_title: String,
+    pub choices: Vec<McChoice>,
+    pub chosen: Option<usize>,
+    pub cost: Option<u32>,
+    pub name: Option<String>,
     /// The stack on the cursor.
     pub cursor: Option<McStack>,
     /// Item icons: one atlas, and each item's rectangle in it (s0 t0 s1 t1).

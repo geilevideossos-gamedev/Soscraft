@@ -37,4 +37,4 @@ pub use ui::{
 pub mod skate;
 pub use skate::SkateMode;
 pub mod minecraft_ui;
-pub use minecraft_ui::{InventoryPuppet, McClick, McScreen, McSlot, McStack, McVitals, MinecraftUi};
+pub use minecraft_ui::{InventoryPuppet, McChoice, McClick, McScreen, McSlot, McStack, McVitals, MinecraftUi};

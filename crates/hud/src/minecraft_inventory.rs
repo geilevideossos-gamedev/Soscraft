@@ -61,6 +61,137 @@ const FURNACE_OUTPUT: [f32; 2] = [26.0, -72.0];
 const XP_GREEN: [f32; 4] = [0.50, 1.0, 0.13, 1.0];
 const REPEAT_DELAY: f64 = 0.4;
 
+const CHOICE_CELL: f32 = 18.0;
+const CHOICE_COLUMNS: usize = 4;
+const CHOICE_ROWS: usize = 3;
+const OFFER_BOX: [f32; 4] = [-36.0, -98.0, 132.0, 20.0];
+const NAME_BOX: [f32; 4] = [-62.0, -98.0, 156.0, 14.0];
+
+fn station_slots(screen: McScreen) -> Option<Vec<(McSlot, f32, f32, f32)>> {
+    let c = McSlot::Container;
+    Some(match screen {
+        McScreen::Brewing => vec![
+            (c(0), -40.0, -40.0, S),
+            (c(1), -10.0, -32.0, S),
+            (c(2), 20.0, -40.0, S),
+            (c(3), -10.0, -96.0, S),
+            (c(4), -82.0, -96.0, S),
+        ],
+        McScreen::Stonecutter => vec![(c(0), -88.0, -78.0, S), (McSlot::Output, 52.0, -80.0, 24.0)],
+        McScreen::Smithing => vec![
+            (c(0), -84.0, -62.0, S),
+            (c(1), -60.0, -62.0, S),
+            (c(2), -36.0, -62.0, S),
+            (McSlot::Output, 40.0, -64.0, 24.0),
+        ],
+        McScreen::Grindstone => vec![(c(0), -50.0, -92.0, S), (c(1), -50.0, -58.0, S), (McSlot::Output, 40.0, -76.0, 24.0)],
+        McScreen::Anvil => vec![(c(0), -84.0, -66.0, S), (c(1), -36.0, -66.0, S), (McSlot::Output, 40.0, -68.0, 24.0)],
+        McScreen::Enchanting => vec![(c(0), -88.0, -80.0, S), (c(1), -64.0, -80.0, S)],
+        _ => return None,
+    })
+}
+
+fn choice_rects(screen: McScreen, count: usize, scroll: usize) -> Vec<(usize, [f32; 4])> {
+    match screen {
+        McScreen::Stonecutter => (0..CHOICE_COLUMNS * CHOICE_ROWS)
+            .map(|cell| (scroll * CHOICE_COLUMNS + cell, cell))
+            .filter(|(index, _)| *index < count)
+            .map(|(index, cell)| {
+                let (col, row) = ((cell % CHOICE_COLUMNS) as f32, (cell / CHOICE_COLUMNS) as f32);
+                (index, [-54.0 + col * CHOICE_CELL, -96.0 + row * CHOICE_CELL, CHOICE_CELL, CHOICE_CELL])
+            })
+            .collect(),
+        McScreen::Enchanting => (0..count.min(3))
+            .map(|index| {
+                let [x, y, w, h] = OFFER_BOX;
+                (index, [x, y + index as f32 * (h + 2.0), w, h])
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn hovered_choice(surface: &crate::surface::Hud2dSurface, mouse: Vec2, screen: McScreen, count: usize, scroll: usize) -> Option<usize> {
+    choice_rects(screen, count, scroll).into_iter().find_map(|(index, [x, y, w, h])| {
+        let r = surface.apply_rect(x * K, y * K, w * K, h * K, CENTER, CENTER);
+        (mouse.x >= r.x && mouse.x < r.x + r.w && mouse.y >= r.y && mouse.y < r.y + r.h).then_some(index)
+    })
+}
+
+struct StationView {
+    scroll: usize,
+    focus: Option<usize>,
+    hovered: Option<usize>,
+    name: String,
+}
+
+fn left_name(ui: &MinecraftUi) -> String {
+    ui.container.first().cloned().flatten().map_or_else(String::new, |left| {
+        left.name.clone().or_else(|| ui.names.get(&left.id).cloned()).unwrap_or_else(|| left.id.clone())
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn station_input(
+    ui: &mut MinecraftUi,
+    input: &mut ScreenInput,
+    surface: &crate::surface::Hud2dSurface,
+    mouse: Option<Vec2>,
+    clicked: bool,
+    [previous, next, confirm]: [bool; 3],
+    text: &str,
+    backspace: bool,
+    opened: bool,
+) {
+    let choices = ui.choices.len();
+    let max_scroll = choices.div_ceil(CHOICE_COLUMNS).saturating_sub(CHOICE_ROWS);
+    if clicked
+        && let Some(index) = mouse.and_then(|m| hovered_choice(surface, m, ui.screen, choices, input.scroll))
+        && ui.choices.get(index).is_some_and(|choice| choice.enabled)
+    {
+        ui.clicks.push(McClick::Choose(index));
+    }
+    if choices > 0 {
+        let step = i32::from(next) - i32::from(previous);
+        if step != 0 {
+            input.choice_focus = (input.choice_focus as i32 + step).rem_euclid(choices as i32) as usize;
+            if ui.screen == McScreen::Stonecutter {
+                ui.clicks.push(McClick::Choose(input.choice_focus));
+                let row = input.choice_focus / CHOICE_COLUMNS;
+                input.scroll = input.scroll.clamp(row.saturating_sub(CHOICE_ROWS - 1), row).min(max_scroll);
+            }
+        }
+        if confirm && ui.screen == McScreen::Enchanting {
+            ui.clicks.push(McClick::Choose(input.choice_focus.min(choices - 1)));
+        }
+    }
+    if ui.screen != McScreen::Anvil {
+        input.name_for = None;
+        return;
+    }
+    let left = ui.container.first().cloned().flatten().map(|stack| stack.id);
+    if opened || left != input.name_for {
+        input.name = ui.name.clone().unwrap_or_else(|| left_name(ui));
+        input.name_for = left.clone();
+    }
+    if left.is_none() {
+        return;
+    }
+    let mut changed = false;
+    for c in text.chars() {
+        if input.name.chars().count() < 50 {
+            input.name.push(c);
+            changed = true;
+        }
+    }
+    if backspace && input.name.pop().is_some() {
+        changed = true;
+    }
+    if changed {
+        ui.clicks.push(McClick::Rename(input.name.clone()));
+    }
+}
+
 fn chest_top(rows: u8) -> f32 {
     -86.0 - f32::from(rows.saturating_sub(3)) * P
 }
@@ -91,6 +222,8 @@ fn layout(screen: McScreen) -> Vec<(McSlot, f32, f32, f32)> {
         out.push((McSlot::Container(0), FURNACE_INPUT[0], FURNACE_INPUT[1], S));
         out.push((McSlot::Container(1), FURNACE_INPUT[0], FURNACE_INPUT[1] + 44.0, S));
         out.push((McSlot::Output, FURNACE_OUTPUT[0], FURNACE_OUTPUT[1], 24.0));
+    } else if let Some(slots) = station_slots(screen) {
+        out.extend(slots);
     } else {
         // Armor, head to feet down the left (slots 39..36).
         for (row, slot) in [39usize, 38, 37, 36].into_iter().enumerate() {
@@ -130,6 +263,10 @@ pub(crate) struct ScreenInput {
     focus: Option<McSlot>,
     repeat: Option<(Nav, f64)>,
     pad_pointer: bool,
+    name: String,
+    name_for: Option<String>,
+    scroll: usize,
+    choice_focus: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -333,13 +470,20 @@ fn stack_name(
     }
 }
 
+type Typing<'w, 's> = (
+    Res<'w, ButtonInput<KeyCode>>,
+    Res<'w, ButtonInput<MouseButton>>,
+    MessageReader<'w, 's, MouseWheel>,
+    MessageReader<'w, 's, bevy::input::keyboard::KeyboardInput>,
+);
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn update_minecraft_hud(
     surface: Res<crate::surface::Hud2dSurface>,
     catalog: Option<Res<MenuCatalog>>,
     ui: Option<ResMut<MinecraftUi>>,
     (weapons, strings): (Option<Res<PreparedWeapons>>, Option<Res<PreparedLocalizedStrings>>),
-    (keys, buttons, mut wheel): (Res<ButtonInput<KeyCode>>, Res<ButtonInput<MouseButton>>, MessageReader<MouseWheel>),
+    (keys, buttons, mut wheel, mut typed): Typing,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     time: Res<Time>,
     mut input: Local<ScreenInput>,
@@ -385,7 +529,9 @@ pub(crate) fn update_minecraft_hud(
 
     // Opening and closing, and the hotbar's keys.
     let open_before = ui.inventory_open;
-    if !blocked && (keys.just_pressed(KeyCode::KeyE) || (ui.inventory_open && keys.just_pressed(KeyCode::Escape))) {
+    let typing = ui.inventory_open && ui.screen == McScreen::Anvil;
+    let text: String = typed.read().filter(|event| event.state.is_pressed()).filter_map(|event| event.text.as_ref()).flat_map(|text| text.chars()).filter(|c| !c.is_control()).collect();
+    if !blocked && ((keys.just_pressed(KeyCode::KeyE) && !typing) || (ui.inventory_open && keys.just_pressed(KeyCode::Escape))) {
         ui.inventory_open = !ui.inventory_open && !keys.just_pressed(KeyCode::Escape);
     } else if ui.inventory_open && (menus.captures_input() || pad_just(GamepadButton::East)) {
         ui.inventory_open = false;
@@ -416,7 +562,7 @@ pub(crate) fn update_minecraft_hud(
         KeyCode::Digit8,
         KeyCode::Digit9,
     ];
-    let digit = digits.iter().position(|k| keys.just_pressed(*k));
+    let digit = digits.iter().position(|k| keys.just_pressed(*k)).filter(|_| !typing);
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
 
@@ -459,7 +605,17 @@ pub(crate) fn update_minecraft_hud(
         draw_hotbar(&mut canvas, &mut ui, weapons, strings, &mut gaps, time.delta_secs());
         ui.character_box = None;
     } else {
-        for _ in wheel.read() {}
+        let mut scroll_step = 0i32;
+        for event in wheel.read() {
+            scroll_step += if event.y < 0.0 { 1 } else if event.y > 0.0 { -1 } else { 0 };
+        }
+        let choices = ui.choices.len();
+        let max_scroll = choices.div_ceil(CHOICE_COLUMNS).saturating_sub(CHOICE_ROWS);
+        if opened {
+            input.scroll = 0;
+            input.choice_focus = 0;
+        }
+        input.scroll = (input.scroll as i32 + scroll_step).clamp(0, max_scroll as i32) as usize;
         let slots = layout(ui.screen);
         let mouse_hovered = mouse.and_then(|m| hovered_slot(&surface, m, ui.screen));
         if opened {
@@ -484,6 +640,7 @@ pub(crate) fn update_minecraft_hud(
             input.drag = None;
         } else {
             handle_clicks(&mut ui, &mut input, screen_buttons(&buttons, pad), hovered, inside, shift, digit, now);
+            station_input(&mut ui, &mut input, &surface, mouse.filter(|_| !pad_pointer), buttons.just_pressed(MouseButton::Left), [pad_just(GamepadButton::LeftTrigger), pad_just(GamepadButton::RightTrigger), pad_just(GamepadButton::RightTrigger2)], &text, keys.just_pressed(KeyCode::Backspace), opened);
         }
         let pointer = if pad_pointer {
             hovered.and_then(|focus| slots.iter().find(|slot| slot.0 == focus)).map(|&(_, x, y, size)| {
@@ -494,7 +651,13 @@ pub(crate) fn update_minecraft_hud(
             mouse
         };
         canvas.k = K;
-        draw_inventory(&mut canvas, &mut ui, weapons, strings, &mut gaps, hovered, pointer, prompts);
+        let view = StationView {
+            scroll: input.scroll,
+            focus: pad_pointer.then_some(input.choice_focus),
+            hovered: mouse.filter(|_| !pad_pointer).and_then(|m| hovered_choice(&surface, m, ui.screen, choices, input.scroll)),
+            name: input.name.clone(),
+        };
+        draw_inventory(&mut canvas, &mut ui, weapons, strings, &mut gaps, hovered, pointer, prompts, &view);
         if ui.screen != McScreen::Inventory {
             ui.character_box = None;
         } else {
@@ -857,7 +1020,7 @@ fn draw_vitals(canvas: &mut Canvas<'_>, ui: &MinecraftUi, x0: f32, width: f32, h
     }
 }
 
-fn draw_station(canvas: &mut Canvas<'_>, ui: &MinecraftUi, c: (i32, i32)) {
+fn draw_station(canvas: &mut Canvas<'_>, ui: &MinecraftUi, weapons: Option<&PreparedWeapons>, view: &StationView, c: (i32, i32)) {
     match ui.screen {
         McScreen::Chest { rows } => {
             let (x, y) = (GRID_X - 3.0, chest_top(rows) - 3.0);
@@ -893,9 +1056,106 @@ fn draw_station(canvas: &mut Canvas<'_>, ui: &MinecraftUi, c: (i32, i32)) {
                 }
             }
         }
+        McScreen::Brewing => {
+            work_box(canvas, [-92.0, -104.0, 140.0, 90.0], c);
+            canvas.text(FONT_SMALL, -82.0, -104.0 + 2.5, 5.5, TEXT_DIM, "FUEL", false, c);
+            canvas.text(FONT_SMALL, -16.0, -104.0 + 2.5, 5.5, TEXT_DIM, "INGREDIENT", false, c);
+            let [fuel, brew] = ui.progress;
+            canvas.fill(-82.0, -72.0, S, 2.5, [0.0, 0.0, 0.0, 0.55], c);
+            canvas.fill(-82.0, -72.0, S * fuel, 2.5, ACCENT, c);
+            canvas.fill(16.0, -96.0, 3.0, 46.0, [0.0, 0.0, 0.0, 0.55], c);
+            canvas.fill(16.0, -96.0, 3.0, 46.0 * brew, HIGHLIGHT, c);
+            for x in [-30.0, 0.0, 30.0] {
+                canvas.fill(x, -58.0, 0.5, 10.0, EDGE, c);
+            }
+            canvas.fill(-30.0, -58.0, 60.5, 0.5, EDGE, c);
+            canvas.fill(0.0, -76.0, 0.5, 18.0, EDGE, c);
+        }
+        McScreen::Stonecutter => {
+            work_box(canvas, [-94.0, -102.0, 178.0, 66.0], c);
+            canvas.text(FONT_TITLE, 32.0, -76.0, 11.0, TEXT_DIM, ">", false, c);
+            for (index, [x, y, w, h]) in choice_rects(ui.screen, ui.choices.len(), view.scroll) {
+                let lit = view.hovered == Some(index) || view.focus == Some(index);
+                canvas.fill(x, y, w - 1.0, h - 1.0, if lit { SLOT_HOVER } else { SLOT }, c);
+                let edge = if ui.chosen == Some(index) { ACCENT } else if lit { HIGHLIGHT } else { SLOT_EDGE };
+                canvas.frame(x, y, w - 1.0, h - 1.0, edge, c);
+                if let Some(icon) = ui.choices.get(index).and_then(|choice| choice.icon.clone()) {
+                    draw_stack(canvas, ui, weapons, &icon, x, y, w - 1.0, c);
+                }
+            }
+            let rows = ui.choices.len().div_ceil(CHOICE_COLUMNS);
+            if rows > CHOICE_ROWS {
+                let track = CHOICE_ROWS as f32 * CHOICE_CELL;
+                let thumb = track * CHOICE_ROWS as f32 / rows as f32;
+                let top = (track - thumb) * view.scroll as f32 / (rows - CHOICE_ROWS) as f32;
+                canvas.fill(20.0, -96.0, 2.0, track, [0.0, 0.0, 0.0, 0.55], c);
+                canvas.fill(20.0, -96.0 + top, 2.0, thumb, ACCENT, c);
+            }
+        }
+        McScreen::Smithing => {
+            work_box(canvas, [-92.0, -100.0, 176.0, 70.0], c);
+            canvas.text(FONT_SMALL, -84.0, -74.0, 5.0, TEXT_DIM, "TEMPLATE", false, c);
+            canvas.text(FONT_SMALL, -60.0, -36.0, 5.0, TEXT_DIM, "BASE", false, c);
+            canvas.text(FONT_SMALL, -36.0, -74.0, 5.0, TEXT_DIM, "MATERIAL", false, c);
+            canvas.text(FONT_TITLE, 12.0, -60.0, 11.0, TEXT_DIM, ">", false, c);
+        }
+        McScreen::Grindstone => {
+            work_box(canvas, [-74.0, -100.0, 144.0, 72.0], c);
+            canvas.fill(-40.0, -72.0, 0.5, 14.0, EDGE, c);
+            canvas.text(FONT_TITLE, 12.0, -72.0, 11.0, TEXT_DIM, ">", false, c);
+        }
+        McScreen::Anvil => {
+            work_box(canvas, [-92.0, -104.0, 190.0, 82.0], c);
+            let [nx, ny, nw, nh] = NAME_BOX;
+            canvas.fill(nx, ny, nw, nh, [0.0, 0.0, 0.0, 0.6], c);
+            canvas.frame(nx, ny, nw, nh, if ui.container.first().is_some_and(Option::is_some) { HIGHLIGHT } else { EDGE }, c);
+            let shown = if view.name.is_empty() { ui.name.clone().unwrap_or_else(|| left_name(ui)) } else { view.name.clone() };
+            canvas.text(FONT_SMALL, nx + 4.0, ny + 4.0, 6.0, TEXT, &shown, false, c);
+            canvas.text(FONT_TITLE, -60.0, -62.0, 11.0, TEXT_DIM, "+", false, c);
+            canvas.text(FONT_TITLE, 12.0, -64.0, 11.0, TEXT_DIM, ">", false, c);
+            if let Some(cost) = ui.cost {
+                let level = ui.vitals.as_ref().map_or(0, |v| v.experience_level);
+                let (label, color) = if cost >= 40 {
+                    ("TOO EXPENSIVE!".to_owned(), VANILLA_RED)
+                } else {
+                    (format!("ENCHANTMENT COST: {cost}"), if level >= cost { VANILLA_GREEN } else { VANILLA_RED })
+                };
+                canvas.text(FONT_SMALL, 94.0, -34.0, 6.0, color, &label, true, c);
+            }
+        }
+        McScreen::Enchanting => {
+            work_box(canvas, [-94.0, -104.0, 192.0, 72.0], c);
+            canvas.text(FONT_SMALL, -88.0, -58.0, 5.0, TEXT_DIM, "ITEM", false, c);
+            canvas.text(FONT_SMALL, -64.0, -58.0, 5.0, TEXT_DIM, "LAPIS", false, c);
+            let level = ui.vitals.as_ref().map_or(0, |v| v.experience_level);
+            for (index, [x, y, w, h]) in choice_rects(ui.screen, ui.choices.len(), 0) {
+                let Some(choice) = ui.choices.get(index) else { continue };
+                let lit = choice.enabled && (view.hovered == Some(index) || view.focus == Some(index));
+                canvas.fill(x, y, w, h, if lit { SLOT_HOVER } else { SLOT }, c);
+                canvas.frame(x, y, w, h, if lit { HIGHLIGHT } else { SLOT_EDGE }, c);
+                if choice.cost == 0 {
+                    continue;
+                }
+                let tone = if choice.enabled { TEXT } else { TEXT_DIM };
+                canvas.text(FONT_SMALL, x + 4.0, y + 3.0, 5.5, tone, &format!("{} LAPIS", index + 1), false, c);
+                if !choice.label.is_empty() {
+                    canvas.text(FONT_SMALL, x + 4.0, y + 11.0, 5.5, tone, &format!("{} . . . ?", choice.label), false, c);
+                }
+                let color = if level >= choice.cost { VANILLA_GREEN } else { VANILLA_RED };
+                canvas.text(FONT_COUNT, x + w - 4.0, y + 6.0, 7.5, color, &choice.cost.to_string(), true, c);
+            }
+        }
         _ => {}
     }
 }
+
+fn work_box(canvas: &mut Canvas<'_>, [x, y, w, h]: [f32; 4], c: (i32, i32)) {
+    canvas.quad(x, y + h - 26.0, w, 26.0, [0.0, 0.0, 0.0, 0.35], "gradient_fadein_fadebottom", [0.0, 0.0, 1.0, 1.0], c);
+    canvas.frame(x, y, w, h, EDGE, c);
+    canvas.brackets(x, y, w, h, 5.0, ACCENT, c);
+}
+
+const VANILLA_RED: [f32; 4] = [1.0, 0.33, 0.33, 1.0];
 
 /// The inventory screen.
 #[allow(clippy::too_many_arguments)]
@@ -908,6 +1168,7 @@ fn draw_inventory(
     hovered: Option<McSlot>,
     mouse: Option<Vec2>,
     prompts: Option<PromptStyle>,
+    view: &StationView,
 ) {
     let c = (CENTER, CENTER);
     // Dim the world around the panel; the character window stays clear.
@@ -952,7 +1213,7 @@ fn draw_inventory(
     canvas.brackets(PANEL_X - 2.0, top - 2.0, PANEL_W + 4.0, height + 4.0, 8.0, [ACCENT[0], ACCENT[1], ACCENT[2], 0.9], c);
 
     if station && !table {
-        draw_station(canvas, ui, c);
+        draw_station(canvas, ui, weapons, view, c);
     } else if table {
         let [tx, ty, tw, th] = TABLE_BOX;
         canvas.quad(tx, ty + th - 26.0, tw, 26.0, [0.0, 0.0, 0.0, 0.35], "gradient_fadein_fadebottom", [0.0, 0.0, 1.0, 1.0], c);

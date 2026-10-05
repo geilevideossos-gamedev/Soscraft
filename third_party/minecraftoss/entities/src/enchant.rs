@@ -15,6 +15,7 @@ pub struct Enchantment {
     pub id: String,
     pub max_level: i32,
     pub weight: i32,
+    pub anvil_cost: i32,
     /// `Enchantment.Cost`: base and per level above the first.
     min_cost: (i32, i32),
     max_cost: (i32, i32),
@@ -118,6 +119,7 @@ impl Enchantments {
             .map(|(id, json)| Enchantment {
                 max_level: json["max_level"].as_i64().unwrap_or(1) as i32,
                 weight: json["weight"].as_i64().unwrap_or(1) as i32,
+                anvil_cost: json["anvil_cost"].as_i64().unwrap_or(1) as i32,
                 min_cost: cost(&json["min_cost"]),
                 max_cost: cost(&json["max_cost"]),
                 supported: holder_set(&json["supported_items"], item_tags).into_iter().collect(),
@@ -161,7 +163,7 @@ impl Enchantments {
     }
 
     /// `Enchantment.areCompatible`.
-    fn compatible(&self, a: usize, b: usize) -> bool {
+    pub fn compatible(&self, a: usize, b: usize) -> bool {
         a != b && !self.list[a].exclusive.contains(&self.list[b].id) && !self.list[b].exclusive.contains(&self.list[a].id)
     }
 
@@ -206,6 +208,10 @@ impl Enchantments {
     /// enchantability and spread by up to 15%, one enchantment by weight,
     /// then while a roll in 50 stays under the (halving) cost, another
     /// compatible one.
+    pub fn enchantable(&self, item: &str) -> i32 {
+        self.enchantable.get(item).copied().unwrap_or(0)
+    }
+
     pub fn select(&self, random: &mut dyn LootRandom, item: &str, mut cost: i32, source: &[usize]) -> Vec<(usize, i32)> {
         let mut results = Vec::new();
         let Some(&enchantable) = self.enchantable.get(item) else { return results };

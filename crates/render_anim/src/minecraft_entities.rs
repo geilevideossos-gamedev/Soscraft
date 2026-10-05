@@ -78,6 +78,8 @@ pub(crate) struct Entities {
     pub(crate) pearl_landings: Vec<DVec3>,
     pub(crate) destroyed: Vec<((i32, i32, i32), Block)>,
     pub(crate) experience_found: f32,
+    pub(crate) stations: std::sync::Arc<minecraft_terrain::stations::StationBook>,
+    pub(crate) enchantments: Option<std::sync::Arc<minecraftoss_entities::enchant::Enchantments>>,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -116,6 +118,8 @@ impl Entities {
         let jar = data_jar();
         let mut inventory = Inventory::default();
         let mut loot = None;
+        let mut stations = std::sync::Arc::default();
+        let mut enchantments = None;
         if let Some(jar) = jar {
             server.load_loot(jar.clone(), seed as u64);
             let catalog = minecraft_terrain::crafting::find_item_catalog(assets::minecraft_map::root().as_deref(), &jar);
@@ -135,6 +139,16 @@ impl Entities {
             match LootBook::from_jar(&jar) {
                 Ok(book) => loot = Some(book),
                 Err(error) => diag::warn!(World, "Minecraft block loot unavailable: {error:#}"),
+            }
+            match minecraft_terrain::stations::StationBook::from_jar(&jar) {
+                Ok(book) => stations = std::sync::Arc::new(book),
+                Err(error) => diag::warn!(World, "Minecraft station recipes unavailable: {error:#}"),
+            }
+            if let Some(catalog) = catalog.as_deref() {
+                match minecraftoss_entities::trading::TradeBook::from_jar(&jar, catalog) {
+                    Ok(book) => enchantments = Some(std::sync::Arc::new(book.enchantments)),
+                    Err(error) => diag::warn!(World, "Minecraft enchantments unavailable: {error:#}"),
+                }
             }
         } else {
             diag::warn!(World, "Minecraft data JAR not found: no loot or recipes");
@@ -168,6 +182,8 @@ impl Entities {
             pearl_landings: Vec::new(),
             destroyed: Vec::new(),
             experience_found: 0.0,
+            stations,
+            enchantments,
         }
     }
 

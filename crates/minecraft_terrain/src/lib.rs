@@ -53,3 +53,4 @@ pub mod doors;
 pub mod thrown;
 pub mod bottle;
 pub mod containers;
+pub mod stations;

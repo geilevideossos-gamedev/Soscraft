@@ -371,7 +371,10 @@ fn update(
                 runtime.minimap = Default::default();
                 runtime.containers = Default::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
-                runtime.entities = Some(crate::minecraft_entities::Entities::new(&world.stream, world.seed));
+                let entities = crate::minecraft_entities::Entities::new(&world.stream, world.seed);
+                runtime.containers.set_book(entities.stations.clone());
+                runtime.inventory_ui.set_station_data(entities.stations.clone(), entities.enchantments.clone(), world.seed as i32);
+                runtime.entities = Some(entities);
                 runtime.day = DayCycle::default();
                 // Game ticks since sunrise to start at: 6000 noon, 13000
                 // dusk, 18000 midnight.
@@ -644,17 +647,34 @@ fn update(
         }
     }
     if let Some(entities) = entities.as_mut() {
-        let mut lit = Vec::new();
+        let mut props = Vec::new();
+        let mut brewed = Vec::new();
         for _ in 0..hand_ticks {
-            lit.extend(containers.tick(&entities.inventory.recipes));
+            let ticked = containers.tick(&entities.inventory.recipes);
+            props.extend(ticked.props);
+            brewed.extend(ticked.brewed);
+            for (pos, stack) in ticked.drops {
+                entities.world_items.spawn_block_drop(stack, pos);
+            }
         }
-        let writes: Vec<_> = lit
-            .into_iter()
-            .filter_map(|(pos, on)| {
-                let block = minecraft_terrain::scene::Scene::block(&world.scene, pos)?;
-                block.properties.contains_key("lit").then(|| (pos, Some(block.clone().with("lit", if on { "true" } else { "false" }))))
-            })
-            .collect();
+        let mut writes: Vec<((i32, i32, i32), Option<minecraft_terrain::scene::Block>)> = Vec::new();
+        for (pos, name, on) in props {
+            let current = writes
+                .iter()
+                .rev()
+                .find(|(at, _)| *at == pos)
+                .and_then(|(_, block)| block.clone())
+                .or_else(|| minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned());
+            if let Some(block) = current.filter(|block| block.properties.contains_key(name)) {
+                writes.push((pos, Some(block.with(name, if on { "true" } else { "false" }))));
+            }
+        }
+        if let Some(sounds) = sounds.as_mut() {
+            for pos in brewed {
+                let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
+                sounds.play(&world.packs, "minecraft:block.brewing_stand.brew", Some(Vec3::from_array(sim::voxel::to_map(origin, centre))), 1.0, 1.0);
+            }
+        }
         if !writes.is_empty() {
             write_blocks(world, shapes, shape_ids, entities, writes);
         }
@@ -666,6 +686,7 @@ fn update(
     }
     let mut open_table = None;
     let mut open_block = None;
+    let mut open_bench = None;
     if let Some(entities) = entities.as_mut()
         && ui.holding_item
         && !ui.inventory_open
@@ -769,13 +790,18 @@ fn update(
                     let partner = minecraft_terrain::containers::chest_partner(pos, block).and_then(|at| minecraft_terrain::scene::Scene::block(&world.scene, at));
                     minecraft_terrain::containers::Opened::new(pos, block, partner)
                 });
+            let workshop = player
+                .target(&minecraft_terrain::doors::Outlined(&world.scene), 5.0)
+                .map(|hit| hit.pos)
+                .filter(|_| table.is_none() && station.is_none() && minecraft_terrain::crafting::opens_table(player.crouching, held.is_some()))
+                .and_then(|pos| minecraft_terrain::scene::Scene::block(&world.scene, pos).and_then(minecraft_terrain::stations::Workshop::of).map(|kind| (pos, kind)));
             let placeable = held.as_ref().is_some_and(|stack| {
                 let id = if stack.id == "minecraft:redstone" { "minecraft:redstone_wire" } else { stack.id.as_str() };
                 minecraft_terrain::pack::ResourceId::parse(id).is_ok_and(|id| {
                     world.stream.states.state_of(&minecraft_terrain::scene::Block { id, properties: Default::default() }).is_some()
                 })
             });
-            let used = if table.is_none() && station.is_none() && !(player.crouching && held.is_some()) {
+            let used = if table.is_none() && station.is_none() && workshop.is_none() && !(player.crouching && held.is_some()) {
                 let facing = minecraft_terrain::doors::facing(f64::from(mc_yaw));
                 player
                     .target(&minecraft_terrain::doors::Outlined(&world.scene), 5.0)
@@ -787,6 +813,11 @@ fn update(
             if let Some(pos) = table {
                 if use_pressed {
                     open_table = Some(pos);
+                    hand.swing = Some(0.0);
+                }
+            } else if let Some(bench) = workshop {
+                if use_pressed {
+                    open_bench = Some(bench);
                     hand.swing = Some(0.0);
                 }
             } else if let Some(opened) = station {
@@ -1167,6 +1198,13 @@ fn update(
         }) {
             ui.inventory_open = false;
         }
+        if inventory_ui.bench().is_some_and(|(pos, kind)| {
+            !minecraft_terrain::crafting::within_table_reach(eye, pos)
+                || minecraft_terrain::scene::Scene::block(&world.scene, pos).and_then(minecraft_terrain::stations::Workshop::of) != Some(kind)
+        }) {
+            ui.inventory_open = false;
+        }
+        inventory_ui.level = survival.status.experience_level;
         inventory_ui.sync_weapons(&mut entities.inventory, &owned);
         let mut selected = entities.selected;
         let was_open = inventory_ui.block().cloned();
@@ -1178,13 +1216,59 @@ fn update(
         if let Some(opened) = open_block.take() {
             inventory_ui.open_block(&mut ui, opened);
         }
+        if let Some((pos, kind)) = open_bench.take() {
+            if kind == minecraft_terrain::stations::Workshop::Enchanting {
+                let block_at = |at: (i32, i32, i32)| minecraft_terrain::scene::Scene::block(&world.scene, at);
+                inventory_ui.shelves = minecraft_terrain::stations::bookshelves(
+                    pos,
+                    |at| block_at(at).is_some_and(|b| b.id.key() == "minecraft:bookshelf"),
+                    |at| {
+                        block_at(at).is_none_or(|b| {
+                            world.stream.states.state_of(b).is_some_and(|state| world.registries.blocks.is(state, minecraftoss_core::block::flags::REPLACEABLE))
+                        })
+                    },
+                );
+            }
+            inventory_ui.open_bench(&mut ui, pos, kind);
+        }
+        survival.spend_levels(inventory_ui.take_spent_levels());
+        for (event, pos) in std::mem::take(&mut inventory_ui.used) {
+            let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
+            let pitch = entities.random_float() * 0.1 + 0.9;
+            if let Some(sounds) = sounds.as_mut() {
+                sounds.play(&world.packs, event, Some(at(centre)), 1.0, pitch);
+            }
+        }
+        if let Some(pos) = inventory_ui.anvil_used.take() {
+            let block = minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned();
+            let worn = entities.random_float() < 0.12;
+            let next = block.as_ref().filter(|_| worn).map(|b| match b.id.key().as_str() {
+                "minecraft:anvil" => Some("minecraft:chipped_anvil"),
+                "minecraft:chipped_anvil" => Some("minecraft:damaged_anvil"),
+                _ => None,
+            });
+            let event = if next == Some(None) { "minecraft:block.anvil.destroy" } else { "minecraft:block.anvil.use" };
+            if let Some(next) = next {
+                let state = next.map(|id| {
+                    let mut worn = minecraft_terrain::scene::Block::new(id);
+                    worn.properties = block.as_ref().map_or_else(Default::default, |b| b.properties.clone());
+                    worn
+                });
+                write_blocks(world, shapes, shape_ids, entities, vec![(pos, state)]);
+            }
+            let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
+            let pitch = entities.random_float() * 0.1 + 0.9;
+            if let Some(sounds) = sounds.as_mut() {
+                sounds.play(&world.packs, event, Some(at(centre)), 1.0, pitch);
+            }
+        }
         let now_open = inventory_ui.block().cloned();
         for (opened, open) in [(was_open.clone().filter(|o| now_open.as_ref() != Some(o)), false), (now_open.filter(|o| was_open.as_ref() != Some(o)), true)] {
             let Some(opened) = opened else { continue };
             let sound = match opened.station {
                 minecraft_terrain::containers::Station::Chest => Some(if open { "minecraft:block.chest.open" } else { "minecraft:block.chest.close" }),
                 minecraft_terrain::containers::Station::Barrel => Some(if open { "minecraft:block.barrel.open" } else { "minecraft:block.barrel.close" }),
-                minecraft_terrain::containers::Station::Oven(_) => None,
+                minecraft_terrain::containers::Station::Oven(_) | minecraft_terrain::containers::Station::Brewer => None,
             };
             let count = opened.cells.len() as f64;
             let centre = opened.cells.iter().fold([0.0; 3], |sum, &(x, y, z)| [sum[0] + (x as f64 + 0.5) / count, sum[1] + (y as f64 + 0.5) / count, sum[2] + (z as f64 + 0.5) / count]);

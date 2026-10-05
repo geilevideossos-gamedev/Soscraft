@@ -211,6 +211,70 @@ impl Survival {
         self.status.food.add_exhaustion(amount);
     }
 
+    pub(crate) fn drink_potion(&mut self, potion: &str) {
+        let name = potion.strip_prefix("minecraft:").unwrap_or(potion);
+        let (base, long, strong) = match name.split_once('_') {
+            Some(("long", base)) => (base, true, false),
+            Some(("strong", base)) => (base, false, true),
+            _ => (name, false, false),
+        };
+        let pick = |normal: u32, extended: u32, boosted: u32| {
+            if long {
+                extended
+            } else if strong {
+                boosted
+            } else {
+                normal
+            }
+        };
+        let level = u8::from(strong);
+        match base {
+            "fire_resistance" => {
+                self.status
+                    .add_effect(EffectKind::FireResistance, pick(3600, 9600, 3600), 0)
+            }
+            "slowness" => {
+                self.status
+                    .add_effect(EffectKind::Slowness, pick(1800, 4800, 400), level * 3)
+            }
+            "turtle_master" => {
+                let ticks = pick(400, 800, 400);
+                self.status
+                    .add_effect(EffectKind::Slowness, ticks, if strong { 5 } else { 3 });
+                self.status
+                    .add_effect(EffectKind::Resistance, ticks, if strong { 3 } else { 2 });
+            }
+            "healing" => self.status.heal(f32::from(4u8 << level)),
+            "harming" => {
+                let _ = self
+                    .status
+                    .hurt(f32::from(6u8 << level), Armor::default(), 0.0);
+            }
+            "poison" => self
+                .status
+                .add_effect(EffectKind::Poison, pick(900, 1800, 432), level),
+            "regeneration" => {
+                self.status
+                    .add_effect(EffectKind::Regeneration, pick(900, 1800, 450), level)
+            }
+            "weakness" => self
+                .status
+                .add_effect(EffectKind::Weakness, pick(1800, 4800, 1800), 0),
+            _ => {}
+        }
+    }
+
+    pub(crate) fn spend_levels(&mut self, levels: u32) {
+        let status = &mut self.status;
+        if status.experience_level < levels {
+            status.experience_level = 0;
+            status.experience_progress = 0.0;
+            status.total_experience = 0;
+        } else {
+            status.experience_level -= levels;
+        }
+    }
+
     pub(crate) fn gain_experience(&mut self, points: u32) -> Option<f32> {
         if points == 0 {
             return None;
@@ -301,8 +365,13 @@ impl Survival {
             }
             FoodUseTick::Finished { overflow } => {
                 let id = using.stack.id.clone();
+                let potion =
+                    minecraft_terrain::stations::potion_of(&using.stack).map(str::to_owned);
                 self.eating = None;
                 apply_consumed_food_effects(&id, &mut self.status, &mut random);
+                if let Some(potion) = potion {
+                    self.drink_potion(&potion);
+                }
                 let fed = minecraftoss_player::food::catalog().contains_key(&id);
                 Bite::Done {
                     sound,
@@ -653,6 +722,49 @@ mod tests {
     }
 
     #[test]
+    fn potions_apply_their_vanilla_effects() {
+        let mut survival = fresh();
+        survival.status.health = 10.0;
+        survival.drink_potion("minecraft:strong_healing");
+        assert!((survival.status.health - 18.0).abs() < 1e-6);
+        survival.drink_potion("minecraft:harming");
+        assert!((survival.status.health - 12.0).abs() < 1e-6);
+        survival.drink_potion("minecraft:long_poison");
+        assert_eq!(
+            survival
+                .status
+                .effect(EffectKind::Poison)
+                .map(|e| (e.duration, e.amplifier)),
+            Some((1800, 0))
+        );
+        survival.drink_potion("minecraft:strong_turtle_master");
+        assert_eq!(
+            survival
+                .status
+                .effect(EffectKind::Slowness)
+                .map(|e| (e.duration, e.amplifier)),
+            Some((400, 5))
+        );
+        assert_eq!(
+            survival
+                .status
+                .effect(EffectKind::Resistance)
+                .map(|e| e.amplifier),
+            Some(3)
+        );
+        survival.drink_potion("minecraft:long_fire_resistance");
+        assert_eq!(
+            survival
+                .status
+                .effect(EffectKind::FireResistance)
+                .map(|e| e.duration),
+            Some(9600)
+        );
+        survival.drink_potion("minecraft:water");
+        survival.drink_potion("minecraft:swiftness");
+    }
+
+    #[test]
     fn experience_levels_up_and_chimes_every_fifth_level() {
         let mut survival = fresh();
         assert_eq!(survival.gain_experience(7), None);
@@ -667,6 +779,11 @@ mod tests {
         );
         assert_eq!(survival.status.experience_level, 10);
         assert_eq!(survival.vitals().experience_level, 10);
+        survival.spend_levels(3);
+        assert_eq!(survival.status.experience_level, 7);
+        survival.spend_levels(30);
+        assert_eq!(survival.status.experience_level, 0);
+        assert_eq!(survival.status.total_experience, 0);
     }
 
     #[test]

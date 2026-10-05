@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use minecraftoss_player::crafting::{CookingKind, RecipeBook};
 use minecraftoss_player::furnace::Furnace;
@@ -6,6 +7,7 @@ use minecraftoss_player::inventory::{Inventory, ItemStack};
 
 use crate::crafting::{move_into, result_order};
 use crate::scene::{Block, BlockPos};
+use crate::stations::StationBook;
 
 pub const CHEST_SLOTS: usize = 27;
 const HOTBAR: usize = 9;
@@ -13,12 +15,19 @@ const STORAGE: usize = 36;
 const INPUT: usize = 0;
 const FUEL: usize = 1;
 const OUTPUT: usize = 2;
+const BREWER_SLOTS: usize = 5;
+const BOTTLES: usize = 3;
+const REAGENT: usize = 3;
+const BLAZE: usize = 4;
+const BREW_TICKS: u32 = 400;
+const FUEL_USES: u32 = 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Station {
     Chest,
     Barrel,
     Oven(CookingKind),
+    Brewer,
 }
 
 impl Station {
@@ -32,6 +41,7 @@ impl Station {
             "furnace" => Some(Self::Oven(CookingKind::Furnace)),
             "smoker" => Some(Self::Oven(CookingKind::Smoker)),
             "blast_furnace" => Some(Self::Oven(CookingKind::BlastFurnace)),
+            "brewing_stand" => Some(Self::Brewer),
             _ => None,
         }
     }
@@ -44,6 +54,7 @@ impl Station {
             Self::Oven(CookingKind::Furnace) => "FURNACE",
             Self::Oven(CookingKind::Smoker) => "SMOKER",
             Self::Oven(CookingKind::BlastFurnace) => "BLAST FURNACE",
+            Self::Brewer => "BREWING STAND",
         }
     }
 }
@@ -90,7 +101,7 @@ impl Opened {
 
     pub fn rows(&self) -> usize {
         match self.station {
-            Station::Oven(_) => 0,
+            Station::Oven(_) | Station::Brewer => 0,
             _ => 3 * self.cells.len(),
         }
     }
@@ -98,6 +109,7 @@ impl Opened {
     pub fn size(&self) -> usize {
         match self.station {
             Station::Oven(_) => 3,
+            Station::Brewer => BREWER_SLOTS,
             _ => CHEST_SLOTS * self.cells.len(),
         }
     }
@@ -191,10 +203,109 @@ impl Oven {
     }
 }
 
+fn shrink(cell: &mut Option<ItemStack>, by: u8) {
+    if let Some(stack) = cell.as_mut() {
+        stack.count = stack.count.saturating_sub(by);
+        if stack.count == 0 {
+            *cell = None;
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Brewer {
+    pub slots: [Option<ItemStack>; BREWER_SLOTS],
+    pub brew_time: u32,
+    pub fuel: u32,
+    ingredient: Option<String>,
+    shown: [bool; BOTTLES],
+}
+
+impl Brewer {
+    fn brewable(&self, book: &StationBook, recipes: &RecipeBook) -> bool {
+        let Some(reagent) = self.slots[REAGENT].as_ref() else {
+            return false;
+        };
+        book.is_reagent(&reagent.id, recipes)
+            && self.slots[..BOTTLES]
+                .iter()
+                .flatten()
+                .any(|bottle| book.brew(bottle, &reagent.id, recipes).is_some())
+    }
+
+    pub fn tick(&mut self, book: &StationBook, recipes: &RecipeBook) -> (bool, Option<ItemStack>) {
+        let blaze = self.slots[BLAZE]
+            .as_ref()
+            .is_some_and(|s| s.id == "minecraft:blaze_powder");
+        if self.fuel == 0 && blaze {
+            self.fuel = FUEL_USES;
+            shrink(&mut self.slots[BLAZE], 1);
+        }
+        let brewable = self.brewable(book, recipes);
+        let reagent = self.slots[REAGENT].as_ref().map(|s| s.id.clone());
+        if self.brew_time > 0 {
+            self.brew_time -= 1;
+            if self.brew_time == 0 && brewable {
+                return (true, self.brew(book, recipes));
+            }
+            if !brewable || reagent != self.ingredient {
+                self.brew_time = 0;
+            }
+        } else if brewable && self.fuel > 0 {
+            self.fuel -= 1;
+            self.brew_time = BREW_TICKS;
+            self.ingredient = reagent;
+        }
+        (false, None)
+    }
+
+    fn brew(&mut self, book: &StationBook, recipes: &RecipeBook) -> Option<ItemStack> {
+        let reagent = self.slots[REAGENT].clone()?;
+        for bottle in &mut self.slots[..BOTTLES] {
+            if let Some(next) = bottle
+                .as_ref()
+                .and_then(|b| book.brew(b, &reagent.id, recipes))
+            {
+                *bottle = Some(next);
+            }
+        }
+        shrink(&mut self.slots[REAGENT], 1);
+        let rest = recipes.crafting_remainder(&reagent.id)?;
+        if self.slots[REAGENT].is_none() {
+            self.slots[REAGENT] = Some(rest);
+            None
+        } else {
+            Some(rest)
+        }
+    }
+
+    pub fn bottles(&self) -> [bool; BOTTLES] {
+        std::array::from_fn(|i| self.slots[i].is_some())
+    }
+
+    pub fn progress(&self) -> [f32; 2] {
+        let brewing = if self.brew_time > 0 {
+            (BREW_TICKS - self.brew_time) as f32 / BREW_TICKS as f32
+        } else {
+            0.0
+        };
+        [self.fuel as f32 / FUEL_USES as f32, brewing]
+    }
+}
+
 #[derive(Default)]
 pub struct Containers {
     chests: HashMap<BlockPos, Vec<Option<ItemStack>>>,
     ovens: HashMap<BlockPos, Oven>,
+    brewers: HashMap<BlockPos, Brewer>,
+    book: Arc<StationBook>,
+}
+
+#[derive(Default)]
+pub struct Ticked {
+    pub props: Vec<(BlockPos, &'static str, bool)>,
+    pub brewed: Vec<BlockPos>,
+    pub drops: Vec<(BlockPos, ItemStack)>,
 }
 
 pub struct Changed {
@@ -202,13 +313,24 @@ pub struct Changed {
 }
 
 impl Containers {
+    pub fn set_book(&mut self, book: Arc<StationBook>) {
+        self.book = book;
+    }
+
     pub fn oven(&self, pos: BlockPos) -> Option<&Oven> {
         self.ovens.get(&pos)
+    }
+
+    pub fn brewer(&self, pos: BlockPos) -> Option<&Brewer> {
+        self.brewers.get(&pos)
     }
 
     pub fn remove(&mut self, pos: BlockPos) -> (Vec<ItemStack>, f32) {
         if let Some(cells) = self.chests.remove(&pos) {
             return (cells.into_iter().flatten().collect(), 0.0);
+        }
+        if let Some(brewer) = self.brewers.remove(&pos) {
+            return (brewer.slots.into_iter().flatten().collect(), 0.0);
         }
         match self.ovens.remove(&pos) {
             Some(mut oven) => (oven.furnace.take_contents(), oven.experience),
@@ -216,15 +338,37 @@ impl Containers {
         }
     }
 
-    pub fn tick(&mut self, recipes: &RecipeBook) -> Vec<(BlockPos, bool)> {
-        let mut lit = Vec::new();
+    pub fn tick(&mut self, recipes: &RecipeBook) -> Ticked {
+        let mut ticked = Ticked::default();
         for (pos, oven) in &mut self.ovens {
             if oven.tick(recipes) {
-                lit.push((*pos, oven.is_lit()));
+                ticked.props.push((*pos, "lit", oven.is_lit()));
             }
         }
-        lit.sort_unstable_by_key(|(pos, _)| *pos);
-        lit
+        for (pos, brewer) in &mut self.brewers {
+            let (brewed, drop) = brewer.tick(&self.book, recipes);
+            if brewed {
+                ticked.brewed.push(*pos);
+            }
+            if let Some(stack) = drop {
+                ticked.drops.push((*pos, stack));
+            }
+            let bottles = brewer.bottles();
+            for (i, name) in ["has_bottle_0", "has_bottle_1", "has_bottle_2"]
+                .into_iter()
+                .enumerate()
+            {
+                if bottles[i] != brewer.shown[i] {
+                    ticked.props.push((*pos, name, bottles[i]));
+                }
+            }
+            brewer.shown = bottles;
+        }
+        ticked
+            .props
+            .sort_unstable_by_key(|(pos, name, _)| (*pos, *name));
+        ticked.brewed.sort_unstable();
+        ticked
     }
 
     pub fn cells(&mut self, opened: &Opened) -> Vec<Option<ItemStack>> {
@@ -234,6 +378,12 @@ impl Containers {
                 .entry(opened.cells[0])
                 .or_insert_with(|| Oven::new(kind))
                 .furnace
+                .slots
+                .to_vec(),
+            Station::Brewer => self
+                .brewers
+                .entry(opened.cells[0])
+                .or_default()
                 .slots
                 .to_vec(),
             _ => opened
@@ -261,6 +411,12 @@ impl Containers {
                     *slot = cell;
                 }
                 oven.refresh(&before, recipes);
+            }
+            Station::Brewer => {
+                let brewer = self.brewers.entry(opened.cells[0]).or_default();
+                for (slot, cell) in brewer.slots.iter_mut().zip(cells) {
+                    *slot = cell;
+                }
             }
             _ => {
                 for (pos, half) in opened.cells.iter().zip(cells.chunks(CHEST_SLOTS)) {
@@ -306,11 +462,16 @@ impl Containers {
                 cells[index] = (stack.count > 0).then_some(stack);
             }
         } else {
-            let may_place = inventory
-                .cursor
-                .as_ref()
-                .is_some_and(|carried| accepts(opened, index, carried, &inventory.recipes));
-            pick(&mut cells[index], &mut inventory.cursor, right, may_place);
+            let may_place = inventory.cursor.as_ref().is_some_and(|carried| {
+                accepts(&self.book, opened, index, carried, &inventory.recipes)
+            });
+            pick(
+                &mut cells[index],
+                &mut inventory.cursor,
+                right,
+                may_place,
+                limit(opened, index),
+            );
         }
         let taken = output && cells[index] != had;
         if let Some(stack) = had.as_ref().filter(|_| taken) {
@@ -347,6 +508,35 @@ impl Containers {
                 } else if recipes.is_fuel(&stack.id) {
                     move_into(&mut cells, &mut stack, &[FUEL]);
                 } else {
+                    let order: Vec<usize> = if slot >= HOTBAR {
+                        (0..HOTBAR).collect()
+                    } else {
+                        (HOTBAR..STORAGE).collect()
+                    };
+                    move_into(&mut inventory.slots, &mut stack, &order);
+                }
+            }
+            Station::Brewer => {
+                let recipes = inventory.recipes.clone();
+                let reagent = self.book.is_reagent(&stack.id, &recipes);
+                let bottle = accepts(&self.book, opened, 0, &stack, &recipes);
+                let before = stack.count;
+                if stack.id == "minecraft:blaze_powder" {
+                    move_into(&mut cells, &mut stack, &[BLAZE]);
+                }
+                if stack.count == before && reagent {
+                    move_into(&mut cells, &mut stack, &[REAGENT]);
+                } else if stack.count == before && bottle {
+                    for cell in &mut cells[..BOTTLES] {
+                        if stack.count > 0 && cell.is_none() {
+                            *cell = Some(ItemStack {
+                                count: 1,
+                                ..stack.clone()
+                            });
+                            stack.count -= 1;
+                        }
+                    }
+                } else if stack.count == before {
                     let order: Vec<usize> = if slot >= HOTBAR {
                         (0..HOTBAR).collect()
                     } else {
@@ -392,14 +582,25 @@ impl Containers {
                 true
             }
             (Some(item), None) => {
-                if !accepts(opened, index, item, &inventory.recipes) {
+                if !accepts(&self.book, opened, index, item, &inventory.recipes) {
                     return none;
                 }
-                cells[index] = inventory.slots[hotbar].take();
+                let cap = limit(opened, index);
+                if item.count > cap {
+                    cells[index] = Some(ItemStack {
+                        count: cap,
+                        ..item.clone()
+                    });
+                    shrink(&mut inventory.slots[hotbar], cap);
+                } else {
+                    cells[index] = inventory.slots[hotbar].take();
+                }
                 false
             }
             (Some(item), Some(_)) => {
-                if !accepts(opened, index, item, &inventory.recipes) {
+                if !accepts(&self.book, opened, index, item, &inventory.recipes)
+                    || item.count > limit(opened, index)
+                {
                     return none;
                 }
                 std::mem::swap(&mut cells[index], &mut inventory.slots[hotbar]);
@@ -433,8 +634,9 @@ impl Containers {
             .chain(cells_at.iter().map(|&cell| base + cell))
             .collect();
         let recipes = inventory.recipes.clone();
+        let book = self.book.clone();
         inventory.distribute_external(&indices, right, &mut cells, |index, stack| {
-            accepts(opened, index, stack, &recipes)
+            accepts(&book, opened, index, stack, &recipes) && limit(opened, index) > 1
         });
         self.store(opened, cells, &inventory.recipes);
     }
@@ -487,25 +689,51 @@ fn is_output(opened: &Opened, index: usize) -> bool {
     matches!(opened.station, Station::Oven(_)) && index == OUTPUT
 }
 
-fn accepts(opened: &Opened, index: usize, stack: &ItemStack, recipes: &RecipeBook) -> bool {
+fn limit(opened: &Opened, index: usize) -> u8 {
+    if opened.station == Station::Brewer && index < BOTTLES {
+        1
+    } else {
+        u8::MAX
+    }
+}
+
+fn accepts(
+    book: &StationBook,
+    opened: &Opened,
+    index: usize,
+    stack: &ItemStack,
+    recipes: &RecipeBook,
+) -> bool {
     match (opened.station, index) {
         (Station::Oven(_), OUTPUT) => false,
         (Station::Oven(_), FUEL) => recipes.is_fuel(&stack.id) || stack.id == "minecraft:bucket",
+        (Station::Brewer, REAGENT) => book.is_reagent(&stack.id, recipes),
+        (Station::Brewer, BLAZE) => stack.id == "minecraft:blaze_powder",
+        (Station::Brewer, _) => matches!(
+            stack.id.as_str(),
+            "minecraft:potion"
+                | "minecraft:splash_potion"
+                | "minecraft:lingering_potion"
+                | "minecraft:glass_bottle"
+        ),
         _ => true,
     }
 }
 
-fn pick(
+pub(crate) fn pick(
     cell: &mut Option<ItemStack>,
     cursor: &mut Option<ItemStack>,
     right: bool,
     may_place: bool,
+    limit: u8,
 ) {
     match (cell.as_mut(), cursor.as_mut()) {
         (None, None) => {}
         (None, Some(carried)) => {
             if may_place {
-                let moved = if right { 1 } else { carried.count }.min(carried.max);
+                let moved = if right { 1 } else { carried.count }
+                    .min(carried.max)
+                    .min(limit);
                 *cell = Some(ItemStack {
                     count: moved,
                     ..carried.clone()
@@ -533,14 +761,14 @@ fn pick(
         }
         (Some(stack), Some(carried)) => {
             if may_place && stack.same_item(carried) {
-                let room = stack.max.saturating_sub(stack.count);
+                let room = stack.max.min(limit).saturating_sub(stack.count);
                 let moved = if right { 1 } else { carried.count }.min(room);
                 stack.count += moved;
                 carried.count -= moved;
                 if carried.count == 0 {
                     *cursor = None;
                 }
-            } else if may_place {
+            } else if may_place && carried.count <= limit {
                 std::mem::swap(cell, cursor);
             } else if stack.same_item(carried) && carried.count + stack.count <= carried.max {
                 carried.count += stack.count;
@@ -702,9 +930,9 @@ mod tests {
         inventory.cursor = None;
         let mut lit = Vec::new();
         for _ in 0..400 {
-            lit.extend(store.tick(&inventory.recipes));
+            lit.extend(store.tick(&inventory.recipes).props);
         }
-        assert_eq!(lit, vec![((0, 64, 0), true)]);
+        assert_eq!(lit, vec![((0, 64, 0), "lit", true)]);
         let oven = store.oven((0, 64, 0)).unwrap();
         assert_eq!(oven.furnace.slots[2].as_ref().map(|s| s.count), Some(2));
         assert!((oven.experience - 1.4).abs() < 1e-4);
@@ -727,6 +955,64 @@ mod tests {
             blast_oven.furnace.slots[2].as_ref().map(|s| s.count),
             Some(1)
         );
+    }
+
+    #[test]
+    fn a_brewing_stand_brews_with_blaze_powder_while_closed() {
+        let dir = crate::test_dir::tempdir().unwrap();
+        let jar = dir.path().join("client.jar");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&jar).unwrap());
+        zip.start_file(
+            "data/minecraft/recipe/brewing/potion_water_nether_wart.json",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        let recipe = json!({"type": "minecraft:brewing", "input": {"item": "minecraft:potion", "potion_contents": {"potions": "minecraft:water"}}, "reagent": {"item": "minecraft:nether_wart"}, "output": {"id": "minecraft:potion", "components": {"minecraft:potion_contents": {"potion": "minecraft:awkward"}}}});
+        zip.write_all(recipe.to_string().as_bytes()).unwrap();
+        zip.finish().unwrap();
+        let mut store = Containers::default();
+        store.set_book(Arc::new(StationBook::from_jar(&jar).unwrap()));
+        let mut inventory = Inventory::default().with_recipes(RecipeBook::from_jar(&jar).unwrap());
+        let pos = (3, 64, 3);
+        let opened = Opened::new(pos, &block("minecraft:brewing_stand", &[]), None).unwrap();
+        assert_eq!(opened.size(), 5);
+        for slot in 10..13 {
+            inventory.slots[slot] = Some(crate::bottle::water_bottle());
+        }
+        inventory.slots[14] = Some(inventory.recipes.stack("minecraft:nether_wart", 2));
+        inventory.slots[15] = Some(inventory.recipes.stack("minecraft:blaze_powder", 1));
+        for slot in [15, 14, 10, 11, 12] {
+            store.quick_move_from_player(&opened, &mut inventory, slot);
+        }
+        let cells = store.cells(&opened);
+        assert!(cells[..3].iter().all(Option::is_some));
+        assert_eq!(cells[3].as_ref().map(|s| s.count), Some(2));
+        assert_eq!(
+            cells[4].as_ref().map(|s| s.id.as_str()),
+            Some("minecraft:blaze_powder")
+        );
+        let first = store.tick(&inventory.recipes);
+        assert_eq!(first.props.len(), 3);
+        assert_eq!(store.brewer(pos).unwrap().fuel, 19);
+        let mut brewed = Vec::new();
+        for _ in 0..400 {
+            brewed.extend(store.tick(&inventory.recipes).brewed);
+        }
+        assert_eq!(brewed, vec![pos]);
+        let cells = store.cells(&opened);
+        assert!(
+            cells[..3]
+                .iter()
+                .all(|b| b.as_ref().and_then(crate::stations::potion_of)
+                    == Some("minecraft:awkward"))
+        );
+        assert_eq!(cells[3].as_ref().map(|s| s.count), Some(1));
+        assert!(cells[4].is_none(), "the powder became twenty uses of fuel");
+        store.click(&opened, &mut inventory, 0, false, false, 0.0);
+        inventory.cursor = Some(inventory.recipes.stack("minecraft:glass_bottle", 4));
+        store.click(&opened, &mut inventory, 0, false, false, 0.0);
+        assert_eq!(store.cells(&opened)[0].as_ref().map(|s| s.count), Some(1));
+        assert_eq!(inventory.cursor.as_ref().map(|s| s.count), Some(3));
     }
 
     #[test]

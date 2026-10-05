@@ -135,8 +135,8 @@ pub enum BottleUse {
 
 pub fn bottle_use(player: &Player, world: &impl World, held: &ItemStack) -> Option<BottleUse> {
     let glass = held.id == GLASS_BOTTLE;
-    let water = is_water_bottle(held);
-    if !glass && !water {
+    let potion = held.id == POTION;
+    if !glass && !potion {
         return None;
     }
     if let Some(hit) = player.target(world, REACH) {
@@ -161,7 +161,7 @@ pub fn bottle_use(player: &Player, world: &impl World, held: &ItemStack) -> Opti
             }
         }
     }
-    if water {
+    if potion {
         return Some(BottleUse::Drink);
     }
     let hit = player.target_source_fluid(world, REACH)?;
