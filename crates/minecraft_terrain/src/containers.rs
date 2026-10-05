@@ -11,6 +11,7 @@ use crate::stations::StationBook;
 
 pub const CHEST_SLOTS: usize = 27;
 const HOTBAR: usize = 9;
+const OFFHAND: usize = 40;
 const STORAGE: usize = 36;
 const INPUT: usize = 0;
 const FUEL: usize = 1;
@@ -675,7 +676,7 @@ impl Containers {
     ) -> Changed {
         let mut cells = self.cells(opened);
         let none = Changed { experience: 0 };
-        if index >= cells.len() || hotbar >= HOTBAR {
+        if index >= cells.len() || (hotbar >= HOTBAR && hotbar != OFFHAND) {
             return none;
         }
         let output = is_output(opened, index);
@@ -740,10 +741,54 @@ impl Containers {
             .collect();
         let recipes = inventory.recipes.clone();
         let book = self.book.clone();
-        inventory.distribute_external(&indices, right, &mut cells, |index, stack| {
-            accepts(&book, opened, index, stack, &recipes) && limit(opened, index) > 1
+        inventory.distribute_limited(&indices, right, &mut cells, |index, stack| {
+            accepts(&book, opened, index, stack, &recipes).then(|| limit(opened, index))
         });
         self.store(opened, cells, &inventory.recipes);
+    }
+
+    pub fn accepts(
+        &self,
+        opened: &Opened,
+        index: usize,
+        stack: &ItemStack,
+        recipes: &RecipeBook,
+    ) -> Option<u8> {
+        (index < opened.size()
+            && !is_output(opened, index)
+            && accepts(&self.book, opened, index, stack, recipes))
+        .then(|| limit(opened, index).min(stack.max))
+    }
+
+    pub fn throw(
+        &mut self,
+        opened: &Opened,
+        inventory: &mut Inventory,
+        index: usize,
+        whole: bool,
+        roll: f32,
+    ) -> (Option<ItemStack>, Changed) {
+        let mut cells = self.cells(opened);
+        let Some(stack) = cells.get_mut(index).and_then(Option::as_mut) else {
+            return (None, Changed { experience: 0 });
+        };
+        let count = if whole { stack.count } else { 1 };
+        let thrown = ItemStack {
+            count,
+            ..stack.clone()
+        };
+        shrink(&mut cells[index], count);
+        let output = is_output(opened, index);
+        if output {
+            inventory.record_crafted(&thrown);
+        }
+        self.store(opened, cells, &inventory.recipes);
+        let experience = if output {
+            self.take_output(opened, roll)
+        } else {
+            0
+        };
+        (Some(thrown), Changed { experience })
     }
 
     pub fn gather(&mut self, opened: &Opened, inventory: &mut Inventory, right: bool) {
@@ -1202,5 +1247,76 @@ mod tests {
             Some("minecraft:dirt")
         );
         assert!(inventory.slots[3].is_none());
+    }
+
+    #[test]
+    fn q_throws_one_or_a_whole_stack_out_of_a_container() {
+        let mut store = Containers::default();
+        let mut inventory = player();
+        let opened = Opened::new((0, 64, 0), &block("minecraft:barrel", &[]), None).unwrap();
+        inventory.cursor = Some(inventory.recipes.stack("minecraft:dirt", 5));
+        store.click(&opened, &mut inventory, 3, false, false, 0.0);
+        let (one, _) = store.throw(&opened, &mut inventory, 3, false, 0.0);
+        assert_eq!(one.map(|s| s.count), Some(1));
+        assert_eq!(store.cells(&opened)[3].as_ref().map(|s| s.count), Some(4));
+        let (rest, _) = store.throw(&opened, &mut inventory, 3, true, 0.0);
+        assert_eq!(rest.map(|s| s.count), Some(4));
+        assert!(store.cells(&opened)[3].is_none());
+        assert!(store.throw(&opened, &mut inventory, 3, true, 0.0).0.is_none());
+    }
+
+    #[test]
+    fn f_swaps_a_cell_with_the_offhand_and_drags_only_where_items_fit() {
+        let mut store = Containers::default();
+        let mut inventory = player();
+        let opened = furnace_opened();
+        inventory.slots[OFFHAND] = Some(inventory.recipes.stack("minecraft:raw_iron", 3));
+        store.swap(&opened, &mut inventory, 0, OFFHAND, 0.0);
+        assert_eq!(
+            store.cells(&opened)[0].as_ref().map(|s| s.id.as_str()),
+            Some("minecraft:raw_iron")
+        );
+        assert!(inventory.slots[OFFHAND].is_none());
+        let iron = inventory.recipes.stack("minecraft:raw_iron", 1);
+        assert_eq!(
+            store.accepts(&opened, 0, &iron, &inventory.recipes),
+            Some(iron.max)
+        );
+        assert_eq!(store.accepts(&opened, 1, &iron, &inventory.recipes), None);
+        assert_eq!(store.accepts(&opened, 2, &iron, &inventory.recipes), None);
+        let brewer =
+            Opened::new((1, 64, 0), &block("minecraft:brewing_stand", &[]), None).unwrap();
+        let bottle = inventory.recipes.stack("minecraft:glass_bottle", 16);
+        assert_eq!(
+            store.accepts(&brewer, 0, &bottle, &inventory.recipes),
+            Some(1)
+        );
+        assert_eq!(store.accepts(&brewer, 4, &bottle, &inventory.recipes), None);
+    }
+
+    #[test]
+    fn a_drag_puts_one_bottle_in_each_brewing_slot_and_counts_full_slots() {
+        let mut store = Containers::default();
+        let mut inventory = player();
+        let brewer =
+            Opened::new((1, 64, 0), &block("minecraft:brewing_stand", &[]), None).unwrap();
+        inventory.cursor = Some(inventory.recipes.stack("minecraft:glass_bottle", 5));
+        store.spread(&brewer, &mut inventory, &[], &[0, 1, 2], false);
+        let cells = store.cells(&brewer);
+        assert!(cells[..BOTTLES]
+            .iter()
+            .all(|cell| cell.as_ref().map(|s| s.count) == Some(1)));
+        assert_eq!(inventory.cursor.as_ref().map(|s| s.count), Some(2));
+        let barrel = Opened::new((2, 64, 0), &block("minecraft:barrel", &[]), None).unwrap();
+        inventory.cursor = Some(inventory.recipes.stack("minecraft:dirt", 64));
+        store.click(&barrel, &mut inventory, 0, false, false, 0.0);
+        inventory.cursor = Some(inventory.recipes.stack("minecraft:dirt", 30));
+        store.spread(&barrel, &mut inventory, &[], &[0, 1, 2], false);
+        let counts: Vec<u8> = store.cells(&barrel)[..3]
+            .iter()
+            .map(|cell| cell.as_ref().map_or(0, |s| s.count))
+            .collect();
+        assert_eq!(counts, vec![64, 10, 10]);
+        assert_eq!(inventory.cursor.as_ref().map(|s| s.count), Some(10));
     }
 }

@@ -14,6 +14,7 @@ use crate::scene::{Block, BlockPos};
 
 const HOTBAR: usize = 9;
 const STORAGE: usize = 36;
+const OFFHAND: usize = 40;
 pub const TOO_EXPENSIVE: u32 = 40;
 const NAME_LIMIT: usize = 50;
 
@@ -539,7 +540,7 @@ impl Bench {
         inventory: &mut Inventory,
         ctx: &Context<'_>,
     ) {
-        if index >= self.cells.len() || hotbar >= HOTBAR {
+        if index >= self.cells.len() || (hotbar >= HOTBAR && hotbar != OFFHAND) {
             return;
         }
         let before = self.cells[0].clone();
@@ -569,8 +570,8 @@ impl Bench {
             .collect();
         let before = self.cells[0].clone();
         let kind = self.kind;
-        inventory.distribute_external(&indices, right, &mut self.cells, |index, stack| {
-            accepts(kind, index, stack, ctx)
+        inventory.distribute_limited(&indices, right, &mut self.cells, |index, stack| {
+            accepts(kind, index, stack, ctx).then(|| cell_limit(kind, index))
         });
         self.input_changed(&before);
     }
@@ -603,7 +604,7 @@ impl Bench {
                 &mut inventory.cursor,
                 right,
                 may_place,
-                u8::MAX,
+                cell_limit(self.kind, index),
             );
         }
         self.input_changed(&before);
@@ -622,6 +623,18 @@ impl Bench {
             return;
         };
         let before = self.cells[0].clone();
+        if self.kind == Workshop::Enchanting && stack.id != "minecraft:lapis_lazuli" {
+            if self.cells[0].is_none() && self.accepts(0, &stack, ctx) {
+                self.cells[0] = Some(ItemStack {
+                    count: 1,
+                    ..stack.clone()
+                });
+                stack.count -= 1;
+            }
+            inventory.slots[slot] = (stack.count > 0).then_some(stack);
+            self.input_changed(&before);
+            return;
+        }
         let cuts = self.kind != Workshop::Stonecutter
             || !ctx
                 .book
@@ -831,10 +844,82 @@ impl Bench {
         self.name = Some(name.chars().take(NAME_LIMIT).collect());
     }
 
+    pub fn accepts_stack(&self, index: usize, stack: &ItemStack, ctx: &Context<'_>) -> Option<u8> {
+        if index >= self.cells.len() || !self.accepts(index, stack, ctx) {
+            return None;
+        }
+        Some(cell_limit(self.kind, index).min(stack.max))
+    }
+
+    pub fn throw(&mut self, index: usize, whole: bool) -> Option<ItemStack> {
+        let before = self.cells[0].clone();
+        let cell = self.cells.get_mut(index)?;
+        let stack = cell.as_mut()?;
+        let count = if whole { stack.count } else { 1 };
+        let thrown = ItemStack {
+            count,
+            ..stack.clone()
+        };
+        stack.count -= count;
+        if stack.count == 0 {
+            *cell = None;
+        }
+        self.input_changed(&before);
+        Some(thrown)
+    }
+
+    pub fn gather(&mut self, inventory: &mut Inventory, right: bool) {
+        let Some(mut carried) = inventory.cursor.take() else {
+            return;
+        };
+        let before = self.cells[0].clone();
+        let mut order: Vec<(bool, usize)> = (0..self.cells.len())
+            .map(|index| (true, index))
+            .chain((HOTBAR..STORAGE).chain(0..HOTBAR).map(|slot| (false, slot)))
+            .collect();
+        if right {
+            order.reverse();
+        }
+        for pass in 0..2 {
+            for &(cell, index) in &order {
+                if carried.count >= carried.max {
+                    break;
+                }
+                let source = if cell {
+                    &mut self.cells[index]
+                } else {
+                    &mut inventory.slots[index]
+                };
+                let Some(stack) = source.as_mut() else {
+                    continue;
+                };
+                if !stack.same_item(&carried) || (pass == 0 && stack.count >= stack.max) {
+                    continue;
+                }
+                let moved = stack.count.min(carried.max - carried.count);
+                carried.count += moved;
+                stack.count -= moved;
+                if stack.count == 0 {
+                    *source = None;
+                }
+            }
+        }
+        inventory.cursor = Some(carried);
+        self.input_changed(&before);
+    }
+
     pub fn close(&mut self) -> Vec<ItemStack> {
         self.chosen = None;
         self.name = None;
         self.cells.iter_mut().filter_map(Option::take).collect()
+    }
+}
+
+fn cell_limit(kind: Workshop, index: usize) -> u8 {
+    if kind == Workshop::Enchanting && index == 0 {
+        1
+    } else {
+        u8::MAX
     }
 }
 
@@ -1420,6 +1505,60 @@ mod tests {
         );
         assert!(book.is_reagent("minecraft:nether_wart", &recipes));
         assert!(!book.is_reagent("minecraft:dirt", &recipes));
+    }
+
+    #[test]
+    fn bench_cells_throw_swap_with_the_offhand_and_gather_into_the_cursor() {
+        let (book, recipes) = setup();
+        let ctx = ctx(&book, &recipes, 0);
+        let mut inventory = Inventory::default();
+        let mut bench = Bench::new(Workshop::Stonecutter);
+        bench.cells[0] = Some(recipes.stack("minecraft:stone", 5));
+        assert_eq!(bench.throw(0, false).map(|s| s.count), Some(1));
+        assert_eq!(bench.cells[0].as_ref().map(|s| s.count), Some(4));
+        inventory.slots[OFFHAND] = Some(recipes.stack("minecraft:stone", 2));
+        bench.swap(0, OFFHAND, &mut inventory, &ctx);
+        assert_eq!(bench.cells[0].as_ref().map(|s| s.count), Some(2));
+        assert_eq!(inventory.slots[OFFHAND].as_ref().map(|s| s.count), Some(4));
+        inventory.slots[12] = Some(recipes.stack("minecraft:stone", 7));
+        inventory.cursor = Some(recipes.stack("minecraft:stone", 1));
+        bench.gather(&mut inventory, false);
+        assert_eq!(inventory.cursor.as_ref().map(|s| s.count), Some(10));
+        assert!(bench.cells[0].is_none() && inventory.slots[12].is_none());
+        assert_eq!(inventory.slots[OFFHAND].as_ref().map(|s| s.count), Some(4));
+        assert_eq!(bench.throw(0, true), None);
+        let mut enchanting = Bench::new(Workshop::Enchanting);
+        let sword = damaged("minecraft:diamond_sword", 0, 1561);
+        assert_eq!(enchanting.accepts_stack(0, &sword, &ctx), Some(1));
+        assert_eq!(enchanting.accepts_stack(1, &sword, &ctx), None);
+        enchanting.cells[1] = Some(recipes.stack("minecraft:lapis_lazuli", 3));
+        assert_eq!(enchanting.throw(1, true).map(|s| s.count), Some(3));
+    }
+
+    #[test]
+    fn the_enchanting_slot_takes_one_item_by_click_drag_and_shift_click() {
+        let (book, recipes) = setup();
+        let ctx = ctx(&book, &recipes, 0);
+        let mut inventory = Inventory::default();
+        let mut bench = Bench::new(Workshop::Enchanting);
+        inventory.cursor = Some(recipes.stack("minecraft:book", 4));
+        bench.click(0, false, false, &mut inventory, &ctx);
+        assert_eq!(bench.cells[0].as_ref().map(|s| s.count), Some(1));
+        assert_eq!(inventory.cursor.as_ref().map(|s| s.count), Some(3));
+        bench.cells[0] = None;
+        bench.spread(&[9], &[0], false, &mut inventory, &ctx);
+        assert_eq!(bench.cells[0].as_ref().map(|s| s.count), Some(1));
+        assert_eq!(inventory.slots[9].as_ref().map(|s| s.count), Some(1));
+        assert_eq!(inventory.cursor.as_ref().map(|s| s.count), Some(1));
+        bench.cells[0] = None;
+        inventory.cursor = None;
+        inventory.slots[12] = Some(recipes.stack("minecraft:book", 5));
+        bench.quick_move_from_player(12, &mut inventory, &ctx);
+        assert_eq!(bench.cells[0].as_ref().map(|s| s.count), Some(1));
+        assert_eq!(inventory.slots[12].as_ref().map(|s| s.count), Some(4));
+        bench.quick_move_from_player(12, &mut inventory, &ctx);
+        assert_eq!(inventory.slots[12].as_ref().map(|s| s.count), Some(4));
+        assert!(inventory.slots[..9].iter().all(Option::is_none));
     }
 
     #[test]

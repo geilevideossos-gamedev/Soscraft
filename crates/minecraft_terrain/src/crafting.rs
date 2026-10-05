@@ -13,6 +13,7 @@ pub const ITEM_CATALOG: &str = "artifacts/item-catalog/26.3.json";
 const TABLE_REACH: f64 = 8.5;
 const HOTBAR: usize = 9;
 const STORAGE: usize = 36;
+const OFFHAND: usize = 40;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Grid {
@@ -211,15 +212,13 @@ pub fn spread(inventory: &mut Inventory, grid: Grid, targets: &[Spot], right: bo
             }
             _ => continue,
         };
-        let room = match armor_slot(index) {
-            Some(name) if inventory.recipes.equipment_slot(carried) != Some(name) => continue,
-            Some(_) => 1,
-            None => max,
-        };
+        if armor_slot(index).is_some_and(|name| inventory.recipes.equipment_slot(carried) != Some(name)) {
+            continue;
+        }
         let fits = target.is_some_and(|target| {
             target
                 .as_ref()
-                .is_none_or(|stack| stack.same_item(carried) && stack.count < room)
+                .is_none_or(|stack| stack.same_item(carried) && stack.count <= max)
         });
         if fits && !indices.contains(&index) {
             indices.push(index);
@@ -284,7 +283,7 @@ pub fn gather(inventory: &mut Inventory, grid: Grid, target: Spot, right: bool) 
 }
 
 pub fn swap(inventory: &mut Inventory, grid: Grid, cell: Option<usize>, hotbar: usize) -> bool {
-    if hotbar >= HOTBAR {
+    if hotbar >= HOTBAR && hotbar != OFFHAND {
         return false;
     }
     let Some(index) = cell else {
@@ -325,6 +324,41 @@ pub fn swap(inventory: &mut Inventory, grid: Grid, cell: Option<usize>, hotbar: 
         inventory.notice_item_changed(&stack);
     }
     true
+}
+
+pub fn throw_cell(inventory: &mut Inventory, grid: Grid, cell: usize, whole: bool) -> Option<ItemStack> {
+    let slot = cells_mut(inventory, grid).get_mut(cell)?;
+    let stack = slot.as_mut()?;
+    let count = if whole { stack.count } else { 1 };
+    let thrown = ItemStack {
+        count,
+        ..stack.clone()
+    };
+    stack.count -= count;
+    if stack.count == 0 {
+        *slot = None;
+    }
+    Some(thrown)
+}
+
+pub fn throw_result(inventory: &mut Inventory, grid: Grid, whole: bool) -> Vec<ItemStack> {
+    let mut thrown = Vec::new();
+    if inventory.cursor.is_some() {
+        return thrown;
+    }
+    let Some(first) = output(inventory, grid) else {
+        return thrown;
+    };
+    while output(inventory, grid).is_some_and(|next| next.same_item(&first)) {
+        if !take_into_cursor(inventory, grid) {
+            break;
+        }
+        thrown.extend(inventory.cursor.take());
+        if !whole {
+            break;
+        }
+    }
+    thrown
 }
 
 pub fn has_loose_items(inventory: &Inventory) -> bool {
@@ -1222,6 +1256,45 @@ mod tests {
         ] {
             assert_eq!(inv.count(id), 0);
         }
+    }
+
+    #[test]
+    fn q_on_the_result_crafts_and_drops_one_result_and_ctrl_q_crafts_all() {
+        let mut inv = inventory();
+        put(&mut inv, Grid::Inventory, &[0], "minecraft:oak_log", 3);
+        let one = throw_result(&mut inv, Grid::Inventory, false);
+        assert_eq!(total(&one, "minecraft:oak_planks"), 4);
+        assert_eq!(count_of(&inv.crafting[0]), 2);
+        let all = throw_result(&mut inv, Grid::Inventory, true);
+        assert_eq!(total(&all, "minecraft:oak_planks"), 8);
+        assert!(inv.crafting[0].is_none());
+        assert!(inv.cursor.is_none());
+        put(&mut inv, Grid::Inventory, &[0], "minecraft:flint", 3);
+        put(&mut inv, Grid::Inventory, &[1], "minecraft:iron_nugget", 1);
+        let changed = throw_result(&mut inv, Grid::Inventory, true);
+        assert_eq!(total(&changed, "minecraft:flint_and_steel"), 1);
+        assert_eq!(total(&changed, "minecraft:arrow"), 0);
+    }
+
+    #[test]
+    fn q_on_a_grid_cell_drops_one_or_the_whole_stack() {
+        let mut inv = inventory();
+        put(&mut inv, Grid::Table, &[4], "minecraft:stick", 5);
+        assert_eq!(throw_cell(&mut inv, Grid::Table, 4, false).map(|s| s.count), Some(1));
+        assert_eq!(count_of(&inv.workbench[4]), 4);
+        assert_eq!(throw_cell(&mut inv, Grid::Table, 4, true).map(|s| s.count), Some(4));
+        assert!(inv.workbench[4].is_none());
+        assert!(throw_cell(&mut inv, Grid::Table, 4, true).is_none());
+    }
+
+    #[test]
+    fn f_swaps_a_grid_cell_with_the_offhand() {
+        let mut inv = inventory();
+        put(&mut inv, Grid::Inventory, &[2], "minecraft:stick", 5);
+        assert!(swap(&mut inv, Grid::Inventory, Some(2), OFFHAND));
+        assert_eq!(id_of(&inv.slots[OFFHAND]), Some("minecraft:stick"));
+        assert!(inv.crafting[2].is_none());
+        assert!(!swap(&mut inv, Grid::Inventory, Some(2), 41));
     }
 
     #[test]

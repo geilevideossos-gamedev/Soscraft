@@ -662,7 +662,7 @@ impl Inventory {
         overflow
     }
     pub fn number_swap(&mut self, slot: usize, hotbar: usize) {
-        if slot < self.slots.len() && hotbar < 9 && slot != hotbar {
+        if slot < self.slots.len() && (hotbar < 9 || hotbar == 40) && slot != hotbar {
             if let Some(slot_name) = armor_slot_name(slot) {
                 if self.slots[hotbar].as_ref().is_some_and(|stack| {
                     stack.count != 1 || self.recipes.equipment_slot(stack) != Some(slot_name)
@@ -795,38 +795,41 @@ impl Inventory {
         external: &mut [Option<ItemStack>],
         may_place: impl Fn(usize, &ItemStack) -> bool,
     ) {
+        self.distribute_limited(slots, right, external, |index, stack| {
+            may_place(index, stack).then_some(u8::MAX)
+        });
+    }
+    pub fn distribute_limited(
+        &mut self,
+        slots: &[usize],
+        right: bool,
+        external: &mut [Option<ItemStack>],
+        capacity: impl Fn(usize, &ItemStack) -> Option<u8>,
+    ) {
         let Some(mut carried) = self.cursor.take() else {
             return;
         };
         let eligible = slots
             .iter()
             .copied()
-            .filter(|&i| {
-                let target = if i < self.slots.len() {
+            .filter_map(|i| {
+                let (target, room) = if i < self.slots.len() {
                     if !armor_slot_name(i).is_none_or(|slot_name| {
                         self.recipes.equipment_slot(&carried) == Some(slot_name)
                     }) {
-                        return false;
+                        return None;
                     }
-                    self.slots.get(i)
+                    let room = if armor_slot_name(i).is_some() { 1 } else { u8::MAX };
+                    (self.slots.get(i)?, room)
                 } else {
                     let external_index = i - self.slots.len();
-                    if !may_place(external_index, &carried) {
-                        return false;
-                    }
-                    external.get(external_index)
+                    let room = capacity(external_index, &carried)?;
+                    (external.get(external_index)?, room)
                 };
-                target.is_some_and(|target| {
-                    target.as_ref().is_none_or(|stack| {
-                        stack.same_item(&carried)
-                            && stack.count
-                                < if armor_slot_name(i).is_some() {
-                                    1
-                                } else {
-                                    stack.max
-                                }
-                    })
-                })
+                target
+                    .as_ref()
+                    .is_none_or(|stack| stack.same_item(&carried) && stack.count <= carried.max)
+                    .then_some((i, room.min(carried.max)))
             })
             .collect::<Vec<_>>();
         if eligible.is_empty() {
@@ -836,9 +839,9 @@ impl Inventory {
         let each = if right {
             1
         } else {
-            carried.count / eligible.len() as u8
+            (usize::from(carried.count) / eligible.len()) as u8
         };
-        for index in eligible {
+        for (index, room) in eligible {
             if carried.count == 0 {
                 break;
             }
@@ -848,16 +851,15 @@ impl Inventory {
             } else {
                 &mut external[index - self.slots.len()]
             };
+            let existing = slot.as_ref().map_or(0, |stack| stack.count);
+            let moved = each.min(room.saturating_sub(existing)).min(carried.count);
+            if moved == 0 {
+                continue;
+            }
             let target = slot.get_or_insert_with(|| ItemStack {
                 count: 0,
                 ..carried.clone()
             });
-            let capacity = if armor_slot_name(index).is_some() {
-                1
-            } else {
-                target.max
-            };
-            let moved = each.min(capacity - target.count).min(carried.count);
             target.count += moved;
             carried.count -= moved;
             if moved > 0 && index < self.slots.len() {
