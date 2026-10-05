@@ -202,6 +202,11 @@ impl Oven {
         };
         [lit, cook]
     }
+
+    pub fn data(&self) -> [i32; 4] {
+        let f = &self.furnace;
+        [f.lit_remaining, f.lit_total, f.cook_progress, f.cook_total].map(|n| n.min(i32::MAX as u32) as i32)
+    }
 }
 
 fn shrink(cell: &mut Option<ItemStack>, by: u8) {
@@ -291,6 +296,10 @@ impl Brewer {
             0.0
         };
         [self.fuel as f32 / FUEL_USES as f32, brewing]
+    }
+
+    pub fn data(&self) -> [i32; 4] {
+        [self.brew_time as i32, self.fuel as i32, BREW_TICKS as i32, FUEL_USES as i32]
     }
 }
 

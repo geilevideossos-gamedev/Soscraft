@@ -177,10 +177,6 @@ pub(crate) fn drumsticks(v: &frame::McVitals) -> [Drumstick; 10] {
     })
 }
 
-pub(crate) fn saturation_share(v: &frame::McVitals) -> f32 {
-    (v.saturation / 20.0).clamp(0.0, 1.0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,13 +286,6 @@ mod tests {
                 .iter()
                 .all(|d| d.empty == "gui:hud/food_empty_hunger")
         );
-    }
-
-    #[test]
-    fn saturation_fills_a_share_of_twenty() {
-        let mut v = vitals(20.0, 20);
-        v.saturation = 5.0;
-        assert!((saturation_share(&v) - 0.25).abs() < 1e-6);
     }
 
     #[test]

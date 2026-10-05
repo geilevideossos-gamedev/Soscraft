@@ -178,21 +178,17 @@ pub(crate) fn place_inventory_puppet(
     };
     let distance = 10.0;
     let world_h = box_h / h * 2.0 * tan_v * distance;
-    // A standing MW2 player is about 72 units: most of the window.
-    let scale = world_h * 0.82 / 72.0;
-    let feet = at(cx, cy + box_h * 0.5, distance) + up * (world_h * 0.07);
-    // Turned by the mouse as vanilla's
-    // `InventoryScreen.renderEntityInInventoryFollowsMouse` turns its body.
-    let turn = (ui.gaze[0] * 1.2).atan() * 0.7;
-    let x_axis = (-fwd * turn.cos() + right * turn.sin()).normalize_or(-fwd);
-    let y_axis = up.cross(x_axis);
+    let scale = world_h * crate::minecraft_gui::PUPPET_HEIGHT / 72.0;
+    let feet = at(cx, cy + box_h * crate::minecraft_gui::PUPPET_FEET, distance);
+    let [yaw, pitch, tilt] = ui.puppet_turn;
+    let [x_axis, y_axis, up_axis] = crate::minecraft_gui::puppet_axes(fwd, right, up, yaw, tilt);
     puppet.root = Mat4::from_cols(
         (x_axis * scale).extend(0.0),
         (y_axis * scale).extend(0.0),
-        (up * scale).extend(0.0),
+        (up_axis * scale).extend(0.0),
         feet.extend(1.0),
     );
-    puppet.pitch = (ui.gaze[1] * 1.2).atan().to_degrees() * 0.6;
+    puppet.pitch = pitch;
     puppet.client = local.0.0;
     puppet.active = true;
     render_frame::DEPTH_HACK_SCENE_ENTNUM.store(local.0.0, Relaxed);
@@ -639,6 +635,8 @@ fn update(
     let hand_ticks = (hand.clock / TICK_SECONDS) as u32;
     hand.clock -= f64::from(hand_ticks) * TICK_SECONDS;
     hand.pearl_cooldown = hand.pearl_cooldown.saturating_sub(hand_ticks);
+    let pearl_left = (hand.pearl_cooldown as f32 - (hand.clock / TICK_SECONDS) as f32) / minecraft_terrain::thrown::PEARL_COOLDOWN as f32;
+    ui.cooldowns = if hand.pearl_cooldown > 0 { vec![("minecraft:ender_pearl".to_owned(), pearl_left)] } else { Vec::new() };
     hand.miss_time = hand.miss_time.saturating_sub(hand_ticks);
     hand.attack_ticks = hand.attack_ticks.saturating_add(hand_ticks);
     let main_hand = entities.as_ref().and_then(|e| e.inventory.slots[e.selected].as_ref().map(|s| s.id.clone()));

@@ -18,8 +18,9 @@ pub struct McStack {
     pub count: u8,
     /// The MW2 weapon this item is, for a gun.
     pub weapon: Option<u32>,
-    /// Durability left of the item's maximum, for a damaged tool.
-    pub durability: Option<f32>,
+    pub damage: Option<(u32, u32)>,
+    pub max: u8,
+    pub named: bool,
     pub name: Option<String>,
     pub attack: Option<[f32; 2]>,
     pub enchantments: Vec<String>,
@@ -45,7 +46,7 @@ pub enum McScreen {
     Chest {
         rows: u8,
     },
-    Furnace,
+    Furnace(McOven),
     Brewing,
     Stonecutter,
     Smithing,
@@ -54,12 +55,21 @@ pub enum McScreen {
     Enchanting,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum McOven {
+    #[default]
+    Furnace,
+    Smoker,
+    BlastFurnace,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct McChoice {
     pub icon: Option<McStack>,
     pub label: String,
     pub cost: u32,
     pub enabled: bool,
+    pub runes: String,
 }
 
 /// What the player did on the inventory screen, applied with vanilla's
@@ -76,6 +86,7 @@ pub enum McClick {
     Swap { slot: McSlot, hotbar: usize },
     /// A drag across slots with a carried stack: shares it out.
     Spread { slots: Vec<McSlot>, right: bool },
+    Throw { slot: McSlot, whole: bool },
     /// The screen closed: the carried stack and the crafting grid go back.
     Close,
     Choose(usize),
@@ -102,7 +113,8 @@ pub struct MinecraftUi {
     pub workbench_result: Option<McStack>,
     pub container: Vec<Option<McStack>>,
     pub output: Option<McStack>,
-    pub progress: [f32; 2],
+    pub data: [i32; 4],
+    pub droppable: Vec<(McSlot, u8)>,
     pub screen_title: String,
     pub choices: Vec<McChoice>,
     pub chosen: Option<usize>,
@@ -113,6 +125,10 @@ pub struct MinecraftUi {
     /// Item icons: one atlas, and each item's rectangle in it (s0 t0 s1 t1).
     pub icons: Option<Handle<Image>>,
     pub icon_rects: HashMap<String, [f32; 4]>,
+    pub gui: Option<std::sync::Arc<crate::McGui>>,
+    pub gui_scale: u32,
+    pub armor: u8,
+    pub cooldowns: Vec<(String, f32)>,
     /// Display names by item id.
     pub names: HashMap<String, String>,
     /// Clicks the HUD took this frame, for the inventory's owner.
@@ -121,14 +137,10 @@ pub struct MinecraftUi {
     pub select: Option<usize>,
     /// A drop of the selected stack (`Q`; with the whole stack on control).
     pub drop_selected: Option<bool>,
-    /// The mouse in the inventory's character box, -1..1 across and down,
-    /// which the character's gaze follows.
-    pub gaze: [f32; 2],
+    pub puppet_turn: [f32; 3],
     /// The character box in window pixels (centre x and y, width, height),
     /// for placing the character.
     pub character_box: Option<[f32; 4]>,
-    /// The name of the item just selected and how long ago, for the hotbar.
-    pub selected_name: Option<(String, f32)>,
     /// The MW2 gun the hotbar selection asks the player to raise.
     pub weapon_request: Option<u32>,
     /// The selection is not a gun: the hand or a held item shows, and the

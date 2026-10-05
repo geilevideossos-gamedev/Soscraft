@@ -9,20 +9,21 @@ use bevy::asset::RenderAssetUsages;
 use bevy::image::ImageSampler;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use frame::{McChoice, McClick, McScreen, McSlot, McStack, MinecraftUi};
+use frame::{McChoice, McClick, McOven, McScreen, McSlot, McStack, MinecraftUi};
 use glam::DVec3;
 use minecraft_terrain::containers::{Containers, Opened, Station};
 use minecraft_terrain::stations::{Bench, Context, StationBook, Taken, Workshop};
 use minecraft_terrain::crafting::{self, Grid, Spot};
 use minecraft_terrain::pack::PackStack;
 use minecraft_terrain::scene::BlockPos;
+use minecraftoss_player::crafting::CookingKind;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 
 /// Items that are MW2 guns: `iw4:weapon/<weapon index>`.
 const WEAPON_PREFIX: &str = "iw4:weapon/";
-/// Icon cells: 32 pixels (a 16-pixel item at GUI scale 2), 32 to a row.
-const ICON: u32 = 32;
-const ATLAS: u32 = ICON * 32;
+const ICON_COLUMNS: u32 = 16;
+const ICON_ATLAS_LIMIT: u32 = 8192;
+const OFFHAND: usize = 40;
 
 pub(crate) fn weapon_of(stack: &ItemStack) -> Option<u32> {
     stack.id.strip_prefix(WEAPON_PREFIX)?.parse().ok()
@@ -57,6 +58,10 @@ pub(crate) struct InventoryUi {
     pub(crate) anvil_used: Option<BlockPos>,
     book: std::sync::Arc<StationBook>,
     enchantments: Option<std::sync::Arc<minecraftoss_entities::enchant::Enchantments>>,
+    gui: Option<crate::minecraft_gui::GuiAssets>,
+    gui_failed: Option<u64>,
+    icon_scale: u32,
+    icon_rows: u32,
 }
 
 /// What the player holds and where it looks, for throwing items.
@@ -127,11 +132,15 @@ impl InventoryUi {
             return false;
         }
         ui.screen = screen_of(&opened);
-        ui.screen_title = opened.station.title(opened.cells.len() > 1).to_owned();
+        ui.screen_title = self.text(station_title(&opened));
         self.block = Some(opened);
         ui.inventory_open = true;
         ui.screen_opened = true;
         true
+    }
+
+    fn text(&self, key: &str) -> String {
+        self.language.as_ref().and_then(|language| language.get(key).cloned()).unwrap_or_else(|| key.to_owned())
     }
 
     pub(crate) fn take_experience(&mut self) -> u32 {
@@ -163,7 +172,7 @@ impl InventoryUi {
         }
         self.bench = Some((pos, Bench::new(kind)));
         ui.screen = bench_screen(kind);
-        ui.screen_title = kind.title().to_owned();
+        ui.screen_title = self.text(bench_title(kind));
         ui.inventory_open = true;
         ui.screen_opened = true;
         true
@@ -200,6 +209,7 @@ impl InventoryUi {
         click: &McClick,
         inventory: &mut Inventory,
         roll: &mut dyn FnMut() -> f32,
+        thrown: &mut Vec<ItemStack>,
     ) -> bool {
         let Some((pos, mut bench)) = self.bench.take() else {
             return false;
@@ -207,10 +217,33 @@ impl InventoryUi {
         let recipes = inventory.recipes.clone();
         let kind = bench.kind;
         let mut handled = true;
-        let mut taken = None;
+        let mut taken: Option<Taken> = None;
         {
             let ctx = self.context(&recipes);
             match click {
+                McClick::Throw { slot: McSlot::Container(index), whole } => {
+                    if inventory.cursor.is_none() {
+                        thrown.extend(bench.throw(*index, *whole));
+                    }
+                }
+                McClick::Throw { slot: McSlot::Output, whole } => {
+                    let first = bench.offer(&ctx).result;
+                    while inventory.cursor.is_none() {
+                        let mut random = minecraftoss_player::rng::LegacyRandom::new((roll() * u32::MAX as f32) as u64);
+                        let Some(step) = bench.take(false, inventory, &ctx, &mut random) else { break };
+                        thrown.extend(inventory.cursor.take());
+                        let total = taken.get_or_insert_with(Taken::default);
+                        total.levels += step.levels;
+                        total.experience += step.experience;
+                        total.sound = step.sound;
+                        total.new_seed |= step.new_seed;
+                        let next = bench.offer(&ctx).result;
+                        if !*whole || next.as_ref().zip(first.as_ref()).is_none_or(|(next, first)| !next.same_item(first)) {
+                            break;
+                        }
+                    }
+                }
+                McClick::Gather { .. } => bench.gather(inventory, false),
                 McClick::Slot { slot: McSlot::Inventory(index), shift: true, .. } => {
                     bench.quick_move_from_player(*index, inventory, &ctx);
                 }
@@ -239,7 +272,6 @@ impl InventoryUi {
                     let cells: Vec<usize> = slots.iter().filter_map(|slot| if let McSlot::Container(i) = slot { Some(*i) } else { None }).collect();
                     bench.spread(&players, &cells, *right, inventory, &ctx);
                 }
-                McClick::Gather { .. } => {}
                 _ => handled = false,
             }
         }
@@ -271,10 +303,13 @@ impl InventoryUi {
         let mut thrown = Vec::new();
         for click in std::mem::take(&mut ui.clicks) {
             let grid = if self.table.is_some() { Grid::Table } else { Grid::Inventory };
+            if keeps_gun(ui, &click) {
+                continue;
+            }
             if self.bench.is_some() {
                 if click == McClick::Close {
                     thrown.extend(self.close_bench(inventory, *selected));
-                } else if self.bench_click(&click, inventory, roll) {
+                } else if self.bench_click(&click, inventory, roll, &mut thrown) {
                     continue;
                 }
             }
@@ -301,6 +336,14 @@ impl InventoryUi {
                     McClick::Swap { slot, hotbar } if cell(*slot).is_some() => {
                         let index = cell(*slot).unwrap_or(0);
                         self.experience += containers.swap(&opened, inventory, index, *hotbar, roll()).experience;
+                        continue;
+                    }
+                    McClick::Throw { slot, whole } if cell(*slot).is_some() => {
+                        if inventory.cursor.is_none() {
+                            let (stack, changed) = containers.throw(&opened, inventory, cell(*slot).unwrap_or(0), *whole, roll());
+                            thrown.extend(stack);
+                            self.experience += changed.experience;
+                        }
                         continue;
                     }
                     McClick::Spread { slots, right } => {
@@ -349,6 +392,17 @@ impl InventoryUi {
                 McClick::Spread { slots, right } => {
                     let spots: Vec<Spot> = slots.into_iter().filter_map(|slot| spot(slot, grid)).collect();
                     crafting::spread(inventory, grid, &spots, right);
+                }
+                McClick::Throw { slot, whole } => {
+                    if inventory.cursor.is_some() {
+                        continue;
+                    }
+                    match spot(slot, grid) {
+                        Some(Spot::Player(index)) => thrown.extend(throw_slot(inventory, index, whole)),
+                        Some(Spot::Grid(cell)) => thrown.extend(crafting::throw_cell(inventory, grid, cell, whole)),
+                        Some(Spot::Result) => thrown.extend(crafting::throw_result(inventory, grid, whole)),
+                        None => {}
+                    }
                 }
                 McClick::Choose(_) | McClick::Rename(_) => {}
                 McClick::Close => {
@@ -435,6 +489,19 @@ impl InventoryUi {
         images: &mut Assets<Image>,
         containers: &mut Containers,
     ) {
+        if self.language.is_none() {
+            self.language = Some(minecraft_terrain::item_icons::language(packs).unwrap_or_else(|_| HashMap::new()));
+        }
+        let generation = packs.generation;
+        if self.gui.as_ref().is_none_or(|gui| gui.generation != generation) && self.gui_failed != Some(generation) {
+            let empty = HashMap::new();
+            let language = self.language.as_ref().unwrap_or(&empty);
+            self.gui = crate::minecraft_gui::GuiAssets::load(packs, language, crate::minecraft_entities::data_jar().as_deref(), images);
+            if self.gui.is_none() {
+                self.gui_failed = Some(generation);
+            }
+        }
+        ui.gui = self.gui.as_ref().map(|gui| gui.gui.clone());
         let language = self
             .language
             .get_or_insert_with(|| minecraft_terrain::item_icons::language(packs).unwrap_or_default());
@@ -453,7 +520,9 @@ impl InventoryUi {
                     id: s.id.clone(),
                     count: s.count,
                     weapon: weapon_of(s),
-                    durability: None,
+                    damage: inventory.recipes.durability(s),
+                    max: stack_limit(&inventory.recipes, s),
+                    named: minecraft_terrain::stations::custom_name(s).is_some(),
                     name: display_name(lang, s).or_else(|| water(s).then(|| water_name.clone())),
                     attack: main_hand_attack(&inventory.recipes, s),
                     enchantments: minecraft_terrain::stations::enchantments_of(s)
@@ -478,48 +547,57 @@ impl InventoryUi {
         let opened = self.block.clone().filter(|_| ui.inventory_open);
         let (mut choices, mut chosen, mut cost, mut name) = (Vec::new(), None, None, None);
         let bench = self.bench.as_ref().filter(|_| ui.inventory_open).map(|(_, bench)| bench);
-        let (container, output, progress) = match (opened.as_ref(), bench) {
+        let ctx = Context {
+            recipes: &inventory.recipes,
+            book: &self.book,
+            enchantments: self.enchantments.as_deref(),
+            bookshelves: self.shelves,
+            seed: self.seed,
+            level: self.level,
+        };
+        let (container, output, data) = match (opened.as_ref(), bench) {
             (None, Some(bench)) => {
-                let ctx = Context {
-                    recipes: &inventory.recipes,
-                    book: &self.book,
-                    enchantments: self.enchantments.as_deref(),
-                    bookshelves: self.shelves,
-                    seed: self.seed,
-                    level: self.level,
-                };
                 let offer = bench.offer(&ctx);
+                let costs: Vec<u32> = offer.choices.iter().map(|choice| choice.cost).collect();
+                let runes = match (bench.kind, self.gui.as_ref()) {
+                    (Workshop::Enchanting, Some(gui)) => crate::minecraft_gui::enchanting_runes(&gui.words, &gui.gui, self.seed, &costs),
+                    _ => Vec::new(),
+                };
                 choices = offer
                     .choices
                     .iter()
-                    .map(|choice| McChoice {
+                    .enumerate()
+                    .map(|(i, choice)| McChoice {
                         icon: choice.item.as_ref().and_then(|item| convert(&Some(item.clone()))),
                         label: choice.clue.as_ref().map_or_else(String::new, |(id, level)| {
                             let key = format!("enchantment.{}", id.replacen(':', ".", 1));
-                            format!("{} {}", lang.get(&key).cloned().unwrap_or_else(|| id.clone()), minecraft_terrain::stations::roman(*level))
+                            let name = lang.get(&key).cloned().unwrap_or_else(|| id.clone());
+                            let single = enchant_table.as_ref().and_then(|table| table.index(id).map(|i| table.list[i].max_level == 1)).unwrap_or(false);
+                            if *level == 1 && single { name } else { format!("{name} {}", minecraft_terrain::stations::roman(*level)) }
                         }),
                         cost: choice.cost,
                         enabled: choice.enabled,
+                        runes: runes.get(i).map_or_else(String::new, Clone::clone),
                     })
                     .collect();
                 chosen = bench.chosen;
                 cost = (offer.cost > 0).then_some(offer.cost);
                 name = bench.name.clone();
-                (bench.cells.iter().map(&mut convert).collect(), convert(&offer.result), [0.0; 2])
+                (bench.cells.iter().map(&mut convert).collect(), convert(&offer.result), [0; 4])
             }
             (Some(opened), _) => {
                 let cells = containers.cells(opened);
                 match opened.station {
-                    Station::Brewer => (cells.iter().map(&mut convert).collect(), None, containers.brewer(opened.cells[0]).map_or([0.0; 2], |brewer| brewer.progress())),
+                    Station::Brewer => (cells.iter().map(&mut convert).collect(), None, containers.brewer(opened.cells[0]).map_or([0; 4], |brewer| brewer.data())),
                     Station::Oven(_) => (
                         cells[..2].iter().map(&mut convert).collect(),
                         convert(&cells[2]),
-                        containers.oven(opened.cells[0]).map_or([0.0; 2], |oven| oven.progress()),
+                        containers.oven(opened.cells[0]).map_or([0; 4], |oven| oven.data()),
                     ),
-                    _ => (cells.iter().map(&mut convert).collect(), None, [0.0; 2]),
+                    _ => (cells.iter().map(&mut convert).collect(), None, [0; 4]),
                 }
             }
-            (None, None) => (Vec::new(), None, [0.0; 2]),
+            (None, None) => (Vec::new(), None, [0; 4]),
         };
         ui.choices = choices;
         ui.chosen = chosen;
@@ -527,16 +605,25 @@ impl InventoryUi {
         ui.name = name;
         ui.container = container;
         ui.output = output;
-        ui.progress = progress;
+        ui.data = data;
         ui.cursor = convert(&inventory.cursor);
-        if ui.selected != selected {
-            let name = inventory.slots[selected]
-                .as_ref()
-                .filter(|s| weapon_of(s).is_none())
-                .map(|s| minecraft_terrain::item_icons::item_name(language, &s.id));
-            ui.selected_name = name.map(|name| (name, 0.0));
-        }
+        ui.armor = inventory.armor_value();
+        ui.droppable = inventory.cursor.as_ref().filter(|_| ui.inventory_open).map_or_else(Vec::new, |carried| {
+            droppable(ui.screen, carried, inventory, opened.as_ref(), bench, containers, &ctx)
+        });
         ui.selected = selected;
+        let scale = ui.gui_scale.clamp(1, 16);
+        if scale != self.icon_scale {
+            self.icon_scale = scale;
+            self.atlas = None;
+            self.icon_rows = 0;
+            self.cells.clear();
+            self.failed.clear();
+            ui.icon_rects.clear();
+        }
+        let icon = 16 * scale;
+        let max_rows = ICON_ATLAS_LIMIT / icon;
+        let mut grown = false;
         for id in stacks {
             if id.starts_with(WEAPON_PREFIX) {
                 continue;
@@ -548,23 +635,29 @@ impl InventoryUi {
                 continue;
             }
             let cell = self.cells.len() as u32;
-            if cell >= (ATLAS / ICON) * (ATLAS / ICON) {
+            if cell >= ICON_COLUMNS * max_rows {
                 diag::warn!(World, "Minecraft item icon atlas full: no icon for `{id}`");
                 self.failed.insert(id);
                 continue;
             }
-            match minecraft_terrain::item_icons::item_icon(packs, &id, ICON as usize) {
-                Ok(Some(icon)) => {
-                    let atlas = self.atlas.get_or_insert_with(|| image::RgbaImage::new(ATLAS, ATLAS));
-                    let (x, y) = ((cell % (ATLAS / ICON)) * ICON, (cell / (ATLAS / ICON)) * ICON);
-                    let icon = image::imageops::resize(&icon, ICON, ICON, image::imageops::FilterType::Nearest);
-                    image::imageops::replace(atlas, &icon, i64::from(x), i64::from(y));
-                    let size = ATLAS as f32;
-                    ui.icon_rects.insert(
-                        id.clone(),
-                        [x as f32 / size, y as f32 / size, (x + ICON) as f32 / size, (y + ICON) as f32 / size],
-                    );
+            match minecraft_terrain::item_icons::item_icon(packs, &id, icon as usize) {
+                Ok(Some(rendered)) => {
+                    let row = cell / ICON_COLUMNS;
+                    if row >= self.icon_rows {
+                        let rows = (self.icon_rows * 2).max(row + 1).min(max_rows);
+                        let mut next = image::RgbaImage::new(ICON_COLUMNS * icon, rows * icon);
+                        if let Some(old) = self.atlas.as_ref() {
+                            image::imageops::replace(&mut next, old, 0, 0);
+                        }
+                        self.atlas = Some(next);
+                        self.icon_rows = rows;
+                    }
+                    let Some(atlas) = self.atlas.as_mut() else { continue };
+                    let (x, y) = ((cell % ICON_COLUMNS) * icon, row * icon);
+                    let rendered = image::imageops::resize(&rendered, icon, icon, image::imageops::FilterType::Nearest);
+                    image::imageops::replace(atlas, &rendered, i64::from(x), i64::from(y));
                     self.cells.insert(id, cell);
+                    grown = true;
                     self.dirty = true;
                 }
                 Ok(None) => {
@@ -577,25 +670,12 @@ impl InventoryUi {
                 }
             }
         }
-        for name in HUD_SPRITES {
-            let key = format!("gui:{name}");
-            if self.cells.contains_key(&key) || self.failed.contains(&key) {
-                continue;
+        if grown {
+            let (w, h) = ((ICON_COLUMNS * icon) as f32, (self.icon_rows * icon).max(1) as f32);
+            for (id, &cell) in &self.cells {
+                let (x, y) = (((cell % ICON_COLUMNS) * icon) as f32, ((cell / ICON_COLUMNS) * icon) as f32);
+                ui.icon_rects.insert(id.clone(), [x / w, y / h, (x + icon as f32) / w, (y + icon as f32) / h]);
             }
-            let cell = self.cells.len() as u32;
-            let Some(sprite) = gui_sprite(packs, name).filter(|_| cell < (ATLAS / ICON) * (ATLAS / ICON)) else {
-                diag::warn!(World, "Minecraft HUD sprite `{name}` unavailable");
-                self.failed.insert(key);
-                continue;
-            };
-            let atlas = self.atlas.get_or_insert_with(|| image::RgbaImage::new(ATLAS, ATLAS));
-            let (x, y) = ((cell % (ATLAS / ICON)) * ICON, (cell / (ATLAS / ICON)) * ICON);
-            let (w, h) = (sprite.width().min(ICON), sprite.height().min(ICON));
-            image::imageops::replace(atlas, &sprite, i64::from(x), i64::from(y));
-            let size = ATLAS as f32;
-            ui.icon_rects.insert(key.clone(), [x as f32 / size, y as f32 / size, (x + w) as f32 / size, (y + h) as f32 / size]);
-            self.cells.insert(key, cell);
-            self.dirty = true;
         }
         if self.dirty
             && let Some(atlas) = self.atlas.as_ref()
@@ -604,10 +684,10 @@ impl InventoryUi {
             let image = Image {
                 sampler: ImageSampler::nearest(),
                 ..Image::new(
-                    Extent3d { width: ATLAS, height: ATLAS, depth_or_array_layers: 1 },
+                    Extent3d { width: atlas.width(), height: atlas.height(), depth_or_array_layers: 1 },
                     TextureDimension::D2,
                     atlas.as_raw().clone(),
-                    TextureFormat::Rgba8UnormSrgb,
+                    TextureFormat::Rgba8Unorm,
                     RenderAssetUsages::default(),
                 )
             };
@@ -622,33 +702,124 @@ impl InventoryUi {
     }
 }
 
-const HUD_SPRITES: [&str; 25] = [
-    "hud/air",
-    "hud/air_bursting",
-    "hud/air_empty",
-    "hud/heart/container",
-    "hud/heart/container_blinking",
-    "hud/heart/full",
-    "hud/heart/half",
-    "hud/heart/full_blinking",
-    "hud/heart/half_blinking",
-    "hud/heart/poisoned_full",
-    "hud/heart/poisoned_half",
-    "hud/heart/poisoned_full_blinking",
-    "hud/heart/poisoned_half_blinking",
-    "hud/heart/absorbing_full",
-    "hud/heart/absorbing_half",
-    "hud/heart/absorbing_full_blinking",
-    "hud/heart/absorbing_half_blinking",
-    "hud/food_empty",
-    "hud/food_half",
-    "hud/food_full",
-    "hud/food_empty_hunger",
-    "hud/food_half_hunger",
-    "hud/food_full_hunger",
-    "container/furnace/lit_progress",
-    "container/furnace/burn_progress",
-];
+fn stack_limit(recipes: &minecraftoss_player::crafting::RecipeBook, stack: &ItemStack) -> u8 {
+    if stack.components.is_none() {
+        stack.max.min(recipes.max_stack(&stack.id))
+    } else {
+        stack.max
+    }
+}
+
+fn armor_slot(index: usize) -> Option<&'static str> {
+    match index {
+        36 => Some("feet"),
+        37 => Some("legs"),
+        38 => Some("chest"),
+        39 => Some("head"),
+        _ => None,
+    }
+}
+
+fn droppable(
+    screen: McScreen,
+    carried: &ItemStack,
+    inventory: &Inventory,
+    opened: Option<&Opened>,
+    bench: Option<&Bench>,
+    containers: &Containers,
+    ctx: &Context<'_>,
+) -> Vec<(McSlot, u8)> {
+    let max = stack_limit(&inventory.recipes, carried);
+    let gun = weapon_of(carried).is_some();
+    let mut out: Vec<(McSlot, u8)> = (0..36).map(|i| (McSlot::Inventory(i), max)).collect();
+    match screen {
+        McScreen::Inventory => {
+            for index in 36..40 {
+                if armor_slot(index).is_some_and(|slot| inventory.recipes.equipment_slot(carried) == Some(slot)) {
+                    out.push((McSlot::Inventory(index), 1));
+                }
+            }
+            if !gun {
+                out.push((McSlot::Inventory(OFFHAND), max));
+            }
+            out.extend((0..4).map(|i| (McSlot::Crafting(i), max)));
+        }
+        McScreen::CraftingTable => out.extend((0..9).map(|i| (McSlot::Workbench(i), max))),
+        _ => {}
+    }
+    if let Some(opened) = opened {
+        for index in 0..opened.size() {
+            if let Some(capacity) = containers.accepts(opened, index, carried, &inventory.recipes) {
+                out.push((McSlot::Container(index), capacity.min(max)));
+            }
+        }
+    }
+    if let Some(bench) = bench {
+        for index in 0..bench.cells.len() {
+            if let Some(capacity) = bench.accepts_stack(index, carried, ctx) {
+                out.push((McSlot::Container(index), capacity.min(max)));
+            }
+        }
+    }
+    out
+}
+
+fn throw_slot(inventory: &mut Inventory, index: usize, whole: bool) -> Option<ItemStack> {
+    let slot = inventory.slots.get_mut(index)?;
+    let stack = slot.as_mut()?;
+    let count = if whole { stack.count } else { 1 };
+    let thrown = ItemStack { count, ..stack.clone() };
+    stack.count -= count;
+    if stack.count == 0 {
+        *slot = None;
+    }
+    Some(thrown)
+}
+
+fn published(ui: &MinecraftUi, slot: McSlot) -> Option<&McStack> {
+    match slot {
+        McSlot::Inventory(i) => ui.slots.get(i)?.as_ref(),
+        McSlot::Crafting(i) => ui.crafting.get(i)?.as_ref(),
+        McSlot::Result => ui.result.as_ref(),
+        McSlot::Workbench(i) => ui.workbench.get(i)?.as_ref(),
+        McSlot::WorkbenchResult => ui.workbench_result.as_ref(),
+        McSlot::Container(i) => ui.container.get(i)?.as_ref(),
+        McSlot::Output => ui.output.as_ref(),
+    }
+}
+
+fn keeps_gun(ui: &MinecraftUi, click: &McClick) -> bool {
+    let gun = |stack: Option<&McStack>| stack.is_some_and(|stack| stack.weapon.is_some());
+    match click {
+        McClick::Swap { slot, hotbar: OFFHAND } => gun(published(ui, *slot)),
+        McClick::Swap { slot: McSlot::Inventory(OFFHAND), hotbar } => gun(ui.slots.get(*hotbar).and_then(Option::as_ref)),
+        McClick::Slot { slot: McSlot::Inventory(OFFHAND), shift: false, .. } => gun(ui.cursor.as_ref()),
+        McClick::Throw { slot, .. } => gun(published(ui, *slot)),
+        _ => false,
+    }
+}
+
+fn station_title(opened: &Opened) -> &'static str {
+    match opened.station {
+        Station::Chest if opened.cells.len() > 1 => "container.chestDouble",
+        Station::Chest => "container.chest",
+        Station::Barrel => "container.barrel",
+        Station::Oven(CookingKind::Furnace) => "container.furnace",
+        Station::Oven(CookingKind::Smoker) => "container.smoker",
+        Station::Oven(CookingKind::BlastFurnace) => "container.blast_furnace",
+        Station::Brewer => "container.brewing",
+    }
+}
+
+fn bench_title(kind: Workshop) -> &'static str {
+    match kind {
+        Workshop::Stonecutter => "container.stonecutter",
+        Workshop::Smithing => "container.upgrade",
+        Workshop::Grindstone => "container.grindstone_title",
+        Workshop::Anvil => "container.repair",
+        Workshop::Enchanting => "container.enchant",
+    }
+}
 
 fn main_hand_attack(recipes: &minecraftoss_player::crafting::RecipeBook, stack: &ItemStack) -> Option<[f32; 2]> {
     let attack = |m: &minecraftoss_player::item_catalog::AttributeModifier| {
@@ -658,12 +829,6 @@ fn main_hand_attack(recipes: &minecraftoss_player::crafting::RecipeBook, stack: 
         let (damage, speed) = recipes.attack_attributes(Some(stack));
         [damage as f32, speed as f32]
     })
-}
-
-fn gui_sprite(packs: &PackStack, name: &str) -> Option<image::RgbaImage> {
-    let id = minecraft_terrain::pack::ResourceId::parse(&format!("minecraft:gui/sprites/{name}")).ok()?;
-    let bytes = packs.texture(&id).ok()??;
-    Some(image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).ok()?.to_rgba8())
 }
 
 fn display_name(language: &HashMap<String, String>, stack: &ItemStack) -> Option<String> {
@@ -688,7 +853,9 @@ fn bench_screen(kind: Workshop) -> McScreen {
 
 fn screen_of(opened: &Opened) -> McScreen {
     match opened.station {
-        Station::Oven(_) => McScreen::Furnace,
+        Station::Oven(CookingKind::Furnace) => McScreen::Furnace(McOven::Furnace),
+        Station::Oven(CookingKind::Smoker) => McScreen::Furnace(McOven::Smoker),
+        Station::Oven(CookingKind::BlastFurnace) => McScreen::Furnace(McOven::BlastFurnace),
         Station::Brewer => McScreen::Brewing,
         _ => McScreen::Chest { rows: opened.rows() as u8 },
     }

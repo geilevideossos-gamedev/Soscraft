@@ -59,3 +59,4 @@ pub mod containers;
 pub mod stations;
 pub mod experience;
 pub mod orb_render;
+pub mod enchantment_names;
