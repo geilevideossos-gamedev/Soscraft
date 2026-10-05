@@ -194,21 +194,34 @@ impl Level<'_> {
     }
 
     /// `BucketItem.emptyContents(null, level, pos, null)` for water or lava.
-    fn empty_bucket_into(&mut self, pos: BlockPos, water: bool) -> bool {
+    pub fn empty_bucket_into(&mut self, pos: BlockPos, water: bool) -> bool {
         let state = self.block(pos);
         let blocks = &self.registries().blocks;
         let name = self.name(state);
         let fixed = name == "minecraft:end_gateway" || name == "minecraft:end_portal";
         let may_replace = !fixed && (blocks.is(state, flags::REPLACEABLE) || !blocks.is(state, flags::LEGACY_SOLID));
         let waterloggable = blocks.property(state, "waterlogged").is_some();
-        let place_liquid = may_replace || waterloggable && water;
+        let container = waterloggable || ["KelpBlock", "KelpPlantBlock", "SeagrassBlock", "TallSeagrassBlock"].iter().any(|class| self.is_a(state, class));
+        let accepts_water = waterloggable && blocks.property(state, "type") != Some("double") && name != "minecraft:barrier";
+        let place_liquid = may_replace || accepts_water && water;
         if !(blocks.is_air(state) || place_liquid) {
             return false;
         }
-        if waterloggable && water {
+        if water && self.gameplay_attribute(pos, "gameplay/water_evaporates") {
+            return true;
+        }
+        if container && water {
             // `SimpleWaterloggedBlock.placeLiquid`.
-            if blocks.property(state, "waterlogged") == Some("false") {
-                self.set_block_and_update(pos, self.with(state, "waterlogged", "true"));
+            if waterloggable && blocks.property(state, "waterlogged") == Some("false") {
+                let lit = blocks.property(state, "lit") == Some("true");
+                let logged = self.with(state, "waterlogged", "true");
+                if lit && self.is_a(state, "CandleBlock") {
+                    self.set_block(pos, self.with(logged, "lit", "false"), 11, update::LIMIT);
+                } else if self.is_a(state, "CampfireBlock") {
+                    self.set_block_and_update(pos, self.with(logged, "lit", "false"));
+                } else {
+                    self.set_block_and_update(pos, logged);
+                }
                 self.schedule_water_tick(pos);
             }
             return true;
@@ -233,7 +246,7 @@ impl Level<'_> {
     }
 
     /// `BucketPickup.pickupBlock` without a player: the bucket it fills.
-    pub(super) fn bucket_pickup(&mut self, target: BlockPos) -> Option<&'static str> {
+    pub fn bucket_pickup(&mut self, target: BlockPos) -> Option<&'static str> {
         let state = self.block(target);
         let blocks = &self.registries().blocks;
         let info = blocks.block(blocks.block_of(state));
@@ -250,8 +263,11 @@ impl Level<'_> {
             Some("minecraft:water_bucket")
         } else if info.is_a("PowderSnowBlock") {
             self.set_block(target, minecraftoss_core::BlockStateId::AIR, 11, update::LIMIT);
+            if let Some(destroyed) = self.destroyed.as_mut() {
+                destroyed.push((target, state));
+            }
             Some("minecraft:powder_snow_bucket")
-        } else if blocks.property(state, "waterlogged").is_some() {
+        } else if blocks.property(state, "waterlogged").is_some() && self.name(state) != "minecraft:barrier" {
             if blocks.property(state, "waterlogged") == Some("true") {
                 self.set_block_and_update(target, self.with(state, "waterlogged", "false"));
                 if !self.can_survive_state(state, target) {

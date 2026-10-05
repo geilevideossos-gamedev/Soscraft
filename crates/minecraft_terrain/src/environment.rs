@@ -14,7 +14,7 @@ use minecraftoss_core::environment::{biome_weights, lerp_value, DimensionPresent
 use minecraftoss_core::Registries;
 
 /// The attributes the renderer reads, in `Used` order.
-const USED: [&str; 18] = [
+const USED: [&str; 19] = [
     "visual/fog_color",
     "visual/fog_start_distance",
     "visual/fog_end_distance",
@@ -33,6 +33,7 @@ const USED: [&str; 18] = [
     "visual/sky_light_factor",
     "visual/ambient_light_color",
     "gameplay/sky_light_level",
+    "gameplay/water_evaporates",
 ];
 
 #[derive(Clone, Copy)]
@@ -55,6 +56,7 @@ enum Used {
     SkyLightFactor,
     AmbientLightColor,
     SkyLightLevel,
+    WaterEvaporates,
 }
 
 /// `MoonPhase` in index order.
@@ -141,6 +143,10 @@ impl DimensionEnvironment {
     /// `gameplay/sky_light_level` at the end of the last tick, for sky darkening.
     pub fn sky_light_level(&self) -> f32 {
         self.current[Used::SkyLightLevel as usize].as_f32()
+    }
+
+    pub fn water_evaporates(&self) -> bool {
+        self.current[Used::WaterEvaporates as usize].as_bool()
     }
 
     /// `visual/sun_angle` in degrees.

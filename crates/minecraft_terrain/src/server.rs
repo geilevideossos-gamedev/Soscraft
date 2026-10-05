@@ -20,6 +20,14 @@ pub enum PlayerEdit {
     Break,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemOnBlock {
+    EmptyBucket { water: bool },
+    FillBucket,
+    Ignite,
+    PrimeTnt,
+}
+
 pub struct ServerSim {
     level: Level<'static>,
     states: Arc<BlockStates>,
@@ -797,6 +805,16 @@ impl ServerSim {
         self.level.attack_block(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2))
     }
 
+    pub fn item_on_block(&mut self, pos: BlockPos, action: ItemOnBlock) -> bool {
+        let at = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
+        match action {
+            ItemOnBlock::EmptyBucket { water } => self.level.empty_bucket_into(at, water),
+            ItemOnBlock::FillBucket => self.level.bucket_pickup(at).is_some(),
+            ItemOnBlock::Ignite => self.level.place_fire(at),
+            ItemOnBlock::PrimeTnt => self.level.ignite_tnt(at),
+        }
+    }
+
     /// The players the level can see (fire spreads near them), and the
     /// difficulty (`Difficulty.getId`).
     pub fn set_players(&mut self, positions: &[[f64; 3]], difficulty: i32) {
@@ -845,8 +863,14 @@ impl ServerSim {
     }
 
     pub fn tick(&mut self) {
+        let bursting: Vec<(i32, [f64; 3])> = self.level.entities.iter().filter(|e| e.tnt_data().is_some_and(|d| d.fuse <= 1)).map(|e| (e.id, e.pos)).collect();
         self.level.tick();
         self.level.unsupported.clear();
+        for (id, position) in bursting {
+            if self.level.tnt_explodes && !self.level.entities.iter().any(|e| e.id == id) {
+                self.explosions.push(minecraftoss_entities::creeper::CreeperExplosion { position: glam::DVec3::from_array(position), radius: TNT_BLAST_RADIUS, powered: false });
+            }
+        }
     }
 
     /// Hands an item entity the client created (a drop, a spill) to the
@@ -946,6 +970,7 @@ pub enum Command {
     UseBlock { pos: BlockPos, facing: &'static str },
     BoneMeal { pos: BlockPos, face: &'static str },
     Attack(BlockPos),
+    ItemOnBlock { pos: BlockPos, action: ItemOnBlock },
     SpawnItem { item: String, count: i32, components: Option<String>, position: [f64; 3], velocity: [f64; 3], pickup_delay: i32, age: i32 },
     /// The recipe book, for mobs.
     RecipeBook(Arc<minecraftoss_player::crafting::RecipeBook>),
@@ -996,6 +1021,7 @@ pub struct TickInput {
 }
 
 const PLAYER_HEIGHT: f64 = 1.8;
+const TNT_BLAST_RADIUS: f32 = 4.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct WeatherView {
@@ -1036,6 +1062,7 @@ pub struct Output {
     pub summoned: Vec<Result<String, String>>,
     /// Positions where bone meal was used.
     pub bone_meal_used: Vec<BlockPos>,
+    pub item_uses: Vec<bool>,
     pub pearl_landings: Vec<[f64; 3]>,
     pub weather: Option<WeatherView>,
     /// How many commands the server has handled so far.
@@ -1131,6 +1158,10 @@ impl ServerHandle {
             self.send(Command::Attack(pos));
         }
         handled
+    }
+
+    pub fn item_on_block(&mut self, pos: BlockPos, action: ItemOnBlock) {
+        self.send(Command::ItemOnBlock { pos, action });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1247,6 +1278,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::Attack(pos) => {
                     sim.attack_block(pos);
+                }
+                Command::ItemOnBlock { pos, action } => {
+                    out.item_uses.push(sim.item_on_block(pos, action));
                 }
                 Command::SpawnItem { item, count, components, position, velocity, pickup_delay, age } => {
                     sim.spawn_item(&item, count, components.as_deref(), position, velocity, pickup_delay, age);
@@ -2890,5 +2924,112 @@ mod tests {
         let placed = place_door(&mut server, &mut scene, "minecraft:iron_door");
         assert_eq!(open(&placed, (8, 200, 8)), Some(true));
         assert_eq!(open(&placed, (8, 201, 8)), Some(true));
+    }
+
+    fn block_at(changes: &std::collections::HashMap<BlockPos, Option<Block>>, pos: BlockPos) -> Option<Block> {
+        changes.get(&pos).cloned().flatten()
+    }
+
+    fn property(block: &Option<Block>, name: &str) -> Option<String> {
+        block.as_ref().and_then(|b| b.properties.get(name).cloned())
+    }
+
+    #[test]
+    fn a_poured_bucket_flows_and_an_empty_one_takes_the_source_back() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.take_changes();
+        assert!(server.item_on_block((8, 200, 8), ItemOnBlock::EmptyBucket { water: true }));
+        let poured = ticked(&mut server, 1);
+        let source = block_at(&poured, (8, 200, 8));
+        assert_eq!(source.as_ref().map(|b| b.id.key()), Some("minecraft:water".to_owned()));
+        assert_eq!(property(&source, "level").as_deref(), Some("0"));
+        let flowed = ticked(&mut server, 20);
+        assert!(flowed.keys().any(|pos| *pos != (8, 200, 8)), "the source should spread");
+        assert!(server.item_on_block((8, 200, 8), ItemOnBlock::FillBucket));
+        assert_eq!(server.take_changes().into_iter().find(|(pos, _)| *pos == (8, 200, 8)), Some(((8, 200, 8), None)));
+        assert!(!server.item_on_block((8, 200, 8), ItemOnBlock::FillBucket), "nothing is left to take");
+        assert!(server.item_on_block((8, 200, 8), ItemOnBlock::EmptyBucket { water: false }));
+        let hardened = server.take_changes().into_iter().find(|(pos, _)| *pos == (8, 200, 8)).and_then(|(_, b)| b);
+        assert_eq!(hardened.map(|b| b.id.key()), Some("minecraft:obsidian".to_owned()), "lava poured beside the flowing water hardens");
+    }
+
+    #[test]
+    fn water_from_a_bucket_douses_and_waterlogs_a_lit_campfire() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:campfire").with("lit", "true").with("waterlogged", "false"));
+        server.take_changes();
+        assert!(server.item_on_block((8, 200, 8), ItemOnBlock::EmptyBucket { water: true }));
+        let doused: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        let campfire = block_at(&doused, (8, 200, 8));
+        assert_eq!(property(&campfire, "lit").as_deref(), Some("false"));
+        assert_eq!(property(&campfire, "waterlogged").as_deref(), Some("true"));
+        assert!(server.item_on_block((8, 200, 8), ItemOnBlock::FillBucket));
+        let drained: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(property(&block_at(&drained, (8, 200, 8)), "waterlogged").as_deref(), Some("false"));
+    }
+
+    #[test]
+    fn lava_poured_on_a_torch_knocks_it_off_as_an_item() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:torch"));
+        server.take_changes();
+        assert!(server.item_on_block((8, 200, 8), ItemOnBlock::EmptyBucket { water: false }));
+        assert!(server.items().iter().any(|item| item.item == "minecraft:torch"), "{:?}", server.items());
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(block_at(&changes, (8, 200, 8)).map(|b| b.id.key()), Some("minecraft:lava".to_owned()));
+    }
+
+    #[test]
+    fn flint_fire_needs_ground_turns_to_soul_fire_on_soul_soil_and_burns_out() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        server.set_players(&[[8.5, 200.0, 8.5]], 2);
+        server.take_changes();
+        assert!(!server.item_on_block((8, 205, 8), ItemOnBlock::Ignite), "no fire in mid-air");
+        assert!(server.item_on_block((8, 200, 8), ItemOnBlock::Ignite));
+        let lit: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(block_at(&lit, (8, 200, 8)).map(|b| b.id.key()), Some("minecraft:fire".to_owned()));
+        assert!(!server.item_on_block((8, 200, 8), ItemOnBlock::Ignite), "fire only goes into air");
+        place(&mut server, &mut scene, (12, 200, 8), Block::new("minecraft:soul_soil"));
+        assert!(server.item_on_block((12, 201, 8), ItemOnBlock::Ignite));
+        let soul: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(block_at(&soul, (12, 201, 8)).map(|b| b.id.key()), Some("minecraft:soul_fire".to_owned()));
+        let burnt = ticked(&mut server, 2400);
+        assert!(burnt.contains_key(&(8, 200, 8)) && block_at(&burnt, (8, 200, 8)).is_none(), "fire on bare stone burns out");
+        assert!(!burnt.contains_key(&(12, 201, 8)), "soul fire keeps burning");
+    }
+
+    #[test]
+    fn flint_primes_tnt_which_blows_up_with_a_bang() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:tnt"));
+        server.take_changes();
+        assert!(!server.item_on_block((8, 199, 8), ItemOnBlock::PrimeTnt), "stone does not prime");
+        assert!(server.item_on_block((8, 200, 8), ItemOnBlock::PrimeTnt));
+        assert_eq!(server.primed_tnt().len(), 1);
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(changes.get(&(8, 200, 8)), Some(&None));
+        for _ in 0..79 {
+            server.tick();
+        }
+        assert!(server.take_explosions().is_empty(), "the fuse lasts 80 ticks");
+        server.tick();
+        assert!(server.primed_tnt().is_empty());
+        assert_eq!(server.take_explosions().len(), 1);
+    }
+
+    #[test]
+    fn the_server_answers_each_item_use_so_one_source_fills_one_bucket() {
+        let Some((mut server, _)) = door_world() else { return };
+        assert!(server.item_on_block((8, 200, 8), ItemOnBlock::EmptyBucket { water: true }));
+        server.take_changes();
+        let mut handle = ServerHandle::spawn(server);
+        handle.item_on_block((8, 200, 8), ItemOnBlock::FillBucket);
+        handle.item_on_block((8, 200, 8), ItemOnBlock::FillBucket);
+        handle.wait_idle();
+        let outputs = handle.poll();
+        let answers: Vec<bool> = outputs.iter().flat_map(|out| out.item_uses.iter().copied()).collect();
+        assert_eq!(answers, vec![true, false]);
+        let drained = outputs.iter().flat_map(|out| out.changes.iter()).any(|(pos, block)| *pos == (8, 200, 8) && block.is_none());
+        assert!(drained, "the answer carries the emptied block");
     }
 }

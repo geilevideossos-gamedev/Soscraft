@@ -56,6 +56,10 @@ impl Level<'_> {
         true
     }
 
+    pub fn ignite_tnt(&mut self, pos: BlockPos) -> bool {
+        self.is_a(self.block(pos), "TntBlock") && self.prime_tnt(pos) && self.set_block(pos, BlockStateId::AIR, 11, update::LIMIT)
+    }
+
     /// `PrimedTnt(level, x, y, z, owner)`: a random horizontal nudge.
     pub(super) fn new_primed_tnt(&mut self, pos: [f64; 3]) -> Entity {
         let rot = self.random.next_f64() * f64::from(std::f32::consts::TAU);

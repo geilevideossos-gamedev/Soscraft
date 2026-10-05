@@ -43,6 +43,15 @@ pub(crate) struct Blow {
     pub can_sweep: bool,
 }
 
+pub(crate) struct SentItemUse {
+    pub slot: usize,
+    pub held: String,
+    pub eye: DVec3,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub outcome: minecraft_terrain::bucket::ItemUse,
+}
+
 pub(crate) struct Entities {
     server: ServerHandle,
     /// The mobs the player tracks, as of the last server tick.
@@ -83,6 +92,8 @@ pub(crate) struct Entities {
     pub(crate) weather: minecraft_terrain::server::WeatherView,
     pub(crate) stations: std::sync::Arc<minecraft_terrain::stations::StationBook>,
     pub(crate) enchantments: Option<std::sync::Arc<minecraftoss_entities::enchant::Enchantments>>,
+    item_use_waiting: Option<SentItemUse>,
+    pub(crate) item_uses_done: Vec<SentItemUse>,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -197,6 +208,8 @@ impl Entities {
             weather: Default::default(),
             stations,
             enchantments,
+            item_use_waiting: None,
+            item_uses_done: Vec::new(),
         }
     }
 
@@ -390,6 +403,15 @@ impl Entities {
         self.server.use_block(scene, pos, facing)
     }
 
+    pub(crate) fn item_on_block(&mut self, pos: (i32, i32, i32), action: minecraft_terrain::server::ItemOnBlock, sent: SentItemUse) {
+        self.server.item_on_block(pos, action);
+        self.item_use_waiting = Some(sent);
+    }
+
+    pub(crate) fn awaits_item_use(&self) -> bool {
+        self.item_use_waiting.is_some()
+    }
+
     /// Client ticks run so far.
     pub(crate) fn client_ticks(&self) -> u64 {
         self.ticks
@@ -525,6 +547,11 @@ impl Entities {
                 self.weather = weather;
             }
             self.server_picked.extend(output.picked);
+            for used in output.item_uses {
+                if let Some(sent) = self.item_use_waiting.take().filter(|_| used) {
+                    self.item_uses_done.push(sent);
+                }
+            }
             changes.extend(output.changes);
             self.destroyed.extend(output.destroyed);
             self.experience_found += output.orbs_taken.iter().map(|orb| orb.2 as f32).sum::<f32>();
@@ -715,6 +742,12 @@ impl Entities {
                 .map(|f| (DVec3::from_array(f.previous_position).lerp(DVec3::from_array(f.position), f64::from(partial)).as_vec3(), f.block.clone()))
                 .collect();
             let _ = self.items.append_falling_blocks(&mut out.items, &falling, packs, atlas, light);
+            let primed: Vec<_> = snapshot
+                .tnt
+                .iter()
+                .map(|t| (DVec3::from_array(t.previous_position).lerp(DVec3::from_array(t.position), f64::from(partial)).as_vec3(), t.fuse as f32 - partial + 1.0))
+                .collect();
+            let _ = self.items.append_primed_tnt(&mut out.items, &primed, packs, atlas, light);
         }
         minecraft_terrain::thrown::append_sprites(
             &mut out.items,

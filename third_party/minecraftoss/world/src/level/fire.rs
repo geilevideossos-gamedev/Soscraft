@@ -85,6 +85,10 @@ impl Level<'_> {
     /// The environment attribute `gameplay/increased_fire_burnout` at a
     /// block (the noise biome there).
     fn increased_fire_burnout(&self, pos: BlockPos) -> bool {
+        self.gameplay_attribute(pos, "gameplay/increased_fire_burnout")
+    }
+
+    pub(super) fn gameplay_attribute(&self, pos: BlockPos, name: &str) -> bool {
         let Some(sky) = &self.sky else { return false };
         let Some(chunk) = self.chunk(pos.chunk()) else { return false };
         let biome = chunk.biome(((pos.x >> 2) & 3) as usize, pos.y >> 2, ((pos.z >> 2) & 3) as usize);
@@ -96,7 +100,16 @@ impl Level<'_> {
             biome_weights: None,
             biome: biome.0,
         };
-        sky.environment.value_named("gameplay/increased_fire_burnout", &sample).as_bool()
+        sky.environment.value_named(name, &sample).as_bool()
+    }
+
+    pub fn place_fire(&mut self, pos: BlockPos) -> bool {
+        if !self.registries().blocks.is_air(self.block(pos)) {
+            return false;
+        }
+        let fire = self.fire_with_age(pos, 0);
+        let survives = if self.name(fire) == "minecraft:fire" { self.fire_survives(pos) } else { self.lib.registries.block_in_tag(self.block(pos.below()), self.lib.update_rules.soul_fire_base) };
+        survives && self.set_block(pos, fire, 11, update::LIMIT)
     }
 
     /// `BaseFireBlock.onPlace` (and `FireBlock.onPlace`'s first tick).

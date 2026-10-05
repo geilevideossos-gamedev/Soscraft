@@ -910,6 +910,25 @@ fn update(
                         sounds.play(&world.packs, event, at.map(|centre| Vec3::from_array(sim::voxel::to_map(origin, centre))), 1.0, 1.0);
                     }
                 }
+            } else if let Some(stack) = held.as_ref()
+                && !entities.awaits_item_use()
+                && let Some(outcome) = {
+                    let catalog = minecraft_terrain::bucket::Catalog { states: &world.stream.states, water_evaporates: world.environment.water_evaporates() };
+                    let outlined = minecraft_terrain::doors::Outlined(&world.scene);
+                    minecraft_terrain::bucket::bucket_use(&player, &outlined, &catalog, stack, || entities.random_float())
+                        .or_else(|| minecraft_terrain::flint::flint_use(&player, &outlined, &catalog, stack, || entities.random_float()))
+                }
+            {
+                hand.swing = Some(0.0);
+                let change = outcome.change.clone();
+                let sent = crate::minecraft_entities::SentItemUse { slot: entities.selected, held: stack.id.clone(), eye: eye_block, yaw: mc_yaw, pitch: ps.viewangles[0], outcome };
+                match change {
+                    minecraft_terrain::bucket::Change::Set(pos, block) => {
+                        write_blocks(world, shapes, shape_ids, entities, vec![(pos, scene_block(&block))]);
+                        finish_item_use(entities, sounds.as_mut(), &world.packs, origin, sent);
+                    }
+                    minecraft_terrain::bucket::Change::Server(pos, action) => entities.item_on_block(pos, action, sent),
+                }
             } else if let Some((stack, kind)) = held.as_ref().and_then(|s| minecraft_terrain::thrown::Throwable::of(&s.id).map(|k| (s, k))) {
                 let pearl = kind == minecraft_terrain::thrown::Throwable::EnderPearl;
                 let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
@@ -1182,6 +1201,9 @@ fn update(
         let armor = crate::minecraft_survival::armor(&entities.inventory);
         for (amount, from) in hits {
             survival.hurt(amount, armor, from);
+        }
+        for used in std::mem::take(&mut entities.item_uses_done) {
+            finish_item_use(entities, sounds.as_mut(), &world.packs, origin, used);
         }
         for landing in std::mem::take(&mut entities.pearl_landings) {
             if !alive {
@@ -1633,6 +1655,31 @@ fn write_blocks(
             entities.placed(&world.scene, at);
         } else {
             entities.broke(&[at]);
+        }
+    }
+}
+
+fn finish_item_use(
+    entities: &mut crate::minecraft_entities::Entities,
+    sounds: Option<&mut crate::minecraft_sounds::Sounds>,
+    packs: &PackStack,
+    origin: [f64; 3],
+    used: crate::minecraft_entities::SentItemUse,
+) {
+    let mut heard = used.outcome.sounds;
+    if entities.inventory.slots.get(used.slot).and_then(Option::as_ref).is_some_and(|stack| stack.id == used.held) {
+        if let Some(result) = used.outcome.result
+            && let Some(rest) = minecraft_terrain::bottle::filled_result(&mut entities.inventory, used.slot, result)
+        {
+            entities.world_items.toss(rest, used.eye, used.yaw, used.pitch);
+        }
+        if entities.inventory.wear_tool(used.slot, used.outcome.wear) {
+            heard.push(minecraft_terrain::flint::break_sound(entities.random_float()));
+        }
+    }
+    if let Some(sounds) = sounds {
+        for sound in heard {
+            sounds.play(packs, sound.event, sound.at.map(|at| Vec3::from_array(sim::voxel::to_map(origin, at))), sound.volume, sound.pitch);
         }
     }
 }
