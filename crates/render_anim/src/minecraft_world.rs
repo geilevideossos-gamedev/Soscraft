@@ -619,7 +619,7 @@ fn update(
                     }
                 }
             }
-        } else if caught {
+        } else if caught || (climbing && sim::voxel::lava(ps.origin, hull_mins, hull_maxs) <= 0.0) {
             steps.air_peak = Some(feet[1]);
         } else {
             steps.air_peak = Some(steps.air_peak.map_or(feet[1], |p| p.max(feet[1])));
