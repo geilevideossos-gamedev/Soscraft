@@ -168,6 +168,11 @@ impl Level<'_> {
         if drop {
             self.drop_resources(state, pos);
         }
+        if !self.is_a(state, "BaseFireBlock") {
+            if let Some(destroyed) = self.destroyed.as_mut() {
+                destroyed.push((pos, state));
+            }
+        }
         let replacement = self.fluid_legacy_block(self.fluid_state(state));
         self.set_block(pos, replacement, update::ALL, limit)
     }

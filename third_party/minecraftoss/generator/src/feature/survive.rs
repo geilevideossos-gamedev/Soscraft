@@ -59,6 +59,31 @@ pub fn is_face_full(shape: &FaceShape, direction: Direction) -> bool {
     true
 }
 
+pub const SCAFFOLDING_REACH: i32 = 7;
+
+pub fn scaffolding_distance<W: super::World + ?Sized>(registries: &Registries, region: &W, (x, y, z): (i32, i32, i32)) -> i32 {
+    let blocks = &registries.blocks;
+    let scaffolding = |s: BlockStateId| blocks.block(blocks.block_of(s)).name.as_str() == "minecraft:scaffolding";
+    let distance = |s: BlockStateId| blocks.property(s, "distance").and_then(|d| d.parse::<i32>().ok()).unwrap_or(SCAFFOLDING_REACH);
+    let below = region.block_at(x, y - 1, z);
+    let mut reach = SCAFFOLDING_REACH;
+    if scaffolding(below) {
+        reach = distance(below);
+    } else if blocks.is_face_sturdy(below, Direction::Up, SupportType::Full) {
+        return 0;
+    }
+    for (dx, dz) in [(0, -1), (1, 0), (0, 1), (-1, 0)] {
+        let side = region.block_at(x + dx, y, z + dz);
+        if scaffolding(side) {
+            reach = reach.min(distance(side) + 1);
+            if reach == 1 {
+                break;
+            }
+        }
+    }
+    reach
+}
+
 /// Tags and blocks survival rules test, resolved once per data pack.
 pub struct Survival {
     tags: HashMap<&'static str, TagId>,
@@ -129,6 +154,8 @@ enum Rule {
     RedstoneWire,
     /// `DiodeBlock`: a rigid top face below.
     Diode,
+    Scaffolding,
+    CeilingHangingSign,
 }
 
 const TAGS: &[&str] = &[
@@ -270,6 +297,8 @@ impl Survival {
             ("PistonHeadBlock", Some(Rule::PistonHead)),
             ("RedstoneWireBlock", Some(Rule::RedstoneWire)),
             ("DiodeBlock", Some(Rule::Diode)),
+            ("ScaffoldingBlock", Some(Rule::Scaffolding)),
+            ("CeilingHangingSignBlock", Some(Rule::CeilingHangingSign)),
         ];
         for (id, info) in registries.blocks.blocks() {
             if rules.contains_key(&id) {
@@ -594,6 +623,8 @@ impl Survival {
                 (is(base, base_name) && blocks.property(base, "extended") == Some("true") || is(base, "minecraft:moving_piston")) && same_facing
             }
             Rule::Diode => blocks.is_face_sturdy(get(0, -1, 0), Direction::Up, SupportType::Rigid),
+            Rule::Scaffolding => scaffolding_distance(registries, region, (x, y, z)) < SCAFFOLDING_REACH,
+            Rule::CeilingHangingSign => blocks.is_face_sturdy(get(0, 1, 0), Direction::Down, SupportType::Center),
             Rule::RedstoneWire => {
                 let below = get(0, -1, 0);
                 sturdy(below, Direction::Up) || is(below, "minecraft:hopper")

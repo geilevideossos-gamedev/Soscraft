@@ -202,6 +202,15 @@ impl Mining {
         inserted
     }
 
+    pub(crate) fn burst(&mut self, packs: &PackStack, scene: &HandcraftedScene, atlas: &Atlas, pos: BlockPos, block: &minecraft_terrain::scene::Block) {
+        if self.particles.is_none() {
+            self.particles = BlockParticles::new(packs).ok();
+        }
+        if let Some(particles) = self.particles.as_mut() {
+            let _ = particles.spawn(packs, scene, pos, block, atlas);
+        }
+    }
+
     /// Steps the break particles at 20 ticks a second.
     pub(crate) fn tick(&mut self, scene: &HandcraftedScene, dt: f64) -> f32 {
         self.tick_clock += dt;

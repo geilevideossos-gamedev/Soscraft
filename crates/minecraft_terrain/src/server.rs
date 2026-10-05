@@ -180,6 +180,7 @@ impl ServerSim {
         let range = states.vertical_range();
         let mut level = Level::new(&worldgen.library, range.start, range.end - range.start);
         level.random_sequences = minecraftoss_core::loot::RandomSequences::new(worldgen.terrain.seed);
+        level.destroyed = Some(Vec::new());
         if let Err(e) = level.set_dimension(dimension_type) {
             eprintln!("world simulation without environment: {e}");
         }
@@ -720,6 +721,19 @@ impl ServerSim {
         block.and_then(|b| self.states.state_of(b)).unwrap_or(BlockStateId::AIR)
     }
 
+    pub fn player_breaks(&mut self, positions: &[BlockPos]) {
+        let at: Vec<_> = positions.iter().map(|p| minecraftoss_core::BlockPos::new(p.0, p.1, p.2)).collect();
+        self.level.remove_blocks(&at, BlockStateId::AIR);
+    }
+
+    pub fn take_destroyed(&mut self) -> Vec<(BlockPos, Block)> {
+        let destroyed = self.level.destroyed.as_mut().map_or_else(Vec::new, std::mem::take);
+        destroyed
+            .into_iter()
+            .filter_map(|(pos, state)| self.states.block(state).cloned().map(|block| ((pos.x, pos.y, pos.z), block)))
+            .collect()
+    }
+
     /// Applies a player's edit that the client scene already shows.
     pub fn player_edit(&mut self, scene: &HandcraftedScene, pos: BlockPos, edit: PlayerEdit) {
         self.player_edit_block(pos, Scene::block(scene, pos), edit);
@@ -908,6 +922,7 @@ pub enum Command {
     UnloadChunk(ChunkPos),
     /// A block the client set, as the client scene now shows it.
     PlayerEdit { pos: BlockPos, block: Option<Block>, edit: PlayerEdit },
+    PlayerBreaks(Vec<BlockPos>),
     UseBlock { pos: BlockPos, facing: &'static str },
     BoneMeal { pos: BlockPos, face: &'static str },
     Attack(BlockPos),
@@ -964,6 +979,7 @@ pub struct TickInput {
 pub struct Output {
     /// Blocks that changed, with the block now there.
     pub changes: Vec<(BlockPos, Option<Block>)>,
+    pub destroyed: Vec<(BlockPos, Block)>,
     /// Entity snapshots, after a tick.
     pub entities: Option<EntitySnapshot>,
     /// Experience orbs the player took: (entity ID, position, value).
@@ -1050,6 +1066,12 @@ impl ServerHandle {
     pub fn player_edit(&mut self, scene: &HandcraftedScene, pos: BlockPos, edit: PlayerEdit) {
         let block = Scene::block(scene, pos).cloned();
         self.send(Command::PlayerEdit { pos, block, edit });
+    }
+
+    pub fn player_breaks(&mut self, positions: &[BlockPos]) {
+        if !positions.is_empty() {
+            self.send(Command::PlayerBreaks(positions.to_vec()));
+        }
     }
 
     fn state_in(&self, scene: &HandcraftedScene, pos: BlockPos) -> Option<BlockStateId> {
@@ -1177,6 +1199,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::LoadChunk(chunk) => sim.load_chunk(&chunk),
                 Command::UnloadChunk(pos) => sim.unload_chunk(pos),
                 Command::PlayerEdit { pos, block, edit } => sim.player_edit_block(pos, block.as_ref(), edit),
+                Command::PlayerBreaks(positions) => sim.player_breaks(&positions),
                 Command::UseBlock { pos, facing } => {
                     sim.use_block(pos, facing);
                 }
@@ -1271,6 +1294,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
             }
         }
         out.changes = sim.take_changes();
+        out.destroyed = sim.take_destroyed();
         out.handled = handled;
         if outputs.send(out).is_err() {
             break;
@@ -2566,6 +2590,113 @@ mod tests {
         server.player_edit(&scene, (8, 201, 8), PlayerEdit::Break);
         let broken: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
         assert_eq!(broken.get(&(8, 200, 8)), Some(&None));
+    }
+
+    fn place(server: &mut ServerSim, scene: &mut HandcraftedScene, pos: BlockPos, block: Block) {
+        scene.set(pos, Some(block));
+        server.player_edit(scene, pos, PlayerEdit::Place);
+    }
+
+    fn take(server: &mut ServerSim, scene: &mut HandcraftedScene, pos: BlockPos) {
+        scene.set(pos, None);
+        server.player_edit(scene, pos, PlayerEdit::Break);
+    }
+
+    fn ticked(server: &mut ServerSim, ticks: usize) -> std::collections::HashMap<BlockPos, Option<Block>> {
+        let mut changes = std::collections::HashMap::new();
+        for _ in 0..ticks {
+            server.tick();
+            changes.extend(server.take_changes());
+        }
+        changes
+    }
+
+    #[test]
+    fn columns_break_block_by_block_when_their_ground_goes() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:sand"));
+        place(&mut server, &mut scene, (9, 200, 8), Block::new("minecraft:water").with("level", "0"));
+        place(&mut server, &mut scene, (9, 199, 8), Block::new("minecraft:stone"));
+        for y in 201..=203 {
+            place(&mut server, &mut scene, (8, y, 8), Block::new("minecraft:sugar_cane"));
+        }
+        place(&mut server, &mut scene, (6, 199, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (6, 200, 8), Block::new("minecraft:dirt"));
+        for y in 201..=202 {
+            place(&mut server, &mut scene, (6, y, 8), Block::new("minecraft:bamboo"));
+        }
+        server.take_changes();
+        take(&mut server, &mut scene, (8, 200, 8));
+        take(&mut server, &mut scene, (6, 200, 8));
+        let after_one = ticked(&mut server, 1);
+        assert_eq!(after_one.get(&(8, 201, 8)), Some(&None), "{after_one:?}");
+        assert!(!after_one.contains_key(&(8, 203, 8)), "a column breaks one block a tick");
+        let changes = ticked(&mut server, 6);
+        for y in 202..=203 {
+            assert_eq!(changes.get(&(8, y, 8)), Some(&None), "sugar cane at {y}");
+        }
+        assert_eq!(changes.get(&(6, 202, 8)), Some(&None), "bamboo");
+        let items: Vec<String> = server.items().into_iter().map(|i| i.item).collect();
+        assert!(items.iter().any(|i| i == "minecraft:sugar_cane"), "{items:?}");
+        assert!(items.iter().any(|i| i == "minecraft:bamboo"), "{items:?}");
+    }
+
+    #[test]
+    fn scaffolding_reaches_six_out_and_falls_or_breaks_beyond() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let mut latest = std::collections::HashMap::new();
+        for x in 8..=15 {
+            place(&mut server, &mut scene, (x, 200, 8), Block::new("minecraft:scaffolding"));
+            latest.extend(server.take_changes());
+            latest.extend(ticked(&mut server, 2));
+        }
+        let distance = |x: i32| latest.get(&(x, 200, 8)).cloned().flatten().and_then(|b| b.properties.get("distance").cloned());
+        assert_eq!(distance(8).as_deref(), Some("0"));
+        assert_eq!(distance(14).as_deref(), Some("6"));
+        assert_eq!(latest.get(&(15, 200, 8)), Some(&None), "the seventh out leaves its place");
+        assert_eq!(server.falling_blocks().len(), 1, "unsupported scaffolding falls");
+        take(&mut server, &mut scene, (8, 199, 8));
+        let changes = ticked(&mut server, 12);
+        for x in 8..=14 {
+            assert_eq!(changes.get(&(x, 200, 8)), Some(&None), "scaffolding at {x}");
+        }
+        assert!(server.items().iter().any(|i| i.item == "minecraft:scaffolding"));
+    }
+
+    #[test]
+    fn hanging_signs_and_torches_drop_with_their_support() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 205, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (8, 204, 8), Block::new("minecraft:oak_hanging_sign").with("rotation", "0").with("attached", "false").with("waterlogged", "false"));
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:torch"));
+        server.take_changes();
+        take(&mut server, &mut scene, (8, 205, 8));
+        take(&mut server, &mut scene, (8, 199, 8));
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(changes.get(&(8, 204, 8)), Some(&None), "{changes:?}");
+        assert_eq!(changes.get(&(8, 200, 8)), Some(&None), "{changes:?}");
+        let items: Vec<String> = server.items().into_iter().map(|i| i.item).collect();
+        assert!(items.iter().any(|i| i == "minecraft:oak_hanging_sign"), "{items:?}");
+        assert!(items.iter().any(|i| i == "minecraft:torch"), "{items:?}");
+    }
+
+    #[test]
+    fn a_batch_of_player_breaks_drops_nothing_twice() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:torch"));
+        place(&mut server, &mut scene, (9, 199, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (9, 200, 8), Block::new("minecraft:torch"));
+        server.take_changes();
+        server.take_destroyed();
+        server.player_breaks(&[(8, 199, 8), (8, 200, 8), (9, 199, 8)]);
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        for pos in [(8, 199, 8), (8, 200, 8), (9, 199, 8), (9, 200, 8)] {
+            assert_eq!(changes.get(&pos), Some(&None), "{pos:?}");
+        }
+        let items: Vec<String> = server.items().into_iter().map(|i| i.item).collect();
+        assert_eq!(items, vec!["minecraft:torch".to_owned()], "only the torch outside the batch drops on the server");
+        let destroyed: Vec<_> = server.take_destroyed().into_iter().map(|(pos, block)| (pos, block.id.key())).collect();
+        assert_eq!(destroyed, vec![((9, 200, 8), "minecraft:torch".to_owned())]);
     }
 
     #[test]

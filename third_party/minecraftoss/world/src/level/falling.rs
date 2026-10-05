@@ -51,15 +51,36 @@ impl Level<'_> {
             // Their landing and block entity rules are not simulated yet.
             self.unsupported.push(format!("falling {}", self.name(state)));
         }
+        self.fall_block(pos, state, !brushable);
+    }
+
+    pub(super) fn fall_block(&mut self, pos: BlockPos, state: BlockStateId, drop_item: bool) {
         // `FallingBlockEntity.fall`: the entity keeps no water.
         let mut falling = state;
         if self.registries().blocks.property(state, "waterlogged").is_some() {
             falling = self.with(state, "waterlogged", "false");
         }
-        let entity = Entity::falling_block([f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5], FallingData { state: falling, time: 0, drop_item: !brushable });
+        let entity = Entity::falling_block([f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5], FallingData { state: falling, time: 0, drop_item });
         let fluid = self.fluid_legacy_block(self.fluid_state(state));
         self.set_block_and_update(pos, fluid);
         self.add_entity(entity);
+    }
+
+    pub(super) fn scaffolding_tick(&mut self, state: BlockStateId, pos: BlockPos) {
+        use minecraftoss_generator::feature::survive::{scaffolding_distance, SCAFFOLDING_REACH};
+        let reach = scaffolding_distance(self.registries(), self, (pos.x, pos.y, pos.z));
+        let on_scaffolding = self.block_id(self.block(pos.below())) == self.block_id(state);
+        let bottom = if reach > 0 && !on_scaffolding { "true" } else { "false" };
+        let next = self.with(self.with(state, "distance", &reach.to_string()), "bottom", bottom);
+        if reach == SCAFFOLDING_REACH {
+            if self.registries().blocks.property(state, "distance") == Some("7") {
+                self.fall_block(pos, next, true);
+            } else {
+                self.destroy_block_drops(pos, true, update::LIMIT);
+            }
+        } else if next != state {
+            self.set_block_and_update(pos, next);
+        }
     }
 
     /// `FallingBlockEntity.tick` (it skips `baseTick`).

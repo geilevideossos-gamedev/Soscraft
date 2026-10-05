@@ -944,7 +944,7 @@ fn update(
     survival.exhaust(crate::minecraft_survival::MINE_EXHAUSTION * broken.iter().filter(|(.., blast)| !blast).count() as f32);
     if let Some(entities) = entities.as_mut() {
         let positions: Vec<_> = broken.iter().map(|(pos, ..)| *pos).collect();
-        entities.broke(&world.scene, &positions);
+        entities.broke(&positions);
         entities.drop_blocks(&broken);
     }
 
@@ -1051,6 +1051,13 @@ fn update(
             }
             world.stream.record_edits(&world.scene, &positions);
             world.stream.mark_edited(&world.scene, &positions);
+        }
+        for (pos, block) in std::mem::take(&mut entities.destroyed) {
+            mining.burst(&world.packs, &world.scene, &world.atlas, pos, &block);
+            if let (Some(sounds), Some(kind)) = (sounds.as_mut(), world.scene.sound_type(&block)) {
+                let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
+                sounds.play(&world.packs, &kind.break_sound, Some(at(centre)), (kind.volume + 1.0) / 2.0, kind.pitch * 0.8);
+            }
         }
         let armor = crate::minecraft_survival::armor(&entities.inventory);
         for (amount, from) in hits {
@@ -1378,7 +1385,7 @@ fn write_blocks(
         if minecraft_terrain::scene::Scene::block(&world.scene, at).is_some() {
             entities.placed(&world.scene, at);
         } else {
-            entities.broke(&world.scene, &[at]);
+            entities.broke(&[at]);
         }
     }
 }

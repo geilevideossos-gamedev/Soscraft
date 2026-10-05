@@ -86,6 +86,8 @@ enum Rule {
     TickIfCovered,
     /// `FallingBlock`, `BrushableBlock`: always a tick.
     Tick,
+    Scaffolding,
+    CeilingHangingSign,
 }
 
 pub struct UpdateRules {
@@ -227,6 +229,8 @@ impl UpdateRules {
             ("FarmlandBlock", Rule::TickIfCovered),
             ("PathBlock", Rule::TickIfCovered),
             ("FallingBlock", Rule::Tick),
+            ("ScaffoldingBlock", Rule::Scaffolding),
+            ("CeilingHangingSignBlock", Rule::CeilingHangingSign),
             ("BrushableBlock", Rule::Tick),
         ];
         for (id, info) in registries.blocks.blocks() {
@@ -903,6 +907,18 @@ pub fn update_shape<W: World + ?Sized>(ctx: &mut Ctx<W>, state: BlockStateId, po
         Rule::Tick => {
             // `FallingBlock.getDelayAfterPlace` and `BrushableBlock`: 2 ticks.
             ctx.region.schedule_block(pos, block, 2);
+            state
+        }
+        Rule::Scaffolding => {
+            tick_if_waterlogged(ctx, state, pos);
+            ctx.region.schedule_block(pos, block, 1);
+            state
+        }
+        Rule::CeilingHangingSign => {
+            if direction == Direction::Up && !survives(ctx) {
+                return air;
+            }
+            tick_if_waterlogged(ctx, state, pos);
             state
         }
     }

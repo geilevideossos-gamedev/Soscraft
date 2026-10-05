@@ -62,6 +62,16 @@ const UPDATE_SHAPE_ORDER: [Direction; 6] = [Direction::West, Direction::East, Di
 const MAX_CHAINED_NEIGHBOR_UPDATES: usize = 1_000_000;
 /// `LevelTicks` drain limit per game tick.
 const MAX_TICKS: usize = 65_536;
+const SUPPORTED_BY_TICK: [&str; 8] = [
+    "SugarCaneBlock",
+    "CactusBlock",
+    "BambooStalkBlock",
+    "GrowingPlantBlock",
+    "ChorusPlantBlock",
+    "ChorusFlowerBlock",
+    "BigDripleafStemBlock",
+    "HangingMossBlock",
+];
 
 /// One queued update of `CollectingNeighborUpdater`.
 #[derive(Clone, Debug)]
@@ -190,6 +200,7 @@ pub struct Level<'a> {
     /// The world's named random sequences (loot).
     pub random_sequences: minecraftoss_core::loot::RandomSequences,
     blocks_fluid_flow_tag: minecraftoss_core::tags::TagId,
+    pub destroyed: Option<Vec<(BlockPos, BlockStateId)>>,
 }
 
 impl<'a> Level<'a> {
@@ -272,6 +283,7 @@ impl<'a> Level<'a> {
             lazy_light: std::cell::RefCell::new(Default::default()),
             random_sequences: minecraftoss_core::loot::RandomSequences::new(0),
             blocks_fluid_flow_tag: lib.registries.block_tags.require("minecraft:blocks_fluid_flow").expect("tag exists"),
+            destroyed: None,
         }
     }
 
@@ -471,6 +483,26 @@ impl<'a> Level<'a> {
         self.set_block(pos, replacement, update::ALL, limit)
     }
 
+    pub fn remove_blocks(&mut self, positions: &[BlockPos], replacement: BlockStateId) {
+        let mut removed = Vec::new();
+        for &pos in positions {
+            let old = self.block(pos);
+            if self.set_block(pos, replacement, update::CLIENTS | update::KNOWN_SHAPE, 0) {
+                removed.push((pos, old));
+            }
+        }
+        for (pos, old) in removed {
+            let state = self.block(pos);
+            if self.block_id(old) != self.block_id(state) {
+                self.affect_neighbors_after_removal(old, pos, false);
+            }
+            self.update_neighbors_at(pos, self.block_id(old));
+            self.update_indirect_neighbour_shapes(old, pos, update::CLIENTS, update::LIMIT - 1);
+            self.update_neighbour_shapes(state, pos, update::CLIENTS, update::LIMIT - 1);
+            self.update_indirect_neighbour_shapes(state, pos, update::CLIENTS, update::LIMIT - 1);
+        }
+    }
+
     /// `ServerLevel.updateNeighboursOnBlockSet` (after commands): the old
     /// block's removal effects, then neighbour and comparator updates.
     pub fn update_neighbours_on_block_set(&mut self, pos: BlockPos, old: BlockStateId) {
@@ -626,6 +658,9 @@ impl<'a> Level<'a> {
             // `FallingBlock.onPlace`: a tick after `getDelayAfterPlace`.
             let block = self.block_id(state);
             self.schedule_block_tick_priority(pos, block, 2, redstone::priority::NORMAL);
+        } else if self.is_a(state, "ScaffoldingBlock") {
+            let block = self.block_id(state);
+            self.schedule_block_tick_priority(pos, block, 1, redstone::priority::NORMAL);
         }
     }
 
@@ -761,6 +796,12 @@ impl<'a> Level<'a> {
             self.fire_tick(state, pos);
         } else if self.is_a(state, "FallingBlock") || self.is_a(state, "BrushableBlock") {
             self.falling_block_tick(state, pos);
+        } else if self.is_a(state, "ScaffoldingBlock") {
+            self.scaffolding_tick(state, pos);
+        } else if SUPPORTED_BY_TICK.iter().any(|class| self.is_a(state, class)) {
+            if !self.can_survive_state(state, pos) {
+                self.destroy_block_drops(pos, true, update::LIMIT);
+            }
         } else if self.is_a(state, "CoralPlantBlock") || self.is_a(state, "CoralFanBlock") || self.is_a(state, "CoralWallFanBlock") || self.is_a(state, "CoralBlock") {
             self.coral_tick(state, pos);
         } else if self.is_a(state, "FarmlandBlock") || self.is_a(state, "PathBlock") {

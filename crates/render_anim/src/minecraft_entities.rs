@@ -76,6 +76,7 @@ pub(crate) struct Entities {
     random: minecraftoss_player::rng::LegacyRandom,
     thrown: Vec<(String, [f64; 3], [f64; 3], i32)>,
     pub(crate) pearl_landings: Vec<DVec3>,
+    pub(crate) destroyed: Vec<((i32, i32, i32), Block)>,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -164,6 +165,7 @@ impl Entities {
             random: minecraftoss_player::rng::LegacyRandom::new((seed ^ 0x1735) as u64),
             thrown: Vec::new(),
             pearl_landings: Vec::new(),
+            destroyed: Vec::new(),
         }
     }
 
@@ -353,10 +355,8 @@ impl Entities {
     }
 
     /// Blocks the player's weapons broke, for the level the mobs walk in.
-    pub(crate) fn broke(&mut self, scene: &HandcraftedScene, positions: &[(i32, i32, i32)]) {
-        for &pos in positions {
-            self.server.player_edit(scene, pos, PlayerEdit::Break);
-        }
+    pub(crate) fn broke(&mut self, positions: &[(i32, i32, i32)]) {
+        self.server.player_breaks(positions);
     }
 
     /// A bullet on a mob: an attack with the bullet's damage from where it
@@ -474,6 +474,7 @@ impl Entities {
             }
             self.server_picked.extend(output.picked);
             changes.extend(output.changes);
+            self.destroyed.extend(output.destroyed);
             for sound in &output.mob_sounds {
                 self.sounds.push((sound.event.clone(), sound.position, sound.volume, sound.pitch));
             }
@@ -652,6 +653,14 @@ impl Entities {
             let base = out.items.vertices.len() as u32;
             out.items.vertices.extend(items.vertices);
             out.items.indices.extend(items.indices.iter().map(|i| i + base));
+        }
+        if let Some(snapshot) = self.server_snapshot.as_ref() {
+            let falling: Vec<_> = snapshot
+                .falling
+                .iter()
+                .map(|f| (DVec3::from_array(f.previous_position).lerp(DVec3::from_array(f.position), f64::from(partial)).as_vec3(), f.block.clone()))
+                .collect();
+            let _ = self.items.append_falling_blocks(&mut out.items, &falling, packs, atlas, light);
         }
         minecraft_terrain::thrown::append_sprites(
             &mut out.items,
