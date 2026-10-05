@@ -11,6 +11,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use frame::{McClick, McScreen, McSlot, McStack, MinecraftUi};
 use glam::DVec3;
+use minecraft_terrain::containers::{Containers, Opened, Station};
 use minecraft_terrain::crafting::{self, Grid, Spot};
 use minecraft_terrain::pack::PackStack;
 use minecraft_terrain::scene::BlockPos;
@@ -44,6 +45,8 @@ pub(crate) struct InventoryUi {
     pending_weapon: Option<u32>,
     last_selected: Option<usize>,
     table: Option<BlockPos>,
+    block: Option<Opened>,
+    experience: u32,
 }
 
 /// What the player holds and where it looks, for throwing items.
@@ -105,6 +108,26 @@ impl InventoryUi {
         ui.screen_opened = true;
     }
 
+    pub(crate) fn block(&self) -> Option<&Opened> {
+        self.block.as_ref()
+    }
+
+    pub(crate) fn open_block(&mut self, ui: &mut MinecraftUi, opened: Opened) -> bool {
+        if ui.inventory_open {
+            return false;
+        }
+        ui.screen = screen_of(&opened);
+        ui.screen_title = opened.station.title(opened.cells.len() > 1).to_owned();
+        self.block = Some(opened);
+        ui.inventory_open = true;
+        ui.screen_opened = true;
+        true
+    }
+
+    pub(crate) fn take_experience(&mut self) -> u32 {
+        std::mem::take(&mut self.experience)
+    }
+
     /// Applies the HUD's clicks, selection and drops with vanilla's rules.
     /// Stacks thrown out of the inventory are returned, except guns, which
     /// stay.
@@ -113,10 +136,47 @@ impl InventoryUi {
         ui: &mut MinecraftUi,
         inventory: &mut Inventory,
         selected: &mut usize,
+        containers: &mut Containers,
+        roll: &mut dyn FnMut() -> f32,
     ) -> Vec<ItemStack> {
         let mut thrown = Vec::new();
         for click in std::mem::take(&mut ui.clicks) {
             let grid = if self.table.is_some() { Grid::Table } else { Grid::Inventory };
+            if let Some(opened) = self.block.clone() {
+                let cell = |slot: McSlot| match slot {
+                    McSlot::Container(index) => Some(index),
+                    McSlot::Output => Some(2),
+                    _ => None,
+                };
+                match &click {
+                    McClick::Slot { slot: McSlot::Inventory(index), right: _, shift: true } => {
+                        containers.quick_move_from_player(&opened, inventory, *index);
+                        continue;
+                    }
+                    McClick::Slot { slot, right, shift } if cell(*slot).is_some() => {
+                        let index = cell(*slot).unwrap_or(0);
+                        self.experience += containers.click(&opened, inventory, index, *right, *shift, roll()).experience;
+                        continue;
+                    }
+                    McClick::Gather { right, .. } => {
+                        containers.gather(&opened, inventory, *right);
+                        continue;
+                    }
+                    McClick::Swap { slot, hotbar } if cell(*slot).is_some() => {
+                        let index = cell(*slot).unwrap_or(0);
+                        self.experience += containers.swap(&opened, inventory, index, *hotbar, roll()).experience;
+                        continue;
+                    }
+                    McClick::Spread { slots, right } => {
+                        let players: Vec<usize> = slots.iter().filter_map(|slot| if let McSlot::Inventory(i) = slot { Some(*i) } else { None }).collect();
+                        let cells: Vec<usize> = slots.iter().filter_map(|slot| cell(*slot)).collect();
+                        containers.spread(&opened, inventory, &players, &cells, *right);
+                        continue;
+                    }
+                    McClick::Close => self.block = None,
+                    _ => {}
+                }
+            }
             match click {
                 McClick::Slot { slot: McSlot::Inventory(index), right, shift } => {
                     if shift && grid == Grid::Table {
@@ -162,11 +222,16 @@ impl InventoryUi {
         }
         if !ui.inventory_open {
             self.table = None;
+            self.block = None;
             if crafting::has_loose_items(inventory) {
                 thrown.extend(crafting::close(inventory, *selected));
             }
         }
-        ui.screen = if self.table.is_some() { McScreen::CraftingTable } else { McScreen::Inventory };
+        ui.screen = match (&self.table, &self.block) {
+            (Some(_), _) => McScreen::CraftingTable,
+            (None, Some(opened)) => screen_of(opened),
+            (None, None) => McScreen::Inventory,
+        };
         thrown.extend(inventory.take_pending_drops());
         let _ = inventory.take_stat_events();
         if let Some(slot) = ui.select.take() {
@@ -229,6 +294,7 @@ impl InventoryUi {
         selected: usize,
         packs: &PackStack,
         images: &mut Assets<Image>,
+        containers: &mut Containers,
     ) {
         let language = self
             .language
@@ -259,6 +325,24 @@ impl InventoryUi {
         ui.result = if small_open { convert(&crafting::output(inventory, Grid::Inventory)) } else { None };
         ui.workbench = std::array::from_fn(|i| convert(&inventory.workbench[i]));
         ui.workbench_result = if table_open { convert(&crafting::output(inventory, Grid::Table)) } else { None };
+        let opened = self.block.clone().filter(|_| ui.inventory_open);
+        let (container, output, progress) = match opened.as_ref() {
+            Some(opened) => {
+                let cells = containers.cells(opened);
+                match opened.station {
+                    Station::Oven(_) => (
+                        cells[..2].iter().map(&mut convert).collect(),
+                        convert(&cells[2]),
+                        containers.oven(opened.cells[0]).map_or([0.0; 2], |oven| oven.progress()),
+                    ),
+                    _ => (cells.iter().map(&mut convert).collect(), None, [0.0; 2]),
+                }
+            }
+            None => (Vec::new(), None, [0.0; 2]),
+        };
+        ui.container = container;
+        ui.output = output;
+        ui.progress = progress;
         ui.cursor = convert(&inventory.cursor);
         if ui.selected != selected {
             let name = inventory.slots[selected]
@@ -353,7 +437,7 @@ impl InventoryUi {
     }
 }
 
-const HUD_SPRITES: [&str; 23] = [
+const HUD_SPRITES: [&str; 25] = [
     "hud/air",
     "hud/air_bursting",
     "hud/air_empty",
@@ -377,6 +461,8 @@ const HUD_SPRITES: [&str; 23] = [
     "hud/food_empty_hunger",
     "hud/food_half_hunger",
     "hud/food_full_hunger",
+    "container/furnace/lit_progress",
+    "container/furnace/burn_progress",
 ];
 
 fn main_hand_attack(recipes: &minecraftoss_player::crafting::RecipeBook, stack: &ItemStack) -> Option<[f32; 2]> {
@@ -393,6 +479,13 @@ fn gui_sprite(packs: &PackStack, name: &str) -> Option<image::RgbaImage> {
     let id = minecraft_terrain::pack::ResourceId::parse(&format!("minecraft:gui/sprites/{name}")).ok()?;
     let bytes = packs.texture(&id).ok()??;
     Some(image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).ok()?.to_rgba8())
+}
+
+fn screen_of(opened: &Opened) -> McScreen {
+    match opened.station {
+        Station::Oven(_) => McScreen::Furnace,
+        _ => McScreen::Chest { rows: opened.rows() as u8 },
+    }
 }
 
 fn spot(slot: McSlot, grid: Grid) -> Option<Spot> {

@@ -42,6 +42,7 @@ pub(crate) struct Survival {
     changed_at: u64,
     blink_until: u64,
     blocked_sprint: bool,
+    level_up_at: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -210,6 +211,24 @@ impl Survival {
         self.status.food.add_exhaustion(amount);
     }
 
+    pub(crate) fn gain_experience(&mut self, points: u32) -> Option<f32> {
+        if points == 0 {
+            return None;
+        }
+        let before = self.status.experience_level;
+        self.status.give_experience_points(points);
+        let level = self.status.experience_level;
+        let rested = self
+            .level_up_at
+            .is_none_or(|at| self.tick.saturating_sub(at) > 100);
+        if level > before && level.is_multiple_of(5) && rested {
+            self.level_up_at = Some(self.tick);
+            Some(if level > 30 { 1.0 } else { level as f32 / 30.0 } * 0.75)
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn can_sprint(&self) -> bool {
         self.status.food.level > SPRINT_FOOD
     }
@@ -320,6 +339,8 @@ impl Survival {
             blink: self.blink_until > self.tick && (self.blink_until - self.tick) / 3 % 2 == 1,
             display_health: self.display_health,
             tick: self.tick,
+            experience_level: self.status.experience_level,
+            experience_progress: self.status.experience_progress,
         }
     }
 }
@@ -552,11 +573,20 @@ mod tests {
         assert_eq!(fall_damage(4.0, 1.0), 1);
         assert_eq!(fall_damage(23.5, 1.0), 20);
         assert_eq!(landing_damage(13.0, Some("minecraft:hay_block"), false), 2);
-        assert_eq!(landing_damage(13.0, Some("minecraft:honey_block"), false), 2);
+        assert_eq!(
+            landing_damage(13.0, Some("minecraft:honey_block"), false),
+            2
+        );
         assert_eq!(landing_damage(13.0, Some("minecraft:red_bed"), false), 3);
         assert_eq!(landing_damage(7.0, Some("minecraft:red_bed"), false), 0);
-        assert_eq!(landing_damage(13.0, Some("minecraft:slime_block"), false), 0);
-        assert_eq!(landing_damage(13.0, Some("minecraft:slime_block"), true), 10);
+        assert_eq!(
+            landing_damage(13.0, Some("minecraft:slime_block"), false),
+            0
+        );
+        assert_eq!(
+            landing_damage(13.0, Some("minecraft:slime_block"), true),
+            10
+        );
         assert_eq!(landing_damage(13.0, None, false), 10);
     }
 
@@ -620,6 +650,23 @@ mod tests {
         assert!((fighter.status.food.exhaustion - 0.205).abs() < 1e-6);
         fighter.observe(80, 100);
         assert!((fighter.status.food.exhaustion - 0.305).abs() < 1e-6);
+    }
+
+    #[test]
+    fn experience_levels_up_and_chimes_every_fifth_level() {
+        let mut survival = fresh();
+        assert_eq!(survival.gain_experience(7), None);
+        assert_eq!(survival.status.experience_level, 1);
+        let chime = survival.gain_experience(48).expect("level five chimes");
+        assert_eq!(survival.status.experience_level, 5);
+        assert!((chime - 0.125).abs() < 1e-6);
+        assert_eq!(
+            survival.gain_experience(105),
+            None,
+            "not twice within five seconds"
+        );
+        assert_eq!(survival.status.experience_level, 10);
+        assert_eq!(survival.vitals().experience_level, 10);
     }
 
     #[test]

@@ -56,7 +56,21 @@ const BOX: [f32; 4] = [-73.0, -100.0, 62.0, 86.0];
 const TABLE_BOX: [f32; 4] = [-74.0, -93.0, 144.0, 78.0];
 const TABLE_GRID: [f32; 2] = [-66.0, -86.0];
 const TABLE_RESULT: [f32; 3] = [38.0, -66.0, 24.0];
+const FURNACE_INPUT: [f32; 2] = [-50.0, -92.0];
+const FURNACE_OUTPUT: [f32; 2] = [26.0, -72.0];
+const XP_GREEN: [f32; 4] = [0.50, 1.0, 0.13, 1.0];
 const REPEAT_DELAY: f64 = 0.4;
+
+fn chest_top(rows: u8) -> f32 {
+    -86.0 - f32::from(rows.saturating_sub(3)) * P
+}
+
+fn panel_top(screen: McScreen) -> f32 {
+    match screen {
+        McScreen::Chest { rows } => PANEL_Y - f32::from(rows.saturating_sub(3)) * P,
+        _ => PANEL_Y,
+    }
+}
 const REPEAT_EVERY: f64 = 0.12;
 const STICK: f32 = 0.6;
 
@@ -68,6 +82,15 @@ fn layout(screen: McScreen) -> Vec<(McSlot, f32, f32, f32)> {
             out.push((McSlot::Workbench(i), TABLE_GRID[0] + (i % 3) as f32 * P, TABLE_GRID[1] + (i / 3) as f32 * P, S));
         }
         out.push((McSlot::WorkbenchResult, TABLE_RESULT[0], TABLE_RESULT[1], TABLE_RESULT[2]));
+    } else if let McScreen::Chest { rows } = screen {
+        let top = chest_top(rows);
+        for i in 0..usize::from(rows) * 9 {
+            out.push((McSlot::Container(i), GRID_X + (i % 9) as f32 * P, top + (i / 9) as f32 * P, S));
+        }
+    } else if screen == McScreen::Furnace {
+        out.push((McSlot::Container(0), FURNACE_INPUT[0], FURNACE_INPUT[1], S));
+        out.push((McSlot::Container(1), FURNACE_INPUT[0], FURNACE_INPUT[1] + 44.0, S));
+        out.push((McSlot::Output, FURNACE_OUTPUT[0], FURNACE_OUTPUT[1], 24.0));
     } else {
         // Armor, head to feet down the left (slots 39..36).
         for (row, slot) in [39usize, 38, 37, 36].into_iter().enumerate() {
@@ -287,11 +310,13 @@ fn stack_at<'a>(ui: &'a MinecraftUi, slot: McSlot) -> Option<&'a McStack> {
         McSlot::Result => ui.result.as_ref(),
         McSlot::Workbench(i) => ui.workbench.get(i)?.as_ref(),
         McSlot::WorkbenchResult => ui.workbench_result.as_ref(),
+        McSlot::Container(i) => ui.container.get(i)?.as_ref(),
+        McSlot::Output => ui.output.as_ref(),
     }
 }
 
 fn is_result(slot: McSlot) -> bool {
-    matches!(slot, McSlot::Result | McSlot::WorkbenchResult)
+    matches!(slot, McSlot::Result | McSlot::WorkbenchResult | McSlot::Output)
 }
 
 fn stack_name(
@@ -454,7 +479,7 @@ pub(crate) fn update_minecraft_hud(
             input.focus = neighbour(&slots, from, nav).or(Some(from));
         }
         let hovered = if pad_pointer { input.focus } else { mouse_hovered };
-        let inside = pad_pointer || mouse.is_some_and(|m| over_panel(&surface, m));
+        let inside = pad_pointer || mouse.is_some_and(|m| over_panel(&surface, m, ui.screen));
         if opened || blocked {
             input.drag = None;
         } else {
@@ -470,7 +495,7 @@ pub(crate) fn update_minecraft_hud(
         };
         canvas.k = K;
         draw_inventory(&mut canvas, &mut ui, weapons, strings, &mut gaps, hovered, pointer, prompts);
-        if ui.screen == McScreen::CraftingTable {
+        if ui.screen != McScreen::Inventory {
             ui.character_box = None;
         } else {
             // Where the character stands, and the mouse it follows.
@@ -623,8 +648,9 @@ fn draw_pad_legend(canvas: &mut Canvas<'_>, style: PromptStyle, carrying: bool, 
     }
 }
 
-fn over_panel(surface: &crate::surface::Hud2dSurface, mouse: Vec2) -> bool {
-    let r = surface.apply_rect(PANEL_X * K, PANEL_Y * K, PANEL_W * K, PANEL_H * K, CENTER, CENTER);
+fn over_panel(surface: &crate::surface::Hud2dSurface, mouse: Vec2, screen: McScreen) -> bool {
+    let top = panel_top(screen);
+    let r = surface.apply_rect(PANEL_X * K, top * K, PANEL_W * K, (PANEL_H + PANEL_Y - top) * K, CENTER, CENTER);
     mouse.x >= r.x && mouse.x < r.x + r.w && mouse.y >= r.y && mouse.y < r.y + r.h
 }
 
@@ -681,7 +707,7 @@ fn handle_clicks(
             }
             input.last_click = Some((slot, now));
             match slot {
-                McSlot::Inventory(_) | McSlot::Crafting(_) | McSlot::Workbench(_) if ui.cursor.is_some() && !shift => {
+                McSlot::Inventory(_) | McSlot::Crafting(_) | McSlot::Workbench(_) | McSlot::Container(_) if ui.cursor.is_some() && !shift => {
                     input.drag = Some((right, vec![slot]));
                 }
                 _ => ui.clicks.push(McClick::Slot { slot, right, shift }),
@@ -779,6 +805,17 @@ fn draw_vitals(canvas: &mut Canvas<'_>, ui: &MinecraftUi, x0: f32, width: f32, h
     let (first, second, _) = vitals_rows(hotbar_y);
     let row_width = VITALS_PITCH * 9.0 + VITALS_ICON;
     let right = x0 + width;
+    canvas.fill(x0 - 3.0, hotbar_y - 4.5, width + 6.0, 1.5, [0.0, 0.0, 0.0, 0.55], align);
+    let filled = vitals.experience_progress.clamp(0.0, 1.0) * (width + 6.0);
+    if filled > 0.0 {
+        canvas.fill(x0 - 3.0, hotbar_y - 4.5, filled, 1.5, XP_GREEN, align);
+    }
+    if vitals.experience_level > 0 {
+        let label = vitals.experience_level.to_string();
+        let px = 7.5;
+        let w = canvas.fonts.get(FONT_COUNT).map_or(0.0, |def| ui_text_width(def, &label, px / ui_text_height(1.0)));
+        canvas.text(FONT_COUNT, x0 + width * 0.5 - w * 0.5, first + 1.5, px, XP_GREEN, &label, false, align);
+    }
     let px = VITALS_ICON / 9.0;
     let (rows, row_height) = crate::minecraft_vitals::heart_rows(vitals);
     let stacked = (rows.saturating_sub(1)) as f32 * row_height * px;
@@ -820,6 +857,46 @@ fn draw_vitals(canvas: &mut Canvas<'_>, ui: &MinecraftUi, x0: f32, width: f32, h
     }
 }
 
+fn draw_station(canvas: &mut Canvas<'_>, ui: &MinecraftUi, c: (i32, i32)) {
+    match ui.screen {
+        McScreen::Chest { rows } => {
+            let (x, y) = (GRID_X - 3.0, chest_top(rows) - 3.0);
+            let (w, h) = (9.0 * P + 4.0, f32::from(rows) * P + 4.0);
+            canvas.frame(x, y, w, h, EDGE, c);
+            canvas.brackets(x, y, w, h, 5.0, ACCENT, c);
+            canvas.text(FONT_SMALL, x, y - 8.0, 6.0, TEXT_DIM, "STORAGE", false, c);
+        }
+        McScreen::Furnace => {
+            let [tx, ty, tw, th] = [-74.0, -100.0, 144.0, 82.0];
+            canvas.quad(tx, ty + th - 26.0, tw, 26.0, [0.0, 0.0, 0.0, 0.35], "gradient_fadein_fadebottom", [0.0, 0.0, 1.0, 1.0], c);
+            canvas.frame(tx, ty, tw, th, EDGE, c);
+            canvas.brackets(tx, ty, tw, th, 5.0, ACCENT, c);
+            let [ix, iy] = FURNACE_INPUT;
+            canvas.text(FONT_SMALL, ix - 22.0, iy + 7.0, 5.5, TEXT_DIM, "INPUT", false, c);
+            canvas.text(FONT_SMALL, ix - 22.0, iy + 51.0, 5.5, TEXT_DIM, "FUEL", false, c);
+            let [lit, cook] = ui.progress;
+            if let Some(&[s0, t0, s1, t1]) = ui.icon_rects.get("gui:container/furnace/lit_progress") {
+                let (fx, fy, size) = (ix + 2.0, iy + 24.0, 16.0);
+                canvas.quad(fx, fy, size, size, [1.0, 1.0, 1.0, 0.12], ICONS, [s0, t0, s1, t1], c);
+                if lit > 0.0 {
+                    let shown = ((lit * 13.0).ceil() + 1.0) / 14.0;
+                    let cut = 1.0 - shown;
+                    canvas.quad(fx, fy + size * cut, size, size * shown, [1.0; 4], ICONS, [s0, t0 + (t1 - t0) * cut, s1, t1], c);
+                }
+            }
+            if let Some(&[s0, t0, s1, t1]) = ui.icon_rects.get("gui:container/furnace/burn_progress") {
+                let (ax, ay, w, h) = (-12.0, FURNACE_OUTPUT[1] + 4.0, 27.0, 18.0);
+                canvas.quad(ax, ay, w, h, [1.0, 1.0, 1.0, 0.12], ICONS, [s0, t0, s1, t1], c);
+                let shown = (cook * 24.0).ceil() / 24.0;
+                if shown > 0.0 {
+                    canvas.quad(ax, ay, w * shown, h, [1.0; 4], ICONS, [s0, t0, s0 + (s1 - s0) * shown, t1], c);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The inventory screen.
 #[allow(clippy::too_many_arguments)]
 fn draw_inventory(
@@ -837,6 +914,9 @@ fn draw_inventory(
     let dim = [0.0, 0.0, 0.0, 0.55];
     let [bx, by, bw, bh] = BOX;
     let table = ui.screen == McScreen::CraftingTable;
+    let station = ui.screen != McScreen::Inventory;
+    let top = panel_top(ui.screen);
+    let height = PANEL_H + PANEL_Y - top;
     let around = [
         (-2000.0, -2000.0, 4000.0, 2000.0 + by),
         (-2000.0, by + bh, 4000.0, 2000.0),
@@ -844,7 +924,7 @@ fn draw_inventory(
         (bx + bw, by, 2000.0, bh),
     ];
     let whole = [(-2000.0, -2000.0, 4000.0, 4000.0)];
-    for &(x, y, w, h) in if table { &whole[..] } else { &around[..] } {
+    for &(x, y, w, h) in if station { &whole[..] } else { &around[..] } {
         canvas.fill(x, y, w, h, dim, c);
         canvas.quad(x, y, w, h, [ACCENT[0], ACCENT[1], ACCENT[2], 0.07], "gradient_fadein_fadebottom", [0.0, 0.0, 1.0, 1.0], c);
     }
@@ -856,21 +936,24 @@ fn draw_inventory(
         (PANEL_X, by, bx - PANEL_X, bh),
         (bx + bw, by, PANEL_X + PANEL_W - bx - bw, bh),
     ];
-    let whole_glass = [(PANEL_X, PANEL_Y + HEADER_H, PANEL_W, PANEL_H - HEADER_H)];
-    for &(x, y, w, h) in if table { &whole_glass[..] } else { &glass[..] } {
+    let whole_glass = [(PANEL_X, top + HEADER_H, PANEL_W, height - HEADER_H)];
+    for &(x, y, w, h) in if station { &whole_glass[..] } else { &glass[..] } {
         canvas.fill(x, y, w, h, PANEL, c);
     }
-    canvas.fill(PANEL_X, PANEL_Y, PANEL_W, HEADER_H, HEADER, c);
-    canvas.quad(PANEL_X, PANEL_Y, PANEL_W, HEADER_H, [ACCENT[0], ACCENT[1], ACCENT[2], 0.22], "gradient_fadein_fadebottom", [0.0, 0.0, 1.0, 1.0], c);
-    canvas.fill(PANEL_X, PANEL_Y + HEADER_H - 1.0, PANEL_W, 1.0, [ACCENT[0], ACCENT[1], ACCENT[2], 0.85], c);
-    canvas.fill(PANEL_X, PANEL_Y, 3.0, HEADER_H, ACCENT, c);
-    canvas.text(FONT_TITLE, PANEL_X + 9.0, PANEL_Y + 5.0, 10.0, HIGHLIGHT, if table { "CRAFTING TABLE" } else { "INVENTORY" }, false, c);
+    canvas.fill(PANEL_X, top, PANEL_W, HEADER_H, HEADER, c);
+    canvas.quad(PANEL_X, top, PANEL_W, HEADER_H, [ACCENT[0], ACCENT[1], ACCENT[2], 0.22], "gradient_fadein_fadebottom", [0.0, 0.0, 1.0, 1.0], c);
+    canvas.fill(PANEL_X, top + HEADER_H - 1.0, PANEL_W, 1.0, [ACCENT[0], ACCENT[1], ACCENT[2], 0.85], c);
+    canvas.fill(PANEL_X, top, 3.0, HEADER_H, ACCENT, c);
+    let title = if table { "CRAFTING TABLE".to_owned() } else if station { ui.screen_title.clone() } else { "INVENTORY".to_owned() };
+    canvas.text(FONT_TITLE, PANEL_X + 9.0, top + 5.0, 10.0, HIGHLIGHT, &title, false, c);
     let close = prompts.map_or("E", |style| pad_label(style, GamepadButton::East));
-    canvas.text(FONT_SMALL, PANEL_X + PANEL_W - 8.0, PANEL_Y + 7.5, 6.0, TEXT_DIM, &format!("SURVIVAL  //  {close} TO CLOSE"), true, c);
-    canvas.frame(PANEL_X, PANEL_Y, PANEL_W, PANEL_H, EDGE, c);
-    canvas.brackets(PANEL_X - 2.0, PANEL_Y - 2.0, PANEL_W + 4.0, PANEL_H + 4.0, 8.0, [ACCENT[0], ACCENT[1], ACCENT[2], 0.9], c);
+    canvas.text(FONT_SMALL, PANEL_X + PANEL_W - 8.0, top + 7.5, 6.0, TEXT_DIM, &format!("SURVIVAL  //  {close} TO CLOSE"), true, c);
+    canvas.frame(PANEL_X, top, PANEL_W, height, EDGE, c);
+    canvas.brackets(PANEL_X - 2.0, top - 2.0, PANEL_W + 4.0, height + 4.0, 8.0, [ACCENT[0], ACCENT[1], ACCENT[2], 0.9], c);
 
-    if table {
+    if station && !table {
+        draw_station(canvas, ui, c);
+    } else if table {
         let [tx, ty, tw, th] = TABLE_BOX;
         canvas.quad(tx, ty + th - 26.0, tw, 26.0, [0.0, 0.0, 0.0, 0.35], "gradient_fadein_fadebottom", [0.0, 0.0, 1.0, 1.0], c);
         canvas.frame(tx, ty, tw, th, EDGE, c);

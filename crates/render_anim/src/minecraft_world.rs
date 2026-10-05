@@ -130,6 +130,7 @@ struct Runtime {
     inventory_ui: crate::minecraft_inventory::InventoryUi,
     entities: Option<crate::minecraft_entities::Entities>,
     survival: crate::minecraft_survival::Survival,
+    containers: minecraft_terrain::containers::Containers,
     /// Shape id of each block state already seen.
     shapes: HashMap<BlockStateId, u16>,
     /// Boxes of each shape id, to reuse an id for a repeated shape.
@@ -368,6 +369,7 @@ fn update(
                 view.crack_texture = Some(world.crack_texture.clone());
                 runtime.mining = Default::default();
                 runtime.minimap = Default::default();
+                runtime.containers = Default::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
                 runtime.entities = Some(crate::minecraft_entities::Entities::new(&world.stream, world.seed));
                 runtime.day = DayCycle::default();
@@ -429,6 +431,7 @@ fn update(
         minimap,
         steps,
         survival,
+        containers,
         ..
     } = &mut *runtime;
     let Some(world) = world.as_mut() else {
@@ -640,12 +643,29 @@ fn update(
             }
         }
     }
+    if let Some(entities) = entities.as_mut() {
+        let mut lit = Vec::new();
+        for _ in 0..hand_ticks {
+            lit.extend(containers.tick(&entities.inventory.recipes));
+        }
+        let writes: Vec<_> = lit
+            .into_iter()
+            .filter_map(|(pos, on)| {
+                let block = minecraft_terrain::scene::Scene::block(&world.scene, pos)?;
+                block.properties.contains_key("lit").then(|| (pos, Some(block.clone().with("lit", if on { "true" } else { "false" }))))
+            })
+            .collect();
+        if !writes.is_empty() {
+            write_blocks(world, shapes, shape_ids, entities, writes);
+        }
+    }
     let menu_captured = hud_input.as_deref().is_some_and(|input| input.console_open || input.script_menu_open);
     let use_held = buttons.pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, false);
     if survival.eating().is_some() && !(use_held && ui.holding_item && !ui.inventory_open && !menu_captured) {
         survival.stop_eating();
     }
     let mut open_table = None;
+    let mut open_block = None;
     if let Some(entities) = entities.as_mut()
         && ui.holding_item
         && !ui.inventory_open
@@ -740,13 +760,22 @@ fn update(
                 .map(|hit| hit.pos)
                 .filter(|&pos| minecraft_terrain::scene::Scene::block(&world.scene, pos).is_some_and(minecraft_terrain::crafting::is_crafting_table))
                 .filter(|_| minecraft_terrain::crafting::opens_table(player.crouching, held.is_some()));
+            let station = player
+                .target(&minecraft_terrain::doors::Outlined(&world.scene), 5.0)
+                .map(|hit| hit.pos)
+                .filter(|_| table.is_none() && minecraft_terrain::crafting::opens_table(player.crouching, held.is_some()))
+                .and_then(|pos| {
+                    let block = minecraft_terrain::scene::Scene::block(&world.scene, pos)?;
+                    let partner = minecraft_terrain::containers::chest_partner(pos, block).and_then(|at| minecraft_terrain::scene::Scene::block(&world.scene, at));
+                    minecraft_terrain::containers::Opened::new(pos, block, partner)
+                });
             let placeable = held.as_ref().is_some_and(|stack| {
                 let id = if stack.id == "minecraft:redstone" { "minecraft:redstone_wire" } else { stack.id.as_str() };
                 minecraft_terrain::pack::ResourceId::parse(id).is_ok_and(|id| {
                     world.stream.states.state_of(&minecraft_terrain::scene::Block { id, properties: Default::default() }).is_some()
                 })
             });
-            let used = if table.is_none() && !(player.crouching && held.is_some()) {
+            let used = if table.is_none() && station.is_none() && !(player.crouching && held.is_some()) {
                 let facing = minecraft_terrain::doors::facing(f64::from(mc_yaw));
                 player
                     .target(&minecraft_terrain::doors::Outlined(&world.scene), 5.0)
@@ -758,6 +787,19 @@ fn update(
             if let Some(pos) = table {
                 if use_pressed {
                     open_table = Some(pos);
+                    hand.swing = Some(0.0);
+                }
+            } else if let Some(opened) = station {
+                if use_pressed {
+                    let conductor = |(x, y, z): (i32, i32, i32)| {
+                        minecraft_terrain::scene::Scene::block(&world.scene, (x, y + 1, z))
+                            .and_then(|b| world.stream.states.state_of(b))
+                            .is_some_and(|state| world.registries.blocks.is(state, minecraftoss_core::block::flags::REDSTONE_CONDUCTOR))
+                    };
+                    let blocked = opened.station == minecraft_terrain::containers::Station::Chest && opened.cells.iter().any(|&pos| conductor(pos));
+                    if !blocked {
+                        open_block = Some(opened);
+                    }
                     hand.swing = Some(0.0);
                 }
             } else if let Some(pos) = used {
@@ -946,6 +988,9 @@ fn update(
         let positions: Vec<_> = broken.iter().map(|(pos, ..)| *pos).collect();
         entities.broke(&positions);
         entities.drop_blocks(&broken);
+        for &pos in &positions {
+            spill(containers, entities, pos);
+        }
     }
 
     let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
@@ -1049,6 +1094,11 @@ fn update(
                 }
                 positions.push(pos);
             }
+            for &pos in &positions {
+                if !minecraft_terrain::scene::Scene::block(&world.scene, pos).and_then(minecraft_terrain::containers::Station::of).is_some() {
+                    spill(containers, entities, pos);
+                }
+            }
             world.stream.record_edits(&world.scene, &positions);
             world.stream.mark_edited(&world.scene, &positions);
         }
@@ -1109,11 +1159,59 @@ fn update(
         }) {
             ui.inventory_open = false;
         }
+        if inventory_ui.block().is_some_and(|opened| {
+            opened.cells.iter().any(|&pos| {
+                !minecraft_terrain::crafting::within_table_reach(eye, pos)
+                    || minecraft_terrain::scene::Scene::block(&world.scene, pos).and_then(minecraft_terrain::containers::Station::of) != Some(opened.station)
+            })
+        }) {
+            ui.inventory_open = false;
+        }
         inventory_ui.sync_weapons(&mut entities.inventory, &owned);
         let mut selected = entities.selected;
-        let thrown = inventory_ui.apply_input(&mut ui, &mut entities.inventory, &mut selected);
+        let was_open = inventory_ui.block().cloned();
+        let roll = entities.random_float();
+        let thrown = inventory_ui.apply_input(&mut ui, &mut entities.inventory, &mut selected, containers, &mut || roll);
         if let Some(pos) = open_table {
             inventory_ui.open_table(&mut ui, pos);
+        }
+        if let Some(opened) = open_block.take() {
+            inventory_ui.open_block(&mut ui, opened);
+        }
+        let now_open = inventory_ui.block().cloned();
+        for (opened, open) in [(was_open.clone().filter(|o| now_open.as_ref() != Some(o)), false), (now_open.filter(|o| was_open.as_ref() != Some(o)), true)] {
+            let Some(opened) = opened else { continue };
+            let sound = match opened.station {
+                minecraft_terrain::containers::Station::Chest => Some(if open { "minecraft:block.chest.open" } else { "minecraft:block.chest.close" }),
+                minecraft_terrain::containers::Station::Barrel => Some(if open { "minecraft:block.barrel.open" } else { "minecraft:block.barrel.close" }),
+                minecraft_terrain::containers::Station::Oven(_) => None,
+            };
+            let count = opened.cells.len() as f64;
+            let centre = opened.cells.iter().fold([0.0; 3], |sum, &(x, y, z)| [sum[0] + (x as f64 + 0.5) / count, sum[1] + (y as f64 + 0.5) / count, sum[2] + (z as f64 + 0.5) / count]);
+            let pitch = entities.random_float() * 0.1 + 0.9;
+            if let (Some(event), Some(sounds)) = (sound, sounds.as_mut()) {
+                sounds.play(&world.packs, event, Some(at(centre)), 0.5, pitch);
+            }
+            if opened.station == minecraft_terrain::containers::Station::Barrel
+                && let Some(block) = minecraft_terrain::scene::Scene::block(&world.scene, opened.cells[0]).cloned()
+                && block.properties.contains_key("open")
+            {
+                let state = block.with("open", if open { "true" } else { "false" });
+                write_blocks(world, shapes, shape_ids, entities, vec![(opened.cells[0], Some(state))]);
+            }
+        }
+        entities.experience_found += inventory_ui.take_experience() as f32;
+        let found = std::mem::take(&mut entities.experience_found);
+        let points = found.floor() as u32 + u32::from(found.fract() > 0.0 && entities.random_float() < found.fract());
+        if points > 0 {
+            let (r1, r2) = (entities.random_float(), entities.random_float());
+            let chime = survival.gain_experience(points);
+            if let Some(sounds) = sounds.as_mut() {
+                sounds.play(&world.packs, "minecraft:entity.experience_orb.pickup", None, 0.1, (r1 - r2) * 0.35 + 0.9);
+                if let Some(volume) = chime {
+                    sounds.play(&world.packs, "minecraft:entity.player.levelup", None, volume, 1.0);
+                }
+            }
         }
         let thrower = crate::minecraft_inventory::Thrower {
             eye: glam::DVec3::from_array(eye),
@@ -1123,7 +1221,7 @@ fn update(
         crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
         ui.weapon_request = inventory_ui.weapon_request(&entities.inventory, &mut selected, ps.weapon as u32);
         entities.selected = selected;
-        inventory_ui.publish(&mut ui, &entities.inventory, selected, &world.packs, &mut images);
+        inventory_ui.publish(&mut ui, &entities.inventory, selected, &world.packs, &mut images, containers);
 
         if let Some(sounds) = sounds.as_mut() {
             for (event, position, volume, pitch) in std::mem::take(&mut entities.sounds) {
@@ -1363,6 +1461,14 @@ fn shape_id(
         shape_ids.insert(key, id);
         id
     })
+}
+
+fn spill(containers: &mut minecraft_terrain::containers::Containers, entities: &mut crate::minecraft_entities::Entities, pos: (i32, i32, i32)) {
+    let (items, experience) = containers.remove(pos);
+    for stack in items {
+        entities.world_items.spawn_block_drop(stack, pos);
+    }
+    entities.experience_found += experience;
 }
 
 fn write_blocks(

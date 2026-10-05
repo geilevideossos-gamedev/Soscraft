@@ -32,6 +32,8 @@ pub enum McSlot {
     Result,
     Workbench(usize),
     WorkbenchResult,
+    Container(usize),
+    Output,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -39,6 +41,10 @@ pub enum McScreen {
     #[default]
     Inventory,
     CraftingTable,
+    Chest {
+        rows: u8,
+    },
+    Furnace,
 }
 
 /// What the player did on the inventory screen, applied with vanilla's
@@ -77,6 +83,10 @@ pub struct MinecraftUi {
     pub result: Option<McStack>,
     pub workbench: [Option<McStack>; 9],
     pub workbench_result: Option<McStack>,
+    pub container: Vec<Option<McStack>>,
+    pub output: Option<McStack>,
+    pub progress: [f32; 2],
+    pub screen_title: String,
     /// The stack on the cursor.
     pub cursor: Option<McStack>,
     /// Item icons: one atlas, and each item's rectangle in it (s0 t0 s1 t1).
@@ -129,6 +139,8 @@ pub struct McVitals {
     pub blink: bool,
     pub display_health: i32,
     pub tick: u64,
+    pub experience_level: u32,
+    pub experience_progress: f32,
 }
 
 /// The player's own MW2 body, drawn standing in the inventory's character

@@ -77,6 +77,7 @@ pub(crate) struct Entities {
     thrown: Vec<(String, [f64; 3], [f64; 3], i32)>,
     pub(crate) pearl_landings: Vec<DVec3>,
     pub(crate) destroyed: Vec<((i32, i32, i32), Block)>,
+    pub(crate) experience_found: f32,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -166,6 +167,7 @@ impl Entities {
             thrown: Vec::new(),
             pearl_landings: Vec::new(),
             destroyed: Vec::new(),
+            experience_found: 0.0,
         }
     }
 
@@ -475,6 +477,7 @@ impl Entities {
             self.server_picked.extend(output.picked);
             changes.extend(output.changes);
             self.destroyed.extend(output.destroyed);
+            self.experience_found += output.orbs_taken.iter().map(|orb| orb.2 as f32).sum::<f32>();
             for sound in &output.mob_sounds {
                 self.sounds.push((sound.event.clone(), sound.position, sound.volume, sound.pitch));
             }
