@@ -47,11 +47,10 @@ pub struct BlockStates {
     /// Per state, what section building asks of its block's name and
     /// properties: whether it darkens a corner's ambient occlusion (opaque
     /// or leaves), the block whose same neighbours hide its faces (water
-    /// and glass; `u32::MAX` for none), fluid, chest, waterlogged, tint.
+    /// and glass; `u32::MAX` for none), fluid, waterlogged, tint.
     ao_occluder: Vec<bool>,
     shared_face: Vec<u32>,
     fluid: Vec<bool>,
-    chest: Vec<bool>,
     waterlogged: Vec<bool>,
     tint_kind: Vec<mesh::TintKind>,
     /// Per state, `FluidCell::from_block` and `fluid::full_collision`.
@@ -69,7 +68,7 @@ impl BlockStates {
         let count = registries.blocks.state_count();
         let mut blocks = Vec::with_capacity(count);
         let mut solid_render = Vec::with_capacity(count);
-        let (mut ao_occluder, mut shared_face, mut fluid, mut chest, mut waterlogged, mut tint_kind) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut ao_occluder, mut shared_face, mut fluid, mut waterlogged, mut tint_kind) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let (mut fluid_cell, mut full_collision) = (Vec::new(), Vec::new());
         let mut shared_groups: HashMap<String, u32> = HashMap::new();
         for index in 0..count {
@@ -91,7 +90,6 @@ impl BlockStates {
                 _ => u32::MAX,
             });
             fluid.push(matches!(path, "water" | "lava"));
-            chest.push(path == "chest");
             waterlogged.push(block.as_ref().is_some_and(|b| b.properties.get("waterlogged").is_some_and(|value| value == "true")));
             tint_kind.push(block.as_ref().map_or(mesh::TintKind::Other, mesh::TintKind::of));
             fluid_cell.push(block.as_ref().and_then(crate::fluid::FluidCell::from_block));
@@ -117,7 +115,6 @@ impl BlockStates {
             ao_occluder,
             shared_face,
             fluid,
-            chest,
             waterlogged,
             tint_kind,
             fluid_cell,
@@ -670,7 +667,7 @@ fn build_section_blocks(states: &BlockStates, view: &View, origin: BlockPos, lig
                     continue;
                 }
                 if let Slot::Model { variants, baked: Some(quads), .. } = slot {
-                    if baked && !fluid && !states.chest[index] {
+                    if baked && !fluid {
                         let shared = states.shared_face[index];
                         mesh::append_baked(
                             view,
@@ -1799,5 +1796,87 @@ mod tests {
         for open in ["minecraft:short_grass", "minecraft:poppy", "minecraft:tall_grass", "minecraft:glass", "minecraft:red_stained_glass", "minecraft:snow[layers=2]", "minecraft:oak_slab", "minecraft:barrier"] {
             assert!(!darkens(open), "{open}");
         }
+    }
+
+    #[test]
+    fn block_entities_signs_and_beds_bake_into_sections_like_the_slow_path() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Some(pack) = paths.datapack.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).map(|root| root.join("resourcepacks/local/minecraft-26.3")).filter(|p| p.is_dir()) else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let states = Arc::new(BlockStates::new(Arc::new(registries), 1, -64, 384).unwrap());
+        let plains = states.registries().biomes.id("minecraft:plains").unwrap_or(BiomeId(0));
+        let mut scene = HandcraftedScene::streamed(states.clone());
+        for x in -1..=1 {
+            for z in -1..=1 {
+                scene.insert_chunk(Arc::new(Chunk::new(minecraftoss_core::ChunkPos::new(x, z), -64, 384, plains)));
+            }
+        }
+        let blocks = vec![
+            Block::new("minecraft:chest").with("facing", "east"),
+            Block::new("minecraft:trapped_chest").with("facing", "north"),
+            Block::new("minecraft:ender_chest").with("facing", "west"),
+            Block::new("minecraft:waxed_oxidized_copper_chest").with("facing", "south"),
+            Block::new("minecraft:shulker_box").with("facing", "up"),
+            Block::new("minecraft:red_shulker_box").with("facing", "north"),
+            Block::new("minecraft:blue_shulker_box").with("facing", "down"),
+            Block::new("minecraft:white_banner").with("rotation", "3"),
+            Block::new("minecraft:red_wall_banner").with("facing", "east"),
+            Block::new("minecraft:skeleton_skull").with("rotation", "5"),
+            Block::new("minecraft:wither_skeleton_wall_skull").with("facing", "south"),
+            Block::new("minecraft:zombie_head").with("rotation", "0"),
+            Block::new("minecraft:creeper_head").with("rotation", "12"),
+            Block::new("minecraft:dragon_head").with("rotation", "8"),
+            Block::new("minecraft:piglin_wall_head").with("facing", "west"),
+            Block::new("minecraft:player_head").with("rotation", "2"),
+            Block::new("minecraft:conduit"),
+            Block::new("minecraft:decorated_pot").with("facing", "west"),
+            Block::new("minecraft:bell").with("attachment", "floor").with("facing", "north"),
+            Block::new("minecraft:enchanting_table"),
+            Block::new("minecraft:lectern").with("facing", "east").with("has_book", "true"),
+            Block::new("minecraft:red_bed").with("facing", "north").with("part", "head"),
+            Block::new("minecraft:red_bed").with("facing", "north").with("part", "foot"),
+            Block::new("minecraft:oak_sign").with("rotation", "7"),
+            Block::new("minecraft:spruce_wall_sign").with("facing", "north"),
+            Block::new("minecraft:birch_hanging_sign").with("rotation", "4").with("attached", "true"),
+            Block::new("minecraft:crimson_wall_hanging_sign").with("facing", "east"),
+        ];
+        let at = |i: usize| ((i % 7) as i32 * 2 + 1, 65, (i / 7) as i32 * 3 + 1);
+        for (i, block) in blocks.iter().enumerate() {
+            scene.set(at(i), Some(block.clone()));
+        }
+        scene.set((14, 65, 14), Some(Block::new("minecraft:chest").with("facing", "south").with("type", "left")));
+        scene.set((13, 65, 14), Some(Block::new("minecraft:chest").with("facing", "south").with("type", "right")));
+        let mut textures = std::collections::BTreeSet::new();
+        for block in &blocks {
+            let variants = resolve_block_variants(&packs, block).unwrap();
+            for (model, _) in &variants {
+                assert!(!model.elements.is_empty(), "{} has no geometry", block.id.key());
+                textures.extend(model.elements.iter().flat_map(|e| e.faces.iter().map(|f| f.texture.clone())));
+            }
+        }
+        textures.extend(crate::special_models::textures().unwrap());
+        let atlas = mesh::make_atlas(&packs, textures.into_iter().collect()).unwrap();
+        assert!(atlas.missing.is_empty(), "{:?}", atlas.missing);
+        let hood = Neighborhood::of(&scene, (0, 0)).unwrap();
+        let light = light_chunk(&states, &hood);
+        let view = View::new(&states, &hood, (-1, 63, -1), (18, 18, 18));
+        let mut models = ModelCache::default();
+        models.prepare(&states, &packs, &atlas, &view);
+        let tint = BiomeTint::from_pack(&packs).unwrap();
+        let baked = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, true).unwrap();
+        let slow = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, false).unwrap();
+        let bits = |m: &ChunkMesh| -> Vec<u32> { m.vertices.iter().flat_map(|v| v.position.iter().chain(&v.uv).chain(&v.color).chain([&v.sky_light, &v.block_light]).map(|f| f.to_bits()).collect::<Vec<_>>()).collect() };
+        assert!(bits(&baked.0) == bits(&slow.0) && baked.0.indices == slow.0.indices && baked.0.faces == slow.0.faces && baked.1 == slow.1);
+        for (i, block) in blocks.iter().enumerate() {
+            let (x, y, z) = at(i);
+            let inside = baked.0.vertices.iter().filter(|v| {
+                let [vx, vy, vz] = v.position;
+                (x as f32..x as f32 + 1.0).contains(&vx) && (y as f32 - 0.1..y as f32 + 2.0).contains(&vy) && (z as f32..z as f32 + 1.0).contains(&vz)
+            });
+            assert!(inside.count() >= 4, "{} draws nothing", block.id.key());
+        }
+        let entity_faces = baked.0.vertices.iter().filter(|v| v.color[3] == crate::special_models::ENTITY_SHEET_ALPHA).count();
+        assert!(entity_faces > 0);
     }
 }

@@ -142,6 +142,111 @@ pub fn block_icon(
     Ok((output.pixels().any(|pixel| pixel[3] > 0)).then_some(output))
 }
 
+pub fn model_icon(
+    packs: &PackStack,
+    model: &crate::model::ResolvedModel,
+    gui: Mat4,
+    front_light: bool,
+    tints: &[[u8; 3]],
+    icon_size: usize,
+) -> Result<Option<RgbaImage>> {
+    let mut output = RgbaImage::new(icon_size as u32, icon_size as u32);
+    let mut depth = vec![vec![f32::NEG_INFINITY; icon_size]; icon_size];
+    let normals = glam::Mat3::from_mat4(Mat4::from_scale(Vec3::new(1.0, -1.0, 1.0)) * gui)
+        .inverse()
+        .transpose();
+    let lights = gui_lights(front_light);
+    let mut sheets: HashMap<ResourceId, Option<(RgbaImage, u32)>> = HashMap::new();
+    let size = icon_size as f32;
+    for element in &model.elements {
+        for face in &element.faces {
+            let corners = crate::mesh::element_corners(element, &face.direction)?;
+            let Some(normal) = crate::mesh::model_face_normal(element, face, &corners) else {
+                continue;
+            };
+            let normal = (normals * normal).normalize();
+            if normal.z <= 0.0 {
+                continue;
+            }
+            if !sheets.contains_key(&face.texture) {
+                let sheet = packs
+                    .texture(&face.texture)?
+                    .map(|bytes| {
+                        image::load_from_memory(&bytes).map(|decoded| {
+                            square_sheet(decoded.to_rgba8(), crate::mesh::entity_face(face))
+                        })
+                    })
+                    .transpose()?;
+                sheets.insert(face.texture.clone(), sheet);
+            }
+            let Some(Some((source, side))) = sheets.get(&face.texture) else {
+                continue;
+            };
+            let shade = ((normal.dot(lights[0]).max(0.0) + normal.dot(lights[1]).max(0.0)) * 0.6
+                + 0.4)
+                .min(1.0);
+            let tint = face
+                .tint_index
+                .and_then(|index| tints.get(index))
+                .copied()
+                .unwrap_or([255; 3]);
+            let vertices = corners.map(|corner| {
+                let point = gui.transform_point3(Vec3::from_array(corner));
+                [(0.5 + point.x) * size, (0.5 - point.y) * size, point.z]
+            });
+            let [a, b, c, d] = face.uv;
+            let uvs = [[a, b], [a, d], [c, d], [c, b]];
+            for triangle in [[0, 1, 2], [0, 2, 3]] {
+                raster_triangle(
+                    &mut output,
+                    &mut depth,
+                    source,
+                    *side,
+                    icon_size,
+                    shade,
+                    tint,
+                    triangle.map(|i| vertices[i]),
+                    triangle.map(|i| uvs[i]),
+                );
+            }
+        }
+    }
+    Ok((output.pixels().any(|pixel| pixel[3] > 0)).then_some(output))
+}
+
+fn square_sheet(decoded: RgbaImage, entity: bool) -> (RgbaImage, u32) {
+    let (width, height) = decoded.dimensions();
+    if entity {
+        let side = width.max(height).max(1);
+        let square = if width == height {
+            decoded
+        } else {
+            image::imageops::resize(&decoded, side, side, image::imageops::FilterType::Nearest)
+        };
+        return (square, side);
+    }
+    let side = width.min(height).max(1);
+    (
+        image::imageops::crop_imm(&decoded, 0, 0, side, side).to_image(),
+        side,
+    )
+}
+
+fn gui_lights(front_light: bool) -> [Vec3; 2] {
+    let flat = Mat4::from_rotation_y(-std::f32::consts::PI / 8.0)
+        * Mat4::from_rotation_x(std::f32::consts::PI * 3.0 / 4.0);
+    let pose = if front_light {
+        flat
+    } else {
+        Mat4::from_scale(Vec3::new(1.0, -1.0, 1.0))
+            * Mat4::from_rotation_y(1.0821041)
+            * Mat4::from_rotation_x(3.2375858)
+            * flat
+    };
+    [Vec3::new(0.2, 1.0, -0.7), Vec3::new(-0.2, 1.0, 0.7)]
+        .map(|light| pose.transform_vector3(light.normalize()).normalize())
+}
+
 fn item_diffuse_light(face: &str, x_angle: f32, y_angle: f32) -> f32 {
     // Lighting.Entry.ITEMS_3D and minecraft_mix_light in the pinned 26.3
     // Lighting.java / assets/minecraft/shaders/include/light.glsl.

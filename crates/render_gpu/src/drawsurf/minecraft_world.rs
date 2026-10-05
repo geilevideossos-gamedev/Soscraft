@@ -711,8 +711,10 @@ fn shade(in: Out, texel: vec4<f32>) -> vec4<f32> {
 
 @fragment
 fn opaque(in: Out) -> @location(0) vec4<f32> {
-    let texel = textureSample(atlas, atlas_sampler, in.uv);
-    if texel.a < 0.5 {
+    let entity_sheet = in.colour.a < 0.75;
+    let level_zero = vec2<f32>(0.0);
+    let texel = textureSampleGrad(atlas, atlas_sampler, in.uv, select(dpdx(in.uv), level_zero, entity_sheet), select(dpdy(in.uv), level_zero, entity_sheet));
+    if texel.a < select(0.5, 0.1, entity_sheet) {
         discard;
     }
     return vec4<f32>(shade(in, texel).rgb, 1.0);
@@ -1194,4 +1196,15 @@ fn pipelines(
         make("hand_vertex", "hand_fragment", &buffers, true, CompareFunction::GreaterEqual, None, None),
         make("vertex", "opaque", &buffers, true, CompareFunction::GreaterEqual, None, Some(bevy::render::render_resource::Face::Back)),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn terrain_shader_validates() {
+        let module = naga::front::wgsl::parse_str(super::TERRAIN_WGSL).unwrap();
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+            .validate(&module)
+            .unwrap();
+    }
 }

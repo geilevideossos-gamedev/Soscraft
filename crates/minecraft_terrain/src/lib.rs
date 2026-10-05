@@ -17,6 +17,7 @@ pub mod model;
 pub mod pack;
 pub mod scene;
 pub mod sections;
+pub(crate) mod special_models;
 pub mod terrain;
 pub mod texture_mips;
 pub mod audio;

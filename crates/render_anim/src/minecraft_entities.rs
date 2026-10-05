@@ -372,7 +372,7 @@ impl Entities {
         light: &SkyLight,
     ) -> ChunkMesh {
         let mut mesh = ChunkMesh::default();
-        let _ = self.items.append_posed_blocks(&mut mesh, &[(pose, light_at, id.to_owned())], packs, atlas, light);
+        let _ = self.items.append_posed_items(&mut mesh, &[(pose, light_at, id.to_owned())], packs, atlas, light);
         mesh
     }
 

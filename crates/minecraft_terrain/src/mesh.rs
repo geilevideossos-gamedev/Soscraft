@@ -276,6 +276,9 @@ fn block_face_tint(
             (color & 255) as f32 / 255.0,
         ];
     }
+    if let Some(dye) = crate::special_models::banner_dye(block) {
+        return if tinted { dye } else { [1.0; 3] };
+    }
     if block.id.path == "oak_leaves" {
         source.foliage(biome)
     } else if tinted {
@@ -373,6 +376,9 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     let mut textures = BTreeMap::<ResourceId, ()>::new();
     // A broken chest can remain as a dropped item after its block mesh is gone.
     textures.insert(ResourceId::parse("minecraft:entity/chest/normal")?, ());
+    for id in crate::special_models::textures()? {
+        textures.insert(id, ());
+    }
     textures.insert(ResourceId::parse("minecraft:entity/bat/bat")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/zombie/zombie")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/player/wide/steve")?, ());
@@ -733,13 +739,11 @@ impl ItemVisuals {
             let mut min = Vec3::splat(f32::INFINITY);
             let mut max = Vec3::splat(f32::NEG_INFINITY);
             for element in &model.elements {
-                for x in [element.from[0], element.to[0]] {
-                    for y in [element.from[1], element.to[1]] {
-                        for z in [element.from[2], element.to[2]] {
-                            let point = ground.transform_point3(Vec3::new(x, y, z));
-                            min = min.min(point);
-                            max = max.max(point);
-                        }
+                for face in &element.faces {
+                    for corner in element_corners(element, &face.direction)? {
+                        let point = ground.transform_point3(Vec3::from_array(corner));
+                        min = min.min(point);
+                        max = max.max(point);
                     }
                 }
             }
@@ -826,7 +830,8 @@ impl ItemVisuals {
                             continue;
                         }
                         let corners = element_corners(element, &face.direction)?;
-                        let [u0, v0, u1, v1] = atlas.region(&face.texture);
+                        let entity = entity_face(face);
+                        let [u0, v0, u1, v1] = if entity { atlas.entity_region(&face.texture) } else { atlas.region(&face.texture) };
                         let [a, b, c, d] = face.uv;
                         let uv = [
                             [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
@@ -839,13 +844,16 @@ impl ItemVisuals {
                             .and_then(|index| visual.tints.get(index))
                             .copied()
                             .unwrap_or([1.0; 3]);
-                        let normal = face_normal(&face.direction)?;
-                        let rotated_normal =
+                        let rotated_normal = if entity {
+                            quad_normal(&corners).unwrap_or(Vec3::Y)
+                        } else {
                             Mat4::from_rotation_y((element.rotation_y as f32).to_radians())
-                                .transform_vector3(normal);
+                                .transform_vector3(face_normal(&face.direction)?)
+                        };
                         let shade = level_item_shade(
                             normal_pose.transform_vector3(rotated_normal).normalize(),
                         );
+                        let alpha = entity_face_alpha(face);
                         let start = mesh.vertices.len() as u32;
                         for (corner, uv) in corners.into_iter().zip(uv) {
                             mesh.vertices.push(Vertex {
@@ -853,7 +861,7 @@ impl ItemVisuals {
                                     .transform_point3(Vec3::from_array(corner))
                                     .to_array(),
                                 uv,
-                                color: [tint[0] * shade, tint[1] * shade, tint[2] * shade, 1.0],
+                                color: [tint[0] * shade, tint[1] * shade, tint[2] * shade, alpha],
                                 sky_light: sky,
                                 block_light: sky_light.get_block(light_pos) as f32,
                             });
@@ -949,6 +957,16 @@ impl ItemVisuals {
         Ok(())
     }
 
+    pub fn append_posed_items(&mut self, mesh: &mut ChunkMesh, items: &[(Mat4, Vec3, String)], packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
+        for (pose, light, id) in items {
+            let Some(tints) = self.model(id, packs)?.map(|visual| visual.tints.clone()) else {
+                continue;
+            };
+            self.append_model(mesh, id, *light, *pose, 1.0, Some(&tints), packs, atlas, sky_light)?;
+        }
+        Ok(())
+    }
+
     /// One item model placed with a pose, lit at `pos`, untinted.
     #[allow(clippy::too_many_arguments)]
     fn append_block_model(&mut self, mesh: &mut ChunkMesh, id: &str, pos: Vec3, pose: Mat4, brightness: f32, packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
@@ -973,7 +991,8 @@ impl ItemVisuals {
                         continue;
                     }
                     let corners = element_corners(element, &face.direction)?;
-                    let [u0, v0, u1, v1] = atlas.region(&face.texture);
+                    let entity = entity_face(face);
+                    let [u0, v0, u1, v1] = if entity { atlas.entity_region(&face.texture) } else { atlas.region(&face.texture) };
                     let [a, b, c, d] = face.uv;
                     let uv = [
                         [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
@@ -981,15 +1000,17 @@ impl ItemVisuals {
                         [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
                         [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
                     ];
-                    let normal = pose.transform_vector3(face_normal(&face.direction)?).normalize();
+                    let local_normal = if entity { quad_normal(&corners).unwrap_or(Vec3::Y) } else { face_normal(&face.direction)? };
+                    let normal = pose.transform_vector3(local_normal).normalize();
                     let shade = level_item_shade(normal) * if white { 4.0 } else { 1.0 };
                     let tint = tints.zip(face.tint_index).and_then(|(tints, index)| tints.get(index)).copied().unwrap_or([1.0; 3]);
+                    let alpha = entity_face_alpha(face);
                     let start = mesh.vertices.len() as u32;
                     for (corner, uv) in corners.into_iter().zip(uv) {
                         mesh.vertices.push(Vertex {
                             position: pose.transform_point3(Vec3::from_array(corner)).to_array(),
                             uv,
-                            color: [tint[0] * shade, tint[1] * shade, tint[2] * shade, 1.0],
+                            color: [tint[0] * shade, tint[1] * shade, tint[2] * shade, alpha],
                             sky_light: sky,
                             block_light: block,
                         });
@@ -1182,7 +1203,7 @@ fn variant_index(variants: &[(ResolvedModel, u32)], (x, y, z): BlockPos) -> usiz
 }
 /// A face's corners as `FaceBakery.bakeVertex` places them: the element's
 /// own rotation about its origin, then the blockstate's.
-fn element_corners(element: &crate::model::Element, face: &str) -> Result<[[f32; 3]; 4]> {
+pub(crate) fn element_corners(element: &crate::model::Element, face: &str) -> Result<[[f32; 3]; 4]> {
     let mut quad = corners(face, element.from, element.to)?;
     // An unrotated sheet with no thickness (leaf litter, ladders, vines) has
     // its two opposite faces in one plane, textured differently. The terrain is drawn without back-face
@@ -1206,6 +1227,31 @@ fn element_corners(element: &crate::model::Element, face: &str) -> Result<[[f32;
 
 /// Blocks; well under a pixel of a block, well over depth precision.
 const SHEET_FACE_OFFSET: f32 = 0.002;
+
+pub(crate) fn entity_face(face: &crate::model::Face) -> bool {
+    face.texture.path.starts_with("entity/")
+}
+
+fn entity_face_alpha(face: &crate::model::Face) -> f32 {
+    if crate::special_models::unmipped_sheet(&face.texture) {
+        crate::special_models::ENTITY_SHEET_ALPHA
+    } else {
+        1.0
+    }
+}
+
+pub(crate) fn quad_normal(corners: &[[f32; 3]; 4]) -> Option<Vec3> {
+    let [v0, v1, v2, _] = corners.map(Vec3::from_array);
+    let normal = (v1 - v0).cross(v2 - v0);
+    (normal.length_squared() > 1e-12).then(|| normal.normalize())
+}
+
+pub(crate) fn model_face_normal(element: &crate::model::Element, face: &crate::model::Face, corners: &[[f32; 3]; 4]) -> Option<Vec3> {
+    let geometric = quad_normal(corners)?;
+    let (linear, _) = crate::special_models::element_affine(element);
+    let expected = linear * face_normal(&face.direction).ok()?;
+    Some(if geometric.dot(expected) < 0.0 { -geometric } else { geometric })
+}
 
 /// The baked quad's direction (`FaceBakery.calculateFacing`): the face's
 /// own, turned with the blockstate, or for a rotated element the direction
@@ -1632,6 +1678,7 @@ pub(crate) struct BakedQuad {
     shade: f32,
     tinted: bool,
     transparent: bool,
+    alpha: f32,
 }
 
 /// How a block's faces are tinted (`block_face_tint`, decided per state).
@@ -1640,11 +1687,15 @@ pub(crate) enum TintKind {
     Water,
     RedstoneWire([f32; 3]),
     OakLeaves,
+    Dye([f32; 3]),
     Other,
 }
 
 impl TintKind {
     pub(crate) fn of(block: &Block) -> Self {
+        if let Some(dye) = crate::special_models::banner_dye(block) {
+            return Self::Dye(dye);
+        }
         match block.id.path.as_str() {
             "water" => Self::Water,
             "redstone_wire" => {
@@ -1662,6 +1713,8 @@ impl TintKind {
         match self {
             Self::Water => biome.water_color.map(|channel| channel as f32 / 255.0),
             Self::RedstoneWire(color) if tinted => color,
+            Self::Dye(color) if tinted => color,
+            Self::Dye(_) => [1.0; 3],
             Self::OakLeaves => source.foliage(biome),
             _ if tinted => source.grass(biome),
             _ => [1.0; 3],
@@ -1680,7 +1733,8 @@ pub(crate) fn bake_quads(block: &Block, model: &ResolvedModel, atlas: &Atlas) ->
             let corners = element_corners(element, &face.direction)?;
             let dir = quad_direction(element, &face.direction, &corners)?;
             let delta = direction(dir)?;
-            let [u0, v0, u1, v1] = atlas.region(&face.texture);
+            let entity = entity_face(face);
+            let [u0, v0, u1, v1] = if entity { atlas.entity_region(&face.texture) } else { atlas.region(&face.texture) };
             let [a, b, c, d] = face.uv;
             let uv = [
                 [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
@@ -1688,20 +1742,26 @@ pub(crate) fn bake_quads(block: &Block, model: &ResolvedModel, atlas: &Atlas) ->
                 [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
                 [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
             ];
-            let shade = match element.shade_direction_override.as_deref().unwrap_or(dir) {
-                "up" => 1.0,
-                "down" => 0.5,
-                "north" | "south" => 0.8,
-                _ => 0.6,
+            let shade = if entity {
+                crate::cow_render::entity_shade(quad_normal(&corners).unwrap_or(Vec3::Y))
+            } else {
+                match element.shade_direction_override.as_deref().unwrap_or(dir) {
+                    "up" => 1.0,
+                    "down" => 0.5,
+                    "north" | "south" => 0.8,
+                    _ => 0.6,
+                }
             };
-            let light_offset = if face.cull {
+            let light_offset = if entity {
+                (0, 0, 0)
+            } else if face.cull {
                 cull_delta
             } else if face_cubic(dir, &corners) {
                 delta
             } else {
                 (0, 0, 0)
             };
-            let full_cube = element.from == [0.0; 3] && element.to == [1.0; 3] && element.rotation.is_none();
+            let full_cube = element.from == [0.0; 3] && element.to == [1.0; 3] && element.rotation.is_none() && !entity;
             let ao_axes = full_cube.then(|| match dir {
                 "up" | "down" => [0, 2],
                 "north" | "south" => [0, 1],
@@ -1716,6 +1776,7 @@ pub(crate) fn bake_quads(block: &Block, model: &ResolvedModel, atlas: &Atlas) ->
                 shade,
                 tinted: face.tint,
                 transparent: block.id.path == "water" || face.force_translucent,
+                alpha: entity_face_alpha(face),
             });
         }
     }
@@ -1758,7 +1819,7 @@ pub(crate) fn append_baked<S: Scene>(
             mesh.vertices.push(Vertex {
                 position: [x as f32 + corner[0], y as f32 + corner[1], z as f32 + corner[2]],
                 uv,
-                color: [quad.shade * ao * tint[0], quad.shade * ao * tint[1], quad.shade * ao * tint[2], 1.0],
+                color: [quad.shade * ao * tint[0], quad.shade * ao * tint[1], quad.shade * ao * tint[2], quad.alpha],
                 sky_light,
                 block_light,
             });
@@ -1825,10 +1886,6 @@ pub(crate) fn append_block<'m, S: Scene>(
     mesh: &mut ChunkMesh,
     transparent_indices: &mut Vec<u32>,
 ) -> Result<()> {
-    if block.id.path == "chest" {
-        // Chest block entities have a separately posed lid/lock.
-        return Ok(());
-    }
     if matches!(block.id.path.as_str(), "water" | "lava") {
         return append_fluid(
             scene,
@@ -1855,7 +1912,8 @@ pub(crate) fn append_block<'m, S: Scene>(
             let corners = element_corners(element, &face.direction)?;
             let dir = quad_direction(element, &face.direction, &corners)?;
             let delta = direction(dir)?;
-            let [u0, v0, u1, v1] = atlas.region(&face.texture);
+            let entity = entity_face(face);
+            let [u0, v0, u1, v1] = if entity { atlas.entity_region(&face.texture) } else { atlas.region(&face.texture) };
             let [a, b, c, d] = face.uv;
             let uv = [
                 [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
@@ -1863,28 +1921,34 @@ pub(crate) fn append_block<'m, S: Scene>(
                 [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
                 [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
             ];
-            let shade = match element.shade_direction_override.as_deref().unwrap_or(dir) {
-                "up" => 1.0,
-                "down" => 0.5,
-                "north" | "south" => 0.8,
-                _ => 0.6,
+            let shade = if entity {
+                crate::cow_render::entity_shade(quad_normal(&corners).unwrap_or(Vec3::Y))
+            } else {
+                match element.shade_direction_override.as_deref().unwrap_or(dir) {
+                    "up" => 1.0,
+                    "down" => 0.5,
+                    "north" | "south" => 0.8,
+                    _ => 0.6,
+                }
             };
             let biome = *biome.get_or_insert_with(|| scene.biome_at((x, y, z)));
             let tint = block_face_tint(block, face.tint, biome, tint_source);
-            let alpha = if block.id.path == "water" { 0.72 } else { 1.0 };
+            let alpha = if block.id.path == "water" { 0.72 } else { entity_face_alpha(face) };
             let start = mesh.vertices.len() as u32;
             // `ModelBlockRenderer.tesselateFlat` and `prepareQuadFlat`: a
             // culled quad is lit from its cullface's neighbour, another from
             // the neighbour it faces only when it lies on that side
             // (`faceCubic`), else from its own block.
-            let light_pos = if face.cull {
+            let light_pos = if entity {
+                (x, y, z)
+            } else if face.cull {
                 (x + cull_delta.0, y + cull_delta.1, z + cull_delta.2)
             } else if face_cubic(dir, &corners) {
                 (x + delta.0, y + delta.1, z + delta.2)
             } else {
                 (x, y, z)
             };
-            let full_cube = element.from == [0.0; 3] && element.to == [1.0; 3] && element.rotation.is_none();
+            let full_cube = element.from == [0.0; 3] && element.to == [1.0; 3] && element.rotation.is_none() && !entity;
             for (corner, uv) in corners.iter().zip(uv) {
                 let (ao, sky_light) = if full_cube {
                     ambient_vertex(scene, light, light_pos, dir, *corner)
@@ -2287,7 +2351,8 @@ pub fn block_preview<S: Scene>(
                 }
             }
             let corners = element_corners(element, &face.direction)?;
-            let [u0, v0, u1, v1] = if block.id.path == "chest" {
+            let entity = entity_face(face);
+            let [u0, v0, u1, v1] = if entity {
                 // Chest ModelPart UVs address individual pixels in a 64x64
                 // entity sheet. The terrain atlas' half-texel tile inset
                 // distorts one-pixel lock faces and can sample alpha beside
@@ -2303,8 +2368,8 @@ pub fn block_preview<S: Scene>(
                 [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
                 [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
             ];
-            let shade = if block.id.path == "chest" {
-                level_item_shade(face_normal(dir)?)
+            let shade = if entity {
+                crate::cow_render::entity_shade(quad_normal(&corners).unwrap_or(Vec3::Y))
             } else {
                 match element.shade_direction_override.as_deref().unwrap_or(dir) {
                     "up" => 1.0,
@@ -2314,16 +2379,16 @@ pub fn block_preview<S: Scene>(
                 }
             };
             let tint = block_face_tint(block, face.tint, biome, tint_source);
-            let alpha = if block.id.path == "water" { 0.72 } else { 1.0 };
+            let alpha = if block.id.path == "water" { 0.72 } else { entity_face_alpha(face) };
             // ChestRenderer lights every ModelPart face from the block entity
             // position; a rotated lid must not retain its closed downward
             // face's dark floor-neighbor light.
-            let light_pos = if block.id.path == "chest" {
+            let light_pos = if entity {
                 pos
             } else {
                 neighbor_pos
             };
-            let full_cube = element.from == [0.0; 3] && element.to == [1.0; 3];
+            let full_cube = element.from == [0.0; 3] && element.to == [1.0; 3] && !entity;
             let start = mesh.vertices.len() as u32;
             for (corner, uv) in corners.iter().zip(uv) {
                 let (ao, sky_light) = if full_cube {

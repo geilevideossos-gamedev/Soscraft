@@ -130,6 +130,9 @@ pub fn resolve_item_model(pack: &PackStack, item: &ResourceId) -> Result<Option<
     let Some(definition) = pack.item_definition(item)? else {
         return Ok(None);
     };
+    if crate::special_models::uses_item_geometry(&definition["model"]) {
+        return item_geometry(pack, item, &definition["model"]).map(Some);
+    }
     let Some(reference) = crate::interface::item_model_reference(&definition["model"]) else {
         return Ok(None);
     };
@@ -142,19 +145,54 @@ pub fn resolve_item_model(pack: &PackStack, item: &ResourceId) -> Result<Option<
     let block = Block::new(&item.key());
     resolve_choices(pack, &block, &[&choice]).map(Some)
 }
+fn item_geometry(pack: &PackStack, item: &ResourceId, model: &Value) -> Result<ResolvedModel> {
+    let mut elements = Vec::new();
+    for leaf in crate::special_models::item_leaves(model, false) {
+        let part = match leaf.special {
+            Some(special) => match crate::special_models::item_model(special)? {
+                Some(part) => part,
+                None => continue,
+            },
+            None => {
+                let model_id = ResourceId::parse(leaf.model)?;
+                let inherited = load_parented(pack, &model_id, &mut HashSet::new())?;
+                if inherited.get("builtin").and_then(Value::as_str) == Some("generated") {
+                    generated_item_model(pack, &model_id, &inherited)?
+                } else {
+                    let choice = serde_json::json!({"model": leaf.model});
+                    resolve_choices(pack, &Block::new(&item.key()), &[&choice])?
+                }
+            }
+        };
+        elements.extend(part.elements.into_iter().map(|element| crate::special_models::transformed(element, leaf.transform)));
+    }
+    Ok(ResolvedModel { elements })
+}
 /// ItemTransform.apply for the right hand, using the selected item's inherited
 /// display transform from the resource pack.
 pub fn item_first_person_transform(pack: &PackStack, item: &ResourceId) -> Result<Mat4> {
     item_display_transform(pack, item, "firstperson_righthand")
 }
 pub fn item_display_transform(pack: &PackStack, item: &ResourceId, context: &str) -> Result<Mat4> {
+    item_display_transform_using(pack, item, context, false)
+}
+fn item_display_model(pack: &PackStack, item: &ResourceId, using_item: bool) -> Result<Option<Value>> {
     let Some(definition) = pack.item_definition(item)? else {
+        return Ok(None);
+    };
+    let leaves = crate::special_models::item_leaves(&definition["model"], using_item);
+    let Some(reference) = leaves.first().map(|leaf| leaf.model).or_else(|| crate::interface::item_model_reference(&definition["model"])) else {
+        return Ok(None);
+    };
+    load_parented(pack, &ResourceId::parse(reference)?, &mut HashSet::new()).map(Some)
+}
+pub fn item_gui_light_front(pack: &PackStack, item: &ResourceId) -> Result<bool> {
+    Ok(item_display_model(pack, item, false)?.is_some_and(|model| model.get("gui_light").and_then(Value::as_str) == Some("front")))
+}
+pub fn item_display_transform_using(pack: &PackStack, item: &ResourceId, context: &str, using_item: bool) -> Result<Mat4> {
+    let Some(model) = item_display_model(pack, item, using_item)? else {
         return Ok(Mat4::IDENTITY);
     };
-    let Some(reference) = crate::interface::item_model_reference(&definition["model"]) else {
-        return Ok(Mat4::IDENTITY);
-    };
-    let model = load_parented(pack, &ResourceId::parse(reference)?, &mut HashSet::new())?;
     let display = &model["display"][context];
     let vector = |key: &str, default: Vec3| -> Vec3 {
         display[key]
@@ -299,14 +337,19 @@ fn generated_item_model(pack: &PackStack, id: &ResourceId, model: &Value) -> Res
 }
 
 pub fn resolve_block(pack: &PackStack, block: &Block) -> Result<ResolvedModel> {
-    if block.id.path == "chest" {
+    if crate::special_models::is_chest(block) {
         return closed_chest_model(block);
+    }
+    if let Some(model) = crate::special_models::block_model(block)? {
+        return Ok(model);
     }
     let state = pack
         .blockstate(&block.id)?
         .ok_or_else(|| anyhow!("missing blockstate {}", block.id.key()))?;
     let choices = choose_models(&state, &block.properties)?;
-    resolve_choices(pack, block, &choices)
+    let mut model = resolve_choices(pack, block, &choices)?;
+    model.elements.extend(crate::special_models::extra_elements(block)?);
+    Ok(model)
 }
 /// Particle material selected by the block model, including inherited
 /// `textures.particle` references (grass blocks deliberately use dirt here).
@@ -337,9 +380,26 @@ pub fn resolve_block_variants(
     pack: &PackStack,
     block: &Block,
 ) -> Result<Vec<(ResolvedModel, u32)>> {
-    if block.id.path == "chest" {
+    if crate::special_models::is_chest(block) {
         return Ok(vec![(closed_chest_model(block)?, 1)]);
     }
+    if let Some(model) = crate::special_models::block_model(block)? {
+        return Ok(vec![(model, 1)]);
+    }
+    let extra = crate::special_models::extra_elements(block)?;
+    if !extra.is_empty() {
+        return Ok(resolve_variants(pack, block)?
+            .into_iter()
+            .map(|(mut model, weight)| {
+                model.elements.extend(extra.iter().cloned());
+                (model, weight)
+            })
+            .collect());
+    }
+    resolve_variants(pack, block)
+}
+
+fn resolve_variants(pack: &PackStack, block: &Block) -> Result<Vec<(ResolvedModel, u32)>> {
     let state = pack
         .blockstate(&block.id)?
         .ok_or_else(|| anyhow!("missing blockstate {}", block.id.key()))?;
@@ -382,11 +442,16 @@ fn closed_chest_model(block: &Block) -> Result<ResolvedModel> {
         .get("type")
         .map(String::as_str)
         .unwrap_or("single");
-    let texture = ResourceId::parse(match chest_type {
-        "left" => "minecraft:entity/chest/normal_left",
-        "right" => "minecraft:entity/chest/normal_right",
-        _ => "minecraft:entity/chest/normal",
-    })?;
+    let texture = crate::special_models::chest_texture(&block.id.path, chest_type)?;
+    let facing = block
+        .properties
+        .get("facing")
+        .map(String::as_str)
+        .unwrap_or("north");
+    Ok(chest_model(texture, chest_type, facing))
+}
+
+pub(crate) fn chest_model(texture: ResourceId, chest_type: &str, facing: &str) -> ResolvedModel {
     let omitted_side = match chest_type {
         "left" => Some("west"),
         "right" => Some("east"),
@@ -397,12 +462,7 @@ fn closed_chest_model(block: &Block) -> Result<ResolvedModel> {
         "right" => (1.0, 16.0, 15.0, 16.0),
         _ => (1.0, 15.0, 7.0, 9.0),
     };
-    let rotation_y = match block
-        .properties
-        .get("facing")
-        .map(String::as_str)
-        .unwrap_or("north")
-    {
+    let rotation_y = match facing {
         "north" => 180,
         "east" => 270,
         "south" => 0,
@@ -487,7 +547,7 @@ fn closed_chest_model(block: &Block) -> Result<ResolvedModel> {
             .collect(),
         }
     };
-    Ok(ResolvedModel {
+    ResolvedModel {
         elements: vec![
             make_box(
                 [body_x0 / 16.0, 0.0, 1.0 / 16.0],
@@ -508,7 +568,7 @@ fn closed_chest_model(block: &Block) -> Result<ResolvedModel> {
                 0.0,
             ),
         ],
-    })
+    }
 }
 
 fn resolve_choices(pack: &PackStack, block: &Block, choices: &[&Value]) -> Result<ResolvedModel> {

@@ -17,12 +17,29 @@ pub fn item_icon(packs: &PackStack, key: &str, icon_size: usize) -> Result<Optio
         .map(|value| item_model_tints(packs, &value["model"]))
         .transpose()?
         .unwrap_or_default();
+    if definition.as_ref().is_some_and(|value| crate::special_models::uses_item_geometry(&value["model"])) {
+        if let Some(geometry) = crate::model::resolve_item_model(packs, &id)? {
+            let gui = crate::model::item_display_transform(packs, &id, "gui")?;
+            let front_light = crate::model::item_gui_light_front(packs, &id)?;
+            if let Some(icon) = crate::item_icon::model_icon(packs, &geometry, gui, front_light, &tints, icon_size)? {
+                return Ok(Some(icon));
+            }
+        }
+    }
     if let Some(icon) = model
         .map(|model| crate::item_icon::block_icon(packs, model, &tints, icon_size))
         .transpose()?
         .flatten()
     {
         return Ok(Some(icon));
+    }
+    let turned = model.and_then(|_| crate::model::resolve_item_model(packs, &id).ok().flatten()).filter(|geometry| geometry.elements.iter().any(|element| element.rotation.is_some()));
+    if let Some(geometry) = turned {
+        let gui = crate::model::item_display_transform(packs, &id, "gui")?;
+        let front_light = crate::model::item_gui_light_front(packs, &id)?;
+        if let Some(icon) = crate::item_icon::model_icon(packs, &geometry, gui, front_light, &tints, icon_size)? {
+            return Ok(Some(icon));
+        }
     }
     if let Some(icon) = model
         .map(|model| generated_item_icon(packs, model, &tints, icon_size))

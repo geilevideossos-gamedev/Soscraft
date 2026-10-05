@@ -64,8 +64,9 @@ impl BlockParticles {
         let model = model::resolve_block(packs, block)?;
         let mut seen = HashSet::new();
         for element in model.elements {
-            let from = element.from.map(|value| value.clamp(0.0, 1.0));
-            let to = element.to.map(|value| value.clamp(0.0, 1.0));
+            let (low, high) = break_bounds(&element)?;
+            let from = low.map(|value| value.clamp(0.0, 1.0));
+            let to = high.map(|value| value.clamp(0.0, 1.0));
             let key = [
                 from[0].to_bits(),
                 from[1].to_bits(),
@@ -346,6 +347,21 @@ impl BlockParticles {
     }
 }
 
+fn break_bounds(element: &model::Element) -> Result<([f32; 3], [f32; 3])> {
+    if !element.faces.iter().any(crate::mesh::entity_face) {
+        return Ok((element.from, element.to));
+    }
+    let mut low = Vec3::splat(f32::INFINITY);
+    let mut high = Vec3::splat(f32::NEG_INFINITY);
+    for face in ["down", "up"] {
+        for corner in crate::mesh::element_corners(element, face)? {
+            low = low.min(Vec3::from_array(corner));
+            high = high.max(Vec3::from_array(corner));
+        }
+    }
+    Ok((low.to_array(), high.to_array()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,6 +447,28 @@ mod tests {
             particles.fragments[63].position,
             Vec3::new(3.875, 4.875, 5.875)
         );
+    }
+
+    #[test]
+    fn block_entity_parts_break_from_where_they_are_drawn() {
+        let packs = PackStack::open(vec![]).unwrap();
+        let shulker = Block::new("minecraft:shulker_box").with("facing", "up");
+        let model = model::resolve_block(&packs, &shulker).unwrap();
+        assert_eq!(model.elements.len(), 2);
+        for element in &model.elements {
+            let (low, high) = break_bounds(element).unwrap();
+            assert!(
+                (0..3).all(|axis| low[axis] >= 0.0
+                    && high[axis] <= 1.0
+                    && high[axis] - low[axis] > 0.4),
+                "{low:?} {high:?}"
+            );
+        }
+        let skull = Block::new("minecraft:skeleton_wall_skull").with("facing", "north");
+        let model = model::resolve_block(&packs, &skull).unwrap();
+        let (low, high) = break_bounds(&model.elements[0]).unwrap();
+        let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|axis| (a[axis] - b[axis]).abs() < 1e-3);
+        assert!(close(low, [0.25, 0.25, 0.5]) && close(high, [0.75, 0.75, 1.0]));
     }
 
     #[test]
