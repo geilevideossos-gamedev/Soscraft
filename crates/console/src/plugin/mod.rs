@@ -377,9 +377,13 @@ fn publish_client_action_input(
         .predicted_local()
         .or_else(|| presented.player(local.0))
         .is_some_and(|ps| ps.last_weapon_hand == 1);
+    let f_key = crate::binds::BindButton::Key(KeyCode::KeyF);
+    hud_input.f_key_activates = minecraft_map
+        && presented.player(local.0).is_some_and(|ps| ps.cursor_hint > 0)
+        && matches!(binds.binding_name(f_key), Some("+activate" | "+usereload"));
     let mut current = [0; input_iw4::KEY_COUNT];
     for (button, id) in binds.iter() {
-        let id = if minecraft_map && button == crate::binds::BindButton::Key(KeyCode::KeyF) {
+        let id = if minecraft_map && !hud_input.f_key_activates && button == f_key {
             0
         } else {
             crate::binds::gameplay_binding(button, id, akimbo)

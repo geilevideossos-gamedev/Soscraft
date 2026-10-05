@@ -352,6 +352,7 @@ pub struct HudInputView {
     pub binding_keys: std::collections::BTreeMap<String, String>,
     pub console_open: bool,
     pub script_menu_open: bool,
+    pub f_key_activates: bool,
     pub action_slot_keys: [Option<String>; 4],
 }
 
