@@ -312,9 +312,114 @@ pub struct Changed {
     pub experience: u32,
 }
 
+fn shuffle<T>(list: &mut [T], random: &mut minecraftoss_player::rng::LegacyRandom) {
+    for i in (2..=list.len()).rev() {
+        let j = random.next_int(i as u32) as usize;
+        list.swap(i - 1, j);
+    }
+}
+
+fn shuffle_and_split(
+    mut items: Vec<ItemStack>,
+    slots: usize,
+    random: &mut minecraftoss_player::rng::LegacyRandom,
+) -> Vec<ItemStack> {
+    items.retain(|stack| stack.count > 0);
+    let (mut many, mut out): (Vec<ItemStack>, Vec<ItemStack>) =
+        items.into_iter().partition(|stack| stack.count > 1);
+    while slots.saturating_sub(out.len() + many.len()) > 0 && !many.is_empty() {
+        let index = random.next_int(many.len() as u32) as usize;
+        let mut stack = many.remove(index);
+        let half = u32::from(stack.count / 2).max(1);
+        let taken = random.next_int(half) as u8 + 1;
+        let split = ItemStack {
+            count: taken,
+            ..stack.clone()
+        };
+        stack.count -= taken;
+        for part in [stack, split] {
+            if part.count == 0 {
+                continue;
+            }
+            if part.count > 1 && random.next_int(2) == 0 {
+                many.push(part);
+            } else {
+                out.push(part);
+            }
+        }
+    }
+    out.extend(many);
+    shuffle(&mut out, random);
+    out
+}
+
+pub fn structure_loot(
+    registries: &minecraftoss_core::Registries,
+    entity: &minecraftoss_core::nbt::Tag,
+    pos: BlockPos,
+    world_seed: i64,
+    recipes: &RecipeBook,
+) -> Option<(Vec<ItemStack>, u64)> {
+    let table = entity.get("LootTable")?.as_str()?;
+    let seed = entity
+        .get("LootTableSeed")
+        .and_then(minecraftoss_core::nbt::Tag::as_i64)
+        .filter(|seed| *seed != 0)
+        .unwrap_or_else(|| {
+            world_seed
+                ^ (i64::from(pos.0) * 3_129_871)
+                ^ (i64::from(pos.2) * 116_129_781)
+                ^ i64::from(pos.1)
+        });
+    let params = minecraftoss_core::loot::LootParams {
+        origin: Some([
+            f64::from(pos.0) + 0.5,
+            f64::from(pos.1) + 0.5,
+            f64::from(pos.2) + 0.5,
+        ]),
+        ..Default::default()
+    };
+    let mut sequences = minecraftoss_core::loot::RandomSequences::new(world_seed);
+    let mut random = minecraftoss_core::random::LegacyRandom::new(seed);
+    let stacks = registries
+        .loot
+        .roll(registries, table, &params, &mut sequences, &mut random)
+        .ok()?;
+    let items = stacks
+        .into_iter()
+        .filter(|stack| stack.count > 0)
+        .map(|stack| ItemStack {
+            count: stack.count.clamp(1, 255) as u8,
+            max: recipes.max_stack(&stack.id),
+            components: stack.components.as_ref().map(crate::server_mobs::tag_json),
+            id: stack.id,
+        })
+        .collect();
+    Some((items, seed as u64))
+}
+
 impl Containers {
     pub fn set_book(&mut self, book: Arc<StationBook>) {
         self.book = book;
+    }
+
+    pub fn is_new(&self, pos: BlockPos) -> bool {
+        !self.chests.contains_key(&pos)
+    }
+
+    pub fn fill(&mut self, pos: BlockPos, items: Vec<ItemStack>, seed: u64) {
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(seed);
+        let mut slots: Vec<usize> = (0..CHEST_SLOTS).collect();
+        shuffle(&mut slots, &mut random);
+        let items = shuffle_and_split(items, slots.len(), &mut random);
+        let mut cells = vec![None; CHEST_SLOTS];
+        for item in items {
+            let Some(slot) = slots.pop() else {
+                break;
+            };
+            cells[slot] = Some(item);
+        }
+        self.chests.insert(pos, cells);
     }
 
     pub fn oven(&self, pos: BlockPos) -> Option<&Oven> {
@@ -1013,6 +1118,60 @@ mod tests {
         store.click(&opened, &mut inventory, 0, false, false, 0.0);
         assert_eq!(store.cells(&opened)[0].as_ref().map(|s| s.count), Some(1));
         assert_eq!(inventory.cursor.as_ref().map(|s| s.count), Some(3));
+    }
+
+    #[test]
+    fn structure_loot_spreads_over_random_slots_once() {
+        let mut store = Containers::default();
+        let recipes = book();
+        let pos = (9, 40, 9);
+        assert!(store.is_new(pos));
+        store.fill(
+            pos,
+            vec![
+                recipes.stack("minecraft:bread", 6),
+                recipes.stack("minecraft:iron_ingot", 1),
+            ],
+            42,
+        );
+        assert!(!store.is_new(pos));
+        let opened = Opened::new(pos, &block("minecraft:chest", &[]), None).unwrap();
+        let cells = store.cells(&opened);
+        let used: Vec<&ItemStack> = cells.iter().flatten().collect();
+        assert!(used.len() >= 2);
+        let bread: u32 = used
+            .iter()
+            .filter(|s| s.id == "minecraft:bread")
+            .map(|s| u32::from(s.count))
+            .sum();
+        assert_eq!(bread, 6);
+        assert!(used.iter().any(|s| s.id == "minecraft:iron_ingot"));
+    }
+
+    #[test]
+    fn a_dungeon_chest_rolls_its_jar_loot_table() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else {
+            return;
+        };
+        let Ok(registries) = minecraftoss_core::Registries::load(&paths) else {
+            return;
+        };
+        let mut map = std::collections::BTreeMap::new();
+        map.insert(
+            "LootTable".to_owned(),
+            minecraftoss_core::nbt::Tag::String("minecraft:chests/simple_dungeon".to_owned()),
+        );
+        map.insert(
+            "LootTableSeed".to_owned(),
+            minecraftoss_core::nbt::Tag::Long(12345),
+        );
+        let entity = minecraftoss_core::nbt::Tag::Compound(map);
+        let recipes = book();
+        let (items, seed) = structure_loot(&registries, &entity, (5, 30, 5), 7, &recipes).unwrap();
+        assert_eq!(seed, 12345);
+        assert!(!items.is_empty(), "a dungeon chest has loot");
+        let plain = minecraftoss_core::nbt::Tag::Compound(std::collections::BTreeMap::new());
+        assert!(structure_loot(&registries, &plain, (5, 30, 5), 7, &recipes).is_none());
     }
 
     #[test]

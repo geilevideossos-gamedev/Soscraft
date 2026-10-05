@@ -901,7 +901,7 @@ fn offers_tag(offers: &[minecraftoss_entities::trading::MerchantOffer]) -> Tag {
 
 /// NBT as the JSON the item and offer codecs read (numbers keep their
 /// value; bytes stand for booleans too).
-fn tag_json(tag: &Tag) -> serde_json::Value {
+pub(crate) fn tag_json(tag: &Tag) -> serde_json::Value {
     use serde_json::Value;
     match tag {
         Tag::Byte(v) => Value::from(*v),
