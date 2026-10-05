@@ -15,18 +15,25 @@ Modern Warfare 2, Skate 3 and Minecraft in one game, all running on
 - Vanilla mobs, both passive and hostile. You can shoot them and they fight back.
 - Shoot blocks to break them. Harder blocks take more bullets, scaled by each gun's real MW2 damage and range. Knife them too. Grenades blow up like TNT.
 - Broken blocks drop items that you pick up.
-- A Minecraft inventory and hotbar restyled in MW2's look. Your guns sit in the hotbar as items, and your MW2 character stands in the inventory window.
+- The Minecraft inventory, hotbar, status bars and every block screen are drawn exactly like vanilla 26.3, on vanilla's GUI scale, from the game's own textures, font and language file. Your guns sit in the hotbar as items, and your MW2 operator stands in the inventory window and turns to follow the mouse.
+- An offhand as in vanilla: its slot sits next to the hotbar and its item is held in your left hand. Right click uses the item in your main hand, or the offhand item when the main hand has no use, and with a gun in hand G uses the offhand item, so a torch, food or a shield goes with your gun. A raised shield blocks Minecraft hits from the front, and a totem of undying in either hand keeps you alive, also against MW2 bullets. While you eat, drink or block, you move at a fifth of your speed and cannot sprint.
 - Vanilla crafting: the 2x2 grid in the inventory, and a 3x3 grid when you use a crafting table. Shaped, shapeless and mirrored recipes come from Minecraft 26.3's own data, and buckets and bottles come back from the recipes that use them.
 - Hold a block to place it. With an empty hand you punch and mine with your bare MW2 hands. Placing never traps you inside a block, and if you ever end up in one you are pushed out.
 - Survival as in vanilla: 20 health in hearts, hunger and saturation, natural regeneration when well fed, starvation, fall damage, drowning with air bubbles, and experience levels. MW2 bullets and Minecraft mobs take from the same hearts, and MW2's own health regeneration is off on this map. Eat and drink by holding right click.
+- Ores, sculk blocks, spawners and natural creaking hearts give vanilla's experience when broken, by any gun, knife, explosion or hand. Experience orbs from blocks and mobs are drawn as in vanilla and fly into you.
+- Lava, fire, soul fire, magma blocks and lit campfires burn you as in vanilla. Lava sets you on fire, and vanilla's flames rise from the bottom of the screen while you burn; water, rain and powder snow put the fire out, and fire resistance stops the damage. In lava you move slowly, sink, and rise while holding jump.
+- Buckets pick up and pour water, lava and powder snow, waterlog stairs and slabs, and fill and empty cauldrons. Poured water and lava flow, and lava meeting water hardens. Flint and steel lights fires, campfires, candles and TNT, and wears out.
+- Ladders, vines, scaffolding and the other climbable blocks are climbed as in vanilla: walk into them or hold jump to go up, crouch to hold still on a ladder or vine, or to climb down through scaffolding. Catching one breaks your fall. Scaffolding stacks on a column, or reaches out the way you face from its top, up to 7 blocks.
+- Sweet berry bushes and cave vines are picked by right click, and their berries plant new ones. Bushes slow you and prick you, and cobwebs slow you down too. Bone meal grows crops and other plants, ripens berry bushes and gives cave vines berries.
 - You move with vanilla's body size (0.6 blocks wide, 1.8 tall, 1.5 crouched), so you fit through the same gaps as in vanilla.
 - Swimming as in vanilla: you sink slowly, swim up with jump, dive with crouch, and sprint (Shift) to swim fast once your eyes are under.
 - Blocks that lose their support break with their drops, as in vanilla: torches, plants, doors, signs, rails, sugar cane, cactus and bamboo columns, and scaffolding past its reach. Sand and gravel fall.
 - Doors, trapdoors, fence gates, levers and buttons placed and used as in vanilla (iron doors only open by redstone).
 - Chests (single and large), barrels, furnaces, smokers, blast furnaces, brewing stands, stonecutters, smithing tables, grindstones, anvils and enchanting tables open with their vanilla screens and rules. Chests in dungeons, villages and other structures hold their loot.
+- Chests, ender chests, shulker boxes, banners, heads, bells, conduits, decorated pots and the books on enchanting tables and lecterns are drawn with vanilla's models, in the world, as inventory icons and in your hand. Beds, banners, signs, heads and bells are placed facing the way vanilla turns them. They are drawn closed and still, and banner patterns and sign text are not drawn yet.
 - Snowballs, eggs (that sometimes hatch chicks) and ender pearls to throw.
 - Glass bottles fill from water, water bottles fill cauldrons, turn dirt to mud or are drunk.
-- Item tooltips show damage: MW2 damage, range and block-breaking strength for guns, attack damage and speed for Minecraft weapons and tools.
+- Item tooltips show damage: MW2 damage, range and block-breaking strength for guns, attack damage and speed for Minecraft weapons and tools. Enchanted items list their enchantments.
 - Minecraft's block, mob and footstep sounds.
 - Unlimited ammo and grenades. The Intervention, SPAS-12 and UMP45 are always in your inventory. No time or score limit.
 - A minimap of the Minecraft world, hidden by default: M or Options > Advanced Video > Minecraft Minimap shows it.
@@ -57,21 +64,30 @@ You don't need Minecraft installed. The first time the game starts, it downloads
 | | Y | Swap between the first two hotbar slots |
 | E | D-pad up | Open the inventory |
 | E or Esc | B | Close the inventory or crafting table |
-| Q | | Drop the selected item |
+| Q, Ctrl+Q | | Drop the selected item, or its whole stack |
+| F | D-pad down | Swap the selected item with the offhand (never a gun); F still picks up a weapon while its hint shows |
 | Left click (block or empty hand) | Right trigger | Mine or punch |
 | Right click (holding a block) | Left trigger | Place the block |
+| Right click (holding a Minecraft item) | Left trigger | Use the main hand item, or the offhand item when the main hand has no use |
+| G (holding a gun) | LB | Use the offhand item; with nothing to use, throw the tactical grenade |
 | Right click on a crafting table (not holding a gun) | Left trigger | Open the 3x3 crafting grid |
 | Crouch + right click on a crafting table | Crouch + left trigger | Place the held block against it |
 | Right click on a door, trapdoor, fence gate, lever or button | Left trigger | Use it |
 | Right click on a chest, barrel, furnace, brewing stand, stonecutter, smithing table, grindstone, anvil or enchanting table | Left trigger | Open its screen (crouch with an item to place against it) |
 | Right click (snowball, egg, ender pearl) | Left trigger | Throw it |
-| Hold right click (food, water bottle) | Hold left trigger | Eat or drink |
+| Hold right click (food, water bottle, shield) | Hold left trigger | Eat, drink or raise the shield |
 | Right click with a glass bottle on water | Left trigger | Fill it |
+| Right click with a bucket | Left trigger | Pick up or pour water, lava or powder snow |
+| Right click with flint and steel | Left trigger | Light a fire, campfire, candle or TNT |
+| Right click on a ripe berry bush or cave vines with berries | Left trigger | Pick the berries |
+| Right click with scaffolding on scaffolding | Left trigger | Stack it, or reach out from the top |
+| Jump or walk into a ladder, vine or scaffolding | Jump or walk into it | Climb |
+| Crouch (C) | Crouch | Sneak: hold still on a ladder or vine, climb down through scaffolding, walk on magma unhurt |
 | Jump / crouch / sprint in water | Jump / crouch / sprint | Swim up / dive / swim fast |
 | M | | Show or hide the minimap |
 | J | Click both sticks in | Skate 3 mode (not while the inventory is open) |
 
-In the inventory and on the crafting table:
+In the inventory and the block screens:
 
 | Keyboard and mouse | Controller | Action |
 | --- | --- | --- |
@@ -79,16 +95,19 @@ In the inventory and on the crafting table:
 | Left click | A | Take, put down or swap a stack; take the crafted item |
 | Right click | X | Take half, or put down one |
 | Shift + left click | Y | Move a stack across; on the result, craft as many as fit |
-| Drag with a stack | Hold A and move | Share the stack out over the slots |
+| Drag with a stack | Hold A and move | Share the stack out evenly over the slots (right button: one item each) |
 | Double click | | Gather matching items onto the held stack |
+| Shift + double click | | Move every matching stack across |
 | 1–9 over a slot | | Swap it with that hotbar slot |
+| F over a slot | | Swap it with the offhand |
+| Q, Ctrl+Q over a slot | | Throw one item, or the whole stack; on a crafting result, craft and throw one, or keep crafting |
 | Click a cut or an offer, mouse wheel to scroll | RB / LB, RT to enchant | Stonecutter cuts, enchanting table offers |
 | Type, Backspace | | Anvil: the item's new name |
 | Click outside the window | | Drop the held stack (right click: one item) |
 
 When the inventory or crafting table closes, the stack you are holding and anything left in the crafting grid go back into the inventory; what does not fit is thrown out in front of you, as Q does.
 
-To try recipes without gathering everything first, set `IW4L_MINECRAFT_KIT` (in the shell or in `.env` next to `iw4l.exe`) to a list of items, for example `IW4L_MINECRAFT_KIT=minecraft:oak_log*16,minecraft:milk_bucket*3`. They are put in the backpack when the world starts.
+To try recipes without gathering everything first, set `IW4L_MINECRAFT_KIT` (in the shell or in `.env` next to `iw4l.exe`) to a list of items, for example `IW4L_MINECRAFT_KIT=minecraft:oak_log*16,minecraft:milk_bucket*3`. They are put in the backpack when the world starts. `IW4L_MINECRAFT_WEATHER` set to `clear`, `rain` or `thunder` sets the weather the same way: the sky darkens and rain puts out fire, but rain itself is not drawn yet.
 
 Hover an item in the inventory to see its damage. Your health is the row of hearts above the hotbar, with food and its saturation line on the right; air bubbles appear above the food under water. Experience is the green line along the top of the hotbar, with your level between the hearts and the food.
 
