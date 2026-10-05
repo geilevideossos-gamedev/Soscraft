@@ -381,10 +381,27 @@ pub fn add_shapes(more: Vec<Vec<[f32; 6]>>) -> Option<u16> {
 pub const WATER: u16 = 0x10;
 pub const LAVA: u16 = 0x20;
 pub const FLUID_AMOUNT: u16 = 0x0f;
+pub const CLIMBABLE: u16 = 0x40;
+pub const SCAFFOLDING: u16 = 0x80;
+pub const SCAFFOLDING_BOTTOM: u16 = 0x100;
+const SCAFFOLDING_SLAB: [[f32; 6]; 1] = [[0.0, 0.0, 0.0, 1.0, 0.125, 1.0]];
+const ABOVE_EPSILON: f64 = 9.999_999_747_378_752e-6;
 pub const STUCK_BERRY_BUSH: u16 = 0x200;
 pub const STUCK_COBWEB: u16 = 0x400;
 const BERRY_BUSH_SLOWDOWN: [f32; 3] = [0.8, 0.8, 0.75];
 const COBWEB_SLOWDOWN: [f32; 3] = [0.25, 0.25, 0.05];
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mover {
+    pub feet: f32,
+    pub descending: bool,
+}
+
+impl Mover {
+    pub fn of(ps: &playerstate_iw4::PlayerState, cmd: &playerstate_iw4::UserCmd) -> Self {
+        Self { feet: ps.origin[2], descending: movement_iw4::sneaking(ps, cmd) }
+    }
+}
 
 pub fn add_fluid_shape(boxes: Vec<[f32; 6]>, fluid: u16) -> Option<u16> {
     let mut world = WORLD.write().ok()?;
@@ -537,6 +554,30 @@ impl VoxelWorld {
         let id = chunk.shapes.get(index).copied().unwrap_or(0);
         self.shapes.get(usize::from(id)).map_or(&[], Vec::as_slice)
     }
+
+    fn shape_for(&self, x: i32, y: i32, z: i32, mover: Option<Mover>) -> &[[f32; 6]] {
+        let boxes = self.shape_at(x, y, z);
+        let Some(mover) = mover else {
+            return boxes;
+        };
+        let flags = self.fluid_at(x, y, z);
+        if flags & SCAFFOLDING == 0 {
+            return boxes;
+        }
+        let bottom = self.origin[1] + f64::from(mover.feet) / f64::from(BLOCK);
+        if bottom > f64::from(y) + 1.0 - ABOVE_EPSILON && !mover.descending {
+            boxes
+        } else if flags & SCAFFOLDING_BOTTOM != 0 && bottom > f64::from(y) - ABOVE_EPSILON {
+            &SCAFFOLDING_SLAB
+        } else {
+            &[]
+        }
+    }
+
+    fn climb_sample(&self, feet: [f64; 3]) -> movement_iw4::ClimbSample {
+        let flags = self.fluid_at(feet[0].floor() as i32, feet[1].floor() as i32, feet[2].floor() as i32);
+        movement_iw4::ClimbSample { on: flags & CLIMBABLE != 0, scaffolding: flags & SCAFFOLDING != 0 }
+    }
 }
 
 struct Sweep {
@@ -548,7 +589,7 @@ struct Sweep {
 impl VoxelWorld {
     /// A block-space box `[lo, hi]` about `a` moved to `b`: the first hit as
     /// a fraction of the move and its normal, or whether it starts inside.
-    fn sweep(&self, a: [f64; 3], b: [f64; 3], lo: [f64; 3], hi: [f64; 3], test_start: bool) -> Sweep {
+    fn sweep(&self, a: [f64; 3], b: [f64; 3], lo: [f64; 3], hi: [f64; 3], test_start: bool, mover: Option<Mover>) -> Sweep {
         const INSIDE: f64 = 1e-4;
         let delta: [f64; 3] = std::array::from_fn(|k| b[k] - a[k]);
         let reach_lo: [i32; 3] = std::array::from_fn(|k| (a[k].min(b[k]) + lo[k] - 1.0).floor() as i32);
@@ -562,7 +603,7 @@ impl VoxelWorld {
         for y in reach_lo[1]..=reach_hi[1] {
             for z in reach_lo[2]..=reach_hi[2] {
                 for x in reach_lo[0]..=reach_hi[0] {
-                    for shape in self.shape_at(x, y, z) {
+                    for shape in self.shape_for(x, y, z, mover) {
                         // The shape grown by the moving box.
                         let bmin = [
                             f64::from(x) + f64::from(shape[0]) - hi[0],
@@ -630,6 +671,10 @@ pub(crate) fn trace(
     mins: [f32; 3],
     maxs: [f32; 3],
 ) -> trace_iw4::Trace {
+    trace_as(start, end, mins, maxs, None)
+}
+
+pub(crate) fn trace_as(start: [f32; 3], end: [f32; 3], mins: [f32; 3], maxs: [f32; 3], mover: Option<Mover>) -> trace_iw4::Trace {
     let open = trace_iw4::Trace {
         fraction: 1.0,
         endpos: end,
@@ -641,10 +686,10 @@ pub(crate) fn trace(
     let Some(world) = guard.as_ref() else {
         return open;
     };
-    trace_in(world, start, end, mins, maxs)
+    trace_in(world, start, end, mins, maxs, mover)
 }
 
-fn trace_in(world: &VoxelWorld, start: [f32; 3], end: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> trace_iw4::Trace {
+fn trace_in(world: &VoxelWorld, start: [f32; 3], end: [f32; 3], mins: [f32; 3], maxs: [f32; 3], mover: Option<Mover>) -> trace_iw4::Trace {
     let open = trace_iw4::Trace {
         fraction: 1.0,
         endpos: end,
@@ -680,7 +725,7 @@ fn trace_in(world: &VoxelWorld, start: [f32; 3], end: [f32; 3], mins: [f32; 3], 
         );
         let sa: [f64; 3] = std::array::from_fn(|k| a[k] + delta[k] * t0);
         let sb: [f64; 3] = std::array::from_fn(|k| a[k] + delta[k] * t1);
-        let hit = world.sweep(sa, sb, lo, hi, segment == 0);
+        let hit = world.sweep(sa, sb, lo, hi, segment == 0, mover);
         if segment == 0 && hit.start_solid {
             start_solid = true;
             end_solid = segments == 1 && hit.end_solid;
@@ -791,25 +836,25 @@ pub fn boxes_meet(a: [f64; 6], b: [f64; 6]) -> bool {
     (0..3).all(|k| a[k] < b[k + 3] && b[k] < a[k + 3])
 }
 
-pub(crate) fn push_out(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> Option<[f32; 3]> {
+pub(crate) fn push_out(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], mover: Option<Mover>) -> Option<[f32; 3]> {
     let guard = WORLD.read().ok()?;
     let world = guard.as_ref()?;
     let at = to_block(world.origin, origin);
     let (lo, hi) = block_bounds(mins, maxs);
     let body_lo = std::array::from_fn(|k| at[k] + lo[k]);
     let body_hi = std::array::from_fn(|k| at[k] + hi[k]);
-    let d = world.way_out(body_lo, body_hi)?;
+    let d = world.way_out(body_lo, body_hi, mover)?;
     Some(to_map(world.origin, std::array::from_fn(|k| at[k] + d[k])))
 }
 
 impl VoxelWorld {
-    fn overlapping(&self, lo: [f64; 3], hi: [f64; 3]) -> Vec<[f64; 6]> {
+    fn overlapping(&self, lo: [f64; 3], hi: [f64; 3], mover: Option<Mover>) -> Vec<[f64; 6]> {
         const INSIDE: f64 = 1e-4;
         let mut out = Vec::new();
         for y in lo[1].floor() as i32 - 1..=hi[1].floor() as i32 {
             for z in lo[2].floor() as i32 - 1..=hi[2].floor() as i32 {
                 for x in lo[0].floor() as i32 - 1..=hi[0].floor() as i32 {
-                    for shape in self.shape_at(x, y, z) {
+                    for shape in self.shape_for(x, y, z, mover) {
                         let cell = [f64::from(x), f64::from(y), f64::from(z)];
                         let b: [f64; 6] = std::array::from_fn(|k| cell[k % 3] + f64::from(shape[k]));
                         if (0..3).all(|k| b[k + 3] - lo[k] > INSIDE && hi[k] - b[k] > INSIDE) {
@@ -822,12 +867,12 @@ impl VoxelWorld {
         out
     }
 
-    fn escape(&self, lo: [f64; 3], hi: [f64; 3], axis: usize, sign: f64, limit: f64) -> Option<f64> {
+    fn escape(&self, lo: [f64; 3], hi: [f64; 3], axis: usize, sign: f64, limit: f64, mover: Option<Mover>) -> Option<f64> {
         let mut d = 0.0;
         loop {
             let l: [f64; 3] = std::array::from_fn(|k| if k == axis { lo[k] + sign * d } else { lo[k] });
             let h: [f64; 3] = std::array::from_fn(|k| if k == axis { hi[k] + sign * d } else { hi[k] });
-            let inside = self.overlapping(l, h);
+            let inside = self.overlapping(l, h, mover);
             if inside.is_empty() {
                 return Some(d);
             }
@@ -843,8 +888,8 @@ impl VoxelWorld {
         }
     }
 
-    fn way_out(&self, lo: [f64; 3], hi: [f64; 3]) -> Option<[f64; 3]> {
-        let inside = self.overlapping(lo, hi);
+    fn way_out(&self, lo: [f64; 3], hi: [f64; 3], mover: Option<Mover>) -> Option<[f64; 3]> {
+        let inside = self.overlapping(lo, hi, mover);
         if inside.is_empty() {
             return None;
         }
@@ -856,19 +901,19 @@ impl VoxelWorld {
         let middle = (lo[1] + hi[1]) * 0.5;
         let ceiling = inside.iter().any(|b| b[1] > middle);
         let mut best = if ceiling {
-            self.escape(lo, hi, 1, -1.0, SIDE_OUT).map(|d| (d, along(1, -1.0, d)))
+            self.escape(lo, hi, 1, -1.0, SIDE_OUT, mover).map(|d| (d, along(1, -1.0, d)))
         } else {
-            self.escape(lo, hi, 1, 1.0, STEP_OUT).map(|d| (d, along(1, 1.0, d)))
+            self.escape(lo, hi, 1, 1.0, STEP_OUT, mover).map(|d| (d, along(1, 1.0, d)))
         };
         for (axis, sign) in [(0, 1.0), (0, -1.0), (2, 1.0), (2, -1.0)] {
-            if let Some(d) = self.escape(lo, hi, axis, sign, SIDE_OUT)
+            if let Some(d) = self.escape(lo, hi, axis, sign, SIDE_OUT, mover)
                 && best.is_none_or(|(b, _)| d < b)
             {
                 best = Some((d, along(axis, sign, d)));
             }
         }
         best.map(|(_, v)| v)
-            .or_else(|| self.escape(lo, hi, 1, 1.0, CLIMB_OUT).filter(|_| !ceiling).map(|d| along(1, 1.0, d)))
+            .or_else(|| self.escape(lo, hi, 1, 1.0, CLIMB_OUT, mover).filter(|_| !ceiling).map(|d| along(1, 1.0, d)))
     }
 
     fn fluid_at(&self, x: i32, y: i32, z: i32) -> u16 {
@@ -973,6 +1018,13 @@ pub fn lava(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> f32 {
     };
     let (lo, hi) = block_bounds(mins, maxs);
     (world.fluid_depth(to_block(world.origin, origin), lo, hi, LAVA) * f64::from(BLOCK)) as f32
+}
+
+pub fn climb(origin: [f32; 3]) -> movement_iw4::ClimbSample {
+    let Ok(guard) = WORLD.read() else {
+        return movement_iw4::ClimbSample::default();
+    };
+    guard.as_ref().map_or_else(movement_iw4::ClimbSample::default, |world| world.climb_sample(to_block(world.origin, origin)))
 }
 
 pub fn eye_in_lava(origin: [f32; 3], view_height: f32) -> bool {
@@ -1127,16 +1179,16 @@ mod tests {
         let (mins, maxs) = ([-15.0, -15.0, 0.0], [15.0, 15.0, 70.0]);
         let above = to_map([0.0; 3], [4.5, 1.0 + 0.25 / 36.0, 4.5]);
         let below = to_map([0.0; 3], [4.5, 1.0 - 0.25 / 36.0, 4.5]);
-        let ground = trace_in(&w, above, below, mins, maxs);
+        let ground = trace_in(&w, above, below, mins, maxs, None);
         assert!(ground.fraction < 1.0);
         assert_eq!(ground.walkable, 1);
         assert_eq!((ground.hit_type, ground.hit_id), (trace_iw4::HITTYPE_ENTITY, trace_iw4::ENTITYNUM_WORLD));
         let sunk = to_map([0.0; 3], [4.5, 0.5, 4.5]);
-        let inside = trace_in(&w, sunk, sunk, mins, maxs);
+        let inside = trace_in(&w, sunk, sunk, mins, maxs, None);
         assert_eq!(inside.startsolid, 1);
         assert_eq!((inside.hit_type, inside.hit_id), (trace_iw4::HITTYPE_ENTITY, trace_iw4::ENTITYNUM_WORLD));
         let (high, low) = (to_map([0.0; 3], [10.5, 5.0, 10.5]), to_map([0.0; 3], [10.5, 4.0, 10.5]));
-        let air = trace_in(&w, high, low, mins, maxs);
+        let air = trace_in(&w, high, low, mins, maxs, None);
         assert_eq!((air.fraction, air.hit_type), (1.0, 0));
     }
 
@@ -1166,13 +1218,13 @@ mod tests {
         assert!((vanilla.heights[1] - 54.0).abs() < 1e-4);
         let drop = |b: movement_iw4::MoveBounds| {
             let (high, low) = (to_map([0.0; 3], [4.6, 6.0, 4.5]), to_map([0.0; 3], [4.6, 2.0, 4.5]));
-            trace_in(&w, high, low, b.mins, b.maxs).fraction
+            trace_in(&w, high, low, b.mins, b.maxs, None).fraction
         };
         assert_eq!(drop(vanilla), 1.0);
         assert!(drop(mw2) < 1.0);
         let stand = |b: movement_iw4::MoveBounds| {
             let at = to_map([0.0; 3], [10.5, 1.01, 10.5]);
-            trace_in(&w, at, at, b.mins, b.maxs).startsolid
+            trace_in(&w, at, at, b.mins, b.maxs, None).startsolid
         };
         assert_eq!(stand(vanilla), 0);
         assert_eq!(stand(mw2), 1);
@@ -1185,14 +1237,14 @@ mod tests {
     fn a_body_clear_of_blocks_is_left_alone() {
         let w = world(&[([4, 0, 4], 1)]);
         let (lo, hi) = body([4.5, 1.0 + 1e-3, 4.5], 70.0 / 36.0);
-        assert_eq!(w.way_out(lo, hi), None);
+        assert_eq!(w.way_out(lo, hi, None), None);
     }
 
     #[test]
     fn a_body_sunk_into_a_block_below_is_lifted_onto_it() {
         let w = world(&[([4, 0, 4], 1)]);
         let (lo, hi) = body([4.5, 0.9, 4.5], 70.0 / 36.0);
-        let d = w.way_out(lo, hi).expect("a way out");
+        let d = w.way_out(lo, hi, None).expect("a way out");
         assert_eq!((d[0], d[2]), (0.0, 0.0));
         assert!((0.9 + d[1] - (1.0 + PUSH_GAP)).abs() < 1e-9);
     }
@@ -1201,17 +1253,17 @@ mod tests {
     fn a_lift_blocked_overhead_goes_sideways_instead() {
         let w = world(&[([4, 0, 4], 1), ([4, 2, 4], 1), ([4, 3, 4], 1)]);
         let (lo, hi) = body([4.3, 0.95, 4.5], 1.2);
-        let d = w.way_out(lo, hi).expect("a way out");
+        let d = w.way_out(lo, hi, None).expect("a way out");
         assert_eq!(d[1], 0.0);
         assert!(d[0] < 0.0);
-        assert!(w.overlapping(std::array::from_fn(|k| lo[k] + d[k]), std::array::from_fn(|k| hi[k] + d[k])).is_empty());
+        assert!(w.overlapping(std::array::from_fn(|k| lo[k] + d[k]), std::array::from_fn(|k| hi[k] + d[k]), None).is_empty());
     }
 
     #[test]
     fn the_shortest_way_out_wins() {
         let w = world(&[([5, 1, 4], 1), ([5, 2, 4], 1)]);
         let (lo, hi) = body([4.75, 1.0, 4.5], 70.0 / 36.0);
-        let d = w.way_out(lo, hi).expect("a way out");
+        let d = w.way_out(lo, hi, None).expect("a way out");
         assert!(d[0] < 0.0 && d[0] > -0.1);
         assert_eq!((d[1], d[2]), (0.0, 0.0));
     }
@@ -1220,8 +1272,8 @@ mod tests {
     fn a_fence_taller_than_its_cell_still_counts() {
         let w = world(&[([4, 0, 4], 2)]);
         let (lo, hi) = body([4.5, 1.2, 4.5], 70.0 / 36.0);
-        assert_eq!(w.overlapping(lo, hi).len(), 1);
-        let d = w.way_out(lo, hi).expect("a way out");
+        assert_eq!(w.overlapping(lo, hi, None).len(), 1);
+        let d = w.way_out(lo, hi, None).expect("a way out");
         assert!((1.2 + d[1] - (1.5 + PUSH_GAP)).abs() < 1e-9);
     }
 
@@ -1237,14 +1289,14 @@ mod tests {
         }
         let w = world(&blocks);
         let (lo, hi) = body([4.5, 1.0, 4.5], 70.0 / 36.0);
-        assert_eq!(w.way_out(lo, hi), None);
+        assert_eq!(w.way_out(lo, hi, None), None);
     }
 
     #[test]
     fn a_head_in_the_ceiling_goes_down_not_through_it() {
         let w = world(&[([4, 0, 4], 1), ([4, 3, 4], 1)]);
         let (lo, hi) = body([4.5, 1.2, 4.5], 70.0 / 36.0);
-        let d = w.way_out(lo, hi).expect("a way out");
+        let d = w.way_out(lo, hi, None).expect("a way out");
         assert!(d[1] < 0.0 && d[1] > -0.2, "{d:?}");
         let mut tunnel = Vec::new();
         for z in 0..9 {
@@ -1257,13 +1309,89 @@ mod tests {
         }
         let w = world(&tunnel);
         let (lo, hi) = body([4.5, 0.0, 4.5], 50.0 / 36.0);
-        assert_eq!(w.way_out(lo, hi), None);
+        assert_eq!(w.way_out(lo, hi, None), None);
     }
 
     #[test]
     fn touching_boxes_do_not_meet() {
         assert!(!boxes_meet([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], [1.0, 0.0, 0.0, 2.0, 1.0, 1.0]));
         assert!(boxes_meet([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], [0.99, 0.5, 0.5, 2.0, 1.0, 1.0]));
+    }
+
+    const STABLE: [[f32; 6]; 5] = [
+        [0.0, 0.875, 0.0, 1.0, 1.0, 1.0],
+        [0.0, 0.0, 0.0, 0.125, 1.0, 0.125],
+        [0.875, 0.0, 0.0, 1.0, 1.0, 0.125],
+        [0.0, 0.0, 0.875, 0.125, 1.0, 1.0],
+        [0.875, 0.0, 0.875, 1.0, 1.0, 1.0],
+    ];
+    const TOWER: u16 = 5;
+    const HANGING: u16 = 6;
+    const LADDER: u16 = 7;
+
+    fn scaffolding(blocks: &[([i32; 3], u16)]) -> VoxelWorld {
+        let mut w = world(blocks);
+        w.shapes.extend([STABLE.to_vec(), STABLE.to_vec(), vec![[0.0, 0.0, 0.8125, 1.0, 1.0, 1.0]]]);
+        w.fluids.extend([CLIMBABLE | SCAFFOLDING, CLIMBABLE | SCAFFOLDING | SCAFFOLDING_BOTTOM, CLIMBABLE]);
+        w
+    }
+
+    fn mover(feet: f64, descending: bool) -> Option<Mover> {
+        Some(Mover { feet: (feet * 36.0) as f32, descending })
+    }
+
+    const HULL: ([f32; 3], [f32; 3]) = ([-10.8, -10.8, 0.0], [10.8, 10.8, 64.8]);
+
+    fn drop_onto(w: &VoxelWorld, from: f64, to: f64, who: Option<Mover>) -> f32 {
+        let (high, low) = (to_map([0.0; 3], [4.5, from, 4.5]), to_map([0.0; 3], [4.5, to, 4.5]));
+        trace_in(w, high, low, HULL.0, HULL.1, who).fraction
+    }
+
+    #[test]
+    fn scaffolding_holds_up_a_player_above_it_unless_they_sneak() {
+        let w = scaffolding(&[([4, 0, 4], 1), ([4, 1, 4], TOWER), ([4, 2, 4], TOWER)]);
+        let above = 3.0 + 0.25 / 36.0;
+        assert!(drop_onto(&w, above, 2.9, mover(above, false)) < 1.0);
+        assert_eq!(drop_onto(&w, above, 2.9, mover(above, true)), 1.0);
+        assert!(drop_onto(&w, above, 2.9, None) < 1.0);
+        let inside = 2.5;
+        assert_eq!(drop_onto(&w, inside, 2.0 + 0.01, mover(inside, false)), 1.0);
+        assert!(drop_onto(&w, inside, 1.9, mover(inside, false)) < 1.0);
+        assert_eq!(drop_onto(&w, 1.2, 1.0 + 0.01, mover(1.2, true)), 1.0);
+    }
+
+    #[test]
+    fn scaffolding_lets_a_player_walk_in_from_the_side() {
+        let w = scaffolding(&[([4, 0, 4], 1), ([5, 1, 4], TOWER), ([5, 2, 4], TOWER)]);
+        let feet = 1.0 + 0.25 / 36.0;
+        let (from, to) = (to_map([0.0; 3], [4.5, feet, 4.5]), to_map([0.0; 3], [5.5, feet, 4.5]));
+        assert_eq!(trace_in(&w, from, to, HULL.0, HULL.1, mover(feet, false)).fraction, 1.0);
+        assert!(trace_in(&w, from, to, HULL.0, HULL.1, None).fraction < 1.0);
+        let (lo, hi) = body([5.5, feet, 4.5], 1.8);
+        assert_eq!(w.way_out(lo, hi, mover(feet, false)), None);
+        assert!(w.way_out(lo, hi, None).is_some());
+    }
+
+    #[test]
+    fn hanging_scaffolding_has_a_floor_slab_for_players_not_below_it() {
+        let w = scaffolding(&[([4, 3, 4], HANGING)]);
+        assert!((drop_onto(&w, 3.5, 3.0, mover(3.5, false)) - 0.75).abs() < 0.01);
+        assert!(drop_onto(&w, 4.5, 3.0, mover(4.5, true)) < 1.0);
+        let rising = (to_map([0.0; 3], [4.5, 1.0, 4.5]), to_map([0.0; 3], [4.5, 3.5, 4.5]));
+        assert_eq!(trace_in(&w, rising.0, rising.1, HULL.0, HULL.1, mover(1.0, false)).fraction, 1.0);
+        let tower = scaffolding(&[([4, 3, 4], TOWER)]);
+        assert_eq!(drop_onto(&tower, 3.5, 3.0, mover(3.5, false)), 1.0);
+    }
+
+    #[test]
+    fn the_block_at_the_feet_decides_climbing() {
+        let w = scaffolding(&[([4, 1, 4], TOWER), ([6, 1, 6], LADDER)]);
+        let tower = w.climb_sample([4.5, 1.2, 4.5]);
+        assert_eq!((tower.on, tower.scaffolding), (true, true));
+        let ladder = w.climb_sample([6.5, 1.0, 6.5]);
+        assert_eq!((ladder.on, ladder.scaffolding), (true, false));
+        assert_eq!(w.climb_sample([4.5, 2.0 + 1e-3, 4.5]), movement_iw4::ClimbSample::default());
+        assert_eq!(w.fluid_depth([4.5, 1.0, 4.5], [-0.3, 0.0, -0.3], [0.3, 1.8, 0.3], WATER), 0.0);
     }
 
     #[test]

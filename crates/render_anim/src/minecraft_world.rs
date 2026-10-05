@@ -504,7 +504,7 @@ fn update(
     );
     let (loaded, forgotten) = world.stream.server_tick(block, &mut world.scene);
     for chunk in loaded {
-        let blocks = &world.registries.blocks;
+        let registries = &world.registries;
         let (min_y, height) = (chunk.min_y(), chunk.height());
         let mut ids = vec![0u16; (height * 256) as usize];
         // Runs of one state (air, stone) skip the map.
@@ -519,7 +519,7 @@ fn update(
                         ids[((y as usize * 16) + z) * 16 + x] = id;
                         continue;
                     }
-                    let id = shape_id(shapes, shape_ids, blocks, state);
+                    let id = shape_id(shapes, shape_ids, registries, state);
                     last = Some((state, id));
                     ids[((y as usize * 16) + z) * 16 + x] = id;
                 }
@@ -565,7 +565,8 @@ fn update(
         steps.air_peak = None;
     }
     if let Some(last) = steps.last.filter(|_| alive) {
-        let horizontal = ((feet[0] - last[0]).hypot(feet[2] - last[2]) * 0.6) as f32;
+        let climbing = sim::voxel::climb(ps.origin).on;
+        let horizontal = ((feet[0] - last[0]).hypot(feet[2] - last[2]).hypot(if climbing { feet[1] - last[1] } else { 0.0 }) * 0.6) as f32;
         let block_at = |dy: f64| {
             let pos = (feet[0].floor() as i32, (feet[1] - dy).floor() as i32, feet[2].floor() as i32);
             minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned().map(|b| (pos, b))
@@ -574,19 +575,24 @@ fn update(
         let centre = |pos: (i32, i32, i32)| {
             Vec3::from_array(sim::voxel::to_map(origin, [pos.0 as f64 + 0.5, pos.1 as f64 + 1.0, pos.2 as f64 + 0.5]))
         };
-        if on_ground && horizontal < 2.0 {
+        if (on_ground || climbing) && horizontal < 2.0 {
             steps.move_dist += horizontal;
             if steps.move_dist > steps.next_step
                 && let Some((pos, block)) = under.as_ref()
             {
                 steps.next_step = steps.move_dist as i32 as f32 + 1.0;
+                let sounding = on_ground
+                    || block.id.path == "powder_snow"
+                    || world.stream.states.state_of(block).is_some_and(|state| {
+                        world.registries.block_tags.id("minecraft:climbable").is_some_and(|tag| world.registries.block_in_tag(state, tag))
+                    });
                 // Snow layers and carpets sound instead of what they lie on.
                 let inside = block_at(-0.01).filter(|(_, b)| {
                     let p = b.id.path.as_str();
                     p == "snow" || p.ends_with("_carpet") || p == "moss_carpet"
                 });
                 let (pos, block) = inside.as_ref().map_or((*pos, block), |(p, b)| (*p, b));
-                if let (Some(sounds), Some(kind)) = (sounds.as_mut(), world.scene.sound_type(block)) {
+                if sounding && let (Some(sounds), Some(kind)) = (sounds.as_mut(), world.scene.sound_type(block)) {
                     sounds.play(&world.packs, &kind.step, Some(centre(pos)), kind.volume * 0.15, kind.pitch);
                 }
             }
@@ -1051,6 +1057,20 @@ fn update(
                             }
                         }
                     }),
+                    None if held.as_ref().is_some_and(|s| s.id == minecraft_terrain::scaffolding::SCAFFOLDING) => minecraft_terrain::scaffolding::place(
+                        &player,
+                        &mut staged,
+                        &mut entities.inventory,
+                        ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0,
+                        &sturdy,
+                        &|block: Option<&minecraftoss_player::Block>| {
+                            block.is_none_or(|b| {
+                                scene_block(b)
+                                    .and_then(|b| world.stream.states.state_of(&b))
+                                    .is_some_and(|state| world.registries.blocks.is(state, minecraftoss_core::block::flags::REPLACEABLE))
+                            })
+                        },
+                    ),
                     None => player.place_selected(&mut staged, &mut entities.inventory, minecraftoss_player::GameMode::Survival),
                 };
                 let writes: Vec<_> = staged
@@ -1062,6 +1082,7 @@ fn update(
                 let blocked = writes.iter().any(|(pos, block)| {
                     let boxes = block
                         .as_ref()
+                        .filter(|b| b.id.key() != minecraft_terrain::scaffolding::SCAFFOLDING)
                         .and_then(|b| world.stream.states.state_of(b))
                         .map_or_else(Vec::new, |state| world.registries.blocks.collision_boxes(state));
                     minecraft_terrain::placing::obstructed(*pos, &boxes, &bodies)
@@ -1243,11 +1264,11 @@ fn update(
         let (changes, hits) = entities.tick(dt, day.ticks as i64, bright_outside, &player);
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
         if !changes.is_empty() {
-            let blocks = &world.registries.blocks;
+            let registries = &world.registries;
             let mut positions = Vec::with_capacity(changes.len());
             for (pos, block) in changes {
                 let state = block.as_ref().and_then(|b| world.stream.states.state_of(b));
-                let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, blocks, state));
+                let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, registries, state));
                 sim::voxel::set_block_shape(pos.0, pos.1, pos.2, shape);
                 let before = minecraftoss_player::World::block(&world.scene, pos);
                 world.scene.set(pos, block);
@@ -1727,10 +1748,11 @@ fn update(
 fn shape_id(
     shapes: &mut HashMap<BlockStateId, u16>,
     shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
-    blocks: &minecraftoss_core::BlockRegistry,
+    registries: &Registries,
     state: BlockStateId,
 ) -> u16 {
     *shapes.entry(state).or_insert_with(|| {
+        let blocks = &registries.blocks;
         let boxes = blocks.collision_boxes(state);
         let fluid = blocks.state(state).fluid.map_or(0, |f| {
             let kind = match f.kind {
@@ -1743,6 +1765,13 @@ fn shape_id(
             "minecraft:cobweb" => sim::voxel::STUCK_COBWEB,
             _ => 0,
         };
+        let scaffolding = blocks.block(blocks.block_of(state)).name.as_str() == minecraft_terrain::scaffolding::SCAFFOLDING;
+        let climbable = registries.block_tags.id("minecraft:climbable").is_some_and(|tag| registries.block_in_tag(state, tag));
+        let hanging = scaffolding && blocks.property(state, "distance") != Some("0") && blocks.property(state, "bottom") == Some("true");
+        let fluid = fluid
+            | (u16::from(climbable) * sim::voxel::CLIMBABLE)
+            | (u16::from(scaffolding) * sim::voxel::SCAFFOLDING)
+            | (u16::from(hanging) * sim::voxel::SCAFFOLDING_BOTTOM);
         if boxes.is_empty() && fluid == 0 {
             return 0;
         }
@@ -1775,7 +1804,7 @@ fn write_blocks(
     let positions: Vec<_> = writes.iter().map(|(p, _)| *p).collect();
     for (at, block) in writes {
         let state = block.as_ref().and_then(|b| world.stream.states.state_of(b));
-        let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, &world.registries.blocks, state));
+        let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, &world.registries, state));
         sim::voxel::set_block_shape(at.0, at.1, at.2, shape);
         world.scene.set(at, block);
     }

@@ -123,7 +123,7 @@ fn normalize(vector: &mut [f32; 3]) -> f32 {
     length
 }
 
-fn walk_accel_scale(ps: &PlayerState, pml: &Pml) -> f32 {
+pub(crate) fn walk_accel_scale(ps: &PlayerState, pml: &Pml) -> f32 {
     const ACCEL_PRONE: f32 = 19.0;
 
     const ACCEL_CROUCH: f32 = 12.0;

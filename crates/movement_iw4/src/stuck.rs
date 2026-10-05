@@ -2,8 +2,8 @@ use playerstate_iw4::{PlayerState, UserCmd, pm_flags};
 
 use crate::swim::input_push;
 use crate::{
-    CollisionBackend, JumpCheckContext, JumpCheckResult, MoveBounds, Pml, WATER_BLOCK,
-    WalkMoveContext, jump, stance_surface_type, step_slide_move,
+    CLIMB_RISE, ClimbSample, CollisionBackend, JumpCheckContext, JumpCheckResult, MoveBounds, Pml,
+    WATER_BLOCK, WalkMoveContext, jump, stance_surface_type, step_slide_move,
 };
 
 const TICK_MS: i32 = 50;
@@ -26,6 +26,7 @@ const BUTTON_JUMP: u32 = 0x400;
 pub struct Stuck {
     pub multiplier: [f32; 3],
     pub fluid_sink: Option<f32>,
+    pub climb: Option<ClimbSample>,
 }
 
 pub fn stuck_move<C: CollisionBackend>(
@@ -38,6 +39,8 @@ pub fn stuck_move<C: CollisionBackend>(
     collision: &C,
 ) {
     let frame_start = cmd.server_time.wrapping_sub(pml.msec);
+    let climb_rising =
+        stuck.climb.is_some() && (cmd.buttons & BUTTON_JUMP != 0 || ps.velocity[2] > 0.0);
     if pml.walking != 0 {
         if ps.pm_flags & pm_flags::JUMPING != 0 {
             jump::clear_state(ps);
@@ -86,15 +89,21 @@ pub fn stuck_move<C: CollisionBackend>(
         0.0
     };
     let fall = match stuck.fluid_sink {
+        _ if climb_rising => CLIMB_RISE / PER_TICK,
         _ if pml.walking != 0 && rising_ms == 0 => 0.0,
         Some(sink) => lift - sink,
         None => -GRAVITY * VERTICAL_DRAG,
     };
     step[2] = JUMP_POWER * rise + fall * (1.0 - rise);
-    ps.velocity = [
-        step[0] * stuck.multiplier[0] * PER_TICK,
-        step[1] * stuck.multiplier[1] * PER_TICK,
-        step[2] * stuck.multiplier[2] * PER_TICK,
+    let mut velocity = step.map(|v| v * PER_TICK);
+    if let Some(climb) = stuck.climb {
+        crate::climb::hold(&mut velocity, climb.scaffolding, crate::sneaking(ps, cmd));
+    }
+    ps.velocity = core::array::from_fn(|k| velocity[k] * stuck.multiplier[k]);
+    let start = ps.origin;
+    let wanted = [
+        ps.velocity[0] * pml.frametime,
+        ps.velocity[1] * pml.frametime,
     ];
     step_slide_move(
         ps,
@@ -105,7 +114,13 @@ pub fn stuck_move<C: CollisionBackend>(
         bounds.tracemask,
         None,
     );
-    ps.velocity[2] = ps.velocity[2].min(0.0);
+    let rising = stuck.climb.is_some()
+        && crate::climb::rise_after_move(ps, pml, cmd, start, wanted, collision);
+    ps.velocity[2] = if rising {
+        CLIMB_RISE
+    } else {
+        ps.velocity[2].min(0.0)
+    };
 }
 
 #[cfg(test)]
@@ -213,6 +228,7 @@ mod tests {
                 Stuck {
                     multiplier,
                     fluid_sink: None,
+                    climb: None,
                 },
                 context(),
                 BOUNDS,
@@ -293,6 +309,7 @@ mod tests {
                 Stuck {
                     multiplier,
                     fluid_sink: Some(sink),
+                    climb: None,
                 },
                 context(),
                 BOUNDS,
@@ -343,11 +360,147 @@ mod tests {
         let bush = Stuck {
             multiplier: BUSH,
             fluid_sink: None,
+            climb: None,
         };
         stuck_move(&mut held, &mut pml, &mut sent, bush, repeat, BOUNDS, &Open);
         assert!(
             held.origin[2].abs() < 1e-6,
             "a held jump waits for a new press"
         );
+    }
+
+    struct Ladder {
+        wall: f32,
+    }
+
+    impl CollisionBackend for Ladder {
+        fn trace(&self, input: GroundTraceInput) -> trace_iw4::Trace {
+            let (front, ahead) = (input.start[0] + input.maxs[0], input.end[0] + input.maxs[0]);
+            if ahead <= self.wall || front > self.wall {
+                return Open.trace(input);
+            }
+            let fraction = ((self.wall - front) / (ahead - front) - 0.01).max(0.0);
+            trace_iw4::Trace {
+                fraction,
+                endpos: core::array::from_fn(|k| {
+                    input.start[k] + (input.end[k] - input.start[k]) * fraction
+                }),
+                normal: [-1.0, 0.0, 0.0],
+                ..trace_iw4::Trace::default()
+            }
+        }
+
+        fn climb(&self, _origin: [f32; 3]) -> ClimbSample {
+            ClimbSample {
+                on: true,
+                scaffolding: false,
+            }
+        }
+    }
+
+    const LADDER: ClimbSample = ClimbSample {
+        on: true,
+        scaffolding: false,
+    };
+
+    fn climbed(
+        ps: &mut PlayerState,
+        cmd: UserCmd,
+        multiplier: [f32; 3],
+        climb: ClimbSample,
+        ladder: &Ladder,
+        frames: &[i32],
+    ) -> f32 {
+        let start = ps.origin[2];
+        let mut time = 1000;
+        for &msec in frames {
+            time += msec;
+            let mut cmd = UserCmd {
+                server_time: time,
+                ..cmd
+            };
+            let stuck = Stuck {
+                multiplier,
+                fluid_sink: None,
+                climb: Some(climb),
+            };
+            let mut pml = frame(msec, false);
+            stuck_move(ps, &mut pml, &mut cmd, stuck, context(), BOUNDS, ladder);
+        }
+        (ps.origin[2] - start) / WATER_BLOCK
+    }
+
+    #[test]
+    fn a_bush_or_web_on_a_ladder_slows_the_climb_the_slide_and_the_sneak() {
+        let open = Ladder { wall: f32::MAX };
+        let jump = UserCmd {
+            buttons: BUTTON_JUMP,
+            ..UserCmd::default()
+        };
+        let cases: [(&[i32], [f32; 3]); 3] =
+            [(&[50; 20], WEB), (&[10; 100], WEB), (&[25; 40], BUSH)];
+        for (frames, multiplier) in cases {
+            let up = climbed(&mut airborne(), jump, multiplier, LADDER, &open, frames);
+            let rise = CLIMB_RISE / PER_TICK * multiplier[2] * 20.0;
+            assert!((up - rise).abs() < 1e-4, "{frames:?} {up} {rise}");
+            let down = climbed(
+                &mut airborne(),
+                UserCmd::default(),
+                multiplier,
+                LADDER,
+                &open,
+                frames,
+            );
+            let slide = -GRAVITY * VERTICAL_DRAG * multiplier[2] * 20.0;
+            assert!((down - slide).abs() < 1e-4, "{frames:?} {down} {slide}");
+            let mut sneaking = airborne();
+            sneaking.pm_flags |= pm_flags::CROUCH;
+            let held = climbed(
+                &mut sneaking,
+                UserCmd::default(),
+                multiplier,
+                LADDER,
+                &open,
+                frames,
+            );
+            assert!(held.abs() < 1e-6, "{frames:?} {held}");
+            let scaffolding = ClimbSample {
+                scaffolding: true,
+                ..LADDER
+            };
+            let sunk = climbed(
+                &mut sneaking,
+                UserCmd::default(),
+                multiplier,
+                scaffolding,
+                &open,
+                frames,
+            );
+            assert!((sunk - slide).abs() < 1e-4, "{frames:?} {sunk}");
+        }
+    }
+
+    #[test]
+    fn pushing_into_a_wall_from_a_bush_on_a_ladder_climbs_at_the_scaled_speed() {
+        let wall = Ladder { wall: 20.0 };
+        let mut ps = airborne();
+        ps.origin[0] = 9.0;
+        let first = climbed(&mut ps, ahead(0), BUSH, LADDER, &wall, &[50]);
+        assert!(
+            (first + GRAVITY * VERTICAL_DRAG * 0.75).abs() < 1e-4,
+            "{first}"
+        );
+        assert_eq!(ps.velocity[2], CLIMB_RISE);
+        assert_eq!(ps.ground_entity_num, ENTITYNUM_NONE);
+        let up = climbed(&mut ps, ahead(0), BUSH, LADDER, &wall, &[50; 20]);
+        assert!(
+            (up - CLIMB_RISE / PER_TICK * 0.75 * 20.0).abs() < 1e-2,
+            "{up}"
+        );
+        let open = Ladder { wall: f32::MAX };
+        let mut free = airborne();
+        free.origin[0] = 9.0;
+        assert!(climbed(&mut free, ahead(0), BUSH, LADDER, &open, &[50; 20]) < 0.0);
+        assert!(free.velocity[2] <= 0.0, "{:?}", free.velocity);
     }
 }

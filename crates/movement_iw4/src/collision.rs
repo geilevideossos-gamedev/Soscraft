@@ -35,4 +35,8 @@ pub trait CollisionBackend {
     fn stuck(&self, _origin: [f32; 3], _mins: [f32; 3], _maxs: [f32; 3]) -> Option<[f32; 3]> {
         None
     }
+
+    fn climb(&self, _origin: [f32; 3]) -> crate::ClimbSample {
+        crate::ClimbSample::default()
+    }
 }

@@ -384,6 +384,7 @@ fn run_players_system(ecs: &mut World) {
                 cmodels: &cmodel_models,
                 linked_brushes: &linked_brushes,
                 model_brushes: &model_brushes,
+                mover: None,
             };
             let script = world.player_anim_script();
             let mantle = world.xanims();
@@ -409,9 +410,10 @@ fn run_players_system(ecs: &mut World) {
                     ps.pm_flags &= !playerstate_iw4::pm_flags::SHELLSHOCKED;
                 }
                 let (hull_mins, hull_maxs) = crate::voxel::player_hull(ps);
-                if crate::voxel::active() && let Some(origin) = crate::voxel::push_out(ps.origin, hull_mins, hull_maxs) {
+                if crate::voxel::active() && let Some(origin) = crate::voxel::push_out(ps.origin, hull_mins, hull_maxs, Some(crate::voxel::Mover::of(ps, &cmd))) {
                     ps.origin = origin;
                 }
+                let backend = ClipBackend { mover: Some(crate::voxel::Mover::of(ps, &cmd)), ..backend };
                 let moved_from = ps.origin;
                 let result = pmove(
                     ps,
@@ -1828,11 +1830,14 @@ struct ClipBackend<'a> {
     cmodels: &'a [clipmap_iw4::ClipCmodel],
     linked_brushes: &'a [LinkedBrushCollisionBrush],
     model_brushes: &'a [SimBrush],
+    mover: Option<crate::voxel::Mover>,
 }
 
 impl CollisionBackend for ClipBackend<'_> {
     fn trace(&self, input: GroundTraceInput) -> Trace {
-        let world_hit = clip_trace(
+        let world_hit = if let Some(mover) = self.mover.filter(|_| crate::voxel::active_for(self.brushes)) {
+            crate::voxel::trace_as(input.start, input.end, input.mins, input.maxs, Some(mover))
+        } else { clip_trace(
             self.brushes,
             self.bsp,
             self.mesh,
@@ -1849,7 +1854,7 @@ impl CollisionBackend for ClipBackend<'_> {
                     .map_or(0, |(_, d)| *d);
                 crate::world_objects::glass_piece_is_solid(damage)
             },
-        );
+        ) };
         let with_bmodels = clip_move_to_bmodels(
             world_hit,
             self.cmodels,
@@ -1883,6 +1888,14 @@ impl CollisionBackend for ClipBackend<'_> {
             crate::voxel::stuck(origin, mins, maxs)
         } else {
             None
+        }
+    }
+
+    fn climb(&self, origin: [f32; 3]) -> movement_iw4::ClimbSample {
+        if crate::voxel::active_for(self.brushes) {
+            crate::voxel::climb(origin)
+        } else {
+            movement_iw4::ClimbSample::default()
         }
     }
 }
@@ -1992,6 +2005,7 @@ pub(crate) fn script_slide(
         cmodels: &content.clip_cmodels().models,
         linked_brushes: &linked_brushes,
         model_brushes: &model_brushes,
+        mover: None,
     };
     slide.advance(origin, &backend, mask)
 }
@@ -2035,6 +2049,7 @@ pub(crate) fn script_mantle(
         cmodels: &content.clip_cmodels().models,
         linked_brushes: &linked_brushes,
         model_brushes: &model_brushes,
+        mover: None,
     };
     let forward = math_iw4::angle_vectors(ps.viewangles).0;
     let mantle = world.xanims();

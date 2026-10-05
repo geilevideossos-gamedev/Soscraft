@@ -50,6 +50,7 @@ pub mod item_icon;
 pub mod item_icons;
 pub mod crafting;
 pub mod placing;
+pub mod scaffolding;
 pub mod doors;
 pub mod thrown;
 pub mod bottle;

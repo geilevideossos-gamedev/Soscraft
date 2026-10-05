@@ -113,6 +113,11 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
         ps.view_height_current,
     );
     let lava = collision.lava(ps.origin, context.bounds.mins, context.bounds.maxs);
+    let climb = if water.wet() || lava > 0.0 {
+        crate::ClimbSample::default()
+    } else {
+        collision.climb(ps.origin)
+    };
     crate::swim::hold_sprint(ps, water, pml.msec);
     let mut sprint = context.sprint;
     if ps.pm_flags & 3 != 0 {
@@ -188,11 +193,12 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
         // correction during that path would push the player back off it.
         complete_ground_trace(ps, &mut pml, bounds, cmd.forwardmove, collision);
         let mut mantle_tracer = CollisionMantleTrace { collision, bounds };
+        let mantle_buttons = crate::climb::mantle_buttons(ps, climb, cmd.buttons);
         let _ = mantle::check(
             ps,
             MantleCheckContext {
                 find: MantleFindLedgeContext::default(),
-                buttons: cmd.buttons,
+                buttons: mantle_buttons,
                 forwardmove: cmd.forwardmove,
                 facing_xy: [pml.forward[0], pml.forward[1]],
                 tracemask: bounds.tracemask,
@@ -259,7 +265,7 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
                 collision,
             );
         } else if let Some(multiplier) = stuck {
-            let stuck = crate::Stuck { multiplier, fluid_sink: crate::swim::fluid_sink(ps, water, lava) };
+            let stuck = crate::Stuck { multiplier, fluid_sink: crate::swim::fluid_sink(ps, water, lava), climb: crate::climb::climbing(ps, climb).then_some(climb) };
             crate::stuck_move(ps, &mut pml, cmd, stuck, context.walk, bounds, collision);
             swam = true;
         } else if water.wet() {
@@ -267,6 +273,9 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
             swam = true;
         } else if lava > 0.0 {
             crate::lava_move(ps, &mut pml, cmd, lava, bounds, collision);
+            swam = true;
+        } else if crate::climb::climbing(ps, climb) {
+            crate::climb_move(ps, &mut pml, cmd, context.walk, climb, bounds, collision);
             swam = true;
         } else if pml.walking == 0 {
             air_move(ps, &pml, cmd, context.air, bounds, collision);
