@@ -95,6 +95,7 @@ pub fn flint_use(
             change: Change::Server(hit.pos, ItemOnBlock::PrimeTnt),
             result: None,
             wear: WEAR,
+            consumed: false,
             sounds: vec![Sound {
                 event: TNT_PRIMED_SOUND,
                 at: Some(fuse_at),
@@ -117,6 +118,7 @@ pub fn flint_use(
         change,
         result: None,
         wear: WEAR,
+        consumed: false,
         sounds: vec![Sound {
             event: USE_SOUND,
             at: Some(centre(at)),

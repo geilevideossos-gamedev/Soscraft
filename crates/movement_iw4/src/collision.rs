@@ -31,4 +31,8 @@ pub trait CollisionBackend {
     fn lava(&self, _origin: [f32; 3], _mins: [f32; 3], _maxs: [f32; 3]) -> f32 {
         0.0
     }
+
+    fn stuck(&self, _origin: [f32; 3], _mins: [f32; 3], _maxs: [f32; 3]) -> Option<[f32; 3]> {
+        None
+    }
 }

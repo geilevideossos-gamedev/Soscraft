@@ -237,8 +237,7 @@ pub fn place(
 ) -> Option<Pos> {
     let opening = Opening::of(id)?;
     let hit = player.target(world, 5.0)?;
-    let (dx, dy, dz) = hit.face.offset();
-    let pos = (hit.pos.0 + dx, hit.pos.1 + dy, hit.pos.2 + dz);
+    let pos = minecraftoss_player::placement_pos(world, &hit);
     match opening {
         Opening::Door => {
             let (lower, upper) = door(world, pos, id, player.yaw, hit.point, sturdy)?;
@@ -274,6 +273,10 @@ impl<W: World> World for Outlined<'_, W> {
 
     fn collision_boxes(&self, pos: Pos) -> Vec<[f64; 6]> {
         self.0.collision_boxes(pos)
+    }
+
+    fn replaceable(&self, block: &Block) -> bool {
+        self.0.replaceable(block)
     }
 }
 
@@ -392,7 +395,25 @@ pub fn toggle_sound(block: &Block) -> Option<Sound> {
             pitch_spread: 0.0,
         });
     }
-    None
+    let ripe = path == "sweet_berry_bush"
+        && block
+            .property("age")
+            .and_then(|age| age.parse::<u8>().ok())
+            .is_some_and(|age| age > 1);
+    let laden = matches!(path, "cave_vines" | "cave_vines_plant") && flag("berries");
+    let picked = if ripe {
+        "minecraft:block.sweet_berry_bush.pick_berries"
+    } else if laden {
+        "minecraft:block.cave_vines.pick_berries"
+    } else {
+        return None;
+    };
+    Some(Sound {
+        event: picked.to_owned(),
+        volume: 1.0,
+        pitch: 0.8,
+        pitch_spread: 0.4,
+    })
 }
 
 fn head_instrument(instrument: &str) -> bool {
@@ -717,6 +738,24 @@ mod tests {
             toggle_sound(&Block::new("minecraft:oak_button").with("powered", "true")).is_none()
         );
         assert!(toggle_sound(&Block::new("minecraft:stone")).is_none());
+    }
+
+    #[test]
+    fn ripe_bushes_and_laden_cave_vines_sound_their_picking() {
+        let bush = |age: &str| Block::new("minecraft:sweet_berry_bush").with("age", age);
+        for age in ["2", "3"] {
+            let picked = toggle_sound(&bush(age)).expect("a ripe bush");
+            assert_eq!(
+                (picked.event.as_str(), picked.volume, picked.pitch, picked.pitch_spread),
+                ("minecraft:block.sweet_berry_bush.pick_berries", 1.0, 0.8, 0.4)
+            );
+        }
+        assert!(toggle_sound(&bush("0")).is_none() && toggle_sound(&bush("1")).is_none());
+        for vine in ["minecraft:cave_vines", "minecraft:cave_vines_plant"] {
+            let picked = toggle_sound(&Block::new(vine).with("berries", "true")).expect("berries");
+            assert_eq!(picked.event, "minecraft:block.cave_vines.pick_berries");
+            assert!(toggle_sound(&Block::new(vine).with("berries", "false")).is_none());
+        }
     }
 
     #[test]

@@ -349,6 +349,10 @@ pub fn add_shapes(more: Vec<Vec<[f32; 6]>>) -> Option<u16> {
 pub const WATER: u16 = 0x10;
 pub const LAVA: u16 = 0x20;
 pub const FLUID_AMOUNT: u16 = 0x0f;
+pub const STUCK_BERRY_BUSH: u16 = 0x200;
+pub const STUCK_COBWEB: u16 = 0x400;
+const BERRY_BUSH_SLOWDOWN: [f32; 3] = [0.8, 0.8, 0.75];
+const COBWEB_SLOWDOWN: [f32; 3] = [0.25, 0.25, 0.05];
 
 pub fn add_fluid_shape(boxes: Vec<[f32; 6]>, fluid: u16) -> Option<u16> {
     let mut world = WORLD.write().ok()?;
@@ -894,6 +898,27 @@ impl VoxelWorld {
             head,
         }
     }
+
+    fn stuck_in(&self, at: [f64; 3], lo: [f64; 3], hi: [f64; 3]) -> Option<[f32; 3]> {
+        let shrink = f64::from(1.0e-5_f32);
+        let min: [f64; 3] = std::array::from_fn(|k| at[k] + lo[k] + shrink);
+        let max: [f64; 3] = std::array::from_fn(|k| at[k] + hi[k] - shrink);
+        let mut touched = 0;
+        for x in min[0].floor() as i32..max[0].ceil() as i32 {
+            for y in min[1].floor() as i32..max[1].ceil() as i32 {
+                for z in min[2].floor() as i32..max[2].ceil() as i32 {
+                    touched |= self.fluid_at(x, y, z);
+                }
+            }
+        }
+        if touched & STUCK_COBWEB != 0 {
+            Some(COBWEB_SLOWDOWN)
+        } else if touched & STUCK_BERRY_BUSH != 0 {
+            Some(BERRY_BUSH_SLOWDOWN)
+        } else {
+            None
+        }
+    }
 }
 
 pub fn water(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], view_height: f32) -> movement_iw4::WaterSample {
@@ -928,6 +953,13 @@ pub fn eye_in_lava(origin: [f32; 3], view_height: f32) -> bool {
     let mut eye = to_block(world.origin, origin);
     eye[1] += f64::from(view_height / BLOCK);
     world.fluid_covers(eye, LAVA)
+}
+
+pub fn stuck(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> Option<[f32; 3]> {
+    let guard = WORLD.read().ok()?;
+    let world = guard.as_ref()?;
+    let (lo, hi) = block_bounds(mins, maxs);
+    world.stuck_in(to_block(world.origin, origin), lo, hi)
 }
 
 #[cfg(test)]
@@ -1023,6 +1055,24 @@ mod tests {
         assert!(w.fluid_covers([4.5, 2.85, 4.5], LAVA) && !w.fluid_covers([4.5, 2.95, 4.5], LAVA));
         assert!(!w.fluid_covers([4.5, 1.5, 4.5], WATER) && !w.fluid_covers([8.5, 1.5, 8.5], LAVA));
         assert_eq!(pool(2).fluid_depth([8.5, 1.0, 8.5], lo, hi, LAVA), 0.0);
+    }
+
+    #[test]
+    fn berry_bushes_and_cobwebs_slow_a_body_that_overlaps_them() {
+        const BUSH: u16 = 5;
+        const WEB: u16 = 6;
+        let mut w = world(&[([4, 0, 4], 1), ([4, 1, 4], BUSH), ([8, 1, 8], WEB), ([8, 2, 9], BUSH)]);
+        w.shapes.extend([Vec::new(), Vec::new()]);
+        w.fluids.extend([STUCK_BERRY_BUSH, STUCK_COBWEB]);
+        let half = f64::from(HULL_HALF_WIDTH / BLOCK);
+        let (lo, hi) = ([-half, 0.0, -half], [half, 1.8, half]);
+        assert_eq!(w.stuck_in([4.5, 1.0, 4.5], lo, hi), Some(BERRY_BUSH_SLOWDOWN));
+        assert_eq!(w.stuck_in([4.5, 2.0, 4.5], lo, hi), None, "standing over a bush is not in it");
+        assert_eq!(w.stuck_in([5.3, 1.0, 4.5], lo, hi), None, "touching a bush is not being in it");
+        assert_eq!(w.stuck_in([5.29, 1.0, 4.5], lo, hi), Some(BERRY_BUSH_SLOWDOWN));
+        assert_eq!(w.stuck_in([4.5, -0.7, 4.5], lo, hi), Some(BERRY_BUSH_SLOWDOWN), "the head counts too");
+        assert_eq!(w.stuck_in([8.5, 1.5, 8.9], lo, hi), Some(COBWEB_SLOWDOWN), "a web holds tighter than a bush");
+        assert_eq!(w.stuck_in([12.5, 1.0, 12.5], lo, hi), None);
     }
 
     #[test]

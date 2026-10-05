@@ -1,13 +1,12 @@
 use crate::pack::ResourceId;
 use crate::server::ItemOnBlock;
 use crate::terrain::BlockStates;
-use glam::DVec3;
 use minecraftoss_core::block::flags;
 use minecraftoss_core::pos::Direction;
 use minecraftoss_core::{BlockStateId, SupportType};
 use minecraftoss_generator::feature::update::fire_can_burn;
 use minecraftoss_player::inventory::ItemStack;
-use minecraftoss_player::{Block, Face, Hit, Player, Pos, World};
+use minecraftoss_player::{Block, Hit, Player, Pos, World};
 
 pub const BUCKET: &str = "minecraft:bucket";
 pub const WATER_BUCKET: &str = "minecraft:water_bucket";
@@ -152,6 +151,7 @@ pub struct ItemUse {
     pub change: Change,
     pub result: Option<ItemStack>,
     pub wear: u32,
+    pub consumed: bool,
     pub sounds: Vec<Sound>,
 }
 
@@ -177,126 +177,12 @@ pub fn offset(pos: Pos, by: Pos) -> Pos {
     (pos.0 + by.0, pos.1 + by.1, pos.2 + by.2)
 }
 
-fn column(width: f64, height: f64) -> (DVec3, DVec3) {
-    let side = (16.0 - width) / 32.0;
-    (
-        DVec3::new(side, 0.0, side),
-        DVec3::new(1.0 - side, height / 16.0, 1.0 - side),
-    )
-}
-
-fn pass_through_outline(block: &Block) -> Option<(DVec3, DVec3)> {
-    match block.id.as_str() {
-        "minecraft:short_grass" => Some(column(12.0, 13.0)),
-        "minecraft:torch" => Some(column(4.0, 10.0)),
-        "minecraft:fire" | "minecraft:soul_fire" => Some(column(16.0, 1.0)),
-        "minecraft:tall_grass" | "minecraft:cobweb" => Some(column(16.0, 16.0)),
-        "minecraft:sweet_berry_bush" => Some(match block.property("age") {
-            Some("0") => column(10.0, 8.0),
-            Some("3") => column(16.0, 16.0),
-            _ => column(14.0, 16.0),
-        }),
-        _ => None,
-    }
-}
-
-fn facing_back(look: DVec3) -> Face {
-    let size = look.abs();
-    if size.y >= size.x && size.y >= size.z {
-        if look.y > 0.0 { Face::Down } else { Face::Up }
-    } else if size.z >= size.x {
-        if look.z > 0.0 {
-            Face::North
-        } else {
-            Face::South
-        }
-    } else if look.x > 0.0 {
-        Face::West
-    } else {
-        Face::East
-    }
-}
-
-fn ray_box(eye: DVec3, look: DVec3, min: DVec3, max: DVec3) -> Option<(f64, Face)> {
-    let mut near = f64::NEG_INFINITY;
-    let mut far = f64::INFINITY;
-    let mut face = Face::North;
-    for (from, step, low, high, below, above) in [
-        (eye.x, look.x, min.x, max.x, Face::West, Face::East),
-        (eye.y, look.y, min.y, max.y, Face::Down, Face::Up),
-        (eye.z, look.z, min.z, max.z, Face::North, Face::South),
-    ] {
-        if step == 0.0 {
-            if from < low || from > high {
-                return None;
-            }
-            continue;
-        }
-        let (enter, exit, entered) = if step > 0.0 {
-            ((low - from) / step, (high - from) / step, below)
-        } else {
-            ((high - from) / step, (low - from) / step, above)
-        };
-        if enter > near {
-            near = enter;
-            face = entered;
-        }
-        far = far.min(exit);
-        if near > far {
-            return None;
-        }
-    }
-    if far < 0.0 {
-        None
-    } else if near < 0.0 {
-        Some((0.0, facing_back(look)))
-    } else {
-        Some((near, face))
-    }
-}
-
-fn nearer(best: &Option<Hit>, distance: f64) -> bool {
-    distance <= REACH && best.as_ref().is_none_or(|hit| distance < hit.distance)
-}
-
 pub fn aim(player: &Player, world: &impl World, source_fluids: bool) -> Option<Hit> {
-    let mut best = if source_fluids {
+    if source_fluids {
         player.target_source_fluid(world, REACH)
     } else {
         player.target(world, REACH)
-    };
-    let eye = player.eye();
-    let look = player.look();
-    let low = (eye - DVec3::splat(REACH)).floor();
-    let high = (eye + DVec3::splat(REACH)).ceil();
-    for x in low.x as i32..high.x as i32 {
-        for y in low.y as i32..high.y as i32 {
-            for z in low.z as i32..high.z as i32 {
-                let corner = DVec3::new(f64::from(x), f64::from(y), f64::from(z));
-                let crossed = ray_box(eye, look, corner, corner + DVec3::ONE);
-                if !crossed.is_some_and(|(distance, _)| nearer(&best, distance)) {
-                    continue;
-                }
-                let Some((min, max)) = world
-                    .block((x, y, z))
-                    .and_then(|b| pass_through_outline(&b))
-                else {
-                    continue;
-                };
-                if let Some((distance, face)) = ray_box(eye, look, corner + min, corner + max) {
-                    if nearer(&best, distance) {
-                        best = Some(Hit {
-                            pos: (x, y, z),
-                            face,
-                            distance,
-                            point: eye + look * distance,
-                        });
-                    }
-                }
-            }
-        }
     }
-    best
 }
 
 pub fn bucket_stack(id: &str) -> ItemStack {
@@ -428,6 +314,7 @@ pub fn bucket_use(
                     change: Change::Set(pos, block),
                     result: Some(result),
                     wear: 0,
+                    consumed: false,
                     sounds: vec![Sound::at_block(sound, pos)],
                 });
             }
@@ -449,6 +336,7 @@ fn fill(player: &Player, world: &impl World) -> Option<ItemUse> {
         change: Change::Server(hit.pos, ItemOnBlock::FillBucket),
         result: Some(bucket_stack(bucket)),
         wear: 0,
+        consumed: false,
         sounds: vec![Sound::on_player(sound)],
     })
 }
@@ -483,6 +371,7 @@ fn pour(
         ),
         result: Some(bucket_stack(BUCKET)),
         wear: 0,
+        consumed: false,
         sounds,
     })
 }
@@ -544,6 +433,7 @@ fn place_powder_snow(player: &Player, world: &impl World) -> Option<ItemUse> {
         change: Change::Set(pos, Block::new(POWDER_SNOW)),
         result: Some(bucket_stack(BUCKET)),
         wear: 0,
+        consumed: false,
         sounds: vec![Sound {
             event: EMPTY_POWDER_SNOW_SOUND,
             at: Some(centre(pos)),
@@ -557,6 +447,7 @@ fn place_powder_snow(player: &Player, world: &impl World) -> Option<ItemUse> {
 mod tests {
     use super::*;
     use glam::DVec3;
+    use minecraftoss_player::Face;
     use std::collections::HashMap;
 
     #[derive(Default)]

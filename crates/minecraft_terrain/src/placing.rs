@@ -59,6 +59,10 @@ impl<W: World> World for Staged<'_, W> {
     fn max_y(&self) -> i32 {
         self.world.max_y()
     }
+
+    fn replaceable(&self, block: &Block) -> bool {
+        self.world.replaceable(block)
+    }
 }
 
 pub fn obstructed(pos: Pos, boxes: &[[f64; 6]], bodies: &[[f64; 6]]) -> bool {

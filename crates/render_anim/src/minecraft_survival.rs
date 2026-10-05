@@ -49,6 +49,7 @@ pub(crate) struct Survival {
     pub(crate) status: SurvivalStatus,
     pub(crate) eye_in_water: bool,
     eye_in_lava: bool,
+    stuck: bool,
     fire_ticks: i32,
     bubbles: i32,
     tick: u64,
@@ -230,6 +231,10 @@ impl Survival {
         self.last_feet
     }
 
+    pub(crate) fn stuck(&self) -> bool {
+        self.stuck
+    }
+
     pub(crate) fn hazards(
         &mut self,
         world: &impl World,
@@ -263,6 +268,7 @@ impl Survival {
         }
         let effects = block_effects(world, &body, DVec3::from_array(from), &[]);
         let before = self.fire_ticks;
+        self.stuck = false;
         for effect in effects {
             if self.status.health <= 0.0 {
                 break;
@@ -297,7 +303,8 @@ impl Survival {
                 }
                 BlockEffect::LavaIgnite => self.fire_ticks = self.fire_ticks.max(LAVA_IGNITE_TICKS),
                 BlockEffect::Extinguish => self.fire_ticks = self.fire_ticks.min(0),
-                BlockEffect::Stuck(_) | BlockEffect::ClearFreeze => {}
+                BlockEffect::Stuck(_) => self.stuck = true,
+                BlockEffect::ClearFreeze => {}
             }
         }
         if motion.in_rain {
@@ -1192,6 +1199,43 @@ mod tests {
 
     fn count(heard: &[&str], event: &str) -> usize {
         heard.iter().filter(|e| **e == event).count()
+    }
+
+    fn through_bush(block: minecraftoss_player::Block, stride: f64) -> (f32, usize, usize) {
+        let world = ground(&[((0, 1, 0), block)]);
+        let mut survival = unfed();
+        let mut heard = Vec::new();
+        let mut stuck = 0;
+        for tick in 0..40 {
+            let x = if tick % 2 == 0 { 0.5 } else { 0.5 + stride };
+            let motion = standing_in([x, 1.0, 0.5]);
+            let from = survival.last_feet().unwrap_or(motion.feet);
+            survival.tick(&motion);
+            let sounds = survival.hazards(&world, &motion, from, Armor::default(), || 0.25);
+            heard.extend(sounds.into_iter().map(|sound| sound.event));
+            stuck += usize::from(survival.stuck());
+        }
+        let pricks = count(&heard, "minecraft:entity.player.hurt_sweet_berry_bush");
+        (survival.status.health, pricks, stuck)
+    }
+
+    #[test]
+    fn a_grown_berry_bush_holds_and_pricks_a_moving_player_every_ten_ticks() {
+        let bush = |age: &str| block("minecraft:sweet_berry_bush").with("age", age);
+        let stuck_step = 0.098 * 0.8;
+        let (health, pricks, stuck) = through_bush(bush("2"), stuck_step);
+        assert_eq!((pricks, stuck), (4, 40));
+        assert!((health - 16.0).abs() < 1e-5, "{health}");
+        let (health, pricks, stuck) = through_bush(bush("3"), 0.0031);
+        assert_eq!((pricks, stuck, health), (4, 40, 16.0));
+        let (health, pricks, stuck) = through_bush(bush("3"), 0.002);
+        assert_eq!((pricks, stuck, health), (0, 40, 20.0), "too slow to prick");
+        let (health, pricks, stuck) = through_bush(bush("0"), stuck_step);
+        assert_eq!((pricks, stuck, health), (0, 40, 20.0), "a sapling bush only holds");
+        let (health, pricks, stuck) = through_bush(block("minecraft:cobweb"), stuck_step);
+        assert_eq!((pricks, stuck, health), (0, 40, 20.0));
+        let (_, _, stuck) = through_bush(block("minecraft:stone"), 0.0);
+        assert_eq!(stuck, 0);
     }
 
     #[test]

@@ -1877,6 +1877,14 @@ impl CollisionBackend for ClipBackend<'_> {
             0.0
         }
     }
+
+    fn stuck(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> Option<[f32; 3]> {
+        if crate::voxel::active_for(self.brushes) {
+            crate::voxel::stuck(origin, mins, maxs)
+        } else {
+            None
+        }
+    }
 }
 
 impl movement_iw4::MantleCapsuleTrace for ClipBackend<'_> {

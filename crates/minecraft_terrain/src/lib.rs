@@ -54,6 +54,7 @@ pub mod thrown;
 pub mod bottle;
 pub mod bucket;
 pub mod flint;
+pub mod berries;
 pub mod containers;
 pub mod stations;
 pub mod experience;

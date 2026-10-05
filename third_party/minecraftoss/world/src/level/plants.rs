@@ -7,6 +7,7 @@
 use super::update;
 use super::Level;
 use minecraftoss_core::block::FluidKind;
+use minecraftoss_core::loot::LootParams;
 use minecraftoss_core::pos::Direction;
 use minecraftoss_core::random::RandomSource;
 use minecraftoss_core::{BlockPos, BlockStateId};
@@ -330,5 +331,40 @@ impl Level<'_> {
             let target = self.state_named(&format!("{name}[facing={},waterlogged={waterlogged}]", direction.name()));
             self.set_block_and_update(grow, target);
         }
+    }
+
+    pub(super) fn harvests(&self, state: BlockStateId) -> bool {
+        if self.is_a(state, "SweetBerryBushBlock") {
+            return self.int_property(state, "age") > 1;
+        }
+        matches!(self.name(state), "minecraft:cave_vines" | "minecraft:cave_vines_plant") && self.registries().blocks.property(state, "berries") == Some("true")
+    }
+
+    pub(super) fn harvest(&mut self, pos: BlockPos) -> bool {
+        let state = self.block(pos);
+        if !self.harvests(state) {
+            return false;
+        }
+        let bush = self.is_a(state, "SweetBerryBushBlock");
+        let table = if bush { "minecraft:harvest/sweet_berry_bush" } else { "minecraft:harvest/cave_vine" };
+        let params = LootParams {
+            origin: Some([f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5]),
+            block_state: Some(state),
+            this_entity: true,
+            ..LootParams::default()
+        };
+        let registries = self.lib.registries.clone();
+        match registries.loot.roll(&registries, table, &params, &mut self.random_sequences, &mut self.random) {
+            Ok(stacks) => {
+                for stack in stacks {
+                    self.pop_resource(pos, stack);
+                }
+            }
+            Err(e) => self.unsupported.push(format!("{table}: {e}")),
+        }
+        self.random.next_f32();
+        let picked = if bush { self.with(state, "age", "1") } else { self.with(state, "berries", "false") };
+        self.set_block(pos, picked, update::CLIENTS, update::LIMIT);
+        true
     }
 }

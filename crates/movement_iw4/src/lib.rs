@@ -30,6 +30,7 @@ mod slide;
 mod snap;
 mod sprint;
 mod stance;
+mod stuck;
 mod swim;
 mod viewangles;
 mod walk;
@@ -98,6 +99,7 @@ pub use stance::{
     stance_surface_type, sync_stance_tail, update_stance_flags, update_stance_target,
     update_view_height, view_height, view_height_lerp_duration,
 };
+pub use stuck::{Stuck, stuck_move};
 pub use swim::{WATER_BLOCK, WaterSample, lava_move, settle, swim_push, swimming, vertical_pull, water_move};
 pub use viewangles::{ANGLE2SHORT, SHORT2ANGLE, ViewAngleClamp, update_view_angles};
 pub use walk::{WalkMoveContext, walk_move};

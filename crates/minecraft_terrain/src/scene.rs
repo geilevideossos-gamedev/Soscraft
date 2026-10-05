@@ -452,6 +452,18 @@ impl PlayerWorld for HandcraftedScene {
         }
         PlayerWorld::block(self, pos).map_or_else(Vec::new, |block| minecraftoss_player::authored_collision_boxes(&block))
     }
+    fn replaceable(&self, block: &PlayerBlock) -> bool {
+        let Some(states) = &self.states else {
+            return minecraftoss_player::authored_replaceable(block);
+        };
+        ResourceId::parse(&block.id)
+            .ok()
+            .and_then(|id| states.state_of(&Block { id, properties: block.properties.clone() }))
+            .map_or_else(
+                || minecraftoss_player::authored_replaceable(block),
+                |state| states.registries().blocks.is(state, minecraftoss_core::block::flags::REPLACEABLE),
+            )
+    }
 }
 #[cfg(test)]
 mod collision_tests {
@@ -476,6 +488,22 @@ mod collision_tests {
         assert!(fence.iter().any(|b| b[4] == 1.5), "{fence:?}");
         assert_eq!(PlayerWorld::collision_boxes(&scene, (2, 100, 0)), vec![[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]]);
         assert_eq!(PlayerWorld::collision_boxes(&scene, (3, 100, 0)), vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]);
+    }
+
+    #[test]
+    fn streamed_blocks_are_replaced_by_the_catalog_flag() {
+        use minecraftoss_core::registries::DataPaths;
+        use minecraftoss_core::Registries;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let states = Arc::new(crate::terrain::BlockStates::new(Arc::new(registries), 0, -64, 384).unwrap());
+        let scene = HandcraftedScene::streamed(states);
+        for taken in ["minecraft:short_grass", "minecraft:fern", "minecraft:dead_bush", "minecraft:vine", "minecraft:fire", "minecraft:water"] {
+            assert!(PlayerWorld::replaceable(&scene, &PlayerBlock::new(taken)), "{taken}");
+        }
+        for kept in ["minecraft:torch", "minecraft:cobweb", "minecraft:sweet_berry_bush", "minecraft:cave_vines", "minecraft:stone"] {
+            assert!(!PlayerWorld::replaceable(&scene, &PlayerBlock::new(kept)), "{kept}");
+        }
     }
 }
 

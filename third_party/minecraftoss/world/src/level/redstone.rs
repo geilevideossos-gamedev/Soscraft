@@ -860,7 +860,7 @@ impl Level<'_> {
         match self.redstone_kind(state) {
             Some(Kind::Door) | Some(Kind::TrapDoor) => !iron,
             Some(Kind::FenceGate | Kind::NoteBlock | Kind::Lever | Kind::Button(_) | Kind::Repeater | Kind::DaylightDetector | Kind::Comparator) => true,
-            _ => false,
+            _ => self.harvests(state),
         }
     }
 
@@ -922,7 +922,7 @@ impl Level<'_> {
                     self.comparator_refresh(pos, next);
                 }
             }
-            _ => return false,
+            _ => return self.harvest(pos),
         }
         true
     }

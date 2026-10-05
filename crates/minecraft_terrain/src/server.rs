@@ -26,6 +26,7 @@ pub enum ItemOnBlock {
     FillBucket,
     Ignite,
     PrimeTnt,
+    BoneMeal { face: &'static str },
 }
 
 pub struct ServerSim {
@@ -812,6 +813,7 @@ impl ServerSim {
             ItemOnBlock::FillBucket => self.level.bucket_pickup(at).is_some(),
             ItemOnBlock::Ignite => self.level.place_fire(at),
             ItemOnBlock::PrimeTnt => self.level.ignite_tnt(at),
+            ItemOnBlock::BoneMeal { face } => self.bone_meal(pos, face),
         }
     }
 
@@ -3031,5 +3033,58 @@ mod tests {
         assert_eq!(answers, vec![true, false]);
         let drained = outputs.iter().flat_map(|out| out.changes.iter()).any(|(pos, block)| *pos == (8, 200, 8) && block.is_none());
         assert!(drained, "the answer carries the emptied block");
+    }
+
+    fn picked(server: &ServerSim, item: &str) -> i32 {
+        server.items().iter().filter(|i| i.item == item).map(|i| i.count).sum()
+    }
+
+    #[test]
+    fn ripe_bushes_and_laden_cave_vines_are_picked_and_bone_meal_ripens_a_bush() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let bush = |age: &str| Block::new("minecraft:sweet_berry_bush").with("age", age);
+        for (age, usable) in [("0", false), ("1", false), ("2", true), ("3", true)] {
+            let state = server.states.state_of(&bush(age)).unwrap();
+            assert_eq!(server.level.handles_use(state), usable, "age {age}");
+        }
+        for (berries, usable) in [("true", true), ("false", false)] {
+            for vine in ["minecraft:cave_vines", "minecraft:cave_vines_plant"] {
+                let state = server.states.state_of(&Block::new(vine).with("berries", berries)).unwrap();
+                assert_eq!(server.level.handles_use(state), usable, "{vine} {berries}");
+            }
+        }
+        place(&mut server, &mut scene, (8, 199, 8), Block::new("minecraft:dirt"));
+        place(&mut server, &mut scene, (8, 200, 8), bush("1"));
+        server.take_changes();
+        let age = |server: &mut ServerSim| {
+            let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+            property(&block_at(&changes, (8, 200, 8)), "age")
+        };
+        assert!(!server.use_block((8, 200, 8), "north"), "nothing to pick yet");
+        assert!(server.item_on_block((8, 200, 8), ItemOnBlock::BoneMeal { face: "up" }));
+        assert_eq!(age(&mut server).as_deref(), Some("2"));
+        assert!(server.use_block((8, 200, 8), "north"));
+        assert_eq!(age(&mut server).as_deref(), Some("1"), "picking leaves the bush at age 1");
+        let young = picked(&server, "minecraft:sweet_berries");
+        assert!((1..=2).contains(&young), "{young}");
+        for _ in 0..2 {
+            assert!(server.item_on_block((8, 200, 8), ItemOnBlock::BoneMeal { face: "up" }));
+        }
+        assert_eq!(age(&mut server).as_deref(), Some("3"));
+        assert!(!server.item_on_block((8, 200, 8), ItemOnBlock::BoneMeal { face: "up" }), "a ripe bush takes no bone meal");
+        assert!(server.use_block((8, 200, 8), "north"));
+        let ripe = picked(&server, "minecraft:sweet_berries") - young;
+        assert!((2..=3).contains(&ripe), "{ripe}");
+        place(&mut server, &mut scene, (8, 206, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (8, 205, 8), Block::new("minecraft:cave_vines").with("age", "0").with("berries", "true"));
+        server.take_changes();
+        assert!(server.use_block((8, 205, 8), "north"));
+        assert_eq!(picked(&server, "minecraft:glow_berries"), 1);
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(property(&block_at(&changes, (8, 205, 8)), "berries").as_deref(), Some("false"));
+        assert!(!server.use_block((8, 205, 8), "north"), "the berries are gone");
+        assert!(server.item_on_block((8, 205, 8), ItemOnBlock::BoneMeal { face: "down" }));
+        let regrown: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(property(&block_at(&regrown, (8, 205, 8)), "berries").as_deref(), Some("true"));
     }
 }

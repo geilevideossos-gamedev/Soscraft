@@ -188,6 +188,9 @@ pub trait World {
     fn max_y(&self) -> i32 {
         319
     }
+    fn replaceable(&self, block: &Block) -> bool {
+        authored_replaceable(block)
+    }
     /// `BlockState.is(tag)` for the block at `pos` (a `minecraft:` block
     /// tag). Authored worlds know the tags their mobs ask for
     /// ([`authored_block_in_tag`]); worlds backed by the registries answer
@@ -623,11 +626,66 @@ pub fn update_stair_shapes(world: &mut impl World, changed: &[Pos]) -> Vec<Pos> 
     }
     positions
 }
+fn outline_column(width: f64, height: f64) -> Box3 {
+    let side = (16.0 - width) / 32.0;
+    Box3::new(
+        DVec3::new(side, 0.0, side),
+        DVec3::new(1.0 - side, height / 16.0, 1.0 - side),
+    )
+}
+fn fire_outline(block: &Block) -> Vec<Box3> {
+    let thin = 1.0 / 16.0;
+    let sides: Vec<Box3> = [
+        ("north", DVec3::ZERO, DVec3::new(1.0, 1.0, thin)),
+        ("south", DVec3::new(0.0, 0.0, 1.0 - thin), DVec3::ONE),
+        ("west", DVec3::ZERO, DVec3::new(thin, 1.0, 1.0)),
+        ("east", DVec3::new(1.0 - thin, 0.0, 0.0), DVec3::ONE),
+        ("up", DVec3::new(0.0, 1.0 - thin, 0.0), DVec3::ONE),
+    ]
+    .into_iter()
+    .filter(|(side, _, _)| block.property(side) == Some("true"))
+    .map(|(_, min, max)| Box3::new(min, max))
+    .collect();
+    if sides.is_empty() {
+        vec![outline_column(16.0, 1.0)]
+    } else {
+        sides
+    }
+}
+fn outline_shapes(block: &Block) -> Vec<Box3> {
+    let id = block.id.rsplit(':').next().unwrap_or(&block.id);
+    let column = match id {
+        "short_grass" => outline_column(12.0, 13.0),
+        "torch" => outline_column(4.0, 10.0),
+        "fire" | "soul_fire" => return fire_outline(block),
+        "tall_grass" | "cobweb" => outline_column(16.0, 16.0),
+        "cave_vines" | "cave_vines_plant" => outline_column(14.0, 16.0),
+        "sweet_berry_bush" => match block.property("age").unwrap_or("0") {
+            "0" => outline_column(10.0, 8.0),
+            "3" => outline_column(16.0, 16.0),
+            _ => outline_column(14.0, 16.0),
+        },
+        _ => return local_shapes(block),
+    };
+    vec![column]
+}
+pub fn authored_replaceable(block: &Block) -> bool {
+    let id = block.id.rsplit(':').next().unwrap_or(&block.id);
+    local_shapes(block).is_empty() && !matches!(id, "torch" | "cobweb" | "sweet_berry_bush" | "cave_vines" | "cave_vines_plant")
+}
+pub fn placement_pos(world: &impl World, hit: &Hit) -> Pos {
+    if world.block(hit.pos).is_some_and(|clicked| world.replaceable(&clicked)) {
+        hit.pos
+    } else {
+        let (dx, dy, dz) = hit.face.offset();
+        (hit.pos.0 + dx, hit.pos.1 + dy, hit.pos.2 + dz)
+    }
+}
 fn local_shapes(block: &Block) -> Vec<Box3> {
     let id = block.id.rsplit(':').next().unwrap_or(&block.id);
     if matches!(
         id,
-        "air" | "cave_air" | "void_air" | "water" | "lava" | "short_grass" | "tall_grass" | "torch" | "fire" | "soul_fire" | "sweet_berry_bush" | "cobweb"
+        "air" | "cave_air" | "void_air" | "water" | "lava" | "short_grass" | "tall_grass" | "torch" | "fire" | "soul_fire" | "sweet_berry_bush" | "cobweb" | "cave_vines" | "cave_vines_plant"
     ) {
         return vec![];
     }
@@ -1719,7 +1777,7 @@ impl Player {
                         continue;
                     }
                     if let Some(block) = world.block(pos) {
-                        let mut shapes = local_shapes(&block);
+                        let mut shapes = outline_shapes(&block);
                         if fluid_ray != FluidRay::None {
                             let waterlogged = block.property("waterlogged") == Some("true");
                             let liquid =
@@ -1828,11 +1886,11 @@ impl Player {
     }
     pub fn place_target_with(&self, world: &mut impl World, mut block: Block) -> Option<Pos> {
         let hit = self.target(world, 5.0)?;
-        let pos = if block.id.ends_with("_slab") {
+        let pos = placement_pos(world, &hit);
+        let pos = if block.id.ends_with("_slab") && pos != hit.pos {
             slab_placement_target(world, hit.pos, hit.face, hit.point.y, &block.id)
         } else {
-            let (dx, dy, dz) = hit.face.offset();
-            (hit.pos.0 + dx, hit.pos.1 + dy, hit.pos.2 + dz)
+            pos
         };
         let replaced = world.block(pos);
         let merge_slab = block.id.ends_with("_slab")
@@ -1841,7 +1899,7 @@ impl Player {
             });
         if replaced
             .as_ref()
-            .is_some_and(|existing| !local_shapes(existing).is_empty())
+            .is_some_and(|existing| !world.replaceable(existing))
             && !merge_slab
         {
             return None;
@@ -2049,8 +2107,31 @@ fn ray_box(origin: DVec3, dir: DVec3, b: Box3) -> Option<(f64, Face)> {
     }
     if far < 0.0 {
         None
+    } else if near < 0.0 {
+        Some((0.0, facing_back(dir)))
     } else {
-        Some((near.max(0.0), face))
+        Some((near, face))
+    }
+}
+
+fn facing_back(look: DVec3) -> Face {
+    let size = look.abs();
+    if size.y >= size.x && size.y >= size.z {
+        if look.y > 0.0 {
+            Face::Down
+        } else {
+            Face::Up
+        }
+    } else if size.z >= size.x {
+        if look.z > 0.0 {
+            Face::North
+        } else {
+            Face::South
+        }
+    } else if look.x > 0.0 {
+        Face::West
+    } else {
+        Face::East
     }
 }
 
@@ -2930,6 +3011,64 @@ mod tests {
         assert_eq!(p.target(&w, 5.0).unwrap().pos, (0, 2, -2));
         assert_eq!(p.break_target(&mut w), Some((0, 2, -2)));
         assert!(w.block((0, 2, -2)).is_none());
+    }
+    #[test]
+    fn the_hand_ray_stops_at_vanilla_outlines_of_plants_and_webs() {
+        let ahead = |block: Block| {
+            let mut world = floor();
+            world.set_block((0, 2, -3), Some(Block::new("minecraft:stone")));
+            world.set_block((0, 2, -2), Some(block));
+            let player = Player::new(DVec3::new(0.5, 1.0, 0.5));
+            player.target(&world, 5.0).map(|hit| (hit.pos, hit.face))
+        };
+        let bush = |age: &str| Block::new("minecraft:sweet_berry_bush").with("age", age);
+        for age in ["1", "2", "3"] {
+            assert_eq!(ahead(bush(age)), Some(((0, 2, -2), Face::South)), "age {age}");
+        }
+        assert_eq!(ahead(bush("0")).map(|(pos, _)| pos), Some((0, 2, -3)), "a sapling bush is half a block tall");
+        assert_eq!(ahead(Block::new("minecraft:cobweb")).map(|(pos, _)| pos), Some((0, 2, -2)));
+        assert_eq!(ahead(Block::new("minecraft:cave_vines_plant")), Some(((0, 2, -2), Face::South)));
+        assert_eq!(ahead(Block::new("minecraft:short_grass")).map(|(pos, _)| pos), Some((0, 2, -2)));
+        assert_eq!(ahead(Block::new("minecraft:fire")).map(|(pos, _)| pos), Some((0, 2, -3)), "floor fire is one pixel high");
+        let wall_fire = Block::new("minecraft:fire").with("north", "true").with("up", "false");
+        assert_eq!(ahead(wall_fire), Some(((0, 2, -2), Face::South)), "fire on a wall burns along it");
+        let mut world = floor();
+        world.set_block((0, 2, 0), Some(Block::new("minecraft:tall_grass").with("half", "upper")));
+        let inside = Player::new(DVec3::new(0.5, 1.0, 0.5)).target(&world, 5.0).unwrap();
+        assert_eq!((inside.pos, inside.face, inside.distance), ((0, 2, 0), Face::South, 0.0));
+    }
+    #[test]
+    fn placing_replaces_clicked_grass_but_never_a_bush_web_or_torch() {
+        let player = Player::new(DVec3::new(0.5, 1.0, 0.5));
+        let mut grassy = floor();
+        grassy.set_block((0, 2, -2), Some(Block::new("minecraft:short_grass")));
+        assert_eq!(player.place_target_with(&mut grassy, Block::new("minecraft:dirt")), Some((0, 2, -2)));
+        assert_eq!(grassy.block((0, 2, -2)).unwrap().id, "minecraft:dirt");
+        let mut bushy = floor();
+        bushy.set_block((0, 2, -2), Some(Block::new("minecraft:sweet_berry_bush").with("age", "2")));
+        assert_eq!(player.place_target_with(&mut bushy, Block::new("minecraft:dirt")), Some((0, 2, -1)), "a bush is placed against");
+        assert_eq!(bushy.block((0, 2, -2)).unwrap().id, "minecraft:sweet_berry_bush");
+        let mut behind = floor();
+        behind.set_block((0, 2, -3), Some(Block::new("minecraft:stone")));
+        behind.set_block((0, 2, -2), Some(Block::new("minecraft:sweet_berry_bush").with("age", "0")));
+        assert_eq!(player.place_target_with(&mut behind, Block::new("minecraft:dirt")), None, "a bush is not replaceable");
+        let hit = Hit { pos: (0, 2, -3), face: Face::South, distance: 1.0, point: DVec3::new(0.5, 2.5, -2.0) };
+        for kept in ["minecraft:torch", "minecraft:cobweb", "minecraft:sweet_berry_bush", "minecraft:cave_vines", "minecraft:cave_vines_plant", "minecraft:stone"] {
+            assert!(!authored_replaceable(&Block::new(kept)), "{kept}");
+        }
+        for taken in ["minecraft:short_grass", "minecraft:tall_grass", "minecraft:fire", "minecraft:soul_fire", "minecraft:water", "minecraft:air"] {
+            assert!(authored_replaceable(&Block::new(taken)), "{taken}");
+            let mut world = floor();
+            world.set_block(hit.pos, Some(Block::new(taken)));
+            assert_eq!(placement_pos(&world, &hit), hit.pos, "{taken}");
+        }
+        assert_eq!(placement_pos(&behind, &hit), (0, 2, -2));
+        let mut tunnel = floor();
+        tunnel.set_block((0, 3, 0), Some(Block::new("minecraft:stone")));
+        let mut upward = Player::new(DVec3::new(0.5, 1.0, 0.5));
+        upward.pitch = -90.0;
+        assert_eq!(upward.place_target_with(&mut tunnel, Block::new("minecraft:dirt")), None, "a solid block cannot go into the player");
+        assert_eq!(upward.place_target_with(&mut tunnel, Block::new("minecraft:cave_vines")), Some((0, 2, 0)), "cave vines hang into the player's space");
     }
     #[test]
     fn empty_bucket_ray_hits_only_source_liquid() {

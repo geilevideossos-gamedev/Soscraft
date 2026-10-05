@@ -162,6 +162,7 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
     update_view_height(ps, &pml, cmd);
     let mut bounds = context.bounds;
     bounds.maxs[2] = sync_stance_tail(ps, bounds.heights);
+    let stuck = collision.stuck(ps.origin, bounds.mins, bounds.maxs);
 
     update_ads_frac(ps, pml.msec, context.ads_frac);
     crate::breath::update_hold_breath(ps, cmd.buttons, pml.msec, context.can_hold_breath);
@@ -257,6 +258,10 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
                 bounds.tracemask,
                 collision,
             );
+        } else if let Some(multiplier) = stuck {
+            let stuck = crate::Stuck { multiplier, fluid_sink: crate::swim::fluid_sink(ps, water, lava) };
+            crate::stuck_move(ps, &mut pml, cmd, stuck, context.walk, bounds, collision);
+            swam = true;
         } else if water.wet() {
             crate::water_move(ps, &mut pml, cmd, water, bounds, collision);
             swam = true;

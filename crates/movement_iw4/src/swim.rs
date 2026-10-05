@@ -47,6 +47,16 @@ pub fn swimming(ps: &PlayerState, water: WaterSample) -> bool {
     ps.pm_flags & pm_flags::SPRINTING != 0 && (water.eye || water.head)
 }
 
+pub(crate) fn fluid_sink(ps: &PlayerState, water: WaterSample, lava: f32) -> Option<f32> {
+    if water.wet() {
+        Some(if ps.pm_flags & pm_flags::SPRINTING != 0 { 0.0 } else { SINK_GRAVITY })
+    } else if lava > 0.0 {
+        Some(if lava <= SHALLOW * WATER_BLOCK { LAVA_GRAVITY + SINK_GRAVITY } else { LAVA_GRAVITY })
+    } else {
+        None
+    }
+}
+
 pub(crate) fn hold_sprint(ps: &mut PlayerState, water: WaterSample, msec: i32) {
     if water.wet() && ps.pm_flags & pm_flags::SPRINTING != 0 {
         ps.last_sprint_start = ps.last_sprint_start.wrapping_add(msec);
@@ -94,13 +104,23 @@ pub fn settle(value: f32, target: f32, keep: f32, ticks: f32) -> f32 {
 
 #[must_use]
 pub fn swim_push(forward: [f32; 2], right: [f32; 2], forwardmove: i8, rightmove: i8) -> [f32; 2] {
+    input_push(forward, right, forwardmove, rightmove, SWIM_SPEED)
+}
+
+pub(crate) fn input_push(
+    forward: [f32; 2],
+    right: [f32; 2],
+    forwardmove: i8,
+    rightmove: i8,
+    speed: f32,
+) -> [f32; 2] {
     let along = f32::from(forwardmove) / 127.0 * INPUT_SCALE;
     let across = f32::from(rightmove) / 127.0 * INPUT_SCALE;
     let length = libm::sqrtf(along * along + across * across);
     if length < 1.0e-4 {
         return [0.0; 2];
     }
-    let scale = SWIM_SPEED / length.max(1.0);
+    let scale = speed / length.max(1.0);
     let flat = |v: [f32; 2]| {
         let n = libm::sqrtf(v[0] * v[0] + v[1] * v[1]);
         if n > 0.0 {

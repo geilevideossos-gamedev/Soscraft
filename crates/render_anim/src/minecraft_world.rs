@@ -677,6 +677,9 @@ fn update(
                 steps.air_peak = steps.air_peak.map(|peak| feet[1] + (peak - feet[1]) * 0.5);
             }
             let heard = survival.hazards(&world.scene, &motion, from, armor, || entities.as_mut().map_or(0.5, |e| e.random_float()));
+            if survival.stuck() {
+                steps.air_peak = steps.air_peak.map(|_| feet[1]);
+            }
             if let Some(sounds) = sounds.as_mut() {
                 for sound in heard {
                     sounds.play(&world.packs, sound.event, None, sound.volume, sound.pitch);
@@ -844,6 +847,7 @@ fn update(
                 player
                     .target(&minecraft_terrain::doors::Outlined(&world.scene), 5.0)
                     .map(|hit| hit.pos)
+                    .filter(|&pos| !minecraftoss_player::World::block(&world.scene, pos).is_some_and(|block| minecraft_terrain::berries::bone_meal_passes(&block, held.as_ref())))
                     .filter(|&pos| entities.use_block(&world.scene, pos, facing))
             } else {
                 None
@@ -917,9 +921,12 @@ fn update(
                     let outlined = minecraft_terrain::doors::Outlined(&world.scene);
                     minecraft_terrain::bucket::bucket_use(&player, &outlined, &catalog, stack, || entities.random_float())
                         .or_else(|| minecraft_terrain::flint::flint_use(&player, &outlined, &catalog, stack, || entities.random_float()))
+                        .or_else(|| minecraft_terrain::berries::bone_meal_use(&player, &outlined, stack))
                 }
             {
-                hand.swing = Some(0.0);
+                if !outcome.consumed {
+                    hand.swing = Some(0.0);
+                }
                 let change = outcome.change.clone();
                 let sent = crate::minecraft_entities::SentItemUse { slot: entities.selected, held: stack.id.clone(), eye: eye_block, yaw: mc_yaw, pitch: ps.viewangles[0], outcome };
                 match change {
@@ -952,6 +959,29 @@ fn update(
                     if let Some(sounds) = sounds.as_mut() {
                         sounds.play(&world.packs, kind.sound(), None, 0.5, pitch);
                     }
+                }
+            } else if let Some((pos, writes)) = held.as_ref().and_then(|stack| {
+                let outlined = minecraft_terrain::doors::Outlined(&world.scene);
+                let mut staged = minecraft_terrain::placing::Staged::new(&outlined);
+                let soil = minecraft_terrain::berries::Ground { states: &world.stream.states };
+                let pos = minecraft_terrain::berries::plant(&player, &mut staged, &stack.id, &soil, || entities.random_float())?;
+                Some((pos, staged.into_writes()))
+            }) {
+                let slot = &mut entities.inventory.slots[entities.selected];
+                if let Some(left) = slot.as_mut() {
+                    left.count -= 1;
+                    if left.count == 0 {
+                        *slot = None;
+                    }
+                }
+                let writes = writes.into_iter().map(|(at, block)| (at, block.and_then(|b| scene_block(&b)))).collect();
+                write_blocks(world, shapes, shape_ids, entities, writes);
+                hand.swing = Some(0.0);
+                if let Some(block) = minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned()
+                    && let (Some(sounds), Some(kind)) = (sounds.as_mut(), world.scene.sound_type(&block))
+                {
+                    let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
+                    sounds.play(&world.packs, &kind.place, Some(Vec3::from_array(sim::voxel::to_map(origin, centre))), (kind.volume + 1.0) / 2.0, kind.pitch * 0.8);
                 }
             } else if let Some(stack) = held.as_ref().filter(|s| !placeable && minecraftoss_player::food::catalog().contains_key(&s.id)) {
                 survival.start_eating(entities.selected, stack);
@@ -1203,6 +1233,9 @@ fn update(
             survival.hurt(amount, armor, from);
         }
         for used in std::mem::take(&mut entities.item_uses_done) {
+            if used.outcome.consumed {
+                hand.swing = Some(0.0);
+            }
             finish_item_use(entities, sounds.as_mut(), &world.packs, origin, used);
         }
         for landing in std::mem::take(&mut entities.pearl_landings) {
@@ -1611,7 +1644,11 @@ fn shape_id(
                 minecraftoss_core::block::FluidKind::Lava => sim::voxel::LAVA,
             };
             kind | u16::from(f.amount).min(sim::voxel::FLUID_AMOUNT)
-        });
+        }) | match blocks.block(blocks.block_of(state)).name.as_str() {
+            "minecraft:sweet_berry_bush" => sim::voxel::STUCK_BERRY_BUSH,
+            "minecraft:cobweb" => sim::voxel::STUCK_COBWEB,
+            _ => 0,
+        };
         if boxes.is_empty() && fluid == 0 {
             return 0;
         }
@@ -1668,6 +1705,15 @@ fn finish_item_use(
 ) {
     let mut heard = used.outcome.sounds;
     if entities.inventory.slots.get(used.slot).and_then(Option::as_ref).is_some_and(|stack| stack.id == used.held) {
+        if used.outcome.consumed
+            && let Some(slot) = entities.inventory.slots.get_mut(used.slot)
+            && let Some(stack) = slot.as_mut()
+        {
+            stack.count -= 1;
+            if stack.count == 0 {
+                *slot = None;
+            }
+        }
         if let Some(result) = used.outcome.result
             && let Some(rest) = minecraft_terrain::bottle::filled_result(&mut entities.inventory, used.slot, result)
         {
