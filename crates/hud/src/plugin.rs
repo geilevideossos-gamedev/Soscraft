@@ -327,6 +327,7 @@ fn ensure_hud_root(mut commands: Commands, existing: Query<Entity, With<HudRoot>
         ))
         .with_children(|root| {
             crate::font_overlay::spawn_overlay(root, crate::overhead_names::OverheadNamesRaster);
+            crate::font_overlay::spawn_overlay(root, crate::minecraft_fire::MinecraftFireRaster);
             spawn_reticle(root);
             spawn_iris(root);
             spawn_hud_elems_back(root);
@@ -345,7 +346,6 @@ fn ensure_hud_root(mut commands: Commands, existing: Query<Entity, With<HudRoot>
             spawn_targetmap(root);
             crate::menus::spawn_script_menus(root);
             crate::font_overlay::spawn_overlay(root, crate::minecraft_inventory::MinecraftRaster);
-            crate::font_overlay::spawn_overlay(root, crate::minecraft_fire::MinecraftFireRaster);
         });
 }
 
