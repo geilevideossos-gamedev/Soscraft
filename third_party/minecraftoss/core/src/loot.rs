@@ -175,7 +175,13 @@ impl LootTables {
         let (namespace, path) = name.split_once(':').unwrap_or(("minecraft", &name));
         let mut params = params.clone();
         params.block_state = Some(state);
-        self.roll(registries, &format!("{namespace}:blocks/{path}"), &params, sequences, random)
+        let own = format!("{namespace}:blocks/{path}");
+        let table = if self.table(registries, &own).is_none() && path.contains("wall_") {
+            format!("{namespace}:blocks/{}", path.replacen("wall_", "", 1))
+        } else {
+            own
+        };
+        self.roll(registries, &table, &params, sequences, random)
     }
 }
 

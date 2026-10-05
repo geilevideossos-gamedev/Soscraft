@@ -117,11 +117,17 @@ impl LootBook {
         world_seed: u64,
         sequences: &mut HashMap<String, XoroshiroRandom>,
     ) -> Option<Vec<ItemStack>> {
-        let id = self.tables.get(&block.id)?["random_sequence"].as_str()?;
+        let id = self.table(&block.id)?["random_sequence"].as_str()?;
         let random = sequences
             .entry(id.to_owned())
             .or_insert_with(|| XoroshiroRandom::for_sequence(world_seed, id));
         self.roll_drops(block, held_item, random)
+    }
+
+    fn table(&self, id: &str) -> Option<&Value> {
+        self.tables
+            .get(id)
+            .or_else(|| self.tables.get(&id.replacen("wall_", "", 1)))
     }
 
     fn evaluate<'a>(
@@ -132,7 +138,7 @@ impl LootBook {
         silk_touch: bool,
         random: Option<&'a mut dyn LootRandom>,
     ) -> Option<Vec<ItemStack>> {
-        let table = self.tables.get(&block.id)?;
+        let table = self.table(&block.id)?;
         let context = LootContext {
             block,
             held_item,
@@ -527,6 +533,30 @@ mod tests {
         let mut high_roll = LegacyRandom::new(4096);
         let result = book.roll_drops(&Block::new("minecraft:sample"), None, &mut high_roll);
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn wall_variants_drop_like_their_standing_block() {
+        let mut book = LootBook::default();
+        book.tables.insert(
+            "minecraft:red_banner".into(),
+            serde_json::json!({
+                "type": "minecraft:block",
+                "pools": [{"rolls": 1, "entries": [{
+                    "type": "minecraft:item",
+                    "name": "minecraft:red_banner"
+                }]}]
+            }),
+        );
+        let drops = book
+            .deterministic_drops(&Block::new("minecraft:red_wall_banner"), None)
+            .unwrap();
+        assert_eq!(drops.len(), 1);
+        assert_eq!(drops[0].id, "minecraft:red_banner");
+        assert_eq!(
+            book.deterministic_drops(&Block::new("minecraft:cobblestone_wall"), None),
+            None
+        );
     }
 
     #[test]

@@ -22,6 +22,7 @@ pub mod loot;
 pub mod mining;
 pub mod jmath;
 pub mod mth;
+mod placement;
 pub mod rail;
 pub mod redstone;
 pub mod rng;
@@ -2008,8 +2009,23 @@ impl Player {
             };
             block = block.with("facing", facing).with("lit", "false");
         }
-        let mut chest_partner_to_update = None;
-        if block.id == "minecraft:chest" {
+        let mut partner_to_update = None;
+        let view = placement::View {
+            yaw: self.yaw,
+            pitch: self.pitch,
+            face: hit.face,
+            crouching: self.crouching,
+            replace_clicked: pos == hit.pos,
+        };
+        match placement::block_entity_placement(world, pos, &block, &view) {
+            placement::Placement::Other => {}
+            placement::Placement::Refused => return None,
+            placement::Placement::Placed(state, partner) => {
+                block = state;
+                partner_to_update = partner;
+            }
+        }
+        if placement::pairs_as_chest(&block.id) {
             let yaw = self.yaw.rem_euclid(360.0);
             let facing = if yaw < 45.0 || yaw >= 315.0 {
                 "north"
@@ -2037,12 +2053,16 @@ impl Player {
                 ] {
                     let other_pos = (pos.0 + offset.0, pos.1, pos.2 + offset.1);
                     if let Some(other) = world.block(other_pos).filter(|other| {
-                        other.id == "minecraft:chest"
+                        placement::chests_connect(&block.id, &other.id)
                             && other.property("type") == Some("single")
                             && other.property("facing") == Some(facing)
                     }) {
+                        let joined = placement::joined_chest(&block.id, &other.id);
                         block = block.with("type", new_type);
-                        chest_partner_to_update = Some((other_pos, other.with("type", other_type)));
+                        block.id.clone_from(&joined);
+                        let mut partner = other.with("type", other_type);
+                        partner.id = joined;
+                        partner_to_update = Some((other_pos, partner));
                         break;
                     }
                 }
@@ -2056,7 +2076,7 @@ impl Player {
             return None;
         }
         world.set_block(pos, Some(block));
-        if let Some((partner_pos, partner)) = chest_partner_to_update {
+        if let Some((partner_pos, partner)) = partner_to_update {
             world.set_block(partner_pos, Some(partner));
         }
         Some(pos)
