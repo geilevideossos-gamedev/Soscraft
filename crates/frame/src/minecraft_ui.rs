@@ -22,6 +22,7 @@ pub struct McStack {
     pub durability: Option<f32>,
     pub name: Option<String>,
     pub attack: Option<[f32; 2]>,
+    pub enchantments: Vec<String>,
 }
 
 /// A slot of the inventory screen.

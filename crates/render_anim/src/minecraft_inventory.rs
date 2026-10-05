@@ -445,6 +445,7 @@ impl InventoryUi {
             .cloned()
             .unwrap_or_else(|| "Water Bottle".to_owned());
         let lang: &HashMap<String, String> = language;
+        let enchant_table = self.enchantments.clone();
         let mut convert = |stack: &Option<ItemStack>| {
             stack.as_ref().map(|s| {
                 stacks.push(s.id.clone());
@@ -455,6 +456,15 @@ impl InventoryUi {
                     durability: None,
                     name: display_name(lang, s).or_else(|| water(s).then(|| water_name.clone())),
                     attack: main_hand_attack(&inventory.recipes, s),
+                    enchantments: minecraft_terrain::stations::enchantments_of(s)
+                        .into_iter()
+                        .map(|(id, level)| {
+                            let key = format!("enchantment.{}", id.replacen(':', ".", 1));
+                            let single = enchant_table.as_ref().and_then(|table| table.index(&id).map(|i| table.list[i].max_level == 1)).unwrap_or(false);
+                            let name = lang.get(&key).cloned().unwrap_or(id);
+                            if level == 1 && single { name } else { format!("{name} {}", minecraft_terrain::stations::roman(level)) }
+                        })
+                        .collect(),
                 }
             })
         };

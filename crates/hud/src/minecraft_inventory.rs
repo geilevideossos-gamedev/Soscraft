@@ -1319,11 +1319,14 @@ fn draw_inventory(
 const VANILLA_GREEN: [f32; 4] = [0.33, 0.85, 0.33, 1.0];
 
 fn tooltip_lines(stack: &McStack, weapons: Option<&PreparedWeapons>) -> Vec<(String, crate::minecraft_tooltip::Tone)> {
-    match (stack.weapon, stack.attack) {
+    let mut lines: Vec<(String, crate::minecraft_tooltip::Tone)> =
+        stack.enchantments.iter().map(|name| (name.clone(), crate::minecraft_tooltip::Tone::Header)).collect();
+    lines.extend(match (stack.weapon, stack.attack) {
         (Some(weapon), _) => weapons
             .and_then(|reg| reg.0.facts_of(weapon))
             .map_or_else(Vec::new, |facts| crate::minecraft_tooltip::gun_lines(&facts)),
         (None, Some(attack)) => crate::minecraft_tooltip::attack_lines(attack),
         (None, None) => Vec::new(),
-    }
+    });
+    lines
 }
