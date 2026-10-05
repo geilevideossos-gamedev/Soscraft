@@ -185,6 +185,7 @@ pub struct HudTessPass {
     pub script_menus: TessJob,
     /// The Minecraft map's hotbar and inventory.
     pub minecraft: TessJob,
+    pub minecraft_fire: TessJob,
 }
 
 /// What the HUD tess flush systems' own bodies cost this frame.

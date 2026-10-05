@@ -326,7 +326,7 @@ fn fluid_box(world: &impl World, pos: Pos) -> Option<(bool, DVec3, DVec3)> {
     let lava = match block.id.as_str() {
         "minecraft:water" => false,
         "minecraft:lava" => true,
-        _ if waterlogged => false,
+        _ if minecraftoss_player::holds_fluid(&block) => false,
         _ => return None,
     };
     let level = if waterlogged { 0 } else { block.property("level").and_then(|v| v.parse::<u32>().ok()).unwrap_or(0) };
@@ -334,13 +334,26 @@ fn fluid_box(world: &impl World, pos: Pos) -> Option<(bool, DVec3, DVec3)> {
         if lava {
             above.id == "minecraft:lava"
         } else {
-            above.id == "minecraft:water" || above.property("waterlogged") == Some("true")
+            above.id != "minecraft:lava" && minecraftoss_player::holds_fluid(&above)
         }
     });
     let amount = if level == 0 || level >= 8 { 8 } else { 8 - level };
     let height = if same_above { 1.0 } else { amount as f32 / 9.0 };
     let lo = DVec3::new(pos.0 as f64, pos.1 as f64, pos.2 as f64);
     Some((lava, lo, DVec3::new(lo.x + 1.0, lo.y + f64::from(height), lo.z + 1.0)))
+}
+
+fn cauldron_content(block: &minecraftoss_player::Block, pos: Pos) -> Option<(bool, DVec3, DVec3)> {
+    let (lava, top_pixels) = match block.id.as_str() {
+        "minecraft:lava_cauldron" => (true, 15.0),
+        "minecraft:water_cauldron" | "minecraft:powder_snow_cauldron" => {
+            let level = block.property("level").and_then(|v| v.parse::<u32>().ok()).unwrap_or(1);
+            (false, 6.0 + 3.0 * f64::from(level))
+        }
+        _ => return None,
+    };
+    let lo = DVec3::new(pos.0 as f64 + 2.0 / 16.0, pos.1 as f64 + 4.0 / 16.0, pos.2 as f64 + 2.0 / 16.0);
+    Some((lava, lo, DVec3::new(pos.0 as f64 + 14.0 / 16.0, pos.1 as f64 + top_pixels / 16.0, pos.2 as f64 + 14.0 / 16.0)))
 }
 
 /// `Entity.applyEffectsFromBlocks`' walk for a living mob: the block
@@ -392,7 +405,7 @@ pub fn block_effects(world: &impl World, body: &Body, old_position: DVec3, moves
                 // `getEntityInsideCollisionShape` is the whole block for all
                 // the blocks here.
                 let (fmin, fmax) = bounds(from, body.width, body.height);
-                let fluid = fluid_box(world, pos).filter(|&(_, lo, hi)| collided_along(fmin, fmax, to - from, &[(lo, hi)]));
+                let fluid = fluid_box(world, pos).or_else(|| cauldron_content(&block, pos)).filter(|&(_, lo, hi)| collided_along(fmin, fmax, to - from, &[(lo, hi)]));
                 if !visited.insert(pos) {
                     return true;
                 }
@@ -461,6 +474,7 @@ fn inside_block(block: &minecraftoss_player::Block, collector: &mut Collector, n
             }
         }
         "minecraft:cobweb" => now.push(BlockEffect::Stuck(DVec3::new(0.25, f64::from(0.05_f32), 0.25))),
+        "minecraft:powder_snow" => collector.apply(Kind::Extinguish),
         _ => {}
     }
 }

@@ -80,6 +80,7 @@ pub(crate) struct Entities {
     pub(crate) pearl_landings: Vec<DVec3>,
     pub(crate) destroyed: Vec<((i32, i32, i32), Block)>,
     pub(crate) experience_found: f32,
+    pub(crate) weather: minecraft_terrain::server::WeatherView,
     pub(crate) stations: std::sync::Arc<minecraft_terrain::stations::StationBook>,
     pub(crate) enchantments: Option<std::sync::Arc<minecraftoss_entities::enchant::Enchantments>>,
 }
@@ -113,7 +114,14 @@ pub(crate) struct PlayerView {
 
 impl Entities {
     pub(crate) fn new(stream: &TerrainStream, seed: i64) -> Self {
-        let sim = ServerSim::new(stream.world_gen(), stream.states.clone(), "minecraft:overworld");
+        let mut sim = ServerSim::new(stream.world_gen(), stream.states.clone(), "minecraft:overworld");
+        if let Ok(weather) = std::env::var("IW4L_MINECRAFT_WEATHER") {
+            if sim.set_weather(weather.trim()) {
+                diag::info!(World, "Minecraft weather: {} from IW4L_MINECRAFT_WEATHER", weather.trim());
+            } else {
+                diag::warn!(World, "Minecraft weather `{weather}` unknown: IW4L_MINECRAFT_WEATHER takes clear, rain or thunder");
+            }
+        }
         let mut server = ServerHandle::spawn(sim);
         // Mob and block loot and the recipes (stack sizes), from the game's
         // data JAR when MinecraftOSS has one.
@@ -186,6 +194,7 @@ impl Entities {
             pearl_landings: Vec::new(),
             destroyed: Vec::new(),
             experience_found: 0.0,
+            weather: Default::default(),
             stations,
             enchantments,
         }
@@ -511,6 +520,9 @@ impl Entities {
                     self.portal.emit_enderman(at, 0.6, 1.8);
                 }
                 self.pearl_landings.push(at);
+            }
+            if let Some(weather) = output.weather {
+                self.weather = weather;
             }
             self.server_picked.extend(output.picked);
             changes.extend(output.changes);

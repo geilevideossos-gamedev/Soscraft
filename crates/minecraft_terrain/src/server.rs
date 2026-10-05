@@ -824,6 +824,26 @@ impl ServerSim {
         self.level.set_time(ticks);
     }
 
+    pub fn set_weather(&mut self, weather: &str) -> bool {
+        const LASTING: i32 = 1_000_000_000;
+        match weather {
+            "clear" => self.level.set_weather(LASTING, 0, false, false),
+            "rain" => self.level.set_weather(0, LASTING, true, false),
+            "thunder" => self.level.set_weather(0, LASTING, true, true),
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn weather(&mut self, feet: Option<[f64; 3]>) -> WeatherView {
+        let (rain_level, thunder_level) = self.level.sky.as_ref().map_or((0.0, 0.0), |sky| (sky.weather.rain_level, sky.weather.thunder_level * sky.weather.rain_level));
+        let player_in_rain = feet.is_some_and(|feet| {
+            let (x, z) = (feet[0].floor() as i32, feet[2].floor() as i32);
+            self.level.is_raining_at(minecraftoss_core::BlockPos::new(x, feet[1].floor() as i32, z)) || self.level.is_raining_at(minecraftoss_core::BlockPos::new(x, (feet[1] + PLAYER_HEIGHT).floor() as i32, z))
+        });
+        WeatherView { rain_level, thunder_level, player_in_rain }
+    }
+
     pub fn tick(&mut self) {
         self.level.tick();
         self.level.unsupported.clear();
@@ -975,6 +995,15 @@ pub struct TickInput {
     pub spawn_mobs: bool,
 }
 
+const PLAYER_HEIGHT: f64 = 1.8;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WeatherView {
+    pub rain_level: f32,
+    pub thunder_level: f32,
+    pub player_in_rain: bool,
+}
+
 /// What the server thread sends back after handling commands.
 #[derive(Default)]
 pub struct Output {
@@ -1008,6 +1037,7 @@ pub struct Output {
     /// Positions where bone meal was used.
     pub bone_meal_used: Vec<BlockPos>,
     pub pearl_landings: Vec<[f64; 3]>,
+    pub weather: Option<WeatherView>,
     /// How many commands the server has handled so far.
     pub handled: u64,
     /// The last tick's phases, light solves and total milliseconds.
@@ -1281,6 +1311,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.mob_sounds.extend(sim.mobs.take_sounds());
                     sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
                     out.mobs = Some(Box::new(sim.tracked_mobs(input.tracking.0, input.tracking.1)));
+                    out.weather = Some(sim.weather(input.players.first().copied()));
                     let pickup_feet = input.pickup.as_ref().map(|(feet, _, _)| *feet);
                     if let Some((feet, mut inventory, selected)) = input.pickup {
                         let recipes = inventory.recipes.clone();
@@ -1351,6 +1382,44 @@ mod tests {
             flowed += server.take_changes().len();
         }
         assert!(flowed > 0, "water should fall from the source");
+    }
+
+    #[test]
+    fn rain_falls_on_a_player_under_the_open_sky() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for x in -1..=1 {
+            for z in -1..=1 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        assert!(!server.set_weather("snow"));
+        assert!(server.set_weather("thunder"));
+        for _ in 0..120 {
+            server.tick();
+        }
+        let surface: Vec<[f64; 3]> = (-16..32)
+            .flat_map(|x| (-16..32).map(move |z| (x, z)))
+            .map(|(x, z)| {
+                let top = minecraftoss_generator::feature::World::height_at(&server.level, minecraftoss_core::HeightmapKind::MotionBlocking, x, z);
+                [f64::from(x) + 0.5, f64::from(top), f64::from(z) + 0.5]
+            })
+            .collect();
+        let stormy = server.weather(None);
+        assert!(stormy.rain_level > 0.99 && stormy.thunder_level > 0.99 && !stormy.player_in_rain, "{stormy:?}");
+        assert!(surface.iter().any(|&feet| server.weather(Some(feet)).player_in_rain), "rain reaches the surface");
+        assert!(surface.iter().all(|&feet| !server.weather(Some([feet[0], feet[1] - 12.0, feet[2]])).player_in_rain), "no rain under the ground");
+        assert!(server.set_weather("clear"));
+        for _ in 0..120 {
+            server.tick();
+        }
+        assert_eq!(server.weather(None), WeatherView::default());
+        assert!(surface.iter().all(|&feet| !server.weather(Some(feet)).player_in_rain));
     }
 
     /// Creatures the SPAWN step generated join the server's mobs with their

@@ -1,9 +1,22 @@
+use glam::DVec3;
+use minecraftoss_entities::inside_blocks::{BlockEffect, Hazard, block_effects};
+use minecraftoss_entities::movement::Body;
 use minecraftoss_player::GameMode;
+use minecraftoss_player::World;
+use minecraftoss_player::collision::find_supporting_block;
 use minecraftoss_player::food::{FoodUse, FoodUseTick, apply_consumed_food_effects};
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::survival::{Armor, Difficulty, EffectKind, SurvivalStatus};
 
 const HURT_EXHAUSTION: f32 = 0.1;
+const BODY_WIDTH: f32 = 0.6;
+const MW2_GROUND_REACH: f64 = 0.01;
+const FIRE_IMMUNE_TICKS: i32 = 20;
+const FIRE_IGNITE_TICKS: i32 = 160;
+const LAVA_IGNITE_TICKS: i32 = 300;
+const LAVA_DAMAGE: f32 = 4.0;
+const BURN_DAMAGE: f32 = 1.0;
+const BURN_INTERVAL: i32 = 20;
 pub(crate) const ATTACK_EXHAUSTION: f32 = 0.1;
 pub(crate) const MINE_EXHAUSTION: f32 = 0.005;
 const JUMP_EXHAUSTION: f32 = 0.05;
@@ -24,12 +37,19 @@ pub(crate) struct Motion {
     pub(crate) jumping: bool,
     pub(crate) in_water: bool,
     pub(crate) eye_in_water: bool,
+    pub(crate) in_lava: bool,
+    pub(crate) eye_in_lava: bool,
+    pub(crate) in_rain: bool,
+    pub(crate) crouching: bool,
+    pub(crate) height: f32,
 }
 
 #[derive(Default)]
 pub(crate) struct Survival {
     pub(crate) status: SurvivalStatus,
     pub(crate) eye_in_water: bool,
+    eye_in_lava: bool,
+    fire_ticks: i32,
     bubbles: i32,
     tick: u64,
     synced: Option<i32>,
@@ -49,6 +69,13 @@ pub(crate) struct Survival {
 pub(crate) struct Breath {
     pub(crate) drowned: bool,
     pub(crate) popped: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PlayerSound {
+    pub(crate) event: &'static str,
+    pub(crate) volume: f32,
+    pub(crate) pitch: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -197,6 +224,129 @@ impl Survival {
         } else {
             0
         }
+    }
+
+    pub(crate) fn last_feet(&self) -> Option<[f64; 3]> {
+        self.last_feet
+    }
+
+    pub(crate) fn hazards(
+        &mut self,
+        world: &impl World,
+        motion: &Motion,
+        from: [f64; 3],
+        armor: Armor,
+        mut random: impl FnMut() -> f32,
+    ) -> Vec<PlayerSound> {
+        let mut heard = Vec::new();
+        self.eye_in_lava = motion.eye_in_lava;
+        if self.fire_ticks > 0 {
+            if self.fire_ticks % BURN_INTERVAL == 0 && !motion.in_lava {
+                self.hurt_aloud(Hazard::OnFire, BURN_DAMAGE, armor, &mut random, &mut heard);
+            }
+            self.fire_ticks -= 1;
+        }
+        let stride = (0..3)
+            .map(|k| (motion.feet[k] - from[k]).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        let from = if stride < MAX_STRIDE {
+            from
+        } else {
+            motion.feet
+        };
+        let feet = DVec3::from_array(motion.feet);
+        let mut body = Body::new(feet, BODY_WIDTH, motion.height);
+        body.on_ground = motion.on_ground;
+        if motion.on_ground {
+            body.supporting_block = standing_on(world, feet);
+        }
+        let effects = block_effects(world, &body, DVec3::from_array(from), &[]);
+        let before = self.fire_ticks;
+        for effect in effects {
+            if self.status.health <= 0.0 {
+                break;
+            }
+            match effect {
+                BlockEffect::Hurt(Hazard::HotFloor, _) if motion.crouching => {}
+                BlockEffect::Hurt(hazard, damage) => {
+                    self.hurt_aloud(hazard, damage, armor, &mut random, &mut heard);
+                }
+                BlockEffect::FireHurt(damage) => {
+                    self.hurt_aloud(Hazard::InFire, damage, armor, &mut random, &mut heard);
+                }
+                BlockEffect::LavaHurt => {
+                    if self.hurt_aloud(Hazard::Lava, LAVA_DAMAGE, armor, &mut random, &mut heard) {
+                        let pitch = 2.0 + random() * 0.4;
+                        heard.push(PlayerSound {
+                            event: "minecraft:entity.generic.burn",
+                            volume: 0.4,
+                            pitch,
+                        });
+                    }
+                }
+                BlockEffect::FireIgnite => {
+                    self.fire_ticks += if self.fire_ticks < 0 || random() < 0.5 {
+                        1
+                    } else {
+                        2
+                    };
+                    if self.fire_ticks >= 0 {
+                        self.fire_ticks = self.fire_ticks.max(FIRE_IGNITE_TICKS);
+                    }
+                }
+                BlockEffect::LavaIgnite => self.fire_ticks = self.fire_ticks.max(LAVA_IGNITE_TICKS),
+                BlockEffect::Extinguish => self.fire_ticks = self.fire_ticks.min(0),
+                BlockEffect::Stuck(_) | BlockEffect::ClearFreeze => {}
+            }
+        }
+        if motion.in_rain {
+            self.fire_ticks = self.fire_ticks.min(0);
+        }
+        if before > 0 && self.fire_ticks <= 0 {
+            let (a, b) = (random(), random());
+            heard.push(PlayerSound {
+                event: "minecraft:entity.generic.extinguish_fire",
+                volume: 0.7,
+                pitch: 1.6 + (a - b) * 0.4,
+            });
+        }
+        if self.fire_ticks <= 0 && self.fire_ticks <= before {
+            self.fire_ticks = -FIRE_IMMUNE_TICKS;
+        }
+        heard
+    }
+
+    fn hurt_aloud(
+        &mut self,
+        hazard: Hazard,
+        damage: f32,
+        armor: Armor,
+        random: &mut impl FnMut() -> f32,
+        heard: &mut Vec<PlayerSound>,
+    ) -> bool {
+        if hazard.is_fire() && self.status.effect(EffectKind::FireResistance).is_some() {
+            return false;
+        }
+        let armor = if hazard.bypasses_armor() {
+            Armor::default()
+        } else {
+            armor
+        };
+        let exhaustion = if hazard == Hazard::OnFire {
+            0.0
+        } else {
+            HURT_EXHAUSTION
+        };
+        let landed = self.status.hurt(damage, armor, exhaustion);
+        if landed == Some(true) && self.status.health > 0.0 {
+            heard.push(PlayerSound {
+                event: hurt_sound(hazard),
+                volume: 1.0,
+                pitch: (random() - random()) * 0.2 + 1.0,
+            });
+        }
+        landed.is_some()
     }
 
     pub(crate) fn hurt(&mut self, damage: f32, armor: Armor, from: Option<[f64; 3]>) -> bool {
@@ -410,7 +560,29 @@ impl Survival {
             tick: self.tick,
             experience_level: self.status.experience_level,
             experience_progress: self.status.experience_progress,
+            on_fire: self.fire_ticks > 0,
+            eye_in_lava: self.eye_in_lava,
         }
+    }
+}
+
+fn standing_on(world: &impl World, feet: DVec3) -> Option<(i32, i32, i32)> {
+    let half = f64::from(BODY_WIDTH) / 2.0;
+    find_supporting_block(
+        world,
+        feet,
+        DVec3::new(feet.x - half, feet.y - MW2_GROUND_REACH, feet.z - half),
+        DVec3::new(feet.x + half, feet.y, feet.z + half),
+    )
+}
+
+fn hurt_sound(hazard: Hazard) -> &'static str {
+    if hazard.is_fire() {
+        "minecraft:entity.player.hurt_on_fire"
+    } else if hazard == Hazard::SweetBerryBush {
+        "minecraft:entity.player.hurt_sweet_berry_bush"
+    } else {
+        "minecraft:entity.player.hurt"
     }
 }
 
@@ -936,6 +1108,343 @@ mod tests {
         }
         assert_eq!(survival.status.absorption, 4.0);
         assert!(survival.vitals().regen_index >= 0);
+    }
+
+    #[derive(Default)]
+    struct Blocks(std::collections::HashMap<(i32, i32, i32), minecraftoss_player::Block>);
+
+    impl World for Blocks {
+        fn block(&self, pos: (i32, i32, i32)) -> Option<minecraftoss_player::Block> {
+            self.0.get(&pos).cloned()
+        }
+
+        fn set_block(&mut self, pos: (i32, i32, i32), block: Option<minecraftoss_player::Block>) {
+            match block {
+                Some(block) => {
+                    self.0.insert(pos, block);
+                }
+                None => {
+                    self.0.remove(&pos);
+                }
+            }
+        }
+    }
+
+    fn ground(blocks: &[((i32, i32, i32), minecraftoss_player::Block)]) -> Blocks {
+        let mut world = Blocks::default();
+        for x in -2..=2 {
+            for z in -2..=2 {
+                world.set_block(
+                    (x, 0, z),
+                    Some(minecraftoss_player::Block::new("minecraft:stone")),
+                );
+            }
+        }
+        for (pos, block) in blocks {
+            world.set_block(*pos, Some(block.clone()));
+        }
+        world
+    }
+
+    fn block(id: &str) -> minecraftoss_player::Block {
+        minecraftoss_player::Block::new(id)
+    }
+
+    fn lava_pool() -> Blocks {
+        ground(&[
+            ((0, 1, 0), block("minecraft:lava")),
+            ((0, 2, 0), block("minecraft:lava")),
+        ])
+    }
+
+    fn unfed() -> Survival {
+        let mut survival = fresh();
+        survival.status.food.level = 10;
+        survival.status.food.saturation = 0.0;
+        survival
+    }
+
+    fn standing_in(feet: [f64; 3]) -> Motion {
+        Motion {
+            feet,
+            on_ground: true,
+            height: 1.8,
+            ..Motion::default()
+        }
+    }
+
+    fn live(
+        survival: &mut Survival,
+        world: &Blocks,
+        motion: &Motion,
+        armor: Armor,
+        ticks: u32,
+    ) -> Vec<&'static str> {
+        let mut heard = Vec::new();
+        for _ in 0..ticks {
+            let from = survival.last_feet().unwrap_or(motion.feet);
+            survival.tick(motion);
+            let sounds = survival.hazards(world, motion, from, armor, || 0.25);
+            heard.extend(sounds.into_iter().map(|sound| sound.event));
+        }
+        heard
+    }
+
+    fn count(heard: &[&str], event: &str) -> usize {
+        heard.iter().filter(|e| **e == event).count()
+    }
+
+    #[test]
+    fn lava_burns_four_every_ten_ticks_through_armor_and_sets_the_player_alight() {
+        let in_lava = Motion {
+            in_lava: true,
+            ..standing_in([0.5, 1.0, 0.5])
+        };
+        let mut bare = unfed();
+        let heard = live(&mut bare, &lava_pool(), &in_lava, Armor::default(), 40);
+        assert!(
+            (bare.status.health - 4.0).abs() < 1e-5,
+            "{}",
+            bare.status.health
+        );
+        assert_eq!(count(&heard, "minecraft:entity.generic.burn"), 4);
+        assert_eq!(count(&heard, "minecraft:entity.player.hurt_on_fire"), 4);
+        assert!(bare.vitals().on_fire);
+        assert_eq!(bare.fire_ticks, 300);
+        let mut armored = unfed();
+        let iron = Armor {
+            value: Some((15.0, 0.0)),
+        };
+        live(&mut armored, &lava_pool(), &in_lava, iron, 40);
+        assert!(
+            (armored.status.health - (20.0 - 4.0 * 4.0 * 0.48)).abs() < 1e-4,
+            "{}",
+            armored.status.health
+        );
+    }
+
+    #[test]
+    fn the_player_burns_one_a_second_for_fifteen_seconds_after_the_lava() {
+        let mut survival = unfed();
+        survival.fire_ticks = 300;
+        let diamond = Armor {
+            value: Some((20.0, 8.0)),
+        };
+        let heard = live(
+            &mut survival,
+            &ground(&[]),
+            &standing_in([0.5, 1.0, 0.5]),
+            diamond,
+            300,
+        );
+        assert!(
+            (survival.status.health - 5.0).abs() < 1e-5,
+            "{}",
+            survival.status.health
+        );
+        assert_eq!(count(&heard, "minecraft:entity.player.hurt_on_fire"), 15);
+        assert_eq!(count(&heard, "minecraft:entity.generic.extinguish_fire"), 0);
+        assert_eq!(survival.status.food.exhaustion, 0.0);
+        assert!(!survival.vitals().on_fire);
+        assert_eq!(survival.fire_ticks, -FIRE_IMMUNE_TICKS);
+    }
+
+    #[test]
+    fn fire_resistance_turns_the_damage_away_but_not_the_flames() {
+        let in_lava = Motion {
+            in_lava: true,
+            ..standing_in([0.5, 1.0, 0.5])
+        };
+        let mut survival = unfed();
+        survival
+            .status
+            .add_effect(EffectKind::FireResistance, 3600, 0);
+        let heard = live(&mut survival, &lava_pool(), &in_lava, Armor::default(), 40);
+        assert!(heard.is_empty(), "{heard:?}");
+        assert_eq!(survival.status.health, 20.0);
+        assert!(survival.vitals().on_fire);
+        live(
+            &mut survival,
+            &ground(&[]),
+            &standing_in([0.5, 1.0, 0.5]),
+            Armor::default(),
+            300,
+        );
+        assert_eq!(survival.status.health, 20.0);
+    }
+
+    #[test]
+    fn water_and_rain_put_the_fire_out_with_a_hiss() {
+        let feet = [0.5, 1.0, 0.5];
+        let mut swimmer = unfed();
+        swimmer.fire_ticks = 299;
+        let pool = ground(&[((0, 1, 0), block("minecraft:water"))]);
+        let heard = live(&mut swimmer, &pool, &standing_in(feet), Armor::default(), 1);
+        assert_eq!(heard, vec!["minecraft:entity.generic.extinguish_fire"]);
+        assert_eq!(swimmer.fire_ticks, -FIRE_IMMUNE_TICKS);
+        let rain = Motion {
+            in_rain: true,
+            ..standing_in(feet)
+        };
+        let mut walker = unfed();
+        walker.fire_ticks = 299;
+        let heard = live(&mut walker, &ground(&[]), &rain, Armor::default(), 1);
+        assert_eq!(heard, vec!["minecraft:entity.generic.extinguish_fire"]);
+        assert!(live(&mut walker, &ground(&[]), &rain, Armor::default(), 5).is_empty());
+        assert_eq!(walker.fire_ticks, -FIRE_IMMUNE_TICKS);
+    }
+
+    #[test]
+    fn fire_hurts_at_once_but_sets_the_player_alight_a_second_later() {
+        let motion = standing_in([0.5, 1.0, 0.5]);
+        let fire = ground(&[((0, 1, 0), block("minecraft:fire"))]);
+        let mut survival = unfed();
+        live(&mut survival, &ground(&[]), &motion, Armor::default(), 1);
+        assert_eq!(survival.fire_ticks, -FIRE_IMMUNE_TICKS);
+        let heard = live(&mut survival, &fire, &motion, Armor::default(), 19);
+        assert!(!survival.vitals().on_fire);
+        assert!(
+            (survival.status.health - 18.0).abs() < 1e-5,
+            "{}",
+            survival.status.health
+        );
+        assert_eq!(count(&heard, "minecraft:entity.player.hurt_on_fire"), 2);
+        live(&mut survival, &fire, &motion, Armor::default(), 1);
+        assert_eq!(survival.fire_ticks, FIRE_IGNITE_TICKS);
+        let mut soul = unfed();
+        let soul_fire = ground(&[((0, 1, 0), block("minecraft:soul_fire"))]);
+        live(&mut soul, &soul_fire, &motion, Armor::default(), 1);
+        assert!(
+            (soul.status.health - 18.0).abs() < 1e-5,
+            "{}",
+            soul.status.health
+        );
+    }
+
+    #[test]
+    fn magma_burns_only_players_who_do_not_sneak() {
+        let magma = ground(&[((0, 0, 0), block("minecraft:magma_block"))]);
+        let motion = standing_in([0.5, 1.0, 0.5]);
+        let mut walker = unfed();
+        let heard = live(&mut walker, &magma, &motion, Armor::default(), 20);
+        assert!(
+            (walker.status.health - 18.0).abs() < 1e-5,
+            "{}",
+            walker.status.health
+        );
+        assert_eq!(count(&heard, "minecraft:entity.player.hurt_on_fire"), 2);
+        assert!(!walker.vitals().on_fire);
+        let mut sneaker = unfed();
+        let sneaking = Motion {
+            crouching: true,
+            ..motion
+        };
+        assert!(live(&mut sneaker, &magma, &sneaking, Armor::default(), 20).is_empty());
+        assert_eq!(sneaker.status.health, 20.0);
+    }
+
+    #[test]
+    fn magma_burns_a_player_on_its_edge_over_a_drop_but_not_beside_it() {
+        let mut ledge = ground(&[((0, 0, 0), block("minecraft:magma_block"))]);
+        ledge.set_block((1, 0, 0), None);
+        let mut overhanging = unfed();
+        let hovering = standing_in([1.25, 1.005, 0.5]);
+        live(&mut overhanging, &ledge, &hovering, Armor::default(), 20);
+        assert!((overhanging.status.health - 18.0).abs() < 1e-5);
+        let beside = ground(&[((1, 0, 0), block("minecraft:magma_block"))]);
+        let mut on_stone = unfed();
+        let mostly_on_stone = standing_in([0.95, 1.0, 0.5]);
+        live(
+            &mut on_stone,
+            &beside,
+            &mostly_on_stone,
+            Armor::default(),
+            20,
+        );
+        assert_eq!(on_stone.status.health, 20.0);
+    }
+
+    #[test]
+    fn cauldrons_bubble_columns_kelp_and_powder_snow_put_the_fire_out() {
+        let (inside, wading) = ([0.5, 1.25, 0.5], [0.5, 1.0, 0.5]);
+        for (put_out, feet) in [
+            (block("minecraft:water_cauldron").with("level", "1"), inside),
+            (
+                block("minecraft:powder_snow_cauldron").with("level", "3"),
+                inside,
+            ),
+            (block("minecraft:bubble_column"), wading),
+            (block("minecraft:kelp_plant"), wading),
+            (block("minecraft:powder_snow"), wading),
+        ] {
+            let id = put_out.id.clone();
+            let mut survival = unfed();
+            survival.fire_ticks = 299;
+            let world = ground(&[((0, 1, 0), put_out)]);
+            let heard = live(
+                &mut survival,
+                &world,
+                &standing_in(feet),
+                Armor::default(),
+                1,
+            );
+            assert_eq!(
+                heard,
+                vec!["minecraft:entity.generic.extinguish_fire"],
+                "{id}"
+            );
+            assert_eq!(survival.fire_ticks, -FIRE_IMMUNE_TICKS, "{id}");
+        }
+        let mut dry = unfed();
+        dry.fire_ticks = 299;
+        let empty = ground(&[((0, 1, 0), block("minecraft:cauldron"))]);
+        assert!(live(&mut dry, &empty, &standing_in(inside), Armor::default(), 1).is_empty());
+        assert_eq!(dry.fire_ticks, 298);
+    }
+
+    #[test]
+    fn a_lava_cauldron_burns_like_lava() {
+        let cauldron = ground(&[((0, 1, 0), block("minecraft:lava_cauldron"))]);
+        let mut survival = unfed();
+        let inside = standing_in([0.5, 1.25, 0.5]);
+        let heard = live(&mut survival, &cauldron, &inside, Armor::default(), 1);
+        assert!((survival.status.health - 16.0).abs() < 1e-5);
+        assert_eq!(count(&heard, "minecraft:entity.generic.burn"), 1);
+        assert_eq!(survival.fire_ticks, LAVA_IGNITE_TICKS);
+    }
+
+    #[test]
+    fn lit_campfires_burn_one_and_soul_campfires_two() {
+        let on_top = standing_in([0.5, 1.0 + 7.0 / 16.0, 0.5]);
+        for (id, lit, damage) in [
+            ("minecraft:campfire", "true", 1.0),
+            ("minecraft:soul_campfire", "true", 2.0),
+            ("minecraft:campfire", "false", 0.0),
+        ] {
+            let camp = ground(&[((0, 1, 0), block(id).with("lit", lit))]);
+            let mut survival = unfed();
+            live(&mut survival, &camp, &on_top, Armor::default(), 1);
+            assert!(
+                (survival.status.health - (20.0 - damage)).abs() < 1e-5,
+                "{id} {lit}"
+            );
+            assert!(!survival.vitals().on_fire);
+        }
+    }
+
+    #[test]
+    fn dying_in_lava_respawns_without_fire() {
+        let in_lava = Motion {
+            in_lava: true,
+            ..standing_in([0.5, 1.0, 0.5])
+        };
+        let mut survival = unfed();
+        live(&mut survival, &lava_pool(), &in_lava, Armor::default(), 60);
+        assert_eq!(survival.status.health, 0.0);
+        assert!(survival.vitals().on_fire);
+        survival.respawn();
+        assert!(!survival.vitals().on_fire);
+        assert_eq!(survival.last_feet(), None);
     }
 
     #[test]

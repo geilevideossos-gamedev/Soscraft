@@ -142,6 +142,7 @@ pub struct MinecraftUi {
     /// north-west and south-east corners.
     pub minimap: Option<(Handle<Image>, [f32; 2], [f32; 2])>,
     pub vitals: Option<McVitals>,
+    pub fire_frames: Option<(Handle<Image>, u32)>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -162,6 +163,8 @@ pub struct McVitals {
     pub tick: u64,
     pub experience_level: u32,
     pub experience_progress: f32,
+    pub on_fire: bool,
+    pub eye_in_lava: bool,
 }
 
 /// The player's own MW2 body, drawn standing in the inventory's character

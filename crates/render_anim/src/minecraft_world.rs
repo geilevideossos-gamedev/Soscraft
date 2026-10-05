@@ -136,6 +136,7 @@ struct Runtime {
     /// Boxes of each shape id, to reuse an id for a repeated shape.
     shape_ids: HashMap<(Vec<[u32; 6]>, u16), u16>,
     was_alive: bool,
+    fire_frames: Option<(Handle<Image>, u32)>,
 }
 
 /// The player's MW2 body stands in the inventory's character window, on a
@@ -287,6 +288,25 @@ fn celestial_image(packs: &PackStack) -> anyhow::Result<image::RgbaImage> {
     Ok(celestial)
 }
 
+fn fire_frames(packs: &PackStack) -> Option<(Image, u32)> {
+    let id = minecraft_terrain::pack::ResourceId::parse("minecraft:block/fire_1").ok()?;
+    let bytes = packs.texture(&id).ok()??;
+    let strip = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).ok()?.to_rgba8();
+    let (width, height) = strip.dimensions();
+    let frames = (height / width.max(1)).max(1);
+    let image = Image {
+        sampler: bevy::image::ImageSampler::nearest(),
+        ..Image::new(
+            bevy::render::render_resource::Extent3d { width, height, depth_or_array_layers: 1 },
+            bevy::render::render_resource::TextureDimension::D2,
+            strip.into_raw(),
+            bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+            bevy::asset::RenderAssetUsages::default(),
+        )
+    };
+    Some((image, frames))
+}
+
 /// A controller trigger, held or just pressed: with a block or an empty hand
 /// the right trigger mines and the left places, as the mouse buttons do.
 fn pad_trigger(pad: Option<&bevy::input::gamepad::Gamepad>, button: GamepadButton, just: bool) -> bool {
@@ -401,6 +421,7 @@ fn update(
                     world.seed,
                     world.stream.player_spawn
                 );
+                runtime.fire_frames = fire_frames(&world.packs).map(|(image, frames)| (images.add(image), frames));
                 runtime.world = Some(world);
                 runtime.shapes.clear();
                 runtime.shape_ids.clear();
@@ -435,6 +456,7 @@ fn update(
         steps,
         survival,
         containers,
+        fire_frames,
         ..
     } = &mut *runtime;
     let Some(world) = world.as_mut() else {
@@ -632,8 +654,15 @@ fn update(
             jumping: ps.pm_flags & playerstate_iw4::pm_flags::JUMPING != 0,
             in_water: water.wet(),
             eye_in_water: water.eye,
+            in_lava: sim::voxel::lava(ps.origin, hull_mins, hull_maxs) > 0.0,
+            eye_in_lava: sim::voxel::eye_in_lava(ps.origin, ps.view_height_current),
+            in_rain: entities.as_ref().is_some_and(|e| e.weather.player_in_rain),
+            crouching: ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0,
+            height: hull_maxs[2] / sim::voxel::BLOCK,
         };
+        let armor = entities.as_ref().map_or_else(minecraftoss_player::survival::Armor::default, |e| crate::minecraft_survival::armor(&e.inventory));
         for _ in 0..hand_ticks {
+            let from = survival.last_feet().unwrap_or(feet);
             let breath = survival.tick(&motion);
             if let Some(sounds) = sounds.as_mut() {
                 if breath.drowned {
@@ -642,6 +671,15 @@ fn update(
                 if let Some(popped) = breath.popped {
                     let (volume, pitch) = crate::minecraft_survival::pop_sound(popped);
                     sounds.play(&world.packs, "minecraft:ui.hud.bubble_pop", None, volume, pitch);
+                }
+            }
+            if motion.in_lava {
+                steps.air_peak = steps.air_peak.map(|peak| feet[1] + (peak - feet[1]) * 0.5);
+            }
+            let heard = survival.hazards(&world.scene, &motion, from, armor, || entities.as_mut().map_or(0.5, |e| e.random_float()));
+            if let Some(sounds) = sounds.as_mut() {
+                for sound in heard {
+                    sounds.play(&world.packs, sound.event, None, sound.volume, sound.pitch);
                 }
             }
         }
@@ -1172,6 +1210,7 @@ fn update(
             }
         }
         ui.vitals = alive.then(|| survival.vitals());
+        ui.fire_frames = fire_frames.clone();
         // The inventory: MW2 guns as items, the HUD's clicks, the hotbar's
         // gun, and what the HUD shows.
         let owned: Vec<u32> = ps
@@ -1389,17 +1428,22 @@ fn update(
         f32::from(light.get(eye_block)),
         f32::from(light.get_block(eye_block)),
     ];
+    let weather = entities.as_ref().map_or_else(minecraft_terrain::server::WeatherView::default, |e| e.weather);
+    let rains_here = world
+        .scene
+        .noise_biome((eye_block.0 >> 2, eye_block.1 >> 2, eye_block.2 >> 2))
+        .is_some_and(|biome| world.registries.biomes.get(biome).has_precipitation);
     world
         .environment
-        .update_rain_fog(0.0, light.get(eye_block), false, (dt * 20.0) as f32);
+        .update_rain_fog(weather.rain_level, light.get(eye_block), rains_here, (dt * 20.0) as f32);
     *environment_accumulator += dt;
     if !*environment_primed || *environment_accumulator >= TICK_SECONDS {
         *environment_accumulator = (*environment_accumulator % TICK_SECONDS).min(TICK_SECONDS);
         let scene = &world.scene;
         world.environment.tick(
             day.ticks.floor() as i64,
-            0.0,
-            0.0,
+            weather.rain_level,
+            weather.thunder_level,
             eye,
             |x, y, z| scene.noise_biome((x, y, z)).map_or(0, |id| id.0),
             !*environment_primed,
@@ -1412,8 +1456,8 @@ fn update(
         forward,
         camera_y: eye[1] as f32,
         render_distance: VIEW_DISTANCE as u32,
-        rain_level: 0.0,
-        thunder_level: 0.0,
+        rain_level: weather.rain_level,
+        thunder_level: weather.thunder_level,
     });
     let render_distance = VIEW_DISTANCE as f32 * 16.0;
     let right = forward.cross(glam::Vec3::Y).normalize_or(glam::Vec3::X);

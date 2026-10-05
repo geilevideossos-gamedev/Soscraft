@@ -856,6 +856,11 @@ impl VoxelWorld {
         Some(f64::from(y) + if covered { 1.0 } else { f64::from(fluid & FLUID_AMOUNT) / 9.0 })
     }
 
+    fn fluid_covers(&self, point: [f64; 3], kind: u16) -> bool {
+        self.fluid_top(point[0].floor() as i32, point[1].floor() as i32, point[2].floor() as i32, kind)
+            .is_some_and(|top| top >= point[1])
+    }
+
     fn fluid_depth(&self, at: [f64; 3], lo: [f64; 3], hi: [f64; 3], kind: u16) -> f64 {
         const SHRINK: f64 = 0.001;
         let min: [f64; 3] = std::array::from_fn(|k| at[k] + lo[k] + SHRINK);
@@ -911,6 +916,18 @@ pub fn lava(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> f32 {
     };
     let (lo, hi) = block_bounds(mins, maxs);
     (world.fluid_depth(to_block(world.origin, origin), lo, hi, LAVA) * f64::from(BLOCK)) as f32
+}
+
+pub fn eye_in_lava(origin: [f32; 3], view_height: f32) -> bool {
+    let Ok(guard) = WORLD.read() else {
+        return false;
+    };
+    let Some(world) = guard.as_ref() else {
+        return false;
+    };
+    let mut eye = to_block(world.origin, origin);
+    eye[1] += f64::from(view_height / BLOCK);
+    world.fluid_covers(eye, LAVA)
 }
 
 #[cfg(test)]
@@ -1003,6 +1020,8 @@ mod tests {
         let shallow = w.fluid_depth([8.5, 1.0, 8.5], lo, hi, LAVA);
         assert!((shallow - (2.0 / 9.0 - 0.001)).abs() < 1e-9, "{shallow}");
         assert!(shallow <= 0.4);
+        assert!(w.fluid_covers([4.5, 2.85, 4.5], LAVA) && !w.fluid_covers([4.5, 2.95, 4.5], LAVA));
+        assert!(!w.fluid_covers([4.5, 1.5, 4.5], WATER) && !w.fluid_covers([8.5, 1.5, 8.5], LAVA));
         assert_eq!(pool(2).fluid_depth([8.5, 1.0, 8.5], lo, hi, LAVA), 0.0);
     }
 

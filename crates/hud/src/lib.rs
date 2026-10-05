@@ -17,6 +17,7 @@ mod killcam_skip;
 mod killfeed;
 mod mantle_hint;
 mod menus;
+mod minecraft_fire;
 mod minecraft_inventory;
 mod minecraft_tooltip;
 mod minecraft_vitals;

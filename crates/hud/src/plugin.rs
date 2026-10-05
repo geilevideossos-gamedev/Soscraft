@@ -120,6 +120,7 @@ impl Plugin for HudPlugin {
                             update_hud_elems,
                             update_targetmap,
                             crate::menus::update_script_menus,
+                            crate::minecraft_fire::update,
                             crate::minecraft_inventory::update_minecraft_hud,
                             hud_stage_close::<7>,
                         )
@@ -135,6 +136,7 @@ impl Plugin for HudPlugin {
                 Update,
                 (
                     begin_hud_tess_frame,
+                    crate::minecraft_fire::flush,
                     flush_flash_tess,
                     flush_overhead_names_tess,
                     flush_hud_tess,
@@ -343,6 +345,7 @@ fn ensure_hud_root(mut commands: Commands, existing: Query<Entity, With<HudRoot>
             spawn_targetmap(root);
             crate::menus::spawn_script_menus(root);
             crate::font_overlay::spawn_overlay(root, crate::minecraft_inventory::MinecraftRaster);
+            crate::font_overlay::spawn_overlay(root, crate::minecraft_fire::MinecraftFireRaster);
         });
 }
 
