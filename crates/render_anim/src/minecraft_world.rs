@@ -1018,6 +1018,7 @@ fn update(
     if let Some(entities) = entities.as_mut() {
         let positions: Vec<_> = broken.iter().map(|(pos, ..)| *pos).collect();
         entities.broke(&positions);
+        entities.award_block_experience(&broken);
         entities.drop_blocks(&broken);
         for &pos in &positions {
             spill(containers, entities, pos);

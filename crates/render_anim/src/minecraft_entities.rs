@@ -14,7 +14,7 @@ use minecraft_terrain::server::{PlayerEdit, ServerHandle, ServerSim, TickInput};
 use minecraft_terrain::terrain::TerrainStream;
 use minecraft_terrain::client_mobs::{ClientMobs, server_mobs};
 use minecraft_terrain::mesh::ItemVisuals;
-use minecraft_terrain::server::{EntitySnapshot, ServerItem};
+use minecraft_terrain::server::{EntitySnapshot, ServerItem, ServerOrb};
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::items::{ItemEntity, WorldItems};
 use minecraftoss_player::loot::LootBook;
@@ -75,6 +75,8 @@ pub(crate) struct Entities {
     pub(crate) sounds: Vec<(String, DVec3, f32, f32)>,
     random: minecraftoss_player::rng::LegacyRandom,
     thrown: Vec<(String, [f64; 3], [f64; 3], i32)>,
+    orbs: Vec<ServerOrb>,
+    orb_pickups: Vec<minecraft_terrain::orb_render::OrbPickup>,
     pub(crate) pearl_landings: Vec<DVec3>,
     pub(crate) destroyed: Vec<((i32, i32, i32), Block)>,
     pub(crate) experience_found: f32,
@@ -179,6 +181,8 @@ impl Entities {
             sounds: Vec::new(),
             random: minecraftoss_player::rng::LegacyRandom::new((seed ^ 0x1735) as u64),
             thrown: Vec::new(),
+            orbs: Vec::new(),
+            orb_pickups: Vec::new(),
             pearl_landings: Vec::new(),
             destroyed: Vec::new(),
             experience_found: 0.0,
@@ -205,6 +209,16 @@ impl Entities {
 
     pub(crate) fn unload_chunk(&mut self, pos: minecraftoss_core::ChunkPos) {
         self.server.unload_chunk(pos);
+    }
+
+    pub(crate) fn award_block_experience(&mut self, broken: &[((i32, i32, i32), Block, bool)]) {
+        for (pos, block, _) in broken {
+            let experience = minecraft_terrain::experience::block_experience(block, true, |bound| self.random.next_int(bound));
+            if experience > 0 {
+                let centre = [f64::from(pos.0) + 0.5, f64::from(pos.1) + 0.5, f64::from(pos.2) + 0.5];
+                self.server.award_experience(centre, experience as i32);
+            }
+        }
     }
 
     /// Block loot for what the weapons broke, dropped as vanilla drops it
@@ -407,6 +421,7 @@ impl Entities {
         player: &PlayerView,
     ) -> (Changes, Hits) {
         self.clock += dt;
+        let orb_pickup_target = DVec3::from_array(player.feet) + DVec3::Y * f64::from(EYE_HEIGHT / 2.0);
         let ticked = self.clock >= TICK_SECONDS;
         if ticked {
             self.clock = (self.clock - TICK_SECONDS).min(TICK_SECONDS);
@@ -419,6 +434,7 @@ impl Entities {
                 }
             }
             self.portal.tick();
+            minecraft_terrain::orb_render::tick_pickups(&mut self.orb_pickups, orb_pickup_target);
             if self.ticks % 600 == 0 {
                 diag::info!(World, "Minecraft mobs: {} tracked", self.boxes().len());
             }
@@ -479,8 +495,14 @@ impl Entities {
         let mut hits = Vec::new();
         for output in self.server.poll() {
             self.server_handled = output.handled;
+            for &(id, position, value) in &output.orbs_taken {
+                let tick_count = self.orbs.iter().find(|orb| orb.id == id).map_or(0, |orb| orb.tick_count);
+                let orb = ServerOrb { id, position, previous_position: position, value, tick_count };
+                self.orb_pickups.push(minecraft_terrain::orb_render::OrbPickup::new(orb, orb_pickup_target));
+            }
             if let Some(snapshot) = output.entities {
                 self.thrown = snapshot.thrown.clone();
+                self.orbs = snapshot.orbs.clone();
                 self.server_snapshot = Some(snapshot);
             }
             for landing in output.pearl_landings {
@@ -637,6 +659,7 @@ impl Entities {
         );
         horse_render::append_horses(&mut out.models, &mut out.translucent, w.cows().iter(), poses, atlas, light, partial);
         slime_render::append_slimes(&mut out.models, &mut out.translucent, w.slimes().iter(), poses, atlas, light, partial);
+        orb_render::append_orbs(&mut out.translucent, &self.orbs, &self.orb_pickups, partial, atlas, forward, light);
         let carried = enderman_render::append_endermen(
             &mut out.models,
             w.endermen().iter(),
@@ -700,7 +723,8 @@ impl Entities {
         let carried: Vec<_> = carried.into_iter().chain(poppies).collect();
         let _ = self.items.append_posed_blocks(&mut out.items, &carried, packs, atlas, light);
         // Their shadows, at `getMaxLocalRawBrightness`.
-        let casters = client_mobs::shadow_casters(w, poses, camera, partial);
+        let mut casters = client_mobs::shadow_casters(w, poses, camera, partial);
+        casters.extend(orb_render::shadow_casters(&self.orbs, camera, partial));
         let raw = |pos: (i32, i32, i32)| light.get(pos).saturating_sub(sky_darken).max(light.get_block(pos));
         if let Ok(shadows) = mesh::entity_shadows(&casters, scene, atlas, &raw, 0.0) {
             out.shadows = shadows;

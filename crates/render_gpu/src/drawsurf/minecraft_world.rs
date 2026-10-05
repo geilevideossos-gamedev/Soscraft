@@ -561,6 +561,12 @@ fn draw_terrain(
     pass.set_render_pipeline(&sky);
     pass.draw(0..3, 0..1);
     pass.set_viewport(vp.x as f32, vp.y as f32, vp.z as f32, vp.w as f32, depth_min, depth_max);
+    if let Some((vertices, indices, count)) = gpu.entities[2].as_ref() {
+        pass.set_render_pipeline(&entity_translucent);
+        pass.set_vertex_buffer(0, vertices.slice(..));
+        pass.set_index_buffer(indices.slice(..), IndexFormat::Uint32);
+        pass.draw_indexed(0..*count, 0, 0..1);
+    }
     pass.set_render_pipeline(&translucent);
     for pos in gpu.visible.iter().rev() {
         let Some(section) = gpu.sections.get(pos) else {
@@ -572,12 +578,6 @@ fn draw_terrain(
         pass.set_vertex_buffer(0, section.vertices.slice(..));
         pass.set_index_buffer(section.indices.slice(..), IndexFormat::Uint32);
         pass.draw_indexed(section.transparent_start..section.count, 0, 0..1);
-    }
-    if let Some((vertices, indices, count)) = gpu.entities[2].as_ref() {
-        pass.set_render_pipeline(&entity_translucent);
-        pass.set_vertex_buffer(0, vertices.slice(..));
-        pass.set_index_buffer(indices.slice(..), IndexFormat::Uint32);
-        pass.draw_indexed(0..*count, 0, 0..1);
     }
     if let Some((vertices, indices, count)) = gpu.cracks.as_ref() {
         pass.set_render_pipeline(&crack);
@@ -1176,7 +1176,7 @@ fn pipelines(
             "entity_vertex",
             "entity_translucent_fragment",
             &entity_buffers,
-            false,
+            true,
             CompareFunction::GreaterEqual,
             Some(BlendState::ALPHA_BLENDING),
             None,

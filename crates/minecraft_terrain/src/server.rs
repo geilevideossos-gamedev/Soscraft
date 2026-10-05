@@ -933,6 +933,7 @@ pub enum Command {
     LootTables { jar: std::path::PathBuf, seed: u64 },
     /// `summon minecraft:experience_orb`.
     SummonOrb { position: [f64; 3], value: i32 },
+    AwardExperience { position: [f64; 3], amount: i32 },
     /// `/summon` for a mob, with the command's NBT and the new mob's own
     /// random yaw.
     Summon { kind: String, position: [f64; 3], nbt: Option<minecraftoss_core::nbt::Tag>, y_rot: f32 },
@@ -1130,6 +1131,12 @@ impl ServerHandle {
         self.send(Command::SummonOrb { position, value });
     }
 
+    pub fn award_experience(&mut self, position: [f64; 3], amount: i32) {
+        if amount > 0 {
+            self.send(Command::AwardExperience { position, amount });
+        }
+    }
+
     /// `/summon` for a mob; what it did arrives in an output. The new
     /// mob's yaw comes from its own random (`LivingEntity`'s constructor:
     /// `nextFloat() * (float)(Math.PI * 2)`, in degrees), seeded here from
@@ -1217,6 +1224,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::RecipeBook(recipes) => sim.set_recipe_book(recipes),
                 Command::LootTables { jar, seed } => sim.load_loot(&jar, seed),
                 Command::SummonOrb { position, value } => sim.summon_orb(position, value),
+                Command::AwardExperience { position, amount } => sim.award_experience(position, amount),
                 Command::Summon { kind, position, nbt, y_rot } => {
                     out.summoned.push(sim.summon(&kind, position, nbt.as_ref(), y_rot).map(|()| kind));
                 }
@@ -2394,6 +2402,54 @@ mod tests {
         }
         assert_eq!(taken.iter().map(|(_, v)| v).sum::<i32>(), 5, "every orb is taken: {taken:?}");
         assert!(taken.windows(2).all(|w| w[1].0 - w[0].0 >= 2), "one orb every other tick at most: {taken:?}");
+        assert!(server.orbs().is_empty());
+    }
+
+    #[test]
+    fn broken_ore_experience_lands_as_an_orb_the_player_takes() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states.clone(), "minecraft:overworld");
+        let mut scene = HandcraftedScene::streamed(states);
+        for x in -1..=1 {
+            for z in -1..=1 {
+                let chunk = map.load_now(ChunkPos::new(x, z));
+                server.load_chunk(&chunk);
+                scene.insert_chunk(chunk);
+            }
+        }
+        for x in 2..=14 {
+            for z in 2..=14 {
+                scene.set((x, 200, z), Some(Block::new("minecraft:stone")));
+                server.player_edit(&scene, (x, 200, z), PlayerEdit::Place);
+            }
+        }
+        let ore = Block::new("minecraft:diamond_ore");
+        scene.set((8, 201, 8), Some(ore.clone()));
+        server.player_edit(&scene, (8, 201, 8), PlayerEdit::Place);
+        let at = minecraftoss_core::BlockPos::new(8, 201, 8);
+        assert!(!server.level.registries().blocks.is_air(server.level.block(at)));
+        server.player_breaks(&[(8, 201, 8)]);
+        assert!(server.level.registries().blocks.is_air(server.level.block(at)));
+        let amount = crate::experience::block_experience(&ore, true, |bound| bound - 1);
+        assert_eq!(amount, 7);
+        server.award_experience([8.5, 201.5, 8.5], amount as i32);
+        assert_eq!(server.orbs().iter().map(|o| (o.value, o.position[1])).collect::<Vec<_>>(), [(7, 201.5)]);
+        assert!(!server.level.unsupported.iter().any(|u| u.contains("experience orb")), "{:?}", server.level.unsupported);
+        let feet = [10.5, 201.0, 8.5];
+        server.level.living_players = vec![(feet, 1.62)];
+        let mut taken = 0;
+        for _ in 0..60 {
+            server.tick();
+            if let Some((_, _, value)) = server.take_experience(Some(feet)) {
+                taken += value;
+            }
+        }
+        assert_eq!(taken, 7);
         assert!(server.orbs().is_empty());
     }
 
