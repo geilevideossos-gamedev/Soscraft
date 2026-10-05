@@ -134,7 +134,7 @@ struct Runtime {
     /// Shape id of each block state already seen.
     shapes: HashMap<BlockStateId, u16>,
     /// Boxes of each shape id, to reuse an id for a repeated shape.
-    shape_ids: HashMap<(Vec<[u32; 6]>, u8), u16>,
+    shape_ids: HashMap<(Vec<[u32; 6]>, u16), u16>,
     was_alive: bool,
 }
 
@@ -1533,17 +1533,19 @@ fn update(
 
 fn shape_id(
     shapes: &mut HashMap<BlockStateId, u16>,
-    shape_ids: &mut HashMap<(Vec<[u32; 6]>, u8), u16>,
+    shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
     blocks: &minecraftoss_core::BlockRegistry,
     state: BlockStateId,
 ) -> u16 {
     *shapes.entry(state).or_insert_with(|| {
         let boxes = blocks.collision_boxes(state);
-        let fluid = blocks
-            .state(state)
-            .fluid
-            .filter(|f| matches!(f.kind, minecraftoss_core::block::FluidKind::Water))
-            .map_or(0, |f| sim::voxel::WATER | f.amount.min(sim::voxel::FLUID_AMOUNT));
+        let fluid = blocks.state(state).fluid.map_or(0, |f| {
+            let kind = match f.kind {
+                minecraftoss_core::block::FluidKind::Water => sim::voxel::WATER,
+                minecraftoss_core::block::FluidKind::Lava => sim::voxel::LAVA,
+            };
+            kind | u16::from(f.amount).min(sim::voxel::FLUID_AMOUNT)
+        });
         if boxes.is_empty() && fluid == 0 {
             return 0;
         }
@@ -1569,7 +1571,7 @@ fn spill(containers: &mut minecraft_terrain::containers::Containers, entities: &
 fn write_blocks(
     world: &mut Loaded,
     shapes: &mut HashMap<BlockStateId, u16>,
-    shape_ids: &mut HashMap<(Vec<[u32; 6]>, u8), u16>,
+    shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
     entities: &mut crate::minecraft_entities::Entities,
     writes: Vec<((i32, i32, i32), Option<minecraft_terrain::scene::Block>)>,
 ) {

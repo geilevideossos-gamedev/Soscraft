@@ -35,7 +35,7 @@ pub struct VoxelWorld {
     /// Collision boxes of each shape id, in block space `[min, max]`; id 0 is
     /// empty.
     shapes: Vec<Vec<[f32; 6]>>,
-    fluids: Vec<u8>,
+    fluids: Vec<u16>,
 }
 
 static WORLD: RwLock<Option<VoxelWorld>> = RwLock::new(None);
@@ -346,10 +346,11 @@ pub fn add_shapes(more: Vec<Vec<[f32; 6]>>) -> Option<u16> {
     Some(first)
 }
 
-pub const WATER: u8 = 0x10;
-pub const FLUID_AMOUNT: u8 = 0x0f;
+pub const WATER: u16 = 0x10;
+pub const LAVA: u16 = 0x20;
+pub const FLUID_AMOUNT: u16 = 0x0f;
 
-pub fn add_fluid_shape(boxes: Vec<[f32; 6]>, fluid: u8) -> Option<u16> {
+pub fn add_fluid_shape(boxes: Vec<[f32; 6]>, fluid: u16) -> Option<u16> {
     let mut world = WORLD.write().ok()?;
     let world = world.as_mut()?;
     let id = world.shapes.len() as u16;
@@ -834,7 +835,7 @@ impl VoxelWorld {
             .or_else(|| self.escape(lo, hi, 1, 1.0, CLIMB_OUT).filter(|_| !ceiling).map(|d| along(1, 1.0, d)))
     }
 
-    fn fluid_at(&self, x: i32, y: i32, z: i32) -> u8 {
+    fn fluid_at(&self, x: i32, y: i32, z: i32) -> u16 {
         let Some(chunk) = self.chunks.get(&(x >> 4, z >> 4)) else {
             return 0;
         };
@@ -846,26 +847,24 @@ impl VoxelWorld {
         self.fluids.get(usize::from(id)).copied().unwrap_or(0)
     }
 
-    fn water_top(&self, x: i32, y: i32, z: i32) -> Option<f64> {
+    fn fluid_top(&self, x: i32, y: i32, z: i32, kind: u16) -> Option<f64> {
         let fluid = self.fluid_at(x, y, z);
-        if fluid & WATER == 0 {
+        if fluid & kind == 0 {
             return None;
         }
-        let covered = self.fluid_at(x, y + 1, z) & WATER != 0;
+        let covered = self.fluid_at(x, y + 1, z) & kind != 0;
         Some(f64::from(y) + if covered { 1.0 } else { f64::from(fluid & FLUID_AMOUNT) / 9.0 })
     }
 
-    fn water_sample(&self, at: [f64; 3], lo: [f64; 3], hi: [f64; 3], eye_height: f64) -> movement_iw4::WaterSample {
+    fn fluid_depth(&self, at: [f64; 3], lo: [f64; 3], hi: [f64; 3], kind: u16) -> f64 {
         const SHRINK: f64 = 0.001;
-        const EYE_DROP: f64 = 0.111_111_11;
-        const HEAD: f64 = 0.9;
         let min: [f64; 3] = std::array::from_fn(|k| at[k] + lo[k] + SHRINK);
         let max: [f64; 3] = std::array::from_fn(|k| at[k] + hi[k] - SHRINK);
         let mut depth = 0.0f64;
         for x in min[0].floor() as i32..max[0].ceil() as i32 {
             for y in min[1].floor() as i32..max[1].ceil() as i32 {
                 for z in min[2].floor() as i32..max[2].ceil() as i32 {
-                    if let Some(top) = self.water_top(x, y, z)
+                    if let Some(top) = self.fluid_top(x, y, z, kind)
                         && top >= min[1]
                     {
                         depth = depth.max(top - min[1]);
@@ -873,9 +872,16 @@ impl VoxelWorld {
                 }
             }
         }
+        depth
+    }
+
+    fn water_sample(&self, at: [f64; 3], lo: [f64; 3], hi: [f64; 3], eye_height: f64) -> movement_iw4::WaterSample {
+        const EYE_DROP: f64 = 0.111_111_11;
+        const HEAD: f64 = 0.9;
+        let depth = self.fluid_depth(at, lo, hi, WATER);
         let (x, z) = (at[0].floor() as i32, at[2].floor() as i32);
         let eye_y = at[1] + eye_height - EYE_DROP;
-        let eye = self.water_top(x, eye_y.floor() as i32, z).is_some_and(|top| top > eye_y);
+        let eye = self.fluid_top(x, eye_y.floor() as i32, z, WATER).is_some_and(|top| top > eye_y);
         let head = self.fluid_at(x, (at[1] + HEAD).floor() as i32, z) & WATER != 0;
         movement_iw4::WaterSample {
             depth: (depth * f64::from(BLOCK)) as f32,
@@ -894,6 +900,17 @@ pub fn water(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], view_height: f32)
     };
     let (lo, hi) = block_bounds(mins, maxs);
     world.water_sample(to_block(world.origin, origin), lo, hi, f64::from(view_height / BLOCK))
+}
+
+pub fn lava(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> f32 {
+    let Ok(guard) = WORLD.read() else {
+        return 0.0;
+    };
+    let Some(world) = guard.as_ref() else {
+        return 0.0;
+    };
+    let (lo, hi) = block_bounds(mins, maxs);
+    (world.fluid_depth(to_block(world.origin, origin), lo, hi, LAVA) * f64::from(BLOCK)) as f32
 }
 
 #[cfg(test)]
@@ -963,6 +980,30 @@ mod tests {
         assert!((f64::from(s.depth) / 36.0 - (4.0 / 9.0 - 0.001)).abs() < 1e-4, "{s:?}");
         let dry = sample(&w, [10.5, 1.0, 10.5], 60.0 / 36.0);
         assert_eq!(dry, movement_iw4::WaterSample::default());
+    }
+
+    #[test]
+    fn lava_has_its_own_depth_and_is_never_water() {
+        const LAVA_SOURCE: u16 = 5;
+        const LAVA_FLOWING: u16 = 6;
+        let mut w = world(&[
+            ([4, 0, 4], 1),
+            ([4, 1, 4], LAVA_SOURCE),
+            ([4, 2, 4], LAVA_SOURCE),
+            ([8, 0, 8], 1),
+            ([8, 1, 8], LAVA_FLOWING),
+        ]);
+        w.shapes.extend([Vec::new(), Vec::new()]);
+        w.fluids.extend([LAVA | 8, LAVA | 2]);
+        let half = f64::from(HULL_HALF_WIDTH / BLOCK);
+        let (lo, hi) = ([-half, 0.0, -half], [half, 1.8, half]);
+        let deep = w.fluid_depth([4.5, 1.0, 4.5], lo, hi, LAVA);
+        assert!((deep - (1.0 + 8.0 / 9.0 - 0.001)).abs() < 1e-9, "{deep}");
+        assert_eq!(sample(&w, [4.5, 1.0, 4.5], 60.0 / 36.0), movement_iw4::WaterSample::default());
+        let shallow = w.fluid_depth([8.5, 1.0, 8.5], lo, hi, LAVA);
+        assert!((shallow - (2.0 / 9.0 - 0.001)).abs() < 1e-9, "{shallow}");
+        assert!(shallow <= 0.4);
+        assert_eq!(pool(2).fluid_depth([8.5, 1.0, 8.5], lo, hi, LAVA), 0.0);
     }
 
     #[test]

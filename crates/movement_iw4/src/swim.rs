@@ -21,6 +21,10 @@ const LEAP_CLEARANCE: f32 = 0.6;
 const LOOK_STEEP: f32 = -0.2;
 const LOOK_PULL: f32 = 0.06;
 const LOOK_PULL_STEEP: f32 = 0.085;
+const LAVA_DRAG: f32 = 0.5;
+const SHALLOW_LAVA_VERTICAL_DRAG: f32 = 0.8;
+const LAVA_GRAVITY: f32 = 0.02;
+const SNEAK_SPEED: f32 = 0.3;
 const BUTTON_JUMP: u32 = 0x400;
 const BUTTON_SPRINT: u32 = 0x2;
 
@@ -192,7 +196,83 @@ pub fn water_move<C: CollisionBackend>(
         bounds.tracemask,
         None,
     );
+    leap_out_of_fluid(ps, pml, v, start, bounds, collision);
+}
 
+pub fn lava_move<C: CollisionBackend>(
+    ps: &mut PlayerState,
+    pml: &mut Pml,
+    cmd: &UserCmd,
+    depth: f32,
+    bounds: MoveBounds,
+    collision: &C,
+) {
+    let ticks = pml.frametime / TICK_SECONDS;
+    let jumping = cmd.buttons & BUTTON_JUMP != 0;
+    let sneaking = ps.pm_flags & (pm_flags::CROUCH | pm_flags::PRONE) != 0;
+    let shallow = depth <= SHALLOW * WATER_BLOCK;
+    let mut v = [
+        ps.velocity[0] / PER_TICK,
+        ps.velocity[1] / PER_TICK,
+        ps.velocity[2] / PER_TICK,
+    ];
+
+    let mut lift = 0.0;
+    let mut jumped = false;
+    if jumping && pml.walking != 0 && shallow {
+        if cmd.server_time.wrapping_sub(ps.jump_time) >= GROUND_JUMP_DELAY_MS {
+            v[2] = GROUND_JUMP;
+            ps.jump_time = cmd.server_time;
+            ps.ground_entity_num = ENTITYNUM_NONE;
+            pml.walking = 0;
+            pml.ground_plane = 0;
+            pml.almost_ground_plane = 0;
+            jumped = true;
+        }
+    } else if jumping {
+        lift = RISE;
+    }
+
+    let push = swim_push(
+        [pml.forward[0], pml.forward[1]],
+        [pml.right[0], pml.right[1]],
+        cmd.forwardmove,
+        cmd.rightmove,
+    );
+    let input = if sneaking { SNEAK_SPEED } else { 1.0 };
+    v[0] = settle(v[0], push[0] * input / (1.0 - LAVA_DRAG), LAVA_DRAG, ticks);
+    v[1] = settle(v[1], push[1] * input / (1.0 - LAVA_DRAG), LAVA_DRAG, ticks);
+    if !jumped {
+        let (keep, sink) = if shallow {
+            (SHALLOW_LAVA_VERTICAL_DRAG, LAVA_GRAVITY + SINK_GRAVITY)
+        } else {
+            (LAVA_DRAG, LAVA_GRAVITY)
+        };
+        v[2] = settle(v[2], (lift - sink) / (1.0 - keep), keep, ticks);
+    }
+
+    ps.velocity = [v[0] * PER_TICK, v[1] * PER_TICK, v[2] * PER_TICK];
+    let start = ps.origin;
+    step_slide_move(
+        ps,
+        pml,
+        collision,
+        bounds.mins,
+        bounds.maxs,
+        bounds.tracemask,
+        None,
+    );
+    leap_out_of_fluid(ps, pml, v, start, bounds, collision);
+}
+
+fn leap_out_of_fluid<C: CollisionBackend>(
+    ps: &mut PlayerState,
+    pml: &Pml,
+    v: [f32; 3],
+    start: [f32; 3],
+    bounds: MoveBounds,
+    collision: &C,
+) {
     let wanted = [
         v[0] * PER_TICK * pml.frametime,
         v[1] * PER_TICK * pml.frametime,
@@ -220,6 +300,7 @@ pub fn water_move<C: CollisionBackend>(
             && !collision
                 .water(raised, bounds.mins, bounds.maxs, ps.view_height_current)
                 .wet()
+            && collision.lava(raised, bounds.mins, bounds.maxs) <= 0.0
         {
             ps.velocity[2] = LEAP * PER_TICK;
         }
@@ -290,6 +371,141 @@ mod tests {
         let vanilla = after_drag + lift + (look - after_drag) * pull;
         let (target, keep) = vertical_pull(look, lift, pull, gravity);
         assert!((settle(moving, target, keep, 1.0) - vanilla).abs() < 1e-6);
+    }
+
+    struct Open;
+
+    impl CollisionBackend for Open {
+        fn trace(&self, input: GroundTraceInput) -> trace_iw4::Trace {
+            trace_iw4::Trace {
+                fraction: 1.0,
+                endpos: input.end,
+                ..trace_iw4::Trace::default()
+            }
+        }
+    }
+
+    const BOUNDS: MoveBounds = MoveBounds {
+        mins: [-10.8, -10.8, 0.0],
+        maxs: [10.8, 10.8, 64.8],
+        tracemask: 0,
+        heights: [64.8, 54.0, 30.0],
+    };
+
+    fn tick_pml(walking: bool) -> Pml {
+        Pml {
+            forward: [1.0, 0.0, 0.0],
+            right: [0.0, -1.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            frametime: TICK_SECONDS,
+            msec: 50,
+            walking: u32::from(walking),
+            ground_plane: u32::from(walking),
+            almost_ground_plane: u32::from(walking),
+            ground_trace: [0; 11],
+            previous_origin: [0.0; 3],
+            previous_velocity: [0.0; 3],
+            holdrand: 0,
+            jump_animations: [None; 4],
+            mantle_movetype: None,
+            landing_animation: false,
+        }
+    }
+
+    fn afloat() -> PlayerState {
+        let mut ps = PlayerState::ZERO;
+        ps.ground_entity_num = ENTITYNUM_NONE;
+        ps
+    }
+
+    fn lava_ticks(ps: &mut PlayerState, cmd: UserCmd, depth: f32, ticks: u32) -> [f32; 3] {
+        for _ in 0..ticks {
+            lava_move(ps, &mut tick_pml(false), &cmd, depth, BOUNDS, &Open);
+        }
+        ps.velocity.map(|v| v / PER_TICK)
+    }
+
+    #[test]
+    fn lava_reaches_vanilla_speeds() {
+        let deep = 2.0 * WATER_BLOCK;
+        let forward = UserCmd {
+            forwardmove: 127,
+            ..UserCmd::default()
+        };
+        let mut ps = afloat();
+        let wading = lava_ticks(&mut ps, forward, deep, 100);
+        assert!((wading[0] - 0.0392).abs() < 1e-5, "{wading:?}");
+        assert!((wading[2] + 0.04).abs() < 1e-5, "{wading:?}");
+        let rising = UserCmd {
+            buttons: BUTTON_JUMP,
+            ..forward
+        };
+        let up = lava_ticks(&mut ps, rising, deep, 100);
+        assert!((up[2] - 0.04).abs() < 1e-5, "{up:?}");
+        let mut sneaking = afloat();
+        sneaking.pm_flags |= pm_flags::CROUCH;
+        let slow = lava_ticks(&mut sneaking, forward, deep, 100);
+        assert!((slow[0] - 0.0392 * SNEAK_SPEED).abs() < 1e-5, "{slow:?}");
+        let mut sprinting = afloat();
+        sprinting.pm_flags |= pm_flags::SPRINTING;
+        let same = lava_ticks(&mut sprinting, forward, deep, 100);
+        assert!((same[0] - 0.0392).abs() < 1e-5, "{same:?}");
+        let mut shallow = afloat();
+        let sinking = lava_ticks(&mut shallow, UserCmd::default(), 0.3 * WATER_BLOCK, 100);
+        assert!((sinking[2] + 0.125).abs() < 1e-5, "{sinking:?}");
+    }
+
+    #[test]
+    fn grounded_players_jump_out_of_shallow_lava_every_half_second() {
+        let shallow = 0.3 * WATER_BLOCK;
+        let jump = UserCmd {
+            server_time: 1000,
+            buttons: BUTTON_JUMP,
+            ..UserCmd::default()
+        };
+        let mut ps = PlayerState::ZERO;
+        let mut grounded = tick_pml(true);
+        lava_move(&mut ps, &mut grounded, &jump, shallow, BOUNDS, &Open);
+        assert!(
+            (ps.velocity[2] - GROUND_JUMP * PER_TICK).abs() < 1e-3,
+            "{:?}",
+            ps.velocity
+        );
+        assert_eq!(
+            (ps.jump_time, ps.ground_entity_num, grounded.walking),
+            (1000, ENTITYNUM_NONE, 0)
+        );
+        let soon = UserCmd {
+            server_time: 1450,
+            ..jump
+        };
+        let mut again = PlayerState::ZERO;
+        again.jump_time = 1000;
+        lava_move(
+            &mut again,
+            &mut tick_pml(true),
+            &soon,
+            shallow,
+            BOUNDS,
+            &Open,
+        );
+        assert!(again.velocity[2] < 0.0, "{:?}", again.velocity);
+        assert_eq!(again.jump_time, 1000);
+        let mut deep = PlayerState::ZERO;
+        deep.jump_time = 1000;
+        lava_move(
+            &mut deep,
+            &mut tick_pml(true),
+            &soon,
+            2.0 * WATER_BLOCK,
+            BOUNDS,
+            &Open,
+        );
+        assert!(
+            (deep.velocity[2] / PER_TICK - 0.02).abs() < 1e-5,
+            "{:?}",
+            deep.velocity
+        );
     }
 
     #[test]

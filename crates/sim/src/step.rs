@@ -1869,6 +1869,14 @@ impl CollisionBackend for ClipBackend<'_> {
             movement_iw4::WaterSample::default()
         }
     }
+
+    fn lava(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> f32 {
+        if crate::voxel::active_for(self.brushes) {
+            crate::voxel::lava(origin, mins, maxs)
+        } else {
+            0.0
+        }
+    }
 }
 
 impl movement_iw4::MantleCapsuleTrace for ClipBackend<'_> {

@@ -27,4 +27,8 @@ pub trait CollisionBackend {
     ) -> crate::WaterSample {
         crate::WaterSample::default()
     }
+
+    fn lava(&self, _origin: [f32; 3], _mins: [f32; 3], _maxs: [f32; 3]) -> f32 {
+        0.0
+    }
 }

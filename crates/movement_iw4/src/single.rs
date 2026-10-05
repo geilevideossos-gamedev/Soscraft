@@ -112,6 +112,7 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
         context.bounds.maxs,
         ps.view_height_current,
     );
+    let lava = collision.lava(ps.origin, context.bounds.mins, context.bounds.maxs);
     crate::swim::hold_sprint(ps, water, pml.msec);
     let mut sprint = context.sprint;
     if ps.pm_flags & 3 != 0 {
@@ -258,6 +259,9 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
             );
         } else if water.wet() {
             crate::water_move(ps, &mut pml, cmd, water, bounds, collision);
+            swam = true;
+        } else if lava > 0.0 {
+            crate::lava_move(ps, &mut pml, cmd, lava, bounds, collision);
             swam = true;
         } else if pml.walking == 0 {
             air_move(ps, &pml, cmd, context.air, bounds, collision);
