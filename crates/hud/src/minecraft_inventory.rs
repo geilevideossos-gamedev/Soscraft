@@ -260,6 +260,9 @@ pub(crate) fn update_minecraft_hud(
         if keys.just_pressed(KeyCode::KeyQ) {
             ui.drop_selected = Some(ctrl);
         }
+        if (!blocked && keys.just_pressed(KeyCode::KeyF)) || pad_just(GamepadButton::DPadDown) {
+            ui.swap_hands = true;
+        }
         if !blocked
             && keys.just_pressed(KeyCode::KeyM)
             && let Some(settings) = settings.as_mut()

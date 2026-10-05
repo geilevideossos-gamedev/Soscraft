@@ -507,7 +507,7 @@ impl Survival {
         let Some(using) = self.eating.as_mut() else {
             return Bite::Nothing;
         };
-        if using.slot != selected {
+        if using.slot != selected && using.slot != crate::minecraft_offhand::OFFHAND {
             self.eating = None;
             return Bite::Nothing;
         }
@@ -541,6 +541,36 @@ impl Survival {
                 Bite::Nothing
             }
         }
+    }
+
+    pub(crate) fn protect(&mut self, inventory: &mut Inventory, selected: usize) -> bool {
+        let Some(slot) = crate::minecraft_offhand::totem_slot(inventory, selected) else {
+            return false;
+        };
+        if let Some(totem) = inventory.slots[slot].as_mut() {
+            totem.count -= 1;
+            if totem.count == 0 {
+                inventory.slots[slot] = None;
+            }
+        }
+        self.status.health = 1.0;
+        for kind in [
+            EffectKind::Hunger,
+            EffectKind::Poison,
+            EffectKind::Regeneration,
+            EffectKind::Absorption,
+            EffectKind::Resistance,
+            EffectKind::FireResistance,
+            EffectKind::Nausea,
+            EffectKind::Slowness,
+            EffectKind::Weakness,
+        ] {
+            self.status.remove_effect(kind);
+        }
+        self.status.add_effect(EffectKind::Regeneration, 900, 1);
+        self.status.add_effect(EffectKind::Absorption, 100, 1);
+        self.status.add_effect(EffectKind::FireResistance, 800, 0);
+        true
     }
 
     pub(crate) fn vitals(&self) -> frame::McVitals {
@@ -1115,6 +1145,47 @@ mod tests {
         }
         assert_eq!(survival.status.absorption, 4.0);
         assert!(survival.vitals().regen_index >= 0);
+    }
+
+    #[test]
+    fn offhand_food_keeps_eating_when_the_hotbar_selection_changes() {
+        let mut survival = fresh();
+        survival.status.food.level = 10;
+        let mut inventory = Inventory::default();
+        inventory.slots[40] = Some(ItemStack::new("minecraft:bread", 2));
+        let bread = inventory.slots[40].clone().expect("bread");
+        assert!(survival.start_eating(40, &bread));
+        let mut done = false;
+        for tick in 0..32 {
+            done |= matches!(survival.chew(&mut inventory, tick % 9, || 0.5), Bite::Done { .. });
+        }
+        assert!(done);
+        assert_eq!(inventory.slots[40].as_ref().map(|s| s.count), Some(1));
+    }
+
+    #[test]
+    fn a_totem_keeps_one_health_and_gives_its_effects() {
+        let mut survival = fresh();
+        let mut inventory = Inventory::default();
+        inventory.slots[3] = Some(ItemStack::new("minecraft:totem_of_undying", 1));
+        inventory.slots[40] = Some(ItemStack::new("minecraft:totem_of_undying", 1));
+        survival.status.add_effect(EffectKind::Poison, 400, 1);
+        survival.status.add_effect(EffectKind::Weakness, 400, 0);
+        survival.status.health = 0.0;
+        assert!(survival.protect(&mut inventory, 3));
+        assert_eq!(survival.status.health, 1.0);
+        assert!(inventory.slots[3].is_none());
+        assert!(inventory.slots[40].is_some());
+        assert!(survival.status.effect(EffectKind::Poison).is_none());
+        assert!(survival.status.effect(EffectKind::Weakness).is_none());
+        let effect = |kind| survival.status.effect(kind).map(|e| (e.duration, e.amplifier));
+        assert_eq!(effect(EffectKind::Regeneration), Some((900, 1)));
+        assert_eq!(effect(EffectKind::Absorption), Some((100, 1)));
+        assert_eq!(effect(EffectKind::FireResistance), Some((800, 0)));
+        assert_eq!(survival.status.absorption, 8.0);
+        assert!(survival.protect(&mut inventory, 3));
+        assert!(inventory.slots[40].is_none());
+        assert!(!survival.protect(&mut inventory, 3));
     }
 
     #[derive(Default)]

@@ -272,6 +272,7 @@ pub(crate) fn finish_damage(
     {
         return Finish::Hurt;
     }
+    let authoritative = world.publishes_snapshot();
     let Some(ps) = world.player_mut(id) else {
         return Finish::Hurt;
     };
@@ -280,6 +281,10 @@ pub(crate) fn finish_damage(
     ps.damage_count = ps.damage_count.saturating_add(1);
     ps.damage_event = ps.damage_event.wrapping_add(1);
     if ps.health > 0 {
+        return Finish::Hurt;
+    }
+    if authoritative && crate::voxel::spend_death_protection(id.0) {
+        ps.health = 1;
         return Finish::Hurt;
     }
     use playerstate_iw4::pm_flags::LAST_STAND;

@@ -347,6 +347,7 @@ fn publish_client_action_input(
         *wheel_carry = 0.0;
     }
     let script_menu = script_menus.is_some_and(|menus| menus.captures_input());
+    let minecraft_map = minecraft.as_ref().is_some_and(|ui| ui.active);
     let inventory_open = minecraft.is_some_and(|ui| ui.active && ui.inventory_open);
     skate.input_blocked = console.open || script_menu;
     // J, or clicking both sticks in together, toggles skating.
@@ -378,7 +379,11 @@ fn publish_client_action_input(
         .is_some_and(|ps| ps.last_weapon_hand == 1);
     let mut current = [0; input_iw4::KEY_COUNT];
     for (button, id) in binds.iter() {
-        let id = crate::binds::gameplay_binding(button, id, akimbo);
+        let id = if minecraft_map && button == crate::binds::BindButton::Key(KeyCode::KeyF) {
+            0
+        } else {
+            crate::binds::gameplay_binding(button, id, akimbo)
+        };
         let key_num = host_keynum(button);
         if key_num < current.len() {
             current[key_num] = id;

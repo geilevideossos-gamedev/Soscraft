@@ -291,6 +291,34 @@ pub(crate) fn take_player_damage() -> Vec<(u32, i32, Option<[f32; 3]>)> {
     PLAYER_DAMAGE.lock().map(|mut d| std::mem::take(&mut *d)).unwrap_or_default()
 }
 
+static DEATH_PROTECTED: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+static TOTEM_POPS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
+pub fn set_death_protected(client: u32, protected: bool) {
+    if let Ok(mut clients) = DEATH_PROTECTED.lock() {
+        clients.retain(|&c| c != client);
+        if protected {
+            clients.push(client);
+        }
+    }
+}
+
+pub(crate) fn spend_death_protection(client: u32) -> bool {
+    let spent = DEATH_PROTECTED.lock().is_ok_and(|mut clients| {
+        let before = clients.len();
+        clients.retain(|&c| c != client);
+        clients.len() < before
+    });
+    if spent && let Ok(mut pops) = TOTEM_POPS.lock() {
+        pops.push(client);
+    }
+    spent
+}
+
+pub fn take_totem_pops() -> Vec<u32> {
+    TOTEM_POPS.lock().map_or_else(|_| Vec::new(), |mut pops| std::mem::take(&mut *pops))
+}
+
 pub fn take_events() -> Vec<VoxelEvent> {
     EVENTS.lock().map(|mut events| std::mem::take(&mut *events)).unwrap_or_default()
 }
@@ -333,6 +361,10 @@ pub fn deactivate() {
     }
     let _ = take_events();
     let _ = take_player_damage();
+    let _ = take_totem_pops();
+    if let Ok(mut clients) = DEATH_PROTECTED.lock() {
+        clients.clear();
+    }
     set_mob_boxes(Vec::new());
 }
 
@@ -1244,5 +1276,19 @@ mod tests {
         ps.view_height_target = movement_iw4::view_height::PRONE;
         assert_eq!(player_hull(&ps).1[2], 30.0);
         assert_eq!(player_hull(&ps).1[0], 0.3 * BLOCK);
+    }
+
+    #[test]
+    fn a_totem_saves_one_death_and_reports_it() {
+        let client = 7_000_001;
+        assert!(!spend_death_protection(client));
+        set_death_protected(client, true);
+        set_death_protected(client, true);
+        assert!(spend_death_protection(client));
+        assert!(!spend_death_protection(client));
+        assert_eq!(take_totem_pops().iter().filter(|&&c| c == client).count(), 1);
+        set_death_protected(client, true);
+        set_death_protected(client, false);
+        assert!(!spend_death_protection(client));
     }
 }

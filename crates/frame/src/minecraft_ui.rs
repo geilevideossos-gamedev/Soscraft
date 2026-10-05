@@ -150,6 +150,11 @@ pub struct MinecraftUi {
     pub empty_hand: bool,
     /// How far through its swing the hand is, 0 to 1.
     pub hand_swing: f32,
+    pub swap_hands: bool,
+    pub offhand_usable: bool,
+    pub offhand_key: Option<bool>,
+    pub offhand_busy: bool,
+    pub using_item: bool,
     /// The minimap's picture of the world and the map points of its
     /// north-west and south-east corners.
     pub minimap: Option<(Handle<Image>, [f32; 2], [f32; 2])>,

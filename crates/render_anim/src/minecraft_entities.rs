@@ -34,7 +34,7 @@ const PLAYER: u64 = 0;
 /// `Player.getEyeHeight` standing.
 const EYE_HEIGHT: f32 = 1.62;
 const SERVER_ITEM: u32 = 1 << 31;
-type Hits = Vec<(f32, Option<[f64; 3]>)>;
+type Hits = Vec<(f32, Option<[f64; 3]>, Option<[f64; 2]>)>;
 type Changes = Vec<((i32, i32, i32), Option<Block>)>;
 
 pub(crate) struct Blow {
@@ -364,15 +364,15 @@ impl Entities {
     /// A held item's model under a view-space pose, lit at `light_at`.
     pub(crate) fn held_item_mesh(
         &mut self,
-        id: &str,
-        pose: glam::Mat4,
+        posed: &[(glam::Mat4, String)],
         light_at: glam::Vec3,
         packs: &PackStack,
         atlas: &Atlas,
         light: &SkyLight,
     ) -> ChunkMesh {
         let mut mesh = ChunkMesh::default();
-        let _ = self.items.append_posed_items(&mut mesh, &[(pose, light_at, id.to_owned())], packs, atlas, light);
+        let items: Vec<_> = posed.iter().map(|(pose, id)| (*pose, light_at, id.clone())).collect();
+        let _ = self.items.append_posed_items(&mut mesh, &items, packs, atlas, light);
         mesh
     }
 
@@ -577,7 +577,12 @@ impl Entities {
                     PlayerHitKind::Melee { attacker, .. } => Some(attacker.to_array()),
                     _ => None,
                 };
-                hits.push((hit.damage, from));
+                let toward = match hit.kind {
+                    PlayerHitKind::Melee { attacker, .. } => [attacker.x - player.feet[0], attacker.z - player.feet[2]],
+                    PlayerHitKind::Arrow { velocity, .. } => [-velocity.x, -velocity.z],
+                    PlayerHitKind::Explosion { knockback } => [-knockback.x, -knockback.z],
+                };
+                hits.push((hit.damage, from, Some(toward)));
             }
         }
         if ticked {

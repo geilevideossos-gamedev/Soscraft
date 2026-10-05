@@ -190,6 +190,13 @@ pub fn item_gui_light_front(pack: &PackStack, item: &ResourceId) -> Result<bool>
     Ok(item_display_model(pack, item, false)?.is_some_and(|model| model.get("gui_light").and_then(Value::as_str) == Some("front")))
 }
 pub fn item_display_transform_using(pack: &PackStack, item: &ResourceId, context: &str, using_item: bool) -> Result<Mat4> {
+    display_transform(pack, item, context, using_item, false)
+}
+pub fn item_hand_transform(pack: &PackStack, item: &ResourceId, left_hand: bool, using_item: bool) -> Result<Mat4> {
+    let context = if left_hand { "firstperson_lefthand" } else { "firstperson_righthand" };
+    display_transform(pack, item, context, using_item, left_hand)
+}
+fn display_transform(pack: &PackStack, item: &ResourceId, context: &str, using_item: bool, left_hand: bool) -> Result<Mat4> {
     let Some(model) = item_display_model(pack, item, using_item)? else {
         return Ok(Mat4::IDENTITY);
     };
@@ -207,14 +214,15 @@ pub fn item_display_transform_using(pack: &PackStack, item: &ResourceId, context
             })
             .unwrap_or(default)
     };
-    let degrees = vector("rotation", Vec3::ZERO);
+    let (turn_mirror, shift_mirror) = if left_hand { (Vec3::new(1.0, -1.0, -1.0), Vec3::new(-1.0, 1.0, 1.0)) } else { (Vec3::ONE, Vec3::ONE) };
+    let degrees = vector("rotation", Vec3::ZERO) * turn_mirror;
     let rotation = Vec3::new(
         degrees.x.to_radians(),
         degrees.y.to_radians(),
         degrees.z.to_radians(),
     );
     let translation =
-        vector("translation", Vec3::ZERO).clamp(Vec3::splat(-80.0), Vec3::splat(80.0)) / 16.0;
+        vector("translation", Vec3::ZERO).clamp(Vec3::splat(-80.0), Vec3::splat(80.0)) / 16.0 * shift_mirror;
     let scale = vector("scale", Vec3::ONE).clamp(Vec3::splat(-4.0), Vec3::splat(4.0));
     Ok(Mat4::from_translation(translation)
         * Mat4::from_quat(Quat::from_euler(
@@ -749,6 +757,9 @@ fn load_parented(
     let mut value = pack
         .model(id)?
         .ok_or_else(|| anyhow!("missing model {}", id.key()))?;
+    if let Some(display) = value.get_mut("display").and_then(Value::as_object_mut) {
+        fill_left_hands(display);
+    }
     if let Some(parent) = value.get("parent").and_then(Value::as_str) {
         let parent_id = ResourceId::parse(parent)?;
         let mut inherited = load_parented(pack, &parent_id, seen)?;
@@ -791,6 +802,18 @@ fn load_parented(
     }
     seen.remove(id);
     Ok(value)
+}
+fn fill_left_hands(display: &mut serde_json::Map<String, Value>) {
+    for (left, right) in [
+        ("thirdperson_lefthand", "thirdperson_righthand"),
+        ("firstperson_lefthand", "firstperson_righthand"),
+    ] {
+        if !display.contains_key(left) {
+            if let Some(transform) = display.get(right).cloned() {
+                display.insert(left.to_owned(), transform);
+            }
+        }
+    }
 }
 fn choose_models<'a>(
     state: &'a Value,
@@ -955,6 +978,36 @@ mod tests {
         assert!((center.x - 1.13 / 16.0).abs() < 1e-5);
         assert!((center.y - 3.2 / 16.0).abs() < 1e-5);
         assert!((center.z - 1.13 / 16.0).abs() < 1e-5);
+    }
+    #[test]
+    fn the_left_hand_takes_the_nearest_hand_display_and_mirrors_it() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(root.join("pack.mcmeta"), r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#).unwrap();
+        for (name, contents) in [
+            ("assets/test/items/rod.json", r#"{"model":{"type":"minecraft:model","model":"test:item/rod"}}"#),
+            ("assets/test/models/item/rod.json", r#"{"parent":"test:item/held","display":{"firstperson_righthand":{"rotation":[10,-90,25],"translation":[1.13,3.2,1.13],"scale":[0.68,0.68,0.68]}}}"#),
+            ("assets/test/models/item/held.json", r#"{"display":{"firstperson_lefthand":{"rotation":[0,0,0],"translation":[9,9,9],"scale":[1,1,1]}}}"#),
+            ("assets/test/items/plate.json", r#"{"model":{"type":"minecraft:model","model":"test:item/plate"}}"#),
+            ("assets/test/models/item/plate.json", r#"{"display":{"firstperson_righthand":{"translation":[-15,3.25,-11]},"firstperson_lefthand":{"translation":[5,5,-11]}}}"#),
+        ] {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+        let pack = PackStack::open(vec![root.into()]).unwrap();
+        let rod = ResourceId::parse("test:rod").unwrap();
+        let left = item_hand_transform(&pack, &rod, true, false).unwrap();
+        let expected = Mat4::from_translation(Vec3::new(-1.13, 3.2, 1.13) / 16.0)
+            * Mat4::from_quat(Quat::from_euler(EulerRot::XYZ, 10f32.to_radians(), 90f32.to_radians(), -25f32.to_radians()))
+            * Mat4::from_scale(Vec3::splat(0.68))
+            * Mat4::from_translation(Vec3::splat(-0.5));
+        assert!(left.abs_diff_eq(expected, 1e-5));
+        let right = item_hand_transform(&pack, &rod, false, false).unwrap();
+        assert!(right.abs_diff_eq(item_first_person_transform(&pack, &rod).unwrap(), 1e-6));
+        let plate = ResourceId::parse("test:plate").unwrap();
+        let centre = item_hand_transform(&pack, &plate, true, false).unwrap().transform_point3(Vec3::splat(0.5));
+        assert!((centre - Vec3::new(-5.0, 5.0, -11.0) / 16.0).length() < 1e-5);
     }
     #[test]
     fn double_chest_halves_use_entity_textures_and_hide_join_faces() {

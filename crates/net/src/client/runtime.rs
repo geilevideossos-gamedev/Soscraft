@@ -1078,6 +1078,26 @@ pub fn sample_client_input(
     if minecraft.as_ref().is_some_and(|ui| ui.active && ui.holding_item) {
         cmd.buttons &= !(playerstate_iw4::buttons::ATTACK | playerstate_iw4::buttons::ADS);
     }
+    if let Some(ui) = minecraft.as_mut() {
+        let smoke = ui.active && (actions.client.kb.smoke.active || actions.client.kb.smoke.was_pressed);
+        ui.offhand_key = match ui.offhand_key {
+            _ if !smoke => None,
+            None => Some(ui.offhand_usable),
+            latched => latched,
+        };
+        if ui.offhand_key == Some(true) {
+            cmd.buttons &= !playerstate_iw4::buttons::SMOKE;
+        }
+        if ui.active && ui.offhand_busy {
+            cmd.buttons &= !(playerstate_iw4::buttons::ATTACK | playerstate_iw4::buttons::ADS);
+        }
+        if ui.active && ui.using_item {
+            let slowed = |axis: i8| (f32::from(axis) * MINECRAFT_ITEM_USE_SPEED) as i8;
+            cmd.forwardmove = slowed(cmd.forwardmove);
+            cmd.rightmove = slowed(cmd.rightmove);
+            cmd.buttons &= !playerstate_iw4::buttons::SPRINT;
+        }
+    }
     look.angles = cmd.angles;
     if !frozen
         && aim.live
@@ -1140,6 +1160,7 @@ pub fn sample_client_input(
     template.ready = true;
 }
 
+const MINECRAFT_ITEM_USE_SPEED: f32 = 0.2;
 const AIM_AUTOMELEE_RANGE: f32 = 128.0;
 const MELEE_REGION_TAN_X: f32 = 0.849 * 0.5;
 const MELEE_REGION_TAN_Y: f32 = 0.478 * 0.5;
