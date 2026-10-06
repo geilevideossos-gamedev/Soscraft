@@ -1406,6 +1406,100 @@ mod tests {
         assert_eq!(player_hull(&ps).1[0], 0.3 * BLOCK);
     }
 
+    struct Pond(VoxelWorld);
+
+    impl movement_iw4::CollisionBackend for Pond {
+        fn trace(&self, input: movement_iw4::GroundTraceInput) -> trace_iw4::Trace {
+            trace_in(&self.0, input.start, input.end, input.mins, input.maxs, None)
+        }
+
+        fn water(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], view_height: f32) -> movement_iw4::WaterSample {
+            let (lo, hi) = block_bounds(mins, maxs);
+            self.0.water_sample(to_block(self.0.origin, origin), lo, hi, f64::from(view_height / BLOCK))
+        }
+
+        fn lava(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> f32 {
+            let (lo, hi) = block_bounds(mins, maxs);
+            (self.0.fluid_depth(to_block(self.0.origin, origin), lo, hi, LAVA) * f64::from(BLOCK)) as f32
+        }
+    }
+
+    const LAVA_POOL: u16 = 5;
+    const POND_EDGE: i32 = 12;
+    const POND_SURFACE: f64 = 2.0 + 8.0 / 9.0;
+
+    fn pond(fluid: u16, depth: i32, bank_top: i32) -> Pond {
+        let mut blocks = Vec::new();
+        for x in 0..16 {
+            for z in 0..16 {
+                blocks.push(([x, 0, z], 1));
+                let (top, block) = if x < POND_EDGE { (depth, fluid) } else { (bank_top - 1, 1) };
+                for y in 1..=top {
+                    blocks.push(([x, y, z], block));
+                }
+            }
+        }
+        let mut w = world(&blocks);
+        w.shapes.push(Vec::new());
+        w.fluids.push(LAVA | 8);
+        Pond(w)
+    }
+
+    fn swimmer(feet: [f64; 3]) -> playerstate_iw4::PlayerState {
+        crate::world::spawn_player_state(to_map([0.0; 3], feet), [0.0; 3])
+    }
+
+    fn swim(pond: &Pond, ps: &mut playerstate_iw4::PlayerState, buttons: u32, forwardmove: i8, msec: i32, seconds: i32) -> Vec<[f64; 3]> {
+        let mut old_buttons = 0;
+        let mut path = Vec::new();
+        for _ in 0..seconds * 1000 / msec {
+            let context = crate::step::pmove_context(old_buttons, (1.0, 1.0, 1.0), false, false, 0.005, 0.005, 0, false, true, false, 0, 0, 0, false, false);
+            let context = movement_iw4::PmoveSingleContext { bounds: move_bounds(context.bounds), ..context };
+            let mut cmd = playerstate_iw4::UserCmd { server_time: ps.command_time + msec, buttons, forwardmove, ..playerstate_iw4::UserCmd::default() };
+            movement_iw4::pmove(ps, &mut cmd, context, pond, &movement_iw4::FlatMantleAnimLength::default(), &movement_iw4::ZeroMantleRootDelta);
+            old_buttons = buttons;
+            path.push(to_block([0.0; 3], ps.origin));
+        }
+        path
+    }
+
+    #[test]
+    fn holding_jump_lifts_a_swimmer_off_the_floor_of_deep_water_or_lava_to_float_at_the_surface() {
+        for fluid in [SOURCE, LAVA_POOL] {
+            for msec in [50, 8] {
+                let pond = pond(fluid, 2, 1);
+                let mut ps = swimmer([6.5, 1.5, 8.5]);
+                let sunk = swim(&pond, &mut ps, 0, 0, msec, 3);
+                assert!((sunk[sunk.len() - 1][1] - 1.0).abs() < 0.01, "fluid {fluid} msec {msec}: {:?}", sunk.last());
+                assert_eq!(ps.ground_entity_num, i32::from(trace_iw4::ENTITYNUM_WORLD), "fluid {fluid} msec {msec}");
+                let held = swim(&pond, &mut ps, playerstate_iw4::buttons::JUMP, 0, msec, 8);
+                let floating = &held[held.len() * 5 / 8..];
+                assert!(
+                    floating.iter().all(|p| (p[1] - POND_SURFACE).abs() < 0.5),
+                    "fluid {fluid} msec {msec}: {:?}",
+                    floating.iter().map(|p| p[1]).fold((f64::MAX, f64::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_swimmer_holding_jump_climbs_out_onto_a_bank_one_block_above_the_floor_or_level_with_the_water() {
+        for fluid in [SOURCE, LAVA_POOL] {
+            for (depth, bank_top) in [(1, 2), (2, 3)] {
+                for msec in [50, 8] {
+                    let pond = pond(fluid, depth, bank_top);
+                    let mut ps = swimmer([10.5, 1.5, 8.5]);
+                    swim(&pond, &mut ps, 0, 0, msec, 3);
+                    assert_eq!(ps.ground_entity_num, i32::from(trace_iw4::ENTITYNUM_WORLD), "fluid {fluid} depth {depth} msec {msec}");
+                    let path = swim(&pond, &mut ps, playerstate_iw4::buttons::JUMP, 127, msec, 6);
+                    let ashore = path.iter().any(|p| p[0] > f64::from(POND_EDGE) + 0.3 && (p[1] - f64::from(bank_top)).abs() < 0.01);
+                    assert!(ashore, "fluid {fluid} depth {depth} msec {msec}: {:?}", path.last());
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_totem_saves_one_death_and_reports_it() {
         let client = 7_000_001;

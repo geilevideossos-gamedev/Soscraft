@@ -2113,7 +2113,8 @@ fn clip_move_to_players(
     hit
 }
 
-fn pmove_context(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pmove_context(
     old_buttons: u32,
     weapon_scales: (f32, f32, f32),
     ads_allowed: bool,

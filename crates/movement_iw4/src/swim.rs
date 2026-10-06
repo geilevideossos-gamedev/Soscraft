@@ -169,10 +169,7 @@ pub fn water_move<C: CollisionBackend>(
         if cmd.server_time.wrapping_sub(ps.jump_time) >= GROUND_JUMP_DELAY_MS {
             v[2] = GROUND_JUMP;
             ps.jump_time = cmd.server_time;
-            ps.ground_entity_num = ENTITYNUM_NONE;
-            pml.walking = 0;
-            pml.ground_plane = 0;
-            pml.almost_ground_plane = 0;
+            leave_ground(ps, pml);
         }
     } else if jumping {
         lift += RISE;
@@ -204,6 +201,9 @@ pub fn water_move<C: CollisionBackend>(
     let gravity = if sprinting { 0.0 } else { SINK_GRAVITY };
     let (target, keep) = vertical_pull(look_up, lift, pull, gravity);
     v[2] = settle(v[2], target, keep, ticks);
+    if v[2] > 0.0 {
+        leave_ground(ps, pml);
+    }
 
     ps.velocity = [v[0] * PER_TICK, v[1] * PER_TICK, v[2] * PER_TICK];
     let start = ps.origin;
@@ -243,10 +243,7 @@ pub fn lava_move<C: CollisionBackend>(
         if cmd.server_time.wrapping_sub(ps.jump_time) >= GROUND_JUMP_DELAY_MS {
             v[2] = GROUND_JUMP;
             ps.jump_time = cmd.server_time;
-            ps.ground_entity_num = ENTITYNUM_NONE;
-            pml.walking = 0;
-            pml.ground_plane = 0;
-            pml.almost_ground_plane = 0;
+            leave_ground(ps, pml);
             jumped = true;
         }
     } else if jumping {
@@ -270,6 +267,9 @@ pub fn lava_move<C: CollisionBackend>(
         };
         v[2] = settle(v[2], (lift - sink) / (1.0 - keep), keep, ticks);
     }
+    if v[2] > 0.0 {
+        leave_ground(ps, pml);
+    }
 
     ps.velocity = [v[0] * PER_TICK, v[1] * PER_TICK, v[2] * PER_TICK];
     let start = ps.origin;
@@ -283,6 +283,13 @@ pub fn lava_move<C: CollisionBackend>(
         None,
     );
     leap_out_of_fluid(ps, pml, v, start, bounds, collision);
+}
+
+fn leave_ground(ps: &mut PlayerState, pml: &mut Pml) {
+    ps.ground_entity_num = ENTITYNUM_NONE;
+    pml.walking = 0;
+    pml.ground_plane = 0;
+    pml.almost_ground_plane = 0;
 }
 
 fn leap_out_of_fluid<C: CollisionBackend>(
@@ -526,6 +533,43 @@ mod tests {
             "{:?}",
             deep.velocity
         );
+    }
+
+    #[test]
+    fn a_grounded_swimmer_rising_in_deep_fluid_leaves_the_ground_and_a_sinking_one_keeps_it() {
+        let deep = WaterSample {
+            depth: 2.0 * WATER_BLOCK,
+            eye: true,
+            head: true,
+        };
+        let rise = UserCmd {
+            server_time: 1000,
+            buttons: BUTTON_JUMP,
+            ..UserCmd::default()
+        };
+        let on_floor = || {
+            let mut ps = PlayerState::ZERO;
+            ps.ground_entity_num = i32::from(trace_iw4::ENTITYNUM_WORLD);
+            ps
+        };
+        for lava in [false, true] {
+            for (cmd, rising) in [(rise, true), (UserCmd::default(), false)] {
+                let mut ps = on_floor();
+                let mut pml = tick_pml(true);
+                if lava {
+                    lava_move(&mut ps, &mut pml, &cmd, deep.depth, BOUNDS, &Open);
+                } else {
+                    water_move(&mut ps, &mut pml, &cmd, deep, BOUNDS, &Open);
+                }
+                assert_eq!(ps.velocity[2] > 0.0, rising, "lava {lava}: {:?}", ps.velocity);
+                let grounded = (ps.ground_entity_num, pml.walking, pml.ground_plane);
+                if rising {
+                    assert_eq!(grounded, (ENTITYNUM_NONE, 0, 0), "lava {lava}");
+                } else {
+                    assert_eq!(grounded, (i32::from(trace_iw4::ENTITYNUM_WORLD), 1, 1), "lava {lava}");
+                }
+            }
+        }
     }
 
     #[test]
