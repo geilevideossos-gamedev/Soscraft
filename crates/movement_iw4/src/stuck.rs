@@ -100,6 +100,9 @@ pub fn stuck_move<C: CollisionBackend>(
         crate::climb::hold(&mut velocity, climb.scaffolding, crate::sneaking(ps, cmd));
     }
     ps.velocity = core::array::from_fn(|k| velocity[k] * stuck.multiplier[k]);
+    if pml.walking != 0 {
+        crate::back_off_from_edge(ps, cmd, pml.frametime, bounds, collision);
+    }
     let start = ps.origin;
     let wanted = [
         ps.velocity[0] * pml.frametime,

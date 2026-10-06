@@ -206,6 +206,10 @@ pub fn water_move<C: CollisionBackend>(
     }
 
     ps.velocity = [v[0] * PER_TICK, v[1] * PER_TICK, v[2] * PER_TICK];
+    if pml.walking != 0 {
+        crate::back_off_from_edge(ps, cmd, pml.frametime, bounds, collision);
+        v = ps.velocity.map(|speed| speed / PER_TICK);
+    }
     let start = ps.origin;
     step_slide_move(
         ps,
@@ -272,6 +276,10 @@ pub fn lava_move<C: CollisionBackend>(
     }
 
     ps.velocity = [v[0] * PER_TICK, v[1] * PER_TICK, v[2] * PER_TICK];
+    if pml.walking != 0 {
+        crate::back_off_from_edge(ps, cmd, pml.frametime, bounds, collision);
+        v = ps.velocity.map(|speed| speed / PER_TICK);
+    }
     let start = ps.origin;
     step_slide_move(
         ps,

@@ -104,6 +104,9 @@ pub fn climb_move<C: CollisionBackend>(
     }
     let descending = sneaking(ps, cmd);
     hold(&mut ps.velocity, climb.scaffolding, descending);
+    if pml.walking != 0 {
+        crate::back_off_from_edge(ps, cmd, pml.frametime, bounds, collision);
+    }
 
     let start = ps.origin;
     let wanted = [

@@ -1898,6 +1898,10 @@ impl CollisionBackend for ClipBackend<'_> {
             movement_iw4::ClimbSample::default()
         }
     }
+
+    fn ground_within(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], drop: f32) -> Option<bool> {
+        crate::voxel::active_for(self.brushes).then(|| crate::voxel::ground_within(origin, mins, maxs, drop, self.mover))
+    }
 }
 
 impl movement_iw4::MantleCapsuleTrace for ClipBackend<'_> {

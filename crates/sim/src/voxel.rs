@@ -689,6 +689,16 @@ pub(crate) fn trace_as(start: [f32; 3], end: [f32; 3], mins: [f32; 3], maxs: [f3
     trace_in(world, start, end, mins, maxs, mover)
 }
 
+pub(crate) fn ground_within(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], drop: f32, mover: Option<Mover>) -> bool {
+    WORLD.read().ok().is_some_and(|guard| guard.as_ref().is_some_and(|world| ground_in(world, origin, mins, maxs, drop, mover)))
+}
+
+fn ground_in(world: &VoxelWorld, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], drop: f32, mover: Option<Mover>) -> bool {
+    let below = [mins[0], mins[1], mins[2] - drop];
+    let feet = [maxs[0], maxs[1], mins[2]];
+    trace_in(world, origin, origin, below, feet, mover).startsolid != 0
+}
+
 fn trace_in(world: &VoxelWorld, start: [f32; 3], end: [f32; 3], mins: [f32; 3], maxs: [f32; 3], mover: Option<Mover>) -> trace_iw4::Trace {
     let open = trace_iw4::Trace {
         fraction: 1.0,
@@ -1422,6 +1432,10 @@ mod tests {
             let (lo, hi) = block_bounds(mins, maxs);
             (self.0.fluid_depth(to_block(self.0.origin, origin), lo, hi, LAVA) * f64::from(BLOCK)) as f32
         }
+
+        fn ground_within(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], drop: f32) -> Option<bool> {
+            Some(ground_in(&self.0, origin, mins, maxs, drop, None))
+        }
     }
 
     const LAVA_POOL: u16 = 5;
@@ -1497,6 +1511,80 @@ mod tests {
                     assert!(ashore, "fluid {fluid} depth {depth} msec {msec}: {:?}", path.last());
                 }
             }
+        }
+    }
+
+    const LEDGE_EDGE: i32 = 6;
+    const BOTTOM_SLAB: u16 = 5;
+
+    fn ledge(below_edge: Option<u16>) -> Pond {
+        let mut blocks = Vec::new();
+        for x in 0..16 {
+            for z in 0..16 {
+                blocks.push(([x, -1, z], 1));
+                match (x < LEDGE_EDGE, below_edge) {
+                    (true, _) => blocks.push(([x, 0, z], 1)),
+                    (false, Some(lower)) => blocks.push(([x, 0, z], lower)),
+                    (false, None) => {}
+                }
+            }
+        }
+        let mut w = world(&blocks);
+        w.shapes.push(vec![[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]]);
+        w.fluids.push(0);
+        Pond(w)
+    }
+
+    #[test]
+    fn sneaking_stops_at_a_ledge_higher_than_a_step_but_walking_falls_off() {
+        for msec in [50, 8] {
+            let cliff = ledge(None);
+            let mut sneaker = swimmer([3.5, 1.0, 8.5]);
+            let path = swim(&cliff, &mut sneaker, playerstate_iw4::buttons::CROUCH, 127, msec, 4);
+            assert!(path.iter().all(|p| (p[1] - 1.0).abs() < 0.01), "msec {msec}: {:?}", path.iter().map(|p| p[1]).fold(f64::MAX, f64::min));
+            let end = path[path.len() - 1];
+            assert!(end[0] > f64::from(LEDGE_EDGE) && end[0] < f64::from(LEDGE_EDGE) + 0.3, "msec {msec}: {end:?}");
+            let mut walker = swimmer([3.5, 1.0, 8.5]);
+            let path = swim(&cliff, &mut walker, 0, 127, msec, 4);
+            assert!(path.iter().any(|p| p[1] < 0.1), "msec {msec}: {:?}", path.last());
+        }
+    }
+
+    #[test]
+    fn sneaking_stops_at_a_ledge_while_wading_in_water_or_lava() {
+        for fluid in [SOURCE, LAVA_POOL + 1] {
+            for msec in [50, 8] {
+                let Pond(mut w) = ledge(None);
+                w.shapes.push(Vec::new());
+                w.fluids.push(LAVA | 8);
+                let chunk = w.chunks.get_mut(&(0, 0)).unwrap();
+                for x in 0..LEDGE_EDGE {
+                    for z in 0..16 {
+                        chunk.shapes[(((1 + 16) * 16 + z) * 16 + x) as usize] = fluid;
+                    }
+                }
+                let wading = Pond(w);
+                let mut sneaker = swimmer([5.3, 1.2, 8.5]);
+                swim(&wading, &mut sneaker, 0, 0, msec, 1);
+                let path = swim(&wading, &mut sneaker, playerstate_iw4::buttons::CROUCH, 127, msec, 6);
+                assert!(path.iter().all(|p| (p[1] - 1.0).abs() < 0.01), "fluid {fluid} msec {msec}: {:?}", path.iter().map(|p| p[1]).fold(f64::MAX, f64::min));
+                let end = path[path.len() - 1];
+                assert!(end[0] > f64::from(LEDGE_EDGE) && end[0] < f64::from(LEDGE_EDGE) + 0.3, "fluid {fluid} msec {msec}: {end:?}");
+                let mut walker = swimmer([5.3, 1.2, 8.5]);
+                swim(&wading, &mut walker, 0, 0, msec, 1);
+                let path = swim(&wading, &mut walker, 0, 127, msec, 6);
+                assert!(path.iter().any(|p| p[1] < 0.1), "fluid {fluid} msec {msec}: {:?}", path.last());
+            }
+        }
+    }
+
+    #[test]
+    fn sneaking_walks_down_onto_a_slab_within_the_step() {
+        for msec in [50, 8] {
+            let steps = ledge(Some(BOTTOM_SLAB));
+            let mut sneaker = swimmer([3.5, 1.0, 8.5]);
+            let path = swim(&steps, &mut sneaker, playerstate_iw4::buttons::CROUCH, 127, msec, 2);
+            assert!(path.iter().any(|p| p[0] > f64::from(LEDGE_EDGE) + 1.0 && (p[1] - 0.5).abs() < 0.01), "msec {msec}: {:?}", path.last());
         }
     }
 

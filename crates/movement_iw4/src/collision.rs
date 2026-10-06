@@ -39,4 +39,14 @@ pub trait CollisionBackend {
     fn climb(&self, _origin: [f32; 3]) -> crate::ClimbSample {
         crate::ClimbSample::default()
     }
+
+    fn ground_within(
+        &self,
+        _origin: [f32; 3],
+        _mins: [f32; 3],
+        _maxs: [f32; 3],
+        _drop: f32,
+    ) -> Option<bool> {
+        None
+    }
 }

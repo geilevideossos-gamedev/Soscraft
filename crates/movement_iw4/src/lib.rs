@@ -14,6 +14,7 @@ mod correct_solid;
 mod crash;
 mod dmgtimer;
 mod drop_timers;
+mod edge;
 mod events;
 mod footstep;
 mod friction;
@@ -52,6 +53,7 @@ pub use dmgtimer::{
     damage_scale_walk, damage_window_open, update_damage_timer, walk_move_drop_damage_timer,
 };
 pub use drop_timers::drop_timers;
+pub use edge::{MAX_UP_STEP, back_off_from_edge};
 pub use events::{SequencedPlayerEvent, add_event, add_predictable_event, consume_player_events};
 pub use footstep::{
     LADDER_SURFACE_FLAGS, LADDER_SURFACE_TYPE, SURFACE_TYPE_NAMES, bob_cycle_wrapped,
