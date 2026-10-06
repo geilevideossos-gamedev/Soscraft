@@ -52,6 +52,7 @@ pub struct GameSettings {
     pub pad_deadzone_left: f32,
     pub pad_deadzone_right: f32,
     pub minecraft_minimap: bool,
+    pub show_blood: bool,
 
     pub revision: u64,
 }
@@ -85,6 +86,7 @@ impl Default for GameSettings {
             pad_deadzone_left: 0.12,
             pad_deadzone_right: 0.12,
             minecraft_minimap: false,
+            show_blood: true,
             revision: 0,
         }
     }

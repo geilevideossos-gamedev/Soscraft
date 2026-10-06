@@ -376,6 +376,7 @@ fn serialize_settings(settings: &frame::GameSettings, binds: &KeyBinds) -> Strin
         format!("pad_deadzone_left={:.2}", settings.pad_deadzone_left),
         format!("pad_deadzone_right={:.2}", settings.pad_deadzone_right),
         format!("minecraft_minimap={}", settings.minecraft_minimap),
+        format!("show_blood={}", settings.show_blood),
         "unbindall".to_owned(),
     ];
     lines.extend(binds.list_lines());
@@ -478,6 +479,7 @@ fn parse_settings(source: &str, settings: &mut frame::GameSettings, binds: &mut 
             "pad_deadzone_left" => parse_into(value, &mut settings.pad_deadzone_left),
             "pad_deadzone_right" => parse_into(value, &mut settings.pad_deadzone_right),
             "minecraft_minimap" => parse_into(value, &mut settings.minecraft_minimap),
+            "show_blood" => parse_into(value, &mut settings.show_blood),
             _ => warn!("ignored unknown setting `{key}`"),
         }
     }
@@ -572,6 +574,7 @@ pub(crate) fn native_menu_settings(
             "ui_pad_deadzone_left" => parse_into(value, &mut settings.pad_deadzone_left),
             "ui_pad_deadzone_right" => parse_into(value, &mut settings.pad_deadzone_right),
             "ui_mc_minimap" => settings.minecraft_minimap = value == "1",
+            "ui_show_blood" => settings.show_blood = value == "1",
             _ => continue,
         }
         settings.sanitize();
@@ -630,6 +633,7 @@ pub(crate) fn native_menu_settings(
         settings.pad_deadzone_right.to_string(),
     );
     dvars.set("ui_mc_minimap", if settings.minecraft_minimap { "1" } else { "0" });
+    dvars.set("ui_show_blood", if settings.show_blood { "1" } else { "0" });
 }
 
 #[cfg(test)]
@@ -645,5 +649,70 @@ mod minimap_tests {
         let mut loaded = frame::GameSettings::default();
         parse_settings(&saved, &mut loaded, &mut KeyBinds::default());
         assert!(loaded.minecraft_minimap);
+    }
+}
+
+#[cfg(test)]
+mod blood_tests {
+    use super::*;
+
+    fn menu_app() -> App {
+        let mut app = App::new();
+        app.add_message::<crate::ConsoleCommand>()
+            .add_message::<frame::TestControllerRumble>()
+            .init_resource::<frame::GameSettings>()
+            .init_resource::<frame::UiMenuDvars>()
+            .init_resource::<render_frontend::prepare::scene::view_parms::SmEnableDvar>()
+            .init_resource::<render_frontend::assemble::drawsurf::dof::DofDvars>()
+            .init_resource::<render_frontend::assemble::drawsurf::dof::GlowDvars>()
+            .add_systems(Update, native_menu_settings);
+        app
+    }
+
+    fn menu_set(app: &mut App, line: &str) {
+        let command = crate::ConsoleCommand::parse(line).expect("menu command parses");
+        app.world_mut().write_message(command);
+        app.update();
+    }
+
+    fn shown_blood_dvar(app: &App) -> Option<&str> {
+        app.world()
+            .resource::<frame::UiMenuDvars>()
+            .get("ui_show_blood")
+    }
+
+    #[test]
+    fn blood_is_shown_until_turned_off() {
+        let settings = frame::GameSettings::default();
+        assert!(settings.show_blood);
+    }
+
+    #[test]
+    fn the_show_blood_choice_survives_a_restart() {
+        let settings = frame::GameSettings {
+            show_blood: false,
+            ..Default::default()
+        };
+        let saved = serialize_settings(&settings, &KeyBinds::default());
+        assert!(saved.lines().any(|line| line == "show_blood=false"));
+        let mut loaded = frame::GameSettings::default();
+        parse_settings(&saved, &mut loaded, &mut KeyBinds::default());
+        assert!(!loaded.show_blood);
+    }
+
+    #[test]
+    fn the_show_blood_menu_row_switches_the_setting_and_mirrors_it() {
+        let mut app = menu_app();
+        app.update();
+        assert_eq!(shown_blood_dvar(&app), Some("1"));
+        let revision = app.world().resource::<frame::GameSettings>().revision;
+        menu_set(&mut app, "set ui_show_blood 0");
+        let settings = app.world().resource::<frame::GameSettings>();
+        assert!(!settings.show_blood);
+        assert_ne!(settings.revision, revision);
+        assert_eq!(shown_blood_dvar(&app), Some("0"));
+        menu_set(&mut app, "set ui_show_blood 1");
+        assert!(app.world().resource::<frame::GameSettings>().show_blood);
+        assert_eq!(shown_blood_dvar(&app), Some("1"));
     }
 }

@@ -38,6 +38,10 @@ fn request_hide(job: &mut BloodGpuJob, packed_empty: bool) {
     }
 }
 
+fn blood_shown(settings: Option<&frame::GameSettings>) -> bool {
+    settings.is_none_or(|settings| settings.show_blood)
+}
+
 fn gpu_stretch_bits_unchanged(
     latch: &BloodOverlayLatch,
     intensity: f32,
@@ -65,6 +69,7 @@ pub(crate) fn update_blood_overlay(
     mut started: MessageReader<LifeStarted>,
     view: Res<ViewSubject>,
     ui_draw: Option<Res<UiDraw>>,
+    settings: Option<Res<frame::GameSettings>>,
 ) {
     *job = BloodGpuJob::Idle;
     for ev in started.read() {
@@ -98,7 +103,7 @@ pub(crate) fn update_blood_overlay(
     let win_w = surface.width();
     let win_h = surface.height();
 
-    let blood_enabled = true;
+    let blood_enabled = blood_shown(settings.as_deref());
     let should_draw_hud = ui_draw.is_some_and(|d| d.0);
     let should_draw = should_draw_blood_overlay(
         blood_enabled,
@@ -107,6 +112,9 @@ pub(crate) fn update_blood_overlay(
         ps.pm_type,
     );
     if !should_draw {
+        if !blood_enabled {
+            latch.intensity = 0.0;
+        }
         gaps.clear(HudGap::BloodOverlay);
         request_hide(&mut job, latch.packed.is_empty());
         return;
@@ -202,4 +210,38 @@ pub(crate) fn update_blood_overlay(
     latch.last_h = Some(win_h);
     latch.last_gpu_intensity = Some(latch.intensity);
     *job = BloodGpuJob::Write;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blood_follows_the_show_blood_option() {
+        let mut settings = frame::GameSettings::default();
+        assert!(blood_shown(Some(&settings)));
+        settings.show_blood = false;
+        assert!(!blood_shown(Some(&settings)));
+        assert!(blood_shown(None));
+    }
+
+    #[test]
+    fn turning_blood_off_hides_the_overlay_even_at_low_health() {
+        let settings = frame::GameSettings {
+            show_blood: false,
+            ..Default::default()
+        };
+        assert!(!should_draw_blood_overlay(
+            blood_shown(Some(&settings)),
+            true,
+            false,
+            0
+        ));
+        assert!(should_draw_blood_overlay(
+            blood_shown(Some(&frame::GameSettings::default())),
+            true,
+            false,
+            0
+        ));
+    }
 }

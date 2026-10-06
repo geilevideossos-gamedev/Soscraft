@@ -267,4 +267,34 @@ mod settings_menu_tests {
         let video = catalog.get("pc_options_video").expect("video page");
         assert_eq!(script(&video.handlers.esc), "close self;");
     }
+
+    #[test]
+    fn advanced_video_offers_a_show_blood_choice() {
+        let catalog = settings_catalog();
+        let advanced = catalog
+            .get("pc_options_advanced_video")
+            .expect("advanced video page");
+        let row = named(advanced, "ui_show_blood");
+        assert_eq!(row.dvar, "ui_show_blood");
+        assert_eq!(row.item_type, 12);
+        assert_eq!(row.vis_exp, "1");
+        assert_eq!(
+            row.choices,
+            vec![
+                ("@MENU_DISABLED".to_owned(), "0".to_owned()),
+                ("@MENU_ENABLED".to_owned(), "1".to_owned())
+            ]
+        );
+        let label = named(advanced, "advanced_label_11");
+        assert_eq!(label.text_key, "Show Blood");
+        assert_eq!(label.rect.y, row.rect.y);
+        assert!(
+            advanced
+                .items
+                .iter()
+                .filter(|item| item.vis_exp != "0" && item.name != "advanced_label_11")
+                .all(|item| item.name == "ui_show_blood" || item.rect.y != row.rect.y),
+            "another visible row shares the Show Blood line"
+        );
+    }
 }
