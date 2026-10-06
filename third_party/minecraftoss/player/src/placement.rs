@@ -104,6 +104,68 @@ pub(crate) fn block_entity_placement(
     }
 }
 
+pub(crate) fn chest(
+    world: &impl World,
+    pos: Pos,
+    block: &Block,
+    view: &View,
+) -> (Block, Option<(Pos, Block)>) {
+    let water = if source_water_at(world, pos) {
+        "true"
+    } else {
+        "false"
+    };
+    let single_facing = |at: Pos| {
+        world
+            .block(at)
+            .filter(|other| {
+                chests_connect(&block.id, &other.id) && other.property("type") == Some("single")
+            })
+            .and_then(|other| other.property("facing").and_then(face_named))
+    };
+    let mut facing = opposite(horizontal(view.yaw));
+    let mut kind = "single";
+    let mut partner = None;
+    if view.crouching && axis(view.face) != 1 {
+        let clicked = step(pos, opposite(view.face));
+        if let Some(other) = single_facing(clicked).filter(|f| axis(*f) != axis(view.face)) {
+            facing = other;
+            kind = if counter_clockwise(other) == opposite(view.face) {
+                "right"
+            } else {
+                "left"
+            };
+            partner = Some(clicked);
+        }
+    }
+    if partner.is_none() && !view.crouching {
+        for (side, side_kind) in [
+            (clockwise(facing), "left"),
+            (counter_clockwise(facing), "right"),
+        ] {
+            if single_facing(step(pos, side)) == Some(facing) {
+                kind = side_kind;
+                partner = Some(step(pos, side));
+                break;
+            }
+        }
+    }
+    let mut placed = block
+        .clone()
+        .with("facing", name(facing))
+        .with("type", kind)
+        .with("waterlogged", water);
+    let joined = partner.and_then(|at| {
+        let other = world.block(at)?;
+        let id = joined_chest(&block.id, &other.id);
+        placed.id.clone_from(&id);
+        let mut half = other.with("type", if kind == "left" { "right" } else { "left" });
+        half.id = id;
+        Some((at, half))
+    });
+    (placed, joined)
+}
+
 pub(crate) fn pairs_as_chest(id: &str) -> bool {
     matches!(id, "minecraft:chest" | "minecraft:trapped_chest") || copper_chest(id).is_some()
 }

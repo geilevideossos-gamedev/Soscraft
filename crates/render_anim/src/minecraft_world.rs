@@ -21,7 +21,6 @@ use minecraftoss_core::registries::{DataPaths, Registries};
 
 const VIEW_DISTANCE: i32 = 8;
 const TICK_SECONDS: f64 = 1.0 / 20.0;
-const CROUCHED_BELOW_VIEW_HEIGHT: f32 = 52.0;
 const CRAWLING_BELOW_VIEW_HEIGHT: f32 = 30.0;
 const RECENT_PLACE_SECONDS: f64 = 1.0;
 /// Blocks on a side of the light volume MW2 models are lit from.
@@ -770,7 +769,7 @@ fn update(
         player.yaw = f64::from(mc_yaw);
         player.pitch = f64::from(ps.viewangles[0]);
         player.selected = entities.selected;
-        player.crouching = ps.view_height_current < CROUCHED_BELOW_VIEW_HEIGHT;
+        player.crouching = ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
         player.swimming = ps.view_height_current < CRAWLING_BELOW_VIEW_HEIGHT;
         let eye_block = player.eye();
         let look = {
@@ -1100,6 +1099,9 @@ fn update(
                     .into_iter()
                     .map(|(pos, block)| (pos, block.and_then(|b| scene_block(&b))))
                     .collect();
+                if std::env::var_os("MINECRAFTOSS_DEBUG_SERVER").is_some() && writes.iter().any(|(_, b)| b.as_ref().is_some_and(|b| b.id.path.ends_with("chest"))) {
+                    eprintln!("chest placement: crouching {} pm_flags {:#x} view height {} yaw {} placed {:?} writes {:?}", player.crouching, ps.pm_flags, ps.view_height_current, player.yaw, placed, writes);
+                }
                 let bodies = obstacles(ps, &authority.0, local.0, entities);
                 let blocked = writes.iter().any(|(pos, block)| {
                     let boxes = block

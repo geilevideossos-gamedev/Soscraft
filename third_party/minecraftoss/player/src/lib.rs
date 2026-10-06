@@ -254,7 +254,7 @@ pub fn authored_collision_boxes(block: &Block) -> Vec<[f64; 6]> {
 
 /// The connected half of a chest, according to ChestBlock's facing/type rule.
 pub fn chest_connected_pos(pos: Pos, block: &Block) -> Option<Pos> {
-    if block.id != "minecraft:chest" {
+    if !placement::pairs_as_chest(&block.id) {
         return None;
     }
     let facing = block.property("facing").unwrap_or("north");
@@ -838,7 +838,7 @@ fn local_shapes(block: &Block) -> Vec<Box3> {
             _ => Box3::new(DVec3::new(0.0, 0.0, 1.0 - thickness), DVec3::ONE),
         }];
     }
-    if id == "chest" || id == "ender_chest" {
+    if placement::pairs_as_chest(&block.id) || id == "ender_chest" {
         let mut min = DVec3::new(1.0 / 16.0, 0.0, 1.0 / 16.0);
         let mut max = DVec3::new(15.0 / 16.0, 14.0 / 16.0, 15.0 / 16.0);
         if let Some((dx, _, dz)) = chest_connected_pos((0, 0, 0), block) {
@@ -2039,47 +2039,9 @@ impl Player {
             }
         }
         if placement::pairs_as_chest(&block.id) {
-            let yaw = self.yaw.rem_euclid(360.0);
-            let facing = if yaw < 45.0 || yaw >= 315.0 {
-                "north"
-            } else if yaw < 135.0 {
-                "east"
-            } else if yaw < 225.0 {
-                "south"
-            } else {
-                "west"
-            };
-            block = block
-                .with("facing", facing)
-                .with("type", "single")
-                .with("waterlogged", "false");
-            if !self.crouching {
-                let clockwise = match facing {
-                    "north" => (1, 0),
-                    "east" => (0, 1),
-                    "south" => (-1, 0),
-                    _ => (0, -1),
-                };
-                for (offset, new_type, other_type) in [
-                    (clockwise, "left", "right"),
-                    ((-clockwise.0, -clockwise.1), "right", "left"),
-                ] {
-                    let other_pos = (pos.0 + offset.0, pos.1, pos.2 + offset.1);
-                    if let Some(other) = world.block(other_pos).filter(|other| {
-                        placement::chests_connect(&block.id, &other.id)
-                            && other.property("type") == Some("single")
-                            && other.property("facing") == Some(facing)
-                    }) {
-                        let joined = placement::joined_chest(&block.id, &other.id);
-                        block = block.with("type", new_type);
-                        block.id.clone_from(&joined);
-                        let mut partner = other.with("type", other_type);
-                        partner.id = joined;
-                        partner_to_update = Some((other_pos, partner));
-                        break;
-                    }
-                }
-            }
+            let (state, partner) = placement::chest(world, pos, &block, &view);
+            block = state;
+            partner_to_update = partner;
         }
         let player = self.bbox();
         if local_shapes(&block).iter().any(|s| {
@@ -2537,6 +2499,95 @@ mod tests {
             world.block((1, 2, 3)).unwrap().property("type"),
             Some("right")
         );
+    }
+    fn aimed(feet: DVec3, crouching: bool, at: DVec3) -> Player {
+        let mut player = Player::new(feet);
+        player.crouching = crouching;
+        let look = at - player.eye();
+        player.yaw = (-look.x).atan2(look.z).to_degrees();
+        player.pitch = (-look.y).atan2(look.x.hypot(look.z)).to_degrees();
+        player
+    }
+    #[test]
+    fn crouching_on_the_side_of_a_chest_joins_it_and_takes_its_facing() {
+        let mut world = floor();
+        let single = |id: &str, facing: &str| {
+            Block::new(id)
+                .with("facing", facing)
+                .with("type", "single")
+                .with("waterlogged", "false")
+        };
+        world.set_block((0, 1, 0), Some(single("minecraft:chest", "south")));
+        let player = aimed(
+            DVec3::new(2.5, 1.0, 0.5),
+            true,
+            DVec3::new(0.9375, 1.4, 0.5),
+        );
+        assert_eq!(
+            player.place_target_with(&mut world, Block::new("minecraft:chest")),
+            Some((1, 1, 0))
+        );
+        let placed = world.block((1, 1, 0)).unwrap();
+        assert_eq!(
+            (placed.property("facing"), placed.property("type")),
+            (Some("south"), Some("left"))
+        );
+        assert_eq!(world.block((0, 1, 0)).unwrap().property("type"), Some("right"));
+        assert_eq!(chest_partner(&world, (1, 1, 0)), Some((0, 1, 0)));
+        world.set_block((0, 1, 3), Some(single("minecraft:trapped_chest", "north")));
+        let standing = aimed(
+            DVec3::new(1.5, 1.0, 1.2),
+            false,
+            DVec3::new(1.5, 1.0, 3.5),
+        );
+        let crouched = aimed(
+            DVec3::new(1.5, 1.0, 1.2),
+            true,
+            DVec3::new(1.5, 1.0, 3.5),
+        );
+        assert_eq!(
+            crouched.place_target_with(&mut world, Block::new("minecraft:trapped_chest")),
+            Some((1, 1, 3))
+        );
+        assert_eq!(world.block((1, 1, 3)).unwrap().property("type"), Some("single"));
+        assert_eq!(world.block((0, 1, 3)).unwrap().property("type"), Some("single"));
+        world.set_block((1, 1, 3), None);
+        assert_eq!(
+            standing.place_target_with(&mut world, Block::new("minecraft:trapped_chest")),
+            Some((1, 1, 3))
+        );
+        assert_eq!(world.block((1, 1, 3)).unwrap().property("type"), Some("right"));
+        assert_eq!(world.block((0, 1, 3)).unwrap().property("type"), Some("left"));
+        assert_eq!(
+            authored_collision_boxes(&world.block((0, 1, 3)).unwrap()),
+            [[1.0 / 16.0, 0.0, 1.0 / 16.0, 1.0, 14.0 / 16.0, 15.0 / 16.0]]
+        );
+    }
+    #[test]
+    fn copper_chests_of_any_age_join_as_the_least_weathered() {
+        let mut world = floor();
+        world.set_block(
+            (0, 1, 3),
+            Some(
+                Block::new("minecraft:weathered_copper_chest")
+                    .with("facing", "north")
+                    .with("type", "single")
+                    .with("waterlogged", "false"),
+            ),
+        );
+        let player = aimed(
+            DVec3::new(1.5, 1.0, 1.2),
+            false,
+            DVec3::new(1.5, 1.0, 3.5),
+        );
+        assert_eq!(
+            player.place_target_with(&mut world, Block::new("minecraft:exposed_copper_chest")),
+            Some((1, 1, 3))
+        );
+        for x in 0..=1 {
+            assert_eq!(world.block((x, 1, 3)).unwrap().id, "minecraft:exposed_copper_chest");
+        }
+        assert_eq!(chest_partner(&world, (1, 1, 3)), Some((0, 1, 3)));
     }
     #[test]
     fn sprint_jump_charges_survival_food_exhaustion() {

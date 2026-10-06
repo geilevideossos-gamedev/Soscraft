@@ -3129,6 +3129,45 @@ mod tests {
         assert_eq!(property(&block_at(&regrown, (8, 205, 8)), "berries").as_deref(), Some("true"));
     }
 
+    fn place_as_client(server: &mut ServerSim, scene: &mut HandcraftedScene, item: &str, feet: [f64; 3], aim: [f64; 3]) -> Option<BlockPos> {
+        place_crouching(server, scene, item, feet, aim, false)
+    }
+
+    fn place_crouching(server: &mut ServerSim, scene: &mut HandcraftedScene, item: &str, feet: [f64; 3], aim: [f64; 3], crouching: bool) -> Option<BlockPos> {
+        let placed = stage_as_client(server, scene, item, feet, aim, crouching)?;
+        for _ in 0..3 {
+            server.tick();
+            for (pos, block) in server.take_changes() {
+                scene.set(pos, block);
+            }
+        }
+        Some(placed)
+    }
+
+    fn stage_as_client(server: &mut ServerSim, scene: &mut HandcraftedScene, item: &str, feet: [f64; 3], aim: [f64; 3], crouching: bool) -> Option<BlockPos> {
+        let mut player = minecraftoss_player::Player::new(glam::DVec3::from_array(feet));
+        player.crouching = crouching;
+        let eye = player.eye();
+        let look = glam::DVec3::from_array(aim) - eye;
+        player.yaw = (-look.x).atan2(look.z).to_degrees();
+        player.pitch = (-look.y).atan2(look.x.hypot(look.z)).to_degrees();
+        let mut inventory = minecraftoss_player::inventory::Inventory::default();
+        inventory.slots[0] = Some(minecraftoss_player::inventory::ItemStack::new(item, 1));
+        let outlined = crate::doors::Outlined(&*scene);
+        let mut staged = crate::placing::Staged::new(&outlined);
+        let placed = player.place_selected(&mut staged, &mut inventory, minecraftoss_player::GameMode::Survival)?;
+        let writes: Vec<_> = staged.into_writes();
+        for (pos, block) in &writes {
+            let block = block.as_ref().map(|b| Block { id: crate::pack::ResourceId::parse(&b.id).unwrap(), properties: b.properties.clone() });
+            assert!(block.as_ref().is_none_or(|b| server.states.state_of(b).is_some()), "{block:?} has a state");
+            scene.set(*pos, block);
+        }
+        for (pos, _) in &writes {
+            server.player_edit(scene, *pos, PlayerEdit::Place);
+        }
+        Some(placed)
+    }
+
     #[test]
     fn a_shulker_box_the_server_blows_up_drops_once_with_its_contents() {
         let Some((mut server, mut scene)) = door_world() else { return };
@@ -3150,5 +3189,60 @@ mod tests {
         server.keep_dropped_contents((3, 200, 3), "minecraft:red_shulker_box", contents);
         assert_eq!(server.items().iter().filter(|i| i.item == "minecraft:red_shulker_box" && i.components.as_deref() == Some(contents)).count(), 2);
         assert_eq!(server.items().iter().filter(|i| i.item == "minecraft:red_shulker_box").count(), 2);
+    }
+
+    #[test]
+    fn a_late_echo_of_the_first_chest_does_not_keep_the_pair_apart() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        for x in 5..=8 {
+            place(&mut server, &mut scene, (x, 199, 8), Block::new("minecraft:stone"));
+        }
+        server.tick();
+        server.take_changes();
+        let first = stage_as_client(&mut server, &mut scene, "minecraft:chest", [6.7, 200.0, 11.5], [6.5, 200.0, 8.5], false);
+        server.tick();
+        let late = server.take_changes();
+        assert!(late.iter().any(|(pos, block)| *pos == (6, 200, 8) && block.as_ref().is_some_and(|b| b.properties.get("type").map(String::as_str) == Some("single"))), "{late:?}");
+        let second = stage_as_client(&mut server, &mut scene, "minecraft:chest", [7.2, 200.0, 11.5], [7.5, 200.0, 8.5], false);
+        assert_eq!((first, second), (Some((6, 200, 8)), Some((7, 200, 8))));
+        for (pos, block) in late {
+            scene.set(pos, block);
+        }
+        for _ in 0..3 {
+            server.tick();
+            for (pos, block) in server.take_changes() {
+                scene.set(pos, block);
+            }
+        }
+        let types: Vec<_> = [(6, 200, 8), (7, 200, 8)].iter().map(|&at| Scene::block(&scene, at).and_then(|b| b.properties.get("type").cloned())).collect();
+        assert_eq!(types, vec![Some("right".to_owned()), Some("left".to_owned())]);
+    }
+
+    #[test]
+    fn chests_placed_side_by_side_join_through_the_server() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        for x in 5..=12 {
+            for z in 5..=12 {
+                place(&mut server, &mut scene, (x, 199, z), Block::new("minecraft:stone"));
+            }
+        }
+        server.take_changes();
+        for (id, other, x) in [("minecraft:chest", "minecraft:chest", 6), ("minecraft:trapped_chest", "minecraft:trapped_chest", 8), ("minecraft:weathered_copper_chest", "minecraft:copper_chest", 11)] {
+            let first = place_as_client(&mut server, &mut scene, id, [x as f64 + 0.7, 200.0, 11.5], [x as f64 + 0.5, 200.0, 8.5]);
+            let second = place_as_client(&mut server, &mut scene, other, [x as f64 + 1.2, 200.0, 11.5], [x as f64 + 1.5, 200.0, 8.5]);
+            assert_eq!((first, second), (Some((x, 200, 8)), Some((x + 1, 200, 8))));
+            let right = Scene::block(&scene, (x, 200, 8)).cloned().unwrap();
+            let left = Scene::block(&scene, (x + 1, 200, 8)).cloned().unwrap();
+            assert_eq!(left.properties.get("type").map(String::as_str), Some("left"), "{left:?}");
+            assert_eq!(right.properties.get("type").map(String::as_str), Some("right"), "{right:?}");
+            let opened = crate::containers::Opened::new((x, 200, 8), &right, crate::containers::chest_partner((x, 200, 8), &right).and_then(|at| Scene::block(&scene, at))).unwrap();
+            assert_eq!(opened.size(), 54);
+            assert_eq!((left.id.key(), right.id.key()), (other.to_owned(), other.to_owned()));
+        }
+        place(&mut server, &mut scene, (6, 200, 5), Block::new("minecraft:chest").with("facing", "south").with("type", "single").with("waterlogged", "false"));
+        let beside = place_crouching(&mut server, &mut scene, "minecraft:chest", [8.5, 200.0, 5.5], [6.9375, 200.4, 5.5], true);
+        assert_eq!(beside, Some((7, 200, 5)), "a crouched click on the side of a chest places against it");
+        let joined: Vec<_> = [(7, 200, 5), (6, 200, 5)].iter().map(|&at| Scene::block(&scene, at).map(|b| (b.properties["facing"].clone(), b.properties["type"].clone()))).collect();
+        assert_eq!(joined, vec![Some(("south".to_owned(), "left".to_owned())), Some(("south".to_owned(), "right".to_owned()))]);
     }
 }
