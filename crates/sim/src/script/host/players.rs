@@ -71,6 +71,64 @@ pub(crate) fn player_damage(world: &mut World, tick: crate::Tick, hit: &crate::s
     }
 }
 
+pub(crate) fn minecraft_damage(
+    world: &mut World,
+    tick: crate::Tick,
+    hit: &crate::script_player::Hit,
+) -> bool {
+    let mut runtime = world.resource_mut::<Runtime>();
+    runtime.minecraft_hit = true;
+    runtime.minecraft_obituary = None;
+    player_damage(world, tick, hit);
+    let mut runtime = world.resource_mut::<Runtime>();
+    runtime.minecraft_hit = false;
+    let killer = runtime.minecraft_killer.map(Value::Object);
+    runtime
+        .minecraft_obituary
+        .take()
+        .is_some_and(|(victim, attacker)| victim == hit.victim.0 && Some(attacker) == killer)
+}
+
+pub(crate) fn minecraft_killer(world: &mut World, victim: u32) -> Option<Value> {
+    let victim_team = match player_object(world, victim) {
+        Value::Object(object) => world.resource_mut::<Runtime>().object_field(object, "team"),
+        _ => Value::Undefined,
+    };
+    let mut runtime = world.resource_mut::<Runtime>();
+    let kept = runtime
+        .minecraft_killer
+        .filter(|id| runtime.entities.contains_key(id) && runtime.live(id));
+    let killer = match kept {
+        Some(id) => id,
+        None => {
+            let id = runtime
+                .create_entity(super::entities::EntityKind::Spawned, "trigger_hurt")
+                .ok()?;
+            let killsteals = runtime.new_object().ok()?;
+            runtime.set_object_field(killsteals, "value", Value::Int(0));
+            let stats = runtime.next_object;
+            runtime.next_object = stats.checked_add(1)?;
+            runtime.arrays.insert(
+                stats,
+                BTreeMap::from([(
+                    crate::script::ArrayKey::String("stats_killsteals".into()),
+                    Value::Object(killsteals),
+                )]),
+            );
+            runtime.set_object_field(id, "stats", Value::Array(stats));
+            runtime.minecraft_killer = Some(id);
+            id
+        }
+    };
+    let team = if victim_team == Value::string("allies") {
+        "axis"
+    } else {
+        "allies"
+    };
+    runtime.set_object_field(killer, "team", Value::string(team));
+    Some(Value::Object(killer))
+}
+
 fn world_entity(world: &World) -> Value {
     world
         .resource::<Runtime>()

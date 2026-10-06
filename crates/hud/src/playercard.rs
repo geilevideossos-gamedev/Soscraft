@@ -59,6 +59,7 @@ impl UiLocalVars {
 pub(crate) struct PlayerCardCache {
     slots: [PlayerCardData; PLAYER_CARD_SCRIPT_SLOT_COUNT],
     broadcast: Option<(hud_iw4::SplashSlot, String)>,
+    minecraft_death: Option<u32>,
 }
 
 impl Default for PlayerCardCache {
@@ -66,6 +67,7 @@ impl Default for PlayerCardCache {
         Self {
             broadcast: None,
             slots: core::array::from_fn(|_| PlayerCardData::default()),
+            minecraft_death: None,
         }
     }
 }
@@ -79,6 +81,13 @@ impl PlayerCardCache {
 
     fn get(&self, slot: i32) -> Option<&PlayerCardData> {
         self.slots.get(slot as usize)
+    }
+
+    pub(crate) fn tear_down(&mut self) {
+        *self = Self {
+            minecraft_death: self.minecraft_death,
+            ..Self::default()
+        };
     }
 }
 
@@ -319,35 +328,91 @@ fn apply_open_menus(
     exprs: &mut crate::expr_cache::MenuExprCache,
     ms: i32,
 ) {
-    let host = OpenMenuHost { ms };
     for cmd in menus.read() {
         let Some(name) = script_menu_name(cmd.cs_index) else {
             continue;
         };
-        let Some(menu) = catalog.and_then(|c| c.get(name)) else {
-            continue;
-        };
-        for lv in &menu.on_open_local_vars {
-            match lv.kind {
-                3 | 4 => {
-                    if let Ok(value) = exprs.evaluate(&lv.expr, &host) {
-                        local_vars.set_int(&lv.name, operand_int(&value));
-                    }
+        open_menu_locals(name, local_vars, catalog, exprs, ms);
+    }
+}
+
+fn open_menu_locals(
+    name: &str,
+    local_vars: &mut UiLocalVars,
+    catalog: Option<&MenuCatalog>,
+    exprs: &mut crate::expr_cache::MenuExprCache,
+    ms: i32,
+) {
+    let host = OpenMenuHost { ms };
+    let Some(menu) = catalog.and_then(|c| c.get(name)) else {
+        return;
+    };
+    for lv in &menu.on_open_local_vars {
+        match lv.kind {
+            3 | 4 => {
+                if let Ok(value) = exprs.evaluate(&lv.expr, &host) {
+                    local_vars.set_int(&lv.name, operand_int(&value));
                 }
-                5 => {
-                    if let Ok(value) = exprs.evaluate_float(&lv.expr, &host) {
-                        local_vars.set_int(&lv.name, value as i32);
-                    }
-                }
-                6 => {
-                    if let Ok(value) = exprs.evaluate_string(&lv.expr, &host) {
-                        local_vars.set_string(&lv.name, value);
-                    }
-                }
-                _ => {}
             }
+            5 => {
+                if let Ok(value) = exprs.evaluate_float(&lv.expr, &host) {
+                    local_vars.set_int(&lv.name, value as i32);
+                }
+            }
+            6 => {
+                if let Ok(value) = exprs.evaluate_string(&lv.expr, &host) {
+                    local_vars.set_string(&lv.name, value);
+                }
+            }
+            _ => {}
         }
     }
+}
+
+fn minecraft_killer_card(killer: &str, cg_time: i32) -> PlayerCardData {
+    let mut name = [0u8; 32];
+    let mut end = killer.len().min(name.len() - 1);
+    while !killer.is_char_boundary(end) {
+        end -= 1;
+    }
+    name[..end].copy_from_slice(&killer.as_bytes()[..end]);
+    PlayerCardData {
+        last_update_time: cg_time,
+        title: -1,
+        icon: -1,
+        rank: -1,
+        name,
+        ..PlayerCardData::default()
+    }
+}
+
+fn apply_minecraft_death(
+    minecraft: Option<&frame::MinecraftUi>,
+    cache: &mut PlayerCardCache,
+    local_vars: &mut UiLocalVars,
+    catalog: Option<&MenuCatalog>,
+    exprs: &mut crate::expr_cache::MenuExprCache,
+    ms: i32,
+    cg_time: i32,
+) {
+    let Some((seq, killer)) = minecraft.and_then(|ui| ui.killed_by.as_ref()) else {
+        return;
+    };
+    if cache.minecraft_death == Some(*seq) {
+        return;
+    }
+    cache.minecraft_death = Some(*seq);
+    open_menu_locals(
+        hud_iw4::SCRIPT_MENU_KILLEDBY_DISPLAY_NAME,
+        local_vars,
+        catalog,
+        exprs,
+        ms,
+    );
+    cache.set(
+        hud_iw4::PLAYER_CARD_SLOT_KILLEDBY,
+        minecraft_killer_card(killer, cg_time),
+    );
 }
 
 fn operand_int(value: &Operand) -> i32 {
@@ -383,6 +448,7 @@ pub(crate) fn update_playercard(
     local: Res<LocalPresentClient>,
     view: Option<Res<frame::ViewSubject>>,
     cg_clock: Res<FrameClock>,
+    minecraft: Option<Res<frame::MinecraftUi>>,
 ) {
     if !surface.is_ready() {
         return;
@@ -400,6 +466,15 @@ pub(crate) fn update_playercard(
         catalog.as_deref(),
         &mut exprs,
         now_ms,
+    );
+    apply_minecraft_death(
+        minecraft.as_deref(),
+        &mut cache,
+        &mut local_vars,
+        catalog.as_deref(),
+        &mut exprs,
+        now_ms,
+        cg_clock.time(),
     );
 
     for cmd in messages.splashes.read().filter(|cmd| cmd.slot == 1) {
@@ -607,4 +682,68 @@ pub(crate) fn update_playercard(
         gaps.clear(HudGap::PlayerCard);
     }
     pass.playercard = TessJob::Quads(quads);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn killed_by(seq: u32, killer: &str) -> frame::MinecraftUi {
+        frame::MinecraftUi {
+            killed_by: Some((seq, killer.to_owned())),
+            ..frame::MinecraftUi::default()
+        }
+    }
+
+    fn apply(ui: &frame::MinecraftUi, cache: &mut PlayerCardCache, cg_time: i32) {
+        apply_minecraft_death(
+            Some(ui),
+            cache,
+            &mut UiLocalVars::default(),
+            None,
+            &mut crate::expr_cache::MenuExprCache::default(),
+            0,
+            cg_time,
+        );
+    }
+
+    #[test]
+    fn a_minecraft_death_puts_the_killer_on_the_killed_by_card_once() {
+        let mut cache = PlayerCardCache::default();
+        apply(&killed_by(0, "Skeleton"), &mut cache, 50);
+        let card = cache.get(hud_iw4::PLAYER_CARD_SLOT_KILLEDBY).cloned();
+        assert_eq!(card.as_ref().map(PlayerCardData::name_str), Some("Skeleton"));
+        assert_eq!(card.as_ref().map(|c| (c.title, c.icon, c.rank, c.last_update_time)), Some((-1, -1, -1, 50)));
+        cache.set(hud_iw4::PLAYER_CARD_SLOT_KILLEDBY, PlayerCardData::default());
+        apply(&killed_by(0, "Skeleton"), &mut cache, 60);
+        assert!(!cache.get(hud_iw4::PLAYER_CARD_SLOT_KILLEDBY).is_some_and(PlayerCardData::valid));
+        apply(&killed_by(1, "Zombie"), &mut cache, 70);
+        assert_eq!(
+            cache.get(hud_iw4::PLAYER_CARD_SLOT_KILLEDBY).map(PlayerCardData::name_str),
+            Some("Zombie")
+        );
+    }
+
+    #[test]
+    fn a_shown_minecraft_death_stays_shown_after_the_match_is_torn_down() {
+        let mut cache = PlayerCardCache::default();
+        apply(&killed_by(3, "Skeleton"), &mut cache, 50);
+        cache.tear_down();
+        assert!(!cache.get(hud_iw4::PLAYER_CARD_SLOT_KILLEDBY).is_some_and(PlayerCardData::valid));
+        apply(&killed_by(3, "Skeleton"), &mut cache, 60);
+        assert!(!cache.get(hud_iw4::PLAYER_CARD_SLOT_KILLEDBY).is_some_and(PlayerCardData::valid));
+        apply(&killed_by(4, "Creeper"), &mut cache, 70);
+        assert_eq!(
+            cache.get(hud_iw4::PLAYER_CARD_SLOT_KILLEDBY).map(PlayerCardData::name_str),
+            Some("Creeper")
+        );
+    }
+
+    #[test]
+    fn a_long_killer_is_cut_to_the_card_name_on_a_character_boundary() {
+        let card = minecraft_killer_card("was poked to death by a sweet berry bush", 0);
+        assert_eq!(card.name_str(), "was poked to death by a sweet b");
+        let card = minecraft_killer_card(&"\u{e9}".repeat(20), 0);
+        assert_eq!(card.name_str(), "\u{e9}".repeat(15));
+    }
 }

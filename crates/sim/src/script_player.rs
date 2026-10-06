@@ -130,6 +130,8 @@ pub(crate) struct Hit {
 
 pub(crate) const IDFLAGS_RADIUS: i32 = 1;
 
+pub(crate) const MINECRAFT_MEANS: &str = "MOD_TRIGGER_HURT";
+
 fn means_of_death(world: &FrameWorld, intent: &DamageAttempt) -> &'static str {
     means(
         world,

@@ -153,38 +153,64 @@ pub(crate) fn apply_explosion_blast(world: &mut FrameWorld, tick: Tick, blast: &
     );
 }
 
-/// Damage the Minecraft world's mobs dealt players this tick, as world
-/// damage the player does to itself.
 pub(crate) fn apply_block_world_damage(world: &mut FrameWorld, tick: Tick) {
     if !world.publishes_snapshot() {
         return;
     }
-    for (client, amount, from) in crate::voxel::take_player_damage() {
-        let target = ClientId(client);
+    for damage in crate::voxel::take_player_damage() {
+        let target = ClientId(damage.client);
         let Some(meta) = world.client_meta(target) else {
             continue;
         };
-        if meta.lifecycle != ClientLifecycle::Alive || amount <= 0 {
+        if meta.lifecycle != ClientLifecycle::Alive || damage.amount <= 0 {
             continue;
         }
         let life = meta.life_sequence;
-        let attempt = DamageAttempt {
-            source: crate::DamageSource::Melee,
-            pellet: crate::PelletId(0),
-            attacker: target,
-            attacker_life: life,
-            target,
-            target_life: life,
+        let victim = entity_iw4::client_state_name(&meta.name)
+            .unwrap_or("")
+            .to_owned();
+        let origin = world.player(target).map_or([0.0; 3], |ps| ps.origin);
+        let point = damage.from.unwrap_or(origin);
+        let dir: [f32; 3] = std::array::from_fn(|i| origin[i] - point[i]);
+        let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+        let hit = crate::script_player::Hit {
+            victim: target,
+            attacker: None,
+            amount: if damage.death.is_some() {
+                damage.amount.max(MINECRAFT_DEATH_DAMAGE)
+            } else {
+                damage.amount
+            },
+            flags: 0,
+            means: crate::script_player::MINECRAFT_MEANS,
             weapon: 0,
-            amount,
-            killcam_entity_start_time: 0,
-            inflictor_origin: from,
+            point,
+            dir: if len > 0.0 {
+                dir.map(|c| c / len)
+            } else {
+                [0.0; 3]
+            },
             hitloc: 0,
-            splash: false,
+            inflictor: None,
+            commit: None,
         };
-        let _ = apply_damage_attempt(world, tick, &attempt);
+        let credited = crate::script::minecraft_damage(world.ecs(), tick, &hit);
+        let died = world
+            .client_meta(target)
+            .is_some_and(|m| m.lifecycle == ClientLifecycle::Dead && m.life_sequence == life);
+        if let Some(death) = damage.death.filter(|_| died && credited) {
+            world.push_print(crate::PendingPrint {
+                recipient: None,
+                bold: false,
+                template: format!("{}{}", crate::HUD_STRING_PLAIN, death.line(&victim)),
+                arg: String::new(),
+            });
+            crate::voxel::push_minecraft_death(damage.client, death.killer);
+        }
     }
 }
+
+const MINECRAFT_DEATH_DAMAGE: i32 = 100_000;
 
 fn apply_entity_blast(world: &mut FrameWorld, blast: &ExplosionBlast) {
     if blast.radius <= 0.0 {

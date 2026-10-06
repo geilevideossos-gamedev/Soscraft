@@ -509,6 +509,10 @@ fn update(
         survival.observe(health.0, health.1);
     }
     let totem_popped = sim::voxel::take_totem_pops().contains(&local.0.0);
+    for (_, killer) in sim::voxel::take_minecraft_deaths().into_iter().filter(|(client, _)| *client == local.0.0) {
+        let seq = ui.killed_by.as_ref().map_or(0, |(seq, _)| seq.wrapping_add(1));
+        ui.killed_by = Some((seq, killer));
+    }
 
     let feet = sim::voxel::to_block(origin, ps.origin);
     let block = (
@@ -586,6 +590,9 @@ fn update(
             minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned().map(|b| (pos, b))
         };
         let under = block_at(0.2);
+        if climbing {
+            survival.set_climbable(Some(block_at(0.0).map_or(crate::minecraft_death::FallLocation::OtherClimbable, |(_, b)| crate::minecraft_death::FallLocation::of_climbable(&b.id.key()))));
+        }
         let centre = |pos: (i32, i32, i32)| {
             Vec3::from_array(sim::voxel::to_map(origin, [pos.0 as f64 + 0.5, pos.1 as f64 + 1.0, pos.2 as f64 + 0.5]))
         };
@@ -633,6 +640,7 @@ fn update(
                     }
                 }
             }
+            survival.set_climbable(None);
         } else if caught || (climbing && sim::voxel::lava(ps.origin, hull_mins, hull_maxs) <= 0.0) {
             steps.air_peak = Some(feet[1]);
         } else {
@@ -1349,7 +1357,7 @@ fn update(
             }
         }
         let armor = crate::minecraft_survival::armor(&entities.inventory);
-        for (amount, from, toward) in hits {
+        for (amount, from, toward, cause) in hits {
             let blocked = hand.blocking.filter(|blocking| blocking.raised()).map_or(0.0, |_| crate::minecraft_offhand::blocked_damage(mc_yaw, toward, amount));
             if let Some(blocking) = hand.blocking.filter(|_| blocked > 0.0) {
                 if entities.inventory.wear_tool(blocking.slot, crate::minecraft_offhand::shield_wear(blocked)) {
@@ -1365,7 +1373,9 @@ fn update(
                 }
             }
             if amount > blocked {
-                survival.hurt(amount - blocked, armor, from);
+                survival.hurt(amount - blocked, armor, from, cause);
+            } else {
+                survival.hurt_blocked(cause);
             }
         }
         for used in std::mem::take(&mut entities.item_uses_done) {
@@ -1380,7 +1390,7 @@ fn update(
                 continue;
             }
             authority.0.teleport(local.0, sim::voxel::to_map(origin, landing.to_array()));
-            survival.hurt(minecraft_terrain::thrown::PEARL_DAMAGE, minecraftoss_player::survival::Armor::default(), None);
+            survival.hurt(minecraft_terrain::thrown::PEARL_DAMAGE, minecraftoss_player::survival::Armor::default(), None, crate::minecraft_death::DamageCause::EnderPearl);
             steps.air_peak = None;
             if let Some(sounds) = sounds.as_mut() {
                 sounds.play(&world.packs, "minecraft:entity.player.teleport", Some(at(landing.to_array())), 1.0, 1.0);
@@ -1396,7 +1406,14 @@ fn update(
                 authority.0.set_health(local.0, health);
             }
             if let Some((amount, from)) = settle.damage {
-                sim::voxel::push_player_damage(local.0.0, amount, from.map(|b| sim::voxel::to_map(origin, b)));
+                let death = (survival.status.health <= 0.0).then(|| {
+                    let line = match inventory_ui.language() {
+                        Some(language) => survival.death_line(language, |id| entities.mob_present(id)),
+                        None => survival.death_line(&minecraft_terrain::item_icons::language(&world.packs).unwrap_or_else(|_| HashMap::new()), |id| entities.mob_present(id)),
+                    };
+                    sim::voxel::MinecraftDeath { message: line.message, killer: line.killer }
+                });
+                sim::voxel::push_player_damage(local.0.0, amount, from.map(|b| sim::voxel::to_map(origin, b)), death);
             }
             if let Some(blocked) = survival.sprint_change(player.pm_flags & playerstate_iw4::pm_flags::SPRINT_BLOCKED != 0) {
                 authority.0.set_sprint_blocked(local.0, blocked);

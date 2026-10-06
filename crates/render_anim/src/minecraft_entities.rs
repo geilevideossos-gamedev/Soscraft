@@ -34,7 +34,7 @@ const PLAYER: u64 = 0;
 /// `Player.getEyeHeight` standing.
 const EYE_HEIGHT: f32 = 1.62;
 const SERVER_ITEM: u32 = 1 << 31;
-type Hits = Vec<(f32, Option<[f64; 3]>, Option<[f64; 2]>)>;
+type Hits = Vec<(f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::minecraft_death::DamageCause)>;
 type Changes = Vec<((i32, i32, i32), Option<Block>)>;
 
 pub(crate) struct Blow {
@@ -600,7 +600,13 @@ impl Entities {
                     PlayerHitKind::Arrow { velocity, .. } => [-velocity.x, -velocity.z],
                     PlayerHitKind::Explosion { knockback } => [-knockback.x, -knockback.z],
                 };
-                hits.push((hit.damage, from, Some(toward)));
+                let attack = match hit.kind {
+                    PlayerHitKind::Melee { .. } => crate::minecraft_death::MobAttack::Melee,
+                    PlayerHitKind::Arrow { .. } => crate::minecraft_death::MobAttack::Arrow,
+                    PlayerHitKind::Explosion { .. } => crate::minecraft_death::MobAttack::Explosion,
+                };
+                let cause = crate::minecraft_death::DamageCause::mob(attack, hit.source, hit.source.and_then(|id| self.world.entity_type(id)));
+                hits.push((hit.damage, from, Some(toward), cause));
             }
         }
         if ticked {
@@ -612,6 +618,10 @@ impl Entities {
             }
         }
         (changes, hits)
+    }
+
+    pub(crate) fn mob_present(&self, id: u64) -> bool {
+        self.world.entity_type(id).is_some()
     }
 
     /// Every living mob's key and box in blocks, for bullets.

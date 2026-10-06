@@ -1,3 +1,4 @@
+use crate::minecraft_death::{CombatTracker, DamageCause, DeathLine, FallLocation};
 use glam::DVec3;
 use minecraftoss_entities::inside_blocks::{BlockEffect, Hazard, block_effects};
 use minecraftoss_entities::movement::Body;
@@ -64,6 +65,9 @@ pub(crate) struct Survival {
     blink_until: u64,
     blocked_sprint: bool,
     level_up_at: Option<u64>,
+    combat: CombatTracker,
+    climbable: Option<FallLocation>,
+    in_water: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -146,7 +150,11 @@ impl Survival {
 
     pub(crate) fn tick(&mut self, motion: &Motion) -> Breath {
         self.tick += 1;
+        self.in_water = motion.in_water;
+        self.combat.tick(self.tick);
+        let before = self.status.health;
         self.status.tick_effects();
+        self.record(before, DamageCause::Magic, 0.0);
         if let Some(last) = self.last_feet {
             let d: [f64; 3] = std::array::from_fn(|k| motion.feet[k] - last[k]);
             let horizontal = d[0].hypot(d[2]);
@@ -179,15 +187,19 @@ impl Survival {
         }
         self.jumping = motion.jumping;
         let breath = self.breathe(motion.eye_in_water);
+        let before = self.status.health;
         self.status
             .tick_with_rules(true, Difficulty::Normal, self.tick);
+        self.record(before, DamageCause::Starve, 0.0);
         self.update_blink();
         breath
     }
 
     pub(crate) fn breathe(&mut self, eye_in_water: bool) -> Breath {
         self.eye_in_water = eye_in_water;
+        let before = self.status.health;
         let drowned = self.status.tick_air(eye_in_water, false);
+        self.record(before, DamageCause::Drown, 0.0);
         let (air, max) = (
             self.status.air.clamp(0, self.status.max_air),
             self.status.max_air,
@@ -215,16 +227,41 @@ impl Survival {
 
     pub(crate) fn fall(&mut self, distance: f64, landed_on: Option<&str>, crouching: bool) -> i32 {
         let damage = landing_damage(distance, landed_on, crouching);
+        let before = self.status.health;
         if damage > 0
             && self
                 .status
                 .hurt(damage as f32, Armor::default(), 0.0)
                 .is_some()
         {
+            self.record(before, DamageCause::Fall, distance as f32);
             damage
         } else {
             0
         }
+    }
+
+    fn record(&mut self, before: f32, cause: DamageCause, fall_distance: f32) {
+        let dealt = before - self.status.health;
+        if dealt > 0.0 {
+            let location = self
+                .climbable
+                .or(self.in_water.then_some(FallLocation::Water));
+            self.combat
+                .record(self.tick, cause, dealt, location, fall_distance);
+        }
+    }
+
+    pub(crate) fn set_climbable(&mut self, climbable: Option<FallLocation>) {
+        self.climbable = climbable;
+    }
+
+    pub(crate) fn death_line(
+        &self,
+        language: &std::collections::HashMap<String, String>,
+        present: impl Fn(u64) -> bool,
+    ) -> DeathLine {
+        self.combat.death_line(language, present)
     }
 
     pub(crate) fn last_feet(&self) -> Option<[f64; 3]> {
@@ -345,7 +382,9 @@ impl Survival {
         } else {
             HURT_EXHAUSTION
         };
+        let before = self.status.health;
         let landed = self.status.hurt(damage, armor, exhaustion);
+        self.record(before, DamageCause::Hazard(hazard), 0.0);
         if landed == Some(true) && self.status.health > 0.0 {
             heard.push(PlayerSound {
                 event: hurt_sound(hazard),
@@ -356,12 +395,29 @@ impl Survival {
         landed.is_some()
     }
 
-    pub(crate) fn hurt(&mut self, damage: f32, armor: Armor, from: Option<[f64; 3]>) -> bool {
+    pub(crate) fn hurt(
+        &mut self,
+        damage: f32,
+        armor: Armor,
+        from: Option<[f64; 3]>,
+        cause: DamageCause,
+    ) -> bool {
+        let before = self.status.health;
         let landed = self.status.hurt(damage, armor, HURT_EXHAUSTION).is_some();
+        if landed {
+            self.combat.hurt_by(self.tick, cause);
+            self.record(before, cause, 0.0);
+        }
         if landed && from.is_some() {
             self.source = from;
         }
         landed
+    }
+
+    pub(crate) fn hurt_blocked(&mut self, cause: DamageCause) {
+        if self.status.hurt(0.0, Armor::default(), 0.0).is_some() {
+            self.combat.hurt_by(self.tick, cause);
+        }
     }
 
     pub(crate) fn exhaust(&mut self, amount: f32) {
@@ -403,9 +459,11 @@ impl Survival {
             }
             "healing" => self.status.heal(f32::from(4u8 << level)),
             "harming" => {
+                let before = self.status.health;
                 let _ = self
                     .status
                     .hurt(f32::from(6u8 << level), Armor::default(), 0.0);
+                self.record(before, DamageCause::Magic, 0.0);
             }
             "poison" => self
                 .status
@@ -827,7 +885,12 @@ mod tests {
     fn a_lethal_hit_takes_what_is_left() {
         let mut survival = fresh();
         survival.observe(20, 100);
-        survival.hurt(10.0, Armor::default(), Some([1.0, 2.0, 3.0]));
+        survival.hurt(
+            10.0,
+            Armor::default(),
+            Some([1.0, 2.0, 3.0]),
+            DamageCause::Generic,
+        );
         assert_eq!(survival.status.health, 0.0);
         assert_eq!(
             survival.settle(20, 100).damage,
@@ -924,7 +987,7 @@ mod tests {
         let mut fighter = fresh();
         fighter.exhaust(ATTACK_EXHAUSTION);
         fighter.exhaust(MINE_EXHAUSTION);
-        fighter.hurt(2.0, Armor::default(), None);
+        fighter.hurt(2.0, Armor::default(), None, DamageCause::Generic);
         assert!((fighter.status.food.exhaustion - 0.205).abs() < 1e-6);
         fighter.observe(80, 100);
         assert!((fighter.status.food.exhaustion - 0.305).abs() < 1e-6);
@@ -1566,7 +1629,7 @@ mod tests {
     fn hearts_blink_after_damage() {
         let mut survival = fresh();
         survival.tick(&standing([0.0; 3]));
-        survival.hurt(4.0, Armor::default(), None);
+        survival.hurt(4.0, Armor::default(), None, DamageCause::Generic);
         let blinks: Vec<bool> = (0..20)
             .map(|_| {
                 survival.tick(&standing([0.0; 3]));
@@ -1574,5 +1637,125 @@ mod tests {
             })
             .collect();
         assert!(blinks.iter().any(|b| *b) && blinks.iter().any(|b| !*b));
+    }
+
+    fn death_language() -> std::collections::HashMap<String, String> {
+        [
+            ("death.attack.lava", "%1$s tried to swim in lava"),
+            (
+                "death.attack.lava.player",
+                "%1$s tried to swim in lava to escape %2$s",
+            ),
+            ("death.attack.drown", "%1$s drowned"),
+            ("death.attack.magic", "%1$s was killed by magic"),
+            ("death.attack.generic", "%1$s died"),
+            ("death.fell.accident.ladder", "%1$s fell off a ladder"),
+            ("entity.minecraft.zombie", "Zombie"),
+            ("block.minecraft.lava", "Lava"),
+        ]
+        .into_iter()
+        .map(|(key, text)| (key.to_owned(), text.to_owned()))
+        .collect()
+    }
+
+    fn death(survival: &Survival) -> (String, String) {
+        let line = survival.death_line(&death_language(), |_| true);
+        (line.message, line.killer)
+    }
+
+    fn said(message: &str, killer: &str) -> (String, String) {
+        (message.to_owned(), killer.to_owned())
+    }
+
+    #[test]
+    fn dying_in_lava_tries_to_swim_in_lava_and_escapes_a_zombie_that_hit_first() {
+        let in_lava = Motion {
+            in_lava: true,
+            ..standing_in([0.5, 1.0, 0.5])
+        };
+        let mut alone = unfed();
+        live(&mut alone, &lava_pool(), &in_lava, Armor::default(), 60);
+        assert_eq!(alone.status.health, 0.0);
+        assert_eq!(death(&alone), said("%1$s tried to swim in lava", "Lava"));
+        let mut chased = unfed();
+        let zombie = DamageCause::mob(
+            crate::minecraft_death::MobAttack::Melee,
+            Some(4),
+            Some("minecraft:zombie"),
+        );
+        assert!(chased.hurt(2.0, Armor::default(), None, zombie));
+        live(&mut chased, &lava_pool(), &in_lava, Armor::default(), 60);
+        assert_eq!(chased.status.health, 0.0);
+        assert_eq!(
+            death(&chased),
+            said("%1$s tried to swim in lava to escape Zombie", "Zombie")
+        );
+    }
+
+    #[test]
+    fn a_zombie_hit_the_shield_blocks_still_gets_the_kill_credit() {
+        let in_lava = Motion {
+            in_lava: true,
+            ..standing_in([0.5, 1.0, 0.5])
+        };
+        let zombie = DamageCause::mob(
+            crate::minecraft_death::MobAttack::Melee,
+            Some(4),
+            Some("minecraft:zombie"),
+        );
+        let mut blocker = unfed();
+        blocker.hurt_blocked(zombie);
+        assert_eq!(blocker.status.health, 20.0);
+        live(&mut blocker, &lava_pool(), &in_lava, Armor::default(), 60);
+        assert_eq!(blocker.status.health, 0.0);
+        assert_eq!(
+            death(&blocker),
+            said("%1$s tried to swim in lava to escape Zombie", "Zombie")
+        );
+        let mut recovering = unfed();
+        assert!(recovering.hurt(1.0, Armor::default(), None, DamageCause::Generic));
+        recovering.hurt_blocked(zombie);
+        live(&mut recovering, &lava_pool(), &in_lava, Armor::default(), 60);
+        assert_eq!(
+            death(&recovering),
+            said("%1$s tried to swim in lava", "Lava")
+        );
+    }
+
+    #[test]
+    fn a_long_fall_after_climbing_falls_off_the_ladder() {
+        let mut survival = fresh();
+        survival.set_climbable(Some(FallLocation::Ladder));
+        assert_eq!(survival.fall(30.0, Some("minecraft:stone"), false), 27);
+        assert_eq!(survival.status.health, 0.0);
+        assert_eq!(
+            death(&survival),
+            said("%1$s fell off a ladder", "fell off a ladder")
+        );
+    }
+
+    #[test]
+    fn running_out_of_air_drowns() {
+        let mut survival = fresh();
+        for _ in 0..1000 {
+            survival.status.tick_effects();
+            survival.breathe(true);
+        }
+        assert_eq!(survival.status.health, 0.0);
+        assert_eq!(death(&survival), said("%1$s drowned", "drowned"));
+    }
+
+    #[test]
+    fn a_potion_of_harming_kills_by_magic_and_a_respawn_forgets_it() {
+        let mut survival = fresh();
+        survival.status.health = 5.0;
+        survival.drink_potion("minecraft:harming");
+        assert_eq!(survival.status.health, 0.0);
+        assert_eq!(
+            death(&survival),
+            said("%1$s was killed by magic", "was killed by magic")
+        );
+        survival.respawn();
+        assert_eq!(death(&survival), said("%1$s died", "died"));
     }
 }

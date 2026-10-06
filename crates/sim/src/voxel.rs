@@ -275,11 +275,31 @@ pub(crate) fn push_mob_shot(key: u64, damage: f32, from: [f32; 3]) {
 
 /// Damage the world's mobs dealt the players: client, amount, and where it
 /// came from in map space.
-static PLAYER_DAMAGE: std::sync::Mutex<Vec<(u32, i32, Option<[f32; 3]>)>> = std::sync::Mutex::new(Vec::new());
+static PLAYER_DAMAGE: std::sync::Mutex<Vec<PlayerDamage>> = std::sync::Mutex::new(Vec::new());
 
-pub fn push_player_damage(client: u32, amount: i32, from: Option<[f32; 3]>) {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MinecraftDeath {
+    pub message: String,
+    pub killer: String,
+}
+
+impl MinecraftDeath {
+    pub fn line(&self, victim: &str) -> String {
+        self.message.replace("%1$s", victim)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PlayerDamage {
+    pub(crate) client: u32,
+    pub(crate) amount: i32,
+    pub(crate) from: Option<[f32; 3]>,
+    pub(crate) death: Option<MinecraftDeath>,
+}
+
+pub fn push_player_damage(client: u32, amount: i32, from: Option<[f32; 3]>, death: Option<MinecraftDeath>) {
     if let Ok(mut damage) = PLAYER_DAMAGE.lock() {
-        damage.push((client, amount, from));
+        damage.push(PlayerDamage { client, amount, from, death });
     }
 }
 
@@ -287,8 +307,20 @@ pub fn player_damage_pending() -> bool {
     PLAYER_DAMAGE.lock().is_ok_and(|damage| !damage.is_empty())
 }
 
-pub(crate) fn take_player_damage() -> Vec<(u32, i32, Option<[f32; 3]>)> {
+pub(crate) fn take_player_damage() -> Vec<PlayerDamage> {
     PLAYER_DAMAGE.lock().map(|mut d| std::mem::take(&mut *d)).unwrap_or_default()
+}
+
+static MINECRAFT_DEATHS: std::sync::Mutex<Vec<(u32, String)>> = std::sync::Mutex::new(Vec::new());
+
+pub(crate) fn push_minecraft_death(client: u32, killer: String) {
+    if let Ok(mut deaths) = MINECRAFT_DEATHS.lock() {
+        deaths.push((client, killer));
+    }
+}
+
+pub fn take_minecraft_deaths() -> Vec<(u32, String)> {
+    MINECRAFT_DEATHS.lock().map_or_else(|_| Vec::new(), |mut deaths| std::mem::take(&mut *deaths))
 }
 
 static DEATH_PROTECTED: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
@@ -362,6 +394,7 @@ pub fn deactivate() {
     let _ = take_events();
     let _ = take_player_damage();
     let _ = take_totem_pops();
+    let _ = take_minecraft_deaths();
     if let Ok(mut clients) = DEATH_PROTECTED.lock() {
         clients.clear();
     }
@@ -1600,5 +1633,19 @@ mod tests {
         set_death_protected(client, true);
         set_death_protected(client, false);
         assert!(!spend_death_protection(client));
+    }
+
+    #[test]
+    fn a_minecraft_death_rides_with_its_damage_and_names_the_victim() {
+        let client = 7_000_002;
+        let death = MinecraftDeath { message: "%1$s was shot by Skeleton".into(), killer: "Skeleton".into() };
+        push_player_damage(client, 20, None, Some(death.clone()));
+        let queued: Vec<PlayerDamage> = take_player_damage().into_iter().filter(|d| d.client == client).collect();
+        assert_eq!(queued, vec![PlayerDamage { client, amount: 20, from: None, death: Some(death.clone()) }]);
+        assert_eq!(death.line("Sos"), "Sos was shot by Skeleton");
+        push_minecraft_death(client, death.killer);
+        let deaths: Vec<(u32, String)> = take_minecraft_deaths().into_iter().filter(|(c, _)| *c == client).collect();
+        assert_eq!(deaths, vec![(client, "Skeleton".to_owned())]);
+        assert!(take_minecraft_deaths().iter().all(|(c, _)| *c != client));
     }
 }

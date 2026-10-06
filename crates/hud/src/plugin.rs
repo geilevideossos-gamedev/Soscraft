@@ -810,7 +810,7 @@ fn reset_match_hud_on_torn_down(
     *killfeed = KillfeedWindow::default();
     *splash = SplashSlots::default();
     *pings = crate::compass::CompassPingLatch::default();
-    *cache = PlayerCardCache::default();
+    cache.tear_down();
     *local_vars = UiLocalVars::default();
 }
 

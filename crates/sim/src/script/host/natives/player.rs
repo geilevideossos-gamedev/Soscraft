@@ -435,8 +435,19 @@ fn register_death(registry: &mut NativeRegistry) {
         }
         let id = ClientId(client);
         let attacker = maybe_player(world, args, 1);
-        let inflictor_entity = super::super::players::damage_entity(world, args.first());
-        let attacker_entity = super::super::players::damage_entity(world, args.get(1));
+        let runtime = world.resource::<Runtime>();
+        let minecraft = runtime.minecraft_hit
+            && runtime.current_hit.as_ref().is_some_and(|hit| hit.victim == id);
+        let killer = if minecraft {
+            super::super::players::minecraft_killer(world, client)
+        } else {
+            None
+        };
+        let inflictor_entity = killer
+            .clone()
+            .unwrap_or_else(|| super::super::players::damage_entity(world, args.first()));
+        let attacker_entity = killer
+            .unwrap_or_else(|| super::super::players::damage_entity(world, args.get(1)));
         let amount = int(args, 2)?;
         if args
             .get(8)
@@ -509,6 +520,11 @@ fn register_death(registry: &mut NativeRegistry) {
                 return Err("obituary victim is not a player".into());
             };
             let attacker = maybe_player(world, args, 1);
+            let mut runtime = world.resource_mut::<Runtime>();
+            if runtime.minecraft_hit {
+                runtime.minecraft_obituary =
+                    Some((victim.0, args.get(1).cloned().unwrap_or(Value::Undefined)));
+            }
             let weapon = weapon_arg(world, args, 2)?;
             let means = string(args, 3)?;
             let tick = tick(world);

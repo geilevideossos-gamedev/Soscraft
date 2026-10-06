@@ -3650,7 +3650,7 @@ impl EntityWorld {
     }
 
     /// An entity's type, by ID, while it is in the world (dying included).
-    fn entity_type(&self, id: u64) -> Option<&'static str> {
+    pub fn entity_type(&self, id: u64) -> Option<&'static str> {
         if self.bats.iter().any(|e| e.id == id) {
             return Some("minecraft:bat");
         }

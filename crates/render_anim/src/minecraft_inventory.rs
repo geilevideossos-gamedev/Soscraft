@@ -223,6 +223,10 @@ impl InventoryUi {
         true
     }
 
+    pub(crate) fn language(&self) -> Option<&HashMap<String, String>> {
+        self.language.as_ref()
+    }
+
     fn text(&self, key: &str) -> String {
         self.language.as_ref().and_then(|language| language.get(key).cloned()).unwrap_or_else(|| key.to_owned())
     }
