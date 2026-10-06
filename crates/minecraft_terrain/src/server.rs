@@ -132,9 +132,11 @@ pub struct ServerItem {
 /// A falling block entity as the client shows it.
 #[derive(Clone, Debug)]
 pub struct ServerFallingBlock {
+    pub id: i32,
     pub position: [f64; 3],
     pub previous_position: [f64; 3],
-    pub block: String,
+    pub block: Block,
+    pub start: BlockPos,
 }
 
 /// An experience orb as the client shows it.
@@ -910,9 +912,11 @@ impl ServerSim {
             .iter()
             .filter_map(|e| {
                 e.falling_data().map(|d| ServerFallingBlock {
+                    id: e.id,
                     position: e.pos,
                     previous_position: e.old_position(),
-                    block: self.level.registries().blocks.block(self.level.registries().blocks.block_of(d.state)).name.to_string(),
+                    block: self.states.block(d.state).cloned().unwrap_or_else(|| Block::new(&self.level.registries().blocks.block(self.level.registries().blocks.block_of(d.state)).name.to_string())),
+                    start: (d.start.x, d.start.y, d.start.z),
                 })
             })
             .collect()
@@ -2666,7 +2670,13 @@ mod tests {
         for _ in 0..3 {
             server.tick();
         }
-        assert_eq!(server.falling_blocks().len(), 1, "the sand should be falling");
+        let falling = server.falling_blocks();
+        assert_eq!(falling.len(), 1, "the sand should be falling");
+        assert_eq!((falling[0].block.clone(), falling[0].start), (Block::new("minecraft:sand"), (8, 205, 8)));
+        server.tick();
+        let later = server.falling_blocks();
+        assert_eq!(later.iter().map(|f| f.id).collect::<Vec<_>>(), vec![falling[0].id], "a falling block keeps its id while it falls");
+        assert_eq!(later[0].previous_position, falling[0].position);
         for _ in 0..40 {
             server.tick();
         }
@@ -2815,7 +2825,9 @@ mod tests {
         assert_eq!(distance(8).as_deref(), Some("0"));
         assert_eq!(distance(14).as_deref(), Some("6"));
         assert_eq!(latest.get(&(15, 200, 8)), Some(&None), "the seventh out leaves its place");
-        assert_eq!(server.falling_blocks().len(), 1, "unsupported scaffolding falls");
+        let falling = server.falling_blocks();
+        assert_eq!(falling.len(), 1, "unsupported scaffolding falls");
+        assert_eq!(falling[0].block.properties.get("distance").map(String::as_str), Some("7"), "the falling block keeps its state");
         take(&mut server, &mut scene, (8, 199, 8));
         let changes = ticked(&mut server, 12);
         for x in 8..=14 {

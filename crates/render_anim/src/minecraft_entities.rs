@@ -85,6 +85,7 @@ pub(crate) struct Entities {
     random: minecraftoss_player::rng::LegacyRandom,
     thrown: Vec<(String, [f64; 3], [f64; 3], i32)>,
     orbs: Vec<ServerOrb>,
+    falling: minecraft_terrain::falling_render::FallingBlocks,
     orb_pickups: Vec<minecraft_terrain::orb_render::OrbPickup>,
     pub(crate) pearl_landings: Vec<DVec3>,
     pub(crate) destroyed: Vec<((i32, i32, i32), Block)>,
@@ -201,6 +202,7 @@ impl Entities {
             random: minecraftoss_player::rng::LegacyRandom::new((seed ^ 0x1735) as u64),
             thrown: Vec::new(),
             orbs: Vec::new(),
+            falling: Default::default(),
             orb_pickups: Vec::new(),
             pearl_landings: Vec::new(),
             destroyed: Vec::new(),
@@ -457,6 +459,7 @@ impl Entities {
         if ticked {
             self.clock = (self.clock - TICK_SECONDS).min(TICK_SECONDS);
             self.ticks += 1;
+            self.falling.tick_sent();
             // Packets first, then the client level's entity ticks.
             self.client.tick();
             for enderman in self.world.endermen() {
@@ -531,9 +534,10 @@ impl Entities {
                 let orb = ServerOrb { id, position, previous_position: position, value, tick_count };
                 self.orb_pickups.push(minecraft_terrain::orb_render::OrbPickup::new(orb, orb_pickup_target));
             }
-            if let Some(snapshot) = output.entities {
+            if let Some(mut snapshot) = output.entities {
                 self.thrown = snapshot.thrown.clone();
                 self.orbs = snapshot.orbs.clone();
+                self.falling.receive(std::mem::take(&mut snapshot.falling), std::mem::take(&mut snapshot.tnt), &output.changes, self.ticks);
                 self.server_snapshot = Some(snapshot);
             }
             for landing in output.pearl_landings {
@@ -674,6 +678,7 @@ impl Entities {
         forward: Vec3,
         camera: DVec3,
         sky_darken: u8,
+        cell_settled: &dyn Fn((i32, i32, i32)) -> bool,
     ) -> MobMeshes {
         use minecraft_terrain::*;
         // Mobs appear on the client once their trackers start.
@@ -740,20 +745,10 @@ impl Entities {
             out.items.vertices.extend(items.vertices);
             out.items.indices.extend(items.indices.iter().map(|i| i + base));
         }
-        if let Some(snapshot) = self.server_snapshot.as_ref() {
-            let falling: Vec<_> = snapshot
-                .falling
-                .iter()
-                .map(|f| (DVec3::from_array(f.previous_position).lerp(DVec3::from_array(f.position), f64::from(partial)).as_vec3(), f.block.clone()))
-                .collect();
-            let _ = self.items.append_falling_blocks(&mut out.items, &falling, packs, atlas, light);
-            let primed: Vec<_> = snapshot
-                .tnt
-                .iter()
-                .map(|t| (DVec3::from_array(t.previous_position).lerp(DVec3::from_array(t.position), f64::from(partial)).as_vec3(), t.fuse as f32 - partial + 1.0))
-                .collect();
-            let _ = self.items.append_primed_tnt(&mut out.items, &primed, packs, atlas, light);
-        }
+        self.falling.settle(scene, cell_settled, self.ticks);
+        let moving = self.falling.moving_blocks(scene, partial);
+        let _ = self.items.append_moving_blocks(&mut out.items, &moving, scene, packs, atlas, light);
+        let _ = self.items.append_primed_tnt(&mut out.items, &self.falling.primed_tnt(partial), packs, atlas, light);
         minecraft_terrain::thrown::append_sprites(
             &mut out.items,
             self.thrown
@@ -775,6 +770,7 @@ impl Entities {
         // Their shadows, at `getMaxLocalRawBrightness`.
         let mut casters = client_mobs::shadow_casters(w, poses, camera, partial);
         casters.extend(orb_render::shadow_casters(&self.orbs, camera, partial));
+        casters.extend(self.falling.shadow_casters(scene, camera, partial));
         let raw = |pos: (i32, i32, i32)| light.get(pos).saturating_sub(sky_darken).max(light.get_block(pos));
         if let Ok(shadows) = mesh::entity_shadows(&casters, scene, atlas, &raw, 0.0) {
             out.shadows = shadows;

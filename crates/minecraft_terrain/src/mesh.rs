@@ -691,7 +691,42 @@ pub fn rebuild_near_many_with_previous_light<S: Scene>(
 #[derive(Default)]
 pub struct ItemVisuals {
     models: HashMap<String, ItemVisual>,
+    block_models: HashMap<String, Vec<(ResolvedModel, u32)>>,
+    tint: Option<BiomeTint>,
 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MovingBlock {
+    pub feet: glam::DVec3,
+    pub block: Block,
+    pub seed: BlockPos,
+}
+
+struct MovingBlockScene<'a, S: Scene> {
+    level: &'a S,
+    block: &'a Block,
+    at: BlockPos,
+}
+
+impl<S: Scene> Scene for MovingBlockScene<'_, S> {
+    fn block(&self, pos: BlockPos) -> Option<&Block> {
+        (pos == self.at).then_some(self.block)
+    }
+    fn chunks(&self) -> Vec<ChunkPos> {
+        Vec::new()
+    }
+    fn vertical_range(&self) -> std::ops::Range<i32> {
+        self.level.vertical_range()
+    }
+    fn revision(&self) -> u64 {
+        0
+    }
+    fn biome_at(&self, pos: BlockPos) -> BiomeSample {
+        self.level.biome_at(pos)
+    }
+}
+
+const MOVING_BLOCK_HEIGHT: f64 = 0.98;
 struct ItemVisual {
     model: ResolvedModel,
     ground: Mat4,
@@ -715,6 +750,8 @@ fn level_item_shade(normal: Vec3) -> f32 {
 impl ItemVisuals {
     pub fn clear(&mut self) {
         self.models.clear();
+        self.block_models.clear();
+        self.tint = None;
     }
     fn model<'a>(&'a mut self, id: &str, packs: &PackStack) -> Result<Option<&'a ItemVisual>> {
         if !self.models.contains_key(id) {
@@ -915,13 +952,38 @@ impl ItemVisuals {
         Ok(())
     }
 
-    /// `FallingBlockRenderer`: each falling block's model, shifted so the
-    /// block is centred on the entity's feet. Items stand in for block
-    /// models (`id` is the block's item).
-    pub fn append_falling_blocks(&mut self, mesh: &mut ChunkMesh, blocks: &[(Vec3, String)], packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
-        for (pos, id) in blocks {
-            let pose = Mat4::from_translation(*pos + Vec3::new(-0.5, 0.0, -0.5));
-            self.append_block_model(mesh, id, *pos, pose, 1.0, packs, atlas, sky_light)?;
+    pub fn append_moving_blocks<S: Scene>(&mut self, mesh: &mut ChunkMesh, blocks: &[MovingBlock], level: &S, packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
+        if self.tint.is_none() {
+            self.tint = Some(BiomeTint::from_pack(packs)?);
+        }
+        for moving in blocks {
+            let key = model_key(&moving.block);
+            if !self.block_models.contains_key(&key) {
+                let variants = resolve_block_variants(packs, &moving.block).unwrap_or_else(|_| Vec::new());
+                self.block_models.insert(key.clone(), variants);
+            }
+            let (Some(variants), Some(tint)) = (self.block_models.get(&key), self.tint.as_ref()) else {
+                continue;
+            };
+            if variants.is_empty() {
+                continue;
+            }
+            let chosen = variant_index(variants, moving.seed);
+            let at = (moving.feet.x.floor() as i32, (moving.feet.y + MOVING_BLOCK_HEIGHT).floor() as i32, moving.feet.z.floor() as i32);
+            let scene = MovingBlockScene { level, block: &moving.block, at };
+            let mut own = ChunkMesh::default();
+            let mut transparent = Vec::new();
+            append_block(&scene, at, &moving.block, || Ok(&variants[chosen..=chosen]), |_| false, atlas, tint, sky_light, &mut own, &mut transparent)?;
+            let offset = [moving.feet.x - 0.5 - f64::from(at.0), moving.feet.y - f64::from(at.1), moving.feet.z - 0.5 - f64::from(at.2)];
+            let base = mesh.vertices.len() as u32;
+            mesh.vertices.extend(own.vertices.into_iter().map(|mut vertex| {
+                for (component, shift) in vertex.position.iter_mut().zip(offset) {
+                    *component += shift as f32;
+                }
+                vertex
+            }));
+            mesh.indices.extend(own.indices.into_iter().chain(transparent).map(|index| index + base));
+            mesh.faces += own.faces;
         }
         Ok(())
     }
@@ -2860,6 +2922,77 @@ mod tests {
                     .to_vec(),
             }],
         }
+    }
+
+    struct Placed(HashMap<BlockPos, Block>);
+
+    impl Scene for Placed {
+        fn block(&self, p: BlockPos) -> Option<&Block> {
+            self.0.get(&p)
+        }
+        fn chunks(&self) -> Vec<ChunkPos> {
+            vec![(0, 0)]
+        }
+        fn vertical_range(&self) -> std::ops::Range<i32> {
+            0..16
+        }
+        fn revision(&self) -> u64 {
+            0
+        }
+    }
+
+    #[test]
+    fn a_moving_block_is_the_placed_block_with_its_variant_shading_and_neighbour_light() {
+        let (first, second) = (ResourceId::parse("minecraft:block/sand").unwrap(), ResourceId::parse("minecraft:block/red_sand").unwrap());
+        let atlas = Atlas {
+            pixels: RgbaImage::new(32, 16),
+            mipmaps: vec![],
+            slots: HashMap::from([(first.clone(), [0.0, 0.0, 0.5, 1.0]), (second.clone(), [0.5, 0.0, 1.0, 1.0])]),
+            missing: vec![],
+            animated: vec![],
+            animated_tiles: vec![],
+        };
+        let tint = BiomeTint { grass: None, foliage: None };
+        let sand = Block::new("minecraft:sand");
+        let variants = vec![(test_box_model(&first, [0.0; 3], [1.0; 3]), 1), (test_box_model(&second, [0.0; 3], [1.0; 3]), 1)];
+        let floor = (0..16).flat_map(|x| (0..16).map(move |z| ((x, 0, z), Block::new("minecraft:stone"))));
+        let cell = (8, 6, 8);
+        let mut placed = Placed(floor.collect());
+        placed.0.insert(cell, sand.clone());
+        let light = SkyLight::build(&placed);
+        assert_eq!(light.get(cell), 0, "the placed block's own cell is dark");
+        placed.0.remove(&cell);
+        let terrain = |at: BlockPos| {
+            let mut scene = Placed(placed.0.clone());
+            scene.0.insert(at, sand.clone());
+            let mut mesh = ChunkMesh::default();
+            append_block(&scene, at, &sand, || Ok(variants.as_slice()), |_| false, &atlas, &tint, &light, &mut mesh, &mut Vec::new()).unwrap();
+            mesh
+        };
+        let placed_mesh = terrain(cell);
+        let mut visuals = ItemVisuals { tint: Some(BiomeTint { grass: None, foliage: None }), ..ItemVisuals::default() };
+        visuals.block_models.insert(model_key(&sand), variants.clone());
+        let packs = PackStack::open(vec![]).unwrap();
+        let mut moving = ChunkMesh::default();
+        let falling = MovingBlock { feet: glam::DVec3::new(8.5, 5.96, 8.5), block: sand.clone(), seed: cell };
+        visuals.append_moving_blocks(&mut moving, &[falling], &placed, &packs, &atlas, &light).unwrap();
+        assert_eq!((moving.vertices.len(), moving.indices.len(), moving.faces), (placed_mesh.vertices.len(), placed_mesh.indices.len(), placed_mesh.faces));
+        assert_eq!(moving.indices, placed_mesh.indices);
+        for (drawn, block) in moving.vertices.iter().zip(&placed_mesh.vertices) {
+            let lowered = [block.position[0], block.position[1] - 0.04, block.position[2]];
+            assert!(drawn.position.iter().zip(lowered).all(|(a, b)| (a - b).abs() < 1e-5), "{drawn:?} {block:?}");
+            assert_eq!((drawn.uv, drawn.color, drawn.sky_light, drawn.block_light), (block.uv, block.color, block.sky_light, block.block_light));
+            assert!(drawn.sky_light >= 14.0, "lit from the open cells around it, not its own dark cell");
+        }
+        let shades: Vec<f32> = placed_mesh.vertices.iter().step_by(4).map(|v| v.color[0]).collect();
+        assert_eq!(shades, vec![0.5, 1.0, 0.8, 0.8, 0.6, 0.6], "terrain face shading");
+        let other = (0..64).map(|x| (x, 6, 8)).find(|&at| variant_index(&variants, at) != variant_index(&variants, cell)).unwrap();
+        let mut reseeded = ChunkMesh::default();
+        let falling = MovingBlock { feet: glam::DVec3::new(8.5, 5.96, 8.5), block: sand.clone(), seed: other };
+        visuals.append_moving_blocks(&mut reseeded, &[falling], &placed, &packs, &atlas, &light).unwrap();
+        let elsewhere = terrain(other);
+        assert!(reseeded.vertices.iter().zip(&elsewhere.vertices).all(|(a, b)| a.uv == b.uv), "the variant follows the seed");
+        assert!(reseeded.vertices.iter().zip(&moving.vertices).any(|(a, b)| a.uv != b.uv));
     }
 
     #[test]

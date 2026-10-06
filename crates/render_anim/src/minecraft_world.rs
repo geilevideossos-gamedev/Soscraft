@@ -1573,6 +1573,7 @@ fn update(
             forward,
             glam::DVec3::from_array(eye),
             sky_darken,
+            &|pos| world.stream.cell_settled(pos),
         );
         let raw = |mesh: &minecraft_terrain::mesh::ChunkMesh| {
             (bytemuck::cast_slice::<_, u8>(&mesh.vertices).to_vec(), mesh.indices.clone())

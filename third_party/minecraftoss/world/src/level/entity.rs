@@ -40,6 +40,7 @@ pub struct FallingData {
     pub state: BlockStateId,
     pub time: i32,
     pub drop_item: bool,
+    pub start: BlockPos,
 }
 
 /// `PrimedTnt` state.

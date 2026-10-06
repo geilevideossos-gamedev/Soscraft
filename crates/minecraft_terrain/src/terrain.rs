@@ -1321,6 +1321,10 @@ impl TerrainStream {
         self.player_sections.is_empty() && self.player_relights.is_empty()
     }
 
+    pub fn cell_settled(&self, (x, y, z): BlockPos) -> bool {
+        !self.player_sections.contains(&(x >> 4, y >> 4, z >> 4))
+    }
+
     /// Everything in view is generated, sent, lit and built.
     pub fn is_settled(&self) -> bool {
         let queue = self.work.0.lock().expect("terrain work queue");
