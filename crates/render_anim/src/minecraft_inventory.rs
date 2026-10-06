@@ -618,6 +618,8 @@ impl InventoryUi {
                             if level == 1 && single { name } else { format!("{name} {}", minecraft_terrain::stations::roman(level)) }
                         })
                         .collect(),
+                    contents: contents_lines(lang, s),
+                    more: more_line(lang, s),
                 }
             })
         };
@@ -919,7 +921,38 @@ fn station_title(opened: &Opened) -> &'static str {
         Station::Oven(CookingKind::Smoker) => "container.smoker",
         Station::Oven(CookingKind::BlastFurnace) => "container.blast_furnace",
         Station::Brewer => "container.brewing",
+        Station::Ender => "container.enderchest",
+        Station::Shulker => "container.shulkerBox",
     }
+}
+
+const SHOWN_CONTENTS: usize = 5;
+
+fn stored_in_order(stack: &ItemStack) -> Vec<ItemStack> {
+    let mut stored = minecraft_terrain::containers::stored_items(stack);
+    stored.sort_by_key(|(slot, _)| *slot);
+    stored.into_iter().map(|(_, item)| item).collect()
+}
+
+fn translated(language: &HashMap<String, String>, keys: [&str; 2], fallback: &str, arguments: &[String]) -> String {
+    let template = keys.iter().find_map(|key| language.get(*key)).map_or(fallback, String::as_str);
+    arguments.iter().fold(template.to_owned(), |text, argument| text.replacen("%s", argument, 1))
+}
+
+fn contents_lines(language: &HashMap<String, String>, stack: &ItemStack) -> Vec<String> {
+    stored_in_order(stack)
+        .iter()
+        .take(SHOWN_CONTENTS)
+        .map(|item| {
+            let name = display_name(language, item).unwrap_or_else(|| minecraft_terrain::item_icons::item_name(language, &item.id));
+            translated(language, ["item.container.item_count", "container.shulkerBox.itemCount"], "%s x %s", &[item.count.to_string(), name])
+        })
+        .collect()
+}
+
+fn more_line(language: &HashMap<String, String>, stack: &ItemStack) -> Option<String> {
+    let rest = stored_in_order(stack).len().checked_sub(SHOWN_CONTENTS).filter(|rest| *rest > 0)?;
+    Some(translated(language, ["item.container.more_items", "container.shulkerBox.more"], "and %s more...", &[rest.to_string()]))
 }
 
 fn bench_title(kind: Workshop) -> &'static str {
@@ -968,6 +1001,7 @@ fn screen_of(opened: &Opened) -> McScreen {
         Station::Oven(CookingKind::Smoker) => McScreen::Furnace(McOven::Smoker),
         Station::Oven(CookingKind::BlastFurnace) => McScreen::Furnace(McOven::BlastFurnace),
         Station::Brewer => McScreen::Brewing,
+        Station::Shulker => McScreen::ShulkerBox,
         _ => McScreen::Chest { rows: opened.rows() as u8 },
     }
 }
@@ -987,5 +1021,30 @@ fn spot(slot: McSlot, grid: Grid) -> Option<Spot> {
 pub(crate) fn throw(items: &mut minecraftoss_player::items::WorldItems, stacks: Vec<ItemStack>, thrower: &Thrower) {
     for stack in stacks {
         items.toss(stack, thrower.eye, thrower.yaw, thrower.pitch);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_shulker_box_tooltip_names_five_stacks_in_slot_order_and_counts_the_rest() {
+        let mut language = HashMap::new();
+        language.insert("container.shulkerBox.itemCount".to_owned(), "%s x %s".to_owned());
+        language.insert("container.shulkerBox.more".to_owned(), "and %s more...".to_owned());
+        language.insert("block.minecraft.stone".to_owned(), "Stone".to_owned());
+        language.insert("item.minecraft.diamond".to_owned(), "Diamond".to_owned());
+        let entries: Vec<serde_json::Value> = [(20, "minecraft:diamond", 3), (0, "minecraft:stone", 64), (4, "minecraft:stone", 1), (5, "minecraft:stone", 2), (7, "minecraft:stone", 3), (9, "minecraft:stone", 4), (26, "minecraft:diamond", 1)]
+            .into_iter()
+            .map(|(slot, id, count)| serde_json::json!({"slot": slot, "item": {"id": id, "count": count}}))
+            .collect();
+        let mut stack = ItemStack::new("minecraft:shulker_box", 1);
+        stack.components = Some(serde_json::json!({"minecraft:container": entries}));
+        assert_eq!(contents_lines(&language, &stack), ["64 x Stone", "1 x Stone", "2 x Stone", "3 x Stone", "4 x Stone"]);
+        assert_eq!(more_line(&language, &stack).as_deref(), Some("and 2 more..."));
+        let empty = ItemStack::new("minecraft:shulker_box", 1);
+        assert!(contents_lines(&language, &empty).is_empty());
+        assert_eq!(more_line(&language, &empty), None);
     }
 }

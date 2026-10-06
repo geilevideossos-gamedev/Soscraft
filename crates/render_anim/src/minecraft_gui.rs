@@ -15,10 +15,11 @@ const ATLAS_WIDTH: u32 = 2048;
 const GUTTER: u32 = 1;
 const SPRITES: &str = "assets/minecraft/textures/gui/sprites/";
 
-pub(crate) const CONTAINER_SHEETS: [&str; 12] = [
+pub(crate) const CONTAINER_SHEETS: [&str; 13] = [
     "inventory",
     "crafting_table",
     "generic_54",
+    "shulker_box",
     "furnace",
     "smoker",
     "blast_furnace",

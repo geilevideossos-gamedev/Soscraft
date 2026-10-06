@@ -316,6 +316,8 @@ mod tests {
             name: None,
             attack: None,
             enchantments: Vec::new(),
+            contents: Vec::new(),
+            more: None,
         }
     }
 

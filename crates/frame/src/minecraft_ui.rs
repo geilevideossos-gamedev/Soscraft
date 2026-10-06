@@ -24,6 +24,8 @@ pub struct McStack {
     pub name: Option<String>,
     pub attack: Option<[f32; 2]>,
     pub enchantments: Vec<String>,
+    pub contents: Vec<String>,
+    pub more: Option<String>,
 }
 
 /// A slot of the inventory screen.
@@ -46,6 +48,7 @@ pub enum McScreen {
     Chest {
         rows: u8,
     },
+    ShulkerBox,
     Furnace(McOven),
     Brewing,
     Stonecutter,

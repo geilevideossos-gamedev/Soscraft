@@ -884,6 +884,29 @@ impl ServerSim {
         self.level.spawn_item_with(position, stack_of(item, count, components), velocity, pickup_delay, age)
     }
 
+    pub fn keep_dropped_contents(&mut self, pos: BlockPos, item: &str, components: &str) {
+        let centre = [f64::from(pos.0) + 0.5, f64::from(pos.1) + 0.5, f64::from(pos.2) + 0.5];
+        let distance = |at: [f64; 3]| (0..3).map(|k| (at[k] - centre[k]).powi(2)).sum::<f64>();
+        let dropped = self
+            .level
+            .entities
+            .iter_mut()
+            .filter_map(|e| {
+                let at = e.pos;
+                match &mut e.kind {
+                    minecraftoss_world::level::entity::EntityKind::Item(data) if data.stack.id == item && data.stack.components.is_none() && distance(at) < 4.0 => Some((distance(at), data)),
+                    _ => None,
+                }
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        match dropped {
+            Some((_, data)) => data.stack.components = Some(minecraftoss_core::nbt::Tag::String(components.to_owned())),
+            None => {
+                self.level.spawn_item_with(centre, stack_of(item, 1, Some(components)), [0.0; 3], 10, 0);
+            }
+        }
+    }
+
     /// The server's item entities.
     pub fn items(&self) -> Vec<ServerItem> {
         self.level
@@ -978,6 +1001,7 @@ pub enum Command {
     Attack(BlockPos),
     ItemOnBlock { pos: BlockPos, action: ItemOnBlock },
     SpawnItem { item: String, count: i32, components: Option<String>, position: [f64; 3], velocity: [f64; 3], pickup_delay: i32, age: i32 },
+    KeepDroppedContents { pos: BlockPos, item: String, components: String },
     /// The recipe book, for mobs.
     RecipeBook(Arc<minecraftoss_player::crafting::RecipeBook>),
     /// The data JAR and world seed the server's loot tables come from.
@@ -1175,6 +1199,10 @@ impl ServerHandle {
         self.send(Command::SpawnItem { item: item.to_owned(), count, components: components.map(str::to_owned), position, velocity, pickup_delay, age });
     }
 
+    pub fn keep_dropped_contents(&mut self, pos: BlockPos, item: &str, components: &str) {
+        self.send(Command::KeepDroppedContents { pos, item: item.to_owned(), components: components.to_owned() });
+    }
+
     pub fn tick(&mut self, input: TickInput) {
         self.send(Command::Tick(Box::new(input)));
     }
@@ -1291,6 +1319,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::SpawnItem { item, count, components, position, velocity, pickup_delay, age } => {
                     sim.spawn_item(&item, count, components.as_deref(), position, velocity, pickup_delay, age);
                 }
+                Command::KeepDroppedContents { pos, item, components } => sim.keep_dropped_contents(pos, &item, &components),
                 Command::RecipeBook(recipes) => sim.set_recipe_book(recipes),
                 Command::LootTables { jar, seed } => sim.load_loot(&jar, seed),
                 Command::SummonOrb { position, value } => sim.summon_orb(position, value),
@@ -3098,5 +3127,28 @@ mod tests {
         assert!(server.item_on_block((8, 205, 8), ItemOnBlock::BoneMeal { face: "down" }));
         let regrown: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
         assert_eq!(property(&block_at(&regrown, (8, 205, 8)), "berries").as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn a_shulker_box_the_server_blows_up_drops_once_with_its_contents() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 199, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:red_shulker_box").with("facing", "up"));
+        server.tick();
+        server.take_changes();
+        let before = server.items().len();
+        server.level.explode(minecraftoss_world::level::explosion::Explosion { center: [8.5, 200.5, 8.5], radius: 2.0, fire: false, interaction: minecraftoss_world::level::explosion::BlockInteraction::DestroyWithDecay, source: None });
+        server.tick();
+        assert!(server.take_changes().contains(&((8, 200, 8), None)));
+        let contents = r#"{"minecraft:container":[{"slot":0,"item":{"id":"minecraft:diamond","count":3}}]}"#;
+        server.keep_dropped_contents((8, 200, 8), "minecraft:red_shulker_box", contents);
+        let boxes: Vec<_> = server.items().into_iter().filter(|i| i.item == "minecraft:red_shulker_box").collect();
+        assert_eq!(boxes.len(), 1, "{boxes:?}");
+        assert_eq!(boxes[0].components.as_deref(), Some(contents));
+        assert!(server.items().len() > before);
+        server.spawn_item("minecraft:red_shulker_box", 1, None, [3.5, 200.5, 3.5], [0.0; 3], 10, 0);
+        server.keep_dropped_contents((3, 200, 3), "minecraft:red_shulker_box", contents);
+        assert_eq!(server.items().iter().filter(|i| i.item == "minecraft:red_shulker_box" && i.components.as_deref() == Some(contents)).count(), 2);
+        assert_eq!(server.items().iter().filter(|i| i.item == "minecraft:red_shulker_box").count(), 2);
     }
 }

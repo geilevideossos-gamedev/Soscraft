@@ -609,6 +609,8 @@ fn tooltip_lines(
 ) -> Vec<TextLine> {
     let name = stack_name(stack, ui, weapons, strings, gaps);
     let mut lines = vec![TextLine { italic: stack.named, ..TextLine::new(name, crate::minecraft_hotbar::name_color(Some(stack))) }];
+    lines.extend(stack.contents.iter().map(|line| TextLine::new(line.clone(), WHITE)));
+    lines.extend(stack.more.iter().map(|line| TextLine { italic: true, ..TextLine::new(line.clone(), WHITE) }));
     lines.extend(stack.enchantments.iter().map(|name| TextLine::new(name.clone(), GRAY)));
     let extra = match (stack.weapon, stack.attack) {
         (Some(weapon), _) => weapons
@@ -790,5 +792,38 @@ mod tests {
         assert_eq!(neighbour(&layout.slots, McSlot::Inventory(9), Nav::Right), Some(McSlot::Inventory(10)));
         assert_eq!(neighbour(&layout.slots, McSlot::Inventory(9), Nav::Down), Some(McSlot::Inventory(18)));
         assert_eq!(neighbour(&layout.slots, McSlot::Inventory(0), Nav::Down), None);
+    }
+
+    #[test]
+    fn a_shulker_box_tooltip_lists_its_stacks_before_the_italic_rest() {
+        let stack = McStack {
+            id: "minecraft:shulker_box".to_owned(),
+            count: 1,
+            weapon: None,
+            damage: None,
+            max: 1,
+            named: false,
+            name: Some("Shulker Box".to_owned()),
+            attack: None,
+            enchantments: vec!["Unbreaking I".to_owned()],
+            contents: (1..=5).map(|count| format!("{count} x Stone")).collect(),
+            more: Some("and 2 more...".to_owned()),
+        };
+        let lines = tooltip_lines(&stack, &MinecraftUi::default(), None, None, &mut HudPresentationGaps::default());
+        let shown: Vec<(&str, bool)> = lines.iter().map(|line| (line.text.as_str(), line.italic)).collect();
+        assert_eq!(
+            shown,
+            [
+                ("Shulker Box", false),
+                ("1 x Stone", false),
+                ("2 x Stone", false),
+                ("3 x Stone", false),
+                ("4 x Stone", false),
+                ("5 x Stone", false),
+                ("and 2 more...", true),
+                ("Unbreaking I", false),
+            ]
+        );
+        assert!(lines[1..7].iter().all(|line| line.color == WHITE));
     }
 }

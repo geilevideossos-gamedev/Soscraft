@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use serde_json::{json, Value};
+
 use minecraftoss_player::crafting::{CookingKind, RecipeBook};
 use minecraftoss_player::furnace::Furnace;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
@@ -22,6 +24,14 @@ const REAGENT: usize = 3;
 const BLAZE: usize = 4;
 const BREW_TICKS: u32 = 400;
 const FUEL_USES: u32 = 20;
+const CONTAINER: &str = "minecraft:container";
+const CUSTOM_NAME: &str = "minecraft:custom_name";
+const COPPER_CHESTS: [&str; 4] = [
+    "copper_chest",
+    "exposed_copper_chest",
+    "weathered_copper_chest",
+    "oxidized_copper_chest",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Station {
@@ -29,6 +39,8 @@ pub enum Station {
     Barrel,
     Oven(CookingKind),
     Brewer,
+    Ender,
+    Shulker,
 }
 
 impl Station {
@@ -38,6 +50,11 @@ impl Station {
         }
         match block.id.path.as_str() {
             "chest" | "trapped_chest" => Some(Self::Chest),
+            path if COPPER_CHESTS.contains(&path.strip_prefix("waxed_").unwrap_or(path)) => {
+                Some(Self::Chest)
+            }
+            "ender_chest" => Some(Self::Ender),
+            path if is_shulker_box(path) => Some(Self::Shulker),
             "barrel" => Some(Self::Barrel),
             "furnace" => Some(Self::Oven(CookingKind::Furnace)),
             "smoker" => Some(Self::Oven(CookingKind::Smoker)),
@@ -56,8 +73,112 @@ impl Station {
             Self::Oven(CookingKind::Smoker) => "SMOKER",
             Self::Oven(CookingKind::BlastFurnace) => "BLAST FURNACE",
             Self::Brewer => "BREWING STAND",
+            Self::Ender => "ENDER CHEST",
+            Self::Shulker => "SHULKER BOX",
         }
     }
+}
+
+pub fn is_shulker_box(id: &str) -> bool {
+    let path = id.strip_prefix("minecraft:").unwrap_or(id);
+    path == "shulker_box" || path.ends_with("_shulker_box")
+}
+
+pub fn chest_sound(path: &str, open: bool) -> &'static str {
+    let copper = COPPER_CHESTS
+        .iter()
+        .position(|chest| *chest == path.strip_prefix("waxed_").unwrap_or(path));
+    match (copper, open) {
+        (Some(2), true) => "minecraft:block.copper_chest_weathered.open",
+        (Some(2), false) => "minecraft:block.copper_chest_weathered.close",
+        (Some(3), true) => "minecraft:block.copper_chest_oxidized.open",
+        (Some(3), false) => "minecraft:block.copper_chest_oxidized.close",
+        (Some(_), true) => "minecraft:block.copper_chest.open",
+        (Some(_), false) => "minecraft:block.copper_chest.close",
+        (None, true) => "minecraft:block.chest.open",
+        (None, false) => "minecraft:block.chest.close",
+    }
+}
+
+pub fn lid_cell(pos: BlockPos, facing: &str) -> Option<BlockPos> {
+    let (dx, dy, dz) = match facing {
+        "up" => (0, 1, 0),
+        "down" => (0, -1, 0),
+        "north" => (0, 0, -1),
+        "south" => (0, 0, 1),
+        "west" => (-1, 0, 0),
+        "east" => (1, 0, 0),
+        _ => return None,
+    };
+    Some((pos.0 + dx, pos.1 + dy, pos.2 + dz))
+}
+
+pub fn lid_blocked(facing: &str, neighbour: &[[f64; 6]]) -> bool {
+    let mut lid = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+    match facing {
+        "up" => lid[4] = 0.5,
+        "down" => lid[1] = 0.5,
+        "north" => lid[2] = 0.5,
+        "south" => lid[5] = 0.5,
+        "west" => lid[0] = 0.5,
+        "east" => lid[3] = 0.5,
+        _ => return false,
+    }
+    let lid: [f64; 6] = std::array::from_fn(|k| lid[k] + if k < 3 { 1e-6 } else { -1e-6 });
+    neighbour
+        .iter()
+        .any(|b| (0..3).all(|k| b[k] < lid[k + 3] && lid[k] < b[k + 3]))
+}
+
+pub fn lid_obstructed(pos: BlockPos, facing: &str, boxes_at: impl Fn(BlockPos) -> Vec<[f64; 6]>) -> bool {
+    let Some(lid) = lid_cell(pos, facing) else {
+        return false;
+    };
+    let mut boxes = boxes_at(lid);
+    boxes.extend(
+        boxes_at((lid.0, lid.1 - 1, lid.2))
+            .into_iter()
+            .map(|b| [b[0], b[1] - 1.0, b[2], b[3], b[4] - 1.0, b[5]]),
+    );
+    lid_blocked(facing, &boxes)
+}
+
+pub fn stored_items(stack: &ItemStack) -> Vec<(usize, ItemStack)> {
+    let Some(list) = stack
+        .components
+        .as_ref()
+        .and_then(|components| components.get(CONTAINER))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|entry| {
+            let slot = usize::try_from(entry.get("slot")?.as_u64()?).ok()?;
+            let item = entry.get("item")?;
+            let count = item.get("count").map_or(Some(1), Value::as_u64)?;
+            let mut stored = ItemStack::new(item.get("id")?.as_str()?, count.clamp(1, 255) as u8);
+            stored.components = item.get("components").cloned();
+            Some((slot, stored))
+        })
+        .collect()
+}
+
+fn container_component(cells: &[Option<ItemStack>]) -> Value {
+    Value::Array(
+        cells
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, cell)| {
+                let stack = cell.as_ref()?;
+                let mut item = json!({"id": stack.id, "count": stack.count});
+                if let Some(components) = &stack.components {
+                    item["components"] = components.clone();
+                }
+                Some(json!({"slot": slot, "item": item}))
+            })
+            .collect(),
+    )
 }
 
 fn property<'a>(block: &'a Block, name: &str) -> Option<&'a str> {
@@ -306,6 +427,8 @@ impl Brewer {
 #[derive(Default)]
 pub struct Containers {
     chests: HashMap<BlockPos, Vec<Option<ItemStack>>>,
+    ender: Vec<Option<ItemStack>>,
+    names: HashMap<BlockPos, Value>,
     ovens: HashMap<BlockPos, Oven>,
     brewers: HashMap<BlockPos, Brewer>,
     book: Arc<StationBook>,
@@ -440,7 +563,45 @@ impl Containers {
         self.brewers.get(&pos)
     }
 
+    pub fn place_shulker(&mut self, pos: BlockPos, stack: &ItemStack, recipes: &RecipeBook) {
+        let mut cells = vec![None; CHEST_SLOTS];
+        for (slot, mut stored) in stored_items(stack) {
+            if let Some(cell) = cells.get_mut(slot) {
+                stored.max = recipes.max_stack(&stored.id);
+                *cell = Some(stored);
+            }
+        }
+        self.chests.insert(pos, cells);
+        match stack.components.as_ref().and_then(|c| c.get(CUSTOM_NAME)) {
+            Some(name) => self.names.insert(pos, name.clone()),
+            None => self.names.remove(&pos),
+        };
+    }
+
+    pub fn take_shulker(&mut self, pos: BlockPos) -> Option<Value> {
+        let mut components = serde_json::Map::new();
+        if let Some(cells) = self
+            .chests
+            .remove(&pos)
+            .filter(|cells| cells.iter().any(Option::is_some))
+        {
+            components.insert(CONTAINER.to_owned(), container_component(&cells));
+        }
+        if let Some(name) = self.names.remove(&pos) {
+            components.insert(CUSTOM_NAME.to_owned(), name);
+        }
+        (!components.is_empty()).then_some(Value::Object(components))
+    }
+
+    pub fn custom_name(&self, pos: BlockPos) -> Option<String> {
+        match self.names.get(&pos)? {
+            Value::String(text) => Some(text.clone()),
+            other => other.get("text").and_then(Value::as_str).map(str::to_owned),
+        }
+    }
+
     pub fn remove(&mut self, pos: BlockPos) -> (Vec<ItemStack>, f32) {
+        self.names.remove(&pos);
         if let Some(cells) = self.chests.remove(&pos) {
             return (cells.into_iter().flatten().collect(), 0.0);
         }
@@ -501,6 +662,10 @@ impl Containers {
                 .or_default()
                 .slots
                 .to_vec(),
+            Station::Ender => {
+                self.ender.resize(CHEST_SLOTS, None);
+                self.ender.clone()
+            }
             _ => opened
                 .cells
                 .iter()
@@ -533,6 +698,7 @@ impl Containers {
                     *slot = cell;
                 }
             }
+            Station::Ender => self.ender = cells,
             _ => {
                 for (pos, half) in opened.cells.iter().zip(cells.chunks(CHEST_SLOTS)) {
                     self.chests.insert(*pos, half.to_vec());
@@ -660,6 +826,7 @@ impl Containers {
                     move_into(&mut inventory.slots, &mut stack, &order);
                 }
             }
+            Station::Shulker if is_shulker_box(&stack.id) => {}
             _ => {
                 let order: Vec<usize> = (0..cells.len()).collect();
                 move_into(&mut cells, &mut stack, &order);
@@ -868,6 +1035,7 @@ fn accepts(
         (Station::Oven(_), FUEL) => recipes.is_fuel(&stack.id) || stack.id == "minecraft:bucket",
         (Station::Brewer, REAGENT) => book.is_reagent(&stack.id, recipes),
         (Station::Brewer, BLAZE) => stack.id == "minecraft:blaze_powder",
+        (Station::Shulker, _) => !is_shulker_box(&stack.id),
         (Station::Brewer, _) => matches!(
             stack.id.as_str(),
             "minecraft:potion"
@@ -1327,5 +1495,128 @@ mod tests {
             .collect();
         assert_eq!(counts, vec![64, 10, 10]);
         assert_eq!(inventory.cursor.as_ref().map(|s| s.count), Some(10));
+    }
+
+    #[test]
+    fn ender_chests_shulker_boxes_and_copper_chests_open_as_vanilla_stations() {
+        assert_eq!(Station::of(&block("minecraft:ender_chest", &[])), Some(Station::Ender));
+        assert_eq!(Station::of(&block("minecraft:shulker_box", &[])), Some(Station::Shulker));
+        assert_eq!(Station::of(&block("minecraft:lime_shulker_box", &[])), Some(Station::Shulker));
+        for copper in ["minecraft:copper_chest", "minecraft:waxed_oxidized_copper_chest"] {
+            assert_eq!(Station::of(&block(copper, &[])), Some(Station::Chest), "{copper}");
+        }
+        let ender = Opened::new((0, 64, 0), &block("minecraft:ender_chest", &[]), None).unwrap();
+        let shulker = Opened::new((0, 64, 0), &block("minecraft:red_shulker_box", &[]), None).unwrap();
+        assert_eq!((ender.rows(), ender.size()), (3, 27));
+        assert_eq!((shulker.rows(), shulker.size()), (3, 27));
+        let left = block("minecraft:waxed_copper_chest", &[("facing", "north"), ("type", "left")]);
+        let right = block("minecraft:waxed_copper_chest", &[("facing", "north"), ("type", "right")]);
+        assert_eq!(Opened::new((5, 64, 5), &left, Some(&right)).unwrap().size(), 54);
+        assert_eq!(chest_sound("waxed_weathered_copper_chest", true), "minecraft:block.copper_chest_weathered.open");
+        assert_eq!(chest_sound("exposed_copper_chest", false), "minecraft:block.copper_chest.close");
+        assert_eq!(chest_sound("trapped_chest", true), "minecraft:block.chest.open");
+    }
+
+    #[test]
+    fn every_ender_chest_opens_the_players_one_ender_inventory() {
+        let mut store = Containers::default();
+        let mut inventory = player();
+        let here = Opened::new((0, 64, 0), &block("minecraft:ender_chest", &[]), None).unwrap();
+        let there = Opened::new((40, 70, -9), &block("minecraft:ender_chest", &[]), None).unwrap();
+        inventory.slots[12] = Some(inventory.recipes.stack("minecraft:diamond", 5));
+        store.quick_move_from_player(&here, &mut inventory, 12);
+        assert_eq!(store.cells(&there)[0].as_ref().map(|s| s.count), Some(5));
+        let (spilled, _) = store.remove((0, 64, 0));
+        assert!(spilled.is_empty(), "breaking an ender chest drops nothing of the inventory");
+        assert_eq!(store.cells(&here)[0].as_ref().map(|s| s.count), Some(5));
+        let chest = Opened::new((0, 64, 0), &block("minecraft:chest", &[]), None).unwrap();
+        assert!(store.cells(&chest).iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn a_shulker_box_refuses_shulker_boxes() {
+        let mut store = Containers::default();
+        let mut inventory = player();
+        let opened = Opened::new((0, 64, 0), &block("minecraft:shulker_box", &[]), None).unwrap();
+        let boxed = inventory.recipes.stack("minecraft:blue_shulker_box", 1);
+        assert_eq!(store.accepts(&opened, 0, &boxed, &inventory.recipes), None);
+        inventory.cursor = Some(boxed.clone());
+        store.click(&opened, &mut inventory, 0, false, false, 0.0);
+        assert!(store.cells(&opened)[0].is_none());
+        assert_eq!(inventory.cursor.as_ref().map(|s| s.id.as_str()), Some("minecraft:blue_shulker_box"));
+        inventory.cursor = None;
+        inventory.slots[15] = Some(boxed);
+        store.quick_move_from_player(&opened, &mut inventory, 15);
+        assert!(store.cells(&opened).iter().all(Option::is_none));
+        assert!(inventory.slots[15].is_some(), "a shift click leaves the box where it was");
+        inventory.slots[2] = inventory.slots[15].take();
+        store.swap(&opened, &mut inventory, 0, 2, 0.0);
+        assert!(store.cells(&opened)[0].is_none());
+        let bundle = inventory.recipes.stack("minecraft:bundle", 1);
+        assert!(store.accepts(&opened, 0, &bundle, &inventory.recipes).is_some());
+        let chest = Opened::new((1, 64, 0), &block("minecraft:chest", &[]), None).unwrap();
+        assert!(store.accepts(&chest, 0, &inventory.recipes.stack("minecraft:shulker_box", 1), &inventory.recipes).is_some());
+    }
+
+    #[test]
+    fn a_broken_shulker_box_keeps_its_contents_and_name_for_the_next_placing() {
+        let mut store = Containers::default();
+        let mut inventory = player();
+        let pos = (2, 64, 2);
+        let opened = Opened::new(pos, &block("minecraft:shulker_box", &[]), None).unwrap();
+        let mut sword = inventory.recipes.stack("minecraft:iron_sword", 1);
+        sword.components = Some(json!({"minecraft:damage": 4}));
+        inventory.cursor = Some(sword);
+        store.click(&opened, &mut inventory, 3, false, false, 0.0);
+        inventory.cursor = Some(inventory.recipes.stack("minecraft:dirt", 40));
+        store.click(&opened, &mut inventory, 26, false, false, 0.0);
+        let components = store.take_shulker(pos).unwrap();
+        assert!(store.cells(&opened).iter().all(Option::is_none), "nothing is left to spill");
+        assert_eq!(
+            components,
+            json!({"minecraft:container": [
+                {"slot": 3, "item": {"id": "minecraft:iron_sword", "count": 1, "components": {"minecraft:damage": 4}}},
+                {"slot": 26, "item": {"id": "minecraft:dirt", "count": 40}}
+            ]})
+        );
+        let mut item = inventory.recipes.stack("minecraft:shulker_box", 1);
+        item.components = Some(json!({"minecraft:container": components["minecraft:container"], "minecraft:custom_name": "Loot"}));
+        let elsewhere = (9, 70, 9);
+        store.place_shulker(elsewhere, &item, &inventory.recipes);
+        let placed = Opened::new(elsewhere, &block("minecraft:shulker_box", &[]), None).unwrap();
+        let cells = store.cells(&placed);
+        assert_eq!(cells[3].as_ref().and_then(|s| s.components.clone()), Some(json!({"minecraft:damage": 4})));
+        assert_eq!(cells[26].as_ref().map(|s| (s.count, s.max)), Some((40, 64)));
+        assert_eq!(store.custom_name(elsewhere).as_deref(), Some("Loot"));
+        let kept = store.take_shulker(elsewhere).unwrap();
+        assert_eq!(kept["minecraft:custom_name"], json!("Loot"));
+        assert_eq!(store.custom_name(elsewhere), None);
+        store.place_shulker(pos, &inventory.recipes.stack("minecraft:shulker_box", 1), &inventory.recipes);
+        assert_eq!(store.take_shulker(pos), None, "an empty unnamed box drops plain and stacks with new ones");
+    }
+
+    #[test]
+    fn a_shulker_box_opens_only_with_room_for_its_lid() {
+        let full = [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
+        let bottom_slab = [[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]];
+        let top_slab = [[0.0, 0.5, 0.0, 1.0, 1.0, 1.0]];
+        assert!(lid_blocked("up", &full));
+        assert!(!lid_blocked("up", &[]));
+        assert!(lid_blocked("up", &bottom_slab));
+        assert!(!lid_blocked("up", &top_slab), "the lid only needs the lower half above");
+        assert!(lid_blocked("down", &top_slab));
+        assert!(!lid_blocked("down", &bottom_slab));
+        let thin_wall_north = [[0.0, 0.0, 0.8125, 1.0, 1.0, 1.0]];
+        assert!(lid_blocked("north", &thin_wall_north));
+        assert!(!lid_blocked("south", &thin_wall_north));
+        assert!(!lid_blocked("east", &[[0.5, 0.0, 0.0, 1.0, 1.0, 1.0]]));
+        assert_eq!(lid_cell((3, 64, 3), "west"), Some((2, 64, 3)));
+        assert_eq!(lid_cell((3, 64, 3), "up"), Some((3, 65, 3)));
+        let fence = |at: BlockPos| if at == (3, 63, 2) { vec![[0.375, 0.0, 0.375, 0.625, 1.5, 0.625]] } else { Vec::new() };
+        assert!(lid_obstructed((3, 64, 3), "north", fence), "a fence below the lid reaches up into it");
+        assert!(!lid_obstructed((3, 64, 3), "south", fence));
+        let shulker_below_the_lid = |at: BlockPos| if at == (3, 64, 3) { full.to_vec() } else { Vec::new() };
+        assert!(!lid_obstructed((3, 64, 3), "up", shulker_below_the_lid));
+        assert!(lid_obstructed((3, 64, 3), "up", |at: BlockPos| if at == (3, 65, 3) { bottom_slab.to_vec() } else { Vec::new() }));
     }
 }

@@ -247,24 +247,34 @@ impl Entities {
 
     /// Block loot for what the weapons broke, dropped as vanilla drops it
     /// (`Block.popResource`); a blast keeps each drop one time in four.
-    pub(crate) fn drop_blocks(&mut self, broken: &[((i32, i32, i32), Block, bool)]) {
-        let Some(loot) = self.loot.as_ref() else {
-            return;
-        };
+    pub(crate) fn drop_blocks(&mut self, broken: &[((i32, i32, i32), Block, bool)], mut kept: HashMap<(i32, i32, i32), serde_json::Value>) {
         let tool = ItemStack::new(LOOT_TOOL, 1);
         for (pos, block, blast) in broken {
             let block = minecraftoss_player::Block { id: block.id.key(), properties: block.properties.clone() };
-            let Some(drops) = loot.roll_drops_named(&block, Some(&tool), self.seed as u64, &mut self.loot_sequences) else {
-                continue;
-            };
-            for mut drop in drops {
-                if *blast && self.random.next_float() >= 1.0 / BLAST_POWER {
+            let drops = self
+                .loot
+                .as_ref()
+                .and_then(|loot| loot.roll_drops_named(&block, Some(&tool), self.seed as u64, &mut self.loot_sequences));
+            let survives_blast = minecraft_terrain::containers::is_shulker_box(&block.id);
+            for mut drop in drops.into_iter().flatten() {
+                if *blast && !survives_blast && self.random.next_float() >= 1.0 / BLAST_POWER {
                     continue;
                 }
                 if drop.components.is_none() {
                     drop.max = drop.max.min(self.inventory.recipes.max_stack(&drop.id));
                 }
+                if drop.id == block.id
+                    && let Some(components) = kept.remove(pos)
+                {
+                    drop.components = Some(components);
+                }
                 self.world_items.spawn_block_drop(drop, *pos);
+            }
+            if let Some(components) = kept.remove(pos) {
+                let mut boxed = ItemStack::new(block.id.clone(), 1);
+                boxed.max = boxed.max.min(self.inventory.recipes.max_stack(&boxed.id));
+                boxed.components = Some(components);
+                self.world_items.spawn_block_drop(boxed, *pos);
             }
         }
     }
@@ -399,6 +409,10 @@ impl Entities {
     /// A block the player placed, for the level the mobs walk in.
     pub(crate) fn placed(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32)) {
         self.server.player_edit(scene, pos, PlayerEdit::Place);
+    }
+
+    pub(crate) fn keep_dropped_contents(&mut self, pos: (i32, i32, i32), id: &str, components: &serde_json::Value) {
+        self.server.keep_dropped_contents(pos, id, &components.to_string());
     }
 
     pub(crate) fn use_block(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32), facing: &'static str) -> bool {

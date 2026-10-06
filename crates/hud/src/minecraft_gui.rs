@@ -1043,6 +1043,8 @@ mod tests {
             name: None,
             attack: None,
             enchantments: Vec::new(),
+            contents: Vec::new(),
+            more: None,
         };
         let mut ui = MinecraftUi::default();
         painter.decorations(&ui, &stack, [0, 0], Some(("ab".into(), YELLOW)));

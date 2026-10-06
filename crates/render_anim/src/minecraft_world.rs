@@ -924,7 +924,14 @@ fn update(
                             .and_then(|b| world.stream.states.state_of(b))
                             .is_some_and(|state| world.registries.blocks.is(state, minecraftoss_core::block::flags::REDSTONE_CONDUCTOR))
                     };
-                    let blocked = opened.station == minecraft_terrain::containers::Station::Chest && opened.cells.iter().any(|&pos| conductor(pos));
+                    let blocked = match opened.station {
+                        minecraft_terrain::containers::Station::Chest | minecraft_terrain::containers::Station::Ender => opened.cells.iter().any(|&pos| conductor(pos)),
+                        minecraft_terrain::containers::Station::Shulker => {
+                            let facing = minecraft_terrain::scene::Scene::block(&world.scene, opened.cells[0]).and_then(|b| b.properties.get("facing").cloned()).unwrap_or_else(|| "up".to_owned());
+                            minecraft_terrain::containers::lid_obstructed(opened.cells[0], &facing, |at| minecraftoss_player::World::collision_boxes(&world.scene, at))
+                        }
+                        _ => false,
+                    };
                     if !blocked {
                         open_block = Some(opened);
                     }
@@ -1107,6 +1114,11 @@ fn update(
                     hand.recent.retain(|(_, _, at)| now - at < RECENT_PLACE_SECONDS);
                     let written: Vec<_> = writes.iter().map(|(p, _)| *p).collect();
                     write_blocks(world, shapes, shape_ids, entities, writes);
+                    if let Some(stack) = held.as_ref().filter(|stack| minecraft_terrain::containers::is_shulker_box(&stack.id))
+                        && minecraft_terrain::scene::Scene::block(&world.scene, pos).and_then(minecraft_terrain::containers::Station::of) == Some(minecraft_terrain::containers::Station::Shulker)
+                    {
+                        containers.place_shulker(pos, stack, &entities.inventory.recipes);
+                    }
                     hand.recent.extend(written.into_iter().filter_map(|p| minecraftoss_player::World::block(&world.scene, p).map(|b| (p, b, now))));
                     hand.swing = Some(0.0);
                     if let Some(block) = minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned()
@@ -1198,7 +1210,12 @@ fn update(
         let positions: Vec<_> = broken.iter().map(|(pos, ..)| *pos).collect();
         entities.broke(&positions);
         entities.award_block_experience(&broken);
-        entities.drop_blocks(&broken);
+        let kept = broken
+            .iter()
+            .filter(|(_, block, _)| minecraft_terrain::containers::Station::of(block) == Some(minecraft_terrain::containers::Station::Shulker))
+            .filter_map(|(pos, ..)| containers.take_shulker(*pos).map(|components| (*pos, components)))
+            .collect();
+        entities.drop_blocks(&broken, kept);
         for &pos in &positions {
             spill(containers, entities, pos);
         }
@@ -1286,7 +1303,16 @@ fn update(
                 let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, registries, state));
                 sim::voxel::set_block_shape(pos.0, pos.1, pos.2, shape);
                 let before = minecraftoss_player::World::block(&world.scene, pos);
+                let shulker_before = minecraft_terrain::scene::Scene::block(&world.scene, pos)
+                    .filter(|b| minecraft_terrain::containers::Station::of(b) == Some(minecraft_terrain::containers::Station::Shulker))
+                    .map(|b| b.id.key());
                 world.scene.set(pos, block);
+                if let Some(id) = shulker_before
+                    && minecraft_terrain::scene::Scene::block(&world.scene, pos).and_then(minecraft_terrain::containers::Station::of) != Some(minecraft_terrain::containers::Station::Shulker)
+                    && let Some(components) = containers.take_shulker(pos)
+                {
+                    entities.keep_dropped_contents(pos, &id, &components);
+                }
                 if let (Some(before), Some(after)) = (before, minecraftoss_player::World::block(&world.scene, pos))
                     && let Some(sound) = minecraft_terrain::doors::release_sound(&before, &after).or_else(|| {
                         let toggled = minecraft_terrain::doors::powered_toggle(&before, &after);
@@ -1433,7 +1459,12 @@ fn update(
                     containers.fill(pos, items, seed);
                 }
             }
-            inventory_ui.open_block(&mut ui, opened);
+            let named = containers.custom_name(opened.cells[0]);
+            if inventory_ui.open_block(&mut ui, opened)
+                && let Some(name) = named
+            {
+                ui.screen_title = name;
+            }
         }
         if let Some((pos, kind)) = open_bench.take() {
             if kind == minecraft_terrain::stations::Workshop::Enchanting {
@@ -1485,7 +1516,12 @@ fn update(
         for (opened, open) in [(was_open.clone().filter(|o| now_open.as_ref() != Some(o)), false), (now_open.filter(|o| was_open.as_ref() != Some(o)), true)] {
             let Some(opened) = opened else { continue };
             let sound = match opened.station {
-                minecraft_terrain::containers::Station::Chest => Some(if open { "minecraft:block.chest.open" } else { "minecraft:block.chest.close" }),
+                minecraft_terrain::containers::Station::Chest => {
+                    let path = minecraft_terrain::scene::Scene::block(&world.scene, opened.cells[0]).map_or_else(|| "chest".to_owned(), |b| b.id.path.clone());
+                    Some(minecraft_terrain::containers::chest_sound(&path, open))
+                }
+                minecraft_terrain::containers::Station::Ender => Some(if open { "minecraft:block.ender_chest.open" } else { "minecraft:block.ender_chest.close" }),
+                minecraft_terrain::containers::Station::Shulker => Some(if open { "minecraft:block.shulker_box.open" } else { "minecraft:block.shulker_box.close" }),
                 minecraft_terrain::containers::Station::Barrel => Some(if open { "minecraft:block.barrel.open" } else { "minecraft:block.barrel.close" }),
                 minecraft_terrain::containers::Station::Oven(_) | minecraft_terrain::containers::Station::Brewer => None,
             };

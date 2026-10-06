@@ -158,6 +158,13 @@ pub(crate) fn layout(screen: McScreen) -> Layout {
             }
             player_inventory(&mut slots, 18 + rows * 18 + 13);
         }
+        McScreen::ShulkerBox => {
+            size = [176, 167];
+            for i in 0..27 {
+                slots.push(cell(i, 8 + 18 * (i % 9) as i32, 18 + 18 * (i / 9) as i32));
+            }
+            player_inventory(&mut slots, 84);
+        }
         McScreen::Furnace(_) => {
             slots.extend([cell(0, 56, 17), cell(1, 56, 53), output(116, 35)]);
             player_inventory(&mut slots, 84);
@@ -243,6 +250,7 @@ impl Layout {
             McScreen::Inventory => "inventory",
             McScreen::CraftingTable => "crafting_table",
             McScreen::Chest { .. } => "generic_54",
+            McScreen::ShulkerBox => "shulker_box",
             McScreen::Furnace(McOven::Furnace) => "furnace",
             McScreen::Furnace(McOven::Smoker) => "smoker",
             McScreen::Furnace(McOven::BlastFurnace) => "blast_furnace",
@@ -1070,6 +1078,11 @@ mod tests {
         assert_eq!(at(&small, McSlot::Inventory(0)), (8, 143));
         assert_eq!(at(&large, McSlot::Inventory(9)), (8, 139));
         assert_eq!(at(&large, McSlot::Container(53)), (152, 108));
+        let shulker = layout(McScreen::ShulkerBox);
+        assert_eq!((shulker.size, shulker.sheet()), ([176, 167], "shulker_box"));
+        assert_eq!(at(&shulker, McSlot::Container(26)), (152, 54));
+        assert_eq!(at(&shulker, McSlot::Inventory(9)), (8, 84));
+        assert_eq!(at(&shulker, McSlot::Inventory(0)), (8, 142));
     }
 
     #[test]
@@ -1187,6 +1200,8 @@ mod tests {
             name: None,
             attack: None,
             enchantments: Vec::new(),
+            contents: Vec::new(),
+            more: None,
         };
         let netherite = stack("minecraft:netherite_upgrade_smithing_template");
         assert_eq!(

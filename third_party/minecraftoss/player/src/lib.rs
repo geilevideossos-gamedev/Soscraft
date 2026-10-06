@@ -838,7 +838,7 @@ fn local_shapes(block: &Block) -> Vec<Box3> {
             _ => Box3::new(DVec3::new(0.0, 0.0, 1.0 - thickness), DVec3::ONE),
         }];
     }
-    if id == "chest" {
+    if id == "chest" || id == "ender_chest" {
         let mut min = DVec3::new(1.0 / 16.0, 0.0, 1.0 / 16.0);
         let mut max = DVec3::new(15.0 / 16.0, 14.0 / 16.0, 15.0 / 16.0);
         if let Some((dx, _, dz)) = chest_connected_pos((0, 0, 0), block) {
