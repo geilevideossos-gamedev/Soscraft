@@ -16,7 +16,7 @@
       {"text_key": "@PLATFORM_BACK_CAPS", "fields": {"handlers": {"action": [{"Script": "close self;"}]}}},
       {"dvar": "profileMenuOption_Gamma", "fields": {"name": "video_brightness", "item_type": 10, "static_flags": 0, "dvar": "ui_brightness", "choices": [], "vis_exp": "1", "disabled_exp": "0", "text_key": "", "text_exp": "", "text_align_mode": 10, "text_align_x": -8, "text_align_y": 0, "fore_color": [1, 1, 1, 1], "rect": {"x": 420, "y": 68, "w": 112, "h": 20}, "handlers": {"action": [], "focus": [{"Script": "play mouse_over;"}], "leave_focus": []}, "text_scale": 0.375, "style": 1, "background": "", "back_color": [0, 0, 0, 0], "slider": {"min": -0.2, "max": 0.2, "step": 0.004, "display_range": [50, 150], "suffix": "%"}, "font_enum": 3, "float_exp": []}},
       {"text_key": "@MENU_BRIGHTNESS", "fields": {"name": "video_brightness_label", "vis_exp": "1", "disabled_exp": "0", "fore_color": [1, 1, 1, 1], "rect": {"x": 232, "y": 68, "w": 344, "h": 20}}},
-      {"text_key": "@MENU_ADVANCED_VIDEO", "item_type": 1, "fields": {"name": "video_advanced", "rect": {"x": 260, "y": 128, "w": 225, "h": 20}, "vis_exp": "1", "disabled_exp": "0", "handlers": {"action": [{"Script": "play mouse_click; open pc_options_advanced_video;"}]}}}
+      {"text_key": "@MENU_ADVANCED_VIDEO", "item_type": 1, "fields": {"name": "video_advanced", "rect": {"x": 260, "y": 128, "w": 225, "h": 20}, "vis_exp": "1", "disabled_exp": "0", "handlers": {"action": [{"Script": "play mouse_click; close self; open pc_options_advanced_video;"}]}}}
     ],
     "item_copies": [
       {"dvar": "ui_r_mode", "fields": {"item_type": 12, "static_flags": 0, "dvar": "ui_r_displayMode", "choices": [["@MENU_DISABLED", "0"], ["@MENU_ENABLED", "1"]], "vis_exp": "1", "disabled_exp": "0", "text_key": "", "text_exp": "", "text_align_mode": 10, "text_align_x": -8, "text_align_y": 0, "fore_color": [1, 1, 1, 1], "rect": {"x": 232, "y": 48, "w": 344, "h": 20}, "handlers": {"action": [{"Script": "play mouse_click;"}], "focus": [{"Script": "play mouse_over; setItemColor self backcolor 0 0 0 1;"}], "leave_focus": [{"Script": "setItemColor self backcolor 0 0 0 0;"}]}, "text_scale": 0.375, "style": 1, "background": "menu_button_selection_bar", "back_color": [0, 0, 0, 0], "name": "video_display_mode", "font_enum": 3}},
@@ -83,8 +83,9 @@
   {
     "name": "pc_options_advanced_video",
     "base": "pc_options_video",
-    "fields": {"handlers": {"open": [{"Script": "focusFirst;"}], "close": [], "esc": [{"Script": "close self;"}]}},
+    "fields": {"handlers": {"open": [{"Script": "focusFirst;"}], "close": [], "esc": [{"Script": "close self; open pc_options_video;"}]}},
     "item_overrides": [
+      {"text_key": "@PLATFORM_BACK_CAPS", "fields": {"handlers": {"action": [{"Script": "close self; open pc_options_video;"}]}}},
       {"name": "video_resolution", "fields": {"vis_exp": "0"}},
       {"name": "video_resolution_label", "fields": {"vis_exp": "0"}},
       {"name": "video_brightness", "fields": {"vis_exp": "0"}},

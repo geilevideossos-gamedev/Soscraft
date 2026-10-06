@@ -156,3 +156,115 @@ pub fn install_frontend_menus(catalog: &mut asset_game::MenuCatalog) -> Result<(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod settings_menu_tests {
+    use asset_game::{MenuCatalog, MenuDef, MenuEvent, MenuItem};
+
+    fn item(name: &str, text_key: &str, dvar: &str, item_type: i32) -> MenuItem {
+        MenuItem {
+            name: name.into(),
+            text_key: text_key.into(),
+            dvar: dvar.into(),
+            item_type,
+            vis_exp: "1".into(),
+            ..Default::default()
+        }
+    }
+
+    fn base(name: &str, items: Vec<MenuItem>) -> (String, MenuDef) {
+        let mut menu = MenuDef::default();
+        menu.name = name.into();
+        menu.items = items;
+        (name.into(), menu)
+    }
+
+    fn settings_catalog() -> MenuCatalog {
+        let mut catalog = MenuCatalog::default();
+        catalog.menus.extend([
+            base(
+                "pc_options_video",
+                vec![
+                    item("", "@MENU_VIDEO", "", 0),
+                    item("", "", "ui_r_mode", 12),
+                    item("", "@MENU_VIDEO_MODE", "", 0),
+                    item("", "@PLATFORM_BACK_CAPS", "", 1),
+                    item("", "", "profileMenuOption_Gamma", 10),
+                    item("", "@MENU_BRIGHTNESS", "", 0),
+                    item("", "@MENU_ADVANCED_VIDEO", "", 1),
+                ],
+            ),
+            base(
+                "pc_options_audio",
+                vec![
+                    item("", "", "profileMenuOption_volume", 10),
+                    item("", "", "ui_outputConfig", 12),
+                    item("", "@MENU_SPEAKER_CONFIG", "", 0),
+                ],
+            ),
+            base(
+                "options_multi",
+                vec![
+                    item("", "", "ui_name", 4),
+                    item("", "@MENU_PLAYER_NAME", "", 0),
+                ],
+            ),
+        ]);
+        catalog
+            .load_definitions(include_str!("../menus/settings.json"))
+            .expect("settings menus load over their bases");
+        catalog
+    }
+
+    fn script(events: &[MenuEvent]) -> String {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                MenuEvent::Script(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn named<'a>(menu: &'a MenuDef, name: &str) -> &'a MenuItem {
+        menu.items
+            .iter()
+            .find(|item| item.name == name)
+            .unwrap_or_else(|| panic!("{} has no item {name}", menu.name))
+    }
+
+    #[test]
+    fn advanced_video_replaces_the_video_page_instead_of_stacking_on_it() {
+        let catalog = settings_catalog();
+        let video = catalog.get("pc_options_video").expect("video page");
+        let action = script(&named(video, "video_advanced").handlers.action);
+        let close = action.find("close self;").expect("video page closes");
+        let open = action
+            .find("open pc_options_advanced_video;")
+            .expect("advanced video opens");
+        assert!(close < open, "{action}");
+    }
+
+    #[test]
+    fn esc_and_back_on_advanced_video_return_to_the_video_page() {
+        let catalog = settings_catalog();
+        let advanced = catalog
+            .get("pc_options_advanced_video")
+            .expect("advanced video page");
+        assert_eq!(
+            script(&advanced.handlers.esc),
+            "close self; open pc_options_video;"
+        );
+        let back = advanced
+            .items
+            .iter()
+            .find(|item| item.text_key == "@PLATFORM_BACK_CAPS")
+            .expect("back button");
+        assert_eq!(
+            script(&back.handlers.action),
+            "close self; open pc_options_video;"
+        );
+        let video = catalog.get("pc_options_video").expect("video page");
+        assert_eq!(script(&video.handlers.esc), "close self;");
+    }
+}
