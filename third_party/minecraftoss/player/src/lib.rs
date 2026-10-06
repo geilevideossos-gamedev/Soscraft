@@ -23,6 +23,7 @@ pub mod mining;
 pub mod jmath;
 pub mod mth;
 mod placement;
+pub use placement::authored_sturdy_face;
 pub mod rail;
 pub mod redstone;
 pub mod rng;
@@ -222,6 +223,9 @@ pub trait World {
     /// underside is a full face. Authored worlds take a full collision cube.
     fn sturdy_underside(&self, pos: Pos) -> bool {
         self.collision_boxes(pos) == [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
+    }
+    fn sturdy_face(&self, pos: Pos, face: Face) -> bool {
+        self.block(pos).is_some_and(|block| placement::authored_sturdy_face(&block, &self.collision_boxes(pos), face))
     }
     /// The block's `SoundType` fall sound at `pos`: its event, volume and
     /// pitch. Authored worlds take the step's family (`block.<family>.fall`).
@@ -824,6 +828,15 @@ fn local_shapes(block: &Block) -> Vec<Box3> {
             }
         }
         return boxes;
+    }
+    if id == "ladder" {
+        let thickness = 3.0 / 16.0;
+        return vec![match block.property("facing").unwrap_or("north") {
+            "south" => Box3::new(DVec3::ZERO, DVec3::new(1.0, 1.0, thickness)),
+            "east" => Box3::new(DVec3::ZERO, DVec3::new(thickness, 1.0, 1.0)),
+            "west" => Box3::new(DVec3::new(1.0 - thickness, 0.0, 0.0), DVec3::ONE),
+            _ => Box3::new(DVec3::new(0.0, 0.0, 1.0 - thickness), DVec3::ONE),
+        }];
     }
     if id == "chest" {
         let mut min = DVec3::new(1.0 / 16.0, 0.0, 1.0 / 16.0);
@@ -3022,6 +3035,38 @@ mod tests {
             "jump should bypass edge backoff: {:?}",
             p.pos
         );
+    }
+    #[test]
+    fn ladder_shapes_are_the_three_pixel_sheet_against_their_wall() {
+        let cases = [
+            ("north", [0.0, 0.0, 0.8125, 1.0, 1.0, 1.0]),
+            ("south", [0.0, 0.0, 0.0, 1.0, 1.0, 0.1875]),
+            ("west", [0.8125, 0.0, 0.0, 1.0, 1.0, 1.0]),
+            ("east", [0.0, 0.0, 0.0, 0.1875, 1.0, 1.0]),
+        ];
+        for (facing, expected) in cases {
+            let ladder = Block::new("minecraft:ladder").with("facing", facing);
+            assert_eq!(authored_collision_boxes(&ladder), [expected], "facing {facing}");
+            assert!(!supports_rigid_top(&ladder));
+        }
+    }
+    #[test]
+    fn a_placed_ladder_hangs_flush_on_the_clicked_wall_and_aims_through_its_empty_side() {
+        let mut world = floor();
+        world.set_block((0, 2, -3), Some(Block::new("minecraft:stone")));
+        world.set_block((-1, 2, -2), Some(Block::new("minecraft:stone")));
+        let player = Player::new(DVec3::new(0.5, 1.0, 0.5));
+        assert_eq!(player.place_target_with(&mut world, Block::new("minecraft:ladder")), Some((0, 2, -2)));
+        let ladder = world.block((0, 2, -2)).unwrap();
+        assert_eq!(ladder.property("facing"), Some("south"));
+        let front = player.target(&world, 5.0).unwrap();
+        assert_eq!((front.pos, front.face), ((0, 2, -2), Face::South));
+        assert!((front.distance - 2.3125).abs() < 1e-9, "{}", front.distance);
+        assert_eq!(player.place_target_with(&mut world, Block::new("minecraft:ladder")), None);
+        let mut beside = Player::new(DVec3::new(3.5, 1.0, -1.4));
+        beside.yaw = 90.0;
+        let through = beside.target(&world, 5.0).unwrap();
+        assert_eq!((through.pos, through.face), ((-1, 2, -2), Face::East));
     }
     #[test]
     fn ray_break_place() {

@@ -275,6 +275,10 @@ impl<W: World> World for Outlined<'_, W> {
         self.0.collision_boxes(pos)
     }
 
+    fn sturdy_face(&self, pos: Pos, face: minecraftoss_player::Face) -> bool {
+        self.0.sturdy_face(pos, face)
+    }
+
     fn replaceable(&self, block: &Block) -> bool {
         self.0.replaceable(block)
     }

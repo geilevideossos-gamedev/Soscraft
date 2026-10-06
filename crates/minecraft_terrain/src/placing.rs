@@ -52,6 +52,15 @@ impl<W: World> World for Staged<'_, W> {
         }
     }
 
+    fn sturdy_face(&self, pos: Pos, face: minecraftoss_player::Face) -> bool {
+        match self.staged(pos) {
+            Some(block) => block.as_ref().is_some_and(|block| {
+                minecraftoss_player::authored_sturdy_face(block, &self.collision_boxes(pos), face)
+            }),
+            None => self.world.sturdy_face(pos, face),
+        }
+    }
+
     fn min_y(&self) -> i32 {
         self.world.min_y()
     }

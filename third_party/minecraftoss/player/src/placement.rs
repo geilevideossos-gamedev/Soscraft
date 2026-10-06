@@ -83,6 +83,7 @@ pub(crate) fn block_entity_placement(
                 .with("powered", "false"),
         )),
         "bell" => placed(bell(world, pos, block, view)),
+        "ladder" => placed(ladder(world, pos, block, view, water)),
         _ if path == "shulker_box" || path.ends_with("_shulker_box") => {
             placed(Some(block.clone().with("facing", name(view.face))))
         }
@@ -326,6 +327,27 @@ fn wall_hanging_sign_fits(world: &impl World, pos: Pos, facing: Face) -> bool {
         || attaches(counter_clockwise(facing), clockwise(facing))
 }
 
+fn ladder(world: &impl World, pos: Pos, block: &Block, view: &View, water: &str) -> Option<Block> {
+    let clicked = world.block(step(pos, opposite(view.face)));
+    if !view.replace_clicked
+        && clicked.is_some_and(|clicked| {
+            clicked.id == block.id && clicked.property("facing") == Some(name(view.face))
+        })
+    {
+        return None;
+    }
+    looking_directions(view)
+        .into_iter()
+        .filter(|direction| axis(*direction) != 1)
+        .find(|direction| world.sturdy_face(step(pos, *direction), opposite(*direction)))
+        .map(|direction| {
+            block
+                .clone()
+                .with("facing", name(opposite(direction)))
+                .with("waterlogged", water)
+        })
+}
+
 fn bell(world: &impl World, pos: Pos, block: &Block, view: &View) -> Option<Block> {
     let base = block.clone().with("powered", "false");
     if axis(view.face) == 1 {
@@ -477,6 +499,16 @@ fn solid(world: &impl World, pos: Pos) -> bool {
 }
 
 fn covered(world: &impl World, pos: Pos, face: Face, from_pixel: u8, to_pixel: u8) -> bool {
+    covers(&world.collision_boxes(pos), face, from_pixel, to_pixel)
+}
+
+pub fn authored_sturdy_face(block: &Block, boxes: &[[f64; 6]], face: Face) -> bool {
+    let id = block.id.as_str();
+    !id.ends_with("_leaves")
+        && (matches!(id, "minecraft:soul_sand" | "minecraft:mud") || covers(boxes, face, 0, 16))
+}
+
+fn covers(boxes: &[[f64; 6]], face: Face, from_pixel: u8, to_pixel: u8) -> bool {
     let normal = axis(face);
     let positive = matches!(face, Face::Up | Face::South | Face::East);
     let (u, v) = match normal {
@@ -484,7 +516,6 @@ fn covered(world: &impl World, pos: Pos, face: Face, from_pixel: u8, to_pixel: u
         1 => (0, 2),
         _ => (0, 1),
     };
-    let boxes = world.collision_boxes(pos);
     let touching: Vec<&[f64; 6]> = boxes
         .iter()
         .filter(|bounds| {
@@ -673,6 +704,70 @@ mod tests {
         assert!(state(&world, (5, 5, 5), "minecraft:white_banner", &on_wall).is_none());
         let (floating, _) = state(&world, (5, 5, 5), "minecraft:zombie_head", &on_wall).unwrap();
         assert_eq!(floating.id, "minecraft:zombie_head");
+    }
+
+    #[test]
+    fn ladders_face_away_from_the_wall_they_are_placed_on() {
+        let mut world = Blocks::default();
+        world.set_block((0, 1, 0), Some(Block::new("minecraft:stone")));
+        for (yaw, face, pos, facing) in [
+            (180.0, Face::South, (0, 1, 1), "south"),
+            (0.0, Face::North, (0, 1, -1), "north"),
+            (90.0, Face::East, (1, 1, 0), "east"),
+            (-90.0, Face::West, (-1, 1, 0), "west"),
+        ] {
+            let (ladder, _) = state(&world, pos, "minecraft:ladder", &view(yaw, 10.0, face)).unwrap();
+            assert_eq!(ladder.property("facing"), Some(facing), "clicked {facing}");
+            assert_eq!(ladder.property("waterlogged"), Some("false"));
+        }
+        world.set_block((0, 0, 1), Some(Block::new("minecraft:stone")));
+        let on_floor_facing_wall = view(180.0, 60.0, Face::Up);
+        let (ladder, _) = state(&world, (0, 1, 1), "minecraft:ladder", &on_floor_facing_wall).unwrap();
+        assert_eq!(ladder.property("facing"), Some("south"));
+        let on_floor_facing_away = view(0.0, 60.0, Face::Up);
+        let (ladder, _) = state(&world, (0, 1, 1), "minecraft:ladder", &on_floor_facing_away).unwrap();
+        assert_eq!(ladder.property("facing"), Some("south"));
+        assert!(state(&world, (5, 1, 5), "minecraft:ladder", &on_floor_facing_wall).is_none());
+        world.set_block((0, 1, 1), Some(Block::new("minecraft:water").with("level", "0")));
+        let flooded = View {
+            replace_clicked: true,
+            ..view(180.0, 10.0, Face::South)
+        };
+        let (ladder, _) = state(&world, (0, 1, 1), "minecraft:ladder", &flooded).unwrap();
+        assert_eq!(ladder.property("waterlogged"), Some("true"));
+    }
+
+    #[test]
+    fn ladders_need_a_sturdy_wall_not_just_a_colliding_one() {
+        let side = view(180.0, 10.0, Face::South);
+        for (wall, placed) in [
+            ("minecraft:oak_leaves", false),
+            ("minecraft:soul_sand", true),
+            ("minecraft:mud", true),
+            ("minecraft:stone_slab", false),
+        ] {
+            let mut world = Blocks::default();
+            world.set_block((0, 1, 0), Some(Block::new(wall)));
+            let ladder = state(&world, (0, 1, 1), "minecraft:ladder", &side);
+            assert_eq!(ladder.is_some(), placed, "{wall}");
+        }
+    }
+
+    #[test]
+    fn a_ladder_cannot_be_placed_on_the_front_of_another_ladder() {
+        let mut world = Blocks::default();
+        world.set_block((0, 1, 0), Some(Block::new("minecraft:stone")));
+        world.set_block(
+            (0, 1, 1),
+            Some(Block::new("minecraft:ladder").with("facing", "south")),
+        );
+        let front = view(180.0, 10.0, Face::South);
+        assert!(state(&world, (0, 1, 2), "minecraft:ladder", &front).is_none());
+        let side = view(-90.0, 10.0, Face::West);
+        assert!(state(&world, (-1, 1, 1), "minecraft:ladder", &side).is_none());
+        world.set_block((-1, 1, 0), Some(Block::new("minecraft:stone")));
+        let (beside, _) = state(&world, (-1, 1, 1), "minecraft:ladder", &side).unwrap();
+        assert_eq!(beside.property("facing"), Some("south"));
     }
 
     #[test]

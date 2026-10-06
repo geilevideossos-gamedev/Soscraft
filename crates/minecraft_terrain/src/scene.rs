@@ -452,6 +452,21 @@ impl PlayerWorld for HandcraftedScene {
         }
         PlayerWorld::block(self, pos).map_or_else(Vec::new, |block| minecraftoss_player::authored_collision_boxes(&block))
     }
+    fn sturdy_face(&self, pos: BlockPos, face: minecraftoss_player::Face) -> bool {
+        if let (Some(states), Some(state)) = (&self.states, self.state_at(pos)) {
+            use minecraftoss_core::pos::Direction;
+            let direction = match face {
+                minecraftoss_player::Face::Down => Direction::Down,
+                minecraftoss_player::Face::Up => Direction::Up,
+                minecraftoss_player::Face::North => Direction::North,
+                minecraftoss_player::Face::South => Direction::South,
+                minecraftoss_player::Face::West => Direction::West,
+                minecraftoss_player::Face::East => Direction::East,
+            };
+            return states.registries().blocks.is_face_sturdy(state, direction, minecraftoss_core::SupportType::Full);
+        }
+        PlayerWorld::block(self, pos).is_some_and(|block| minecraftoss_player::authored_sturdy_face(&block, &PlayerWorld::collision_boxes(self, pos), face))
+    }
     fn replaceable(&self, block: &PlayerBlock) -> bool {
         let Some(states) = &self.states else {
             return minecraftoss_player::authored_replaceable(block);
@@ -488,6 +503,21 @@ mod collision_tests {
         assert!(fence.iter().any(|b| b[4] == 1.5), "{fence:?}");
         assert_eq!(PlayerWorld::collision_boxes(&scene, (2, 100, 0)), vec![[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]]);
         assert_eq!(PlayerWorld::collision_boxes(&scene, (3, 100, 0)), vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]);
+    }
+
+    #[test]
+    fn streamed_faces_are_sturdy_by_the_catalog_support_shape() {
+        use minecraftoss_core::registries::DataPaths;
+        use minecraftoss_core::Registries;
+        use minecraftoss_player::Face;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let states = Arc::new(crate::terrain::BlockStates::new(Arc::new(registries), 0, -64, 384).unwrap());
+        let mut scene = HandcraftedScene::streamed(states);
+        for (x, wall, sturdy) in [(0, "minecraft:stone", true), (1, "minecraft:oak_leaves", false), (2, "minecraft:soul_sand", true), (3, "minecraft:mud", true), (4, "minecraft:oak_fence", false)] {
+            scene.set((x, 100, 0), Some(Block::new(wall)));
+            assert_eq!(PlayerWorld::sturdy_face(&scene, (x, 100, 0), Face::South), sturdy, "{wall}");
+        }
     }
 
     #[test]
