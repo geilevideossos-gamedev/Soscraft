@@ -951,7 +951,13 @@ pub fn extract_minecraft_world(
         frame.generation = view.generation;
         frame.uploads.clear();
         frame.removed.clear();
+        frame.atlas_patches.clear();
     }
+    frame.atlas_patches.extend(view.atlas_patches.drain(..).map(|patch| render_gpu::MinecraftAtlasPatch {
+        x: patch.origin.0,
+        y: patch.origin.1,
+        levels: patch.levels.into_iter().map(|level| (level.width(), level.height(), level.into_raw())).collect(),
+    }));
     frame.atlas = view.atlas.as_ref().map(|atlas| {
         let key = std::sync::Arc::as_ptr(atlas) as usize;
         if let Some((held, converted)) = atlas_of.as_ref()

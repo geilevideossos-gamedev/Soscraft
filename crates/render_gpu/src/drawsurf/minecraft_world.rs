@@ -20,7 +20,7 @@ use bevy::render::render_resource::{
     RawVertexBufferLayout, RawVertexState, RenderPipeline, Sampler, SamplerBindingType,
     SamplerDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages, StoreOp,
     TexelCopyBufferLayout, TexelCopyTextureInfo, TextureAspect, TextureDescriptor,
-    TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView,
+    Texture, TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView,
     TextureViewDescriptor, VertexAttribute, VertexFormat, VertexStepMode,
 };
 use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery};
@@ -49,6 +49,12 @@ pub struct MinecraftAtlasImage {
     pub levels: Vec<Vec<u8>>,
 }
 
+pub struct MinecraftAtlasPatch {
+    pub x: u32,
+    pub y: u32,
+    pub levels: Vec<(u32, u32, Vec<u8>)>,
+}
+
 /// Cloud geometry in blocks: position then colour per vertex.
 pub struct MinecraftClouds {
     pub vertices: Vec<[f32; 7]>,
@@ -62,6 +68,7 @@ pub struct MinecraftWorldFrame {
     pub origin: [f64; 3],
     pub view_distance: f32,
     pub atlas: Option<Arc<MinecraftAtlasImage>>,
+    pub atlas_patches: Vec<MinecraftAtlasPatch>,
     pub uploads: Vec<MinecraftSectionUpload>,
     pub removed: Vec<[i32; 3]>,
     pub visible: Vec<[i32; 3]>,
@@ -121,6 +128,7 @@ struct TerrainGpu {
     generation: u64,
     view: Option<Buffer>,
     atlas: Option<(Arc<MinecraftAtlasImage>, TextureView)>,
+    atlas_texture: Option<Texture>,
     celestial: Option<(Arc<MinecraftAtlasImage>, TextureView)>,
     clouds: Option<(Arc<MinecraftClouds>, Buffer, Buffer, u32)>,
     crack_texture: Option<(Arc<MinecraftAtlasImage>, TextureView)>,
@@ -195,6 +203,7 @@ fn prepare_terrain(
 ) {
     HIDES_MAP.store(frame.active, std::sync::atomic::Ordering::Relaxed);
     if !frame.active {
+        frame.atlas_patches.clear();
         if !gpu.sections.is_empty() || gpu.atlas.is_some() {
             *gpu = TerrainGpu {
                 pipelines: std::mem::take(&mut gpu.pipelines),
@@ -210,9 +219,32 @@ fn prepare_terrain(
     if let Some(atlas) = frame.atlas.clone()
         && gpu.atlas.as_ref().is_none_or(|(held, _)| !Arc::ptr_eq(held, &atlas))
     {
-        let view = upload_atlas(&device, &queue, &atlas);
+        let (view, texture) = upload_atlas(&device, &queue, &atlas);
         gpu.atlas = Some((atlas, view));
+        gpu.atlas_texture = Some(texture);
         gpu.bind = None;
+    }
+    let patches = std::mem::take(&mut frame.atlas_patches);
+    if let (Some((atlas, _)), Some(texture)) = (gpu.atlas.as_ref(), gpu.atlas_texture.as_ref()) {
+        for patch in &patches {
+            for (level, origin, size, texels) in patch_writes(patch, atlas) {
+                queue.write_texture(
+                    TexelCopyTextureInfo {
+                        texture,
+                        mip_level: level,
+                        origin,
+                        aspect: TextureAspect::All,
+                    },
+                    texels,
+                    TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(size.width * 4),
+                        rows_per_image: Some(size.height),
+                    },
+                    size,
+                );
+            }
+        }
     }
     if let Some(celestial) = frame.celestial.clone()
         && gpu
@@ -220,7 +252,7 @@ fn prepare_terrain(
             .as_ref()
             .is_none_or(|(held, _)| !Arc::ptr_eq(held, &celestial))
     {
-        let view = upload_atlas(&device, &queue, &celestial);
+        let (view, _) = upload_atlas(&device, &queue, &celestial);
         gpu.celestial = Some((celestial, view));
         gpu.bind = None;
     }
@@ -230,7 +262,7 @@ fn prepare_terrain(
             .as_ref()
             .is_none_or(|(held, _)| !Arc::ptr_eq(held, &cracks))
     {
-        let view = upload_atlas(&device, &queue, &cracks);
+        let (view, _) = upload_atlas(&device, &queue, &cracks);
         gpu.crack_texture = Some((cracks, view));
         gpu.bind = None;
     }
@@ -443,7 +475,33 @@ fn prepare_terrain(
     }
 }
 
-fn upload_atlas(device: &RenderDevice, queue: &RenderQueue, atlas: &MinecraftAtlasImage) -> TextureView {
+fn patch_writes<'a>(patch: &'a MinecraftAtlasPatch, atlas: &MinecraftAtlasImage) -> Vec<(u32, Origin3d, Extent3d, &'a [u8])> {
+    patch
+        .levels
+        .iter()
+        .zip(&atlas.levels)
+        .enumerate()
+        .filter_map(|(level, ((width, height, texels), _))| {
+            let (x, y) = (patch.x >> level, patch.y >> level);
+            let (atlas_width, atlas_height) = ((atlas.width >> level).max(1), (atlas.height >> level).max(1));
+            let fits = *width > 0
+                && *height > 0
+                && x + width <= atlas_width
+                && y + height <= atlas_height
+                && texels.len() >= (width * height * 4) as usize;
+            fits.then(|| {
+                (
+                    level as u32,
+                    Origin3d { x, y, z: 0 },
+                    Extent3d { width: *width, height: *height, depth_or_array_layers: 1 },
+                    &texels[..(width * height * 4) as usize],
+                )
+            })
+        })
+        .collect()
+}
+
+fn upload_atlas(device: &RenderDevice, queue: &RenderQueue, atlas: &MinecraftAtlasImage) -> (TextureView, Texture) {
     let levels = atlas.levels.len().max(1) as u32;
     let texture = device.create_texture(&TextureDescriptor {
         label: Some("iw4l_minecraft_atlas"),
@@ -484,7 +542,7 @@ fn upload_atlas(device: &RenderDevice, queue: &RenderQueue, atlas: &MinecraftAtl
             },
         );
     }
-    texture.create_view(&TextureViewDescriptor::default())
+    (texture.create_view(&TextureViewDescriptor::default()), texture)
 }
 
 fn draw_terrain(
@@ -1206,5 +1264,34 @@ mod tests {
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
             .validate(&module)
             .unwrap();
+    }
+
+    #[test]
+    fn atlas_patch_writes_each_mip_level_at_its_scaled_cell() {
+        let atlas = super::MinecraftAtlasImage {
+            width: 256,
+            height: 256,
+            levels: (0..5).map(|level| vec![0; ((256 >> level) * (256 >> level) * 4) as usize]).collect(),
+        };
+        let patch = super::MinecraftAtlasPatch {
+            x: 128,
+            y: 64,
+            levels: (0..5).map(|level| (64 >> level, 64 >> level, vec![level as u8; ((64 >> level) * (64 >> level) * 4) as usize])).collect(),
+        };
+        let writes = super::patch_writes(&patch, &atlas);
+        assert_eq!(
+            writes.iter().map(|(level, origin, size, texels)| (*level, origin.x, origin.y, size.width, size.height, texels.len(), texels[0])).collect::<Vec<_>>(),
+            [
+                (0, 128, 64, 64, 64, 64 * 64 * 4, 0),
+                (1, 64, 32, 32, 32, 32 * 32 * 4, 1),
+                (2, 32, 16, 16, 16, 16 * 16 * 4, 2),
+                (3, 16, 8, 8, 8, 8 * 8 * 4, 3),
+                (4, 8, 4, 4, 4, 4 * 4 * 4, 4),
+            ]
+        );
+        let outside = super::MinecraftAtlasPatch { x: 224, y: 0, levels: patch.levels.clone() };
+        assert!(super::patch_writes(&outside, &atlas).is_empty());
+        let short = super::MinecraftAtlasImage { width: 256, height: 256, levels: atlas.levels[..2].to_vec() };
+        assert_eq!(super::patch_writes(&patch, &short).len(), 2);
     }
 }

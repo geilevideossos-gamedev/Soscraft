@@ -14,6 +14,7 @@ pub fn block_icon(
     model: &str,
     tints: &[[u8; 3]],
     icon_size: usize,
+    clock: &SpriteClock,
 ) -> Result<Option<RgbaImage>> {
     let mut textures = HashMap::<String, String>::new();
     let mut elements = None;
@@ -99,7 +100,7 @@ pub fn block_icon(
             let Some(bytes) = packs.texture(&texture)? else {
                 continue;
             };
-            let source = image::load_from_memory(&bytes)?.to_rgba8();
+            let source = clock.sprite(packs, &texture, &bytes)?;
             let side = source.width().min(source.height());
             if side == 0 {
                 continue;
@@ -149,6 +150,7 @@ pub fn model_icon(
     front_light: bool,
     tints: &[[u8; 3]],
     icon_size: usize,
+    clock: &SpriteClock,
 ) -> Result<Option<RgbaImage>> {
     let mut output = RgbaImage::new(icon_size as u32, icon_size as u32);
     let mut depth = vec![vec![f32::NEG_INFINITY; icon_size]; icon_size];
@@ -172,8 +174,8 @@ pub fn model_icon(
                 let sheet = packs
                     .texture(&face.texture)?
                     .map(|bytes| {
-                        image::load_from_memory(&bytes).map(|decoded| {
-                            square_sheet(decoded.to_rgba8(), crate::mesh::entity_face(face))
+                        clock.sprite(packs, &face.texture, &bytes).map(|decoded| {
+                            square_sheet(decoded, crate::mesh::entity_face(face))
                         })
                     })
                     .transpose()?;
@@ -212,6 +214,45 @@ pub fn model_icon(
         }
     }
     Ok((output.pixels().any(|pixel| pixel[3] > 0)).then_some(output))
+}
+
+pub struct SpriteClock {
+    tick: u64,
+    animated: std::cell::Cell<bool>,
+}
+
+impl SpriteClock {
+    pub fn at(tick: u64) -> Self {
+        Self {
+            tick,
+            animated: std::cell::Cell::new(false),
+        }
+    }
+
+    pub fn animated(&self) -> bool {
+        self.animated.get()
+    }
+
+    pub(crate) fn sprite(
+        &self,
+        packs: &PackStack,
+        texture: &ResourceId,
+        bytes: &[u8],
+    ) -> Result<RgbaImage> {
+        let decoded = image::load_from_memory(bytes)?.to_rgba8();
+        let animation = packs
+            .animation(texture)?
+            .and_then(|meta| meta.get("animation").cloned());
+        match animation
+            .and_then(|animation| crate::mesh::animation_frame(&decoded, &animation, self.tick))
+        {
+            Some(frame) => {
+                self.animated.set(true);
+                Ok(frame)
+            }
+            None => Ok(decoded),
+        }
+    }
 }
 
 fn square_sheet(decoded: RgbaImage, entity: bool) -> (RgbaImage, u32) {
@@ -489,7 +530,7 @@ mod tests {
             .save(texture)
             .unwrap();
         let packs = PackStack::open(vec![root.into()]).unwrap();
-        let icon = block_icon(&packs, "test:block/glass", &[], 48)
+        let icon = block_icon(&packs, "test:block/glass", &[], 48, &SpriteClock::at(0))
             .unwrap()
             .unwrap();
         let xs = icon
@@ -522,10 +563,16 @@ mod tests {
             .save(texture)
             .unwrap();
         let packs = PackStack::open(vec![root.into()]).unwrap();
-        let plain = block_icon(&packs, "test:block/shape", &[], 48)
+        let plain = block_icon(&packs, "test:block/shape", &[], 48, &SpriteClock::at(0))
             .unwrap()
             .unwrap();
-        let tinted = block_icon(&packs, "test:block/shape", &[[32, 160, 64]], 48)
+        let tinted = block_icon(
+            &packs,
+            "test:block/shape",
+            &[[32, 160, 64]],
+            48,
+            &SpriteClock::at(0),
+        )
             .unwrap()
             .unwrap();
         assert_eq!(plain.dimensions(), (48, 48));
@@ -539,5 +586,94 @@ mod tests {
             .pixels()
             .zip(tinted.pixels())
             .any(|(a, b)| { a[3] != 0 && b[0] < a[0] && b[1] < a[1] && b[2] < a[2] }));
+    }
+
+    #[test]
+    fn vanilla_animated_block_items_have_animated_icons() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let icon = |id: &str, tick: u64| {
+            let clock = SpriteClock::at(tick);
+            let icon = crate::item_icons::item_icon_at(&packs, id, 32, &clock)
+                .unwrap()
+                .unwrap();
+            (icon, clock.animated())
+        };
+        for (id, later) in [
+            ("minecraft:magma_block", 4),
+            ("minecraft:sea_lantern", 5),
+            ("minecraft:prismarine", 150),
+            ("minecraft:command_block", 5),
+            ("minecraft:stonecutter", 1),
+            ("minecraft:sculk_vein", 10),
+        ] {
+            let (first, animated) = icon(id, 0);
+            assert!(animated, "{id}");
+            assert_ne!(first, icon(id, later).0, "{id}");
+        }
+        for id in ["minecraft:stone", "minecraft:lantern", "minecraft:kelp"] {
+            assert!(!icon(id, 0).1, "{id}");
+        }
+    }
+
+    #[test]
+    fn animated_block_icon_follows_the_sprite_clock() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(
+            root.join("pack.mcmeta"),
+            r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#,
+        )
+        .unwrap();
+        let models = root.join("assets/test/models/block");
+        fs::create_dir_all(&models).unwrap();
+        for name in ["glow", "plain"] {
+            fs::write(
+                models.join(format!("{name}.json")),
+                format!(r##"{{"textures":{{"all":"test:block/{name}"}},"elements":[{{"from":[0,0,0],"to":[16,16,16],"faces":{{"up":{{"texture":"#all"}},"north":{{"texture":"#all"}},"west":{{"texture":"#all"}},"east":{{"texture":"#all"}},"south":{{"texture":"#all"}}}}}}]}}"##),
+            )
+            .unwrap();
+        }
+        let textures = root.join("assets/test/textures/block");
+        fs::create_dir_all(&textures).unwrap();
+        let mut sheet = RgbaImage::new(16, 32);
+        for (_, y, pixel) in sheet.enumerate_pixels_mut() {
+            *pixel = if y < 16 {
+                Rgba([200, 0, 0, 255])
+            } else {
+                Rgba([0, 0, 200, 255])
+            };
+        }
+        sheet.save(textures.join("glow.png")).unwrap();
+        fs::write(
+            textures.join("glow.png.mcmeta"),
+            r#"{"animation":{"frametime":4,"interpolate":true}}"#,
+        )
+        .unwrap();
+        sheet.save(textures.join("plain.png")).unwrap();
+        let packs = PackStack::open(vec![root.into()]).unwrap();
+        let colour = |model: &str, tick: u64| {
+            let clock = SpriteClock::at(tick);
+            let icon = block_icon(&packs, model, &[], 32, &clock).unwrap().unwrap();
+            let lit = icon.get_pixel(16, 16).0;
+            (lit, clock.animated())
+        };
+        let (first, animated) = colour("test:block/glow", 0);
+        assert!(animated);
+        assert!(first[0] > 0 && first[2] == 0, "{first:?}");
+        let (halfway, _) = colour("test:block/glow", 2);
+        assert!(halfway[0] > 0 && halfway[2] > 0, "{halfway:?}");
+        let (second, _) = colour("test:block/glow", 4);
+        assert!(second[0] == 0 && second[2] > 0, "{second:?}");
+        assert_eq!(colour("test:block/glow", 8).0, first);
+        let (plain, animated) = colour("test:block/plain", 4);
+        assert!(!animated);
+        assert_eq!(plain, first);
     }
 }

@@ -62,6 +62,90 @@ pub(crate) struct InventoryUi {
     gui_failed: Option<u64>,
     icon_scale: u32,
     icon_rows: u32,
+    pub(crate) animation_tick: u64,
+    animated: AnimatedIcons,
+}
+
+#[derive(Default)]
+struct AnimatedIcons {
+    sheet: Option<image::RgbaImage>,
+    handle: Option<Handle<Image>>,
+    cells: HashMap<String, u32>,
+    tick: u64,
+    dirty: bool,
+    moved: bool,
+}
+
+impl AnimatedIcons {
+    fn clear(&mut self) {
+        self.sheet = None;
+        self.cells.clear();
+        self.moved = true;
+    }
+
+    fn add(&mut self, id: String, rendered: &image::RgbaImage, icon: u32) -> bool {
+        let cell = self.cells.len() as u32;
+        let limit = ICON_ATLAS_LIMIT / icon;
+        if cell >= limit {
+            return false;
+        }
+        let capacity = self.sheet.as_ref().map_or(0, |sheet| sheet.width() / icon);
+        if cell >= capacity {
+            let mut next = image::RgbaImage::new((cell + 1).next_power_of_two().min(limit) * icon, icon);
+            if let Some(old) = self.sheet.as_ref() {
+                image::imageops::replace(&mut next, old, 0, 0);
+            }
+            self.sheet = Some(next);
+            self.moved = true;
+            self.dirty = true;
+        }
+        self.cells.insert(id, cell);
+        self.draw(cell, rendered, icon);
+        true
+    }
+
+    fn draw(&mut self, cell: u32, rendered: &image::RgbaImage, icon: u32) {
+        let Some(sheet) = self.sheet.as_mut() else { return };
+        let x = cell * icon;
+        if image::imageops::crop_imm(sheet, x, 0, icon, icon).to_image() != *rendered {
+            image::imageops::replace(sheet, rendered, i64::from(x), 0);
+            self.dirty = true;
+        }
+    }
+
+    fn publish(&mut self, ui: &mut MinecraftUi, images: &mut Assets<Image>, icon: u32) {
+        if self.moved {
+            self.moved = false;
+            ui.animated_icon_rects.clear();
+            let width = self.sheet.as_ref().map_or(1, image::RgbaImage::width) as f32;
+            for (id, &cell) in &self.cells {
+                let x = (cell * icon) as f32;
+                ui.animated_icon_rects.insert(id.clone(), [x / width, 0.0, (x + icon as f32) / width, 1.0]);
+            }
+        }
+        if !self.dirty {
+            return;
+        }
+        let Some(sheet) = self.sheet.as_ref() else { return };
+        self.dirty = false;
+        let image = Image {
+            sampler: ImageSampler::nearest(),
+            ..Image::new(
+                Extent3d { width: sheet.width(), height: sheet.height(), depth_or_array_layers: 1 },
+                TextureDimension::D2,
+                sheet.as_raw().clone(),
+                TextureFormat::Rgba8Unorm,
+                RenderAssetUsages::default(),
+            )
+        };
+        match self.handle.as_ref() {
+            Some(handle) => {
+                let _ = images.insert(handle.id(), image);
+            }
+            None => self.handle = Some(images.add(image)),
+        }
+        ui.animated_icons = self.handle.clone();
+    }
 }
 
 /// What the player holds and where it looks, for throwing items.
@@ -619,11 +703,33 @@ impl InventoryUi {
             self.icon_rows = 0;
             self.cells.clear();
             self.failed.clear();
+            self.animated.clear();
             ui.icon_rects.clear();
         }
         let icon = 16 * scale;
         let max_rows = ICON_ATLAS_LIMIT / icon;
         let mut grown = false;
+        let animation_tick = self.animation_tick;
+        if self.animated.tick != animation_tick {
+            self.animated.tick = animation_tick;
+            let shown: Vec<&String> = if ui.inventory_open {
+                stacks.iter().collect()
+            } else {
+                let hotbar = inventory.slots.iter().take(frame::minecraft_ui::MC_HOTBAR);
+                hotbar.chain(inventory.slots.get(OFFHAND)).chain(std::iter::once(&inventory.cursor)).flatten().map(|stack| &stack.id).collect()
+            };
+            let mut refreshed = HashSet::new();
+            for id in shown {
+                let Some(&cell) = self.animated.cells.get(id) else { continue };
+                if !refreshed.insert(id) {
+                    continue;
+                }
+                let clock = minecraft_terrain::item_icon::SpriteClock::at(animation_tick);
+                let Ok(Some(rendered)) = minecraft_terrain::item_icons::item_icon_at(packs, id, icon as usize, &clock) else { continue };
+                let rendered = image::imageops::resize(&rendered, icon, icon, image::imageops::FilterType::Nearest);
+                self.animated.draw(cell, &rendered, icon);
+            }
+        }
         for id in stacks {
             if id.starts_with(WEAPON_PREFIX) {
                 continue;
@@ -631,7 +737,7 @@ impl InventoryUi {
             if !ui.names.contains_key(&id) {
                 ui.names.insert(id.clone(), minecraft_terrain::item_icons::item_name(language, &id));
             }
-            if self.cells.contains_key(&id) || self.failed.contains(&id) {
+            if self.cells.contains_key(&id) || self.failed.contains(&id) || self.animated.cells.contains_key(&id) {
                 continue;
             }
             let cell = self.cells.len() as u32;
@@ -640,8 +746,12 @@ impl InventoryUi {
                 self.failed.insert(id);
                 continue;
             }
-            match minecraft_terrain::item_icons::item_icon(packs, &id, icon as usize) {
+            let clock = minecraft_terrain::item_icon::SpriteClock::at(animation_tick);
+            match minecraft_terrain::item_icons::item_icon_at(packs, &id, icon as usize, &clock) {
                 Ok(Some(rendered)) => {
+                    if clock.animated() && self.animated.add(id.clone(), &image::imageops::resize(&rendered, icon, icon, image::imageops::FilterType::Nearest), icon) {
+                        continue;
+                    }
                     let row = cell / ICON_COLUMNS;
                     if row >= self.icon_rows {
                         let rows = (self.icon_rows * 2).max(row + 1).min(max_rows);
@@ -699,6 +809,7 @@ impl InventoryUi {
             }
             ui.icons = self.handle.clone();
         }
+        self.animated.publish(ui, images, icon);
     }
 }
 

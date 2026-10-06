@@ -65,8 +65,8 @@ pub(crate) use draw::register_drawsurf_render;
 pub use geometry_diagnostic::{ExtractedDiagnosticGeometry, geometry_diagnostic_enabled};
 pub use gpu_resources::*;
 pub use minecraft_world::{
-    MINECRAFT_VERTEX_BYTES, MinecraftAtlasImage, MinecraftClouds, MinecraftSectionUpload,
-    MinecraftWorldFrame,
+    MINECRAFT_VERTEX_BYTES, MinecraftAtlasImage, MinecraftAtlasPatch, MinecraftClouds,
+    MinecraftSectionUpload, MinecraftWorldFrame,
 };
 pub use model_lighting_tiles::{ModelLightingTileUpload, ModelLightingTileUploads};
 pub use postfx::{ExtractedBlood, ExtractedFilm, ExtractedPostFx};

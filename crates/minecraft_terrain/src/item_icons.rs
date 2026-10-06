@@ -9,6 +9,15 @@ use std::collections::HashMap;
 /// An item's GUI icon: its block model rastered, its generated layers, or
 /// its flat texture.
 pub fn item_icon(packs: &PackStack, key: &str, icon_size: usize) -> Result<Option<RgbaImage>> {
+    item_icon_at(packs, key, icon_size, &crate::item_icon::SpriteClock::at(0))
+}
+
+pub fn item_icon_at(
+    packs: &PackStack,
+    key: &str,
+    icon_size: usize,
+    clock: &crate::item_icon::SpriteClock,
+) -> Result<Option<RgbaImage>> {
     let id = ResourceId::parse(key)?;
     let definition = packs.item_definition(&id)?;
     let model = definition.as_ref().and_then(|value| item_model_reference(&value["model"]));
@@ -21,13 +30,13 @@ pub fn item_icon(packs: &PackStack, key: &str, icon_size: usize) -> Result<Optio
         if let Some(geometry) = crate::model::resolve_item_model(packs, &id)? {
             let gui = crate::model::item_display_transform(packs, &id, "gui")?;
             let front_light = crate::model::item_gui_light_front(packs, &id)?;
-            if let Some(icon) = crate::item_icon::model_icon(packs, &geometry, gui, front_light, &tints, icon_size)? {
+            if let Some(icon) = crate::item_icon::model_icon(packs, &geometry, gui, front_light, &tints, icon_size, clock)? {
                 return Ok(Some(icon));
             }
         }
     }
     if let Some(icon) = model
-        .map(|model| crate::item_icon::block_icon(packs, model, &tints, icon_size))
+        .map(|model| crate::item_icon::block_icon(packs, model, &tints, icon_size, clock))
         .transpose()?
         .flatten()
     {
@@ -37,12 +46,12 @@ pub fn item_icon(packs: &PackStack, key: &str, icon_size: usize) -> Result<Optio
     if let Some(geometry) = turned {
         let gui = crate::model::item_display_transform(packs, &id, "gui")?;
         let front_light = crate::model::item_gui_light_front(packs, &id)?;
-        if let Some(icon) = crate::item_icon::model_icon(packs, &geometry, gui, front_light, &tints, icon_size)? {
+        if let Some(icon) = crate::item_icon::model_icon(packs, &geometry, gui, front_light, &tints, icon_size, clock)? {
             return Ok(Some(icon));
         }
     }
     if let Some(icon) = model
-        .map(|model| generated_item_icon(packs, model, &tints, icon_size))
+        .map(|model| generated_item_icon(packs, model, &tints, icon_size, clock))
         .transpose()?
         .flatten()
     {
@@ -52,7 +61,7 @@ pub fn item_icon(packs: &PackStack, key: &str, icon_size: usize) -> Result<Optio
     let texture = texture.or_else(|| ResourceId::parse(&format!("{}:item/{}", id.namespace, id.path)).ok());
     let Some(texture) = texture else { return Ok(None) };
     let Some(bytes) = packs.texture(&texture)? else { return Ok(None) };
-    let decoded = image::load_from_memory(&bytes)?.to_rgba8();
+    let decoded = clock.sprite(packs, &texture, &bytes)?;
     let side = decoded.width().min(decoded.height());
     let first = image::imageops::crop_imm(&decoded, 0, 0, side, side).to_image();
     Ok(Some(image::imageops::resize(&first, icon_size as u32, icon_size as u32, FilterType::Nearest)))
@@ -93,6 +102,7 @@ fn generated_item_icon(
     model: &str,
     tints: &[[u8; 3]],
     icon_size: usize,
+    clock: &crate::item_icon::SpriteClock,
 ) -> Result<Option<RgbaImage>> {
     let mut textures = HashMap::<String, String>::new();
     let mut current = Some(ResourceId::parse(model)?);
@@ -138,10 +148,11 @@ fn generated_item_icon(
                 break;
             }
         }
-        let Some(bytes) = packs.texture(&ResourceId::parse(texture)?)? else {
+        let texture = ResourceId::parse(texture)?;
+        let Some(bytes) = packs.texture(&texture)? else {
             continue;
         };
-        let source = image::load_from_memory(&bytes)?.to_rgba8();
+        let source = clock.sprite(packs, &texture, &bytes)?;
         let side = source.width().min(source.height());
         if side == 0 {
             continue;

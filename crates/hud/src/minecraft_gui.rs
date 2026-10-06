@@ -9,6 +9,7 @@ use crate::images::HUD_CHROME_NAMESPACE;
 
 pub(crate) const GUI_MATERIAL: &str = "mc_gui";
 pub(crate) const ICON_MATERIAL: &str = "mc_item_icons";
+pub(crate) const ANIMATED_ICON_MATERIAL: &str = "mc_animated_item_icons";
 pub(crate) const WHITE: u32 = 0xFFFF_FFFF;
 pub(crate) const GRAY: u32 = 0xFFAA_AAAA;
 pub(crate) const DARK_GREEN: u32 = 0xFF00_AA00;
@@ -721,7 +722,15 @@ impl<'a> Painter<'a> {
             );
             return;
         }
-        if let Some(&st) = ui.icon_rects.get(&stack.id) {
+        if let Some(&st) = ui.animated_icon_rects.get(&stack.id) {
+            self.rect(
+                ANIMATED_ICON_MATERIAL,
+                HUD_CHROME_NAMESPACE,
+                [x, y, x + 16.0, y + 16.0],
+                st,
+                argb(color),
+            );
+        } else if let Some(&st) = ui.icon_rects.get(&stack.id) {
             self.rect(
                 ICON_MATERIAL,
                 HUD_CHROME_NAMESPACE,

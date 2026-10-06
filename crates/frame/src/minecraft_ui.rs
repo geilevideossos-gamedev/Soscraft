@@ -125,6 +125,8 @@ pub struct MinecraftUi {
     /// Item icons: one atlas, and each item's rectangle in it (s0 t0 s1 t1).
     pub icons: Option<Handle<Image>>,
     pub icon_rects: HashMap<String, [f32; 4]>,
+    pub animated_icons: Option<Handle<Image>>,
+    pub animated_icon_rects: HashMap<String, [f32; 4]>,
     pub gui: Option<std::sync::Arc<crate::McGui>>,
     pub gui_scale: u32,
     pub armor: u8,

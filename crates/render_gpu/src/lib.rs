@@ -36,7 +36,7 @@ pub use drawsurf::{
     write_buffer_padded, write_buffer_range,
 };
 pub use drawsurf::{
-    MINECRAFT_VERTEX_BYTES, MinecraftAtlasImage, MinecraftClouds, MinecraftSectionUpload,
-    MinecraftWorldFrame,
+    MINECRAFT_VERTEX_BYTES, MinecraftAtlasImage, MinecraftAtlasPatch, MinecraftClouds,
+    MinecraftSectionUpload, MinecraftWorldFrame,
 };
 pub use plugin::RenderGpuPlugin;

@@ -155,6 +155,64 @@ impl AnimatedTile {
         std::borrow::Cow::Owned(image)
     }
 }
+pub struct AtlasPatch {
+    pub origin: (u32, u32),
+    pub levels: Vec<RgbaImage>,
+}
+#[derive(Default)]
+pub struct AtlasAnimation {
+    ticks: u64,
+    shown: Vec<AnimationFrameState>,
+}
+impl AtlasAnimation {
+    pub fn new(atlas: &Atlas) -> Self {
+        Self {
+            ticks: 0,
+            shown: atlas
+                .animated_tiles
+                .iter()
+                .map(|tile| tile.state_at(0))
+                .collect(),
+        }
+    }
+    pub fn ticks(&self) -> u64 {
+        self.ticks
+    }
+    pub fn tick(&mut self, atlas: &Atlas) -> Vec<AtlasPatch> {
+        self.ticks += 1;
+        let ticks = self.ticks;
+        if self.shown.len() != atlas.animated_tiles.len() {
+            self.shown = atlas
+                .animated_tiles
+                .iter()
+                .map(|tile| tile.state_at(0))
+                .collect();
+        }
+        atlas
+            .animated_tiles
+            .iter()
+            .zip(self.shown.iter_mut())
+            .filter_map(|(tile, shown)| {
+                let state = tile.state_at(ticks);
+                let unchanged = if tile.interpolate {
+                    *shown == state
+                } else {
+                    shown.current == state.current
+                };
+                *shown = state;
+                if unchanged {
+                    return None;
+                }
+                Some(AtlasPatch {
+                    origin: tile.origin,
+                    levels: (0..tile.frames[state.current].len())
+                        .map(|level| tile.image_at(state, level).into_owned())
+                        .collect(),
+                })
+            })
+            .collect()
+    }
+}
 impl Atlas {
     pub fn region(&self, id: &ResourceId) -> [f32; 4] {
         self.slots
@@ -1597,6 +1655,30 @@ fn animated_tile(
     metadata: &serde_json::Value,
     origin: (u32, u32),
 ) -> Option<AnimatedTile> {
+    animated_frames(sheet, metadata, origin, |frame| {
+        let tile = image::imageops::resize(&frame, 64, 64, FilterType::Nearest);
+        (0..5)
+            .map(|level| {
+                image::imageops::resize(&tile, 64 >> level, 64 >> level, FilterType::Triangle)
+            })
+            .collect()
+    })
+}
+pub(crate) fn animation_frame(
+    sheet: &RgbaImage,
+    metadata: &serde_json::Value,
+    tick: u64,
+) -> Option<RgbaImage> {
+    let tile = animated_frames(sheet, metadata, (0, 0), |frame| vec![frame])?;
+    let image = tile.image_at(tile.state_at(tick), 0).into_owned();
+    Some(image)
+}
+fn animated_frames(
+    sheet: &RgbaImage,
+    metadata: &serde_json::Value,
+    origin: (u32, u32),
+    levels: impl Fn(RgbaImage) -> Vec<RgbaImage>,
+) -> Option<AnimatedTile> {
     let square = sheet.width().min(sheet.height());
     let width = metadata
         .get("width")
@@ -1646,12 +1728,7 @@ fn animated_tile(
                 height,
             )
             .to_image();
-            let tile = image::imageops::resize(&frame, 64, 64, FilterType::Nearest);
-            (0..5)
-                .map(|level| {
-                    image::imageops::resize(&tile, 64 >> level, 64 >> level, FilterType::Triangle)
-                })
-                .collect::<Vec<_>>()
+            levels(frame)
         })
         .collect();
     Some(AnimatedTile {
@@ -2725,6 +2802,226 @@ mod tests {
         assert_eq!(state.progress_millis, 500);
         assert_eq!((state.current, state.next), (0, 1));
         assert_eq!(tile.image_at(state, 0).get_pixel(0, 0).0, [128, 0, 0, 128]);
+    }
+
+    fn strip(colours: &[[u8; 4]]) -> RgbaImage {
+        let mut sheet = RgbaImage::new(2, 2 * colours.len() as u32);
+        for (frame, colour) in colours.iter().enumerate() {
+            for y in frame as u32 * 2..frame as u32 * 2 + 2 {
+                for x in 0..2 {
+                    sheet.put_pixel(x, y, image::Rgba(*colour));
+                }
+            }
+        }
+        sheet
+    }
+
+    fn animated_atlas(tiles: Vec<AnimatedTile>) -> Atlas {
+        Atlas {
+            pixels: RgbaImage::new(128, 128),
+            mipmaps: Vec::new(),
+            slots: HashMap::new(),
+            missing: Vec::new(),
+            animated: Vec::new(),
+            animated_tiles: tiles,
+        }
+    }
+
+    #[test]
+    fn stepped_animation_patches_only_when_its_frame_changes() {
+        let sheet = strip(&[[10, 0, 0, 255], [20, 0, 0, 255], [30, 0, 0, 255]]);
+        let tile = animated_tile(&sheet, &serde_json::json!({"frametime": 2}), (64, 0)).unwrap();
+        let atlas = animated_atlas(vec![tile]);
+        let mut animation = AtlasAnimation::new(&atlas);
+        assert!(animation.tick(&atlas).is_empty());
+        let patches = animation.tick(&atlas);
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].origin, (64, 0));
+        assert_eq!(
+            patches[0]
+                .levels
+                .iter()
+                .map(|level| level.dimensions())
+                .collect::<Vec<_>>(),
+            [(64, 64), (32, 32), (16, 16), (8, 8), (4, 4)]
+        );
+        assert!(patches[0]
+            .levels
+            .iter()
+            .all(|level| level.get_pixel(0, 0).0 == [20, 0, 0, 255]));
+        assert!(animation.tick(&atlas).is_empty());
+        assert_eq!(animation.tick(&atlas)[0].levels[0].get_pixel(1, 1).0, [30, 0, 0, 255]);
+        assert!(animation.tick(&atlas).is_empty());
+        assert_eq!(animation.tick(&atlas)[0].levels[4].get_pixel(3, 3).0, [10, 0, 0, 255]);
+        assert_eq!(animation.ticks(), 6);
+    }
+
+    #[test]
+    fn repeated_frame_index_in_sequence_is_not_redrawn() {
+        let sheet = strip(&[[10, 0, 0, 255], [20, 0, 0, 255]]);
+        let tile = animated_tile(
+            &sheet,
+            &serde_json::json!({"frames": [0, 0, 1]}),
+            (0, 0),
+        )
+        .unwrap();
+        let atlas = animated_atlas(vec![tile]);
+        let mut animation = AtlasAnimation::new(&atlas);
+        let patched = (0..6)
+            .map(|_| !animation.tick(&atlas).is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(patched, [false, true, true, false, true, true]);
+    }
+
+    #[test]
+    fn interpolated_animation_patches_every_tick_with_blended_mips() {
+        let sheet = strip(&[[0, 0, 0, 255], [200, 100, 0, 255]]);
+        let tile = animated_tile(
+            &sheet,
+            &serde_json::json!({"frametime": 4, "interpolate": true}),
+            (0, 64),
+        )
+        .unwrap();
+        let stepped = animated_tile(&sheet, &serde_json::json!({"frametime": 40}), (64, 64)).unwrap();
+        let atlas = animated_atlas(vec![tile, stepped]);
+        let mut animation = AtlasAnimation::new(&atlas);
+        for tick in 1..=8u64 {
+            let patches = animation.tick(&atlas);
+            assert_eq!(patches.len(), 1, "tick {tick}");
+            assert_eq!(patches[0].origin, (0, 64));
+            let progress = (tick % 4) as f32 / 4.0;
+            let towards = if tick % 8 < 4 { progress } else { 1.0 - progress };
+            let red = (200.0 * towards).round() as u8;
+            for level in &patches[0].levels {
+                assert_eq!(level.get_pixel(0, 0).0[0], red, "tick {tick}");
+            }
+        }
+    }
+
+    #[test]
+    fn vanilla_animated_block_textures_tick_in_the_world_atlas() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let atlas = build(&HandcraftedScene::default(), &packs).unwrap().atlas;
+        let width = atlas.pixels.width() as f32;
+        let tile_of = |name: &str| {
+            let [u0, v0, ..] = atlas.region(&ResourceId::parse(&format!("minecraft:block/{name}")).unwrap());
+            let origin = ((u0 * width).floor() as u32, (v0 * width).floor() as u32);
+            atlas
+                .animated_tiles
+                .iter()
+                .position(|tile| tile.origin == origin)
+                .unwrap_or_else(|| panic!("{name} is not animated"))
+        };
+        let expected = [
+            ("fire_0", 32, 1, false),
+            ("soul_fire_1", 32, 1, false),
+            ("campfire_fire", 8, 2, false),
+            ("campfire_log_lit", 4, 20, true),
+            ("lava_still", 38, 2, false),
+            ("lava_flow", 16, 3, false),
+            ("water_still", 32, 2, false),
+            ("water_flow", 32, 1, false),
+            ("magma", 3, 8, true),
+            ("nether_portal", 32, 1, false),
+            ("sea_lantern", 5, 5, false),
+            ("prismarine", 22, 300, true),
+            ("stonecutter_saw", 3, 1, false),
+            ("kelp", 20, 2, false),
+            ("seagrass", 18, 2, false),
+            ("lantern", 3, 8, false),
+            ("sculk", 4, 20, true),
+            ("command_block_front", 4, 10, true),
+        ];
+        let mut animation = AtlasAnimation::new(&atlas);
+        let mut patched = vec![0; atlas.animated_tiles.len()];
+        for _ in 0..40 {
+            for patch in animation.tick(&atlas) {
+                let index = atlas.animated_tiles.iter().position(|tile| tile.origin == patch.origin).unwrap();
+                patched[index] += 1;
+                assert_eq!(patch.levels.len(), 5);
+            }
+        }
+        for (name, entries, time, interpolate) in expected {
+            let tile = &atlas.animated_tiles[tile_of(name)];
+            assert_eq!(tile.sequence.len(), entries, "{name}");
+            assert!(tile.sequence.iter().all(|&(_, t)| t == time), "{name}");
+            assert_eq!(tile.interpolate, interpolate, "{name}");
+        }
+        assert_eq!(patched[tile_of("fire_0")], 40);
+        assert_eq!(patched[tile_of("water_still")], 20);
+        assert_eq!(patched[tile_of("sea_lantern")], 8);
+        assert_eq!(patched[tile_of("magma")], 40);
+        assert_eq!(patched[tile_of("prismarine")], 40);
+    }
+
+    #[test]
+    fn atlas_cell_starts_on_the_frame_the_animation_starts_from() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(
+            root.join("pack.mcmeta"),
+            r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#,
+        )
+        .unwrap();
+        let textures = root.join("assets/test/textures/block");
+        std::fs::create_dir_all(&textures).unwrap();
+        let mut sheet = RgbaImage::new(16, 48);
+        for (index, pixel) in sheet.pixels_mut().enumerate() {
+            let frame = index / (16 * 16);
+            *pixel = image::Rgba([(index % 251) as u8, frame as u8 * 90, 40, 255]);
+        }
+        sheet.save(textures.join("glow.png")).unwrap();
+        std::fs::write(
+            textures.join("glow.png.mcmeta"),
+            r#"{"animation":{"frametime":3,"frames":[2,0,1]}}"#,
+        )
+        .unwrap();
+        sheet.save(textures.join("fade.png")).unwrap();
+        std::fs::write(
+            textures.join("fade.png.mcmeta"),
+            r#"{"animation":{"frametime":5,"interpolate":true}}"#,
+        )
+        .unwrap();
+        let packs = PackStack::open(vec![root.into()]).unwrap();
+        let ids = ["test:block/glow", "test:block/fade"].map(|id| ResourceId::parse(id).unwrap());
+        let atlas = make_atlas(&packs, ids.to_vec()).unwrap();
+        assert_eq!(atlas.animated_tiles.len(), 2);
+        let mut levels = vec![atlas.pixels.clone()];
+        levels.extend(atlas.mipmaps.iter().cloned());
+        let cell = |levels: &[RgbaImage], origin: (u32, u32), level: usize| {
+            let size = 64 >> level;
+            image::imageops::crop_imm(&levels[level], origin.0 >> level, origin.1 >> level, size, size).to_image()
+        };
+        for tile in &atlas.animated_tiles {
+            for level in 0..5 {
+                assert_eq!(cell(&levels, tile.origin, level), *tile.image_at(tile.state_at(0), level));
+            }
+        }
+        let mut animation = AtlasAnimation::new(&atlas);
+        for _ in 0..23 {
+            for patch in animation.tick(&atlas) {
+                for (level, image) in patch.levels.iter().enumerate() {
+                    image::imageops::replace(
+                        &mut levels[level],
+                        image,
+                        (patch.origin.0 >> level) as i64,
+                        (patch.origin.1 >> level) as i64,
+                    );
+                }
+            }
+        }
+        for tile in &atlas.animated_tiles {
+            for level in 0..5 {
+                assert_eq!(cell(&levels, tile.origin, level), *tile.image_at(tile.state_at(23), level));
+            }
+        }
     }
     #[test]
     fn dropped_item_shadow_projects_on_ground() {

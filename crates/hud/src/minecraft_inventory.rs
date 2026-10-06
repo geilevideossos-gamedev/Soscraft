@@ -9,7 +9,7 @@ use crate::gaps::HudPresentationGaps;
 use crate::gpu_list::{HudTessPass, TessJob};
 use crate::images::HudImages;
 use crate::minecraft_clicks::{Clicks, Menu, Target};
-use crate::minecraft_gui::{DARK_GREEN, GRAY, GUI_MATERIAL, GuiSpace, ICON_MATERIAL, Painter, TextLine, WHITE, YELLOW};
+use crate::minecraft_gui::{ANIMATED_ICON_MATERIAL, DARK_GREEN, GRAY, GUI_MATERIAL, GuiSpace, ICON_MATERIAL, Painter, TextLine, WHITE, YELLOW};
 use crate::minecraft_screens::{
     Cycler, Layout, PUPPET_BOX, RECIPE_COLUMNS, RECIPE_ROWS, Screen, SlotSpec, Station, drag_offset, enchant_row_at, hidden_rows,
     over_scroller, recipe_at, smithing_icons, smithing_templates, start_index,
@@ -288,6 +288,9 @@ pub(crate) fn update_minecraft_hud(
     hud_images.insert_runtime(GUI_MATERIAL, gui.image.clone());
     if let Some(icons) = ui.icons.clone() {
         hud_images.insert_runtime(ICON_MATERIAL, icons);
+    }
+    if let Some(icons) = ui.animated_icons.clone() {
+        hud_images.insert_runtime(ANIMATED_ICON_MATERIAL, icons);
     }
     let weapons = weapons.as_deref();
     let strings = strings.as_deref();

@@ -11,7 +11,7 @@ use minecraft_terrain::clouds::CloudMask;
 use minecraft_terrain::day_cycle::{DayCycle, Skybox};
 use minecraft_terrain::environment::{DimensionEnvironment, View};
 use minecraft_terrain::lighting::SkyLight;
-use minecraft_terrain::mesh::{Atlas, SectionMesh, Vertex};
+use minecraft_terrain::mesh::{Atlas, AtlasAnimation, AtlasPatch, SectionMesh, Vertex};
 use minecraft_terrain::pack::PackStack;
 use minecraft_terrain::scene::HandcraftedScene;
 use minecraft_terrain::sections::{CullCamera, SectionPos};
@@ -37,6 +37,7 @@ pub struct MinecraftWorldView {
     /// Block point at map origin.
     pub origin: [f64; 3],
     pub atlas: Option<Arc<Atlas>>,
+    pub atlas_patches: Vec<AtlasPatch>,
     pub uploads: Vec<(SectionPos, SectionMesh)>,
     pub removed: Vec<SectionPos>,
     pub visible: Vec<(SectionPos, f32)>,
@@ -141,6 +142,8 @@ struct Runtime {
     shape_ids: HashMap<(Vec<[u32; 6]>, u16), u16>,
     was_alive: bool,
     fire_frames: Option<(Handle<Image>, u32)>,
+    atlas_animation: AtlasAnimation,
+    animation_clock: f64,
 }
 
 /// The player's MW2 body stands in the inventory's character window, on a
@@ -385,6 +388,9 @@ fn update(
                 let (x, y, z) = world.stream.player_spawn;
                 view.origin = [x, y, z];
                 view.atlas = Some(world.atlas.clone());
+                view.atlas_patches.clear();
+                runtime.atlas_animation = AtlasAnimation::new(&world.atlas);
+                runtime.animation_clock = 0.0;
                 view.celestial = Some(world.celestial.clone());
                 view.crack_texture = Some(world.crack_texture.clone());
                 runtime.mining = Default::default();
@@ -457,6 +463,8 @@ fn update(
         survival,
         containers,
         fire_frames,
+        atlas_animation,
+        animation_clock,
         ..
     } = &mut *runtime;
     let Some(world) = world.as_mut() else {
@@ -465,6 +473,13 @@ fn update(
         puppet.active = false;
         return;
     };
+    *animation_clock += time.delta_secs_f64();
+    if *animation_clock >= TICK_SECONDS {
+        *animation_clock %= TICK_SECONDS;
+        let patches = atlas_animation.tick(&world.atlas);
+        view.atlas_patches.retain(|queued| patches.iter().all(|patch| patch.origin != queued.origin));
+        view.atlas_patches.extend(patches);
+    }
     let Some(ps) = presented.player(local.0) else {
         ui.active = false;
         puppet.active = false;
@@ -1509,6 +1524,7 @@ fn update(
         crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
         ui.weapon_request = inventory_ui.weapon_request(&entities.inventory, &mut selected, ps.weapon as u32);
         entities.selected = selected;
+        inventory_ui.animation_tick = atlas_animation.ticks();
         inventory_ui.publish(&mut ui, &entities.inventory, selected, &world.packs, &mut images, containers);
 
         if let Some(sounds) = sounds.as_mut() {
@@ -1905,6 +1921,7 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
         sim::voxel::deactivate();
         view.active = false;
         view.atlas = None;
+        view.atlas_patches.clear();
         view.uploads.clear();
         view.removed.clear();
         view.visible.clear();
