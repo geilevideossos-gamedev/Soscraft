@@ -1,6 +1,6 @@
 //! Copied from MinecraftOSS (`engine/viewer/src/block_particles.rs`); the camera is its forward vector.
 use crate::{
-    mesh::{redstone_wire_color_argb, Atlas, BiomeTint, ChunkMesh, Vertex},
+    mesh::{Atlas, BiomeTint, ChunkMesh, TintKind, Vertex},
     model,
     pack::{PackStack, ResourceId},
     scene::{Block, BlockPos, Scene},
@@ -114,40 +114,8 @@ impl BlockParticles {
     /// BlockTintSource.colorAsTerrainParticle. Grass blocks override this
     /// method to return white, since their particle texture is dirt.
     fn particle_tint<S: Scene>(&self, scene: &S, pos: BlockPos, block: &Block) -> [f32; 3] {
-        match block.id.path.as_str() {
-            "short_grass" | "fern" | "potted_fern" | "bush" => self.tint.grass(scene.biome_at(pos)),
-            "tall_grass" | "large_fern" => {
-                let sample = if block
-                    .properties
-                    .get("half")
-                    .is_some_and(|half| half == "upper")
-                {
-                    (pos.0, pos.1 - 1, pos.2)
-                } else {
-                    pos
-                };
-                self.tint.grass(scene.biome_at(sample))
-            }
-            "spruce_leaves" => [0x61, 0x99, 0x61].map(|c| c as f32 / 255.0),
-            "birch_leaves" => [0x80, 0xa7, 0x55].map(|c| c as f32 / 255.0),
-            "oak_leaves" | "jungle_leaves" | "acacia_leaves" | "dark_oak_leaves"
-            | "mangrove_leaves" | "vine" => self.tint.foliage(scene.biome_at(pos)),
-            "lily_pad" => [0x20, 0x80, 0x30].map(|c| c as f32 / 255.0),
-            "redstone_wire" => {
-                let power = block
-                    .properties
-                    .get("power")
-                    .and_then(|value| value.parse::<u8>().ok())
-                    .unwrap_or(0);
-                let color = redstone_wire_color_argb(power);
-                [
-                    ((color >> 16) & 255) as f32 / 255.0,
-                    ((color >> 8) & 255) as f32 / 255.0,
-                    (color & 255) as f32 / 255.0,
-                ]
-            }
-            _ => [1.0; 3],
-        }
+        let kind = TintKind::of(block);
+        kind.particle_tint(scene.biome_at(kind.biome_pos(pos)), &self.tint)
     }
 
     /// Entity.spawnSprintParticle: one BLOCK particle per sprint tick from
@@ -425,6 +393,23 @@ mod tests {
             &Block::new("minecraft:redstone_wire").with("power", "15"),
         );
         assert_eq!(color, [1.0, 50.0 / 255.0, 0.0]);
+    }
+
+    #[test]
+    fn crop_and_cane_particles_share_the_block_tint_table() {
+        let packs = PackStack::open(vec![]).unwrap();
+        let particles = BlockParticles::new(&packs).unwrap();
+        let scene = HandcraftedScene::new();
+        let pos = (0, 0, 0);
+        let tint = |block: Block| particles.particle_tint(&scene, pos, &block);
+        let grass = particles.tint.grass(scene.biome_at(pos));
+        assert_eq!(tint(Block::new("minecraft:sugar_cane")), grass);
+        assert_eq!(tint(Block::new("minecraft:tall_grass").with("half", "upper")), grass);
+        assert_eq!(tint(Block::new("minecraft:pink_petals")), [1.0; 3]);
+        assert_eq!(tint(Block::new("minecraft:stonecutter")), [1.0; 3]);
+        assert_eq!(tint(Block::new("minecraft:attached_melon_stem")), [0xe0, 0xc7, 0x1c].map(|c| c as f32 / 255.0));
+        assert_eq!(tint(Block::new("minecraft:pumpkin_stem").with("age", "0")), [0.0, 1.0, 0.0]);
+        assert_eq!(tint(Block::new("minecraft:lily_pad")), [0x20, 0x80, 0x30].map(|c| c as f32 / 255.0));
     }
 
     #[test]

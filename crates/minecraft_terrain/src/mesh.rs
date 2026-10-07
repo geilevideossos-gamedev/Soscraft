@@ -258,14 +258,16 @@ pub struct Build {
 pub struct BiomeTint {
     grass: Option<RgbaImage>,
     foliage: Option<RgbaImage>,
+    dry_foliage: Option<RgbaImage>,
 }
 impl BiomeTint {
     pub fn from_pack(packs: &PackStack) -> Result<Self> {
         let mut tint = Self {
             grass: None,
             foliage: None,
+            dry_foliage: None,
         };
-        for (name, output) in [("grass", &mut tint.grass), ("foliage", &mut tint.foliage)] {
+        for (name, output) in [("grass", &mut tint.grass), ("foliage", &mut tint.foliage), ("dry_foliage", &mut tint.dry_foliage)] {
             let id = ResourceId::parse(&format!("minecraft:colormap/{name}"))?;
             if let Some(bytes) = packs.texture(&id)? {
                 let map = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)?
@@ -303,6 +305,9 @@ impl BiomeTint {
     pub(crate) fn foliage(&self, biome: BiomeSample) -> [f32; 3] {
         Self::color(&self.foliage, biome.foliage_color, biome, [113, 167, 77])
     }
+    pub(crate) fn dry_foliage(&self, biome: BiomeSample) -> [f32; 3] {
+        Self::color(&self.dry_foliage, biome.dry_foliage_color, biome, [92, 60, 50])
+    }
 }
 /// RedstoneWireBlock.COLORS, including ARGB.colorFromFloat's floor-to-byte step.
 pub fn redstone_wire_color_argb(power: u8) -> u32 {
@@ -312,39 +317,6 @@ pub fn redstone_wire_color_argb(power: u8) -> u32 {
     let blue = (level * level * 0.6 - 0.7).clamp(0.0, 1.0);
     let byte = |channel: f32| (channel * 255.0).floor() as u32;
     0xff00_0000 | byte(red) << 16 | byte(green) << 8 | byte(blue)
-}
-fn block_face_tint(
-    block: &Block,
-    tinted: bool,
-    biome: BiomeSample,
-    source: &BiomeTint,
-) -> [f32; 3] {
-    if block.id.path == "water" {
-        return biome.water_color.map(|channel| channel as f32 / 255.0);
-    }
-    if block.id.path == "redstone_wire" && tinted {
-        let power = block
-            .properties
-            .get("power")
-            .and_then(|value| value.parse::<u8>().ok())
-            .unwrap_or(0);
-        let color = redstone_wire_color_argb(power);
-        return [
-            ((color >> 16) & 255) as f32 / 255.0,
-            ((color >> 8) & 255) as f32 / 255.0,
-            (color & 255) as f32 / 255.0,
-        ];
-    }
-    if let Some(dye) = crate::special_models::banner_dye(block) {
-        return if tinted { dye } else { [1.0; 3] };
-    }
-    if block.id.path == "oak_leaves" {
-        source.foliage(biome)
-    } else if tinted {
-        source.grass(biome)
-    } else {
-        [1.0; 3]
-    }
 }
 pub fn build<S: Scene>(scene: &S, packs: &PackStack) -> Result<Build> {
     build_internal(scene, packs, true)
@@ -1072,8 +1044,18 @@ impl ItemVisuals {
     /// Block models under whole poses (an enderman's carried block), each lit
     /// at its point.
     pub fn append_posed_blocks(&mut self, mesh: &mut ChunkMesh, blocks: &[(Mat4, Vec3, String)], packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
+        if self.tint.is_none() {
+            self.tint = Some(BiomeTint::from_pack(packs)?);
+        }
         for (pose, light, id) in blocks {
-            self.append_block_model(mesh, id, *light, *pose, 1.0, packs, atlas, sky_light)?;
+            let tints = match (ResourceId::parse(id), self.tint.as_ref()) {
+                (Ok(id), Some(source)) => {
+                    let kind = TintKind::of(&Block { id, properties: BTreeMap::new() });
+                    vec![kind.in_hand(0, source), kind.in_hand(1, source)]
+                }
+                _ => Vec::new(),
+            };
+            self.append_model(mesh, id, *light, *pose, 1.0, Some(&tints), packs, atlas, sky_light)?;
         }
         Ok(())
     }
@@ -1822,19 +1804,30 @@ pub(crate) struct BakedQuad {
     corners: [[f32; 3]; 4],
     uv: [[f32; 2]; 4],
     shade: f32,
-    tinted: bool,
+    tint_index: Option<usize>,
     transparent: bool,
     alpha: f32,
 }
 
-/// How a block's faces are tinted (`block_face_tint`, decided per state).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum TintKind {
+    None,
+    Grass,
+    GrassBlock,
+    GrassOfLowerHalf,
+    SugarCane,
+    WhiteThenGrass,
+    Foliage,
+    DryFoliage,
     Water,
-    RedstoneWire([f32; 3]),
-    OakLeaves,
+    WaterParticles,
+    Constant([f32; 3]),
+    LilyPad,
     Dye([f32; 3]),
-    Other,
+}
+
+fn rgb_of(color: u32) -> [f32; 3] {
+    [((color >> 16) & 255) as f32 / 255.0, ((color >> 8) & 255) as f32 / 255.0, (color & 255) as f32 / 255.0]
 }
 
 impl TintKind {
@@ -1842,28 +1835,72 @@ impl TintKind {
         if let Some(dye) = crate::special_models::banner_dye(block) {
             return Self::Dye(dye);
         }
+        let number = |key: &str| block.properties.get(key).and_then(|value| value.parse::<u32>().ok()).unwrap_or(0);
         match block.id.path.as_str() {
-            "water" => Self::Water,
-            "redstone_wire" => {
-                let power = block.properties.get("power").and_then(|value| value.parse::<u8>().ok()).unwrap_or(0);
-                let color = redstone_wire_color_argb(power);
-                Self::RedstoneWire([((color >> 16) & 255) as f32 / 255.0, ((color >> 8) & 255) as f32 / 255.0, (color & 255) as f32 / 255.0])
+            "tall_grass" | "large_fern" if block.properties.get("half").is_some_and(|half| half == "upper") => Self::GrassOfLowerHalf,
+            "tall_grass" | "large_fern" | "fern" | "short_grass" | "potted_fern" | "bush" => Self::Grass,
+            "sugar_cane" => Self::SugarCane,
+            "grass_block" => Self::GrassBlock,
+            "pink_petals" | "wildflowers" => Self::WhiteThenGrass,
+            "spruce_leaves" => Self::Constant(rgb_of(0x619961)),
+            "birch_leaves" => Self::Constant(rgb_of(0x80a755)),
+            "oak_leaves" | "jungle_leaves" | "acacia_leaves" | "dark_oak_leaves" | "vine" | "mangrove_leaves" => Self::Foliage,
+            "leaf_litter" => Self::DryFoliage,
+            "water_cauldron" => Self::Water,
+            "water" | "bubble_column" => Self::WaterParticles,
+            "redstone_wire" => Self::Constant(rgb_of(redstone_wire_color_argb(number("power").min(15) as u8))),
+            "attached_melon_stem" | "attached_pumpkin_stem" => Self::Constant(rgb_of(0xe0c71c)),
+            "melon_stem" | "pumpkin_stem" => {
+                let age = number("age").min(7);
+                Self::Constant(rgb_of(((age * 32) << 16) | ((255 - age * 8) << 8) | (age * 4)))
             }
-            "oak_leaves" => Self::OakLeaves,
-            _ => Self::Other,
+            "lily_pad" => Self::LilyPad,
+            _ => Self::None,
         }
     }
 
-    /// `block_face_tint` for a face of this kind.
-    fn tint(self, tinted: bool, biome: BiomeSample, source: &BiomeTint) -> [f32; 3] {
+    pub(crate) fn biome_pos(self, (x, y, z): BlockPos) -> BlockPos {
+        if self == Self::GrassOfLowerHalf {
+            (x, y - 1, z)
+        } else {
+            (x, y, z)
+        }
+    }
+
+    pub(crate) fn tint(self, tint_index: Option<usize>, biome: BiomeSample, source: &BiomeTint) -> [f32; 3] {
+        match (self, tint_index) {
+            (_, None) => [1.0; 3],
+            (Self::WhiteThenGrass, Some(1)) => source.grass(biome),
+            (_, Some(index)) if index > 0 => [1.0; 3],
+            (Self::Grass | Self::GrassBlock | Self::GrassOfLowerHalf | Self::SugarCane, _) => source.grass(biome),
+            (Self::Foliage, _) => source.foliage(biome),
+            (Self::DryFoliage, _) => source.dry_foliage(biome),
+            (Self::Water, _) => biome.water_color.map(|channel| channel as f32 / 255.0),
+            (Self::Constant(color) | Self::Dye(color), _) => color,
+            (Self::LilyPad, _) => rgb_of(0x208030),
+            (Self::None | Self::WhiteThenGrass | Self::WaterParticles, _) => [1.0; 3],
+        }
+    }
+
+    pub(crate) fn in_hand(self, tint_index: usize, source: &BiomeTint) -> [f32; 3] {
+        let default_grass = || source.grass(BiomeSample { temperature: 0.5, downfall: 1.0, grass_color: None, ..BiomeSample::THE_VOID });
+        match (self, tint_index) {
+            (Self::WhiteThenGrass, 1) => default_grass(),
+            (_, index) if index > 0 => [1.0; 3],
+            (Self::Grass | Self::GrassBlock | Self::GrassOfLowerHalf, _) => default_grass(),
+            (Self::Foliage, _) => rgb_of(0x48b518),
+            (Self::DryFoliage, _) => rgb_of(0x5c3c32),
+            (Self::Constant(color) | Self::Dye(color), _) => color,
+            (Self::LilyPad, _) => rgb_of(0x71c35c),
+            (Self::None | Self::SugarCane | Self::WhiteThenGrass | Self::Water | Self::WaterParticles, _) => [1.0; 3],
+        }
+    }
+
+    pub(crate) fn particle_tint(self, biome: BiomeSample, source: &BiomeTint) -> [f32; 3] {
         match self {
-            Self::Water => biome.water_color.map(|channel| channel as f32 / 255.0),
-            Self::RedstoneWire(color) if tinted => color,
-            Self::Dye(color) if tinted => color,
-            Self::Dye(_) => [1.0; 3],
-            Self::OakLeaves => source.foliage(biome),
-            _ if tinted => source.grass(biome),
-            _ => [1.0; 3],
+            Self::GrassBlock | Self::Dye(_) => [1.0; 3],
+            Self::WaterParticles => biome.water_color.map(|channel| channel as f32 / 255.0),
+            _ => self.tint(Some(0), biome, source),
         }
     }
 }
@@ -1920,7 +1957,7 @@ pub(crate) fn bake_quads(block: &Block, model: &ResolvedModel, atlas: &Atlas) ->
                 corners,
                 uv,
                 shade,
-                tinted: face.tint,
+                tint_index: face.tint_index,
                 transparent: block.id.path == "water" || face.force_translucent,
                 alpha: entity_face_alpha(face),
             });
@@ -1952,8 +1989,8 @@ pub(crate) fn append_baked<S: Scene>(
         if quad.cull.is_some_and(|(dx, dy, dz)| hidden_by((x + dx, y + dy, z + dz), cull_side((dx, dy, dz)))) {
             continue;
         }
-        let biome = *biome.get_or_insert_with(|| scene.biome_at((x, y, z)));
-        let tint = tint_kind.tint(quad.tinted, biome, tint_source);
+        let biome = *biome.get_or_insert_with(|| scene.biome_at(tint_kind.biome_pos((x, y, z))));
+        let tint = tint_kind.tint(quad.tint_index, biome, tint_source);
         let start = mesh.vertices.len() as u32;
         let light_pos = (x + quad.light_offset.0, y + quad.light_offset.1, z + quad.light_offset.2);
         let block_light = light.get_block(light_pos) as f32;
@@ -2074,6 +2111,7 @@ pub(crate) fn append_block<'m, S: Scene>(
     }
     let variants = variants()?;
     let model = &variants[variant_index(variants, (x, y, z))].0;
+    let tint_kind = TintKind::of(block);
     let mut biome = None;
     for element in &model.elements {
         for face in &element.faces {
@@ -2106,8 +2144,8 @@ pub(crate) fn append_block<'m, S: Scene>(
                     _ => 0.6,
                 }
             };
-            let biome = *biome.get_or_insert_with(|| scene.biome_at((x, y, z)));
-            let tint = block_face_tint(block, face.tint, biome, tint_source);
+            let biome = *biome.get_or_insert_with(|| scene.biome_at(tint_kind.biome_pos((x, y, z))));
+            let tint = tint_kind.tint(face.tint_index, biome, tint_source);
             let alpha = if block.id.path == "water" { 0.72 } else { entity_face_alpha(face) };
             let start = mesh.vertices.len() as u32;
             // `ModelBlockRenderer.tesselateFlat` and `prepareQuadFlat`: a
@@ -2487,7 +2525,8 @@ pub fn block_preview<S: Scene>(
     }
     let variants = resolve_block_variants(packs, block)?;
     let model = &variants[variant_index(&variants, pos)].0;
-    let biome = scene.biome_at(pos);
+    let tint_kind = TintKind::of(block);
+    let biome = scene.biome_at(tint_kind.biome_pos(pos));
     let mut mesh = ChunkMesh::default();
     let mut transparent_indices = Vec::new();
     let mut neighbor_cube = HashMap::new();
@@ -2558,7 +2597,7 @@ pub fn block_preview<S: Scene>(
                     _ => 0.6,
                 }
             };
-            let tint = block_face_tint(block, face.tint, biome, tint_source);
+            let tint = tint_kind.tint(face.tint_index, biome, tint_source);
             let alpha = if block.id.path == "water" { 0.72 } else { entity_face_alpha(face) };
             // ChestRenderer lights every ModelPart face from the block entity
             // position; a rotated lid must not retain its closed downward
@@ -2799,16 +2838,231 @@ mod tests {
         let source = BiomeTint {
             grass: None,
             foliage: None,
+            dry_foliage: None,
         };
         let wire = Block::new("minecraft:redstone_wire").with("power", "15");
-        let tinted = block_face_tint(&wire, true, BiomeSample::THE_VOID, &source);
+        let tinted = TintKind::of(&wire).tint(Some(0), BiomeSample::THE_VOID, &source);
         assert_eq!(redstone_wire_color_argb(0), 0xff4c0000);
         assert_eq!(redstone_wire_color_argb(15), 0xffff3200);
         assert_eq!(tinted, [1.0, 50.0 / 255.0, 0.0]);
         assert_eq!(
-            block_face_tint(&wire, false, BiomeSample::THE_VOID, &source),
+            TintKind::of(&wire).tint(None, BiomeSample::THE_VOID, &source),
             [1.0; 3]
         );
+    }
+
+    fn colormap(rgb: [u8; 3]) -> Option<RgbaImage> {
+        Some(RgbaImage::from_pixel(256, 256, image::Rgba([rgb[0], rgb[1], rgb[2], 255])))
+    }
+
+    #[test]
+    fn block_tints_follow_the_vanilla_block_colors_table() {
+        let source = BiomeTint { grass: colormap([10, 200, 10]), foliage: colormap([20, 150, 20]), dry_foliage: colormap([150, 100, 50]) };
+        let biome = BiomeSample { water_color: [1, 2, 3], ..BiomeSample::THE_VOID };
+        let grass = source.grass(biome);
+        let foliage = source.foliage(biome);
+        assert_eq!(grass, rgb_of(0x0ac80a));
+        assert_eq!(foliage, rgb_of(0x149614));
+        let tint = |id: &str, index: Option<usize>| TintKind::of(&Block::new(id)).tint(index, biome, &source);
+        for untinted in ["minecraft:stonecutter", "minecraft:cherry_leaves", "minecraft:pale_oak_leaves", "minecraft:azalea_leaves", "minecraft:bamboo", "minecraft:bamboo_sapling", "minecraft:lava_cauldron", "minecraft:powder_snow_cauldron", "minecraft:water", "minecraft:bubble_column"] {
+            assert_eq!(tint(untinted, Some(0)), [1.0; 3], "{untinted}");
+        }
+        for grassy in ["minecraft:short_grass", "minecraft:fern", "minecraft:potted_fern", "minecraft:bush", "minecraft:grass_block", "minecraft:sugar_cane", "minecraft:tall_grass", "minecraft:large_fern"] {
+            assert_eq!(tint(grassy, Some(0)), grass, "{grassy}");
+            assert_eq!(tint(grassy, None), [1.0; 3], "{grassy}");
+            assert_eq!(tint(grassy, Some(1)), [1.0; 3], "{grassy}");
+        }
+        for leafy in ["minecraft:oak_leaves", "minecraft:jungle_leaves", "minecraft:acacia_leaves", "minecraft:dark_oak_leaves", "minecraft:mangrove_leaves", "minecraft:vine"] {
+            assert_eq!(tint(leafy, Some(0)), foliage, "{leafy}");
+        }
+        assert_eq!(tint("minecraft:spruce_leaves", Some(0)), rgb_of(0x619961));
+        assert_eq!(tint("minecraft:birch_leaves", Some(0)), rgb_of(0x80a755));
+        assert_eq!(tint("minecraft:leaf_litter", Some(0)), rgb_of(0x966432));
+        assert_eq!(tint("minecraft:water_cauldron", Some(0)), rgb_of(0x010203));
+        assert_eq!(tint("minecraft:lily_pad", Some(0)), rgb_of(0x208030));
+        assert_eq!(tint("minecraft:attached_pumpkin_stem", Some(0)), rgb_of(0xe0c71c));
+        assert_eq!(tint("minecraft:attached_melon_stem", Some(0)), rgb_of(0xe0c71c));
+        for petals in ["minecraft:pink_petals", "minecraft:wildflowers"] {
+            assert_eq!(tint(petals, Some(0)), [1.0; 3], "{petals}");
+            assert_eq!(tint(petals, Some(1)), grass, "{petals}");
+            assert_eq!(tint(petals, Some(2)), [1.0; 3], "{petals}");
+        }
+        let stem = |age: &str| TintKind::of(&Block::new("minecraft:pumpkin_stem").with("age", age)).tint(Some(0), biome, &source);
+        assert_eq!(stem("0"), rgb_of(0x00ff00));
+        assert_eq!(stem("3"), rgb_of(0x60e70c));
+        assert_eq!(stem("7"), rgb_of(0xe0c71c));
+        let melon = TintKind::of(&Block::new("minecraft:melon_stem").with("age", "7"));
+        assert_eq!(melon.tint(Some(0), biome, &source), rgb_of(0xe0c71c));
+    }
+
+    #[test]
+    fn upper_tall_grass_takes_its_colour_from_the_lower_half() {
+        let upper = TintKind::of(&Block::new("minecraft:tall_grass").with("half", "upper"));
+        let lower = TintKind::of(&Block::new("minecraft:large_fern").with("half", "lower"));
+        assert_eq!(upper.biome_pos((4, 70, -2)), (4, 69, -2));
+        assert_eq!(lower.biome_pos((4, 70, -2)), (4, 70, -2));
+        assert_eq!(TintKind::of(&Block::new("minecraft:stonecutter")).biome_pos((4, 70, -2)), (4, 70, -2));
+    }
+
+    #[test]
+    fn terrain_particles_use_tint_source_zero_with_vanilla_overrides() {
+        let source = BiomeTint { grass: colormap([10, 200, 10]), foliage: colormap([20, 150, 20]), dry_foliage: None };
+        let biome = BiomeSample { water_color: [1, 2, 3], ..BiomeSample::THE_VOID };
+        let particle = |id: &str| TintKind::of(&Block::new(id)).particle_tint(biome, &source);
+        assert_eq!(particle("minecraft:grass_block"), [1.0; 3]);
+        assert_eq!(particle("minecraft:short_grass"), source.grass(biome));
+        assert_eq!(particle("minecraft:sugar_cane"), source.grass(biome));
+        assert_eq!(particle("minecraft:water"), rgb_of(0x010203));
+        assert_eq!(particle("minecraft:bubble_column"), rgb_of(0x010203));
+        assert_eq!(particle("minecraft:pink_petals"), [1.0; 3]);
+        assert_eq!(particle("minecraft:stonecutter"), [1.0; 3]);
+        assert_eq!(particle("minecraft:leaf_litter"), rgb_of(0x5c3c32));
+    }
+
+    #[test]
+    fn vanilla_stonecutter_saw_has_a_tintindex_but_no_tint_source() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let source = BiomeTint::from_pack(&packs).unwrap();
+        assert!(source.dry_foliage.is_some());
+        let block = Block::new("minecraft:stonecutter").with("facing", "north");
+        let variants = resolve_block_variants(&packs, &block).unwrap();
+        let indices = variants[0].0.elements.iter().flat_map(|element| &element.faces).filter_map(|face| face.tint_index).collect::<Vec<_>>();
+        assert_eq!(indices, [0, 0]);
+        let grassy = BiomeSample { grass_color: Some([0, 255, 0]), ..BiomeSample::THE_VOID };
+        assert_eq!(TintKind::of(&block).tint(Some(0), grassy, &source), [1.0; 3]);
+    }
+
+    #[test]
+    fn a_stonecutter_saw_with_a_tintindex_bakes_untinted() {
+        let texture = ResourceId::parse("minecraft:block/stonecutter_saw").unwrap();
+        let mut model = test_box_model(&texture, [0.0; 3], [1.0; 3]);
+        for face in &mut model.elements[0].faces {
+            face.tint = true;
+            face.tint_index = Some(0);
+        }
+        let atlas = Atlas {
+            pixels: RgbaImage::new(16, 16),
+            mipmaps: vec![],
+            slots: HashMap::from([(texture, [0.0, 0.0, 1.0, 1.0])]),
+            missing: vec![],
+            animated: vec![],
+            animated_tiles: vec![],
+        };
+        let scene = Placed(HashMap::new());
+        let light = SkyLight::build(&scene);
+        let source = BiomeTint { grass: colormap([10, 200, 10]), foliage: None, dry_foliage: None };
+        for id in ["minecraft:stonecutter", "minecraft:short_grass"] {
+            let block = Block::new(id);
+            let variants = vec![(model.clone(), 1)];
+            let mut slow = ChunkMesh::default();
+            append_block(&scene, (0, 0, 0), &block, || Ok(variants.as_slice()), |_, _| false, &atlas, &source, &light, &mut slow, &mut Vec::new()).unwrap();
+            let quads = bake_quads(&block, &model, &atlas).unwrap();
+            let mut baked = ChunkMesh::default();
+            append_baked(&scene, (0, 0, 0), &quads, TintKind::of(&block), false, |_, _| false, |_| false, &atlas, &source, &light, &mut baked, &mut Vec::new()).unwrap();
+            let expected = if id == "minecraft:stonecutter" { [1.0; 3] } else { source.grass(BiomeSample::THE_VOID) };
+            for mesh in [&slow, &baked] {
+                assert!(!mesh.vertices.is_empty());
+                for vertex in &mesh.vertices {
+                    let shade = [0.5, 0.6, 0.8, 1.0].into_iter().find(|shade| (vertex.color[0] / expected[0] - shade).abs() < 1e-5);
+                    let shade = shade.unwrap_or_else(|| panic!("{id} {:?}", vertex.color));
+                    for (drawn, wanted) in vertex.color.iter().zip(expected) {
+                        assert!((drawn - shade * wanted).abs() < 1e-5, "{id} {:?}", vertex.color);
+                    }
+                }
+            }
+            assert_eq!(slow.vertices.iter().map(|vertex| vertex.color).collect::<Vec<_>>(), baked.vertices.iter().map(|vertex| vertex.color).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn blocks_outside_the_level_use_the_tint_sources_default_colour() {
+        let source = BiomeTint { grass: colormap([10, 200, 10]), foliage: colormap([20, 150, 20]), dry_foliage: colormap([150, 100, 50]) };
+        let hand = |block: Block, index: usize| TintKind::of(&block).in_hand(index, &source);
+        let grass = rgb_of(0x0ac80a);
+        for grassy in ["minecraft:grass_block", "minecraft:short_grass", "minecraft:fern", "minecraft:tall_grass"] {
+            assert_eq!(hand(Block::new(grassy), 0), grass, "{grassy}");
+            assert_eq!(hand(Block::new(grassy), 1), [1.0; 3], "{grassy}");
+        }
+        assert_eq!(hand(Block::new("minecraft:large_fern").with("half", "upper"), 0), grass);
+        assert_eq!(hand(Block::new("minecraft:pink_petals"), 0), [1.0; 3]);
+        assert_eq!(hand(Block::new("minecraft:pink_petals"), 1), grass);
+        assert_eq!(hand(Block::new("minecraft:oak_leaves"), 0), rgb_of(0x48b518));
+        assert_eq!(hand(Block::new("minecraft:leaf_litter"), 0), rgb_of(0x5c3c32));
+        assert_eq!(hand(Block::new("minecraft:spruce_leaves"), 0), rgb_of(0x619961));
+        assert_eq!(hand(Block::new("minecraft:lily_pad"), 0), rgb_of(0x71c35c));
+        assert_eq!(hand(Block::new("minecraft:pumpkin_stem").with("age", "7"), 0), rgb_of(0xe0c71c));
+        for white in ["minecraft:sugar_cane", "minecraft:water_cauldron", "minecraft:water", "minecraft:stonecutter"] {
+            assert_eq!(hand(Block::new(white), 0), [1.0; 3], "{white}");
+        }
+        assert_eq!(TintKind::of(&Block::new("minecraft:sugar_cane")).tint(Some(0), BiomeSample::THE_VOID, &source), grass);
+        assert_eq!(TintKind::of(&Block::new("minecraft:lily_pad")).tint(Some(0), BiomeSample::THE_VOID, &source), rgb_of(0x208030));
+    }
+
+    #[test]
+    fn a_carried_grass_block_takes_the_default_grass_colour_and_a_stonecutter_stays_white() {
+        let texture = ResourceId::parse("minecraft:block/grass_block_top").unwrap();
+        let atlas = Atlas {
+            pixels: RgbaImage::new(16, 16),
+            mipmaps: vec![],
+            slots: HashMap::from([(texture.clone(), [0.0, 0.0, 1.0, 1.0])]),
+            missing: vec![],
+            animated: vec![],
+            animated_tiles: vec![],
+        };
+        let face = |direction: &str, tint_index: Option<usize>| crate::model::Face {
+            direction: direction.into(),
+            texture: texture.clone(),
+            uv: [0.0, 0.0, 1.0, 1.0],
+            cull: false,
+            cullface: None,
+            tint: tint_index.is_some(),
+            tint_index,
+            force_translucent: false,
+        };
+        let visual = || ItemVisual {
+            model: ResolvedModel {
+                elements: vec![crate::model::Element {
+                    from: [0.0; 3],
+                    to: [1.0; 3],
+                    faces: vec![face("up", Some(0)), face("north", None)],
+                    rotation_y: 0,
+                    rotation_x: 0,
+                    rotation: None,
+                    shade_direction_override: None,
+                }],
+            },
+            ground: Mat4::IDENTITY,
+            right_hand: Mat4::IDENTITY,
+            min_y: 0.0,
+            tints: vec![[0.3, 0.6, 0.2]],
+            flat: false,
+        };
+        let source = BiomeTint { grass: colormap([10, 200, 10]), foliage: None, dry_foliage: None };
+        let grass = source.grass(BiomeSample { temperature: 0.5, downfall: 1.0, ..BiomeSample::THE_VOID });
+        let mut visuals = ItemVisuals { tint: Some(source), ..ItemVisuals::default() };
+        let sky_light = SkyLight::build(&HandcraftedScene::new());
+        let packs = PackStack::open(vec![]).unwrap();
+        for (id, expected) in [("minecraft:grass_block", grass), ("minecraft:stonecutter", [1.0; 3])] {
+            visuals.models.insert(id.into(), visual());
+            let mut mesh = ChunkMesh::default();
+            visuals.append_posed_blocks(&mut mesh, &[(Mat4::IDENTITY, Vec3::new(5.5, 6.0, -6.5), id.into())], &packs, &atlas, &sky_light).unwrap();
+            assert_eq!(mesh.vertices.len(), 8);
+            let up = level_item_shade(Vec3::Y);
+            let north = level_item_shade(Vec3::NEG_Z);
+            for vertex in &mesh.vertices[..4] {
+                assert_eq!(vertex.color, [expected[0] * up, expected[1] * up, expected[2] * up, 1.0], "{id}");
+            }
+            for vertex in &mesh.vertices[4..] {
+                assert_eq!(vertex.color, [north, north, north, 1.0], "{id}");
+            }
+        }
     }
 
     #[test]
@@ -3303,7 +3557,7 @@ mod tests {
             animated: vec![],
             animated_tiles: vec![],
         };
-        let tint = BiomeTint { grass: None, foliage: None };
+        let tint = BiomeTint { grass: None, foliage: None, dry_foliage: None };
         let sand = Block::new("minecraft:sand");
         let variants = vec![(test_box_model(&first, [0.0; 3], [1.0; 3]), 1), (test_box_model(&second, [0.0; 3], [1.0; 3]), 1)];
         let floor = (0..16).flat_map(|x| (0..16).map(move |z| ((x, 0, z), Block::new("minecraft:stone"))));
@@ -3321,7 +3575,7 @@ mod tests {
             mesh
         };
         let placed_mesh = terrain(cell);
-        let mut visuals = ItemVisuals { tint: Some(BiomeTint { grass: None, foliage: None }), ..ItemVisuals::default() };
+        let mut visuals = ItemVisuals { tint: Some(BiomeTint { grass: None, foliage: None, dry_foliage: None }), ..ItemVisuals::default() };
         visuals.block_models.insert(model_key(&sand), variants.clone());
         let packs = PackStack::open(vec![]).unwrap();
         let mut moving = ChunkMesh::default();
@@ -3360,6 +3614,7 @@ mod tests {
         let tint = BiomeTint {
             grass: None,
             foliage: None,
+            dry_foliage: None,
         };
         for (neighbor_id, neighbor_model, expected_faces) in [
             (
@@ -3414,6 +3669,7 @@ mod tests {
         let tint = BiomeTint {
             grass: None,
             foliage: None,
+            dry_foliage: None,
         };
         let water_model = test_box_model(&texture, [0.0; 3], [1.0, 8.0 / 9.0, 1.0]);
         let solid_model = test_box_model(&texture, [0.0; 3], [1.0; 3]);
@@ -3473,6 +3729,7 @@ mod tests {
             &BiomeTint {
                 grass: None,
                 foliage: None,
+                dry_foliage: None,
             },
             &SkyLight::build(&scene),
         )
@@ -3512,6 +3769,7 @@ mod tests {
         let tint = BiomeTint {
             grass: None,
             foliage: None,
+            dry_foliage: None,
         };
         let light = SkyLight::build(&scene);
         let mut water = ChunkMesh::default();
@@ -3596,7 +3854,8 @@ mod tests {
                 &atlas,
                 &BiomeTint {
                     grass: None,
-                    foliage: None
+                    foliage: None,
+                    dry_foliage: None
                 },
                 &light
             )
@@ -3612,7 +3871,8 @@ mod tests {
                 &atlas,
                 &BiomeTint {
                     grass: None,
-                    foliage: None
+                    foliage: None,
+                    dry_foliage: None
                 },
                 &light
             )
@@ -3730,7 +3990,7 @@ mod tests {
         let scene = Placed(HashMap::from([(pos, block.clone())]));
         let light = SkyLight::build(&scene);
         let mut mesh = ChunkMesh::default();
-        append_block(&scene, pos, &block, || Ok(variants), |_, _| false, &atlas, &BiomeTint { grass: None, foliage: None }, &light, &mut mesh, &mut Vec::new()).unwrap();
+        append_block(&scene, pos, &block, || Ok(variants), |_, _| false, &atlas, &BiomeTint { grass: None, foliage: None, dry_foliage: None }, &light, &mut mesh, &mut Vec::new()).unwrap();
         mesh.vertices.iter().map(|vertex| vertex.position.map(f32::to_bits)).collect()
     }
 

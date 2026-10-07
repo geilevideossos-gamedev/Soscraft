@@ -82,7 +82,7 @@ impl BlockStates {
             ao_occluder.push(block.as_ref().is_some_and(|b| shade_darkens(&registries.blocks, state, b)));
             fluid.push(matches!(path, "water" | "lava"));
             waterlogged.push(block.as_ref().is_some_and(|b| b.properties.get("waterlogged").is_some_and(|value| value == "true")));
-            tint_kind.push(block.as_ref().map_or(mesh::TintKind::Other, mesh::TintKind::of));
+            tint_kind.push(block.as_ref().map_or(mesh::TintKind::None, mesh::TintKind::of));
             fluid_cell.push(block.as_ref().and_then(crate::fluid::FluidCell::from_block));
             full_collision.push(crate::fluid::full_collision(block.as_ref()));
             blocks.push(block);
@@ -247,6 +247,7 @@ fn biome_sample(info: &minecraftoss_core::biome::BiomeInfo) -> BiomeSample {
         has_precipitation: info.has_precipitation,
         grass_color: effect("grass_color"),
         foliage_color: effect("foliage_color"),
+        dry_foliage_color: effect("dry_foliage_color"),
         water_color: effect("water_color").unwrap_or(BiomeSample::THE_VOID.water_color),
         sky_color: attribute("minecraft:visual/sky_color"),
         fog_color: attribute("minecraft:visual/fog_color"),
@@ -1780,6 +1781,15 @@ mod tests {
         assert_eq!(block, Block::new("minecraft:grass_block").with("snowy", "false"));
         assert_eq!(color(&serde_json::json!("#3f76e4")), Some([0x3f, 0x76, 0xe4]));
         assert_eq!(color(&serde_json::json!(4159204)), Some([0x3f, 0x76, 0xe4]));
+    }
+
+    #[test]
+    fn swamp_leaf_litter_reads_the_biome_dry_foliage_colour() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let registries = Registries::load(&paths).unwrap();
+        let swamp = registries.biomes.id("minecraft:swamp").map(|id| biome_sample(registries.biomes.get(id))).unwrap();
+        assert_eq!(swamp.dry_foliage_color, Some([0x7b, 0x53, 0x34]));
+        assert_eq!(plains_sample(&registries).dry_foliage_color, None);
     }
 
     #[test]
