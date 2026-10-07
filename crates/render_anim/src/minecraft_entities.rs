@@ -95,6 +95,7 @@ pub(crate) struct Entities {
     pub(crate) enchantments: Option<std::sync::Arc<minecraftoss_entities::enchant::Enchantments>>,
     item_use_waiting: Option<SentItemUse>,
     pub(crate) item_uses_done: Vec<SentItemUse>,
+    eggs_waiting: minecraft_terrain::spawn_egg::EggsWaiting,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -211,6 +212,7 @@ impl Entities {
             enchantments,
             item_use_waiting: None,
             item_uses_done: Vec::new(),
+            eggs_waiting: Default::default(),
         }
     }
 
@@ -430,6 +432,13 @@ impl Entities {
         self.item_use_waiting.is_some()
     }
 
+    pub(crate) fn hatch_egg(&mut self, slot: usize, kind: String, position: [f64; 3]) {
+        if self.eggs_waiting.send(&self.inventory, slot) {
+            let y_rot = minecraftoss_core::entity_data::wrap_degrees(self.random.next_float() * 360.0);
+            self.server.hatch_egg(kind, position, y_rot);
+        }
+    }
+
     /// Client ticks run so far.
     pub(crate) fn client_ticks(&self) -> u64 {
         self.ticks
@@ -577,6 +586,12 @@ impl Entities {
             for used in output.item_uses {
                 if let Some(sent) = self.item_use_waiting.take().filter(|_| used) {
                     self.item_uses_done.push(sent);
+                }
+            }
+            for summoned in output.summoned {
+                let egg = self.eggs_waiting.answer(&mut self.inventory, summoned.is_ok());
+                if let (Some(egg), Err(error)) = (egg, summoned) {
+                    diag::warn!(World, "Minecraft {egg} hatched nothing: {error}");
                 }
             }
             changes.extend(output.changes);

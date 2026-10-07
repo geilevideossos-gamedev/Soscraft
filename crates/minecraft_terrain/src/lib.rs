@@ -57,6 +57,7 @@ pub mod thrown;
 pub mod bottle;
 pub mod bucket;
 pub mod flint;
+pub mod spawn_egg;
 pub mod berries;
 pub mod campfire;
 pub mod containers;

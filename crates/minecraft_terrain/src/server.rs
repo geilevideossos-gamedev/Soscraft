@@ -643,6 +643,14 @@ impl ServerSim {
         Ok(())
     }
 
+    pub fn hatch_egg(&mut self, kind: &str, position: [f64; 3], y_rot: f32) -> Result<(), String> {
+        let tag = self.level.summon_mob(kind, position, None, y_rot)?;
+        self.mobs.set_day_time(self.level.overworld_clock());
+        let id = crate::server_mobs::spawn_saved(&mut self.mobs, &tag).ok_or_else(|| format!("{kind} is not simulated"))?;
+        self.mob_tags.insert(id, tag);
+        Ok(())
+    }
+
     /// Creeper blasts reach the level (`ServerLevel.explode` with
     /// `ExplosionInteraction.MOB`): blocks break when mobs may grief, with
     /// the drops decaying (`mob_explosion_drop_decay`), and items, TNT and
@@ -1017,6 +1025,7 @@ pub enum Command {
     /// `/summon` for a mob, with the command's NBT and the new mob's own
     /// random yaw.
     Summon { kind: String, position: [f64; 3], nbt: Option<minecraftoss_core::nbt::Tag>, y_rot: f32 },
+    HatchEgg { kind: String, position: [f64; 3], y_rot: f32 },
     /// A player's hit (`attack`) or item use on a mob, with a copy of its
     /// inventory.
     MobAction { hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, infinite: bool },
@@ -1248,6 +1257,10 @@ impl ServerHandle {
         self.send(Command::Summon { kind, position, nbt, y_rot });
     }
 
+    pub fn hatch_egg(&mut self, kind: String, position: [f64; 3], y_rot: f32) {
+        self.send(Command::HatchEgg { kind, position, y_rot });
+    }
+
     /// Hands a player's hit or use on a mob to the server; its result
     /// arrives in an output.
     pub fn mob_action(&mut self, hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, inventory: &minecraftoss_player::inventory::Inventory, selected: usize, infinite: bool) {
@@ -1336,6 +1349,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::AwardExperience { position, amount } => sim.award_experience(position, amount),
                 Command::Summon { kind, position, nbt, y_rot } => {
                     out.summoned.push(sim.summon(&kind, position, nbt.as_ref(), y_rot).map(|()| kind));
+                }
+                Command::HatchEgg { kind, position, y_rot } => {
+                    out.summoned.push(sim.hatch_egg(&kind, position, y_rot).map(|()| kind));
                 }
                 Command::MobAction { hit, attack, inventory, selected, infinite } => {
                     out.mob_results.push(sim.mob_action(hit, attack, *inventory, selected, infinite));
@@ -3087,6 +3103,34 @@ mod tests {
         server.tick();
         assert!(server.primed_tnt().is_empty());
         assert_eq!(server.take_explosions().len(), 1);
+    }
+
+    #[test]
+    fn a_spawn_egg_hatches_its_mob_on_the_clicked_slab_and_each_egg_is_answered() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:smooth_stone_slab").with("type", "bottom").with("waterlogged", "false"));
+        server.set_players(&[[8.5, 200.0, 11.5]], 2);
+        let mut player = minecraftoss_player::Player::new(glam::DVec3::new(8.5, 202.5 - 1.62, 8.5));
+        player.pitch = 90.0;
+        let aimed = crate::spawn_egg::egg_use(&player, &crate::doors::Outlined(&scene), "minecraft:zombie_spawn_egg");
+        let Some(crate::spawn_egg::EggUse::Spawn { kind, position }) = aimed else { panic!("{aimed:?}") };
+        assert_eq!((kind.as_str(), position), ("minecraft:zombie", [8.5, 200.5, 8.5]));
+        server.hatch_egg(&kind, position, -120.0).unwrap();
+        let zombie = server.mobs.zombies().last().expect("a zombie");
+        assert_eq!((zombie.zombie.body.position.to_array(), zombie.yaw), (position, -120.0));
+        let dormant = server.dormant.len();
+        assert!(server.hatch_egg("minecraft:fox", position, 0.0).is_err());
+        assert_eq!(server.dormant.len(), dormant);
+        let mut handle = ServerHandle::spawn(server);
+        handle.hatch_egg("minecraft:cow".to_owned(), position, 45.0);
+        handle.hatch_egg("minecraft:not_a_mob".to_owned(), position, 0.0);
+        handle.hatch_egg("minecraft:fox".to_owned(), position, 0.0);
+        handle.wait_idle();
+        let answers: Vec<_> = handle.poll().into_iter().flat_map(|out| out.summoned).collect();
+        assert_eq!(answers.len(), 3);
+        assert_eq!(answers[0].as_deref(), Ok("minecraft:cow"));
+        assert!(answers[1].is_err());
+        assert!(answers[2].is_err());
     }
 
     #[test]

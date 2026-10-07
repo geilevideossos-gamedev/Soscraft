@@ -95,6 +95,7 @@ pub(crate) fn has_use(stack: &ItemStack, placeable: bool, food: &FoodData) -> bo
         || stack.id == minecraft_terrain::berries::GLOW_BERRIES
         || FoodUse::start(OFFHAND, stack, food, GameMode::Survival).is_some()
         || minecraft_terrain::thrown::Throwable::of(&stack.id).is_some()
+        || minecraft_terrain::spawn_egg::spawned_kind(&stack.id).is_some()
 }
 
 pub(crate) fn swap_hands(inventory: &mut Inventory, selected: usize) -> bool {
@@ -250,6 +251,7 @@ mod tests {
         ));
         assert!(has_use(&stack("minecraft:snowball"), false, &full));
         assert!(has_use(&stack("minecraft:water_bucket"), false, &full));
+        assert!(has_use(&stack("minecraft:zombie_spawn_egg"), false, &full));
         assert!(!has_use(&stack(TOTEM), false, &hungry));
         assert!(!has_use(&stack("minecraft:stick"), false, &hungry));
     }

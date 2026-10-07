@@ -322,6 +322,10 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
     Some(TypeInfo { width, height, placement, heightmap, fire_immune, rules, walk, remove_far, cluster })
 }
 
+pub fn type_width(kind: &str) -> Option<f32> {
+    type_info(kind).map(|info| info.width)
+}
+
 /// Per-biome creature spawning and the data finalizing it reads.
 pub struct CreatureSpawns {
     registries: Arc<Registries>,

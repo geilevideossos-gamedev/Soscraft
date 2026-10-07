@@ -1032,6 +1032,14 @@ fn update(
                     minecraft_terrain::bucket::Change::Server(pos, action) => entities.item_on_block(pos, action, sent),
                 }
                 HandUse::Consumed
+            } else if let Some(stack) = held.as_ref()
+                && let Some(egg) = minecraft_terrain::spawn_egg::egg_use(&player, &minecraft_terrain::doors::Outlined(&world.scene), &stack.id)
+            {
+                if let minecraft_terrain::spawn_egg::EggUse::Spawn { kind, position } = egg {
+                    entities.hatch_egg(slot, kind, position);
+                }
+                hand.swing = Some(0.0);
+                HandUse::Consumed
             } else if let Some((stack, kind)) = held.as_ref().and_then(|s| minecraft_terrain::thrown::Throwable::of(&s.id).map(|k| (s, k))) {
                 let pearl = kind == minecraft_terrain::thrown::Throwable::EnderPearl;
                 let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
