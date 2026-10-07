@@ -19,6 +19,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 - Water like vanilla: seagrass, kelp, bubble columns and waterlogged blocks hold water, there are no faces between water cells, and water is single-sided apart from the vanilla backward surface.
 - XP orbs and the burning overlay with two flames.
 - Weather from `IW4L_MINECRAFT_WEATHER`: rain darkens the sky and puts out fire.
+- A render error no longer quits the game. Validation and internal GPU errors drop only the broken frame and are written to the game log as `render error ignored`, at most once every 5 s with a count of the ones in between. Running out of GPU memory quits only after 30 times in 10 s, and a lost GPU device still quits; the world is saved on the way out.
 
 ### Movement on blocks (MW2 movement with vanilla rules)
 - Ground, falls and footsteps. Body size is 0.6 x 1.8 blocks, or 1.5 crouched. Prone keeps MW2's height.
@@ -148,6 +149,7 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 - Missing sounds: ambient fire, lava and campfire.
 - The display tick only animates nether portals.
 - The animation clock keeps running while paused.
+- An ignored render error loses that frame, so an error that repeats every frame would flicker the screen. bevy also prints `Caught rendering error` to the console, not to the game log.
 - GUI gaps: no 3D enchanting book, smithing armour stand, recipe book, effects panel, enchant glint or rarity colours. Characters missing from the font show as gaps.
 
 ### Movement

@@ -4,6 +4,7 @@ pub struct RenderGpuPlugin;
 
 impl Plugin for RenderGpuPlugin {
     fn build(&self, app: &mut App) {
+        crate::render_errors::install(app);
         match crate::SamplerTable::captured_2026_08_11() {
             Ok(table) => {
                 let adapted = table.host_adapted_rows();
