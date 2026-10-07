@@ -303,11 +303,7 @@ impl Level<'_> {
         } else if class("IceBlock") {
             let dampening = i32::from(self.registries().blocks.state(state).light_dampening);
             if self.block_light(pos) > 11 - dampening {
-                // `IceBlock.melt` outside the Nether.
-                let water = self.registries().blocks.parse_state("minecraft:water").expect("vanilla block");
-                self.set_block_and_update(pos, water);
-                let block = self.block_id(water);
-                self.add_and_run(super::Update::Simple { pos, block });
+                self.melt_ice(pos);
             }
         } else if class("SnowLayerBlock") {
             if self.block_light(pos) > 11 {

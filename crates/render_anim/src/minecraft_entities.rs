@@ -10,7 +10,7 @@ use glam::{DVec3, Vec3};
 use minecraft_terrain::lighting::SkyLight;
 use minecraft_terrain::mesh::{Atlas, ChunkMesh};
 use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
-use minecraft_terrain::server::{PlayerEdit, ServerHandle, ServerSim, TickInput};
+use minecraft_terrain::server::{HowBroken, PlayerEdit, ServerHandle, ServerSim, TickInput};
 use minecraft_terrain::terrain::TerrainStream;
 use minecraft_terrain::client_mobs::{ClientMobs, server_mobs};
 use minecraft_terrain::mesh::ItemVisuals;
@@ -103,6 +103,7 @@ pub(crate) struct Entities {
 /// What bullets and blasts count as for block loot: vanilla drops nothing
 /// from stone or ores broken bare-handed.
 const LOOT_TOOL: &str = "minecraft:diamond_pickaxe";
+const SILK_TOUCH: &str = "minecraft:silk_touch";
 type BrokenBlock = ((i32, i32, i32), Block, Option<f32>);
 
 /// The mobs drawn this frame: entity models (cut out, back-face culled,
@@ -239,8 +240,12 @@ impl Entities {
         self.server.unload_chunk(pos);
     }
 
-    pub(crate) fn award_block_experience(&mut self, broken: &[BrokenBlock]) {
-        for (pos, block, _) in broken {
+    pub(crate) fn award_block_experience(&mut self, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)]) {
+        let silk_touch = self.hand_has_silk_touch();
+        for (pos, block, blast) in broken {
+            if silk_touch && blast.is_none() && by_hand.contains(pos) {
+                continue;
+            }
             let experience = minecraft_terrain::experience::block_experience(block, true, |bound| self.random.next_int(bound));
             if experience > 0 {
                 let centre = [f64::from(pos.0) + 0.5, f64::from(pos.1) + 0.5, f64::from(pos.2) + 0.5];
@@ -251,14 +256,16 @@ impl Entities {
 
     /// Block loot for what the weapons broke, dropped as vanilla drops it
     /// (`Block.popResource`); a blast keeps each drop one time in its power.
-    pub(crate) fn drop_blocks(&mut self, broken: &[BrokenBlock], mut kept: HashMap<(i32, i32, i32), serde_json::Value>) {
+    pub(crate) fn drop_blocks(&mut self, broken: &[BrokenBlock], mut kept: HashMap<(i32, i32, i32), serde_json::Value>, by_hand: &[(i32, i32, i32)]) {
         let tool = ItemStack::new(LOOT_TOOL, 1);
+        let hand_tool = self.hand_tool();
         for (pos, block, blast) in broken {
             let block = minecraftoss_player::Block { id: block.id.key(), properties: block.properties.clone() };
+            let tool = if blast.is_none() && by_hand.contains(pos) { &hand_tool } else { &tool };
             let drops = self
                 .loot
                 .as_ref()
-                .and_then(|loot| loot.roll_drops_named(&block, Some(&tool), self.seed as u64, &mut self.loot_sequences));
+                .and_then(|loot| loot.roll_drops_named(&block, Some(tool), self.seed as u64, &mut self.loot_sequences));
             let survives_blast = minecraft_terrain::containers::is_shulker_box(&block.id);
             for mut drop in drops.into_iter().flatten() {
                 if let Some(power) = *blast
@@ -460,6 +467,24 @@ impl Entities {
     /// Blocks the player's weapons broke, for the level the mobs walk in.
     pub(crate) fn broke(&mut self, positions: &[(i32, i32, i32)]) {
         self.server.player_breaks(positions);
+    }
+
+    pub(crate) fn mined(&mut self, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)]) {
+        let silk_touch = self.hand_has_silk_touch();
+        let how: Vec<_> = broken.iter().map(|(pos, _, blast)| (*pos, how_broken(*pos, *blast, by_hand, silk_touch))).collect();
+        self.server.player_mines(&how);
+    }
+
+    fn hand_enchantments(&self) -> Option<serde_json::Value> {
+        self.inventory.slots[self.selected].as_ref()?.components.as_ref()?.get("minecraft:enchantments").cloned()
+    }
+
+    fn hand_has_silk_touch(&self) -> bool {
+        has_silk_touch(self.hand_enchantments().as_ref())
+    }
+
+    fn hand_tool(&self) -> ItemStack {
+        loot_tool_with(self.hand_enchantments())
     }
 
     /// A bullet on a mob: an attack with the bullet's damage from where it
@@ -846,6 +871,24 @@ fn mirrored(id: i32) -> u32 {
     id as u32 | SERVER_ITEM
 }
 
+fn how_broken(pos: (i32, i32, i32), blast: Option<f32>, by_hand: &[(i32, i32, i32)], silk_touch: bool) -> HowBroken {
+    match blast {
+        Some(_) => HowBroken::Blasted,
+        None if silk_touch && by_hand.contains(&pos) => HowBroken::SilkTouched,
+        None => HowBroken::Mined,
+    }
+}
+
+fn has_silk_touch(enchantments: Option<&serde_json::Value>) -> bool {
+    enchantments.and_then(|enchantments| enchantments.get(SILK_TOUCH)).and_then(serde_json::Value::as_i64).is_some_and(|level| level > 0)
+}
+
+fn loot_tool_with(enchantments: Option<serde_json::Value>) -> ItemStack {
+    let mut tool = ItemStack::new(LOOT_TOOL, 1);
+    tool.components = enchantments.map(|enchantments| serde_json::json!({ "minecraft:enchantments": enchantments }));
+    tool
+}
+
 /// The viewer's `server_bob_offset`: a server item's bob phase from its id.
 fn bob_offset(id: i32) -> f32 {
     let hash = (id as u32).wrapping_mul(0x9e37_79b9).rotate_left(13).wrapping_mul(0x85eb_ca6b);
@@ -928,5 +971,26 @@ mod tests {
     fn blasts_hurt_mobs_twice_as_hard_as_bullets() {
         assert_eq!(HEALTH_SCALE, 0.2);
         assert_eq!(BLAST_HEALTH_SCALE, 2.0 * HEALTH_SCALE);
+    }
+
+    #[test]
+    fn only_silk_touch_in_the_mining_hand_keeps_ice_from_melting() {
+        let by_hand = [(1, 2, 3)];
+        assert_eq!(how_broken((1, 2, 3), None, &by_hand, true), HowBroken::SilkTouched);
+        assert_eq!(how_broken((1, 2, 3), None, &by_hand, false), HowBroken::Mined);
+        assert_eq!(how_broken((4, 2, 3), None, &by_hand, true), HowBroken::Mined);
+        assert_eq!(how_broken((1, 2, 3), Some(4.0), &by_hand, true), HowBroken::Blasted);
+    }
+
+    #[test]
+    fn the_hand_loot_tool_carries_the_held_enchantments() {
+        let silk = serde_json::json!({ "minecraft:silk_touch": 1 });
+        assert!(has_silk_touch(Some(&silk)));
+        assert!(!has_silk_touch(Some(&serde_json::json!({ "minecraft:efficiency": 5 }))));
+        assert!(!has_silk_touch(None));
+        let tool = loot_tool_with(Some(silk));
+        assert_eq!(tool.id, LOOT_TOOL);
+        assert_eq!(tool.components, Some(serde_json::json!({ "minecraft:enchantments": { "minecraft:silk_touch": 1 } })));
+        assert_eq!(loot_tool_with(None).components, None);
     }
 }

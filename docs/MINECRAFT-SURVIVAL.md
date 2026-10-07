@@ -43,6 +43,8 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 - Blocks are only placed where vanilla `canSurvive` allows, on the client and again on the server: sugar cane needs water, a waterlogged block or frosted ice beside its ground, cactus a free side, flowers and saplings soil, torches a floor that holds their centre, carpets and cakes something below, rails a rigid top. A refused block stays in the hotbar; one the server refuses comes back as its item.
 - Doors, trapdoors, fence gates, levers, buttons and note blocks.
 - Scaffolding. Blocks that lose support break and drop. Sand and gravel fall. Sugar cane and cactus columns break one block a tick, corals, cakes and shelf mushrooms go with their support, stalagmites break and stalactites fall.
+- Ice broken by hand, bullet or knife over a block in `#blocks_motion` or a liquid turns into a water source, except where water evaporates; blasts and Silk Touch leave none. Packed and blue ice never melt.
+- Hand mining with Silk Touch or Fortune applies the enchantment to the drops, and Silk Touch gives no block experience.
 
 ### Crafting, inventory, containers
 - 2x2 and 3x3 crafting from the 26.3 recipe data, with remainders and real stack sizes.
@@ -122,7 +124,7 @@ The MW2 netcode is host-authoritative and goes through the `iw4l-master` QUIC re
 - A respawn shows no loading screen; the player only waits for its own chunk's collision, so terrain may still fade in. Respawns are not spread at random over vanilla's radius of 10.
 
 ### Survival and combat
-- Hand mining counts as a diamond pickaxe, so a bare hand, a wrong tool or Silk Touch still drops items.
+- Hand mining counts as a diamond pickaxe with the held item's enchantments, so a bare hand or a wrong tool still drops items.
 - Not modelled: Fire Protection, Frost Walker and the burn-time attribute.
 - Lava and fire deaths have no death sound.
 - Shield: no knockback to the attacker, axes don't disable it, and MW2 bullets ignore it.
@@ -143,6 +145,7 @@ The MW2 netcode is host-authoritative and goes through the `iw4l-master` QUIC re
 - The fire charge uses flint and steel's block-update flags.
 - No campfire smoke, and no dousing with a shovel.
 - The enchanting slot takes tools, armour and books only. The anvil name field only edits at the end.
+- Ice whose support breaks in the same frame leaves no water, and melted ice shows air for about a server tick before the water appears.
 - To check in game: whether breaking one bed half removes the other, and whether a ladder drops when its wall is removed. The update rules for both exist now.
 
 ### Mobs
@@ -177,7 +180,7 @@ Run every cargo command with `-j 8`, one at a time.
 1. Build with `cargo build --release --locked -j 8 -p launcher`. It takes about 25 minutes and produces `D:\iw4l-target\release\iw4l.exe`.
 2. Copy it to `C:\Games\Mashup\2010-Rust-Rewrite-Mashup\iw4l-survival.exe`. Older builds are kept as `iw4l-survival-<hash>.exe`.
 3. The `.env` next to the exe holds `IW4L_MINECRAFT_KIT=`.
-   - Format: a comma list of `id` or `id*count`; the `minecraft:` prefix is optional.
+   - Format: a comma list of `id` or `id*count`; the `minecraft:` prefix is optional. `+enchantment` or `+enchantment=level` after the id enchants the item, e.g. `diamond_pickaxe+silk_touch`; a count goes last, as in `iron_sword+sharpness=5*2`.
    - It fills only the 27 backpack slots, so give at most 27 stacks. The log prints how many stacks were given.
 4. Start with `iw4l-survival.exe map minecraft:overworld`.
 5. The owner plays and sends numbered screenshots in a folder named after the build, e.g. `screenshots-<hash>/` or `ac0c791/`. These folders are git-ignored.

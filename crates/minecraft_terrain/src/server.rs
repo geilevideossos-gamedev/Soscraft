@@ -21,6 +21,13 @@ pub enum PlayerEdit {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HowBroken {
+    Mined,
+    SilkTouched,
+    Blasted,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ItemOnBlock {
     EmptyBucket { water: bool },
     FillBucket,
@@ -754,6 +761,22 @@ impl ServerSim {
         self.level.remove_blocks(&at, BlockStateId::AIR);
     }
 
+    pub fn player_mines(&mut self, broken: &[(BlockPos, HowBroken)]) {
+        let at: Vec<_> = broken.iter().map(|(p, _)| minecraftoss_core::BlockPos::new(p.0, p.1, p.2)).collect();
+        let old: Vec<_> = at.iter().map(|&pos| self.level.block(pos)).collect();
+        self.level.remove_blocks(&at, BlockStateId::AIR);
+        let mut destroyed: Vec<_> = at
+            .into_iter()
+            .zip(old)
+            .zip(broken.iter().map(|(_, how)| *how))
+            .filter(|(_, how)| *how != HowBroken::Blasted)
+            .collect();
+        destroyed.sort_by_key(|((pos, _), _)| pos.y);
+        for ((pos, old), how) in destroyed {
+            self.level.ice_player_destroyed(pos, old, how == HowBroken::SilkTouched);
+        }
+    }
+
     pub fn take_destroyed(&mut self) -> Vec<(BlockPos, Block)> {
         let destroyed = self.level.destroyed.as_mut().map_or_else(Vec::new, std::mem::take);
         destroyed
@@ -1042,6 +1065,7 @@ pub enum Command {
     /// A block the client set, as the client scene now shows it.
     PlayerEdit { pos: BlockPos, block: Option<Block>, edit: PlayerEdit },
     PlayerBreaks(Vec<BlockPos>),
+    PlayerMines(Vec<(BlockPos, HowBroken)>),
     UseBlock { pos: BlockPos, facing: &'static str },
     BoneMeal { pos: BlockPos, face: &'static str },
     Attack(BlockPos),
@@ -1211,6 +1235,12 @@ impl ServerHandle {
         }
     }
 
+    pub fn player_mines(&mut self, broken: &[(BlockPos, HowBroken)]) {
+        if !broken.is_empty() {
+            self.send(Command::PlayerMines(broken.to_vec()));
+        }
+    }
+
     fn state_in(&self, scene: &HandcraftedScene, pos: BlockPos) -> Option<BlockStateId> {
         Scene::block(scene, pos).and_then(|b| self.states.state_of(b))
     }
@@ -1359,6 +1389,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::UnloadChunk(pos) => sim.unload_chunk(pos),
                 Command::PlayerEdit { pos, block, edit } => sim.player_edit_block(pos, block.as_ref(), edit),
                 Command::PlayerBreaks(positions) => sim.player_breaks(&positions),
+                Command::PlayerMines(broken) => sim.player_mines(&broken),
                 Command::UseBlock { pos, facing } => {
                     sim.use_block(pos, facing);
                 }
@@ -3243,6 +3274,81 @@ mod tests {
         assert_eq!(items, vec!["minecraft:torch".to_owned()], "only the torch outside the batch drops on the server");
         let destroyed: Vec<_> = server.take_destroyed().into_iter().map(|(pos, block)| (pos, block.id.key())).collect();
         assert_eq!(destroyed, vec![((9, 200, 8), "minecraft:torch".to_owned())]);
+    }
+
+    fn mined_to(server: &mut ServerSim, broken: &[(BlockPos, HowBroken)]) -> std::collections::HashMap<BlockPos, Option<String>> {
+        server.take_changes();
+        server.player_mines(broken);
+        server.take_changes().into_iter().map(|(pos, block)| (pos, block.map(|b| b.id.key()))).collect()
+    }
+
+    #[test]
+    fn mined_ice_on_stone_turns_into_water() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:ice"));
+        let changes = mined_to(&mut server, &[((8, 200, 8), HowBroken::Mined)]);
+        assert_eq!(changes.get(&(8, 200, 8)), Some(&Some("minecraft:water".to_owned())));
+        assert!(server.items().is_empty());
+    }
+
+    #[test]
+    fn silk_touched_ice_leaves_air() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:ice"));
+        let changes = mined_to(&mut server, &[((8, 200, 8), HowBroken::SilkTouched)]);
+        assert_eq!(changes.get(&(8, 200, 8)), Some(&None));
+    }
+
+    #[test]
+    fn mined_ice_over_air_and_packed_and_blue_ice_leave_air() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 205, 8), Block::new("minecraft:ice"));
+        place(&mut server, &mut scene, (10, 199, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (10, 200, 8), Block::new("minecraft:packed_ice"));
+        place(&mut server, &mut scene, (12, 199, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (12, 200, 8), Block::new("minecraft:blue_ice"));
+        let changes = mined_to(&mut server, &[((8, 205, 8), HowBroken::Mined), ((10, 200, 8), HowBroken::Mined), ((12, 200, 8), HowBroken::Mined)]);
+        for pos in [(8, 205, 8), (10, 200, 8), (12, 200, 8)] {
+            assert_eq!(changes.get(&pos), Some(&None), "{pos:?}");
+        }
+    }
+
+    #[test]
+    fn mined_ice_on_carpet_leaves_air() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:white_carpet"));
+        place(&mut server, &mut scene, (8, 201, 8), Block::new("minecraft:ice"));
+        let changes = mined_to(&mut server, &[((8, 201, 8), HowBroken::Mined)]);
+        assert_eq!(changes.get(&(8, 201, 8)), Some(&None));
+    }
+
+    #[test]
+    fn a_stack_of_mined_ice_all_melts() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:ice"));
+        place(&mut server, &mut scene, (8, 201, 8), Block::new("minecraft:ice"));
+        let changes = mined_to(&mut server, &[((8, 201, 8), HowBroken::Mined), ((8, 200, 8), HowBroken::Mined)]);
+        for pos in [(8, 200, 8), (8, 201, 8)] {
+            assert_eq!(changes.get(&pos), Some(&Some("minecraft:water".to_owned())), "{pos:?}");
+        }
+    }
+
+    #[test]
+    fn blasted_ice_leaves_no_water() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:ice"));
+        let changes = mined_to(&mut server, &[((8, 200, 8), HowBroken::Blasted)]);
+        assert_eq!(changes.get(&(8, 200, 8)), Some(&None));
+    }
+
+    #[test]
+    fn mined_and_blasted_blocks_of_one_batch_drop_nothing_on_the_server() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:torch"));
+        let changes = mined_to(&mut server, &[((8, 199, 8), HowBroken::Mined), ((8, 200, 8), HowBroken::Blasted)]);
+        assert_eq!(changes.get(&(8, 199, 8)), Some(&None));
+        assert_eq!(changes.get(&(8, 200, 8)), Some(&None));
+        assert!(server.items().is_empty());
     }
 
     #[test]

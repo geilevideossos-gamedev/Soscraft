@@ -522,6 +522,7 @@ fn update(
     let yaw_rad = ps.viewangles[1].to_radians();
     let mc_yaw = (-yaw_rad.cos()).atan2(-yaw_rad.sin()).to_degrees();
     let mut all_events = sim::voxel::take_events();
+    let mut hand_mined = Vec::new();
 
     // The hand, when no gun is selected: vanilla's left click mines by hand
     // (with the hand's break speed) or punches, its right click places the
@@ -813,6 +814,7 @@ fn update(
                         block: [hit.pos.0, hit.pos.1, hit.pos.2],
                         damage: 160.0 / 30.0,
                     });
+                    hand_mined.push(hit.pos);
                     if hand.swing.is_none_or(|t| t >= crate::minecraft_hand::SWING_TICKS * 0.5) {
                         hand.swing = Some(0.0);
                         hand.swing_offhand = false;
@@ -1228,14 +1230,14 @@ fn update(
     survival.exhaust(crate::minecraft_survival::MINE_EXHAUSTION * broken.iter().filter(|(.., blast)| blast.is_none()).count() as f32);
     if let Some(entities) = entities.as_mut() {
         let positions: Vec<_> = broken.iter().map(|(pos, ..)| *pos).collect();
-        entities.broke(&positions);
-        entities.award_block_experience(&broken);
+        entities.mined(&broken, &hand_mined);
+        entities.award_block_experience(&broken, &hand_mined);
         let kept = broken
             .iter()
             .filter(|(_, block, _)| minecraft_terrain::containers::Station::of(block) == Some(minecraft_terrain::containers::Station::Shulker))
             .filter_map(|(pos, ..)| containers.take_shulker(*pos).map(|components| (*pos, components)))
             .collect();
-        entities.drop_blocks(&broken, kept);
+        entities.drop_blocks(&broken, kept, &hand_mined);
         for &pos in &positions {
             spill(containers, entities, pos);
         }

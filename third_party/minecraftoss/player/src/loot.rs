@@ -185,7 +185,7 @@ fn tool_enchantments(stack: &ItemStack) -> (u32, bool) {
         .components
         .as_ref()
         .and_then(|value| value.get("minecraft:enchantments"))
-        .and_then(|value| value.get("levels"))
+        .map(|value| value.get("levels").unwrap_or(value))
         .unwrap_or(&Value::Null);
     (
         levels["minecraft:fortune"].as_u64().unwrap_or(0) as u32,
@@ -652,5 +652,39 @@ mod tests {
             .unwrap();
         assert_eq!(crop[0].id, "minecraft:wheat");
         assert!(crop.iter().any(|stack| stack.id == "minecraft:wheat_seeds"));
+    }
+
+    #[test]
+    fn silk_touch_as_the_enchantments_component_holds_it_drops_ice() {
+        let mut book = LootBook::default();
+        book.tables.insert(
+            "minecraft:ice".into(),
+            serde_json::json!({
+                "type": "minecraft:block",
+                "pools": [{
+                    "condition": "minecraft:tool/can_silk_touch",
+                    "rolls": 1,
+                    "entries": [{"type": "minecraft:item", "name": "minecraft:ice"}]
+                }]
+            }),
+        );
+        let ice = Block::new("minecraft:ice");
+        let mut plain = ItemStack::new("minecraft:diamond_pickaxe", 1);
+        let mut silk = plain.clone();
+        silk.components = Some(serde_json::json!({
+            "minecraft:enchantments": {"minecraft:silk_touch": 1}
+        }));
+        let mut wrapped = plain.clone();
+        wrapped.components = Some(serde_json::json!({
+            "minecraft:enchantments": {"levels": {"minecraft:silk_touch": 1}}
+        }));
+        let roll = |tool: &ItemStack| book.roll_drops(&ice, Some(tool), &mut LegacyRandom::new(0));
+        assert_eq!(roll(&plain), Some(vec![]));
+        assert_eq!(roll(&silk), Some(vec![ItemStack::new("minecraft:ice", 1)]));
+        assert_eq!(roll(&wrapped), Some(vec![ItemStack::new("minecraft:ice", 1)]));
+        plain.components = Some(serde_json::json!({
+            "minecraft:enchantments": {"minecraft:efficiency": 5}
+        }));
+        assert_eq!(roll(&plain), Some(vec![]));
     }
 }

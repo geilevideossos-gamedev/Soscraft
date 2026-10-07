@@ -410,7 +410,7 @@ pub fn kit(spec: &str) -> Vec<(String, u32)> {
             if id.is_empty() || count == 0 {
                 return None;
             }
-            let id = if id.contains(':') {
+            let id = if id.split('+').next().unwrap_or(id).contains(':') {
                 id.to_owned()
             } else {
                 format!("minecraft:{id}")
@@ -422,19 +422,51 @@ pub fn kit(spec: &str) -> Vec<(String, u32)> {
 
 pub fn give_kit(inventory: &mut Inventory, spec: &str) -> usize {
     let mut given = 0;
-    for (id, mut count) in kit(spec) {
-        let max = u32::from(inventory.recipes.max_stack(&id).max(1));
+    for (entry, mut count) in kit(spec) {
+        let (id, enchantments) = kit_enchantments(&entry);
+        let max = u32::from(inventory.recipes.max_stack(id).max(1));
         while count > 0 {
             let Some(slot) = (HOTBAR..STORAGE).find(|&slot| inventory.slots[slot].is_none()) else {
                 return given;
             };
             let size = count.min(max);
             count -= size;
-            inventory.slots[slot] = Some(inventory.recipes.stack(&id, size as u8));
+            let mut stack = inventory.recipes.stack(id, size as u8);
+            if !enchantments.is_empty() {
+                let mut components = serde_json::Map::new();
+                for (enchantment, level) in &enchantments {
+                    minecraftoss_entities::enchant::add_enchantment(id, &mut components, enchantment, *level);
+                }
+                stack.components = Some(serde_json::Value::Object(components));
+            }
+            inventory.slots[slot] = Some(stack);
             given += 1;
         }
     }
     given
+}
+
+pub fn kit_enchantments(entry: &str) -> (&str, Vec<(String, i32)>) {
+    let mut parts = entry.split('+');
+    let id = parts.next().unwrap_or(entry).trim();
+    let enchantments = parts
+        .filter_map(|part| {
+            let (name, level) = match part.split_once('=') {
+                Some((name, level)) => (name.trim(), level.trim().parse::<i32>().ok()?),
+                None => (part.trim(), 1),
+            };
+            if name.is_empty() {
+                return None;
+            }
+            let name = if name.contains(':') {
+                name.to_owned()
+            } else {
+                format!("minecraft:{name}")
+            };
+            Some((name, level))
+        })
+        .collect();
+    (id, enchantments)
 }
 
 fn cells(inventory: &Inventory, grid: Grid) -> &[Option<ItemStack>] {
@@ -522,6 +554,24 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+
+    #[test]
+    fn kit_entries_carry_enchantments() {
+        let (id, enchantments) = kit_enchantments("minecraft:diamond_pickaxe+silk_touch+minecraft:efficiency=5");
+        assert_eq!(id, "minecraft:diamond_pickaxe");
+        assert_eq!(
+            enchantments,
+            vec![("minecraft:silk_touch".to_owned(), 1), ("minecraft:efficiency".to_owned(), 5)]
+        );
+        assert_eq!(kit_enchantments("minecraft:ice"), ("minecraft:ice", vec![]));
+        assert_eq!(kit("diamond_pickaxe+minecraft:silk_touch,iron_sword+sharpness=5*2"), vec![("minecraft:diamond_pickaxe+minecraft:silk_touch".to_owned(), 1), ("minecraft:iron_sword+sharpness=5".to_owned(), 2)]);
+        let mut inventory = Inventory::default();
+        assert_eq!(give_kit(&mut inventory, "ice*2,diamond_pickaxe+silk_touch"), 2);
+        assert_eq!(inventory.slots[HOTBAR].as_ref().map(|s| (s.id.as_str(), s.count, s.components.is_none())), Some(("minecraft:ice", 2, true)));
+        let pickaxe = inventory.slots[HOTBAR + 1].as_ref().unwrap();
+        assert_eq!(pickaxe.id, "minecraft:diamond_pickaxe");
+        assert_eq!(pickaxe.components, Some(json!({"minecraft:enchantments": {"minecraft:silk_touch": 1}})));
+    }
 
     fn write_jar(path: &Path, recipes: &[(&str, Value)], tags: &[(&str, Value)]) {
         let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());

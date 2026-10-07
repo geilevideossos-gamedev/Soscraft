@@ -17,6 +17,7 @@ pub mod explosion;
 pub mod falling;
 pub mod fire;
 pub mod grow;
+pub mod ice;
 pub mod plants;
 pub mod bonemeal;
 pub mod fluid;
