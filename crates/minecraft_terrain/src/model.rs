@@ -614,6 +614,10 @@ fn resolve_choices(pack: &PackStack, block: &Block, choices: &[&Value]) -> Resul
         if rotation_y > 270 || rotation_y % 90 != 0 {
             bail!("unsupported model Y rotation {rotation_y}");
         }
+        if rotation_x > 270 || rotation_x % 90 != 0 {
+            bail!("unsupported model X rotation {rotation_x}");
+        }
+        let uvlock = choice.get("uvlock").and_then(Value::as_bool).unwrap_or(false);
         let raw_id = choice
             .get("model")
             .and_then(Value::as_str)
@@ -662,6 +666,11 @@ fn resolve_choices(pack: &PackStack, block: &Block, choices: &[&Value]) -> Resul
                     .map(uv_coords)
                     .transpose()?
                     .unwrap_or(implicit_uv(direction, from, to)?);
+                let uv = if uvlock {
+                    uv_locked(direction, uv, rotation_x as u16, rotation_y as u16)
+                } else {
+                    uv
+                };
                 resolved.push(Face {
                     direction: direction.clone(),
                     texture,
@@ -732,6 +741,51 @@ fn implicit_uv(direction: &str, from: [f32; 3], to: [f32; 3]) -> Result<[f32; 4]
         "east" => [1.0 - zz, 1.0 - yy, 1.0 - z, 1.0 - y],
         _ => bail!("unsupported model face direction {direction}"),
     })
+}
+type Turn = [[i32; 3]; 3];
+const UNTURNED: Turn = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+const BLOCKSTATE_X_QUARTER: Turn = [[1, 0, 0], [0, 0, 1], [0, -1, 0]];
+const BLOCKSTATE_Y_QUARTER: Turn = [[0, 0, -1], [0, 1, 0], [1, 0, 0]];
+const UV_FRAMES: [(&str, [i32; 3], Turn); 6] = [
+    ("south", [0, 0, 1], UNTURNED),
+    ("east", [1, 0, 0], [[0, 0, 1], [0, 1, 0], [-1, 0, 0]]),
+    ("west", [-1, 0, 0], [[0, 0, -1], [0, 1, 0], [1, 0, 0]]),
+    ("north", [0, 0, -1], [[-1, 0, 0], [0, 1, 0], [0, 0, -1]]),
+    ("up", [0, 1, 0], [[1, 0, 0], [0, 0, 1], [0, -1, 0]]),
+    ("down", [0, -1, 0], [[1, 0, 0], [0, 0, -1], [0, 1, 0]]),
+];
+fn turn_product(a: Turn, b: Turn) -> Turn {
+    std::array::from_fn(|row| {
+        std::array::from_fn(|column| (0..3).map(|k| a[row][k] * b[k][column]).sum())
+    })
+}
+fn turn_transposed(a: Turn) -> Turn {
+    std::array::from_fn(|row| std::array::from_fn(|column| a[column][row]))
+}
+fn blockstate_turn(rotation_x: u16, rotation_y: u16) -> Turn {
+    let quarters = |degrees: u16, quarter: Turn| {
+        (0..degrees / 90).fold(UNTURNED, |turn, _| turn_product(quarter, turn))
+    };
+    turn_product(
+        quarters(rotation_y, BLOCKSTATE_Y_QUARTER),
+        quarters(rotation_x, BLOCKSTATE_X_QUARTER),
+    )
+}
+fn uv_locked(direction: &str, uv: [f32; 4], rotation_x: u16, rotation_y: u16) -> [f32; 4] {
+    let Some(&(_, _, frame)) = UV_FRAMES.iter().find(|(name, _, _)| *name == direction) else {
+        return uv;
+    };
+    let action = turn_product(blockstate_turn(rotation_x, rotation_y), frame);
+    let normal = [action[0][2], action[1][2], action[2][2]];
+    let Some(&(_, _, turned_frame)) = UV_FRAMES.iter().find(|(_, n, _)| *n == normal) else {
+        return uv;
+    };
+    let on_face = turn_transposed(turn_product(turn_transposed(turned_frame), action));
+    if on_face[0][0] == -1 && on_face[1][1] == -1 {
+        uv.map(|value| 1.0 - value)
+    } else {
+        uv
+    }
 }
 fn resolve_texture(
     raw: &str,
@@ -1178,5 +1232,95 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(0, 1), (90, 2), (180, 1), (270, 1)]
         );
+    }
+
+    #[test]
+    fn blockstate_x_rotation_and_uvlock_are_kept() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        for (name, contents) in [
+            ("pack.mcmeta", r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#),
+            ("assets/test/blockstates/creeper.json", r#"{"multipart":[{"when":{"up":"true"},"apply":{"model":"test:block/sheet","x":270,"uvlock":true}},{"when":{"north":"true"},"apply":{"model":"test:block/sheet"}},{"when":{"east":"true"},"apply":{"model":"test:block/sheet","y":90,"uvlock":true}},{"when":{"south":"true"},"apply":{"model":"test:block/sheet","x":180,"y":180}}]}"#),
+            ("assets/test/models/block/sheet.json", r##"{"textures":{"all":"test:block/sheet"},"elements":[{"from":[0,0,0.8],"to":[16,16,0.8],"faces":{"north":{"uv":[16,0,0,16],"texture":"#all"},"south":{"uv":[0,0,16,16],"texture":"#all"}}}]}"##),
+            ("assets/test/blockstates/tilted.json", r#"{"variants":{"":{"model":"test:block/sheet","x":45}}}"#),
+        ] {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+        let packs = PackStack::open(vec![root.into()]).unwrap();
+        let creeper = |side: &str| {
+            let block = ["up", "north", "east", "south"].into_iter().fold(Block::new("test:creeper"), |block, property| block.with(property, if property == side { "true" } else { "false" }));
+            let model = resolve_block(&packs, &block).unwrap();
+            assert_eq!(model.elements.len(), 1, "{side}");
+            model.elements.into_iter().next().unwrap()
+        };
+        let uv = |element: &Element, direction: &str| element.faces.iter().find(|face| face.direction == direction).unwrap().uv;
+        let ceiling = creeper("up");
+        assert_eq!((ceiling.rotation_x, ceiling.rotation_y), (270, 0));
+        assert_eq!(uv(&ceiling, "north"), [0.0, 1.0, 1.0, 0.0]);
+        assert_eq!(uv(&ceiling, "south"), [0.0, 0.0, 1.0, 1.0]);
+        let wall = creeper("north");
+        assert_eq!(uv(&wall, "north"), [1.0, 0.0, 0.0, 1.0]);
+        let turned = creeper("east");
+        assert_eq!((turned.rotation_x, turned.rotation_y), (0, 90));
+        assert_eq!(uv(&turned, "north"), [1.0, 0.0, 0.0, 1.0]);
+        let flipped = creeper("south");
+        assert_eq!((flipped.rotation_x, flipped.rotation_y), (180, 180));
+        assert_eq!(uv(&flipped, "north"), [1.0, 0.0, 0.0, 1.0], "no uvlock, no change");
+        assert!(resolve_block(&packs, &Block::new("test:tilted")).is_err());
+    }
+
+    #[test]
+    fn uvlock_keeps_textures_upright_where_the_face_turns_half_round() {
+        let rect = [0.25, 0.0, 0.75, 0.5];
+        let flipped = [0.75, 1.0, 0.25, 0.5];
+        assert_eq!(uv_locked("north", rect, 270, 0), flipped);
+        assert_eq!(uv_locked("south", rect, 270, 0), rect);
+        assert_eq!(uv_locked("north", rect, 180, 0), flipped, "an upside-down stair's back");
+        assert_eq!(uv_locked("east", rect, 180, 0), flipped);
+        assert_eq!(uv_locked("up", rect, 180, 0), rect);
+        assert_eq!(uv_locked("down", rect, 180, 0), rect);
+        assert_eq!(uv_locked("up", rect, 0, 180), flipped);
+        assert_eq!(uv_locked("down", rect, 0, 180), flipped);
+        for rotation_y in [0, 90, 180, 270] {
+            for side in ["north", "east", "south", "west"] {
+                assert_eq!(uv_locked(side, rect, 0, rotation_y), rect, "{side} y{rotation_y}");
+            }
+        }
+        assert_eq!(uv_locked("up", rect, 0, 90), rect, "a quarter turn is left as it was");
+        assert_eq!(uv_locked("up", rect, 0, 0), rect);
+        assert_eq!(uv_locked("inside", rect, 90, 0), rect);
+        assert_eq!(blockstate_turn(90, 90), turn_product(BLOCKSTATE_Y_QUARTER, BLOCKSTATE_X_QUARTER));
+        assert_eq!(blockstate_turn(270, 0), turn_transposed(BLOCKSTATE_X_QUARTER));
+    }
+
+    #[test]
+    fn vanilla_vine_parts_lie_flat_on_their_faces() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let vine = |sides: &[&str]| {
+            let block = ["up", "north", "east", "south", "west"].into_iter().fold(Block::new("minecraft:vine"), |block, side| block.with(side, if sides.contains(&side) { "true" } else { "false" }));
+            resolve_block(&packs, &block).unwrap()
+        };
+        let planes = |element: &Element, axis: usize| -> Vec<f32> {
+            element.faces.iter().flat_map(|face| crate::mesh::element_corners(element, &face.direction).unwrap()).map(|corner| corner[axis]).collect()
+        };
+        let ceiling = vine(&["up"]);
+        assert_eq!(ceiling.elements.len(), 1);
+        assert!(planes(&ceiling.elements[0], 1).iter().all(|y| (y - 15.2 / 16.0).abs() < 0.0025), "{:?}", planes(&ceiling.elements[0], 1));
+        let underside = ceiling.elements[0].faces.iter().find(|face| face.direction == "north").unwrap();
+        assert_eq!(underside.uv, [0.0, 1.0, 1.0, 0.0]);
+        let corner = vine(&["north", "east"]);
+        assert_eq!(corner.elements.len(), 2);
+        assert!(planes(&corner.elements[0], 2).iter().all(|z| (z - 0.8 / 16.0).abs() < 0.0025));
+        assert!(planes(&corner.elements[1], 0).iter().all(|x| (x - 15.2 / 16.0).abs() < 0.0025));
+        assert_eq!(vine(&[]).elements.len(), 5, "the preview model with no face");
     }
 }

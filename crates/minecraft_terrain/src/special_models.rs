@@ -553,7 +553,7 @@ pub(crate) fn transformed(mut element: Element, transform: Mat4) -> Element {
         return element;
     }
     let outer = Mat3::from_mat4(transform);
-    if outer == Mat3::IDENTITY && element.rotation.is_none() && element.rotation_y == 0 {
+    if outer == Mat3::IDENTITY && element.rotation.is_none() && element.rotation_y == 0 && element.rotation_x == 0 {
         let offset = transform.w_axis.truncate();
         element.from = (Vec3::from(element.from) + offset).to_array();
         element.to = (Vec3::from(element.to) + offset).to_array();
@@ -570,6 +570,7 @@ pub(crate) fn transformed(mut element: Element, transform: Mat4) -> Element {
         matrix: linear.to_cols_array_2d(),
     });
     element.rotation_y = 0;
+    element.rotation_x = 0;
     element
 }
 
@@ -594,7 +595,25 @@ pub(crate) fn element_affine(element: &Element) -> (Mat3, Vec3) {
         ),
         _ => (Mat3::IDENTITY, Vec3::ZERO),
     };
-    (turn * rotation, turn * rotation_offset + turn_offset)
+    let (tilt, tilt_offset) = match element.rotation_x {
+        90 => (
+            Mat3::from_cols(Vec3::X, Vec3::NEG_Z, Vec3::Y),
+            Vec3::new(0.0, 0.0, 1.0),
+        ),
+        180 => (
+            Mat3::from_diagonal(Vec3::new(1.0, -1.0, -1.0)),
+            Vec3::new(0.0, 1.0, 1.0),
+        ),
+        270 => (
+            Mat3::from_cols(Vec3::X, Vec3::Z, Vec3::NEG_Y),
+            Vec3::new(0.0, 1.0, 0.0),
+        ),
+        _ => (Mat3::IDENTITY, Vec3::ZERO),
+    };
+    (
+        turn * tilt * rotation,
+        turn * (tilt * rotation_offset + tilt_offset) + turn_offset,
+    )
 }
 
 fn sheet_id(raw: &str, directory: &str) -> Result<ResourceId> {
@@ -1290,6 +1309,27 @@ mod tests {
         };
         let turned = transformed(turned, Mat4::from_rotation_y(PI));
         assert!(turned.rotation.is_some() && turned.rotation_y == 0);
+        for (rotation_x, rotation_y) in [(90, 0), (180, 90), (270, 270)] {
+            let tilted = Element {
+                from: [0.0; 3],
+                to: [1.0, 0.5, 1.0],
+                faces: Vec::new(),
+                rotation_y,
+                rotation_x,
+                rotation: None,
+                shade_direction_override: None,
+            };
+            let moved = transformed(tilted.clone(), leaves[1].transform);
+            assert!(moved.rotation.is_some() && (moved.rotation_x, moved.rotation_y) == (0, 0));
+            for face in ["down", "up", "north", "south", "west", "east"] {
+                let expected = crate::mesh::element_corners(&tilted, face).unwrap();
+                let actual = crate::mesh::element_corners(&moved, face).unwrap();
+                for (expected, actual) in expected.iter().zip(&actual) {
+                    let expected = Vec3::from(*expected) + Vec3::Z;
+                    assert!((expected - Vec3::from(*actual)).length() < 1e-5, "x{rotation_x} y{rotation_y} {face}: {expected} {actual:?}");
+                }
+            }
+        }
         let shield = serde_json::json!({
             "type": "minecraft:condition",
             "property": "minecraft:using_item",

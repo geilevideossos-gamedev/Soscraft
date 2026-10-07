@@ -355,7 +355,12 @@ impl BlockParticles {
 
 fn break_bounds(element: &model::Element) -> Result<([f32; 3], [f32; 3])> {
     if !element.faces.iter().any(crate::mesh::entity_face) {
-        return Ok((element.from, element.to));
+        let [a, b] = [element.from, element.to]
+            .map(|corner| crate::mesh::blockstate_turned(corner, element));
+        return Ok((
+            std::array::from_fn(|axis| a[axis].min(b[axis])),
+            std::array::from_fn(|axis| a[axis].max(b[axis])),
+        ));
     }
     let mut low = Vec3::splat(f32::INFINITY);
     let mut high = Vec3::splat(f32::NEG_INFINITY);
@@ -498,6 +503,25 @@ mod tests {
         let down = &particles.fragments[21];
         assert!((down.position.y - 9.4).abs() < 1e-5);
         assert!((-0.9 - 1e-5..=-0.3 + 1e-5).contains(&down.position.z));
+    }
+
+    #[test]
+    fn turned_blocks_break_from_where_they_are_drawn() {
+        let sheet = |rotation_x, rotation_y| model::Element {
+            from: [0.0, 0.0, 0.25],
+            to: [1.0, 1.0, 0.25],
+            faces: Vec::new(),
+            rotation_y,
+            rotation_x,
+            rotation: None,
+            shade_direction_override: None,
+        };
+        let (low, high) = break_bounds(&sheet(270, 0)).unwrap();
+        assert_eq!((low, high), ([0.0, 0.75, 0.0], [1.0, 0.75, 1.0]), "under the ceiling");
+        let (low, high) = break_bounds(&sheet(0, 90)).unwrap();
+        assert_eq!((low, high), ([0.75, 0.0, 0.0], [0.75, 1.0, 1.0]), "on the east wall");
+        let (low, high) = break_bounds(&sheet(0, 0)).unwrap();
+        assert_eq!((low, high), ([0.0, 0.0, 0.25], [1.0, 1.0, 0.25]));
     }
 
     #[test]

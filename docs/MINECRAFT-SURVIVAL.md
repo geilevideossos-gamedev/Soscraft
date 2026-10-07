@@ -100,7 +100,8 @@ The MW2 netcode is host-authoritative and goes through the `iw4l-master` QUIC re
 
 ### Rendering
 - Translucent faces are not sorted by camera distance within a 16-block section. Inside one block, smaller faces are drawn first.
-- Blockstates rotated about X (horizontal logs, upside-down stairs) are drawn without that rotation and keep the old full-cube culling rule.
+- Blockstates rotated about X (horizontal logs, upside-down stairs, ceiling vines) are drawn rotated, but still cull with the old full-cube rule, so they may draw a few hidden faces.
+- `uvlock` only applies to faces it turns half round. Faces it would turn a quarter (some stair tops, fence and wall caps) keep the model's texture direction, and the face `rotation` key is not read.
 - Block entities never animate: no chest lids, bell swing or banner wave. There are no banner or shield patterns and no sign text. Heads use the default skin, and the conduit always shows its inactive shell.
 - Not drawn: the copper golem statue and the held trident model. Each half of a double chest is lit separately.
 - No lava fog and no rain particles.

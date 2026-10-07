@@ -975,8 +975,7 @@ impl ItemVisuals {
                         let rotated_normal = if entity {
                             quad_normal(&corners).unwrap_or(Vec3::Y)
                         } else {
-                            Mat4::from_rotation_y((element.rotation_y as f32).to_radians())
-                                .transform_vector3(face_normal(&face.direction)?)
+                            face_normal(quad_direction(element, &face.direction, &corners)?)?
                         };
                         let shade = level_item_shade(
                             normal_pose.transform_vector3(rotated_normal).normalize(),
@@ -1386,7 +1385,10 @@ pub(crate) fn element_corners(element: &crate::model::Element, face: &str) -> Re
             corner[axis] += sign * SHEET_FACE_OFFSET;
         }
     }
-    Ok(quad.map(|corner| rotate_y(element.rotation.map_or(corner, |r| r.apply(corner)), element.rotation_y)))
+    Ok(quad.map(|corner| blockstate_turned(element.rotation.map_or(corner, |r| r.apply(corner)), element)))
+}
+pub(crate) fn blockstate_turned(corner: [f32; 3], element: &crate::model::Element) -> [f32; 3] {
+    rotate_y(rotate_x(corner, element.rotation_x), element.rotation_y)
 }
 
 /// Blocks; well under a pixel of a block, well over depth precision.
@@ -1423,7 +1425,7 @@ pub(crate) fn model_face_normal(element: &crate::model::Element, face: &crate::m
 /// corners; the first of equals in `Direction` order).
 fn quad_direction(element: &crate::model::Element, face: &str, corners: &[[f32; 3]; 4]) -> Result<&'static str> {
     if element.rotation.is_none() {
-        let dir = rotated_direction(face, element.rotation_y)?;
+        let dir = turned_direction(face, element)?;
         return Ok(["down", "up", "north", "south", "west", "east"].into_iter().find(|d| *d == dir).unwrap_or("up"));
     }
     let [v0, v1, v2, _] = *corners;
@@ -1482,6 +1484,29 @@ fn rotated_direction(dir: &str, degrees: u16) -> Result<&str> {
         _ => return Err(anyhow!("unsupported face direction {dir}")),
     };
     Ok(["north", "east", "south", "west"][(i + degrees as usize / 90) % 4])
+}
+fn rotate_x([x, y, z]: [f32; 3], degrees: u16) -> [f32; 3] {
+    match degrees {
+        90 => [x, z, 1.0 - y],
+        180 => [x, 1.0 - y, 1.0 - z],
+        270 => [x, 1.0 - z, y],
+        _ => [x, y, z],
+    }
+}
+fn rotated_direction_x(dir: &str, degrees: u16) -> Result<&'static str> {
+    let i = match dir {
+        "up" => 0,
+        "north" => 1,
+        "down" => 2,
+        "south" => 3,
+        "east" => return Ok("east"),
+        "west" => return Ok("west"),
+        _ => return Err(anyhow!("unsupported face direction {dir}")),
+    };
+    Ok(["up", "north", "down", "south"][(i + degrees as usize / 90) % 4])
+}
+fn turned_direction(dir: &str, element: &crate::model::Element) -> Result<&'static str> {
+    rotated_direction(rotated_direction_x(dir, element.rotation_x)?, element.rotation_y)
 }
 pub fn make_atlas(packs: &PackStack, mut textures: Vec<ResourceId>) -> Result<Atlas> {
     textures.insert(0, ResourceId::parse("minecraft:missingno")?);
@@ -1980,7 +2005,7 @@ pub(crate) fn bake_quads(block: &Block, model: &ResolvedModel, atlas: &Atlas) ->
     for element in &model.elements {
         let size = (0..3).map(|axis| (element.to[axis] - element.from[axis]).abs()).product::<f32>();
         for face in &element.faces {
-            let cull_dir = rotated_direction(face.cullface.as_deref().unwrap_or(face.direction.as_str()), element.rotation_y)?;
+            let cull_dir = turned_direction(face.cullface.as_deref().unwrap_or(face.direction.as_str()), element)?;
             let cull_delta = direction(cull_dir)?;
             let corners = element_corners(element, &face.direction)?;
             let dir = quad_direction(element, &face.direction, &corners)?;
@@ -2189,7 +2214,7 @@ pub(crate) fn append_block<'m, S: Scene>(
         for face in &element.faces {
             // Culled quads go with their cullface (turned with the
             // blockstate), and take their light from that neighbour.
-            let cull_dir = rotated_direction(face.cullface.as_deref().unwrap_or(face.direction.as_str()), element.rotation_y)?;
+            let cull_dir = turned_direction(face.cullface.as_deref().unwrap_or(face.direction.as_str()), element)?;
             let cull_delta = direction(cull_dir)?;
             if face.cull && hidden_by((x + cull_delta.0, y + cull_delta.1, z + cull_delta.2), cull_side(cull_delta)) {
                 continue;
@@ -2619,7 +2644,7 @@ pub fn block_preview<S: Scene>(
             if !atlas.contains(&face.texture) {
                 return Err(anyhow!("atlas missing {}", face.texture.key()));
             }
-            let dir = rotated_direction(face.direction.as_str(), element.rotation_y)?;
+            let dir = turned_direction(face.direction.as_str(), element)?;
             let delta = direction(dir)?;
             let neighbor_pos = (pos.0 + delta.0, pos.1 + delta.1, pos.2 + delta.2);
             let catalog_hidden = if face.cull { scene.face_hidden(pos, neighbor_pos, cull_side(delta)) } else { None };
@@ -4289,6 +4314,74 @@ mod tests {
         assert_eq!(variant_index(&variants, (2_000_000_000, 1, 0)), 1);
         assert_eq!(rotate_y([0.0, 1.0, 0.0], 90), [1.0, 1.0, 0.0]);
         assert_eq!(rotated_direction("north", 90).unwrap(), "east");
+    }
+
+    fn turned_element(from: [f32; 3], to: [f32; 3], rotation_x: u16, rotation_y: u16) -> crate::model::Element {
+        crate::model::Element { from, to, faces: Vec::new(), rotation_y, rotation_x, rotation: None, shade_direction_override: None }
+    }
+
+    #[test]
+    fn blockstate_x_rotation_turns_geometry_and_cull_directions_before_y() {
+        assert_eq!(rotate_x([0.5, 1.0, 0.5], 90), [0.5, 0.5, 0.0]);
+        assert_eq!(rotate_x([0.5, 1.0, 0.5], 270), [0.5, 0.5, 1.0]);
+        assert_eq!(rotate_x([0.5, 1.0, 0.25], 180), [0.5, 0.0, 0.75]);
+        let log_along_x = turned_element([0.0; 3], [1.0; 3], 90, 90);
+        assert_eq!(turned_direction("up", &log_along_x).unwrap(), "east");
+        assert_eq!(turned_direction("down", &log_along_x).unwrap(), "west");
+        assert_eq!(turned_direction("north", &log_along_x).unwrap(), "down");
+        let cube_tipped_north = turned_element([0.0; 3], [1.0; 3], 90, 0);
+        assert_eq!(turned_direction("up", &cube_tipped_north).unwrap(), "north");
+        assert_eq!(turned_direction("east", &cube_tipped_north).unwrap(), "east");
+        for (rotation_x, up_becomes) in [(0, "up"), (90, "north"), (180, "down"), (270, "south")] {
+            let element = turned_element([0.0; 3], [1.0; 3], rotation_x, 0);
+            let corners = element_corners(&element, "up").unwrap();
+            assert_eq!(quad_direction(&element, "up", &corners).unwrap(), up_becomes);
+            let normal = quad_normal(&corners).unwrap();
+            assert!((normal - face_normal(up_becomes).unwrap()).length() < 1e-5, "x{rotation_x}: {normal}");
+            let (linear, _) = crate::special_models::element_affine(&element);
+            assert!((linear * Vec3::Y - normal).length() < 1e-5, "x{rotation_x}");
+        }
+        let upside_down_slab = turned_element([0.0; 3], [1.0, 0.5, 1.0], 180, 0);
+        let bottom = element_corners(&upside_down_slab, "down").unwrap();
+        assert!(bottom.iter().all(|corner| corner[1] == 1.0), "{bottom:?}");
+        assert_eq!(quad_direction(&upside_down_slab, "down", &bottom).unwrap(), "up");
+        assert!(face_cubic("up", &bottom), "the slab's bottom becomes the block's top");
+        assert!(element_corners(&upside_down_slab, "up").unwrap().iter().all(|corner| corner[1] == 0.5));
+    }
+
+    #[test]
+    fn a_ceiling_vine_sheet_lies_flat_under_the_block_above() {
+        let sheet = turned_element([0.0, 0.0, 0.8 / 16.0], [1.0, 1.0, 0.8 / 16.0], 270, 0);
+        let outer = element_corners(&sheet, "north").unwrap();
+        assert!(outer.iter().all(|corner| (corner[1] - (15.2 / 16.0 + SHEET_FACE_OFFSET)).abs() < 1e-6), "{outer:?}");
+        assert_eq!(quad_direction(&sheet, "north", &outer).unwrap(), "up");
+        let inner = element_corners(&sheet, "south").unwrap();
+        assert!(inner.iter().all(|corner| (corner[1] - (15.2 / 16.0 - SHEET_FACE_OFFSET)).abs() < 1e-6), "{inner:?}");
+        assert_eq!(quad_direction(&sheet, "south", &inner).unwrap(), "down");
+        let (low, high) = outer.iter().fold(([1.0f32; 3], [0.0f32; 3]), |(low, high), c| (std::array::from_fn(|k| low[k].min(c[k])), std::array::from_fn(|k| high[k].max(c[k]))));
+        assert_eq!((low[0], low[2], high[0], high[2]), (0.0, 0.0, 1.0, 1.0), "it covers the whole ceiling");
+        let east_sheet = turned_element([0.0, 0.0, 0.8 / 16.0], [1.0, 1.0, 0.8 / 16.0], 0, 90);
+        assert!(element_corners(&east_sheet, "north").unwrap().iter().all(|corner| (corner[0] - (15.2 / 16.0 + SHEET_FACE_OFFSET)).abs() < 1e-6));
+    }
+
+    #[test]
+    fn turned_cubes_cull_and_light_toward_the_side_each_face_was_turned_to() {
+        let atlas = Atlas { pixels: RgbaImage::new(16, 16), mipmaps: Vec::new(), slots: HashMap::new(), missing: Vec::new(), animated: Vec::new(), animated_tiles: Vec::new(), translucent: HashMap::new() };
+        for (rotation_x, rotation_y) in [(90, 0), (90, 90), (180, 0), (180, 270), (270, 180)] {
+            let mut cube = crumble_element([0.0; 3], [1.0; 3], &["down", "up", "north", "south", "west", "east"], rotation_y, None);
+            cube.rotation_x = rotation_x;
+            for face in &mut cube.faces {
+                face.cull = true;
+            }
+            let quads = bake_quads(&crate::scene::Block::new("minecraft:oak_log"), &ResolvedModel { elements: vec![cube] }, &atlas).unwrap();
+            assert_eq!(quads.len(), 6);
+            for quad in quads {
+                let normal = quad_normal(&quad.corners).unwrap().round();
+                let cull = quad.cull.unwrap();
+                assert_eq!((cull.0 as f32, cull.1 as f32, cull.2 as f32), (normal.x, normal.y, normal.z), "x{rotation_x} y{rotation_y}");
+                assert_eq!(quad.light_offset, cull);
+            }
+        }
     }
 
     fn crumble_texture() -> ResourceId {
