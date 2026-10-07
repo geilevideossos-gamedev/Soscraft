@@ -2002,6 +2002,35 @@ pub(crate) fn variant_for(variants: &[(ResolvedModel, u32)], pos: BlockPos) -> u
     variant_index(variants, pos)
 }
 
+pub fn sheeted_decal_uv(direction: &str, [x, y, z]: [f32; 3]) -> [f32; 2] {
+    match direction {
+        "down" => [x, -z],
+        "up" => [x, z],
+        "north" => [-x, -y],
+        "south" => [x, -y],
+        "west" => [-z, -y],
+        _ => [z, -y],
+    }
+}
+
+pub fn crumbling_quads(variants: &[(ResolvedModel, u32)], (x, y, z): BlockPos) -> Result<Vec<[[f32; 5]; 4]>> {
+    let Some((model, _)) = variants.get(variant_index(variants, (x, y, z))) else {
+        return Ok(Vec::new());
+    };
+    let mut quads = Vec::new();
+    for element in &model.elements {
+        for face in &element.faces {
+            let corners = element_corners(element, &face.direction)?;
+            let direction = quad_direction(element, &face.direction, &corners)?;
+            quads.push(corners.map(|corner| {
+                let [u, v] = sheeted_decal_uv(direction, corner);
+                [x as f32 + corner[0], y as f32 + corner[1], z as f32 + corner[2], u, v]
+            }));
+        }
+    }
+    Ok(quads)
+}
+
 pub(crate) fn finish_mesh(mut mesh: ChunkMesh, transparent_indices: Vec<u32>) -> ChunkMesh {
     if !transparent_indices.is_empty() {
         mesh.transparent_start = Some(mesh.indices.len() as u32);
@@ -3628,5 +3657,139 @@ mod tests {
         assert_eq!(variant_index(&variants, (2_000_000_000, 1, 0)), 1);
         assert_eq!(rotate_y([0.0, 1.0, 0.0], 90), [1.0, 1.0, 0.0]);
         assert_eq!(rotated_direction("north", 90).unwrap(), "east");
+    }
+
+    fn crumble_texture() -> ResourceId {
+        ResourceId::parse("minecraft:block/test_crumble").unwrap()
+    }
+
+    fn crumble_element(from: [f32; 3], to: [f32; 3], directions: &[&str], rotation_y: u16, rotation: Option<&str>) -> crate::model::Element {
+        crate::model::Element {
+            from,
+            to,
+            rotation_y,
+            rotation: rotation.and_then(|raw| crate::model::ElementRotation::parse(&serde_json::from_str(raw).unwrap()).unwrap()),
+            shade_direction_override: None,
+            faces: directions
+                .iter()
+                .map(|direction| crate::model::Face {
+                    direction: (*direction).into(),
+                    texture: crumble_texture(),
+                    uv: [0.0, 0.0, 1.0, 1.0],
+                    cull: false,
+                    cullface: None,
+                    tint: false,
+                    tint_index: None,
+                    force_translucent: false,
+                })
+                .collect(),
+        }
+    }
+
+    fn ladder_sheet() -> crate::model::Element {
+        crumble_element([0.0, 0.0, 15.2 / 16.0], [1.0, 1.0, 15.2 / 16.0], &["north", "south"], 0, None)
+    }
+
+    fn terrain_positions(variants: &[(ResolvedModel, u32)], pos: BlockPos) -> Vec<[u32; 3]> {
+        let atlas = Atlas {
+            pixels: RgbaImage::new(16, 16),
+            mipmaps: vec![],
+            slots: HashMap::from([(crumble_texture(), [0.0, 0.0, 1.0, 1.0])]),
+            missing: vec![],
+            animated: vec![],
+            animated_tiles: vec![],
+        };
+        let block = Block::new("minecraft:test_crumble");
+        let scene = Placed(HashMap::from([(pos, block.clone())]));
+        let light = SkyLight::build(&scene);
+        let mut mesh = ChunkMesh::default();
+        append_block(&scene, pos, &block, || Ok(variants), |_| false, &atlas, &BiomeTint { grass: None, foliage: None }, &light, &mut mesh, &mut Vec::new()).unwrap();
+        mesh.vertices.iter().map(|vertex| vertex.position.map(f32::to_bits)).collect()
+    }
+
+    fn crack_positions(variants: &[(ResolvedModel, u32)], pos: BlockPos) -> Vec<[u32; 3]> {
+        crumbling_quads(variants, pos).unwrap().iter().flatten().map(|corner| [corner[0].to_bits(), corner[1].to_bits(), corner[2].to_bits()]).collect()
+    }
+
+    #[test]
+    fn a_ladder_cracks_on_its_sheet_not_on_a_cube() {
+        let variants = vec![(ResolvedModel { elements: vec![ladder_sheet()] }, 1)];
+        let quads = crumbling_quads(&variants, (3, 64, -2)).unwrap();
+        assert_eq!(quads.len(), 2);
+        for corner in quads.iter().flatten() {
+            assert!((corner[2] - (-2.0 + 15.2 / 16.0)).abs() <= 0.002 + 1e-5, "{corner:?}");
+            assert!((3.0..=4.0).contains(&corner[0]) && (64.0..=65.0).contains(&corner[1]), "{corner:?}");
+            assert!(corner[..3].iter().zip([3.0, 64.0, -2.0]).all(|(value, base)| (value - (base - 0.002)).abs() > 1e-4 && (value - (base + 1.002)).abs() > 1e-4), "{corner:?}");
+        }
+        assert!(crumbling_quads(&[], (0, 0, 0)).unwrap().is_empty());
+        assert!(crumbling_quads(&[(ResolvedModel { elements: vec![] }, 1)], (0, 0, 0)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn crack_corners_are_the_terrain_corners_bit_for_bit() {
+        let cross = crumble_element([0.8 / 16.0, 0.0, 0.5], [15.2 / 16.0, 1.0, 0.5], &["north", "south"], 0, Some(r#"{"rotation":{"origin":[8,8,8],"axis":"y","angle":45,"rescale":true}}"#));
+        let turned = crumble_element([0.0, 0.0, 0.0], [1.0, 0.5, 0.5], &["down", "up", "north", "south", "west", "east"], 90, None);
+        let torch = crumble_element([7.0 / 16.0, 0.0, 7.0 / 16.0], [9.0 / 16.0, 10.0 / 16.0, 9.0 / 16.0], &["up", "north", "south", "west", "east"], 270, Some(r#"{"rotation":{"origin":[0,3.5,8],"axis":"z","angle":-22.5}}"#));
+        for elements in [vec![ladder_sheet()], vec![cross.clone()], vec![turned.clone()], vec![torch.clone()], vec![ladder_sheet(), cross, turned, torch]] {
+            let variants = vec![(ResolvedModel { elements }, 1)];
+            let pos = (3, 5, 2);
+            let crack = crack_positions(&variants, pos);
+            assert!(!crack.is_empty());
+            assert_eq!(crack, terrain_positions(&variants, pos));
+        }
+    }
+
+    #[test]
+    fn crack_uvs_are_vanillas_sheeted_decal_projection() {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        let cube = crumble_element([0.0; 3], [1.0; 3], &["down", "up", "north", "south", "west", "east"], 0, None);
+        let quads = crumbling_quads(&[(ResolvedModel { elements: vec![cube] }, 1)], (0, 0, 0)).unwrap();
+        let uvs = |quad: &[[f32; 5]; 4]| quad.map(|corner| [corner[3], corner[4]]);
+        assert_eq!(uvs(&quads[3]), [[0.0, -1.0], [0.0, 0.0], [1.0, 0.0], [1.0, -1.0]], "south");
+        assert_eq!(uvs(&quads[2]), [[-1.0, -1.0], [-1.0, 0.0], [0.0, 0.0], [0.0, -1.0]], "north");
+        for (quad, direction) in quads.iter().zip(["down", "up", "north", "south", "west", "east"]) {
+            let facing = match direction {
+                "down" => glam::Quat::from_rotation_x(PI),
+                "up" => glam::Quat::IDENTITY,
+                "north" => glam::Quat::from_rotation_x(FRAC_PI_2) * glam::Quat::from_rotation_z(PI),
+                "south" => glam::Quat::from_rotation_x(FRAC_PI_2),
+                "west" => glam::Quat::from_rotation_x(FRAC_PI_2) * glam::Quat::from_rotation_z(FRAC_PI_2),
+                _ => glam::Quat::from_rotation_x(FRAC_PI_2) * glam::Quat::from_rotation_z(-FRAC_PI_2),
+            };
+            for corner in quad {
+                let turned = facing * (glam::Quat::from_rotation_x(-FRAC_PI_2) * (glam::Quat::from_rotation_y(PI) * Vec3::new(corner[0], corner[1], corner[2])));
+                assert!((corner[3] + turned.x).abs() < 1e-5 && (corner[4] + turned.y).abs() < 1e-5, "{direction} {corner:?} {turned}");
+            }
+        }
+    }
+
+    #[test]
+    fn crack_takes_the_terrain_variant_at_each_position() {
+        let variants = vec![
+            (ResolvedModel { elements: vec![crumble_element([0.0; 3], [1.0; 3], &["down", "up", "north", "south", "west", "east"], 0, None)] }, 1),
+            (ResolvedModel { elements: vec![ladder_sheet()] }, 1),
+        ];
+        let mut seen = [false; 2];
+        for x in 0..16 {
+            let pos = (x, 3, 7);
+            seen[variant_for(&variants, pos)] = true;
+            assert_eq!(crack_positions(&variants, pos), terrain_positions(&variants, pos), "{pos:?}");
+            assert_eq!(crumbling_quads(&variants, pos).unwrap().len(), [6, 2][variant_for(&variants, pos)]);
+        }
+        assert_eq!(seen, [true, true]);
+    }
+
+    #[test]
+    fn a_vine_cracks_only_on_its_attached_planes() {
+        let north = crumble_element([0.0, 0.0, 0.8 / 16.0], [1.0, 1.0, 0.8 / 16.0], &["north", "south"], 0, None);
+        let east = crumble_element([0.0, 0.0, 0.8 / 16.0], [1.0, 1.0, 0.8 / 16.0], &["north", "south"], 90, None);
+        let quads = crumbling_quads(&[(ResolvedModel { elements: vec![north, east] }, 1)], (-5, 70, 9)).unwrap();
+        assert_eq!(quads.len(), 4);
+        for corner in quads[..2].iter().flatten() {
+            assert!(corner[2] - 9.0 <= 0.05 + 0.002 + 1e-5 && corner[2] >= 9.0, "{corner:?}");
+        }
+        for corner in quads[2..].iter().flatten() {
+            assert!(-4.0 - corner[0] <= 0.05 + 0.002 + 1e-5 && corner[0] <= -4.0, "{corner:?}");
+        }
     }
 }

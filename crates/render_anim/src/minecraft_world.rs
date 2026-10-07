@@ -54,8 +54,7 @@ pub struct MinecraftWorldView {
     pub eye_light: [f32; 2],
     /// Break particles as section vertices and indices, rebuilt each frame.
     pub particles: (Vec<u8>, Vec<u32>),
-    /// Destroy stage cubes over blocks being mined: position, strip uv.
-    pub cracks: (Vec<[f32; 5]>, Vec<u32>),
+    pub cracks: (Vec<[f32; 6]>, Vec<u32>),
     /// The ten destroy stages side by side.
     pub crack_texture: Option<Arc<image::RgbaImage>>,
     /// Mob models (cut out, back-face culled, translucent) and entity
@@ -1663,7 +1662,7 @@ fn update(
         bytes.extend_from_slice(bytemuck::cast_slice(&vertices));
         indices.extend(mesh.indices.iter().map(|i| i + base));
     }
-    view.cracks = mining.crack_mesh();
+    view.cracks = mining.crack_mesh(&world.scene, &world.stream.states, &world.packs);
     day.advance(dt);
     let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
     view.eye_light = [

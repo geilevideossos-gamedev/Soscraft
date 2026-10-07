@@ -14,7 +14,7 @@ use bevy::render::render_resource::binding_types::{
 use bevy::render::render_resource::{
     AddressMode, BindGroup, BindGroupEntry, BindGroupLayoutDescriptor, BindingResource, BlendState,
     Buffer, BufferBinding, BufferDescriptor, BufferInitDescriptor, BufferUsages, ColorTargetState,
-    ColorWrites, CompareFunction, DepthStencilState, Extent3d, FilterMode, IndexFormat,
+    ColorWrites, CompareFunction, DepthBiasState, DepthStencilState, Extent3d, FilterMode, IndexFormat,
     MipmapFilterMode, MultisampleState, Origin3d, PipelineCompilationOptions,
     PipelineLayoutDescriptor, PrimitiveState, RawFragmentState, RawRenderPipelineDescriptor,
     RawVertexBufferLayout, RawVertexState, RenderPipeline, Sampler, SamplerBindingType,
@@ -83,8 +83,7 @@ pub struct MinecraftWorldFrame {
     pub eye_light: [f32; 2],
     /// Break particles: section vertex bytes and indices.
     pub particles: (Vec<u8>, Vec<u32>),
-    /// Destroy stage cubes: position and strip uv, and indices.
-    pub cracks: (Vec<[f32; 5]>, Vec<u32>),
+    pub cracks: (Vec<[f32; 6]>, Vec<u32>),
     /// The ten destroy stages side by side.
     pub crack_texture: Option<Arc<MinecraftAtlasImage>>,
     /// Mob models (cut out, back-face culled, translucent) and entity
@@ -112,7 +111,7 @@ struct TerrainView {
 
 const VIEW_SIZE: u64 = std::mem::size_of::<TerrainView>() as u64;
 const CLOUD_VERTEX_BYTES: u64 = 28;
-const CRACK_VERTEX_BYTES: u64 = 20;
+const CRACK_VERTEX_BYTES: u64 = 24;
 /// MinecraftOSS's full `Vertex`: position, uv, colour, sky and block light.
 const ENTITY_VERTEX_BYTES: u64 = 44;
 
@@ -996,19 +995,22 @@ fn shadow_fragment(in: EntityOut) -> @location(0) vec4<f32> {
 struct CrackOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
+    @location(1) @interpolate(flat) stage: f32,
 }
 
 @vertex
-fn crack_vertex(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>) -> CrackOut {
+fn crack_vertex(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) stage: f32) -> CrackOut {
     var out: CrackOut;
     out.clip = view.clip_from_rel * vec4<f32>(rel_from_block(position), 1.0);
     out.uv = uv;
+    out.stage = stage;
     return out;
 }
 
 @fragment
 fn crack_fragment(in: CrackOut) -> @location(0) vec4<f32> {
-    let colour = textureSample(cracks, atlas_sampler, in.uv);
+    let tile = fract(in.uv);
+    let colour = textureSampleLevel(cracks, atlas_sampler, vec2<f32>((in.stage + tile.x) / 10.0, tile.y), 0.0);
     if colour.a < 0.1 {
         discard;
     }
@@ -1093,6 +1095,11 @@ fn pipelines(
             offset: 12,
             shader_location: 1,
         },
+        VertexAttribute {
+            format: VertexFormat::Float32,
+            offset: 20,
+            shader_location: 2,
+        },
     ];
     let crack_buffers = [RawVertexBufferLayout {
         array_stride: CRACK_VERTEX_BYTES,
@@ -1153,7 +1160,7 @@ fn pipelines(
             operation: bevy::render::render_resource::BlendOperation::Add,
         },
     };
-    let make = |vertex: &str, fragment: &str, buffers: &[RawVertexBufferLayout], depth_write: bool, compare: CompareFunction, blend: Option<BlendState>, cull: Option<bevy::render::render_resource::Face>| {
+    let make_biased = |vertex: &str, fragment: &str, buffers: &[RawVertexBufferLayout], depth_write: bool, compare: CompareFunction, blend: Option<BlendState>, cull: Option<bevy::render::render_resource::Face>, bias: DepthBiasState| {
         device.create_render_pipeline(&RawRenderPipelineDescriptor {
             label: Some("iw4l_minecraft_terrain"),
             layout: Some(&pipeline_layout),
@@ -1182,7 +1189,7 @@ fn pipelines(
                 depth_write_enabled: Some(depth_write),
                 depth_compare: Some(compare),
                 stencil: default(),
-                bias: default(),
+                bias,
             }),
             multisample: MultisampleState {
                 count: samples,
@@ -1191,6 +1198,9 @@ fn pipelines(
             multiview_mask: None,
             cache: None,
         })
+    };
+    let make = |vertex: &str, fragment: &str, buffers: &[RawVertexBufferLayout], depth_write: bool, compare: CompareFunction, blend: Option<BlendState>, cull: Option<bevy::render::render_resource::Face>| {
+        make_biased(vertex, fragment, buffers, depth_write, compare, blend, cull, DepthBiasState::default())
     };
     [
         make("sky_vertex", "sky_fragment", &[], false, CompareFunction::Equal, None, None),
@@ -1213,14 +1223,19 @@ fn pipelines(
             Some(BlendState::ALPHA_BLENDING),
             None,
         ),
-        make(
+        make_biased(
             "crack_vertex",
             "crack_fragment",
             &crack_buffers,
             false,
             CompareFunction::GreaterEqual,
             Some(crumbling),
-            None,
+            Some(bevy::render::render_resource::Face::Back),
+            DepthBiasState {
+                constant: 10,
+                slope_scale: 1.0,
+                clamp: 0.0,
+            },
         ),
         make("entity_vertex", "entity_fragment", &entity_buffers, true, CompareFunction::GreaterEqual, None, None),
         make(
@@ -1264,6 +1279,15 @@ mod tests {
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
             .validate(&module)
             .unwrap();
+    }
+
+    #[test]
+    fn crack_vertex_stride_is_the_frame_crack_vertex() {
+        fn vertex_bytes<T>(_: fn(&super::MinecraftWorldFrame) -> &(Vec<T>, Vec<u32>)) -> u64 {
+            std::mem::size_of::<T>() as u64
+        }
+        assert_eq!(super::CRACK_VERTEX_BYTES, vertex_bytes(|frame| &frame.cracks));
+        assert_eq!(super::CRACK_VERTEX_BYTES, std::mem::size_of::<[f32; 6]>() as u64);
     }
 
     #[test]

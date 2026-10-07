@@ -9,9 +9,11 @@ use std::collections::HashMap;
 
 use minecraft_terrain::block_particles::BlockParticles;
 use minecraft_terrain::mesh::{Atlas, ChunkMesh, SectionVertex};
+use minecraft_terrain::model::ResolvedModel;
 use minecraft_terrain::pack::{PackStack, ResourceId};
 use minecraft_terrain::scene::{HandcraftedScene, Scene};
-use minecraft_terrain::terrain::TerrainStream;
+use minecraft_terrain::terrain::{BlockStates, TerrainStream};
+use minecraftoss_core::BlockStateId;
 use minecraftoss_core::registries::Registries;
 
 type BlockPos = (i32, i32, i32);
@@ -31,6 +33,7 @@ pub(crate) struct Mining {
     particles: Option<BlockParticles>,
     tick_clock: f64,
     rng: u64,
+    models: HashMap<BlockStateId, Option<Vec<(ResolvedModel, u32)>>>,
 }
 
 impl Default for Mining {
@@ -40,6 +43,7 @@ impl Default for Mining {
             particles: None,
             tick_clock: 0.0,
             rng: 0x2545_f491_4f6c_dd1d,
+            models: HashMap::new(),
         }
     }
 }
@@ -240,31 +244,29 @@ impl Mining {
         (bytemuck::cast_slice(&vertices).to_vec(), mesh.indices)
     }
 
-    /// A cube a hair larger than each block being mined, textured with its
-    /// destroy stage from a strip of the ten: position then uv.
-    pub(crate) fn crack_mesh(&self) -> (Vec<[f32; 5]>, Vec<u32>) {
+    pub(crate) fn crack_mesh(&mut self, scene: &HandcraftedScene, states: &BlockStates, packs: &PackStack) -> (Vec<[f32; 6]>, Vec<u32>) {
         let (mut vertices, mut indices) = (Vec::new(), Vec::new());
-        for (&(x, y, z), &(progress, _)) in &self.progress {
+        for (&pos, &(progress, _)) in &self.progress {
+            let Some(block) = Scene::block(scene, pos) else {
+                continue;
+            };
+            if matches!(block.id.path.as_str(), "water" | "lava") {
+                continue;
+            }
+            let Some(state) = states.state_of(block) else {
+                continue;
+            };
+            let variants = self
+                .models
+                .entry(state)
+                .or_insert_with(|| states.block(state).and_then(|block| minecraft_terrain::model::resolve_block_variants(packs, block).ok()));
+            let Some(quads) = variants.as_deref().and_then(|variants| minecraft_terrain::mesh::crumbling_quads(variants, pos).ok()) else {
+                continue;
+            };
             let stage = ((progress * 10.0) as i32).clamp(0, 9) as f32;
-            let a = [x as f32 - 0.002, y as f32 - 0.002, z as f32 - 0.002];
-            let b = [x as f32 + 1.002, y as f32 + 1.002, z as f32 + 1.002];
-            let p = [
-                [a[0], a[1], a[2]],
-                [b[0], a[1], a[2]],
-                [b[0], b[1], a[2]],
-                [a[0], b[1], a[2]],
-                [a[0], a[1], b[2]],
-                [b[0], a[1], b[2]],
-                [b[0], b[1], b[2]],
-                [a[0], b[1], b[2]],
-            ];
-            // The viewer's `interaction_mesh` faces.
-            for face in [[0, 3, 2, 1], [5, 6, 7, 4], [4, 7, 3, 0], [1, 2, 6, 5], [3, 7, 6, 2], [4, 0, 1, 5]] {
+            for quad in quads {
                 let first = vertices.len() as u32;
-                for (index, uv) in face.into_iter().zip([[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]) {
-                    let q = p[index];
-                    vertices.push([q[0], q[1], q[2], (stage + uv[0]) / 10.0, uv[1]]);
-                }
+                vertices.extend(quad.map(|[x, y, z, u, v]| [x, y, z, u, v, stage]));
                 indices.extend_from_slice(&[first, first + 1, first + 2, first, first + 2, first + 3]);
             }
         }
@@ -351,4 +353,66 @@ pub(crate) fn crack_strip(packs: &PackStack) -> anyhow::Result<image::RgbaImage>
         }
     }
     Ok(strip)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minecraft_terrain::scene::Block;
+
+    #[test]
+    fn real_blocks_crack_on_their_own_model_shapes() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else {
+            return;
+        };
+        let Ok(registries) = Registries::load(&paths) else {
+            return;
+        };
+        let states = std::sync::Arc::new(BlockStates::new(std::sync::Arc::new(registries), 0, -64, 384).unwrap());
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let mut scene = HandcraftedScene::streamed(states.clone());
+        let blocks = [
+            Some(Block::new("minecraft:ladder").with("facing", "north")),
+            Some(Block::new("minecraft:vine").with("north", "true")),
+            Some(Block::new("minecraft:torch")),
+            Some(Block::new("minecraft:oak_slab").with("type", "bottom")),
+            Some(Block::new("minecraft:poppy")),
+            Some(Block::new("minecraft:stone")),
+            Some(Block::new("minecraft:water")),
+            None,
+        ];
+        let mut mining = Mining::default();
+        for (stage, block) in blocks.into_iter().enumerate() {
+            let pos = (stage as i32 * 2, 100, 0);
+            scene.set(pos, block);
+            mining.progress.insert(pos, (0.05 + stage as f32 * 0.1, 0.0));
+        }
+        let (vertices, indices) = mining.crack_mesh(&scene, &states, &packs);
+        assert_eq!(indices.len() * 4, vertices.len() * 6);
+        let local = |stage: usize| -> Vec<[f32; 3]> {
+            vertices.iter().filter(|vertex| vertex[5] == stage as f32).map(|vertex| [vertex[0] - stage as f32 * 2.0, vertex[1] - 100.0, vertex[2]]).collect()
+        };
+        assert!(vertices.iter().all(|vertex| (0.0..=9.0).contains(&vertex[5])));
+        let ladder = local(0);
+        assert!(ladder.len() >= 8 && ladder.iter().all(|p| (p[2] - 15.2 / 16.0).abs() <= 0.0021), "{ladder:?}");
+        let vine = local(1);
+        assert!(vine.len() >= 8 && vine.iter().all(|p| (p[2] - 0.8 / 16.0).abs() <= 0.0021), "{vine:?}");
+        let torch = local(2);
+        let inside = |value: f32| (7.0 / 16.0 - 1e-4..=9.0 / 16.0 + 1e-4).contains(&value);
+        assert!(torch.len() == 24 && torch.iter().all(|p| inside(p[0]) && inside(p[2]) && p[1] <= 10.0 / 16.0 + 1e-5), "{torch:?}");
+        let slab = local(3);
+        assert!(slab.len() == 24 && slab.iter().all(|p| p[1] <= 0.5 + 1e-5), "{slab:?}");
+        let poppy = local(4);
+        assert!(poppy.len() == 16 && poppy.iter().all(|p| ((p[0] - 0.5).abs() - (p[2] - 0.5).abs()).abs() < 1e-3), "{poppy:?}");
+        let stone = local(5);
+        assert!(stone.len() == 24 && stone.iter().flatten().all(|&value| value == 0.0 || value == 1.0), "{stone:?}");
+        assert!(local(6).is_empty() && local(7).is_empty());
+    }
 }
