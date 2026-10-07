@@ -90,6 +90,12 @@ impl PortalParticles {
         }
     }
 
+    pub fn emit(&mut self, start: DVec3, motion: DVec3) {
+        let sprite = self.random.next_int(8) as i32;
+        let particle = PortalParticle::new(start, motion, sprite, &mut self.random);
+        self.particles.push(particle);
+    }
+
     pub fn tick(&mut self) {
         self.particles.retain_mut(PortalParticle::tick);
     }
@@ -100,12 +106,12 @@ impl PortalParticles {
         let partial = partial.clamp(0.0, 1.0);
         let right = forward.cross(Vec3::Y).normalize();
         let up = right.cross(forward).normalize();
+        let sprites: [Option<[f32; 4]>; 8] = std::array::from_fn(|index| {
+            let sprite = ResourceId::parse(&format!("minecraft:particle/generic_{index}")).ok()?;
+            atlas.contains(&sprite).then(|| atlas.region(&sprite))
+        });
         for particle in &self.particles {
-            let Ok(sprite) = ResourceId::parse(&format!("minecraft:particle/generic_{}", particle.sprite)) else { continue };
-            if !atlas.contains(&sprite) {
-                continue;
-            }
-            let [u0, v0, u1, v1] = atlas.region(&sprite);
+            let Some([u0, v0, u1, v1]) = usize::try_from(particle.sprite).ok().and_then(|index| sprites.get(index).copied().flatten()) else { continue };
             let center = particle.previous.lerp(particle.position, f64::from(partial));
             let cell = (center.x.floor() as i32, center.y.floor() as i32, center.z.floor() as i32);
             let glow = {

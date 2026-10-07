@@ -7,11 +7,14 @@ use std::sync::Arc;
 use bevy::prelude::Vec3;
 use minecraft_terrain::pack::{PackStack, ResourceId};
 
+const DEFAULT_ATTENUATION: f32 = 16.0;
+
 struct Entry {
     name: String,
     volume: f32,
     pitch: f32,
     weight: u32,
+    attenuation: f32,
     /// `name` is another event rather than a file.
     event: bool,
 }
@@ -44,6 +47,7 @@ impl Sounds {
                                     volume: 1.0,
                                     pitch: 1.0,
                                     weight: 1,
+                                    attenuation: DEFAULT_ATTENUATION,
                                     event: false,
                                 }),
                                 serde_json::Value::Object(o) => Some(Entry {
@@ -51,6 +55,7 @@ impl Sounds {
                                     volume: o.get("volume").and_then(serde_json::Value::as_f64).unwrap_or(1.0) as f32,
                                     pitch: o.get("pitch").and_then(serde_json::Value::as_f64).unwrap_or(1.0) as f32,
                                     weight: o.get("weight").and_then(serde_json::Value::as_u64).unwrap_or(1) as u32,
+                                    attenuation: o.get("attenuation_distance").and_then(serde_json::Value::as_f64).map_or(DEFAULT_ATTENUATION, |distance| distance as f32),
                                     event: o.get("type").and_then(serde_json::Value::as_str) == Some("event"),
                                 }),
                                 _ => None,
@@ -105,7 +110,7 @@ impl Sounds {
         }) else {
             return;
         };
-        let (name, entry_volume, entry_pitch, is_event) = (entry.name.clone(), entry.volume, entry.pitch, entry.event);
+        let (name, entry_volume, entry_pitch, is_event, attenuation) = (entry.name.clone(), entry.volume, entry.pitch, entry.event, entry.attenuation);
         if is_event {
             self.play_depth(packs, &name, position, volume * entry_volume, pitch * entry_pitch, depth + 1);
             return;
@@ -131,7 +136,30 @@ impl Sounds {
             position,
             volume: volume * entry_volume,
             pitch: pitch * entry_pitch,
+            attenuation,
             block: sim::voxel::BLOCK,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_portal_hum_fades_out_at_ten_blocks() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let mut sounds = Sounds::load(&packs);
+        sounds.play(&packs, "minecraft:block.portal.ambient", Some(Vec3::ZERO), 0.5, 1.0);
+        sounds.play(&packs, "minecraft:block.stone.break", Some(Vec3::ZERO), 1.0, 1.0);
+        let reach: Vec<f32> = sounds.queued.iter().map(|request| request.attenuation).collect();
+        assert_eq!(reach, [10.0, 16.0]);
     }
 }

@@ -439,6 +439,15 @@ impl Entities {
         }
     }
 
+    pub(crate) fn animate_tick<S: minecraft_terrain::scene::Scene + ?Sized>(&mut self, scene: &S, feet: [f64; 3]) -> Vec<minecraft_terrain::display_ticks::AmbientSound> {
+        let at = (feet[0].floor() as i32, feet[1].floor() as i32, feet[2].floor() as i32);
+        let tick = minecraft_terrain::display_ticks::animate_tick(scene, at, &mut self.random);
+        for (start, motion) in tick.portal_particles {
+            self.portal.emit(start, motion);
+        }
+        tick.sounds
+    }
+
     /// Client ticks run so far.
     pub(crate) fn client_ticks(&self) -> u64 {
         self.ticks

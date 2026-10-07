@@ -3086,6 +3086,69 @@ mod tests {
         assert!(!burnt.contains_key(&(12, 201, 8)), "soul fire keeps burning");
     }
 
+    fn obsidian_frame(server: &mut ServerSim, scene: &mut HandcraftedScene, along_x: bool, width: i32, height: i32, corners: bool) {
+        for i in 0..=width + 1 {
+            for y in 0..=height + 1 {
+                let edge_side = i == 0 || i == width + 1;
+                let edge_end = y == 0 || y == height + 1;
+                if (edge_side || edge_end) && (corners || !(edge_side && edge_end)) {
+                    let pos = if along_x { (7 + i, 200 + y, 8) } else { (8, 200 + y, 7 + i) };
+                    place(server, scene, pos, Block::new("minecraft:obsidian"));
+                }
+            }
+        }
+        server.take_changes();
+    }
+
+    fn portal_blocks(changes: &std::collections::HashMap<BlockPos, Option<Block>>) -> Vec<(BlockPos, String)> {
+        let mut portals: Vec<_> = changes
+            .iter()
+            .filter_map(|(&pos, block)| block.as_ref().filter(|b| b.id.key() == "minecraft:nether_portal").map(|b| (pos, b.properties["axis"].clone())))
+            .collect();
+        portals.sort();
+        portals
+    }
+
+    #[test]
+    fn fire_in_an_obsidian_frame_opens_a_portal_even_where_it_could_not_burn() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        obsidian_frame(&mut server, &mut scene, true, 2, 3, true);
+        assert!(server.item_on_block((8, 202, 8), ItemOnBlock::Ignite), "mid-air fire is allowed where it opens a portal");
+        let lit: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        let expected: Vec<_> = [(8, 201, 8), (8, 202, 8), (8, 203, 8), (9, 201, 8), (9, 202, 8), (9, 203, 8)].into_iter().map(|pos| (pos, "x".to_owned())).collect();
+        assert_eq!(portal_blocks(&lit), expected);
+        assert!(lit.values().flatten().all(|b| b.id.key() != "minecraft:fire"));
+        assert!(!server.item_on_block((8, 202, 8), ItemOnBlock::Ignite), "a portal is not air");
+        server.take_destroyed();
+        take(&mut server, &mut scene, (7, 202, 8));
+        let broken: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        for (pos, _) in &expected {
+            assert_eq!(broken.get(pos), Some(&None), "{pos:?}");
+        }
+        let destroyed = server.take_destroyed();
+        assert_eq!(destroyed.iter().filter(|(_, b)| b.id.key() == "minecraft:nether_portal").count(), 6, "{destroyed:?}");
+    }
+
+    #[test]
+    fn a_frame_along_z_without_corners_opens_and_an_open_frame_does_not() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        obsidian_frame(&mut server, &mut scene, false, 4, 5, false);
+        assert!(server.item_on_block((8, 201, 10), ItemOnBlock::Ignite));
+        let lit: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        let portals = portal_blocks(&lit);
+        assert_eq!(portals.len(), 20);
+        assert!(portals.iter().all(|((x, y, z), axis)| *x == 8 && (201..=205).contains(y) && (8..=11).contains(z) && axis == "z"));
+        let Some((mut server, mut scene)) = door_world() else { return };
+        obsidian_frame(&mut server, &mut scene, true, 2, 3, true);
+        take(&mut server, &mut scene, (8, 204, 8));
+        server.take_changes();
+        assert!(!server.item_on_block((8, 202, 8), ItemOnBlock::Ignite), "no top, no portal, no mid-air fire");
+        assert!(server.item_on_block((8, 201, 8), ItemOnBlock::Ignite));
+        let lit: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert!(portal_blocks(&lit).is_empty());
+        assert_eq!(block_at(&lit, (8, 201, 8)).map(|b| b.id.key()), Some("minecraft:fire".to_owned()));
+    }
+
     #[test]
     fn flint_primes_tnt_which_blows_up_with_a_bang() {
         let Some((mut server, mut scene)) = door_world() else { return };

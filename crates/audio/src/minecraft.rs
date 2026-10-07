@@ -21,6 +21,7 @@ pub struct McSoundRequest {
     pub position: Option<Vec3>,
     pub volume: f32,
     pub pitch: f32,
+    pub attenuation: f32,
     /// Map units a block spans, for the falloff.
     pub block: f32,
 }
@@ -66,7 +67,7 @@ fn play_minecraft_sounds(
         // when it is above one.
         let (gain, pan) = match (request.position, pose) {
             (Some(at), Some((ear, right))) => {
-                let reach = 16.0 * request.volume.max(1.0) * request.block;
+                let reach = request.attenuation * request.volume.max(1.0) * request.block;
                 let falloff = (1.0 - (at - ear).length() / reach).clamp(0.0, 1.0);
                 (request.volume.min(1.0) * falloff, world_oneshot_channel_gains(ear, right, at, 1.0))
             }

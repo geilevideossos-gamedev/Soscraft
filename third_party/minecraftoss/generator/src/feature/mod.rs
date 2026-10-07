@@ -12,6 +12,7 @@ pub mod entities;
 pub mod java_set;
 pub mod kinds;
 pub mod placement;
+pub mod portal;
 pub mod post_process;
 pub mod predicate;
 pub mod region;

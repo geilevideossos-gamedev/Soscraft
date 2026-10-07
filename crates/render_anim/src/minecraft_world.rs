@@ -1016,10 +1016,11 @@ fn update(
                     let outlined = minecraft_terrain::doors::Outlined(&world.scene);
                     minecraft_terrain::bucket::bucket_use(&player, &outlined, &catalog, stack, || entities.random_float())
                         .or_else(|| minecraft_terrain::flint::flint_use(&player, &outlined, &catalog, stack, || entities.random_float()))
+                        .or_else(|| minecraft_terrain::flint::fire_charge_use(&player, &outlined, &catalog, stack, || entities.random_float()))
                         .or_else(|| minecraft_terrain::berries::bone_meal_use(&player, &outlined, stack))
                 }
             {
-                if !outcome.consumed {
+                if !outcome.consumed || matches!(outcome.change, minecraft_terrain::bucket::Change::Set(..)) {
                     hand.swing = Some(0.0);
                 }
                 let change = outcome.change.clone();
@@ -1340,6 +1341,13 @@ fn update(
         let ticks_before = entities.client_ticks();
         let (changes, hits) = entities.tick(dt, day.ticks as i64, bright_outside, &player);
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
+        for _ in 0..mob_ticks {
+            for sound in entities.animate_tick(&world.scene, feet) {
+                if let Some(sounds) = sounds.as_mut() {
+                    sounds.play(&world.packs, sound.event, Some(at(sound.at)), sound.volume, sound.pitch);
+                }
+            }
+        }
         if !changes.is_empty() {
             let registries = &world.registries;
             let mut positions = Vec::with_capacity(changes.len());

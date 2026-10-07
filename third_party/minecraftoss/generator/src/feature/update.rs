@@ -88,11 +88,13 @@ enum Rule {
     Tick,
     Scaffolding,
     CeilingHangingSign,
+    NetherPortal,
 }
 
 pub struct UpdateRules {
     rules: super::BlockMap<Rule>,
     pub soul_fire_base: TagId,
+    pub nether_portal_frame: TagId,
     snow: TagId,
     supports_chorus_plant: TagId,
     fences: TagId,
@@ -182,6 +184,7 @@ impl UpdateRules {
         add(&["water", "lava"], Rule::Liquid);
         add(&["fire"], Rule::Fire);
         add(&["soul_fire"], Rule::SoulFire);
+        add(&["nether_portal"], Rule::NetherPortal);
         add(&["chorus_plant"], Rule::ChorusPlant);
         add(&["chorus_flower"], Rule::ChorusFlower);
         add(&["vine"], Rule::Vine);
@@ -249,6 +252,7 @@ impl UpdateRules {
         Ok(Self {
             rules,
             soul_fire_base: tag("minecraft:soul_fire_base_blocks")?,
+            nether_portal_frame: tag("minecraft:nether_portal_frame")?,
             snow: tag("minecraft:snow")?,
             supports_chorus_plant: tag("minecraft:supports_chorus_plant")?,
             fences: tag("minecraft:fences")?,
@@ -563,6 +567,17 @@ pub fn update_shape<W: World + ?Sized>(ctx: &mut Ctx<W>, state: BlockStateId, po
         Rule::SoulFire => {
             if survives(ctx) {
                 ctx.registries().blocks.block(block).default_state()
+            } else {
+                air
+            }
+        }
+        Rule::NetherPortal => {
+            let axis = ctx.property(state, "axis").and_then(minecraftoss_core::pos::Axis::from_name).unwrap_or(minecraftoss_core::pos::Axis::X);
+            let wrong_axis = direction.axis() != axis && direction.is_horizontal();
+            let min_y = ctx.region.min_y();
+            let cell = |at: BlockPos| super::portal::Cell::of(lib, ctx.block(at));
+            if wrong_axis || same_block(ctx, neighbor) || super::portal::PortalShape::find_any(&cell, pos, axis, min_y).is_complete() {
+                state
             } else {
                 air
             }

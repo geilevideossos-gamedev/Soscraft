@@ -6,9 +6,10 @@
 
 use super::update;
 use super::Level;
-use minecraftoss_core::pos::Direction;
+use minecraftoss_core::pos::{Axis, Direction};
 use minecraftoss_core::random::RandomSource;
 use minecraftoss_core::{BlockPos, BlockStateId};
+use minecraftoss_generator::feature::portal::{Cell, PortalShape};
 use minecraftoss_generator::feature::update::{fire_can_burn, fire_odds, fire_state_with_age};
 use minecraftoss_generator::feature::Ctx;
 
@@ -103,26 +104,47 @@ impl Level<'_> {
         sky.environment.value_named(name, &sample).as_bool()
     }
 
+    fn in_portal_dimension(&self) -> bool {
+        matches!(self.dimension.as_deref(), Some("minecraft:overworld" | "minecraft:the_nether"))
+    }
+
+    fn empty_portal_shape(&self, pos: BlockPos) -> Option<PortalShape> {
+        let lib = self.lib;
+        let cell = |at: BlockPos| Cell::of(lib, self.block(at));
+        PortalShape::find_empty(&cell, pos, Axis::X, self.min_y())
+    }
+
+    fn is_portal(&self, pos: BlockPos) -> bool {
+        self.in_portal_dimension()
+            && Direction::ALL.iter().any(|&d| Cell::of(self.lib, self.block(pos.relative(d, 1))) == Cell::Frame)
+            && self.empty_portal_shape(pos).is_some()
+    }
+
     pub fn place_fire(&mut self, pos: BlockPos) -> bool {
         if !self.registries().blocks.is_air(self.block(pos)) {
             return false;
         }
         let fire = self.fire_with_age(pos, 0);
         let survives = if self.name(fire) == "minecraft:fire" { self.fire_survives(pos) } else { self.lib.registries.block_in_tag(self.block(pos.below()), self.lib.update_rules.soul_fire_base) };
-        survives && self.set_block(pos, fire, 11, update::LIMIT)
+        (survives || self.is_portal(pos)) && self.set_block(pos, fire, 11, update::LIMIT)
     }
 
     /// `BaseFireBlock.onPlace` (and `FireBlock.onPlace`'s first tick).
     pub(super) fn fire_on_place(&mut self, state: BlockStateId, pos: BlockPos, old: BlockStateId) {
         let fire = self.name(state) == "minecraft:fire";
         if self.block_id(old) != self.block_id(state) {
-            let portal_dimension = matches!(self.dimension.as_deref(), Some("minecraft:overworld" | "minecraft:the_nether"));
-            if portal_dimension && Direction::ALL.iter().any(|&d| self.name(self.block(pos.relative(d, 1))) == "minecraft:obsidian") {
-                self.unsupported.push("nether portal lighting".to_owned());
-            }
-            let survives = if fire { self.fire_survives(pos) } else { self.lib.registries.block_in_tag(self.block(pos.below()), self.lib.update_rules.soul_fire_base) };
-            if !survives {
-                self.remove_block(pos, false);
+            if self.in_portal_dimension()
+                && let Some(shape) = self.empty_portal_shape(pos)
+                && let Some(portal) = shape.portal_state(self.lib)
+            {
+                for at in shape.interior() {
+                    self.set_block(at, portal, update::CLIENTS | update::KNOWN_SHAPE, update::LIMIT);
+                }
+            } else {
+                let survives = if fire { self.fire_survives(pos) } else { self.lib.registries.block_in_tag(self.block(pos.below()), self.lib.update_rules.soul_fire_base) };
+                if !survives {
+                    self.remove_block(pos, false);
+                }
             }
         }
         if fire {
