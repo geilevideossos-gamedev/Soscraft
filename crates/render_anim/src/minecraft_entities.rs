@@ -29,7 +29,7 @@ use minecraftoss_entities::world::{EntityWorld, MobHit, PlayerHitKind};
 const TICK_SECONDS: f64 = 1.0 / 20.0;
 /// Minecraft health per MW2 health.
 const HEALTH_SCALE: f32 = 20.0 / 100.0;
-const BLAST_HEALTH_SCALE: f32 = 40.0 / 100.0;
+const BLAST_HEALTH_SCALE: f32 = 80.0 / 100.0;
 /// The player's id in the entity world.
 const PLAYER: u64 = 0;
 /// `Player.getEyeHeight` standing.
@@ -973,9 +973,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn blasts_hurt_mobs_twice_as_hard_as_bullets() {
+    fn blasts_hurt_mobs_four_times_as_hard_as_bullets() {
         assert_eq!(HEALTH_SCALE, 0.2);
-        assert_eq!(BLAST_HEALTH_SCALE, 2.0 * HEALTH_SCALE);
+        assert_eq!(BLAST_HEALTH_SCALE, 0.8);
+        assert_eq!(BLAST_HEALTH_SCALE, 4.0 * HEALTH_SCALE);
     }
 
     #[test]

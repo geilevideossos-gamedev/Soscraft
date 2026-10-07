@@ -169,7 +169,7 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 - Shield: no knockback to the attacker, axes don't disable it, and MW2 bullets ignore it.
 - The totem plays no animation. Every item has the same use speed.
 - Difficulty is fixed at Normal. Witch potions don't reach the player.
-- MW2 blast damage on mobs is MW2 damage x 0.4 (bullets x 0.2), not vanilla's explosion formula. MW2 craters are full spheres (the claymore's cone limits only its damage) and appear a server tick after the MW2 explosion. Mobs can't set off claymores. Kills by bot explosives give no XP.
+- MW2 blast damage on mobs is MW2 damage x 0.8 (bullets x 0.2), not vanilla's explosion formula, so a frag kills a 20-health mob it can see anywhere in its reach. MW2 craters are full spheres (the claymore's cone limits only its damage) and appear a server tick after the MW2 explosion. Mobs can't set off claymores. Kills by bot explosives give no XP.
 - TNT explosions don't hurt mobs or players; only creeper explosions do.
 
 ### Blocks and items
