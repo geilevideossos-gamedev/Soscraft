@@ -103,7 +103,11 @@ pub(crate) fn apply_explosion_blast(world: &mut FrameWorld, tick: Tick, blast: &
         return;
     }
     if crate::voxel::active() {
-        if let Some(power) = crater_power(blast.inner_damage, blast.radius) {
+        if let Some(power) = crater_power(
+            blast.inner_damage,
+            blast.radius,
+            is_tactical(world.equipment_facts_for(blast.weapon)),
+        ) {
             crate::voxel::push_explosion(blast.origin, power);
         }
         push_mob_blasts(
@@ -235,8 +239,37 @@ const CRATER_MIN_DAMAGE: f32 = 5.0;
 
 const MOB_EYE_HEIGHT_SCALE: f32 = 0.85;
 
-fn crater_power(inner_damage: f32, radius: f32) -> Option<f32> {
-    (inner_damage >= CRATER_MIN_DAMAGE && radius > 0.0).then(|| radius / crate::voxel::BLOCK / 2.0)
+const CRATER_MAX_POWER: f32 = 8.0;
+
+const TACTICAL_OFFHAND_CLASSES: [i32; 2] = [2, 3];
+
+const FLASHBANG_EXPLOSION: i32 = 2;
+
+const CRATER_MEANS: [&str; 4] = [
+    "MOD_EXPLOSIVE",
+    "MOD_GRENADE_SPLASH",
+    "MOD_PROJECTILE_SPLASH",
+    "MOD_ARTILLERY",
+];
+
+fn is_tactical(facts: Option<crate::equipment::EquipmentRuntimeFacts>) -> bool {
+    facts.is_some_and(|f| {
+        TACTICAL_OFFHAND_CLASSES.contains(&f.offhand_class)
+            || f.projectile_explosion_type == FLASHBANG_EXPLOSION
+    })
+}
+
+fn crater_power(inner_damage: f32, radius: f32, tactical: bool) -> Option<f32> {
+    (!tactical && inner_damage >= CRATER_MIN_DAMAGE && radius > 0.0)
+        .then(|| (radius / crate::voxel::BLOCK / 2.0).min(CRATER_MAX_POWER))
+}
+
+fn script_crater_power(means: &str, max: f32, radius: f32, tactical: bool) -> Option<f32> {
+    if CRATER_MEANS.contains(&means) {
+        crater_power(max, radius, tactical)
+    } else {
+        None
+    }
 }
 
 const CONCUSSION_WEAPON: &str = "concussion_grenade_mp";
@@ -385,6 +418,14 @@ pub(crate) fn apply_script_blast(
         );
     }
     if world.publishes_snapshot() && crate::voxel::active() {
+        if let Some(power) = script_crater_power(
+            blast.means,
+            blast.max,
+            blast.radius,
+            is_tactical(world.equipment_facts_for(blast.weapon)),
+        ) {
+            crate::voxel::push_explosion(blast.origin, power);
+        }
         push_mob_blasts(
             world,
             &crate::t5_destructible::RadiusDamage {
@@ -1048,11 +1089,48 @@ mod tests {
 
     #[test]
     fn only_damaging_explosives_blow_craters_sized_by_their_radius() {
-        assert_eq!(crater_power(1.0, 512.0), None, "concussion");
-        assert_eq!(crater_power(0.0, 256.0), None);
-        assert_eq!(crater_power(130.0, 0.0), None);
-        let frag = crater_power(130.0, 256.0).unwrap();
+        assert_eq!(crater_power(1.0, 512.0, false), None, "concussion");
+        assert_eq!(crater_power(0.0, 256.0, false), None);
+        assert_eq!(crater_power(130.0, 0.0, false), None);
+        let frag = crater_power(130.0, 256.0, false).unwrap();
         assert!((frag - 256.0 / 72.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn tactical_grenades_never_blow_craters() {
+        assert_eq!(crater_power(130.0, 256.0, true), None);
+        let facts = |offhand_class, projectile_explosion_type| {
+            Some(crate::equipment::EquipmentRuntimeFacts {
+                offhand_class,
+                projectile_explosion_type,
+                ..Default::default()
+            })
+        };
+        assert!(is_tactical(facts(2, 0)), "smoke");
+        assert!(is_tactical(facts(3, 0)), "flash and concussion");
+        assert!(is_tactical(facts(0, 2)), "flashbang explosion");
+        for lethal in [0, 1, 4, 5] {
+            assert!(!is_tactical(facts(lethal, 0)), "offhand class {lethal}");
+        }
+        assert!(!is_tactical(None), "launchers and killstreaks");
+    }
+
+    #[test]
+    fn huge_blasts_are_capped_at_a_wither_sized_crater() {
+        assert_eq!(crater_power(300.0, 2000.0, false), Some(8.0));
+    }
+
+    #[test]
+    fn killstreak_script_blasts_crater_only_for_explosive_means() {
+        for means in ["MOD_PROJECTILE_SPLASH", "MOD_EXPLOSIVE", "MOD_ARTILLERY", "MOD_GRENADE_SPLASH"] {
+            let power = script_crater_power(means, 300.0, 512.0, false).unwrap();
+            assert!((power - 512.0 / 72.0).abs() < 1e-6, "{means}");
+        }
+        for means in ["MOD_MELEE", "MOD_CRUSH", "MOD_GAS", "MOD_BURNED", "MOD_FALLING"] {
+            assert_eq!(script_crater_power(means, 300.0, 512.0, false), None, "{means}");
+        }
+        assert_eq!(script_crater_power("MOD_EXPLOSIVE", 1.0, 512.0, false), None);
+        assert_eq!(script_crater_power("MOD_EXPLOSIVE", 300.0, 512.0, true), None);
     }
 
     #[test]
