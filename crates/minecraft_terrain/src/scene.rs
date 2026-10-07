@@ -93,9 +93,15 @@ pub trait Scene {
     fn biome_at(&self, _pos: BlockPos) -> BiomeSample {
         BiomeSample::THE_VOID
     }
-    /// The fluid at a position (`FluidCell::from_block` of its block).
+    /// The fluid at a position (`FluidCell::held_by` of its block).
     fn fluid_at(&self, pos: BlockPos) -> Option<crate::fluid::FluidCell> {
-        crate::fluid::FluidCell::from_block(self.block(pos)?)
+        crate::fluid::FluidCell::held_by(self.block(pos)?)
+    }
+    fn solid_render_at(&self, pos: BlockPos) -> bool {
+        self.block(pos).is_some_and(Block::is_opaque)
+    }
+    fn fluid_overlay_at(&self, pos: BlockPos) -> bool {
+        self.block(pos).is_some_and(named_fluid_overlay)
     }
     /// Whether the block at a position darkens the corners of the faces
     /// beside it (`getShadeBrightness` below 1). Scenes without collision
@@ -120,6 +126,11 @@ fn named_fluid_face_hidden(neighbor: Option<&Block>, full_collision: bool, side:
     full_collision
         && (side != minecraftoss_core::pos::Direction::Up || height == 1.0)
         && neighbor.is_some_and(|block| block.is_opaque() && !matches!(block.id.path.as_str(), "ice" | "frosted_ice" | "slime_block" | "honey_block" | "nether_portal"))
+}
+
+fn named_fluid_overlay(block: &Block) -> bool {
+    let path = block.id.path.as_str();
+    matches!(path, "glass" | "tinted_glass" | "ice" | "frosted_ice" | "slime_block" | "honey_block") || path.ends_with("_stained_glass") || path.ends_with("_leaves") || path.ends_with("copper_grate")
 }
 
 #[derive(Clone, Default)]
@@ -408,6 +419,24 @@ impl Scene for HandcraftedScene {
         match &self.states {
             Some(states) => states.fluid_face_hidden(self.state_at(neighbor).unwrap_or(minecraftoss_core::BlockStateId::AIR), side, height),
             None => named_fluid_face_hidden(Scene::block(self, neighbor), self.full_collision_at(neighbor), side, height),
+        }
+    }
+    fn fluid_at(&self, pos: BlockPos) -> Option<crate::fluid::FluidCell> {
+        match (&self.states, self.state_at(pos)) {
+            (Some(states), Some(state)) => states.fluid_cell(state),
+            _ => crate::fluid::FluidCell::held_by(Scene::block(self, pos)?),
+        }
+    }
+    fn solid_render_at(&self, pos: BlockPos) -> bool {
+        match (&self.states, self.state_at(pos)) {
+            (Some(states), Some(state)) => states.solid_render(state),
+            _ => Scene::block(self, pos).is_some_and(Block::is_opaque),
+        }
+    }
+    fn fluid_overlay_at(&self, pos: BlockPos) -> bool {
+        match (&self.states, self.state_at(pos)) {
+            (Some(states), Some(state)) => states.fluid_overlay(state),
+            _ => Scene::block(self, pos).is_some_and(named_fluid_overlay),
         }
     }
     fn chunks(&self) -> Vec<ChunkPos> {

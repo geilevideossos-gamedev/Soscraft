@@ -792,10 +792,7 @@ fn opaque(in: Out) -> @location(0) vec4<f32> {
 }
 
 @fragment
-fn translucent(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    if !front && in.colour.a > 0.75 {
-        discard;
-    }
+fn translucent(in: Out) -> @location(0) vec4<f32> {
     let texel = textureSample(atlas, atlas_sampler, in.uv);
     return shade(in, texel);
 }
@@ -1229,7 +1226,7 @@ fn pipelines(
             false,
             CompareFunction::GreaterEqual,
             Some(BlendState::ALPHA_BLENDING),
-            None,
+            Some(bevy::render::render_resource::Face::Back),
         ),
         make(
             "cloud_vertex",

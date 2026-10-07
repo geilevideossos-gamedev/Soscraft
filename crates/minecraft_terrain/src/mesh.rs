@@ -2218,7 +2218,7 @@ pub(crate) fn append_block<'m, S: Scene>(
             };
             let biome = *biome.get_or_insert_with(|| scene.biome_at(tint_kind.biome_pos((x, y, z))));
             let tint = tint_kind.tint(face.tint_index, biome, tint_source);
-            let alpha = if block.id.path == "water" { 0.72 } else { entity_face_alpha(face) };
+            let alpha = entity_face_alpha(face);
             let start = mesh.vertices.len() as u32;
             // `ModelBlockRenderer.tesselateFlat` and `prepareQuadFlat`: a
             // culled quad is lit from its cullface's neighbour, another from
@@ -2266,11 +2266,7 @@ pub(crate) fn append_block<'m, S: Scene>(
             mesh.faces += 1;
         }
     }
-    if block
-        .properties
-        .get("waterlogged")
-        .is_some_and(|value| value == "true")
-    {
+    if FluidCell::at(scene, (x, y, z)).is_some() {
         append_fluid(
             scene,
             (x, y, z),
@@ -2373,20 +2369,21 @@ fn append_fluid<S: Scene>(
     let up = near((0, 1, 0));
     let down = near((0, -1, 0));
     let top_open = !same(up);
-    let bottom = !same(down) && !scene.fluid_face_hidden(down, Direction::Down, 8.0 / 9.0);
+    let self_hidden = |side: Direction| scene.fluid_face_hidden(pos, side.opposite(), 1.0);
+    let bottom = !same(down) && !self_hidden(Direction::Down) && !scene.fluid_face_hidden(down, Direction::Down, 8.0 / 9.0);
     // The side faces, north, south, west and east: most fluid lies inside
     // a body of it and shows none of its faces.
     let sides = [(0, 0, -1), (0, 0, 1), (-1, 0, 0), (1, 0, 0)].map(|d| {
         let other = near(d);
-        !(same(other) || scene.fluid_face_hidden(other, cull_side(d), 1.0))
+        !(same(other) || self_hidden(cull_side(d)) || scene.fluid_face_hidden(other, cull_side(d), 1.0))
     });
     if !top_open && !bottom && !sides.contains(&true) && !FLUID_FULL_PATH.with(std::cell::Cell::get) {
         return Ok(());
     }
     let water = cell.kind == FluidKind::Water;
-    static TEXTURES: std::sync::OnceLock<[ResourceId; 4]> = std::sync::OnceLock::new();
-    let [water_still, water_flow, lava_still, lava_flow] = TEXTURES.get_or_init(|| {
-        ["water_still", "water_flow", "lava_still", "lava_flow"].map(|name| ResourceId::parse(&format!("minecraft:block/{name}")).expect("static texture id"))
+    static TEXTURES: std::sync::OnceLock<[ResourceId; 5]> = std::sync::OnceLock::new();
+    let [water_still, water_flow, lava_still, lava_flow, water_overlay] = TEXTURES.get_or_init(|| {
+        ["water_still", "water_flow", "lava_still", "lava_flow", "water_overlay"].map(|name| ResourceId::parse(&format!("minecraft:block/{name}")).expect("static texture id"))
     });
     let (still, flow) = if water { (water_still.clone(), water_flow.clone()) } else { (lava_still.clone(), lava_flow.clone()) };
     let tint = if water {
@@ -2395,7 +2392,6 @@ fn append_fluid<S: Scene>(
         [1.0; 3]
     };
     let _ = tint_source;
-    let alpha = if water { 0.72 } else { 1.0 };
     let [x, y, z] = [pos.0 as f32, pos.1 as f32, pos.2 as f32];
     let h = fluid_render_height(scene, cell.kind, pos);
     let nw;
@@ -2419,7 +2415,7 @@ fn append_fluid<S: Scene>(
     }
     let top = top_open && !scene.fluid_face_hidden(up, Direction::Up, nw.min(ne).min(sw).min(se));
     let sky = light.get(pos).max(light.get(up)) as f32;
-    let color = |shade: f32| [shade * tint[0], shade * tint[1], shade * tint[2], alpha];
+    let color = |shade: f32| [shade * tint[0], shade * tint[1], shade * tint[2], 1.0];
     let uv = |texture: &ResourceId, points: [[f32; 2]; 4]| {
         let [u0, v0, u1, v1] = atlas.region(texture);
         points.map(|[u, v]| [u0 + (u1 - u0) * u, v0 + (v1 - v0) * v])
@@ -2481,6 +2477,9 @@ fn append_fluid<S: Scene>(
             light.get_block(pos) as f32,
             water,
         );
+        if water && backward_up_face(scene, up, cell.kind) {
+            backward_fluid_face(mesh, transparent);
+        }
     }
     if bottom {
         fluid_quad(
@@ -2533,6 +2532,8 @@ fn append_fluid<S: Scene>(
             continue;
         }
         let [[ax, _, az], [bx, _, bz]] = points;
+        let overlay = water && scene.fluid_overlay_at(near(delta));
+        let side_texture = if overlay && atlas.contains(water_overlay) { water_overlay } else { &flow };
         fluid_quad(
             mesh,
             transparent,
@@ -2543,7 +2544,7 @@ fn append_fluid<S: Scene>(
                 [ax, y, az],
             ],
             uv(
-                &flow,
+                side_texture,
                 [
                     [0.0, (1.0 - ha) * 0.5],
                     [0.5, (1.0 - hb) * 0.5],
@@ -2556,8 +2557,23 @@ fn append_fluid<S: Scene>(
             light.get_block(pos) as f32,
             water,
         );
+        if water && !overlay {
+            backward_fluid_face(mesh, transparent);
+        }
     }
     Ok(())
+}
+fn backward_up_face<S: Scene>(scene: &S, above: BlockPos, kind: FluidKind) -> bool {
+    (-1..=1).any(|dx| {
+        (-1..=1).any(|dz| {
+            let at = (above.0 + dx, above.1, above.2 + dz);
+            !FluidCell::at(scene, at).is_some_and(|other| other.kind == kind) && !scene.solid_render_at(at)
+        })
+    })
+}
+fn backward_fluid_face(mesh: &ChunkMesh, transparent: &mut Vec<u32>) {
+    let start = mesh.vertices.len() as u32 - 4;
+    transparent.extend_from_slice(&[start, start + 2, start + 1, start, start + 3, start + 2]);
 }
 /// Draw only a newly placed block while its neighboring chunks are rebuilt on
 /// the worker. This uses the same model, atlas, tint, AO and face rules as the
@@ -2573,12 +2589,7 @@ pub fn block_preview<S: Scene>(
     let Some(block) = scene.block(pos) else {
         return Ok(ChunkMesh::default());
     };
-    if matches!(block.id.path.as_str(), "water" | "lava")
-        || block
-            .properties
-            .get("waterlogged")
-            .is_some_and(|value| value == "true")
-    {
+    if matches!(block.id.path.as_str(), "water" | "lava") {
         let mut mesh = ChunkMesh::default();
         let mut transparent = Vec::new();
         append_fluid(
@@ -2671,7 +2682,7 @@ pub fn block_preview<S: Scene>(
                 }
             };
             let tint = tint_kind.tint(face.tint_index, biome, tint_source);
-            let alpha = if block.id.path == "water" { 0.72 } else { entity_face_alpha(face) };
+            let alpha = entity_face_alpha(face);
             // ChestRenderer lights every ModelPart face from the block entity
             // position; a rotated lid must not retain its closed downward
             // face's dark floor-neighbor light.
@@ -2713,6 +2724,9 @@ pub fn block_preview<S: Scene>(
             indices.extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
             mesh.faces += 1;
         }
+    }
+    if FluidCell::at(scene, pos).is_some() {
+        append_fluid(scene, pos, atlas, tint_source, light, &mut mesh, &mut transparent_indices)?;
     }
     if !transparent_indices.is_empty() {
         mesh.transparent_start = Some(mesh.indices.len() as u32);
@@ -3781,7 +3795,7 @@ mod tests {
             let water = mesh_chunk(&scene, (0, 0), &models, &atlas, &tint, &light).unwrap();
             assert_eq!(water.faces, 5);
             assert_eq!(water.transparent_start, Some(0));
-            assert_eq!(water.indices.len(), water.faces * 6);
+            assert_eq!(water.indices.len(), (water.faces + 4) * 6);
             if neighbor == "minecraft:stone" {
                 let solid = mesh_chunk(&scene, (1, 0), &models, &atlas, &tint, &light).unwrap();
                 assert_eq!(solid.faces, 6);
@@ -3968,7 +3982,7 @@ mod tests {
         )
         .unwrap();
         assert!(!transparent.is_empty());
-        assert_eq!(transparent.len(), water.faces * 6);
+        assert_eq!(transparent.len(), (water.faces + 5) * 6);
         assert!(water.vertices.iter().all(|v| v.position[1] <= 4.0 / 9.0));
         let mut lava = ChunkMesh::default();
         let mut transparent = Vec::new();
@@ -3989,6 +4003,154 @@ mod tests {
         for quad in lava.indices.chunks(12) {
             assert_eq!([quad[6], quad[7], quad[8]], [quad[0], quad[2], quad[1]]);
         }
+    }
+    fn fluid_test_atlas() -> Atlas {
+        let slots = [
+            ("minecraft:block/water_still", [0.0, 0.0, 0.25, 0.25]),
+            ("minecraft:block/water_flow", [0.25, 0.0, 0.5, 0.25]),
+            ("minecraft:block/water_overlay", [0.5, 0.0, 0.75, 0.25]),
+            ("minecraft:block/lava_still", [0.0, 0.5, 0.25, 0.75]),
+            ("minecraft:block/lava_flow", [0.25, 0.5, 0.5, 0.75]),
+            ("test:block/plant", [0.75, 0.75, 1.0, 1.0]),
+        ]
+        .into_iter()
+        .map(|(id, slot)| (ResourceId::parse(id).unwrap(), slot))
+        .collect();
+        Atlas { pixels: RgbaImage::new(16, 16), mipmaps: vec![], slots, missing: vec![], animated: vec![], animated_tiles: vec![], translucent: HashMap::new() }
+    }
+    fn untinted() -> BiomeTint {
+        BiomeTint { grass: None, foliage: None, dry_foliage: None }
+    }
+    fn water_faces(mesh: &ChunkMesh, transparent: &[u32]) -> (Vec<[[f32; 3]; 4]>, usize) {
+        let mut fronts = Vec::new();
+        let mut backs = 0;
+        for six in transparent.chunks(6) {
+            if six[1] == six[0] + 1 {
+                let start = six[0] as usize;
+                fronts.push(std::array::from_fn(|i| mesh.vertices[start + i].position));
+            } else {
+                assert_eq!(six, [six[0], six[0] + 2, six[0] + 1, six[0], six[0] + 3, six[0] + 2]);
+                backs += 1;
+            }
+        }
+        (fronts, backs)
+    }
+    fn kelp_pool() -> (Placed, HashMap<String, Vec<(ResolvedModel, u32)>>) {
+        let plant = ResourceId::parse("test:block/plant").unwrap();
+        let mut pool = Placed(HashMap::new());
+        for x in 0..3 {
+            for y in 1..3 {
+                for z in 0..3 {
+                    pool.0.insert((x, y, z), Block::new("minecraft:water").with("level", "0"));
+                }
+            }
+        }
+        let plants = [((1, 1, 1), Block::new("minecraft:kelp_plant")), ((1, 2, 1), Block::new("minecraft:kelp").with("age", "3")), ((0, 1, 0), Block::new("minecraft:seagrass")), ((2, 1, 2), Block::new("minecraft:bubble_column").with("drag", "true"))];
+        let mut models = HashMap::new();
+        for (pos, block) in plants {
+            models.insert(model_key(&block), vec![(test_box_model(&plant, [0.4, 0.0, 0.4], [0.6, 1.0, 0.6]), 1)]);
+            pool.0.insert(pos, block);
+        }
+        (pool, models)
+    }
+
+    #[test]
+    fn water_and_the_plants_that_hold_it_share_no_faces() {
+        let (pool, models) = kelp_pool();
+        let mesh = mesh_chunk(&pool, (0, 0), &models, &fluid_test_atlas(), &untinted(), &SkyLight::build(&pool)).unwrap();
+        let start = mesh.transparent_start.unwrap() as usize;
+        assert_eq!(start, 4 * 6 * 6, "the four plants keep their own faces");
+        let (quads, _) = water_faces(&mesh, &mesh.indices[start..]);
+        let on = |axis: usize, plane: f32| quads.iter().filter(|quad| quad.iter().all(|v| (v[axis] - plane).abs() < 0.01)).count();
+        for plane in [1.0, 2.0] {
+            assert_eq!(on(0, plane), 0, "no water face between columns at x {plane}");
+            assert_eq!(on(2, plane), 0, "no water face between columns at z {plane}");
+        }
+        assert_eq!(on(1, 2.0), 0, "no surface inside the kelp column or the pool");
+        let tops: Vec<_> = quads.iter().filter(|quad| quad.iter().all(|v| v[1] > 2.5)).collect();
+        assert_eq!(tops.len(), 9, "every column has its surface, the kelp's too");
+        let surface = 2.0 + 8.0 / 9.0 - 0.001;
+        for v in tops.iter().flat_map(|quad| quad.iter()) {
+            if (1.0..=2.0).contains(&v[0]) && (1.0..=2.0).contains(&v[2]) {
+                assert!((v[1] - surface).abs() < 1e-5, "the surface stays level over the kelp: {v:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn water_is_as_opaque_as_vanilla() {
+        let (pool, models) = kelp_pool();
+        let mesh = mesh_chunk(&pool, (0, 0), &models, &fluid_test_atlas(), &untinted(), &SkyLight::build(&pool)).unwrap();
+        let start = mesh.transparent_start.unwrap() as usize;
+        let water: Vec<&Vertex> = mesh.indices[start..].iter().map(|&i| &mesh.vertices[i as usize]).collect();
+        assert!(!water.is_empty());
+        for v in water {
+            assert_eq!(v.color[3], 1.0);
+            assert_eq!(SectionVertex::from_vertex(v).color[3], 255);
+        }
+    }
+
+    #[test]
+    fn the_water_surface_has_a_back_only_where_vanilla_draws_one() {
+        let atlas = fluid_test_atlas();
+        let water_at = (0, 1, 0);
+        let faces = |others: &[(BlockPos, &str)]| {
+            let mut scene = Placed(HashMap::from([(water_at, Block::new("minecraft:water").with("level", "0"))]));
+            for &(pos, id) in others {
+                scene.0.insert(pos, Block::new(id));
+            }
+            let mut mesh = ChunkMesh::default();
+            let mut transparent = Vec::new();
+            append_fluid(&scene, water_at, &atlas, &untinted(), &SkyLight::build(&scene), &mut mesh, &mut transparent).unwrap();
+            let (fronts, backs) = water_faces(&mesh, &transparent);
+            (fronts, backs, mesh)
+        };
+        let (fronts, backs, _) = faces(&[]);
+        assert_eq!((fronts.len(), backs), (6, 5), "under open sky the top and the four sides have backs, the bottom none");
+        let roof: Vec<(BlockPos, &str)> = (-1..=1).flat_map(|x| (-1..=1).map(move |z| ((x, 2, z), "minecraft:stone"))).collect();
+        let (fronts, backs, _) = faces(&roof);
+        assert_eq!((fronts.len(), backs), (6, 4), "a full roof over the 3x3 above hides the surface's back");
+        let (fronts, backs, _) = faces(&roof[..8]);
+        assert_eq!((fronts.len(), backs), (6, 5), "one open cell diagonally above shows the surface's back");
+        let (fronts, backs, mesh) = faces(&[((1, 1, 0), "minecraft:glass")]);
+        assert_eq!((fronts.len(), backs), (6, 4), "the face against glass has no back");
+        let overlay = atlas.region(&ResourceId::parse("minecraft:block/water_overlay").unwrap());
+        let against_glass: Vec<&Vertex> = mesh.vertices.iter().filter(|v| (v.position[0] - 0.999).abs() < 1e-5).collect();
+        assert_eq!(against_glass.len(), 4);
+        assert!(against_glass.iter().all(|v| (overlay[0]..=overlay[2]).contains(&v.uv[0])), "the face against glass shows the overlay");
+        let (fronts, backs, _) = faces(&[((1, 1, 0), "minecraft:oak_leaves")]);
+        assert_eq!((fronts.len(), backs), (6, 4), "the face against leaves has no back");
+    }
+
+    #[test]
+    fn a_waterlogged_block_draws_its_model_and_its_water() {
+        use std::fs;
+        let atlas = fluid_test_atlas();
+        let plant = ResourceId::parse("test:block/plant").unwrap();
+        let slab = Block::new("test:slab").with("waterlogged", "true");
+        let at = (0, 1, 0);
+        let mut scene = HandcraftedScene::default();
+        scene.set(at, Some(slab.clone()));
+        let light = SkyLight::build(&scene);
+        let variants = vec![(test_box_model(&plant, [0.0; 3], [1.0, 0.5, 1.0]), 1)];
+        let mut mesh = ChunkMesh::default();
+        let mut transparent = Vec::new();
+        append_block(&scene, at, &slab, || Ok(variants.as_slice()), |_, _| false, &atlas, &untinted(), &light, &mut mesh, &mut transparent).unwrap();
+        assert_eq!(mesh.indices.len(), 36, "the slab's own faces");
+        assert!(!transparent.is_empty(), "and its water");
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(root.join("pack.mcmeta"), r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#).unwrap();
+        let states = root.join("assets/test/blockstates/slab.json");
+        fs::create_dir_all(states.parent().unwrap()).unwrap();
+        fs::write(states, r#"{"variants":{"":{"model":"test:block/slab"}}}"#).unwrap();
+        let model = root.join("assets/test/models/block/slab.json");
+        fs::create_dir_all(model.parent().unwrap()).unwrap();
+        fs::write(model, r##"{"textures":{"all":"test:block/plant"},"elements":[{"from":[0,0,0],"to":[16,8,16],"faces":{"down":{"texture":"#all"},"up":{"texture":"#all"},"north":{"texture":"#all"},"south":{"texture":"#all"},"west":{"texture":"#all"},"east":{"texture":"#all"}}}]}"##).unwrap();
+        let packs = PackStack::open(vec![root.into()]).unwrap();
+        let preview = block_preview(&scene, &packs, &atlas, &light, &untinted(), at).unwrap();
+        assert_eq!(preview.transparent_start, Some(36), "the preview shows the slab before its water");
+        assert_eq!(preview.indices.len(), 36 + transparent.len());
     }
     #[test]
     fn boundary_neighbors_hide_shared_face() {

@@ -332,6 +332,18 @@ mod tests {
     }
 
     #[test]
+    fn a_waterlogged_blocks_own_full_face_hides_its_water() {
+        let culling = synthetic();
+        let hides_own_water = |own, side: Direction| culling.fluid_face_hidden(own, side.opposite(), 1.0);
+        assert!(hides_own_water(BOTTOM_SLAB, Down));
+        assert!(!hides_own_water(BOTTOM_SLAB, Up));
+        assert!(!hides_own_water(BOTTOM_SLAB, East));
+        assert!(hides_own_water(STACKED_HALVES, East));
+        assert!(!hides_own_water(CACTUS, North));
+        assert!(!hides_own_water(GLASS, West));
+    }
+
+    #[test]
     fn faces_hide_only_behind_a_covering_neighbour_face() {
         let culling = synthetic();
         assert!(culling.hidden(STONE, BOTTOM_SLAB, Up));

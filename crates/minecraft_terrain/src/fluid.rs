@@ -96,6 +96,16 @@ impl FluidCell {
             }
         })
     }
+    pub fn held_by(block: &Block) -> Option<Self> {
+        Self::from_block(block).or_else(|| {
+            (block.id.namespace == "minecraft"
+                && matches!(
+                    block.id.path.as_str(),
+                    "seagrass" | "tall_seagrass" | "kelp" | "kelp_plant" | "bubble_column"
+                ))
+            .then(|| Self::source(FluidKind::Water))
+        })
+    }
     pub fn source(kind: FluidKind) -> Self {
         Self {
             kind,
@@ -222,6 +232,11 @@ pub(crate) fn full_collision(block: Option<&Block>) -> bool {
             | "torch"
             | "redstone_torch"
             | "snow"
+            | "seagrass"
+            | "tall_seagrass"
+            | "kelp"
+            | "kelp_plant"
+            | "bubble_column"
     ) && !path.ends_with("_flower")
         && !path.ends_with("torch")
         && !path.ends_with("_slab")
@@ -667,6 +682,28 @@ mod tests {
             assert!(is_replaceable(Some(&torch), FluidKind::Water), "{id}");
             assert!(is_replaceable(Some(&torch), FluidKind::Lava), "{id}");
         }
+    }
+    #[test]
+    fn plants_that_hold_water_draw_as_water_but_are_no_bucket_source() {
+        let mut scene = HandcraftedScene::default();
+        let plants = [
+            Block::new("minecraft:seagrass"),
+            Block::new("minecraft:tall_seagrass").with("half", "upper"),
+            Block::new("minecraft:kelp").with("age", "3"),
+            Block::new("minecraft:kelp_plant"),
+            Block::new("minecraft:bubble_column").with("drag", "true"),
+        ];
+        for (x, plant) in (0..).zip(plants) {
+            let name = plant.id.key();
+            assert_eq!(FluidCell::from_block(&plant), None, "{name}");
+            assert!(!full_collision(Some(&plant)), "{name}");
+            scene.set((x, 0, 0), Some(plant));
+            assert_eq!(FluidCell::at(&scene, (x, 0, 0)), Some(FluidCell::source(FluidKind::Water)), "{name}");
+            assert_eq!(pickup_source(&mut scene, (x, 0, 0)), None, "{name}");
+        }
+        assert_eq!(FluidCell::held_by(&Block::new("minecraft:stone")), None);
+        let level = Block::new("minecraft:water").with("level", "3");
+        assert_eq!(FluidCell::held_by(&level), FluidCell::from_block(&level));
     }
     #[test]
     fn two_sources_form_new_water_source_only_over_support() {

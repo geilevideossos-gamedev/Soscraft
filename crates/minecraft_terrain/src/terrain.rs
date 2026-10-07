@@ -48,12 +48,13 @@ pub struct BlockStates {
     face_culling: crate::face_culling::FaceCulling,
     /// Per state, what section building asks of its block's name and
     /// properties: whether it darkens a corner's ambient occlusion (opaque
-    /// or leaves), fluid, waterlogged, tint.
+    /// or leaves), fluid, holds_fluid, tint.
     ao_occluder: Vec<bool>,
     fluid: Vec<bool>,
-    waterlogged: Vec<bool>,
+    holds_fluid: Vec<bool>,
+    fluid_overlay: Vec<bool>,
     tint_kind: Vec<mesh::TintKind>,
-    /// Per state, `FluidCell::from_block` and `fluid::full_collision`.
+    /// Per state, the catalog `FluidState` as a `FluidCell` and `fluid::full_collision`.
     fluid_cell: Vec<Option<crate::fluid::FluidCell>>,
     full_collision: Vec<bool>,
     biomes: Vec<BiomeSample>,
@@ -68,8 +69,8 @@ impl BlockStates {
         let count = registries.blocks.state_count();
         let mut blocks = Vec::with_capacity(count);
         let mut solid_render = Vec::with_capacity(count);
-        let (mut ao_occluder, mut fluid, mut waterlogged, mut tint_kind) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        let (mut fluid_cell, mut full_collision) = (Vec::new(), Vec::new());
+        let (mut ao_occluder, mut fluid, mut holds_fluid, mut tint_kind) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut fluid_cell, mut full_collision, mut fluid_overlay) = (Vec::new(), Vec::new(), Vec::new());
         for index in 0..count {
             let state = BlockStateId(index as u16);
             let block = if registries.blocks.is_air(state) {
@@ -80,10 +81,13 @@ impl BlockStates {
             solid_render.push(registries.blocks.is(state, flags::SOLID_RENDER));
             let path = block.as_ref().map_or("", |b| b.id.path.as_str());
             ao_occluder.push(block.as_ref().is_some_and(|b| shade_darkens(&registries.blocks, state, b)));
+            let cell = registries.blocks.state(state).fluid.map(catalog_fluid_cell).or_else(|| block.as_ref().and_then(crate::fluid::FluidCell::from_block));
             fluid.push(matches!(path, "water" | "lava"));
-            waterlogged.push(block.as_ref().is_some_and(|b| b.properties.get("waterlogged").is_some_and(|value| value == "true")));
+            holds_fluid.push(cell.is_some() && !matches!(path, "water" | "lava"));
+            let class = registries.blocks.block(registries.blocks.block_of(state));
+            fluid_overlay.push(class.is_a("HalfTransparentBlock") || class.is_a("LeavesBlock"));
             tint_kind.push(block.as_ref().map_or(mesh::TintKind::None, mesh::TintKind::of));
-            fluid_cell.push(block.as_ref().and_then(crate::fluid::FluidCell::from_block));
+            fluid_cell.push(cell);
             full_collision.push(crate::fluid::full_collision(block.as_ref()));
             blocks.push(block);
         }
@@ -107,7 +111,8 @@ impl BlockStates {
             face_culling,
             ao_occluder,
             fluid,
-            waterlogged,
+            holds_fluid,
+            fluid_overlay,
             tint_kind,
             fluid_cell,
             full_collision,
@@ -129,6 +134,22 @@ impl BlockStates {
 
     pub fn fluid_face_hidden(&self, neighbor: BlockStateId, side: Direction, height: f32) -> bool {
         self.face_culling.fluid_face_hidden(neighbor, side, height)
+    }
+
+    pub fn fluid_cell(&self, state: BlockStateId) -> Option<crate::fluid::FluidCell> {
+        self.fluid_cell[usize::from(state.0)]
+    }
+
+    pub fn holds_fluid(&self, state: BlockStateId) -> bool {
+        self.holds_fluid[usize::from(state.0)]
+    }
+
+    pub fn solid_render(&self, state: BlockStateId) -> bool {
+        self.solid_render[usize::from(state.0)]
+    }
+
+    pub fn fluid_overlay(&self, state: BlockStateId) -> bool {
+        self.fluid_overlay[usize::from(state.0)]
     }
 
     /// Whether a block darkens the corners of faces beside it
@@ -204,6 +225,18 @@ impl BlockStates {
             || self.registries.biomes.id("minecraft:plains").unwrap_or(BiomeId(0)),
             |chunk| chunk.biome((qx & 3) as usize, qy, (qz & 3) as usize),
         )
+    }
+}
+
+fn catalog_fluid_cell(fluid: minecraftoss_core::block::FluidInfo) -> crate::fluid::FluidCell {
+    crate::fluid::FluidCell {
+        kind: match fluid.kind {
+            minecraftoss_core::block::FluidKind::Water => crate::fluid::FluidKind::Water,
+            minecraftoss_core::block::FluidKind::Lava => crate::fluid::FluidKind::Lava,
+        },
+        amount: fluid.amount,
+        source: fluid.source,
+        falling: fluid.falling,
     }
 }
 
@@ -415,6 +448,12 @@ impl Scene for View<'_> {
     }
     fn full_collision_at(&self, pos: BlockPos) -> bool {
         self.states.full_collision[usize::from(self.state(pos).0)]
+    }
+    fn solid_render_at(&self, pos: BlockPos) -> bool {
+        self.states.solid_render[usize::from(self.state(pos).0)]
+    }
+    fn fluid_overlay_at(&self, pos: BlockPos) -> bool {
+        self.states.fluid_overlay[usize::from(self.state(pos).0)]
     }
     fn fluid_face_hidden(&self, neighbor: BlockPos, side: Direction, height: f32) -> bool {
         self.states.fluid_face_hidden(self.state(neighbor), side, height)
@@ -688,7 +727,7 @@ fn build_section_blocks(states: &BlockStates, view: &View, origin: BlockPos, lig
                             pos,
                             &quads[mesh::variant_for(variants, pos)],
                             states.tint_kind[index],
-                            states.waterlogged[index],
+                            states.holds_fluid[index],
                             |neighbor, side| models.face_hidden(states, state, view.state(neighbor), side),
                             |at| states.ao_occluder[usize::from(view.state(at).0)],
                             atlas,
@@ -1989,5 +2028,105 @@ mod tests {
             let between_logs = mesh.vertices.chunks(4).filter(|quad| quad.iter().all(|v| v.position[0] == 10.0 && (65.0..=66.0).contains(&v.position[1]))).count();
             assert_eq!(between_logs, 0, "logs lying side by side still hide their shared faces");
         }
+    }
+
+    #[test]
+    fn water_plants_and_waterlogged_blocks_hold_water_in_both_section_paths() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Some(pack) = paths.datapack.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).map(|root| root.join("resourcepacks/local/minecraft-26.3")).filter(|p| p.is_dir()) else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let states = Arc::new(BlockStates::new(Arc::new(registries), 1, -64, 384).unwrap());
+        let state = |text: &str| states.registries().blocks.parse_state(text).unwrap();
+        let source = Some(crate::fluid::FluidCell::source(crate::fluid::FluidKind::Water));
+        for plant in ["minecraft:seagrass", "minecraft:tall_seagrass[half=upper]", "minecraft:kelp[age=3]", "minecraft:kelp_plant", "minecraft:bubble_column[drag=true]"] {
+            assert_eq!(states.fluid_cell(state(plant)), source, "{plant}");
+            assert!(states.holds_fluid(state(plant)), "{plant}");
+        }
+        assert!(states.holds_fluid(state("minecraft:oak_stairs[facing=east,half=bottom,shape=straight,waterlogged=true]")));
+        for dry in ["minecraft:water[level=0]", "minecraft:lava[level=0]", "minecraft:stone", "minecraft:oak_stairs[facing=east,half=bottom,shape=straight,waterlogged=false]"] {
+            assert!(!states.holds_fluid(state(dry)), "{dry}");
+        }
+        for fluid in ["minecraft:water[level=0]", "minecraft:water[level=3]", "minecraft:water[level=9]", "minecraft:lava[level=0]", "minecraft:lava[level=6]"] {
+            assert_eq!(states.fluid_cell(state(fluid)), crate::fluid::FluidCell::from_block(states.block(state(fluid)).unwrap()), "{fluid}");
+        }
+        for (block, overlay) in [("minecraft:glass", true), ("minecraft:white_stained_glass", true), ("minecraft:tinted_glass", true), ("minecraft:ice", true), ("minecraft:slime_block", true), ("minecraft:oak_leaves", true), ("minecraft:stone", false), ("minecraft:glass_pane", false), ("minecraft:kelp", false)] {
+            assert_eq!(states.fluid_overlay(state(block)), overlay, "{block}");
+        }
+        let plains = states.registries().biomes.id("minecraft:plains").unwrap_or(BiomeId(0));
+        let mut scene = HandcraftedScene::streamed(states.clone());
+        for x in -1..=1 {
+            for z in -1..=1 {
+                scene.insert_chunk(Arc::new(Chunk::new(minecraftoss_core::ChunkPos::new(x, z), -64, 384, plains)));
+            }
+        }
+        for x in 2..=8 {
+            for z in 2..=8 {
+                scene.set((x, 64, z), Some(Block::new("minecraft:stone")));
+            }
+        }
+        for x in 3..=7 {
+            for z in 3..=7 {
+                for y in 65..=66 {
+                    scene.set((x, y, z), Some(Block::new("minecraft:water").with("level", "0")));
+                }
+            }
+        }
+        let stair = Block::new("minecraft:oak_stairs").with("facing", "east").with("half", "bottom").with("shape", "straight").with("waterlogged", "true");
+        let placed = [
+            ((5, 65, 5), Block::new("minecraft:kelp_plant")),
+            ((5, 66, 5), Block::new("minecraft:kelp").with("age", "3")),
+            ((4, 65, 4), Block::new("minecraft:seagrass")),
+            ((6, 65, 4), Block::new("minecraft:tall_seagrass").with("half", "lower")),
+            ((6, 66, 4), Block::new("minecraft:tall_seagrass").with("half", "upper")),
+            ((7, 65, 6), stair.clone()),
+        ];
+        for (pos, block) in &placed {
+            scene.set(*pos, Some(block.clone()));
+        }
+        assert!(states.fluid_face_hidden(states.state_of(&stair).unwrap(), Direction::West, 1.0), "the stair's back is a full face");
+        assert_eq!(Scene::fluid_at(&scene, (5, 66, 5)), source);
+        assert!(Scene::solid_render_at(&scene, (2, 64, 2)));
+        assert!(!Scene::solid_render_at(&scene, (5, 66, 5)));
+        let mut textures = std::collections::BTreeSet::new();
+        for block in placed.iter().map(|(_, block)| block).chain([&Block::new("minecraft:stone")]) {
+            for (model, _) in &resolve_block_variants(&packs, block).unwrap() {
+                textures.extend(model.elements.iter().flat_map(|e| e.faces.iter().map(|f| f.texture.clone())));
+            }
+        }
+        for name in ["water_still", "water_flow", "water_overlay"] {
+            textures.insert(ResourceId::parse(&format!("minecraft:block/{name}")).unwrap());
+        }
+        let atlas = mesh::make_atlas(&packs, textures.into_iter().collect()).unwrap();
+        let hood = Neighborhood::of(&scene, (0, 0)).unwrap();
+        let light = light_chunk(&states, &hood);
+        let view = View::new(&states, &hood, (-1, 63, -1), (18, 18, 18));
+        let mut models = ModelCache::default();
+        models.prepare(&states, &packs, &atlas, &view);
+        let tint = BiomeTint::from_pack(&packs).unwrap();
+        let baked = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, true).unwrap();
+        let slow = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, false).unwrap();
+        let bits = |m: &ChunkMesh| -> Vec<u32> { m.vertices.iter().flat_map(|v| v.position.iter().chain(&v.uv).chain(&v.color).chain([&v.sky_light, &v.block_light]).map(|f| f.to_bits()).collect::<Vec<_>>()).collect() };
+        assert!(bits(&baked.0) == bits(&slow.0) && baked.0.indices == slow.0.indices && baked.0.faces == slow.0.faces && baked.1 == slow.1);
+        let water: Vec<[[f32; 3]; 4]> = baked.1.chunks(6).filter(|six| six[1] == six[0] + 1).map(|six| std::array::from_fn(|i| baked.0.vertices[six[0] as usize + i].position)).collect();
+        let centre = |quad: &[[f32; 3]; 4]| [0, 1, 2].map(|axis| quad.iter().map(|v| v[axis]).sum::<f32>() / 4.0);
+        for quad in &water {
+            let [x, y, z] = centre(quad);
+            assert!(x < 3.01 || x > 7.99 || z < 3.01 || z > 7.99 || y > 66.5, "a water face inside the pool at {quad:?}");
+        }
+        let surface = 66.0 + 8.0 / 9.0 - 0.001;
+        let tops: Vec<&[[f32; 3]; 4]> = water.iter().filter(|quad| quad.iter().all(|v| v[1] > 66.5)).collect();
+        assert_eq!(tops.len(), 25, "every column has its surface, over the plants too");
+        for v in tops.iter().flat_map(|quad| quad.iter()) {
+            if (4.0..=7.0).contains(&v[0]) && (4.0..=7.0).contains(&v[2]) {
+                assert!((v[1] - surface).abs() < 1e-4, "the surface stays level beside the plants: {v:?}");
+            }
+        }
+        let east_side = |z: f32| water.iter().filter(|quad| quad.iter().all(|v| (v[0] - 7.999).abs() < 1e-4 && (z..=z + 1.0).contains(&v[2]) && v[1] < 66.01)).count();
+        assert_eq!(east_side(5.0), 1, "open water shows its side");
+        assert_eq!(east_side(6.0), 0, "the stair's back hides its own water");
+        let preview = mesh::block_preview(&scene, &packs, &atlas, &light, &tint, (5, 66, 5)).unwrap();
+        let start = preview.transparent_start.unwrap() as usize;
+        assert!(start > 0 && preview.indices.len() > start, "the kelp preview shows the kelp and its water");
     }
 }
