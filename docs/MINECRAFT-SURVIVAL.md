@@ -38,7 +38,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 ### Mining and placing
 - [upstream] Shooting and knifing breaks blocks by hardness, broken blocks drop items, and grenades blow craters.
 - The hand ray follows the MW2 crosshair in every stance. Items that are not blocks are never placed.
-- Vanilla placement states: beds, banners, signs, heads, bells, lecterns, pots, shulker boxes, ladders. Chests join into double chests.
+- Vanilla placement states: beds, banners, signs, heads, bells, lecterns, pots, shulker boxes, ladders, vines (one face per use, added to a vine already there). Chests join into double chests.
 - Doors, trapdoors, fence gates, levers, buttons and note blocks.
 - Scaffolding. Blocks that lose support break and drop. Sand and gravel fall.
 

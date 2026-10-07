@@ -86,6 +86,7 @@ pub(crate) fn block_entity_placement(
         )),
         "bell" => placed(bell(world, pos, block, view)),
         "ladder" => placed(ladder(world, pos, block, view, water)),
+        "vine" => placed(vine(world, pos, block, view)),
         _ if path == "shulker_box" || path.ends_with("_shulker_box") => {
             placed(Some(block.clone().with("facing", name(view.face))))
         }
@@ -460,6 +461,33 @@ fn ladder(world: &impl World, pos: Pos, block: &Block, view: &View, water: &str)
                 .with("facing", name(opposite(direction)))
                 .with("waterlogged", water)
         })
+}
+
+fn vine(world: &impl World, pos: Pos, block: &Block, view: &View) -> Option<Block> {
+    let base = world
+        .block(pos)
+        .filter(|existing| existing.id == block.id)
+        .unwrap_or_else(|| {
+            ["up", "north", "east", "south", "west"]
+                .into_iter()
+                .fold(block.clone(), |state, side| state.with(side, "false"))
+        });
+    looking_directions(view)
+        .into_iter()
+        .filter(|direction| {
+            *direction != Face::Down && base.property(name(*direction)) != Some("true")
+        })
+        .find(|direction| vine_supported(world, pos, *direction, &block.id))
+        .map(|direction| base.clone().with(name(direction), "true"))
+}
+
+fn vine_supported(world: &impl World, pos: Pos, direction: Face, id: &str) -> bool {
+    world.sturdy_face(step(pos, direction), opposite(direction))
+        || covered(world, step(pos, direction), opposite(direction), 0, 16)
+        || (axis(direction) != 1
+            && world.block(step(pos, Face::Up)).is_some_and(|above| {
+                above.id == id && above.property(name(direction)) == Some("true")
+            }))
 }
 
 fn bell(world: &impl World, pos: Pos, block: &Block, view: &View) -> Option<Block> {
@@ -1007,6 +1035,137 @@ mod tests {
         world.set_block((-1, 1, 0), Some(Block::new("minecraft:stone")));
         let (beside, _) = state(&world, (-1, 1, 1), "minecraft:ladder", &side).unwrap();
         assert_eq!(beside.property("facing"), Some("south"));
+    }
+
+    fn vine_sides(vine: &Block) -> Vec<&'static str> {
+        ["up", "north", "east", "south", "west"]
+            .into_iter()
+            .filter(|side| vine.property(side) == Some("true"))
+            .collect()
+    }
+
+    #[test]
+    fn a_vine_hangs_flat_on_the_clicked_wall_only() {
+        let mut world = Blocks::default();
+        world.set_block((0, 1, 0), Some(Block::new("minecraft:stone")));
+        for (yaw, face, pos, side) in [
+            (180.0, Face::South, (0, 1, 1), "north"),
+            (0.0, Face::North, (0, 1, -1), "south"),
+            (90.0, Face::East, (1, 1, 0), "west"),
+            (-90.0, Face::West, (-1, 1, 0), "east"),
+        ] {
+            let (vine, partner) =
+                state(&world, pos, "minecraft:vine", &view(yaw, 10.0, face)).unwrap();
+            assert!(partner.is_none());
+            assert_eq!(vine_sides(&vine), [side], "clicked {face:?}");
+            for property in ["up", "north", "east", "south", "west"] {
+                assert!(vine.property(property).is_some(), "{property} is set");
+            }
+        }
+    }
+
+    #[test]
+    fn a_vine_under_a_ceiling_takes_the_up_face() {
+        let mut world = Blocks::default();
+        world.set_block((0, 2, 0), Some(Block::new("minecraft:stone")));
+        let below = view(0.0, -80.0, Face::Down);
+        let (vine, _) = state(&world, (0, 1, 0), "minecraft:vine", &below).unwrap();
+        assert_eq!(vine_sides(&vine), ["up"]);
+    }
+
+    #[test]
+    fn a_vine_needs_a_full_face_and_never_rests_on_the_floor() {
+        let mut world = Blocks::default();
+        let anywhere = view(30.0, 20.0, Face::Up);
+        assert!(state(&world, (0, 1, 0), "minecraft:vine", &anywhere).is_none());
+        world.set_block((0, 0, 0), Some(Block::new("minecraft:stone")));
+        let on_floor = view(0.0, 80.0, Face::Up);
+        assert!(state(&world, (0, 1, 0), "minecraft:vine", &on_floor).is_none());
+        let side = view(180.0, 0.0, Face::South);
+        world.set_block(
+            (0, 1, -1),
+            Some(Block::new("minecraft:stone_slab").with("type", "bottom")),
+        );
+        assert!(state(&world, (0, 1, 0), "minecraft:vine", &side).is_none());
+        for support in ["minecraft:oak_leaves", "minecraft:soul_sand", "minecraft:mud"] {
+            world.set_block((0, 1, -1), Some(Block::new(support)));
+            let (vine, _) = state(&world, (0, 1, 0), "minecraft:vine", &side).unwrap();
+            assert_eq!(vine_sides(&vine), ["north"], "{support}");
+        }
+    }
+
+    struct Sunken(Blocks);
+
+    impl World for Sunken {
+        fn block(&self, pos: Pos) -> Option<Block> {
+            self.0.block(pos)
+        }
+
+        fn set_block(&mut self, pos: Pos, block: Option<Block>) {
+            self.0.set_block(pos, block)
+        }
+
+        fn collision_boxes(&self, pos: Pos) -> Vec<[f64; 6]> {
+            self.0
+                .block(pos)
+                .map_or_else(Vec::new, |_| vec![[0.0, 0.0, 0.0, 1.0, 14.0 / 16.0, 1.0]])
+        }
+    }
+
+    #[test]
+    fn a_vine_takes_a_full_support_face_even_where_the_collision_box_is_lower() {
+        let side = view(180.0, 0.0, Face::South);
+        for (support, placed) in [("minecraft:soul_sand", true), ("minecraft:dirt_path", false)] {
+            let mut world = Sunken(Blocks::default());
+            world.set_block((0, 1, -1), Some(Block::new(support)));
+            let vine =
+                block_entity_placement(&world, (0, 1, 0), &Block::new("minecraft:vine"), &side);
+            match vine {
+                Placement::Placed(vine, None) => {
+                    assert!(placed, "{support}");
+                    assert_eq!(vine_sides(&vine), ["north"]);
+                }
+                _ => assert!(!placed, "{support}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_vine_used_on_a_vine_adds_one_more_face() {
+        let mut world = Blocks::default();
+        world.set_block((0, 1, -1), Some(Block::new("minecraft:stone")));
+        world.set_block((1, 1, 0), Some(Block::new("minecraft:stone")));
+        let hanging = ["up", "north", "east", "south", "west"]
+            .into_iter()
+            .fold(Block::new("minecraft:vine"), |vine, side| {
+                vine.with(side, if side == "north" { "true" } else { "false" })
+            });
+        world.set_block((0, 1, 0), Some(hanging));
+        let on_the_vine = View {
+            replace_clicked: true,
+            ..view(-90.0, 0.0, Face::South)
+        };
+        let (merged, _) = state(&world, (0, 1, 0), "minecraft:vine", &on_the_vine).unwrap();
+        assert_eq!(vine_sides(&merged), ["north", "east"]);
+        world.set_block((0, 1, 0), Some(merged));
+        assert!(
+            state(&world, (0, 1, 0), "minecraft:vine", &on_the_vine).is_none(),
+            "every supported face is taken"
+        );
+    }
+
+    #[test]
+    fn a_vine_hangs_below_a_vine_on_the_same_side() {
+        let mut world = Blocks::default();
+        let above = ["up", "north", "east", "south", "west"]
+            .into_iter()
+            .fold(Block::new("minecraft:vine"), |vine, side| {
+                vine.with(side, if side == "west" { "true" } else { "false" })
+            });
+        world.set_block((0, 2, 0), Some(above));
+        let west = view(90.0, 0.0, Face::East);
+        let (vine, _) = state(&world, (0, 1, 0), "minecraft:vine", &west).unwrap();
+        assert_eq!(vine_sides(&vine), ["west"]);
     }
 
     #[test]

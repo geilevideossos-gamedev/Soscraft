@@ -3331,6 +3331,25 @@ mod tests {
     }
 
     #[test]
+    fn a_vine_clicked_onto_a_wall_hangs_flat_and_goes_with_the_wall() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 201, 7), Block::new("minecraft:stone"));
+        server.take_changes();
+        let placed = place_as_client(&mut server, &mut scene, "minecraft:vine", [8.5, 200.0, 8.5], [8.5, 201.5, 8.0]);
+        assert_eq!(placed, Some((8, 201, 8)), "a vine goes into the player's own cell");
+        let vine = Scene::block(&scene, (8, 201, 8)).cloned().unwrap();
+        assert_eq!(vine.id.key(), "minecraft:vine");
+        let sides: Vec<&str> = ["up", "north", "east", "south", "west"].into_iter().filter(|side| vine.properties.get(*side).map(String::as_str) == Some("true")).collect();
+        assert_eq!(sides, ["north"]);
+        place(&mut server, &mut scene, (12, 199, 12), Block::new("minecraft:stone"));
+        assert_eq!(place_as_client(&mut server, &mut scene, "minecraft:vine", [12.5, 200.0, 12.5], [12.5, 199.9, 12.5]), None, "a vine never rests on the floor");
+        take(&mut server, &mut scene, (8, 201, 7));
+        let mut changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        changes.extend(ticked(&mut server, 3));
+        assert_eq!(changes.get(&(8, 201, 8)), Some(&None), "{changes:?}");
+    }
+
+    #[test]
     fn a_torch_needs_a_floor_that_holds_its_centre() {
         let Some((mut server, mut scene)) = door_world() else { return };
         for (x, floor, holds) in [(8, "minecraft:soul_sand", true), (11, "minecraft:oak_leaves", false), (14, "minecraft:glass_pane", true)] {

@@ -684,7 +684,8 @@ fn outline_shapes(block: &Block) -> Vec<Box3> {
         },
         _ if noncolliding_mount(id) => outline_column(8.0, 16.0),
         "fire" | "soul_fire" => return fire_outline(block),
-        "tall_grass" | "cobweb" => outline_column(16.0, 16.0),
+        "vine" if ["up", "north", "east", "south", "west"].iter().any(|side| block.property(side) == Some("true")) => return fire_outline(block),
+        "tall_grass" | "cobweb" | "vine" => outline_column(16.0, 16.0),
         "cave_vines" | "cave_vines_plant" => outline_column(14.0, 16.0),
         "sweet_berry_bush" => match block.property("age").unwrap_or("0") {
             "0" => outline_column(10.0, 8.0),
@@ -736,8 +737,11 @@ pub fn authored_replaceable(block: &Block) -> bool {
     let id = block.id.rsplit(':').next().unwrap_or(&block.id);
     local_shapes(block).is_empty() && !noncolliding_mount(id) && !matches!(id, "cobweb" | "sweet_berry_bush" | "cave_vines" | "cave_vines_plant")
 }
+fn replaceable_in_place(world: &impl World, block: &Block) -> bool {
+    world.replaceable(block) && !(block.id == "minecraft:vine" && ["up", "north", "east", "south", "west"].iter().all(|side| block.property(side) == Some("true")))
+}
 pub fn placement_pos(world: &impl World, hit: &Hit) -> Pos {
-    if world.block(hit.pos).is_some_and(|clicked| world.replaceable(&clicked)) {
+    if world.block(hit.pos).is_some_and(|clicked| replaceable_in_place(world, &clicked)) {
         hit.pos
     } else {
         let (dx, dy, dz) = hit.face.offset();
@@ -748,7 +752,7 @@ fn local_shapes(block: &Block) -> Vec<Box3> {
     let id = block.id.rsplit(':').next().unwrap_or(&block.id);
     if matches!(
         id,
-        "air" | "cave_air" | "void_air" | "water" | "lava" | "short_grass" | "tall_grass" | "fire" | "soul_fire" | "sweet_berry_bush" | "cobweb" | "cave_vines" | "cave_vines_plant"
+        "air" | "cave_air" | "void_air" | "water" | "lava" | "short_grass" | "tall_grass" | "fire" | "soul_fire" | "sweet_berry_bush" | "cobweb" | "cave_vines" | "cave_vines_plant" | "vine"
     ) || noncolliding_mount(id)
     {
         return vec![];
@@ -1978,7 +1982,7 @@ impl Player {
             });
         if replaced
             .as_ref()
-            .is_some_and(|existing| !world.replaceable(existing))
+            .is_some_and(|existing| !replaceable_in_place(world, existing))
             && !merge_slab
         {
             return None;
@@ -3279,6 +3283,29 @@ mod tests {
         player.pitch = -90.0;
         assert_eq!(player.place_target_with(&mut world, Block::new("minecraft:oak_hanging_sign")), Some((0, 2, 0)), "a hanging sign above the player's head");
         assert_eq!(world.block((0, 2, 0)).map(|sign| sign.id), Some("minecraft:oak_hanging_sign".to_string()));
+    }
+    #[test]
+    fn a_vine_hangs_in_the_players_own_cell_and_is_outlined_by_its_faces() {
+        let (player, mut world) = facing_wall_at_head_height();
+        assert_eq!(player.place_target_with(&mut world, Block::new("minecraft:vine")), Some((0, 2, 0)));
+        let vine = world.block((0, 2, 0)).unwrap();
+        let sides: Vec<&str> = ["up", "north", "east", "south", "west"].into_iter().filter(|side| vine.property(side) == Some("true")).collect();
+        assert_eq!(sides, ["north"]);
+        assert!(authored_collision_boxes(&vine).is_empty());
+        assert!(authored_replaceable(&vine));
+        let bounds = |block: &Block| -> Vec<[f64; 6]> { outline_shapes(block).iter().map(|b| [b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z].map(|v| v * 16.0)).collect() };
+        assert_eq!(bounds(&vine), vec![[0.0, 0.0, 0.0, 16.0, 16.0, 1.0]]);
+        let hanging = vine.clone().with("up", "true").with("north", "false").with("west", "true");
+        assert_eq!(bounds(&hanging), vec![[0.0, 0.0, 0.0, 1.0, 16.0, 16.0], [0.0, 15.0, 0.0, 16.0, 16.0, 16.0]]);
+        assert_eq!(bounds(&vine.with("north", "false")), vec![[0.0, 0.0, 0.0, 16.0, 16.0, 16.0]]);
+        assert_eq!(player.target(&world, 5.0).map(|hit| hit.pos), Some((0, 2, 0)), "the ray stops at the sheet");
+        assert_eq!(player.place_target_with(&mut world, Block::new("minecraft:vine")), None, "nothing more to hang on");
+        let full = ["up", "north", "east", "south", "west"].into_iter().fold(Block::new("minecraft:vine"), |vine, side| vine.with(side, "true"));
+        let hit = Hit { pos: (0, 2, 0), face: Face::South, distance: 1.0, point: DVec3::new(0.5, 2.5, 1.0) };
+        world.set_block(hit.pos, Some(full.clone().with("west", "false")));
+        assert_eq!(placement_pos(&world, &hit), hit.pos);
+        world.set_block(hit.pos, Some(full));
+        assert_eq!(placement_pos(&world, &hit), (0, 2, 1), "a vine on every face is placed against");
     }
     #[test]
     fn the_ray_passes_beside_a_wall_torch_to_the_wall() {
