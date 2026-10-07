@@ -22,6 +22,7 @@ use crate::sections::{CompileQueue, CullCamera, SectionPos, Sections, VisGraph, 
 use anyhow::{anyhow, Result};
 use glam::DVec3;
 use minecraftoss_core::block::flags;
+use minecraftoss_core::pos::Direction;
 use minecraftoss_core::{BiomeId, BlockStateId, Chunk, Registries};
 use minecraftoss_generator::terrain::TerrainGenerator;
 use minecraftoss_generator::zoom;
@@ -44,12 +45,11 @@ pub struct BlockStates {
     sky_light: bool,
     /// `BlockState.isSolidRender`, which closes a cell in `VisGraph`.
     solid_render: Vec<bool>,
+    face_culling: crate::face_culling::FaceCulling,
     /// Per state, what section building asks of its block's name and
     /// properties: whether it darkens a corner's ambient occlusion (opaque
-    /// or leaves), the block whose same neighbours hide its faces (water
-    /// and glass; `u32::MAX` for none), fluid, waterlogged, tint.
+    /// or leaves), fluid, waterlogged, tint.
     ao_occluder: Vec<bool>,
-    shared_face: Vec<u32>,
     fluid: Vec<bool>,
     waterlogged: Vec<bool>,
     tint_kind: Vec<mesh::TintKind>,
@@ -68,9 +68,8 @@ impl BlockStates {
         let count = registries.blocks.state_count();
         let mut blocks = Vec::with_capacity(count);
         let mut solid_render = Vec::with_capacity(count);
-        let (mut ao_occluder, mut shared_face, mut fluid, mut waterlogged, mut tint_kind) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut ao_occluder, mut fluid, mut waterlogged, mut tint_kind) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let (mut fluid_cell, mut full_collision) = (Vec::new(), Vec::new());
-        let mut shared_groups: HashMap<String, u32> = HashMap::new();
         for index in 0..count {
             let state = BlockStateId(index as u16);
             let block = if registries.blocks.is_air(state) {
@@ -81,14 +80,6 @@ impl BlockStates {
             solid_render.push(registries.blocks.is(state, flags::SOLID_RENDER));
             let path = block.as_ref().map_or("", |b| b.id.path.as_str());
             ao_occluder.push(block.as_ref().is_some_and(|b| shade_darkens(&registries.blocks, state, b)));
-            let shares = path == "water" || path == "glass" || path == "tinted_glass" || path.ends_with("_stained_glass");
-            shared_face.push(match &block {
-                Some(b) if shares => {
-                    let next = shared_groups.len() as u32;
-                    *shared_groups.entry(b.id.key()).or_insert(next)
-                }
-                _ => u32::MAX,
-            });
             fluid.push(matches!(path, "water" | "lava"));
             waterlogged.push(block.as_ref().is_some_and(|b| b.properties.get("waterlogged").is_some_and(|value| value == "true")));
             tint_kind.push(block.as_ref().map_or(mesh::TintKind::Other, mesh::TintKind::of));
@@ -106,14 +97,15 @@ impl BlockStates {
             .biomes
             .id("minecraft:plains")
             .map_or(BiomeSample::THE_VOID, |id| biomes[usize::from(id.0)]);
+        let face_culling = crate::face_culling::FaceCulling::new(&registries);
         Ok(Self {
             registries,
             blocks,
             light_table,
             sky_light: true,
             solid_render,
+            face_culling,
             ao_occluder,
-            shared_face,
             fluid,
             waterlogged,
             tint_kind,
@@ -129,6 +121,10 @@ impl BlockStates {
 
     pub fn registries(&self) -> &Arc<Registries> {
         &self.registries
+    }
+
+    pub fn face_hidden(&self, own: BlockStateId, neighbor: BlockStateId, side: Direction) -> bool {
+        self.face_culling.hidden(own, neighbor, side)
     }
 
     /// Whether a block darkens the corners of faces beside it
@@ -529,6 +525,7 @@ enum Slot {
     Missing,
     Model {
         variants: Vec<(ResolvedModel, u32)>,
+        turned: bool,
         occludes: bool,
         /// Each variant's faces baked; `None` if a face could not be.
         baked: Option<Vec<Vec<mesh::BakedQuad>>>,
@@ -557,6 +554,7 @@ impl ModelCache {
             };
             *slot = match resolve_block_variants(packs, block) {
                 Ok(variants) => Slot::Model {
+                    turned: mesh::turned_about_x(&variants),
                     occludes: block.is_opaque() && mesh::all_full_cubes(&variants),
                     baked: variants.iter().map(|(model, _)| mesh::bake_quads(block, model, atlas)).collect::<Result<Vec<_>>>().ok(),
                     variants,
@@ -569,8 +567,17 @@ impl ModelCache {
         }
     }
 
-    fn occludes(&self, state: BlockStateId) -> bool {
-        matches!(self.slots[usize::from(state.0)], Slot::Model { occludes: true, .. })
+    fn face_hidden(&self, states: &BlockStates, own: BlockStateId, neighbor: BlockStateId, side: Direction) -> bool {
+        let model = |state: BlockStateId| match self.slots[usize::from(state.0)] {
+            Slot::Model { turned, occludes, .. } => (turned, occludes),
+            _ => (false, false),
+        };
+        let ((own_turned, _), (neighbor_turned, neighbor_occludes)) = (model(own), model(neighbor));
+        if own_turned || neighbor_turned {
+            neighbor_occludes
+        } else {
+            states.face_hidden(own, neighbor, side)
+        }
     }
 }
 
@@ -668,18 +675,13 @@ fn build_section_blocks(states: &BlockStates, view: &View, origin: BlockPos, lig
                 }
                 if let Slot::Model { variants, baked: Some(quads), .. } = slot {
                     if baked && !fluid {
-                        let shared = states.shared_face[index];
                         mesh::append_baked(
                             view,
                             pos,
                             &quads[mesh::variant_for(variants, pos)],
                             states.tint_kind[index],
                             states.waterlogged[index],
-                            |neighbor| {
-                                let other = view.state(neighbor);
-                                let other_index = usize::from(other.0);
-                                states.blocks[other_index].is_some() && (models.occludes(other) || (shared != u32::MAX && states.shared_face[other_index] == shared))
-                            },
+                            |neighbor, side| models.face_hidden(states, state, view.state(neighbor), side),
                             |at| states.ao_occluder[usize::from(view.state(at).0)],
                             atlas,
                             tint,
@@ -698,12 +700,7 @@ fn build_section_blocks(states: &BlockStates, view: &View, origin: BlockPos, lig
                         Slot::Model { variants, .. } => Ok(variants.as_slice()),
                         _ => Err(anyhow!("unresolved model")),
                     },
-                    |neighbor| {
-                        let other = view.state(neighbor);
-                        states.block(other).is_some_and(|other_block| {
-                            models.occludes(other) || mesh::hides_shared_face(block, other_block)
-                        })
-                    },
+                    |neighbor, side| models.face_hidden(states, state, view.state(neighbor), side),
                     atlas,
                     tint,
                     light,
@@ -1882,5 +1879,98 @@ mod tests {
         }
         let entity_faces = baked.0.vertices.iter().filter(|v| v.color[3] == crate::special_models::ENTITY_SHEET_ALPHA).count();
         assert!(entity_faces > 0);
+    }
+
+    #[test]
+    fn sand_under_a_cactus_keeps_its_top_face_in_both_section_paths() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Some(pack) = paths.datapack.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).map(|root| root.join("resourcepacks/local/minecraft-26.3")).filter(|p| p.is_dir()) else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let states = Arc::new(BlockStates::new(Arc::new(registries), 1, -64, 384).unwrap());
+        let plains = states.registries().biomes.id("minecraft:plains").unwrap_or(BiomeId(0));
+        let mut scene = HandcraftedScene::streamed(states.clone());
+        for x in -1..=1 {
+            for z in -1..=1 {
+                scene.insert_chunk(Arc::new(Chunk::new(minecraftoss_core::ChunkPos::new(x, z), -64, 384, plains)));
+            }
+        }
+        let column = [(1, "minecraft:sand"), (2, "minecraft:cactus"), (3, "minecraft:cactus"), (4, "minecraft:stone")];
+        for (y, id) in column {
+            scene.set((5, 64 + y, 5), Some(Block::new(id)));
+        }
+        scene.set((6, 66, 5), Some(Block::new("minecraft:ice")));
+        scene.set((7, 66, 5), Some(Block::new("minecraft:ice")));
+        assert_eq!(Scene::face_hidden(&scene, (5, 65, 5), (5, 66, 5), Direction::Up), Some(false));
+        assert_eq!(Scene::face_hidden(&scene, (5, 66, 5), (5, 65, 5), Direction::Down), Some(true));
+        assert_eq!(Scene::face_hidden(&HandcraftedScene::new(), (0, 0, 0), (0, 1, 0), Direction::Up), None);
+        let mut textures = std::collections::BTreeSet::new();
+        for id in ["minecraft:sand", "minecraft:cactus", "minecraft:stone", "minecraft:ice"] {
+            for (model, _) in &resolve_block_variants(&packs, &Block::new(id)).unwrap() {
+                textures.extend(model.elements.iter().flat_map(|e| e.faces.iter().map(|f| f.texture.clone())));
+            }
+        }
+        let atlas = mesh::make_atlas(&packs, textures.into_iter().collect()).unwrap();
+        let hood = Neighborhood::of(&scene, (0, 0)).unwrap();
+        let light = light_chunk(&states, &hood);
+        let view = View::new(&states, &hood, (-1, 63, -1), (18, 18, 18));
+        let mut models = ModelCache::default();
+        models.prepare(&states, &packs, &atlas, &view);
+        let tint = BiomeTint::from_pack(&packs).unwrap();
+        let baked = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, true).unwrap();
+        let slow = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, false).unwrap();
+        let bits = |m: &ChunkMesh| -> Vec<u32> { m.vertices.iter().flat_map(|v| v.position.iter().chain(&v.uv).chain(&v.color).chain([&v.sky_light, &v.block_light]).map(|f| f.to_bits()).collect::<Vec<_>>()).collect() };
+        assert!(bits(&baked.0) == bits(&slow.0) && baked.0.indices == slow.0.indices && baked.0.faces == slow.0.faces && baked.1 == slow.1);
+        let flat_faces_at = |plane: f32| {
+            baked.0.vertices.chunks(4).filter(|quad| quad.iter().all(|v| v.position[1] == plane && (5.0..=6.0).contains(&v.position[0]) && (5.0..=6.0).contains(&v.position[2]))).count()
+        };
+        assert_eq!(flat_faces_at(66.0), 1, "the sand top shows around the cactus");
+        assert_eq!(flat_faces_at(67.0), 0, "stacked cacti hide their shared faces");
+        assert_eq!(flat_faces_at(68.0), 1, "the stone bottom shows around the cactus");
+        let side_faces_at = |plane: f32| baked.0.vertices.chunks(4).filter(|quad| quad.iter().all(|v| v.position[0] == plane && (66.0..=67.0).contains(&v.position[1]))).count();
+        assert_eq!(side_faces_at(6.0), 1, "the ice shows beside the cactus");
+        assert_eq!(side_faces_at(7.0), 0, "ice hides the face it shares with ice");
+    }
+
+    #[test]
+    fn blocks_turned_about_x_keep_the_faces_their_drawn_model_leaves_open() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Some(pack) = paths.datapack.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).map(|root| root.join("resourcepacks/local/minecraft-26.3")).filter(|p| p.is_dir()) else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let states = Arc::new(BlockStates::new(Arc::new(registries), 1, -64, 384).unwrap());
+        let plains = states.registries().biomes.id("minecraft:plains").unwrap_or(BiomeId(0));
+        let mut scene = HandcraftedScene::streamed(states.clone());
+        for x in -1..=1 {
+            for z in -1..=1 {
+                scene.insert_chunk(Arc::new(Chunk::new(minecraftoss_core::ChunkPos::new(x, z), -64, 384, plains)));
+            }
+        }
+        let top_stair = Block::new("minecraft:oak_stairs").with("facing", "north").with("half", "top").with("shape", "straight").with("waterlogged", "false");
+        let log_along_x = Block::new("minecraft:oak_log").with("axis", "x");
+        scene.set((5, 65, 5), Some(top_stair.clone()));
+        scene.set((5, 66, 5), Some(Block::new("minecraft:oak_planks")));
+        scene.set((9, 65, 5), Some(log_along_x.clone()));
+        scene.set((10, 65, 5), Some(log_along_x.clone()));
+        let mut textures = std::collections::BTreeSet::new();
+        for block in [top_stair, log_along_x, Block::new("minecraft:oak_planks")] {
+            for (model, _) in &resolve_block_variants(&packs, &block).unwrap() {
+                textures.extend(model.elements.iter().flat_map(|e| e.faces.iter().map(|f| f.texture.clone())));
+            }
+        }
+        let atlas = mesh::make_atlas(&packs, textures.into_iter().collect()).unwrap();
+        let hood = Neighborhood::of(&scene, (0, 0)).unwrap();
+        let light = light_chunk(&states, &hood);
+        let view = View::new(&states, &hood, (-1, 63, -1), (18, 18, 18));
+        let mut models = ModelCache::default();
+        models.prepare(&states, &packs, &atlas, &view);
+        let tint = BiomeTint::from_pack(&packs).unwrap();
+        for baked in [true, false] {
+            let (mesh, _, _) = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, baked).unwrap();
+            let planks_bottom = mesh.vertices.chunks(4).filter(|quad| quad.iter().all(|v| v.position[1] == 66.0 && (5.0..=6.0).contains(&v.position[0]) && (5.0..=6.0).contains(&v.position[2]))).count();
+            assert_eq!(planks_bottom, 1, "the planks over a top stair keep their bottom face");
+            let between_logs = mesh.vertices.chunks(4).filter(|quad| quad.iter().all(|v| v.position[0] == 10.0 && (65.0..=66.0).contains(&v.position[1]))).count();
+            assert_eq!(between_logs, 0, "logs lying side by side still hide their shared faces");
+        }
     }
 }

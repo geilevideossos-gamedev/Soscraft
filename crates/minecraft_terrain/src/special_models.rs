@@ -745,6 +745,7 @@ fn push_cube(elements: &mut Vec<Element>, sheet: &Sheet, cube: Cube, pose: Mat4,
         to: to.to_array(),
         faces,
         rotation_y: 0,
+        rotation_x: 0,
         rotation: Some(ElementRotation {
             origin: [0.0; 3],
             matrix: linear.to_cols_array_2d(),
@@ -1277,6 +1278,7 @@ mod tests {
             to: [1.0, 0.5, 1.0],
             faces: Vec::new(),
             rotation_y: 0,
+            rotation_x: 0,
             rotation: None,
             shade_direction_override: None,
         };

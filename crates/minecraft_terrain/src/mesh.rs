@@ -10,6 +10,7 @@ use anyhow::{anyhow, Context, Result};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 use image::{imageops::FilterType, RgbaImage};
+use minecraftoss_core::pos::Direction;
 use minecraftoss_player::items::WorldItems;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -1031,7 +1032,7 @@ impl ItemVisuals {
             let scene = MovingBlockScene { level, block: &moving.block, at };
             let mut own = ChunkMesh::default();
             let mut transparent = Vec::new();
-            append_block(&scene, at, &moving.block, || Ok(&variants[chosen..=chosen]), |_| false, atlas, tint, sky_light, &mut own, &mut transparent)?;
+            append_block(&scene, at, &moving.block, || Ok(&variants[chosen..=chosen]), |_, _| false, atlas, tint, sky_light, &mut own, &mut transparent)?;
             let offset = [moving.feet.x - 0.5 - f64::from(at.0), moving.feet.y - f64::from(at.1), moving.feet.z - 0.5 - f64::from(at.2)];
             let base = mesh.vertices.len() as u32;
             mesh.vertices.extend(own.vertices.into_iter().map(|mut vertex| {
@@ -1752,6 +1753,7 @@ fn mesh_chunk<S: Scene>(
         .iter()
         .map(|(key, variants)| (key.clone(), all_full_cubes(variants)))
         .collect();
+    let turned = |b: &Block| models.get(&model_key(b)).is_some_and(|variants| turned_about_x(variants));
     for x in chunk.0 * 16..chunk.0 * 16 + 16 {
         for z in chunk.1 * 16..chunk.1 * 16 + 16 {
             for y in scene.vertical_range() {
@@ -1768,14 +1770,16 @@ fn mesh_chunk<S: Scene>(
                             .map(Vec::as_slice)
                             .ok_or_else(|| anyhow!("uncached model"))
                     },
-                    |neighbor| {
-                        scene.block(neighbor).is_some_and(|b| {
-                            hides_shared_face(block, b)
-                                || (b.is_opaque()
-                                    && full_cube_models
-                                        .get(&model_key(b))
-                                        .copied()
-                                        .unwrap_or(false))
+                    |neighbor, side| {
+                        scene.face_hidden((x, y, z), neighbor, side).filter(|_| !turned(block) && !scene.block(neighbor).is_some_and(turned)).unwrap_or_else(|| {
+                            scene.block(neighbor).is_some_and(|b| {
+                                hides_shared_face(block, b)
+                                    || (b.is_opaque()
+                                        && full_cube_models
+                                            .get(&model_key(b))
+                                            .copied()
+                                            .unwrap_or(false))
+                            })
                         })
                     },
                     atlas,
@@ -1798,6 +1802,9 @@ pub(crate) fn all_full_cubes(variants: &[(ResolvedModel, u32)]) -> bool {
             .iter()
             .any(|element| element.from == [0.0; 3] && element.to == [1.0; 3])
     })
+}
+pub(crate) fn turned_about_x(variants: &[(ResolvedModel, u32)]) -> bool {
+    variants.iter().any(|(model, _)| model.elements.iter().any(|element| element.rotation_x % 360 != 0))
 }
 /// Moves the translucent faces after the opaque ones.
 /// One model face baked for a block state's variant (vanilla `BakedQuad`):
@@ -1932,7 +1939,7 @@ pub(crate) fn append_baked<S: Scene>(
     quads: &[BakedQuad],
     tint_kind: TintKind,
     waterlogged: bool,
-    hidden_by: impl Fn(BlockPos) -> bool,
+    hidden_by: impl Fn(BlockPos, Direction) -> bool,
     ao_occluder: impl Fn(BlockPos) -> bool,
     atlas: &Atlas,
     tint_source: &BiomeTint,
@@ -1942,7 +1949,7 @@ pub(crate) fn append_baked<S: Scene>(
 ) -> Result<()> {
     let mut biome = None;
     for quad in quads {
-        if quad.cull.is_some_and(|(dx, dy, dz)| hidden_by((x + dx, y + dy, z + dz))) {
+        if quad.cull.is_some_and(|(dx, dy, dz)| hidden_by((x + dx, y + dy, z + dz), cull_side((dx, dy, dz)))) {
             continue;
         }
         let biome = *biome.get_or_insert_with(|| scene.biome_at((x, y, z)));
@@ -2039,7 +2046,7 @@ pub(crate) fn finish_mesh(mut mesh: ChunkMesh, transparent_indices: Vec<u32>) ->
     mesh
 }
 /// Appends one block's faces. `variants` supplies its resolved models when
-/// the block is not a fluid; `hidden_by(neighbor)` is whether the block at a
+/// the block is not a fluid; `hidden_by(neighbor, side)` is whether the block at a
 /// neighboring position hides a cullable face toward it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn append_block<'m, S: Scene>(
@@ -2047,7 +2054,7 @@ pub(crate) fn append_block<'m, S: Scene>(
     (x, y, z): BlockPos,
     block: &Block,
     variants: impl FnOnce() -> Result<&'m [(ResolvedModel, u32)]>,
-    hidden_by: impl Fn(BlockPos) -> bool,
+    hidden_by: impl Fn(BlockPos, Direction) -> bool,
     atlas: &Atlas,
     tint_source: &BiomeTint,
     light: &SkyLight,
@@ -2074,7 +2081,7 @@ pub(crate) fn append_block<'m, S: Scene>(
             // blockstate), and take their light from that neighbour.
             let cull_dir = rotated_direction(face.cullface.as_deref().unwrap_or(face.direction.as_str()), element.rotation_y)?;
             let cull_delta = direction(cull_dir)?;
-            if face.cull && hidden_by((x + cull_delta.0, y + cull_delta.1, z + cull_delta.2)) {
+            if face.cull && hidden_by((x + cull_delta.0, y + cull_delta.1, z + cull_delta.2), cull_side(cull_delta)) {
                 continue;
             }
             let corners = element_corners(element, &face.direction)?;
@@ -2492,7 +2499,12 @@ pub fn block_preview<S: Scene>(
             let dir = rotated_direction(face.direction.as_str(), element.rotation_y)?;
             let delta = direction(dir)?;
             let neighbor_pos = (pos.0 + delta.0, pos.1 + delta.1, pos.2 + delta.2);
-            if face.cull {
+            let catalog_hidden = if face.cull { scene.face_hidden(pos, neighbor_pos, cull_side(delta)) } else { None };
+            let catalog_hidden = catalog_hidden.filter(|_| !turned_about_x(&variants) && !scene.block(neighbor_pos).is_some_and(|neighbor| resolve_block_variants(packs, neighbor).is_ok_and(|v| turned_about_x(&v))));
+            if catalog_hidden == Some(true) {
+                continue;
+            }
+            if face.cull && catalog_hidden.is_none() {
                 if let Some(neighbor) = scene.block(neighbor_pos) {
                     let full_cube = if neighbor.is_opaque() {
                         let key = model_key(neighbor);
@@ -2673,6 +2685,16 @@ fn direction(dir: &str) -> Result<(i32, i32, i32)> {
         _ => return Err(anyhow!("unsupported face direction {dir}")),
     })
 }
+fn cull_side(delta: (i32, i32, i32)) -> Direction {
+    match delta {
+        (0, -1, 0) => Direction::Down,
+        (0, 1, 0) => Direction::Up,
+        (0, 0, -1) => Direction::North,
+        (0, 0, 1) => Direction::South,
+        (-1, 0, 0) => Direction::West,
+        _ => Direction::East,
+    }
+}
 fn corners(dir: &str, a: [f32; 3], b: [f32; 3]) -> Result<[[f32; 3]; 4]> {
     let [x, y, z] = a;
     let [xx, yy, zz] = b;
@@ -2702,6 +2724,7 @@ mod tests {
             to: [15.2 / 16.0, 1.0, 0.5],
             faces: Vec::new(),
             rotation_y: 0,
+            rotation_x: 0,
             rotation: crate::model::ElementRotation::parse(&raw).unwrap(),
             shade_direction_override: None,
         };
@@ -2713,10 +2736,10 @@ mod tests {
         assert_eq!(quad_direction(&element, "north", &corners).unwrap(), "north");
         assert_eq!(quad_direction(&element, "south", &element_corners(&element, "south").unwrap()).unwrap(), "south");
         assert!(!face_cubic("north", &corners), "a diagonal plane is lit from its own cell");
-        let cube = crate::model::Element { from: [0.0; 3], to: [1.0; 3], faces: Vec::new(), rotation_y: 0, rotation: None, shade_direction_override: None };
+        let cube = crate::model::Element { from: [0.0; 3], to: [1.0; 3], faces: Vec::new(), rotation_y: 0, rotation_x: 0, rotation: None, shade_direction_override: None };
         let top = element_corners(&cube, "up").unwrap();
         assert!(face_cubic("up", &top), "a cube's top lies on its side");
-        let slab = crate::model::Element { from: [0.0; 3], to: [1.0, 0.5, 1.0], faces: Vec::new(), rotation_y: 0, rotation: None, shade_direction_override: None };
+        let slab = crate::model::Element { from: [0.0; 3], to: [1.0, 0.5, 1.0], faces: Vec::new(), rotation_y: 0, rotation_x: 0, rotation: None, shade_direction_override: None };
         assert!(!face_cubic("up", &element_corners(&slab, "up").unwrap()), "a slab's top is inside the block");
         // A 22.5° torch tilt about z: no rescale.
         let raw: serde_json::Value = serde_json::from_str(r#"{"rotation":{"origin":[0,3.5,8],"axis":"z","angle":-22.5}}"#).unwrap();
@@ -3112,6 +3135,7 @@ mod tests {
                         to: [1.0; 3],
                         faces: vec![face("up", Some(0)), face("north", None)],
                         rotation_y: 0,
+                        rotation_x: 0,
                         rotation: None,
                         shade_direction_override: None,
                     }],
@@ -3232,6 +3256,7 @@ mod tests {
                 from,
                 to,
                 rotation_y: 0,
+                rotation_x: 0,
                 rotation: None,
                 shade_direction_override: None,
                 faces: ["down", "up", "north", "south", "west", "east"]
@@ -3292,7 +3317,7 @@ mod tests {
             let mut scene = Placed(placed.0.clone());
             scene.0.insert(at, sand.clone());
             let mut mesh = ChunkMesh::default();
-            append_block(&scene, at, &sand, || Ok(variants.as_slice()), |_| false, &atlas, &tint, &light, &mut mesh, &mut Vec::new()).unwrap();
+            append_block(&scene, at, &sand, || Ok(variants.as_slice()), |_, _| false, &atlas, &tint, &light, &mut mesh, &mut Vec::new()).unwrap();
             mesh
         };
         let placed_mesh = terrain(cell);
@@ -3540,6 +3565,7 @@ mod tests {
                 from: [0.0; 3],
                 to: [1.0; 3],
                 rotation_y: 0,
+                rotation_x: 0,
                 rotation: None,
                 shade_direction_override: None,
                 faces: ["down", "up", "north", "south", "west", "east"]
@@ -3668,6 +3694,7 @@ mod tests {
             from,
             to,
             rotation_y,
+            rotation_x: 0,
             rotation: rotation.and_then(|raw| crate::model::ElementRotation::parse(&serde_json::from_str(raw).unwrap()).unwrap()),
             shade_direction_override: None,
             faces: directions
@@ -3703,7 +3730,7 @@ mod tests {
         let scene = Placed(HashMap::from([(pos, block.clone())]));
         let light = SkyLight::build(&scene);
         let mut mesh = ChunkMesh::default();
-        append_block(&scene, pos, &block, || Ok(variants), |_| false, &atlas, &BiomeTint { grass: None, foliage: None }, &light, &mut mesh, &mut Vec::new()).unwrap();
+        append_block(&scene, pos, &block, || Ok(variants), |_, _| false, &atlas, &BiomeTint { grass: None, foliage: None }, &light, &mut mesh, &mut Vec::new()).unwrap();
         mesh.vertices.iter().map(|vertex| vertex.position.map(f32::to_bits)).collect()
     }
 

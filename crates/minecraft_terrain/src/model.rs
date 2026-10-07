@@ -25,6 +25,7 @@ pub struct Element {
     pub to: [f32; 3],
     pub faces: Vec<Face>,
     pub rotation_y: u16,
+    pub rotation_x: u16,
     /// `CuboidModelElement.rotation`, applied before the blockstate's.
     pub rotation: Option<ElementRotation>,
     /// CuboidModelElement.shadeDirectionOverride affects directional brightness.
@@ -269,6 +270,7 @@ fn generated_item_model(pack: &PackStack, id: &ResourceId, model: &Value) -> Res
             from: [0.0, 0.0, 7.5 / 16.0],
             to: [1.0, 1.0, 8.5 / 16.0],
             rotation_y: 0,
+            rotation_x: 0,
             rotation: None,
             shade_direction_override: None,
             faces: vec![
@@ -301,6 +303,7 @@ fn generated_item_model(pack: &PackStack, id: &ResourceId, model: &Value) -> Res
                         from,
                         to,
                         rotation_y: 0,
+                        rotation_x: 0,
                         rotation: None,
                         shade_direction_override: None,
                         faces: vec![face(direction, uv)],
@@ -486,6 +489,7 @@ pub(crate) fn chest_model(texture: ResourceId, chest_type: &str, facing: &str) -
             from,
             to,
             rotation_y,
+            rotation_x: 0,
             rotation: None,
             shade_direction_override: None,
             faces: [
@@ -583,6 +587,7 @@ fn resolve_choices(pack: &PackStack, block: &Block, choices: &[&Value]) -> Resul
     let mut elements = Vec::new();
     for &choice in choices {
         let rotation_y = choice.get("y").and_then(Value::as_u64).unwrap_or(0);
+        let rotation_x = choice.get("x").and_then(Value::as_u64).unwrap_or(0);
         if rotation_y > 270 || rotation_y % 90 != 0 {
             bail!("unsupported model Y rotation {rotation_y}");
         }
@@ -653,6 +658,7 @@ fn resolve_choices(pack: &PackStack, block: &Block, choices: &[&Value]) -> Resul
                 to,
                 faces: resolved,
                 rotation_y: rotation_y as u16,
+                rotation_x: rotation_x as u16,
                 rotation: ElementRotation::parse(raw)?,
                 shade_direction_override: raw
                     .get("shade_direction_override")
@@ -892,6 +898,7 @@ fn fallback_fluid(texture: ResourceId) -> Vec<Element> {
         from: [0.0; 3],
         to: [1.0, 8.0 / 9.0, 1.0],
         rotation_y: 0,
+        rotation_x: 0,
         rotation: None,
         shade_direction_override: None,
         faces: ["down", "up", "north", "south", "west", "east"]

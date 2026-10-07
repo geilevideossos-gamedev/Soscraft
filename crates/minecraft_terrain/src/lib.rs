@@ -8,6 +8,7 @@ mod test_dir;
 pub mod clouds;
 pub mod day_cycle;
 pub mod environment;
+pub(crate) mod face_culling;
 pub mod fluid;
 pub mod frame_spans;
 pub(crate) mod interface;

@@ -678,6 +678,14 @@ impl BlockRegistry {
         &self.shapes[usize::from(self.state(state).faces[direction.index()])]
     }
 
+    pub fn face_shape_id(&self, state: BlockStateId, direction: Direction) -> u16 {
+        self.state(state).faces[direction.index()]
+    }
+
+    pub fn shape(&self, id: u16) -> &FaceShape {
+        &self.shapes[usize::from(id)]
+    }
+
     fn stride(&self, block: &BlockInfo, property: usize) -> usize {
         usize::from(block.strides[property])
     }

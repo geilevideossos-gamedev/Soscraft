@@ -106,6 +106,9 @@ pub trait Scene {
     fn full_collision_at(&self, pos: BlockPos) -> bool {
         crate::fluid::full_collision(self.block(pos))
     }
+    fn face_hidden(&self, _pos: BlockPos, _neighbor: BlockPos, _side: minecraftoss_core::pos::Direction) -> Option<bool> {
+        None
+    }
 }
 
 #[derive(Clone, Default)]
@@ -384,6 +387,11 @@ impl Scene for HandcraftedScene {
             Some(states) => states.shade_darkens(block),
             None => block.is_opaque() || block.id.path.ends_with("_leaves"),
         }
+    }
+    fn face_hidden(&self, pos: BlockPos, neighbor: BlockPos, side: minecraftoss_core::pos::Direction) -> Option<bool> {
+        let states = self.states.as_ref()?;
+        let own = self.state_at(pos)?;
+        Some(states.face_hidden(own, self.state_at(neighbor).unwrap_or(minecraftoss_core::BlockStateId::AIR), side))
     }
     fn chunks(&self) -> Vec<ChunkPos> {
         let mut chunks: Vec<ChunkPos> = self.blocks.keys().copied().collect();
