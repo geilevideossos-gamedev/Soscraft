@@ -1030,14 +1030,50 @@ fn monster_ai_step(ai: &mut MonsterAi, body: &mut Body, health: f32, random: &mu
 /// centre to its eyes (`Vec3.normalize`, which divides) and the share of it
 /// the blast sees (`getSeenPercent` over its bounding box).
 fn explosion_exposure(world: &impl World, body: &Body, eye_height: f32, center: DVec3) -> (DVec3, f32) {
-    let offset = body.position + DVec3::new(0.0, f64::from(eye_height), 0.0) - center;
-    let length = (offset.x * offset.x + offset.y * offset.y + offset.z * offset.z).sqrt();
-    let direction = if length < f64::from(1.0e-5_f32) { DVec3::ZERO } else { DVec3::new(offset.x / length, offset.y / length, offset.z / length) };
+    let direction = explosion_direction(body, eye_height, center);
     let half = f64::from(body.width / 2.0);
     let p = body.position;
     let min = DVec3::new(p.x - half, p.y, p.z - half);
     let max = DVec3::new(p.x + half, p.y + f64::from(body.height), p.z + half);
     (direction, crate::sight::seen_percent(world, center, min, max))
+}
+
+fn explosion_direction(body: &Body, eye_height: f32, center: DVec3) -> DVec3 {
+    let offset = body.position + DVec3::new(0.0, f64::from(eye_height), 0.0) - center;
+    let length = (offset.x * offset.x + offset.y * offset.y + offset.z * offset.z).sqrt();
+    if length < f64::from(1.0e-5_f32) { DVec3::ZERO } else { DVec3::new(offset.x / length, offset.y / length, offset.z / length) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Blaster {
+    Mob(u64),
+    Player(u64),
+    Nobody,
+}
+
+impl Blaster {
+    fn damage_type(self) -> &'static str {
+        match self {
+            Blaster::Mob(_) | Blaster::Player(_) => "minecraft:player_explosion",
+            Blaster::Nobody => "minecraft:explosion",
+        }
+    }
+
+    fn wolf_attacker(self) -> Option<crate::monster_ai::Target> {
+        match self {
+            Blaster::Mob(id) => Some(crate::monster_ai::Target::Mob(id)),
+            Blaster::Player(player) => Some(crate::monster_ai::Target::Player(player)),
+            Blaster::Nobody => None,
+        }
+    }
+
+    fn villager_attacker(self) -> Option<u64> {
+        match self {
+            Blaster::Mob(id) => Some(id),
+            Blaster::Player(player) => Some(PLAYER_TARGET + player),
+            Blaster::Nobody => None,
+        }
+    }
 }
 
 fn projectile_knockback(body: &mut Body, random: &mut LegacyRandom, velocity: DVec3) {
@@ -2577,7 +2613,7 @@ impl EntityWorld {
     /// A blast's damage on a mob (`hurtServer` with `player_explosion`:
     /// armor counts, no default knockback), then its push
     /// (`pushFromExplosion`), which lands even when the hurt does not.
-    fn hurt_by_blast(&mut self, key: EntityKey, damage: f32, push: DVec3, source_id: u64) -> Option<DamageResult> {
+    fn hurt_by_blast(&mut self, key: EntityKey, damage: f32, push: DVec3, blaster: Blaster) -> Option<DamageResult> {
         let time = self.game_time;
         let source = DamageSourceKind::Explosion;
         let (result, body) = match key {
@@ -2590,8 +2626,8 @@ impl EntityWorld {
             EntityKey::Enderman(id) => self.endermen.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.enderman.body)),
             EntityKey::Witch(id) => self.witches.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, false, false), &mut e.witch.body)),
             EntityKey::IronGolem(id) => self.iron_golems.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.golem.body)),
-            EntityKey::Wolf(id) => self.wolves.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, "minecraft:player_explosion", Some(crate::monster_ai::Target::Mob(source_id)), time), &mut e.wolf.body)),
-            EntityKey::Villager(id) => self.villagers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, "minecraft:player_explosion", Some(source_id), time), &mut e.villager.body)),
+            EntityKey::Wolf(id) => self.wolves.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, blaster.damage_type(), blaster.wolf_attacker(), time), &mut e.wolf.body)),
+            EntityKey::Villager(id) => self.villagers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, blaster.damage_type(), blaster.villager_attacker(), time), &mut e.villager.body)),
             EntityKey::Cow(id) => self.cows.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.cow.body)),
             EntityKey::Sheep(id) => self.sheep.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.body)),
             EntityKey::Pig(id) => self.pigs.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.pig.body)),
@@ -2599,10 +2635,81 @@ impl EntityWorld {
             EntityKey::Arrow(_) | EntityKey::Potion(_) => None,
         }?;
         body.velocity += push;
-        if let (true, EntityKey::Villager(id)) = (result.applied, key) {
-            self.villager_hurt_by(id, source_id);
+        if let (true, EntityKey::Villager(id), Some(attacker)) = (result.applied, key, blaster.villager_attacker()) {
+            self.villager_hurt_by(id, attacker);
         }
         Some(result)
+    }
+
+    pub fn player_blast(&mut self, player: Option<u64>, id: u64, damage: f32, center: DVec3, impact: f64) -> Option<DamageResult> {
+        let key = *self.order.iter().find(|key| key.id() == id)?;
+        let (body, eye_height) = self.blast_target(key)?;
+        let push = explosion_direction(&body, eye_height, center) * impact;
+        let blaster = player.map_or(Blaster::Nobody, Blaster::Player);
+        let result = self.hurt_by_blast(key, damage, push, blaster)?;
+        if let Some(player) = player {
+            if result.applied {
+                self.blasted_by_player(key, player);
+            }
+            self.credit(id, result, "minecraft:player", true);
+        }
+        Some(result)
+    }
+
+    fn blasted_by_player(&mut self, key: EntityKey, player: u64) {
+        let target = crate::monster_ai::Target::Player(player);
+        match key {
+            EntityKey::Zombie(id) => {
+                if let Some(e) = self.zombies.iter_mut().find(|e| e.id == id) {
+                    if let Some(ai) = e.ai.as_deref_mut() {
+                        ai.state.hurt_by = Some((target, e.tick_count));
+                    } else {
+                        e.target_player_id = Some(player);
+                        e.target_villager_id = None;
+                    }
+                }
+            }
+            EntityKey::Skeleton(id) => {
+                if let Some(e) = self.skeletons.iter_mut().find(|e| e.id == id) {
+                    if let Some(ai) = e.ai.as_deref_mut() {
+                        ai.state.hurt_by = Some((target, e.tick_count));
+                    } else {
+                        e.target_player_id = Some(player);
+                    }
+                }
+            }
+            EntityKey::Creeper(id) => {
+                if let Some(e) = self.creepers.iter_mut().find(|e| e.id == id) {
+                    e.ai.state.hurt_by = Some((target, e.tick_count));
+                }
+            }
+            EntityKey::Spider(id) => {
+                if let Some(e) = self.spiders.iter_mut().find(|e| e.id == id) {
+                    e.ai.state.hurt_by = Some((target, e.tick_count));
+                }
+            }
+            EntityKey::Slime(id) => {
+                if let Some(e) = self.slimes.iter_mut().find(|e| e.id == id) {
+                    e.ai.state.hurt_by = Some((target, e.tick_count));
+                }
+            }
+            EntityKey::Enderman(id) => {
+                if let Some(e) = self.endermen.iter_mut().find(|e| e.id == id) {
+                    e.ai.state.hurt_by = Some((target, e.tick_count));
+                }
+            }
+            EntityKey::Witch(id) => {
+                if let Some(e) = self.witches.iter_mut().find(|e| e.id == id) {
+                    e.ai.state.hurt_by = Some((target, e.tick_count));
+                }
+            }
+            EntityKey::IronGolem(id) => {
+                if let Some(e) = self.iron_golems.iter_mut().find(|e| e.id == id) {
+                    e.ai.state.hurt_by = Some((target, e.tick_count));
+                }
+            }
+            _ => {}
+        }
     }
 
     /// `ServerExplosion.hurtEntities` for a creeper's blast: every mob and
@@ -2633,7 +2740,7 @@ impl EntityWorld {
             }
             let Some((body, eye_height)) = self.blast_target(key) else { continue };
             if let Some((damage, push)) = impact(&body, eye_height) {
-                if let Some(result) = self.hurt_by_blast(key, damage, push, source_id) {
+                if let Some(result) = self.hurt_by_blast(key, damage, push, Blaster::Mob(source_id)) {
                     // `explosion(creeper, creeper)`: the creeper is the
                     // source's entity and its direct one.
                     self.credit(key.id(), result, "minecraft:creeper", true);
@@ -6905,5 +7012,50 @@ mod tests {
         let cow = &world.cows()[0];
         assert_eq!(cow.cow.age.ticks, -19);
         assert_eq!(cow.cow.body.position, DVec3::new(0.5, 3.0, 0.5));
+    }
+
+    #[test]
+    fn a_players_blast_hurts_pushes_angers_and_credits_the_player() {
+        let mut world = EntityWorld::default();
+        let zombie = world.spawn_zombie(Zombie::new(DVec3::new(0.5, 1.0, 2.5)), true);
+        let creeper = world.spawn_creeper(Creeper::new(DVec3::new(4.5, 1.0, 0.5)), true);
+        let center = DVec3::new(0.5, 1.0, 0.5);
+        let hit = world.player_blast(Some(7), zombie, 10.0, center, 0.5).unwrap();
+        assert!(hit.applied && hit.full && !hit.died);
+        let entity = world.zombie_mut(zombie).unwrap();
+        assert!((entity.zombie.health - (20.0 - damage_after_armor(10.0, 2.0, 0.0))).abs() < 1e-6);
+        let eye = f64::from(entity.zombie.eye_height());
+        let along = DVec3::new(0.0, eye, 2.0) / (eye * eye + 4.0).sqrt() * 0.5;
+        assert!((entity.zombie.body.velocity - along).length() < 1e-9, "{:?}", entity.zombie.body.velocity);
+        assert_eq!(entity.target_player_id, Some(7));
+        assert!(world.player_blast(Some(7), creeper, 2.0, center, 0.0).unwrap().applied);
+        let creeper = world.creepers().iter().find(|e| e.id == creeper).unwrap();
+        assert!(matches!(creeper.ai.state.hurt_by, Some((crate::monster_ai::Target::Player(7), _))));
+
+        let weaker = world.player_blast(Some(7), zombie, 4.0, center, 0.0).unwrap();
+        assert!(!weaker.applied, "inside the damage cooldown only a bigger blast lands");
+        let kill = world.player_blast(Some(7), zombie, 40.0, center, 0.0).unwrap();
+        assert!(kill.applied && !kill.full && kill.died);
+        let deaths = world.take_deaths();
+        assert_eq!(deaths.len(), 1);
+        assert_eq!(deaths[0].id, zombie);
+        assert_eq!(deaths[0].context.attacker, Some("minecraft:player"));
+        assert!(deaths[0].context.killed_by_player);
+        assert_eq!(deaths[0].experience, 5);
+    }
+
+    #[test]
+    fn a_blast_nobody_answers_for_kills_without_experience() {
+        let mut world = EntityWorld::default();
+        let zombie = world.spawn_zombie(Zombie::new(DVec3::new(0.5, 1.0, 2.5)), true);
+        let killed = world.player_blast(None, zombie, 40.0, DVec3::new(0.5, 1.0, 0.5), 1.0).unwrap();
+        assert!(killed.died);
+        assert_eq!(world.zombies()[0].target_player_id, None);
+        let deaths = world.take_deaths();
+        assert_eq!(deaths.len(), 1);
+        assert_eq!(deaths[0].context.attacker, None);
+        assert!(!deaths[0].context.killed_by_player);
+        assert_eq!(deaths[0].experience, 0);
+        assert!(world.player_blast(Some(7), 999, 40.0, DVec3::ZERO, 1.0).is_none());
     }
 }

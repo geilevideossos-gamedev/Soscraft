@@ -21,8 +21,6 @@ type BlockPos = (i32, i32, i32);
 /// Bullet damage that mines a block of hardness 1 in four shots: a 40-damage
 /// bullet (an ACR up close) breaks dirt, of hardness 0.5, on the second.
 const DAMAGE_PER_HARDNESS: f32 = sim::voxel::DAMAGE_PER_HARDNESS;
-/// TNT's explosion power.
-const TNT_POWER: f32 = 4.0;
 /// Progress on a block no longer being shot is forgotten after this long.
 const PROGRESS_SECONDS: f64 = 6.0;
 const TICK_SECONDS: f64 = 1.0 / 20.0;
@@ -66,17 +64,17 @@ impl Mining {
     }
 
     /// Applies this tick's shots and explosions; the blocks they broke, each
-    /// with whether a blast broke it.
+    /// with the power of the blast that broke it.
     pub(crate) fn apply(
         &mut self,
         events: Vec<sim::voxel::VoxelEvent>,
         world: &mut WorldRefs<'_>,
         now: f64,
-    ) -> Vec<(BlockPos, minecraft_terrain::scene::Block, bool)> {
+    ) -> Vec<(BlockPos, minecraft_terrain::scene::Block, Option<f32>)> {
         if self.particles.is_none() {
             self.particles = BlockParticles::new(world.packs).ok();
         }
-        let mut broken: Vec<(BlockPos, bool)> = Vec::new();
+        let mut broken: Vec<(BlockPos, Option<f32>)> = Vec::new();
         // Blocks broken by this batch: the rest of a shotgun's pellets into
         // one pass through, rather than starting a crack on a block that is
         // about to go.
@@ -101,15 +99,15 @@ impl Mining {
                         {
                             let _ = particles.spawn(world.packs, &*world.scene, pos, &block, world.atlas);
                         }
-                        broken.push((pos, false));
+                        broken.push((pos, None));
                         gone.insert(pos);
                     }
                 }
-                sim::voxel::VoxelEvent::Explosion { center } => {
-                    for pos in self.exploded_positions(world, center, TNT_POWER) {
+                sim::voxel::VoxelEvent::Explosion { center, power } => {
+                    for pos in self.exploded_positions(world, center, power) {
                         if hardness(world, pos).is_some() && gone.insert(pos) {
                             self.progress.remove(&pos);
-                            broken.push((pos, true));
+                            broken.push((pos, Some(power)));
                         }
                     }
                 }
@@ -132,12 +130,12 @@ impl Mining {
                             {
                                 let _ = particles.spawn(world.packs, &*world.scene, pos, &block, world.atlas);
                             }
-                            broken.push((pos, false));
+                            broken.push((pos, None));
                             gone.insert(pos);
                         }
                     }
                 }
-                sim::voxel::VoxelEvent::MobShot { .. } => {}
+                sim::voxel::VoxelEvent::MobShot { .. } | sim::voxel::VoxelEvent::MobBlast { .. } => {}
             }
         }
         // No crack outlives its block, however it went.
@@ -146,7 +144,7 @@ impl Mining {
         if broken.is_empty() {
             return Vec::new();
         }
-        broken.sort_unstable();
+        broken.sort_unstable_by_key(|(pos, _)| *pos);
         broken.dedup_by_key(|(pos, _)| *pos);
         let mut out = Vec::with_capacity(broken.len());
         for &(pos, blast) in &broken {

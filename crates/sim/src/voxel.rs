@@ -113,10 +113,11 @@ pub enum VoxelEvent {
     /// weapon's, at that range, after penetration.
     Shot { block: [i32; 3], damage: f32 },
     /// An explosion went off here, in blocks.
-    Explosion { center: [f64; 3] },
+    Explosion { center: [f64; 3], power: f32 },
     /// A bullet struck the mob with this key, with the damage it would have
     /// done at that range, from this block point.
     MobShot { key: u64, damage: f32, from: [f64; 3] },
+    MobBlast { key: u64, damage: f32, center: [f64; 3], impact: f32, attacker: Option<u32> },
     /// A bullet's path through the air, in blocks, up to what stopped it:
     /// blocks without collision on it (grass, flowers) take its damage.
     Ray { from: [f64; 3], to: [f64; 3], damage: f32 },
@@ -143,7 +144,7 @@ pub fn push_shot(end: [f32; 3], normal: [f32; 3], damage: f32) {
 }
 
 /// An explosion at map point `origin`.
-pub fn push_explosion(origin: [f32; 3]) {
+pub fn push_explosion(origin: [f32; 3], power: f32) {
     let Ok(world) = WORLD.read() else {
         return;
     };
@@ -152,7 +153,7 @@ pub fn push_explosion(origin: [f32; 3]) {
     };
     let center = to_block(world.origin, origin);
     if let Ok(mut events) = EVENTS.lock() {
-        events.push(VoxelEvent::Explosion { center });
+        events.push(VoxelEvent::Explosion { center, power });
     }
 }
 
@@ -270,6 +271,19 @@ pub(crate) fn push_mob_shot(key: u64, damage: f32, from: [f32; 3]) {
     let from = to_block(world.origin, from);
     if let Ok(mut events) = EVENTS.lock() {
         events.push(VoxelEvent::MobShot { key, damage, from });
+    }
+}
+
+pub(crate) fn push_mob_blast(key: u64, damage: f32, origin: [f32; 3], impact: f32, attacker: Option<u32>) {
+    let Ok(world) = WORLD.read() else {
+        return;
+    };
+    let Some(world) = world.as_ref() else {
+        return;
+    };
+    let center = to_block(world.origin, origin);
+    if let Ok(mut events) = EVENTS.lock() {
+        events.push(VoxelEvent::MobBlast { key, damage, center, impact, attacker });
     }
 }
 

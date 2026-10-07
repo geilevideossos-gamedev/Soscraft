@@ -1184,11 +1184,15 @@ fn update(
     // mob hurt it, the rest mine.
     let (mob_shots, events): (Vec<_>, Vec<_>) = all_events
         .into_iter()
-        .partition(|event| matches!(event, sim::voxel::VoxelEvent::MobShot { .. }));
+        .partition(|event| matches!(event, sim::voxel::VoxelEvent::MobShot { .. } | sim::voxel::VoxelEvent::MobBlast { .. }));
     if let Some(entities) = entities.as_mut() {
         for shot in mob_shots {
-            if let sim::voxel::VoxelEvent::MobShot { key, damage, from } = shot {
-                entities.shoot(key, damage, from, mc_yaw);
+            match shot {
+                sim::voxel::VoxelEvent::MobShot { key, damage, from } => entities.shoot(key, damage, from, mc_yaw),
+                sim::voxel::VoxelEvent::MobBlast { key, damage, center, impact, attacker } => {
+                    entities.blast(key, damage, center, impact, attacker == Some(local.0.0));
+                }
+                _ => {}
             }
         }
     }
@@ -1208,11 +1212,11 @@ fn update(
                         sounds.play(&world.packs, &kind.hit, Some(at(centre)), (kind.volume + 1.0) / 4.0, kind.pitch * 0.5);
                     }
                 }
-                sim::voxel::VoxelEvent::Explosion { center } => {
+                sim::voxel::VoxelEvent::Explosion { center, .. } => {
                     let pitch = (1.0 + (sounds.random() - sounds.random()) * 0.2) * 0.7;
                     sounds.play(&world.packs, "minecraft:entity.generic.explode", Some(at(center)), 4.0, pitch);
                 }
-                sim::voxel::VoxelEvent::MobShot { .. } | sim::voxel::VoxelEvent::Ray { .. } => {}
+                sim::voxel::VoxelEvent::MobShot { .. } | sim::voxel::VoxelEvent::MobBlast { .. } | sim::voxel::VoxelEvent::Ray { .. } => {}
             }
         }
     }
@@ -1229,7 +1233,7 @@ fn update(
     );
     if let Some(sounds) = sounds.as_mut() {
         for (pos, block, blast) in &broken {
-            if *blast {
+            if blast.is_some() {
                 continue;
             }
             if let Some(kind) = world.scene.sound_type(block) {
@@ -1238,7 +1242,7 @@ fn update(
             }
         }
     }
-    survival.exhaust(crate::minecraft_survival::MINE_EXHAUSTION * broken.iter().filter(|(.., blast)| !blast).count() as f32);
+    survival.exhaust(crate::minecraft_survival::MINE_EXHAUSTION * broken.iter().filter(|(.., blast)| blast.is_none()).count() as f32);
     if let Some(entities) = entities.as_mut() {
         let positions: Vec<_> = broken.iter().map(|(pos, ..)| *pos).collect();
         entities.broke(&positions);

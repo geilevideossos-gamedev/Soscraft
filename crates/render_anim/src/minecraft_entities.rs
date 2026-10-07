@@ -100,8 +100,7 @@ pub(crate) struct Entities {
 /// What bullets and blasts count as for block loot: vanilla drops nothing
 /// from stone or ores broken bare-handed.
 const LOOT_TOOL: &str = "minecraft:diamond_pickaxe";
-/// TNT's power: a blast drops each block's loot one time in this many.
-const BLAST_POWER: f32 = 4.0;
+type BrokenBlock = ((i32, i32, i32), Block, Option<f32>);
 
 /// The mobs drawn this frame: entity models (cut out, back-face culled,
 /// translucent) and their shadows, in `mesh::Vertex`s; and what goes with
@@ -235,7 +234,7 @@ impl Entities {
         self.server.unload_chunk(pos);
     }
 
-    pub(crate) fn award_block_experience(&mut self, broken: &[((i32, i32, i32), Block, bool)]) {
+    pub(crate) fn award_block_experience(&mut self, broken: &[BrokenBlock]) {
         for (pos, block, _) in broken {
             let experience = minecraft_terrain::experience::block_experience(block, true, |bound| self.random.next_int(bound));
             if experience > 0 {
@@ -246,8 +245,8 @@ impl Entities {
     }
 
     /// Block loot for what the weapons broke, dropped as vanilla drops it
-    /// (`Block.popResource`); a blast keeps each drop one time in four.
-    pub(crate) fn drop_blocks(&mut self, broken: &[((i32, i32, i32), Block, bool)], mut kept: HashMap<(i32, i32, i32), serde_json::Value>) {
+    /// (`Block.popResource`); a blast keeps each drop one time in its power.
+    pub(crate) fn drop_blocks(&mut self, broken: &[BrokenBlock], mut kept: HashMap<(i32, i32, i32), serde_json::Value>) {
         let tool = ItemStack::new(LOOT_TOOL, 1);
         for (pos, block, blast) in broken {
             let block = minecraftoss_player::Block { id: block.id.key(), properties: block.properties.clone() };
@@ -257,7 +256,10 @@ impl Entities {
                 .and_then(|loot| loot.roll_drops_named(&block, Some(&tool), self.seed as u64, &mut self.loot_sequences));
             let survives_blast = minecraft_terrain::containers::is_shulker_box(&block.id);
             for mut drop in drops.into_iter().flatten() {
-                if *blast && !survives_blast && self.random.next_float() >= 1.0 / BLAST_POWER {
+                if let Some(power) = *blast
+                    && !survives_blast
+                    && self.random.next_float() >= 1.0 / power
+                {
                     continue;
                 }
                 if drop.components.is_none() {
@@ -456,6 +458,13 @@ impl Entities {
         };
         self.server
             .mob_action(hit, Some(attack), &minecraftoss_player::inventory::Inventory::default(), 0, false);
+    }
+
+    pub(crate) fn blast(&mut self, key: u64, damage: f32, center: [f64; 3], impact: f32, by_player: bool) {
+        let Some(hit) = decode(key) else {
+            return;
+        };
+        self.server.mob_blast(hit, damage * HEALTH_SCALE, center, impact, by_player.then_some(PLAYER));
     }
 
     /// Sends a server tick when one is due and takes what came back: block

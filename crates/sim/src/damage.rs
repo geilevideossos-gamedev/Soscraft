@@ -78,13 +78,17 @@ pub(crate) struct ExplosionBlast {
 
 impl ExplosionBlast {
     fn contains(&self, point: [f32; 3]) -> bool {
-        self.cone.is_none_or(|(forward, cosine)| {
-            let delta: [f32; 3] = std::array::from_fn(|i| point[i] - self.origin[i]);
-            let len = delta.iter().map(|v| v * v).sum::<f32>().sqrt();
-            len <= f32::EPSILON
-                || delta.iter().zip(forward).map(|(a, b)| a * b).sum::<f32>() >= cosine * len
-        })
+        cone_contains(self.origin, self.cone, point)
     }
+}
+
+fn cone_contains(origin: [f32; 3], cone: Option<([f32; 3], f32)>, point: [f32; 3]) -> bool {
+    cone.is_none_or(|(forward, cosine)| {
+        let delta: [f32; 3] = std::array::from_fn(|i| point[i] - origin[i]);
+        let len = delta.iter().map(|v| v * v).sum::<f32>().sqrt();
+        len <= f32::EPSILON
+            || delta.iter().zip(forward).map(|(a, b)| a * b).sum::<f32>() >= cosine * len
+    })
 }
 
 struct GlassBlastHit {
@@ -99,7 +103,21 @@ pub(crate) fn apply_explosion_blast(world: &mut FrameWorld, tick: Tick, blast: &
         return;
     }
     if crate::voxel::active() {
-        crate::voxel::push_explosion(blast.origin);
+        if let Some(power) = crater_power(blast.inner_damage, blast.radius) {
+            crate::voxel::push_explosion(blast.origin, power);
+        }
+        push_mob_blasts(
+            world,
+            &crate::t5_destructible::RadiusDamage {
+                origin: blast.origin,
+                radius: blast.radius,
+                inner: blast.inner_damage,
+                outer: blast.outer_damage,
+                attacker: Some(blast.attacker),
+                exclude: None,
+                cone: blast.cone,
+            },
+        );
     }
     let attempts = radius_player_attempts(world, blast);
     let glass = radius_glass_hits(world, blast);
@@ -212,6 +230,63 @@ pub(crate) fn apply_block_world_damage(world: &mut FrameWorld, tick: Tick) {
 
 const MINECRAFT_DEATH_DAMAGE: i32 = 100_000;
 
+const CRATER_MIN_DAMAGE: f32 = 5.0;
+
+const MOB_EYE_HEIGHT_SCALE: f32 = 0.85;
+
+fn crater_power(inner_damage: f32, radius: f32) -> Option<f32> {
+    (inner_damage >= CRATER_MIN_DAMAGE && radius > 0.0).then(|| radius / crate::voxel::BLOCK / 2.0)
+}
+
+fn push_mob_blasts(world: &FrameWorld, blast: &crate::t5_destructible::RadiusDamage) {
+    let exclude = blast.exclude.map(crate::AuthorityModelOwner::ScriptModel);
+    let hits = mob_blast_hits(blast, &crate::voxel::mob_targets(), |feet, view_height, right| {
+        can_damage_player_vis_scale(feet, view_height, right, blast.origin, |start, end| {
+            t_trace_passed(&world.trace_world_except(start, end, G_CAN_DAMAGE_CONTENTS_MASK, exclude))
+        })
+    });
+    for (key, damage, impact) in hits {
+        crate::voxel::push_mob_blast(key, damage, blast.origin, impact, blast.attacker.map(|c| c.0));
+    }
+}
+
+fn mob_blast_hits(
+    blast: &crate::t5_destructible::RadiusDamage,
+    mobs: &[(u64, [f32; 3], [f32; 3])],
+    mut vis_scale: impl FnMut([f32; 3], f32, [f32; 3]) -> f32,
+) -> Vec<(u64, f32, f32)> {
+    let mut hits = Vec::new();
+    if blast.radius <= 0.0 {
+        return hits;
+    }
+    for &(key, mins, maxs) in mobs {
+        let mid: [f32; 3] = std::array::from_fn(|i| (mins[i] + maxs[i]) * 0.5);
+        let half: [f32; 3] = std::array::from_fn(|i| (maxs[i] - mins[i]) * 0.5);
+        if !cone_contains(blast.origin, blast.cone, mid) {
+            continue;
+        }
+        let dist = radius_damage_distance_to_aabb(blast.origin, mid, half);
+        if dist >= blast.radius {
+            continue;
+        }
+        let along = [mid[0] - blast.origin[0], mid[1] - blast.origin[1]];
+        let len = along[0].hypot(along[1]);
+        let right = if len > f32::EPSILON {
+            [along[1] / len, -along[0] / len, 0.0]
+        } else {
+            [1.0, 0.0, 0.0]
+        };
+        let view_height = (maxs[2] - mins[2]) * MOB_EYE_HEIGHT_SCALE;
+        let vis = vis_scale([mid[0], mid[1], mins[2]], view_height, right);
+        let amount = radius_damage_amount(blast.inner, blast.outer, blast.radius, dist, vis);
+        if amount <= 0 {
+            continue;
+        }
+        hits.push((key, amount as f32, (1.0 - dist / blast.radius) * vis));
+    }
+    hits
+}
+
 fn apply_entity_blast(world: &mut FrameWorld, blast: &ExplosionBlast) {
     if blast.radius <= 0.0 {
         return;
@@ -272,6 +347,20 @@ pub(crate) fn apply_script_blast(
                 missile: None,
                 means: blast.means,
                 ignore_model: blast.inflictor,
+                cone: None,
+            },
+        );
+    }
+    if world.publishes_snapshot() && crate::voxel::active() {
+        push_mob_blasts(
+            world,
+            &crate::t5_destructible::RadiusDamage {
+                origin: blast.origin,
+                radius: blast.radius,
+                inner: blast.max,
+                outer: blast.min,
+                attacker: blast.attacker,
+                exclude: blast.inflictor,
                 cone: None,
             },
         );
@@ -434,34 +523,47 @@ fn radius_player_attempts(world: &FrameWorld, blast: &ExplosionBlast) -> Vec<Dam
         if !blast.contains(bounds.mid()) {
             continue;
         }
-        let dist = radius_damage_distance_to_aabb(blast.origin, bounds.mid(), bounds.half());
         let vis_scale = player_radius_vis_scale(world, blast.origin, target, None);
-        let amount = radius_damage_amount(
-            blast.inner_damage,
-            blast.outer_damage,
-            blast.radius,
-            dist,
-            vis_scale,
-        );
-        if amount <= 0 {
-            continue;
-        }
-        intents.push(DamageAttempt {
-            splash: true,
-            source: blast.source,
-            pellet: PelletId(0),
-            attacker: blast.attacker,
-            attacker_life: blast.attacker_life,
+        intents.extend(radius_player_attempt(
+            blast,
             target,
-            target_life: meta.life_sequence,
-            weapon: blast.weapon,
-            amount,
-            killcam_entity_start_time: blast.killcam_entity_start_time,
-            inflictor_origin: Some(blast.origin),
-            hitloc: 0,
-        });
+            meta.life_sequence,
+            (bounds.mid(), bounds.half()),
+            vis_scale,
+        ));
     }
     intents
+}
+
+fn radius_player_attempt(
+    blast: &ExplosionBlast,
+    target: ClientId,
+    target_life: LifeSequence,
+    (mid, half): ([f32; 3], [f32; 3]),
+    vis_scale: f32,
+) -> Option<DamageAttempt> {
+    let dist = radius_damage_distance_to_aabb(blast.origin, mid, half);
+    let amount = radius_damage_amount(
+        blast.inner_damage,
+        blast.outer_damage,
+        blast.radius,
+        dist,
+        vis_scale,
+    );
+    (amount > 0).then_some(DamageAttempt {
+        splash: true,
+        source: blast.source,
+        pellet: PelletId(0),
+        attacker: blast.attacker,
+        attacker_life: blast.attacker_life,
+        target,
+        target_life,
+        weapon: blast.weapon,
+        amount,
+        killcam_entity_start_time: blast.killcam_entity_start_time,
+        inflictor_origin: Some(blast.origin),
+        hitloc: 0,
+    })
 }
 
 fn radius_glass_hits(world: &FrameWorld, blast: &ExplosionBlast) -> Vec<GlassBlastHit> {
@@ -850,5 +952,96 @@ fn anim_script_damagetype(
             }
         }
         crate::DamageSource::Melee => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FRAG: crate::t5_destructible::RadiusDamage = crate::t5_destructible::RadiusDamage {
+        origin: [0.0; 3],
+        radius: 256.0,
+        inner: 130.0,
+        outer: 55.0,
+        attacker: Some(ClientId(3)),
+        exclude: None,
+        cone: None,
+    };
+
+    fn mob_at(key: u64, x: f32) -> (u64, [f32; 3], [f32; 3]) {
+        (key, [x - 10.0, -10.0, 0.0], [x + 10.0, 10.0, 70.0])
+    }
+
+    #[test]
+    fn a_mob_at_the_centre_takes_the_inner_damage_and_the_full_push() {
+        let hits = mob_blast_hits(&FRAG, &[mob_at(1, 0.0)], |_, _, _| 1.0);
+        assert_eq!(hits, vec![(1, 130.0, 1.0)]);
+    }
+
+    #[test]
+    fn damage_and_push_fall_off_to_the_edge_and_stop_past_it() {
+        let mut traced = 0;
+        let hits = mob_blast_hits(&FRAG, &[mob_at(1, 138.0), mob_at(2, 266.0)], |feet, view_height, right| {
+            traced += 1;
+            assert_eq!(feet, [138.0, 0.0, 0.0]);
+            assert!((view_height - 59.5).abs() < 1e-4);
+            assert_eq!(right, [0.0, -1.0, 0.0]);
+            1.0
+        });
+        assert_eq!(traced, 1, "a mob out of reach costs no traces");
+        let falloff = 55.0 + (1.0 - 128.0 / 256.0) * (130.0 - 55.0);
+        assert_eq!(hits, vec![(1, f32::round(falloff), 0.5)]);
+    }
+
+    #[test]
+    fn blocks_between_shield_a_mob_like_a_soldier() {
+        assert!(mob_blast_hits(&FRAG, &[mob_at(1, 0.0)], |_, _, _| 0.0).is_empty());
+        let hits = mob_blast_hits(&FRAG, &[mob_at(1, 0.0)], |_, _, _| 1.0 / 3.0);
+        assert_eq!(hits, vec![(1, f32::round(130.0 / 3.0), 1.0 / 3.0)]);
+    }
+
+    #[test]
+    fn a_claymore_only_hurts_mobs_in_front_of_it() {
+        let claymore = crate::t5_destructible::RadiusDamage {
+            radius: 192.0,
+            cone: Some(([1.0, 0.0, 0.0], 70f32.to_radians().cos())),
+            ..FRAG
+        };
+        let hits = mob_blast_hits(&claymore, &[mob_at(1, 100.0), mob_at(2, -100.0)], |_, _, _| 1.0);
+        assert_eq!(hits.iter().map(|h| h.0).collect::<Vec<_>>(), vec![1]);
+    }
+
+    #[test]
+    fn only_damaging_explosives_blow_craters_sized_by_their_radius() {
+        assert_eq!(crater_power(1.0, 512.0), None, "concussion");
+        assert_eq!(crater_power(0.0, 256.0), None);
+        assert_eq!(crater_power(130.0, 0.0), None);
+        let frag = crater_power(130.0, 256.0).unwrap();
+        assert!((frag - 256.0 / 72.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_self_frag_still_hurts_its_thrower_with_minecraft_damage_queued_in_the_same_tick() {
+        let thrower = ClientId(3);
+        crate::voxel::push_player_damage(thrower.0, 35, None, None);
+        let frag = ExplosionBlast {
+            cone: None,
+            origin: [0.0; 3],
+            radius: FRAG.radius,
+            inner_damage: FRAG.inner,
+            outer_damage: FRAG.outer,
+            weapon: 7,
+            source: DamageSource::Projectile(crate::identities::ProjectileId(1)),
+            attacker: thrower,
+            attacker_life: LifeSequence(2),
+            killcam_entity_start_time: 0,
+        };
+        let attempt = radius_player_attempt(&frag, thrower, LifeSequence(2), ([0.0, 0.0, 36.0], [16.0, 16.0, 36.0]), 1.0)
+            .expect("the thrower is in its own blast");
+        assert_eq!((attempt.attacker, attempt.target, attempt.amount), (thrower, thrower, 130));
+        assert!(attempt.splash);
+        let queued = crate::voxel::take_player_damage();
+        assert!(queued.iter().any(|d| d.client == thrower.0 && d.amount == 35));
     }
 }

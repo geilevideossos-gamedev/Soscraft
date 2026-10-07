@@ -291,6 +291,11 @@ impl ServerSim {
         MobResult { sounds: outcome.sounds, slots, merchant: self.merchant_view(0) }
     }
 
+    pub fn mob_blast(&mut self, hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64>) {
+        let _ = self.mobs.player_blast(player, hit.id(), damage, glam::DVec3::from_array(center), f64::from(impact));
+        self.drop_death_loot();
+    }
+
     /// The player's trading screen as the client shows it.
     pub fn merchant_view(&mut self, player: u64) -> Option<MerchantView> {
         let menu = self.mobs.merchant_menu(player)?.clone();
@@ -1015,6 +1020,7 @@ pub enum Command {
     /// A player's hit (`attack`) or item use on a mob, with a copy of its
     /// inventory.
     MobAction { hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, infinite: bool },
+    MobBlast { hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64> },
     /// An operation on the player's trading screen.
     Merchant { op: MerchantOp, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, feet: [f64; 3] },
     /// One server tick, with the player's state for it.
@@ -1248,6 +1254,10 @@ impl ServerHandle {
         self.send(Command::MobAction { hit, attack, inventory: Box::new(inventory.clone()), selected, infinite });
     }
 
+    pub fn mob_blast(&mut self, hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64>) {
+        self.send(Command::MobBlast { hit, damage, center, impact, player });
+    }
+
     pub fn throw(&mut self, thrown: crate::thrown::Thrown) {
         self.send(Command::Throw(Box::new(thrown)));
     }
@@ -1330,6 +1340,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::MobAction { hit, attack, inventory, selected, infinite } => {
                     out.mob_results.push(sim.mob_action(hit, attack, *inventory, selected, infinite));
                 }
+                Command::MobBlast { hit, damage, center, impact, player } => sim.mob_blast(hit, damage, center, impact, player),
                 Command::Merchant { op, inventory, selected, feet } => {
                     out.merchant.push(sim.merchant(op, *inventory, selected, feet));
                 }
@@ -2541,6 +2552,24 @@ mod tests {
         assert_eq!(taken.iter().map(|(_, v)| v).sum::<i32>(), 5, "every orb is taken: {taken:?}");
         assert!(taken.windows(2).all(|w| w[1].0 - w[0].0 >= 2), "one orb every other tick at most: {taken:?}");
         assert!(server.orbs().is_empty());
+    }
+
+    #[test]
+    fn a_players_blast_kill_leaves_experience_and_a_bots_does_not() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        let zombie = |server: &mut ServerSim, x: f64| server.mobs.spawn_zombie(minecraftoss_entities::zombie::Zombie::new(glam::DVec3::new(x, 100.0, 0.5)), true);
+        let bots = zombie(&mut server, 0.5);
+        server.mob_blast(minecraftoss_entities::world::MobHit::Zombie(bots), 40.0, [0.5, 100.0, -1.5], 1.0, None);
+        assert!(server.mobs.zombies().iter().all(|z| z.id != bots || z.zombie.health <= 0.0));
+        assert!(server.orbs().is_empty());
+        let mine = zombie(&mut server, 8.5);
+        server.mob_blast(minecraftoss_entities::world::MobHit::Zombie(mine), 40.0, [8.5, 100.0, -1.5], 1.0, Some(0));
+        assert_eq!(server.orbs().iter().map(|o| o.value).sum::<i32>(), 5);
     }
 
     #[test]

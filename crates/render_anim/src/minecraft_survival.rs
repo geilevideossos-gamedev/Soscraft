@@ -860,6 +860,16 @@ mod tests {
     }
 
     #[test]
+    fn a_self_frag_lowers_hearts_even_with_minecraft_damage_queued_in_the_same_tick() {
+        let mut survival = fresh();
+        assert_eq!(survival.fall(10.0, Some("minecraft:stone"), false), 7);
+        assert_eq!(survival.settle(100, 100).damage, Some((35, None)));
+        survival.observe(100 - 35 - 61, 100);
+        assert!((survival.status.health - (13.0 - 61.0 / 5.0)).abs() < 1e-5);
+        assert_eq!(survival.settle(4, 100).damage, None);
+    }
+
+    #[test]
     fn mw2_health_regeneration_is_undone() {
         let mut survival = fresh();
         survival.observe(60, 100);
