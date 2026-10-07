@@ -127,6 +127,7 @@ pub struct Entity {
     pub lava_height: f64,
     /// `isEyeInFluid(WATER)`: the eyes are under a water surface.
     pub eye_in_water: bool,
+    pub remaining_fire_ticks: i32,
     /// `ItemEntity.target` / thrower are not tracked; merging compares none.
     _reserved: (),
 }
@@ -164,6 +165,7 @@ impl Entity {
             water_height: 0.0,
             lava_height: 0.0,
             eye_in_water: false,
+            remaining_fire_ticks: 0,
             _reserved: (),
         }
     }
@@ -344,7 +346,7 @@ fn corners_in_direction(a: [i32; 3], b: [i32; 3], direction: [f64; 3]) -> Vec<Bl
 }
 
 /// `AABB.clip(min, max, from, to)`: the entry point, if any.
-fn aabb_clip(min: [f64; 3], max: [f64; 3], from: [f64; 3], to: [f64; 3]) -> Option<[f64; 3]> {
+pub(super) fn aabb_clip(min: [f64; 3], max: [f64; 3], from: [f64; 3], to: [f64; 3]) -> Option<[f64; 3]> {
     let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
     let mut scale = 1.0;
     let mut hit = false;
@@ -748,9 +750,15 @@ impl Level<'_> {
     /// `Entity.baseTick` for entities that neither burn nor ride.
     fn base_tick(&mut self, e: &mut Entity) {
         self.update_fluid_interaction(e);
+        let item = matches!(e.kind, EntityKind::Item(_));
+        if item {
+            super::burning::item_fire_tick(e);
+        }
         if e.lava_height > 0.0 && !e.first_tick {
             e.fall_distance *= 0.5;
-            self.unsupported.push("entity in lava (fire)".to_owned());
+            if !item {
+                self.unsupported.push("entity in lava (fire)".to_owned());
+            }
         }
         if e.pos[1] < f64::from(self.min_y - 64) {
             e.removed = true;
@@ -1151,6 +1159,8 @@ impl Level<'_> {
             let state = self.block(pos);
             self.step_on(e, state, pos);
         }
+        let (was_on_fire, fire_before) = (super::burning::is_on_fire(e), e.remaining_fire_ticks);
+        let mut collector = super::burning::EffectCollector::default();
         let mut visited: HashSet<BlockPos> = HashSet::new();
         for movement in movements {
             let mut max_iterations = 16;
@@ -1164,21 +1174,25 @@ impl Level<'_> {
                         if delta[axis] != 0.0 {
                             let mut to = pos;
                             to[axis] += delta[axis];
-                            max_iterations -= self.check_inside_blocks(e, pos, to, &mut visited, max_iterations);
+                            max_iterations -= self.check_inside_blocks(e, pos, to, &mut visited, max_iterations, &mut collector);
                             pos = to;
                         }
                     }
                 }
-                _ => max_iterations -= self.check_inside_blocks(e, movement.from, movement.to, &mut visited, 16),
+                _ => max_iterations -= self.check_inside_blocks(e, movement.from, movement.to, &mut visited, 16, &mut collector),
             }
             if max_iterations <= 0 {
-                self.check_inside_blocks(e, movement.to, movement.to, &mut visited, 1);
+                self.check_inside_blocks(e, movement.to, movement.to, &mut visited, 1, &mut collector);
             }
+        }
+        let actions = collector.finish();
+        if matches!(e.kind, EntityKind::Item(_)) {
+            self.item_burn_effects(e, &actions, was_on_fire, fire_before);
         }
     }
 
     /// One segment of `Entity.checkInsideBlocks`; returns iterations used.
-    fn check_inside_blocks(&mut self, e: &mut Entity, from: [f64; 3], to: [f64; 3], visited: &mut HashSet<BlockPos>, max_iterations: i32) -> i32 {
+    fn check_inside_blocks(&mut self, e: &mut Entity, from: [f64; 3], to: [f64; 3], visited: &mut HashSet<BlockPos>, max_iterations: i32, collector: &mut super::burning::EffectCollector) -> i32 {
         let at_target = e.make_bounding_box(to).inflate(-f64::from(1.0e-5f32));
         let mut last = 0;
         for (pos, iteration) in blocks_intersected_between(from, to, &at_target) {
@@ -1190,10 +1204,26 @@ impl Level<'_> {
             if self.registries().blocks.is_air(state) {
                 continue;
             }
-            // `getEntityInsideCollisionShape` is the full block for every
-            // simulated block.
-            if visited.insert(pos) {
-                self.entity_inside(e, state, pos);
+            let travel = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+            let start = e.make_bounding_box(from);
+            let in_block = self.entity_inside_boxes(state, pos).is_none_or(|boxes| super::burning::collided_along_vector(&start, travel, &boxes));
+            let fluid = self.fluid_state(state).filter(|&f| {
+                let (x, y, z) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+                let surface = Aabb::new(x, y, z, x + 1.0, f64::from(pos.y as f32 + self.fluid_height_at(f, pos)), z + 1.0);
+                super::burning::collided_along_vector(&start, travel, &[surface])
+            });
+            if (in_block || fluid.is_some()) && visited.insert(pos) {
+                if in_block {
+                    collector.advance_step(iteration);
+                    self.entity_inside(e, state, pos, collector);
+                }
+                if let Some(f) = fluid {
+                    collector.advance_step(iteration);
+                    match f.kind {
+                        minecraftoss_core::block::FluidKind::Lava => collector.lava(),
+                        minecraftoss_core::block::FluidKind::Water => collector.extinguish(),
+                    }
+                }
             }
         }
         last + 1
@@ -1208,7 +1238,7 @@ impl Level<'_> {
     }
 
     /// `BlockBehaviour.entityInside`.
-    fn entity_inside(&mut self, e: &mut Entity, state: BlockStateId, pos: BlockPos) {
+    fn entity_inside(&mut self, e: &mut Entity, state: BlockStateId, pos: BlockPos, collector: &mut super::burning::EffectCollector) {
         let blocks = &self.registries().blocks;
         let info = blocks.block(blocks.block_of(state));
         if info.is_a("BasePressurePlateBlock") {
@@ -1216,6 +1246,19 @@ impl Level<'_> {
                 self.plate_check_pressed(pos, state, 0);
             }
             return;
+        }
+        if matches!(e.kind, EntityKind::Item(_)) {
+            if info.is_a("BaseFireBlock") {
+                collector.fire(if info.is_a("SoulFireBlock") { 2.0 } else { 1.0 });
+                return;
+            }
+            if info.is_a("LavaCauldronBlock") {
+                collector.lava();
+                return;
+            }
+            if info.is_a("CampfireBlock") {
+                return;
+            }
         }
         const CALLBACKS: [&str; 22] = [
             "BaseFireBlock", "BigDripleafBlock", "BubbleColumnBlock", "ButtonBlock", "CactusBlock", "CampfireBlock", "CropBlock", "DetectorRailBlock",

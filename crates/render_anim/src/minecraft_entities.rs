@@ -72,6 +72,7 @@ pub(crate) struct Entities {
     pub(crate) world_items: WorldItems,
     /// Client drops handed to the server: the command count that sent each.
     server_handed: HashMap<u32, (u64, ItemEntity)>,
+    burning_items: Vec<u32>,
     /// Stacks the server let the player pick up, not yet in the inventory.
     server_picked: Vec<(i32, [f64; 3], String, i32, Option<String>)>,
     server_snapshot: Option<EntitySnapshot>,
@@ -192,6 +193,7 @@ impl Entities {
             selected: 0,
             world_items: WorldItems::default(),
             server_handed: HashMap::new(),
+            burning_items: Vec::new(),
             server_picked: Vec::new(),
             server_snapshot: None,
             server_handled: 0,
@@ -350,6 +352,7 @@ impl Entities {
             return;
         };
         let recipes = self.inventory.recipes.clone();
+        self.burning_items = snapshot.items.iter().filter(|item| item.on_fire).map(|item| mirrored(item.id)).collect();
         self.world_items.entities = snapshot
             .items
             .into_iter()
@@ -783,6 +786,7 @@ impl Entities {
             &mut out.items,
             w.burning()
                 .into_iter()
+                .chain(self.world_items.entities.iter().filter(|e| self.burning_items.contains(&e.entity_id)).map(|e| (e.previous_position, e.position, 0.25, 0.25)))
                 .map(|(previous, now, width, height)| (previous.lerp(now, f64::from(partial)), width, height)),
             atlas,
             forward,

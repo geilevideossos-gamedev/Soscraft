@@ -1283,6 +1283,7 @@ pub fn level_entity_tags(level: &Level<'static>, keep: impl Fn(DVec3) -> bool) -
             map.insert("Age".into(), Tag::Short(item.age.clamp(-32768, 32767) as i16));
             map.insert("PickupDelay".into(), Tag::Short(item.pickup_delay.clamp(-32768, 32767) as i16));
             map.insert("Health".into(), Tag::Short(item.health as i16));
+            map.insert("Fire".into(), Tag::Short(e.remaining_fire_ticks.clamp(-32768, 32767) as i16));
         } else if let Some(orb) = e.orb_data() {
             map.insert("id".into(), Tag::String("minecraft:experience_orb".into()));
             map.insert("Value".into(), Tag::Short(orb.value as i16));
@@ -1307,7 +1308,13 @@ pub fn load_level_entity(level: &mut Level<'static>, tag: &Tag) -> bool {
             let (Some(id), count) = (text(item, "id"), int(item, "count").unwrap_or(1)) else { return true };
             let mut stack = minecraftoss_core::item::ItemStack::new(id, count);
             stack.components = item.get("components").cloned();
-            level.spawn_item_with(pos.to_array(), stack, motion, int(tag, "PickupDelay").unwrap_or(0), int(tag, "Age").unwrap_or(0));
+            let id = level.spawn_item_with(pos.to_array(), stack, motion, int(tag, "PickupDelay").unwrap_or(0), int(tag, "Age").unwrap_or(0));
+            if let Some(e) = level.entities.iter_mut().find(|e| e.id == id) {
+                e.remaining_fire_ticks = int(tag, "Fire").unwrap_or(0);
+                if let minecraftoss_world::level::entity::EntityKind::Item(data) = &mut e.kind {
+                    data.health = int(tag, "Health").unwrap_or(5);
+                }
+            }
             true
         }
         Some("minecraft:experience_orb") => {

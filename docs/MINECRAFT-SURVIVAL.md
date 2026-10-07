@@ -56,6 +56,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 - Snowballs, eggs and ender pearls. Sweet and glow berries.
 - Campfire cooking: 4 slots, 30 s per item, nothing cooks while unlit.
 - Spawn eggs for every simulated mob.
+- Dropped items burn up in fire, soul fire and lava, and lava sizzles. Netherite gear and ancient debris never burn and float on lava. Lit campfires leave items alone, as in vanilla.
 
 ### World simulation (integrated server thread)
 - Fluids flow, and lava meeting water hardens. Fire spreads. TNT explodes.
@@ -129,6 +130,7 @@ The MW2 netcode is host-authoritative and goes through the `iw4l-master` QUIC re
 - Buckets and flint and steel wait for the server, with no client prediction.
 - No Unbreaking on flint and steel, and lava doesn't set blocks on fire.
 - Books can't be placed on a lectern.
+- A shulker box or bundle that burns as an item loses its contents instead of spilling them. Experience orbs don't burn. A burning item keeps burning in a water cauldron.
 - Trapped chests give no redstone signal.
 - Redstone covers only levers, buttons and the powered sounds of doors, trapdoors and gates.
 - Spawn eggs for unsimulated mobs (fox, rabbit, goat and others) spawn nothing, and the egg is kept. Clicking a spawner with an egg doesn't change its mob.

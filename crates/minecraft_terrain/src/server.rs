@@ -127,6 +127,7 @@ pub struct ServerItem {
     pub age: i32,
     pub pickup_delay: i32,
     pub on_ground: bool,
+    pub on_fire: bool,
 }
 
 /// A falling block entity as the client shows it.
@@ -937,6 +938,7 @@ impl ServerSim {
                 age: d.age,
                 pickup_delay: d.pickup_delay,
                 on_ground: e.on_ground,
+                on_fire: minecraftoss_world::level::burning::is_on_fire(e),
             })
             .collect()
     }
@@ -1405,6 +1407,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.potion_breaks.extend(sim.mobs.take_potion_breaks());
                     out.explosions.extend(sim.take_explosions());
                     out.mob_sounds.extend(sim.mobs.take_sounds());
+                    out.mob_sounds.extend(sim.level.sounds.drain(..).map(|s| minecraftoss_entities::world::MobSound { event: s.event.to_owned(), position: glam::DVec3::from_array(s.pos), volume: s.volume, pitch: s.pitch, category: "ambient" }));
                     sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
                     out.mobs = Some(Box::new(sim.tracked_mobs(input.tracking.0, input.tracking.1)));
                     out.weather = Some(sim.weather(input.players.first().copied()));
@@ -3416,5 +3419,137 @@ mod tests {
         assert_eq!(beside, Some((7, 200, 5)), "a crouched click on the side of a chest places against it");
         let joined: Vec<_> = [(7, 200, 5), (6, 200, 5)].iter().map(|&at| Scene::block(&scene, at).map(|b| (b.properties["facing"].clone(), b.properties["type"].clone()))).collect();
         assert_eq!(joined, vec![Some(("south".to_owned(), "left".to_owned())), Some(("south".to_owned(), "right".to_owned()))]);
+    }
+
+    fn burn_world() -> Option<(ServerSim, HandcraftedScene)> {
+        let (mut server, mut scene) = door_world()?;
+        for x in 2..=14 {
+            for z in 2..=14 {
+                place(&mut server, &mut scene, (x, 200, z), Block::new("minecraft:stone"));
+            }
+        }
+        server.take_changes();
+        Some((server, scene))
+    }
+
+    fn lava_pool(server: &mut ServerSim, scene: &mut HandcraftedScene, centre: BlockPos) {
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                let at = (centre.0 + dx, centre.1, centre.2 + dz);
+                if at != centre {
+                    place(server, scene, at, Block::new("minecraft:stone"));
+                }
+            }
+        }
+        place(server, scene, centre, Block::new("minecraft:lava").with("level", "0"));
+        server.take_changes();
+    }
+
+    fn burn_sounds(server: &ServerSim) -> Vec<&minecraftoss_world::level::burning::LevelSound> {
+        server.level.sounds.iter().filter(|s| s.event == "minecraft:entity.generic.burn").collect()
+    }
+
+    fn alive(server: &ServerSim, id: i32) -> Option<ServerItem> {
+        server.items().into_iter().find(|i| i.id == id)
+    }
+
+    #[test]
+    fn lava_burns_a_dropped_item_with_a_sizzle() {
+        let Some((mut server, mut scene)) = burn_world() else { return };
+        lava_pool(&mut server, &mut scene, (8, 201, 8));
+        let id = server.spawn_item("minecraft:cobblestone", 3, None, [8.5, 202.5, 8.5], [0.0; 3], 10, 0);
+        let mut ticks = 0;
+        while alive(&server, id).is_some() && ticks < 40 {
+            server.tick();
+            ticks += 1;
+        }
+        assert!(alive(&server, id).is_none(), "the item should burn up in lava");
+        let sounds = burn_sounds(&server);
+        assert!(!sounds.is_empty(), "{:?}", server.level.sounds);
+        assert!(sounds.iter().all(|s| s.volume == 0.4 && (2.0..2.4).contains(&s.pitch)), "{sounds:?}");
+    }
+
+    #[test]
+    fn netherite_floats_on_lava_and_survives() {
+        let Some((mut server, mut scene)) = burn_world() else { return };
+        lava_pool(&mut server, &mut scene, (5, 201, 5));
+        lava_pool(&mut server, &mut scene, (11, 201, 11));
+        let ingot = server.spawn_item("minecraft:netherite_ingot", 1, None, [5.5, 202.5, 5.5], [0.0; 3], 10, 0);
+        let debris = server.spawn_item("minecraft:ancient_debris", 1, None, [11.5, 202.5, 11.5], [0.0; 3], 10, 0);
+        for _ in 0..200 {
+            server.tick();
+        }
+        let mut heights = Vec::new();
+        for _ in 0..100 {
+            server.tick();
+            for id in [ingot, debris] {
+                let item = alive(&server, id).expect("fire-resistant items survive lava");
+                assert!(!item.on_fire);
+                heights.push(item.position[1]);
+            }
+        }
+        let (low, high) = heights.iter().fold((f64::MAX, f64::MIN), |(lo, hi), &y| (lo.min(y), hi.max(y)));
+        assert!(low > 201.4 && high < 202.0 && high > 201.7, "{low} {high}");
+        assert!(burn_sounds(&server).is_empty());
+    }
+
+    #[test]
+    fn fire_and_soul_fire_burn_items_silently() {
+        let Some((mut server, mut scene)) = burn_world() else { return };
+        place(&mut server, &mut scene, (5, 201, 5), Block::new("minecraft:netherrack"));
+        place(&mut server, &mut scene, (5, 202, 5), Block::new("minecraft:fire"));
+        place(&mut server, &mut scene, (11, 201, 11), Block::new("minecraft:soul_sand"));
+        place(&mut server, &mut scene, (11, 202, 11), Block::new("minecraft:soul_fire"));
+        place(&mut server, &mut scene, (8, 201, 11), Block::new("minecraft:netherrack"));
+        place(&mut server, &mut scene, (8, 202, 11), Block::new("minecraft:fire"));
+        server.take_changes();
+        let log = server.spawn_item("minecraft:oak_log", 64, None, [5.5, 202.0, 5.5], [0.0; 3], 10, 0);
+        let flesh = server.spawn_item("minecraft:rotten_flesh", 1, None, [11.5, 202.2, 11.5], [0.0; 3], 10, 0);
+        let ingot = server.spawn_item("minecraft:netherite_ingot", 1, None, [8.5, 202.0, 11.5], [0.0; 3], 10, 0);
+        server.tick();
+        assert!(alive(&server, log).is_some_and(|i| i.on_fire), "an item in fire burns");
+        for _ in 0..9 {
+            server.tick();
+        }
+        assert!(alive(&server, log).is_none() && alive(&server, flesh).is_none(), "{:?}", server.items());
+        for _ in 0..30 {
+            server.tick();
+        }
+        assert!(alive(&server, ingot).is_some_and(|i| !i.on_fire));
+        assert!(server.level.sounds.is_empty(), "{:?}", server.level.sounds);
+    }
+
+    #[test]
+    fn a_lit_campfire_leaves_items_alone() {
+        let Some((mut server, mut scene)) = burn_world() else { return };
+        place(&mut server, &mut scene, (8, 201, 8), Block::new("minecraft:campfire"));
+        server.take_changes();
+        let at = minecraftoss_core::BlockPos::new(8, 201, 8);
+        assert_eq!(server.level.registries().blocks.property(server.level.block(at), "lit"), Some("true"));
+        let id = server.spawn_item("minecraft:cobblestone", 1, None, [8.5, 201.6, 8.5], [0.0; 3], 10, 0);
+        for _ in 0..100 {
+            server.tick();
+        }
+        assert!(alive(&server, id).is_some_and(|i| !i.on_fire && i.position[1] < 201.5));
+        assert!(server.level.sounds.is_empty());
+    }
+
+    #[test]
+    fn a_saved_burning_item_keeps_its_fire_and_health() {
+        let Some((mut server, mut scene)) = burn_world() else { return };
+        place(&mut server, &mut scene, (5, 201, 5), Block::new("minecraft:netherrack"));
+        place(&mut server, &mut scene, (5, 202, 5), Block::new("minecraft:fire"));
+        server.take_changes();
+        let id = server.spawn_item("minecraft:oak_log", 1, None, [5.5, 202.0, 5.5], [0.0; 3], 10, 0);
+        server.tick();
+        let state = |server: &ServerSim| server.level.entities.iter().find(|e| e.item_data().is_some()).map(|e| (e.remaining_fire_ticks, e.item_data().map_or(0, |d| d.health)));
+        let before = state(&server);
+        assert_eq!(before, Some((160, 4)), "{:?}", alive(&server, id));
+        let tags = crate::server_mobs::level_entity_tags(&server.level, |_| true);
+        server.level.entities.clear();
+        for tag in &tags {
+            assert!(crate::server_mobs::load_level_entity(&mut server.level, tag));
+        }
+        assert_eq!(state(&server), before);
     }
 }

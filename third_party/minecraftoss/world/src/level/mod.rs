@@ -8,6 +8,7 @@
 //! Implemented behaviours so far: liquid blocks and flowing fluids, and
 //! redstone components (`redstone`).
 
+pub mod burning;
 pub mod container;
 pub mod dispenser;
 pub mod drops;
@@ -137,6 +138,7 @@ pub struct Level<'a> {
     dispensing_slot: Option<usize>,
     /// Behaviours that ran but are not simulated yet.
     pub unsupported: Vec<String>,
+    pub sounds: Vec<burning::LevelSound>,
     /// Time, weather and sky light, once `set_dimension` has run.
     pub sky: Option<time::Sky>,
     /// Entities in tick order (`entityTickList`).
@@ -249,6 +251,7 @@ impl<'a> Level<'a> {
             hopper_ticked: HashMap::new(),
             dispensing_slot: None,
             unsupported: Vec::new(),
+            sounds: Vec::new(),
             sky: None,
             entities: Vec::new(),
             spawned: Vec::new(),
