@@ -348,6 +348,7 @@ fn publish_client_action_input(
     }
     let script_menu = script_menus.is_some_and(|menus| menus.captures_input());
     let minecraft_map = minecraft.as_ref().is_some_and(|ui| ui.active);
+    let minecraft_item_in_hand = minecraft.as_ref().is_some_and(|ui| ui.active && ui.holding_item);
     let inventory_open = minecraft.is_some_and(|ui| ui.active && ui.inventory_open);
     skate.input_blocked = console.open || script_menu;
     // J, or clicking both sticks in together, toggles skating.
@@ -383,7 +384,9 @@ fn publish_client_action_input(
         && matches!(binds.binding_name(f_key), Some("+activate" | "+usereload"));
     let mut current = [0; input_iw4::KEY_COUNT];
     for (button, id) in binds.iter() {
-        let id = if minecraft_map && !hud_input.f_key_activates && button == f_key {
+        let id = if button == f_key
+            && minecraft_takes_f(minecraft_map, minecraft_item_in_hand, inventory_open, hud_input.f_key_activates)
+        {
             0
         } else {
             crate::binds::gameplay_binding(button, id, akimbo)
@@ -2350,6 +2353,10 @@ fn update_console_ui(
     }
 }
 
+fn minecraft_takes_f(minecraft_map: bool, item_in_hand: bool, screen_open: bool, f_key_activates: bool) -> bool {
+    minecraft_map && (screen_open || (item_in_hand && !f_key_activates))
+}
+
 fn suggest_span_bundle(span: &SuggestSpan, font: Handle<Font>) -> impl Bundle {
     (
         TextSpan::new(span.text.clone()),
@@ -2366,4 +2373,19 @@ fn suggest_span_bundle(span: &SuggestSpan, font: Handle<Font>) -> impl Bundle {
         }),
         TextBackgroundColor(COLOR_SUGGEST_BG),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::minecraft_takes_f;
+
+    #[test]
+    fn f_swaps_hands_only_while_a_minecraft_item_is_in_hand() {
+        assert!(minecraft_takes_f(true, true, false, false));
+        assert!(!minecraft_takes_f(true, false, false, false));
+        assert!(!minecraft_takes_f(true, true, false, true));
+        assert!(minecraft_takes_f(true, false, true, false));
+        assert!(!minecraft_takes_f(false, true, false, false));
+        assert!(!minecraft_takes_f(false, false, true, false));
+    }
 }

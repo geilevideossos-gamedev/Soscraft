@@ -73,6 +73,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 
 ### MW2 integration and UI
 - [upstream] Guns sit in the hotbar with unlimited ammo. Skate 3 works on block collision.
+- F keeps its MW2 binding (the lethal grenade: frag, semtex, C4 or claymore) while a gun is in hand. With a Minecraft item or an empty hand selected, or a Minecraft screen open, F swaps hands like vanilla, unless a use hint shows and F is bound to MW2 use.
 - Guns left in a crafting grid are not duplicated. Esc closes a Minecraft screen. The Skate toggle is blocked while a screen is open.
 - Options: the Minecraft minimap (M), Show Blood, and an Advanced Video page that replaces the Video page.
 - The loading screen stays up like vanilla's until the 7x7 spawn chunks have collision and the camera's section is drawn (0.5 s close delay, 30 s timeout). Every MW2 spawn and respawn lands on the Minecraft spawn, or on the nearest free dry column within 10 blocks when someone stands there. A player in that area waits in place until the ground under it has collision.
