@@ -385,6 +385,29 @@ pub fn block_particle_texture(pack: &PackStack, block: &Block) -> Result<Option<
     resolve_texture(particle, textures, &model_id.namespace).map(Some)
 }
 
+pub fn item_particle_texture(pack: &PackStack, item: &ResourceId) -> Result<Option<ResourceId>> {
+    let Some(definition) = pack.item_definition(item)? else {
+        return Ok(None);
+    };
+    let Some(reference) = crate::interface::item_model_reference(&definition["model"]) else {
+        return Ok(None);
+    };
+    let model_id = ResourceId::parse(reference)?;
+    let model = load_parented(pack, &model_id, &mut HashSet::new())?;
+    let Some(textures) = model.get("textures").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    let generated = model.get("builtin").and_then(Value::as_str) == Some("generated");
+    let particle = if textures.contains_key("particle") {
+        "#particle"
+    } else if generated && textures.contains_key("layer0") {
+        "#layer0"
+    } else {
+        return Ok(None);
+    };
+    resolve_texture(particle, textures, &model_id.namespace).map(Some)
+}
+
 /// Resolve each weighted blockstate alternative once. The mesh picks one
 /// using Minecraft's position seed; the pack may replace these choices.
 pub fn resolve_block_variants(
@@ -985,6 +1008,48 @@ mod tests {
         assert!((center.x - 1.13 / 16.0).abs() < 1e-5);
         assert!((center.y - 3.2 / 16.0).abs() < 1e-5);
         assert!((center.z - 1.13 / 16.0).abs() < 1e-5);
+    }
+    #[test]
+    fn item_particles_use_the_particle_texture_or_the_first_generated_layer() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        for (name, contents) in [
+            ("pack.mcmeta", r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#),
+            ("assets/test/items/bread.json", r#"{"model":{"type":"minecraft:model","model":"test:item/bread"}}"#),
+            ("assets/test/models/item/bread.json", r#"{"parent":"test:item/generated","textures":{"layer0":"test:item/bread","layer1":"test:item/crust"}}"#),
+            ("assets/test/models/item/generated.json", r#"{"parent":"builtin/generated"}"#),
+            ("assets/test/items/pie.json", r#"{"model":{"type":"minecraft:model","model":"test:item/pie"}}"#),
+            ("assets/test/models/item/pie.json", r##"{"parent":"test:item/generated","textures":{"particle":"#crumb","crumb":"test:item/pie_crumb","layer0":"test:item/pie"}}"##),
+            ("assets/test/items/block.json", r#"{"model":{"type":"minecraft:model","model":"test:block/plain"}}"#),
+            ("assets/test/models/block/plain.json", r#"{"textures":{"all":"test:block/plain"}}"#),
+        ] {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+        let pack = PackStack::open(vec![root.into()]).unwrap();
+        let particle = |id: &str| item_particle_texture(&pack, &ResourceId::parse(id).unwrap()).unwrap().map(|texture| texture.key());
+        assert_eq!(particle("test:bread").as_deref(), Some("test:item/bread"));
+        assert_eq!(particle("test:pie").as_deref(), Some("test:item/pie_crumb"));
+        assert_eq!(particle("test:block"), None);
+        assert_eq!(particle("test:missing"), None);
+    }
+    #[test]
+    fn every_vanilla_food_has_an_item_particle_texture() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = PackStack::open(vec![pack]).unwrap();
+        for id in minecraftoss_player::food::catalog().keys() {
+            let texture = item_particle_texture(&packs, &ResourceId::parse(id).unwrap()).unwrap();
+            assert!(texture.is_some_and(|texture| packs.texture(&texture).unwrap().is_some()), "{id}");
+        }
+        let bread = item_particle_texture(&packs, &ResourceId::parse("minecraft:bread").unwrap()).unwrap();
+        assert_eq!(bread.map(|texture| texture.key()).as_deref(), Some("minecraft:item/bread"));
     }
     #[test]
     fn the_left_hand_takes_the_nearest_hand_display_and_mirrors_it() {

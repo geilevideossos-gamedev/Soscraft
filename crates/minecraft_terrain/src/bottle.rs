@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 pub const GLASS_BOTTLE: &str = "minecraft:glass_bottle";
 pub const POTION: &str = "minecraft:potion";
+pub const MILK_BUCKET: &str = "minecraft:milk_bucket";
 pub const FILL_SOUND: &str = "minecraft:item.bottle.fill";
 pub const EMPTY_SOUND: &str = "minecraft:item.bottle.empty";
 pub const SPLASH_SOUND: &str = "minecraft:entity.generic.splash";
@@ -117,6 +118,12 @@ pub fn drink(slot: usize, stack: &ItemStack) -> FoodUse {
         },
         elapsed_ticks: 0,
     }
+}
+
+pub fn drink_milk(slot: usize, stack: &ItemStack) -> FoodUse {
+    let mut using = drink(slot, stack);
+    using.info.remainder = Some(ItemStack::new(crate::bucket::BUCKET, 1));
+    using
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -374,5 +381,29 @@ mod tests {
             inventory.slots[0].as_ref().map(|s| s.id.as_str()),
             Some(GLASS_BOTTLE)
         );
+    }
+
+    #[test]
+    fn milk_is_drunk_like_a_potion_and_leaves_the_bucket() {
+        let mut inventory = Inventory::default();
+        inventory.slots[3] = Some(ItemStack::new(MILK_BUCKET, 1));
+        let mut food = minecraftoss_player::survival::FoodData::default();
+        let mut using = drink_milk(3, inventory.slots[3].as_ref().unwrap());
+        assert_eq!(using.info.consume_ticks, 32);
+        assert_eq!(using.info.animation, "drink");
+        assert_eq!(using.info.sound, "entity.generic.drink");
+        assert!(!using.info.particles);
+        for _ in 1..32 {
+            assert!(matches!(
+                using.tick(&mut inventory, &mut food, minecraftoss_player::GameMode::Survival),
+                minecraftoss_player::food::FoodUseTick::Continuing { .. }
+            ));
+        }
+        assert!(matches!(
+            using.tick(&mut inventory, &mut food, minecraftoss_player::GameMode::Survival),
+            minecraftoss_player::food::FoodUseTick::Finished { overflow: None }
+        ));
+        assert_eq!(inventory.slots[3].as_ref().map(|s| s.id.as_str()), Some(crate::bucket::BUCKET));
+        assert_eq!(food.level, 20);
     }
 }

@@ -587,6 +587,9 @@ impl Survival {
                 if let Some(potion) = potion {
                     self.drink_potion(&potion);
                 }
+                if id == minecraft_terrain::bottle::MILK_BUCKET {
+                    self.clear_effects();
+                }
                 let fed = minecraftoss_player::food::catalog().contains_key(&id);
                 Bite::Done {
                     sound,
@@ -612,6 +615,14 @@ impl Survival {
             }
         }
         self.status.health = 1.0;
+        self.clear_effects();
+        self.status.add_effect(EffectKind::Regeneration, 900, 1);
+        self.status.add_effect(EffectKind::Absorption, 100, 1);
+        self.status.add_effect(EffectKind::FireResistance, 800, 0);
+        true
+    }
+
+    fn clear_effects(&mut self) {
         for kind in [
             EffectKind::Hunger,
             EffectKind::Poison,
@@ -625,10 +636,6 @@ impl Survival {
         ] {
             self.status.remove_effect(kind);
         }
-        self.status.add_effect(EffectKind::Regeneration, 900, 1);
-        self.status.add_effect(EffectKind::Absorption, 100, 1);
-        self.status.add_effect(EffectKind::FireResistance, 800, 0);
-        true
     }
 
     pub(crate) fn vitals(&self) -> frame::McVitals {
@@ -1218,6 +1225,51 @@ mod tests {
         }
         assert_eq!(survival.status.absorption, 4.0);
         assert!(survival.vitals().regen_index >= 0);
+    }
+
+    #[test]
+    fn milk_clears_every_effect_when_finished_without_a_burp() {
+        let mut survival = fresh();
+        survival.status.add_effect(EffectKind::Poison, 400, 1);
+        survival.status.add_effect(EffectKind::Absorption, 2400, 0);
+        let mut inventory = Inventory::default();
+        inventory.slots[40] = Some(ItemStack::new(minecraft_terrain::bottle::MILK_BUCKET, 1));
+        let milk = inventory.slots[40].clone().expect("milk");
+        survival.start_using(minecraft_terrain::bottle::drink_milk(40, &milk));
+        let using = survival.eating().expect("drinking");
+        assert!(using.info.animation.eq_ignore_ascii_case("drink"));
+        assert!(!using.info.particles);
+        for _ in 1..32 {
+            assert!(!matches!(survival.chew(&mut inventory, 4, || 0.5), Bite::Done { .. }));
+        }
+        assert!(survival.status.effect(EffectKind::Poison).is_some());
+        let done = survival.chew(&mut inventory, 4, || 0.5);
+        assert_eq!(done, Bite::Done { sound: "minecraft:entity.generic.drink".to_owned(), overflow: None, fed: false });
+        assert_eq!(survival.status.effect(EffectKind::Poison), None);
+        assert_eq!(survival.status.absorption, 0.0);
+        assert_eq!(inventory.slots[40].as_ref().map(|s| s.id.as_str()), Some("minecraft:bucket"));
+    }
+
+    #[test]
+    fn eating_and_drinking_report_their_animation_and_crumbs() {
+        let mut survival = fresh();
+        survival.status.food.level = 4;
+        let bread = ItemStack::new("minecraft:bread", 1);
+        assert!(survival.start_eating(0, &bread));
+        let using = survival.eating().expect("eating");
+        assert!(using.info.animation.eq_ignore_ascii_case("eat"));
+        assert!(using.info.particles);
+        survival.stop_eating();
+        let honey = ItemStack::new("minecraft:honey_bottle", 1);
+        assert!(survival.start_eating(0, &honey));
+        let using = survival.eating().expect("drinking");
+        assert!(using.info.animation.eq_ignore_ascii_case("drink"));
+        assert!(!using.info.particles);
+        assert_eq!(using.info.consume_ticks, 40);
+        survival.stop_eating();
+        let kelp = ItemStack::new("minecraft:dried_kelp", 1);
+        assert!(survival.start_eating(0, &kelp));
+        assert_eq!(survival.eating().expect("eating").info.consume_ticks, 16);
     }
 
     #[test]

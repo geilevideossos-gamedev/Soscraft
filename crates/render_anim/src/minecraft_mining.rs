@@ -213,6 +213,15 @@ impl Mining {
         }
     }
 
+    pub(crate) fn eat_burst(&mut self, packs: &PackStack, eye: glam::Vec3, yaw: f32, pitch: f32, count: u32, texture: &ResourceId) {
+        if self.particles.is_none() {
+            self.particles = BlockParticles::new(packs).ok();
+        }
+        if let Some(particles) = self.particles.as_mut() {
+            particles.spawn_eating(eye, yaw, pitch, count, texture);
+        }
+    }
+
     /// Steps the break particles at 20 ticks a second.
     pub(crate) fn tick(&mut self, scene: &HandcraftedScene, dt: f64) -> f32 {
         self.tick_clock += dt;

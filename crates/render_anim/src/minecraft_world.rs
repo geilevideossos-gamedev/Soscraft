@@ -815,9 +815,9 @@ fn update(
             }
         }
         for _ in 0..hand_ticks {
-            if survival.eating().is_none() {
+            let Some((drinking, crumbs, item)) = survival.eating().map(|eating| (eating.info.animation.eq_ignore_ascii_case("drink"), eating.info.particles, eating.stack.id.clone())) else {
                 break;
-            }
+            };
             let roll = entities.random_float();
             let bite = survival.chew(&mut entities.inventory, entities.selected, || roll);
             let (sound, finished) = match bite {
@@ -825,10 +825,19 @@ fn update(
                 crate::minecraft_survival::Bite::Chew(sound) => (sound, None),
                 crate::minecraft_survival::Bite::Done { sound, overflow, fed } => (sound, Some((overflow, fed))),
             };
+            if crumbs
+                && let Some(texture) = minecraft_terrain::pack::ResourceId::parse(&item)
+                    .ok()
+                    .and_then(|id| minecraft_terrain::model::item_particle_texture(&world.packs, &id).ok().flatten())
+                    .filter(|texture| world.atlas.contains(texture))
+            {
+                let count = if finished.is_some() { 16 } else { 5 };
+                mining.eat_burst(&world.packs, eye_block.as_vec3(), mc_yaw, ps.viewangles[0], count, &texture);
+            }
             let (r1, r2) = (entities.random_float(), entities.random_float());
             if let Some(sounds) = sounds.as_mut() {
-                let volume = if r1 < 0.5 { 0.5 } else { 1.0 };
-                sounds.play(&world.packs, &sound, None, volume, (r1 - r2) * 0.2 + 1.0);
+                let (volume, pitch) = if drinking { (0.5, r1 * 0.1 + 0.9) } else { (if r1 < 0.5 { 0.5 } else { 1.0 }, (r1 - r2) * 0.2 + 1.0) };
+                sounds.play(&world.packs, &sound, None, volume, pitch);
             }
             if let Some((overflow, fed)) = finished {
                 if let Some(sounds) = sounds.as_mut().filter(|_| fed) {
@@ -1094,6 +1103,9 @@ fn update(
                 HandUse::Consumed
             } else if let Some(stack) = held.as_ref().filter(|s| !placeable && minecraftoss_player::food::catalog().contains_key(&s.id)) {
                 if survival.start_eating(slot, stack) { HandUse::Consumed } else { HandUse::Passed }
+            } else if let Some(stack) = held.as_ref().filter(|s| s.id == minecraft_terrain::bottle::MILK_BUCKET) {
+                survival.start_using(minecraft_terrain::bottle::drink_milk(slot, stack));
+                HandUse::Consumed
             } else if held.as_ref().is_some_and(|stack| stack.id == crate::minecraft_offhand::SHIELD) {
                 hand.blocking = Some(crate::minecraft_offhand::Blocking::start(slot));
                 HandUse::Consumed
@@ -1669,8 +1681,12 @@ fn update(
                     .ok()
                     .and_then(|id| minecraft_terrain::model::item_hand_transform(&world.packs, &id, arm < 0.0, using).ok())
                     .unwrap_or(glam::Mat4::IDENTITY);
-                let swung = if using || hand.swing_offhand != (slot == crate::minecraft_offhand::OFFHAND) { 0.0 } else { swing };
-                posed.push((crate::minecraft_hand::item_pose(display, swung, 0.0, arm), stack.id));
+                let eat = survival
+                    .eating()
+                    .filter(|eating| eating.slot == slot)
+                    .map(|eating| crate::minecraft_hand::eat_transform(eating.remaining_ticks() as f32, (hand.clock / TICK_SECONDS) as f32, eating.info.consume_ticks, arm));
+                let swung = if using || eat.is_some() || hand.swing_offhand != (slot == crate::minecraft_offhand::OFFHAND) { 0.0 } else { swing };
+                posed.push((eat.unwrap_or(glam::Mat4::IDENTITY) * crate::minecraft_hand::item_pose(display, swung, 0.0, arm), stack.id));
             }
             let mesh = entities.held_item_mesh(&posed, eye_light_at, &world.packs, &world.atlas, light);
             let vertices: Vec<minecraft_terrain::mesh::SectionVertex> =

@@ -18,7 +18,7 @@ const WEAR_BASE: f32 = 1.0;
 const WEAR_FACTOR: f32 = 1.0;
 const REDUCTION_BASE: f32 = 0.0;
 const REDUCTION_FACTOR: f32 = 1.0;
-const USED_ITEMS: [&str; 9] = [
+const USED_ITEMS: [&str; 10] = [
     "minecraft:bucket",
     "minecraft:water_bucket",
     "minecraft:lava_bucket",
@@ -27,6 +27,7 @@ const USED_ITEMS: [&str; 9] = [
     "minecraft:bone_meal",
     "minecraft:glass_bottle",
     "minecraft:potion",
+    minecraft_terrain::bottle::MILK_BUCKET,
     SHIELD,
 ];
 
@@ -251,6 +252,7 @@ mod tests {
         ));
         assert!(has_use(&stack("minecraft:snowball"), false, &full));
         assert!(has_use(&stack("minecraft:water_bucket"), false, &full));
+        assert!(has_use(&stack("minecraft:milk_bucket"), false, &full));
         assert!(has_use(&stack("minecraft:zombie_spawn_egg"), false, &full));
         assert!(!has_use(&stack(TOTEM), false, &hungry));
         assert!(!has_use(&stack("minecraft:stick"), false, &hungry));

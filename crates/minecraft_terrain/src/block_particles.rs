@@ -155,6 +155,44 @@ impl BlockParticles {
         Ok(true)
     }
 
+    pub fn spawn_eating(
+        &mut self,
+        eye: Vec3,
+        yaw: f32,
+        pitch: f32,
+        count: u32,
+        texture: &ResourceId,
+    ) {
+        let (pitch_sin, pitch_cos) = (-pitch.to_radians()).sin_cos();
+        let (yaw_sin, yaw_cos) = (-yaw.to_radians()).sin_cos();
+        let turn = |v: Vec3| {
+            let y = v.y * pitch_cos + v.z * pitch_sin;
+            let z = v.z * pitch_cos - v.y * pitch_sin;
+            Vec3::new(v.x * yaw_cos + z * yaw_sin, y, z * yaw_cos - v.x * yaw_sin)
+        };
+        for _ in 0..count {
+            let velocity = turn(Vec3::new(
+                (self.random() - 0.5) * 0.1,
+                self.random() * 0.1 + 0.1,
+                0.0,
+            ));
+            let offset = turn(Vec3::new(
+                (self.random() - 0.5) * 0.3,
+                -self.random() * 0.6 - 0.3,
+                0.6,
+            ));
+            self.spawn_item(eye + offset, velocity + Vec3::Y * 0.05, texture.clone());
+        }
+    }
+
+    fn spawn_item(&mut self, position: Vec3, velocity: Vec3, texture: ResourceId) {
+        self.spawn_fragment(position, Vec3::ZERO, texture, [1.0; 3]);
+        if let Some(fragment) = self.fragments.last_mut() {
+            fragment.velocity = fragment.velocity * 0.1 + velocity;
+            fragment.color = [1.0; 3];
+        }
+    }
+
     fn spawn_box(
         &mut self,
         pos: BlockPos,
@@ -432,6 +470,34 @@ mod tests {
             particles.fragments[63].position,
             Vec3::new(3.875, 4.875, 5.875)
         );
+    }
+
+    #[test]
+    fn eating_crumbs_fall_white_from_below_the_eyes() {
+        let packs = PackStack::open(vec![]).unwrap();
+        let mut particles = BlockParticles::new(&packs).unwrap();
+        let bread = ResourceId::parse("test:item/bread").unwrap();
+        particles.spawn_eating(Vec3::new(0.0, 10.0, 0.0), 0.0, 0.0, 5, &bread);
+        assert_eq!(particles.len(), 5);
+        for fragment in &particles.fragments {
+            assert_eq!(fragment.color, [1.0; 3]);
+            assert_eq!(fragment.texture, bread);
+            assert!(fragment.position.x.abs() <= 0.15);
+            assert!((9.1..=9.7).contains(&fragment.position.y));
+            assert!((fragment.position.z - 0.6).abs() < 1e-6);
+            assert!(fragment.velocity.y > 0.14);
+            assert!((0.05..=0.1).contains(&fragment.size));
+        }
+        particles.spawn_eating(Vec3::new(0.0, 10.0, 0.0), 90.0, 0.0, 16, &bread);
+        assert_eq!(particles.len(), 21);
+        for fragment in &particles.fragments[5..] {
+            assert!((fragment.position.x + 0.6).abs() < 1e-5);
+            assert!(fragment.position.z.abs() <= 0.15 + 1e-6);
+        }
+        particles.spawn_eating(Vec3::new(0.0, 10.0, 0.0), 0.0, 90.0, 1, &bread);
+        let down = &particles.fragments[21];
+        assert!((down.position.y - 9.4).abs() < 1e-5);
+        assert!((-0.9 - 1e-5..=-0.3 + 1e-5).contains(&down.position.z));
     }
 
     #[test]

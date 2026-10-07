@@ -147,14 +147,13 @@ impl FoodUse {
         if !current.same_item(&self.stack) || current.count == 0 {
             return FoodUseTick::Cancelled;
         }
+        let lead_in = (self.info.consume_ticks as f32 * 0.21875) as u32;
+        let emit_sound = self.elapsed_ticks > lead_in && self.remaining_ticks() % 4 == 0;
         self.elapsed_ticks += 1;
         let remaining = self.remaining_ticks();
         if remaining > 0 {
             // Consumable uses elapsed > floor(duration * .21875), then every fourth remaining tick.
-            let lead_in = (self.info.consume_ticks as f32 * 0.21875) as u32;
-            return FoodUseTick::Continuing {
-                emit_sound: self.elapsed_ticks > lead_in && remaining % 4 == 0,
-            };
+            return FoodUseTick::Continuing { emit_sound };
         }
         food.eat(self.info.nutrition, self.info.saturation);
         let mut overflow = None;
@@ -319,5 +318,41 @@ mod tests {
         assert_eq!(inventory.slots[0].as_ref().unwrap().count, 1);
         assert_eq!(inventory.count("minecraft:glass_bottle"), 1);
         assert_eq!(food.level, 14);
+    }
+
+    fn chew_ticks(id: &str) -> Vec<u32> {
+        let mut inventory = Inventory::default();
+        inventory.slots[0] = Some(ItemStack::new(id, 1));
+        let mut food = FoodData::default();
+        food.level = 2;
+        let mut using = FoodUse::start(
+            0,
+            inventory.slots[0].as_ref().unwrap(),
+            &food,
+            GameMode::Survival,
+        )
+        .unwrap();
+        let mut chews = Vec::new();
+        for tick in 1.. {
+            match using.tick(&mut inventory, &mut food, GameMode::Survival) {
+                FoodUseTick::Continuing { emit_sound: true } => chews.push(tick),
+                FoodUseTick::Continuing { emit_sound: false } => {}
+                _ => {
+                    chews.push(tick);
+                    break;
+                }
+            }
+        }
+        chews
+    }
+
+    #[test]
+    fn chews_follow_the_remaining_ticks_before_each_decrement() {
+        assert_eq!(chew_ticks("minecraft:bread"), [9, 13, 17, 21, 25, 29, 32]);
+        assert_eq!(chew_ticks("minecraft:dried_kelp"), [5, 9, 13, 16]);
+        assert_eq!(
+            chew_ticks("minecraft:honey_bottle"),
+            [13, 17, 21, 25, 29, 33, 37, 40]
+        );
     }
 }
