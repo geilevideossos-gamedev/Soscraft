@@ -877,6 +877,27 @@ mod tests {
     }
 
     #[test]
+    fn own_grenades_cost_the_same_hearts_after_every_respawn() {
+        let mut survival = Survival::default();
+        for life in 0..4 {
+            survival.respawn();
+            survival.observe(100, 100);
+            assert_eq!(survival.fall(10.0, Some("minecraft:stone"), false), 7);
+            assert_eq!(survival.settle(100, 100).damage, Some((35, None)));
+            survival.observe(65, 100);
+            assert_eq!(survival.settle(65, 100), Settle::default(), "life {life}");
+            survival.observe(65 - 61, 100);
+            assert!(
+                (survival.status.health - (13.0 - 61.0 / 5.0)).abs() < 1e-5,
+                "life {life}"
+            );
+            assert_eq!(survival.settle(4, 100).damage, None, "life {life}");
+            survival.observe(0, 100);
+            assert!(survival.status.health < 1e-5, "life {life}");
+        }
+    }
+
+    #[test]
     fn mw2_health_regeneration_is_undone() {
         let mut survival = fresh();
         survival.observe(60, 100);

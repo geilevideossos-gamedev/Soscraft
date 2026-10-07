@@ -30,7 +30,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 - A player is never embedded in blocks; anyone inside a block is pushed out.
 
 ### Survival and combat
-- Hearts, hunger, saturation, exhaustion, regeneration and starvation. MW2 health follows the hearts at 5 per point, and MW2's own regeneration is off.
+- Hearts, hunger, saturation, exhaustion, regeneration and starvation. MW2 health follows the hearts at 5 per point in every life. MW2's own regeneration is off, and the MW2 scripts can't heal a live player or change its maximum health, so a grenade or bullet costs the same hearts after every respawn.
 - Vanilla fall damage, including the blocks that soften falls. Drowning with air bubbles.
 - Burning from lava, fire, soul fire, magma and campfires, and putting it out.
 - XP levels, the XP bar and vanilla XP from blocks.
@@ -171,6 +171,7 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 - Difficulty is fixed at Normal. Witch potions don't reach the player.
 - MW2 blast damage on mobs is MW2 damage x 0.8 (bullets x 0.2), not vanilla's explosion formula, so a frag kills a 20-health mob it can see anywhere in its reach. MW2 craters are full spheres (the claymore's cone limits only its damage) and appear a server tick after the MW2 explosion. Mobs can't set off claymores. Kills by bot explosives give no XP.
 - TNT explosions don't hurt mobs or players; only creeper explosions do.
+- MW2 perks and scripts that heal or resize a live player's health (Last Stand and Final Stand revives, the low-health overlay's max reset) do nothing on Minecraft maps; only Minecraft heals. Since MW2's maximum health stays at its spawn value, MW2's blood overlay and pain vision stay on while the hearts are low.
 
 ### Blocks and items
 - Buckets and flint and steel wait for the server, with no client prediction.

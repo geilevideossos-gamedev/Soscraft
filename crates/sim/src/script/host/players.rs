@@ -978,6 +978,10 @@ pub(crate) fn alive_on_team(world: &mut World, team: &str) -> i32 {
     alive
 }
 
+fn minecraft_holds_health(name: &str, alive: bool, current: i32, value: i32) -> bool {
+    alive && (name == "maxhealth" || name == "health" && value > current)
+}
+
 pub(crate) fn store_field(
     world: &mut World,
     client: u32,
@@ -1019,6 +1023,16 @@ pub(crate) fn store_field(
             }
         }
         return Ok(true);
+    }
+    if matches!(name, "health" | "maxhealth") && crate::voxel::active() {
+        let frame = FrameWorld::from_world(world);
+        let alive = frame
+            .client_meta(id)
+            .is_some_and(|m| m.lifecycle == crate::ClientLifecycle::Alive);
+        let current = frame.player(id).map_or(0, |ps| ps.health);
+        if minecraft_holds_health(name, alive, current, int(value)?) {
+            return Ok(true);
+        }
     }
     match name {
         "sessionstate" => {
@@ -1230,6 +1244,58 @@ pub(crate) fn apply_player_links(world: &mut World) {
             && let Some(link) = slot.link.as_mut()
         {
             link.parent_angles = parent;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::minecraft_holds_health;
+
+    #[test]
+    fn a_live_minecraft_player_keeps_its_max_health() {
+        assert!(minecraft_holds_health("maxhealth", true, 85, 85));
+        assert!(minecraft_holds_health("maxhealth", true, 100, 400));
+    }
+
+    #[test]
+    fn scripts_cannot_heal_a_live_minecraft_player_but_can_hurt_it() {
+        assert!(minecraft_holds_health("health", true, 85, 100));
+        assert!(!minecraft_holds_health("health", true, 85, 60));
+        assert!(!minecraft_holds_health("health", true, 85, 85));
+    }
+
+    #[test]
+    fn a_spawning_player_still_gets_its_max_health_from_the_scripts() {
+        assert!(!minecraft_holds_health("maxhealth", false, 0, 100));
+        assert!(!minecraft_holds_health("health", false, 0, 100));
+        assert!(!minecraft_holds_health("score", true, 0, 5));
+    }
+
+    #[test]
+    fn the_no_regen_script_no_longer_shrinks_max_health() {
+        let (mut max, mut health) = (100, 100);
+        let store = |name: &str, alive: bool, value: i32, max: &mut i32, health: &mut i32| {
+            if minecraft_holds_health(name, alive, *health, value) {
+                return;
+            }
+            if name == "maxhealth" {
+                *max = value.max(1);
+                *health = (*health).min(*max);
+            } else {
+                *health = value;
+            }
+        };
+        for life in 0..4 {
+            store("maxhealth", false, 100, &mut max, &mut health);
+            store("health", false, 100, &mut max, &mut health);
+            assert_eq!((max, health), (100, 100), "life {life}");
+            store("health", true, 85, &mut max, &mut health);
+            let shrunk = health.max(2);
+            store("maxhealth", true, shrunk, &mut max, &mut health);
+            store("health", true, max, &mut max, &mut health);
+            assert_eq!((max, health), (100, 85), "life {life}");
+            store("health", false, 0, &mut max, &mut health);
         }
     }
 }
