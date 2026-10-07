@@ -239,6 +239,7 @@ impl<'a> ExtractedColourRefs<'a> {
 }
 
 mod geometry;
+mod index_guard;
 mod indirect;
 mod pipeline;
 mod prepare_camera;
@@ -789,6 +790,12 @@ enum GpuSubmitRefusal {
     WorldPretessEpochMismatch {
         span_epoch: u64,
         layout_epoch: u64,
+    },
+
+    IndexRangeBeyondUpload {
+        tess: ExactTessBind,
+        end: u64,
+        len: u64,
     },
 }
 
@@ -1869,6 +1876,7 @@ fn submit_refusal_class(cause: &GpuSubmitRefusal) -> &'static str {
         GpuSubmitRefusal::ConstantArenaMissing => "ConstantArenaMissing",
         GpuSubmitRefusal::WorldPretessSpanBeyondLimit { .. } => "WorldPretessSpanBeyondLimit",
         GpuSubmitRefusal::WorldPretessEpochMismatch { .. } => "WorldPretessEpochMismatch",
+        GpuSubmitRefusal::IndexRangeBeyondUpload { .. } => "IndexRangeBeyondUpload",
     }
 }
 
@@ -3187,6 +3195,8 @@ fn submit_exact_draw_run<'a>(
     );
     let mut bound_pipeline = None;
     let mut bound_tess = None;
+    let mut bound_index_bytes = 0u64;
+    let mut bound_index_format = IndexFormat::Uint32;
     let mut bound_smc_off = None;
     let mut bound_depth = None;
     let mut bound_arena = None;
@@ -3319,6 +3329,8 @@ fn submit_exact_draw_run<'a>(
                 IndexFormat::Uint32
             };
             pass.set_index_buffer(index.slice(..), index_format);
+            bound_index_bytes = index.size();
+            bound_index_format = index_format;
             record_n.state = record_n.state.saturating_add(1);
             bound_pipeline = Some(draw.pipeline);
             bound_tess = Some(draw.tess);
@@ -3358,6 +3370,22 @@ fn submit_exact_draw_run<'a>(
                 });
                 continue;
             }
+        }
+        if !index_guard::index_range_fits(
+            draw.start,
+            draw.count,
+            bound_index_bytes,
+            bound_index_format,
+        ) {
+            let limit = bound_index_bytes / index_guard::index_stride(bound_index_format);
+            index_guard::report_skipped_draw(label, draw.tess, draw.start, draw.count, limit);
+            *refused_draws = refused_draws.saturating_add(1);
+            *last_refusal = Some(GpuSubmitRefusal::IndexRangeBeyondUpload {
+                tess: draw.tess,
+                end: u64::from(draw.start) + u64::from(draw.count),
+                len: limit,
+            });
+            continue;
         }
         match (indirect_args, draw.indirect_arg) {
             (Some(_), Some(slot)) => {
@@ -4217,6 +4245,7 @@ fn record_shadowmap_draws<'a>(
     let mut bound_pipeline = None;
     let mut bound_tess = None;
     let mut bound_epoch = None;
+    let mut bound_index_bytes = 0u64;
     let mut bound_depth = None;
     let mut constants_bound = false;
     let mut indexed = 0u32;
@@ -4278,6 +4307,7 @@ fn record_shadowmap_draws<'a>(
                 record_n.state = record_n.state.saturating_add(1);
             }
             pass.set_index_buffer(index.slice(..), IndexFormat::Uint32);
+            bound_index_bytes = index.size();
             record_n.state = record_n.state.saturating_add(1);
             bound_pipeline = Some(draw.pipeline);
             bound_tess = Some(draw.tess);
@@ -4305,6 +4335,18 @@ fn record_shadowmap_draws<'a>(
             constants_bound = true;
             record_n.group0 = record_n.group0.saturating_add(1);
             record_n.group1 = record_n.group1.saturating_add(1);
+        }
+        if !index_guard::index_range_fits(
+            draw.start,
+            draw.count,
+            bound_index_bytes,
+            IndexFormat::Uint32,
+        ) {
+            let limit = bound_index_bytes / index_guard::index_stride(IndexFormat::Uint32);
+            index_guard::report_skipped_draw(label, draw.tess, draw.start, draw.count, limit);
+            *miss = miss.saturating_add(1);
+            *miss_rows.entry("IndexRangeBeyondBuffer".into()).or_default() += 1;
+            continue;
         }
         pass.draw_indexed(
             draw.start..draw.start.saturating_add(draw.count),
@@ -5071,7 +5113,12 @@ fn prepare_shadowmap_sun(
                 let hit_start = entry.index_byte_offset / 2;
                 let hit_count = u32::from(entry.tri_count).saturating_mul(3);
                 match sun_model_index_span(
-                    extracted.frame.xmodel_indices.len(),
+                    index_guard::resident_model_index_len(
+                        geometry.xmodel.index.len(),
+                        extracted.frame.xmodel_indices.len(),
+                        geometry.xmodel.uploaded_topology,
+                        extracted.frame.xmodel_topology_revision,
+                    ),
                     hit_start,
                     hit_count,
                 ) {
@@ -5793,6 +5840,9 @@ impl ExactPrepare<'_> {
                 )
             }
         };
+        if let Some(refusal) = index_guard::beyond_upload(self.geometry, tess, start, count) {
+            return Err(refusal);
+        }
 
         let smc_stream_off = if tess == ExactTessBind::SmodelCached {
             if let RetainedDrawKind::Smodel {

@@ -20,6 +20,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 - XP orbs and the burning overlay with two flames.
 - Weather from `IW4L_MINECRAFT_WEATHER`: rain darkens the sky and puts out fire.
 - A render error no longer quits the game. Validation and internal GPU errors drop only the broken frame and are written to the game log as `render error ignored`, at most once every 5 s with a count of the ones in between. Running out of GPU memory quits only after 30 times in 10 s, and a lost GPU device still quits; the world is saved on the way out.
+- Many explosions at once no longer overflow a render index buffer. Model, spark, effect, decal and glass streams are uploaded every frame, sun shadows of models are drawn only from what the GPU holds, and every MW2 world, model and effect draw in the colour and sun-shadow passes is checked against its bound index buffer before it is sent. A skipped draw is written to the game log as `skipped a ... draw`, naming the pass and stream, for the first 8 times and then every 600th.
 
 ### Movement on blocks (MW2 movement with vanilla rules)
 - Ground, falls and footsteps. Body size is 0.6 x 1.8 blocks, or 1.5 crouched. Prone keeps MW2's height.
@@ -150,6 +151,7 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 - The display tick only animates nether portals.
 - The animation clock keeps running while paused.
 - An ignored render error loses that frame, so an error that repeats every frame would flicker the screen. bevy also prints `Caught rendering error` to the console, not to the game log.
+- A model whose index stream has not been uploaded yet casts no sun shadow for that one frame, and an effect mesh past its 16384-vertex or 24576-index buffer is not drawn that frame.
 - GUI gaps: no 3D enchanting book, smithing armour stand, recipe book, effects panel, enchant glint or rarity colours. Characters missing from the font show as gaps.
 
 ### Movement

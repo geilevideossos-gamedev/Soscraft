@@ -135,3 +135,14 @@ impl GpuMesh {
             && !self.index.is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_stream_capacity_is_one_and_a_half_times_rounded_to_64_kib() {
+        assert_eq!(stream_capacity(305_832), 458_752);
+        assert_eq!(stream_capacity(1), 65_536);
+    }
+}

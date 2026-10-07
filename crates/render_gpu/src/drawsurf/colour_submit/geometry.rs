@@ -6,7 +6,7 @@ pub(super) fn upload_exact_geometry(
     frame: Res<PublishedRenderFrame>,
     geometry: ResMut<ExactColourGeometry>,
     mut smodel_cache_gpu: ResMut<SmodelCacheGpu>,
-    mut census: ResMut<ExactColourSubmitCensus>,
+    census: ResMut<ExactColourSubmitCensus>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
 ) {
@@ -34,6 +34,7 @@ pub(super) fn upload_exact_geometry(
     let empty_source = source.world.static_geometry.world_vertices.is_empty()
         && source.world.static_geometry.smodel_vertices.is_empty();
     if empty_source && geometry.world_products.0.is_some() {
+        upload_dynamic_streams(geometry, source, device, queue, census);
         return;
     }
     let static_matches = colour_world_smodel_static(
@@ -139,7 +140,16 @@ pub(super) fn upload_exact_geometry(
         }
     }
     geometry.generation = source.world.generation;
+    upload_dynamic_streams(geometry, source, device, queue, census);
+}
 
+fn upload_dynamic_streams(
+    geometry: &mut ExactColourGeometry,
+    source: ExtractedColourRefs<'_>,
+    device: Res<RenderDevice>,
+    queue: Res<RenderQueue>,
+    mut census: ResMut<ExactColourSubmitCensus>,
+) {
     upload_xmodel_streams(geometry, source, &device, &queue);
     upload_particle_cloud(geometry, source, &device, &queue);
 
@@ -196,7 +206,14 @@ pub(super) fn upload_exact_geometry(
     );
     census.code_mesh_gpu_kind = Some(fx_kind);
     if fx_kind == 0 {
-        if source.frame.fx_vertices.is_empty() || source.frame.fx_indices.is_empty() {
+        let over_cap = index_guard::code_mesh_over_cap(
+            source.frame.fx_vertices.len(),
+            source.frame.fx_indices.len(),
+        );
+        if over_cap
+            || source.frame.fx_vertices.is_empty()
+            || source.frame.fx_indices.is_empty()
+        {
             geometry.fx_revision = source.frame.fx_revision;
             geometry.fx_vertex_count = source.frame.fx_vertices.len();
             geometry.fx_index_count = source.frame.fx_indices.len();
