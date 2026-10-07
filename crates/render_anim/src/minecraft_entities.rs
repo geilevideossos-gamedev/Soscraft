@@ -703,6 +703,7 @@ impl Entities {
         camera: DVec3,
         sky_darken: u8,
         cell_settled: &dyn Fn((i32, i32, i32)) -> bool,
+        placed_items: &[minecraft_terrain::mesh::HeldItem],
     ) -> MobMeshes {
         use minecraft_terrain::*;
         // Mobs appear on the client once their trackers start.
@@ -787,7 +788,7 @@ impl Entities {
         self.poof.append_mesh(&mut out.items, atlas, forward, partial, light);
         self.portal.append_mesh(&mut out.items, atlas, forward, partial, light);
         let held: Vec<_> =
-            skeleton_items.into_iter().chain(zombie_items).chain(villager_items).chain(witch_items).collect();
+            skeleton_items.into_iter().chain(zombie_items).chain(villager_items).chain(witch_items).chain(placed_items.iter().cloned()).collect();
         let _ = self.items.append_held_items(&mut out.items, &held, packs, atlas, light);
         let carried: Vec<_> = carried.into_iter().chain(poppies).collect();
         let _ = self.items.append_posed_blocks(&mut out.items, &carried, packs, atlas, light);

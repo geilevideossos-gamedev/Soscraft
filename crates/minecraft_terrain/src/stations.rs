@@ -121,6 +121,7 @@ pub struct StationBook {
     stonecutting: Vec<(Ingredient, String, u8)>,
     smithing: Vec<Smithing>,
     brewing: Vec<Brewing>,
+    campfire: Vec<(Ingredient, String, u32)>,
 }
 
 pub fn potion_of(stack: &ItemStack) -> Option<&str> {
@@ -207,8 +208,23 @@ impl StationBook {
                     });
                 }
             }
+            Some("minecraft:campfire_cooking") => {
+                let ticks = json["cookingtime"].as_u64().and_then(|t| u32::try_from(t).ok());
+                if let (Some(ingredient), Some(id), Some(ticks)) =
+                    (Ingredient::parse(&json["ingredient"]), result_id, ticks)
+                {
+                    self.campfire.push((ingredient, id, ticks));
+                }
+            }
             _ => {}
         }
+    }
+
+    pub fn campfire_cooking(&self, id: &str, recipes: &RecipeBook) -> Option<(ItemStack, u32)> {
+        self.campfire
+            .iter()
+            .find(|(ingredient, ..)| ingredient.matches(id, recipes))
+            .map(|(_, result, ticks)| (recipes.stack(result, 1), *ticks))
     }
 
     pub fn stonecutter_results(&self, input: &str, recipes: &RecipeBook) -> Vec<ItemStack> {
@@ -1328,6 +1344,14 @@ mod tests {
                 json!({"type": "minecraft:brewing", "input": {"item": "minecraft:potion", "potion_contents": {"potions": "minecraft:water"}}, "reagent": {"item": "minecraft:nether_wart"}, "output": {"id": "minecraft:potion", "components": {"minecraft:potion_contents": {"potion": "minecraft:awkward"}}}}),
             ),
             (
+                "data/minecraft/recipe/cooked_beef_from_campfire_cooking.json",
+                json!({"type": "minecraft:campfire_cooking", "ingredient": "minecraft:beef", "result": {"id": "minecraft:cooked_beef"}, "cookingtime": 600, "experience": 0.35}),
+            ),
+            (
+                "data/minecraft/recipe/cooked_chicken_from_campfire_cooking.json",
+                json!({"type": "minecraft:campfire_cooking", "ingredient": "minecraft:chicken", "result": {"id": "minecraft:cooked_chicken"}}),
+            ),
+            (
                 "data/minecraft/tags/item/netherite_tool_materials.json",
                 json!({"values": ["minecraft:netherite_ingot"]}),
             ),
@@ -1370,6 +1394,46 @@ mod tests {
         stack.max = 1;
         stack.components = Some(json!({"minecraft:damage": damage, "minecraft:max_damage": max}));
         stack
+    }
+
+    #[test]
+    fn campfire_recipes_give_the_cooked_item_and_its_time() {
+        let (book, recipes) = setup();
+        let (cooked, ticks) = book.campfire_cooking("minecraft:beef", &recipes).unwrap();
+        assert_eq!((cooked.id.as_str(), cooked.count, ticks), ("minecraft:cooked_beef", 1, 600));
+        assert!(book.campfire_cooking("minecraft:chicken", &recipes).is_none(), "cookingtime is a required field");
+        assert!(book.campfire_cooking("minecraft:stone", &recipes).is_none());
+        assert!(book.campfire_cooking("minecraft:cooked_beef", &recipes).is_none());
+    }
+
+    #[test]
+    fn vanilla_campfires_cook_nine_foods_in_thirty_seconds() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = Path::new(&root).join("client.jar");
+        if !jar.is_file() {
+            return;
+        }
+        let book = StationBook::from_jar(&jar).unwrap();
+        let recipes = RecipeBook::from_jar(&jar).unwrap();
+        let foods = [
+            ("beef", "cooked_beef"),
+            ("chicken", "cooked_chicken"),
+            ("cod", "cooked_cod"),
+            ("mutton", "cooked_mutton"),
+            ("porkchop", "cooked_porkchop"),
+            ("rabbit", "cooked_rabbit"),
+            ("salmon", "cooked_salmon"),
+            ("potato", "baked_potato"),
+            ("kelp", "dried_kelp"),
+        ];
+        for (raw, done) in foods {
+            let (cooked, ticks) = book.campfire_cooking(&format!("minecraft:{raw}"), &recipes).unwrap();
+            assert_eq!((cooked.id, ticks), (format!("minecraft:{done}"), 600));
+        }
+        assert_eq!(book.campfire.len(), foods.len());
+        assert!(book.campfire_cooking("minecraft:raw_iron", &recipes).is_none());
     }
 
     #[test]

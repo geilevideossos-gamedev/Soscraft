@@ -191,6 +191,32 @@ impl WorldItems {
         self.spawn(stack, position);
     }
 
+    pub fn drop_item_stack(&mut self, mut stack: ItemStack, block: (i32, i32, i32)) {
+        let size = f64::from(0.25_f32);
+        let range = 1.0 - size;
+        let x = block.0 as f64 + self.world_random.next_double() * range + size / 2.0;
+        let y = block.1 as f64 + self.world_random.next_double() * range;
+        let z = block.2 as f64 + self.world_random.next_double() * range + size / 2.0;
+        let spread = 0.11485000171139836;
+        while stack.count > 0 {
+            let amount = (self.world_random.next_int(21) + 10).min(u32::from(stack.count)) as u8;
+            let part = ItemStack {
+                count: amount,
+                ..stack.clone()
+            };
+            stack.count -= amount;
+            self.spawn(part, DVec3::new(x, y, z));
+            let mut triangle = |mean: f64| {
+                mean + spread * (self.world_random.next_double() - self.world_random.next_double())
+            };
+            let velocity = DVec3::new(triangle(0.0), triangle(0.2), triangle(0.0));
+            if let Some(entity) = self.entities.last_mut() {
+                entity.velocity = velocity;
+                entity.pickup_delay = 0;
+            }
+        }
+    }
+
     pub fn take_pickup_sounds(&mut self) -> u32 {
         std::mem::take(&mut self.pickup_sounds)
     }
@@ -565,6 +591,35 @@ mod tests {
         assert_eq!(items.tick_and_collect(&Floor, feet, &mut inventory, 0), 5);
         assert_eq!(inventory.count("minecraft:stone"), 5);
         assert!(items.entities.is_empty());
+    }
+
+    #[test]
+    fn dropped_contents_leave_from_a_random_point_in_the_block_like_containers() {
+        let mut items = WorldItems::with_seeds(7, 8, 9);
+        items.drop_item_stack(ItemStack::new("minecraft:cooked_beef", 64), (3, 64, -2));
+        let mut random = LegacyRandom::new(7);
+        let x = 3.0 + random.next_double() * 0.75 + 0.125;
+        let y = 64.0 + random.next_double() * 0.75;
+        let z = -2.0 + random.next_double() * 0.75 + 0.125;
+        let mut left = 64;
+        for entity in &items.entities {
+            let amount = (random.next_int(21) + 10).min(left);
+            left -= amount;
+            let mut triangle = |mean: f64| {
+                mean + 0.11485000171139836 * (random.next_double() - random.next_double())
+            };
+            let velocity = DVec3::new(triangle(0.0), triangle(0.2), triangle(0.0));
+            assert_eq!(u32::from(entity.stack.count), amount);
+            assert_eq!(entity.position, DVec3::new(x, y, z));
+            assert_eq!(entity.velocity, velocity);
+            assert_eq!(entity.pickup_delay, 0);
+        }
+        assert_eq!(left, 0);
+        assert!(items.entities.len() >= 3);
+        let mut single = WorldItems::default();
+        single.drop_item_stack(ItemStack::new("minecraft:baked_potato", 1), (0, 0, 0));
+        assert_eq!(single.entities.len(), 1);
+        assert_eq!(single.entities[0].stack.count, 1);
     }
 
     #[test]

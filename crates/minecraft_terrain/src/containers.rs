@@ -7,6 +7,7 @@ use minecraftoss_player::crafting::{CookingKind, RecipeBook};
 use minecraftoss_player::furnace::Furnace;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 
+use crate::campfire::Campfire;
 use crate::crafting::{move_into, result_order};
 use crate::scene::{Block, BlockPos};
 use crate::stations::StationBook;
@@ -431,6 +432,7 @@ pub struct Containers {
     names: HashMap<BlockPos, Value>,
     ovens: HashMap<BlockPos, Oven>,
     brewers: HashMap<BlockPos, Brewer>,
+    campfires: HashMap<BlockPos, Campfire>,
     book: Arc<StationBook>,
 }
 
@@ -608,10 +610,42 @@ impl Containers {
         if let Some(brewer) = self.brewers.remove(&pos) {
             return (brewer.slots.into_iter().flatten().collect(), 0.0);
         }
+        if let Some(campfire) = self.campfires.remove(&pos) {
+            return (campfire.take_contents(), 0.0);
+        }
         match self.ovens.remove(&pos) {
             Some(mut oven) => (oven.furnace.take_contents(), oven.experience),
             None => (Vec::new(), 0.0),
         }
+    }
+
+    pub fn campfires(&self) -> impl Iterator<Item = (BlockPos, &Campfire)> {
+        self.campfires.iter().map(|(pos, campfire)| (*pos, campfire))
+    }
+
+    pub fn place_food(&mut self, pos: BlockPos, stack: &ItemStack, recipes: &RecipeBook) -> Option<bool> {
+        let (_, ticks) = self.book.campfire_cooking(&stack.id, recipes)?;
+        Some(self.campfires.entry(pos).or_default().place(stack, ticks))
+    }
+
+    pub fn cooks_on_campfire(&self, stack: &ItemStack, recipes: &RecipeBook) -> bool {
+        self.book.campfire_cooking(&stack.id, recipes).is_some()
+    }
+
+    pub fn cook(&mut self, lit: impl Fn(BlockPos) -> Option<bool>, recipes: &RecipeBook) -> Vec<(BlockPos, ItemStack)> {
+        let mut positions: Vec<BlockPos> = self.campfires.keys().copied().collect();
+        positions.sort_unstable();
+        let mut popped = Vec::new();
+        for pos in positions {
+            let (Some(campfire), Some(lit)) = (self.campfires.get_mut(&pos), lit(pos)) else {
+                continue;
+            };
+            let book = &self.book;
+            let done = campfire.tick(lit, |item| book.campfire_cooking(&item.id, recipes).map(|(cooked, _)| cooked));
+            popped.extend(done.into_iter().map(|stack| (pos, stack)));
+        }
+        self.campfires.retain(|_, campfire| !campfire.is_empty());
+        popped
     }
 
     pub fn tick(&mut self, recipes: &RecipeBook) -> Ticked {
@@ -1593,6 +1627,52 @@ mod tests {
         assert_eq!(store.custom_name(elsewhere), None);
         store.place_shulker(pos, &inventory.recipes.stack("minecraft:shulker_box", 1), &inventory.recipes);
         assert_eq!(store.take_shulker(pos), None, "an empty unnamed box drops plain and stacks with new ones");
+    }
+
+    #[test]
+    fn a_campfire_takes_four_foods_cooks_them_while_lit_and_spills_the_rest() {
+        let dir = crate::test_dir::tempdir().unwrap();
+        let jar = dir.path().join("client.jar");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&jar).unwrap());
+        zip.start_file(
+            "data/minecraft/recipe/cooked_beef_from_campfire_cooking.json",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        let recipe = json!({"type": "minecraft:campfire_cooking", "ingredient": "minecraft:beef", "result": {"id": "minecraft:cooked_beef"}, "cookingtime": 600});
+        zip.write_all(recipe.to_string().as_bytes()).unwrap();
+        zip.finish().unwrap();
+        let recipes = RecipeBook::from_jar(&jar).unwrap();
+        let mut store = Containers::default();
+        store.set_book(Arc::new(StationBook::from_jar(&jar).unwrap()));
+        let (lit, unlit, unloaded) = ((1, 64, 1), (2, 64, 1), (3, 64, 1));
+        let beef = recipes.stack("minecraft:beef", 64);
+        assert_eq!(store.place_food(lit, &recipes.stack("minecraft:stick", 1), &recipes), None);
+        assert_eq!(store.place_food(lit, &recipes.stack("minecraft:cooked_beef", 1), &recipes), None);
+        assert_eq!(store.campfires().count(), 0);
+        for _ in 0..4 {
+            assert_eq!(store.place_food(lit, &beef, &recipes), Some(true));
+        }
+        assert_eq!(store.place_food(lit, &beef, &recipes), Some(false));
+        assert_eq!(store.place_food(unlit, &beef, &recipes), Some(true));
+        assert_eq!(store.place_food(unloaded, &beef, &recipes), Some(true));
+        let mut popped = Vec::new();
+        for tick in 0..599 {
+            let loaded = tick < 300;
+            popped.extend(store.cook(|pos| (loaded || pos != unloaded).then_some(pos == lit || pos == unloaded), &recipes));
+        }
+        assert!(popped.is_empty());
+        assert_eq!(store.campfires().find(|(pos, _)| *pos == unloaded).map(|(_, campfire)| campfire.progress(0)), Some(300));
+        popped.extend(store.cook(|pos| (pos != unloaded).then_some(pos == lit), &recipes));
+        assert_eq!(popped.len(), 4);
+        assert!(popped.iter().all(|(pos, stack)| *pos == lit && stack.id == "minecraft:cooked_beef" && stack.count == 1));
+        let mut left: Vec<_> = store.campfires().map(|(pos, _)| pos).collect();
+        left.sort_unstable();
+        assert_eq!(left, vec![unlit, unloaded]);
+        assert_eq!(store.remove(unloaded).0.len(), 1);
+        let (spilled, experience) = store.remove(unlit);
+        assert_eq!((spilled.len(), spilled[0].id.as_str(), experience), (1, "minecraft:beef", 0.0));
+        assert_eq!(store.campfires().count(), 0);
     }
 
     #[test]

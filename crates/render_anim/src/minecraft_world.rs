@@ -730,6 +730,10 @@ fn update(
             for (pos, stack) in ticked.drops {
                 entities.world_items.spawn_block_drop(stack, pos);
             }
+            let lit = |pos| minecraft_terrain::scene::Scene::block(&world.scene, pos).map(minecraft_terrain::campfire::is_lit);
+            for (pos, stack) in containers.cook(lit, &entities.inventory.recipes) {
+                entities.world_items.drop_item_stack(stack, pos);
+            }
         }
         let mut writes: Vec<((i32, i32, i32), Option<minecraft_terrain::scene::Block>)> = Vec::new();
         for (pos, name, on) in props {
@@ -895,6 +899,11 @@ fn update(
                 .map(|hit| hit.pos)
                 .filter(|_| main && table.is_none() && station.is_none() && minecraft_terrain::crafting::opens_table(player.crouching, has_item))
                 .and_then(|pos| minecraft_terrain::scene::Scene::block(&world.scene, pos).and_then(minecraft_terrain::stations::Workshop::of).map(|kind| (pos, kind)));
+            let campfire = player
+                .target(&minecraft_terrain::doors::Outlined(&world.scene), 5.0)
+                .map(|hit| hit.pos)
+                .filter(|&pos| minecraft_terrain::scene::Scene::block(&world.scene, pos).is_some_and(minecraft_terrain::campfire::is_campfire))
+                .filter(|_| !(player.crouching && has_item));
             let placeable = held.as_ref().is_some_and(|stack| {
                 let id = if stack.id == "minecraft:redstone" { "minecraft:redstone_wire" } else { stack.id.as_str() };
                 minecraft_terrain::pack::ResourceId::parse(id).is_ok_and(|id| {
@@ -940,6 +949,21 @@ fn update(
                     };
                     if !blocked {
                         open_block = Some(opened);
+                    }
+                    hand.swing = Some(0.0);
+                }
+                HandUse::Consumed
+            } else if let Some(pos) = campfire
+                && let Some(stack) = held.as_ref()
+                && let Some(placed) = containers.place_food(pos, stack, &entities.inventory.recipes)
+            {
+                if placed {
+                    let slot = &mut entities.inventory.slots[slot];
+                    if let Some(left) = slot.as_mut() {
+                        left.count -= 1;
+                        if left.count == 0 {
+                            *slot = None;
+                        }
                     }
                     hand.swing = Some(0.0);
                 }
@@ -1341,7 +1365,7 @@ fn update(
                 positions.push(pos);
             }
             for &pos in &positions {
-                if !minecraft_terrain::scene::Scene::block(&world.scene, pos).and_then(minecraft_terrain::containers::Station::of).is_some() {
+                if !minecraft_terrain::scene::Scene::block(&world.scene, pos).is_some_and(|b| minecraft_terrain::containers::Station::of(b).is_some() || minecraft_terrain::campfire::is_campfire(b)) {
                     spill(containers, entities, pos);
                 }
             }
@@ -1591,7 +1615,19 @@ fn update(
             minecraft_terrain::pack::ResourceId::parse(id).is_ok_and(|id| world.stream.states.state_of(&minecraft_terrain::scene::Block { id, properties: Default::default() }).is_some())
         };
         let offhand_stack = entities.inventory.slots[crate::minecraft_offhand::OFFHAND].clone();
-        ui.offhand_usable = alive && !holding && offhand_stack.as_ref().is_some_and(|stack| crate::minecraft_offhand::has_use(stack, placeable(stack), &survival.status.food));
+        let aims_at_campfire = || {
+            let mut aim = minecraftoss_player::Player::new(glam::DVec3::from_array(feet));
+            aim.yaw = f64::from(mc_yaw);
+            aim.pitch = f64::from(ps.viewangles[0]);
+            aim.swimming = ps.view_height_current < CRAWLING_BELOW_VIEW_HEIGHT;
+            ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) == 0
+                && aim.target(&minecraft_terrain::doors::Outlined(&world.scene), 5.0).is_some_and(|hit| minecraft_terrain::scene::Scene::block(&world.scene, hit.pos).is_some_and(minecraft_terrain::campfire::is_campfire))
+        };
+        ui.offhand_usable = alive
+            && !holding
+            && offhand_stack.as_ref().is_some_and(|stack| {
+                crate::minecraft_offhand::has_use(stack, placeable(stack), &survival.status.food) || (containers.cooks_on_campfire(stack, &entities.inventory.recipes) && aims_at_campfire())
+            });
         ui.offhand_busy = alive && !holding && (survival.eating().is_some() || hand.blocking.is_some());
         ui.using_item = alive && (survival.eating().is_some() || hand.blocking.is_some());
         sim::voxel::set_death_protected(local.0.0, alive && crate::minecraft_offhand::totem_slot(&entities.inventory, entities.selected).is_some());
@@ -1635,6 +1671,15 @@ fn update(
         sim::voxel::set_mob_boxes(entities.boxes());
         entities.tick_scene(&world.scene, mob_ticks);
         let sky_darken = (15.0 - world.environment.sky_light_level()).clamp(0.0, 15.0) as u8;
+        let campfire_items: Vec<_> = containers
+            .campfires()
+            .filter(|(pos, _)| minecraft_terrain::campfire::shown(*pos, glam::DVec3::from_array(eye)))
+            .filter_map(|(pos, campfire)| {
+                let block = minecraft_terrain::scene::Scene::block(&world.scene, pos).filter(|b| minecraft_terrain::campfire::is_campfire(b))?;
+                Some(campfire.held_items(pos, block.properties.get("facing").map_or("south", String::as_str)))
+            })
+            .flatten()
+            .collect();
         let meshes = entities.meshes(
             &world.scene,
             &world.packs,
@@ -1644,6 +1689,7 @@ fn update(
             glam::DVec3::from_array(eye),
             sky_darken,
             &|pos| world.stream.cell_settled(pos),
+            &campfire_items,
         );
         let raw = |mesh: &minecraft_terrain::mesh::ChunkMesh| {
             (bytemuck::cast_slice::<_, u8>(&mesh.vertices).to_vec(), mesh.indices.clone())
@@ -1860,7 +1906,7 @@ fn shape_id(
 fn spill(containers: &mut minecraft_terrain::containers::Containers, entities: &mut crate::minecraft_entities::Entities, pos: (i32, i32, i32)) {
     let (items, experience) = containers.remove(pos);
     for stack in items {
-        entities.world_items.spawn_block_drop(stack, pos);
+        entities.world_items.drop_item_stack(stack, pos);
     }
     entities.experience_found += experience;
 }

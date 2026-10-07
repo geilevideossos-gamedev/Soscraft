@@ -763,6 +763,7 @@ struct ItemVisual {
     ground: Mat4,
     /// The `thirdperson_righthand` display transform.
     right_hand: Mat4,
+    fixed: Mat4,
     min_y: f32,
     tints: Vec<[f32; 3]>,
     flat: bool,
@@ -795,6 +796,7 @@ impl ItemVisuals {
             }
             let ground = crate::model::item_display_transform(packs, &resource, "ground")?;
             let right_hand = crate::model::item_display_transform(packs, &resource, "thirdperson_righthand")?;
+            let fixed = crate::model::item_display_transform(packs, &resource, "fixed")?;
             let definition = packs.item_definition(&resource)?;
             let tints = definition
                 .as_ref()
@@ -821,6 +823,7 @@ impl ItemVisuals {
                     model,
                     ground,
                     right_hand,
+                    fixed,
                     min_y: min.y,
                     tints,
                     flat: max.z - min.z <= 0.0625,
@@ -1025,7 +1028,7 @@ impl ItemVisuals {
     pub fn append_held_items(&mut self, mesh: &mut ChunkMesh, items: &[HeldItem], packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
         for item in items {
             let Some((display, mut tints)) = self.model(&item.id, packs)?.map(|visual| {
-                (match item.display { HeldDisplay::RightHand => visual.right_hand, HeldDisplay::Ground => visual.ground }, visual.tints.clone())
+                (match item.display { HeldDisplay::RightHand => visual.right_hand, HeldDisplay::Ground => visual.ground, HeldDisplay::Fixed => visual.fixed }, visual.tints.clone())
             }) else {
                 continue;
             };
@@ -1134,6 +1137,7 @@ pub enum HeldDisplay {
     RightHand,
     /// `GROUND` (`CrossedArmsItemLayer`, a witch's potion).
     Ground,
+    Fixed,
 }
 
 /// An item a mob holds: its holder's pose, where it is lit, the item, its
@@ -3040,6 +3044,7 @@ mod tests {
             },
             ground: Mat4::IDENTITY,
             right_hand: Mat4::IDENTITY,
+            fixed: Mat4::IDENTITY,
             min_y: 0.0,
             tints: vec![[0.3, 0.6, 0.2]],
             flat: false,
@@ -3396,6 +3401,7 @@ mod tests {
                 },
                 ground: Mat4::IDENTITY,
                 right_hand: Mat4::IDENTITY,
+                fixed: Mat4::IDENTITY,
                 min_y: 0.0,
                 tints: vec![[0.3, 0.6, 0.2]],
                 flat: false,
