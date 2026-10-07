@@ -87,6 +87,20 @@ pub(crate) fn block_entity_placement(
         "bell" => placed(bell(world, pos, block, view)),
         "ladder" => placed(ladder(world, pos, block, view, water)),
         "vine" => placed(vine(world, pos, block, view)),
+        "tripwire_hook" => placed(
+            on_wall(world, pos, block, view)
+                .map(|hook| hook.with("attached", "false").with("powered", "false")),
+        ),
+        "shelf_mushroom" => placed(
+            on_wall(world, pos, block, view).map(|shelf| shelf.with("age", "0")),
+        ),
+        "glow_lichen" | "sculk_vein" | "resin_clump" => placed(multiface(world, pos, block, view)),
+        _ if path == "lever" || path.ends_with("_button") => {
+            placed(face_attached(world, pos, block, view))
+        }
+        _ if path == "lantern" || path == "soul_lantern" || path.ends_with("copper_lantern") => {
+            placed(lantern(world, pos, block, view))
+        }
         _ if path == "shulker_box" || path.ends_with("_shulker_box") => {
             placed(Some(block.clone().with("facing", name(view.face))))
         }
@@ -459,6 +473,82 @@ fn ladder(world: &impl World, pos: Pos, block: &Block, view: &View, water: &str)
             block
                 .clone()
                 .with("facing", name(opposite(direction)))
+                .with("waterlogged", water)
+        })
+}
+
+fn face_attached(world: &impl World, pos: Pos, block: &Block, view: &View) -> Option<Block> {
+    let facing = horizontal(view.yaw);
+    looking_directions(view).into_iter().find_map(|direction| {
+        let (face, facing) = match direction {
+            Face::Up => ("ceiling", facing),
+            Face::Down => ("floor", facing),
+            _ => ("wall", opposite(direction)),
+        };
+        world
+            .sturdy_face(step(pos, direction), opposite(direction))
+            .then(|| {
+                block
+                    .clone()
+                    .with("face", face)
+                    .with("facing", name(facing))
+                    .with("powered", "false")
+            })
+    })
+}
+
+fn on_wall(world: &impl World, pos: Pos, block: &Block, view: &View) -> Option<Block> {
+    looking_directions(view)
+        .into_iter()
+        .filter(|direction| axis(*direction) != 1)
+        .find(|direction| world.sturdy_face(step(pos, *direction), opposite(*direction)))
+        .map(|direction| block.clone().with("facing", name(opposite(direction))))
+}
+
+fn multiface(world: &impl World, pos: Pos, block: &Block, view: &View) -> Option<Block> {
+    let water = if source_water_at(world, pos) {
+        "true"
+    } else {
+        "false"
+    };
+    let base = world
+        .block(pos)
+        .filter(|existing| existing.id == block.id)
+        .unwrap_or_else(|| {
+            ["down", "up", "north", "south", "west", "east"]
+                .into_iter()
+                .fold(block.clone(), |state, side| state.with(side, "false"))
+                .with("waterlogged", water)
+        });
+    looking_directions(view)
+        .into_iter()
+        .filter(|direction| base.property(name(*direction)) != Some("true"))
+        .find(|direction| {
+            world.sturdy_face(step(pos, *direction), opposite(*direction))
+                || covered(world, step(pos, *direction), opposite(*direction), 0, 16)
+        })
+        .map(|direction| base.clone().with(name(direction), "true"))
+}
+
+fn lantern(world: &impl World, pos: Pos, block: &Block, view: &View) -> Option<Block> {
+    let water = if source_water_at(world, pos) {
+        "true"
+    } else {
+        "false"
+    };
+    looking_directions(view)
+        .into_iter()
+        .filter(|direction| axis(*direction) == 1)
+        .find(|direction| world.sturdy_center(step(pos, *direction), opposite(*direction)))
+        .map(|direction| {
+            let hanging = if direction == Face::Up {
+                "true"
+            } else {
+                "false"
+            };
+            block
+                .clone()
+                .with("hanging", hanging)
                 .with("waterlogged", water)
         })
 }
@@ -1244,5 +1334,61 @@ mod tests {
             ),
             "minecraft:copper_chest"
         );
+    }
+
+    #[test]
+    fn levers_buttons_hooks_and_lanterns_take_the_first_looking_direction_with_support() {
+        let mut world = Blocks::default();
+        world.set_block((0, 2, 0), Some(Block::new("minecraft:stone")));
+        world.set_block((0, 1, -1), Some(Block::new("minecraft:stone")));
+        let down_north = view(180.0, 60.0, Face::Up);
+        let (lever, _) = state(&world, (0, 1, 0), "minecraft:lever", &down_north).unwrap();
+        assert_eq!(
+            (lever.property("face"), lever.property("facing")),
+            (Some("wall"), Some("south"))
+        );
+        assert_eq!(lever.property("powered"), Some("false"));
+        let (lantern, _) = state(&world, (0, 1, 0), "minecraft:lantern", &down_north).unwrap();
+        assert_eq!(lantern.property("hanging"), Some("true"));
+        assert_eq!(lantern.property("waterlogged"), Some("false"));
+        let (hook, _) = state(&world, (0, 1, 0), "minecraft:tripwire_hook", &down_north).unwrap();
+        assert_eq!(hook.property("facing"), Some("south"));
+        assert_eq!(hook.property("attached"), Some("false"));
+        let (shelf, _) = state(&world, (0, 1, 0), "minecraft:shelf_mushroom", &down_north).unwrap();
+        assert_eq!(
+            (shelf.property("facing"), shelf.property("age")),
+            (Some("south"), Some("0"))
+        );
+        let up_north = view(180.0, -60.0, Face::Down);
+        let (button, _) = state(&world, (0, 1, 0), "minecraft:oak_button", &up_north).unwrap();
+        assert_eq!(
+            (button.property("face"), button.property("facing")),
+            (Some("ceiling"), Some("north"))
+        );
+        let mut floor = Blocks::default();
+        floor.set_block((0, 0, 0), Some(Block::new("minecraft:stone")));
+        let (standing, _) = state(&floor, (0, 1, 0), "minecraft:copper_lantern", &up_north).unwrap();
+        assert_eq!(standing.property("hanging"), Some("false"));
+        let (floor_button, _) = state(&floor, (0, 1, 0), "minecraft:stone_button", &up_north).unwrap();
+        assert_eq!(floor_button.property("face"), Some("floor"));
+        let (lichen, _) = state(&floor, (0, 1, 0), "minecraft:glow_lichen", &up_north).unwrap();
+        assert_eq!(
+            ["down", "up", "north", "south", "west", "east"].map(|side| lichen.property(side)),
+            [Some("true"), Some("false"), Some("false"), Some("false"), Some("false"), Some("false")]
+        );
+        let mut grown = Blocks::default();
+        grown.set_block((0, 0, 0), Some(Block::new("minecraft:stone")));
+        grown.set_block((0, 1, 0), Some(lichen));
+        grown.set_block((0, 1, -1), Some(Block::new("minecraft:stone")));
+        let (both, _) = state(&grown, (0, 1, 0), "minecraft:glow_lichen", &down_north).unwrap();
+        assert_eq!(
+            (both.property("down"), both.property("north")),
+            (Some("true"), Some("true"))
+        );
+        let empty = Blocks::default();
+        for id in ["minecraft:sculk_vein", "minecraft:lever", "minecraft:soul_lantern", "minecraft:tripwire_hook", "minecraft:shelf_mushroom", "minecraft:oak_button"] {
+            assert!(state(&empty, (0, 1, 0), id, &down_north).is_none(), "{id}");
+        }
+        assert!(state(&floor, (0, 1, 0), "minecraft:tripwire_hook", &down_north).is_none());
     }
 }

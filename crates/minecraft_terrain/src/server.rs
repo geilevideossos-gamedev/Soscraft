@@ -771,6 +771,11 @@ impl ServerSim {
         if self.level.block(at) == target {
             return;
         }
+        if matches!(edit, PlayerEdit::Place) && !self.may_place(at, target) {
+            let refund = self.refund_of(target);
+            self.level.refuse_placement(at, refund.as_deref());
+            return;
+        }
         let flags = match edit {
             PlayerEdit::Place => update::ALL | 8,
             PlayerEdit::Break => update::ALL,
@@ -779,6 +784,29 @@ impl ServerSim {
         if matches!(edit, PlayerEdit::Place) {
             self.power_placed_opening(at, block);
         }
+    }
+
+    fn may_place(&self, at: minecraftoss_core::BlockPos, target: BlockStateId) -> bool {
+        let blocks = &self.level.registries().blocks;
+        let placed = blocks.block_of(target);
+        if blocks.is_air(target) || blocks.block_of(self.level.block(at)) == placed {
+            return true;
+        }
+        blocks.block(placed).name.as_str() == crate::scaffolding::SCAFFOLDING || self.level.can_survive_at(target, at)
+    }
+
+    fn refund_of(&self, target: BlockStateId) -> Option<String> {
+        let blocks = &self.level.registries().blocks;
+        if blocks.property(target, "half") == Some("upper") {
+            return None;
+        }
+        let name = blocks.block(blocks.block_of(target)).name.as_str();
+        Some(match name {
+            "minecraft:redstone_wire" => "minecraft:redstone".to_owned(),
+            "minecraft:sweet_berry_bush" => crate::berries::SWEET_BERRIES.to_owned(),
+            "minecraft:cave_vines" | "minecraft:cave_vines_plant" => crate::berries::GLOW_BERRIES.to_owned(),
+            _ => name.replace("wall_", "").replace("candle_cake", "candle"),
+        })
     }
 
     fn power_placed_opening(&mut self, at: minecraftoss_core::BlockPos, block: Option<&Block>) {
@@ -2889,6 +2917,236 @@ mod tests {
         assert!(items.iter().any(|i| i == "minecraft:bamboo"), "{items:?}");
     }
 
+    fn survives_on_both_sides(server: &ServerSim, scene: &HandcraftedScene, pos: BlockPos, block: &Block) -> bool {
+        let state = server.states.state_of(block).unwrap();
+        let on_server = server.level.can_survive_at(state, minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2));
+        let on_client = crate::placing::may_place(server.level.lib, &crate::placing::SurviveView::new(scene, None), pos, block);
+        assert_eq!(on_client, on_server, "{block:?} at {pos:?}");
+        on_server
+    }
+
+    #[test]
+    fn sugar_cane_needs_water_frosted_ice_or_a_waterlogged_block_beside_its_ground() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let cane = Block::new("minecraft:sugar_cane");
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:sand"));
+        assert!(!survives_on_both_sides(&server, &scene, (8, 201, 8), &cane), "dry sand");
+        for beside in [
+            Block::new("minecraft:water").with("level", "0"),
+            Block::new("minecraft:frosted_ice").with("age", "0"),
+            Block::new("minecraft:oak_slab").with("type", "bottom").with("waterlogged", "true"),
+        ] {
+            place(&mut server, &mut scene, (9, 200, 8), beside.clone());
+            assert!(survives_on_both_sides(&server, &scene, (8, 201, 8), &cane), "{beside:?}");
+            take(&mut server, &mut scene, (9, 200, 8));
+        }
+        place(&mut server, &mut scene, (8, 199, 9), Block::new("minecraft:water").with("level", "0"));
+        assert!(!survives_on_both_sides(&server, &scene, (8, 201, 8), &cane), "water diagonally below does not count");
+        place(&mut server, &mut scene, (8, 200, 9), Block::new("minecraft:water").with("level", "0"));
+        assert!(survives_on_both_sides(&server, &scene, (8, 201, 8), &cane));
+        place(&mut server, &mut scene, (8, 201, 8), cane.clone());
+        assert!(survives_on_both_sides(&server, &scene, (8, 202, 8), &cane), "cane on cane");
+        place(&mut server, &mut scene, (6, 200, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (6, 200, 9), Block::new("minecraft:water").with("level", "0"));
+        assert!(!survives_on_both_sides(&server, &scene, (6, 201, 8), &cane), "stone does not hold cane");
+        place(&mut server, &mut scene, (4, 200, 8), Block::new("minecraft:grass_block"));
+        place(&mut server, &mut scene, (4, 200, 9), Block::new("minecraft:water").with("level", "0"));
+        assert!(survives_on_both_sides(&server, &scene, (4, 201, 8), &cane), "grass holds cane");
+    }
+
+    #[test]
+    fn a_placement_that_cannot_survive_is_refused_by_the_client_and_the_server() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:sand"));
+        server.take_changes();
+        let aim = [8.5, 200.9, 8.5];
+        assert_eq!(stage_as_client(&mut server, &mut scene, "minecraft:sugar_cane", [8.5, 201.0, 10.5], aim, false), None);
+        assert!(Scene::block(&scene, (8, 201, 8)).is_none());
+        place(&mut server, &mut scene, (8, 201, 8), Block::new("minecraft:sugar_cane"));
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(changes.get(&(8, 201, 8)), Some(&None), "the server sends its air back");
+        for (pos, block) in changes {
+            scene.set(pos, block);
+        }
+        assert_eq!(picked(&server, "minecraft:sugar_cane"), 1, "the refused cane drops as an item");
+        place(&mut server, &mut scene, (9, 200, 8), Block::new("minecraft:water").with("level", "0"));
+        server.take_changes();
+        assert_eq!(place_as_client(&mut server, &mut scene, "minecraft:sugar_cane", [8.5, 201.0, 10.5], aim), Some((8, 201, 8)));
+        assert_eq!(Scene::block(&scene, (8, 201, 8)).map(|b| b.id.key()).as_deref(), Some("minecraft:sugar_cane"));
+        place(&mut server, &mut scene, (12, 199, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (12, 200, 8), Block::new("minecraft:sand"));
+        place(&mut server, &mut scene, (13, 201, 8), Block::new("minecraft:stone"));
+        assert_eq!(stage_as_client(&mut server, &mut scene, "minecraft:cactus", [12.5, 201.0, 10.5], [12.5, 200.9, 8.5], false), None, "cactus beside stone");
+        take(&mut server, &mut scene, (13, 201, 8));
+        assert_eq!(place_as_client(&mut server, &mut scene, "minecraft:cactus", [12.5, 201.0, 10.5], [12.5, 200.9, 8.5]), Some((12, 201, 8)));
+    }
+
+    #[test]
+    fn a_refused_placement_gives_back_the_item_spent_and_never_leaves_a_lone_upper_half() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        server.take_changes();
+        let door = |half: &str| Block::new("minecraft:oak_door").with("facing", "north").with("half", half).with("hinge", "left").with("open", "false").with("powered", "false");
+        let refused = [
+            ((2, 201, 8), Block::new("minecraft:tube_coral_wall_fan").with("facing", "south").with("waterlogged", "false")),
+            ((4, 201, 8), Block::new("minecraft:cake").with("bites", "0")),
+            ((6, 201, 8), Block::new("minecraft:wall_torch").with("facing", "south")),
+            ((10, 201, 8), Block::new("minecraft:glow_lichen").with("down", "true").with("up", "false").with("north", "false").with("south", "false").with("west", "false").with("east", "false").with("waterlogged", "false")),
+            ((12, 201, 8), door("lower")),
+            ((12, 202, 8), door("upper")),
+        ];
+        for (pos, block) in refused {
+            place(&mut server, &mut scene, pos, block);
+        }
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        for pos in [(2, 201, 8), (4, 201, 8), (6, 201, 8), (10, 201, 8), (12, 201, 8), (12, 202, 8)] {
+            assert_eq!(changes.get(&pos), Some(&None), "{pos:?}");
+        }
+        for item in ["minecraft:tube_coral_fan", "minecraft:cake", "minecraft:torch", "minecraft:glow_lichen", "minecraft:oak_door"] {
+            assert_eq!(picked(&server, item), 1, "{item}");
+        }
+        place(&mut server, &mut scene, (8, 200, 8), door("lower"));
+        place(&mut server, &mut scene, (8, 201, 8), door("upper"));
+        let blocks = &server.level.registries().blocks;
+        assert_eq!(blocks.property(server.level.block(minecraftoss_core::BlockPos::new(8, 201, 8)), "half"), Some("upper"));
+        assert_eq!(picked(&server, "minecraft:oak_door"), 1);
+    }
+
+    #[test]
+    fn cane_stays_when_only_its_water_goes_and_breaks_when_its_side_is_touched_like_vanilla() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:sand"));
+        place(&mut server, &mut scene, (9, 199, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (9, 200, 8), Block::new("minecraft:water").with("level", "0"));
+        for y in 201..=203 {
+            place(&mut server, &mut scene, (8, y, 8), Block::new("minecraft:sugar_cane"));
+        }
+        server.take_changes();
+        take(&mut server, &mut scene, (9, 200, 8));
+        let dried = ticked(&mut server, 3);
+        for y in 201..=203 {
+            assert!(!dried.contains_key(&(8, y, 8)), "the cane only checks itself when a face neighbour changes: {dried:?}");
+        }
+        place(&mut server, &mut scene, (7, 201, 8), Block::new("minecraft:stone"));
+        let changes = ticked(&mut server, 1);
+        assert_eq!(changes.get(&(8, 201, 8)), Some(&None));
+        assert!(!changes.contains_key(&(8, 203, 8)));
+        let changes = ticked(&mut server, 4);
+        for y in 202..=203 {
+            assert_eq!(changes.get(&(8, y, 8)), Some(&None), "sugar cane at {y}");
+        }
+        assert_eq!(picked(&server, "minecraft:sugar_cane"), 3);
+    }
+
+    #[test]
+    fn a_cactus_pops_off_when_a_block_is_placed_beside_it() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:sand"));
+        place(&mut server, &mut scene, (8, 201, 8), Block::new("minecraft:cactus"));
+        place(&mut server, &mut scene, (8, 202, 8), Block::new("minecraft:cactus"));
+        server.take_changes();
+        place(&mut server, &mut scene, (9, 202, 8), Block::new("minecraft:stone"));
+        let changes = ticked(&mut server, 2);
+        assert_eq!(changes.get(&(8, 202, 8)), Some(&None));
+        assert!(!changes.contains_key(&(8, 201, 8)), "the lower cactus keeps its free sides");
+        assert_eq!(picked(&server, "minecraft:cactus"), 1);
+    }
+
+    #[test]
+    fn plants_torches_carpets_cakes_corals_and_rails_need_their_support() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let slab = |half: &str| Block::new("minecraft:oak_slab").with("type", half);
+        let cases = [
+            (Block::new("minecraft:stone"), Block::new("minecraft:poppy"), false),
+            (Block::new("minecraft:dirt"), Block::new("minecraft:poppy"), true),
+            (Block::new("minecraft:air"), Block::new("minecraft:torch"), false),
+            (slab("bottom"), Block::new("minecraft:torch"), false),
+            (Block::new("minecraft:glass"), Block::new("minecraft:torch"), true),
+            (Block::new("minecraft:air"), Block::new("minecraft:white_carpet"), false),
+            (Block::new("minecraft:oak_fence"), Block::new("minecraft:white_carpet"), true),
+            (Block::new("minecraft:air"), Block::new("minecraft:cake"), false),
+            (Block::new("minecraft:stone"), Block::new("minecraft:cake"), true),
+            (Block::new("minecraft:stone"), Block::new("minecraft:white_candle_cake"), true),
+            (slab("bottom"), Block::new("minecraft:rail"), false),
+            (slab("top"), Block::new("minecraft:rail"), true),
+            (Block::new("minecraft:glass"), Block::new("minecraft:powered_rail"), true),
+            (Block::new("minecraft:air"), Block::new("minecraft:brain_coral_fan").with("waterlogged", "false"), false),
+            (Block::new("minecraft:stone"), Block::new("minecraft:dead_brain_coral").with("waterlogged", "false"), true),
+            (Block::new("minecraft:dirt"), Block::new("minecraft:pitcher_crop"), false),
+            (Block::new("minecraft:farmland"), Block::new("minecraft:pitcher_crop"), true),
+        ];
+        let mut held = Vec::new();
+        for (x, (ground, block, holds)) in (-14..).step_by(2).zip(cases) {
+            let (ground_at, at) = ((x, 209, 4), (x, 210, 4));
+            if ground.id.key() != "minecraft:air" {
+                place(&mut server, &mut scene, ground_at, ground.clone());
+            }
+            assert_eq!(survives_on_both_sides(&server, &scene, at, &block), holds, "{block:?} on {ground:?}");
+            if holds {
+                place(&mut server, &mut scene, at, block.clone());
+                held.push((ground_at, at, block));
+            }
+        }
+        server.take_changes();
+        for (ground_at, _, _) in &held {
+            take(&mut server, &mut scene, *ground_at);
+        }
+        let mut changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        changes.extend(ticked(&mut server, 3));
+        for (_, at, block) in &held {
+            assert_eq!(changes.get(at), Some(&None), "{block:?} goes with its support");
+        }
+        assert!(picked(&server, "minecraft:torch") >= 1);
+        assert!(picked(&server, "minecraft:rail") >= 1);
+    }
+
+    #[test]
+    fn wall_fans_and_shelf_mushrooms_need_a_sturdy_back() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        for (x, id) in [(8, "minecraft:tube_coral_wall_fan"), (10, "minecraft:dead_horn_coral_wall_fan"), (12, "minecraft:shelf_mushroom")] {
+            let fan = |facing: &str| if id.ends_with("_fan") { Block::new(id).with("facing", facing).with("waterlogged", "false") } else { Block::new(id).with("facing", facing) };
+            let block = fan("south");
+            assert!(!survives_on_both_sides(&server, &scene, (x, 210, 9), &block), "{id} on air");
+            place(&mut server, &mut scene, (x, 210, 8), Block::new("minecraft:stone"));
+            assert!(survives_on_both_sides(&server, &scene, (x, 210, 9), &block), "{id} on stone");
+            assert!(!survives_on_both_sides(&server, &scene, (x, 210, 9), &fan("north")), "{id} facing the stone");
+            place(&mut server, &mut scene, (x, 210, 9), block);
+        }
+        server.take_changes();
+        for x in [8, 10, 12] {
+            take(&mut server, &mut scene, (x, 210, 8));
+        }
+        let mut changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        changes.extend(ticked(&mut server, 2));
+        for x in [8, 10, 12] {
+            assert_eq!(changes.get(&(x, 210, 9)), Some(&None), "{x}");
+        }
+    }
+
+    #[test]
+    fn a_stalagmite_breaks_and_a_stalactite_falls_without_support() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let dripstone = |tip: &str, thickness: &str| Block::new("minecraft:pointed_dripstone").with("vertical_direction", tip).with("thickness", thickness).with("waterlogged", "false");
+        place(&mut server, &mut scene, (8, 209, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (8, 210, 8), dripstone("up", "tip"));
+        place(&mut server, &mut scene, (12, 215, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (12, 214, 8), dripstone("down", "frustum"));
+        place(&mut server, &mut scene, (12, 213, 8), dripstone("down", "tip"));
+        assert!(!survives_on_both_sides(&server, &scene, (4, 210, 8), &dripstone("up", "tip")));
+        server.take_changes();
+        take(&mut server, &mut scene, (8, 209, 8));
+        take(&mut server, &mut scene, (12, 215, 8));
+        let mut changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        changes.extend(ticked(&mut server, 1));
+        assert_eq!(changes.get(&(8, 210, 8)), Some(&None), "the stalagmite breaks on the next tick");
+        assert!(!changes.contains_key(&(12, 214, 8)), "a stalactite waits two ticks");
+        changes.extend(ticked(&mut server, 2));
+        assert_eq!(changes.get(&(12, 214, 8)), Some(&None));
+        assert_eq!(changes.get(&(12, 213, 8)), Some(&None), "the whole stalactite falls");
+        assert_eq!(picked(&server, "minecraft:pointed_dripstone"), 1);
+        let falling = server.level.entities.iter().filter(|e| matches!(e.kind, minecraftoss_world::level::entity::EntityKind::FallingBlock(_))).count();
+        assert_eq!(falling, 2);
+    }
+
     #[test]
     fn scaffolding_reaches_six_out_and_falls_or_breaks_beyond() {
         let Some((mut server, mut scene)) = door_world() else { return };
@@ -3296,6 +3554,12 @@ mod tests {
         let mut staged = crate::placing::Staged::new(&outlined);
         let placed = player.place_selected(&mut staged, &mut inventory, minecraftoss_player::GameMode::Survival)?;
         let writes: Vec<_> = staged.into_writes();
+        let primary = writes.iter().find(|(pos, _)| *pos == placed).and_then(|(_, b)| b.as_ref());
+        if let Some(block) = primary.map(|b| Block { id: crate::pack::ResourceId::parse(&b.id).unwrap(), properties: b.properties.clone() }) {
+            if !crate::placing::may_place(server.level.lib, &crate::placing::SurviveView::new(scene, None), placed, &block) {
+                return None;
+            }
+        }
         for (pos, block) in &writes {
             let block = block.as_ref().map(|b| Block { id: crate::pack::ResourceId::parse(&b.id).unwrap(), properties: b.properties.clone() });
             assert!(block.as_ref().is_none_or(|b| server.states.state_of(b).is_some()), "{block:?} has a state");

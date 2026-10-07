@@ -93,6 +93,95 @@ pub fn obstructed(pos: Pos, boxes: &[[f64; 6]], bodies: &[[f64; 6]]) -> bool {
     })
 }
 
+pub struct SurviveView<'a> {
+    scene: &'a crate::scene::HandcraftedScene,
+    light: Option<&'a crate::lighting::SkyLight>,
+    random: minecraftoss_core::random::AnyRandom,
+}
+
+impl<'a> SurviveView<'a> {
+    pub fn new(
+        scene: &'a crate::scene::HandcraftedScene,
+        light: Option<&'a crate::lighting::SkyLight>,
+    ) -> Self {
+        Self {
+            scene,
+            light,
+            random: minecraftoss_core::random::AnyRandom::new(true, 0),
+        }
+    }
+}
+
+pub fn raw_brightness(sky: u8, block: u8, darkening: i32) -> (i32, bool) {
+    (
+        (i32::from(sky) - darkening).max(i32::from(block)),
+        sky >= 15,
+    )
+}
+
+impl minecraftoss_generator::feature::World for SurviveView<'_> {
+    fn block_at(&self, x: i32, y: i32, z: i32) -> minecraftoss_core::BlockStateId {
+        self.scene
+            .state_at((x, y, z))
+            .unwrap_or(minecraftoss_core::BlockStateId::AIR)
+    }
+
+    fn set_block_with_flags(
+        &mut self,
+        _lib: &minecraftoss_generator::feature::Library,
+        _pos: minecraftoss_core::BlockPos,
+        _state: minecraftoss_core::BlockStateId,
+        _flags: u32,
+    ) -> bool {
+        false
+    }
+
+    fn schedule(&mut self, _pos: minecraftoss_core::BlockPos, _fluid: bool, _delay: i32) {}
+
+    fn random(&mut self) -> &mut minecraftoss_core::random::AnyRandom {
+        &mut self.random
+    }
+
+    fn light(&self, pos: minecraftoss_core::BlockPos, darkening: i32) -> Option<(i32, bool)> {
+        let at = (pos.x, pos.y, pos.z);
+        self.light
+            .map(|light| raw_brightness(light.get(at), light.get_block(at), darkening))
+    }
+
+    fn world_seed(&self) -> i64 {
+        0
+    }
+
+    fn min_y(&self) -> i32 {
+        crate::scene::Scene::vertical_range(self.scene).start
+    }
+
+    fn max_y(&self) -> i32 {
+        crate::scene::Scene::vertical_range(self.scene).end - 1
+    }
+
+    fn height_at(&self, _kind: minecraftoss_core::chunk::HeightmapKind, _x: i32, _z: i32) -> i32 {
+        minecraftoss_generator::feature::World::min_y(self)
+    }
+}
+
+pub fn may_place(
+    library: &minecraftoss_generator::feature::Library,
+    view: &SurviveView<'_>,
+    pos: Pos,
+    block: &crate::scene::Block,
+) -> bool {
+    if block.id.key() == crate::scaffolding::SCAFFOLDING {
+        return true;
+    }
+    match view.scene.states().and_then(|states| states.state_of(block)) {
+        Some(state) => library
+            .survival
+            .can_survive(&library.registries, view, state, pos),
+        None => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +327,31 @@ mod tests {
         assert!(staged.sturdy_center((1, 0, 0), up));
         assert!(!staged.sturdy_center((2, 0, 0), up));
         assert!(!staged.sturdy_center((0, 1, 0), up));
+    }
+
+    #[test]
+    fn survival_light_is_the_brighter_of_sky_and_block_and_only_full_sky_counts_as_open() {
+        assert_eq!(raw_brightness(15, 3, 0), (15, true));
+        assert_eq!(raw_brightness(4, 9, 0), (9, false));
+        assert_eq!(raw_brightness(15, 3, 11), (4, true));
+        assert_eq!(raw_brightness(14, 0, 0), (14, false));
+    }
+
+    #[test]
+    fn the_survival_view_reads_the_client_light_and_answers_none_without_it() {
+        use minecraftoss_generator::feature::World as _;
+        let scene = crate::scene::HandcraftedScene::default();
+        let light = crate::lighting::SkyLight::from_levels(
+            (0, 0, 0),
+            (1, 2, 1),
+            vec![15, 4],
+            vec![3, 9],
+        );
+        let lit = SurviveView::new(&scene, Some(&light));
+        let at = |y| minecraftoss_core::BlockPos::new(0, y, 0);
+        assert_eq!(lit.light(at(0), 0), Some((15, true)));
+        assert_eq!(lit.light(at(1), 0), Some((9, false)));
+        assert_eq!(SurviveView::new(&scene, None).light(at(0), 0), None);
+        assert_eq!(lit.block_at(0, 0, 0), minecraftoss_core::BlockStateId::AIR);
     }
 }

@@ -66,6 +66,27 @@ impl Level<'_> {
         self.add_entity(entity);
     }
 
+    pub(super) fn speleothem_tick(&mut self, state: BlockStateId, pos: BlockPos) {
+        let lib = self.lib;
+        let blocks = &lib.registries.blocks;
+        if blocks.property(state, "vertical_direction") == Some("up") {
+            if !self.can_survive_state(state, pos) {
+                self.destroy_block_drops(pos, true, update::LIMIT);
+            }
+            return;
+        }
+        let mut at = pos;
+        let mut piece = state;
+        while self.is_a(piece, "SpeleothemBlock") && blocks.property(piece, "vertical_direction") == Some("down") {
+            self.fall_block(at, piece, true);
+            if matches!(blocks.property(piece, "thickness"), Some("tip" | "tip_merge")) {
+                break;
+            }
+            at = at.below();
+            piece = self.block(at);
+        }
+    }
+
     pub(super) fn scaffolding_tick(&mut self, state: BlockStateId, pos: BlockPos) {
         use minecraftoss_generator::feature::survive::{scaffolding_distance, SCAFFOLDING_REACH};
         let reach = scaffolding_distance(self.registries(), self, (pos.x, pos.y, pos.z));

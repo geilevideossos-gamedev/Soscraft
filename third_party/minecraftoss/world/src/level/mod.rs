@@ -324,6 +324,17 @@ impl<'a> Level<'a> {
         std::mem::take(&mut self.changed).into_iter().collect()
     }
 
+    pub fn can_survive_at(&self, state: BlockStateId, pos: BlockPos) -> bool {
+        self.can_survive_state(state, pos)
+    }
+
+    pub fn refuse_placement(&mut self, pos: BlockPos, refund: Option<&str>) {
+        self.changed.insert((pos.x, pos.y, pos.z));
+        if let Some(item) = refund {
+            self.pop_resource(pos, container::Stack::new(item, 1));
+        }
+    }
+
     fn outside(&self, y: i32) -> bool {
         y < self.min_y || y >= self.min_y + self.height
     }
@@ -801,6 +812,8 @@ impl<'a> Level<'a> {
             self.falling_block_tick(state, pos);
         } else if self.is_a(state, "ScaffoldingBlock") {
             self.scaffolding_tick(state, pos);
+        } else if self.is_a(state, "SpeleothemBlock") {
+            self.speleothem_tick(state, pos);
         } else if SUPPORTED_BY_TICK.iter().any(|class| self.is_a(state, class)) {
             if !self.can_survive_state(state, pos) {
                 self.destroy_block_drops(pos, true, update::LIMIT);

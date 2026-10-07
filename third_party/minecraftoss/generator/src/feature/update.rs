@@ -89,6 +89,7 @@ enum Rule {
     Scaffolding,
     CeilingHangingSign,
     NetherPortal,
+    PitcherCrop,
 }
 
 pub struct UpdateRules {
@@ -192,6 +193,7 @@ impl UpdateRules {
         add(&["pale_moss_carpet"], Rule::MossyCarpet);
         add(&["creaking_heart"], Rule::CreakingHeart);
         add(&["pointed_dripstone", "sulfur_spike"], Rule::Speleothem);
+        add(&["pitcher_crop"], Rule::PitcherCrop);
         add(&["attached_pumpkin_stem"], Rule::AttachedStem { fruit: "minecraft:pumpkin", stem: "minecraft:pumpkin_stem" });
         add(&["attached_melon_stem"], Rule::AttachedStem { fruit: "minecraft:melon", stem: "minecraft:melon_stem" });
         // The rest by vanilla class (schema 4 catalog), most derived first.
@@ -235,6 +237,9 @@ impl UpdateRules {
             ("ScaffoldingBlock", Rule::Scaffolding),
             ("CeilingHangingSignBlock", Rule::CeilingHangingSign),
             ("BrushableBlock", Rule::Tick),
+            ("CakeBlock", Rule::DownSurvive),
+            ("CandleCakeBlock", Rule::DownSurvive),
+            ("FrogspawnBlock", Rule::SurviveOrAir),
         ];
         for (id, info) in registries.blocks.blocks() {
             if rules.contains_key(&id) {
@@ -296,7 +301,14 @@ pub fn update_shape<W: World + ?Sized>(ctx: &mut Ctx<W>, state: BlockStateId, po
             ctx.schedule_fluid_tick_for(pos, state);
             state
         }
-        Rule::DoublePlant => {
+        Rule::PitcherCrop if ctx.property(state, "age").and_then(|a| a.parse::<i32>().ok()).unwrap_or(0) < 3 => {
+            if survives(ctx) {
+                state
+            } else {
+                air
+            }
+        }
+        Rule::DoublePlant | Rule::PitcherCrop => {
             let lower = ctx.property(state, "half") == Some("lower");
             let neighbor_other_half = same_block(ctx, neighbor) && ctx.property(neighbor, "half") != ctx.property(state, "half");
             if direction.axis() != minecraftoss_core::pos::Axis::Y || lower != (direction == Direction::Up) || neighbor_other_half {
@@ -643,6 +655,14 @@ pub fn update_shape<W: World + ?Sized>(ctx: &mut Ctx<W>, state: BlockStateId, po
                 ctx.schedule_fluid_tick_for(pos, state);
             }
             if !matches!(direction, Direction::Up | Direction::Down) {
+                return state;
+            }
+            let tip = if ctx.property(state, "vertical_direction") == Some("up") { Direction::Up } else { Direction::Down };
+            if tip == Direction::Down && ctx.region.has_block_tick(pos, block) {
+                return state;
+            }
+            if direction == tip.opposite() && !survives(ctx) {
+                ctx.region.schedule_block(pos, block, if tip == Direction::Down { 2 } else { 1 });
                 return state;
             }
             // Thickness recalculation is left to the feature that placed it.

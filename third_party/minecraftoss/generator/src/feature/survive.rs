@@ -156,6 +156,10 @@ enum Rule {
     Diode,
     Scaffolding,
     CeilingHangingSign,
+    Coral,
+    Frogspawn,
+    PitcherCrop,
+    Rail,
 }
 
 const TAGS: &[&str] = &[
@@ -191,6 +195,7 @@ const TAGS: &[&str] = &[
     "minecraft:supports_pumpkin_stem",
     "minecraft:supports_melon_stem",
     "minecraft:supports_nether_wart",
+    "minecraft:supports_frogspawn",
 ];
 
 impl Survival {
@@ -273,6 +278,7 @@ impl Survival {
         rule(&["pumpkin_stem", "attached_pumpkin_stem"], Rule::Below("minecraft:supports_pumpkin_stem"))?;
         rule(&["melon_stem", "attached_melon_stem"], Rule::Below("minecraft:supports_melon_stem"))?;
         rule(&["nether_wart"], Rule::Below("minecraft:supports_nether_wart"))?;
+        rule(&["pitcher_crop"], Rule::PitcherCrop)?;
         // The rest by vanilla class, from the schema 4 catalog; the most
         // derived class that has a rule decides.
         let by_class: &[(&str, Option<Rule>)] = &[
@@ -299,6 +305,13 @@ impl Survival {
             ("DiodeBlock", Some(Rule::Diode)),
             ("ScaffoldingBlock", Some(Rule::Scaffolding)),
             ("CeilingHangingSignBlock", Some(Rule::CeilingHangingSign)),
+            ("BaseCoralWallFanBlock", Some(Rule::Behind)),
+            ("BaseCoralPlantTypeBlock", Some(Rule::Coral)),
+            ("ShelfMushroomBlock", Some(Rule::Behind)),
+            ("CakeBlock", Some(Rule::SolidBelow)),
+            ("CandleCakeBlock", Some(Rule::SolidBelow)),
+            ("FrogspawnBlock", Some(Rule::Frogspawn)),
+            ("BaseRailBlock", Some(Rule::Rail)),
         ];
         for (id, info) in registries.blocks.blocks() {
             if rules.contains_key(&id) {
@@ -553,6 +566,21 @@ impl Survival {
                 let lit = region.light(BlockPos::new(x, y, z), 0).map_or(self.unlit_raw_brightness >= 8, |(raw, sky)| raw >= 8 || sky);
                 tagged(get(0, -1, 0), "minecraft:supports_crops") && lit
             }
+            Rule::PitcherCrop => {
+                let below = get(0, -1, 0);
+                if blocks.property(state, "half") == Some("upper") {
+                    blocks.block_of(below) == blocks.block_of(state) && blocks.property(below, "half") == Some("lower")
+                } else {
+                    let lit = region.light(BlockPos::new(x, y, z), 0).map_or(self.unlit_raw_brightness >= 8, |(raw, sky)| raw >= 8 || sky);
+                    lit && tagged(below, "minecraft:supports_crops")
+                }
+            }
+            Rule::Frogspawn => {
+                let below = get(0, -1, 0);
+                (self.fluid_in("minecraft:supports_frogspawn", fluid(below)) || tagged(below, "minecraft:supports_frogspawn")) && fluid(get(0, 0, 0)) == FluidType::Empty
+            }
+            Rule::Coral => sturdy(get(0, -1, 0), Direction::Up),
+            Rule::Rail => blocks.is_face_sturdy(get(0, -1, 0), Direction::Up, SupportType::Rigid),
             Rule::BelowCenter => blocks.is_face_sturdy(get(0, -1, 0), Direction::Up, SupportType::Center),
             Rule::Behind | Rule::SolidBehind => {
                 let facing = blocks.property(state, "facing").and_then(parse_direction).unwrap_or(Direction::North);

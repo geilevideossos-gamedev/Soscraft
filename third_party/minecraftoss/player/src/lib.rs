@@ -1968,8 +1968,21 @@ impl Player {
         Some(placed)
     }
     pub fn place_target_with(&self, world: &mut impl World, mut block: Block) -> Option<Pos> {
-        let hit = self.target(world, 5.0)?;
-        let pos = placement_pos(world, &hit);
+        let on_water = matches!(block.id.as_str(), "minecraft:lily_pad" | "minecraft:frogspawn");
+        let hit = if on_water {
+            let water = self.target_source_fluid(world, 5.0)?;
+            Hit {
+                pos: (water.pos.0, water.pos.1 + 1, water.pos.2),
+                ..water
+            }
+        } else {
+            self.target(world, 5.0)?
+        };
+        let pos = if on_water && world.block(hit.pos).is_none() {
+            hit.pos
+        } else {
+            placement_pos(world, &hit)
+        };
         let pos = if block.id.ends_with("_slab") && pos != hit.pos {
             slab_placement_target(world, hit.pos, hit.face, hit.point.y, &block.id)
         } else {
@@ -2044,30 +2057,6 @@ impl Player {
         }
         if block.id == "minecraft:daylight_detector" {
             block = block.with("inverted", "false").with("power", "0");
-        }
-        if block.id == "minecraft:lever" || block.id.ends_with("_button") {
-            let yaw = self.yaw.rem_euclid(360.0);
-            let facing = if yaw < 45.0 || yaw >= 315.0 {
-                "south"
-            } else if yaw < 135.0 {
-                "west"
-            } else if yaw < 225.0 {
-                "north"
-            } else {
-                "east"
-            };
-            let (face, facing) = match hit.face {
-                Face::Up => ("floor", facing),
-                Face::Down => ("ceiling", facing),
-                Face::North => ("wall", "north"),
-                Face::South => ("wall", "south"),
-                Face::West => ("wall", "west"),
-                Face::East => ("wall", "east"),
-            };
-            block = block
-                .with("face", face)
-                .with("facing", facing)
-                .with("powered", "false");
         }
         if block.id.ends_with("_slab") {
             block = slab_placement_state(world, pos, block, hit.face, hit.point.y);
@@ -2530,6 +2519,28 @@ mod tests {
             ),
         );
         assert_eq!(chest_partner(&world, right), None);
+    }
+    #[test]
+    fn lily_pads_and_frogspawn_go_on_the_water_source_the_ray_meets() {
+        for id in ["minecraft:lily_pad", "minecraft:frogspawn"] {
+            let mut world = floor();
+            world.set_block(
+                (0, 0, 3),
+                Some(Block::new("minecraft:water").with("level", "0")),
+            );
+            let mut player = Player::new(DVec3::new(0.5, 1.0, 0.5));
+            player.yaw = 0.0;
+            player.pitch = 1.72_f64.atan2(3.0).to_degrees();
+            assert_eq!(
+                player.place_target_with(&mut world, Block::new(id)),
+                Some((0, 1, 3))
+            );
+            assert_eq!(world.block((0, 1, 3)).map(|b| b.id), Some(id.to_owned()));
+            assert_eq!(
+                world.block((0, 0, 3)).map(|b| b.id),
+                Some("minecraft:water".to_owned())
+            );
+        }
     }
     #[test]
     fn placing_adjacent_chests_links_halves_without_replacing_their_blocks() {

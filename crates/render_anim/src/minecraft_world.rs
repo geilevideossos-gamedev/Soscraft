@@ -1163,7 +1163,13 @@ fn update(
                         .map_or_else(Vec::new, |state| world.registries.blocks.collision_boxes(state));
                     minecraft_terrain::placing::obstructed(*pos, &boxes, &bodies)
                 });
-                if let Some(pos) = placed.filter(|_| !blocked) {
+                let survives = placed.is_none_or(|pos| {
+                    writes.iter().find(|(at, _)| *at == pos).and_then(|(_, block)| block.as_ref()).is_none_or(|block| {
+                        let view = minecraft_terrain::placing::SurviveView::new(&world.scene, light.as_ref());
+                        minecraft_terrain::placing::may_place(&world.stream.world_gen().library, &view, pos, block)
+                    })
+                });
+                if let Some(pos) = placed.filter(|_| !blocked && survives) {
                     let now = time.elapsed_secs_f64();
                     hand.recent.retain(|(_, _, at)| now - at < RECENT_PLACE_SECONDS);
                     let written: Vec<_> = writes.iter().map(|(p, _)| *p).collect();
