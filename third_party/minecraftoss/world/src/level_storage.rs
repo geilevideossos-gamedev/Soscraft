@@ -1,3 +1,4 @@
+use crate::game_rules::{GAME_RULES, GameRules};
 pub use crate::settings::WorldSettings;
 use crate::storage::ChunkStorage;
 use minecraftoss_core::Registries;
@@ -358,6 +359,20 @@ impl LevelStorage {
             .collect();
         self.write_saved(WORLD_CLOCKS, Tag::Compound(data))
     }
+
+    pub fn read_game_rules(&self) -> Result<GameRules, String> {
+        let Some(data) = self.read_saved(GAME_RULES)? else {
+            return Ok(GameRules::default());
+        };
+        if data.as_compound().is_none() {
+            return Err("game_rules is not a compound".to_owned());
+        }
+        Ok(GameRules::from_tag(&data))
+    }
+
+    pub fn write_game_rules(&self, rules: &GameRules) -> Result<(), String> {
+        self.write_saved(GAME_RULES, rules.to_tag())
+    }
 }
 
 pub fn dimension_path(world: &Path, dimension: &str) -> PathBuf {
@@ -638,6 +653,32 @@ mod tests {
         let overworld = data.get("minecraft:overworld").unwrap();
         assert_eq!(overworld.get("total_ticks"), Some(&Tag::Long(30_250)));
         assert_eq!(overworld.get("rate"), Some(&Tag::Float(1.0)));
+    }
+
+    #[test]
+    fn game_rules_live_in_data_minecraft_game_rules_dat() {
+        let dir = test_dir("rules");
+        let storage = LevelStorage::open(&dir.0).unwrap();
+        let mut rules = GameRules::default();
+        rules.set("keep_inventory", "true").unwrap();
+        rules.set("random_tick_speed", "7").unwrap();
+        storage.write_game_rules(&rules).unwrap();
+        let path = dir.0.join("data").join("minecraft").join("game_rules.dat");
+        let root = nbt::read(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(root.get("DataVersion"), Some(&Tag::Int(DATA_VERSION)));
+        let data = root.get("data").unwrap();
+        assert_eq!(data.get("minecraft:keep_inventory"), Some(&Tag::Byte(1)));
+        assert_eq!(data.get("minecraft:random_tick_speed"), Some(&Tag::Int(7)));
+        assert_eq!(storage.read_game_rules().unwrap(), rules);
+    }
+
+    #[test]
+    fn missing_game_rules_read_as_defaults() {
+        let dir = test_dir("norules");
+        let storage = LevelStorage::open(&dir.0).unwrap();
+        assert_eq!(storage.read_game_rules().unwrap(), GameRules::default());
+        storage.write_saved(GAME_RULES, Tag::Int(3)).unwrap();
+        assert!(storage.read_game_rules().is_err());
     }
 
     #[test]

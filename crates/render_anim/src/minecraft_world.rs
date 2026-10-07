@@ -82,6 +82,7 @@ struct Loaded {
     crack_texture: Arc<image::RgbaImage>,
     saved_day: Option<f64>,
     save: Option<crate::minecraft_save::WorldSave>,
+    game_rules: minecraft_terrain::game_rules::GameRules,
     level_writer: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -273,7 +274,7 @@ fn load() -> Result<Loaded, String> {
     )
     .map_err(|e| e.to_string())?;
     if let Some(save) = &opened.save
-        && let Err(error) = save.write(stream.world_spawn, None)
+        && let Err(error) = save.write(stream.world_spawn, None, &opened.game_rules)
     {
         diag::warn!(World, "Minecraft level.dat not written: {error}");
     }
@@ -298,6 +299,7 @@ fn load() -> Result<Loaded, String> {
         crack_texture,
         saved_day: opened.day_ticks,
         save: opened.save,
+        game_rules: opened.game_rules,
         level_writer: None,
     })
 }
@@ -2168,10 +2170,11 @@ fn autosave(world: &mut Loaded, day_ticks: f64) {
     }
     let path = save.path().display().to_string();
     let spawn = world.stream.world_spawn;
+    let rules = world.game_rules.clone();
     world.level_writer = std::thread::Builder::new()
         .name("minecraft-level-save".into())
         .spawn(move || {
-            if let Err(error) = save.write(spawn, Some(day_ticks)) {
+            if let Err(error) = save.write(spawn, Some(day_ticks), &rules) {
                 diag::warn!(World, "Minecraft autosave: level.dat not written: {error}");
             }
         })
@@ -2237,11 +2240,12 @@ fn save_and_close(
         let _ = writer.join();
     }
     let spawn = world.stream.world_spawn;
+    let rules = std::mem::take(&mut world.game_rules);
     drop(world);
     let Some(save) = save else {
         return;
     };
-    if let Err(error) = save.write(spawn, Some(day_ticks)) {
+    if let Err(error) = save.write(spawn, Some(day_ticks), &rules) {
         diag::warn!(World, "Minecraft level.dat not written: {error}");
     }
     diag::info!(

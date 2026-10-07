@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use minecraft_terrain::game_rules::GameRules;
 use minecraft_terrain::level_storage::{
     ClockState, LevelData, LevelStorage, RespawnData, WorldSettings,
 };
@@ -85,6 +86,7 @@ impl WorldSave {
         &self,
         spawn: (i32, i32, i32),
         day_ticks: Option<f64>,
+        game_rules: &GameRules,
     ) -> Result<(), String> {
         let elapsed = match (day_ticks, self.day_at_start) {
             (Some(now), Some(start)) => (now - start).max(0.0) as i64,
@@ -101,6 +103,7 @@ impl WorldSave {
             ..self.level.clone()
         };
         self.storage.write_level_data(&level)?;
+        self.storage.write_game_rules(game_rules)?;
         let Some(day_ticks) = day_ticks else {
             return Ok(());
         };
@@ -118,6 +121,7 @@ pub(crate) struct OpenedWorld {
     pub(crate) save: Option<WorldSave>,
     pub(crate) spawn: Option<(i32, i32, i32)>,
     pub(crate) day_ticks: Option<f64>,
+    pub(crate) game_rules: GameRules,
     pub(crate) notes: Vec<String>,
     pub(crate) warnings: Vec<String>,
 }
@@ -129,6 +133,7 @@ impl OpenedWorld {
             save: None,
             spawn: None,
             day_ticks: None,
+            game_rules: GameRules::default(),
             notes: vec![format!(
                 "Minecraft world: temporary, deleted when it closes, seed {seed}"
             )],
@@ -184,6 +189,12 @@ fn open_save(
         ));
         BTreeMap::new()
     });
+    let game_rules = storage.read_game_rules().unwrap_or_else(|error| {
+        warnings.push(format!(
+            "Minecraft game_rules unreadable, using the defaults: {error}"
+        ));
+        GameRules::default()
+    });
     let (seed, warning) = choose_seed(stored.map(|s| s.seed), requested, random, name);
     warnings.extend(warning);
     if stored.is_none() {
@@ -207,6 +218,7 @@ fn open_save(
         seed,
         spawn,
         day_ticks: clocks.get(OVERWORLD).map(ClockState::ticks),
+        game_rules,
         notes: vec![format!(
             "Minecraft world: {verb} {} seed {seed}",
             path.display()
@@ -305,9 +317,10 @@ mod tests {
         }
         let mut save = first.save.expect("a real world");
         assert_eq!(save.path(), world);
-        save.write((12, 70, -4), None).unwrap();
+        let rules = GameRules::default();
+        save.write((12, 70, -4), None, &rules).unwrap();
         save.started(1000.0);
-        save.write((12, 70, -4), Some(19_000.25)).unwrap();
+        save.write((12, 70, -4), Some(19_000.25), &rules).unwrap();
         drop(save);
         let again = open_world(&dir.0, Some("world"), Some("77"), 9);
         assert_eq!(again.seed, 123);
@@ -351,7 +364,7 @@ mod tests {
             .save
             .as_ref()
             .unwrap()
-            .write((1, 64, 2), Some(700.0))
+            .write((1, 64, 2), Some(700.0), &GameRules::default())
             .unwrap();
         drop(first);
         let world = dir.0.join("world");
@@ -369,6 +382,41 @@ mod tests {
         assert_eq!(again.spawn, None);
         assert_eq!(again.day_ticks, None);
         assert_eq!(again.warnings.len(), 2, "{:?}", again.warnings);
+    }
+
+    #[test]
+    fn game_rules_survive_reopening_a_world() {
+        let dir = saves();
+        let first = open_world(&dir.0, None, Some("8"), 9);
+        assert!(!first.game_rules.keep_inventory());
+        let mut rules = first.game_rules.clone();
+        rules.set("keep_inventory", "true").unwrap();
+        first
+            .save
+            .as_ref()
+            .unwrap()
+            .write((0, 64, 0), None, &rules)
+            .unwrap();
+        drop(first);
+        let world = dir.0.join("world");
+        assert!(world.join("data/minecraft/game_rules.dat").is_file());
+        let again = open_world(&dir.0, None, None, 9);
+        assert!(again.game_rules.keep_inventory());
+        assert!(again.warnings.is_empty(), "{:?}", again.warnings);
+        drop(again);
+        for file in [
+            "data/minecraft/game_rules.dat",
+            "data/minecraft/game_rules.dat_old",
+        ] {
+            let _ = std::fs::write(world.join(file), b"broken");
+        }
+        let broken = open_world(&dir.0, None, None, 9);
+        assert!(broken.save.is_some());
+        assert!(!broken.game_rules.keep_inventory());
+        assert_eq!(broken.warnings.len(), 1, "{:?}", broken.warnings);
+        assert!(broken.warnings[0].contains("game_rules"));
+        let temp = open_world(&dir.0, Some("temp"), None, 9);
+        assert_eq!(temp.game_rules, GameRules::default());
     }
 
     #[test]

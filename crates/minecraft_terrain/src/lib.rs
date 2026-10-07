@@ -2,6 +2,7 @@
 //! vanilla light solver and the section mesher, from MinecraftOSS
 //! (`engine/viewer`, commit 9e4108d) with its GPU binding code left out.
 pub use minecraftoss_core::fast_hash;
+pub use minecraftoss_world::game_rules;
 pub use minecraftoss_world::level_storage;
 pub mod block_particles;
 #[cfg(test)]
