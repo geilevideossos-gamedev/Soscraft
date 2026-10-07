@@ -153,6 +153,7 @@ fn is_replaceable(block: Option<&Block>, kind: FluidKind) -> bool {
             | "redstone_torch"
             | "snow"
     ) || block.id.path.ends_with("_flower")
+        || block.id.path.ends_with("torch")
 }
 fn waterloggable(block: &Block) -> bool {
     supports_waterlogging(block)
@@ -222,6 +223,7 @@ pub(crate) fn full_collision(block: Option<&Block>) -> bool {
             | "redstone_torch"
             | "snow"
     ) && !path.ends_with("_flower")
+        && !path.ends_with("torch")
         && !path.ends_with("_slab")
         && !path.ends_with("_stairs")
 }
@@ -647,6 +649,24 @@ mod tests {
         assert!(sim.tick(&mut scene, 5).contains(&(0, 1, 0)));
         assert_eq!(FluidCell::at(&scene, (0, 1, 0)).unwrap().legacy_level(), 8);
         assert!(sim.tick(&mut scene, 10).contains(&(1, 1, 0)));
+    }
+    #[test]
+    fn every_torch_is_washed_away_and_never_shapes_the_water_surface() {
+        for id in [
+            "minecraft:torch",
+            "minecraft:wall_torch",
+            "minecraft:soul_torch",
+            "minecraft:soul_wall_torch",
+            "minecraft:copper_torch",
+            "minecraft:copper_wall_torch",
+            "minecraft:redstone_torch",
+            "minecraft:redstone_wall_torch",
+        ] {
+            let torch = Block::new(id);
+            assert!(!full_collision(Some(&torch)), "{id}");
+            assert!(is_replaceable(Some(&torch), FluidKind::Water), "{id}");
+            assert!(is_replaceable(Some(&torch), FluidKind::Lava), "{id}");
+        }
     }
     #[test]
     fn two_sources_form_new_water_source_only_over_support() {

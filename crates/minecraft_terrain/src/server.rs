@@ -3305,6 +3305,42 @@ mod tests {
     }
 
     #[test]
+    fn a_torch_clicked_onto_a_wall_hangs_there_and_drops_when_the_wall_goes() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        for (x, item, wall_torch) in [(8, "minecraft:torch", "minecraft:wall_torch"), (10, "minecraft:redstone_torch", "minecraft:redstone_wall_torch"), (12, "minecraft:copper_torch", "minecraft:copper_wall_torch")] {
+            place(&mut server, &mut scene, (x, 201, 7), Block::new("minecraft:stone"));
+            server.take_changes();
+            let feet = [x as f64 + 0.5, 200.0, 8.5];
+            let placed = place_as_client(&mut server, &mut scene, item, feet, [x as f64 + 0.5, 201.5, 8.0]);
+            assert_eq!(placed, Some((x, 201, 8)), "{item} goes into the player's own cell");
+            let torch = Scene::block(&scene, (x, 201, 8)).cloned().unwrap();
+            assert_eq!(torch.id.key(), wall_torch);
+            assert_eq!(torch.properties.get("facing").map(String::as_str), Some("south"));
+            let lit = (item == "minecraft:redstone_torch").then_some("true");
+            assert_eq!(torch.properties.get("lit").map(String::as_str), lit);
+            take(&mut server, &mut scene, (x, 201, 7));
+            let mut changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+            changes.extend(ticked(&mut server, 3));
+            assert_eq!(changes.get(&(x, 201, 8)), Some(&None), "{item}: {changes:?}");
+            assert_eq!(picked(&server, item), 1, "{item} drops itself");
+            assert_eq!(picked(&server, wall_torch), 0);
+        }
+    }
+
+    #[test]
+    fn a_torch_needs_a_floor_that_holds_its_centre() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        for (x, floor, holds) in [(8, "minecraft:soul_sand", true), (11, "minecraft:oak_leaves", false), (14, "minecraft:glass_pane", true)] {
+            place(&mut server, &mut scene, (x, 200, 8), Block::new(floor));
+            server.take_changes();
+            let placed = stage_as_client(&mut server, &mut scene, "minecraft:torch", [x as f64 + 0.5, 201.0, 10.5], [x as f64 + 0.5, 200.9, 8.5], false);
+            assert_eq!(placed.is_some(), holds, "{floor}");
+            let standing = Scene::block(&scene, (x, 201, 8)).map(|b| b.id.key());
+            assert_eq!(standing.as_deref(), holds.then_some("minecraft:torch"), "{floor}");
+        }
+    }
+
+    #[test]
     fn a_shulker_box_the_server_blows_up_drops_once_with_its_contents() {
         let Some((mut server, mut scene)) = door_world() else { return };
         place(&mut server, &mut scene, (8, 199, 8), Block::new("minecraft:stone"));

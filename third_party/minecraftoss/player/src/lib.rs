@@ -23,7 +23,7 @@ pub mod mining;
 pub mod jmath;
 pub mod mth;
 mod placement;
-pub use placement::authored_sturdy_face;
+pub use placement::{authored_sturdy_center, authored_sturdy_face};
 pub mod rail;
 pub mod redstone;
 pub mod rng;
@@ -226,6 +226,9 @@ pub trait World {
     }
     fn sturdy_face(&self, pos: Pos, face: Face) -> bool {
         self.block(pos).is_some_and(|block| placement::authored_sturdy_face(&block, &self.collision_boxes(pos), face))
+    }
+    fn sturdy_center(&self, pos: Pos, face: Face) -> bool {
+        self.block(pos).is_some_and(|block| placement::authored_sturdy_center(&block, &self.collision_boxes(pos), face))
     }
     /// The block's `SoundType` fall sound at `pos`: its event, volume and
     /// pitch. Authored worlds take the step's family (`block.<family>.fall`).
@@ -659,9 +662,27 @@ fn fire_outline(block: &Block) -> Vec<Box3> {
 }
 fn outline_shapes(block: &Block) -> Vec<Box3> {
     let id = block.id.rsplit(':').next().unwrap_or(&block.id);
+    if let Some(head) = head_shape(block, id, true) {
+        return vec![head];
+    }
     let column = match id {
         "short_grass" => outline_column(12.0, 13.0),
-        "torch" => outline_column(4.0, 10.0),
+        _ if id.ends_with("wall_torch") => return vec![wall_outline(block, 5.0, 3.0, 13.0, 5.0)],
+        _ if id.ends_with("torch") => outline_column(4.0, 10.0),
+        _ if id.ends_with("_coral_wall_fan") => return vec![wall_outline(block, 16.0, 4.0, 12.0, 11.0)],
+        _ if id.ends_with("_coral_fan") => outline_column(12.0, 4.0),
+        _ if id.ends_with("_wall_sign") => return vec![wall_outline(block, 16.0, 4.5, 12.5, 2.0)],
+        _ if id.ends_with("_wall_banner") => return vec![wall_outline(block, 16.0, 0.0, 12.5, 2.0)],
+        _ if id.ends_with("_wall_hanging_sign") => {
+            let east_west = matches!(block.property("facing"), Some("east" | "west"));
+            return vec![axis_column(east_west, 16.0, 4.0, 14.0, 16.0), axis_column(east_west, 14.0, 2.0, 0.0, 10.0)];
+        }
+        _ if id.ends_with("_hanging_sign") => match block.property("rotation").unwrap_or("0") {
+            "0" | "8" => axis_column(false, 14.0, 2.0, 0.0, 10.0),
+            "4" | "12" => axis_column(true, 14.0, 2.0, 0.0, 10.0),
+            _ => outline_column(10.0, 16.0),
+        },
+        _ if noncolliding_mount(id) => outline_column(8.0, 16.0),
         "fire" | "soul_fire" => return fire_outline(block),
         "tall_grass" | "cobweb" => outline_column(16.0, 16.0),
         "cave_vines" | "cave_vines_plant" => outline_column(14.0, 16.0),
@@ -674,9 +695,46 @@ fn outline_shapes(block: &Block) -> Vec<Box3> {
     };
     vec![column]
 }
+fn wall_outline(block: &Block, width: f64, bottom: f64, top: f64, depth: f64) -> Box3 {
+    let side = (16.0 - width) / 32.0;
+    let depth = depth / 16.0;
+    let (min_x, max_x, min_z, max_z) = match block.property("facing").unwrap_or("north") {
+        "south" => (side, 1.0 - side, 0.0, depth),
+        "east" => (0.0, depth, side, 1.0 - side),
+        "west" => (1.0 - depth, 1.0, side, 1.0 - side),
+        _ => (side, 1.0 - side, 1.0 - depth, 1.0),
+    };
+    Box3::new(DVec3::new(min_x, bottom / 16.0, min_z), DVec3::new(max_x, top / 16.0, max_z))
+}
+fn axis_column(east_west: bool, width: f64, depth: f64, bottom: f64, top: f64) -> Box3 {
+    let (across_x, across_z) = if east_west { (depth, width) } else { (width, depth) };
+    let (x, z) = ((16.0 - across_x) / 32.0, (16.0 - across_z) / 32.0);
+    Box3::new(DVec3::new(x, bottom / 16.0, z), DVec3::new(1.0 - x, top / 16.0, 1.0 - z))
+}
+fn head_shape(block: &Block, id: &str, outline: bool) -> Option<Box3> {
+    if placement::HEADS.contains(&id) {
+        return Some(match id {
+            "piglin_head" => outline_column(10.0, 8.0),
+            "dragon_head" if outline => outline_column(8.0, 8.5),
+            _ => outline_column(8.0, 8.0),
+        });
+    }
+    let standing = id.replacen("_wall_", "_", 1);
+    if standing == id || !placement::HEADS.contains(&standing.as_str()) {
+        return None;
+    }
+    let width = if standing == "piglin_head" { 10.0 } else { 8.0 };
+    Some(wall_outline(block, width, 4.0, 12.0, 8.0))
+}
+fn noncolliding_mount(id: &str) -> bool {
+    id.ends_with("torch")
+        || id.ends_with("_coral_fan")
+        || id.ends_with("_coral_wall_fan")
+        || ((id.ends_with("_sign") || id.ends_with("_banner")) && !id.ends_with("_wall_hanging_sign"))
+}
 pub fn authored_replaceable(block: &Block) -> bool {
     let id = block.id.rsplit(':').next().unwrap_or(&block.id);
-    local_shapes(block).is_empty() && !matches!(id, "torch" | "cobweb" | "sweet_berry_bush" | "cave_vines" | "cave_vines_plant")
+    local_shapes(block).is_empty() && !noncolliding_mount(id) && !matches!(id, "cobweb" | "sweet_berry_bush" | "cave_vines" | "cave_vines_plant")
 }
 pub fn placement_pos(world: &impl World, hit: &Hit) -> Pos {
     if world.block(hit.pos).is_some_and(|clicked| world.replaceable(&clicked)) {
@@ -690,9 +748,16 @@ fn local_shapes(block: &Block) -> Vec<Box3> {
     let id = block.id.rsplit(':').next().unwrap_or(&block.id);
     if matches!(
         id,
-        "air" | "cave_air" | "void_air" | "water" | "lava" | "short_grass" | "tall_grass" | "torch" | "fire" | "soul_fire" | "sweet_berry_bush" | "cobweb" | "cave_vines" | "cave_vines_plant"
-    ) {
+        "air" | "cave_air" | "void_air" | "water" | "lava" | "short_grass" | "tall_grass" | "fire" | "soul_fire" | "sweet_berry_bush" | "cobweb" | "cave_vines" | "cave_vines_plant"
+    ) || noncolliding_mount(id)
+    {
         return vec![];
+    }
+    if id.ends_with("_wall_hanging_sign") {
+        return vec![axis_column(matches!(block.property("facing"), Some("east" | "west")), 16.0, 4.0, 14.0, 16.0)];
+    }
+    if let Some(head) = head_shape(block, id, false) {
+        return vec![head];
     }
     let unit = Box3::new(DVec3::ZERO, DVec3::ONE);
     // `CactusBlock`: a column 14 wide and 15 tall; campfires 7 tall.
@@ -3169,7 +3234,7 @@ mod tests {
         behind.set_block((0, 2, -2), Some(Block::new("minecraft:sweet_berry_bush").with("age", "0")));
         assert_eq!(player.place_target_with(&mut behind, Block::new("minecraft:dirt")), None, "a bush is not replaceable");
         let hit = Hit { pos: (0, 2, -3), face: Face::South, distance: 1.0, point: DVec3::new(0.5, 2.5, -2.0) };
-        for kept in ["minecraft:torch", "minecraft:cobweb", "minecraft:sweet_berry_bush", "minecraft:cave_vines", "minecraft:cave_vines_plant", "minecraft:stone"] {
+        for kept in ["minecraft:torch", "minecraft:wall_torch", "minecraft:soul_torch", "minecraft:soul_wall_torch", "minecraft:copper_wall_torch", "minecraft:redstone_wall_torch", "minecraft:oak_sign", "minecraft:oak_wall_sign", "minecraft:white_banner", "minecraft:white_wall_banner", "minecraft:tube_coral_fan", "minecraft:tube_coral_wall_fan", "minecraft:cobweb", "minecraft:sweet_berry_bush", "minecraft:cave_vines", "minecraft:cave_vines_plant", "minecraft:stone"] {
             assert!(!authored_replaceable(&Block::new(kept)), "{kept}");
         }
         for taken in ["minecraft:short_grass", "minecraft:tall_grass", "minecraft:fire", "minecraft:soul_fire", "minecraft:water", "minecraft:air"] {
@@ -3185,6 +3250,96 @@ mod tests {
         upward.pitch = -90.0;
         assert_eq!(upward.place_target_with(&mut tunnel, Block::new("minecraft:dirt")), None, "a solid block cannot go into the player");
         assert_eq!(upward.place_target_with(&mut tunnel, Block::new("minecraft:cave_vines")), Some((0, 2, 0)), "cave vines hang into the player's space");
+    }
+    fn facing_wall_at_head_height() -> (Player, TestWorld) {
+        let mut world = floor();
+        world.set_block((0, 1, -1), Some(Block::new("minecraft:stone")));
+        world.set_block((0, 2, -1), Some(Block::new("minecraft:stone")));
+        let mut player = Player::new(DVec3::new(0.5, 1.0, 0.5));
+        player.yaw = 180.0;
+        let drop = player.eye().y - 2.5;
+        player.pitch = drop.atan2(0.5).to_degrees();
+        (player, world)
+    }
+    #[test]
+    fn a_wall_torch_is_placed_in_the_players_own_cell() {
+        for (item, wall_torch) in [("minecraft:torch", "minecraft:wall_torch"), ("minecraft:soul_torch", "minecraft:soul_wall_torch"), ("minecraft:copper_torch", "minecraft:copper_wall_torch"), ("minecraft:redstone_torch", "minecraft:redstone_wall_torch")] {
+            let (player, mut world) = facing_wall_at_head_height();
+            assert_eq!(player.target(&world, 5.0).map(|hit| (hit.pos, hit.face)), Some(((0, 2, -1), Face::South)));
+            assert_eq!(player.place_target_with(&mut world, Block::new(item)), Some((0, 2, 0)), "{item}");
+            let placed = world.block((0, 2, 0)).unwrap();
+            assert_eq!((placed.id.as_str(), placed.property("facing")), (wall_torch, Some("south")));
+            assert!(authored_collision_boxes(&placed).is_empty(), "{item}");
+        }
+        let (mut player, mut world) = facing_wall_at_head_height();
+        player.pitch = 90.0;
+        assert_eq!(player.place_target_with(&mut world, Block::new("minecraft:soul_torch")), Some((0, 1, 0)), "a soul torch at the player's feet");
+        let (mut player, mut world) = facing_wall_at_head_height();
+        world.set_block((0, 3, 0), Some(Block::new("minecraft:stone")));
+        player.pitch = -90.0;
+        assert_eq!(player.place_target_with(&mut world, Block::new("minecraft:oak_hanging_sign")), Some((0, 2, 0)), "a hanging sign above the player's head");
+        assert_eq!(world.block((0, 2, 0)).map(|sign| sign.id), Some("minecraft:oak_hanging_sign".to_string()));
+    }
+    #[test]
+    fn the_ray_passes_beside_a_wall_torch_to_the_wall() {
+        let (mut player, mut world) = facing_wall_at_head_height();
+        world.set_block((0, 2, 0), Some(Block::new("minecraft:wall_torch").with("facing", "south")));
+        player.pos = DVec3::new(0.5, 1.0, 2.5);
+        let eye = player.eye();
+        let beside = DVec3::new(0.15, 2.5, 0.0) - eye;
+        player.yaw = (-beside.x).atan2(beside.z).to_degrees();
+        player.pitch = (-beside.y).atan2(beside.x.hypot(beside.z)).to_degrees();
+        assert_eq!(player.target(&world, 5.0).map(|hit| hit.pos), Some((0, 2, -1)), "beside the torch the wall is hit");
+        let at = DVec3::new(0.5, 2.5, 0.2) - eye;
+        player.yaw = (-at.x).atan2(at.z).to_degrees();
+        player.pitch = (-at.y).atan2(at.x.hypot(at.z)).to_degrees();
+        assert_eq!(player.target(&world, 5.0).map(|hit| hit.pos), Some((0, 2, 0)), "the torch itself is hit");
+    }
+    #[test]
+    fn wall_mounted_outlines_follow_their_facing() {
+        let bounds = |block: Block| -> Vec<[f64; 6]> {
+            outline_shapes(&block).iter().map(|b| [b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z].map(|v| v * 16.0)).collect()
+        };
+        let wall_torch = |facing: &str| bounds(Block::new("minecraft:wall_torch").with("facing", facing));
+        assert_eq!(wall_torch("north"), vec![[5.5, 3.0, 11.0, 10.5, 13.0, 16.0]]);
+        assert_eq!(wall_torch("south"), vec![[5.5, 3.0, 0.0, 10.5, 13.0, 5.0]]);
+        assert_eq!(wall_torch("east"), vec![[0.0, 3.0, 5.5, 5.0, 13.0, 10.5]]);
+        assert_eq!(wall_torch("west"), vec![[11.0, 3.0, 5.5, 16.0, 13.0, 10.5]]);
+        assert_eq!(bounds(Block::new("minecraft:redstone_wall_torch").with("facing", "east")), wall_torch("east"));
+        for torch in ["minecraft:torch", "minecraft:soul_torch", "minecraft:copper_torch", "minecraft:redstone_torch"] {
+            assert_eq!(bounds(Block::new(torch)), vec![[6.0, 0.0, 6.0, 10.0, 10.0, 10.0]], "{torch}");
+        }
+        assert_eq!(bounds(Block::new("minecraft:tube_coral_wall_fan").with("facing", "west")), vec![[5.0, 4.0, 0.0, 16.0, 12.0, 16.0]]);
+        assert_eq!(bounds(Block::new("minecraft:dead_tube_coral_fan")), vec![[2.0, 0.0, 2.0, 14.0, 4.0, 14.0]]);
+        assert_eq!(bounds(Block::new("minecraft:oak_wall_sign").with("facing", "south")), vec![[0.0, 4.5, 0.0, 16.0, 12.5, 2.0]]);
+        assert_eq!(bounds(Block::new("minecraft:red_wall_banner").with("facing", "north")), vec![[0.0, 0.0, 14.0, 16.0, 12.5, 16.0]]);
+        assert_eq!(bounds(Block::new("minecraft:oak_sign")), vec![[4.0, 0.0, 4.0, 12.0, 16.0, 12.0]]);
+        assert_eq!(bounds(Block::new("minecraft:red_banner")), vec![[4.0, 0.0, 4.0, 12.0, 16.0, 12.0]]);
+        for other in ["torchflower", "oak_wall_hanging_sign", "skeleton_skull"] {
+            assert!(!noncolliding_mount(other), "{other}");
+        }
+        let hanging = |rotation: &str| bounds(Block::new("minecraft:oak_hanging_sign").with("rotation", rotation).with("attached", "false"));
+        assert_eq!(hanging("0"), vec![[1.0, 0.0, 7.0, 15.0, 10.0, 9.0]]);
+        assert_eq!(hanging("8"), hanging("0"));
+        assert_eq!(hanging("4"), vec![[7.0, 0.0, 1.0, 9.0, 10.0, 15.0]]);
+        assert_eq!(hanging("12"), hanging("4"));
+        assert_eq!(hanging("3"), vec![[3.0, 0.0, 3.0, 13.0, 16.0, 13.0]]);
+        assert!(local_shapes(&Block::new("minecraft:oak_hanging_sign").with("rotation", "0")).is_empty());
+        assert!(!authored_replaceable(&Block::new("minecraft:oak_hanging_sign")));
+        let wall_hanging = |facing: &str| Block::new("minecraft:oak_wall_hanging_sign").with("facing", facing);
+        assert_eq!(bounds(wall_hanging("north")), vec![[0.0, 14.0, 6.0, 16.0, 16.0, 10.0], [1.0, 0.0, 7.0, 15.0, 10.0, 9.0]]);
+        assert_eq!(bounds(wall_hanging("east")), vec![[6.0, 14.0, 0.0, 10.0, 16.0, 16.0], [7.0, 0.0, 1.0, 9.0, 10.0, 15.0]]);
+        assert_eq!(authored_collision_boxes(&wall_hanging("west")), vec![[0.375, 0.875, 0.0, 0.625, 1.0, 1.0]]);
+        assert_eq!(bounds(Block::new("minecraft:skeleton_skull").with("rotation", "5")), vec![[4.0, 0.0, 4.0, 12.0, 8.0, 12.0]]);
+        assert_eq!(bounds(Block::new("minecraft:piglin_head")), vec![[3.0, 0.0, 3.0, 13.0, 8.0, 13.0]]);
+        assert_eq!(bounds(Block::new("minecraft:dragon_head")), vec![[4.0, 0.0, 4.0, 12.0, 8.5, 12.0]]);
+        assert_eq!(authored_collision_boxes(&Block::new("minecraft:dragon_head")), vec![[0.25, 0.0, 0.25, 0.75, 0.5, 0.75]]);
+        assert_eq!(bounds(Block::new("minecraft:zombie_wall_head").with("facing", "north")), vec![[4.0, 4.0, 8.0, 12.0, 12.0, 16.0]]);
+        assert_eq!(bounds(Block::new("minecraft:piglin_wall_head").with("facing", "east")), vec![[0.0, 4.0, 3.0, 8.0, 12.0, 13.0]]);
+        assert!(head_shape(&Block::new("minecraft:piston_head"), "piston_head", true).is_none());
+        for mounted in ["minecraft:wall_torch", "minecraft:oak_wall_sign", "minecraft:red_banner", "minecraft:tube_coral_wall_fan"] {
+            assert!(local_shapes(&Block::new(mounted)).is_empty(), "{mounted}");
+        }
     }
     #[test]
     fn empty_bucket_ray_hits_only_source_liquid() {

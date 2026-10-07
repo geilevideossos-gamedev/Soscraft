@@ -479,18 +479,15 @@ impl PlayerWorld for HandcraftedScene {
     }
     fn sturdy_face(&self, pos: BlockPos, face: minecraftoss_player::Face) -> bool {
         if let (Some(states), Some(state)) = (&self.states, self.state_at(pos)) {
-            use minecraftoss_core::pos::Direction;
-            let direction = match face {
-                minecraftoss_player::Face::Down => Direction::Down,
-                minecraftoss_player::Face::Up => Direction::Up,
-                minecraftoss_player::Face::North => Direction::North,
-                minecraftoss_player::Face::South => Direction::South,
-                minecraftoss_player::Face::West => Direction::West,
-                minecraftoss_player::Face::East => Direction::East,
-            };
-            return states.registries().blocks.is_face_sturdy(state, direction, minecraftoss_core::SupportType::Full);
+            return states.registries().blocks.is_face_sturdy(state, face_direction(face), minecraftoss_core::SupportType::Full);
         }
         PlayerWorld::block(self, pos).is_some_and(|block| minecraftoss_player::authored_sturdy_face(&block, &PlayerWorld::collision_boxes(self, pos), face))
+    }
+    fn sturdy_center(&self, pos: BlockPos, face: minecraftoss_player::Face) -> bool {
+        if let (Some(states), Some(state)) = (&self.states, self.state_at(pos)) {
+            return states.registries().blocks.is_face_sturdy(state, face_direction(face), minecraftoss_core::SupportType::Center);
+        }
+        PlayerWorld::block(self, pos).is_some_and(|block| minecraftoss_player::authored_sturdy_center(&block, &PlayerWorld::collision_boxes(self, pos), face))
     }
     fn replaceable(&self, block: &PlayerBlock) -> bool {
         let Some(states) = &self.states else {
@@ -503,6 +500,17 @@ impl PlayerWorld for HandcraftedScene {
                 || minecraftoss_player::authored_replaceable(block),
                 |state| states.registries().blocks.is(state, minecraftoss_core::block::flags::REPLACEABLE),
             )
+    }
+}
+fn face_direction(face: minecraftoss_player::Face) -> minecraftoss_core::pos::Direction {
+    use minecraftoss_core::pos::Direction;
+    match face {
+        minecraftoss_player::Face::Down => Direction::Down,
+        minecraftoss_player::Face::Up => Direction::Up,
+        minecraftoss_player::Face::North => Direction::North,
+        minecraftoss_player::Face::South => Direction::South,
+        minecraftoss_player::Face::West => Direction::West,
+        minecraftoss_player::Face::East => Direction::East,
     }
 }
 #[cfg(test)]
@@ -542,6 +550,97 @@ mod collision_tests {
         for (x, wall, sturdy) in [(0, "minecraft:stone", true), (1, "minecraft:oak_leaves", false), (2, "minecraft:soul_sand", true), (3, "minecraft:mud", true), (4, "minecraft:oak_fence", false)] {
             scene.set((x, 100, 0), Some(Block::new(wall)));
             assert_eq!(PlayerWorld::sturdy_face(&scene, (x, 100, 0), Face::South), sturdy, "{wall}");
+        }
+    }
+
+    #[test]
+    fn streamed_tops_hold_torches_by_the_catalog_centre_support() {
+        use minecraftoss_core::registries::DataPaths;
+        use minecraftoss_core::Registries;
+        use minecraftoss_player::Face;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let states = Arc::new(crate::terrain::BlockStates::new(Arc::new(registries), 0, -64, 384).unwrap());
+        let mut scene = HandcraftedScene::streamed(states);
+        let slab = |half: &str| Block::new("minecraft:stone_slab").with("type", half);
+        let floors = [
+            (Block::new("minecraft:stone"), true),
+            (Block::new("minecraft:oak_leaves"), false),
+            (Block::new("minecraft:soul_sand"), true),
+            (Block::new("minecraft:mud"), true),
+            (Block::new("minecraft:oak_fence"), true),
+            (Block::new("minecraft:glass_pane"), true),
+            (slab("top"), true),
+            (slab("bottom"), false),
+        ];
+        for (x, (floor, holds)) in (0..).zip(floors) {
+            let name = floor.id.key();
+            scene.set((x, 100, 0), Some(floor));
+            assert_eq!(PlayerWorld::sturdy_center(&scene, (x, 100, 0), Face::Up), holds, "{name}");
+        }
+    }
+
+    #[test]
+    fn torches_signs_banners_and_coral_fans_lack_collision_like_the_catalog() {
+        use minecraftoss_core::registries::DataPaths;
+        use minecraftoss_core::Registries;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let states = crate::terrain::BlockStates::new(Arc::new(registries), 0, -64, 384).unwrap();
+        for id in [
+            "torch",
+            "wall_torch",
+            "soul_torch",
+            "soul_wall_torch",
+            "copper_torch",
+            "copper_wall_torch",
+            "redstone_torch",
+            "redstone_wall_torch",
+            "oak_sign",
+            "oak_wall_sign",
+            "white_banner",
+            "white_wall_banner",
+            "tube_coral_fan",
+            "tube_coral_wall_fan",
+            "dead_horn_coral_fan",
+            "dead_horn_coral_wall_fan",
+        ] {
+            let block = Block::new(&format!("minecraft:{id}"));
+            let state = states.state_of(&block).unwrap_or_else(|| panic!("{id} is a 26.3 block"));
+            assert!(states.registries().blocks.collision_boxes(state).is_empty(), "{id} collides in the catalog");
+            let authored = PlayerBlock { id: block.id.key(), properties: block.properties.clone() };
+            assert!(minecraftoss_player::authored_collision_boxes(&authored).is_empty(), "{id}");
+            assert!(!states.registries().blocks.is(state, minecraftoss_core::block::flags::REPLACEABLE), "{id}");
+            assert!(!minecraftoss_player::authored_replaceable(&authored), "{id}");
+        }
+    }
+
+    #[test]
+    fn hanging_signs_and_heads_collide_like_the_catalog() {
+        use minecraftoss_core::registries::DataPaths;
+        use minecraftoss_core::Registries;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let states = crate::terrain::BlockStates::new(Arc::new(registries), 0, -64, 384).unwrap();
+        for block in [
+            Block::new("minecraft:oak_hanging_sign").with("rotation", "0"),
+            Block::new("minecraft:oak_hanging_sign").with("rotation", "5"),
+            Block::new("minecraft:oak_wall_hanging_sign").with("facing", "north"),
+            Block::new("minecraft:oak_wall_hanging_sign").with("facing", "east"),
+            Block::new("minecraft:skeleton_skull"),
+            Block::new("minecraft:piglin_head"),
+            Block::new("minecraft:dragon_head"),
+            Block::new("minecraft:zombie_wall_head").with("facing", "south"),
+            Block::new("minecraft:piglin_wall_head").with("facing", "west"),
+        ] {
+            let name = format!("{} {:?}", block.id.key(), block.properties);
+            let state = states.state_of(&block).unwrap_or_else(|| panic!("{name} is a 26.3 block"));
+            let catalog = states.registries().blocks.collision_boxes(state);
+            let authored = minecraftoss_player::authored_collision_boxes(&PlayerBlock { id: block.id.key(), properties: block.properties.clone() });
+            assert_eq!(catalog.len(), authored.len(), "{name}");
+            for (catalog, authored) in catalog.iter().zip(&authored) {
+                assert!(catalog.iter().zip(authored).all(|(a, b)| (a - b).abs() < 1e-9), "{name}: {catalog:?} {authored:?}");
+            }
         }
     }
 

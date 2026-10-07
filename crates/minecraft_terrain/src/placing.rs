@@ -61,6 +61,15 @@ impl<W: World> World for Staged<'_, W> {
         }
     }
 
+    fn sturdy_center(&self, pos: Pos, face: minecraftoss_player::Face) -> bool {
+        match self.staged(pos) {
+            Some(block) => block.as_ref().is_some_and(|block| {
+                minecraftoss_player::authored_sturdy_center(block, &self.collision_boxes(pos), face)
+            }),
+            None => self.world.sturdy_center(pos, face),
+        }
+    }
+
     fn min_y(&self) -> i32 {
         self.world.min_y()
     }
@@ -204,5 +213,30 @@ mod tests {
         let near = hull([0.5, 0.5, 0.5], height);
         assert!(obstructed((0, 0, 0), &[FULL], &[far, near]));
         assert!(!obstructed((0, 0, 0), &[], &[near]));
+    }
+
+    #[test]
+    fn staged_torches_have_no_collision_and_staged_tops_hold_them_by_the_centre() {
+        let mut world = Blocks::default();
+        world.set_block((0, 0, 0), Some(Block::new("minecraft:oak_leaves")));
+        let mut staged = Staged::new(&world);
+        staged.set_block(
+            (0, 1, 0),
+            Some(Block::new("minecraft:wall_torch").with("facing", "south")),
+        );
+        staged.set_block(
+            (1, 0, 0),
+            Some(Block::new("minecraft:stone_slab").with("type", "top")),
+        );
+        staged.set_block(
+            (2, 0, 0),
+            Some(Block::new("minecraft:stone_slab").with("type", "bottom")),
+        );
+        assert!(staged.collision_boxes((0, 1, 0)).is_empty());
+        let up = minecraftoss_player::Face::Up;
+        assert!(!staged.sturdy_center((0, 0, 0), up));
+        assert!(staged.sturdy_center((1, 0, 0), up));
+        assert!(!staged.sturdy_center((2, 0, 0), up));
+        assert!(!staged.sturdy_center((0, 1, 0), up));
     }
 }

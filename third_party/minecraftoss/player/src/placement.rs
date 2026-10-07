@@ -1,6 +1,6 @@
 use crate::{Block, Face, Pos, World, mth, source_water_at};
 
-const HEADS: [&str; 7] = [
+pub(crate) const HEADS: [&str; 7] = [
     "skeleton_skull",
     "wither_skeleton_skull",
     "zombie_head",
@@ -38,6 +38,8 @@ enum Mounted {
     Sign,
     Head,
     HangingSign,
+    Torch,
+    CoralFan,
 }
 
 pub(crate) fn block_entity_placement(
@@ -207,6 +209,12 @@ fn wall_variant(path: &str) -> Option<(Mounted, String)> {
     if path.contains("wall_") {
         return None;
     }
+    if let Some(kind) = path.strip_suffix("torch") {
+        return Some((Mounted::Torch, format!("{kind}wall_torch")));
+    }
+    if let Some(kind) = path.strip_suffix("_coral_fan") {
+        return Some((Mounted::CoralFan, format!("{kind}_coral_wall_fan")));
+    }
     if let Some(wood) = path.strip_suffix("_hanging_sign") {
         return Some((Mounted::HangingSign, format!("{wood}_wall_hanging_sign")));
     }
@@ -289,6 +297,39 @@ fn standing_state(
                 .with("rotation", &rotation.to_string())
                 .with("waterlogged", water)
         }
+        Mounted::Torch => lit_if_redstone(block.clone()),
+        Mounted::CoralFan => block
+            .clone()
+            .with("waterlogged", full_water(world, pos)),
+    }
+}
+
+fn lit_if_redstone(torch: Block) -> Block {
+    if torch.id.starts_with("minecraft:redstone_") {
+        torch.with("lit", "true")
+    } else {
+        torch
+    }
+}
+
+fn full_water(world: &impl World, pos: Pos) -> &'static str {
+    let full = world.block(pos).is_some_and(|existing| match existing.id.as_str() {
+        "minecraft:water" => existing
+            .property("level")
+            .unwrap_or("0")
+            .parse::<u8>()
+            .is_ok_and(|level| level == 0 || level >= 8),
+        "minecraft:bubble_column"
+        | "minecraft:seagrass"
+        | "minecraft:tall_seagrass"
+        | "minecraft:kelp"
+        | "minecraft:kelp_plant" => true,
+        _ => existing.property("waterlogged") == Some("true"),
+    });
+    if full {
+        "true"
+    } else {
+        "false"
     }
 }
 
@@ -343,12 +384,17 @@ fn wall_state(
             Mounted::Banner | Mounted::Sign => solid(world, step(pos, direction)),
             Mounted::Head => !replaceable(world, step(pos, direction)),
             Mounted::HangingSign => wall_hanging_sign_fits(world, pos, opposite(direction)),
+            Mounted::Torch | Mounted::CoralFan => {
+                world.sturdy_face(step(pos, direction), opposite(direction))
+            }
         };
         if fits {
             return Some(match kind {
                 Mounted::Banner => state,
                 Mounted::Head => state.with("powered", "false"),
                 Mounted::Sign | Mounted::HangingSign => state.with("waterlogged", water),
+                Mounted::Torch => lit_if_redstone(state),
+                Mounted::CoralFan => state.with("waterlogged", full_water(world, pos)),
             });
         }
     }
@@ -368,6 +414,12 @@ fn can_place(world: &impl World, pos: Pos, state: &Block, kind: Mounted, on_wall
             .and_then(face_named)
             .is_some_and(|facing| wall_hanging_sign_fits(world, pos, facing)),
         (Mounted::Head, _) => true,
+        (Mounted::Torch, false) => world.sturdy_center(step(pos, Face::Down), Face::Up),
+        (Mounted::CoralFan, false) => world.sturdy_face(step(pos, Face::Down), Face::Up),
+        (Mounted::Torch | Mounted::CoralFan, true) => state
+            .property("facing")
+            .and_then(face_named)
+            .is_some_and(|facing| world.sturdy_face(step(pos, opposite(facing)), facing)),
     }
 }
 
@@ -570,6 +622,12 @@ pub fn authored_sturdy_face(block: &Block, boxes: &[[f64; 6]], face: Face) -> bo
         && (matches!(id, "minecraft:soul_sand" | "minecraft:mud") || covers(boxes, face, 0, 16))
 }
 
+pub fn authored_sturdy_center(block: &Block, boxes: &[[f64; 6]], face: Face) -> bool {
+    let id = block.id.as_str();
+    !id.ends_with("_leaves")
+        && (matches!(id, "minecraft:soul_sand" | "minecraft:mud") || covers(boxes, face, 7, 9))
+}
+
 fn covers(boxes: &[[f64; 6]], face: Face, from_pixel: u8, to_pixel: u8) -> bool {
     let normal = axis(face);
     let positive = matches!(face, Face::Up | Face::South | Face::East);
@@ -766,6 +824,125 @@ mod tests {
         assert!(state(&world, (5, 5, 5), "minecraft:white_banner", &on_wall).is_none());
         let (floating, _) = state(&world, (5, 5, 5), "minecraft:zombie_head", &on_wall).unwrap();
         assert_eq!(floating.id, "minecraft:zombie_head");
+    }
+
+    const TORCHES: [(&str, &str); 4] = [
+        ("minecraft:torch", "minecraft:wall_torch"),
+        ("minecraft:soul_torch", "minecraft:soul_wall_torch"),
+        ("minecraft:copper_torch", "minecraft:copper_wall_torch"),
+        ("minecraft:redstone_torch", "minecraft:redstone_wall_torch"),
+    ];
+
+    #[test]
+    fn torches_hang_on_the_wall_they_were_placed_against() {
+        for (yaw, face, wall, facing) in [
+            (180.0, Face::South, (0, 1, -1), "south"),
+            (0.0, Face::North, (0, 1, 1), "north"),
+            (90.0, Face::East, (-1, 1, 0), "east"),
+            (-90.0, Face::West, (1, 1, 0), "west"),
+        ] {
+            let mut world = Blocks::default();
+            world.set_block((0, 0, 0), Some(Block::new("minecraft:stone")));
+            world.set_block(wall, Some(Block::new("minecraft:stone")));
+            for (item, wall_torch) in TORCHES {
+                let (torch, partner) =
+                    state(&world, (0, 1, 0), item, &view(yaw, 10.0, face)).unwrap();
+                assert_eq!(torch.id, wall_torch, "{item} on the {facing} wall");
+                assert_eq!(torch.property("facing"), Some(facing), "{item}");
+                assert!(partner.is_none());
+                let lit = (item == "minecraft:redstone_torch").then_some("true");
+                assert_eq!(torch.property("lit"), lit, "{item}");
+            }
+        }
+    }
+
+    #[test]
+    fn torches_stand_on_floors_and_refuse_thin_air() {
+        let mut world = Blocks::default();
+        world.set_block((0, 0, 0), Some(Block::new("minecraft:stone")));
+        world.set_block((0, 1, -1), Some(Block::new("minecraft:stone")));
+        let on_top = view(180.0, 70.0, Face::Up);
+        for (item, _) in TORCHES {
+            let (torch, _) = state(&world, (0, 1, 0), item, &on_top).unwrap();
+            assert_eq!(torch.id, item);
+            assert_eq!(torch.property("facing"), None);
+            let lit = (item == "minecraft:redstone_torch").then_some("true");
+            assert_eq!(torch.property("lit"), lit, "{item}");
+            for clicked in [on_top.face, Face::South, Face::Down] {
+                let floating = view(180.0, 10.0, clicked);
+                assert!(state(&world, (5, 5, 5), item, &floating).is_none(), "{item} {clicked:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_torch_falls_back_to_the_floor_when_the_wall_is_not_sturdy() {
+        let side = view(190.0, 10.0, Face::South);
+        let mut world = Blocks::default();
+        world.set_block((0, 1, -1), Some(Block::new("minecraft:oak_leaves")));
+        assert!(state(&world, (0, 1, 0), "minecraft:torch", &side).is_none());
+        world.set_block((0, 0, 0), Some(Block::new("minecraft:stone")));
+        let (torch, _) = state(&world, (0, 1, 0), "minecraft:torch", &side).unwrap();
+        assert_eq!(torch.id, "minecraft:torch");
+        world.set_block((1, 1, 0), Some(Block::new("minecraft:stone")));
+        let (torch, _) = state(&world, (0, 1, 0), "minecraft:torch", &side).unwrap();
+        assert_eq!(torch.id, "minecraft:wall_torch", "a sturdy side wall wins over the floor");
+        assert_eq!(torch.property("facing"), Some("west"));
+    }
+
+    #[test]
+    fn standing_torches_need_centre_support() {
+        let on_top = view(180.0, 70.0, Face::Up);
+        for (floor, placed) in [
+            (Block::new("minecraft:stone_slab").with("type", "top"), true),
+            (Block::new("minecraft:soul_sand"), true),
+            (Block::new("minecraft:mud"), true),
+            (Block::new("minecraft:stone_slab").with("type", "bottom"), false),
+            (Block::new("minecraft:oak_leaves"), false),
+        ] {
+            let mut world = Blocks::default();
+            let name = format!("{floor:?}");
+            world.set_block((0, 0, 0), Some(floor));
+            let torch = state(&world, (0, 1, 0), "minecraft:torch", &on_top);
+            assert_eq!(torch.is_some(), placed, "{name}");
+        }
+        let stone = Block::new("minecraft:stone");
+        let post = [[7.0 / 16.0, 0.0, 7.0 / 16.0, 9.0 / 16.0, 1.5, 9.0 / 16.0]];
+        assert!(authored_sturdy_center(&stone, &post, Face::Up));
+        assert!(!authored_sturdy_face(&stone, &post, Face::Up));
+        let thin = [[8.0 / 16.0, 0.0, 7.0 / 16.0, 9.0 / 16.0, 1.0, 9.0 / 16.0]];
+        assert!(!authored_sturdy_center(&stone, &thin, Face::Up));
+    }
+
+    #[test]
+    fn coral_fans_hang_on_walls_and_keep_the_water() {
+        let mut world = Blocks::default();
+        world.set_block((0, 0, 0), Some(Block::new("minecraft:stone")));
+        world.set_block((0, 1, -1), Some(Block::new("minecraft:stone")));
+        world.set_block((0, 1, 0), Some(Block::new("minecraft:water").with("level", "0")));
+        let on_wall = view(180.0, 10.0, Face::South);
+        let (fan, _) = state(&world, (0, 1, 0), "minecraft:tube_coral_fan", &on_wall).unwrap();
+        assert_eq!(fan.id, "minecraft:tube_coral_wall_fan");
+        assert_eq!(fan.property("facing"), Some("south"));
+        assert_eq!(fan.property("waterlogged"), Some("true"));
+        let (dead, _) = state(&world, (0, 1, 0), "minecraft:dead_horn_coral_fan", &on_wall).unwrap();
+        assert_eq!(dead.id, "minecraft:dead_horn_coral_wall_fan");
+        let on_top = view(180.0, 70.0, Face::Up);
+        for (level, waterlogged) in [("8", "true"), ("3", "false")] {
+            world.set_block((0, 1, 0), Some(Block::new("minecraft:water").with("level", level)));
+            let (fan, _) = state(&world, (0, 1, 0), "minecraft:brain_coral_fan", &on_top).unwrap();
+            assert_eq!(fan.id, "minecraft:brain_coral_fan");
+            assert_eq!(fan.property("waterlogged"), Some(waterlogged), "level {level}");
+        }
+        for grass in ["minecraft:seagrass", "minecraft:tall_seagrass"] {
+            world.set_block((0, 1, 0), Some(Block::new(grass)));
+            let (fan, _) = state(&world, (0, 1, 0), "minecraft:tube_coral_fan", &on_wall).unwrap();
+            assert_eq!(fan.property("waterlogged"), Some("true"), "{grass}");
+        }
+        world.set_block((0, 0, 0), Some(Block::new("minecraft:stone_slab").with("type", "bottom")));
+        world.set_block((0, 1, 0), None);
+        world.set_block((0, 1, -1), None);
+        assert!(state(&world, (0, 1, 0), "minecraft:brain_coral_fan", &on_top).is_none());
     }
 
     #[test]
