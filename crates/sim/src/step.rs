@@ -293,7 +293,7 @@ fn run_players_system(ecs: &mut World) {
 
             // A local external controller publishes the complete player position.
             // Keep command acknowledgement moving without also applying PMove.
-            if world.external_motion.contains(id) {
+            if world.external_motion.contains(id) || crate::voxel::awaiting_spawn_ground(ps.origin) {
                 if let Some(ps) = world.player_mut(*id) { ps.command_time = cmd.server_time; }
                 continue;
             }

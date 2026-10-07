@@ -310,7 +310,7 @@ fn try_spawn_order(
     report
 }
 
-fn occupied(avoid: &[[f32; 3]], origin: [f32; 3]) -> bool {
+pub(crate) fn occupied(avoid: &[[f32; 3]], origin: [f32; 3]) -> bool {
     avoid.iter().any(|other| {
         (other[0] - origin[0]).abs() < PLAYER_MAXS[0] - PLAYER_MINS[0]
             && (other[1] - origin[1]).abs() < PLAYER_MAXS[1] - PLAYER_MINS[1]

@@ -138,10 +138,10 @@ struct Runtime {
     shapes: HashMap<BlockStateId, u16>,
     /// Boxes of each shape id, to reuse an id for a repeated shape.
     shape_ids: HashMap<(Vec<[u32; 6]>, u16), u16>,
-    was_alive: bool,
     fire_frames: Option<(Handle<Image>, u32)>,
     atlas_animation: AtlasAnimation,
     animation_clock: f64,
+    spawn_gate: crate::minecraft_spawn_gate::SpawnGate,
 }
 
 /// The player's MW2 body stands in the inventory's character window, on a
@@ -352,12 +352,13 @@ fn update(
         Option<Res<frame::ActivePad>>,
     ),
     (hud_input, settings): (Option<Res<frame::HudInputView>>, Option<Res<frame::GameSettings>>),
+    real_time: Res<Time<Real>>,
 ) {
     let pad = active_pad.and_then(|active| active.0).and_then(|entity| gamepads.get(entity).ok());
     for _ in torn_down.read() {
         stop(&mut runtime, &mut view);
     }
-    ui.loading_world = runtime.loading.is_some();
+    let now_ms = real_time.elapsed().as_millis() as u64;
     for match_ in installed.read() {
         stop(&mut runtime, &mut view);
         if assets::minecraft_map::is_minecraft(&match_.zone) {
@@ -373,6 +374,7 @@ fn update(
             view.active = true;
         }
     }
+    ui.loading_world = runtime.loading.is_some() || (runtime.world.is_some() && runtime.spawn_gate.holding(now_ms));
     let Some(mut authority) = authority else {
         return;
     };
@@ -429,7 +431,7 @@ fn update(
                 runtime.world = Some(world);
                 runtime.shapes.clear();
                 runtime.shape_ids.clear();
-                runtime.was_alive = false;
+                runtime.spawn_gate.start(now_ms);
             }
             Err(error) => {
                 diag::warn!(World, "Minecraft world failed to load: {error}");
@@ -443,7 +445,6 @@ fn update(
         world,
         shapes,
         shape_ids,
-        was_alive,
         day,
         environment_accumulator,
         environment_primed,
@@ -463,6 +464,7 @@ fn update(
         fire_frames,
         atlas_animation,
         animation_clock,
+        spawn_gate,
         ..
     } = &mut *runtime;
     let Some(world) = world.as_mut() else {
@@ -478,28 +480,22 @@ fn update(
         view.atlas_patches.retain(|queued| patches.iter().all(|patch| patch.origin != queued.origin));
         view.atlas_patches.extend(patches);
     }
+    let aspect = windows
+        .single()
+        .map(|w| w.width() / w.height().max(1.0))
+        .unwrap_or(16.0 / 9.0);
     let Some(ps) = presented.player(local.0) else {
         ui.active = false;
         puppet.active = false;
+        stream_around_spawn(world, shapes, shape_ids, entities, light, spawn_gate, &mut view, aspect, now_ms);
         return;
     };
 
-    // Every spawn lands on the Minecraft spawn once its ground exists.
     let alive = ps.pm_type == 0;
     let dead = matches!(
         ps.pm_type,
         playerstate_iw4::PM_TYPE_SPECTATOR | playerstate_iw4::PM_TYPE_INTERMISSION | playerstate_iw4::PM_TYPE_DEAD | playerstate_iw4::PM_TYPE_DEAD_LINKED
     );
-    let spawn_chunk = ((origin[0].floor() as i32) >> 4, (origin[2].floor() as i32) >> 4);
-    if alive && !*was_alive && world.scene.generated_chunk(spawn_chunk).is_some() {
-        // Retried each frame until the authority has the player to move.
-        if authority.0.teleport(local.0, [0.0, 0.0, 0.0]) {
-            diag::info!(World, "Minecraft spawn: moved to the world spawn");
-            *was_alive = true;
-        }
-    } else if dead {
-        *was_alive = false;
-    }
     if dead {
         survival.respawn();
     } else if !sim::voxel::player_damage_pending()
@@ -519,48 +515,8 @@ fn update(
         feet[1].floor() as i32,
         feet[2].floor() as i32,
     );
-    let (loaded, forgotten) = world.stream.server_tick(block, &mut world.scene);
-    for chunk in loaded {
-        let registries = &world.registries;
-        let (min_y, height) = (chunk.min_y(), chunk.height());
-        let mut ids = vec![0u16; (height * 256) as usize];
-        // Runs of one state (air, stone) skip the map.
-        let mut last = None;
-        for y in 0..height {
-            for z in 0..16usize {
-                for x in 0..16usize {
-                    let state = chunk.block(x, min_y + y, z);
-                    if let Some((last_state, id)) = last
-                        && last_state == state
-                    {
-                        ids[((y as usize * 16) + z) * 16 + x] = id;
-                        continue;
-                    }
-                    let id = shape_id(shapes, shape_ids, registries, state);
-                    last = Some((state, id));
-                    ids[((y as usize * 16) + z) * 16 + x] = id;
-                }
-            }
-        }
-        if let Some(entities) = entities.as_mut() {
-            entities.load_chunk(&chunk);
-        }
-        sim::voxel::set_chunk(
-            chunk.pos.x,
-            chunk.pos.z,
-            sim::voxel::VoxelChunk {
-                min_y,
-                height,
-                shapes: ids,
-            },
-        );
-    }
-    for pos in forgotten {
-        sim::voxel::remove_chunk(pos.x, pos.z);
-        if let Some(entities) = entities.as_mut() {
-            entities.unload_chunk(pos);
-        }
-    }
+    let streamed = world.stream.server_tick(block, &mut world.scene);
+    apply_streamed(&world.registries, shapes, shape_ids, entities, streamed);
 
     // Minecraft's yaw: 0 facing +Z (map -Y), turning towards -X.
     let yaw_rad = ps.viewangles[1].to_radians();
@@ -1289,10 +1245,6 @@ fn update(
     let (pitch, yaw) = (ps.viewangles[0].to_radians(), ps.viewangles[1].to_radians());
     let map_forward = [pitch.cos() * yaw.cos(), pitch.cos() * yaw.sin(), -pitch.sin()];
     let forward = glam::Vec3::new(map_forward[0], map_forward[2], -map_forward[1]);
-    let aspect = windows
-        .single()
-        .map(|w| w.width() / w.height().max(1.0))
-        .unwrap_or(16.0 / 9.0);
     // Culled from the camera that draws: the player's eye, or while
     // skating the Skate camera (a frame behind, so with room to spare).
     let skate_camera = cameras.iter().next().filter(|_| skate.active).map(|t| {
@@ -1318,6 +1270,7 @@ fn update(
     view.uploads.extend(update.uploads);
     view.removed.extend(update.removed);
     view.visible = update.visible;
+    observe_spawn(world, spawn_gate, origin, cull_at, now_ms);
     let Some(light) = light.as_mut() else {
         return;
     };
@@ -1904,6 +1857,101 @@ fn update(
     }
 }
 
+fn apply_streamed(
+    registries: &Registries,
+    shapes: &mut HashMap<BlockStateId, u16>,
+    shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
+    entities: &mut Option<crate::minecraft_entities::Entities>,
+    (loaded, forgotten): (Vec<Arc<minecraftoss_core::Chunk>>, Vec<minecraftoss_core::ChunkPos>),
+) {
+    for chunk in loaded {
+        let (min_y, height) = (chunk.min_y(), chunk.height());
+        let mut ids = vec![0u16; (height * 256) as usize];
+        let mut last = None;
+        for y in 0..height {
+            for z in 0..16usize {
+                for x in 0..16usize {
+                    let state = chunk.block(x, min_y + y, z);
+                    if let Some((last_state, id)) = last
+                        && last_state == state
+                    {
+                        ids[((y as usize * 16) + z) * 16 + x] = id;
+                        continue;
+                    }
+                    let id = shape_id(shapes, shape_ids, registries, state);
+                    last = Some((state, id));
+                    ids[((y as usize * 16) + z) * 16 + x] = id;
+                }
+            }
+        }
+        if let Some(entities) = entities.as_mut() {
+            entities.load_chunk(&chunk);
+        }
+        sim::voxel::set_chunk(
+            chunk.pos.x,
+            chunk.pos.z,
+            sim::voxel::VoxelChunk {
+                min_y,
+                height,
+                shapes: ids,
+            },
+        );
+    }
+    for pos in forgotten {
+        sim::voxel::remove_chunk(pos.x, pos.z);
+        if let Some(entities) = entities.as_mut() {
+            entities.unload_chunk(pos);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stream_around_spawn(
+    world: &mut Loaded,
+    shapes: &mut HashMap<BlockStateId, u16>,
+    shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
+    entities: &mut Option<crate::minecraft_entities::Entities>,
+    light: &mut Option<SkyLight>,
+    gate: &mut crate::minecraft_spawn_gate::SpawnGate,
+    view: &mut MinecraftWorldView,
+    aspect: f32,
+    now_ms: u64,
+) {
+    let [x, y, z] = view.origin;
+    let spawn_block = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
+    let streamed = world.stream.server_tick(spawn_block, &mut world.scene);
+    apply_streamed(&world.registries, shapes, shape_ids, entities, streamed);
+    let camera = CullCamera {
+        position: glam::DVec3::new(x, y + crate::minecraft_spawn_gate::SPAWN_EYE_HEIGHT, z),
+        forward: glam::Vec3::Z,
+        fov_degrees: 90.0,
+        aspect,
+        yaw_degrees: 0.0,
+        pitch_degrees: 0.0,
+    };
+    let update = world.stream.frame(&world.scene, &camera, FADE_MILLIS, &world.atlas, &world.packs);
+    view.uploads.extend(update.uploads);
+    view.removed.extend(update.removed);
+    view.visible = update.visible;
+    if let Some(light) = light.as_mut() {
+        for (chunk, column) in update.lights {
+            light.set_chunk_column(chunk, column);
+        }
+    }
+    observe_spawn(world, gate, view.origin, camera.position, now_ms);
+}
+
+fn observe_spawn(world: &Loaded, gate: &mut crate::minecraft_spawn_gate::SpawnGate, origin: [f64; 3], eye: glam::DVec3, now_ms: u64) {
+    if !gate.waiting() {
+        return;
+    }
+    let spawn_chunk = ((origin[0].floor() as i32) >> 4, (origin[2].floor() as i32) >> 4);
+    let chunks_ready = sim::voxel::chunks_ready_around(spawn_chunk.0, spawn_chunk.1, crate::minecraft_spawn_gate::SPAWN_CHUNK_RADIUS);
+    let eye = eye.floor();
+    let section_visible = world.stream.section_compiled_and_visible((eye.x as i32, eye.y as i32, eye.z as i32), FADE_MILLIS);
+    gate.observe(now_ms, chunks_ready, section_visible);
+}
+
 fn shape_id(
     shapes: &mut HashMap<BlockStateId, u16>,
     shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
@@ -2061,6 +2109,7 @@ fn obstacles(
 fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
     if runtime.world.take().is_some() || runtime.loading.take().is_some() || view.active {
         sim::voxel::deactivate();
+        runtime.spawn_gate = Default::default();
         view.active = false;
         view.atlas = None;
         view.atlas_patches.clear();

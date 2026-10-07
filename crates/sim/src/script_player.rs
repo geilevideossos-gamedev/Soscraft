@@ -30,6 +30,7 @@ pub(crate) fn spawn(
         }
         _ => (origin, angles),
     };
+    let origin = minecraft_spawn(world, id, sessionstate).unwrap_or(origin);
     world.unlink_player_area(id);
     world.client_meta_mut(id).shield = None;
     let mut ps = spawn_player_state(origin, angles);
@@ -411,6 +412,21 @@ fn forced_point(
     let report = crate::spawn::decide_forced_spawn(world, pick, &avoid, team);
     crate::step::log_forced_spawn(id, pick, &report);
     report.accepted.map(|d| (d.traced_origin, d.raw_angles))
+}
+
+fn minecraft_spawn(world: &FrameWorld, id: ClientId, sessionstate: &str) -> Option<[f32; 3]> {
+    let spawn = crate::voxel::spawn_origin(sessionstate)?;
+    if sessionstate != "playing" {
+        return Some(spawn);
+    }
+    let avoid: Vec<[f32; 3]> = world
+        .alive_origins()
+        .into_iter()
+        .filter(|&o| world.player(id).is_none_or(|ps| ps.origin != o))
+        .collect();
+    Some(crate::voxel::spawn_clear_of(|spot| {
+        crate::spawn::occupied(&avoid, spot)
+    }))
 }
 
 pub(crate) fn move_to_forced_spawn(world: &mut FrameWorld, id: ClientId, pick: crate::SpawnPick) {

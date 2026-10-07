@@ -69,6 +69,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 - [upstream] Guns sit in the hotbar with unlimited ammo. Skate 3 works on block collision.
 - Guns left in a crafting grid are not duplicated. Esc closes a Minecraft screen. The Skate toggle is blocked while a screen is open.
 - Options: the Minecraft minimap (M), Show Blood, and an Advanced Video page that replaces the Video page.
+- The loading screen stays up like vanilla's until the 7x7 spawn chunks have collision and the camera's section is drawn (0.5 s close delay, 30 s timeout). Every MW2 spawn and respawn lands on the Minecraft spawn, or on the nearest free dry column within 10 blocks when someone stands there. A player in that area waits in place until the ground under it has collision.
 
 ## Multiplayer and saving today
 
@@ -118,6 +119,7 @@ The MW2 netcode is host-authoritative and goes through the `iw4l-master` QUIC re
 - Shallow-lava details differ from vanilla. Powder snow neither slows nor freezes.
 - No ground jump at a ladder, no climbing in fluids, and an open trapdoor above a ladder doesn't count as part of it.
 - Sneak edge: no back-off while in the air, and it checks blocks only, not entities.
+- A respawn shows no loading screen; the player only waits for its own chunk's collision, so terrain may still fade in. Respawns are not spread at random over vanilla's radius of 10.
 
 ### Survival and combat
 - Hand mining counts as a diamond pickaxe, so a bare hand, a wrong tool or Silk Touch still drops items.

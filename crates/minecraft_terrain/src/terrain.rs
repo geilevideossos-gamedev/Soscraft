@@ -1172,6 +1172,10 @@ impl TerrainStream {
         self.clock.elapsed().as_millis() as u64
     }
 
+    pub fn section_compiled_and_visible(&self, (x, y, z): BlockPos, fade_millis: u64) -> bool {
+        self.sections.compiled_and_visible((x >> 4, y >> 4, z >> 4), self.now(), fade_millis)
+    }
+
     fn empty_sections(&self, scene: &HandcraftedScene, chunk: &Chunk) -> Vec<i32> {
         let placed = scene.chunk_edits((chunk.pos.x, chunk.pos.z)).0;
         chunk

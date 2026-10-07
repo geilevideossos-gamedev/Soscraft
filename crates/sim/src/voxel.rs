@@ -568,6 +568,34 @@ pub fn active() -> bool {
     WORLD.read().ok().is_some_and(|world| world.is_some())
 }
 
+pub fn chunks_ready_around(cx: i32, cz: i32, radius: i32) -> bool {
+    WORLD.read().ok().is_some_and(|world| world.as_ref().is_some_and(|w| w.has_chunks_around(cx, cz, radius)))
+}
+
+pub const RESPAWN_RADIUS: i32 = 10;
+const SPAWN_SEARCH_UP: i32 = 8;
+const SPAWN_SEARCH_DOWN: i32 = 16;
+
+pub fn awaiting_spawn_ground(origin: [f32; 3]) -> bool {
+    WORLD.read().ok().is_some_and(|world| world.as_ref().is_some_and(|w| w.awaits_spawn_ground(origin)))
+}
+
+pub(crate) fn spawn_clear_of(taken: impl Fn([f32; 3]) -> bool) -> [f32; 3] {
+    let spawn = [0.0; 3];
+    if !taken(spawn) {
+        return spawn;
+    }
+    WORLD.read().ok().and_then(|world| world.as_ref().and_then(|w| w.free_spawn_spot(&taken))).unwrap_or(spawn)
+}
+
+pub fn spawn_origin(sessionstate: &str) -> Option<[f32; 3]> {
+    spawn_origin_for(active(), sessionstate)
+}
+
+fn spawn_origin_for(active: bool, sessionstate: &str) -> Option<[f32; 3]> {
+    (active && sessionstate != "dead").then_some([0.0; 3])
+}
+
 /// Map point to block point.
 pub fn to_block(origin: [f64; 3], p: [f32; 3]) -> [f64; 3] {
     let s = f64::from(BLOCK);
@@ -589,6 +617,37 @@ pub fn to_map(origin: [f64; 3], b: [f64; 3]) -> [f32; 3] {
 }
 
 impl VoxelWorld {
+    fn has_chunks_around(&self, cx: i32, cz: i32, radius: i32) -> bool {
+        (cx - radius..=cx + radius).all(|x| (cz - radius..=cz + radius).all(|z| self.chunks.contains_key(&(x, z))))
+    }
+
+    fn awaits_spawn_ground(&self, origin: [f32; 3]) -> bool {
+        let feet = to_block(self.origin, origin).map(|c| c.floor() as i32);
+        let spawn = self.origin.map(|c| c.floor() as i32);
+        (feet[0] - spawn[0]).abs() <= RESPAWN_RADIUS
+            && (feet[2] - spawn[2]).abs() <= RESPAWN_RADIUS
+            && !self.has_chunks_around(feet[0] >> 4, feet[2] >> 4, 0)
+    }
+
+    fn free_spawn_spot(&self, taken: &impl Fn([f32; 3]) -> bool) -> Option<[f32; 3]> {
+        let mins = [-HULL_HALF_WIDTH, -HULL_HALF_WIDTH, 0.0];
+        let maxs = [HULL_HALF_WIDTH, HULL_HALF_WIDTH, STANCE_HEIGHTS[0]];
+        let spawn = self.origin.map(|c| c.floor() as i32);
+        (1..=RESPAWN_RADIUS)
+            .flat_map(|r| (-r..=r).flat_map(move |dx| (-r..=r).map(move |dz| (dx, dz))).filter(move |&(dx, dz)| dx.abs().max(dz.abs()) == r))
+            .find_map(|(dx, dz)| {
+                let (x, z) = (spawn[0] + dx, spawn[2] + dz);
+                let (y, top) = (spawn[1] - SPAWN_SEARCH_DOWN..=spawn[1] + SPAWN_SEARCH_UP)
+                    .rev()
+                    .find_map(|y| self.shape_at(x, y, z).iter().map(|b| b[4]).reduce(f32::max).map(|top| (y, top)))?;
+                let feet = [f64::from(x) + 0.5, f64::from(y) + f64::from(top), f64::from(z) + 0.5];
+                let spot = to_map(self.origin, feet);
+                let clear = trace_in(self, spot, spot, mins, maxs, None).startsolid == 0;
+                let wet = (0..2).any(|up| self.fluid_at(x, feet[1].floor() as i32 + up, z) != 0);
+                (clear && !wet && !taken(spot)).then_some(spot)
+            })
+    }
+
     fn shape_at(&self, x: i32, y: i32, z: i32) -> &[[f32; 6]] {
         let Some(chunk) = self.chunks.get(&(x >> 4, z >> 4)) else {
             return &[];
@@ -1170,6 +1229,68 @@ mod tests {
         assert!((f64::from(s.depth) / 36.0 - (4.0 / 9.0 - 0.001)).abs() < 1e-4, "{s:?}");
         let dry = sample(&w, [10.5, 1.0, 10.5], 60.0 / 36.0);
         assert_eq!(dry, movement_iw4::WaterSample::default());
+    }
+
+    #[test]
+    fn chunks_ready_around_needs_every_column() {
+        let mut w = VoxelWorld::default();
+        let column = || VoxelChunk { min_y: 0, height: 1, shapes: vec![0; 256] };
+        for x in -3..=3 {
+            for z in -3..=3 {
+                if (x, z) != (2, -3) {
+                    w.chunks.insert((x, z), column());
+                }
+            }
+        }
+        assert!(!w.has_chunks_around(0, 0, 3));
+        assert!(w.has_chunks_around(0, 0, 2));
+        assert!(w.has_chunks_around(-1, 1, 0));
+        assert!(!w.has_chunks_around(2, -3, 0));
+        w.chunks.insert((2, -3), column());
+        assert!(w.has_chunks_around(0, 0, 3));
+        assert!(!w.has_chunks_around(1, 0, 3));
+    }
+
+    #[test]
+    fn a_player_in_the_respawn_area_waits_for_its_ground_but_not_one_far_away() {
+        let mut w = world(&[]);
+        w.origin = [7.5, 64.0, 3.5];
+        assert!(!w.awaits_spawn_ground([0.0; 3]));
+        assert!(!w.awaits_spawn_ground(to_map(w.origin, [15.9, -200.0, 0.1])));
+        assert!(!w.awaits_spawn_ground(to_map(w.origin, [7.5, 64.0, 13.9])));
+        assert!(w.awaits_spawn_ground(to_map(w.origin, [-0.5, 64.0, 8.0])));
+        assert!(w.awaits_spawn_ground(to_map(w.origin, [7.5, 64.0, -7.0])));
+        assert!(!w.awaits_spawn_ground(to_map(w.origin, [7.5, 64.0, -7.1])));
+        assert!(!w.awaits_spawn_ground(to_map(w.origin, [8.0, 64.0, 16.5])));
+        assert!(!w.awaits_spawn_ground(to_map(w.origin, [40.0, 64.0, 3.5])));
+    }
+
+    #[test]
+    fn a_taken_spawn_moves_to_the_nearest_dry_free_column() {
+        let mut blocks = Vec::new();
+        for x in 0..16 {
+            for z in 0..16 {
+                blocks.push(([x, 10, z], 1));
+            }
+        }
+        blocks.push(([6, 11, 6], SOURCE));
+        let mut w = world(&blocks);
+        w.origin = [7.5, 11.0, 7.5];
+        let nobody = |_: [f32; 3]| false;
+        let spot = w.free_spawn_spot(&nobody).unwrap();
+        assert_eq!([spot[0], spot[1]], [-36.0, 0.0]);
+        assert!(spot[2].abs() < 0.2, "{spot:?}");
+        let crowded = |spot: [f32; 3]| crate::spawn::occupied(&[[-36.0, 0.0, 0.0], [-36.0, -36.0, 0.0]], spot);
+        assert_eq!(w.free_spawn_spot(&crowded).map(|s| [s[0], s[1]]), Some([0.0, 36.0]));
+    }
+
+    #[test]
+    fn the_minecraft_spawn_takes_every_live_or_watching_spawn_but_not_a_corpse() {
+        for state in ["playing", "spectator", "intermission"] {
+            assert_eq!(spawn_origin_for(true, state), Some([0.0; 3]), "{state}");
+            assert_eq!(spawn_origin_for(false, state), None, "{state}");
+        }
+        assert_eq!(spawn_origin_for(true, "dead"), None);
     }
 
     #[test]

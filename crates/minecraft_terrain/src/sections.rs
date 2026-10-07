@@ -20,6 +20,8 @@ use std::collections::VecDeque;
 pub type SectionPos = (i32, i32, i32);
 pub type ChunkPos = (i32, i32);
 
+pub const PLAYER_SECTION_VISIBILITY: f32 = 0.3;
+
 /// Vanilla `Direction` order: down, up, north, south, west, east.
 pub const DIRECTIONS: [(i32, i32, i32); 6] = [
     (0, -1, 0),
@@ -644,6 +646,13 @@ impl Sections {
 
     pub fn section(&self, pos: SectionPos) -> Option<&Section> {
         self.sections[self.slot(pos)?].as_ref()
+    }
+
+    pub fn compiled_and_visible(&self, pos: SectionPos, now: u64, fade_millis: u64) -> bool {
+        match self.section(pos) {
+            Some(section) => section.mesh != MeshState::Uncompiled && section.visibility(now, fade_millis) >= PLAYER_SECTION_VISIBILITY,
+            None => false,
+        }
     }
 
     fn section_mut(&mut self, pos: SectionPos) -> Option<&mut Section> {
@@ -1383,6 +1392,50 @@ mod tests {
         };
         assert_eq!(reached(&moved), reached(&fresh));
         assert_eq!(moved.visible(), fresh.visible());
+    }
+
+    #[test]
+    fn the_player_section_is_ready_once_compiled_and_faded_past_three_tenths() {
+        let camera_at = |y: f64| CullCamera {
+            position: DVec3::new(8.0, y, 8.0),
+            forward: Vec3::Z,
+            fov_degrees: 90.0,
+            aspect: 16.0 / 9.0,
+            yaw_degrees: 0.0,
+            pitch_degrees: 0.0,
+        };
+        let mut sections = Sections::new(2, -4, 19);
+        sections.synchronous = true;
+        let ground = camera_at(65.62);
+        sections.reposition(&ground);
+        assert!(!sections.compiled_and_visible((0, 4, 0), 0, 750));
+        for x in -3..=3 {
+            for z in -3..=3 {
+                sections.chunk_loaded((x, z), 5..=19);
+            }
+        }
+        sections.update(&ground, 0, |_| true);
+        assert_eq!(sections.section((0, 4, 0)).map(|s| s.mesh), Some(MeshState::Uncompiled));
+        assert!(!sections.compiled_and_visible((0, 4, 0), 5000, 750));
+        sections.compiled((0, 4, 0), VisibilitySet::ALL, 1000);
+        assert!(!sections.compiled_and_visible((0, 4, 0), 1224, 750));
+        assert!(sections.compiled_and_visible((0, 4, 0), 1225, 750));
+        assert!(sections.compiled_and_visible((0, 4, 0), 9000, 750));
+        assert!(!sections.compiled_and_visible((5, 4, 0), 9000, 750));
+
+        let mut sky = Sections::new(2, -4, 19);
+        sky.synchronous = true;
+        let above = camera_at(100.0);
+        sky.reposition(&above);
+        for x in -3..=3 {
+            for z in -3..=3 {
+                sky.chunk_loaded((x, z), 5..=19);
+            }
+        }
+        sky.update(&above, 2000, |_| true);
+        assert_eq!(sky.section((0, 6, 0)).map(|s| s.mesh), Some(MeshState::Empty));
+        assert!(!sky.compiled_and_visible((0, 6, 0), 2224, 750));
+        assert!(sky.compiled_and_visible((0, 6, 0), 2225, 750));
     }
 
     #[test]
