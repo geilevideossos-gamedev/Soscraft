@@ -117,6 +117,7 @@ pub(crate) fn apply_explosion_blast(world: &mut FrameWorld, tick: Tick, blast: &
                 exclude: None,
                 cone: blast.cone,
             },
+            crate::script_player::weapon_name(world, blast.weapon) == CONCUSSION_WEAPON,
         );
     }
     let attempts = radius_player_attempts(world, blast);
@@ -238,16 +239,48 @@ fn crater_power(inner_damage: f32, radius: f32) -> Option<f32> {
     (inner_damage >= CRATER_MIN_DAMAGE && radius > 0.0).then(|| radius / crate::voxel::BLOCK / 2.0)
 }
 
-fn push_mob_blasts(world: &FrameWorld, blast: &crate::t5_destructible::RadiusDamage) {
+const CONCUSSION_WEAPON: &str = "concussion_grenade_mp";
+
+const CONCUSSION_RADIUS: f32 = 512.0;
+
+const TICKS_PER_SECOND: f32 = 20.0;
+
+fn concussion_slow_ticks(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> i32 {
+    let feet = [(mins[0] + maxs[0]) * 0.5, (mins[1] + maxs[1]) * 0.5, mins[2]];
+    let dist = feet.iter().zip(origin).map(|(f, o)| (f - o) * (f - o)).sum::<f32>().sqrt();
+    let scale = (1.0 - dist / CONCUSSION_RADIUS).max(0.0);
+    ((2.0 + 4.0 * scale) * TICKS_PER_SECOND).round() as i32
+}
+
+fn push_mob_blasts(world: &FrameWorld, blast: &crate::t5_destructible::RadiusDamage, stun: bool) {
     let exclude = blast.exclude.map(crate::AuthorityModelOwner::ScriptModel);
-    let hits = mob_blast_hits(blast, &crate::voxel::mob_targets(), |feet, view_height, right| {
+    let mobs = crate::voxel::mob_targets();
+    let hits = mob_blast_hits(blast, &mobs, |feet, view_height, right| {
         can_damage_player_vis_scale(feet, view_height, right, blast.origin, |start, end| {
             t_trace_passed(&world.trace_world_except(start, end, G_CAN_DAMAGE_CONTENTS_MASK, exclude))
         })
     });
-    for (key, damage, impact) in hits {
-        crate::voxel::push_mob_blast(key, damage, blast.origin, impact, blast.attacker.map(|c| c.0));
+    for (key, damage, impact, slow_ticks) in mob_blast_slows(blast.origin, stun, hits, &mobs) {
+        crate::voxel::push_mob_blast(key, damage, blast.origin, impact, blast.attacker.map(|c| c.0), slow_ticks);
     }
+}
+
+fn mob_blast_slows(
+    origin: [f32; 3],
+    stun: bool,
+    hits: Vec<(u64, f32, f32)>,
+    mobs: &[(u64, [f32; 3], [f32; 3])],
+) -> Vec<(u64, f32, f32, i32)> {
+    hits.into_iter()
+        .map(|(key, damage, impact)| {
+            let slow_ticks = if stun {
+                mobs.iter().find(|mob| mob.0 == key).map_or(0, |&(_, mins, maxs)| concussion_slow_ticks(origin, mins, maxs))
+            } else {
+                0
+            };
+            (key, damage, impact, slow_ticks)
+        })
+        .collect()
 }
 
 fn mob_blast_hits(
@@ -363,6 +396,7 @@ pub(crate) fn apply_script_blast(
                 exclude: blast.inflictor,
                 cone: None,
             },
+            crate::script_player::weapon_name(world, blast.weapon) == CONCUSSION_WEAPON,
         );
     }
     for target in radius_player_candidates(world, blast.origin, blast.radius) {
@@ -1019,6 +1053,35 @@ mod tests {
         assert_eq!(crater_power(130.0, 0.0), None);
         let frag = crater_power(130.0, 256.0).unwrap();
         assert!((frag - 256.0 / 72.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_stun_slows_a_mob_two_to_six_seconds_by_how_far_its_feet_are() {
+        let (_, mins, maxs) = mob_at(1, 0.0);
+        assert_eq!(concussion_slow_ticks([0.0; 3], mins, maxs), 120);
+        assert_eq!(concussion_slow_ticks([256.0, 0.0, 0.0], mins, maxs), 80);
+        assert_eq!(concussion_slow_ticks([0.0, 0.0, 256.0], mins, maxs), 80);
+        assert_eq!(concussion_slow_ticks([512.0, 0.0, 0.0], mins, maxs), 40);
+        assert_eq!(concussion_slow_ticks([900.0, 0.0, 0.0], mins, maxs), 40);
+    }
+
+    #[test]
+    fn only_a_mob_the_stun_hurts_is_slowed() {
+        let stun = crate::t5_destructible::RadiusDamage {
+            radius: CONCUSSION_RADIUS,
+            inner: 1.0,
+            outer: 1.0,
+            ..FRAG
+        };
+        assert!(mob_blast_hits(&stun, &[mob_at(1, 100.0)], |_, _, _| 1.0 / 3.0).is_empty());
+        assert!(mob_blast_hits(&stun, &[mob_at(1, 600.0)], |_, _, _| 1.0).is_empty());
+        let mobs = [mob_at(1, 0.0), mob_at(2, 100.0), mob_at(3, 256.0)];
+        let slows = |is_stun: bool| {
+            let hits = mob_blast_hits(&stun, &mobs, |feet, _, _| if feet[0] == 100.0 { 0.0 } else { 1.0 });
+            mob_blast_slows(stun.origin, is_stun, hits, &mobs).iter().map(|h| (h.0, h.1, h.3)).collect::<Vec<_>>()
+        };
+        assert_eq!(slows(true), vec![(1, 1.0, 120), (3, 1.0, 80)]);
+        assert_eq!(slows(false), vec![(1, 1.0, 0), (3, 1.0, 0)]);
     }
 
     #[test]

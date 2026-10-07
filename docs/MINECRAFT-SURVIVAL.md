@@ -34,6 +34,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 - Vanilla attack cooldown, crits, sweeps and knockback. Shield blocking and the totem of undying.
 - Vanilla death messages and a Killed By card. A Minecraft death is not counted as an MW2 suicide.
 - MW2 explosives (frag, semtex, C4, claymore, RPG, grenade launcher, killstreak blasts) hurt and push mobs, and a player's kills drop loot and XP. Concussion and flash grenades leave no crater. Crater size follows the blast radius.
+- A stun (concussion) grenade that hurts a mob slows it like a stunned MW2 player: Slowness IV (0.4x walk speed) for 2 s at the 512-unit edge up to 6 s at point blank. Flash grenades don't slow mobs, as they don't slow players.
 
 ### Mining and placing
 - [upstream] Shooting and knifing breaks blocks by hardness, broken blocks drop items, and grenades blow craters.
@@ -125,7 +126,7 @@ The MW2 netcode is host-authoritative and goes through the `iw4l-master` QUIC re
 - Shield: no knockback to the attacker, axes don't disable it, and MW2 bullets ignore it.
 - The totem plays no animation. Every item has the same use speed.
 - Difficulty is fixed at Normal. Witch potions don't reach the player.
-- MW2 blast damage on mobs is MW2 damage x 0.2, not vanilla's explosion formula. Killstreak blasts leave no crater. Mobs can't set off claymores. Kills by bot explosives give no XP.
+- MW2 blast damage on mobs is MW2 damage x 0.4 (bullets x 0.2), not vanilla's explosion formula. Killstreak blasts leave no crater. Mobs can't set off claymores. Kills by bot explosives give no XP.
 - TNT explosions don't hurt mobs or players; only creeper explosions do.
 
 ### Blocks and items

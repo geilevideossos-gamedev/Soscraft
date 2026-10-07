@@ -29,6 +29,7 @@ use minecraftoss_entities::world::{EntityWorld, MobHit, PlayerHitKind};
 const TICK_SECONDS: f64 = 1.0 / 20.0;
 /// Minecraft health per MW2 health.
 const HEALTH_SCALE: f32 = 20.0 / 100.0;
+const BLAST_HEALTH_SCALE: f32 = 40.0 / 100.0;
 /// The player's id in the entity world.
 const PLAYER: u64 = 0;
 /// `Player.getEyeHeight` standing.
@@ -481,11 +482,11 @@ impl Entities {
             .mob_action(hit, Some(attack), &minecraftoss_player::inventory::Inventory::default(), 0, false);
     }
 
-    pub(crate) fn blast(&mut self, key: u64, damage: f32, center: [f64; 3], impact: f32, by_player: bool) {
+    pub(crate) fn blast(&mut self, key: u64, damage: f32, center: [f64; 3], impact: f32, by_player: bool, slow_ticks: i32) {
         let Some(hit) = decode(key) else {
             return;
         };
-        self.server.mob_blast(hit, damage * HEALTH_SCALE, center, impact, by_player.then_some(PLAYER));
+        self.server.mob_blast(hit, damage * BLAST_HEALTH_SCALE, center, impact, by_player.then_some(PLAYER), slow_ticks);
     }
 
     /// Sends a server tick when one is due and takes what came back: block
@@ -917,4 +918,15 @@ fn decode(key: u64) -> Option<MobHit> {
         15 => MobHit::Chicken(id),
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blasts_hurt_mobs_twice_as_hard_as_bullets() {
+        assert_eq!(HEALTH_SCALE, 0.2);
+        assert_eq!(BLAST_HEALTH_SCALE, 2.0 * HEALTH_SCALE);
+    }
 }

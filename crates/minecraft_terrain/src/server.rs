@@ -292,8 +292,11 @@ impl ServerSim {
         MobResult { sounds: outcome.sounds, slots, merchant: self.merchant_view(0) }
     }
 
-    pub fn mob_blast(&mut self, hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64>) {
-        let _ = self.mobs.player_blast(player, hit.id(), damage, glam::DVec3::from_array(center), f64::from(impact));
+    pub fn mob_blast(&mut self, hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64>, slow_ticks: i32) {
+        let result = self.mobs.player_blast(player, hit.id(), damage, glam::DVec3::from_array(center), f64::from(impact));
+        if slow_ticks > 0 && result.is_some_and(|r| r.applied && !r.died) {
+            self.mobs.add_mob_effect(hit.id(), minecraftoss_entities::effects::EffectInstance::new(minecraftoss_entities::effects::MobEffect::Slowness, slow_ticks, STUN_SLOWNESS_AMPLIFIER));
+        }
         self.drop_death_loot();
     }
 
@@ -1059,7 +1062,7 @@ pub enum Command {
     /// A player's hit (`attack`) or item use on a mob, with a copy of its
     /// inventory.
     MobAction { hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, infinite: bool },
-    MobBlast { hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64> },
+    MobBlast { hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64>, slow_ticks: i32 },
     /// An operation on the player's trading screen.
     Merchant { op: MerchantOp, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, feet: [f64; 3] },
     /// One server tick, with the player's state for it.
@@ -1097,6 +1100,7 @@ pub struct TickInput {
 
 const PLAYER_HEIGHT: f64 = 1.8;
 const TNT_BLAST_RADIUS: f32 = 4.0;
+const STUN_SLOWNESS_AMPLIFIER: i32 = 3;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct WeatherView {
@@ -1297,8 +1301,8 @@ impl ServerHandle {
         self.send(Command::MobAction { hit, attack, inventory: Box::new(inventory.clone()), selected, infinite });
     }
 
-    pub fn mob_blast(&mut self, hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64>) {
-        self.send(Command::MobBlast { hit, damage, center, impact, player });
+    pub fn mob_blast(&mut self, hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64>, slow_ticks: i32) {
+        self.send(Command::MobBlast { hit, damage, center, impact, player, slow_ticks });
     }
 
     pub fn throw(&mut self, thrown: crate::thrown::Thrown) {
@@ -1386,7 +1390,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::MobAction { hit, attack, inventory, selected, infinite } => {
                     out.mob_results.push(sim.mob_action(hit, attack, *inventory, selected, infinite));
                 }
-                Command::MobBlast { hit, damage, center, impact, player } => sim.mob_blast(hit, damage, center, impact, player),
+                Command::MobBlast { hit, damage, center, impact, player, slow_ticks } => sim.mob_blast(hit, damage, center, impact, player, slow_ticks),
                 Command::Merchant { op, inventory, selected, feet } => {
                     out.merchant.push(sim.merchant(op, *inventory, selected, feet));
                 }
@@ -2611,12 +2615,46 @@ mod tests {
         let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
         let zombie = |server: &mut ServerSim, x: f64| server.mobs.spawn_zombie(minecraftoss_entities::zombie::Zombie::new(glam::DVec3::new(x, 100.0, 0.5)), true);
         let bots = zombie(&mut server, 0.5);
-        server.mob_blast(minecraftoss_entities::world::MobHit::Zombie(bots), 40.0, [0.5, 100.0, -1.5], 1.0, None);
+        server.mob_blast(minecraftoss_entities::world::MobHit::Zombie(bots), 40.0, [0.5, 100.0, -1.5], 1.0, None, 0);
         assert!(server.mobs.zombies().iter().all(|z| z.id != bots || z.zombie.health <= 0.0));
         assert!(server.orbs().is_empty());
         let mine = zombie(&mut server, 8.5);
-        server.mob_blast(minecraftoss_entities::world::MobHit::Zombie(mine), 40.0, [8.5, 100.0, -1.5], 1.0, Some(0));
+        server.mob_blast(minecraftoss_entities::world::MobHit::Zombie(mine), 40.0, [8.5, 100.0, -1.5], 1.0, Some(0), 0);
         assert_eq!(server.orbs().iter().map(|o| o.value).sum::<i32>(), 5);
+    }
+
+    #[test]
+    fn stun_slowness_walks_a_mob_at_the_shellshocked_players_scale() {
+        let mut effects = minecraftoss_entities::effects::MobEffects::default();
+        effects.add(minecraftoss_entities::effects::EffectInstance::new(minecraftoss_entities::effects::MobEffect::Slowness, 120, STUN_SLOWNESS_AMPLIFIER));
+        assert!((effects.movement_speed(1.0) - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_stun_slows_the_mob_it_hurts_and_other_blasts_do_not() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        let zombie = |server: &mut ServerSim, x: f64| server.mobs.spawn_zombie(minecraftoss_entities::zombie::Zombie::new(glam::DVec3::new(x, 100.0, 0.5)), true);
+        let slowness = |server: &ServerSim, id: u64| {
+            server.mobs.mob_effects(id).and_then(|e| e.get(minecraftoss_entities::effects::MobEffect::Slowness)).map(|e| (e.amplifier, e.duration))
+        };
+        let stunned = zombie(&mut server, 0.5);
+        server.mob_blast(minecraftoss_entities::world::MobHit::Zombie(stunned), 0.4, [0.5, 100.0, -1.5], 0.5, Some(0), 120);
+        assert_eq!(slowness(&server, stunned), Some((STUN_SLOWNESS_AMPLIFIER, 120)));
+        let shot = zombie(&mut server, 24.5);
+        server.mob_blast(minecraftoss_entities::world::MobHit::Zombie(shot), 5.0, [24.5, 100.0, -1.5], 0.0, Some(0), 0);
+        server.mob_blast(minecraftoss_entities::world::MobHit::Zombie(shot), 0.4, [24.5, 100.0, -1.5], 0.5, Some(0), 120);
+        assert_eq!(slowness(&server, shot), None);
+        let fragged = zombie(&mut server, 8.5);
+        server.mob_blast(minecraftoss_entities::world::MobHit::Zombie(fragged), 5.0, [8.5, 100.0, -1.5], 0.5, Some(0), 0);
+        assert_eq!(slowness(&server, fragged), None);
+        let killed = zombie(&mut server, 16.5);
+        server.mob_blast(minecraftoss_entities::world::MobHit::Zombie(killed), 40.0, [16.5, 100.0, -1.5], 1.0, Some(0), 120);
+        assert_eq!(slowness(&server, killed), None);
     }
 
     #[test]

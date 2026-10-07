@@ -1216,8 +1216,8 @@ fn update(
         for shot in mob_shots {
             match shot {
                 sim::voxel::VoxelEvent::MobShot { key, damage, from } => entities.shoot(key, damage, from, mc_yaw),
-                sim::voxel::VoxelEvent::MobBlast { key, damage, center, impact, attacker } => {
-                    entities.blast(key, damage, center, impact, attacker == Some(local.0.0));
+                sim::voxel::VoxelEvent::MobBlast { key, damage, center, impact, attacker, slow_ticks } => {
+                    entities.blast(key, damage, center, impact, attacker == Some(local.0.0), slow_ticks);
                 }
                 _ => {}
             }

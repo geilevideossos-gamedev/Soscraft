@@ -117,7 +117,7 @@ pub enum VoxelEvent {
     /// A bullet struck the mob with this key, with the damage it would have
     /// done at that range, from this block point.
     MobShot { key: u64, damage: f32, from: [f64; 3] },
-    MobBlast { key: u64, damage: f32, center: [f64; 3], impact: f32, attacker: Option<u32> },
+    MobBlast { key: u64, damage: f32, center: [f64; 3], impact: f32, attacker: Option<u32>, slow_ticks: i32 },
     /// A bullet's path through the air, in blocks, up to what stopped it:
     /// blocks without collision on it (grass, flowers) take its damage.
     Ray { from: [f64; 3], to: [f64; 3], damage: f32 },
@@ -274,7 +274,7 @@ pub(crate) fn push_mob_shot(key: u64, damage: f32, from: [f32; 3]) {
     }
 }
 
-pub(crate) fn push_mob_blast(key: u64, damage: f32, origin: [f32; 3], impact: f32, attacker: Option<u32>) {
+pub(crate) fn push_mob_blast(key: u64, damage: f32, origin: [f32; 3], impact: f32, attacker: Option<u32>, slow_ticks: i32) {
     let Ok(world) = WORLD.read() else {
         return;
     };
@@ -283,7 +283,7 @@ pub(crate) fn push_mob_blast(key: u64, damage: f32, origin: [f32; 3], impact: f3
     };
     let center = to_block(world.origin, origin);
     if let Ok(mut events) = EVENTS.lock() {
-        events.push(VoxelEvent::MobBlast { key, damage, center, impact, attacker });
+        events.push(VoxelEvent::MobBlast { key, damage, center, impact, attacker, slow_ticks });
     }
 }
 
