@@ -111,6 +111,15 @@ pub trait Scene {
     fn face_hidden(&self, _pos: BlockPos, _neighbor: BlockPos, _side: minecraftoss_core::pos::Direction) -> Option<bool> {
         None
     }
+    fn fluid_face_hidden(&self, neighbor: BlockPos, side: minecraftoss_core::pos::Direction, height: f32) -> bool {
+        named_fluid_face_hidden(self.block(neighbor), self.full_collision_at(neighbor), side, height)
+    }
+}
+
+fn named_fluid_face_hidden(neighbor: Option<&Block>, full_collision: bool, side: minecraftoss_core::pos::Direction, height: f32) -> bool {
+    full_collision
+        && (side != minecraftoss_core::pos::Direction::Up || height == 1.0)
+        && neighbor.is_some_and(|block| block.is_opaque() && !matches!(block.id.path.as_str(), "ice" | "frosted_ice" | "slime_block" | "honey_block" | "nether_portal"))
 }
 
 #[derive(Clone, Default)]
@@ -394,6 +403,12 @@ impl Scene for HandcraftedScene {
         let states = self.states.as_ref()?;
         let own = self.state_at(pos)?;
         Some(states.face_hidden(own, self.state_at(neighbor).unwrap_or(minecraftoss_core::BlockStateId::AIR), side))
+    }
+    fn fluid_face_hidden(&self, neighbor: BlockPos, side: minecraftoss_core::pos::Direction, height: f32) -> bool {
+        match &self.states {
+            Some(states) => states.fluid_face_hidden(self.state_at(neighbor).unwrap_or(minecraftoss_core::BlockStateId::AIR), side, height),
+            None => named_fluid_face_hidden(Scene::block(self, neighbor), self.full_collision_at(neighbor), side, height),
+        }
     }
     fn chunks(&self) -> Vec<ChunkPos> {
         let mut chunks: Vec<ChunkPos> = self.blocks.keys().copied().collect();

@@ -92,6 +92,60 @@ pub struct Atlas {
     pub missing: Vec<ResourceId>,
     pub animated: Vec<ResourceId>,
     pub animated_tiles: Vec<AnimatedTile>,
+    pub translucent: HashMap<ResourceId, TranslucentPixels>,
+}
+pub struct TranslucentPixels {
+    width: u32,
+    height: u32,
+    pixels: Vec<bool>,
+}
+impl TranslucentPixels {
+    fn of(image: &RgbaImage, animation: Option<&serde_json::Value>) -> Option<Self> {
+        let (width, height) = if animation.is_some() {
+            let size = image.width().min(image.height());
+            (size, size)
+        } else {
+            image.dimensions()
+        };
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let columns = (image.width() / width).max(1);
+        let count = columns * (image.height() / height).max(1);
+        let frames: Vec<u32> = animation
+            .and_then(|animation| animation.get("frames"))
+            .and_then(|frames| frames.as_array())
+            .map(|frames| {
+                frames
+                    .iter()
+                    .filter_map(|frame| frame.as_u64().or_else(|| frame.get("index").and_then(|index| index.as_u64())))
+                    .filter_map(|index| u32::try_from(index).ok().filter(|&index| index < count))
+                    .collect()
+            })
+            .unwrap_or_else(|| (0..count).collect());
+        let mut pixels = vec![false; (width * height) as usize];
+        for frame in frames {
+            let (left, top) = ((frame % columns) * width, (frame / columns) * height);
+            for y in 0..height {
+                for x in 0..width {
+                    let alpha = image.get_pixel(left + x, top + y)[3];
+                    if alpha != 0 && alpha != 255 {
+                        pixels[(y * width + x) as usize] = true;
+                    }
+                }
+            }
+        }
+        pixels.contains(&true).then_some(Self { width, height, pixels })
+    }
+
+    fn within(&self, [a, b, c, d]: [f32; 4]) -> bool {
+        let (width, height) = (self.width as f32, self.height as f32);
+        let left = ((a.min(c) * width).floor().max(0.0) as u32).min(self.width);
+        let top = ((b.min(d) * height).floor().max(0.0) as u32).min(self.height);
+        let right = ((a.max(c) * width).ceil().max(0.0) as u32).min(self.width);
+        let bottom = ((b.max(d) * height).ceil().max(0.0) as u32).min(self.height);
+        (top..bottom).any(|y| (left..right).any(|x| self.pixels[(y * self.width + x) as usize]))
+    }
 }
 pub struct AnimatedTile {
     pub origin: (u32, u32),
@@ -236,6 +290,9 @@ impl Atlas {
     }
     pub fn contains(&self, id: &ResourceId) -> bool {
         self.slots.contains_key(id)
+    }
+    pub fn translucent(&self, face: &crate::model::Face) -> bool {
+        face.force_translucent || !entity_face(face) && self.translucent.get(&face.texture).is_some_and(|pixels| pixels.within(face.uv))
     }
     fn region_exact(&self, id: &ResourceId) -> [f32; 4] {
         let [u0, v0, u1, v1] = self.region(id);
@@ -1462,6 +1519,7 @@ pub fn make_atlas(packs: &PackStack, mut textures: Vec<ResourceId>) -> Result<At
     let mut missing = Vec::new();
     let mut animated = Vec::new();
     let mut animated_tiles = Vec::new();
+    let mut translucent = HashMap::new();
     for (i, id) in textures.into_iter().enumerate() {
         let (col, row) = positions[i];
         let (span_w, span_h) = spans[i];
@@ -1471,7 +1529,11 @@ pub fn make_atlas(packs: &PackStack, mut textures: Vec<ResourceId>) -> Result<At
         let tile_image = if let Some(bytes) = image {
             let decoded =
                 image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)?.to_rgba8();
-            let frame = if let Some(meta) = packs.animation(&id)? {
+            let meta = packs.animation(&id)?;
+            if let Some(pixels) = TranslucentPixels::of(&decoded, meta.as_ref().and_then(|meta| meta.get("animation"))) {
+                translucent.insert(id.clone(), pixels);
+            }
+            let frame = if let Some(meta) = meta {
                 dark_cutout = meta
                     .get("texture")
                     .and_then(|texture| texture.get("mipmap_strategy"))
@@ -1606,6 +1668,7 @@ pub fn make_atlas(packs: &PackStack, mut textures: Vec<ResourceId>) -> Result<At
         missing,
         animated,
         animated_tiles,
+        translucent,
     })
 }
 /// Grid cells for each texture's span (columns, rows) in a `side`-cell
@@ -1913,7 +1976,9 @@ impl TintKind {
 /// place them.
 pub(crate) fn bake_quads(block: &Block, model: &ResolvedModel, atlas: &Atlas) -> Result<Vec<BakedQuad>> {
     let mut quads = Vec::new();
+    let mut sizes = Vec::new();
     for element in &model.elements {
+        let size = (0..3).map(|axis| (element.to[axis] - element.from[axis]).abs()).product::<f32>();
         for face in &element.faces {
             let cull_dir = rotated_direction(face.cullface.as_deref().unwrap_or(face.direction.as_str()), element.rotation_y)?;
             let cull_delta = direction(cull_dir)?;
@@ -1962,12 +2027,15 @@ pub(crate) fn bake_quads(block: &Block, model: &ResolvedModel, atlas: &Atlas) ->
                 uv,
                 shade,
                 tint_index: face.tint_index,
-                transparent: block.id.path == "water" || face.force_translucent,
+                transparent: block.id.path == "water" || atlas.translucent(face),
                 alpha: entity_face_alpha(face),
             });
+            sizes.push(size);
         }
     }
-    Ok(quads)
+    let mut sized: Vec<(f32, BakedQuad)> = sizes.into_iter().zip(quads).map(|(size, quad)| (if quad.transparent { size } else { 0.0 }, quad)).collect();
+    sized.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Ok(sized.into_iter().map(|(_, quad)| quad).collect())
 }
 
 /// [`append_block`] for a block whose faces are baked: the same vertices,
@@ -2189,7 +2257,7 @@ pub(crate) fn append_block<'m, S: Scene>(
                     block_light: light.get_block(light_pos) as f32,
                 });
             }
-            let indices = if block.id.path == "water" || face.force_translucent {
+            let indices = if block.id.path == "water" || atlas.translucent(face) {
                 &mut *transparent_indices
             } else {
                 &mut mesh.indices
@@ -2304,15 +2372,15 @@ fn append_fluid<S: Scene>(
     let same = |p| FluidCell::at(scene, p).is_some_and(|other| other.kind == cell.kind);
     let up = near((0, 1, 0));
     let down = near((0, -1, 0));
-    let top = !same(up) && !scene.full_collision_at(up);
-    let bottom = !same(down) && !scene.full_collision_at(down);
+    let top_open = !same(up);
+    let bottom = !same(down) && !scene.fluid_face_hidden(down, Direction::Down, 8.0 / 9.0);
     // The side faces, north, south, west and east: most fluid lies inside
     // a body of it and shows none of its faces.
     let sides = [(0, 0, -1), (0, 0, 1), (-1, 0, 0), (1, 0, 0)].map(|d| {
         let other = near(d);
-        !(same(other) || scene.full_collision_at(other))
+        !(same(other) || scene.fluid_face_hidden(other, cull_side(d), 1.0))
     });
-    if !top && !bottom && !sides.contains(&true) && !FLUID_FULL_PATH.with(std::cell::Cell::get) {
+    if !top_open && !bottom && !sides.contains(&true) && !FLUID_FULL_PATH.with(std::cell::Cell::get) {
         return Ok(());
     }
     let water = cell.kind == FluidKind::Water;
@@ -2349,6 +2417,7 @@ fn append_fluid<S: Scene>(
         sw = fluid_corner_height(scene, cell.kind, h, south, west, near((-1, 0, 1)));
         se = fluid_corner_height(scene, cell.kind, h, south, east, near((1, 0, 1)));
     }
+    let top = top_open && !scene.fluid_face_hidden(up, Direction::Up, nw.min(ne).min(sw).min(se));
     let sky = light.get(pos).max(light.get(up)) as f32;
     let color = |shade: f32| [shade * tint[0], shade * tint[1], shade * tint[2], alpha];
     let uv = |texture: &ResourceId, points: [[f32; 2]; 4]| {
@@ -2430,7 +2499,7 @@ fn append_fluid<S: Scene>(
             water,
         );
     }
-    for (side, (_, points, heights, shade)) in [
+    for (side, (delta, points, heights, shade)) in [
         (
             (0, 0, -1),
             [[x, y, z + 0.001], [x + 1.0, y, z + 0.001]],
@@ -2459,11 +2528,11 @@ fn append_fluid<S: Scene>(
     .into_iter()
     .enumerate()
     {
-        if !sides[side] {
+        let [ha, hb] = heights;
+        if !sides[side] || scene.fluid_face_hidden(near(delta), cull_side(delta), ha.max(hb)) {
             continue;
         }
         let [[ax, _, az], [bx, _, bz]] = points;
-        let [ha, hb] = heights;
         fluid_quad(
             mesh,
             transparent,
@@ -2636,7 +2705,7 @@ pub fn block_preview<S: Scene>(
                     block_light: light.get_block(light_pos) as f32,
                 });
             }
-            let indices = if block.id.path == "water" || face.force_translucent {
+            let indices = if block.id.path == "water" || atlas.translucent(face) {
                 &mut transparent_indices
             } else {
                 &mut mesh.indices
@@ -2805,6 +2874,7 @@ mod tests {
             missing: vec![],
             animated: vec![],
             animated_tiles: vec![],
+            translucent: HashMap::new(),
         };
         assert_eq!(atlas.region_exact(&texture), [0.0, 0.0, 1.0, 1.0]);
     }
@@ -2824,6 +2894,7 @@ mod tests {
             missing: Vec::new(),
             animated: Vec::new(),
             animated_tiles: Vec::new(),
+            translucent: HashMap::new(),
         };
         let [u0, v0, u1, v1] = atlas.entity_region(&id);
         assert_eq!([u0, v0, u1, v1], [0.5, 0.0, 1.0, 0.5]);
@@ -2958,6 +3029,7 @@ mod tests {
             missing: vec![],
             animated: vec![],
             animated_tiles: vec![],
+            translucent: HashMap::new(),
         };
         let scene = Placed(HashMap::new());
         let light = SkyLight::build(&scene);
@@ -3019,6 +3091,7 @@ mod tests {
             missing: vec![],
             animated: vec![],
             animated_tiles: vec![],
+            translucent: HashMap::new(),
         };
         let face = |direction: &str, tint_index: Option<usize>| crate::model::Face {
             direction: direction.into(),
@@ -3135,6 +3208,7 @@ mod tests {
             missing: Vec::new(),
             animated: Vec::new(),
             animated_tiles: tiles,
+            translucent: HashMap::new(),
         }
     }
 
@@ -3344,6 +3418,7 @@ mod tests {
             missing: vec![],
             animated: vec![],
             animated_tiles: vec![],
+            translucent: HashMap::new(),
         };
         let scene = HandcraftedScene::new();
         let mut items = WorldItems::default();
@@ -3373,6 +3448,7 @@ mod tests {
             missing: vec![],
             animated: vec![],
             animated_tiles: vec![],
+            translucent: HashMap::new(),
         };
         let face = |direction: &str, tint_index: Option<usize>| crate::model::Face {
             direction: direction.into(),
@@ -3562,6 +3638,7 @@ mod tests {
             missing: vec![],
             animated: vec![],
             animated_tiles: vec![],
+            translucent: HashMap::new(),
         };
         let tint = BiomeTint { grass: None, foliage: None, dry_foliage: None };
         let sand = Block::new("minecraft:sand");
@@ -3616,6 +3693,7 @@ mod tests {
             missing: vec![],
             animated: vec![],
             animated_tiles: vec![],
+            translucent: HashMap::new(),
         };
         let tint = BiomeTint {
             grass: None,
@@ -3671,6 +3749,7 @@ mod tests {
             missing: vec![],
             animated: vec![],
             animated_tiles: vec![],
+            translucent: HashMap::new(),
         };
         let tint = BiomeTint {
             grass: None,
@@ -3711,6 +3790,33 @@ mod tests {
         }
     }
     #[test]
+    fn water_shows_its_faces_through_ice() {
+        let texture = ResourceId::parse("minecraft:block/water_still").unwrap();
+        let atlas = Atlas {
+            pixels: RgbaImage::new(16, 16),
+            mipmaps: vec![],
+            slots: HashMap::from([(texture.clone(), [0.0, 0.0, 1.0, 1.0])]),
+            missing: vec![],
+            animated: vec![],
+            animated_tiles: vec![],
+            translucent: HashMap::new(),
+        };
+        let tint = BiomeTint {
+            grass: None,
+            foliage: None,
+            dry_foliage: None,
+        };
+        for (neighbor, faces) in [("minecraft:ice", 6), ("minecraft:stone", 5)] {
+            let scene = Two {
+                a: Block::new("minecraft:water"),
+                b: Block::new(neighbor),
+            };
+            let models = HashMap::from([(model_key(&scene.b), vec![(test_box_model(&texture, [0.0; 3], [1.0; 3]), 1)])]);
+            let light = SkyLight::build(&scene);
+            assert_eq!(mesh_chunk(&scene, (0, 0), &models, &atlas, &tint, &light).unwrap().faces, faces, "{neighbor}");
+        }
+    }
+    #[test]
     fn forced_translucent_model_face_uses_blended_range() {
         let texture = ResourceId::parse("minecraft:block/redstone_dust_dot").unwrap();
         let atlas = Atlas {
@@ -3720,6 +3826,7 @@ mod tests {
             missing: vec![],
             animated: vec![],
             animated_tiles: vec![],
+            translucent: HashMap::new(),
         };
         let mut model = test_box_model(&texture, [0.0; 3], [1.0; 3]);
         model.elements[0].faces[0].force_translucent = true;
@@ -3742,6 +3849,75 @@ mod tests {
         .unwrap();
         assert_eq!(mesh.transparent_start, Some(30));
         assert_eq!(mesh.indices.len(), 36);
+    }
+    #[test]
+    fn faces_over_translucent_sprite_pixels_use_the_blended_range() {
+        let texture = ResourceId::parse("minecraft:block/nether_portal").unwrap();
+        let mut pixels = RgbaImage::from_pixel(4, 4, image::Rgba([90, 10, 200, 255]));
+        pixels.put_pixel(0, 0, image::Rgba([90, 10, 200, 160]));
+        pixels.put_pixel(3, 3, image::Rgba([0, 0, 0, 0]));
+        let atlas = Atlas {
+            pixels: RgbaImage::new(16, 16),
+            mipmaps: vec![],
+            slots: HashMap::from([(texture.clone(), [0.0, 0.0, 1.0, 1.0])]),
+            missing: vec![],
+            animated: vec![],
+            animated_tiles: vec![],
+            translucent: HashMap::from([(texture.clone(), TranslucentPixels::of(&pixels, None).unwrap())]),
+        };
+        let mut scene = HandcraftedScene::default();
+        scene.set((0, 0, 0), Some(Block::new("minecraft:nether_portal").with("axis", "x")));
+        let block = scene.block((0, 0, 0)).unwrap();
+        let tint = BiomeTint {
+            grass: None,
+            foliage: None,
+            dry_foliage: None,
+        };
+        let whole = test_box_model(&texture, [0.0; 3], [1.0; 3]);
+        let mut corner = whole.clone();
+        for face in &mut corner.elements[0].faces {
+            face.uv = [0.5, 1.0, 1.0, 0.5];
+        }
+        for (model, start) in [(whole, Some(0)), (corner, None)] {
+            let models = HashMap::from([(model_key(block), vec![(model, 1)])]);
+            let mesh = mesh_chunk(&scene, (0, 0), &models, &atlas, &tint, &SkyLight::build(&scene)).unwrap();
+            assert_eq!(mesh.transparent_start, start);
+            assert_eq!(mesh.indices.len(), 36);
+        }
+    }
+    #[test]
+    fn inner_translucent_elements_bake_before_the_shell_around_them() {
+        let texture = ResourceId::parse("minecraft:block/honey_block_side").unwrap();
+        let pixels = RgbaImage::from_pixel(4, 4, image::Rgba([250, 170, 30, 190]));
+        let atlas = Atlas {
+            pixels: RgbaImage::new(16, 16),
+            mipmaps: vec![],
+            slots: HashMap::from([(texture.clone(), [0.0, 0.0, 1.0, 1.0])]),
+            missing: vec![],
+            animated: vec![],
+            animated_tiles: vec![],
+            translucent: HashMap::from([(texture.clone(), TranslucentPixels::of(&pixels, None).unwrap())]),
+        };
+        let mut model = test_box_model(&texture, [0.0; 3], [1.0; 3]);
+        model.elements.extend(test_box_model(&texture, [1.0 / 16.0; 3], [15.0 / 16.0; 3]).elements);
+        let quads = bake_quads(&Block::new("minecraft:honey_block"), &model, &atlas).unwrap();
+        assert_eq!(quads.len(), 12);
+        assert!(quads.iter().all(|quad| quad.transparent));
+        let inner = |quad: &BakedQuad| quad.corners.iter().flatten().all(|c| (1.0 / 16.0..=15.0 / 16.0).contains(c));
+        assert!(quads[..6].iter().all(inner));
+        assert!(!quads[6..].iter().any(inner));
+    }
+    #[test]
+    fn sprite_translucency_spans_the_frames_the_animation_shows() {
+        let mut strip = RgbaImage::from_pixel(2, 6, image::Rgba([1, 2, 3, 255]));
+        strip.put_pixel(1, 3, image::Rgba([1, 2, 3, 100]));
+        assert!(TranslucentPixels::of(&strip, None).unwrap().within([0.5, 0.5, 1.0, 0.6]));
+        let all = TranslucentPixels::of(&strip, Some(&serde_json::json!({}))).unwrap();
+        assert!(all.within([0.5, 0.5, 1.0, 1.0]));
+        assert!(!all.within([0.0, 0.0, 0.5, 1.0]));
+        assert!(TranslucentPixels::of(&strip, Some(&serde_json::json!({"frames": [0, {"index": 2, "time": 4}]}))).is_none());
+        assert!(TranslucentPixels::of(&strip, Some(&serde_json::json!({"frames": [1]}))).is_some());
+        assert!(TranslucentPixels::of(&RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 0])), None).is_none());
     }
     #[test]
     fn flowing_surface_height_and_lava_light_follow_fluid_state() {
@@ -3771,6 +3947,7 @@ mod tests {
             missing: vec![],
             animated: vec![],
             animated_tiles: vec![],
+            translucent: HashMap::new(),
         };
         let tint = BiomeTint {
             grass: None,
@@ -3823,6 +4000,7 @@ mod tests {
             missing: vec![],
             animated: vec![],
             animated_tiles: vec![],
+            translucent: HashMap::new(),
         };
         let model = ResolvedModel {
             elements: vec![crate::model::Element {
@@ -3991,6 +4169,7 @@ mod tests {
             missing: vec![],
             animated: vec![],
             animated_tiles: vec![],
+            translucent: HashMap::new(),
         };
         let block = Block::new("minecraft:test_crumble");
         let scene = Placed(HashMap::from([(pos, block.clone())]));

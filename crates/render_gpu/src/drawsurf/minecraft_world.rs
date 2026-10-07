@@ -130,6 +130,8 @@ struct TerrainGpu {
     atlas_texture: Option<Texture>,
     celestial: Option<(Arc<MinecraftAtlasImage>, TextureView)>,
     clouds: Option<(Arc<MinecraftClouds>, Buffer, Buffer, u32)>,
+    cloud_top: f32,
+    camera_above_clouds: bool,
     crack_texture: Option<(Arc<MinecraftAtlasImage>, TextureView)>,
     /// This frame's particles and cracks: vertices, indices, index count.
     particles: Option<(Buffer, Buffer, u32)>,
@@ -341,6 +343,7 @@ fn prepare_terrain(
     });
     match frame.clouds.clone() {
         Some(clouds) if gpu.clouds.as_ref().is_none_or(|(held, ..)| !Arc::ptr_eq(held, &clouds)) => {
+            gpu.cloud_top = clouds.vertices.iter().map(|vertex| vertex[1]).fold(f32::NEG_INFINITY, f32::max);
             gpu.clouds = (!clouds.indices.is_empty()).then(|| {
                 let vertices = device.create_buffer_with_data(&BufferInitDescriptor {
                     label: Some("iw4l_minecraft_cloud_vertices"),
@@ -359,6 +362,7 @@ fn prepare_terrain(
         Some(_) => {}
         None => gpu.clouds = None,
     }
+    gpu.camera_above_clouds = frame.environment[3][1] > gpu.cloud_top;
     if gpu.view.is_none() {
         gpu.view = Some(device.create_buffer(&BufferDescriptor {
             label: Some("iw4l_minecraft_terrain_view"),
@@ -624,6 +628,14 @@ fn draw_terrain(
         pass.set_index_buffer(indices.slice(..), IndexFormat::Uint32);
         pass.draw_indexed(0..*count, 0, 0..1);
     }
+    if !gpu.camera_above_clouds
+        && let Some((_, vertices, indices, count)) = gpu.clouds.as_ref()
+    {
+        pass.set_render_pipeline(&clouds);
+        pass.set_vertex_buffer(0, vertices.slice(..));
+        pass.set_index_buffer(indices.slice(..), IndexFormat::Uint32);
+        pass.draw_indexed(0..*count, 0, 0..1);
+    }
     pass.set_render_pipeline(&translucent);
     for pos in gpu.visible.iter().rev() {
         let Some(section) = gpu.sections.get(pos) else {
@@ -652,7 +664,9 @@ fn draw_terrain(
         pass.draw_indexed(0..*count, 0, 0..1);
         pass.set_viewport(vp.x as f32, vp.y as f32, vp.z as f32, vp.w as f32, depth_min, depth_max);
     }
-    if let Some((_, vertices, indices, count)) = gpu.clouds.as_ref() {
+    if gpu.camera_above_clouds
+        && let Some((_, vertices, indices, count)) = gpu.clouds.as_ref()
+    {
         pass.set_render_pipeline(&clouds);
         pass.set_vertex_buffer(0, vertices.slice(..));
         pass.set_index_buffer(indices.slice(..), IndexFormat::Uint32);
@@ -778,7 +792,10 @@ fn opaque(in: Out) -> @location(0) vec4<f32> {
 }
 
 @fragment
-fn translucent(in: Out) -> @location(0) vec4<f32> {
+fn translucent(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    if !front && in.colour.a > 0.75 {
+        discard;
+    }
     let texel = textureSample(atlas, atlas_sampler, in.uv);
     return shade(in, texel);
 }

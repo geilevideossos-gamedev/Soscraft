@@ -27,6 +27,7 @@ pub(crate) struct FaceCulling {
     skip: Vec<SkipRendering>,
     sizes: [usize; 3],
     covered: [Vec<bool>; 3],
+    rects: [Vec<Vec<[f64; 4]>>; 3],
 }
 
 impl FaceCulling {
@@ -83,6 +84,27 @@ impl FaceCulling {
             skip,
             sizes,
             covered,
+            rects,
+        }
+    }
+
+    pub(crate) fn fluid_face_hidden(&self, neighbor: BlockStateId, side: Direction, height: f32) -> bool {
+        let theirs = self.faces[usize::from(neighbor.0)][side.opposite().index()];
+        let full_height = height == 1.0;
+        match theirs {
+            EMPTY => false,
+            FULL => side != Direction::Up || full_height,
+            _ if side == Direction::Up && !full_height => false,
+            _ => {
+                let axis = side.index() / 2;
+                let height = f64::from(height);
+                let fluid = match axis {
+                    0 => [0.0, 0.0, 1.0, 1.0],
+                    1 => [0.0, 0.0, 1.0, height],
+                    _ => [0.0, 0.0, height, 1.0],
+                };
+                rects_cover(&[fluid], &self.rects[axis][usize::from(theirs)])
+            }
         }
     }
 
@@ -287,6 +309,26 @@ mod tests {
             assert!(culling.hidden(CACTUS, STONE, side));
             assert!(!culling.hidden(GLASS, AIR, side));
         }
+    }
+
+    #[test]
+    fn fluid_faces_hide_like_fluid_renderer() {
+        let culling = synthetic();
+        let source = 8.0 / 9.0;
+        for side in Direction::ALL {
+            assert!(!culling.fluid_face_hidden(GLASS, side, 1.0));
+            assert!(!culling.fluid_face_hidden(AIR, side, 1.0));
+            assert!(culling.fluid_face_hidden(STONE, side, 1.0));
+        }
+        assert!(!culling.fluid_face_hidden(STONE, Up, source));
+        assert!(culling.fluid_face_hidden(STONE, Down, source));
+        assert!(culling.fluid_face_hidden(STONE, North, source));
+        assert!(culling.fluid_face_hidden(BOTTOM_SLAB, North, 0.5));
+        assert!(culling.fluid_face_hidden(BOTTOM_SLAB, East, 0.5));
+        assert!(!culling.fluid_face_hidden(BOTTOM_SLAB, East, source));
+        assert!(!culling.fluid_face_hidden(BOTTOM_SLAB, Down, source));
+        assert!(culling.fluid_face_hidden(TOP_SLAB, Down, source));
+        assert!(!culling.fluid_face_hidden(TOP_SLAB, Up, 1.0));
     }
 
     #[test]

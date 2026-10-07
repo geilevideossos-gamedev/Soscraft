@@ -127,6 +127,10 @@ impl BlockStates {
         self.face_culling.hidden(own, neighbor, side)
     }
 
+    pub fn fluid_face_hidden(&self, neighbor: BlockStateId, side: Direction, height: f32) -> bool {
+        self.face_culling.fluid_face_hidden(neighbor, side, height)
+    }
+
     /// Whether a block darkens the corners of faces beside it
     /// (`shade_darkens`).
     pub fn shade_darkens(&self, block: &Block) -> bool {
@@ -411,6 +415,9 @@ impl Scene for View<'_> {
     }
     fn full_collision_at(&self, pos: BlockPos) -> bool {
         self.states.full_collision[usize::from(self.state(pos).0)]
+    }
+    fn fluid_face_hidden(&self, neighbor: BlockPos, side: Direction, height: f32) -> bool {
+        self.states.fluid_face_hidden(self.state(neighbor), side, height)
     }
     fn shade_darkens_at(&self, pos: BlockPos) -> bool {
         self.states.ao_occluder[usize::from(self.state(pos).0)]
