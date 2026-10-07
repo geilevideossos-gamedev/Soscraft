@@ -1037,6 +1037,10 @@ impl TerrainStream {
     /// A streamed dimension; with `world`, chunks load from and save to that
     /// world directory's region files.
     pub fn for_dimension(registries: Arc<Registries>, seed: i64, view_distance: i32, dimension: Dimension, world: Option<&std::path::Path>) -> Result<Self> {
+        Self::for_dimension_at(registries, seed, view_distance, dimension, world, None)
+    }
+
+    pub fn for_dimension_at(registries: Arc<Registries>, seed: i64, view_distance: i32, dimension: Dimension, world: Option<&std::path::Path>, known_spawn: Option<(i32, i32, i32)>) -> Result<Self> {
         let started = Instant::now();
         let generator = match dimension {
             Dimension::Overworld => TerrainGenerator::overworld(registries.clone(), seed),
@@ -1074,7 +1078,7 @@ impl TerrainStream {
         let searching = Instant::now();
         let (world_spawn, player_spawn) = match dimension {
             Dimension::Overworld => {
-                let world_spawn = spawn::world_spawn(&mut server);
+                let world_spawn = known_spawn.unwrap_or_else(|| spawn::world_spawn(&mut server));
                 (world_spawn, spawn::player_spawn(&mut server, world_spawn, spawn::DEFAULT_RESPAWN_RADIUS, unseeded()))
             }
             Dimension::Nether => {
@@ -1214,6 +1218,10 @@ impl TerrainStream {
     /// The world generation data the chunk map runs.
     pub fn world_gen(&self) -> Arc<minecraftoss_world::chunk_map::WorldGen> {
         self.server.world_gen().clone()
+    }
+
+    pub fn queue_save(&mut self) -> usize {
+        self.server.queue_unsaved()
     }
 
     /// The storage chunks are saved to, which the level's entities share.
@@ -2132,5 +2140,40 @@ mod tests {
         let preview = mesh::block_preview(&scene, &packs, &atlas, &light, &tint, (5, 66, 5)).unwrap();
         let start = preview.transparent_start.unwrap() as usize;
         assert!(start > 0 && preview.indices.len() > start, "the kelp preview shows the kelp and its water");
+    }
+
+    #[test]
+    fn a_saved_world_reopens_at_its_spawn_with_the_edits_an_autosave_queued() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let dir = crate::test_dir::tempdir().unwrap();
+        let level = crate::level_storage::LevelStorage::open(dir.path()).unwrap();
+        let spawn = (40, 90, -24);
+        let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::Overworld, Some(level.root()), Some(spawn)).unwrap();
+        assert_eq!(stream.world_spawn, spawn, "a known spawn is kept, not searched again");
+        let (px, _, pz) = stream.player_spawn;
+        assert!((px - 40.5).abs() <= 11.0 && (pz + 23.5).abs() <= 11.0, "the player spawns around it: {:?}", stream.player_spawn);
+        let column = minecraftoss_core::ChunkPos::new(2, -2);
+        stream.server.load_now(column);
+        let gold = registries.blocks.parse_state("minecraft:gold_block").unwrap();
+        let at = minecraftoss_core::BlockPos::new(40, 300, -24);
+        stream.server.set_block(at, gold);
+        assert!(stream.queue_save() >= 1, "the edited chunk is queued");
+        assert_eq!(stream.queue_save(), 0, "and only once");
+        let until = Instant::now() + std::time::Duration::from_secs(60);
+        let saved = loop {
+            let reader = level.chunk_storage("minecraft:overworld", registries.clone(), -64, 384);
+            let found = reader.load(column).unwrap().map(|chunk| chunk.block(8, 300, 8));
+            if found == Some(gold) || Instant::now() > until {
+                break found;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert_eq!(saved, Some(gold), "the autosave reached the region file while the world stays open");
+        drop(stream);
+        let reopened = level.chunk_storage("minecraft:overworld", registries, -64, 384).load(column).unwrap().unwrap();
+        assert_eq!(reopened.block(8, 300, 8), gold);
+        assert!(dir.path().join("dimensions/minecraft/overworld/region/r.0.-1.mca").is_file());
     }
 }

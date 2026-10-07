@@ -130,6 +130,7 @@ pub(crate) struct PlayerView {
 impl Entities {
     pub(crate) fn new(stream: &TerrainStream, seed: i64) -> Self {
         let mut sim = ServerSim::new(stream.world_gen(), stream.states.clone(), "minecraft:overworld");
+        sim.set_entity_storage(stream.storage());
         if let Ok(weather) = std::env::var("IW4L_MINECRAFT_WEATHER") {
             if sim.set_weather(weather.trim()) {
                 diag::info!(World, "Minecraft weather: {} from IW4L_MINECRAFT_WEATHER", weather.trim());

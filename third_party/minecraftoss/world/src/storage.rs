@@ -92,9 +92,26 @@ impl ChunkStorage {
         store(&self.dir, &self.regions, region, index, stored)?;
         // The level owns a FULL chunk's entities once it has saved them.
         if chunk.status == ChunkStatus::Full && !self.with_entity_region(region, |file| file.contains(index))? {
-            self.save_entities(chunk.pos, &chunk.generation.entities)?;
+            self.seed_entities(chunk.pos, &chunk.generation.entities)?;
         }
         Ok(())
+    }
+
+    pub fn seed_entities(&self, pos: ChunkPos, entities: &[Tag]) -> Result<bool, String> {
+        let (region, index) = region_of(pos);
+        let stored = StoredChunk::encode(&write_entities(pos, entities));
+        let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32);
+        let seeded = self.with_entity_region(region, |file| {
+            let absent = !file.contains(index);
+            if absent {
+                file.set_stored(index, stored, timestamp);
+            }
+            absent
+        })?;
+        if seeded {
+            self.entities.regions.lock().expect("region cache").dirty.insert(region);
+        }
+        Ok(seeded)
     }
 
     /// A chunk's saved entities (`EntityStorage.loadEntities`): `None` when
@@ -146,4 +163,147 @@ fn with_region<T>(dir: &Path, regions: &Mutex<Regions>, region: (i32, i32), f: i
         regions.loaded.insert(region, file);
     }
     Ok(f(regions.loaded.get_mut(&region).expect("inserted")))
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use minecraftoss_core::registries::DataPaths;
+    use minecraftoss_core::{BiomeId, BlockStateId};
+
+    pub(crate) struct TestDir(pub(crate) PathBuf);
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    pub(crate) fn test_dir(name: &str) -> TestDir {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!("minecraftoss-storage-{name}-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        TestDir(dir)
+    }
+
+    pub(crate) fn synthetic_registries(dir: &Path) -> Arc<Registries> {
+        let state = |id: u32, block: &str, air: bool| {
+            serde_json::json!({"id": id, "block": block, "block_id": id, "default": true, "properties": [],
+                "air": air, "liquid": false, "can_occlude": !air, "solid_render": !air, "legacy_solid": !air,
+                "replaceable": air, "light_emission": 0, "light_dampening": if air { 0 } else { 15 },
+                "propagates_skylight_down": air, "use_shape_for_light_occlusion": false, "has_block_entity": false,
+                "randomly_ticking": false, "render_shape": if air { "INVISIBLE" } else { "MODEL" }, "has_offset": false,
+                "face_occlusion": if air { [0, 0, 0, 0, 0, 0] } else { [1, 1, 1, 1, 1, 1] }})
+        };
+        let catalog = serde_json::json!({"schema_version": 2, "minecraft_version": "26.3",
+            "face_order": ["down", "up", "north", "south", "west", "east"], "shapes": ["empty", "full"],
+            "states": [state(0, "minecraft:air", true), state(1, "minecraft:stone", false)]});
+        let pack = dir.join("datapack");
+        let write = |path: PathBuf, value: serde_json::Value| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, value.to_string()).unwrap();
+        };
+        write(dir.join("catalog.json"), catalog);
+        write(pack.join("data/minecraft/worldgen/biome/plains.json"), serde_json::json!({"temperature": 0.8, "downfall": 0.4, "has_precipitation": true}));
+        for tag in ["blocks_motion_in_heightmap", "blocks_motion_in_heightmap_no_leaves"] {
+            write(pack.join(format!("data/minecraft/tags/block/{tag}.json")), serde_json::json!({"values": ["minecraft:stone"]}));
+        }
+        let missing = dir.join("missing.json");
+        let paths = DataPaths { block_catalog: dir.join("catalog.json"), datapack: pack, block_entity_catalog: missing.clone(), entity_catalog: missing.clone(), item_catalog: missing };
+        Arc::new(Registries::load(&paths).unwrap())
+    }
+
+    pub(crate) const STONE: BlockStateId = BlockStateId(1);
+
+    pub(crate) fn full_chunk(pos: ChunkPos, registries: &Registries, column: (usize, usize), height: i32, entities: Vec<Tag>) -> Chunk {
+        let mut chunk = Chunk::new(pos, 0, 32, BiomeId(0));
+        for y in 0..height {
+            chunk.set_block_raw(column.0, y, column.1, STONE, registries);
+        }
+        chunk.status = ChunkStatus::Full;
+        chunk.generation.entities = entities;
+        chunk
+    }
+
+    pub(crate) fn entity(id: &str) -> Tag {
+        Tag::Compound([("id".to_owned(), Tag::String(id.to_owned()))].into_iter().collect())
+    }
+
+    pub(crate) fn ids(entities: &[Tag]) -> Vec<&str> {
+        entities.iter().filter_map(|t| t.get("id").and_then(Tag::as_str)).collect()
+    }
+
+    #[test]
+    fn a_full_chunk_and_its_generated_entities_come_back_from_a_new_storage() {
+        let dir = test_dir("reload");
+        let registries = synthetic_registries(&dir.0);
+        let world = dir.0.join("world");
+        let storage = ChunkStorage::new(&world, "minecraft:overworld", registries.clone(), 0, 32);
+        let pos = ChunkPos::new(-33, 70);
+        storage.save(&full_chunk(pos, &registries, (3, 9), 5, vec![entity("minecraft:cow")])).unwrap();
+        storage.flush().unwrap();
+        assert!(world.join("dimensions/minecraft/overworld/region/r.-2.2.mca").is_file());
+        assert!(world.join("dimensions/minecraft/overworld/entities/r.-2.2.mca").is_file());
+        let reopened = ChunkStorage::new(&world, "minecraft:overworld", registries.clone(), 0, 32);
+        let chunk = reopened.load(pos).unwrap().expect("saved");
+        assert_eq!(chunk.status, ChunkStatus::Full);
+        assert_eq!(chunk.block(3, 4, 9), STONE);
+        assert!(registries.blocks.is_air(chunk.block(3, 5, 9)));
+        assert_eq!(ids(&chunk.generation.entities), ["minecraft:cow"]);
+        assert_eq!(reopened.load(ChunkPos::new(0, 0)).unwrap().map(|c| c.pos), None);
+    }
+
+    #[test]
+    fn saving_a_full_chunk_never_overwrites_entities_the_level_saved_first() {
+        let dir = test_dir("level-first");
+        let registries = synthetic_registries(&dir.0);
+        let storage = ChunkStorage::new(&dir.0, "minecraft:overworld", registries.clone(), 0, 32);
+        let pos = ChunkPos::new(4, -2);
+        storage.save_entities(pos, &[entity("minecraft:item")]).unwrap();
+        storage.save(&full_chunk(pos, &registries, (0, 0), 1, vec![entity("minecraft:cow"), entity("minecraft:pig")])).unwrap();
+        storage.flush().unwrap();
+        let reopened = ChunkStorage::new(&dir.0, "minecraft:overworld", registries, 0, 32);
+        assert_eq!(ids(&reopened.load_entities(pos).unwrap().unwrap()), ["minecraft:item"]);
+    }
+
+    #[test]
+    fn the_level_saving_after_the_chunk_replaces_the_generated_entities() {
+        let dir = test_dir("chunk-first");
+        let registries = synthetic_registries(&dir.0);
+        let storage = ChunkStorage::new(&dir.0, "minecraft:overworld", registries.clone(), 0, 32);
+        let pos = ChunkPos::new(4, -2);
+        storage.save(&full_chunk(pos, &registries, (0, 0), 1, vec![entity("minecraft:cow")])).unwrap();
+        assert_eq!(ids(&storage.load_entities(pos).unwrap().unwrap()), ["minecraft:cow"]);
+        storage.save_entities(pos, &[]).unwrap();
+        storage.save(&full_chunk(pos, &registries, (0, 0), 2, vec![entity("minecraft:cow")])).unwrap();
+        storage.flush().unwrap();
+        let reopened = ChunkStorage::new(&dir.0, "minecraft:overworld", registries, 0, 32);
+        assert_eq!(reopened.load_entities(pos).unwrap(), Some(Vec::new()));
+        assert_eq!(reopened.load(pos).unwrap().unwrap().block(0, 1, 0), STONE);
+    }
+
+    #[test]
+    fn seeding_only_fills_an_empty_entry_however_the_threads_interleave() {
+        let dir = test_dir("race");
+        let registries = synthetic_registries(&dir.0);
+        let storage = Arc::new(ChunkStorage::new(&dir.0, "minecraft:overworld", registries, 0, 32));
+        for round in 0..50 {
+            let pos = ChunkPos::new(round, 0);
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let seeding = {
+                let (storage, barrier) = (storage.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    storage.seed_entities(pos, &[entity("minecraft:cow")]).unwrap()
+                })
+            };
+            barrier.wait();
+            storage.save_entities(pos, &[entity("minecraft:item")]).unwrap();
+            let seeded = seeding.join().unwrap();
+            let saved = storage.load_entities(pos).unwrap().unwrap();
+            assert_eq!(ids(&saved), ["minecraft:item"], "round {round}, seeded first: {seeded}");
+            assert!(!storage.seed_entities(pos, &[entity("minecraft:pig")]).unwrap());
+        }
+    }
 }

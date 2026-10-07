@@ -129,6 +129,9 @@ pub struct SessionSwapApplied;
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModelLightingSeated;
 
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SaveBeforeExit;
+
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum WorkerCmdSet {

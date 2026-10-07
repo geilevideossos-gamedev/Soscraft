@@ -1092,6 +1092,7 @@ pub enum Command {
     /// One server tick, with the player's state for it.
     Tick(Box<TickInput>),
     Throw(Box<crate::thrown::Thrown>),
+    Save,
 }
 
 /// The client state a server tick reads.
@@ -1339,6 +1340,10 @@ impl ServerHandle {
         self.send(Command::Throw(Box::new(thrown)));
     }
 
+    pub fn save(&mut self) {
+        self.send(Command::Save);
+    }
+
     /// Outputs the server has produced since the last call.
     pub fn poll(&mut self) -> Vec<Output> {
         let mut outputs = std::mem::take(&mut self.waited);
@@ -1426,6 +1431,10 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.merchant.push(sim.merchant(op, *inventory, selected, feet));
                 }
                 Command::Throw(thrown) => sim.throw(*thrown),
+                Command::Save => {
+                    sim.ticks_since_save = 0;
+                    sim.save_all_entities();
+                }
                 Command::Tick(input) => {
                     let started = std::time::Instant::now();
                     let input = *input;
@@ -1748,6 +1757,49 @@ mod tests {
         let (_, restored) = health.iter().find(|(p, _)| p.distance(hurt_at) < 2.0).copied().expect("the hurt animal is back");
         assert!(restored < 10.0, "hurt as it was: {restored}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mobs_items_and_orbs_come_back_when_the_world_is_opened_again() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 1234).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 1234, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 6, 8);
+        let chunks: Vec<Arc<Chunk>> = (15..=25).flat_map(|x| (123..=133).map(move |z| (x, z))).map(|(x, z)| map.load_now(ChunkPos::new(x, z))).collect();
+        let dir = crate::test_dir::tempdir().unwrap();
+        let level = crate::level_storage::LevelStorage::open(dir.path()).unwrap();
+        let storage = || Some(Arc::new(level.chunk_storage("minecraft:overworld", registries.clone(), -64, 384)));
+        let animals = |world: &minecraftoss_entities::world::EntityWorld| world.cows().iter().filter(|c| c.horse.is_none()).count() + world.pigs().len() + world.chickens().len() + world.sheep().len();
+        let mut first = ServerSim::new(worldgen.clone(), states.clone(), "minecraft:overworld");
+        first.set_entity_storage(storage());
+        for chunk in &chunks {
+            first.load_chunk(chunk);
+        }
+        let generated = animals(&first.mobs);
+        assert!(generated > 1, "seed 1234 has animals there");
+        let victim = first.mobs.mob_ids().next().unwrap();
+        if let Some(e) = first.mobs.cow_mut(victim) { e.hurt(100.0, minecraftoss_entities::world::DamageSourceKind::Generic); }
+        if let Some(e) = first.mobs.sheep_mut(victim) { e.hurt(100.0, minecraftoss_entities::world::DamageSourceKind::Generic); }
+        if let Some(e) = first.mobs.pig_mut(victim) { e.hurt(100.0, minecraftoss_entities::world::DamageSourceKind::Generic); }
+        if let Some(e) = first.mobs.chicken_mut(victim) { e.hurt(100.0); }
+        let mut handle = ServerHandle::spawn(first);
+        handle.spawn_item("minecraft:diamond", 3, None, [328.5, 200.0, 2056.5], [0.0; 3], 10, 0);
+        handle.summon_orb([330.5, 200.0, 2058.5], 7);
+        handle.save();
+        handle.wait_idle();
+        let written = storage().unwrap().load_entities(ChunkPos::new(20, 128)).unwrap().expect("the save command wrote the chunk's entities");
+        assert!(written.iter().any(|t| t.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) == Some("minecraft:item")), "{written:?}");
+        drop(handle);
+        let mut second = ServerSim::new(worldgen, states, "minecraft:overworld");
+        second.set_entity_storage(storage());
+        for chunk in &chunks {
+            second.load_chunk(chunk);
+        }
+        assert_eq!(animals(&second.mobs), generated - 1, "the killed animal stays dead in the next session");
+        assert!(second.items().iter().any(|i| i.item == "minecraft:diamond" && i.count == 3), "the dropped stack is back");
+        assert!(second.orbs().iter().any(|o| o.value == 7), "the orb is back");
     }
 
     /// At midnight on Normal, natural spawning fills the dark around a

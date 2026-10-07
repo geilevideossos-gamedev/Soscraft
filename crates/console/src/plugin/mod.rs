@@ -205,7 +205,7 @@ impl Plugin for ConsolePlugin {
                 Last,
                 (
                     paint_scrollback_selection,
-                    crate::feature_dispatch::exit_process,
+                    crate::feature_dispatch::exit_process.after(frame::SaveBeforeExit),
                 )
                     .chain(),
             );

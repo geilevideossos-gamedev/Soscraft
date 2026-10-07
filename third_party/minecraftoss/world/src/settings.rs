@@ -72,7 +72,7 @@ impl WorldSettings {
             ("dimensions", dimensions()),
         ]);
         let root = compound(vec![("data", data), ("DataVersion", Tag::Int(DATA_VERSION))]);
-        std::fs::write(&path, nbt::write_gzip(&root, "")).map_err(|e| format!("{}: {e}", path.display()))
+        crate::level_storage::safe_replace(&path, &nbt::write_gzip(&root, ""))
     }
 }
 

@@ -11,6 +11,7 @@
 pub mod chunk_map;
 pub mod distance;
 pub mod level;
+pub mod level_storage;
 pub mod natural_spawner;
 pub mod spawn;
 pub mod settings;

@@ -82,21 +82,22 @@ The MW2 netcode is host-authoritative and goes through the `iw4l-master` QUIC re
 
 ### The Minecraft world is single player
 - It runs only on the host. `render_anim/src/minecraft_world.rs` returns early without a local `AuthorityWorld`, so a joining client most likely never finishes loading the world.
-- The seed is random per process unless `IW4L_MINECRAFT_SEED` is set.
+- The seed is stored with the world (see below).
 - Nothing Minecraft goes over the network: blocks, mobs, items, inventories, containers, hunger, time of day and weather are all host-only.
 - The server thread knows one player (`PLAYER = 0` in `minecraft_entities.rs`). Chunks stream around the host only.
 - Survival state (inventory, containers, hunger) lives in the render crate (`render_anim`), not in the sim or the server thread.
 
-### Saving does not happen yet
-- The world is opened without a world folder, so chunks go to a temp `minecraftoss-session-*` folder that is deleted on exit.
-- Entity storage is never set, so the 5-minute entity autosave writes nothing.
-- These are not serialized at all: containers, player inventory, survival stats, position, time and weather.
-- The storage layer itself exists and writes vanilla Anvil regions (DataVersion 5023).
+### Saving (one player, overworld)
+- The world lives in `iw4l-artifacts\saves\<name>` next to the exe, in the vanilla 26.3 layout: `level.dat`, `session.lock`, `data/minecraft/world_gen_settings.dat` (the seed) and `world_clocks.dat` (time of day), and `dimensions/minecraft/overworld/{region,entities,poi,data}`. `level.dat` and `world_clocks.dat` keep a `_old` copy that is read when the file is missing or broken.
+- `IW4L_MINECRAFT_WORLD` names it (default `world`, letters, digits, `_` and `-` only). `temp` plays a throw-away world as before. A world that another copy of the game holds falls back to a temporary world with a warning.
+- `IW4L_MINECRAFT_SEED` only seeds a new world; an existing world keeps its seed and the log warns that the variable is ignored.
+- Changed chunks, mobs, dropped items and XP orbs are saved every 5 minutes (6000 ticks) on background threads, when a match ends and when the game quits.
+- Not saved yet: containers, player inventory, survival stats, position and weather. The kit is given on every load.
 
 ## Limitations
 
 ### Persistence and multiplayer
-- No persistent world and no Minecraft multiplayer (see above).
+- No Minecraft multiplayer, and the player itself is not saved (see above).
 - Overworld only. There is no Nether travel. It would need:
   - a shared world folder and a runtime dimension switch;
   - the 80-tick portal timer, x8 coordinate scaling and linking to a return portal;
@@ -190,7 +191,8 @@ Other switches:
 
 | Variable | Effect |
 |---|---|
-| `IW4L_MINECRAFT_SEED` | Fixed world seed |
+| `IW4L_MINECRAFT_WORLD` | Save folder name under `iw4l-artifacts\saves` (default `world`, `temp` for a throw-away world) |
+| `IW4L_MINECRAFT_SEED` | Seed of a new world |
 | `IW4L_MINECRAFT_TIME` | Start time in ticks |
 | `IW4L_MINECRAFT_WEATHER` | `clear`, `rain` or `thunder` |
 | `MINECRAFTOSS_DEBUG_SERVER=1` | Logs server changes and chest placement |

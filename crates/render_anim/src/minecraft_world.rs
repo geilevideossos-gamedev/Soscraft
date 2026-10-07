@@ -80,6 +80,9 @@ struct Loaded {
     celestial: Arc<image::RgbaImage>,
     cloud_mask: Option<CloudMask>,
     crack_texture: Arc<image::RgbaImage>,
+    saved_day: Option<f64>,
+    save: Option<crate::minecraft_save::WorldSave>,
+    level_writer: Option<std::thread::JoinHandle<()>>,
 }
 
 /// The hand's swing and the timers of mining and placing by hand.
@@ -142,6 +145,15 @@ struct Runtime {
     atlas_animation: AtlasAnimation,
     animation_clock: f64,
     spawn_gate: crate::minecraft_spawn_gate::SpawnGate,
+    loader: Option<std::thread::JoinHandle<()>>,
+    closing: Vec<std::thread::JoinHandle<()>>,
+    autosave_ticks: u32,
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        close_world(self, true);
+    }
 }
 
 /// The player's MW2 body stands in the inventory's character window, on a
@@ -223,23 +235,48 @@ pub(crate) fn register(app: &mut App) {
             update
                 .after(frame::PresentedPublished)
                 .in_set(frame::ClientSet::Present),
+        )
+        .add_systems(
+            Last,
+            save_before_exit
+                .in_set(frame::SaveBeforeExit)
+                .after(bevy::window::ExitSystems),
         );
 }
 
-fn load(seed: i64) -> Result<Loaded, String> {
+fn load() -> Result<Loaded, String> {
     let root = assets::minecraft_map::root().ok_or_else(assets::minecraft_setup::status)?;
+    let opened = crate::minecraft_save::open_world(
+        &crate::minecraft_save::saves_dir(),
+        std::env::var("IW4L_MINECRAFT_WORLD").ok().as_deref(),
+        std::env::var("IW4L_MINECRAFT_SEED").ok().as_deref(),
+        crate::minecraft_save::random_seed(),
+    );
+    for note in &opened.notes {
+        diag::info!(World, "{note}");
+    }
+    for warning in &opened.warnings {
+        diag::warn!(World, "{warning}");
+    }
+    let seed = opened.seed;
     let paths = DataPaths::under(&root);
     let registries = Arc::new(Registries::load(&paths)?);
     let packs = PackStack::open(vec![root.join("resourcepacks/local/minecraft-26.3")])
         .map_err(|e| e.to_string())?;
-    let stream = TerrainStream::for_dimension(
+    let stream = TerrainStream::for_dimension_at(
         registries.clone(),
         seed,
         VIEW_DISTANCE,
         Dimension::Overworld,
-        None,
+        opened.save.as_ref().map(crate::minecraft_save::WorldSave::path),
+        opened.spawn,
     )
     .map_err(|e| e.to_string())?;
+    if let Some(save) = &opened.save
+        && let Err(error) = save.write(stream.world_spawn, None)
+    {
+        diag::warn!(World, "Minecraft level.dat not written: {error}");
+    }
     let build = minecraft_terrain::mesh::build(&HandcraftedScene::default(), &packs)
         .map_err(|e| e.to_string())?;
     let scene = HandcraftedScene::streamed(stream.states.clone());
@@ -259,6 +296,9 @@ fn load(seed: i64) -> Result<Loaded, String> {
         celestial,
         cloud_mask,
         crack_texture,
+        saved_day: opened.day_ticks,
+        save: opened.save,
+        level_writer: None,
     })
 }
 
@@ -314,19 +354,6 @@ fn pad_trigger(pad: Option<&bevy::input::gamepad::Gamepad>, button: GamepadButto
     pad.is_some_and(|pad| if just { pad.just_pressed(button) } else { pad.pressed(button) })
 }
 
-fn seed() -> i64 {
-    if let Some(seed) = std::env::var("IW4L_MINECRAFT_SEED")
-        .ok()
-        .and_then(|s| s.parse().ok())
-    {
-        return seed;
-    }
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    (nanos as i64) ^ 0x5DEE_CE66_D1CE_4E5B
-}
-
 #[allow(clippy::too_many_arguments)]
 fn update(
     time: Res<Time>,
@@ -362,14 +389,17 @@ fn update(
     for match_ in installed.read() {
         stop(&mut runtime, &mut view);
         if assets::minecraft_map::is_minecraft(&match_.zone) {
-            let seed = seed();
-            diag::info!(World, "Minecraft world: seed {seed}");
+            let closing = std::mem::take(&mut runtime.closing);
             let (send, receive) = mpsc::channel();
-            let _ = std::thread::Builder::new()
+            runtime.loader = std::thread::Builder::new()
                 .name("minecraft-world-load".into())
                 .spawn(move || {
-                    let _ = send.send(load(seed));
-                });
+                    for previous in closing {
+                        let _ = previous.join();
+                    }
+                    let _ = send.send(load());
+                })
+                .ok();
             runtime.loading = Some(receive);
             view.active = true;
         }
@@ -383,8 +413,9 @@ fn update(
         && let Ok(result) = receive.try_recv()
     {
         runtime.loading = None;
+        runtime.loader = None;
         match result {
-            Ok(world) => {
+            Ok(mut world) => {
                 let (x, y, z) = world.stream.player_spawn;
                 view.origin = [x, y, z];
                 view.atlas = Some(world.atlas.clone());
@@ -402,6 +433,9 @@ fn update(
                 runtime.inventory_ui.set_station_data(entities.stations.clone(), entities.enchantments.clone(), world.seed as i32);
                 runtime.entities = Some(entities);
                 runtime.day = DayCycle::default();
+                if let Some(ticks) = world.saved_day {
+                    runtime.day.set(ticks);
+                }
                 // Game ticks since sunrise to start at: 6000 noon, 13000
                 // dusk, 18000 midnight.
                 if let Some(ticks) = std::env::var("IW4L_MINECRAFT_TIME")
@@ -410,6 +444,10 @@ fn update(
                 {
                     runtime.day.set(ticks);
                 }
+                if let Some(save) = world.save.as_mut() {
+                    save.started(runtime.day.ticks);
+                }
+                runtime.autosave_ticks = 0;
                 runtime.environment_accumulator = 0.0;
                 runtime.environment_primed = false;
                 runtime.light = Some(SkyLight::streamed());
@@ -465,6 +503,7 @@ fn update(
         atlas_animation,
         animation_clock,
         spawn_gate,
+        autosave_ticks,
         ..
     } = &mut *runtime;
     let Some(world) = world.as_mut() else {
@@ -1314,6 +1353,11 @@ fn update(
         let ticks_before = entities.client_ticks();
         let (changes, hits) = entities.tick(dt, day.ticks as i64, bright_outside, &player);
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
+        *autosave_ticks += mob_ticks;
+        if *autosave_ticks >= crate::minecraft_save::AUTOSAVE_TICKS {
+            *autosave_ticks = 0;
+            autosave(world, day.ticks);
+        }
         for _ in 0..mob_ticks {
             for sound in entities.animate_tick(&world.scene, feet) {
                 if let Some(sounds) = sounds.as_mut() {
@@ -2108,8 +2152,103 @@ fn obstacles(
     out
 }
 
+fn autosave(world: &mut Loaded, day_ticks: f64) {
+    let Some(save) = world.save.clone() else {
+        return;
+    };
+    let started = std::time::Instant::now();
+    let chunks = world.stream.queue_save();
+    if let Some(previous) = world.level_writer.take() {
+        let _ = previous.join();
+    }
+    let path = save.path().display().to_string();
+    let spawn = world.stream.world_spawn;
+    world.level_writer = std::thread::Builder::new()
+        .name("minecraft-level-save".into())
+        .spawn(move || {
+            if let Err(error) = save.write(spawn, Some(day_ticks)) {
+                diag::warn!(World, "Minecraft autosave: level.dat not written: {error}");
+            }
+        })
+        .map_err(|error| diag::warn!(World, "Minecraft autosave: level.dat thread not started: {error}"))
+        .ok();
+    diag::info!(
+        World,
+        "Minecraft autosave: {chunks} chunks queued for {path} in {:.1} ms",
+        started.elapsed().as_secs_f64() * 1000.0
+    );
+}
+
+fn save_before_exit(mut exit: MessageReader<AppExit>, mut runtime: NonSendMut<Runtime>) {
+    if exit.read().last().is_some() {
+        close_world(&mut runtime, true);
+    }
+}
+
+fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
+    let entities = runtime.entities.take();
+    let world = runtime.world.take();
+    let loading = runtime.loading.take();
+    let loader = runtime.loader.take();
+    let day_ticks = runtime.day.ticks;
+    let open = world.is_some() || loading.is_some();
+    if entities.is_some() || open || loader.is_some() {
+        let close = move || save_and_close(entities, world, loading, loader, day_ticks);
+        if blocking {
+            close();
+        } else {
+            match std::thread::Builder::new().name("minecraft-world-save".into()).spawn(close) {
+                Ok(handle) => runtime.closing.push(handle),
+                Err(error) => diag::warn!(World, "Minecraft world save thread not started: {error}"),
+            }
+        }
+    }
+    if blocking {
+        for handle in runtime.closing.drain(..) {
+            let _ = handle.join();
+        }
+    }
+    open
+}
+
+fn save_and_close(
+    entities: Option<crate::minecraft_entities::Entities>,
+    world: Option<Loaded>,
+    loading: Option<mpsc::Receiver<Result<Loaded, String>>>,
+    loader: Option<std::thread::JoinHandle<()>>,
+    day_ticks: f64,
+) {
+    let started = std::time::Instant::now();
+    drop(entities);
+    if let Some(loader) = loader {
+        let _ = loader.join();
+    }
+    drop(loading);
+    let Some(mut world) = world else {
+        return;
+    };
+    let save = world.save.take();
+    if let Some(writer) = world.level_writer.take() {
+        let _ = writer.join();
+    }
+    let spawn = world.stream.world_spawn;
+    drop(world);
+    let Some(save) = save else {
+        return;
+    };
+    if let Err(error) = save.write(spawn, Some(day_ticks)) {
+        diag::warn!(World, "Minecraft level.dat not written: {error}");
+    }
+    diag::info!(
+        World,
+        "Minecraft world saved in {} ms: {}",
+        started.elapsed().as_millis(),
+        save.path().display()
+    );
+}
+
 fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
-    if runtime.world.take().is_some() || runtime.loading.take().is_some() || view.active {
+    if close_world(runtime, false) || view.active {
         sim::voxel::deactivate();
         runtime.spawn_gate = Default::default();
         view.active = false;

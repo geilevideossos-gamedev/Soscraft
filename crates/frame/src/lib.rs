@@ -14,7 +14,7 @@ pub use retire::Retiring;
 pub use schedule::{
     AUTHORITY_TOC, AuthorityBookkeeping, AuthorityEdge, AuthoritySet, CLIENT_TOC,
     ClassEquipResolved, ClientEdge, ClientSet, FxSoundPublished, LifeFrontPublished,
-    ModelLightingSeated, PresentedPublished, RenderSet, SessionSwapApplied, WORKER_CMD_AFTER,
+    ModelLightingSeated, PresentedPublished, RenderSet, SaveBeforeExit, SessionSwapApplied, WORKER_CMD_AFTER,
     WORKER_CMD_END_FENCE, WORKER_CMD_NOT_RENDER_THREAD, WORKER_CMD_RETAIL_NAMES, WORKER_CMD_TOC,
     WorkerCmdSet, authority_set_name, client_set_name, configure_authority_sets,
     configure_client_sets, configure_render_sets, configure_worker_cmd_sets, worker_cmd_name,

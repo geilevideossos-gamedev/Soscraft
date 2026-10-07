@@ -206,6 +206,7 @@ struct World {
     wanted_head: usize,
     jobs_in_flight: usize,
     stop: bool,
+    unsaved: HashSet<ChunkPos>,
 }
 
 enum Job {
@@ -239,6 +240,7 @@ struct Shared {
     /// Wakes the saver thread.
     evicted_ready: Condvar,
     saver_stop: std::sync::atomic::AtomicBool,
+    snapshots: Mutex<Vec<Evicted>>,
 }
 
 /// A chunk dropped from the map but not yet saved.
@@ -287,6 +289,7 @@ pub struct ChunkMap {
     /// changes would copy it every tick; instead they wait here and are
     /// written in one copy when the chunk is sent again, dropped or saved.
     edits: HashMap<ChunkPos, Vec<(BlockPos, BlockStateId)>>,
+    queued_edits: HashMap<ChunkPos, usize>,
 }
 
 /// Generation order: the player ticket level (chessboard distance), then
@@ -432,6 +435,7 @@ impl World {
                 promote_block_entities(&mut chunk, registries);
                 *slot = Slot::Final(Arc::new(*chunk));
                 finalized.push(candidate);
+                self.unsaved.insert(candidate);
             }
         }
         finalized
@@ -494,7 +498,7 @@ impl ChunkMap {
         let storage = storage.map(Arc::new);
         let generator = worldgen.terrain.clone();
         let shared = Arc::new(Shared {
-            world: Mutex::new(World { slots: HashMap::new(), ticking: HashSet::new(), terrain_in_flight: HashSet::new(), wanted: Vec::new(), wanted_head: 0, jobs_in_flight: 0, stop: false }),
+            world: Mutex::new(World { slots: HashMap::new(), ticking: HashSet::new(), terrain_in_flight: HashSet::new(), wanted: Vec::new(), wanted_head: 0, jobs_in_flight: 0, stop: false, unsaved: HashSet::new() }),
             work: Condvar::new(),
             done: Condvar::new(),
             biomes: Mutex::new(HashMap::new()),
@@ -507,6 +511,7 @@ impl ChunkMap {
             registries: generator.registries.clone(),
             evicted_ready: Condvar::new(),
             saver_stop: std::sync::atomic::AtomicBool::new(false),
+            snapshots: Mutex::new(Vec::new()),
         });
         let saver = shared.storage.is_some().then(|| {
             let shared = shared.clone();
@@ -541,6 +546,7 @@ impl ChunkMap {
             sender,
             chunks: HashMap::new(),
             edits: HashMap::new(),
+            queued_edits: HashMap::new(),
             last_tick_ms: [0.0; 7],
             view_distance: view_distance.clamp(MIN_VIEW_DISTANCE, EXTENDED_VIEW_DISTANCE),
             view: None,
@@ -741,6 +747,7 @@ impl ChunkMap {
                     Slot::Out { .. } => continue,
                 };
                 let edits = Arc::new(self.edits.remove(&pos).unwrap_or_default());
+                self.queued_edits.remove(&pos);
                 evicted.insert(pos, Evicted { chunk, status, edits });
             }
             drop(evicted);
@@ -768,10 +775,12 @@ impl ChunkMap {
     /// Writes a chunk's waiting edits into its FULL slot and sendable copy.
     fn write_edits(&mut self, pos: ChunkPos) {
         let Some(edits) = self.edits.remove(&pos) else { return };
+        self.queued_edits.remove(&pos);
         let mut world = self.shared.world.lock().expect("chunk world");
         if let Some(Slot::Final(chunk)) = world.slots.get_mut(&pos) {
             apply_edits(Arc::make_mut(chunk), &edits, &self.generator.registries);
             let updated = chunk.clone();
+            world.unsaved.insert(pos);
             drop(world);
             self.chunks.insert(pos, updated);
         }
@@ -781,6 +790,12 @@ impl ChunkMap {
     /// for its entities.
     pub fn storage(&self) -> Option<Arc<ChunkStorage>> {
         self.shared.storage.clone()
+    }
+
+    pub fn queue_unsaved(&mut self) -> usize {
+        let edited: Vec<ChunkPos> = self.edits.iter().filter(|&(pos, edits)| self.queued_edits.get(pos) != Some(&edits.len())).map(|(&pos, _)| pos).collect();
+        self.queued_edits = self.edits.iter().map(|(&pos, edits)| (pos, edits.len())).collect();
+        queue_snapshots(&self.shared, &self.edits, edited)
     }
 
     /// Saves every chunk in memory and writes the region files.
@@ -897,7 +912,10 @@ impl Drop for ChunkMap {
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
-        self.shared.saver_stop.store(true, Ordering::Relaxed);
+        {
+            let _evicted = self.shared.evicted.lock().expect("evicted chunks");
+            self.shared.saver_stop.store(true, Ordering::Relaxed);
+        }
         self.shared.evicted_ready.notify_all();
         if let Some(saver) = self.saver.take() {
             let _ = saver.join();
@@ -930,16 +948,23 @@ fn save_evicted(shared: &Shared, chunks: Vec<Evicted>) {
 /// one unless it was reloaded or evicted again meanwhile.
 fn saver(shared: &Shared) {
     loop {
-        let batch: Vec<(ChunkPos, Evicted)> = {
+        let (batch, snapshots): (Vec<(ChunkPos, Evicted)>, Vec<Evicted>) = {
             let mut evicted = shared.evicted.lock().expect("evicted chunks");
-            while evicted.is_empty() && !shared.saver_stop.load(Ordering::Relaxed) {
+            while evicted.is_empty() && shared.snapshots.lock().expect("chunk snapshots").is_empty() && !shared.saver_stop.load(Ordering::Relaxed) {
                 evicted = shared.evicted_ready.wait(evicted).expect("evicted chunks");
             }
-            if evicted.is_empty() {
+            let snapshots = std::mem::take(&mut *shared.snapshots.lock().expect("chunk snapshots"));
+            if evicted.is_empty() && snapshots.is_empty() {
                 return;
             }
-            evicted.iter().take(64).map(|(&pos, entry)| (pos, entry.clone())).collect()
+            (evicted.iter().take(64).map(|(&pos, entry)| (pos, entry.clone())).collect(), snapshots)
         };
+        if !snapshots.is_empty() {
+            save_evicted(shared, snapshots);
+        }
+        if batch.is_empty() {
+            continue;
+        }
         let saved: Vec<(ChunkPos, Arc<Chunk>)> = batch.iter().map(|(pos, entry)| (*pos, entry.chunk.clone())).collect();
         save_evicted(shared, batch.into_iter().map(|(_, entry)| entry).collect());
         let mut evicted = shared.evicted.lock().expect("evicted chunks");
@@ -949,6 +974,31 @@ fn saver(shared: &Shared) {
             }
         }
     }
+}
+
+fn queue_snapshots(shared: &Shared, edits: &HashMap<ChunkPos, Vec<(BlockPos, BlockStateId)>>, edited: Vec<ChunkPos>) -> usize {
+    let mut world = shared.world.lock().expect("chunk world");
+    let mut unsaved = std::mem::take(&mut world.unsaved);
+    if shared.storage.is_none() {
+        return 0;
+    }
+    unsaved.extend(edited);
+    let snapshots: Vec<Evicted> = unsaved
+        .into_iter()
+        .filter_map(|pos| match world.slots.get(&pos) {
+            Some(Slot::Final(chunk)) => Some(Evicted { chunk: chunk.clone(), status: ChunkStatus::Full, edits: Arc::new(edits.get(&pos).cloned().unwrap_or_else(Vec::new)) }),
+            _ => None,
+        })
+        .collect();
+    drop(world);
+    let count = snapshots.len();
+    if count > 0 {
+        let evicted = shared.evicted.lock().expect("evicted chunks");
+        shared.snapshots.lock().expect("chunk snapshots").extend(snapshots);
+        drop(evicted);
+        shared.evicted_ready.notify_one();
+    }
+    count
 }
 
 /// Block changes written into a chunk, with its heightmaps.
@@ -1027,6 +1077,7 @@ fn run_job(shared: &Shared, worldgen: &WorldGen, job: Job, finished: &mpsc::Send
             // A chunk dropped earlier comes back as it was: from memory if
             // it is not saved yet, else from storage.
             let evicted = shared.evicted.lock().expect("evicted chunks").remove(&pos);
+            let from_memory = evicted.is_some();
             let evicted = evicted.map(|entry| entry.resolve(&shared.registries));
             let saved = evicted.or_else(|| {
                 shared.storage.as_ref().and_then(|s| {
@@ -1053,6 +1104,9 @@ fn run_job(shared: &Shared, worldgen: &WorldGen, job: Job, finished: &mpsc::Send
                 Slot::Proto { chunk: Box::new(chunk), decorated: loaded && status >= ChunkStatus::Features }
             };
             world.slots.insert(pos, slot);
+            if from_memory && status == ChunkStatus::Full {
+                world.unsaved.insert(pos);
+            }
             world.jobs_in_flight -= 1;
             if loaded {
                 // A saved chunk can complete 3x3s around it.
@@ -1236,4 +1290,140 @@ fn generate_terrain(shared: &Shared, worldgen: &WorldGen, pos: ChunkPos) -> Chun
     generator.build_terrain_with(&mut chunk, &neighbors, &possible, beardifier);
     stage_times::add(stage_times::TERRAIN_BUILD, building);
     chunk
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::tests::{full_chunk, synthetic_registries, test_dir, STONE};
+
+    fn shared(storage: ChunkStorage, registries: Arc<minecraftoss_core::Registries>) -> Arc<Shared> {
+        Arc::new(Shared {
+            world: Mutex::new(World { slots: HashMap::new(), ticking: HashSet::new(), terrain_in_flight: HashSet::new(), wanted: Vec::new(), wanted_head: 0, jobs_in_flight: 0, stop: false, unsaved: HashSet::new() }),
+            work: Condvar::new(),
+            done: Condvar::new(),
+            biomes: Mutex::new(HashMap::new()),
+            generated: AtomicU64::new(0),
+            decorated: AtomicU64::new(0),
+            generation_micros: AtomicU64::new(0),
+            decoration_micros: AtomicU64::new(0),
+            storage: Some(Arc::new(storage)),
+            evicted: Mutex::new(HashMap::new()),
+            registries,
+            evicted_ready: Condvar::new(),
+            saver_stop: std::sync::atomic::AtomicBool::new(false),
+            snapshots: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn drain(shared: &Shared) {
+        shared.saver_stop.store(true, Ordering::Relaxed);
+        saver(shared);
+        shared.saver_stop.store(false, Ordering::Relaxed);
+    }
+
+    fn column_height(chunk: &Chunk) -> i32 {
+        (0..32).take_while(|&y| chunk.block(0, y, 0) == STONE).count() as i32
+    }
+
+    #[test]
+    fn only_unsaved_full_chunks_are_queued_and_saved() {
+        let dir = test_dir("queue");
+        let registries = synthetic_registries(&dir.0);
+        let world_dir = dir.0.join("world");
+        let shared = shared(ChunkStorage::new(&world_dir, "minecraft:overworld", registries.clone(), 0, 32), registries.clone());
+        let (edited, untouched, proto) = (ChunkPos::new(0, 0), ChunkPos::new(1, 0), ChunkPos::new(2, 0));
+        {
+            let mut world = shared.world.lock().unwrap();
+            world.slots.insert(edited, Slot::Final(Arc::new(full_chunk(edited, &registries, (0, 0), 3, Vec::new()))));
+            world.slots.insert(untouched, Slot::Final(Arc::new(full_chunk(untouched, &registries, (0, 0), 4, Vec::new()))));
+            world.slots.insert(proto, Slot::Proto { chunk: Box::new(full_chunk(proto, &registries, (0, 0), 5, Vec::new())), decorated: true });
+            world.unsaved.extend([edited, proto, ChunkPos::new(9, 9)]);
+        }
+        assert_eq!(queue_snapshots(&shared, &HashMap::new(), Vec::new()), 1);
+        assert!(shared.world.lock().unwrap().unsaved.is_empty());
+        assert_eq!(queue_snapshots(&shared, &HashMap::new(), Vec::new()), 0);
+        drain(&shared);
+        let reopened = ChunkStorage::new(&world_dir, "minecraft:overworld", registries.clone(), 0, 32);
+        let saved = reopened.load(edited).unwrap().expect("queued chunk saved");
+        assert_eq!(saved.status, ChunkStatus::Full);
+        assert_eq!(column_height(&saved), 3);
+        assert!(reopened.load(untouched).unwrap().is_none());
+        assert!(reopened.load(proto).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_chunk_changed_after_an_autosave_is_saved_again_on_the_next() {
+        let dir = test_dir("again");
+        let registries = synthetic_registries(&dir.0);
+        let shared = shared(ChunkStorage::new(&dir.0, "minecraft:overworld", registries.clone(), 0, 32), registries.clone());
+        let pos = ChunkPos::new(-5, 12);
+        for height in [2, 7] {
+            {
+                let mut world = shared.world.lock().unwrap();
+                world.slots.insert(pos, Slot::Final(Arc::new(full_chunk(pos, &registries, (0, 0), height, Vec::new()))));
+                world.unsaved.insert(pos);
+            }
+            assert_eq!(queue_snapshots(&shared, &HashMap::new(), Vec::new()), 1);
+            drain(&shared);
+            let reopened = ChunkStorage::new(&dir.0, "minecraft:overworld", registries.clone(), 0, 32);
+            assert_eq!(column_height(&reopened.load(pos).unwrap().unwrap()), height);
+        }
+    }
+
+    #[test]
+    fn pending_edits_are_saved_without_copying_the_shared_chunk() {
+        let dir = test_dir("edits");
+        let registries = synthetic_registries(&dir.0);
+        let shared = shared(ChunkStorage::new(&dir.0, "minecraft:overworld", registries.clone(), 0, 32), registries.clone());
+        let pos = ChunkPos::new(0, 0);
+        let sent = Arc::new(full_chunk(pos, &registries, (0, 0), 2, Vec::new()));
+        shared.world.lock().unwrap().slots.insert(pos, Slot::Final(sent.clone()));
+        let edits: HashMap<ChunkPos, Vec<(BlockPos, BlockStateId)>> = HashMap::from([(pos, vec![(BlockPos::new(0, 2, 0), STONE), (BlockPos::new(0, 3, 0), STONE)])]);
+        assert_eq!(queue_snapshots(&shared, &edits, vec![pos]), 1);
+        match shared.world.lock().unwrap().slots.get(&pos) {
+            Some(Slot::Final(chunk)) => assert!(Arc::ptr_eq(chunk, &sent)),
+            _ => panic!("the slot stays final"),
+        }
+        drain(&shared);
+        assert_eq!(column_height(&sent), 2);
+        let reopened = ChunkStorage::new(&dir.0, "minecraft:overworld", registries.clone(), 0, 32);
+        assert_eq!(column_height(&reopened.load(pos).unwrap().unwrap()), 4);
+    }
+
+    #[test]
+    fn the_running_saver_writes_queued_snapshots_without_being_stopped() {
+        let dir = test_dir("wake");
+        let registries = synthetic_registries(&dir.0);
+        let shared = shared(ChunkStorage::new(&dir.0, "minecraft:overworld", registries.clone(), 0, 32), registries.clone());
+        let thread = {
+            let shared = shared.clone();
+            std::thread::spawn(move || saver(&shared))
+        };
+        let pos = ChunkPos::new(3, 3);
+        {
+            let mut world = shared.world.lock().unwrap();
+            world.slots.insert(pos, Slot::Final(Arc::new(full_chunk(pos, &registries, (0, 0), 6, Vec::new()))));
+            world.unsaved.insert(pos);
+        }
+        assert_eq!(queue_snapshots(&shared, &HashMap::new(), Vec::new()), 1);
+        let until = Instant::now() + std::time::Duration::from_secs(20);
+        let saved = loop {
+            let reopened = ChunkStorage::new(&dir.0, "minecraft:overworld", registries.clone(), 0, 32);
+            if let Some(chunk) = reopened.load(pos).unwrap() {
+                break Some(chunk);
+            }
+            if Instant::now() > until {
+                break None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        shared.saver_stop.store(true, Ordering::Relaxed);
+        {
+            let _evicted = shared.evicted.lock().unwrap();
+            shared.evicted_ready.notify_all();
+        }
+        thread.join().unwrap();
+        assert_eq!(column_height(&saved.expect("the saver woke for the snapshot")), 6);
+    }
 }
