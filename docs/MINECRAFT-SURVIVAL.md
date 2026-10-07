@@ -36,7 +36,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 - XP levels, the XP bar and vanilla XP from blocks.
 - Vanilla attack cooldown, crits, sweeps and knockback. Shield blocking and the totem of undying.
 - Vanilla death messages and a Killed By card. A Minecraft death is not counted as an MW2 suicide.
-- MW2 explosives (frag, semtex, C4, claymore, RPG, grenade launcher, killstreak blasts) hurt and push mobs, and a player's kills drop loot and XP. Concussion and flash grenades leave no crater. Crater size follows the blast radius.
+- MW2 explosives (frag, semtex, C4, claymore, RPG, grenade launcher, killstreak blasts) hurt and push mobs, and a player's kills drop loot and XP. Concussion and flash grenades leave no crater. A crater is a vanilla explosion on the Minecraft server with power radius / 72 blocks (a frag about 3.6, TNT 4): blocks break by vanilla blast resistance, so obsidian, water and lava hold and bedrock stays. Each blasted block drops its empty-hand loot with a chance of one in the power (stone gives cobblestone, ores their items), merged into stacks of up to 16, and gives no block XP. TNT a crater reaches is primed, and dropped items in it are hurt and pushed. Craters are saved with the world.
 - A stun (concussion) grenade that hurts a mob slows it like a stunned MW2 player: Slowness IV (0.4x walk speed) for 2 s at the 512-unit edge up to 6 s at point blank. Flash grenades don't slow mobs, as they don't slow players.
 
 ### Mining and placing
@@ -169,7 +169,7 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 - Shield: no knockback to the attacker, axes don't disable it, and MW2 bullets ignore it.
 - The totem plays no animation. Every item has the same use speed.
 - Difficulty is fixed at Normal. Witch potions don't reach the player.
-- MW2 blast damage on mobs is MW2 damage x 0.4 (bullets x 0.2), not vanilla's explosion formula. Killstreak blasts leave no crater. Mobs can't set off claymores. Kills by bot explosives give no XP.
+- MW2 blast damage on mobs is MW2 damage x 0.4 (bullets x 0.2), not vanilla's explosion formula. Killstreak blasts leave no crater. MW2 craters are full spheres (the claymore's cone limits only its damage) and appear a server tick after the MW2 explosion. Mobs can't set off claymores. Kills by bot explosives give no XP.
 - TNT explosions don't hurt mobs or players; only creeper explosions do.
 
 ### Blocks and items

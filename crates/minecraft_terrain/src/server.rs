@@ -676,6 +676,11 @@ impl ServerSim {
         }
     }
 
+    pub fn weapon_blast(&mut self, center: [f64; 3], power: f32) {
+        use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
+        self.level.explode(Explosion { center, radius: power, fire: false, interaction: BlockInteraction::DestroyWithDecay, source: None });
+    }
+
     /// The blasts since the last call, for the client's sound and particles.
     pub fn take_explosions(&mut self) -> Vec<minecraftoss_entities::creeper::CreeperExplosion> {
         std::mem::take(&mut self.explosions)
@@ -1087,6 +1092,7 @@ pub enum Command {
     /// inventory.
     MobAction { hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, infinite: bool },
     MobBlast { hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64>, slow_ticks: i32 },
+    WeaponBlast { center: [f64; 3], power: f32 },
     /// An operation on the player's trading screen.
     Merchant { op: MerchantOp, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, feet: [f64; 3] },
     /// One server tick, with the player's state for it.
@@ -1336,6 +1342,10 @@ impl ServerHandle {
         self.send(Command::MobBlast { hit, damage, center, impact, player, slow_ticks });
     }
 
+    pub fn weapon_blast(&mut self, center: [f64; 3], power: f32) {
+        self.send(Command::WeaponBlast { center, power });
+    }
+
     pub fn throw(&mut self, thrown: crate::thrown::Thrown) {
         self.send(Command::Throw(Box::new(thrown)));
     }
@@ -1427,6 +1437,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.mob_results.push(sim.mob_action(hit, attack, *inventory, selected, infinite));
                 }
                 Command::MobBlast { hit, damage, center, impact, player, slow_ticks } => sim.mob_blast(hit, damage, center, impact, player, slow_ticks),
+                Command::WeaponBlast { center, power } => sim.weapon_blast(center, power),
                 Command::Merchant { op, inventory, selected, feet } => {
                     out.merchant.push(sim.merchant(op, *inventory, selected, feet));
                 }
@@ -3843,6 +3854,78 @@ mod tests {
         server.keep_dropped_contents((3, 200, 3), "minecraft:red_shulker_box", contents);
         assert_eq!(server.items().iter().filter(|i| i.item == "minecraft:red_shulker_box" && i.components.as_deref() == Some(contents)).count(), 2);
         assert_eq!(server.items().iter().filter(|i| i.item == "minecraft:red_shulker_box").count(), 2);
+    }
+
+    fn dirt_box(server: &mut ServerSim, scene: &mut HandcraftedScene, xz: std::ops::RangeInclusive<i32>, ys: std::ops::RangeInclusive<i32>) -> Vec<BlockPos> {
+        let mut placed = Vec::new();
+        for y in ys {
+            for x in xz.clone() {
+                for z in xz.clone() {
+                    place(server, scene, (x, y, z), Block::new("minecraft:dirt"));
+                    placed.push((x, y, z));
+                }
+            }
+        }
+        placed
+    }
+
+    #[test]
+    fn an_mw2_blast_breaks_blocks_by_vanilla_resistance() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        dirt_box(&mut server, &mut scene, 5..=11, 199..=199);
+        place(&mut server, &mut scene, (8, 200, 9), Block::new("minecraft:obsidian"));
+        place(&mut server, &mut scene, (8, 199, 10), Block::new("minecraft:obsidian"));
+        server.tick();
+        server.take_changes();
+        server.weapon_blast([8.5, 200.2, 8.5], 256.0 / 72.0);
+        server.tick();
+        let changes = server.take_changes();
+        assert!(changes.contains(&((8, 199, 8), None)), "{changes:?}");
+        assert!(!changes.iter().any(|(pos, _)| *pos == (8, 200, 9) || *pos == (8, 199, 10)), "{changes:?}");
+    }
+
+    #[test]
+    fn an_mw2_blast_drops_one_in_its_power_of_the_blocks_it_breaks() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let dirt = dirt_box(&mut server, &mut scene, 4..=12, 197..=199);
+        server.tick();
+        server.take_changes();
+        let before = picked(&server, "minecraft:dirt");
+        server.weapon_blast([8.5, 200.2, 8.5], 256.0 / 72.0);
+        server.tick();
+        let changes = server.take_changes();
+        let broken = changes.iter().filter(|(pos, block)| block.is_none() && dirt.contains(pos)).count() as i32;
+        let dropped = picked(&server, "minecraft:dirt") - before;
+        assert!(broken > 8, "{broken}");
+        assert!(0 < dropped && dropped < broken, "{dropped} of {broken}");
+        assert!(server.orbs().is_empty());
+    }
+
+    #[test]
+    fn an_mw2_blast_primes_tnt_it_reaches() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (9, 199, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (9, 200, 8), Block::new("minecraft:tnt"));
+        server.tick();
+        server.take_changes();
+        assert!(server.primed_tnt().is_empty());
+        server.weapon_blast([8.5, 200.5, 8.5], 3.0);
+        server.tick();
+        assert!(server.take_changes().contains(&((9, 200, 8), None)));
+        assert_eq!(server.primed_tnt().len(), 1);
+    }
+
+    #[test]
+    fn an_mw2_blast_sent_to_the_server_thread_comes_back_as_block_changes() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        dirt_box(&mut server, &mut scene, 7..=9, 199..=199);
+        server.tick();
+        server.take_changes();
+        let mut handle = ServerHandle::spawn(server);
+        handle.weapon_blast([8.5, 200.2, 8.5], 3.0);
+        handle.wait_idle();
+        let blown = handle.poll().iter().flat_map(|out| out.changes.iter()).any(|(pos, block)| *pos == (8, 199, 8) && block.is_none());
+        assert!(blown, "the output carries the crater");
     }
 
     #[test]

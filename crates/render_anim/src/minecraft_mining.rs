@@ -2,9 +2,7 @@
 //! strike the way a tool does in survival: each adds progress in proportion
 //! to the damage the bullet would do and in inverse proportion to the
 //! block's hardness, the destroy stages show it, and at full
-//! progress the block breaks with MinecraftOSS's break particles. Explosions
-//! are vanilla TNT: MinecraftOSS's `ServerExplosion` rays pick the blocks,
-//! stopped by each block's explosion resistance.
+//! progress the block breaks with MinecraftOSS's break particles.
 use std::collections::HashMap;
 
 use minecraft_terrain::block_particles::BlockParticles;
@@ -30,7 +28,6 @@ pub(crate) struct Mining {
     progress: HashMap<BlockPos, (f32, f64)>,
     particles: Option<BlockParticles>,
     tick_clock: f64,
-    rng: u64,
     models: HashMap<BlockStateId, Option<Vec<(ResolvedModel, u32)>>>,
 }
 
@@ -40,7 +37,6 @@ impl Default for Mining {
             progress: HashMap::new(),
             particles: None,
             tick_clock: 0.0,
-            rng: 0x2545_f491_4f6c_dd1d,
             models: HashMap::new(),
         }
     }
@@ -56,13 +52,6 @@ pub(crate) struct WorldRefs<'a> {
 }
 
 impl Mining {
-    fn next_f32(&mut self) -> f32 {
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 7;
-        self.rng ^= self.rng << 17;
-        ((self.rng >> 40) as u32 as f32) / ((1u32 << 24) as f32)
-    }
-
     /// Applies this tick's shots and explosions; the blocks they broke, each
     /// with the power of the blast that broke it.
     pub(crate) fn apply(
@@ -103,14 +92,6 @@ impl Mining {
                         gone.insert(pos);
                     }
                 }
-                sim::voxel::VoxelEvent::Explosion { center, power } => {
-                    for pos in self.exploded_positions(world, center, power) {
-                        if hardness(world, pos).is_some() && gone.insert(pos) {
-                            self.progress.remove(&pos);
-                            broken.push((pos, Some(power)));
-                        }
-                    }
-                }
                 sim::voxel::VoxelEvent::Ray { from, to, damage } => {
                     // Blocks without collision the bullet passed through.
                     for pos in blocks_on_segment(from, to) {
@@ -135,7 +116,7 @@ impl Mining {
                         }
                     }
                 }
-                sim::voxel::VoxelEvent::MobShot { .. } | sim::voxel::VoxelEvent::MobBlast { .. } => {}
+                sim::voxel::VoxelEvent::Explosion { .. } | sim::voxel::VoxelEvent::MobShot { .. } | sim::voxel::VoxelEvent::MobBlast { .. } => {}
             }
         }
         // No crack outlives its block, however it went.
@@ -158,50 +139,6 @@ impl Mining {
         world.stream.record_edits(world.scene, &positions);
         world.stream.mark_edited(world.scene, &positions);
         out
-    }
-
-    /// `ServerExplosion.calculateExplodedPositions`: rays from the centre
-    /// through the surface of a 16³ grid, each losing strength with distance
-    /// and with the explosion resistance of the blocks it passes.
-    fn exploded_positions(&mut self, world: &WorldRefs<'_>, center: [f64; 3], radius: f32) -> Vec<BlockPos> {
-        let range = world.stream.states.vertical_range();
-        let mut seen = std::collections::HashSet::new();
-        let mut inserted = Vec::new();
-        for xx in 0..16 {
-            for yy in 0..16 {
-                for zz in 0..16 {
-                    if !(xx == 0 || xx == 15 || yy == 0 || yy == 15 || zz == 0 || zz == 15) {
-                        continue;
-                    }
-                    let unit = |i: i32| f64::from(i as f32 / 15.0f32 * 2.0f32 - 1.0f32);
-                    let (mut xd, mut yd, mut zd) = (unit(xx), unit(yy), unit(zz));
-                    let d = (xd * xd + yd * yd + zd * zd).sqrt();
-                    xd /= d;
-                    yd /= d;
-                    zd /= d;
-                    let mut remaining = radius * (0.7f32 + self.next_f32() * 0.6f32);
-                    let [mut xp, mut yp, mut zp] = center;
-                    let step = f64::from(0.3f32);
-                    while remaining > 0.0 {
-                        let pos = (xp.floor() as i32, yp.floor() as i32, zp.floor() as i32);
-                        if !range.contains(&pos.1) {
-                            break;
-                        }
-                        if let Some(resistance) = explosion_resistance(world, pos) {
-                            remaining -= (resistance + 0.3f32) * 0.3f32;
-                        }
-                        if remaining > 0.0 && seen.insert(pos) {
-                            inserted.push(pos);
-                        }
-                        xp += xd * step;
-                        yp += yd * step;
-                        zp += zd * step;
-                        remaining -= 0.225_000_01_f32;
-                    }
-                }
-            }
-        }
-        inserted
     }
 
     pub(crate) fn burst(&mut self, packs: &PackStack, scene: &HandcraftedScene, atlas: &Atlas, pos: BlockPos, block: &minecraft_terrain::scene::Block) {
@@ -334,18 +271,6 @@ fn hardness(world: &WorldRefs<'_>, pos: BlockPos) -> Option<f32> {
     let state = world.stream.states.state_of(block)?;
     let speed = world.registries.blocks.state(state).destroy_speed;
     (speed >= 0.0).then_some(speed)
-}
-
-/// `ExplosionDamageCalculator.getBlockExplosionResistance`: none for air.
-fn explosion_resistance(world: &WorldRefs<'_>, pos: BlockPos) -> Option<f32> {
-    let block = Scene::block(&*world.scene, pos)?;
-    let state = world.stream.states.state_of(block)?;
-    let blocks = &world.registries.blocks;
-    if blocks.is_air(state) {
-        return None;
-    }
-    let fluid = if matches!(block.id.path.as_str(), "water" | "lava") { 100.0f32 } else { 0.0 };
-    Some(blocks.state(state).explosion_resistance.max(fluid))
 }
 
 /// The ten destroy stages side by side, 16 pixels each.

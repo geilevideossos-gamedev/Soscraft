@@ -1219,6 +1219,11 @@ fn update(
                 _ => {}
             }
         }
+        for event in &events {
+            if let sim::voxel::VoxelEvent::Explosion { center, power } = *event {
+                entities.weapon_blast(center, power);
+            }
+        }
     }
     // Vanilla's block sounds: a hit for each bullet into a block, then the
     // break of each block broken (`SoundType` volume and pitch as

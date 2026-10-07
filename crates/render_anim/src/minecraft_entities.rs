@@ -515,6 +515,10 @@ impl Entities {
         self.server.mob_blast(hit, damage * BLAST_HEALTH_SCALE, center, impact, by_player.then_some(PLAYER), slow_ticks);
     }
 
+    pub(crate) fn weapon_blast(&mut self, center: [f64; 3], power: f32) {
+        self.server.weapon_blast(center, power);
+    }
+
     /// Sends a server tick when one is due and takes what came back: block
     /// changes to show, and mob hits on the player in MW2 damage.
     pub(crate) fn tick(
