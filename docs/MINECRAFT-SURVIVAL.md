@@ -1,6 +1,6 @@
 # Minecraft survival: state, limitations, testing
 
-State of branch `minecraft-survival` at 622f915 (2026-10-07). It is 90 commits ahead of upstream `main` (f608f85) and 0 behind. Rules and goal: [../CLAUDE.md](../CLAUDE.md).
+State of branch `minecraft-survival` after round 6 (2026-10-08). It is ahead of upstream `main` (f608f85) and 0 behind. Rules and goal: [../CLAUDE.md](../CLAUDE.md).
 
 ## Implemented
 
@@ -16,6 +16,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 - The break-crack overlay follows the block's real model.
 - Block-entity models: chests (double, trapped, ender, copper), shulker boxes, banners, heads, bell, conduit, decorated pot and books. They are used in the world, as icons, as dropped items and as held items.
 - Falling blocks and primed TNT are meshed like terrain, with no flicker.
+- Water like vanilla: seagrass, kelp, bubble columns and waterlogged blocks hold water, there are no faces between water cells, and water is single-sided apart from the vanilla backward surface.
 - XP orbs and the burning overlay with two flames.
 - Weather from `IW4L_MINECRAFT_WEATHER`: rain darkens the sky and puts out fire.
 
@@ -39,6 +40,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 ### Mining and placing
 - [upstream] Shooting and knifing breaks blocks by hardness, broken blocks drop items, and grenades blow craters.
 - The hand ray follows the MW2 crosshair in every stance. Items that are not blocks are never placed.
+- Torches (also soul, copper and redstone) hang on walls when a side face is clicked, and pop off when their support goes.
 - Vanilla placement states: beds, banners, signs, heads, bells, lecterns, pots, shulker boxes, ladders, vines (one face per use, added to a vine already there), levers, buttons, lanterns, tripwire hooks, shelf mushrooms and glow lichen (the first looking direction with a support), lily pads and frogspawn (on the water source the crosshair meets). Chests join into double chests.
 - Blocks are only placed where vanilla `canSurvive` allows, on the client and again on the server: sugar cane needs water, a waterlogged block or frosted ice beside its ground, cactus a free side, flowers and saplings soil, torches a floor that holds their centre, carpets and cakes something below, rails a rigid top. A refused block stays in the hotbar; one the server refuses comes back as its item.
 - Doors, trapdoors, fence gates, levers, buttons and note blocks.
@@ -55,7 +57,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 - Tooltips with MW2 gun stats and Minecraft tool stats.
 
 ### Items
-- Eating, drinking and potions. Glass bottles, buckets (water, lava, powder snow), cauldrons and waterlogging.
+- Eating, drinking and potions, with the vanilla first-person eat and drink animation, crumbs, sounds and burp. Food only counts when finished; letting go cancels. Glass bottles, buckets (water, lava, powder snow), cauldrons and waterlogging.
 - Flint and steel and fire charges light fire, campfires and candles, and prime TNT.
 - Snowballs, eggs and ender pearls. Sweet and glow berries.
 - Campfire cooking: 4 slots, 30 s per item, nothing cooks while unlit.
@@ -98,11 +100,42 @@ The MW2 netcode is host-authoritative and goes through the `iw4l-master` QUIC re
 
 ### Persistence and multiplayer
 - No Minecraft multiplayer, and the player itself is not saved (see above).
-- Overworld only. There is no Nether travel. It would need:
-  - a shared world folder and a runtime dimension switch;
-  - the 80-tick portal timer, x8 coordinate scaling and linking to a return portal;
-  - the Nether sky and fog;
-  - Nether mobs.
+- Overworld only. There is no Nether or End travel yet (see the roadmap below).
+
+## Roadmap: dimensions
+
+The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate split, dimension switch and Nether travel, multiplayer, then the End. Everything saved or networked must handle all three dimensions. The 26.3 folder layout is `dimensions/minecraft/<overworld|the_nether|the_end>/`; 26.3 no longer uses `DIM-1` or `DIM1`.
+
+### Nether travel (about 3.5-4.5 days after the crate split)
+- **Already there:** portals light, shimmer and break. The Nether terrain generator exists.
+- **Runtime dimension switch**, in this order:
+  1. save the old level and drop it;
+  2. load the new level behind the loading screen;
+  3. hold the player until the arrival chunk has collision;
+  4. teleport.
+  It also needs the one-time loading split from the per-level parts.
+- **Portal travel:**
+  - the 80-tick timer in the portal, with a cooldown;
+  - x8 / ÷8 coordinate scaling and the world-border clamp;
+  - the vanilla portal search (POI radius 16 in the Nether, 128 in the Overworld), building a new portal when none is found, and the vanilla exit position and turn.
+- **Presentation:** the Nether sky and fog (no clouds), the portal trigger and travel sounds and the purple overlay. A bed explodes in the Nether, and respawning there sends you to the Overworld spawn.
+- **Nether mobs:** ghast, piglin, zombified piglin, hoglin, magma cube, blaze, wither skeleton, strider.
+
+### The End (about 4-6 weeks after the dimension switch, mostly the dragon)
+- **Already generated by MinecraftOSS:**
+  - End terrain and outer islands;
+  - obsidian spikes with iron-bar cages and end crystals;
+  - small islands and chorus plants;
+  - end cities with loot, shulkers and elytra item frames;
+  - strongholds (ring placement, a portal room with 12 frames that each get an eye 10% of the time, a silverfish spawner).
+- **Missing:**
+  - eyes of ender: throwing one toward the nearest stronghold, inserting it into a frame, and filling the portal once all 12 frames have eyes;
+  - end portal travel, the End spawn platform at 100, 50, 0, the End sky, and the return through the exit portal;
+  - the Ender Dragon fight: the phase machine, multipart hitboxes for MW2 bullets, crystal healing, the boss bar, the exit podium, the egg and the XP;
+  - the 20 end gateways at radius 96 and gateway teleports;
+  - simulated end crystals, shulkers and their bullets;
+  - elytra flight on MW2 movement;
+  - chorus fruit teleport.
 
 ### Rendering
 - Translucent faces are not sorted by camera distance within a 16-block section. Inside one block, smaller faces are drawn first.

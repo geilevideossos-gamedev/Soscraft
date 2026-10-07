@@ -8,10 +8,23 @@ Play online with 2-4 friends in one persistent Minecraft world, with MW2 weapons
 
 ## Roadmap
 
-1. Multiplayer and saving
+1. **Multiplayer, saving and dimensions**
+   1. Persistent world for one player. Step 1 is done: world folder, seed, chunks, mobs and items. Next come containers as block entities, then the player file.
+   2. Crate split. The headless Minecraft game state moves out of `render_anim` into its own crate, with separate per-level and per-player state.
+   3. Dimension switch and Nether travel. That means the portal timer, x8 coordinate scaling, linked return portals, the Nether sky and Nether mobs.
+   4. Multiplayer with 2-4 friends: the host owns the world and the friends join through our MW2 relay.
+   5. The End. That means strongholds and end portal frames, eyes of ender, end portal travel, the Ender Dragon fight, end gateways and end cities.
 2. Finish survival
 3. One Elden Ring boss as a proof of concept
 4. Skate 3
+
+**Why the crate split comes before the dimension switch:**
+- Both rewrite the same code (`load()`, `stop()`, `Entities`, `Runtime`).
+- Travel needs the split's core seam: keep the player, swap the level.
+- Multiplayer needs several dimensions loaded at once, because friends can be in different dimensions.
+- Doing the switch inside `render_anim` first would mean writing it twice.
+
+**All three dimensions:** everything built for saving and multiplayer must handle all three, with a server that can run several levels at once. The world folder uses the vanilla 26.3 layout. 26.3 no longer uses `DIM-1` and `DIM1` (checked with javap: `DimensionType.getStorageFolder`). Every dimension lives in `dimensions/minecraft/<overworld|the_nether|the_end>/` with `region`, `entities`, `poi` and `data`. `level.dat` and the global `data/` folder sit at the world root, and player files go in `players/data/<uuid>.dat`.
 
 ## Rules
 
@@ -34,7 +47,7 @@ Play online with 2-4 friends in one persistent Minecraft world, with MW2 weapons
 - **Test kit:** `IW4L_MINECRAFT_KIT=` in the `.env` next to the exe.
   - At most 27 stacks, because it only fills the 27 backpack slots.
   - Always give the kit line in its own code block so it isn't cut when copied.
-- **Leave alone:** the untracked `blocks.txt` and `props.txt`, and the screenshot folders (`screenshots-*/`, `ac0c791/`).
+- **Leave alone:** the untracked `blocks.txt` and `props.txt`, and the screenshot folders (`screenshots-*/`, `ac0c791/`, `scrennshots/`).
 - **Tests:** the fork's test policy is the owner's. Don't trim tests because of upstream's `approved_tests` rule.
 - **How the owner tests:** they play the release build and send numbered screenshots. Every change therefore ends with exact in-game test steps and the kit line they need.
 
