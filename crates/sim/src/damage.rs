@@ -38,6 +38,7 @@ pub enum DamageRefusal {
     MissingTarget,
     TargetNotAlive,
     StaleLife,
+    Invulnerable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -444,7 +445,7 @@ pub(crate) fn apply_script_blast(
         let Some(meta) = world.client_meta(target) else {
             continue;
         };
-        if meta.lifecycle != ClientLifecycle::Alive {
+        if meta.lifecycle != ClientLifecycle::Alive || minecraft_invulnerable(world, target) {
             continue;
         }
         let victim_life = meta.life_sequence;
@@ -536,7 +537,7 @@ pub(crate) fn apply_script_hit(world: &mut FrameWorld, tick: Tick, hit: &crate::
     let Some(meta) = world.client_meta(target) else {
         return;
     };
-    if meta.lifecycle != ClientLifecycle::Alive {
+    if meta.lifecycle != ClientLifecycle::Alive || minecraft_invulnerable(world, target) {
         return;
     }
     let victim_life = meta.life_sequence;
@@ -903,6 +904,9 @@ pub(crate) fn apply_damage_attempt(
     if meta.life_sequence != intent.target_life {
         return DamageOutcome::Refused(DamageRefusal::StaleLife);
     }
+    if minecraft_invulnerable(world, intent.target) {
+        return DamageOutcome::Refused(DamageRefusal::Invulnerable);
+    }
     let mut amount = intent.amount;
     if intent.hitloc != crate::shield::HITLOC
         && !matches!(intent.source, crate::DamageSource::Melee)
@@ -917,6 +921,12 @@ pub(crate) fn apply_damage_attempt(
         return DamageOutcome::Refused(DamageRefusal::NonPositive);
     }
     crate::script_player::damage(world, tick, intent, amount)
+}
+
+fn minecraft_invulnerable(world: &FrameWorld, target: ClientId) -> bool {
+    world
+        .player(target)
+        .is_some_and(|ps| ps.pm_flags & playerstate_iw4::pm_flags::MC_INVULNERABLE != 0)
 }
 
 pub(crate) fn play_death(
@@ -1184,5 +1194,41 @@ mod tests {
         assert!(attempt.splash);
         let queued = crate::voxel::take_player_damage();
         assert!(queued.iter().any(|d| d.client == thrower.0 && d.amount == 35));
+    }
+
+    fn knifed(flags: u32) -> (DamageOutcome, i32) {
+        let mut sim = crate::SimWorld::default();
+        let target = ClientId(2);
+        let mut world = sim.frame();
+        let ps = world.ensure_player(target);
+        ps.pm_flags = flags;
+        ps.health = 100;
+        let meta = world.client_meta_mut(target);
+        meta.lifecycle = ClientLifecycle::Alive;
+        meta.life_sequence = LifeSequence(4);
+        let attempt = DamageAttempt {
+            splash: false,
+            source: DamageSource::Melee,
+            pellet: PelletId(0),
+            attacker: ClientId(3),
+            attacker_life: LifeSequence(1),
+            target,
+            target_life: LifeSequence(4),
+            weapon: 0,
+            amount: 40,
+            killcam_entity_start_time: 0,
+            inflictor_origin: None,
+            hitloc: 0,
+        };
+        let outcome = apply_damage_attempt(&mut world, Tick(1), &attempt);
+        (outcome, world.player(target).map_or(0, |ps| ps.health))
+    }
+
+    #[test]
+    fn mw2_damage_is_refused_for_an_invulnerable_minecraft_player() {
+        let flags = playerstate_iw4::pm_flags::MC_INVULNERABLE | playerstate_iw4::pm_flags::SPRINTING;
+        assert_eq!(knifed(flags), (DamageOutcome::Refused(DamageRefusal::Invulnerable), 100));
+        let (outcome, _) = knifed(playerstate_iw4::pm_flags::SPRINTING);
+        assert!(!matches!(outcome, DamageOutcome::Refused(_)), "{outcome:?}");
     }
 }

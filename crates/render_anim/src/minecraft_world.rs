@@ -141,6 +141,7 @@ struct Runtime {
     inventory_ui: crate::minecraft_inventory::InventoryUi,
     entities: Option<crate::minecraft_entities::Entities>,
     survival: crate::minecraft_survival::Survival,
+    player_mode: minecraft_terrain::game_mode::PlayerMode,
     containers: minecraft_terrain::containers::Containers,
     /// Shape id of each block state already seen.
     shapes: HashMap<BlockStateId, u16>,
@@ -473,6 +474,7 @@ fn update(
                     save.started(runtime.day.ticks);
                 }
                 runtime.autosave_ticks = 0;
+                runtime.player_mode = starting_game_mode();
                 runtime.environment_accumulator = 0.0;
                 runtime.environment_primed = false;
                 runtime.light = Some(SkyLight::streamed());
@@ -523,6 +525,7 @@ fn update(
         minimap,
         steps,
         survival,
+        player_mode,
         containers,
         fire_frames,
         atlas_animation,
@@ -592,6 +595,9 @@ fn update(
     }
     let keep_inventory = world.game_rules.keep_inventory();
     survival.rules = crate::minecraft_survival::SurvivalRules::of(&world.game_rules, world.difficulty);
+    survival.set_game_mode(player_mode);
+    authority.0.set_minecraft_abilities(local.0, ability_bits(player_mode));
+    ui.game_mode = ui_game_mode(player_mode.mode);
     death_watch.observe(in_world, died, survival.status.experience_level, keep_inventory);
     if dead {
         if keep_inventory || death_watch.switched_teams() {
@@ -1414,6 +1420,9 @@ fn update(
         let player = crate::minecraft_entities::PlayerView {
             feet,
             alive,
+            attackable: alive && player_mode.attackable_by_mobs(),
+            spectator: !alive || player_mode.mode == minecraftoss_player::GameMode::Spectator,
+            picks_up: alive && player_mode.picks_up(),
             health: survival.status.health,
             yaw: mc_yaw,
             pitch: ps.viewangles[0],
@@ -1487,7 +1496,7 @@ fn update(
             }
         }
         let armor = crate::minecraft_survival::armor(&entities.inventory);
-        for (amount, from, toward, cause) in hits {
+        for (amount, from, toward, cause) in hits.into_iter().filter(|_| !player_mode.invulnerable()) {
             let blocked = hand.blocking.filter(|blocking| blocking.raised()).map_or(0.0, |_| crate::minecraft_offhand::blocked_damage(mc_yaw, toward, amount));
             if let Some(blocking) = hand.blocking.filter(|_| blocked > 0.0) {
                 if entities.inventory.wear_tool(blocking.slot, crate::minecraft_offhand::shield_wear(blocked)) {
@@ -2239,6 +2248,32 @@ fn obstacles(
     });
     out.extend(entities.boxes().into_iter().map(|(_, b)| b));
     out
+}
+
+fn starting_game_mode() -> minecraft_terrain::game_mode::PlayerMode {
+    use minecraft_terrain::game_mode::{GameMode, PlayerMode, from_id, parse};
+    let chosen = std::env::var("IW4L_MINECRAFT_GAMEMODE").ok().and_then(|name| {
+        let name = name.trim().to_ascii_lowercase();
+        parse(&name).or_else(|| name.parse().ok().and_then(from_id))
+    });
+    PlayerMode::new(chosen.unwrap_or(GameMode::Survival))
+}
+
+fn ability_bits(mode: &minecraft_terrain::game_mode::PlayerMode) -> u32 {
+    use playerstate_iw4::pm_flags::{MC_INVULNERABLE, MC_MAY_FLY, MC_NOCLIP};
+    [(mode.abilities.invulnerable, MC_INVULNERABLE), (mode.abilities.may_fly, MC_MAY_FLY), (mode.noclip(), MC_NOCLIP)]
+        .into_iter()
+        .filter(|&(on, _)| on)
+        .fold(0, |bits, (_, bit)| bits | bit)
+}
+
+fn ui_game_mode(mode: minecraftoss_player::GameMode) -> frame::McGameMode {
+    match mode {
+        minecraftoss_player::GameMode::Survival => frame::McGameMode::Survival,
+        minecraftoss_player::GameMode::Creative => frame::McGameMode::Creative,
+        minecraftoss_player::GameMode::Adventure => frame::McGameMode::Adventure,
+        minecraftoss_player::GameMode::Spectator => frame::McGameMode::Spectator,
+    }
 }
 
 fn autosave(world: &mut Loaded, day_ticks: f64) {

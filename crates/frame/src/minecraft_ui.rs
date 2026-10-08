@@ -184,9 +184,25 @@ pub struct MinecraftUi {
     /// north-west and south-east corners.
     pub minimap: Option<(Handle<Image>, [f32; 2], [f32; 2])>,
     pub vitals: Option<McVitals>,
+    pub game_mode: McGameMode,
     pub fire_frames: Option<(Handle<Image>, u32)>,
     pub killed_by: Option<(u32, String)>,
     pub chat: crate::McChat,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum McGameMode {
+    #[default]
+    Survival,
+    Creative,
+    Adventure,
+    Spectator,
+}
+
+impl McGameMode {
+    pub const fn shows_vitals(self) -> bool {
+        matches!(self, Self::Survival | Self::Adventure)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

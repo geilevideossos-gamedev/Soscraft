@@ -287,6 +287,10 @@ impl SimWorld {
         self.frame().set_sprint_blocked(id, blocked)
     }
 
+    pub fn set_minecraft_abilities(&mut self, id: ClientId, bits: u32) -> bool {
+        self.frame().set_minecraft_abilities(id, bits)
+    }
+
     pub fn set_viewangles(&mut self, id: ClientId, viewangles: [f32; 3]) -> bool {
         self.frame().set_viewangles(id, viewangles)
     }

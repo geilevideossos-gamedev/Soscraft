@@ -177,6 +177,14 @@ pub mod pm_flags {
     pub const SPRINT_BLOCKED: u32 = 0x0002_0000;
 
     pub const LAST_STAND: u32 = 0x0040_0000;
+
+    pub const MC_INVULNERABLE: u32 = 0x1000_0000;
+
+    pub const MC_MAY_FLY: u32 = 0x2000_0000;
+
+    pub const MC_NOCLIP: u32 = 0x4000_0000;
+
+    pub const MC_FLYING: u32 = 0x8000_0000;
 }
 
 pub mod weap_flags {

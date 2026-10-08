@@ -112,7 +112,7 @@ pub(crate) fn draw_hud(
     for &(stack, x, y) in &items {
         p.decorations(ui, stack, [x, y], None);
     }
-    if let Some(vitals) = ui.vitals.as_ref() {
+    if let Some(vitals) = ui.vitals.as_ref().filter(|_| ui.game_mode.shows_vitals()) {
         let left = cx - 91;
         let right = cx + 91;
         let line = h - 39;
@@ -187,7 +187,8 @@ pub(crate) fn draw_hud(
         let color = (name_color(selected) & 0x00ff_ffff) | (alpha << 24);
         let italic = selected.is_some_and(|stack| stack.named);
         let x = (p.space.width - p.width(name)) / 2;
-        p.styled_text(false, name, x, h - 59, color, true, italic);
+        let y = if ui.game_mode.shows_vitals() { h - 59 } else { h - 45 };
+        p.styled_text(false, name, x, y, color, true, italic);
     }
 }
 

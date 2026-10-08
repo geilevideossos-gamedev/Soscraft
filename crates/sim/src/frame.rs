@@ -432,6 +432,22 @@ impl FrameWorld<'_> {
         true
     }
 
+    pub fn set_minecraft_abilities(&mut self, id: ClientId, bits: u32) -> bool {
+        use playerstate_iw4::pm_flags::{MC_FLYING, MC_INVULNERABLE, MC_MAY_FLY, MC_NOCLIP};
+        let Some(ps) = self.player_mut(id) else {
+            return false;
+        };
+        let held = MC_INVULNERABLE | MC_MAY_FLY | MC_NOCLIP;
+        ps.pm_flags = (ps.pm_flags & !held) | (bits & held);
+        if bits & MC_MAY_FLY == 0 {
+            ps.pm_flags &= !MC_FLYING;
+        }
+        if bits & MC_NOCLIP != 0 {
+            ps.pm_flags |= MC_FLYING;
+        }
+        true
+    }
+
     pub fn set_viewangles(&mut self, id: ClientId, viewangles: [f32; 3]) -> bool {
         let Some(ps) = self.player_mut(id) else {
             return false;
@@ -1067,4 +1083,38 @@ fn begin_script_movers_rotate_velocity_supplied(
         }
     }
     n
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::world::ClientId;
+    use playerstate_iw4::pm_flags::{
+        MC_FLYING, MC_INVULNERABLE, MC_MAY_FLY, MC_NOCLIP, SPRINT_BLOCKED,
+    };
+
+    fn flags(sim: &mut crate::SimWorld, id: ClientId) -> u32 {
+        sim.frame().player(id).map_or(0, |ps| ps.pm_flags)
+    }
+
+    #[test]
+    fn minecraft_abilities_replace_their_bits_and_flying_needs_may_fly() {
+        let mut sim = crate::SimWorld::default();
+        let id = ClientId(1);
+        assert!(!sim.set_minecraft_abilities(id, MC_INVULNERABLE));
+        sim.frame().ensure_player(id).pm_flags = SPRINT_BLOCKED | MC_FLYING;
+        assert!(sim.set_minecraft_abilities(id, MC_INVULNERABLE | MC_MAY_FLY));
+        assert_eq!(
+            flags(&mut sim, id),
+            SPRINT_BLOCKED | MC_FLYING | MC_INVULNERABLE | MC_MAY_FLY
+        );
+        assert!(sim.set_minecraft_abilities(id, 0));
+        assert_eq!(flags(&mut sim, id), SPRINT_BLOCKED);
+        assert!(sim.set_minecraft_abilities(id, MC_INVULNERABLE | MC_MAY_FLY | MC_NOCLIP));
+        assert_eq!(
+            flags(&mut sim, id),
+            SPRINT_BLOCKED | MC_FLYING | MC_INVULNERABLE | MC_MAY_FLY | MC_NOCLIP
+        );
+        assert!(sim.set_minecraft_abilities(id, MC_FLYING));
+        assert_eq!(flags(&mut sim, id), SPRINT_BLOCKED);
+    }
 }

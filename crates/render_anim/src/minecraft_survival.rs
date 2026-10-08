@@ -112,6 +112,9 @@ pub(crate) struct Survival {
     combat: CombatTracker,
     climbable: Option<FallLocation>,
     in_water: bool,
+    invulnerable: bool,
+    creative: bool,
+    may_fly: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -153,6 +156,9 @@ impl Survival {
         *self = Self {
             blocked_sprint: self.blocked_sprint,
             rules: self.rules,
+            invulnerable: self.invulnerable,
+            creative: self.creative,
+            may_fly: self.may_fly,
             ..Self::default()
         };
     }
@@ -165,6 +171,16 @@ impl Survival {
         self.status.experience_level = level;
         self.status.experience_progress = progress;
         self.status.total_experience = total;
+    }
+
+    pub(crate) fn set_game_mode(&mut self, mode: &minecraft_terrain::game_mode::PlayerMode) {
+        self.invulnerable = mode.invulnerable();
+        self.creative = mode.mode == GameMode::Creative;
+        self.may_fly = mode.abilities.may_fly;
+    }
+
+    fn food_mode(&self) -> GameMode {
+        if self.creative { GameMode::Creative } else { GameMode::Survival }
     }
 
     pub(crate) fn sprint_change(&mut self, blocked: bool) -> Option<bool> {
@@ -192,7 +208,7 @@ impl Survival {
             self.display_health = self.last_health;
             return;
         };
-        if health < synced {
+        if health < synced && !self.invulnerable {
             let mut lost = (synced - health) as f32 / scale;
             let absorbed = lost.min(self.status.absorption);
             self.status.absorption -= absorbed;
@@ -209,6 +225,9 @@ impl Survival {
         self.combat.tick(self.tick);
         let before = self.status.health;
         self.status.tick_effects();
+        if self.invulnerable {
+            self.status.health = self.status.health.max(before);
+        }
         self.record(before, DamageCause::Magic, 0.0);
         if let Some(last) = self.last_feet {
             let d: [f64; 3] = std::array::from_fn(|k| motion.feet[k] - last[k]);
@@ -243,8 +262,14 @@ impl Survival {
         self.jumping = motion.jumping;
         let breath = self.breathe(motion.eye_in_water);
         let before = self.status.health;
+        if self.invulnerable {
+            self.status.food.exhaustion = 0.0;
+        }
         self.status
             .tick_with_rules(self.rules.natural_regeneration, self.rules.difficulty, self.tick);
+        if self.invulnerable {
+            self.status.health = self.status.health.max(before);
+        }
         self.record(before, DamageCause::Starve, 0.0);
         self.update_blink();
         breath
@@ -253,14 +278,14 @@ impl Survival {
     pub(crate) fn breathe(&mut self, eye_in_water: bool) -> Breath {
         self.eye_in_water = eye_in_water;
         let before = self.status.health;
-        let drowned = if eye_in_water && !self.rules.drowning_damage {
+        let drowned = if eye_in_water && !self.rules.drowning_damage && !self.invulnerable {
             self.status.air -= 1;
             if self.status.air <= -20 {
                 self.status.air = 0;
             }
             false
         } else {
-            self.status.tick_air(eye_in_water, false)
+            self.status.tick_air(eye_in_water, self.invulnerable)
         };
         self.record(before, DamageCause::Drown, 0.0);
         let (air, max) = (
@@ -289,7 +314,7 @@ impl Survival {
     }
 
     pub(crate) fn fall(&mut self, distance: f64, landed_on: Option<&str>, crouching: bool) -> i32 {
-        let damage = if self.rules.fall_damage {
+        let damage = if self.rules.fall_damage && !self.invulnerable {
             landing_damage(distance, landed_on, crouching)
         } else {
             0
@@ -411,6 +436,9 @@ impl Survival {
                 BlockEffect::ClearFreeze => {}
             }
         }
+        if self.invulnerable {
+            self.fire_ticks = self.fire_ticks.min(1);
+        }
         if motion.in_rain {
             self.fire_ticks = self.fire_ticks.min(0);
         }
@@ -436,6 +464,9 @@ impl Survival {
         random: &mut impl FnMut() -> f32,
         heard: &mut Vec<PlayerSound>,
     ) -> bool {
+        if self.invulnerable {
+            return false;
+        }
         if hazard.is_fire() && (self.status.effect(EffectKind::FireResistance).is_some() || !self.rules.fire_damage) {
             return false;
         }
@@ -469,7 +500,7 @@ impl Survival {
         from: Option<[f64; 3]>,
         cause: DamageCause,
     ) -> bool {
-        if !self.rules.allows(cause) {
+        if !self.rules.allows(cause) || (self.invulnerable && cause != DamageCause::Kill) {
             return false;
         }
         let before = self.status.health;
@@ -540,7 +571,7 @@ impl Survival {
                     .add_effect(EffectKind::Resistance, ticks, if strong { 3 } else { 2 });
             }
             "healing" => self.status.heal(f32::from(4u8 << level)),
-            "harming" => {
+            "harming" if !self.invulnerable => {
                 let before = self.status.health;
                 let _ = self
                     .status
@@ -591,7 +622,7 @@ impl Survival {
     }
 
     pub(crate) fn can_sprint(&self) -> bool {
-        self.status.food.level > SPRINT_FOOD
+        self.may_fly || self.status.food.level > SPRINT_FOOD
     }
 
     pub(crate) fn settle(&mut self, health: i32, max_health: i32) -> Settle {
@@ -624,7 +655,7 @@ impl Survival {
 
     pub(crate) fn start_eating(&mut self, slot: usize, stack: &ItemStack) -> bool {
         if self.eating.is_none() {
-            self.eating = FoodUse::start(slot, stack, &self.status.food, GameMode::Survival);
+            self.eating = FoodUse::start(slot, stack, &self.status.food, self.food_mode());
         }
         self.eating.is_some()
     }
@@ -645,6 +676,7 @@ impl Survival {
         selected: usize,
         mut random: impl FnMut() -> f32,
     ) -> Bite {
+        let mode = self.food_mode();
         let Some(using) = self.eating.as_mut() else {
             return Bite::Nothing;
         };
@@ -653,7 +685,7 @@ impl Survival {
             return Bite::Nothing;
         }
         let sound = format!("minecraft:{}", using.info.sound);
-        match using.tick(inventory, &mut self.status.food, GameMode::Survival) {
+        match using.tick(inventory, &mut self.status.food, mode) {
             FoodUseTick::Continuing { emit_sound } => {
                 if emit_sound {
                     Bite::Chew(sound)
@@ -1271,6 +1303,10 @@ mod tests {
         survival.status.food.level = 7;
         assert!(survival.can_sprint());
         survival.status.food.level = 6;
+        assert!(!survival.can_sprint());
+        survival.set_game_mode(&minecraft_terrain::game_mode::PlayerMode::new(GameMode::Creative));
+        assert!(survival.can_sprint());
+        survival.set_game_mode(&minecraft_terrain::game_mode::PlayerMode::new(GameMode::Adventure));
         assert!(!survival.can_sprint());
     }
 
@@ -2024,5 +2060,128 @@ mod tests {
         );
         survival.respawn();
         assert_eq!(death(&survival), said("%1$s died", "died"));
+    }
+
+    fn creative() -> Survival {
+        let mut survival = fresh();
+        survival.set_game_mode(&minecraft_terrain::game_mode::PlayerMode::new(GameMode::Creative));
+        survival
+    }
+
+    #[test]
+    fn creative_and_spectator_players_are_invulnerable_and_survival_and_adventure_ones_are_not() {
+        use minecraft_terrain::game_mode::{MODES, PlayerMode};
+        for mode in MODES {
+            let mut survival = fresh();
+            survival.set_game_mode(&PlayerMode::new(mode));
+            let hurt = survival.hurt(3.0, Armor::default(), None, DamageCause::Generic);
+            assert_eq!(hurt, !mode.may_fly(), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn an_invulnerable_player_takes_no_hits_falls_lava_fire_poison_or_harming() {
+        let mut survival = creative();
+        assert!(!survival.hurt(6.0, Armor::default(), Some([1.0, 2.0, 3.0]), DamageCause::Generic));
+        assert_eq!(survival.fall(30.0, None, false), 0);
+        survival.drink_potion("minecraft:harming");
+        survival.drink_potion("minecraft:strong_poison");
+        let in_lava = Motion {
+            in_lava: true,
+            ..standing_in([0.5, 1.0, 0.5])
+        };
+        let heard = live(&mut survival, &lava_pool(), &in_lava, Armor::default(), 200);
+        assert_eq!(survival.status.health, 20.0);
+        assert!(survival.status.effect(EffectKind::Poison).is_some());
+        assert_eq!(count(&heard, "minecraft:entity.player.hurt_on_fire"), 0);
+        assert_eq!(count(&heard, "minecraft:entity.generic.burn"), 0);
+        assert!(survival.fire_ticks <= 1, "{}", survival.fire_ticks);
+        assert!(survival.vitals().on_fire);
+        live(&mut survival, &ground(&[]), &standing_in([0.5, 1.0, 0.5]), Armor::default(), 40);
+        assert!(survival.fire_ticks <= 0, "{}", survival.fire_ticks);
+        assert!(!survival.vitals().on_fire);
+        assert_eq!(survival.settle(100, 100), Settle::default());
+    }
+
+    #[test]
+    fn an_invulnerable_player_never_gets_hungry() {
+        let mut runner = creative();
+        let saturation = runner.status.food.saturation;
+        runner.status.add_effect(EffectKind::Hunger, 600, 2);
+        for i in 0..1000 {
+            runner.tick(&Motion {
+                feet: [f64::from(i) * 0.25, 0.0, 0.0],
+                on_ground: true,
+                sprinting: true,
+                jumping: i % 2 == 0,
+                ..Motion::default()
+            });
+            runner.exhaust(ATTACK_EXHAUSTION);
+        }
+        assert_eq!(runner.status.food.level, 20);
+        assert_eq!(runner.status.food.saturation, saturation);
+        let mut starving = creative();
+        starving.status.food.level = 0;
+        starving.status.food.saturation = 0.0;
+        for _ in 0..400 {
+            starving.tick(&standing([0.0, 64.0, 0.0]));
+        }
+        assert_eq!(starving.status.health, 20.0);
+    }
+
+    #[test]
+    fn an_invulnerable_player_never_runs_out_of_air() {
+        let mut diver = creative();
+        for _ in 0..400 {
+            assert!(!diver.breathe(true).drowned);
+        }
+        assert_eq!(diver.status.air, diver.status.max_air);
+        assert_eq!(diver.status.health, 20.0);
+        diver.rules.drowning_damage = false;
+        diver.breathe(true);
+        assert_eq!(diver.status.air, diver.status.max_air);
+    }
+
+    #[test]
+    fn mw2_damage_reaching_an_invulnerable_player_is_healed_back() {
+        let mut survival = creative();
+        survival.observe(60, 100);
+        assert_eq!(survival.status.health, 20.0);
+        assert_eq!(survival.settle(60, 100).set, Some(100));
+    }
+
+    #[test]
+    fn kill_still_kills_an_invulnerable_player_and_a_respawn_keeps_the_game_mode() {
+        let mut survival = creative();
+        survival.kill(DamageCause::Kill);
+        assert_eq!(survival.status.health, 0.0);
+        assert_eq!(survival.settle(100, 100).damage, Some((100, None)));
+        survival.respawn();
+        assert!(survival.invulnerable && survival.creative);
+        assert!(!survival.hurt(3.0, Armor::default(), None, DamageCause::Generic));
+        survival.respawn_keeping_experience();
+        assert!(survival.invulnerable);
+        survival.set_game_mode(&minecraft_terrain::game_mode::PlayerMode::new(GameMode::Survival));
+        assert!(survival.hurt(3.0, Armor::default(), None, DamageCause::Generic));
+    }
+
+    #[test]
+    fn creative_players_eat_when_full_and_keep_their_food() {
+        let mut survival = creative();
+        let mut inventory = Inventory::default();
+        inventory.slots[0] = Some(ItemStack::new("minecraft:cooked_beef", 3));
+        let stack = inventory.slots[0].clone().unwrap();
+        assert!(survival.start_eating(0, &stack));
+        let mut done = false;
+        for _ in 0..40 {
+            if let Bite::Done { .. } = survival.chew(&mut inventory, 0, || 0.5) {
+                done = true;
+                break;
+            }
+        }
+        assert!(done);
+        assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(3));
+        let mut full = fresh();
+        assert!(!full.start_eating(0, &stack));
     }
 }

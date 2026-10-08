@@ -125,9 +125,35 @@ pub(crate) struct MobMeshes {
 pub(crate) struct PlayerView {
     pub feet: [f64; 3],
     pub alive: bool,
+    pub attackable: bool,
+    pub spectator: bool,
+    pub picks_up: bool,
     pub health: f32,
     pub yaw: f32,
     pub pitch: f32,
+}
+
+fn player_candidate(player: &PlayerView) -> PlayerCandidate {
+    PlayerCandidate {
+        id: PLAYER,
+        position: DVec3::from_array(player.feet),
+        eye_height: EYE_HEIGHT,
+        main_hand_cow_food: false,
+        offhand_cow_food: false,
+        main_hand_pig_food: false,
+        offhand_pig_food: false,
+        main_hand_chicken_food: false,
+        offhand_chicken_food: false,
+        main_hand_carrot_on_a_stick: false,
+        offhand_carrot_on_a_stick: false,
+        main_hand_wolf_interest: false,
+        offhand_wolf_interest: false,
+        main_hand_horse_tempt: false,
+        offhand_horse_tempt: false,
+        alive: player.alive,
+        spectator: player.spectator,
+        attackable: player.attackable,
+    }
 }
 
 impl Entities {
@@ -580,26 +606,7 @@ impl Entities {
             }
             let feet = DVec3::from_array(player.feet);
             let center = ((feet.x.floor() as i32) >> 4, (feet.z.floor() as i32) >> 4);
-            let candidate = PlayerCandidate {
-                id: PLAYER,
-                position: feet,
-                eye_height: EYE_HEIGHT,
-                main_hand_cow_food: false,
-                offhand_cow_food: false,
-                main_hand_pig_food: false,
-                offhand_pig_food: false,
-                main_hand_chicken_food: false,
-                offhand_chicken_food: false,
-                main_hand_carrot_on_a_stick: false,
-                offhand_carrot_on_a_stick: false,
-                main_hand_wolf_interest: false,
-                offhand_wolf_interest: false,
-                main_hand_horse_tempt: false,
-                offhand_horse_tempt: false,
-                alive: player.alive,
-                spectator: !player.alive,
-                attackable: player.alive,
-            };
+            let candidate = player_candidate(player);
             self.server.tick(TickInput {
                 day_ticks,
                 players: if player.alive { vec![player.feet] } else { Vec::new() },
@@ -607,7 +614,7 @@ impl Entities {
                 simulation_center: center,
                 simulation_distance: 8,
                 pickup: player
-                    .alive
+                    .picks_up
                     .then(|| (player.feet, Box::new(self.inventory.clone()), self.selected)),
                 mob_players: vec![candidate],
                 mob_views: vec![(
@@ -1019,6 +1026,27 @@ fn decode(key: u64) -> Option<MobHit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mobs_leave_creative_and_spectator_players_alone() {
+        let view = |attackable, spectator| PlayerView {
+            feet: [1.0, 64.0, 2.0],
+            alive: true,
+            attackable,
+            spectator,
+            picks_up: !spectator,
+            health: 20.0,
+            yaw: 0.0,
+            pitch: 0.0,
+        };
+        let survival = player_candidate(&view(true, false));
+        assert!(survival.alive && survival.attackable && !survival.spectator);
+        assert_eq!(survival.position, DVec3::new(1.0, 64.0, 2.0));
+        let creative = player_candidate(&view(false, false));
+        assert!(creative.alive && !creative.attackable && !creative.spectator);
+        let spectator = player_candidate(&view(false, true));
+        assert!(spectator.alive && !spectator.attackable && spectator.spectator);
+    }
 
     #[test]
     fn blasts_hurt_mobs_four_times_as_hard_as_bullets() {
