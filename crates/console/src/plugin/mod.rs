@@ -84,6 +84,7 @@ impl Plugin for ConsolePlugin {
         app.init_resource::<ConsoleSettings>()
             .init_resource::<ConsoleState>()
             .init_resource::<frame::HudInputView>()
+            .init_resource::<frame::McActionInput>()
             .init_resource::<ConsoleInputState>()
             .init_resource::<KeyBinds>()
             .init_resource::<ConsoleCommandQueue>()
@@ -293,7 +294,11 @@ fn publish_client_action_input(
     binds: Res<KeyBinds>,
     mut scripted: ResMut<ConsoleInputState>,
     console: Res<ConsoleState>,
-    (script_menus, minecraft): (Option<Res<hud::ScriptMenus>>, Option<Res<frame::MinecraftUi>>),
+    (script_menus, minecraft, mut mc_keys): (
+        Option<Res<hud::ScriptMenus>>,
+        Option<Res<frame::MinecraftUi>>,
+        ResMut<frame::McActionInput>,
+    ),
     mut hud_input: ResMut<frame::HudInputView>,
     settings: Res<frame::GameSettings>,
     mut out: ResMut<ClientActionInput>,
@@ -378,15 +383,21 @@ fn publish_client_action_input(
         .predicted_local()
         .or_else(|| presented.player(local.0))
         .is_some_and(|ps| ps.last_weapon_hand == 1);
-    let f_key = crate::binds::BindButton::Key(KeyCode::KeyF);
-    hud_input.f_key_activates = minecraft_map
-        && presented.player(local.0).is_some_and(|ps| ps.cursor_hint > 0)
-        && matches!(binds.binding_name(f_key), Some("+activate" | "+usereload"));
+    let gated = console.open || script_menu || !devices.focused;
+    let (suppressed, presses) = crate::binds::minecraft_presses(
+        &binds,
+        crate::binds::MinecraftKeyState {
+            active: minecraft_map,
+            use_hint: presented.player(local.0).is_some_and(|ps| ps.cursor_hint > 0),
+            screen_open: inventory_open,
+            holding_item: minecraft_item_in_hand,
+        },
+        |button| !gated && inputs.just_pressed(button),
+    );
+    *mc_keys = presses;
     let mut current = [0; input_iw4::KEY_COUNT];
     for (button, id) in binds.iter() {
-        let id = if button == f_key
-            && minecraft_takes_f(minecraft_map, minecraft_item_in_hand, inventory_open, hud_input.f_key_activates)
-        {
+        let id = if suppressed.contains(&button) {
             0
         } else {
             crate::binds::gameplay_binding(button, id, akimbo)
@@ -552,6 +563,7 @@ fn publish_client_action_input(
     physical.prompts = Some(prompts);
     let mut labels: Vec<_> = binds
         .iter()
+        .chain(binds.iter_minecraft())
         .filter(|(button, _)| button.is_pad() == devices.pad_prompts)
         .collect();
     labels.sort_by_key(|(button, _)| host_keynum(*button));
@@ -563,7 +575,7 @@ fn publish_client_action_input(
             BindButton::Pad(button) => button.prompt(devices.style).to_owned(),
             _ => crate::binds::display_button(button).to_uppercase(),
         };
-        if let Some(command) = binds.binding_name(button) {
+        if let Some(command) = input_iw4::command_name(id) {
             hud_input
                 .binding_keys
                 .entry(command.to_owned())
@@ -2353,10 +2365,6 @@ fn update_console_ui(
     }
 }
 
-fn minecraft_takes_f(minecraft_map: bool, item_in_hand: bool, screen_open: bool, f_key_activates: bool) -> bool {
-    minecraft_map && (screen_open || (item_in_hand && !f_key_activates))
-}
-
 fn suggest_span_bundle(span: &SuggestSpan, font: Handle<Font>) -> impl Bundle {
     (
         TextSpan::new(span.text.clone()),
@@ -2373,19 +2381,4 @@ fn suggest_span_bundle(span: &SuggestSpan, font: Handle<Font>) -> impl Bundle {
         }),
         TextBackgroundColor(COLOR_SUGGEST_BG),
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::minecraft_takes_f;
-
-    #[test]
-    fn f_swaps_hands_only_while_a_minecraft_item_is_in_hand() {
-        assert!(minecraft_takes_f(true, true, false, false));
-        assert!(!minecraft_takes_f(true, false, false, false));
-        assert!(!minecraft_takes_f(true, true, false, true));
-        assert!(minecraft_takes_f(true, false, true, false));
-        assert!(!minecraft_takes_f(false, true, false, false));
-        assert!(!minecraft_takes_f(false, false, true, false));
-    }
 }

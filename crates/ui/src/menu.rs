@@ -58,6 +58,7 @@ pub fn install_frontend_menus(catalog: &mut asset_game::MenuCatalog) -> Result<(
     catalog.load_definitions(include_str!("../menus/settings.json"))?;
     catalog.load_definitions(include_str!("../menus/controller.json"))?;
     let has_controller_page = catalog.get("options_controller").is_some();
+    let has_minecraft_page = catalog.get("pc_options_minecraft").is_some();
     for (name, menu) in &mut catalog.menus {
         if matches!(name.as_str(), "popup_endgame" | "popup_endgame_ranked") {
             for item in &mut menu.items {
@@ -129,6 +130,9 @@ pub fn install_frontend_menus(catalog: &mut asset_game::MenuCatalog) -> Result<(
                     item.rect.y -= 20.0;
                 }
             }
+            if has_minecraft_page {
+                add_minecraft_controls_link(menu);
+            }
         }
 
         let Some(mode) = name.strip_prefix("settings_quick_") else {
@@ -157,9 +161,47 @@ pub fn install_frontend_menus(catalog: &mut asset_game::MenuCatalog) -> Result<(
     Ok(())
 }
 
+fn add_minecraft_controls_link(menu: &mut asset_game::MenuDef) {
+    let Some(last) = menu
+        .items
+        .iter()
+        .filter(|item| {
+            item.item_type == 1
+                && item.rect.x >= 232.0
+                && item.vis_exp != "0"
+                && item.text_key != "@PLATFORM_BACK_CAPS"
+                && !item.handlers.action.is_empty()
+        })
+        .max_by(|a, b| a.rect.y.total_cmp(&b.rect.y))
+        .cloned()
+    else {
+        return;
+    };
+    let mut link = last;
+    link.name = "minecraft_controls".into();
+    link.text_key = "Minecraft".into();
+    link.text_exp.clear();
+    link.rect.y += 20.0;
+    link.vis_exp = "1".into();
+    link.disabled_exp = "0".into();
+    link.handlers.action = vec![asset_game::MenuEvent::Script(
+        "play mouse_click; close self; open pc_options_minecraft;".into(),
+    )];
+    menu.items.push(link);
+}
+
 #[cfg(test)]
 mod settings_menu_tests {
     use asset_game::{MenuCatalog, MenuDef, MenuEvent, MenuItem};
+
+    const MINECRAFT_KEYS: [(&str, &str); 6] = [
+        ("mc_inventory", "Open/Close Inventory"),
+        ("mc_drop", "Drop Selected Item"),
+        ("mc_swaphands", "Swap Item With Off Hand"),
+        ("mc_chat", "Open Chat"),
+        ("mc_command", "Open Command"),
+        ("mc_perspective", "Toggle Perspective"),
+    ];
 
     fn item(name: &str, text_key: &str, dvar: &str, item_type: i32) -> MenuItem {
         MenuItem {
@@ -296,5 +338,96 @@ mod settings_menu_tests {
                 .all(|item| item.name == "ui_show_blood" || item.rect.y != row.rect.y),
             "another visible row shares the Show Blood line"
         );
+    }
+
+    #[test]
+    fn the_minecraft_page_lists_the_six_minecraft_keys() {
+        let catalog = settings_catalog();
+        let page = catalog.get("pc_options_minecraft").expect("minecraft page");
+        let rows: Vec<&MenuItem> = page
+            .items
+            .iter()
+            .filter(|item| item.item_type == 14 && item.vis_exp != "0")
+            .collect();
+        assert_eq!(rows.len(), MINECRAFT_KEYS.len());
+        for (row, (command, text)) in rows.iter().zip(MINECRAFT_KEYS) {
+            assert_eq!(row.dvar, command);
+            assert!(row.choices.is_empty(), "{command}");
+            assert!(row.slider.is_none(), "{command}");
+            assert_eq!(row.vis_exp, "1");
+            assert_eq!(row.disabled_exp, "0");
+            let labels: Vec<&MenuItem> = page
+                .items
+                .iter()
+                .filter(|item| item.vis_exp != "0" && item.rect.y == row.rect.y)
+                .filter(|item| item.name != row.name)
+                .collect();
+            assert_eq!(labels.len(), 1, "{command} shares its line");
+            assert_eq!(labels[0].text_key, text);
+            assert_eq!(labels[0].item_type, 0);
+        }
+        let mut lines: Vec<f32> = rows.iter().map(|row| row.rect.y).collect();
+        lines.dedup();
+        assert_eq!(lines, vec![28.0, 48.0, 68.0, 88.0, 108.0, 128.0]);
+        assert_eq!(named(page, "video_title").text_key, "Minecraft");
+    }
+
+    #[test]
+    fn esc_and_back_on_the_minecraft_page_return_to_the_controls_page() {
+        let catalog = settings_catalog();
+        let page = catalog.get("pc_options_minecraft").expect("minecraft page");
+        assert_eq!(
+            script(&page.handlers.esc),
+            "close self; open pc_options_controls;"
+        );
+        let back = page
+            .items
+            .iter()
+            .find(|item| item.text_key == "@PLATFORM_BACK_CAPS")
+            .expect("back button");
+        assert_eq!(
+            script(&back.handlers.action),
+            "close self; open pc_options_controls;"
+        );
+    }
+
+    #[test]
+    fn the_controls_page_links_the_minecraft_page_under_its_last_row() {
+        let link = |name: &str, y: f32| {
+            let mut item = item(name, name, "", 1);
+            item.rect.x = 260.0;
+            item.rect.y = y;
+            item.handlers.action = vec![MenuEvent::Script(format!("open {name};"))];
+            item
+        };
+        let mut back = item("back", "@PLATFORM_BACK_CAPS", "", 1);
+        back.rect.x = 300.0;
+        back.rect.y = 400.0;
+        back.handlers.action = vec![MenuEvent::Script("close self;".into())];
+        let mut hidden = link("hidden", 200.0);
+        hidden.vis_exp = "0".into();
+        let (_, mut menu) = base(
+            "pc_options_controls",
+            vec![
+                link("pc_options_movement", 28.0),
+                link("pc_options_look", 48.0),
+                link("pc_options_actions", 68.0),
+                back,
+                hidden,
+            ],
+        );
+        super::add_minecraft_controls_link(&mut menu);
+        let added = named(&menu, "minecraft_controls");
+        assert_eq!(added.rect.y, 88.0);
+        assert_eq!(added.rect.x, 260.0);
+        assert_eq!(added.text_key, "Minecraft");
+        assert_eq!(added.vis_exp, "1");
+        let action = script(&added.handlers.action);
+        let close = action.find("close self;").expect("controls page closes");
+        let open = action
+            .find("open pc_options_minecraft;")
+            .expect("minecraft page opens");
+        assert!(close < open, "{action}");
+        assert_eq!(menu.items.len(), 6);
     }
 }

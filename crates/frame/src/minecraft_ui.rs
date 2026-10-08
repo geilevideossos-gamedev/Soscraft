@@ -210,6 +210,61 @@ pub struct McVitals {
     pub eye_in_lava: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum McAction {
+    Inventory,
+    Drop,
+    SwapHands,
+    Chat,
+    Command,
+    Perspective,
+}
+
+impl McAction {
+    pub const ALL: [Self; 6] = [
+        Self::Inventory,
+        Self::Drop,
+        Self::SwapHands,
+        Self::Chat,
+        Self::Command,
+        Self::Perspective,
+    ];
+
+    pub const fn command(self) -> &'static str {
+        match self {
+            Self::Inventory => "mc_inventory",
+            Self::Drop => "mc_drop",
+            Self::SwapHands => "mc_swaphands",
+            Self::Chat => "mc_chat",
+            Self::Command => "mc_command",
+            Self::Perspective => "mc_perspective",
+        }
+    }
+
+    pub fn from_command(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|action| action.command() == name)
+    }
+}
+
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct McActionInput {
+    pressed: u8,
+}
+
+impl McActionInput {
+    pub fn press(&mut self, action: McAction) {
+        self.pressed |= 1 << action as u8;
+    }
+
+    pub fn just_pressed(&self, action: McAction) -> bool {
+        self.pressed & (1 << action as u8) != 0
+    }
+
+    pub fn clear(&mut self) {
+        self.pressed = 0;
+    }
+}
+
 /// The player's own MW2 body, drawn standing in the inventory's character
 /// box and looking towards the mouse.
 #[derive(Resource, Default, Clone)]
@@ -228,6 +283,31 @@ mod tests {
 
     fn near(a: [f32; 2], b: [f32; 2]) -> bool {
         (a[0] - b[0]).abs() < 1e-4 && (a[1] - b[1]).abs() < 1e-4
+    }
+
+    #[test]
+    fn every_minecraft_action_has_its_own_command() {
+        for action in McAction::ALL {
+            assert_eq!(McAction::from_command(action.command()), Some(action));
+        }
+        assert_eq!(McAction::from_command("+frag"), None);
+        assert_eq!(McAction::from_command(""), None);
+    }
+
+    #[test]
+    fn minecraft_action_presses_last_until_cleared() {
+        let mut input = McActionInput::default();
+        assert!(McAction::ALL.iter().all(|a| !input.just_pressed(*a)));
+        input.press(McAction::SwapHands);
+        input.press(McAction::Perspective);
+        for action in McAction::ALL {
+            assert_eq!(
+                input.just_pressed(action),
+                matches!(action, McAction::SwapHands | McAction::Perspective)
+            );
+        }
+        input.clear();
+        assert_eq!(input, McActionInput::default());
     }
 
     #[test]

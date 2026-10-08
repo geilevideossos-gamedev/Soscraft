@@ -14,8 +14,9 @@ pub use adjust_angles::{
     adjust_angles,
 };
 pub use names::{
-    HOLD_PAIR_LIMIT, INPUT_COMMAND_NAMES, SCRIPT_KEYNUM, command_id_from_name, command_id_lookup,
-    command_name, command_names, key_up_command_id,
+    HOLD_PAIR_LIMIT, INPUT_COMMAND_NAMES, MINECRAFT_COMMAND_FIRST, SCRIPT_KEYNUM,
+    command_id_from_name, command_id_lookup, command_name, command_names, is_minecraft_command,
+    key_up_command_id,
 };
 
 use playerstate_iw4::{UserCmd, buttons};

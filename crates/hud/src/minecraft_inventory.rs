@@ -3,7 +3,7 @@ use bevy::input::gamepad::{Gamepad, GamepadButton};
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use frame::minecraft_ui::MC_HOTBAR;
-use frame::{McClick, McFont, McScreen, McSlot, McStack, MinecraftUi, PromptStyle};
+use frame::{McAction, McClick, McFont, McScreen, McSlot, McStack, MinecraftUi, PromptStyle};
 
 use crate::gaps::HudPresentationGaps;
 use crate::gpu_list::{HudTessPass, TessJob};
@@ -180,6 +180,7 @@ pub(crate) fn update_minecraft_hud(
         Option<Res<frame::HudInputView>>,
         Option<ResMut<frame::GameSettings>>,
     ),
+    mc_keys: Option<Res<frame::McActionInput>>,
 ) {
     let Some(mut ui) = ui else {
         pass.minecraft = TessJob::Hide;
@@ -207,11 +208,12 @@ pub(crate) fn update_minecraft_hud(
     let pad_pointer = prompts.is_some();
     let held = pad.and_then(pad_direction);
     let pad_just = |button: GamepadButton| pad.is_some_and(|pad| pad.just_pressed(button));
+    let mc = |action: McAction| mc_keys.as_deref().is_some_and(|keys| keys.just_pressed(action));
 
     let open_before = ui.inventory_open;
     let typing = ui.inventory_open && ui.screen == McScreen::Anvil && ui.container.first().is_some_and(Option::is_some);
     let text: String = typed.read().filter(|event| event.state.is_pressed()).filter_map(|event| event.text.as_ref()).flat_map(|text| text.chars()).filter(|c| !c.is_control()).collect();
-    if !blocked && ((keys.just_pressed(KeyCode::KeyE) && !typing) || (ui.inventory_open && keys.just_pressed(KeyCode::Escape))) {
+    if !blocked && ((mc(McAction::Inventory) && !typing) || (ui.inventory_open && keys.just_pressed(KeyCode::Escape))) {
         ui.inventory_open = !ui.inventory_open && !keys.just_pressed(KeyCode::Escape);
     } else if ui.inventory_open && (menus.captures_input() || pad_just(GamepadButton::East)) {
         ui.inventory_open = false;
@@ -257,11 +259,10 @@ pub(crate) fn update_minecraft_hud(
         if let Some(digit) = digit {
             ui.select = Some(digit);
         }
-        if keys.just_pressed(KeyCode::KeyQ) {
+        if mc(McAction::Drop) {
             ui.drop_selected = Some(ctrl);
         }
-        let f_activates = hud_input.as_ref().is_some_and(|input| input.f_key_activates);
-        if (!blocked && !f_activates && keys.just_pressed(KeyCode::KeyF)) || pad_just(GamepadButton::DPadDown) {
+        if (!blocked && mc(McAction::SwapHands)) || pad_just(GamepadButton::DPadDown) {
             ui.swap_hands = true;
         }
         if !blocked
@@ -400,8 +401,8 @@ pub(crate) fn update_minecraft_hud(
                 }
             }
             if !typing {
-                let swap = digit.or_else(|| keys.just_pressed(KeyCode::KeyF).then_some(40));
-                let throw = keys.just_pressed(KeyCode::KeyQ).then_some(ctrl);
+                let swap = digit.or_else(|| mc(McAction::SwapHands).then_some(40));
+                let throw = mc(McAction::Drop).then_some(ctrl);
                 clicks.extend(input.clicks.key(&view, hovered, swap, throw));
             }
             ui.clicks.extend(clicks);

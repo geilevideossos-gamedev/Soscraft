@@ -142,7 +142,7 @@ pub(crate) fn consume_menu_binding(
                 .map(BindButton::Mouse)
                 .next()
         })
-        .or(wheel_direction);
+        .or(wheel_direction.filter(|_| !input_iw4::is_minecraft_command(id)));
     let Some(button) = button else { return };
     capture.command = None;
     capture.consumed_input = true;
@@ -166,7 +166,7 @@ pub(crate) fn sync_binding_view(
     }
     *style = Some(devices.style);
     let mut chords = std::collections::BTreeMap::<u32, (Vec<String>, Vec<String>)>::new();
-    for (button, id) in binds.iter() {
+    for (button, id) in binds.iter().chain(binds.iter_minecraft()) {
         let (keys, buttons) = chords.entry(id).or_default();
         match button {
             BindButton::Pad(pad) => buttons.push(pad.prompt(devices.style).to_owned()),
@@ -343,7 +343,7 @@ fn parse_into<T: std::str::FromStr>(value: &str, slot: &mut T) {
 fn serialize_settings(settings: &frame::GameSettings, binds: &KeyBinds) -> String {
     let safe_name = settings.player_name.replace(['\n', '\r', '='], " ");
     let mut lines = vec![
-        "// IW4L user settings v2".to_owned(),
+        "// IW4L user settings v3".to_owned(),
         format!(
             "resolution={}x{}",
             settings.resolution.width, settings.resolution.height
@@ -488,6 +488,12 @@ fn parse_settings(source: &str, settings: &mut frame::GameSettings, binds: &mut 
         for warning in warnings {
             warn!("settings bind: {warning}");
         }
+    }
+    if matches!(
+        source.lines().next().map(str::trim),
+        Some("// IW4L user settings v1" | "// IW4L user settings v2")
+    ) {
+        binds.apply_minecraft_defaults();
     }
     if !binds.has_pad_binds() {
         binds.apply_pad_layout(usize::from(settings.pad_layout.min(4)));
@@ -686,6 +692,82 @@ mod function_key_tests {
         for (key, id) in keys.iter().zip(&commands) {
             assert_eq!(loaded.get(BindButton::Key(*key)), Some(*id), "{key:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod minecraft_bind_tests {
+    use super::*;
+
+    const E: BindButton = BindButton::Key(KeyCode::KeyE);
+    const F5: BindButton = BindButton::Key(KeyCode::F5);
+    const F6: BindButton = BindButton::Key(KeyCode::F6);
+
+    fn load(source: &str) -> KeyBinds {
+        let mut binds = KeyBinds::default();
+        binds.apply_defaults();
+        parse_settings(source, &mut frame::GameSettings::default(), &mut binds);
+        binds
+    }
+
+    #[test]
+    fn older_settings_get_the_vanilla_minecraft_keys() {
+        for header in ["// IW4L user settings v1", "// IW4L user settings v2"] {
+            let binds = load(&format!(
+                "{header}\nshow_blood=true\nunbindall\nbind e +activate\nbind f +frag\n"
+            ));
+            assert_eq!(binds.minecraft_binding(E), Some("mc_inventory"), "{header}");
+            assert_eq!(binds.minecraft_binding(F5), Some("mc_perspective"), "{header}");
+            assert_eq!(binds.iter_minecraft().count(), 6, "{header}");
+            assert_eq!(binds.binding_name(E), Some("+activate"), "{header}");
+            assert_eq!(
+                binds.binding_name(BindButton::Key(KeyCode::KeyF)),
+                Some("+frag"),
+                "{header}"
+            );
+        }
+    }
+
+    #[test]
+    fn current_settings_keep_their_minecraft_keys_unbound() {
+        let binds = load("// IW4L user settings v3\nunbindall\nbind e +activate\n");
+        assert_eq!(binds.iter_minecraft().count(), 0);
+        assert_eq!(binds.binding_name(E), Some("+activate"));
+    }
+
+    #[test]
+    fn a_rebound_minecraft_key_survives_a_restart() {
+        let mut binds = KeyBinds::default();
+        binds.apply_defaults();
+        let perspective = input_iw4::command_id_lookup("mc_perspective").expect("command");
+        binds.clear_command_on(perspective, false);
+        binds.set(F6, perspective);
+        let saved = serialize_settings(&frame::GameSettings::default(), &binds);
+        assert_eq!(saved.lines().next(), Some("// IW4L user settings v3"));
+        assert!(saved.lines().any(|line| line == "bind F6 mc_perspective"));
+        assert!(!saved.lines().any(|line| line == "bind F5 mc_perspective"));
+        let loaded = load(&saved);
+        assert_eq!(loaded.minecraft_binding(F6), Some("mc_perspective"));
+        assert_eq!(loaded.minecraft_binding(F5), None);
+        assert_eq!(loaded.list_lines(), binds.list_lines());
+    }
+
+    #[test]
+    fn the_controls_menu_shows_the_minecraft_keys() {
+        let mut app = App::new();
+        let mut binds = KeyBinds::default();
+        binds.apply_defaults();
+        app.insert_resource(binds)
+            .init_resource::<frame::InputDevices>()
+            .init_resource::<ui::BindingView>()
+            .init_resource::<frame::UiMenuDvars>()
+            .add_systems(Update, sync_binding_view);
+        app.update();
+        let dvars = app.world().resource::<frame::UiMenuDvars>();
+        assert_eq!(dvars.get("ui_bind_mc_perspective"), Some("F5"));
+        assert_eq!(dvars.get("ui_bind_mc_command"), Some("SLASH"));
+        assert_eq!(dvars.get("ui_bind_mc_inventory"), Some("e"));
+        assert_eq!(dvars.get("ui_bind_+activate"), Some("e"));
     }
 }
 

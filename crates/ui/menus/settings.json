@@ -126,5 +126,37 @@
       {"dvar": "ui_name", "fields": {"dvar": "ui_player_name", "vis_exp": "1", "disabled_exp": "0", "edit_field": {"max_chars": 16}, "rect": {"x": 420, "y": 28, "w": 156, "h": 20}, "text_key": "", "text_exp": "", "text_align_x": -8, "text_align_mode": 10, "text_align_y": 0, "handlers": {"action": [], "accept": []}}},
       {"text_key": "@MENU_PLAYER_NAME", "fields": {"vis_exp": "1", "rect": {"x": 232, "y": 28, "w": 344, "h": 20}}}
     ]
+  },
+  {
+    "name": "pc_options_minecraft",
+    "base": "pc_options_video",
+    "fields": {"handlers": {"open": [{"Script": "focusFirst;"}], "close": [], "esc": [{"Script": "close self; open pc_options_controls;"}]}},
+    "item_overrides": [
+      {"text_key": "@PLATFORM_BACK_CAPS", "fields": {"handlers": {"action": [{"Script": "close self; open pc_options_controls;"}]}}},
+      {"name": "video_resolution", "fields": {"vis_exp": "0"}},
+      {"name": "video_resolution_label", "fields": {"vis_exp": "0"}},
+      {"name": "video_brightness", "fields": {"vis_exp": "0"}},
+      {"name": "video_brightness_label", "fields": {"vis_exp": "0"}},
+      {"name": "video_display_mode", "fields": {"vis_exp": "0"}},
+      {"name": "video_display_mode_label", "fields": {"vis_exp": "0"}},
+      {"name": "video_advanced", "fields": {"vis_exp": "0"}},
+      {"name": "video_fov", "fields": {"vis_exp": "0"}},
+      {"name": "video_fov_label", "fields": {"vis_exp": "0"}},
+      {"name": "video_title", "fields": {"text_key": "Minecraft"}}
+    ],
+    "item_copies": [
+      {"name": "video_display_mode", "fields": {"item_type": 14, "static_flags": 0, "dvar": "mc_inventory", "choices": [], "vis_exp": "1", "disabled_exp": "0", "text_key": "", "text_exp": "", "text_align_mode": 10, "text_align_x": -8, "text_align_y": 0, "fore_color": [1, 1, 1, 1], "rect": {"x": 232, "y": 28, "w": 344, "h": 20}, "handlers": {"action": [{"Script": "play mouse_click;"}], "focus": [{"Script": "play mouse_over; setItemColor self backcolor 0 0 0 1;"}], "leave_focus": [{"Script": "setItemColor self backcolor 0 0 0 0;"}]}, "text_scale": 0.375, "style": 1, "background": "menu_button_selection_bar", "back_color": [0, 0, 0, 0], "name": "mc_bind_inventory"}},
+      {"name": "video_display_mode_label", "fields": {"vis_exp": "1", "text_key": "Open/Close Inventory", "rect": {"x": 232, "y": 28, "w": 344, "h": 20}, "text_scale": 0.32, "name": "mc_bind_label_1"}},
+      {"name": "video_display_mode", "fields": {"item_type": 14, "static_flags": 0, "dvar": "mc_drop", "choices": [], "vis_exp": "1", "disabled_exp": "0", "text_key": "", "text_exp": "", "text_align_mode": 10, "text_align_x": -8, "text_align_y": 0, "fore_color": [1, 1, 1, 1], "rect": {"x": 232, "y": 48, "w": 344, "h": 20}, "handlers": {"action": [{"Script": "play mouse_click;"}], "focus": [{"Script": "play mouse_over; setItemColor self backcolor 0 0 0 1;"}], "leave_focus": [{"Script": "setItemColor self backcolor 0 0 0 0;"}]}, "text_scale": 0.375, "style": 1, "background": "menu_button_selection_bar", "back_color": [0, 0, 0, 0], "name": "mc_bind_drop"}},
+      {"name": "video_display_mode_label", "fields": {"vis_exp": "1", "text_key": "Drop Selected Item", "rect": {"x": 232, "y": 48, "w": 344, "h": 20}, "text_scale": 0.32, "name": "mc_bind_label_2"}},
+      {"name": "video_display_mode", "fields": {"item_type": 14, "static_flags": 0, "dvar": "mc_swaphands", "choices": [], "vis_exp": "1", "disabled_exp": "0", "text_key": "", "text_exp": "", "text_align_mode": 10, "text_align_x": -8, "text_align_y": 0, "fore_color": [1, 1, 1, 1], "rect": {"x": 232, "y": 68, "w": 344, "h": 20}, "handlers": {"action": [{"Script": "play mouse_click;"}], "focus": [{"Script": "play mouse_over; setItemColor self backcolor 0 0 0 1;"}], "leave_focus": [{"Script": "setItemColor self backcolor 0 0 0 0;"}]}, "text_scale": 0.375, "style": 1, "background": "menu_button_selection_bar", "back_color": [0, 0, 0, 0], "name": "mc_bind_swaphands"}},
+      {"name": "video_display_mode_label", "fields": {"vis_exp": "1", "text_key": "Swap Item With Off Hand", "rect": {"x": 232, "y": 68, "w": 344, "h": 20}, "text_scale": 0.32, "name": "mc_bind_label_3"}},
+      {"name": "video_display_mode", "fields": {"item_type": 14, "static_flags": 0, "dvar": "mc_chat", "choices": [], "vis_exp": "1", "disabled_exp": "0", "text_key": "", "text_exp": "", "text_align_mode": 10, "text_align_x": -8, "text_align_y": 0, "fore_color": [1, 1, 1, 1], "rect": {"x": 232, "y": 88, "w": 344, "h": 20}, "handlers": {"action": [{"Script": "play mouse_click;"}], "focus": [{"Script": "play mouse_over; setItemColor self backcolor 0 0 0 1;"}], "leave_focus": [{"Script": "setItemColor self backcolor 0 0 0 0;"}]}, "text_scale": 0.375, "style": 1, "background": "menu_button_selection_bar", "back_color": [0, 0, 0, 0], "name": "mc_bind_chat"}},
+      {"name": "video_display_mode_label", "fields": {"vis_exp": "1", "text_key": "Open Chat", "rect": {"x": 232, "y": 88, "w": 344, "h": 20}, "text_scale": 0.32, "name": "mc_bind_label_4"}},
+      {"name": "video_display_mode", "fields": {"item_type": 14, "static_flags": 0, "dvar": "mc_command", "choices": [], "vis_exp": "1", "disabled_exp": "0", "text_key": "", "text_exp": "", "text_align_mode": 10, "text_align_x": -8, "text_align_y": 0, "fore_color": [1, 1, 1, 1], "rect": {"x": 232, "y": 108, "w": 344, "h": 20}, "handlers": {"action": [{"Script": "play mouse_click;"}], "focus": [{"Script": "play mouse_over; setItemColor self backcolor 0 0 0 1;"}], "leave_focus": [{"Script": "setItemColor self backcolor 0 0 0 0;"}]}, "text_scale": 0.375, "style": 1, "background": "menu_button_selection_bar", "back_color": [0, 0, 0, 0], "name": "mc_bind_command"}},
+      {"name": "video_display_mode_label", "fields": {"vis_exp": "1", "text_key": "Open Command", "rect": {"x": 232, "y": 108, "w": 344, "h": 20}, "text_scale": 0.32, "name": "mc_bind_label_5"}},
+      {"name": "video_display_mode", "fields": {"item_type": 14, "static_flags": 0, "dvar": "mc_perspective", "choices": [], "vis_exp": "1", "disabled_exp": "0", "text_key": "", "text_exp": "", "text_align_mode": 10, "text_align_x": -8, "text_align_y": 0, "fore_color": [1, 1, 1, 1], "rect": {"x": 232, "y": 128, "w": 344, "h": 20}, "handlers": {"action": [{"Script": "play mouse_click;"}], "focus": [{"Script": "play mouse_over; setItemColor self backcolor 0 0 0 1;"}], "leave_focus": [{"Script": "setItemColor self backcolor 0 0 0 0;"}]}, "text_scale": 0.375, "style": 1, "background": "menu_button_selection_bar", "back_color": [0, 0, 0, 0], "name": "mc_bind_perspective"}},
+      {"name": "video_display_mode_label", "fields": {"vis_exp": "1", "text_key": "Toggle Perspective", "rect": {"x": 232, "y": 128, "w": 344, "h": 20}, "text_scale": 0.32, "name": "mc_bind_label_6"}}
+    ]
   }
 ]

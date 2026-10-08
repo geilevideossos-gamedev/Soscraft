@@ -55,7 +55,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 ### Crafting, inventory, containers
 - 2x2 and 3x3 crafting from the 26.3 recipe data, with remainders and real stack sizes.
 - The vanilla inventory, hotbar, status bars and station screens, drawn from the runtime packs.
-- Vanilla clicks: drag-split, double-click, shift-click, number keys, Q and Ctrl+Q, F for offhand, click outside to drop. Controller slot focus.
+- Vanilla clicks: drag-split, double-click, shift-click, number keys, the drop key (Q) with or without Ctrl, the swap-hands key (F) for the offhand, click outside to drop. Controller slot focus.
 - Chests, barrels, furnace, smoker and blast furnace (they cook while closed), brewing stand, stonecutter, smithing table, grindstone, anvil and enchanting table.
 - Structure loot tables, shulker boxes that keep their contents, a shared ender chest, and the offhand slot.
 - Tooltips with MW2 gun stats and Minecraft tool stats.
@@ -76,9 +76,9 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 
 ### MW2 integration and UI
 - [upstream] Guns sit in the hotbar with unlimited ammo. Skate 3 works on block collision.
-- F keeps its MW2 binding (the lethal grenade: frag, semtex, C4 or claymore) while a gun is in hand. With a Minecraft item or an empty hand selected, or a Minecraft screen open, F swaps hands like vanilla, unless a use hint shows and F is bound to MW2 use.
+- The Minecraft keys are their own binding layer beside the MW2 one, so a key can hold one of each. The vanilla defaults are E inventory, Q drop, F swap hands, T chat, / (the physical slash key) command and F5 perspective; chat, command and perspective do nothing yet. On the Minecraft map a Minecraft key takes the key from its MW2 binding, except while a use hint shows and the key is bound to MW2 use (+activate or +usereload) with no Minecraft screen open: then only the MW2 use fires, so E picks up a gun instead of opening the inventory. The swap-hands key keeps its MW2 binding (F: the lethal grenade, frag, semtex, C4 or claymore) while a gun is in hand, and swaps hands like vanilla only with a Minecraft item or an empty hand selected, or a Minecraft screen open. Off the Minecraft map the Minecraft keys do nothing. The minimap key M, the hotbar number keys and the controller D-pad stay fixed.
 - Guns left in a crafting grid are not duplicated. Esc closes a Minecraft screen. The Skate toggle is blocked while a screen is open.
-- Options: the Minecraft minimap (M), Show Blood, and an Advanced Video page that replaces the Video page.
+- Options: the Minecraft minimap (M), Show Blood, and an Advanced Video page that replaces the Video page. Options > Controls has a Minecraft row that opens a page with the six Minecraft keys under their vanilla names; click a row and press a key to rebind it. The mouse wheel can't take a Minecraft key, so scrolling while a row listens is ignored. The bindings are saved in `settings.cfg` (now `// IW4L user settings v3`, with lines like `bind F5 mc_perspective`), and `unbind <key>` clears both layers of a key. A v1 or v2 `settings.cfg` from an older build gets the vanilla Minecraft defaults on its first load; after that a Minecraft key left unbound stays unbound.
 - F1 to F12 can be bound in the controls menu or with `bind`, and keep their binding in `settings.cfg` after a restart. Keys outside the bind key list, such as the numpad, Insert or the backquote key, still lose their binding on a restart.
 - The loading screen stays up like vanilla's until the 7x7 spawn chunks have collision and the camera's section is drawn (0.5 s close delay, 30 s timeout). Every MW2 spawn and respawn lands on the Minecraft spawn, or on the nearest free dry column within 10 blocks when someone stands there. A player in that area waits in place until the ground under it has collision.
 
