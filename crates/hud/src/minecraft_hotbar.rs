@@ -81,6 +81,9 @@ pub(crate) fn draw_hud(
     weapons: Option<&PreparedWeapons>,
     name: Option<(&str, u32)>,
 ) {
+    if !ui.game_mode.shows_hotbar() {
+        return;
+    }
     let cx = p.space.width / 2;
     let h = p.space.height;
     p.sprite("hud/hotbar", cx - 91, h - 22, 182, 22);

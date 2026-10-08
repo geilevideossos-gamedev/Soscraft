@@ -255,6 +255,7 @@ pub(crate) struct PredictionRemoteBody {
     pub client: ClientId,
     pub origin: [f32; 3],
     pub life_sequence: crate::LifeSequence,
+    pub noclip: bool,
 }
 
 /// Immutable definitions shared by independently mutable simulations.
@@ -3210,6 +3211,7 @@ impl SimState {
                                 client: *id,
                                 origin: ps.origin,
                                 life_sequence: meta.life_sequence,
+                                noclip: ps.pm_flags & playerstate_iw4::pm_flags::MC_NOCLIP != 0,
                             },
                         )
                     }),

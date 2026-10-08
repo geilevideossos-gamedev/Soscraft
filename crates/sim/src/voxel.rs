@@ -1936,6 +1936,40 @@ mod tests {
     }
 
     #[test]
+    fn a_spectator_flies_through_a_stone_wall_and_the_floor_and_never_lands() {
+        let spectator = FLYING | playerstate_iw4::pm_flags::MC_NOCLIP;
+        let mut blocks = Vec::new();
+        for x in 10..13 {
+            for y in 0..12 {
+                for z in 0..16 {
+                    blocks.push(([x, y, z], 1));
+                }
+            }
+        }
+        let thick = Pond(world(&blocks));
+        for msec in [50, 8] {
+            let mut ghost = flier([6.5, 5.0, 8.5], spectator);
+            let path = drive(&thick, &mut ghost, 0, 127, msec, 2000 / msec);
+            let end = path[path.len() - 1];
+            assert!(end[0] > 13.5, "msec {msec}: {end:?}");
+            assert!((end[1] - 5.0).abs() < 1e-3, "msec {msec}: {end:?}");
+            assert!(path.iter().any(|p| p[0] > 10.5 && p[0] < 12.5), "msec {msec}");
+            assert_eq!(ghost.ground_entity_num, playerstate_iw4::ENTITYNUM_NONE, "msec {msec}");
+            assert_ne!(ghost.pm_flags & playerstate_iw4::pm_flags::MC_FLYING, 0, "msec {msec}");
+
+            let mut walled = flier([6.5, 5.0, 8.5], FLYING);
+            let path = drive(&thick, &mut walled, 0, 127, msec, 2000 / msec);
+            assert!(path[path.len() - 1][0] < 9.71, "msec {msec}: {:?}", path.last());
+
+            let mut sinker = flier([8.5, 3.0, 8.5], spectator);
+            let path = drive(&floor(), &mut sinker, playerstate_iw4::buttons::CROUCH, 0, msec, 2000 / msec);
+            assert!(path[path.len() - 1][1] < -5.0, "msec {msec}: {:?}", path.last());
+            assert_eq!(sinker.ground_entity_num, playerstate_iw4::ENTITYNUM_NONE, "msec {msec}");
+            assert_ne!(sinker.pm_flags & playerstate_iw4::pm_flags::MC_FLYING, 0, "msec {msec}");
+        }
+    }
+
+    #[test]
     fn a_double_tap_on_the_ground_takes_off_only_for_a_player_who_may_fly() {
         for (flags, flies) in [(playerstate_iw4::pm_flags::MC_MAY_FLY, true), (0, false)] {
             let ground = floor();

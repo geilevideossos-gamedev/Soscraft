@@ -115,6 +115,7 @@ pub(crate) struct Survival {
     invulnerable: bool,
     creative: bool,
     may_fly: bool,
+    no_physics: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -159,6 +160,7 @@ impl Survival {
             invulnerable: self.invulnerable,
             creative: self.creative,
             may_fly: self.may_fly,
+            no_physics: self.no_physics,
             ..Self::default()
         };
     }
@@ -177,6 +179,7 @@ impl Survival {
         self.invulnerable = mode.invulnerable();
         self.creative = mode.mode == GameMode::Creative;
         self.may_fly = mode.abilities.may_fly;
+        self.no_physics = mode.noclip();
     }
 
     fn food_mode(&self) -> GameMode {
@@ -395,7 +398,7 @@ impl Survival {
         if motion.on_ground {
             body.supporting_block = standing_on(world, feet);
         }
-        let effects = block_effects(world, &body, DVec3::from_array(from), &[]);
+        let effects = if self.no_physics { Vec::new() } else { block_effects(world, &body, DVec3::from_array(from), &[]) };
         let before = self.fire_ticks;
         self.stuck = false;
         for effect in effects {
@@ -2101,6 +2104,39 @@ mod tests {
         assert!(survival.fire_ticks <= 0, "{}", survival.fire_ticks);
         assert!(!survival.vitals().on_fire);
         assert_eq!(survival.settle(100, 100), Settle::default());
+    }
+
+    #[test]
+    fn a_spectator_touches_no_lava_fire_or_cobweb_and_a_burn_from_before_goes_out() {
+        let spectator = || {
+            let mut survival = fresh();
+            survival.set_game_mode(&minecraft_terrain::game_mode::PlayerMode::new(GameMode::Spectator));
+            survival
+        };
+        let in_lava = Motion {
+            in_lava: true,
+            ..standing_in([0.5, 1.0, 0.5])
+        };
+        let mut swimmer = spectator();
+        let heard = live(&mut swimmer, &lava_pool(), &in_lava, Armor::default(), 200);
+        assert!(heard.is_empty(), "{heard:?}");
+        assert!(swimmer.fire_ticks <= 0, "{}", swimmer.fire_ticks);
+        assert!(!swimmer.vitals().on_fire);
+        let mut burning = spectator();
+        burning.fire_ticks = 300;
+        live(&mut burning, &ground(&[((0, 1, 0), block("minecraft:fire"))]), &standing_in([0.5, 1.0, 0.5]), Armor::default(), 2);
+        assert!(burning.fire_ticks <= 0, "{}", burning.fire_ticks);
+        assert!(!burning.vitals().on_fire);
+        let web = ground(&[((0, 1, 0), block("minecraft:cobweb"))]);
+        let mut ghost = spectator();
+        live(&mut ghost, &web, &standing_in([0.5, 1.0, 0.5]), Armor::default(), 1);
+        assert!(!ghost.stuck());
+        ghost.respawn();
+        live(&mut ghost, &web, &standing_in([0.5, 1.0, 0.5]), Armor::default(), 1);
+        assert!(!ghost.stuck());
+        let mut creative = creative();
+        live(&mut creative, &web, &standing_in([0.5, 1.0, 0.5]), Armor::default(), 1);
+        assert!(creative.stuck());
     }
 
     #[test]

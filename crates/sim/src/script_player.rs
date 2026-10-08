@@ -793,6 +793,24 @@ pub(crate) fn buttons(world: &mut FrameWorld, id: ClientId) -> u32 {
         .map_or(0, |(_, b)| *b)
 }
 
+pub(crate) fn untouchable_buttons(world: &FrameWorld, id: ClientId) -> u32 {
+    use playerstate_iw4::buttons;
+    if world.player(id).is_some_and(|ps| ps.pm_flags & playerstate_iw4::pm_flags::MC_NOCLIP != 0) {
+        buttons::ATTACK
+            | buttons::ADS
+            | buttons::MELEE_CHARGE
+            | buttons::USE
+            | buttons::RELOAD
+            | buttons::USE_RELOAD
+            | buttons::FRAG
+            | buttons::SMOKE
+            | buttons::THROW
+            | buttons::LOCATION_SELECT
+    } else {
+        0
+    }
+}
+
 pub(crate) fn constrain_cmd(
     world: &mut FrameWorld,
     id: ClientId,
@@ -800,6 +818,11 @@ pub(crate) fn constrain_cmd(
 ) {
     use playerstate_iw4::buttons;
     let held = world.player(id).map_or(0, |ps| ps.weapon);
+    let untouchable = untouchable_buttons(world, id);
+    if untouchable != 0 {
+        cmd.buttons &= !untouchable;
+        cmd.weapon = held as u16;
+    }
     let Some(mut controls) = world.client_meta(id).map(|m| m.controls) else {
         return;
     };

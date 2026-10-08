@@ -167,7 +167,7 @@ fn phase_stuck_in_client(world: &mut FrameWorld) {
         world
             .client_meta(*id)
             .is_some_and(|m| m.lifecycle == ClientLifecycle::Alive)
-            && world.player(*id).is_some()
+            && world.player(*id).is_some_and(|ps| ps.pm_flags & playerstate_iw4::pm_flags::MC_NOCLIP == 0)
     });
     let mut rows: Vec<gamemode_iw4::StuckClient> = ids
         .iter()
@@ -352,7 +352,8 @@ fn run_players_system(ecs: &mut World) {
             if crate::voxel::active() {
                 context.bounds = crate::voxel::move_bounds(context.bounds);
             }
-            crate::script::player_commands(world.ecs(), id.0, cmd.buttons, old_buttons);
+            let untouchable = crate::script_player::untouchable_buttons(&world, *id);
+            crate::script::player_commands(world.ecs(), id.0, cmd.buttons & !untouchable, old_buttons & !untouchable);
             let mut cmd = *cmd;
             crate::script_player::constrain_cmd(&mut world, *id, &mut cmd);
             crate::script::select_location(world.ecs(), id.0, &mut cmd, old_buttons);
@@ -410,7 +411,7 @@ fn run_players_system(ecs: &mut World) {
                     ps.pm_flags &= !playerstate_iw4::pm_flags::SHELLSHOCKED;
                 }
                 let (hull_mins, hull_maxs) = crate::voxel::player_hull(ps);
-                if crate::voxel::active() && let Some(origin) = crate::voxel::push_out(ps.origin, hull_mins, hull_maxs, Some(crate::voxel::Mover::of(ps, &cmd))) {
+                if crate::voxel::active() && ps.pm_flags & playerstate_iw4::pm_flags::MC_NOCLIP == 0 && let Some(origin) = crate::voxel::push_out(ps.origin, hull_mins, hull_maxs, Some(crate::voxel::Mover::of(ps, &cmd))) {
                     ps.origin = origin;
                 }
                 let backend = ClipBackend { mover: Some(crate::voxel::Mover::of(ps, &cmd)), ..backend };
@@ -1801,7 +1802,7 @@ fn alive_body_clips(world: &FrameWorld) -> Vec<PlayerBodyClip> {
                 .is_some_and(|m| m.lifecycle == ClientLifecycle::Alive)
         })
         .filter_map(|id| {
-            world.player(id).map(|ps| PlayerBodyClip {
+            world.player(id).filter(|ps| ps.pm_flags & playerstate_iw4::pm_flags::MC_NOCLIP == 0).map(|ps| PlayerBodyClip {
                 entnum: id.0 as u16,
                 origin: ps.origin,
             })
@@ -1811,6 +1812,7 @@ fn alive_body_clips(world: &FrameWorld) -> Vec<PlayerBodyClip> {
         world
             .prediction_remote_bodies()
             .iter()
+            .filter(|body| !body.noclip)
             .map(|body| PlayerBodyClip {
                 entnum: body.client.0 as u16,
                 origin: body.origin,
@@ -2256,4 +2258,83 @@ pub(crate) fn arm_held_weapon(
     }
     seed_ps_ammo_tables(ps, weapon, facts, clip0, clip1, last_hand >= 1, stock);
     (clip0, stock)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use playerstate_iw4::pm_flags::{MC_FLYING, MC_MAY_FLY, MC_NOCLIP};
+
+    fn alive(world: &mut FrameWorld, id: ClientId, flags: u32) {
+        let ps = world.ensure_player(id);
+        ps.pm_flags = flags;
+        ps.weapon = 7;
+        world.client_meta_mut(id).lifecycle = ClientLifecycle::Alive;
+    }
+
+    #[test]
+    fn spectators_are_no_body_for_other_players_to_bump_into() {
+        let mut sim = crate::SimWorld::default();
+        let mut world = sim.frame();
+        alive(&mut world, ClientId(1), MC_MAY_FLY | MC_FLYING);
+        alive(&mut world, ClientId(2), MC_MAY_FLY | MC_NOCLIP | MC_FLYING);
+        alive(&mut world, ClientId(3), 0);
+        let bodies: Vec<u16> = alive_body_clips(&world).iter().map(|body| body.entnum).collect();
+        assert_eq!(bodies, [1, 3]);
+    }
+
+    #[test]
+    fn spectators_overlapping_a_player_push_nobody_apart() {
+        let mut sim = crate::SimWorld::default();
+        let mut world = sim.frame();
+        let flags = [0, MC_MAY_FLY | MC_NOCLIP | MC_FLYING, 0, 0];
+        for (n, flags) in flags.into_iter().enumerate() {
+            let id = ClientId(n as u32 + 1);
+            alive(&mut world, id, flags);
+            let ps = world.player_mut(id).unwrap();
+            ps.origin = if n < 2 { [0.0; 3] } else { [1000.0, 0.0, 0.0] };
+            ps.velocity = [200.0, 0.0, 0.0];
+            ps.health = 100;
+            ps.other_flags = 0x1000;
+        }
+        phase_stuck_in_client(&mut world);
+        for n in 1..=4 {
+            let ps = world.player(ClientId(n)).unwrap();
+            let pushed = ps.velocity != [200.0, 0.0, 0.0] || ps.pm_time != 0;
+            assert_eq!(pushed, n > 2, "client {n}: {:?} {}", ps.velocity, ps.pm_time);
+        }
+    }
+
+    #[test]
+    fn spectators_fire_no_gun_throw_no_grenade_use_nothing_and_switch_no_weapon() {
+        let mut sim = crate::SimWorld::default();
+        let mut world = sim.frame();
+        alive(&mut world, ClientId(1), MC_MAY_FLY | MC_NOCLIP | MC_FLYING);
+        alive(&mut world, ClientId(2), MC_MAY_FLY | MC_FLYING);
+        let pressed = buttons::ATTACK
+            | buttons::ADS
+            | buttons::MELEE_CHARGE
+            | buttons::USE
+            | buttons::RELOAD
+            | buttons::USE_RELOAD
+            | buttons::FRAG
+            | buttons::SMOKE
+            | buttons::THROW
+            | buttons::LOCATION_SELECT;
+        let moving = buttons::JUMP | buttons::CROUCH | buttons::SPRINT;
+        for (id, kept) in [(ClientId(1), moving), (ClientId(2), pressed | moving)] {
+            let mut cmd = playerstate_iw4::UserCmd {
+                buttons: pressed | moving,
+                weapon: 9,
+                forwardmove: 127,
+                ..playerstate_iw4::UserCmd::default()
+            };
+            let untouchable = crate::script_player::untouchable_buttons(&world, id);
+            assert_eq!(untouchable, pressed & !kept, "{id:?}");
+            crate::script_player::constrain_cmd(&mut world, id, &mut cmd);
+            assert_eq!(cmd.buttons, kept, "{id:?}");
+            assert_eq!(cmd.weapon, if id == ClientId(1) { 7 } else { 9 }, "{id:?}");
+            assert_eq!(cmd.forwardmove, 127);
+        }
+    }
 }

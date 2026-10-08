@@ -663,7 +663,7 @@ fn update(
     if water.wet() {
         steps.air_peak = None;
     }
-    if let Some(last) = steps.last.filter(|_| alive) {
+    if let Some(last) = steps.last.filter(|_| alive && !player_mode.noclip()) {
         let climbing = sim::voxel::climb(ps.origin).on;
         let horizontal = ((feet[0] - last[0]).hypot(feet[2] - last[2]).hypot(if climbing { feet[1] - last[1] } else { 0.0 }) * 0.6) as f32;
         let block_at = |dy: f64| {
@@ -742,7 +742,7 @@ fn update(
     let holding = entities.as_ref().is_some_and(|e| {
         e.inventory.slots[e.selected].as_ref().is_none_or(|s| crate::minecraft_inventory::weapon_of(s).is_none())
     });
-    ui.holding_item = alive && holding;
+    ui.holding_item = alive && holding && player_mode.interacts();
     ui.empty_hand = ui.holding_item
         && entities.as_ref().is_some_and(|e| e.inventory.slots[e.selected].is_none());
     hand.clock += dt_hand;
@@ -1634,6 +1634,12 @@ fn update(
             ui.inventory_open = false;
             ui.chat.close();
         }
+        if !player_mode.interacts() {
+            ui.inventory_open = false;
+            ui.select = None;
+            ui.drop_selected = None;
+            ui.swap_hands = false;
+        }
         if inventory_ui.table().is_some_and(|pos| {
             !minecraft_terrain::crafting::within_table_reach(eye, pos)
                 || !minecraft_terrain::scene::Scene::block(&world.scene, pos).is_some_and(minecraft_terrain::crafting::is_crafting_table)
@@ -1786,7 +1792,7 @@ fn update(
             hand.blocking = None;
         }
         crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
-        ui.weapon_request = inventory_ui.weapon_request(&entities.inventory, &mut selected, ps.weapon as u32);
+        ui.weapon_request = inventory_ui.weapon_request(&entities.inventory, &mut selected, ps.weapon).filter(|_| player_mode.interacts());
         entities.selected = selected;
         inventory_ui.animation_tick = atlas_animation.ticks();
         inventory_ui.publish(&mut ui, &entities.inventory, selected, &world.packs, &mut images, containers);

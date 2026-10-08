@@ -418,6 +418,7 @@ pub fn occupy_fpv_scene(
         || puppet.as_ref().is_some_and(|p| p.active)
         || minecraft.as_ref().is_some_and(|ui| ui.active && ui.holding_item && !ui.empty_hand)
         || minecraft.as_ref().is_some_and(|ui| ui.active && ui.offhand_busy)
+        || minecraft.as_ref().is_some_and(|ui| ui.active && !ui.game_mode.shows_hotbar())
         || presented.viewweapon_player(local.0).is_none()
         || presented_is_third_person(&presented, local.0, view.in_killcam())
         || mc_camera.as_ref().is_some_and(|c| c.detached)

@@ -203,6 +203,10 @@ impl McGameMode {
     pub const fn shows_vitals(self) -> bool {
         matches!(self, Self::Survival | Self::Adventure)
     }
+
+    pub const fn shows_hotbar(self) -> bool {
+        !matches!(self, Self::Spectator)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -370,6 +374,18 @@ mod tests {
         }
         input.clear();
         assert_eq!(input, McActionInput::default());
+    }
+
+    #[test]
+    fn only_spectators_have_no_hotbar_and_only_survival_and_adventure_show_vitals() {
+        let modes = [
+            McGameMode::Survival,
+            McGameMode::Creative,
+            McGameMode::Adventure,
+            McGameMode::Spectator,
+        ];
+        assert_eq!(modes.map(McGameMode::shows_hotbar), [true, true, true, false]);
+        assert_eq!(modes.map(McGameMode::shows_vitals), [true, false, true, false]);
     }
 
     #[test]

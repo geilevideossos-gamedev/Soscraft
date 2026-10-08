@@ -100,6 +100,7 @@ pub fn fly_move<C: CollisionBackend>(
     bounds: MoveBounds,
     collision: &C,
 ) {
+    let stuck = stuck.filter(|_| !flight.noclip);
     let ticks = pml.frametime / TICK_SECONDS;
     let speed = if flight.sprint {
         FLYING_SPEED * SPRINT_SCALE
@@ -141,6 +142,16 @@ pub fn fly_move<C: CollisionBackend>(
     }
     let multiplier = stuck.unwrap_or([1.0; 3]);
     ps.velocity = core::array::from_fn(|k| v[k] * PER_TICK * multiplier[k]);
+    if flight.noclip {
+        for (origin, speed) in ps.origin.iter_mut().zip(ps.velocity) {
+            *origin += speed * pml.frametime;
+        }
+        ps.ground_entity_num = ENTITYNUM_NONE;
+        pml.walking = 0;
+        pml.ground_plane = 0;
+        pml.almost_ground_plane = 0;
+        return;
+    }
     let requested_z = ps.velocity[2];
     step_slide_move(
         ps,
@@ -580,5 +591,61 @@ mod tests {
             );
         }
         assert_ne!(spectator.pm_flags & pm_flags::MC_FLYING, 0);
+    }
+
+    #[test]
+    fn a_spectator_flies_through_solid_blocks_and_cobwebs_at_full_speed() {
+        struct Solid;
+
+        impl CollisionBackend for Solid {
+            fn trace(&self, input: GroundTraceInput) -> trace_iw4::Trace {
+                trace_iw4::Trace {
+                    fraction: 0.0,
+                    allsolid: 1,
+                    startsolid: 1,
+                    endpos: input.start,
+                    ..trace_iw4::Trace::default()
+                }
+            }
+        }
+
+        let cmd = UserCmd {
+            forwardmove: 127,
+            ..UserCmd::default()
+        };
+        let sink = Flight {
+            down: true,
+            ..Flight::default()
+        };
+        let ghost = Flight {
+            noclip: true,
+            ..sink
+        };
+        let web = Some([0.25, 0.25, 0.05]);
+        for msec in [50, 8] {
+            let mut free = flier();
+            let mut spectator = flier();
+            for _ in 0..1000 / msec {
+                fly_move(&mut free, &mut pml(msec), &cmd, sink, None, BOUNDS, &Open);
+                let mut frame = pml(msec);
+                frame.walking = 1;
+                fly_move(&mut spectator, &mut frame, &cmd, ghost, web, BOUNDS, &Solid);
+                assert_eq!((frame.walking, frame.ground_plane), (0, 0));
+            }
+            assert!(
+                spectator
+                    .origin
+                    .iter()
+                    .zip(free.origin)
+                    .all(|(a, b)| (a - b).abs() < 1e-2),
+                "msec {msec}: {:?} {:?}",
+                spectator.origin,
+                free.origin
+            );
+            assert!(spectator.origin[0] / WATER_BLOCK > 5.0, "msec {msec}");
+            assert!(spectator.origin[2] / WATER_BLOCK < -5.0, "msec {msec}");
+            assert_eq!(spectator.ground_entity_num, ENTITYNUM_NONE);
+            assert_ne!(spectator.pm_flags & pm_flags::MC_FLYING, 0);
+        }
     }
 }

@@ -211,13 +211,14 @@ pub(crate) fn update_minecraft_hud(
     let mc = |action: McAction| mc_keys.as_deref().is_some_and(|keys| keys.just_pressed(action));
 
     let open_before = ui.inventory_open;
+    let hotbar = ui.game_mode.shows_hotbar();
     let typing = ui.inventory_open && ui.screen == McScreen::Anvil && ui.container.first().is_some_and(Option::is_some);
     let text: String = typed.read().filter(|event| event.state.is_pressed()).filter_map(|event| event.text.as_ref()).flat_map(|text| text.chars()).filter(|c| !c.is_control()).collect();
-    if !blocked && ((mc(McAction::Inventory) && !typing && !ui.chat.open) || (ui.inventory_open && keys.just_pressed(KeyCode::Escape))) {
+    if !blocked && ((mc(McAction::Inventory) && !typing && !ui.chat.open && (hotbar || ui.inventory_open)) || (ui.inventory_open && keys.just_pressed(KeyCode::Escape))) {
         ui.inventory_open = !ui.inventory_open && !keys.just_pressed(KeyCode::Escape);
     } else if ui.inventory_open && (menus.captures_input() || pad_just(GamepadButton::East)) {
         ui.inventory_open = false;
-    } else if !ui.inventory_open && !ui.chat.open && pad_just(GamepadButton::DPadUp) {
+    } else if !ui.inventory_open && !ui.chat.open && hotbar && pad_just(GamepadButton::DPadUp) {
         ui.inventory_open = true;
     }
     if ui.inventory_open && !open_before {
@@ -253,16 +254,16 @@ pub(crate) fn update_minecraft_hud(
     let dt = time.delta_secs();
 
     if !ui.inventory_open && !ui.chat.open {
-        if wheel_steps != 0 {
+        if wheel_steps != 0 && hotbar {
             ui.select = Some((ui.selected as i32 + wheel_steps).rem_euclid(9) as usize);
         }
-        if let Some(digit) = digit {
+        if let Some(digit) = digit.filter(|_| hotbar) {
             ui.select = Some(digit);
         }
-        if mc(McAction::Drop) {
+        if mc(McAction::Drop) && hotbar {
             ui.drop_selected = Some(ctrl);
         }
-        if (!blocked && mc(McAction::SwapHands)) || pad_just(GamepadButton::DPadDown) {
+        if hotbar && ((!blocked && mc(McAction::SwapHands)) || pad_just(GamepadButton::DPadDown)) {
             ui.swap_hands = true;
         }
         if !blocked
