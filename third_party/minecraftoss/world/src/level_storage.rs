@@ -50,6 +50,8 @@ pub struct LevelData {
     pub difficulty: String,
     pub hardcore: bool,
     pub initialized: bool,
+    pub allow_commands: bool,
+    pub game_type: i32,
 }
 
 impl LevelData {
@@ -61,6 +63,8 @@ impl LevelData {
             difficulty: "normal".to_owned(),
             hardcore: false,
             initialized: false,
+            allow_commands: true,
+            game_type: 0,
         }
     }
 }
@@ -221,6 +225,8 @@ impl LevelStorage {
             difficulty: text(difficulty.and_then(|d| d.get("difficulty")), "normal"),
             hardcore: flag(difficulty.and_then(|d| d.get("hardcore"))),
             initialized: flag(data.get("initialized")),
+            allow_commands: flag(data.get("allowCommands")),
+            game_type: data.get("GameType").and_then(Tag::as_i64).unwrap_or(0) as i32,
         }))
     }
 
@@ -279,6 +285,8 @@ impl LevelStorage {
             ("LevelName", string(&level.level_name)),
             ("version", Tag::Int(STORAGE_VERSION)),
             ("initialized", Tag::Byte(i8::from(level.initialized))),
+            ("allowCommands", Tag::Byte(i8::from(level.allow_commands))),
+            ("GameType", Tag::Int(level.game_type)),
             (
                 "difficulty_settings",
                 compound(vec![
@@ -292,8 +300,6 @@ impl LevelStorage {
             data.insert(key.to_owned(), value);
         }
         let defaults = [
-            ("GameType", Tag::Int(0)),
-            ("allowCommands", Tag::Byte(0)),
             (
                 "DataPacks",
                 compound(vec![
@@ -488,6 +494,8 @@ mod tests {
             difficulty: "normal".to_owned(),
             hardcore: false,
             initialized: true,
+            allow_commands: true,
+            game_type: 0,
         }
     }
 
@@ -580,7 +588,7 @@ mod tests {
         let foreign = compound(vec![(
             "Data",
             compound(vec![
-                ("GameType", Tag::Int(1)),
+                ("WanderingTraderSpawnDelay", Tag::Int(24000)),
                 ("singleplayer_uuid", Tag::IntArray(vec![1, 2, 3, 4])),
                 ("ServerBrands", Tag::List(vec![string("vanilla")])),
                 ("version_history", Tag::List(vec![Tag::Int(4000)])),
@@ -590,7 +598,10 @@ mod tests {
         storage.write_level_data(&level()).unwrap();
         let root = nbt::read(&std::fs::read(storage.level_data_path()).unwrap()).unwrap();
         let data = root.get("Data").unwrap();
-        assert_eq!(data.get("GameType"), Some(&Tag::Int(1)));
+        assert_eq!(
+            data.get("WanderingTraderSpawnDelay"),
+            Some(&Tag::Int(24000))
+        );
         assert_eq!(
             data.get("singleplayer_uuid"),
             Some(&Tag::IntArray(vec![1, 2, 3, 4]))
@@ -603,6 +614,39 @@ mod tests {
             data.get("version_history"),
             Some(&Tag::List(vec![Tag::Int(4000), Tag::Int(DATA_VERSION)]))
         );
+    }
+
+    #[test]
+    fn allow_commands_and_game_type_round_trip() {
+        let dir = test_dir("commands");
+        let storage = LevelStorage::open(&dir.0).unwrap();
+        assert!(LevelData::new("world").allow_commands);
+        assert_eq!(LevelData::new("world").game_type, 0);
+        let old = compound(vec![(
+            "Data",
+            compound(vec![
+                ("allowCommands", Tag::Byte(0)),
+                ("GameType", Tag::Int(1)),
+            ]),
+        )]);
+        safe_replace(&storage.level_data_path(), &nbt::write_gzip(&old, "")).unwrap();
+        let read = storage.read_level_data().unwrap().unwrap();
+        assert!(!read.allow_commands);
+        assert_eq!(read.game_type, 1);
+        storage
+            .write_level_data(&LevelData {
+                allow_commands: true,
+                game_type: 2,
+                ..read
+            })
+            .unwrap();
+        let root = nbt::read(&std::fs::read(storage.level_data_path()).unwrap()).unwrap();
+        let data = root.get("Data").unwrap();
+        assert_eq!(data.get("allowCommands"), Some(&Tag::Byte(1)));
+        assert_eq!(data.get("GameType"), Some(&Tag::Int(2)));
+        let again = storage.read_level_data().unwrap().unwrap();
+        assert!(again.allow_commands);
+        assert_eq!(again.game_type, 2);
     }
 
     #[test]

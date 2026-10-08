@@ -73,6 +73,7 @@ pub(crate) enum DamageCause {
     Drown,
     Starve,
     Magic,
+    Kill,
     Mob {
         id: u64,
         type_id: &'static str,
@@ -128,6 +129,7 @@ impl DamageCause {
             Self::Drown => "drown",
             Self::Starve => "starve",
             Self::Magic => "magic",
+            Self::Kill => "genericKill",
             Self::Mob {
                 attack: MobAttack::Melee,
                 ..

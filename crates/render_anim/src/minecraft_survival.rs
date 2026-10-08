@@ -45,9 +45,53 @@ pub(crate) struct Motion {
     pub(crate) height: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SurvivalRules {
+    pub(crate) natural_regeneration: bool,
+    pub(crate) fall_damage: bool,
+    pub(crate) fire_damage: bool,
+    pub(crate) drowning_damage: bool,
+    pub(crate) difficulty: Difficulty,
+}
+
+impl Default for SurvivalRules {
+    fn default() -> Self {
+        Self {
+            natural_regeneration: true,
+            fall_damage: true,
+            fire_damage: true,
+            drowning_damage: true,
+            difficulty: Difficulty::Normal,
+        }
+    }
+}
+
+impl SurvivalRules {
+    pub(crate) fn of(rules: &minecraft_terrain::game_rules::GameRules, difficulty: Difficulty) -> Self {
+        Self {
+            natural_regeneration: rules.bool("natural_health_regeneration"),
+            fall_damage: rules.bool("fall_damage"),
+            fire_damage: rules.bool("fire_damage"),
+            drowning_damage: rules.bool("drowning_damage"),
+            difficulty,
+        }
+    }
+
+    fn allows(&self, cause: DamageCause) -> bool {
+        match cause {
+            DamageCause::Fall | DamageCause::EnderPearl => self.fall_damage,
+            DamageCause::Hazard(hazard) if hazard.is_fire() => self.fire_damage,
+            DamageCause::Drown => self.drowning_damage,
+            _ => true,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Survival {
     pub(crate) status: SurvivalStatus,
+    pub(crate) rules: SurvivalRules,
+    killed: bool,
     pub(crate) eye_in_water: bool,
     eye_in_lava: bool,
     stuck: bool,
@@ -108,6 +152,7 @@ impl Survival {
     pub(crate) fn respawn(&mut self) {
         *self = Self {
             blocked_sprint: self.blocked_sprint,
+            rules: self.rules,
             ..Self::default()
         };
     }
@@ -199,7 +244,7 @@ impl Survival {
         let breath = self.breathe(motion.eye_in_water);
         let before = self.status.health;
         self.status
-            .tick_with_rules(true, Difficulty::Normal, self.tick);
+            .tick_with_rules(self.rules.natural_regeneration, self.rules.difficulty, self.tick);
         self.record(before, DamageCause::Starve, 0.0);
         self.update_blink();
         breath
@@ -208,7 +253,15 @@ impl Survival {
     pub(crate) fn breathe(&mut self, eye_in_water: bool) -> Breath {
         self.eye_in_water = eye_in_water;
         let before = self.status.health;
-        let drowned = self.status.tick_air(eye_in_water, false);
+        let drowned = if eye_in_water && !self.rules.drowning_damage {
+            self.status.air -= 1;
+            if self.status.air <= -20 {
+                self.status.air = 0;
+            }
+            false
+        } else {
+            self.status.tick_air(eye_in_water, false)
+        };
         self.record(before, DamageCause::Drown, 0.0);
         let (air, max) = (
             self.status.air.clamp(0, self.status.max_air),
@@ -236,7 +289,11 @@ impl Survival {
     }
 
     pub(crate) fn fall(&mut self, distance: f64, landed_on: Option<&str>, crouching: bool) -> i32 {
-        let damage = landing_damage(distance, landed_on, crouching);
+        let damage = if self.rules.fall_damage {
+            landing_damage(distance, landed_on, crouching)
+        } else {
+            0
+        };
         let before = self.status.health;
         if damage > 0
             && self
@@ -379,7 +436,7 @@ impl Survival {
         random: &mut impl FnMut() -> f32,
         heard: &mut Vec<PlayerSound>,
     ) -> bool {
-        if hazard.is_fire() && self.status.effect(EffectKind::FireResistance).is_some() {
+        if hazard.is_fire() && (self.status.effect(EffectKind::FireResistance).is_some() || !self.rules.fire_damage) {
             return false;
         }
         let armor = if hazard.bypasses_armor() {
@@ -412,6 +469,9 @@ impl Survival {
         from: Option<[f64; 3]>,
         cause: DamageCause,
     ) -> bool {
+        if !self.rules.allows(cause) {
+            return false;
+        }
         let before = self.status.health;
         let landed = self.status.hurt(damage, armor, HURT_EXHAUSTION).is_some();
         if landed {
@@ -422,6 +482,18 @@ impl Survival {
             self.source = from;
         }
         landed
+    }
+
+    pub(crate) fn kill(&mut self, cause: DamageCause) {
+        let before = self.status.health;
+        self.status.absorption = 0.0;
+        self.status.health = 0.0;
+        self.killed = true;
+        self.record(before, cause, 0.0);
+    }
+
+    pub(crate) fn killed(&self) -> bool {
+        self.killed
     }
 
     pub(crate) fn hurt_blocked(&mut self, cause: DamageCause) {
@@ -530,7 +602,8 @@ impl Survival {
             out.set = Some(base.max(1));
             current = base.max(1);
         }
-        if self.status.health <= 0.0 {
+        if self.killed || self.status.health <= 0.0 {
+            self.status.health = 0.0;
             out.damage = Some((current.max(1), self.source.take()));
             return out;
         }
@@ -615,6 +688,9 @@ impl Survival {
     }
 
     pub(crate) fn protect(&mut self, inventory: &mut Inventory, selected: usize) -> bool {
+        if self.killed {
+            return false;
+        }
         let Some(slot) = crate::minecraft_offhand::totem_slot(inventory, selected) else {
             return false;
         };
@@ -1366,6 +1442,80 @@ mod tests {
         assert!(survival.protect(&mut inventory, 3));
         assert!(inventory.slots[40].is_none());
         assert!(!survival.protect(&mut inventory, 3));
+    }
+
+    #[test]
+    fn generic_kill_has_the_vanilla_message_and_bypasses_the_totem() {
+        let mut survival = fresh();
+        let mut inventory = Inventory::default();
+        inventory.slots[40] = Some(ItemStack::new("minecraft:totem_of_undying", 1));
+        survival.status.absorption = 4.0;
+        survival.status.add_effect(EffectKind::Resistance, 400, 4);
+        survival.kill(DamageCause::Kill);
+        assert_eq!(survival.status.health, 0.0);
+        assert_eq!(survival.status.absorption, 0.0);
+        assert!(survival.killed());
+        assert!(!survival.protect(&mut inventory, 0));
+        assert!(inventory.slots[40].is_some());
+        let language: std::collections::HashMap<String, String> = [("death.attack.genericKill", "%1$s was killed")]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect();
+        assert_eq!(survival.death_line(&language, |_| false).message, "%1$s was killed");
+        assert_eq!(survival.settle(100, 100).damage, Some((100, None)));
+        survival.respawn();
+        assert!(!survival.killed());
+        survival.status.health = 0.0;
+        assert!(survival.protect(&mut inventory, 0));
+    }
+
+    #[test]
+    fn a_kill_sticks_through_healing_until_it_is_settled() {
+        let mut survival = fresh();
+        survival.status.health = 12.0;
+        survival.status.food.level = 20;
+        survival.status.food.saturation = 5.0;
+        survival.status.add_effect(EffectKind::Regeneration, 400, 1);
+        survival.kill(DamageCause::Kill);
+        for _ in 0..40 {
+            survival.tick(&standing([0.0, 64.0, 0.0]));
+        }
+        assert!(survival.status.health > 0.0);
+        assert_eq!(survival.settle(100, 100).damage.map(|d| d.0), Some(100));
+        assert_eq!(survival.status.health, 0.0);
+        assert!(survival.killed());
+    }
+
+    #[test]
+    fn game_rules_turn_fall_fire_drowning_and_regeneration_off() {
+        let mut rules = minecraft_terrain::game_rules::GameRules::default();
+        assert_eq!(SurvivalRules::of(&rules, Difficulty::Normal), SurvivalRules::default());
+        for rule in ["fall_damage", "fire_damage", "drowning_damage", "natural_health_regeneration"] {
+            rules.set(rule, "false").unwrap();
+        }
+        let off = SurvivalRules::of(&rules, Difficulty::Hard);
+        assert_eq!(off.difficulty, Difficulty::Hard);
+        let mut survival = fresh();
+        survival.rules = off;
+        assert_eq!(survival.fall(20.0, None, false), 0);
+        assert!(!survival.hurt(3.0, Armor::default(), None, DamageCause::EnderPearl));
+        assert!(survival.hurt(3.0, Armor::default(), None, DamageCause::Generic));
+        assert_eq!(survival.status.health, 17.0);
+        for _ in 0..400 {
+            assert!(!survival.breathe(true).drowned);
+        }
+        assert_eq!(survival.status.health, 17.0);
+        for _ in 0..200 {
+            survival.tick(&standing([0.0, 64.0, 0.0]));
+        }
+        assert_eq!(survival.status.health, 17.0);
+        let mut heard = Vec::new();
+        assert!(!survival.hurt_aloud(Hazard::Lava, 4.0, Armor::default(), &mut || 0.5, &mut heard));
+        assert_eq!(survival.status.health, 17.0);
+        survival.respawn();
+        assert_eq!(survival.rules, off);
+        survival.rules = SurvivalRules::default();
+        assert_eq!(survival.fall(20.0, None, false), 17);
     }
 
     #[derive(Default)]

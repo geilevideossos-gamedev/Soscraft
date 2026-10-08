@@ -921,13 +921,33 @@ impl ServerSim {
 
     pub fn set_weather(&mut self, weather: &str) -> bool {
         const LASTING: i32 = 1_000_000_000;
+        self.set_weather_for(weather, LASTING)
+    }
+
+    pub fn set_weather_for(&mut self, weather: &str, duration: i32) -> bool {
         match weather {
-            "clear" => self.level.set_weather(LASTING, 0, false, false),
-            "rain" => self.level.set_weather(0, LASTING, true, false),
-            "thunder" => self.level.set_weather(0, LASTING, true, true),
+            "clear" => self.level.set_weather(duration, 0, false, false),
+            "rain" => self.level.set_weather(0, duration, true, false),
+            "thunder" => self.level.set_weather(0, duration, true, true),
             _ => return false,
         }
         true
+    }
+
+    pub fn apply_game_rules(&mut self, rules: &crate::game_rules::GameRules) {
+        let level = &mut self.level;
+        level.random_tick_speed = rules.int("random_tick_speed");
+        level.block_drops = rules.bool("block_drops");
+        level.entity_drops = rules.bool("entity_drops");
+        level.max_snow_accumulation_height = rules.int("max_snow_accumulation_height");
+        level.fire_spread_radius = rules.int("fire_spread_radius_around_player");
+        level.water_source_conversion = rules.bool("water_source_conversion");
+        level.lava_source_conversion = rules.bool("lava_source_conversion");
+        level.tnt_explodes = rules.bool("tnt_explodes");
+        level.tnt_explosion_drop_decay = rules.bool("tnt_explosion_drop_decay");
+        level.set_advance_weather(rules.bool("advance_weather"));
+        self.mobs.set_mob_griefing(rules.bool("mob_griefing"));
+        self.mobs.set_mob_drops(rules.bool("mob_drops"));
     }
 
     pub fn weather(&mut self, feet: Option<[f64; 3]>) -> WeatherView {
@@ -1099,6 +1119,8 @@ pub enum Command {
     Tick(Box<TickInput>),
     Throw(Box<crate::thrown::Thrown>),
     Save,
+    SetWeather { weather: &'static str, duration: i32 },
+    GameRules(Box<crate::game_rules::GameRules>),
 }
 
 /// The client state a server tick reads.
@@ -1328,6 +1350,14 @@ impl ServerHandle {
         self.send(Command::Summon { kind, position, nbt, y_rot });
     }
 
+    pub fn set_weather(&mut self, weather: &'static str, duration: i32) {
+        self.send(Command::SetWeather { weather, duration });
+    }
+
+    pub fn set_game_rules(&mut self, rules: crate::game_rules::GameRules) {
+        self.send(Command::GameRules(Box::new(rules)));
+    }
+
     pub fn hatch_egg(&mut self, kind: String, position: [f64; 3], y_rot: f32) {
         self.send(Command::HatchEgg { kind, position, y_rot });
     }
@@ -1442,6 +1472,10 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.merchant.push(sim.merchant(op, *inventory, selected, feet));
                 }
                 Command::Throw(thrown) => sim.throw(*thrown),
+                Command::SetWeather { weather, duration } => {
+                    sim.set_weather_for(weather, duration);
+                }
+                Command::GameRules(rules) => sim.apply_game_rules(&rules),
                 Command::Save => {
                     sim.ticks_since_save = 0;
                     sim.save_all_entities();
@@ -1602,6 +1636,48 @@ mod tests {
         }
         assert_eq!(server.weather(None), WeatherView::default());
         assert!(surface.iter().all(|&feet| !server.weather(Some(feet)).player_in_rain));
+    }
+
+    #[test]
+    fn command_weather_sets_rain_for_its_duration() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        server.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        assert!(!server.set_weather_for("snow", 100));
+        assert!(server.set_weather_for("rain", 150));
+        for _ in 0..120 {
+            server.tick();
+        }
+        let raining = server.weather(None);
+        assert!(raining.rain_level > 0.99 && raining.thunder_level == 0.0, "{raining:?}");
+        for _ in 0..140 {
+            server.tick();
+        }
+        assert_eq!(server.weather(None).rain_level, 0.0);
+        let mut rules = crate::game_rules::GameRules::default();
+        rules.set("random_tick_speed", "0").unwrap();
+        rules.set("mob_griefing", "false").unwrap();
+        rules.set("tnt_explodes", "false").unwrap();
+        rules.set("advance_weather", "false").unwrap();
+        server.apply_game_rules(&rules);
+        assert_eq!(server.level.random_tick_speed, 0);
+        assert!(!server.level.tnt_explodes);
+        assert!(!server.mobs.mob_griefing());
+        assert!(server.level.block_drops);
+        assert!(server.set_weather_for("thunder", 5));
+        for _ in 0..120 {
+            server.tick();
+        }
+        let stormy = server.weather(None);
+        assert!(stormy.rain_level > 0.99 && stormy.thunder_level > 0.99, "{stormy:?}");
+        server.apply_game_rules(&crate::game_rules::GameRules::default());
+        assert_eq!(server.level.random_tick_speed, 3);
+        assert!(server.mobs.mob_griefing());
     }
 
     /// Creatures the SPAWN step generated join the server's mobs with their

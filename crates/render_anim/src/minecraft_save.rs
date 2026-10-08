@@ -6,6 +6,7 @@ use minecraft_terrain::game_rules::GameRules;
 use minecraft_terrain::level_storage::{
     ClockState, LevelData, LevelStorage, RespawnData, WorldSettings,
 };
+use minecraftoss_player::Difficulty;
 
 pub(crate) const DEFAULT_WORLD: &str = "world";
 pub(crate) const TEMPORARY_WORLD: &str = "temp";
@@ -82,24 +83,41 @@ impl WorldSave {
         self.day_at_start = Some(day_ticks);
     }
 
+    pub(crate) fn ops_path(&self) -> PathBuf {
+        self.path().join(minecraft_commands::permissions::OPS_FILE)
+    }
+
+    pub(crate) fn shift_day(&mut self, by: f64) {
+        if let Some(start) = &mut self.day_at_start {
+            *start += by;
+        }
+    }
+
+    pub(crate) fn game_time(&self, day_ticks: Option<f64>) -> i64 {
+        let elapsed = match (day_ticks, self.day_at_start) {
+            (Some(now), Some(start)) => (now - start).max(0.0) as i64,
+            _ => 0,
+        };
+        self.level.game_time + elapsed
+    }
+
     pub(crate) fn write(
         &self,
         spawn: (i32, i32, i32),
         day_ticks: Option<f64>,
         game_rules: &GameRules,
+        difficulty: Difficulty,
     ) -> Result<(), String> {
-        let elapsed = match (day_ticks, self.day_at_start) {
-            (Some(now), Some(start)) => (now - start).max(0.0) as i64,
-            _ => 0,
-        };
         let level = LevelData {
-            game_time: self.level.game_time + elapsed,
+            game_time: self.game_time(day_ticks),
             spawn: RespawnData {
                 dimension: OVERWORLD.to_owned(),
                 pos: spawn,
                 ..self.level.spawn.clone()
             },
+            difficulty: minecraft_commands::difficulty_name(difficulty).to_owned(),
             initialized: true,
+            allow_commands: true,
             ..self.level.clone()
         };
         self.storage.write_level_data(&level)?;
@@ -122,6 +140,7 @@ pub(crate) struct OpenedWorld {
     pub(crate) spawn: Option<(i32, i32, i32)>,
     pub(crate) day_ticks: Option<f64>,
     pub(crate) game_rules: GameRules,
+    pub(crate) difficulty: Difficulty,
     pub(crate) notes: Vec<String>,
     pub(crate) warnings: Vec<String>,
 }
@@ -134,6 +153,7 @@ impl OpenedWorld {
             spawn: None,
             day_ticks: None,
             game_rules: GameRules::default(),
+            difficulty: Difficulty::Normal,
             notes: vec![format!(
                 "Minecraft world: temporary, deleted when it closes, seed {seed}"
             )],
@@ -219,6 +239,7 @@ fn open_save(
         spawn,
         day_ticks: clocks.get(OVERWORLD).map(ClockState::ticks),
         game_rules,
+        difficulty: Difficulty::parse(&level.difficulty).unwrap_or(Difficulty::Normal),
         notes: vec![format!(
             "Minecraft world: {verb} {} seed {seed}",
             path.display()
@@ -318,9 +339,9 @@ mod tests {
         let mut save = first.save.expect("a real world");
         assert_eq!(save.path(), world);
         let rules = GameRules::default();
-        save.write((12, 70, -4), None, &rules).unwrap();
+        save.write((12, 70, -4), None, &rules, Difficulty::Normal).unwrap();
         save.started(1000.0);
-        save.write((12, 70, -4), Some(19_000.25), &rules).unwrap();
+        save.write((12, 70, -4), Some(19_000.25), &rules, Difficulty::Normal).unwrap();
         drop(save);
         let again = open_world(&dir.0, Some("world"), Some("77"), 9);
         assert_eq!(again.seed, 123);
@@ -364,7 +385,7 @@ mod tests {
             .save
             .as_ref()
             .unwrap()
-            .write((1, 64, 2), Some(700.0), &GameRules::default())
+            .write((1, 64, 2), Some(700.0), &GameRules::default(), Difficulty::Normal)
             .unwrap();
         drop(first);
         let world = dir.0.join("world");
@@ -395,13 +416,15 @@ mod tests {
             .save
             .as_ref()
             .unwrap()
-            .write((0, 64, 0), None, &rules)
+            .write((0, 64, 0), None, &rules, Difficulty::Hard)
             .unwrap();
         drop(first);
         let world = dir.0.join("world");
         assert!(world.join("data/minecraft/game_rules.dat").is_file());
         let again = open_world(&dir.0, None, None, 9);
         assert!(again.game_rules.keep_inventory());
+        assert_eq!(again.difficulty, Difficulty::Hard);
+        assert!(again.save.as_ref().unwrap().level.allow_commands);
         assert!(again.warnings.is_empty(), "{:?}", again.warnings);
         drop(again);
         for file in [
@@ -417,6 +440,39 @@ mod tests {
         assert!(broken.warnings[0].contains("game_rules"));
         let temp = open_world(&dir.0, Some("temp"), None, 9);
         assert_eq!(temp.game_rules, GameRules::default());
+        assert_eq!(temp.difficulty, Difficulty::Normal);
+    }
+
+    #[test]
+    fn game_time_ignores_time_set_by_commands() {
+        let dir = saves();
+        let opened = open_world(&dir.0, None, Some("1"), 9);
+        assert_eq!(opened.difficulty, Difficulty::Normal);
+        let mut save = opened.save.unwrap();
+        save.started(5000.0);
+        assert_eq!(save.game_time(Some(5600.0)), 600);
+        save.shift_day(6000.0 - 5600.0);
+        assert_eq!(save.game_time(Some(6000.0)), 600);
+        save.shift_day(-200.0);
+        assert_eq!(save.game_time(Some(6000.0)), 800);
+        assert_eq!(save.game_time(None), 0);
+    }
+
+    #[test]
+    fn ops_json_is_written_in_the_world_folder() {
+        let dir = saves();
+        let opened = open_world(&dir.0, None, Some("2"), 9);
+        let save = opened.save.unwrap();
+        let mut server = minecraft_commands::CommandServer::new(minecraft_commands::PlayerId(0));
+        server.open_ops(&save.ops_path()).unwrap();
+        server.join(minecraft_commands::PlayerId(0), "Steve");
+        server.join(minecraft_commands::PlayerId(1), "Alex");
+        assert!(server.op(minecraft_commands::PlayerId(1)));
+        let ops = dir.0.join("world").join("ops.json");
+        assert!(ops.is_file());
+        let text = std::fs::read_to_string(ops).unwrap();
+        assert!(text.contains("\"name\": \"Alex\""), "{text}");
+        assert!(text.contains("\"bypassesPlayerLimit\": false"), "{text}");
     }
 
     #[test]

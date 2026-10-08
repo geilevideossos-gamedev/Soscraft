@@ -98,6 +98,9 @@ pub(crate) struct Entities {
     item_use_waiting: Option<SentItemUse>,
     pub(crate) item_uses_done: Vec<SentItemUse>,
     eggs_waiting: minecraft_terrain::spawn_egg::EggsWaiting,
+    pub(crate) difficulty: i32,
+    spawn_mobs: bool,
+    block_drops: bool,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -218,7 +221,20 @@ impl Entities {
             item_use_waiting: None,
             item_uses_done: Vec::new(),
             eggs_waiting: Default::default(),
+            difficulty: 2,
+            spawn_mobs: true,
+            block_drops: true,
         }
+    }
+
+    pub(crate) fn set_game_rules(&mut self, rules: &minecraft_terrain::game_rules::GameRules) {
+        self.spawn_mobs = rules.bool("spawn_mobs");
+        self.block_drops = rules.bool("block_drops");
+        self.server.set_game_rules(rules.clone());
+    }
+
+    pub(crate) fn set_weather(&mut self, weather: &'static str, duration: i32) {
+        self.server.set_weather(weather, duration);
     }
 
     pub(crate) fn throw(&mut self, item: &str, eye: DVec3, yaw: f32, pitch: f32, motion: DVec3, on_ground: bool) -> bool {
@@ -246,6 +262,9 @@ impl Entities {
     }
 
     pub(crate) fn award_block_experience(&mut self, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)]) {
+        if !self.block_drops {
+            return;
+        }
         let silk_touch = self.hand_has_silk_touch();
         for (pos, block, blast) in broken {
             if silk_touch && blast.is_none() && by_hand.contains(pos) {
@@ -262,6 +281,9 @@ impl Entities {
     /// Block loot for what the weapons broke, dropped as vanilla drops it
     /// (`Block.popResource`); a blast keeps each drop one time in its power.
     pub(crate) fn drop_blocks(&mut self, broken: &[BrokenBlock], mut kept: HashMap<(i32, i32, i32), serde_json::Value>, by_hand: &[(i32, i32, i32)]) {
+        if !self.block_drops {
+            return;
+        }
         let tool = ItemStack::new(LOOT_TOOL, 1);
         let hand_tool = self.hand_tool();
         for (pos, block, blast) in broken {
@@ -581,7 +603,7 @@ impl Entities {
             self.server.tick(TickInput {
                 day_ticks,
                 players: if player.alive { vec![player.feet] } else { Vec::new() },
-                difficulty: 2,
+                difficulty: self.difficulty,
                 simulation_center: center,
                 simulation_distance: 8,
                 pickup: player
@@ -606,7 +628,7 @@ impl Entities {
                 bright_outside,
                 tracking: (player.feet, 160.0),
                 player_hurts: Vec::new(),
-                spawn_mobs: true,
+                spawn_mobs: self.spawn_mobs,
             });
         }
         let mut changes = Vec::new();
@@ -682,7 +704,11 @@ impl Entities {
                     PlayerHitKind::Explosion { .. } => crate::minecraft_death::MobAttack::Explosion,
                 };
                 let cause = crate::minecraft_death::DamageCause::mob(attack, hit.source, hit.source.and_then(|id| self.world.entity_type(id)));
-                hits.push((hit.damage, from, Some(toward), cause));
+                let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. }) || hit.source.is_some();
+                let damage = difficulty_scaled(hit.damage, self.difficulty, scales);
+                if damage > 0.0 {
+                    hits.push((damage, from, Some(toward), cause));
+                }
             }
         }
         if ticked {
@@ -882,6 +908,18 @@ impl Entities {
     }
 }
 
+fn difficulty_scaled(damage: f32, difficulty: i32, scales: bool) -> f32 {
+    if !scales {
+        return damage;
+    }
+    match difficulty {
+        0 => 0.0,
+        1 => (damage / 2.0 + 1.0).min(damage),
+        3 => damage * 3.0 / 2.0,
+        _ => damage,
+    }
+}
+
 fn mirrored(id: i32) -> u32 {
     id as u32 | SERVER_ITEM
 }
@@ -987,6 +1025,17 @@ mod tests {
         assert_eq!(HEALTH_SCALE, 0.2);
         assert_eq!(BLAST_HEALTH_SCALE, 0.8);
         assert_eq!(BLAST_HEALTH_SCALE, 4.0 * HEALTH_SCALE);
+    }
+
+    #[test]
+    fn mob_hits_on_the_player_scale_with_difficulty_like_vanilla() {
+        assert_eq!(difficulty_scaled(6.0, 0, true), 0.0);
+        assert_eq!(difficulty_scaled(6.0, 1, true), 4.0);
+        assert_eq!(difficulty_scaled(1.5, 1, true), 1.5);
+        assert_eq!(difficulty_scaled(6.0, 2, true), 6.0);
+        assert_eq!(difficulty_scaled(6.0, 3, true), 9.0);
+        assert_eq!(difficulty_scaled(6.0, 3, false), 6.0);
+        assert_eq!(difficulty_scaled(6.0, 0, false), 6.0);
     }
 
     #[test]

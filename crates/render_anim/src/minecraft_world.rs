@@ -85,6 +85,7 @@ struct Loaded {
     saved_day: Option<f64>,
     save: Option<crate::minecraft_save::WorldSave>,
     game_rules: minecraft_terrain::game_rules::GameRules,
+    difficulty: minecraftoss_player::Difficulty,
     level_writer: Option<std::thread::JoinHandle<()>>,
     chat: minecraft_commands::CommandServer,
 }
@@ -279,9 +280,15 @@ fn load() -> Result<Loaded, String> {
     )
     .map_err(|e| e.to_string())?;
     if let Some(save) = &opened.save
-        && let Err(error) = save.write(stream.world_spawn, None, &opened.game_rules)
+        && let Err(error) = save.write(stream.world_spawn, None, &opened.game_rules, opened.difficulty)
     {
         diag::warn!(World, "Minecraft level.dat not written: {error}");
+    }
+    let mut chat = minecraft_commands::CommandServer::new(crate::minecraft_chat::HOST);
+    if let Some(save) = &opened.save
+        && let Err(error) = chat.open_ops(&save.ops_path())
+    {
+        diag::warn!(World, "Minecraft ops.json unreadable, no operators loaded: {error}");
     }
     let build = minecraft_terrain::mesh::build(&HandcraftedScene::default(), &packs)
         .map_err(|e| e.to_string())?;
@@ -307,8 +314,9 @@ fn load() -> Result<Loaded, String> {
         saved_day: opened.day_ticks,
         save: opened.save,
         game_rules: opened.game_rules,
+        difficulty: opened.difficulty,
         level_writer: None,
-        chat: minecraft_commands::CommandServer::default(),
+        chat,
     })
 }
 
@@ -444,7 +452,8 @@ fn update(
                 runtime.minimap = Default::default();
                 runtime.containers = Default::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
-                let entities = crate::minecraft_entities::Entities::new(&world.stream, world.seed);
+                let mut entities = crate::minecraft_entities::Entities::new(&world.stream, world.seed);
+                entities.set_game_rules(&world.game_rules);
                 runtime.containers.set_book(entities.stations.clone());
                 runtime.inventory_ui.set_station_data(entities.stations.clone(), entities.enchantments.clone(), world.seed as i32);
                 runtime.entities = Some(entities);
@@ -529,7 +538,25 @@ fn update(
         puppet.active = false;
         return;
     };
-    let delivered = crate::minecraft_chat::pump(&mut ui.chat, &mut world.chat);
+    let mut host = crate::minecraft_chat::Host {
+        seed: world.seed,
+        rules: &mut world.game_rules,
+        difficulty: &mut world.difficulty,
+        day,
+        save: world.save.as_mut(),
+        survival,
+        entities: entities.as_mut(),
+        rules_changed: false,
+    };
+    let delivered = crate::minecraft_chat::pump(&mut ui.chat, &mut world.chat, &mut host);
+    if host.rules_changed
+        && let Some(entities) = entities.as_mut()
+    {
+        entities.set_game_rules(&world.game_rules);
+    }
+    for warning in world.chat.take_warnings() {
+        diag::warn!(World, "{warning}");
+    }
     if !delivered.is_empty() {
         match inventory_ui.language() {
             Some(language) => crate::minecraft_chat::show(&mut ui.chat, &delivered, language),
@@ -564,6 +591,7 @@ fn update(
         death_watch.switch_teams();
     }
     let keep_inventory = world.game_rules.keep_inventory();
+    survival.rules = crate::minecraft_survival::SurvivalRules::of(&world.game_rules, world.difficulty);
     death_watch.observe(in_world, died, survival.status.experience_level, keep_inventory);
     if dead {
         if keep_inventory || death_watch.switched_teams() {
@@ -1391,6 +1419,7 @@ fn update(
             pitch: ps.viewangles[0],
         };
         let bright_outside = world.environment.sky_light_level() > 11.0;
+        entities.difficulty = minecraft_commands::difficulty_id(world.difficulty);
         let ticks_before = entities.client_ticks();
         let (changes, hits) = entities.tick(dt, day.ticks as i64, bright_outside, &player);
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
@@ -1514,6 +1543,12 @@ fn update(
                     };
                     sim::voxel::MinecraftDeath { message: line.message, killer: line.killer }
                 });
+                if let Some(death) = &death
+                    && world.game_rules.bool("show_death_messages")
+                {
+                    let name = world.chat.name(crate::minecraft_chat::HOST).unwrap_or("Player");
+                    crate::minecraft_chat::show(&mut ui.chat, &[crate::minecraft_chat::death_message(death.line(name))], &HashMap::new());
+                }
                 sim::voxel::push_player_damage(local.0.0, amount, from.map(|b| sim::voxel::to_map(origin, b)), death);
             }
             if let Some(blocked) = survival.sprint_change(player.pm_flags & playerstate_iw4::pm_flags::SPRINT_BLOCKED != 0) {
@@ -1718,7 +1753,7 @@ fn update(
             });
         ui.offhand_busy = alive && !holding && (survival.eating().is_some() || hand.blocking.is_some());
         ui.using_item = alive && (survival.eating().is_some() || hand.blocking.is_some());
-        sim::voxel::set_death_protected(local.0.0, alive && crate::minecraft_offhand::totem_slot(&entities.inventory, entities.selected).is_some());
+        sim::voxel::set_death_protected(local.0.0, alive && !survival.killed() && crate::minecraft_offhand::totem_slot(&entities.inventory, entities.selected).is_some());
         // The held item in view; an empty hand is MW2's own hands.
         view.hand = Default::default();
         let swing = hand.swing.map_or(0.0, |t| (t / crate::minecraft_hand::SWING_TICKS).clamp(0.0, 1.0));
@@ -1800,7 +1835,11 @@ fn update(
         indices.extend(mesh.indices.iter().map(|i| i + base));
     }
     view.cracks = mining.crack_mesh(&world.scene, &world.stream.states, &world.packs);
-    day.advance(dt);
+    if world.game_rules.bool("advance_time") && !day.paused {
+        day.advance(dt);
+    } else if let Some(save) = world.save.as_mut() {
+        save.shift_day(-dt * 20.0);
+    }
     let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
     view.eye_light = [
         f32::from(light.get(eye_block)),
@@ -2214,10 +2253,11 @@ fn autosave(world: &mut Loaded, day_ticks: f64) {
     let path = save.path().display().to_string();
     let spawn = world.stream.world_spawn;
     let rules = world.game_rules.clone();
+    let difficulty = world.difficulty;
     world.level_writer = std::thread::Builder::new()
         .name("minecraft-level-save".into())
         .spawn(move || {
-            if let Err(error) = save.write(spawn, Some(day_ticks), &rules) {
+            if let Err(error) = save.write(spawn, Some(day_ticks), &rules, difficulty) {
                 diag::warn!(World, "Minecraft autosave: level.dat not written: {error}");
             }
         })
@@ -2284,11 +2324,12 @@ fn save_and_close(
     }
     let spawn = world.stream.world_spawn;
     let rules = std::mem::take(&mut world.game_rules);
+    let difficulty = world.difficulty;
     drop(world);
     let Some(save) = save else {
         return;
     };
-    if let Err(error) = save.write(spawn, Some(day_ticks), &rules) {
+    if let Err(error) = save.write(spawn, Some(day_ticks), &rules, difficulty) {
         diag::warn!(World, "Minecraft level.dat not written: {error}");
     }
     diag::info!(

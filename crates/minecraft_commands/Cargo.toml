@@ -6,6 +6,9 @@ license.workspace = true
 description = "Minecraft chat and commands: network-ready messages, text components and the server side."
 
 [dependencies]
+md5 = "0.8"
+minecraftoss-player = { path = "../../third_party/minecraftoss/player" }
+minecraftoss-world = { path = "../../third_party/minecraftoss/world" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

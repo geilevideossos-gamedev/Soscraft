@@ -1,34 +1,288 @@
+use std::path::{Path, PathBuf};
+
+use minecraftoss_player::Difficulty;
+use minecraftoss_world::game_rules::{GameRules, Rule, Value};
+
+use crate::args::{Arg, Selector};
+use crate::permissions::{ALL, OWNERS, OpList};
+use crate::players::offline_uuid;
 use crate::protocol::{
     Clientbound, Outgoing, PlayerId, Recipient, Serverbound, allowed_in_chat, normalize_chat,
 };
+use crate::reader::CommandError;
 use crate::text::{GRAY, RED, Text};
+use crate::tree::{parse, runnable};
 
-#[derive(Clone, Debug, Default)]
+pub const SEND_COMMAND_FEEDBACK: &str = "send_command_feedback";
+pub const LOG_ADMIN_COMMANDS: &str = "log_admin_commands";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Weather {
+    Clear,
+    Rain,
+    Thunder,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Clock {
+    pub total: i64,
+    pub game_time: i64,
+    pub paused: bool,
+}
+
+pub trait CommandWorld {
+    fn seed(&self) -> i64;
+    fn game_rules(&self) -> &GameRules;
+    fn set_game_rule(&mut self, rule: &'static Rule, value: Value);
+    fn difficulty(&self) -> Difficulty;
+    fn set_difficulty(&mut self, difficulty: Difficulty);
+    fn clock(&self) -> Clock;
+    fn set_time(&mut self, total: i64);
+    fn set_time_paused(&mut self, paused: bool);
+    fn set_weather(&mut self, weather: Weather, duration: i32);
+    fn kill(&mut self, player: PlayerId) -> bool;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Profile {
+    pub id: PlayerId,
+    pub name: String,
+    pub uuid: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct CommandServer {
-    players: Vec<(PlayerId, String)>,
+    players: Vec<Profile>,
+    host: Option<PlayerId>,
+    ops: OpList,
+    ops_path: Option<PathBuf>,
+    warnings: Vec<String>,
+    random: u64,
+}
+
+impl Default for CommandServer {
+    fn default() -> Self {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        Self {
+            players: Vec::new(),
+            host: None,
+            ops: OpList::default(),
+            ops_path: None,
+            warnings: Vec::new(),
+            random: nanos | 1,
+        }
+    }
+}
+
+pub struct Ctx<'a> {
+    pub server: &'a mut CommandServer,
+    pub world: &'a mut dyn CommandWorld,
+    pub source: PlayerId,
+    pub level: u8,
+    pub input: &'a str,
+    pub args: Vec<(&'static str, Arg)>,
+    pub literals: Vec<&'static str>,
+    pub out: Vec<Outgoing>,
+}
+
+fn system(to: PlayerId, text: Text) -> Outgoing {
+    Outgoing {
+        to: Recipient::Player(to),
+        message: Clientbound::System {
+            text,
+            overlay: false,
+        },
+    }
+}
+
+impl Ctx<'_> {
+    pub fn arg(&self, name: &str) -> Option<&Arg> {
+        self.args
+            .iter()
+            .find(|(arg, _)| *arg == name)
+            .map(|(_, value)| value)
+    }
+
+    pub fn success(&mut self, text: Text, broadcast: bool) {
+        let rules = self.world.game_rules();
+        let feedback = rules.bool(SEND_COMMAND_FEEDBACK);
+        let admins = broadcast && rules.bool(LOG_ADMIN_COMMANDS);
+        if feedback {
+            self.out.push(system(self.source, text.clone()));
+        }
+        if admins {
+            let name = self.server.name(self.source).unwrap_or("").to_owned();
+            let admin = Text::translate("chat.type.admin", vec![Text::literal(name), text.clone()])
+                .color(GRAY)
+                .italic();
+            let ops: Vec<PlayerId> = self
+                .server
+                .players
+                .iter()
+                .map(|player| player.id)
+                .filter(|&id| id != self.source && self.server.is_op(id))
+                .collect();
+            self.out
+                .extend(ops.into_iter().map(|id| system(id, admin.clone())));
+        }
+    }
+
+    pub fn targets(&mut self, name: &str) -> Result<Vec<PlayerId>, CommandError> {
+        let selector = match self.arg(name) {
+            Some(Arg::Players(selector)) => selector.clone(),
+            _ => Selector::Me,
+        };
+        let players = &self.server.players;
+        let found: Vec<PlayerId> = match selector {
+            Selector::Me | Selector::Nearest => players
+                .iter()
+                .filter(|player| player.id == self.source)
+                .map(|player| player.id)
+                .collect(),
+            Selector::All => players.iter().map(|player| player.id).collect(),
+            Selector::Random => {
+                let count = players.len() as u64;
+                if count == 0 {
+                    Vec::new()
+                } else {
+                    let index = (self.server.next_random() % count) as usize;
+                    vec![self.server.players[index].id]
+                }
+            }
+            Selector::Name(name) => players
+                .iter()
+                .filter(|player| player.name.eq_ignore_ascii_case(&name))
+                .map(|player| player.id)
+                .collect(),
+        };
+        if found.is_empty() {
+            Err(CommandError::new(
+                "argument.entity.notfound.player",
+                Vec::new(),
+            ))
+        } else {
+            Ok(found)
+        }
+    }
+
+    pub fn random_between(&mut self, min: i32, max: i32) -> i32 {
+        let span = (i64::from(max) - i64::from(min) + 1).max(1) as u64;
+        min + (self.server.next_random() % span) as i32
+    }
 }
 
 impl CommandServer {
+    pub fn new(host: PlayerId) -> Self {
+        Self {
+            host: Some(host),
+            ..Self::default()
+        }
+    }
+
     pub fn join(&mut self, id: PlayerId, name: impl Into<String>) {
         let name = name.into();
-        match self.players.iter_mut().find(|(player, _)| *player == id) {
-            Some((_, known)) => *known = name,
-            None => self.players.push((id, name)),
+        let uuid = offline_uuid(&name);
+        match self.players.iter_mut().find(|player| player.id == id) {
+            Some(known) => {
+                known.name = name;
+                known.uuid = uuid;
+            }
+            None => self.players.push(Profile { id, name, uuid }),
         }
     }
 
     pub fn leave(&mut self, id: PlayerId) {
-        self.players.retain(|(player, _)| *player != id);
+        self.players.retain(|player| player.id != id);
+    }
+
+    pub fn profile(&self, id: PlayerId) -> Option<&Profile> {
+        self.players.iter().find(|player| player.id == id)
     }
 
     pub fn name(&self, id: PlayerId) -> Option<&str> {
-        self.players
-            .iter()
-            .find(|(player, _)| *player == id)
-            .map(|(_, name)| name.as_str())
+        self.profile(id).map(|player| player.name.as_str())
     }
 
-    pub fn handle(&mut self, from: PlayerId, message: Serverbound) -> Vec<Outgoing> {
+    pub fn is_op(&self, id: PlayerId) -> bool {
+        self.host == Some(id)
+            || self
+                .profile(id)
+                .is_some_and(|player| self.ops.level_of(&player.uuid).is_some())
+    }
+
+    pub fn level(&self, id: PlayerId) -> u8 {
+        if self.host == Some(id) {
+            return OWNERS;
+        }
+        self.profile(id)
+            .and_then(|player| self.ops.level_of(&player.uuid))
+            .unwrap_or(ALL)
+    }
+
+    pub fn ops(&self) -> &OpList {
+        &self.ops
+    }
+
+    pub fn open_ops(&mut self, path: &Path) -> Result<(), String> {
+        self.ops_path = Some(path.to_owned());
+        self.ops = OpList::load(path)?;
+        Ok(())
+    }
+
+    pub fn op(&mut self, id: PlayerId) -> bool {
+        if self.is_op(id) {
+            return false;
+        }
+        let Some(player) = self.profile(id).cloned() else {
+            return false;
+        };
+        self.ops.add(&player.uuid, &player.name, OWNERS);
+        self.save_ops();
+        true
+    }
+
+    pub fn deop(&mut self, id: PlayerId) -> bool {
+        if !self.is_op(id) {
+            return false;
+        }
+        if let Some(uuid) = self.profile(id).map(|player| player.uuid.clone())
+            && self.ops.remove(&uuid)
+        {
+            self.save_ops();
+        }
+        true
+    }
+
+    fn save_ops(&mut self) {
+        if let Some(path) = &self.ops_path
+            && let Err(error) = self.ops.save(path)
+        {
+            self.warnings
+                .push(format!("Minecraft ops.json not written: {error}"));
+        }
+    }
+
+    pub fn take_warnings(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.warnings)
+    }
+
+    fn next_random(&mut self) -> u64 {
+        let mut x = self.random;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.random = x;
+        x
+    }
+
+    pub fn handle(
+        &mut self,
+        from: PlayerId,
+        message: Serverbound,
+        world: &mut dyn CommandWorld,
+    ) -> Vec<Outgoing> {
         let Some(name) = self.name(from).map(str::to_owned) else {
             return Vec::new();
         };
@@ -48,24 +302,49 @@ impl CommandServer {
                     },
                 }]
             }
-            Serverbound::Command(command) => failure(
-                from,
-                Text::translate("command.unknown.command", Vec::new()),
-                &command,
-                0,
-            ),
+            Serverbound::Command(command) => self.perform(from, &command, world),
         }
+    }
+
+    fn perform(
+        &mut self,
+        from: PlayerId,
+        command: &str,
+        world: &mut dyn CommandWorld,
+    ) -> Vec<Outgoing> {
+        let level = self.level(from);
+        let parsed = parse(crate::commands::tree(), command, level);
+        let exec = match runnable(&parsed, command) {
+            Ok(exec) => exec,
+            Err(error) => return report(from, error, command),
+        };
+        let mut ctx = Ctx {
+            server: self,
+            world,
+            source: from,
+            level,
+            input: command,
+            args: parsed.args,
+            literals: parsed.literals,
+            out: Vec::new(),
+        };
+        let result = exec(&mut ctx);
+        let mut out = ctx.out;
+        if let Err(error) = result {
+            out.extend(report(from, error, command));
+        }
+        out
+    }
+}
+
+fn report(to: PlayerId, error: CommandError, input: &str) -> Vec<Outgoing> {
+    match error.cursor {
+        Some(cursor) => failure(to, error.text, input, cursor),
+        None => vec![system(to, Text::literal("").color(RED).append(error.text))],
     }
 }
 
 pub fn failure(to: PlayerId, error: Text, input: &str, cursor: usize) -> Vec<Outgoing> {
-    let system = |text: Text| Outgoing {
-        to: Recipient::Player(to),
-        message: Clientbound::System {
-            text,
-            overlay: false,
-        },
-    };
     let mut cursor = cursor.min(input.len());
     while !input.is_char_boundary(cursor) {
         cursor -= 1;
@@ -89,38 +368,153 @@ pub fn failure(to: PlayerId, error: Text, input: &str, cursor: usize) -> Vec<Out
             .italic(),
     );
     vec![
-        system(Text::literal("").color(RED).append(error)),
-        system(context),
+        system(to, Text::literal("").color(RED).append(error)),
+        system(to, context),
     ]
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    const HOST: PlayerId = PlayerId(0);
+    pub(crate) const HOST: PlayerId = PlayerId(0);
+    pub(crate) const FRIEND: PlayerId = PlayerId(1);
 
-    fn lang(key: &str) -> Option<String> {
-        match key {
-            "chat.type.text" => Some("<%s> %s".into()),
-            "command.unknown.command" => {
-                Some("Unknown or incomplete command. See below for error".into())
-            }
-            "command.context.here" => Some("<--[HERE]".into()),
-            _ => None,
+    #[derive(Debug, Default)]
+    pub(crate) struct FakeWorld {
+        pub(crate) rules: GameRules,
+        pub(crate) difficulty: Option<Difficulty>,
+        pub(crate) clock: Clock,
+        pub(crate) weather: Vec<(Weather, i32)>,
+        pub(crate) killed: Vec<PlayerId>,
+    }
+
+    impl CommandWorld for FakeWorld {
+        fn seed(&self) -> i64 {
+            -4_172_144_997_902_289_642
+        }
+
+        fn game_rules(&self) -> &GameRules {
+            &self.rules
+        }
+
+        fn set_game_rule(&mut self, rule: &'static Rule, value: Value) {
+            self.rules.set(rule.id, &value.to_string()).unwrap();
+        }
+
+        fn difficulty(&self) -> Difficulty {
+            self.difficulty.unwrap_or(Difficulty::Normal)
+        }
+
+        fn set_difficulty(&mut self, difficulty: Difficulty) {
+            self.difficulty = Some(difficulty);
+        }
+
+        fn clock(&self) -> Clock {
+            self.clock
+        }
+
+        fn set_time(&mut self, total: i64) {
+            self.clock.total = total;
+        }
+
+        fn set_time_paused(&mut self, paused: bool) {
+            self.clock.paused = paused;
+        }
+
+        fn set_weather(&mut self, weather: Weather, duration: i32) {
+            self.weather.push((weather, duration));
+        }
+
+        fn kill(&mut self, player: PlayerId) -> bool {
+            self.killed.push(player);
+            true
         }
     }
 
-    fn server() -> CommandServer {
-        let mut server = CommandServer::default();
+    pub(crate) fn lang(key: &str) -> Option<String> {
+        let text = match key {
+            "chat.type.text" => "<%s> %s",
+            "chat.type.admin" => "[%s: %s]",
+            "chat.square_brackets" => "[%s]",
+            "command.unknown.command" => "Unknown or incomplete command. See below for error",
+            "command.unknown.argument" => "Incorrect argument for command",
+            "command.context.here" => "<--[HERE]",
+            "commands.seed.success" => "Seed: %s",
+            "commands.help.failed" => "Unknown command or insufficient permissions",
+            "commands.op.success" => "Made %s a server operator",
+            "commands.op.failed" => "Nothing changed. The player is already an operator",
+            "commands.deop.success" => "Made %s no longer a server operator",
+            "commands.deop.failed" => "Nothing changed. The player is not an operator",
+            "commands.difficulty.query" => "The difficulty is %s",
+            "commands.difficulty.success" => "The difficulty has been set to %s",
+            "commands.difficulty.failure" => {
+                "The difficulty did not change; it is already set to %s"
+            }
+            "commands.gamerule.query" => "Game rule %s is currently set to %s",
+            "commands.gamerule.set" => "Game rule %s is now set to %s",
+            "commands.gamerule.not_set" => "Game rule %s is already set to %s",
+            "commands.kill.success.single" => "Killed %s",
+            "commands.kill.success.multiple" => "Killed %s entities",
+            "commands.time.set.absolute" => "Set %s to %s tick(s)",
+            "commands.time.set.time_marker" => "Set %s to time marker %s",
+            "commands.time.set.already_at_time" => "Clock %s is already set to %s tick(s)",
+            "commands.time.set.already_at_time_marker" => "Clock %s is already at time marker %s",
+            "commands.time.no_time_marker_found" => "Time marker %s does not exist for clock %s",
+            "commands.time.pause" => "Paused clock %s",
+            "commands.time.resume" => "Resumed clock %s",
+            "commands.time.pause.already_paused" => "Clock %s is already paused",
+            "commands.time.pause.already_running" => "Clock %s is already running",
+            "commands.time.query.absolute" => "Clock %s is at %s tick(s)",
+            "commands.time.query.gametime" => "The game time is %s tick(s)",
+            "commands.weather.set.clear" => "Set the weather to clear",
+            "commands.weather.set.rain" => "Set the weather to rain",
+            "commands.weather.set.thunder" => "Set the weather to rain and thunder",
+            "options.difficulty.hard" => "Hard",
+            "options.difficulty.normal" => "Normal",
+            "options.difficulty.peaceful" => "Peaceful",
+            "parsing.bool.invalid" => "Invalid boolean: expected 'true' or 'false' but found '%s'",
+            "argument.entity.notfound.player" => "No player was found",
+            _ => return None,
+        };
+        Some(text.to_owned())
+    }
+
+    pub(crate) fn server() -> CommandServer {
+        let mut server = CommandServer::new(HOST);
         server.join(HOST, "Steve");
         server
+    }
+
+    pub(crate) fn run(
+        server: &mut CommandServer,
+        world: &mut FakeWorld,
+        from: PlayerId,
+        command: &str,
+    ) -> Vec<(Recipient, String, u32)> {
+        server
+            .handle(from, Serverbound::Command(command.into()), world)
+            .into_iter()
+            .map(|out| {
+                let resolved = out.message.chat_text().unwrap().resolve(&lang);
+                (out.to, resolved.text, resolved.color)
+            })
+            .collect()
+    }
+
+    pub(crate) fn texts(lines: &[(Recipient, String, u32)]) -> Vec<&str> {
+        lines.iter().map(|(_, text, _)| text.as_str()).collect()
     }
 
     #[test]
     fn chat_broadcasts_the_sender_name() {
         let mut server = server();
-        let out = server.handle(HOST, Serverbound::Chat("  hello\u{a7}  there ".into()));
+        let mut world = FakeWorld::default();
+        let out = server.handle(
+            HOST,
+            Serverbound::Chat("  hello\u{a7}  there ".into()),
+            &mut world,
+        );
         assert_eq!(
             out,
             vec![Outgoing {
@@ -136,12 +530,12 @@ mod tests {
         assert_eq!(text.text, "<Steve> hello there");
         assert!(
             server
-                .handle(HOST, Serverbound::Chat("   ".into()))
+                .handle(HOST, Serverbound::Chat("   ".into()), &mut world)
                 .is_empty()
         );
         assert!(
             server
-                .handle(PlayerId(7), Serverbound::Chat("who".into()))
+                .handle(PlayerId(7), Serverbound::Chat("who".into()), &mut world)
                 .is_empty()
         );
         server.join(HOST, "Alex");
@@ -151,9 +545,10 @@ mod tests {
     }
 
     #[test]
-    fn a_command_without_dispatcher_is_unknown_and_red() {
+    fn an_unknown_command_reports_context_with_here_marker() {
         let mut server = server();
-        let out = server.handle(HOST, Serverbound::Command("frob".into()));
+        let mut world = FakeWorld::default();
+        let out = server.handle(HOST, Serverbound::Command("frob".into()), &mut world);
         assert_eq!(out.len(), 2);
         assert!(out.iter().all(|o| o.to == Recipient::Player(HOST)));
         let lines: Vec<_> = out
@@ -168,6 +563,37 @@ mod tests {
         assert_eq!(lines[1].text, "frob<--[HERE]");
         assert_eq!(lines[1].color, GRAY);
         assert_eq!(lines[1].spans, vec![(0..13, RED)]);
+        let incomplete = run(&mut server, &mut world, HOST, "weather");
+        assert_eq!(texts(&incomplete)[1], "weather<--[HERE]");
+    }
+
+    #[test]
+    fn trailing_data_is_incorrect_argument() {
+        let mut server = server();
+        let mut world = FakeWorld::default();
+        let out = run(&mut server, &mut world, HOST, "seed now");
+        assert_eq!(
+            texts(&out),
+            vec!["Incorrect argument for command", "seed now<--[HERE]"]
+        );
+        let out = run(&mut server, &mut world, HOST, "weather snow");
+        assert_eq!(
+            texts(&out),
+            vec!["Incorrect argument for command", "weather snow<--[HERE]"]
+        );
+        let out = run(
+            &mut server,
+            &mut world,
+            HOST,
+            "gamerule keep_inventory maybe",
+        );
+        assert_eq!(
+            texts(&out),
+            vec![
+                "Invalid boolean: expected 'true' or 'false' but found 'maybe'",
+                "...inventory maybe<--[HERE]",
+            ]
+        );
     }
 
     #[test]
@@ -185,5 +611,147 @@ mod tests {
         let context = at_end[1].message.chat_text().unwrap().resolve(&lang);
         assert_eq!(context.text, "seed<--[HERE]");
         assert_eq!(context.spans, vec![(4..13, RED)]);
+    }
+
+    #[test]
+    fn the_host_is_owner_even_without_an_ops_entry() {
+        let mut server = server();
+        server.join(FRIEND, "Alex");
+        assert_eq!(server.level(HOST), OWNERS);
+        assert!(server.is_op(HOST));
+        assert!(server.ops().0.is_empty());
+        assert_eq!(server.level(FRIEND), ALL);
+        assert!(!server.is_op(FRIEND));
+        assert!(!server.op(HOST));
+        assert!(server.deop(HOST));
+        assert_eq!(server.level(HOST), OWNERS);
+        assert!(server.op(FRIEND));
+        assert_eq!(server.level(FRIEND), OWNERS);
+        assert_eq!(server.ops().0[0].name, "Alex");
+        assert_eq!(server.ops().0[0].uuid, offline_uuid("Alex"));
+        assert!(server.deop(FRIEND));
+        assert!(!server.deop(FRIEND));
+        assert_eq!(server.level(FRIEND), ALL);
+        assert_eq!(CommandServer::default().level(HOST), ALL);
+    }
+
+    #[test]
+    fn op_needs_level_three_and_gamerule_level_two() {
+        let mut server = server();
+        server.join(FRIEND, "Alex");
+        let mut world = FakeWorld::default();
+        for command in ["op Steve", "gamerule keep_inventory", "kill", "time set 0"] {
+            let out = run(&mut server, &mut world, FRIEND, command);
+            assert_eq!(
+                texts(&out)[0],
+                "Unknown or incomplete command. See below for error",
+                "{command}"
+            );
+        }
+        assert!(world.killed.is_empty());
+        server.ops.add(&offline_uuid("Alex"), "Alex", 2);
+        let out = run(&mut server, &mut world, FRIEND, "gamerule keep_inventory");
+        assert_eq!(
+            texts(&out),
+            vec!["Game rule keep_inventory is currently set to false"]
+        );
+        let out = run(&mut server, &mut world, FRIEND, "op Alex");
+        assert_eq!(
+            texts(&out)[0],
+            "Unknown or incomplete command. See below for error"
+        );
+        server.ops.add(&offline_uuid("Alex"), "Alex", 3);
+        let out = run(&mut server, &mut world, FRIEND, "op Steve");
+        assert_eq!(
+            texts(&out),
+            vec!["Nothing changed. The player is already an operator"]
+        );
+    }
+
+    #[test]
+    fn ops_json_is_written_when_an_operator_is_added_or_removed() {
+        let dir = std::env::temp_dir().join(format!(
+            "minecraft_commands-server-ops-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(crate::permissions::OPS_FILE);
+        let mut server = server();
+        server.open_ops(&path).unwrap();
+        server.join(FRIEND, "Alex");
+        let mut world = FakeWorld::default();
+        let out = run(&mut server, &mut world, HOST, "op alex");
+        assert_eq!(
+            texts(&out),
+            vec![
+                "Made Alex a server operator",
+                "[Steve: Made Alex a server operator]"
+            ]
+        );
+        assert_eq!(out[1].0, Recipient::Player(FRIEND));
+        let saved = OpList::load(&path).unwrap();
+        assert_eq!(saved.level_of(&offline_uuid("Alex")), Some(OWNERS));
+        let mut reopened = CommandServer::new(HOST);
+        reopened.open_ops(&path).unwrap();
+        reopened.join(FRIEND, "Alex");
+        assert_eq!(reopened.level(FRIEND), OWNERS);
+        let out = run(&mut server, &mut world, HOST, "deop Alex");
+        assert_eq!(texts(&out), vec!["Made Alex no longer a server operator"]);
+        assert!(OpList::load(&path).unwrap().0.is_empty());
+        let out = run(&mut server, &mut world, HOST, "deop Alex");
+        assert_eq!(
+            texts(&out),
+            vec!["Nothing changed. The player is not an operator"]
+        );
+        let out = run(&mut server, &mut world, HOST, "op Nobody");
+        assert_eq!(texts(&out), vec!["No player was found"]);
+        assert!(server.take_warnings().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn admins_see_other_operators_commands_unless_logging_is_off() {
+        let mut server = server();
+        server.join(FRIEND, "Alex");
+        server.ops.add(&offline_uuid("Alex"), "Alex", 2);
+        let mut world = FakeWorld::default();
+        let out = run(&mut server, &mut world, FRIEND, "weather rain 100");
+        assert_eq!(
+            out,
+            vec![
+                (
+                    Recipient::Player(FRIEND),
+                    "Set the weather to rain".to_owned(),
+                    crate::text::WHITE
+                ),
+                (
+                    Recipient::Player(HOST),
+                    "[Alex: Set the weather to rain]".to_owned(),
+                    GRAY
+                ),
+            ]
+        );
+        let out = run(&mut server, &mut world, FRIEND, "seed");
+        assert_eq!(out.len(), 1);
+        world.rules.set(LOG_ADMIN_COMMANDS, "false").unwrap();
+        let out = run(&mut server, &mut world, FRIEND, "weather clear");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, Recipient::Player(FRIEND));
+    }
+
+    #[test]
+    fn feedback_is_silent_when_send_command_feedback_is_off() {
+        let mut server = server();
+        let mut world = FakeWorld::default();
+        world.rules.set(SEND_COMMAND_FEEDBACK, "false").unwrap();
+        assert!(run(&mut server, &mut world, HOST, "weather thunder").is_empty());
+        assert_eq!(world.weather.len(), 1);
+        let failed = run(&mut server, &mut world, HOST, "difficulty normal");
+        assert_eq!(
+            texts(&failed),
+            vec!["The difficulty did not change; it is already set to Normal"]
+        );
+        assert_eq!(failed[0].2, RED);
     }
 }
