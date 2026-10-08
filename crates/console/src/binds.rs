@@ -495,3 +495,75 @@ pub(crate) fn pulse_wheel_binding(
     key_event(client, key_num, true, now_msec, frame_msec);
     key_event(client, key_num, false, now_msec, frame_msec);
 }
+
+#[cfg(test)]
+mod function_key_tests {
+    use super::*;
+
+    const FUNCTION_KEYS: [(KeyCode, &str); 12] = [
+        (KeyCode::F1, "F1"),
+        (KeyCode::F2, "F2"),
+        (KeyCode::F3, "F3"),
+        (KeyCode::F4, "F4"),
+        (KeyCode::F5, "F5"),
+        (KeyCode::F6, "F6"),
+        (KeyCode::F7, "F7"),
+        (KeyCode::F8, "F8"),
+        (KeyCode::F9, "F9"),
+        (KeyCode::F10, "F10"),
+        (KeyCode::F11, "F11"),
+        (KeyCode::F12, "F12"),
+    ];
+
+    #[test]
+    fn function_keys_parse_in_either_case_and_display_upper_case() {
+        for (key, name) in FUNCTION_KEYS {
+            assert_eq!(parse_button_name(name), Some(vec![BindButton::Key(key)]));
+            assert_eq!(
+                parse_button_name(&name.to_ascii_lowercase()),
+                Some(vec![BindButton::Key(key)])
+            );
+            assert_eq!(display_button(BindButton::Key(key)), name);
+            assert!(BINDABLE_KEYS.contains(&name.to_ascii_lowercase().as_str()));
+        }
+    }
+
+    #[test]
+    fn every_keyboard_key_has_its_own_host_key_number() {
+        let mut buttons: Vec<BindButton> = BINDABLE_KEYS
+            .iter()
+            .filter_map(|name| parse_button_name(name))
+            .flatten()
+            .filter(|button| matches!(button, BindButton::Key(_)))
+            .collect();
+        buttons.sort_by_key(|button| host_keynum(*button));
+        buttons.dedup();
+        for (key, _) in FUNCTION_KEYS {
+            assert!(buttons.contains(&BindButton::Key(key)));
+            assert_ne!(host_keynum(BindButton::Key(key)), 62);
+        }
+        for pair in buttons.windows(2) {
+            assert_ne!(
+                host_keynum(pair[0]),
+                host_keynum(pair[1]),
+                "{:?} and {:?} share a host key number",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    #[test]
+    fn a_function_key_binding_is_listed_and_loads_back() {
+        let mut binds = KeyBinds::default();
+        let _ = binds.apply_script("bind F5 +scores");
+        let lines = binds.list_lines();
+        assert_eq!(lines, vec!["bind F5 +scores".to_owned()]);
+        let mut loaded = KeyBinds::default();
+        let _ = loaded.apply_config_script(&lines.join("\n"));
+        assert_eq!(
+            loaded.get(BindButton::Key(KeyCode::F5)),
+            command_id_lookup("+scores")
+        );
+    }
+}

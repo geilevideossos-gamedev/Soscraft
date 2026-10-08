@@ -653,6 +653,43 @@ mod minimap_tests {
 }
 
 #[cfg(test)]
+mod function_key_tests {
+    use super::*;
+
+    #[test]
+    fn function_key_bindings_survive_a_restart() {
+        let keys = [
+            KeyCode::F1,
+            KeyCode::F2,
+            KeyCode::F3,
+            KeyCode::F4,
+            KeyCode::F5,
+            KeyCode::F6,
+            KeyCode::F7,
+            KeyCode::F8,
+            KeyCode::F9,
+            KeyCode::F10,
+            KeyCode::F11,
+            KeyCode::F12,
+        ];
+        let commands: Vec<u32> = input_iw4::command_names()
+            .filter_map(input_iw4::command_id_lookup)
+            .take(keys.len())
+            .collect();
+        let mut binds = KeyBinds::default();
+        for (key, id) in keys.iter().zip(&commands) {
+            binds.set(BindButton::Key(*key), *id);
+        }
+        let saved = serialize_settings(&frame::GameSettings::default(), &binds);
+        let mut loaded = KeyBinds::default();
+        parse_settings(&saved, &mut frame::GameSettings::default(), &mut loaded);
+        for (key, id) in keys.iter().zip(&commands) {
+            assert_eq!(loaded.get(BindButton::Key(*key)), Some(*id), "{key:?}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod blood_tests {
     use super::*;
 
