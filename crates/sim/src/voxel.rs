@@ -1674,9 +1674,13 @@ mod tests {
     }
 
     fn swim(pond: &Pond, ps: &mut playerstate_iw4::PlayerState, buttons: u32, forwardmove: i8, msec: i32, seconds: i32) -> Vec<[f64; 3]> {
+        drive(pond, ps, buttons, forwardmove, msec, seconds * 1000 / msec)
+    }
+
+    fn drive(pond: &Pond, ps: &mut playerstate_iw4::PlayerState, buttons: u32, forwardmove: i8, msec: i32, frames: i32) -> Vec<[f64; 3]> {
         let mut old_buttons = 0;
         let mut path = Vec::new();
-        for _ in 0..seconds * 1000 / msec {
+        for _ in 0..frames {
             let context = crate::step::pmove_context(old_buttons, (1.0, 1.0, 1.0), false, false, 0.005, 0.005, 0, false, true, false, 0, 0, 0, false, false);
             let context = movement_iw4::PmoveSingleContext { bounds: move_bounds(context.bounds), ..context };
             let mut cmd = playerstate_iw4::UserCmd { server_time: ps.command_time + msec, buttons, forwardmove, ..playerstate_iw4::UserCmd::default() };
@@ -1877,5 +1881,71 @@ mod tests {
         assert_eq!(trace_in(&w, eye, end, [0.0; 3], [0.0; 3], None).fraction, 1.0);
         let reach = camera_reach_in(&w, eye, BACK_X, 4.0 * BLOCK);
         assert!((reach - 1.5 * BLOCK).abs() < 0.1 * BLOCK, "{reach}");
+    }
+
+    fn floor() -> Pond {
+        let mut blocks = Vec::new();
+        for x in 0..16 {
+            for z in 0..16 {
+                blocks.push(([x, 0, z], 1));
+            }
+        }
+        Pond(world(&blocks))
+    }
+
+    fn flier(feet: [f64; 3], flags: u32) -> playerstate_iw4::PlayerState {
+        let mut ps = swimmer(feet);
+        ps.ground_entity_num = playerstate_iw4::ENTITYNUM_NONE;
+        ps.pm_flags |= flags;
+        ps
+    }
+
+    const FLYING: u32 = playerstate_iw4::pm_flags::MC_MAY_FLY | playerstate_iw4::pm_flags::MC_FLYING;
+
+    #[test]
+    fn a_flier_sinking_onto_stone_lands_and_stops_flying() {
+        for msec in [50, 8] {
+            let mut ps = flier([8.5, 4.0, 8.5], FLYING);
+            let path = drive(&floor(), &mut ps, playerstate_iw4::buttons::CROUCH, 0, msec, 2000 / msec);
+            assert!((path[path.len() - 1][1] - 1.0).abs() < 0.01, "msec {msec}: {:?}", path.last());
+            assert_eq!(ps.pm_flags & playerstate_iw4::pm_flags::MC_FLYING, 0, "msec {msec}");
+            assert_eq!(ps.ground_entity_num, i32::from(trace_iw4::ENTITYNUM_WORLD), "msec {msec}");
+        }
+    }
+
+    #[test]
+    fn a_flier_hovering_just_above_the_floor_keeps_flying() {
+        for msec in [50, 8] {
+            let mut ps = flier([8.5, 1.5, 8.5], FLYING);
+            let path = drive(&floor(), &mut ps, 0, 0, msec, 2000 / msec);
+            assert!(path.iter().all(|p| (p[1] - 1.5).abs() < 1e-3), "msec {msec}: {:?}", path.last());
+            assert_ne!(ps.pm_flags & playerstate_iw4::pm_flags::MC_FLYING, 0, "msec {msec}");
+        }
+    }
+
+    #[test]
+    fn a_flier_stops_at_a_stone_wall() {
+        for msec in [50, 8] {
+            let mut ps = flier([6.5, 5.0, 8.5], FLYING);
+            let path = drive(&Pond(wall(10)), &mut ps, 0, 127, msec, 2000 / msec);
+            let end = path[path.len() - 1];
+            assert!(end[0] > 9.6 && end[0] < 9.71, "msec {msec}: {end:?}");
+            assert!((end[1] - 5.0).abs() < 1e-3, "msec {msec}: {end:?}");
+            assert_ne!(ps.pm_flags & playerstate_iw4::pm_flags::MC_FLYING, 0, "msec {msec}");
+        }
+    }
+
+    #[test]
+    fn a_double_tap_on_the_ground_takes_off_only_for_a_player_who_may_fly() {
+        for (flags, flies) in [(playerstate_iw4::pm_flags::MC_MAY_FLY, true), (0, false)] {
+            let ground = floor();
+            let mut ps = flier([8.5, 1.0, 8.5], flags);
+            drive(&ground, &mut ps, 0, 0, 50, 20);
+            assert_eq!(ps.ground_entity_num, i32::from(trace_iw4::ENTITYNUM_WORLD));
+            drive(&ground, &mut ps, playerstate_iw4::buttons::MC_FLY_TOGGLE, 0, 50, 1);
+            let path = drive(&ground, &mut ps, 0, 0, 50, 4);
+            assert_eq!(ps.pm_flags & playerstate_iw4::pm_flags::MC_FLYING != 0, flies);
+            assert_eq!(path[path.len() - 1][1] > 1.4, flies, "{:?}", path.last());
+        }
     }
 }

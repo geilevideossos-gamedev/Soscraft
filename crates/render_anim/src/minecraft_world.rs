@@ -611,6 +611,9 @@ fn update(
     survival.rules = crate::minecraft_survival::SurvivalRules::of(&world.game_rules, world.difficulty);
     survival.set_game_mode(player_mode);
     authority.0.set_minecraft_abilities(local.0, ability_bits(player_mode));
+    if alive && player_mode.abilities.may_fly {
+        player_mode.abilities.flying = authority.0.player(local.0).is_some_and(|p| p.pm_flags & playerstate_iw4::pm_flags::MC_FLYING != 0);
+    }
     ui.game_mode = ui_game_mode(player_mode.mode);
     death_watch.observe(in_world, died, survival.status.experience_level, keep_inventory);
     if dead {
@@ -719,7 +722,7 @@ fn update(
                 }
             }
             survival.set_climbable(None);
-        } else if caught || (climbing && sim::voxel::lava(ps.origin, hull_mins, hull_maxs) <= 0.0) {
+        } else if caught || ps.pm_flags & playerstate_iw4::pm_flags::MC_FLYING != 0 || (climbing && sim::voxel::lava(ps.origin, hull_mins, hull_maxs) <= 0.0) {
             steps.air_peak = Some(feet[1]);
         } else {
             steps.air_peak = Some(steps.air_peak.map_or(feet[1], |p| p.max(feet[1])));

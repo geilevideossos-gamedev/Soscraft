@@ -112,8 +112,18 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
         context.bounds.maxs,
         ps.view_height_current,
     );
-    let lava = collision.lava(ps.origin, context.bounds.mins, context.bounds.maxs);
-    let climb = if water.wet() || lava > 0.0 {
+    let flight = crate::fly::prepare(ps, cmd, crate::swim::swimming(ps, water));
+    let water = if flight.is_some() {
+        crate::WaterSample::default()
+    } else {
+        water
+    };
+    let lava = if flight.is_some() {
+        0.0
+    } else {
+        collision.lava(ps.origin, context.bounds.mins, context.bounds.maxs)
+    };
+    let climb = if flight.is_some() || water.wet() || lava > 0.0 {
         crate::ClimbSample::default()
     } else {
         collision.climb(ps.origin)
@@ -179,6 +189,17 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
         ps.pm_flags &= !pm_flags::LADDER;
         ps.ground_entity_num = ENTITYNUM_NONE;
         ps.velocity = [0.0; 3];
+        drop_timers(ps, &pml);
+        return PmoveResult {
+            pml,
+            bounds,
+            stance_event,
+            reset_torso,
+        };
+    }
+
+    if let Some(flight) = flight {
+        crate::fly::fly_move(ps, &mut pml, cmd, flight, stuck, bounds, collision);
         drop_timers(ps, &pml);
         return PmoveResult {
             pml,

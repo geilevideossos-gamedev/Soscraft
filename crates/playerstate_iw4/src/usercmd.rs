@@ -54,5 +54,7 @@ pub mod buttons {
 
     pub const OFFHAND_HOLD_CANCEL: u32 = 0x200000;
 
+    pub const MC_FLY_TOGGLE: u32 = 0x0100_0000;
+
     pub const SPRINT_INTERFERING: u32 = 0xcc35;
 }

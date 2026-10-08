@@ -16,6 +16,7 @@ mod dmgtimer;
 mod drop_timers;
 mod edge;
 mod events;
+mod fly;
 mod footstep;
 mod friction;
 mod ground;
@@ -55,6 +56,7 @@ pub use dmgtimer::{
 pub use drop_timers::drop_timers;
 pub use edge::{MAX_UP_STEP, back_off_from_edge};
 pub use events::{SequencedPlayerEvent, add_event, add_predictable_event, consume_player_events};
+pub use fly::{Flight, FlyTap, fly_move, prepare as prepare_flight};
 pub use footstep::{
     LADDER_SURFACE_FLAGS, LADDER_SURFACE_TYPE, SURFACE_TYPE_NAMES, bob_cycle_wrapped,
     footstep_event, footstep_event_type, footsteps_anim_move_type, footsteps_bob_cycle,

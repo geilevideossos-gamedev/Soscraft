@@ -29,6 +29,7 @@ pub struct ClientActionInput {
     pub client: ClientInput,
     pub(crate) stance_life: Option<u32>,
     pub(crate) stance_event_sequence: i32,
+    pub(crate) fly_tap: movement_iw4::FlyTap,
 
     pub scripted_ids: BTreeSet<u32>,
     pub mouse_x: f32,
@@ -72,6 +73,7 @@ impl Default for ClientActionInput {
             client: ClientInput::default(),
             stance_life: None,
             stance_event_sequence: 0,
+            fly_tap: movement_iw4::FlyTap::default(),
             scripted_ids: BTreeSet::new(),
             mouse_x: 0.0,
             mouse_y: 0.0,
@@ -105,6 +107,7 @@ impl Default for ClientActionInput {
 impl ClientActionInput {
     pub fn consume_edges(&mut self) {
         self.client.kb.clear_was_pressed();
+        self.fly_tap.consume();
     }
 }
 
@@ -152,6 +155,11 @@ pub fn build_usercmd(input: &mut ClientActionInput, look: &LookState, server_tim
     let bits = if input.client.offhand_hold_cancel {
         input.client.offhand_hold_cancel = false;
         bits | buttons::OFFHAND_HOLD_CANCEL
+    } else {
+        bits
+    };
+    let bits = if input.fly_tap.press(bits & buttons::JUMP != 0, now) {
+        bits | buttons::MC_FLY_TOGGLE
     } else {
         bits
     };
