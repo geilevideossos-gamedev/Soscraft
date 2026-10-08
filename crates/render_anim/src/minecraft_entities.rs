@@ -42,6 +42,7 @@ pub(crate) struct Blow {
     pub sprinting: bool,
     pub can_critical: bool,
     pub can_sweep: bool,
+    pub reach: f64,
 }
 
 pub(crate) struct SentItemUse {
@@ -462,7 +463,7 @@ impl Entities {
     }
 
     pub(crate) fn punch(&mut self, eye: DVec3, look: DVec3, yaw: f32, attack_damage: f64, strength: f32, blow: Blow) -> bool {
-        let Some((hit, _)) = self.world.mob_on_ray(eye, look, 3.0) else {
+        let Some((hit, _)) = self.world.mob_on_ray(eye, look, blow.reach) else {
             return false;
         };
         let attack = minecraftoss_entities::world::PlayerAttack {
@@ -477,6 +478,10 @@ impl Entities {
         };
         self.server.mob_action(hit, Some(attack), &self.inventory.clone(), self.selected, false);
         true
+    }
+
+    pub(crate) fn mob_distance(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
+        self.world.mob_on_ray(eye, look, reach).map(|(_, distance)| distance)
     }
 
     /// A block the player placed, for the level the mobs walk in.
@@ -501,8 +506,8 @@ impl Entities {
         self.item_use_waiting.is_some()
     }
 
-    pub(crate) fn hatch_egg(&mut self, slot: usize, kind: String, position: [f64; 3]) {
-        if self.eggs_waiting.send(&self.inventory, slot) {
+    pub(crate) fn hatch_egg(&mut self, slot: usize, kind: String, position: [f64; 3], spends: bool) {
+        if self.eggs_waiting.send_from(&self.inventory, slot, spends) {
             let y_rot = minecraftoss_core::entity_data::wrap_degrees(self.random.next_float() * 360.0);
             self.server.hatch_egg(kind, position, y_rot);
         }
@@ -527,9 +532,9 @@ impl Entities {
         self.server.player_breaks(positions);
     }
 
-    pub(crate) fn mined(&mut self, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)]) {
+    pub(crate) fn mined(&mut self, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)], creative: bool) {
         let silk_touch = self.hand_has_silk_touch();
-        let how: Vec<_> = broken.iter().map(|(pos, _, blast)| (*pos, how_broken(*pos, *blast, by_hand, silk_touch))).collect();
+        let how: Vec<_> = broken.iter().map(|(pos, _, blast)| (*pos, how_broken(*pos, *blast, by_hand, silk_touch, creative))).collect();
         self.server.player_mines(&how);
     }
 
@@ -931,9 +936,10 @@ fn mirrored(id: i32) -> u32 {
     id as u32 | SERVER_ITEM
 }
 
-fn how_broken(pos: (i32, i32, i32), blast: Option<f32>, by_hand: &[(i32, i32, i32)], silk_touch: bool) -> HowBroken {
+fn how_broken(pos: (i32, i32, i32), blast: Option<f32>, by_hand: &[(i32, i32, i32)], silk_touch: bool, creative: bool) -> HowBroken {
     match blast {
         Some(_) => HowBroken::Blasted,
+        None if creative => HowBroken::SilkTouched,
         None if silk_touch && by_hand.contains(&pos) => HowBroken::SilkTouched,
         None => HowBroken::Mined,
     }
@@ -1069,10 +1075,18 @@ mod tests {
     #[test]
     fn only_silk_touch_in_the_mining_hand_keeps_ice_from_melting() {
         let by_hand = [(1, 2, 3)];
-        assert_eq!(how_broken((1, 2, 3), None, &by_hand, true), HowBroken::SilkTouched);
-        assert_eq!(how_broken((1, 2, 3), None, &by_hand, false), HowBroken::Mined);
-        assert_eq!(how_broken((4, 2, 3), None, &by_hand, true), HowBroken::Mined);
-        assert_eq!(how_broken((1, 2, 3), Some(4.0), &by_hand, true), HowBroken::Blasted);
+        assert_eq!(how_broken((1, 2, 3), None, &by_hand, true, false), HowBroken::SilkTouched);
+        assert_eq!(how_broken((1, 2, 3), None, &by_hand, false, false), HowBroken::Mined);
+        assert_eq!(how_broken((4, 2, 3), None, &by_hand, true, false), HowBroken::Mined);
+        assert_eq!(how_broken((1, 2, 3), Some(4.0), &by_hand, true, false), HowBroken::Blasted);
+    }
+
+    #[test]
+    fn creative_hand_and_bullet_breaks_leave_no_water_and_blasts_stay_blasts() {
+        let by_hand = [(1, 2, 3)];
+        assert_eq!(how_broken((1, 2, 3), None, &by_hand, false, true), HowBroken::SilkTouched);
+        assert_eq!(how_broken((4, 2, 3), None, &by_hand, false, true), HowBroken::SilkTouched);
+        assert_eq!(how_broken((1, 2, 3), Some(4.0), &by_hand, false, true), HowBroken::Blasted);
     }
 
     #[test]

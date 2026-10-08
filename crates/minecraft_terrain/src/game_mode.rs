@@ -164,6 +164,22 @@ impl PlayerMode {
         self.mode != GameMode::Spectator
     }
 
+    pub fn block_reach(&self) -> f64 {
+        if self.mode == GameMode::Creative {
+            CREATIVE_BLOCK_REACH
+        } else {
+            BLOCK_REACH
+        }
+    }
+
+    pub fn entity_reach(&self) -> f64 {
+        if self.mode == GameMode::Creative {
+            CREATIVE_ENTITY_REACH
+        } else {
+            ENTITY_REACH
+        }
+    }
+
     pub fn to_tag(&self) -> Tag {
         let flag = |on: bool| Tag::Byte(i8::from(on));
         let abilities = &self.abilities;
@@ -232,6 +248,33 @@ impl PlayerMode {
             abilities,
         })
     }
+}
+
+pub const BLOCK_REACH: f64 = 4.5;
+pub const CREATIVE_BLOCK_REACH: f64 = 5.0;
+pub const ENTITY_REACH: f64 = 3.0;
+pub const CREATIVE_ENTITY_REACH: f64 = 5.0;
+pub const CREATIVE_BREAK_DELAY: u32 = 5;
+
+pub fn creative_breaks(delay: &mut u32, pressed: bool, held: bool, ticks: u32) -> u32 {
+    let mut breaks = 0;
+    let mut ticks = ticks;
+    if pressed {
+        breaks += 1;
+        *delay = CREATIVE_BREAK_DELAY;
+        ticks = ticks.saturating_sub(1);
+    }
+    if held {
+        for _ in 0..ticks {
+            if *delay > 0 {
+                *delay -= 1;
+            } else {
+                breaks += 1;
+                *delay = CREATIVE_BREAK_DELAY;
+            }
+        }
+    }
+    breaks
 }
 
 pub fn can_destroy_in_creative(item: Option<&str>) -> bool {
@@ -400,6 +443,47 @@ mod tests {
         );
         assert_eq!(PlayerMode::from_tag(&unknown), None);
         assert_eq!(PlayerMode::from_tag(&Tag::Int(1)), None);
+    }
+
+    #[test]
+    fn only_creative_builds_for_free_and_only_survival_and_creative_build() {
+        for mode in MODES {
+            let player = PlayerMode::new(mode);
+            let creative = mode == GameMode::Creative;
+            assert_eq!(player.consumes_items(), !creative, "{mode:?}");
+            assert_eq!(player.instant_break(), creative, "{mode:?}");
+            assert_eq!(player.drops_from_breaking(), !creative, "{mode:?}");
+            assert_eq!(
+                player.may_build(),
+                matches!(mode, GameMode::Survival | GameMode::Creative),
+                "{mode:?}"
+            );
+            assert_eq!(
+                (player.block_reach(), player.entity_reach()),
+                if creative { (5.0, 5.0) } else { (4.5, 3.0) },
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_held_creative_break_repeats_every_six_ticks_and_a_fresh_press_breaks_at_once() {
+        let mut delay = 0;
+        let mut at = Vec::new();
+        for tick in 0..20 {
+            if creative_breaks(&mut delay, tick == 0, true, 1) > 0 {
+                at.push(tick);
+            }
+        }
+        assert_eq!(at, [0, 6, 12, 18]);
+        let mut delay = 0;
+        assert_eq!(creative_breaks(&mut delay, true, true, 0), 1);
+        assert_eq!(creative_breaks(&mut delay, false, true, 3), 0);
+        assert_eq!(creative_breaks(&mut delay, true, true, 1), 1);
+        assert_eq!(delay, CREATIVE_BREAK_DELAY);
+        assert_eq!(creative_breaks(&mut delay, false, false, 40), 0);
+        assert_eq!(delay, CREATIVE_BREAK_DELAY);
+        assert_eq!(creative_breaks(&mut delay, false, true, 13), 2);
     }
 
     #[test]

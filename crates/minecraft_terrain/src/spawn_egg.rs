@@ -16,24 +16,28 @@ pub enum EggUse {
 }
 
 #[derive(Default)]
-pub struct EggsWaiting(VecDeque<(usize, String)>);
+pub struct EggsWaiting(VecDeque<(usize, String, bool)>);
 
 impl EggsWaiting {
     pub fn send(&mut self, inventory: &Inventory, slot: usize) -> bool {
+        self.send_from(inventory, slot, true)
+    }
+
+    pub fn send_from(&mut self, inventory: &Inventory, slot: usize, spends: bool) -> bool {
         let Some(egg) = inventory.slots[slot].as_ref() else {
             return false;
         };
-        let waiting = self.0.iter().filter(|(at, _)| *at == slot).count();
+        let waiting = self.0.iter().filter(|(at, ..)| *at == slot).count();
         if usize::from(egg.count) <= waiting {
             return false;
         }
-        self.0.push_back((slot, egg.id.clone()));
+        self.0.push_back((slot, egg.id.clone(), spends));
         true
     }
 
     pub fn answer(&mut self, inventory: &mut Inventory, hatched: bool) -> Option<String> {
-        let (slot, egg) = self.0.pop_front()?;
-        if hatched {
+        let (slot, egg, spends) = self.0.pop_front()?;
+        if hatched && spends {
             let slots = &mut inventory.slots;
             let holds = |stack: &Option<ItemStack>| stack.as_ref().is_some_and(|s| s.id == egg);
             let index = if holds(&slots[slot]) {
@@ -279,6 +283,19 @@ mod tests {
         waiting.answer(&mut inventory, true);
         assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(1));
         assert_eq!(waiting.answer(&mut inventory, true), None);
+    }
+
+    #[test]
+    fn a_creative_egg_hatches_without_being_used() {
+        let mut inventory = eggs(&[(0, 1)]);
+        let mut waiting = EggsWaiting::default();
+        assert!(waiting.send_from(&inventory, 0, false));
+        assert!(!waiting.send_from(&inventory, 0, false));
+        assert_eq!(
+            waiting.answer(&mut inventory, true).as_deref(),
+            Some("minecraft:zombie_spawn_egg")
+        );
+        assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(1));
     }
 
     #[test]

@@ -89,12 +89,12 @@ pub(crate) fn repeat_delay(used: Option<(usize, HandUse)>, delay: u32) -> u32 {
     }
 }
 
-pub(crate) fn has_use(stack: &ItemStack, placeable: bool, food: &FoodData) -> bool {
+pub(crate) fn has_use(stack: &ItemStack, placeable: bool, food: &FoodData, mode: GameMode) -> bool {
     placeable
         || USED_ITEMS.contains(&stack.id.as_str())
         || stack.id == minecraft_terrain::berries::SWEET_BERRIES
         || stack.id == minecraft_terrain::berries::GLOW_BERRIES
-        || FoodUse::start(OFFHAND, stack, food, GameMode::Survival).is_some()
+        || FoodUse::start(OFFHAND, stack, food, mode).is_some()
         || minecraft_terrain::thrown::Throwable::of(&stack.id).is_some()
         || minecraft_terrain::spawn_egg::spawned_kind(&stack.id).is_some()
 }
@@ -236,6 +236,9 @@ mod tests {
 
     #[test]
     fn only_items_with_a_use_take_the_tactical_key() {
+        let has_use = |stack: &ItemStack, placeable: bool, food: &FoodData| {
+            super::has_use(stack, placeable, food, GameMode::Survival)
+        };
         let stack = |id: &str| ItemStack::new(id, 1);
         let full = FoodData::default();
         let mut hungry = FoodData::default();
@@ -256,6 +259,15 @@ mod tests {
         assert!(has_use(&stack("minecraft:zombie_spawn_egg"), false, &full));
         assert!(!has_use(&stack(TOTEM), false, &hungry));
         assert!(!has_use(&stack("minecraft:stick"), false, &hungry));
+    }
+
+    #[test]
+    fn creative_players_can_eat_from_the_offhand_at_full_hunger() {
+        let bread = ItemStack::new("minecraft:bread", 1);
+        let full = FoodData::default();
+        assert!(has_use(&bread, false, &full, GameMode::Creative));
+        assert!(!has_use(&bread, false, &full, GameMode::Adventure));
+        assert!(!has_use(&bread, false, &full, GameMode::Survival));
     }
 
     #[test]

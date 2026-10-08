@@ -25,7 +25,7 @@ const REAGENT: usize = 3;
 const BLAZE: usize = 4;
 const BREW_TICKS: u32 = 400;
 const FUEL_USES: u32 = 20;
-const CONTAINER: &str = "minecraft:container";
+pub const CONTAINER: &str = "minecraft:container";
 const CUSTOM_NAME: &str = "minecraft:custom_name";
 const COPPER_CHESTS: [&str; 4] = [
     "copper_chest",

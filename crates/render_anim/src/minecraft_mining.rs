@@ -122,23 +122,23 @@ impl Mining {
         // No crack outlives its block, however it went.
         self.progress
             .retain(|pos, (_, at)| now - *at < PROGRESS_SECONDS && !gone.contains(pos) && Scene::block(&*world.scene, *pos).is_some());
-        if broken.is_empty() {
-            return Vec::new();
+        remove_broken(broken, world)
+    }
+
+    pub(crate) fn break_now(&mut self, positions: &[BlockPos], world: &mut WorldRefs<'_>) -> Vec<(BlockPos, minecraft_terrain::scene::Block, Option<f32>)> {
+        if self.particles.is_none() {
+            self.particles = BlockParticles::new(world.packs).ok();
         }
-        broken.sort_unstable_by_key(|(pos, _)| *pos);
-        broken.dedup_by_key(|(pos, _)| *pos);
-        let mut out = Vec::with_capacity(broken.len());
-        for &(pos, blast) in &broken {
-            if let Some(block) = Scene::block(&*world.scene, pos).cloned() {
-                out.push((pos, block, blast));
+        let breakable = breakable_now(&*world.scene, positions);
+        for &pos in &breakable {
+            self.progress.remove(&pos);
+            if let Some(block) = Scene::block(&*world.scene, pos).cloned()
+                && let Some(particles) = self.particles.as_mut()
+            {
+                let _ = particles.spawn(world.packs, &*world.scene, pos, &block, world.atlas);
             }
-            world.scene.set(pos, None);
-            sim::voxel::set_block_shape(pos.0, pos.1, pos.2, 0);
         }
-        let positions: Vec<BlockPos> = broken.iter().map(|(pos, _)| *pos).collect();
-        world.stream.record_edits(world.scene, &positions);
-        world.stream.mark_edited(world.scene, &positions);
-        out
+        remove_broken(breakable.into_iter().map(|pos| (pos, None)).collect(), world)
     }
 
     pub(crate) fn burst(&mut self, packs: &PackStack, scene: &HandcraftedScene, atlas: &Atlas, pos: BlockPos, block: &minecraft_terrain::scene::Block) {
@@ -218,6 +218,37 @@ impl Mining {
     }
 }
 
+fn remove_broken(mut broken: Vec<(BlockPos, Option<f32>)>, world: &mut WorldRefs<'_>) -> Vec<(BlockPos, minecraft_terrain::scene::Block, Option<f32>)> {
+    if broken.is_empty() {
+        return Vec::new();
+    }
+    broken.sort_unstable_by_key(|(pos, _)| *pos);
+    broken.dedup_by_key(|(pos, _)| *pos);
+    let mut out = Vec::with_capacity(broken.len());
+    for &(pos, blast) in &broken {
+        if let Some(block) = Scene::block(&*world.scene, pos).cloned() {
+            out.push((pos, block, blast));
+        }
+        world.scene.set(pos, None);
+        sim::voxel::set_block_shape(pos.0, pos.1, pos.2, 0);
+    }
+    let positions: Vec<BlockPos> = broken.iter().map(|(pos, _)| *pos).collect();
+    world.stream.record_edits(world.scene, &positions);
+    world.stream.mark_edited(world.scene, &positions);
+    out
+}
+
+fn breakable_now(scene: &impl Scene, positions: &[BlockPos]) -> Vec<BlockPos> {
+    let mut breakable: Vec<BlockPos> = positions
+        .iter()
+        .copied()
+        .filter(|&pos| Scene::block(scene, pos).is_some_and(|block| !matches!(block.id.path.as_str(), "water" | "lava" | "air" | "cave_air" | "void_air")))
+        .collect();
+    breakable.sort_unstable();
+    breakable.dedup();
+    breakable
+}
+
 /// The destroy speed of a breakable block, or `None` for air, fluids and
 /// unbreakable blocks.
 /// A block bullets pass through: one with no collision shape.
@@ -291,6 +322,19 @@ pub(crate) fn crack_strip(packs: &PackStack) -> anyhow::Result<image::RgbaImage>
 mod tests {
     use super::*;
     use minecraft_terrain::scene::Block;
+
+    #[test]
+    fn a_creative_break_takes_any_block_even_bedrock_but_no_air_or_fluid() {
+        let mut scene = HandcraftedScene::new();
+        let (stone, bedrock, water, lava, cave_air, empty) = ((0, 64, 0), (1, 64, 0), (2, 64, 0), (3, 64, 0), (4, 64, 0), (5, 64, 0));
+        scene.set(stone, Some(Block::new("minecraft:stone")));
+        scene.set(bedrock, Some(Block::new("minecraft:bedrock")));
+        scene.set(water, Some(Block::new("minecraft:water")));
+        scene.set(lava, Some(Block::new("minecraft:lava")));
+        scene.set(cave_air, Some(Block::new("minecraft:cave_air")));
+        assert_eq!(breakable_now(&scene, &[empty, bedrock, water, stone, lava, cave_air, stone]), vec![stone, bedrock]);
+        assert!(breakable_now(&scene, &[]).is_empty());
+    }
 
     #[test]
     fn real_blocks_crack_on_their_own_model_shapes() {
