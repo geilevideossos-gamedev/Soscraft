@@ -112,6 +112,16 @@ impl Survival {
         };
     }
 
+    pub(crate) fn respawn_keeping_experience(&mut self) {
+        let level = self.status.experience_level;
+        let progress = self.status.experience_progress;
+        let total = self.status.total_experience;
+        self.respawn();
+        self.status.experience_level = level;
+        self.status.experience_progress = progress;
+        self.status.total_experience = total;
+    }
+
     pub(crate) fn sprint_change(&mut self, blocked: bool) -> Option<bool> {
         let hungry = !self.can_sprint();
         if hungry && !blocked {
@@ -1199,6 +1209,30 @@ mod tests {
         survival.respawn();
         assert_eq!(survival.sprint_change(true), Some(false));
         assert_eq!(survival.sprint_change(false), None);
+    }
+
+    #[test]
+    fn respawn_keeping_experience_keeps_levels_and_resets_food() {
+        let mut survival = fresh();
+        survival.status.experience_level = 12;
+        survival.status.experience_progress = 0.5;
+        survival.status.total_experience = 300;
+        survival.status.food.level = 3;
+        survival.status.food.saturation = 0.0;
+        survival.status.health = 4.0;
+        survival.respawn_keeping_experience();
+        assert_eq!(survival.status.experience_level, 12);
+        assert_eq!(survival.status.experience_progress, 0.5);
+        assert_eq!(survival.status.total_experience, 300);
+        assert_eq!(survival.status.food.level, 20);
+        assert_eq!(survival.status.food.saturation, 5.0);
+        assert_eq!(survival.status.health, 20.0);
+        let mut plain = fresh();
+        plain.status.experience_level = 12;
+        plain.status.total_experience = 300;
+        plain.respawn();
+        assert_eq!(plain.status.experience_level, 0);
+        assert_eq!(plain.status.total_experience, 0);
     }
 
     #[test]

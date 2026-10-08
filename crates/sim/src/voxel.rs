@@ -337,6 +337,18 @@ pub fn take_minecraft_deaths() -> Vec<(u32, String)> {
     MINECRAFT_DEATHS.lock().map_or_else(|_| Vec::new(), |mut deaths| std::mem::take(&mut *deaths))
 }
 
+static TEAM_SWITCHES: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
+pub(crate) fn push_team_switch(client: u32) {
+    if let Ok(mut clients) = TEAM_SWITCHES.lock() {
+        clients.push(client);
+    }
+}
+
+pub fn take_team_switches() -> Vec<u32> {
+    TEAM_SWITCHES.lock().map_or_else(|_| Vec::new(), |mut clients| std::mem::take(&mut *clients))
+}
+
 static DEATH_PROTECTED: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 static TOTEM_POPS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 
@@ -409,6 +421,7 @@ pub fn deactivate() {
     let _ = take_player_damage();
     let _ = take_totem_pops();
     let _ = take_minecraft_deaths();
+    let _ = take_team_switches();
     if let Ok(mut clients) = DEATH_PROTECTED.lock() {
         clients.clear();
     }
@@ -1782,5 +1795,13 @@ mod tests {
         let deaths: Vec<(u32, String)> = take_minecraft_deaths().into_iter().filter(|(c, _)| *c == client).collect();
         assert_eq!(deaths, vec![(client, "Skeleton".to_owned())]);
         assert!(take_minecraft_deaths().iter().all(|(c, _)| *c != client));
+    }
+
+    #[test]
+    fn a_team_switch_is_taken_once() {
+        let client = 7_000_003;
+        push_team_switch(client);
+        assert_eq!(take_team_switches().into_iter().filter(|&c| c == client).count(), 1);
+        assert!(!take_team_switches().contains(&client));
     }
 }

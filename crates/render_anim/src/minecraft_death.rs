@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use minecraftoss_entities::inside_blocks::Hazard;
+use minecraftoss_player::inventory::{Inventory, ItemStack};
 
 const DAMAGE_STATUS_TICKS: u64 = 100;
 const COMBAT_STATUS_TICKS: u64 = 300;
@@ -10,6 +11,12 @@ const SIGNIFICANT_FALL: f32 = 5.0;
 const VICTIM: &str = "%1$s";
 const ATTACKER: &str = "%2$s";
 const OWNERLESS_ARROW: &str = "minecraft:arrow";
+const DEATH_EXPERIENCE_PER_LEVEL: u32 = 7;
+const MAX_DEATH_EXPERIENCE: u32 = 100;
+const STORAGE_SLOTS: usize = 36;
+const EQUIPMENT_DROP_ORDER: [usize; 7] = [40, 36, 37, 38, 39, 41, 42];
+const ENCHANTMENTS: &str = "minecraft:enchantments";
+const VANISHING_CURSE: &str = "minecraft:vanishing_curse";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FallLocation {
@@ -360,6 +367,133 @@ fn entity_name(language: &HashMap<String, String>, type_id: &str) -> String {
         .unwrap_or_else(|| path.to_owned())
 }
 
+pub(crate) fn death_experience(level: u32, keep_inventory: bool) -> i32 {
+    if keep_inventory {
+        return 0;
+    }
+    level
+        .saturating_mul(DEATH_EXPERIENCE_PER_LEVEL)
+        .min(MAX_DEATH_EXPERIENCE) as i32
+}
+
+pub(crate) fn life_state(pm_type: i32) -> (bool, bool) {
+    let in_world = matches!(
+        pm_type,
+        0 | playerstate_iw4::PM_TYPE_NORMAL_LINKED | playerstate_iw4::PM_TYPE_LAST_STAND
+    );
+    let died = matches!(
+        pm_type,
+        playerstate_iw4::PM_TYPE_DEAD | playerstate_iw4::PM_TYPE_DEAD_LINKED
+    );
+    (in_world, died)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DeathSpot {
+    pub(crate) feet: [f64; 3],
+    pub(crate) eye: [f64; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Death {
+    pub(crate) spot: DeathSpot,
+    pub(crate) experience: i32,
+    pub(crate) keep_inventory: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DeathWatch {
+    in_world: bool,
+    switching_teams: bool,
+    switched_teams: bool,
+    spot: Option<DeathSpot>,
+    pending: Option<Death>,
+}
+
+impl DeathWatch {
+    pub(crate) fn observe(&mut self, in_world: bool, died: bool, level: u32, keep_inventory: bool) {
+        if self.in_world && died {
+            if self.switching_teams {
+                self.switched_teams = true;
+            } else if let Some(spot) = self.spot.take() {
+                self.pending = Some(Death {
+                    spot,
+                    experience: death_experience(level, keep_inventory),
+                    keep_inventory,
+                });
+            }
+        }
+        self.in_world = in_world;
+        if in_world {
+            self.switched_teams = false;
+        } else {
+            self.spot = None;
+            self.switching_teams = false;
+        }
+    }
+
+    pub(crate) fn switch_teams(&mut self) {
+        if self.in_world {
+            self.switching_teams = true;
+        }
+    }
+
+    pub(crate) fn switched_teams(&self) -> bool {
+        self.switched_teams
+    }
+
+    pub(crate) fn stood(&mut self, spot: DeathSpot) {
+        if self.in_world {
+            self.spot = Some(spot);
+        }
+    }
+
+    pub(crate) fn take(&mut self) -> Option<Death> {
+        self.pending.take()
+    }
+}
+
+fn vanishes(stack: &ItemStack) -> bool {
+    stack
+        .components
+        .as_ref()
+        .and_then(|components| components.get(ENCHANTMENTS))
+        .and_then(|enchantments| enchantments.get(VANISHING_CURSE))
+        .and_then(serde_json::Value::as_i64)
+        .is_some_and(|level| level > 0)
+}
+
+pub(crate) fn death_drops(
+    inventory: &mut Inventory,
+    stays: impl Fn(&ItemStack) -> bool,
+) -> Vec<ItemStack> {
+    let mut drops = Vec::new();
+    for slot in (0..STORAGE_SLOTS).chain(EQUIPMENT_DROP_ORDER) {
+        let Some(stack) = inventory.slots.get_mut(slot).and_then(Option::take) else {
+            continue;
+        };
+        if stays(&stack) {
+            inventory.slots[slot] = Some(stack);
+        } else if !vanishes(&stack) {
+            drops.push(stack);
+        }
+    }
+    let mut loose: Vec<ItemStack> = inventory
+        .crafting
+        .iter_mut()
+        .chain(inventory.workbench.iter_mut())
+        .filter_map(Option::take)
+        .collect();
+    loose.extend(inventory.cursor.take());
+    loose.extend(inventory.take_pending_drops());
+    drops.extend(
+        loose
+            .into_iter()
+            .filter(|stack| !stays(stack) && !vanishes(stack)),
+    );
+    drops
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -621,6 +755,191 @@ mod tests {
         assert_eq!(
             FallLocation::of_climbable("minecraft:cave_vines"),
             FallLocation::OtherClimbable
+        );
+    }
+
+    fn spot(x: f64) -> DeathSpot {
+        DeathSpot {
+            feet: [x, 64.0, 0.0],
+            eye: [x, 65.62, 0.0],
+        }
+    }
+
+    fn enchanted(id: &str, key: &str, enchantment: &str) -> ItemStack {
+        let mut stack = ItemStack::new(id, 1);
+        stack.components = Some(serde_json::json!({ key: { enchantment: 1 } }));
+        stack
+    }
+
+    fn ids(stacks: &[ItemStack]) -> Vec<&str> {
+        stacks.iter().map(|stack| stack.id.as_str()).collect()
+    }
+
+    #[test]
+    fn death_experience_is_seven_per_level_up_to_one_hundred() {
+        assert_eq!(death_experience(0, false), 0);
+        assert_eq!(death_experience(1, false), 7);
+        assert_eq!(death_experience(14, false), 98);
+        assert_eq!(death_experience(15, false), 100);
+        assert_eq!(death_experience(40, false), 100);
+        assert_eq!(death_experience(u32::MAX, false), 100);
+        assert_eq!(death_experience(30, true), 0);
+    }
+
+    #[test]
+    fn death_drops_follow_vanilla_order_keep_guns_and_destroy_vanishing_items() {
+        let gun = |stack: &ItemStack| stack.id.starts_with("iw4:weapon/");
+        let mut inventory = Inventory::default();
+        inventory.slots[0] = Some(ItemStack::new("iw4:weapon/5", 1));
+        inventory.slots[3] = Some(ItemStack::new("minecraft:dirt", 64));
+        inventory.slots[20] = Some(enchanted(
+            "minecraft:iron_sword",
+            ENCHANTMENTS,
+            VANISHING_CURSE,
+        ));
+        inventory.slots[36] = Some(ItemStack::new("minecraft:iron_boots", 1));
+        inventory.slots[39] = Some(ItemStack::new("minecraft:iron_helmet", 1));
+        inventory.slots[40] = Some(ItemStack::new("minecraft:shield", 1));
+        inventory.crafting[1] = Some(ItemStack::new("minecraft:stick", 2));
+        inventory.workbench[4] = Some(ItemStack::new("iw4:weapon/9", 1));
+        inventory.cursor = Some(ItemStack::new("minecraft:apple", 3));
+        let drops = death_drops(&mut inventory, gun);
+        assert_eq!(
+            ids(&drops),
+            [
+                "minecraft:dirt",
+                "minecraft:shield",
+                "minecraft:iron_boots",
+                "minecraft:iron_helmet",
+                "minecraft:stick",
+                "minecraft:apple",
+            ]
+        );
+        assert_eq!(drops[0].count, 64);
+        assert_eq!(
+            inventory.slots[0].as_ref().map(|stack| stack.id.as_str()),
+            Some("iw4:weapon/5")
+        );
+        assert!(inventory.slots[1..].iter().all(Option::is_none));
+        assert!(inventory.crafting.iter().all(Option::is_none));
+        assert!(inventory.workbench.iter().all(Option::is_none));
+        assert!(inventory.cursor.is_none());
+    }
+
+    #[test]
+    fn a_cursed_enchanted_book_still_drops() {
+        let mut inventory = Inventory::default();
+        inventory.slots[5] = Some(enchanted(
+            "minecraft:enchanted_book",
+            "minecraft:stored_enchantments",
+            VANISHING_CURSE,
+        ));
+        inventory.slots[6] = Some(enchanted(
+            "minecraft:diamond_pickaxe",
+            ENCHANTMENTS,
+            "minecraft:silk_touch",
+        ));
+        let drops = death_drops(&mut inventory, |_| false);
+        assert_eq!(
+            ids(&drops),
+            ["minecraft:enchanted_book", "minecraft:diamond_pickaxe"]
+        );
+        assert!(drops[1].components.is_some());
+    }
+
+    #[test]
+    fn a_death_is_seen_once_at_the_last_spot_and_never_at_intermission() {
+        let mut watch = DeathWatch::default();
+        watch.observe(false, false, 3, false);
+        watch.stood(spot(9.0));
+        watch.observe(true, false, 3, false);
+        watch.stood(spot(1.0));
+        watch.observe(true, false, 3, false);
+        watch.stood(spot(2.0));
+        watch.observe(false, true, 3, false);
+        watch.stood(spot(5.0));
+        watch.observe(false, true, 0, false);
+        assert_eq!(
+            watch.take(),
+            Some(Death {
+                spot: spot(2.0),
+                experience: 21,
+                keep_inventory: false,
+            })
+        );
+        assert_eq!(watch.take(), None);
+        watch.observe(true, false, 3, false);
+        watch.stood(spot(3.0));
+        watch.observe(false, false, 3, false);
+        assert_eq!(watch.take(), None);
+        watch.observe(false, false, 3, false);
+        watch.observe(false, true, 3, false);
+        assert_eq!(watch.take(), None);
+    }
+
+    #[test]
+    fn only_dead_player_states_count_as_a_death() {
+        use playerstate_iw4::{
+            PM_TYPE_DEAD, PM_TYPE_DEAD_LINKED, PM_TYPE_INTERMISSION, PM_TYPE_LAST_STAND,
+            PM_TYPE_NORMAL_LINKED, PM_TYPE_SPECTATOR,
+        };
+        assert_eq!(life_state(0), (true, false));
+        assert_eq!(life_state(PM_TYPE_NORMAL_LINKED), (true, false));
+        assert_eq!(life_state(PM_TYPE_LAST_STAND), (true, false));
+        assert_eq!(life_state(PM_TYPE_DEAD), (false, true));
+        assert_eq!(life_state(PM_TYPE_DEAD_LINKED), (false, true));
+        assert_eq!(life_state(PM_TYPE_SPECTATOR), (false, false));
+        assert_eq!(life_state(PM_TYPE_INTERMISSION), (false, false));
+    }
+
+    #[test]
+    fn last_stand_then_death_drops() {
+        let mut watch = DeathWatch::default();
+        let observe = |watch: &mut DeathWatch, pm_type: i32| {
+            let (in_world, died) = life_state(pm_type);
+            watch.observe(in_world, died, 15, false);
+        };
+        observe(&mut watch, 0);
+        watch.stood(spot(1.0));
+        observe(&mut watch, playerstate_iw4::PM_TYPE_LAST_STAND);
+        watch.stood(spot(4.0));
+        observe(&mut watch, playerstate_iw4::PM_TYPE_DEAD);
+        assert_eq!(watch.take().map(|death| death.spot), Some(spot(4.0)));
+    }
+
+    #[test]
+    fn a_team_switch_suicide_drops_nothing_and_the_next_death_does() {
+        let mut watch = DeathWatch::default();
+        watch.switch_teams();
+        watch.observe(true, false, 4, false);
+        watch.stood(spot(1.0));
+        watch.switch_teams();
+        watch.observe(false, true, 4, false);
+        assert_eq!(watch.take(), None);
+        assert!(watch.switched_teams());
+        watch.observe(false, false, 4, false);
+        assert!(watch.switched_teams());
+        watch.observe(true, false, 4, false);
+        assert!(!watch.switched_teams());
+        watch.stood(spot(2.0));
+        watch.observe(false, true, 4, false);
+        assert!(!watch.switched_teams());
+        assert_eq!(watch.take().map(|death| death.spot), Some(spot(2.0)));
+    }
+
+    #[test]
+    fn keep_inventory_deaths_carry_no_experience() {
+        let mut watch = DeathWatch::default();
+        watch.observe(true, false, 20, true);
+        watch.stood(spot(1.0));
+        watch.observe(false, true, 20, true);
+        assert_eq!(
+            watch.take(),
+            Some(Death {
+                spot: spot(1.0),
+                experience: 0,
+                keep_inventory: true,
+            })
         );
     }
 }

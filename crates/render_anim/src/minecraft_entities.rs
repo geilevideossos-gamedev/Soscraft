@@ -241,6 +241,10 @@ impl Entities {
         self.server.unload_chunk(pos);
     }
 
+    pub(crate) fn award_experience(&mut self, at: [f64; 3], amount: i32) {
+        self.server.award_experience(at, amount);
+    }
+
     pub(crate) fn award_block_experience(&mut self, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)]) {
         let silk_touch = self.hand_has_silk_touch();
         for (pos, block, blast) in broken {

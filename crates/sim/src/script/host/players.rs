@@ -200,14 +200,14 @@ pub(crate) fn owe(world: &mut World, client: u32, callback: &'static str, args: 
         .push_back((client, callback, args));
 }
 
-pub(crate) fn suicide(world: &mut World, tick: crate::Tick, client: u32) {
+pub(crate) fn suicide(world: &mut World, tick: crate::Tick, client: u32) -> bool {
     let id = crate::ClientId(client);
     let mut frame = FrameWorld::from_world(world);
     if !frame
         .client_meta(id)
         .is_some_and(|m| m.lifecycle == crate::ClientLifecycle::Alive)
     {
-        return;
+        return false;
     }
     crate::script_player::kill(&mut frame, tick, id, Some(id), None);
     let me = player_object(world, client);
@@ -227,6 +227,7 @@ pub(crate) fn suicide(world: &mut World, tick: crate::Tick, client: u32) {
             Value::Int(0),
         ],
     );
+    true
 }
 
 pub(crate) fn force_death(world: &mut World, tick: crate::Tick, client: u32) {

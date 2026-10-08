@@ -146,6 +146,7 @@ struct Runtime {
     atlas_animation: AtlasAnimation,
     animation_clock: f64,
     spawn_gate: crate::minecraft_spawn_gate::SpawnGate,
+    death_watch: crate::minecraft_death::DeathWatch,
     loader: Option<std::thread::JoinHandle<()>>,
     closing: Vec<std::thread::JoinHandle<()>>,
     autosave_ticks: u32,
@@ -505,6 +506,7 @@ fn update(
         atlas_animation,
         animation_clock,
         spawn_gate,
+        death_watch,
         autosave_ticks,
         ..
     } = &mut *runtime;
@@ -537,8 +539,18 @@ fn update(
         ps.pm_type,
         playerstate_iw4::PM_TYPE_SPECTATOR | playerstate_iw4::PM_TYPE_INTERMISSION | playerstate_iw4::PM_TYPE_DEAD | playerstate_iw4::PM_TYPE_DEAD_LINKED
     );
+    let (in_world, died) = crate::minecraft_death::life_state(ps.pm_type);
+    if sim::voxel::take_team_switches().contains(&local.0.0) {
+        death_watch.switch_teams();
+    }
+    let keep_inventory = world.game_rules.keep_inventory();
+    death_watch.observe(in_world, died, survival.status.experience_level, keep_inventory);
     if dead {
-        survival.respawn();
+        if keep_inventory || death_watch.switched_teams() {
+            survival.respawn_keeping_experience();
+        } else {
+            survival.respawn();
+        }
     } else if !sim::voxel::player_damage_pending()
         && let Some(health) = authority.0.player(local.0).map(|p| (p.health, p.max_health))
     {
@@ -1290,6 +1302,7 @@ fn update(
     }
 
     let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
+    death_watch.stood(crate::minecraft_death::DeathSpot { feet, eye });
     let (pitch, yaw) = (ps.viewangles[0].to_radians(), ps.viewangles[1].to_radians());
     let map_forward = [pitch.cos() * yaw.cos(), pitch.cos() * yaw.sin(), -pitch.sin()];
     let forward = glam::Vec3::new(map_forward[0], map_forward[2], -map_forward[1]);
@@ -1643,6 +1656,15 @@ fn update(
             yaw: mc_yaw,
             pitch: ps.viewangles[0],
         };
+        if let Some(death) = death_watch.take()
+            && !death.keep_inventory
+        {
+            for stack in crate::minecraft_death::death_drops(&mut entities.inventory, |stack| crate::minecraft_inventory::weapon_of(stack).is_some()) {
+                entities.world_items.drop_on_death(stack, glam::DVec3::from_array(death.spot.eye));
+            }
+            entities.award_experience(death.spot.feet, death.experience);
+            hand.blocking = None;
+        }
         crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
         ui.weapon_request = inventory_ui.weapon_request(&entities.inventory, &mut selected, ps.weapon as u32);
         entities.selected = selected;
@@ -2260,6 +2282,7 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
     if close_world(runtime, false) || view.active {
         sim::voxel::deactivate();
         runtime.spawn_gate = Default::default();
+        runtime.death_watch = Default::default();
         view.active = false;
         view.atlas = None;
         view.atlas_patches.clear();

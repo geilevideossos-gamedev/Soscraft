@@ -503,7 +503,19 @@ fn register_death(registry: &mut NativeRegistry) {
     registry.register(Method, "suicide", |world, receiver, _| {
         let client = player(world, receiver)?;
         let tick = tick(world);
-        super::super::players::suicide(world, tick, client);
+        let switching_teams = match receiver {
+            Value::Object(id) => matches!(
+                super::super::players::entity_field(world, *id, "switching_teams"),
+                Value::Int(n) if n != 0
+            ),
+            _ => false,
+        };
+        if super::super::players::suicide(world, tick, client)
+            && switching_teams
+            && crate::voxel::active()
+        {
+            crate::voxel::push_team_switch(client);
+        }
         Ok(Value::Undefined)
     });
     registry.register(Method, "laststandrevive", |world, receiver, _| {
