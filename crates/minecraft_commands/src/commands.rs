@@ -5,8 +5,9 @@ use minecraftoss_world::game_rules::Value;
 
 use crate::args::{Arg, ArgKind, TICKS_PER_DAY, marker_ticks};
 use crate::permissions::{ADMINS, GAMEMASTERS};
+use crate::players::game_mode_key;
 use crate::reader::{CommandError, literal};
-use crate::server::{Ctx, Weather};
+use crate::server::{Ctx, SEND_COMMAND_FEEDBACK, Weather, system};
 use crate::text::{GREEN, Text};
 use crate::tree::{Node, parse, smart_usage, smart_usages, sorted};
 
@@ -43,6 +44,11 @@ fn build() -> Vec<Node> {
                 .requires(GAMEMASTERS)
                 .executes(query_difficulty),
             |node, name| node.then(Node::literal(name).executes(set_difficulty)),
+        ),
+        Node::literal("gamemode").requires(GAMEMASTERS).then(
+            Node::argument("gamemode", ArgKind::GameMode)
+                .executes(game_mode)
+                .then(Node::argument("target", players).executes(game_mode)),
         ),
         Node::literal("gamerule").requires(GAMEMASTERS).then(
             Node::argument("rule", ArgKind::Rule)
@@ -423,6 +429,42 @@ fn kill(ctx: &mut Ctx) -> Result<i32, CommandError> {
     Ok(targets.len() as i32)
 }
 
+fn game_mode(ctx: &mut Ctx) -> Result<i32, CommandError> {
+    let Some(Arg::GameMode(mode)) = ctx.arg("gamemode").cloned() else {
+        return Err(CommandError::new("command.unknown.argument", Vec::new()));
+    };
+    let name = Text::translate(game_mode_key(mode), Vec::new());
+    let mut count = 0;
+    for player in ctx.targets("target")? {
+        if !ctx.world.set_game_mode(player, mode) {
+            continue;
+        }
+        count += 1;
+        if player == ctx.source {
+            ctx.success(
+                Text::translate("commands.gamemode.success.self", vec![name.clone()]),
+                true,
+            );
+            continue;
+        }
+        if ctx.world.game_rules().bool(SEND_COMMAND_FEEDBACK) {
+            ctx.out.push(system(
+                player,
+                Text::translate("gameMode.changed", vec![name.clone()]),
+            ));
+        }
+        let target = Text::literal(ctx.server.name(player).unwrap_or(""));
+        ctx.success(
+            Text::translate(
+                "commands.gamemode.success.other",
+                vec![target, name.clone()],
+            ),
+            true,
+        );
+    }
+    Ok(count)
+}
+
 pub fn usage(command: &str, level: u8) -> Option<String> {
     tree()
         .iter()
@@ -436,8 +478,10 @@ mod tests {
     use crate::permissions::{ALL, OWNERS};
     use crate::protocol::Recipient;
     use crate::server::Clock;
+    use crate::server::CommandWorld;
     use crate::server::tests::{FRIEND, FakeWorld, HOST, run, server, texts};
     use crate::text::RED;
+    use minecraftoss_player::GameMode;
 
     #[test]
     fn a_level_zero_source_sees_help_and_seed_only() {
@@ -466,6 +510,7 @@ mod tests {
             vec![
                 "/deop <targets>",
                 "/difficulty [easy|hard|normal|peaceful]",
+                "/gamemode <gamemode> [<target>]",
                 "/gamerule <rule> [<value>]",
                 "/help [<command>]",
                 "/kill [<targets>]",
@@ -655,6 +700,97 @@ mod tests {
         assert_eq!(ticks_to_marker(6000, 6000), None);
         assert_eq!(ticks_to_marker(7000, 6000), Some(30_000));
         assert_eq!(ticks_to_marker(30_500, 0), Some(48_000));
+    }
+
+    #[test]
+    fn gamemode_sets_self_with_the_self_message() {
+        let mut server = server();
+        let mut world = FakeWorld::default();
+        let out = run(&mut server, &mut world, HOST, "gamemode creative");
+        assert_eq!(texts(&out), vec!["Set own game mode to Creative Mode"]);
+        assert_eq!(out[0].0, Recipient::Player(HOST));
+        assert_eq!(world.game_mode(HOST), Some(GameMode::Creative));
+        let out = run(&mut server, &mut world, HOST, "gamemode spectator @s");
+        assert_eq!(texts(&out), vec!["Set own game mode to Spectator Mode"]);
+        assert_eq!(world.game_mode(HOST), Some(GameMode::Spectator));
+    }
+
+    #[test]
+    fn gamemode_to_the_same_mode_says_nothing_and_changes_nothing() {
+        let mut server = server();
+        let mut world = FakeWorld::default();
+        assert!(run(&mut server, &mut world, HOST, "gamemode survival").is_empty());
+        assert!(world.mode_changes.is_empty());
+        run(&mut server, &mut world, HOST, "gamemode adventure");
+        assert!(run(&mut server, &mut world, HOST, "gamemode adventure").is_empty());
+        assert_eq!(world.mode_changes.len(), 1);
+    }
+
+    #[test]
+    fn gamemode_on_another_player_tells_both() {
+        let mut server = server();
+        server.join(FRIEND, "Alex");
+        let mut world = FakeWorld::default();
+        let out = run(&mut server, &mut world, HOST, "gamemode creative Alex");
+        assert_eq!(
+            out,
+            vec![
+                (
+                    Recipient::Player(FRIEND),
+                    "Your game mode has been updated to Creative Mode".to_owned(),
+                    crate::text::WHITE
+                ),
+                (
+                    Recipient::Player(HOST),
+                    "Set Alex's game mode to Creative Mode".to_owned(),
+                    crate::text::WHITE
+                ),
+            ]
+        );
+        let out = run(&mut server, &mut world, HOST, "gamemode creative @a");
+        assert_eq!(texts(&out), vec!["Set own game mode to Creative Mode"]);
+        world.rules.set(SEND_COMMAND_FEEDBACK, "false").unwrap();
+        assert!(run(&mut server, &mut world, HOST, "gamemode adventure @a").is_empty());
+        assert_eq!(world.game_mode(FRIEND), Some(GameMode::Adventure));
+    }
+
+    #[test]
+    fn mode_changes_reach_the_world_once_with_old_and_new() {
+        let mut server = server();
+        server.join(FRIEND, "Alex");
+        let mut world = FakeWorld::default();
+        run(&mut server, &mut world, HOST, "gamemode creative");
+        run(&mut server, &mut world, HOST, "gamemode creative");
+        run(&mut server, &mut world, HOST, "gamemode spectator @a");
+        assert_eq!(
+            world.mode_changes,
+            vec![
+                (HOST, GameMode::Survival, GameMode::Creative),
+                (HOST, GameMode::Creative, GameMode::Spectator),
+                (FRIEND, GameMode::Survival, GameMode::Spectator),
+            ]
+        );
+    }
+
+    #[test]
+    fn gamemode_needs_level_two_and_a_known_mode() {
+        let mut server = server();
+        server.join(FRIEND, "Alex");
+        let mut world = FakeWorld::default();
+        let out = run(&mut server, &mut world, FRIEND, "gamemode creative");
+        assert_eq!(
+            texts(&out)[0],
+            "Unknown or incomplete command. See below for error"
+        );
+        assert!(world.mode_changes.is_empty());
+        let out = run(&mut server, &mut world, HOST, "gamemode god");
+        assert_eq!(
+            texts(&out),
+            vec!["Unknown game mode: god", "...memode god<--[HERE]"]
+        );
+        let out = run(&mut server, &mut world, HOST, "gamemode creative Herobrine");
+        assert_eq!(texts(&out), vec!["No player was found"]);
+        assert!(world.mode_changes.is_empty());
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use minecraftoss_player::GameMode;
 use minecraftoss_world::game_rules::{self, Rule, Value};
 
 use crate::reader::{CommandError, StringReader, literal};
@@ -19,6 +20,7 @@ pub enum ArgKind {
     Rule,
     RuleValue,
     TimeMarker,
+    GameMode,
     Greedy,
 }
 
@@ -38,6 +40,7 @@ pub enum Arg {
     Rule(&'static Rule),
     RuleValue(Value),
     Marker(String),
+    GameMode(GameMode),
     Text(String),
 }
 
@@ -89,6 +92,15 @@ impl ArgKind {
                     reader.cursor = start;
                     Err(CommandError::new("argument.id.invalid", Vec::new()).at(start))
                 }
+            }
+            Self::GameMode => {
+                let name = reader.read_unquoted();
+                crate::players::game_mode_named(name)
+                    .map(Arg::GameMode)
+                    .ok_or_else(|| {
+                        CommandError::new("argument.gamemode.invalid", vec![literal(name)])
+                            .at(reader.cursor)
+                    })
             }
             Self::Greedy => {
                 let rest = reader.remaining().to_owned();
@@ -305,6 +317,17 @@ mod tests {
             parse("8", ArgKind::RuleValue, &snow),
             Ok(Arg::RuleValue(Value::Int(8)))
         );
+    }
+
+    #[test]
+    fn game_modes_parse_their_four_names() {
+        let parse = |text: &str| ArgKind::GameMode.parse(&mut StringReader::new(text), &[]);
+        assert_eq!(parse("creative"), Ok(Arg::GameMode(GameMode::Creative)));
+        assert_eq!(parse("spectator"), Ok(Arg::GameMode(GameMode::Spectator)));
+        let error = parse("god").unwrap_err();
+        assert_eq!(key(&error), "argument.gamemode.invalid");
+        assert_eq!(error.cursor, Some(3));
+        assert_eq!(key(&parse("1").unwrap_err()), "argument.gamemode.invalid");
     }
 
     #[test]

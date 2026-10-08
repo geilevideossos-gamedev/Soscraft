@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use minecraftoss_player::Difficulty;
+use minecraftoss_player::{Difficulty, GameMode};
 use minecraftoss_world::game_rules::{GameRules, Rule, Value};
 
 use crate::args::{Arg, Selector};
@@ -41,6 +41,8 @@ pub trait CommandWorld {
     fn set_time_paused(&mut self, paused: bool);
     fn set_weather(&mut self, weather: Weather, duration: i32);
     fn kill(&mut self, player: PlayerId) -> bool;
+    fn game_mode(&self, player: PlayerId) -> Option<GameMode>;
+    fn set_game_mode(&mut self, player: PlayerId, mode: GameMode) -> bool;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,7 +89,7 @@ pub struct Ctx<'a> {
     pub out: Vec<Outgoing>,
 }
 
-fn system(to: PlayerId, text: Text) -> Outgoing {
+pub(crate) fn system(to: PlayerId, text: Text) -> Outgoing {
     Outgoing {
         to: Recipient::Player(to),
         message: Clientbound::System {
@@ -387,6 +389,8 @@ pub(crate) mod tests {
         pub(crate) clock: Clock,
         pub(crate) weather: Vec<(Weather, i32)>,
         pub(crate) killed: Vec<PlayerId>,
+        pub(crate) modes: Vec<(PlayerId, GameMode)>,
+        pub(crate) mode_changes: Vec<(PlayerId, GameMode, GameMode)>,
     }
 
     impl CommandWorld for FakeWorld {
@@ -428,6 +432,21 @@ pub(crate) mod tests {
 
         fn kill(&mut self, player: PlayerId) -> bool {
             self.killed.push(player);
+            true
+        }
+
+        fn game_mode(&self, player: PlayerId) -> Option<GameMode> {
+            let set = self.modes.iter().rev().find(|(id, _)| *id == player);
+            Some(set.map_or(GameMode::Survival, |(_, mode)| *mode))
+        }
+
+        fn set_game_mode(&mut self, player: PlayerId, mode: GameMode) -> bool {
+            let old = self.game_mode(player).unwrap_or(GameMode::Survival);
+            if old == mode {
+                return false;
+            }
+            self.modes.push((player, mode));
+            self.mode_changes.push((player, old, mode));
             true
         }
     }
@@ -475,6 +494,14 @@ pub(crate) mod tests {
             "options.difficulty.peaceful" => "Peaceful",
             "parsing.bool.invalid" => "Invalid boolean: expected 'true' or 'false' but found '%s'",
             "argument.entity.notfound.player" => "No player was found",
+            "argument.gamemode.invalid" => "Unknown game mode: %s",
+            "commands.gamemode.success.self" => "Set own game mode to %s",
+            "commands.gamemode.success.other" => "Set %s's game mode to %s",
+            "gameMode.changed" => "Your game mode has been updated to %s",
+            "gameMode.survival" => "Survival Mode",
+            "gameMode.creative" => "Creative Mode",
+            "gameMode.adventure" => "Adventure Mode",
+            "gameMode.spectator" => "Spectator Mode",
             _ => return None,
         };
         Some(text.to_owned())

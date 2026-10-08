@@ -21,6 +21,7 @@ pub const VERSION_NAME: &str = "26.3";
 pub const VERSION_SERIES: &str = "main";
 pub const SERVER_BRAND: &str = "iw4l";
 pub const WORLD_CLOCKS: &str = "world_clocks";
+pub const PLAYERS_FOLDER: &str = "players";
 const LOCK_CONTENT: &str = "\u{2603}";
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,6 +53,7 @@ pub struct LevelData {
     pub initialized: bool,
     pub allow_commands: bool,
     pub game_type: i32,
+    pub singleplayer_uuid: Option<String>,
 }
 
 impl LevelData {
@@ -65,6 +67,7 @@ impl LevelData {
             initialized: false,
             allow_commands: true,
             game_type: 0,
+            singleplayer_uuid: None,
         }
     }
 }
@@ -227,6 +230,10 @@ impl LevelStorage {
             initialized: flag(data.get("initialized")),
             allow_commands: flag(data.get("allowCommands")),
             game_type: data.get("GameType").and_then(Tag::as_i64).unwrap_or(0) as i32,
+            singleplayer_uuid: data
+                .get("singleplayer_uuid")
+                .and_then(Tag::as_ints)
+                .and_then(|ints| uuid_from_ints(&ints)),
         }))
     }
 
@@ -298,6 +305,9 @@ impl LevelStorage {
         ];
         for (key, value) in entries {
             data.insert(key.to_owned(), value);
+        }
+        if let Some(ints) = level.singleplayer_uuid.as_deref().and_then(uuid_to_ints) {
+            data.insert("singleplayer_uuid".to_owned(), Tag::IntArray(ints.to_vec()));
         }
         let defaults = [
             (
@@ -379,6 +389,56 @@ impl LevelStorage {
     pub fn write_game_rules(&self, rules: &GameRules) -> Result<(), String> {
         self.write_saved(GAME_RULES, rules.to_tag())
     }
+
+    pub fn player_data_path(&self, uuid: &str) -> PathBuf {
+        self.root
+            .join(PLAYERS_FOLDER)
+            .join(DATA_FOLDER)
+            .join(format!("{uuid}.dat"))
+    }
+
+    pub fn read_player_data(&self, uuid: &str) -> Result<Option<Tag>, String> {
+        read_nbt_or_old(&self.player_data_path(uuid))
+    }
+
+    pub fn write_player_data(&self, uuid: &str, data: &Tag) -> Result<(), String> {
+        let mut entries = data
+            .as_compound()
+            .cloned()
+            .ok_or("player data is not a compound")?;
+        entries.insert("DataVersion".to_owned(), Tag::Int(DATA_VERSION));
+        safe_replace(
+            &self.player_data_path(uuid),
+            &nbt::write_gzip(&Tag::Compound(entries), ""),
+        )
+    }
+}
+
+pub fn uuid_to_ints(uuid: &str) -> Option<[i32; 4]> {
+    let hex: String = uuid.chars().filter(|&c| c != '-').collect();
+    if hex.len() != 32 {
+        return None;
+    }
+    let value = u128::from_str_radix(&hex, 16).ok()?;
+    Some([96, 64, 32, 0].map(|shift| (value >> shift) as u32 as i32))
+}
+
+pub fn uuid_from_ints(ints: &[i32]) -> Option<String> {
+    let [a, b, c, d] = ints else {
+        return None;
+    };
+    let hex = format!(
+        "{:08x}{:08x}{:08x}{:08x}",
+        *a as u32, *b as u32, *c as u32, *d as u32
+    );
+    Some(format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    ))
 }
 
 pub fn dimension_path(world: &Path, dimension: &str) -> PathBuf {
@@ -496,6 +556,7 @@ mod tests {
             initialized: true,
             allow_commands: true,
             game_type: 0,
+            singleplayer_uuid: None,
         }
     }
 
@@ -647,6 +708,62 @@ mod tests {
         let again = storage.read_level_data().unwrap().unwrap();
         assert!(again.allow_commands);
         assert_eq!(again.game_type, 2);
+    }
+
+    #[test]
+    fn player_files_live_in_players_data_uuid_dat() {
+        let dir = test_dir("players");
+        let storage = LevelStorage::open(&dir.0).unwrap();
+        let uuid = "b50ad385-829d-3141-a216-7e7d7539ba7f";
+        let path = dir
+            .0
+            .join("players")
+            .join("data")
+            .join(format!("{uuid}.dat"));
+        assert_eq!(storage.player_data_path(uuid), path);
+        assert_eq!(storage.read_player_data(uuid).unwrap(), None);
+        let first = compound(vec![("playerGameType", Tag::Int(1))]);
+        storage.write_player_data(uuid, &first).unwrap();
+        let read = storage.read_player_data(uuid).unwrap().unwrap();
+        assert_eq!(read.get("playerGameType"), Some(&Tag::Int(1)));
+        assert_eq!(read.get("DataVersion"), Some(&Tag::Int(DATA_VERSION)));
+        let second = compound(vec![("playerGameType", Tag::Int(3))]);
+        storage.write_player_data(uuid, &second).unwrap();
+        std::fs::write(&path, b"broken").unwrap();
+        let fallback = storage.read_player_data(uuid).unwrap().unwrap();
+        assert_eq!(fallback.get("playerGameType"), Some(&Tag::Int(1)));
+        assert!(storage.write_player_data(uuid, &Tag::Int(2)).is_err());
+    }
+
+    #[test]
+    fn uuids_are_stored_as_four_ints_like_uuid_util() {
+        let uuid = "b50ad385-829d-3141-a216-7e7d7539ba7f";
+        let ints = uuid_to_ints(uuid).unwrap();
+        assert_eq!(
+            ints,
+            [
+                0xb50a_d385_u32 as i32,
+                0x829d_3141_u32 as i32,
+                0xa216_7e7d_u32 as i32,
+                0x7539_ba7f
+            ]
+        );
+        assert_eq!(uuid_from_ints(&ints).as_deref(), Some(uuid));
+        assert_eq!(uuid_to_ints("not-a-uuid"), None);
+        assert_eq!(uuid_from_ints(&[1, 2, 3]), None);
+        let dir = test_dir("host");
+        let storage = LevelStorage::open(&dir.0).unwrap();
+        let level = LevelData {
+            singleplayer_uuid: Some(uuid.to_owned()),
+            ..level()
+        };
+        storage.write_level_data(&level).unwrap();
+        let root = nbt::read(&std::fs::read(storage.level_data_path()).unwrap()).unwrap();
+        assert_eq!(
+            root.get("Data").and_then(|d| d.get("singleplayer_uuid")),
+            Some(&Tag::IntArray(ints.to_vec()))
+        );
+        assert_eq!(storage.read_level_data().unwrap(), Some(level));
     }
 
     #[test]

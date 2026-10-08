@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+
+use minecraftoss_core::nbt::Tag;
 pub use minecraftoss_player::GameMode;
 
 pub const MODES: [GameMode; 4] = [
@@ -160,6 +163,75 @@ impl PlayerMode {
     pub fn picks_up(&self) -> bool {
         self.mode != GameMode::Spectator
     }
+
+    pub fn to_tag(&self) -> Tag {
+        let flag = |on: bool| Tag::Byte(i8::from(on));
+        let abilities = &self.abilities;
+        let entries = [
+            ("invulnerable", flag(abilities.invulnerable)),
+            ("flying", flag(abilities.flying)),
+            ("mayfly", flag(abilities.may_fly)),
+            ("instabuild", flag(abilities.instabuild)),
+            ("mayBuild", flag(abilities.may_build)),
+            ("flySpeed", Tag::Float(abilities.flying_speed)),
+            ("walkSpeed", Tag::Float(abilities.walking_speed)),
+        ];
+        let compound = |entries: Vec<(&str, Tag)>| {
+            Tag::Compound(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key.to_owned(), value))
+                    .collect::<BTreeMap<_, _>>(),
+            )
+        };
+        compound(vec![
+            ("playerGameType", Tag::Int(id(self.mode))),
+            (
+                "previousPlayerGameType",
+                Tag::Int(self.previous.map_or(-1, id)),
+            ),
+            ("abilities", compound(entries.to_vec())),
+        ])
+    }
+
+    pub fn from_tag(tag: &Tag) -> Option<Self> {
+        let mode = tag
+            .get("playerGameType")
+            .and_then(Tag::as_i64)
+            .and_then(|value| i32::try_from(value).ok())
+            .and_then(from_id)?;
+        let previous = tag
+            .get("previousPlayerGameType")
+            .and_then(Tag::as_i64)
+            .and_then(|value| i32::try_from(value).ok())
+            .and_then(from_id);
+        let saved = tag.get("abilities");
+        let flag = |key: &str| {
+            saved
+                .and_then(|abilities| abilities.get(key))
+                .and_then(Tag::as_i64)
+                .map(|value| value != 0)
+        };
+        let speed = |key: &str, default: f32| {
+            saved
+                .and_then(|abilities| abilities.get(key))
+                .and_then(Tag::as_f64)
+                .map_or(default, |value| value as f32)
+        };
+        let defaults = Abilities::default();
+        let mut abilities = Abilities {
+            flying: flag("flying").unwrap_or(false),
+            flying_speed: speed("flySpeed", defaults.flying_speed),
+            walking_speed: speed("walkSpeed", defaults.walking_speed),
+            ..defaults
+        };
+        abilities.update_for(mode);
+        Some(Self {
+            mode,
+            previous,
+            abilities,
+        })
+    }
 }
 
 pub fn can_destroy_in_creative(item: Option<&str>) -> bool {
@@ -265,6 +337,69 @@ mod tests {
             assert_eq!(player.shows_hotbar(), !spectator, "{mode:?}");
             assert_eq!(player.interacts(), !spectator, "{mode:?}");
         }
+    }
+
+    #[test]
+    fn player_file_tags_round_trip_every_mode() {
+        for mode in MODES {
+            let mut player = PlayerMode::new(mode);
+            let tag = player.to_tag();
+            assert_eq!(tag.get("playerGameType"), Some(&Tag::Int(id(mode))));
+            assert_eq!(tag.get("previousPlayerGameType"), Some(&Tag::Int(-1)));
+            assert_eq!(PlayerMode::from_tag(&tag), Some(player), "{mode:?}");
+            player.set(if mode == GameMode::Survival {
+                GameMode::Creative
+            } else {
+                GameMode::Survival
+            });
+            assert_eq!(PlayerMode::from_tag(&player.to_tag()), Some(player));
+        }
+        let mut flier = PlayerMode::new(GameMode::Creative);
+        flier.abilities.flying = true;
+        let tag = flier.to_tag();
+        let abilities = tag.get("abilities").unwrap();
+        for (key, value) in [
+            ("invulnerable", Tag::Byte(1)),
+            ("flying", Tag::Byte(1)),
+            ("mayfly", Tag::Byte(1)),
+            ("instabuild", Tag::Byte(1)),
+            ("mayBuild", Tag::Byte(1)),
+            ("flySpeed", Tag::Float(0.05)),
+            ("walkSpeed", Tag::Float(0.1)),
+        ] {
+            assert_eq!(abilities.get(key), Some(&value), "{key}");
+        }
+        assert_eq!(PlayerMode::from_tag(&tag), Some(flier));
+    }
+
+    #[test]
+    fn loading_rederives_abilities_from_the_mode() {
+        let spectator = PlayerMode::new(GameMode::Spectator).to_tag();
+        let mut survival = PlayerMode::new(GameMode::Survival).to_tag();
+        if let Tag::Compound(map) = &mut survival {
+            map.insert(
+                "abilities".to_owned(),
+                spectator.get("abilities").unwrap().clone(),
+            );
+        }
+        let loaded = PlayerMode::from_tag(&survival).unwrap();
+        assert_eq!(loaded, PlayerMode::new(GameMode::Survival));
+        let bare = Tag::Compound(
+            [("playerGameType".to_owned(), Tag::Int(3))]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(
+            PlayerMode::from_tag(&bare),
+            Some(PlayerMode::new(GameMode::Spectator))
+        );
+        let unknown = Tag::Compound(
+            [("playerGameType".to_owned(), Tag::Int(7))]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(PlayerMode::from_tag(&unknown), None);
+        assert_eq!(PlayerMode::from_tag(&Tag::Int(1)), None);
     }
 
     #[test]

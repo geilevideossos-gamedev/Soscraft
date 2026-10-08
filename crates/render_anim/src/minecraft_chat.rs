@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use frame::{McChat, McChatLine};
 use minecraft_commands::{Clientbound, Clock, CommandServer, CommandWorld, PlayerId, Serverbound, Text, Weather};
 use minecraft_terrain::day_cycle::DayCycle;
+use minecraft_terrain::game_mode::{GameMode, PlayerMode};
 use minecraft_terrain::game_rules::{GameRules, Rule, Value};
 use minecraftoss_player::Difficulty;
 
@@ -16,7 +17,9 @@ pub(crate) struct Host<'a> {
     pub(crate) save: Option<&'a mut crate::minecraft_save::WorldSave>,
     pub(crate) survival: &'a mut crate::minecraft_survival::Survival,
     pub(crate) entities: Option<&'a mut crate::minecraft_entities::Entities>,
+    pub(crate) player_mode: &'a mut PlayerMode,
     pub(crate) rules_changed: bool,
+    pub(crate) mode_changed: bool,
 }
 
 impl CommandWorld for Host<'_> {
@@ -81,6 +84,16 @@ impl CommandWorld for Host<'_> {
         self.survival.kill(crate::minecraft_death::DamageCause::Kill);
         true
     }
+
+    fn game_mode(&self, player: PlayerId) -> Option<GameMode> {
+        (player == HOST).then_some(self.player_mode.mode)
+    }
+
+    fn set_game_mode(&mut self, player: PlayerId, mode: GameMode) -> bool {
+        let changed = player == HOST && self.player_mode.set(mode);
+        self.mode_changed |= changed;
+        changed
+    }
 }
 
 pub(crate) fn pump(chat: &mut McChat, server: &mut CommandServer, world: &mut dyn CommandWorld) -> Vec<Clientbound> {
@@ -144,6 +157,8 @@ mod tests {
             ("commands.kill.success.single", "Killed %s"),
             ("commands.time.set.absolute", "Set %s to %s tick(s)"),
             ("commands.gamerule.set", "Game rule %s is now set to %s"),
+            ("commands.gamemode.success.self", "Set own game mode to %s"),
+            ("gameMode.creative", "Creative Mode"),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v.to_owned()))
@@ -155,6 +170,7 @@ mod tests {
         difficulty: Difficulty,
         day: DayCycle,
         survival: crate::minecraft_survival::Survival,
+        player_mode: PlayerMode,
     }
 
     impl Parts {
@@ -166,6 +182,7 @@ mod tests {
                 difficulty: Difficulty::Normal,
                 day: DayCycle::default(),
                 survival,
+                player_mode: PlayerMode::default(),
             }
         }
 
@@ -178,7 +195,9 @@ mod tests {
                 save: None,
                 survival: &mut self.survival,
                 entities: None,
+                player_mode: &mut self.player_mode,
                 rules_changed: false,
+                mode_changed: false,
             }
         }
     }
@@ -244,6 +263,30 @@ mod tests {
         assert!(parts.rules.keep_inventory());
         assert!(parts.survival.killed());
         assert_eq!(parts.survival.status.health, 0.0);
+    }
+
+    #[test]
+    fn gamemode_switches_the_host_player_mode() {
+        let mut server = CommandServer::new(HOST);
+        server.join(HOST, "Steve");
+        let mut parts = Parts::new();
+        let mut chat = McChat::default();
+        chat.sent.push("/gamemode creative".into());
+        let mut host = parts.host();
+        let delivered = pump(&mut chat, &mut server, &mut host);
+        assert!(host.mode_changed);
+        assert_eq!(host.game_mode(HOST), Some(GameMode::Creative));
+        assert_eq!(host.game_mode(PlayerId(1)), None);
+        assert!(!host.set_game_mode(PlayerId(1), GameMode::Spectator));
+        show(&mut chat, &delivered, &language());
+        assert_eq!(chat.received[0].text, "Set own game mode to Creative Mode");
+        assert_eq!(parts.player_mode.mode, GameMode::Creative);
+        assert_eq!(parts.player_mode.previous, Some(GameMode::Survival));
+        assert!(parts.player_mode.abilities.invulnerable);
+        chat.sent.push("/gamemode creative".into());
+        let mut host = parts.host();
+        assert!(pump(&mut chat, &mut server, &mut host).is_empty());
+        assert!(!host.mode_changed);
     }
 
     #[test]

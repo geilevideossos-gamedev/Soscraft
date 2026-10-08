@@ -2,10 +2,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use minecraft_terrain::game_mode::{GameMode, PlayerMode};
 use minecraft_terrain::game_rules::GameRules;
 use minecraft_terrain::level_storage::{
     ClockState, LevelData, LevelStorage, RespawnData, WorldSettings,
 };
+use minecraftoss_core::nbt::Tag;
 use minecraftoss_player::Difficulty;
 
 pub(crate) const DEFAULT_WORLD: &str = "world";
@@ -72,6 +74,7 @@ pub(crate) struct WorldSave {
     storage: Arc<LevelStorage>,
     level: LevelData,
     day_at_start: Option<f64>,
+    host: Option<String>,
 }
 
 impl WorldSave {
@@ -85,6 +88,39 @@ impl WorldSave {
 
     pub(crate) fn ops_path(&self) -> PathBuf {
         self.path().join(minecraft_commands::permissions::OPS_FILE)
+    }
+
+    pub(crate) fn set_host(&mut self, uuid: &str) {
+        self.host = Some(uuid.to_owned());
+        self.level.singleplayer_uuid = Some(uuid.to_owned());
+    }
+
+    pub(crate) fn host_mode(&self) -> (PlayerMode, Option<String>) {
+        let fresh = PlayerMode::new(minecraft_terrain::game_mode::from_id(self.level.game_type).unwrap_or(GameMode::Survival));
+        let Some(uuid) = &self.host else {
+            return (fresh, None);
+        };
+        match self.storage.read_player_data(uuid) {
+            Ok(saved) => (saved.as_ref().and_then(PlayerMode::from_tag).unwrap_or(fresh), None),
+            Err(error) => (fresh, Some(format!("Minecraft player file unreadable, starting it again: {error}"))),
+        }
+    }
+
+    pub(crate) fn write_host(&self, mode: &PlayerMode) -> Result<(), String> {
+        let Some(uuid) = &self.host else {
+            return Ok(());
+        };
+        let mut data = self
+            .storage
+            .read_player_data(uuid)
+            .ok()
+            .flatten()
+            .filter(|tag| tag.as_compound().is_some())
+            .unwrap_or(Tag::Compound(BTreeMap::new()));
+        if let (Tag::Compound(data), Tag::Compound(ours)) = (&mut data, mode.to_tag()) {
+            data.extend(ours);
+        }
+        self.storage.write_player_data(uuid, &data)
     }
 
     pub(crate) fn shift_day(&mut self, by: f64) {
@@ -249,6 +285,7 @@ fn open_save(
             storage: Arc::new(storage),
             level,
             day_at_start: None,
+            host: None,
         }),
     })
 }
@@ -456,6 +493,77 @@ mod tests {
         save.shift_day(-200.0);
         assert_eq!(save.game_time(Some(6000.0)), 800);
         assert_eq!(save.game_time(None), 0);
+    }
+
+    #[test]
+    fn player_game_type_is_merged_into_the_player_file() {
+        let dir = saves();
+        let mut save = open_world(&dir.0, None, Some("4"), 9).save.unwrap();
+        let uuid = minecraft_commands::offline_uuid("Steve");
+        save.set_host(&uuid);
+        let extra = Tag::Compound(
+            [
+                ("Inventory".to_owned(), Tag::List(Vec::new())),
+                ("playerGameType".to_owned(), Tag::Int(0)),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        save.storage.write_player_data(&uuid, &extra).unwrap();
+        let mut mode = PlayerMode::default();
+        mode.set(GameMode::Creative);
+        save.write_host(&mode).unwrap();
+        let path = dir.0.join("world").join("players").join("data").join(format!("{uuid}.dat"));
+        assert!(path.is_file());
+        let saved = save.storage.read_player_data(&uuid).unwrap().unwrap();
+        assert_eq!(saved.get("Inventory"), Some(&Tag::List(Vec::new())));
+        assert_eq!(saved.get("playerGameType"), Some(&Tag::Int(1)));
+        assert_eq!(saved.get("previousPlayerGameType"), Some(&Tag::Int(0)));
+        assert_eq!(saved.get("abilities").and_then(|a| a.get("instabuild")), Some(&Tag::Byte(1)));
+        assert!(saved.get("DataVersion").is_some());
+        assert_eq!(save.host_mode(), (mode, None));
+    }
+
+    #[test]
+    fn a_new_player_takes_the_level_default_game_type() {
+        let dir = saves();
+        let mut save = open_world(&dir.0, None, Some("5"), 9).save.unwrap();
+        save.set_host(&minecraft_commands::offline_uuid("Steve"));
+        assert_eq!(save.host_mode(), (PlayerMode::new(GameMode::Survival), None));
+        save.level.game_type = 2;
+        save.write((0, 64, 0), None, &GameRules::default(), Difficulty::Normal).unwrap();
+        drop(save);
+        let mut again = open_world(&dir.0, None, None, 9).save.unwrap();
+        again.set_host(&minecraft_commands::offline_uuid("Alex"));
+        assert_eq!(again.host_mode(), (PlayerMode::new(GameMode::Adventure), None));
+        let temp = open_world(&dir.0, Some("temp"), None, 9);
+        assert!(temp.save.is_none());
+    }
+
+    #[test]
+    fn the_host_game_mode_survives_reopening_a_world() {
+        let dir = saves();
+        let uuid = minecraft_commands::offline_uuid("Steve");
+        let mut save = open_world(&dir.0, None, Some("6"), 9).save.unwrap();
+        save.set_host(&uuid);
+        let mut mode = PlayerMode::new(GameMode::Creative);
+        mode.abilities.flying = true;
+        mode.set(GameMode::Spectator);
+        save.write((0, 64, 0), None, &GameRules::default(), Difficulty::Normal).unwrap();
+        save.write_host(&mode).unwrap();
+        drop(save);
+        let mut again = open_world(&dir.0, None, None, 9).save.unwrap();
+        assert_eq!(again.level.singleplayer_uuid.as_deref(), Some(uuid.as_str()));
+        assert_eq!(again.host_mode().0, PlayerMode::new(GameMode::Survival));
+        again.set_host(&uuid);
+        assert_eq!(again.host_mode(), (mode, None));
+        assert_eq!(again.host_mode().0.previous, Some(GameMode::Creative));
+        let path = again.storage.player_data_path(&uuid);
+        std::fs::write(&path, b"broken").unwrap();
+        std::fs::write(minecraft_terrain::level_storage::old_path(&path), b"broken").unwrap();
+        let (fresh, warning) = again.host_mode();
+        assert_eq!(fresh, PlayerMode::new(GameMode::Survival));
+        assert!(warning.is_some_and(|w| w.contains("player file")));
     }
 
     #[test]

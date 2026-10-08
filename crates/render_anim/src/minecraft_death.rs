@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use minecraftoss_entities::inside_blocks::Hazard;
+use minecraftoss_player::GameMode;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 
 const DAMAGE_STATUS_TICKS: u64 = 100;
@@ -376,6 +377,10 @@ pub(crate) fn death_experience(level: u32, keep_inventory: bool) -> i32 {
     level
         .saturating_mul(DEATH_EXPERIENCE_PER_LEVEL)
         .min(MAX_DEATH_EXPERIENCE) as i32
+}
+
+pub(crate) fn keeps_belongings(keep_inventory: bool, mode: GameMode) -> bool {
+    keep_inventory || mode == GameMode::Spectator
 }
 
 pub(crate) fn life_state(pm_type: i32) -> (bool, bool) {
@@ -927,6 +932,23 @@ mod tests {
         watch.observe(false, true, 4, false);
         assert!(!watch.switched_teams());
         assert_eq!(watch.take().map(|death| death.spot), Some(spot(2.0)));
+    }
+
+    #[test]
+    fn spectators_keep_their_items_and_experience_like_keep_inventory() {
+        assert!(!keeps_belongings(false, GameMode::Survival));
+        assert!(!keeps_belongings(false, GameMode::Creative));
+        assert!(!keeps_belongings(false, GameMode::Adventure));
+        assert!(keeps_belongings(false, GameMode::Spectator));
+        assert!(keeps_belongings(true, GameMode::Survival));
+        let mut watch = DeathWatch::default();
+        let keep = keeps_belongings(false, GameMode::Spectator);
+        watch.observe(true, false, 20, keep);
+        watch.stood(spot(1.0));
+        watch.observe(false, true, 20, keep);
+        let death = watch.take().unwrap();
+        assert!(death.keep_inventory);
+        assert_eq!(death.experience, 0);
     }
 
     #[test]

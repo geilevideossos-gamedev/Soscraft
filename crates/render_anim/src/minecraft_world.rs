@@ -472,9 +472,16 @@ fn update(
                 }
                 if let Some(save) = world.save.as_mut() {
                     save.started(runtime.day.ticks);
+                    if let Some(host) = world.chat.profile(crate::minecraft_chat::HOST) {
+                        save.set_host(&host.uuid);
+                    }
                 }
                 runtime.autosave_ticks = 0;
-                runtime.player_mode = starting_game_mode();
+                let saved_mode = world.save.as_ref().map(crate::minecraft_save::WorldSave::host_mode);
+                if let Some((_, Some(warning))) = &saved_mode {
+                    diag::warn!(World, "{warning}");
+                }
+                runtime.player_mode = starting_game_mode(saved_mode.map(|(mode, _)| mode));
                 runtime.environment_accumulator = 0.0;
                 runtime.environment_primed = false;
                 runtime.light = Some(SkyLight::streamed());
@@ -549,9 +556,12 @@ fn update(
         save: world.save.as_mut(),
         survival,
         entities: entities.as_mut(),
+        player_mode,
         rules_changed: false,
+        mode_changed: false,
     };
     let delivered = crate::minecraft_chat::pump(&mut ui.chat, &mut world.chat, &mut host);
+    let mode_changed = host.mode_changed;
     if host.rules_changed
         && let Some(entities) = entities.as_mut()
     {
@@ -559,6 +569,9 @@ fn update(
     }
     for warning in world.chat.take_warnings() {
         diag::warn!(World, "{warning}");
+    }
+    if mode_changed {
+        save_player_mode(world, *player_mode);
     }
     if !delivered.is_empty() {
         match inventory_ui.language() {
@@ -593,7 +606,7 @@ fn update(
     if sim::voxel::take_team_switches().contains(&local.0.0) {
         death_watch.switch_teams();
     }
-    let keep_inventory = world.game_rules.keep_inventory();
+    let keep_inventory = crate::minecraft_death::keeps_belongings(world.game_rules.keep_inventory(), player_mode.mode);
     survival.rules = crate::minecraft_survival::SurvivalRules::of(&world.game_rules, world.difficulty);
     survival.set_game_mode(player_mode);
     authority.0.set_minecraft_abilities(local.0, ability_bits(player_mode));
@@ -1435,7 +1448,7 @@ fn update(
         *autosave_ticks += mob_ticks;
         if *autosave_ticks >= crate::minecraft_save::AUTOSAVE_TICKS {
             *autosave_ticks = 0;
-            autosave(world, day.ticks);
+            autosave(world, day.ticks, *player_mode);
         }
         for _ in 0..mob_ticks {
             for sound in entities.animate_tick(&world.scene, feet) {
@@ -2250,13 +2263,35 @@ fn obstacles(
     out
 }
 
-fn starting_game_mode() -> minecraft_terrain::game_mode::PlayerMode {
+fn starting_game_mode(saved: Option<minecraft_terrain::game_mode::PlayerMode>) -> minecraft_terrain::game_mode::PlayerMode {
     use minecraft_terrain::game_mode::{GameMode, PlayerMode, from_id, parse};
     let chosen = std::env::var("IW4L_MINECRAFT_GAMEMODE").ok().and_then(|name| {
         let name = name.trim().to_ascii_lowercase();
         parse(&name).or_else(|| name.parse().ok().and_then(from_id))
     });
-    PlayerMode::new(chosen.unwrap_or(GameMode::Survival))
+    let mut mode = saved.unwrap_or_else(|| PlayerMode::new(GameMode::Survival));
+    if let Some(chosen) = chosen {
+        mode.set(chosen);
+    }
+    mode
+}
+
+fn save_player_mode(world: &mut Loaded, mode: minecraft_terrain::game_mode::PlayerMode) {
+    let Some(save) = world.save.clone() else {
+        return;
+    };
+    if let Some(previous) = world.level_writer.take() {
+        let _ = previous.join();
+    }
+    world.level_writer = std::thread::Builder::new()
+        .name("minecraft-player-save".into())
+        .spawn(move || {
+            if let Err(error) = save.write_host(&mode) {
+                diag::warn!(World, "Minecraft player file not written: {error}");
+            }
+        })
+        .map_err(|error| diag::warn!(World, "Minecraft player file thread not started: {error}"))
+        .ok();
 }
 
 fn ability_bits(mode: &minecraft_terrain::game_mode::PlayerMode) -> u32 {
@@ -2276,7 +2311,7 @@ fn ui_game_mode(mode: minecraftoss_player::GameMode) -> frame::McGameMode {
     }
 }
 
-fn autosave(world: &mut Loaded, day_ticks: f64) {
+fn autosave(world: &mut Loaded, day_ticks: f64, mode: minecraft_terrain::game_mode::PlayerMode) {
     let Some(save) = world.save.clone() else {
         return;
     };
@@ -2294,6 +2329,9 @@ fn autosave(world: &mut Loaded, day_ticks: f64) {
         .spawn(move || {
             if let Err(error) = save.write(spawn, Some(day_ticks), &rules, difficulty) {
                 diag::warn!(World, "Minecraft autosave: level.dat not written: {error}");
+            }
+            if let Err(error) = save.write_host(&mode) {
+                diag::warn!(World, "Minecraft autosave: player file not written: {error}");
             }
         })
         .map_err(|error| diag::warn!(World, "Minecraft autosave: level.dat thread not started: {error}"))
@@ -2317,9 +2355,10 @@ fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
     let loading = runtime.loading.take();
     let loader = runtime.loader.take();
     let day_ticks = runtime.day.ticks;
+    let player_mode = runtime.player_mode;
     let open = world.is_some() || loading.is_some();
     if entities.is_some() || open || loader.is_some() {
-        let close = move || save_and_close(entities, world, loading, loader, day_ticks);
+        let close = move || save_and_close(entities, world, loading, loader, day_ticks, player_mode);
         if blocking {
             close();
         } else {
@@ -2343,6 +2382,7 @@ fn save_and_close(
     loading: Option<mpsc::Receiver<Result<Loaded, String>>>,
     loader: Option<std::thread::JoinHandle<()>>,
     day_ticks: f64,
+    player_mode: minecraft_terrain::game_mode::PlayerMode,
 ) {
     let started = std::time::Instant::now();
     drop(entities);
@@ -2366,6 +2406,9 @@ fn save_and_close(
     };
     if let Err(error) = save.write(spawn, Some(day_ticks), &rules, difficulty) {
         diag::warn!(World, "Minecraft level.dat not written: {error}");
+    }
+    if let Err(error) = save.write_host(&player_mode) {
+        diag::warn!(World, "Minecraft player file not written: {error}");
     }
     diag::info!(
         World,
