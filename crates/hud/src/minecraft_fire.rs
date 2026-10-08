@@ -125,6 +125,7 @@ pub(crate) fn update(
             },
             layer: 0,
             clip: None,
+            glint: None,
         })
         .collect();
     if !quads.is_empty() {

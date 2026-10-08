@@ -673,6 +673,7 @@ fn friendly_quad(
         provenance,
         layer: 1,
         clip: None,
+        glint: None,
     }
 }
 

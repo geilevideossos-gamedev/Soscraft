@@ -205,6 +205,7 @@ pub struct Draw2dQuad {
     pub layer: u8,
 
     pub clip: Option<[f32; 4]>,
+    pub glint: Option<[[f32; 2]; 4]>,
 }
 
 pub const DRAW2D_QUAD_INDICES: [u16; 6] = hud_iw4::RB_DRAW_STRETCHPIC_INDICES;
@@ -544,6 +545,7 @@ fn quad_from_stretch(
         provenance,
         layer,
         clip,
+        glint: None,
     }
 }
 
@@ -709,6 +711,7 @@ fn text_run_quads(
                         provenance: provenance.clone(),
                         layer,
                         clip,
+                        glint: None,
                     });
                 }
             }
@@ -729,6 +732,7 @@ fn text_run_quads(
                     provenance: provenance.clone(),
                     layer,
                     clip,
+                    glint: None,
                 });
             }
             let (xy, st) = hud_iw4::draw_stretch_pic_corners(gx, gy, gw, gh, s0, t0, s1, t1);
@@ -741,6 +745,7 @@ fn text_run_quads(
                 provenance: provenance.clone(),
                 layer,
                 clip,
+                glint: None,
             });
         }
         cursor_x += f32::from(advance) * x_scale;
@@ -789,6 +794,7 @@ fn quad_from_cmd(cmd: &Draw2dCmd, clip: Option<[f32; 4]>) -> Draw2dQuad {
         provenance: cmd.provenance.clone(),
         layer: cmd.layer,
         clip,
+        glint: None,
     }
 }
 

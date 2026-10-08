@@ -69,3 +69,4 @@ pub mod experience;
 pub mod orb_render;
 pub mod falling_render;
 pub mod enchantment_names;
+pub mod glint;

@@ -318,6 +318,7 @@ mod tests {
             enchantments: Vec::new(),
             contents: Vec::new(),
             more: None,
+            glint: false,
         }
     }
 

@@ -34,3 +34,42 @@ fn vs_tess(in: VsIn) -> VsOut {
 fn fs_tess(in: VsOut) -> @location(0) vec4<f32> {
     return textureSample(color_tex, color_samp, in.uv) * in.color;
 }
+
+struct GlintIn {
+    @location(0) xyzw: vec4<f32>,
+    @location(1) color: vec4<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) glint: vec2<f32>,
+}
+
+struct GlintOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) glint: vec2<f32>,
+    @location(2) strength: f32,
+}
+
+@group(0) @binding(3) var glint_tex: texture_2d<f32>;
+@group(0) @binding(4) var glint_samp: sampler;
+
+@vertex
+fn vs_glint(in: GlintIn) -> GlintOut {
+    var out: GlintOut;
+    let x = in.xyzw.x * params.set2d.x + params.set2d.z;
+    let y = in.xyzw.y * params.set2d.y + params.set2d.w;
+    out.clip = vec4<f32>(x, y, 0.0, 1.0);
+    out.uv = in.uv;
+    out.glint = in.glint * 2.0;
+    out.strength = in.color.a;
+    return out;
+}
+
+@fragment
+fn fs_glint(in: GlintOut) -> @location(0) vec4<f32> {
+    let mask = textureSample(color_tex, color_samp, in.uv);
+    let g = textureSample(glint_tex, glint_samp, in.glint).rgb * in.strength;
+    if mask.a < 0.1 {
+        discard;
+    }
+    return vec4<f32>(g * g, 0.0);
+}

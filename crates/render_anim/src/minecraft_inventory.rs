@@ -590,6 +590,7 @@ impl InventoryUi {
             }
         }
         ui.gui = self.gui.as_ref().map(|gui| gui.gui.clone());
+        ui.glint = self.gui.as_ref().and_then(|gui| gui.glint.clone());
         let language = self
             .language
             .get_or_insert_with(|| minecraft_terrain::item_icons::language(packs).unwrap_or_default());
@@ -624,6 +625,7 @@ impl InventoryUi {
                         .collect(),
                     contents: contents_lines(lang, s),
                     more: more_line(lang, s),
+                    glint: minecraft_terrain::glint::has_glint(s),
                 }
             })
         };

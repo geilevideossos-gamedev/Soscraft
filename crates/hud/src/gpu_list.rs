@@ -34,6 +34,8 @@ pub enum HudTessTechnique {
     SplatterAlt,
 
     SavedScreen,
+
+    Glint,
 }
 
 #[derive(Clone, Debug)]
@@ -136,6 +138,16 @@ fn hash_one_quad(h: &mut impl Hasher, q: &Draw2dQuad) {
         Some(c) => {
             1u8.hash(h);
             for v in c {
+                v.to_bits().hash(h);
+            }
+        }
+        None => 0u8.hash(h),
+    }
+    match q.glint {
+        Some(corners) => {
+            1u8.hash(h);
+            for [u, v] in corners {
+                u.to_bits().hash(h);
                 v.to_bits().hash(h);
             }
         }
@@ -310,6 +322,10 @@ pub fn clip_aa_quad(quad: &Draw2dQuad) -> Option<Draw2dQuad> {
     let mut out = quad.clone();
     out.xy = [[nx0, ny0], [nx1, ny0], [nx1, ny1], [nx0, ny1]];
     out.st = [st(u0, v0), st(u1, v0), st(u1, v1), st(u0, v1)];
+    out.glint = quad.glint.map(|g| {
+        let at = |u: f32, v: f32| lerp2(lerp2(g[0], g[1], u), lerp2(g[3], g[2], u), v);
+        [at(u0, v0), at(u1, v0), at(u1, v1), at(u0, v1)]
+    });
     Some(out)
 }
 
@@ -349,8 +365,22 @@ pub fn present_list(input: PresentInput<'_>) -> usize {
         hide_list(host, latch);
         return 0;
     }
+    let glint_texture = quads
+        .iter()
+        .any(|q| q.glint.is_some())
+        .then(|| {
+            hud_images.get_native(
+                crate::images::HUD_CHROME_NAMESPACE,
+                crate::minecraft_gui::GLINT_MATERIAL,
+                images,
+            )
+        })
+        .flatten();
     let mut prepared = Vec::with_capacity(quads.len());
     for quad in quads {
+        if quad.glint.is_some() && glint_texture.is_none() {
+            continue;
+        }
         let Some(clipped) = clip_aa_quad(quad) else {
             continue;
         };
@@ -377,7 +407,7 @@ pub fn present_list(input: PresentInput<'_>) -> usize {
         return shown;
     }
 
-    let packed = pack_material_runs(&prepared);
+    let packed = pack_material_runs(&prepared, glint_texture.as_ref());
     if shown == 0 {
         hide_list(host, latch);
         return 0;
@@ -404,7 +434,30 @@ fn pack_quad_verts(quad: &Draw2dQuad) -> [HudTessVertex; 4] {
     })
 }
 
-fn pack_material_runs(prepared: &[Prepared]) -> PackedList {
+const GLINT_UV_RANGE: f32 = 2.0;
+
+fn glint_words(glint: [[f32; 2]; 4]) -> [u32; 4] {
+    let base = |axis: usize| {
+        glint
+            .iter()
+            .map(|c| c[axis])
+            .fold(f32::INFINITY, f32::min)
+            .floor()
+    };
+    let base = [base(0), base(1)];
+    let unorm = |value: f32| ((value / GLINT_UV_RANGE).clamp(0.0, 1.0) * 65535.0).round() as u32;
+    glint.map(|[u, v]| unorm(u - base[0]) | (unorm(v - base[1]) << 16))
+}
+
+fn pack_glint_quad_verts(quad: &Draw2dQuad, glint: [[f32; 2]; 4]) -> [HudTessVertex; 4] {
+    let mut verts = pack_quad_verts(quad);
+    for (vert, word) in verts.iter_mut().zip(glint_words(glint)) {
+        vert.packed_normal = word;
+    }
+    verts
+}
+
+fn pack_material_runs(prepared: &[Prepared], glint_texture: Option<&Handle<Image>>) -> PackedList {
     let mut packed = PackedList::default();
     let mut i = 0;
     while i < prepared.len() {
@@ -420,11 +473,15 @@ fn pack_material_runs(prepared: &[Prepared]) -> PackedList {
             && prepared[j].state_bits == prepared[i].state_bits
             && prepared[j].quad.material == prepared[i].quad.material
             && prepared[j].quad.material_namespace == prepared[i].quad.material_namespace
+            && prepared[j].quad.glint.is_some() == prepared[i].quad.glint.is_some()
         {
             if hud_iw4::tess_stretchpic_must_flush(batch_verts, batch_idx) {
                 break;
             }
-            let verts = pack_quad_verts(&prepared[j].quad);
+            let verts = match prepared[j].quad.glint {
+                Some(glint) => pack_glint_quad_verts(&prepared[j].quad, glint),
+                None => pack_quad_verts(&prepared[j].quad),
+            };
             let local_base = (k * 4) as u16;
             packed.vertices.extend(verts);
             for t in DRAW2D_QUAD_INDICES {
@@ -435,11 +492,16 @@ fn pack_material_runs(prepared: &[Prepared]) -> PackedList {
             k = k.saturating_add(1);
             j += 1;
         }
+        let glint = prepared[i].quad.glint.is_some();
         packed.batches.push(HudTessBatch {
             image: prepared[i].texture.clone(),
-            mask: None,
-            technique: HudTessTechnique::Modulate,
-            state_bits: prepared[i].state_bits,
+            mask: if glint { glint_texture.cloned() } else { None },
+            technique: if glint {
+                HudTessTechnique::Glint
+            } else {
+                HudTessTechnique::Modulate
+            },
+            state_bits: if glint { None } else { prepared[i].state_bits },
             first_index,
             index_count: batch_idx,
             first_vertex: u32::from(vert0),
@@ -495,4 +557,95 @@ pub(crate) fn pack_modulate(quad: &Draw2dQuad, image: Handle<Image>) -> PackedLi
         vertex_count: 4,
     });
     packed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::draw2d::Draw2dProvenance;
+    use crate::images::HUD_CHROME_NAMESPACE;
+
+    fn quad(glint: Option<[[f32; 2]; 4]>) -> Draw2dQuad {
+        Draw2dQuad {
+            xy: [[0.0, 0.0], [16.0, 0.0], [16.0, 16.0], [0.0, 16.0]],
+            st: [[0.0, 0.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5]],
+            color: [1.0, 1.0, 1.0, 0.75],
+            material: crate::minecraft_gui::ICON_MATERIAL.to_owned(),
+            material_namespace: HUD_CHROME_NAMESPACE,
+            provenance: Draw2dProvenance::CgDraw { site: "test" },
+            layer: 1,
+            clip: None,
+            glint,
+        }
+    }
+
+    const CORNERS: [[f32; 2]; 4] = [[-0.3, 2.1], [-0.05, 2.15], [-0.1, 2.4], [-0.35, 2.35]];
+
+    #[test]
+    fn glint_words_keep_the_corners_relative_to_their_cell() {
+        let words = glint_words(CORNERS);
+        let base = [-1.0, 2.0];
+        for (word, corner) in words.iter().zip(CORNERS) {
+            let u = (word & 0xffff) as f32 / 65535.0;
+            let v = (word >> 16) as f32 / 65535.0;
+            assert!((0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v));
+            assert!((u * GLINT_UV_RANGE + base[0] - corner[0]).abs() < 1e-4);
+            assert!((v * GLINT_UV_RANGE + base[1] - corner[1]).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn glint_quads_get_a_batch_of_their_own_with_the_glint_texture() {
+        let mut images = Assets::<Image>::default();
+        let icons = images.add(Image::default());
+        let glint = images.add(Image::default());
+        let prepared: Vec<Prepared> = [None, Some(CORNERS), None]
+            .into_iter()
+            .map(|g| Prepared {
+                texture: icons.clone(),
+                state_bits: None,
+                quad: quad(g),
+            })
+            .collect();
+        let packed = pack_material_runs(&prepared, Some(&glint));
+        let techniques: Vec<_> = packed.batches.iter().map(|b| b.technique).collect();
+        assert_eq!(
+            techniques,
+            [
+                HudTessTechnique::Modulate,
+                HudTessTechnique::Glint,
+                HudTessTechnique::Modulate
+            ]
+        );
+        assert_eq!(packed.batches[0].mask, None);
+        assert_eq!(packed.batches[1].mask, Some(glint));
+        assert_eq!(packed.batches[1].image, icons);
+        let first = packed.batches[1].first_vertex as usize;
+        let words: Vec<u32> = packed.vertices[first..first + 4]
+            .iter()
+            .map(|v| v.packed_normal)
+            .collect();
+        assert_eq!(words, glint_words(CORNERS));
+    }
+
+    #[test]
+    fn the_fingerprint_sees_the_glint_move() {
+        let moved = CORNERS.map(|[u, v]| [u + 0.01, v]);
+        let fp = |g| fingerprint_quads(1, std::iter::once(&quad(g)));
+        assert_ne!(fp(None), fp(Some(CORNERS)));
+        assert_ne!(fp(Some(CORNERS)), fp(Some(moved)));
+        assert_eq!(fp(Some(CORNERS)), fp(Some(CORNERS)));
+    }
+
+    #[test]
+    fn clipping_a_glint_quad_clips_its_glint_too() {
+        let mut clipped = quad(Some(CORNERS));
+        clipped.clip = Some([0.0, 0.0, 8.0, 16.0]);
+        let out = clip_aa_quad(&clipped).unwrap();
+        let glint = out.glint.unwrap();
+        let half = lerp2(CORNERS[0], CORNERS[1], 0.5);
+        assert!((glint[1][0] - half[0]).abs() < 1e-6 && (glint[1][1] - half[1]).abs() < 1e-6);
+        assert_eq!(glint[0], CORNERS[0]);
+        assert_eq!(glint[3], CORNERS[3]);
+    }
 }

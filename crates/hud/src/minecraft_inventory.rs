@@ -9,7 +9,7 @@ use crate::gaps::HudPresentationGaps;
 use crate::gpu_list::{HudTessPass, TessJob};
 use crate::images::HudImages;
 use crate::minecraft_clicks::{Clicks, Menu, Target};
-use crate::minecraft_gui::{ANIMATED_ICON_MATERIAL, DARK_GREEN, GRAY, GUI_MATERIAL, GuiSpace, ICON_MATERIAL, Painter, TextLine, WHITE, YELLOW};
+use crate::minecraft_gui::{ANIMATED_ICON_MATERIAL, DARK_GREEN, GLINT_MATERIAL, GRAY, GUI_MATERIAL, GuiSpace, ICON_MATERIAL, Painter, TextLine, WHITE, YELLOW};
 use crate::minecraft_screens::{
     Cycler, Layout, PUPPET_BOX, RECIPE_COLUMNS, RECIPE_ROWS, Screen, SlotSpec, Station, drag_offset, enchant_row_at, hidden_rows,
     over_scroller, recipe_at, smithing_icons, smithing_templates, start_index,
@@ -292,9 +292,13 @@ pub(crate) fn update_minecraft_hud(
     if let Some(icons) = ui.animated_icons.clone() {
         hud_images.insert_runtime(ANIMATED_ICON_MATERIAL, icons);
     }
+    if let Some(glint) = ui.glint.clone() {
+        hud_images.insert_runtime(GLINT_MATERIAL, glint);
+    }
     let weapons = weapons.as_deref();
     let strings = strings.as_deref();
     let mut painter = Painter::new(&gui, space);
+    painter.glint_shift = frame::minecraft_ui::glint_shift(time.elapsed().as_millis() as u64);
     let highlighted = ui.slots.get(ui.selected).and_then(Option::as_ref).filter(|stack| stack.weapon.is_none());
     let highlighted = highlighted.map(|stack| (stack.id.clone(), stack_name(stack, &ui, weapons, strings, &mut gaps)));
     input.highlight.advance(f64::from(dt), highlighted);
@@ -808,6 +812,7 @@ mod tests {
             enchantments: vec!["Unbreaking I".to_owned()],
             contents: (1..=5).map(|count| format!("{count} x Stone")).collect(),
             more: Some("and 2 more...".to_owned()),
+            glint: false,
         };
         let lines = tooltip_lines(&stack, &MinecraftUi::default(), None, None, &mut HudPresentationGaps::default());
         let shown: Vec<(&str, bool)> = lines.iter().map(|line| (line.text.as_str(), line.italic)).collect();

@@ -511,6 +511,7 @@ fn thermal_target_quads(
             },
             layer: 1,
             clip: None,
+            glint: None,
         });
     }
     quads

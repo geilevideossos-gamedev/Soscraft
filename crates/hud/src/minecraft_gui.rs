@@ -10,6 +10,7 @@ use crate::images::HUD_CHROME_NAMESPACE;
 pub(crate) const GUI_MATERIAL: &str = "mc_gui";
 pub(crate) const ICON_MATERIAL: &str = "mc_item_icons";
 pub(crate) const ANIMATED_ICON_MATERIAL: &str = "mc_animated_item_icons";
+pub(crate) const GLINT_MATERIAL: &str = "mc_item_glint";
 pub(crate) const WHITE: u32 = 0xFFFF_FFFF;
 pub(crate) const GRAY: u32 = 0xFFAA_AAAA;
 pub(crate) const DARK_GREEN: u32 = 0xFF00_AA00;
@@ -179,6 +180,7 @@ pub(crate) struct Painter<'a> {
     pub gui: &'a McGui,
     pub space: GuiSpace,
     pub quads: Vec<Draw2dQuad>,
+    pub glint_shift: [f32; 2],
 }
 
 impl<'a> Painter<'a> {
@@ -187,6 +189,7 @@ impl<'a> Painter<'a> {
             gui,
             space,
             quads: Vec::new(),
+            glint_shift: [0.0, 0.0],
         }
     }
 
@@ -210,6 +213,7 @@ impl<'a> Painter<'a> {
             },
             layer: 1,
             clip: None,
+            glint: None,
         });
     }
 
@@ -722,22 +726,53 @@ impl<'a> Painter<'a> {
             );
             return;
         }
-        if let Some(&st) = ui.animated_icon_rects.get(&stack.id) {
+        let icon = ui
+            .animated_icon_rects
+            .get(&stack.id)
+            .map(|&st| (ANIMATED_ICON_MATERIAL, st))
+            .or_else(|| ui.icon_rects.get(&stack.id).map(|&st| (ICON_MATERIAL, st)));
+        if let Some((material, st)) = icon {
             self.rect(
-                ANIMATED_ICON_MATERIAL,
+                material,
                 HUD_CHROME_NAMESPACE,
                 [x, y, x + 16.0, y + 16.0],
                 st,
                 argb(color),
             );
-        } else if let Some(&st) = ui.icon_rects.get(&stack.id) {
-            self.rect(
-                ICON_MATERIAL,
-                HUD_CHROME_NAMESPACE,
-                [x, y, x + 16.0, y + 16.0],
-                st,
-                argb(color),
-            );
+            if stack.glint {
+                self.glint(material, x, y, st);
+            }
+        }
+    }
+
+    fn glint(&mut self, material: &str, x: f32, y: f32, st: [f32; 4]) {
+        let cell = |lo: f32, hi: f32| (lo / (hi - lo).max(f32::EPSILON)).round();
+        let cell = [cell(st[0], st[2]), cell(st[1], st[3])];
+        let shift = self.glint_shift;
+        let corner = |[u, v]: [f32; 2]| {
+            frame::minecraft_ui::glint_uv(
+                shift,
+                [
+                    (cell[0] + u) / frame::minecraft_ui::GLINT_ATLAS_CELLS,
+                    (cell[1] + v) / frame::minecraft_ui::GLINT_ATLAS_CELLS,
+                ],
+                frame::minecraft_ui::ITEM_GLINT_SCALE,
+            )
+        };
+        self.rect(
+            material,
+            HUD_CHROME_NAMESPACE,
+            [x, y, x + 16.0, y + 16.0],
+            st,
+            [1.0, 1.0, 1.0, frame::minecraft_ui::GLINT_STRENGTH],
+        );
+        if let Some(quad) = self.quads.last_mut() {
+            quad.glint = Some([
+                corner([0.0, 0.0]),
+                corner([1.0, 0.0]),
+                corner([1.0, 1.0]),
+                corner([0.0, 1.0]),
+            ]);
         }
     }
 
@@ -1045,6 +1080,7 @@ mod tests {
             enchantments: Vec::new(),
             contents: Vec::new(),
             more: None,
+            glint: false,
         };
         let mut ui = MinecraftUi::default();
         painter.decorations(&ui, &stack, [0, 0], Some(("ab".into(), YELLOW)));
@@ -1088,5 +1124,82 @@ mod tests {
                 argb(GRAY)
             ]
         );
+    }
+
+    fn shiny(id: &str, glint: bool) -> McStack {
+        McStack {
+            id: id.into(),
+            count: 1,
+            weapon: None,
+            damage: None,
+            max: 1,
+            named: false,
+            name: None,
+            attack: None,
+            enchantments: Vec::new(),
+            contents: Vec::new(),
+            more: None,
+            glint,
+        }
+    }
+
+    #[test]
+    fn glinting_icons_get_a_second_quad_with_the_vanilla_glint_corners() {
+        let gui = gui();
+        let mut ui = MinecraftUi::default();
+        let st = [3.0 / 32.0, 5.0 / 32.0, 4.0 / 32.0, 6.0 / 32.0];
+        ui.icon_rects.insert("minecraft:diamond_pickaxe".into(), st);
+        let mut painter = Painter::new(&gui, space(1));
+        painter.glint_shift = [-0.25, 0.5];
+        painter.item(&ui, None, &shiny("minecraft:diamond_pickaxe", true), 10, 20);
+        assert_eq!(painter.quads.len(), 2);
+        let [icon, glint] = [&painter.quads[0], &painter.quads[1]];
+        assert_eq!(icon.glint, None);
+        assert_eq!(glint.xy, icon.xy);
+        assert_eq!(glint.st, icon.st);
+        assert_eq!(glint.material, ICON_MATERIAL);
+        assert_eq!(glint.color, [1.0, 1.0, 1.0, 0.75]);
+        let corner = |u: f32, v: f32| {
+            frame::minecraft_ui::glint_uv([-0.25, 0.5], [(3.0 + u) / 32.0, (5.0 + v) / 32.0], 8.0)
+        };
+        assert_eq!(
+            glint.glint,
+            Some([
+                corner(0.0, 0.0),
+                corner(1.0, 0.0),
+                corner(1.0, 1.0),
+                corner(0.0, 1.0)
+            ])
+        );
+        let mut painter = Painter::new(&gui, space(1));
+        painter.item(
+            &ui,
+            None,
+            &shiny("minecraft:diamond_pickaxe", false),
+            10,
+            20,
+        );
+        assert_eq!(painter.quads.len(), 1);
+        assert_eq!(painter.quads[0].glint, None);
+    }
+
+    #[test]
+    fn animated_icons_glint_through_their_own_atlas_and_guns_never_glint() {
+        let gui = gui();
+        let mut ui = MinecraftUi::default();
+        ui.animated_icon_rects
+            .insert("minecraft:compass".into(), [0.0, 0.0, 0.5, 0.5]);
+        let mut painter = Painter::new(&gui, space(1));
+        painter.item(&ui, None, &shiny("minecraft:compass", true), 0, 0);
+        let materials: Vec<&str> = painter.quads.iter().map(|q| q.material.as_str()).collect();
+        assert_eq!(materials, [ANIMATED_ICON_MATERIAL, ANIMATED_ICON_MATERIAL]);
+        assert!(painter.quads[1].glint.is_some());
+        let gun = McStack {
+            weapon: Some(3),
+            ..shiny("iw4:weapon/3", true)
+        };
+        let mut painter = Painter::new(&gui, space(1));
+        painter.item(&ui, None, &gun, 0, 0);
+        assert!(painter.quads.is_empty());
     }
 }

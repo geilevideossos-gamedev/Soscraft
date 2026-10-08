@@ -194,6 +194,7 @@ fn rotated_pic(
         provenance: Draw2dProvenance::OwnerDraw(args.item.owner_draw),
         layer: 1,
         clip: None,
+        glint: None,
     }
 }
 

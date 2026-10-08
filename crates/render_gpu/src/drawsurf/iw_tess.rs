@@ -120,6 +120,7 @@ struct SavedScreenGpu {
 struct IwTessPipeline {
     shader: Handle<Shader>,
     modulate_layout: BindGroupLayoutDescriptor,
+    glint_layout: BindGroupLayoutDescriptor,
     params: Buffer,
 }
 
@@ -128,6 +129,7 @@ struct IwTessPipelineKey {
     target: TextureFormat,
     samples: u32,
     state_bits: Option<[u32; 2]>,
+    glint: bool,
 }
 
 impl SpecializedRenderPipeline for IwTessPipeline {
@@ -145,12 +147,16 @@ impl SpecializedRenderPipeline for IwTessPipeline {
         });
         RenderPipelineDescriptor {
             label: Some("iw_tess_stretchpic".into()),
-            layout: vec![self.modulate_layout.clone()],
+            layout: vec![if key.glint {
+                self.glint_layout.clone()
+            } else {
+                self.modulate_layout.clone()
+            }],
             immediate_size: 0,
             vertex: VertexState {
                 shader: self.shader.clone(),
                 shader_defs: Vec::new(),
-                entry_point: Some("vs_tess".into()),
+                entry_point: Some(if key.glint { "vs_glint" } else { "vs_tess" }.into()),
                 buffers: vec![VertexBufferLayout {
                     array_stride: 32,
                     step_mode: VertexStepMode::Vertex,
@@ -170,16 +176,35 @@ impl SpecializedRenderPipeline for IwTessPipeline {
                             offset: 20,
                             shader_location: 2,
                         },
-                    ],
+                    ]
+                    .into_iter()
+                    .chain(key.glint.then_some(VertexAttribute {
+                        format: VertexFormat::Unorm16x2,
+                        offset: 28,
+                        shader_location: 3,
+                    }))
+                    .collect(),
                 }],
             },
             fragment: Some(FragmentState {
                 shader: self.shader.clone(),
                 shader_defs: Vec::new(),
-                entry_point: Some("fs_tess".into()),
+                entry_point: Some(if key.glint { "fs_glint" } else { "fs_tess" }.into()),
                 targets: vec![Some(ColorTargetState {
                     format: key.target,
                     blend: match state {
+                        _ if key.glint => Some(BlendState {
+                            color: BlendComponent {
+                                src_factor: BlendFactor::One,
+                                dst_factor: BlendFactor::One,
+                                operation: BlendOperation::Add,
+                            },
+                            alpha: BlendComponent {
+                                src_factor: BlendFactor::Zero,
+                                dst_factor: BlendFactor::One,
+                                operation: BlendOperation::Add,
+                            },
+                        }),
                         Some(state) => state.blend.blend_state(),
                         None => Some(BlendState {
                             color: blend,
@@ -224,6 +249,19 @@ fn init_pipeline(
                 ShaderStages::VERTEX_FRAGMENT,
                 (
                     uniform_buffer_sized(false, NonZeroU64::new(PARAMS_SIZE)),
+                    texture_2d(TextureSampleType::Float { filterable: true }),
+                    sampler(SamplerBindingType::Filtering),
+                ),
+            ),
+        ),
+        glint_layout: BindGroupLayoutDescriptor::new(
+            "iw_tess_glint_layout",
+            &BindGroupLayoutEntries::sequential(
+                ShaderStages::VERTEX_FRAGMENT,
+                (
+                    uniform_buffer_sized(false, NonZeroU64::new(PARAMS_SIZE)),
+                    texture_2d(TextureSampleType::Float { filterable: true }),
+                    sampler(SamplerBindingType::Filtering),
                     texture_2d(TextureSampleType::Float { filterable: true }),
                     sampler(SamplerBindingType::Filtering),
                 ),
@@ -500,6 +538,7 @@ fn draw_iw_tess(
                         target: format,
                         samples,
                         state_bits: batch.state_bits,
+                        glint: false,
                     },
                 );
                 let layout = cache.get_bind_group_layout(&pipeline.modulate_layout);
@@ -525,6 +564,7 @@ fn draw_iw_tess(
                         target: format,
                         samples,
                         state_bits: batch.state_bits,
+                        glint: false,
                     },
                 );
                 let layout = cache.get_bind_group_layout(&pipeline.modulate_layout);
@@ -535,6 +575,34 @@ fn draw_iw_tess(
                         pipeline.params.as_entire_buffer_binding(),
                         &copy.view,
                         &copy.sampler,
+                    )),
+                );
+                (id, bind, None)
+            }
+            HudTessTechnique::Glint => {
+                let Some(gpu_glint) = batch.mask.as_ref().and_then(|mask| images.get(mask)) else {
+                    continue;
+                };
+                let id = specialized.specialize(
+                    &cache,
+                    &pipeline,
+                    IwTessPipelineKey {
+                        target: format,
+                        samples,
+                        state_bits: None,
+                        glint: true,
+                    },
+                );
+                let layout = cache.get_bind_group_layout(&pipeline.glint_layout);
+                let bind = device.create_bind_group(
+                    "iw_tess_glint",
+                    &layout,
+                    &BindGroupEntries::sequential((
+                        pipeline.params.as_entire_buffer_binding(),
+                        &gpu_image.texture_view,
+                        &gpu_image.sampler,
+                        &gpu_glint.texture_view,
+                        &gpu_glint.sampler,
                     )),
                 );
                 (id, bind, None)
@@ -649,6 +717,7 @@ fn prepare_saved_screen(
             target: format,
             samples: 1,
             state_bits: None,
+            glint: false,
         },
     );
     if saved
@@ -761,4 +830,24 @@ pub(super) fn register(app: &mut App) {
                 .in_set(Core3dSystems::PostProcess)
                 .after(super::postfx::PostFxSet),
         );
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn iw_tess_shader_validates() {
+        let module = naga::front::wgsl::parse_str(include_str!("iw_tess.wgsl")).unwrap();
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap();
+    }
+
+    #[test]
+    fn the_glint_reads_the_spare_vertex_word() {
+        assert_eq!(std::mem::size_of::<super::IwTessVertex>(), 32);
+        assert_eq!(std::mem::offset_of!(super::IwTessVertex, packed_normal), 28);
+    }
 }

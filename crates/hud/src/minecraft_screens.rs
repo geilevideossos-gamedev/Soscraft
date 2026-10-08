@@ -1202,6 +1202,7 @@ mod tests {
             enchantments: Vec::new(),
             contents: Vec::new(),
             more: None,
+            glint: false,
         };
         let netherite = stack("minecraft:netherite_upgrade_smithing_template");
         assert_eq!(

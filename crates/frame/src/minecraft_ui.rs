@@ -9,6 +9,24 @@ use bevy::prelude::*;
 /// armor (feet to head), 40 offhand.
 pub const MC_INVENTORY_SLOTS: usize = 41;
 pub const MC_HOTBAR: usize = 9;
+pub const GLINT_STRENGTH: f32 = 0.75;
+pub const GLINT_SPEED: f64 = 0.5;
+pub const ITEM_GLINT_SCALE: f32 = 8.0;
+pub const GLINT_ATLAS_CELLS: f32 = 32.0;
+
+pub fn glint_shift(millis: u64) -> [f32; 2] {
+    let t = (millis as f64 * GLINT_SPEED * 8.0) as i64;
+    [
+        -((t % 110_000) as f32 / 110_000.0),
+        (t % 30_000) as f32 / 30_000.0,
+    ]
+}
+
+pub fn glint_uv(shift: [f32; 2], point: [f32; 2], scale: f32) -> [f32; 2] {
+    let (s, c) = 0.174_532_92_f32.sin_cos();
+    let [x, y] = [point[0] * scale, point[1] * scale];
+    [shift[0] + c * x - s * y, shift[1] + s * x + c * y]
+}
 
 /// One stack as the HUD shows it.
 #[derive(Clone, Debug, PartialEq)]
@@ -26,6 +44,7 @@ pub struct McStack {
     pub enchantments: Vec<String>,
     pub contents: Vec<String>,
     pub more: Option<String>,
+    pub glint: bool,
 }
 
 /// A slot of the inventory screen.
@@ -130,6 +149,7 @@ pub struct MinecraftUi {
     pub icon_rects: HashMap<String, [f32; 4]>,
     pub animated_icons: Option<Handle<Image>>,
     pub animated_icon_rects: HashMap<String, [f32; 4]>,
+    pub glint: Option<Handle<Image>>,
     pub gui: Option<std::sync::Arc<crate::McGui>>,
     pub gui_scale: u32,
     pub armor: u8,
@@ -200,4 +220,40 @@ pub struct InventoryPuppet {
     pub root: Mat4,
     /// The aim pitch its upper body and head take, in degrees.
     pub pitch: f32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn near(a: [f32; 2], b: [f32; 2]) -> bool {
+        (a[0] - b[0]).abs() < 1e-4 && (a[1] - b[1]).abs() < 1e-4
+    }
+
+    #[test]
+    fn the_glint_scrolls_at_vanilla_speed() {
+        assert_eq!(glint_shift(0), [-0.0, 0.0]);
+        assert!(near(
+            glint_shift(1000),
+            [-4000.0 / 110_000.0, 4000.0 / 30_000.0]
+        ));
+        assert!(near(glint_shift(27_500), [0.0, 20_000.0 / 30_000.0]));
+    }
+
+    #[test]
+    fn the_glint_turns_ten_degrees_anticlockwise_after_scaling() {
+        assert!(near(
+            glint_uv([0.0, 0.0], [1.0, 0.0], 8.0),
+            [7.8785, 1.3892]
+        ));
+        assert!(near(
+            glint_uv([0.0, 0.0], [0.0, 1.0], 8.0),
+            [-1.3892, 7.8785]
+        ));
+        assert!(near(glint_uv([0.25, -0.5], [0.0, 0.0], 8.0), [0.25, -0.5]));
+        assert!(near(
+            glint_uv([0.25, -0.5], [1.0, 0.0], 8.0),
+            [0.25 + 7.8785, -0.5 + 1.3892]
+        ));
+    }
 }

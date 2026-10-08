@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use bevy::asset::RenderAssetUsages;
-use bevy::image::ImageSampler;
+use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use frame::{McFont, McGlyph, McGui, McScaling, McSprite};
@@ -73,6 +73,7 @@ pub(crate) fn puppet_axes(forward: Vec3, right: Vec3, up: Vec3, yaw: f32, tilt: 
 pub(crate) struct GuiAssets {
     pub gui: Arc<McGui>,
     pub words: Vec<String>,
+    pub glint: Option<Handle<Image>>,
     pub generation: u64,
 }
 
@@ -139,12 +140,49 @@ impl GuiAssets {
             )
         };
         gui.image = images.add(image);
+        let glint = glint_image(packs, images);
         Some(Self {
             gui: Arc::new(gui),
             words,
+            glint,
             generation: packs.generation,
         })
     }
+}
+
+fn glint_image(packs: &PackStack, images: &mut Assets<Image>) -> Option<Handle<Image>> {
+    let glint = match minecraft_terrain::glint::glint_texture(packs) {
+        Ok(Some(glint)) => glint,
+        Ok(None) => {
+            diag::warn!(World, "Minecraft enchantment glint texture missing");
+            return None;
+        }
+        Err(error) => {
+            diag::warn!(World, "Minecraft enchantment glint unavailable: {error:#}");
+            return None;
+        }
+    };
+    let image = Image {
+        sampler: ImageSampler::Descriptor(ImageSamplerDescriptor {
+            address_mode_u: ImageAddressMode::Repeat,
+            address_mode_v: ImageAddressMode::Repeat,
+            mag_filter: ImageFilterMode::Linear,
+            min_filter: ImageFilterMode::Linear,
+            ..default()
+        }),
+        ..Image::new(
+            Extent3d {
+                width: glint.width(),
+                height: glint.height(),
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            glint.into_raw(),
+            TextureFormat::Rgba8Unorm,
+            RenderAssetUsages::default(),
+        )
+    };
+    Some(images.add(image))
 }
 
 fn decode(bytes: &[u8]) -> anyhow::Result<RgbaImage> {
