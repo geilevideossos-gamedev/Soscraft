@@ -940,6 +940,7 @@ pub fn extract_minecraft_world(
     mut celestial_of: Local<Option<(usize, std::sync::Arc<render_gpu::MinecraftAtlasImage>)>>,
     mut clouds_of: Local<Option<(usize, std::sync::Arc<render_gpu::MinecraftClouds>)>>,
     mut cracks_of: Local<Option<(usize, std::sync::Arc<render_gpu::MinecraftAtlasImage>)>>,
+    mut glint_of: Local<Option<(usize, std::sync::Arc<render_gpu::MinecraftAtlasImage>)>>,
 ) {
     let Some(mut view) = main_world.get_resource_mut::<render_anim::minecraft_world::MinecraftWorldView>() else {
         return;
@@ -1006,6 +1007,21 @@ pub fn extract_minecraft_world(
             levels: vec![image.as_raw().clone()],
         });
         *cracks_of = Some((key, converted.clone()));
+        converted
+    });
+    frame.glint_texture = view.glint_texture.as_ref().map(|image| {
+        let key = std::sync::Arc::as_ptr(image) as usize;
+        if let Some((held, converted)) = glint_of.as_ref()
+            && *held == key
+        {
+            return converted.clone();
+        }
+        let converted = std::sync::Arc::new(render_gpu::MinecraftAtlasImage {
+            width: image.width(),
+            height: image.height(),
+            levels: vec![image.as_raw().clone()],
+        });
+        *glint_of = Some((key, converted.clone()));
         converted
     });
     frame.celestial = view.celestial.as_ref().map(|image| {

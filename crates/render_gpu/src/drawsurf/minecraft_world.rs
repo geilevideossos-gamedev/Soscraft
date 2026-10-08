@@ -86,6 +86,7 @@ pub struct MinecraftWorldFrame {
     pub cracks: (Vec<[f32; 6]>, Vec<u32>),
     /// The ten destroy stages side by side.
     pub crack_texture: Option<Arc<MinecraftAtlasImage>>,
+    pub glint_texture: Option<Arc<MinecraftAtlasImage>>,
     /// Mob models (cut out, back-face culled, translucent) and entity
     /// shadows: MinecraftOSS `Vertex` bytes (44 each) and indices.
     pub entity_meshes: [(Vec<u8>, Vec<u32>); 4],
@@ -107,6 +108,7 @@ struct TerrainView {
     /// The block at map origin.
     origin: [f32; 4],
     environment: [[f32; 4]; 16],
+    glint: [f32; 4],
 }
 
 const VIEW_SIZE: u64 = std::mem::size_of::<TerrainView>() as u64;
@@ -133,6 +135,8 @@ struct TerrainGpu {
     cloud_top: f32,
     camera_above_clouds: bool,
     crack_texture: Option<(Arc<MinecraftAtlasImage>, TextureView)>,
+    glint: Option<(Arc<MinecraftAtlasImage>, TextureView)>,
+    glint_sampler: Option<Sampler>,
     /// This frame's particles and cracks: vertices, indices, index count.
     particles: Option<(Buffer, Buffer, u32)>,
     cracks: Option<(Buffer, Buffer, u32)>,
@@ -182,6 +186,12 @@ fn layout() -> BindGroupLayoutDescriptor {
             texture_2d(TextureSampleType::Float { filterable: true })
                 .visibility(ShaderStages::FRAGMENT)
                 .build(4, ShaderStages::FRAGMENT),
+            texture_2d(TextureSampleType::Float { filterable: true })
+                .visibility(ShaderStages::FRAGMENT)
+                .build(5, ShaderStages::FRAGMENT),
+            sampler(SamplerBindingType::Filtering)
+                .visibility(ShaderStages::FRAGMENT)
+                .build(6, ShaderStages::FRAGMENT),
         ],
     )
 }
@@ -201,6 +211,7 @@ fn prepare_terrain(
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
     mut gpu: ResMut<TerrainGpu>,
+    mut started: Local<Option<std::time::Instant>>,
 ) {
     HIDES_MAP.store(frame.active, std::sync::atomic::Ordering::Relaxed);
     if !frame.active {
@@ -266,6 +277,20 @@ fn prepare_terrain(
         let (view, _) = upload_atlas(&device, &queue, &cracks);
         gpu.crack_texture = Some((cracks, view));
         gpu.bind = None;
+    }
+    match frame.glint_texture.clone() {
+        Some(glint) if gpu.glint.as_ref().is_none_or(|(held, _)| !Arc::ptr_eq(held, &glint)) => {
+            let (view, _) = upload_atlas(&device, &queue, &glint);
+            gpu.glint = Some((glint, view));
+            gpu.bind = None;
+        }
+        None if gpu.glint.is_none() => {
+            let blank = Arc::new(no_glint());
+            let (view, _) = upload_atlas(&device, &queue, &blank);
+            gpu.glint = Some((blank, view));
+            gpu.bind = None;
+        }
+        _ => {}
     }
     let (particle_vertices, particle_indices) = std::mem::take(&mut frame.particles);
     gpu.particles = (!particle_indices.is_empty()).then(|| {
@@ -379,14 +404,25 @@ fn prepare_terrain(
             mipmap_filter: MipmapFilterMode::Linear,
             ..default()
         }));
+        gpu.glint_sampler = Some(device.create_sampler(&SamplerDescriptor {
+            label: Some("iw4l_minecraft_glint"),
+            address_mode_u: AddressMode::Repeat,
+            address_mode_v: AddressMode::Repeat,
+            mag_filter: FilterMode::Linear,
+            min_filter: FilterMode::Linear,
+            mipmap_filter: MipmapFilterMode::Nearest,
+            ..default()
+        }));
     }
     if gpu.bind.is_none()
-        && let (Some(view), Some((_, atlas)), Some((_, celestial)), Some((_, cracks)), Some(sampler)) = (
+        && let (Some(view), Some((_, atlas)), Some((_, celestial)), Some((_, cracks)), Some(sampler), Some((_, glint)), Some(glint_sampler)) = (
             gpu.view.as_ref(),
             gpu.atlas.as_ref(),
             gpu.celestial.as_ref(),
             gpu.crack_texture.as_ref(),
             gpu.sampler.as_ref(),
+            gpu.glint.as_ref(),
+            gpu.glint_sampler.as_ref(),
         )
     {
         let layout = registry.bind_group_layout(&device, &layout());
@@ -417,6 +453,14 @@ fn prepare_terrain(
                 BindGroupEntry {
                     binding: 4,
                     resource: BindingResource::TextureView(cracks),
+                },
+                BindGroupEntry {
+                    binding: 5,
+                    resource: BindingResource::TextureView(glint),
+                },
+                BindGroupEntry {
+                    binding: 6,
+                    resource: BindingResource::Sampler(glint_sampler),
                 },
             ],
         );
@@ -453,9 +497,11 @@ fn prepare_terrain(
     }
     gpu.visible = frame.visible.clone();
 
+    let shift = frame::minecraft_ui::glint_shift(started.get_or_insert_with(std::time::Instant::now).elapsed().as_millis() as u64);
     let mut view = TerrainView {
         environment: frame.environment,
         hand_clip: frame.hand_clip,
+        glint: [shift[0], shift[1], frame::minecraft_ui::GLINT_STRENGTH, 0.0],
         ..TerrainView::default()
     };
     if let Some(exec) = published.as_ref().map(|p| &p.exec_frame)
@@ -475,6 +521,14 @@ fn prepare_terrain(
     ];
     if let Some(buffer) = gpu.view.as_ref() {
         queue.write_buffer(buffer, 0, bytemuck::bytes_of(&view));
+    }
+}
+
+fn no_glint() -> MinecraftAtlasImage {
+    MinecraftAtlasImage {
+        width: 1,
+        height: 1,
+        levels: vec![vec![0, 0, 0, 255]],
     }
 }
 
@@ -692,12 +746,15 @@ struct TerrainView {
     view: vec4<f32>,
     origin: vec4<f32>,
     environment: Environment,
+    glint: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> view: TerrainView;
 @group(0) @binding(1) var atlas: texture_2d<f32>;
 @group(0) @binding(2) var atlas_sampler: sampler;
 @group(0) @binding(3) var celestials: texture_2d<f32>;
 @group(0) @binding(4) var cracks: texture_2d<f32>;
+@group(0) @binding(5) var glint_texture: texture_2d<f32>;
+@group(0) @binding(6) var glint_sampler: sampler;
 
 // Map units per block, as `sim::voxel::BLOCK`.
 const BLOCK: f32 = 36.0;
@@ -755,6 +812,7 @@ struct Out {
     @location(0) uv: vec2<f32>,
     @location(1) colour: vec4<f32>,
     @location(2) world_pos: vec3<f32>,
+    @location(3) glint: f32,
 }
 
 @vertex
@@ -763,6 +821,7 @@ fn vertex(
     @location(1) uv: vec2<f32>,
     @location(2) colour: vec4<f32>,
     @location(3) light: vec2<f32>,
+    @location(4) flags: vec2<f32>,
 ) -> Out {
     var out: Out;
     out.clip = view.clip_from_rel * vec4<f32>(rel_from_block(position), 1.0);
@@ -771,6 +830,7 @@ fn vertex(
     let level = light * (255.0 / 16.0);
     out.colour = vec4<f32>(colour.rgb * lightmap(level.x, level.y), colour.a);
     out.world_pos = position;
+    out.glint = flags.x;
     return out;
 }
 
@@ -778,6 +838,18 @@ fn vertex(
 fn shade(in: Out, texel: vec4<f32>) -> vec4<f32> {
     let lit = texel.rgb * in.colour.rgb;
     return vec4<f32>(mix(lit, view.environment.fog.rgb, fog_value(in.world_pos)), texel.a * in.colour.a);
+}
+
+fn glint_light(uv: vec2<f32>, flag: f32) -> vec3<f32> {
+    if flag <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let p = uv * vec2<f32>(textureDimensions(atlas, 0)) * (8.0 / 512.0);
+    let c = cos(0.17453292);
+    let s = sin(0.17453292);
+    let g = view.glint.xy + vec2<f32>(c * p.x - s * p.y, s * p.x + c * p.y);
+    let t = textureSampleLevel(glint_texture, glint_sampler, g, 0.0).rgb * (view.glint.z * flag);
+    return t * t;
 }
 
 @fragment
@@ -788,7 +860,8 @@ fn opaque(in: Out) -> @location(0) vec4<f32> {
     if texel.a < select(0.5, 0.1, entity_sheet) {
         discard;
     }
-    return vec4<f32>(shade(in, texel).rgb, 1.0);
+    let lit = texel.rgb * in.colour.rgb + glint_light(in.uv, in.glint);
+    return vec4<f32>(mix(lit, view.environment.fog.rgb, fog_value(in.world_pos)), 1.0);
 }
 
 @fragment
@@ -966,6 +1039,7 @@ fn hand_vertex(
     @location(1) uv: vec2<f32>,
     @location(2) colour: vec4<f32>,
     @location(3) light: vec2<f32>,
+    @location(4) flags: vec2<f32>,
 ) -> Out {
     var out: Out;
     out.clip = view.hand_clip * vec4<f32>(position, 1.0);
@@ -973,6 +1047,7 @@ fn hand_vertex(
     let level = light * (255.0 / 16.0);
     out.colour = vec4<f32>(colour.rgb * lightmap(level.x, level.y), colour.a);
     out.world_pos = view.environment.camera_pos.xyz;
+    out.glint = flags.x;
     return out;
 }
 
@@ -982,7 +1057,7 @@ fn hand_fragment(in: Out) -> @location(0) vec4<f32> {
     if texel.a < 0.1 {
         discard;
     }
-    return vec4<f32>(texel.rgb * in.colour.rgb, 1.0);
+    return vec4<f32>(texel.rgb * in.colour.rgb + glint_light(in.uv, in.glint), 1.0);
 }
 
 // The card behind the inventory's character.
@@ -1070,6 +1145,11 @@ fn pipelines(
             format: VertexFormat::Unorm8x2,
             offset: 24,
             shader_location: 3,
+        },
+        VertexAttribute {
+            format: VertexFormat::Unorm8x2,
+            offset: 26,
+            shader_location: 4,
         },
     ];
     let options = PipelineCompilationOptions {
@@ -1293,6 +1373,28 @@ mod tests {
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
             .validate(&module)
             .unwrap();
+    }
+
+    #[test]
+    fn the_glint_uniform_ends_the_terrain_view_in_rust_and_wgsl() {
+        let size = std::mem::size_of::<super::TerrainView>();
+        assert_eq!(size % 16, 0);
+        assert_eq!(std::mem::offset_of!(super::TerrainView, glint), size - 16);
+        let module = naga::front::wgsl::parse_str(super::TERRAIN_WGSL).unwrap();
+        let (_, view) = module.types.iter().find(|(_, ty)| ty.name.as_deref() == Some("TerrainView")).unwrap();
+        let naga::TypeInner::Struct { members, span } = &view.inner else {
+            panic!("TerrainView is not a struct");
+        };
+        assert_eq!(*span as usize, size);
+        let glint = members.iter().find(|member| member.name.as_deref() == Some("glint")).unwrap();
+        assert_eq!(glint.offset as usize, size - 16);
+    }
+
+    #[test]
+    fn the_missing_glint_stand_in_is_one_black_texel() {
+        let blank = super::no_glint();
+        assert_eq!((blank.width, blank.height), (1, 1));
+        assert_eq!(blank.levels, [vec![0, 0, 0, 255]]);
     }
 
     #[test]

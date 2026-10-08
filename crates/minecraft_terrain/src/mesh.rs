@@ -84,6 +84,22 @@ pub struct ChunkMesh {
     pub indices: Vec<u32>,
     pub transparent_start: Option<u32>,
     pub faces: usize,
+    pub glint: Vec<std::ops::Range<u32>>,
+}
+
+pub const GLINT_VERTEX: u8 = 255;
+
+pub fn section_vertices(mesh: &ChunkMesh) -> Vec<SectionVertex> {
+    let mut vertices: Vec<SectionVertex> = mesh.vertices.iter().map(SectionVertex::from_vertex).collect();
+    let len = vertices.len();
+    for range in &mesh.glint {
+        let end = (range.end as usize).min(len);
+        let start = (range.start as usize).min(end);
+        for vertex in &mut vertices[start..end] {
+            vertex.pad[0] = GLINT_VERTEX;
+        }
+    }
+    vertices
 }
 pub struct Atlas {
     pub pixels: RgbaImage,
@@ -931,6 +947,7 @@ impl ItemVisuals {
                 33..=48 => 4,
                 _ => 5,
             };
+            let first = mesh.vertices.len() as u32;
             for copy in 0..copies {
                 let offset = if copy == 0 {
                     Vec3::ZERO
@@ -1004,6 +1021,9 @@ impl ItemVisuals {
                         mesh.faces += 1;
                     }
                 }
+            }
+            if crate::glint::has_glint(&entity.stack) {
+                mesh.glint.push(first..mesh.vertices.len() as u32);
             }
         }
         Ok(mesh)
@@ -3545,6 +3565,88 @@ mod tests {
         }
         assert!(mesh.vertices[4].color[0] < 0.95);
         assert!(mesh.vertices.iter().all(|vertex| vertex.sky_light == 13.0));
+    }
+    #[test]
+    fn section_vertices_flag_only_the_glint_ranges() {
+        let mut mesh = ChunkMesh {
+            vertices: vec![Vertex { position: [0.0; 3], uv: [0.0; 2], color: [1.0; 4], sky_light: 15.0, block_light: 0.0 }; 10],
+            ..ChunkMesh::default()
+        };
+        mesh.glint = vec![2..4, 8..20];
+        let vertices = section_vertices(&mesh);
+        assert_eq!(vertices.len(), 10);
+        let flags: Vec<u8> = vertices.iter().map(|vertex| vertex.pad[0]).collect();
+        assert_eq!(flags, [0, 0, GLINT_VERTEX, GLINT_VERTEX, 0, 0, 0, 0, GLINT_VERTEX, GLINT_VERTEX]);
+        assert!(vertices.iter().all(|vertex| vertex.pad[1] == 0));
+        for (vertex, plain) in vertices.iter().zip(&mesh.vertices) {
+            assert_eq!(SectionVertex { pad: [0; 2], ..*vertex }, SectionVertex::from_vertex(plain));
+        }
+        mesh.glint = vec![12..30, 40..50];
+        assert!(section_vertices(&mesh).iter().all(|vertex| vertex.pad[0] == 0));
+    }
+    #[test]
+    fn dropped_enchanted_items_glint_on_every_copy() {
+        let texture = ResourceId::parse("minecraft:item/diamond_pickaxe").unwrap();
+        let atlas = Atlas {
+            pixels: RgbaImage::new(16, 16),
+            mipmaps: vec![],
+            slots: HashMap::from([(texture.clone(), [0.0, 0.0, 1.0, 1.0])]),
+            missing: vec![],
+            animated: vec![],
+            animated_tiles: vec![],
+            translucent: HashMap::new(),
+        };
+        let visual = || ItemVisual {
+            model: ResolvedModel {
+                elements: vec![crate::model::Element {
+                    from: [0.0; 3],
+                    to: [1.0, 1.0, 0.0],
+                    faces: vec![crate::model::Face {
+                        direction: "north".into(),
+                        texture: texture.clone(),
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        cull: false,
+                        cullface: None,
+                        tint: false,
+                        tint_index: None,
+                        force_translucent: false,
+                    }],
+                    rotation_y: 0,
+                    rotation_x: 0,
+                    rotation: None,
+                    shade_direction_override: None,
+                }],
+            },
+            ground: Mat4::IDENTITY,
+            right_hand: Mat4::IDENTITY,
+            fixed: Mat4::IDENTITY,
+            min_y: 0.0,
+            tints: vec![],
+            flat: true,
+        };
+        let mut visuals = ItemVisuals::default();
+        for id in ["minecraft:diamond_pickaxe", "minecraft:nether_star"] {
+            visuals.models.insert(id.into(), visual());
+        }
+        let stack = |id: &str, count: u8, components: Option<serde_json::Value>| minecraftoss_player::inventory::ItemStack {
+            components,
+            ..minecraftoss_player::inventory::ItemStack::new(id, count)
+        };
+        let silk_touch = serde_json::json!({"minecraft:enchantments": {"minecraft:silk_touch": 1}});
+        let mut items = WorldItems::default();
+        for item in [
+            stack("minecraft:diamond_pickaxe", 1, None),
+            stack("minecraft:diamond_pickaxe", 1, Some(silk_touch.clone())),
+            stack("minecraft:diamond_pickaxe", 20, Some(silk_touch)),
+            stack("minecraft:nether_star", 1, None),
+        ] {
+            items.spawn(item, glam::DVec3::new(0.5, 1.0, 0.5));
+        }
+        let mesh = visuals
+            .mesh(&items, &PackStack::open(vec![]).unwrap(), &atlas, &SkyLight::build(&HandcraftedScene::new()), 1.0)
+            .unwrap();
+        assert_eq!(mesh.vertices.len(), 4 + 4 + 12 + 4);
+        assert_eq!(mesh.glint, [4..8, 8..20, 20..24]);
     }
     #[test]
     #[ignore = "local performance diagnostic with the pinned resource pack"]

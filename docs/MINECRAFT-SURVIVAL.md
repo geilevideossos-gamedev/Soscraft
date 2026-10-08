@@ -59,7 +59,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 - Chests, barrels, furnace, smoker and blast furnace (they cook while closed), brewing stand, stonecutter, smithing table, grindstone, anvil and enchanting table.
 - Structure loot tables, shulker boxes that keep their contents, a shared ender chest, and the offhand slot.
 - Tooltips with MW2 gun stats and Minecraft tool stats.
-- Enchanted items shimmer with the vanilla glint in the hotbar, the inventory, every container and station screen and on the cursor. As in vanilla, so do enchanted books, enchanted golden apples, bottles o' enchanting, written books, nether stars, end crystals, lodestone compasses and items with a glint override, but not stacks that only hold stored enchantments.
+- Enchanted items shimmer with the vanilla glint in the hotbar, the inventory, every container and station screen, on the cursor, in the first-person hand (main hand and offhand) and as dropped items on the ground, every copy of a dropped stack included. The world glint is added after the light, so it still shows in the dark, and fog covers it. Placed blocks never glint. As in vanilla, so do enchanted books, enchanted golden apples, bottles o' enchanting, written books, nether stars, end crystals, lodestone compasses and items with a glint override, but not stacks that only hold stored enchantments.
 
 ### Items
 - Eating, drinking and potions, with the vanilla first-person eat and drink animation, crumbs, sounds and burp. Food only counts when finished; letting go cancels. Glass bottles, buckets (water, lava, powder snow), cauldrons and waterlogging.
@@ -158,7 +158,7 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 - An ignored render error loses that frame, so an error that repeats every frame would flicker the screen. bevy also prints `Caught rendering error` to the console, not to the game log.
 - A model whose index stream has not been uploaded yet casts no sun shadow for that one frame, and an effect mesh past its 16384-vertex or 24576-index buffer is not drawn that frame.
 - GUI gaps: no 3D enchanting book, smithing armour stand, recipe book, effects panel or rarity colours. Characters missing from the font show as gaps.
-- The enchantment glint is only drawn on GUI icons, not on held or dropped items. Worn armour shows no glint, because worn armour itself is not drawn on the MW2 model, and mob armour has none either. A block item gets one flat glint over its icon instead of one per face, and the glint speed and strength are fixed at the vanilla defaults (0.5 and 0.75).
+- The enchantment glint is drawn on GUI icons, held items and dropped items only. Worn armour shows no glint, because worn armour itself is not drawn on the MW2 model, and mob armour, items held by mobs, items on campfires and thrown bottles o' enchanting have none either, because they reach the renderer as bare item ids. The glint streaks in the world are sized for a 512-pixel atlas, so their density can differ a little from vanilla. A block item gets one flat glint over its icon instead of one per face, and the glint speed and strength are fixed at the vanilla defaults (0.5 and 0.75).
 
 ### Movement
 - The bush and cobweb slowdown has no momentum carry, and the Weaving effect is ignored.

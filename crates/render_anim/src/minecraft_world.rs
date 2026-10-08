@@ -57,6 +57,7 @@ pub struct MinecraftWorldView {
     pub cracks: (Vec<[f32; 6]>, Vec<u32>),
     /// The ten destroy stages side by side.
     pub crack_texture: Option<Arc<image::RgbaImage>>,
+    pub glint_texture: Option<Arc<image::RgbaImage>>,
     /// Mob models (cut out, back-face culled, translucent) and entity
     /// shadows, as `mesh::Vertex` bytes and indices.
     pub entity_meshes: [(Vec<u8>, Vec<u32>); 4],
@@ -80,6 +81,7 @@ struct Loaded {
     celestial: Arc<image::RgbaImage>,
     cloud_mask: Option<CloudMask>,
     crack_texture: Arc<image::RgbaImage>,
+    glint_texture: Option<Arc<image::RgbaImage>>,
     saved_day: Option<f64>,
     save: Option<crate::minecraft_save::WorldSave>,
     game_rules: minecraft_terrain::game_rules::GameRules,
@@ -287,6 +289,7 @@ fn load() -> Result<Loaded, String> {
     let celestial = Arc::new(celestial_image(&packs).map_err(|e| e.to_string())?);
     let cloud_mask = CloudMask::from_pack(&packs).ok();
     let crack_texture = Arc::new(crate::minecraft_mining::crack_strip(&packs).map_err(|e| e.to_string())?);
+    let glint_texture = minecraft_terrain::glint::glint_texture(&packs).ok().flatten().map(Arc::new);
     Ok(Loaded {
         stream,
         scene,
@@ -298,6 +301,7 @@ fn load() -> Result<Loaded, String> {
         celestial,
         cloud_mask,
         crack_texture,
+        glint_texture,
         saved_day: opened.day_ticks,
         save: opened.save,
         game_rules: opened.game_rules,
@@ -427,6 +431,7 @@ fn update(
                 runtime.animation_clock = 0.0;
                 view.celestial = Some(world.celestial.clone());
                 view.crack_texture = Some(world.crack_texture.clone());
+                view.glint_texture = world.glint_texture.clone();
                 runtime.mining = Default::default();
                 runtime.minimap = Default::default();
                 runtime.containers = Default::default();
@@ -1720,11 +1725,11 @@ fn update(
                     .filter(|eating| eating.slot == slot)
                     .map(|eating| crate::minecraft_hand::eat_transform(eating.remaining_ticks() as f32, (hand.clock / TICK_SECONDS) as f32, eating.info.consume_ticks, arm));
                 let swung = if using || eat.is_some() || hand.swing_offhand != (slot == crate::minecraft_offhand::OFFHAND) { 0.0 } else { swing };
-                posed.push((eat.unwrap_or(glam::Mat4::IDENTITY) * crate::minecraft_hand::item_pose(display, swung, 0.0, arm), stack.id));
+                let glint = minecraft_terrain::glint::has_glint(&stack);
+                posed.push((eat.unwrap_or(glam::Mat4::IDENTITY) * crate::minecraft_hand::item_pose(display, swung, 0.0, arm), stack.id, glint));
             }
             let mesh = entities.held_item_mesh(&posed, eye_light_at, &world.packs, &world.atlas, light);
-            let vertices: Vec<minecraft_terrain::mesh::SectionVertex> =
-                mesh.vertices.iter().map(minecraft_terrain::mesh::SectionVertex::from_vertex).collect();
+            let vertices = minecraft_terrain::mesh::section_vertices(&mesh);
             view.hand = (bytemuck::cast_slice(&vertices).to_vec(), mesh.indices);
             // Reverse-Z with no far plane, as the scene's; 70 degrees up.
             let f = 1.0 / (35.0f32.to_radians()).tan();
@@ -1773,8 +1778,7 @@ fn update(
         let mesh = meshes.items;
         let (bytes, indices) = &mut view.particles;
         let base = (bytes.len() / std::mem::size_of::<minecraft_terrain::mesh::SectionVertex>()) as u32;
-        let vertices: Vec<minecraft_terrain::mesh::SectionVertex> =
-            mesh.vertices.iter().map(minecraft_terrain::mesh::SectionVertex::from_vertex).collect();
+        let vertices = minecraft_terrain::mesh::section_vertices(&mesh);
         bytes.extend_from_slice(bytemuck::cast_slice(&vertices));
         indices.extend(mesh.indices.iter().map(|i| i + base));
     }
@@ -2291,6 +2295,7 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
         view.visible.clear();
         view.celestial = None;
         view.crack_texture = None;
+        view.glint_texture = None;
         view.particles = Default::default();
         view.entity_meshes = Default::default();
         view.hand = Default::default();

@@ -396,15 +396,20 @@ impl Entities {
     /// A held item's model under a view-space pose, lit at `light_at`.
     pub(crate) fn held_item_mesh(
         &mut self,
-        posed: &[(glam::Mat4, String)],
+        posed: &[(glam::Mat4, String, bool)],
         light_at: glam::Vec3,
         packs: &PackStack,
         atlas: &Atlas,
         light: &SkyLight,
     ) -> ChunkMesh {
         let mut mesh = ChunkMesh::default();
-        let items: Vec<_> = posed.iter().map(|(pose, id)| (*pose, light_at, id.clone())).collect();
-        let _ = self.items.append_posed_items(&mut mesh, &items, packs, atlas, light);
+        for (pose, id, glint) in posed {
+            let start = mesh.vertices.len() as u32;
+            let _ = self.items.append_posed_items(&mut mesh, &[(*pose, light_at, id.clone())], packs, atlas, light);
+            if *glint {
+                mesh.glint.push(start..mesh.vertices.len() as u32);
+            }
+        }
         mesh
     }
 
@@ -841,6 +846,7 @@ impl Entities {
             let base = out.items.vertices.len() as u32;
             out.items.vertices.extend(items.vertices);
             out.items.indices.extend(items.indices.iter().map(|i| i + base));
+            out.items.glint.extend(items.glint.iter().map(|r| r.start + base..r.end + base));
         }
         self.falling.settle(scene, cell_settled, self.ticks);
         let moving = self.falling.moving_blocks(scene, partial);
