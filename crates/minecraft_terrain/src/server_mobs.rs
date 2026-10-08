@@ -385,6 +385,32 @@ fn seed(tag: &Tag) -> u64 {
     uuid.iter().fold(0x9E37_79B9_7F4A_7C15u64, |h, &w| (h ^ u64::from(w as u32)).wrapping_mul(0x100_0000_01B3))
 }
 
+pub const SIMULATED_KINDS: &[&str] = &[
+    "minecraft:bat",
+    "minecraft:bogged",
+    "minecraft:chicken",
+    "minecraft:cow",
+    "minecraft:creeper",
+    "minecraft:donkey",
+    "minecraft:enderman",
+    "minecraft:horse",
+    "minecraft:husk",
+    "minecraft:iron_golem",
+    "minecraft:mooshroom",
+    "minecraft:parched",
+    "minecraft:pig",
+    "minecraft:sheep",
+    "minecraft:skeleton",
+    "minecraft:slime",
+    "minecraft:spider",
+    "minecraft:stray",
+    "minecraft:villager",
+    "minecraft:witch",
+    "minecraft:wolf",
+    "minecraft:zombie",
+    "minecraft:zombie_villager",
+];
+
 /// Adds a saved entity the entity world simulates; its ID, or none for a
 /// type it does not simulate yet.
 pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {

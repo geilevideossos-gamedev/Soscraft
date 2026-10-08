@@ -155,6 +155,31 @@ impl<'a> StringReader<'a> {
             })
     }
 
+    pub fn read_double(&mut self) -> Result<f64, CommandError> {
+        let start = self.cursor;
+        let number = self.take_while(allowed_in_number);
+        if number.is_empty() {
+            return Err(CommandError::new("parsing.double.expected", Vec::new()).at(self.cursor));
+        }
+        number
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| {
+                self.cursor = start;
+                CommandError::new("parsing.double.invalid", vec![literal(number)]).at(start)
+            })
+    }
+
+    pub fn expect(&mut self, c: char) -> Result<(), CommandError> {
+        if self.peek() == Some(c) {
+            self.skip();
+            Ok(())
+        } else {
+            Err(CommandError::new("parsing.expected", vec![literal(c)]).at(self.cursor))
+        }
+    }
+
     pub fn read_bool(&mut self) -> Result<bool, CommandError> {
         let start = self.cursor;
         let value = self.read_string()?;

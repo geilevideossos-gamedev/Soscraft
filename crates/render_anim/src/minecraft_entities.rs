@@ -99,6 +99,7 @@ pub(crate) struct Entities {
     item_use_waiting: Option<SentItemUse>,
     pub(crate) item_uses_done: Vec<SentItemUse>,
     eggs_waiting: minecraft_terrain::spawn_egg::EggsWaiting,
+    pub(crate) command_summons: Vec<Result<String, String>>,
     pub(crate) difficulty: i32,
     spawn_mobs: bool,
     block_drops: bool,
@@ -248,6 +249,7 @@ impl Entities {
             item_use_waiting: None,
             item_uses_done: Vec::new(),
             eggs_waiting: Default::default(),
+            command_summons: Vec::new(),
             difficulty: 2,
             spawn_mobs: true,
             block_drops: true,
@@ -513,6 +515,15 @@ impl Entities {
         }
     }
 
+    pub(crate) fn summon(&mut self, kind: String, position: [f64; 3], nbt: Option<minecraftoss_core::nbt::Tag>) {
+        self.server.summon(kind, position, nbt);
+    }
+
+    pub(crate) fn drop_given(&mut self, stack: &ItemStack, feet: [f64; 3]) {
+        let components = stack.components.as_ref().map(|c| c.to_string());
+        self.server.spawn_item(&stack.id, i32::from(stack.count), components.as_deref(), feet, [0.0; 3], 0, 0);
+    }
+
     pub(crate) fn animate_tick<S: minecraft_terrain::scene::Scene + ?Sized>(&mut self, scene: &S, feet: [f64; 3]) -> Vec<minecraft_terrain::display_ticks::AmbientSound> {
         let at = (feet[0].floor() as i32, feet[1].floor() as i32, feet[2].floor() as i32);
         let tick = minecraft_terrain::display_ticks::animate_tick(scene, at, &mut self.random);
@@ -680,6 +691,7 @@ impl Entities {
                     diag::warn!(World, "Minecraft {egg} hatched nothing: {error}");
                 }
             }
+            self.command_summons.extend(output.command_summons);
             changes.extend(output.changes);
             self.destroyed.extend(output.destroyed);
             self.experience_found += output.orbs_taken.iter().map(|orb| orb.2 as f32).sum::<f32>();

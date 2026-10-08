@@ -743,7 +743,7 @@ impl Survival {
         true
     }
 
-    fn clear_effects(&mut self) {
+    pub(crate) fn clear_effects(&mut self) {
         for kind in [
             EffectKind::Hunger,
             EffectKind::Poison,

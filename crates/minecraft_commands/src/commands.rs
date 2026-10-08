@@ -6,8 +6,9 @@ use minecraftoss_world::game_rules::Value;
 use crate::args::{Arg, ArgKind, TICKS_PER_DAY, marker_ticks};
 use crate::permissions::{ADMINS, GAMEMASTERS};
 use crate::players::game_mode_key;
+use crate::protocol::PlayerId;
 use crate::reader::{CommandError, literal};
-use crate::server::{Ctx, SEND_COMMAND_FEEDBACK, Weather, system};
+use crate::server::{Ctx, SEND_COMMAND_FEEDBACK, Weather, registered, system};
 use crate::text::{GREEN, Text};
 use crate::tree::{Node, parse, smart_usage, smart_usages, sorted};
 
@@ -15,10 +16,73 @@ pub const CLOCK: &str = "minecraft:overworld";
 const RAIN_DELAY: (i32, i32) = (12_000, 180_000);
 const RAIN_DURATION: (i32, i32) = (12_000, 24_000);
 const THUNDER_DURATION: (i32, i32) = (3600, 15_600);
+pub const MAX_ALLOWED_ITEMSTACKS: u32 = 100;
+pub const INSTANT_EFFECTS: [&str; 3] = [
+    "minecraft:instant_damage",
+    "minecraft:instant_health",
+    "minecraft:saturation",
+];
+const MOB_EFFECT_REGISTRY: &str = "minecraft:mob_effect";
 
 pub fn tree() -> &'static [Node] {
     static TREE: OnceLock<Vec<Node>> = OnceLock::new();
     TREE.get_or_init(build)
+}
+
+fn teleport_node(name: &'static str) -> Node {
+    let players = ArgKind::Players { single: false };
+    let destination = ArgKind::Players { single: true };
+    Node::literal(name)
+        .requires(GAMEMASTERS)
+        .then(Node::argument("location", ArgKind::Vec3).executes(teleport_to_location))
+        .then(Node::argument("destination", destination).executes(teleport_to_player))
+        .then(
+            Node::argument("targets", players)
+                .then(Node::argument("location", ArgKind::Vec3).executes(teleport_to_location))
+                .then(Node::argument("destination", destination).executes(teleport_to_player)),
+        )
+}
+
+fn effect_node() -> Node {
+    let players = ArgKind::Players { single: false };
+    let amplifier = || {
+        Node::argument("amplifier", ArgKind::Int { min: 0, max: 255 })
+            .executes(give_effect)
+            .then(Node::argument("hideParticles", ArgKind::Bool).executes(give_effect))
+    };
+    Node::literal("effect")
+        .requires(GAMEMASTERS)
+        .then(
+            Node::literal("clear").executes(clear_effects).then(
+                Node::argument("targets", players)
+                    .executes(clear_effects)
+                    .then(Node::argument("effect", ArgKind::Resource).executes(clear_effects)),
+            ),
+        )
+        .then(
+            Node::literal("give").then(
+                Node::argument("targets", players).then(
+                    Node::argument("effect", ArgKind::Resource)
+                        .executes(give_effect)
+                        .then(
+                            Node::argument(
+                                "seconds",
+                                ArgKind::Int {
+                                    min: 1,
+                                    max: 1_000_000,
+                                },
+                            )
+                            .executes(give_effect)
+                            .then(amplifier()),
+                        )
+                        .then(
+                            Node::literal("infinite")
+                                .executes(give_effect)
+                                .then(amplifier()),
+                        ),
+                ),
+            ),
+        )
 }
 
 fn build() -> Vec<Node> {
@@ -83,6 +147,32 @@ fn build() -> Vec<Node> {
             .requires(GAMEMASTERS)
             .executes(kill)
             .then(Node::argument("targets", players).executes(kill)),
+        Node::literal("give").requires(GAMEMASTERS).then(
+            Node::argument("targets", players).then(
+                Node::argument("item", ArgKind::Item).executes(give).then(
+                    Node::argument(
+                        "count",
+                        ArgKind::Int {
+                            min: 1,
+                            max: i32::MAX,
+                        },
+                    )
+                    .executes(give),
+                ),
+            ),
+        ),
+        teleport_node("teleport"),
+        teleport_node("tp"),
+        effect_node(),
+        Node::literal("summon").requires(GAMEMASTERS).then(
+            Node::argument("entity", ArgKind::Resource)
+                .executes(summon)
+                .then(
+                    Node::argument("pos", ArgKind::Vec3)
+                        .executes(summon)
+                        .then(Node::argument("nbt", ArgKind::Nbt).executes(summon)),
+                ),
+        ),
     ])
 }
 
@@ -465,6 +555,276 @@ fn game_mode(ctx: &mut Ctx) -> Result<i32, CommandError> {
     Ok(count)
 }
 
+fn give(ctx: &mut Ctx) -> Result<i32, CommandError> {
+    let Some(Arg::Item(item)) = ctx.arg("item").cloned() else {
+        return Err(CommandError::new("command.unknown.argument", Vec::new()));
+    };
+    let count = match ctx.arg("count") {
+        Some(Arg::Int(count)) => *count as u32,
+        _ => 1,
+    };
+    let registries = ctx.server.registries();
+    if !registered(&registries.items, &item.id) {
+        return Err(
+            CommandError::new("argument.item.id.invalid", vec![literal(&item.id)]).at(item.at),
+        );
+    }
+    if let Some((unknown, _)) = item
+        .enchantments
+        .iter()
+        .find(|(id, _)| !registered(&registries.enchantments, id))
+    {
+        let reason = format!(
+            "Unknown registry key in ResourceKey[minecraft:root / minecraft:enchantment]: {unknown}"
+        );
+        return Err(CommandError::new(
+            "arguments.item.component.malformed",
+            vec![literal("minecraft:enchantments"), literal(reason)],
+        )
+        .at(item.at));
+    }
+    let limit = ctx.world.max_stack(&item.id).max(1) * MAX_ALLOWED_ITEMSTACKS;
+    if count > limit {
+        return Err(CommandError::new(
+            "commands.give.failed.toomanyitems",
+            vec![literal(limit), Text::item(&item.id)],
+        ));
+    }
+    let mut given = Vec::new();
+    for player in ctx.targets("targets")? {
+        if ctx.world.give(player, &item, count) {
+            given.push(player);
+        }
+    }
+    let text = match given.as_slice() {
+        [] => return Ok(0),
+        [only] => Text::translate(
+            "commands.give.success.single",
+            vec![
+                literal(count),
+                Text::item(&item.id),
+                ctx.display_name(*only),
+            ],
+        ),
+        _ => Text::translate(
+            "commands.give.success.multiple",
+            vec![literal(count), Text::item(&item.id), literal(given.len())],
+        ),
+    };
+    ctx.success(text, true);
+    Ok(given.len() as i32)
+}
+
+pub fn in_spawnable_bounds(position: [f64; 3]) -> bool {
+    let [x, y, z] = position.map(f64::floor);
+    let horizontal = |c: f64| (-30_000_000.0..30_000_000.0).contains(&c);
+    horizontal(x) && horizontal(z) && (-20_000_000.0..20_000_000.0).contains(&y)
+}
+
+fn format_double(value: f64) -> Text {
+    literal(format!("{value:.6}"))
+}
+
+fn teleport_all(ctx: &mut Ctx, position: [f64; 3]) -> Result<Vec<PlayerId>, CommandError> {
+    if !in_spawnable_bounds(position) {
+        return Err(CommandError::new(
+            "commands.teleport.invalidPosition",
+            Vec::new(),
+        ));
+    }
+    let mut moved = Vec::new();
+    for player in ctx.targets("targets")? {
+        if ctx.world.teleport(player, position) {
+            moved.push(player);
+        }
+    }
+    Ok(moved)
+}
+
+fn teleport_to_location(ctx: &mut Ctx) -> Result<i32, CommandError> {
+    let Some(Arg::Vec3(location)) = ctx.arg("location").cloned() else {
+        return Err(CommandError::new("command.unknown.argument", Vec::new()));
+    };
+    let position = location.position(ctx.pose());
+    let moved = teleport_all(ctx, position)?;
+    let [x, y, z] = position.map(format_double);
+    let text = match moved.as_slice() {
+        [] => return Ok(0),
+        [only] => Text::translate(
+            "commands.teleport.success.location.single",
+            vec![ctx.display_name(*only), x, y, z],
+        ),
+        _ => Text::translate(
+            "commands.teleport.success.location.multiple",
+            vec![literal(moved.len()), x, y, z],
+        ),
+    };
+    ctx.success(text, true);
+    Ok(moved.len() as i32)
+}
+
+fn teleport_to_player(ctx: &mut Ctx) -> Result<i32, CommandError> {
+    let destination = ctx.targets("destination")?[0];
+    let Some(pose) = ctx.world.pose(destination) else {
+        return Err(CommandError::new(
+            "argument.entity.notfound.player",
+            Vec::new(),
+        ));
+    };
+    let moved = teleport_all(ctx, pose.feet)?;
+    let name = ctx.display_name(destination);
+    let text = match moved.as_slice() {
+        [] => return Ok(0),
+        [only] => Text::translate(
+            "commands.teleport.success.entity.single",
+            vec![ctx.display_name(*only), name],
+        ),
+        _ => Text::translate(
+            "commands.teleport.success.entity.multiple",
+            vec![literal(moved.len()), name],
+        ),
+    };
+    ctx.success(text, true);
+    Ok(moved.len() as i32)
+}
+
+fn effect_arg(ctx: &Ctx) -> Result<Option<String>, CommandError> {
+    let Some(Arg::Resource { id, at }) = ctx.arg("effect") else {
+        return Ok(None);
+    };
+    if registered(&ctx.server.registries().effects, id) {
+        Ok(Some(id.clone()))
+    } else {
+        Err(CommandError::new(
+            "argument.resource.not_found",
+            vec![literal(id), literal(MOB_EFFECT_REGISTRY)],
+        )
+        .at(*at))
+    }
+}
+
+fn effect_name(id: &str) -> Text {
+    let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
+    Text::translate(format!("effect.{namespace}.{path}"), Vec::new())
+}
+
+pub fn effect_ticks(seconds: Option<i32>, instant: bool) -> Option<u32> {
+    match seconds {
+        Some(-1) => None,
+        Some(seconds) if instant => Some(seconds.max(0) as u32),
+        Some(seconds) => Some(seconds.max(0) as u32 * 20),
+        None if instant => Some(1),
+        None => Some(600),
+    }
+}
+
+fn give_effect(ctx: &mut Ctx) -> Result<i32, CommandError> {
+    let Some(effect) = effect_arg(ctx)? else {
+        return Err(CommandError::new("command.unknown.argument", Vec::new()));
+    };
+    let seconds = match ctx.arg("seconds") {
+        Some(Arg::Int(seconds)) => Some(*seconds),
+        _ if ctx.literals.contains(&"infinite") => Some(-1),
+        _ => None,
+    };
+    let amplifier = match ctx.arg("amplifier") {
+        Some(Arg::Int(amplifier)) => *amplifier as u8,
+        _ => 0,
+    };
+    let ticks = effect_ticks(seconds, INSTANT_EFFECTS.contains(&effect.as_str()));
+    let mut affected = Vec::new();
+    for player in ctx.targets("targets")? {
+        if ctx.world.effect_give(player, &effect, ticks, amplifier) {
+            affected.push(player);
+        }
+    }
+    let seconds = literal(ticks.map_or(0, |ticks| ticks / 20));
+    let text = match affected.as_slice() {
+        [] => {
+            return Err(CommandError::new("commands.effect.give.failed", Vec::new()));
+        }
+        [only] => Text::translate(
+            "commands.effect.give.success.single",
+            vec![effect_name(&effect), ctx.display_name(*only), seconds],
+        ),
+        _ => Text::translate(
+            "commands.effect.give.success.multiple",
+            vec![effect_name(&effect), literal(affected.len()), seconds],
+        ),
+    };
+    ctx.success(text, true);
+    Ok(affected.len() as i32)
+}
+
+fn clear_effects(ctx: &mut Ctx) -> Result<i32, CommandError> {
+    let effect = effect_arg(ctx)?;
+    let mut cleared = Vec::new();
+    for player in ctx.targets("targets")? {
+        if ctx.world.effect_clear(player, effect.as_deref()) {
+            cleared.push(player);
+        }
+    }
+    let text = match (&effect, cleared.as_slice()) {
+        (None, []) => {
+            return Err(CommandError::new(
+                "commands.effect.clear.everything.failed",
+                Vec::new(),
+            ));
+        }
+        (Some(_), []) => {
+            return Err(CommandError::new(
+                "commands.effect.clear.specific.failed",
+                Vec::new(),
+            ));
+        }
+        (None, [only]) => Text::translate(
+            "commands.effect.clear.everything.success.single",
+            vec![ctx.display_name(*only)],
+        ),
+        (None, _) => Text::translate(
+            "commands.effect.clear.everything.success.multiple",
+            vec![literal(cleared.len())],
+        ),
+        (Some(effect), [only]) => Text::translate(
+            "commands.effect.clear.specific.success.single",
+            vec![effect_name(effect), ctx.display_name(*only)],
+        ),
+        (Some(effect), _) => Text::translate(
+            "commands.effect.clear.specific.success.multiple",
+            vec![effect_name(effect), literal(cleared.len())],
+        ),
+    };
+    ctx.success(text, true);
+    Ok(cleared.len() as i32)
+}
+
+fn summon(ctx: &mut Ctx) -> Result<i32, CommandError> {
+    let Some(Arg::Resource { id, .. }) = ctx.arg("entity").cloned() else {
+        return Err(CommandError::new("command.unknown.argument", Vec::new()));
+    };
+    if !registered(&ctx.server.registries().entities, &id) {
+        return Err(CommandError::new("commands.summon.failed", Vec::new()));
+    }
+    let position = match ctx.arg("pos") {
+        Some(Arg::Vec3(pos)) => pos.position(ctx.pose()),
+        _ => ctx.pose().feet,
+    };
+    if !in_spawnable_bounds(position) {
+        return Err(CommandError::new(
+            "commands.summon.invalidPosition",
+            Vec::new(),
+        ));
+    }
+    let nbt = match ctx.arg("nbt") {
+        Some(Arg::Nbt(nbt)) => Some(nbt.clone()),
+        _ => None,
+    };
+    ctx.world
+        .summon(ctx.source, &id, position, nbt.as_deref())
+        .map_err(|text| CommandError { text, cursor: None })?;
+    Ok(1)
+}
+
 pub fn usage(command: &str, level: u8) -> Option<String> {
     tree()
         .iter()
@@ -510,13 +870,18 @@ mod tests {
             vec![
                 "/deop <targets>",
                 "/difficulty [easy|hard|normal|peaceful]",
+                "/effect (clear|give)",
                 "/gamemode <gamemode> [<target>]",
                 "/gamerule <rule> [<value>]",
+                "/give <targets> <item> [<count>]",
                 "/help [<command>]",
                 "/kill [<targets>]",
                 "/op <targets>",
                 "/seed",
+                "/summon <entity> [<pos>]",
+                "/teleport (<destination>|<location>|<targets>)",
                 "/time (add|pause|query|resume|set)",
+                "/tp (<destination>|<location>|<targets>)",
                 "/weather (clear|rain|thunder)",
             ]
         );
@@ -527,6 +892,19 @@ mod tests {
                 "/weather clear [<duration>]",
                 "/weather rain [<duration>]",
                 "/weather thunder [<duration>]",
+            ]
+        );
+        let out = run(
+            &mut server,
+            &mut world,
+            HOST,
+            "help effect give @s regeneration",
+        );
+        assert_eq!(
+            texts(&out),
+            vec![
+                "/effect give @s regeneration [infinite] [<amplifier>]",
+                "/effect give @s regeneration [<seconds>] [<amplifier>]",
             ]
         );
         let out = run(&mut server, &mut world, HOST, "help time set");
@@ -812,5 +1190,326 @@ mod tests {
         let out = run(&mut server, &mut world, HOST, "kill Herobrine");
         assert_eq!(texts(&out), vec!["No player was found"]);
         assert_eq!(world.killed.len(), 5);
+    }
+
+    fn registered_server() -> crate::server::CommandServer {
+        let mut server = server();
+        let owned = |ids: &[&str]| ids.iter().map(|id| (*id).to_owned()).collect();
+        *server.registries_mut() = crate::server::CommandRegistries {
+            items: owned(&["minecraft:stone", "minecraft:diamond_sword"]),
+            entities: owned(&["minecraft:cow", "minecraft:zombie"]),
+            effects: owned(&[
+                "minecraft:regeneration",
+                "minecraft:speed",
+                "minecraft:instant_health",
+            ]),
+            enchantments: owned(&["minecraft:sharpness"]),
+        };
+        server
+    }
+
+    fn feet_at(world: &mut FakeWorld, player: crate::protocol::PlayerId, feet: [f64; 3]) {
+        world.poses.push((
+            player,
+            crate::server::Pose {
+                feet,
+                yaw: 0.0,
+                pitch: 0.0,
+            },
+        ));
+    }
+
+    #[test]
+    fn give_counts_and_too_many_items() {
+        let mut server = registered_server();
+        let mut world = FakeWorld::default();
+        let out = run(&mut server, &mut world, HOST, "give @s stone");
+        assert_eq!(texts(&out), vec!["Gave 1 [Stone] to Steve"]);
+        let out = run(
+            &mut server,
+            &mut world,
+            HOST,
+            "give Steve minecraft:stone 6400",
+        );
+        assert_eq!(texts(&out), vec!["Gave 6400 [Stone] to Steve"]);
+        let out = run(&mut server, &mut world, HOST, "give @s stone 6401");
+        assert_eq!(texts(&out), vec!["Can't give more than 6400 of [Stone]"]);
+        assert_eq!(out[0].2, RED);
+        let out = run(&mut server, &mut world, HOST, "give @s diamond_sword 101");
+        assert_eq!(
+            texts(&out),
+            vec!["Can't give more than 100 of [Diamond Sword]"]
+        );
+        let out = run(&mut server, &mut world, HOST, "give @s stone 0");
+        assert_eq!(out.len(), 2);
+        let counts: Vec<(String, u32)> = world
+            .given
+            .iter()
+            .map(|(_, item, count)| (item.id.clone(), *count))
+            .collect();
+        assert_eq!(
+            counts,
+            vec![
+                ("minecraft:stone".to_owned(), 1),
+                ("minecraft:stone".to_owned(), 6400)
+            ]
+        );
+        let out = run(
+            &mut server,
+            &mut world,
+            HOST,
+            "give @s diamond_sword[enchantments={sharpness:5}]",
+        );
+        assert_eq!(texts(&out), vec!["Gave 1 [Diamond Sword] to Steve"]);
+        assert_eq!(
+            world.given[2].1.enchantments,
+            vec![("minecraft:sharpness".to_owned(), 5)]
+        );
+        run(
+            &mut server,
+            &mut world,
+            HOST,
+            "give @s diamond_sword+sharpness=3 2",
+        );
+        assert_eq!(
+            (world.given[3].1.enchantments.clone(), world.given[3].2),
+            (vec![("minecraft:sharpness".to_owned(), 3)], 2)
+        );
+    }
+
+    #[test]
+    fn unknown_items_are_invalid() {
+        let mut server = registered_server();
+        let mut world = FakeWorld::default();
+        let out = run(&mut server, &mut world, HOST, "give @s notanitem");
+        assert_eq!(
+            texts(&out),
+            vec![
+                "Unknown item 'minecraft:notanitem'",
+                "give @s notanitem<--[HERE]"
+            ]
+        );
+        assert_eq!(out[1].0, Recipient::Player(HOST));
+        let out = run(
+            &mut server,
+            &mut world,
+            HOST,
+            "give @s diamond_sword[enchantments={unbreaking:3}]",
+        );
+        assert!(texts(&out)[0].starts_with("Malformed 'minecraft:enchantments' component"));
+        assert!(texts(&out)[0].contains("minecraft:unbreaking"));
+        assert!(world.given.is_empty());
+        let mut open = server.clone();
+        open.registries_mut().items.clear();
+        run(&mut open, &mut world, HOST, "give @s modded:thing");
+        assert_eq!(world.given[0].1.id, "modded:thing");
+    }
+
+    #[test]
+    fn tp_variants_resolve_targets_and_positions() {
+        let mut server = registered_server();
+        server.join(FRIEND, "Alex");
+        let mut world = FakeWorld::default();
+        feet_at(&mut world, HOST, [10.5, 64.0, -3.5]);
+        feet_at(&mut world, FRIEND, [100.0, 70.0, 100.0]);
+        let out = run(&mut server, &mut world, HOST, "tp ~ ~10 ~");
+        assert_eq!(
+            texts(&out),
+            vec!["Teleported Steve to 10.500000, 74.000000, -3.500000"]
+        );
+        let out = run(&mut server, &mut world, HOST, "teleport 2000 120 2000");
+        assert_eq!(
+            texts(&out),
+            vec!["Teleported Steve to 2000.500000, 120.000000, 2000.500000"]
+        );
+        run(&mut server, &mut world, HOST, "tp Alex 0 100 0");
+        let out = run(&mut server, &mut world, HOST, "tp Alex");
+        assert_eq!(texts(&out), vec!["Teleported Steve to Alex"]);
+        let out = run(&mut server, &mut world, HOST, "tp @a Steve");
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            world.teleported,
+            vec![
+                (HOST, [10.5, 74.0, -3.5]),
+                (HOST, [2000.5, 120.0, 2000.5]),
+                (FRIEND, [0.5, 100.0, 0.5]),
+                (HOST, [0.5, 100.0, 0.5]),
+                (HOST, [0.5, 100.0, 0.5]),
+                (FRIEND, [0.5, 100.0, 0.5]),
+            ]
+        );
+        let out = run(&mut server, &mut world, HOST, "tp 30000000 64 0");
+        assert_eq!(texts(&out), vec!["Invalid position for teleport"]);
+        let out = run(&mut server, &mut world, HOST, "tp ~ ~");
+        assert_eq!(
+            texts(&out),
+            vec!["Incorrect argument for command", "tp ~ ~<--[HERE]"]
+        );
+        let out = run(&mut server, &mut world, HOST, "tp 1 2");
+        assert_eq!(texts(&out), vec!["No player was found"]);
+        let out = run(&mut server, &mut world, HOST, "tp Herobrine");
+        assert_eq!(texts(&out), vec!["No player was found"]);
+        assert_eq!(world.teleported.len(), 6);
+        let out = run(&mut server, &mut world, FRIEND, "tp 0 0 0");
+        assert_eq!(
+            texts(&out)[0],
+            "Unknown or incomplete command. See below for error"
+        );
+    }
+
+    #[test]
+    fn effect_defaults_to_thirty_seconds_amplifier_zero() {
+        let mut server = registered_server();
+        let mut world = FakeWorld::default();
+        let out = run(&mut server, &mut world, HOST, "effect give @s regeneration");
+        assert_eq!(texts(&out), vec!["Applied effect Regeneration to Steve"]);
+        let out = run(
+            &mut server,
+            &mut world,
+            HOST,
+            "effect give @s minecraft:regeneration 10 1 true",
+        );
+        assert_eq!(out.len(), 1);
+        run(
+            &mut server,
+            &mut world,
+            HOST,
+            "effect give @s instant_health",
+        );
+        run(
+            &mut server,
+            &mut world,
+            HOST,
+            "effect give @s instant_health 5 2",
+        );
+        assert_eq!(
+            world.effects,
+            vec![
+                (HOST, "minecraft:regeneration".to_owned(), Some(600), 0),
+                (HOST, "minecraft:regeneration".to_owned(), Some(200), 1),
+                (HOST, "minecraft:instant_health".to_owned(), Some(1), 0),
+                (HOST, "minecraft:instant_health".to_owned(), Some(5), 2),
+            ]
+        );
+        let out = run(&mut server, &mut world, HOST, "effect give @s speed");
+        assert_eq!(
+            texts(&out),
+            vec![
+                "Unable to apply this effect (target is either immune to effects, or has something stronger)"
+            ]
+        );
+        let out = run(&mut server, &mut world, HOST, "effect give @s glowing");
+        assert_eq!(
+            texts(&out),
+            vec![
+                "Can't find element 'minecraft:glowing' of type 'minecraft:mob_effect'",
+                "...t give @s glowing<--[HERE]"
+            ]
+        );
+        let out = run(
+            &mut server,
+            &mut world,
+            HOST,
+            "effect give @s regeneration 0",
+        );
+        assert_eq!(out.len(), 2);
+        let out = run(
+            &mut server,
+            &mut world,
+            HOST,
+            "effect give @s regeneration 1 256",
+        );
+        assert_eq!(out.len(), 2);
+        let out = run(
+            &mut server,
+            &mut world,
+            HOST,
+            "effect clear @s minecraft:regeneration",
+        );
+        assert_eq!(texts(&out), vec!["Removed effect Regeneration from Steve"]);
+        let out = run(&mut server, &mut world, HOST, "effect clear");
+        assert_eq!(texts(&out), vec!["Removed every effect from Steve"]);
+        let out = run(&mut server, &mut world, HOST, "effect clear @s");
+        assert_eq!(texts(&out), vec!["Target has no effects to remove"]);
+        let out = run(
+            &mut server,
+            &mut world,
+            HOST,
+            "effect clear @s regeneration",
+        );
+        assert_eq!(
+            texts(&out),
+            vec!["Target doesn't have the requested effect"]
+        );
+    }
+
+    #[test]
+    fn effect_infinite_has_no_end() {
+        let mut server = registered_server();
+        let mut world = FakeWorld::default();
+        run(
+            &mut server,
+            &mut world,
+            HOST,
+            "effect give @s regeneration infinite",
+        );
+        run(
+            &mut server,
+            &mut world,
+            HOST,
+            "effect give @s regeneration infinite 3 true",
+        );
+        assert_eq!(world.effects[0].2, None);
+        assert_eq!(world.effects[1].2, None);
+        assert_eq!(world.effects[1].3, 3);
+        assert_eq!(effect_ticks(Some(-1), false), None);
+        assert_eq!(effect_ticks(Some(-1), true), None);
+        assert_eq!(effect_ticks(Some(7), true), Some(7));
+        assert_eq!(effect_ticks(Some(30), false), Some(600));
+        assert_eq!(effect_ticks(None, true), Some(1));
+    }
+
+    #[test]
+    fn summon_defaults_to_the_source_feet() {
+        let mut server = registered_server();
+        let mut world = FakeWorld::default();
+        feet_at(&mut world, HOST, [5.25, 70.0, -8.75]);
+        assert!(run(&mut server, &mut world, HOST, "summon cow").is_empty());
+        run(&mut server, &mut world, HOST, "summon minecraft:cow ~ ~ ~3");
+        run(
+            &mut server,
+            &mut world,
+            HOST,
+            "summon zombie 10 64 10 {NoAI:1b,CustomName:'a b'}",
+        );
+        assert_eq!(
+            world.summoned,
+            vec![
+                ("minecraft:cow".to_owned(), [5.25, 70.0, -8.75], None),
+                ("minecraft:cow".to_owned(), [5.25, 70.0, -5.75], None),
+                (
+                    "minecraft:zombie".to_owned(),
+                    [10.5, 64.0, 10.5],
+                    Some("{NoAI:1b,CustomName:'a b'}".to_owned())
+                ),
+            ]
+        );
+        let out = run(&mut server, &mut world, HOST, "summon cow ~ ~ ~ {bad}");
+        assert_eq!(texts(&out), vec!["Expected value"]);
+        assert_eq!(out[0].2, RED);
+        let out = run(&mut server, &mut world, HOST, "summon cow 0 30000000 0");
+        assert_eq!(texts(&out), vec!["Invalid position for summon"]);
+    }
+
+    #[test]
+    fn summon_rejects_unsimulated_kinds() {
+        let mut server = registered_server();
+        let mut world = FakeWorld::default();
+        let out = run(&mut server, &mut world, HOST, "summon minecraft:fox");
+        assert_eq!(texts(&out), vec!["Unable to summon entity"]);
+        assert_eq!(out[0].2, RED);
+        let out = run(&mut server, &mut world, HOST, "summon Cow");
+        assert_eq!(out.len(), 2);
+        assert!(world.summoned.is_empty());
     }
 }

@@ -287,6 +287,7 @@ fn load() -> Result<Loaded, String> {
         diag::warn!(World, "Minecraft level.dat not written: {error}");
     }
     let mut chat = minecraft_commands::CommandServer::new(crate::minecraft_chat::HOST);
+    *chat.registries_mut() = crate::minecraft_chat::registries(&packs);
     if let Some(save) = &opened.save
         && let Err(error) = chat.open_ops(&save.ops_path())
     {
@@ -366,6 +367,18 @@ fn fire_frames(packs: &PackStack) -> Option<(Image, u32)> {
         )
     };
     Some((image, frames))
+}
+
+fn minecraft_yaw(mw2_yaw: f32) -> f32 {
+    let yaw_rad = mw2_yaw.to_radians();
+    (-yaw_rad.cos()).atan2(-yaw_rad.sin()).to_degrees()
+}
+
+fn show_chat(chat: &mut frame::McChat, inventory_ui: &crate::minecraft_inventory::InventoryUi, packs: &PackStack, delivered: &[minecraft_commands::Clientbound]) {
+    match inventory_ui.language() {
+        Some(language) => crate::minecraft_chat::show(chat, delivered, language),
+        None => crate::minecraft_chat::show(chat, delivered, &minecraft_terrain::item_icons::language(packs).unwrap_or_else(|_| HashMap::new())),
+    }
 }
 
 /// A controller trigger, held or just pressed: with a block or an empty hand
@@ -458,6 +471,7 @@ fn update(
                 entities.set_game_rules(&world.game_rules);
                 runtime.containers.set_book(entities.stations.clone());
                 runtime.inventory_ui.set_station_data(entities.stations.clone(), entities.enchantments.clone(), world.seed as i32);
+                world.chat.registries_mut().enchantments = entities.enchantments.as_ref().map_or_else(Vec::new, |book| book.list.iter().map(|enchantment| enchantment.id.clone()).collect());
                 runtime.entities = Some(entities);
                 runtime.day = DayCycle::default();
                 if let Some(ticks) = world.saved_day {
@@ -549,6 +563,12 @@ fn update(
         puppet.active = false;
         return;
     };
+    let host_alive = presented.player(local.0).is_some_and(|ps| ps.pm_type == 0);
+    let host_pose = presented
+        .player(local.0)
+        .filter(|_| host_alive)
+        .map(|ps| minecraft_commands::Pose { feet: sim::voxel::to_block(origin, ps.origin), yaw: minecraft_yaw(ps.viewangles[1]), pitch: ps.viewangles[0] })
+        .or_else(|| survival.last_feet().map(|feet| minecraft_commands::Pose { feet, yaw: 0.0, pitch: 0.0 }));
     let mut host = crate::minecraft_chat::Host {
         seed: world.seed,
         rules: &mut world.game_rules,
@@ -560,9 +580,13 @@ fn update(
         player_mode,
         rules_changed: false,
         mode_changed: false,
+        pose: host_pose,
+        alive: host_alive,
+        teleports: Vec::new(),
     };
     let delivered = crate::minecraft_chat::pump(&mut ui.chat, &mut world.chat, &mut host);
     let mode_changed = host.mode_changed;
+    let teleports = std::mem::take(&mut host.teleports);
     if host.rules_changed
         && let Some(entities) = entities.as_mut()
     {
@@ -575,10 +599,7 @@ fn update(
         save_player_mode(world, *player_mode);
     }
     if !delivered.is_empty() {
-        match inventory_ui.language() {
-            Some(language) => crate::minecraft_chat::show(&mut ui.chat, &delivered, language),
-            None => crate::minecraft_chat::show(&mut ui.chat, &delivered, &minecraft_terrain::item_icons::language(&world.packs).unwrap_or_else(|_| HashMap::new())),
-        }
+        show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
     }
     *animation_clock += time.delta_secs_f64();
     if *animation_clock >= TICK_SECONDS {
@@ -643,8 +664,7 @@ fn update(
     apply_streamed(&world.registries, shapes, shape_ids, entities, streamed);
 
     // Minecraft's yaw: 0 facing +Z (map -Y), turning towards -X.
-    let yaw_rad = ps.viewangles[1].to_radians();
-    let mc_yaw = (-yaw_rad.cos()).atan2(-yaw_rad.sin()).to_degrees();
+    let mc_yaw = minecraft_yaw(ps.viewangles[1]);
     let mut all_events = sim::voxel::take_events();
     let mut hand_mined = Vec::new();
     let mut creative_broken = Vec::new();
@@ -1485,6 +1505,11 @@ fn update(
         entities.difficulty = minecraft_commands::difficulty_id(world.difficulty);
         let ticks_before = entities.client_ticks();
         let (changes, hits) = entities.tick(dt, day.ticks as i64, bright_outside, &player);
+        let summoned = std::mem::take(&mut entities.command_summons);
+        if !summoned.is_empty() {
+            let answers = crate::minecraft_chat::summon_answers(&world.chat, &world.game_rules, summoned);
+            show_chat(&mut ui.chat, inventory_ui, &world.packs, &answers);
+        }
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
         *autosave_ticks += mob_ticks;
         if *autosave_ticks >= crate::minecraft_save::AUTOSAVE_TICKS {
@@ -1577,6 +1602,10 @@ fn update(
                 hand.swing_offhand = used.slot == crate::minecraft_offhand::OFFHAND;
             }
             finish_item_use(entities, sounds.as_mut(), &world.packs, origin, used, player_mode.consumes_items());
+        }
+        for to in teleports.iter().filter(|_| alive) {
+            authority.0.teleport(local.0, sim::voxel::to_map(origin, *to));
+            steps.air_peak = None;
         }
         for landing in std::mem::take(&mut entities.pearl_landings) {
             if !alive {

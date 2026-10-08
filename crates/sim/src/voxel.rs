@@ -589,8 +589,8 @@ pub const RESPAWN_RADIUS: i32 = 10;
 const SPAWN_SEARCH_UP: i32 = 8;
 const SPAWN_SEARCH_DOWN: i32 = 16;
 
-pub fn awaiting_spawn_ground(origin: [f32; 3]) -> bool {
-    WORLD.read().ok().is_some_and(|world| world.as_ref().is_some_and(|w| w.awaits_spawn_ground(origin)))
+pub fn awaiting_ground(origin: [f32; 3]) -> bool {
+    WORLD.read().ok().is_some_and(|world| world.as_ref().is_some_and(|w| w.awaits_ground(origin)))
 }
 
 pub(crate) fn spawn_clear_of(taken: impl Fn([f32; 3]) -> bool) -> [f32; 3] {
@@ -634,12 +634,9 @@ impl VoxelWorld {
         (cx - radius..=cx + radius).all(|x| (cz - radius..=cz + radius).all(|z| self.chunks.contains_key(&(x, z))))
     }
 
-    fn awaits_spawn_ground(&self, origin: [f32; 3]) -> bool {
+    fn awaits_ground(&self, origin: [f32; 3]) -> bool {
         let feet = to_block(self.origin, origin).map(|c| c.floor() as i32);
-        let spawn = self.origin.map(|c| c.floor() as i32);
-        (feet[0] - spawn[0]).abs() <= RESPAWN_RADIUS
-            && (feet[2] - spawn[2]).abs() <= RESPAWN_RADIUS
-            && !self.has_chunks_around(feet[0] >> 4, feet[2] >> 4, 0)
+        !self.has_chunks_around(feet[0] >> 4, feet[2] >> 4, 0)
     }
 
     fn free_spawn_spot(&self, taken: &impl Fn([f32; 3]) -> bool) -> Option<[f32; 3]> {
@@ -1294,17 +1291,20 @@ mod tests {
     }
 
     #[test]
-    fn a_player_in_the_respawn_area_waits_for_its_ground_but_not_one_far_away() {
+    fn a_player_waits_for_ground_wherever_its_chunk_is_missing() {
         let mut w = world(&[]);
         w.origin = [7.5, 64.0, 3.5];
-        assert!(!w.awaits_spawn_ground([0.0; 3]));
-        assert!(!w.awaits_spawn_ground(to_map(w.origin, [15.9, -200.0, 0.1])));
-        assert!(!w.awaits_spawn_ground(to_map(w.origin, [7.5, 64.0, 13.9])));
-        assert!(w.awaits_spawn_ground(to_map(w.origin, [-0.5, 64.0, 8.0])));
-        assert!(w.awaits_spawn_ground(to_map(w.origin, [7.5, 64.0, -7.0])));
-        assert!(!w.awaits_spawn_ground(to_map(w.origin, [7.5, 64.0, -7.1])));
-        assert!(!w.awaits_spawn_ground(to_map(w.origin, [8.0, 64.0, 16.5])));
-        assert!(!w.awaits_spawn_ground(to_map(w.origin, [40.0, 64.0, 3.5])));
+        assert!(!w.awaits_ground([0.0; 3]));
+        assert!(!w.awaits_ground(to_map(w.origin, [15.9, -200.0, 0.1])));
+        assert!(!w.awaits_ground(to_map(w.origin, [7.5, 64.0, 13.9])));
+        assert!(w.awaits_ground(to_map(w.origin, [-0.5, 64.0, 8.0])));
+        assert!(w.awaits_ground(to_map(w.origin, [7.5, 64.0, -7.0])));
+        assert!(w.awaits_ground(to_map(w.origin, [8.0, 64.0, 16.5])));
+        assert!(w.awaits_ground(to_map(w.origin, [40.0, 64.0, 3.5])));
+        assert!(w.awaits_ground(to_map(w.origin, [2000.5, 120.0, 2000.5])));
+        w.chunks.insert((125, 125), VoxelChunk { min_y: 0, height: 1, shapes: vec![0; 256] });
+        assert!(!w.awaits_ground(to_map(w.origin, [2000.5, 120.0, 2000.5])));
+        assert!(w.awaits_ground(to_map(w.origin, [2016.5, 120.0, 2000.5])));
     }
 
     #[test]

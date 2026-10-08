@@ -22,6 +22,31 @@ pub enum ArgKind {
     TimeMarker,
     GameMode,
     Greedy,
+    Int { min: i32, max: i32 },
+    Bool,
+    Item,
+    Vec3,
+    Resource,
+    Nbt,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ItemArg {
+    pub id: String,
+    pub enchantments: Vec<(String, i32)>,
+    pub at: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WorldCoordinate {
+    pub value: f64,
+    pub relative: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Coordinates {
+    World([WorldCoordinate; 3]),
+    Local([f64; 3]),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,6 +67,12 @@ pub enum Arg {
     Marker(String),
     GameMode(GameMode),
     Text(String),
+    Int(i32),
+    Bool(bool),
+    Item(ItemArg),
+    Vec3(Coordinates),
+    Resource { id: String, at: usize },
+    Nbt(String),
 }
 
 impl ArgKind {
@@ -107,6 +138,15 @@ impl ArgKind {
                 reader.cursor = reader.input().len();
                 Ok(Arg::Text(rest))
             }
+            Self::Int { min, max } => reader.read_bounded_int(min, max).map(Arg::Int),
+            Self::Bool => reader.read_bool().map(Arg::Bool),
+            Self::Item => item(reader).map(Arg::Item),
+            Self::Vec3 => vec3(reader).map(Arg::Vec3),
+            Self::Resource => {
+                let at = reader.cursor;
+                resource_id(reader).map(|id| Arg::Resource { id, at })
+            }
+            Self::Nbt => nbt(reader).map(Arg::Nbt),
         }
     }
 }
@@ -202,6 +242,298 @@ fn players(reader: &mut StringReader, single: bool) -> Result<Selector, CommandE
         return Err(CommandError::new("argument.entity.invalid", Vec::new()).at(start));
     }
     Ok(Selector::Name(name))
+}
+
+pub const ENCHANTMENT_COMPONENTS: [&str; 2] =
+    ["minecraft:enchantments", "minecraft:stored_enchantments"];
+
+fn allowed_in_id(c: char) -> bool {
+    c.is_ascii_digit() || c.is_ascii_lowercase() || matches!(c, '_' | ':' | '/' | '.' | '-')
+}
+
+pub fn resource_id(reader: &mut StringReader) -> Result<String, CommandError> {
+    let start = reader.cursor;
+    while reader.peek().is_some_and(allowed_in_id) {
+        reader.skip();
+    }
+    let text = &reader.input()[start..reader.cursor];
+    let (namespace, path) = match text.split_once(':') {
+        Some(("", path)) => ("minecraft", path),
+        Some(split) => split,
+        None => ("minecraft", text),
+    };
+    if namespace.contains('/') || path.contains(':') {
+        reader.cursor = start;
+        return Err(CommandError::new("argument.id.invalid", Vec::new()).at(start));
+    }
+    Ok(format!("{namespace}:{path}"))
+}
+
+fn item(reader: &mut StringReader) -> Result<ItemArg, CommandError> {
+    let at = reader.cursor;
+    let id = resource_id(reader)?;
+    let mut enchantments = Vec::new();
+    match reader.peek() {
+        Some('[') => components(reader, &mut enchantments)?,
+        Some('+') => kit_enchantments(reader, &mut enchantments)?,
+        _ => {}
+    }
+    Ok(ItemArg {
+        id,
+        enchantments,
+        at,
+    })
+}
+
+fn components(reader: &mut StringReader, out: &mut Vec<(String, i32)>) -> Result<(), CommandError> {
+    reader.expect('[')?;
+    let mut seen: Vec<String> = Vec::new();
+    while reader.can_read() && reader.peek() != Some(']') {
+        reader.skip_ws();
+        let start = reader.cursor;
+        let id = resource_id(reader)?;
+        if !ENCHANTMENT_COMPONENTS.contains(&id.as_str()) {
+            reader.cursor = start;
+            return Err(
+                CommandError::new("arguments.item.component.unknown", vec![literal(&id)]).at(start),
+            );
+        }
+        if seen.contains(&id) {
+            return Err(CommandError::new(
+                "arguments.item.component.repeated",
+                vec![literal(&id)],
+            ));
+        }
+        reader.skip_ws();
+        reader.expect('=')?;
+        reader.skip_ws();
+        enchantment_levels(reader, &id, out)?;
+        seen.push(id);
+        reader.skip_ws();
+        if reader.peek() != Some(',') {
+            break;
+        }
+        reader.skip();
+        reader.skip_ws();
+        if !reader.can_read() {
+            return Err(
+                CommandError::new("arguments.item.component.expected", Vec::new())
+                    .at(reader.cursor),
+            );
+        }
+    }
+    reader.expect(']')
+}
+
+fn enchantment_levels(
+    reader: &mut StringReader,
+    component: &str,
+    out: &mut Vec<(String, i32)>,
+) -> Result<(), CommandError> {
+    let start = reader.cursor;
+    reader.expect('{')?;
+    reader.skip_ws();
+    while reader.can_read() && reader.peek() != Some('}') {
+        let key_at = reader.cursor;
+        let key = reader.read_string()?;
+        if key.is_empty() {
+            return Err(CommandError::new("argument.nbt.expected.key", Vec::new()).at(key_at));
+        }
+        let id = if key.contains(':') {
+            key
+        } else {
+            format!("minecraft:{key}")
+        };
+        reader.skip_ws();
+        reader.expect(':')?;
+        reader.skip_ws();
+        let level = reader.read_int()?;
+        if reader
+            .peek()
+            .is_some_and(|c| matches!(c, 'b' | 'B' | 's' | 'S' | 'i' | 'I' | 'l' | 'L'))
+        {
+            reader.skip();
+        }
+        if !(1..=255).contains(&level) {
+            reader.cursor = start;
+            return Err(CommandError::new(
+                "arguments.item.component.malformed",
+                vec![
+                    literal(component),
+                    literal(format!("Value {level} outside of range [1:255]")),
+                ],
+            )
+            .at(start));
+        }
+        out.retain(|(known, _)| *known != id);
+        out.push((id, level));
+        reader.skip_ws();
+        if reader.peek() != Some(',') {
+            break;
+        }
+        reader.skip();
+        reader.skip_ws();
+    }
+    reader.expect('}')
+}
+
+fn kit_enchantments(
+    reader: &mut StringReader,
+    out: &mut Vec<(String, i32)>,
+) -> Result<(), CommandError> {
+    while reader.peek() == Some('+') {
+        reader.skip();
+        let start = reader.cursor;
+        let id = resource_id(reader)?;
+        if id.ends_with(':') {
+            return Err(CommandError::new("argument.id.invalid", Vec::new()).at(start));
+        }
+        let level = if reader.peek() == Some('=') {
+            reader.skip();
+            reader.read_int()?
+        } else {
+            1
+        };
+        out.push((id, level));
+    }
+    Ok(())
+}
+
+fn incomplete(reader: &mut StringReader, start: usize) -> CommandError {
+    reader.cursor = start;
+    CommandError::new("argument.pos3d.incomplete", Vec::new()).at(start)
+}
+
+fn world_coordinate(
+    reader: &mut StringReader,
+    center: bool,
+) -> Result<WorldCoordinate, CommandError> {
+    if reader.peek() == Some('^') {
+        return Err(CommandError::new("argument.pos.mixed", Vec::new()).at(reader.cursor));
+    }
+    if !reader.can_read() {
+        return Err(CommandError::new("argument.pos.missing.double", Vec::new()).at(reader.cursor));
+    }
+    let relative = reader.peek() == Some('~');
+    if relative {
+        reader.skip();
+    }
+    let start = reader.cursor;
+    let value = if reader.can_read() && reader.peek() != Some(' ') {
+        reader.read_double()?
+    } else {
+        0.0
+    };
+    let centered = center && !relative && !reader.input()[start..reader.cursor].contains('.');
+    Ok(WorldCoordinate {
+        value: if centered { value + 0.5 } else { value },
+        relative,
+    })
+}
+
+fn local_coordinate(reader: &mut StringReader, start: usize) -> Result<f64, CommandError> {
+    if !reader.can_read() {
+        return Err(CommandError::new("argument.pos.missing.double", Vec::new()).at(reader.cursor));
+    }
+    if reader.peek() != Some('^') {
+        reader.cursor = start;
+        return Err(CommandError::new("argument.pos.mixed", Vec::new()).at(start));
+    }
+    reader.skip();
+    if reader.can_read() && reader.peek() != Some(' ') {
+        reader.read_double()
+    } else {
+        Ok(0.0)
+    }
+}
+
+fn vec3(reader: &mut StringReader) -> Result<Coordinates, CommandError> {
+    let start = reader.cursor;
+    let local = reader.peek() == Some('^');
+    let mut world = [WorldCoordinate {
+        value: 0.0,
+        relative: false,
+    }; 3];
+    let mut offsets = [0.0; 3];
+    for axis in 0..3 {
+        if axis > 0 {
+            if reader.peek() != Some(' ') {
+                return Err(incomplete(reader, start));
+            }
+            reader.skip();
+        }
+        if local {
+            offsets[axis] = local_coordinate(reader, start)?;
+        } else {
+            world[axis] = world_coordinate(reader, axis != 1)?;
+        }
+    }
+    Ok(if local {
+        Coordinates::Local(offsets)
+    } else {
+        Coordinates::World(world)
+    })
+}
+
+impl Coordinates {
+    pub fn position(&self, pose: crate::server::Pose) -> [f64; 3] {
+        match *self {
+            Self::World(axes) => std::array::from_fn(|i| {
+                axes[i].value + if axes[i].relative { pose.feet[i] } else { 0.0 }
+            }),
+            Self::Local([left, up, forwards]) => {
+                let radians = std::f32::consts::PI / 180.0;
+                let (yaw, pitch) = (pose.yaw + 90.0, -pose.pitch);
+                let (f, g) = ((yaw * radians).cos(), (yaw * radians).sin());
+                let (h, i) = ((pitch * radians).cos(), (pitch * radians).sin());
+                let (j, k) = (
+                    ((pitch + 90.0) * radians).cos(),
+                    ((pitch + 90.0) * radians).sin(),
+                );
+                let ahead = [f * h, i, g * h].map(f64::from);
+                let above = [f * j, k, g * j].map(f64::from);
+                let side = [
+                    above[1] * ahead[2] - above[2] * ahead[1],
+                    above[2] * ahead[0] - above[0] * ahead[2],
+                    above[0] * ahead[1] - above[1] * ahead[0],
+                ];
+                std::array::from_fn(|n| {
+                    pose.feet[n] + ahead[n] * forwards + above[n] * up + side[n] * left
+                })
+            }
+        }
+    }
+}
+
+fn nbt(reader: &mut StringReader) -> Result<String, CommandError> {
+    let start = reader.cursor;
+    if reader.peek() != Some('{') {
+        return Err(CommandError::new("argument.nbt.expected.compound", Vec::new()).at(start));
+    }
+    let mut depth = 0_usize;
+    let mut quote = None;
+    let mut escaped = false;
+    while let Some(c) = reader.peek() {
+        reader.skip();
+        match quote {
+            Some(_) if escaped => escaped = false,
+            Some(_) if c == '\\' => escaped = true,
+            Some(open) if c == open => quote = None,
+            Some(_) => {}
+            None => match c {
+                '"' | '\'' => quote = Some(c),
+                '{' | '[' => depth += 1,
+                '}' | ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(reader.input()[start..reader.cursor].to_owned());
+                    }
+                }
+                _ => {}
+            },
+        }
+    }
+    Err(CommandError::new("parsing.expected", vec![literal('}')]).at(reader.cursor))
 }
 
 #[cfg(test)]
@@ -343,5 +675,199 @@ mod tests {
         assert_eq!(marker_ticks("minecraft:dusk"), None);
         assert_eq!(marker_ticks("other:noon"), None);
         assert!(parse("a:b:c").is_err());
+    }
+
+    fn parse_item(text: &str) -> Result<ItemArg, CommandError> {
+        match ArgKind::Item.parse(&mut StringReader::new(text), &[])? {
+            Arg::Item(item) => Ok(item),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn levels(pairs: &[(&str, i32)]) -> Vec<(String, i32)> {
+        pairs
+            .iter()
+            .map(|(id, level)| ((*id).to_owned(), *level))
+            .collect()
+    }
+
+    #[test]
+    fn items_parse_vanilla_enchantment_components_and_kit_plus_syntax() {
+        let sword =
+            parse_item("diamond_sword[enchantments={sharpness:5,\"minecraft:looting\":3b}]")
+                .unwrap();
+        assert_eq!(sword.id, "minecraft:diamond_sword");
+        assert_eq!(
+            sword.enchantments,
+            levels(&[("minecraft:sharpness", 5), ("minecraft:looting", 3)])
+        );
+        assert_eq!(sword.at, 0);
+        let spaced =
+            parse_item("minecraft:bow[ minecraft:enchantments = { power : 2 , flame:1 } ]")
+                .unwrap();
+        assert_eq!(
+            spaced.enchantments,
+            levels(&[("minecraft:power", 2), ("minecraft:flame", 1)])
+        );
+        let book = parse_item("enchanted_book[stored_enchantments={mending:1}]").unwrap();
+        assert_eq!(book.enchantments, levels(&[("minecraft:mending", 1)]));
+        let pickaxe = parse_item("diamond_pickaxe+silk_touch+minecraft:efficiency=5").unwrap();
+        assert_eq!(pickaxe.id, "minecraft:diamond_pickaxe");
+        assert_eq!(
+            pickaxe.enchantments,
+            levels(&[("minecraft:silk_touch", 1), ("minecraft:efficiency", 5)])
+        );
+        let plain = parse_item("stone").unwrap();
+        assert_eq!(
+            (plain.id.as_str(), plain.enchantments.len()),
+            ("minecraft:stone", 0)
+        );
+        assert_eq!(
+            key(&parse_item("diamond_sword[custom_name='x']").unwrap_err()),
+            "arguments.item.component.unknown"
+        );
+        assert_eq!(
+            key(&parse_item("diamond_sword[enchantments={sharpness:300}]").unwrap_err()),
+            "arguments.item.component.malformed"
+        );
+        assert_eq!(
+            key(
+                &parse_item("diamond_sword[enchantments={sharpness:1},enchantments={}]")
+                    .unwrap_err()
+            ),
+            "arguments.item.component.repeated"
+        );
+        assert_eq!(
+            key(&parse_item("diamond_sword[enchantments={sharpness:1}").unwrap_err()),
+            "parsing.expected"
+        );
+        assert_eq!(
+            key(&parse_item("diamond_sword[enchantments={sharpness:1},").unwrap_err()),
+            "arguments.item.component.expected"
+        );
+    }
+
+    #[test]
+    fn item_ids_take_vanilla_resource_location_syntax() {
+        let mut reader = StringReader::new("Stone");
+        let item = ArgKind::Item.parse(&mut reader, &[]).unwrap();
+        assert_eq!(
+            item,
+            Arg::Item(ItemArg {
+                id: "minecraft:".into(),
+                enchantments: Vec::new(),
+                at: 0
+            })
+        );
+        assert_eq!(reader.cursor, 0);
+        let error = parse_item("a:b:c").unwrap_err();
+        assert_eq!(
+            (key(&error), error.cursor),
+            ("argument.id.invalid".into(), Some(0))
+        );
+        assert_eq!(parse_item("mod:thing").unwrap().id, "mod:thing");
+        assert_eq!(parse_item(":thing").unwrap().id, "minecraft:thing");
+        assert_eq!(key(&parse_item("bow+").unwrap_err()), "argument.id.invalid");
+    }
+
+    fn coordinates(text: &str) -> Result<Coordinates, CommandError> {
+        match ArgKind::Vec3.parse(&mut StringReader::new(text), &[])? {
+            Arg::Vec3(coordinates) => Ok(coordinates),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn world_coordinates_center_whole_numbers_and_add_relatives() {
+        let pose = crate::server::Pose {
+            feet: [10.25, 64.0, -3.5],
+            yaw: 0.0,
+            pitch: 0.0,
+        };
+        assert_eq!(
+            coordinates("1 2 3").unwrap().position(pose),
+            [1.5, 2.0, 3.5]
+        );
+        assert_eq!(
+            coordinates("1.0 2 -3.25").unwrap().position(pose),
+            [1.0, 2.0, -3.25]
+        );
+        assert_eq!(
+            coordinates("~ ~10 ~-1").unwrap().position(pose),
+            [10.25, 74.0, -4.5]
+        );
+        assert_eq!(
+            coordinates("~1 70 4").unwrap().position(pose),
+            [11.25, 70.0, 4.5]
+        );
+        let incomplete = coordinates("1 2").unwrap_err();
+        assert_eq!(
+            (key(&incomplete), incomplete.cursor),
+            ("argument.pos3d.incomplete".into(), Some(0))
+        );
+        assert_eq!(
+            key(&coordinates("~ ^ ~").unwrap_err()),
+            "argument.pos.mixed"
+        );
+        assert_eq!(
+            key(&coordinates("^ ~ ^").unwrap_err()),
+            "argument.pos.mixed"
+        );
+        assert_eq!(
+            key(&coordinates("1 x 3").unwrap_err()),
+            "parsing.double.expected"
+        );
+    }
+
+    #[test]
+    fn local_coordinates_turn_with_the_view() {
+        let close = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-5);
+        let south = crate::server::Pose {
+            feet: [0.0, 64.0, 0.0],
+            yaw: 0.0,
+            pitch: 0.0,
+        };
+        let local = coordinates("^1 ^2 ^5").unwrap();
+        assert!(
+            close(local.position(south), [1.0, 66.0, 5.0]),
+            "{:?}",
+            local.position(south)
+        );
+        let west = crate::server::Pose { yaw: 90.0, ..south };
+        assert!(
+            close(local.position(west), [-5.0, 66.0, 1.0]),
+            "{:?}",
+            local.position(west)
+        );
+        let down = crate::server::Pose {
+            pitch: 90.0,
+            ..south
+        };
+        assert!(close(
+            coordinates("^ ^ ^3").unwrap().position(down),
+            [0.0, 61.0, 0.0]
+        ));
+    }
+
+    #[test]
+    fn nbt_argument_spans_balanced_braces_with_strings() {
+        let mut reader = StringReader::new(
+            "{NoAI:1b,CustomName:\"a } b\",Tags:['x]',\"y\\\"}\"],Inner:{A:{}}} rest",
+        );
+        let Ok(Arg::Nbt(text)) = ArgKind::Nbt.parse(&mut reader, &[]) else {
+            panic!("nbt");
+        };
+        assert_eq!(
+            text,
+            "{NoAI:1b,CustomName:\"a } b\",Tags:['x]',\"y\\\"}\"],Inner:{A:{}}}"
+        );
+        assert_eq!(reader.remaining(), " rest");
+        let parse = |text: &str| ArgKind::Nbt.parse(&mut StringReader::new(text), &[]);
+        assert_eq!(
+            key(&parse("NoAI:1b").unwrap_err()),
+            "argument.nbt.expected.compound"
+        );
+        assert_eq!(key(&parse("{NoAI:{}").unwrap_err()), "parsing.expected");
+        assert_eq!(parse("{}"), Ok(Arg::Nbt("{}".into())));
     }
 }

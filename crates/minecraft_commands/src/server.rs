@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use minecraftoss_player::{Difficulty, GameMode};
 use minecraftoss_world::game_rules::{GameRules, Rule, Value};
 
-use crate::args::{Arg, Selector};
+use crate::args::{Arg, ItemArg, Selector};
 use crate::permissions::{ALL, OWNERS, OpList};
 use crate::players::offline_uuid;
 use crate::protocol::{
@@ -30,6 +30,33 @@ pub struct Clock {
     pub paused: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Pose {
+    pub feet: [f64; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+impl Pose {
+    pub const ORIGIN: Pose = Pose {
+        feet: [0.0; 3],
+        yaw: 0.0,
+        pitch: 0.0,
+    };
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommandRegistries {
+    pub items: Vec<String>,
+    pub entities: Vec<String>,
+    pub effects: Vec<String>,
+    pub enchantments: Vec<String>,
+}
+
+pub fn registered(list: &[String], id: &str) -> bool {
+    list.is_empty() || list.iter().any(|known| known == id)
+}
+
 pub trait CommandWorld {
     fn seed(&self) -> i64;
     fn game_rules(&self) -> &GameRules;
@@ -43,6 +70,25 @@ pub trait CommandWorld {
     fn kill(&mut self, player: PlayerId) -> bool;
     fn game_mode(&self, player: PlayerId) -> Option<GameMode>;
     fn set_game_mode(&mut self, player: PlayerId, mode: GameMode) -> bool;
+    fn pose(&self, player: PlayerId) -> Option<Pose>;
+    fn max_stack(&self, item: &str) -> u32;
+    fn give(&mut self, player: PlayerId, item: &ItemArg, count: u32) -> bool;
+    fn teleport(&mut self, player: PlayerId, position: [f64; 3]) -> bool;
+    fn effect_give(
+        &mut self,
+        player: PlayerId,
+        effect: &str,
+        ticks: Option<u32>,
+        amplifier: u8,
+    ) -> bool;
+    fn effect_clear(&mut self, player: PlayerId, effect: Option<&str>) -> bool;
+    fn summon(
+        &mut self,
+        source: PlayerId,
+        kind: &str,
+        position: [f64; 3],
+        nbt: Option<&str>,
+    ) -> Result<(), Text>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,6 +106,7 @@ pub struct CommandServer {
     ops_path: Option<PathBuf>,
     warnings: Vec<String>,
     random: u64,
+    registries: CommandRegistries,
 }
 
 impl Default for CommandServer {
@@ -74,6 +121,7 @@ impl Default for CommandServer {
             ops_path: None,
             warnings: Vec::new(),
             random: nanos | 1,
+            registries: CommandRegistries::default(),
         }
     }
 }
@@ -99,6 +147,10 @@ pub(crate) fn system(to: PlayerId, text: Text) -> Outgoing {
     }
 }
 
+pub fn error_line(to: PlayerId, text: Text) -> Outgoing {
+    system(to, Text::literal("").color(RED).append(text))
+}
+
 impl Ctx<'_> {
     pub fn arg(&self, name: &str) -> Option<&Arg> {
         self.args
@@ -108,27 +160,18 @@ impl Ctx<'_> {
     }
 
     pub fn success(&mut self, text: Text, broadcast: bool) {
-        let rules = self.world.game_rules();
-        let feedback = rules.bool(SEND_COMMAND_FEEDBACK);
-        let admins = broadcast && rules.bool(LOG_ADMIN_COMMANDS);
-        if feedback {
-            self.out.push(system(self.source, text.clone()));
-        }
-        if admins {
-            let name = self.server.name(self.source).unwrap_or("").to_owned();
-            let admin = Text::translate("chat.type.admin", vec![Text::literal(name), text.clone()])
-                .color(GRAY)
-                .italic();
-            let ops: Vec<PlayerId> = self
-                .server
-                .players
-                .iter()
-                .map(|player| player.id)
-                .filter(|&id| id != self.source && self.server.is_op(id))
-                .collect();
-            self.out
-                .extend(ops.into_iter().map(|id| system(id, admin.clone())));
-        }
+        let out = self
+            .server
+            .feedback(self.source, text, broadcast, self.world.game_rules());
+        self.out.extend(out);
+    }
+
+    pub fn pose(&self) -> Pose {
+        self.world.pose(self.source).unwrap_or(Pose::ORIGIN)
+    }
+
+    pub fn display_name(&self, player: PlayerId) -> Text {
+        Text::literal(self.server.name(player).unwrap_or(""))
     }
 
     pub fn targets(&mut self, name: &str) -> Result<Vec<PlayerId>, CommandError> {
@@ -266,6 +309,41 @@ impl CommandServer {
         }
     }
 
+    pub fn registries(&self) -> &CommandRegistries {
+        &self.registries
+    }
+
+    pub fn registries_mut(&mut self) -> &mut CommandRegistries {
+        &mut self.registries
+    }
+
+    pub fn feedback(
+        &self,
+        source: PlayerId,
+        text: Text,
+        broadcast: bool,
+        rules: &GameRules,
+    ) -> Vec<Outgoing> {
+        let mut out = Vec::new();
+        if rules.bool(SEND_COMMAND_FEEDBACK) {
+            out.push(system(source, text.clone()));
+        }
+        if broadcast && rules.bool(LOG_ADMIN_COMMANDS) {
+            let name = self.name(source).unwrap_or("").to_owned();
+            let admin = Text::translate("chat.type.admin", vec![Text::literal(name), text])
+                .color(GRAY)
+                .italic();
+            out.extend(
+                self.players
+                    .iter()
+                    .map(|player| player.id)
+                    .filter(|&id| id != source && self.is_op(id))
+                    .map(|id| system(id, admin.clone())),
+            );
+        }
+        out
+    }
+
     pub fn take_warnings(&mut self) -> Vec<String> {
         std::mem::take(&mut self.warnings)
     }
@@ -342,7 +420,7 @@ impl CommandServer {
 fn report(to: PlayerId, error: CommandError, input: &str) -> Vec<Outgoing> {
     match error.cursor {
         Some(cursor) => failure(to, error.text, input, cursor),
-        None => vec![system(to, Text::literal("").color(RED).append(error.text))],
+        None => vec![error_line(to, error.text)],
     }
 }
 
@@ -391,6 +469,12 @@ pub(crate) mod tests {
         pub(crate) killed: Vec<PlayerId>,
         pub(crate) modes: Vec<(PlayerId, GameMode)>,
         pub(crate) mode_changes: Vec<(PlayerId, GameMode, GameMode)>,
+        pub(crate) poses: Vec<(PlayerId, Pose)>,
+        pub(crate) given: Vec<(PlayerId, ItemArg, u32)>,
+        pub(crate) teleported: Vec<(PlayerId, [f64; 3])>,
+        pub(crate) effects: Vec<(PlayerId, String, Option<u32>, u8)>,
+        pub(crate) cleared: Vec<(PlayerId, Option<String>)>,
+        pub(crate) summoned: Vec<(String, [f64; 3], Option<String>)>,
     }
 
     impl CommandWorld for FakeWorld {
@@ -449,6 +533,72 @@ pub(crate) mod tests {
             self.mode_changes.push((player, old, mode));
             true
         }
+
+        fn pose(&self, player: PlayerId) -> Option<Pose> {
+            self.poses
+                .iter()
+                .rev()
+                .find(|(id, _)| *id == player)
+                .map(|(_, pose)| *pose)
+        }
+
+        fn max_stack(&self, item: &str) -> u32 {
+            if item.ends_with("_sword") { 1 } else { 64 }
+        }
+
+        fn give(&mut self, player: PlayerId, item: &ItemArg, count: u32) -> bool {
+            self.given.push((player, item.clone(), count));
+            true
+        }
+
+        fn teleport(&mut self, player: PlayerId, position: [f64; 3]) -> bool {
+            self.teleported.push((player, position));
+            let pose = Pose {
+                feet: position,
+                ..self.pose(player).unwrap_or(Pose::ORIGIN)
+            };
+            self.poses.push((player, pose));
+            true
+        }
+
+        fn effect_give(
+            &mut self,
+            player: PlayerId,
+            effect: &str,
+            ticks: Option<u32>,
+            amplifier: u8,
+        ) -> bool {
+            if effect == "minecraft:speed" {
+                return false;
+            }
+            self.effects
+                .push((player, effect.to_owned(), ticks, amplifier));
+            true
+        }
+
+        fn effect_clear(&mut self, player: PlayerId, effect: Option<&str>) -> bool {
+            let before = self.effects.len();
+            self.effects.retain(|(id, kind, _, _)| {
+                *id != player || effect.is_some_and(|effect| effect != kind)
+            });
+            self.cleared.push((player, effect.map(str::to_owned)));
+            self.effects.len() < before
+        }
+
+        fn summon(
+            &mut self,
+            _source: PlayerId,
+            kind: &str,
+            position: [f64; 3],
+            nbt: Option<&str>,
+        ) -> Result<(), Text> {
+            if nbt == Some("{bad}") {
+                return Err(Text::translate("argument.nbt.expected.value", Vec::new()));
+            }
+            self.summoned
+                .push((kind.to_owned(), position, nbt.map(str::to_owned)));
+            Ok(())
+        }
     }
 
     pub(crate) fn lang(key: &str) -> Option<String> {
@@ -502,6 +652,32 @@ pub(crate) mod tests {
             "gameMode.creative" => "Creative Mode",
             "gameMode.adventure" => "Adventure Mode",
             "gameMode.spectator" => "Spectator Mode",
+            "commands.give.success.single" => "Gave %s %s to %s",
+            "commands.give.success.multiple" => "Gave %s %s to %s players",
+            "commands.give.failed.toomanyitems" => "Can't give more than %s of %s",
+            "argument.item.id.invalid" => "Unknown item '%s'",
+            "arguments.item.component.malformed" => "Malformed '%s' component: '%s'",
+            "item.minecraft.diamond_sword" => "Diamond Sword",
+            "block.minecraft.stone" => "Stone",
+            "commands.teleport.success.location.single" => "Teleported %s to %s, %s, %s",
+            "commands.teleport.success.location.multiple" => "Teleported %s entities to %s, %s, %s",
+            "commands.teleport.success.entity.single" => "Teleported %s to %s",
+            "commands.teleport.invalidPosition" => "Invalid position for teleport",
+            "commands.effect.give.success.single" => "Applied effect %s to %s",
+            "commands.effect.give.failed" => {
+                "Unable to apply this effect (target is either immune to effects, or has something stronger)"
+            }
+            "commands.effect.clear.everything.success.single" => "Removed every effect from %s",
+            "commands.effect.clear.everything.failed" => "Target has no effects to remove",
+            "commands.effect.clear.specific.success.single" => "Removed effect %s from %s",
+            "commands.effect.clear.specific.failed" => "Target doesn't have the requested effect",
+            "argument.resource.not_found" => "Can't find element '%s' of type '%s'",
+            "effect.minecraft.regeneration" => "Regeneration",
+            "effect.minecraft.speed" => "Speed",
+            "commands.summon.failed" => "Unable to summon entity",
+            "commands.summon.invalidPosition" => "Invalid position for summon",
+            "argument.nbt.expected.value" => "Expected value",
+            "argument.pos3d.incomplete" => "Incomplete (expected 3 coordinates)",
             _ => return None,
         };
         Some(text.to_owned())

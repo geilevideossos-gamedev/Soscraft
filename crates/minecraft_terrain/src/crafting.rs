@@ -431,19 +431,23 @@ pub fn give_kit(inventory: &mut Inventory, spec: &str) -> usize {
             };
             let size = count.min(max);
             count -= size;
-            let mut stack = inventory.recipes.stack(id, size as u8);
-            if !enchantments.is_empty() {
-                let mut components = serde_json::Map::new();
-                for (enchantment, level) in &enchantments {
-                    minecraftoss_entities::enchant::add_enchantment(id, &mut components, enchantment, *level);
-                }
-                stack.components = Some(serde_json::Value::Object(components));
-            }
-            inventory.slots[slot] = Some(stack);
+            inventory.slots[slot] = Some(kit_stack(&inventory.recipes, id, size as u8, &enchantments));
             given += 1;
         }
     }
     given
+}
+
+pub fn kit_stack(recipes: &RecipeBook, id: &str, size: u8, enchantments: &[(String, i32)]) -> ItemStack {
+    let mut stack = recipes.stack(id, size);
+    if !enchantments.is_empty() {
+        let mut components = serde_json::Map::new();
+        for (enchantment, level) in enchantments {
+            minecraftoss_entities::enchant::add_enchantment(id, &mut components, enchantment, *level);
+        }
+        stack.components = Some(serde_json::Value::Object(components));
+    }
+    stack
 }
 
 pub fn kit_enchantments(entry: &str) -> (&str, Vec<(String, i32)>) {
@@ -571,6 +575,24 @@ mod tests {
         let pickaxe = inventory.slots[HOTBAR + 1].as_ref().unwrap();
         assert_eq!(pickaxe.id, "minecraft:diamond_pickaxe");
         assert_eq!(pickaxe.components, Some(json!({"minecraft:enchantments": {"minecraft:silk_touch": 1}})));
+    }
+
+    #[test]
+    fn kit_stack_matches_give_kit_stacks() {
+        let mut inventory = Inventory::default();
+        give_kit(&mut inventory, "ice*2,diamond_pickaxe+silk_touch+efficiency=5,enchanted_book+mending");
+        let built: Vec<ItemStack> = kit("ice*2,diamond_pickaxe+silk_touch+efficiency=5,enchanted_book+mending")
+            .into_iter()
+            .map(|(entry, count)| {
+                let (id, enchantments) = kit_enchantments(&entry);
+                kit_stack(&inventory.recipes, id, count as u8, &enchantments)
+            })
+            .collect();
+        let given: Vec<ItemStack> = inventory.slots[HOTBAR..HOTBAR + 3].iter().flatten().cloned().collect();
+        assert_eq!(given, built);
+        assert_eq!(built[2].components, Some(json!({"minecraft:stored_enchantments": {"minecraft:mending": 1}})));
+        let plain = kit_stack(&inventory.recipes, "minecraft:stone", 64, &[]);
+        assert_eq!((plain.count, plain.components), (64, None));
     }
 
     fn write_jar(path: &Path, recipes: &[(&str, Value)], tags: &[(&str, Value)]) {

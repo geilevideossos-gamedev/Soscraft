@@ -1192,6 +1192,7 @@ pub struct Output {
     pub picked: Vec<(i32, [f64; 3], String, i32, Option<String>)>,
     /// What each `/summon` did: the type it made, or why it failed.
     pub summoned: Vec<Result<String, String>>,
+    pub command_summons: Vec<Result<String, String>>,
     /// Positions where bone meal was used.
     pub bone_meal_used: Vec<BlockPos>,
     pub item_uses: Vec<bool>,
@@ -1458,7 +1459,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::SummonOrb { position, value } => sim.summon_orb(position, value),
                 Command::AwardExperience { position, amount } => sim.award_experience(position, amount),
                 Command::Summon { kind, position, nbt, y_rot } => {
-                    out.summoned.push(sim.summon(&kind, position, nbt.as_ref(), y_rot).map(|()| kind));
+                    out.command_summons.push(sim.summon(&kind, position, nbt.as_ref(), y_rot).map(|()| kind));
                 }
                 Command::HatchEgg { kind, position, y_rot } => {
                     out.summoned.push(sim.hatch_egg(&kind, position, y_rot).map(|()| kind));
@@ -3738,6 +3739,32 @@ mod tests {
         assert_eq!(answers[0].as_deref(), Ok("minecraft:cow"));
         assert!(answers[1].is_err());
         assert!(answers[2].is_err());
+    }
+
+    #[test]
+    fn command_summons_do_not_reach_the_egg_results() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:smooth_stone_slab").with("type", "bottom").with("waterlogged", "false"));
+        server.set_players(&[[8.5, 200.0, 11.5]], 2);
+        let position = [8.5, 200.5, 8.5];
+        let dormant = server.dormant.len();
+        let fresh = minecraftoss_core::snbt::parse_compound("{}").unwrap();
+        for kind in crate::server_mobs::SIMULATED_KINDS {
+            server.summon(kind, position, Some(&fresh), 0.0).unwrap_or_else(|error| panic!("{kind}: {error}"));
+            assert_eq!(server.dormant.len(), dormant, "{kind} is simulated");
+        }
+        let mut handle = ServerHandle::spawn(server);
+        handle.summon("minecraft:cow".to_owned(), position, None);
+        handle.hatch_egg("minecraft:pig".to_owned(), position, 0.0);
+        handle.summon("minecraft:not_a_mob".to_owned(), position, None);
+        handle.wait_idle();
+        let outputs = handle.poll();
+        let eggs: Vec<_> = outputs.iter().flat_map(|out| out.summoned.clone()).collect();
+        let commands: Vec<_> = outputs.iter().flat_map(|out| out.command_summons.clone()).collect();
+        assert_eq!(eggs, vec![Ok("minecraft:pig".to_owned())]);
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].as_deref(), Ok("minecraft:cow"));
+        assert!(commands[1].is_err());
     }
 
     #[test]
