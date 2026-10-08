@@ -237,7 +237,7 @@ pub fn tick_session_view_kick(
 }
 
 pub fn sync_camera_from_presented(
-    skate: Res<frame::SkateMode>,
+    (skate, mc_camera): (Res<frame::SkateMode>, Option<Res<frame::McCamera>>),
     mut killcam: Local<super::killcam::KillcamCamera>,
     clock: Res<FrameClock>,
     presented: Res<PresentedSnapshot>,
@@ -335,6 +335,61 @@ pub fn sync_camera_from_presented(
             }
         }
         kick.horiz_fov_deg = horiz;
+        return;
+    }
+    if let Some(camera) = mc_camera.as_deref().filter(|camera| camera.detached) {
+        stamp_damage_feedback(
+            &mut kick,
+            &mut hurt,
+            ps.damage_event,
+            ps.damage_yaw,
+            ps.damage_pitch,
+            ps.damage_count,
+            ps.viewangles,
+            clock.time(),
+        );
+        stamp_and_land_origin_z(
+            &mut kick,
+            ps.gravity,
+            ps.origin,
+            ps.velocity,
+            ps.ground_entity_num,
+            clock.time(),
+        );
+        let offset = presented.view_offset();
+        let eye = [
+            ps.origin[0] + offset[0],
+            ps.origin[1] + offset[1],
+            ps.origin[2] + offset[2] + ps.view_height_current,
+        ];
+        let pose = crate::minecraft_camera::third_person_pose(
+            eye,
+            ps.viewangles,
+            camera.camera_type.is_mirrored(),
+            sim::voxel::camera_reach,
+        );
+        let pose = earthquake_pose(pose, &presented, clock.time());
+        kick.refdef_vieworg = pose.origin;
+        kick.refdef_view_angles = pose.angles;
+        let eye = transform_from_iw_view(pose);
+        for mut transform in &mut q {
+            transform.translation = eye.translation;
+            transform.rotation = eye.rotation;
+        }
+        if let Some(horiz) = apply_fpv_lens_fov(
+            &mut lenses,
+            settings.fov,
+            ps.pm_type,
+            ps.link_flags,
+            ps.e_flags,
+            0.0,
+            viewmodel,
+            weapons.as_ref().and_then(|w| w.0.facts_of(viewmodel)),
+            false,
+            actions.as_deref_mut(),
+        ) {
+            kick.horiz_fov_deg = horiz;
+        }
         return;
     }
     if presented_is_third_person(&presented, local.0, view.in_killcam()) {

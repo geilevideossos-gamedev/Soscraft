@@ -265,6 +265,38 @@ impl McActionInput {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum McCameraType {
+    #[default]
+    FirstPerson,
+    ThirdPersonBack,
+    ThirdPersonFront,
+}
+
+impl McCameraType {
+    pub const fn cycle(self) -> Self {
+        match self {
+            Self::FirstPerson => Self::ThirdPersonBack,
+            Self::ThirdPersonBack => Self::ThirdPersonFront,
+            Self::ThirdPersonFront => Self::FirstPerson,
+        }
+    }
+
+    pub const fn is_first_person(self) -> bool {
+        matches!(self, Self::FirstPerson)
+    }
+
+    pub const fn is_mirrored(self) -> bool {
+        matches!(self, Self::ThirdPersonFront)
+    }
+}
+
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct McCamera {
+    pub camera_type: McCameraType,
+    pub detached: bool,
+}
+
 /// The player's own MW2 body, drawn standing in the inventory's character
 /// box and looking towards the mouse.
 #[derive(Resource, Default, Clone)]
@@ -308,6 +340,30 @@ mod tests {
         }
         input.clear();
         assert_eq!(input, McActionInput::default());
+    }
+
+    #[test]
+    fn the_camera_cycles_first_back_front_like_vanilla() {
+        let first = McCameraType::default();
+        assert_eq!(first, McCameraType::FirstPerson);
+        assert_eq!(first.cycle(), McCameraType::ThirdPersonBack);
+        assert_eq!(first.cycle().cycle(), McCameraType::ThirdPersonFront);
+        assert_eq!(first.cycle().cycle().cycle(), first);
+        for camera in [
+            McCameraType::FirstPerson,
+            McCameraType::ThirdPersonBack,
+            McCameraType::ThirdPersonFront,
+        ] {
+            assert_eq!(
+                camera.is_first_person(),
+                camera == McCameraType::FirstPerson
+            );
+            assert_eq!(
+                camera.is_mirrored(),
+                camera == McCameraType::ThirdPersonFront
+            );
+        }
+        assert!(!McCamera::default().detached);
     }
 
     #[test]

@@ -403,7 +403,7 @@ fn fpv_occupy_submission(
 pub fn occupy_fpv_scene(
     skate: Res<frame::SkateMode>,
     puppet: Option<Res<frame::InventoryPuppet>>,
-    minecraft: Option<Res<frame::MinecraftUi>>,
+    (minecraft, mc_camera): (Option<Res<frame::MinecraftUi>>, Option<Res<frame::McCamera>>),
     mut submissions: MessageWriter<AnimDObjSceneSubmission>,
     presented: Res<PresentedSnapshot>,
     local: Res<LocalPresentClient>,
@@ -420,6 +420,7 @@ pub fn occupy_fpv_scene(
         || minecraft.as_ref().is_some_and(|ui| ui.active && ui.offhand_busy)
         || presented.viewweapon_player(local.0).is_none()
         || presented_is_third_person(&presented, local.0, view.in_killcam())
+        || mc_camera.as_ref().is_some_and(|c| c.detached)
     {
         return;
     }
@@ -513,21 +514,23 @@ pub fn tick_fpv_viewmodel(
     mut pending_notes: ResMut<PendingFpvNotetracks>,
     mut bolts: ResMut<FpvBoltTargets>,
     kick: Option<Res<SessionViewKick>>,
-    view: Res<ViewSubject>,
+    (view, mc_camera): (Res<ViewSubject>, Option<Res<frame::McCamera>>),
 ) {
+    let third_person = presented_is_third_person(&presented, local.0, view.in_killcam())
+        || mc_camera.as_ref().is_some_and(|c| c.detached);
     let table = prepared.table().map(|table| &**table);
     pending_notes.weapon = 0;
     pending_notes.names.clear();
     bolts.clear();
     *product = FpvPoseProduct::default();
-    if let Some(ps) = presented.viewweapon_player(local.0) {
-        if !presented_is_third_person(&presented, local.0, view.in_killcam()) {
-            product.drawgun = viewweapon_drawgun_value(
-                ps,
-                table,
-                kick.as_ref().map(|k| k.b_position_to_ads).unwrap_or(true),
-            );
-        }
+    if let Some(ps) = presented.viewweapon_player(local.0)
+        && !third_person
+    {
+        product.drawgun = viewweapon_drawgun_value(
+            ps,
+            table,
+            kick.as_ref().map(|k| k.b_position_to_ads).unwrap_or(true),
+        );
     }
     let Some(session) = session_vm.0.as_mut() else {
         product.kind = FpvPoseKind::Hide;
@@ -554,7 +557,7 @@ pub fn tick_fpv_viewmodel(
         product.kind = FpvPoseKind::Hide;
         return;
     }
-    if presented_is_third_person(&presented, local.0, view.in_killcam()) {
+    if third_person {
         product.kind = FpvPoseKind::Hide;
         return;
     }
@@ -917,6 +920,7 @@ pub fn apply_fpv_placement(
     view: Res<ViewSubject>,
     mut gfx_scene: ResMut<HostGfxScene>,
     minecraft: Option<Res<frame::MinecraftUi>>,
+    mc_camera: Option<Res<frame::McCamera>>,
 ) {
     *aim = ViewweaponAim::default();
     let Ok(mut transform) = roots.single_mut() else {
@@ -925,7 +929,9 @@ pub fn apply_fpv_placement(
     let Some(ps) = presented.player(local.0) else {
         return;
     };
-    if presented_is_third_person(&presented, local.0, view.in_killcam()) {
+    if presented_is_third_person(&presented, local.0, view.in_killcam())
+        || mc_camera.as_ref().is_some_and(|c| c.detached)
+    {
         return;
     }
     let Some(table) = prepared.table() else {

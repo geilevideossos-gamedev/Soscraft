@@ -167,7 +167,7 @@ fn begin_remote_body_tess() {}
 
 fn occupy_remote_scene_ents(
     skate: Res<frame::SkateMode>,
-    puppet: Option<Res<frame::InventoryPuppet>>,
+    (puppet, mc_camera): (Option<Res<frame::InventoryPuppet>>, Option<Res<frame::McCamera>>),
     mut scene_skels: ResMut<AnimDObjSceneSkels>,
     mut scene_submissions: MessageWriter<AnimDObjSceneSubmission>,
     lod_skinned: Res<render_scene::LodRampSkinnedDvar>,
@@ -220,6 +220,7 @@ fn occupy_remote_scene_ents(
             .unwrap_or(0),
         rendering_third_person: (skate.active && !skate.bones.is_empty())
             || puppet.as_ref().is_some_and(|p| p.active)
+            || mc_camera.as_ref().is_some_and(|c| c.detached)
             || crate::occupancy::third_person::presented_is_third_person(
                 &presented, local.0, in_killcam,
             ),
@@ -308,7 +309,7 @@ fn occupy_remote_scene_ents(
 
 fn sync_remote_bodies(
     skate: Res<frame::SkateMode>,
-    puppet: Option<Res<frame::InventoryPuppet>>,
+    (puppet, mc_camera): (Option<Res<frame::InventoryPuppet>>, Option<Res<frame::McCamera>>),
     mut commands: Commands,
     local: Res<LocalPresentClient>,
     presented: Res<PresentedSnapshot>,
@@ -340,6 +341,7 @@ fn sync_remote_bodies(
             .unwrap_or(0),
         rendering_third_person: (skate.active && !skate.bones.is_empty())
             || puppet.as_ref().is_some_and(|p| p.active)
+            || mc_camera.as_ref().is_some_and(|c| c.detached)
             || crate::occupancy::third_person::presented_is_third_person(
                 &presented, local.0, in_killcam,
             ),
@@ -407,6 +409,16 @@ fn sync_remote_bodies(
             || runtime.pose_e_type == ET_PLAYER_CORPSE as u8;
         if skate.active && !skate.bones.is_empty() && client.0 == skate.client && !is_corpse {
             pose = Transform::from_matrix(skate.root);
+        }
+        if client == local.0
+            && !is_corpse
+            && mc_camera.as_ref().is_some_and(|c| c.detached)
+            && let Some(ps) = presented.player(local.0)
+        {
+            let offset = presented.view_offset();
+            pose.translation =
+                Vec3::from_array(std::array::from_fn(|k| ps.origin[k] + offset[k]));
+            pose.rotation = Quat::from_rotation_z(ps.viewangles[1].to_radians());
         }
         if let Some(puppet) = puppet.as_ref().filter(|p| p.active && client.0 == p.client) {
             pose = Transform::from_matrix(puppet.root);

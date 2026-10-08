@@ -38,6 +38,7 @@ pub use occupancy::{
 };
 pub use plugin::RenderAnimPlugin;
 
+mod minecraft_camera;
 mod minecraft_death;
 mod minecraft_entities;
 mod minecraft_gui;

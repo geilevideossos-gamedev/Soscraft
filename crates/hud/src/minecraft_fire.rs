@@ -89,6 +89,7 @@ pub(crate) fn update(
     ui: Option<Res<MinecraftUi>>,
     mut pass: ResMut<HudTessPass>,
     mut hud_images: ResMut<HudImages>,
+    camera: Option<Res<frame::McCamera>>,
 ) {
     pass.minecraft_fire = TessJob::Hide;
     let Some(ui) = ui else {
@@ -98,7 +99,7 @@ pub(crate) fn update(
     let (Some(vitals), Some((strip, frames))) = (burning, ui.fire_frames.as_ref()) else {
         return;
     };
-    if !ui.active || !surface.is_ready() {
+    if !ui.active || !surface.is_ready() || camera.is_some_and(|camera| camera.detached) {
         return;
     }
     hud_images.insert_runtime(MATERIAL, strip.clone());

@@ -808,6 +808,35 @@ pub(crate) fn trace_as(start: [f32; 3], end: [f32; 3], mins: [f32; 3], maxs: [f3
     trace_in(world, start, end, mins, maxs, mover)
 }
 
+pub fn camera_reach(eye: [f32; 3], back: [f32; 3], distance: f32) -> f32 {
+    let Ok(guard) = WORLD.read() else {
+        return distance;
+    };
+    match guard.as_ref() {
+        Some(world) => camera_reach_in(world, eye, back, distance),
+        None => distance,
+    }
+}
+
+fn camera_reach_in(world: &VoxelWorld, eye: [f32; 3], back: [f32; 3], distance: f32) -> f32 {
+    let mut reach = distance;
+    for corner in 0..8 {
+        let offset = [corner & 1, (corner >> 1) & 1, (corner >> 2) & 1].map(|bit| (bit * 2 - 1) as f32 * 0.1 * BLOCK);
+        let start: [f32; 3] = std::array::from_fn(|k| eye[k] + offset[k]);
+        let end: [f32; 3] = std::array::from_fn(|k| start[k] + back[k] * reach);
+        let hit = trace_in(world, start, end, [0.0; 3], [0.0; 3], None);
+        if hit.fraction >= 1.0 {
+            continue;
+        }
+        let at: [f32; 3] = std::array::from_fn(|k| start[k] + (end[k] - start[k]) * hit.fraction);
+        let dist = (0..3).map(|k| (at[k] - eye[k]) * (at[k] - eye[k])).sum::<f32>().sqrt();
+        if dist < reach {
+            reach = dist;
+        }
+    }
+    reach
+}
+
 pub(crate) fn ground_within(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], drop: f32, mover: Option<Mover>) -> bool {
     WORLD.read().ok().is_some_and(|guard| guard.as_ref().is_some_and(|world| ground_in(world, origin, mins, maxs, drop, mover)))
 }
@@ -1803,5 +1832,50 @@ mod tests {
         push_team_switch(client);
         assert_eq!(take_team_switches().into_iter().filter(|&c| c == client).count(), 1);
         assert!(!take_team_switches().contains(&client));
+    }
+
+    fn wall(x: i32) -> VoxelWorld {
+        let mut blocks = Vec::new();
+        for y in 0..12 {
+            for z in 0..16 {
+                blocks.push(([x, y, z], 1));
+            }
+        }
+        world(&blocks)
+    }
+
+    const BACK_X: [f32; 3] = [-1.0, 0.0, 0.0];
+
+    #[test]
+    fn the_camera_keeps_its_full_distance_in_the_open() {
+        let w = world(&[]);
+        let eye = to_map([0.0; 3], [8.5, 5.5, 8.5]);
+        assert_eq!(camera_reach_in(&w, eye, BACK_X, 4.0 * BLOCK), 4.0 * BLOCK);
+    }
+
+    #[test]
+    fn the_camera_stops_at_a_wall_behind_the_eye() {
+        let w = wall(5);
+        let eye = to_map([0.0; 3], [8.5, 5.5, 8.5]);
+        let reach = camera_reach_in(&w, eye, BACK_X, 4.0 * BLOCK);
+        assert!((reach - 2.5 * BLOCK).abs() < 0.2 * BLOCK, "{reach}");
+    }
+
+    #[test]
+    fn the_camera_never_goes_through_a_wall_right_behind_the_eye() {
+        let w = wall(5);
+        let eye = to_map([0.0; 3], [6.05, 5.5, 8.5]);
+        let reach = camera_reach_in(&w, eye, BACK_X, 4.0 * BLOCK);
+        assert!(reach > 0.14 * BLOCK && reach < 0.18 * BLOCK, "{reach}");
+    }
+
+    #[test]
+    fn the_corner_rays_catch_a_block_the_centre_ray_misses() {
+        let w = world(&[([6, 5, 9], 1)]);
+        let eye = to_map([0.0; 3], [8.5, 5.5, 8.95]);
+        let end: [f32; 3] = std::array::from_fn(|k| eye[k] + BACK_X[k] * 4.0 * BLOCK);
+        assert_eq!(trace_in(&w, eye, end, [0.0; 3], [0.0; 3], None).fraction, 1.0);
+        let reach = camera_reach_in(&w, eye, BACK_X, 4.0 * BLOCK);
+        assert!((reach - 1.5 * BLOCK).abs() < 0.1 * BLOCK, "{reach}");
     }
 }

@@ -223,6 +223,7 @@ pub(crate) fn place_inventory_puppet(
 }
 
 pub(crate) fn register(app: &mut App) {
+    crate::minecraft_camera::register(app);
     app.add_systems(
         Update,
         place_inventory_puppet
@@ -387,6 +388,7 @@ fn update(
     ),
     (hud_input, settings): (Option<Res<frame::HudInputView>>, Option<Res<frame::GameSettings>>),
     real_time: Res<Time<Real>>,
+    mc_camera: Option<Res<frame::McCamera>>,
 ) {
     let pad = active_pad.and_then(|active| active.0).and_then(|entity| gamepads.get(entity).ok());
     for _ in torn_down.read() {
@@ -1313,7 +1315,8 @@ fn update(
     let forward = glam::Vec3::new(map_forward[0], map_forward[2], -map_forward[1]);
     // Culled from the camera that draws: the player's eye, or while
     // skating the Skate camera (a frame behind, so with room to spare).
-    let skate_camera = cameras.iter().next().filter(|_| skate.active).map(|t| {
+    let mc_detached = mc_camera.as_ref().is_some_and(|c| c.detached);
+    let skate_camera = cameras.iter().next().filter(|_| skate.active || mc_detached).map(|t| {
         let at = sim::voxel::to_block(origin, t.translation.to_array());
         let ahead = t.rotation * Vec3::NEG_Z;
         (
@@ -1708,7 +1711,7 @@ fn update(
         ui.hand_swing = if hand.swing_offhand { 0.0 } else { swing };
         let main_stack = entities.inventory.slots[entities.selected].clone().filter(|_| ui.holding_item);
         let offhand_stack = offhand_stack.filter(|_| ui.holding_item || ui.offhand_busy);
-        if !puppet.active && (main_stack.is_some() || offhand_stack.is_some()) {
+        if !puppet.active && !mc_detached && (main_stack.is_some() || offhand_stack.is_some()) {
             let eye_light_at = glam::Vec3::new(eye[0] as f32, eye[1] as f32, eye[2] as f32);
             let mut posed = Vec::new();
             for (slot, stack, arm) in [(entities.selected, main_stack, 1.0), (crate::minecraft_offhand::OFFHAND, offhand_stack, -1.0)] {
