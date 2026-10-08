@@ -354,6 +354,7 @@ fn publish_client_action_input(
     let script_menu = script_menus.is_some_and(|menus| menus.captures_input());
     let minecraft_map = minecraft.as_ref().is_some_and(|ui| ui.active);
     let minecraft_item_in_hand = minecraft.as_ref().is_some_and(|ui| ui.active && ui.holding_item);
+    let chat_open = minecraft.as_ref().is_some_and(|ui| ui.active && ui.chat.open);
     let inventory_open = minecraft.is_some_and(|ui| ui.active && ui.inventory_open);
     skate.input_blocked = console.open || script_menu;
     // J, or clicking both sticks in together, toggles skating.
@@ -365,6 +366,7 @@ fn publish_client_action_input(
     });
     if !skate.input_blocked
         && !inventory_open
+        && !chat_open
         && (keys.just_pressed(KeyCode::KeyJ) || sticks_clicked)
     {
         skate.toggle_requested = true;
@@ -372,6 +374,7 @@ fn publish_client_action_input(
     let modal_captured = console.open
         || script_menu
         || inventory_open
+        || chat_open
         || keys.just_pressed(KeyCode::Escape)
         || pad.is_some_and(|pad| pad.just_pressed(bevy::input::gamepad::GamepadButton::Start));
     let captured = !devices.focused || modal_captured;
@@ -383,7 +386,7 @@ fn publish_client_action_input(
         .predicted_local()
         .or_else(|| presented.player(local.0))
         .is_some_and(|ps| ps.last_weapon_hand == 1);
-    let gated = console.open || script_menu || !devices.focused;
+    let gated = console.open || script_menu || chat_open || !devices.focused;
     let (suppressed, presses) = crate::binds::minecraft_presses(
         &binds,
         crate::binds::MinecraftKeyState {
@@ -621,7 +624,7 @@ fn sync_cursor_grab(
     returned |= entered.read().count() > 0;
 
     let menu_open = script_menus.is_some_and(|m| m.captures_input())
-        || minecraft.is_some_and(|ui| ui.active && ui.inventory_open);
+        || minecraft.is_some_and(|ui| ui.active && (ui.inventory_open || ui.chat.open));
     let in_game = screen
         .as_ref()
         .is_some_and(|s| matches!(**s, AppScreen::InGame));
@@ -1201,9 +1204,11 @@ fn handle_console_input(
     mut focus: ResMut<InputFocus>,
     prompt: Option<Res<ConsolePrompt>>,
     mut editables: Query<&mut EditableText, With<ConsoleInputText>>,
+    minecraft: Option<Res<frame::MinecraftUi>>,
 ) {
     let prompt_entity = prompt.map(|p| p.0);
-    if keys.just_pressed(KeyCode::Backquote) {
+    let chat_open = minecraft.is_some_and(|ui| ui.active && ui.chat.open);
+    if keys.just_pressed(KeyCode::Backquote) && !chat_open {
         state.open = !state.open;
         if let Some(entity) = prompt_entity
             && let Ok(mut editable) = editables.get_mut(entity)

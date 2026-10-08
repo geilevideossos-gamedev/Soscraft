@@ -86,6 +86,7 @@ struct Loaded {
     save: Option<crate::minecraft_save::WorldSave>,
     game_rules: minecraft_terrain::game_rules::GameRules,
     level_writer: Option<std::thread::JoinHandle<()>>,
+    chat: minecraft_commands::CommandServer,
 }
 
 /// The hand's swing and the timers of mining and placing by hand.
@@ -307,6 +308,7 @@ fn load() -> Result<Loaded, String> {
         save: opened.save,
         game_rules: opened.game_rules,
         level_writer: None,
+        chat: minecraft_commands::CommandServer::default(),
     })
 }
 
@@ -393,10 +395,12 @@ fn update(
     let pad = active_pad.and_then(|active| active.0).and_then(|entity| gamepads.get(entity).ok());
     for _ in torn_down.read() {
         stop(&mut runtime, &mut view);
+        ui.chat.clear_messages();
     }
     let now_ms = real_time.elapsed().as_millis() as u64;
     for match_ in installed.read() {
         stop(&mut runtime, &mut view);
+        ui.chat.clear_messages();
         if assets::minecraft_map::is_minecraft(&match_.zone) {
             let closing = std::mem::take(&mut runtime.closing);
             let (send, receive) = mpsc::channel();
@@ -425,6 +429,8 @@ fn update(
         runtime.loader = None;
         match result {
             Ok(mut world) => {
+                let host = settings.as_deref().map_or_else(|| "Player".to_owned(), |settings| settings.player_name.clone());
+                world.chat.join(crate::minecraft_chat::HOST, host);
                 let (x, y, z) = world.stream.player_spawn;
                 view.origin = [x, y, z];
                 view.atlas = Some(world.atlas.clone());
@@ -523,6 +529,13 @@ fn update(
         puppet.active = false;
         return;
     };
+    let delivered = crate::minecraft_chat::pump(&mut ui.chat, &mut world.chat);
+    if !delivered.is_empty() {
+        match inventory_ui.language() {
+            Some(language) => crate::minecraft_chat::show(&mut ui.chat, &delivered, language),
+            None => crate::minecraft_chat::show(&mut ui.chat, &delivered, &minecraft_terrain::item_icons::language(&world.packs).unwrap_or_else(|_| HashMap::new())),
+        }
+    }
     *animation_clock += time.delta_secs_f64();
     if *animation_clock >= TICK_SECONDS {
         *animation_clock %= TICK_SECONDS;
@@ -774,7 +787,7 @@ fn update(
             write_blocks(world, shapes, shape_ids, entities, writes);
         }
     }
-    let menu_captured = hud_input.as_deref().is_some_and(|input| input.console_open || input.script_menu_open);
+    let menu_captured = ui.chat.open || hud_input.as_deref().is_some_and(|input| input.console_open || input.script_menu_open);
     let use_held = buttons.pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, false);
     let offhand_key = alive && !holding && ui.offhand_key == Some(true);
     let use_live = !ui.inventory_open && !menu_captured && if hand.use_by_key { offhand_key } else { use_held && ui.holding_item };
@@ -1521,6 +1534,7 @@ fn update(
         ui.active = alive;
         if !alive {
             ui.inventory_open = false;
+            ui.chat.close();
         }
         if inventory_ui.table().is_some_and(|pos| {
             !minecraft_terrain::crafting::within_table_reach(eye, pos)

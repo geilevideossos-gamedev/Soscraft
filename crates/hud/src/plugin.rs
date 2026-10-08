@@ -120,6 +120,7 @@ impl Plugin for HudPlugin {
                             update_hud_elems,
                             update_targetmap,
                             crate::menus::update_script_menus,
+                            crate::minecraft_chat::update_chat,
                             crate::minecraft_fire::update,
                             crate::minecraft_inventory::update_minecraft_hud,
                             hud_stage_close::<7>,

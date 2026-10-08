@@ -3298,6 +3298,7 @@ dependencies = [
  "gamemode_iw4",
  "hud_iw4",
  "math_iw4",
+ "minecraft_commands",
  "movement_iw4",
  "net",
  "playerstate_iw4",
@@ -3900,6 +3901,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2d4139bb28d14ad1facf21d5eb8825051b326e172d216b39f6d31df53cc97862"
 dependencies = [
  "libmimalloc-sys",
+]
+
+[[package]]
+name = "minecraft_commands"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -5217,6 +5226,7 @@ dependencies = [
  "image",
  "lighting_iw4",
  "math_iw4",
+ "minecraft_commands",
  "minecraft_terrain",
  "minecraftoss-core",
  "minecraftoss-entities",

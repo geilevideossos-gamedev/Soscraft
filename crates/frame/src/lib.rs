@@ -40,3 +40,5 @@ pub mod minecraft_ui;
 pub use minecraft_ui::{InventoryPuppet, McAction, McActionInput, McCamera, McCameraType, McChoice, McClick, McOven, McScreen, McSlot, McStack, McVitals, MinecraftUi};
 pub mod minecraft_gui;
 pub use minecraft_gui::{McFont, McGlyph, McGui, McScaling, McSprite};
+pub mod minecraft_chat;
+pub use minecraft_chat::{McChat, McChatLine};

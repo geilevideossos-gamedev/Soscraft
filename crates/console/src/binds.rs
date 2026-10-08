@@ -542,6 +542,7 @@ pub(crate) fn minecraft_presses(
         let Some(action) = command_name(id).and_then(frame::McAction::from_command) else {
             continue;
         };
+        presses.bind(action);
         let use_wins = !state.screen_open
             && state.use_hint
             && matches!(binds.binding_name(button), Some("+activate" | "+usereload"));
@@ -831,7 +832,7 @@ mod minecraft_bind_tests {
         let binds = defaults();
         let (suppressed, presses) = minecraft_presses(&binds, state(false, false, true), |_| false);
         assert_eq!(suppressed.len(), 6);
-        assert_eq!(presses, McActionInput::default());
+        assert!(McAction::ALL.iter().all(|a| !presses.just_pressed(*a)));
         let q = BindButton::Key(KeyCode::KeyQ);
         let (_, presses) = press(&binds, state(false, false, false), q);
         assert!(presses.just_pressed(McAction::Drop));
@@ -839,5 +840,18 @@ mod minecraft_bind_tests {
             .iter()
             .filter(|a| **a != McAction::Drop)
             .all(|a| !presses.just_pressed(*a)));
+    }
+
+    #[test]
+    fn only_minecraft_actions_with_a_key_count_as_bound() {
+        let mut binds = defaults();
+        let (_, presses) = minecraft_presses(&binds, state(false, false, true), |_| false);
+        assert!(McAction::ALL.iter().all(|a| presses.is_bound(*a)));
+        binds.clear_command_on(id("mc_command"), false);
+        let (_, presses) = minecraft_presses(&binds, state(false, false, true), |_| false);
+        assert!(!presses.is_bound(McAction::Command));
+        assert!(presses.is_bound(McAction::Chat));
+        let (_, presses) = press(&binds, MinecraftKeyState::default(), E);
+        assert!(!presses.is_bound(McAction::Chat));
     }
 }

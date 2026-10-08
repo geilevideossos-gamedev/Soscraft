@@ -213,11 +213,11 @@ pub(crate) fn update_minecraft_hud(
     let open_before = ui.inventory_open;
     let typing = ui.inventory_open && ui.screen == McScreen::Anvil && ui.container.first().is_some_and(Option::is_some);
     let text: String = typed.read().filter(|event| event.state.is_pressed()).filter_map(|event| event.text.as_ref()).flat_map(|text| text.chars()).filter(|c| !c.is_control()).collect();
-    if !blocked && ((mc(McAction::Inventory) && !typing) || (ui.inventory_open && keys.just_pressed(KeyCode::Escape))) {
+    if !blocked && ((mc(McAction::Inventory) && !typing && !ui.chat.open) || (ui.inventory_open && keys.just_pressed(KeyCode::Escape))) {
         ui.inventory_open = !ui.inventory_open && !keys.just_pressed(KeyCode::Escape);
     } else if ui.inventory_open && (menus.captures_input() || pad_just(GamepadButton::East)) {
         ui.inventory_open = false;
-    } else if !ui.inventory_open && pad_just(GamepadButton::DPadUp) {
+    } else if !ui.inventory_open && !ui.chat.open && pad_just(GamepadButton::DPadUp) {
         ui.inventory_open = true;
     }
     if ui.inventory_open && !open_before {
@@ -252,7 +252,7 @@ pub(crate) fn update_minecraft_hud(
     }
     let dt = time.delta_secs();
 
-    if !ui.inventory_open {
+    if !ui.inventory_open && !ui.chat.open {
         if wheel_steps != 0 {
             ui.select = Some((ui.selected as i32 + wheel_steps).rem_euclid(9) as usize);
         }
@@ -304,6 +304,7 @@ pub(crate) fn update_minecraft_hud(
     let highlighted = highlighted.map(|stack| (stack.id.clone(), stack_name(stack, &ui, weapons, strings, &mut gaps)));
     input.highlight.advance(f64::from(dt), highlighted);
     crate::minecraft_hotbar::draw_hud(&mut painter, &ui, weapons, input.highlight.shown());
+    crate::minecraft_chat::draw(&mut painter, &ui.chat, now);
 
     if ui.inventory_open {
         let layout = crate::minecraft_screens::layout(ui.screen);

@@ -186,6 +186,7 @@ pub struct MinecraftUi {
     pub vitals: Option<McVitals>,
     pub fire_frames: Option<(Handle<Image>, u32)>,
     pub killed_by: Option<(u32, String)>,
+    pub chat: crate::McChat,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -249,6 +250,7 @@ impl McAction {
 #[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct McActionInput {
     pressed: u8,
+    bound: u8,
 }
 
 impl McActionInput {
@@ -260,8 +262,17 @@ impl McActionInput {
         self.pressed & (1 << action as u8) != 0
     }
 
+    pub fn bind(&mut self, action: McAction) {
+        self.bound |= 1 << action as u8;
+    }
+
+    pub fn is_bound(&self, action: McAction) -> bool {
+        self.bound & (1 << action as u8) != 0
+    }
+
     pub fn clear(&mut self) {
         self.pressed = 0;
+        self.bound = 0;
     }
 }
 
@@ -332,6 +343,9 @@ mod tests {
         assert!(McAction::ALL.iter().all(|a| !input.just_pressed(*a)));
         input.press(McAction::SwapHands);
         input.press(McAction::Perspective);
+        input.bind(McAction::Command);
+        assert!(input.is_bound(McAction::Command) && !input.is_bound(McAction::Chat));
+        assert!(!input.just_pressed(McAction::Command));
         for action in McAction::ALL {
             assert_eq!(
                 input.just_pressed(action),
