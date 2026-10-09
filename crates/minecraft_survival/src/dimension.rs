@@ -214,7 +214,9 @@ mod tests {
         assert!(!overworld.nether_cardinal_light);
         assert_eq!(overworld.bed_rule, BedRule::can_sleep_when_dark());
         assert_eq!(overworld.straw_bed_rule.can_set_spawn, BedRuleTest::Never);
-        assert!(overworld.straw_bed_rule.destroy_on_leave && !overworld.straw_bed_rule.destroy_on_use);
+        assert!(
+            overworld.straw_bed_rule.destroy_on_leave && !overworld.straw_bed_rule.destroy_on_use
+        );
         assert!(!overworld.respawn_anchor_works && !overworld.water_evaporates);
         assert!(!overworld.fast_lava && overworld.nether_portal_spawns_piglin);
 

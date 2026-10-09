@@ -776,3 +776,12 @@ Previous commit: ea8214c7
 - **Tests:** `world::tests::a_zombified_piglin_s_dropped_sword_no_longer_adds_experience` (400 player kills with seeded randoms: a kill that drops the sword gives 5, one that keeps it 6 to 8).
 - **Test steps:** none worth a screenshot; the sword drops on 8.5% of player kills, and the orb count is then a little lower.
 - **Kit:** none.
+
+### 33. Minecraft dimension rules pass rustfmt
+
+Previous commit: bbf1db34
+
+- **Changed:** `minecraft_survival/src/dimension.rs`, new in this track, failed `rustfmt --check` on one line of its overworld test (an `assert!` added by entry 25, 549e0168). It is wrapped as rustfmt wants; nothing else in the file changes. Every other new `.rs` file of the track passes.
+- **Tests:** none new.
+- **Test steps:** none; nothing changes in game.
+- **Kit:** none.
