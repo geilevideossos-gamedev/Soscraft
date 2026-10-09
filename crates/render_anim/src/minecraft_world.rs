@@ -83,7 +83,7 @@ struct Loaded {
     crack_texture: Arc<image::RgbaImage>,
     glint_texture: Option<Arc<image::RgbaImage>>,
     saved_day: Option<f64>,
-    save: Option<crate::minecraft_save::WorldSave>,
+    save: Option<minecraft_survival::save::WorldSave>,
     game_rules: minecraft_terrain::game_rules::GameRules,
     difficulty: minecraftoss_player::Difficulty,
     level_writer: Option<std::thread::JoinHandle<()>>,
@@ -255,11 +255,11 @@ pub(crate) fn register(app: &mut App) {
 
 fn load() -> Result<Loaded, String> {
     let root = assets::minecraft_map::root().ok_or_else(assets::minecraft_setup::status)?;
-    let opened = crate::minecraft_save::open_world(
-        &crate::minecraft_save::saves_dir(),
+    let opened = minecraft_survival::save::open_world(
+        &minecraft_survival::save::saves_dir(),
         std::env::var("IW4L_MINECRAFT_WORLD").ok().as_deref(),
         std::env::var("IW4L_MINECRAFT_SEED").ok().as_deref(),
-        crate::minecraft_save::random_seed(),
+        minecraft_survival::save::random_seed(),
     );
     for note in &opened.notes {
         diag::info!(World, "{note}");
@@ -277,7 +277,7 @@ fn load() -> Result<Loaded, String> {
         seed,
         VIEW_DISTANCE,
         Dimension::Overworld,
-        opened.save.as_ref().map(crate::minecraft_save::WorldSave::path),
+        opened.save.as_ref().map(minecraft_survival::save::WorldSave::path),
         opened.spawn,
     )
     .map_err(|e| e.to_string())?;
@@ -492,7 +492,7 @@ fn update(
                     }
                 }
                 runtime.autosave_ticks = 0;
-                let saved_mode = world.save.as_ref().map(crate::minecraft_save::WorldSave::host_mode);
+                let saved_mode = world.save.as_ref().map(minecraft_survival::save::WorldSave::host_mode);
                 if let Some((_, Some(warning))) = &saved_mode {
                     diag::warn!(World, "{warning}");
                 }
@@ -1512,7 +1512,7 @@ fn update(
         }
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
         *autosave_ticks += mob_ticks;
-        if *autosave_ticks >= crate::minecraft_save::AUTOSAVE_TICKS {
+        if *autosave_ticks >= minecraft_survival::save::AUTOSAVE_TICKS {
             *autosave_ticks = 0;
             autosave(world, day.ticks, *player_mode);
         }

@@ -50,3 +50,22 @@ IW4L_MINECRAFT_KIT=diamond_pickaxe+silk_touch=1,diamond_sword,shield,cooked_beef
 - **Kit:** any; the regression kit above works.
 - **Decisions:**
   - `serde_json` in `minecraft_survival` uses the workspace entry (`serde_json = "1"`, as `render_anim` pins it). `diag`, `minecraft_commands`, `minecraft_net` and `playerstate_iw4` use `.workspace = true`; `minecraft_terrain` and the `minecraftoss-*` crates are path dependencies as in `render_anim`.
+
+## A2. Minecraft world saving code moves to minecraft_survival
+
+A1 is commit `5a7a4e4`.
+
+- **What changed:**
+  - `git mv crates/render_anim/src/minecraft_save.rs crates/minecraft_survival/src/save.rs` (git reports `R`), with its 28 `pub(crate)` turned into `pub`. No other line of it changed.
+  - `minecraft_survival/src/lib.rs` is `pub mod save;`.
+  - `render_anim`: `mod minecraft_save;` is gone, and `crate::minecraft_save::` became `minecraft_survival::save::` in `minecraft_world.rs` (7 sites) and `minecraft_chat.rs` (1).
+- **Tests:** the 12 `save` tests moved with the file. `minecraft_survival` 12, `render_anim` 141 (was 153), total unchanged.
+- **Checks:** `check -p launcher --locked`, `test -p minecraft_survival --locked`, `test -p render_anim --locked`; the staged `lib.rs` passes `rustfmt --check --edition 2024`.
+- **Owner test** (saving and loading must work exactly as before):
+  1. Set `IW4L_MINECRAFT_WORLD=split` in the `.env` and load a Minecraft match. The log says "Minecraft world: created ..." (or "opened ..." if the folder exists) with the seed.
+  2. Place a few cobblestone and oak planks blocks, then type `/gamemode creative`.
+  3. Leave the match. The log says "Minecraft world saved".
+  4. Load the match again. The same seed and terrain, the placed blocks and creative mode are back.
+  5. Stay 5 minutes in the world. The log says "Minecraft autosave: N chunks queued".
+- **Kit:** `minecraft:cobblestone` x64 and `minecraft:oak_planks` x64 (both in the regression kit).
+- **Decisions:** none. The `save` tests keep their `render_anim-saves-` temp folder prefix, because the move changes no other line.

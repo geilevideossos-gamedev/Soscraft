@@ -10,26 +10,26 @@ use minecraft_terrain::level_storage::{
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_player::Difficulty;
 
-pub(crate) const DEFAULT_WORLD: &str = "world";
-pub(crate) const TEMPORARY_WORLD: &str = "temp";
-pub(crate) const AUTOSAVE_TICKS: u32 = 6000;
+pub const DEFAULT_WORLD: &str = "world";
+pub const TEMPORARY_WORLD: &str = "temp";
+pub const AUTOSAVE_TICKS: u32 = 6000;
 const OVERWORLD: &str = "minecraft:overworld";
 
-pub(crate) fn saves_dir() -> PathBuf {
+pub fn saves_dir() -> PathBuf {
     std::env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
         .join("iw4l-artifacts")
         .join("saves")
 }
 
-pub(crate) fn random_seed() -> i64 {
+pub fn random_seed() -> i64 {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
     (nanos as i64) ^ 0x5DEE_CE66_D1CE_4E5B
 }
 
-pub(crate) fn world_name(value: Option<&str>) -> Result<String, String> {
+pub fn world_name(value: Option<&str>) -> Result<String, String> {
     let name = value.map_or("", str::trim);
     if name.is_empty() {
         return Ok(DEFAULT_WORLD.to_owned());
@@ -46,11 +46,11 @@ pub(crate) fn world_name(value: Option<&str>) -> Result<String, String> {
     }
 }
 
-pub(crate) fn requested_seed(value: Option<&str>) -> Option<i64> {
+pub fn requested_seed(value: Option<&str>) -> Option<i64> {
     value.and_then(|seed| seed.trim().parse().ok())
 }
 
-pub(crate) fn choose_seed(
+pub fn choose_seed(
     stored: Option<i64>,
     requested: Option<i64>,
     random: i64,
@@ -70,7 +70,7 @@ pub(crate) fn choose_seed(
 }
 
 #[derive(Clone)]
-pub(crate) struct WorldSave {
+pub struct WorldSave {
     storage: Arc<LevelStorage>,
     level: LevelData,
     day_at_start: Option<f64>,
@@ -78,24 +78,24 @@ pub(crate) struct WorldSave {
 }
 
 impl WorldSave {
-    pub(crate) fn path(&self) -> &Path {
+    pub fn path(&self) -> &Path {
         self.storage.root()
     }
 
-    pub(crate) fn started(&mut self, day_ticks: f64) {
+    pub fn started(&mut self, day_ticks: f64) {
         self.day_at_start = Some(day_ticks);
     }
 
-    pub(crate) fn ops_path(&self) -> PathBuf {
+    pub fn ops_path(&self) -> PathBuf {
         self.path().join(minecraft_commands::permissions::OPS_FILE)
     }
 
-    pub(crate) fn set_host(&mut self, uuid: &str) {
+    pub fn set_host(&mut self, uuid: &str) {
         self.host = Some(uuid.to_owned());
         self.level.singleplayer_uuid = Some(uuid.to_owned());
     }
 
-    pub(crate) fn host_mode(&self) -> (PlayerMode, Option<String>) {
+    pub fn host_mode(&self) -> (PlayerMode, Option<String>) {
         let fresh = PlayerMode::new(minecraft_terrain::game_mode::from_id(self.level.game_type).unwrap_or(GameMode::Survival));
         let Some(uuid) = &self.host else {
             return (fresh, None);
@@ -106,7 +106,7 @@ impl WorldSave {
         }
     }
 
-    pub(crate) fn write_host(&self, mode: &PlayerMode) -> Result<(), String> {
+    pub fn write_host(&self, mode: &PlayerMode) -> Result<(), String> {
         let Some(uuid) = &self.host else {
             return Ok(());
         };
@@ -123,13 +123,13 @@ impl WorldSave {
         self.storage.write_player_data(uuid, &data)
     }
 
-    pub(crate) fn shift_day(&mut self, by: f64) {
+    pub fn shift_day(&mut self, by: f64) {
         if let Some(start) = &mut self.day_at_start {
             *start += by;
         }
     }
 
-    pub(crate) fn game_time(&self, day_ticks: Option<f64>) -> i64 {
+    pub fn game_time(&self, day_ticks: Option<f64>) -> i64 {
         let elapsed = match (day_ticks, self.day_at_start) {
             (Some(now), Some(start)) => (now - start).max(0.0) as i64,
             _ => 0,
@@ -137,7 +137,7 @@ impl WorldSave {
         self.level.game_time + elapsed
     }
 
-    pub(crate) fn write(
+    pub fn write(
         &self,
         spawn: (i32, i32, i32),
         day_ticks: Option<f64>,
@@ -170,15 +170,15 @@ impl WorldSave {
     }
 }
 
-pub(crate) struct OpenedWorld {
-    pub(crate) seed: i64,
-    pub(crate) save: Option<WorldSave>,
-    pub(crate) spawn: Option<(i32, i32, i32)>,
-    pub(crate) day_ticks: Option<f64>,
-    pub(crate) game_rules: GameRules,
-    pub(crate) difficulty: Difficulty,
-    pub(crate) notes: Vec<String>,
-    pub(crate) warnings: Vec<String>,
+pub struct OpenedWorld {
+    pub seed: i64,
+    pub save: Option<WorldSave>,
+    pub spawn: Option<(i32, i32, i32)>,
+    pub day_ticks: Option<f64>,
+    pub game_rules: GameRules,
+    pub difficulty: Difficulty,
+    pub notes: Vec<String>,
+    pub warnings: Vec<String>,
 }
 
 impl OpenedWorld {
@@ -198,7 +198,7 @@ impl OpenedWorld {
     }
 }
 
-pub(crate) fn open_world(
+pub fn open_world(
     saves: &Path,
     name: Option<&str>,
     seed: Option<&str>,

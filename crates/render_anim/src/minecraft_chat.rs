@@ -16,7 +16,7 @@ pub(crate) struct Host<'a> {
     pub(crate) rules: &'a mut GameRules,
     pub(crate) difficulty: &'a mut Difficulty,
     pub(crate) day: &'a mut DayCycle,
-    pub(crate) save: Option<&'a mut crate::minecraft_save::WorldSave>,
+    pub(crate) save: Option<&'a mut minecraft_survival::save::WorldSave>,
     pub(crate) survival: &'a mut crate::minecraft_survival::Survival,
     pub(crate) entities: Option<&'a mut crate::minecraft_entities::Entities>,
     pub(crate) player_mode: &'a mut PlayerMode,
