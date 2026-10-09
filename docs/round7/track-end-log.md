@@ -582,3 +582,18 @@ Previous commit: 4bd081e8
 ```
 IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:cobweb*16,minecraft:cobblestone*64,minecraft:golden_apple*8
 ```
+
+## Final check of the second run
+
+### 20. The track END log sums up its second final check
+
+Previous commit: c36cf09f
+
+- **Clippy:** `clippy -p minecraft_survival -p minecraft_terrain -p movement_iw4 -p net -p playerstate_iw4 -p render_anim -p sim --locked --all-targets -- -A clippy::approx_constant` exits 0. No warning falls on a line the track added since d49f75d2 (every reported location checked against `git diff -U0 d49f75d2..HEAD`). The ones in touched files (`minecraft_terrain` `server.rs` 337, 1502 and 1715, `sim` `frame.rs` 81, 626, 724 and 932, `sim` `voxel.rs` 47, 325 and 381) are on older lines, and the new files have none.
+- **Tests** (`test -p <crate> --locked`, `MINECRAFTOSS_ROOT` set by `cargo-slot.ps1`): `minecraft_survival` 281 and the vanilla world test, `minecraft_terrain` 670 (4 ignored), `movement_iw4` 49, `sim` 72, `render_anim` 70 pass; `playerstate_iw4` and `net` have no unit tests of their own and build. No fixes were needed.
+- **Test steps:** none new. The owner's test of the second run is, in order: entry 14 in the new world `eyetest`; entry 15 in `kittest` (optional); entries 16, 17 and 19 in `elytratest`. The first run's steps are listed in entry 13. Each is a new world, and the kit goes to a player only in a world where they have no inventory yet, so the one kit line below serves every world of the whole track.
+- **Kit for the whole track** (21 stacks; the 32 eyes fill two stacks of 16 and the 128 rockets two of 64):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ender_eye*32,minecraft:end_portal_frame*24,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_shovel+efficiency=5,minecraft:cobblestone*64,minecraft:oak_sapling*4,minecraft:bone_meal*32,minecraft:dirt*8,minecraft:elytra,minecraft:elytra+damage=420,minecraft:elytra+unbreaking=3,minecraft:elytra+damage=430,minecraft:diamond_sword+sharpness=5+damage=12,minecraft:diamond_chestplate,minecraft:water_bucket,minecraft:ladder*16,minecraft:golden_apple*8,minecraft:firework_rocket*128,minecraft:cobweb*16
+```
