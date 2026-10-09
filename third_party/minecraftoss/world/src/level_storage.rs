@@ -177,18 +177,27 @@ impl LevelStorage {
     }
 
     pub fn read_saved(&self, id: &str) -> Result<Option<Tag>, String> {
-        let Some(root) = read_nbt_or_old(&self.saved_data_path(id))? else {
-            return Ok(None);
-        };
-        Ok(root.get("data").cloned())
+        read_saved_at(&self.saved_data_path(id))
     }
 
     pub fn write_saved(&self, id: &str, data: Tag) -> Result<(), String> {
-        let root = compound(vec![
-            ("data", data),
-            ("DataVersion", Tag::Int(DATA_VERSION)),
-        ]);
-        safe_replace(&self.saved_data_path(id), &nbt::write_gzip(&root, ""))
+        write_saved_at(&self.saved_data_path(id), data)
+    }
+
+    pub fn dimension_data_path(&self, dimension: &str, id: &str) -> PathBuf {
+        let (namespace, path) = split_id(id);
+        self.dimension_path(dimension)
+            .join(DATA_FOLDER)
+            .join(namespace)
+            .join(format!("{path}.dat"))
+    }
+
+    pub fn read_saved_in(&self, dimension: &str, id: &str) -> Result<Option<Tag>, String> {
+        read_saved_at(&self.dimension_data_path(dimension, id))
+    }
+
+    pub fn write_saved_in(&self, dimension: &str, id: &str, data: Tag) -> Result<(), String> {
+        write_saved_at(&self.dimension_data_path(dimension, id), data)
     }
 
     pub fn read_world_settings(&self) -> Result<Option<WorldSettings>, String> {
@@ -544,6 +553,21 @@ fn read_nbt_or_old(path: &Path) -> Result<Option<Tag>, String> {
     }
 }
 
+fn read_saved_at(path: &Path) -> Result<Option<Tag>, String> {
+    let Some(root) = read_nbt_or_old(path)? else {
+        return Ok(None);
+    };
+    Ok(root.get("data").cloned())
+}
+
+fn write_saved_at(path: &Path, data: Tag) -> Result<(), String> {
+    let root = compound(vec![
+        ("data", data),
+        ("DataVersion", Tag::Int(DATA_VERSION)),
+    ]);
+    safe_replace(path, &nbt::write_gzip(&root, ""))
+}
+
 fn compound(entries: Vec<(&str, Tag)>) -> Tag {
     Tag::Compound(
         entries
@@ -894,6 +918,67 @@ mod tests {
             .write_saved(WEATHER, compound(vec![("raining", Tag::Byte(1))]))
             .unwrap();
         assert!(storage.read_weather().is_err());
+    }
+
+    #[test]
+    fn a_dimension_keeps_its_own_saved_data_under_its_data_folder() {
+        let dir = test_dir("dimension-data");
+        let storage = LevelStorage::open(&dir.0).unwrap();
+        let fight = compound(vec![("DragonKilled", Tag::Byte(1))]);
+        assert_eq!(
+            storage
+                .read_saved_in("minecraft:the_end", "ender_dragon_fight")
+                .unwrap(),
+            None
+        );
+        storage
+            .write_saved_in("minecraft:the_end", "ender_dragon_fight", fight.clone())
+            .unwrap();
+        let path = dir
+            .0
+            .join("dimensions")
+            .join("minecraft")
+            .join("the_end")
+            .join("data")
+            .join("minecraft")
+            .join("ender_dragon_fight.dat");
+        assert_eq!(
+            storage.dimension_data_path("minecraft:the_end", "ender_dragon_fight"),
+            path
+        );
+        let root = nbt::read(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(root.get("DataVersion"), Some(&Tag::Int(DATA_VERSION)));
+        assert_eq!(root.get("data"), Some(&fight));
+        assert_eq!(
+            storage
+                .read_saved_in("minecraft:the_end", "ender_dragon_fight")
+                .unwrap(),
+            Some(fight.clone())
+        );
+        assert_eq!(
+            storage
+                .read_saved_in("minecraft:the_nether", "ender_dragon_fight")
+                .unwrap(),
+            None
+        );
+        assert_eq!(storage.read_saved("ender_dragon_fight").unwrap(), None);
+        std::fs::write(&path, b"broken").unwrap();
+        assert!(storage
+            .read_saved_in("minecraft:the_end", "ender_dragon_fight")
+            .is_err());
+        storage
+            .write_saved_in("minecraft:the_end", "ender_dragon_fight", fight.clone())
+            .unwrap();
+        storage
+            .write_saved_in("minecraft:the_end", "ender_dragon_fight", Tag::Int(0))
+            .unwrap();
+        std::fs::write(&path, b"broken").unwrap();
+        assert_eq!(
+            storage
+                .read_saved_in("minecraft:the_end", "ender_dragon_fight")
+                .unwrap(),
+            Some(fight)
+        );
     }
 
     #[test]

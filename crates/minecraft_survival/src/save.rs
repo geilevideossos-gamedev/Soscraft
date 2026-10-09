@@ -5,9 +5,11 @@ use std::sync::Arc;
 use minecraft_terrain::day_cycle::DayCycle;
 use minecraft_terrain::game_mode::{GameMode, PlayerMode};
 use minecraft_terrain::game_rules::GameRules;
+use minecraft_net::Dimension;
 use minecraft_terrain::level_storage::{
     ClockState, LevelData, LevelStorage, RespawnData, WeatherData, WorldSettings,
 };
+use minecraftoss_core::nbt::Tag;
 use minecraftoss_player::Difficulty;
 use minecraftoss_player::crafting::RecipeBook;
 
@@ -123,20 +125,31 @@ impl WorldSave {
         self.level.game_time + elapsed
     }
 
+    pub fn create_dimension(&self, dimension: Dimension) -> Result<(), String> {
+        self.storage
+            .create_dimension(dimension.dimension_type())
+            .map(|_| ())
+    }
+
+    pub fn read_saved_in(&self, dimension: Dimension, id: &str) -> Result<Option<Tag>, String> {
+        self.storage.read_saved_in(dimension.dimension_type(), id)
+    }
+
+    pub fn write_saved_in(&self, dimension: Dimension, id: &str, data: Tag) -> Result<(), String> {
+        self.storage
+            .write_saved_in(dimension.dimension_type(), id, data)
+    }
+
     pub fn write(
         &self,
-        spawn: (i32, i32, i32),
+        spawn: &RespawnData,
         day: Option<DayCycle>,
         game_rules: &GameRules,
         difficulty: Difficulty,
     ) -> Result<(), String> {
         let level = LevelData {
             game_time: self.game_time(day.map(|day| day.ticks)),
-            spawn: RespawnData {
-                dimension: OVERWORLD.to_owned(),
-                pos: spawn,
-                ..self.level.spawn.clone()
-            },
+            spawn: spawn.clone(),
             difficulty: minecraft_commands::difficulty_name(difficulty).to_owned(),
             initialized: true,
             allow_commands: true,
@@ -160,6 +173,18 @@ impl WorldSave {
     }
 }
 
+pub fn world_spawn(dimension: Dimension, pos: (i32, i32, i32)) -> RespawnData {
+    RespawnData {
+        dimension: dimension.dimension_type().to_owned(),
+        pos,
+        ..RespawnData::default()
+    }
+}
+
+pub fn spawn_dimension(spawn: &RespawnData) -> Dimension {
+    Dimension::parse(&spawn.dimension).unwrap_or_default()
+}
+
 fn clock_state(day: DayCycle) -> ClockState {
     ClockState {
         paused: day.paused,
@@ -170,7 +195,7 @@ fn clock_state(day: DayCycle) -> ClockState {
 pub struct OpenedWorld {
     pub seed: i64,
     pub save: Option<WorldSave>,
-    pub spawn: Option<(i32, i32, i32)>,
+    pub spawn: Option<RespawnData>,
     pub day_ticks: Option<f64>,
     pub time_paused: bool,
     pub weather: Option<WeatherData>,
@@ -266,8 +291,8 @@ fn open_save(
     storage.create_dimension(OVERWORLD)?;
     let spawn = level
         .as_ref()
-        .filter(|level| level.initialized && level.spawn.dimension == OVERWORLD)
-        .map(|level| level.spawn.pos);
+        .filter(|level| level.initialized)
+        .map(|level| level.spawn.clone());
     let mut level = level.unwrap_or_else(|| LevelData::new(name));
     if level.level_name.is_empty() {
         level.level_name = name.to_owned();
@@ -392,9 +417,9 @@ mod tests {
         let mut save = first.save.expect("a real world");
         assert_eq!(save.path(), world);
         let rules = GameRules::default();
-        save.write((12, 70, -4), None, &rules, Difficulty::Normal).unwrap();
+        save.write(&world_spawn(Dimension::Overworld, (12, 70, -4)), None, &rules, Difficulty::Normal).unwrap();
         save.started(1000.0);
-        save.write((12, 70, -4), Some(day(19_000.25)), &rules, Difficulty::Normal).unwrap();
+        save.write(&world_spawn(Dimension::Overworld, (12, 70, -4)), Some(day(19_000.25)), &rules, Difficulty::Normal).unwrap();
         drop(save);
         let again = open_world(&dir.0, Some("world"), Some("77"), 9);
         assert_eq!(again.seed, 123);
@@ -403,13 +428,41 @@ mod tests {
             ["IW4L_MINECRAFT_SEED ignored: world 'world' has seed 123"]
         );
         assert!(again.notes[0].starts_with("Minecraft world: opened "));
-        assert_eq!(again.spawn, Some((12, 70, -4)));
+        assert_eq!(again.spawn.as_ref().map(|spawn| spawn.pos), Some((12, 70, -4)));
         assert_eq!(again.day_ticks, Some(19_000.25));
         let level = again.save.as_ref().unwrap().level.clone();
         assert_eq!(level.game_time, 18_000);
         assert_eq!(level.level_name, "world");
         let other = open_world(&dir.0, Some("other"), None, 31);
         assert_eq!(other.seed, 31);
+    }
+
+    #[test]
+    fn a_world_spawn_in_another_dimension_comes_back_with_its_dimension() {
+        let dir = saves();
+        let save = open_world(&dir.0, None, Some("21"), 9).save.unwrap();
+        let spawn = RespawnData {
+            yaw: 90.0,
+            ..world_spawn(Dimension::Nether, (3, 70, -2))
+        };
+        save.write(&spawn, None, &GameRules::default(), Difficulty::Normal).unwrap();
+        save.create_dimension(Dimension::Nether).unwrap();
+        let fight = Tag::Compound(BTreeMap::from([("DragonKilled".to_owned(), Tag::Byte(1))]));
+        save.write_saved_in(Dimension::End, "ender_dragon_fight", fight.clone()).unwrap();
+        drop(save);
+        let world = dir.0.join("world");
+        for folder in ["region", "entities", "poi", "data"] {
+            assert!(world.join("dimensions/minecraft/the_nether").join(folder).is_dir());
+        }
+        assert!(world.join("dimensions/minecraft/the_end/data/minecraft/ender_dragon_fight.dat").is_file());
+        let again = open_world(&dir.0, None, None, 9);
+        assert_eq!(again.spawn, Some(spawn.clone()));
+        assert_eq!(spawn_dimension(&spawn), Dimension::Nether);
+        let unknown = RespawnData { dimension: "mod:moon".to_owned(), ..spawn };
+        assert_eq!(spawn_dimension(&unknown), Dimension::Overworld);
+        let save = again.save.unwrap();
+        assert_eq!(save.read_saved_in(Dimension::End, "ender_dragon_fight"), Ok(Some(fight)));
+        assert_eq!(save.read_saved_in(Dimension::Overworld, "ender_dragon_fight"), Ok(None));
     }
 
     #[test]
@@ -438,7 +491,7 @@ mod tests {
             .save
             .as_ref()
             .unwrap()
-            .write((1, 64, 2), Some(day(700.0)), &GameRules::default(), Difficulty::Normal)
+            .write(&world_spawn(Dimension::Overworld, (1, 64, 2)), Some(day(700.0)), &GameRules::default(), Difficulty::Normal)
             .unwrap();
         drop(first);
         let world = dir.0.join("world");
@@ -469,7 +522,7 @@ mod tests {
             paused: true,
         };
         let rules = GameRules::default();
-        save.write((0, 64, 0), Some(paused), &rules, Difficulty::Normal)
+        save.write(&world_spawn(Dimension::Overworld, (0, 64, 0)), Some(paused), &rules, Difficulty::Normal)
             .unwrap();
         let clocks = save.storage.read_saved("world_clocks").unwrap().unwrap();
         assert_eq!(
@@ -481,7 +534,7 @@ mod tests {
         assert!(again.time_paused);
         assert_eq!(again.day_ticks, Some(6_000.5));
         let save = again.save.unwrap();
-        save.write((0, 64, 0), Some(day(7_000.0)), &rules, Difficulty::Normal)
+        save.write(&world_spawn(Dimension::Overworld, (0, 64, 0)), Some(day(7_000.0)), &rules, Difficulty::Normal)
             .unwrap();
         assert_eq!(
             save.storage.read_clocks().unwrap()[OVERWORLD],
@@ -508,7 +561,7 @@ mod tests {
             .save
             .as_ref()
             .unwrap()
-            .write((0, 64, 0), None, &rules, Difficulty::Hard)
+            .write(&world_spawn(Dimension::Overworld, (0, 64, 0)), None, &rules, Difficulty::Hard)
             .unwrap();
         drop(first);
         let world = dir.0.join("world");
@@ -625,7 +678,7 @@ mod tests {
         assert_eq!(save.default_mode(), PlayerMode::new(GameMode::Survival));
         assert_eq!(save.read_player(&minecraft_commands::offline_uuid("Steve"), &RecipeBook::default()), Ok(None));
         save.level.game_type = 2;
-        save.write((0, 64, 0), None, &GameRules::default(), Difficulty::Normal).unwrap();
+        save.write(&world_spawn(Dimension::Overworld, (0, 64, 0)), None, &GameRules::default(), Difficulty::Normal).unwrap();
         drop(save);
         let mut again = open_world(&dir.0, None, None, 9).save.unwrap();
         again.set_host(&minecraft_commands::offline_uuid("Alex"));
@@ -644,7 +697,7 @@ mod tests {
         let mut mode = PlayerMode::new(GameMode::Creative);
         mode.abilities.flying = true;
         mode.set(GameMode::Spectator);
-        save.write((0, 64, 0), None, &GameRules::default(), Difficulty::Normal).unwrap();
+        save.write(&world_spawn(Dimension::Overworld, (0, 64, 0)), None, &GameRules::default(), Difficulty::Normal).unwrap();
         save.write_player(&uuid, &PlayerData { mode: Some(mode), ..PlayerData::default() }).unwrap();
         drop(save);
         let mut again = open_world(&dir.0, None, None, 9).save.unwrap();

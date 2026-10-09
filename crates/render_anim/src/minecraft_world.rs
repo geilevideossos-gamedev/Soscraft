@@ -228,11 +228,12 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         VIEW_DISTANCE,
         Dimension::Overworld,
         opened.save.as_ref().map(minecraft_survival::save::WorldSave::path),
-        opened.spawn,
+        opened.spawn.as_ref().filter(|spawn| minecraft_survival::save::spawn_dimension(spawn) == Dimension::Overworld).map(|spawn| spawn.pos),
     )
     .map_err(|e| e.to_string())?;
+    let spawn = opened.spawn.clone().unwrap_or_else(|| minecraft_survival::save::world_spawn(Dimension::Overworld, stream.world_spawn));
     if let Some(save) = &opened.save
-        && let Err(error) = save.write(stream.world_spawn, None, &opened.game_rules, opened.difficulty)
+        && let Err(error) = save.write(&spawn, None, &opened.game_rules, opened.difficulty)
     {
         diag::warn!(World, "Minecraft level.dat not written: {error}");
     }
@@ -271,6 +272,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         save: opened.save,
         game_rules: opened.game_rules,
         difficulty: opened.difficulty,
+        spawn,
         day,
         weather: opened.weather,
         chat,

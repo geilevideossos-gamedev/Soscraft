@@ -9,7 +9,7 @@ use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_terrain::day_cycle::DayCycle;
 use minecraft_terrain::game_mode::{GameMode, PlayerMode, from_id, parse};
 use minecraft_terrain::game_rules::GameRules;
-use minecraft_terrain::level_storage::WeatherData;
+use minecraft_terrain::level_storage::{RespawnData, WeatherData};
 use minecraftoss_core::Registries;
 use minecraftoss_player::Difficulty;
 use minecraftoss_player::crafting::RecipeBook;
@@ -33,6 +33,7 @@ pub struct Globals {
     pub save: Option<WorldSave>,
     pub game_rules: GameRules,
     pub difficulty: Difficulty,
+    pub spawn: RespawnData,
     pub day: DayCycle,
     pub weather: Option<WeatherData>,
     pub chat: CommandServer,
@@ -47,18 +48,7 @@ impl Server {
         if let Some(writer) = self.globals.level_writer.take() {
             let _ = writer.join();
         }
-        let Some(spawn) = self
-            .levels
-            .get(&Dimension::Overworld)
-            .map(|level| level.terrain.stream.world_spawn)
-        else {
-            return;
-        };
-        let rules = std::mem::take(&mut self.globals.game_rules);
-        let difficulty = self.globals.difficulty;
-        let day = self.globals.day;
-        let weather = self.globals.weather;
-        let players = player_files(&self.players);
+        let files = WorldFiles::of(&self.globals, &self.players);
         for level in self.levels.values_mut() {
             if let Some(entities) = level.entities.as_mut() {
                 crate::level::save_server_block_entities(entities, &mut level.terrain, true);
@@ -69,15 +59,7 @@ impl Server {
         let Some(save) = save else {
             return;
         };
-        if let Err(error) = save.write(spawn, Some(day), &rules, difficulty) {
-            diag::warn!(World, "Minecraft level.dat not written: {error}");
-        }
-        if let Some(weather) = weather
-            && let Err(error) = save.write_weather(&weather)
-        {
-            diag::warn!(World, "Minecraft weather.dat not written: {error}");
-        }
-        write_players(&save, &players, "Minecraft player file not written");
+        files.write(&save, "Minecraft");
         diag::info!(
             World,
             "Minecraft world saved in {} ms: {}",
@@ -178,11 +160,45 @@ pub fn join(
     player
 }
 
-fn player_files(players: &BTreeMap<PlayerUuid, Player>) -> Vec<(String, PlayerData)> {
-    players
-        .values()
-        .map(|player| (player.uuid.0.clone(), player.data()))
-        .collect()
+struct WorldFiles {
+    spawn: RespawnData,
+    day: DayCycle,
+    rules: GameRules,
+    difficulty: Difficulty,
+    weather: Option<WeatherData>,
+    players: Vec<(String, PlayerData)>,
+}
+
+impl WorldFiles {
+    fn of(globals: &Globals, players: &BTreeMap<PlayerUuid, Player>) -> Self {
+        Self {
+            spawn: globals.spawn.clone(),
+            day: globals.day,
+            rules: globals.game_rules.clone(),
+            difficulty: globals.difficulty,
+            weather: globals.weather,
+            players: players
+                .values()
+                .map(|player| (player.uuid.0.clone(), player.data()))
+                .collect(),
+        }
+    }
+
+    fn write(&self, save: &WorldSave, prefix: &str) {
+        if let Err(error) = save.write(&self.spawn, Some(self.day), &self.rules, self.difficulty) {
+            diag::warn!(World, "{prefix} level.dat not written: {error}");
+        }
+        if let Some(weather) = self.weather
+            && let Err(error) = save.write_weather(&weather)
+        {
+            diag::warn!(World, "{prefix} weather.dat not written: {error}");
+        }
+        write_players(
+            save,
+            &self.players,
+            &format!("{prefix} player file not written"),
+        );
+    }
 }
 
 fn write_players(save: &WorldSave, players: &[(String, PlayerData)], failed: &str) {
@@ -216,12 +232,6 @@ pub fn autosave(
     let Some(save) = globals.save.clone() else {
         return;
     };
-    let Some(spawn) = levels
-        .get(&Dimension::Overworld)
-        .map(|level| level.terrain.stream.world_spawn)
-    else {
-        return;
-    };
     let started = Instant::now();
     let chunks: usize = levels
         .values_mut()
@@ -234,31 +244,10 @@ pub fn autosave(
         let _ = previous.join();
     }
     let path = save.path().display().to_string();
-    let rules = globals.game_rules.clone();
-    let difficulty = globals.difficulty;
-    let day = globals.day;
-    let weather = globals.weather;
-    let players = player_files(players);
+    let files = WorldFiles::of(globals, players);
     globals.level_writer = std::thread::Builder::new()
         .name("minecraft-level-save".into())
-        .spawn(move || {
-            if let Err(error) = save.write(spawn, Some(day), &rules, difficulty) {
-                diag::warn!(World, "Minecraft autosave: level.dat not written: {error}");
-            }
-            if let Some(weather) = weather
-                && let Err(error) = save.write_weather(&weather)
-            {
-                diag::warn!(
-                    World,
-                    "Minecraft autosave: weather.dat not written: {error}"
-                );
-            }
-            write_players(
-                &save,
-                &players,
-                "Minecraft autosave: player file not written",
-            );
-        })
+        .spawn(move || files.write(&save, "Minecraft autosave:"))
         .map_err(|error| {
             diag::warn!(
                 World,
@@ -611,6 +600,70 @@ mod tests {
         let player = join(Some(&save), &recipes, &rules, kit);
         assert_eq!(player.mode, PlayerMode::new(GameMode::Survival));
         assert_eq!(held(&player, 9), Some(("minecraft:dirt", 1)));
+    }
+
+    fn registries() -> Option<Arc<Registries>> {
+        let paths = minecraftoss_core::registries::DataPaths::discover().ok()?;
+        Registries::load(&paths).ok().map(Arc::new)
+    }
+
+    #[test]
+    fn closing_with_no_overworld_loaded_still_writes_level_dat_and_the_player_files() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let (dir, save) = world("no-overworld");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let steve = profile("Steve");
+        let mut player = join(Some(&save), &recipes, &rules, joining(&steve));
+        let nether = Place::standing(Dimension::Nether, [5.5, 70.0, 5.5], 90.0, 0.0);
+        player.place = Some(nether);
+        player.inventory.slots[0] = Some(ItemStack::new("minecraft:netherrack", 7));
+        let spawn = RespawnData {
+            yaw: 45.0,
+            ..crate::save::world_spawn(Dimension::Nether, (4, 70, 4))
+        };
+        let weather = WeatherData {
+            rain_time: 900,
+            raining: true,
+            ..WeatherData::default()
+        };
+        let globals = Globals {
+            seed: 1,
+            registries,
+            save: Some(save),
+            game_rules: rules.clone(),
+            difficulty: Difficulty::Hard,
+            spawn: spawn.clone(),
+            day: DayCycle {
+                ticks: 13_000.0,
+                paused: false,
+            },
+            weather: Some(weather),
+            chat: CommandServer::new(crate::commands::HOST),
+            data: GameData::default(),
+            level_writer: None,
+            autosave_ticks: 0,
+        };
+        let uuid = player.uuid.clone();
+        let server = Server {
+            globals,
+            levels: BTreeMap::new(),
+            players: BTreeMap::from([(uuid.clone(), player)]),
+        };
+        server.save_and_close(Instant::now());
+        let opened = crate::save::open_world(&dir.0, None, None, 2);
+        assert!(opened.warnings.is_empty(), "{:?}", opened.warnings);
+        assert_eq!(opened.spawn, Some(spawn));
+        assert_eq!(opened.day_ticks, Some(13_000.0));
+        assert_eq!(opened.difficulty, Difficulty::Hard);
+        assert_eq!(opened.weather, Some(weather));
+        let save = opened.save.unwrap();
+        let saved = save.read_player(&uuid.0, &recipes).unwrap().unwrap();
+        assert_eq!(saved.place, Some(nether));
+        let back = join(Some(&save), &recipes, &rules, joining(&steve));
+        assert_eq!(held(&back, 0), Some(("minecraft:netherrack", 7)));
     }
 
     #[test]
