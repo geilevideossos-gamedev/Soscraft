@@ -69,6 +69,9 @@ pub struct ServerSim {
     player_potions: Vec<crate::potions::PlayerPotionHit>,
     held: std::collections::HashMap<u64, [Option<minecraftoss_player::inventory::ItemStack>; 2]>,
     clouds: Vec<crate::effect_cloud::EffectCloud>,
+    tridents: Vec<crate::trident::ThrownTrident>,
+    next_trident: i32,
+    players_struck: Vec<crate::thrown::PlayerStruck>,
 }
 
 /// What a player's hit or use on a mob did, for the client to present.
@@ -173,6 +176,7 @@ pub struct EntitySnapshot {
     pub thrown: Vec<(String, [f64; 3], [f64; 3], i32)>,
     pub thrown_views: Vec<crate::thrown::ThrownView>,
     pub clouds: Vec<crate::effect_cloud::CloudView>,
+    pub tridents: Vec<crate::trident::TridentView>,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -246,6 +250,9 @@ impl ServerSim {
             player_potions: Vec::new(),
             held: std::collections::HashMap::new(),
             clouds: Vec::new(),
+            tridents: Vec::new(),
+            next_trident: TRIDENT_IDS,
+            players_struck: Vec::new(),
         }
     }
 
@@ -759,6 +766,83 @@ impl ServerSim {
         }
         clouds.retain(|cloud| cloud.alive);
         self.clouds = clouds;
+    }
+
+    pub fn throw_trident(&mut self, mut trident: crate::trident::ThrownTrident) {
+        trident.id = self.next_trident;
+        self.next_trident = self.next_trident.wrapping_add(1).max(TRIDENT_IDS);
+        self.tridents.push(trident);
+    }
+
+    pub fn trident_views(&self) -> Vec<crate::trident::TridentView> {
+        self.tridents.iter().map(crate::trident::ThrownTrident::view).collect()
+    }
+
+    pub fn take_players_struck(&mut self) -> Vec<crate::thrown::PlayerStruck> {
+        std::mem::take(&mut self.players_struck)
+    }
+
+    pub fn tick_tridents(&mut self, players: &[crate::thrown::PlayerBody]) {
+        use crate::trident::TridentEvent;
+        if self.tridents.is_empty() {
+            return;
+        }
+        let mob_targets = crate::thrown::targets(&self.mobs);
+        let mut tridents = std::mem::take(&mut self.tridents);
+        for trident in &mut tridents {
+            let mut targets = mob_targets.clone();
+            targets.extend(crate::thrown::player_targets(players, trident.owner));
+            let owner = players.iter().find(|p| p.id == trident.owner).map(crate::trident::TridentOwner::of);
+            let events = {
+                let Self { level, states, mob_tables, .. } = self;
+                let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
+                trident.tick(&world, &targets, owner)
+            };
+            for event in events {
+                match event {
+                    TridentEvent::Struck { target, velocity } => match crate::thrown::struck_player(target) {
+                        Some(player) => self.players_struck.push(crate::thrown::PlayerStruck { player, by: trident.owner, damage: crate::trident::DAMAGE, kind: crate::trident::DAMAGE_TYPE, velocity }),
+                        None => {
+                            let seed = self.sound_random.next_long();
+                            crate::thrown::hurt_by(&mut self.mobs, target, crate::trident::DAMAGE, crate::trident::DAMAGE_TYPE, velocity, trident.owner, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
+                        }
+                    },
+                    TridentEvent::Sound { event, at, volume, pitch } => {
+                        self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event, pos: at.to_array(), volume, pitch });
+                    }
+                    TridentEvent::Dropped { at } => {
+                        let components = trident.stack.components.as_ref().map(|c| c.to_string());
+                        let stack = stack_of(&trident.stack.id, i32::from(trident.stack.count.max(1)), components.as_deref());
+                        self.level.spawn_at_location(at.to_array(), stack);
+                    }
+                }
+            }
+        }
+        tridents.retain(|t| t.alive);
+        tridents.append(&mut self.tridents);
+        self.tridents = tridents;
+    }
+
+    pub fn pickup_tridents(&mut self, player: &crate::thrown::PlayerBody, mut take: impl FnMut(&minecraftoss_player::inventory::ItemStack) -> bool) -> Vec<PickedStack> {
+        let mut picked = Vec::new();
+        for trident in &mut self.tridents {
+            if !trident.touched_by(player) {
+                continue;
+            }
+            match trident.taken_by(player.id) {
+                Some(Some(stack)) => {
+                    if take(&stack) {
+                        trident.alive = false;
+                        let components = stack.components.as_ref().map(|c| c.to_string());
+                        picked.push((trident.id, trident.position.to_array(), stack.id.clone(), i32::from(stack.count.max(1)), components));
+                    }
+                }
+                Some(None) => trident.alive = false,
+                None => {}
+            }
+        }
+        self.tridents.retain(|t| t.alive);
+        picked
     }
 
     pub fn cloud_views(&self) -> Vec<crate::effect_cloud::CloudView> {
@@ -1291,6 +1375,7 @@ pub enum Command {
     /// One server tick, with the player's state for it.
     Tick(Box<TickInput>),
     Throw(Box<crate::thrown::Thrown>),
+    ThrowTrident(Box<crate::trident::ThrownTrident>),
     Save,
     SetWeather { weather: &'static str, duration: i32 },
     GameRules(Box<crate::game_rules::GameRules>),
@@ -1326,6 +1411,8 @@ pub struct TickInput {
 
 const PLAYER_HEIGHT: f64 = 1.8;
 const OFFHAND_SLOT: usize = 40;
+const TRIDENT_IDS: i32 = 0x3000_0000;
+pub type PickedStack = (i32, [f64; 3], String, i32, Option<String>);
 const TNT_BLAST_RADIUS: f32 = 4.0;
 const STUN_SLOWNESS_AMPLIFIER: i32 = 3;
 
@@ -1359,6 +1446,7 @@ pub struct Output {
     /// Where splash potions broke (their sound and colour).
     pub potion_breaks: Vec<minecraftoss_entities::world::PotionBreak>,
     pub player_potions: Vec<crate::potions::PlayerPotionHit>,
+    pub players_struck: Vec<crate::thrown::PlayerStruck>,
     /// Creeper blasts this tick (`ClientboundExplodePacket`).
     pub explosions: Vec<minecraftoss_entities::creeper::CreeperExplosion>,
     /// Sounds mobs made this tick.
@@ -1557,6 +1645,10 @@ impl ServerHandle {
         self.send(Command::Throw(Box::new(thrown)));
     }
 
+    pub fn throw_trident(&mut self, trident: crate::trident::ThrownTrident) {
+        self.send(Command::ThrowTrident(Box::new(trident)));
+    }
+
     pub fn save(&mut self) {
         self.send(Command::Save);
     }
@@ -1649,6 +1741,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.merchant.push(sim.merchant(op, *inventory, selected, feet));
                 }
                 Command::Throw(thrown) => sim.throw(*thrown),
+                Command::ThrowTrident(trident) => sim.throw_trident(*trident),
                 Command::SetWeather { weather, duration } => {
                     sim.set_weather_for(weather, duration);
                 }
@@ -1698,6 +1791,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     let bodies: Vec<_> = input.mob_players.iter().map(crate::thrown::PlayerBody::of).collect();
                     sim.tick_clouds(&bodies);
                     sim.tick_thrown(&bodies);
+                    sim.tick_tridents(&bodies);
                     let teleports = sim.take_pearl_teleports();
                     out.pearl_landings.extend(teleports.iter().map(|&(_, at)| at));
                     out.pearl_teleports.extend(teleports);
@@ -1708,6 +1802,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.player_potions.extend(witch_splashes.iter().map(|(player, splash)| crate::splash::of_witch(*player, splash)));
                     out.player_potions.extend(sim.take_player_potions());
                     out.player_splashes.extend(witch_splashes);
+                    out.players_struck.extend(sim.take_players_struck());
                     out.potion_breaks.extend(sim.take_potion_breaks());
                     out.explosions.extend(sim.take_explosions());
                     out.mob_sounds.extend(sim.mobs.take_sounds());
@@ -1726,10 +1821,18 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                             }
                         });
                         out.picked.extend(picked);
+                        if let Some(body) = bodies.first() {
+                            let tridents = sim.pickup_tridents(body, |stack| {
+                                let mut stack = stack.clone();
+                                stack.max = stack.max.min(recipes.max_stack(&stack.id));
+                                inventory.add_item(stack, selected).is_none()
+                            });
+                            out.picked.extend(tridents);
+                        }
                     }
                     // After the items, one experience orb.
                     out.orbs_taken.extend(sim.take_experience(pickup_feet));
-                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown: sim.thrown_view(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views() });
+                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown: sim.thrown_view(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views() });
                     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
                     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), started.elapsed().as_secs_f64() * 1000.0));
                 }
@@ -3955,6 +4058,54 @@ mod tests {
         }
         health.dedup();
         assert_eq!(health[..2], [10.0, 7.0], "{health:?}");
+    }
+
+    fn trident_down(owner: u64, components: Option<serde_json::Value>, seed: u64) -> crate::trident::ThrownTrident {
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(seed);
+        let mut stack = minecraftoss_player::inventory::ItemStack::new(crate::trident::ITEM, 1);
+        stack.components = components;
+        let components = stack.components.clone();
+        let throw = crate::thrown::Throw { owner, item: crate::trident::ITEM, components: components.as_ref(), eye: glam::DVec3::new(8.5, 204.0, 8.5), yaw: 0.0, pitch: 90.0, motion: glam::DVec3::ZERO, on_ground: true };
+        crate::trident::ThrownTrident::launch(&throw, stack, false, &mut random)
+    }
+
+    #[test]
+    fn a_trident_hits_a_cow_for_8_sticks_and_only_its_thrower_takes_it_back() {
+        let Some((mut server, _)) = door_world() else { return };
+        if server.summon("minecraft:cow", [8.5, 200.0, 8.5], None, 0.0).is_err() {
+            return;
+        }
+        server.throw_trident(trident_down(0, None, 5));
+        let away = [player_at(0, [30.5, 200.0, 8.5], true)];
+        for _ in 0..30 {
+            server.tick_tridents(&away);
+        }
+        assert_eq!(cow_health(&server, 8.5), Some(2.0));
+        let events: Vec<_> = server.level.sounds.iter().map(|s| s.event).collect();
+        assert!(events.contains(&crate::trident::HIT_SOUND) && events.contains(&crate::trident::HIT_GROUND_SOUND), "{events:?}");
+        let views = server.trident_views();
+        assert_eq!(views.len(), 1);
+        assert!((views[0].position.y - 200.0).abs() < 0.1, "{views:?}");
+        let stranger = player_at(1, [9.5, 200.0, 8.5], true);
+        assert!(server.pickup_tridents(&stranger, |_| true).is_empty());
+        let full = player_at(0, [9.5, 200.0, 8.5], true);
+        assert!(server.pickup_tridents(&full, |_| false).is_empty(), "no room, it stays");
+        let picked = server.pickup_tridents(&full, |_| true);
+        assert_eq!(picked.iter().map(|p| (p.0, p.2.as_str(), p.3)).collect::<Vec<_>>(), vec![(TRIDENT_IDS, crate::trident::ITEM, 1)]);
+        assert!(server.trident_views().is_empty());
+    }
+
+    #[test]
+    fn a_trident_strikes_another_player_for_8() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.throw_trident(trident_down(0, None, 6));
+        let players = [player_at(0, [30.5, 200.0, 8.5], true), player_at(2, [8.5, 200.0, 8.5], true)];
+        for _ in 0..10 {
+            server.tick_tridents(&players);
+        }
+        let struck = server.take_players_struck();
+        assert_eq!(struck.len(), 1);
+        assert_eq!((struck[0].player, struck[0].by, struck[0].damage, struck[0].kind), (2, 0, 8.0, "minecraft:trident"));
     }
 
     #[test]

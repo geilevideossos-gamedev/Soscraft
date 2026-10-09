@@ -200,6 +200,15 @@ pub fn owner_box(players: &[PlayerBody], owner: u64) -> Option<(DVec3, DVec3)> {
     players.iter().find(|p| p.id == owner && p.targetable()).map(PlayerBody::bounds)
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayerStruck {
+    pub player: u64,
+    pub by: u64,
+    pub damage: f32,
+    pub kind: &'static str,
+    pub velocity: DVec3,
+}
+
 pub struct Throw<'a> {
     pub owner: u64,
     pub item: &'a str,
@@ -521,6 +530,18 @@ pub fn hurt(
     player: u64,
     random: &mut LegacyRandom,
 ) -> bool {
+    hurt_by(world, id, 0.0, THROWN, velocity, player, random)
+}
+
+pub fn hurt_by(
+    world: &mut EntityWorld,
+    id: u64,
+    amount: f32,
+    kind: &'static str,
+    velocity: DVec3,
+    player: u64,
+    random: &mut LegacyRandom,
+) -> bool {
     if let Some(e) = world.enderman_mut(id) {
         e.dodge_pending = true;
         return false;
@@ -531,64 +552,64 @@ pub fn hurt(
     let blame =
         |hit: &DamageResult, tick: i32| hit.applied.then_some((Target::Player(player), tick));
     let (hit, resists) = if let Some(e) = world.bat_mut(id) {
-        (e.hurt(0.0), false)
+        (e.hurt(amount), false)
     } else if let Some(e) = world.zombie_mut(id) {
-        let hit = e.hurt(0.0);
+        let hit = e.hurt(minecraftoss_entities::health::damage_after_armor(amount, 2.0, 0.0));
         if let (Some(ai), Some(blamed)) = (e.ai.as_deref_mut(), blame(&hit, e.tick_count)) {
             ai.state.hurt_by = Some(blamed);
         }
         (hit, false)
     } else if let Some(e) = world.skeleton_mut(id) {
-        let hit = e.hurt(0.0);
+        let hit = e.hurt(amount);
         if let (Some(ai), Some(blamed)) = (e.ai.as_deref_mut(), blame(&hit, e.tick_count)) {
             ai.state.hurt_by = Some(blamed);
         }
         (hit, false)
     } else if let Some(e) = world.creeper_mut(id) {
-        let hit = e.hurt(0.0);
+        let hit = e.hurt(amount);
         if let Some(blamed) = blame(&hit, e.tick_count) {
             e.ai.state.hurt_by = Some(blamed);
         }
         (hit, false)
     } else if let Some(e) = world.spider_mut(id) {
-        let hit = e.hurt(0.0);
+        let hit = e.hurt(amount);
         if let Some(blamed) = blame(&hit, e.tick_count) {
             e.ai.state.hurt_by = Some(blamed);
         }
         (hit, false)
     } else if let Some(e) = world.slime_mut(id) {
-        let hit = e.hurt(0.0);
+        let hit = e.hurt(amount);
         if let Some(blamed) = blame(&hit, e.tick_count) {
             e.ai.state.hurt_by = Some(blamed);
         }
         (hit, false)
     } else if let Some(e) = world.witch_mut(id) {
-        let hit = e.hurt(0.0, false, false);
+        let hit = e.hurt(amount, false, false);
         if let Some(blamed) = blame(&hit, e.tick_count) {
             e.ai.state.hurt_by = Some(blamed);
         }
         (hit, false)
     } else if let Some(e) = world.iron_golem_mut(id) {
-        let hit = e.hurt(0.0);
+        let hit = e.hurt(amount);
         if let Some(blamed) = blame(&hit, e.tick_count) {
             e.ai.state.hurt_by = Some(blamed);
         }
         (hit, true)
     } else if let Some(e) = world.wolf_mut(id) {
-        (e.hurt_from(0.0, THROWN, by, time), false)
+        (e.hurt_from(amount, kind, by, time), false)
     } else if let Some(e) = world.villager_mut(id) {
         (
-            e.hurt_from(0.0, THROWN, Some(PLAYER_TARGET + player), time),
+            e.hurt_from(amount, kind, Some(PLAYER_TARGET + player), time),
             false,
         )
     } else if let Some(e) = world.cow_mut(id) {
-        (e.hurt(0.0, projectile), false)
+        (e.hurt(amount, projectile), false)
     } else if let Some(e) = world.sheep_mut(id) {
-        (e.hurt(0.0, projectile), false)
+        (e.hurt(amount, projectile), false)
     } else if let Some(e) = world.pig_mut(id) {
-        (e.hurt(0.0, projectile), false)
+        (e.hurt(amount, projectile), false)
     } else if let Some(e) = world.chicken_mut(id) {
-        (e.hurt_with_source(0.0, projectile), false)
+        (e.hurt_with_source(amount, projectile), false)
     } else {
         return false;
     };
