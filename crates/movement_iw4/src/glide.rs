@@ -4,6 +4,7 @@ use crate::{
     CollisionBackend, MoveBounds, Pml, WATER_BLOCK, complete_ground_trace, step_slide_move,
 };
 
+pub const ROCKET_TICK_MS: i32 = 50;
 const TICK_SECONDS: f64 = 0.05;
 const PER_TICK: f64 = WATER_BLOCK as f64 / TICK_SECONDS;
 const GRAVITY: f64 = 0.08;
@@ -12,6 +13,9 @@ const DRAG: [f64; 3] = [
     0.990_000_009_536_743_2,
     0.980_000_019_073_486_3,
 ];
+const ROCKET_KEEP: f64 = 0.5;
+const ROCKET_SPEED: f64 = 1.5;
+const ROCKET_PUSH: f64 = 0.1;
 const HELD: u32 =
     buttons::JUMP | buttons::CROUCH | buttons::PRONE | buttons::STANCE_HELD | buttons::SPRINT;
 const BLOCKED: u32 = pm_flags::MC_FLYING | pm_flags::MANTLE | pm_flags::LADDER;
@@ -22,6 +26,7 @@ pub fn prepare(
     old_buttons: u32,
     liquid: bool,
     climbing: bool,
+    msec: i32,
 ) -> bool {
     let may = ps.pm_flags & pm_flags::MC_MAY_GLIDE != 0
         && ps.pm_flags & BLOCKED == 0
@@ -35,9 +40,18 @@ pub fn prepare(
         ps.pm_flags |= pm_flags::MC_GLIDING;
     }
     if ps.pm_flags & pm_flags::MC_GLIDING == 0 {
+        ps.mc_rocket_time = (ps.mc_rocket_time - msec).max(0);
         return false;
     }
     cmd.buttons &= !HELD;
+    true
+}
+
+pub fn launch_rocket(ps: &mut PlayerState, boost_ticks: i32) -> bool {
+    if ps.pm_flags & pm_flags::MC_GLIDING == 0 {
+        return false;
+    }
+    ps.mc_rocket_time = ps.mc_rocket_time.max(boost_ticks * ROCKET_TICK_MS);
     true
 }
 
@@ -52,6 +66,12 @@ pub fn glide_move<C: CollisionBackend>(
     let ticks = f64::from(pml.frametime) / TICK_SECONDS;
     let look = pml.forward.map(f64::from);
     let mut motion = ps.velocity.map(|speed| f64::from(speed) / PER_TICK);
+    let boosted = ps.mc_rocket_time.clamp(0, pml.msec.max(0));
+    if boosted > 0 {
+        let boost_ticks = f64::from(boosted) / f64::from(ROCKET_TICK_MS);
+        motion = boost(motion, look, boost_ticks);
+        ps.mc_rocket_time -= boosted;
+    }
     let moved = match stuck {
         Some(multiplier) => {
             let step = glide(motion, look, 1.0);
@@ -89,6 +109,13 @@ pub fn glide(motion: [f64; 3], look: [f64; 3], ticks: f64) -> [f64; 3] {
         let keep = libm::pow(DRAG[k], ticks);
         keep * motion[k] + (pushed[k] - motion[k]) * DRAG[k] * (1.0 - keep) / (1.0 - DRAG[k])
     })
+}
+
+#[must_use]
+pub fn boost(motion: [f64; 3], look: [f64; 3], ticks: f64) -> [f64; 3] {
+    let keep = libm::pow(ROCKET_KEEP, ticks);
+    let target = (ROCKET_SPEED * ROCKET_KEEP + ROCKET_PUSH) / ROCKET_KEEP;
+    core::array::from_fn(|k| keep * motion[k] + look[k] * target * (1.0 - keep))
 }
 
 fn glide_push(motion: [f64; 3], look: [f64; 3]) -> [f64; 3] {
@@ -284,6 +311,32 @@ mod tests {
     }
 
     #[test]
+    fn rocket_pushes_converge_and_level_flight_settles_at_33_5_metres_a_second() {
+        let look = [1.0, 0.0, 0.0];
+        assert!(close(boost([0.0; 3], look, 1.0), [0.85, 0.0, 0.0], 1e-12));
+        let mut alone = [0.0; 3];
+        for _ in 0..100 {
+            alone = boost(alone, look, 1.0);
+        }
+        assert!(close(alone, [1.7, 0.0, 0.0], 1e-9), "{alone:?}");
+        let mut flight = [0.5, 0.0, 0.0];
+        for _ in 0..400 {
+            flight = glide(boost(flight, look, 1.0), look, 1.0);
+        }
+        assert!(
+            close(
+                flight,
+                [1.672_649_211_053_651_7, 0.0, -0.031_556_351_724_817_695],
+                1e-9
+            ),
+            "{flight:?}"
+        );
+        let start = [0.3, -0.2, 0.1];
+        let halves = boost(boost(start, pitched(20.0), 0.5), pitched(20.0), 0.5);
+        assert!(close(halves, boost(start, pitched(20.0), 1.0), 1e-12));
+    }
+
+    #[test]
     fn gliding_from_rest_covers_the_vanilla_path_at_any_frame_rate() {
         let mut vanilla = [0.0; 3];
         let mut path = [0.0; 3];
@@ -324,30 +377,44 @@ mod tests {
         ps.ground_entity_num = ENTITYNUM_NONE;
         ps.pm_flags |= pm_flags::MC_MAY_GLIDE;
         let mut held = jump;
-        assert!(!prepare(&mut ps, &mut held, buttons::JUMP, false, false));
+        assert!(!prepare(
+            &mut ps,
+            &mut held,
+            buttons::JUMP,
+            false,
+            false,
+            16
+        ));
         assert_eq!(held.buttons, jump.buttons);
         let mut pressed = jump;
-        assert!(prepare(&mut ps, &mut pressed, 0, false, false));
+        assert!(prepare(&mut ps, &mut pressed, 0, false, false, 16));
         assert_eq!(pressed.buttons, buttons::ATTACK);
         assert_ne!(ps.pm_flags & pm_flags::MC_GLIDING, 0);
         let mut later = UserCmd::default();
-        assert!(prepare(&mut ps, &mut later, buttons::JUMP, false, false));
+        assert!(prepare(
+            &mut ps,
+            &mut later,
+            buttons::JUMP,
+            false,
+            false,
+            16
+        ));
 
         let mut grounded = PlayerState::ZERO;
         grounded.pm_flags |= pm_flags::MC_MAY_GLIDE;
         let mut cmd = jump;
-        assert!(!prepare(&mut grounded, &mut cmd, 0, false, false));
+        assert!(!prepare(&mut grounded, &mut cmd, 0, false, false, 16));
         let mut bare = PlayerState::ZERO;
         bare.ground_entity_num = ENTITYNUM_NONE;
         let mut cmd = jump;
-        assert!(!prepare(&mut bare, &mut cmd, 0, false, false));
+        assert!(!prepare(&mut bare, &mut cmd, 0, false, false, 16));
         assert_eq!(bare.pm_flags & pm_flags::MC_GLIDING, 0);
         for (liquid, climbing) in [(true, false), (false, true)] {
             let mut ps = PlayerState::ZERO;
             ps.ground_entity_num = ENTITYNUM_NONE;
             ps.pm_flags |= pm_flags::MC_MAY_GLIDE;
             let mut cmd = jump;
-            assert!(!prepare(&mut ps, &mut cmd, 0, liquid, climbing));
+            assert!(!prepare(&mut ps, &mut cmd, 0, liquid, climbing, 16));
         }
     }
 
@@ -362,13 +429,13 @@ mod tests {
             let mut ps = glider(100.0);
             ps.pm_flags |= flags;
             let mut cmd = UserCmd::default();
-            assert!(!prepare(&mut ps, &mut cmd, 0, liquid, climbing));
+            assert!(!prepare(&mut ps, &mut cmd, 0, liquid, climbing, 16));
             assert_eq!(ps.pm_flags & pm_flags::MC_GLIDING, 0);
         }
         let mut worn = glider(100.0);
         worn.pm_flags &= !pm_flags::MC_MAY_GLIDE;
         let mut cmd = UserCmd::default();
-        assert!(!prepare(&mut worn, &mut cmd, 0, false, false));
+        assert!(!prepare(&mut worn, &mut cmd, 0, false, false, 16));
         assert_eq!(worn.pm_flags & pm_flags::MC_GLIDING, 0);
     }
 
@@ -398,6 +465,44 @@ mod tests {
         let (_, before, after) = hit.expect("the glider reaches the wall");
         assert!(before > 1.4 && after.abs() < 1e-3, "{before} {after}");
         assert_ne!(ps.pm_flags & pm_flags::MC_GLIDING, 0);
+    }
+
+    #[test]
+    fn a_rocket_burns_down_by_frame_time_and_only_lights_while_gliding() {
+        let mut walker = PlayerState::ZERO;
+        assert!(!launch_rocket(&mut walker, 22));
+        assert_eq!(walker.mc_rocket_time, 0);
+        let mut ps = glider(100.0 * WATER_BLOCK);
+        assert!(launch_rocket(&mut ps, 22));
+        assert_eq!(ps.mc_rocket_time, 1100);
+        assert!(launch_rocket(&mut ps, 10));
+        assert_eq!(ps.mc_rocket_time, 1100);
+        glide_frames(&mut ps, 16, 1, [1.0, 0.0, 0.0], None, &Open);
+        assert_eq!(ps.mc_rocket_time, 1084);
+        assert!(per_tick(ps.velocity)[0] > 0.2, "{:?}", ps.velocity);
+        ps.ground_entity_num = 0;
+        let mut cmd = UserCmd::default();
+        assert!(!prepare(&mut ps, &mut cmd, 0, false, false, 1000));
+        assert_eq!(ps.mc_rocket_time, 84);
+        prepare(&mut ps, &mut cmd, 0, false, false, 1000);
+        assert_eq!(ps.mc_rocket_time, 0);
+
+        let look = [1.0, 0.0, 0.0];
+        let mut vanilla = [0.0; 3];
+        for _ in 0..2 {
+            vanilla = glide(boost(vanilla, look, 1.0), look, 1.0);
+        }
+        for msec in [50, 10] {
+            let mut ps = glider(100.0 * WATER_BLOCK);
+            launch_rocket(&mut ps, 2);
+            glide_frames(&mut ps, msec, 100 / msec, [1.0, 0.0, 0.0], None, &Open);
+            assert_eq!(ps.mc_rocket_time, 0);
+            assert!(
+                close(per_tick(ps.velocity), vanilla, 0.05),
+                "msec {msec}: {:?} {vanilla:?}",
+                per_tick(ps.velocity)
+            );
+        }
     }
 
     #[test]

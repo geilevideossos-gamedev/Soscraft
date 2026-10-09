@@ -57,3 +57,16 @@ fn flight(ps: &PlayerState, may: bool) -> Flight {
         motion: [x / per_tick, z / per_tick, -y / per_tick],
     }
 }
+
+pub(crate) fn launch_rocket(
+    authority: &mut sim::SimWorld,
+    id: sim::ClientId,
+    boost_ticks: i32,
+    swing: &mut Option<f32>,
+    spend: impl FnOnce(),
+) {
+    if authority.launch_rocket(id, boost_ticks) {
+        *swing = Some(0.0);
+        spend();
+    }
+}

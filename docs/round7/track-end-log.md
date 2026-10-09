@@ -485,3 +485,45 @@ Previous commit: 9a9a5777
 ```
 IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:elytra+damage=420,minecraft:elytra+unbreaking=3,minecraft:diamond_chestplate,minecraft:water_bucket,minecraft:cobblestone*64,minecraft:ladder*16,minecraft:golden_apple*8
 ```
+
+### 17. Minecraft firework rockets boost elytra flight (E3-28)
+
+Previous commit: 20afd35e
+
+- **Changed:**
+  - `playerstate_iw4/src/playerstate.rs`: a new field `mc_rocket_time`, the milliseconds of rocket boost left. `net/src/transport/netfields.rs`: it is replicated and validated exactly (appended at the end of the table), so the countdown sits in the pmove state and prediction matches, as decision 4 asks.
+  - `movement_iw4/src/glide.rs`:
+    - `launch_rocket(ps, ticks)` lights a rocket only while gliding (`FireworkRocketItem.use` passes otherwise).
+    - `boost` is the attached `FireworkRocketEntity.tick`: each tick the motion becomes `v + look·0.1 + (look·1.5 − v)·0.5`. For a frame of `t` ticks it uses the exact fraction, `v·0.5ᵗ + look·1.7·(1 − 0.5ᵗ)`, which equals the vanilla tick at `t = 1`. `glide_move` spends the countdown by the frame time and boosts for the part of the frame it covers, then glides. Off the glide the countdown still burns down (the attached rocket lives on but pushes only a fall-flying player).
+  - `sim/src/frame.rs`, `carrier.rs`: `launch_rocket(id, ticks)`.
+  - New `minecraft_terrain/src/firework.rs`: `flight_duration` (the `fireworks` component's `flight_duration`; the item's default component is 1, and a `fireworks` patch without the field is 0), `lifetime` (`10·(1 + flight) + nextInt(6) + nextInt(7)`), `boost_ticks` (the lifetime plus one: the rocket pushes on its ticks 0 to `lifetime` and explodes after), and `rocket_use`, an item use for a gliding player that is spent and plays `entity.firework_rocket.launch` at volume 3.
+  - `minecraft_terrain/src/bucket.rs`: `Change::Rocket(ticks)`.
+  - `render_anim/src/minecraft_elytra.rs`: `launch_rocket` lights it on the authority's player state, swings the hand and spends the rocket (not in creative) with the launch sound. `minecraft_world.rs`: two call lines, the `rocket_use` link of the item-use chain and the `Change::Rocket` arm.
+  - `minecraft_survival/src/offhand.rs`: a firework rocket counts as an item with a use, so rockets in the offhand boost with the tactical key while an MW2 gun stays in the hand.
+- **Checked with javap (26.3):** `FireworkRocketItem.use` (only while `isFallFlying`: a `FireworkRocketEntity(level, stack, player)` attached to the player, `consume(1, player)`, SUCCESS; PASS otherwise), `FireworkRocketItem.useOn` (PASS while fall flying), `FireworkRocketEntity.<init>` (`lifetime = 10·(1 + flightDuration) + nextInt(6) + nextInt(7)`, starting from 1 plus the `fireworks` component's duration), `FireworkRocketEntity.tick` (attached and fall flying: the push above with 1.5 and 0.1; the launch sound `FIREWORK_ROCKET_LAUNCH` at life 0, volume 3, pitch 1; `life++`, explode when `life > lifetime`).
+- **Tests:**
+  - `glide`: `rocket_pushes_converge_and_level_flight_settles_at_33_5_metres_a_second` (one push from rest is 0.85; pushes alone converge on 1.7; level flight with a rocket settles at 1.6726 blocks per tick forward, 33.5 m/s, matching the hand-run vanilla ticks; two half-tick pushes equal one), `a_rocket_burns_down_by_frame_time_and_only_lights_while_gliding` (only a glider lights it; a second, shorter rocket doesn't cut the first; frame time spends it, also after landing; two ticks of boost at 50 ms and 10 ms frames match vanilla's).
+  - `sim` `frame`: `an_elytra_lets_a_player_glide_and_a_rocket_lights_only_while_gliding` (was `an_elytra_lets_a_player_glide_until_it_is_taken_off`).
+  - `firework`: `a_rocket_flies_one_unless_its_fireworks_say_otherwise`, `the_boost_lasts_vanillas_lifetime_and_one_tick_more` (21 to 32 ticks for a plain rocket), `a_rocket_boosts_only_a_gliding_player_and_is_spent`.
+  - `offhand`: `only_items_with_a_use_take_the_tactical_key` now checks the rocket too.
+- **Decisions:**
+  - **Overlapping rockets:** in vanilla two attached rockets both push every tick. Here one countdown holds the longer of the two, so a second rocket extends the boost but doesn't double it.
+  - **Not done:**
+    - Rockets with firework stars don't hurt the wearer when they end (vanilla: 5 + 2 per explosion, `fireworks` damage). Plain rockets, the only ones a kit can give, have none.
+    - No rocket model at the hand and no spark trail: there is no firework particle yet.
+    - Using a rocket on a block while not gliding doesn't launch a free rocket into the sky (`useOn`): that needs a new entity, its renderer and the firework particles, more than this group could take on. Until then nothing happens and the rocket stays in the hand, as for any use that passes.
+  - **Adventure mode:** the rocket goes through the same item-use chain as the eye of ender, which needs a game mode that may build, so in adventure mode it does nothing (vanilla allows it).
+  - **Server-owned:** the countdown lives in the authority's player state. The client asks through the item use and the authority lights it; prediction replays it from the replicated field.
+- **Test steps:**
+  1. Keep `IW4L_MINECRAFT_WORLD=elytratest` (or a new world) and the kit below. Put the elytra in the chest armour slot.
+  2. Type `/tp ~ ~40 ~`, press jump to glide, select the rockets in the hotbar and right-click: the launch sound plays, you shoot forward along your look at about 34 m/s for 1 to 1.5 seconds, and one rocket leaves the stack. **Screenshot 1** during the boost.
+  3. Look up 45° and fire a rocket: you climb steeply. Keep firing: you can climb as high as you like.
+  4. On the ground or falling without gliding, right-click a rocket: nothing happens and the stack stays.
+  5. Put the rockets in the offhand slot, select an MW2 gun, glide and press the tactical key: you boost while the gun stays in your hands and fires. **Screenshot 2.**
+  6. Fire a rocket and land at once: the push stops with the glide.
+  7. `/gamemode creative`: rockets boost without leaving the stack. `/gamemode survival` afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:firework_rocket*128,minecraft:cobblestone*64,minecraft:golden_apple*8
+```

@@ -76,6 +76,7 @@ pub mod wind;
 pub mod bottle;
 pub mod bucket;
 pub mod flint;
+pub mod firework;
 pub mod spawn_egg;
 pub mod berries;
 pub mod campfire;

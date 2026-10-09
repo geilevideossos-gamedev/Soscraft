@@ -119,6 +119,7 @@ pub struct PlayerState {
     pub kill_cam_look_at_entity: i32,
     pub kill_cam_client_num: i32,
     pub recoil_scale: i32,
+    pub mc_rocket_time: i32,
 }
 
 pub mod eflags {
@@ -345,6 +346,7 @@ impl PlayerState {
         kill_cam_look_at_entity: 0,
         kill_cam_client_num: 0,
         recoil_scale: 0,
+        mc_rocket_time: 0,
     };
 
     pub fn anim(&self) -> AnimPair {

@@ -134,6 +134,7 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
         context.old_buttons,
         water.wet() || lava > 0.0,
         crate::climb::climbing(ps, climb),
+        pml.msec,
     );
     crate::swim::hold_sprint(ps, water, pml.msec);
     let mut sprint = context.sprint;

@@ -65,6 +65,7 @@ pub use footstep::{
     surface_type_name, surface_type_to_name,
 };
 pub use friction::friction;
+pub use glide::launch_rocket;
 pub use ground::complete_ground_trace;
 pub use integrate::predict_integrate;
 pub use is_in_air::is_in_air;

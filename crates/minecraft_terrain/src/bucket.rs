@@ -145,6 +145,7 @@ pub enum Change {
     Set(Pos, Block),
     Server(Pos, ItemOnBlock),
     ThrowEye(crate::ender_eye::EyeThrow),
+    Rocket(i32),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -525,7 +526,7 @@ mod tests {
     fn served(used: &ItemUse) -> Option<(Pos, ItemOnBlock)> {
         match used.change {
             Change::Server(pos, action) => Some((pos, action)),
-            Change::Set(..) | Change::ThrowEye(..) => None,
+            Change::Set(..) | Change::ThrowEye(..) | Change::Rocket(..) => None,
         }
     }
 
