@@ -196,3 +196,28 @@ Previous commit: 32e3fe6b
 ```
 IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_shovel+efficiency=5,minecraft:cobblestone*64
 ```
+
+### 8. Minecraft End spawn platform is rebuilt on every arrival and drops what it breaks (E3-6)
+
+Previous commit: 40f26f27
+
+- **Changed:**
+  - Vendored `third_party/minecraftoss/world/src/level/end_portal.rs` (MinecraftOSS patch): `end_platform_cells(origin)` and `Level::create_end_platform(origin, break_blocks)` are `EndPlatformFeature.createEndPlatform`. They go over the 5x5 around the origin, z then x then y from -1 to 2, and want obsidian at y -1 and air above. A block that isn't already the wanted block (compared as a block, not a state) is destroyed with its drops (`destroyBlock(pos, true)`) and replaced (`setBlockAndUpdate`, flags 3).
+  - `minecraft_terrain/src/server.rs` (End region): `ServerSim::create_end_platform(origin)` with `break_blocks` true, as `EndPortalBlock` asks for it.
+  - `minecraft_survival/src/the_end.rs`: entering the End sets `EndTravel.platform`. `build_platform(level, player)` waits until the player is in the End level and both chunks of the platform, (6, -1) and (6, 0), are in its scene. The scene only gets chunks the server thread was already sent, so the platform job then reaches a server that has them. It sends `platform_job` (origin 100, 49, 0) once and clears the flag. A player who ends up in another dimension (a level that failed to open) drops the flag.
+  - `render_anim/src/minecraft_end.rs`: `arriving` runs `build_platform` and logs `Minecraft End platform rebuilt at (100, 49, 0)`. `minecraft_world.rs` gets one call line in the switch hold, after the player is placed; the adapter step also runs it.
+- **Checked with javap (26.3):** `EndPlatformFeature.createEndPlatform` (the loops, `BlockState.is(Block)`, `destroyBlock(pos, true, null)` only when `breakBlocks`, `setBlockAndUpdate`), `EndPortalBlock.getPortalDestination` (`createEndPlatform(level, END_SPAWN_POINT.below(), true)` before the transition, on every trip into the End).
+- **Tests:** world `end_portal`: `the_end_platform_is_25_obsidian_under_75_air_in_vanilla_order`. `minecraft_terrain` `server`: `the_end_platform_is_rebuilt_and_drops_what_it_breaks` (an End level of seed 0: cobblestone at 101, 50, 0, a missing obsidian and a dirt block in the floor; afterwards the 25 obsidian and 75 air are whole, the cobblestone and the dirt dropped, nothing dropped for the obsidian already there, and a second call changes nothing). `the_end`: `the_platform_lies_in_two_chunks_below_the_end_spawn_point`, `an_arrival_rebuilds_the_platform_once_its_chunks_are_in` (a real End level: nothing before the chunks stream in, then one job that clears the cobblestone and drops it, never a second one).
+- **Decisions:**
+  - Vanilla builds the platform before the player arrives, loading its chunks at once. Here it waits for the chunks to stream in and runs on the server thread while the loading screen still holds the player, so the platform is whole before they can move. The scene shows the server's changes from the first frame after the hold.
+  - The flag is per player (`Player.end`), so two players arriving each rebuild it, as each trip does in vanilla.
+- **Test steps:**
+  1. Keep `IW4L_MINECRAFT_WORLD=x2test` and the kit below. Go into the End through the ring's portal (entry 7).
+  2. On the platform, place cobblestone at 101, 50, 0 (one block east of where you stand, at head height: `/setblock 101 50 0 minecraft:cobblestone` works too), and mine one obsidian block of the floor at its edge. **Screenshot 3.**
+  3. Type `/kill`, respawn in the overworld, and go back through the ring's portal. You stand on a whole 5x5 obsidian floor with nothing around your head, and a cobblestone item lies on the platform (pick it up). The obsidian you mined is back; it doesn't drop a second time. **Screenshot 4.** The log says `Minecraft End platform rebuilt at (100, 49, 0)`.
+  4. Wait 20 seconds in the overworld before going back, so the End level closes (the log says it saved and closed): the platform is rebuilt the same way in the reopened level.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_shovel+efficiency=5,minecraft:cobblestone*64
+```

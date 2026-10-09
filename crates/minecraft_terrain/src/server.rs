@@ -1244,6 +1244,10 @@ impl ServerSim {
         }
     }
 
+    pub fn create_end_platform(&mut self, origin: BlockPos) {
+        self.level.create_end_platform(minecraftoss_core::BlockPos::new(origin.0, origin.1, origin.2), true);
+    }
+
     /// The players the level can see (fire spreads near them), and the
     /// difficulty (`Difficulty.getId`).
     pub fn set_players(&mut self, positions: &[[f64; 3]], difficulty: i32) {
@@ -4872,6 +4876,56 @@ mod tests {
         let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
         assert!(changes.values().flatten().all(|b| b.id.key() != "minecraft:end_portal"));
         assert!(server.level.sounds.iter().all(|s| s.event != minecraftoss_world::level::end_portal::OPEN_SOUND));
+    }
+
+    fn end_world(chunks: impl Iterator<Item = (i32, i32)>) -> Option<ServerSim> {
+        let paths = DataPaths::discover().ok()?;
+        let registries = Arc::new(Registries::load(&paths).ok()?);
+        let generator = TerrainGenerator::end(registries.clone(), 0).ok()?;
+        let states = Arc::new(BlockStates::new(registries, 0, generator.chunk_min_y, generator.chunk_height).ok()?);
+        let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(generator), "minecraft:the_end").ok()?);
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:the_end");
+        for (x, z) in chunks {
+            server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+        }
+        Some(server)
+    }
+
+    #[test]
+    fn the_end_platform_is_rebuilt_and_drops_what_it_breaks() {
+        let Some(mut server) = end_world((5..=7).flat_map(|x| (-1..=1).map(move |z| (x, z)))) else { return };
+        let name = |server: &ServerSim, pos: BlockPos| {
+            let state = server.level.block(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2));
+            let blocks = &server.level.registries().blocks;
+            blocks.block(blocks.block_of(state)).name.as_str().to_owned()
+        };
+        assert_eq!(name(&server, (100, 48, 0)), "minecraft:obsidian", "the End generates its platform");
+        server.player_edit_block((101, 50, 0), Some(&Block::new("minecraft:cobblestone")), PlayerEdit::Place);
+        server.player_edit_block((99, 48, -1), None, PlayerEdit::Break);
+        server.player_edit_block((102, 48, 2), Some(&Block::new("minecraft:dirt")), PlayerEdit::Place);
+        server.take_changes();
+        let before = server.items().len();
+        server.create_end_platform((100, 49, 0));
+        for x in 98..=102 {
+            for z in -2..=2 {
+                assert_eq!(name(&server, (x, 48, z)), "minecraft:obsidian", "{x} 48 {z}");
+                for y in 49..=51 {
+                    assert_eq!(name(&server, (x, y, z)), "minecraft:air", "{x} {y} {z}");
+                }
+            }
+        }
+        let count = |server: &ServerSim, id: &str| server.items().iter().filter(|item| item.item == id).count();
+        assert_eq!(server.items().len(), before + 2);
+        assert_eq!((count(&server, "minecraft:cobblestone"), count(&server, "minecraft:dirt")), (1, 1));
+        assert_eq!(count(&server, "minecraft:obsidian"), 0);
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(block_at(&changes, (101, 50, 0)), None);
+        assert_eq!(block_at(&changes, (99, 48, -1)).map(|b| b.id.key()), Some("minecraft:obsidian".to_owned()));
+        assert!(!changes.contains_key(&(100, 48, 0)), "blocks already right are left alone");
+        server.create_end_platform((100, 49, 0));
+        assert!(server.take_changes().is_empty(), "a whole platform changes nothing");
+        assert_eq!(server.items().len(), before + 2);
     }
 
     #[test]

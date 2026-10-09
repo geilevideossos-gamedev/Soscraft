@@ -8,14 +8,15 @@ use minecraft_terrain::terrain::Dimension;
 
 pub(crate) fn step(
     player: &mut Player,
-    levels: &BTreeMap<Dimension, Level>,
+    levels: &mut BTreeMap<Dimension, Level>,
     globals: &Globals,
     feet: Option<[f64; 3]>,
     seconds: f64,
 ) {
-    let Some(level) = levels.get(&player.dimension) else {
+    let Some(level) = levels.get_mut(&player.dimension) else {
         return;
     };
+    arriving(player, level);
     if !minecraft_survival::the_end::step(player, &level.terrain, feet, seconds) {
         return;
     }
@@ -31,5 +32,15 @@ pub(crate) fn step(
             feet,
             to.dimension_type()
         ),
+    }
+}
+
+pub(crate) fn arriving(player: &mut Player, level: &mut Level) {
+    if minecraft_survival::the_end::build_platform(level, player) {
+        diag::info!(
+            World,
+            "Minecraft End platform rebuilt at {:?}",
+            minecraft_survival::the_end::platform_origin()
+        );
     }
 }
