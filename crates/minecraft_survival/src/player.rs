@@ -87,6 +87,15 @@ pub fn starting_inventory(recipes: Arc<RecipeBook>, kit: Option<&str>) -> Invent
     inventory
 }
 
+pub fn hold_off_death(
+    survival: &mut Survival,
+    inventory: &mut Inventory,
+    selected: usize,
+    struck: bool,
+) -> bool {
+    (struck || survival.status.health <= 0.0) && survival.protect(inventory, selected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +177,33 @@ mod tests {
                 (11, "minecraft:diamond_sword", 1)
             ]
         );
+    }
+
+    #[test]
+    fn a_totem_holds_off_death_only_when_the_player_would_die() {
+        let mut survival = Survival::default();
+        survival.observe(100, 100);
+        let mut inventory = Inventory::default();
+        inventory.slots[40] = Some(ItemStack::new(crate::offhand::TOTEM, 1));
+        assert!(!hold_off_death(&mut survival, &mut inventory, 0, false));
+        assert!(inventory.slots[40].is_some());
+        survival.status.health = 0.0;
+        assert!(hold_off_death(&mut survival, &mut inventory, 0, false));
+        assert_eq!(survival.status.health, 1.0);
+        assert!(inventory.slots[40].is_none());
+        survival.status.health = 0.0;
+        assert!(!hold_off_death(&mut survival, &mut inventory, 0, false));
+    }
+
+    #[test]
+    fn a_totem_pop_from_the_game_uses_the_held_totem_at_any_health() {
+        let mut survival = Survival::default();
+        survival.observe(100, 100);
+        let mut inventory = Inventory::default();
+        inventory.slots[2] = Some(ItemStack::new(crate::offhand::TOTEM, 1));
+        assert!(!hold_off_death(&mut survival, &mut inventory, 0, true));
+        assert!(hold_off_death(&mut survival, &mut inventory, 2, true));
+        assert!(inventory.slots[2].is_none());
+        assert_eq!(survival.status.health, 1.0);
     }
 }

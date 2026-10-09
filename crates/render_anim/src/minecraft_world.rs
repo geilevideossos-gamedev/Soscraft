@@ -1424,7 +1424,7 @@ fn update(
         entities.award_block_experience(inventory.slots[*selected].as_ref(), &dropping, &hand_mined);
         entities.drop_blocks(inventory.slots[*selected].as_ref(), &dropping, kept, &hand_mined);
         for &pos in &positions {
-            spill(containers, entities, pos);
+            minecraft_survival::level::spill(containers, entities, pos);
         }
     }
 
@@ -1560,7 +1560,7 @@ fn update(
             }
             for &pos in &positions {
                 if !minecraft_terrain::scene::Scene::block(&terrain.scene, pos).is_some_and(|b| minecraft_terrain::containers::Station::of(b).is_some() || minecraft_terrain::campfire::is_campfire(b)) {
-                    spill(containers, entities, pos);
+                    minecraft_survival::level::spill(containers, entities, pos);
                 }
             }
             terrain.stream.record_edits(&terrain.scene, &positions);
@@ -2225,14 +2225,6 @@ fn shape_id(
     })
 }
 
-fn spill(containers: &mut minecraft_terrain::containers::Containers, entities: &mut minecraft_survival::entities::Entities, pos: (i32, i32, i32)) {
-    let (items, experience) = containers.remove(pos);
-    for stack in items {
-        entities.world_items.drop_item_stack(stack, pos);
-    }
-    entities.experience_found += experience;
-}
-
 fn write_blocks(
     terrain: &mut minecraft_survival::level::Terrain,
     registries: &Registries,
@@ -2241,22 +2233,12 @@ fn write_blocks(
     entities: &mut minecraft_survival::entities::Entities,
     writes: Vec<((i32, i32, i32), Option<minecraft_terrain::scene::Block>)>,
 ) {
-    let positions: Vec<_> = writes.iter().map(|(p, _)| *p).collect();
-    for (at, block) in writes {
+    for (at, block) in &writes {
         let state = block.as_ref().and_then(|b| terrain.stream.states.state_of(b));
         let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, registries, state));
         sim::voxel::set_block_shape(at.0, at.1, at.2, shape);
-        terrain.scene.set(at, block);
     }
-    terrain.stream.record_edits(&terrain.scene, &positions);
-    terrain.stream.mark_edited(&terrain.scene, &positions);
-    for &at in &positions {
-        if minecraft_terrain::scene::Scene::block(&terrain.scene, at).is_some() {
-            entities.placed(&terrain.scene, at);
-        } else {
-            entities.broke(&[at]);
-        }
-    }
+    minecraft_survival::level::write_blocks(terrain, entities, writes);
 }
 
 fn finish_item_use(
@@ -2268,28 +2250,7 @@ fn finish_item_use(
     used: minecraft_survival::entities::SentItemUse,
     consumes: bool,
 ) {
-    let mut heard = used.outcome.sounds;
-    let spends = consumes || used.outcome.result.is_some();
-    if inventory.slots.get(used.slot).and_then(Option::as_ref).is_some_and(|stack| stack.id == used.held) {
-        if used.outcome.consumed
-            && spends
-            && let Some(slot) = inventory.slots.get_mut(used.slot)
-            && let Some(stack) = slot.as_mut()
-        {
-            stack.count -= 1;
-            if stack.count == 0 {
-                *slot = None;
-            }
-        }
-        if let Some(result) = used.outcome.result
-            && let Some(rest) = minecraft_terrain::bottle::filled_result(inventory, used.slot, result)
-        {
-            entities.world_items.toss(rest, used.eye, used.yaw, used.pitch);
-        }
-        if spends && inventory.wear_tool(used.slot, used.outcome.wear) {
-            heard.push(minecraft_terrain::flint::break_sound(entities.random_float()));
-        }
-    }
+    let heard = minecraft_survival::level::finish_item_use(entities, inventory, used, consumes);
     if let Some(sounds) = sounds {
         for sound in heard {
             sounds.play(packs, sound.event, sound.at.map(|at| Vec3::from_array(sim::voxel::to_map(origin, at))), sound.volume, sound.pitch);
@@ -2305,8 +2266,7 @@ fn hold_off_death(
     packs: &PackStack,
     struck: bool,
 ) {
-    if (struck || survival.status.health <= 0.0)
-        && survival.protect(inventory, selected)
+    if minecraft_survival::player::hold_off_death(survival, inventory, selected, struck)
         && let Some(sounds) = sounds
     {
         sounds.play(packs, minecraft_survival::offhand::TOTEM_SOUND, None, 1.0, 1.0);

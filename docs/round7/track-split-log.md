@@ -474,3 +474,35 @@ B7 is commit `9be1914`.
   - `starting_game_mode` takes the `IW4L_MINECRAFT_GAMEMODE` value as a second argument, read by the adapter, the same way B6's `starting_inventory` takes the kit: the server crate reads no environment for it, and the choice is testable.
   - The adapter now drops the client assets (`Loaded`) just before the server instead of just after it. Freeing them saves nothing, so the files are written in the same order (entities, then chunks, then `level.dat`, then the player file), and "saved in N ms" still covers the same work.
   - The procedures are free functions taking the parts they need (`&mut Globals`, `&mut Terrain`), so the call sites keep their argument order; only the close is a `Server` method, because it consumes the server.
+
+## C2. Minecraft block edits run from the level
+
+C1 is commit `8ad8272`.
+
+- **What changed:**
+  - `minecraft_survival/src/level.rs` (no comments, rustfmt-clean) gains three procedures from `render_anim/src/minecraft_world.rs`, unchanged apart from their paths:
+    - `spill(containers, entities, pos)`: a broken container's items drop at its block and its stored furnace XP is found.
+    - `write_blocks(terrain, entities, writes)`: the scene takes the blocks, the stream records and marks the edits, and the level server hears of each placed or broken block.
+    - `finish_item_use(entities, inventory, used, consumes)`: the held stack is spent, a filled bottle or bucket goes to the hand or is tossed, and the tool wears. It returns the sounds it heard (with the flint-and-steel break sound when the tool breaks) instead of playing them.
+  - `minecraft_survival/src/player.rs` gains `hold_off_death(survival, inventory, selected, struck)`, which returns whether a totem popped.
+  - `render_anim/src/minecraft_world.rs`:
+    - `spill` is gone; its two callers call `minecraft_survival::level::spill`.
+    - `write_blocks` keeps its signature. It sets the MW2 collision shape of every write first, then hands the writes to the level.
+    - `finish_item_use` and `hold_off_death` keep their signatures. They call the moved rules and play what comes back: the heard sounds, and `TOTEM_SOUND` when a totem popped. No call site changed.
+- **Tests added** (2, in `player.rs`): `a_totem_holds_off_death_only_when_the_player_would_die` (alive: the totem stays; at zero health: it pops and leaves one health; with no totem left: nothing) and `a_totem_pop_from_the_game_uses_the_held_totem_at_any_health` (the MW2 pop uses a totem in the selected slot even at full health, and none in another slot). `spill`, `write_blocks` and `finish_item_use` need a level server and a streamed world, so they have no unit test. Totals: `minecraft_survival` 128 (126 + 2), `render_anim` 34; the moved total stays 153.
+- **Checks:** `check -p launcher --locked` (no new warning), `test -p minecraft_survival --locked`, `test -p render_anim --locked`; the staged `level.rs` and `player.rs` pass `rustfmt --check --edition 2024` with empty output.
+- **Owner test** (placing, item uses, container drops and totems must work exactly as before):
+  1. Load a Minecraft match with the regression kit.
+  2. Place a few cobblestone and planks blocks, then walk into them: they block you at once, and they make the place sound.
+  3. Pour the water bucket on the ground: the water flows and the bucket is empty. Scoop the water up again: the bucket is full. Pour the lava bucket the same way and scoop it up.
+  4. Light a fire on the ground with flint and steel: the fire shows and the flint and steel loses durability (its bar shows).
+  5. Fill a glass bottle at the water: it becomes a water bottle.
+  6. Place a chest, put a few stacks in it and break it: the chest and every stack drop.
+  7. Place a furnace and smelt 8 raw iron with coal. Before taking the ingots out, break the furnace: the furnace, the ingots and the coal drop, and the XP bar fills a little.
+  8. Put the totem of undying in the offhand and fall from 20 blocks or more: the totem pops with its sound and you keep one heart.
+- **Kit:** `minecraft:cobblestone` x64, `minecraft:oak_planks` x64, `minecraft:water_bucket` x1, `minecraft:lava_bucket` x1, `minecraft:flint_and_steel` x1, `minecraft:glass_bottle` x4, `minecraft:chest` x2, `minecraft:furnace` x1, `minecraft:raw_iron` x16, `minecraft:coal` x16, `minecraft:totem_of_undying` x1 (all in the regression kit).
+- **Not done here:** nothing.
+- **Decisions:**
+  - The plan names these `Level::write_blocks` and `Level::spill`. They are free functions in `level.rs` instead, taking the level's parts (`&mut Terrain`, `&mut Containers`, `&mut Entities`). `update()` holds the level split into those parts, so a `&mut Level` method can't be called there, and the call sites keep their argument order.
+  - `hold_off_death` goes to `player.rs` rather than `level.rs`: it only reads the player's survival and inventory. `survival.rs` is a moved file, so it stays unedited during the split.
+  - The adapter's `write_blocks` now sets every collision shape before the scene takes any of the blocks, where it used to alternate per block. Shapes come from the block states alone, and nothing reads the MW2 collision in between (`sim` reads it in FixedUpdate), so the end state is the same even when a position repeats in one write list.
