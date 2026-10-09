@@ -485,6 +485,22 @@ fn closed_chest_model(block: &Block) -> Result<ResolvedModel> {
     Ok(chest_model(texture, chest_type, facing))
 }
 
+pub fn opened_chest_model(block: &Block, openness: f32) -> Result<ResolvedModel> {
+    let mut model = closed_chest_model(block)?;
+    let shut = 1.0 - openness;
+    let angle = -((1.0 - shut * shut * shut) * std::f32::consts::FRAC_PI_2);
+    if angle != 0.0 {
+        let hinge = ElementRotation {
+            origin: [0.0, 9.0 / 16.0, 1.0 / 16.0],
+            matrix: glam::Mat3::from_rotation_x(angle).to_cols_array_2d(),
+        };
+        for element in &mut model.elements[1..] {
+            element.rotation = Some(hinge);
+        }
+    }
+    Ok(model)
+}
+
 pub(crate) fn chest_model(texture: ResourceId, chest_type: &str, facing: &str) -> ResolvedModel {
     let omitted_side = match chest_type {
         "left" => Some("west"),
@@ -1166,6 +1182,53 @@ mod tests {
             assert_eq!(lock_south.uv[1], 5.0 / 64.0);
             assert_eq!(lock_south.uv[3], 1.0 / 64.0);
         }
+    }
+    #[test]
+    fn a_chest_lid_swings_up_about_its_back_hinge() {
+        let points = |element: &Element| -> Vec<Vec3> {
+            element
+                .faces
+                .iter()
+                .flat_map(|face| crate::mesh::element_corners(element, &face.direction).unwrap())
+                .map(Vec3::from_array)
+                .collect()
+        };
+        let bounds = |element: &Element| {
+            points(element).iter().fold(
+                (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+                |(low, high), point| (low.min(*point), high.max(*point)),
+            )
+        };
+        let close = |a: Vec3, b: Vec3| (a - b).abs().max_element() < 1e-5;
+        let south = Block::new("minecraft:chest").with("facing", "south");
+        let shut = closed_chest_model(&south).unwrap();
+        let rest = opened_chest_model(&south, 0.0).unwrap();
+        assert!(rest
+            .elements
+            .iter()
+            .zip(&shut.elements)
+            .all(|(a, b)| a.rotation.is_none() && points(a) == points(b)));
+        let open = opened_chest_model(&south, 1.0).unwrap();
+        assert_eq!(points(&open.elements[0]), points(&shut.elements[0]));
+        let (low, high) = bounds(&open.elements[1]);
+        assert!(close(low, Vec3::new(1.0, 9.0, -4.0) / 16.0), "{low}");
+        assert!(close(high, Vec3::new(15.0, 23.0, 1.0) / 16.0), "{high}");
+        let (low, high) = bounds(&open.elements[2]);
+        assert!(close(low, Vec3::new(7.0, 23.0, -1.0) / 16.0), "{low}");
+        assert!(close(high, Vec3::new(9.0, 24.0, 3.0) / 16.0), "{high}");
+        let north = Block::new("minecraft:ender_chest").with("facing", "north");
+        let (low, high) = bounds(&opened_chest_model(&north, 1.0).unwrap().elements[1]);
+        assert!(close(low, Vec3::new(1.0, 9.0, 15.0) / 16.0), "{low}");
+        assert!(close(high, Vec3::new(15.0, 23.0, 20.0) / 16.0), "{high}");
+        let half = opened_chest_model(&south, 0.5).unwrap();
+        let lid = &half.elements[1];
+        let top = lid.faces.iter().find(|face| face.direction == "up").unwrap();
+        let corners = crate::mesh::element_corners(lid, "up").unwrap();
+        let normal = crate::mesh::model_face_normal(lid, top, &corners).unwrap();
+        let swung = (1.0 - 0.5f32.powi(3)) * 90.0;
+        assert!((swung - 78.75).abs() < 1e-4);
+        let (sin, cos) = swung.to_radians().sin_cos();
+        assert!(close(normal, Vec3::new(0.0, cos, -sin)), "{normal}");
     }
     #[test]
     fn variant_and_multipart() {

@@ -223,7 +223,7 @@ Brief: `b2-shulker-lid.md`. `crates/minecraft_terrain/src/terrain.rs` is off lim
 
 ### 1. Minecraft shulker box model takes a lid opening progress
 
-Commit: (next entry)
+Commit: cf6f8a2
 
 - **Changed:** `special_models.rs`: new `shulker_box_model(block, progress)` (the block model's shulker branch moved into it; `block_model` passes 0). `push_shulker` takes the progress and poses the lid as `ShulkerBoxRenderer$ShulkerBoxModel.setupAnim` (26.3, javap): `setPos(0, 24 - p * 0.5 * 16, 0)` and `yRot = 270 * p` degrees, under the box's facing pose; the base never moves. The item model passes 0.
 - **Tests:** `a_shulker_lid_rises_half_a_block_and_turns_three_quarters` (progress 0 is today's model; at 1 an upward lid spans y 0.75 to 1.5, a downward one -0.5 to 0.25, a north one z -0.5 to 0.25, all times the 0.9995 scale; at 0.5 the lid is turned 135 degrees; the base is the same at 0, 0.5 and 1).
@@ -234,6 +234,15 @@ Commit: (next entry)
 ```
 IW4L_MINECRAFT_KIT=shulker_box,red_shulker_box*4
 ```
+
+### 2. Minecraft chest model takes a lid openness
+
+Commit: (next entry)
+
+- **Changed:** `model.rs`: new `opened_chest_model(block, openness)`: the closed chest model (single, left or right half, plain, trapped, ender or copper, any facing) with the lid and the lock turned about the hinge at (0, 9, 1) px by `-(1 - (1 - o)^3) * pi/2`, as `ChestRenderer.submit` eases the openness and `ChestModel.setupAnim` sets `lid.xRot = lock.xRot` (26.3, javap: lid box (1, 0, 0) 14x5x14 and lock (7, -2, 14) 2x4x1, both at offset (0, 9, 1)). At openness 0 it is the closed model, unrotated, so the section mesh and the frame pass draw the same vertices.
+- **Tests:** `a_chest_lid_swings_up_about_its_back_hinge` (0 is the closed model; at 1 the body stays, the lid stands up behind the hinge, y 9 to 23 and z -4 to 1 px for a south chest, the lock on top, a north ender chest mirrored; at 0.5 the eased lid is at 78.75 degrees).
+- **Test steps:** nothing changes in game yet.
+- **Kit:** none.
 
 ## After the split
 
