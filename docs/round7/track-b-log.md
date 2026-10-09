@@ -1103,3 +1103,22 @@ Commit: (this entry; the previous one is `1603069`)
 - **Tests:** none (doc only).
 - **Test steps:** none.
 - **Kit:** none.
+
+## Final check of the glue
+
+### Track B log gets the final checks of the glue and one kit for its second half
+
+Commit: (this entry; the review fixes above are `04128c7`, `1603069` and `eb9b10c`)
+
+- **Changed:** this log only.
+- **Clippy:** `clippy -p minecraft_survival -p minecraft_terrain -p render -p render_anim -p sim --locked --all-targets -- -A clippy::approx_constant` (every crate `git diff --stat 984bd51..HEAD` names) reports no warning on any line the second half added or changed (`git diff -U0 984bd51..HEAD`), and none of the multi-line warnings in the touched files starts or spans a line of it. The warnings left in those files were there before (`mesh.rs`, `model.rs`, `server.rs` 1360 and 1504, `block_particles.rs` 373, `entities.rs` 76 and 623, `extract.rs` 28 to 830, `minecraft_world.rs` 126, 390 and 399, `occupancy/remote_body.rs`, `frame.rs` 81, 592, 690 and 898).
+- **Tests:** `minecraft_survival` 155 passed, `minecraft_terrain` 580 passed (3 ignored), `render` passed (no unit tests), `render_anim` 50 passed, `sim` 64 passed; none failed.
+- **Test steps:** none new. Each entry of the throw glue, lid glue, body glue and review fix groups has its own steps, and the kit below covers most of them in one world. Not covered, use those entries' own kits:
+  - Throw glue: the brown and blue eggs (entry 3), Healing II as a splash potion, Lingering Poison, splash water on fire (entry 7: netherrack and flint and steel), long weakness, strong turtle master and long poison drinks (entry 8), the diamond chestplate (entry 9), Riptide I (entry 15), the zombies (entries 8 and 12, or `/summon minecraft:zombie`).
+  - Lid glue: the trapped and copper chests, the barrel, the furnace and the brewing stand (entry 3).
+  - Body glue: the lever (entry 2), the other armour textures (entry 2 step 5, group step 7), the enchanted leather chestplate (entry 3 step 2).
+- **Kit:** one kit for the second half, 27 stacks (potions, tridents, armour, the bucket and the shulker box take one slot each):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:experience_bottle*64,minecraft:snowball*16,minecraft:egg*16,minecraft:ender_pearl*16,minecraft:wind_charge*64,minecraft:splash_potion@poison,minecraft:splash_potion@harming,minecraft:splash_potion@water,minecraft:lingering_potion@regeneration,minecraft:potion@strong_healing,minecraft:trident,minecraft:trident+loyalty=3,minecraft:trident+riptide=3,minecraft:witch_spawn_egg*2,minecraft:cow_spawn_egg*4,minecraft:water_bucket,minecraft:red_shulker_box,minecraft:chest*4,minecraft:ender_chest,minecraft:oak_slab*16,minecraft:diamond_helmet+protection=4,minecraft:iron_chestplate+protection=4,minecraft:leather_leggings@red,minecraft:iron_boots,minecraft:cobblestone*64,minecraft:torch*64,minecraft:diamond_sword+sharpness=5
+```
