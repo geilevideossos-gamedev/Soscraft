@@ -108,6 +108,7 @@ struct Runtime {
     closing: Vec<std::thread::JoinHandle<()>>,
     shown: Option<Dimension>,
     origins: HashMap<Dimension, [f64; 3]>,
+    switch_screen: Option<minecraft_survival::switch::LoadingReason>,
 }
 
 impl Drop for Runtime {
@@ -424,6 +425,9 @@ fn update(
         }
     }
     ui.loading_world = runtime.loading.is_some() || (runtime.world.is_some() && (runtime.spawn_gate.holding(now_ms) || awaiting_level(&runtime)));
+    if runtime.switch_screen.is_some() && !local_switching(&runtime) && !runtime.spawn_gate.holding(now_ms) {
+        runtime.switch_screen = None;
+    }
     let Some(mut authority) = authority else {
         return;
     };
@@ -526,7 +530,7 @@ fn update(
         }
     }
 
-    follow_levels(&mut runtime, &mut view, now_ms);
+    let failed = follow_levels(&mut runtime, &mut view, now_ms);
     let origin = view.origin;
     let Runtime {
         world,
@@ -548,6 +552,8 @@ fn update(
         atlas_animation,
         animation_clock,
         spawn_gate,
+        shown,
+        switch_screen,
         ..
     } = &mut *runtime;
     let (Some(world), Some(server), Some(local_uuid)) = (world.as_mut(), server.as_mut(), local_uuid.as_ref()) else {
@@ -567,6 +573,28 @@ fn update(
         puppet.active = false;
         return;
     };
+    if player.switching.is_some() {
+        for (dimension, error) in &failed {
+            show_chat(&mut ui.chat, inventory_ui, &world.packs, &[minecraft_survival::switch::failed_message(*dimension, error)]);
+        }
+    }
+    if let Some(switch) = player.switching.filter(|switch| !switch.left) {
+        if let Some(switching) = player.switching.as_mut() {
+            switching.left = true;
+        }
+        *switch_screen = Some(switch.reason);
+        if let Some(level) = levels.get_mut(&switch.from) {
+            leave_level(level, player, &mut ui, inventory_ui);
+        }
+        sim::voxel::switch_level(origin);
+        *shown = None;
+        authority.0.set_minecraft_abilities(local.0, ability_bits(&player.mode) | playerstate_iw4::pm_flags::MC_INVULNERABLE);
+        diag::info!(World, "Minecraft player leaves {} for {}", switch.from.dimension_type(), switch.to.dimension_type());
+        ui.active = false;
+        ui.inventory_open = false;
+        puppet.active = false;
+        return;
+    }
     let loaded: Vec<Dimension> = levels.keys().copied().collect();
     let Some(level) = levels.get_mut(&player.dimension) else {
         ui.active = false;
@@ -574,6 +602,26 @@ fn update(
         puppet.active = false;
         return;
     };
+    if player.switching.is_some() {
+        let aspect = windows.single().map(|w| w.width() / w.height().max(1.0)).unwrap_or(16.0 / 9.0);
+        let ps = presented.player(local.0).filter(|ps| ps.pm_type == 0);
+        if let Some(ps) = ps.filter(|_| player.arrival.is_some()) {
+            place_player(player, &mut authority.0, local.0, ps, origin, spawn_gate, now_ms);
+        }
+        authority.0.set_minecraft_abilities(local.0, ability_bits(&player.mode) | playerstate_iw4::pm_flags::MC_INVULNERABLE);
+        let at = player.place.filter(|place| place.dimension == player.dimension).map_or(origin, |place| place.feet);
+        let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
+        stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, at, aspect, now_ms);
+        globals.advance_clocks(time.delta_secs_f64());
+        if ps.is_some() && player.arrival.is_none() && !spawn_gate.waiting() {
+            player.switching = None;
+            diag::info!(World, "Minecraft player arrived in {} at {:?}", player.dimension.dimension_type(), at);
+        }
+        ui.active = false;
+        ui.inventory_open = false;
+        puppet.active = false;
+        return;
+    }
     if let Some(ps) = presented.player(local.0) {
         if player.observe_life(ps.pm_type) && player.respawn.is_none_or(|respawn| respawn.forced) {
             let open = |pos| minecraft_survival::level::open_for_respawn(&level.terrain, &globals.registries, pos);
@@ -2414,22 +2462,22 @@ fn awaiting_level(runtime: &Runtime) -> bool {
     server.players.get(local).is_some_and(|player| !server.levels.contains_key(&player.dimension) || runtime.shown != Some(player.dimension))
 }
 
-fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u64) {
+fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u64) -> Vec<(Dimension, String)> {
     let (Some(server), Some(local)) = (runtime.server.as_mut(), runtime.local.as_ref()) else {
-        return;
+        return Vec::new();
     };
     let ticks = std::mem::take(&mut server.globals.level_ticks);
     for closed in server.close_empty_levels(ticks) {
         runtime.origins.remove(&closed);
     }
     server.open_levels(VIEW_DISTANCE);
-    server.finish_opening();
+    let failed: Vec<(Dimension, String)> = server.finish_opening().into_iter().filter_map(|(dimension, opened)| opened.err().map(|error| (dimension, error))).collect();
     let Some(player) = server.players.get(local) else {
-        return;
+        return failed;
     };
     let dimension = player.dimension;
-    let Some(level) = server.levels.get(&dimension).filter(|_| runtime.shown != Some(dimension)) else {
-        return;
+    let Some(level) = server.levels.get_mut(&dimension).filter(|_| runtime.shown != Some(dimension)) else {
+        return failed;
     };
     let (x, y, z) = level.terrain.stream.player_spawn;
     let arrived = player.arrival.or(player.place).filter(|place| place.dimension == dimension).map(|place| place.feet);
@@ -2450,6 +2498,8 @@ fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u
     view.light_volume = None;
     runtime.shapes.clear();
     runtime.shape_ids.clear();
+    let chunks = level.terrain.stream.reshow(&level.terrain.scene);
+    apply_streamed(&server.globals.registries, &mut runtime.shapes, &mut runtime.shape_ids, (chunks, Vec::new()));
     runtime.light = Some(SkyLight::streamed());
     runtime.light_volume_at = None;
     runtime.cloud_center = None;
@@ -2460,6 +2510,43 @@ fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u
     runtime.spawn_gate.start(now_ms);
     runtime.shown = Some(dimension);
     diag::info!(World, "Minecraft level shown: {} with {:?} at map origin", dimension.dimension_type(), origin);
+    failed
+}
+
+fn local_switching(runtime: &Runtime) -> bool {
+    let (Some(server), Some(local)) = (runtime.server.as_ref(), runtime.local.as_ref()) else {
+        return false;
+    };
+    server.players.get(local).is_some_and(|player| player.switching.is_some())
+}
+
+fn leave_level(
+    level: &mut minecraft_survival::level::Level,
+    player: &mut minecraft_survival::player::Player,
+    ui: &mut frame::MinecraftUi,
+    inventory_ui: &mut crate::minecraft_inventory::InventoryUi,
+) {
+    let minecraft_survival::player::Player { inventory, selected, ender, survival, hand, steps, place, .. } = player;
+    ui.inventory_open = false;
+    if let Some(entities) = level.entities.as_mut() {
+        entities.leave(inventory, *selected);
+        let roll = entities.random_float();
+        let thrown = level.containers.with_ender(ender, |containers| inventory_ui.apply_input(ui, inventory, selected, containers, &mut || roll));
+        if let Some(place) = place.as_ref() {
+            let thrower = crate::minecraft_inventory::Thrower {
+                eye: glam::DVec3::new(place.feet[0], place.feet[1] + crate::minecraft_spawn_gate::SPAWN_EYE_HEIGHT, place.feet[2]),
+                yaw: place.yaw,
+                pitch: place.pitch,
+            };
+            crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
+        }
+    }
+    survival.stop_eating();
+    hand.blocking = None;
+    hand.swing = None;
+    hand.recent.clear();
+    steps.air_peak = None;
+    steps.last = None;
 }
 
 fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {

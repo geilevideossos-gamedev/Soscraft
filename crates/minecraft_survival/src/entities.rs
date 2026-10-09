@@ -486,6 +486,13 @@ impl Entities {
         self.item_use_waiting.is_some()
     }
 
+    pub fn leave(&mut self, inventory: &mut Inventory, selected: usize) {
+        let picked = std::mem::take(&mut self.server_picked);
+        take_picked(inventory, selected, picked);
+        self.item_use_waiting = None;
+        self.pearl_landings.clear();
+    }
+
     pub fn hatch_egg(&mut self, inventory: &Inventory, slot: usize, kind: String, position: [f64; 3], spends: bool) {
         if self.eggs_waiting.send_from(inventory, slot, spends) {
             let y_rot = minecraftoss_core::entity_data::wrap_degrees(self.random.next_float() * 360.0);
@@ -1017,6 +1024,15 @@ fn decode(key: u64) -> Option<MobHit> {
     })
 }
 
+fn take_picked(inventory: &mut Inventory, selected: usize, picked: Vec<(i32, [f64; 3], String, i32, Option<String>)>) {
+    for (_, _, item, count, components) in picked {
+        let mut stack = ItemStack::new(&item, count.clamp(0, 255) as u8);
+        stack.components = components.as_deref().and_then(|c| serde_json::from_str(c).ok());
+        stack.max = stack.max.min(inventory.recipes.max_stack(&item));
+        let _ = inventory.add_item(stack, selected);
+    }
+}
+
 fn weather_name(weather: &WeatherData) -> &'static str {
     match (weather.raining, weather.thundering) {
         (true, true) => "thunder",
@@ -1104,5 +1120,20 @@ mod tests {
         assert_eq!(tool.id, LOOT_TOOL);
         assert_eq!(tool.components, Some(serde_json::json!({ "minecraft:enchantments": { "minecraft:silk_touch": 1 } })));
         assert_eq!(loot_tool_with(None).components, None);
+    }
+
+    #[test]
+    fn stacks_the_old_level_let_the_player_pick_up_reach_the_inventory_on_leaving() {
+        let mut inventory = Inventory::default();
+        inventory.slots[0] = Some(ItemStack::new("minecraft:dirt", 60));
+        let picked = vec![
+            (7, [1.0, 64.0, 1.0], "minecraft:dirt".to_owned(), 10, None),
+            (8, [1.0, 64.0, 1.0], "minecraft:diamond_sword".to_owned(), 1, Some(r#"{"minecraft:damage":5}"#.to_owned())),
+        ];
+        take_picked(&mut inventory, 0, picked);
+        let count = |id: &str| inventory.slots.iter().flatten().filter(|stack| stack.id == id).map(|stack| u32::from(stack.count)).sum::<u32>();
+        assert_eq!(count("minecraft:dirt"), 70);
+        let sword = inventory.slots.iter().flatten().find(|stack| stack.id == "minecraft:diamond_sword").expect("the sword");
+        assert_eq!(sword.components, Some(serde_json::json!({ "minecraft:damage": 5 })));
     }
 }

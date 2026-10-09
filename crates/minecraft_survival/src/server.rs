@@ -372,6 +372,10 @@ impl Server {
                             .filter(|place| place.dimension != dimension)
                             .unwrap_or(spawn);
                         player.arrive(back);
+                        if let Some(switch) = player.switching.as_mut() {
+                            switch.to = back.dimension;
+                            switch.arrival = Some(back);
+                        }
                     }
                     finished.push((dimension, Err(error)));
                 }
@@ -1357,6 +1361,49 @@ mod tests {
             "with nowhere else to go, the world spawn"
         );
         assert_eq!(alex.dimension, Dimension::Overworld);
+    }
+
+    #[test]
+    fn a_switching_player_opens_its_new_level_and_arrives_where_it_was_sent() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let (_dir, save) = world("switch");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let mut steve = join(Some(&save), &recipes, &rules, joining(&profile("Steve")));
+        let home = steve.place.expect("a joining player stands somewhere");
+        steve.arrival = None;
+        let roof = Place::standing(Dimension::Nether, [100.5, 128.0, -200.5], 30.0, 0.0);
+        steve.switch_to(Dimension::Nether, Some(roof), crate::switch::LoadingReason::NetherPortal);
+        let steve_id = steve.uuid.clone();
+        let mut server = server_with(test_globals(registries, Some(save)), vec![steve]);
+        assert_eq!(server.known_spawn(Dimension::Nether, Some(roof)), Some((100, 128, -201)));
+        server.open_levels(2);
+        assert_eq!(server.opening.keys().copied().collect::<Vec<_>>(), vec![Dimension::Nether]);
+        assert_eq!(wait_for_levels(&mut server), vec![(Dimension::Nether, Ok(()))]);
+        let steve = &server.players[&steve_id];
+        assert_eq!((steve.dimension, steve.arrival), (Dimension::Nether, Some(roof)));
+        assert!(steve.switching.is_some(), "the switch ends when the player is let in");
+        assert_eq!(server.levels[&Dimension::Nether].terrain.stream.player_spawn, (100.5, 128.0, -200.5));
+        assert!(server.close_empty_levels(EMPTY_TIME).is_empty(), "the level the player switched into stays open");
+        let player = server.players.get_mut(&steve_id).unwrap();
+        player.place = Some(home);
+        player.switch_to(Dimension::End, None, crate::switch::LoadingReason::EndPortal);
+        let loader = LevelLoader::open(
+            &mut server.globals,
+            Dimension::End,
+            2,
+            None,
+            |_terrain: &mut Terrain| -> Arrival { panic!("the End fails") },
+        );
+        server.opening.insert(Dimension::End, loader);
+        let finished = wait_for_levels(&mut server);
+        assert!(finished[0].1.is_err(), "{finished:?}");
+        let steve = &server.players[&steve_id];
+        assert_eq!((steve.dimension, steve.arrival), (Dimension::Overworld, Some(home)));
+        let switch = steve.switching.expect("still switching, back home");
+        assert_eq!((switch.to, switch.arrival), (Dimension::Overworld, Some(home)));
     }
 
     #[test]

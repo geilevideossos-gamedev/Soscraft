@@ -198,7 +198,7 @@ IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:obsidian*64,
 
 ### 10. The Minecraft debug start passes clippy
 
-Commit: filled in by `git log` under this subject
+Commit: 079cb532
 
 - **Changed:** the one clippy finding on this group's lines: the adapter reads `IW4L_MINECRAFT_DIMENSION` with `as_deref().unwrap_or("")` instead of `unwrap_or_default` (disallowed by `clippy.toml`).
 - **Clippy:** `clippy -p minecraft_survival -p sim -p minecraft_terrain -p render_anim --tests --no-deps -- -A clippy::approx_constant` has no other finding on a line of this group; the rest are older (`entities.rs` 76 and 613, `voxel.rs` 47, 325 and 381, and many in `minecraft_terrain`, `sim` and `render_anim`).
@@ -217,3 +217,27 @@ Commit: filled in by `git log` under this subject
 - **Handed to S4:** the switch time for E1-13 (`voxel::switch_level` is where to record it).
 - **After track C:** nothing new in this group.
 - **MinecraftOSS patches in this group:** none.
+
+## Group S3: the switch
+
+### 11. Minecraft players travel between dimensions behind a loading screen (E1-8)
+
+Commit: filled in by the next entry
+
+- **Changed:**
+  - New `minecraft_survival/src/switch.rs`: `LoadingReason { NetherPortal, EndPortal, Other }` and `loading_reason(dead, from, to)`, as vanilla's `ClientPacketListener.determineLevelLoadingReason` (checked with javap: dead gives `OTHER`, then the Nether on either side gives `NETHER_PORTAL`, then the End on either side `END_PORTAL`, else `OTHER`). `Switch { from, to, arrival, reason, respawn, left }`, and `failed_message`, the red chat line of a level that failed to load.
+  - `minecraft_survival/src/player.rs`: `Player.switching` and `Player::switch_to(to, arrival, reason)`: the player keeps everything (inventory, health, UUID, respawn point) and only their level changes. Their old place stays as where to go back to; an arrival outside the target dimension is not taken (`None` lets the level loader choose, as a portal search will). `Player.respawning` is added for entry 13.
+  - `minecraft_survival/src/server.rs`: a level that fails to open turns a switching player's switch back to where they came from.
+  - `minecraft_survival/src/entities.rs` (one method and its helper): `Entities::leave` puts the stacks the old level already let the player pick up into the inventory, cancels a waiting item use and drops pending pearl landings, so nothing of the old level lands in the new one.
+  - `minecraft_terrain/src/terrain.rs`: `TerrainStream::reshow(scene)`: a level shown again (a return within its 15 seconds) hands every chunk it holds back for collision, sends its light again and rebuilds every section, as the renderer and the voxel world dropped them.
+  - `render_anim/src/minecraft_world.rs` (load/level handling only):
+    - **Leave**, the frame after `switch_to`: the container screen closes (loose crafting items go back or drop in the old level), `Entities::leave` runs on the old level, eating and blocking stop, the step and fall state and the recent placements clear, the voxel world drops its chunks (so `awaiting_ground` holds the player still), and `MC_INVULNERABLE` is set (vanilla's `isChangingDimension`).
+    - **Arrive:** `follow_levels` shows the new level when it is open (switch_level to its origin, fresh shape tables, light, clouds, environment, mining and minimap, a new `view.generation`, `reshow`, and the spawn gate).
+    - **Hold:** while the player is switching, the player is teleported to the arrival facing its angles, the level streams around the arrival and nothing else of the level runs (no mob ticks, so no mob hits); the world clocks keep going. When the gate has the arrival's chunks with collision and a visible section, the switch ends and the game goes on; the loading flag stays up for the gate's 500 ms close delay.
+    - A level that fails to load sends the player back with a red chat line (`minecraft:the_end could not be loaded: ...`).
+- **Tests:** `switch`: `the_loading_reason_follows_determine_level_loading_reason` (all nine pairs alive, and death in each), `a_switch_keeps_only_an_arrival_in_its_target_dimension`, `a_level_that_failed_to_load_says_so_in_red`. `player`: `a_switching_player_keeps_where_it_stood_until_it_arrives`. `server`: `a_switching_player_opens_its_new_level_and_arrives_where_it_was_sent` (one loader, the arrival as the Nether's known spawn, the player placed at it, the level stays open, then an End that panics while opening sends the player home with the switch pointing back). `entities`: `stacks_the_old_level_let_the_player_pick_up_reach_the_inventory_on_leaving`. `terrain`: `a_level_shown_again_sends_its_chunks_and_light_again`.
+- **Decisions:**
+  - The player is held (frozen and invulnerable, the level not ticking) until the gate lets them in, instead of vanilla's 60-tick `hasClientLoaded` timeout with the level ticking: here the client and the server are one frame loop, so a level that ticks while its chunks are missing would let mobs hit a player who cannot move.
+  - A remote killstreak (AC-130, predator, chopper gunner) does not hold a switch yet; that rule comes with the ordnance work of S4 (E1-13).
+- **Test steps:** nothing starts a switch on its own yet; entry 13 (respawning after death in the Nether) is the first trigger, and its steps test this entry too.
+- **Kit:** none.

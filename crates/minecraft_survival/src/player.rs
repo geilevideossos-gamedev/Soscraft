@@ -12,6 +12,7 @@ use crate::death::DeathWatch;
 use crate::offhand::Blocking;
 use crate::player_nbt::{ENDER_SLOTS, GlobalPos, Place, PlayerData, Respawn, SLOTS, Stats};
 use crate::survival::Survival;
+use crate::switch::{LoadingReason, Switch};
 
 pub struct Player {
     pub uuid: PlayerUuid,
@@ -34,6 +35,8 @@ pub struct Player {
     pub last_death: Option<GlobalPos>,
     pub portal_cooldown: i32,
     pub seen_credits: bool,
+    pub switching: Option<Switch>,
+    pub respawning: Option<Dimension>,
 }
 
 #[derive(Default)]
@@ -89,6 +92,8 @@ impl Player {
             last_death: None,
             portal_cooldown: 0,
             seen_credits: false,
+            switching: None,
+            respawning: None,
         }
     }
 
@@ -96,6 +101,13 @@ impl Player {
         self.dimension = place.dimension;
         self.place = Some(place);
         self.arrival = Some(place);
+    }
+
+    pub fn switch_to(&mut self, to: Dimension, arrival: Option<Place>, reason: LoadingReason) {
+        let switch = Switch::new(self.dimension, to, arrival, reason);
+        self.dimension = to;
+        self.arrival = switch.arrival;
+        self.switching = Some(switch);
     }
 
     pub fn set_respawn(&mut self, respawn: Option<Respawn>) -> bool {
@@ -514,6 +526,25 @@ mod tests {
                 overlay: false,
             }
         );
+    }
+
+    #[test]
+    fn a_switching_player_keeps_where_it_stood_until_it_arrives() {
+        let mut player = steve();
+        let home = Place::standing(Dimension::Overworld, [800.5, 70.0, -1600.5], 45.0, 0.0);
+        player.arrive(home);
+        player.arrival = None;
+        let roof = Place::standing(Dimension::Nether, [100.5, 128.0, -200.5], 45.0, 0.0);
+        player.switch_to(Dimension::Nether, Some(roof), LoadingReason::NetherPortal);
+        assert_eq!(player.dimension, Dimension::Nether);
+        assert_eq!(player.arrival, Some(roof));
+        assert_eq!(player.place, Some(home), "where to go back to if the Nether fails to load");
+        let switch = player.switching.expect("switching");
+        assert_eq!((switch.from, switch.to, switch.reason), (Dimension::Overworld, Dimension::Nether, LoadingReason::NetherPortal));
+        assert!(!switch.left && !switch.respawn);
+        player.switch_to(Dimension::End, Some(roof), LoadingReason::EndPortal);
+        assert_eq!(player.arrival, None, "an arrival in another dimension is not taken");
+        assert_eq!(player.switching.map(|switch| switch.from), Some(Dimension::Nether));
     }
 
     #[test]

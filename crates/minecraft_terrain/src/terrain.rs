@@ -1156,6 +1156,24 @@ impl TerrainStream {
         spawn::player_spawn(&mut self.server, self.world_spawn, spawn::DEFAULT_RESPAWN_RADIUS, unseeded())
     }
 
+    pub fn reshow(&mut self, scene: &HandcraftedScene) -> Vec<Arc<Chunk>> {
+        let (min_section, max_section) = self.states.section_range();
+        self.sections = Sections::new(self.sections.view_distance(), min_section, max_section);
+        let mut chunks = Vec::new();
+        for pos in scene.generated_chunks().collect::<Vec<_>>() {
+            let chunk = scene.generated_chunk(pos).expect("listed").clone();
+            let empty = self.empty_sections(scene, &chunk);
+            self.sections.chunk_loaded(pos, empty);
+            chunks.push(chunk);
+        }
+        self.serials.clear();
+        self.player_sections.clear();
+        self.removed.clear();
+        self.work.0.lock().expect("terrain work queue").compile.retain(|_, _| false);
+        self.light_changes = self.lights.iter().map(|(&pos, light)| (pos, Some(light.clone()))).collect();
+        chunks
+    }
+
     fn now(&self) -> u64 {
         self.clock.elapsed().as_millis() as u64
     }
@@ -2302,5 +2320,32 @@ mod tests {
         let far = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::End, Some(level.root()), Some((1200, 60, 0))).unwrap();
         assert_eq!(far.world_spawn, (1200, 60, 0), "a known End spawn is kept");
         assert_eq!(far.player_spawn, (1200.5, 60.0, 0.5));
+    }
+
+    #[test]
+    fn a_level_shown_again_sends_its_chunks_and_light_again() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let mut stream = TerrainStream::for_dimension_at(registries, 77, 2, Dimension::End, None, None).unwrap();
+        let mut scene = HandcraftedScene::streamed(stream.states.clone());
+        let started = Instant::now();
+        let mut sent = 0;
+        while scene.generated_chunk((6, 0)).is_none() {
+            assert!(started.elapsed().as_secs() < 600, "no chunks around the End platform");
+            sent += stream.server_tick((100, 49, 0), &mut scene).0.len();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let generated: HashSet<ChunkPos> = scene.generated_chunks().collect();
+        assert_eq!(sent, generated.len());
+        let light = Arc::new(SkyLight::streamed());
+        stream.lights.insert((6, 0), light.clone());
+        stream.light_changes.clear();
+        let again = stream.reshow(&scene);
+        let shown: HashSet<ChunkPos> = again.iter().map(|chunk| (chunk.pos.x, chunk.pos.z)).collect();
+        assert_eq!(shown, generated, "every chunk the scene holds is sent again for collision");
+        assert_eq!(stream.light_changes.len(), 1);
+        assert!(stream.light_changes[0].0 == (6, 0) && stream.light_changes[0].1.as_ref().is_some_and(|l| Arc::ptr_eq(l, &light)));
+        assert!(stream.server_tick((100, 49, 0), &mut scene).0.is_empty(), "the server does not send them twice");
     }
 }

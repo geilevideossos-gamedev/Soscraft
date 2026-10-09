@@ -10,3 +10,4 @@ pub mod player_nbt;
 pub mod save;
 pub mod server;
 pub mod survival;
+pub mod switch;
