@@ -145,3 +145,17 @@ Previous commit: 118bb95c
 - **Decisions:** the world border is vanilla's default; the fork has no `/worldborder` yet, so a later border command only needs to replace `within_border` and `clamp_to_border`.
 - **Test steps:** nothing visible yet (entry 10).
 - **Kit:** none.
+
+### 8. Minecraft finds the nearest nether portal like vanilla (E2-8)
+
+Previous commit: b39687f9
+
+- **Changed:**
+  - New `minecraft_survival/src/portal_forcer.rs`:
+    - `PortalWorld` (a portal block's axis, the portal blocks of a chunk) and `find_closest(world, target, radius)`: `PortalForcer.findClosestPortalPosition` (javap): every `nether_portal` block in the square of `radius` around the target at any height (`PoiManager.getInSquare` keeps `|dx| <= radius` and `|dz| <= radius`), inside the world border, whose block still has an axis; the smallest `distSqr` wins and a tie goes to the lowest Y. `search_radius`: 16 into the Nether, 128 anywhere else.
+    - `ChunkWorld`, the search's view of a level: a chunk is the chunk map's loaded chunk with its edits, or else the saved FULL chunk from the region file, and never generated (`generates` stays off for the search). A section is scanned only when it holds anything, and its palette tells at once when it holds no portal.
+  - `minecraft_terrain/src/terrain.rs`: `TerrainStream::loaded_chunk` (the chunk map's chunk with its edits, nothing loaded or generated) and `TerrainStream::load_chunk_now` (the chunk map's `load_now`, for the portal build of entry 9).
+- **Tests:** `portal_forcer`: `the_search_looks_sixteen_blocks_into_the_nether_and_a_hundred_and_twenty_eight_out` (a portal 16 blocks away is found, 17 not; 3x3 chunks are read into the Nether and 17x17 into the overworld), `the_closest_portal_block_wins_and_a_tie_goes_to_the_lowest`, `broken_portals_and_portals_past_the_border_are_skipped`, `a_level_s_chunks_are_searched_as_loaded_or_saved_and_never_generated` (a real Nether stream of seed 77: a search over chunks nobody loaded finds nothing and generates nothing; two lit portal blocks recorded into a loaded chunk are found with their axis).
+- **Decisions:** plan decision 7: no POI files; the search reads loaded and saved chunks and never generates, as vanilla's `PoiManager.ensureLoadedAndValid` loads the square at `ChunkStatus.EMPTY` and rebuilds missing POIs from the blocks. A chunk the chunk map evicted moments ago whose save has not reached the region file yet is not seen (a gap of the save thread's queue; the portal is found once it is written).
+- **Test steps:** nothing visible yet (entry 10).
+- **Kit:** none.

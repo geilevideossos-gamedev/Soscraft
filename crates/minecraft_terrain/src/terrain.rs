@@ -1251,6 +1251,14 @@ impl TerrainStream {
         self.server.storage()
     }
 
+    pub fn loaded_chunk(&mut self, pos: minecraftoss_core::ChunkPos) -> Option<Arc<Chunk>> {
+        self.server.chunk(pos).cloned()
+    }
+
+    pub fn load_chunk_now(&mut self, pos: minecraftoss_core::ChunkPos) -> Arc<Chunk> {
+        self.server.load_now(pos)
+    }
+
     /// One server tick: runs the chunk map for the player and applies what it
     /// sends to the scene. Returns the chunks it loaded and the positions it
     /// forgot, for the world simulation.

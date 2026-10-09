@@ -14,6 +14,7 @@ pub mod offhand;
 pub mod player;
 pub mod player_nbt;
 pub mod portal;
+pub mod portal_forcer;
 pub mod respawn;
 pub mod save;
 pub mod server;
