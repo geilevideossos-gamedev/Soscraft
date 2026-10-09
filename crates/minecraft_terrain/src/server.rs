@@ -830,6 +830,12 @@ impl ServerSim {
         self.level.update_neighbours_on_block_set(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), old);
     }
 
+    pub fn command_closest_poi(&self, ids: &[String], center: BlockPos, radius: i32) -> Option<(BlockPos, String)> {
+        let wanted = |kind: minecraftoss_entities::poi::PoiType| ids.iter().any(|id| id == kind.id());
+        let pos = self.mobs.pois.find_closest(&wanted, center, radius, minecraftoss_entities::poi::Occupancy::Any)?;
+        Some((pos, self.mobs.pois.kind(pos)?.id().to_owned()))
+    }
+
     pub fn command_block_entity(&self, pos: BlockPos) -> Option<&minecraftoss_core::nbt::Tag> {
         let at = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
         self.level.chunk(at.chunk())?.block_entities.entities.get(&pos)
@@ -4313,6 +4319,12 @@ mod tests {
         assert_eq!(destroyed[0].0, (8, 200, 8));
         assert!(server.items().iter().any(|item| item.item == "minecraft:oak_fence"));
         assert!(server.take_changes().contains(&((8, 200, 8), None)));
+        let librarian = ["minecraft:librarian".to_owned()];
+        assert_eq!(server.command_closest_poi(&librarian, (8, 200, 8), 256), None);
+        assert!(server.command_place((12, 201, 12), blocks.parse_state("minecraft:lectern").unwrap(), &[], false));
+        server.sync_pois();
+        assert_eq!(server.command_closest_poi(&librarian, (8, 200, 8), 256), Some(((12, 201, 12), "minecraft:librarian".to_owned())));
+        assert_eq!(server.command_closest_poi(&["minecraft:home".to_owned()], (8, 200, 8), 256), None);
         let mut handle = ServerHandle::spawn(server);
         handle.run_job(Box::new(|sim: &mut ServerSim| -> Box<dyn std::any::Any + Send> { Box::new(sim.command_block((9, 200, 8))) }));
         handle.wait_idle();

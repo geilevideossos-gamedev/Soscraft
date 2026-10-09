@@ -3,11 +3,12 @@ use std::collections::{BTreeMap, HashMap};
 
 use minecraft_commands::{
     Answer, BlockEdit, Clientbound, Clock, CommandData, CommandRegistries, CommandServer,
-    CommandWorld, Enchanted, EnchantmentInfo, Experience, ItemArg, ItemFilter, Loaded, PlayerId,
-    Pose, Serverbound, Text, Weather,
+    CommandWorld, Enchanted, EnchantmentInfo, Experience, ItemArg, ItemFilter, Loaded,
+    LocateKind, LocateRequest, Located, PlayerId, Pose, Serverbound, Text, Weather,
 };
 use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_terrain::day_cycle::DayCycle;
+use minecraft_terrain::locate::Search;
 use minecraft_terrain::server::ServerSim;
 use minecraft_terrain::terrain::TerrainStream;
 use minecraft_terrain::game_mode::GameMode;
@@ -24,6 +25,7 @@ use crate::server::Globals;
 
 pub const HOST: PlayerId = PlayerId(0);
 pub const LEVEL_UP_SOUND: &str = "minecraft:entity.player.levelup";
+pub const LOCATE_TIME_CAP: std::time::Duration = std::time::Duration::from_secs(20);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Presence {
@@ -546,6 +548,54 @@ impl CommandWorld for Host<'_> {
         Answer::Later
     }
 
+    fn locate(&mut self, source: PlayerId, request: &LocateRequest) -> Answer<Option<Located>> {
+        let Some(level) = loaded_dimension(self.levels, &request.dimension)
+            .and_then(|dimension| self.levels.get_mut(&dimension))
+        else {
+            return Answer::Now(None);
+        };
+        let worldgen = level.terrain.stream.world_gen();
+        let Some(entities) = level.entities.as_mut() else {
+            return Answer::Now(None);
+        };
+        let request = request.clone();
+        entities.run_job(Box::new(move |sim: &mut ServerSim| -> Box<dyn Any + Send> {
+            let deadline = std::time::Instant::now() + LOCATE_TIME_CAP;
+            let [x, y, z] = request.origin;
+            let search = match request.kind {
+                LocateKind::Structure => minecraft_terrain::locate::nearest_structure(
+                    &worldgen,
+                    &request.targets,
+                    request.origin,
+                    minecraft_terrain::locate::STRUCTURE_RADIUS,
+                    deadline,
+                ),
+                LocateKind::Biome => minecraft_terrain::locate::nearest_biome(
+                    &worldgen,
+                    &request.targets,
+                    request.origin,
+                    minecraft_terrain::locate::BIOME_RADIUS,
+                    deadline,
+                ),
+                LocateKind::Poi => sim
+                    .command_closest_poi(
+                        &request.targets,
+                        (x, y, z),
+                        minecraft_commands::locate::POI_SEARCH_RADIUS,
+                    )
+                    .map_or(Search::NotFound, |((x, y, z), id)| {
+                        Search::Found([x, y, z], id)
+                    }),
+            };
+            Box::new(CommandJob::Located {
+                source,
+                request,
+                search,
+            })
+        }));
+        Answer::Later
+    }
+
     fn level_up(&mut self, player: PlayerId) {
         let feet = self.presence(player).pose.map(|pose| pose.feet);
         let Some((player, entities)) = self.player_in_level(player) else {
@@ -594,6 +644,28 @@ pub enum CommandJob {
         edit: BlockEdit,
         count: i32,
     },
+    Located {
+        source: PlayerId,
+        request: LocateRequest,
+        search: Search,
+    },
+}
+
+fn located(request: &LocateRequest, search: Search) -> Option<Located> {
+    match search {
+        Search::Found(pos, id) => Some(Located { pos, id }),
+        Search::NotFound => None,
+        Search::TimedOut => {
+            diag::warn!(
+                World,
+                "Minecraft /locate {:?} {} gave up after {} s",
+                request.kind,
+                request.printable,
+                LOCATE_TIME_CAP.as_secs()
+            );
+            None
+        }
+    }
 }
 
 pub fn command_data(stream: &TerrainStream) -> CommandData {
@@ -614,11 +686,20 @@ pub fn command_data(stream: &TerrainStream) -> CommandData {
             (block.name.to_string(), properties)
         })
         .collect();
+    let tags = |registry: &str| minecraft_terrain::locate::tags(&worldgen, registry);
     CommandData {
-        item_tags: minecraft_terrain::locate::tags(&worldgen, "item"),
+        item_tags: tags("item"),
         blocks,
-        block_tags: minecraft_terrain::locate::tags(&worldgen, "block"),
-        ..CommandData::default()
+        block_tags: tags("block"),
+        structures: minecraft_terrain::locate::structure_names(&worldgen),
+        structure_tags: tags("worldgen/structure"),
+        biomes: minecraft_terrain::locate::biome_names(&worldgen),
+        biome_tags: tags("worldgen/biome"),
+        poi_types: minecraftoss_entities::poi::PoiType::ALL
+            .iter()
+            .map(|kind| kind.id().to_owned())
+            .collect(),
+        poi_tags: tags("point_of_interest_type"),
     }
 }
 
@@ -668,6 +749,15 @@ pub fn answer_jobs(
                 true,
                 rules,
             ),
+            CommandJob::Located {
+                source,
+                request,
+                search,
+            } => {
+                let found = located(&request, search);
+                let answer = minecraft_commands::locate_answer(&request, found.as_ref());
+                chat.reply(source, answer.map(|(text, _)| text), false, rules)
+            }
         };
         delivered.extend(
             out.into_iter()
@@ -897,6 +987,14 @@ pub(crate) mod tests {
             "commands.fill.failed" => "No blocks were filled",
             "argument.pos.unloaded" => "That position is not loaded",
             "argument.dimension.invalid" => "Unknown dimension '%s'",
+            "commands.locate.structure.success" => "The nearest %s is at %s (%s blocks away)",
+            "commands.locate.biome.success" => "The nearest %s is at %s (%s blocks away)",
+            "commands.locate.structure.not_found" => {
+                "Could not find a structure of type \"%s\" nearby"
+            }
+            "commands.locate.poi.not_found" => {
+                "Could not find a point of interest of type \"%s\" within a reasonable distance"
+            }
             _ => return None,
         };
         Some(text.to_owned())
@@ -1190,6 +1288,68 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn locate_answers_once_the_level_has_searched() {
+        let mut parts = Parts::new();
+        let (lines, _) = parts.send(HOST, &["/locate structure minecraft:village_plains"]);
+        assert_eq!(
+            lines,
+            vec!["Could not find a structure of type \"minecraft:village_plains\" nearby"]
+        );
+        let request = |kind: LocateKind, printable: &str, tag: bool| LocateRequest {
+            kind,
+            printable: printable.to_owned(),
+            tag,
+            targets: Vec::new(),
+            dimension: minecraft_commands::OVERWORLD.to_owned(),
+            origin: [0, 64, 0],
+        };
+        let job = |request: LocateRequest, search: Search| -> Box<dyn Any + Send> {
+            Box::new(CommandJob::Located {
+                source: HOST,
+                request,
+                search,
+            })
+        };
+        let answers = answer_jobs(
+            &parts.server,
+            &parts.rules,
+            HOST,
+            vec![
+                job(
+                    request(LocateKind::Structure, "#minecraft:village", true),
+                    Search::Found([272, 0, 944], "minecraft:village_plains".to_owned()),
+                ),
+                job(
+                    request(LocateKind::Biome, "minecraft:desert", false),
+                    Search::Found([608, 64, -1632], "minecraft:desert".to_owned()),
+                ),
+                job(
+                    request(LocateKind::Structure, "minecraft:fortress", false),
+                    Search::NotFound,
+                ),
+                job(
+                    request(LocateKind::Structure, "minecraft:stronghold", false),
+                    Search::TimedOut,
+                ),
+                job(
+                    request(LocateKind::Poi, "minecraft:home", false),
+                    Search::NotFound,
+                ),
+            ],
+        );
+        assert_eq!(
+            answers.iter().map(line).collect::<Vec<_>>(),
+            vec![
+                "The nearest #minecraft:village (minecraft:village_plains) is at [272, ~, 944] (982 blocks away)",
+                "The nearest minecraft:desert is at [608, 64, -1632] (1741 blocks away)",
+                "Could not find a structure of type \"minecraft:fortress\" nearby",
+                "Could not find a structure of type \"minecraft:stronghold\" nearby",
+                "Could not find a point of interest of type \"minecraft:home\" within a reasonable distance",
+            ]
+        );
+    }
+
+    #[test]
     fn command_data_reads_the_item_tags_of_the_game_data() {
         let Some(stream) = test_stream() else {
             return;
@@ -1205,6 +1365,19 @@ pub(crate) mod tests {
         let half = stairs.iter().find(|(name, _)| name == "half").unwrap();
         assert_eq!(half.1, vec!["top".to_owned(), "bottom".to_owned()]);
         assert!(data.block_tags["minecraft:logs"].contains(&"minecraft:oak_log".to_owned()));
+        let has = |list: &[String], id: &str| list.iter().any(|known| known == id);
+        assert!(has(&data.structures, "minecraft:village_plains"));
+        assert!(has(
+            &data.structure_tags["minecraft:village"],
+            "minecraft:village_desert"
+        ));
+        assert!(has(&data.biomes, "minecraft:cherry_grove"));
+        assert!(has(&data.biome_tags["minecraft:is_ocean"], "minecraft:deep_ocean"));
+        assert!(has(&data.poi_types, "minecraft:home"));
+        assert!(has(
+            &data.poi_tags["minecraft:acquirable_job_site"],
+            "minecraft:librarian"
+        ));
     }
 
     #[test]

@@ -1218,3 +1218,44 @@ Kit: `minecraft:oak_fence` 16 (only to compare with hand-placed fences; the comm
 ### After track D
 
 - Containers replaced by `/setblock` or `/fill` (not in `destroy` mode) drop their items, because `render_anim` spills the main-thread `Containers` of any position that stops being a station. Vanilla 26.3 deletes them (flag 256, `UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS`). Once containers are block entities in the level, the command path should discard their contents instead of spilling.
+
+## Minecraft /locate searches on the level's server thread
+
+Commit: the commit that adds this entry.
+
+### What changed
+
+- `Host::locate` runs the search as a job on the server thread of the level the request names (vanilla runs `/locate` on the server thread too, and the server pauses while it searches), and answers `Answer::Later`. The job captures the level's `WorldGen` and gives up after `LOCATE_TIME_CAP` (20 s) from when it starts:
+  - **structure**: `minecraft_terrain::locate::nearest_structure`, radius 100 (`findNearestMapStructure`);
+  - **biome**: `nearest_biome`, radius 6400 (`findClosestBiome3d`);
+  - **poi**: new `ServerSim::command_closest_poi`, vanilla's `PoiManager.findClosestWithType(predicate, pos, 256, ANY)` over the points of interest the level tracks for its villagers (beds, job sites, bells, beehives, portals, lodestones and lightning rods in loaded chunks).
+- `run` turns a finished search into vanilla's line with `locate_answer` and `CommandServer::reply`, to the source only. A search that ran out of time answers like nothing was found and logs "Minecraft /locate ... gave up after 20 s".
+- `command_data` now fills `structures`, `structure_tags`, `biomes`, `biome_tags` (from the level's `WorldGen`), `poi_types` (the 21 types of 26.3 `PoiTypes`, as `minecraftoss_entities::poi::PoiType::ALL`) and `poi_tags`, so unknown ids and tags are refused as vanilla refuses them, and the suggestions list them.
+
+### Tests added
+
+- `commands::tests::locate_answers_once_the_level_has_searched`: without a level the answer is "not found" at once; then a tag with its found member and the horizontal distance, a biome with its height and the 3D distance, not found, a timeout, and a POI miss.
+- `commands::tests::command_data_reads_the_item_tags_of_the_game_data` also checks the structure, biome and POI ids and tags (skipped without the data).
+- `server::tests::command_placements_shape_like_vanilla_and_jobs_answer` (`minecraft_terrain`) also finds a lectern placed by a command as the nearest librarian site, and no home.
+
+### In-game test steps
+
+```
+IW4L_MINECRAFT_KIT=lectern,white_bed
+```
+
+1. `/locate structure minecraft:village_plains`: after a moment, "The nearest minecraft:village_plains is at [x, ~, z] (N blocks away)" with the coordinates in green. Screenshot.
+2. `/tp @s x 120 z` with those numbers: a plains village is below you. Screenshot.
+3. `/locate structure #minecraft:village`: the line names the tag and the village type in brackets.
+4. `/locate biome minecraft:cherry_grove`, then `/tp` there: pink cherry trees. Screenshot.
+5. `/locate structure minecraft:fortress`: red "Could not find a structure of type "minecraft:fortress" nearby".
+6. Place the lectern somewhere, wait a second, `/locate poi minecraft:librarian`: its position, with `~` as the height. Screenshot.
+7. `/locate poi minecraft:home` with no bed placed: red "Could not find a point of interest of type "minecraft:home" within a reasonable distance". Place the bed and repeat: its position.
+8. `/locate structure minecraft:nope`: red "There is no structure with type "minecraft:nope"".
+
+Kit: `minecraft:lectern` 1, `minecraft:white_bed` 1.
+
+### Decisions
+
+- **Server thread rather than a thread of its own.** That is where vanilla searches, it already holds the POIs, and the answer travels the same way as the block edits. A long search stalls mobs (not the game), as vanilla's stalls the server; the 20 s cap bounds it.
+- **POI ids are the code registry of 26.3** (`PoiTypes`), listed from `PoiType::ALL`; the tags come from the data like the others.
