@@ -325,3 +325,31 @@ B2 is commit `fd3a993`.
 - **Decisions:**
   - The completion keeps its steps in the order they run today (`Entities::new` before the time and the game mode). The plan's list puts `Entities::new` last, but none of these steps reads another's result, and keeping the order keeps the diff to path changes.
   - If a loaded server had no overworld level the completion would warn "Minecraft world failed to load: no overworld" and stop, like a failed load; `load()` always builds one, so this can't happen. The same goes for the second `let ... else` in `update()`, which hides the Minecraft UI exactly as the "no world" branch does.
+
+## B4. Minecraft recipes, loot, stations and enchantments load once per world
+
+B3 is commit `96fff5a`.
+
+- **What changed:**
+  - New `minecraft_survival/src/data.rs` (no comments, rustfmt-clean): `GameData { jar, recipes: Arc<RecipeBook>, loot: Option<Arc<LootBook>>, stations: Arc<StationBook>, enchantments: Option<Arc<Enchantments>> }` (`Default` for a world without data) and `GameData::load(root, jar)`, which holds the jar reading and its log lines that were in `Entities::new` (item catalog, recipes, block loot, station recipes, enchantments, and the "data JAR not found" warning), unchanged apart from writing into `GameData`.
+  - `Globals` gains `data: GameData`. The loader fills it with `Default::default()`, and the load completion replaces it with `GameData::load(asset root, data_jar())` on the main thread, right before `Entities::new`, where the jar was read before.
+  - `Entities::new(stream, seed, &GameData)`: it still sends `load_loot` and `set_recipe_book` to its own level server thread when there is a jar, and keeps `Arc` clones of the books (`loot` is now `Option<Arc<LootBook>>`; `roll_drops_named` takes `&self`, so nothing else changed) plus a new `pub recipes` field for B6. The inventory takes `data.recipes`. The kit stays here until B6.
+  - The completion reads the station book and the enchantments from `globals.data` for the containers, the inventory screens and the chat's enchantment names.
+  - `minecraft_survival/src/lib.rs` gains `pub mod data;`.
+- **Tests added** (2, in `data.rs`): `without_a_jar_there_is_no_loot_and_no_recipe` (no jar: no loot, an empty recipe book, no enchantments) and `an_unreadable_jar_is_kept_for_the_level_server` (a jar path that can't be read loads nothing but keeps the path, so the level server still gets its `load_loot` as before). Totals: `minecraft_survival` 121 (119 + 2), `render_anim` 34; the moved total stays 153.
+- **Checks:** `check -p launcher --locked` (no new warning), `test -p minecraft_survival --locked`, `test -p render_anim --locked`; the staged `data.rs`, `server.rs` and `lib.rs` pass `rustfmt --check --edition 2024` with empty output.
+- **Owner test** (everything read from the jar must work exactly as before):
+  1. Load a Minecraft match with the regression kit. The log has "Minecraft recipes: N with the item catalog ..." and no "Minecraft data JAR not found", "recipes unavailable", "block loot unavailable", "station recipes unavailable" or "enchantments unavailable" warning.
+  2. Open the inventory and craft sticks from planks in the 2x2 grid; place the crafting table and craft a chest. Sticks stack to 64.
+  3. Place the furnace and smelt raw iron with coal: iron ingots come out.
+  4. Mine stone with the pickaxe: it drops cobblestone; with silk touch, an ore drops itself. Shoot a block with a gun: it drops its loot too.
+  5. Kill a cow from the spawn egg: it drops beef and leather.
+  6. Place the enchanting table with the bookshelves around it, drink experience bottles and open it: three enchantment offers show; enchant something.
+  7. Place the anvil and open it: it accepts items.
+  8. Type `/give @s minecraft:diamond_sword[enchantments={sharpness:5}]`: an enchanted sword (it shimmers) lands in the inventory, or at your feet if it is full. Without the enchantment names the chat would answer "Malformed 'minecraft:enchantments' component" instead.
+- **Kit:** `minecraft:oak_planks` x64, `minecraft:crafting_table` x1, `minecraft:furnace` x1, `minecraft:raw_iron` x16, `minecraft:coal` x16, `minecraft:diamond_pickaxe` x1 with silk touch, `minecraft:cow_spawn_egg` x2, `minecraft:enchanting_table` x1, `minecraft:bookshelf` x15, `minecraft:experience_bottle` x64, `minecraft:anvil` x1, `minecraft:diamond_sword` x1 (all in the regression kit).
+- **Not done here:** nothing.
+- **Decisions:**
+  - `Globals.data` is a plain `GameData` (not an `Option`), filled with the empty default by the loader thread and loaded at the completion, as the plan says, so the jar is still read on the main thread at the same point of the load.
+  - The jar is now read just before the level server thread starts instead of just after it, so that thread receives `load_loot` a moment later and the "Minecraft weather" log line (when `IW4L_MINECRAFT_WEATHER` is set) comes after the recipe lines. The commands reach the level server in the same order (`load_loot`, then `set_recipe_book`), and the main thread does the same work.
+  - `set_recipe_book` is sent whenever there is a jar, where before it was sent only when the recipes parsed. If they fail to parse, the level server now gets an empty book instead of none; the only reader (sheep wool colour mixing) treats both the same (`matching` finds nothing and it falls back to a parent's colour with the same random draw).

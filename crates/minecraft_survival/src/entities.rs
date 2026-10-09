@@ -79,7 +79,7 @@ pub struct Entities {
     server_picked: Vec<(i32, [f64; 3], String, i32, Option<String>)>,
     server_snapshot: Option<EntitySnapshot>,
     server_handled: u64,
-    loot: Option<LootBook>,
+    loot: Option<std::sync::Arc<LootBook>>,
     loot_sequences: HashMap<String, XoroshiroRandom>,
     seed: i64,
     /// Sounds the mob world made since the last take: event, block point,
@@ -96,6 +96,7 @@ pub struct Entities {
     pub weather: minecraft_terrain::server::WeatherView,
     pub stations: std::sync::Arc<minecraft_terrain::stations::StationBook>,
     pub enchantments: Option<std::sync::Arc<minecraftoss_entities::enchant::Enchantments>>,
+    pub recipes: std::sync::Arc<minecraftoss_player::crafting::RecipeBook>,
     item_use_waiting: Option<SentItemUse>,
     pub item_uses_done: Vec<SentItemUse>,
     eggs_waiting: minecraft_terrain::spawn_egg::EggsWaiting,
@@ -159,7 +160,7 @@ fn player_candidate(player: &PlayerView) -> PlayerCandidate {
 }
 
 impl Entities {
-    pub fn new(stream: &TerrainStream, seed: i64, root: Option<&std::path::Path>, jar: Option<std::path::PathBuf>) -> Self {
+    pub fn new(stream: &TerrainStream, seed: i64, data: &crate::data::GameData) -> Self {
         let mut sim = ServerSim::new(stream.world_gen(), stream.states.clone(), "minecraft:overworld");
         sim.set_entity_storage(stream.storage());
         if let Ok(weather) = std::env::var("IW4L_MINECRAFT_WEATHER") {
@@ -173,42 +174,11 @@ impl Entities {
         // Mob and block loot and the recipes (stack sizes), from the game's
         // data JAR when MinecraftOSS has one.
         let mut inventory = Inventory::default();
-        let mut loot = None;
-        let mut stations = std::sync::Arc::default();
-        let mut enchantments = None;
-        if let Some(jar) = jar {
+        if let Some(jar) = &data.jar {
             server.load_loot(jar.clone(), seed as u64);
-            let catalog = minecraft_terrain::crafting::find_item_catalog(root, &jar);
-            match minecraft_terrain::crafting::load_recipes(&jar, catalog.as_deref()) {
-                Ok((recipes, catalog_error)) => {
-                    match (catalog_error, catalog.as_deref()) {
-                        (Some(error), _) => diag::warn!(World, "Minecraft item catalog unavailable, stacks of 64 and no crafting remainders: {error:#}"),
-                        (None, Some(path)) => diag::info!(World, "Minecraft recipes: {} with the item catalog {}", recipes.count(), path.display()),
-                        (None, None) => {}
-                    }
-                    let recipes = std::sync::Arc::new(recipes);
-                    server.set_recipe_book(recipes.clone());
-                    inventory.recipes = recipes;
-                }
-                Err(error) => diag::warn!(World, "Minecraft recipes unavailable: {error:#}"),
-            }
-            match LootBook::from_jar(&jar) {
-                Ok(book) => loot = Some(book),
-                Err(error) => diag::warn!(World, "Minecraft block loot unavailable: {error:#}"),
-            }
-            match minecraft_terrain::stations::StationBook::from_jar(&jar) {
-                Ok(book) => stations = std::sync::Arc::new(book),
-                Err(error) => diag::warn!(World, "Minecraft station recipes unavailable: {error:#}"),
-            }
-            if let Some(catalog) = catalog.as_deref() {
-                match minecraftoss_entities::trading::TradeBook::from_jar(&jar, catalog) {
-                    Ok(book) => enchantments = Some(std::sync::Arc::new(book.enchantments)),
-                    Err(error) => diag::warn!(World, "Minecraft enchantments unavailable: {error:#}"),
-                }
-            }
-        } else {
-            diag::warn!(World, "Minecraft data JAR not found: no loot or recipes");
+            server.set_recipe_book(data.recipes.clone());
         }
+        inventory.recipes = data.recipes.clone();
         if let Ok(kit) = std::env::var("IW4L_MINECRAFT_KIT") {
             let given = minecraft_terrain::crafting::give_kit(&mut inventory, &kit);
             diag::info!(World, "Minecraft kit: {given} stacks from IW4L_MINECRAFT_KIT");
@@ -230,7 +200,7 @@ impl Entities {
             server_picked: Vec::new(),
             server_snapshot: None,
             server_handled: 0,
-            loot,
+            loot: data.loot.clone(),
             loot_sequences: HashMap::new(),
             seed,
             sounds: Vec::new(),
@@ -243,8 +213,9 @@ impl Entities {
             destroyed: Vec::new(),
             experience_found: 0.0,
             weather: Default::default(),
-            stations,
-            enchantments,
+            stations: data.stations.clone(),
+            enchantments: data.enchantments.clone(),
+            recipes: data.recipes.clone(),
             item_use_waiting: None,
             item_uses_done: Vec::new(),
             eggs_waiting: Default::default(),

@@ -308,6 +308,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         difficulty: opened.difficulty,
         day,
         chat,
+        data: Default::default(),
         level_writer: None,
         autosave_ticks: 0,
     };
@@ -485,11 +486,12 @@ fn update(
                 runtime.mining = Default::default();
                 runtime.minimap = Default::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
-                let mut entities = minecraft_survival::entities::Entities::new(&level.terrain.stream, globals.seed, assets::minecraft_map::root().as_deref(), data_jar());
+                globals.data = minecraft_survival::data::GameData::load(assets::minecraft_map::root().as_deref(), data_jar());
+                let mut entities = minecraft_survival::entities::Entities::new(&level.terrain.stream, globals.seed, &globals.data);
                 entities.set_game_rules(&globals.game_rules);
-                level.containers.set_book(entities.stations.clone());
-                runtime.inventory_ui.set_station_data(entities.stations.clone(), entities.enchantments.clone(), globals.seed as i32);
-                globals.chat.registries_mut().enchantments = entities.enchantments.as_ref().map_or_else(Vec::new, |book| book.list.iter().map(|enchantment| enchantment.id.clone()).collect());
+                level.containers.set_book(globals.data.stations.clone());
+                runtime.inventory_ui.set_station_data(globals.data.stations.clone(), globals.data.enchantments.clone(), globals.seed as i32);
+                globals.chat.registries_mut().enchantments = globals.data.enchantments.as_ref().map_or_else(Vec::new, |book| book.list.iter().map(|enchantment| enchantment.id.clone()).collect());
                 // Game ticks since sunrise to start at: 6000 noon, 13000
                 // dusk, 18000 midnight.
                 if let Some(ticks) = std::env::var("IW4L_MINECRAFT_TIME")

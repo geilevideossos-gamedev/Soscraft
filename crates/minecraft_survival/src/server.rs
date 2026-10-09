@@ -9,6 +9,7 @@ use minecraft_terrain::game_rules::GameRules;
 use minecraftoss_core::Registries;
 use minecraftoss_player::Difficulty;
 
+use crate::data::GameData;
 use crate::level::Level;
 use crate::save::WorldSave;
 
@@ -25,6 +26,7 @@ pub struct Globals {
     pub difficulty: Difficulty,
     pub day: DayCycle,
     pub chat: CommandServer,
+    pub data: GameData,
     pub level_writer: Option<JoinHandle<()>>,
     pub autosave_ticks: u32,
 }
