@@ -37,6 +37,7 @@ pub struct Hand {
     pub attack_item: Option<String>,
     pub miss_time: u32,
     pub blocking: Option<Blocking>,
+    pub charging: Option<crate::trident::Charging>,
     pub swing_offhand: bool,
     pub use_by_key: bool,
     pub offhand_key_was: bool,

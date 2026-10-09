@@ -9,3 +9,4 @@ pub mod player;
 pub mod save;
 pub mod server;
 pub mod survival;
+pub mod trident;

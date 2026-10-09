@@ -245,6 +245,18 @@ impl Entities {
         true
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn release_trident(&mut self, inventory: &mut Inventory, charging: crate::trident::Charging, creative: bool, wet: bool, eye: DVec3, yaw: f32, pitch: f32, motion: DVec3, on_ground: bool) -> minecraft_terrain::trident::Release {
+        use minecraft_terrain::trident::{Release, ThrownTrident};
+        let release = minecraft_terrain::trident::release(inventory, charging.slot, charging.ticks, creative, wet, &mut self.random);
+        if let Release::Throw(stack) = &release {
+            let throw = minecraft_terrain::thrown::Throw { owner: PLAYER, item: &stack.id, components: stack.components.as_ref(), eye, yaw, pitch, motion, on_ground };
+            let trident = ThrownTrident::launch(&throw, stack.clone(), creative, &mut self.random);
+            self.server.throw_trident(trident);
+        }
+        release
+    }
+
     pub fn random_float(&mut self) -> f32 {
         self.random.next_float()
     }

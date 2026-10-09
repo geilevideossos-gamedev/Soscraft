@@ -816,11 +816,26 @@ fn update(
     if !use_live || !shield_held {
         hand.blocking = None;
     }
+    let (charging, released) = minecraft_survival::trident::released(hand.charging, use_live, alive, inventory, *selected);
+    hand.charging = charging;
+    if let (Some(released), Some(entities)) = (released, entities.as_mut()) {
+        let wet = water.wet() || entities.weather.player_in_rain;
+        let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
+        let motion = glam::DVec3::new(f64::from(ps.velocity[0]), f64::from(ps.velocity[2]), -f64::from(ps.velocity[1])) / (f64::from(sim::voxel::BLOCK) * 20.0);
+        let release = entities.release_trident(inventory, released, !game_mode.consumes_items(), wet, glam::DVec3::from_array(eye), mc_yaw, ps.viewangles[0], motion, on_ground);
+        let thrown = match &release {
+            minecraft_terrain::trident::Release::Throw(stack) => Some(minecraft_terrain::trident::throw_sound(stack)),
+            _ => None,
+        };
+        if let (Some(sound), Some(sounds)) = (thrown, sounds.as_mut()) {
+            sounds.play(&world.packs, sound, None, 1.0, 1.0);
+        }
+    }
     let mut open_table = None;
     let mut open_block = None;
     let mut open_bench = None;
     if let Some(entities) = entities.as_mut()
-        && (ui.holding_item || offhand_key || survival.eating().is_some() || hand.blocking.is_some())
+        && (ui.holding_item || offhand_key || survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some())
         && !ui.inventory_open
         && !menu_captured
         && game_mode.interacts()
@@ -840,7 +855,7 @@ fn update(
         if !attack_held {
             hand.miss_time = 0;
         }
-        let busy = survival.eating().is_some() || hand.blocking.is_some() || hand.miss_time > 0;
+        let busy = survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some() || hand.miss_time > 0;
         let mut creative_press = false;
         let mut punched = false;
         if ui.holding_item && (buttons.just_pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, true)) && !busy {
@@ -938,8 +953,11 @@ fn update(
         if let Some(blocking) = hand.blocking.as_mut() {
             blocking.ticks = blocking.ticks.saturating_add(hand_ticks);
         }
+        if let Some(charging) = hand.charging.as_mut() {
+            charging.ticks = charging.ticks.saturating_add(hand_ticks);
+        }
         hand.place_delay = hand.place_delay.saturating_sub(hand_ticks);
-        let idle = survival.eating().is_none() && hand.blocking.is_none();
+        let idle = survival.eating().is_none() && hand.blocking.is_none() && hand.charging.is_none();
         let (use_pressed, use_down) = if ui.holding_item {
             (buttons.just_pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, true), use_held)
         } else {
@@ -1123,6 +1141,14 @@ fn update(
                 }
                 hand.swing = Some(0.0);
                 HandUse::Consumed
+            } else if held.as_ref().is_some_and(|stack| stack.id == minecraft_terrain::trident::ITEM) {
+                match minecraft_survival::trident::Charging::start(inventory, slot, water.wet() || entities.weather.player_in_rain) {
+                    Some(charging) => {
+                        hand.charging = Some(charging);
+                        HandUse::Consumed
+                    }
+                    None => HandUse::Failed,
+                }
             } else if let Some((stack, kind)) = held.as_ref().and_then(|s| minecraft_terrain::thrown::Throwable::of(&s.id).map(|k| (s, k))) {
                 let pearl = kind == minecraft_terrain::thrown::Throwable::EnderPearl;
                 let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
@@ -1819,8 +1845,8 @@ fn update(
             && offhand_stack.as_ref().is_some_and(|stack| {
                 minecraft_survival::offhand::has_use(stack, placeable(stack), &survival.status.food, player_mode.mode) || (containers.cooks_on_campfire(stack, &entities.recipes) && aims_at_campfire())
             });
-        ui.offhand_busy = alive && !holding && (survival.eating().is_some() || hand.blocking.is_some());
-        ui.using_item = alive && (survival.eating().is_some() || hand.blocking.is_some());
+        ui.offhand_busy = alive && !holding && (survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some());
+        ui.using_item = alive && (survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some());
         sim::voxel::set_death_protected(local.0.0, alive && !survival.killed() && minecraft_survival::offhand::totem_slot(inventory, *selected).is_some());
         // The held item in view; an empty hand is MW2's own hands.
         view.hand = Default::default();
@@ -1835,11 +1861,16 @@ fn update(
                 let Some(stack) = stack else {
                     continue;
                 };
-                let using = hand.blocking.is_some_and(|blocking| blocking.slot == slot);
+                let charging = hand.charging.filter(|charging| charging.slot == slot);
+                let using = hand.blocking.is_some_and(|blocking| blocking.slot == slot) || charging.is_some();
                 let display = minecraft_terrain::pack::ResourceId::parse(&stack.id)
                     .ok()
                     .and_then(|id| minecraft_terrain::model::item_hand_transform(&world.packs, &id, arm < 0.0, using).ok())
                     .unwrap_or(glam::Mat4::IDENTITY);
+                let display = match charging {
+                    Some(charging) => crate::minecraft_hand::trident_charge_transform(charging.ticks as f32 + (hand.clock / TICK_SECONDS) as f32, arm) * display,
+                    None => display,
+                };
                 let eat = survival
                     .eating()
                     .filter(|eating| eating.slot == slot)

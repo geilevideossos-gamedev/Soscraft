@@ -762,7 +762,7 @@ IW4L_MINECRAFT_KIT=trident,trident+loyalty=3
 
 ### 11. A held Minecraft trident is the 3D trident
 
-Commit: (next entry)
+Commit: 7db3399
 
 - **Changed:** `special_models.rs`: item definitions are read for a display context (`item_leaves_in`, `uses_item_geometry_in`): a `minecraft:display_context` select takes the case whose `when` names the context, then its fallback, then the other cases; without a context it is read as `gui`. The `minecraft:trident` special model (`TridentSpecialRenderer`) is the `TridentModel`'s pole, base and spikes on `entity/trident/trident`, under the definition's `scale(1, -1, -1)`. `model.rs`: `resolve_item_model_in(pack, item, context)`, and every display transform reads the model of its own context, so a trident's first and third person transforms come from `item/trident_in_hand` (or `item/trident_throwing` while charging) and its gui, ground and frame ones from the flat `item/trident`. `mesh.rs`: `ItemVisual.hand` is the hand context's geometry when it differs from the flat one; items held by bodies and mobs (`append_held_items` in a hand) and the first person hand (`append_posed_items`) draw it. The same goes for spears and the spyglass: in the hand their `_in_hand` models, in the gui and on the ground their flat ones.
 - **Tests:** special_models: `a_trident_is_flat_in_the_gui_and_on_the_ground_and_3d_in_the_hands`, `the_held_trident_is_the_pole_base_and_spikes_of_the_thrown_one`. body_render: `a_held_trident_is_the_3d_model_and_on_the_ground_it_stays_flat`.
@@ -775,4 +775,25 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=trident,trident+loyalty=3
+```
+
+### 12. Minecraft tridents charge while right-click is held and are thrown on release like vanilla
+
+Commit: (next entry)
+
+- **Changed:** new `minecraft_survival/src/trident.rs`: `Charging { slot, ticks }` (`TridentItem.use`: it starts only with `trident::can_start`, so not when the next use would break it, and a Riptide one only in water or rain) and `released(charging, use_held, alive, inventory, selected)`: letting go of the use key releases (`releaseUsing`), while switching to another slot, losing the trident or dying only stops (`stopUsingItem`). `player.rs` `Hand.charging` (one field). `entities.rs` `Entities::release_trident`: `trident::release` (10 ticks of charge, one durability, Unbreaking, creative keeps it) and, for a throw, `ThrownTrident::launch` from the eyes with the player's motion, sent to the server under the player's ID. The adapter starts the charge from either hand (right-click, or the offhand key when the main hand holds a gun), counts game ticks while it is held, blocks attacks and other uses meanwhile, plays `item.trident.throw` (volume 1, pitch 1) on a throw, and draws the first-person charge pose (`ItemUseAnimation.TRIDENT` in `FirstPersonHandsAndItemsRenderer`: raised 55 degrees, pulled back and stretched over 10 ticks with the small shake) with the `item/trident_throwing` display. `offhand::has_use` knows the trident (After the split item 9).
+- **Tests:** trident: `only_a_trident_starts_charging_and_a_riptide_one_only_when_wet`, `letting_go_releases_but_switching_away_or_dying_only_stops`. minecraft_hand: `a_charging_trident_is_raised_and_pulled_back_over_half_a_second`. offhand: `has_use` covers the trident.
+- **Decisions:** the MW2 body keeps its normal hold in third person while charging (vanilla raises the arm over the head, `ArmPose.THROW_TRIDENT`; the MW2 body has no such pose), and the player is not slowed while charging (vanilla walks at a fifth of the speed while using an item; the MW2 movement has no hook for it yet). A Riptide trident released in water wears one durability but doesn't launch yet: that is the next entry.
+- **Test steps** (survival mode):
+  1. Select the plain trident and hold right-click: the 3D trident rises over your shoulder and pulls back with a small shake. Screenshot while holding.
+  2. Release after a second: it flies far, spikes first, with the throw sound and sticks in the ground at an angle with the thud. Release after a quick click: nothing is thrown.
+  3. Throw it at a zombie: the zombie takes a big hit (about 8) and the trident drops near it. Walk over it: it comes back into your inventory one durability lower (the bar under the icon).
+  4. Throw the Loyalty trident at the ground: it flies back to you with the return sound and lands in your inventory.
+  5. Hold right-click and switch hotbar slot before releasing: nothing is thrown.
+  6. Put a trident in the offhand (F) and select a gun: press the offhand use key, hold it and let go: the trident is thrown from the left hand.
+  7. Creative mode: the trident stays in your hand while a copy flies; it can't be picked up.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=trident,trident+loyalty=3,trident,zombie_spawn_egg*4
 ```
