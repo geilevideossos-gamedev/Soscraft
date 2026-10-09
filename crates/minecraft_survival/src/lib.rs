@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod cooldowns;
 pub mod data;
 pub mod death;
 pub mod entities;

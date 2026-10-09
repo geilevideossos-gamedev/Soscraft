@@ -738,9 +738,8 @@ fn update(
     hand.clock += dt_hand;
     let hand_ticks = (hand.clock / TICK_SECONDS) as u32;
     hand.clock -= f64::from(hand_ticks) * TICK_SECONDS;
-    hand.pearl_cooldown = hand.pearl_cooldown.saturating_sub(hand_ticks);
-    let pearl_left = (hand.pearl_cooldown as f32 - (hand.clock / TICK_SECONDS) as f32) / minecraft_terrain::thrown::PEARL_COOLDOWN as f32;
-    ui.cooldowns = if hand.pearl_cooldown > 0 { vec![("minecraft:ender_pearl".to_owned(), pearl_left)] } else { Vec::new() };
+    hand.cooldowns.tick(hand_ticks);
+    ui.cooldowns = hand.cooldowns.shown((hand.clock / TICK_SECONDS) as f32);
     hand.miss_time = hand.miss_time.saturating_sub(hand_ticks);
     hand.attack_ticks = hand.attack_ticks.saturating_add(hand_ticks);
     let main_hand = entities.as_ref().and_then(|_| inventory.slots[*selected].as_ref().map(|s| s.id.clone()));
@@ -1150,11 +1149,10 @@ fn update(
                     None => HandUse::Failed,
                 }
             } else if let Some((stack, kind)) = held.as_ref().and_then(|s| minecraft_terrain::thrown::Throwable::of(&s.id).map(|k| (s, k))) {
-                let pearl = kind == minecraft_terrain::thrown::Throwable::EnderPearl;
                 let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
                 let motion = glam::DVec3::new(f64::from(ps.velocity[0]), f64::from(ps.velocity[2]), -f64::from(ps.velocity[1]))
                     / (f64::from(sim::voxel::BLOCK) * 20.0);
-                if !(pearl && hand.pearl_cooldown > 0)
+                if !hand.cooldowns.active(&stack.id)
                     && entities.throw(stack, glam::DVec3::from_array(eye), mc_yaw, ps.viewangles[0], motion, on_ground)
                 {
                     let slot = &mut inventory.slots[slot];
@@ -1164,8 +1162,8 @@ fn update(
                             *slot = None;
                         }
                     }
-                    if pearl {
-                        hand.pearl_cooldown = minecraft_terrain::thrown::PEARL_COOLDOWN;
+                    if let Some(ticks) = kind.cooldown() {
+                        hand.cooldowns.start(&stack.id, ticks);
                     }
                     hand.swing = Some(0.0);
                     let pitch = minecraft_terrain::thrown::throw_pitch(entities.random_float());

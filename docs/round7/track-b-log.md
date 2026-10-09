@@ -779,7 +779,7 @@ IW4L_MINECRAFT_KIT=trident,trident+loyalty=3
 
 ### 12. Minecraft tridents charge while right-click is held and are thrown on release like vanilla
 
-Commit: (next entry)
+Commit: 9beeb6d
 
 - **Changed:** new `minecraft_survival/src/trident.rs`: `Charging { slot, ticks }` (`TridentItem.use`: it starts only with `trident::can_start`, so not when the next use would break it, and a Riptide one only in water or rain) and `released(charging, use_held, alive, inventory, selected)`: letting go of the use key releases (`releaseUsing`), while switching to another slot, losing the trident or dying only stops (`stopUsingItem`). `player.rs` `Hand.charging` (one field). `entities.rs` `Entities::release_trident`: `trident::release` (10 ticks of charge, one durability, Unbreaking, creative keeps it) and, for a throw, `ThrownTrident::launch` from the eyes with the player's motion, sent to the server under the player's ID. The adapter starts the charge from either hand (right-click, or the offhand key when the main hand holds a gun), counts game ticks while it is held, blocks attacks and other uses meanwhile, plays `item.trident.throw` (volume 1, pitch 1) on a throw, and draws the first-person charge pose (`ItemUseAnimation.TRIDENT` in `FirstPersonHandsAndItemsRenderer`: raised 55 degrees, pulled back and stretched over 10 ticks with the small shake) with the `item/trident_throwing` display. `offhand::has_use` knows the trident (After the split item 9).
 - **Tests:** trident: `only_a_trident_starts_charging_and_a_riptide_one_only_when_wet`, `letting_go_releases_but_switching_away_or_dying_only_stops`. minecraft_hand: `a_charging_trident_is_raised_and_pulled_back_over_half_a_second`. offhand: `has_use` covers the trident.
@@ -796,4 +796,19 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=trident,trident+loyalty=3,trident,zombie_spawn_egg*4
+```
+
+### 13. Minecraft wind charges get their own half-second cooldown like ender pearls
+
+Commit: (next entry)
+
+- **Changed:** new `minecraft_survival/src/cooldowns.rs`: `Cooldowns` is vanilla's `ItemCooldowns` per item ID: `start(item, ticks)` replaces that item's cooldown, `tick(n)` drops the ones that ran out, `active(item)` blocks its use (the other hand is tried, as `useItem` passes), `shown(partial)` is each item's `getCooldownPercent` for the slot overlay. `player.rs` `Hand.cooldowns` replaces `pearl_cooldown` (one field and its test line). The adapter starts `Throwable::cooldown()` after a throw (ender pearl 20 ticks, wind charge 10) and hands every running cooldown to the hotbar overlay (After the split item 13).
+- **Tests:** cooldowns: `a_cooldown_blocks_only_its_own_item_until_it_runs_out`, `the_slot_overlay_shrinks_with_the_time_left`; player: `a_joining_player_has_no_hand_or_fall_timers_running` checks the empty cooldowns.
+- **Test steps:**
+  1. Spam right-click with the wind charges: one is thrown every half second, and the wind charge slot shows the white overlay shrinking from the top in between. Screenshot right after a throw.
+  2. Throw an ender pearl, then a wind charge straight away: the wind charge is thrown (each item has its own cooldown); the pearl slot keeps its one-second overlay.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=wind_charge*64,ender_pearl*16
 ```
