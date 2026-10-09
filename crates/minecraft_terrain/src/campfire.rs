@@ -67,7 +67,7 @@ impl Campfire {
     pub fn from_tag(tag: &Tag, recipes: &RecipeBook) -> Self {
         let times = |key: &str| {
             let mut out = [0; SLOTS];
-            let saved = tag.get(key).and_then(Tag::as_ints).unwrap_or_default();
+            let saved = tag.get(key).and_then(Tag::as_ints).into_iter().flatten();
             for (time, value) in out.iter_mut().zip(saved) {
                 *time = value.max(0) as u32;
             }
@@ -77,7 +77,7 @@ impl Campfire {
             .get("Items")
             .map(|list| slots(list, SLOTS, recipes))
             .and_then(|list| list.try_into().ok())
-            .unwrap_or_default();
+            .unwrap_or_else(|| std::array::from_fn(|_| None));
         Self {
             items,
             progress: times("CookingTimes"),

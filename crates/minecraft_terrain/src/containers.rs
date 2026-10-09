@@ -360,8 +360,8 @@ impl Oven {
     pub fn from_tag(kind: CookingKind, tag: &Tag, recipes: &RecipeBook) -> Self {
         let mut oven = Self::new(kind);
         let furnace = &mut oven.furnace;
-        if let Some(list) = tag.get("Items") {
-            furnace.slots = slots(list, 3, recipes).try_into().unwrap_or_default();
+        if let Some(Ok(cells)) = tag.get("Items").map(|list| slots(list, 3, recipes).try_into()) {
+            furnace.slots = cells;
         }
         furnace.cook_progress = int(tag, "cooking_time_spent", 0);
         furnace.cook_total = int(tag, "cooking_total_time", 0);
@@ -501,8 +501,8 @@ pub struct Brewer {
 impl Brewer {
     pub fn from_tag(tag: &Tag, recipes: &RecipeBook) -> Self {
         let mut brewer = Self::default();
-        if let Some(list) = tag.get("Items") {
-            brewer.slots = slots(list, BREWER_SLOTS, recipes).try_into().unwrap_or_default();
+        if let Some(Ok(cells)) = tag.get("Items").map(|list| slots(list, BREWER_SLOTS, recipes).try_into()) {
+            brewer.slots = cells;
         }
         brewer.brew_time = int(tag, "BrewTime", 0).min(BREW_TICKS);
         brewer.fuel = int(tag, "Fuel", 0).min(FUEL_USES);

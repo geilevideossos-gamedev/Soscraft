@@ -334,7 +334,7 @@ IW4L_MINECRAFT_KIT=minecraft:furnace,minecraft:smoker,minecraft:blast_furnace,mi
 
 ### 13. Minecraft hoppers, dispensers and droppers keep their items
 
-Commit: (filled in by the next entry)
+Commit: c5efeed
 
 - **Changed:**
   - Vendored `third_party/minecraftoss/world/src/level/` (MinecraftOSS patch):
@@ -367,3 +367,13 @@ Commit: (filled in by the next entry)
 ```
 IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5
 ```
+
+### Minecraft station saving passes clippy
+
+Commit: (filled in by the next entry)
+
+- **Changed:** `campfire.rs` and `containers.rs`: the loading of saved campfires, furnaces and brewing stands (c2a10e3) no longer uses `unwrap_or_default`, which the workspace `clippy.toml` disallows; a saved item list of the wrong length still leaves the slots empty. No behaviour change.
+- **Tests:** none new; the `containers` and `campfire` tests pass unchanged.
+- **Decisions:** clippy on `minecraft_terrain` still stops at 16 errors that were there before this track (`spider_render.rs`, `horse_render.rs`, `villager_render.rs`, `wolf_render.rs`), so the crates that depend on it (`minecraft_survival`) cannot be linted until those are fixed. None of the warnings left are in code of this group.
+- **Test steps:** none; entries 12 and 13 cover the behaviour.
+- **Kit:** none.
