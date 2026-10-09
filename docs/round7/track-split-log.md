@@ -553,3 +553,44 @@ C3 is commit `e745029`.
 - **Decisions:**
   - Like C2 and C3, `stream_tick` is a free function on the level's parts (`terrain` and the level's `Option<Entities>`), so `update()` and `stream_around_spawn` keep their bindings.
   - The level server now gets all `load_chunk` commands of a tick before the adapter fills the MW2 collision of those chunks, where the two used to alternate per chunk. As the plan says, the entity commands and the voxel updates don't depend on each other. Each kind keeps its own order: loads before unloads, chunks in stream order.
+
+## C5. Minecraft chat command handling runs from minecraft_survival
+
+C4 is commit `1703c63`.
+
+- **What changed:**
+  - `minecraft_survival/src/commands.rs` gains `run(globals, level, player, sent, pose, alive) -> Handled { delivered, teleports }`. It holds the chat command handling that ran at the top of `update()`, unchanged apart from its paths:
+    - It builds the `Host` from the world globals, the level's mobs and the player's survival, inventory, selected slot and game mode.
+    - It pumps the sent chat lines through the `CommandServer`.
+    - After a rule change it hands the new rules to the level server, and it logs the chat server's warnings.
+    - After a game mode change it writes the player file (`server::save_player_mode`).
+    - It returns the messages to show and the teleports.
+    
+    The file stays comment-free and rustfmt-clean.
+  - `render_anim/src/minecraft_world.rs`: `update()` computes the host's pose and life state as before (the pose now reads `player.survival`) and calls `run` with `&mut ui.chat.sent`. Then it destructures the player and the level into the same bindings as before, a few lines lower, and shows the delivered messages with `show_chat`. The rest of `update()` is unchanged.
+- **Tests added:** none. `run` needs the world globals (loaded registries) and a level, which a unit test can't build without the vanilla data. What it runs is covered by the existing `pump` and `Host` tests (`commands.rs` and `render_anim/src/minecraft_chat.rs`). Totals: `minecraft_survival` 131, `render_anim` 34; the moved total stays 153.
+- **Checks:** `check -p launcher --locked` (no new warning), `test -p minecraft_survival --locked`, `test -p render_anim --locked`; the staged `commands.rs` passes `rustfmt --check --edition 2024` with empty output.
+- **Owner test** (chat and every command must work exactly as before):
+  1. Load a Minecraft match with `IW4L_MINECRAFT_WORLD=split` and the regression kit.
+  2. Open the chat and type `hello`: it shows as `<name> hello`. Type `/frob`: the red unknown-command error shows.
+  3. Type `/give @s minecraft:diamond 5`: the diamonds land in the inventory. Select an empty hotbar slot and give again: they still land in the inventory.
+  4. Type `/tp ~ ~10 ~`: you are lifted 10 blocks and fall back down. Die (`/kill`) and type `/tp ~ ~10 ~` before you respawn: nothing moves.
+  5. Type `/gamerule spawn_mobs false`, then `/summon minecraft:zombie`: the zombie still appears, but no new mobs spawn on their own at night. Type `/gamerule spawn_mobs true`.
+  6. Type `/gamerule block_drops false` and mine a block: it drops nothing. Type `/gamerule block_drops true`: blocks drop again.
+  7. Type `/gamemode creative`, leave the match: creative is back on the next load (the player file was written). Type `/gamemode survival`.
+  8. Type `/time set 13000` and `/weather rain`: dusk and rain. Type `/effect give @s minecraft:regeneration 10 1` with a heart missing: the hearts come back.
+- **Kit:** `minecraft:cobblestone` x64, `minecraft:diamond_pickaxe` x1 (both in the regression kit). The rest comes from the commands.
+- **Not done here:** nothing. The group's optional step is done, because it stayed a clean move.
+- **Decisions:**
+  - `run` takes `&mut Level` and `&mut Player` as the plan says, so `update()` destructures the player and the level after the call instead of before it. Destructuring has no side effects, and every later use keeps its binding.
+  - The return type is a small `Handled { delivered, teleports }` struct, the two outputs `update()` still needs: the messages to show (presentation) and the teleports to apply to the MW2 player.
+
+## Test totals after C5
+
+| Crate | Baseline (`70a01b2`) | After B7 | After C5 |
+|---|---|---|---|
+| `minecraft_survival` | - | 124 | 131 |
+| `render_anim` | 153 | 34 | 34 |
+| `minecraft_net` | - | 2 | 2 (not touched) |
+
+The 153 moved tests are all still there (119 in `minecraft_survival` plus 34 in `render_anim`). The 12 new `minecraft_survival` tests are B4 2, B5 1, B6 1, B7 1, C1 2, C2 2 and C3 3. `minecraft_terrain` (464 passed, 3 ignored), `minecraft_commands` (53) and `minecraft_net` (2) were not touched by C1-C5 (`git diff 9be1914` is empty for them).

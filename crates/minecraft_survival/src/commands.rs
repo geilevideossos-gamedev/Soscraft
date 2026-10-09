@@ -11,6 +11,10 @@ use minecraftoss_player::Difficulty;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::survival::{Armor, EffectKind};
 
+use crate::level::Level;
+use crate::player::Player;
+use crate::server::Globals;
+
 pub const HOST: PlayerId = PlayerId(0);
 
 pub struct Host<'a> {
@@ -399,6 +403,56 @@ pub fn pump(
         );
     }
     delivered
+}
+
+pub struct Handled {
+    pub delivered: Vec<Clientbound>,
+    pub teleports: Vec<[f64; 3]>,
+}
+
+pub fn run(
+    globals: &mut Globals,
+    level: &mut Level,
+    player: &mut Player,
+    sent: &mut Vec<String>,
+    pose: Option<Pose>,
+    alive: bool,
+) -> Handled {
+    let mut host = Host {
+        seed: globals.seed,
+        rules: &mut globals.game_rules,
+        difficulty: &mut globals.difficulty,
+        day: &mut globals.day,
+        save: globals.save.as_mut(),
+        survival: &mut player.survival,
+        entities: level.entities.as_mut(),
+        inventory: &mut player.inventory,
+        selected: player.selected,
+        player_mode: &mut player.mode,
+        rules_changed: false,
+        mode_changed: false,
+        pose,
+        alive,
+        teleports: Vec::new(),
+    };
+    let delivered = pump(sent, &mut globals.chat, &mut host);
+    let mode_changed = host.mode_changed;
+    let teleports = std::mem::take(&mut host.teleports);
+    if host.rules_changed
+        && let Some(entities) = level.entities.as_mut()
+    {
+        entities.set_game_rules(&globals.game_rules);
+    }
+    for warning in globals.chat.take_warnings() {
+        diag::warn!(World, "{warning}");
+    }
+    if mode_changed {
+        crate::server::save_player_mode(globals, player.mode);
+    }
+    Handled {
+        delivered,
+        teleports,
+    }
 }
 
 pub fn death_message(line: String) -> Clientbound {

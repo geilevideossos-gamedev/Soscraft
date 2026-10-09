@@ -558,45 +558,15 @@ fn update(
         puppet.active = false;
         return;
     };
-    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, .. } = player;
-    let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
     let host_alive = presented.player(local.0).is_some_and(|ps| ps.pm_type == 0);
     let host_pose = presented
         .player(local.0)
         .filter(|_| host_alive)
         .map(|ps| minecraft_commands::Pose { feet: sim::voxel::to_block(origin, ps.origin), yaw: minecraft_yaw(ps.viewangles[1]), pitch: ps.viewangles[0] })
-        .or_else(|| survival.last_feet().map(|feet| minecraft_commands::Pose { feet, yaw: 0.0, pitch: 0.0 }));
-    let mut host = minecraft_survival::commands::Host {
-        seed: globals.seed,
-        rules: &mut globals.game_rules,
-        difficulty: &mut globals.difficulty,
-        day: &mut globals.day,
-        save: globals.save.as_mut(),
-        survival,
-        entities: entities.as_mut(),
-        inventory,
-        selected: *selected,
-        player_mode,
-        rules_changed: false,
-        mode_changed: false,
-        pose: host_pose,
-        alive: host_alive,
-        teleports: Vec::new(),
-    };
-    let delivered = minecraft_survival::commands::pump(&mut ui.chat.sent, &mut globals.chat, &mut host);
-    let mode_changed = host.mode_changed;
-    let teleports = std::mem::take(&mut host.teleports);
-    if host.rules_changed
-        && let Some(entities) = entities.as_mut()
-    {
-        entities.set_game_rules(&globals.game_rules);
-    }
-    for warning in globals.chat.take_warnings() {
-        diag::warn!(World, "{warning}");
-    }
-    if mode_changed {
-        minecraft_survival::server::save_player_mode(globals, *player_mode);
-    }
+        .or_else(|| player.survival.last_feet().map(|feet| minecraft_commands::Pose { feet, yaw: 0.0, pitch: 0.0 }));
+    let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, level, player, &mut ui.chat.sent, host_pose, host_alive);
+    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, .. } = player;
+    let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
     if !delivered.is_empty() {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
     }
