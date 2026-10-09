@@ -400,7 +400,7 @@ Commit: d53120c6
 
 ### 19. Docs: Minecraft dimension switch (E1-15)
 
-Commit: filled in by `git log` under this subject
+Commit: 0b0e254b
 
 - **Changed:**
   - `docs/MINECRAFT-SURVIVAL.md`: the Crate layout (`Server` with `Globals`, `opening` and level closing, `Level.dimension` and `empty_ticks`, the switch on `Player`, `switch.rs`, `respawn.rs`, and the adapter's `follow_levels`, leave, hold and loading screen); the Limitations (how the Nether and End can be entered today, one MW2 collision world, MW2 in other dimensions with the air support rule and the ordnance gaps); saving of the Nether and End; the `IW4L_MINECRAFT_DIMENSION` row in the switches table; the roadmap's runtime switch marked done.
@@ -409,3 +409,26 @@ Commit: filled in by `git log` under this subject
 - **Tests:** none (docs only).
 - **Test steps:** none.
 - **Kit:** none.
+
+## Group S4 summary
+
+- **Commits:** entries 15 to 19. No clippy fix was needed: `clippy -p sim -p minecraft_survival -p render_anim -p net -p playerstate_iw4 -p minecraft_terrain --tests --no-deps -- -A clippy::approx_constant` and `clippy -p minecraftoss-core --tests --no-deps` have no finding on a line of this group (the older ones are `entities.rs` 77 and 621, `voxel.rs` 47, 325 and 381, `minecraft_world.rs` 127, 385 and 394, and many more in those crates).
+- **Tests:** `sim` (69), `minecraft_survival` (200 and the vanilla world test), `minecraft_terrain` environment tests, `minecraftoss-core` (23), `render_anim` (44), `playerstate_iw4` and `net` (no tests) pass, and `check -p launcher` is green.
+- **Owner test for the whole group** (one world, two starts):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=s4test` (a new world) and `IW4L_MINECRAFT_DIMENSION=the_nether`. Start. Throw a frag at netherrack: it craters. Build a small obsidian wall and throw a frag at it: the obsidian holds. **Screenshot 1.**
+  2. Open the console, `give killstreak/predator` (accept the suggestion), close it, and select the predator on the hotbar: it is not raised, and the chat says "Air support is unavailable under this dimension's ceiling". **Screenshot 2.** Do the same with `give killstreak/airdrop`: the same line.
+  3. `give killstreak/uav` and select it: the UAV works in the Nether.
+  4. `/kill`. After the respawn in the overworld, throw a frag at the ground (it craters), then select the predator: you fly it. **Screenshot 3.**
+  5. Quit. Set `IW4L_MINECRAFT_DIMENSION=the_end` and start on the obsidian platform. `give killstreak/predator` and fly it at the main island to the west: it works and craters the end stone. **Screenshot 4.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:obsidian*64,minecraft:netherrack*64,minecraft:cobblestone*64,minecraft:cooked_beef*32
+```
+
+- **After track C:**
+  - E1-11's wiring: `CommandWorld::teleport` with the dimension and `Player::teleport_into` in the adapter (entry 18), with the brief's `FakeWorld` test. Then the owner steps of entries 15 (step 3) and 16, and the brief's steps 1, 2 and 7.
+  - `/time` per dimension from S1 (`server::default_clock`).
+- **Known gaps (brief section 8):** a level-wide script `RadiusDamage` and killstreak turret bullets from before a switch still reach the new level; MW2 player damage from old ordnance is not filtered (the MW2 map is shared); the air support weapon names are from MW2's stock scripts and are checked in game (entry 17).
+- **MinecraftOSS patches in this group:** `core/src/environment.rs` (`DimensionPresentation.has_ceiling`).
+- **For the later tracks:** a living player travels with `Player::travel_to` (portals in N2 and X2), which waits for a remote killstreak; `switch_to` is only for the respawn and failed loads. The next free `pm_flags` bit for the glide is below `MC_NO_SKY` (`0x0400_0000`).
