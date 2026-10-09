@@ -58,6 +58,8 @@ pub mod placing;
 pub mod scaffolding;
 pub mod doors;
 pub mod thrown;
+pub mod potions;
+pub mod splash;
 pub mod bottle;
 pub mod bucket;
 pub mod flint;

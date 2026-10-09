@@ -66,6 +66,8 @@ pub struct ServerSim {
     pearl_landings: Vec<(u64, [f64; 3])>,
     potion_breaks: Vec<minecraftoss_entities::world::PotionBreak>,
     sound_random: minecraftoss_player::rng::LegacyRandom,
+    player_potions: Vec<crate::potions::PlayerPotionHit>,
+    held: std::collections::HashMap<u64, [Option<minecraftoss_player::inventory::ItemStack>; 2]>,
 }
 
 /// What a player's hit or use on a mob did, for the client to present.
@@ -168,6 +170,7 @@ pub struct EntitySnapshot {
     pub falling: Vec<ServerFallingBlock>,
     pub orbs: Vec<ServerOrb>,
     pub thrown: Vec<(String, [f64; 3], [f64; 3], i32)>,
+    pub thrown_views: Vec<crate::thrown::ThrownView>,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -238,6 +241,8 @@ impl ServerSim {
             pearl_landings: Vec::new(),
             potion_breaks: Vec::new(),
             sound_random: minecraftoss_player::rng::LegacyRandom::new(0x5EED_B0771E),
+            player_potions: Vec::new(),
+            held: std::collections::HashMap::new(),
         }
     }
 
@@ -691,8 +696,18 @@ impl ServerSim {
         std::mem::take(&mut self.explosions)
     }
 
-    pub fn throw(&mut self, thrown: crate::thrown::Thrown) {
+    pub fn throw(&mut self, mut thrown: crate::thrown::Thrown) {
+        if thrown.components.is_none() {
+            if let Some(held) = self.held.get(&thrown.owner) {
+                thrown.components = held.iter().flatten().find(|s| s.id == thrown.item).and_then(|s| s.components.clone());
+            }
+        }
         self.thrown.push(thrown);
+    }
+
+    pub fn note_held(&mut self, player: u64, inventory: &minecraftoss_player::inventory::Inventory, selected: usize) {
+        let slot = |index: usize| inventory.slots.get(index).cloned().flatten();
+        self.held.insert(player, [slot(selected), slot(OFFHAND_SLOT)]);
     }
 
     pub fn take_pearl_teleports(&mut self) -> Vec<(u64, [f64; 3])> {
@@ -716,6 +731,14 @@ impl ServerSim {
         self.thrown.iter().map(|t| (t.item.clone(), t.previous.to_array(), t.position().to_array(), t.age())).collect()
     }
 
+    pub fn thrown_views(&self) -> Vec<crate::thrown::ThrownView> {
+        self.thrown.iter().map(crate::thrown::Thrown::view).collect()
+    }
+
+    pub fn take_player_potions(&mut self) -> Vec<crate::potions::PlayerPotionHit> {
+        std::mem::take(&mut self.player_potions)
+    }
+
     pub fn tick_thrown(&mut self, players: &[crate::thrown::PlayerBody]) {
         use crate::thrown::Throwable;
         self.thrown.retain(|t| t.kind != Throwable::EnderPearl || players.iter().any(|p| p.id == t.owner && p.alive));
@@ -726,6 +749,7 @@ impl ServerSim {
         let mut struck = Vec::new();
         let mut hatched = Vec::new();
         let mut awards = Vec::new();
+        let mut splashes = Vec::new();
         {
             let Self { level, states, mob_tables, thrown, pearl_landings, potion_breaks, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
@@ -733,7 +757,8 @@ impl ServerSim {
                 let mut targets = mob_targets.clone();
                 targets.extend(crate::thrown::player_targets(players, t.owner));
                 let Some(landed) = t.tick(&world, &targets, crate::thrown::owner_box(players, t.owner)) else { continue };
-                if let Some(mob) = landed.mob.filter(|&id| crate::thrown::struck_player(id).is_none()) {
+                let hurts = matches!(t.kind, Throwable::Snowball | Throwable::Egg | Throwable::EnderPearl);
+                if let Some(mob) = landed.mob.filter(|&id| hurts && crate::thrown::struck_player(id).is_none()) {
                     struck.push((mob, landed.velocity, t.owner, t.random().next_long()));
                 }
                 match t.kind {
@@ -752,6 +777,14 @@ impl ServerSim {
                         let direction = landed.face.map_or(-landed.velocity, crate::thrown::face_normal);
                         awards.push((crate::thrown::sound_cell(at), pitch, landed.at, direction, amount));
                     }
+                    Throwable::SplashPotion => {
+                        let contents = t.contents();
+                        let at = t.position();
+                        potion_breaks.push(minecraftoss_entities::world::PotionBreak { position: at, color: contents.color(), instant: contents.instant_potion() });
+                        let pitch = crate::thrown::break_pitch(t.random().next_float());
+                        let scale = crate::potions::duration_scale(&t.item, t.components.as_ref());
+                        splashes.push((at, t.margin(), t.owner, contents.all_effects(), scale, pitch));
+                    }
                 }
             }
             thrown.retain(crate::thrown::Thrown::alive);
@@ -759,6 +792,11 @@ impl ServerSim {
         for (cell, pitch, hit, direction, amount) in awards {
             self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::thrown::BREAK_SOUND, pos: cell, volume: 1.0, pitch });
             self.level.award_experience_toward(hit.to_array(), direction.to_array(), amount);
+        }
+        for (at, margin, owner, effects, scale, pitch) in splashes {
+            let hits = crate::splash::splash(&mut self.mobs, at, margin, owner, &effects, scale, players);
+            self.player_potions.extend(hits);
+            self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::thrown::BREAK_SOUND, pos: crate::thrown::sound_cell(at), volume: 1.0, pitch });
         }
         for (mob, velocity, owner, seed) in struck {
             crate::thrown::hurt(&mut self.mobs, mob, velocity, owner, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
@@ -1182,6 +1220,7 @@ pub struct TickInput {
 }
 
 const PLAYER_HEIGHT: f64 = 1.8;
+const OFFHAND_SLOT: usize = 40;
 const TNT_BLAST_RADIUS: f32 = 4.0;
 const STUN_SLOWNESS_AMPLIFIER: i32 = 3;
 
@@ -1214,6 +1253,7 @@ pub struct Output {
     pub player_splashes: Vec<(u64, minecraftoss_entities::world::PlayerSplash)>,
     /// Where splash potions broke (their sound and colour).
     pub potion_breaks: Vec<minecraftoss_entities::world::PotionBreak>,
+    pub player_potions: Vec<crate::potions::PlayerPotionHit>,
     /// Creeper blasts this tick (`ClientboundExplodePacket`).
     pub explosions: Vec<minecraftoss_entities::creeper::CreeperExplosion>,
     /// Sounds mobs made this tick.
@@ -1515,6 +1555,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::Tick(input) => {
                     let started = std::time::Instant::now();
                     let input = *input;
+                    if let (Some((_, inventory, selected)), Some(player)) = (input.pickup.as_ref(), input.mob_players.first()) {
+                        sim.note_held(player.id, inventory, *selected);
+                    }
                     // `MinecraftServer.autoSave`: every five minutes.
                     sim.ticks_since_save += 1;
                     if sim.ticks_since_save >= 6000 {
@@ -1555,7 +1598,10 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.spawn_trade_experience();
                     out.merchant.extend(sim.check_merchant(&input.mob_players));
                     out.player_hits.extend(sim.mobs.take_player_hits());
-                    out.player_splashes.extend(sim.mobs.take_player_splashes());
+                    let witch_splashes = sim.mobs.take_player_splashes();
+                    out.player_potions.extend(witch_splashes.iter().map(|(player, splash)| crate::splash::of_witch(*player, splash)));
+                    out.player_potions.extend(sim.take_player_potions());
+                    out.player_splashes.extend(witch_splashes);
                     out.potion_breaks.extend(sim.take_potion_breaks());
                     out.explosions.extend(sim.take_explosions());
                     out.mob_sounds.extend(sim.mobs.take_sounds());
@@ -1577,7 +1623,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     }
                     // After the items, one experience orb.
                     out.orbs_taken.extend(sim.take_experience(pickup_feet));
-                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown: sim.thrown_view() });
+                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown: sim.thrown_view(), thrown_views: sim.thrown_views() });
                     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
                     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), started.elapsed().as_secs_f64() * 1000.0));
                 }
@@ -3616,6 +3662,82 @@ mod tests {
                 e.removed |= e.orb_data().is_some();
             }
         }
+    }
+
+    fn thrown_potion(owner: u64, item: &str, potion: &str, seed: u64) -> crate::thrown::Thrown {
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(seed);
+        let components = serde_json::json!({"minecraft:potion_contents": {"potion": potion}});
+        let throw = crate::thrown::Throw { owner, item, components: Some(&components), eye: glam::DVec3::new(8.5, 203.0, 8.5), yaw: 0.0, pitch: 90.0, motion: glam::DVec3::ZERO, on_ground: true };
+        crate::thrown::Thrown::launch(&throw, &mut random).expect("a throwable")
+    }
+
+    fn cow_health(server: &ServerSim, x: f64) -> Option<f32> {
+        server.mobs.cows().iter().find(|c| (c.cow.body.position.x - x).abs() < 1e-6).map(|c| c.cow.health)
+    }
+
+    #[test]
+    fn a_splash_of_harming_hurts_a_near_cow_more_than_a_far_one() {
+        let Some((mut server, _)) = door_world() else { return };
+        for x in [9.9, 11.5, 14.5] {
+            if server.summon("minecraft:cow", [x, 200.0, 8.5], None, 0.0).is_err() {
+                return;
+            }
+        }
+        server.throw(thrown_potion(0, "minecraft:splash_potion", "minecraft:harming", 1));
+        for _ in 0..20 {
+            server.tick_thrown(&[]);
+        }
+        let breaks = server.take_potion_breaks();
+        assert_eq!(breaks.len(), 1);
+        assert!(breaks[0].instant);
+        assert_eq!(breaks[0].color, 11101546);
+        let (near, far) = (cow_health(&server, 9.9).unwrap(), cow_health(&server, 11.5).unwrap());
+        assert!(near < far && far < 10.0, "{near} {far}");
+        assert_eq!(near, 5.0);
+        assert_eq!(cow_health(&server, 14.5), Some(10.0));
+        assert_eq!(server.level.sounds.iter().filter(|s| s.event == crate::thrown::BREAK_SOUND).count(), 1);
+    }
+
+    #[test]
+    fn a_throw_without_its_stack_takes_it_from_the_throwers_hand() {
+        let Some((mut server, _)) = door_world() else { return };
+        let mut inventory = minecraftoss_player::inventory::Inventory::default();
+        let mut potion = minecraftoss_player::inventory::ItemStack::new("minecraft:splash_potion", 1);
+        potion.components = Some(serde_json::json!({"minecraft:potion_contents": {"potion": "minecraft:poison"}}));
+        inventory.slots[3] = Some(potion);
+        let mut offhand = minecraftoss_player::inventory::ItemStack::new("minecraft:lingering_potion", 1);
+        offhand.components = Some(serde_json::json!({"minecraft:potion_contents": {"potion": "minecraft:regeneration"}}));
+        inventory.slots[40] = Some(offhand);
+        server.note_held(0, &inventory, 3);
+        server.throw(thrown_down("minecraft:splash_potion", 1));
+        server.throw(thrown_down_by(5, "minecraft:splash_potion", 2));
+        let tints: Vec<_> = server.thrown_views().iter().map(|v| v.tint).collect();
+        assert_eq!(tints, vec![Some(8889187), Some(crate::thrown::BOTTLE_COLOR)]);
+        server.note_held(0, &inventory, 0);
+        server.throw(thrown_down("minecraft:splash_potion", 3));
+        assert_eq!(server.thrown_views()[2].tint, Some(crate::thrown::BOTTLE_COLOR));
+    }
+
+    #[test]
+    fn a_splash_of_poison_reaches_every_near_player_and_its_thrower() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.throw(thrown_potion(1, "minecraft:splash_potion", "minecraft:poison", 2));
+        let players = [player_at(1, [8.5, 200.0, 8.5], true), player_at(2, [11.0, 200.0, 8.5], true), player_at(3, [30.0, 200.0, 8.5], true)];
+        let mut hits = Vec::new();
+        for _ in 0..20 {
+            server.tick_thrown(&players);
+            hits.extend(server.take_player_potions());
+        }
+        let poisoned: Vec<(u64, i32)> = hits
+            .iter()
+            .filter_map(|h| match &h.potion {
+                crate::potions::PlayerPotion::Effect(e) if e.effect == "minecraft:poison" => Some((h.player, e.duration)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(poisoned.iter().map(|p| p.0).collect::<Vec<_>>(), vec![1, 2], "{hits:?}");
+        assert!(poisoned[0].1 > poisoned[1].1);
+        assert!(poisoned[0].1 <= 900);
     }
 
     #[test]

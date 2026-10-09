@@ -35,6 +35,7 @@ pub enum Throwable {
     Egg,
     EnderPearl,
     ExperienceBottle,
+    SplashPotion,
 }
 
 impl Throwable {
@@ -44,6 +45,7 @@ impl Throwable {
             "minecraft:egg" | "minecraft:blue_egg" | "minecraft:brown_egg" => Some(Self::Egg),
             "minecraft:ender_pearl" => Some(Self::EnderPearl),
             "minecraft:experience_bottle" => Some(Self::ExperienceBottle),
+            "minecraft:splash_potion" => Some(Self::SplashPotion),
             _ => None,
         }
     }
@@ -54,13 +56,14 @@ impl Throwable {
             Self::Egg => "minecraft:entity.egg.throw",
             Self::EnderPearl => "minecraft:entity.ender_pearl.throw",
             Self::ExperienceBottle => "minecraft:entity.experience_bottle.throw",
+            Self::SplashPotion => "minecraft:entity.splash_potion.throw",
         }
     }
 
     pub fn pitch_offset(self) -> f32 {
         match self {
             Self::Snowball | Self::Egg | Self::EnderPearl => 0.0,
-            Self::ExperienceBottle => -20.0,
+            Self::ExperienceBottle | Self::SplashPotion => -20.0,
         }
     }
 
@@ -68,6 +71,7 @@ impl Throwable {
         match self {
             Self::Snowball | Self::Egg | Self::EnderPearl => POWER,
             Self::ExperienceBottle => 0.7,
+            Self::SplashPotion => 0.5,
         }
     }
 
@@ -79,6 +83,7 @@ impl Throwable {
         match self {
             Self::Snowball | Self::Egg | Self::EnderPearl => GRAVITY,
             Self::ExperienceBottle => 0.07,
+            Self::SplashPotion => minecraftoss_entities::potion::GRAVITY,
         }
     }
 }
@@ -298,6 +303,35 @@ impl Thrown {
 
     pub fn age(&self) -> i32 {
         self.flight.tick_count
+    }
+
+    pub fn pitch(&self) -> f32 {
+        self.flight.pitch
+    }
+
+    pub fn margin(&self) -> f64 {
+        self.flight.margin()
+    }
+
+    pub fn contents(&self) -> crate::potions::PotionContents {
+        crate::potions::PotionContents::from_components(self.components.as_ref())
+    }
+
+    pub fn tint(&self) -> Option<u32> {
+        matches!(self.kind, Throwable::SplashPotion).then(|| self.contents().color())
+    }
+
+    pub fn view(&self) -> ThrownView {
+        ThrownView {
+            item: self.item.clone(),
+            owner: self.owner,
+            previous: self.previous,
+            position: self.position(),
+            age: self.age(),
+            yaw: self.yaw(),
+            pitch: self.pitch(),
+            tint: self.tint(),
+        }
     }
 
     pub fn random(&mut self) -> &mut LegacyRandom {
@@ -568,6 +602,69 @@ pub fn hatch_point(at: DVec3, before: DVec3) -> DVec3 {
 pub fn texture(item: &str) -> Option<ResourceId> {
     let path = item.strip_prefix("minecraft:")?;
     ResourceId::parse(&format!("minecraft:item/{path}")).ok()
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ThrownView {
+    pub item: String,
+    pub owner: u64,
+    pub previous: DVec3,
+    pub position: DVec3,
+    pub age: i32,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub tint: Option<u32>,
+}
+
+impl ThrownView {
+    pub fn at(&self, partial: f32) -> DVec3 {
+        self.previous.lerp(self.position, f64::from(partial.clamp(0.0, 1.0)))
+    }
+}
+
+fn tint_color(rgb: u32) -> [f32; 4] {
+    let [r, g, b] = crate::spell_particles::rgb(rgb);
+    [r, g, b, 1.0]
+}
+
+fn layers(view: &ThrownView) -> Vec<(ResourceId, [f32; 4])> {
+    match (view.tint, texture(&view.item)) {
+        (Some(tint), Some(bottle)) => match ResourceId::parse("minecraft:item/potion_overlay") {
+            Ok(overlay) => vec![(overlay, tint_color(tint)), (bottle, [1.0; 4])],
+            Err(_) => Vec::new(),
+        },
+        (None, Some(item)) => vec![(item, [1.0; 4])],
+        (_, None) => Vec::new(),
+    }
+}
+
+pub fn append_views<'a>(mesh: &mut ChunkMesh, views: impl IntoIterator<Item = &'a ThrownView>, partial: f32, camera: DVec3, atlas: &Atlas, forward: Vec3, light: &SkyLight) {
+    let right = forward.cross(Vec3::Y).normalize_or_zero();
+    let up = right.cross(forward).normalize_or_zero();
+    for view in views {
+        let at = view.at(partial);
+        if !shown(view.age, at, camera) {
+            continue;
+        }
+        let layers = layers(view);
+        if layers.iter().any(|(id, _)| !atlas.contains(id)) {
+            continue;
+        }
+        let cell = (at.x.floor() as i32, at.y.floor() as i32, at.z.floor() as i32);
+        let (sky, block) = (light.get(cell) as f32, light.get_block(cell) as f32);
+        let center = at.as_vec3() + up * 0.125;
+        for (index, (id, color)) in layers.iter().enumerate() {
+            let [u0, v0, u1, v1] = atlas.region(id);
+            let nudge = forward * (index as f32 * 0.002);
+            let start = mesh.vertices.len() as u32;
+            for (corner, uv) in [(Vec2::new(-0.25, -0.25), [u0, v1]), (Vec2::new(0.25, -0.25), [u1, v1]), (Vec2::new(0.25, 0.25), [u1, v0]), (Vec2::new(-0.25, 0.25), [u0, v0])] {
+                let point = center + right * corner.x + up * corner.y - nudge;
+                mesh.vertices.push(Vertex { position: point.to_array(), uv, color: *color, sky_light: sky, block_light: block });
+            }
+            mesh.indices.extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
+            mesh.faces += 1;
+        }
+    }
 }
 
 pub fn append_sprites<'a>(
@@ -867,6 +964,28 @@ mod tests {
         let before = bottle.velocity();
         bottle.tick(&world, &[], None);
         assert!((bottle.velocity().y - (before.y - 0.07) * f64::from(0.99_f32)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_splash_potion_leaves_20_degrees_up_at_half_speed_and_shows_its_colour() {
+        let kind = Throwable::SplashPotion;
+        assert_eq!(Throwable::of("minecraft:splash_potion"), Some(kind));
+        assert_eq!((kind.pitch_offset(), kind.power(), kind.gravity()), (-20.0, 0.5, 0.05));
+        assert_eq!(kind.sound(), "minecraft:entity.splash_potion.throw");
+        let mut random = LegacyRandom::new(8);
+        let components = serde_json::json!({"minecraft:potion_contents": {"potion": "minecraft:poison"}});
+        let poison = Throw { owner: 2, item: "minecraft:splash_potion", components: Some(&components), eye: DVec3::new(0.0, 70.0, 0.0), yaw: 0.0, pitch: 0.0, motion: DVec3::ZERO, on_ground: true };
+        let potion = Thrown::launch(&poison, &mut random).unwrap();
+        assert!((potion.velocity().length() - 0.5).abs() < 0.03);
+        let view = potion.view();
+        assert_eq!((view.tint, view.owner, view.item.as_str()), (Some(8889187), 2, "minecraft:splash_potion"));
+        let layered = layers(&view);
+        assert_eq!(layered.iter().map(|(id, _)| id.key()).collect::<Vec<_>>(), vec!["minecraft:item/potion_overlay".to_owned(), "minecraft:item/splash_potion".to_owned()]);
+        assert_eq!(layered[1].1, [1.0; 4]);
+        assert_eq!(throw_owner("minecraft:snowball"), 0);
+        assert_eq!(throw("minecraft:snowball", 0.0).view().tint, None);
+        let plain = throw("minecraft:splash_potion", 0.0);
+        assert_eq!(plain.view().tint, Some(BOTTLE_COLOR));
     }
 
     #[test]
