@@ -354,7 +354,12 @@ mod tests {
         assert!(chimes(false, 9, &start, &at(5, 0.0, 9)));
         assert!(chimes(false, 400, &start, &at(12, 0.0, 400)));
         assert!(!chimes(false, 1, &at(5, 0.0, 0), &at(6, 0.0, 1)));
-        assert!(!chimes(true, 2, &at(i32::MAX - 1, 0.0, 0), &at(i32::MAX, 0.0, 0)));
+        assert!(!chimes(
+            true,
+            2,
+            &at(i32::MAX - 1, 0.0, 0),
+            &at(i32::MAX, 0.0, 0)
+        ));
     }
 
     #[test]
