@@ -105,11 +105,10 @@ pub fn joining_inventory(
     let mut inventory = starting_inventory(recipes, None);
     inventory.slots = slots;
     inventory.slots.resize(SLOTS, None);
-    if let Some(kit) = kit {
-        let given = minecraft_terrain::crafting::give_kit(&mut inventory, kit);
+    if kit.is_some() {
         diag::info!(
             World,
-            "Minecraft kit: {given} stacks from IW4L_MINECRAFT_KIT"
+            "Minecraft kit skipped: the player file already holds an inventory"
         );
     }
     inventory
@@ -236,6 +235,22 @@ mod tests {
         assert_eq!(
             fresh.slots[9].as_ref().map(|stack| stack.id.as_str()),
             Some("minecraft:dirt")
+        );
+    }
+
+    #[test]
+    fn the_kit_only_goes_to_a_player_without_a_saved_inventory() {
+        let recipes = Arc::new(RecipeBook::default());
+        let mut slots = vec![None; SLOTS];
+        slots[0] = Some(ItemStack::new("minecraft:bread", 2));
+        let saved = joining_inventory(recipes.clone(), Some(slots.clone()), Some("dirt*3"));
+        assert_eq!(saved.slots, slots);
+        let emptied = joining_inventory(recipes.clone(), Some(vec![None; SLOTS]), Some("dirt*3"));
+        assert!(emptied.slots.iter().all(Option::is_none));
+        let new = joining_inventory(recipes, None, Some("dirt*3"));
+        assert_eq!(
+            new.slots[9].as_ref().map(|stack| (stack.id.as_str(), stack.count)),
+            Some(("minecraft:dirt", 3))
         );
     }
 

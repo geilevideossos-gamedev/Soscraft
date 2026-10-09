@@ -319,6 +319,28 @@ mod tests {
     }
 
     #[test]
+    fn a_mode_only_player_file_still_gets_the_kit_and_a_saved_inventory_does_not() {
+        let (_dir, save) = world("kit");
+        let recipes = Arc::new(RecipeBook::default());
+        let steve = profile("Steve");
+        let mode_only = PlayerData {
+            mode: Some(PlayerMode::new(GameMode::Creative)),
+            ..PlayerData::default()
+        };
+        save.write_player(&steve.uuid, &mode_only).unwrap();
+        let first = join(Some(&save), &recipes, &steve, None, Some("dirt*5"), None);
+        assert_eq!(first.mode.mode, GameMode::Creative);
+        assert_eq!(held(&first, 9), Some(("minecraft:dirt", 5)));
+        let mut emptied = first;
+        emptied.inventory.slots.fill(None);
+        save.write_player(&steve.uuid, &emptied.data()).unwrap();
+        let again = join(Some(&save), &recipes, &steve, None, Some("dirt*5"), None);
+        assert!(again.inventory.slots.iter().all(Option::is_none));
+        let alex = join(Some(&save), &recipes, &profile("Alex"), None, Some("dirt*5"), None);
+        assert_eq!(held(&alex, 9), Some(("minecraft:dirt", 5)));
+    }
+
+    #[test]
     fn an_unreadable_player_file_starts_the_player_again() {
         let (_dir, save) = world("broken");
         let steve = profile("Steve");

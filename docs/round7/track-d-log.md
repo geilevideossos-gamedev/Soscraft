@@ -85,7 +85,7 @@ Commit: 2c5e8d3
 
 ### 4. Minecraft player files hold the inventory, armour and offhand like vanilla
 
-Commit: (filled in by the next entry)
+Commit: 382dcc5
 
 - **Changed:**
   - New `minecraft_survival/src/player_nbt.rs`: `PlayerData` is what a player file holds, with `read` (from the file's NBT) and `entries`/`merged` (to it). Slots 0-35 go to `Inventory` as `ItemStackWithSlot` (a `Slot` byte, then `id`, `count` as an int and `components` as a compound), and slots 36-42 go to `equipment` under `feet`, `legs`, `chest`, `head`, `offhand`, `body` and `saddle`, as 26.3's `EntityEquipment.CODEC` writes them (checked with javap: `Player.addAdditionalSaveData`, `Inventory.save`/`load`, `ItemStackWithSlot.CODEC` with `ExtraCodecs.UNSIGNED_BYTE`, `ItemStack.MAP_CODEC` with `count` in 1-99, `EquipmentSlot` names). `SelectedItemSlot` is an int.
@@ -111,4 +111,23 @@ Commit: (filled in by the next entry)
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:shield,minecraft:diamond_sword+sharpness=5,minecraft:cobblestone*64,minecraft:torch*16
+```
+
+### 5. The Minecraft kit only goes to a player without a saved inventory
+
+Commit: (filled in by the next entry)
+
+- **Changed:** `joining_inventory` (`minecraft_survival/src/player.rs`) gives the `IW4L_MINECRAFT_KIT` stacks only when the joining player's file has no `Inventory` key. A file with an `Inventory`, even an empty list, keeps exactly its stacks and the log says `Minecraft kit skipped: the player file already holds an inventory`. Round-6 worlds have player files with only the game mode in them, and those players still get the kit once. A temporary world (`temp`) has no files, so its player gets the kit on every start, as before.
+- **Tests:** `player`: `the_kit_only_goes_to_a_player_without_a_saved_inventory` (a saved stack stays alone, an emptied inventory stays empty, a new player gets the kit). `server`: `a_mode_only_player_file_still_gets_the_kit_and_a_saved_inventory_does_not` (a mode-only file gets the kit and keeps its creative mode, a saved empty inventory gets nothing, a second UUID still gets the kit).
+- **Decisions:** "No saved data" is judged by the `Inventory` key, not by the file, as the brief says; vanilla always writes `Inventory`, so any file saved by this build or by Minecraft counts as saved.
+- **Test steps:**
+  1. Use a new world: set `IW4L_MINECRAFT_WORLD=kittest` and the kit below in the `.env`. Start. The log says `Minecraft kit: 3 stacks from IW4L_MINECRAFT_KIT`.
+  2. Throw the dirt away (Q) and place the oak log. **Screenshot 1:** the open inventory.
+  3. Quit through the menu and start again with the same `.env`.
+  4. Expected: no new kit (no dirt, one oak log fewer), and the log says `Minecraft kit skipped: the player file already holds an inventory`. **Screenshot 2:** the open inventory.
+  5. Set `IW4L_MINECRAFT_WORLD=temp` and start: the kit is there again, as in a temporary world it always is.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:dirt*16,minecraft:oak_log*2,minecraft:stone_pickaxe
 ```
