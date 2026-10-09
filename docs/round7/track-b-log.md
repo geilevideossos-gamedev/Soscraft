@@ -464,7 +464,7 @@ Defects found by the adversarial review of the whole track (base `071dada`), eac
 
 ### 1. A creative Minecraft trident that comes back with Loyalty adds no second trident
 
-Commit: (next entry)
+Commit: f0d63f0
 
 - **Defect:** `ThrownTrident::taken_by` gave the stack back for a `CreativeOnly` trident on its way back (`no_physics`), so a Loyalty trident thrown in creative (which leaves the original in the hand) put a second trident in the inventory when it returned. Vanilla (`AbstractArrow.tryPickup`, 26.3 javap): `CREATIVE_ONLY` returns `player.hasInfiniteMaterials()` first, so the creative thrower takes it with nothing added; only the `ThrownTrident.tryPickup` fallback (`isNoPhysics && ownedBy && inventory.add`) could add it, and it is never reached by a creative player.
 - **Changed:** `trident.rs` `taken_by`: a `CreativeOnly` trident is always removed with nothing given.
@@ -476,6 +476,22 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=trident+loyalty=3
+```
+
+### 2. Anyone picks up a Minecraft trident whose thrower is not in the world, like vanilla
+
+Commit: (next entry)
+
+- **Defect:** a trident whose thrower was not in the level (a loaded trident before its thrower joins, or one whose thrower left) could be picked up by nobody, and saving a trident with no known thrower wrote a made-up `Owner` UUID (the fallback UUID of an unknown entity ID, different every session). Vanilla (`ThrownTrident.playerTouch`, 26.3 javap): `ownedBy(player) || getOwner() == null`, so while the owner entity is not in the level anyone may take it; an entity with no owner saves no `Owner`.
+- **Changed:** `trident.rs`: `taken_by(player, owner_here)` refuses others only while the thrower is in the level; `to_tag(owner: Option<u128>)` writes `Owner` only when known. `server.rs`: `pickup_tridents(player, players, take)` asks whether the thrower is among the level's players; a trident saves with its own `owner_uuid`.
+- **Tests:** trident: `a_settled_trident_is_its_throwers_while_the_thrower_is_here` (was `only_its_thrower_picks_it_up_once_it_has_settled`; anyone takes it while its thrower is away), `a_stuck_trident_saves_as_the_vanilla_entity_and_loads_back` (an ownerless trident saves no `Owner`). server: `a_saved_trident_comes_back_and_still_knows_its_thrower` (a stranger is offered it while the thrower is away, not once the thrower is back), `a_trident_hits_a_cow_for_8_sticks_and_only_its_thrower_takes_it_back` (with the thrower present).
+- **Decision:** a Loyalty trident still waits for its thrower and does not come back while the thrower is away (vanilla: `getOwner()` is null, so no return).
+- **Found, not fixed here:** nothing calls `EntityWorld::set_player_uuid`, so a thrown trident's saved `Owner` is the fallback UUID of player 0, not the player's UUID from `players/data/<uuid>.dat`. It is stable between sessions, so single player works; the glue (After the split, item 22) has to name the real UUID.
+- **Test steps:** single player cannot show the difference (the thrower is always in the world). With two players later: player A throws a plain trident into the ground and leaves; player B walks over it and takes it.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=trident
 ```
 
 ## After the split
@@ -519,3 +535,4 @@ The glue still needed in the game files (today `render_anim/src/minecraft_*.rs`,
 19. **The body gear drawn every frame** (`minecraft_world.rs`): `Runtime` gets `gear_items: minecraft_terrain::mesh::ItemVisuals` (cleared with the world in `close_world`). A new system `draw_body_gear(mut view: ResMut<MinecraftWorldView>, mut runtime: NonSendMut<Runtime>, posed: Res<crate::anim::minecraft_gear::PosedGearFrame>, gear: Res<crate::anim::minecraft_gear::McBodyGear>, puppet: Res<frame::InventoryPuppet>)`, added in `register` to `Update` with `.after(update).after(frame::WorkerCmdSet::SkinModel)` (the bodies are posed in `SkinModel`, and `update` rebuilds `view.particles`). It takes `let Runtime { world: Some(world), light: Some(light), gear_items, .. } = &mut *runtime else { return };`, calls `crate::anim::minecraft_gear::gear_meshes(&posed, &gear, view.origin, puppet.active.then_some(puppet.client), gear_items, &world.packs, &world.atlas, light)` and appends `minecraft_terrain::mesh::section_vertices(&meshes.world)` and its indices to `view.particles` exactly as :1929-1933 append the items mesh (indices offset by the vertices already there). `meshes.puppet` goes to item 21. Once items 18 and 19 are in, update `docs/MINECRAFT-SURVIVAL.md:194` (the body no longer holds the last gun while a Minecraft item is selected).
 20. **The armour glint texture** (`minecraft_world.rs` and `crates/render/src/extract.rs`): `Loaded` gets `armor_glint_texture: Option<Arc<image::RgbaImage>>`, loaded beside the item glint (:304) with `minecraft_terrain::glint::armor_glint_texture(&packs).ok().flatten().map(Arc::new)`; `MinecraftWorldView` gets `pub armor_glint_texture: Option<Arc<image::RgbaImage>>`, set beside `view.glint_texture` (:465) and cleared beside it (:2513). In `extract_minecraft_world` (`render/src/extract.rs:937`) add `mut armor_glint_of: Local<Option<(usize, std::sync::Arc<render_gpu::MinecraftAtlasImage>)>>` (the system then has 8 parameters) and set `frame.armor_glint_texture` from `view.armor_glint_texture` exactly as `frame.glint_texture` is set from `view.glint_texture` (:1012-1025). Until then the armour shimmers with the item glint's image at the armour's scale.
 21. **The inventory character's gear** (`minecraft_world.rs` and `crates/render/src/extract.rs`): `MinecraftWorldView` gets `pub puppet_gear: (Vec<u8>, Vec<u32>)`; item 19's `draw_body_gear` sets it to `(bytemuck::cast_slice(&section_vertices(&meshes.puppet)).to_vec(), meshes.puppet.indices)` every frame (empty when the inventory is shut, and cleared with the other meshes at :2514). `extract_minecraft_world` adds `frame.puppet_gear = std::mem::take(&mut view.puppet_gear);` beside `frame.backdrop = view.backdrop;` (:994).
+22. **The server knows each player's real UUID** (`minecraft_terrain/src/server.rs` and `minecraft_world.rs`; review fix 2): nothing calls `EntityWorld::set_player_uuid` today, so `uuid_of(PLAYER_TARGET + 0)` is a made-up fallback UUID and a thrown trident saves that as its `Owner`. Add `Command::PlayerUuid { player: u64, uuid: u128 }` with `ServerHandle::set_player_uuid(player, uuid)`, handled in `server_loop` as `sim.mobs.set_player_uuid(player, uuid)`, and send it when the world opens with `PLAYER` and `minecraftoss_entities::gossip::parse_uuid` of the save's host UUID (`minecraft_save.rs:93`, the same UUID item 17 gives the openers). Several players: the host sends it for each player as it joins. Tridents saved before this keep the old fallback `Owner`; with the vanilla rule of review fix 2 anyone can still pick those up.

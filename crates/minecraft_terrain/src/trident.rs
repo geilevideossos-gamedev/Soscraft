@@ -551,9 +551,9 @@ impl ThrownTrident {
         player.alive && !player.spectator && meets((min - grow, max + grow), self.bounds())
     }
 
-    pub fn taken_by(&self, player: u64) -> Option<Option<ItemStack>> {
+    pub fn taken_by(&self, player: u64, owner_here: bool) -> Option<Option<ItemStack>> {
         if !self.alive
-            || player != self.owner
+            || (player != self.owner && owner_here)
             || !(self.in_ground || self.no_physics)
             || self.shake > 0
         {
@@ -565,7 +565,7 @@ impl ThrownTrident {
         }
     }
 
-    pub fn to_tag(&self, owner: u128) -> Tag {
+    pub fn to_tag(&self, owner: Option<u128>) -> Tag {
         let doubles =
             |v: DVec3| Tag::List(vec![Tag::Double(v.x), Tag::Double(v.y), Tag::Double(v.z)]);
         let mut item = BTreeMap::new();
@@ -588,10 +588,12 @@ impl ThrownTrident {
             "Rotation".to_owned(),
             Tag::List(vec![Tag::Float(self.yaw), Tag::Float(self.pitch)]),
         );
-        map.insert(
-            "Owner".to_owned(),
-            Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(owner).to_vec()),
-        );
+        if let Some(owner) = owner {
+            map.insert(
+                "Owner".to_owned(),
+                Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(owner).to_vec()),
+            );
+        }
         map.insert("LeftOwner".to_owned(), Tag::Byte(i8::from(self.left_owner)));
         map.insert("HasBeenShot".to_owned(), Tag::Byte(1));
         map.insert(
@@ -1113,7 +1115,7 @@ mod tests {
         assert!(closest < 1.0, "{closest}");
         assert!(thrown.alive);
         assert_eq!(
-            thrown.taken_by(1).flatten().map(|s| s.id),
+            thrown.taken_by(1, true).flatten().map(|s| s.id),
             Some(ITEM.to_owned())
         );
     }
@@ -1141,7 +1143,7 @@ mod tests {
         while !thrown.in_ground {
             thrown.tick(&world, &[], None);
         }
-        let tag = thrown.to_tag(0x1234_5678_9abc_def0_1122_3344_5566_7788);
+        let tag = thrown.to_tag(Some(0x1234_5678_9abc_def0_1122_3344_5566_7788));
         assert_eq!(
             tag.get("id").and_then(Tag::as_str),
             Some("minecraft:trident")
@@ -1174,24 +1176,35 @@ mod tests {
             "it stays stuck in the same stone"
         );
         assert!(ThrownTrident::from_tag(&Tag::Compound(BTreeMap::new())).is_none());
+        let ownerless = back.to_tag(None);
+        assert_eq!(ownerless.get("Owner"), None, "no thrower is made up");
+        assert_eq!(
+            ThrownTrident::from_tag(&ownerless).map(|t| t.owner_uuid),
+            Some(None)
+        );
     }
 
     #[test]
-    fn only_its_thrower_picks_it_up_once_it_has_settled() {
+    fn a_settled_trident_is_its_throwers_while_the_thrower_is_here() {
         let world = floor();
         let mut thrown = launched(worn(3), 30.0, 4);
         while !thrown.in_ground {
             thrown.tick(&world, &[], None);
         }
-        assert_eq!(thrown.taken_by(4), None);
+        assert_eq!(thrown.taken_by(4, true), None);
         for _ in 0..7 {
             thrown.tick(&world, &[], None);
         }
         assert_eq!(
-            thrown.taken_by(4).flatten().map(|s| s.id),
+            thrown.taken_by(4, true).flatten().map(|s| s.id),
             Some(ITEM.to_owned())
         );
-        assert_eq!(thrown.taken_by(5), None);
+        assert_eq!(thrown.taken_by(5, true), None);
+        assert_eq!(
+            thrown.taken_by(5, false).flatten().map(|s| s.id),
+            Some(ITEM.to_owned()),
+            "anyone takes it while its thrower is not in the world"
+        );
         let near = PlayerBody {
             id: 4,
             feet: thrown.position + DVec3::new(1.2, -0.5, 0.0),
@@ -1204,7 +1217,7 @@ mod tests {
         };
         assert!(thrown.touched_by(&near) && !thrown.touched_by(&far));
         thrown.pickup = Pickup::CreativeOnly;
-        assert_eq!(thrown.taken_by(4), Some(None));
+        assert_eq!(thrown.taken_by(4, true), Some(None));
     }
 
     #[test]
@@ -1231,7 +1244,7 @@ mod tests {
         }
         assert!(thrown.no_physics, "it is on its way back");
         assert_eq!(
-            thrown.taken_by(1),
+            thrown.taken_by(1, true),
             Some(None),
             "a creative throw leaves the trident in the hand and adds no second one"
         );

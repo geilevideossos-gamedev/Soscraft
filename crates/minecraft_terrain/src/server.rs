@@ -483,7 +483,7 @@ impl ServerSim {
         let mut tags: Vec<minecraftoss_core::nbt::Tag> = crate::server_mobs::mob_tags(&self.mobs, inside, &self.mob_tags).into_iter().map(|(_, tag)| tag).collect();
         tags.extend(self.dormant.iter().filter(|(group, _)| inside(glam::DVec3::from_array(group[0].pos))).map(|(_, tag)| tag.clone()));
         tags.extend(crate::server_mobs::level_entity_tags(&self.level, inside));
-        tags.extend(self.tridents.iter().filter(|t| t.alive && inside(t.position)).map(|t| t.to_tag(t.owner_uuid.unwrap_or_else(|| self.mobs.uuid_of(crate::thrown::PLAYER_TARGET.wrapping_add(t.owner))))));
+        tags.extend(self.tridents.iter().filter(|t| t.alive && inside(t.position)).map(|t| t.to_tag(t.owner_uuid)));
         if unload {
             self.tridents.retain(|t| !inside(t.position));
             self.mobs.remove_where(inside);
@@ -859,13 +859,14 @@ impl ServerSim {
         self.tridents = tridents;
     }
 
-    pub fn pickup_tridents(&mut self, player: &crate::thrown::PlayerBody, mut take: impl FnMut(&minecraftoss_player::inventory::ItemStack) -> bool) -> Vec<PickedStack> {
+    pub fn pickup_tridents(&mut self, player: &crate::thrown::PlayerBody, players: &[crate::thrown::PlayerBody], mut take: impl FnMut(&minecraftoss_player::inventory::ItemStack) -> bool) -> Vec<PickedStack> {
         let mut picked = Vec::new();
         for trident in &mut self.tridents {
             if !trident.touched_by(player) {
                 continue;
             }
-            match trident.taken_by(player.id) {
+            let owner_here = players.iter().any(|p| p.id == trident.owner);
+            match trident.taken_by(player.id, owner_here) {
                 Some(Some(stack)) => {
                     if take(&stack) {
                         trident.alive = false;
@@ -1875,7 +1876,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                         });
                         out.picked.extend(picked);
                         if let Some(body) = bodies.first() {
-                            let tridents = sim.pickup_tridents(body, |stack| {
+                            let tridents = sim.pickup_tridents(body, &bodies, |stack| {
                                 let mut stack = stack.clone();
                                 stack.max = stack.max.min(recipes.max_stack(&stack.id));
                                 inventory.add_item(stack, selected).is_none()
@@ -4140,10 +4141,10 @@ mod tests {
         assert_eq!(views.len(), 1);
         assert!((views[0].position.y - 200.0).abs() < 0.1, "{views:?}");
         let stranger = player_at(1, [9.5, 200.0, 8.5], true);
-        assert!(server.pickup_tridents(&stranger, |_| true).is_empty());
         let full = player_at(0, [9.5, 200.0, 8.5], true);
-        assert!(server.pickup_tridents(&full, |_| false).is_empty(), "no room, it stays");
-        let picked = server.pickup_tridents(&full, |_| true);
+        assert!(server.pickup_tridents(&stranger, &[stranger, full], |_| true).is_empty());
+        assert!(server.pickup_tridents(&full, &[stranger, full], |_| false).is_empty(), "no room, it stays");
+        let picked = server.pickup_tridents(&full, &[stranger, full], |_| true);
         assert_eq!(picked.iter().map(|p| (p.0, p.2.as_str(), p.3)).collect::<Vec<_>>(), vec![(TRIDENT_IDS, crate::trident::ITEM, 1)]);
         assert!(server.trident_views().is_empty());
     }
@@ -4156,8 +4157,9 @@ mod tests {
         for _ in 0..30 {
             server.tick_tridents(&me);
         }
-        let tags: Vec<_> = server.tridents.iter().map(|t| t.to_tag(t.owner_uuid.unwrap())).collect();
+        let tags: Vec<_> = server.tridents.iter().map(|t| t.to_tag(t.owner_uuid)).collect();
         assert_eq!(tags.len(), 1);
+        assert!(tags[0].get("Owner").is_some());
         let Some((mut again, _)) = door_world() else { return };
         for tag in tags {
             again.add_saved_entity(tag);
@@ -4165,10 +4167,13 @@ mod tests {
         assert_eq!(again.trident_views().len(), 1);
         let stranger = player_at(7, [9.5, 200.0, 8.5], true);
         again.tick_tridents(&[stranger]);
-        assert!(again.pickup_tridents(&stranger, |_| true).is_empty());
+        let mut offered = false;
+        assert!(again.pickup_tridents(&stranger, &[stranger], |_| std::mem::replace(&mut offered, true)).is_empty());
+        assert!(offered, "while its thrower is away anyone may take it");
         let near = player_at(0, [9.5, 200.0, 8.5], true);
-        again.tick_tridents(&[near]);
-        assert_eq!(again.pickup_tridents(&near, |_| true).len(), 1);
+        again.tick_tridents(&[stranger, near]);
+        assert!(again.pickup_tridents(&stranger, &[stranger, near], |_| true).is_empty(), "its thrower is back");
+        assert_eq!(again.pickup_tridents(&near, &[stranger, near], |_| true).len(), 1);
     }
 
     #[test]
