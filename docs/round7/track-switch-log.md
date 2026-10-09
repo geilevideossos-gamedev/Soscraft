@@ -168,7 +168,7 @@ Commit: 4ac9b0e4
 
 ### 9. IW4L_MINECRAFT_DIMENSION starts the player in the Nether or the End (E1-12)
 
-Commit: filled in by the next entry (or `git log` under this subject)
+Commit: c739d2b7
 
 - **Changed:**
   - `minecraft_survival/src/server.rs`:
@@ -195,3 +195,25 @@ Commit: filled in by the next entry (or `git log` under this subject)
 ```
 IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:obsidian*64,minecraft:netherrack*64,minecraft:cobblestone*64,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:torch*64,minecraft:cooked_beef*32
 ```
+
+### 10. The Minecraft debug start passes clippy
+
+Commit: filled in by `git log` under this subject
+
+- **Changed:** the one clippy finding on this group's lines: the adapter reads `IW4L_MINECRAFT_DIMENSION` with `as_deref().unwrap_or("")` instead of `unwrap_or_default` (disallowed by `clippy.toml`).
+- **Clippy:** `clippy -p minecraft_survival -p sim -p minecraft_terrain -p render_anim --tests --no-deps -- -A clippy::approx_constant` has no other finding on a line of this group; the rest are older (`entities.rs` 76 and 613, `voxel.rs` 47, 325 and 381, and many in `minecraft_terrain`, `sim` and `render_anim`).
+- **Tests:** none new; `minecraft_survival` (186 and the vanilla world test), `minecraft_terrain` (489 passed, 3 ignored as before), `sim` (66) and `render_anim` pass, and `check -p launcher` is green.
+- **Test steps:** none; nothing changes in game.
+- **Kit:** none.
+
+## Group S2 summary
+
+- **Owner test for the whole group:** the steps and kit of entry 9 (one new world `s2test`, several starts).
+- **Handed to S3:**
+  - The switch (E1-8) sets `player.dimension` and the arrival and lets `open_levels`, `finish_opening` and `follow_levels` do the rest; a player switching in counts as being in the level, so it never closes under them.
+  - Coming back to a level that is still open needs its collision, sections and light sent again (`follow_levels` only starts a level's presentation afresh).
+  - The respawn switch (E1-10): until then, death in the Nether or the End respawns at that dimension's map origin.
+  - A chat line when a level fails to open during a switch (today only the log warns, and the player goes back).
+- **Handed to S4:** the switch time for E1-13 (`voxel::switch_level` is where to record it).
+- **After track C:** nothing new in this group.
+- **MinecraftOSS patches in this group:** none.

@@ -482,7 +482,7 @@ fn update(
                 let kit = std::env::var("IW4L_MINECRAFT_KIT").ok();
                 let joining = minecraft_survival::server::Joining { profile: &profile, spawn: view.origin, chosen_mode: chosen_mode.as_deref(), kit: kit.as_deref(), carried: runtime.carried_survival.take() };
                 let mut player = minecraft_survival::server::join(globals.save.as_ref(), &globals.data.recipes, &globals.game_rules, joining);
-                match minecraft_survival::server::debug_dimension(&std::env::var("IW4L_MINECRAFT_DIMENSION").unwrap_or_default()) {
+                match minecraft_survival::server::debug_dimension(std::env::var("IW4L_MINECRAFT_DIMENSION").as_deref().unwrap_or("")) {
                     Ok(Some(dimension)) => {
                         minecraft_survival::server::start_in(&mut player, dimension, view.origin);
                         diag::info!(World, "Minecraft player starts in {} from IW4L_MINECRAFT_DIMENSION", dimension.dimension_type());
