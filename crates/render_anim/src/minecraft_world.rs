@@ -271,6 +271,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         game_rules: opened.game_rules,
         difficulty: opened.difficulty,
         day,
+        weather: opened.weather,
         chat,
         data: Default::default(),
         level_writer: None,
@@ -456,7 +457,7 @@ fn update(
                 runtime.minimap = Default::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
                 globals.data = minecraft_survival::data::GameData::load(assets::minecraft_map::root().as_deref(), data_jar());
-                let mut entities = minecraft_survival::entities::Entities::new(&level.terrain.stream, globals.seed, &globals.data);
+                let mut entities = minecraft_survival::entities::Entities::new(&level.terrain.stream, globals.seed, &globals.data, globals.weather.as_ref());
                 let inventory = minecraft_survival::player::starting_inventory(globals.data.recipes.clone(), std::env::var("IW4L_MINECRAFT_KIT").ok().as_deref());
                 entities.set_game_rules(&globals.game_rules);
                 level.containers.set_book(globals.data.stations.clone());
@@ -1450,6 +1451,7 @@ fn update(
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
         let ticks_before = entities.client_ticks();
         let (changes, hits) = entities.tick(inventory, *selected, dt, globals.day.ticks as i64, bright_outside, &player);
+        globals.weather = entities.weather_data.or(globals.weather);
         let summoned = std::mem::take(&mut entities.command_summons);
         if !summoned.is_empty() {
             let answers = minecraft_survival::commands::summon_answers(&globals.chat, &globals.game_rules, summoned);

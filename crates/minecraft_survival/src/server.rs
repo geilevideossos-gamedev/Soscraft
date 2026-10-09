@@ -8,6 +8,7 @@ use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_terrain::day_cycle::DayCycle;
 use minecraft_terrain::game_mode::{GameMode, PlayerMode, from_id, parse};
 use minecraft_terrain::game_rules::GameRules;
+use minecraft_terrain::level_storage::WeatherData;
 use minecraftoss_core::Registries;
 use minecraftoss_player::Difficulty;
 
@@ -29,6 +30,7 @@ pub struct Globals {
     pub game_rules: GameRules,
     pub difficulty: Difficulty,
     pub day: DayCycle,
+    pub weather: Option<WeatherData>,
     pub chat: CommandServer,
     pub data: GameData,
     pub level_writer: Option<JoinHandle<()>>,
@@ -51,6 +53,7 @@ impl Server {
         let rules = std::mem::take(&mut self.globals.game_rules);
         let difficulty = self.globals.difficulty;
         let day_ticks = self.globals.day.ticks;
+        let weather = self.globals.weather;
         let player_mode = local
             .and_then(|uuid| self.players.get(uuid))
             .map(|player| player.mode);
@@ -60,6 +63,11 @@ impl Server {
         };
         if let Err(error) = save.write(spawn, Some(day_ticks), &rules, difficulty) {
             diag::warn!(World, "Minecraft level.dat not written: {error}");
+        }
+        if let Some(weather) = weather
+            && let Err(error) = save.write_weather(&weather)
+        {
+            diag::warn!(World, "Minecraft weather.dat not written: {error}");
         }
         if let Some(player_mode) = player_mode
             && let Err(error) = save.write_host(&player_mode)
@@ -119,11 +127,20 @@ pub fn autosave(globals: &mut Globals, terrain: &mut Terrain, mode: PlayerMode) 
     let rules = globals.game_rules.clone();
     let difficulty = globals.difficulty;
     let day_ticks = globals.day.ticks;
+    let weather = globals.weather;
     globals.level_writer = std::thread::Builder::new()
         .name("minecraft-level-save".into())
         .spawn(move || {
             if let Err(error) = save.write(spawn, Some(day_ticks), &rules, difficulty) {
                 diag::warn!(World, "Minecraft autosave: level.dat not written: {error}");
+            }
+            if let Some(weather) = weather
+                && let Err(error) = save.write_weather(&weather)
+            {
+                diag::warn!(
+                    World,
+                    "Minecraft autosave: weather.dat not written: {error}"
+                );
             }
             if let Err(error) = save.write_host(&mode) {
                 diag::warn!(

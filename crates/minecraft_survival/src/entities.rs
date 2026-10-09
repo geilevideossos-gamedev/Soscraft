@@ -7,6 +7,7 @@
 //! (a hundred MW2 health to Minecraft's twenty), and mobs hurt the player
 //! the other way round.
 use glam::{DVec3, Vec3};
+use minecraft_terrain::level_storage::WeatherData;
 use minecraft_terrain::lighting::SkyLight;
 use minecraft_terrain::mesh::{Atlas, ChunkMesh};
 use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
@@ -90,6 +91,7 @@ pub struct Entities {
     pub destroyed: Vec<((i32, i32, i32), Block)>,
     pub experience_found: f32,
     pub weather: minecraft_terrain::server::WeatherView,
+    pub weather_data: Option<WeatherData>,
     pub stations: std::sync::Arc<minecraft_terrain::stations::StationBook>,
     pub enchantments: Option<std::sync::Arc<minecraftoss_entities::enchant::Enchantments>>,
     pub recipes: std::sync::Arc<minecraftoss_player::crafting::RecipeBook>,
@@ -156,16 +158,23 @@ fn player_candidate(player: &PlayerView) -> PlayerCandidate {
 }
 
 impl Entities {
-    pub fn new(stream: &TerrainStream, seed: i64, data: &crate::data::GameData) -> Self {
+    pub fn new(stream: &TerrainStream, seed: i64, data: &crate::data::GameData, saved_weather: Option<&WeatherData>) -> Self {
         let mut sim = ServerSim::new(stream.world_gen(), stream.states.clone(), "minecraft:overworld");
         sim.set_entity_storage(stream.storage());
-        if let Ok(weather) = std::env::var("IW4L_MINECRAFT_WEATHER") {
+        if let Some(saved) = saved_weather {
+            sim.set_weather_data(saved);
+            diag::info!(World, "Minecraft weather: {} from weather.dat", weather_name(saved));
+        }
+        if let Ok(weather) = std::env::var("IW4L_MINECRAFT_WEATHER")
+            && !weather.trim().is_empty()
+        {
             if sim.set_weather(weather.trim()) {
                 diag::info!(World, "Minecraft weather: {} from IW4L_MINECRAFT_WEATHER", weather.trim());
             } else {
                 diag::warn!(World, "Minecraft weather `{weather}` unknown: IW4L_MINECRAFT_WEATHER takes clear, rain or thunder");
             }
         }
+        let weather_data = sim.weather_data();
         let mut server = ServerHandle::spawn(sim);
         // Mob and block loot and the recipes (stack sizes), from the game's
         // data JAR when MinecraftOSS has one.
@@ -201,6 +210,7 @@ impl Entities {
             destroyed: Vec::new(),
             experience_found: 0.0,
             weather: Default::default(),
+            weather_data,
             stations: data.stations.clone(),
             enchantments: data.enchantments.clone(),
             recipes: data.recipes.clone(),
@@ -640,6 +650,9 @@ impl Entities {
             if let Some(weather) = output.weather {
                 self.weather = weather;
             }
+            if let Some(weather) = output.weather_data {
+                self.weather_data = Some(weather);
+            }
             self.server_picked.extend(output.picked);
             for used in output.item_uses {
                 if let Some(sent) = self.item_use_waiting.take().filter(|_| used) {
@@ -981,9 +994,26 @@ fn decode(key: u64) -> Option<MobHit> {
     })
 }
 
+fn weather_name(weather: &WeatherData) -> &'static str {
+    match (weather.raining, weather.thundering) {
+        (true, true) => "thunder",
+        (true, false) => "rain",
+        (false, _) => "clear",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_weather_is_named_like_the_weather_command() {
+        let clear = WeatherData { clear_weather_time: 600, ..WeatherData::default() };
+        assert_eq!(weather_name(&clear), "clear");
+        assert_eq!(weather_name(&WeatherData { thundering: true, ..clear }), "clear");
+        assert_eq!(weather_name(&WeatherData { raining: true, ..clear }), "rain");
+        assert_eq!(weather_name(&WeatherData { raining: true, thundering: true, ..clear }), "thunder");
+    }
 
     #[test]
     fn mobs_leave_creative_and_spectator_players_alone() {

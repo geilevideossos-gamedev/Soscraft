@@ -8,7 +8,7 @@ A commit can't name its own hash, so each entry is written with its commit and i
 
 ### 1. Minecraft dropped items save their components as vanilla NBT
 
-Commit: (filled in by the next entry)
+Commit: 33a04dd
 
 - **Changed:**
   - New `minecraft_terrain/src/item_nbt.rs` holds `tag_json` and `json_tag`, moved out of `server_mobs.rs`, plus `components_tag`, `components_from_text`, `saved_components` and `components_text`.
@@ -33,3 +33,29 @@ Commit: (filled in by the next entry)
 ```
 IW4L_MINECRAFT_KIT=minecraft:diamond_sword+sharpness=5,minecraft:diamond_pickaxe+efficiency=5,minecraft:enchanted_book+mending,minecraft:red_shulker_box,minecraft:cobblestone*64
 ```
+
+### 2. Minecraft weather is saved like vanilla
+
+Commit: (filled in by the next entry)
+
+- **Changed:**
+  - Vendored `level_storage.rs` (MinecraftOSS patch): `WeatherData` and `LevelStorage::read_weather`/`write_weather`. The file is `data/minecraft/weather.dat`, a saved-data file like `world_clocks.dat` (`data` compound plus `DataVersion`) with the five keys of 26.3's `WeatherData.CODEC` (checked with javap): `clear_weather_time`, `rain_time`, `thunder_time` (ints), `raining`, `thundering` (bytes). All five are required, as in vanilla, and a broken file is read from its `_old` copy.
+  - `ServerSim::weather_data`/`set_weather_data` (`minecraft_terrain/src/server.rs`), and `Output::weather_data` after every tick beside the `WeatherView`. Loading copies vanilla's `ServerLevel.prepareWeather`: when the save says it rains, the rain level starts at 1 (and the thunder level when it also thunders), so the world opens already raining instead of fading in.
+  - `save.rs`: `OpenedWorld::weather` is read by `open_world` (an unreadable file gives a warning and the weather starts again), and `WorldSave::write_weather`.
+  - `server.rs`: `Globals::weather` holds the world's weather, as vanilla's `MinecraftServer` owns `WeatherData`. `autosave` and `Server::save_and_close` write it.
+  - `entities.rs`: `Entities::new` takes the saved weather and logs `Minecraft weather: <clear|rain|thunder> from weather.dat`. `IW4L_MINECRAFT_WEATHER` is applied after it, so it overrides the save only when it is set; an empty value now counts as not set. `Entities::weather_data` follows the server's output.
+  - `render_anim/src/minecraft_world.rs`, three lines: `Globals` gets `opened.weather` in `load()`, `Entities::new` gets `globals.weather`, and `globals.weather` follows `entities.weather_data` after each `entities.tick`.
+- **Tests:** `level_storage`: `weather_lives_in_data_minecraft_weather_dat_with_its_five_keys` (path, `DataVersion`, exact keys and tag types, `_old` fallback, a file missing a key is an error). `server`: `saved_weather_comes_back_already_raining_and_keeps_counting_down`. `save`: `the_weather_survives_reopening_a_world` (round trip, broken file and its `_old` give one warning, `temp` has none). `entities`: `saved_weather_is_named_like_the_weather_command`.
+- **Decisions:**
+  - The weather belongs to the server, not to a level: in 26.3 `MinecraftServer.getWeatherData()` is one file for the world, and only levels that `canHaveWeather` use it. Today it is mirrored from the overworld's server thread; the dimension switch can keep `Globals::weather` and feed it to the overworld level only.
+  - The weather now also carries over from one MW2 match on the Minecraft map to the next, because each match loads the world from disk. Before, every match started with fresh weather.
+  - `IW4L_MINECRAFT_WEATHER` still sets weather that lasts 1,000,000,000 ticks, as before. That weather is now saved like any other, so after removing the line, `/weather clear` brings back the normal cycle.
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=savetest` and remove the `IW4L_MINECRAFT_WEATHER` line (or leave it empty). Start.
+  2. Type `/weather thunder`. Wait until it rains and thunders. **Screenshot 1.**
+  3. Quit through the menu. `iw4l-artifacts\saves\savetest\data\minecraft\weather.dat` now exists. Start again.
+  4. Expected: it is already raining and thundering when the loading screen goes away (no slow fade-in), and the log says `Minecraft weather: thunder from weather.dat`. **Screenshot 2.**
+  5. Type `/weather clear`, quit and start again: the sky is clear, and the log says `Minecraft weather: clear from weather.dat`.
+  6. Add `IW4L_MINECRAFT_WEATHER=rain` to the `.env` and start again: it rains, and the log says `Minecraft weather: rain from IW4L_MINECRAFT_WEATHER`. Remove the line, start again and type `/weather clear`.
+  7. Optional: open the world in Minecraft 26.3 after step 3: it is still storming there.
+- **Kit:** none needed; any kit works.

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use minecraft_terrain::game_mode::{GameMode, PlayerMode};
 use minecraft_terrain::game_rules::GameRules;
 use minecraft_terrain::level_storage::{
-    ClockState, LevelData, LevelStorage, RespawnData, WorldSettings,
+    ClockState, LevelData, LevelStorage, RespawnData, WeatherData, WorldSettings,
 };
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_player::Difficulty;
@@ -168,6 +168,10 @@ impl WorldSave {
         clocks.insert(OVERWORLD.to_owned(), ClockState::at(day_ticks));
         self.storage.write_clocks(&clocks)
     }
+
+    pub fn write_weather(&self, weather: &WeatherData) -> Result<(), String> {
+        self.storage.write_weather(weather)
+    }
 }
 
 pub struct OpenedWorld {
@@ -175,6 +179,7 @@ pub struct OpenedWorld {
     pub save: Option<WorldSave>,
     pub spawn: Option<(i32, i32, i32)>,
     pub day_ticks: Option<f64>,
+    pub weather: Option<WeatherData>,
     pub game_rules: GameRules,
     pub difficulty: Difficulty,
     pub notes: Vec<String>,
@@ -188,6 +193,7 @@ impl OpenedWorld {
             save: None,
             spawn: None,
             day_ticks: None,
+            weather: None,
             game_rules: GameRules::default(),
             difficulty: Difficulty::Normal,
             notes: vec![format!(
@@ -245,6 +251,12 @@ fn open_save(
         ));
         BTreeMap::new()
     });
+    let weather = storage.read_weather().unwrap_or_else(|error| {
+        warnings.push(format!(
+            "Minecraft weather.dat unreadable, the weather starts again: {error}"
+        ));
+        None
+    });
     let game_rules = storage.read_game_rules().unwrap_or_else(|error| {
         warnings.push(format!(
             "Minecraft game_rules unreadable, using the defaults: {error}"
@@ -274,6 +286,7 @@ fn open_save(
         seed,
         spawn,
         day_ticks: clocks.get(OVERWORLD).map(ClockState::ticks),
+        weather,
         game_rules,
         difficulty: Difficulty::parse(&level.difficulty).unwrap_or(Difficulty::Normal),
         notes: vec![format!(
@@ -478,6 +491,41 @@ mod tests {
         let temp = open_world(&dir.0, Some("temp"), None, 9);
         assert_eq!(temp.game_rules, GameRules::default());
         assert_eq!(temp.difficulty, Difficulty::Normal);
+    }
+
+    #[test]
+    fn the_weather_survives_reopening_a_world() {
+        let dir = saves();
+        let first = open_world(&dir.0, None, Some("12"), 9);
+        assert_eq!(first.weather, None);
+        let stormy = WeatherData {
+            clear_weather_time: 0,
+            rain_time: 5_000,
+            thunder_time: 2_500,
+            raining: true,
+            thundering: true,
+        };
+        first.save.as_ref().unwrap().write_weather(&stormy).unwrap();
+        drop(first);
+        let world = dir.0.join("world");
+        assert!(world.join("data/minecraft/weather.dat").is_file());
+        let again = open_world(&dir.0, None, None, 9);
+        assert_eq!(again.weather, Some(stormy));
+        assert!(again.warnings.is_empty(), "{:?}", again.warnings);
+        drop(again);
+        for file in [
+            "data/minecraft/weather.dat",
+            "data/minecraft/weather.dat_old",
+        ] {
+            let _ = std::fs::write(world.join(file), b"broken");
+        }
+        let broken = open_world(&dir.0, None, None, 9);
+        assert!(broken.save.is_some());
+        assert_eq!(broken.weather, None);
+        assert_eq!(broken.warnings.len(), 1, "{:?}", broken.warnings);
+        assert!(broken.warnings[0].contains("weather.dat"));
+        let temp = open_world(&dir.0, Some("temp"), None, 9);
+        assert_eq!(temp.weather, None);
     }
 
     #[test]

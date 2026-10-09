@@ -930,6 +930,32 @@ impl ServerSim {
         true
     }
 
+    pub fn weather_data(&self) -> Option<crate::level_storage::WeatherData> {
+        self.level.sky.as_ref().map(|sky| crate::level_storage::WeatherData {
+            clear_weather_time: sky.weather.clear_time,
+            rain_time: sky.weather.rain_time,
+            thunder_time: sky.weather.thunder_time,
+            raining: sky.weather.raining,
+            thundering: sky.weather.thundering,
+        })
+    }
+
+    pub fn set_weather_data(&mut self, data: &crate::level_storage::WeatherData) {
+        let Some(sky) = &mut self.level.sky else { return };
+        let weather = &mut sky.weather;
+        weather.clear_time = data.clear_weather_time;
+        weather.rain_time = data.rain_time;
+        weather.thunder_time = data.thunder_time;
+        weather.raining = data.raining;
+        weather.thundering = data.thundering;
+        if sky.can_have_weather && data.raining {
+            weather.rain_level = 1.0;
+            if data.thundering {
+                weather.thunder_level = 1.0;
+            }
+        }
+    }
+
     pub fn apply_game_rules(&mut self, rules: &crate::game_rules::GameRules) {
         let level = &mut self.level;
         level.random_tick_speed = rules.int("random_tick_speed");
@@ -1194,6 +1220,7 @@ pub struct Output {
     pub item_uses: Vec<bool>,
     pub pearl_landings: Vec<[f64; 3]>,
     pub weather: Option<WeatherView>,
+    pub weather_data: Option<crate::level_storage::WeatherData>,
     /// How many commands the server has handled so far.
     pub handled: u64,
     /// The last tick's phases, light solves and total milliseconds.
@@ -1525,6 +1552,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
                     out.mobs = Some(Box::new(sim.tracked_mobs(input.tracking.0, input.tracking.1)));
                     out.weather = Some(sim.weather(input.players.first().copied()));
+                    out.weather_data = sim.weather_data();
                     let pickup_feet = input.pickup.as_ref().map(|(feet, _, _)| *feet);
                     if let Some((feet, mut inventory, selected)) = input.pickup {
                         let recipes = inventory.recipes.clone();
@@ -1675,6 +1703,37 @@ mod tests {
         server.apply_game_rules(&crate::game_rules::GameRules::default());
         assert_eq!(server.level.random_tick_speed, 3);
         assert!(server.mobs.mob_griefing());
+    }
+
+    #[test]
+    fn saved_weather_comes_back_already_raining_and_keeps_counting_down() {
+        use crate::level_storage::WeatherData;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen.clone(), states.clone(), "minecraft:overworld");
+        server.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        assert!(server.set_weather_for("thunder", 900));
+        for _ in 0..150 {
+            server.tick();
+        }
+        let saved = server.weather_data().expect("the overworld has weather");
+        assert_eq!(saved, WeatherData { clear_weather_time: 0, rain_time: 750, thunder_time: 750, raining: true, thundering: true });
+        let mut loaded = ServerSim::new(worldgen.clone(), states.clone(), "minecraft:overworld");
+        loaded.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        assert_eq!(loaded.weather(None), WeatherView::default());
+        loaded.set_weather_data(&saved);
+        let stormy = loaded.weather(None);
+        assert_eq!((stormy.rain_level, stormy.thunder_level), (1.0, 1.0));
+        loaded.tick();
+        assert_eq!(loaded.weather_data().map(|w| (w.rain_time, w.thunder_time, w.raining)), Some((749, 749, true)));
+        let mut clear = ServerSim::new(worldgen, states, "minecraft:overworld");
+        clear.set_weather_data(&WeatherData { clear_weather_time: 300, ..WeatherData::default() });
+        assert_eq!(clear.weather(None), WeatherView::default());
+        assert_eq!(clear.weather_data().map(|w| w.clear_weather_time), Some(300));
     }
 
     /// Creatures the SPAWN step generated join the server's mobs with their
