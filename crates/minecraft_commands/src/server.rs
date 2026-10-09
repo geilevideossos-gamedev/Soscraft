@@ -5,6 +5,7 @@ use minecraftoss_player::{Difficulty, GameMode};
 use minecraftoss_world::game_rules::{GameRules, Rule, Value};
 
 use crate::args::{Arg, ItemArg, Selector};
+use crate::blocks::{BlockEdit, Loaded};
 use crate::clear::ItemFilter;
 use crate::enchant::{Enchanted, EnchantmentInfo};
 use crate::experience::Experience;
@@ -18,6 +19,7 @@ use crate::text::{GRAY, RED, Text};
 use crate::tree::{Parsed, parse, runnable};
 
 pub const SEND_COMMAND_FEEDBACK: &str = "send_command_feedback";
+pub const OVERWORLD: &str = "minecraft:overworld";
 pub const LOG_ADMIN_COMMANDS: &str = "log_admin_commands";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +62,14 @@ pub struct CommandRegistries {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CommandData {
     pub item_tags: BTreeMap<String, Vec<String>>,
+    pub blocks: BTreeMap<String, Vec<(String, Vec<String>)>>,
+    pub block_tags: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Answer<T> {
+    Now(T),
+    Later,
 }
 
 pub fn registered(list: &[String], id: &str) -> bool {
@@ -112,6 +122,15 @@ pub trait CommandWorld {
     }
     fn enchant(&mut self, _player: PlayerId, _enchantment: &str, _level: i32) -> Option<Enchanted> {
         None
+    }
+    fn dimension(&self, _player: PlayerId) -> String {
+        OVERWORLD.to_owned()
+    }
+    fn loaded(&self, _dimension: &str, _pos: [i32; 3]) -> Loaded {
+        Loaded::Unloaded
+    }
+    fn edit_blocks(&mut self, _source: PlayerId, _edit: &BlockEdit) -> Answer<i32> {
+        Answer::Now(0)
     }
 }
 
@@ -194,6 +213,10 @@ impl Ctx<'_> {
 
     pub fn pose(&self) -> Pose {
         self.world.pose(self.source).unwrap_or(Pose::ORIGIN)
+    }
+
+    pub fn dimension(&self) -> String {
+        self.world.dimension(self.source)
     }
 
     pub fn display_name(&self, player: PlayerId) -> Text {
@@ -536,6 +559,9 @@ pub(crate) mod tests {
         pub(crate) inventories: Vec<(PlayerId, minecraftoss_player::inventory::Inventory)>,
         pub(crate) experience: Vec<(PlayerId, Experience)>,
         pub(crate) held: Vec<(PlayerId, Held)>,
+        pub(crate) loaded: Option<Loaded>,
+        pub(crate) blocks: crate::blocks::tests::Blocks,
+        pub(crate) edits: Vec<BlockEdit>,
     }
 
     impl CommandWorld for FakeWorld {
@@ -705,6 +731,15 @@ pub(crate) mod tests {
             enchantments.push((enchantment.to_owned(), level));
             Some(Enchanted::Applied)
         }
+
+        fn loaded(&self, _dimension: &str, _pos: [i32; 3]) -> Loaded {
+            self.loaded.unwrap_or(Loaded::Unloaded)
+        }
+
+        fn edit_blocks(&mut self, _source: PlayerId, edit: &BlockEdit) -> Answer<i32> {
+            self.edits.push(edit.clone());
+            Answer::Now(crate::blocks::apply_edit(edit, &mut self.blocks))
+        }
     }
 
     pub(crate) fn lang(key: &str) -> Option<String> {
@@ -837,6 +872,20 @@ pub(crate) mod tests {
             "enchantment.level.4" => "IV",
             "enchantment.level.5" => "V",
             "item.minecraft.stick" => "Stick",
+            "argument.block.id.invalid" => "Unknown block type '%s'",
+            "argument.block.property.duplicate" => {
+                "Property '%s' can only be set once for block %s"
+            }
+            "argument.block.property.invalid" => "Block %s does not accept '%s' for %s property",
+            "argument.block.property.novalue" => "Expected value for property '%s' on block %s",
+            "argument.block.property.unclosed" => "Expected closing ] for block state properties",
+            "argument.block.property.unknown" => "Block %s does not have property '%s'",
+            "argument.block.tag.disallowed" => "Tags aren't allowed here; only actual blocks are",
+            "argument.pos.outofworld" => "That position is out of this world!",
+            "argument.pos.unloaded" => "That position is not loaded",
+            "commands.setblock.failed" => "Could not set the block",
+            "commands.setblock.success" => "Changed the block at %s, %s, %s",
+            "parsing.int.invalid" => "Invalid integer '%s'",
             _ => return None,
         };
         Some(text.to_owned())

@@ -36,6 +36,8 @@ pub enum ArgKind {
     Resource(Registry),
     Nbt,
     ItemPredicate,
+    BlockPos,
+    BlockState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,6 +91,8 @@ pub enum Arg {
     Resource { id: String, at: usize },
     Nbt(String),
     ItemPredicate { predicate: ItemPredicate, at: usize },
+    BlockPos(Coordinates),
+    Block(crate::blocks::ParsedBlock),
 }
 
 impl ArgKind {
@@ -178,6 +182,8 @@ impl ArgKind {
                 };
                 Ok(Arg::ItemPredicate { predicate, at })
             }
+            Self::BlockPos => block_pos(reader).map(Arg::BlockPos),
+            Self::BlockState => crate::blocks::parse_block(reader, false).map(Arg::Block),
         }
     }
 }
@@ -506,6 +512,58 @@ fn vec3(reader: &mut StringReader) -> Result<Coordinates, CommandError> {
     })
 }
 
+fn int_coordinate(reader: &mut StringReader) -> Result<WorldCoordinate, CommandError> {
+    if reader.peek() == Some('^') {
+        return Err(CommandError::new("argument.pos.mixed", Vec::new()).at(reader.cursor));
+    }
+    if !reader.can_read() {
+        return Err(CommandError::new("argument.pos.missing.int", Vec::new()).at(reader.cursor));
+    }
+    let relative = reader.peek() == Some('~');
+    if relative {
+        reader.skip();
+    }
+    let value = if !reader.can_read() || reader.peek() == Some(' ') {
+        0.0
+    } else if relative {
+        reader.read_double()?
+    } else {
+        f64::from(reader.read_int()?)
+    };
+    Ok(WorldCoordinate { value, relative })
+}
+
+fn block_pos(reader: &mut StringReader) -> Result<Coordinates, CommandError> {
+    let start = reader.cursor;
+    if reader.peek() == Some('^') {
+        let mut offsets = [0.0; 3];
+        for (axis, offset) in offsets.iter_mut().enumerate() {
+            if axis > 0 {
+                if reader.peek() != Some(' ') {
+                    return Err(incomplete(reader, start));
+                }
+                reader.skip();
+            }
+            *offset = local_coordinate(reader, start)?;
+        }
+        return Ok(Coordinates::Local(offsets));
+    }
+    let mut axes = [WorldCoordinate {
+        value: 0.0,
+        relative: false,
+    }; 3];
+    for (axis, coordinate) in axes.iter_mut().enumerate() {
+        if axis > 0 {
+            if reader.peek() != Some(' ') {
+                return Err(incomplete(reader, start));
+            }
+            reader.skip();
+        }
+        *coordinate = int_coordinate(reader)?;
+    }
+    Ok(Coordinates::World(axes))
+}
+
 impl Coordinates {
     pub fn position(&self, pose: crate::server::Pose) -> [f64; 3] {
         match *self {
@@ -536,7 +594,7 @@ impl Coordinates {
     }
 }
 
-fn nbt(reader: &mut StringReader) -> Result<String, CommandError> {
+pub(crate) fn nbt(reader: &mut StringReader) -> Result<String, CommandError> {
     let start = reader.cursor;
     if reader.peek() != Some('{') {
         return Err(CommandError::new("argument.nbt.expected.compound", Vec::new()).at(start));
@@ -878,6 +936,32 @@ mod tests {
             coordinates("^ ^ ^3").unwrap().position(down),
             [0.0, 61.0, 0.0]
         ));
+    }
+
+    #[test]
+    fn block_positions_read_integers_or_relative_offsets() {
+        let parse = |text: &str| match ArgKind::BlockPos.parse(&mut StringReader::new(text), &[]) {
+            Ok(Arg::BlockPos(coordinates)) => Ok(coordinates),
+            Ok(other) => panic!("{other:?}"),
+            Err(error) => Err(error),
+        };
+        let pose = crate::server::Pose {
+            feet: [10.7, 64.0, -3.2],
+            yaw: 0.0,
+            pitch: 0.0,
+        };
+        assert_eq!(parse("1 2 3").unwrap().position(pose), [1.0, 2.0, 3.0]);
+        assert_eq!(parse("~ ~-1 ~0.5").unwrap().position(pose), [10.7, 63.0, -2.7]);
+        assert_eq!(parse("-4 ~ 5").unwrap().position(pose), [-4.0, 64.0, 5.0]);
+        assert_eq!(key(&parse("1.5 2 3").unwrap_err()), "parsing.int.invalid");
+        let incomplete = parse("1 2").unwrap_err();
+        assert_eq!(
+            (key(&incomplete), incomplete.cursor),
+            ("argument.pos3d.incomplete".into(), Some(0))
+        );
+        assert_eq!(key(&parse("").unwrap_err()), "argument.pos.missing.int");
+        assert_eq!(key(&parse("1 ^ 3").unwrap_err()), "argument.pos.mixed");
+        assert!(matches!(parse("^ ^1 ^"), Ok(Coordinates::Local(_))));
     }
 
     #[test]

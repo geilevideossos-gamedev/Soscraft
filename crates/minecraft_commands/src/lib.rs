@@ -1,4 +1,5 @@
 pub mod args;
+pub mod blocks;
 pub mod clear;
 pub mod commands;
 pub mod enchant;
@@ -14,6 +15,7 @@ pub mod tracker;
 pub mod tree;
 
 pub use args::ItemArg;
+pub use blocks::{BlockAccess, BlockEdit, BlockInput, BlockState, Loaded, apply_edit};
 pub use clear::{ItemFilter, clear_inventory};
 pub use commands::{difficulty_id, difficulty_name};
 pub use enchant::{Enchanted, EnchantmentInfo};
@@ -24,7 +26,8 @@ pub use protocol::{
 };
 pub use reader::CommandError;
 pub use server::{
-    Clock, CommandData, CommandRegistries, CommandServer, CommandWorld, Pose, Weather, error_line,
+    Answer, Clock, CommandData, CommandRegistries, CommandServer, CommandWorld, OVERWORLD, Pose,
+    Weather, error_line,
 };
 pub use suggest::{CommandHints, Completion, Suggestion, complete};
 pub use text::{Content, Resolved, Text};

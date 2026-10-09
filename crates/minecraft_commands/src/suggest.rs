@@ -34,6 +34,10 @@ pub struct CommandHints {
     pub hit: Option<[f64; 3]>,
     #[serde(default)]
     pub item_tags: Vec<String>,
+    #[serde(default)]
+    pub blocks: Vec<String>,
+    #[serde(default)]
+    pub hit_block: Option<[i32; 3]>,
 }
 
 impl CommandHints {
@@ -47,6 +51,8 @@ impl CommandHints {
             enchantments: registries.enchantments.clone(),
             hit: None,
             item_tags: server.data().item_tags.keys().cloned().collect(),
+            blocks: server.data().blocks.keys().cloned().collect(),
+            hit_block: None,
         }
     }
 
@@ -359,6 +365,8 @@ fn suggest_argument(
             found.resources(start, hints.ids(registry).iter().map(String::as_str), "")
         }
         ArgKind::ItemPredicate => item_predicate(start, hints, found),
+        ArgKind::BlockPos => block_coordinates(start, hints, found),
+        ArgKind::BlockState => block_state(start, hints, found),
         ArgKind::Greedy | ArgKind::Int { .. } | ArgKind::Nbt => {}
     }
 }
@@ -442,6 +450,18 @@ fn item_predicate(start: usize, hints: &CommandHints, found: &mut Found) {
     found.resources(start, hints.items.iter().map(String::as_str), "");
 }
 
+fn block_state(start: usize, hints: &CommandHints, found: &mut Found) {
+    let typed = found.typed(start);
+    let length = id_length(typed);
+    let known = resource_id(&mut StringReader::new(&typed[..length]))
+        .is_ok_and(|id| hints.blocks.contains(&id));
+    if !known {
+        found.resources(start, hints.blocks.iter().map(String::as_str), "");
+    } else if length == typed.len() {
+        found.add(start + length, "[");
+    }
+}
+
 fn components(mut at: usize, found: &mut Found) {
     let input = found.input;
     while !input[at..].starts_with(']') {
@@ -494,14 +514,21 @@ fn two_decimals(value: f64) -> String {
 }
 
 fn coordinates(start: usize, hints: &CommandHints, found: &mut Found) {
+    let hit = hints.hit.map(|hit| hit.map(two_decimals));
+    suggest_coordinates(start, hit, ArgKind::Vec3, found);
+}
+
+fn block_coordinates(start: usize, hints: &CommandHints, found: &mut Found) {
+    let hit = hints.hit_block.map(|hit| hit.map(|axis| axis.to_string()));
+    suggest_coordinates(start, hit, ArgKind::BlockPos, found);
+}
+
+fn suggest_coordinates(start: usize, hit: Option<[String; 3]>, kind: ArgKind, found: &mut Found) {
     let typed = found.typed(start);
     let [x, y, z] = if typed.starts_with('^') {
         ["^", "^", "^"].map(str::to_owned)
     } else {
-        hints.hit.map_or_else(
-            || ["~", "~", "~"].map(str::to_owned),
-            |hit| hit.map(two_decimals),
-        )
+        hit.unwrap_or_else(|| ["~", "~", "~"].map(str::to_owned))
     };
     let mut parts: Vec<&str> = typed.split(' ').collect();
     while parts.last() == Some(&"") {
@@ -513,11 +540,9 @@ fn coordinates(start: usize, hints: &CommandHints, found: &mut Found) {
         (false, [first, second]) => vec![format!("{first} {second} {z}")],
         _ => Vec::new(),
     };
-    let valid = candidates.last().is_some_and(|full| {
-        ArgKind::Vec3
-            .parse(&mut StringReader::new(full), &[])
-            .is_ok()
-    });
+    let valid = candidates
+        .last()
+        .is_some_and(|full| kind.parse(&mut StringReader::new(full), &[]).is_ok());
     if valid {
         found.matching(start, candidates.iter().map(String::as_str));
     }
@@ -650,6 +675,8 @@ mod tests {
             enchantments: owned(&["minecraft:efficiency", "minecraft:sharpness"]),
             hit: None,
             item_tags: owned(&["minecraft:logs", "minecraft:planks"]),
+            blocks: owned(&["minecraft:stone", "minecraft:oak_stairs", "minecraft:glass"]),
+            hit_block: None,
         }
     }
 
@@ -707,6 +734,7 @@ mod tests {
                 "kill",
                 "op",
                 "seed",
+                "setblock",
                 "summon",
                 "teleport",
                 "time",
@@ -964,6 +992,32 @@ mod tests {
         assert_eq!(
             usage_lines(&at_end("/xp query ", OWNERS)),
             vec![("<target> (levels|points)".to_owned(), GRAY)]
+        );
+    }
+
+    #[test]
+    fn block_arguments_suggest_whole_coordinates_and_block_ids() {
+        assert_eq!(
+            texts(&at_end("/setblock ", OWNERS)),
+            vec!["~", "~ ~", "~ ~ ~"]
+        );
+        let looking = CommandHints {
+            hit: Some([0.125, 64.0, -3.5]),
+            hit_block: Some([0, 63, -4]),
+            ..hints()
+        };
+        assert_eq!(
+            texts(&complete("/setblock ", 10, OWNERS, &looking)),
+            vec!["0", "0 63", "0 63 -4"]
+        );
+        assert_eq!(
+            texts(&at_end("/setblock ~ ~ ~ st", OWNERS)),
+            vec!["minecraft:stone", "minecraft:oak_stairs"]
+        );
+        assert_eq!(texts(&at_end("/setblock ~ ~ ~ glass", OWNERS)), vec!["["]);
+        assert_eq!(
+            texts(&at_end("/setblock ~ ~ ~ glass ", OWNERS)),
+            vec!["destroy", "keep", "replace", "strict"]
         );
     }
 

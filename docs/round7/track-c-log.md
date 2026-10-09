@@ -301,3 +301,62 @@ Kit: `minecraft:diamond_sword` 1, `minecraft:stick` 1.
 1. **`CommandWorld::enchantment`**: from `minecraftoss_entities::enchant::Enchantments` (the list the enchanting table already loads): `max_level` of the entry, and `curse` from `tag_contains("minecraft:curse", id)`.
 2. **`CommandWorld::enchant`**: the player's main-hand stack (`inventory.slots[selected]` for the host). Empty: `Itemless`. Otherwise read its enchantments (`stored_enchantments` for an enchanted book, as `getEnchantmentsForCrafting` does). It is incompatible unless `can_enchant(item)` holds and every existing enchantment passes `compatible(existing, new)`, which is false for the same enchantment. Then `add_enchantment` with `max(existing, level)` capped at 255, skipping level 0 (vanilla's `ItemEnchantments.Mutable.upgrade`), and answer `Applied`. The incompatible name is `Text::hover_name(item_id)`.
 3. **Registry ids**: fill `registries().enchantments` from the same list so suggestions and `registered()` know them.
+
+## Minecraft /setblock places blocks like vanilla
+
+Commit: the commit that adds this entry (branch `track-c`, group "commands").
+
+### What changed
+
+- New `crates/minecraft_commands/src/blocks.rs`, checked against 26.3 `SetBlockCommand`, `BlockPosArgument`, `WorldCoordinate.parseInt` and `BlockStateParser` with javap:
+  - `/setblock <pos> <block> [destroy|keep|replace|strict]` at level 2.
+  - **Block states**: `parse_block` reads `id[name=value,...]{nbt}` with vanilla's whitespace rules and errors (`property.novalue`, `property.unclosed`, and `tag.disallowed` for `#` where a tag is not allowed). `resolve_block` then checks the id, each property name, duplicates and each value against `CommandData::blocks`, in vanilla's order and at vanilla's cursor positions (`id.invalid`, `property.unknown`, `property.duplicate`, `property.invalid` with the arguments in vanilla's order). Empty block data accepts anything, like `registered()`.
+  - **Order**: the block is checked first (vanilla parses it), then the position. `getLoadedBlockPos` gives `argument.pos.unloaded`, then `argument.pos.outofworld`.
+  - **The edit**: `BlockEdit { kind, dimension, from, to, block, mode, filter, strict }` goes to the world. `apply_edit` is vanilla's `setBlock` over a `BlockAccess` (read a state, destroy with drops, place, update the neighbours), so the glue only implements those four:
+    - `keep` filters on air (`isEmptyBlock`: air, cave air, void air) and fails on anything else.
+    - `destroy` breaks the block with drops first, then places unless both the new block and the spot are air.
+    - Placing the same state fails ("Could not set the block"), as `BlockInput.place` does.
+    - `strict` skips the neighbour update (vanilla flags 816 instead of 256).
+  - `edit_answer` turns the count into "Changed the block at x, y, z" (broadcast to ops) or the failure. With `Answer::Later` the world may answer after the server thread ran the edit.
+- `ArgKind::BlockPos` reads three integers or `~` offsets (which may be fractional), or `^` local coordinates, with vanilla's `argument.pos.missing.int`, `argument.pos.mixed` and `argument.pos3d.incomplete`. The block is the floor of the position, as `BlockPos.containing`. `ArgKind::BlockState` reads a block state.
+- `CommandData` gains `blocks` (id to its properties and their values) and `block_tags`. `Answer<T>` (`Now` or `Later`) is new in `server.rs`, with `OVERWORLD`.
+- `CommandWorld` gains `dimension(player)` (default the overworld), `loaded(dimension, pos) -> Loaded` (default `Unloaded`) and `edit_blocks(source, &BlockEdit) -> Answer<i32>` (default 0). `Ctx::dimension()` is the source's dimension.
+- Suggestions: a block position suggests `~`, `~ ~`, `~ ~ ~`, or the targeted block's whole coordinates from the new `CommandHints::hit_block`. A block state suggests block ids from the new `CommandHints::blocks`, then `[` once the id is complete.
+
+### Tests added
+
+- `blocks::tests` (5): block states parse properties and NBT with cursor positions; they resolve against the data with every error and position; `apply_edit` places, refuses the same state, keeps, destroys, clears with air and skips updates when strict; and `/setblock` end to end with `~` floors, the failure lines, a bad value with its context, a fractional integer, too few coordinates, a tag, and unloaded and out-of-world positions.
+- `args::tests::block_positions_read_integers_or_relative_offsets`.
+- `suggest::tests::block_arguments_suggest_whole_coordinates_and_block_ids`.
+
+### In-game test steps
+
+`/setblock` needs the glue. Until then it answers "That position is not loaded" for every position.
+
+```
+IW4L_MINECRAFT_KIT=stone*64
+```
+
+1. `/setblock ~ ~-1 ~ minecraft:gold_block`: "Changed the block at x, y, z" and gold appears under your feet. Screenshot.
+2. The same command again: red "Could not set the block".
+3. `/setblock ~ ~-1 ~ stone keep`: red "Could not set the block" (the spot is not air).
+4. `/setblock ~ ~-1 ~ stone destroy`: the gold breaks with particles and drops a gold block, and stone takes its place. Screenshot.
+5. `/setblock ~2 ~ ~ oak_stairs[facing=east,half=top]`: an upside-down stair facing east.
+6. `/setblock ~ ~ ~ oak_stairs[half=up]`: red "Block minecraft:oak_stairs does not accept 'up' for half property" with the context line.
+
+Kit: none needed.
+
+### Decisions
+
+- **Block data is checked when the command runs, with vanilla's cursor**, not while parsing, because the parser has no registry access (as `/give` already does for items). The red line and its context are the same; only the live red colouring of a bad property in the chat box is missing.
+- **No property suggestions.** Ids and `[` are suggested; property names and values would need the full state list in `CommandHints`.
+
+### After the split
+
+1. **Block data**: fill `server.data_mut().blocks` once from `Registries.blocks` (each block id with its properties and their values, in the catalog's order), and `block_tags` from `data/minecraft/tags/block/**.json` like the item tags.
+2. **`CommandWorld::loaded`**: `OutOfWorld` when y is outside the dimension's build height or x or z is outside ±30,000,000 (`isInWorldBounds`); otherwise `Yes` when the chunk at (x >> 4, z >> 4) is loaded in that dimension (`hasChunkAt`), else `Unloaded`. Vanilla checks the chunk first.
+3. **`CommandWorld::edit_blocks`**: implement `BlockAccess` over the level's chunks and call `minecraft_commands::apply_edit`, either on the main thread against the host's copy (then send the changed blocks to the server thread like player edits), or on the server thread through a new `Command::EditBlocks { source, edit }` with the count coming back in `Output` and `Answer::Later` returned meanwhile. When it comes back, `minecraft_commands::blocks::edit_answer(&edit, count)` gives the line: send `Ok` through `server.feedback(source, text, true, rules)` and `Err` through `error_line`.
+   - `state`: the block id and all its property values.
+   - `destroy`: vanilla `destroyBlock(pos, true)`: false for air, otherwise break with the break particles and sound, drop the loot like a player break without a tool, and set air.
+   - `place`: start from the block's default state with the given properties, update the shape from the neighbours unless strict (stairs and fences connect), keep the given properties, write it with the NBT for a block entity, and return false when nothing changed.
+   - `update_neighbours`: the block updates that a player placement sends.

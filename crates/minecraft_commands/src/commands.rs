@@ -180,6 +180,7 @@ fn build() -> Vec<Node> {
         crate::experience::node(),
         crate::experience::alias(),
         crate::enchant::node(),
+        crate::blocks::setblock_node(),
     ])
 }
 
@@ -888,6 +889,7 @@ mod tests {
                 "/kill [<targets>]",
                 "/op <targets>",
                 "/seed",
+                "/setblock <pos> <block> [destroy|keep|replace|strict]",
                 "/summon <entity> [<pos>]",
                 "/teleport (<destination>|<location>|<targets>)",
                 "/time (add|pause|query|resume|set)",
