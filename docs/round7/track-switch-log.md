@@ -479,3 +479,14 @@ Previous commit: c96e3a93
   3. Wait 20 seconds (the log says `Minecraft minecraft:overworld level saved and closed`), then `/kill`. After the respawn the overworld is clear, not raining. **Screenshot 1.**
   4. Remove the weather and dimension lines afterwards.
 - **Kit:** none.
+
+### 23. Minecraft stacks picked up while leaving a level are dropped there when they don't fit
+
+Previous commit: 198ea8e7
+
+- **Defect:** `Entities::leave` puts the stacks the old level already let the player pick up into the inventory, but threw away whatever did not fit. The old level had already removed those item entities, so with a full inventory they were lost. The normal pickup drops the rest back at the player's feet.
+- **Changed:** `minecraft_survival/src/entities.rs`: `take_picked` returns what did not fit, and `Entities::leave(inventory, selected, feet)` spawns it as an item at the player's feet in the level they leave, as the normal pickup does. `render_anim/src/minecraft_world.rs` (`leave_level`, one line) passes the player's place.
+- **Tests:** `entities`: `stacks_that_no_longer_fit_on_leaving_come_back_to_be_dropped` (a full inventory gives the whole picked stack back with its components); `stacks_the_old_level_let_the_player_pick_up_reach_the_inventory_on_leaving` now also checks nothing comes back when everything fits.
+- **Known gap left as it was (entry 11's decision):** an item use already sent to the old level's server when the player leaves (a bucket on a block) is forgotten: if that server still carries it out, the block changes but the item stays in hand. A leave right after a use needs a living switch, which only `/execute in` (after track C) and the portals (N2) start; N2 should let the waiting use finish before the leave.
+- **Test steps:** none reliable in game: it needs a pickup in the very frame a switch starts.
+- **Kit:** none.

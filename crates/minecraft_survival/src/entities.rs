@@ -490,9 +490,13 @@ impl Entities {
         self.item_use_waiting.is_some()
     }
 
-    pub fn leave(&mut self, inventory: &mut Inventory, selected: usize) {
+    pub fn leave(&mut self, inventory: &mut Inventory, selected: usize, feet: Option<[f64; 3]>) {
         let picked = std::mem::take(&mut self.server_picked);
-        take_picked(inventory, selected, picked);
+        for rest in take_picked(inventory, selected, picked) {
+            if let Some(feet) = feet {
+                self.server.spawn_item(&rest.id, i32::from(rest.count), rest.components.map(|c| c.to_string()).as_deref(), feet, [0.0; 3], 0, 0);
+            }
+        }
         self.item_use_waiting = None;
         self.pearl_landings.clear();
     }
@@ -1028,13 +1032,15 @@ fn decode(key: u64) -> Option<MobHit> {
     })
 }
 
-fn take_picked(inventory: &mut Inventory, selected: usize, picked: Vec<Picked>) {
+fn take_picked(inventory: &mut Inventory, selected: usize, picked: Vec<Picked>) -> Vec<ItemStack> {
+    let mut rests = Vec::new();
     for (_, _, item, count, components) in picked {
         let mut stack = ItemStack::new(&item, count.clamp(0, 255) as u8);
         stack.components = components.as_deref().and_then(|c| serde_json::from_str(c).ok());
         stack.max = stack.max.min(inventory.recipes.max_stack(&item));
-        let _ = inventory.add_item(stack, selected);
+        rests.extend(inventory.add_item(stack, selected));
     }
+    rests
 }
 
 fn weather_name(weather: &WeatherData) -> &'static str {
@@ -1134,10 +1140,23 @@ mod tests {
             (7, [1.0, 64.0, 1.0], "minecraft:dirt".to_owned(), 10, None),
             (8, [1.0, 64.0, 1.0], "minecraft:diamond_sword".to_owned(), 1, Some(r#"{"minecraft:damage":5}"#.to_owned())),
         ];
-        take_picked(&mut inventory, 0, picked);
+        assert!(take_picked(&mut inventory, 0, picked).is_empty());
         let count = |id: &str| inventory.slots.iter().flatten().filter(|stack| stack.id == id).map(|stack| u32::from(stack.count)).sum::<u32>();
         assert_eq!(count("minecraft:dirt"), 70);
         let sword = inventory.slots.iter().flatten().find(|stack| stack.id == "minecraft:diamond_sword").expect("the sword");
         assert_eq!(sword.components, Some(serde_json::json!({ "minecraft:damage": 5 })));
+    }
+
+    #[test]
+    fn stacks_that_no_longer_fit_on_leaving_come_back_to_be_dropped() {
+        let mut inventory = Inventory::default();
+        for slot in inventory.slots.iter_mut().take(36) {
+            *slot = Some(ItemStack::new("minecraft:stone", 64));
+        }
+        let picked = vec![(7, [1.0, 64.0, 1.0], "minecraft:dirt".to_owned(), 10, Some(r#"{"minecraft:custom_name":"x"}"#.to_owned()))];
+        let rests = take_picked(&mut inventory, 0, picked);
+        assert_eq!(rests.len(), 1, "the part that did not fit is not lost");
+        assert_eq!((rests[0].id.as_str(), rests[0].count), ("minecraft:dirt", 10));
+        assert_eq!(rests[0].components, Some(serde_json::json!({ "minecraft:custom_name": "x" })));
     }
 }

@@ -2588,7 +2588,7 @@ fn leave_level(
     let minecraft_survival::player::Player { inventory, selected, ender, survival, hand, steps, place, .. } = player;
     ui.inventory_open = false;
     if let Some(entities) = level.entities.as_mut() {
-        entities.leave(inventory, *selected);
+        entities.leave(inventory, *selected, place.map(|place| place.feet));
         let roll = entities.random_float();
         let thrown = level.containers.with_ender(ender, |containers| inventory_ui.apply_input(ui, inventory, selected, containers, &mut || roll));
         if let Some(place) = place.as_ref() {
