@@ -277,3 +277,19 @@ Previous commit: 245fdc4b
 ```
 IW4L_MINECRAFT_KIT=minecraft:obsidian*64,minecraft:flint_and_steel,minecraft:diamond_pickaxe+efficiency=5,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:torch*64
 ```
+
+## Group N3: Nether mobs on existing AI
+
+E2-18 to E2-22, then E2-25.
+
+### 14. Minecraft mobs can be immune to fire (E2-18)
+
+Previous commit: 2f111564
+
+- **Changed:**
+  - Vendored `third_party/minecraftoss/entities/src/world/hazards.rs` (MinecraftOSS patch): `fire_immune(kind)`, the types whose `EntityType.Builder.fireImmune` is called in 26.3's `EntityTypes` (checked with javap): area effect cloud, blaze, ender dragon, end crystal, ghast, magma cube, shulker, strider, TNT, vex, warden, wither, wither skeleton, zoglin and zombified piglin. The hazards ask each mob's `Exposed::fire_immune` (zombies and skeletons by their kind's type ID; the other mobs are never immune): as `Entity.baseTick` does, a burning immune mob's fire is cleared without damage; `isInvulnerableTo` turns every `#is_fire` hazard away (in fire, on fire, lava, hot floor, campfire); fire and lava do not set it alight (`BaseFireBlock.fireIgnite`, `Entity.lavaIgnite`); and lava neither hurts it nor plays the burn sound (`Entity.lavaHurt`). `world.rs` re-exports `fire_immune`.
+  - Vendored `third_party/minecraftoss/world/src/natural_spawner/spawning.rs` (MinecraftOSS patch): `MobCategory::of_type` knows wither skeletons, piglin brutes and zoglins as monsters, so the caps count them and peaceful refuses them.
+- **Tests:** `hazards`: `the_nether_mobs_and_the_bosses_are_immune_to_fire`, `a_fire_immune_mob_puts_its_fire_out_and_shrugs_off_fire_but_not_cactus`. `spawning`: `every_nether_monster_has_the_monster_category`.
+- **Decisions:** the End's endermites, dragon and wither stay out of `of_type` here; the End track adds them with their mobs.
+- **Test steps:** nothing visible yet; the fire-immune mobs come with entries 16 to 18, whose steps cover this entry.
+- **Kit:** none.

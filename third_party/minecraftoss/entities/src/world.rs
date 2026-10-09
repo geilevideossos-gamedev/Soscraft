@@ -38,6 +38,7 @@ pub use wolves::WolfEntity;
 pub use witches::{PlayerSplash, PotionBreak, PotionEntity, WitchEntity};
 use emissions::{base_tick_fluid, play_movement, MovementSounds};
 pub use slimes::SlimeEntity;
+pub use hazards::fire_immune;
 pub use combat::{AttackResult, PlayerAttack};
 pub use merchants::{max_xp_for_level, min_xp_for_level, VillagerUse};
 use crate::eat_block::{

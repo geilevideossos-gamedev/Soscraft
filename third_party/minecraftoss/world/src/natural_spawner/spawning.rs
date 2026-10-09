@@ -98,7 +98,7 @@ impl MobCategory {
         Some(match kind.trim_start_matches("minecraft:") {
             "zombie" | "zombie_villager" | "zombie_horse" | "skeleton" | "creeper" | "spider" | "enderman" | "witch" | "slime" | "husk" | "stray" | "drowned"
             | "bogged" | "parched" | "camel_husk" | "cave_spider" | "silverfish" | "phantom" | "blaze" | "ghast" | "magma_cube" | "piglin" | "hoglin"
-            | "zombified_piglin" | "pillager" | "shulker" => Self::Monster,
+            | "zombified_piglin" | "pillager" | "shulker" | "wither_skeleton" | "piglin_brute" | "zoglin" => Self::Monster,
             "cow" | "pig" | "sheep" | "chicken" | "horse" | "donkey" | "mule" | "mooshroom" | "rabbit" | "wolf" | "fox" | "goat" | "llama" | "panda"
             | "polar_bear" | "cat" | "ocelot" | "parrot" | "frog" | "camel" | "armadillo" | "turtle" | "strider" => Self::Creature,
             "bat" => Self::Ambient,
@@ -1114,5 +1114,18 @@ impl CreatureSpawns {
 
     fn biome_name(&self, biome: BiomeId) -> String {
         self.registries.biomes.get(biome).name.as_str().to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MobCategory;
+
+    #[test]
+    fn every_nether_monster_has_the_monster_category() {
+        for kind in ["blaze", "ghast", "magma_cube", "piglin", "piglin_brute", "hoglin", "zoglin", "wither_skeleton", "zombified_piglin", "skeleton", "enderman"] {
+            assert_eq!(MobCategory::of_type(&format!("minecraft:{kind}")), Some(MobCategory::Monster), "{kind}");
+        }
+        assert_eq!(MobCategory::of_type("minecraft:strider"), Some(MobCategory::Creature));
     }
 }
