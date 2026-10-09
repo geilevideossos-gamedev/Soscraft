@@ -84,6 +84,46 @@ impl GearBones {
             .collect()
     }
 
+    pub fn measures(&self) -> String {
+        let at = |joint: usize| self.index[joint].map(|_| self.bind[joint].w_axis.truncate());
+        let span = |a: usize, b: usize| match (at(a), at(b)) {
+            (Some(a), Some(b)) => format!("{:.1}", a.distance(b)),
+            _ => "-".to_owned(),
+        };
+        let mut parts = vec![
+            format!("shoulders {}", span(SHOULDERS[0], SHOULDERS[1])),
+            format!("hips {}", span(HIPS[0], HIPS[1])),
+            format!("neck to spine {}", span(NECK, SPINE_LOWER)),
+            format!("neck to head {}", span(NECK, HEAD)),
+        ];
+        for (side, name) in ["right", "left"].into_iter().enumerate() {
+            parts.push(format!(
+                "{name} arm {} + {}",
+                span(SHOULDERS[side], ELBOWS[side]),
+                span(ELBOWS[side], WRISTS[side])
+            ));
+            parts.push(format!(
+                "{name} leg {} + {}",
+                span(HIPS[side], KNEES[side]),
+                span(KNEES[side], ANKLES[side])
+            ));
+            let Some(tag) = self.index[HAND_TAGS[side]].map(|_| self.bind[HAND_TAGS[side]]) else {
+                parts.push(format!("{name} hand tag -"));
+                continue;
+            };
+            let place = match at(WRISTS[side]) {
+                Some(wrist) => format!("{} from the wrist", vector(tag.w_axis.truncate() - wrist)),
+                None => format!("at {}", vector(tag.w_axis.truncate())),
+            };
+            parts.push(format!(
+                "{name} hand tag {place}, X {} Z {}",
+                vector(tag.x_axis.truncate().normalize_or_zero()),
+                vector(tag.z_axis.truncate().normalize_or_zero())
+            ));
+        }
+        parts.join(", ")
+    }
+
     pub fn posed(&self, world: &[Mat4], placement: Mat4) -> [Option<PosedJoint>; JOINTS] {
         std::array::from_fn(|joint| {
             let bone = world.get(self.index[joint]?)?;
@@ -93,6 +133,10 @@ impl GearBones {
             })
         })
     }
+}
+
+fn vector(v: Vec3) -> String {
+    format!("({:.1} {:.1} {:.1})", v.x, v.y, v.z)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -186,7 +230,7 @@ impl McBodyGear {
     pub fn shown_weapon(&self, client: Option<u32>, corpse: bool, weapon: u32) -> u32 {
         let hidden = client.is_some_and(|client| {
             if corpse {
-                self.corpses.get(&client).copied().unwrap_or(false)
+                self.corpses.get(&client) == Some(&true)
             } else {
                 self.get(client).is_some_and(|gear| gear.hides_gun)
             }
@@ -211,7 +255,7 @@ pub struct GearFit {
 
 pub const GEAR_FIT: GearFit = GearFit {
     item_scale: 0.9375,
-    hand_offset: [0.0, 1.0, -1.0],
+    hand_offset: [0.0, 2.0, -2.0],
     head: 9.0,
     head_offset: [0.5, 0.0, 3.5],
     torso_width: 13.0,
@@ -542,6 +586,29 @@ mod tests {
         let missing = bones.missing();
         assert!(missing.contains(&"j_head") && missing.contains(&"tag_weapon_left"));
         assert!(!missing.contains(&"j_elbow_ri"));
+    }
+
+    #[test]
+    fn the_bind_pose_measures_name_the_sizes_the_fit_is_tuned_against() {
+        let measures = GearBones::resolve(&skeleton()).measures();
+        assert!(measures.starts_with("shoulders -, hips -,"), "{measures}");
+        assert!(measures.contains("right arm 11.0 + -"), "{measures}");
+        assert!(
+            measures
+                .contains("right hand tag at (10.0 -18.0 58.0), X (1.0 0.0 0.0) Z (0.0 0.0 1.0)"),
+            "{measures}"
+        );
+        assert!(measures.ends_with("left hand tag -"), "{measures}");
+        let mut bones = GearBones::resolve(&skeleton());
+        bones.index[WRISTS[0]] = Some(4);
+        bones.bind[WRISTS[0]] = Mat4::from_translation(Vec3::new(0.0, -18.0, 58.0));
+        assert!(
+            bones
+                .measures()
+                .contains("right hand tag (10.0 0.0 0.0) from the wrist"),
+            "{}",
+            bones.measures()
+        );
     }
 
     #[test]

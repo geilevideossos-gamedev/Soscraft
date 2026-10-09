@@ -163,8 +163,9 @@ fn prepare_remote_kits(
         if let Some(kit) = kits.get(axis, 0) {
             diag::info!(
                 World,
-                "remote kits: axis={axis} Minecraft gear bones missing: {:?}",
-                kit.gear_bones.missing()
+                "remote kits: axis={axis} Minecraft gear bones missing: {:?}; bind sizes: {}",
+                kit.gear_bones.missing(),
+                kit.gear_bones.measures()
             );
         }
     }

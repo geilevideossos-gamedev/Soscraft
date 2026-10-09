@@ -992,13 +992,13 @@ IW4L_MINECRAFT_KIT=diamond_helmet+protection=4,iron_chestplate,leather_leggings@
 
 ### 5. The MW2 corpse in the death cam has no gun when its player died holding a Minecraft item
 
-Commit: (next entry)
+Commit: fd80722
 
 - **Changed:** `minecraft_gear.rs`: `McBodyGear.died(client)` moves a living player's entry out and keeps only whether it had its gun put away, per MW2 client number; `shown_weapon` for a corpse now puts the gun away when that player's last death came with a Minecraft item or an empty hand selected (a corpse of a player who died holding a gun, or of an MW2 bot, keeps its gun as before). `clear` forgets both. The adapter (`minecraft_world.rs`) calls `died` while the local player is dead (MW2 `PM_TYPE_DEAD` and the other dead types), `remove` while spectating or in intermission.
 - **Tests:** minecraft_gear: `a_corpse_puts_its_gun_away_when_its_player_died_holding_a_minecraft_item` (the death keeps the hand of the last living frame; dying again with no living frame in between keeps it; a new life changes the corpse rule only at the next death; `clear` forgets it). `a_minecraft_item_in_hand_puts_the_mw2_gun_away_but_not_on_a_corpse` still holds while the player lives.
 - **Decisions:**
   - Vanilla drops a dead player's items and armour at once (`LivingEntity.dropAllDeathLoot` from `die`), so the dying body shows no gear; the MW2 corpse therefore wears and holds nothing, and now has no gun either when none was held. With `keep_inventory` vanilla would keep the gear on the dying body; that, like gear on corpses in general, stays later work (the corpse's bones are not published, and several corpses of one client can't yet be told apart).
-  - The rule is kept per client, not per corpse: an older corpse of the same player still lying there follows the latest death. MW2 sinks corpses after a few seconds, so this shows only on a quick second death.
+  - The rule is kept per client, not per corpse: an older corpse of the same player still lying there follows the latest death, which shows only when two of one player's corpses are in view at once.
 - **Screenshot 2 ("items at the head" in the death cam), checked again on the split code:** they were the death drops. Nothing drew a Minecraft item on the body before this group (the first-person item is built in view space and skipped while dead, F5 or in the inventory). On death the adapter (`minecraft_world.rs:1846`) spawns every stack with `WorldItems::drop_on_death(stack, death.spot.eye)` (`third_party/minecraftoss/player/src/items.rs:254-270`, vanilla `Player.drop(stack, true, false)`): 0.3 below the eyes, flying up 0.2 and up to 0.5 sideways. `Entities::server_items_tick` (`minecraft_survival/src/entities.rs:347`) hands each one to the server and draws it where it was until the server's copy arrives, so a slow server tick right after a death keeps them hanging at the head a little longer. That delay is the death-at-height work's (Phase 1 item 1), not this track's.
 - **Test steps** (survival mode, with `keep_inventory` off, the default):
   1. Select the cobblestone and type `/kill`. In the death cam the corpse holds no gun and no cobblestone; the drops fly out from eye height and land within about a second. Screenshot 1.
@@ -1008,4 +1008,22 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=cobblestone*64
+```
+
+### 6. Minecraft items sit at the vanilla fist point of the MW2 hand tags, and the log names the body's bind sizes
+
+Commit: (next entry)
+
+- **Checked:** the hand frames against the hand tags. MW2 attaches the world gun (and the riot shield, on the left) with its model axes on the tag (`xmodel_runtime::build_body_head_weapon_dobj`: X along the barrel, Y left, Z up), so `hand_frame`'s Rz(-90 degrees) gives vanilla's hand frame (x right, y forward, z up) on both hands, and the left hand needs no mirrored frame: its mirror is the display's, as in vanilla. The gun's origin sits in the middle of the fist, where its grip passes through. Vanilla's item point is not the middle of the fist: `ItemInHandLayer.submitArmWithItem` steps 10 pixels down the arm from the shoulder pivot (the arm runs 2 above it to 10 below, the hand being its last 4) and 2 forward (the arm's front face), with the 1 sideways only taking the off-centre pivot back to the arm's middle. So the item hangs from the fist's front, bottom edge: 2 pixels ahead of the middle of the hand and 2 below it.
+- **Changed:** `GEAR_FIT.hand_offset` from (0, 1, -1) to (0, 2, -2) pixels (right, forward, up; mirrored in x for the left hand), the vanilla point above. `GearBones::measures()` gives the kit's bind-pose sizes in map units (shoulder and hip spans, neck to spine and to head, both arms and legs joint to joint, each hand tag's place from its wrist and its X and Z axes), and the `remote kits` log line prints them after the missing bones, so the rest of `GEAR_FIT` (head, torso, girths, sole) can be tuned from numbers rather than guessed. `McBodyGear::shown_weapon` compares the corpse entry with `Some(&true)` instead of copying it out.
+- **Tests:** minecraft_gear: `the_bind_pose_measures_name_the_sizes_the_fit_is_tuned_against` (spans, a missing joint as `-`, a tag's place from the wrist or, without a wrist, in the model, and its axes).
+- **Decision:** the other `GEAR_FIT` sizes stay as they are until the owner's screenshots and the new log line are in: nothing in the code pins the MW2 body's girths, while the hand point follows from vanilla's own numbers.
+- **Test steps** (survival mode):
+  1. Start the game, open `iw4l-artifacts/logs/latest.log` and send the two `Minecraft gear bones missing: ...; bind sizes: ...` lines.
+  2. Select the cobblestone and press F5, then F5 again for the front view: the block hangs just in front of and below the closed right hand, as a vanilla player's does, not inside the fist. Put the torch in the offhand (F): the same on the left. Screenshots 1 and 2.
+  3. Select the sword and the trident: each comes out of the front of the fist pointing forward and up. Screenshot 3.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=cobblestone*64,torch*64,diamond_sword,trident
 ```
