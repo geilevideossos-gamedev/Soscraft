@@ -67,11 +67,10 @@ pub fn visible_tags<'a>(query: &str, tags: impl Iterator<Item = &'a str>) -> Vec
     let Some(query) = query.strip_prefix('#') else {
         return Vec::new();
     };
-    let query = query.to_lowercase();
     tags.filter(|tag| {
         let (namespace, path) = split_id(tag);
-        match split_query(&query) {
-            None => path.contains(query.as_str()),
+        match split_query(query) {
+            None => path.contains(query),
             Some((wanted_namespace, wanted_path)) => {
                 namespace.contains(wanted_namespace) && path.contains(wanted_path)
             }
@@ -188,5 +187,7 @@ mod tests {
             ["minecraft:wool"]
         );
         assert!(visible_tags("log", tags.iter().copied()).is_empty());
+        assert!(visible_tags("#LOG", tags.iter().copied()).is_empty());
+        assert_eq!(found("#LOGS"), ["minecraft:oak_log"]);
     }
 }

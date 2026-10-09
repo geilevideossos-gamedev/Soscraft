@@ -1856,3 +1856,23 @@ IW4L_MINECRAFT_KIT=torch*64,stone*64
 2. Hover the torches in the bottom hotbar row and press 5: they swap with hotbar slot 5, and no `5` is typed. Screenshot.
 3. Pick up the stone onto the cursor, hover a grid stack and press 4: `4` is typed into the box and the hotbar does not change.
 4. With the mouse over no slot, press 7: `7` is typed.
+
+## Minecraft creative search shows tag lines only for the case vanilla matches
+
+Commit: the commit that adds this entry. The previous commit is b064dc0 (number keys on the Search tab).
+
+### What changed
+
+- **The defect:** `creative_search::visible_tags` lowercased the `#` query before picking the purple tag lines. 26.3 `CreativeModeInventoryScreen.updateVisibleTags` (checked with javap, including its three lambdas) compares the text after `#` exactly as typed with `Identifier.getNamespace().contains` and `getPath().contains`; only the item search itself (`refreshSearchResults`) lowercases. So `#LOGS` finds the logs in vanilla but shows no `#minecraft:logs` line under them, and we showed one.
+- `visible_tags` now keeps the case; `search` still lowercases.
+
+### Tests added
+
+- `minecraft_terrain` `creative_search::tests::the_shown_tags_follow_the_hash_query`: `#LOG` shows no tag line while `#LOGS` still finds the oak log.
+
+### In-game test steps
+
+Kit: none needed.
+
+1. `/gamemode creative`, E, Search tab, type `#LOGS`: the logs show; hovering an oak log shows the blue tab names but no purple `#minecraft:logs` line.
+2. Change it to `#logs`: the purple line is back. Screenshot.
