@@ -47,6 +47,7 @@ pub struct Host<'a> {
     pub env_file: Option<PathBuf>,
     pub rules_changed: bool,
     pub mode_changed: Vec<PlayerId>,
+    pub respawn_changed: Vec<PlayerId>,
     pub teleports: Vec<(PlayerId, [f64; 3])>,
 }
 
@@ -575,6 +576,30 @@ impl CommandWorld for Host<'_> {
         Answer::Later
     }
 
+    fn set_respawn(&mut self, player: PlayerId, respawn: &minecraft_commands::Respawn) -> bool {
+        let Some(dimension) = Dimension::parse(&respawn.dimension) else {
+            return false;
+        };
+        let Some(known) = self.player_mut(player) else {
+            return false;
+        };
+        let [x, y, z] = respawn.pos;
+        let point = crate::player_nbt::Respawn {
+            at: crate::player_nbt::GlobalPos {
+                dimension,
+                pos: (x, y, z),
+            },
+            yaw: respawn.yaw,
+            pitch: respawn.pitch,
+            forced: respawn.forced,
+        };
+        if known.respawn != Some(point) {
+            known.set_respawn(Some(point));
+            self.respawn_changed.push(player);
+        }
+        true
+    }
+
     fn locate(&mut self, source: PlayerId, request: &LocateRequest) -> Answer<Option<Located>> {
         let Some(level) = loaded_dimension(self.levels, &request.dimension)
             .and_then(|dimension| self.levels.get_mut(&dimension))
@@ -883,11 +908,13 @@ pub fn run(
         env_file: if sent.is_empty() { None } else { env_file() },
         rules_changed: false,
         mode_changed: Vec::new(),
+        respawn_changed: Vec::new(),
         teleports: Vec::new(),
     };
     let mut delivered = pump(id, sent, &mut globals.chat, &mut host);
     let rules_changed = host.rules_changed;
     let mode_changed = std::mem::take(&mut host.mode_changed);
+    let respawn_changed = std::mem::take(&mut host.respawn_changed);
     let teleports = std::mem::take(&mut host.teleports);
     drop(host);
     let mut finished = Vec::new();
@@ -905,7 +932,7 @@ pub fn run(
     }
     for player in players
         .values()
-        .filter(|player| mode_changed.contains(&player.id))
+        .filter(|player| mode_changed.contains(&player.id) || respawn_changed.contains(&player.id))
     {
         crate::server::save_player(globals, player);
     }
@@ -1014,6 +1041,7 @@ pub(crate) mod tests {
                 env_file: self.env_file.clone(),
                 rules_changed: false,
                 mode_changed: Vec::new(),
+                respawn_changed: Vec::new(),
                 teleports: Vec::new(),
             }
         }
@@ -1078,6 +1106,12 @@ pub(crate) mod tests {
             "argument.pos.unloaded" => "That position is not loaded",
             "argument.dimension.invalid" => "Unknown dimension '%s'",
             "commands.give.success.single" => "Gave %s %s to %s",
+            "commands.spawnpoint.success.single" => {
+                "Set spawn point to %s, %s, %s [%s] in %s for %s"
+            }
+            "commands.spawnpoint.success.multiple" => {
+                "Set spawn point to %s, %s, %s [%s] in %s for %s players"
+            }
             "commands.seed.success" => "Seed: %s",
             "block.minecraft.stone" => "Stone",
             "block.minecraft.torch" => "Torch",
@@ -1212,6 +1246,62 @@ pub(crate) mod tests {
             }
         ));
         assert_eq!(host.experience(HOST), Some(Experience::default()));
+    }
+
+    #[test]
+    fn spawnpoint_sets_the_named_players_respawn_point_and_saves_it() {
+        let mut parts = Parts::new();
+        parts.join(FRIEND, "Alex", [0.5, 64.0, 0.5]);
+        let (lines, _) = parts.send(HOST, &["/spawnpoint Alex 10 64 -4 90 0", "/spawnpoint"]);
+        assert_eq!(
+            lines,
+            vec![
+                "Set spawn point to 10, 64, -4 [90.0] in 0.0 for minecraft:overworld",
+                "Set spawn point to 4, 70, -3 [0.0] in 0.0 for minecraft:overworld",
+            ]
+        );
+        let point = |pos, yaw| crate::player_nbt::Respawn {
+            at: crate::player_nbt::GlobalPos {
+                dimension: Dimension::Overworld,
+                pos,
+            },
+            yaw,
+            pitch: 0.0,
+            forced: true,
+        };
+        assert_eq!(parts.player(FRIEND).respawn, Some(point((10, 64, -4), 90.0)));
+        assert_eq!(parts.player(FRIEND).data().respawn, Some(point((10, 64, -4), 90.0)));
+        assert_eq!(parts.player(HOST).respawn, Some(point((4, 70, -3), 0.0)));
+        let alex = parts.player(FRIEND);
+        alex.observe_life(playerstate_iw4::PM_TYPE_DEAD);
+        assert!(alex.observe_life(0));
+        assert!(!alex.arrive_at_respawn(&[Dimension::Overworld], |_| Some(true), |_| None));
+        assert_eq!(
+            alex.arrival.map(|place| (place.feet, place.yaw)),
+            Some(([10.5, 64.0, -3.5], 90.0))
+        );
+        let mut server = std::mem::take(&mut parts.server);
+        let mut host = parts.host();
+        let mut sent = vec![
+            "/spawnpoint Alex 10 64 -4 90 0".to_owned(),
+            "/spawnpoint Alex 10 64 -4 -90 0".to_owned(),
+        ];
+        pump(HOST, &mut sent, &mut server, &mut host);
+        assert_eq!(host.respawn_changed, vec![FRIEND]);
+        let moon = minecraft_commands::Respawn {
+            dimension: "minecraft:moon".into(),
+            pos: [0, 64, 0],
+            yaw: 0.0,
+            pitch: 0.0,
+            forced: true,
+        };
+        assert!(!host.set_respawn(HOST, &moon));
+        let nowhere = minecraft_commands::Respawn {
+            dimension: "minecraft:overworld".into(),
+            ..moon
+        };
+        assert!(!host.set_respawn(PlayerId(7), &nowhere));
+        assert_eq!(host.respawn_changed, vec![FRIEND]);
     }
 
     fn enchantment_book() -> minecraftoss_entities::enchant::Enchantments {

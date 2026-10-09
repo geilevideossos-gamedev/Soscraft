@@ -1386,7 +1386,7 @@ Kit: `minecraft:cobblestone` 64, `minecraft:diamond_pickaxe` 1.
 
 ## After track D (glue group)
 
-- **`/spawnpoint`**: track D's per-player respawn point is not on `minecraft-survival` yet (no respawn commit in `git log minecraft-survival`), so `CommandWorld::set_respawn` keeps its default and `/spawnpoint` still answers "No player was found". Once track D lands:
+- **`/spawnpoint`** (done after the merge, see "Minecraft /spawnpoint sets the respawn point MW2 respawns at" at the end): track D's per-player respawn point is not on `minecraft-survival` yet (no respawn commit in `git log minecraft-survival`), so `CommandWorld::set_respawn` keeps its default and `/spawnpoint` still answers "No player was found". Once track D lands:
   1. `Host::set_respawn(player, respawn)`: find the player by id (`player_mut`) and store the `Respawn` in track D's per-player respawn field, keyed by the player's UUID; return `true`. Track D's player file writes it under vanilla's `respawn` key (`{dimension, pos: [x, y, z], yaw, pitch, forced: true}`).
   2. Respawning reads it before the world spawn, as the `/spawnpoint` entry's "After the split" notes describe (forced: only room to stand is checked, otherwise the world spawn and `block.minecraft.spawn.not_valid`), and faces the stored yaw and pitch.
   3. Add a test next to `commands::tests::experience_commands_fill_the_named_players_bar`: `/spawnpoint Alex 10 64 -4 90 0` sets Alex's point only, and `/spawnpoint` without a position takes the source's feet.
@@ -1931,3 +1931,45 @@ Load a fresh world with this kit, then:
 2. The chat UI entry, steps 1 to 11 (screenshots 1 to 5 of that entry). `/kit` afterwards if the glue steps emptied the inventory.
 3. The creative group, as "Testing the creative group" orders it (`/gamemode creative` first).
 4. The review fixes: the command answers entry (steps 1 and 2), the number keys entry (steps 1 to 4), the tag lines entry (steps 1 and 2), and last the creative screen entry (steps 1 and 2, ending in survival).
+
+# After the merge with track D
+
+## Minecraft /spawnpoint sets the respawn point MW2 respawns at
+
+Commit: the commit that adds this entry. Its parent is the track C merge e166289.
+
+### What changed
+
+- `Host::set_respawn` (`minecraft_survival/src/commands.rs`) is the glue the "After track D (glue group)" notes asked for. It finds the named player and stores the command's point in track D's `Player::respawn` as a `player_nbt::Respawn` (`GlobalPos` in the executing level, the block position, yaw, pitch and `forced: true`, which is vanilla's `RespawnConfig(respawnData, true)` from `SetSpawnCommand`), then returns `true`. A dimension id that is not one of the three is refused like an unknown player, and then the answer is "No player was found".
+- Each player whose point changed (position, angles or level) goes into the new `Host::respawn_changed`, and `commands::run` writes their player file at once, the same way a `/gamemode` change is written. Track D's `player_nbt` saves it under vanilla's `respawn` key (`{dimension, pos: [x, y, z], yaw, pitch, forced: 1b}`), and the autosave and quit save keep it as well.
+- Nothing changed in the respawn itself. Track D's `render_anim` respawn already reads `Player::respawn` when MW2 respawns the player: a forced point puts them at the block's bottom centre facing the stored yaw and pitch, and a blocked point gives `block.minecraft.spawn.not_valid` and the world spawn.
+- The chat line is track C's, with vanilla's seven arguments. The player name or count is dropped, so it reads "Set spawn point to 10, 64, -4 [90.0] in 0.0 for minecraft:overworld".
+
+### Tests added
+
+- `commands::tests::spawnpoint_sets_the_named_players_respawn_point_and_saves_it` (`minecraft_survival`) covers these cases:
+  - `/spawnpoint Alex 10 64 -4 90 0` sets only Alex's point, and the player file data holds it.
+  - `/spawnpoint` without a position takes the block at the source's feet.
+  - After a death and an MW2 respawn, Alex arrives at 10.5, 64, -3.5 facing yaw 90.
+  - Setting the same point again does not mark the player for a save. Changing only the yaw does.
+  - An unknown dimension or player sets nothing.
+
+### In-game test steps
+
+```
+IW4L_MINECRAFT_KIT=stone*64
+```
+
+`minecraft:stone` 64.
+
+1. Stand somewhere recognisable and run `/spawnpoint`. The chat says "Set spawn point to x, y, z [0.0] in 0.0 for minecraft:overworld" (the missing player name is vanilla's quirk). Screenshot.
+2. Walk about 50 blocks away and run `/kill`, then respawn in MW2. You arrive on the block from step 1, not at the world spawn. Screenshot.
+3. Turn to face somewhere else and run `/spawnpoint @s ~ ~ ~ 90 0`, then `/kill` and respawn. You arrive on that block looking west (yaw 90). Screenshot.
+4. Quit the game straight away, without waiting for an autosave, and start it again. `/kill` and respawn: you are back on the block from step 3, still facing west.
+5. Put two blocks of stone on the spot (the block and the one above it), walk away and `/kill`. The chat says "You have no home bed or charged respawn anchor, or it was obstructed" and you respawn at the world spawn. Screenshot.
+6. `/spawnpoint @s 0 30000000 0` gives a red "That position is outside the allowed boundaries".
+
+### Decisions
+
+- **The file is written when the command changes a point**, not only at the next autosave, the same way `/gamemode` is handled. A crash right after `/spawnpoint` keeps the point.
+- **The open check before a respawn stays track D's.** It looks at the player's current level. Only the overworld is loaded today, so a point in another level cannot be set (`execute in` refuses levels that are not loaded). Once the Nether and the End load (phase 3), the check has to look at the point's own level.

@@ -100,6 +100,7 @@ mod tests {
                 env_file: None,
                 rules_changed: false,
                 mode_changed: Vec::new(),
+                respawn_changed: Vec::new(),
                 teleports: Vec::new(),
             }
         }
