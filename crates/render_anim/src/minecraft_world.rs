@@ -2199,7 +2199,7 @@ fn update(
         [sky.moon_direction.x, sky.moon_direction.y, sky.moon_direction.z, sky.rain_brightness],
         // The brightness option at its default.
         [sky.cloud.x, sky.cloud.y, sky.cloud.z, 0.5],
-        [aspect, 0.0, sky.star_brightness, sky.star_angle],
+        [aspect, sky.cloud_alpha, sky.star_brightness, sky.star_angle],
         [sky.moon_phase as f32, (game_time as f32) * 0.03, 96.0, 160.0],
         [
             sky.fog_start,

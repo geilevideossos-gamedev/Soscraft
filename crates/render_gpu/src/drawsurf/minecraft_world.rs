@@ -136,6 +136,7 @@ struct TerrainGpu {
     clouds: Option<(Arc<MinecraftClouds>, Buffer, Buffer, u32)>,
     cloud_top: f32,
     camera_above_clouds: bool,
+    clouds_shown: bool,
     crack_texture: Option<(Arc<MinecraftAtlasImage>, TextureView)>,
     glint: Option<(Arc<MinecraftAtlasImage>, TextureView)>,
     armor_glint: Option<(Arc<MinecraftAtlasImage>, TextureView)>,
@@ -421,6 +422,7 @@ fn prepare_terrain(
         None => gpu.clouds = None,
     }
     gpu.camera_above_clouds = frame.environment[3][1] > gpu.cloud_top;
+    gpu.clouds_shown = clouds_shown(&frame.environment);
     if gpu.view.is_none() {
         gpu.view = Some(device.create_buffer(&BufferDescriptor {
             label: Some("iw4l_minecraft_terrain_view"),
@@ -560,6 +562,10 @@ fn prepare_terrain(
     if let Some(buffer) = gpu.view.as_ref() {
         queue.write_buffer(buffer, 0, bytemuck::bytes_of(&view));
     }
+}
+
+fn clouds_shown(environment: &[[f32; 4]; 16]) -> bool {
+    environment[11][1] > 0.0
 }
 
 fn no_glint() -> MinecraftAtlasImage {
@@ -730,6 +736,7 @@ fn draw_terrain(
         pass.draw_indexed(0..*count, 0, 0..1);
     }
     if !gpu.camera_above_clouds
+        && gpu.clouds_shown
         && let Some((_, vertices, indices, count)) = gpu.clouds.as_ref()
     {
         pass.set_render_pipeline(&clouds);
@@ -766,6 +773,7 @@ fn draw_terrain(
         pass.set_viewport(vp.x as f32, vp.y as f32, vp.z as f32, vp.w as f32, depth_min, depth_max);
     }
     if gpu.camera_above_clouds
+        && gpu.clouds_shown
         && let Some((_, vertices, indices, count)) = gpu.clouds.as_ref()
     {
         pass.set_render_pipeline(&clouds);
@@ -927,6 +935,8 @@ struct SkyOut {
     @location(0) ndc: vec2<f32>,
 }
 
+const SKYBOX_NONE_ABOVE: f32 = 1.5;
+
 @vertex
 fn sky_vertex(@builtin(vertex_index) index: u32) -> SkyOut {
     let uv = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
@@ -976,6 +986,9 @@ fn stars(ray: vec3<f32>) -> f32 {
 @fragment
 fn sky_fragment(in: SkyOut) -> @location(0) vec4<f32> {
     let environment = view.environment;
+    if environment.ambient.w > SKYBOX_NONE_ABOVE {
+        return vec4<f32>(environment.fog.rgb, 1.0);
+    }
     let far = view.rel_from_clip * vec4<f32>(in.ndc, 0.5, 1.0);
     let map_ray = far.xyz / far.w;
     let ray = normalize(vec3<f32>(map_ray.x, map_ray.z, -map_ray.y));
@@ -1500,5 +1513,32 @@ mod tests {
         assert!(super::patch_writes(&outside, &atlas).is_empty());
         let short = super::MinecraftAtlasImage { width: 256, height: 256, levels: atlas.levels[..2].to_vec() };
         assert_eq!(super::patch_writes(&patch, &short).len(), 2);
+    }
+
+    fn wgsl_float(name: &str) -> f32 {
+        let module = naga::front::wgsl::parse_str(super::TERRAIN_WGSL).unwrap();
+        let (_, constant) = module.constants.iter().find(|(_, constant)| constant.name.as_deref() == Some(name)).unwrap();
+        match module.global_expressions[constant.init] {
+            naga::Expression::Literal(naga::Literal::F32(value)) => value,
+            ref other => panic!("{name} is {other:?}"),
+        }
+    }
+
+    #[test]
+    fn only_a_dimension_without_a_skybox_shows_the_fog_colour_as_its_sky() {
+        let none_above = wgsl_float("SKYBOX_NONE_ABOVE");
+        assert!(1.0 < none_above && none_above < 2.0, "render_anim sends 0 for the overworld, 1 for the End and 2 for none");
+        assert!(super::TERRAIN_WGSL.contains("if environment.ambient.w > SKYBOX_NONE_ABOVE {
+        return vec4<f32>(environment.fog.rgb, 1.0);"));
+    }
+
+    #[test]
+    fn clouds_show_only_while_the_cloud_colour_has_alpha() {
+        let mut environment = [[0.0; 4]; 16];
+        assert!(!super::clouds_shown(&environment));
+        environment[11][1] = 1.0 / 255.0;
+        assert!(super::clouds_shown(&environment));
+        environment[11][1] = 0.8;
+        assert!(super::clouds_shown(&environment));
     }
 }

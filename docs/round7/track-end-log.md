@@ -90,3 +90,23 @@ Previous commit: 5eae59cd
 - **Clippy:** `clippy -p minecraft_terrain -p minecraftoss-generator -p minecraftoss-world --all-targets --no-deps -- -A clippy::approx_constant` has no finding in the new files or the changed lines (the `approx_constant` errors and 38 warnings are older).
 - **Left for X2:** the eye of ender throw. Brief E3 leaves it to track B's commit 8, which hasn't landed: `EnderEyeItem.use` (the nearest stronghold through `#eye_of_ender_located`, search radius 100), the `EyeOfEnder` flight (a target over 12 blocks away becomes the point 12 toward it and 8 up), its 80 ticks, the drop when `nextInt(5) > 0`, and the eye kept in the hand when there is no stronghold. Until then right-clicking with an eye anywhere but an empty frame does nothing.
 - **Owner test for the group:** entry 2's steps with its kit, then entry 3's step 1 with its kit, in the world `x1atest`.
+
+## Group X1b: skies and portals drawn
+
+### 4. The Minecraft Nether has no sky, sun, stars or clouds (E2-4)
+
+Previous commit: bbc88f0c
+
+- **Defect:** the sky shader ignored the dimension's skybox, so the Nether showed the overworld sky: a sun overhead (the Nether has no timeline, so the sun angle stays at its default), stars and clouds. Clouds always drew.
+- **Changed:**
+  - `render_gpu/src/drawsurf/minecraft_world.rs` (the sky shader): `sky_fragment` returns the fog colour where the skybox is `none` (mode 2 in `environment.ambient.w`), as vanilla draws no sky pass then and the cleared colour is the fog colour. Clouds draw only while the cloud colour has alpha (`clouds_shown`), as `LevelRenderer` adds the cloud pass only when `ARGB.alpha(cloudColor) > 0`.
+  - `render_anim/src/minecraft_world.rs`: the free `y` of the environment's `params` row carries `sky.cloud_alpha` (one literal).
+  - The fog colour per biome and the fixed time were already right: the environment system samples each biome's `visual/fog_color` with vanilla's blending, and the Nether has no timeline, so nothing follows the clock.
+- **Checked with javap (26.3):** `SkyRenderer.render` draws the End sky for `END`, the overworld disc, sunrise, sun, moon and stars otherwise, and `LevelRenderer.addSkyPass` skips the pass for `NONE`. `LevelRenderer` adds clouds only when `cloudStatus != OFF` and the cloud colour's alpha is above 0. `the_nether.json` has no `cloud_color`, whose default is transparent, and `the_end.json` neither.
+- **Tests:** `render_gpu`: `only_a_dimension_without_a_skybox_shows_the_fog_colour_as_its_sky`, `clouds_show_only_while_the_cloud_colour_has_alpha`. `minecraft_terrain` `environment`: `the_nether_sky_keeps_no_time_and_takes_each_biome_fog` (the same sky at noon and midnight, `#330808` in the nether wastes and `#685f70` in the basalt deltas, no clouds), `only_the_overworld_has_clouds`.
+- **Decisions:** vanilla's `CardinalLighting.NETHER` face shading stays with the Nether track (E2-5), as the brief says.
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x1btest` (a new world) and add `IW4L_MINECRAFT_DIMENSION=the_nether`. Start. Look up and around: no sun, moon, stars or clouds; where no block is in view, the sky is the dark red of the fog. **Screenshot 1.**
+  2. Optional: type `/locate biome minecraft:basalt_deltas` or `minecraft:soul_sand_valley` and walk there: the fog and the sky turn grey or blue-green as you enter. **Screenshot 2.**
+  3. Quit, set `IW4L_MINECRAFT_DIMENSION=overworld` and start again: in the overworld the sun or moon, the stars at night and the clouds are back. **Screenshot 3.** Remove the line afterwards.
+- **Kit:** none needed.
