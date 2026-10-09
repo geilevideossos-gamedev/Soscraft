@@ -410,6 +410,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:wolf",
     "minecraft:zombie",
     "minecraft:zombie_villager",
+    "minecraft:zombified_piglin",
 ];
 
 /// Adds a saved entity the entity world simulates; its ID, or none for a
@@ -549,11 +550,12 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
         }
         // Monsters and bats natural spawning makes. Riders (jockeys) wait
         // dormant with their vehicle.
-        "minecraft:zombie" | "minecraft:husk" | "minecraft:zombie_villager" if tag.get("Passengers").is_none() => {
+        "minecraft:zombie" | "minecraft:husk" | "minecraft:zombie_villager" | "minecraft:zombified_piglin" if tag.get("Passengers").is_none() => {
             let mut zombie = minecraftoss_entities::zombie::Zombie::new(pos);
             zombie.kind = match kind {
                 "minecraft:husk" => ZombieKind::Husk,
                 "minecraft:zombie_villager" => ZombieKind::ZombieVillager,
+                "minecraft:zombified_piglin" => ZombieKind::ZombifiedPiglin,
                 _ => ZombieKind::Zombie,
             };
             if zombie.kind == ZombieKind::ZombieVillager {
@@ -579,6 +581,9 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             entity.look_control.head_yaw = yaw;
             if let (Some(range), Some(ai)) = (attribute_value(tag, "minecraft:follow_range"), entity.ai.as_deref_mut()) {
                 ai.state.follow_range = range;
+            }
+            if let (Some(end), Some(ai)) = (tag.get("anger_end_time").and_then(Tag::as_i64), entity.ai.as_deref_mut()) {
+                ai.state.enderman.anger_end_time = end;
             }
             id
         }
@@ -1025,7 +1030,10 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
     }
     for e in world.zombies() {
         let kind = e.zombie.kind.type_id();
-        let fields = vec![("IsBaby", Tag::Byte(i8::from(e.zombie.baby))), ("CanBreakDoors", Tag::Byte(i8::from(e.zombie.can_break_doors)))];
+        let mut fields = vec![("IsBaby", Tag::Byte(i8::from(e.zombie.baby))), ("CanBreakDoors", Tag::Byte(i8::from(e.zombie.can_break_doors)))];
+        if let (ZombieKind::ZombifiedPiglin, Some(ai)) = (e.zombie.kind, e.ai.as_deref()) {
+            fields.push(("anger_end_time", Tag::Long(ai.state.enderman.anger_end_time)));
+        }
         add(e.id, kind, &e.zombie.body, e.yaw, e.zombie.health, e.zombie.persistence_required, fields);
     }
     for e in world.skeletons() {

@@ -523,6 +523,9 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     textures.insert(ResourceId::parse("minecraft:item/potion_overlay")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/zombie/husk")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/zombie/husk_baby")?, ());
+    for skin in ["zombified_piglin", "zombified_piglin_baby"] {
+        textures.insert(ResourceId::parse(&format!("minecraft:entity/piglin/{skin}"))?, ());
+    }
     textures.insert(ResourceId::parse("minecraft:entity/zombie_villager/zombie_villager")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/zombie_villager/zombie_villager_baby")?, ());
     for kind in ["desert", "jungle", "plains", "savanna", "snow", "swamp", "taiga"] {

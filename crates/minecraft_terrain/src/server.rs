@@ -5473,6 +5473,97 @@ mod tests {
     }
 
     #[test]
+    fn zombified_piglins_hold_gold_keep_their_anger_and_come_out_of_overworld_portals() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let level_of = |terrain: TerrainGenerator, dimension_type: &str, min_y: i32, height: i32| {
+            let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(terrain), dimension_type).unwrap());
+            let states = Arc::new(BlockStates::new(registries.clone(), 0, min_y, height).unwrap());
+            let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+            let mut server = ServerSim::new(worldgen, states, dimension_type);
+            for x in -1..=1 {
+                for z in -1..=1 {
+                    server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+                }
+            }
+            server
+        };
+        let mut nether = level_of(TerrainGenerator::nether(registries.clone(), 0).unwrap(), "minecraft:the_nether", 0, 256);
+        nether.set_players(&[[0.5, 100.0, 0.5]], 2);
+        nether.summon("minecraft:zombified_piglin", [0.5, 100.0, 0.5], None, 0.0).unwrap();
+        let piglin = &nether.mobs.zombies()[0];
+        assert_eq!(piglin.zombie.kind, minecraftoss_entities::zombie::ZombieKind::ZombifiedPiglin);
+        assert!(matches!(piglin.zombie.main_hand.as_deref(), Some("minecraft:golden_sword" | "minecraft:golden_spear")), "{:?}", piglin.zombie.main_hand);
+        assert!(piglin.zombie.armor.iter().all(Option::is_none), "no armour");
+        let id = piglin.id;
+        nether.mobs.zombie_mut(id).unwrap().ai.as_deref_mut().unwrap().state.enderman.anger_end_time = 1234;
+        let tags = crate::server_mobs::mob_tags(&nether.mobs, |_| true, &nether.mob_tags);
+        let (_, tag) = tags.iter().find(|(tag_id, _)| *tag_id == id).expect("the piglin is saved");
+        assert_eq!(tag.get("anger_end_time").and_then(minecraftoss_core::nbt::Tag::as_i64), Some(1234));
+        let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+        let back = crate::server_mobs::spawn_saved(&mut loaded, tag).expect("zombified piglins load");
+        let back = loaded.zombie_mut(back).unwrap();
+        assert_eq!(back.zombie.kind, minecraftoss_entities::zombie::ZombieKind::ZombifiedPiglin);
+        assert_eq!(back.zombie.main_hand, nether.mobs.zombies()[0].zombie.main_hand);
+        assert_eq!(back.ai.as_ref().unwrap().state.enderman.anger_end_time, 1234);
+        let mut overworld = level_of(TerrainGenerator::overworld(registries.clone(), 0).unwrap(), "minecraft:overworld", -64, 384);
+        let obsidian = Block::new("minecraft:obsidian");
+        for (x, y) in [(-1, 200), (0, 200), (1, 200), (2, 200), (-1, 201), (-1, 202), (-1, 203), (2, 201), (2, 202), (2, 203), (-1, 204), (0, 204), (1, 204), (2, 204)] {
+            overworld.player_edit_block((x, y, 0), Some(&obsidian), PlayerEdit::Place);
+        }
+        let portal = Block::new("minecraft:nether_portal").with("axis", "x");
+        for x in 0..=1 {
+            for y in 201..=203 {
+                overworld.player_edit_block((x, y, 0), Some(&portal), PlayerEdit::Place);
+            }
+        }
+        let spawned = |server: &mut ServerSim, difficulty: i32, player: [f64; 3]| {
+            server.set_players(&[player], difficulty);
+            let candidate = minecraftoss_entities::tempt::PlayerCandidate {
+                id: 0,
+                position: glam::DVec3::from_array(player),
+                eye_height: 1.62,
+                main_hand_cow_food: false,
+                offhand_cow_food: false,
+                main_hand_pig_food: false,
+                offhand_pig_food: false,
+                main_hand_chicken_food: false,
+                offhand_chicken_food: false,
+                main_hand_carrot_on_a_stick: false,
+                offhand_carrot_on_a_stick: false,
+                main_hand_wolf_interest: false,
+                offhand_wolf_interest: false,
+                main_hand_horse_tempt: false,
+                offhand_horse_tempt: false,
+                alive: true,
+                spectator: false,
+                attackable: true,
+            };
+            server.prepare_spawning(&[candidate]);
+            server.level.spawned.clear();
+            for _ in 0..20000 {
+                server.level.nether_portal_random_tick(minecraftoss_core::BlockPos::new(1, 203, 0));
+            }
+            std::mem::take(&mut server.level.spawned)
+        };
+        let near = [8.5, 200.0, 8.5];
+        let piglins = spawned(&mut overworld, 3, near);
+        assert!((10..=60).contains(&piglins.len()), "about 30 in 20000 random ticks on hard: {}", piglins.len());
+        for tag in &piglins {
+            assert_eq!(tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str), Some("minecraft:zombified_piglin"));
+            assert_eq!(tag.get("PortalCooldown").and_then(minecraftoss_core::nbt::Tag::as_i64), Some(300));
+            let pos = tag.get("Pos").and_then(minecraftoss_core::nbt::Tag::as_list).unwrap().iter().filter_map(minecraftoss_core::nbt::Tag::as_f64).collect::<Vec<_>>();
+            assert_eq!(pos, vec![1.5, 201.0, 0.5], "on the portal's floor");
+        }
+        assert!(spawned(&mut overworld, 0, near).is_empty(), "none in peaceful");
+        assert!(spawned(&mut overworld, 3, [500.0, 200.0, 500.0]).is_empty(), "none with nobody near");
+    }
+
+    #[test]
     fn nether_lava_spreads_farther_and_faster_and_the_nether_sea_is_at_32() {
         let Ok(paths) = DataPaths::discover() else { return };
         let Ok(registries) = Registries::load(&paths) else { return };

@@ -48,6 +48,7 @@ pub enum MonsterKind {
     IronGolem,
     /// `Wolf`: a tamable animal that hunts (`wolf_ai`).
     Wolf,
+    ZombifiedPiglin,
 }
 
 impl MonsterKind {
@@ -63,6 +64,7 @@ impl MonsterKind {
             Self::Witch => &WITCH_GOAL_NAMES,
             Self::IronGolem => &crate::golem_ai::GOAL_NAMES,
             Self::Wolf => &crate::wolf_ai::GOAL_NAMES,
+            Self::ZombifiedPiglin => &ZOMBIFIED_PIGLIN_GOAL_NAMES,
         }
     }
 
@@ -77,6 +79,7 @@ impl MonsterKind {
             Self::Witch => &WITCH_TARGET_NAMES,
             Self::IronGolem => &crate::golem_ai::TARGET_NAMES,
             Self::Wolf => &crate::wolf_ai::TARGET_NAMES,
+            Self::ZombifiedPiglin => &ZOMBIFIED_PIGLIN_TARGET_NAMES,
         }
     }
 }
@@ -108,6 +111,9 @@ pub const ZOMBIE_TARGET_NAMES: [&str; 5] = [
     "NearestAttackableTargetGoal",
     "NearestAttackableTargetGoal",
 ];
+pub const ZOMBIFIED_PIGLIN_GOAL_NAMES: [&str; 6] =
+    ["ZombieAttackTurtleEggGoal", "LookAtPlayerGoal", "RandomLookAroundGoal", "SpearUseGoal", "ZombieAttackGoal", "WaterAvoidingRandomStrollGoal"];
+pub const ZOMBIFIED_PIGLIN_TARGET_NAMES: [&str; 3] = ["HurtByTargetGoal", "NearestAttackableTargetGoal", "ResetUniversalAngerTargetGoal"];
 
 pub const SKELETON_GOAL_NAMES: [&str; 7] = [
     "RestrictSunGoal",
@@ -223,6 +229,8 @@ pub struct EndermanState {
     /// A block the goals took or put down this tick, for the world to
     /// change (none for air).
     pub block_change: Option<((i32, i32, i32), Option<minecraftoss_player::Block>)>,
+    pub first_anger_sound_in: i32,
+    pub alert_in: i32,
 }
 
 impl Default for EndermanState {
@@ -236,6 +244,8 @@ impl Default for EndermanState {
             anger_target: None,
             teleports: Vec::new(),
             block_change: None,
+            first_anger_sound_in: 0,
+            alert_in: 0,
         }
     }
 }
@@ -576,7 +586,12 @@ impl MonsterGoalContext {
 
     /// `Mob.setTarget` through `asValidTarget`.
     pub(crate) fn set_target(&mut self, target: Option<Target>) {
-        self.target = target.filter(|&t| self.info(t).is_some_and(|info| self.can_attack(info)));
+        let target = target.filter(|&t| self.info(t).is_some_and(|info| self.can_attack(info)));
+        if self.kind == MonsterKind::ZombifiedPiglin && self.target.is_none() && target.is_some() {
+            self.enderman.first_anger_sound_in = self.random.next_int(21) as i32;
+            self.enderman.alert_in = 80 + self.random.next_int(41) as i32;
+        }
+        self.target = target;
         self.target_set(target.is_some());
     }
 
@@ -668,7 +683,7 @@ impl MonsterGoalContext {
         let allowed = match (self.kind, self.target().is_some()) {
             (_, false) => 0.0,
             (MonsterKind::Creeper, true) => self.health - 1.0,
-            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf, true) => {
+            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin, true) => {
                 let sacrifice = (self.health - self.max_health * 0.33) as i32 - (3 - self.difficulty) * 4;
                 sacrifice.max(0) as f32
             }
@@ -736,7 +751,7 @@ impl MonsterAi {
         walk.can_float = matches!(kind, MonsterKind::Creeper | MonsterKind::Spider | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::Wolf);
         let follow_range = match kind {
             MonsterKind::Creeper | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Witch | MonsterKind::IronGolem => FOLLOW_RANGE,
-            MonsterKind::Zombie => ZOMBIE_FOLLOW_RANGE,
+            MonsterKind::Zombie | MonsterKind::ZombifiedPiglin => ZOMBIE_FOLLOW_RANGE,
             MonsterKind::Enderman => crate::enderman::FOLLOW_RANGE,
             MonsterKind::Wolf => crate::wolf::FOLLOW_RANGE,
         };
@@ -757,6 +772,9 @@ impl MonsterAi {
             walk.max_up_step = 1.0;
             walk.walk_target = WalkTarget::Zero;
         }
+        if kind == MonsterKind::ZombifiedPiglin {
+            walk.set_malus(PathType::Lava, 8.0);
+        }
         if kind == MonsterKind::IronGolem {
             // A `PathfinderMob` with a one-block step (`STEP_HEIGHT`) whose
             // spots are all alike (`getWalkTargetValue` 0).
@@ -766,6 +784,7 @@ impl MonsterAi {
         let (goals, targets, eye_height) = match kind {
             MonsterKind::Creeper => (creeper_goals(), creeper_targets(), body.height * 0.85),
             MonsterKind::Zombie => (zombie_goals(), zombie_targets(), 1.74),
+            MonsterKind::ZombifiedPiglin => (zombified_piglin_goals(), zombified_piglin_targets(), 1.79),
             MonsterKind::Skeleton => (skeleton_goals(), skeleton_targets(), 1.74),
             MonsterKind::Spider => (spider_goals(), spider_targets(), 0.65),
             MonsterKind::Slime => (slime_goals(), slime_targets(), 0.325),
@@ -1397,6 +1416,51 @@ pub fn zombie_targets() -> GoalSelector<MonsterGoalContext> {
     selector.add(3, NearestTargetGoal { interval: 5, prey: Prey::Golem, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
     selector.add(5, NearestTargetGoal { interval: 5, prey: Prey::Absent, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
     selector
+}
+
+pub fn zombified_piglin_goals() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = GoalSelector::default();
+    selector.add(4, TurtleEggGoal);
+    selector.add(8, LookAtPlayerGoal { range: 8.0 });
+    selector.add(8, RandomLookGoal);
+    selector.add(1, NeverGoal { controls: &[Control::Move, Control::Look] });
+    selector.add(2, MeleeAttackGoal { hits: true, raises_arms: true, follow_unseen: false, gives_up_in_light: false });
+    selector.add(7, StrollGoal { speed: 1.0, probability: 0.001 });
+    selector
+}
+
+pub fn zombified_piglin_targets() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = GoalSelector::default();
+    selector.add(1, HurtByTargetGoal { timestamp: 0, unseen_ticks: 0, target_mob: None, alert_others: true });
+    selector.add(2, NearestTargetGoal { interval: 5, prey: Prey::AngryPlayer, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
+    selector.add(3, NeverGoal { controls: &[] });
+    selector
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PiglinStep {
+    pub alert: Option<Target>,
+    pub anger_sound: bool,
+}
+
+pub fn zombified_piglin_step(ctx: &mut MonsterGoalContext, world: &dyn World) -> PiglinStep {
+    let mut step = PiglinStep::default();
+    if ctx.angry() && ctx.enderman.first_anger_sound_in > 0 {
+        ctx.enderman.first_anger_sound_in -= 1;
+        step.anger_sound = ctx.enderman.first_anger_sound_in == 0;
+    }
+    update_enderman_anger(ctx);
+    if let Some(target) = ctx.target() {
+        if ctx.enderman.alert_in > 0 {
+            ctx.enderman.alert_in -= 1;
+        } else {
+            if ctx.sees(world, target) {
+                step.alert = Some(target.target);
+            }
+            ctx.enderman.alert_in = 80 + ctx.random.next_int(41) as i32;
+        }
+    }
+    step
 }
 
 #[derive(Clone)]

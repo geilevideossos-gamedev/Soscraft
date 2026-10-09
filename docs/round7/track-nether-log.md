@@ -310,3 +310,34 @@ Previous commit: dfb165d1
 - **Decisions:** structures referencing a chunk are checked in registry order (vanilla walks a hash map, so any order is as good). Blazes, magma cubes, zombified piglins and wither skeletons the fortress draws wait dormant until their own entries (16 to 18, and N4 for blazes) make them live.
 - **Test steps** (after entry 18, with `IW4L_MINECRAFT_DIMENSION=the_nether`; see the group summary): in a fortress at night-like darkness, wither skeletons, zombified piglins and magma cubes appear on its bridges and halls.
 - **Kit:** none.
+
+### 16. Minecraft zombified piglins (E2-20)
+
+Previous commit: cdcaf137
+
+- **Changed** (all checked with javap on the 26.3 jar: `ZombifiedPiglin`, `Zombie`, `NetherPortalBlock`, `AdultPiglinModel`, `BabyPiglinModel`, `AbstractPiglinModel`, `PlayerModel.createMesh`, `ZombifiedPiglinRenderer`):
+  - Vendored `third_party/minecraftoss/entities` (MinecraftOSS patch):
+    - `zombie.rs`: `ZombieKind::ZombifiedPiglin`: 0.6 x 1.95 with eyes at 1.79 (a baby's at 0.78), 5 attack damage, never converts in water, sounds `entity.zombified_piglin.*`, steps like a zombie. It stays sun sensitive as `Zombie` is: its fire immunity (entry 14) puts the fire out, and a helmet still wears in daylight.
+    - `monster_ai.rs`: `MonsterKind::ZombifiedPiglin`: `Zombie.registerGoals` with `ZombifiedPiglin.addBehaviourGoals` (the spear goal at 1, `ZombieAttackGoal` at 2, the stroll at 7), and as targets `HurtByTargetGoal` with `setAlertOthers`, players only when it is angry at them (`NearestAttackableTargetGoal(Player, 10, true, false, isAngryAt)`), and `ResetUniversalAngerTargetGoal` (universal anger is off). Lava costs 8 on its paths. `zombified_piglin_step` is `customServerAiStep`: the first anger sound 0 to 20 ticks after it first takes a target (`entity.zombified_piglin.angry` at twice the volume and 1.8 times the pitch), `NeutralMob.updatePersistentAnger` (20 to 39 seconds, as the enderman's), and `maybeAlertOthers` every 4 to 6 seconds while it sees its target.
+    - `world.rs`: the zombie tick runs that step, adds the 0.05 speed of an angry adult, says `entity.zombified_piglin.angry` instead of its ambient sound while angry, alerts the piglins within its follow range (35) and 10 up or down that have no target (only its own kind, as `getEntitiesOfClass(ZombifiedPiglin)`), and hits for 5 plus the golden sword's 3. A player's kill may drop its weapon (8.5%, worn at random as a bow is) and its experience counts 1 to 3 more for each item it wears or holds (`Mob.getBaseExperienceReward`).
+  - Vendored `third_party/minecraftoss/world` (MinecraftOSS patch):
+    - Natural spawning knows the type: fire immune, `checkZombifiedPiglinSpawnRules` (not in peaceful, not on a nether wart block, no darkness test), the monster walk target, follow range 35. `finalizeSpawn` is the zombie's with `ZombifiedPiglin.populateDefaultEquipmentSlots` (a golden spear one time in 20, else a golden sword, and no armour) and `randomizeReinforcementsChance` (0, with no draw).
+    - Portal piglins (`NetherPortalBlock.randomTick`, in `level/random_tick.rs` and `level/spawning.rs`): with `spawn_mobs` and `spawn_monsters` on, not in peaceful, where the dimension's `gameplay/nether_portal_spawns_piglin` holds (the overworld), `nextInt(2000) < difficulty`, a player within 128 blocks of the chunk, it walks down the portal to its floor and, when a zombified piglin may spawn on that block, summons one standing on it (`EntitySpawnReason.STRUCTURE`, a random yaw) with `PortalCooldown` 300.
+  - `minecraft_terrain/src/server_mobs.rs`: `minecraft:zombified_piglin` is simulated (spawn eggs, `/summon`, natural spawns), and its `anger_end_time` is loaded and saved.
+  - New `minecraft_terrain/src/piglin_render.rs`: `AdultPiglinModel` (the player mesh with its jacket, sleeves and trousers, the 10-wide piglin head with snout and tusks, and the ears) and `BabyPiglinModel`, with `zombified_piglin.png` and `zombified_piglin_baby.png` from the pack, the zombie arms (`AnimationUtils.animateZombieArms`), the ears' flap (`AbstractPiglinModel.setupAnim`: 30 degrees for adults, 5 for babies), the held weapon and adult armour. `zombie_render.rs` hands the kind to it; `mesh.rs` loads the two textures.
+- **Tests:** `world` (entities): `a_zombified_piglin_leaves_players_alone_until_one_hits_it_and_then_its_group_turns_on_them` (a hit piglin and one 8 blocks off turn on the player, one 60 blocks off stays calm), `a_zombified_piglin_puts_out_its_fire_and_hits_harder_with_its_golden_sword`. `piglin_render`: `a_zombified_piglin_has_the_piglin_head_ears_and_the_player_body_with_its_outer_layer` (16 cubes and 384 vertices for an adult, 9 cubes for a baby), `its_ears_hang_out_at_thirty_degrees_and_flap_as_it_walks`. `server`: `zombified_piglins_hold_gold_keep_their_anger_and_come_out_of_overworld_portals` (a summoned one holds gold and no armour, its anger survives a save, an overworld portal on hard makes about 30 in 20000 random ticks standing on the portal floor with a portal cooldown of 300, none in peaceful or with nobody near).
+- **Decisions:**
+  - Who a piglin was angry at is not saved, as for endermen, golems and wolves here; only how long its anger lasts. After a reload it calms down unless hit again.
+  - Only the zombified piglin's golden sword adds to its damage; the other zombies' held weapons stay as before (a gap of the zombie port, not of this entry).
+  - "A player close enough for spawning" for portal piglins is any non-spectator player within 128 blocks of the chunk's centre (`ChunkMap.anyPlayerCloseEnoughForSpawningInternal`), without the distance manager's tri-state shortcut.
+- **Test steps** (any world; creative is easiest for the eggs):
+  1. In the overworld, `/difficulty normal`, use 4 zombified piglin spawn eggs close together and walk among them: they ignore you, golden swords in hand. **Screenshot 11.**
+  2. Hit one with the sword (or shoot it): all four turn on you with an angry grunt and chase you for a while. **Screenshot 12.**
+  3. Push one into lava or set it on fire with flint and steel: it does not burn or lose health.
+  4. Kill them in survival: rotten flesh and gold nuggets drop, sometimes a gold ingot or the sword.
+  5. Portal piglins: build and light a nether portal, `/difficulty hard` and `/gamerule random_tick_speed 1000`, stand near: within about a minute zombified piglins step out of the portal. Set `/gamerule random_tick_speed 3` again. **Screenshot 13.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:zombified_piglin_spawn_egg*4,minecraft:diamond_sword,minecraft:lava_bucket,minecraft:flint_and_steel,minecraft:obsidian*14
+```

@@ -599,6 +599,7 @@ pub struct MobDeath {
 
 /// `Items.BOW`'s durability.
 const BOW_DURABILITY: u32 = 384;
+const GOLDEN_SWORD_DURABILITY: u32 = 32;
 
 /// A reported death: its order and what its drops see.
 fn death_of(id: u64, damage: &mut DamageState, kind: &'static str, table: Option<&'static str>, context: EntityLootContext) -> Option<(u64, MobDeath)> {
@@ -634,6 +635,14 @@ pub enum Voice {
 /// from an unseeded random): its ID in the low bits of a version-4 UUID.
 fn fallback_uuid(id: u64) -> u128 {
     (0x4000u128 << 64) | (0x8000_0000_0000_0000u128) | u128::from(id)
+}
+
+fn zombie_attack_damage(zombie: &Zombie) -> f32 {
+    let weapon = match (zombie.kind, zombie.main_hand.as_deref()) {
+        (ZombieKind::ZombifiedPiglin, Some("minecraft:golden_sword")) => 3.0,
+        _ => 0.0,
+    };
+    zombie.kind.attack_damage() + weapon
 }
 
 /// `LivingEntity.getVoicePitch`: two draws from the mob's random, higher
@@ -899,6 +908,7 @@ impl ZombieKind {
             Self::Husk => "entity.husk.step",
             Self::ZombieVillager => "entity.zombie_villager.step",
             Self::Drowned => "entity.drowned.step",
+            Self::ZombifiedPiglin => "entity.zombie.step",
         }));
         if self == Self::Drowned {
             sounds.swim = "entity.drowned.swim";
@@ -3143,7 +3153,8 @@ impl EntityWorld {
     /// A zombie with its whole goal and target selectors
     /// (`Zombie.registerGoals`), facing `yaw`.
     pub fn spawn_zombie_active(&mut self, zombie: Zombie, yaw: f32) -> u64 {
-        let mut ai = MonsterAi::of_kind(crate::monster_ai::MonsterKind::Zombie, &zombie.body, yaw);
+        let kind = if zombie.kind == ZombieKind::ZombifiedPiglin { crate::monster_ai::MonsterKind::ZombifiedPiglin } else { crate::monster_ai::MonsterKind::Zombie };
+        let mut ai = MonsterAi::of_kind(kind, &zombie.body, yaw);
         ai.state.eye_height = zombie.eye_height();
         ai.state.max_health = 20.0;
         let id = self.spawn_zombie_internal(zombie, false, false);
@@ -3528,7 +3539,9 @@ impl EntityWorld {
             let half = f64::from(b.width / 2.0);
             let q = b.position;
             let touches = q.x - half < max.x && q.x + half > min.x && q.y < max.y && q.y + f64::from(b.height) > min.y && q.z - half < max.z && q.z + half > min.z;
-            if touches && ai.state.target().is_none() {
+            if touches && ai.state.target().is_none() && kind == ZombieKind::ZombifiedPiglin {
+                ai.state.set_target(Some(attacker));
+            } else if touches && ai.state.target().is_none() {
                 ai.state.target = Some(attacker);
             }
         }
@@ -3625,6 +3638,25 @@ impl EntityWorld {
             // (`Zombie.getBaseExperienceReward`).
             if earns(&death, true) {
                 death.experience = if e.zombie.baby { 12 } else { 5 };
+            }
+            if e.zombie.kind == ZombieKind::ZombifiedPiglin {
+                let worn = usize::from(e.zombie.main_hand.is_some()) + e.zombie.armor.iter().flatten().count();
+                if earns(&death, true) {
+                    for _ in 0..worn {
+                        death.experience += 1 + e.random.next_int(3) as i32;
+                    }
+                }
+                if mob_drops && death.context.killed_by_player && e.zombie.main_hand.is_some() && e.random.next_float() < 0.085 {
+                    let item = e.zombie.main_hand.take().unwrap_or_default();
+                    let mut stack = ItemStack::new(&item, 1);
+                    stack.max = 1;
+                    if item == "minecraft:golden_sword" {
+                        let spread = e.random.next_int(GOLDEN_SWORD_DURABILITY - 3);
+                        let wear = GOLDEN_SWORD_DURABILITY - e.random.next_int(1 + spread);
+                        stack.components = Some(serde_json::json!({ "minecraft:damage": wear }));
+                    }
+                    death.equipment.push(stack);
+                }
             }
             deaths.push((order, death));
         }
@@ -4669,6 +4701,7 @@ impl EntityWorld {
                     // The level's points of interest, lent to its goals.
                     let mut lent_pois = Some(std::mem::take(&mut self.pois));
                     let mut alert = None;
+                    let mut piglin_alert = None;
                     let mut pending_mob = None;
                     let (pending_attack, pending_player, conversion_due, stepped) = {
                         let entity = self.zombie_mut(id).unwrap();
@@ -4700,7 +4733,8 @@ impl EntityWorld {
                                 entity.ambient_sound_time = -80;
                                 let (a, b) = (entity.random.next_float(), entity.random.next_float());
                                 let base = if entity.zombie.baby { entity.zombie.kind.baby_voice() } else { 1.0 };
-                                let voice = Voice::Ambient((a - b) * 0.2 + base);
+                                let angry = entity.zombie.kind == ZombieKind::ZombifiedPiglin && entity.ai.as_ref().is_some_and(|ai| ai.state.angry());
+                                let voice = if angry { Voice::Event("entity.zombified_piglin.angry", 1.0, (a - b) * 0.2 + base) } else { Voice::Ambient((a - b) * 0.2 + base) };
                             entity.voices.push((voice, entity.position()));
                             } else {
                                 entity.ambient_sound_time += 1;
@@ -4723,7 +4757,9 @@ impl EntityWorld {
                                     .map(|v| crate::monster_ai::MobCandidate { id: v.id, position: v.position, eye_height: v.eye_height, width: v.width, height: v.height, alive: v.alive, kind: "minecraft:villager" })
                                     .collect();
                                 // `Zombie.createAttributes`: 0.23 speed, half again for babies.
-                                let speed = entity.effects.movement_speed(f64::from(0.23_f32) * if entity.zombie.baby { 1.5 } else { 1.0 });
+                                let piglin = entity.zombie.kind == ZombieKind::ZombifiedPiglin;
+                                let attacking = if piglin && !entity.zombie.baby && entity.ai.as_ref().is_some_and(|ai| ai.state.angry()) { 0.05 } else { 0.0 };
+                                let speed = entity.effects.movement_speed(f64::from(0.23_f32) * if entity.zombie.baby { 1.5 } else { 1.0 } + attacking);
                                 let step = MonsterStep { players, villagers: &mob_villagers, game_time, difficulty, movement_speed: speed, sounds: entity.zombie.kind.movement_sounds() };
                                 let ai = entity.ai.as_deref_mut().unwrap();
                                 ai.state.mob_griefing = mob_griefing;
@@ -4734,6 +4770,16 @@ impl EntityWorld {
                                 // The goals hit before the zombie moves.
                                 let position = entity.zombie.body.position;
                                 let landed = monster_ai_step(ai, &mut entity.zombie.body, entity.zombie.health, &mut entity.random, &mut entity.voices, &mut entity.no_action_time, entity.previous_position, entity.tick_count, entity.id, world, &step);
+                                if piglin {
+                                    ai.state.random = std::mem::take(&mut entity.random);
+                                    let stepped = crate::monster_ai::zombified_piglin_step(&mut ai.state, world);
+                                    entity.random = std::mem::take(&mut ai.state.random);
+                                    if stepped.anger_sound {
+                                        let pitch = voice_pitch(&mut entity.random, entity.zombie.baby) * 1.8;
+                                        entity.voices.push((Voice::Event("entity.zombified_piglin.angry", 2.0, pitch), entity.zombie.body.position));
+                                    }
+                                    piglin_alert = stepped.alert;
+                                }
                                 lent_pois = ai.state.pois.take();
                                 // The renderer, the census and the gates read the zombie's own fields.
                                 entity.yaw = ai.yaw;
@@ -4814,11 +4860,13 @@ impl EntityWorld {
                                 let (clock, inhabited, moon) = world.difficulty_inputs((p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32));
                                 140 * regional_difficulty(difficulty, clock, inhabited, moon) as i32
                             });
-                        self.player_hits.push(PlayerHit { player_id, damage: 3.0, kind: PlayerHitKind::Melee { attacker, hunger_ticks, lift: 0.0 }, source: Some(id) });
+                        let damage = self.zombies.iter().find(|e| e.id == id).map_or(3.0, |e| zombie_attack_damage(&e.zombie));
+                        self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Melee { attacker, hunger_ticks, lift: 0.0 }, source: Some(id) });
                     }
+                    let damage = self.zombies.iter().find(|e| e.id == id).map_or(3.0, |e| zombie_attack_damage(&e.zombie));
                     if let Some((victim_id, attacker_position)) = pending_attack {
                         if let Some(victim) = self.villager_mut(victim_id) {
-                            let result = victim.hurt_from(3.0, "minecraft:mob_attack", Some(id), game_time);
+                            let result = victim.hurt_from(damage, "minecraft:mob_attack", Some(id), game_time);
                             if result.applied {
                                 victim.knockback_from(attacker_position);
                                 self.villager_hurt_by(victim_id, id);
@@ -4827,7 +4875,7 @@ impl EntityWorld {
                     }
                     self.pois = lent_pois.expect("the points of interest come back");
                     if let Some((victim, attacker_position)) = pending_mob {
-                        self.mob_hits_mob(id, victim, 3.0, attacker_position, 0.0);
+                        self.mob_hits_mob(id, victim, damage, attacker_position, 0.0);
                     }
                     if stepped {
                         self.push_entities(EntityKey::Zombie(id), &*world, game_time, ticks);
@@ -4840,6 +4888,9 @@ impl EntityWorld {
                     }
                     if let Some(attacker) = alert {
                         self.alert_zombies(id, attacker);
+                    }
+                    if let Some(target) = piglin_alert {
+                        self.alert_zombies(id, target);
                     }
                     if conversion_due {
                         self.convert_drowning_zombie(id);
@@ -6839,6 +6890,80 @@ mod tests {
             world.tick_with_players(&mut EmptyWorld, &[player]);
             assert_eq!(world.zombies()[0].target_player_id, attackable.then_some(7));
         }
+    }
+
+    fn candidate(id: u64, position: DVec3) -> PlayerCandidate {
+        PlayerCandidate {
+            id,
+            position,
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        }
+    }
+
+    struct Floor;
+    impl World for Floor {
+        fn block(&self, pos: minecraftoss_player::Pos) -> Option<minecraftoss_player::Block> {
+            (pos.1 < 1).then(|| minecraftoss_player::Block::new("minecraft:stone"))
+        }
+        fn set_block(&mut self, _: minecraftoss_player::Pos, _: Option<minecraftoss_player::Block>) {}
+    }
+
+    fn zombified_piglin(x: f64) -> Zombie {
+        let mut piglin = Zombie::new(DVec3::new(x, 1.0, 0.5));
+        piglin.kind = ZombieKind::ZombifiedPiglin;
+        piglin
+    }
+
+    #[test]
+    fn a_zombified_piglin_leaves_players_alone_until_one_hits_it_and_then_its_group_turns_on_them() {
+        let mut world = EntityWorld::default();
+        let hit = world.spawn_zombie_active(zombified_piglin(0.5), 0.0);
+        let near = world.spawn_zombie_active(zombified_piglin(8.5), 0.0);
+        let far = world.spawn_zombie_active(zombified_piglin(60.5), 0.0);
+        let player = candidate(7, DVec3::new(0.5, 1.0, 3.5));
+        for _ in 0..40 {
+            world.tick_with_players(&mut Floor, &[player]);
+        }
+        assert!(world.zombies().iter().all(|e| e.target_player_id.is_none()), "zombified piglins are neutral");
+        assert!(world.player_blast(Some(7), hit, 1.0, DVec3::new(0.5, 1.0, 3.5), 0.0).unwrap().applied);
+        for _ in 0..4 {
+            world.tick_with_players(&mut Floor, &[player]);
+        }
+        let target = |id: u64| world.zombies().iter().find(|e| e.id == id).unwrap().target_player_id;
+        assert_eq!((target(hit), target(near), target(far)), (Some(7), Some(7), None));
+        let angry = world.zombies().iter().find(|e| e.id == near).unwrap().ai.as_ref().unwrap().state.angry();
+        assert!(angry, "an alerted piglin is angry at the player too");
+    }
+
+    #[test]
+    fn a_zombified_piglin_puts_out_its_fire_and_hits_harder_with_its_golden_sword() {
+        let mut world = EntityWorld::default();
+        let mut piglin = zombified_piglin(0.5);
+        piglin.body.fire_ticks = 100;
+        piglin.main_hand = Some("minecraft:golden_sword".to_owned());
+        let id = world.spawn_zombie_active(piglin, 0.0);
+        world.tick(&mut EmptyWorld);
+        let entity = world.zombie_mut(id).unwrap();
+        assert_eq!((entity.zombie.body.fire_ticks, entity.zombie.health), (0, 20.0));
+        assert_eq!(zombie_attack_damage(&entity.zombie), 8.0);
+        assert_eq!(zombie_attack_damage(&Zombie::new(DVec3::ZERO)), 3.0);
+        assert_eq!((entity.zombie.eye_height(), entity.zombie.kind.type_id()), (1.79, "minecraft:zombified_piglin"));
+        assert_eq!(world.entity_type(id), Some("minecraft:zombified_piglin"));
     }
 
     #[test]

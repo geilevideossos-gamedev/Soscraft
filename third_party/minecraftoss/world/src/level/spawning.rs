@@ -221,6 +221,48 @@ impl Level<'_> {
     }
 }
 
+impl Level<'_> {
+    pub fn nether_portal_random_tick(&mut self, pos: BlockPos) {
+        let Some(natural) = &self.natural_spawning else { return };
+        if !natural.spawn_mobs || !natural.spawn_monsters || self.difficulty == 0 {
+            return;
+        }
+        let biome = SpawnLevel::biome(self, pos);
+        if !self.environment_flag("gameplay/nether_portal_spawns_piglin", biome.0) {
+            return;
+        }
+        if self.random.next_i32_bound(2000) >= self.difficulty {
+            return;
+        }
+        let center = [f64::from(pos.x & !15) + 8.0, f64::from(pos.z & !15) + 8.0];
+        let near = natural.players.iter().any(|p| !p.spectator && (p.pos[0] - center[0]).powi(2) + (p.pos[2] - center[1]).powi(2) < 128.0 * 128.0);
+        if !near {
+            return;
+        }
+        let portal = self.block(pos);
+        let mut floor = pos;
+        while self.block(floor) == portal {
+            floor = floor.below();
+        }
+        let spawns = natural.spawns.clone();
+        if !spawns.valid_spawn_block(self.block(floor), "minecraft:zombified_piglin") {
+            return;
+        }
+        let at = floor.above();
+        let y_rot = self.random.next_f32() * 360.0;
+        let y_rot = y_rot - 360.0 * ((y_rot + 180.0) / 360.0).floor();
+        match self.summon_mob("minecraft:zombified_piglin", [f64::from(at.x) + 0.5, f64::from(at.y), f64::from(at.z) + 0.5], None, y_rot) {
+            Ok(mut tag) => {
+                if let Tag::Compound(map) = &mut tag {
+                    map.insert("PortalCooldown".to_owned(), Tag::Int(300));
+                }
+                self.spawned.push(tag);
+            }
+            Err(e) => self.unsupported.push(format!("portal piglin: {e}")),
+        }
+    }
+}
+
 pub fn structures_of(worldgen: &'static crate::chunk_map::WorldGen) -> StructureFinder {
     let cache = std::sync::Mutex::new(std::collections::HashMap::new());
     Arc::new(move |pos: BlockPos| {

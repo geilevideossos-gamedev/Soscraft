@@ -230,6 +230,7 @@ enum Rules {
     Stray,
     /// `Slime.checkSlimeSpawnRules` (swamp surfaces, slime chunks).
     Slime,
+    ZombifiedPiglin,
     /// `Bat.checkBatSpawnRules` (below the surface, in the dark).
     Bat,
     /// `GlowSquid.checkGlowSquidSpawnRules` (deep, dark water).
@@ -284,6 +285,7 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         // Monsters (`EntityTypes` sizes; `Monster.checkMonsterSpawnRules`).
         "zombie" | "zombie_villager" | "witch" | "husk" => (0.6, 1.95, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "skeleton" | "stray" | "bogged" | "parched" => (0.6, 1.99, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        "zombified_piglin" => (0.6, 1.95, Placement::OnGround, MotionBlockingNoLeaves, true, false),
         // A husk's mount (its room is tried; it never spawns on its own).
         "camel_husk" => (1.7, 2.375, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "creeper" => (0.6, 1.7, Placement::OnGround, MotionBlockingNoLeaves, false, false),
@@ -296,7 +298,7 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         _ => return None,
     };
     let short = kind.trim_start_matches("minecraft:");
-    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "enderman" | "husk" | "stray" | "bogged" | "parched");
+    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin");
     let rules = match short {
         _ if animal_rules => Rules::Animal,
         "wolf" => Rules::SpawnableOn("minecraft:wolves_spawnable_on"),
@@ -306,6 +308,7 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "zombie_horse" => Rules::Monster,
         "husk" | "parched" => Rules::SurfaceMonster,
         "stray" => Rules::Stray,
+        "zombified_piglin" => Rules::ZombifiedPiglin,
         "camel_husk" => Rules::Other,
         "slime" => Rules::Slime,
         "bat" => Rules::Bat,
@@ -645,6 +648,10 @@ impl CreatureSpawns {
     /// `BlockState.isValidSpawn` for a type: the plain animal answer, with
     /// the block predicates that name types (leaves for ocelots and
     /// parrots, ice for polar bears, magma for fire-immune mobs).
+    pub fn valid_spawn_block(&self, state: BlockStateId, kind: &str) -> bool {
+        type_info(kind).is_some_and(|info| self.is_valid_spawn(&self.registries, state, kind, &info))
+    }
+
     fn is_valid_spawn(&self, registries: &Registries, state: BlockStateId, kind: &str, info: &TypeInfo) -> bool {
         let name = registries.blocks.block(registries.blocks.block_of(state)).name.as_str();
         if registries.block_in_tag(state, self.leaves) && registries.blocks.block(registries.blocks.block_of(state)).is_a("LeavesBlock") {

@@ -187,6 +187,13 @@ impl Level<'_> {
         sky.environment.value_named(name, &sample).as_f32()
     }
 
+    pub(super) fn environment_flag(&self, name: &str, biome: u16) -> bool {
+        let Some(sky) = &self.sky else { return false };
+        let clocks = |clock: &str| sky.clocks.get(clock).copied().unwrap_or(0);
+        let sample = Sample { clock_ticks: &clocks, rain_level: sky.weather.rain_level, thunder_level: sky.weather.thunder_level, biome_weights: None, biome };
+        sky.environment.value_named(name, &sample).as_bool()
+    }
+
     /// The `visual/moon_phase` attribute's index (`MoonPhase.index`).
     pub(super) fn moon_phase(&self) -> usize {
         const PHASES: [&str; 8] =

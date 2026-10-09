@@ -13,6 +13,7 @@ pub enum ZombieKind {
     Husk,
     /// `ZombieVillager`: never drowns.
     ZombieVillager,
+    ZombifiedPiglin,
 }
 
 impl ZombieKind {
@@ -23,6 +24,7 @@ impl ZombieKind {
             Self::Drowned => "minecraft:drowned",
             Self::Husk => "minecraft:husk",
             Self::ZombieVillager => "minecraft:zombie_villager",
+            Self::ZombifiedPiglin => "minecraft:zombified_piglin",
         }
     }
 
@@ -33,6 +35,7 @@ impl ZombieKind {
             Self::Drowned => "drowned",
             Self::Husk => "husk",
             Self::ZombieVillager => "zombie_villager",
+            Self::ZombifiedPiglin => "zombified_piglin",
         }
     }
 
@@ -47,8 +50,12 @@ impl ZombieKind {
         match self {
             Self::Zombie => Some(Self::Drowned),
             Self::Husk => Some(Self::Zombie),
-            Self::Drowned | Self::ZombieVillager => None,
+            Self::Drowned | Self::ZombieVillager | Self::ZombifiedPiglin => None,
         }
+    }
+
+    pub fn attack_damage(self) -> f32 {
+        if self == Self::ZombifiedPiglin { 5.0 } else { 3.0 }
     }
 
     /// `getVoicePitch`'s centre for a baby: a zombie villager's is higher.
@@ -114,7 +121,10 @@ impl Zombie {
                 ZombieKind::Husk => 0.825,
                 ZombieKind::ZombieVillager => 0.67,
                 ZombieKind::Zombie | ZombieKind::Drowned => 0.775,
+                ZombieKind::ZombifiedPiglin => 0.78,
             }
+        } else if self.kind == ZombieKind::ZombifiedPiglin {
+            1.79
         } else {
             1.74
         }

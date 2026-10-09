@@ -273,7 +273,7 @@ fn add_modifier(tag: &mut Tag, id: &str, default_base: f64, modifier_id: &str, a
 /// The follow range base a type's attribute supplier gives.
 fn follow_range_base(kind: &str) -> f64 {
     match kind {
-        "minecraft:zombie" | "minecraft:zombie_villager" | "minecraft:husk" | "minecraft:drowned" => 35.0,
+        "minecraft:zombie" | "minecraft:zombie_villager" | "minecraft:husk" | "minecraft:drowned" | "minecraft:zombified_piglin" => 35.0,
         "minecraft:enderman" => 64.0,
         _ => 16.0,
     }
@@ -582,6 +582,10 @@ impl CreatureSpawns {
                 self.dark_enough(level, context, pos) && self.mob_spawn_rules(level, kind, info, pos) && level.sky_brightness(sky.below()) >= 15
             }
             Rules::Slime => self.slime_spawn_rules(level, context, kind, info, pos),
+            Rules::ZombifiedPiglin => {
+                let below = self.registries.blocks.block(self.registries.blocks.block_of(level.block(pos.below()))).name.as_str() == "minecraft:nether_wart_block";
+                context.difficulty != 0 && !below
+            }
             Rules::Bat => self.bat_spawn_rules(level, kind, info, pos),
             // `pos.y <= seaLevel - 33`, unlit, in water: no random draws.
             Rules::GlowSquid => {
@@ -817,7 +821,7 @@ impl CreatureSpawns {
                 let root = self.finalize_zombie(level, context, tag, pos, difficulty, group, &mut own);
                 return self.finalize_husk(level, context, root, pos, difficulty, natural);
             }
-            "minecraft:zombie" | "minecraft:zombie_villager" => {
+            "minecraft:zombie" | "minecraft:zombie_villager" | "minecraft:zombified_piglin" => {
                 if kind == "minecraft:zombie_villager" {
                     // The constructor's profession, then `finalizeVillagerType`.
                     let profession = PROFESSIONS[own.next_i32_bound(PROFESSIONS.len() as i32) as usize];
@@ -969,6 +973,7 @@ impl CreatureSpawns {
         own: &mut LegacyRandom,
     ) -> Tag {
         let special = difficulty.special_multiplier();
+        let piglin = tag.get("id").and_then(Tag::as_str) == Some("minecraft:zombified_piglin");
         let loot = level.random().next_f32() < 0.55 * special;
         set(&mut tag, "CanPickUpLoot", byte(loot));
         if matches!(group, MonsterGroup::None) {
@@ -997,10 +1002,15 @@ impl CreatureSpawns {
             }
             let doors = level.random().next_f32() < special * 0.1;
             set(&mut tag, "CanBreakDoors", byte(doors));
-            Self::populate_armor(level, &mut tag, difficulty);
+            if piglin {
+                let item = if level.random().next_i32_bound(20) == 0 { "minecraft:golden_spear" } else { "minecraft:golden_sword" };
+                equip(&mut tag, "mainhand", item);
+            } else {
+                Self::populate_armor(level, &mut tag, difficulty);
+            }
             // `Zombie.populateDefaultEquipmentSlots`: a rare iron weapon.
             let weapon_chance = if difficulty.base == 3 { 0.05 } else { 0.01 };
-            if level.random().next_f32() < weapon_chance {
+            if !piglin && level.random().next_f32() < weapon_chance {
                 let item = match level.random().next_i32_bound(6) {
                     0 => "minecraft:iron_sword",
                     1 => "minecraft:iron_spear",
@@ -1012,7 +1022,8 @@ impl CreatureSpawns {
         }
         Self::halloween_head(level, context, &mut tag);
         // `handleAttributes`, from the zombie's own random.
-        set_attribute_base(&mut tag, "minecraft:spawn_reinforcements", own.next_f64() * f64::from(0.1f32));
+        let reinforcements = if piglin { 0.0 } else { own.next_f64() * f64::from(0.1f32) };
+        set_attribute_base(&mut tag, "minecraft:spawn_reinforcements", reinforcements);
         add_modifier(&mut tag, "minecraft:knockback_resistance", 0.0, "minecraft:random_spawn_bonus", own.next_f64() * f64::from(0.05f32), "add_value");
         let follow = own.next_f64() * 1.5 * f64::from(special);
         if follow > 1.0 {
