@@ -7,7 +7,8 @@ Started 2026-10-09 on `minecraft-survival` at 3c2c62b. The owner's brief for thi
 - The full suite is `scripts\full-suite.ps1` (workspace tests without doc-tests, then the five minecraftoss crates with their stand-in scenario files).
 - Track worktrees live in `C:\Dev\mc-wt\<name>` on branch `<name>`, each with its own target dir `D:\iw4l-wt\<name>`. Worktrees never share a target dir: cargo's freshness check would reuse another worktree's build of a crate whose files are older there.
 - D: is short on space (one debug target dir is about 11 GB with the suite and clippy, 6-8 GB without). Delete a track's target dir once the track is merged.
-- Merge tracks into `minecraft-survival` one at a time in `C:\Dev\mashup-crafting`, run the full suite after each merge, then push to `origin`.
+- Merging a track: in the track's worktree run `git checkout --detach minecraft-survival` and `git merge --no-ff <track>`, run `scripts\full-suite.ps1 +target=<the track's target dir>` there (so the merged code is built in a dir that has only seen this worktree), then `git merge --ff-only <merge commit>` in `C:\Dev\mashup-crafting` and push to `origin`.
+- PowerShell drops a bare `--` when calling a script, so pass it quoted: `& scripts\cargo-slot.ps1 clippy -p x --locked '--' -A clippy::approx_constant`.
 - Each track agent keeps `docs/round7/track-<name>-log.md` with its commits, decisions and the owner's in-game test steps.
 - The workflow scripts used by the orchestrator: a track runner (commit groups in order, then an adversarial review, then clippy). If a session dies, re-create the worktree state from `git worktree list` and continue the track from its log.
 
@@ -25,7 +26,7 @@ Design briefs: `docs/round7/a1-grenade-keys.md`, `a2-chat.md`, `b1-throwables.md
 
 | Track | Branch | State |
 |---|---|---|
-| A. Controls and chat | track-a | running (worktree `C:\Dev\mc-wt\track-a`, target `D:\iw4l-wt\track-a`) |
+| A. Controls and chat | track-a | merged (80cacc3, full suite 1315 passed). Left for after the split: mouse buttons still mine/place while a grenade is up with a Minecraft item selected (see `docs/round7/track-a-log.md`) |
 | B. Items, blocks, player model | track-b | not started; minecraft_terrain and MW2-body parts can run during the split, the render_anim glue after it |
 | C. Commands | track-c | early part running (minecraft_commands, creative tab reader; worktree `C:\Dev\mc-wt\track-c`, target `D:\iw4l-wt\track-c`); chat UI and glue after track A and the split |
 | D. Saving everything | track-d | after the split |
@@ -70,5 +71,6 @@ The 41 minutes of the last round were not reproduced: a clean release build alon
 - Shulker lids (track B): chests and ender chests get the same vanilla lid animation as shulker boxes, as vanilla has it.
 
 ## Log
+- 2026-10-09: track A merged (80cacc3) and pushed.
 - 2026-10-09: item 1 merged and pushed (65f6402). Crate split, track A and early track C started.
 - 2026-10-09: plan written, `scripts/cargo-slot.ps1` added. Upstream checked (nothing new). Research for items 1, 4, 5 and the Phase 2 briefs done. Build changes measured and committed.
