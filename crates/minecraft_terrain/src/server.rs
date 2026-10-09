@@ -4875,6 +4875,35 @@ mod tests {
     }
 
     #[test]
+    fn features_placed_in_a_live_level_keep_their_entities_spawners_and_gateway_exits() {
+        use minecraftoss_core::nbt::Tag;
+        use minecraftoss_generator::feature::World;
+        let Some((mut server, _)) = door_world() else { return };
+        server.level.take_changed_block_entities();
+        server.level.unsupported.clear();
+        let block_entity = |server: &ServerSim, pos: (i32, i32, i32)| server.level.chunk(ChunkPos::new(pos.0 >> 4, pos.2 >> 4)).and_then(|c| c.block_entities.entities.get(&pos).cloned());
+        assert!(server.level.place_configured_feature("minecraft:end_gateway_return", minecraftoss_core::BlockPos::new(8, 210, 8)));
+        let gateway = block_entity(&server, (8, 210, 8)).expect("the gateway has its block entity");
+        assert_eq!(gateway.get("exit_portal"), Some(&Tag::IntArray(vec![100, 50, 0])));
+        assert_eq!(gateway.get("ExactTeleport"), Some(&Tag::Byte(1)));
+        assert!(server.level.take_changed_block_entities().contains(&(8, 210, 8)));
+        server.player_edit_block((4, 205, 4), Some(&Block::new("minecraft:spawner")), PlayerEdit::Place);
+        World::set_spawner_entity(&mut server.level, 4, 205, 4, "minecraft:blaze");
+        let spawner = block_entity(&server, (4, 205, 4)).expect("the spawner has its block entity");
+        let kind = spawner.get("SpawnData").and_then(|d| d.get("entity")).and_then(|e| e.get("id")).and_then(Tag::as_str);
+        assert_eq!(kind, Some("minecraft:blaze"));
+        World::set_gateway_exit(&mut server.level, 4, 205, 4, (1, 2, 3), false);
+        assert_eq!(block_entity(&server, (4, 205, 4)).and_then(|s| s.get("exit_portal").cloned()), None, "a spawner takes no exit");
+        let uuid = World::next_uuid(&mut server.level);
+        assert_ne!(uuid, World::next_uuid(&mut server.level));
+        let shulker = minecraftoss_core::snbt::parse_compound(&format!("{{id:\"minecraft:shulker\",Pos:[8.5d,206.0d,8.5d],UUID:[I;{},{},{},{}]}}", uuid[0], uuid[1], uuid[2], uuid[3])).unwrap();
+        World::add_entity(&mut server.level, shulker);
+        server.take_spawned();
+        assert!(server.dormant.iter().any(|(group, _)| group[0].kind == "minecraft:shulker"), "the entity joins the server");
+        assert_eq!(server.level.unsupported, Vec::<String>::new());
+    }
+
+    #[test]
     fn the_server_answers_each_item_use_so_one_source_fills_one_bucket() {
         let Some((mut server, _)) = door_world() else { return };
         assert!(server.item_on_block((8, 200, 8), ItemOnBlock::EmptyBucket { water: true }));

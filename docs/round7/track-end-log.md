@@ -58,3 +58,25 @@ Previous commit: a4dbd42b
 ```
 IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*24,minecraft:ender_eye*32,minecraft:diamond_pickaxe+efficiency=5,minecraft:cobblestone*64
 ```
+
+### 3. Minecraft live levels keep feature entities and gateway exits (E3-4)
+
+Previous commit: 585bad58
+
+- **Defect:** a feature placed in a running level (bone meal, a sapling, and from X2 on the End podium, gateways and islands) wrote through the live `World` of the vendored `Level`, which dropped every entity (`add_entity`), gave every entity the UUID 0 (`next_uuid`), and dropped spawner mobs, loot tables and gateway exits. Generation (the `Region`) had them all.
+- **Changed:** vendored `third_party/minecraftoss/world/src/level/mod.rs` (MinecraftOSS patch), the live `World for Level` only:
+  - `add_entity` is `ServerLevel.addFreshEntityWithPassengers`: the tag joins `Level.spawned`, which the server already hands to the entity world each tick (items and orbs as level entities, simulated mobs, the rest dormant), as natural spawning does.
+  - `next_uuid` is `Mth.createInsecureUUID` from the level's entity random, the same draw natural spawning uses.
+  - `set_spawner_entity`, `set_gateway_exit` and `set_loot_table` edit the block entity the feature just placed, as the `Region` does, and mark it changed so the client and the save get it.
+  - New `Level::place_configured_feature(name, pos)`: `ConfiguredFeature.place` with the level random, for the End features X2 places at runtime (vanilla's `EnderDragonFight` places `end_gateway_delayed`, and the gateways `end_gateway_return` and `end_island`).
+- **Tests:** `server`: `features_placed_in_a_live_level_keep_their_entities_spawners_and_gateway_exits` (`end_gateway_return` placed in a running level has `exit_portal` 100, 50, 0 and `ExactTeleport`, and its block entity is reported changed; a spawner takes its mob, and a gateway exit on a spawner is ignored; two UUIDs differ; an added shulker joins the server; nothing is reported unsupported).
+- **Decisions:**
+  - The brief names `add_entity` and `set_gateway_exit`; `set_spawner_entity` (orchestrator) and `set_loot_table` (a dungeon grown at runtime would lose its chest loot) come along as they are the same few lines. `set_brushable_loot`, `add_bees` and `load_block_entity` stay unsupported on the live level: no runtime feature uses them yet.
+  - The server tests that build a level need the vanilla data: run them with `MINECRAFTOSS_ROOT=C:\Games\Mashup\2010-Rust-Rewrite-Mashup\iw4l-artifacts\minecraft-26.3`, as `scripts\full-suite.ps1` does. Without it they return early and pass. Entries 1 to 3 were run with it.
+- **Test steps:** nothing to see in game yet: no feature placed at runtime has entities or gateways before X2 (the End podium and gateways). Check that nothing broke:
+  1. Keep `IW4L_MINECRAFT_WORLD=x1atest`. Use bone meal on an oak sapling: the tree grows as before. **Screenshot 1.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:oak_sapling*4,minecraft:bone_meal*32,minecraft:dirt*8
+```
