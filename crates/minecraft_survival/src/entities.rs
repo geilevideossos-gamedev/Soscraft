@@ -38,6 +38,7 @@ const EYE_HEIGHT: f32 = 1.62;
 const SERVER_ITEM: u32 = 1 << 31;
 type Hits = Vec<(f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause)>;
 type Changes = Vec<((i32, i32, i32), Option<Block>)>;
+type Picked = (i32, [f64; 3], String, i32, Option<String>);
 
 pub struct Blow {
     pub sprinting: bool,
@@ -1024,7 +1025,7 @@ fn decode(key: u64) -> Option<MobHit> {
     })
 }
 
-fn take_picked(inventory: &mut Inventory, selected: usize, picked: Vec<(i32, [f64; 3], String, i32, Option<String>)>) {
+fn take_picked(inventory: &mut Inventory, selected: usize, picked: Vec<Picked>) {
     for (_, _, item, count, components) in picked {
         let mut stack = ItemStack::new(&item, count.clamp(0, 255) as u8);
         stack.components = components.as_deref().and_then(|c| serde_json::from_str(c).ok());

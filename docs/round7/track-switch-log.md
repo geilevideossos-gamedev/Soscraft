@@ -266,7 +266,7 @@ Commit: 7dcc3aae
 
 ### 13. Minecraft players respawn in their respawn dimension (E1-10)
 
-Commit: filled in by `git log` under this subject
+Commit: 4e05214a
 
 - **Changed:**
   - New `minecraft_survival/src/respawn.rs` (the pure respawn rules of the plan's ownership table):
@@ -295,3 +295,23 @@ Commit: filled in by `git log` under this subject
 ```
 IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:obsidian*64,minecraft:netherrack*64,minecraft:cobblestone*64,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:torch*64,minecraft:cooked_beef*32
 ```
+
+### 14. The Minecraft dimension switch passes clippy
+
+Commit: filled in by `git log` under this subject
+
+- **Changed:** the two clippy findings on lines of this group. `Entities::leave`'s helper takes `Vec<Picked>` with a `type Picked` (`type_complexity`), and the loading backgrounds read the end portal colours with `map_or_else` instead of `unwrap_or_default` (disallowed by `clippy.toml`).
+- **Clippy:** `clippy -p minecraft_survival -p minecraft_terrain -p render_anim -p hud -p frame --tests --no-deps -- -A clippy::approx_constant` has no other finding on a line of this group. The rest are older: `entities.rs` 76 and 620, `terrain.rs` 657, `minecraft_world.rs` 126, 384 and 393, `hud/src/plugin.rs` and `gpu_list.rs`, and many more in those crates.
+- **Tests:** none new. `minecraft_survival` (195 and the vanilla world test), `minecraft_terrain` (490 passed, 3 ignored as before), `render_anim` (43), `hud` (111) and `frame` (14) pass, and `check -p launcher` is green.
+- **Test steps:** none; nothing changes in game.
+- **Kit:** none.
+
+## Group S3 summary
+
+- **Owner test for the whole group:** the steps and kit of entry 13 (one new world `s3test`, several starts). It covers the switch (entry 11), the `OTHER` loading screen (entry 12) and the respawn into another dimension (entry 13), including a return to a level that was still open.
+- **Not reachable in game yet:** the `NETHER_PORTAL` and `END_PORTAL` loading screens. Only `/execute in` (E1-11) and the portals (N2, X2) start a switch while alive.
+- **Handed to S4:**
+  - E1-11 (`/execute in` moves players between dimensions) still waits for track C's `Ctx.dimension` (C commit 12). Without it the command can't name a dimension. The switch API it will call is `Player::switch_to(to, Some(arrival), loading_reason(false, from, to))`, with the teleport scale of `DimensionType.getTeleportationScale`.
+  - E1-13: a switch should wait while the player is in a remote killstreak. Ordnance fired before a switch must leave the new level alone; the switch moment to record is the leave step in `minecraft_world.rs`, where `voxel::switch_level` runs.
+- **After track C:** E1-11 as above, plus `/time` per dimension from S1.
+- **MinecraftOSS patches in this group:** none.

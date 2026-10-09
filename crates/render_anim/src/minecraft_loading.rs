@@ -61,8 +61,9 @@ impl LoadingBackgrounds {
         let end_colors = ResourceId::parse("minecraft:end_portal")
             .ok()
             .and_then(|id| packs.get(&id, END_PORTAL_SHADER).ok().flatten())
-            .map(|source| end_portal_colors(&String::from_utf8_lossy(&source)))
-            .unwrap_or_default();
+            .map_or_else(Vec::new, |source| {
+                end_portal_colors(&String::from_utf8_lossy(&source))
+            });
         if end_colors.len() < END_PORTAL_LAYERS {
             diag::warn!(
                 World,
