@@ -93,6 +93,7 @@ pub struct MinecraftWorldFrame {
     pub entity_meshes: [(Vec<u8>, Vec<u32>); 4],
     /// A black card to draw, in blocks: behind the inventory's character.
     pub backdrop: Option<[[f32; 3]; 4]>,
+    pub puppet_gear: (Vec<u8>, Vec<u32>),
     /// The first-person hand or held item in view space, and its projection.
     pub hand: (Vec<u8>, Vec<u32>),
     pub hand_clip: [f32; 16],
@@ -145,6 +146,7 @@ struct TerrainGpu {
     /// This frame's entity meshes, in `MinecraftWorldFrame::entity_meshes` order.
     entities: [Option<(Buffer, Buffer, u32)>; 4],
     backdrop: Option<Buffer>,
+    puppet_gear: Option<(Buffer, Buffer, u32)>,
     hand: Option<(Buffer, Buffer, u32)>,
     sampler: Option<Sampler>,
     bind: Option<BindGroup>,
@@ -330,6 +332,22 @@ fn prepare_terrain(
             contents: bytemuck::cast_slice(&corners),
             usage: BufferUsages::VERTEX,
         })
+    });
+    let (gear_vertices, gear_indices) = std::mem::take(&mut frame.puppet_gear);
+    gpu.puppet_gear = (!gear_indices.is_empty()).then(|| {
+        (
+            device.create_buffer_with_data(&BufferInitDescriptor {
+                label: Some("iw4l_minecraft_puppet_gear_vertices"),
+                contents: &gear_vertices,
+                usage: BufferUsages::VERTEX,
+            }),
+            device.create_buffer_with_data(&BufferInitDescriptor {
+                label: Some("iw4l_minecraft_puppet_gear_indices"),
+                contents: bytemuck::cast_slice(&gear_indices),
+                usage: BufferUsages::INDEX,
+            }),
+            gear_indices.len() as u32,
+        )
     });
     let (hand_vertices, hand_indices) = std::mem::take(&mut frame.hand);
     gpu.hand = (!hand_indices.is_empty()).then(|| {
@@ -680,6 +698,15 @@ fn draw_terrain(
         pass.draw(0..6, 0..1);
         pass.set_viewport(vp.x as f32, vp.y as f32, vp.z as f32, vp.w as f32, depth_min, depth_max);
         pass.set_render_pipeline(&opaque);
+    }
+    if let Some((vertices, indices, count)) = gpu.puppet_gear.as_ref() {
+        let (band_min, band_max) = reverse_z_viewport_depth(super::depth_range::GFX_DEPTH_RANGE_VIEWMODEL);
+        pass.set_viewport(vp.x as f32, vp.y as f32, vp.z as f32, vp.w as f32, band_min, band_max);
+        pass.set_render_pipeline(&opaque);
+        pass.set_vertex_buffer(0, vertices.slice(..));
+        pass.set_index_buffer(indices.slice(..), IndexFormat::Uint32);
+        pass.draw_indexed(0..*count, 0, 0..1);
+        pass.set_viewport(vp.x as f32, vp.y as f32, vp.z as f32, vp.w as f32, depth_min, depth_max);
     }
     // Mobs, then their shadows on what is drawn so far.
     for (pipeline, mesh) in [(&entity, &gpu.entities[0]), (&entity_culled, &gpu.entities[1]), (&shadow, &gpu.entities[3])] {
