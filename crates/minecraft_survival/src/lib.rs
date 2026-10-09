@@ -1,3 +1,4 @@
+pub mod command_blocks;
 pub mod commands;
 pub mod data;
 pub mod death;

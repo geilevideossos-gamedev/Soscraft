@@ -1161,3 +1161,60 @@ Kit: `minecraft:diamond_sword` 1, `minecraft:stick` 1.
 ### Decisions
 
 - **A stick takes no enchantment, not even Unbreaking**, because vanilla's `supported_items` for Unbreaking is `#minecraft:enchantable/durability`. The test registry lets a stick take Unbreaking only to reach the other player's slot.
+
+## Minecraft /setblock and /fill change blocks on the level's server thread
+
+Commit: the commit that adds this entry.
+
+### What changed
+
+- **The edit runs on the level's server thread**, where the vanilla `Level.setBlock` with its update flags already lives (`minecraftoss_world::level::Level`). The answer comes back a few frames later, as vanilla's would in multiplayer.
+  - `minecraft_terrain/src/server.rs`: a generic `Command::Job` (`ServerHandle::run_job`), a closure run on the server thread whose result comes back in `Output::jobs`; and `ServerSim` primitives for commands: `command_block`, `command_registries`, `command_destroy` (`destroyBlock(pos, true)`: drops with no tool, the break particles and sound through `destroyed`), `command_place` (26.3 `BlockInput.place`, checked with javap: `Block.updateFromNeighbourShapes` unless strict, the given state again if that turns to air, the typed properties written back over it, then `setBlock` with `2 | 256`, or `2 | 816` when strict) and `command_updates` (`ServerLevel.updateNeighboursOnBlockSet`, which `SetBlockCommand` and `FillCommand` call afterwards unless strict). `command_block_entity` reads a block entity's tag.
+  - `minecraft_survival/src/command_blocks.rs` (new): `SimBlocks`, the `minecraft_commands::BlockAccess` over a `ServerSim`, so the first half's `apply_edit` loop (filters, modes, counting, the deferred neighbour updates) runs unchanged; `describe` and `state_of` between block states and the commands' names and properties; `nbt_matches`, vanilla's `NbtUtils.compareNbt` with partial lists, for `/fill ... replace chest{...}`; and `loaded_at`, vanilla's `getLoadedBlockPos` order: the chunk must be loaded in the level, then y inside the build height and x and z inside 30,000,000.
+  - `Entities` (`minecraft_survival/src/entities.rs`) gains `run_job` and `command_jobs`, where the server's answers wait.
+- `Host::edit_blocks` sends the edit to the level named by the edit's dimension and answers `Answer::Later`; `Host::loaded` uses `loaded_at` on that level's scene; `Host::dimension` is the player's own level. Each frame `run` collects the finished jobs of every level and turns them into vanilla's lines with `edit_answer` and `CommandServer::reply`, broadcast to ops as `SetBlockCommand` and `FillCommand` do.
+- The changed blocks come back to the client the way the server's own changes always do (`Output::changes`), so the scene, the saved chunks, the MW2 collision and the block sounds follow without new code in `render_anim`.
+- `command_data` now also fills `blocks` (every block with its properties and values, in catalog order) and `block_tags`, so block ids and properties are checked like vanilla, the suggestions list block ids, `[` shows only for blocks with properties, and `#` tags work in `/fill ... replace`.
+- **Dimension lookup:** `loaded_dimension(levels, id)` and `level_of(levels, id)` are the one place a dimension id becomes a loaded level. Only the overworld is loaded until phase 3, which only has to add its levels to the map.
+
+### Tests added
+
+- `server::tests::command_placements_shape_like_vanilla_and_jobs_answer` (`minecraft_terrain`, real terrain, skipped without the data): two fences connect, placing the same state again fails, strict fences stay unconnected, typed properties survive (the chain of shape updates connects the third fence as vanilla's does), destroying drops the fence and disconnects its neighbour, and a job sent through a `ServerHandle` answers.
+- `command_blocks::tests` (`minecraft_survival`):
+  - `nbt_predicates_compare_like_vanilla_compare_nbt`: empty predicates, partial and full list matching, an empty list, wrong values, missing keys and types, no block entity.
+  - `positions_are_loaded_only_in_streamed_chunks_inside_the_world`: chunk edges, the build height and the world border.
+  - `setblock_and_fill_run_on_the_level_like_vanilla` (skipped without the data): setblock, the same block again, keep, destroy with the gold block dropped, a fence fill that connects, a strict one that does not, a hollow 5x5x5 glass box (98) and again (0), void air above the world, and one destroyed block reported.
+- `commands::tests::block_edits_answer_once_the_level_has_run_them`: no level gives "That position is not loaded", the Nether is an unknown dimension, and the late answers for both commands, success and failure, with the op broadcast for another player's edit.
+- `commands::tests::command_data_reads_the_item_tags_of_the_game_data` also checks the block properties in catalog order and the block tags.
+
+### In-game test steps
+
+```
+IW4L_MINECRAFT_KIT=oak_fence*16
+```
+
+1. `/setblock ~ ~-1 ~ minecraft:gold_block`: "Changed the block at x, y, z" and gold appears under your feet. Screenshot.
+2. The same command again: red "Could not set the block".
+3. `/setblock ~ ~-1 ~ stone keep`: red "Could not set the block".
+4. `/setblock ~ ~-1 ~ stone destroy`: the gold breaks with particles and sound, a gold block drops, stone takes its place. Screenshot.
+5. `/setblock ~2 ~ ~ oak_stairs[facing=east,half=top]`: an upside-down stair facing east.
+6. `/fill ~1 ~ ~1 ~5 ~4 ~5 glass hollow`: "Successfully filled 98 block(s)", a glass box with air inside. The same command again: red "No blocks were filled". Screenshot.
+7. `/fill ~1 ~ ~1 ~5 ~4 ~5 stone replace glass`: "Successfully filled 98 block(s)".
+8. `/fill ~1 ~ ~1 ~5 ~4 ~5 air destroy`: the stone breaks with particles and drops cobblestone. Screenshot.
+9. `/fill ~1 ~ ~3 ~5 ~ ~3 oak_fence`: a connected fence line. `/fill ~1 ~ ~5 ~5 ~ ~5 oak_fence strict`: five unconnected posts. Screenshot.
+10. `/fill ~ ~ ~ ~100 ~100 ~100 stone`: red "Too many blocks in the specified area (maximum 32768, but specified 1030301)".
+11. `/setblock ~ ~ ~ oak_stairs[half=up]`: red "Block minecraft:oak_stairs does not accept 'up' for half property" with the context line.
+12. `/setblock 0 ~ 100000 stone` (far away): red "That position is not loaded".
+
+Kit: `minecraft:oak_fence` 16 (only to compare with hand-placed fences; the commands need no items).
+
+### Decisions
+
+- **Server thread, not the client scene.** The level thread has vanilla's `setBlock` with every flag, the shape updates, the neighbour updates and the drops; doing it on the main thread would have needed a second copy of all of that.
+- **One fill runs in one job**, as vanilla runs it in one tick; 32768 blocks is the cap, and the client applies the changes in the frame they arrive.
+- **Block entity NBT in `/setblock ... chest{...}` is not written.** The fork's containers keep their items on the main thread (`Containers`), not in the level's block entities, so there is nothing for the tag to land in yet. NBT predicates compare against the level's block entity tags.
+- **Unloaded chunks inside a fill are skipped.** Only the two corners are checked, as in 26.3; `setBlock` on a chunk the level does not hold changes nothing and does not count.
+
+### After track D
+
+- Containers replaced by `/setblock` or `/fill` (not in `destroy` mode) drop their items, because `render_anim` spills the main-thread `Containers` of any position that stops being a station. Vanilla 26.3 deletes them (flag 256, `UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS`). Once containers are block entities in the level, the command path should discard their contents instead of spilling.

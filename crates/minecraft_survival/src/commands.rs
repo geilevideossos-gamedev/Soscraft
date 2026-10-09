@@ -1,11 +1,14 @@
+use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 
 use minecraft_commands::{
-    Clientbound, Clock, CommandData, CommandRegistries, CommandServer, CommandWorld, Enchanted,
-    EnchantmentInfo, Experience, ItemArg, ItemFilter, PlayerId, Pose, Serverbound, Text, Weather,
+    Answer, BlockEdit, Clientbound, Clock, CommandData, CommandRegistries, CommandServer,
+    CommandWorld, Enchanted, EnchantmentInfo, Experience, ItemArg, ItemFilter, Loaded, PlayerId,
+    Pose, Serverbound, Text, Weather,
 };
 use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_terrain::day_cycle::DayCycle;
+use minecraft_terrain::server::ServerSim;
 use minecraft_terrain::terrain::TerrainStream;
 use minecraft_terrain::game_mode::GameMode;
 use minecraft_terrain::game_rules::{GameRules, Rule, Value};
@@ -13,6 +16,7 @@ use minecraftoss_player::Difficulty;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::survival::{Armor, EffectKind};
 
+use crate::command_blocks::SimBlocks;
 use crate::entities::Entities;
 use crate::level::Level;
 use crate::player::Player;
@@ -510,6 +514,38 @@ impl CommandWorld for Host<'_> {
         Some(Enchanted::Applied)
     }
 
+    fn dimension(&self, player: PlayerId) -> String {
+        self.player(player)
+            .map_or(Dimension::Overworld, |player| player.dimension)
+            .dimension_type()
+            .to_owned()
+    }
+
+    fn loaded(&self, dimension: &str, pos: [i32; 3]) -> Loaded {
+        level_of(self.levels, dimension).map_or(Loaded::Unloaded, |level| {
+            crate::command_blocks::loaded_at(&level.terrain.scene, pos)
+        })
+    }
+
+    fn edit_blocks(&mut self, source: PlayerId, edit: &BlockEdit) -> Answer<i32> {
+        let Some(entities) = loaded_dimension(self.levels, &edit.dimension)
+            .and_then(|dimension| self.levels.get_mut(&dimension))
+            .and_then(|level| level.entities.as_mut())
+        else {
+            return Answer::Now(0);
+        };
+        let edit = edit.clone();
+        entities.run_job(Box::new(move |sim: &mut ServerSim| -> Box<dyn Any + Send> {
+            let count = minecraft_commands::apply_edit(&edit, &mut SimBlocks(sim));
+            Box::new(CommandJob::Edit {
+                source,
+                edit,
+                count,
+            })
+        }));
+        Answer::Later
+    }
+
     fn level_up(&mut self, player: PlayerId) {
         let feet = self.presence(player).pose.map(|pose| pose.feet);
         let Some((player, entities)) = self.player_in_level(player) else {
@@ -541,10 +577,47 @@ fn held_enchantments(stack: &ItemStack) -> Vec<String> {
         .map_or_else(Vec::new, |map| map.keys().cloned().collect())
 }
 
+pub fn loaded_dimension(levels: &BTreeMap<Dimension, Level>, id: &str) -> Option<Dimension> {
+    levels
+        .keys()
+        .copied()
+        .find(|dimension| dimension.dimension_type() == id)
+}
+
+pub fn level_of<'l>(levels: &'l BTreeMap<Dimension, Level>, id: &str) -> Option<&'l Level> {
+    levels.get(&loaded_dimension(levels, id)?)
+}
+
+pub enum CommandJob {
+    Edit {
+        source: PlayerId,
+        edit: BlockEdit,
+        count: i32,
+    },
+}
+
 pub fn command_data(stream: &TerrainStream) -> CommandData {
     let worldgen = stream.world_gen();
+    let registries = stream.states.registries();
+    let blocks = registries
+        .blocks
+        .blocks()
+        .map(|(_, block)| {
+            let properties = block
+                .properties()
+                .iter()
+                .map(|property| {
+                    let values = property.values.iter().map(|value| value.to_string());
+                    (property.name.to_string(), values.collect())
+                })
+                .collect();
+            (block.name.to_string(), properties)
+        })
+        .collect();
     CommandData {
         item_tags: minecraft_terrain::locate::tags(&worldgen, "item"),
+        blocks,
+        block_tags: minecraft_terrain::locate::tags(&worldgen, "block"),
         ..CommandData::default()
     }
 }
@@ -566,6 +639,39 @@ pub fn pump(
                 .handle(from, message, world)
                 .into_iter()
                 .filter(|out| out.to.reaches(from, level))
+                .map(|out| out.message),
+        );
+    }
+    delivered
+}
+
+pub fn answer_jobs(
+    chat: &CommandServer,
+    rules: &GameRules,
+    to: PlayerId,
+    finished: Vec<Box<dyn Any + Send>>,
+) -> Vec<Clientbound> {
+    let level = chat.level(to);
+    let mut delivered = Vec::new();
+    for job in finished {
+        let Ok(job) = job.downcast::<CommandJob>() else {
+            continue;
+        };
+        let out = match *job {
+            CommandJob::Edit {
+                source,
+                edit,
+                count,
+            } => chat.reply(
+                source,
+                minecraft_commands::blocks::edit_answer(&edit, count),
+                true,
+                rules,
+            ),
+        };
+        delivered.extend(
+            out.into_iter()
+                .filter(|out| out.to.reaches(to, level))
                 .map(|out| out.message),
         );
     }
@@ -603,11 +709,16 @@ pub fn run(
         mode_changed: Vec::new(),
         teleports: Vec::new(),
     };
-    let delivered = pump(id, sent, &mut globals.chat, &mut host);
+    let mut delivered = pump(id, sent, &mut globals.chat, &mut host);
     let rules_changed = host.rules_changed;
     let mode_changed = std::mem::take(&mut host.mode_changed);
     let teleports = std::mem::take(&mut host.teleports);
     drop(host);
+    let mut finished = Vec::new();
+    for entities in levels.values_mut().filter_map(|level| level.entities.as_mut()) {
+        finished.append(&mut entities.command_jobs);
+    }
+    delivered.extend(answer_jobs(&globals.chat, &globals.game_rules, id, finished));
     if rules_changed {
         for entities in levels.values_mut().filter_map(|level| level.entities.as_mut()) {
             entities.set_game_rules(&globals.game_rules);
@@ -779,6 +890,13 @@ pub(crate) mod tests {
             "enchantment.level.5" => "V",
             "item.minecraft.diamond_sword" => "Diamond Sword",
             "item.minecraft.stick" => "Stick",
+            "chat.type.admin" => "[%s: %s]",
+            "commands.setblock.success" => "Changed the block at %s, %s, %s",
+            "commands.setblock.failed" => "Could not set the block",
+            "commands.fill.success" => "Successfully filled %s block(s)",
+            "commands.fill.failed" => "No blocks were filled",
+            "argument.pos.unloaded" => "That position is not loaded",
+            "argument.dimension.invalid" => "Unknown dimension '%s'",
             _ => return None,
         };
         Some(text.to_owned())
@@ -1006,6 +1124,72 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn block_edits_answer_once_the_level_has_run_them() {
+        use minecraft_commands::blocks::{BlockInput, EditKind, FillMode};
+        let mut parts = Parts::new();
+        parts.join(FRIEND, "Alex", [0.5, 64.0, 0.5]);
+        let (lines, _) = parts.send(
+            HOST,
+            &[
+                "/setblock ~ ~ ~ stone",
+                "/fill ~ ~ ~ ~1 ~1 ~1 stone",
+                "/execute in minecraft:the_nether run setblock 0 0 0 stone",
+            ],
+        );
+        assert_eq!(
+            lines,
+            vec![
+                "That position is not loaded",
+                "That position is not loaded",
+                "Unknown dimension 'minecraft:the_nether'",
+            ]
+        );
+        let job = |source: PlayerId, kind: EditKind, count: i32| -> Box<dyn Any + Send> {
+            Box::new(CommandJob::Edit {
+                source,
+                edit: BlockEdit {
+                    kind,
+                    dimension: minecraft_commands::OVERWORLD.to_owned(),
+                    from: [1, 2, 3],
+                    to: [4, 5, 6],
+                    block: BlockInput::default(),
+                    mode: FillMode::Replace,
+                    filter: None,
+                    strict: false,
+                },
+                count,
+            })
+        };
+        let answers = answer_jobs(
+            &parts.server,
+            &parts.rules,
+            HOST,
+            vec![
+                job(HOST, EditKind::SetBlock, 1),
+                job(HOST, EditKind::SetBlock, 0),
+                job(HOST, EditKind::Fill, 98),
+                job(HOST, EditKind::Fill, 0),
+                Box::new(5_i32),
+                job(FRIEND, EditKind::SetBlock, 1),
+                job(FRIEND, EditKind::Fill, 0),
+            ],
+        );
+        assert_eq!(
+            answers.iter().map(line).collect::<Vec<_>>(),
+            vec![
+                "Changed the block at 1, 2, 3",
+                "Could not set the block",
+                "Successfully filled 98 block(s)",
+                "No blocks were filled",
+                "[Alex: Changed the block at 1, 2, 3]",
+            ]
+        );
+        let host = parts.host();
+        assert_eq!(host.dimension(HOST), "minecraft:overworld");
+        assert_eq!(host.loaded("minecraft:overworld", [0, 64, 0]), Loaded::Unloaded);
+    }
+
+    #[test]
     fn command_data_reads_the_item_tags_of_the_game_data() {
         let Some(stream) = test_stream() else {
             return;
@@ -1016,6 +1200,11 @@ pub(crate) mod tests {
             assert!(logs.iter().any(|id| id == log), "{log} in #logs");
         }
         assert!(!logs.iter().any(|id| id.starts_with('#')));
+        assert_eq!(data.blocks["minecraft:stone"], Vec::new());
+        let stairs = &data.blocks["minecraft:oak_stairs"];
+        let half = stairs.iter().find(|(name, _)| name == "half").unwrap();
+        assert_eq!(half.1, vec!["top".to_owned(), "bottom".to_owned()]);
+        assert!(data.block_tags["minecraft:logs"].contains(&"minecraft:oak_log".to_owned()));
     }
 
     #[test]

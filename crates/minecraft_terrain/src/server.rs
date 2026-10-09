@@ -790,6 +790,51 @@ impl ServerSim {
             .collect()
     }
 
+    pub fn command_block(&self, pos: BlockPos) -> BlockStateId {
+        self.level.block(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2))
+    }
+
+    pub fn command_registries(&self) -> &minecraftoss_core::Registries {
+        self.level.registries()
+    }
+
+    pub fn command_destroy(&mut self, pos: BlockPos) -> bool {
+        self.level.destroy_block_drops(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), true, update::LIMIT)
+    }
+
+    pub fn command_place(&mut self, pos: BlockPos, state: BlockStateId, defined: &[(String, String)], strict: bool) -> bool {
+        let at = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
+        let lib = self.level.lib;
+        let shaped = if strict {
+            state
+        } else {
+            let mut ctx = minecraftoss_generator::feature::Ctx { lib, region: &mut self.level };
+            minecraftoss_generator::feature::template::update_from_neighbour_shapes(&mut ctx, state, at)
+        };
+        let blocks = &lib.registries.blocks;
+        let mut placed = if blocks.is_air(shaped) { state } else { shaped };
+        for (name, value) in defined {
+            if let Some(next) = blocks.with_property(placed, name, value) {
+                placed = next;
+            }
+        }
+        let flags = if strict {
+            update::CLIENTS | update::SKIP_ON_PLACE | update::SKIP_BLOCK_ENTITY_SIDEEFFECTS | update::SUPPRESS_DROPS | update::KNOWN_SHAPE
+        } else {
+            update::CLIENTS | update::SKIP_BLOCK_ENTITY_SIDEEFFECTS
+        };
+        self.level.set_block(at, placed, flags, update::LIMIT)
+    }
+
+    pub fn command_updates(&mut self, pos: BlockPos, old: BlockStateId) {
+        self.level.update_neighbours_on_block_set(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), old);
+    }
+
+    pub fn command_block_entity(&self, pos: BlockPos) -> Option<&minecraftoss_core::nbt::Tag> {
+        let at = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
+        self.level.chunk(at.chunk())?.block_entities.entities.get(&pos)
+    }
+
     /// Applies a player's edit that the client scene already shows.
     pub fn player_edit(&mut self, scene: &HandcraftedScene, pos: BlockPos, edit: PlayerEdit) {
         self.player_edit_block(pos, Scene::block(scene, pos), edit);
@@ -1121,7 +1166,10 @@ pub enum Command {
     Save,
     SetWeather { weather: &'static str, duration: i32 },
     GameRules(Box<crate::game_rules::GameRules>),
+    Job(Job),
 }
+
+pub type Job = Box<dyn FnOnce(&mut ServerSim) -> Box<dyn std::any::Any + Send> + Send>;
 
 /// The client state a server tick reads.
 pub struct TickInput {
@@ -1202,6 +1250,7 @@ pub struct Output {
     pub handled: u64,
     /// The last tick's phases, light solves and total milliseconds.
     pub tick_phases: Option<([f64; 6], (u32, f64), f64)>,
+    pub jobs: Vec<Box<dyn std::any::Any + Send>>,
 }
 
 /// The integrated server on its own thread, as vanilla runs it: the client
@@ -1385,6 +1434,10 @@ impl ServerHandle {
         self.send(Command::Save);
     }
 
+    pub fn run_job(&mut self, job: Job) {
+        self.send(Command::Job(job));
+    }
+
     /// Outputs the server has produced since the last call.
     pub fn poll(&mut self) -> Vec<Output> {
         let mut outputs = std::mem::take(&mut self.waited);
@@ -1477,6 +1530,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.set_weather_for(weather, duration);
                 }
                 Command::GameRules(rules) => sim.apply_game_rules(&rules),
+                Command::Job(job) => out.jobs.push(job(&mut sim)),
                 Command::Save => {
                     sim.ticks_since_save = 0;
                     sim.save_all_entities();
@@ -4216,5 +4270,55 @@ mod tests {
             assert!(crate::server_mobs::load_level_entity(&mut server.level, tag));
         }
         assert_eq!(state(&server), before);
+    }
+
+    #[test]
+    fn command_placements_shape_like_vanilla_and_jobs_answer() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for x in -1..=1 {
+            for z in -1..=1 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        let blocks = &registries.blocks;
+        let fence = blocks.parse_state("minecraft:oak_fence").unwrap();
+        let side = |server: &ServerSim, pos: BlockPos, name: &str| blocks.property(server.command_block(pos), name).map(str::to_owned);
+        assert!(server.command_place((8, 200, 8), fence, &[], false));
+        assert!(server.command_place((9, 200, 8), fence, &[], false));
+        assert_eq!(side(&server, (8, 200, 8), "east").as_deref(), Some("true"));
+        assert_eq!(side(&server, (9, 200, 8), "west").as_deref(), Some("true"));
+        assert!(!server.command_place((9, 200, 8), fence, &[], false));
+        assert!(server.command_place((8, 200, 10), fence, &[], true));
+        assert!(server.command_place((9, 200, 10), fence, &[], true));
+        assert_eq!(side(&server, (8, 200, 10), "east").as_deref(), Some("false"));
+        assert_eq!(side(&server, (9, 200, 10), "west").as_deref(), Some("false"));
+        let defined = [("west".to_owned(), "false".to_owned()), ("waterlogged".to_owned(), "true".to_owned())];
+        assert!(server.command_place((10, 200, 8), fence, &defined, false));
+        assert_eq!(side(&server, (10, 200, 8), "west").as_deref(), Some("true"));
+        assert_eq!(side(&server, (10, 200, 8), "waterlogged").as_deref(), Some("true"));
+        assert_eq!(side(&server, (9, 200, 8), "east").as_deref(), Some("true"));
+        server.take_changes();
+        server.take_destroyed();
+        assert!(server.command_destroy((8, 200, 8)));
+        assert!(!server.command_destroy((8, 200, 8)));
+        assert_eq!(side(&server, (9, 200, 8), "west").as_deref(), Some("false"));
+        let destroyed = server.take_destroyed();
+        assert_eq!(destroyed.len(), 1);
+        assert_eq!(destroyed[0].0, (8, 200, 8));
+        assert!(server.items().iter().any(|item| item.item == "minecraft:oak_fence"));
+        assert!(server.take_changes().contains(&((8, 200, 8), None)));
+        let mut handle = ServerHandle::spawn(server);
+        handle.run_job(Box::new(|sim: &mut ServerSim| -> Box<dyn std::any::Any + Send> { Box::new(sim.command_block((9, 200, 8))) }));
+        handle.wait_idle();
+        let answers: Vec<BlockStateId> = handle.poll().into_iter().flat_map(|out| out.jobs).filter_map(|job| job.downcast::<BlockStateId>().ok()).map(|state| *state).collect();
+        assert_eq!(answers.len(), 1);
+        assert_eq!(blocks.property(answers[0], "east"), Some("true"));
+        assert_eq!(blocks.property(answers[0], "west"), Some("false"));
     }
 }
