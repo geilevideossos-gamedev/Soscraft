@@ -3,14 +3,14 @@ use minecraftoss_player::food::FoodUse;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::survival::FoodData;
 
-pub(crate) const OFFHAND: usize = 40;
-pub(crate) const SHIELD: &str = "minecraft:shield";
-pub(crate) const TOTEM: &str = "minecraft:totem_of_undying";
-pub(crate) const BLOCK_SOUND: &str = "minecraft:item.shield.block";
-pub(crate) const BREAK_SOUND: &str = "minecraft:item.shield.break";
-pub(crate) const TOTEM_SOUND: &str = "minecraft:item.totem.use";
+pub const OFFHAND: usize = 40;
+pub const SHIELD: &str = "minecraft:shield";
+pub const TOTEM: &str = "minecraft:totem_of_undying";
+pub const BLOCK_SOUND: &str = "minecraft:item.shield.block";
+pub const BREAK_SOUND: &str = "minecraft:item.shield.break";
+pub const TOTEM_SOUND: &str = "minecraft:item.totem.use";
 const BLOCK_DELAY_TICKS: u32 = 5;
-pub(crate) const USE_DELAY_TICKS: u32 = 4;
+pub const USE_DELAY_TICKS: u32 = 4;
 const BLOCKING_ANGLE_DEGREES: f32 = 90.0;
 const DEGREES_TO_RADIANS: f32 = 0.017_453_292;
 const WEAR_THRESHOLD: f32 = 3.0;
@@ -32,28 +32,28 @@ const USED_ITEMS: [&str; 10] = [
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum HandUse {
+pub enum HandUse {
     Consumed,
     Failed,
     Passed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Blocking {
-    pub(crate) slot: usize,
-    pub(crate) ticks: u32,
+pub struct Blocking {
+    pub slot: usize,
+    pub ticks: u32,
 }
 
 impl Blocking {
-    pub(crate) fn start(slot: usize) -> Self {
+    pub fn start(slot: usize) -> Self {
         Self { slot, ticks: 0 }
     }
 
-    pub(crate) fn raised(&self) -> bool {
+    pub fn raised(&self) -> bool {
         self.ticks >= BLOCK_DELAY_TICKS
     }
 
-    pub(crate) fn holds_shield(&self, inventory: &Inventory, selected: usize) -> bool {
+    pub fn holds_shield(&self, inventory: &Inventory, selected: usize) -> bool {
         (self.slot == OFFHAND || self.slot == selected)
             && inventory
                 .slots
@@ -63,7 +63,7 @@ impl Blocking {
     }
 }
 
-pub(crate) fn hand_slots(selected: usize, main_hand_is_gun: bool) -> Vec<usize> {
+pub fn hand_slots(selected: usize, main_hand_is_gun: bool) -> Vec<usize> {
     if main_hand_is_gun {
         vec![OFFHAND]
     } else {
@@ -71,7 +71,7 @@ pub(crate) fn hand_slots(selected: usize, main_hand_is_gun: bool) -> Vec<usize> 
     }
 }
 
-pub(crate) fn use_hands(
+pub fn use_hands(
     hands: &[usize],
     mut use_hand: impl FnMut(usize) -> HandUse,
 ) -> Option<(usize, HandUse)> {
@@ -81,7 +81,7 @@ pub(crate) fn use_hands(
         .find(|&(_, used)| used != HandUse::Passed)
 }
 
-pub(crate) fn repeat_delay(used: Option<(usize, HandUse)>, delay: u32) -> u32 {
+pub fn repeat_delay(used: Option<(usize, HandUse)>, delay: u32) -> u32 {
     if matches!(used, Some((_, HandUse::Consumed))) {
         USE_DELAY_TICKS
     } else {
@@ -89,7 +89,7 @@ pub(crate) fn repeat_delay(used: Option<(usize, HandUse)>, delay: u32) -> u32 {
     }
 }
 
-pub(crate) fn has_use(stack: &ItemStack, placeable: bool, food: &FoodData, mode: GameMode) -> bool {
+pub fn has_use(stack: &ItemStack, placeable: bool, food: &FoodData, mode: GameMode) -> bool {
     placeable
         || USED_ITEMS.contains(&stack.id.as_str())
         || stack.id == minecraft_terrain::berries::SWEET_BERRIES
@@ -99,20 +99,20 @@ pub(crate) fn has_use(stack: &ItemStack, placeable: bool, food: &FoodData, mode:
         || minecraft_terrain::spawn_egg::spawned_kind(&stack.id).is_some()
 }
 
-pub(crate) fn swap_hands(inventory: &mut Inventory, selected: usize) -> bool {
+pub fn swap_hands(inventory: &mut Inventory, selected: usize) -> bool {
     let gun = |slot: usize| {
         inventory.slots[slot]
             .as_ref()
-            .is_some_and(|stack| crate::minecraft_inventory::weapon_of(stack).is_some())
+            .is_some_and(|stack| crate::guns::weapon_of(stack).is_some())
     };
-    if selected >= frame::minecraft_ui::MC_HOTBAR || gun(selected) || gun(OFFHAND) {
+    if selected >= crate::guns::HOTBAR || gun(selected) || gun(OFFHAND) {
         return false;
     }
     inventory.slots.swap(selected, OFFHAND);
     true
 }
 
-pub(crate) fn blocked_damage(
+pub fn blocked_damage(
     yaw_degrees: f32,
     toward_source: Option<[f64; 2]>,
     damage: f32,
@@ -138,7 +138,7 @@ pub(crate) fn blocked_damage(
     }
 }
 
-pub(crate) fn shield_wear(blocked: f32) -> u32 {
+pub fn shield_wear(blocked: f32) -> u32 {
     if blocked < WEAR_THRESHOLD {
         0
     } else {
@@ -146,7 +146,7 @@ pub(crate) fn shield_wear(blocked: f32) -> u32 {
     }
 }
 
-pub(crate) fn totem_slot(inventory: &Inventory, selected: usize) -> Option<usize> {
+pub fn totem_slot(inventory: &Inventory, selected: usize) -> Option<usize> {
     [selected, OFFHAND].into_iter().find(|&slot| {
         inventory
             .slots

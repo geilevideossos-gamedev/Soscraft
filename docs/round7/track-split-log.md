@@ -89,3 +89,27 @@ A2 is commit `86fa3d4`.
   6. Stand in lava until you die: "... tried to swim in lava".
 - **Kit:** `minecraft:totem_of_undying` x1, `minecraft:zombie_spawn_egg` x2, `minecraft:lava_bucket` x1, `minecraft:experience_bottle` x64, `minecraft:cobblestone` x64 (all in the regression kit).
 - **Decisions:** none.
+
+## A4. Minecraft gun items and offhand rules move to minecraft_survival
+
+A3 is commit `dd6291c`.
+
+- **What changed:**
+  - New `minecraft_survival/src/guns.rs` (no comments, rustfmt-clean): `WEAPON_PREFIX`, `weapon_of` and `weapon_item` moved from `render_anim/src/minecraft_inventory.rs`, now `pub`, plus `pub const HOTBAR: usize = 9`, vanilla's selection size and the value of `frame::minecraft_ui::MC_HOTBAR`, which `hud` and `minecraft_inventory.rs` keep using.
+  - `minecraft_inventory.rs` loses those lines (and the doc line of `WEAPON_PREFIX`) and imports them with `use minecraft_survival::guns::{WEAPON_PREFIX, weapon_item, weapon_of};`.
+  - `git mv crates/render_anim/src/minecraft_offhand.rs crates/minecraft_survival/src/offhand.rs` (`R`): its 22 `pub(crate)` became `pub`, `crate::minecraft_inventory::weapon_of` became `crate::guns::weapon_of` and `frame::minecraft_ui::MC_HOTBAR` became `crate::guns::HOTBAR`. No other line changed, so `minecraft_survival` still has no `frame` (bevy) dependency.
+  - `minecraft_survival/src/lib.rs` gains `pub mod guns;` and `pub mod offhand;`.
+  - `render_anim`: `mod minecraft_offhand;` is gone; `crate::minecraft_offhand::` became `minecraft_survival::offhand::` in `minecraft_world.rs` (24 sites on 23 lines) and `minecraft_survival.rs` (2); `crate::minecraft_inventory::weapon_of` became `minecraft_survival::guns::weapon_of` in `minecraft_world.rs` (2).
+- **Tests:** the 10 `offhand` tests moved with the file; `guns.rs` brings none (the plan lists 0). `minecraft_survival` 47, `render_anim` 106, total unchanged (153).
+- **Checks:** `check -p launcher --locked`, `test -p minecraft_survival --locked`, `test -p render_anim --locked`; the staged `guns.rs` and `lib.rs` pass `rustfmt --check --edition 2024`.
+- **Owner test** (guns in the inventory, the offhand, the shield and the totem must work exactly as before):
+  1. Load a Minecraft match with the regression kit. The MW2 guns sit in the hotbar; select one with the number keys and it is raised.
+  2. Open the inventory and move a gun to another hotbar slot; select it there and the same gun is raised.
+  3. Put the shield in the offhand (swap-hands key with the shield selected). Swap hands with a gun selected: nothing happens.
+  4. Spawn a zombie from the egg, hold the tactical key to raise the shield and face the zombie: its hits are blocked with the shield block sound.
+  5. Swap the shield back and put cooked beef in the offhand. With some hunger lost, the tactical key eats it. Eggs or torches in the offhand are thrown or placed the same way.
+  6. Select the totem in the hotbar and take lethal damage (a long fall): the totem in the main hand pops with the totem sound and you live.
+- **Kit:** `minecraft:shield` x1, `minecraft:totem_of_undying` x1, `minecraft:zombie_spawn_egg` x2, `minecraft:cooked_beef` x32, `minecraft:egg` x16, `minecraft:torch` x64 (all in the regression kit).
+- **Decisions:**
+  - The `WEAPON_PREFIX` doc line (`/// Items that are MW2 guns ...`) is dropped rather than carried into `guns.rs`, because `guns.rs` is a new file and new files have no comments.
+  - The `use` line goes right after `use glam::DVec3;`, where rustfmt's sort order puts it.

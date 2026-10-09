@@ -105,7 +105,7 @@ struct HandState {
     attack_ticks: u32,
     attack_item: Option<String>,
     miss_time: u32,
-    blocking: Option<crate::minecraft_offhand::Blocking>,
+    blocking: Option<minecraft_survival::offhand::Blocking>,
     swing_offhand: bool,
     use_by_key: bool,
     offhand_key_was: bool,
@@ -760,7 +760,7 @@ fn update(
         }
     }
     let holding = entities.as_ref().is_some_and(|e| {
-        e.inventory.slots[e.selected].as_ref().is_none_or(|s| crate::minecraft_inventory::weapon_of(s).is_none())
+        e.inventory.slots[e.selected].as_ref().is_none_or(|s| minecraft_survival::guns::weapon_of(s).is_none())
     });
     ui.holding_item = alive && holding && player_mode.interacts();
     ui.empty_hand = ui.holding_item
@@ -1005,14 +1005,14 @@ fn update(
         let hands = if place {
             hand.place_delay = 4;
             hand.use_by_key = !ui.holding_item;
-            crate::minecraft_offhand::hand_slots(entities.selected, !ui.holding_item)
+            minecraft_survival::offhand::hand_slots(entities.selected, !ui.holding_item)
         } else {
             Vec::new()
         };
-        let has_item = entities.inventory.slots[entities.selected].is_some() || entities.inventory.slots[crate::minecraft_offhand::OFFHAND].is_some();
-        let used = crate::minecraft_offhand::use_hands(&hands, |slot| {
-            use crate::minecraft_offhand::HandUse;
-            let main = slot != crate::minecraft_offhand::OFFHAND;
+        let has_item = entities.inventory.slots[entities.selected].is_some() || entities.inventory.slots[minecraft_survival::offhand::OFFHAND].is_some();
+        let used = minecraft_survival::offhand::use_hands(&hands, |slot| {
+            use minecraft_survival::offhand::HandUse;
+            let main = slot != minecraft_survival::offhand::OFFHAND;
             player.selected = slot;
             let held = entities.inventory.slots[slot].clone();
             let table = player
@@ -1234,8 +1234,8 @@ fn update(
             } else if let Some(stack) = held.as_ref().filter(|s| s.id == minecraft_terrain::bottle::MILK_BUCKET) {
                 survival.start_using(minecraft_terrain::bottle::drink_milk(slot, stack));
                 HandUse::Consumed
-            } else if held.as_ref().is_some_and(|stack| stack.id == crate::minecraft_offhand::SHIELD) {
-                hand.blocking = Some(crate::minecraft_offhand::Blocking::start(slot));
+            } else if held.as_ref().is_some_and(|stack| stack.id == minecraft_survival::offhand::SHIELD) {
+                hand.blocking = Some(minecraft_survival::offhand::Blocking::start(slot));
                 HandUse::Consumed
             } else if placeable {
                 let outlined = minecraft_terrain::doors::Outlined(&world.scene);
@@ -1330,11 +1330,11 @@ fn update(
                 HandUse::Passed
             }
         });
-        hand.place_delay = crate::minecraft_offhand::repeat_delay(used, hand.place_delay);
-        if let Some((slot, crate::minecraft_offhand::HandUse::Consumed)) = used
+        hand.place_delay = minecraft_survival::offhand::repeat_delay(used, hand.place_delay);
+        if let Some((slot, minecraft_survival::offhand::HandUse::Consumed)) = used
             && hand.swing == Some(0.0)
         {
-            hand.swing_offhand = slot == crate::minecraft_offhand::OFFHAND;
+            hand.swing_offhand = slot == minecraft_survival::offhand::OFFHAND;
         }
     }
     hand.offhand_key_was = offhand_key;
@@ -1576,18 +1576,18 @@ fn update(
         }
         let armor = crate::minecraft_survival::armor(&entities.inventory);
         for (amount, from, toward, cause) in hits.into_iter().filter(|_| !player_mode.invulnerable()) {
-            let blocked = hand.blocking.filter(|blocking| blocking.raised()).map_or(0.0, |_| crate::minecraft_offhand::blocked_damage(mc_yaw, toward, amount));
+            let blocked = hand.blocking.filter(|blocking| blocking.raised()).map_or(0.0, |_| minecraft_survival::offhand::blocked_damage(mc_yaw, toward, amount));
             if let Some(blocking) = hand.blocking.filter(|_| blocked > 0.0) {
-                if entities.inventory.wear_tool(blocking.slot, crate::minecraft_offhand::shield_wear(blocked)) {
+                if entities.inventory.wear_tool(blocking.slot, minecraft_survival::offhand::shield_wear(blocked)) {
                     hand.blocking = None;
                     let pitch = 0.8 + entities.random_float() * 0.4;
                     if let Some(sounds) = sounds.as_mut() {
-                        sounds.play(&world.packs, crate::minecraft_offhand::BREAK_SOUND, None, 0.8, pitch);
+                        sounds.play(&world.packs, minecraft_survival::offhand::BREAK_SOUND, None, 0.8, pitch);
                     }
                 }
                 let pitch = 0.8 + entities.random_float() * 0.4;
                 if let Some(sounds) = sounds.as_mut() {
-                    sounds.play(&world.packs, crate::minecraft_offhand::BLOCK_SOUND, None, 1.0, pitch);
+                    sounds.play(&world.packs, minecraft_survival::offhand::BLOCK_SOUND, None, 1.0, pitch);
                 }
             }
             if amount > blocked {
@@ -1599,7 +1599,7 @@ fn update(
         for used in std::mem::take(&mut entities.item_uses_done) {
             if used.outcome.consumed {
                 hand.swing = Some(0.0);
-                hand.swing_offhand = used.slot == crate::minecraft_offhand::OFFHAND;
+                hand.swing_offhand = used.slot == minecraft_survival::offhand::OFFHAND;
             }
             finish_item_use(entities, sounds.as_mut(), &world.packs, origin, used, player_mode.consumes_items());
         }
@@ -1691,7 +1691,7 @@ fn update(
         }
         inventory_ui.level = survival.status.experience_level;
         inventory_ui.sync_weapons(&mut entities.inventory, &owned);
-        if std::mem::take(&mut ui.swap_hands) && alive && crate::minecraft_offhand::swap_hands(&mut entities.inventory, entities.selected) {
+        if std::mem::take(&mut ui.swap_hands) && alive && minecraft_survival::offhand::swap_hands(&mut entities.inventory, entities.selected) {
             survival.stop_eating();
             hand.blocking = None;
         }
@@ -1814,7 +1814,7 @@ fn update(
         if let Some(death) = death_watch.take()
             && !death.keep_inventory
         {
-            for stack in minecraft_survival::death::death_drops(&mut entities.inventory, |stack| crate::minecraft_inventory::weapon_of(stack).is_some()) {
+            for stack in minecraft_survival::death::death_drops(&mut entities.inventory, |stack| minecraft_survival::guns::weapon_of(stack).is_some()) {
                 entities.world_items.drop_on_death(stack, glam::DVec3::from_array(death.spot.eye));
             }
             entities.award_experience(death.spot.feet, death.experience);
@@ -1835,7 +1835,7 @@ fn update(
             let id = if stack.id == "minecraft:redstone" { "minecraft:redstone_wire" } else { stack.id.as_str() };
             minecraft_terrain::pack::ResourceId::parse(id).is_ok_and(|id| world.stream.states.state_of(&minecraft_terrain::scene::Block { id, properties: Default::default() }).is_some())
         };
-        let offhand_stack = entities.inventory.slots[crate::minecraft_offhand::OFFHAND].clone();
+        let offhand_stack = entities.inventory.slots[minecraft_survival::offhand::OFFHAND].clone();
         let aims_at_campfire = || {
             let mut aim = minecraftoss_player::Player::new(glam::DVec3::from_array(feet));
             aim.yaw = f64::from(mc_yaw);
@@ -1847,11 +1847,11 @@ fn update(
         ui.offhand_usable = alive
             && !holding
             && offhand_stack.as_ref().is_some_and(|stack| {
-                crate::minecraft_offhand::has_use(stack, placeable(stack), &survival.status.food, player_mode.mode) || (containers.cooks_on_campfire(stack, &entities.inventory.recipes) && aims_at_campfire())
+                minecraft_survival::offhand::has_use(stack, placeable(stack), &survival.status.food, player_mode.mode) || (containers.cooks_on_campfire(stack, &entities.inventory.recipes) && aims_at_campfire())
             });
         ui.offhand_busy = alive && !holding && (survival.eating().is_some() || hand.blocking.is_some());
         ui.using_item = alive && (survival.eating().is_some() || hand.blocking.is_some());
-        sim::voxel::set_death_protected(local.0.0, alive && !survival.killed() && crate::minecraft_offhand::totem_slot(&entities.inventory, entities.selected).is_some());
+        sim::voxel::set_death_protected(local.0.0, alive && !survival.killed() && minecraft_survival::offhand::totem_slot(&entities.inventory, entities.selected).is_some());
         // The held item in view; an empty hand is MW2's own hands.
         view.hand = Default::default();
         let swing = hand.swing.map_or(0.0, |t| (t / crate::minecraft_hand::SWING_TICKS).clamp(0.0, 1.0));
@@ -1861,7 +1861,7 @@ fn update(
         if !puppet.active && !mc_detached && (main_stack.is_some() || offhand_stack.is_some()) {
             let eye_light_at = glam::Vec3::new(eye[0] as f32, eye[1] as f32, eye[2] as f32);
             let mut posed = Vec::new();
-            for (slot, stack, arm) in [(entities.selected, main_stack, 1.0), (crate::minecraft_offhand::OFFHAND, offhand_stack, -1.0)] {
+            for (slot, stack, arm) in [(entities.selected, main_stack, 1.0), (minecraft_survival::offhand::OFFHAND, offhand_stack, -1.0)] {
                 let Some(stack) = stack else {
                     continue;
                 };
@@ -1874,7 +1874,7 @@ fn update(
                     .eating()
                     .filter(|eating| eating.slot == slot)
                     .map(|eating| crate::minecraft_hand::eat_transform(eating.remaining_ticks() as f32, (hand.clock / TICK_SECONDS) as f32, eating.info.consume_ticks, arm));
-                let swung = if using || eat.is_some() || hand.swing_offhand != (slot == crate::minecraft_offhand::OFFHAND) { 0.0 } else { swing };
+                let swung = if using || eat.is_some() || hand.swing_offhand != (slot == minecraft_survival::offhand::OFFHAND) { 0.0 } else { swing };
                 let glint = minecraft_terrain::glint::has_glint(&stack);
                 posed.push((eat.unwrap_or(glam::Mat4::IDENTITY) * crate::minecraft_hand::item_pose(display, swung, 0.0, arm), stack.id, glint));
             }
@@ -2307,7 +2307,7 @@ fn hold_off_death(
         && survival.protect(&mut entities.inventory, entities.selected)
         && let Some(sounds) = sounds
     {
-        sounds.play(packs, crate::minecraft_offhand::TOTEM_SOUND, None, 1.0, 1.0);
+        sounds.play(packs, minecraft_survival::offhand::TOTEM_SOUND, None, 1.0, 1.0);
     }
 }
 

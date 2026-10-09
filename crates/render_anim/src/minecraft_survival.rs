@@ -713,7 +713,7 @@ impl Survival {
         let Some(using) = self.eating.as_mut() else {
             return Bite::Nothing;
         };
-        if using.slot != selected && using.slot != crate::minecraft_offhand::OFFHAND {
+        if using.slot != selected && using.slot != minecraft_survival::offhand::OFFHAND {
             self.eating = None;
             return Bite::Nothing;
         }
@@ -756,7 +756,7 @@ impl Survival {
         if self.killed {
             return false;
         }
-        let Some(slot) = crate::minecraft_offhand::totem_slot(inventory, selected) else {
+        let Some(slot) = minecraft_survival::offhand::totem_slot(inventory, selected) else {
             return false;
         };
         if let Some(totem) = inventory.slots[slot].as_mut() {

@@ -46,7 +46,6 @@ mod minecraft_hand;
 mod minecraft_inventory;
 mod minecraft_mining;
 mod minecraft_minimap;
-mod minecraft_offhand;
 mod minecraft_sounds;
 mod minecraft_spawn_gate;
 mod minecraft_survival;

@@ -11,6 +11,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use frame::{McChoice, McClick, McOven, McScreen, McSlot, McStack, MinecraftUi};
 use glam::DVec3;
+use minecraft_survival::guns::{WEAPON_PREFIX, weapon_item, weapon_of};
 use minecraft_terrain::containers::{Containers, Opened, Station};
 use minecraft_terrain::stations::{Bench, Context, StationBook, Taken, Workshop};
 use minecraft_terrain::crafting::{self, Grid, Spot};
@@ -19,21 +20,9 @@ use minecraft_terrain::scene::BlockPos;
 use minecraftoss_player::crafting::CookingKind;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 
-/// Items that are MW2 guns: `iw4:weapon/<weapon index>`.
-const WEAPON_PREFIX: &str = "iw4:weapon/";
 const ICON_COLUMNS: u32 = 16;
 const ICON_ATLAS_LIMIT: u32 = 8192;
 const OFFHAND: usize = 40;
-
-pub(crate) fn weapon_of(stack: &ItemStack) -> Option<u32> {
-    stack.id.strip_prefix(WEAPON_PREFIX)?.parse().ok()
-}
-
-fn weapon_item(weapon: u32) -> ItemStack {
-    let mut stack = ItemStack::new(format!("{WEAPON_PREFIX}{weapon}"), 1);
-    stack.max = 1;
-    stack
-}
 
 #[derive(Default)]
 pub(crate) struct InventoryUi {
