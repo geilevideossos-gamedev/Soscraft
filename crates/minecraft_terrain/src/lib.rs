@@ -11,6 +11,7 @@ pub mod class_file;
 pub mod clouds;
 pub mod creative_search;
 pub mod creative_tabs;
+pub mod creative_variants;
 pub mod day_cycle;
 pub mod environment;
 pub(crate) mod face_culling;

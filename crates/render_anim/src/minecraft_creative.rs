@@ -5,6 +5,7 @@ use frame::{McClick, McCreativeTab, McScreen, McSlot, McTabKind, MinecraftUi};
 use minecraft_survival::creative::{self, CreativeSlot, GridClick, SetSlot};
 use minecraft_terrain::creative_search::Searched;
 use minecraft_terrain::creative_tabs::{CreativeTab, CreativeTabs, Row, TabEntry, TabKind};
+use minecraft_terrain::creative_variants::VariantData;
 use minecraft_terrain::game_mode::PlayerMode;
 use minecraft_terrain::hotbars::{self, Hotbars};
 use minecraftoss_player::crafting::RecipeBook;
@@ -34,12 +35,65 @@ pub(crate) struct SearchList {
 pub(crate) fn search_lines(
     stack: &ItemStack,
     language: Option<&HashMap<String, String>>,
+    variants: Option<&VariantData>,
 ) -> Vec<String> {
-    let name = language.map_or_else(
-        || stack.id.clone(),
-        |language| minecraft_terrain::item_icons::item_name(language, &stack.id),
-    );
-    vec![name]
+    let Some(language) = language else {
+        return vec![stack.id.clone()];
+    };
+    let text = |key: String| language.get(&key).cloned();
+    let item = stack.id.rsplit(':').next().unwrap_or(&stack.id);
+    let potion = minecraft_terrain::stations::potion_of(stack).and_then(|potion| {
+        let effect = potion
+            .rsplit(':')
+            .next()?
+            .trim_start_matches("long_")
+            .trim_start_matches("strong_");
+        text(format!("item.minecraft.{item}.effect.{effect}"))
+    });
+    let mut lines = vec![
+        potion.unwrap_or_else(|| minecraft_terrain::item_icons::item_name(language, &stack.id)),
+    ];
+    for (id, level) in minecraft_terrain::stations::enchantments_of(stack) {
+        let name =
+            text(format!("enchantment.{}", id.replacen(':', ".", 1))).unwrap_or_else(|| id.clone());
+        let single = variants.is_some_and(|data| {
+            data.enchantments
+                .iter()
+                .any(|(known, max)| *known == id && *max == 1)
+        });
+        lines.push(if level == 1 && single {
+            name
+        } else {
+            format!("{name} {}", minecraft_terrain::stations::roman(level))
+        });
+    }
+    let component = |key: &str| {
+        stack
+            .components
+            .as_ref()
+            .and_then(|components| components.get(key))
+    };
+    if let Some(instrument) = component("minecraft:instrument").and_then(serde_json::Value::as_str)
+    {
+        lines.extend(text(format!(
+            "instrument.{}",
+            instrument.replacen(':', ".", 1)
+        )));
+    }
+    if let Some(painting) =
+        component("minecraft:painting/variant").and_then(serde_json::Value::as_str)
+    {
+        let key = format!("painting.{}", painting.replacen(':', ".", 1));
+        lines.extend(text(format!("{key}.title")));
+        lines.extend(text(format!("{key}.author")));
+    }
+    if let Some(flight) =
+        component("minecraft:fireworks").and_then(|fireworks| fireworks.get("flight_duration"))
+    {
+        let label = text("item.minecraft.firework_rocket.flight".to_owned()).unwrap_or_default();
+        lines.push(format!("{label} {flight}"));
+    }
+    lines
 }
 
 pub(crate) fn search_items(
@@ -105,7 +159,8 @@ pub(crate) fn format_text(template: &str, args: &[&str]) -> String {
 #[derive(Default)]
 pub(crate) struct CreativeUi {
     started: bool,
-    loading: Option<mpsc::Receiver<CreativeTabs>>,
+    loading: Option<mpsc::Receiver<(CreativeTabs, Option<VariantData>)>>,
+    variants: Option<Arc<VariantData>>,
     tabs: Option<Arc<CreativeTabs>>,
     published: Option<(bool, bool)>,
     built: Option<Built>,
@@ -137,19 +192,43 @@ pub(crate) fn stack_of(recipes: &RecipeBook, id: &str) -> ItemStack {
     stack
 }
 
-pub(crate) fn entry_stacks(entries: &[&TabEntry], recipes: &RecipeBook) -> Vec<ItemStack> {
+pub(crate) fn entry_stacks(
+    entries: &[&TabEntry],
+    recipes: &RecipeBook,
+    variants: Option<&VariantData>,
+) -> Vec<ItemStack> {
     let plain: std::collections::HashSet<&str> = entries
         .iter()
         .filter(|entry| entry.variants.is_none())
         .map(|entry| entry.item.as_str())
         .collect();
     let mut seen = std::collections::HashSet::new();
-    entries
-        .iter()
-        .filter(|entry| entry.variants.is_none() || !plain.contains(entry.item.as_str()))
-        .filter(|entry| entry.variants.is_none() || seen.insert(entry.item.as_str()))
-        .map(|entry| stack_of(recipes, &entry.item))
-        .collect()
+    let mut expanded = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for entry in entries {
+        let Some(kind) = entry.variants.as_ref() else {
+            out.push(stack_of(recipes, &entry.item));
+            continue;
+        };
+        match variants.and_then(|data| data.expand(kind)) {
+            Some(list) => {
+                for components in list {
+                    if expanded.insert((entry.item.clone(), components.to_string())) {
+                        let mut stack = ItemStack::new(entry.item.as_str(), 1);
+                        stack.components = Some(components);
+                        stack.max = creative::max_stack(recipes, &stack);
+                        out.push(stack);
+                    }
+                }
+            }
+            None => {
+                if !plain.contains(entry.item.as_str()) && seen.insert(entry.item.as_str()) {
+                    out.push(stack_of(recipes, &entry.item));
+                }
+            }
+        }
+    }
+    out
 }
 
 pub(crate) fn tab_view(
@@ -184,7 +263,11 @@ impl CreativeUi {
                 let spawned = std::thread::Builder::new()
                     .name("minecraft-creative-tabs".into())
                     .spawn(move || {
-                        let _ = send.send(minecraft_terrain::creative_tabs::creative_tabs(&jar));
+                        let tabs = minecraft_terrain::creative_tabs::creative_tabs(&jar);
+                        let variants = VariantData::read(&jar)
+                            .map_err(|error| eprintln!("creative variants unavailable: {error:#}"))
+                            .ok();
+                        let _ = send.send((tabs, variants));
                     });
                 if spawned.is_ok() {
                     self.loading = Some(receive);
@@ -192,10 +275,12 @@ impl CreativeUi {
             }
         }
         if let Some(receive) = self.loading.as_ref()
-            && let Ok(tabs) = receive.try_recv()
+            && let Ok((tabs, variants)) = receive.try_recv()
         {
             self.loading = None;
             self.tabs = Some(Arc::new(tabs));
+            self.variants = variants.map(Arc::new);
+            self.search = None;
             self.published = None;
             self.built = None;
         }
@@ -275,7 +360,13 @@ impl CreativeUi {
         let shown: Vec<Option<Shown>> = match selected.kind {
             McTabKind::Category => tabs
                 .tab(&selected.id)
-                .map(|tab| entry_stacks(&tab.displayed().collect::<Vec<_>>(), recipes))
+                .map(|tab| {
+                    entry_stacks(
+                        &tab.displayed().collect::<Vec<_>>(),
+                        recipes,
+                        self.variants.as_deref(),
+                    )
+                })
                 .unwrap_or_default()
                 .into_iter()
                 .map(unlocked)
@@ -375,10 +466,14 @@ impl CreativeUi {
         let key = (self.operator, language.is_some());
         if self.search.as_ref().is_none_or(|search| search.key != key) {
             let entries = tabs.search(self.operator);
-            let stacks = entry_stacks(&entries.iter().collect::<Vec<_>>(), recipes);
+            let stacks = entry_stacks(
+                &entries.iter().collect::<Vec<_>>(),
+                recipes,
+                self.variants.as_deref(),
+            );
             let lines = stacks
                 .iter()
-                .map(|stack| search_lines(stack, language))
+                .map(|stack| search_lines(stack, language, self.variants.as_deref()))
                 .collect();
             self.search = Some(SearchList { key, stacks, lines });
         }
@@ -590,7 +685,11 @@ mod tests {
             entry("minecraft:stone", None),
             entry("minecraft:potion", Some(Variants::Potions)),
         ];
-        let stacks = entry_stacks(&entries.iter().collect::<Vec<_>>(), &RecipeBook::default());
+        let stacks = entry_stacks(
+            &entries.iter().collect::<Vec<_>>(),
+            &RecipeBook::default(),
+            None,
+        );
         let ids: Vec<&str> = stacks.iter().map(|stack| stack.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -669,7 +768,7 @@ mod tests {
         );
         let lines = stacks
             .iter()
-            .map(|stack| search_lines(stack, Some(&language)))
+            .map(|stack| search_lines(stack, Some(&language), None))
             .collect();
         let search = SearchList {
             key: (false, true),
@@ -771,6 +870,105 @@ mod tests {
                 )
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn expanded_variants_replace_their_entry_and_unexpanded_ones_stay_plain() {
+        use minecraft_terrain::creative_tabs::Variants;
+        let data = VariantData {
+            potions: vec![
+                "minecraft:water".to_owned(),
+                "minecraft:swiftness".to_owned(),
+            ],
+            enchantments: vec![
+                ("minecraft:mending".to_owned(), 1),
+                ("minecraft:sharpness".to_owned(), 5),
+            ],
+            ..VariantData::default()
+        };
+        let entries = [
+            entry("minecraft:potion", Some(Variants::Potions)),
+            entry(
+                "minecraft:enchanted_book",
+                Some(Variants::EnchantedBooks { all_levels: false }),
+            ),
+            entry("minecraft:suspicious_stew", Some(Variants::SuspiciousStews)),
+            entry("minecraft:white_banner", None),
+            entry("minecraft:white_banner", Some(Variants::OminousBanner)),
+        ];
+        let stacks = entry_stacks(
+            &entries.iter().collect::<Vec<_>>(),
+            &RecipeBook::default(),
+            Some(&data),
+        );
+        let shown: Vec<(&str, Option<String>)> = stacks
+            .iter()
+            .map(|stack| {
+                (
+                    stack.id.as_str(),
+                    stack.components.as_ref().map(ToString::to_string),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (
+                    "minecraft:potion",
+                    Some(
+                        r#"{"minecraft:potion_contents":{"potion":"minecraft:water"}}"#.to_owned()
+                    )
+                ),
+                (
+                    "minecraft:potion",
+                    Some(
+                        r#"{"minecraft:potion_contents":{"potion":"minecraft:swiftness"}}"#
+                            .to_owned()
+                    )
+                ),
+                (
+                    "minecraft:enchanted_book",
+                    Some(r#"{"minecraft:stored_enchantments":{"minecraft:mending":1}}"#.to_owned())
+                ),
+                (
+                    "minecraft:enchanted_book",
+                    Some(
+                        r#"{"minecraft:stored_enchantments":{"minecraft:sharpness":5}}"#.to_owned()
+                    )
+                ),
+                ("minecraft:suspicious_stew", None),
+                ("minecraft:white_banner", None),
+            ]
+        );
+        let mut language = HashMap::new();
+        language.insert(
+            "item.minecraft.potion.effect.swiftness".to_owned(),
+            "Potion of Swiftness".to_owned(),
+        );
+        language.insert(
+            "item.minecraft.enchanted_book".to_owned(),
+            "Enchanted Book".to_owned(),
+        );
+        language.insert(
+            "enchantment.minecraft.sharpness".to_owned(),
+            "Sharpness".to_owned(),
+        );
+        language.insert(
+            "enchantment.minecraft.mending".to_owned(),
+            "Mending".to_owned(),
+        );
+        assert_eq!(
+            search_lines(&stacks[1], Some(&language), Some(&data)),
+            ["Potion of Swiftness"]
+        );
+        assert_eq!(
+            search_lines(&stacks[3], Some(&language), Some(&data)),
+            ["Enchanted Book", "Sharpness V"]
+        );
+        assert_eq!(
+            search_lines(&stacks[2], Some(&language), Some(&data)),
+            ["Enchanted Book", "Mending"]
         );
     }
 

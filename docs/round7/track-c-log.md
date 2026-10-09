@@ -1692,3 +1692,48 @@ IW4L_MINECRAFT_KIT=torch*64,stone*64,diamond_pickaxe
 - **C and X are fixed keys**, like the minimap's M: they are vanilla's defaults and there is no Minecraft key binding screen for them yet. C is also MW2's crouch, so the player crouches while saving.
 - **Guns are not saved.** A gun is the player's MW2 weapon, not a Minecraft item, and the server would refuse to load it.
 - **No data fixing.** Vanilla runs a file from an older version through DataFixerUpper; the file is read as 26.3's layout.
+
+## Minecraft creative tabs hold every potion, enchanted book and variant like vanilla
+
+Commit: the commit that adds this entry. The previous commit is c87d3e5 (the saved hotbars).
+
+### What changed
+
+Checked with javap against 26.3 `Potions`, `PotionIds`, `TestBlockMode` and the `DataComponents` names, and against the jar's `data/minecraft/enchantment`, `painting_variant`, `tags/instrument` and `tags/painting_variant` files.
+
+- **Variant data** (new `crates/minecraft_terrain/src/creative_variants.rs`), read once from the owner's 26.3 jar on the creative tabs' thread. No Mojang data is committed.
+  - `potion_ids`: the potion registry in registration order. In 26.3 `Potions.<clinit>` registers each potion under a `PotionIds` key, so the order comes from its `getstatic PotionIds.X` instructions and each id from the string `PotionIds.<clinit>` stores in that field (46 potions, water first).
+  - Enchantments: `data/minecraft/enchantment/*.json` in id order (a data-driven registry loads its files sorted) with their `max_level`.
+  - Goat horn instruments from `tags/instrument`, painting variants (width and height) from `painting_variant` and their tags, with nested `#tag` entries expanded.
+  - `enum_names`: `TestBlockMode`'s constants (start, log, fail, accept).
+- `VariantData::expand(variants)` is each `CreativeModeTabs` generator:
+  - `Potions`: every potion as `potion_contents` (potions, splash and lingering potions, tipped arrows).
+  - `EnchantedBooks`: `stored_enchantments` at the maximum level for the tab, every level from 1 to the maximum for the search tab.
+  - `Instruments { tag }`: each goat horn as `instrument`.
+  - `OminousBottles`: `ominous_bottle_amplifier` 0 to 4. `Fireworks`: `fireworks` with `flight_duration` 1 to 3.
+  - `Paintings { tag, in_tag }`: the variants in (or outside) the tag, sorted by area and then width (`PAINTING_COMPARATOR`, stable over registry order), as `painting/variant`.
+  - `LightLevels`: the light block's `block_state` level 15 down to 0. `TestBlockModes`: the test block's `block_state` mode.
+  - Suspicious stews and the ominous banner are not expanded: they keep showing their plain item once.
+- **Client side**: tab and search contents expand every variant entry into its stacks (each item and component set once). The search text of a stack now also holds its potion name, its enchantments (with the level unless the enchantment has a single level), a goat horn's instrument, a painting's title and author, and a rocket's flight duration.
+
+### Tests added
+
+- `minecraft_terrain` `creative_variants::tests` (4): potions, books (maximum and all levels) and horns through nested tags; bottles, rockets, light levels, test block modes and the painting order in and outside the tag, with stews and the banner left alone; nested tags expanding once; `the_real_variants_match_vanilla` against the 26.3 jar (46 potions with water first, Sharpness V, enchantments in id order, eight goat horns, the four test block modes, Alban first among the placeable paintings), skipped without the jar.
+- `render_anim` `minecraft_creative::tests::expanded_variants_replace_their_entry_and_unexpanded_ones_stay_plain`: expanded potions and books in order, the stew and banner plain once, and the search lines of a potion and of books with and without a level.
+
+### In-game test steps
+
+Kit: none needed.
+
+1. `/gamemode creative`, E, Food & Drinks (golden apple): the potions, splash potions and lingering potions follow the foods, one per potion, each with its own name ("Potion of Swiftness" and so on). Screenshot 8. All potions share one icon colour for now.
+2. Ingredients (iron ingot): the enchanted books at their highest level, glinting, each tooltip naming its enchantment ("Sharpness V").
+3. Search tab, type `sharpness`: Sharpness I to V show. Type `swiftness`: the swiftness potions, splash, lingering and tipped arrows show.
+4. Tools & Utilities (diamond pickaxe): the eight goat horns and three firework rockets show. Search `sing`: the Sing goat horn shows.
+5. Functional Blocks (oak sign): the paintings after the plain painting, small ones first. Search `kebab`: the Kebab painting shows.
+6. Take a Potion of Swiftness and a Sharpness V book: both keep their effect and enchantment in the hotbar (hover them).
+
+### Decisions
+
+- **The registry order is read, not written down**: the potion order from the bytecode, and data-driven registries (enchantments, paintings) in id order as 26.3 loads them.
+- **Suspicious stews and the ominous banner stay plain.** The stews' effects are code in each flower's constructor and the banner's patterns are code in `Raid`; reading them needs more of the bytecode interpreter than the tabs reader has. The plain items still show once.
+- **Variant icons share their item's icon** (potion colours, painting pictures and light levels look alike), as the icon cache is per item id.
