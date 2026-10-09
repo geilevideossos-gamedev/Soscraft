@@ -1287,6 +1287,7 @@ fn update(
                         .or_else(|| minecraft_terrain::flint::flint_use(&player, &outlined, &catalog, stack, || entities.random_float()))
                         .or_else(|| minecraft_terrain::flint::fire_charge_use(&player, &outlined, &catalog, stack, || entities.random_float()))
                         .or_else(|| minecraft_terrain::berries::bone_meal_use(&player, &outlined, stack))
+                        .or_else(|| minecraft_terrain::ender_eye::eye_use(&player, &outlined, stack))
                 }
             {
                 if !outcome.consumed || matches!(outcome.change, minecraft_terrain::bucket::Change::Set(..)) {

@@ -12,6 +12,7 @@ pub mod burning;
 pub mod container;
 pub mod dispenser;
 pub mod drops;
+pub mod end_portal;
 pub mod entity;
 pub mod explosion;
 pub mod falling;

@@ -34,6 +34,7 @@ pub enum ItemOnBlock {
     Ignite,
     PrimeTnt,
     BoneMeal { face: &'static str },
+    EnderEye,
 }
 
 pub struct ServerSim {
@@ -1239,6 +1240,7 @@ impl ServerSim {
             ItemOnBlock::Ignite => self.level.place_fire(at),
             ItemOnBlock::PrimeTnt => self.level.ignite_tnt(at),
             ItemOnBlock::BoneMeal { face } => self.bone_meal(pos, face),
+            ItemOnBlock::EnderEye => self.level.place_ender_eye(at).is_some(),
         }
     }
 
@@ -4805,6 +4807,71 @@ mod tests {
         assert_eq!(kinds(&server), ["minecraft:shulker"]);
         server.despawn_mobs(&[player], 0);
         assert_eq!(kinds(&server), ["minecraft:shulker"], "shulkers are allowed in peaceful");
+    }
+
+    #[test]
+    fn twelve_eyes_in_an_inward_ring_of_frames_open_the_end_portal() {
+        use minecraftoss_world::level::end_portal::{FILL_SOUND, OPEN_SOUND};
+        let Some((mut server, _)) = door_world() else { return };
+        let centre = (8, 201, 8);
+        let mut frames = Vec::new();
+        for i in -1..=1 {
+            frames.push(((centre.0 + i, centre.1, centre.2 - 2), "south"));
+            frames.push(((centre.0 + i, centre.1, centre.2 + 2), "north"));
+            frames.push(((centre.0 - 2, centre.1, centre.2 + i), "east"));
+            frames.push(((centre.0 + 2, centre.1, centre.2 + i), "west"));
+        }
+        for &(pos, facing) in &frames {
+            let frame = Block::new("minecraft:end_portal_frame").with("facing", facing).with("eye", "false");
+            server.player_edit_block(pos, Some(&frame), PlayerEdit::Place);
+        }
+        server.player_edit_block(centre, Some(&Block::new("minecraft:cobblestone")), PlayerEdit::Place);
+        server.take_changes();
+        server.level.sounds.clear();
+        assert!(!server.item_on_block((8, 199, 8), ItemOnBlock::EnderEye), "stone takes no eye");
+        for (i, &(pos, _)) in frames.iter().enumerate() {
+            assert!(server.item_on_block(pos, ItemOnBlock::EnderEye));
+            assert!(!server.item_on_block(pos, ItemOnBlock::EnderEye), "a filled frame takes no second eye");
+            let sounds: Vec<_> = server.level.sounds.drain(..).map(|s| (s.event, s.pos)).collect();
+            let fill = (FILL_SOUND, [f64::from(pos.0) + 0.5, f64::from(pos.1) + 0.5, f64::from(pos.2) + 0.5]);
+            if i + 1 < frames.len() {
+                assert_eq!(sounds, [fill]);
+                assert!(server.items().iter().all(|item| item.item != "minecraft:cobblestone"), "eye {i} opened nothing");
+            } else {
+                assert_eq!(sounds, [fill, (OPEN_SOUND, [8.5, 201.5, 8.5])]);
+            }
+        }
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        for x in 7..=9 {
+            for z in 7..=9 {
+                assert_eq!(block_at(&changes, (x, 201, z)).map(|b| b.id.key()), Some("minecraft:end_portal".to_owned()));
+            }
+        }
+        for &(pos, facing) in &frames {
+            let frame = block_at(&changes, pos);
+            assert_eq!((property(&frame, "eye").as_deref(), property(&frame, "facing").as_deref()), (Some("true"), Some(facing)));
+        }
+        assert!(server.items().iter().any(|item| item.item == "minecraft:cobblestone"), "the cobblestone inside dropped");
+    }
+
+    #[test]
+    fn a_frame_facing_out_keeps_the_portal_shut() {
+        let Some((mut server, _)) = door_world() else { return };
+        let mut frames = Vec::new();
+        for i in -1..=1 {
+            frames.push(((8 + i, 201, 6), if i == 0 { "north" } else { "south" }));
+            frames.push(((8 + i, 201, 10), "north"));
+            frames.push(((6, 201, 8 + i), "east"));
+            frames.push(((10, 201, 8 + i), "west"));
+        }
+        for &(pos, facing) in &frames {
+            let frame = Block::new("minecraft:end_portal_frame").with("facing", facing).with("eye", "false");
+            server.player_edit_block(pos, Some(&frame), PlayerEdit::Place);
+            assert!(server.item_on_block(pos, ItemOnBlock::EnderEye));
+        }
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert!(changes.values().flatten().all(|b| b.id.key() != "minecraft:end_portal"));
+        assert!(server.level.sounds.iter().all(|s| s.event != minecraftoss_world::level::end_portal::OPEN_SOUND));
     }
 
     #[test]

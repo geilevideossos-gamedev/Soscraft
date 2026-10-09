@@ -8,6 +8,7 @@
 //! placement order and block-update side effects that change results.
 
 pub mod blocks;
+pub mod end_portal;
 pub mod entities;
 pub mod java_set;
 pub mod kinds;
