@@ -511,7 +511,7 @@ IW4L_MINECRAFT_KIT=trident,cow_spawn_egg*2
 
 ### 4. A Minecraft double chest half still drawn by its section stays shut
 
-Commit: (next entry)
+Commit: 00072ad
 
 - **Defect:** `Lids::posed` gave each half of a double chest the wider-open half's progress even when that half had not left its section yet (its cell waiting for the rebuild, `Sending(true)`/`Rebuilding(true)`, or already handed back). Its section still drew the closed lid there, so for a frame or more the frame pass drew a moving lid over a closed one: the two-lid look the lids group set out to avoid (lids test step 6). It happens when the two halves' cells sit in different sections (a chest across a section border), or when one half shuts a tick before the other.
 - **Changed:** `lids.rs` `posed`: only a half drawn apart takes the other half's progress; a half its section still draws keeps its own (0).
@@ -523,6 +523,16 @@ Commit: (next entry)
 ```
 IW4L_MINECRAFT_KIT=chest*2
 ```
+
+### 5. Review notes: found and left open
+
+Commit: (next entry)
+
+- **A trident waiting in a chunk that was never loaded is lost when the world closes.** Entry 11 keeps a trident that flew or came back into an unloaded chunk in memory, but `ServerSim::save_all_entities` (autosave and shutdown) only writes the loaded chunks' entities, so quitting while it waits there drops it and the item in it. Vanilla saves it: the entity section of the unloaded chunk is queued for loading (`PersistentEntitySectionManager.ensureChunkQueuedForLoad`) and written with that chunk's other entities. It is not fixed here because writing the trident alone into that chunk's entity file would replace the entities already saved there, or the generation mobs of a chunk never saved (`load_chunk` only uses `chunk.generation.entities` when no entity file exists); the fix needs the entity storage to merge into a chunk it has not loaded, which belongs with the per-level storage of the crate split. Until then it only happens to a trident thrown beyond the loaded area.
+- **The server never learns the player's real UUID** (review fix 2, After the split item 22).
+- **Checked and found right** (26.3 javap where it matters): projectile entity hits stop at the clip point (`EntityHitResult(entity, location)`), so a wind charge bursts where it struck a mob while a lingering cloud forms at the struck mob's position (`ThrownLingeringPotion.onHitAsPotion`); splash potions have no direct-hit bonus (`ThrownSplashPotion.onHitAsPotion`); shulker and chest lid timings, opener sounds and positions, potion table, colours and duration scaling, the trident's flight, deflection, Loyalty and despawn, the armour draw order, slot parts, inflation and first-layer glint.
+- **Test steps:** none.
+- **Kit:** none.
 
 ## After the split
 
