@@ -190,9 +190,6 @@ pub(crate) fn apply_block_world_damage(world: &mut FrameWorld, tick: Tick) {
             continue;
         }
         let life = meta.life_sequence;
-        let victim = entity_iw4::client_state_name(&meta.name)
-            .unwrap_or("")
-            .to_owned();
         let origin = world.player(target).map_or([0.0; 3], |ps| ps.origin);
         let point = damage.from.unwrap_or(origin);
         let dir: [f32; 3] = std::array::from_fn(|i| origin[i] - point[i]);
@@ -223,12 +220,6 @@ pub(crate) fn apply_block_world_damage(world: &mut FrameWorld, tick: Tick) {
             .client_meta(target)
             .is_some_and(|m| m.lifecycle == ClientLifecycle::Dead && m.life_sequence == life);
         if let Some(death) = damage.death.filter(|_| died && credited) {
-            world.push_print(crate::PendingPrint {
-                recipient: None,
-                bold: false,
-                template: format!("{}{}", crate::HUD_STRING_PLAIN, death.line(&victim)),
-                arg: String::new(),
-            });
             crate::voxel::push_minecraft_death(damage.client, death.killer);
         }
     }

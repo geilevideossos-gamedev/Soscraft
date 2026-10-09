@@ -157,7 +157,7 @@ Commit: 4a8ee15
 
 ### 4. Minecraft chat stays on screen while the player is dead like vanilla
 
-Commit: (filled in by the next commit, or see `git log`)
+Commit: 465f841
 
 - **Changed:** `hud/src/minecraft_inventory.rs update_minecraft_hud`: the pure `minecraft_layers(active, in_world)` says what to draw: the whole Minecraft HUD while alive, only the chat while dead in a Minecraft world, nothing elsewhere. `in_world` is the loaded zone being the Minecraft map (`LaunchIdentity.zone`, as the compass already checks) and the world not loading. While dead it still hides the hotbar, vitals and screens and resets the screen input as before, then paints only `minecraft_chat::draw` (closed chat: the last 10 lines fading by age). The chat input itself still closes on death (`update_chat` and `minecraft_world.rs` both close it while `active` is false), as in vanilla, where the death screen replaces the chat screen. `MINECRAFT-SURVIVAL.md` updated.
 - **Checked with javap (26.3):** `Hud.extractChat` draws whenever there is a player and the HUD isn't hidden; it isn't gated on being alive, so vanilla shows the death message behind the death screen.
@@ -169,8 +169,32 @@ Commit: (filled in by the next commit, or see `git log`)
   3. Load an MW2 map (not Minecraft) and die there: no Minecraft chat lines show.
 - **Kit:** none needed.
 
+### 5. Minecraft death messages leave the MW2 kill feed
+
+Commit: (filled in by the next commit, or see `git log`)
+
+- **Changed:** both kill feed lines a Minecraft death made are gone, the chat line (`minecraft_world.rs`, under `show_death_messages`) is unchanged:
+  - `sim/src/damage.rs apply_block_world_damage` no longer calls `push_print` with the death line for every client (it showed as a `KillfeedLine::Notify` text line); the `victim` name it needed is gone too. `push_minecraft_death` stays, so the Killed By card still gets its killer.
+  - The script `obituary()` native (`sim/src/script/host/natives/player.rs`) still records `minecraft_obituary` (the damage code still uses it to know the stand-in was credited), but skips `script_player::obituary`, so no `EV_OBITUARY` skull line, when the new pure `players::hides_minecraft_obituary(minecraft_hit, attacker, minecraft_killer)` holds: the hit is a Minecraft one and the attacker passed to `obituary` is the `trigger_hurt` stand-in. If the gametype credits a real MW2 player instead, the normal obituary is sent. MW2 damage never sets `minecraft_hit`, so MW2 deaths on any map keep their kill feed.
+  - The gametype callbacks still run, so the death animation, the killcam rules and the Killed By card are as before. `MINECRAFT-SURVIVAL.md` updated.
+- **Tests:** `players::only_a_minecraft_death_credited_to_the_stand_in_leaves_the_kill_feed` (not for an MW2 hit, another attacker, an undefined attacker, no attacker or no stand-in yet).
+- **Decision:** order kept as the brief asked (chat while dead landed first, commit 4), so the death message is never shown nowhere. Multiplayer delivery of the message to every player's chat is left for after the split (see below).
+- **Test steps** (Minecraft map; `keepInventory` doesn't exist in 26.3, the rule is `keep_inventory`):
+  1. Run `/gamerule keep_inventory false`. Place the lava and walk in. Bottom left shows `<name> tried to swim in lava` for about 10 s, also while dead. The MW2 kill feed on the left stays empty, the Killed By card says Lava and the death animation plays. Screenshot 1 while dead.
+  2. Tower about 20 dirt, jump off: `<name> fell from a high place` in the chat, nothing in the kill feed.
+  3. Run `/summon minecraft:skeleton ~ ~ ~6` and let it kill you: `<name> was shot by Skeleton`, Killed By card Skeleton. Screenshot 2.
+  4. Run `/gamerule show_death_messages false`, then `/kill`: no chat line and no kill feed line, but the Killed By card still shows. Run `/gamerule show_death_messages true` afterwards.
+  5. Throw a frag at your feet (G): the MW2 kill feed shows its normal MW2 line.
+  6. On an MW2 map, die to an enemy or a grenade: the kill feed is as before.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:lava_bucket,minecraft:dirt*64,minecraft:water_bucket
+```
+
 ## After the split
 
 Changes this track needs in files the crate split owns, with the exact edit.
 
 - **Block Minecraft attack, mining and use while an MW2 grenade is up** (from commit 4). In `minecraft_world.rs update` (or wherever the split moves it), after `let busy = survival.eating().is_some() || hand.blocking.is_some() || hand.miss_time > 0;` (about line 898) compute `let mw2_offhand = (0x10..=0x15).contains(&ps.weaponstate_primary);` (OffhandInit to OffhandEnd; or make `weapon_iw4::offhand::in_offhand_family` at `weapon_iw4/src/offhand.rs:128` `pub` and call it) and add `|| mw2_offhand` to `busy`, so the hits at about 901, 961 and 976 stop. Change `let idle = survival.eating().is_none() && hand.blocking.is_none();` (about line 997) to `... && !mw2_offhand`, so no item is used or placed. In the split this is the per-player server check: the player's own MW2 weapon state, read from that UUID's playerstate.
+- **Send Minecraft death messages to every player's chat** (from chat commit 5). Today `minecraft_world.rs` (about lines 1638 to 1643, where `show_death_messages` is read) pushes `death_message(death.line(name))`, a `Text::literal` already resolved in the host's language, into the host's own `ui.chat` only. In the split, the server-side death handling for a player (by UUID) should keep the `DeathLine` translation key and its arguments (victim name, killer name or entity id, item name) and, when `show_death_messages` is on, broadcast it through the command server as a `Clientbound` translatable system message to every connected player like vanilla `ServerPlayer.die` (`broadcastSystemMessage`, following team visibility), so each client resolves it in its own language and it lands in each client's `McChat.received`. Nothing goes to the MW2 kill feed (`sim` no longer prints it and the stand-in obituary is skipped). The Killed By card keeps coming from `push_minecraft_death`.
