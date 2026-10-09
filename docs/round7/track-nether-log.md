@@ -763,3 +763,16 @@ Previous commit: 764dfa21
 ```
 IW4L_MINECRAFT_KIT=minecraft:water_bucket,minecraft:ice*4,minecraft:wet_sponge*2,minecraft:netherrack*32,minecraft:red_bed,minecraft:red_bed,minecraft:red_bed,minecraft:straw_bed,minecraft:totem_of_undying,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:respawn_anchor*4,minecraft:glowstone*32,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:compass,minecraft:clock,minecraft:recovery_compass,minecraft:cobblestone*64,minecraft:cooked_beef*16,minecraft:diamond_pickaxe
 ```
+
+## Adversarial review of the track
+
+Fixes found by reviewing the whole track (base 3aef2ebe to ea8214c7).
+
+### 32. Minecraft zombified piglins count no experience for a sword they dropped
+
+Previous commit: ea8214c7
+
+- **Changed:** `third_party/minecraftoss/entities/src/world.rs` (`take_deaths`): a zombified piglin's golden sword drop is drawn before its experience, and the experience counts only the equipment still held. Vanilla's `LivingEntity.dropAllDeathLoot` runs `dropCustomDeathLoot` (which empties the slot of a dropped item) before `dropExperience` (checked with javap), and `Mob.getBaseExperienceReward` adds 1 to 3 only for an item still in a slot. Before, a dropped sword still added 1 to 3 experience, and the random draws came in the other order. Wither skeletons already did it this way.
+- **Tests:** `world::tests::a_zombified_piglin_s_dropped_sword_no_longer_adds_experience` (400 player kills with seeded randoms: a kill that drops the sword gives 5, one that keeps it 6 to 8).
+- **Test steps:** none worth a screenshot; the sword drops on 8.5% of player kills, and the orb count is then a little lower.
+- **Kit:** none.

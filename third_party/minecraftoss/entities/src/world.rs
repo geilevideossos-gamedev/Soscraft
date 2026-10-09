@@ -3734,12 +3734,6 @@ impl EntityWorld {
                 death.experience = if e.zombie.baby { 12 } else { 5 };
             }
             if e.zombie.kind == ZombieKind::ZombifiedPiglin {
-                let worn = usize::from(e.zombie.main_hand.is_some()) + e.zombie.armor.iter().flatten().count();
-                if earns(&death, true) {
-                    for _ in 0..worn {
-                        death.experience += 1 + e.random.next_int(3) as i32;
-                    }
-                }
                 if mob_drops && death.context.killed_by_player && e.zombie.main_hand.is_some() && e.random.next_float() < 0.085 {
                     let item = e.zombie.main_hand.take().unwrap_or_default();
                     let mut stack = ItemStack::new(&item, 1);
@@ -3750,6 +3744,12 @@ impl EntityWorld {
                         stack.components = Some(serde_json::json!({ "minecraft:damage": wear }));
                     }
                     death.equipment.push(stack);
+                }
+                let worn = usize::from(e.zombie.main_hand.is_some()) + e.zombie.armor.iter().flatten().count();
+                if earns(&death, true) {
+                    for _ in 0..worn {
+                        death.experience += 1 + e.random.next_int(3) as i32;
+                    }
                 }
             }
             deaths.push((order, death));
@@ -7196,6 +7196,30 @@ mod tests {
         assert_eq!(zombie_attack_damage(&Zombie::new(DVec3::ZERO)), 3.0);
         assert_eq!((entity.zombie.eye_height(), entity.zombie.kind.type_id()), (1.79, "minecraft:zombified_piglin"));
         assert_eq!(world.entity_type(id), Some("minecraft:zombified_piglin"));
+    }
+
+    #[test]
+    fn a_zombified_piglin_s_dropped_sword_no_longer_adds_experience() {
+        let mut world = EntityWorld::default();
+        let (mut dropped, mut kept) = (0, 0);
+        for n in 0..400_u32 {
+            let mut piglin = zombified_piglin(f64::from(n) * 3.0 + 0.5);
+            piglin.main_hand = Some("minecraft:golden_sword".to_owned());
+            let id = world.spawn_zombie(piglin, true);
+            world.zombie_mut(id).unwrap().random = LegacyRandom::new(u64::from(n));
+            let center = DVec3::new(f64::from(n) * 3.0 + 0.5, 1.0, 2.5);
+            assert!(world.player_blast(Some(7), id, 100.0, center, 0.0).unwrap().died);
+            for death in world.take_deaths() {
+                if death.equipment.iter().any(|stack| stack.id == "minecraft:golden_sword") {
+                    dropped += 1;
+                    assert_eq!(death.experience, 5, "the sword left its hand before the experience was counted");
+                } else {
+                    kept += 1;
+                    assert!((6..=8).contains(&death.experience), "{}", death.experience);
+                }
+            }
+        }
+        assert!(dropped > 0 && kept > 0, "{dropped} dropped, {kept} kept");
     }
 
     #[test]
