@@ -815,7 +815,7 @@ IW4L_MINECRAFT_KIT=wind_charge*64,ender_pearl*16
 
 ### 14. A Minecraft wind charge burst launches the player without fall damage like vanilla
 
-Commit: (next entry)
+Commit: ac27e8b
 
 - **Changed:** `entities.rs` keeps the local player's (`PLAYER`) `Output.players_pushed` in `Entities.player_pushes`; the adapter adds each to the MW2 velocity through the new `sim` `push_velocity(id, delta)` (`SimWorld` and `FrameWorld`; prediction picks it up from the next snapshot like any server-side change), except for spectators and flying players (`ServerExplosion` skips them). New `minecraft_survival/src/impulse.rs` `launch_velocity(push, gravity)`: an upward push is turned into the MW2 launch speed that reaches vanilla's height under the player's own gravity (vanilla flies with 0.08 gravity and 0.98 drag a tick, MW2 with `ps.gravity`, 800 units/s^2 = 22 blocks/s^2, and no drag), and its sideways part into the speed that lands as far off as vanilla's 0.91-a-tick air friction carries it in that flight; a push along the ground or down is carried as it is (blocks a tick times 20). `survival.rs` `start_impulse(feet_y)` and `impulse_fall(distance, feet_y)` are `ServerPlayer.setCurrentExplosionCause` for a wind charge and `LivingEntity.causeFallDamage`: the next fall only counts below where the player was pushed, and the context ends on landing at or above it, on a fall that hurts, or on a landing once its 40-tick grace has run out. The adapter runs the landing distance through `impulse_fall` (After the split item 14).
 - **Tests:** impulse: `a_push_up_reaches_the_vanilla_height_under_mw2_gravity` (a push of 1 a tick climbs 5.92 blocks in vanilla and in MW2), `a_push_up_and_away_lands_as_far_off_as_in_vanilla`, `a_push_along_the_ground_or_down_is_carried_as_it_is`. survival: `a_wind_charge_jump_only_counts_the_fall_below_where_it_burst`, `a_short_drop_after_a_wind_charge_keeps_the_grace_for_two_seconds`. sim: `a_push_adds_to_the_players_velocity`.
@@ -829,4 +829,22 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=wind_charge*64,cobblestone*64
+```
+
+### 15. A Minecraft Riptide trident launches the player in water or rain
+
+Commit: (next entry)
+
+- **Changed:** the adapter turns a `Release::Riptide { strength, sound }` (entry 12's release in water or rain, one durability spent) into a push: `trident::riptide_push(yaw, pitch, strength)` (1.5 blocks a tick at level 1, plus 0.75 a level, where the player looks), through entry 14's `push_velocity`, and plays the level's riptide sound (`item.trident.riptide_1` to `_3`, volume 1, pitch 1). New `impulse::riptide_velocity(push, on_ground, gravity)`: entry 14's `launch_velocity`, and from the ground the extra speed that climbs vanilla's 1.2-block lift (`player.move(0, 1.2, 0)`) on top (After the split item 11).
+- **Tests:** impulse: `a_riptide_from_the_ground_climbs_its_lift_higher`.
+- **Decisions:** the lift is speed, not a 1.2-block move, so it can't put the player inside a ceiling. Not done: the spin attack (`startAutoSpinAttack(20, 8)`: for a second the player spins and hits the first mob it touches for 8, bouncing back), its spinning pose, and the riptide fall rules; they need a per-player spin state on the server's mob hits. In water the MW2 swim drag decides how far the push carries, not vanilla's 0.8 a tick.
+- **Test steps** (survival mode):
+  1. Stand in water at least 2 blocks deep, look 45 degrees up, hold right-click with the Riptide III trident for a second and release: you shoot out of the water in that direction with the riptide whoosh. Screenshot in the air.
+  2. Out of the water in clear weather: holding right-click does nothing (no charge pose).
+  3. `/weather rain`, stand on grass and do it again: you hop up and fly where you look; you take fall damage if you land from high up.
+  4. The trident's durability bar drops by one per launch.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=trident+riptide=3,trident+riptide=1,water_bucket*4
 ```

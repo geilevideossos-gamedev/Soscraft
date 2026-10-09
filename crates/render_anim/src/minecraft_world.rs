@@ -824,7 +824,13 @@ fn update(
         let release = entities.release_trident(inventory, released, !game_mode.consumes_items(), wet, glam::DVec3::from_array(eye), mc_yaw, ps.viewangles[0], motion, on_ground);
         let thrown = match &release {
             minecraft_terrain::trident::Release::Throw(stack) => Some(minecraft_terrain::trident::throw_sound(stack)),
-            _ => None,
+            minecraft_terrain::trident::Release::Riptide { strength, sound } => {
+                let push = minecraft_terrain::trident::riptide_push(mc_yaw, ps.viewangles[0], *strength);
+                let launch = minecraft_survival::impulse::riptide_velocity(push, on_ground, f64::from(ps.gravity) / f64::from(sim::voxel::BLOCK)) * f64::from(sim::voxel::BLOCK);
+                authority.0.push_velocity(local.0, [launch.x as f32, -launch.z as f32, launch.y as f32]);
+                Some(*sound)
+            }
+            minecraft_terrain::trident::Release::Nothing => None,
         };
         if let (Some(sound), Some(sounds)) = (thrown, sounds.as_mut()) {
             sounds.play(&world.packs, sound, None, 1.0, 1.0);

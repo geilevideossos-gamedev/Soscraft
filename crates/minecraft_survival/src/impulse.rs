@@ -6,6 +6,7 @@ const AIR_FRICTION: f64 = 0.91;
 const TICKS_PER_SECOND: f64 = 20.0;
 const LONGEST_FLIGHT: u32 = 1200;
 pub const FALL_GRACE_TICKS: u32 = 40;
+pub const RIPTIDE_LIFT: f64 = 1.2;
 
 fn flight(rise: f64) -> (f64, u32) {
     let (mut height, mut speed, mut apex, mut ticks) = (0.0, rise, 0.0_f64, 0);
@@ -31,6 +32,15 @@ pub fn launch_velocity(push: DVec3, gravity: f64) -> DVec3 {
     let carried = (1.0 - AIR_FRICTION.powi(ticks as i32)) / (1.0 - AIR_FRICTION);
     let across = DVec3::new(push.x, 0.0, push.z) * carried / airtime;
     DVec3::new(across.x, up, across.z)
+}
+
+pub fn riptide_velocity(push: DVec3, on_ground: bool, gravity: f64) -> DVec3 {
+    let launch = launch_velocity(push, gravity);
+    if !on_ground || gravity <= 0.0 || launch.y < 0.0 {
+        return launch;
+    }
+    let up = (launch.y * launch.y + 2.0 * gravity * RIPTIDE_LIFT).sqrt();
+    DVec3::new(launch.x, up, launch.z)
 }
 
 #[cfg(test)]
@@ -64,6 +74,24 @@ mod tests {
         }
         let mw2 = DVec3::new(launch.x, 0.0, launch.z) * airtime;
         assert!((mw2 - vanilla).length() < 1e-9, "{mw2} {vanilla}");
+    }
+
+    #[test]
+    fn a_riptide_from_the_ground_climbs_its_lift_higher() {
+        let push = DVec3::new(0.0, 1.5, 0.0);
+        let flying = riptide_velocity(push, false, MW2_GRAVITY);
+        assert_eq!(flying, launch_velocity(push, MW2_GRAVITY));
+        let grounded = riptide_velocity(push, true, MW2_GRAVITY);
+        let height = |v: DVec3| v.y * v.y / (2.0 * MW2_GRAVITY);
+        assert!((height(grounded) - height(flying) - RIPTIDE_LIFT).abs() < 1e-9);
+        let level = riptide_velocity(DVec3::new(2.0, 0.0, 0.0), true, MW2_GRAVITY);
+        assert_eq!(level.x, 40.0);
+        assert!((height(level) - RIPTIDE_LIFT).abs() < 1e-9);
+        let down = DVec3::new(0.0, -1.0, 0.0);
+        assert_eq!(
+            riptide_velocity(down, true, MW2_GRAVITY),
+            DVec3::new(0.0, -20.0, 0.0)
+        );
     }
 
     #[test]
