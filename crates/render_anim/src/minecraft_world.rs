@@ -556,6 +556,8 @@ fn update(
         .or_else(|| players.get(local_uuid).and_then(|player| player.survival.last_feet()).map(|feet| minecraft_commands::Pose { feet, yaw: 0.0, pitch: 0.0 }));
     let presence = vec![(local_uuid.clone(), minecraft_survival::commands::Presence { pose: host_pose, alive: host_alive })];
     let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, levels, players, local_uuid, &mut ui.chat.sent, presence);
+    let loaded_dimensions: Vec<Dimension> = levels.keys().copied().collect();
+    ui.chat.command_level = players.get(local_uuid).map_or(0, |player| globals.chat.level(player.id));
     let Some(player) = players.get_mut(local_uuid) else {
         ui.active = false;
         ui.inventory_open = false;
@@ -637,6 +639,14 @@ fn update(
 
     // Minecraft's yaw: 0 facing +Z (map -Y), turning towards -X.
     let mc_yaw = minecraft_yaw(ps.viewangles[1]);
+    let aim = {
+        let mut aim = minecraftoss_player::Player::new(glam::DVec3::from_array(feet));
+        aim.yaw = f64::from(mc_yaw);
+        aim.pitch = f64::from(ps.viewangles[0]);
+        aim.crouching = ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
+        aim.target(&minecraft_terrain::doors::Outlined(&terrain.scene), player_mode.block_reach())
+    };
+    minecraft_survival::commands::refresh_hints(&mut ui.chat.hints, &globals.chat, loaded_dimensions.iter().copied(), aim.map(|hit| (hit.point.to_array(), [hit.pos.0, hit.pos.1, hit.pos.2])));
     let mut all_events = sim::voxel::take_events();
     let mut hand_mined = Vec::new();
     let mut creative_broken = Vec::new();

@@ -3,9 +3,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use minecraft_commands::{
-    Answer, BlockEdit, Clientbound, Clock, CommandData, CommandRegistries, CommandServer,
-    CommandWorld, Enchanted, EnchantmentInfo, Experience, ItemArg, ItemFilter, Loaded,
-    LocateKind, LocateRequest, Located, PlayerId, Pose, Serverbound, Text, Weather,
+    Answer, BlockEdit, Clientbound, Clock, CommandData, CommandHints, CommandRegistries,
+    CommandServer, CommandWorld, Enchanted, EnchantmentInfo, Experience, ItemArg, ItemFilter,
+    Loaded, LocateKind, LocateRequest, Located, PlayerId, Pose, Serverbound, Text, Weather,
 };
 use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_terrain::day_cycle::DayCycle;
@@ -671,6 +671,33 @@ pub fn loaded_dimension(levels: &BTreeMap<Dimension, Level>, id: &str) -> Option
 
 pub fn level_of<'l>(levels: &'l BTreeMap<Dimension, Level>, id: &str) -> Option<&'l Level> {
     levels.get(&loaded_dimension(levels, id)?)
+}
+
+pub fn refresh_hints(
+    hints: &mut CommandHints,
+    chat: &CommandServer,
+    dimensions: impl Iterator<Item = Dimension>,
+    aim: Option<([f64; 3], [i32; 3])>,
+) {
+    let registries = chat.registries();
+    if hints.items.len() != registries.items.len()
+        || hints.enchantments.len() != registries.enchantments.len()
+        || hints.blocks.len() != chat.data().blocks.len()
+    {
+        *hints = CommandHints::from_server(chat);
+    }
+    let players = chat.player_names();
+    if hints.players != players {
+        hints.players = players;
+    }
+    let dimensions: Vec<String> = dimensions
+        .map(|dimension| dimension.dimension_type().to_owned())
+        .collect();
+    if hints.dimensions != dimensions {
+        hints.dimensions = dimensions;
+    }
+    hints.hit = aim.map(|(point, _)| point);
+    hints.hit_block = aim.map(|(_, block)| block);
 }
 
 pub fn coordinate_scale(datapack: &minecraftoss_core::datapack::DataPack, id: &str) -> f64 {
@@ -1401,6 +1428,56 @@ pub(crate) mod tests {
             host.loaded("minecraft:overworld", [0, 64, 0]),
             Loaded::Unloaded
         );
+    }
+
+    #[test]
+    fn hints_follow_the_server_and_the_point_in_view() {
+        let mut parts = Parts::new();
+        let mut hints = CommandHints::default();
+        let overworld = || [Dimension::Overworld].into_iter();
+        refresh_hints(&mut hints, &parts.server, overworld(), None);
+        assert_eq!(hints.players, vec!["Steve".to_owned()]);
+        assert_eq!(hints.dimensions, vec!["minecraft:overworld".to_owned()]);
+        assert_eq!((hints.hit, hints.hit_block), (None, None));
+        parts.server.registries_mut().items = vec!["minecraft:stone".to_owned()];
+        parts.server.registries_mut().enchantments = vec!["minecraft:sharpness".to_owned()];
+        parts.server.data_mut().blocks.insert(
+            "minecraft:oak_stairs".to_owned(),
+            vec![("half".to_owned(), vec!["top".to_owned(), "bottom".to_owned()])],
+        );
+        parts.join(FRIEND, "Alex", [0.5, 64.0, 0.5]);
+        let aim = ([3.5, 64.0, -2.125], [3, 63, -3]);
+        refresh_hints(
+            &mut hints,
+            &parts.server,
+            [Dimension::Overworld, Dimension::Nether].into_iter(),
+            Some(aim),
+        );
+        assert_eq!(hints.items, vec!["minecraft:stone".to_owned()]);
+        assert_eq!(hints.enchantments, vec!["minecraft:sharpness".to_owned()]);
+        assert_eq!(hints.blocks_with_properties, vec!["minecraft:oak_stairs".to_owned()]);
+        assert_eq!(hints.players, vec!["Steve".to_owned(), "Alex".to_owned()]);
+        assert_eq!(
+            hints.dimensions,
+            vec![
+                "minecraft:overworld".to_owned(),
+                "minecraft:the_nether".to_owned()
+            ]
+        );
+        assert_eq!(hints.hit, Some([3.5, 64.0, -2.125]));
+        assert_eq!(hints.hit_block, Some([3, 63, -3]));
+        let completion = minecraft_commands::complete("/tp ", 4, 4, &hints);
+        assert!(
+            completion
+                .list
+                .iter()
+                .any(|suggestion| suggestion.text == "3.50 64.00 -2.13")
+        );
+        parts.server.leave(FRIEND);
+        refresh_hints(&mut hints, &parts.server, overworld(), None);
+        assert_eq!(hints.players, vec!["Steve".to_owned()]);
+        assert_eq!(hints.items, vec!["minecraft:stone".to_owned()]);
+        assert_eq!((hints.hit, hints.hit_block), (None, None));
     }
 
     #[test]

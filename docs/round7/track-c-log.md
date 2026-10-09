@@ -1323,3 +1323,32 @@ Kit: none needed.
 ### Decisions
 
 - **The lookup is by the level map, not by the `Dimension` enum.** `Dimension::parse` also accepts `nether` and `end`; vanilla only knows `minecraft:the_nether` and `minecraft:the_end`, so the lookup compares full ids.
+
+## Minecraft chat keeps the command hints up to date
+
+Commit: the commit that adds this entry.
+
+### What changed
+
+- `frame::McChat` gains `hints` (`minecraft_commands::CommandHints`) and `command_level` (the local player's permission level), which the chat UI passes to `minecraft_commands::complete`. `clear_messages` resets both when a match ends. `frame` now depends on `minecraft_commands` (one line in `Cargo.lock`).
+- New `commands::refresh_hints(&mut hints, &chat, loaded dimensions, aim)`, called by `render_anim` every frame:
+  - the registry and data lists (items, entities, effects, enchantments, item and block tags, blocks, structures, biomes, POI types and their tags) are rebuilt with `CommandHints::from_server` only when the server's lists change size, which happens once while the world loads;
+  - the online player names and the loaded dimensions (only the overworld until phase 3) are replaced when they differ;
+  - `hit` is the exact point where the crosshair ray meets the block (`Hit::point`, vanilla `hitResult.getLocation()`) and `hit_block` that block, both `None` when no block is in reach. The ray uses the player's block reach (4.5, or 5 in creative) and the crouching eye, as the hand's targeting does.
+- `render_anim` sets `command_level` from the local player's id each frame.
+
+### Tests added
+
+- `commands::tests::hints_follow_the_server_and_the_point_in_view`: names and the dimension at first, the lists rebuilt after the registries and block data change (with `blocks_with_properties`), a second player and the Nether, the hit point and block, `/tp ` suggesting "3.50 64.00 -2.13" from them, and a player leaving and the hit clearing without the lists being rebuilt.
+- `frame` `clearing_messages_keeps_the_sent_history` checks that the hints and the level are reset.
+
+### In-game test steps
+
+Nothing shows yet: the chat UI that draws the suggestions comes in the next group of this track and reads `McChat.hints`. The suggestion entries' steps (`/ga`, `/give @s pick`, `/tp ` while looking at a block, `/execute in `) are the check once it is in.
+
+Kit: none needed.
+
+### Decisions
+
+- **The hints live in `McChat`**, next to the input they complete, as the brief planned; in multiplayer the host sends each friend theirs and the friend's client writes them there.
+- **The static lists are compared by length, not rebuilt every frame.** They only change while a world loads; cloning about 5,000 ids per frame would be wasted work.

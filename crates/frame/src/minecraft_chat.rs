@@ -27,6 +27,8 @@ pub struct McChat {
     pub received: Vec<McChatLine>,
     pub sent: Vec<String>,
     pub opened_at: f64,
+    pub hints: minecraft_commands::CommandHints,
+    pub command_level: u8,
 }
 
 impl McChat {
@@ -45,6 +47,8 @@ impl McChat {
         self.lines.clear();
         self.received.clear();
         self.sent.clear();
+        self.hints = minecraft_commands::CommandHints::default();
+        self.command_level = 0;
     }
 }
 
@@ -66,11 +70,15 @@ mod tests {
         chat.lines.push_front((McChatLine::default(), 1.0));
         chat.received.push(McChatLine::default());
         chat.sent.push("hi".into());
+        chat.hints.players.push("Steve".into());
+        chat.command_level = 4;
         chat.clear_messages();
         assert!(!chat.open);
         assert!(chat.input.is_empty() && chat.cursor == 0 && chat.scroll == 0);
         assert_eq!(chat.highlight, 0);
         assert!(chat.lines.is_empty() && chat.received.is_empty() && chat.sent.is_empty());
         assert_eq!(chat.history, vec!["hello".to_owned()]);
+        assert!(chat.hints.players.is_empty());
+        assert_eq!(chat.command_level, 0);
     }
 }
