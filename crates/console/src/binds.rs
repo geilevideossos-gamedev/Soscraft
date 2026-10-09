@@ -583,11 +583,12 @@ pub(crate) fn minecraft_presses(
         if just_pressed(button) {
             presses.press(action);
         }
-        if !state.screen_open && held(button) {
+        if !state.screen_open && (held(button) || just_pressed(button)) {
             presses.hold(action);
         }
     }
-    if !state.screen_open && held(BindButton::Pad(PadButton::DpadDown)) {
+    let dpad_down = BindButton::Pad(PadButton::DpadDown);
+    if !state.screen_open && (held(dpad_down) || just_pressed(dpad_down)) {
         presses.hold(frame::McAction::SwapHands);
     }
     (suppressed, presses)
@@ -996,6 +997,22 @@ mod minecraft_bind_tests {
             binds.binding_name(BindButton::Pad(PadButton::LeftBumper)),
             Some("+smoke")
         );
+    }
+
+    #[test]
+    fn a_swap_hands_tap_inside_one_frame_still_holds_for_that_frame() {
+        let binds = defaults();
+        let tapped = |state, key: BindButton| {
+            let (_, presses) = minecraft_presses(&binds, state, |button| button == key, |_| false);
+            presses.is_held(McAction::SwapHands)
+        };
+        for key in [F, BindButton::Pad(PadButton::DpadDown)] {
+            assert!(tapped(state(false, false), key));
+            assert!(!tapped(state(false, true), key));
+            assert!(!tapped(MinecraftKeyState::default(), key));
+        }
+        assert!(!tapped(state(false, false), B));
+        assert!(!tapped(state(false, false), G));
     }
 
     #[test]

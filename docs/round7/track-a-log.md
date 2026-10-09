@@ -171,7 +171,7 @@ Commit: 465f841
 
 ### 5. Minecraft death messages leave the MW2 kill feed
 
-Commit: (filled in by the next commit, or see `git log`)
+Commit: 3e228ed
 
 - **Changed:** both kill feed lines a Minecraft death made are gone, the chat line (`minecraft_world.rs`, under `show_death_messages`) is unchanged:
   - `sim/src/damage.rs apply_block_world_damage` no longer calls `push_print` with the death line for every client (it showed as a `KillfeedLine::Notify` text line); the `victim` name it needed is gone too. `push_minecraft_death` stays, so the Killed By card still gets its killer.
@@ -190,6 +190,26 @@ Commit: (filled in by the next commit, or see `git log`)
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:lava_bucket,minecraft:dirt*64,minecraft:water_bucket
+```
+
+## Group: review fixes
+
+Adversarial review of the whole track (base 105d982).
+
+### 1. A quick tap of the swap-hands key with a gun selected still uses the offhand item
+
+Commit: (filled in by the next commit, or see `git log`)
+
+- **Defect:** commit 3 of the grenade group latched the offhand use from the swap-hands key's held state only (`inputs.pressed`). A tap whose press and release land in the same frame is never pressed at the sample, so with a gun selected a quick F (or D-pad down) tap threw no snowball and placed no block. The tactical latch it replaced read `kb.smoke.active || kb.smoke.was_pressed`, which caught such taps; this was a regression, more likely at low frame rates.
+- **Changed:** `console/src/binds.rs minecraft_presses` holds a Minecraft key's action, and D-pad down's swap hands, while the key is held or was just pressed this frame, still only outside Minecraft screens. A tap now holds for its one frame, so `offhand_key_latch` latches and `minecraft_world` sees the rising edge.
+- **Tests:** `a_swap_hands_tap_inside_one_frame_still_holds_for_that_frame` (F and D-pad down, not in screens, not off the map, not for B or G).
+- **Test steps** (pick a class with Frag and Flash):
+  1. Put the snowballs in the offhand, select a gun and tap F as quickly as you can, ten times: every tap throws a snowball.
+  2. Put cobblestone in the offhand, gun selected, look at the ground and tap F quickly: each tap places one block.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:snowball*16,minecraft:cobblestone*64
 ```
 
 ## After the split
