@@ -631,7 +631,7 @@ impl Entities {
                 self.falling.receive(std::mem::take(&mut snapshot.falling), std::mem::take(&mut snapshot.tnt), &output.changes, self.ticks);
                 self.server_snapshot = Some(snapshot);
             }
-            for landing in output.pearl_landings {
+            for (_, landing) in output.pearl_teleports.into_iter().filter(|&(player, _)| player == PLAYER) {
                 let at = DVec3::from_array(landing);
                 for _ in 0..16 {
                     self.portal.emit_enderman(at, 0.6, 1.8);

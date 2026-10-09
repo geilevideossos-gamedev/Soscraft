@@ -1499,7 +1499,6 @@ pub struct Output {
     /// Positions where bone meal was used.
     pub bone_meal_used: Vec<BlockPos>,
     pub item_uses: Vec<bool>,
-    pub pearl_landings: Vec<[f64; 3]>,
     pub pearl_teleports: Vec<(u64, [f64; 3])>,
     pub weather: Option<WeatherView>,
     /// How many commands the server has handled so far.
@@ -1829,9 +1828,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.tick_clouds(&bodies);
                     sim.tick_thrown(&bodies);
                     sim.tick_tridents(&bodies);
-                    let teleports = sim.take_pearl_teleports();
-                    out.pearl_landings.extend(teleports.iter().map(|&(_, at)| at));
-                    out.pearl_teleports.extend(teleports);
+                    out.pearl_teleports.extend(sim.take_pearl_teleports());
                     sim.spawn_trade_experience();
                     out.merchant.extend(sim.check_merchant(&input.mob_players));
                     out.player_hits.extend(sim.mobs.take_player_hits());

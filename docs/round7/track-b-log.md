@@ -602,7 +602,7 @@ The second half of the track wires the throwables into the game (After the split
 
 ### 1. Minecraft throws carry their thrower and the stack they came from
 
-Commit: (next entry)
+Commit: 4749db4
 
 - **Changed:** `entities.rs` `Entities::throw` takes the thrown stack and launches it with `Thrown::launch` (`Throw { owner: PLAYER, item, components, .. }`), so a potion carries its own contents and every throw names its thrower. `minecraft_world.rs` passes the stack. `server.rs`: the hand bridge (`ServerSim::note_held`, its `held` map and the `TickInput.pickup` call to it) is gone, since every throw now brings its components (After the split item 1).
 - **Tests:** server: `a_throw_without_its_stack_takes_it_from_the_throwers_hand` removed with the bridge it tested; the throws in the other tests already carry their stacks.
@@ -613,4 +613,18 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=splash_potion@poison*2,splash_potion@harming,stick,pig_spawn_egg*2,cow_spawn_egg*2
+```
+
+### 2. A Minecraft ender pearl moves only the player who threw it
+
+Commit: (next entry)
+
+- **Changed:** `entities.rs` reads `Output.pearl_teleports` and keeps only the local player's (`PLAYER`) landings; `server.rs` drops `Output.pearl_landings`, which carried every pearl's landing without its thrower (After the split item 2).
+- **Tests:** none new; `each_pearl_teleports_its_own_thrower_and_dies_with_it` covers the keyed list.
+- **Test steps:**
+  1. Throw an ender pearl at the ground 10 blocks away: you land there with the teleport sound and take the 5 pearl damage, as before.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=ender_pearl*16
 ```
