@@ -112,7 +112,7 @@ IW4L_MINECRAFT_KIT=minecraft:cobblestone*64
 
 ### 6. Minecraft levels open on demand for any dimension (E1-5)
 
-Commit: filled in by the next entry (or `git log` under this subject)
+Commit: 9c0b000
 
 - **Changed:**
   - `minecraft_survival/src/level.rs`: `Level::new(dimension, terrain)` and `Terrain::open(registries, seed, view_distance, dimension, save, known_spawn)`, which creates the dimension's folders (`WorldSave::create_dimension`), builds the terrain stream, the streamed scene and the dimension's environment. `load()` builds the overworld through it.
@@ -129,3 +129,24 @@ Commit: filled in by the next entry (or `git log` under this subject)
   1. Keep `IW4L_MINECRAFT_WORLD=dimtest` and add `IW4L_MINECRAFT_WEATHER=rain`. Start: it rains, the log says `Minecraft weather: rain from IW4L_MINECRAFT_WEATHER`. **Screenshot 1.**
   2. Remove the weather line again.
 - **Kit:** none needed; any kit works.
+
+### 7. Minecraft levels nobody is in save and close after 15 seconds (E1-6)
+
+Commit: filled in by the next entry (or `git log` under this subject)
+
+- **Changed:**
+  - `minecraft_survival/src/level.rs`: `Level.empty_ticks`.
+  - `minecraft_survival/src/server.rs`:
+    - `EMPTY_TIME` = 300 ticks, vanilla's `ServerLevel.EMPTY_TIME_NO_TICK` and the length of the `portal` ticket (checked with javap in the brief).
+    - `Server::close_empty_levels(ticks)`: a level no player is in counts the server ticks; at 300 it leaves `levels` and `Globals::close_level` saves and drops it on a `minecraft-level-save` thread (server block entities with the closing save, containers, then the mobs, then the chunks), logging `Minecraft <dimension> level saved and closed in N ms`. A player in the level, alive or dead, resets the count. Returns the closed dimensions.
+    - `Globals.closing` keeps those threads by dimension. `LevelLoader::open` takes the ones of its dimension and joins them on its own thread before it builds the level, so two chunk storages never hold the same region files. `Server::save_and_close` joins the rest; the adapter's `close_world` already runs it.
+    - `Globals.level_ticks` gathers the server ticks of the frame for the next count.
+    - A level that has weather and was empty takes the server's `WeatherData` back when a player returns (the S1 hand-off), so the weather that changed while nobody was in the overworld goes on there.
+  - `minecraft_terrain/src/server.rs`: `Command::WeatherData` and `ServerHandle::set_weather_data`; `Entities::set_weather_data` also updates its cached copy so the next frame doesn't write the old weather back.
+  - `render_anim/src/minecraft_world.rs`: the frame adds its server ticks to `level_ticks`; `follow_levels` closes empty levels before it opens any.
+- **Tests:** `server`: `a_level_nobody_is_in_saves_and_closes_after_300_ticks` (299 ticks keep it, a player coming back resets the count, the 300th closes it, the occupied Nether stays, the reopening loader takes the closing save and the End's chunks are in its region folder when it opens again), `a_temporary_world_keeps_its_empty_levels_open`, `the_overworld_takes_the_world_s_weather_back_when_a_player_returns` (an empty overworld keeps its old weather, the player's return hands it the server's storm, and the count is reset).
+- **Decisions:**
+  - A temporary world (`IW4L_MINECRAFT_WORLD=temp`) keeps its empty levels open: its chunks live in a session folder that is deleted when the level closes, so closing would regenerate the level on the next visit.
+  - Only the player's level ticks, as before; vanilla stops ticking entities in a level empty for 300 ticks, and here an empty level is not ticked at all.
+- **Test steps:** the overworld closes when the player starts in another dimension (entry 9); then the log shows `Minecraft minecraft:overworld level saved and closed` about 15 seconds after the start. Nothing to test on its own.
+- **Kit:** none.

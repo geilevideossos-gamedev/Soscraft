@@ -277,6 +277,8 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         data: Default::default(),
         level_writer: None,
         autosave_ticks: 0,
+        level_ticks: 0,
+        closing: Vec::new(),
     };
     let level = minecraft_survival::level::Level::new(Dimension::Overworld, terrain);
     Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), opening: Default::default(), players: std::collections::BTreeMap::new() }))
@@ -1472,6 +1474,7 @@ fn update(
         }
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
         globals.autosave_ticks += mob_ticks;
+        globals.level_ticks += mob_ticks;
         globals.advance_weather(&[*dimension], mob_ticks);
         for _ in 0..mob_ticks {
             for sound in entities.animate_tick(&terrain.scene, feet) {
@@ -2401,6 +2404,8 @@ fn follow_levels(runtime: &mut Runtime) {
     let Some(server) = runtime.server.as_mut() else {
         return;
     };
+    let ticks = std::mem::take(&mut server.globals.level_ticks);
+    server.close_empty_levels(ticks);
     server.open_levels(VIEW_DISTANCE);
     server.finish_opening();
 }

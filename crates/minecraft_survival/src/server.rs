@@ -46,6 +46,8 @@ pub struct Globals {
     pub data: GameData,
     pub level_writer: Option<JoinHandle<()>>,
     pub autosave_ticks: u32,
+    pub level_ticks: u32,
+    pub closing: Vec<(Dimension, JoinHandle<()>)>,
 }
 
 impl Globals {
@@ -78,6 +80,31 @@ impl Globals {
         self.weather = Some(weather);
     }
 
+    pub fn close_level(&mut self, mut level: Level) {
+        let dimension = level.dimension;
+        let closing = std::thread::Builder::new()
+            .name("minecraft-level-save".into())
+            .spawn(move || {
+                let started = Instant::now();
+                if let Some(entities) = level.entities.as_mut() {
+                    crate::level::save_server_block_entities(entities, &mut level.terrain, true);
+                }
+                crate::level::save_block_entities(&mut level.containers, &mut level.terrain);
+                drop(level.entities.take());
+                drop(level);
+                diag::info!(
+                    World,
+                    "Minecraft {} level saved and closed in {} ms",
+                    dimension.dimension_type(),
+                    started.elapsed().as_millis()
+                );
+            });
+        match closing {
+            Ok(closing) => self.closing.push((dimension, closing)),
+            Err(error) => diag::warn!(World, "Minecraft level save thread not started: {error}"),
+        }
+    }
+
     pub fn advance_clocks(&mut self, seconds: f64) {
         let advancing = self.game_rules.bool("advance_time");
         if advancing && !self.day.paused {
@@ -90,6 +117,8 @@ impl Globals {
         }
     }
 }
+
+pub const EMPTY_TIME: u32 = 300;
 
 const NEW_WORLD_WEATHER: WeatherData = WeatherData {
     clear_weather_time: 0,
@@ -172,10 +201,17 @@ impl LevelLoader {
         let registries = globals.registries.clone();
         let seed = globals.seed;
         let save = globals.save.clone();
+        let (closing, open): (Vec<_>, Vec<_>) = std::mem::take(&mut globals.closing)
+            .into_iter()
+            .partition(|(closed, _)| *closed == dimension);
+        globals.closing = open;
         let (send, result) = mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("minecraft-level-load".into())
             .spawn(move || {
+                for (_, save) in closing {
+                    let _ = save.join();
+                }
                 let started = Instant::now();
                 let opened = Terrain::open(
                     registries,
@@ -344,10 +380,42 @@ impl Server {
         finished
     }
 
+    pub fn close_empty_levels(&mut self, ticks: u32) -> Vec<Dimension> {
+        let occupied: Vec<Dimension> = self.players.values().map(|player| player.dimension).collect();
+        let keeps_empty_levels = self.globals.save.is_none();
+        let mut closing = Vec::new();
+        for (&dimension, level) in &mut self.levels {
+            if occupied.contains(&dimension) {
+                if level.empty_ticks > 0
+                    && has_weather(dimension)
+                    && let (Some(entities), Some(weather)) =
+                        (level.entities.as_mut(), self.globals.weather)
+                {
+                    entities.set_weather_data(weather);
+                }
+                level.empty_ticks = 0;
+                continue;
+            }
+            level.empty_ticks = level.empty_ticks.saturating_add(ticks);
+            if level.empty_ticks >= EMPTY_TIME && !keeps_empty_levels {
+                closing.push(dimension);
+            }
+        }
+        for dimension in &closing {
+            if let Some(level) = self.levels.remove(dimension) {
+                self.globals.close_level(level);
+            }
+        }
+        closing
+    }
+
     pub fn save_and_close(mut self, started: Instant) {
         let save = self.globals.save.take();
         if let Some(writer) = self.globals.level_writer.take() {
             let _ = writer.join();
+        }
+        for (_, closing) in self.globals.closing.drain(..) {
+            let _ = closing.join();
         }
         let files = WorldFiles::of(&self.globals, &self.players);
         for level in self.levels.values_mut() {
@@ -927,6 +995,8 @@ mod tests {
             data: GameData::default(),
             level_writer: None,
             autosave_ticks: 0,
+            level_ticks: 0,
+            closing: Vec::new(),
         }
     }
 
@@ -1251,5 +1321,140 @@ mod tests {
             Arrival::at([0.5, 64.0, 0.5]).place(Dimension::Nether),
             Place::standing(Dimension::Nether, [0.5, 64.0, 0.5], 0.0, 0.0)
         );
+    }
+
+    fn load_chunks_around(level: &mut Level, block: (i32, i32, i32)) {
+        let started = Instant::now();
+        let chunk = (block.0 >> 4, block.2 >> 4);
+        while level.terrain.scene.generated_chunk(chunk).is_none() {
+            assert!(started.elapsed().as_secs() < 600, "no chunk at {block:?}");
+            let Level {
+                terrain,
+                entities,
+                containers,
+                ..
+            } = level;
+            crate::level::stream_tick(terrain, entities, containers, block);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_level_nobody_is_in_saves_and_closes_after_300_ticks() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let (_dir, save) = world("close-levels");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let mut steve = join(Some(&save), &recipes, &rules, joining(&profile("Steve")));
+        steve.arrive(Place::standing(Dimension::Nether, [5.5, 70.0, 5.5], 0.0, 0.0));
+        let mut alex = join(Some(&save), &recipes, &rules, joining(&profile("Alex")));
+        alex.dimension = Dimension::End;
+        let alex_id = alex.uuid.clone();
+        let mut server = server_with(test_globals(registries, Some(save)), vec![steve, alex]);
+        server.open_levels(2);
+        wait_for_levels(&mut server);
+        let end = server.levels.get_mut(&Dimension::End).unwrap();
+        load_chunks_around(end, (100, 49, 0));
+        let empty = |server: &Server| server.levels[&Dimension::End].empty_ticks;
+        server.players.get_mut(&alex_id).unwrap().dimension = Dimension::Nether;
+        assert!(server.close_empty_levels(299).is_empty());
+        assert_eq!(empty(&server), 299);
+        assert_eq!(server.levels[&Dimension::Nether].empty_ticks, 0);
+        server.players.get_mut(&alex_id).unwrap().dimension = Dimension::End;
+        assert!(server.close_empty_levels(7).is_empty());
+        assert_eq!(empty(&server), 0, "a player coming back resets the count");
+        server.players.get_mut(&alex_id).unwrap().dimension = Dimension::Nether;
+        assert!(server.close_empty_levels(150).is_empty());
+        assert!(server.close_empty_levels(149).is_empty());
+        assert_eq!(server.close_empty_levels(1), vec![Dimension::End]);
+        assert!(!server.levels.contains_key(&Dimension::End));
+        assert!(server.levels.contains_key(&Dimension::Nether));
+        assert_eq!(server.globals.closing.len(), 1);
+        assert_eq!(server.globals.closing[0].0, Dimension::End);
+        let alex = server.players.get_mut(&alex_id).unwrap();
+        alex.dimension = Dimension::End;
+        alex.arrival = None;
+        server.open_levels(2);
+        assert!(
+            server.globals.closing.is_empty(),
+            "the loader waits for the closing save itself"
+        );
+        assert_eq!(wait_for_levels(&mut server), vec![(Dimension::End, Ok(()))]);
+        let region = server
+            .globals
+            .save
+            .as_ref()
+            .unwrap()
+            .path()
+            .join("dimensions/minecraft/the_end/region");
+        let saved = std::fs::read_dir(&region)
+            .unwrap()
+            .flatten()
+            .any(|file| file.path().extension().is_some_and(|ext| ext == "mca"));
+        assert!(saved, "the closed level saved its chunks before it opened again");
+    }
+
+    #[test]
+    fn a_temporary_world_keeps_its_empty_levels_open() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let mut steve = join(None, &recipes, &rules, joining(&profile("Steve")));
+        steve.dimension = Dimension::End;
+        let steve_id = steve.uuid.clone();
+        let mut server = server_with(test_globals(registries, None), vec![steve]);
+        server.open_levels(2);
+        wait_for_levels(&mut server);
+        server.players.get_mut(&steve_id).unwrap().dimension = Dimension::Nether;
+        assert!(server.close_empty_levels(EMPTY_TIME * 4).is_empty());
+        assert!(server.levels.contains_key(&Dimension::End));
+        assert!(server.globals.closing.is_empty());
+    }
+
+    #[test]
+    fn the_overworld_takes_the_world_s_weather_back_when_a_player_returns() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let (_dir, save) = world("weather-return");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let steve = join(Some(&save), &recipes, &rules, joining(&profile("Steve")));
+        let steve_id = steve.uuid.clone();
+        let globals = Globals {
+            spawn: crate::save::world_spawn(Dimension::Overworld, (8, 64, -4)),
+            ..test_globals(registries, Some(save))
+        };
+        let mut server = server_with(globals, vec![steve]);
+        server.open_levels(2);
+        wait_for_levels(&mut server);
+        let overworld_weather = |server: &Server| {
+            server.levels[&Dimension::Overworld]
+                .entities
+                .as_ref()
+                .unwrap()
+                .weather_data
+        };
+        let before = overworld_weather(&server);
+        server.players.get_mut(&steve_id).unwrap().dimension = Dimension::Nether;
+        server.close_empty_levels(20);
+        let storm = WeatherData {
+            thunder_time: 400,
+            rain_time: 600,
+            raining: true,
+            thundering: true,
+            ..WeatherData::default()
+        };
+        server.globals.weather = Some(storm);
+        server.close_empty_levels(20);
+        assert_eq!(overworld_weather(&server), before, "an empty level is left alone");
+        server.players.get_mut(&steve_id).unwrap().dimension = Dimension::Overworld;
+        server.close_empty_levels(0);
+        assert_eq!(overworld_weather(&server), Some(storm));
+        assert_eq!(server.levels[&Dimension::Overworld].empty_ticks, 0);
     }
 }

@@ -238,6 +238,11 @@ impl Entities {
         self.server.set_weather(weather, duration);
     }
 
+    pub fn set_weather_data(&mut self, data: WeatherData) {
+        self.server.set_weather_data(data);
+        self.weather_data = Some(data);
+    }
+
     pub fn throw(&mut self, item: &str, eye: DVec3, yaw: f32, pitch: f32, motion: DVec3, on_ground: bool) -> bool {
         let Some(thrown) = minecraft_terrain::thrown::Thrown::throw(item, eye, yaw, pitch, motion, on_ground, &mut self.random) else {
             return false;

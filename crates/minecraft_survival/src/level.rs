@@ -19,6 +19,7 @@ pub struct Level {
     pub entities: Option<Entities>,
     pub containers: Containers,
     pub terrain: Terrain,
+    pub empty_ticks: u32,
 }
 
 pub struct Terrain {
@@ -34,6 +35,7 @@ impl Level {
             entities: None,
             containers: Containers::default(),
             terrain,
+            empty_ticks: 0,
         }
     }
 }

@@ -1172,6 +1172,7 @@ pub enum Command {
     Throw(Box<crate::thrown::Thrown>),
     Save,
     SetWeather { weather: &'static str, duration: i32 },
+    WeatherData(crate::level_storage::WeatherData),
     GameRules(Box<crate::game_rules::GameRules>),
 }
 
@@ -1435,6 +1436,10 @@ impl ServerHandle {
         self.send(Command::GameRules(Box::new(rules)));
     }
 
+    pub fn set_weather_data(&mut self, data: crate::level_storage::WeatherData) {
+        self.send(Command::WeatherData(data));
+    }
+
     pub fn hatch_egg(&mut self, kind: String, position: [f64; 3], y_rot: f32) {
         self.send(Command::HatchEgg { kind, position, y_rot });
     }
@@ -1552,6 +1557,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::SetWeather { weather, duration } => {
                     sim.set_weather_for(weather, duration);
                 }
+                Command::WeatherData(data) => sim.set_weather_data(&data),
                 Command::GameRules(rules) => sim.apply_game_rules(&rules),
                 Command::Save => {
                     sim.ticks_since_save = 0;
