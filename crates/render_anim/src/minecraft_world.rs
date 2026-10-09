@@ -822,32 +822,7 @@ fn update(
         }
     }
     if let Some(entities) = entities.as_mut() {
-        let mut props = Vec::new();
-        let mut brewed = Vec::new();
-        for _ in 0..hand_ticks {
-            let ticked = containers.tick(&entities.recipes);
-            props.extend(ticked.props);
-            brewed.extend(ticked.brewed);
-            for (pos, stack) in ticked.drops {
-                entities.world_items.spawn_block_drop(stack, pos);
-            }
-            let lit = |pos| minecraft_terrain::scene::Scene::block(&terrain.scene, pos).map(minecraft_terrain::campfire::is_lit);
-            for (pos, stack) in containers.cook(lit, &entities.recipes) {
-                entities.world_items.drop_item_stack(stack, pos);
-            }
-        }
-        let mut writes: Vec<((i32, i32, i32), Option<minecraft_terrain::scene::Block>)> = Vec::new();
-        for (pos, name, on) in props {
-            let current = writes
-                .iter()
-                .rev()
-                .find(|(at, _)| *at == pos)
-                .and_then(|(_, block)| block.clone())
-                .or_else(|| minecraft_terrain::scene::Scene::block(&terrain.scene, pos).cloned());
-            if let Some(block) = current.filter(|block| block.properties.contains_key(name)) {
-                writes.push((pos, Some(block.with(name, if on { "true" } else { "false" }))));
-            }
-        }
+        let (writes, brewed) = minecraft_survival::level::tick_containers(containers, entities, terrain, hand_ticks);
         if let Some(sounds) = sounds.as_mut() {
             for pos in brewed {
                 let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];

@@ -506,3 +506,29 @@ C1 is commit `8ad8272`.
   - The plan names these `Level::write_blocks` and `Level::spill`. They are free functions in `level.rs` instead, taking the level's parts (`&mut Terrain`, `&mut Containers`, `&mut Entities`). `update()` holds the level split into those parts, so a `&mut Level` method can't be called there, and the call sites keep their argument order.
   - `hold_off_death` goes to `player.rs` rather than `level.rs`: it only reads the player's survival and inventory. `survival.rs` is a moved file, so it stays unedited during the split.
   - The adapter's `write_blocks` now sets every collision shape before the scene takes any of the blocks, where it used to alternate per block. Shapes come from the block states alone, and nothing reads the MW2 collision in between (`sim` reads it in FixedUpdate), so the end state is the same even when a position repeats in one write list.
+
+## C3. Minecraft containers tick in their level
+
+C2 is commit `b6a79ab`.
+
+- **What changed:**
+  - `minecraft_survival/src/level.rs` gains `tick_containers(containers, entities, terrain, ticks) -> (writes, brewed)`. This is the container tick moved from `update()` in `render_anim/src/minecraft_world.rs`. Each game tick it ticks the furnaces and brewing stands, drops what they spit out, and cooks on the lit campfires. It then turns their lit and bottle property changes into block writes (private `prop_writes`). It returns those writes and the brewing stands that finished. It also gets a `Writes` alias for the block write list, which `write_blocks` now uses too. The file stays comment-free and rustfmt-clean.
+  - `update()` calls it once per frame for the frame's ticks, as before. It still plays the brewing sound at each finished stand and applies the writes through its `write_blocks`, so the MW2 collision is updated as before.
+- **Tests added** (3, in `level.rs`, on `prop_writes` with a plain `HandcraftedScene`):
+  - `a_furnace_lights_and_goes_out_through_its_lit_property`: a furnace keeps its facing and switches `lit`; lit then unlit in one batch ends unlit.
+  - `brewing_stand_bottles_add_up_within_one_tick_batch`: a second bottle builds on the first write, not on the old block.
+  - `blocks_without_the_property_and_empty_cells_are_left_alone`.
+  
+  Totals: `minecraft_survival` 131 (128 + 3), `render_anim` 34; the moved total stays 153.
+- **Checks:** `check -p launcher --locked` (no new warning), `test -p minecraft_survival --locked`, `test -p render_anim --locked`; the staged `level.rs` passes `rustfmt --check --edition 2024` with empty output.
+- **Owner test** (furnaces, brewing stands and campfires must work exactly as before):
+  1. Load a Minecraft match with the regression kit.
+  2. Place the furnace and smelt 8 raw iron with coal. While it smelts, its front glows (lit). The ingots come out one by one, and when it runs out of iron the glow goes out.
+  3. Type `/give @s minecraft:brewing_stand`, `/give @s minecraft:blaze_powder 2` and `/give @s minecraft:nether_wart 4`. Fill three glass bottles at water (pour the water bucket first).
+  4. Place the brewing stand and open it. Put in the blaze powder, then the three water bottles: the stand shows a bottle in each arm. Add the nether wart: about 20 seconds later the brewing sound plays and the bottles are awkward potions.
+  5. Type `/give @s minecraft:campfire` and `/give @s minecraft:beef 2`. Place the campfire and use raw beef on it: the beef lies on the fire, and about 30 seconds later cooked beef pops off.
+- **Kit:** `minecraft:furnace` x1, `minecraft:raw_iron` x16, `minecraft:coal` x16, `minecraft:glass_bottle` x4, `minecraft:water_bucket` x1 (all in the regression kit). The brewing stand, blaze powder, nether wart, campfire and raw beef come from `/give` in step 3 and 5.
+- **Not done here:** nothing.
+- **Decisions:**
+  - Like C2, `tick_containers` is a free function taking the level's parts (`containers`, `entities`, `terrain`) instead of a `Level` method, so `update()` can call it while it holds the level split into those parts.
+  - The property writes are computed in a private `prop_writes(scene, props)`, so they can be tested without a level server; `tick_containers` does the same work in the same order as the old block (all ticks, then the writes from all props).
