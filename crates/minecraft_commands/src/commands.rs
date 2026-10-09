@@ -375,19 +375,27 @@ fn ticks(ctx: &Ctx) -> i32 {
     }
 }
 
+fn default_clock(ctx: &Ctx) -> Result<String, CommandError> {
+    let dimension = ctx.dimension();
+    ctx.world.default_clock(&dimension).ok_or_else(|| {
+        CommandError::new("commands.time.no_default_clock", vec![literal(&dimension)])
+    })
+}
+
 fn set_time(ctx: &mut Ctx) -> Result<i32, CommandError> {
+    let clock = default_clock(ctx)?;
     let value = ticks(ctx);
-    if ctx.world.clock().total == i64::from(value) {
+    if ctx.world.clock(&clock).total == i64::from(value) {
         return Err(CommandError::new(
             "commands.time.set.already_at_time",
-            vec![literal(CLOCK), literal(value)],
+            vec![literal(&clock), literal(value)],
         ));
     }
-    ctx.world.set_time(i64::from(value));
+    ctx.world.set_time(&clock, i64::from(value));
     ctx.success(
         Text::translate(
             "commands.time.set.absolute",
-            vec![literal(CLOCK), literal(value)],
+            vec![literal(&clock), literal(value)],
         ),
         true,
     );
@@ -406,26 +414,27 @@ pub fn ticks_to_marker(total: i64, marker: i32) -> Option<i64> {
 }
 
 fn set_marker(ctx: &mut Ctx) -> Result<i32, CommandError> {
+    let clock = default_clock(ctx)?;
     let Some(Arg::Marker(id)) = ctx.arg("timemarker").cloned() else {
         return Err(CommandError::new("command.unknown.argument", Vec::new()));
     };
-    let Some(marker) = marker_ticks(&id) else {
+    let Some(marker) = marker_ticks(&id).filter(|_| clock == CLOCK) else {
         return Err(CommandError::new(
             "commands.time.no_time_marker_found",
-            vec![literal(&id), literal(CLOCK)],
+            vec![literal(&id), literal(&clock)],
         ));
     };
-    let Some(total) = ticks_to_marker(ctx.world.clock().total, marker) else {
+    let Some(total) = ticks_to_marker(ctx.world.clock(&clock).total, marker) else {
         return Err(CommandError::new(
             "commands.time.set.already_at_time_marker",
-            vec![literal(CLOCK), literal(&id)],
+            vec![literal(&clock), literal(&id)],
         ));
     };
-    ctx.world.set_time(total);
+    ctx.world.set_time(&clock, total);
     ctx.success(
         Text::translate(
             "commands.time.set.time_marker",
-            vec![literal(CLOCK), literal(&id)],
+            vec![literal(&clock), literal(&id)],
         ),
         true,
     );
@@ -433,12 +442,13 @@ fn set_marker(ctx: &mut Ctx) -> Result<i32, CommandError> {
 }
 
 fn add_time(ctx: &mut Ctx) -> Result<i32, CommandError> {
-    let total = ctx.world.clock().total + i64::from(ticks(ctx));
-    ctx.world.set_time(total);
+    let clock = default_clock(ctx)?;
+    let total = ctx.world.clock(&clock).total + i64::from(ticks(ctx));
+    ctx.world.set_time(&clock, total);
     ctx.success(
         Text::translate(
             "commands.time.set.absolute",
-            vec![literal(CLOCK), literal(total)],
+            vec![literal(&clock), literal(total)],
         ),
         true,
     );
@@ -446,21 +456,22 @@ fn add_time(ctx: &mut Ctx) -> Result<i32, CommandError> {
 }
 
 fn set_paused(ctx: &mut Ctx, paused: bool) -> Result<i32, CommandError> {
-    if ctx.world.clock().paused == paused {
+    let clock = default_clock(ctx)?;
+    if ctx.world.clock(&clock).paused == paused {
         let key = if paused {
             "commands.time.pause.already_paused"
         } else {
             "commands.time.pause.already_running"
         };
-        return Err(CommandError::new(key, vec![literal(CLOCK)]));
+        return Err(CommandError::new(key, vec![literal(&clock)]));
     }
-    ctx.world.set_time_paused(paused);
+    ctx.world.set_time_paused(&clock, paused);
     let key = if paused {
         "commands.time.pause"
     } else {
         "commands.time.resume"
     };
-    ctx.success(Text::translate(key, vec![literal(CLOCK)]), true);
+    ctx.success(Text::translate(key, vec![literal(&clock)]), true);
     Ok(1)
 }
 
@@ -473,11 +484,12 @@ fn resume_time(ctx: &mut Ctx) -> Result<i32, CommandError> {
 }
 
 fn query_time(ctx: &mut Ctx) -> Result<i32, CommandError> {
-    let total = ctx.world.clock().total;
+    let clock = default_clock(ctx)?;
+    let total = ctx.world.clock(&clock).total;
     ctx.success(
         Text::translate(
             "commands.time.query.absolute",
-            vec![literal(CLOCK), literal(total)],
+            vec![literal(&clock), literal(total)],
         ),
         false,
     );
@@ -485,7 +497,7 @@ fn query_time(ctx: &mut Ctx) -> Result<i32, CommandError> {
 }
 
 fn query_game_time(ctx: &mut Ctx) -> Result<i32, CommandError> {
-    let game_time = ctx.world.clock().game_time;
+    let game_time = ctx.world.clock(CLOCK).game_time;
     ctx.success(
         Text::translate("commands.time.query.gametime", vec![literal(game_time)]),
         false,
@@ -1104,6 +1116,72 @@ mod tests {
         let out = run(&mut server, &mut world, HOST, "time resume");
         assert_eq!(texts(&out), vec!["Resumed clock minecraft:overworld"]);
         assert!(!world.clock.paused);
+    }
+
+    #[test]
+    fn time_acts_on_the_default_clock_of_the_command_s_dimension() {
+        let mut server = server();
+        let mut world = FakeWorld {
+            clock: Clock {
+                total: 1000,
+                game_time: 777,
+                paused: false,
+            },
+            ..FakeWorld::default()
+        };
+        world
+            .player_dimensions
+            .push((HOST, "minecraft:the_nether".to_owned()));
+        for command in [
+            "time set 5000",
+            "time set noon",
+            "time add 1d",
+            "time pause",
+            "time resume",
+            "time query time",
+        ] {
+            let out = run(&mut server, &mut world, HOST, command);
+            assert_eq!(
+                texts(&out),
+                vec!["There is no default clock in dimension minecraft:the_nether"],
+                "{command}"
+            );
+            assert_eq!(out[0].2, RED);
+        }
+        let out = run(&mut server, &mut world, HOST, "time query gametime");
+        assert_eq!(texts(&out), vec!["The game time is 777 tick(s)"]);
+        let out = run(
+            &mut server,
+            &mut world,
+            HOST,
+            "execute in minecraft:overworld run time set 2000",
+        );
+        assert_eq!(texts(&out), vec!["Set minecraft:overworld to 2000 tick(s)"]);
+        assert_eq!((world.clock.total, world.end_clock.total), (2000, 0));
+        world
+            .player_dimensions
+            .push((HOST, "minecraft:the_end".to_owned()));
+        let out = run(&mut server, &mut world, HOST, "time set 5000");
+        assert_eq!(texts(&out), vec!["Set minecraft:the_end to 5000 tick(s)"]);
+        let out = run(&mut server, &mut world, HOST, "time add 500");
+        assert_eq!(texts(&out), vec!["Set minecraft:the_end to 5500 tick(s)"]);
+        let out = run(&mut server, &mut world, HOST, "time set noon");
+        assert_eq!(
+            texts(&out),
+            vec!["Time marker minecraft:noon does not exist for clock minecraft:the_end"]
+        );
+        let out = run(&mut server, &mut world, HOST, "time pause");
+        assert_eq!(texts(&out), vec!["Paused clock minecraft:the_end"]);
+        let out = run(&mut server, &mut world, HOST, "time query time");
+        assert_eq!(
+            texts(&out),
+            vec!["Clock minecraft:the_end is at 5500 tick(s)"]
+        );
+        assert_eq!(
+            (world.end_clock.total, world.end_clock.paused),
+            (5500, true)
+        );
+        assert_eq!((world.clock.total, world.clock.paused), (2000, false));
     }
 
     #[test]

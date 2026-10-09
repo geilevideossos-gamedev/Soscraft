@@ -90,9 +90,9 @@ pub trait CommandWorld {
     fn set_game_rule(&mut self, rule: &'static Rule, value: Value);
     fn difficulty(&self) -> Difficulty;
     fn set_difficulty(&mut self, difficulty: Difficulty);
-    fn clock(&self) -> Clock;
-    fn set_time(&mut self, total: i64);
-    fn set_time_paused(&mut self, paused: bool);
+    fn clock(&self, clock: &str) -> Clock;
+    fn set_time(&mut self, clock: &str, total: i64);
+    fn set_time_paused(&mut self, clock: &str, paused: bool);
     fn set_weather(&mut self, weather: Weather, duration: i32);
     fn kill(&mut self, player: PlayerId) -> bool;
     fn game_mode(&self, player: PlayerId) -> Option<GameMode>;
@@ -134,6 +134,9 @@ pub trait CommandWorld {
     }
     fn dimension(&self, _player: PlayerId) -> String {
         OVERWORLD.to_owned()
+    }
+    fn default_clock(&self, _dimension: &str) -> Option<String> {
+        Some(crate::commands::CLOCK.to_owned())
     }
     fn loaded(&self, _dimension: &str, _pos: [i32; 3]) -> Loaded {
         Loaded::Unloaded
@@ -588,6 +591,7 @@ pub(crate) mod tests {
 
     pub(crate) const HOST: PlayerId = PlayerId(0);
     pub(crate) const FRIEND: PlayerId = PlayerId(1);
+    pub(crate) const END_CLOCK: &str = "minecraft:the_end";
 
     pub(crate) type Held = Option<(String, Vec<(String, i32)>)>;
 
@@ -596,6 +600,7 @@ pub(crate) mod tests {
         pub(crate) rules: GameRules,
         pub(crate) difficulty: Option<Difficulty>,
         pub(crate) clock: Clock,
+        pub(crate) end_clock: Clock,
         pub(crate) weather: Vec<(Weather, i32)>,
         pub(crate) killed: Vec<PlayerId>,
         pub(crate) modes: Vec<(PlayerId, GameMode)>,
@@ -644,16 +649,33 @@ pub(crate) mod tests {
             self.difficulty = Some(difficulty);
         }
 
-        fn clock(&self) -> Clock {
-            self.clock
+        fn clock(&self, clock: &str) -> Clock {
+            match clock {
+                END_CLOCK => self.end_clock,
+                _ => self.clock,
+            }
         }
 
-        fn set_time(&mut self, total: i64) {
-            self.clock.total = total;
+        fn set_time(&mut self, clock: &str, total: i64) {
+            match clock {
+                END_CLOCK => self.end_clock.total = total,
+                _ => self.clock.total = total,
+            }
         }
 
-        fn set_time_paused(&mut self, paused: bool) {
-            self.clock.paused = paused;
+        fn set_time_paused(&mut self, clock: &str, paused: bool) {
+            match clock {
+                END_CLOCK => self.end_clock.paused = paused,
+                _ => self.clock.paused = paused,
+            }
+        }
+
+        fn default_clock(&self, dimension: &str) -> Option<String> {
+            match dimension {
+                "minecraft:the_nether" => None,
+                "minecraft:the_end" => Some(END_CLOCK.to_owned()),
+                _ => Some(crate::commands::CLOCK.to_owned()),
+            }
         }
 
         fn set_weather(&mut self, weather: Weather, duration: i32) {
@@ -888,6 +910,7 @@ pub(crate) mod tests {
             "commands.time.pause.already_running" => "Clock %s is already running",
             "commands.time.query.absolute" => "Clock %s is at %s tick(s)",
             "commands.time.query.gametime" => "The game time is %s tick(s)",
+            "commands.time.no_default_clock" => "There is no default clock in dimension %s",
             "commands.weather.set.clear" => "Set the weather to clear",
             "commands.weather.set.rain" => "Set the weather to rain",
             "commands.weather.set.thunder" => "Set the weather to rain and thunder",

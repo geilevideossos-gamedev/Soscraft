@@ -542,3 +542,23 @@ Previous commit: 9dbec02a
 ```
 IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:obsidian*64,minecraft:netherrack*64,minecraft:cobblestone*64,minecraft:cooked_beef*32
 ```
+
+### 25. Minecraft /time acts on the clock of the command's dimension (S1, after track C)
+
+Previous commit: f0c30259
+
+- **Vanilla, checked with javap:** every clock node of `TimeCommand` (`set`, `add`, `pause`, `resume`, `query time`) first takes `getDefaultClock(source)`: the `default_clock` of the source level's dimension type, or `commands.time.no_default_clock` ("There is no default clock in dimension %s", with the dimension type's id). `query gametime` is not a clock node and works everywhere. 26.3's data pack gives `minecraft:overworld` the `minecraft:overworld` clock, `minecraft:the_end` the `minecraft:the_end` clock and the Nether none. Time markers come from the timelines of a clock; only the overworld clock has any (`timeline/day.json`), so a marker in the End answers `commands.time.no_time_marker_found` with `minecraft:the_end`.
+- **Changed:**
+  - `minecraft_commands/src/server.rs`: `CommandWorld::clock`, `set_time` and `set_time_paused` take the clock id, and `CommandWorld::default_clock(dimension)` names it (by default the overworld clock, so a world without dimensions behaves as before).
+  - `minecraft_commands/src/commands.rs`: every clock node takes the default clock of `Ctx::dimension()` first and fails with `commands.time.no_default_clock` without one; the messages name that clock; time markers belong to the overworld clock only. `query gametime` is unchanged.
+  - `minecraft_survival/src/commands.rs` (`Host`): `default_clock` goes through `server::default_clock`; `Host.end_clock` is `Globals.end_clock`, which `clock`, `set_time` and `set_time_paused` act on for `minecraft:the_end`. The overworld clock keeps its game time shift; the End clock has none, as before.
+  - `docs/MINECRAFT-SURVIVAL.md`: the `/time` line.
+- **Tests:** `minecraft_commands::commands`: `time_acts_on_the_default_clock_of_the_command_s_dimension` (every clock node refused in the Nether, `query gametime` still answers, `/execute in minecraft:overworld run time set` reaches the overworld clock from the Nether, and in the End `set`, `add`, `pause` and `query time` act on `minecraft:the_end` while a marker is refused). `minecraft_survival::commands`: `time_follows_the_default_clock_of_the_player_s_dimension` (through `Host` and `server::default_clock`: nothing changes from the Nether, the End sets and pauses only `Globals.end_clock`, the overworld only the day).
+- **Decisions:** the chat still suggests the overworld's time markers after `/time set` in the End and the Nether; vanilla suggests none there. The suggestions don't know the dimension yet.
+- **Test steps** (with entry 24's world and kit):
+  1. Keep `IW4L_MINECRAFT_WORLD=e24test` and remove any `IW4L_MINECRAFT_DIMENSION` line. Start in the overworld and type `/time query time`: `Clock minecraft:overworld is at ... tick(s)`.
+  2. Send `/execute in minecraft:the_nether run tp ~ 128 ~`. In the Nether, type `/time set day`: a red `There is no default clock in dimension minecraft:the_nether`. `/time query gametime` still answers. **Screenshot 1.**
+  3. Send `/execute in minecraft:the_end run tp 100 50 0`. Type `/time query time`: `Clock minecraft:the_end is at ... tick(s)`. `/time set noon`: a red `Time marker minecraft:noon does not exist for clock minecraft:the_end`. **Screenshot 2.**
+  4. Type `/time set 18000`, then `/time pause`: `Paused clock minecraft:the_end`. Send `/execute in minecraft:overworld run time query time`: the overworld clock did not move. **Screenshot 3.**
+  5. Quit through the menu and start again (you start in the End where you left). `/time query time` still says about 18000, as the clock is paused and saved. `/time resume`: `Resumed clock minecraft:the_end`. **Screenshot 4.**
+- **Kit:** none needed; any kit works.

@@ -10,7 +10,7 @@ use minecraft_commands::{
 use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_terrain::day_cycle::DayCycle;
 use minecraft_terrain::locate::Search;
-use minecraft_terrain::server::ServerSim;
+use minecraft_terrain::server::{ServerSim, THE_END_CLOCK};
 use minecraft_terrain::terrain::TerrainStream;
 use minecraft_terrain::game_mode::GameMode;
 use minecraft_terrain::game_rules::{GameRules, Rule, Value};
@@ -39,6 +39,7 @@ pub struct Host<'a> {
     pub rules: &'a mut GameRules,
     pub difficulty: &'a mut Difficulty,
     pub day: &'a mut DayCycle,
+    pub end_clock: &'a mut DayCycle,
     pub save: Option<&'a mut crate::save::WorldSave>,
     pub data: &'a crate::data::GameData,
     pub registries: Option<&'a minecraftoss_core::Registries>,
@@ -260,19 +261,29 @@ impl CommandWorld for Host<'_> {
         *self.difficulty = difficulty;
     }
 
-    fn clock(&self) -> Clock {
+    fn clock(&self, clock: &str) -> Clock {
         let total = self.day.ticks.floor() as i64;
+        let game_time = self
+            .save
+            .as_ref()
+            .map_or(total, |save| save.game_time(Some(self.day.ticks)));
+        let cycle: &DayCycle = if clock == THE_END_CLOCK {
+            self.end_clock
+        } else {
+            self.day
+        };
         Clock {
-            total,
-            game_time: self
-                .save
-                .as_ref()
-                .map_or(total, |save| save.game_time(Some(self.day.ticks))),
-            paused: self.day.paused,
+            total: cycle.ticks.floor() as i64,
+            game_time,
+            paused: cycle.paused,
         }
     }
 
-    fn set_time(&mut self, total: i64) {
+    fn set_time(&mut self, clock: &str, total: i64) {
+        if clock == THE_END_CLOCK {
+            self.end_clock.set(total as f64);
+            return;
+        }
         let ticks = total as f64;
         if let Some(save) = self.save.as_mut() {
             save.shift_day(ticks - self.day.ticks);
@@ -280,8 +291,18 @@ impl CommandWorld for Host<'_> {
         self.day.set(ticks);
     }
 
-    fn set_time_paused(&mut self, paused: bool) {
-        self.day.paused = paused;
+    fn set_time_paused(&mut self, clock: &str, paused: bool) {
+        if clock == THE_END_CLOCK {
+            self.end_clock.paused = paused;
+        } else {
+            self.day.paused = paused;
+        }
+    }
+
+    fn default_clock(&self, dimension: &str) -> Option<String> {
+        crate::switch::dimension_named(dimension)
+            .and_then(crate::server::default_clock)
+            .map(str::to_owned)
     }
 
     fn set_weather(&mut self, weather: Weather, duration: i32) {
@@ -949,6 +970,7 @@ pub fn run(
         rules: &mut globals.game_rules,
         difficulty: &mut globals.difficulty,
         day: &mut globals.day,
+        end_clock: &mut globals.end_clock,
         save: globals.save.as_mut(),
         data: &globals.data,
         registries: Some(&globals.registries),
@@ -1020,6 +1042,7 @@ pub(crate) mod tests {
         pub(crate) rules: GameRules,
         pub(crate) difficulty: Difficulty,
         pub(crate) day: DayCycle,
+        pub(crate) end_clock: DayCycle,
         pub(crate) data: crate::data::GameData,
         pub(crate) registries: Option<std::sync::Arc<minecraftoss_core::Registries>>,
         pub(crate) levels: BTreeMap<Dimension, Level>,
@@ -1036,6 +1059,7 @@ pub(crate) mod tests {
                 rules: GameRules::default(),
                 difficulty: Difficulty::Normal,
                 day: DayCycle::default(),
+                end_clock: DayCycle::default(),
                 data: crate::data::GameData::default(),
                 registries: None,
                 levels: BTreeMap::new(),
@@ -1089,6 +1113,7 @@ pub(crate) mod tests {
                 rules: &mut self.rules,
                 difficulty: &mut self.difficulty,
                 day: &mut self.day,
+                end_clock: &mut self.end_clock,
                 save: None,
                 data: &self.data,
                 registries: self.registries.as_deref(),
@@ -1171,6 +1196,10 @@ pub(crate) mod tests {
                 "Set spawn point to %s, %s, %s [%s] in %s for %s players"
             }
             "commands.seed.success" => "Seed: %s",
+            "commands.time.set.absolute" => "Set %s to %s tick(s)",
+            "commands.time.pause" => "Paused clock %s",
+            "commands.time.query.absolute" => "Clock %s is at %s tick(s)",
+            "commands.time.no_default_clock" => "There is no default clock in dimension %s",
             "block.minecraft.stone" => "Stone",
             "block.minecraft.torch" => "Torch",
             "commands.locate.structure.success" => "The nearest %s is at %s (%s blocks away)",
@@ -1749,6 +1778,52 @@ pub(crate) mod tests {
         assert!(
             parts.levels.is_empty(),
             "the switch opens the level, not the command"
+        );
+    }
+
+    #[test]
+    fn time_follows_the_default_clock_of_the_player_s_dimension() {
+        let mut parts = Parts::new();
+        parts.day.set(1000.0);
+        parts.player(HOST).dimension = Dimension::Nether;
+        let (lines, _) = parts.send(HOST, &["/time set 5000", "/time pause"]);
+        assert_eq!(
+            lines,
+            vec![
+                "There is no default clock in dimension minecraft:the_nether",
+                "There is no default clock in dimension minecraft:the_nether",
+            ]
+        );
+        assert_eq!((parts.day.ticks, parts.end_clock.ticks), (1000.0, 1000.0));
+        assert!(!parts.day.paused && !parts.end_clock.paused);
+        parts.player(HOST).dimension = Dimension::End;
+        let (lines, _) = parts.send(HOST, &["/time set 5000", "/time pause", "/time query time"]);
+        assert_eq!(
+            lines,
+            vec![
+                "Set minecraft:the_end to 5000 tick(s)",
+                "Paused clock minecraft:the_end",
+                "Clock minecraft:the_end is at 5000 tick(s)",
+            ]
+        );
+        assert_eq!(
+            (parts.end_clock.ticks, parts.end_clock.paused),
+            (5000.0, true)
+        );
+        assert_eq!((parts.day.ticks, parts.day.paused), (1000.0, false));
+        parts.player(HOST).dimension = Dimension::Overworld;
+        let (lines, _) = parts.send(HOST, &["/time set 3000"]);
+        assert_eq!(lines, vec!["Set minecraft:overworld to 3000 tick(s)"]);
+        assert_eq!((parts.day.ticks, parts.end_clock.ticks), (3000.0, 5000.0));
+        let host = parts.host();
+        assert_eq!(
+            host.default_clock("minecraft:overworld").as_deref(),
+            Some("minecraft:overworld")
+        );
+        assert_eq!(host.default_clock("minecraft:the_nether"), None);
+        assert_eq!(
+            host.default_clock("minecraft:the_end").as_deref(),
+            Some("minecraft:the_end")
         );
     }
 
