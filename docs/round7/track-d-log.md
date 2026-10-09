@@ -489,3 +489,11 @@ Commit: b6f8bd9. Its first test steps did not reproduce the bug (a dropper fille
   3. Break the dropper with the pickaxe and pick up the dirt it held and the dropper. Place the dropper again on the same spot, under the locked hopper. Quit through the menu and start again.
   4. Break the dropper and the hopper and pick everything up. Expected: 64 dirt in total. Before this fix the new dropper held the moved dirt again. **Screenshot 1:** the inventory.
 - **Kit:** none: the world keeps the inventory vanilla saved.
+
+## Combined kit
+
+One kit line for the whole track (27 stacks). It is entry 14's kit with three chests, two ender chests, two campfires and eight beef, so it also covers the test steps of entries 1, 4, 6, 7, 8, 9, 13 (the pickaxe), 14 and 16, entry 11 without the trapped chest, and entry 12 without the smoker, blast furnace, soul campfire and potatoes. In entry 16, use the cobblestone where the steps say dirt. The kit is given once to each new world, so every test that sets a new `IW4L_MINECRAFT_WORLD` starts with all of it. Entries 5, 10, 11 and 12 keep their own kit lines for their full steps.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:shield,minecraft:diamond_sword+sharpness=5,minecraft:diamond_pickaxe+efficiency=5,minecraft:golden_apple*4,minecraft:experience_bottle*64,minecraft:chest*3,minecraft:barrel,minecraft:red_shulker_box,minecraft:ender_chest*2,minecraft:furnace,minecraft:brewing_stand,minecraft:campfire*2,minecraft:coal*16,minecraft:raw_iron*32,minecraft:beef*8,minecraft:blaze_powder*2,minecraft:nether_wart*4,minecraft:glass_bottle*3,minecraft:water_bucket,minecraft:cobblestone*64,minecraft:enchanted_book+mending,minecraft:diamond*8,minecraft:bread*16
+```
