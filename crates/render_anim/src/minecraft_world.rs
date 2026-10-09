@@ -480,7 +480,7 @@ fn update(
                 if let Some((_, Some(warning))) = &saved_mode {
                     diag::warn!(World, "{warning}");
                 }
-                let player = minecraft_survival::player::Player::new(&profile, starting_game_mode(saved_mode.map(|(mode, _)| mode)), runtime.carried_survival.take().unwrap_or_else(minecraft_survival::survival::Survival::default), inventory);
+                let player = minecraft_survival::player::Player::new(&profile, minecraft_survival::server::starting_game_mode(saved_mode.map(|(mode, _)| mode), std::env::var("IW4L_MINECRAFT_GAMEMODE").ok().as_deref()), runtime.carried_survival.take().unwrap_or_else(minecraft_survival::survival::Survival::default), inventory);
                 let uuid = player.uuid.clone();
                 players.insert(uuid.clone(), player);
                 runtime.environment_accumulator = 0.0;
@@ -595,7 +595,7 @@ fn update(
         diag::warn!(World, "{warning}");
     }
     if mode_changed {
-        save_player_mode(globals, *player_mode);
+        minecraft_survival::server::save_player_mode(globals, *player_mode);
     }
     if !delivered.is_empty() {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
@@ -1513,7 +1513,7 @@ fn update(
         globals.autosave_ticks += mob_ticks;
         if globals.autosave_ticks >= minecraft_survival::save::AUTOSAVE_TICKS {
             globals.autosave_ticks = 0;
-            autosave(globals, terrain, *player_mode);
+            minecraft_survival::server::autosave(globals, terrain, *player_mode);
         }
         for _ in 0..mob_ticks {
             for sound in entities.animate_tick(&terrain.scene, feet) {
@@ -2344,37 +2344,6 @@ fn obstacles(
     out
 }
 
-fn starting_game_mode(saved: Option<minecraft_terrain::game_mode::PlayerMode>) -> minecraft_terrain::game_mode::PlayerMode {
-    use minecraft_terrain::game_mode::{GameMode, PlayerMode, from_id, parse};
-    let chosen = std::env::var("IW4L_MINECRAFT_GAMEMODE").ok().and_then(|name| {
-        let name = name.trim().to_ascii_lowercase();
-        parse(&name).or_else(|| name.parse().ok().and_then(from_id))
-    });
-    let mut mode = saved.unwrap_or_else(|| PlayerMode::new(GameMode::Survival));
-    if let Some(chosen) = chosen {
-        mode.set(chosen);
-    }
-    mode
-}
-
-fn save_player_mode(globals: &mut minecraft_survival::server::Globals, mode: minecraft_terrain::game_mode::PlayerMode) {
-    let Some(save) = globals.save.clone() else {
-        return;
-    };
-    if let Some(previous) = globals.level_writer.take() {
-        let _ = previous.join();
-    }
-    globals.level_writer = std::thread::Builder::new()
-        .name("minecraft-player-save".into())
-        .spawn(move || {
-            if let Err(error) = save.write_host(&mode) {
-                diag::warn!(World, "Minecraft player file not written: {error}");
-            }
-        })
-        .map_err(|error| diag::warn!(World, "Minecraft player file thread not started: {error}"))
-        .ok();
-}
-
 fn ability_bits(mode: &minecraft_terrain::game_mode::PlayerMode) -> u32 {
     use playerstate_iw4::pm_flags::{MC_INVULNERABLE, MC_MAY_FLY, MC_NOCLIP};
     [(mode.abilities.invulnerable, MC_INVULNERABLE), (mode.abilities.may_fly, MC_MAY_FLY), (mode.noclip(), MC_NOCLIP)]
@@ -2413,39 +2382,6 @@ fn mc_vitals(vitals: minecraft_survival::survival::Vitals) -> frame::McVitals {
         on_fire: vitals.on_fire,
         eye_in_lava: vitals.eye_in_lava,
     }
-}
-
-fn autosave(globals: &mut minecraft_survival::server::Globals, terrain: &mut minecraft_survival::level::Terrain, mode: minecraft_terrain::game_mode::PlayerMode) {
-    let Some(save) = globals.save.clone() else {
-        return;
-    };
-    let started = std::time::Instant::now();
-    let chunks = terrain.stream.queue_save();
-    if let Some(previous) = globals.level_writer.take() {
-        let _ = previous.join();
-    }
-    let path = save.path().display().to_string();
-    let spawn = terrain.stream.world_spawn;
-    let rules = globals.game_rules.clone();
-    let difficulty = globals.difficulty;
-    let day_ticks = globals.day.ticks;
-    globals.level_writer = std::thread::Builder::new()
-        .name("minecraft-level-save".into())
-        .spawn(move || {
-            if let Err(error) = save.write(spawn, Some(day_ticks), &rules, difficulty) {
-                diag::warn!(World, "Minecraft autosave: level.dat not written: {error}");
-            }
-            if let Err(error) = save.write_host(&mode) {
-                diag::warn!(World, "Minecraft autosave: player file not written: {error}");
-            }
-        })
-        .map_err(|error| diag::warn!(World, "Minecraft autosave: level.dat thread not started: {error}"))
-        .ok();
-    diag::info!(
-        World,
-        "Minecraft autosave: {chunks} chunks queued for {path} in {:.1} ms",
-        started.elapsed().as_secs_f64() * 1000.0
-    );
 }
 
 fn save_before_exit(mut exit: MessageReader<AppExit>, mut runtime: NonSendMut<Runtime>) {
@@ -2500,39 +2436,11 @@ fn save_and_close(
         let _ = loader.join();
     }
     drop(loading);
-    let (Some(world), Some(mut server)) = (world, server) else {
+    let (Some(world), Some(server)) = (world, server) else {
         return;
     };
-    let save = server.globals.save.take();
-    if let Some(writer) = server.globals.level_writer.take() {
-        let _ = writer.join();
-    }
-    let Some(spawn) = server.levels.get(&Dimension::Overworld).map(|level| level.terrain.stream.world_spawn) else {
-        return;
-    };
-    let rules = std::mem::take(&mut server.globals.game_rules);
-    let difficulty = server.globals.difficulty;
-    let day_ticks = server.globals.day.ticks;
-    let player_mode = local.and_then(|uuid| server.players.get(&uuid)).map(|player| player.mode);
-    drop(server);
     drop(world);
-    let Some(save) = save else {
-        return;
-    };
-    if let Err(error) = save.write(spawn, Some(day_ticks), &rules, difficulty) {
-        diag::warn!(World, "Minecraft level.dat not written: {error}");
-    }
-    if let Some(player_mode) = player_mode
-        && let Err(error) = save.write_host(&player_mode)
-    {
-        diag::warn!(World, "Minecraft player file not written: {error}");
-    }
-    diag::info!(
-        World,
-        "Minecraft world saved in {} ms: {}",
-        started.elapsed().as_millis(),
-        save.path().display()
-    );
+    server.save_and_close(local.as_ref(), started);
 }
 
 fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {

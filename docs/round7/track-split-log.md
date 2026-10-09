@@ -447,3 +447,30 @@ B6 is commit `cb2909c`. (Its entry says "60 lines" for `update()`: the exact cou
 - **Decisions:**
   - B7 is done: it stays a pure move of the two structs (the diff in `minecraft_world.rs` only deletes them and the two `Runtime` fields and adds `hand, steps` to the player binding).
   - As the plan's section 2.2 says, the hand and step timers now start fresh with each loaded world instead of carrying over from the previous match in the same game session. While no world is loaded `update()` returns before touching them, so before this change a pearl cooldown, a raised shield or a fall peak left at the end of one match carried into the first frames of the next; the most visible case was fall damage on the first landing of a new match if the last one ended in mid-air. Vanilla doesn't keep item cooldowns or a raised shield over a rejoin either, so this is the vanilla-like choice.
+
+## C1. Minecraft saving and closing run from minecraft_survival
+
+B7 is commit `9be1914`.
+
+- **What changed:**
+  - `minecraft_survival/src/server.rs` (no comments, rustfmt-clean) gains the save procedures from `render_anim/src/minecraft_world.rs`, unchanged apart from their paths:
+    - `starting_game_mode(saved, chosen)`: the saved mode, or survival, switched to the mode `IW4L_MINECRAFT_GAMEMODE` names (by name or vanilla id).
+    - `save_player_mode(globals, mode)`: the player file on the `minecraft-player-save` thread.
+    - `autosave(globals, terrain, mode)`: queues the edited chunks and writes `level.dat` and the player file on the `minecraft-level-save` thread, with the same log lines.
+    - `Server::save_and_close(self, local, started)`: the file-writing tail of the adapter's `save_and_close`. It joins the level writer, reads the overworld's world spawn, the rules, the difficulty, the day and the local player's mode, drops the server (the chunks are saved), then writes `level.dat` and the player file and logs "Minecraft world saved in N ms".
+  - `render_anim/src/minecraft_world.rs` loses those three functions and the tail. Its `save_and_close` keeps the adapter part in the B2 order: drop every level's mobs, join the loader and drop `loading`, then drop the client assets and hand the server to `Server::save_and_close`. The three call sites point at `minecraft_survival::server::`, and the load completion passes `IW4L_MINECRAFT_GAMEMODE` to `starting_game_mode`.
+- **Tests added** (2, in `server.rs`): `a_player_starts_in_survival_or_in_the_mode_their_file_saved` (no save and no choice gives survival, a saved mode comes back whole, an unknown name changes nothing) and `a_chosen_game_mode_by_name_or_id_overrides_the_saved_one` (a padded, capitalised name, an id, the previous mode and the abilities of the chosen mode, and choosing the mode you already have changes nothing). Totals: `minecraft_survival` 126 (124 + 2), `render_anim` 34; the moved total stays 153.
+- **Checks:** `check -p launcher --locked` (no new warning), `test -p minecraft_survival --locked`, `test -p render_anim --locked`; the staged `server.rs` passes `rustfmt --check --edition 2024` with empty output.
+- **Owner test** (saving, closing, autosave and the starting game mode must work exactly as before):
+  1. Load a Minecraft match with `IW4L_MINECRAFT_WORLD=split` and the regression kit. Place some cobblestone and planks, and type `/time set 13000`.
+  2. Type `/gamemode creative`. Leave the match: the log says "Minecraft world saved in N ms".
+  3. Load the match again: the placed blocks, the evening and creative mode are back.
+  4. Add `IW4L_MINECRAFT_GAMEMODE=adventure` to the `.env` and load the match: you start in adventure mode although the world saved creative. Remove the line again.
+  5. Stay 5 minutes in the world: the log says "Minecraft autosave: N chunks queued for ... in X ms".
+  6. Place a block, then quit the game from the menu without leaving the match first. Start the game and load the match: the block is there and the log of the last run ends with "Minecraft world saved".
+- **Kit:** `minecraft:cobblestone` x64, `minecraft:oak_planks` x64 (both in the regression kit).
+- **Not done here:** nothing.
+- **Decisions:**
+  - `starting_game_mode` takes the `IW4L_MINECRAFT_GAMEMODE` value as a second argument, read by the adapter, the same way B6's `starting_inventory` takes the kit: the server crate reads no environment for it, and the choice is testable.
+  - The adapter now drops the client assets (`Loaded`) just before the server instead of just after it. Freeing them saves nothing, so the files are written in the same order (entities, then chunks, then `level.dat`, then the player file), and "saved in N ms" still covers the same work.
+  - The procedures are free functions taking the parts they need (`&mut Globals`, `&mut Terrain`), so the call sites keep their argument order; only the close is a `Server` method, because it consumes the server.
