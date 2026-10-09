@@ -44,7 +44,7 @@ IW4L_MINECRAFT_KIT=minecraft:cobblestone*64
 
 ### 3. With a gun selected, the swap-hands key uses the offhand item, so the tactical key always throws
 
-Commit: (filled in by the next commit)
+Commit: 0d87b80
 
 - **Changed:** before, the tactical key (`+smoke`) latched `MinecraftUi.offhand_key` and lost its SMOKE bit when a gun was selected and the offhand item had a use, so with food in the offhand G ate instead of throwing. Now `frame::McActionInput` also carries held bits (`hold`, `is_held`), filled by `minecraft_presses` for a Minecraft key it took, outside screens only (`console/src/binds.rs`, fed with `inputs.pressed` in `console/src/plugin/mod.rs`). `sample_client_input` (`net/src/client/runtime.rs`) latches the offhand use from the held swap-hands key through the new pure `frame::minecraft_ui::offhand_key_latch` and no longer strips SMOKE. `render_anim` reads `offhand_key` as before, so no `minecraft_*` file changed. Swapping with a gun selected stays a no-op (`minecraft_offhand::swap_hands`).
 - **Tests:** frame: `a_held_minecraft_key_is_held_apart_from_its_press`, `the_offhand_key_latches_what_it_could_do_when_pressed` (press, hold, release, not usable at the press stays not usable). binds: `a_held_swap_hands_key_stays_held_until_released` (not in screens, not off the map, not for B or G, not when the key also throws).
@@ -61,3 +61,29 @@ Commit: (filled in by the next commit)
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:golden_apple*16,minecraft:shield,minecraft:snowball*16,minecraft:stick
 ```
+
+### 4. MW2 grenade throws show while a Minecraft item or an empty hand is selected
+
+Commit: (filled in by the next commit)
+
+- **Changed:** new `pub fn mw2_throw_in_view(ps)` in `render_anim/src/occupancy/fpv_present.rs`: true while `weap_flags & OFFHAND_VIEW` is set, which MW2 sets from OffhandPrepare to the throw and clears at OffhandInit (gun going down) and OffhandEnd (gun coming up). While it is true: `occupy_fpv_scene` no longer hides the MW2 viewmodel for a selected Minecraft item, `skin_fpv_geometry` keeps the grenade draws for an empty hand (`hands_only` false), and `apply_fpv_placement` leaves the hands in MW2's place instead of Minecraft's arm pose. `render/src/extract.rs extract_minecraft_world` sends no first-person Minecraft item (main hand and offhand) to the GPU while it is true. No `minecraft_*` file changed.
+- **Tests:** `fpv_present.rs a_grenade_shows_only_while_the_offhand_view_is_up` (weapon states 0x0F to 0x16, with and without the flag).
+- **Decision:** the grenade shows only while the offhand view is up, not during the quick drop and quick raise around it, because with a Minecraft item selected those would show the hidden gun going down and coming back up.
+- **After the split** (needs `render_anim/src/minecraft_world.rs`): Minecraft attack, mining and use still work during the throw. See "After the split" below.
+- **Test steps** (pick a class with Frag and Flash):
+  1. Select cobblestone and press G: MW2's hand with the frag comes up, the cobblestone disappears, the frag is thrown and the cobblestone comes back. Screenshot mid-throw.
+  2. Hold G with cobblestone selected: the frag cooks in view until you release it.
+  3. Select cobblestone and press B: the flash shows and flies the same way.
+  4. Select an empty slot and press G: both MW2 hands and the frag show in MW2's position for the throw, then the empty hand goes back to the Minecraft arm position.
+  5. With a gun selected, G and B look exactly as before.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64
+```
+
+## After the split
+
+Changes this track needs in files the crate split owns, with the exact edit.
+
+- **Block Minecraft attack, mining and use while an MW2 grenade is up** (from commit 4). In `minecraft_world.rs update` (or wherever the split moves it), after `let busy = survival.eating().is_some() || hand.blocking.is_some() || hand.miss_time > 0;` (about line 898) compute `let mw2_offhand = (0x10..=0x15).contains(&ps.weaponstate_primary);` (OffhandInit to OffhandEnd; or make `weapon_iw4::offhand::in_offhand_family` at `weapon_iw4/src/offhand.rs:128` `pub` and call it) and add `|| mw2_offhand` to `busy`, so the hits at about 901, 961 and 976 stop. Change `let idle = survival.eating().is_none() && hand.blocking.is_none();` (about line 997) to `... && !mw2_offhand`, so no item is used or placed. In the split this is the per-player server check: the player's own MW2 weapon state, read from that UUID's playerstate.
