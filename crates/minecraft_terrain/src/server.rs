@@ -65,6 +65,7 @@ pub struct ServerSim {
     thrown: Vec<crate::thrown::Thrown>,
     pearl_landings: Vec<(u64, [f64; 3])>,
     potion_breaks: Vec<minecraftoss_entities::world::PotionBreak>,
+    sound_random: minecraftoss_player::rng::LegacyRandom,
 }
 
 /// What a player's hit or use on a mob did, for the client to present.
@@ -236,6 +237,7 @@ impl ServerSim {
             thrown: Vec::new(),
             pearl_landings: Vec::new(),
             potion_breaks: Vec::new(),
+            sound_random: minecraftoss_player::rng::LegacyRandom::new(0x5EED_B0771E),
         }
     }
 
@@ -596,6 +598,7 @@ impl ServerSim {
         // (`ServerExplosion.explode`: `hurtEntities`, then the blocks).
         self.drop_death_loot();
         self.explode_creepers();
+        self.sound_potion_breaks();
     }
 
     /// The loot and experience of the mobs that died, into the level as
@@ -697,9 +700,16 @@ impl ServerSim {
     }
 
     pub fn take_potion_breaks(&mut self) -> Vec<minecraftoss_entities::world::PotionBreak> {
-        let mut breaks = self.mobs.take_potion_breaks();
-        breaks.append(&mut self.potion_breaks);
-        breaks
+        self.sound_potion_breaks();
+        std::mem::take(&mut self.potion_breaks)
+    }
+
+    fn sound_potion_breaks(&mut self) {
+        for broken in self.mobs.take_potion_breaks() {
+            let pitch = crate::thrown::break_pitch(self.sound_random.next_float());
+            self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::thrown::BREAK_SOUND, pos: crate::thrown::sound_cell(broken.position), volume: 1.0, pitch });
+            self.potion_breaks.push(broken);
+        }
     }
 
     pub fn thrown_view(&self) -> Vec<(String, [f64; 3], [f64; 3], i32)> {
@@ -3606,6 +3616,26 @@ mod tests {
                 e.removed |= e.orb_data().is_some();
             }
         }
+    }
+
+    #[test]
+    fn a_witch_potion_breaks_with_the_glass_sound() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.set_simulation_area((0, 0), 2);
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(1);
+        let poison = minecraftoss_entities::potion::Potion::Poison;
+        let potion = minecraftoss_entities::potion::ThrownPotion::shoot(poison, 999, glam::DVec3::new(8.5, 202.0, 8.5), glam::DVec3::new(0.0, -1.0, 0.0), 0.5, 0.0, &mut random);
+        server.mobs.spawn_potion(potion);
+        let mut breaks = Vec::new();
+        for _ in 0..20 {
+            server.tick_mobs(&[], true);
+            breaks.extend(server.take_potion_breaks());
+        }
+        assert_eq!(breaks.len(), 1);
+        assert_eq!(breaks[0].color, poison.color());
+        let sounds: Vec<_> = server.level.sounds.iter().filter(|s| s.event == crate::thrown::BREAK_SOUND).collect();
+        assert_eq!(sounds.len(), 1);
+        assert_eq!(sounds[0].pos, [8.5, 200.5, 8.5]);
     }
 
     #[test]

@@ -661,6 +661,9 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
         }
         textures.insert(ResourceId::parse("minecraft:particle/note")?, ());
         textures.insert(ResourceId::parse("minecraft:particle/glow")?, ());
+        for id in crate::spell_particles::textures() {
+            textures.insert(id, ());
+        }
         textures.insert(ResourceId::parse("minecraft:misc/shadow")?, ());
     }
     let atlas = make_atlas(packs, textures.into_keys().collect())?;

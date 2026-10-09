@@ -43,7 +43,7 @@ IW4L_MINECRAFT_KIT=snowball*16,egg*16,ender_pearl*16,cow_spawn_egg*2
 
 ### 3. Minecraft bottles o' enchanting are thrown and burst into experience like vanilla
 
-Commit: (next entry)
+Commit: 1c21ff7
 
 - **Changed:** `thrown.rs`: `Throwable::ExperienceBottle` (`minecraft:experience_bottle`: thrown 20 degrees up at 0.7, gravity 0.07, sound `entity.experience_bottle.throw`), so right-click (main hand or offhand, both go through `Throwable::of`) throws it with no glue. `Landed` now carries the struck `block` and `face` (`struck_face`: the face of the collision box the hit point lies on, or the opposite of the motion when it started inside, as `VoxelShape.clip`). New `bottle_experience` (`3 + nextInt(5) + nextInt(5)` from the bottle's own random), `break_pitch`, `sound_cell`, `face_normal`, `BOTTLE_COLOR` (0x385DC6) and `BREAK_SOUND`.
 - `server.rs`: a landed bottle queues a potion break (`PotionBreak`, the bottle's colour, not instant), plays `entity.splash_potion.break` at its block's centre (volume 1, pitch 0.9 to 1, through the level sounds the client already plays) and awards the experience with `ExperienceOrb.awardWithDirection`: the struck face's normal on a block, the reversed motion on a mob or player. New `ServerSim::take_potion_breaks` returns the witches' and the thrown breaks together (`Output.potion_breaks`).
@@ -62,6 +62,23 @@ Commit: (next entry)
 IW4L_MINECRAFT_KIT=experience_bottle*64
 ```
 
+### 4. Minecraft potions break with the vanilla glass sound and swirl
+
+Commit: (next entry)
+
+- **Changed:** `server.rs`: witch potions now break with `entity.splash_potion.break` too (`AbstractThrownPotion.onHit`'s event 1053/1054: volume 1, pitch 0.9 to 1 at the block centre), played through the level sounds the client already plays; `ServerSim` keeps its own `sound_random` for those pitches so the mobs' randoms are untouched. Every break, witch or thrown, reaches `Output.potion_breaks`.
+- New `spell_particles.rs` (client side, `LevelEventHandler.potionSplashParticles` with `SpellParticle`): `SpellParticles::burst(position, colour, instant)` swirls 100 `effect` (or `instant_effect` for instant potions) particles from the bottom centre of the break's block, each shaded 0.75 to 1 of the colour, with the vanilla speed (`setPower`), upward drift (gravity -0.1, friction 0.96), 8 to 40 tick life and the 8 shrinking sprites; `tick` and `append_mesh` (camera-facing quads, lit by the block light at the particle). `mesh.rs` preloads the 16 `particle/effect_*` and `particle/spell_*` sprites. `BlockParticles::spawn_potion_crumbs(centre, texture)`: the 8 item crumbs (gaussian 0.15 sideways, up to 0.2 up), drawn with the item's particle texture `item/potion_overlay`.
+- **Tests:** spell_particles: `a_break_swirls_a_hundred_spells_of_its_colour_from_the_block_bottom`, `spells_drift_up_and_are_gone_within_forty_ticks`, `the_sprite_shrinks_from_the_seventh_to_the_first_frame`. block_particles: `a_potion_breaks_into_eight_untinted_crumbs_flying_out_and_up`. server: `a_witch_potion_breaks_with_the_glass_sound`.
+- **Decision:** the swirl and crumbs are client particles, so they need the glue (After the split, item 4); the sound does not.
+- **Test steps:**
+  1. Find or summon a witch (`/summon minecraft:witch`) and stand 6 blocks from it in survival: each potion it throws breaks with the glass sound where it lands. (The swirl comes with the glue.)
+  2. Throw a bottle o' enchanting: same glass sound as entry 3.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=experience_bottle*16,witch_spawn_egg*2
+```
+
 ## After the split
 
 The glue still needed in the game files (today `render_anim/src/minecraft_*.rs`, after the split their new crate). Each item names the function, its inputs and the call site.
@@ -69,3 +86,4 @@ The glue still needed in the game files (today `render_anim/src/minecraft_*.rs`,
 1. **Throws carry the thrower and the stack.** In `use_hands` (`minecraft_world.rs`, the throwables branch, now at about line 1181) and `Entities::throw` (`minecraft_entities.rs:269`): build a `minecraft_terrain::thrown::Throw { owner: PLAYER (the local player's ID), item: &stack.id, components: stack.components.as_ref(), eye, yaw, pitch, motion, on_ground }` and call `Thrown::launch(&throw, &mut self.random)` instead of `Thrown::throw`. With several players the server makes the throw from the player's own state.
 2. **Pearl teleports by player.** In `Entities::poll` (`minecraft_entities.rs:672`): read `output.pearl_teleports` and keep only the entries whose player is the local player (instead of every `output.pearl_landings` entry). `pearl_landings` can then be dropped from `Output`.
 3. **`/give` with potion contents** (track C's crate, `minecraft_commands/src/args.rs:248`, and the call in `minecraft_chat.rs:209`): parse `potion_contents={potion:"minecraft:x"}` in the item argument and build the stack with `minecraft_terrain::crafting::kit_potion_stack(recipes, id, 1, &enchantments, potion)` instead of `kit_stack`.
+4. **Potion break swirl and crumbs.** `Entities` (`minecraft_entities.rs`) gets a `spell: minecraft_terrain::spell_particles::SpellParticles` (`SpellParticles::new(seed)`, cleared with the other particles on a world change). In `Entities::poll`, for each `output.potion_breaks` entry: `self.spell.burst(b.position, b.color, b.instant)` and `minecraft_mining`'s particles `spawn_potion_crumbs(spell_particles::break_center(b.position).as_vec3(), &ResourceId::parse("minecraft:item/potion_overlay"))` (a new `Mining::potion_burst` beside `eat_burst`, `minecraft_mining.rs:153`). Tick it with `self.portal.tick()` (`minecraft_entities.rs:618`) and draw it with `self.spell.append_mesh(&mut out.translucent, atlas, forward, partial, light)` beside `self.portal.append_mesh` (`minecraft_entities.rs:917`).
