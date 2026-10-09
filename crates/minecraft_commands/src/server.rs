@@ -13,7 +13,7 @@ use crate::protocol::{
 };
 use crate::reader::CommandError;
 use crate::text::{GRAY, RED, Text};
-use crate::tree::{parse, runnable};
+use crate::tree::{Parsed, parse, runnable};
 
 pub const SEND_COMMAND_FEEDBACK: &str = "send_command_feedback";
 pub const LOG_ADMIN_COMMANDS: &str = "log_admin_commands";
@@ -431,17 +431,32 @@ impl CommandServer {
             source: from,
             level,
             input: command,
-            args: parsed.args,
-            literals: parsed.literals,
+            args: Vec::new(),
+            literals: Vec::new(),
             out: Vec::new(),
         };
-        let result = exec(&mut ctx);
+        let result = run_stages(&mut ctx, &parsed).and_then(|()| exec(&mut ctx));
         let mut out = ctx.out;
         if let Err(error) = result {
             out.extend(report(from, error, command));
         }
         out
     }
+}
+
+fn run_stages(ctx: &mut Ctx, parsed: &Parsed) -> Result<(), CommandError> {
+    for (index, stage) in parsed.stages.iter().enumerate() {
+        let next = parsed.stages.get(index + 1);
+        let args = next.map_or(parsed.args.len(), |next| next.args);
+        let literals = next.map_or(parsed.literals.len(), |next| next.literals);
+        ctx.args = parsed.args[stage.args..args].to_vec();
+        ctx.literals = parsed.literals[stage.literals..literals].to_vec();
+        let modifier = next.and_then(|next| parsed.nodes[next.nodes - 1].modifier);
+        if let Some(modify) = modifier {
+            modify(ctx)?;
+        }
+    }
+    Ok(())
 }
 
 fn report(to: PlayerId, error: CommandError, input: &str) -> Vec<Outgoing> {
@@ -984,6 +999,77 @@ pub(crate) mod tests {
         let out = run(&mut server, &mut world, FRIEND, "weather clear");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0, Recipient::Player(FRIEND));
+    }
+
+    #[test]
+    fn redirects_run_each_modifier_with_its_own_arguments() {
+        use crate::args::ArgKind;
+        use crate::tree::{Node, Redirect, sorted};
+        fn value(ctx: &Ctx) -> i32 {
+            match ctx.arg("value") {
+                Some(Arg::Int(value)) => *value,
+                _ => -1,
+            }
+        }
+        fn note(ctx: &mut Ctx) -> Result<(), CommandError> {
+            if value(ctx) == 0 {
+                return Err(CommandError::new("commands.help.failed", Vec::new()));
+            }
+            let line = format!("modifier {} of {}", value(ctx), ctx.args.len());
+            ctx.out.push(system(ctx.source, Text::literal(line)));
+            Ok(())
+        }
+        fn show(ctx: &mut Ctx) -> Result<i32, CommandError> {
+            let line = format!("command {} of {}", value(ctx), ctx.args.len());
+            ctx.out.push(system(ctx.source, Text::literal(line)));
+            Ok(1)
+        }
+        let digit = ArgKind::Int { min: 0, max: 9 };
+        let roots = sorted(vec![
+            Node::literal("wrap")
+                .then(Node::argument("value", digit).redirect_with(Redirect::Root, note)),
+            Node::literal("again").redirect(Redirect::Command("wrap")),
+            Node::literal("show").then(Node::argument("value", digit).executes(show)),
+        ]);
+        let mut server = server();
+        let mut world = FakeWorld::default();
+        let mut lines = |input: &str| {
+            let parsed = parse(&roots, input, OWNERS);
+            let exec = runnable(&parsed, input).unwrap();
+            let mut ctx = Ctx {
+                server: &mut server,
+                world: &mut world,
+                source: HOST,
+                level: OWNERS,
+                input,
+                args: Vec::new(),
+                literals: Vec::new(),
+                out: Vec::new(),
+            };
+            let result = run_stages(&mut ctx, &parsed).and_then(|()| exec(&mut ctx));
+            let texts: Vec<String> = ctx
+                .out
+                .iter()
+                .map(|out| out.message.chat_text().unwrap().resolve(&lang).text)
+                .collect();
+            (result, texts, parsed.stages.len())
+        };
+        let (result, texts, stages) = lines("wrap 1 again 2 show 3");
+        assert_eq!(result, Ok(1));
+        assert_eq!(
+            texts,
+            vec!["modifier 1 of 1", "modifier 2 of 1", "command 3 of 1"]
+        );
+        assert_eq!(stages, 4);
+        let (result, texts, _) = lines("wrap 0 show 3");
+        assert!(result.is_err());
+        assert!(texts.is_empty());
+        let parsed = parse(&roots, "wrap 1", OWNERS);
+        assert_eq!(parsed.stages.len(), 1);
+        assert!(runnable(&parsed, "wrap 1").is_err());
+        let parsed = parse(&roots, "wrap 1 frob", OWNERS);
+        assert_eq!((parsed.cursor, parsed.stages.len()), (7, 2));
+        assert_eq!(parsed.stages[1].start, 7);
     }
 
     #[test]

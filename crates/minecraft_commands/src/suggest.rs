@@ -299,20 +299,29 @@ fn client_order(list: Vec<Suggestion>, input: &str) -> Vec<Suggestion> {
 }
 
 fn suggestion_context<'t>(parsed: &Parsed<'t>, cursor: usize) -> (Option<&'t Node>, usize) {
-    let Some(last) = parsed.ranges.last() else {
-        return (None, 1);
-    };
-    if last.end < cursor {
-        return (parsed.nodes.last().copied(), last.end + 1);
-    }
-    let mut parent = None;
-    for (node, range) in parsed.nodes.iter().zip(&parsed.ranges) {
-        if range.start <= cursor && cursor <= range.end {
-            return (parent, range.start);
+    for (index, stage) in parsed.stages.iter().enumerate() {
+        let nodes = parsed.stage_nodes(index);
+        let ranges = &parsed.ranges[nodes.clone()];
+        let end = ranges.last().map_or(stage.start, |range| range.end);
+        if end < cursor {
+            if index + 1 < parsed.stages.len() {
+                continue;
+            }
+            return match ranges.last() {
+                Some(range) => (parsed.nodes.last().copied(), range.end + 1),
+                None => (stage.root, stage.start),
+            };
         }
-        parent = Some(*node);
+        let mut parent = stage.root;
+        for (node, range) in parsed.nodes[nodes].iter().zip(ranges) {
+            if range.start <= cursor && cursor <= range.end {
+                return (parent, range.start);
+            }
+            parent = Some(*node);
+        }
+        return (parent, stage.start);
     }
-    (parent, 1)
+    (None, 1)
 }
 
 fn suggest_argument(
@@ -590,10 +599,10 @@ fn span(spans: &mut Vec<(Range<usize>, u32)>, range: Range<usize>, color: u32) {
 fn colors(parsed: &Parsed, input: &str) -> Vec<(Range<usize>, u32)> {
     let mut spans = Vec::new();
     let mut done = 0;
-    let arguments = parsed
-        .nodes
+    let last = parsed.stage_nodes(parsed.stages.len() - 1);
+    let arguments = parsed.nodes[last.clone()]
         .iter()
-        .zip(&parsed.ranges)
+        .zip(&parsed.ranges[last])
         .filter(|(node, _)| !node.is_literal());
     for (index, (_, range)) in arguments.enumerate() {
         if range.start >= input.len() {
@@ -927,6 +936,23 @@ mod tests {
             texts(&summon),
             vec!["0.13", "0.13 64.00", "0.13 64.00 -3.50"]
         );
+    }
+
+    #[test]
+    fn redirects_suggest_and_colour_the_target_command() {
+        let tp = at_end("/tp ", OWNERS);
+        assert_eq!(texts(&tp), texts(&at_end("/teleport ", OWNERS)));
+        assert_eq!(tp.start, 4);
+        assert_eq!(
+            usage_lines(&at_end("/tp 1", OWNERS)),
+            usage_lines(&at_end("/teleport 1", OWNERS))
+        );
+        assert_eq!(
+            at_end("/tp @s ~ ~ ~", OWNERS).spans,
+            vec![(0..4, GRAY), (4..6, AQUA), (6..7, GRAY), (7..12, YELLOW)]
+        );
+        assert_eq!(texts(&at_end("/tp", OWNERS)), Vec::<&str>::new());
+        assert_eq!(texts(&at_end("/t", OWNERS)), vec!["teleport", "time", "tp"]);
     }
 
     #[test]

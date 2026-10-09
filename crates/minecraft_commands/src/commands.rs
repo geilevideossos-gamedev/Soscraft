@@ -10,7 +10,7 @@ use crate::protocol::PlayerId;
 use crate::reader::{CommandError, literal};
 use crate::server::{Ctx, SEND_COMMAND_FEEDBACK, Weather, registered, system};
 use crate::text::{GREEN, Text};
-use crate::tree::{Node, parse, smart_usage, smart_usages, sorted};
+use crate::tree::{Node, Redirect, parse, smart_usage, smart_usages, sorted};
 
 pub const CLOCK: &str = "minecraft:overworld";
 const RAIN_DELAY: (i32, i32) = (12_000, 180_000);
@@ -163,7 +163,9 @@ fn build() -> Vec<Node> {
             ),
         ),
         teleport_node("teleport"),
-        teleport_node("tp"),
+        Node::literal("tp")
+            .requires(GAMEMASTERS)
+            .redirect(Redirect::Command("teleport")),
         effect_node(),
         Node::literal("summon").requires(GAMEMASTERS).then(
             Node::argument("entity", ArgKind::Resource(Registry::EntityType))
@@ -195,7 +197,7 @@ fn help_command(ctx: &mut Ctx) -> Result<i32, CommandError> {
         return Err(CommandError::new("commands.help.failed", Vec::new()));
     };
     let parsed = parse(tree(), &command, ctx.level);
-    let Some(last) = parsed.nodes.last() else {
+    let Some(last) = parsed.nodes[..parsed.stage_nodes(0).end].last() else {
         return Err(CommandError::new("commands.help.failed", Vec::new()));
     };
     let usages = smart_usages(&last.children, last.exec.is_some(), ctx.level);
@@ -884,7 +886,7 @@ mod tests {
                 "/summon <entity> [<pos>]",
                 "/teleport (<destination>|<location>|<targets>)",
                 "/time (add|pause|query|resume|set)",
-                "/tp (<destination>|<location>|<targets>)",
+                "/tp -> teleport",
                 "/weather (clear|rain|thunder)",
             ]
         );

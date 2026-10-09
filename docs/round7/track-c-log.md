@@ -165,3 +165,41 @@ Kit: `minecraft:stone` 64 and 30, `minecraft:oak_log` 10, `minecraft:iron_boots`
 
 1. **`CommandWorld::clear`** in the glue: find the player's `Inventory` (the host's is `entities.inventory`) and return `Some(minecraft_commands::clear_inventory(inventory, filter, max))`. When anything was removed, mark the inventory changed so the client and the save see it. In multiplayer each player's inventory is keyed by its `PlayerId` and UUID.
 2. **Item tags**: fill `server.data_mut().item_tags` once at load from the 26.3 jar, `data/minecraft/tags/item/**.json`, resolving nested `#` references (the same walk as `minecraftoss_core::tags::Tags::load`, but keeping ids). Keys are `minecraft:<path>` without the `#`.
+
+## Minecraft commands can redirect like vanilla
+
+Commit: the commit that adds this entry (branch `track-c`, group "commands"). `/xp` and `/execute` need it, so it comes before them.
+
+### What changed
+
+- `crates/minecraft_commands/src/tree.rs` follows brigadier's redirects:
+  - `Node` gains `redirect: Option<Redirect>` and `modifier: Option<Modifier>`, built with `.redirect(target)` or `.redirect_with(target, modifier)`. `Redirect::Root` is the dispatcher root, and `Redirect::Command(name)` a root command, as `xp` and `tp` point at `experience` and `teleport`.
+  - `Parsed` gains `stages`, one per brigadier `CommandContextBuilder`: the redirect target, its start and where its nodes, arguments and literals begin. `stage_nodes(i)` gives a stage's node range.
+  - `parse_nodes` follows a redirect when a separator follows the node (`canRead(1)`) and returns the redirected parse at once, as `CommandDispatcher.parseNodes` does.
+  - `smart_usage` prints `-> name` for a command redirect and `...` for the root, so `/help` shows `/tp -> teleport` like vanilla.
+- `CommandServer::perform` runs each stage's modifier with that stage's arguments and literals, then the command with the last stage's. A modifier error stops the command and is reported like any command error.
+- `/tp` is now a redirect to `/teleport` (vanilla `TeleportCommand`), instead of a copy of its tree.
+- `/help <command>` uses the nodes of the first stage, as vanilla's `HelpCommand` does.
+- Suggestions follow brigadier's `findSuggestionContext` through the stages, and the input colours use the last stage's arguments only (`CommandSuggestions.formatText` takes `getLastChild()`).
+
+### Tests added
+
+- `server::tests::redirects_run_each_modifier_with_its_own_arguments`: a test tree with a root redirect that has a modifier and a command redirect. It checks the modifier order and arguments, a failing modifier, an unfollowed redirect and the stage start.
+- `suggest::tests::redirects_suggest_and_colour_the_target_command`: `/tp ` suggests what `/teleport ` does, with the same usage and colours.
+- `commands::tests::help_lists_smart_usages_of_visible_commands` now expects `/tp -> teleport`.
+
+### In-game test steps
+
+```
+IW4L_MINECRAFT_KIT=stone*64
+```
+
+1. `/help`: the list shows `/tp -> teleport`. Screenshot.
+2. `/tp ~ ~5 ~`: you are teleported 5 blocks up with "Teleported Steve to ...", as before.
+3. `/tp`: red "Unknown or incomplete command. See below for error" and `tp<--[HERE]`.
+
+Kit: none needed (the line above is any valid kit).
+
+### Decisions
+
+- **Stages instead of nested contexts.** The parse stays one flat list of nodes, arguments and literals, with the stage boundaries recorded. It keeps the existing lookups (`ctx.arg`) working and is enough for redirects whose modifier changes one source. Forking modifiers that run the rest once per target (`execute as @a`) are not supported.
