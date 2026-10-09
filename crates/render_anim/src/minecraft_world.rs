@@ -2380,6 +2380,9 @@ fn save_and_close(
 ) {
     let started = std::time::Instant::now();
     for level in server.iter_mut().flat_map(|server| server.levels.values_mut()) {
+        if let Some(entities) = level.entities.as_mut() {
+            minecraft_survival::level::save_server_block_entities(entities, &mut level.terrain, true);
+        }
         drop(level.entities.take());
     }
     if let Some(loader) = loader {

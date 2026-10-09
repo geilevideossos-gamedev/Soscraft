@@ -447,7 +447,7 @@ Commit: 2501d43
 
 ### 16. A broken Minecraft chest, furnace or campfire no longer comes back full
 
-Commit: (filled in by the next entry)
+Commit: ce141f2
 
 - **Defect (item duplication):** `Containers::take_block_entities` skipped every changed position whose block is no container any more. So when a chest, barrel, furnace, smoker, blast furnace, brewing stand or campfire was broken, nothing told the chunk map, and the chunk map kept the last tag written for that position (block entity edits wait per chunk until it is saved or dropped, the latest per position wins). The chunk map then only removed it because the block had become air. Placing the same kind of block there again before the chunk was written (and without opening it) brought that tag back: the chest was saved full again, although its items had already dropped when it was broken. The same happened in play when the chunk was unloaded and loaded again, since the chunk map applies its edits then too.
 - **Changed:** `take_block_entities` writes `None` (no block entity) for a changed position whose block is no container of ours when the containers no longer hold anything there, which is a container that was removed. The chunk map then drops the old tag, and a block placed there later gets its empty default, as in vanilla (`LevelChunk.setBlockState` removes the old block entity). A position the containers still hold whose block is something else is still left alone, as before.
@@ -463,3 +463,13 @@ Commit: (filled in by the next entry)
 ```
 IW4L_MINECRAFT_KIT=minecraft:chest,minecraft:campfire*2,minecraft:dirt*64,minecraft:beef*4,minecraft:diamond_pickaxe+efficiency=5
 ```
+
+### 17. Quitting a Minecraft world keeps the hoppers' last moves
+
+Commit: (filled in by the next entry)
+
+- **Defect:** entry 13 (c5efeed) says the closing save asks the server for its last block entity changes (`Entities::finish_block_entity_changes`, called from `Server::save_and_close`). It never ran: `save_and_close` in `render_anim/src/minecraft_world.rs` drops every level's `Entities` (stopping the server thread) before it calls `Server::save_and_close`, so that call always found no entities. The hopper, dropper and comparator changes the server made since the frame's last stream tick, including those already polled and waiting in `Entities`, were lost on quit, and the world was saved as it stood a frame or more earlier.
+- **Changed:** `save_and_close` in `render_anim/src/minecraft_world.rs` (three lines) passes each level's last server changes to its chunk map through `minecraft_survival::level::save_server_block_entities(..., true)` before it drops the level's entities. The containers' last changes are still written by `Server::save_and_close`, after the server's, as before.
+- **Tests:** none new: the closing order lives in the `render_anim` glue, which cannot be built without a whole world. The server side, which hands over the changes in its output, is covered by the hopper test of entry 13. `check -p launcher` and the `render_anim` `minecraft_world` tests pass.
+- **Test steps:** as entry 13, steps 1 to 6 (the hopper test needs a world prepared in vanilla 26.3). At step 4, quit through the menu while the dirt is still moving. Expected after the restart: exactly 128 dirt in total, and the hoppers and dropper hold the dirt where it was when you quit (open the world in Minecraft 26.3 to see their contents).
+- **Kit:** none (see entry 13).
