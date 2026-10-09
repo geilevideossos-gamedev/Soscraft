@@ -587,6 +587,9 @@ pub(crate) fn minecraft_presses(
             presses.hold(action);
         }
     }
+    if !state.screen_open && held(BindButton::Pad(PadButton::DpadDown)) {
+        presses.hold(frame::McAction::SwapHands);
+    }
     (suppressed, presses)
 }
 
@@ -972,6 +975,27 @@ mod minecraft_bind_tests {
         let mut thrown = defaults();
         thrown.set(F, id("+smoke"));
         assert!(!holding(&thrown, state(false, false), F));
+    }
+
+    #[test]
+    fn holding_the_pads_d_pad_down_holds_swap_hands_but_its_tactical_button_does_not() {
+        let binds = defaults();
+        let held = |state, button: PadButton| {
+            let pad = BindButton::Pad(button);
+            let (suppressed, presses) =
+                minecraft_presses(&binds, state, |_| false, |b| b == pad);
+            assert!(!suppressed.contains(&pad));
+            presses.is_held(McAction::SwapHands)
+        };
+        assert!(held(state(false, false), PadButton::DpadDown));
+        assert!(!held(state(false, true), PadButton::DpadDown));
+        assert!(!held(MinecraftKeyState::default(), PadButton::DpadDown));
+        assert!(!held(state(false, false), PadButton::LeftBumper));
+        assert!(!held(state(false, false), PadButton::RightBumper));
+        assert_eq!(
+            binds.binding_name(BindButton::Pad(PadButton::LeftBumper)),
+            Some("+smoke")
+        );
     }
 
     #[test]

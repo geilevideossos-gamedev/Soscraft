@@ -64,7 +64,7 @@ IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:golden_apple*16,minecraft:
 
 ### 4. MW2 grenade throws show while a Minecraft item or an empty hand is selected
 
-Commit: (filled in by the next commit)
+Commit: 8ee0cd0
 
 - **Changed:** new `pub fn mw2_throw_in_view(ps)` in `render_anim/src/occupancy/fpv_present.rs`: true while `weap_flags & OFFHAND_VIEW` is set, which MW2 sets from OffhandPrepare to the throw and clears at OffhandInit (gun going down) and OffhandEnd (gun coming up). While it is true: `occupy_fpv_scene` no longer hides the MW2 viewmodel for a selected Minecraft item, `skin_fpv_geometry` keeps the grenade draws for an empty hand (`hands_only` false), and `apply_fpv_placement` leaves the hands in MW2's place instead of Minecraft's arm pose. `render/src/extract.rs extract_minecraft_world` sends no first-person Minecraft item (main hand and offhand) to the GPU while it is true. No `minecraft_*` file changed.
 - **Tests:** `fpv_present.rs a_grenade_shows_only_while_the_offhand_view_is_up` (weapon states 0x0F to 0x16, with and without the flag).
@@ -80,6 +80,23 @@ Commit: (filled in by the next commit)
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64
+```
+
+### 5. The pad's tactical button always throws, and holding D-pad down uses the offhand item with a gun
+
+Commit: (filled in by the next commit)
+
+- **Changed:** the pad's tactical button (LB in the default layout) already throws since commit 3, because the offhand latch no longer reads `+smoke`. `minecraft_presses` (`console/src/binds.rs`) now also holds swap hands while the fixed D-pad down (the pad's swap-hands button, `hud/src/minecraft_inventory.rs:266`) is held outside screens, so with a gun selected holding D-pad down eats, blocks or places with the offhand item like F.
+- **Tests:** `holding_the_pads_d_pad_down_holds_swap_hands_but_its_tactical_button_does_not` (not in screens, not off the map, not for LB or RB).
+- **Decision:** D-pad down keeps its MW2 `+actionslot 2` too, as before. MW2's multiplayer scripts give out action slots 1, 3 and 4 (night vision, attachment mode, killstreaks), so slot 2 has nothing to clash with. Not checked in game data, only from memory of the MW2 scripts; if it ever does something, the owner will see it on step 3.
+- **Test steps** (controller, default layout, a class with Frag and Flash):
+  1. Cobblestone selected: RB throws a frag, LB a flash, both visible.
+  2. Golden apples in the offhand, gun selected: hold D-pad down, you eat. Press LB: a flash flies and nothing is eaten.
+  3. Gun selected, nothing in the offhand: tap D-pad down, nothing happens.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:golden_apple*16
 ```
 
 ## After the split
