@@ -2,7 +2,7 @@ use bevy::input::keyboard::Key;
 use frame::minecraft_creative::{
     MC_SEARCH_LIMIT, can_scroll, scroll_after_wheel, scroll_for_drag, scroller_y,
 };
-use frame::{McCreative, McCreativeTab, McFont, McScreen, McSlot, McTabKind, MinecraftUi};
+use frame::{McCreative, McCreativeTab, McFont, McScreen, McSlot, McStack, McTabKind, MinecraftUi};
 
 use crate::minecraft_chat::{ChatClipboard, Mods, Typed};
 use crate::minecraft_edit::Edit;
@@ -15,6 +15,8 @@ pub(crate) const PUPPET_HEIGHT: f32 = 70.0 * 20.0 / 30.0;
 const SEARCH_BOX: [i32; 3] = [82, 6, 80];
 const HIGHLIGHT: u32 = 0xFF00_00FF;
 const BLINK_MILLIS: f64 = 300.0;
+const BLUE: u32 = 0xFF55_55FF;
+const DARK_PURPLE: u32 = 0xFFAA_00AA;
 
 fn spec(slot: McSlot, x: i32, y: i32, group: Group, empty: Option<&'static str>) -> SlotSpec {
     SlotSpec {
@@ -459,6 +461,38 @@ pub(crate) fn tooltip(
         .then(|| vec![TextLine::new(p.gui.text("inventory.binSlot"), WHITE)])
 }
 
+pub(crate) fn extra_lines(ui: &MinecraftUi, slot: McSlot, stack: &McStack) -> Vec<TextLine> {
+    let Some(tab) = ui.creative.selected_tab() else {
+        return Vec::new();
+    };
+    let grid = match slot {
+        McSlot::Creative(index) => Some(index),
+        _ => None,
+    };
+    if grid.is_some() && tab.kind == McTabKind::Category {
+        return Vec::new();
+    }
+    let mut lines: Vec<TextLine> = ui
+        .creative
+        .tabs_of
+        .get(&stack.id)
+        .into_iter()
+        .flatten()
+        .map(|title| TextLine::new(title.clone(), BLUE))
+        .collect();
+    if let Some(index) = grid.filter(|_| tab.kind == McTabKind::Search) {
+        lines.extend(
+            ui.creative
+                .tags
+                .get(index)
+                .into_iter()
+                .flatten()
+                .map(|tag| TextLine::new(format!("#{tag}"), DARK_PURPLE)),
+        );
+    }
+    lines
+}
+
 pub(crate) fn over_tab(ui: &MinecraftUi, rel: [f64; 2]) -> bool {
     tab_at(&ui.creative.tabs, rel).is_some()
 }
@@ -633,6 +667,56 @@ mod tests {
         reopen(&mut creative);
         assert!(creative.query.is_empty());
         assert_eq!(creative.selected.as_deref(), Some("minecraft:search"));
+    }
+
+    fn stone() -> McStack {
+        McStack {
+            id: "minecraft:stone".to_owned(),
+            count: 1,
+            weapon: None,
+            damage: None,
+            max: 64,
+            named: false,
+            name: None,
+            attack: None,
+            enchantments: Vec::new(),
+            contents: Vec::new(),
+            more: None,
+            glint: false,
+        }
+    }
+
+    #[test]
+    fn tooltips_name_the_tabs_and_shown_tags_outside_the_item_tabs() {
+        let mut ui = MinecraftUi {
+            creative: tabs(),
+            ..MinecraftUi::default()
+        };
+        ui.creative.tabs_of.insert(
+            "minecraft:stone".to_owned(),
+            vec!["Building Blocks".to_owned(), "Natural Blocks".to_owned()],
+        );
+        ui.creative.tags = vec![vec!["minecraft:stone_tool_materials".to_owned()]];
+        let texts = |ui: &MinecraftUi, slot| {
+            extra_lines(ui, slot, &stone())
+                .into_iter()
+                .map(|line| (line.text, line.color))
+                .collect::<Vec<_>>()
+        };
+        assert!(texts(&ui, McSlot::Creative(0)).is_empty());
+        assert_eq!(
+            texts(&ui, McSlot::Inventory(0)),
+            [
+                ("Building Blocks".to_owned(), BLUE),
+                ("Natural Blocks".to_owned(), BLUE)
+            ]
+        );
+        select(&mut ui.creative, 3);
+        assert_eq!(
+            texts(&ui, McSlot::Creative(0)).last(),
+            Some(&("#minecraft:stone_tool_materials".to_owned(), DARK_PURPLE))
+        );
+        assert_eq!(texts(&ui, McSlot::Inventory(0)).len(), 2);
     }
 
     fn typed(key: Key, code: KeyCode, text: Option<&str>, ctrl: bool) -> Typed {

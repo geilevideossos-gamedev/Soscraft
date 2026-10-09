@@ -1600,3 +1600,46 @@ IW4L_MINECRAFT_KIT=stone*64,diamond_sword,iron_helmet
 - **Variants** (potions, enchanted books, goat horns and the rest) show their plain item once for now. Expanding them needs registry data and is its own step.
 - **The pad cannot pick tabs yet**: tabs and the scroller take the mouse. The pad still moves between slots and clicks them.
 - **The middle button works in the creative screen only**, not yet in chests.
+
+## Minecraft creative inventory searches items like vanilla
+
+Commit: the commit that adds this entry. The previous commit is 20ebfb8 (the creative tabs).
+
+### What changed
+
+Checked with javap against 26.3 `CreativeModeInventoryScreen.refreshSearchResults`, `updateVisibleTags`, `getTooltipFromContainerItem`, `FullTextSearchTree`, `IdSearchTree` and `SuffixArray`.
+
+- **Search rules** (new `crates/minecraft_terrain/src/creative_search.rs`, pure):
+  - An empty box shows the whole search tab.
+  - Text without `:` matches items whose tooltip text contains it, ignoring case (26.3's `FullTextSearchTree.searchPlainText` only searches the text, not the id).
+  - With `:`, the part before must be in the item's namespace, and the part after in its id path or its text (`searchIdentifier`, both parts trimmed).
+  - A leading `#` searches the item tags instead (`IdSearchTree` over each item's tags): without `:` the tag path must contain the text, with `:` some tag's namespace and some tag's path must contain the two parts.
+  - `visible_tags` picks the tags a `#` query names, as `updateVisibleTags` does.
+  - Results keep the search tab's order.
+- **Client side** (`render_anim/src/minecraft_creative.rs`):
+  - The search tab's stacks and their text lines (the item's name from the language) are built once and kept; each change of the box filters them.
+  - Each item's tags come from the item tags the commands already load (`CommandData.item_tags`), turned around once into item to tags.
+  - For a `#` query, each shown item gets the shown tags it has (`McCreative.tags`).
+  - `McCreative.tabs_of` lists, for each item id, the titles of the shown category tabs that hold it, in tab order.
+- **HUD**: a stack's tooltip in the creative screen gains vanilla's extra lines after the name: the blue names of the tabs that hold it (everywhere except the grid of a category tab), then, on the search tab's grid, the purple `#tag` lines for a `#` query. The box itself came with the previous commit; every edit scrolls the grid back to the top.
+
+### Tests added
+
+- `minecraft_terrain` `creative_search::tests` (4): plain text over tooltip lines ignoring case, and that the id alone does not match; `namespace:path` against the id, the text and the namespace; `#` tag searches with and without a namespace; the shown tags for a `#` query.
+- `render_anim` `minecraft_creative::tests` (2 more): the tab titles each item lists (the operator tab only when shown); the search list filtering by name, by tag and empty.
+- `hud` `minecraft_creative::tests::tooltips_name_the_tabs_and_shown_tags_outside_the_item_tabs`.
+
+### In-game test steps
+
+Kit: none needed.
+
+1. `/gamemode creative`, E, then click the Search tab (compass, top right). Type `wool`: only the 16 wools show. Screenshot 4.
+2. Clear the box and type `#logs`: every log and wood shows. Hover an oak log: under its name the blue "Building Blocks" and "Natural Blocks" lines, then a purple `#minecraft:logs` line (and the other log tags). Screenshot 5.
+3. Type `minecraft:dia`: the diamond items and blocks show. Type `#minecraft:swo`: the swords show.
+4. Type more than 50 characters: the box stops at 50. Select text with Shift+arrows and type over it.
+5. Hover a stack in the bottom hotbar row on Building Blocks: its tooltip lists the tabs that hold it; a stack in the Building Blocks grid shows only its own lines.
+
+### Decisions
+
+- **The searched text is the item's name.** Vanilla searches every tooltip line; until variants are expanded every searched stack is a plain item, whose tooltip is just its name.
+- **Tags are shown in their sorted order.** Vanilla inserts them from a hash set, so its order is arbitrary.

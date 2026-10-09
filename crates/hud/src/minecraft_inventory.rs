@@ -542,8 +542,14 @@ pub(crate) fn update_minecraft_hud(
         }
         let item_tooltip = hovered
             .filter(|_| ui.cursor.is_none())
-            .and_then(|slot| stack_at(&ui, slot))
-            .map(|stack| (tooltip_lines(stack, &ui, weapons, strings, &mut gaps), true));
+            .and_then(|slot| stack_at(&ui, slot).map(|stack| (slot, stack)))
+            .map(|(slot, stack)| {
+                let mut lines = tooltip_lines(stack, &ui, weapons, strings, &mut gaps);
+                if matches!(ui.screen, McScreen::Creative(_)) {
+                    lines.splice(1..1, crate::minecraft_creative::extra_lines(&ui, slot, stack));
+                }
+                (lines, true)
+            });
         let recipe_tooltip = crate::minecraft_screens::hovered_recipe(&screen)
             .and_then(|index| ui.choices.get(index))
             .and_then(|choice| choice.icon.as_ref())

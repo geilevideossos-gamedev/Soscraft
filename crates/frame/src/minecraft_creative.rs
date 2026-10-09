@@ -37,7 +37,8 @@ pub struct McCreative {
     pub highlight: usize,
     pub scroll: f32,
     pub items: Vec<Option<McStack>>,
-    pub tags: Vec<String>,
+    pub tags: Vec<Vec<String>>,
+    pub tabs_of: std::collections::HashMap<String, Vec<String>>,
     pub hotbar_key: Option<(usize, bool)>,
     pub saved: Option<(String, f64)>,
 }

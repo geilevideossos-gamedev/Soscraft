@@ -3,6 +3,7 @@ use std::sync::{Arc, mpsc};
 
 use frame::{McClick, McCreativeTab, McScreen, McSlot, McTabKind, MinecraftUi};
 use minecraft_survival::creative::{self, CreativeSlot, GridClick, SetSlot};
+use minecraft_terrain::creative_search::Searched;
 use minecraft_terrain::creative_tabs::{CreativeTab, CreativeTabs, Row, TabEntry, TabKind};
 use minecraft_terrain::game_mode::PlayerMode;
 use minecraftoss_player::crafting::RecipeBook;
@@ -21,6 +22,62 @@ pub(crate) struct Shown {
     locked: bool,
 }
 
+pub(crate) struct SearchList {
+    key: (bool, bool),
+    stacks: Vec<ItemStack>,
+    lines: Vec<Vec<String>>,
+}
+
+pub(crate) fn search_lines(
+    stack: &ItemStack,
+    language: Option<&HashMap<String, String>>,
+) -> Vec<String> {
+    let name = language.map_or_else(
+        || stack.id.clone(),
+        |language| minecraft_terrain::item_icons::item_name(language, &stack.id),
+    );
+    vec![name]
+}
+
+pub(crate) fn search_items(
+    query: &str,
+    search: &SearchList,
+    item_tags: &HashMap<String, Vec<String>>,
+) -> Vec<usize> {
+    let searched: Vec<Searched> = search
+        .stacks
+        .iter()
+        .zip(&search.lines)
+        .map(|(stack, lines)| Searched {
+            id: &stack.id,
+            lines,
+            tags: item_tags.get(&stack.id).map_or(&[][..], Vec::as_slice),
+        })
+        .collect();
+    minecraft_terrain::creative_search::search(query, &searched)
+}
+
+pub(crate) fn tabs_of(
+    tabs: &CreativeTabs,
+    operator: bool,
+    language: Option<&HashMap<String, String>>,
+) -> HashMap<String, Vec<String>> {
+    let mut found: HashMap<String, Vec<String>> = HashMap::new();
+    for tab in tabs
+        .shown(operator)
+        .filter(|tab| tab.kind == TabKind::Category)
+    {
+        let title = tab_view(tab, language).title;
+        for entry in tab.entries.iter().filter(|entry| entry.in_search) {
+            let titles = found.entry(entry.item.clone()).or_default();
+            if titles.last() != Some(&title) {
+                titles.push(title.clone());
+            }
+        }
+    }
+    found
+}
+
 #[derive(Default)]
 pub(crate) struct CreativeUi {
     started: bool,
@@ -33,6 +90,9 @@ pub(crate) struct CreativeUi {
     pending_items: Option<Vec<Option<ItemStack>>>,
     creative_mode: bool,
     operator: bool,
+    search: Option<SearchList>,
+    item_tags: HashMap<String, Vec<String>>,
+    tag_names: Vec<String>,
 }
 
 pub(crate) fn kind_of(kind: TabKind) -> McTabKind {
@@ -136,6 +196,7 @@ impl CreativeUi {
         if self.published != Some(wanted) {
             self.published = Some(wanted);
             self.built = None;
+            ui.creative.tabs_of = tabs_of(&tabs, self.operator, language);
             self.pending_tabs = Some(
                 tabs.shown(self.operator)
                     .map(|tab| {
@@ -153,7 +214,7 @@ impl CreativeUi {
         {
             ui.screen = screen;
         }
-        let Some(selected) = ui.creative.selected_tab() else {
+        let Some(selected) = ui.creative.selected_tab().cloned() else {
             return;
         };
         let built = Built {
@@ -168,33 +229,50 @@ impl CreativeUi {
         if self.built.as_ref() == Some(&built) {
             return;
         }
+        let unlocked = |stack: ItemStack| {
+            Some(Shown {
+                stack,
+                locked: false,
+            })
+        };
+        let mut tags = Vec::new();
         let shown: Vec<Option<Shown>> = match selected.kind {
             McTabKind::Category => tabs
                 .tab(&selected.id)
                 .map(|tab| entry_stacks(&tab.displayed().collect::<Vec<_>>(), recipes))
                 .unwrap_or_default()
                 .into_iter()
-                .map(|stack| {
-                    Some(Shown {
-                        stack,
-                        locked: false,
-                    })
-                })
+                .map(unlocked)
                 .collect(),
             McTabKind::Search => {
-                let entries = tabs.search(self.operator);
-                entry_stacks(&entries.iter().collect::<Vec<_>>(), recipes)
-                    .into_iter()
-                    .map(|stack| {
-                        Some(Shown {
-                            stack,
-                            locked: false,
-                        })
+                self.ensure_search(&tabs, recipes, language);
+                let Some(search) = self.search.as_ref() else {
+                    return;
+                };
+                let found = search_items(&built.query, search, &self.item_tags);
+                let visible = minecraft_terrain::creative_search::visible_tags(
+                    &built.query,
+                    self.tag_names.iter().map(String::as_str),
+                );
+                tags = found
+                    .iter()
+                    .map(|&index| {
+                        let own = self.item_tags.get(&search.stacks[index].id);
+                        visible
+                            .iter()
+                            .filter(|tag| own.is_some_and(|own| own.contains(tag)))
+                            .cloned()
+                            .collect()
                     })
+                    .collect();
+                found
+                    .into_iter()
+                    .map(|index| unlocked(search.stacks[index].clone()))
                     .collect()
             }
             McTabKind::Hotbar | McTabKind::Inventory => Vec::new(),
         };
+        ui.creative.tags = tags;
         self.pending_items = Some(
             shown
                 .iter()
@@ -203,6 +281,43 @@ impl CreativeUi {
         );
         self.items = shown;
         self.built = Some(built);
+    }
+
+    pub(crate) fn set_item_tags(
+        &mut self,
+        item_tags: &std::collections::BTreeMap<String, Vec<String>>,
+    ) {
+        if !self.tag_names.is_empty() || item_tags.is_empty() {
+            return;
+        }
+        self.tag_names = item_tags.keys().cloned().collect();
+        for (tag, items) in item_tags {
+            for item in items {
+                self.item_tags
+                    .entry(item.clone())
+                    .or_default()
+                    .push(tag.clone());
+            }
+        }
+        self.built = None;
+    }
+
+    fn ensure_search(
+        &mut self,
+        tabs: &CreativeTabs,
+        recipes: &RecipeBook,
+        language: Option<&HashMap<String, String>>,
+    ) {
+        let key = (self.operator, language.is_some());
+        if self.search.as_ref().is_none_or(|search| search.key != key) {
+            let entries = tabs.search(self.operator);
+            let stacks = entry_stacks(&entries.iter().collect::<Vec<_>>(), recipes);
+            let lines = stacks
+                .iter()
+                .map(|stack| search_lines(stack, language))
+                .collect();
+            self.search = Some(SearchList { key, stacks, lines });
+        }
     }
 
     pub(crate) fn take_tabs(&mut self) -> Option<Vec<(McCreativeTab, Option<ItemStack>)>> {
@@ -366,6 +481,89 @@ mod tests {
                 .iter()
                 .all(|stack| stack.count == 1 && stack.max == 64)
         );
+    }
+
+    fn category(id: &str, title: &str, items: &[&str], operator: bool) -> CreativeTab {
+        CreativeTab {
+            id: id.into(),
+            title: title.into(),
+            row: Row::Top,
+            column: 0,
+            kind: TabKind::Category,
+            aligned_right: false,
+            show_title: true,
+            scroll_bar: true,
+            background: "items".into(),
+            icon: None,
+            operator,
+            entries: items.iter().map(|item| entry(item, None)).collect(),
+        }
+    }
+
+    #[test]
+    fn items_know_the_shown_tabs_that_hold_them() {
+        let tabs = CreativeTabs {
+            tabs: vec![
+                category(
+                    "minecraft:building_blocks",
+                    "itemGroup.buildingBlocks",
+                    &["minecraft:stone", "minecraft:stone"],
+                    false,
+                ),
+                category(
+                    "minecraft:natural_blocks",
+                    "itemGroup.natural",
+                    &["minecraft:stone", "minecraft:dirt"],
+                    false,
+                ),
+                category(
+                    "minecraft:op_blocks",
+                    "itemGroup.op",
+                    &["minecraft:stone"],
+                    true,
+                ),
+            ],
+            ..CreativeTabs::default()
+        };
+        let found = tabs_of(&tabs, false, None);
+        assert_eq!(
+            found["minecraft:stone"],
+            ["itemGroup.buildingBlocks", "itemGroup.natural"]
+        );
+        assert_eq!(found["minecraft:dirt"], ["itemGroup.natural"]);
+        assert_eq!(tabs_of(&tabs, true, None)["minecraft:stone"].len(), 3);
+    }
+
+    #[test]
+    fn the_search_list_filters_by_name_and_by_tag() {
+        let recipes = RecipeBook::default();
+        let stacks: Vec<ItemStack> = ["minecraft:oak_log", "minecraft:white_wool"]
+            .iter()
+            .map(|id| stack_of(&recipes, id))
+            .collect();
+        let mut language = HashMap::new();
+        language.insert("block.minecraft.oak_log".to_owned(), "Oak Log".to_owned());
+        language.insert(
+            "block.minecraft.white_wool".to_owned(),
+            "White Wool".to_owned(),
+        );
+        let lines = stacks
+            .iter()
+            .map(|stack| search_lines(stack, Some(&language)))
+            .collect();
+        let search = SearchList {
+            key: (false, true),
+            stacks,
+            lines,
+        };
+        let mut tags = HashMap::new();
+        tags.insert(
+            "minecraft:oak_log".to_owned(),
+            vec!["minecraft:logs".to_owned()],
+        );
+        assert_eq!(search_items("wool", &search, &tags), [1]);
+        assert_eq!(search_items("#logs", &search, &tags), [0]);
+        assert_eq!(search_items("", &search, &tags), [0, 1]);
     }
 
     #[test]

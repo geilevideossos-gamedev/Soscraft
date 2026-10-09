@@ -9,6 +9,7 @@ pub mod block_particles;
 mod test_dir;
 pub mod class_file;
 pub mod clouds;
+pub mod creative_search;
 pub mod creative_tabs;
 pub mod day_cycle;
 pub mod environment;

@@ -1660,6 +1660,7 @@ fn update(
         let roll = entities.random_float();
         let operator = ui.chat.command_level >= 2 && settings.as_deref().is_some_and(|settings| settings.minecraft_operator_items);
         inventory_ui.creative.prepare(!player_mode.consumes_items(), operator);
+        inventory_ui.creative.set_item_tags(&globals.chat.data().item_tags);
         let known = |id: &str| globals.chat.registries().items.iter().any(|item| item == id);
         let creative_thrown = inventory_ui.creative.apply(&mut ui, player_mode, inventory, &known);
         let thrown: Vec<_> = creative_thrown.into_iter().chain(inventory_ui.apply_input(&mut ui, inventory, selected, containers, &mut || roll)).collect();
