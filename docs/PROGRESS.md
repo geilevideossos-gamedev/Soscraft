@@ -49,8 +49,8 @@ Design briefs: `docs/round7/a1-grenade-keys.md`, `a2-chat.md`, `b1-throwables.md
 | Track | Branch | State |
 |---|---|---|
 | A. Controls and chat | track-a | merged (80cacc3, full suite 1315 passed). Left for after the split: mouse buttons still mine/place while a grenade is up with a Minecraft item selected (see `docs/round7/track-a-log.md`) |
-| B. Items, blocks, player model | track-b | early half done (throwables, lids, body gear in minecraft_terrain and render_anim/anim, reviewed); main merged in as 984bd51; second half (game glue) running. Log `docs/round7/track-b-log.md` |
-| C. Commands | track-c | early half done (suggestion engine, /clear /xp /enchant /setblock /fill /spawnpoint /locate /execute /kit, creative tab reader; reviewed, 6 fixes); main merged in as 44759b7; second half (command glue, chat suggestions UI, creative screen) running. Log `docs/round7/track-c-log.md` |
+| B. Items, blocks, player model | track-b | merged (e9ba6ad, full suite 1555 passed). Log `docs/round7/track-b-log.md` |
+| C. Commands | track-c | merged (e166289, plus 375b5b4 /spawnpoint glue and 4ac8b27 rustfmt; full suite 1695 passed). Open: `/kit` skips `@` entries that the start kit accepts. Log `docs/round7/track-c-log.md` |
 | D. Saving everything | track-d | merged (fc6d4bd, full suite 1398 passed). Review fixed 4 defects (rustfmt, broken containers coming back full, hoppers losing their last moves on quit, and one more). Log `docs/round7/track-d-log.md` |
 
 ## Phase 3 (after track D)
@@ -64,7 +64,7 @@ Briefs: `docs/round7/e0-phase3-plan.md` (order, groups, ownership, estimate), `e
 ## Release builds
 | # | When | Commit | State |
 |---|---|---|---|
-| 1 | tracks A-D merged (`--profile play`) | | |
+| 1 | tracks A-D merged (`--profile play`) | 4ac8b27 | installed as `iw4l-survival.exe` (old one is `iw4l-survival-3c2c62b.exe`), smoke-run on a temp world clean; owner steps in `docs/round7/release-1-tests.md` |
 | 2 | end of round (`--release`) | | |
 
 ## Build times
@@ -99,6 +99,7 @@ The 41 minutes of the last round were not reproduced: a clean release build alon
 - Elytra: a new 20 Hz glide mode in MW2 movement, guns still usable.
 - Throwables kit syntax: `id@potion` for potion contents (`#` starts a comment in `.env`).
 ## Log
+- 2026-10-09: tracks B and C merged; release build 1 (play profile, 4ac8b27) installed and pushed.
 - 2026-10-09: track D merged (fc6d4bd) and pushed; the dimension switch started.
 - 2026-10-09: resumed after the restart: disk freed, track runner saved in the repo, tracks B, C and D restarted from their heads.
 - 2026-10-09: stopped for a PC shutdown; all branches committed (track D with one WIP commit) and pushed. See "Where everything stands".
