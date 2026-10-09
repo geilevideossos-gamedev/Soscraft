@@ -1,5 +1,6 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
+use std::sync::Arc;
 
 pub const MC_CHAT_HISTORY: usize = 100;
 pub const MC_CHAT_INPUT_LIMIT: usize = 256;
@@ -10,6 +11,27 @@ pub struct McChatLine {
     pub color: u32,
     pub spans: Vec<(Range<usize>, u32)>,
     pub italic: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct McSuggestionList {
+    pub list: Vec<minecraft_commands::Suggestion>,
+    pub original: String,
+    pub offset: usize,
+    pub current: usize,
+    pub tab_cycles: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct McSuggestions {
+    pub pending: Option<minecraft_commands::Completion>,
+    pub spans: Vec<(Range<usize>, u32)>,
+    pub usage: Vec<minecraft_commands::Text>,
+    pub usage_start: usize,
+    pub list: Option<McSuggestionList>,
+    pub inline: Option<String>,
+    pub allow: bool,
+    pub keep: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -29,6 +51,8 @@ pub struct McChat {
     pub opened_at: f64,
     pub hints: minecraft_commands::CommandHints,
     pub command_level: u8,
+    pub suggestions: McSuggestions,
+    pub language: Arc<HashMap<String, String>>,
 }
 
 impl McChat {
@@ -40,6 +64,7 @@ impl McChat {
         self.draft.clear();
         self.scroll = 0;
         self.new_since_scroll = false;
+        self.suggestions = McSuggestions::default();
     }
 
     pub fn clear_messages(&mut self) {
@@ -72,6 +97,9 @@ mod tests {
         chat.sent.push("hi".into());
         chat.hints.players.push("Steve".into());
         chat.command_level = 4;
+        chat.suggestions.inline = Some("ed".into());
+        chat.suggestions.allow = true;
+        chat.language = Arc::new(HashMap::from([("a".to_owned(), "b".to_owned())]));
         chat.clear_messages();
         assert!(!chat.open);
         assert!(chat.input.is_empty() && chat.cursor == 0 && chat.scroll == 0);
@@ -80,5 +108,7 @@ mod tests {
         assert_eq!(chat.history, vec!["hello".to_owned()]);
         assert!(chat.hints.players.is_empty());
         assert_eq!(chat.command_level, 0);
+        assert!(chat.suggestions.inline.is_none() && !chat.suggestions.allow);
+        assert_eq!(chat.language.len(), 1);
     }
 }

@@ -647,6 +647,9 @@ fn update(
         aim.target(&minecraft_terrain::doors::Outlined(&terrain.scene), player_mode.block_reach())
     };
     minecraft_survival::commands::refresh_hints(&mut ui.chat.hints, &globals.chat, loaded_dimensions.iter().copied(), aim.map(|hit| (hit.point.to_array(), [hit.pos.0, hit.pos.1, hit.pos.2])));
+    if ui.chat.language.is_empty() && let Some(language) = inventory_ui.language() {
+        ui.chat.language = std::sync::Arc::new(language.clone());
+    }
     let mut all_events = sim::voxel::take_events();
     let mut hand_mined = Vec::new();
     let mut creative_broken = Vec::new();

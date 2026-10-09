@@ -1432,3 +1432,64 @@ Load a fresh world with this kit, then follow the entries' own steps in this ord
 3. The `/kit` entry, steps 2 to 4: `/kit` gives the whole kit back, one line per entry. Step 3's count is for that entry's own kit; with this one the fifth `/kit` after the `/clear` is the first that no longer fits the 36 slots: from its sword on, what does not merge into a stack drops at your feet.
 4. `/clear`, then `/kit` once, then the `/enchant`, `/xp`, `/setblock` and `/fill`, `/locate` and `/execute in` entries.
 5. The suggestion steps wait for the chat UI group.
+
+# Second half: the chat UI
+
+Branch `track-c`, group "chat-ui". The previous commit is 2a3d60e (the glue group's test order).
+
+## Minecraft chat suggests commands like vanilla
+
+Commit: the commit that adds this entry.
+
+### What changed
+
+- `frame::McChat` gains `suggestions` (`McSuggestions`: the pending completion, the input colours, the usage lines and their start, the shown list, the grey inline text and vanilla's `allowSuggestions` and `keepSuggestions` flags) and `language` (the 26.3 language, shared, to resolve usage and error lines). `close()` forgets the suggestions; `clear_messages` keeps the language.
+- New `crates/hud/src/minecraft_suggestions.rs`, vanilla 26.3 `CommandSuggestions` and its `SuggestionsList` (checked with javap, with `ChatScreen` and `EditBox`), on top of `minecraft_commands::complete` and the `CommandHints` the glue group keeps in `McChat`:
+  - **When it updates** (`updateCommandInfo`): on every edit of the input, not on cursor moves, as the `EditBox` responder only fires on a value change. Opening the chat computes it with suggestions not yet allowed, so `/` opens with no list; the first typed character shows it.
+  - **Command lines** show the list by themselves at most 10 lines of 12 px, above the input at the x of the word it completes (clamped to the input box), with `0xD0000000` behind each line, the selected line yellow and the others grey, and dotted white lines above or below when more lines are hidden.
+  - **Chat lines** (no `/`) complete online player names at the last word, on Tab only.
+  - **Keys** (`SuggestionsList.keyPressed`, then `CommandSuggestions.keyPressed`): with the list shown, Up and Down move the selection without writing; Tab writes the selection (the first Tab writes the selected line, later ones move first), Shift+Tab moves back; Esc hides the list and the chat stays open. With the list hidden, Tab shows it, Up and Down walk the history and Esc closes the chat.
+  - **Writing a suggestion** (`useSuggestion`) keeps the list, moves the cursor to the end of the written text and recolours the input; the next edit rebuilds the list.
+  - **History** (`moveInHistory`): a line from the history hides the list until the next edit or Tab.
+  - **Grey inline text** (`EditBox.setSuggestion`): the rest of the selected suggestion in `0xFF808080` right after the text, only while the cursor is at the end.
+  - **Usage** (`extractUsage`): with the list hidden, the usage lines from the engine (grey node usage, or the parse error with its position and context) stack upward from 27 px above the bottom, at the start of the argument, each on `0xD0000000`.
+  - **Input colours** (`formatText`): the engine's spans colour the input, shifted with the part of the input in view.
+- `hud/src/minecraft_chat.rs`: `apply_typed` gives the suggestions the key first and calls the update after an edit; `draw` colours the input and draws the inline text and the list or usage.
+- `render_anim/src/minecraft_world.rs`: one line fills `McChat.language` from the inventory UI's language once it is loaded.
+
+### Tests added (`hud` `minecraft_suggestions::tests`, 11; `frame` `clearing_messages_keeps_the_sent_history` extended)
+
+- `/ga` shows `gamemode` and `gamerule`, the first selected, "memode" grey inline, `/` grey and `ga` red; `/` alone shows no list until Tab.
+- Tab writes `/gamemode` with the cursor at 9, Tab cycles to `/gamerule` and back, Shift+Tab goes back; a typed space rebuilds the list.
+- Up and Down move in the list without writing and reset the Tab cycle; they walk the history only while the list is hidden, and a history line keeps the list hidden.
+- Esc hides the list first and closes the chat second.
+- A chat line completes `st` to `Steve` on Tab only; a blank line has nothing.
+- `/give ` has the grey usage `<targets> <item> [<count>]` at position 6; `/gamemode god` has the error "... at position 13: ...memode god<--[HERE]" and `god` red.
+- `/kill Steve` colours `Steve` aqua, and the colours follow the part of the input in view.
+- 14 suggestions scroll ten lines at a time and wrap both ways.
+- The list rectangle, the usage position and rows, and the clamp to the input box match vanilla's numbers.
+- Closing the chat forgets the suggestions; reopening starts clean.
+
+### In-game test steps
+
+Kit: none needed.
+
+1. Press `/`. The chat opens with `/` and no list. Type `ga`: the list above the input shows `gamemode` (yellow) and `gamerule` (grey), `memode` shows grey after the cursor, and `ga` is red. Screenshot 1.
+2. Press Tab: the input reads `/gamemode`. Tab again: `/gamerule`. Shift+Tab: `/gamemode`.
+3. Type a space: the game modes show. Press Down twice: the yellow line moves and the input does not change. Tab writes the yellow one.
+4. Clear the line and type `/give @s pick`: the pickaxes show. Esc: the list goes, the chat stays open. Esc again closes the chat.
+5. Type `/give ` and press Esc: the grey line `<targets> <item> [<count>]` shows above the input, starting under the space after `give`. Screenshot 2.
+6. Type `/gamemode god`: `god` is red, and the white line reads "Unknown game mode: god at position 13: ...memode god<--[HERE]". Screenshot 3.
+7. Type `/give @s stone 5`: `/give` grey, `@s` aqua, `stone` yellow, `5` green. Screenshot 4.
+8. Clear to `/` and press Tab: every command shows, ten at a time. Hold Down: the list scrolls, with a dotted white line on the side that has more. Screenshot 5.
+9. Close the chat, press T, type `hi` and the first two letters of your player name, then Tab: your name shows; Tab again writes it.
+10. Look at a block and type `/tp `: the block's coordinates show with two decimals.
+11. Send `/seed`, open the chat with T and press Up: `/seed` comes back with no list over it.
+
+### Decisions
+
+- **Error lines in the usage area stay white.** `extractUsage` draws them with colour -1 and the error components carry no style; the red is the input past the parse error, as `formatText` does. (Same decision as the suggestion engine's entry.)
+- **Keyboard only.** Vanilla also selects a line under the mouse, writes it on a click and scrolls it with the wheel when the mouse is over it. The chat UI has no mouse position yet; the wheel still scrolls the chat history. Left for a later commit.
+- **The "Command Suggestions" option is always on**, its vanilla default; there is no options screen for it.
+- **Suggestions follow the input, not the cursor**, as vanilla: moving the cursor with the arrows or Home keeps the list until the next edit.
+- **The language lives in `McChat`** as a shared map, filled once by `render_anim`; the usage lines are resolved when drawn, so a language that loads late still shows.

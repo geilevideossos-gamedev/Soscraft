@@ -25,6 +25,7 @@ mod minecraft_gui;
 mod minecraft_hotbar;
 mod minecraft_inventory;
 mod minecraft_screens;
+mod minecraft_suggestions;
 mod minecraft_tooltip;
 mod minecraft_vitals;
 mod overhead_names;
