@@ -80,3 +80,13 @@ Previous commit: 585bad58
 ```
 IW4L_MINECRAFT_KIT=minecraft:oak_sapling*4,minecraft:bone_meal*32,minecraft:dirt*8
 ```
+
+### Group X1a summary
+
+Previous commit: 5eae59cd
+
+- **Commits:** entries 1 to 3 (E3-1, E3-2, E3-4).
+- **Tests:** with `MINECRAFTOSS_ROOT` set, `minecraft_terrain` 645 pass (3 ignored), `minecraftoss-generator` 26, `minecraftoss-world` 59 and `render_anim` 67; `check -p launcher` is green.
+- **Clippy:** `clippy -p minecraft_terrain -p minecraftoss-generator -p minecraftoss-world --all-targets --no-deps -- -A clippy::approx_constant` has no finding in the new files or the changed lines (the `approx_constant` errors and 38 warnings are older).
+- **Left for X2:** the eye of ender throw. Brief E3 leaves it to track B's commit 8, which hasn't landed: `EnderEyeItem.use` (the nearest stronghold through `#eye_of_ender_located`, search radius 100), the `EyeOfEnder` flight (a target over 12 blocks away becomes the point 12 toward it and 8 up), its 80 ticks, the drop when `nextInt(5) > 0`, and the eye kept in the hand when there is no stronghold. Until then right-clicking with an eye anywhere but an empty frame does nothing.
+- **Owner test for the group:** entry 2's steps with its kit, then entry 3's step 1 with its kit, in the world `x1atest`.
