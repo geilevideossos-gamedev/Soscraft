@@ -606,7 +606,7 @@ IW4L_MINECRAFT_KIT=diamond_pickaxe+efficiency=5,diamond_sword,stone*64,oak_log*6
 
 1. Load the world with the kit above, then `/clear` (or drop everything).
 2. `/kit`: one "Gave ..." line per entry, and the items are back. Screenshot.
-3. Fill the inventory (`/kit` three more times): the stacks that do not fit lie at your feet. Screenshot.
+3. Run `/kit` six more times. The pickaxe, sword, stone, logs and torches take five new slots per kit while the bread stacks up, so the seventh kit is the first that no longer fits in the 36 slots: its torches lie at your feet. Screenshot.
 4. Change the `.env` line to `IW4L_MINECRAFT_KIT=torch*8` without restarting, `/kit`: "Gave 8 [Torch] to Steve".
 
 Kit: `minecraft:diamond_pickaxe` 1 (Efficiency V), `minecraft:diamond_sword` 1, `minecraft:stone` 64, `minecraft:oak_log` 64, `minecraft:torch` 64, `minecraft:bread` 16.
@@ -917,3 +917,21 @@ Kit: none needed.
 ### Decisions
 
 - **Known difference, not fixed: malformed input can report a different error first.** The `/setblock` entry says block data is checked when the command runs with the same red line. That holds for a well-formed block state. When the state is also malformed, the parse-time error wins here: `stonee[` gives "Expected closing ]" where vanilla, which checks the id while parsing, gives "Unknown block type 'minecraft:stonee'". In the same way, `oak_stairs[foo]` gives "Expected value for property 'foo'" where vanilla gives "Block minecraft:oak_stairs does not have property 'foo'". Fixing this needs block data inside the argument parser, which the parser does not have.
+
+## Minecraft /kit test steps overflow the inventory for real
+
+Commit: the commit that adds this entry (branch `track-c`, adversarial review of the whole track). It changes only this log.
+
+### What changed
+
+- Step 3 of the `/kit` entry said three more `/kit` runs fill the inventory. They do not. The pickaxe, sword, stone, logs and torches take five slots per kit, while 16 bread per kit merge into one stack (`Inventory::add_item` merges first). Four kits use 21 of the 36 slots and nothing drops. The step now says six more runs: the seventh kit needs 37 slots, and its torches drop at the player's feet.
+
+### Tests added
+
+None. Only the log changed.
+
+### In-game test steps
+
+The corrected steps are in the `/kit` entry above.
+
+Kit: as in the `/kit` entry.
