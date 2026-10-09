@@ -490,3 +490,17 @@ Previous commit: 198ea8e7
 - **Known gap left as it was (entry 11's decision):** an item use already sent to the old level's server when the player leaves (a bucket on a block) is forgotten: if that server still carries it out, the block changes but the item stays in hand. A leave right after a use needs a living switch, which only `/execute in` (after track C) and the portals (N2) start; N2 should let the waiting use finish before the leave.
 - **Test steps:** none reliable in game: it needs a pickup in the very frame a switch starts.
 - **Kit:** none.
+
+## Final verification
+
+Previous commit: a9e2a2e7
+
+- **Crates touched since fc6d4bd:** `frame`, `hud`, `minecraft_survival`, `minecraft_terrain`, `net`, `playerstate_iw4`, `render_anim`, `sim`, `minecraftoss-core` and `minecraftoss-world`.
+- **Clippy:** `clippy -p frame -p hud -p minecraft_survival -p minecraft_terrain -p net -p playerstate_iw4 -p render_anim -p sim -p minecraftoss-core -p minecraftoss-world --locked --all-targets -- -A clippy::approx_constant` has no finding on a line this track added (checked against `git diff -U0 fc6d4bd..HEAD`). The findings left are older: `entities.rs` 77 and 628, `minecraft_terrain/src/server.rs` 311, 1087 and 1278, `terrain.rs` 657, `minecraft_world.rs` 127, 386 and 395, `voxel.rs` 47, 325 and 381, and many more in those crates. No fix was needed.
+- **Tests:** `frame` 14, `hud` 111, `minecraft_survival` 204 and the vanilla world test, `minecraft_terrain` 492 (3 ignored as before), `net` and `playerstate_iw4` (no tests), `render_anim` 44, `sim` 69, `minecraftoss-core` 23 and `minecraftoss-world` 59 (with the full suite's stand-in `third_party/scenarios` files) all pass.
+- **Owner test for the whole track:** the group tests in order, each in its own new world: entry 9 (S2, `s2test`), entry 13 (S3, `s3test`), the S4 summary (`s4test`), then entries 20 and 22 in `s4test`. Entries 21 and 23 have no in-game steps. Each step list is in its entry.
+- **Kit for the whole track** (8 stacks, the hotbar stays free for the killstreaks of entry 17):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:obsidian*64,minecraft:netherrack*64,minecraft:cobblestone*64,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:torch*64,minecraft:cooked_beef*32
+```
