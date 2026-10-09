@@ -133,3 +133,26 @@ A4 is commit `96d91f6`.
 - **Kit:** `minecraft:experience_bottle` x64, `minecraft:water_bucket` x1, `minecraft:lava_bucket` x1, `minecraft:cooked_beef` x32, `minecraft:cobblestone` x64 (all in the regression kit).
 - **Decisions:**
   - `Vitals` sits right after `Motion`, the other plain-data struct the adapter fills or reads, and its fields stay `pub(crate)` until the A6 move turns them `pub` with the rest of the file.
+
+## A6. Minecraft health, hunger and hazards move to minecraft_survival
+
+A5 is commit `493fea3`.
+
+- **What changed:**
+  - `git mv crates/render_anim/src/minecraft_survival.rs crates/minecraft_survival/src/survival.rs` (`R`), with its 94 `pub(crate)` turned into `pub`, and its `minecraft_survival::death::` (4) and `minecraft_survival::offhand::` (2) paths turned into `crate::death::` and `crate::offhand::`. No other line of it changed (checked by normalising the rename diff: every removed line has its added twin).
+  - `minecraft_survival/src/lib.rs` gains `pub mod survival;`.
+  - `render_anim`: `mod minecraft_survival;` is gone, and `crate::minecraft_survival::` became `minecraft_survival::survival::` in `minecraft_world.rs` (16 lines: the plan's 15 plus `mc_vitals` from A5) and `minecraft_chat.rs` (3).
+- **Tests:** the 64 `survival` tests moved with the file (61 in the plan at `d426239`, plus the void-damage tests from `65f6402`). `minecraft_survival` 111, `render_anim` 42, total unchanged (153). Matches the recomputed table.
+- **Checks:** `check -p launcher --locked`, `test -p minecraft_survival --locked`, `test -p render_anim --locked`; the staged `lib.rs` passes `rustfmt --check --edition 2024`.
+- **Owner test** (health, hunger and every hazard must work exactly as before):
+  1. Load a Minecraft match with the regression kit. Hearts, hunger and XP show.
+  2. Sprint and jump around for a minute: the hunger bar drops. Eat cooked beef: it fills, with the eating sound and the burp.
+  3. With full hunger, take a little damage (a 4-block fall): the hearts come back by natural regeneration.
+  4. Fall from 6 blocks or more: fall damage and the big fall sound. Fall the same height into water: no damage.
+  5. Stay under water until the air bubbles run out: drowning damage.
+  6. Step into lava: you catch fire and take damage; jump into water and the fire goes out. Light a fire with flint and steel and stand in it: burning damage.
+  7. Hit a cow with the sword: the hunger bar drops faster than when standing still.
+  8. Type `/gamerule fall_damage false`, fall 10 blocks: no damage. Then `/gamerule fall_damage true`.
+  9. Type `/effect give @s minecraft:poison 5`: the hearts turn green and drop to half a heart at least.
+- **Kit:** `minecraft:cooked_beef` x32, `minecraft:water_bucket` x1, `minecraft:lava_bucket` x1, `minecraft:flint_and_steel` x1, `minecraft:diamond_sword` x1, `minecraft:cow_spawn_egg` x2, `minecraft:cobblestone` x64 (all in the regression kit).
+- **Decisions:** none.

@@ -141,7 +141,7 @@ struct Runtime {
     sounds: Option<crate::minecraft_sounds::Sounds>,
     inventory_ui: crate::minecraft_inventory::InventoryUi,
     entities: Option<crate::minecraft_entities::Entities>,
-    survival: crate::minecraft_survival::Survival,
+    survival: minecraft_survival::survival::Survival,
     player_mode: minecraft_terrain::game_mode::PlayerMode,
     containers: minecraft_terrain::containers::Containers,
     /// Shape id of each block state already seen.
@@ -629,7 +629,7 @@ fn update(
         death_watch.switch_teams();
     }
     let keep_inventory = minecraft_survival::death::keeps_belongings(world.game_rules.keep_inventory(), player_mode.mode);
-    survival.rules = crate::minecraft_survival::SurvivalRules::of(&world.game_rules, world.difficulty);
+    survival.rules = minecraft_survival::survival::SurvivalRules::of(&world.game_rules, world.difficulty);
     survival.set_game_mode(player_mode);
     authority.0.set_minecraft_abilities(local.0, ability_bits(player_mode));
     if alive && player_mode.abilities.may_fly {
@@ -721,7 +721,7 @@ fn update(
         }
         let caught = [-0.01, -1.0]
             .into_iter()
-            .any(|dy| block_at(dy).is_some_and(|(_, b)| crate::minecraft_survival::breaks_fall(&b.id.key())));
+            .any(|dy| block_at(dy).is_some_and(|(_, b)| minecraft_survival::survival::breaks_fall(&b.id.key())));
         if on_ground {
             if let Some(peak) = steps.air_peak.take().filter(|_| !caught) {
                 let fall = peak - feet[1];
@@ -731,7 +731,7 @@ fn update(
                 if damage > 0
                     && let Some(sounds) = sounds.as_mut()
                 {
-                    sounds.play(&world.packs, crate::minecraft_survival::fall_sound(damage), None, 1.0, 1.0);
+                    sounds.play(&world.packs, minecraft_survival::survival::fall_sound(damage), None, 1.0, 1.0);
                     let voice = (sounds.random() - sounds.random()) * 0.2 + 1.0;
                     sounds.play(&world.packs, "minecraft:entity.player.hurt", None, 1.0, voice);
                     if let Some((pos, block)) = under.as_ref()
@@ -779,7 +779,7 @@ fn update(
         hand.attack_ticks = 0;
     }
     if alive {
-        let motion = crate::minecraft_survival::Motion {
+        let motion = minecraft_survival::survival::Motion {
             feet,
             on_ground,
             sprinting: ps.pm_flags & playerstate_iw4::pm_flags::SPRINTING != 0,
@@ -792,7 +792,7 @@ fn update(
             crouching: ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0,
             height: hull_maxs[2] / sim::voxel::BLOCK,
         };
-        let armor = entities.as_ref().map_or_else(minecraftoss_player::survival::Armor::default, |e| crate::minecraft_survival::armor(&e.inventory));
+        let armor = entities.as_ref().map_or_else(minecraftoss_player::survival::Armor::default, |e| minecraft_survival::survival::armor(&e.inventory));
         for _ in 0..hand_ticks {
             let from = survival.last_feet().unwrap_or(feet);
             let breath = survival.tick(&motion);
@@ -801,7 +801,7 @@ fn update(
                     sounds.play(&world.packs, "minecraft:entity.player.hurt_drown", None, 1.0, 1.0);
                 }
                 if let Some(popped) = breath.popped {
-                    let (volume, pitch) = crate::minecraft_survival::pop_sound(popped);
+                    let (volume, pitch) = minecraft_survival::survival::pop_sound(popped);
                     sounds.play(&world.packs, "minecraft:ui.hud.bubble_pop", None, volume, pitch);
                 }
             }
@@ -904,7 +904,7 @@ fn update(
             let held = entities.inventory.slots[entities.selected].clone();
             let (damage, speed) = entities.inventory.recipes.attack_attributes(held.as_ref());
             let damage = (damage + survival.status.attack_damage_modifier()).max(0.0);
-            let strength = crate::minecraft_survival::attack_strength(hand.attack_ticks, speed);
+            let strength = minecraft_survival::survival::attack_strength(hand.attack_ticks, speed);
             let sprinting = ps.pm_flags & playerstate_iw4::pm_flags::SPRINTING != 0;
             let falling = steps.air_peak.is_some_and(|peak| peak > feet[1]);
             let blow = crate::minecraft_entities::Blow {
@@ -916,7 +916,7 @@ fn update(
             if entities.punch(eye_block, look, mc_yaw, damage, strength, blow) {
                 punched = true;
                 hand.attack_ticks = 0;
-                survival.exhaust(crate::minecraft_survival::ATTACK_EXHAUSTION);
+                survival.exhaust(minecraft_survival::survival::ATTACK_EXHAUSTION);
             } else if player.target(&minecraft_terrain::doors::Outlined(&world.scene), game_mode.block_reach()).is_none() {
                 hand.attack_ticks = 0;
                 hand.miss_time = if game_mode.instant_break() { 0 } else { 10 };
@@ -931,9 +931,9 @@ fn update(
             let roll = entities.random_float();
             let bite = survival.chew(&mut entities.inventory, entities.selected, || roll);
             let (sound, finished) = match bite {
-                crate::minecraft_survival::Bite::Nothing => continue,
-                crate::minecraft_survival::Bite::Chew(sound) => (sound, None),
-                crate::minecraft_survival::Bite::Done { sound, overflow, fed } => (sound, Some((overflow, fed))),
+                minecraft_survival::survival::Bite::Nothing => continue,
+                minecraft_survival::survival::Bite::Chew(sound) => (sound, None),
+                minecraft_survival::survival::Bite::Done { sound, overflow, fed } => (sound, Some((overflow, fed))),
             };
             if crumbs
                 && let Some(texture) = minecraft_terrain::pack::ResourceId::parse(&item)
@@ -1408,7 +1408,7 @@ fn update(
             }
         }
     }
-    survival.exhaust(crate::minecraft_survival::MINE_EXHAUSTION * broken.iter().filter(|(.., blast)| blast.is_none()).count() as f32);
+    survival.exhaust(minecraft_survival::survival::MINE_EXHAUSTION * broken.iter().filter(|(.., blast)| blast.is_none()).count() as f32);
     if let Some(entities) = entities.as_mut() {
         let positions: Vec<_> = broken.iter().map(|(pos, ..)| *pos).collect();
         entities.mined(&broken, &hand_mined, !player_mode.drops_from_breaking());
@@ -1574,7 +1574,7 @@ fn update(
                 sounds.play(&world.packs, &kind.break_sound, Some(at(centre)), (kind.volume + 1.0) / 2.0, kind.pitch * 0.8);
             }
         }
-        let armor = crate::minecraft_survival::armor(&entities.inventory);
+        let armor = minecraft_survival::survival::armor(&entities.inventory);
         for (amount, from, toward, cause) in hits.into_iter().filter(|_| !player_mode.invulnerable()) {
             let blocked = hand.blocking.filter(|blocking| blocking.raised()).map_or(0.0, |_| minecraft_survival::offhand::blocked_damage(mc_yaw, toward, amount));
             if let Some(blocking) = hand.blocking.filter(|_| blocked > 0.0) {
@@ -2297,7 +2297,7 @@ fn finish_item_use(
 }
 
 fn hold_off_death(
-    survival: &mut crate::minecraft_survival::Survival,
+    survival: &mut minecraft_survival::survival::Survival,
     entities: &mut crate::minecraft_entities::Entities,
     sounds: Option<&mut crate::minecraft_sounds::Sounds>,
     packs: &PackStack,
@@ -2390,7 +2390,7 @@ fn ui_game_mode(mode: minecraftoss_player::GameMode) -> frame::McGameMode {
     }
 }
 
-fn mc_vitals(vitals: crate::minecraft_survival::Vitals) -> frame::McVitals {
+fn mc_vitals(vitals: minecraft_survival::survival::Vitals) -> frame::McVitals {
     frame::McVitals {
         air: vitals.air,
         max_air: vitals.max_air,

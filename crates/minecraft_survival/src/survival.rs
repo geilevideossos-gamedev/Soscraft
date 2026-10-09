@@ -1,4 +1,4 @@
-use minecraft_survival::death::{CombatTracker, DamageCause, DeathLine, FallLocation};
+use crate::death::{CombatTracker, DamageCause, DeathLine, FallLocation};
 use glam::DVec3;
 use minecraftoss_entities::inside_blocks::{BlockEffect, Hazard, block_effects};
 use minecraftoss_entities::movement::Body;
@@ -20,8 +20,8 @@ const OUT_OF_WORLD_DAMAGE: f32 = 4.0;
 const OUT_OF_WORLD_DEPTH: i32 = 64;
 const BURN_DAMAGE: f32 = 1.0;
 const BURN_INTERVAL: i32 = 20;
-pub(crate) const ATTACK_EXHAUSTION: f32 = 0.1;
-pub(crate) const MINE_EXHAUSTION: f32 = 0.005;
+pub const ATTACK_EXHAUSTION: f32 = 0.1;
+pub const MINE_EXHAUSTION: f32 = 0.005;
 const JUMP_EXHAUSTION: f32 = 0.05;
 const SPRINT_JUMP_EXHAUSTION: f32 = 0.2;
 const SPRINT_EXHAUSTION: f32 = 0.1;
@@ -33,49 +33,49 @@ const DAMAGE_BLINK: u64 = 20;
 const SETTLE_DISPLAY: u64 = 20;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct Motion {
-    pub(crate) feet: [f64; 3],
-    pub(crate) on_ground: bool,
-    pub(crate) sprinting: bool,
-    pub(crate) jumping: bool,
-    pub(crate) in_water: bool,
-    pub(crate) eye_in_water: bool,
-    pub(crate) in_lava: bool,
-    pub(crate) eye_in_lava: bool,
-    pub(crate) in_rain: bool,
-    pub(crate) crouching: bool,
-    pub(crate) height: f32,
+pub struct Motion {
+    pub feet: [f64; 3],
+    pub on_ground: bool,
+    pub sprinting: bool,
+    pub jumping: bool,
+    pub in_water: bool,
+    pub eye_in_water: bool,
+    pub in_lava: bool,
+    pub eye_in_lava: bool,
+    pub in_rain: bool,
+    pub crouching: bool,
+    pub height: f32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Vitals {
-    pub(crate) air: i32,
-    pub(crate) max_air: i32,
-    pub(crate) eye_in_water: bool,
-    pub(crate) health: f32,
-    pub(crate) max_health: f32,
-    pub(crate) absorption: f32,
-    pub(crate) food: u8,
-    pub(crate) saturation: f32,
-    pub(crate) poisoned: bool,
-    pub(crate) hunger: bool,
-    pub(crate) regen_index: i32,
-    pub(crate) blink: bool,
-    pub(crate) display_health: i32,
-    pub(crate) tick: u64,
-    pub(crate) experience_level: u32,
-    pub(crate) experience_progress: f32,
-    pub(crate) on_fire: bool,
-    pub(crate) eye_in_lava: bool,
+pub struct Vitals {
+    pub air: i32,
+    pub max_air: i32,
+    pub eye_in_water: bool,
+    pub health: f32,
+    pub max_health: f32,
+    pub absorption: f32,
+    pub food: u8,
+    pub saturation: f32,
+    pub poisoned: bool,
+    pub hunger: bool,
+    pub regen_index: i32,
+    pub blink: bool,
+    pub display_health: i32,
+    pub tick: u64,
+    pub experience_level: u32,
+    pub experience_progress: f32,
+    pub on_fire: bool,
+    pub eye_in_lava: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct SurvivalRules {
-    pub(crate) natural_regeneration: bool,
-    pub(crate) fall_damage: bool,
-    pub(crate) fire_damage: bool,
-    pub(crate) drowning_damage: bool,
-    pub(crate) difficulty: Difficulty,
+pub struct SurvivalRules {
+    pub natural_regeneration: bool,
+    pub fall_damage: bool,
+    pub fire_damage: bool,
+    pub drowning_damage: bool,
+    pub difficulty: Difficulty,
 }
 
 impl Default for SurvivalRules {
@@ -91,7 +91,7 @@ impl Default for SurvivalRules {
 }
 
 impl SurvivalRules {
-    pub(crate) fn of(rules: &minecraft_terrain::game_rules::GameRules, difficulty: Difficulty) -> Self {
+    pub fn of(rules: &minecraft_terrain::game_rules::GameRules, difficulty: Difficulty) -> Self {
         Self {
             natural_regeneration: rules.bool("natural_health_regeneration"),
             fall_damage: rules.bool("fall_damage"),
@@ -112,11 +112,11 @@ impl SurvivalRules {
 }
 
 #[derive(Default)]
-pub(crate) struct Survival {
-    pub(crate) status: SurvivalStatus,
-    pub(crate) rules: SurvivalRules,
+pub struct Survival {
+    pub status: SurvivalStatus,
+    pub rules: SurvivalRules,
     killed: bool,
-    pub(crate) eye_in_water: bool,
+    pub eye_in_water: bool,
     eye_in_lava: bool,
     stuck: bool,
     fire_ticks: i32,
@@ -143,20 +143,20 @@ pub(crate) struct Survival {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct Breath {
-    pub(crate) drowned: bool,
-    pub(crate) popped: Option<i32>,
+pub struct Breath {
+    pub drowned: bool,
+    pub popped: Option<i32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct PlayerSound {
-    pub(crate) event: &'static str,
-    pub(crate) volume: f32,
-    pub(crate) pitch: f32,
+pub struct PlayerSound {
+    pub event: &'static str,
+    pub volume: f32,
+    pub pitch: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Bite {
+pub enum Bite {
     Nothing,
     Chew(String),
     Done {
@@ -167,9 +167,9 @@ pub(crate) enum Bite {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct Settle {
-    pub(crate) damage: Option<(i32, Option<[f64; 3]>)>,
-    pub(crate) set: Option<i32>,
+pub struct Settle {
+    pub damage: Option<(i32, Option<[f64; 3]>)>,
+    pub set: Option<i32>,
 }
 
 fn scale(max_health: i32) -> f32 {
@@ -177,7 +177,7 @@ fn scale(max_health: i32) -> f32 {
 }
 
 impl Survival {
-    pub(crate) fn respawn(&mut self) {
+    pub fn respawn(&mut self) {
         *self = Self {
             blocked_sprint: self.blocked_sprint,
             rules: self.rules,
@@ -189,7 +189,7 @@ impl Survival {
         };
     }
 
-    pub(crate) fn respawn_keeping_experience(&mut self) {
+    pub fn respawn_keeping_experience(&mut self) {
         let level = self.status.experience_level;
         let progress = self.status.experience_progress;
         let total = self.status.total_experience;
@@ -199,7 +199,7 @@ impl Survival {
         self.status.total_experience = total;
     }
 
-    pub(crate) fn set_game_mode(&mut self, mode: &minecraft_terrain::game_mode::PlayerMode) {
+    pub fn set_game_mode(&mut self, mode: &minecraft_terrain::game_mode::PlayerMode) {
         self.invulnerable = mode.invulnerable();
         self.creative = mode.mode == GameMode::Creative;
         self.may_fly = mode.abilities.may_fly;
@@ -210,7 +210,7 @@ impl Survival {
         if self.creative { GameMode::Creative } else { GameMode::Survival }
     }
 
-    pub(crate) fn sprint_change(&mut self, blocked: bool) -> Option<bool> {
+    pub fn sprint_change(&mut self, blocked: bool) -> Option<bool> {
         let hungry = !self.can_sprint();
         if hungry && !blocked {
             self.blocked_sprint = true;
@@ -226,7 +226,7 @@ impl Survival {
         None
     }
 
-    pub(crate) fn observe(&mut self, health: i32, max_health: i32) {
+    pub fn observe(&mut self, health: i32, max_health: i32) {
         let scale = scale(max_health);
         let Some(synced) = self.synced else {
             self.synced = Some(health);
@@ -246,7 +246,7 @@ impl Survival {
         }
     }
 
-    pub(crate) fn tick(&mut self, motion: &Motion) -> Breath {
+    pub fn tick(&mut self, motion: &Motion) -> Breath {
         self.tick += 1;
         self.in_water = motion.in_water;
         self.combat.tick(self.tick);
@@ -302,7 +302,7 @@ impl Survival {
         breath
     }
 
-    pub(crate) fn breathe(&mut self, eye_in_water: bool) -> Breath {
+    pub fn breathe(&mut self, eye_in_water: bool) -> Breath {
         self.eye_in_water = eye_in_water;
         let before = self.status.health;
         let drowned = if eye_in_water && !self.rules.drowning_damage && !self.invulnerable {
@@ -340,7 +340,7 @@ impl Survival {
         self.last_health = health;
     }
 
-    pub(crate) fn fall(&mut self, distance: f64, landed_on: Option<&str>, crouching: bool) -> i32 {
+    pub fn fall(&mut self, distance: f64, landed_on: Option<&str>, crouching: bool) -> i32 {
         let damage = if self.rules.fall_damage && !self.invulnerable {
             landing_damage(distance, landed_on, crouching)
         } else {
@@ -371,11 +371,11 @@ impl Survival {
         }
     }
 
-    pub(crate) fn set_climbable(&mut self, climbable: Option<FallLocation>) {
+    pub fn set_climbable(&mut self, climbable: Option<FallLocation>) {
         self.climbable = climbable;
     }
 
-    pub(crate) fn death_line(
+    pub fn death_line(
         &self,
         language: &std::collections::HashMap<String, String>,
         present: impl Fn(u64) -> bool,
@@ -383,15 +383,15 @@ impl Survival {
         self.combat.death_line(language, present)
     }
 
-    pub(crate) fn last_feet(&self) -> Option<[f64; 3]> {
+    pub fn last_feet(&self) -> Option<[f64; 3]> {
         self.last_feet
     }
 
-    pub(crate) fn stuck(&self) -> bool {
+    pub fn stuck(&self) -> bool {
         self.stuck
     }
 
-    pub(crate) fn hazards(
+    pub fn hazards(
         &mut self,
         world: &impl World,
         motion: &Motion,
@@ -548,7 +548,7 @@ impl Survival {
         }
     }
 
-    pub(crate) fn hurt(
+    pub fn hurt(
         &mut self,
         damage: f32,
         armor: Armor,
@@ -570,7 +570,7 @@ impl Survival {
         landed
     }
 
-    pub(crate) fn kill(&mut self, cause: DamageCause) {
+    pub fn kill(&mut self, cause: DamageCause) {
         let before = self.status.health;
         self.status.absorption = 0.0;
         self.status.health = 0.0;
@@ -578,21 +578,21 @@ impl Survival {
         self.record(before, cause, 0.0);
     }
 
-    pub(crate) fn killed(&self) -> bool {
+    pub fn killed(&self) -> bool {
         self.killed
     }
 
-    pub(crate) fn hurt_blocked(&mut self, cause: DamageCause) {
+    pub fn hurt_blocked(&mut self, cause: DamageCause) {
         if self.status.hurt(0.0, Armor::default(), 0.0).is_some() {
             self.combat.hurt_by(self.tick, cause);
         }
     }
 
-    pub(crate) fn exhaust(&mut self, amount: f32) {
+    pub fn exhaust(&mut self, amount: f32) {
         self.status.food.add_exhaustion(amount);
     }
 
-    pub(crate) fn drink_potion(&mut self, potion: &str) {
+    pub fn drink_potion(&mut self, potion: &str) {
         let name = potion.strip_prefix("minecraft:").unwrap_or(potion);
         let (base, long, strong) = match name.split_once('_') {
             Some(("long", base)) => (base, true, false),
@@ -647,7 +647,7 @@ impl Survival {
         }
     }
 
-    pub(crate) fn spend_levels(&mut self, levels: u32) {
+    pub fn spend_levels(&mut self, levels: u32) {
         let status = &mut self.status;
         if status.experience_level < levels {
             status.experience_level = 0;
@@ -658,7 +658,7 @@ impl Survival {
         }
     }
 
-    pub(crate) fn gain_experience(&mut self, points: u32) -> Option<f32> {
+    pub fn gain_experience(&mut self, points: u32) -> Option<f32> {
         if points == 0 {
             return None;
         }
@@ -676,11 +676,11 @@ impl Survival {
         }
     }
 
-    pub(crate) fn can_sprint(&self) -> bool {
+    pub fn can_sprint(&self) -> bool {
         self.may_fly || self.status.food.level > SPRINT_FOOD
     }
 
-    pub(crate) fn settle(&mut self, health: i32, max_health: i32) -> Settle {
+    pub fn settle(&mut self, health: i32, max_health: i32) -> Settle {
         let base = self.synced.unwrap_or(health);
         let mut out = Settle::default();
         let mut current = health;
@@ -704,28 +704,28 @@ impl Survival {
         out
     }
 
-    pub(crate) fn eating(&self) -> Option<&FoodUse> {
+    pub fn eating(&self) -> Option<&FoodUse> {
         self.eating.as_ref()
     }
 
-    pub(crate) fn start_eating(&mut self, slot: usize, stack: &ItemStack) -> bool {
+    pub fn start_eating(&mut self, slot: usize, stack: &ItemStack) -> bool {
         if self.eating.is_none() {
             self.eating = FoodUse::start(slot, stack, &self.status.food, self.food_mode());
         }
         self.eating.is_some()
     }
 
-    pub(crate) fn start_using(&mut self, using: FoodUse) {
+    pub fn start_using(&mut self, using: FoodUse) {
         if self.eating.is_none() {
             self.eating = Some(using);
         }
     }
 
-    pub(crate) fn stop_eating(&mut self) {
+    pub fn stop_eating(&mut self) {
         self.eating = None;
     }
 
-    pub(crate) fn chew(
+    pub fn chew(
         &mut self,
         inventory: &mut Inventory,
         selected: usize,
@@ -735,7 +735,7 @@ impl Survival {
         let Some(using) = self.eating.as_mut() else {
             return Bite::Nothing;
         };
-        if using.slot != selected && using.slot != minecraft_survival::offhand::OFFHAND {
+        if using.slot != selected && using.slot != crate::offhand::OFFHAND {
             self.eating = None;
             return Bite::Nothing;
         }
@@ -774,11 +774,11 @@ impl Survival {
         }
     }
 
-    pub(crate) fn protect(&mut self, inventory: &mut Inventory, selected: usize) -> bool {
+    pub fn protect(&mut self, inventory: &mut Inventory, selected: usize) -> bool {
         if self.killed {
             return false;
         }
-        let Some(slot) = minecraft_survival::offhand::totem_slot(inventory, selected) else {
+        let Some(slot) = crate::offhand::totem_slot(inventory, selected) else {
             return false;
         };
         if let Some(totem) = inventory.slots[slot].as_mut() {
@@ -795,7 +795,7 @@ impl Survival {
         true
     }
 
-    pub(crate) fn clear_effects(&mut self) {
+    pub fn clear_effects(&mut self) {
         for kind in [
             EffectKind::Hunger,
             EffectKind::Poison,
@@ -811,7 +811,7 @@ impl Survival {
         }
     }
 
-    pub(crate) fn vitals(&self) -> Vitals {
+    pub fn vitals(&self) -> Vitals {
         let regen = self.status.effect(EffectKind::Regeneration).is_some();
         let max = self.status.max_health;
         Vitals {
@@ -861,18 +861,18 @@ fn hurt_sound(hazard: Hazard) -> &'static str {
     }
 }
 
-pub(crate) fn attack_strength(ticks_since_attack: u32, attack_speed: f64) -> f32 {
+pub fn attack_strength(ticks_since_attack: u32, attack_speed: f64) -> f32 {
     let delay = 20.0 / attack_speed.max(1.0e-4);
     ((f64::from(ticks_since_attack) + 0.5) / delay).clamp(0.0, 1.0) as f32
 }
 
-pub(crate) fn fall_damage(distance: f64, multiplier: f32) -> i32 {
+pub fn fall_damage(distance: f64, multiplier: f32) -> i32 {
     ((distance + 1.0e-6 - SAFE_FALL) * f64::from(multiplier))
         .floor()
         .max(0.0) as i32
 }
 
-pub(crate) fn breaks_fall(block: &str) -> bool {
+pub fn breaks_fall(block: &str) -> bool {
     matches!(
         block,
         "minecraft:ladder"
@@ -892,7 +892,7 @@ pub(crate) fn breaks_fall(block: &str) -> bool {
     )
 }
 
-pub(crate) fn fall_sound(damage: i32) -> &'static str {
+pub fn fall_sound(damage: i32) -> &'static str {
     if damage > 4 {
         "minecraft:entity.player.big_fall"
     } else {
@@ -900,7 +900,7 @@ pub(crate) fn fall_sound(damage: i32) -> &'static str {
     }
 }
 
-pub(crate) fn landing_damage(distance: f64, block: Option<&str>, crouching: bool) -> i32 {
+pub fn landing_damage(distance: f64, block: Option<&str>, crouching: bool) -> i32 {
     match block {
         Some("minecraft:slime_block") if !crouching => 0,
         Some(soft) if breaks_fall(soft) => 0,
@@ -912,7 +912,7 @@ pub(crate) fn landing_damage(distance: f64, block: Option<&str>, crouching: bool
     }
 }
 
-pub(crate) fn armor(inventory: &Inventory) -> Armor {
+pub fn armor(inventory: &Inventory) -> Armor {
     let recipes = &inventory.recipes;
     let (mut points, mut toughness) = (0.0, 0.0);
     for (slot, name) in [(36, "feet"), (37, "legs"), (38, "chest"), (39, "head")] {
@@ -926,11 +926,11 @@ pub(crate) fn armor(inventory: &Inventory) -> Armor {
     }
 }
 
-pub(crate) fn bubble_count(air: i32, max_air: i32) -> i32 {
+pub fn bubble_count(air: i32, max_air: i32) -> i32 {
     ((air * 10) as f32 / max_air.max(1) as f32).ceil() as i32
 }
 
-pub(crate) fn pop_sound(empty: i32) -> (f32, f32) {
+pub fn pop_sound(empty: i32) -> (f32, f32) {
     let volume = 0.5 + 0.1 * (empty - 2).max(0) as f32;
     let pitch = 1.0 + 0.1 * (empty - 4).max(0) as f32;
     (volume, pitch)
@@ -2042,7 +2042,7 @@ mod tests {
         assert_eq!(death(&alone), said("%1$s tried to swim in lava", "Lava"));
         let mut chased = unfed();
         let zombie = DamageCause::mob(
-            minecraft_survival::death::MobAttack::Melee,
+            crate::death::MobAttack::Melee,
             Some(4),
             Some("minecraft:zombie"),
         );
@@ -2062,7 +2062,7 @@ mod tests {
             ..standing_in([0.5, 1.0, 0.5])
         };
         let zombie = DamageCause::mob(
-            minecraft_survival::death::MobAttack::Melee,
+            crate::death::MobAttack::Melee,
             Some(4),
             Some("minecraft:zombie"),
         );
@@ -2362,7 +2362,7 @@ mod tests {
     fn falling_out_of_the_world_after_a_zombie_hit_names_the_zombie() {
         let mut survival = unfed();
         let zombie = DamageCause::mob(
-            minecraft_survival::death::MobAttack::Melee,
+            crate::death::MobAttack::Melee,
             Some(4),
             Some("minecraft:zombie"),
         );

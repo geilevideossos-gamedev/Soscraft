@@ -17,7 +17,7 @@ pub(crate) struct Host<'a> {
     pub(crate) difficulty: &'a mut Difficulty,
     pub(crate) day: &'a mut DayCycle,
     pub(crate) save: Option<&'a mut minecraft_survival::save::WorldSave>,
-    pub(crate) survival: &'a mut crate::minecraft_survival::Survival,
+    pub(crate) survival: &'a mut minecraft_survival::survival::Survival,
     pub(crate) entities: Option<&'a mut crate::minecraft_entities::Entities>,
     pub(crate) player_mode: &'a mut PlayerMode,
     pub(crate) rules_changed: bool,
@@ -371,13 +371,13 @@ mod tests {
         rules: GameRules,
         difficulty: Difficulty,
         day: DayCycle,
-        survival: crate::minecraft_survival::Survival,
+        survival: minecraft_survival::survival::Survival,
         player_mode: PlayerMode,
     }
 
     impl Parts {
         fn new() -> Self {
-            let mut survival = crate::minecraft_survival::Survival::default();
+            let mut survival = minecraft_survival::survival::Survival::default();
             survival.observe(100, 100);
             Self {
                 rules: GameRules::default(),
