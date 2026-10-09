@@ -77,7 +77,7 @@ IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:netherrack*64
 
 ### 5. Minecraft explosions can start fires (E2-12)
 
-Commit: see `git log` under this subject.
+Commit: 99b4cd5
 
 - **Changed:**
   - Vendored `third_party/minecraftoss/world/src/level/explosion.rs` (MinecraftOSS patch): `ServerExplosion.createFire`. An explosion with `fire` no longer logs "fire from explosions" as unsupported: after the blocks break, each picked position draws `random.nextInt(3)`, and on 0 an air block over a solid-render block becomes `BaseFireBlock.getState` (soul fire on soul fire bases, else fire), set with `setBlockAndUpdate`. As in vanilla (javap), `interactWithBlocks` shuffles the picked list in place, and the fire pass walks that shuffled list.
@@ -94,4 +94,18 @@ Commit: see `git log` under this subject.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:tnt*4,minecraft:flint_and_steel
+```
+
+## Group N1 summary
+
+- **Commits:** f39da09 (E2-1), 24c89d4 (E2-2), 955de45 (E2-3), e87a02b (E2-5), 99b4cd5 (E2-12), and this log entry.
+- **Checks:** `test -p minecraft_survival` (258 and 1 passed), `test -p minecraft_terrain` (639 passed, 3 ignored as before), `test -p render_anim` (67 passed), `minecraftoss-world` and `minecraftoss-entities` with the full suite's stand-in files (123 passed), and `check -p launcher` are green. `clippy -p minecraft_survival -p minecraft_terrain -p minecraftoss-world -p minecraftoss-entities --tests --no-deps -- -A clippy::approx_constant` has no finding on a line of this group (the older ones in `mesh.rs`, `server.rs`, `entities.rs` and the mob renderers stay).
+- **MinecraftOSS patches in this group:** `world/src/level/explosion.rs` (fire from explosions, the in-place shuffle), `entities/src/world.rs` (the public `EntityWorld::blast`).
+- **Handed on:** `Terrain.rules` (`coordinate_scale`, `logical_height`) for N2's portal search and build; `BedRule`, `respawn_anchor_works` and `Entities::explode` for N5's beds and anchors (with the `bad_respawn_point` death cause); `ServerSim::blast` for the End's crystals (X3), which will want a source and attacker.
+- **Not done:** the MW2 player and weapon models keep the overworld's two lights in the Nether (entry 4).
+- **Owner test for the whole group** (fresh world `IW4L_MINECRAFT_WORLD=n1` with `IW4L_MINECRAFT_DIMENSION=the_nether`; portals come with N2): entry 2 steps 1-2, entry 3 steps 1-2, entry 4 step 1, entry 5 step 1 (in the overworld: start once without the dimension line).
+- **Kit (8 stacks):**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:netherrack*64,minecraft:lava_bucket,minecraft:tnt*4,minecraft:flint_and_steel
 ```
