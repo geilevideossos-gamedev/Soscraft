@@ -53,6 +53,7 @@ pub(crate) struct InventoryUi {
     icon_rows: u32,
     pub(crate) animation_tick: u64,
     animated: AnimatedIcons,
+    pub(crate) creative: crate::minecraft_creative::CreativeUi,
 }
 
 #[derive(Default)]
@@ -481,7 +482,7 @@ impl InventoryUi {
                         None => {}
                     }
                 }
-                McClick::Choose(_) | McClick::Rename(_) => {}
+                McClick::Choose(_) | McClick::Rename(_) | McClick::Clone(_) => {}
                 McClick::Close => {
                     self.table = None;
                     thrown.extend(crafting::close(inventory, *selected));
@@ -580,6 +581,7 @@ impl InventoryUi {
         }
         ui.gui = self.gui.as_ref().map(|gui| gui.gui.clone());
         ui.glint = self.gui.as_ref().and_then(|gui| gui.glint.clone());
+        self.creative.refresh(ui, &inventory.recipes, self.language.as_ref());
         let language = self
             .language
             .get_or_insert_with(|| minecraft_terrain::item_icons::language(packs).unwrap_or_default());
@@ -688,6 +690,17 @@ impl InventoryUi {
         ui.output = output;
         ui.data = data;
         ui.cursor = convert(&inventory.cursor);
+        let mut creative_converted = 0;
+        if let Some(items) = self.creative.take_items() {
+            creative_converted += items.iter().flatten().count();
+            ui.creative.items = items.iter().map(&mut convert).collect();
+        }
+        if let Some(tabs) = self.creative.take_tabs() {
+            creative_converted += tabs.iter().filter(|(_, icon)| icon.is_some()).count();
+            ui.creative.tabs = tabs.into_iter().map(|(tab, icon)| frame::McCreativeTab { icon: convert(&icon), ..tab }).collect();
+        }
+        stacks.truncate(stacks.len() - creative_converted);
+        stacks.extend(self.creative.icon_ids(ui));
         ui.armor = inventory.armor_value();
         ui.droppable = inventory.cursor.as_ref().filter(|_| ui.inventory_open).map_or_else(Vec::new, |carried| {
             droppable(ui.screen, carried, inventory, opened.as_ref(), bench, containers, &ctx)
@@ -853,6 +866,16 @@ fn droppable(
             out.extend((0..4).map(|i| (McSlot::Crafting(i), max)));
         }
         McScreen::CraftingTable => out.extend((0..9).map(|i| (McSlot::Workbench(i), max))),
+        McScreen::Creative(frame::McTabKind::Inventory) => {
+            for index in 36..40 {
+                if armor_slot(index).is_some_and(|slot| inventory.recipes.equipment_slot(carried) == Some(slot)) {
+                    out.push((McSlot::Inventory(index), 1));
+                }
+            }
+            if !gun {
+                out.push((McSlot::Inventory(OFFHAND), max));
+            }
+        }
         _ => {}
     }
     if let Some(opened) = opened {
@@ -893,6 +916,8 @@ fn published(ui: &MinecraftUi, slot: McSlot) -> Option<&McStack> {
         McSlot::WorkbenchResult => ui.workbench_result.as_ref(),
         McSlot::Container(i) => ui.container.get(i)?.as_ref(),
         McSlot::Output => ui.output.as_ref(),
+        McSlot::Creative(i) => ui.creative.items.get(i)?.as_ref(),
+        McSlot::Trash => None,
     }
 }
 

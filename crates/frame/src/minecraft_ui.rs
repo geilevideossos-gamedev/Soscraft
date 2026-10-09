@@ -57,6 +57,8 @@ pub enum McSlot {
     WorkbenchResult,
     Container(usize),
     Output,
+    Creative(usize),
+    Trash,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -75,6 +77,7 @@ pub enum McScreen {
     Grindstone,
     Anvil,
     Enchanting,
+    Creative(crate::McTabKind),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -113,6 +116,7 @@ pub enum McClick {
     Close,
     Choose(usize),
     Rename(String),
+    Clone(McSlot),
 }
 
 #[derive(Resource, Default)]
@@ -188,6 +192,7 @@ pub struct MinecraftUi {
     pub fire_frames: Option<(Handle<Image>, u32)>,
     pub killed_by: Option<(u32, String)>,
     pub chat: crate::McChat,
+    pub creative: crate::McCreative,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -30,7 +30,7 @@ const COMMAND_HISTORY_FILE: &str = "command_history.txt";
 const COMMAND_HISTORY_LIMIT: usize = 50;
 const SELECTION: u32 = 0xFFC0_C0FF;
 const SELECTED_TEXT: u32 = 0xFF1F_1FFF;
-const MODIFIERS: [KeyCode; 6] = [
+pub(crate) const MODIFIERS: [KeyCode; 6] = [
     KeyCode::ControlLeft,
     KeyCode::ControlRight,
     KeyCode::ShiftLeft,
@@ -188,7 +188,7 @@ fn copy(clipboard: &mut dyn ChatClipboard, text: &str) {
     }
 }
 
-fn shortcut(typed: &Typed) -> Option<char> {
+pub(crate) fn shortcut(typed: &Typed) -> Option<char> {
     let Mods { ctrl, shift, alt } = typed.mods;
     if !ctrl || shift || alt {
         return None;

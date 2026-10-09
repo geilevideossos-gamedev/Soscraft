@@ -1509,3 +1509,94 @@ None; the five existing tests (`sent_lines_come_back_as_resolved_chat_lines`, `h
 ### In-game test steps
 
 Nothing changes in game. Kit: none needed.
+
+# Second half: the creative inventory
+
+Branch `track-c`, group "creative". The previous commit is a299c9d (the chat UI group's last commit).
+
+## Minecraft creative inventory has the vanilla tabs
+
+Commit: the commit that adds this entry.
+
+### What changed
+
+Checked with javap against 26.3 `CreativeModeInventoryScreen` (and its `ItemPickerMenu`, `SlotWrapper` and `CustomCreativeSlot`), `AbstractContainerScreen` and `InputConstants`.
+
+- **Shared types** (new `crates/frame/src/minecraft_creative.rs`): `McCreative` in `MinecraftUi.creative` holds the shown tabs (`McCreativeTab`: id, title, row, column, aligned right, kind, title shown, scroll bar, background, icon), the selected tab id, the search text with its cursor, the scroll offset and the grid's stacks.
+  - The selected tab is kept between openings like vanilla's static `selectedTab`, and falls back to the first category tab when it is not shown.
+  - The vanilla scroll maths live here too: `hidden_rows`, `can_scroll` (more than 45 items), `first_row` (`getRowIndexForScroll`), `scroll_after_wheel` (`subtractInputFromScroll`), `scroll_for_drag` and `scroller_y`.
+  - `McScreen::Creative(McTabKind)`, `McSlot::Creative(index)` (an index into the tab's items, so the grid's slots follow the scroll), `McSlot::Trash` and `McClick::Clone(slot)` (the middle button).
+- **Server-owned slot setting** (new `crates/minecraft_survival/src/creative.rs`): `set_slot(mode, inventory, slot, stack, known)` is vanilla's `SetCreativeModeSlot` handling, on the player the caller looked up by UUID.
+  - It refuses a player without infinite materials, an item id that is not in the item registry, a count above the item's maximum stack size (the `max_stack_size` component first), and a menu slot outside 1 to 45.
+  - Menu slots map like `InventoryMenu`: 1-4 crafting, 5-8 head to feet, 9-35 main, 36-44 hotbar, 45 offhand.
+  - `CreativeSlot::Carried` sets the cursor and `CreativeSlot::Drop` returns the stack to throw. `apply` runs a list of sets and reports refusals.
+- **Click rules** (same file, pure), from `slotClicked`:
+  - `grid_click` for a slot of the creative grid: with an empty cursor a click takes the shown stack (one item) and shift a full stack; clicking the same item again adds one (shift fills the stack) and the right button takes one away; clicking another item or an empty grid slot deletes the cursor stack (the right button takes one away).
+  - A number key (or F) puts a full stack in that slot, Q throws one and Ctrl+Q a full stack, the middle button takes a full stack.
+  - `trash_click` deletes the cursor stack, and with shift empties menu slots 1 to 45.
+  - `hotbar_quick_move` deletes a hotbar stack shift-clicked under an item tab (`ItemPickerMenu.quickMoveStack`).
+  - `load_hotbar` is ready for the saved hotbars.
+- **Client side** (new `crates/render_anim/src/minecraft_creative.rs`):
+  - Reads the tabs from the game jar once, on its own thread, with the `creative_tabs` reader.
+  - Publishes the shown tabs (`shown(operator)`, titles from the language, icons as stacks).
+  - Builds the selected tab's stacks when the tab, search text or operator flag changes. A variant entry shows its plain item once until variants are expanded, and is dropped when the tab already has that plain item.
+  - Turns the HUD's creative clicks into `set_slot` calls on the local player's inventory, and throws what `Drop` returns.
+  - In creative it turns the plain inventory screen into the creative one. Icons are made only for the 45 shown stacks and the tab icons.
+- `render_anim/src/minecraft_inventory.rs`: publishes the creative tabs and items through the same stack conversion as every other slot. The inventory tab accepts armour and the offhand like the survival inventory.
+- `render_anim/src/minecraft_world.rs`: the creative clicks run just before the vanilla container clicks, with the item registry as the known-item check. The operator flag is "level 2 or more" and the new "Operator Items Tab" option.
+- `render_anim/src/minecraft_gui.rs`: the atlas also holds `textures/gui/container/creative_inventory/tab_items`, `tab_item_search` and `tab_inventory` and the `container/creative_inventory/` sprites. The `itemGroup.` and `inventory.` texts are loaded.
+- **HUD** (new `crates/hud/src/minecraft_creative.rs`, hooked into `minecraft_inventory.rs`):
+  - In creative, E opens the creative screen on the kept tab, with the search text and scroll cleared (vanilla `init` selects the tab again).
+  - Layout: 195 x 136. Tabs are 26 x 32 at `column * 27`, or `195 - 27 * (7 - column) + 1` when aligned right. Top tabs are drawn at y -28 and bottom ones at 132; they are clicked over y -32 and 136 and hovered over the inner 21 x 27. Unselected tabs sit behind the background and the selected one in front, with the icon at (x + 5, y + 8 +/- 1).
+  - Item tabs: the 9 x 5 grid from (9, 18), the hotbar at y 112, the scroller at x 175 (`scroller` or `scroller_disabled`).
+  - The inventory tab: helmet (54, 6), chestplate (54, 33), leggings (108, 6), boots (108, 33) with their empty-slot icons, offhand (35, 20), main inventory from (9, 54), hotbar at 112, trash at (173, 112) with the tooltip `inventory.binSlot`, and the player's MW2 body in (73, 6)-(105, 49) at vanilla's smaller scale (20 against 30).
+  - The title is at (8, 6) in 0x404040 when the tab shows it. Tab tooltips are the titles.
+  - Tabs are selected on the left button's release over a tab (26.3's left button is `MOUSE_BUTTON_LEFT = 1`). The wheel and the scroller move by rows. A click on a tab is never a click outside.
+  - The search box is at (82, 6), 80 wide, 50 characters, white text with a shadow, a blinking `_` or bar cursor and a blue selection. It edits with the chat's editing keys (arrows, Home, End, Ctrl+A/C/V/X, Backspace and Delete with Ctrl for words).
+  - On the search tab every key goes to the box except Esc, and a number key over a grid stack still puts it on the hotbar. The chat key on another tab opens the search tab.
+- **Option** `minecraft_operator_items` in `settings.cfg` (`GameSettings.minecraft_operator_items`), off by default like vanilla's "Operator Items Tab".
+
+### Tests added
+
+- `frame` `minecraft_creative::tests` (2): the kept tab and its fallback; the scroll maths (rows, wheel, drag, scroller, first shown index).
+- `minecraft_survival` `creative::tests` (8):
+  - menu slot mapping both ways;
+  - refusals (survival, unknown id, too many, slot 0) and every target (hotbar, helmet, crafting, cursor, drop, empty);
+  - the `max_stack_size` component;
+  - grid clicks (one, shift, add one, full, right, another item, empty slot);
+  - number key, F, throw, Ctrl+throw and middle button;
+  - the trash and shift-trash (the cursor is kept);
+  - shift on the hotbar; loading nine slots.
+- `render_anim` `minecraft_creative::tests` (2): variant entries show their plain item once; tab titles from the language. `minecraft_gui::tests::the_real_gui_textures_and_fonts_load_into_one_atlas` also checks the creative sheets and sprites (the atlas still fits 2048 high).
+- `hud` `minecraft_creative::tests` (5): the item tab grid and its scroll offset; the inventory tab slots and empty icons; tab positions, hit areas, hover areas and sprites; selecting a tab clears the search and scroll (not when the search tab is chosen again), and so does reopening; the search box typing, deleting, Ctrl+A and the 50 character cap.
+- `console` `the_operator_items_tab_option_is_off_until_chosen_and_survives_a_restart`.
+
+### In-game test steps
+
+Kit:
+
+```
+IW4L_MINECRAFT_KIT=stone*64,diamond_sword,iron_helmet
+```
+
+`minecraft:stone` 64, `minecraft:diamond_sword` 1, `minecraft:iron_helmet` 1.
+
+1. Load the world and type `/gamemode creative`. Press E: the creative screen opens on Building Blocks (bricks icon) with "Building Blocks" at the top left. Five tabs sit above on the left, Saved Hotbars and Search above on the right, five tabs below and the chest (Survival Inventory) below on the right. Screenshot 1.
+2. Hover the tabs: each shows its name. Click Colored Blocks: wool, terracotta, concrete and glass show. Scroll with the wheel and drag the scroller: the grid moves by rows. Screenshot 2.
+3. Click a white wool: one wool on the cursor. Click it again: two. Shift-click it: 64. Right-click it: 63. Click an orange wool: the cursor is empty.
+4. Hover a block and press 3: a full stack lands in hotbar slot 3. Press F over another: a full stack in the offhand. Middle-click a block: a full stack on the cursor; put it in the hotbar row at the bottom.
+5. Hover a block and press Q: one is thrown. Ctrl+Q throws a full stack.
+6. Shift-click a stack in the bottom hotbar row: it is deleted.
+7. Click the chest tab: armour slots, offhand, inventory, hotbar, the trash at the bottom right and your MW2 body. Screenshot 3. Hover the trash: "Destroy Item". Pick up the stone and click the trash: it is gone. Shift-click the trash: the whole inventory is emptied (the guns come back on their own).
+8. Click Building Blocks, then press T: the Search tab opens with its text box and every item. Type `wool`: the text shows in the box (filtering comes with the next commit). Esc closes the screen; E opens it again on Search with the box empty.
+9. `/gamemode survival`, then E: the survival inventory.
+10. Optional: add `minecraft_operator_items=true` to `iw4l-artifacts\settings.cfg` before starting the game. In creative, the Operator Utilities tab (command block icon) shows at the bottom right, next to the chest.
+
+### Decisions
+
+- **A left click takes one item, shift-click a full stack.** 26.3's `slotClicked` gives the shown stack's count (one) on a plain click, and the maximum stack size only with shift, the middle button or a number key. The brief's "left takes a full stack" is how Bedrock does it, so the Java bytecode wins.
+- **The cursor stack is server-owned.** Vanilla keeps the creative cursor on the client and only sends slot sets. Here the cursor already lives in the server's inventory, so the creative cursor goes through the same `set_slot` checks (`CreativeSlot::Carried`).
+- **No drop throttle.** Vanilla's throttle guards against a modified client; here a throw needs a key press or a click.
+- **Variants** (potions, enchanted books, goat horns and the rest) show their plain item once for now. Expanding them needs registry data and is its own step.
+- **The pad cannot pick tabs yet**: tabs and the scroller take the mouse. The pad still moves between slots and clicks them.
+- **The middle button works in the creative screen only**, not yet in chests.

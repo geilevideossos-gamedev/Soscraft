@@ -15,7 +15,7 @@ const ATLAS_WIDTH: u32 = 2048;
 const GUTTER: u32 = 1;
 const SPRITES: &str = "assets/minecraft/textures/gui/sprites/";
 
-pub(crate) const CONTAINER_SHEETS: [&str; 13] = [
+pub(crate) const CONTAINER_SHEETS: [&str; 16] = [
     "inventory",
     "crafting_table",
     "generic_54",
@@ -29,9 +29,12 @@ pub(crate) const CONTAINER_SHEETS: [&str; 13] = [
     "grindstone",
     "stonecutter",
     "smithing",
+    "creative_inventory/tab_items",
+    "creative_inventory/tab_item_search",
+    "creative_inventory/tab_inventory",
 ];
 
-const SPRITE_FOLDERS: [&str; 12] = [
+const SPRITE_FOLDERS: [&str; 13] = [
     "container/slot/",
     "container/anvil/",
     "container/brewing_stand/",
@@ -42,6 +45,7 @@ const SPRITE_FOLDERS: [&str; 12] = [
     "container/furnace/",
     "container/smoker/",
     "container/blast_furnace/",
+    "container/creative_inventory/",
     "hud/heart/",
     "tooltip/",
 ];
@@ -51,8 +55,10 @@ const LOOSE_SPRITES: [&str; 2] = [
     "container/slot_highlight_front",
 ];
 
-const TEXT_PREFIXES: [&str; 4] = [
+const TEXT_PREFIXES: [&str; 6] = [
     "container.",
+    "itemGroup.",
+    "inventory.",
     "item.modifiers.",
     "gui.experience.",
     "item.minecraft.smithing_template.",
@@ -586,6 +592,10 @@ mod tests {
         assert_eq!(atlas.width(), ATLAS_WIDTH);
         assert!(atlas.height() <= 2048);
         assert_eq!(gui.sheets.len(), CONTAINER_SHEETS.len());
+        assert!(gui.sheets.contains_key("creative_inventory/tab_item_search"));
+        assert_eq!(gui.sprites["container/creative_inventory/tab_top_selected_7"].rect[2..], [26, 32]);
+        assert_eq!(gui.sprites["container/creative_inventory/tab_bottom_unselected_1"].rect[2..], [26, 32]);
+        assert_eq!(gui.sprites["container/creative_inventory/scroller"].rect[2..], [12, 15]);
         assert_eq!(gui.sprites["hud/hotbar"].rect[2..], [182, 22]);
         assert_eq!(
             gui.sprites["tooltip/frame"].scaling,

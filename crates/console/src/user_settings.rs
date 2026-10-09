@@ -377,6 +377,7 @@ fn serialize_settings(settings: &frame::GameSettings, binds: &KeyBinds) -> Strin
         format!("pad_deadzone_left={:.2}", settings.pad_deadzone_left),
         format!("pad_deadzone_right={:.2}", settings.pad_deadzone_right),
         format!("minecraft_minimap={}", settings.minecraft_minimap),
+        format!("minecraft_operator_items={}", settings.minecraft_operator_items),
         format!("show_blood={}", settings.show_blood),
         "unbindall".to_owned(),
     ];
@@ -480,6 +481,7 @@ fn parse_settings(source: &str, settings: &mut frame::GameSettings, binds: &mut 
             "pad_deadzone_left" => parse_into(value, &mut settings.pad_deadzone_left),
             "pad_deadzone_right" => parse_into(value, &mut settings.pad_deadzone_right),
             "minecraft_minimap" => parse_into(value, &mut settings.minecraft_minimap),
+            "minecraft_operator_items" => parse_into(value, &mut settings.minecraft_operator_items),
             "show_blood" => parse_into(value, &mut settings.show_blood),
             _ => warn!("ignored unknown setting `{key}`"),
         }
@@ -665,6 +667,18 @@ mod minimap_tests {
         let mut loaded = frame::GameSettings::default();
         parse_settings(&saved, &mut loaded, &mut KeyBinds::default());
         assert!(loaded.minecraft_minimap);
+    }
+
+    #[test]
+    fn the_operator_items_tab_option_is_off_until_chosen_and_survives_a_restart() {
+        let mut settings = frame::GameSettings::default();
+        assert!(!settings.minecraft_operator_items);
+        settings.minecraft_operator_items = true;
+        let saved = serialize_settings(&settings, &KeyBinds::default());
+        assert!(saved.contains("minecraft_operator_items=true"));
+        let mut loaded = frame::GameSettings::default();
+        parse_settings(&saved, &mut loaded, &mut KeyBinds::default());
+        assert!(loaded.minecraft_operator_items);
     }
 }
 
