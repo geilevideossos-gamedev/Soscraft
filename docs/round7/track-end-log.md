@@ -330,3 +330,18 @@ Previous commit: 8a6d4d1c
 ```
 IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:diamond_pickaxe+efficiency=5,minecraft:cobblestone*64
 ```
+
+## Final check of the track
+
+### 13. The track END log sums up its final check
+
+Previous commit: 849a5103
+
+- **Clippy:** `clippy -p minecraft_survival -p minecraft_terrain -p render -p render_anim -p render_gpu -p minecraftoss-generator -p minecraftoss-world --locked --all-targets -- -A clippy::approx_constant` exits 0. No warning falls on a line the track added: the ones in touched files (`minecraft_terrain` `mesh.rs` and `server.rs` 332, 1483 and 1695, `render` `extract.rs`, `render_anim` `minecraft_world.rs` 133, 405 and 414) all blame to commits before 3aef2ebe, and the new files have none.
+- **Tests** (`test -p <crate> --locked`, `MINECRAFTOSS_ROOT` set by `cargo-slot.ps1`): `minecraft_survival` 274 and the vanilla world test, `minecraft_terrain` 655 (3 ignored), `minecraftoss-generator` 28, `minecraftoss-world` 60, `render_anim` 70, `render_gpu` 33 and `render` 0 pass. No fixes were needed.
+- **Test steps:** none new. The owner's test of the whole track is each group's owner test in order: X1a (entries 2 and 3 in `x1atest`), X1b (entries 4 to 6 in `x1btest`), X2 (entries 7 to 9 in `x2test`, entry 10 in `x2fight`), and the review (entry 12 in `x2gate`). Each is a new world, and the kit goes to a player only in a world where they have no inventory yet, so the one kit line below serves every world.
+- **Kit for the whole track** (9 stacks; the 32 eyes fill two stacks of 16):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*24,minecraft:ender_eye*32,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_shovel+efficiency=5,minecraft:cobblestone*64,minecraft:oak_sapling*4,minecraft:bone_meal*32,minecraft:dirt*8
+```
