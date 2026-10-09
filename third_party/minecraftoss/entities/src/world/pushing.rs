@@ -174,6 +174,7 @@ impl EntityWorld {
             EntityKey::Pig(id) => self.pigs.iter_mut().find(|e| e.id == id).map(|e| (&mut e.pig.body, e.pig.health > 0.0)),
             EntityKey::Chicken(id) => self.chickens.iter_mut().find(|e| e.id == id).map(|e| (&mut e.chicken.body, e.chicken.health > 0.0)),
             EntityKey::Ghast(id) => self.ghasts.iter_mut().find(|e| e.id == id).map(|e| (&mut e.ghast.body, e.ghast.health > 0.0)),
+            EntityKey::Blaze(id) => self.blazes.iter_mut().find(|e| e.id == id).map(|e| (&mut e.blaze.body, e.blaze.health > 0.0)),
             EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) => None,
         }
     }
@@ -196,6 +197,7 @@ impl EntityWorld {
             EntityKey::Pig(id) => self.pigs.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Chicken(id) => self.chickens.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Ghast(id) => self.ghasts.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
+            EntityKey::Blaze(id) => self.blazes.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) => None,
         }
     }
@@ -326,6 +328,7 @@ impl EntityWorld {
                 EntityKey::Pig(id) => self.pigs.iter().find(|e| e.id == id).map(|e| &e.pig.body),
                 EntityKey::Chicken(id) => self.chickens.iter().find(|e| e.id == id).map(|e| &e.chicken.body),
                 EntityKey::Ghast(id) => self.ghasts.iter().find(|e| e.id == id).map(|e| &e.ghast.body),
+                EntityKey::Blaze(id) => self.blazes.iter().find(|e| e.id == id).map(|e| &e.blaze.body),
                 EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) => None,
             };
             let Some(body) = body else { continue };

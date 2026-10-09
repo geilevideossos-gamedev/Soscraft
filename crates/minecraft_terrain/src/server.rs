@@ -733,6 +733,9 @@ impl ServerSim {
             self.level.explode(Explosion { center: blast.position.to_array(), radius: blast.power, fire: blast.fire, interaction, source: None });
             self.explosions.push(minecraftoss_entities::creeper::CreeperExplosion { position: blast.position, radius: blast.power, powered: false });
         }
+        for (x, y, z) in self.mobs.take_fireball_fires() {
+            self.level.light_fire(minecraftoss_core::BlockPos::new(x, y, z));
+        }
     }
 
     pub fn deflect_fireball(&mut self, id: u64, look: [f64; 3], player: u64, by_attack: bool) -> bool {
@@ -5696,6 +5699,7 @@ mod tests {
                 rules.set("spawner_blocks_work", "false").unwrap();
             }
             server.apply_game_rules(&rules);
+            server.level.natural_spawning.as_mut().unwrap().spawn_mobs = false;
             let feet = glam::DVec3::new(f64::from(spawner.0) + 0.5 + player_offset, f64::from(spawner.1), f64::from(spawner.2) + 0.5);
             let player = minecraftoss_entities::tempt::PlayerCandidate {
                 id: 0,
@@ -5953,5 +5957,69 @@ mod tests {
         let id = server.mobs.fireballs()[0].id;
         assert!(server.deflect_fireball(id, [0.0, 0.0, -1.0], 0, true));
         assert_eq!(server.mobs.fireballs()[0].fireball.owner, Some(Shooter::Player(0)));
+    }
+
+    #[test]
+    fn blazes_live_and_their_small_fireballs_set_fire_beside_what_they_strike() {
+        use minecraftoss_entities::fireball::{Fireball, FireballKind, Shooter};
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let fire = registries.blocks.block_by_name("minecraft:fire").unwrap();
+        let shoot = |griefing: bool| {
+            let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+            let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+            let mut server = ServerSim::new(worldgen.clone(), states, "minecraft:overworld");
+            for x in -1..=1 {
+                for z in -1..=1 {
+                    server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+                }
+            }
+            for x in -2..=2 {
+                for y in 200..=204 {
+                    server.player_edit_block((x, y, 6), Some(&Block::new("minecraft:obsidian")), PlayerEdit::Place);
+                }
+                for z in 0..=5 {
+                    server.player_edit_block((x, 200, z), Some(&Block::new("minecraft:obsidian")), PlayerEdit::Place);
+                }
+            }
+            server.take_changes();
+            server.mobs.set_mob_griefing(griefing);
+            server.summon("minecraft:blaze", [0.5, 200.0, -8.5], None, 0.0).unwrap();
+            let blaze = server.mobs.blazes()[0].id;
+            server.mobs.blaze_mut(blaze).unwrap().no_ai = true;
+            server.mobs.spawn_fireball(Fireball::shoot(FireballKind::Small, Shooter::Mob(blaze), glam::DVec3::new(0.5, 201.5, 0.5), glam::DVec3::Z));
+            server.set_players(&[[0.5, 200.0, -30.5]], 2);
+            server.set_simulation_area((0, 0), 4);
+            for _ in 0..20 {
+                server.tick();
+                server.tick_mobs(&[], false);
+            }
+            let lit = registries.blocks.block_of(server.level.block(minecraftoss_core::BlockPos::new(0, 201, 5))) == fire;
+            (lit, server.mobs.fireballs().len(), server.take_explosions().len())
+        };
+        assert_eq!(shoot(true), (true, 0, 0), "it bursts on the wall with no blast and sets fire in front of it");
+        assert_eq!(shoot(false), (false, 0, 0), "a blaze's fireball lights nothing where mobs may not grief");
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen.clone(), states, "minecraft:overworld");
+        server.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        server.set_players(&[[0.5, 200.0, 0.5]], 2);
+        server.summon("minecraft:blaze", [0.5, 200.0, 0.5], None, 0.0).unwrap();
+        assert_eq!(server.dormant_count(), 0, "blazes are simulated");
+        let blaze = server.mobs.blazes()[0].id;
+        server.mobs.spawn_fireball(Fireball::shoot(FireballKind::Small, Shooter::Mob(blaze), glam::DVec3::new(0.5, 201.5, 4.5), glam::DVec3::X));
+        let tags = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        assert!(tags.iter().any(|(_, tag)| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) == Some("minecraft:small_fireball") && tag.get("ExplosionPower").is_none()));
+        let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+        for (_, tag) in &tags {
+            crate::server_mobs::spawn_saved(&mut loaded, tag).expect("blazes and small fireballs load");
+        }
+        assert_eq!(loaded.blazes().len(), 1);
+        assert_eq!(loaded.fireballs()[0].fireball.kind, FireballKind::Small);
     }
 }

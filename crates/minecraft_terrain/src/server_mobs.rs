@@ -388,6 +388,7 @@ fn seed(tag: &Tag) -> u64 {
 
 pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:bat",
+    "minecraft:blaze",
     "minecraft:bogged",
     "minecraft:chicken",
     "minecraft:cow",
@@ -794,9 +795,24 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             }
             id
         }
-        "minecraft:fireball" => {
+        "minecraft:blaze" => {
+            let mut blaze = minecraftoss_entities::blaze::Blaze::new(pos);
+            blaze.yaw = yaw;
+            blaze.persistence_required = persistent;
+            if let Some(health) = health {
+                blaze.health = health;
+            }
+            let id = world.spawn_blaze(blaze, no_ai);
+            let entity = world.blaze_mut(id)?;
+            entity.random = random;
+            if let Some(range) = attribute_value(tag, "minecraft:follow_range") {
+                entity.ai.state.follow_range = range;
+            }
+            id
+        }
+        "minecraft:fireball" | "minecraft:small_fireball" => {
             let motion = tag.get("Motion").and_then(Tag::as_list).map(|m| DVec3::new(m.first().and_then(Tag::as_f64).unwrap_or(0.0), m.get(1).and_then(Tag::as_f64).unwrap_or(0.0), m.get(2).and_then(Tag::as_f64).unwrap_or(0.0))).unwrap_or(DVec3::ZERO);
-            let kind = minecraftoss_entities::fireball::FireballKind::Large { explosion_power: int(tag, "ExplosionPower").unwrap_or(1) };
+            let kind = if kind == "minecraft:small_fireball" { minecraftoss_entities::fireball::FireballKind::Small } else { minecraftoss_entities::fireball::FireballKind::Large { explosion_power: int(tag, "ExplosionPower").unwrap_or(1) } };
             let mut fireball = minecraftoss_entities::fireball::Fireball::shoot(kind, minecraftoss_entities::fireball::Shooter::Mob(0), pos, motion);
             fireball.owner = None;
             fireball.velocity = motion;
@@ -1095,6 +1111,10 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         let g = &e.ghast;
         add(e.id, "minecraft:ghast", &g.body, g.yaw, g.health, g.persistence_required, vec![("ExplosionPower", Tag::Byte(g.explosion_power.clamp(-128, 127) as i8))]);
     }
+    for e in world.blazes() {
+        let b = &e.blaze;
+        add(e.id, "minecraft:blaze", &b.body, b.yaw, b.health, b.persistence_required, Vec::new());
+    }
     for e in world.iron_golems() {
         let g = &e.golem;
         let fields = vec![("PlayerCreated", Tag::Byte(i8::from(g.player_created))), ("anger_end_time", Tag::Long(e.ai.state.enderman.anger_end_time))];
@@ -1278,8 +1298,9 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         map.insert("Rotation".to_owned(), Tag::List(vec![Tag::Float(0.0), Tag::Float(0.0)]));
         map.insert("acceleration_power".to_owned(), Tag::Double(fireball.acceleration_power));
         map.insert("LeftOwner".to_owned(), Tag::Byte(i8::from(fireball.left_owner)));
-        let minecraftoss_entities::fireball::FireballKind::Large { explosion_power } = fireball.kind;
-        map.insert("ExplosionPower".to_owned(), Tag::Byte(explosion_power.clamp(-128, 127) as i8));
+        if let minecraftoss_entities::fireball::FireballKind::Large { explosion_power } = fireball.kind {
+            map.insert("ExplosionPower".to_owned(), Tag::Byte(explosion_power.clamp(-128, 127) as i8));
+        }
         map.insert("UUID".to_owned(), fresh_uuid(f.id, fireball.position));
         out.push((f.id, Tag::Compound(map)));
     }

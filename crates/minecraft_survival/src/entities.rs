@@ -731,6 +731,13 @@ impl Entities {
                     self.portal.emit_enderman(mob.position, 0.6, 2.9);
                 }
             }
+            for blaze in self.world.blazes() {
+                if let Some(mob) = self.client.get(blaze.id).filter(|_| self.random.next_int(24) == 0) {
+                    let volume = 1.0 + self.random.next_float();
+                    let pitch = self.random.next_float() * 0.7 + 0.3;
+                    self.sounds.push(("minecraft:entity.blaze.burn".to_owned(), mob.position + DVec3::splat(0.5), volume, pitch));
+                }
+            }
             self.portal.tick();
             for cloud in &self.clouds {
                 self.spell.cloud(cloud.position, cloud.radius, cloud.color, cloud.waiting);
@@ -867,6 +874,7 @@ impl Entities {
                     PlayerHitKind::Melee { .. } => crate::death::MobAttack::Melee,
                     PlayerHitKind::Arrow { .. } => crate::death::MobAttack::Arrow,
                     PlayerHitKind::Explosion { .. } => crate::death::MobAttack::Explosion,
+                    PlayerHitKind::Fireball { ignite_ticks, .. } if ignite_ticks > 0 => crate::death::MobAttack::SmallFireball,
                     PlayerHitKind::Fireball { .. } => crate::death::MobAttack::Fireball,
                 };
                 let cause = crate::death::DamageCause::mob(attack, hit.source, hit.source.and_then(|id| self.world.entity_type(id)));
@@ -953,6 +961,9 @@ impl Entities {
         for e in w.ghasts().iter().filter(|e| e.ghast.health > 0.0) {
             add(MobHit::Ghast(e.id), &e.ghast.body);
         }
+        for e in w.blazes().iter().filter(|e| e.blaze.health > 0.0) {
+            add(MobHit::Blaze(e.id), &e.blaze.body);
+        }
         out
     }
 
@@ -1027,6 +1038,7 @@ impl Entities {
         );
         let witch_items = witch_render::append_witches(&mut out.models, w.witches().iter(), poses, atlas, light, partial);
         ghast_render::append_ghasts(&mut out.models, w.ghasts().iter(), poses, atlas, light, partial);
+        blaze_render::append_blazes(&mut out.models, w.blazes().iter(), poses, atlas, light, partial);
         let poppies = golem_render::append_iron_golems(&mut out.models, w.iron_golems().iter(), poses, atlas, light, partial);
         wolf_render::append_wolves(&mut out.models, w.wolves().iter(), poses, atlas, light, partial, w.game_time());
         flame_render::append_flames(
@@ -1156,6 +1168,7 @@ fn encode(hit: MobHit) -> u64 {
         MobHit::Pig(_) => 14,
         MobHit::Chicken(_) => 15,
         MobHit::Ghast(_) => 16,
+        MobHit::Blaze(_) => 18,
     };
     (kind << 56) | (hit.id() & ((1 << 56) - 1))
 }
@@ -1180,6 +1193,7 @@ fn decode(key: u64) -> Option<MobHit> {
         14 => MobHit::Pig(id),
         15 => MobHit::Chicken(id),
         16 => MobHit::Ghast(id),
+        18 => MobHit::Blaze(id),
         _ => return None,
     })
 }

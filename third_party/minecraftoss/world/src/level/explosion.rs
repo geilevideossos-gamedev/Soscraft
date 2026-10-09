@@ -119,6 +119,17 @@ impl Level<'_> {
         to_blow.len()
     }
 
+    pub fn light_fire(&mut self, pos: BlockPos) -> bool {
+        let lib = self.lib;
+        if !lib.registries.blocks.is_air(self.block(pos)) {
+            return false;
+        }
+        let ctx: Ctx = Ctx { lib, region: self };
+        let fire = base_fire_state(&ctx, pos);
+        self.set_block(pos, fire, update::ALL, update::LIMIT);
+        true
+    }
+
     fn create_fire(&mut self, positions: &[BlockPos]) {
         let lib = self.lib;
         let blocks = &lib.registries.blocks;

@@ -104,6 +104,7 @@ pub fn append_ghasts<'a>(
 pub fn fireball_scale(entity: &FireballEntity) -> f32 {
     match entity.fireball.kind {
         minecraftoss_entities::fireball::FireballKind::Large { .. } => 3.0,
+        minecraftoss_entities::fireball::FireballKind::Small => 0.75,
     }
 }
 

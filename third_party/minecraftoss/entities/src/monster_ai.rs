@@ -51,6 +51,7 @@ pub enum MonsterKind {
     ZombifiedPiglin,
     WitherSkeleton,
     Ghast,
+    Blaze,
 }
 
 impl MonsterKind {
@@ -69,6 +70,7 @@ impl MonsterKind {
             Self::ZombifiedPiglin => &ZOMBIFIED_PIGLIN_GOAL_NAMES,
             Self::WitherSkeleton => &WITHER_SKELETON_GOAL_NAMES,
             Self::Ghast => &GHAST_GOAL_NAMES,
+            Self::Blaze => &BLAZE_GOAL_NAMES,
         }
     }
 
@@ -86,6 +88,7 @@ impl MonsterKind {
             Self::ZombifiedPiglin => &ZOMBIFIED_PIGLIN_TARGET_NAMES,
             Self::WitherSkeleton => &WITHER_SKELETON_TARGET_NAMES,
             Self::Ghast => &GHAST_TARGET_NAMES,
+            Self::Blaze => &BLAZE_TARGET_NAMES,
         }
     }
 }
@@ -140,6 +143,8 @@ pub const WITHER_SKELETON_GOAL_NAMES: [&str; 7] =
     ["RestrictSunGoal", "FleeSunGoal", "AvoidEntityGoal", "WaterAvoidingRandomStrollGoal", "LookAtPlayerGoal", "RandomLookAroundGoal", "MeleeAttackGoal"];
 pub const GHAST_GOAL_NAMES: [&str; 3] = ["RandomFloatAroundGoal", "GhastLookGoal", "GhastShootFireballGoal"];
 pub const GHAST_TARGET_NAMES: [&str; 1] = ["NearestAttackableTargetGoal"];
+pub const BLAZE_GOAL_NAMES: [&str; 5] = ["BlazeAttackGoal", "MoveTowardsRestrictionGoal", "WaterAvoidingRandomStrollGoal", "LookAtPlayerGoal", "RandomLookAroundGoal"];
+pub const BLAZE_TARGET_NAMES: [&str; 2] = ["HurtByTargetGoal", "NearestAttackableTargetGoal"];
 pub const WITHER_SKELETON_TARGET_NAMES: [&str; 5] =
     ["NearestAttackableTargetGoal", "HurtByTargetGoal", "NearestAttackableTargetGoal", "NearestAttackableTargetGoal", "NearestAttackableTargetGoal"];
 
@@ -338,6 +343,7 @@ pub fn is_enemy(kind: &str) -> bool {
             | "minecraft:magma_cube"
             | "minecraft:wither_skeleton"
             | "minecraft:ghast"
+            | "minecraft:blaze"
     )
 }
 
@@ -500,6 +506,7 @@ pub struct MonsterGoalContext {
     /// through.
     pub can_break_doors: bool,
     pub ghast: GhastState,
+    pub blaze: BlazeState,
 }
 
 impl MonsterGoalContext {
@@ -700,7 +707,7 @@ impl MonsterGoalContext {
         let allowed = match (self.kind, self.target().is_some()) {
             (_, false) => 0.0,
             (MonsterKind::Creeper, true) => self.health - 1.0,
-            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast, true) => {
+            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze, true) => {
                 let sacrifice = (self.health - self.max_health * 0.33) as i32 - (3 - self.difficulty) * 4;
                 sacrifice.max(0) as f32
             }
@@ -772,6 +779,7 @@ impl MonsterAi {
             MonsterKind::Enderman => crate::enderman::FOLLOW_RANGE,
             MonsterKind::Wolf => crate::wolf::FOLLOW_RANGE,
             MonsterKind::Ghast => crate::ghast::FOLLOW_RANGE,
+            MonsterKind::Blaze => crate::blaze::FOLLOW_RANGE,
         };
         walk.follow_range = follow_range as f32;
         // An `Animal` keeps its own walk values (grass is best).
@@ -793,6 +801,10 @@ impl MonsterAi {
         if matches!(kind, MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton) {
             walk.set_malus(PathType::Lava, 8.0);
         }
+        if kind == MonsterKind::Blaze {
+            walk.set_malus(PathType::Water, -1.0);
+            walk.set_malus(PathType::Lava, 8.0);
+        }
         if kind == MonsterKind::IronGolem {
             // A `PathfinderMob` with a one-block step (`STEP_HEIGHT`) whose
             // spots are all alike (`getWalkTargetValue` 0).
@@ -805,6 +817,7 @@ impl MonsterAi {
             MonsterKind::ZombifiedPiglin => (zombified_piglin_goals(), zombified_piglin_targets(), 1.79),
             MonsterKind::WitherSkeleton => (wither_skeleton_goals(), wither_skeleton_targets(), 2.1),
             MonsterKind::Ghast => (ghast_goals(), ghast_targets(), crate::ghast::EYE_HEIGHT),
+            MonsterKind::Blaze => (blaze_goals(), blaze_targets(), crate::blaze::EYE_HEIGHT),
             MonsterKind::Skeleton => (skeleton_goals(), skeleton_targets(), 1.74),
             MonsterKind::Spider => (spider_goals(), spider_targets(), 0.65),
             MonsterKind::Slime => (slime_goals(), slime_targets(), 0.325),
@@ -871,6 +884,7 @@ impl MonsterAi {
                 level_random: None,
                 can_break_doors: false,
                 ghast: GhastState::default(),
+                blaze: BlazeState::default(),
             },
             move_control: MoveControl::default(),
             body_rotation: BodyRotation::new(yaw),
@@ -1290,6 +1304,100 @@ impl Goal<MonsterGoalContext> for GhastShootGoal {
             ctx.ghast.charge_time -= 1;
         }
         ctx.ghast.charging = ctx.ghast.charge_time > 10;
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct BlazeState {
+    pub attack_step: i32,
+    pub attack_time: i32,
+    pub last_seen: i32,
+    pub charged: bool,
+    pub wanted: Option<DVec3>,
+    pub shots: Vec<DVec3>,
+}
+
+pub fn blaze_goals() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = GoalSelector::default();
+    selector.add(4, BlazeAttackGoal);
+    selector.add(5, NeverGoal { controls: &[Control::Move] });
+    selector.add(7, StrollGoal { speed: 1.0, probability: 0.0 });
+    selector.add(8, LookAtPlayerGoal { range: 8.0 });
+    selector.add(8, RandomLookGoal);
+    selector
+}
+
+pub fn blaze_targets() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = GoalSelector::default();
+    selector.add(1, HurtByTargetGoal { timestamp: 0, unseen_ticks: 0, target_mob: None, alert_others: true });
+    selector.add(2, NearestTargetGoal { interval: 5, prey: Prey::Player, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
+    selector
+}
+
+#[derive(Clone)]
+struct BlazeAttackGoal;
+impl Goal<MonsterGoalContext> for BlazeAttackGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Move, Control::Look])
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        ctx.target().is_some()
+    }
+    fn every_tick(&self) -> bool {
+        true
+    }
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        ctx.blaze.attack_step = 0;
+    }
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        ctx.blaze.charged = false;
+        ctx.blaze.last_seen = 0;
+    }
+    fn tick_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        ctx.blaze.attack_time -= 1;
+        let Some(target) = ctx.target() else { return };
+        let seen = ctx.sees(world, target);
+        if seen {
+            ctx.blaze.last_seen = 0;
+        } else {
+            ctx.blaze.last_seen += 1;
+        }
+        let position = ctx.body.position;
+        let distance = position.distance_squared(target.position);
+        if distance < 4.0 {
+            if !seen {
+                return;
+            }
+            if ctx.blaze.attack_time <= 0 {
+                ctx.blaze.attack_time = 20;
+                ctx.attack = Some(target.target);
+            }
+            ctx.blaze.wanted = Some(target.position);
+        } else if distance < ctx.follow_range * ctx.follow_range && seen {
+            let middle = position.y + f64::from(ctx.body.height) * 0.5;
+            let delta = DVec3::new(target.position.x - position.x, target.position.y + f64::from(target.height) * 0.5 - middle, target.position.z - position.z);
+            if ctx.blaze.attack_time <= 0 {
+                ctx.blaze.attack_step += 1;
+                if ctx.blaze.attack_step == 1 {
+                    ctx.blaze.attack_time = 60;
+                    ctx.blaze.charged = true;
+                } else if ctx.blaze.attack_step <= 4 {
+                    ctx.blaze.attack_time = 6;
+                } else {
+                    ctx.blaze.attack_time = 100;
+                    ctx.blaze.attack_step = 0;
+                    ctx.blaze.charged = false;
+                }
+                if ctx.blaze.attack_step > 1 {
+                    let aim = crate::blaze::small_fireball_aim(delta, distance, &mut ctx.random);
+                    ctx.blaze.shots.push(aim);
+                }
+            }
+            let eye = target.position + DVec3::new(0.0, f64::from(target.eye_height), 0.0);
+            ctx.look_control.set_look_at_with_limits(eye, 10.0, 10.0);
+        } else if ctx.blaze.last_seen < 5 {
+            ctx.blaze.wanted = Some(target.position);
+        }
     }
 }
 

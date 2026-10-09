@@ -618,6 +618,9 @@ impl Survival {
             if let Some((kind, ticks)) = cause.melee_effect() {
                 self.status.add_effect(kind, ticks, 0);
             }
+            if let Some(ticks) = cause.ignites() {
+                self.fire_ticks = self.fire_ticks.max(ticks);
+            }
         }
         if landed && from.is_some() {
             self.source = from;
@@ -1057,6 +1060,22 @@ mod tests {
         assert!(!ruled.hurt(6.0, Armor::default(), None, fireball));
         let blast = DamageCause::mob(crate::death::MobAttack::Explosion, Some(4), Some("minecraft:ghast"));
         assert!(resistant.hurt(4.0, Armor::default(), None, blast), "its blast is no fire");
+    }
+
+    #[test]
+    fn a_blaze_fireball_sets_the_player_alight_only_when_it_hurts() {
+        let small = DamageCause::mob(crate::death::MobAttack::SmallFireball, Some(3), Some("minecraft:blaze"));
+        let mut survival = fresh();
+        assert!(survival.hurt(5.0, Armor::default(), None, small));
+        assert_eq!((survival.status.health, survival.fire_ticks()), (15.0, 100));
+        let mut resistant = fresh();
+        resistant.status.add_effect(EffectKind::FireResistance, 600, 0);
+        assert!(!resistant.hurt(5.0, Armor::default(), None, small));
+        assert_eq!(resistant.fire_ticks(), 0);
+        let large = DamageCause::mob(crate::death::MobAttack::Fireball, Some(4), Some("minecraft:ghast"));
+        let mut ghast_hit = fresh();
+        assert!(ghast_hit.hurt(6.0, Armor::default(), None, large));
+        assert_eq!(ghast_hit.fire_ticks(), 0, "a ghast's fireball does not set the player alight");
     }
 
     #[test]

@@ -233,6 +233,7 @@ enum Rules {
     MagmaCube,
     ZombifiedPiglin,
     Ghast,
+    AnyLightMonster,
     /// `Bat.checkBatSpawnRules` (below the surface, in the dark).
     Bat,
     /// `GlowSquid.checkGlowSquidSpawnRules` (deep, dark water).
@@ -297,13 +298,14 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "slime" => (0.52, 0.52, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "magma_cube" => (0.52, 0.52, Placement::OnGround, MotionBlockingNoLeaves, true, false),
         "ghast" => (4.0, 4.0, Placement::OnGround, MotionBlockingNoLeaves, true, false),
+        "blaze" => (0.6, 1.8, Placement::OnGround, MotionBlockingNoLeaves, true, false),
         "zombie_horse" => (1.396_484_4, 1.6, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "bat" => (0.5, 0.9, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "glow_squid" => (0.8, 0.8, Placement::InWater, MotionBlockingNoLeaves, false, false),
         _ => return None,
     };
     let short = kind.trim_start_matches("minecraft:");
-    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin" | "wither_skeleton");
+    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin" | "wither_skeleton" | "blaze");
     let rules = match short {
         _ if animal_rules => Rules::Animal,
         "wolf" => Rules::SpawnableOn("minecraft:wolves_spawnable_on"),
@@ -318,6 +320,7 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "slime" => Rules::Slime,
         "magma_cube" => Rules::MagmaCube,
         "ghast" => Rules::Ghast,
+        "blaze" => Rules::AnyLightMonster,
         "bat" => Rules::Bat,
         "glow_squid" => Rules::GlowSquid,
         _ if monster => Rules::Monster,

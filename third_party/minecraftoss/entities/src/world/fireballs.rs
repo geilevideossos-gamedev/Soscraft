@@ -37,6 +37,10 @@ impl EntityWorld {
         std::mem::take(&mut self.fireball_blasts)
     }
 
+    pub fn take_fireball_fires(&mut self) -> Vec<(i32, i32, i32)> {
+        std::mem::take(&mut self.fireball_fires)
+    }
+
     pub fn deflect_fireball(&mut self, id: u64, look: DVec3, player: u64, by_attack: bool) -> bool {
         let Some(entity) = self
             .fireballs
@@ -198,17 +202,23 @@ impl EntityWorld {
             Some(Shooter::Mob(id)) => Some(id),
             _ => None,
         };
-        let FireballKind::Large { explosion_power } = fireball.kind;
+        let (damage, ignite_ticks) = match fireball.kind {
+            FireballKind::Large { .. } => (crate::fireball::LARGE_DAMAGE, 0),
+            FireballKind::Small => (
+                crate::fireball::SMALL_DAMAGE,
+                crate::fireball::SMALL_IGNITE_TICKS,
+            ),
+        };
         if let Some(target) = hit.entity {
             if target >= PLAYER_TARGET {
                 let player = target - PLAYER_TARGET;
                 if players.iter().any(|p| p.id == player && p.attackable) {
                     self.player_hits.push(PlayerHit {
                         player_id: player,
-                        damage: crate::fireball::LARGE_DAMAGE,
+                        damage,
                         kind: PlayerHitKind::Fireball {
                             velocity: fireball.velocity,
-                            ignite_ticks: 0,
+                            ignite_ticks,
                         },
                         source,
                     });
@@ -216,22 +226,53 @@ impl EntityWorld {
             } else {
                 self.fireball_hurts_mob(
                     target,
-                    crate::fireball::LARGE_DAMAGE,
+                    damage,
                     fireball.owner,
                     fireball.velocity,
+                    ignite_ticks,
                 );
             }
         }
-        self.fireball_explosion(
-            world,
-            fireball.position,
-            explosion_power as f32,
-            fireball.owner,
-            players,
-        );
+        match fireball.kind {
+            FireballKind::Large { explosion_power } => self.fireball_explosion(
+                world,
+                fireball.position,
+                explosion_power as f32,
+                fireball.owner,
+                players,
+            ),
+            FireballKind::Small => {
+                let griefs = !matches!(fireball.owner, Some(Shooter::Mob(_))) || self.mob_griefing;
+                if let Some(pos) = hit.block.filter(|_| griefs) {
+                    let beside = struck_side(world, pos, hit.location, fireball.velocity);
+                    self.fireball_fires.push(beside);
+                }
+            }
+        }
     }
 
     fn fireball_hurts_mob(
+        &mut self,
+        victim: u64,
+        damage: f32,
+        owner: Option<Shooter>,
+        velocity: DVec3,
+        ignite_ticks: i32,
+    ) -> Option<DamageResult> {
+        let before = self.body_mut(victim).map(|body| body.fire_ticks);
+        if let Some(body) = self.body_mut(victim).filter(|_| ignite_ticks > 0) {
+            body.fire_ticks = body.fire_ticks.max(ignite_ticks);
+        }
+        let result = self.fireball_damages_mob(victim, damage, owner, velocity);
+        if !result.is_some_and(|r| r.applied) {
+            if let (Some(before), Some(body)) = (before, self.body_mut(victim)) {
+                body.fire_ticks = before;
+            }
+        }
+        result
+    }
+
+    fn fireball_damages_mob(
         &mut self,
         victim: u64,
         damage: f32,
@@ -365,4 +406,34 @@ impl EntityWorld {
             fire: self.mob_griefing,
         });
     }
+}
+
+fn struck_side(
+    world: &impl World,
+    pos: (i32, i32, i32),
+    at: DVec3,
+    velocity: DVec3,
+) -> (i32, i32, i32) {
+    let local = at - DVec3::new(f64::from(pos.0), f64::from(pos.1), f64::from(pos.2));
+    let step = |axis: usize, by: i32| match axis {
+        0 => (pos.0 + by, pos.1, pos.2),
+        1 => (pos.0, pos.1 + by, pos.2),
+        _ => (pos.0, pos.1, pos.2 + by),
+    };
+    for b in world.collision_boxes(pos) {
+        for axis in 0..3 {
+            if velocity[axis] > 0.0 && (local[axis] - b[axis]).abs() < 1.0e-4 {
+                return step(axis, -1);
+            }
+            if velocity[axis] < 0.0 && (local[axis] - b[axis + 3]).abs() < 1.0e-4 {
+                return step(axis, 1);
+            }
+        }
+    }
+    let back = at - crate::fireball::normalize(velocity) * 1.0e-3;
+    (
+        back.x.floor() as i32,
+        back.y.floor() as i32,
+        back.z.floor() as i32,
+    )
 }

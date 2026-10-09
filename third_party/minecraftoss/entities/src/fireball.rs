@@ -6,23 +6,28 @@ pub const ACCELERATION_POWER: f64 = 0.1;
 pub const INERTIA: f32 = 0.95;
 pub const LIQUID_INERTIA: f32 = 0.8;
 pub const LARGE_DAMAGE: f32 = 6.0;
+pub const SMALL_DAMAGE: f32 = 5.0;
+pub const SMALL_IGNITE_TICKS: i32 = 100;
 pub const PICK_RADIUS: f64 = 1.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FireballKind {
     Large { explosion_power: i32 },
+    Small,
 }
 
 impl FireballKind {
     pub fn type_id(self) -> &'static str {
         match self {
             Self::Large { .. } => "minecraft:fireball",
+            Self::Small => "minecraft:small_fireball",
         }
     }
 
     pub fn size(self) -> f64 {
         match self {
             Self::Large { .. } => 1.0,
+            Self::Small => 0.3125,
         }
     }
 

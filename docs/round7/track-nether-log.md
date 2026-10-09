@@ -511,3 +511,37 @@ Previous commit: 6d2abe6b
 ```
 IW4L_MINECRAFT_KIT=minecraft:ghast_spawn_egg*4,minecraft:diamond_sword,minecraft:shield,minecraft:diamond_chestplate,minecraft:golden_apple*4,minecraft:cooked_beef*16,minecraft:cobblestone*64,minecraft:water_bucket
 ```
+
+### 23. Minecraft blazes and small fireballs (E2-24)
+
+Previous commit: 45b0216c
+
+- **Changed** (all checked with javap on the 26.3 jar: `Blaze`, `Blaze$BlazeAttackGoal`, `SmallFireball`, `Monster.checkAnyLightMonsterSpawnRules`, `SpawnPlacements`, `EntityTypes`, `LevelEventHandler` 1018, `BlazeModel`, `BlazeRenderer`):
+  - Vendored `third_party/minecraftoss/entities` (MinecraftOSS patch):
+    - New `blaze.rs`: 20 health, 0.6 by 1.8 (eyes at 1.53), attack damage 6, speed 0.23, follow range 48, 10 experience. `slow_fall` (`Blaze.aiStep`: falling in the air it keeps only 0.6 of its fall a tick), `rise_towards` (`customServerAiStep`: every 100 ticks a new `allowedHeightOffset` of `triangle(0.5, 6.891)`, and with its target's eyes above its own plus that offset it climbs, `y += (0.3 - y) * 0.3`), `small_fireball_aim` (`triangle` spread of `2.297 * sqrt(sqrt(distance squared)) * 0.5` on x and z), `triangle`.
+    - `fireball.rs`: `FireballKind::Small` (`SmallFireball`: 0.3125 wide, not redirectable, 5 damage, 100 ticks of fire).
+    - `monster_ai.rs`: `MonsterKind::Blaze` with `BlazeState` and `BlazeAttackGoal` (4, move and look): within 2 blocks and in sight it strikes every 20 ticks and walks at its target; within follow range and in sight it flares up (`setCharged`) for 60 ticks, fires three small fireballs 6 ticks apart (`entity.blaze.shoot` at volume 2) and rests for 100, looking at its target; out of sight for under 5 ticks it moves at it. Then `MoveTowardsRestrictionGoal` (5, no home: never runs), `WaterAvoidingRandomStrollGoal(1.0, 0.0)` (7), looking at players (8) and around (8); targets: `HurtByTargetGoal` alerting other blazes, and players in sight. Water costs -1 and lava 8 on its paths. Blazes count as enemies for iron golems.
+    - New `world/blazes.rs`: the blaze in the entity world: fire immune, its idle clock always running fast (`getLightLevelDependentMagicValue` 1), the slow fall, the goals, the move control towards the attack goal's spot, the climb, the walk, then water and rain hurting it (`isSensitiveToWater`); a strike is a 6 melee hit; its small fireballs start half a block above its middle; a hurt blaze sets the blazes around it on its attacker; it drops `minecraft:blaze` loot with 10 experience.
+    - `world/fireballs.rs`: a small fireball sets what it strikes alight for 5 seconds and hurts it 5 (`fireball`, `#is_fire`: fire-immune mobs shrug it off and their fire is put back as it was, as `SmallFireball.onHitEntity` restores it); on a block it lights the block in front of the face it hit, unless a mob shot it where mobs may not grief (`onHitBlock`), and it never bursts. `take_fireball_fires`.
+    - `world.rs` and `world/{combat,pushing,hazards}.rs`: the blaze wiring; a flaring blaze is drawn burning (`isOnFire` is `isCharged`).
+  - Vendored `third_party/minecraftoss/world` (MinecraftOSS patch): natural spawning knows the blaze: 0.6 by 1.8, fire immune, a monster that spawns in any light (`checkAnyLightMonsterSpawnRules`: not in peaceful, a valid block below; a spawner only needs room), follow range 48, `Mob`'s `finalizeSpawn`. So fortress spawners and the fortress's own spawns now make live blazes. `level/explosion.rs`: `Level::light_fire` (`BaseFireBlock.getState` set where there is air).
+  - `minecraft_terrain`: `minecraft:blaze` is simulated, loaded and saved, and small fireballs in flight too (`minecraft:small_fireball`); the server lights the fires small fireballs ask for; new `blaze_render.rs`: `BlazeModel` (the head turning with the look, three rings of four rods circling at 9, 7 and 5 pixels at their own speeds and bobbing), always lit at block light 15 (`BlazeRenderer`), shadow 0.5; small fireballs are the `fire_charge` sprite at 0.75 of its ground size. `client_mobs.rs` tracks blazes; `mesh.rs` loads the texture.
+  - `minecraft_survival`: blazes are hit boxes for bullets (`MobHit::Blaze`); the client plays `entity.blaze.burn` one tick in 24 (volume 1 to 2, pitch 0.3 to 1); a small fireball's hit is `MobAttack::SmallFireball` ("was fireballed by"), which sets the player alight for 100 ticks when it hurts (`survival.rs`; fire resistance turns it away and no fire is left).
+- **Tests:** `blaze`: `a_blaze_falls_slowly_and_rises_towards_a_target_above_it`. `world::blazes`: `a_blaze_burns_bright_and_fires_three_small_fireballs_that_set_the_player_alight` (the flare, three shots a volley, a hit of 5 with 100 ticks of fire, a strike of 6 up close), `a_blaze_rises_towards_a_player_above_it`, `a_small_fireball_lights_the_block_beside_where_it_lands_and_spares_fire_immune_mobs` (a blaze untouched, a zombie hurt and burning, fire in front of the wall, none without mob griefing, no deflection). `spawning`: `a_blaze_spawns_as_a_monster_in_any_light`. `blaze_render`: `a_blaze_is_a_head_over_three_rings_of_rods_that_turn_and_bob` (312 vertices at block light 15). `server`: `blazes_live_and_their_small_fireballs_set_fire_beside_what_they_strike` (fire in front of an obsidian wall, none without mob griefing, no blast; a blaze and a small fireball survive a save). `death`: the small fireball's line. `survival`: `a_blaze_fireball_sets_the_player_alight_only_when_it_hurts`.
+- **Test changed:** `server::a_fortress_spawner_spawns_blazes_near_a_player_and_waits_between_rounds` now turns natural spawning off: with blazes simulated, the fortress's own natural spawns put blazes outside the spawner's range into the list it checks.
+- **Decisions:**
+  - The blaze's smoke particles and the small fireballs' smoke trail are not drawn; the burn sound is played from the client's own random, as vanilla's client does.
+  - The blaze's look, its shots and its strike follow the goal order of vanilla's `serverAiStep`; the fireballs start from where it stood when the goal fired them.
+- **Test steps** (survival, `/difficulty normal`):
+  1. Use a blaze spawn egg on flat ground and step back about 10 blocks. The yellow blaze glows in the dark, its rods circling and bobbing, and it crackles now and then. **Screenshot 23.**
+  2. It flares up (flames around it) for about 3 seconds, then fires three small fireballs in quick succession. A hit sets you on fire. **Screenshot 24** (the flaring blaze or a fireball in flight).
+  3. Fireballs that miss leave fire on the ground or wall where they land. **Screenshot 25.**
+  4. Pillar up 6 blocks with cobblestone: the blaze rises towards you.
+  5. Walk up to it: up close it strikes you. Pour the water bucket on it: it takes damage. Kill it with the sword: blaze rods drop.
+  6. `/gamerule mob_griefing false`: its fireballs still burn you but light no fires. Set it back to `true`.
+  7. In the Nether, at a fortress spawner (`/locate structure minecraft:fortress`, then `/tp`): blazes appear around the cage and come at you; more blazes appear on the fortress's nether bricks in the dark. **Screenshot 26.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:blaze_spawn_egg*4,minecraft:diamond_sword,minecraft:shield,minecraft:water_bucket,minecraft:cobblestone*64,minecraft:diamond_chestplate,minecraft:golden_apple*4,minecraft:cooked_beef*16
+```
