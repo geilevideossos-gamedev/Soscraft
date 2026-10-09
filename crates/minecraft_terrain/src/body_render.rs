@@ -1,6 +1,7 @@
 use anyhow::Result;
 use glam::{Mat4, Vec3};
 
+use crate::armor_render::{ArmorRig, append_armor_on_rig};
 use crate::body_gear::BodyGear;
 use crate::lighting::SkyLight;
 use crate::mesh::{Atlas, ChunkMesh, HeldDisplay, HeldItem, ItemVisuals};
@@ -11,6 +12,7 @@ pub const HAND_DISPLAYS: [HeldDisplay; 2] = [HeldDisplay::RightHand, HeldDisplay
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BodyRig {
     pub hands: [Option<Mat4>; 2],
+    pub armor: ArmorRig,
     pub light: Vec3,
 }
 
@@ -42,6 +44,12 @@ pub fn append_body_gear(
     atlas: &Atlas,
     light: &SkyLight,
 ) -> Result<()> {
+    let cell = rig.light.floor().as_ivec3();
+    let (sky, block) = (
+        f32::from(light.get((cell.x, cell.y, cell.z))),
+        f32::from(light.get_block((cell.x, cell.y, cell.z))),
+    );
+    append_armor_on_rig(mesh, atlas, &rig.armor, &gear.armor, sky, block);
     for (held, glint) in held_items(rig, gear) {
         let start = mesh.vertices.len() as u32;
         items.append_held_items(mesh, std::slice::from_ref(&held), packs, atlas, light)?;
@@ -106,6 +114,7 @@ mod tests {
         let rig = BodyRig {
             hands: [Some(right), Some(left)],
             light: Vec3::new(0.0, 64.0, 0.0),
+            ..BodyRig::default()
         };
         let gear = BodyGear {
             main: item("minecraft:diamond_sword", true),
@@ -159,6 +168,7 @@ mod tests {
         let rig = BodyRig {
             hands: [Some(Mat4::IDENTITY), Some(Mat4::IDENTITY)],
             light: Vec3::ZERO,
+            ..BodyRig::default()
         };
         let gear = BodyGear {
             main: item("test:rod", false),
@@ -183,5 +193,47 @@ mod tests {
             (right - left).abs_diff_eq(Vec3::new(0.5, 0.0, 0.0), 1e-5),
             "{right} {left}"
         );
+    }
+
+    #[test]
+    fn worn_armour_is_drawn_with_the_body_and_lit_where_it_is() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(
+            root.join("pack.mcmeta"),
+            r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#,
+        )
+        .unwrap();
+        let texture = root.join("assets/minecraft/textures/entity/equipment/humanoid/diamond.png");
+        std::fs::create_dir_all(texture.parent().unwrap()).unwrap();
+        image::RgbaImage::from_pixel(64, 32, image::Rgba([90, 220, 220, 255]))
+            .save(texture)
+            .unwrap();
+        let packs = PackStack::open(vec![root.into()]).unwrap();
+        let id = ResourceId::parse("minecraft:entity/equipment/humanoid/diamond").unwrap();
+        let atlas = crate::mesh::make_atlas(&packs, vec![id]).unwrap();
+        let light = SkyLight::from_levels((0, 64, 0), (1, 1, 1), vec![9], vec![3]);
+        let rig = BodyRig {
+            armor: crate::armor_render::ArmorRig {
+                head: Some(Mat4::from_translation(Vec3::new(0.5, 65.5, 0.5))),
+                ..Default::default()
+            },
+            light: Vec3::new(0.5, 64.5, 0.5),
+            ..BodyRig::default()
+        };
+        let gear = BodyGear {
+            armor: [item("minecraft:diamond_helmet", true), None, None, None],
+            ..BodyGear::default()
+        };
+        let mut mesh = ChunkMesh::default();
+        let mut items = ItemVisuals::default();
+        append_body_gear(&mut mesh, &mut items, &rig, &gear, &packs, &atlas, &light).unwrap();
+        assert_eq!(mesh.faces, 12);
+        assert!(
+            mesh.vertices
+                .iter()
+                .all(|vertex| (vertex.sky_light, vertex.block_light) == (9.0, 3.0))
+        );
+        assert!(mesh.glint.is_empty());
     }
 }

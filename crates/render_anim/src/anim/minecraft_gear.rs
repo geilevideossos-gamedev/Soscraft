@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
+use minecraft_terrain::armor_render::{ArmorRig, SplitPart};
 use minecraft_terrain::body_gear::BodyGear;
 use minecraft_terrain::body_render::{BodyRig, append_body_gear};
 use minecraft_terrain::lighting::SkyLight;
@@ -185,12 +186,32 @@ impl McBodyGear {
 pub struct GearFit {
     pub item_scale: f32,
     pub hand_offset: [f32; 3],
+    pub head: f32,
+    pub head_offset: [f32; 3],
+    pub torso_width: f32,
+    pub torso_depth: f32,
+    pub torso_top: f32,
+    pub arm_girth: f32,
+    pub leg_girth: f32,
+    pub sole: f32,
 }
 
 pub const GEAR_FIT: GearFit = GearFit {
     item_scale: 0.9375,
     hand_offset: [0.0, 1.0, -1.0],
+    head: 9.0,
+    head_offset: [0.5, 0.0, 3.5],
+    torso_width: 13.0,
+    torso_depth: 8.0,
+    torso_top: 3.5,
+    arm_girth: 4.0,
+    leg_girth: 5.5,
+    sole: 4.0,
 };
+
+const ARM_LENGTH: f32 = 10.0;
+const LEG_LENGTH: f32 = 12.0;
+const TORSO_SPLIT: f32 = 6.0;
 
 pub fn map_to_block(origin: [f64; 3]) -> Mat4 {
     let scale = 1.0 / sim::voxel::BLOCK;
@@ -231,6 +252,150 @@ fn to_terrain(matrix: Mat4) -> glam::Mat4 {
     glam::Mat4::from_cols_array(&matrix.to_cols_array())
 }
 
+pub fn part_frame(origin: Vec3, down: Vec3, scale: Vec3, anchor: Vec3) -> Option<Mat4> {
+    let y = down.try_normalize()?;
+    let back = (Vec3::NEG_X - y * y.dot(Vec3::NEG_X)).try_normalize()?;
+    let x = y.cross(back);
+    Some(
+        Mat4::from_cols(
+            (x * scale.x).extend(0.0),
+            (y * scale.y).extend(0.0),
+            (back * scale.z).extend(0.0),
+            origin.extend(1.0),
+        ) * Mat4::from_translation(-anchor),
+    )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoundPart {
+    pub riders: [PosedJoint; 2],
+    pub upper: Mat4,
+    pub lower: Mat4,
+    pub split: f32,
+}
+
+impl BoundPart {
+    pub fn posed(&self, to_block: Mat4) -> SplitPart {
+        SplitPart {
+            upper: to_terrain(to_block * self.riders[0].skin() * self.upper),
+            lower: to_terrain(to_block * self.riders[1].skin() * self.lower),
+            split: self.split,
+        }
+    }
+}
+
+fn bound_at(joint: Option<PosedJoint>) -> Option<(PosedJoint, Vec3)> {
+    let joint = joint?;
+    Some((joint, joint.bind.w_axis.truncate()))
+}
+
+pub fn limb(
+    top: Option<PosedJoint>,
+    middle: Option<PosedJoint>,
+    end: Vec3,
+    girth: f32,
+    length: f32,
+    centre: f32,
+) -> Option<BoundPart> {
+    let ((upper_rider, top), (lower_rider, middle)) = (bound_at(top)?, bound_at(middle)?);
+    let (upper_length, lower_length) = (top.distance(middle), middle.distance(end));
+    let along = (upper_length + lower_length) / length;
+    if along <= f32::EPSILON {
+        return None;
+    }
+    let split = upper_length / along;
+    let scale = Vec3::new(girth / 4.0, along, girth / 4.0);
+    Some(BoundPart {
+        riders: [upper_rider, lower_rider],
+        upper: part_frame(top, middle - top, scale, Vec3::new(centre, 0.0, 0.0))?,
+        lower: part_frame(middle, end - middle, scale, Vec3::new(centre, split, 0.0))?,
+        split,
+    })
+}
+
+pub fn bound_armor(joints: &[Option<PosedJoint>; JOINTS], fit: &GearFit) -> BoundArmor {
+    let position = |joint: usize| joints[joint].map(|joint| joint.bind.w_axis.truncate());
+    let head = joints[HEAD].and_then(|head| {
+        let centre = head.bind.w_axis.truncate() + Vec3::from_array(fit.head_offset);
+        let frame = part_frame(
+            centre,
+            Vec3::NEG_Z,
+            Vec3::splat(fit.head / 8.0),
+            Vec3::new(0.0, -4.0, 0.0),
+        )?;
+        Some((head, frame))
+    });
+    let body = (|| {
+        let shoulders = (position(SHOULDERS[0])? + position(SHOULDERS[1])?) * 0.5;
+        let hips = (position(HIPS[0])? + position(HIPS[1])?) * 0.5;
+        let top = shoulders + Vec3::Z * fit.torso_top;
+        let scale = Vec3::new(
+            fit.torso_width / 8.0,
+            top.distance(hips) / 12.0,
+            fit.torso_depth / 4.0,
+        );
+        let frame = part_frame(top, hips - top, scale, Vec3::ZERO)?;
+        Some(BoundPart {
+            riders: [
+                joints[SPINE4].or(joints[SPINE_UPPER])?,
+                joints[SPINE_LOWER].or(joints[SPINE_UPPER])?,
+            ],
+            upper: frame,
+            lower: frame,
+            split: TORSO_SPLIT,
+        })
+    })();
+    let arms = [0, 1].map(|side| {
+        limb(
+            joints[SHOULDERS[side]],
+            joints[ELBOWS[side]],
+            position(WRISTS[side])?,
+            fit.arm_girth,
+            ARM_LENGTH,
+            if side == 0 { -1.0 } else { 1.0 },
+        )
+    });
+    let legs = [0, 1].map(|side| {
+        let (knee, ankle) = (position(KNEES[side])?, position(ANKLES[side])?);
+        let sole = ankle + (ankle - knee).normalize_or_zero() * fit.sole;
+        limb(
+            joints[HIPS[side]],
+            joints[KNEES[side]],
+            sole,
+            fit.leg_girth,
+            LEG_LENGTH,
+            0.0,
+        )
+    });
+    BoundArmor {
+        head,
+        body,
+        arms,
+        legs,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoundArmor {
+    pub head: Option<(PosedJoint, Mat4)>,
+    pub body: Option<BoundPart>,
+    pub arms: [Option<BoundPart>; 2],
+    pub legs: [Option<BoundPart>; 2],
+}
+
+impl BoundArmor {
+    pub fn posed(&self, to_block: Mat4) -> ArmorRig {
+        ArmorRig {
+            head: self
+                .head
+                .map(|(rider, frame)| to_terrain(to_block * rider.skin() * frame)),
+            body: self.body.map(|part| part.posed(to_block)),
+            arms: self.arms.map(|part| part.map(|part| part.posed(to_block))),
+            legs: self.legs.map(|part| part.map(|part| part.posed(to_block))),
+        }
+    }
+}
+
 pub fn body_rig(joints: &[Option<PosedJoint>; JOINTS], origin: [f64; 3], fit: &GearFit) -> BodyRig {
     let to_block = map_to_block(origin);
     let lit_at = [SPINE4, SPINE_UPPER, SPINE_LOWER, NECK, HEAD]
@@ -246,6 +411,7 @@ pub fn body_rig(joints: &[Option<PosedJoint>; JOINTS], origin: [f64; 3], fit: &G
     BodyRig {
         hands: [0, 1]
             .map(|side| hand_frame(joints, side, fit).map(|hand| to_terrain(to_block * hand))),
+        armor: bound_armor(joints, fit).posed(to_block),
         light: glam::Vec3::from_array(lit_at.to_array()),
     }
 }
@@ -456,6 +622,7 @@ mod tests {
         let fit = GearFit {
             item_scale: 1.0,
             hand_offset: [0.0; 3],
+            ..GEAR_FIT
         };
         let rig = body_rig(&joints, [10.0, 64.0, -5.0], &fit);
         let hand = rig.hands[0].unwrap();
@@ -488,6 +655,7 @@ mod tests {
         let fit = GearFit {
             item_scale: 0.5,
             hand_offset: [2.0, 4.0, -8.0],
+            ..GEAR_FIT
         };
         let rig = body_rig(&joints, [0.0; 3], &fit);
         let origin = |hand: Option<glam::Mat4>| hand.unwrap().transform_point3(glam::Vec3::ZERO);
@@ -516,6 +684,7 @@ mod tests {
         let fit = GearFit {
             item_scale: 1.0,
             hand_offset: [0.0; 3],
+            ..GEAR_FIT
         };
         let hand = hand_frame(&joints, 0, &fit).unwrap();
         assert!(
@@ -554,5 +723,151 @@ mod tests {
                 .collect::<Vec<_>>(),
             [(1, false), (2, true)]
         );
+    }
+
+    fn standing() -> [Option<PosedJoint>; JOINTS] {
+        let mut joints = [None; JOINTS];
+        let at = |x: f32, y: f32, z: f32| {
+            Some(PosedJoint {
+                posed: Mat4::from_translation(Vec3::new(x, y, z)),
+                bind: Mat4::from_translation(Vec3::new(x, y, z)),
+            })
+        };
+        joints[HEAD] = at(0.0, 0.0, 62.0);
+        joints[SPINE4] = at(0.0, 0.0, 52.0);
+        joints[SPINE_LOWER] = at(0.0, 0.0, 40.0);
+        joints[SHOULDERS[0]] = at(0.0, -8.0, 56.0);
+        joints[SHOULDERS[1]] = at(0.0, 8.0, 56.0);
+        joints[ELBOWS[0]] = at(0.0, -9.0, 45.0);
+        joints[ELBOWS[1]] = at(0.0, 9.0, 45.0);
+        joints[WRISTS[0]] = at(0.0, -10.0, 35.0);
+        joints[WRISTS[1]] = at(0.0, 10.0, 35.0);
+        joints[HIPS[0]] = at(0.0, -4.0, 36.0);
+        joints[HIPS[1]] = at(0.0, 4.0, 36.0);
+        joints[KNEES[0]] = at(1.0, -4.0, 20.0);
+        joints[KNEES[1]] = at(1.0, 4.0, 20.0);
+        joints[ANKLES[0]] = at(0.0, -4.0, 4.0);
+        joints[ANKLES[1]] = at(0.0, 4.0, 4.0);
+        joints
+    }
+
+    #[test]
+    fn a_part_frame_turns_vanilla_left_down_back_into_the_model_axes() {
+        let frame = part_frame(
+            Vec3::new(0.0, 0.0, 50.0),
+            Vec3::NEG_Z,
+            Vec3::new(2.0, 3.0, 4.0),
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        assert!(
+            frame
+                .transform_point3(Vec3::new(1.0, 0.0, 0.0))
+                .abs_diff_eq(Vec3::new(0.0, 0.0, 50.0), 1e-5)
+        );
+        assert!(frame.x_axis.truncate().abs_diff_eq(Vec3::Y * 2.0, 1e-5));
+        assert!(frame.y_axis.truncate().abs_diff_eq(Vec3::NEG_Z * 3.0, 1e-5));
+        assert!(frame.z_axis.truncate().abs_diff_eq(Vec3::NEG_X * 4.0, 1e-5));
+        assert!(part_frame(Vec3::ZERO, Vec3::ZERO, Vec3::ONE, Vec3::ZERO).is_none());
+    }
+
+    #[test]
+    fn limbs_run_from_joint_to_joint_and_split_at_the_elbow_and_knee() {
+        let joints = standing();
+        let armor = bound_armor(&joints, &GEAR_FIT);
+        let arm = armor.arms[0].unwrap();
+        let (shoulder, elbow, wrist) = (
+            Vec3::new(0.0, -8.0, 56.0),
+            Vec3::new(0.0, -9.0, 45.0),
+            Vec3::new(0.0, -10.0, 35.0),
+        );
+        let along = (shoulder.distance(elbow) + elbow.distance(wrist)) / ARM_LENGTH;
+        assert!((arm.split - shoulder.distance(elbow) / along).abs() < 1e-4);
+        assert!(
+            arm.upper
+                .transform_point3(Vec3::new(-1.0, 0.0, 0.0))
+                .abs_diff_eq(shoulder, 1e-4)
+        );
+        assert!(
+            arm.upper
+                .transform_point3(Vec3::new(-1.0, arm.split, 0.0))
+                .abs_diff_eq(elbow, 1e-4),
+            "the upper slice ends at the elbow"
+        );
+        assert!(
+            arm.lower
+                .transform_point3(Vec3::new(-1.0, arm.split, 0.0))
+                .abs_diff_eq(elbow, 1e-4),
+            "the lower slice starts there"
+        );
+        assert!(
+            arm.lower
+                .transform_point3(Vec3::new(-1.0, ARM_LENGTH, 0.0))
+                .abs_diff_eq(wrist, 1e-4)
+        );
+        assert!((arm.upper.y_axis.truncate().length() - along).abs() < 1e-4);
+        assert!((arm.upper.x_axis.truncate().length() - GEAR_FIT.arm_girth / 4.0).abs() < 1e-4);
+        let leg = armor.legs[1].unwrap();
+        let (knee, ankle) = (Vec3::new(1.0, 4.0, 20.0), Vec3::new(0.0, 4.0, 4.0));
+        let sole = ankle + (ankle - knee).normalize() * GEAR_FIT.sole;
+        assert!(
+            leg.lower
+                .transform_point3(Vec3::new(0.0, LEG_LENGTH, 0.0))
+                .abs_diff_eq(sole, 1e-3),
+            "boots reach the sole"
+        );
+        let body = armor.body.unwrap();
+        assert!(
+            body.upper
+                .transform_point3(Vec3::new(0.0, 12.0, 0.0))
+                .abs_diff_eq(Vec3::new(0.0, 0.0, 36.0), 1e-4)
+        );
+        assert_eq!(body.riders[0].bind, joints[SPINE4].unwrap().bind);
+        assert_eq!(body.riders[1].bind, joints[SPINE_LOWER].unwrap().bind);
+    }
+
+    #[test]
+    fn a_bent_elbow_turns_only_the_lower_slice() {
+        let mut joints = standing();
+        let elbow = joints[ELBOWS[0]].unwrap();
+        let pivot = elbow.bind.w_axis.truncate();
+        let bend = Mat4::from_translation(pivot)
+            * Mat4::from_rotation_y(-std::f32::consts::FRAC_PI_2)
+            * Mat4::from_translation(-pivot);
+        joints[ELBOWS[0]] = Some(PosedJoint {
+            posed: bend * elbow.bind,
+            bind: elbow.bind,
+        });
+        let rig = body_rig(&joints, [0.0; 3], &GEAR_FIT);
+        let straight = body_rig(&standing(), [0.0; 3], &GEAR_FIT);
+        let (bent, before) = (rig.armor.arms[0].unwrap(), straight.armor.arms[0].unwrap());
+        assert_eq!(bent.upper, before.upper);
+        assert_ne!(bent.lower, before.lower);
+        let to_block = |p: Vec3| map_to_block([0.0; 3]).transform_point3(p);
+        let wrist = bent
+            .lower
+            .transform_point3(glam::Vec3::new(-1.0, ARM_LENGTH, 0.0));
+        let elbow_at = to_block(pivot);
+        let reach = Vec3::new(wrist.x, wrist.y, wrist.z) - elbow_at;
+        assert!(
+            reach.y.abs() < 0.05,
+            "the forearm now points forward: {reach}"
+        );
+        assert_eq!(bent.split, before.split);
+        assert_eq!(rig.armor.head, straight.armor.head);
+    }
+
+    #[test]
+    fn missing_joints_leave_their_part_out() {
+        let mut joints = standing();
+        joints[HEAD] = None;
+        joints[KNEES[1]] = None;
+        joints[SPINE4] = None;
+        let armor = bound_armor(&joints, &GEAR_FIT);
+        assert!(armor.head.is_none());
+        assert!(armor.legs[0].is_some() && armor.legs[1].is_none());
+        assert!(armor.body.is_none(), "no spine to ride");
+        joints[SPINE_UPPER] = joints[SPINE_LOWER];
+        assert!(bound_armor(&joints, &GEAR_FIT).body.is_some());
     }
 }
