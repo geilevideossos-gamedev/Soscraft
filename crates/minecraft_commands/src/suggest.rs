@@ -530,10 +530,11 @@ fn item_predicate(start: usize, hints: &CommandHints, found: &mut Found) {
 fn block_state(start: usize, hints: &CommandHints, found: &mut Found) {
     let typed = found.typed(start);
     let length = id_length(typed);
-    let id = resource_id(&mut StringReader::new(&typed[..length])).unwrap_or_default();
-    if !hints.blocks.contains(&id) {
+    let id = resource_id(&mut StringReader::new(&typed[..length])).ok();
+    let known = |list: &[String]| id.as_ref().is_some_and(|id| list.contains(id));
+    if !known(&hints.blocks) {
         found.resources(start, hints.blocks.iter().map(String::as_str), "");
-    } else if length == typed.len() && hints.blocks_with_properties.contains(&id) {
+    } else if length == typed.len() && known(&hints.blocks_with_properties) {
         found.add(start + length, "[");
     }
 }

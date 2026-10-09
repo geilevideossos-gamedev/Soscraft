@@ -935,3 +935,21 @@ None. Only the log changed.
 The corrected steps are in the `/kit` entry above.
 
 Kit: as in the `/kit` entry.
+
+## Minecraft block suggestions pass the workspace clippy rules
+
+Commit: the commit that adds this entry (branch `track-c`, adversarial review of the whole track).
+
+### What changed
+
+- The block suggestion fix above used `Result::unwrap_or_default`, which the workspace `clippy.toml` disallows, so `clippy -p minecraft_commands --all-targets` warned. `block_state` now keeps the parsed id as an `Option` and checks it against both hint lists. The suggestions are unchanged.
+
+### Tests added
+
+None. `suggest::tests::block_arguments_suggest_whole_coordinates_and_block_ids` covers the same behaviour, and clippy reports nothing on `minecraft_commands`.
+
+### In-game test steps
+
+Nothing changes in game. The steps in the block suggestion entry above still apply.
+
+Kit: none needed.
