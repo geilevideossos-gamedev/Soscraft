@@ -1876,3 +1876,58 @@ Kit: none needed.
 
 1. `/gamemode creative`, E, Search tab, type `#LOGS`: the logs show; hovering an oak log shows the blue tab names but no purple `#minecraft:logs` line.
 2. Change it to `#logs`: the purple line is back. Screenshot.
+
+# Testing the second half
+
+Branch `track-c`, base 44759b7. The previous commit is be8d812 (the tag lines' case).
+
+## Final verification
+
+- `clippy -p console -p frame -p hud -p minecraft_commands -p minecraft_survival -p minecraft_terrain -p render_anim --locked --all-targets -- -A clippy::approx_constant`: no warning on a line the second half added; the warnings left are in older code.
+- `test -p <crate> --locked`: `console` 35, `frame` 16, `hud` 128, `minecraft_commands` 114, `minecraft_survival` 153, `minecraft_terrain` 490 (3 ignored, the existing timing and local-pack diagnostics), `render_anim` 43; all passed, with the 26.3 data present.
+- The nine new `.rs` files pass `rustfmt --check` on their committed content (edition 2021 for `minecraft_terrain`, 2024 for the rest), and the added lines hold no comments.
+
+## Commits, oldest first
+
+| Commit | Subject |
+| --- | --- |
+| eefc73b | Minecraft commands act on the player they name |
+| 2fec35a | Minecraft /clear empties the named player's inventory |
+| 6fafe57 | Minecraft /xp fills the named player's experience bar and chimes like vanilla |
+| 8b6ca64 | Minecraft /enchant enchants the named player's held item |
+| cf013fd | Minecraft /setblock and /fill change blocks on the level's server thread |
+| d36e020 | Minecraft /locate searches on the level's server thread |
+| 131ccc8 | Minecraft /kit reads the .env again for every call |
+| 62e91aa | Minecraft /execute in looks up the server's loaded levels |
+| c0d10ad | Minecraft chat keeps the command hints up to date |
+| 6f9b45c | Minecraft hands stay still while an MW2 grenade is up |
+| 2a3d60e | Minecraft command glue track log lists one kit and one test order |
+| 80894e3 | Minecraft chat suggests commands like vanilla |
+| a299c9d | Minecraft chat display tests build against the per-player command host |
+| 20ebfb8 | Minecraft creative inventory has the vanilla tabs |
+| 1cbbb6d | Minecraft creative inventory searches items like vanilla |
+| c87d3e5 | Minecraft creative players save and load hotbars like vanilla |
+| d1f0062 | Minecraft creative tabs hold every potion, enchanted book and variant like vanilla |
+| 555f750 | Minecraft creative inventory code passes clippy |
+| 896e289 | Minecraft command answers reach the player who sent the command |
+| c4a1f8e | Minecraft creative screen turns back into the inventory when creative ends |
+| b064dc0 | Minecraft creative search tab swaps on number keys only where vanilla does |
+| be8d812 | Minecraft creative search shows tag lines only for the case vanilla matches |
+| (this one) | Minecraft track C log lists one kit and one test order for the second half |
+
+## One kit for the whole second half
+
+```
+IW4L_MINECRAFT_KIT=diamond_pickaxe+efficiency=5,diamond_sword,stick,stone*64,stone*30,oak_log*10,iron_boots,torch*64,bread*16,cobblestone*64,oak_fence*16,lectern,white_bed,iron_helmet
+```
+
+14 stacks: `minecraft:diamond_pickaxe` 1 (Efficiency V), `minecraft:diamond_sword` 1, `minecraft:stick` 1, `minecraft:stone` 64 and 30, `minecraft:oak_log` 10, `minecraft:iron_boots` 1, `minecraft:torch` 64, `minecraft:bread` 16, `minecraft:cobblestone` 64, `minecraft:oak_fence` 16, `minecraft:lectern` 1, `minecraft:white_bed` 1, `minecraft:iron_helmet` 1. It holds every item the entries' own kits name. The `/clear` counts in the glue group's order are for that group's kit: with this one, step 4 of the `/clear` entry removes one more item (the helmet).
+
+## Order
+
+Load a fresh world with this kit, then:
+
+1. The glue group, as "Testing the glue group" orders it (survival).
+2. The chat UI entry, steps 1 to 11 (screenshots 1 to 5 of that entry). `/kit` afterwards if the glue steps emptied the inventory.
+3. The creative group, as "Testing the creative group" orders it (`/gamemode creative` first).
+4. The review fixes: the command answers entry (steps 1 and 2), the number keys entry (steps 1 to 4), the tag lines entry (steps 1 and 2), and last the creative screen entry (steps 1 and 2, ending in survival).
