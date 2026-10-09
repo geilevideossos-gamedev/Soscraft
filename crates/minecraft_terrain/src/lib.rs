@@ -80,3 +80,4 @@ pub mod enchantment_names;
 pub mod glint;
 pub mod game_mode;
 pub mod body_gear;
+pub mod body_render;

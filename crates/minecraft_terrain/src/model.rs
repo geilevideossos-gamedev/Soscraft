@@ -193,6 +193,10 @@ pub fn item_gui_light_front(pack: &PackStack, item: &ResourceId) -> Result<bool>
 pub fn item_display_transform_using(pack: &PackStack, item: &ResourceId, context: &str, using_item: bool) -> Result<Mat4> {
     display_transform(pack, item, context, using_item, false)
 }
+pub fn item_third_person_transform(pack: &PackStack, item: &ResourceId, left_hand: bool) -> Result<Mat4> {
+    let context = if left_hand { "thirdperson_lefthand" } else { "thirdperson_righthand" };
+    display_transform(pack, item, context, false, left_hand)
+}
 pub fn item_hand_transform(pack: &PackStack, item: &ResourceId, left_hand: bool, using_item: bool) -> Result<Mat4> {
     let context = if left_hand { "firstperson_lefthand" } else { "firstperson_righthand" };
     display_transform(pack, item, context, using_item, left_hand)
@@ -1150,6 +1154,30 @@ mod tests {
         let plate = ResourceId::parse("test:plate").unwrap();
         let centre = item_hand_transform(&pack, &plate, true, false).unwrap().transform_point3(Vec3::splat(0.5));
         assert!((centre - Vec3::new(-5.0, 5.0, -11.0) / 16.0).length() < 1e-5);
+    }
+    #[test]
+    fn third_person_hands_take_their_display_and_the_left_mirrors_the_right() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(root.join("pack.mcmeta"), r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#).unwrap();
+        for (name, contents) in [
+            ("assets/test/items/rod.json", r#"{"model":{"type":"minecraft:model","model":"test:item/rod"}}"#),
+            ("assets/test/models/item/rod.json", r#"{"display":{"thirdperson_righthand":{"rotation":[0,-90,55],"translation":[0,4,0.5],"scale":[0.85,0.85,0.85]}}}"#),
+        ] {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+        let pack = PackStack::open(vec![root.into()]).unwrap();
+        let rod = ResourceId::parse("test:rod").unwrap();
+        let right = item_third_person_transform(&pack, &rod, false).unwrap();
+        assert!(right.abs_diff_eq(item_display_transform(&pack, &rod, "thirdperson_righthand").unwrap(), 1e-6));
+        let left = item_third_person_transform(&pack, &rod, true).unwrap();
+        let expected = Mat4::from_translation(Vec3::new(0.0, 4.0, 0.5) / 16.0)
+            * Mat4::from_quat(Quat::from_euler(EulerRot::XYZ, 0.0, 90f32.to_radians(), -55f32.to_radians()))
+            * Mat4::from_scale(Vec3::splat(0.85))
+            * Mat4::from_translation(Vec3::splat(-0.5));
+        assert!(left.abs_diff_eq(expected, 1e-5));
     }
     #[test]
     fn double_chest_halves_use_entity_textures_and_hide_join_faces() {
