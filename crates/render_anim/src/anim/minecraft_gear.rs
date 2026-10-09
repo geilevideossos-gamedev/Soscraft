@@ -52,14 +52,16 @@ pub struct GearBones {
 
 impl Default for GearBones {
     fn default() -> Self {
-        Self {
-            index: [None; JOINTS],
-            bind: [Mat4::IDENTITY; JOINTS],
-        }
+        Self::NONE
     }
 }
 
 impl GearBones {
+    pub const NONE: Self = Self {
+        index: [None; JOINTS],
+        bind: [Mat4::IDENTITY; JOINTS],
+    };
+
     pub fn resolve(dobj: &xmodel_runtime::DObj) -> Self {
         let bind = dobj.compose(&dobj.bind_locals(), Mat4::IDENTITY);
         let index = GEAR_BONES.map(|name| dobj.find(name));

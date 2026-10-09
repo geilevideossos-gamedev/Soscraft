@@ -180,7 +180,8 @@ mod tests {
         append_body_gear(&mut mesh, &mut items, &rig, &gear, &packs, &atlas, &light).unwrap();
         let half = mesh.vertices.len() / 2;
         assert!(half > 0);
-        assert_eq!(mesh.glint, [half as u32..mesh.vertices.len() as u32]);
+        assert_eq!(mesh.glint.len(), 1);
+        assert_eq!(mesh.glint[0], half as u32..mesh.vertices.len() as u32);
         let centre = |range: std::ops::Range<usize>| {
             mesh.vertices[range.clone()]
                 .iter()
@@ -235,6 +236,7 @@ mod tests {
                 .all(|vertex| (vertex.sky_light, vertex.block_light) == (9.0, 3.0))
         );
         assert!(mesh.glint.is_empty());
-        assert_eq!(mesh.armor_glint, [0..mesh.vertices.len() as u32]);
+        assert_eq!(mesh.armor_glint.len(), 1);
+        assert_eq!(mesh.armor_glint[0], 0..mesh.vertices.len() as u32);
     }
 }

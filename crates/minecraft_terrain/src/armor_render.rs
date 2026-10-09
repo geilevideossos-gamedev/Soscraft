@@ -406,10 +406,10 @@ mod tests {
         let enchanted = |id: &str| Some(GearItem { id: id.to_owned(), glint: true, dye: None });
         let mut mesh = ChunkMesh::default();
         append_armor_on_rig(&mut mesh, &atlas, &rig(), &[None, enchanted("minecraft:leather_chestplate"), None, None], 15.0, 0.0);
-        assert_eq!(mesh.armor_glint, [0..120]);
+        assert_eq!((mesh.armor_glint.len(), mesh.armor_glint.first()), (1, Some(&(0..120))));
         assert!(mesh.glint.is_empty());
         let mut mesh = ChunkMesh::default();
         append_armor_on_rig(&mut mesh, &atlas, &rig(), &[enchanted("minecraft:diamond_helmet"), worn("minecraft:iron_chestplate", None), None, None], 15.0, 0.0);
-        assert_eq!(mesh.armor_glint, [120..168], "the chestplate first, then the enchanted helmet");
+        assert_eq!((mesh.armor_glint.len(), mesh.armor_glint.first()), (1, Some(&(120..168))), "the chestplate first, then the enchanted helmet");
     }
 }

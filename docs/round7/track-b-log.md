@@ -414,7 +414,7 @@ IW4L_MINECRAFT_KIT=diamond_helmet+protection=4,iron_chestplate+protection=4,iron
 
 ### 8. The inventory's character wears its Minecraft armour and holds its items like vanilla
 
-Commit: (next entry)
+Commit: 4eeadc6
 
 - **Changed:** `render_gpu` `minecraft_world.rs`: `MinecraftWorldFrame.puppet_gear` (section vertex bytes and indices in blocks, like the particles), uploaded each frame and drawn with the opaque section pipeline in the view model's depth band right after the inventory's black card, so the character box's MW2 body (drawn in that band, `DEPTH_HACK_SCENE_ENTNUM`) and its gear hide each other correctly and no wall comes between. The character's gear is already split off by `gear_meshes` (entry 5: the body whose client is the active `InventoryPuppet`'s goes to `GearMeshes.puppet`), and the puppet's bones carry its root transform, so the armour and items take its place, turn and scale.
 - **Tests:** none new here: the routing is `only_bodies_with_gear_get_a_rig_and_the_puppet_is_kept_apart` (entry 5) and the frames follow the posed bones whatever their placement (entries 3, 5 and 6); the draw itself needs a GPU.
@@ -426,6 +426,36 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=diamond_helmet+protection=4,iron_chestplate,leather_leggings@red,iron_boots,cobblestone*64,torch*64
+```
+
+### 9. Minecraft body gear code passes clippy
+
+Commit: (next entry)
+
+- **Changed:** `anim/remote_body.rs` takes `GearBones::NONE` (new, the gear bones of a kit without a DObj; `GearBones::default()` is it) instead of `unwrap_or_default()`, which the workspace's `clippy.toml` disallows. Five test asserts on a single vertex range no longer build a one-element array of ranges (`single_range_in_vec_init`).
+- **Tests:** unchanged; `clippy -p minecraft_terrain`, `-p render_anim` and `-p render_gpu` (`--all-targets`, with `-A clippy::approx_constant` for the 16 deny-level `approx_constant` errors `minecraft_terrain` already had) report nothing in this group's code; the warnings left in the files it touched (`occupancy/remote_body.rs`'s argument counts and complex types, `mesh.rs` and `model.rs`) were there before.
+- **Test steps:** none.
+- **Kit:** none.
+
+### Group summary: body items and armour
+
+- Built and tested: the per-player gear read from the inventory (entry 1), dyed leather in the kit (entry 2), the MW2 body's gear bones published every frame with their bind pose (entry 3), the gun put away while a Minecraft item is held (entry 4), held items and blocks in both hands (entry 5), the armour pieces bending with the MW2 joints (entry 6), the armour glint (entry 7) and the inventory character's gear (entry 8). Everything lives in `minecraft_terrain` (`body_gear.rs`, `body_render.rs`, `armor_render.rs`, `glint.rs`, `mesh.rs`, `model.rs`), `render_anim/src/anim/minecraft_gear.rs` (bones, `McBodyGear`, `GEAR_FIT`, rigs, `gear_meshes`), a few lines in the upstream body files and `render_gpu`'s Minecraft world pass.
+- Nothing changes in game until After the split items 18 (each player's gear into `McBodyGear`), 19 (`draw_body_gear` appends the world gear to `view.particles`), 20 (the armour glint texture through the extract) and 21 (the character box gear through the extract) are in. Item 20 is optional for a first look: without it the armour shimmers with the item glint's image.
+- **Screenshot 2 ("items at the head"):** confirmed from the code. Nothing draws a held Minecraft item on the body before this group (the only held-item mesh is the first-person one, built in view space and skipped in F5, in the inventory and while dead), so the items at head height are the death drops: `death_drops` spawns every stack with `WorldItems::drop_on_death(stack, death.spot.eye)` (`minecraft_world.rs:1817-1818`), which is vanilla's `Player.drop(stack, true, false)`: the item appears 0.3 below the eyes and flies up 0.2 and up to 0.5 sideways (`third_party/minecraftoss/player/src/items.rs:254-269`). The client draws its copy frozen where it spawned until the server has taken it over (`Entities::server_items_tick`, `minecraft_entities.rs:356-375`), so a slow server tick right after a death keeps them hanging at the head a little longer; that delay belongs to the death-at-height work, not to this track. Death-cam step 5 below checks it.
+- **Not done** (and why): the trident's 3D in-hand model and the spyglass's in-hand model (both need the item definition's `display_context` select per context, and `ItemVisuals` caches one model per item; `trident::MODEL` is ready), a held potion's contents colour (the gear carries no tint yet), the vanilla arm swing and use poses on the MW2 rig, armour trims, carved pumpkins and mob heads on the head (`CustomHeadLayer`), the elytra, gear on corpses (only with `keep_inventory`), dyed colours on item icons and the crafting grid's armour dye recipe.
+- **Test steps** (after glue items 18 to 21; step 5 works today):
+  1. Wear the enchanted diamond helmet, enchanted iron chestplate, red leather leggings and iron boots (shift-click them in the inventory). Press F5 for the back view: Minecraft armour on the head, torso and arms, hips and legs, and boots on the feet; the helmet and chestplate shimmer purple, the leggings are red with the darker trim. Press F5 again for the front view. Walk, crouch, go prone and look up and down: the pieces bend at the elbows and knees. Screenshots 1 and 2.
+  2. Select the cobblestone and put the torch in the offhand (F). In F5 the cobblestone is in the right hand, the torch in the left, and there is no MW2 gun. Select the sword: it shimmers. Screenshot 3.
+  3. Select an MW2 gun slot: the gun is back, the right hand is empty, the torch stays in the left hand. Screenshot 4.
+  4. Open the inventory (E): the character in the box wears the same armour and holds the items. Screenshot 5.
+  5. Death cam: press Tab and note whether a bot is in the match. Hold the cobblestone and type `/kill`. The drops fly out of your eye height and land within about a second; no standing copy of your soldier appears. If a standing soldier appears and Tab shows no other player, say so. Screenshot 6.
+  6. Swap in the golden, red leather, chainmail and turtle helmets, the netherite, copper and blue leather chestplates, the chainmail leggings and the diamond boots, and check each texture. Screenshot 7.
+  7. Open `iw4l-artifacts/logs/latest.log` and send the two `Minecraft gear bones missing` lines.
+  8. For anything floating off the body, sunk into it, too big, too small or turned wrongly, say which piece or item and by about how much: every size and offset is in `GEAR_FIT` (`render_anim/src/anim/minecraft_gear.rs`).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=diamond_helmet+protection=4,iron_chestplate+protection=4,leather_leggings@red,iron_boots,golden_helmet,leather_helmet@red,chainmail_helmet,turtle_helmet,netherite_chestplate,copper_chestplate,leather_chestplate@blue+unbreaking=3,chainmail_leggings,diamond_boots+feather_falling=4,leather_boots,cobblestone*64,torch*64,diamond_sword+sharpness=5,lever*8,shield
 ```
 
 ## After the split

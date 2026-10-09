@@ -552,7 +552,7 @@ impl PreparedRemoteKits {
                         gear_bones: dobj
                             .as_deref()
                             .map(crate::anim::minecraft_gear::GearBones::resolve)
-                            .unwrap_or_default(),
+                            .unwrap_or(crate::anim::minecraft_gear::GearBones::NONE),
                         dobj,
                     },
                 );

@@ -3627,7 +3627,7 @@ mod tests {
             ..ChunkMesh::default()
         };
         mesh.armor_glint = vec![0..4, 7..20];
-        mesh.glint = vec![5..6];
+        mesh.glint.push(5..6);
         let flags: Vec<u8> = section_vertices(&mesh).iter().map(|vertex| vertex.pad[0]).collect();
         assert_eq!(flags, [ARMOR_GLINT_VERTEX, ARMOR_GLINT_VERTEX, ARMOR_GLINT_VERTEX, ARMOR_GLINT_VERTEX, 0, GLINT_VERTEX, 0, ARMOR_GLINT_VERTEX]);
     }
