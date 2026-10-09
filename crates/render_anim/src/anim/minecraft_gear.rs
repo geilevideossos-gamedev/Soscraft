@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+
 use bevy::prelude::*;
+use minecraft_terrain::body_gear::BodyGear;
 
 pub const HEAD: usize = 0;
 pub const NECK: usize = 1;
@@ -143,6 +146,37 @@ pub fn publish_posed_gear(
     });
 }
 
+#[derive(Resource, Default)]
+pub struct McBodyGear {
+    by_client: HashMap<u32, BodyGear>,
+}
+
+impl McBodyGear {
+    pub fn set(&mut self, client: u32, gear: BodyGear) {
+        self.by_client.insert(client, gear);
+    }
+
+    pub fn remove(&mut self, client: u32) {
+        self.by_client.remove(&client);
+    }
+
+    pub fn clear(&mut self) {
+        self.by_client.clear();
+    }
+
+    pub fn get(&self, client: u32) -> Option<&BodyGear> {
+        self.by_client.get(&client)
+    }
+
+    pub fn shown_weapon(&self, client: Option<u32>, corpse: bool, weapon: u32) -> u32 {
+        let hidden = !corpse
+            && client
+                .and_then(|client| self.get(client))
+                .is_some_and(|gear| gear.hides_gun);
+        if hidden { 0 } else { weapon }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,5 +287,29 @@ mod tests {
         );
         frame.clear();
         assert!(frame.get(3).is_none());
+    }
+
+    #[test]
+    fn a_minecraft_item_in_hand_puts_the_mw2_gun_away_but_not_on_a_corpse() {
+        let mut gear = McBodyGear::default();
+        assert_eq!(gear.shown_weapon(Some(2), false, 7), 7);
+        gear.set(
+            2,
+            BodyGear {
+                hides_gun: true,
+                ..BodyGear::default()
+            },
+        );
+        gear.set(5, BodyGear::default());
+        assert_eq!(gear.shown_weapon(Some(2), false, 7), 0);
+        assert_eq!(gear.shown_weapon(Some(2), true, 7), 7);
+        assert_eq!(gear.shown_weapon(Some(5), false, 7), 7);
+        assert_eq!(gear.shown_weapon(Some(3), false, 7), 7);
+        assert_eq!(gear.shown_weapon(None, false, 7), 7);
+        gear.remove(2);
+        assert_eq!(gear.shown_weapon(Some(2), false, 7), 7);
+        gear.set(2, BodyGear::default());
+        gear.clear();
+        assert!(gear.get(2).is_none() && gear.get(5).is_none());
     }
 }

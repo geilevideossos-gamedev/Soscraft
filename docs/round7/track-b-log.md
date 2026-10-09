@@ -332,7 +332,7 @@ IW4L_MINECRAFT_KIT=leather_helmet@red,leather_chestplate@blue,leather_leggings@g
 
 ### 3. MW2 bodies publish their limb and hand bones for Minecraft gear
 
-Commit: (next entry)
+Commit: f8573f5
 
 - **Changed:** new `render_anim/src/anim/minecraft_gear.rs`: `GEAR_BONES` (19 names: `j_head`, `j_neck`, `j_spine4`, `j_spineupper`, `j_spinelower`, shoulder, elbow, wrist, hip, knee and ankle on each side, `tag_weapon_right`, `tag_weapon_left`; indices `HEAD`, `SHOULDERS[side]` and so on, right side first). `GearBones::resolve(dobj)` finds each by name and keeps its bind pose in body model space (`dobj.compose(&dobj.bind_locals(), IDENTITY)`, so a bone of the attached head model is in body space too); `missing()` names the ones the kit lacks. `GearBones::posed(world, placement)` gives each found joint's `PosedJoint { posed: placement * world[i] (map space), bind }`, and `PosedJoint::skin()` is `posed * bind^-1`, the same skinning delta the MW2 mesh uses (`DObj::skin_matrices`). `PosedGearFrame` (a resource, one `PosedGear { client, joints }` per posed body, keyed by MW2 client number) and `publish_posed_gear`.
 - `anim/remote_body.rs`: `PreparedRemoteKit.gear_bones`, resolved in `PreparedRemoteKits::prepare` beside `head_bone`. `anim/dobj_pose.rs`: `begin_dobj_pose_frame` clears the gear frame with the others. `occupancy/remote_body.rs`: the resource is registered, `pose_one_remote` publishes the gear bones of every living body right after `publish_posed_player_head` (so live bodies, the F5 body at the predicted origin, skating bodies and the inventory puppet, but never corpses), and `prepare_remote_kits` logs `remote kits: axis=.. Minecraft gear bones missing: [..]` for both kits.
@@ -341,6 +341,21 @@ Commit: (next entry)
 - **Test steps:**
   1. Start the game and open `iw4l-artifacts/logs/latest.log`: find `Minecraft gear bones missing` and send the two lines (an empty list is the hoped-for answer).
 - **Kit:** none.
+
+### 4. The MW2 body puts its gun away while a Minecraft item is held
+
+Commit: (next entry)
+
+- **Changed:** `minecraft_gear.rs`: `McBodyGear` (a resource: one `BodyGear` per MW2 client number, `set`, `remove`, `clear`, `get`) and `shown_weapon(client, corpse, weapon)`: 0 (no gun) for a living body whose gear `hides_gun`, the MW2 weapon otherwise. `occupancy/remote_body.rs`: the resource is registered, and both places that pick the body's kit by weapon use it, `occupy_remote_scene_ents` (the scene's model list) and `pose_one_remote` (the posed and skinned models), so the two always agree. A corpse keeps its gun as before.
+- **Tests:** `a_minecraft_item_in_hand_puts_the_mw2_gun_away_but_not_on_a_corpse`.
+- **Decision:** only the gun model goes; the MW2 arm animation still holds the pose of the last gun, which is the grip the items sit in (entry 5). A vanilla-like arm swing and use pose on the MW2 rig is later work (the brief defers it too).
+- **Test steps** (after glue item 18):
+  1. Select the cobblestone and press F5: the MW2 body holds no gun. Select a gun slot: the gun is back. Screenshot of each.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=cobblestone*64
+```
 
 ## After the split
 
@@ -379,4 +394,4 @@ The glue still needed in the game files (today `render_anim/src/minecraft_*.rs`,
     - :1079-1082, the shulker box's check: `entities.lids.lid_closed(opened.cells[0]) && lid_obstructed(..)` (`ShulkerBoxBlock.canOpen` checks the space only while the lid is `CLOSED`).
     - Several players (roadmap 1.4): `Openers` stays per level on the server; each `OpenerEvent::block_event()` goes to every client near `pos` as a `minecraft_net` `BlockEvent { pos, id: 1, param: count }`, which feeds that client's `Lids::block_event`; the server plays the sound for everyone near.
     - Once items 15 to 17 are in, update `docs/MINECRAFT-SURVIVAL.md:187` (it says no block entity animates).
-18. **Each player's body gear, every frame** (`minecraft_world.rs` `update`, after `inventory_ui.publish` at about :1827; with several players, the server for each player and then the equipment messages): `let gear = minecraft_terrain::body_gear::body_gear(&entities.inventory.slots, entities.selected, |stack| crate::minecraft_inventory::weapon_of(stack).is_some());` for the local player while `alive && player_mode.interacts()`.
+18. **Each player's body gear, every frame** (`minecraft_world.rs` `update`, after `inventory_ui.publish` at about :1827; with several players, the server for each player and then the equipment messages): add `mut body_gear: ResMut<crate::anim::minecraft_gear::McBodyGear>` to `update` (or to one of its parameter tuples), and each frame `body_gear.set(local.0.0, minecraft_terrain::body_gear::body_gear(&entities.inventory.slots, entities.selected, |stack| crate::minecraft_inventory::weapon_of(stack).is_some()))` while `alive && player_mode.interacts()`, else `body_gear.remove(local.0.0)`; `body_gear.clear()` where the world closes (`close_world`) and while no Minecraft world is loaded. Several players: the host keeps each player's `BodyGear` with its inventory (by UUID), sends it on change as a `minecraft_net` equipment message (as vanilla's `ClientboundSetEquipmentPacket`, slot and stack), and each client `set`s it under that player's MW2 client number. The gun comes back one frame late at most, because `update` (`ClientSet::Present`) is not ordered before `occupy_remote_scene_ents` (`render_scene::GfxSceneAdd`); ordering `update.before(render_scene::GfxSceneAdd)` would remove that frame if it makes no cycle.
