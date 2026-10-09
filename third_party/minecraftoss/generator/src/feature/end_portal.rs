@@ -101,6 +101,80 @@ impl EndPortalRing {
     }
 }
 
+pub const BEDROCK: &str = "minecraft:bedrock";
+
+const EXIT_PATTERN: [[&[u8; 7]; 7]; 5] = [
+    [
+        b"       ", b"       ", b"       ", b"   #   ", b"       ", b"       ", b"       ",
+    ],
+    [
+        b"       ", b"       ", b"       ", b"   #   ", b"       ", b"       ", b"       ",
+    ],
+    [
+        b"       ", b"       ", b"       ", b"   #   ", b"       ", b"       ", b"       ",
+    ],
+    [
+        b"  ###  ", b" #   # ", b"#     #", b"#  #  #", b"#     #", b" #   # ", b"  ###  ",
+    ],
+    [
+        b"       ", b"  ###  ", b" ##### ", b" ##### ", b" ##### ", b"  ###  ", b"       ",
+    ],
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExitPortal {
+    pub front_top_left: BlockPos,
+    pub forward: Direction,
+    pub up: Direction,
+}
+
+impl ExitPortal {
+    fn matches(
+        is_bedrock: &impl Fn(BlockPos) -> bool,
+        origin: BlockPos,
+        forward: Direction,
+        up: Direction,
+    ) -> bool {
+        (0..7).all(|x| {
+            (0..7).all(|y| {
+                (0..5).all(|z| {
+                    EXIT_PATTERN[z as usize][y as usize][x as usize] != b'#'
+                        || is_bedrock(translate(origin, forward, up, x, y, z))
+                })
+            })
+        })
+    }
+
+    pub fn find(is_bedrock: &impl Fn(BlockPos) -> bool, pos: BlockPos) -> Option<Self> {
+        for dz in 0..7 {
+            for dy in 0..7 {
+                for dx in 0..7 {
+                    let origin = pos.offset(dx, dy, dz);
+                    for forward in Direction::ALL {
+                        for up in Direction::ALL {
+                            if up != forward
+                                && up != forward.opposite()
+                                && Self::matches(is_bedrock, origin, forward, up)
+                            {
+                                return Some(Self {
+                                    front_top_left: origin,
+                                    forward,
+                                    up,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn centre(self) -> BlockPos {
+        translate(self.front_top_left, self.forward, self.up, 3, 3, 3)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,5 +302,59 @@ mod tests {
             }
         };
         assert_eq!(EndPortalRing::find(&cell, centre.offset(0, 0, 2)), None);
+    }
+
+    fn podium(centre: BlockPos) -> std::collections::HashSet<BlockPos> {
+        let mut bedrock = std::collections::HashSet::new();
+        for y in 0..4 {
+            bedrock.insert(centre.offset(0, y, 0));
+        }
+        for x in -4i32..=4 {
+            for z in -4i32..=4 {
+                let flat = x * x + z * z;
+                if flat + 1 < 7 {
+                    bedrock.insert(centre.offset(x, -1, z));
+                }
+                if (7..13).contains(&flat) {
+                    bedrock.insert(centre.offset(x, 0, z));
+                }
+            }
+        }
+        bedrock
+    }
+
+    #[test]
+    fn the_exit_portal_is_found_from_its_pillar_top_and_names_its_centre() {
+        let centre = BlockPos::new(0, 62, 0);
+        let bedrock = podium(centre);
+        assert_eq!(bedrock.len(), 4 + 21 + 16);
+        let is = |pos: BlockPos| bedrock.contains(&pos);
+        let found = ExitPortal::find(&is, centre.offset(0, 3, 0)).expect("found");
+        assert_eq!(found.forward, Direction::Down);
+        assert_eq!(found.centre(), centre);
+        assert_eq!(
+            ExitPortal::find(&is, centre.offset(0, 4, 0)),
+            None,
+            "the pillar top is below the search"
+        );
+        for y in -3..=3 {
+            let below = ExitPortal::find(&is, centre.offset(0, y, 0)).expect("found lower");
+            assert_eq!(below.centre(), centre, "from {y}");
+        }
+    }
+
+    #[test]
+    fn a_podium_missing_one_bedrock_is_no_exit_portal() {
+        let centre = BlockPos::new(0, 62, 0);
+        for missing in podium(centre) {
+            let mut bedrock = podium(centre);
+            bedrock.remove(&missing);
+            let is = |pos: BlockPos| bedrock.contains(&pos);
+            assert_eq!(
+                ExitPortal::find(&is, centre.offset(0, 3, 0)),
+                None,
+                "{missing:?}"
+            );
+        }
     }
 }

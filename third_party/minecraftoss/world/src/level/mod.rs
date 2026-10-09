@@ -986,4 +986,8 @@ impl World for Level<'_> {
             map.remove("ExactTeleport");
         }
     }
+
+    fn drop_and_destroy(&mut self, pos: BlockPos) -> bool {
+        self.destroy_block_drops(pos, true, update::LIMIT)
+    }
 }

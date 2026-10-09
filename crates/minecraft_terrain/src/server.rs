@@ -1248,6 +1248,47 @@ impl ServerSim {
         self.level.create_end_platform(minecraftoss_core::BlockPos::new(origin.0, origin.1, origin.2), true);
     }
 
+    pub fn dormant_uuids(&self, kind: &str) -> Vec<[i32; 4]> {
+        self.dormant
+            .iter()
+            .filter(|(group, _)| group.first().is_some_and(|root| root.kind == kind))
+            .filter_map(|(_, tag)| match tag.get("UUID") {
+                Some(minecraftoss_core::nbt::Tag::IntArray(uuid)) => uuid.as_slice().try_into().ok(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn discard_dormant(&mut self, uuid: [i32; 4]) {
+        self.dormant.retain(|(_, tag)| !matches!(tag.get("UUID"), Some(minecraftoss_core::nbt::Tag::IntArray(found)) if found.as_slice() == uuid));
+    }
+
+    pub fn scan_dragon_fight(&mut self, origin: BlockPos, exit_portal_location: Option<BlockPos>) -> DragonFightScan {
+        let at = |pos: BlockPos| minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
+        let origin = at(origin);
+        let mut location = exit_portal_location.map(at);
+        let previously_killed = self.level.has_active_exit_portal();
+        if !previously_killed {
+            match self.level.find_exit_portal(origin) {
+                Some(found) => {
+                    location.get_or_insert(found);
+                }
+                None => location = Some(self.level.spawn_exit_portal(origin, location, false)),
+            }
+        }
+        let mut dragon_uuid = self.dormant_uuids(ENDER_DRAGON).first().copied();
+        let dragon_seen = dragon_uuid.is_some();
+        let mut dragon_killed = !dragon_seen;
+        if let Some(uuid) = dragon_uuid.filter(|_| !previously_killed) {
+            self.discard_dormant(uuid);
+            dragon_uuid = None;
+        }
+        if !previously_killed {
+            dragon_killed = false;
+        }
+        DragonFightScan { previously_killed, dragon_killed, dragon_seen, dragon_uuid, exit_portal_location: location.map(|pos| (pos.x, pos.y, pos.z)) }
+    }
+
     /// The players the level can see (fire spreads near them), and the
     /// difficulty (`Difficulty.getId`).
     pub fn set_players(&mut self, positions: &[[f64; 3]], difficulty: i32) {
@@ -1535,6 +1576,17 @@ pub enum Command {
 }
 
 pub type Job = Box<dyn FnOnce(&mut ServerSim) -> Box<dyn std::any::Any + Send> + Send>;
+
+pub const ENDER_DRAGON: &str = "minecraft:ender_dragon";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DragonFightScan {
+    pub previously_killed: bool,
+    pub dragon_killed: bool,
+    pub dragon_seen: bool,
+    pub dragon_uuid: Option<[i32; 4]>,
+    pub exit_portal_location: Option<BlockPos>,
+}
 
 pub fn advance_weather_timers(data: &mut crate::level_storage::WeatherData, random: &mut impl minecraftoss_core::random::RandomSource) {
     let mut weather = minecraftoss_world::level::time::Weather {
@@ -4926,6 +4978,57 @@ mod tests {
         server.create_end_platform((100, 49, 0));
         assert!(server.take_changes().is_empty(), "a whole platform changes nothing");
         assert_eq!(server.items().len(), before + 2);
+    }
+
+    #[test]
+    fn a_first_fight_scan_builds_the_inactive_podium_and_later_scans_find_it() {
+        let Some(mut server) = end_world((-1..=1).flat_map(|x| (-1..=1).map(move |z| (x, z)))) else { return };
+        let block = |server: &ServerSim, pos: BlockPos| {
+            let state = server.level.block(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2));
+            let blocks = &server.level.registries().blocks;
+            blocks.block(blocks.block_of(state)).name.as_str().to_owned()
+        };
+        let top = server.level.exit_portal_location(minecraftoss_core::BlockPos::new(0, 0, 0));
+        assert!(top.y > 40 && block(&server, (0, top.y, 0)) == "minecraft:end_stone", "{top:?}");
+        server.take_changes();
+        let scan = server.scan_dragon_fight((0, 0, 0), None);
+        let at = (0, top.y, 0);
+        assert_eq!(scan, DragonFightScan { previously_killed: false, dragon_killed: false, dragon_seen: false, dragon_uuid: None, exit_portal_location: Some(at) });
+        for y in 0..4 {
+            assert_eq!(block(&server, (0, at.1 + y, 0)), "minecraft:bedrock", "pillar {y}");
+        }
+        for (x, z) in [(3, 0), (-3, 1), (2, 2), (-1, -3)] {
+            assert_eq!(block(&server, (x, at.1, z)), "minecraft:bedrock", "rim {x} {z}");
+        }
+        for (x, z) in [(1, 0), (-2, 1), (1, 1)] {
+            assert_eq!(block(&server, (x, at.1, z)), "minecraft:air", "inside {x} {z}");
+            assert_eq!(block(&server, (x, at.1 - 1, z)), "minecraft:bedrock", "floor {x} {z}");
+        }
+        assert_eq!(block(&server, (3, at.1 - 1, 1)), "minecraft:end_stone");
+        assert_eq!(block(&server, (0, at.1 + 2, -1)), "minecraft:wall_torch");
+        let torch = server.level.block(minecraftoss_core::BlockPos::new(1, at.1 + 2, 0));
+        assert_eq!(server.level.registries().blocks.property(torch, "facing"), Some("east"));
+        assert!(server.level.unsupported.is_empty(), "{:?}", server.level.unsupported);
+        assert_eq!(server.level.find_exit_portal(minecraftoss_core::BlockPos::new(0, 0, 0)), Some(minecraftoss_core::BlockPos::new(0, at.1, 0)));
+        server.take_changes();
+        let again = server.scan_dragon_fight((0, 0, 0), None);
+        assert_eq!(again.exit_portal_location, Some(at), "the podium is found, not built twice");
+        assert!(server.take_changes().is_empty());
+        server.summon(ENDER_DRAGON, [0.5, 128.0, 0.5], None, 0.0).expect("a dragon waits dormant");
+        assert_eq!(server.dormant_uuids(ENDER_DRAGON).len(), 1);
+        let discarded = server.scan_dragon_fight((0, 0, 0), Some(at));
+        assert_eq!((discarded.dragon_killed, discarded.dragon_seen, discarded.dragon_uuid), (false, true, None));
+        assert!(server.dormant_uuids(ENDER_DRAGON).is_empty(), "a dragon without an exit portal goes");
+        assert!(server.level.place_configured_feature("minecraft:end_podium_active", minecraftoss_core::BlockPos::new(0, at.1, 0)));
+        assert_eq!(block(&server, (1, at.1, 0)), "minecraft:end_portal");
+        assert!(server.level.has_active_exit_portal());
+        let killed = server.scan_dragon_fight((0, 0, 0), Some(at));
+        assert_eq!(killed, DragonFightScan { previously_killed: true, dragon_killed: true, dragon_seen: false, dragon_uuid: None, exit_portal_location: Some(at) });
+        server.summon(ENDER_DRAGON, [0.5, 128.0, 0.5], None, 0.0).expect("a dragon waits dormant");
+        let alive = server.scan_dragon_fight((0, 0, 0), Some(at));
+        assert_eq!((alive.previously_killed, alive.dragon_killed), (true, false));
+        assert_eq!(alive.dragon_uuid, server.dormant_uuids(ENDER_DRAGON).first().copied());
+        assert!(alive.dragon_uuid.is_some());
     }
 
     #[test]

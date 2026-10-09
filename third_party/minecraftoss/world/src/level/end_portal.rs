@@ -1,14 +1,22 @@
 use super::Level;
 use super::burning::LevelSound;
 use super::update;
-use minecraftoss_core::BlockPos;
+use minecraftoss_core::chunk::HeightmapKind;
+use minecraftoss_core::nbt::Tag;
 use minecraftoss_core::pos::Direction;
-use minecraftoss_generator::feature::end_portal::{END_PORTAL, EndPortalRing, FRAME, RingCell};
+use minecraftoss_core::{BlockPos, ChunkPos};
+use minecraftoss_generator::feature::World;
+use minecraftoss_generator::feature::end_portal::{
+    BEDROCK, END_PORTAL, EndPortalRing, ExitPortal, FRAME, RingCell,
+};
 
 pub const FILL_SOUND: &str = "minecraft:block.end_portal_frame.fill";
 pub const OPEN_SOUND: &str = "minecraft:block.end_portal.spawn";
 pub const OBSIDIAN: &str = "minecraft:obsidian";
 pub const AIR: &str = "minecraft:air";
+pub const ARENA_SIZE_CHUNKS: i32 = 8;
+pub const PODIUM_ACTIVE: &str = "minecraft:end_podium_active";
+pub const PODIUM_INACTIVE: &str = "minecraft:end_podium_inactive";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EyePlaced {
@@ -99,6 +107,81 @@ impl Level<'_> {
             pitch: 1.0,
         });
         Some(EyePlaced::Opened(ring))
+    }
+
+    fn end_portals_in(&self, chunk: ChunkPos) -> Vec<BlockPos> {
+        let Some(chunk) = self.chunk(chunk) else {
+            return Vec::new();
+        };
+        let mut portals: Vec<BlockPos> = chunk
+            .block_entities
+            .entities
+            .iter()
+            .filter(|(_, nbt)| nbt.get("id").and_then(Tag::as_str) == Some(END_PORTAL))
+            .map(|(&(x, y, z), _)| BlockPos::new(x, y, z))
+            .collect();
+        portals.sort_by_key(|pos| (pos.y, pos.z, pos.x));
+        portals
+    }
+
+    pub fn has_active_exit_portal(&self) -> bool {
+        (-ARENA_SIZE_CHUNKS..=ARENA_SIZE_CHUNKS).any(|x| {
+            (-ARENA_SIZE_CHUNKS..=ARENA_SIZE_CHUNKS)
+                .any(|z| !self.end_portals_in(ChunkPos::new(x, z)).is_empty())
+        })
+    }
+
+    pub fn is_bedrock(&self, pos: BlockPos) -> bool {
+        self.chunk(pos.chunk()).is_some() && self.name(self.block(pos)) == BEDROCK
+    }
+
+    pub fn find_exit_portal(&self, origin: BlockPos) -> Option<BlockPos> {
+        let is_bedrock = |pos: BlockPos| self.is_bedrock(pos);
+        let centre = origin.chunk();
+        for x in centre.x - ARENA_SIZE_CHUNKS..=centre.x + ARENA_SIZE_CHUNKS {
+            for z in centre.z - ARENA_SIZE_CHUNKS..=centre.z + ARENA_SIZE_CHUNKS {
+                for portal in self.end_portals_in(ChunkPos::new(x, z)) {
+                    if let Some(found) = ExitPortal::find(&is_bedrock, portal) {
+                        return Some(found.centre());
+                    }
+                }
+            }
+        }
+        let top = World::height_at(self, HeightmapKind::MotionBlocking, origin.x, origin.z);
+        (self.min_y()..=top).rev().find_map(|y| {
+            ExitPortal::find(&is_bedrock, BlockPos::new(origin.x, y, origin.z))
+                .map(ExitPortal::centre)
+        })
+    }
+
+    pub fn exit_portal_location(&self, origin: BlockPos) -> BlockPos {
+        let top = World::height_at(
+            self,
+            HeightmapKind::MotionBlockingNoLeaves,
+            origin.x,
+            origin.z,
+        );
+        let mut at = BlockPos::new(origin.x, top - 1, origin.z);
+        while self.is_bedrock(at) && at.y > 63 {
+            at = at.below();
+        }
+        BlockPos::new(at.x, (self.min_y() + 1).max(at.y), at.z)
+    }
+
+    pub fn spawn_exit_portal(
+        &mut self,
+        origin: BlockPos,
+        location: Option<BlockPos>,
+        active: bool,
+    ) -> BlockPos {
+        let location = location.unwrap_or_else(|| self.exit_portal_location(origin));
+        let podium = if active {
+            PODIUM_ACTIVE
+        } else {
+            PODIUM_INACTIVE
+        };
+        self.place_configured_feature(podium, location);
+        location
     }
 
     pub fn create_end_platform(&mut self, origin: BlockPos, break_blocks: bool) {

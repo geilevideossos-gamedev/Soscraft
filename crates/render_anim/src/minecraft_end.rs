@@ -49,17 +49,38 @@ pub(crate) fn arriving(player: &mut Player, level: &mut Level) {
 pub(crate) fn tick_fight(
     levels: &mut BTreeMap<Dimension, Level>,
     players: &BTreeMap<PlayerUuid, Player>,
+    globals: &Globals,
     seconds: f64,
 ) {
-    if let Some(level) = levels.get_mut(&Dimension::End) {
-        match minecraft_survival::the_end::dragon_fight::tick_level(
-            level,
-            players.values(),
-            seconds,
-        ) {
-            Some(0) => diag::info!(World, "Minecraft End arena released"),
-            Some(count) => diag::info!(World, "Minecraft End arena held for {count} players"),
-            None => {}
-        }
+    let Some(level) = levels.get_mut(&Dimension::End) else {
+        return;
+    };
+    let events = minecraft_survival::the_end::dragon_fight::tick_level(
+        level,
+        players.values(),
+        globals.save.as_ref(),
+        globals.seed,
+        seconds,
+    );
+    match events.loaded {
+        Some(Ok(true)) => diag::info!(World, "Minecraft End dragon fight read from the save"),
+        Some(Err(error)) => diag::warn!(World, "Minecraft End dragon fight unreadable: {error}"),
+        _ => {}
+    }
+    match events.arena {
+        Some(0) => diag::info!(World, "Minecraft End arena released"),
+        Some(count) => diag::info!(World, "Minecraft End arena held for {count} players"),
+        None => {}
+    }
+    if let Some(scan) = events.scanned {
+        diag::info!(
+            World,
+            "Minecraft End dragon fight scanned: exit portal at {:?}, dragon killed before {}",
+            scan.exit_portal_location,
+            scan.previously_killed
+        );
+    }
+    if let Some(Err(error)) = events.saved {
+        diag::warn!(World, "Minecraft End dragon fight not saved: {error}");
     }
 }

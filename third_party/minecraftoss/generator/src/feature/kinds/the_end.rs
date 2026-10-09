@@ -16,6 +16,7 @@ pub fn parse(lib: &mut Library, kind: &str, json: &Value) -> Option<Result<Box<d
         "end_platform" => EndPlatform::parse(lib).map(|f| Box::new(f) as Box<dyn Placeable>),
         "end_gateway" => EndGateway::parse(lib, json).map(|f| Box::new(f) as Box<dyn Placeable>),
         "end_island" => EndIsland::parse(lib).map(|f| Box::new(f) as Box<dyn Placeable>),
+        "end_podium" => EndPodium::parse(lib, json).map(|f| Box::new(f) as Box<dyn Placeable>),
         "chorus_plant" => ChorusPlant::parse(lib).map(|f| Box::new(f) as Box<dyn Placeable>),
         _ => return None,
     })
@@ -167,6 +168,85 @@ impl Placeable for EndPlatform {
                     }
                 }
             }
+        }
+        true
+    }
+}
+
+#[derive(Debug)]
+struct EndPodium {
+    active: bool,
+    bedrock: BlockStateId,
+    end_stone: BlockStateId,
+    end_portal: BlockStateId,
+    wall_torch: BlockStateId,
+}
+
+impl EndPodium {
+    fn parse(lib: &mut Library, json: &Value) -> Result<Self, String> {
+        let b = |n: &str| lib.registries.blocks.parse_state(n);
+        Ok(Self {
+            active: bool_or(json, "active", false),
+            bedrock: b("minecraft:bedrock")?,
+            end_stone: b("minecraft:end_stone")?,
+            end_portal: b("minecraft:end_portal")?,
+            wall_torch: b("minecraft:wall_torch")?,
+        })
+    }
+
+    fn drop_previous_and_set(&self, ctx: &mut Ctx, pos: BlockPos, state: BlockStateId) {
+        let blocks = &ctx.registries().blocks;
+        if blocks.block_of(ctx.block(pos)) != blocks.block_of(state) {
+            ctx.region.drop_and_destroy(pos);
+            ctx.set_block_update(pos, state);
+        }
+    }
+}
+
+impl Placeable for EndPodium {
+    fn place(&self, ctx: &mut Ctx, _random: &mut WorldgenRandom, origin: BlockPos) -> bool {
+        let air = ctx.lib.blocks.air;
+        for z in origin.z - 4..=origin.z + 4 {
+            for y in origin.y - 1..=origin.y + 32 {
+                for x in origin.x - 4..=origin.x + 4 {
+                    let pos = BlockPos::new(x, y, z);
+                    let (dx, dy, dz) = (x - origin.x, y - origin.y, z - origin.z);
+                    let distance = f64::from(dx * dx + dy * dy + dz * dz);
+                    let inner = distance < 2.5 * 2.5;
+                    if !inner && distance >= 3.5 * 3.5 {
+                        continue;
+                    }
+                    if y < origin.y {
+                        if inner {
+                            ctx.set_block_update(pos, self.bedrock);
+                        } else if self.active {
+                            self.drop_previous_and_set(ctx, pos, self.end_stone);
+                        } else {
+                            ctx.set_block_update(pos, self.end_stone);
+                        }
+                    } else if y > origin.y {
+                        if self.active {
+                            self.drop_previous_and_set(ctx, pos, air);
+                        } else {
+                            ctx.set_block_update(pos, air);
+                        }
+                    } else if !inner {
+                        ctx.set_block_update(pos, self.bedrock);
+                    } else if self.active {
+                        self.drop_previous_and_set(ctx, pos, self.end_portal);
+                    } else {
+                        ctx.set_block_update(pos, air);
+                    }
+                }
+            }
+        }
+        for i in 0..4 {
+            ctx.set_block_update(origin.offset(0, i, 0), self.bedrock);
+        }
+        let centre = origin.offset(0, 2, 0);
+        for facing in [Direction::North, Direction::East, Direction::South, Direction::West] {
+            let torch = ctx.with(self.wall_torch, "facing", facing.name());
+            ctx.set_block_update(centre.relative(facing, 1), torch);
         }
         true
     }
