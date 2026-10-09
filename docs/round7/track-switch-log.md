@@ -385,7 +385,7 @@ Commit: b7ca1a57
 
 ### 18. Minecraft players can be teleported into another dimension (E1-11, the part without track C)
 
-Commit: filled in by `git log` under this subject
+Commit: d53120c6
 
 - **Changed:**
   - `minecraft_survival/src/switch.rs`:
@@ -396,4 +396,16 @@ Commit: filled in by `git log` under this subject
 - **After track C** (`Ctx.dimension` and `/execute in`, C commit 12, merged on `minecraft-survival` but not on this branch): give `CommandWorld::teleport` the target dimension (`minecraft_commands/src/server.rs`), and in the adapter's teleport (`minecraft_world.rs`, where `commands::run` hands back `teleports`) call `player.teleport_into(Place::standing(dimension, feet, yaw, pitch))` and only do the plain MW2 teleport when it answers `false`. If track C's `Ctx.dimension` is a string, `dimension_named` turns it into a `Dimension`; if C does not scale the position, `teleport_scale` and `scaled` do it. The brief's `FakeWorld` test (`/execute in minecraft:the_nether run tp ~ ~ ~` from (800, 70, -1600) asks for (100, 70, -200) in the Nether) goes with that wiring, in `minecraft_commands`.
 - **Decisions:** none new. A teleport into another dimension uses the loading screen of that pair (`NETHER_PORTAL` with the Nether on either side, `END_PORTAL` with the End), as vanilla's client picks it from the two dimensions whatever moved the player.
 - **Test steps:** none in game until the wiring after track C; then the brief's owner steps 1, 2 and 7 (`/execute in ... run tp`).
+- **Kit:** none.
+
+### 19. Docs: Minecraft dimension switch (E1-15)
+
+Commit: filled in by `git log` under this subject
+
+- **Changed:**
+  - `docs/MINECRAFT-SURVIVAL.md`: the Crate layout (`Server` with `Globals`, `opening` and level closing, `Level.dimension` and `empty_ticks`, the switch on `Player`, `switch.rs`, `respawn.rs`, and the adapter's `follow_levels`, leave, hold and loading screen); the Limitations (how the Nether and End can be entered today, one MW2 collision world, MW2 in other dimensions with the air support rule and the ordnance gaps); saving of the Nether and End; the `IW4L_MINECRAFT_DIMENSION` row in the switches table; the roadmap's runtime switch marked done.
+  - `docs/NETHER-END.md`: the "What the game hard-wires to the overworld today" list rechecked, each item marked fixed or still open.
+- **Decisions:** the bullet "Only the overworld level and the host's player exist so far" under "The Minecraft world is single player" is left as it is: the line above it changed on `minecraft-survival` (track B), and editing the next line would make the merge conflict. The orchestrator can drop that sentence at merge time; the Crate layout already says that levels open for any dimension.
+- **Tests:** none (docs only).
+- **Test steps:** none.
 - **Kit:** none.
