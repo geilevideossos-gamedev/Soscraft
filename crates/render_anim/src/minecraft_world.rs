@@ -1647,7 +1647,7 @@ fn update(
                 authority.0.set_sprint_blocked(local.0, blocked);
             }
         }
-        ui.vitals = alive.then(|| survival.vitals());
+        ui.vitals = alive.then(|| mc_vitals(survival.vitals()));
         ui.fire_frames = fire_frames.clone();
         // The inventory: MW2 guns as items, the HUD's clicks, the hotbar's
         // gun, and what the HUD shows.
@@ -2387,6 +2387,29 @@ fn ui_game_mode(mode: minecraftoss_player::GameMode) -> frame::McGameMode {
         minecraftoss_player::GameMode::Creative => frame::McGameMode::Creative,
         minecraftoss_player::GameMode::Adventure => frame::McGameMode::Adventure,
         minecraftoss_player::GameMode::Spectator => frame::McGameMode::Spectator,
+    }
+}
+
+fn mc_vitals(vitals: crate::minecraft_survival::Vitals) -> frame::McVitals {
+    frame::McVitals {
+        air: vitals.air,
+        max_air: vitals.max_air,
+        eye_in_water: vitals.eye_in_water,
+        health: vitals.health,
+        max_health: vitals.max_health,
+        absorption: vitals.absorption,
+        food: vitals.food,
+        saturation: vitals.saturation,
+        poisoned: vitals.poisoned,
+        hunger: vitals.hunger,
+        regen_index: vitals.regen_index,
+        blink: vitals.blink,
+        display_health: vitals.display_health,
+        tick: vitals.tick,
+        experience_level: vitals.experience_level,
+        experience_progress: vitals.experience_progress,
+        on_fire: vitals.on_fire,
+        eye_in_lava: vitals.eye_in_lava,
     }
 }
 

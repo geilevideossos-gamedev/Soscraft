@@ -113,3 +113,23 @@ A3 is commit `dd6291c`.
 - **Decisions:**
   - The `WEAPON_PREFIX` doc line (`/// Items that are MW2 guns ...`) is dropped rather than carried into `guns.rs`, because `guns.rs` is a new file and new files have no comments.
   - The `use` line goes right after `use glam::DVec3;`, where rustfmt's sort order puts it.
+
+## A5. Minecraft vitals are plain data
+
+A4 is commit `96d91f6`.
+
+- **What changed:**
+  - `render_anim/src/minecraft_survival.rs` gains `pub(crate) struct Vitals`, with exactly the fields and derives of `frame::McVitals` (`Clone, Debug, Default, PartialEq`), and `Survival::vitals()` builds it instead of `frame::McVitals`. The file no longer names `frame`, so it can move to the bevy-free crate in A6.
+  - `minecraft_world.rs` gains `fn mc_vitals(vitals: Vitals) -> frame::McVitals` (after `ui_game_mode`), a field-by-field copy, and the HUD update calls `alive.then(|| mc_vitals(survival.vitals()))`. It is a function, not `impl From`, because both types will live in other crates (orphan rule).
+- **Tests:** none added; the 15 test uses of `.vitals().on_fire` and similar compile unchanged. `render_anim` 106, `minecraft_survival` 47, total unchanged (153).
+- **Checks:** `check -p launcher --locked`, `test -p render_anim --locked`.
+- **Owner test** (the HUD must show the same vitals as before):
+  1. Load a Minecraft match with the regression kit. Hearts, the hunger bar and the XP bar show.
+  2. Drink a few experience bottles: the XP bar fills and the level number goes up.
+  3. Fall a few blocks: the hearts blink and drop. Sprint and jump for a while: the hunger bar drops.
+  4. Swim under water: the air bubbles show and run down.
+  5. Step into lava briefly: the fire overlay shows and the hearts drop; it goes out in water.
+  6. Eat cooked beef: the hunger bar fills.
+- **Kit:** `minecraft:experience_bottle` x64, `minecraft:water_bucket` x1, `minecraft:lava_bucket` x1, `minecraft:cooked_beef` x32, `minecraft:cobblestone` x64 (all in the regression kit).
+- **Decisions:**
+  - `Vitals` sits right after `Motion`, the other plain-data struct the adapter fills or reads, and its fields stay `pub(crate)` until the A6 move turns them `pub` with the rest of the file.

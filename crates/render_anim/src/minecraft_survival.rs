@@ -47,6 +47,28 @@ pub(crate) struct Motion {
     pub(crate) height: f32,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Vitals {
+    pub(crate) air: i32,
+    pub(crate) max_air: i32,
+    pub(crate) eye_in_water: bool,
+    pub(crate) health: f32,
+    pub(crate) max_health: f32,
+    pub(crate) absorption: f32,
+    pub(crate) food: u8,
+    pub(crate) saturation: f32,
+    pub(crate) poisoned: bool,
+    pub(crate) hunger: bool,
+    pub(crate) regen_index: i32,
+    pub(crate) blink: bool,
+    pub(crate) display_health: i32,
+    pub(crate) tick: u64,
+    pub(crate) experience_level: u32,
+    pub(crate) experience_progress: f32,
+    pub(crate) on_fire: bool,
+    pub(crate) eye_in_lava: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SurvivalRules {
     pub(crate) natural_regeneration: bool,
@@ -789,10 +811,10 @@ impl Survival {
         }
     }
 
-    pub(crate) fn vitals(&self) -> frame::McVitals {
+    pub(crate) fn vitals(&self) -> Vitals {
         let regen = self.status.effect(EffectKind::Regeneration).is_some();
         let max = self.status.max_health;
-        frame::McVitals {
+        Vitals {
             air: self.status.air,
             max_air: self.status.max_air,
             eye_in_water: self.eye_in_water,
