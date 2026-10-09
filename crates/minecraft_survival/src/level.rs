@@ -10,6 +10,7 @@ use minecraft_terrain::terrain::TerrainStream;
 use minecraftoss_core::{Chunk, ChunkPos, Registries};
 use minecraftoss_player::inventory::Inventory;
 
+use crate::dimension::DimensionRules;
 use crate::entities::{Entities, SentItemUse};
 use crate::save::WorldSave;
 
@@ -28,6 +29,7 @@ pub struct Terrain {
     pub stream: TerrainStream,
     pub scene: HandcraftedScene,
     pub environment: DimensionEnvironment,
+    pub rules: DimensionRules,
 }
 
 impl Level {
@@ -66,10 +68,12 @@ impl Terrain {
         .map_err(|error| error.to_string())?;
         let scene = HandcraftedScene::streamed(stream.states.clone());
         let environment = DimensionEnvironment::load(&registries, dimension.dimension_type())?;
+        let rules = DimensionRules::load(&registries, dimension)?;
         Ok(Self {
             stream,
             scene,
             environment,
+            rules,
         })
     }
 }

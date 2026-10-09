@@ -222,6 +222,12 @@ impl DimensionEnvironment {
     }
 }
 
+pub fn dimension_value(system: &EnvironmentSystem, name: &str) -> Value {
+    let clock = |_: &str| 0;
+    let sample = Sample { clock_ticks: &clock, rain_level: 0.0, thunder_level: 0.0, biome_weights: Some(&[]), biome: u16::MAX };
+    system.value_named(name, &sample)
+}
+
 /// `AtmosphericFogEnvironment.applyWeatherDarken`.
 fn weather_darken(color: Vec3, rain: f32, thunder: f32) -> Vec3 {
     let mut color = color;
@@ -305,5 +311,16 @@ mod tests {
             let env = DimensionEnvironment::load(&registries, dimension).unwrap();
             assert_eq!(env.presentation.has_ceiling, ceiling, "{dimension}");
         }
+    }
+
+    #[test]
+    fn a_dimension_value_ignores_the_biomes() {
+        let dimension = serde_json::json!({"minecraft:gameplay/fast_lava": true, "minecraft:visual/fog_start_distance": 10.0});
+        let biome = serde_json::json!({"minecraft:gameplay/water_evaporates": true, "minecraft:visual/fog_start_distance": 2.0});
+        let system = EnvironmentSystem::new(&dimension, &[biome], &[], false).unwrap();
+        assert_eq!(dimension_value(&system, "gameplay/fast_lava"), Value::Bool(true));
+        assert_eq!(dimension_value(&system, "gameplay/water_evaporates"), Value::Bool(false));
+        assert_eq!(dimension_value(&system, "visual/fog_start_distance"), Value::Float(10.0));
+        assert_eq!(dimension_value(&system, "gameplay/respawn_anchor_works"), Value::Bool(false));
     }
 }
