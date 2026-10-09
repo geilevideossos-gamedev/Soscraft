@@ -57,6 +57,11 @@ if ($jobsSubs -contains $sub) {
 }
 
 $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+$noSlotSubs = @("version", "--version", "-V", "metadata", "tree", "pkgid", "locate-project", "help", "--help", "-h")
+if ($noSlotSubs -contains $sub) {
+    & cargo @cmdArgs
+    exit $LASTEXITCODE
+}
 if ($targetDir -ne "") {
     $env:CARGO_TARGET_DIR = $targetDir
 } elseif (-not $env:CARGO_TARGET_DIR) {
@@ -65,6 +70,43 @@ if ($targetDir -ne "") {
 if (-not $env:MINECRAFTOSS_ROOT) {
     $env:MINECRAFTOSS_ROOT = "C:\Games\Mashup\2010-Rust-Rewrite-Mashup\iw4l-artifacts\minecraft-26.3"
 }
+
+if (-not ('CargoSlotJob' -as [type])) {
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class CargoSlotJob {
+    [StructLayout(LayoutKind.Sequential)]
+    struct BasicLimits {
+        public long PerProcessUserTimeLimit; public long PerJobUserTimeLimit; public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize; public UIntPtr MaximumWorkingSetSize; public uint ActiveProcessLimit;
+        public UIntPtr Affinity; public uint PriorityClass; public uint SchedulingClass;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct IoCounters { public ulong A, B, C, D, E, F; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct ExtendedLimits {
+        public BasicLimits Basic; public IoCounters Io;
+        public UIntPtr ProcessMemoryLimit; public UIntPtr JobMemoryLimit; public UIntPtr PeakProcessMemoryUsed; public UIntPtr PeakJobMemoryUsed;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr CreateJobObject(IntPtr attributes, string name);
+    [DllImport("kernel32.dll")] static extern bool SetInformationJobObject(IntPtr job, int infoClass, ref ExtendedLimits info, uint length);
+    [DllImport("kernel32.dll")] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    public static IntPtr Job = IntPtr.Zero;
+    public static bool KillTreeOnExit() {
+        if (Job != IntPtr.Zero) return true;
+        Job = CreateJobObject(IntPtr.Zero, null);
+        if (Job == IntPtr.Zero) return false;
+        ExtendedLimits info = new ExtendedLimits();
+        info.Basic.LimitFlags = 0x2000;
+        if (!SetInformationJobObject(Job, 9, ref info, (uint)Marshal.SizeOf(typeof(ExtendedLimits)))) return false;
+        return AssignProcessToJobObject(Job, GetCurrentProcess());
+    }
+}
+"@
+}
+if (-not [CargoSlotJob]::KillTreeOnExit()) { Write-Host "cargo-slot: warning: cargo will outlive this shell if it is killed" }
 
 $m0 = New-Object System.Threading.Mutex($false, "Local\iw4l-cargo-slot-0")
 $m1 = New-Object System.Threading.Mutex($false, "Local\iw4l-cargo-slot-1")
