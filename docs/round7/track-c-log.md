@@ -458,3 +458,69 @@ Kit: none needed.
 1. **`CommandWorld::set_respawn`**: store the `Respawn` per player (keyed by its UUID) and return `true`. Track D's player file saves it under the vanilla `respawn` key: `{dimension, pos: [x, y, z], yaw, pitch, forced: true}`.
 2. **Respawning**: when the player respawns, use the stored point before the world spawn. Vanilla (`ServerPlayer.findRespawnPositionAndUseSpawnBlock`) checks a forced point only for room to stand (no bed or anchor needed); if the spot is blocked it falls back to the world spawn and says `block.minecraft.spawn.not_valid`. Face the stored yaw and pitch.
 3. **Dimension**: the stored dimension decides the respawn level once there are several (phase 3).
+
+## Minecraft /locate finds structures and biomes like vanilla
+
+Commit: the commit that adds this entry (branch `track-c`, group "commands").
+
+### What changed
+
+- New `crates/minecraft_commands/src/locate.rs`, checked against 26.3 `LocateCommand`, `ResourceOrTagArgument`, `ResourceOrTagKeyArgument` and their string recipes with javap:
+  - `/locate structure <id|#tag>`, `/locate biome <id|#tag>` and `/locate poi <id|#tag>` at level 2.
+  - **Structures** are checked when the command runs: an unknown id or tag gives `commands.locate.structure.invalid` with `#` for a tag. **Biomes and POI** are checked like vanilla's parser: `argument.resource.not_found` or `argument.resource_tag.not_found`, with the registry name and the context after the id.
+  - `LocateRequest { kind, printable, tag, targets, dimension, origin }` goes to `CommandWorld::locate`, with the tag already expanded to its members and the origin the block at the source's feet. The world answers `Answer::Now(Option<Located { pos, id }>)` or `Answer::Later`.
+  - `locate_answer` builds vanilla's line: "The nearest %s is at %s (%s blocks away)". The name is the id, or for a tag `#tag (found id)`. The coordinates are green and bracketed (`chat.square_brackets` around `chat.coordinates`), with `~` as y for structures and POI and the real y for biomes. The distance is vanilla's float math: horizontal for structures and POI (`Mth.floor(Mth.sqrt((float) (dx*dx + dz*dz)))`), 3D for biomes. Nothing found gives `commands.locate.<kind>.not_found`. The line goes to the source only.
+  - `CommandServer::reply(source, result, broadcast, rules)` turns a late answer (from `/locate`, `/setblock` or `/fill`) into the same lines a direct answer gives.
+- `ArgKind::ResourceOrTag(Registry)`, with `Registry::Structure`, `Biome` and `PointOfInterest`. `CommandData` gains `structures`, `structure_tags`, `biomes`, `biome_tags`, `poi_types` and `poi_tags`; `CommandHints` gains the same as id lists and `tag_ids(registry)`. Suggestions give `#` plus the tags when the argument is empty or starts with `#`, otherwise the ids.
+- New `crates/minecraft_terrain/src/locate.rs` (edition 2021): pure searches over `minecraftoss_world::chunk_map::WorldGen` with a time cap, checked against 26.3 `ChunkGenerator.findNearestMapStructure`, `getNearestGeneratedStructure`, `getStructureGeneratingAt`, `BiomeSource.findClosestBiome3d`, `Mth.outFromOrigin` and `BlockPos.spiralAround`:
+  - `nearest_structure(gen, targets, origin, radius, deadline) -> Search`:
+    - It groups the targets by the structure sets that place them, skipping sets that cannot appear in the dimension's biomes (vanilla's `possibleStructureSets`).
+    - Concentric rings (strongholds) check every ring position, nearest centre first. Random spread placements search square rings of grid cells out to radius 100 and stop at the first ring with a find, keeping the first hit inside a ring as vanilla does.
+    - A chunk counts when `Structures::starts_in` really makes a start of a wanted structure there, which covers frequency, exclusion zones, the biome check and the weighted choice inside a set.
+    - The answer is the placement's locate position (the chunk corner plus `locate_offset`).
+  - `nearest_biome(gen, targets, origin, radius, deadline) -> Search`: only biomes the dimension can make; the spiral of 32-block steps out to 6400 blocks; at each column the heights from `out_from_origin(y, minY + 1, maxY + 1, 64)`; the first sample in a wanted biome wins.
+  - `Search` is `Found(pos, id)`, `NotFound` or `TimedOut`. `structure_names`, `biome_names` and `tags(gen, registry)` (tag ids to members, nested tags expanded) fill the command data.
+- `CommandWorld::locate` defaults to `Answer::Now(None)`, so until the glue lands `/locate structure minecraft:village_plains` answers "Could not find a structure of type "minecraft:village_plains" nearby".
+
+### Tests added
+
+- `locate::tests` in `minecraft_commands` (4): structures with the tilde, the green span, the tag form and the request's origin and members, not found and invalid ids and tags; biomes with their height and 3D distance, tags, not found, unknown ids and tags with context; POI without a manager, a late answer and level 0; vanilla's float distances.
+- `suggest::tests::locate_suggests_ids_and_tags_of_its_registry`.
+- `locate::tests` in `minecraft_terrain` (3): the spiral order (the first nine steps, and 401x401 for radius 200), `out_from_origin` for three cases, and seed 0 with the 26.3 data: the nearest village from (0, 64, 0) is `village_plains` at (272, 0, 944) whether asked by tag or by id, the nearest desert sample is (608, 64, -1632), a Nether fortress is not found in the overworld, and a passed deadline times out. It is skipped without the data; run it with `MINECRAFTOSS_ROOT=C:\Games\Mashup\2010-Rust-Rewrite-Mashup\iw4l-artifacts\minecraft-26.3`.
+
+Seed 0 from (0, 64, 0) also gives (not in the test, for comparing with vanilla): stronghold (-208, ~, -1696) in 2.3 s, mansion (-3536, ~, -832) in 0.5 s, cherry grove (-1024, 128, 1344), mushroom fields (-672, 64, -896).
+
+### In-game test steps
+
+`/locate` needs the glue; until then every search answers "Could not find ...".
+
+```
+IW4L_MINECRAFT_KIT=stone*64
+```
+
+1. `/locate structure minecraft:village_plains`: "The nearest minecraft:village_plains is at [x, ~, z] (N blocks away)" with the coordinates in green. Screenshot.
+2. `/tp @s x 120 z` with those numbers: a plains village is below you. Screenshot.
+3. `/locate structure #minecraft:village`: the line names the tag and the village type in brackets.
+4. `/locate biome minecraft:cherry_grove`, then `/tp` there: pink cherry trees. Screenshot.
+5. `/locate structure minecraft:fortress`: red "Could not find a structure of type "minecraft:fortress" nearby" (no fortresses in the overworld).
+6. `/locate poi minecraft:home`: red "Could not find a point of interest of type "minecraft:home" within a reasonable distance".
+7. Optional vanilla comparison: in vanilla 26.3, a new world with seed 0, `/execute positioned 0 64 0 run locate structure #minecraft:village` should give 272 ~ 944.
+
+Kit: none needed.
+
+### Decisions
+
+- **Not checked against a running vanilla server.** This machine has no Java 25 runtime or the 26.3 libraries, so the seed 0 positions are what the ported search and MinecraftOSS's generator give; step 7 is the check.
+- **A time cap.** Vanilla searches without one. Here a timed-out search answers like nothing was found; the glue should log `TimedOut`. Searches measured on seed 0 took 0.2 to 2.3 s (debug build of the tests), so 20 s is a generous cap.
+- **No click or hover on the coordinates.** Vanilla's green coordinates suggest `/tp @s x y z` on click and show `chat.coordinates.tooltip` on hover; the fork's `Text` has neither yet.
+- **POI answers "not found"** because there is no POI manager; ids and tags are not checked while `poi_types` is empty (vanilla's POI types are a code registry, so the glue would have to list them).
+
+### After the split
+
+1. **Command data** once at load, from the level's `WorldGen` (`TerrainStream::world_gen()`): `structures = minecraft_terrain::locate::structure_names(&gen)`, `structure_tags = tags(&gen, "worldgen/structure")`, `biomes = biome_names(&gen)`, `biome_tags = tags(&gen, "worldgen/biome")`. Tags read like this cover every dimension, since the registries are shared.
+2. **`CommandWorld::locate`**: return `Answer::Later` and run the search off the main thread, for the request's dimension:
+   - `LocateKind::Structure`: `nearest_structure(&gen, &request.targets, request.origin, STRUCTURE_RADIUS, now + 20 s)`.
+   - `LocateKind::Biome`: `nearest_biome(&gen, &request.targets, request.origin, BIOME_RADIUS, now + 20 s)`.
+   - `LocateKind::Poi`: answer `None` until there is a POI manager.
+3. **The answer**, back on the main thread: `Found(pos, id)` becomes `Some(Located { pos, id })`, the other two `None`. Then `server.reply(source, minecraft_commands::locate_answer(&request, found.as_ref()).map(|(text, _)| text), false, rules)` gives the lines for that player.
+4. **Threads**: `Structures::starts_in` caches the starts it makes in the shared `WorldGen`, which the chunk generator reuses; the search only adds starts the generator would make anyway.

@@ -4,6 +4,7 @@ pub mod clear;
 pub mod commands;
 pub mod enchant;
 pub mod experience;
+pub mod locate;
 pub mod permissions;
 pub mod players;
 pub mod protocol;
@@ -21,6 +22,7 @@ pub use clear::{ItemFilter, clear_inventory};
 pub use commands::{difficulty_id, difficulty_name};
 pub use enchant::{Enchanted, EnchantmentInfo};
 pub use experience::Experience;
+pub use locate::{LocateKind, LocateRequest, Located, locate_answer};
 pub use players::offline_uuid;
 pub use protocol::{
     Clientbound, MAX_CHAT_LENGTH, Outgoing, PlayerId, Recipient, Serverbound, normalize_chat,

@@ -18,6 +18,9 @@ pub enum Registry {
     EntityType,
     MobEffect,
     Enchantment,
+    Structure,
+    Biome,
+    PointOfInterest,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,6 +43,7 @@ pub enum ArgKind {
     BlockState,
     BlockPredicate,
     Rotation,
+    ResourceOrTag(Registry),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,6 +100,12 @@ pub enum Arg {
     BlockPos(Coordinates),
     Block(crate::blocks::ParsedBlock),
     Rotation([WorldCoordinate; 2]),
+    ResourceOrTag {
+        id: String,
+        tag: bool,
+        at: usize,
+        end: usize,
+    },
 }
 
 impl ArgKind {
@@ -189,6 +199,20 @@ impl ArgKind {
             Self::BlockState => crate::blocks::parse_block(reader, false).map(Arg::Block),
             Self::BlockPredicate => crate::blocks::parse_block(reader, true).map(Arg::Block),
             Self::Rotation => rotation(reader).map(Arg::Rotation),
+            Self::ResourceOrTag(_) => {
+                let at = reader.cursor;
+                let tag = reader.peek() == Some('#');
+                if tag {
+                    reader.skip();
+                }
+                let id = resource_id(reader).inspect_err(|_| reader.cursor = at)?;
+                Ok(Arg::ResourceOrTag {
+                    id,
+                    tag,
+                    at,
+                    end: reader.cursor,
+                })
+            }
         }
     }
 }

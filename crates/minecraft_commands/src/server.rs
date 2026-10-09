@@ -9,6 +9,7 @@ use crate::blocks::{BlockEdit, Loaded};
 use crate::clear::ItemFilter;
 use crate::enchant::{Enchanted, EnchantmentInfo};
 use crate::experience::Experience;
+use crate::locate::{LocateRequest, Located};
 use crate::permissions::{ALL, OWNERS, OpList};
 use crate::players::offline_uuid;
 use crate::protocol::{
@@ -65,6 +66,12 @@ pub struct CommandData {
     pub item_tags: BTreeMap<String, Vec<String>>,
     pub blocks: BTreeMap<String, Vec<(String, Vec<String>)>>,
     pub block_tags: BTreeMap<String, Vec<String>>,
+    pub structures: Vec<String>,
+    pub structure_tags: BTreeMap<String, Vec<String>>,
+    pub biomes: Vec<String>,
+    pub biome_tags: BTreeMap<String, Vec<String>>,
+    pub poi_types: Vec<String>,
+    pub poi_tags: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,6 +142,9 @@ pub trait CommandWorld {
     }
     fn set_respawn(&mut self, _player: PlayerId, _respawn: &Respawn) -> bool {
         false
+    }
+    fn locate(&mut self, _source: PlayerId, _request: &LocateRequest) -> Answer<Option<Located>> {
+        Answer::Now(None)
     }
 }
 
@@ -412,6 +422,19 @@ impl CommandServer {
         out
     }
 
+    pub fn reply(
+        &self,
+        source: PlayerId,
+        result: Result<Text, CommandError>,
+        broadcast: bool,
+        rules: &GameRules,
+    ) -> Vec<Outgoing> {
+        match result {
+            Ok(text) => self.feedback(source, text, broadcast, rules),
+            Err(error) => vec![error_line(source, error.text)],
+        }
+    }
+
     pub fn take_warnings(&mut self) -> Vec<String> {
         std::mem::take(&mut self.warnings)
     }
@@ -567,6 +590,9 @@ pub(crate) mod tests {
         pub(crate) blocks: crate::blocks::tests::Blocks,
         pub(crate) edits: Vec<BlockEdit>,
         pub(crate) respawns: Vec<(PlayerId, Option<Respawn>)>,
+        pub(crate) located: Vec<Located>,
+        pub(crate) located_requests: Vec<LocateRequest>,
+        pub(crate) later: bool,
     }
 
     impl CommandWorld for FakeWorld {
@@ -753,6 +779,18 @@ pub(crate) mod tests {
             *known = Some(respawn.clone());
             true
         }
+
+        fn locate(&mut self, _source: PlayerId, request: &LocateRequest) -> Answer<Option<Located>> {
+            self.located_requests.push(request.clone());
+            if self.later {
+                return Answer::Later;
+            }
+            let found = self
+                .located
+                .iter()
+                .find(|located| request.targets.contains(&located.id));
+            Answer::Now(found.cloned())
+        }
     }
 
     pub(crate) fn lang(key: &str) -> Option<String> {
@@ -909,6 +947,21 @@ pub(crate) mod tests {
             "commands.spawnpoint.success.single" => {
                 "Set spawn point to %s, %s, %s [%s] in %s for %s"
             }
+            "argument.resource_tag.not_found" => "Can't find tag '%s' of type '%s'",
+            "chat.coordinates" => "%s, %s, %s",
+            "commands.locate.biome.not_found" => {
+                "Could not find a biome of type \"%s\" within a reasonable distance"
+            }
+            "commands.locate.biome.success" => "The nearest %s is at %s (%s blocks away)",
+            "commands.locate.poi.not_found" => {
+                "Could not find a point of interest of type \"%s\" within a reasonable distance"
+            }
+            "commands.locate.poi.success" => "The nearest %s is at %s (%s blocks away)",
+            "commands.locate.structure.invalid" => "There is no structure with type \"%s\"",
+            "commands.locate.structure.not_found" => {
+                "Could not find a structure of type \"%s\" nearby"
+            }
+            "commands.locate.structure.success" => "The nearest %s is at %s (%s blocks away)",
             "commands.fill.toobig" => {
                 "Too many blocks in the specified area (maximum %s, but specified %s)"
             }

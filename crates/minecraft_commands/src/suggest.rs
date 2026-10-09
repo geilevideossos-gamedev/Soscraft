@@ -40,6 +40,18 @@ pub struct CommandHints {
     pub block_tags: Vec<String>,
     #[serde(default)]
     pub hit_block: Option<[i32; 3]>,
+    #[serde(default)]
+    pub structures: Vec<String>,
+    #[serde(default)]
+    pub structure_tags: Vec<String>,
+    #[serde(default)]
+    pub biomes: Vec<String>,
+    #[serde(default)]
+    pub biome_tags: Vec<String>,
+    #[serde(default)]
+    pub poi_types: Vec<String>,
+    #[serde(default)]
+    pub poi_tags: Vec<String>,
 }
 
 impl CommandHints {
@@ -56,6 +68,12 @@ impl CommandHints {
             blocks: server.data().blocks.keys().cloned().collect(),
             block_tags: server.data().block_tags.keys().cloned().collect(),
             hit_block: None,
+            structures: server.data().structures.clone(),
+            structure_tags: server.data().structure_tags.keys().cloned().collect(),
+            biomes: server.data().biomes.clone(),
+            biome_tags: server.data().biome_tags.keys().cloned().collect(),
+            poi_types: server.data().poi_types.clone(),
+            poi_tags: server.data().poi_tags.keys().cloned().collect(),
         }
     }
 
@@ -64,6 +82,18 @@ impl CommandHints {
             Registry::EntityType => &self.entities,
             Registry::MobEffect => &self.effects,
             Registry::Enchantment => &self.enchantments,
+            Registry::Structure => &self.structures,
+            Registry::Biome => &self.biomes,
+            Registry::PointOfInterest => &self.poi_types,
+        }
+    }
+
+    pub fn tag_ids(&self, registry: Registry) -> &[String] {
+        match registry {
+            Registry::Structure => &self.structure_tags,
+            Registry::Biome => &self.biome_tags,
+            Registry::PointOfInterest => &self.poi_tags,
+            Registry::EntityType | Registry::MobEffect | Registry::Enchantment => &[],
         }
     }
 }
@@ -368,6 +398,20 @@ fn suggest_argument(
             found.resources(start, hints.ids(registry).iter().map(String::as_str), "")
         }
         ArgKind::ItemPredicate => item_predicate(start, hints, found),
+        ArgKind::ResourceOrTag(registry) => {
+            let typed = found.typed(start);
+            let tags = hints.tag_ids(registry).iter().map(String::as_str);
+            if typed.starts_with('#') {
+                found.tags(start, tags);
+            } else {
+                if typed.is_empty() {
+                    for tag in tags {
+                        found.add(start, format!("#{tag}"));
+                    }
+                }
+                found.resources(start, hints.ids(registry).iter().map(String::as_str), "");
+            }
+        }
         ArgKind::BlockPos => block_coordinates(start, hints, found),
         ArgKind::BlockState => block_state(start, hints, found),
         ArgKind::BlockPredicate => {
@@ -695,6 +739,10 @@ mod tests {
             blocks: owned(&["minecraft:stone", "minecraft:oak_stairs", "minecraft:glass"]),
             block_tags: owned(&["minecraft:logs", "minecraft:stairs"]),
             hit_block: None,
+            structures: owned(&["minecraft:village_plains", "minecraft:igloo"]),
+            structure_tags: owned(&["minecraft:village"]),
+            biomes: owned(&["minecraft:cherry_grove", "minecraft:desert"]),
+            ..CommandHints::default()
         }
     }
 
@@ -751,6 +799,7 @@ mod tests {
                 "give",
                 "help",
                 "kill",
+                "locate",
                 "op",
                 "seed",
                 "setblock",
@@ -1051,6 +1100,31 @@ mod tests {
             texts(&at_end("/fill ~ ~ ~ ~ ~ ~ glass replace stone ", OWNERS)),
             vec!["destroy", "hollow", "outline", "strict"]
         );
+    }
+
+    #[test]
+    fn locate_suggests_ids_and_tags_of_its_registry() {
+        assert_eq!(
+            texts(&at_end("/locate ", OWNERS)),
+            vec!["biome", "poi", "structure"]
+        );
+        assert_eq!(
+            texts(&at_end("/locate structure ", OWNERS)),
+            vec![
+                "#minecraft:village",
+                "minecraft:igloo",
+                "minecraft:village_plains"
+            ]
+        );
+        assert_eq!(
+            texts(&at_end("/locate structure #v", OWNERS)),
+            vec!["#minecraft:village"]
+        );
+        assert_eq!(
+            texts(&at_end("/locate biome ch", OWNERS)),
+            vec!["minecraft:cherry_grove"]
+        );
+        assert!(at_end("/locate poi ", OWNERS).list.is_empty());
     }
 
     #[test]

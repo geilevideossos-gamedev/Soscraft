@@ -183,6 +183,7 @@ fn build() -> Vec<Node> {
         crate::blocks::setblock_node(),
         crate::blocks::fill_node(),
         crate::spawnpoint::node(),
+        crate::locate::node(),
     ])
 }
 
@@ -890,6 +891,7 @@ mod tests {
                 "/give <targets> <item> [<count>]",
                 "/help [<command>]",
                 "/kill [<targets>]",
+                "/locate (biome|poi|structure)",
                 "/op <targets>",
                 "/seed",
                 "/setblock <pos> <block> [destroy|keep|replace|strict]",
