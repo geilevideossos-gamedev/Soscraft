@@ -6,6 +6,7 @@ use minecraft_survival::creative::{self, CreativeSlot, GridClick, SetSlot};
 use minecraft_terrain::creative_search::Searched;
 use minecraft_terrain::creative_tabs::{CreativeTab, CreativeTabs, Row, TabEntry, TabKind};
 use minecraft_terrain::game_mode::PlayerMode;
+use minecraft_terrain::hotbars::{self, Hotbars};
 use minecraftoss_player::crafting::RecipeBook;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 
@@ -14,12 +15,14 @@ struct Built {
     tab: String,
     query: String,
     operator: bool,
+    hotbars: u64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Shown {
     stack: ItemStack,
     locked: bool,
+    name: Option<String>,
 }
 
 pub(crate) struct SearchList {
@@ -78,6 +81,27 @@ pub(crate) fn tabs_of(
     found
 }
 
+pub(crate) const SAVE_KEY: &str = "C";
+pub(crate) const LOAD_KEY: &str = "X";
+
+pub(crate) fn hotbar_path() -> std::path::PathBuf {
+    std::path::Path::new("iw4l-artifacts").join(hotbars::FILE)
+}
+
+pub(crate) fn format_text(template: &str, args: &[&str]) -> String {
+    let mut out = template.to_owned();
+    for (index, arg) in args.iter().enumerate() {
+        out = out.replace(&format!("%{}$s", index + 1), arg);
+    }
+    for arg in args {
+        if !out.contains("%s") {
+            break;
+        }
+        out = out.replacen("%s", arg, 1);
+    }
+    out
+}
+
 #[derive(Default)]
 pub(crate) struct CreativeUi {
     started: bool,
@@ -93,6 +117,9 @@ pub(crate) struct CreativeUi {
     search: Option<SearchList>,
     item_tags: HashMap<String, Vec<String>>,
     tag_names: Vec<String>,
+    hotbars: Option<Hotbars>,
+    hotbars_version: u64,
+    texts: Option<(String, String)>,
 }
 
 pub(crate) fn kind_of(kind: TabKind) -> McTabKind {
@@ -189,6 +216,13 @@ impl CreativeUi {
         recipes: &RecipeBook,
         language: Option<&HashMap<String, String>>,
     ) {
+        if self.texts.is_none()
+            && let Some(language) = language
+        {
+            let text = |key: &str| language.get(key).cloned().unwrap_or_else(|| key.to_owned());
+            self.texts = Some((text("inventory.hotbarInfo"), text("inventory.hotbarSaved")));
+            self.built = None;
+        }
         let Some(tabs) = self.tabs.clone() else {
             return;
         };
@@ -225,6 +259,7 @@ impl CreativeUi {
                 String::new()
             },
             operator: self.operator,
+            hotbars: self.hotbars_version,
         };
         if self.built.as_ref() == Some(&built) {
             return;
@@ -233,6 +268,7 @@ impl CreativeUi {
             Some(Shown {
                 stack,
                 locked: false,
+                name: None,
             })
         };
         let mut tags = Vec::new();
@@ -270,7 +306,35 @@ impl CreativeUi {
                     .map(|index| unlocked(search.stacks[index].clone()))
                     .collect()
             }
-            McTabKind::Hotbar | McTabKind::Inventory => Vec::new(),
+            McTabKind::Hotbar => {
+                let info = self.texts.as_ref().map(|texts| texts.0.clone());
+                let hotbars = self.hotbars().clone();
+                let mut shown = Vec::new();
+                for row in 0..hotbars::GROUPS {
+                    if hotbars.is_empty(row) {
+                        shown.extend((0..hotbars::SIZE).map(|column| {
+                            (column == row).then(|| Shown {
+                                stack: stack_of(recipes, "minecraft:paper"),
+                                locked: true,
+                                name: Some(format_text(
+                                    info.as_deref().unwrap_or("inventory.hotbarInfo"),
+                                    &[SAVE_KEY, &(row + 1).to_string()],
+                                )),
+                            })
+                        }));
+                    } else {
+                        shown.extend(hotbars.row(row).iter().map(|stack| {
+                            stack.clone().map(|stack| Shown {
+                                stack,
+                                locked: false,
+                                name: None,
+                            })
+                        }));
+                    }
+                }
+                shown
+            }
+            McTabKind::Inventory => Vec::new(),
         };
         ui.creative.tags = tags;
         self.pending_items = Some(
@@ -320,6 +384,64 @@ impl CreativeUi {
         }
     }
 
+    fn hotbars(&mut self) -> &mut Hotbars {
+        self.hotbars
+            .get_or_insert_with(|| Hotbars::read(&hotbar_path()))
+    }
+
+    pub(crate) fn name_items(&self, items: &mut [Option<frame::McStack>]) {
+        for (item, shown) in items.iter_mut().zip(&self.items) {
+            if let (Some(item), Some(name)) = (
+                item.as_mut(),
+                shown.as_ref().and_then(|shown| shown.name.clone()),
+            ) {
+                item.name = Some(name);
+            }
+        }
+    }
+
+    pub(crate) fn hotbar_key(
+        &mut self,
+        ui: &mut MinecraftUi,
+        mode: &PlayerMode,
+        inventory: &mut Inventory,
+        known: &dyn Fn(&str) -> bool,
+    ) {
+        let Some((index, load)) = ui.creative.hotbar_key.take() else {
+            return;
+        };
+        if !self.creative_mode || index >= hotbars::GROUPS {
+            return;
+        }
+        if load {
+            let stacks = self.hotbars().row(index).to_vec();
+            let (_, refused) =
+                creative::apply(mode, inventory, creative::load_hotbar(&stacks), known);
+            for why in refused {
+                diag::warn!(World, "Minecraft saved hotbar slot refused: {why:?}");
+            }
+            return;
+        }
+        let stacks: Vec<Option<ItemStack>> = inventory.slots[..hotbars::SIZE]
+            .iter()
+            .map(|stack| {
+                stack
+                    .clone()
+                    .filter(|stack| minecraft_survival::guns::weapon_of(stack).is_none())
+            })
+            .collect();
+        self.hotbars().store(index, &stacks);
+        if let Err(error) = self.hotbars().write(&hotbar_path()) {
+            diag::warn!(World, "Failed to save creative mode options: {error}");
+        }
+        self.hotbars_version += 1;
+        let saved = self
+            .texts
+            .as_ref()
+            .map_or("inventory.hotbarSaved", |texts| texts.1.as_str());
+        ui.creative.saved = Some(format_text(saved, &[LOAD_KEY, &(index + 1).to_string()]));
+    }
+
     pub(crate) fn take_tabs(&mut self) -> Option<Vec<(McCreativeTab, Option<ItemStack>)>> {
         self.pending_tabs.take()
     }
@@ -341,17 +463,15 @@ impl CreativeUi {
     }
 
     fn grid(&self, inventory: &Inventory, index: usize, click: GridClick) -> Vec<SetSlot> {
-        let Some(shown) = self.items.get(index) else {
-            return Vec::new();
-        };
-        if shown.as_ref().is_some_and(|shown| shown.locked) {
+        let shown = self.items.get(index).and_then(Option::as_ref);
+        if shown.is_some_and(|shown| shown.locked) {
             return Vec::new();
         }
         let recipes = inventory.recipes.clone();
         let max = |stack: &ItemStack| creative::max_stack(&recipes, stack);
         creative::grid_click(
             inventory.cursor.as_ref(),
-            shown.as_ref().map(|shown| &shown.stack),
+            shown.map(|shown| &shown.stack),
             click,
             &max,
         )
@@ -564,6 +684,94 @@ mod tests {
         assert_eq!(search_items("wool", &search, &tags), [1]);
         assert_eq!(search_items("#logs", &search, &tags), [0]);
         assert_eq!(search_items("", &search, &tags), [0, 1]);
+    }
+
+    #[test]
+    fn hotbar_texts_fill_their_keys_like_vanilla() {
+        assert_eq!(
+            format_text("Save hotbar with %1$s+%2$s", &[SAVE_KEY, "3"]),
+            "Save hotbar with C+3"
+        );
+        assert_eq!(
+            format_text("Saved hotbar (restore with %1$s+%2$s)", &[LOAD_KEY, "1"]),
+            "Saved hotbar (restore with X+1)"
+        );
+        assert_eq!(format_text("%s and %s", &["a", "b"]), "a and b");
+    }
+
+    #[test]
+    fn the_saved_hotbars_tab_shows_a_locked_paper_for_each_empty_row() {
+        let mut creative = CreativeUi {
+            tabs: Some(Arc::new(CreativeTabs {
+                tabs: vec![CreativeTab {
+                    kind: TabKind::Hotbar,
+                    ..category("minecraft:hotbar", "itemGroup.hotbar", &[], false)
+                }],
+                ..CreativeTabs::default()
+            })),
+            hotbars: Some(Hotbars::default()),
+            ..CreativeUi::default()
+        };
+        let mut stacks = vec![None; 9];
+        stacks[4] = Some(ItemStack::new("minecraft:torch", 16));
+        creative.hotbars().store(1, &stacks);
+        let mut ui = MinecraftUi::default();
+        let recipes = RecipeBook::default();
+        creative.refresh(&mut ui, &recipes, None);
+        ui.creative.tabs = creative
+            .take_tabs()
+            .unwrap()
+            .into_iter()
+            .map(|(tab, _)| tab)
+            .collect();
+        creative.refresh(&mut ui, &recipes, None);
+        let items = creative.take_items().unwrap();
+        assert_eq!(items.len(), 81);
+        assert_eq!(
+            items[0].as_ref().map(|stack| stack.id.as_str()),
+            Some("minecraft:paper")
+        );
+        assert!(items[1..9].iter().all(Option::is_none));
+        assert_eq!(items[9 + 4], Some(ItemStack::new("minecraft:torch", 16)));
+        assert_eq!(items[9 + 1], None);
+        assert_eq!(
+            items[18 + 2].as_ref().map(|stack| stack.id.as_str()),
+            Some("minecraft:paper")
+        );
+        assert!(creative.items[0].as_ref().is_some_and(|shown| shown.locked));
+        assert_eq!(
+            creative.items[20]
+                .as_ref()
+                .and_then(|shown| shown.name.clone())
+                .as_deref(),
+            Some("inventory.hotbarInfo")
+        );
+        let inventory = Inventory::default();
+        assert!(
+            creative
+                .grid(
+                    &inventory,
+                    0,
+                    GridClick::Pick {
+                        right: false,
+                        shift: false
+                    }
+                )
+                .is_empty()
+        );
+        assert_eq!(
+            creative
+                .grid(
+                    &inventory,
+                    13,
+                    GridClick::Pick {
+                        right: false,
+                        shift: true
+                    }
+                )
+                .len(),
+            1
+        );
     }
 
     #[test]

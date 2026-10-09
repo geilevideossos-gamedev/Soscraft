@@ -1643,3 +1643,52 @@ Kit: none needed.
 
 - **The searched text is the item's name.** Vanilla searches every tooltip line; until variants are expanded every searched stack is a plain item, whose tooltip is just its name.
 - **Tags are shown in their sorted order.** Vanilla inserts them from a hash set, so its order is arbitrary.
+
+## Minecraft creative players save and load hotbars like vanilla
+
+Commit: the commit that adds this entry. The previous commit is 1cbbb6d (the search).
+
+### What changed
+
+Checked with javap against 26.3 `HotbarManager`, `Hotbar`, `CreativeModeInventoryScreen.handleHotbarLoadOrSave` and `selectTab` (the hotbar tab), and `Hud.setOverlayMessage` and `extractOverlayMessage`.
+
+- **The file** (new `crates/minecraft_terrain/src/hotbars.rs`, pure): `Hotbars` holds nine hotbars of nine stacks (`HotbarManager.NUM_HOTBAR_GROUPS`, `Inventory.getSelectionSize`).
+  - `hotbar.nbt` is vanilla's layout: uncompressed NBT (`NbtIo.write`) with an unnamed root compound holding `DataVersion` and the keys `"0"` to `"8"`, each a list of nine item compounds. An empty slot is `{}` (`ItemStack.OPTIONAL_CODEC`); a stack is `{id, count, components}`, with `components` left out when there are none.
+  - Reading tolerates a missing or broken file (empty hotbars, as vanilla logs "Failed to load creative mode options") and a row that is not nine long (empty).
+  - `server_mobs::json_tag` is now visible inside the crate so the components turn into NBT the same way the world save does.
+- **Client side** (`render_anim/src/minecraft_creative.rs`):
+  - The file is per client, `iw4l-artifacts\hotbar.nbt` next to the game (vanilla keeps it in the game folder, not in the world). It is read the first time a hotbar is needed.
+  - **Saving** (C held, then 1 to 9): the hotbar's nine stacks are stored in that row and the file is written at once. The MW2 guns are left out, as they are not Minecraft items. The overlay message `inventory.hotbarSaved` ("Saved hotbar (restore with X+1)") shows.
+  - **Loading** (X held, then 1 to 9): each of the nine stacks goes through the server's `set_slot` on menu slots 36 to 44, so the server checks every one (creative only, known item, stack size). An empty saved row empties the hotbar, as in vanilla.
+  - **The Saved Hotbars tab** shows the nine rows. An empty row shows a paper named `inventory.hotbarInfo` ("Save hotbar with C+n") in its own column; it cannot be taken (`CREATIVE_SLOT_LOCK`). The tab refreshes after each save.
+  - A click on any grid slot past the last item counts as an empty grid slot, as in vanilla (it deletes the cursor stack).
+- **HUD**: in creative, with no screen open, a number key while C or X is held saves or loads instead of selecting a slot (X wins when both are held, as vanilla checks loading first). The overlay message shows 72 px above the bottom, centred, white with a shadow, for 60 ticks, fading over the last 20.
+
+### Tests added
+
+- `minecraft_terrain` `hotbars::tests` (3): empty hotbars and storing nine stacks; the file layout (`DataVersion`, nine rows of nine, `{}` for empty, the count, components only when present); a round trip through the disk (an unnamed root compound) and rows that are too short or have no count.
+- `render_anim` `minecraft_creative::tests` (2 more): the two hotbar texts with their keys; the Saved Hotbars tab with a locked, named paper for each empty row and the stored stacks in their row, a click on the paper doing nothing and a shift-click on a stored stack taking it.
+- `hud` `minecraft_creative::tests::the_saved_message_shows_three_seconds_and_fades_over_the_last_second`.
+
+### In-game test steps
+
+Kit:
+
+```
+IW4L_MINECRAFT_KIT=torch*64,stone*64,diamond_pickaxe
+```
+
+`minecraft:torch` 64, `minecraft:stone` 64, `minecraft:diamond_pickaxe` 1.
+
+1. `/gamemode creative`. With no screen open, hold C and press 1: "Saved hotbar (restore with X+1)" shows above the hotbar and fades out after three seconds. Screenshot 6. (C also crouches in MW2.)
+2. Press E and open Saved Hotbars (the bookshelf, top right): row 1 holds your hotbar; rows 2 to 9 each show a paper "Save hotbar with C+2" and so on, in their own column. Clicking a paper does nothing. Shift-click the torch in row 1: 64 torches on the cursor. Screenshot 7.
+3. Close the screen, empty the hotbar with `/clear`, then hold X and press 1: the torches, stone and pickaxe come back in their slots.
+4. Hold X and press 2: the hotbar is emptied (row 2 is empty).
+5. Quit and start the game again: row 1 is still saved (`iw4l-artifacts\hotbar.nbt`).
+6. `/gamemode survival`, hold C and press 3: slot 3 is selected and nothing is saved.
+
+### Decisions
+
+- **C and X are fixed keys**, like the minimap's M: they are vanilla's defaults and there is no Minecraft key binding screen for them yet. C is also MW2's crouch, so the player crouches while saving.
+- **Guns are not saved.** A gun is the player's MW2 weapon, not a Minecraft item, and the server would refuse to load it.
+- **No data fixing.** Vanilla runs a file from an older version through DataFixerUpper; the file is read as 26.3's layout.

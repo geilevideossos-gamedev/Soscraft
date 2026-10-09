@@ -40,7 +40,7 @@ pub struct McCreative {
     pub tags: Vec<Vec<String>>,
     pub tabs_of: std::collections::HashMap<String, Vec<String>>,
     pub hotbar_key: Option<(usize, bool)>,
-    pub saved: Option<(String, f64)>,
+    pub saved: Option<String>,
 }
 
 impl McCreative {

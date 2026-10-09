@@ -1663,6 +1663,7 @@ fn update(
         inventory_ui.creative.set_item_tags(&globals.chat.data().item_tags);
         let known = |id: &str| globals.chat.registries().items.iter().any(|item| item == id);
         let creative_thrown = inventory_ui.creative.apply(&mut ui, player_mode, inventory, &known);
+        inventory_ui.creative.hotbar_key(&mut ui, player_mode, inventory, &known);
         let thrown: Vec<_> = creative_thrown.into_iter().chain(inventory_ui.apply_input(&mut ui, inventory, selected, containers, &mut || roll)).collect();
         if let Some(pos) = open_table {
             inventory_ui.open_table(&mut ui, pos);

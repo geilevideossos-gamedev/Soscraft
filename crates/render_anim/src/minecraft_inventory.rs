@@ -694,6 +694,7 @@ impl InventoryUi {
         if let Some(items) = self.creative.take_items() {
             creative_converted += items.iter().flatten().count();
             ui.creative.items = items.iter().map(&mut convert).collect();
+            self.creative.name_items(&mut ui.creative.items);
         }
         if let Some(tabs) = self.creative.take_tabs() {
             creative_converted += tabs.iter().filter(|(_, icon)| icon.is_some()).count();

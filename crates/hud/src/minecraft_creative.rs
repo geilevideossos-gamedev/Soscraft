@@ -15,6 +15,8 @@ pub(crate) const PUPPET_HEIGHT: f32 = 70.0 * 20.0 / 30.0;
 const SEARCH_BOX: [i32; 3] = [82, 6, 80];
 const HIGHLIGHT: u32 = 0xFF00_00FF;
 const BLINK_MILLIS: f64 = 300.0;
+const OVERLAY_TICKS: f64 = 60.0;
+const TICK: f64 = 0.05;
 const BLUE: u32 = 0xFF55_55FF;
 const DARK_PURPLE: u32 = 0xFFAA_00AA;
 
@@ -493,6 +495,19 @@ pub(crate) fn extra_lines(ui: &MinecraftUi, slot: McSlot, stack: &McStack) -> Ve
     lines
 }
 
+pub(crate) fn overlay_alpha(elapsed: f64) -> Option<u32> {
+    let left = OVERLAY_TICKS - elapsed / TICK;
+    let alpha = ((left * 255.0 / 20.0) as i32).min(255);
+    (alpha > 0).then_some(alpha as u32)
+}
+
+pub(crate) fn draw_overlay(p: &mut Painter<'_>, message: &str, alpha: u32) {
+    let width = p.width(message);
+    let x = p.space.width / 2 - width / 2;
+    let y = p.space.height - 68 - 4;
+    p.text(message, x, y, (alpha << 24) | 0x00FF_FFFF, true);
+}
+
 pub(crate) fn over_tab(ui: &MinecraftUi, rel: [f64; 2]) -> bool {
     tab_at(&ui.creative.tabs, rel).is_some()
 }
@@ -717,6 +732,15 @@ mod tests {
             Some(&("#minecraft:stone_tool_materials".to_owned(), DARK_PURPLE))
         );
         assert_eq!(texts(&ui, McSlot::Inventory(0)).len(), 2);
+    }
+
+    #[test]
+    fn the_saved_message_shows_three_seconds_and_fades_over_the_last_second() {
+        assert_eq!(overlay_alpha(0.0), Some(255));
+        assert_eq!(overlay_alpha(2.0), Some(255));
+        assert_eq!(overlay_alpha(2.5), Some(127));
+        assert_eq!(overlay_alpha(2.99), Some(2));
+        assert_eq!(overlay_alpha(3.0), None);
     }
 
     fn typed(key: Key, code: KeyCode, text: Option<&str>, ctrl: bool) -> Typed {

@@ -82,6 +82,7 @@ pub(crate) struct ScreenInput {
     cycle_clock: f64,
     highlight: crate::minecraft_hotbar::Highlight,
     creative: crate::minecraft_creative::CreativeInput,
+    overlay: Option<(String, f64)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -286,7 +287,12 @@ pub(crate) fn update_minecraft_hud(
             ui.select = Some((ui.selected as i32 + wheel_steps).rem_euclid(9) as usize);
         }
         if let Some(digit) = digit.filter(|_| hotbar) {
-            ui.select = Some(digit);
+            let (load, save) = (keys.pressed(KeyCode::KeyX), keys.pressed(KeyCode::KeyC));
+            if ui.game_mode == McGameMode::Creative && (load || save) {
+                ui.creative.hotbar_key = Some((digit, load));
+            } else {
+                ui.select = Some(digit);
+            }
         }
         if mc(McAction::Drop) && hotbar {
             ui.drop_selected = Some(ctrl);
@@ -333,6 +339,15 @@ pub(crate) fn update_minecraft_hud(
     let highlighted = highlighted.map(|stack| (stack.id.clone(), stack_name(stack, &ui, weapons, strings, &mut gaps)));
     input.highlight.advance(f64::from(dt), highlighted);
     crate::minecraft_hotbar::draw_hud(&mut painter, &ui, weapons, input.highlight.shown());
+    if let Some(message) = ui.creative.saved.take() {
+        input.overlay = Some((message, now));
+    }
+    if let Some((message, since)) = input.overlay.as_ref() {
+        match crate::minecraft_creative::overlay_alpha(now - since) {
+            Some(alpha) => crate::minecraft_creative::draw_overlay(&mut painter, message, alpha),
+            None => input.overlay = None,
+        }
+    }
     crate::minecraft_chat::draw(&mut painter, &ui.chat, now);
 
     if ui.inventory_open {
