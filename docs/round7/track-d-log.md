@@ -36,7 +36,7 @@ IW4L_MINECRAFT_KIT=minecraft:diamond_sword+sharpness=5,minecraft:diamond_pickaxe
 
 ### 2. Minecraft weather is saved like vanilla
 
-Commit: (filled in by the next entry)
+Commit: a8ed2a4
 
 - **Changed:**
   - Vendored `level_storage.rs` (MinecraftOSS patch): `WeatherData` and `LevelStorage::read_weather`/`write_weather`. The file is `data/minecraft/weather.dat`, a saved-data file like `world_clocks.dat` (`data` compound plus `DataVersion`) with the five keys of 26.3's `WeatherData.CODEC` (checked with javap): `clear_weather_time`, `rain_time`, `thunder_time` (ints), `raining`, `thundering` (bytes). All five are required, as in vanilla, and a broken file is read from its `_old` copy.
@@ -58,4 +58,25 @@ Commit: (filled in by the next entry)
   5. Type `/weather clear`, quit and start again: the sky is clear, and the log says `Minecraft weather: clear from weather.dat`.
   6. Add `IW4L_MINECRAFT_WEATHER=rain` to the `.env` and start again: it rains, and the log says `Minecraft weather: rain from IW4L_MINECRAFT_WEATHER`. Remove the line, start again and type `/weather clear`.
   7. Optional: open the world in Minecraft 26.3 after step 3: it is still storming there.
+- **Kit:** none needed; any kit works.
+
+### 3. Minecraft /time pause survives a restart
+
+Commit: (filled in by the next entry)
+
+- **Changed:**
+  - `WorldSave::write` takes the whole `DayCycle` instead of its ticks, and the overworld clock in `data/minecraft/world_clocks.dat` gets its `paused` flag from it. Before, `paused` was always written as false. The key and its type (`Codec.BOOL`, a byte) are those of 26.3's `ClockState.CODEC`, checked with javap.
+  - `OpenedWorld::time_paused` is read from the overworld clock, and `load()` in `render_anim/src/minecraft_world.rs` sets `day.paused` from it (one line).
+  - `autosave` and `Server::save_and_close` pass `globals.day`.
+- **Tests:** `save`: `a_paused_clock_stays_paused_when_the_world_is_opened_again` (the file holds `paused: 1b`, the world opens paused at the same tick, a resumed clock is saved with `paused: 0b`, `temp` is never paused). `a_new_world_keeps_its_seed_spawn_and_time_when_opened_again` and `unreadable_level_data_and_clocks_keep_the_world_and_its_seed` now pass a `DayCycle`.
+- **Decisions:**
+  - Only the overworld clock is written, as before. The clock's `rate` stays 1, because the game has no `/time rate`.
+  - Known limit, unchanged by this commit: `level.dat`'s `Time` (game time) is counted from the day clock, so it stands still while time is paused, where vanilla keeps counting it. It only shows in `/time query gametime`.
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=savetest` and remove any `IW4L_MINECRAFT_TIME` line (it sets the time at every start). Start.
+  2. Type `/time set noon`, then `/time pause`. Wait a minute: the sun does not move. **Screenshot 1.**
+  3. Quit through the menu and start again.
+  4. Expected: still noon, and the sun still does not move after a minute. `/time pause` answers that time is already paused. **Screenshot 2.**
+  5. Type `/time resume`, quit and start again: the sun moves again.
+  6. Optional: open the world in Minecraft 26.3 after step 3: time stands still there too.
 - **Kit:** none needed; any kit works.

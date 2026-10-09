@@ -264,6 +264,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
     if let Some(ticks) = opened.day_ticks {
         day.set(ticks);
     }
+    day.paused = opened.time_paused;
     let globals = minecraft_survival::server::Globals {
         seed,
         registries,

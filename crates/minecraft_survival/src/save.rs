@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use minecraft_terrain::day_cycle::DayCycle;
 use minecraft_terrain::game_mode::{GameMode, PlayerMode};
 use minecraft_terrain::game_rules::GameRules;
 use minecraft_terrain::level_storage::{
@@ -140,12 +141,12 @@ impl WorldSave {
     pub fn write(
         &self,
         spawn: (i32, i32, i32),
-        day_ticks: Option<f64>,
+        day: Option<DayCycle>,
         game_rules: &GameRules,
         difficulty: Difficulty,
     ) -> Result<(), String> {
         let level = LevelData {
-            game_time: self.game_time(day_ticks),
+            game_time: self.game_time(day.map(|day| day.ticks)),
             spawn: RespawnData {
                 dimension: OVERWORLD.to_owned(),
                 pos: spawn,
@@ -158,14 +159,14 @@ impl WorldSave {
         };
         self.storage.write_level_data(&level)?;
         self.storage.write_game_rules(game_rules)?;
-        let Some(day_ticks) = day_ticks else {
+        let Some(day) = day else {
             return Ok(());
         };
         let mut clocks = self
             .storage
             .read_clocks()
             .unwrap_or_else(|_| BTreeMap::new());
-        clocks.insert(OVERWORLD.to_owned(), ClockState::at(day_ticks));
+        clocks.insert(OVERWORLD.to_owned(), clock_state(day));
         self.storage.write_clocks(&clocks)
     }
 
@@ -174,11 +175,19 @@ impl WorldSave {
     }
 }
 
+fn clock_state(day: DayCycle) -> ClockState {
+    ClockState {
+        paused: day.paused,
+        ..ClockState::at(day.ticks)
+    }
+}
+
 pub struct OpenedWorld {
     pub seed: i64,
     pub save: Option<WorldSave>,
     pub spawn: Option<(i32, i32, i32)>,
     pub day_ticks: Option<f64>,
+    pub time_paused: bool,
     pub weather: Option<WeatherData>,
     pub game_rules: GameRules,
     pub difficulty: Difficulty,
@@ -193,6 +202,7 @@ impl OpenedWorld {
             save: None,
             spawn: None,
             day_ticks: None,
+            time_paused: false,
             weather: None,
             game_rules: GameRules::default(),
             difficulty: Difficulty::Normal,
@@ -286,6 +296,7 @@ fn open_save(
         seed,
         spawn,
         day_ticks: clocks.get(OVERWORLD).map(ClockState::ticks),
+        time_paused: clocks.get(OVERWORLD).is_some_and(|clock| clock.paused),
         weather,
         game_rules,
         difficulty: Difficulty::parse(&level.difficulty).unwrap_or(Difficulty::Normal),
@@ -325,6 +336,13 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         TestDir(dir)
+    }
+
+    fn day(ticks: f64) -> DayCycle {
+        DayCycle {
+            ticks,
+            paused: false,
+        }
     }
 
     #[test]
@@ -391,7 +409,7 @@ mod tests {
         let rules = GameRules::default();
         save.write((12, 70, -4), None, &rules, Difficulty::Normal).unwrap();
         save.started(1000.0);
-        save.write((12, 70, -4), Some(19_000.25), &rules, Difficulty::Normal).unwrap();
+        save.write((12, 70, -4), Some(day(19_000.25)), &rules, Difficulty::Normal).unwrap();
         drop(save);
         let again = open_world(&dir.0, Some("world"), Some("77"), 9);
         assert_eq!(again.seed, 123);
@@ -435,7 +453,7 @@ mod tests {
             .save
             .as_ref()
             .unwrap()
-            .write((1, 64, 2), Some(700.0), &GameRules::default(), Difficulty::Normal)
+            .write((1, 64, 2), Some(day(700.0)), &GameRules::default(), Difficulty::Normal)
             .unwrap();
         drop(first);
         let world = dir.0.join("world");
@@ -453,6 +471,45 @@ mod tests {
         assert_eq!(again.spawn, None);
         assert_eq!(again.day_ticks, None);
         assert_eq!(again.warnings.len(), 2, "{:?}", again.warnings);
+    }
+
+    #[test]
+    fn a_paused_clock_stays_paused_when_the_world_is_opened_again() {
+        let dir = saves();
+        let first = open_world(&dir.0, None, Some("13"), 9);
+        assert!(!first.time_paused);
+        let save = first.save.unwrap();
+        let paused = DayCycle {
+            ticks: 6_000.5,
+            paused: true,
+        };
+        let rules = GameRules::default();
+        save.write((0, 64, 0), Some(paused), &rules, Difficulty::Normal)
+            .unwrap();
+        let clocks = save.storage.read_saved("world_clocks").unwrap().unwrap();
+        assert_eq!(
+            clocks.get(OVERWORLD).and_then(|clock| clock.get("paused")),
+            Some(&Tag::Byte(1))
+        );
+        drop(save);
+        let again = open_world(&dir.0, None, None, 9);
+        assert!(again.time_paused);
+        assert_eq!(again.day_ticks, Some(6_000.5));
+        let save = again.save.unwrap();
+        save.write((0, 64, 0), Some(day(7_000.0)), &rules, Difficulty::Normal)
+            .unwrap();
+        assert_eq!(
+            save.storage.read_clocks().unwrap()[OVERWORLD],
+            ClockState {
+                total_ticks: 7_000,
+                partial_tick: 0.0,
+                rate: 1.0,
+                paused: false,
+            }
+        );
+        drop(save);
+        assert!(!open_world(&dir.0, None, None, 9).time_paused);
+        assert!(!open_world(&dir.0, Some("temp"), None, 9).time_paused);
     }
 
     #[test]

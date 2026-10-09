@@ -52,7 +52,7 @@ impl Server {
         };
         let rules = std::mem::take(&mut self.globals.game_rules);
         let difficulty = self.globals.difficulty;
-        let day_ticks = self.globals.day.ticks;
+        let day = self.globals.day;
         let weather = self.globals.weather;
         let player_mode = local
             .and_then(|uuid| self.players.get(uuid))
@@ -61,7 +61,7 @@ impl Server {
         let Some(save) = save else {
             return;
         };
-        if let Err(error) = save.write(spawn, Some(day_ticks), &rules, difficulty) {
+        if let Err(error) = save.write(spawn, Some(day), &rules, difficulty) {
             diag::warn!(World, "Minecraft level.dat not written: {error}");
         }
         if let Some(weather) = weather
@@ -126,12 +126,12 @@ pub fn autosave(globals: &mut Globals, terrain: &mut Terrain, mode: PlayerMode) 
     let spawn = terrain.stream.world_spawn;
     let rules = globals.game_rules.clone();
     let difficulty = globals.difficulty;
-    let day_ticks = globals.day.ticks;
+    let day = globals.day;
     let weather = globals.weather;
     globals.level_writer = std::thread::Builder::new()
         .name("minecraft-level-save".into())
         .spawn(move || {
-            if let Err(error) = save.write(spawn, Some(day_ticks), &rules, difficulty) {
+            if let Err(error) = save.write(spawn, Some(day), &rules, difficulty) {
                 diag::warn!(World, "Minecraft autosave: level.dat not written: {error}");
             }
             if let Some(weather) = weather
