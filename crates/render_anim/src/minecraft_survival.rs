@@ -1,4 +1,4 @@
-use crate::minecraft_death::{CombatTracker, DamageCause, DeathLine, FallLocation};
+use minecraft_survival::death::{CombatTracker, DamageCause, DeathLine, FallLocation};
 use glam::DVec3;
 use minecraftoss_entities::inside_blocks::{BlockEffect, Hazard, block_effects};
 use minecraftoss_entities::movement::Body;
@@ -2020,7 +2020,7 @@ mod tests {
         assert_eq!(death(&alone), said("%1$s tried to swim in lava", "Lava"));
         let mut chased = unfed();
         let zombie = DamageCause::mob(
-            crate::minecraft_death::MobAttack::Melee,
+            minecraft_survival::death::MobAttack::Melee,
             Some(4),
             Some("minecraft:zombie"),
         );
@@ -2040,7 +2040,7 @@ mod tests {
             ..standing_in([0.5, 1.0, 0.5])
         };
         let zombie = DamageCause::mob(
-            crate::minecraft_death::MobAttack::Melee,
+            minecraft_survival::death::MobAttack::Melee,
             Some(4),
             Some("minecraft:zombie"),
         );
@@ -2340,7 +2340,7 @@ mod tests {
     fn falling_out_of_the_world_after_a_zombie_hit_names_the_zombie() {
         let mut survival = unfed();
         let zombie = DamageCause::mob(
-            crate::minecraft_death::MobAttack::Melee,
+            minecraft_survival::death::MobAttack::Melee,
             Some(4),
             Some("minecraft:zombie"),
         );

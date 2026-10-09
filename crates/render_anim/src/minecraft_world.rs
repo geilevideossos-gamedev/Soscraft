@@ -152,7 +152,7 @@ struct Runtime {
     atlas_animation: AtlasAnimation,
     animation_clock: f64,
     spawn_gate: crate::minecraft_spawn_gate::SpawnGate,
-    death_watch: crate::minecraft_death::DeathWatch,
+    death_watch: minecraft_survival::death::DeathWatch,
     loader: Option<std::thread::JoinHandle<()>>,
     closing: Vec<std::thread::JoinHandle<()>>,
     autosave_ticks: u32,
@@ -624,11 +624,11 @@ fn update(
         ps.pm_type,
         playerstate_iw4::PM_TYPE_SPECTATOR | playerstate_iw4::PM_TYPE_INTERMISSION | playerstate_iw4::PM_TYPE_DEAD | playerstate_iw4::PM_TYPE_DEAD_LINKED
     );
-    let (in_world, died) = crate::minecraft_death::life_state(ps.pm_type);
+    let (in_world, died) = minecraft_survival::death::life_state(ps.pm_type);
     if sim::voxel::take_team_switches().contains(&local.0.0) {
         death_watch.switch_teams();
     }
-    let keep_inventory = crate::minecraft_death::keeps_belongings(world.game_rules.keep_inventory(), player_mode.mode);
+    let keep_inventory = minecraft_survival::death::keeps_belongings(world.game_rules.keep_inventory(), player_mode.mode);
     survival.rules = crate::minecraft_survival::SurvivalRules::of(&world.game_rules, world.difficulty);
     survival.set_game_mode(player_mode);
     authority.0.set_minecraft_abilities(local.0, ability_bits(player_mode));
@@ -692,7 +692,7 @@ fn update(
         };
         let under = block_at(0.2);
         if climbing {
-            survival.set_climbable(Some(block_at(0.0).map_or(crate::minecraft_death::FallLocation::OtherClimbable, |(_, b)| crate::minecraft_death::FallLocation::of_climbable(&b.id.key()))));
+            survival.set_climbable(Some(block_at(0.0).map_or(minecraft_survival::death::FallLocation::OtherClimbable, |(_, b)| minecraft_survival::death::FallLocation::of_climbable(&b.id.key()))));
         }
         let centre = |pos: (i32, i32, i32)| {
             Vec3::from_array(sim::voxel::to_map(origin, [pos.0 as f64 + 0.5, pos.1 as f64 + 1.0, pos.2 as f64 + 0.5]))
@@ -1430,7 +1430,7 @@ fn update(
     }
 
     let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
-    death_watch.stood(crate::minecraft_death::DeathSpot { feet, eye });
+    death_watch.stood(minecraft_survival::death::DeathSpot { feet, eye });
     let (pitch, yaw) = (ps.viewangles[0].to_radians(), ps.viewangles[1].to_radians());
     let map_forward = [pitch.cos() * yaw.cos(), pitch.cos() * yaw.sin(), -pitch.sin()];
     let forward = glam::Vec3::new(map_forward[0], map_forward[2], -map_forward[1]);
@@ -1612,7 +1612,7 @@ fn update(
                 continue;
             }
             authority.0.teleport(local.0, sim::voxel::to_map(origin, landing.to_array()));
-            survival.hurt(minecraft_terrain::thrown::PEARL_DAMAGE, minecraftoss_player::survival::Armor::default(), None, crate::minecraft_death::DamageCause::EnderPearl);
+            survival.hurt(minecraft_terrain::thrown::PEARL_DAMAGE, minecraftoss_player::survival::Armor::default(), None, minecraft_survival::death::DamageCause::EnderPearl);
             steps.air_peak = None;
             if let Some(sounds) = sounds.as_mut() {
                 sounds.play(&world.packs, "minecraft:entity.player.teleport", Some(at(landing.to_array())), 1.0, 1.0);
@@ -1814,7 +1814,7 @@ fn update(
         if let Some(death) = death_watch.take()
             && !death.keep_inventory
         {
-            for stack in crate::minecraft_death::death_drops(&mut entities.inventory, |stack| crate::minecraft_inventory::weapon_of(stack).is_some()) {
+            for stack in minecraft_survival::death::death_drops(&mut entities.inventory, |stack| crate::minecraft_inventory::weapon_of(stack).is_some()) {
                 entities.world_items.drop_on_death(stack, glam::DVec3::from_array(death.spot.eye));
             }
             entities.award_experience(death.spot.feet, death.experience);

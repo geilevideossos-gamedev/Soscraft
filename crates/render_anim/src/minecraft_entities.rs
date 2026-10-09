@@ -35,7 +35,7 @@ const PLAYER: u64 = 0;
 /// `Player.getEyeHeight` standing.
 const EYE_HEIGHT: f32 = 1.62;
 const SERVER_ITEM: u32 = 1 << 31;
-type Hits = Vec<(f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::minecraft_death::DamageCause)>;
+type Hits = Vec<(f32, Option<[f64; 3]>, Option<[f64; 2]>, minecraft_survival::death::DamageCause)>;
 type Changes = Vec<((i32, i32, i32), Option<Block>)>;
 
 pub(crate) struct Blow {
@@ -723,11 +723,11 @@ impl Entities {
                     PlayerHitKind::Explosion { knockback } => [-knockback.x, -knockback.z],
                 };
                 let attack = match hit.kind {
-                    PlayerHitKind::Melee { .. } => crate::minecraft_death::MobAttack::Melee,
-                    PlayerHitKind::Arrow { .. } => crate::minecraft_death::MobAttack::Arrow,
-                    PlayerHitKind::Explosion { .. } => crate::minecraft_death::MobAttack::Explosion,
+                    PlayerHitKind::Melee { .. } => minecraft_survival::death::MobAttack::Melee,
+                    PlayerHitKind::Arrow { .. } => minecraft_survival::death::MobAttack::Arrow,
+                    PlayerHitKind::Explosion { .. } => minecraft_survival::death::MobAttack::Explosion,
                 };
-                let cause = crate::minecraft_death::DamageCause::mob(attack, hit.source, hit.source.and_then(|id| self.world.entity_type(id)));
+                let cause = minecraft_survival::death::DamageCause::mob(attack, hit.source, hit.source.and_then(|id| self.world.entity_type(id)));
                 let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. }) || hit.source.is_some();
                 let damage = difficulty_scaled(hit.damage, self.difficulty, scales);
                 if damage > 0.0 {

@@ -180,7 +180,7 @@ impl CommandWorld for Host<'_> {
         if player != HOST {
             return false;
         }
-        self.survival.kill(crate::minecraft_death::DamageCause::Kill);
+        self.survival.kill(minecraft_survival::death::DamageCause::Kill);
         true
     }
 
@@ -245,7 +245,7 @@ impl CommandWorld for Host<'_> {
             }
             "minecraft:instant_damage" => {
                 let damage = 6_i32.wrapping_shl(u32::from(amplifier)).max(0) as f32;
-                self.survival.hurt(damage, Armor::default(), None, crate::minecraft_death::DamageCause::Magic);
+                self.survival.hurt(damage, Armor::default(), None, minecraft_survival::death::DamageCause::Magic);
                 return true;
             }
             "minecraft:saturation" => {

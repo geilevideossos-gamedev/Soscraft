@@ -69,3 +69,23 @@ A1 is commit `5a7a4e4`.
   5. Stay 5 minutes in the world. The log says "Minecraft autosave: N chunks queued".
 - **Kit:** `minecraft:cobblestone` x64 and `minecraft:oak_planks` x64 (both in the regression kit).
 - **Decisions:** none. The `save` tests keep their `render_anim-saves-` temp folder prefix, because the move changes no other line.
+
+## A3. Minecraft death rules move to minecraft_survival
+
+A2 is commit `86fa3d4`.
+
+- **What changed:**
+  - `git mv crates/render_anim/src/minecraft_death.rs crates/minecraft_survival/src/death.rs` (`R`), with its 30 `pub(crate)` turned into `pub`. No other line of it changed.
+  - `minecraft_survival/src/lib.rs` gains `pub mod death;`.
+  - `render_anim`: `mod minecraft_death;` is gone, and `crate::minecraft_death::` became `minecraft_survival::death::` in `minecraft_world.rs` (8 sites on 7 lines), `minecraft_entities.rs` (5), `minecraft_survival.rs` (4: the `use` at line 1 and three tests; the plan counted 3 at `d426239`) and `minecraft_chat.rs` (2).
+- **Tests:** the 25 `death` tests moved with the file (24 in the plan, plus the void test from `65f6402`). `minecraft_survival` 37, `render_anim` 116, total unchanged.
+- **Checks:** `check -p launcher --locked`, `test -p minecraft_survival --locked`, `test -p render_anim --locked`; the staged `lib.rs` passes `rustfmt --check --edition 2024`.
+- **Owner test** (deaths, death messages and drops must work exactly as before):
+  1. Load a Minecraft match with the regression kit and drink a few experience bottles to get some levels.
+  2. Fall from 6 blocks or more: fall damage and the fall sound. Fall again until you die: the message is "... fell from a high place" and the killed-by card names it.
+  3. Respawn. Items (apart from guns) and XP lie where you died, and the guns are still in the hotbar.
+  4. Put the totem of undying in the offhand and die again: the totem pops and you live.
+  5. Spawn a zombie from the egg and let it kill you: "... was slain by Zombie".
+  6. Stand in lava until you die: "... tried to swim in lava".
+- **Kit:** `minecraft:totem_of_undying` x1, `minecraft:zombie_spawn_egg` x2, `minecraft:lava_bucket` x1, `minecraft:experience_bottle` x64, `minecraft:cobblestone` x64 (all in the regression kit).
+- **Decisions:** none.
