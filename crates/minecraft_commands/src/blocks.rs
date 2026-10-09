@@ -3,9 +3,11 @@ use crate::permissions::GAMEMASTERS;
 use crate::reader::{CommandError, StringReader, literal};
 use crate::server::{Answer, CommandData, Ctx};
 use crate::text::Text;
+use crate::tree::Exec;
 use crate::tree::Node;
 
 pub const AIR: [&str; 3] = ["minecraft:air", "minecraft:cave_air", "minecraft:void_air"];
+pub const MAX_BLOCK_MODIFICATIONS: &str = "max_block_modifications";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BlockState {
@@ -194,6 +196,62 @@ pub fn resolve_block(data: &CommandData, parsed: &ParsedBlock) -> Result<BlockIn
     Ok(input)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockPredicate {
+    pub ids: Vec<String>,
+    pub properties: Vec<(String, String)>,
+    pub nbt: Option<String>,
+}
+
+impl BlockPredicate {
+    pub fn test(&self, access: &dyn BlockAccess, pos: [i32; 3]) -> bool {
+        let state = access.state(pos);
+        if !self.ids.contains(&state.id) {
+            return false;
+        }
+        let matches = self.properties.iter().all(|(name, value)| {
+            state
+                .properties
+                .iter()
+                .any(|(known, current)| known == name && current == value)
+        });
+        matches
+            && self
+                .nbt
+                .as_ref()
+                .is_none_or(|nbt| access.block_entity_matches(pos, nbt))
+    }
+}
+
+pub fn resolve_predicate(
+    data: &CommandData,
+    parsed: &ParsedBlock,
+) -> Result<BlockPredicate, CommandError> {
+    if !parsed.tag {
+        let input = resolve_block(data, parsed)?;
+        return Ok(BlockPredicate {
+            ids: vec![input.id],
+            properties: input.properties,
+            nbt: input.nbt,
+        });
+    }
+    let Some(members) = data.block_tags.get(&parsed.id) else {
+        return Err(
+            CommandError::new("arguments.block.tag.unknown", vec![literal(&parsed.id)])
+                .at(parsed.at),
+        );
+    };
+    Ok(BlockPredicate {
+        ids: members.clone(),
+        properties: parsed
+            .properties
+            .iter()
+            .map(|property| (property.name.clone(), property.value.clone()))
+            .collect(),
+        nbt: parsed.nbt.clone(),
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Loaded {
     Yes,
@@ -204,17 +262,21 @@ pub enum Loaded {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FillMode {
     Replace,
+    Outline,
+    Hollow,
     Destroy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BlockFilter {
     Air,
+    Matching(BlockPredicate),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditKind {
     SetBlock,
+    Fill,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -234,16 +296,41 @@ pub trait BlockAccess {
     fn destroy(&mut self, pos: [i32; 3]) -> bool;
     fn place(&mut self, pos: [i32; 3], block: &BlockInput, strict: bool) -> bool;
     fn update_neighbours(&mut self, _pos: [i32; 3], _old: &BlockState) {}
+    fn block_entity_matches(&self, _pos: [i32; 3], _nbt: &str) -> bool {
+        false
+    }
 }
 
 fn passes(filter: Option<&BlockFilter>, access: &dyn BlockAccess, pos: [i32; 3]) -> bool {
     match filter {
         None => true,
         Some(BlockFilter::Air) => access.state(pos).is_air(),
+        Some(BlockFilter::Matching(predicate)) => predicate.test(access, pos),
     }
 }
 
+pub fn bounds(from: [i32; 3], to: [i32; 3]) -> ([i32; 3], [i32; 3]) {
+    (
+        std::array::from_fn(|axis| from[axis].min(to[axis])),
+        std::array::from_fn(|axis| from[axis].max(to[axis])),
+    )
+}
+
+pub fn volume(from: [i32; 3], to: [i32; 3]) -> i64 {
+    let (min, max) = bounds(from, to);
+    (0..3)
+        .map(|axis| i64::from(max[axis]) - i64::from(min[axis]) + 1)
+        .product()
+}
+
+fn on_edge(min: [i32; 3], max: [i32; 3], pos: [i32; 3]) -> bool {
+    (0..3).any(|axis| pos[axis] == min[axis] || pos[axis] == max[axis])
+}
+
 pub fn apply_edit(edit: &BlockEdit, access: &mut dyn BlockAccess) -> i32 {
+    if edit.kind == EditKind::Fill {
+        return fill(edit, access);
+    }
     let pos = edit.from;
     if !passes(edit.filter.as_ref(), access, pos) {
         return 0;
@@ -264,7 +351,54 @@ pub fn apply_edit(edit: &BlockEdit, access: &mut dyn BlockAccess) -> i32 {
     1
 }
 
+fn fill(edit: &BlockEdit, access: &mut dyn BlockAccess) -> i32 {
+    let (min, max) = bounds(edit.from, edit.to);
+    let air = BlockInput::air();
+    let mut count = 0;
+    let mut updated = Vec::new();
+    for z in min[2]..=max[2] {
+        for y in min[1]..=max[1] {
+            for x in min[0]..=max[0] {
+                let pos = [x, y, z];
+                if !passes(edit.filter.as_ref(), access, pos) {
+                    continue;
+                }
+                let old = access.state(pos);
+                let affected = edit.mode == FillMode::Destroy && access.destroy(pos);
+                let block = match edit.mode {
+                    FillMode::Outline if !on_edge(min, max, pos) => None,
+                    FillMode::Hollow if !on_edge(min, max, pos) => Some(&air),
+                    _ => Some(&edit.block),
+                };
+                let placed = block.is_some_and(|block| access.place(pos, block, edit.strict));
+                if !placed {
+                    count += i32::from(affected);
+                    continue;
+                }
+                if !edit.strict {
+                    updated.push((pos, old));
+                }
+                count += 1;
+            }
+        }
+    }
+    for (pos, old) in updated {
+        access.update_neighbours(pos, &old);
+    }
+    count
+}
+
 pub fn edit_answer(edit: &BlockEdit, count: i32) -> Result<Text, CommandError> {
+    if edit.kind == EditKind::Fill {
+        return if count == 0 {
+            Err(CommandError::new("commands.fill.failed", Vec::new()))
+        } else {
+            Ok(Text::translate(
+                "commands.fill.success",
+                vec![literal(count)],
+            ))
+        };
+    }
     if count == 0 {
         return Err(CommandError::new("commands.setblock.failed", Vec::new()));
     }
@@ -324,6 +458,70 @@ pub(crate) fn setblock_node() -> Node {
     )
 }
 
+pub(crate) fn fill_node() -> Node {
+    let modes = |node: Node, exec: Exec| {
+        node.executes(exec)
+            .then(Node::literal("outline").executes(exec))
+            .then(Node::literal("hollow").executes(exec))
+            .then(Node::literal("destroy").executes(exec))
+            .then(Node::literal("strict").executes(exec))
+    };
+    let block = modes(Node::argument("block", ArgKind::BlockState), fill_blocks)
+        .then(Node::literal("replace").executes(fill_blocks).then(modes(
+            Node::argument("filter", ArgKind::BlockPredicate),
+            fill_blocks,
+        )))
+        .then(Node::literal("keep").executes(fill_blocks));
+    Node::literal("fill").requires(GAMEMASTERS).then(
+        Node::argument("from", ArgKind::BlockPos)
+            .then(Node::argument("to", ArgKind::BlockPos).then(block)),
+    )
+}
+
+fn fill_blocks(ctx: &mut Ctx) -> Result<i32, CommandError> {
+    let block = block_arg(ctx, "block")?;
+    let filter = match ctx.arg("filter") {
+        Some(Arg::Block(parsed)) => Some(BlockFilter::Matching(resolve_predicate(
+            ctx.server.data(),
+            parsed,
+        )?)),
+        _ => None,
+    };
+    let from = loaded_pos(ctx, "from")?;
+    let to = loaded_pos(ctx, "to")?;
+    let size = volume(from, to);
+    let limit = ctx.world.game_rules().int(MAX_BLOCK_MODIFICATIONS);
+    if size > i64::from(limit) {
+        return Err(CommandError::new(
+            "commands.fill.toobig",
+            vec![literal(limit), literal(size)],
+        ));
+    }
+    let last = ctx.literals.last().copied();
+    let mode = match last {
+        Some("outline") => FillMode::Outline,
+        Some("hollow") => FillMode::Hollow,
+        Some("destroy") => FillMode::Destroy,
+        _ => FillMode::Replace,
+    };
+    let filter = if last == Some("keep") {
+        Some(BlockFilter::Air)
+    } else {
+        filter
+    };
+    let edit = BlockEdit {
+        kind: EditKind::Fill,
+        dimension: ctx.dimension(),
+        from,
+        to,
+        block,
+        mode,
+        filter,
+        strict: last == Some("strict"),
+    };
+    run_edit(ctx, edit)
+}
+
 fn setblock(ctx: &mut Ctx) -> Result<i32, CommandError> {
     let block = block_arg(ctx, "block")?;
     let pos = loaded_pos(ctx, "pos")?;
@@ -357,6 +555,7 @@ pub(crate) mod tests {
         pub(crate) states: BTreeMap<[i32; 3], BlockState>,
         pub(crate) destroyed: Vec<[i32; 3]>,
         pub(crate) updated: Vec<[i32; 3]>,
+        pub(crate) placed: Vec<[i32; 3]>,
     }
 
     pub(crate) fn state(id: &str) -> BlockState {
@@ -396,6 +595,7 @@ pub(crate) mod tests {
             } else {
                 self.states.insert(pos, placed);
             }
+            self.placed.push(pos);
             true
         }
 
@@ -558,6 +758,179 @@ pub(crate) mod tests {
             loaded: Some(Loaded::Yes),
             ..FakeWorld::default()
         }
+    }
+
+    fn fill_edit(to: [i32; 3], block: &str, mode: FillMode) -> BlockEdit {
+        BlockEdit {
+            kind: EditKind::Fill,
+            to,
+            from: [0, 0, 0],
+            mode,
+            ..edit(block, FillMode::Replace, None, false)
+        }
+    }
+
+    fn count(blocks: &Blocks, id: &str) -> usize {
+        blocks
+            .states
+            .values()
+            .filter(|state| state.id == id)
+            .count()
+    }
+
+    #[test]
+    fn fill_walks_x_then_y_then_z_and_counts_changes() {
+        let mut blocks = Blocks::default();
+        let cube = fill_edit([1, 1, 1], "minecraft:stone", FillMode::Replace);
+        assert_eq!(apply_edit(&cube, &mut blocks), 8);
+        assert_eq!(
+            blocks.placed[..4],
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]]
+        );
+        assert_eq!(blocks.updated.len(), 8);
+        assert_eq!(apply_edit(&cube, &mut blocks), 0);
+        let mut blocks = Blocks::default();
+        let outline = fill_edit([2, 2, 2], "minecraft:glass", FillMode::Outline);
+        assert_eq!(apply_edit(&outline, &mut blocks), 26);
+        assert!(!blocks.states.contains_key(&[1, 1, 1]));
+        let mut blocks = Blocks::default();
+        let solid = fill_edit([2, 2, 2], "minecraft:stone", FillMode::Replace);
+        apply_edit(&solid, &mut blocks);
+        let hollow = fill_edit([2, 2, 2], "minecraft:glass", FillMode::Hollow);
+        assert_eq!(apply_edit(&hollow, &mut blocks), 27);
+        assert_eq!(
+            (count(&blocks, "minecraft:glass"), blocks.states.len()),
+            (26, 26)
+        );
+        let destroy = fill_edit([0, 0, 1], "minecraft:glass", FillMode::Destroy);
+        assert_eq!(apply_edit(&destroy, &mut blocks), 2);
+        assert_eq!(blocks.destroyed, vec![[0, 0, 0], [0, 0, 1]]);
+        let strict = BlockEdit {
+            strict: true,
+            ..fill_edit([0, 0, 3], "minecraft:stone", FillMode::Replace)
+        };
+        let updates = blocks.updated.len();
+        assert_eq!(apply_edit(&strict, &mut blocks), 4);
+        assert_eq!(blocks.updated.len(), updates);
+    }
+
+    #[test]
+    fn fill_filters_by_air_blocks_tags_and_properties() {
+        let mut blocks = Blocks::default();
+        blocks.states.insert([0, 0, 0], state("minecraft:stone"));
+        blocks.states.insert([1, 0, 0], state("minecraft:dirt"));
+        blocks.states.insert(
+            [2, 0, 0],
+            BlockState {
+                id: "minecraft:oak_log".into(),
+                properties: vec![("axis".into(), "y".into())],
+            },
+        );
+        let keep = BlockEdit {
+            filter: Some(BlockFilter::Air),
+            ..fill_edit([3, 0, 0], "minecraft:glass", FillMode::Replace)
+        };
+        assert_eq!(apply_edit(&keep, &mut blocks), 1);
+        assert_eq!(blocks.states[&[3, 0, 0]].id, "minecraft:glass");
+        let mut data = data();
+        data.block_tags
+            .insert("minecraft:logs".into(), vec!["minecraft:oak_log".into()]);
+        let tag = parse("#logs[axis=x]", true).unwrap();
+        let sideways = resolve_predicate(&data, &tag).unwrap();
+        let only = |predicate: BlockPredicate| BlockEdit {
+            filter: Some(BlockFilter::Matching(predicate)),
+            ..fill_edit([3, 0, 0], "minecraft:gold_block", FillMode::Replace)
+        };
+        assert_eq!(apply_edit(&only(sideways), &mut blocks), 0);
+        let upright = resolve_predicate(&data, &parse("#logs[axis=y]", true).unwrap()).unwrap();
+        assert_eq!(apply_edit(&only(upright), &mut blocks), 1);
+        let stone = resolve_predicate(&data, &parse("stone", true).unwrap()).unwrap();
+        assert_eq!(apply_edit(&only(stone), &mut blocks), 1);
+        let with_nbt = resolve_predicate(&data, &parse("glass{x:1}", true).unwrap()).unwrap();
+        assert_eq!(apply_edit(&only(with_nbt), &mut blocks), 0);
+        let unknown = resolve_predicate(&data, &parse("#nope", true).unwrap()).unwrap_err();
+        assert_eq!(
+            (key(&unknown), unknown.cursor),
+            ("arguments.block.tag.unknown".into(), Some(0))
+        );
+        assert_eq!(volume([0, 0, 0], [-1, 2, 3]), 24);
+        assert_eq!(bounds([5, 0, -1], [1, 2, -3]), ([1, 0, -3], [5, 2, -1]));
+    }
+
+    #[test]
+    fn fill_answers_like_vanilla() {
+        let mut server = server();
+        *server.data_mut() = data();
+        let mut world = world();
+        let out = run(
+            &mut server,
+            &mut world,
+            HOST,
+            "fill 1 64 1 5 68 5 glass hollow",
+        );
+        assert_eq!(texts(&out), vec!["Successfully filled 98 block(s)"]);
+        assert_eq!(world.edits[0].mode, FillMode::Hollow);
+        assert_eq!(count(&world.blocks, "minecraft:glass"), 98);
+        let out = run(
+            &mut server,
+            &mut world,
+            HOST,
+            "fill 1 64 1 5 68 5 glass outline",
+        );
+        assert_eq!(texts(&out), vec!["No blocks were filled"]);
+        assert_eq!(out[0].2, RED);
+        let out = run(
+            &mut server,
+            &mut world,
+            HOST,
+            "fill 1 64 1 5 68 5 stone replace glass strict",
+        );
+        assert_eq!(texts(&out), vec!["Successfully filled 98 block(s)"]);
+        assert!(world.edits[2].strict);
+        let out = run(
+            &mut server,
+            &mut world,
+            HOST,
+            "fill 0 64 1 6 64 1 gold_block keep",
+        );
+        assert_eq!(texts(&out), vec!["Successfully filled 2 block(s)"]);
+        let out = run(
+            &mut server,
+            &mut world,
+            HOST,
+            "fill 0 0 0 100 100 100 stone",
+        );
+        assert_eq!(
+            texts(&out),
+            vec!["Too many blocks in the specified area (maximum 32768, but specified 1030301)"]
+        );
+        world.rules.set(MAX_BLOCK_MODIFICATIONS, "8").unwrap();
+        let out = run(&mut server, &mut world, HOST, "fill 0 0 0 1 1 2 stone");
+        assert_eq!(
+            texts(&out),
+            vec!["Too many blocks in the specified area (maximum 8, but specified 12)"]
+        );
+        let out = run(
+            &mut server,
+            &mut world,
+            HOST,
+            "fill 0 0 0 1 1 1 stone replace #nope",
+        );
+        assert_eq!(
+            texts(&out),
+            vec![
+                "Unknown block tag 'minecraft:nope'",
+                "...e replace #nope<--[HERE]"
+            ]
+        );
+        let out = run(&mut server, &mut world, HOST, "fill 0 0 0 1 1 1 #logs");
+        assert_eq!(
+            texts(&out)[0],
+            "Tags aren't allowed here; only actual blocks are"
+        );
+        world.loaded = Some(Loaded::Unloaded);
+        let out = run(&mut server, &mut world, HOST, "fill 0 0 0 1 1 1 stone");
+        assert_eq!(texts(&out), vec!["That position is not loaded"]);
     }
 
     #[test]

@@ -360,3 +360,54 @@ Kit: none needed.
    - `destroy`: vanilla `destroyBlock(pos, true)`: false for air, otherwise break with the break particles and sound, drop the loot like a player break without a tool, and set air.
    - `place`: start from the block's default state with the given properties, update the shape from the neighbours unless strict (stairs and fences connect), keep the given properties, write it with the NBT for a block entity, and return false when nothing changed.
    - `update_neighbours`: the block updates that a player placement sends.
+
+## Minecraft /fill fills areas like vanilla
+
+Commit: the commit that adds this entry (branch `track-c`, group "commands").
+
+### What changed
+
+- `crates/minecraft_commands/src/blocks.rs` gains `/fill`, checked against 26.3 `FillCommand`, `FillCommand$Mode`, `BlockPredicateArgument`, `BlockStateParser.readVagueProperties` and `BlockPos.betweenClosed` with javap:
+  - The tree is 26.3's: `/fill <from> <to> <block> [outline|hollow|destroy|strict|keep|replace [<filter> [outline|hollow|destroy|strict]]]` at level 2. `strict` is replace without block updates.
+  - **Order**: the block, then the filter (both parse-time in vanilla), then the two corners (`getLoadedBlockPos` each), then the size. The size is the box's volume as a 64-bit number, and anything above the `max_block_modifications` game rule (32768 by default) gives `commands.fill.toobig` with the limit and the size.
+  - **The loop** (`apply_edit` for `EditKind::Fill`): x fastest, then y, then z, as `betweenClosed`. Each position: the filter, the old state, `destroy` breaks with drops first, then the mode picks the block (`outline` skips the inside, `hollow` puts air inside), and a placement that changes nothing does not count unless the block was destroyed. The neighbour updates run after the whole loop, unless strict. 0 gives `commands.fill.failed`, otherwise `commands.fill.success` with the count.
+  - **Filters**: `keep` is air only. `replace <filter>` takes a block predicate: a block with exact properties, or `#tag` with loose properties (a block without that property does not match) and an optional `{nbt}` that the world compares (`BlockAccess::block_entity_matches`, false by default). An unknown tag gives `arguments.block.tag.unknown` with its context.
+- `ArgKind::BlockPredicate` parses like a block state but allows `#`.
+- `CommandHints::block_tags`; a predicate suggests `#` plus the block tags when empty or after `#`, otherwise block ids.
+- The glue for `/setblock` covers `/fill`: the same `edit_blocks` and `BlockAccess`.
+
+### Tests added
+
+- `blocks::tests` (3 more):
+  - The loop order, counting, refills that change nothing, outline (26 of 27), hollow over a solid cube (26 glass and the core cleared, 27 changes), destroy and strict.
+  - Filters: air, a tag with a loose property that does and does not match, an exact block, an NBT predicate, an unknown tag, and the box helpers.
+  - `/fill` end to end: a 5x5x5 glass box (98), the same box again, `replace glass strict`, `keep`, too big at the default and a lowered limit, an unknown tag with its context, a tag as the block, and an unloaded corner.
+- `suggest::tests::block_arguments_suggest_whole_coordinates_and_block_ids` covers the filter suggestions and the modes after it.
+
+### In-game test steps
+
+`/fill` needs the same glue as `/setblock`; until then it answers "That position is not loaded".
+
+```
+IW4L_MINECRAFT_KIT=stone*64
+```
+
+1. `/fill ~1 ~ ~1 ~5 ~4 ~5 glass hollow`: "Successfully filled 98 block(s)" and a glass box with air inside appears next to you. Screenshot.
+2. The same command again: red "No blocks were filled".
+3. `/fill ~1 ~ ~1 ~5 ~4 ~5 stone replace glass`: the box turns to stone, "Successfully filled 98 block(s)".
+4. `/fill ~1 ~ ~1 ~5 ~4 ~5 air destroy`: the stone breaks with particles and drops. Screenshot.
+5. `/fill ~ ~ ~ ~100 ~100 ~100 stone`: red "Too many blocks in the specified area (maximum 32768, but specified 1030301)".
+6. `/gamerule max_block_modifications 8`, then `/fill ~1 ~ ~1 ~2 ~1 ~3 stone`: red "... (maximum 8, but specified 12)". Set it back with `/gamerule max_block_modifications 32768`.
+
+Kit: none needed.
+
+### Decisions
+
+- **Only the two corners must be loaded**, as in 26.3 (`getLoadedBlockPos` on `from` and `to`). Vanilla then loads whatever lies between; the glue decides how to handle unloaded chunks inside the box (see below).
+- **The whole fill runs in one call.** The brief suggested spreading a large fill over ticks; vanilla does it in one tick too, and 32768 blocks is the cap.
+
+### After the split
+
+1. Same as `/setblock`. In addition, `BlockAccess::block_entity_matches(pos, nbt)` should parse the SNBT and compare it with the block entity's saved tag the way `NbtUtils.compareNbt(expected, actual, true)` does (every given key must match; lists match as subsets). Returning false keeps NBT predicates from matching.
+2. **Chunks inside the box that are not loaded**: vanilla loads them synchronously. The glue can generate or load them on the server thread before running the loop, or skip them and count only what changed; skipping is the safer first step.
+3. **Block tags**: as in the `/setblock` notes, `block_tags` from `data/minecraft/tags/block/**.json`.

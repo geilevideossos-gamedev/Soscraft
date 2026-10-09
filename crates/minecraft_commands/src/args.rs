@@ -38,6 +38,7 @@ pub enum ArgKind {
     ItemPredicate,
     BlockPos,
     BlockState,
+    BlockPredicate,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -184,6 +185,7 @@ impl ArgKind {
             }
             Self::BlockPos => block_pos(reader).map(Arg::BlockPos),
             Self::BlockState => crate::blocks::parse_block(reader, false).map(Arg::Block),
+            Self::BlockPredicate => crate::blocks::parse_block(reader, true).map(Arg::Block),
         }
     }
 }

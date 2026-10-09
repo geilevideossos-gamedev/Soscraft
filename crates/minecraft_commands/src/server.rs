@@ -885,6 +885,12 @@ pub(crate) mod tests {
             "argument.pos.unloaded" => "That position is not loaded",
             "commands.setblock.failed" => "Could not set the block",
             "commands.setblock.success" => "Changed the block at %s, %s, %s",
+            "arguments.block.tag.unknown" => "Unknown block tag '%s'",
+            "commands.fill.failed" => "No blocks were filled",
+            "commands.fill.success" => "Successfully filled %s block(s)",
+            "commands.fill.toobig" => {
+                "Too many blocks in the specified area (maximum %s, but specified %s)"
+            }
             "parsing.int.invalid" => "Invalid integer '%s'",
             _ => return None,
         };

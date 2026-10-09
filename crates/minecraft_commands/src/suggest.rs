@@ -37,6 +37,8 @@ pub struct CommandHints {
     #[serde(default)]
     pub blocks: Vec<String>,
     #[serde(default)]
+    pub block_tags: Vec<String>,
+    #[serde(default)]
     pub hit_block: Option<[i32; 3]>,
 }
 
@@ -52,6 +54,7 @@ impl CommandHints {
             hit: None,
             item_tags: server.data().item_tags.keys().cloned().collect(),
             blocks: server.data().blocks.keys().cloned().collect(),
+            block_tags: server.data().block_tags.keys().cloned().collect(),
             hit_block: None,
         }
     }
@@ -367,6 +370,20 @@ fn suggest_argument(
         ArgKind::ItemPredicate => item_predicate(start, hints, found),
         ArgKind::BlockPos => block_coordinates(start, hints, found),
         ArgKind::BlockState => block_state(start, hints, found),
+        ArgKind::BlockPredicate => {
+            let typed = found.typed(start);
+            let tags = hints.block_tags.iter().map(String::as_str);
+            if typed.starts_with('#') {
+                found.tags(start, tags);
+            } else {
+                if typed.is_empty() {
+                    for tag in tags {
+                        found.add(start, format!("#{tag}"));
+                    }
+                }
+                block_state(start, hints, found);
+            }
+        }
         ArgKind::Greedy | ArgKind::Int { .. } | ArgKind::Nbt => {}
     }
 }
@@ -676,6 +693,7 @@ mod tests {
             hit: None,
             item_tags: owned(&["minecraft:logs", "minecraft:planks"]),
             blocks: owned(&["minecraft:stone", "minecraft:oak_stairs", "minecraft:glass"]),
+            block_tags: owned(&["minecraft:logs", "minecraft:stairs"]),
             hit_block: None,
         }
     }
@@ -727,6 +745,7 @@ mod tests {
                 "effect",
                 "enchant",
                 "experience",
+                "fill",
                 "gamemode",
                 "gamerule",
                 "give",
@@ -1018,6 +1037,18 @@ mod tests {
         assert_eq!(
             texts(&at_end("/setblock ~ ~ ~ glass ", OWNERS)),
             vec!["destroy", "keep", "replace", "strict"]
+        );
+        assert_eq!(
+            texts(&at_end("/fill ~ ~ ~ ~ ~ ~ glass replace #st", OWNERS)),
+            vec!["#minecraft:stairs"]
+        );
+        assert_eq!(
+            texts(&at_end("/fill ~ ~ ~ ~ ~ ~ glass replace ", OWNERS))[..2],
+            ["#minecraft:logs", "#minecraft:stairs"]
+        );
+        assert_eq!(
+            texts(&at_end("/fill ~ ~ ~ ~ ~ ~ glass replace stone ", OWNERS)),
+            vec!["destroy", "hollow", "outline", "strict"]
         );
     }
 

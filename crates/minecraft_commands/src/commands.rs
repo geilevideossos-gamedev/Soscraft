@@ -181,6 +181,7 @@ fn build() -> Vec<Node> {
         crate::experience::alias(),
         crate::enchant::node(),
         crate::blocks::setblock_node(),
+        crate::blocks::fill_node(),
     ])
 }
 
@@ -882,6 +883,7 @@ mod tests {
                 "/effect (clear|give)",
                 "/enchant <targets> <enchantment> [<level>]",
                 "/experience (add|query|set)",
+                "/fill <from> <to> <block> [destroy|hollow|keep|outline|replace|strict]",
                 "/gamemode <gamemode> [<target>]",
                 "/gamerule <rule> [<value>]",
                 "/give <targets> <item> [<count>]",
