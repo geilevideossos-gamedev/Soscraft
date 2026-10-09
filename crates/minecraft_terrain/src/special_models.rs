@@ -12,6 +12,8 @@ const UV_INSET: f32 = 1.0 / 32.0;
 const SHEET_HALF_THICKNESS: f32 = 0.01;
 const ALL_FACES: [&str; 6] = ["down", "up", "west", "north", "east", "south"];
 const SHULKER_SCALE: f32 = 0.9995;
+const SHULKER_LID_HEIGHT: f32 = 0.5;
+const SHULKER_LID_TURN: f32 = 270.0;
 const BANNER_SCALE: f32 = 2.0 / 3.0;
 const BANNER_FLAG_ANGLE: f32 = (-0.0125 + 0.01) * PI;
 const DYES: [(&str, u32); 16] = [
@@ -280,17 +282,7 @@ pub(crate) fn block_model(block: &Block) -> Result<Option<ResolvedModel>> {
         };
         push_head(&mut elements, head, None, pose)?;
     } else if path == "shulker_box" || path.ends_with("_shulker_box") {
-        let texture = match path.strip_suffix("_shulker_box") {
-            Some(color) => format!("minecraft:entity/shulker/shulker_{color}"),
-            None => "minecraft:entity/shulker/shulker".to_owned(),
-        };
-        let facing = property("facing").unwrap_or("up");
-        let pose = Mat4::from_translation(Vec3::splat(0.5))
-            * Mat4::from_scale(Vec3::splat(SHULKER_SCALE))
-            * direction_rotation(facing)
-            * Mat4::from_scale(Vec3::new(1.0, -1.0, -1.0))
-            * Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0));
-        push_shulker(&mut elements, Sheet::new(&texture, [64.0, 64.0])?, pose);
+        elements = shulker_box_model(block, 0.0)?.elements;
     } else if banner_dye(block).is_some() {
         let wall = path.ends_with("_wall_banner");
         let degrees = if wall {
@@ -312,6 +304,24 @@ pub(crate) fn block_model(block: &Block) -> Result<Option<ResolvedModel>> {
         return Ok(None);
     }
     Ok(Some(ResolvedModel { elements }))
+}
+
+pub(crate) fn shulker_box_model(block: &Block, progress: f32) -> Result<ResolvedModel> {
+    let path = block.id.path.as_str();
+    let texture = match path.strip_suffix("_shulker_box") {
+        Some(color) => format!("minecraft:entity/shulker/shulker_{color}"),
+        None => "minecraft:entity/shulker/shulker".to_owned(),
+    };
+    let facing = block.properties.get("facing").map_or("up", String::as_str);
+    let pose = Mat4::from_translation(Vec3::splat(0.5))
+        * Mat4::from_scale(Vec3::splat(SHULKER_SCALE))
+        * direction_rotation(facing)
+        * Mat4::from_scale(Vec3::new(1.0, -1.0, -1.0))
+        * Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0));
+    let mut elements = Vec::new();
+    let sheet = Sheet::new(&texture, [64.0, 64.0])?;
+    push_shulker(&mut elements, sheet, pose, progress);
+    Ok(ResolvedModel { elements })
 }
 
 pub(crate) fn extra_elements(block: &Block) -> Result<Vec<Element>> {
@@ -364,7 +374,7 @@ pub(crate) fn item_model(special: &Value) -> Result<Option<ResolvedModel>> {
                 size: [64.0, 64.0],
                 tinted: false,
             };
-            push_shulker(&mut elements, sheet, Mat4::IDENTITY);
+            push_shulker(&mut elements, sheet, Mat4::IDENTITY, 0.0);
         }
         "minecraft:head" => {
             let Some(head) = field("kind").and_then(Head::of_kind) else {
@@ -781,11 +791,14 @@ fn inset(start: f32, end: f32) -> (f32, f32) {
     }
 }
 
-fn push_shulker(elements: &mut Vec<Element>, sheet: Sheet, pose: Mat4) {
+fn push_shulker(elements: &mut Vec<Element>, sheet: Sheet, pose: Mat4, progress: f32) {
     let body = pose * part([0.0, 24.0, 0.0], [0.0; 3]);
+    let lift = 24.0 - progress * SHULKER_LID_HEIGHT * 16.0;
+    let turn = (SHULKER_LID_TURN * progress).to_radians();
+    let lid_pose = pose * part([0.0, lift, 0.0], [0.0, turn, 0.0]);
     let lid = Cube::new([0.0, 0.0], [-8.0, -16.0, -8.0], [16.0, 12.0, 16.0]);
     let base = Cube::new([0.0, 28.0], [-8.0, -8.0, -8.0], [16.0, 8.0, 16.0]);
-    push_cube(elements, &sheet, lid, body, &ALL_FACES);
+    push_cube(elements, &sheet, lid, lid_pose, &ALL_FACES);
     push_cube(elements, &sheet, base, body, &ALL_FACES);
 }
 
@@ -1076,6 +1089,47 @@ mod tests {
             base_low.y > 0.49,
             "a downward box keeps its base at the top"
         );
+    }
+
+    #[test]
+    fn a_shulker_lid_rises_half_a_block_and_turns_three_quarters() {
+        let scaled = |y: f32| 0.5 + (y - 0.5) * SHULKER_SCALE;
+        let up = Block::new("minecraft:red_shulker_box").with("facing", "up");
+        let closed = shulker_box_model(&up, 0.0).unwrap();
+        assert_eq!(corners(&closed), corners(&block_model(&up).unwrap().unwrap()));
+        let open = shulker_box_model(&up, 1.0).unwrap();
+        let (low, high) = bounds(&element_points(&open.elements[0]));
+        assert!((low.y - scaled(0.75)).abs() < 1e-4 && (high.y - scaled(1.5)).abs() < 1e-4);
+        assert!((low.x - scaled(0.0)).abs() < 1e-4 && (high.x - scaled(1.0)).abs() < 1e-4);
+        let down = Block::new("minecraft:shulker_box").with("facing", "down");
+        let (low, high) = bounds(&element_points(
+            &shulker_box_model(&down, 1.0).unwrap().elements[0],
+        ));
+        assert!((low.y - scaled(-0.5)).abs() < 1e-4 && (high.y - scaled(0.25)).abs() < 1e-4);
+        let north = Block::new("minecraft:shulker_box").with("facing", "north");
+        let (low, high) = bounds(&element_points(
+            &shulker_box_model(&north, 1.0).unwrap().elements[0],
+        ));
+        assert!((low.z - scaled(-0.5)).abs() < 1e-4 && (high.z - scaled(0.25)).abs() < 1e-4);
+        assert!(low.y > 0.0 && high.y < 1.0);
+        let half = shulker_box_model(&up, 0.5).unwrap();
+        let top = |model: &ResolvedModel| {
+            let lid = &model.elements[0];
+            let face = lid.faces.iter().find(|f| f.direction == "up").unwrap();
+            let corner = Vec3::from_array(element_corners(lid, &face.direction).unwrap()[0]);
+            Vec3::new(corner.x - 0.5, 0.0, corner.z - 0.5)
+        };
+        let (before, after) = (top(&closed), top(&half));
+        let turned = before.angle_between(after).to_degrees();
+        assert!((turned - 135.0).abs() < 0.01, "{turned}");
+        assert!((after.length() - before.length()).abs() < 1e-4);
+        for model in [&half, &open] {
+            assert_eq!(
+                element_points(&model.elements[1]),
+                element_points(&closed.elements[1]),
+                "the base never moves"
+            );
+        }
     }
 
     #[test]

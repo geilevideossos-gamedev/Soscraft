@@ -200,7 +200,7 @@ IW4L_MINECRAFT_KIT=trident,trident+loyalty=3
 
 ### 11. Minecraft tridents wait where the world is not loaded
 
-Commit: (next entry)
+Commit: 657de8f
 
 - **Changed:** `server.rs` `tick_tridents` skips a trident whose chunk is not loaded, as vanilla doesn't tick entities there. Before, a trident thrown or returning into unloaded ground found no blocks, fell out of the world and was lost.
 - **Tests:** server: `a_trident_waits_where_the_world_is_not_loaded`.
@@ -216,6 +216,24 @@ IW4L_MINECRAFT_KIT=trident
 
 - Without glue, right-click already throws bottles o' enchanting, splash and lingering potions and wind charges (their contents come from the thrower's hand through `ServerSim::note_held`), with the vanilla flight, break sounds, experience, effects on mobs, water dousing, lingering clouds and wind pushes on mobs and items. Witch and player potions break with the glass sound.
 - The glue (items 1 to 14 below) adds what the client has to do: the potion swirl and crumbs, tinted bottles and the trident model in flight, potion effects, trident hits and wind pushes on the player, the trident's charge and release, Riptide, per-item cooldowns and the keyed pearl teleports.
+
+## Group: lids
+
+Brief: `b2-shulker-lid.md`. `crates/minecraft_terrain/src/terrain.rs` is off limits in this part of the track (like the game files), so the section side of "draw an animating lid apart from its section" is glue too (After the split, item 15); everything it calls is built and tested here.
+
+### 1. Minecraft shulker box model takes a lid opening progress
+
+Commit: (next entry)
+
+- **Changed:** `special_models.rs`: new `shulker_box_model(block, progress)` (the block model's shulker branch moved into it; `block_model` passes 0). `push_shulker` takes the progress and poses the lid as `ShulkerBoxRenderer$ShulkerBoxModel.setupAnim` (26.3, javap): `setPos(0, 24 - p * 0.5 * 16, 0)` and `yRot = 270 * p` degrees, under the box's facing pose; the base never moves. The item model passes 0.
+- **Tests:** `a_shulker_lid_rises_half_a_block_and_turns_three_quarters` (progress 0 is today's model; at 1 an upward lid spans y 0.75 to 1.5, a downward one -0.5 to 0.25, a north one z -0.5 to 0.25, all times the 0.9995 scale; at 0.5 the lid is turned 135 degrees; the base is the same at 0, 0.5 and 1).
+- **Test steps:** nothing changes in game yet (every box is still drawn closed):
+  1. Place a shulker box on the floor, one on a wall and one on a ceiling, and hold one: they look exactly as before. Screenshot.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=shulker_box,red_shulker_box*4
+```
 
 ## After the split
 
