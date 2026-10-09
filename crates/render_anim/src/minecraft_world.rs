@@ -721,13 +721,14 @@ fn update(
         puppet.active = false;
         return;
     };
-    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, arrived, ender, .. } = player;
+    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, arrived, ender, respawn, .. } = player;
     let minecraft_survival::level::Level { entities, containers, terrain, openers, dimension, .. } = level;
     minecraft_terrain::cow_render::set_nether_entity_lighting(terrain.rules.nether_cardinal_light);
     if !delivered.is_empty() {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
     }
     *animation_clock += time.delta_secs_f64();
+    crate::minecraft_respawn::fade_overlay(&mut ui, time.delta_secs_f64());
     if *animation_clock >= TICK_SECONDS {
         *animation_clock %= TICK_SECONDS;
         let patches = atlas_animation.tick(&world.atlas);
@@ -1240,9 +1241,9 @@ fn update(
                     hand.swing = Some(0.0);
                 }
                 HandUse::Consumed
-            } else if let Some(respawn_use) = (main && !(player.crouching && has_item)).then(|| crate::minecraft_respawn::use_block(&player, terrain, &globals.registries)).flatten() {
+            } else if let Some(respawn_use) = (main && !(player.crouching && has_item)).then(|| crate::minecraft_respawn::use_block(&player, terrain, &globals.registries, *dimension)).flatten() {
                 write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, respawn_use.writes.clone());
-                crate::minecraft_respawn::finish(respawn_use, entities, sounds.as_mut(), &world.packs, origin);
+                crate::minecraft_respawn::finish(respawn_use, entities, respawn, sounds.as_mut(), &world.packs, origin, &mut ui, inventory_ui);
                 hand.swing = Some(0.0);
                 HandUse::Consumed
             } else if let Some(pos) = used {

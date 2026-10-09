@@ -613,3 +613,27 @@ Previous commit: 56c1e7a7
 ```
 IW4L_MINECRAFT_KIT=minecraft:red_bed,minecraft:red_bed,minecraft:red_bed,minecraft:straw_bed,minecraft:totem_of_undying,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:netherrack*32,minecraft:cooked_beef*16
 ```
+
+### 26. Minecraft beds set your respawn point
+
+Previous commit: 549e0168
+
+- **Why:** the owner wants to respawn at their bed after dying in the Nether or the End; nothing set a bed point before (only `/spawnpoint`). Outside the brief, needed by entry 28.
+- **Changed** (checked with javap on the 26.3 jar: `ServerPlayer.startSleepInBed`, `bedInRange`, `isReachableBedBlock`, `bedBlocked`, `Player.freeAt`, `ServerPlayer.setRespawnPosition`, `BedRule.asProblem`, `Player$BedSleepingProblem`, `Level.isDarkOutside`, `Gui.setOverlayMessage` and its overlay drawing):
+  - `minecraft_survival/src/respawn_block.rs`: `rest_in_bed(world, registries, rules, bed, sleeper)`, the checks of `ServerPlayer.startSleepInBed` in order: the player's feet within 3 blocks across and 2 up or down of the head's or the foot's bottom centre, else "You may not rest now; the bed is too far away"; no suffocating block above the head or above the foot, else "This bed is obstructed"; then, when the bed rule's `can_set_spawn` holds, the point at the bed's head with the player's yaw and pitch (not forced); then the rule's `error_message` when `can_sleep` does not hold ("You can sleep only at night or during thunderstorms" by day in the overworld). `set_respawn` tells whether the point moved, as `RespawnConfig.isSamePosition`. "Dark" is the sky light level at 11 or below (`skyDarken >= 4`).
+  - `render_anim/src/minecraft_respawn.rs`: an occupied bed says "This bed is occupied"; a bed in reach sets the player's respawn point (`Player.respawn`, saved by track D's `player_nbt`) and, when it moved, shows "Respawn point set" in the chat; the bed rules' messages show as overlay messages. `minecraft_world.rs`: `respawn` is taken from the player with the other fields (one destructuring line), and one call line fades the overlay each frame.
+  - Overlay messages (`Gui.setOverlayMessage`, the "action bar"), which the fork did not show at all: `frame/src/minecraft_ui.rs` (appended) `MinecraftUi.overlay_message: Option<McOverlayMessage { text, ticks }>`, 60 ticks; `hud/src/minecraft_hotbar.rs` draws it centred 72 GUI pixels above the bottom, white with a shadow, its alpha `ticks * 255 / 20` capped at 255 and drawn above 8, as vanilla's overlay message.
+- **Tests:** `respawn_block`: `a_bed_in_reach_sets_the_spawn_by_day_and_says_you_can_sleep_only_at_night` (in reach from 2.5 blocks past the foot, too far across, along and up, obstructed by stone but not by glass, a straw bed never sets the spawn), `the_spawn_message_comes_only_when_the_point_moves`. `minecraft_hotbar`: `the_overlay_message_holds_for_two_seconds_then_fades_over_one`.
+- **Decisions:**
+  - Sleeping itself (lying down, skipping the night, waking up, `NOT_SAFE` with monsters near) is not part of this round: by night a bed sets the spawn and shows nothing more. It belongs to "finish survival".
+  - Until entry 28 the bed point is saved but the respawn still goes to the world spawn.
+- **Test steps** (overworld, survival, by day):
+  1. Place a bed, stand next to it and use it: the chat says "Respawn point set" and "You can sleep only at night or during thunderstorms" shows above the hotbar for about 3 seconds. **Screenshot 30.**
+  2. Use it again: only the overlay message shows, not the chat line.
+  3. Step 5 blocks away and use it from there (it is in reach of your crosshair at up to 5 blocks): "You may not rest now; the bed is too far away".
+  4. Put a stone block on top of the bed's pillow end and use it: "This bed is obstructed".
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:red_bed,minecraft:red_bed,minecraft:stone*16
+```

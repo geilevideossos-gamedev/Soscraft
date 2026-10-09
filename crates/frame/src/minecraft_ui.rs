@@ -196,12 +196,27 @@ pub struct MinecraftUi {
     pub level_loading: Option<McLevelLoading>,
     pub portal_frames: Option<(Handle<Image>, u32)>,
     pub portal_overlay: Option<McPortalOverlay>,
+    pub overlay_message: Option<McOverlayMessage>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct McPortalOverlay {
     pub alpha: f32,
     pub frame: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct McOverlayMessage {
+    pub text: String,
+    pub ticks: f32,
+}
+
+impl McOverlayMessage {
+    pub const TICKS: f32 = 60.0;
+
+    pub fn alpha(&self) -> u32 {
+        ((self.ticks * 255.0 / 20.0) as i32).clamp(0, 255) as u32
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
