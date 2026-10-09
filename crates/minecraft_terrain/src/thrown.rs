@@ -5,8 +5,8 @@ use minecraftoss_entities::movement::Body;
 use minecraftoss_entities::potion::{Potion, PotionTarget, ThrownPotion};
 use minecraftoss_entities::tempt::PlayerCandidate;
 use minecraftoss_entities::world::{DamageSourceKind, EntityWorld};
-use minecraftoss_player::World;
 use minecraftoss_player::rng::LegacyRandom;
+use minecraftoss_player::{Face, Pos, World};
 
 use crate::lighting::SkyLight;
 use crate::mesh::{Atlas, ChunkMesh, Vertex};
@@ -25,12 +25,16 @@ const PLAYER_HEIGHT: f64 = 1.8;
 const HIDDEN_TICKS: i32 = 2;
 const HIDDEN_NEAR: f64 = 12.25;
 const CHICK_NUDGE: f64 = 0.25;
+pub const BOTTLE_COLOR: u32 = 0x385DC6;
+pub const BREAK_SOUND: &str = "minecraft:entity.splash_potion.break";
+const FACE_EPSILON: f64 = 1.0e-5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Throwable {
     Snowball,
     Egg,
     EnderPearl,
+    ExperienceBottle,
 }
 
 impl Throwable {
@@ -39,6 +43,7 @@ impl Throwable {
             "minecraft:snowball" => Some(Self::Snowball),
             "minecraft:egg" | "minecraft:blue_egg" | "minecraft:brown_egg" => Some(Self::Egg),
             "minecraft:ender_pearl" => Some(Self::EnderPearl),
+            "minecraft:experience_bottle" => Some(Self::ExperienceBottle),
             _ => None,
         }
     }
@@ -48,18 +53,21 @@ impl Throwable {
             Self::Snowball => "minecraft:entity.snowball.throw",
             Self::Egg => "minecraft:entity.egg.throw",
             Self::EnderPearl => "minecraft:entity.ender_pearl.throw",
+            Self::ExperienceBottle => "minecraft:entity.experience_bottle.throw",
         }
     }
 
     pub fn pitch_offset(self) -> f32 {
         match self {
             Self::Snowball | Self::Egg | Self::EnderPearl => 0.0,
+            Self::ExperienceBottle => -20.0,
         }
     }
 
     pub fn power(self) -> f32 {
         match self {
             Self::Snowball | Self::Egg | Self::EnderPearl => POWER,
+            Self::ExperienceBottle => 0.7,
         }
     }
 
@@ -70,8 +78,58 @@ impl Throwable {
     pub fn gravity(self) -> f64 {
         match self {
             Self::Snowball | Self::Egg | Self::EnderPearl => GRAVITY,
+            Self::ExperienceBottle => 0.07,
         }
     }
+}
+
+pub fn bottle_experience(random: &mut LegacyRandom) -> i32 {
+    3 + random.next_int(5) as i32 + random.next_int(5) as i32
+}
+
+pub fn break_pitch(random: f32) -> f32 {
+    random * 0.1 + 0.9
+}
+
+pub fn sound_cell(at: DVec3) -> [f64; 3] {
+    (at.floor() + DVec3::splat(0.5)).to_array()
+}
+
+pub fn face_normal(face: Face) -> DVec3 {
+    let (x, y, z) = face.offset();
+    DVec3::new(f64::from(x), f64::from(y), f64::from(z))
+}
+
+fn nearest_face(v: DVec3) -> Face {
+    let mut best = (Face::Down, f64::MIN);
+    for face in [Face::Down, Face::Up, Face::North, Face::South, Face::West, Face::East] {
+        let dot = face_normal(face).dot(v);
+        if dot > best.1 {
+            best = (face, dot);
+        }
+    }
+    best.0
+}
+
+pub fn struck_face(world: &impl World, block: Pos, at: DVec3, motion: DVec3) -> Face {
+    let mut best: Option<(f64, Face)> = None;
+    for (min, max) in minecraftoss_player::collision_boxes_at(world, block) {
+        for axis in 0..3 {
+            let (plane, face) = if motion[axis] > 0.0 {
+                (min[axis], [Face::West, Face::Down, Face::North][axis])
+            } else if motion[axis] < 0.0 {
+                (max[axis], [Face::East, Face::Up, Face::South][axis])
+            } else {
+                continue;
+            };
+            let within = (0..3).filter(|&o| o != axis).all(|o| at[o] >= min[o] - FACE_EPSILON && at[o] <= max[o] + FACE_EPSILON);
+            let gap = (at[axis] - plane).abs();
+            if within && gap < FACE_EPSILON && best.is_none_or(|(g, _)| gap < g) {
+                best = Some((gap, face));
+            }
+        }
+    }
+    best.map_or_else(|| nearest_face(-motion), |(_, face)| face)
 }
 
 pub fn throw_pitch(random: f32) -> f32 {
@@ -179,6 +237,8 @@ pub struct Landed {
     pub before: DVec3,
     pub mob: Option<u64>,
     pub velocity: DVec3,
+    pub block: Option<Pos>,
+    pub face: Option<Face>,
 }
 
 impl Thrown {
@@ -253,11 +313,14 @@ impl Thrown {
         self.previous = self.flight.position;
         self.flight.velocity.y += minecraftoss_entities::potion::GRAVITY - self.kind.gravity();
         let hit = self.flight.tick(world, targets, owner)?;
+        let velocity = self.flight.velocity;
         Some(Landed {
             at: hit.location,
             before: self.previous,
             mob: hit.entity,
-            velocity: self.flight.velocity,
+            velocity,
+            block: hit.block,
+            face: hit.block.map(|block| struck_face(world, block, hit.location, velocity)),
         })
     }
 }
@@ -587,7 +650,11 @@ mod tests {
     }
 
     #[test]
-    fn only_snowballs_eggs_and_pearls_are_thrown() {
+    fn each_throwable_item_names_its_kind() {
+        assert_eq!(
+            Throwable::of("minecraft:experience_bottle"),
+            Some(Throwable::ExperienceBottle)
+        );
         assert_eq!(
             Throwable::of("minecraft:snowball"),
             Some(Throwable::Snowball)
@@ -785,6 +852,64 @@ mod tests {
         let landed = landed.expect("it comes back down");
         assert_eq!(landed.mob.and_then(struck_player), Some(4));
         assert!(thrown.age() > 50, "{}", thrown.age());
+    }
+
+    #[test]
+    fn a_bottle_o_enchanting_leaves_20_degrees_up_at_0_7_and_falls_faster() {
+        let kind = Throwable::ExperienceBottle;
+        assert_eq!((kind.pitch_offset(), kind.power(), kind.gravity()), (-20.0, 0.7, 0.07));
+        let bottle = throw("minecraft:experience_bottle", 0.0);
+        let v = bottle.velocity();
+        assert!((v.length() - 0.7).abs() < 0.03, "{v:?}");
+        assert!((v.y / v.z - 20.0_f64.to_radians().sin()).abs() < 0.05, "{v:?}");
+        let world = Blocks::default();
+        let mut bottle = bottle;
+        let before = bottle.velocity();
+        bottle.tick(&world, &[], None);
+        assert!((bottle.velocity().y - (before.y - 0.07) * f64::from(0.99_f32)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn bottle_experience_is_3_to_11() {
+        let mut random = LegacyRandom::new(17);
+        let rolls: Vec<i32> = (0..20_000).map(|_| bottle_experience(&mut random)).collect();
+        assert_eq!(rolls.iter().min(), Some(&3));
+        assert_eq!(rolls.iter().max(), Some(&11));
+        let mean = rolls.iter().sum::<i32>() as f64 / rolls.len() as f64;
+        assert!((mean - 7.0).abs() < 0.1, "{mean}");
+        assert!((break_pitch(0.0) - 0.9).abs() < 1e-6 && (break_pitch(1.0) - 1.0).abs() < 1e-6);
+        assert_eq!(sound_cell(DVec3::new(-0.2, 64.9, 3.0)), [-0.5, 64.5, 3.5]);
+    }
+
+    #[test]
+    fn a_throw_lands_on_the_face_it_met() {
+        let mut world = Blocks::default();
+        world.set_block((0, 69, 5), Some(Block::new("minecraft:stone")));
+        for x in -2..=2 {
+            for z in -2..=40 {
+                world.set_block((x, 50, z), Some(Block::new("minecraft:stone")));
+            }
+        }
+        let mut level = throw("minecraft:snowball", 0.0);
+        let mut wall = None;
+        for _ in 0..20 {
+            if let Some(hit) = level.tick(&world, &[], None) {
+                wall = Some(hit);
+                break;
+            }
+        }
+        let wall = wall.expect("it meets the wall");
+        assert_eq!((wall.block, wall.face), (Some((0, 69, 5)), Some(Face::North)));
+        let mut down = throw("minecraft:snowball", 90.0);
+        let mut floor = None;
+        for _ in 0..40 {
+            if let Some(hit) = down.tick(&world, &[], None) {
+                floor = Some(hit);
+                break;
+            }
+        }
+        assert_eq!(floor.and_then(|f| f.face), Some(Face::Up));
+        assert_eq!(face_normal(Face::West), DVec3::new(-1.0, 0.0, 0.0));
     }
 
     #[test]

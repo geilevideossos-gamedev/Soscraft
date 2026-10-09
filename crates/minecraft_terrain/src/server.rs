@@ -64,6 +64,7 @@ pub struct ServerSim {
     merchant_closing: bool,
     thrown: Vec<crate::thrown::Thrown>,
     pearl_landings: Vec<(u64, [f64; 3])>,
+    potion_breaks: Vec<minecraftoss_entities::world::PotionBreak>,
 }
 
 /// What a player's hit or use on a mob did, for the client to present.
@@ -234,6 +235,7 @@ impl ServerSim {
             merchant_closing: false,
             thrown: Vec::new(),
             pearl_landings: Vec::new(),
+            potion_breaks: Vec::new(),
         }
     }
 
@@ -694,6 +696,12 @@ impl ServerSim {
         std::mem::take(&mut self.pearl_landings)
     }
 
+    pub fn take_potion_breaks(&mut self) -> Vec<minecraftoss_entities::world::PotionBreak> {
+        let mut breaks = self.mobs.take_potion_breaks();
+        breaks.append(&mut self.potion_breaks);
+        breaks
+    }
+
     pub fn thrown_view(&self) -> Vec<(String, [f64; 3], [f64; 3], i32)> {
         self.thrown.iter().map(|t| (t.item.clone(), t.previous.to_array(), t.position().to_array(), t.age())).collect()
     }
@@ -707,8 +715,9 @@ impl ServerSim {
         let mob_targets = crate::thrown::targets(&self.mobs);
         let mut struck = Vec::new();
         let mut hatched = Vec::new();
+        let mut awards = Vec::new();
         {
-            let Self { level, states, mob_tables, thrown, pearl_landings, .. } = self;
+            let Self { level, states, mob_tables, thrown, pearl_landings, potion_breaks, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
             for t in thrown.iter_mut() {
                 let mut targets = mob_targets.clone();
@@ -725,9 +734,21 @@ impl ServerSim {
                     }
                     Throwable::EnderPearl => pearl_landings.push((t.owner, landed.before.to_array())),
                     Throwable::Snowball => {}
+                    Throwable::ExperienceBottle => {
+                        let at = t.position();
+                        potion_breaks.push(minecraftoss_entities::world::PotionBreak { position: at, color: crate::thrown::BOTTLE_COLOR, instant: false });
+                        let pitch = crate::thrown::break_pitch(t.random().next_float());
+                        let amount = crate::thrown::bottle_experience(t.random());
+                        let direction = landed.face.map_or(-landed.velocity, crate::thrown::face_normal);
+                        awards.push((crate::thrown::sound_cell(at), pitch, landed.at, direction, amount));
+                    }
                 }
             }
             thrown.retain(crate::thrown::Thrown::alive);
+        }
+        for (cell, pitch, hit, direction, amount) in awards {
+            self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::thrown::BREAK_SOUND, pos: cell, volume: 1.0, pitch });
+            self.level.award_experience_toward(hit.to_array(), direction.to_array(), amount);
         }
         for (mob, velocity, owner, seed) in struck {
             crate::thrown::hurt(&mut self.mobs, mob, velocity, owner, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
@@ -1525,7 +1546,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.merchant.extend(sim.check_merchant(&input.mob_players));
                     out.player_hits.extend(sim.mobs.take_player_hits());
                     out.player_splashes.extend(sim.mobs.take_player_splashes());
-                    out.potion_breaks.extend(sim.mobs.take_potion_breaks());
+                    out.potion_breaks.extend(sim.take_potion_breaks());
                     out.explosions.extend(sim.take_explosions());
                     out.mob_sounds.extend(sim.mobs.take_sounds());
                     out.mob_sounds.extend(sim.level.sounds.drain(..).map(|s| minecraftoss_entities::world::MobSound { event: s.event.to_owned(), position: glam::DVec3::from_array(s.pos), volume: s.volume, pitch: s.pitch, category: "ambient" }));
@@ -3559,6 +3580,41 @@ mod tests {
             teleports.extend(server.take_pearl_teleports());
         }
         assert_eq!(teleports.iter().map(|t| t.0).collect::<Vec<_>>(), vec![1]);
+    }
+
+    #[test]
+    fn a_bottle_on_stone_bursts_into_3_to_11_experience_above_it() {
+        let Some((mut server, _)) = door_world() else { return };
+        for seed in 0..8 {
+            server.throw(thrown_down("minecraft:experience_bottle", seed));
+            for _ in 0..40 {
+                server.tick_thrown(&[]);
+            }
+            assert!(server.thrown_view().is_empty());
+            let orbs: Vec<_> = server.level.entities.iter().filter(|e| !e.removed && e.orb_data().is_some()).collect();
+            let total: i32 = orbs.iter().map(|e| e.orb_data().map_or(0, |d| d.value * d.count)).sum();
+            assert!((3..=11).contains(&total), "{total}");
+            assert!(orbs.iter().all(|e| (e.pos[1] - 200.25).abs() < 1e-6 && e.delta[1] >= 0.0), "orbs leave the top face upwards");
+            let breaks = server.take_potion_breaks();
+            assert_eq!(breaks.len(), 1);
+            assert_eq!((breaks[0].color, breaks[0].instant), (crate::thrown::BOTTLE_COLOR, false));
+            let sounds: Vec<_> = server.level.sounds.drain(..).filter(|s| s.event == crate::thrown::BREAK_SOUND).collect();
+            assert_eq!(sounds.len(), 1);
+            assert_eq!(sounds[0].pos, [8.5, 200.5, 8.5]);
+            assert!((0.9..=1.0).contains(&sounds[0].pitch));
+            for e in &mut server.level.entities {
+                e.removed |= e.orb_data().is_some();
+            }
+        }
+    }
+
+    #[test]
+    fn directed_orbs_never_fly_into_the_face() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.level.award_experience_toward([20.0, 210.5, 20.5], [-1.0, 0.0, 0.0], 60);
+        let orbs: Vec<_> = server.level.entities.iter().filter(|e| !e.removed && e.orb_data().is_some()).collect();
+        assert!(orbs.len() > 3);
+        assert!(orbs.iter().all(|e| e.delta[0] <= 0.0 && (e.pos[0] - 19.75).abs() < 1e-9), "{:?}", orbs.iter().map(|e| (e.pos, e.delta)).collect::<Vec<_>>());
     }
 
     #[test]
