@@ -41,7 +41,9 @@ pub struct Host<'a> {
     pub day: &'a mut DayCycle,
     pub save: Option<&'a mut crate::save::WorldSave>,
     pub data: &'a crate::data::GameData,
+    pub registries: Option<&'a minecraftoss_core::Registries>,
     pub levels: &'a mut BTreeMap<Dimension, Level>,
+    pub waiting_locates: &'a mut Vec<(Dimension, PlayerId, LocateRequest)>,
     pub players: &'a mut BTreeMap<PlayerUuid, Player>,
     pub presence: Vec<(PlayerUuid, Presence)>,
     pub env_file: Option<PathBuf>,
@@ -552,9 +554,40 @@ impl CommandWorld for Host<'_> {
     }
 
     fn dimension_scale(&self, dimension: &str) -> Option<f64> {
-        let level = level_of(self.levels, dimension)?;
-        let datapack = &level.terrain.stream.states.registries().datapack;
-        Some(coordinate_scale(datapack, dimension))
+        let dimension = crate::switch::dimension_named(dimension)?;
+        let datapack = &self.registries?.datapack;
+        Some(coordinate_scale(datapack, dimension.dimension_type()))
+    }
+
+    fn teleport_to_dimension(
+        &mut self,
+        player: PlayerId,
+        dimension: &str,
+        position: [f64; 3],
+    ) -> bool {
+        let Some(dimension) = crate::switch::dimension_named(dimension) else {
+            return false;
+        };
+        let presence = self.presence(player);
+        let Some(pose) = presence.pose.filter(|_| presence.alive) else {
+            return false;
+        };
+        let Some(known) = self.player_mut(player) else {
+            return false;
+        };
+        let place = crate::player_nbt::Place::standing(dimension, position, pose.yaw, pose.pitch);
+        if !known.teleport_into(place) {
+            return false;
+        }
+        let travelled = known.dimension == dimension;
+        if let Some(pose) = self
+            .presence_mut(player)
+            .and_then(|presence| presence.pose.as_mut())
+            .filter(|_| travelled)
+        {
+            pose.feet = position;
+        }
+        true
     }
 
     fn loaded(&self, dimension: &str, pos: [i32; 3]) -> Loaded {
@@ -607,50 +640,18 @@ impl CommandWorld for Host<'_> {
     }
 
     fn locate(&mut self, source: PlayerId, request: &LocateRequest) -> Answer<Option<Located>> {
-        let Some(level) = loaded_dimension(self.levels, &request.dimension)
-            .and_then(|dimension| self.levels.get_mut(&dimension))
-        else {
+        let Some(dimension) = crate::switch::dimension_named(&request.dimension) else {
             return Answer::Now(None);
         };
-        let worldgen = level.terrain.stream.world_gen();
+        let Some(level) = self.levels.get_mut(&dimension) else {
+            self.waiting_locates
+                .push((dimension, source, request.clone()));
+            return Answer::Later;
+        };
         let Some(entities) = level.entities.as_mut() else {
             return Answer::Now(None);
         };
-        let request = request.clone();
-        entities.run_job(Box::new(move |sim: &mut ServerSim| -> Box<dyn Any + Send> {
-            let deadline = std::time::Instant::now() + LOCATE_TIME_CAP;
-            let [x, y, z] = request.origin;
-            let search = match request.kind {
-                LocateKind::Structure => minecraft_terrain::locate::nearest_structure(
-                    &worldgen,
-                    &request.targets,
-                    request.origin,
-                    minecraft_terrain::locate::STRUCTURE_RADIUS,
-                    deadline,
-                ),
-                LocateKind::Biome => minecraft_terrain::locate::nearest_biome(
-                    &worldgen,
-                    &request.targets,
-                    request.origin,
-                    minecraft_terrain::locate::BIOME_RADIUS,
-                    deadline,
-                ),
-                LocateKind::Poi => sim
-                    .command_closest_poi(
-                        &request.targets,
-                        (x, y, z),
-                        minecraft_commands::locate::POI_SEARCH_RADIUS,
-                    )
-                    .map_or(Search::NotFound, |((x, y, z), id)| {
-                        Search::Found([x, y, z], id)
-                    }),
-            };
-            Box::new(CommandJob::Located {
-                source,
-                request,
-                search,
-            })
-        }));
+        entities.run_job(locate_job(source, request.clone(), &level.terrain.stream));
         Answer::Later
     }
 
@@ -677,6 +678,48 @@ impl CommandWorld for Host<'_> {
             ));
         }
     }
+}
+
+pub fn locate_job(
+    source: PlayerId,
+    request: LocateRequest,
+    stream: &TerrainStream,
+) -> minecraft_terrain::server::Job {
+    let worldgen = stream.world_gen();
+    Box::new(move |sim: &mut ServerSim| -> Box<dyn Any + Send> {
+        let deadline = std::time::Instant::now() + LOCATE_TIME_CAP;
+        let [x, y, z] = request.origin;
+        let search = match request.kind {
+            LocateKind::Structure => minecraft_terrain::locate::nearest_structure(
+                &worldgen,
+                &request.targets,
+                request.origin,
+                minecraft_terrain::locate::STRUCTURE_RADIUS,
+                deadline,
+            ),
+            LocateKind::Biome => minecraft_terrain::locate::nearest_biome(
+                &worldgen,
+                &request.targets,
+                request.origin,
+                minecraft_terrain::locate::BIOME_RADIUS,
+                deadline,
+            ),
+            LocateKind::Poi => sim
+                .command_closest_poi(
+                    &request.targets,
+                    (x, y, z),
+                    minecraft_commands::locate::POI_SEARCH_RADIUS,
+                )
+                .map_or(Search::NotFound, |((x, y, z), id)| {
+                    Search::Found([x, y, z], id)
+                }),
+        };
+        Box::new(CommandJob::Located {
+            source,
+            request,
+            search,
+        })
+    })
 }
 
 fn held_enchantments(stack: &ItemStack) -> Vec<String> {
@@ -908,7 +951,9 @@ pub fn run(
         day: &mut globals.day,
         save: globals.save.as_mut(),
         data: &globals.data,
+        registries: Some(&globals.registries),
         levels: &mut *levels,
+        waiting_locates: &mut globals.waiting_locates,
         players: &mut *players,
         presence,
         env_file: if sent.is_empty() { None } else { env_file() },
@@ -925,6 +970,7 @@ pub fn run(
     drop(host);
     let mut finished = Vec::new();
     for entities in levels.values_mut().filter_map(|level| level.entities.as_mut()) {
+        entities.poll_jobs();
         finished.extend(take_jobs_of(&mut entities.command_jobs, id));
     }
     delivered.extend(answer_jobs(&globals.chat, &globals.game_rules, id, finished));
@@ -975,7 +1021,9 @@ pub(crate) mod tests {
         pub(crate) difficulty: Difficulty,
         pub(crate) day: DayCycle,
         pub(crate) data: crate::data::GameData,
+        pub(crate) registries: Option<std::sync::Arc<minecraftoss_core::Registries>>,
         pub(crate) levels: BTreeMap<Dimension, Level>,
+        pub(crate) waiting_locates: Vec<(Dimension, PlayerId, LocateRequest)>,
         pub(crate) players: BTreeMap<PlayerUuid, Player>,
         pub(crate) presence: Vec<(PlayerUuid, Presence)>,
         pub(crate) server: CommandServer,
@@ -989,7 +1037,9 @@ pub(crate) mod tests {
                 difficulty: Difficulty::Normal,
                 day: DayCycle::default(),
                 data: crate::data::GameData::default(),
+                registries: None,
                 levels: BTreeMap::new(),
+                waiting_locates: Vec::new(),
                 players: BTreeMap::new(),
                 presence: Vec::new(),
                 server: CommandServer::new(HOST),
@@ -1041,7 +1091,9 @@ pub(crate) mod tests {
                 day: &mut self.day,
                 save: None,
                 data: &self.data,
+                registries: self.registries.as_deref(),
                 levels: &mut self.levels,
+                waiting_locates: &mut self.waiting_locates,
                 players: &mut self.players,
                 presence: self.presence.clone(),
                 env_file: self.env_file.clone(),
@@ -1563,7 +1615,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn execute_in_finds_only_loaded_levels() {
+    fn execute_in_finds_every_real_level_open_or_not() {
         let mut parts = Parts::new();
         let (lines, _) = parts.send(HOST, &["/execute in minecraft:overworld run seed"]);
         assert_eq!(lines, vec!["Unknown dimension 'minecraft:overworld'"]);
@@ -1571,23 +1623,30 @@ pub(crate) mod tests {
         let Some(level) = test_stream().and_then(test_level) else {
             return;
         };
-        parts.levels.insert(Dimension::Overworld, level);
+        parts.registries = Some(level.terrain.stream.states.registries().clone());
         let (lines, _) = parts.send(
             HOST,
             &[
                 "/execute in minecraft:overworld run seed",
                 "/execute in minecraft:the_nether run seed",
-                "/execute in minecraft:the_end run seed",
+                "/execute in the_end run seed",
+                "/execute in minecraft:the_moon run seed",
             ],
         );
         assert_eq!(
             lines,
             vec![
                 "Seed: [42]",
-                "Unknown dimension 'minecraft:the_nether'",
-                "Unknown dimension 'minecraft:the_end'",
+                "Seed: [42]",
+                "Seed: [42]",
+                "Unknown dimension 'minecraft:the_moon'",
             ]
         );
+        assert!(
+            parts.levels.is_empty(),
+            "looking a level up does not open it"
+        );
+        parts.levels.insert(Dimension::Overworld, level);
         let datapack = parts.levels[&Dimension::Overworld]
             .terrain
             .stream
@@ -1600,10 +1659,96 @@ pub(crate) mod tests {
         assert_eq!(coordinate_scale(&datapack, "minecraft:nope"), 1.0);
         let host = parts.host();
         assert_eq!(host.dimension_scale("minecraft:overworld"), Some(1.0));
-        assert_eq!(host.dimension_scale("minecraft:the_nether"), None);
+        assert_eq!(host.dimension_scale("minecraft:the_nether"), Some(8.0));
+        assert_eq!(host.dimension_scale("minecraft:the_end"), Some(1.0));
+        assert_eq!(host.dimension_scale("minecraft:nope"), None);
         assert_eq!(
             host.loaded("minecraft:overworld", [0, 64, 0]),
             Loaded::Unloaded
+        );
+    }
+
+    #[test]
+    fn execute_in_teleports_the_player_into_another_dimension_through_the_switch() {
+        let mut parts = Parts::new();
+        parts.registries = minecraftoss_core::registries::DataPaths::discover()
+            .ok()
+            .and_then(|paths| minecraftoss_core::Registries::load(&paths).ok())
+            .map(std::sync::Arc::new);
+        if parts.registries.is_none() {
+            return;
+        }
+        parts.presence[0].1.pose = Some(Pose {
+            feet: [800.0, 70.0, -1600.0],
+            yaw: 45.0,
+            pitch: 10.0,
+        });
+        let (lines, teleports) =
+            parts.send(HOST, &["/execute in minecraft:the_nether run tp ~ 128 ~"]);
+        assert_eq!(
+            lines,
+            vec!["Teleported Steve to 100.000000, 128.000000, -200.000000"]
+        );
+        assert!(teleports.is_empty(), "no teleport inside the old level");
+        let roof = crate::player_nbt::Place::standing(
+            Dimension::Nether,
+            [100.0, 128.0, -200.0],
+            45.0,
+            10.0,
+        );
+        let steve = parts.player(HOST);
+        assert_eq!(steve.dimension, Dimension::Nether);
+        assert_eq!(steve.arrival, Some(roof));
+        let switch = steve.switching.expect("the switch started");
+        assert_eq!(
+            (switch.from, switch.to),
+            (Dimension::Overworld, Dimension::Nether)
+        );
+        assert_eq!(switch.arrival, Some(roof));
+        assert_eq!(switch.reason, crate::switch::LoadingReason::NetherPortal);
+        parts.presence[0].1.pose = Some(Pose {
+            feet: [100.0, 128.0, -200.0],
+            yaw: 45.0,
+            pitch: 10.0,
+        });
+        let (lines, teleports) =
+            parts.send(HOST, &["/execute in minecraft:the_nether run tp ~ ~ ~"]);
+        assert_eq!(
+            lines,
+            vec!["Teleported Steve to 100.000000, 128.000000, -200.000000"]
+        );
+        assert_eq!(
+            teleports,
+            vec![(HOST, [100.0, 128.0, -200.0])],
+            "same level: a plain teleport"
+        );
+        parts.player(HOST).switching = None;
+        parts.player(HOST).set_remote(true);
+        let (lines, _) = parts.send(HOST, &["/execute in minecraft:overworld run tp ~ ~ ~"]);
+        assert_eq!(
+            lines,
+            vec!["Teleported Steve to 800.000000, 128.000000, -1600.000000"]
+        );
+        let steve = parts.player(HOST);
+        assert_eq!(
+            steve.dimension,
+            Dimension::Nether,
+            "held during a remote killstreak"
+        );
+        assert!(steve.switching.is_none());
+        assert_eq!(steve.held.map(|held| held.to), Some(Dimension::Overworld));
+        steve.set_remote(false);
+        assert_eq!(steve.dimension, Dimension::Overworld);
+        parts.player(HOST).switching = None;
+        parts.presence[0].1.alive = false;
+        let (lines, _) = parts.send(HOST, &["/execute in minecraft:the_end run tp 100 50 0"]);
+        assert!(lines.is_empty(), "nobody to move: {lines:?}");
+        assert_eq!(parts.player(HOST).dimension, Dimension::Overworld);
+        let host = parts.host();
+        assert_eq!(host.dimension_scale("minecraft:the_nether"), Some(8.0));
+        assert!(
+            parts.levels.is_empty(),
+            "the switch opens the level, not the command"
         );
     }
 
@@ -1711,10 +1856,11 @@ pub(crate) mod tests {
     fn locate_answers_once_the_level_has_searched() {
         let mut parts = Parts::new();
         let (lines, _) = parts.send(HOST, &["/locate structure minecraft:village_plains"]);
-        assert_eq!(
-            lines,
-            vec!["Could not find a structure of type \"minecraft:village_plains\" nearby"]
-        );
+        assert!(lines.is_empty(), "the search waits for its level to open");
+        assert_eq!(parts.waiting_locates.len(), 1);
+        let (dimension, source, waiting) = &parts.waiting_locates[0];
+        assert_eq!((*dimension, *source), (Dimension::Overworld, HOST));
+        assert_eq!(waiting.printable, "minecraft:village_plains");
         let request = |kind: LocateKind, printable: &str, tag: bool| LocateRequest {
             kind,
             printable: printable.to_owned(),

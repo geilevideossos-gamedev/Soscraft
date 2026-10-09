@@ -210,6 +210,38 @@ mod tests {
     }
 
     #[test]
+    fn execute_in_the_nether_asks_for_an_eighth_of_the_overworld_position() {
+        let mut server = server();
+        let mut world = FakeWorld {
+            poses: vec![(
+                HOST,
+                Pose {
+                    feet: [800.0, 70.0, -1600.0],
+                    yaw: 0.0,
+                    pitch: 0.0,
+                },
+            )],
+            ..FakeWorld::default()
+        };
+        world.levels.push((NETHER.to_owned(), 8.0));
+        let out = run(
+            &mut server,
+            &mut world,
+            HOST,
+            "execute in minecraft:the_nether run tp ~ ~ ~",
+        );
+        assert_eq!(
+            texts(&out),
+            vec!["Teleported Steve to 100.000000, 70.000000, -200.000000"]
+        );
+        assert_eq!(
+            world.dimension_teleports,
+            vec![(HOST, NETHER.to_owned(), [100.0, 70.0, -200.0])]
+        );
+        assert!(world.teleported.is_empty());
+    }
+
+    #[test]
     fn execute_positioned_moves_the_source() {
         let mut server = server();
         let mut world = world();

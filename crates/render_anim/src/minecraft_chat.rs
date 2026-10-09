@@ -64,6 +64,7 @@ mod tests {
         day: DayCycle,
         data: minecraft_survival::data::GameData,
         levels: BTreeMap<Dimension, Level>,
+        waiting_locates: Vec<(Dimension, PlayerId, minecraft_commands::LocateRequest)>,
         players: BTreeMap<PlayerUuid, Player>,
         presence: Vec<(PlayerUuid, Presence)>,
     }
@@ -81,6 +82,7 @@ mod tests {
                 day: DayCycle::default(),
                 data: minecraft_survival::data::GameData::default(),
                 levels: BTreeMap::new(),
+                waiting_locates: Vec::new(),
                 presence: vec![(uuid.clone(), Presence { pose: Some(pose), alive: true })],
                 players: BTreeMap::from([(uuid, player)]),
             }
@@ -94,7 +96,9 @@ mod tests {
                 day: &mut self.day,
                 save: None,
                 data: &self.data,
+                registries: None,
                 levels: &mut self.levels,
+                waiting_locates: &mut self.waiting_locates,
                 players: &mut self.players,
                 presence: self.presence.clone(),
                 env_file: None,

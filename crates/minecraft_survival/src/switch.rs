@@ -6,7 +6,7 @@ use minecraftoss_core::ident::Identifier;
 
 use crate::player_nbt::Place;
 
-const DIMENSIONS: [Dimension; 3] = [Dimension::Overworld, Dimension::Nether, Dimension::End];
+pub const DIMENSIONS: [Dimension; 3] = [Dimension::Overworld, Dimension::Nether, Dimension::End];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LoadingReason {

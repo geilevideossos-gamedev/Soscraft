@@ -299,6 +299,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         autosave_ticks: 0,
         level_ticks: 0,
         closing: Vec::new(),
+        waiting_locates: Vec::new(),
     };
     let level = minecraft_survival::level::Level::new(Dimension::Overworld, terrain);
     Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), opening: Default::default(), players: std::collections::BTreeMap::new() }))
@@ -704,7 +705,13 @@ fn update(
         puppet.active = false;
         return;
     };
-    let loaded: Vec<Dimension> = levels.keys().copied().collect();
+    if player.switching.is_some_and(|switch| !switch.left) {
+        show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
+        ui.active = false;
+        ui.inventory_open = false;
+        puppet.active = false;
+        return;
+    }
     let Some(level) = levels.get_mut(&player.dimension) else {
         ui.active = false;
         ui.inventory_open = false;
@@ -788,7 +795,7 @@ fn update(
         aim.crouching = ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
         aim.target(&minecraft_terrain::doors::Outlined(&terrain.scene), player_mode.block_reach())
     };
-    minecraft_survival::commands::refresh_hints(&mut ui.chat.hints, &globals.chat, loaded.iter().copied(), aim.map(|hit| (hit.point.to_array(), [hit.pos.0, hit.pos.1, hit.pos.2])));
+    minecraft_survival::commands::refresh_hints(&mut ui.chat.hints, &globals.chat, minecraft_survival::switch::DIMENSIONS.into_iter(), aim.map(|hit| (hit.point.to_array(), [hit.pos.0, hit.pos.1, hit.pos.2])));
     if ui.chat.language.is_empty() && let Some(language) = inventory_ui.language() {
         ui.chat.language = std::sync::Arc::new(language.clone());
     }

@@ -168,7 +168,7 @@ The MW2 netcode is host-authoritative and goes through the `iw4l-master` QUIC re
 
 ### Persistence and multiplayer
 - No Minecraft multiplayer. Saving covers all three dimensions and one file per player; see [Saving](#saving-overworld-one-file-per-player) for what is not saved.
-- The Nether and the End can be entered only with `IW4L_MINECRAFT_DIMENSION` so far, and left by dying (the respawn goes to the overworld spawn, or to a forced respawn point). There are no portals yet, `/execute in` reaches only a level that is already open and can't move a player into another dimension yet, and their sky, fog and clouds are still the overworld's (see the roadmap below).
+- The Nether and the End can be entered with `IW4L_MINECRAFT_DIMENSION` or `/execute in <dimension> run tp ...`, and left by dying (the respawn goes to the overworld spawn, or to a forced respawn point) or by another `/execute in`. `/execute in` knows all three dimensions whether their level is open or not, scales x and z like vanilla, and a teleport into another dimension travels there behind the loading screen. A `/locate` in a closed level opens it and answers when the level has searched; `/setblock` and `/fill` there answer that the position is not loaded, as vanilla does where no player keeps chunks loaded. There are no portals yet, and their sky, fog and clouds are still the overworld's (see the roadmap below).
 - **Several levels, one MW2 world.** The server holds a level per dimension, but the MW2 side has one collision world (`sim::voxel`), which mirrors the local player's level. Bots and every MW2 entity live in it, so they follow the host into the Nether. Friends in other dimensions need a collision world per dimension (multiplayer work).
 - **MW2 in other dimensions.** Guns, grenades and craters work in every dimension with vanilla blast resistance. Air support (predator, airstrikes, harrier, helicopters, AC-130 and the care package markers) is refused where the dimension has a ceiling (the Nether): the streak stays on the hotbar and the chat says why. A dimension switch waits while the player flies a remote killstreak. Projectile and script-model blasts from before a switch leave the new level alone, but a level-wide script blast and killstreak turret bullets fired before a switch still reach it.
 - The chat is local: there are no other players to talk to.
@@ -180,7 +180,7 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 
 ### Nether travel (about 3.5-4.5 days after the crate split)
 - **Already there:** portals light, shimmer and break. The Nether terrain generator exists.
-- **Runtime dimension switch** (done, track SWITCH): levels open on demand and close 15 seconds after the last player leaves, the player waits behind vanilla's loading screen until the arrival chunk has collision, and death in the Nether or End respawns in the respawn dimension. Still to wire: `/execute in` teleports into another dimension and the portals.
+- **Runtime dimension switch** (done, track SWITCH): levels open on demand and close 15 seconds after the last player leaves, the player waits behind vanilla's loading screen until the arrival chunk has collision, and death in the Nether or End respawns in the respawn dimension. `/execute in` teleports into another dimension. Still to wire: the portals.
 - **Portal travel:**
   - the 80-tick timer in the portal, with a cooldown;
   - x8 / ÷8 coordinate scaling and the world-border clamp;

@@ -111,6 +111,8 @@ pub struct Entities {
     eggs_waiting: minecraft_terrain::spawn_egg::EggsWaiting,
     pub command_summons: Vec<Result<String, String>>,
     pub command_jobs: Vec<Box<dyn std::any::Any + Send>>,
+    jobs_running: usize,
+    unread: Vec<minecraft_terrain::server::Output>,
     pub difficulty: i32,
     spawn_mobs: bool,
     block_drops: bool,
@@ -243,6 +245,8 @@ impl Entities {
             eggs_waiting: Default::default(),
             command_summons: Vec::new(),
             command_jobs: Vec::new(),
+            jobs_running: 0,
+            unread: Vec::new(),
             difficulty: 2,
             spawn_mobs: true,
             block_drops: true,
@@ -556,7 +560,12 @@ impl Entities {
     pub fn finish_block_entity_changes(&mut self) -> Vec<((i32, i32, i32), Option<minecraftoss_core::nbt::Tag>)> {
         self.server.save();
         self.server.wait_idle();
-        for output in self.server.poll() {
+        for output in &mut self.unread {
+            self.block_entity_changes.append(&mut output.block_entities);
+        }
+        for mut output in self.server.poll() {
+            self.jobs_running = self.jobs_running.saturating_sub(output.jobs.len());
+            self.command_jobs.append(&mut output.jobs);
             self.block_entity_changes.extend(output.block_entities);
         }
         self.take_block_entity_changes()
@@ -567,7 +576,26 @@ impl Entities {
     }
 
     pub fn run_job(&mut self, job: minecraft_terrain::server::Job) {
+        self.jobs_running += 1;
         self.server.run_job(job);
+    }
+
+    pub fn runs_jobs(&self) -> bool {
+        self.jobs_running > 0
+    }
+
+    pub fn poll_jobs(&mut self) {
+        for mut output in self.server.poll() {
+            self.jobs_running = self.jobs_running.saturating_sub(output.jobs.len());
+            self.command_jobs.append(&mut output.jobs);
+            self.unread.push(output);
+        }
+    }
+
+    fn take_outputs(&mut self) -> Vec<minecraft_terrain::server::Output> {
+        let mut outputs = std::mem::take(&mut self.unread);
+        outputs.extend(self.server.poll());
+        outputs
     }
 
     pub fn drop_given(&mut self, stack: &ItemStack, feet: [f64; 3]) {
@@ -714,7 +742,8 @@ impl Entities {
         }
         let mut changes = Vec::new();
         let mut hits = Vec::new();
-        for output in self.server.poll() {
+        for output in self.take_outputs() {
+            self.jobs_running = self.jobs_running.saturating_sub(output.jobs.len());
             self.server_handled = output.handled;
             for &(id, position, value) in &output.orbs_taken {
                 let tick_count = self.orbs.iter().find(|orb| orb.id == id).map_or(0, |orb| orb.tick_count);

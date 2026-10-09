@@ -3,7 +3,7 @@ use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-use minecraft_commands::CommandServer;
+use minecraft_commands::{CommandServer, LocateRequest, PlayerId};
 use minecraft_commands::server::Profile;
 use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_terrain::day_cycle::DayCycle;
@@ -49,6 +49,7 @@ pub struct Globals {
     pub autosave_ticks: u32,
     pub level_ticks: u32,
     pub closing: Vec<(Dimension, JoinHandle<()>)>,
+    pub waiting_locates: Vec<(Dimension, PlayerId, LocateRequest)>,
 }
 
 impl Globals {
@@ -280,6 +281,14 @@ pub fn start_level(globals: &mut Globals, level: &mut Level) {
         forced_weather.as_deref(),
     );
     entities.set_game_rules(&globals.game_rules);
+    let (waiting, others) = std::mem::take(&mut globals.waiting_locates)
+        .into_iter()
+        .partition(|(dimension, _, _)| *dimension == level.dimension);
+    globals.waiting_locates = others;
+    for (_, source, request) in waiting {
+        let job = crate::commands::locate_job(source, request, &level.terrain.stream);
+        entities.run_job(job);
+    }
     level.containers.set_book(globals.data.stations.clone());
     level.entities = Some(entities);
 }
@@ -350,6 +359,12 @@ impl Server {
                 (player.dimension, arrival)
             })
             .chain(respawns)
+            .chain(
+                self.globals
+                    .waiting_locates
+                    .iter()
+                    .map(|(dimension, _, _)| (*dimension, None)),
+            )
             .filter(|(dimension, _)| !self.levels.contains_key(dimension))
             .collect();
         for (dimension, arrival) in waiting {
@@ -413,6 +428,9 @@ impl Server {
                         "Minecraft {} level failed to open: {error}",
                         dimension.dimension_type()
                     );
+                    self.globals
+                        .waiting_locates
+                        .retain(|(waiting, _, _)| *waiting != dimension);
                     let spawn = spawn_place(&self.globals.spawn);
                     for player in waiting {
                         let back = player
@@ -478,7 +496,8 @@ impl Server {
                 continue;
             }
             level.empty_ticks = level.empty_ticks.saturating_add(ticks);
-            if level.empty_ticks >= EMPTY_TIME && !keeps_empty_levels {
+            let searching = level.entities.as_ref().is_some_and(Entities::runs_jobs);
+            if level.empty_ticks >= EMPTY_TIME && !keeps_empty_levels && !searching {
                 closing.push(dimension);
             }
         }
@@ -1130,6 +1149,7 @@ mod tests {
             autosave_ticks: 0,
             level_ticks: 0,
             closing: Vec::new(),
+            waiting_locates: Vec::new(),
         }
     }
 
@@ -1421,10 +1441,30 @@ mod tests {
             |_terrain: &mut Terrain| -> Arrival { panic!("the arrival search fails") },
         );
         server.opening.insert(Dimension::End, loader);
+        let host = crate::commands::HOST;
+        server.globals.waiting_locates = vec![
+            (Dimension::End, host, biome_search(Dimension::End, &[])),
+            (
+                Dimension::Nether,
+                host,
+                biome_search(Dimension::Nether, &[]),
+            ),
+        ];
         let finished = wait_for_levels(&mut server);
         assert_eq!(finished.len(), 1);
         assert!(finished[0].1.is_err(), "{finished:?}");
         assert!(server.levels.is_empty());
+        let waiting: Vec<Dimension> = server
+            .globals
+            .waiting_locates
+            .iter()
+            .map(|(dimension, _, _)| *dimension)
+            .collect();
+        assert_eq!(
+            waiting,
+            vec![Dimension::Nether],
+            "a search in a level that failed to open is dropped"
+        );
         let steve = &server.players[&steve_id];
         assert_eq!((steve.dimension, steve.arrival), (Dimension::Overworld, Some(home)));
         let alex = &server.players[&alex_id];
@@ -1439,6 +1479,107 @@ mod tests {
             "with nowhere else to go, the world spawn"
         );
         assert_eq!(alex.dimension, Dimension::Overworld);
+    }
+
+    fn biome_search(dimension: Dimension, targets: &[&str]) -> LocateRequest {
+        LocateRequest {
+            kind: minecraft_commands::LocateKind::Biome,
+            printable: "#minecraft:is_nether".to_owned(),
+            tag: true,
+            targets: targets.iter().map(|target| (*target).to_owned()).collect(),
+            dimension: dimension.dimension_type().to_owned(),
+            origin: [0, 64, 0],
+        }
+    }
+
+    #[test]
+    fn a_search_in_a_closed_level_opens_it_and_keeps_it_open_until_answered() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let (_dir, save) = world("search-level");
+        let mut server = server_with(test_globals(registries, Some(save)), Vec::new());
+        let host = crate::commands::HOST;
+        let nether_biomes = [
+            "minecraft:nether_wastes",
+            "minecraft:crimson_forest",
+            "minecraft:warped_forest",
+            "minecraft:soul_sand_valley",
+            "minecraft:basalt_deltas",
+        ];
+        let request = biome_search(Dimension::Nether, &nether_biomes);
+        server
+            .globals
+            .waiting_locates
+            .push((Dimension::Nether, host, request.clone()));
+        server.open_levels(2);
+        assert_eq!(
+            server.opening.keys().copied().collect::<Vec<_>>(),
+            vec![Dimension::Nether]
+        );
+        assert_eq!(
+            wait_for_levels(&mut server),
+            vec![(Dimension::Nether, Ok(()))]
+        );
+        assert!(
+            server.globals.waiting_locates.is_empty(),
+            "the level took its search"
+        );
+        let entities = server
+            .levels
+            .get_mut(&Dimension::Nether)
+            .unwrap()
+            .entities
+            .as_mut()
+            .unwrap();
+        assert!(entities.runs_jobs());
+        assert!(
+            server.close_empty_levels(EMPTY_TIME).is_empty(),
+            "a level still searching stays open"
+        );
+        let started = Instant::now();
+        let answer = loop {
+            let entities = server
+                .levels
+                .get_mut(&Dimension::Nether)
+                .unwrap()
+                .entities
+                .as_mut()
+                .unwrap();
+            entities.poll_jobs();
+            if let Some(job) = entities.command_jobs.pop() {
+                break job;
+            }
+            assert!(
+                started.elapsed().as_secs() < 600,
+                "no answer from the Nether"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let Ok(answer) = answer.downcast::<crate::commands::CommandJob>() else {
+            panic!("a command job");
+        };
+        let crate::commands::CommandJob::Located {
+            source,
+            request: asked,
+            search,
+        } = *answer
+        else {
+            panic!("a located answer");
+        };
+        assert_eq!((source, asked), (host, request));
+        let minecraft_terrain::locate::Search::Found(_, biome) = search else {
+            panic!("a Nether biome near 0, 0: {search:?}");
+        };
+        assert!(nether_biomes.contains(&biome.as_str()), "{biome}");
+        assert!(
+            !server.levels[&Dimension::Nether]
+                .entities
+                .as_ref()
+                .unwrap()
+                .runs_jobs()
+        );
+        assert_eq!(server.close_empty_levels(1), vec![Dimension::Nether]);
     }
 
     #[test]

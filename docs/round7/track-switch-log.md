@@ -504,3 +504,41 @@ Previous commit: a9e2a2e7
 ```
 IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:obsidian*64,minecraft:netherrack*64,minecraft:cobblestone*64,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:torch*64,minecraft:cooked_beef*32
 ```
+
+## After track C
+
+Track C (`/execute`, `Ctx.dimension`, `/locate`, `/kit`) is merged on this branch (merge 9dbec02a). These entries do what the earlier entries left "After track C". Each names the previous commit's hash; its own hash is in `git log` under its subject.
+
+### 24. Minecraft /execute in moves players into another dimension (E1-11)
+
+Previous commit: 9dbec02a
+
+- **Vanilla, checked with javap:** `CommandSourceStack.withLevel` scales the source position's x and z by `DimensionType.getTeleportationScale(old, new)` and keeps y, and `/execute in` does nothing else to it. `TeleportCommand.teleportToPos` resolves the location against that scaled source and calls `Entity.teleportTo(source.getLevel(), x, y, z, ...)`: the relative flags only matter inside one level, so `~` in another dimension is the scaled position. `DimensionArgument.getDimension` takes any level of the server, and vanilla's server always has all three. Track C's `/execute in` already scales like `withLevel` and asks `teleport_to_dimension` when the target is in another dimension, so nothing changed in `minecraft_commands` but a test.
+- **Changed:**
+  - `minecraft_survival/src/commands.rs` (`Host`):
+    - `dimension_scale` answers every real dimension (`switch::dimension_named`), open or closed, with its `coordinate_scale` from the data pack (`Host.registries`, the server's `Registries`). Before, a closed level was `Unknown dimension`.
+    - `teleport_to_dimension` calls `Player::teleport_into` with the position and the player's own angles, as vanilla keeps them without a rotation argument. The switch opens the level, shows the loading screen of that pair and waits for a remote killstreak. A dead player is not moved, as with a plain `/tp`.
+    - `locate` in a closed level keeps the request in `Globals.waiting_locates` and answers later. `locate_job` builds the search, shared with the level start.
+    - `run` collects job answers from every open level, not only the one being ticked (`Entities::poll_jobs`), so `/execute in` a level the player is not in still answers `/locate`, `/setblock` and `/fill`.
+  - `minecraft_survival/src/entities.rs`: `poll_jobs` takes the job answers from the level's server output and keeps the rest of that output for the next tick, which handles it as before. `runs_jobs` is true while a job sent to the level has not answered.
+  - `minecraft_survival/src/server.rs`: `open_levels` opens the level of a waiting search, `start_level` hands it its searches, a level that fails to open drops them, and `close_empty_levels` keeps an empty level open while it still searches.
+  - `render_anim/src/minecraft_world.rs`: when a command starts a switch, the frame shows the command's chat lines and stops there, as the respawn switch does, so nothing of the old level runs with the new dimension. The chat suggests all three dimensions after `/execute in`, as vanilla lists every level (`switch::DIMENSIONS`).
+  - `docs/MINECRAFT-SURVIVAL.md`: the `/execute in` limitation and the roadmap line.
+- **Tests:** `minecraft_commands::execute`: `execute_in_the_nether_asks_for_an_eighth_of_the_overworld_position` (the brief's `FakeWorld` test: from (800, 70, -1600), `tp ~ ~ ~` asks for (100, 70, -200) in the Nether). `commands`: `execute_in_teleports_the_player_into_another_dimension_through_the_switch` (the Nether roof at an eighth with the player's angles and the `NETHER_PORTAL` switch; a teleport inside the same dimension stays plain; a remote killstreak holds the way back; a dead player stays), `execute_in_finds_every_real_level_open_or_not` (was `execute_in_finds_only_loaded_levels`: closed Nether and End are found, a lookup opens nothing, an unknown dimension is still refused), and `locate_answers_once_the_level_has_searched` now expects a search in a closed level to wait. `server`: `a_search_in_a_closed_level_opens_it_and_keeps_it_open_until_answered` (opens the Nether for it, keeps it open past 300 empty ticks while searching, the answer is a Nether biome, then it closes), and `a_level_that_fails_to_open_sends_its_players_back` also drops the searches for that level only.
+- **Decisions:**
+  - A level opens when a command needs it (a teleport through the switch, a `/locate`), not on every lookup: `/execute in minecraft:the_end run seed` opens nothing. A level opened for a search closes 15 s after it answered, like a level a player left.
+  - `/setblock` and `/fill` in a closed level answer `That position is not loaded`. Vanilla 26.x has no spawn chunks, so with nobody in the Nether vanilla answers the same.
+- **Test steps** (brief steps 1, 2 and 7, then the waiting steps of entries 15 and 16):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=e24test` (a new world) and remove any `IW4L_MINECRAFT_DIMENSION` line. Start, type `/gamemode creative` (so the falls below don't kill), and walk about 100 blocks from spawn.
+  2. Open the chat and type `/execute in ` : the suggestions list `minecraft:overworld`, `minecraft:the_nether` and `minecraft:the_end`. **Screenshot 1.**
+  3. Send `/execute in minecraft:the_nether run tp ~ 128 ~`. The chat says `Teleported Steve to ...` with about an eighth of your x and z, the purple portal background shows with "Loading terrain...", then you stand on the bedrock roof. **Screenshots 2 (loading screen) and 3 (Nether roof).**
+  4. Send `/execute in minecraft:overworld run tp ~ ~ ~`. You are back in the overworld at 8 times those x and z, at y 128. After about 15 s the log says `Minecraft minecraft:the_nether level saved and closed`.
+  5. Send `/execute in minecraft:the_nether run locate structure minecraft:fortress`. After a moment the chat answers `The nearest minecraft:fortress is at [...]` with Nether coordinates, and the log says the Nether level opened and, 15 s later, closed. **Screenshot 4.**
+  6. Send `/execute in minecraft:the_end run tp 100 50 0`. The end portal background shows, then you are on the obsidian platform. Type `give killstreak/predator` in the console (accept the suggestion) and use it: it works. **Screenshot 5.**
+  7. `/kill`, and after the respawn in the overworld throw a frag at the ground and at once send `/execute in minecraft:the_nether run tp ~ 128 ~` (type it once beforehand so Up and Enter bring it back). In the Nether there is no crater from that frag. **Screenshot 6.**
+  8. Send `/execute in minecraft:overworld run tp ~ ~ ~`. Back in the overworld, `give killstreak/predator` in the console, select it to fly it, and while steering open chat and send `/execute in minecraft:the_nether run tp ~ 128 ~`. Nothing happens until the missile hits; then the Nether loading screen shows. **Screenshot 7.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:obsidian*64,minecraft:netherrack*64,minecraft:cobblestone*64,minecraft:cooked_beef*32
+```
