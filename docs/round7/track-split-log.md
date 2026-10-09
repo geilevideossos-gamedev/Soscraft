@@ -594,3 +594,50 @@ C4 is commit `1703c63`.
 | `minecraft_net` | - | 2 | 2 (not touched) |
 
 The 153 moved tests are all still there (119 in `minecraft_survival` plus 34 in `render_anim`). The 12 new `minecraft_survival` tests are B4 2, B5 1, B6 1, B7 1, C1 2, C2 2 and C3 3. `minecraft_terrain` (464 passed, 3 ignored), `minecraft_commands` (53) and `minecraft_net` (2) were not touched by C1-C5 (`git diff 9be1914` is empty for them).
+
+## D1. Minecraft code map after the crate split
+
+C5 is commit `636e433`.
+
+- **What changed** (docs only, no code):
+  - `docs/MINECRAFT-SURVIVAL.md`, "The Minecraft world is single player":
+    - The server-thread line names `PLAYER` in `minecraft_survival/src/entities.rs` (it said `PLAYER = 0` in `minecraft_entities.rs`) and adds that what the server thread hands back for a player has no player key yet.
+    - The survival-state line says the game state lives in `minecraft_survival`: one `Server`, a `Level` per dimension and a `Player` per UUID, with only the overworld and the host so far. It used to say the render crate.
+    - The commands line names `minecraft_survival::commands::Host` as the `CommandWorld` implementation.
+  - `docs/MINECRAFT-SURVIVAL.md`, Limitations, "Survival and combat": death drops are spawned by the per-frame update in `render_anim` with `minecraft_survival::death::death_drops`.
+  - `docs/MINECRAFT-SURVIVAL.md`, new "Crate layout" section before "Testing workflow": `minecraft_survival` (`Server` with its globals, `Level` per dimension, `Player` per UUID, and the rule modules), `minecraft_net`, `minecraft_terrain`, `minecraft_commands`, and what stays in `render_anim`.
+  - `docs/CRATE-SPLIT.md`: a "Done in `5a7a4e4`..`636e433`" note at the top. No step was skipped.
+- **Tests added:** none (docs only). Totals unchanged from C5: `minecraft_survival` 131, `render_anim` 34, `minecraft_net` 2, `minecraft_terrain` 464 passed and 3 ignored, `minecraft_commands` 53.
+- **Checks:** `check -p launcher --locked` on the final tree, whose code is identical to `636e433`.
+- **Owner test** (the plan's end-of-split checkpoint: the full regression on the release build; the whole game must play exactly as before):
+  1. Load a Minecraft match with `IW4L_MINECRAFT_WORLD=split` and the regression kit. The log says "Minecraft kit: 27 stacks from IW4L_MINECRAFT_KIT". The kit is in the backpack, and hearts, hunger and XP show.
+  2. Mine stone with the pickaxe and shoot a block with a gun. Both drop items, and a silk-touch ore drops itself.
+  3. Place a crafting table, a furnace and a chest. Craft something, smelt raw iron with coal (the furnace front glows while it smelts), and put items in the chest.
+  4. Place the ender chest and put an item in it. Break it: the item doesn't drop. Place it again, and the item is still there.
+  5. Eat beef. Hold the shield up against a zombie from the spawn egg. Throw a pearl (teleport and fall damage) and an egg.
+  6. Fall from 6 blocks or more (fall damage and sound), then swim in water and stand in lava briefly.
+  7. Die with the totem in the offhand (it pops). Die again without it: items and XP drop, guns stay, and the chat shows the death message.
+  8. Type `/gamemode creative`, `/give @s minecraft:diamond 5`, `/tp ~ ~10 ~`, `/time set 13000`, `/weather rain` and `/summon minecraft:cow`. Each one works.
+  9. Still in creative, fly about 300 blocks away and back. Terrain streams in ahead, and the cow is still there. Type `/gamemode survival`.
+  10. Leave the match, and check the log for "Minecraft world saved". Start the match again: the same seed and terrain, your placed blocks and your game mode are back.
+  11. Wait 5 minutes (autosave, "Minecraft autosave: N chunks queued"), then quit the game from the menu. On the next start, the world loads with your edits.
+- **Kit:** the regression kit above (27 stacks).
+- **Not done here:**
+  - The plan's D1 also updates the PROGRESS.md row and log, and the roadmap line in CLAUDE.md if the owner wants it. The orchestrator owns both files, so this commit leaves them alone.
+  - The end-of-split release build. The track may not pass `--release`, so the orchestrator builds it.
+- **Decisions:**
+  - The subject drops the plan's "Docs:" prefix, because CLAUDE.md wants plain-English subjects with no prefix.
+  - "Crate layout" sits right before "Testing workflow", not inside "Multiplayer and saving today". That keeps it away from the saving lines that track D will change. The doc's status line at the top ("after round 6") is left for the orchestrator.
+  - The "Done in" range in CRATE-SPLIT.md ends at C5, the last code commit, because D1 can't name its own hash.
+
+## Test totals at the end of the split
+
+| Crate | Baseline (`70a01b2`) | After D1 |
+|---|---|---|
+| `minecraft_survival` | - | 131 |
+| `render_anim` | 153 | 34 |
+| `minecraft_net` | - | 2 |
+| `minecraft_terrain` | 464 passed, 3 ignored | 464 passed, 3 ignored |
+| `minecraft_commands` | 53 | 53 |
+
+All 153 `render_anim` tests from the baseline are still there: 119 moved to `minecraft_survival` and 34 stayed. The track added 14 tests, 12 in `minecraft_survival` and 2 in `minecraft_net`.

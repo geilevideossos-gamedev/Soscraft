@@ -125,9 +125,9 @@ The MW2 netcode is host-authoritative and goes through the `iw4l-master` QUIC re
 - The seed is stored with the world (see below).
 - Nothing Minecraft goes over the network: blocks, mobs, items, inventories, containers, hunger, time of day and weather are all host-only.
 - Chat goes through serde message types made for the network (`Serverbound` chat and command lines without a sender, `Clientbound` system and player messages with translatable text that each client resolves in its own language), but they only travel inside the host for now.
-- The server thread knows one player (`PLAYER = 0` in `minecraft_entities.rs`). Chunks stream around the host only.
-- Survival state (inventory, containers, hunger) lives in the render crate (`render_anim`), not in the sim or the server thread.
-- Commands run on the host only, behind a `CommandWorld` trait that the render crate implements for now. Players are known by the vanilla offline UUID of their name, so `ops.json` already works for friends once they can join: a friend has level 0 until `/op` makes them an operator.
+- The level's server thread (`minecraft_terrain/src/server.rs`) knows one player, its entity `0` (`PLAYER` in `minecraft_survival/src/entities.rs`). What it hands back for a player (picked-up stacks, pearl landings, XP, item uses, egg and summon answers) has no player key yet. Chunks stream around the host only.
+- The game state lives in `crates/minecraft_survival`, a crate without bevy (see [Crate layout](#crate-layout)): one `Server` per world, one `Level` per dimension (terrain, mobs, containers) and one `Player` per UUID (inventory, health, hunger, XP, game mode). Only the overworld level and the host's player exist so far. The survival state is not in the MW2 sim or the server thread.
+- Commands run on the host only, behind a `CommandWorld` trait that `minecraft_survival::commands::Host` implements for the host's player. Players are known by the vanilla offline UUID of their name, so `ops.json` already works for friends once they can join: a friend has level 0 until `/op` makes them an operator.
 
 ### Saving (one player, overworld)
 - The world lives in `iw4l-artifacts\saves\<name>` next to the exe, in the vanilla 26.3 layout: `level.dat`, `session.lock`, `data/minecraft/world_gen_settings.dat` (the seed), `world_clocks.dat` (time of day) and `game_rules.dat` (the 58 vanilla 26.3 game rules, such as `minecraft:keep_inventory`), and `dimensions/minecraft/overworld/{region,entities,poi,data}`. `level.dat`, `world_clocks.dat` and `game_rules.dat` keep a `_old` copy that is read when the file is missing or broken.
@@ -212,7 +212,7 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 - Hand mining counts as a diamond pickaxe with the held item's enchantments, so a bare hand or a wrong tool still drops items.
 - Not modelled: Fire Protection, Frost Walker and the burn-time attribute.
 - Lava and fire deaths have no death sound.
-- Death drops are spawned by the render crate on the host for the one local player, not by the server thread. Anvil, enchanting and other bench inputs go back to the inventory when the screen closes and then drop with it. Items that fall into lava or fire burn like any dropped item. A match end still resets the XP level to 0.
+- Death drops are spawned on the host for the one local player, by the per-frame update in `render_anim` with `minecraft_survival::death::death_drops`, not by the server thread. Anvil, enchanting and other bench inputs go back to the inventory when the screen closes and then drop with it. Items that fall into lava or fire burn like any dropped item. A match end still resets the XP level to 0.
 - Shield: no knockback to the attacker, axes don't disable it, and MW2 bullets ignore it.
 - The totem plays no animation. Every item has the same use speed.
 - Witch potions don't reach the player.
@@ -238,6 +238,20 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 
 ### Mobs
 - Only the kinds listed above are simulated. There are no Nether mobs: ghast, piglin, zombified piglin, hoglin, magma cube, blaze, wither skeleton and strider are missing.
+
+## Crate layout
+
+Since the crate split ([CRATE-SPLIT.md](CRATE-SPLIT.md)), the Minecraft game state lives outside the render crate. New game state goes into `minecraft_survival`, kept per dimension in a `Level` or per player in a `Player`, never in the adapter.
+
+- **`crates/minecraft_survival`** (edition 2024, no bevy): the headless game state and rules.
+  - `server.rs`: one `Server` per open world, with `globals` (seed, registries, world folder, game rules, difficulty, day clock, the chat `CommandServer`, game data, autosave timer), `levels` (a `Level` per `Dimension`) and `players` (a `Player` per `PlayerUuid`). The autosave and the closing save run from here.
+  - `level.rs`: a `Level` holds its `entities` (the level's server thread and mobs), `containers` and `terrain` (the `TerrainStream`, block scene and environment). Block writes, container ticks and chunk streaming run on it. Only the overworld is loaded so far.
+  - `player.rs`: a `Player` holds the name, dimension, survival stats, game mode, death watch, inventory, selected slot and the hand and fall timers. The kit fills the inventory when the player joins. Only the host joins so far.
+  - The rules: `survival.rs` (health, hunger, air, fire, effects, XP, falls), `death.rs`, `offhand.rs` (shield, totem, hand use), `guns.rs`, `commands.rs` (the `CommandWorld` host), `entities.rs` (the server thread handle and the client copies of its mobs, items and orbs), `save.rs` (world folder, `level.dat`, player files) and `data.rs` (recipes, loot, stations and enchantments, read from the jar once per world).
+- **`crates/minecraft_net`** (serde only): the shared ids `Dimension` and `PlayerUuid`. Network messages come with multiplayer.
+- **`crates/minecraft_terrain`** (edition 2021, unchanged by the split apart from re-exporting `Dimension`): world generation, the `TerrainStream`, the level server thread (`server.rs`), containers, crafting, stations, game modes, item-use rules, packs and all meshing.
+- **`crates/minecraft_commands`**: the command tree, `CommandServer`, the `CommandWorld` trait and the chat protocol.
+- **`crates/render_anim`**: the Bevy adapter `minecraft_world.rs`. Its `Runtime` holds the loading thread, the client assets, the `Server`, the local player's UUID, the survival stats carried to the next match, and presentation. Each frame `update()` looks up the local `Player` and its `Level`, reads the MW2 player state, runs the player's actions and the game procedures, writes health, damage, teleports and abilities back into MW2, and draws the world. The inventory screens, mining progress, sounds, spawn gate, hand, minimap, GUI, camera and the MW2 collision mirror (`sim::voxel`) stay here; the player actions, menus and mining progress move out with multiplayer (CRATE-SPLIT.md section 6).
 
 ## Testing workflow
 
