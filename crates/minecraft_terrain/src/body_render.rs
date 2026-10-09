@@ -235,5 +235,6 @@ mod tests {
                 .all(|vertex| (vertex.sky_light, vertex.block_light) == (9.0, 3.0))
         );
         assert!(mesh.glint.is_empty());
+        assert_eq!(mesh.armor_glint, [0..mesh.vertices.len() as u32]);
     }
 }

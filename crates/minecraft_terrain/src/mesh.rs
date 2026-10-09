@@ -85,18 +85,22 @@ pub struct ChunkMesh {
     pub transparent_start: Option<u32>,
     pub faces: usize,
     pub glint: Vec<std::ops::Range<u32>>,
+    pub armor_glint: Vec<std::ops::Range<u32>>,
 }
 
 pub const GLINT_VERTEX: u8 = 255;
+pub const ARMOR_GLINT_VERTEX: u8 = 128;
 
 pub fn section_vertices(mesh: &ChunkMesh) -> Vec<SectionVertex> {
     let mut vertices: Vec<SectionVertex> = mesh.vertices.iter().map(SectionVertex::from_vertex).collect();
     let len = vertices.len();
-    for range in &mesh.glint {
-        let end = (range.end as usize).min(len);
-        let start = (range.start as usize).min(end);
-        for vertex in &mut vertices[start..end] {
-            vertex.pad[0] = GLINT_VERTEX;
+    for (ranges, flag) in [(&mesh.armor_glint, ARMOR_GLINT_VERTEX), (&mesh.glint, GLINT_VERTEX)] {
+        for range in ranges {
+            let end = (range.end as usize).min(len);
+            let start = (range.start as usize).min(end);
+            for vertex in &mut vertices[start..end] {
+                vertex.pad[0] = flag;
+            }
         }
     }
     vertices
@@ -3615,6 +3619,17 @@ mod tests {
         }
         mesh.glint = vec![12..30, 40..50];
         assert!(section_vertices(&mesh).iter().all(|vertex| vertex.pad[0] == 0));
+    }
+    #[test]
+    fn section_vertices_mark_armour_glint_apart_from_item_glint() {
+        let mut mesh = ChunkMesh {
+            vertices: vec![Vertex { position: [0.0; 3], uv: [0.0; 2], color: [1.0; 4], sky_light: 15.0, block_light: 0.0 }; 8],
+            ..ChunkMesh::default()
+        };
+        mesh.armor_glint = vec![0..4, 7..20];
+        mesh.glint = vec![5..6];
+        let flags: Vec<u8> = section_vertices(&mesh).iter().map(|vertex| vertex.pad[0]).collect();
+        assert_eq!(flags, [ARMOR_GLINT_VERTEX, ARMOR_GLINT_VERTEX, ARMOR_GLINT_VERTEX, ARMOR_GLINT_VERTEX, 0, GLINT_VERTEX, 0, ARMOR_GLINT_VERTEX]);
     }
     #[test]
     fn dropped_enchanted_items_glint_on_every_copy() {

@@ -217,10 +217,12 @@ pub fn append_armor_on_rig(mesh: &mut ChunkMesh, atlas: &Atlas, rig: &ArmorRig, 
     for slot in DRAW_ORDER {
         let Some(item) = armor[slot].as_ref() else { continue };
         let g = if slot == 2 { 0.5 } else { 1.0 };
+        let mut foil = item.glint;
         for (id, tint) in armor_layers(item, slot) {
             if !atlas.contains(&id) {
                 continue;
             }
+            let start = mesh.vertices.len() as u32;
             let panel = ArmorPanel { region: atlas.entity_region(&id), tint, sky, block };
             match slot {
                 0 => {
@@ -253,6 +255,11 @@ pub fn append_armor_on_rig(mesh: &mut ChunkMesh, atlas: &Atlas, rig: &ArmorRig, 
                     }
                 }
             }
+            let end = mesh.vertices.len() as u32;
+            if foil && end > start {
+                mesh.armor_glint.push(start..end);
+            }
+            foil = false;
         }
     }
 }
@@ -391,5 +398,18 @@ mod tests {
             assert!(tint(top).iter().zip(colour).all(|(c, want)| (c - want * shade).abs() < 1e-5), "{:?}", tint(top));
             assert!(mesh.vertices[120..].iter().all(|vertex| vertex.color[0] == vertex.color[1] && vertex.color[1] == vertex.color[2]));
         }
+    }
+
+    #[test]
+    fn an_enchanted_piece_shimmers_on_its_first_layer_only() {
+        let (_temp, atlas) = armor_atlas();
+        let enchanted = |id: &str| Some(GearItem { id: id.to_owned(), glint: true, dye: None });
+        let mut mesh = ChunkMesh::default();
+        append_armor_on_rig(&mut mesh, &atlas, &rig(), &[None, enchanted("minecraft:leather_chestplate"), None, None], 15.0, 0.0);
+        assert_eq!(mesh.armor_glint, [0..120]);
+        assert!(mesh.glint.is_empty());
+        let mut mesh = ChunkMesh::default();
+        append_armor_on_rig(&mut mesh, &atlas, &rig(), &[enchanted("minecraft:diamond_helmet"), worn("minecraft:iron_chestplate", None), None, None], 15.0, 0.0);
+        assert_eq!(mesh.armor_glint, [120..168], "the chestplate first, then the enchanted helmet");
     }
 }
