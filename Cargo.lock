@@ -3919,6 +3919,7 @@ name = "minecraft_net"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3945,6 +3946,7 @@ dependencies = [
  "bytemuck",
  "glam 0.29.3",
  "image",
+ "minecraft_net",
  "minecraftoss-core",
  "minecraftoss-entities",
  "minecraftoss-generator",

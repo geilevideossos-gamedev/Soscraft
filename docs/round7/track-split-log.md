@@ -243,3 +243,22 @@ A8 is commit `1d8f688`.
 | sum | 153 | 153 |
 
 No test was lost: save 12, death 25, offhand 10, survival 64, entities 6 and commands 2 moved (119). `minecraft_terrain` (464 passed, 3 ignored) and `minecraft_commands` (53) were not touched by A1-A9.
+
+## B1. Minecraft dimension and player ids live in minecraft_net
+
+A9 is commit `ec1bb14`.
+
+- **What changed:**
+  - `Dimension` moved from `minecraft_terrain/src/terrain.rs` into `minecraft_net/src/lib.rs` (new file, no comments, rustfmt-clean; its doc line is dropped). Same variants, `parse` and `dimension_type`, plus the derives `Hash`, `PartialOrd`, `Ord`, `Serialize` and `Deserialize`.
+  - New `PlayerUuid(pub String)` in `minecraft_net`: the hyphenated offline UUID that `minecraft_commands::offline_uuid` returns, ordered and hashable so it can key the server's player map.
+  - `terrain.rs` re-exports it with `pub use minecraft_net::Dimension;` where the enum was, so `minecraft_terrain::terrain::Dimension` (`minecraft_world.rs`, `examples/smoke.rs`) still resolves. `minecraft_terrain/Cargo.toml` gains the `minecraft_net` path dependency. No let-chains in the edition-2021 crate.
+  - `minecraft_net` gains `serde_json` as a dev-dependency. `Cargo.lock` only gains the two dependency lines (`minecraft_net` -> `serde_json`, `minecraft_terrain` -> `minecraft_net`).
+- **Tests added** (2, in `minecraft_net`): `dimension_types_parse_back` (`parse(dimension_type())` gives back each of the three dimensions, plus the short names and an unknown name) and `dimensions_and_uuids_survive_serde` (JSON round trip of the three dimensions and of a `PlayerUuid`). Totals: `minecraft_net` 2, `minecraft_terrain` 464 passed + 3 ignored (unchanged), `minecraft_survival` 119 and `render_anim` 34 (not touched).
+- **Checks:** `check -p launcher --offline` (lock update), `check -p launcher --locked`, `test -p minecraft_net --locked`, `test -p minecraft_terrain --locked`; `rustfmt --check --edition 2024` on the new `lib.rs` prints nothing.
+- **Owner test** (nothing visible changes; the overworld must generate exactly as before):
+  1. Load a Minecraft match in the world folder used before (`IW4L_MINECRAFT_WORLD=split`). The log says "Minecraft world: opened ..." with the same seed, and the terrain around the spawn is the same as in your last screenshot of it.
+  2. Walk a few chunks out: new chunks stream in with sky light, as before.
+- **Kit:** any; the regression kit above works.
+- **Decisions:**
+  - Serde writes a dimension as its vanilla resource key (`"minecraft:overworld"`, `"minecraft:the_nether"`, `"minecraft:the_end"`, the same strings as `dimension_type()`) through `#[serde(rename)]`, and `PlayerUuid` as a plain string (`#[serde(transparent)]`), the way vanilla writes dimension keys and UUIDs in its JSON. The plan only asked for the derives; nothing serialises either type yet, so this changes no behaviour.
+  - `PlayerUuid` derives `Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord`, enough for the `BTreeMap<PlayerUuid, Player>` of B5.

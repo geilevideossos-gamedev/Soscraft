@@ -8,5 +8,8 @@ description = "Minecraft ids shared by the server and its clients: dimensions an
 [dependencies]
 serde = { workspace = true }
 
+[dev-dependencies]
+serde_json = { workspace = true }
+
 [lints]
 workspace = true
