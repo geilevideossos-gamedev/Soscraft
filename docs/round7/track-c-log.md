@@ -810,3 +810,25 @@ The creative screen goes in after the split. That covers the UI, the search box,
 9. **Multiplayer**
    - Every friend reads their own jar, so the tabs need no network messages.
    - The host checks every `CreativeSet` again, as above.
+
+## Minecraft suggestion engine passes rustfmt again
+
+Commit: the commit that adds this entry (branch `track-c`, adversarial review of the whole track).
+
+### What changed
+
+- One test assertion in the new `crates/minecraft_commands/src/suggest.rs`, added with `/execute` in 410015a, was wider than rustfmt allows. From that commit on, the file printed a diff under `git show :crates/minecraft_commands/src/suggest.rs | rustfmt --check --edition 2024`, which breaks the rule for new files. The assertion now has rustfmt's layout. Nothing else changes.
+
+### Tests added
+
+None. The existing tests are unchanged.
+
+### In-game test steps
+
+Nothing changes in game.
+
+Kit: none needed.
+
+### Decisions
+
+- **The check is the printed diff, not the exit code.** rustfmt reading stdin with `--check` exits 0 even when it prints a diff. That is how the violation slipped through. A new file passes only when the command prints nothing.

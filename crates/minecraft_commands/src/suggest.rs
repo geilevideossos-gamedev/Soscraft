@@ -1159,7 +1159,11 @@ mod tests {
             vec!["creative"]
         );
         assert_eq!(
-            at_end("/execute in minecraft:overworld run gamemode creative", OWNERS).spans,
+            at_end(
+                "/execute in minecraft:overworld run gamemode creative",
+                OWNERS
+            )
+            .spans,
             vec![(0..45, GRAY), (45..53, AQUA)]
         );
         assert_eq!(
