@@ -119,6 +119,7 @@ pub struct PotionTarget {
 pub struct PotionHit {
     pub location: DVec3,
     pub entity: Option<u64>,
+    pub block: Option<minecraftoss_player::Pos>,
 }
 
 /// A thrown splash potion (`ThrownSplashPotion`).
@@ -214,9 +215,9 @@ impl ThrownPotion {
             }
         }
         let hit = match (entity, block) {
-            (Some((id, at)), _) => Some(PotionHit { location: at, entity: Some(id) }),
+            (Some((id, at)), _) => Some(PotionHit { location: at, entity: Some(id), block: None }),
             // `hitTargetOrDeflectSelf`: a block hit on air strikes nothing.
-            (None, Some((pos, at))) if world.block(pos).is_some_and(|b| b.id != "minecraft:air") => Some(PotionHit { location: at, entity: None }),
+            (None, Some((pos, at))) if world.block(pos).is_some_and(|b| b.id != "minecraft:air") => Some(PotionHit { location: at, entity: None, block: Some(pos) }),
             _ => None,
         };
         self.position = match (entity, block) {

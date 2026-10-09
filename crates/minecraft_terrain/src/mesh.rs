@@ -85,18 +85,22 @@ pub struct ChunkMesh {
     pub transparent_start: Option<u32>,
     pub faces: usize,
     pub glint: Vec<std::ops::Range<u32>>,
+    pub armor_glint: Vec<std::ops::Range<u32>>,
 }
 
 pub const GLINT_VERTEX: u8 = 255;
+pub const ARMOR_GLINT_VERTEX: u8 = 128;
 
 pub fn section_vertices(mesh: &ChunkMesh) -> Vec<SectionVertex> {
     let mut vertices: Vec<SectionVertex> = mesh.vertices.iter().map(SectionVertex::from_vertex).collect();
     let len = vertices.len();
-    for range in &mesh.glint {
-        let end = (range.end as usize).min(len);
-        let start = (range.start as usize).min(end);
-        for vertex in &mut vertices[start..end] {
-            vertex.pad[0] = GLINT_VERTEX;
+    for (ranges, flag) in [(&mesh.armor_glint, ARMOR_GLINT_VERTEX), (&mesh.glint, GLINT_VERTEX)] {
+        for range in ranges {
+            let end = (range.end as usize).min(len);
+            let start = (range.start as usize).min(end);
+            for vertex in &mut vertices[start..end] {
+                vertex.pad[0] = flag;
+            }
         }
     }
     vertices
@@ -492,6 +496,7 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     }
     textures.insert(ResourceId::parse("minecraft:entity/creeper/creeper")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/experience/experience_orb")?, ());
+    textures.insert(ResourceId::parse(crate::trident::TEXTURE)?, ());
     textures.insert(ResourceId::parse("minecraft:entity/spider/spider")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/slime/slime")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/enderman/enderman")?, ());
@@ -661,6 +666,9 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
         }
         textures.insert(ResourceId::parse("minecraft:particle/note")?, ());
         textures.insert(ResourceId::parse("minecraft:particle/glow")?, ());
+        for id in crate::spell_particles::textures() {
+            textures.insert(id, ());
+        }
         textures.insert(ResourceId::parse("minecraft:misc/shadow")?, ());
     }
     let atlas = make_atlas(packs, textures.into_keys().collect())?;
@@ -833,9 +841,11 @@ impl<S: Scene> Scene for MovingBlockScene<'_, S> {
 const MOVING_BLOCK_HEIGHT: f64 = 0.98;
 struct ItemVisual {
     model: ResolvedModel,
+    hand: Option<ResolvedModel>,
     ground: Mat4,
     /// The `thirdperson_righthand` display transform.
     right_hand: Mat4,
+    left_hand: Mat4,
     fixed: Mat4,
     min_y: f32,
     tints: Vec<[f32; 3]>,
@@ -867,10 +877,17 @@ impl ItemVisuals {
             if model.elements.is_empty() {
                 return Ok(None);
             }
+            let definition = packs.item_definition(&resource)?;
+            let hand = match definition.as_ref().map(|value| &value["model"]) {
+                Some(value) if crate::special_models::uses_item_geometry_in(value, Some("thirdperson_righthand")) && !crate::special_models::uses_item_geometry(value) => {
+                    crate::model::resolve_item_model_in(packs, &resource, Some("thirdperson_righthand"))?.filter(|hand| !hand.elements.is_empty())
+                }
+                _ => None,
+            };
             let ground = crate::model::item_display_transform(packs, &resource, "ground")?;
             let right_hand = crate::model::item_display_transform(packs, &resource, "thirdperson_righthand")?;
+            let left_hand = crate::model::item_third_person_transform(packs, &resource, true)?;
             let fixed = crate::model::item_display_transform(packs, &resource, "fixed")?;
-            let definition = packs.item_definition(&resource)?;
             let tints = definition
                 .as_ref()
                 .map(|value| crate::interface::item_model_tints(packs, &value["model"]))
@@ -894,8 +911,10 @@ impl ItemVisuals {
                 id.into(),
                 ItemVisual {
                     model,
+                    hand,
                     ground,
                     right_hand,
+                    left_hand,
                     fixed,
                     min_y: min.y,
                     tints,
@@ -1098,13 +1117,35 @@ impl ItemVisuals {
         Ok(())
     }
 
+    pub fn append_open_lids<S: Scene>(&mut self, mesh: &mut ChunkMesh, lids: &[crate::lids::PosedLid], level: &S, packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
+        if self.tint.is_none() {
+            self.tint = Some(BiomeTint::from_pack(packs)?);
+        }
+        let Some(tint) = self.tint.as_ref() else {
+            return Ok(());
+        };
+        for lid in lids {
+            let Some(model) = crate::lids::lid_model(&lid.block, lid.progress)? else {
+                continue;
+            };
+            let variants = [(model, 1)];
+            let mut dry = lid.block.clone();
+            dry.properties.remove("waterlogged");
+            let scene = MovingBlockScene { level, block: &dry, at: lid.cell };
+            let mut transparent = Vec::new();
+            append_block(&scene, lid.cell, &dry, || Ok(variants.as_slice()), |_, _| false, atlas, tint, sky_light, mesh, &mut transparent)?;
+            mesh.indices.extend(transparent);
+        }
+        Ok(())
+    }
+
     /// Items mobs hold (`ItemInHandLayer`, `CrossedArmsItemLayer`): each
     /// under its holder's pose, then its display transform, tinted as its
     /// item definition says, lit at its point.
     pub fn append_held_items(&mut self, mesh: &mut ChunkMesh, items: &[HeldItem], packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
         for item in items {
             let Some((display, mut tints)) = self.model(&item.id, packs)?.map(|visual| {
-                (match item.display { HeldDisplay::RightHand => visual.right_hand, HeldDisplay::Ground => visual.ground, HeldDisplay::Fixed => visual.fixed }, visual.tints.clone())
+                (match item.display { HeldDisplay::RightHand => visual.right_hand, HeldDisplay::LeftHand => visual.left_hand, HeldDisplay::Ground => visual.ground, HeldDisplay::Fixed => visual.fixed }, visual.tints.clone())
             }) else {
                 continue;
             };
@@ -1115,7 +1156,8 @@ impl ItemVisuals {
                     tints[0] = color;
                 }
             }
-            self.append_model(mesh, &item.id, item.light, item.pose * display, 1.0, Some(&tints), packs, atlas, sky_light)?;
+            let hand = matches!(item.display, HeldDisplay::RightHand | HeldDisplay::LeftHand);
+            self.append_model(mesh, &item.id, item.light, item.pose * display, 1.0, Some(&tints), hand, packs, atlas, sky_light)?;
         }
         Ok(())
     }
@@ -1134,7 +1176,7 @@ impl ItemVisuals {
                 }
                 _ => Vec::new(),
             };
-            self.append_model(mesh, id, *light, *pose, 1.0, Some(&tints), packs, atlas, sky_light)?;
+            self.append_model(mesh, id, *light, *pose, 1.0, Some(&tints), false, packs, atlas, sky_light)?;
         }
         Ok(())
     }
@@ -1144,7 +1186,7 @@ impl ItemVisuals {
             let Some(tints) = self.model(id, packs)?.map(|visual| visual.tints.clone()) else {
                 continue;
             };
-            self.append_model(mesh, id, *light, *pose, 1.0, Some(&tints), packs, atlas, sky_light)?;
+            self.append_model(mesh, id, *light, *pose, 1.0, Some(&tints), true, packs, atlas, sky_light)?;
         }
         Ok(())
     }
@@ -1152,13 +1194,13 @@ impl ItemVisuals {
     /// One item model placed with a pose, lit at `pos`, untinted.
     #[allow(clippy::too_many_arguments)]
     fn append_block_model(&mut self, mesh: &mut ChunkMesh, id: &str, pos: Vec3, pose: Mat4, brightness: f32, packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
-        self.append_model(mesh, id, pos, pose, brightness, None, packs, atlas, sky_light)
+        self.append_model(mesh, id, pos, pose, brightness, None, false, packs, atlas, sky_light)
     }
 
     /// One item model placed with a pose, lit at `pos`, its faces with a
     /// tint index coloured from `tints` when given.
     #[allow(clippy::too_many_arguments)]
-    fn append_model(&mut self, mesh: &mut ChunkMesh, id: &str, pos: Vec3, pose: Mat4, brightness: f32, tints: Option<&[[f32; 3]]>, packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
+    fn append_model(&mut self, mesh: &mut ChunkMesh, id: &str, pos: Vec3, pose: Mat4, brightness: f32, tints: Option<&[[f32; 3]]>, hand: bool, packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
         let Some(visual) = self.model(id, packs)? else {
             return Ok(());
         };
@@ -1167,7 +1209,8 @@ impl ItemVisuals {
             let light_pos = (pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32);
             let sky = sky_light.get(light_pos) as f32;
             let block = sky_light.get_block(light_pos) as f32;
-            for element in &visual.model.elements {
+            let model = if hand { visual.hand.as_ref().unwrap_or(&visual.model) } else { &visual.model };
+            for element in &model.elements {
                 for face in &element.faces {
                     if !atlas.contains(&face.texture) {
                         continue;
@@ -1211,6 +1254,7 @@ impl ItemVisuals {
 pub enum HeldDisplay {
     /// `THIRD_PERSON_RIGHT_HAND` (`ItemInHandLayer`).
     RightHand,
+    LeftHand,
     /// `GROUND` (`CrossedArmsItemLayer`, a witch's potion).
     Ground,
     Fixed,
@@ -3163,6 +3207,7 @@ mod tests {
             force_translucent: false,
         };
         let visual = || ItemVisual {
+            hand: None,
             model: ResolvedModel {
                 elements: vec![crate::model::Element {
                     from: [0.0; 3],
@@ -3176,6 +3221,7 @@ mod tests {
             },
             ground: Mat4::IDENTITY,
             right_hand: Mat4::IDENTITY,
+            left_hand: Mat4::IDENTITY,
             fixed: Mat4::IDENTITY,
             min_y: 0.0,
             tints: vec![[0.3, 0.6, 0.2]],
@@ -3523,6 +3569,7 @@ mod tests {
         visuals.models.insert(
             "minecraft:grass_block".into(),
             ItemVisual {
+                hand: None,
                 model: ResolvedModel {
                     elements: vec![crate::model::Element {
                         from: [0.0; 3],
@@ -3536,6 +3583,7 @@ mod tests {
                 },
                 ground: Mat4::IDENTITY,
                 right_hand: Mat4::IDENTITY,
+                left_hand: Mat4::IDENTITY,
                 fixed: Mat4::IDENTITY,
                 min_y: 0.0,
                 tints: vec![[0.3, 0.6, 0.2]],
@@ -3585,6 +3633,17 @@ mod tests {
         assert!(section_vertices(&mesh).iter().all(|vertex| vertex.pad[0] == 0));
     }
     #[test]
+    fn section_vertices_mark_armour_glint_apart_from_item_glint() {
+        let mut mesh = ChunkMesh {
+            vertices: vec![Vertex { position: [0.0; 3], uv: [0.0; 2], color: [1.0; 4], sky_light: 15.0, block_light: 0.0 }; 8],
+            ..ChunkMesh::default()
+        };
+        mesh.armor_glint = vec![0..4, 7..20];
+        mesh.glint.push(5..6);
+        let flags: Vec<u8> = section_vertices(&mesh).iter().map(|vertex| vertex.pad[0]).collect();
+        assert_eq!(flags, [ARMOR_GLINT_VERTEX, ARMOR_GLINT_VERTEX, ARMOR_GLINT_VERTEX, ARMOR_GLINT_VERTEX, 0, GLINT_VERTEX, 0, ARMOR_GLINT_VERTEX]);
+    }
+    #[test]
     fn dropped_enchanted_items_glint_on_every_copy() {
         let texture = ResourceId::parse("minecraft:item/diamond_pickaxe").unwrap();
         let atlas = Atlas {
@@ -3597,6 +3656,7 @@ mod tests {
             translucent: HashMap::new(),
         };
         let visual = || ItemVisual {
+            hand: None,
             model: ResolvedModel {
                 elements: vec![crate::model::Element {
                     from: [0.0; 3],
@@ -3619,6 +3679,7 @@ mod tests {
             },
             ground: Mat4::IDENTITY,
             right_hand: Mat4::IDENTITY,
+            left_hand: Mat4::IDENTITY,
             fixed: Mat4::IDENTITY,
             min_y: 0.0,
             tints: vec![],
@@ -3822,6 +3883,56 @@ mod tests {
         let elsewhere = terrain(other);
         assert!(reseeded.vertices.iter().zip(&elsewhere.vertices).all(|(a, b)| a.uv == b.uv), "the variant follows the seed");
         assert!(reseeded.vertices.iter().zip(&moving.vertices).any(|(a, b)| a.uv != b.uv));
+    }
+
+    #[test]
+    fn a_shut_lid_drawn_apart_is_its_section_block_and_leaves_the_water_to_the_section() {
+        let sheets = ["minecraft:entity/chest/normal", "minecraft:entity/shulker/shulker_red"].map(|id| ResourceId::parse(id).unwrap());
+        let atlas = Atlas {
+            pixels: RgbaImage::new(128, 64),
+            mipmaps: vec![],
+            slots: HashMap::from([(sheets[0].clone(), [0.0, 0.0, 0.5, 1.0]), (sheets[1].clone(), [0.5, 0.0, 1.0, 1.0])]),
+            missing: vec![],
+            animated: vec![],
+            animated_tiles: vec![],
+            translucent: HashMap::new(),
+        };
+        let tint = BiomeTint { grass: None, foliage: None, dry_foliage: None };
+        let packs = PackStack::open(vec![]).unwrap();
+        let cell = (8, 6, 8);
+        for (block, wet, faces) in [
+            (Block::new("minecraft:chest").with("facing", "east").with("waterlogged", "true"), true, 18),
+            (Block::new("minecraft:red_shulker_box").with("facing", "north"), false, 12),
+        ] {
+            let mut placed = Placed((0..16).flat_map(|x| (0..16).map(move |z| ((x, 0, z), Block::new("minecraft:stone")))).collect());
+            placed.0.insert(cell, block.clone());
+            placed.0.insert((9, 6, 8), Block::new("minecraft:glowstone"));
+            let light = SkyLight::build(&placed);
+            let variants = resolve_block_variants(&packs, &block).unwrap();
+            let mut whole = ChunkMesh::default();
+            let mut whole_transparent = Vec::new();
+            append_block(&placed, cell, &block, || Ok(variants.as_slice()), |_, _| false, &atlas, &tint, &light, &mut whole, &mut whole_transparent).unwrap();
+            let mut visuals = ItemVisuals { tint: Some(BiomeTint { grass: None, foliage: None, dry_foliage: None }), ..ItemVisuals::default() };
+            let mut lid = ChunkMesh::default();
+            let posed = crate::lids::PosedLid { cell, block: block.clone(), progress: 0.0 };
+            visuals.append_open_lids(&mut lid, &[posed], &placed, &packs, &atlas, &light).unwrap();
+            let mut left = ChunkMesh::default();
+            let mut left_transparent = Vec::new();
+            append_baked(&placed, cell, &[], TintKind::of(&block), wet, |_, _| false, |_| false, &atlas, &tint, &light, &mut left, &mut left_transparent).unwrap();
+            let n = lid.vertices.len();
+            assert_eq!(lid.faces, faces);
+            assert_eq!((lid.faces + left.faces, n + left.vertices.len()), (whole.faces, whole.vertices.len()));
+            assert_eq!(whole.vertices[..n], lid.vertices[..], "{}", block.id.path);
+            assert_eq!(whole.vertices[n..], left.vertices[..]);
+            assert_eq!(whole.indices, lid.indices.iter().copied().chain(left.indices.iter().map(|i| i + n as u32)).collect::<Vec<_>>());
+            assert_eq!(whole_transparent, left_transparent.iter().map(|i| i + n as u32).collect::<Vec<_>>());
+            assert_eq!(wet, left.faces > 0, "only a waterlogged chest leaves water behind");
+            let mut open = ChunkMesh::default();
+            let posed = crate::lids::PosedLid { cell, block: block.clone(), progress: 1.0 };
+            visuals.append_open_lids(&mut open, &[posed], &placed, &packs, &atlas, &light).unwrap();
+            assert_eq!(open.faces, lid.faces);
+            assert!(open.vertices.iter().zip(&lid.vertices).any(|(a, b)| a.position != b.position), "{}", block.id.path);
+        }
     }
 
     #[test]

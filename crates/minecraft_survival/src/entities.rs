@@ -63,6 +63,7 @@ pub struct Entities {
     client: ClientMobs,
     poof: PoofParticles,
     portal: PortalParticles,
+    spell: minecraft_terrain::spell_particles::SpellParticles,
     items: ItemVisuals,
     clock: f64,
     ticks: u64,
@@ -84,11 +85,18 @@ pub struct Entities {
     /// volume, pitch.
     pub sounds: Vec<(String, DVec3, f32, f32)>,
     random: minecraftoss_player::rng::LegacyRandom,
-    thrown: Vec<(String, [f64; 3], [f64; 3], i32)>,
+    thrown: Vec<minecraft_terrain::thrown::ThrownView>,
+    clouds: Vec<minecraft_terrain::effect_cloud::CloudView>,
+    tridents: Vec<minecraft_terrain::trident::TridentView>,
     orbs: Vec<ServerOrb>,
     falling: minecraft_terrain::falling_render::FallingBlocks,
+    pub lids: minecraft_terrain::lids::Lids,
     orb_pickups: Vec<minecraft_terrain::orb_render::OrbPickup>,
     pub pearl_landings: Vec<DVec3>,
+    pub player_potions: Vec<minecraft_terrain::potions::PlayerPotionHit>,
+    pub player_pushes: Vec<DVec3>,
+    pub item_crumbs: Vec<(String, DVec3, Vec<Vec3>)>,
+    pub potion_crumbs: Vec<DVec3>,
     pub destroyed: Vec<((i32, i32, i32), Block)>,
     pub experience_found: f32,
     pub weather: minecraft_terrain::server::WeatherView,
@@ -189,6 +197,7 @@ impl Entities {
             client: ClientMobs::default(),
             poof: PoofParticles::default(),
             portal: PortalParticles::default(),
+            spell: minecraft_terrain::spell_particles::SpellParticles::new((seed ^ 0x5be1) as u64),
             items: ItemVisuals::default(),
             clock: 0.0,
             ticks: 0,
@@ -205,10 +214,17 @@ impl Entities {
             sounds: Vec::new(),
             random: minecraftoss_player::rng::LegacyRandom::new((seed ^ 0x1735) as u64),
             thrown: Vec::new(),
+            clouds: Vec::new(),
+            tridents: Vec::new(),
             orbs: Vec::new(),
             falling: Default::default(),
+            lids: Default::default(),
             orb_pickups: Vec::new(),
             pearl_landings: Vec::new(),
+            player_potions: Vec::new(),
+            player_pushes: Vec::new(),
+            item_crumbs: Vec::new(),
+            potion_crumbs: Vec::new(),
             destroyed: Vec::new(),
             experience_found: 0.0,
             weather: Default::default(),
@@ -236,16 +252,37 @@ impl Entities {
         self.server.set_weather(weather, duration);
     }
 
-    pub fn throw(&mut self, item: &str, eye: DVec3, yaw: f32, pitch: f32, motion: DVec3, on_ground: bool) -> bool {
-        let Some(thrown) = minecraft_terrain::thrown::Thrown::throw(item, eye, yaw, pitch, motion, on_ground, &mut self.random) else {
+    pub fn set_player_uuid(&mut self, uuid: &minecraft_net::PlayerUuid) {
+        self.server.set_player_uuid(PLAYER, crate::level::opener_key(uuid));
+    }
+
+    pub fn throw(&mut self, stack: &ItemStack, eye: DVec3, yaw: f32, pitch: f32, motion: DVec3, on_ground: bool) -> bool {
+        let throw = minecraft_terrain::thrown::Throw { owner: PLAYER, item: &stack.id, components: stack.components.as_ref(), eye, yaw, pitch, motion, on_ground };
+        let Some(thrown) = minecraft_terrain::thrown::Thrown::launch(&throw, &mut self.random) else {
             return false;
         };
         self.server.throw(thrown);
         true
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn release_trident(&mut self, inventory: &mut Inventory, charging: crate::trident::Charging, creative: bool, wet: bool, eye: DVec3, yaw: f32, pitch: f32, motion: DVec3, on_ground: bool) -> minecraft_terrain::trident::Release {
+        use minecraft_terrain::trident::{Release, ThrownTrident};
+        let release = minecraft_terrain::trident::release(inventory, charging.slot, charging.ticks, creative, wet, &mut self.random);
+        if let Release::Throw(stack) = &release {
+            let throw = minecraft_terrain::thrown::Throw { owner: PLAYER, item: &stack.id, components: stack.components.as_ref(), eye, yaw, pitch, motion, on_ground };
+            let trident = ThrownTrident::launch(&throw, stack.clone(), creative, &mut self.random);
+            self.server.throw_trident(trident);
+        }
+        release
+    }
+
     pub fn random_float(&mut self) -> f32 {
         self.random.next_float()
+    }
+
+    pub fn ticks(&self) -> u64 {
+        self.ticks
     }
 
     pub fn load_chunk(&mut self, chunk: &std::sync::Arc<minecraftoss_core::Chunk>) {
@@ -594,6 +631,7 @@ impl Entities {
             self.clock = (self.clock - TICK_SECONDS).min(TICK_SECONDS);
             self.ticks += 1;
             self.falling.tick_sent();
+            self.lids.tick();
             // Packets first, then the client level's entity ticks.
             self.client.tick();
             for enderman in self.world.endermen() {
@@ -602,6 +640,10 @@ impl Entities {
                 }
             }
             self.portal.tick();
+            for cloud in &self.clouds {
+                self.spell.cloud(cloud.position, cloud.radius, cloud.color, cloud.waiting);
+            }
+            self.spell.tick();
             minecraft_terrain::orb_render::tick_pickups(&mut self.orb_pickups, orb_pickup_target);
             if self.ticks % 600 == 0 {
                 diag::info!(World, "Minecraft mobs: {} tracked", self.boxes().len());
@@ -650,17 +692,31 @@ impl Entities {
                 self.orb_pickups.push(minecraft_terrain::orb_render::OrbPickup::new(orb, orb_pickup_target));
             }
             if let Some(mut snapshot) = output.entities {
-                self.thrown = snapshot.thrown.clone();
+                self.thrown = std::mem::take(&mut snapshot.thrown_views);
+                self.clouds = std::mem::take(&mut snapshot.clouds);
+                self.tridents = std::mem::take(&mut snapshot.tridents);
                 self.orbs = snapshot.orbs.clone();
                 self.falling.receive(std::mem::take(&mut snapshot.falling), std::mem::take(&mut snapshot.tnt), &output.changes, self.ticks);
                 self.server_snapshot = Some(snapshot);
             }
-            for landing in output.pearl_landings {
-                let at = DVec3::from_array(landing);
-                for _ in 0..16 {
-                    self.portal.emit_enderman(at, 0.6, 1.8);
+            for (_, landing) in output.pearl_teleports.into_iter().filter(|&(player, _)| player == PLAYER) {
+                self.pearl_landings.push(DVec3::from_array(landing));
+            }
+            self.player_potions.extend(output.player_potions.into_iter().filter(|hit| hit.player == PLAYER));
+            self.player_pushes.extend(output.players_pushed.iter().filter(|(player, _)| *player == PLAYER).map(|(_, push)| *push));
+            for broken in &output.potion_breaks {
+                self.spell.burst(broken.position, broken.color, broken.instant);
+                self.potion_crumbs.push(minecraft_terrain::spell_particles::break_center(broken.position));
+            }
+            for hit in output.thrown_hits {
+                if hit.kind == minecraft_terrain::thrown::Throwable::EnderPearl {
+                    for (start, motion) in minecraft_terrain::thrown::pearl_portal(hit.at, &mut self.random) {
+                        self.portal.emit(start, motion);
+                    }
+                } else {
+                    let velocities = minecraft_terrain::thrown::hit_crumbs(hit.kind, &mut self.random);
+                    self.item_crumbs.push((hit.item, hit.at, velocities));
                 }
-                self.pearl_landings.push(at);
             }
             if let Some(weather) = output.weather {
                 self.weather = weather;
@@ -702,6 +758,7 @@ impl Entities {
                     self.poof.spawn(feet, width, height);
                 }
             }
+            hits.extend(output.players_struck.iter().filter(|struck| struck.player == PLAYER).map(|struck| struck_hit(player.feet, struck)));
             for hit in output.player_hits.into_iter().filter(|h| h.player_id == PLAYER) {
                 let from = match hit.kind {
                     PlayerHitKind::Melee { attacker, .. } => Some(attacker.to_array()),
@@ -892,20 +949,15 @@ impl Entities {
         self.falling.settle(scene, cell_settled, self.ticks);
         let moving = self.falling.moving_blocks(scene, partial);
         let _ = self.items.append_moving_blocks(&mut out.items, &moving, scene, packs, atlas, light);
+        self.lids.settle(scene, cell_settled);
+        let lids = self.lids.posed(scene, partial);
+        let _ = self.items.append_open_lids(&mut out.items, &lids, scene, packs, atlas, light);
         let _ = self.items.append_primed_tnt(&mut out.items, &self.falling.primed_tnt(partial), packs, atlas, light);
-        minecraft_terrain::thrown::append_sprites(
-            &mut out.items,
-            self.thrown
-                .iter()
-                .map(|(item, previous, now, age)| (item.as_str(), DVec3::from_array(*previous).lerp(DVec3::from_array(*now), f64::from(partial)), *age))
-                .filter(|(_, at, age)| minecraft_terrain::thrown::shown(*age, *at, camera))
-                .map(|(item, at, _)| (item, at)),
-            atlas,
-            forward,
-            light,
-        );
+        minecraft_terrain::thrown::append_views(&mut out.items, &self.thrown, partial, camera, atlas, forward, light);
+        minecraft_terrain::trident::append_tridents(&mut out.items, &self.tridents, partial, atlas, light);
         self.poof.append_mesh(&mut out.items, atlas, forward, partial, light);
         self.portal.append_mesh(&mut out.items, atlas, forward, partial, light);
+        self.spell.append_mesh(&mut out.translucent, atlas, forward, partial, light);
         let held: Vec<_> =
             skeleton_items.into_iter().chain(zombie_items).chain(villager_items).chain(witch_items).chain(placed_items.iter().cloned()).collect();
         let _ = self.items.append_held_items(&mut out.items, &held, packs, atlas, light);
@@ -921,6 +973,11 @@ impl Entities {
         }
         out
     }
+}
+
+fn struck_hit(feet: [f64; 3], struck: &minecraft_terrain::thrown::PlayerStruck) -> (f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause) {
+    let from = DVec3::from_array(feet) - struck.velocity.normalize_or_zero();
+    (struck.damage, Some(from.to_array()), Some([-struck.velocity.x, -struck.velocity.z]), crate::death::DamageCause::Generic)
 }
 
 fn difficulty_scaled(damage: f32, difficulty: i32, scales: bool) -> f32 {
@@ -1057,6 +1114,22 @@ mod tests {
         assert_eq!(HEALTH_SCALE, 0.2);
         assert_eq!(BLAST_HEALTH_SCALE, 0.8);
         assert_eq!(BLAST_HEALTH_SCALE, 4.0 * HEALTH_SCALE);
+    }
+
+    #[test]
+    fn a_thrown_trident_hits_the_player_for_8_from_where_it_flew_in() {
+        let struck = minecraft_terrain::thrown::PlayerStruck {
+            player: PLAYER,
+            by: 3,
+            damage: minecraft_terrain::trident::DAMAGE,
+            kind: minecraft_terrain::trident::DAMAGE_TYPE,
+            velocity: DVec3::new(2.0, 0.0, 0.0),
+        };
+        let (damage, from, toward, cause) = struck_hit([10.0, 64.0, 5.0], &struck);
+        assert_eq!(damage, 8.0);
+        assert_eq!(from, Some([9.0, 64.0, 5.0]));
+        assert_eq!(toward, Some([-2.0, -0.0]));
+        assert_eq!(cause, crate::death::DamageCause::Generic);
     }
 
     #[test]

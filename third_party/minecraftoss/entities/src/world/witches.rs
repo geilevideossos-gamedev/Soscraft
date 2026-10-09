@@ -522,14 +522,20 @@ impl EntityWorld {
     /// where it broke, crediting the thrower); the undead the other way
     /// round. An enderman teleports away from a potion instead of taking
     /// its harm (`Enderman.hurtServer`).
-    fn splash_instant(&mut self, id: u64, effect: MobEffect, amplifier: i32, scale: f64, at: DVec3, owner: Option<u64>) {
+    pub fn splash_instant(&mut self, id: u64, effect: MobEffect, amplifier: i32, scale: f64, at: DVec3, owner: Option<u64>) -> Option<DamageResult> {
         let undead = self.zombies.iter().any(|e| e.id == id) || self.skeletons.iter().any(|e| e.id == id);
         match instant_work(effect, amplifier, undead, scale) {
-            Some(EffectWork::Heal(amount)) => self.heal_mob(id, amount),
+            Some(EffectWork::Heal(amount)) => {
+                self.heal_mob(id, amount);
+                None
+            }
             Some(EffectWork::HurtMagic(amount)) => {
                 let result = self.hurt_mob_by_magic(id, amount, owner);
                 if let Some(result) = result {
-                    let attacker = owner.and_then(|o| self.entity_type(o)).unwrap_or("minecraft:splash_potion");
+                    let attacker = match owner {
+                        Some(o) if o >= PLAYER_TARGET => "minecraft:player",
+                        _ => owner.and_then(|o| self.entity_type(o)).unwrap_or("minecraft:splash_potion"),
+                    };
                     self.credit(id, result, attacker, true);
                     if result.applied && result.full {
                         if let Some((body, _)) = self.mob_body(id) {
@@ -538,8 +544,9 @@ impl EntityWorld {
                         }
                     }
                 }
+                result
             }
-            _ => {}
+            _ => None,
         }
     }
 
@@ -614,7 +621,8 @@ impl EntityWorld {
             e.hurt(amount)
         } else if let Some(e) = self.wolves.iter_mut().find(|e| e.id == id) {
             let kind = if owner.is_some() { "minecraft:indirect_magic" } else { "minecraft:magic" };
-            e.hurt_from(amount, kind, owner.map(crate::monster_ai::Target::Mob), self.game_time)
+            let by = owner.map(|o| if o >= PLAYER_TARGET { crate::monster_ai::Target::Player(o - PLAYER_TARGET) } else { crate::monster_ai::Target::Mob(o) });
+            e.hurt_from(amount, kind, by, self.game_time)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
             e.hurt(amount, source)
         } else if let Some(e) = self.sheep.iter_mut().find(|e| e.id == id) {

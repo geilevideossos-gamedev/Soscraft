@@ -128,11 +128,14 @@ pub struct ResolvedModel {
 /// The held item uses its 26.3 item definition's model, not a placed
 /// blockstate (whose defaults and shape may differ from the inventory model).
 pub fn resolve_item_model(pack: &PackStack, item: &ResourceId) -> Result<Option<ResolvedModel>> {
+    resolve_item_model_in(pack, item, None)
+}
+pub fn resolve_item_model_in(pack: &PackStack, item: &ResourceId, context: Option<&str>) -> Result<Option<ResolvedModel>> {
     let Some(definition) = pack.item_definition(item)? else {
         return Ok(None);
     };
-    if crate::special_models::uses_item_geometry(&definition["model"]) {
-        return item_geometry(pack, item, &definition["model"]).map(Some);
+    if crate::special_models::uses_item_geometry_in(&definition["model"], context) {
+        return item_geometry(pack, item, &definition["model"], context).map(Some);
     }
     let Some(reference) = crate::interface::item_model_reference(&definition["model"]) else {
         return Ok(None);
@@ -146,9 +149,9 @@ pub fn resolve_item_model(pack: &PackStack, item: &ResourceId) -> Result<Option<
     let block = Block::new(&item.key());
     resolve_choices(pack, &block, &[&choice]).map(Some)
 }
-fn item_geometry(pack: &PackStack, item: &ResourceId, model: &Value) -> Result<ResolvedModel> {
+fn item_geometry(pack: &PackStack, item: &ResourceId, model: &Value, context: Option<&str>) -> Result<ResolvedModel> {
     let mut elements = Vec::new();
-    for leaf in crate::special_models::item_leaves(model, false) {
+    for leaf in crate::special_models::item_leaves_in(model, false, context) {
         let part = match leaf.special {
             Some(special) => match crate::special_models::item_model(special)? {
                 Some(part) => part,
@@ -177,28 +180,32 @@ pub fn item_first_person_transform(pack: &PackStack, item: &ResourceId) -> Resul
 pub fn item_display_transform(pack: &PackStack, item: &ResourceId, context: &str) -> Result<Mat4> {
     item_display_transform_using(pack, item, context, false)
 }
-fn item_display_model(pack: &PackStack, item: &ResourceId, using_item: bool) -> Result<Option<Value>> {
+fn item_display_model(pack: &PackStack, item: &ResourceId, using_item: bool, context: &str) -> Result<Option<Value>> {
     let Some(definition) = pack.item_definition(item)? else {
         return Ok(None);
     };
-    let leaves = crate::special_models::item_leaves(&definition["model"], using_item);
+    let leaves = crate::special_models::item_leaves_in(&definition["model"], using_item, Some(context));
     let Some(reference) = leaves.first().map(|leaf| leaf.model).or_else(|| crate::interface::item_model_reference(&definition["model"])) else {
         return Ok(None);
     };
     load_parented(pack, &ResourceId::parse(reference)?, &mut HashSet::new()).map(Some)
 }
 pub fn item_gui_light_front(pack: &PackStack, item: &ResourceId) -> Result<bool> {
-    Ok(item_display_model(pack, item, false)?.is_some_and(|model| model.get("gui_light").and_then(Value::as_str) == Some("front")))
+    Ok(item_display_model(pack, item, false, "gui")?.is_some_and(|model| model.get("gui_light").and_then(Value::as_str) == Some("front")))
 }
 pub fn item_display_transform_using(pack: &PackStack, item: &ResourceId, context: &str, using_item: bool) -> Result<Mat4> {
     display_transform(pack, item, context, using_item, false)
+}
+pub fn item_third_person_transform(pack: &PackStack, item: &ResourceId, left_hand: bool) -> Result<Mat4> {
+    let context = if left_hand { "thirdperson_lefthand" } else { "thirdperson_righthand" };
+    display_transform(pack, item, context, false, left_hand)
 }
 pub fn item_hand_transform(pack: &PackStack, item: &ResourceId, left_hand: bool, using_item: bool) -> Result<Mat4> {
     let context = if left_hand { "firstperson_lefthand" } else { "firstperson_righthand" };
     display_transform(pack, item, context, using_item, left_hand)
 }
 fn display_transform(pack: &PackStack, item: &ResourceId, context: &str, using_item: bool, left_hand: bool) -> Result<Mat4> {
-    let Some(model) = item_display_model(pack, item, using_item)? else {
+    let Some(model) = item_display_model(pack, item, using_item, context)? else {
         return Ok(Mat4::IDENTITY);
     };
     let display = &model["display"][context];
@@ -483,6 +490,22 @@ fn closed_chest_model(block: &Block) -> Result<ResolvedModel> {
         .map(String::as_str)
         .unwrap_or("north");
     Ok(chest_model(texture, chest_type, facing))
+}
+
+pub fn opened_chest_model(block: &Block, openness: f32) -> Result<ResolvedModel> {
+    let mut model = closed_chest_model(block)?;
+    let shut = 1.0 - openness;
+    let angle = -((1.0 - shut * shut * shut) * std::f32::consts::FRAC_PI_2);
+    if angle != 0.0 {
+        let hinge = ElementRotation {
+            origin: [0.0, 9.0 / 16.0, 1.0 / 16.0],
+            matrix: glam::Mat3::from_rotation_x(angle).to_cols_array_2d(),
+        };
+        for element in &mut model.elements[1..] {
+            element.rotation = Some(hinge);
+        }
+    }
+    Ok(model)
 }
 
 pub(crate) fn chest_model(texture: ResourceId, chest_type: &str, facing: &str) -> ResolvedModel {
@@ -1136,6 +1159,30 @@ mod tests {
         assert!((centre - Vec3::new(-5.0, 5.0, -11.0) / 16.0).length() < 1e-5);
     }
     #[test]
+    fn third_person_hands_take_their_display_and_the_left_mirrors_the_right() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(root.join("pack.mcmeta"), r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#).unwrap();
+        for (name, contents) in [
+            ("assets/test/items/rod.json", r#"{"model":{"type":"minecraft:model","model":"test:item/rod"}}"#),
+            ("assets/test/models/item/rod.json", r#"{"display":{"thirdperson_righthand":{"rotation":[0,-90,55],"translation":[0,4,0.5],"scale":[0.85,0.85,0.85]}}}"#),
+        ] {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+        let pack = PackStack::open(vec![root.into()]).unwrap();
+        let rod = ResourceId::parse("test:rod").unwrap();
+        let right = item_third_person_transform(&pack, &rod, false).unwrap();
+        assert!(right.abs_diff_eq(item_display_transform(&pack, &rod, "thirdperson_righthand").unwrap(), 1e-6));
+        let left = item_third_person_transform(&pack, &rod, true).unwrap();
+        let expected = Mat4::from_translation(Vec3::new(0.0, 4.0, 0.5) / 16.0)
+            * Mat4::from_quat(Quat::from_euler(EulerRot::XYZ, 0.0, 90f32.to_radians(), -55f32.to_radians()))
+            * Mat4::from_scale(Vec3::splat(0.85))
+            * Mat4::from_translation(Vec3::splat(-0.5));
+        assert!(left.abs_diff_eq(expected, 1e-5));
+    }
+    #[test]
     fn double_chest_halves_use_entity_textures_and_hide_join_faces() {
         for (kind, texture, hidden, x0, x1) in [
             ("right", "normal_right", "east", 1.0 / 16.0, 1.0),
@@ -1166,6 +1213,53 @@ mod tests {
             assert_eq!(lock_south.uv[1], 5.0 / 64.0);
             assert_eq!(lock_south.uv[3], 1.0 / 64.0);
         }
+    }
+    #[test]
+    fn a_chest_lid_swings_up_about_its_back_hinge() {
+        let points = |element: &Element| -> Vec<Vec3> {
+            element
+                .faces
+                .iter()
+                .flat_map(|face| crate::mesh::element_corners(element, &face.direction).unwrap())
+                .map(Vec3::from_array)
+                .collect()
+        };
+        let bounds = |element: &Element| {
+            points(element).iter().fold(
+                (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+                |(low, high), point| (low.min(*point), high.max(*point)),
+            )
+        };
+        let close = |a: Vec3, b: Vec3| (a - b).abs().max_element() < 1e-5;
+        let south = Block::new("minecraft:chest").with("facing", "south");
+        let shut = closed_chest_model(&south).unwrap();
+        let rest = opened_chest_model(&south, 0.0).unwrap();
+        assert!(rest
+            .elements
+            .iter()
+            .zip(&shut.elements)
+            .all(|(a, b)| a.rotation.is_none() && points(a) == points(b)));
+        let open = opened_chest_model(&south, 1.0).unwrap();
+        assert_eq!(points(&open.elements[0]), points(&shut.elements[0]));
+        let (low, high) = bounds(&open.elements[1]);
+        assert!(close(low, Vec3::new(1.0, 9.0, -4.0) / 16.0), "{low}");
+        assert!(close(high, Vec3::new(15.0, 23.0, 1.0) / 16.0), "{high}");
+        let (low, high) = bounds(&open.elements[2]);
+        assert!(close(low, Vec3::new(7.0, 23.0, -1.0) / 16.0), "{low}");
+        assert!(close(high, Vec3::new(9.0, 24.0, 3.0) / 16.0), "{high}");
+        let north = Block::new("minecraft:ender_chest").with("facing", "north");
+        let (low, high) = bounds(&opened_chest_model(&north, 1.0).unwrap().elements[1]);
+        assert!(close(low, Vec3::new(1.0, 9.0, 15.0) / 16.0), "{low}");
+        assert!(close(high, Vec3::new(15.0, 23.0, 20.0) / 16.0), "{high}");
+        let half = opened_chest_model(&south, 0.5).unwrap();
+        let lid = &half.elements[1];
+        let top = lid.faces.iter().find(|face| face.direction == "up").unwrap();
+        let corners = crate::mesh::element_corners(lid, "up").unwrap();
+        let normal = crate::mesh::model_face_normal(lid, top, &corners).unwrap();
+        let swung = (1.0 - 0.5f32.powi(3)) * 90.0;
+        assert!((swung - 78.75).abs() < 1e-4);
+        let (sin, cos) = swung.to_radians().sin_cos();
+        assert!(close(normal, Vec3::new(0.0, cos, -sin)), "{normal}");
     }
     #[test]
     fn variant_and_multipart() {

@@ -253,6 +253,37 @@ impl Level<'_> {
         }
     }
 
+    pub fn wind_burst(&mut self, center: [f64; 3], radius: f32, knockback: f64) {
+        if radius < 1.0e-5 {
+            return;
+        }
+        let r = f64::from(radius * 2.0);
+        let lo = |c: f64| f64::from((c - r - 1.0).floor() as i32);
+        let hi = |c: f64| f64::from((c + r + 1.0).floor() as i32);
+        let area = Aabb::new(lo(center[0]), lo(center[1]), lo(center[2]), hi(center[0]), hi(center[1]), hi(center[2]));
+        let targets: Vec<usize> = (0..self.entities.len()).filter(|&i| !self.entities[i].removed && self.entities[i].bb.intersects(&area)).collect();
+        for i in targets {
+            let e = &self.entities[i];
+            if matches!(e.kind, EntityKind::LightningBolt(_)) {
+                continue;
+            }
+            let (dx, dy, dz) = (e.pos[0] - center[0], e.pos[1] - center[1], e.pos[2] - center[2]);
+            let dist = (dx * dx + dy * dy + dz * dz).sqrt() / r;
+            if dist > 1.0 {
+                continue;
+            }
+            let origin = [e.pos[0], e.pos[1] + f64::from(e.eye_height()), e.pos[2]];
+            let direction = super::entity::normalize([origin[0] - center[0], origin[1] - center[1], origin[2] - center[2]]);
+            let exposure = self.seen_percent(center, &self.entities[i].bb);
+            let strength = (1.0 - dist) * f64::from(exposure) * knockback;
+            let push = [direction[0] * strength, direction[1] * strength, direction[2] * strength];
+            let e = &mut self.entities[i];
+            if push.iter().all(|v| v.is_finite()) {
+                e.delta = [e.delta[0] + push[0], e.delta[1] + push[1], e.delta[2] + push[2]];
+            }
+        }
+    }
+
     /// Items with `damage_resistant` against explosions (`canBeHurtBy`).
     fn explosion_proof_item(&self, stack: &Stack) -> bool {
         stack.id == "minecraft:nether_star"

@@ -155,6 +155,12 @@ impl BlockParticles {
         Ok(true)
     }
 
+    pub fn spawn_item_crumbs(&mut self, at: Vec3, velocities: &[Vec3], texture: &ResourceId) {
+        for &velocity in velocities {
+            self.spawn_item(at, velocity, texture.clone());
+        }
+    }
+
     pub fn spawn_eating(
         &mut self,
         eye: Vec3,
@@ -183,6 +189,22 @@ impl BlockParticles {
             ));
             self.spawn_item(eye + offset, velocity + Vec3::Y * 0.05, texture.clone());
         }
+    }
+
+    pub fn spawn_potion_crumbs(&mut self, center: Vec3, texture: &ResourceId) {
+        for _ in 0..8 {
+            let velocity = Vec3::new(
+                self.gaussian() * 0.15,
+                self.random() * 0.2,
+                self.gaussian() * 0.15,
+            );
+            self.spawn_item(center, velocity, texture.clone());
+        }
+    }
+
+    fn gaussian(&mut self) -> f32 {
+        let radius = (-2.0 * self.random().max(f32::MIN_POSITIVE).ln()).sqrt();
+        radius * (std::f32::consts::TAU * self.random()).cos()
     }
 
     fn spawn_item(&mut self, position: Vec3, velocity: Vec3, texture: ResourceId) {
@@ -379,6 +401,34 @@ mod tests {
     use crate::{mesh, scene::HandcraftedScene};
     use image::{Rgba, RgbaImage};
     use std::fs;
+
+    #[test]
+    fn item_crumbs_start_where_the_item_broke_with_their_own_push() {
+        let packs = PackStack::open(vec![]).unwrap();
+        let mut particles = BlockParticles::new(&packs).unwrap();
+        let texture = ResourceId::parse("minecraft:item/snowball").unwrap();
+        let at = Vec3::new(1.5, 70.25, -3.5);
+        particles.spawn_item_crumbs(at, &[Vec3::ZERO; 8], &texture);
+        assert_eq!(particles.len(), 8);
+        assert!(particles.fragments.iter().all(|f| f.position == at && f.texture == texture && f.color == [1.0; 3]));
+        assert!(particles.fragments.iter().all(|f| f.velocity.length() < 0.05));
+        let pushed = Vec3::new(0.04, 0.0, 0.0);
+        particles.spawn_item_crumbs(at, &[pushed], &texture);
+        assert!(particles.fragments[8].velocity.x > 0.01);
+    }
+
+    #[test]
+    fn a_potion_breaks_into_eight_untinted_crumbs_flying_out_and_up() {
+        let packs = PackStack::open(vec![]).unwrap();
+        let mut particles = BlockParticles::new(&packs).unwrap();
+        let texture = ResourceId::parse("minecraft:item/potion_overlay").unwrap();
+        particles.spawn_potion_crumbs(Vec3::new(0.5, 64.0, 0.5), &texture);
+        assert_eq!(particles.len(), 8);
+        assert!(particles.fragments.iter().all(|f| f.color == [1.0; 3]
+            && f.texture == texture
+            && f.velocity.y > 0.0
+            && f.position == Vec3::new(0.5, 64.0, 0.5)));
+    }
 
     #[test]
     fn grass_block_dirt_particles_are_not_biome_tinted() {

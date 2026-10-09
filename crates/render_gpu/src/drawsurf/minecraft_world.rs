@@ -87,11 +87,13 @@ pub struct MinecraftWorldFrame {
     /// The ten destroy stages side by side.
     pub crack_texture: Option<Arc<MinecraftAtlasImage>>,
     pub glint_texture: Option<Arc<MinecraftAtlasImage>>,
+    pub armor_glint_texture: Option<Arc<MinecraftAtlasImage>>,
     /// Mob models (cut out, back-face culled, translucent) and entity
     /// shadows: MinecraftOSS `Vertex` bytes (44 each) and indices.
     pub entity_meshes: [(Vec<u8>, Vec<u32>); 4],
     /// A black card to draw, in blocks: behind the inventory's character.
     pub backdrop: Option<[[f32; 3]; 4]>,
+    pub puppet_gear: (Vec<u8>, Vec<u32>),
     /// The first-person hand or held item in view space, and its projection.
     pub hand: (Vec<u8>, Vec<u32>),
     pub hand_clip: [f32; 16],
@@ -136,6 +138,7 @@ struct TerrainGpu {
     camera_above_clouds: bool,
     crack_texture: Option<(Arc<MinecraftAtlasImage>, TextureView)>,
     glint: Option<(Arc<MinecraftAtlasImage>, TextureView)>,
+    armor_glint: Option<(Arc<MinecraftAtlasImage>, TextureView)>,
     glint_sampler: Option<Sampler>,
     /// This frame's particles and cracks: vertices, indices, index count.
     particles: Option<(Buffer, Buffer, u32)>,
@@ -143,6 +146,7 @@ struct TerrainGpu {
     /// This frame's entity meshes, in `MinecraftWorldFrame::entity_meshes` order.
     entities: [Option<(Buffer, Buffer, u32)>; 4],
     backdrop: Option<Buffer>,
+    puppet_gear: Option<(Buffer, Buffer, u32)>,
     hand: Option<(Buffer, Buffer, u32)>,
     sampler: Option<Sampler>,
     bind: Option<BindGroup>,
@@ -192,6 +196,9 @@ fn layout() -> BindGroupLayoutDescriptor {
             sampler(SamplerBindingType::Filtering)
                 .visibility(ShaderStages::FRAGMENT)
                 .build(6, ShaderStages::FRAGMENT),
+            texture_2d(TextureSampleType::Float { filterable: true })
+                .visibility(ShaderStages::FRAGMENT)
+                .build(7, ShaderStages::FRAGMENT),
         ],
     )
 }
@@ -292,6 +299,16 @@ fn prepare_terrain(
         }
         _ => {}
     }
+    if let Some(armor) = frame.armor_glint_texture.clone()
+        && gpu
+            .armor_glint
+            .as_ref()
+            .is_none_or(|(held, _)| !Arc::ptr_eq(held, &armor))
+    {
+        let (view, _) = upload_atlas(&device, &queue, &armor);
+        gpu.armor_glint = Some((armor, view));
+        gpu.bind = None;
+    }
     let (particle_vertices, particle_indices) = std::mem::take(&mut frame.particles);
     gpu.particles = (!particle_indices.is_empty()).then(|| {
         (
@@ -315,6 +332,22 @@ fn prepare_terrain(
             contents: bytemuck::cast_slice(&corners),
             usage: BufferUsages::VERTEX,
         })
+    });
+    let (gear_vertices, gear_indices) = std::mem::take(&mut frame.puppet_gear);
+    gpu.puppet_gear = (!gear_indices.is_empty()).then(|| {
+        (
+            device.create_buffer_with_data(&BufferInitDescriptor {
+                label: Some("iw4l_minecraft_puppet_gear_vertices"),
+                contents: &gear_vertices,
+                usage: BufferUsages::VERTEX,
+            }),
+            device.create_buffer_with_data(&BufferInitDescriptor {
+                label: Some("iw4l_minecraft_puppet_gear_indices"),
+                contents: bytemuck::cast_slice(&gear_indices),
+                usage: BufferUsages::INDEX,
+            }),
+            gear_indices.len() as u32,
+        )
     });
     let (hand_vertices, hand_indices) = std::mem::take(&mut frame.hand);
     gpu.hand = (!hand_indices.is_empty()).then(|| {
@@ -425,6 +458,7 @@ fn prepare_terrain(
             gpu.glint_sampler.as_ref(),
         )
     {
+        let armor_glint = gpu.armor_glint.as_ref().map_or(glint, |(_, view)| view);
         let layout = registry.bind_group_layout(&device, &layout());
         let bind = device.create_bind_group(
             "iw4l_minecraft_terrain",
@@ -461,6 +495,10 @@ fn prepare_terrain(
                 BindGroupEntry {
                     binding: 6,
                     resource: BindingResource::Sampler(glint_sampler),
+                },
+                BindGroupEntry {
+                    binding: 7,
+                    resource: BindingResource::TextureView(armor_glint),
                 },
             ],
         );
@@ -661,6 +699,15 @@ fn draw_terrain(
         pass.set_viewport(vp.x as f32, vp.y as f32, vp.z as f32, vp.w as f32, depth_min, depth_max);
         pass.set_render_pipeline(&opaque);
     }
+    if let Some((vertices, indices, count)) = gpu.puppet_gear.as_ref() {
+        let (band_min, band_max) = reverse_z_viewport_depth(super::depth_range::GFX_DEPTH_RANGE_VIEWMODEL);
+        pass.set_viewport(vp.x as f32, vp.y as f32, vp.z as f32, vp.w as f32, band_min, band_max);
+        pass.set_render_pipeline(&opaque);
+        pass.set_vertex_buffer(0, vertices.slice(..));
+        pass.set_index_buffer(indices.slice(..), IndexFormat::Uint32);
+        pass.draw_indexed(0..*count, 0, 0..1);
+        pass.set_viewport(vp.x as f32, vp.y as f32, vp.z as f32, vp.w as f32, depth_min, depth_max);
+    }
     // Mobs, then their shadows on what is drawn so far.
     for (pipeline, mesh) in [(&entity, &gpu.entities[0]), (&entity_culled, &gpu.entities[1]), (&shadow, &gpu.entities[3])] {
         if let Some((vertices, indices, count)) = mesh.as_ref() {
@@ -755,6 +802,7 @@ struct TerrainView {
 @group(0) @binding(4) var cracks: texture_2d<f32>;
 @group(0) @binding(5) var glint_texture: texture_2d<f32>;
 @group(0) @binding(6) var glint_sampler: sampler;
+@group(0) @binding(7) var armor_glint_texture: texture_2d<f32>;
 
 // Map units per block, as `sim::voxel::BLOCK`.
 const BLOCK: f32 = 36.0;
@@ -844,11 +892,14 @@ fn glint_light(uv: vec2<f32>, flag: f32) -> vec3<f32> {
     if flag <= 0.0 {
         return vec3<f32>(0.0);
     }
-    let p = uv * vec2<f32>(textureDimensions(atlas, 0)) * (8.0 / 512.0);
+    let armour = flag < 0.75;
+    let p = uv * vec2<f32>(textureDimensions(atlas, 0)) * select(8.0 / 512.0, 0.16 / 64.0, armour);
     let c = cos(0.17453292);
     let s = sin(0.17453292);
     let g = view.glint.xy + vec2<f32>(c * p.x - s * p.y, s * p.x + c * p.y);
-    let t = textureSampleLevel(glint_texture, glint_sampler, g, 0.0).rgb * (view.glint.z * flag);
+    let item = textureSampleLevel(glint_texture, glint_sampler, g, 0.0).rgb;
+    let worn = textureSampleLevel(armor_glint_texture, glint_sampler, g, 0.0).rgb;
+    let t = select(item, worn, armour) * view.glint.z;
     return t * t;
 }
 
@@ -1388,6 +1439,22 @@ mod tests {
         assert_eq!(*span as usize, size);
         let glint = members.iter().find(|member| member.name.as_deref() == Some("glint")).unwrap();
         assert_eq!(glint.offset as usize, size - 16);
+    }
+
+    #[test]
+    fn the_glint_flags_the_meshes_write_pick_the_item_and_armour_glints() {
+        let module = naga::front::wgsl::parse_str(super::TERRAIN_WGSL).unwrap();
+        let bindings: Vec<(u32, String)> = module
+            .global_variables
+            .iter()
+            .filter_map(|(_, var)| Some((var.binding.as_ref()?.binding, var.name.clone()?)))
+            .collect();
+        assert!(bindings.contains(&(7, "armor_glint_texture".to_owned())));
+        let source = super::TERRAIN_WGSL;
+        assert!(source.contains("let armour = flag < 0.75;"));
+        let flag = |byte: u8| f32::from(byte) / 255.0;
+        assert!(flag(255) >= 0.75, "minecraft_terrain::mesh::GLINT_VERTEX");
+        assert!(flag(128) > 0.0 && flag(128) < 0.75, "minecraft_terrain::mesh::ARMOR_GLINT_VERTEX");
     }
 
     #[test]

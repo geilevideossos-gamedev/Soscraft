@@ -654,6 +654,7 @@ pub mod compile_profile {
 }
 
 /// `SectionCompiler.compile`: one section's faces and visibility set.
+#[allow(clippy::too_many_arguments)]
 fn compile_section(
     states: &BlockStates,
     hood: &Neighborhood,
@@ -663,6 +664,7 @@ fn compile_section(
     packs: &PackStack,
     atlas: &Atlas,
     tint: &BiomeTint,
+    apart: &[BlockPos],
 ) -> Result<(ChunkMesh, VisibilitySet)> {
     let origin = (sx * 16, sy * 16, sz * 16);
     let started = Instant::now();
@@ -673,11 +675,11 @@ fn compile_section(
     compile_profile::add(compile_profile::MODELS, started);
     let started = Instant::now();
     let models = &*models;
-    let built = build_section_blocks(states, &view, origin, light, models, atlas, tint, true)?;
+    let built = build_section_blocks(states, &view, origin, light, models, atlas, tint, true, apart)?;
     if std::env::var_os("MINECRAFTOSS_MESH_CHECK").is_some() {
         // The baked faces must give exactly the unbaked build's mesh.
         mesh::FLUID_FULL_PATH.with(|full| full.set(true));
-        let slow = build_section_blocks(states, &view, origin, light, models, atlas, tint, false);
+        let slow = build_section_blocks(states, &view, origin, light, models, atlas, tint, false, apart);
         mesh::FLUID_FULL_PATH.with(|full| full.set(false));
         let slow = slow?;
         let bits = |m: &ChunkMesh| -> Vec<u32> {
@@ -698,7 +700,7 @@ fn compile_section(
 /// translucent indices apart) and its visibility graph. `baked` uses the
 /// baked faces where a block has them.
 #[allow(clippy::too_many_arguments)]
-fn build_section_blocks(states: &BlockStates, view: &View, origin: BlockPos, light: &SkyLight, models: &ModelCache, atlas: &Atlas, tint: &BiomeTint, baked: bool) -> Result<(ChunkMesh, Vec<u32>, VisGraph)> {
+fn build_section_blocks(states: &BlockStates, view: &View, origin: BlockPos, light: &SkyLight, models: &ModelCache, atlas: &Atlas, tint: &BiomeTint, baked: bool, apart: &[BlockPos]) -> Result<(ChunkMesh, Vec<u32>, VisGraph)> {
     let mut mesh = ChunkMesh::default();
     let mut transparent = Vec::new();
     let mut vis = VisGraph::default();
@@ -715,6 +717,10 @@ fn build_section_blocks(states: &BlockStates, view: &View, origin: BlockPos, lig
                     vis.set_opaque(x as usize, y as usize, z as usize);
                 }
                 let index = usize::from(state.0);
+                if apart.contains(&pos) {
+                    mesh::append_baked(view, pos, &[], states.tint_kind[index], states.holds_fluid[index], |_, _| false, |_| false, atlas, tint, light, &mut mesh, &mut transparent)?;
+                    continue;
+                }
                 let slot = &models.slots[index];
                 let fluid = states.fluid[index];
                 if !fluid && !matches!(slot, Slot::Model { .. }) {
@@ -780,6 +786,7 @@ struct CompileJob {
     hood: Neighborhood,
     light: Arc<SkyLight>,
     context: JobContext,
+    apart: Vec<BlockPos>,
 }
 
 struct WorkQueue {
@@ -885,6 +892,7 @@ fn worker(work: &Work, done: &mpsc::Sender<Done>) {
                         stack,
                         &context.atlas,
                         tint,
+                        &job.apart,
                     ),
                     None => Err(anyhow!("resource packs unavailable")),
                 }
@@ -968,6 +976,7 @@ pub struct TerrainStream {
     scheduled_last_frame: usize,
     clock: Instant,
     stats: Stats,
+    apart: crate::lids::ApartCells,
 }
 
 pub use minecraft_net::Dimension;
@@ -1109,6 +1118,7 @@ impl TerrainStream {
             scheduled_last_frame: 0,
             clock: Instant::now(),
             stats: Stats::default(),
+            apart: Default::default(),
         })
     }
 
@@ -1362,6 +1372,16 @@ impl TerrainStream {
         self.player_sections.is_empty() && self.player_relights.is_empty()
     }
 
+    pub fn draw_apart(&mut self, pos: BlockPos, apart: bool) {
+        if let Some(section) = self.apart.set(pos, apart) {
+            if self.sections.section(section).is_some() {
+                self.sections.set_dirty(section, true);
+                self.player_sections.insert(section);
+                self.serials.remove(&section);
+            }
+        }
+    }
+
     pub fn cell_settled(&self, (x, y, z): BlockPos) -> bool {
         !self.player_sections.contains(&(x >> 4, y >> 4, z >> 4))
     }
@@ -1487,6 +1507,7 @@ impl TerrainStream {
                     hood,
                     light: light.clone(),
                     context: context.clone(),
+                    apart: self.apart.in_section(pos),
                 },
             ));
         }
@@ -1801,7 +1822,7 @@ mod tests {
         let mut opaque = 0;
         for sy in -4..20 {
             let (mesh, _) =
-                compile_section(&states, &hood, (0, sy, 0), &light, &mut models, &packs, &reference.atlas, &tint).unwrap();
+                compile_section(&states, &hood, (0, sy, 0), &light, &mut models, &packs, &reference.atlas, &tint, &[]).unwrap();
             opaque += mesh.transparent_start.unwrap_or(mesh.indices.len() as u32) as usize / 6;
             vertices.extend(mesh.vertices);
         }
@@ -1918,8 +1939,8 @@ mod tests {
         let mut models = ModelCache::default();
         models.prepare(&states, &packs, &atlas, &view);
         let tint = BiomeTint::from_pack(&packs).unwrap();
-        let baked = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, true).unwrap();
-        let slow = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, false).unwrap();
+        let baked = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, true, &[]).unwrap();
+        let slow = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, false, &[]).unwrap();
         let bits = |m: &ChunkMesh| -> Vec<u32> { m.vertices.iter().flat_map(|v| v.position.iter().chain(&v.uv).chain(&v.color).chain([&v.sky_light, &v.block_light]).map(|f| f.to_bits()).collect::<Vec<_>>()).collect() };
         assert!(bits(&baked.0) == bits(&slow.0) && baked.0.indices == slow.0.indices && baked.0.faces == slow.0.faces && baked.1 == slow.1);
         for (i, block) in blocks.iter().enumerate() {
@@ -1970,8 +1991,8 @@ mod tests {
         let mut models = ModelCache::default();
         models.prepare(&states, &packs, &atlas, &view);
         let tint = BiomeTint::from_pack(&packs).unwrap();
-        let baked = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, true).unwrap();
-        let slow = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, false).unwrap();
+        let baked = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, true, &[]).unwrap();
+        let slow = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, false, &[]).unwrap();
         let bits = |m: &ChunkMesh| -> Vec<u32> { m.vertices.iter().flat_map(|v| v.position.iter().chain(&v.uv).chain(&v.color).chain([&v.sky_light, &v.block_light]).map(|f| f.to_bits()).collect::<Vec<_>>()).collect() };
         assert!(bits(&baked.0) == bits(&slow.0) && baked.0.indices == slow.0.indices && baked.0.faces == slow.0.faces && baked.1 == slow.1);
         let flat_faces_at = |plane: f32| {
@@ -2019,7 +2040,7 @@ mod tests {
         models.prepare(&states, &packs, &atlas, &view);
         let tint = BiomeTint::from_pack(&packs).unwrap();
         for baked in [true, false] {
-            let (mesh, _, _) = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, baked).unwrap();
+            let (mesh, _, _) = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, baked, &[]).unwrap();
             let planks_bottom = mesh.vertices.chunks(4).filter(|quad| quad.iter().all(|v| v.position[1] == 66.0 && (5.0..=6.0).contains(&v.position[0]) && (5.0..=6.0).contains(&v.position[2]))).count();
             assert_eq!(planks_bottom, 1, "the planks over a top stair keep their bottom face");
             let between_logs = mesh.vertices.chunks(4).filter(|quad| quad.iter().all(|v| v.position[0] == 10.0 && (65.0..=66.0).contains(&v.position[1]))).count();
@@ -2101,8 +2122,8 @@ mod tests {
         let mut models = ModelCache::default();
         models.prepare(&states, &packs, &atlas, &view);
         let tint = BiomeTint::from_pack(&packs).unwrap();
-        let baked = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, true).unwrap();
-        let slow = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, false).unwrap();
+        let baked = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, true, &[]).unwrap();
+        let slow = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, false, &[]).unwrap();
         let bits = |m: &ChunkMesh| -> Vec<u32> { m.vertices.iter().flat_map(|v| v.position.iter().chain(&v.uv).chain(&v.color).chain([&v.sky_light, &v.block_light]).map(|f| f.to_bits()).collect::<Vec<_>>()).collect() };
         assert!(bits(&baked.0) == bits(&slow.0) && baked.0.indices == slow.0.indices && baked.0.faces == slow.0.faces && baked.1 == slow.1);
         let water: Vec<[[f32; 3]; 4]> = baked.1.chunks(6).filter(|six| six[1] == six[0] + 1).map(|six| std::array::from_fn(|i| baked.0.vertices[six[0] as usize + i].position)).collect();
@@ -2125,6 +2146,58 @@ mod tests {
         let preview = mesh::block_preview(&scene, &packs, &atlas, &light, &tint, (5, 66, 5)).unwrap();
         let start = preview.transparent_start.unwrap() as usize;
         assert!(start > 0 && preview.indices.len() > start, "the kelp preview shows the kelp and its water");
+    }
+
+    #[test]
+    fn an_apart_shulker_box_leaves_its_cell_empty_and_every_other_face_alone() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Some(pack) = paths.datapack.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).map(|root| root.join("resourcepacks/local/minecraft-26.3")).filter(|p| p.is_dir()) else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let states = Arc::new(BlockStates::new(Arc::new(registries), 1, -64, 384).unwrap());
+        let plains = states.registries().biomes.id("minecraft:plains").unwrap_or(BiomeId(0));
+        let mut scene = HandcraftedScene::streamed(states.clone());
+        for x in -1..=1 {
+            for z in -1..=1 {
+                scene.insert_chunk(Arc::new(Chunk::new(minecraftoss_core::ChunkPos::new(x, z), -64, 384, plains)));
+            }
+        }
+        let cell = (5, 66, 5);
+        let box_block = Block::new("minecraft:red_shulker_box").with("facing", "up");
+        scene.set(cell, Some(box_block.clone()));
+        for (dx, dy, dz) in [(-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0), (0, 0, -1), (0, 0, 1)] {
+            scene.set((cell.0 + dx, cell.1 + dy, cell.2 + dz), Some(Block::new("minecraft:stone")));
+        }
+        let mut textures = std::collections::BTreeSet::new();
+        for block in [box_block, Block::new("minecraft:stone")] {
+            for (model, _) in &resolve_block_variants(&packs, &block).unwrap() {
+                textures.extend(model.elements.iter().flat_map(|e| e.faces.iter().map(|f| f.texture.clone())));
+            }
+        }
+        textures.extend(crate::special_models::textures().unwrap());
+        let atlas = mesh::make_atlas(&packs, textures.into_iter().collect()).unwrap();
+        let hood = Neighborhood::of(&scene, (0, 0)).unwrap();
+        let light = light_chunk(&states, &hood);
+        let view = View::new(&states, &hood, (-1, 63, -1), (18, 18, 18));
+        let mut models = ModelCache::default();
+        models.prepare(&states, &packs, &atlas, &view);
+        let tint = BiomeTint::from_pack(&packs).unwrap();
+        let bits = |m: &ChunkMesh| -> Vec<Vec<u32>> { m.vertices.iter().map(|v| v.position.iter().chain(&v.uv).chain(&v.color).chain([&v.sky_light, &v.block_light]).map(|f| f.to_bits()).collect()).collect() };
+        let low = [cell.0 as f32, cell.1 as f32, cell.2 as f32];
+        let within = |v: &mesh::Vertex| (0..3).all(|axis| v.position[axis] > low[axis] && v.position[axis] < low[axis] + 1.0);
+        let inside = |m: &ChunkMesh| m.vertices.iter().filter(|v| within(v)).count();
+        for baked in [true, false] {
+            let whole = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, baked, &[]).unwrap();
+            let apart = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, baked, &[cell]).unwrap();
+            assert!(inside(&whole.0) > 0, "the box is drawn in its section");
+            assert_eq!(inside(&apart.0), 0, "an apart box leaves its cell empty");
+            let kept: Vec<Vec<u32>> = bits(&whole.0).into_iter().zip(&whole.0.vertices).filter(|(_, v)| !within(v)).map(|(b, _)| b).collect();
+            assert_eq!(bits(&apart.0), kept, "every other face is the same");
+            assert_eq!(apart.0.faces, whole.0.faces - inside(&whole.0) / 4);
+        }
+        let baked = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, true, &[cell]).unwrap();
+        let slow = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, false, &[cell]).unwrap();
+        assert!(bits(&baked.0) == bits(&slow.0) && baked.0.indices == slow.0.indices && baked.0.faces == slow.0.faces && baked.1 == slow.1);
     }
 
     #[test]

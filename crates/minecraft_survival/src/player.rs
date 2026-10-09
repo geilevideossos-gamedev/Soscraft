@@ -41,12 +41,13 @@ pub struct Hand {
     pub swing: Option<f32>,
     pub clock: f64,
     pub place_delay: u32,
-    pub pearl_cooldown: u32,
+    pub cooldowns: crate::cooldowns::Cooldowns,
     pub recent: Vec<((i32, i32, i32), Block, f64)>,
     pub attack_ticks: u32,
     pub attack_item: Option<String>,
     pub miss_time: u32,
     pub blocking: Option<Blocking>,
+    pub charging: Option<crate::trident::Charging>,
     pub swing_offhand: bool,
     pub use_by_key: bool,
     pub offhand_key_was: bool,
@@ -305,7 +306,7 @@ mod tests {
             Survival::default(),
             Inventory::default(),
         );
-        assert_eq!(player.hand.pearl_cooldown, 0);
+        assert!(player.hand.cooldowns.is_empty());
         assert_eq!(player.hand.place_delay, 0);
         assert!(player.hand.blocking.is_none());
         assert!(player.hand.swing.is_none());

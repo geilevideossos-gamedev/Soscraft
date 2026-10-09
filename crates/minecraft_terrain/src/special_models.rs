@@ -12,6 +12,8 @@ const UV_INSET: f32 = 1.0 / 32.0;
 const SHEET_HALF_THICKNESS: f32 = 0.01;
 const ALL_FACES: [&str; 6] = ["down", "up", "west", "north", "east", "south"];
 const SHULKER_SCALE: f32 = 0.9995;
+const SHULKER_LID_HEIGHT: f32 = 0.5;
+const SHULKER_LID_TURN: f32 = 270.0;
 const BANNER_SCALE: f32 = 2.0 / 3.0;
 const BANNER_FLAG_ANGLE: f32 = (-0.0125 + 0.01) * PI;
 const DYES: [(&str, u32); 16] = [
@@ -38,7 +40,7 @@ const COPPER_CHESTS: [(&str, &str); 4] = [
     ("weathered_copper_chest", "copper_weathered"),
     ("oxidized_copper_chest", "copper_oxidized"),
 ];
-const SUPPORTED_SPECIALS: [&str; 8] = [
+const SUPPORTED_SPECIALS: [&str; 9] = [
     "minecraft:chest",
     "minecraft:shulker_box",
     "minecraft:head",
@@ -47,6 +49,7 @@ const SUPPORTED_SPECIALS: [&str; 8] = [
     "minecraft:conduit",
     "minecraft:decorated_pot",
     "minecraft:shield",
+    "minecraft:trident",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -181,6 +184,10 @@ pub(crate) fn dye_color(name: &str) -> Option<[f32; 3]> {
         .map(|&(_, rgb)| [rgb >> 16, rgb >> 8, rgb].map(|channel| (channel & 255) as f32 / 255.0))
 }
 
+pub(crate) fn dye_rgb(name: &str) -> Option<u32> {
+    DYES.iter().find(|(dye, _)| *dye == name).map(|&(_, rgb)| rgb)
+}
+
 pub(crate) fn banner_dye(block: &Block) -> Option<[f32; 3]> {
     let path = block.id.path.as_str();
     let color = path
@@ -280,17 +287,7 @@ pub(crate) fn block_model(block: &Block) -> Result<Option<ResolvedModel>> {
         };
         push_head(&mut elements, head, None, pose)?;
     } else if path == "shulker_box" || path.ends_with("_shulker_box") {
-        let texture = match path.strip_suffix("_shulker_box") {
-            Some(color) => format!("minecraft:entity/shulker/shulker_{color}"),
-            None => "minecraft:entity/shulker/shulker".to_owned(),
-        };
-        let facing = property("facing").unwrap_or("up");
-        let pose = Mat4::from_translation(Vec3::splat(0.5))
-            * Mat4::from_scale(Vec3::splat(SHULKER_SCALE))
-            * direction_rotation(facing)
-            * Mat4::from_scale(Vec3::new(1.0, -1.0, -1.0))
-            * Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0));
-        push_shulker(&mut elements, Sheet::new(&texture, [64.0, 64.0])?, pose);
+        elements = shulker_box_model(block, 0.0)?.elements;
     } else if banner_dye(block).is_some() {
         let wall = path.ends_with("_wall_banner");
         let degrees = if wall {
@@ -312,6 +309,24 @@ pub(crate) fn block_model(block: &Block) -> Result<Option<ResolvedModel>> {
         return Ok(None);
     }
     Ok(Some(ResolvedModel { elements }))
+}
+
+pub(crate) fn shulker_box_model(block: &Block, progress: f32) -> Result<ResolvedModel> {
+    let path = block.id.path.as_str();
+    let texture = match path.strip_suffix("_shulker_box") {
+        Some(color) => format!("minecraft:entity/shulker/shulker_{color}"),
+        None => "minecraft:entity/shulker/shulker".to_owned(),
+    };
+    let facing = block.properties.get("facing").map_or("up", String::as_str);
+    let pose = Mat4::from_translation(Vec3::splat(0.5))
+        * Mat4::from_scale(Vec3::splat(SHULKER_SCALE))
+        * direction_rotation(facing)
+        * Mat4::from_scale(Vec3::new(1.0, -1.0, -1.0))
+        * Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0));
+    let mut elements = Vec::new();
+    let sheet = Sheet::new(&texture, [64.0, 64.0])?;
+    push_shulker(&mut elements, sheet, pose, progress);
+    Ok(ResolvedModel { elements })
 }
 
 pub(crate) fn extra_elements(block: &Block) -> Result<Vec<Element>> {
@@ -364,7 +379,7 @@ pub(crate) fn item_model(special: &Value) -> Result<Option<ResolvedModel>> {
                 size: [64.0, 64.0],
                 tinted: false,
             };
-            push_shulker(&mut elements, sheet, Mat4::IDENTITY);
+            push_shulker(&mut elements, sheet, Mat4::IDENTITY, 0.0);
         }
         "minecraft:head" => {
             let Some(head) = field("kind").and_then(Head::of_kind) else {
@@ -383,6 +398,7 @@ pub(crate) fn item_model(special: &Value) -> Result<Option<ResolvedModel>> {
         "minecraft:conduit" => push_conduit(&mut elements, Mat4::IDENTITY)?,
         "minecraft:decorated_pot" => push_decorated_pot(&mut elements, Mat4::IDENTITY)?,
         "minecraft:shield" => push_shield(&mut elements)?,
+        "minecraft:trident" => push_trident(&mut elements)?,
         _ => return Ok(None),
     }
     Ok(Some(ResolvedModel { elements }))
@@ -401,7 +417,11 @@ pub(crate) fn special_tints(model: &Value) -> Vec<[u8; 3]> {
 }
 
 pub(crate) fn uses_item_geometry(model: &Value) -> bool {
-    let leaves = item_leaves(model, false);
+    uses_item_geometry_in(model, None)
+}
+
+pub(crate) fn uses_item_geometry_in(model: &Value, context: Option<&str>) -> bool {
+    let leaves = item_leaves_in(model, false, context);
     leaves.len() > 1
         || leaves
             .iter()
@@ -409,14 +429,31 @@ pub(crate) fn uses_item_geometry(model: &Value) -> bool {
 }
 
 pub(crate) fn item_leaves(model: &Value, using_item: bool) -> Vec<ItemLeaf<'_>> {
+    item_leaves_in(model, using_item, None)
+}
+
+pub(crate) fn item_leaves_in<'a>(
+    model: &'a Value,
+    using_item: bool,
+    context: Option<&str>,
+) -> Vec<ItemLeaf<'a>> {
     let mut leaves = Vec::new();
-    collect_leaves(model, using_item, Mat4::IDENTITY, &mut leaves);
+    collect_leaves(model, using_item, context, Mat4::IDENTITY, &mut leaves);
     leaves
+}
+
+fn when_matches(when: Option<&Value>, context: &str) -> bool {
+    match when {
+        Some(Value::String(one)) => one == context,
+        Some(Value::Array(many)) => many.iter().any(|one| one.as_str() == Some(context)),
+        _ => false,
+    }
 }
 
 fn collect_leaves<'a>(
     value: &'a Value,
     using_item: bool,
+    context: Option<&str>,
     parent: Mat4,
     out: &mut Vec<ItemLeaf<'a>>,
 ) {
@@ -424,7 +461,7 @@ fn collect_leaves<'a>(
     let first_yielding = |out: &mut Vec<ItemLeaf<'a>>, options: Vec<&'a Value>| {
         for option in options {
             let mut found = Vec::new();
-            collect_leaves(option, using_item, transform, &mut found);
+            collect_leaves(option, using_item, context, transform, &mut found);
             if !found.is_empty() {
                 out.extend(found);
                 return;
@@ -464,7 +501,7 @@ fn collect_leaves<'a>(
                 .into_iter()
                 .flatten()
             {
-                collect_leaves(model, using_item, transform, out);
+                collect_leaves(model, using_item, context, transform, out);
             }
         }
         "minecraft:condition" => {
@@ -480,16 +517,25 @@ fn collect_leaves<'a>(
             first_yielding(out, order.into_iter().flatten().collect());
         }
         "minecraft:select" | "minecraft:range_dispatch" => {
-            let mut options: Vec<&Value> = value.get("fallback").into_iter().collect();
-            for entry in value
+            let entries: Vec<&Value> = value
                 .get("cases")
                 .or_else(|| value.get("entries"))
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
-            {
-                options.extend(entry.get("model"));
+                .collect();
+            let mut options: Vec<&Value> = Vec::new();
+            if value.get("property").and_then(Value::as_str) == Some("minecraft:display_context") {
+                let wanted = context.unwrap_or("gui");
+                options.extend(
+                    entries
+                        .iter()
+                        .filter(|entry| when_matches(entry.get("when"), wanted))
+                        .filter_map(|entry| entry.get("model")),
+                );
             }
+            options.extend(value.get("fallback"));
+            options.extend(entries.iter().filter_map(|entry| entry.get("model")));
             first_yielding(out, options);
         }
         _ => {}
@@ -781,11 +827,14 @@ fn inset(start: f32, end: f32) -> (f32, f32) {
     }
 }
 
-fn push_shulker(elements: &mut Vec<Element>, sheet: Sheet, pose: Mat4) {
+fn push_shulker(elements: &mut Vec<Element>, sheet: Sheet, pose: Mat4, progress: f32) {
     let body = pose * part([0.0, 24.0, 0.0], [0.0; 3]);
+    let lift = 24.0 - progress * SHULKER_LID_HEIGHT * 16.0;
+    let turn = (SHULKER_LID_TURN * progress).to_radians();
+    let lid_pose = pose * part([0.0, lift, 0.0], [0.0, turn, 0.0]);
     let lid = Cube::new([0.0, 0.0], [-8.0, -16.0, -8.0], [16.0, 12.0, 16.0]);
     let base = Cube::new([0.0, 28.0], [-8.0, -8.0, -8.0], [16.0, 8.0, 16.0]);
-    push_cube(elements, &sheet, lid, body, &ALL_FACES);
+    push_cube(elements, &sheet, lid, lid_pose, &ALL_FACES);
     push_cube(elements, &sheet, base, body, &ALL_FACES);
 }
 
@@ -1017,6 +1066,16 @@ fn push_shield(elements: &mut Vec<Element>) -> Result<()> {
     Ok(())
 }
 
+fn push_trident(elements: &mut Vec<Element>) -> Result<()> {
+    let sheet = Sheet::new(crate::trident::TEXTURE, crate::trident::TEXTURE_SIZE)?;
+    for part in crate::trident::MODEL {
+        let cube = Cube::new(part.uv, part.origin, part.size);
+        let cube = if part.mirror { cube.mirrored() } else { cube };
+        push_cube(elements, &sheet, cube, Mat4::IDENTITY, &ALL_FACES);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1076,6 +1135,47 @@ mod tests {
             base_low.y > 0.49,
             "a downward box keeps its base at the top"
         );
+    }
+
+    #[test]
+    fn a_shulker_lid_rises_half_a_block_and_turns_three_quarters() {
+        let scaled = |y: f32| 0.5 + (y - 0.5) * SHULKER_SCALE;
+        let up = Block::new("minecraft:red_shulker_box").with("facing", "up");
+        let closed = shulker_box_model(&up, 0.0).unwrap();
+        assert_eq!(corners(&closed), corners(&block_model(&up).unwrap().unwrap()));
+        let open = shulker_box_model(&up, 1.0).unwrap();
+        let (low, high) = bounds(&element_points(&open.elements[0]));
+        assert!((low.y - scaled(0.75)).abs() < 1e-4 && (high.y - scaled(1.5)).abs() < 1e-4);
+        assert!((low.x - scaled(0.0)).abs() < 1e-4 && (high.x - scaled(1.0)).abs() < 1e-4);
+        let down = Block::new("minecraft:shulker_box").with("facing", "down");
+        let (low, high) = bounds(&element_points(
+            &shulker_box_model(&down, 1.0).unwrap().elements[0],
+        ));
+        assert!((low.y - scaled(-0.5)).abs() < 1e-4 && (high.y - scaled(0.25)).abs() < 1e-4);
+        let north = Block::new("minecraft:shulker_box").with("facing", "north");
+        let (low, high) = bounds(&element_points(
+            &shulker_box_model(&north, 1.0).unwrap().elements[0],
+        ));
+        assert!((low.z - scaled(-0.5)).abs() < 1e-4 && (high.z - scaled(0.25)).abs() < 1e-4);
+        assert!(low.y > 0.0 && high.y < 1.0);
+        let half = shulker_box_model(&up, 0.5).unwrap();
+        let top = |model: &ResolvedModel| {
+            let lid = &model.elements[0];
+            let face = lid.faces.iter().find(|f| f.direction == "up").unwrap();
+            let corner = Vec3::from_array(element_corners(lid, &face.direction).unwrap()[0]);
+            Vec3::new(corner.x - 0.5, 0.0, corner.z - 0.5)
+        };
+        let (before, after) = (top(&closed), top(&half));
+        let turned = before.angle_between(after).to_degrees();
+        assert!((turned - 135.0).abs() < 0.01, "{turned}");
+        assert!((after.length() - before.length()).abs() < 1e-4);
+        for model in [&half, &open] {
+            assert_eq!(
+                element_points(&model.elements[1]),
+                element_points(&closed.elements[1]),
+                "the base never moves"
+            );
+        }
     }
 
     #[test]
@@ -1361,6 +1461,61 @@ mod tests {
         let rotation = serde_json::json!({"left_rotation": [1.0, 0.0, 0.0, 0.0]});
         let flipped = transformation(Some(&rotation));
         assert!(close(flipped.transform_vector3(Vec3::Y), Vec3::NEG_Y));
+    }
+
+    #[test]
+    fn a_trident_is_flat_in_the_gui_and_on_the_ground_and_3d_in_the_hands() {
+        let trident = serde_json::json!({
+            "type": "minecraft:select",
+            "property": "minecraft:display_context",
+            "cases": [{
+                "when": ["gui", "ground", "fixed", "on_shelf"],
+                "model": {"type": "minecraft:model", "model": "minecraft:item/trident"}
+            }],
+            "fallback": {
+                "type": "minecraft:condition",
+                "property": "minecraft:using_item",
+                "on_false": {"type": "minecraft:special", "base": "minecraft:item/trident_in_hand", "model": {"type": "minecraft:trident"}},
+                "on_true": {"type": "minecraft:special", "base": "minecraft:item/trident_throwing", "model": {"type": "minecraft:trident"}},
+                "transformation": {"scale": [1.0, -1.0, -1.0]}
+            }
+        });
+        for context in [None, Some("gui"), Some("ground"), Some("fixed")] {
+            let leaves = item_leaves_in(&trident, false, context);
+            assert_eq!(leaves[0].model, "minecraft:item/trident", "{context:?}");
+            assert!(leaves[0].special.is_none());
+            assert!(!uses_item_geometry_in(&trident, context));
+        }
+        let flip = Mat4::from_scale(Vec3::new(1.0, -1.0, -1.0));
+        for context in ["firstperson_righthand", "firstperson_lefthand", "thirdperson_righthand", "thirdperson_lefthand"] {
+            let held = item_leaves_in(&trident, false, Some(context));
+            assert_eq!(held[0].model, "minecraft:item/trident_in_hand");
+            assert_eq!(held[0].transform, flip);
+            assert!(held[0].special.is_some());
+            assert!(uses_item_geometry_in(&trident, Some(context)));
+            let charging = item_leaves_in(&trident, true, Some(context));
+            assert_eq!(charging[0].model, "minecraft:item/trident_throwing");
+        }
+        let spyglass = serde_json::json!({
+            "type": "minecraft:select",
+            "property": "minecraft:display_context",
+            "cases": [{"when": ["gui", "ground"], "model": {"type": "minecraft:model", "model": "minecraft:item/spyglass"}}],
+            "fallback": {"type": "minecraft:model", "model": "minecraft:item/spyglass_in_hand"}
+        });
+        assert_eq!(item_leaves_in(&spyglass, false, Some("ground"))[0].model, "minecraft:item/spyglass");
+        assert_eq!(item_leaves_in(&spyglass, false, Some("firstperson_righthand"))[0].model, "minecraft:item/spyglass_in_hand");
+    }
+
+    #[test]
+    fn the_held_trident_is_the_pole_base_and_spikes_of_the_thrown_one() {
+        let special = serde_json::json!({"type": "minecraft:trident"});
+        let model = item_model(&special).unwrap().unwrap();
+        assert_eq!(model.elements.len(), 5);
+        let (low, high) = bounds(&corners(&model));
+        assert!(close(low, Vec3::new(-2.5, -4.0, -0.5) / 16.0), "{low}");
+        assert!(close(high, Vec3::new(2.5, 27.0, 0.5) / 16.0), "{high}");
+        let texture = ResourceId::parse(crate::trident::TEXTURE).unwrap();
+        assert!(model.elements.iter().flat_map(|e| e.faces.iter()).all(|face| face.texture == texture));
     }
 
     #[test]

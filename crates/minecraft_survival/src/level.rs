@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
-use minecraft_net::Dimension;
+use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_terrain::bucket::Sound;
 use minecraft_terrain::containers::{Containers, block_entity_kind};
 use minecraft_terrain::environment::DimensionEnvironment;
+use minecraft_terrain::openers::{OpenerEvent, OpenerSound, Openers};
 use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
 use minecraft_terrain::terrain::TerrainStream;
 use minecraftoss_core::{Chunk, ChunkPos, Registries};
@@ -18,6 +19,7 @@ pub struct Level {
     pub entities: Option<Entities>,
     pub containers: Containers,
     pub terrain: Terrain,
+    pub openers: Openers,
 }
 
 pub struct Terrain {
@@ -173,6 +175,85 @@ pub fn tick_containers(
     (prop_writes(&terrain.scene, props), brewed)
 }
 
+pub fn opener_key(player: &PlayerUuid) -> u128 {
+    minecraftoss_entities::gossip::parse_uuid(&player.0).unwrap_or_else(|| {
+        player
+            .0
+            .bytes()
+            .fold(0x6c62_272e_07bb_0142_62b8_2175_6295_c58d, |hash, byte| {
+                (hash ^ u128::from(byte)).wrapping_mul(0x0000_0000_0100_0000_0000_0000_0000_013b)
+            })
+    })
+}
+
+pub fn toggle_openers(
+    openers: &mut Openers,
+    scene: &HandcraftedScene,
+    cells: &[(i32, i32, i32)],
+    player: &PlayerUuid,
+    open: bool,
+    spectator: bool,
+) -> Vec<OpenerEvent> {
+    let key = opener_key(player);
+    cells
+        .iter()
+        .filter(|&&pos| Scene::block(scene, pos).is_some_and(Openers::counted))
+        .filter_map(|&pos| {
+            if open {
+                openers.open(pos, key, spectator)
+            } else {
+                openers.close(pos, key)
+            }
+        })
+        .collect()
+}
+
+pub struct OpenerOutcome {
+    pub block_event: ((i32, i32, i32), u8, u32),
+    pub sound: Option<OpenerSound>,
+    pub state: Option<((i32, i32, i32), Block)>,
+}
+
+pub fn opener_outcome(scene: &HandcraftedScene, event: &OpenerEvent) -> OpenerOutcome {
+    let changed = Scene::block(scene, event.pos).zip(event.change);
+    OpenerOutcome {
+        block_event: event.block_event(),
+        sound: changed.and_then(|(block, change)| {
+            minecraft_terrain::openers::sound(block, event.pos, change)
+        }),
+        state: changed
+            .and_then(|(block, change)| minecraft_terrain::openers::opened_state(block, change))
+            .map(|state| (event.pos, state)),
+    }
+}
+
+pub fn leave_containers(
+    openers: &mut Openers,
+    scene: &HandcraftedScene,
+    player: &PlayerUuid,
+) -> Writes {
+    openers
+        .leave(opener_key(player))
+        .iter()
+        .filter_map(|event| opener_outcome(scene, event).state)
+        .map(|(pos, block)| (pos, Some(block)))
+        .collect()
+}
+
+pub fn leave(level: &mut Level, player: &PlayerUuid) {
+    let writes = leave_containers(&mut level.openers, &level.terrain.scene, player);
+    let positions: Vec<_> = writes.iter().map(|(pos, _)| *pos).collect();
+    for (pos, block) in writes {
+        level.terrain.scene.set(pos, block);
+    }
+    if !positions.is_empty() {
+        level
+            .terrain
+            .stream
+            .record_edits(&level.terrain.scene, &positions);
+    }
+}
+
 fn prop_writes(scene: &HandcraftedScene, props: Vec<((i32, i32, i32), &str, bool)>) -> Writes {
     let mut writes: Writes = Vec::new();
     for (pos, name, on) in props {
@@ -239,6 +320,120 @@ mod tests {
                     .with("has_bottle_2", "true")
             )
         );
+    }
+
+    fn host() -> PlayerUuid {
+        PlayerUuid("b50ad385-829d-3141-a216-7e7d7539ba7f".to_owned())
+    }
+
+    fn friend() -> PlayerUuid {
+        PlayerUuid("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0".to_owned())
+    }
+
+    #[test]
+    fn a_player_uuid_is_its_vanilla_number() {
+        assert_eq!(
+            opener_key(&host()),
+            0xb50a_d385_829d_3141_a216_7e7d_7539_ba7f
+        );
+        let odd = PlayerUuid("not a uuid".to_owned());
+        assert_eq!(opener_key(&odd), opener_key(&odd));
+        assert_ne!(
+            opener_key(&odd),
+            opener_key(&PlayerUuid("not a uuid either".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_double_chest_opens_both_halves_and_sounds_once_from_its_middle() {
+        let mut scene = HandcraftedScene::default();
+        let half = |kind| {
+            Block::new("minecraft:chest")
+                .with("facing", "south")
+                .with("type", kind)
+        };
+        scene.set((14, 65, 14), Some(half("left")));
+        scene.set((13, 65, 14), Some(half("right")));
+        let mut openers = Openers::default();
+        let cells = [(14, 65, 14), (13, 65, 14)];
+        let events = toggle_openers(&mut openers, &scene, &cells, &host(), true, false);
+        assert_eq!(events.len(), 2);
+        let outcomes: Vec<_> = events.iter().map(|e| opener_outcome(&scene, e)).collect();
+        assert_eq!(outcomes[0].block_event, ((14, 65, 14), 1, 1));
+        assert_eq!(outcomes[1].block_event, ((13, 65, 14), 1, 1));
+        let sounds: Vec<_> = outcomes.iter().filter_map(|o| o.sound).collect();
+        assert_eq!(sounds.len(), 1);
+        assert_eq!(sounds[0].event, "minecraft:block.chest.open");
+        assert_eq!(sounds[0].position, [14.0, 65.5, 14.5]);
+        assert!(outcomes.iter().all(|o| o.state.is_none()));
+        let again = toggle_openers(&mut openers, &scene, &cells, &host(), true, false);
+        assert!(again.is_empty());
+        let shut = toggle_openers(&mut openers, &scene, &cells, &host(), false, false);
+        assert_eq!(
+            shut.iter().map(|e| e.block_event()).collect::<Vec<_>>(),
+            vec![((14, 65, 14), 1, 0), ((13, 65, 14), 1, 0)]
+        );
+    }
+
+    #[test]
+    fn a_second_player_keeps_a_shulker_box_open_and_a_spectator_is_not_counted() {
+        let mut scene = HandcraftedScene::default();
+        scene.set(
+            (0, 64, 0),
+            Some(Block::new("minecraft:red_shulker_box").with("facing", "up")),
+        );
+        let mut openers = Openers::default();
+        let cells = [(0, 64, 0)];
+        let first = toggle_openers(&mut openers, &scene, &cells, &host(), true, false);
+        let sound = opener_outcome(&scene, &first[0]).sound.map(|s| s.event);
+        assert_eq!(sound, Some("minecraft:block.shulker_box.open"));
+        let second = toggle_openers(&mut openers, &scene, &cells, &friend(), true, false);
+        assert_eq!(second[0].block_event(), ((0, 64, 0), 1, 2));
+        assert!(opener_outcome(&scene, &second[0]).sound.is_none());
+        let ghost = PlayerUuid("11111111-2222-3333-4444-555555555555".to_owned());
+        assert!(toggle_openers(&mut openers, &scene, &cells, &ghost, true, true).is_empty());
+        let left = toggle_openers(&mut openers, &scene, &cells, &host(), false, false);
+        assert_eq!(left[0].block_event(), ((0, 64, 0), 1, 1));
+        assert!(opener_outcome(&scene, &left[0]).sound.is_none());
+        let last = toggle_openers(&mut openers, &scene, &cells, &friend(), false, false);
+        let sound = opener_outcome(&scene, &last[0]).sound.map(|s| s.event);
+        assert_eq!(sound, Some("minecraft:block.shulker_box.close"));
+    }
+
+    #[test]
+    fn furnaces_and_empty_cells_count_no_openers() {
+        let mut scene = HandcraftedScene::default();
+        scene.set(
+            (1, 64, 2),
+            Some(Block::new("minecraft:furnace").with("facing", "north")),
+        );
+        let mut openers = Openers::default();
+        let cells = [(1, 64, 2), (2, 64, 2)];
+        assert!(toggle_openers(&mut openers, &scene, &cells, &host(), true, false).is_empty());
+    }
+
+    #[test]
+    fn a_barrel_shows_open_until_its_player_leaves_the_world() {
+        let mut scene = HandcraftedScene::default();
+        let barrel = Block::new("minecraft:barrel")
+            .with("facing", "east")
+            .with("open", "false");
+        scene.set((3, 64, 3), Some(barrel.clone()));
+        let mut openers = Openers::default();
+        let opened = toggle_openers(&mut openers, &scene, &[(3, 64, 3)], &host(), true, false);
+        let outcome = opener_outcome(&scene, &opened[0]);
+        assert_eq!(
+            outcome.state,
+            Some(((3, 64, 3), barrel.clone().with("open", "true")))
+        );
+        assert_eq!(outcome.sound.map(|s| s.position), Some([4.0, 64.5, 3.5]));
+        scene.set((3, 64, 3), Some(barrel.clone().with("open", "true")));
+        assert!(leave_containers(&mut openers, &scene, &friend()).is_empty());
+        assert_eq!(
+            leave_containers(&mut openers, &scene, &host()),
+            vec![((3, 64, 3), Some(barrel))]
+        );
+        assert_eq!(openers.count((3, 64, 3)), 0);
     }
 
     #[test]

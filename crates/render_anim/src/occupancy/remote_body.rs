@@ -78,6 +78,8 @@ pub fn register_remote_body_systems(app: &mut App) {
         .add_systems(Update, prepare_remote_kits.in_set(ClientSet::Load))
         .init_resource::<crate::anim::dobj_pose::HostDObjPoseFrame>()
         .init_resource::<crate::anim::dobj_pose::PosedPlayerFrame>()
+        .init_resource::<crate::anim::minecraft_gear::PosedGearFrame>()
+        .init_resource::<crate::anim::minecraft_gear::McBodyGear>()
         .add_systems(
             Update,
             sync_remote_bodies
@@ -157,6 +159,16 @@ fn prepare_remote_kits(
         weapons.0.len(),
         started.elapsed().as_secs_f64() * 1000.0
     );
+    for axis in [false, true] {
+        if let Some(kit) = kits.get(axis, 0) {
+            diag::info!(
+                World,
+                "remote kits: axis={axis} Minecraft gear bones missing: {:?}; bind sizes: {}",
+                kit.gear_bones.missing(),
+                kit.gear_bones.measures()
+            );
+        }
+    }
 }
 
 fn finish_body_draw_plan(mut plan: ResMut<RemoteBodyDrawPlan>) {
@@ -179,6 +191,7 @@ fn occupy_remote_scene_ents(
     weapons: Option<Res<PreparedWeapons>>,
     world_weapons: Option<Res<PreparedWorldWeapons>>,
     prepared_kits: Res<PreparedRemoteKits>,
+    body_gear: Res<crate::anim::minecraft_gear::McBodyGear>,
     remotes: Query<
         (&CEntity, &CEntityRuntime, &Transform),
         (
@@ -239,7 +252,10 @@ fn occupy_remote_scene_ents(
         let client_state_team = meta.map(|m| m.client_state_team).unwrap_or(0);
         let axis = asset_model::kit_assignment_is_axis(client_state_team, ffa_team);
         let shield = meta.and_then(|meta| meta.shield);
-        let held = remote_pose_sample(runtime).weapon;
+        let is_corpse = runtime.next_state.e_type == ET_PLAYER_CORPSE
+            || runtime.pose_e_type == ET_PLAYER_CORPSE as u8;
+        let held =
+            body_gear.shown_weapon(Some(client.0), is_corpse, remote_pose_sample(runtime).weapon);
         let (kit_models, radius, hide_part_bits) = match live_kits.filter(|_| shield.is_none()) {
             Some((kits, world)) => {
                 let Some(kit) = kits.get(axis, held) else {
@@ -485,6 +501,8 @@ struct RemotePoseFrame<'a> {
     submit: &'a mut RemoteBodySkinnedQueue,
     dobj_poses: &'a mut crate::anim::dobj_pose::HostDObjPoseFrame,
     posed_players: &'a mut crate::anim::dobj_pose::PosedPlayerFrame,
+    posed_gear: &'a mut crate::anim::minecraft_gear::PosedGearFrame,
+    body_gear: &'a crate::anim::minecraft_gear::McBodyGear,
     scene: &'a render_scene::GfxScene,
     last_cache_hits: &'a HashSet<u32>,
     pending: Vec<PendingBodySkin<'a>>,
@@ -538,6 +556,8 @@ fn pose_remote_bodies(
         ResMut<crate::anim::dobj_pose::PosedPlayerFrame>,
         Res<HostGfxScene>,
         Option<Res<FrameClock>>,
+        ResMut<crate::anim::minecraft_gear::PosedGearFrame>,
+        Res<crate::anim::minecraft_gear::McBodyGear>,
     ),
     mut roots: Query<
         (
@@ -555,7 +575,16 @@ fn pose_remote_bodies(
         ),
     >,
 ) {
-    let (cameras, lod_skinned, mut dobj_poses, mut posed_players, gfx, cg_clock) = dpvs;
+    let (
+        cameras,
+        lod_skinned,
+        mut dobj_poses,
+        mut posed_players,
+        gfx,
+        cg_clock,
+        mut posed_gear,
+        body_gear,
+    ) = dpvs;
     submit.clear();
     for (_, _, _, mut bolts, _) in &mut roots {
         *bolts = RemoteFxBolts::default();
@@ -666,6 +695,8 @@ fn pose_remote_bodies(
         submit: &mut submit,
         dobj_poses: &mut dobj_poses,
         posed_players: &mut posed_players,
+        posed_gear: &mut posed_gear,
+        body_gear: &body_gear,
         scene: &gfx.scene,
         last_cache_hits: &last_cache_hits,
         pending: Vec::new(),
@@ -788,7 +819,11 @@ impl<'a> RemotePoseFrame<'a> {
         let weapons = self.weapons;
         let world_weapons = self.world_weapons;
         let kits = self.kits;
-        let weapon = sample.weapon;
+        let weapon = self.body_gear.shown_weapon(
+            identity.client().map(|client| client.0),
+            is_corpse,
+            sample.weapon,
+        );
         let view_pitch_deg = match self.puppet {
             Some(puppet) if puppet.active && persist_key == puppet.client => puppet.pitch,
             _ => sample.view_pitch_deg,
@@ -811,6 +846,7 @@ impl<'a> RemotePoseFrame<'a> {
         let ramp = self.ramp;
         let dobj_poses = &mut *self.dobj_poses;
         let posed_players = &mut *self.posed_players;
+        let posed_gear = &mut *self.posed_gear;
         let world_gun_gap = &mut self.world_gun_gap;
         let result = (|| {
             let origin = transform.translation.to_array();
@@ -899,6 +935,13 @@ impl<'a> RemotePoseFrame<'a> {
                     transform,
                     posed_players,
                 )?;
+                crate::anim::minecraft_gear::publish_posed_gear(
+                    posed_gear,
+                    &kit.gear_bones,
+                    &world,
+                    identity.client().map(|client| client.0),
+                    transform.to_matrix(),
+                );
             }
             let hash = hash_skin_matrices(&skin);
             let pose_same = pose_hashes.remember_pose_hash(persist_key, hash);

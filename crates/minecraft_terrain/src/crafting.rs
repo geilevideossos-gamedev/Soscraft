@@ -410,7 +410,7 @@ pub fn kit(spec: &str) -> Vec<(String, u32)> {
             if id.is_empty() || count == 0 {
                 return None;
             }
-            let id = if id.split('+').next().unwrap_or(id).contains(':') {
+            let id = if id.split(['+', '@']).next().unwrap_or(id).contains(':') {
                 id.to_owned()
             } else {
                 format!("minecraft:{id}")
@@ -424,6 +424,7 @@ pub fn give_kit(inventory: &mut Inventory, spec: &str) -> usize {
     let mut given = 0;
     for (entry, mut count) in kit(spec) {
         let (id, enchantments) = kit_enchantments(&entry);
+        let (id, potion) = kit_potion(id);
         let max = u32::from(inventory.recipes.max_stack(id).max(1));
         while count > 0 {
             let Some(slot) = (HOTBAR..STORAGE).find(|&slot| inventory.slots[slot].is_none()) else {
@@ -431,7 +432,7 @@ pub fn give_kit(inventory: &mut Inventory, spec: &str) -> usize {
             };
             let size = count.min(max);
             count -= size;
-            inventory.slots[slot] = Some(kit_stack(&inventory.recipes, id, size as u8, &enchantments));
+            inventory.slots[slot] = Some(kit_potion_stack(&inventory.recipes, id, size as u8, &enchantments, potion.as_deref()));
             given += 1;
         }
     }
@@ -448,6 +449,35 @@ pub fn kit_stack(recipes: &RecipeBook, id: &str, size: u8, enchantments: &[(Stri
         stack.components = Some(serde_json::Value::Object(components));
     }
     stack
+}
+
+pub fn kit_potion_stack(recipes: &RecipeBook, id: &str, size: u8, enchantments: &[(String, i32)], potion: Option<&str>) -> ItemStack {
+    let mut stack = kit_stack(recipes, id, size, enchantments);
+    if let Some(potion) = potion {
+        let mut components = match stack.components.take() {
+            Some(serde_json::Value::Object(components)) => components,
+            _ => serde_json::Map::new(),
+        };
+        let dye = crate::special_models::dye_rgb(potion.strip_prefix("minecraft:").unwrap_or(potion)).filter(|_| recipes.item_in_tag("minecraft:dyeable", id));
+        match dye {
+            Some(rgb) => components.insert("minecraft:dyed_color".to_owned(), serde_json::json!(rgb)),
+            None => components.insert("minecraft:potion_contents".to_owned(), serde_json::json!({ "potion": potion })),
+        };
+        stack.components = Some(serde_json::Value::Object(components));
+    }
+    stack
+}
+
+pub fn kit_potion(id: &str) -> (&str, Option<String>) {
+    match id.split_once('@') {
+        Some((id, potion)) if !potion.trim().is_empty() => {
+            let potion = potion.trim();
+            let potion = if potion.contains(':') { potion.to_owned() } else { format!("minecraft:{potion}") };
+            (id.trim(), Some(potion))
+        }
+        Some((id, _)) => (id.trim(), None),
+        None => (id, None),
+    }
 }
 
 pub fn kit_enchantments(entry: &str) -> (&str, Vec<(String, i32)>) {
@@ -595,6 +625,32 @@ mod tests {
         assert_eq!((plain.count, plain.components), (64, None));
     }
 
+    #[test]
+    fn kit_gives_potion_contents() {
+        assert_eq!(kit("splash_potion@poison,lingering_potion@minecraft:strong_healing*2"), vec![("minecraft:splash_potion@poison".to_owned(), 1), ("minecraft:lingering_potion@minecraft:strong_healing".to_owned(), 2)]);
+        assert_eq!(kit_potion("minecraft:splash_potion@poison"), ("minecraft:splash_potion", Some("minecraft:poison".to_owned())));
+        assert_eq!(kit_potion("minecraft:splash_potion"), ("minecraft:splash_potion", None));
+        let mut inventory = Inventory::default();
+        assert_eq!(give_kit(&mut inventory, "splash_potion@poison,tipped_arrow@slowness+unbreaking,stone"), 3);
+        let potion = inventory.slots[HOTBAR].as_ref().unwrap();
+        assert_eq!(potion.id, "minecraft:splash_potion");
+        assert_eq!(potion.components, Some(json!({"minecraft:potion_contents": {"potion": "minecraft:poison"}})));
+        let arrow = inventory.slots[HOTBAR + 1].as_ref().unwrap();
+        assert_eq!(arrow.components, Some(json!({"minecraft:enchantments": {"minecraft:unbreaking": 1}, "minecraft:potion_contents": {"potion": "minecraft:slowness"}})));
+        assert_eq!(inventory.slots[HOTBAR + 2].as_ref().map(|s| s.components.is_none()), Some(true));
+    }
+
+    #[test]
+    fn kit_dyes_dyeable_items_with_a_dye_name() {
+        let mut inventory = inventory();
+        assert_eq!(give_kit(&mut inventory, "leather_chestplate@red,leather_boots@minecraft:blue+unbreaking,potion@red,leather_chestplate"), 4);
+        let components = |slot: usize| inventory.slots[HOTBAR + slot].as_ref().unwrap().components.clone();
+        assert_eq!(components(0), Some(json!({"minecraft:dyed_color": 0xB02E26})));
+        assert_eq!(components(1), Some(json!({"minecraft:enchantments": {"minecraft:unbreaking": 1}, "minecraft:dyed_color": 0x3C44AA})));
+        assert_eq!(components(2), Some(json!({"minecraft:potion_contents": {"potion": "minecraft:red"}})));
+        assert_eq!(components(3), None);
+    }
+
     fn write_jar(path: &Path, recipes: &[(&str, Value)], tags: &[(&str, Value)]) {
         let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
         let entries = recipes
@@ -707,6 +763,7 @@ mod tests {
                 json!({"values": ["minecraft:oak_log", "#minecraft:birch_logs"]}),
             ),
             ("birch_logs", json!({"values": ["minecraft:birch_log"]})),
+            ("dyeable", json!({"values": ["minecraft:leather_chestplate", "minecraft:leather_boots"]})),
             (
                 "planks",
                 json!({"values": ["minecraft:oak_planks", "minecraft:birch_planks"]}),

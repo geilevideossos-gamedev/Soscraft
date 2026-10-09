@@ -38,6 +38,20 @@ pub(crate) fn eat_transform(remaining: f32, partial: f32, duration: u32, arm: f3
         * Mat4::from_rotation_z((arm * lift * 30.0).to_radians())
 }
 
+pub(crate) fn trident_charge_transform(used: f32, arm: f32) -> Mat4 {
+    let held = used - 1.0;
+    let charge = (held / 10.0).min(1.0);
+    let shake = if charge > 0.1 { ((held - 0.1) * 1.3).sin() * (charge - 0.1) } else { 0.0 };
+    Mat4::from_translation(Vec3::new(arm * -0.5, 0.7, 0.1))
+        * Mat4::from_rotation_x((-55.0f32).to_radians())
+        * Mat4::from_rotation_y((arm * 35.3).to_radians())
+        * Mat4::from_rotation_z((arm * -9.785).to_radians())
+        * Mat4::from_translation(Vec3::new(0.0, shake * 0.004, 0.0))
+        * Mat4::from_translation(Vec3::new(0.0, 0.0, charge * 0.2))
+        * Mat4::from_scale(Vec3::new(1.0, 1.0, 1.0 + charge * 0.2))
+        * Mat4::from_rotation_y((arm * -45.0).to_radians())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,6 +93,23 @@ mod tests {
         for remaining in [31.0, 24.0, 9.0, 1.0] {
             let right = eat_transform(remaining, 0.4, 32, 1.0) * item_pose(Mat4::IDENTITY, 0.0, 0.0, 1.0);
             let left = eat_transform(remaining, 0.4, 32, -1.0) * item_pose(Mat4::IDENTITY, 0.0, 0.0, -1.0);
+            assert!(left.abs_diff_eq(flip * right * flip, 1e-5));
+        }
+    }
+
+    #[test]
+    fn a_charging_trident_is_raised_and_pulled_back_over_half_a_second() {
+        let start = trident_charge_transform(1.0, 1.0).transform_point3(Vec3::ZERO);
+        assert!((start - Vec3::new(-0.5, 0.7, 0.1)).length() < 1e-5, "{start}");
+        let unturn = Mat4::from_rotation_y(45.0f32.to_radians());
+        let back = |used: f32| (trident_charge_transform(used, 1.0) * unturn).transform_vector3(Vec3::Z).length();
+        assert!((back(1.0) - 1.0).abs() < 1e-5);
+        assert!((back(11.0) - 1.2).abs() < 1e-5);
+        assert!((back(40.0) - 1.2).abs() < 1e-5);
+        let flip = Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0));
+        for used in [1.0, 4.5, 12.0] {
+            let right = trident_charge_transform(used, 1.0);
+            let left = trident_charge_transform(used, -1.0);
             assert!(left.abs_diff_eq(flip * right * flip, 1e-5));
         }
     }

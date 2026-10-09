@@ -124,7 +124,9 @@ impl HostDObjPoseFrame {
 pub fn begin_dobj_pose_frame(
     mut dobj_poses: ResMut<HostDObjPoseFrame>,
     mut posed_players: ResMut<PosedPlayerFrame>,
+    mut posed_gear: ResMut<crate::anim::minecraft_gear::PosedGearFrame>,
 ) {
     dobj_poses.clear();
     posed_players.clear();
+    posed_gear.clear();
 }

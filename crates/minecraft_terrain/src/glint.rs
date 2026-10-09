@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::pack::{PackStack, ResourceId};
 
 pub const ITEM_GLINT_TEXTURE: &str = "minecraft:misc/enchanted_glint_item";
+pub const ARMOR_GLINT_TEXTURE: &str = "minecraft:misc/enchanted_glint_armor";
 
 pub const DEFAULT_GLINT: [&str; 7] = [
     "minecraft:enchanted_golden_apple",
@@ -41,7 +42,15 @@ fn flag(value: &Value) -> Option<bool> {
 }
 
 pub fn glint_texture(packs: &PackStack) -> Result<Option<RgbaImage>> {
-    let id = ResourceId::parse(ITEM_GLINT_TEXTURE)?;
+    texture_image(packs, ITEM_GLINT_TEXTURE)
+}
+
+pub fn armor_glint_texture(packs: &PackStack) -> Result<Option<RgbaImage>> {
+    texture_image(packs, ARMOR_GLINT_TEXTURE)
+}
+
+fn texture_image(packs: &PackStack, texture: &str) -> Result<Option<RgbaImage>> {
+    let id = ResourceId::parse(texture)?;
     packs
         .texture(&id)?
         .map(|bytes| {
@@ -144,5 +153,28 @@ mod tests {
         assert_eq!(glint.dimensions(), (128, 128));
         assert!(glint.pixels().all(|p| p[3] == 255));
         assert!(glint.pixels().any(|p| p[0] > 0));
+        let armor = armor_glint_texture(&packs).unwrap().unwrap();
+        assert_eq!(armor.dimensions(), (128, 128));
+        assert_ne!(armor, glint);
+    }
+
+    #[test]
+    fn the_armour_glint_comes_from_its_own_texture() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(
+            root.join("pack.mcmeta"),
+            r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#,
+        )
+        .unwrap();
+        let path = root.join("assets/minecraft/textures/misc/enchanted_glint_armor.png");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        RgbaImage::from_pixel(4, 4, image::Rgba([10, 0, 30, 255]))
+            .save(path)
+            .unwrap();
+        let packs = PackStack::open(vec![root.into()]).unwrap();
+        let armor = armor_glint_texture(&packs).unwrap().unwrap();
+        assert_eq!(armor.get_pixel(1, 1).0, [10, 0, 30, 255]);
+        assert!(glint_texture(&packs).unwrap().is_none());
     }
 }

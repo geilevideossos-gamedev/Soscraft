@@ -1,6 +1,7 @@
 use crate::death::{CombatTracker, DamageCause, DeathLine, FallLocation};
 use glam::DVec3;
 use minecraftoss_entities::inside_blocks::{BlockEffect, Hazard, block_effects};
+use minecraft_terrain::potions::PlayerPotion;
 use minecraftoss_entities::movement::Body;
 use minecraftoss_player::GameMode;
 use minecraftoss_player::World;
@@ -141,6 +142,8 @@ pub struct Survival {
     creative: bool,
     may_fly: bool,
     no_physics: bool,
+    impulse: Option<f64>,
+    impulse_grace: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -264,6 +267,10 @@ impl Survival {
 
     pub fn tick(&mut self, motion: &Motion) -> Breath {
         self.tick += 1;
+        self.impulse_grace = self.impulse_grace.saturating_sub(1);
+        if self.impulse_grace == 0 && (motion.on_ground || motion.in_water) {
+            self.impulse = None;
+        }
         self.in_water = motion.in_water;
         self.combat.tick(self.tick);
         let before = self.status.health;
@@ -370,10 +377,27 @@ impl Survival {
                 .is_some()
         {
             self.record(before, DamageCause::Fall, distance as f32);
+            self.impulse = None;
             damage
         } else {
             0
         }
+    }
+
+    pub fn start_impulse(&mut self, feet_y: f64) {
+        self.impulse = Some(feet_y);
+        self.impulse_grace = self.impulse_grace.max(crate::impulse::FALL_GRACE_TICKS);
+    }
+
+    pub fn impulse_fall(&mut self, distance: f64, feet_y: f64) -> f64 {
+        let Some(impact) = self.impulse else {
+            return distance;
+        };
+        let counted = distance.min(impact - feet_y);
+        if counted <= 0.0 || self.impulse_grace == 0 {
+            self.impulse = None;
+        }
+        counted.max(0.0)
     }
 
     fn record(&mut self, before: f32, cause: DamageCause, fall_distance: f32) {
@@ -586,6 +610,48 @@ impl Survival {
         landed
     }
 
+    pub fn take_potion(
+        &mut self,
+        potion: &PlayerPotion,
+        from: Option<[f64; 3]>,
+        mut random: impl FnMut() -> f32,
+    ) -> Option<PlayerSound> {
+        match potion {
+            PlayerPotion::Harm { amount, .. } => {
+                self.hurt_magic(*amount, from);
+                None
+            }
+            PlayerPotion::Extinguish => {
+                let burning = self.fire_ticks > 0;
+                self.fire_ticks = self.fire_ticks.min(0);
+                burning.then(|| {
+                    let (a, b) = (random(), random());
+                    PlayerSound {
+                        event: "minecraft:entity.generic.extinguish_fire",
+                        volume: 0.7,
+                        pitch: 1.6 + (a - b) * 0.4,
+                    }
+                })
+            }
+            other => {
+                let _ = minecraft_terrain::potions::apply_to_player(&mut self.status, other);
+                None
+            }
+        }
+    }
+
+    fn hurt_magic(&mut self, damage: f32, from: Option<[f64; 3]>) {
+        if self.invulnerable {
+            return;
+        }
+        let before = self.status.health;
+        let landed = self.status.hurt(damage, Armor::default(), 0.0).is_some();
+        self.record(before, DamageCause::Magic, 0.0);
+        if landed && from.is_some() {
+            self.source = from;
+        }
+    }
+
     pub fn kill(&mut self, cause: DamageCause) {
         let before = self.status.health;
         self.status.absorption = 0.0;
@@ -608,58 +674,11 @@ impl Survival {
         self.status.food.add_exhaustion(amount);
     }
 
-    pub fn drink_potion(&mut self, potion: &str) {
-        let name = potion.strip_prefix("minecraft:").unwrap_or(potion);
-        let (base, long, strong) = match name.split_once('_') {
-            Some(("long", base)) => (base, true, false),
-            Some(("strong", base)) => (base, false, true),
-            _ => (name, false, false),
-        };
-        let pick = |normal: u32, extended: u32, boosted: u32| {
-            if long {
-                extended
-            } else if strong {
-                boosted
-            } else {
-                normal
-            }
-        };
-        let level = u8::from(strong);
-        match base {
-            "fire_resistance" => {
-                self.status
-                    .add_effect(EffectKind::FireResistance, pick(3600, 9600, 3600), 0)
-            }
-            "slowness" => {
-                self.status
-                    .add_effect(EffectKind::Slowness, pick(1800, 4800, 400), level * 3)
-            }
-            "turtle_master" => {
-                let ticks = pick(400, 800, 400);
-                self.status
-                    .add_effect(EffectKind::Slowness, ticks, if strong { 5 } else { 3 });
-                self.status
-                    .add_effect(EffectKind::Resistance, ticks, if strong { 3 } else { 2 });
-            }
-            "healing" => self.status.heal(f32::from(4u8 << level)),
-            "harming" if !self.invulnerable => {
-                let before = self.status.health;
-                let _ = self
-                    .status
-                    .hurt(f32::from(6u8 << level), Armor::default(), 0.0);
-                self.record(before, DamageCause::Magic, 0.0);
-            }
-            "poison" => self
-                .status
-                .add_effect(EffectKind::Poison, pick(900, 1800, 432), level),
-            "regeneration" => {
-                self.status
-                    .add_effect(EffectKind::Regeneration, pick(900, 1800, 450), level)
-            }
-            "weakness" => self
-                .status
-                .add_effect(EffectKind::Weakness, pick(1800, 4800, 1800), 0),
-            _ => {}
+    pub fn drink_potion(&mut self, item: &str, components: Option<&serde_json::Value>) {
+        use minecraft_terrain::potions::{PotionContents, drink_hits, duration_scale};
+        let contents = PotionContents::from_components(components);
+        for potion in drink_hits(&contents, duration_scale(item, components)) {
+            self.take_potion(&potion, None, || 0.0);
         }
     }
 
@@ -768,13 +787,10 @@ impl Survival {
             }
             FoodUseTick::Finished { overflow } => {
                 let id = using.stack.id.clone();
-                let potion =
-                    minecraft_terrain::stations::potion_of(&using.stack).map(str::to_owned);
+                let components = using.stack.components.clone();
                 self.eating = None;
                 apply_consumed_food_effects(&id, &mut self.status, &mut random);
-                if let Some(potion) = potion {
-                    self.drink_potion(&potion);
-                }
+                self.drink_potion(&id, components.as_ref());
                 if id == minecraft_terrain::bottle::MILK_BUCKET {
                     self.clear_effects();
                 }
@@ -1137,6 +1153,57 @@ mod tests {
     }
 
     #[test]
+    fn a_wind_charge_jump_only_counts_the_fall_below_where_it_burst() {
+        let mut survival = fresh();
+        survival.start_impulse(64.0);
+        assert_eq!(survival.impulse_fall(9.0, 64.0), 0.0);
+        assert_eq!(survival.impulse_fall(9.0, 64.0), 9.0);
+        survival.start_impulse(64.0);
+        assert_eq!(survival.impulse_fall(12.0, 60.0), 4.0);
+        assert_eq!(survival.fall(4.0, None, false), 1);
+        assert_eq!(survival.impulse_fall(12.0, 60.0), 12.0);
+    }
+
+    #[test]
+    fn a_short_drop_after_a_wind_charge_keeps_the_grace_for_two_seconds() {
+        let mut survival = fresh();
+        survival.start_impulse(70.0);
+        assert_eq!(survival.impulse_fall(5.0, 68.0), 2.0);
+        assert_eq!(survival.fall(2.0, None, false), 0);
+        assert_eq!(survival.impulse_fall(10.0, 67.0), 3.0);
+        for _ in 0..40 {
+            survival.tick(&Motion {
+                feet: [0.5, 67.0, 0.5],
+                ..Motion::default()
+            });
+        }
+        assert_eq!(survival.impulse_fall(10.0, 66.0), 4.0);
+        assert_eq!(survival.impulse_fall(10.0, 66.0), 10.0);
+    }
+
+    #[test]
+    fn a_wind_charge_grace_ends_on_the_ground_or_in_water_once_two_seconds_are_up() {
+        let mut survival = fresh();
+        survival.start_impulse(64.0);
+        assert_eq!(survival.impulse_fall(1.0, 63.0), 1.0);
+        for _ in 0..39 {
+            survival.tick(&standing([0.5, 63.0, 0.5]));
+        }
+        assert_eq!(survival.impulse_fall(3.0, 60.0), 3.0);
+        survival.tick(&standing([0.5, 60.0, 0.5]));
+        assert_eq!(survival.impulse_fall(10.0, 70.0), 10.0);
+        survival.start_impulse(64.0);
+        for _ in 0..40 {
+            survival.tick(&Motion {
+                feet: [0.5, 50.0, 0.5],
+                in_water: true,
+                ..Motion::default()
+            });
+        }
+        assert_eq!(survival.impulse_fall(10.0, 70.0), 10.0);
+    }
+
+    #[test]
     fn falls_hurt_one_per_block_past_three() {
         assert_eq!(fall_damage(3.0, 1.0), 0);
         assert_eq!(fall_damage(3.9, 1.0), 0);
@@ -1222,15 +1289,20 @@ mod tests {
         assert!((fighter.status.food.exhaustion - 0.305).abs() < 1e-6);
     }
 
+    fn drink(survival: &mut Survival, potion: &str) {
+        let components = serde_json::json!({"minecraft:potion_contents": {"potion": potion}});
+        survival.drink_potion("minecraft:potion", Some(&components));
+    }
+
     #[test]
     fn potions_apply_their_vanilla_effects() {
         let mut survival = fresh();
         survival.status.health = 10.0;
-        survival.drink_potion("minecraft:strong_healing");
+        drink(&mut survival, "minecraft:strong_healing");
         assert!((survival.status.health - 18.0).abs() < 1e-6);
-        survival.drink_potion("minecraft:harming");
+        drink(&mut survival, "minecraft:harming");
         assert!((survival.status.health - 12.0).abs() < 1e-6);
-        survival.drink_potion("minecraft:long_poison");
+        drink(&mut survival, "minecraft:long_poison");
         assert_eq!(
             survival
                 .status
@@ -1238,7 +1310,7 @@ mod tests {
                 .map(|e| (e.duration, e.amplifier)),
             Some((1800, 0))
         );
-        survival.drink_potion("minecraft:strong_turtle_master");
+        drink(&mut survival, "minecraft:strong_turtle_master");
         assert_eq!(
             survival
                 .status
@@ -1253,7 +1325,7 @@ mod tests {
                 .map(|e| e.amplifier),
             Some(3)
         );
-        survival.drink_potion("minecraft:long_fire_resistance");
+        drink(&mut survival, "minecraft:long_fire_resistance");
         assert_eq!(
             survival
                 .status
@@ -1261,8 +1333,116 @@ mod tests {
                 .map(|e| e.duration),
             Some(9600)
         );
-        survival.drink_potion("minecraft:water");
-        survival.drink_potion("minecraft:swiftness");
+        drink(&mut survival, "minecraft:water");
+        drink(&mut survival, "minecraft:swiftness");
+    }
+
+    #[test]
+    fn a_drunk_potion_gives_its_custom_effects_and_every_strong_and_long_form() {
+        let mut survival = fresh();
+        let components = serde_json::json!({"minecraft:potion_contents": {
+            "potion": "minecraft:strong_poison",
+            "custom_effects": [{"id": "minecraft:regeneration", "amplifier": 1, "duration": 100}]
+        }});
+        survival.drink_potion("minecraft:potion", Some(&components));
+        assert_eq!(
+            survival
+                .status
+                .effect(EffectKind::Poison)
+                .map(|e| (e.duration, e.amplifier)),
+            Some((432, 1))
+        );
+        assert_eq!(
+            survival
+                .status
+                .effect(EffectKind::Regeneration)
+                .map(|e| (e.duration, e.amplifier)),
+            Some((100, 1))
+        );
+        drink(&mut survival, "minecraft:long_weakness");
+        assert_eq!(
+            survival.status.effect(EffectKind::Weakness).map(|e| e.duration),
+            Some(4800)
+        );
+        drink(&mut survival, "minecraft:long_turtle_master");
+        assert_eq!(
+            survival
+                .status
+                .effect(EffectKind::Resistance)
+                .map(|e| (e.duration, e.amplifier)),
+            Some((800, 2))
+        );
+    }
+
+    #[test]
+    fn a_splash_gives_its_effect_heals_and_harms_past_armour() {
+        use minecraft_terrain::potions::PotionEffect;
+        let mut survival = fresh();
+        survival.status.health = 10.0;
+        let poison = PlayerPotion::Effect(PotionEffect::new("minecraft:poison", 450, 1));
+        assert_eq!(survival.take_potion(&poison, None, || 0.5), None);
+        assert_eq!(
+            survival
+                .status
+                .effect(EffectKind::Poison)
+                .map(|e| (e.duration, e.amplifier)),
+            Some((450, 1))
+        );
+        survival.take_potion(&PlayerPotion::Heal(4.0), None, || 0.5);
+        assert!((survival.status.health - 14.0).abs() < 1e-6);
+        let exhaustion = survival.status.food.exhaustion;
+        let harm = PlayerPotion::Harm {
+            amount: 6.0,
+            by: Some(0),
+        };
+        survival.take_potion(&harm, Some([1.0, 64.0, 2.0]), || 0.5);
+        assert!((survival.status.health - 8.0).abs() < 1e-6);
+        assert_eq!(survival.status.food.exhaustion, exhaustion);
+        assert_eq!(survival.source, Some([1.0, 64.0, 2.0]));
+        assert_eq!(
+            survival.combat.death_line(&std::collections::HashMap::new(), |_| false).message,
+            "death.attack.magic"
+        );
+    }
+
+    #[test]
+    fn a_creative_player_takes_splash_effects_but_no_harm() {
+        use minecraft_terrain::potions::PotionEffect;
+        let mut survival = fresh();
+        survival.set_game_mode(&minecraft_terrain::game_mode::PlayerMode::new(GameMode::Creative));
+        let harm = PlayerPotion::Harm {
+            amount: 12.0,
+            by: None,
+        };
+        survival.take_potion(&harm, None, || 0.5);
+        assert_eq!(survival.status.health, 20.0);
+        let slow = PlayerPotion::Effect(PotionEffect::new("minecraft:slowness", 100, 0));
+        survival.take_potion(&slow, None, || 0.5);
+        assert!(survival.status.effect(EffectKind::Slowness).is_some());
+    }
+
+    #[test]
+    fn splash_water_puts_out_a_burning_player_with_the_hiss() {
+        let mut survival = fresh();
+        assert_eq!(
+            survival.take_potion(&PlayerPotion::Extinguish, None, || 0.5),
+            None
+        );
+        survival.fire_ticks = 120;
+        assert!(survival.vitals().on_fire);
+        let sound = survival.take_potion(&PlayerPotion::Extinguish, None, || 0.5);
+        assert_eq!(
+            sound,
+            Some(PlayerSound {
+                event: "minecraft:entity.generic.extinguish_fire",
+                volume: 0.7,
+                pitch: 1.6
+            })
+        );
+        assert!(!survival.vitals().on_fire);
+        survival.fire_ticks = -20;
+        survival.take_potion(&PlayerPotion::Extinguish, None, || 0.5);
+        assert_eq!(survival.fire_ticks, -20);
     }
 
     #[test]
@@ -2130,7 +2310,7 @@ mod tests {
     fn a_potion_of_harming_kills_by_magic_and_a_respawn_forgets_it() {
         let mut survival = fresh();
         survival.status.health = 5.0;
-        survival.drink_potion("minecraft:harming");
+        drink(&mut survival, "minecraft:harming");
         assert_eq!(survival.status.health, 0.0);
         assert_eq!(
             death(&survival),
@@ -2162,8 +2342,8 @@ mod tests {
         let mut survival = creative();
         assert!(!survival.hurt(6.0, Armor::default(), Some([1.0, 2.0, 3.0]), DamageCause::Generic));
         assert_eq!(survival.fall(30.0, None, false), 0);
-        survival.drink_potion("minecraft:harming");
-        survival.drink_potion("minecraft:strong_poison");
+        drink(&mut survival, "minecraft:harming");
+        drink(&mut survival, "minecraft:strong_poison");
         let in_lava = Motion {
             in_lava: true,
             ..standing_in([0.5, 1.0, 0.5])

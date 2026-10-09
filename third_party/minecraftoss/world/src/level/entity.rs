@@ -1469,8 +1469,14 @@ impl Level<'_> {
     /// first. Each joins a matching orb within half a block whose ID falls
     /// in the group the level random picks, or is thrown up and out as a
     /// new orb.
-    pub fn award_experience(&mut self, pos: [f64; 3], mut amount: i32) {
+    pub fn award_experience(&mut self, pos: [f64; 3], amount: i32) {
+        self.award_experience_toward(pos, [0.0; 3], amount);
+    }
+
+    pub fn award_experience_toward(&mut self, pos: [f64; 3], direction: [f64; 3], mut amount: i32) {
         use minecraftoss_core::random::RandomSource;
+        let unit = normalize(direction);
+        let directed = direction.iter().map(|v| v * v).sum::<f64>() > 0.0;
         while amount > 0 {
             let value = orb_value(amount);
             amount -= value;
@@ -1491,8 +1497,13 @@ impl Level<'_> {
             let dx = (self.entity_random.next_f64() * 0.2 - 0.1) * 2.0;
             let dy = self.entity_random.next_f64() * 0.2 * 2.0;
             let dz = (self.entity_random.next_f64() * 0.2 - 0.1) * 2.0;
-            let mut orb = Entity::experience_orb(pos, value);
-            orb.delta = [dx, dy, dz];
+            let mut delta = [dx, dy, dz];
+            if directed && direction[0] * dx + direction[1] * dy + direction[2] * dz < 0.0 {
+                delta = [-dx, -dy, -dz];
+            }
+            let at = [pos[0] + unit[0] * 0.25, pos[1] + unit[1] * 0.25, pos[2] + unit[2] * 0.25];
+            let mut orb = Entity::experience_orb(at, value);
+            orb.delta = delta;
             if !self.no_block_collision(&orb.bb) {
                 self.unsupported.push("experience orb placed inside blocks".to_owned());
             }
