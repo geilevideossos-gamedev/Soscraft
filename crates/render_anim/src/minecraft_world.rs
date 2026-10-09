@@ -70,6 +70,7 @@ pub struct MinecraftWorldView {
     /// draws them (vanilla's fixed 70 degree hand field of view).
     pub hand: (Vec<u8>, Vec<u32>),
     pub hand_clip: [f32; 16],
+    pub end_look: crate::minecraft_end_look::EndFrame,
 }
 
 struct Loaded {
@@ -80,6 +81,7 @@ struct Loaded {
     crack_texture: Arc<image::RgbaImage>,
     glint_texture: Option<Arc<image::RgbaImage>>,
     armor_glint_texture: Option<Arc<image::RgbaImage>>,
+    end_look: Arc<crate::minecraft_end_look::EndLook>,
 }
 
 #[derive(Default)]
@@ -267,6 +269,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
     let crack_texture = Arc::new(crate::minecraft_mining::crack_strip(&packs).map_err(|e| e.to_string())?);
     let glint_texture = minecraft_terrain::glint::glint_texture(&packs).ok().flatten().map(Arc::new);
     let armor_glint_texture = minecraft_terrain::glint::armor_glint_texture(&packs).ok().flatten().map(Arc::new);
+    let end_look = Arc::new(crate::minecraft_end_look::EndLook::load(&packs));
     let loaded = Loaded {
         packs,
         atlas: build.atlas,
@@ -275,6 +278,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         crack_texture,
         glint_texture,
         armor_glint_texture,
+        end_look,
     };
     let mut day = DayCycle::default();
     if let Some(ticks) = opened.day_ticks {
@@ -488,6 +492,7 @@ fn update(
                 view.crack_texture = Some(world.crack_texture.clone());
                 view.glint_texture = world.glint_texture.clone();
                 view.armor_glint_texture = world.armor_glint_texture.clone();
+                view.end_look.look = Some(world.end_look.clone());
                 runtime.mining = Default::default();
                 runtime.minimap = Default::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
@@ -2224,6 +2229,7 @@ fn update(
             sky.block_factor,
         ],
     ];
+    view.end_look.portal_time = crate::minecraft_end_look::portal_time(game_time);
 
     // Clouds, rebuilt when the camera crosses a cloud cell.
     if let Some(mask) = &world.cloud_mask {
@@ -2808,6 +2814,7 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
         view.crack_texture = None;
         view.glint_texture = None;
         view.armor_glint_texture = None;
+        view.end_look = Default::default();
         view.particles = Default::default();
         view.puppet_gear = Default::default();
         view.entity_meshes = Default::default();

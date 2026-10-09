@@ -270,6 +270,9 @@ pub(crate) fn textures() -> Result<Vec<ResourceId>> {
 }
 
 pub(crate) fn block_model(block: &Block) -> Result<Option<ResolvedModel>> {
+    if let Some(model) = crate::end_portal_look::block_model(block) {
+        return Ok(Some(model));
+    }
     let path = block.id.path.as_str();
     let property = |key: &str| block.properties.get(key).map(String::as_str);
     let mut elements = Vec::new();

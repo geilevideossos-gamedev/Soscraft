@@ -110,3 +110,29 @@ Previous commit: bbc88f0c
   2. Optional: type `/locate biome minecraft:basalt_deltas` or `minecraft:soul_sand_valley` and walk there: the fog and the sky turn grey or blue-green as you enter. **Screenshot 2.**
   3. Quit, set `IW4L_MINECRAFT_DIMENSION=overworld` and start again: in the overworld the sun or moon, the stars at night and the clouds are back. **Screenshot 3.** Remove the line afterwards.
 - **Kit:** none needed.
+
+### 5. Minecraft end portals and gateways are drawn (E3-3)
+
+Previous commit: 1597f7a8
+
+- **Defect:** end portal and end gateway blocks have no block model (only a particle texture); vanilla draws them with block entity renderers, so they were invisible.
+- **Changed:**
+  - New `minecraft_terrain/src/end_portal_look.rs`: the geometry of `TheEndPortalRenderer` and `TheEndGatewayRenderer` as a block model. An end portal is its top and bottom face at heights 0.75 and 0.375, always drawn (`TheEndPortalBlockEntity.shouldRenderFace` is true for both Y faces, whatever is next to it). An end gateway is a full cube whose faces hide like any block's against an occluding neighbour (`TheEndGatewayBlockEntity.shouldRenderFace` is `Block.shouldRenderFace`). Their faces carry a marker vertex alpha (0.25 for the portal, 0.125 for the gateway), well apart from the 1.0 of blocks and the 0.5 of entity sheets.
+  - `special_models.rs` and `mesh.rs`: one call line each (the model, and the marker alpha in `entity_face_alpha`, which the baked and the plain mesher both use). The faces stay in the opaque section pass, as vanilla's end portal pipelines don't blend.
+  - `render_gpu/src/drawsurf/minecraft_world.rs` (the terrain shader): `rendertype_end_portal` ported. The section vertex shader passes `projection_from_position(gl_Position)`; a fragment with the marker alpha draws `end_sky.png` across the screen tinted by `COLORS[0]`, then adds 15 layers (16 for a gateway) of `end_portal.png`, each scaled, turned and drifting with `GameTime` as `end_portal_layer` does, then the fog as `apply_fog`. New bindings 8 to 10: the two textures and a repeating nearest sampler; the colours and `GameTime` ride in the terrain uniform.
+  - New `render_anim/src/minecraft_end_look.rs`: loads `environment/end_sky`, `entity/end_portal/end_portal` and the 16 `COLORS` of `shaders/core/rendertype_end_portal.fsh` from the resource packs at runtime (nothing of Mojang's is committed), and `portal_time` (`GameTime` is the game time modulo 24000 over 24000). `minecraft_world.rs` gets call lines only: load, hand to the view, the time each frame, clear on stop. `render/src/extract.rs` converts the two images once per world.
+- **Checked with javap (26.3):** `TheEndPortalRenderer` (`Transformation` translation 0, 0.375, 0 and scale 1, 0.375, 1 over the unit cube), `AbstractEndPortalRenderer` (`END_SKY_LOCATION`, `END_PORTAL_LOCATION`, the faces from `facesToShow`), `TheEndPortalBlockEntity.shouldRenderFace` (axis Y), `TheEndGatewayBlockEntity.shouldRenderFace` (`Block.shouldRenderFace`), `RenderPipelines.END_PORTAL` (`PORTAL_LAYERS` 15) and `END_GATEWAY` (16), both with the default colour target and depth state.
+- **Tests:** `minecraft_terrain` `end_portal_look`: `an_end_portal_shows_its_top_and_bottom_at_vanilla_heights`, `an_end_gateway_is_a_cube_whose_covered_faces_are_hidden` (both through the plain and the baked mesher), `the_marker_alphas_stay_apart_from_every_other_section_alpha`, `other_blocks_keep_their_own_models`. `render_gpu`: `end_portal_faces_are_told_apart_by_their_vertex_alpha`, `the_end_textures_and_portal_uniforms_match_in_rust_and_wgsl`. `render_anim` `minecraft_end_look`: `the_portal_colours_fill_sixteen_slots_and_pad_with_black`, `the_portal_time_is_the_game_time_shader_uniform`, `the_vanilla_shader_lists_sixteen_portal_colours` (with `MINECRAFTOSS_ROOT`).
+- **Decisions:**
+  - `GameTime` comes from the overworld day clock (`globals.day.ticks`), as the End loading screen and the clouds already use it; vanilla uses the level's game time, which only differs after `/time set`.
+  - Not done: the gateway's beacon beam while it spawns (its first 200 ticks) or cools down (40 ticks after a teleport), from `TheEndGatewayRenderer` with `end_gateway_beam.png`. It belongs with the gateways themselves (X6).
+- **Test steps:**
+  1. Keep `IW4L_MINECRAFT_WORLD=x1btest` (no `IW4L_MINECRAFT_DIMENSION` line) and the kit below. On flat ground, build the ring of entry 2 (12 frames facing inward around a cleared 3x3) and fill it with eyes. The 3x3 inside shows the dark starfield, slightly below the frames' tops. **Screenshot 4.**
+  2. Walk around it and look at it from different heights: the speckles stay fixed on the screen rather than on the blocks, and drift slowly. Far away it fades into the fog like the ground around it. **Screenshot 5.**
+  3. Dig down beside the ring and look up at the portal from under it: its bottom face shows the same starfield. **Screenshot 6.**
+  4. Type `/setblock ~3 ~1 ~ minecraft:end_gateway`: a floating cube with the same starfield on all six sides, a little more blue. **Screenshot 7.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:diamond_shovel+efficiency=5,minecraft:diamond_pickaxe+efficiency=5,minecraft:cobblestone*64
+```

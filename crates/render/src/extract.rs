@@ -931,6 +931,32 @@ pub fn extract_model_lighting_tiles(
     );
 }
 
+fn minecraft_end_look_images(
+    end: &render_anim::minecraft_end_look::EndFrame,
+    held: &mut Option<(usize, [Option<std::sync::Arc<render_gpu::MinecraftAtlasImage>>; 2])>,
+) -> [Option<std::sync::Arc<render_gpu::MinecraftAtlasImage>>; 2] {
+    let Some(look) = end.look.as_ref() else {
+        return [None, None];
+    };
+    let key = std::sync::Arc::as_ptr(look) as usize;
+    if let Some((old, images)) = held.as_ref()
+        && *old == key
+    {
+        return images.clone();
+    }
+    let images = [&look.end_sky, &look.end_portal].map(|image| {
+        image.as_ref().map(|image| {
+            std::sync::Arc::new(render_gpu::MinecraftAtlasImage {
+                width: image.width(),
+                height: image.height(),
+                levels: vec![image.as_raw().clone()],
+            })
+        })
+    });
+    *held = Some((key, images.clone()));
+    images
+}
+
 /// Moves the Minecraft world's new section meshes and state to the render
 /// world, converting the atlas once per world.
 #[allow(clippy::too_many_arguments)]
@@ -943,6 +969,7 @@ pub fn extract_minecraft_world(
     mut cracks_of: Local<Option<(usize, std::sync::Arc<render_gpu::MinecraftAtlasImage>)>>,
     mut glint_of: Local<Option<(usize, std::sync::Arc<render_gpu::MinecraftAtlasImage>)>>,
     mut armor_glint_of: Local<Option<(usize, std::sync::Arc<render_gpu::MinecraftAtlasImage>)>>,
+    mut end_look_of: Local<Option<(usize, [Option<std::sync::Arc<render_gpu::MinecraftAtlasImage>>; 2])>>,
 ) {
     let throwing = main_world
         .get_resource::<net::LocalPresentClient>()
@@ -1065,6 +1092,11 @@ pub fn extract_minecraft_world(
         *celestial_of = Some((key, converted.clone()));
         converted
     });
+    let [end_sky, end_portal] = minecraft_end_look_images(&view.end_look, &mut end_look_of);
+    frame.end_sky_texture = end_sky;
+    frame.end_portal_texture = end_portal;
+    frame.end_portal_colors = view.end_look.look.as_ref().map_or([[0.0; 4]; 16], |look| look.portal_colors);
+    frame.end_portal_time = view.end_look.portal_time;
     frame.clouds = view.clouds.as_ref().map(|clouds| {
         let key = std::sync::Arc::as_ptr(clouds) as usize;
         if let Some((held, converted)) = clouds_of.as_ref()

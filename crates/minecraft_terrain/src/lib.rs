@@ -14,6 +14,7 @@ pub mod creative_tabs;
 pub mod creative_variants;
 pub mod day_cycle;
 pub mod dormant;
+pub mod end_portal_look;
 pub mod ender_eye;
 pub mod environment;
 pub(crate) mod face_culling;
