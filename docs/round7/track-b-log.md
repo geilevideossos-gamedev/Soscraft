@@ -237,11 +237,26 @@ IW4L_MINECRAFT_KIT=shulker_box,red_shulker_box*4
 
 ### 2. Minecraft chest model takes a lid openness
 
-Commit: (next entry)
+Commit: b36fe90
 
 - **Changed:** `model.rs`: new `opened_chest_model(block, openness)`: the closed chest model (single, left or right half, plain, trapped, ender or copper, any facing) with the lid and the lock turned about the hinge at (0, 9, 1) px by `-(1 - (1 - o)^3) * pi/2`, as `ChestRenderer.submit` eases the openness and `ChestModel.setupAnim` sets `lid.xRot = lock.xRot` (26.3, javap: lid box (1, 0, 0) 14x5x14 and lock (7, -2, 14) 2x4x1, both at offset (0, 9, 1)). At openness 0 it is the closed model, unrotated, so the section mesh and the frame pass draw the same vertices.
 - **Tests:** `a_chest_lid_swings_up_about_its_back_hinge` (0 is the closed model; at 1 the body stays, the lid stands up behind the hinge, y 9 to 23 and z -4 to 1 px for a south chest, the lock on top, a north ender chest mirrored; at 0.5 the eased lid is at 78.75 degrees).
 - **Test steps:** nothing changes in game yet.
+- **Kit:** none.
+
+### 3. Minecraft block entity lids tick open and shut like vanilla
+
+Commit: (next entry)
+
+- **Changed:** new `lids.rs` (client side, one per level, keyed by `BlockPos`):
+  - `LidKind::of(block)`: shulker boxes, and chests, trapped chests, ender chests and copper chests (waxed too). `lid_model(block, progress)` gives entry 1's or entry 2's model.
+  - `ShulkerLid` is `ShulkerBoxBlockEntity` (26.3, javap): `set_open_count` is `triggerEvent(1, count)` (0 closes, 1 opens, any other count changes nothing), `tick` is `updateAnimation` (0.1 a tick, so 10 ticks each way, f32 like vanilla), `progress(partial)` is `getProgress`.
+  - `ChestLid` is `ChestLidController` (`shouldBeOpen(count > 0)`, `tickLid` 0.1 a tick clamped, `getOpenness`).
+  - `Lids` drives them from block events, `block_event(scene, pos, SET_OPEN_COUNT, count)` (`Level.blockEvent(pos, block, 1, count)`), and tracks each lid's cell for the terrain: a lid that starts to open asks for its cell to be taken out of its section (`take_apart_changes` gives `(pos, true)`), and only moves once `settle(scene, cell_settled)` saw that section rebuilt, so the static lid never shows inside a rising one; a lid back at rest asks for its cell back (`(pos, false)`) and is drawn until the section has it again. A box broken or replaced while open gives its cell back and draws nothing. `posed(scene, partial)` lists every lid to draw this frame; the two halves of a double chest both swing as the wider open one (`ChestBlock.opennessCombiner`, the max). `lid_closed(pos)` is the shulker's `AnimationStatus.CLOSED` for `ShulkerBoxBlock.canOpen`.
+  - `ApartCells` is the terrain's side: `set(pos, apart)` names the section to rebuild once per change and `in_section` lists a section's apart cells for its compile job.
+- **Tests:** `a_shulker_lid_opens_in_ten_ticks_and_closes_in_ten`, `only_counts_of_zero_and_one_move_a_shulker_lid`, `a_lid_half_a_tick_on_is_halfway_between_its_ticks`, `a_chest_lid_clamps_and_turns_back_from_where_it_is`, `a_new_lid_waits_for_its_section_before_it_moves`, `a_closed_lid_goes_back_to_its_section_once`, `a_lid_reopened_while_closing_turns_back_without_a_jump`, `a_lid_shut_before_its_section_returned_it_is_taken_apart_again`, `a_broken_box_leaves_no_lid_and_gives_its_cell_back`, `a_count_that_opens_nothing_makes_no_lid`, `both_halves_of_a_double_chest_swing_as_the_wider_open_one`, `every_chest_and_shulker_box_has_a_lid`, `apart_cells_name_their_section_once_per_change`.
+- **Decisions:** a lid waits for its section before it moves (a frame or two late) rather than showing two lids; a lid only goes back to its section one tick after it shut, when it is drawn shut at every partial tick. The lids are client state like vanilla's client block entities; the server keeps the openers (entry 5). Vanilla does not save lid progress, so neither does this.
+- **Test steps:** nothing changes in game yet (After the split, items 15 to 17).
 - **Kit:** none.
 
 ## After the split
