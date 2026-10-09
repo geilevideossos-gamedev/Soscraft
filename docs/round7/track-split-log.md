@@ -532,3 +532,24 @@ C2 is commit `b6a79ab`.
 - **Decisions:**
   - Like C2, `tick_containers` is a free function taking the level's parts (`containers`, `entities`, `terrain`) instead of a `Level` method, so `update()` can call it while it holds the level split into those parts.
   - The property writes are computed in a private `prop_writes(scene, props)`, so they can be tested without a level server; `tick_containers` does the same work in the same order as the old block (all ticks, then the writes from all props).
+
+## C4. Minecraft chunk streaming runs from the level
+
+C3 is commit `e745029`.
+
+- **What changed:**
+  - `minecraft_survival/src/level.rs` gains `stream_tick(terrain, entities, block) -> (loaded, forgotten)`. It runs the stream's server tick around a block, hands each loaded chunk to the level server (`load_chunk`) and tells it which chunks were forgotten (`unload_chunk`), then returns both lists. The file stays comment-free and rustfmt-clean.
+  - `render_anim/src/minecraft_world.rs`: `update()` (around the player's feet) and `stream_around_spawn` (around the spawn while no player is presented yet) call `stream_tick` instead of `server_tick`. `apply_streamed` loses its `entities` parameter and keeps the MW2 half: the collision shape ids of every loaded chunk, `sim::voxel::set_chunk` and `remove_chunk`.
+- **Tests added:** none. `stream_tick` needs a streamed world and a level server, which a unit test can't build without the vanilla data. Totals: `minecraft_survival` 131, `render_anim` 34; the moved total stays 153.
+- **Checks:** `check -p launcher --locked` (no new warning), `test -p minecraft_survival --locked`, `test -p render_anim --locked`; the staged `level.rs` passes `rustfmt --check --edition 2024` with empty output.
+- **Owner test** (chunks, their collision and their mobs must stream exactly as before):
+  1. Load a Minecraft match with the regression kit. The loading screen lifts once the ground around the spawn is there, and you land on solid ground.
+  2. Spawn two cows from the eggs next to the spawn.
+  3. Type `/gamemode creative` and fly about 300 blocks in a straight line. New terrain streams in ahead. Land now and then: the ground holds you, and water and lava behave as liquids.
+  4. Fly back to the spawn: the cows are still where you left them (their chunks unloaded and loaded again).
+  5. Type `/gamemode survival`, then die (`/kill`) and respawn: the world around the spawn is there at once and holds you.
+- **Kit:** `minecraft:cow_spawn_egg` x2 (in the regression kit).
+- **Not done here:** nothing.
+- **Decisions:**
+  - Like C2 and C3, `stream_tick` is a free function on the level's parts (`terrain` and the level's `Option<Entities>`), so `update()` and `stream_around_spawn` keep their bindings.
+  - The level server now gets all `load_chunk` commands of a tick before the adapter fills the MW2 collision of those chunks, where the two used to alternate per chunk. As the plan says, the entity commands and the voxel updates don't depend on each other. Each kind keeps its own order: loads before unloads, chunks in stream order.

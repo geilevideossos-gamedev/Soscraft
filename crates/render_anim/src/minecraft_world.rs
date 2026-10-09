@@ -659,8 +659,8 @@ fn update(
         feet[1].floor() as i32,
         feet[2].floor() as i32,
     );
-    let streamed = terrain.stream.server_tick(block, &mut terrain.scene);
-    apply_streamed(&globals.registries, shapes, shape_ids, entities, streamed);
+    let streamed = minecraft_survival::level::stream_tick(terrain, entities, block);
+    apply_streamed(&globals.registries, shapes, shape_ids, streamed);
 
     // Minecraft's yaw: 0 facing +Z (map -Y), turning towards -X.
     let mc_yaw = minecraft_yaw(ps.viewangles[1]);
@@ -2066,7 +2066,6 @@ fn apply_streamed(
     registries: &Registries,
     shapes: &mut HashMap<BlockStateId, u16>,
     shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
-    entities: &mut Option<minecraft_survival::entities::Entities>,
     (loaded, forgotten): (Vec<Arc<minecraftoss_core::Chunk>>, Vec<minecraftoss_core::ChunkPos>),
 ) {
     for chunk in loaded {
@@ -2089,9 +2088,6 @@ fn apply_streamed(
                 }
             }
         }
-        if let Some(entities) = entities.as_mut() {
-            entities.load_chunk(&chunk);
-        }
         sim::voxel::set_chunk(
             chunk.pos.x,
             chunk.pos.z,
@@ -2104,9 +2100,6 @@ fn apply_streamed(
     }
     for pos in forgotten {
         sim::voxel::remove_chunk(pos.x, pos.z);
-        if let Some(entities) = entities.as_mut() {
-            entities.unload_chunk(pos);
-        }
     }
 }
 
@@ -2126,8 +2119,8 @@ fn stream_around_spawn(
 ) {
     let [x, y, z] = view.origin;
     let spawn_block = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
-    let streamed = terrain.stream.server_tick(spawn_block, &mut terrain.scene);
-    apply_streamed(registries, shapes, shape_ids, entities, streamed);
+    let streamed = minecraft_survival::level::stream_tick(terrain, entities, spawn_block);
+    apply_streamed(registries, shapes, shape_ids, streamed);
     let camera = CullCamera {
         position: glam::DVec3::new(x, y + crate::minecraft_spawn_gate::SPAWN_EYE_HEIGHT, z),
         forward: glam::Vec3::Z,

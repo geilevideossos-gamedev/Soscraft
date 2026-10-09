@@ -1,9 +1,12 @@
+use std::sync::Arc;
+
 use minecraft_net::Dimension;
 use minecraft_terrain::bucket::Sound;
 use minecraft_terrain::containers::Containers;
 use minecraft_terrain::environment::DimensionEnvironment;
 use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
 use minecraft_terrain::terrain::TerrainStream;
+use minecraftoss_core::{Chunk, ChunkPos};
 use minecraftoss_player::inventory::Inventory;
 
 use crate::entities::{Entities, SentItemUse};
@@ -86,6 +89,23 @@ pub fn finish_item_use(
         }
     }
     heard
+}
+
+pub fn stream_tick(
+    terrain: &mut Terrain,
+    entities: &mut Option<Entities>,
+    block: (i32, i32, i32),
+) -> (Vec<Arc<Chunk>>, Vec<ChunkPos>) {
+    let (loaded, forgotten) = terrain.stream.server_tick(block, &mut terrain.scene);
+    if let Some(entities) = entities.as_mut() {
+        for chunk in &loaded {
+            entities.load_chunk(chunk);
+        }
+        for &pos in &forgotten {
+            entities.unload_chunk(pos);
+        }
+    }
+    (loaded, forgotten)
 }
 
 pub fn tick_containers(
