@@ -1309,6 +1309,7 @@ fn update(
                         finish_item_use(entities, inventory, sounds.as_mut(), &world.packs, origin, sent, game_mode.consumes_items());
                     }
                     minecraft_terrain::bucket::Change::Server(pos, action) => entities.item_on_block(pos, action, sent),
+                    minecraft_terrain::bucket::Change::ThrowEye(throw) => entities.throw_eye(throw, sent),
                 }
                 HandUse::Consumed
             } else if let Some(stack) = held.as_ref()

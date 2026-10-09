@@ -345,3 +345,75 @@ Previous commit: 849a5103
 ```
 IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*24,minecraft:ender_eye*32,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_shovel+efficiency=5,minecraft:cobblestone*64,minecraft:oak_sapling*4,minecraft:bone_meal*32,minecraft:dirt*8
 ```
+
+## Second run, group eye-throw: eyes of ender find the stronghold
+
+### 14. Minecraft eyes of ender fly toward the nearest stronghold like vanilla (E3 eye throw, B1-8)
+
+Previous commit: d49f75d2
+
+- **Changed:**
+  - New `minecraft_terrain/src/eye_of_ender.rs`:
+    - `EyeOfEnder` is vanilla's entity. `launch` puts it at the middle of the thrower's body (`getY(0.5)`) and calls `signal_to`: a target more than 12 blocks away horizontally becomes the point 12 blocks toward it and 8 up, `life` goes back to 0, and the eye will drop when `nextInt(5) > 0`. `tick` is the server half of `EyeOfEnder.tick`: the new position is the old one plus the motion, the motion is steered (`steer`, vanilla's `updateDeltaMovement`: the horizontal speed eases toward the distance by 0.0025, the vertical speed by 0.015 toward +1 or -1, both times 0.8 within a block), and the eye ends on its 81st tick.
+    - `Eyes` holds the level's eyes on the server thread. `locate` is `findNearestMapStructure(#eye_of_ender_located, blockPosition, 100)`: the tag is read from the data pack once per level, and the search is `/locate`'s own (`locate::nearest_structure`: rings by chunk centre, aiming at the ring chunk's corner at y 0). `launch` adds the eye and plays `entity.ender_eye.launch` at the thrower's feet (volume 1, pitch `lerp(r, 0.33, 0.5)`). `tick` plays `entity.ender_eye.death` where an eye ends (volume 1, pitch 1). The eye then either drops as one ender eye item (`ItemEntity(level, x, y, z, stack)`: launch `(r·0.2−0.1, 0.2, r·0.2−0.1)`, no pickup delay, the thrown stack's components kept) or records level event 2003 at its block. `snapshot` sends the eyes and the breaks.
+    - Client side: `EyeTrails` keeps the eyes of the last snapshot. Every client tick each eye leaves one portal particle half a block below and a quarter step back, with ±0.3 jitter and its motion as the particle's motion (vanilla's `spawnParticles`). A break (event 2003) gives 8 ender eye crumbs (`gaussian·0.15, r·0.2, gaussian·0.15`) and a ring of 80 portal particles 5 blocks out (motions −5 and −7 toward the centre). `append_eyes` draws the eye as a camera-facing ender eye sprite at full brightness, the size of a snowball (`ThrownItemRenderer(ctx, 1.0, true)`), hidden for its first 2 ticks within 3.5 blocks of the camera.
+  - `minecraft_terrain/src/ender_eye.rs`: `eye_use` now also does `EnderEyeItem.use`. An eye aimed at an empty frame still fills it, and an eye aimed at a filled frame passes (vanilla's PASS). Anywhere else it asks the server to throw the eye (`Change::ThrowEye(EyeThrow { feet, middle, components })`). The middle comes from the body height: 1.8, crouching 1.5, swimming 0.6.
+  - `minecraft_terrain/src/bucket.rs`: the `Change::ThrowEye` arm.
+  - `minecraft_terrain/src/server.rs`:
+    - `ServerSim.worldgen` (the level's generator, kept from `new`) and `ServerSim.eyes`.
+    - `throw_eye` searches, launches and answers whether an eye flew. `Command::ThrowEye { owner, throw }` answers through the existing `item_uses`.
+    - `tick_eyes` runs after the tridents, and `EntitySnapshot.eyes` carries the eyes.
+  - `minecraft_survival/src/entities.rs`:
+    - `Entities::throw_eye` sends the throw for this player and waits for the answer, as for an item on a block.
+    - The trails tick before the portal particles, the snapshot's eyes and breaks are taken in, and the eyes are drawn after the thrown items.
+  - `minecraft_survival/src/offhand.rs`: an eye of ender counts as an item with a use, so the tactical key uses it from the offhand (both throwing and filling a frame).
+  - `render_anim/src/minecraft_world.rs`: one call line, the `Change::ThrowEye` arm calling `entities.throw_eye`.
+- **Checked with javap (26.3):**
+  - `EnderEyeItem.use`: `getPlayerPOVHitResult(.., Fluid.NONE)`; PASS on any `end_portal_frame`; `findNearestMapStructure(EYE_OF_ENDER_LOCATED, player.blockPosition(), 100, false)`; CONSUME without a result; `new EyeOfEnder(level, getX(), getY(0.5), getZ())`, `setItem`, `signalTo(Vec3.atLowerCornerOf(found))`; `ENDER_EYE_LAUNCH` at the player (NEUTRAL, volume 1, pitch `Mth.lerp(nextFloat, 0.33, 0.5)`); `consume(1, player)`.
+  - `EyeOfEnder`: `TOO_FAR_DISTANCE` 12, `TOO_FAR_SIGNAL_HEIGHT` 8, `MIN_CAMERA_DISTANCE_SQUARED` 12.25; `signalTo`, `tick`, `updateDeltaMovement`; `spawnParticles` (4 bubbles in water, else one portal particle at `p ± 0.3`, `p.y − 0.5`); `life > 80`, `ENDER_EYE_DEATH` (1, 1), then `ItemEntity` or level event 2003; `getLightLevelDependentMagicValue` 1.
+  - `ItemEntity(Level, x, y, z, ItemStack)`: pickup delay 0 and the launch above.
+  - `LevelEventHandler` event 2003: 8 ender eye item particles at `x + 0.5, y, z + 0.5`. Then for `a` from 0 in steps of π/20 while below 2π, two portal particles at `cos·5, −0.4, sin·5` with motions `cos·−5` and `cos·−7`: 40 steps, 80 particles.
+  - `EntityRenderers`: `EYE_OF_ENDER` is `lambda$static$13`, which is `ThrownItemRenderer(ctx, 1.0F, true)`.
+- **Tests:**
+  - `eye_of_ender`:
+    - `a_far_target_aims_12_out_and_8_up`, which also checks that a target exactly 12 blocks away is kept.
+    - `the_first_ticks_match_hand_worked_vanilla_numbers`: motion 0.03, 0.015, then 0.05985, 0.029775.
+    - `steering_sinks_toward_a_lower_target_and_brakes_within_a_block`.
+    - `the_eye_ends_on_its_81st_tick_and_a_new_signal_restarts_its_life`.
+    - `four_eyes_in_five_drop`: 10000 seeds, each matching `nextInt(5) > 0`.
+    - `the_launch_pitch_spans_a_third_to_a_half`.
+    - `a_shattered_eye_leaves_8_crumbs_and_a_ring_of_80_portal_particles`.
+    - `the_trail_starts_half_a_block_below_and_a_quarter_step_back`.
+    - `a_thrown_eye_sounds_flies_and_then_drops_or_shatters`: on a live level with 12 seeds. The launch sound plays at the feet. After 80 ticks the eye still flies, toward its target and above the hand. Then the death sound plays where it ends, and it leaves either one named eye item with the vanilla launch or one break. Both cases happen.
+    - `eyes_of_ender_look_for_the_stronghold_and_find_none_in_the_nether`: the tag is the stronghold. A Nether level finds none, and its `ServerSim::throw_eye` answers no and launches nothing.
+    - Ignored: `an_overworld_eye_finds_a_stronghold_ring_chunk_corner`. It resolves all 128 rings, which takes 2.4 s in a test build.
+  - `ender_eye`:
+    - `a_filled_frame_passes_the_eye_on`. It was `a_filled_frame_or_another_block_passes_the_eye_on`; its stone and air cases now throw.
+    - `anywhere_else_the_eye_is_thrown_from_the_middle_of_the_body`: 0.9 up when standing, 0.75 when crouching, and the stack's name is kept.
+  - `offhand`: `only_items_with_a_use_take_the_tactical_key` now checks the eye too.
+- **Decisions:**
+  - **Server-owned:** the client only asks. The server searches, launches and answers. The eye leaves the stack only on the server's yes, through the item-use answer the frame fill already uses. Each eye keeps its thrower's player key (`owner`), and the answer goes back to the thrower who waits for it. Vanilla's eye has no owner; the key is kept for multiplayer tracking.
+  - **Search time:** the search runs on the server thread like `/locate`, with `/locate`'s 20 s cap. A timeout counts as "not found", so the eye stays in the hand. The first throw in a level resolves all 128 stronghold rings (vanilla does that at world load); later throws reuse them.
+  - **Nether and End:** the stronghold can't generate there, so nothing is found and the eye stays in the hand without a sound, as in vanilla. A world without structures finds nothing either.
+  - **Saving:** eyes in flight are not saved, like the other thrown items here. Vanilla saves the item but neither the target nor the life, so a reloaded eye flies on for 80 ticks without steering. Here an eye in flight at quit (at most 4 s) is lost.
+  - **Under water:** vanilla leaves 4 bubbles a tick instead of the portal particle. There is no bubble particle yet, so the portal trail shows under water too.
+  - **Trail timing:** the trail starts from the server's latest position and motion each client tick, while vanilla's client moves its own copy by the synced motion. They differ by at most one tick.
+  - **Straight above:** vanilla divides by zero when the eye is exactly above or below its target (NaN). Here the horizontal motion is then zero.
+  - **Adventure mode:** throwing goes through the same item-on-block chain as the frame fill, which needs a game mode that may build. So in adventure mode the eye isn't thrown, although vanilla allows it. Spectators can't throw in either.
+  - **Not done:** the `used_ender_eye` advancement trigger, the `used` statistic and the `projectile_shoot` game event (there are no advancements, statistics or sculk yet).
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=eyetest` (a new world) and the kit below. Start in the overworld.
+  2. Type `/locate structure minecraft:stronghold` and note the coordinates.
+  3. Look straight ahead and right-click with an eye of ender. The launch sound plays, and the eye leaves your chest. It flies about 12 blocks toward the stronghold while rising about 8, glowing and leaving a purple particle trail. One eye goes from the stack. **Screenshot 1** while it flies, with the `/locate` answer still in the chat.
+  4. After about 4 seconds it plays a short sound. It either falls as an item you can pick up, or breaks into eye crumbs and a purple ring.
+  5. Walk about 100 blocks to the side and throw again, then do the same from a third place. Each eye flies toward the `/locate` coordinates. **Screenshot 2** from the third place.
+  6. Throw 10 eyes in a row: about 8 drop and 2 break.
+  7. Place an end portal frame and right-click it with an eye: the eye goes in with the fill sound. Right-click the filled frame: nothing happens and the stack stays the same.
+  8. Put eyes in the offhand slot, hold a gun and press the tactical key: an eye flies.
+  9. Type `/gamemode creative` and throw: the stack doesn't shrink. Type `/gamemode survival`.
+  10. Quit, add the line `IW4L_MINECRAFT_DIMENSION=the_end` to the `.env` and start: you are in the End. Right-click with an eye: nothing happens, there is no sound, and the stack stays. **Screenshot 3.** Quit and remove the line again.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ender_eye*32,minecraft:end_portal_frame*2,minecraft:diamond_pickaxe+efficiency=5
+```

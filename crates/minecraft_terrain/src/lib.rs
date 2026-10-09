@@ -16,6 +16,7 @@ pub mod day_cycle;
 pub mod dormant;
 pub mod end_portal_look;
 pub mod ender_eye;
+pub mod eye_of_ender;
 pub mod environment;
 pub(crate) mod face_culling;
 pub mod fluid;

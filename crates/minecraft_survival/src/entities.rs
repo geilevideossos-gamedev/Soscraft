@@ -64,6 +64,7 @@ pub struct Entities {
     client: ClientMobs,
     poof: PoofParticles,
     portal: PortalParticles,
+    eyes: minecraft_terrain::eye_of_ender::EyeTrails,
     spell: minecraft_terrain::spell_particles::SpellParticles,
     items: ItemVisuals,
     clock: f64,
@@ -204,6 +205,7 @@ impl Entities {
             client: ClientMobs::default(),
             poof: PoofParticles::default(),
             portal: PortalParticles::default(),
+            eyes: minecraft_terrain::eye_of_ender::EyeTrails::default(),
             spell: minecraft_terrain::spell_particles::SpellParticles::new((seed ^ 0x5be1) as u64),
             items: ItemVisuals::default(),
             clock: 0.0,
@@ -529,6 +531,11 @@ impl Entities {
         self.item_use_waiting = Some(sent);
     }
 
+    pub fn throw_eye(&mut self, throw: minecraft_terrain::ender_eye::EyeThrow, sent: SentItemUse) {
+        self.server.throw_eye(PLAYER, throw);
+        self.item_use_waiting = Some(sent);
+    }
+
     pub fn awaits_item_use(&self) -> bool {
         self.item_use_waiting.is_some()
     }
@@ -697,6 +704,7 @@ impl Entities {
                     self.portal.emit_enderman(mob.position, 0.6, 2.9);
                 }
             }
+            self.eyes.tick(&mut self.portal);
             self.portal.tick();
             for cloud in &self.clouds {
                 self.spell.cloud(cloud.position, cloud.radius, cloud.color, cloud.waiting);
@@ -752,6 +760,7 @@ impl Entities {
             }
             if let Some(mut snapshot) = output.entities {
                 self.thrown = std::mem::take(&mut snapshot.thrown_views);
+                self.eyes.receive(std::mem::take(&mut snapshot.eyes), &mut self.portal, &mut self.item_crumbs);
                 self.clouds = std::mem::take(&mut snapshot.clouds);
                 self.tridents = std::mem::take(&mut snapshot.tridents);
                 self.orbs = snapshot.orbs.clone();
@@ -1014,6 +1023,7 @@ impl Entities {
         let _ = self.items.append_open_lids(&mut out.items, &lids, scene, packs, atlas, light);
         let _ = self.items.append_primed_tnt(&mut out.items, &self.falling.primed_tnt(partial), packs, atlas, light);
         minecraft_terrain::thrown::append_views(&mut out.items, &self.thrown, partial, camera, atlas, forward, light);
+        minecraft_terrain::eye_of_ender::append_eyes(&mut out.items, self.eyes.views(), partial, camera, atlas, forward);
         minecraft_terrain::trident::append_tridents(&mut out.items, &self.tridents, partial, atlas, light);
         self.poof.append_mesh(&mut out.items, atlas, forward, partial, light);
         self.portal.append_mesh(&mut out.items, atlas, forward, partial, light);
