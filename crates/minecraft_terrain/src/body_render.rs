@@ -197,6 +197,52 @@ mod tests {
     }
 
     #[test]
+    fn a_held_trident_is_the_3d_model_and_on_the_ground_it_stays_flat() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let definition = r#"{"model":{"type":"minecraft:select","property":"minecraft:display_context","cases":[{"when":["gui","ground","fixed"],"model":{"type":"minecraft:model","model":"test:item/rod"}}],"fallback":{"type":"minecraft:special","base":"test:item/rod","model":{"type":"minecraft:trident"},"transformation":{"scale":[1.0,-1.0,-1.0]}}}}"#;
+        let items = temp.path().join("assets/test/items");
+        std::fs::create_dir_all(&items).unwrap();
+        std::fs::write(items.join("spear.json"), definition).unwrap();
+        let sheet = temp
+            .path()
+            .join("assets/minecraft/textures/entity/trident/trident.png");
+        std::fs::create_dir_all(sheet.parent().unwrap()).unwrap();
+        image::RgbaImage::from_pixel(32, 32, image::Rgba([90, 140, 130, 255]))
+            .save(sheet)
+            .unwrap();
+        let packs = rod_pack(temp.path());
+        let atlas = crate::mesh::make_atlas(
+            &packs,
+            vec![
+                ResourceId::parse("test:item/rod").unwrap(),
+                ResourceId::parse(crate::trident::TEXTURE).unwrap(),
+            ],
+        )
+        .unwrap();
+        let light = SkyLight::build(&HandcraftedScene::new());
+        let held = |display| {
+            let mut mesh = ChunkMesh::default();
+            let mut items = ItemVisuals::default();
+            let item = HeldItem {
+                pose: Mat4::IDENTITY,
+                light: Vec3::ZERO,
+                id: "test:spear".to_owned(),
+                display,
+                first_tint: None,
+            };
+            items
+                .append_held_items(&mut mesh, &[item], &packs, &atlas, &light)
+                .unwrap();
+            mesh.vertices.len()
+        };
+        assert_eq!(held(HeldDisplay::RightHand), 5 * 6 * 4);
+        assert_eq!(held(HeldDisplay::LeftHand), 5 * 6 * 4);
+        let flat = held(HeldDisplay::Ground);
+        assert!(flat > 0 && flat != 5 * 6 * 4, "{flat}");
+        assert_eq!(held(HeldDisplay::Fixed), flat);
+    }
+
+    #[test]
     fn worn_armour_is_drawn_with_the_body_and_lit_where_it_is() {
         let temp = crate::test_dir::tempdir().unwrap();
         let root = temp.path();

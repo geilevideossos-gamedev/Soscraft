@@ -747,13 +747,30 @@ IW4L_MINECRAFT_KIT=trident,diamond_chestplate
 
 ### 10. Thrown Minecraft tridents are drawn as the 3D trident
 
-Commit: (next entry)
+Commit: ae11220
 
 - **Changed:** `entities.rs` keeps the snapshot's `tridents` and draws them with `trident::append_tridents` beside the thrown items: the `TridentModel` (pole, base and three spikes) turned along its flight as `ThrownTridentRenderer` does, stuck at its angle in the ground, shimmering when enchanted (After the split item 10).
 - **Tests:** none new; the model and its turn are the throwables group's entry 8 (`the_spikes_lead_along_the_heading`, `the_model_is_a_pole_a_base_and_three_spikes_on_a_32_sheet`).
 - **Test steps** (once the trident charge entry below makes the trident throwable):
-  1. Throw the plain trident at the ground 10 blocks away: a 3D trident flies spikes first and sticks in the ground at an angle, shaking for a moment. Screenshot of it stuck.
+  1. Throw the plain trident at the ground 10 blocks away: a 3D trident flies spikes first and sticks in the ground at an angle. Screenshot of it stuck.
   2. Throw the Loyalty trident: it shimmers purple in flight and on its way back.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=trident,trident+loyalty=3
+```
+
+### 11. A held Minecraft trident is the 3D trident
+
+Commit: (next entry)
+
+- **Changed:** `special_models.rs`: item definitions are read for a display context (`item_leaves_in`, `uses_item_geometry_in`): a `minecraft:display_context` select takes the case whose `when` names the context, then its fallback, then the other cases; without a context it is read as `gui`. The `minecraft:trident` special model (`TridentSpecialRenderer`) is the `TridentModel`'s pole, base and spikes on `entity/trident/trident`, under the definition's `scale(1, -1, -1)`. `model.rs`: `resolve_item_model_in(pack, item, context)`, and every display transform reads the model of its own context, so a trident's first and third person transforms come from `item/trident_in_hand` (or `item/trident_throwing` while charging) and its gui, ground and frame ones from the flat `item/trident`. `mesh.rs`: `ItemVisual.hand` is the hand context's geometry when it differs from the flat one; items held by bodies and mobs (`append_held_items` in a hand) and the first person hand (`append_posed_items`) draw it. The same goes for spears and the spyglass: in the hand their `_in_hand` models, in the gui and on the ground their flat ones.
+- **Tests:** special_models: `a_trident_is_flat_in_the_gui_and_on_the_ground_and_3d_in_the_hands`, `the_held_trident_is_the_pole_base_and_spikes_of_the_thrown_one`. body_render: `a_held_trident_is_the_3d_model_and_on_the_ground_it_stays_flat`.
+- **Test steps:**
+  1. Select the trident: in first person you hold the 3D trident (a long grey-green pole with three spikes), not the flat icon. Screenshot.
+  2. Press F5 for third person: the MW2 body holds the same 3D trident in its right hand; put it in the offhand (F): it is in the left hand. Screenshot each.
+  3. Open the inventory: the hotbar and the character box show the flat trident icon in the slots and the 3D trident in the character's hand. Drop it (Q): it lies on the ground as the flat item.
+  4. The enchanted trident shimmers in the hand.
 - **Kit:**
 
 ```

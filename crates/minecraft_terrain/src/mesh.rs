@@ -841,6 +841,7 @@ impl<S: Scene> Scene for MovingBlockScene<'_, S> {
 const MOVING_BLOCK_HEIGHT: f64 = 0.98;
 struct ItemVisual {
     model: ResolvedModel,
+    hand: Option<ResolvedModel>,
     ground: Mat4,
     /// The `thirdperson_righthand` display transform.
     right_hand: Mat4,
@@ -876,11 +877,17 @@ impl ItemVisuals {
             if model.elements.is_empty() {
                 return Ok(None);
             }
+            let definition = packs.item_definition(&resource)?;
+            let hand = match definition.as_ref().map(|value| &value["model"]) {
+                Some(value) if crate::special_models::uses_item_geometry_in(value, Some("thirdperson_righthand")) && !crate::special_models::uses_item_geometry(value) => {
+                    crate::model::resolve_item_model_in(packs, &resource, Some("thirdperson_righthand"))?.filter(|hand| !hand.elements.is_empty())
+                }
+                _ => None,
+            };
             let ground = crate::model::item_display_transform(packs, &resource, "ground")?;
             let right_hand = crate::model::item_display_transform(packs, &resource, "thirdperson_righthand")?;
             let left_hand = crate::model::item_third_person_transform(packs, &resource, true)?;
             let fixed = crate::model::item_display_transform(packs, &resource, "fixed")?;
-            let definition = packs.item_definition(&resource)?;
             let tints = definition
                 .as_ref()
                 .map(|value| crate::interface::item_model_tints(packs, &value["model"]))
@@ -904,6 +911,7 @@ impl ItemVisuals {
                 id.into(),
                 ItemVisual {
                     model,
+                    hand,
                     ground,
                     right_hand,
                     left_hand,
@@ -1148,7 +1156,8 @@ impl ItemVisuals {
                     tints[0] = color;
                 }
             }
-            self.append_model(mesh, &item.id, item.light, item.pose * display, 1.0, Some(&tints), packs, atlas, sky_light)?;
+            let hand = matches!(item.display, HeldDisplay::RightHand | HeldDisplay::LeftHand);
+            self.append_model(mesh, &item.id, item.light, item.pose * display, 1.0, Some(&tints), hand, packs, atlas, sky_light)?;
         }
         Ok(())
     }
@@ -1167,7 +1176,7 @@ impl ItemVisuals {
                 }
                 _ => Vec::new(),
             };
-            self.append_model(mesh, id, *light, *pose, 1.0, Some(&tints), packs, atlas, sky_light)?;
+            self.append_model(mesh, id, *light, *pose, 1.0, Some(&tints), false, packs, atlas, sky_light)?;
         }
         Ok(())
     }
@@ -1177,7 +1186,7 @@ impl ItemVisuals {
             let Some(tints) = self.model(id, packs)?.map(|visual| visual.tints.clone()) else {
                 continue;
             };
-            self.append_model(mesh, id, *light, *pose, 1.0, Some(&tints), packs, atlas, sky_light)?;
+            self.append_model(mesh, id, *light, *pose, 1.0, Some(&tints), true, packs, atlas, sky_light)?;
         }
         Ok(())
     }
@@ -1185,13 +1194,13 @@ impl ItemVisuals {
     /// One item model placed with a pose, lit at `pos`, untinted.
     #[allow(clippy::too_many_arguments)]
     fn append_block_model(&mut self, mesh: &mut ChunkMesh, id: &str, pos: Vec3, pose: Mat4, brightness: f32, packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
-        self.append_model(mesh, id, pos, pose, brightness, None, packs, atlas, sky_light)
+        self.append_model(mesh, id, pos, pose, brightness, None, false, packs, atlas, sky_light)
     }
 
     /// One item model placed with a pose, lit at `pos`, its faces with a
     /// tint index coloured from `tints` when given.
     #[allow(clippy::too_many_arguments)]
-    fn append_model(&mut self, mesh: &mut ChunkMesh, id: &str, pos: Vec3, pose: Mat4, brightness: f32, tints: Option<&[[f32; 3]]>, packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
+    fn append_model(&mut self, mesh: &mut ChunkMesh, id: &str, pos: Vec3, pose: Mat4, brightness: f32, tints: Option<&[[f32; 3]]>, hand: bool, packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
         let Some(visual) = self.model(id, packs)? else {
             return Ok(());
         };
@@ -1200,7 +1209,8 @@ impl ItemVisuals {
             let light_pos = (pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32);
             let sky = sky_light.get(light_pos) as f32;
             let block = sky_light.get_block(light_pos) as f32;
-            for element in &visual.model.elements {
+            let model = if hand { visual.hand.as_ref().unwrap_or(&visual.model) } else { &visual.model };
+            for element in &model.elements {
                 for face in &element.faces {
                     if !atlas.contains(&face.texture) {
                         continue;
@@ -3197,6 +3207,7 @@ mod tests {
             force_translucent: false,
         };
         let visual = || ItemVisual {
+            hand: None,
             model: ResolvedModel {
                 elements: vec![crate::model::Element {
                     from: [0.0; 3],
@@ -3558,6 +3569,7 @@ mod tests {
         visuals.models.insert(
             "minecraft:grass_block".into(),
             ItemVisual {
+                hand: None,
                 model: ResolvedModel {
                     elements: vec![crate::model::Element {
                         from: [0.0; 3],
@@ -3644,6 +3656,7 @@ mod tests {
             translucent: HashMap::new(),
         };
         let visual = || ItemVisual {
+            hand: None,
             model: ResolvedModel {
                 elements: vec![crate::model::Element {
                     from: [0.0; 3],

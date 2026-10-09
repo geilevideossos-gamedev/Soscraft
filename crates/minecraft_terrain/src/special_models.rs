@@ -40,7 +40,7 @@ const COPPER_CHESTS: [(&str, &str); 4] = [
     ("weathered_copper_chest", "copper_weathered"),
     ("oxidized_copper_chest", "copper_oxidized"),
 ];
-const SUPPORTED_SPECIALS: [&str; 8] = [
+const SUPPORTED_SPECIALS: [&str; 9] = [
     "minecraft:chest",
     "minecraft:shulker_box",
     "minecraft:head",
@@ -49,6 +49,7 @@ const SUPPORTED_SPECIALS: [&str; 8] = [
     "minecraft:conduit",
     "minecraft:decorated_pot",
     "minecraft:shield",
+    "minecraft:trident",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -397,6 +398,7 @@ pub(crate) fn item_model(special: &Value) -> Result<Option<ResolvedModel>> {
         "minecraft:conduit" => push_conduit(&mut elements, Mat4::IDENTITY)?,
         "minecraft:decorated_pot" => push_decorated_pot(&mut elements, Mat4::IDENTITY)?,
         "minecraft:shield" => push_shield(&mut elements)?,
+        "minecraft:trident" => push_trident(&mut elements)?,
         _ => return Ok(None),
     }
     Ok(Some(ResolvedModel { elements }))
@@ -415,7 +417,11 @@ pub(crate) fn special_tints(model: &Value) -> Vec<[u8; 3]> {
 }
 
 pub(crate) fn uses_item_geometry(model: &Value) -> bool {
-    let leaves = item_leaves(model, false);
+    uses_item_geometry_in(model, None)
+}
+
+pub(crate) fn uses_item_geometry_in(model: &Value, context: Option<&str>) -> bool {
+    let leaves = item_leaves_in(model, false, context);
     leaves.len() > 1
         || leaves
             .iter()
@@ -423,14 +429,31 @@ pub(crate) fn uses_item_geometry(model: &Value) -> bool {
 }
 
 pub(crate) fn item_leaves(model: &Value, using_item: bool) -> Vec<ItemLeaf<'_>> {
+    item_leaves_in(model, using_item, None)
+}
+
+pub(crate) fn item_leaves_in<'a>(
+    model: &'a Value,
+    using_item: bool,
+    context: Option<&str>,
+) -> Vec<ItemLeaf<'a>> {
     let mut leaves = Vec::new();
-    collect_leaves(model, using_item, Mat4::IDENTITY, &mut leaves);
+    collect_leaves(model, using_item, context, Mat4::IDENTITY, &mut leaves);
     leaves
+}
+
+fn when_matches(when: Option<&Value>, context: &str) -> bool {
+    match when {
+        Some(Value::String(one)) => one == context,
+        Some(Value::Array(many)) => many.iter().any(|one| one.as_str() == Some(context)),
+        _ => false,
+    }
 }
 
 fn collect_leaves<'a>(
     value: &'a Value,
     using_item: bool,
+    context: Option<&str>,
     parent: Mat4,
     out: &mut Vec<ItemLeaf<'a>>,
 ) {
@@ -438,7 +461,7 @@ fn collect_leaves<'a>(
     let first_yielding = |out: &mut Vec<ItemLeaf<'a>>, options: Vec<&'a Value>| {
         for option in options {
             let mut found = Vec::new();
-            collect_leaves(option, using_item, transform, &mut found);
+            collect_leaves(option, using_item, context, transform, &mut found);
             if !found.is_empty() {
                 out.extend(found);
                 return;
@@ -478,7 +501,7 @@ fn collect_leaves<'a>(
                 .into_iter()
                 .flatten()
             {
-                collect_leaves(model, using_item, transform, out);
+                collect_leaves(model, using_item, context, transform, out);
             }
         }
         "minecraft:condition" => {
@@ -494,16 +517,25 @@ fn collect_leaves<'a>(
             first_yielding(out, order.into_iter().flatten().collect());
         }
         "minecraft:select" | "minecraft:range_dispatch" => {
-            let mut options: Vec<&Value> = value.get("fallback").into_iter().collect();
-            for entry in value
+            let entries: Vec<&Value> = value
                 .get("cases")
                 .or_else(|| value.get("entries"))
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
-            {
-                options.extend(entry.get("model"));
+                .collect();
+            let mut options: Vec<&Value> = Vec::new();
+            if value.get("property").and_then(Value::as_str) == Some("minecraft:display_context") {
+                let wanted = context.unwrap_or("gui");
+                options.extend(
+                    entries
+                        .iter()
+                        .filter(|entry| when_matches(entry.get("when"), wanted))
+                        .filter_map(|entry| entry.get("model")),
+                );
             }
+            options.extend(value.get("fallback"));
+            options.extend(entries.iter().filter_map(|entry| entry.get("model")));
             first_yielding(out, options);
         }
         _ => {}
@@ -1034,6 +1066,16 @@ fn push_shield(elements: &mut Vec<Element>) -> Result<()> {
     Ok(())
 }
 
+fn push_trident(elements: &mut Vec<Element>) -> Result<()> {
+    let sheet = Sheet::new(crate::trident::TEXTURE, crate::trident::TEXTURE_SIZE)?;
+    for part in crate::trident::MODEL {
+        let cube = Cube::new(part.uv, part.origin, part.size);
+        let cube = if part.mirror { cube.mirrored() } else { cube };
+        push_cube(elements, &sheet, cube, Mat4::IDENTITY, &ALL_FACES);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1419,6 +1461,61 @@ mod tests {
         let rotation = serde_json::json!({"left_rotation": [1.0, 0.0, 0.0, 0.0]});
         let flipped = transformation(Some(&rotation));
         assert!(close(flipped.transform_vector3(Vec3::Y), Vec3::NEG_Y));
+    }
+
+    #[test]
+    fn a_trident_is_flat_in_the_gui_and_on_the_ground_and_3d_in_the_hands() {
+        let trident = serde_json::json!({
+            "type": "minecraft:select",
+            "property": "minecraft:display_context",
+            "cases": [{
+                "when": ["gui", "ground", "fixed", "on_shelf"],
+                "model": {"type": "minecraft:model", "model": "minecraft:item/trident"}
+            }],
+            "fallback": {
+                "type": "minecraft:condition",
+                "property": "minecraft:using_item",
+                "on_false": {"type": "minecraft:special", "base": "minecraft:item/trident_in_hand", "model": {"type": "minecraft:trident"}},
+                "on_true": {"type": "minecraft:special", "base": "minecraft:item/trident_throwing", "model": {"type": "minecraft:trident"}},
+                "transformation": {"scale": [1.0, -1.0, -1.0]}
+            }
+        });
+        for context in [None, Some("gui"), Some("ground"), Some("fixed")] {
+            let leaves = item_leaves_in(&trident, false, context);
+            assert_eq!(leaves[0].model, "minecraft:item/trident", "{context:?}");
+            assert!(leaves[0].special.is_none());
+            assert!(!uses_item_geometry_in(&trident, context));
+        }
+        let flip = Mat4::from_scale(Vec3::new(1.0, -1.0, -1.0));
+        for context in ["firstperson_righthand", "firstperson_lefthand", "thirdperson_righthand", "thirdperson_lefthand"] {
+            let held = item_leaves_in(&trident, false, Some(context));
+            assert_eq!(held[0].model, "minecraft:item/trident_in_hand");
+            assert_eq!(held[0].transform, flip);
+            assert!(held[0].special.is_some());
+            assert!(uses_item_geometry_in(&trident, Some(context)));
+            let charging = item_leaves_in(&trident, true, Some(context));
+            assert_eq!(charging[0].model, "minecraft:item/trident_throwing");
+        }
+        let spyglass = serde_json::json!({
+            "type": "minecraft:select",
+            "property": "minecraft:display_context",
+            "cases": [{"when": ["gui", "ground"], "model": {"type": "minecraft:model", "model": "minecraft:item/spyglass"}}],
+            "fallback": {"type": "minecraft:model", "model": "minecraft:item/spyglass_in_hand"}
+        });
+        assert_eq!(item_leaves_in(&spyglass, false, Some("ground"))[0].model, "minecraft:item/spyglass");
+        assert_eq!(item_leaves_in(&spyglass, false, Some("firstperson_righthand"))[0].model, "minecraft:item/spyglass_in_hand");
+    }
+
+    #[test]
+    fn the_held_trident_is_the_pole_base_and_spikes_of_the_thrown_one() {
+        let special = serde_json::json!({"type": "minecraft:trident"});
+        let model = item_model(&special).unwrap().unwrap();
+        assert_eq!(model.elements.len(), 5);
+        let (low, high) = bounds(&corners(&model));
+        assert!(close(low, Vec3::new(-2.5, -4.0, -0.5) / 16.0), "{low}");
+        assert!(close(high, Vec3::new(2.5, 27.0, 0.5) / 16.0), "{high}");
+        let texture = ResourceId::parse(crate::trident::TEXTURE).unwrap();
+        assert!(model.elements.iter().flat_map(|e| e.faces.iter()).all(|face| face.texture == texture));
     }
 
     #[test]

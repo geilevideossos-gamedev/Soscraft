@@ -128,11 +128,14 @@ pub struct ResolvedModel {
 /// The held item uses its 26.3 item definition's model, not a placed
 /// blockstate (whose defaults and shape may differ from the inventory model).
 pub fn resolve_item_model(pack: &PackStack, item: &ResourceId) -> Result<Option<ResolvedModel>> {
+    resolve_item_model_in(pack, item, None)
+}
+pub fn resolve_item_model_in(pack: &PackStack, item: &ResourceId, context: Option<&str>) -> Result<Option<ResolvedModel>> {
     let Some(definition) = pack.item_definition(item)? else {
         return Ok(None);
     };
-    if crate::special_models::uses_item_geometry(&definition["model"]) {
-        return item_geometry(pack, item, &definition["model"]).map(Some);
+    if crate::special_models::uses_item_geometry_in(&definition["model"], context) {
+        return item_geometry(pack, item, &definition["model"], context).map(Some);
     }
     let Some(reference) = crate::interface::item_model_reference(&definition["model"]) else {
         return Ok(None);
@@ -146,9 +149,9 @@ pub fn resolve_item_model(pack: &PackStack, item: &ResourceId) -> Result<Option<
     let block = Block::new(&item.key());
     resolve_choices(pack, &block, &[&choice]).map(Some)
 }
-fn item_geometry(pack: &PackStack, item: &ResourceId, model: &Value) -> Result<ResolvedModel> {
+fn item_geometry(pack: &PackStack, item: &ResourceId, model: &Value, context: Option<&str>) -> Result<ResolvedModel> {
     let mut elements = Vec::new();
-    for leaf in crate::special_models::item_leaves(model, false) {
+    for leaf in crate::special_models::item_leaves_in(model, false, context) {
         let part = match leaf.special {
             Some(special) => match crate::special_models::item_model(special)? {
                 Some(part) => part,
@@ -177,18 +180,18 @@ pub fn item_first_person_transform(pack: &PackStack, item: &ResourceId) -> Resul
 pub fn item_display_transform(pack: &PackStack, item: &ResourceId, context: &str) -> Result<Mat4> {
     item_display_transform_using(pack, item, context, false)
 }
-fn item_display_model(pack: &PackStack, item: &ResourceId, using_item: bool) -> Result<Option<Value>> {
+fn item_display_model(pack: &PackStack, item: &ResourceId, using_item: bool, context: &str) -> Result<Option<Value>> {
     let Some(definition) = pack.item_definition(item)? else {
         return Ok(None);
     };
-    let leaves = crate::special_models::item_leaves(&definition["model"], using_item);
+    let leaves = crate::special_models::item_leaves_in(&definition["model"], using_item, Some(context));
     let Some(reference) = leaves.first().map(|leaf| leaf.model).or_else(|| crate::interface::item_model_reference(&definition["model"])) else {
         return Ok(None);
     };
     load_parented(pack, &ResourceId::parse(reference)?, &mut HashSet::new()).map(Some)
 }
 pub fn item_gui_light_front(pack: &PackStack, item: &ResourceId) -> Result<bool> {
-    Ok(item_display_model(pack, item, false)?.is_some_and(|model| model.get("gui_light").and_then(Value::as_str) == Some("front")))
+    Ok(item_display_model(pack, item, false, "gui")?.is_some_and(|model| model.get("gui_light").and_then(Value::as_str) == Some("front")))
 }
 pub fn item_display_transform_using(pack: &PackStack, item: &ResourceId, context: &str, using_item: bool) -> Result<Mat4> {
     display_transform(pack, item, context, using_item, false)
@@ -202,7 +205,7 @@ pub fn item_hand_transform(pack: &PackStack, item: &ResourceId, left_hand: bool,
     display_transform(pack, item, context, using_item, left_hand)
 }
 fn display_transform(pack: &PackStack, item: &ResourceId, context: &str, using_item: bool, left_hand: bool) -> Result<Mat4> {
-    let Some(model) = item_display_model(pack, item, using_item)? else {
+    let Some(model) = item_display_model(pack, item, using_item, context)? else {
         return Ok(Mat4::IDENTITY);
     };
     let display = &model["display"][context];
