@@ -410,3 +410,29 @@ Previous commit: 899359fa
 ```
 IW4L_MINECRAFT_KIT=minecraft:wither_skeleton_spawn_egg*4,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:golden_apple*4,minecraft:cooked_beef*16,minecraft:diamond_chestplate
 ```
+
+### 20. Minecraft monster spawners spawn their mob (E2-25)
+
+Previous commit: d37cfa4b
+
+- **Changed** (checked with javap on the 26.3 jar: `BaseSpawner.serverTick`, `delay`, `isNearPlayer`, `ServerLevel.isSpawnerBlockEnabled`, `Monster.checkMonsterSpawnRules`, `EntitySpawnReason.ignoresLightRequirements`):
+  - Vendored `third_party/minecraftoss/world/src/level/spawning.rs` (MinecraftOSS patch): `Level::tick_spawners`, each `minecraft:mob_spawner` block entity in the simulated chunks, from its saved fields (`Delay`, `MinSpawnDelay`, `MaxSpawnDelay`, `SpawnCount`, `MaxNearbyEntities`, `RequiredPlayerRange`, `SpawnRange`, `SpawnData`, `SpawnPotentials`):
+    - it does nothing unless a non-spectator player is within `RequiredPlayerRange` (16) of its centre and the `spawner_blocks_work` game rule is on;
+    - a delay of -1 is drawn first; while the delay is above 0 it counts down;
+    - then up to `SpawnCount` (4) tries: the entity's saved `Pos`, or a random spot within `SpawnRange` (4) across and one block up or down (the level random's draws in vanilla's order); its box must be free; with `custom_spawn_rules` only the block and sky light limits (and no monsters in peaceful) count, otherwise the type's own spawn rules as for a `SPAWNER` reason (darkness for monsters, no check of the block below) with its walk target and spawn obstruction; when `MaxNearbyEntities` (6) of its type already stand within its range around it, it waits again; a lone `id` is finalized like a new spawn, a fuller tag loaded as given; the mob joins the level facing a random way;
+    - after a round that spawned anything it waits 200 to 799 ticks and picks its next mob from `SpawnPotentials` by weight.
+    - The block entity's `Delay` and `SpawnData` are written back; a new wait is sent to the client like other block entity changes (so it is saved).
+  - Vendored `natural_spawner/spawning.rs` (MinecraftOSS patch): `CreatureSpawns::spawner_may_spawn`, the spawner's form of the type's spawn checks. A type natural spawning does not know yet (a blaze until N4) only needs room.
+  - `minecraft_terrain/src/server.rs`: `ServerSim::tick` runs the spawners after the level's tick, and `apply_game_rules` passes `spawner_blocks_work`.
+- **Tests:** `server`: `a_fortress_spawner_spawns_blazes_near_a_player_and_waits_between_rounds` (seed 77's fortress spawner, a player 3 blocks off: blazes within its range, at most 6, then a wait of 200 to 799; a player 40 blocks off: nothing and the first wait of 20 does not run down; `spawner_blocks_work` off: nothing).
+- **Decisions:** blazes from fortress spawners wait dormant until N4 brings blazes to life, and count toward the spawner's limit of 6 meanwhile. The flames and smoke of a spawn (level event 2004), the mob turning inside the cage and the spin-up on the client are not drawn.
+- **Test steps** (overworld, survival, `/difficulty normal`):
+  1. Find a dungeon (a mossy cobblestone room with a spawner and chests underground), or `/setblock ~2 ~ ~ minecraft:spawner` and use a zombie spawn egg on it. Stand within 16 blocks in the dark: zombies (or the dungeon's skeletons or spiders) appear around it, two to four at a time, then nothing for 10 to 40 seconds. **Screenshot 19.**
+  2. Kill them and stay: new ones come after the wait, never more than 6 of its kind around it at once.
+  3. `/gamerule spawner_blocks_work false`: nothing more spawns. Set it back to `true`.
+  4. In the Nether, a fortress spawner (a cage on a nether brick stair room) needs N4's blazes to show them; until then nothing visible happens there.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:spawner,minecraft:zombie_spawn_egg*2,minecraft:skeleton_spawn_egg*2,minecraft:diamond_sword,minecraft:torch*64,minecraft:cobblestone*64
+```

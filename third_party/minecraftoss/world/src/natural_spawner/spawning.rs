@@ -566,6 +566,32 @@ impl CreatureSpawns {
         self.no_collision(level, spawn_aabb(info, f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5))
     }
 
+    pub fn spawner_may_spawn(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, kind: &str, at: [f64; 3]) -> bool {
+        let Some(info) = type_info(kind) else { return true };
+        let pos = BlockPos::new(at[0].floor() as i32, at[1].floor() as i32, at[2].floor() as i32);
+        let bb = spawn_aabb(&info, at[0], at[1], at[2]);
+        if !self.no_collision(level, bb) {
+            return false;
+        }
+        if context.difficulty == 0 && MobCategory::of_type(kind) == Some(MobCategory::Monster) {
+            return false;
+        }
+        let rules = match info.rules {
+            Rules::Monster => self.dark_enough(level, context, pos),
+            Rules::SurfaceMonster => self.dark_enough(level, context, pos) && level.sky_brightness(pos) >= 15,
+            _ => self.natural_spawn_rules(level, context, kind, &info, pos),
+        };
+        if !rules {
+            return false;
+        }
+        let walk = match info.walk {
+            Walk::Animal => self.mob_check_spawn_rules(level, &info, pos),
+            Walk::Monster => -self.pathfinding_cost_from_light(level, pos) >= 0.0,
+            Walk::Neutral => true,
+        };
+        walk && self.check_spawn_obstruction(level, &info, at[0], at[1], at[2]) && !context.obstacles.iter().any(|o| overlaps(&bb, o))
+    }
+
     /// `SpawnPlacements.checkSpawnRules` with reason `NATURAL`.
     fn natural_spawn_rules(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, kind: &str, info: &TypeInfo, pos: BlockPos) -> bool {
         match info.rules {

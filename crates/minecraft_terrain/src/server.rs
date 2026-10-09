@@ -1375,6 +1375,9 @@ impl ServerSim {
         level.set_advance_weather(rules.bool("advance_weather"));
         self.mobs.set_mob_griefing(rules.bool("mob_griefing"));
         self.mobs.set_mob_drops(rules.bool("mob_drops"));
+        if let Some(natural) = &mut self.level.natural_spawning {
+            natural.spawner_blocks_work = rules.bool("spawner_blocks_work");
+        }
     }
 
     pub fn weather(&mut self, feet: Option<[f64; 3]>) -> WeatherView {
@@ -1389,6 +1392,7 @@ impl ServerSim {
     pub fn tick(&mut self) {
         let bursting: Vec<(i32, [f64; 3])> = self.level.entities.iter().filter(|e| e.tnt_data().is_some_and(|d| d.fuse <= 1)).map(|e| (e.id, e.pos)).collect();
         self.level.tick();
+        self.level.tick_spawners();
         self.level.unsupported.clear();
         for (id, position) in bursting {
             if self.level.tnt_explodes && !self.level.entities.iter().any(|e| e.id == id) {
@@ -5626,6 +5630,84 @@ mod tests {
         let back = crate::server_mobs::spawn_saved(&mut loaded, tag).expect("wither skeletons load");
         let back = &loaded.skeleton_mut(back).unwrap().skeleton;
         assert_eq!((back.kind, back.main_hand.as_deref(), back.body.height), (minecraftoss_entities::skeleton::SkeletonKind::WitherSkeleton, Some("minecraft:stone_sword"), 2.4));
+    }
+
+    #[test]
+    fn a_fortress_spawner_spawns_blazes_near_a_player_and_waits_between_rounds() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(TerrainGenerator::nether(registries.clone(), 77).unwrap()), "minecraft:the_nether").unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 77, 0, 256).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let at = match crate::locate::nearest_structure(&worldgen, &["minecraft:fortress".to_owned()], [0, 64, 0], crate::locate::STRUCTURE_RADIUS, deadline) {
+            crate::locate::Search::Found(at, _) => at,
+            other => panic!("no fortress near the origin of seed 77: {other:?}"),
+        };
+        let mut run = |player_offset: f64, rule: bool, ticks: usize| {
+            let mut server = ServerSim::new(worldgen.clone(), states.clone(), "minecraft:the_nether");
+            let (cx, cz) = (at[0] >> 4, at[2] >> 4);
+            for x in cx - 3..=cx + 3 {
+                for z in cz - 3..=cz + 3 {
+                    server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+                }
+            }
+            let spawner = server.level.chunks().flat_map(|chunk| chunk.block_entities.entities.iter()).find(|(_, tag)| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) == Some("minecraft:mob_spawner")).map(|(key, _)| *key).expect("the fortress has a spawner");
+            let mut rules = crate::game_rules::GameRules::default();
+            if !rule {
+                rules.set("spawner_blocks_work", "false").unwrap();
+            }
+            server.apply_game_rules(&rules);
+            let feet = glam::DVec3::new(f64::from(spawner.0) + 0.5 + player_offset, f64::from(spawner.1), f64::from(spawner.2) + 0.5);
+            let player = minecraftoss_entities::tempt::PlayerCandidate {
+                id: 0,
+                position: feet,
+                eye_height: 1.62,
+                main_hand_cow_food: false,
+                offhand_cow_food: false,
+                main_hand_pig_food: false,
+                offhand_pig_food: false,
+                main_hand_chicken_food: false,
+                offhand_chicken_food: false,
+                main_hand_carrot_on_a_stick: false,
+                offhand_carrot_on_a_stick: false,
+                main_hand_wolf_interest: false,
+                offhand_wolf_interest: false,
+                main_hand_horse_tempt: false,
+                offhand_horse_tempt: false,
+                alive: true,
+                spectator: false,
+                attackable: true,
+            };
+            let mut spawned = Vec::new();
+            for _ in 0..ticks {
+                server.set_players(&[feet.to_array()], 2);
+                server.set_simulation_area((spawner.0 >> 4, spawner.2 >> 4), 4);
+                server.prepare_spawning(&[player]);
+                server.tick();
+                spawned.extend(server.level.spawned.iter().filter(|tag| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) == Some("minecraft:blaze")).cloned());
+                server.take_spawned();
+            }
+            let delay = server.level.chunk(ChunkPos::new(spawner.0 >> 4, spawner.2 >> 4)).and_then(|chunk| chunk.block_entities.entities.get(&spawner)).and_then(|tag| tag.get("Delay")).and_then(minecraftoss_core::nbt::Tag::as_i64);
+            (spawner, spawned, delay)
+        };
+        let (spawner, blazes, delay) = run(3.0, true, 120);
+        assert!(!blazes.is_empty(), "the spawner made blazes");
+        assert!(blazes.len() <= 6, "no more than the spawner's limit in one wait: {}", blazes.len());
+        for tag in &blazes {
+            let pos: Vec<f64> = tag.get("Pos").and_then(minecraftoss_core::nbt::Tag::as_list).unwrap().iter().filter_map(minecraftoss_core::nbt::Tag::as_f64).collect();
+            assert!((pos[0] - f64::from(spawner.0) - 0.5).abs() <= 4.0 && (pos[2] - f64::from(spawner.2) - 0.5).abs() <= 4.0 && (pos[1] - f64::from(spawner.1)).abs() <= 1.0, "within its spawn range: {pos:?}");
+        }
+        assert!(delay.is_some_and(|d| (80..800).contains(&d)), "it waits 200 to 799 ticks after a round: {delay:?}");
+        let (_, none, kept) = run(40.0, true, 60);
+        assert!(none.is_empty(), "nobody within 16 blocks: nothing");
+        assert_eq!(kept, Some(20), "and its first wait does not run down");
+        let (_, off, _) = run(3.0, false, 60);
+        assert!(off.is_empty(), "spawner_blocks_work off: nothing");
     }
 
     #[test]

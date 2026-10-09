@@ -37,6 +37,7 @@ pub struct NaturalSpawning {
     /// What the last tick's spawning decided.
     pub report: TickReport,
     pub structures: Option<StructureFinder>,
+    pub spawner_blocks_work: bool,
 }
 
 impl NaturalSpawning {
@@ -53,6 +54,7 @@ impl NaturalSpawning {
             simulation: HashSet::new(),
             report: TickReport::default(),
             structures: None,
+            spawner_blocks_work: true,
         }
     }
 
@@ -221,7 +223,207 @@ impl Level<'_> {
     }
 }
 
+struct Spawner {
+    delay: i32,
+    min_delay: i32,
+    max_delay: i32,
+    count: i32,
+    max_nearby: i32,
+    range: i32,
+    data: Option<Tag>,
+    potentials: Vec<(Tag, i32)>,
+}
+
+impl Spawner {
+    fn read(tag: &Tag) -> Self {
+        let int = |key: &str, default: i32| tag.get(key).and_then(Tag::as_i64).map_or(default, |v| v as i32);
+        let potentials = tag
+            .get("SpawnPotentials")
+            .and_then(Tag::as_list)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| Some((entry.get("data")?.clone(), entry.get("weight").and_then(Tag::as_i64).unwrap_or(1) as i32)))
+            .collect();
+        Self {
+            delay: int("Delay", 20),
+            min_delay: int("MinSpawnDelay", 200),
+            max_delay: int("MaxSpawnDelay", 800),
+            count: int("SpawnCount", 4),
+            max_nearby: int("MaxNearbyEntities", 6),
+            range: int("SpawnRange", 4),
+            data: tag.get("SpawnData").filter(|data| data.as_compound().is_some()).cloned(),
+            potentials,
+        }
+    }
+
+    fn pick(&self, random: &mut dyn RandomSource) -> Option<Tag> {
+        let total: i32 = self.potentials.iter().map(|(_, weight)| *weight).sum();
+        if total <= 0 {
+            return None;
+        }
+        let mut selection = random.next_i32_bound(total);
+        for (data, weight) in &self.potentials {
+            if selection < *weight {
+                return Some(data.clone());
+            }
+            selection -= weight;
+        }
+        None
+    }
+
+    fn delay(&mut self, random: &mut dyn RandomSource) {
+        self.delay = if self.max_delay <= self.min_delay { self.min_delay } else { self.min_delay + random.next_i32_bound(self.max_delay - self.min_delay) };
+        if let Some(data) = self.pick(random) {
+            self.data = Some(data);
+        }
+    }
+}
+
+fn in_range(range: Option<&Tag>, value: i32) -> bool {
+    match range {
+        None => true,
+        Some(Tag::Int(only)) => value == *only,
+        Some(limits) => {
+            let bound = |key: &str| limits.get(key).and_then(Tag::as_i64).map(|v| v as i32);
+            bound("min_inclusive").is_none_or(|min| value >= min) && bound("max_inclusive").is_none_or(|max| value <= max)
+        }
+    }
+}
+
 impl Level<'_> {
+    pub fn tick_spawners(&mut self) {
+        let Some(natural) = self.natural_spawning.take() else { return };
+        if natural.spawner_blocks_work {
+            let mut spawners: Vec<(i32, i32, i32)> = self
+                .chunks
+                .iter()
+                .filter(|(pos, _)| natural.simulation.contains(pos))
+                .flat_map(|(_, chunk)| chunk.block_entities.entities.iter().filter(|(_, tag)| tag.get("id").and_then(Tag::as_str) == Some("minecraft:mob_spawner")).map(|(key, _)| *key))
+                .collect();
+            spawners.sort_unstable();
+            let mut census = natural.census.clone();
+            for key in spawners {
+                self.spawner_tick(&natural, &mut census, key);
+            }
+        }
+        self.natural_spawning = Some(natural);
+    }
+
+    fn spawner_tick(&mut self, natural: &NaturalSpawning, census: &mut Vec<CensusMob>, key: (i32, i32, i32)) {
+        let pos = BlockPos::new(key.0, key.1, key.2);
+        let Some(tag) = self.chunks.get(&pos.chunk()).and_then(|chunk| chunk.block_entities.entities.get(&key)).cloned() else { return };
+        let required = tag.get("RequiredPlayerRange").and_then(Tag::as_i64).unwrap_or(16) as f64;
+        let center = [f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5];
+        let near = natural.players.iter().any(|p| !p.spectator && (0..3).map(|k| (p.pos[k] - center[k]).powi(2)).sum::<f64>() < required * required);
+        if !near {
+            return;
+        }
+        let mut spawner = Spawner::read(&tag);
+        let was = (spawner.delay, spawner.data.clone());
+        if spawner.delay == -1 {
+            spawner.delay(&mut self.random);
+        }
+        if spawner.delay > 0 {
+            spawner.delay -= 1;
+        } else {
+            self.spawner_spawns(natural, census, pos, &mut spawner);
+        }
+        if (spawner.delay, spawner.data.clone()) != was {
+            let reset = spawner.delay > was.0 || spawner.data != was.1;
+            if let Some(Tag::Compound(map)) = self.chunks.get_mut(&pos.chunk()).and_then(|chunk| chunk.block_entities.entities.get_mut(&key)) {
+                map.insert("Delay".to_owned(), Tag::Short(spawner.delay as i16));
+                if let Some(data) = &spawner.data {
+                    map.insert("SpawnData".to_owned(), data.clone());
+                }
+            }
+            if reset {
+                self.changed_block_entities.insert(key);
+            }
+        }
+    }
+
+    fn spawner_spawns(&mut self, natural: &NaturalSpawning, census: &mut Vec<CensusMob>, pos: BlockPos, spawner: &mut Spawner) {
+        if spawner.data.is_none() {
+            spawner.data = Some(spawner.pick(&mut self.random).unwrap_or_else(|| {
+                let mut data = std::collections::BTreeMap::new();
+                data.insert("entity".to_owned(), Tag::Compound(std::collections::BTreeMap::new()));
+                Tag::Compound(data)
+            }));
+        }
+        let data = spawner.data.clone().unwrap_or(Tag::Compound(std::collections::BTreeMap::new()));
+        let inputs = self.spawn_inputs(&natural.players);
+        let in_loaded = |c: ChunkPos| inputs.loaded.contains(&c);
+        let slime_chance = |b: BiomeId| inputs.slime_chances.get(usize::from(b.0)).copied().unwrap_or(0.0);
+        let finder = natural.structures.clone();
+        let structures = |at: BlockPos| finder.as_ref().map_or_else(Vec::new, |find| find(at));
+        let mut context = inputs.context(natural.respawn, census, &in_loaded, &slime_chance, &structures);
+        let spawns = natural.spawns.clone();
+        let mut spawned = false;
+        for _ in 0..spawner.count {
+            let entity = data.get("entity").cloned().unwrap_or(Tag::Compound(std::collections::BTreeMap::new()));
+            let Some(kind) = entity.get("id").and_then(Tag::as_str).map(str::to_owned) else {
+                spawner.delay(&mut self.random);
+                return;
+            };
+            let saved = entity.get("Pos").and_then(Tag::as_list).filter(|p| p.len() == 3).and_then(|p| Some([p[0].as_f64()?, p[1].as_f64()?, p[2].as_f64()?]));
+            let at = match saved {
+                Some(at) => at,
+                None => {
+                    let range = f64::from(spawner.range);
+                    let x = f64::from(pos.x) + (self.random.next_f64() - self.random.next_f64()) * range + 0.5;
+                    let y = f64::from(pos.y + self.random.next_i32_bound(3) - 1);
+                    let z = f64::from(pos.z) + (self.random.next_f64() - self.random.next_f64()) * range + 0.5;
+                    [x, y, z]
+                }
+            };
+            let block = BlockPos::new(at[0].floor() as i32, at[1].floor() as i32, at[2].floor() as i32);
+            match data.get("custom_spawn_rules") {
+                Some(rules) => {
+                    let monster = crate::natural_spawner::spawning::MobCategory::of_type(&kind).is_none_or(|c| !c.friendly());
+                    if monster && self.difficulty == 0 {
+                        continue;
+                    }
+                    if !in_range(rules.get("block_light_limit"), self.block_light(block)) || !in_range(rules.get("sky_light_limit"), self.sky_light(block)) {
+                        continue;
+                    }
+                }
+                None => {
+                    if !spawns.spawner_may_spawn(self, &context, &kind, at) {
+                        continue;
+                    }
+                }
+            }
+            let reach = f64::from(spawner.range);
+            let area = [f64::from(pos.x) - reach, f64::from(pos.y) - reach, f64::from(pos.z) - reach, f64::from(pos.x) + 1.0 + reach, f64::from(pos.y) + 1.0 + reach, f64::from(pos.z) + 1.0 + reach];
+            let nearby = census.iter().filter(|m| m.kind == kind && m.bb[0] < area[3] && m.bb[3] > area[0] && m.bb[1] < area[4] && m.bb[4] > area[1] && m.bb[2] < area[5] && m.bb[5] > area[2]).count();
+            if nearby as i32 >= spawner.max_nearby {
+                spawner.delay(&mut self.random);
+                return;
+            }
+            let y_rot = self.random.next_f32() * 360.0;
+            let only_id = matches!(&entity, Tag::Compound(map) if map.len() == 1);
+            let nbt = (!only_id).then(|| {
+                let mut nbt = entity.clone();
+                if let Tag::Compound(map) = &mut nbt {
+                    map.remove("Pos");
+                }
+                nbt
+            });
+            let Ok(mob) = spawns.summon(self, &mut context, &kind, at, nbt.as_ref(), y_rot) else {
+                spawner.delay(&mut self.random);
+                return;
+            };
+            let census_entry = crate::natural_spawner::tick::census_of(&mob);
+            context.obstacles.extend(census_entry.iter().map(|m| m.bb));
+            census.extend(census_entry);
+            self.spawned.push(mob);
+            spawned = true;
+        }
+        if spawned {
+            spawner.delay(&mut self.random);
+        }
+    }
+
     pub fn nether_portal_random_tick(&mut self, pos: BlockPos) {
         let Some(natural) = &self.natural_spawning else { return };
         if !natural.spawn_mobs || !natural.spawn_monsters || self.difficulty == 0 {
