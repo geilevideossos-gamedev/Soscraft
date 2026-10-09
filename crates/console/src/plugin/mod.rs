@@ -353,7 +353,6 @@ fn publish_client_action_input(
     }
     let script_menu = script_menus.is_some_and(|menus| menus.captures_input());
     let minecraft_map = minecraft.as_ref().is_some_and(|ui| ui.active);
-    let minecraft_item_in_hand = minecraft.as_ref().is_some_and(|ui| ui.active && ui.holding_item);
     let chat_open = minecraft.as_ref().is_some_and(|ui| ui.active && ui.chat.open);
     let inventory_open = minecraft.is_some_and(|ui| ui.active && ui.inventory_open);
     skate.input_blocked = console.open || script_menu;
@@ -393,7 +392,6 @@ fn publish_client_action_input(
             active: minecraft_map,
             use_hint: presented.player(local.0).is_some_and(|ps| ps.cursor_hint > 0),
             screen_open: inventory_open,
-            holding_item: minecraft_item_in_hand,
         },
         |button| !gated && inputs.just_pressed(button),
     );
