@@ -153,6 +153,31 @@ A5 is commit `493fea3`.
   6. Step into lava: you catch fire and take damage; jump into water and the fire goes out. Light a fire with flint and steel and stand in it: burning damage.
   7. Hit a cow with the sword: the hunger bar drops faster than when standing still.
   8. Type `/gamerule fall_damage false`, fall 10 blocks: no damage. Then `/gamerule fall_damage true`.
-  9. Type `/effect give @s minecraft:poison 5`: the hearts turn green and drop to half a heart at least.
+  9. Type `/effect give @s minecraft:poison 5`: the hearts turn green and drop by about two hearts while it lasts (poison never kills).
 - **Kit:** `minecraft:cooked_beef` x32, `minecraft:water_bucket` x1, `minecraft:lava_bucket` x1, `minecraft:flint_and_steel` x1, `minecraft:diamond_sword` x1, `minecraft:cow_spawn_egg` x2, `minecraft:cobblestone` x64 (all in the regression kit).
 - **Decisions:** none.
+
+## A7. Minecraft entities take the asset root from the caller
+
+A6 is commit `a47014b`.
+
+- **What changed:**
+  - `Entities::new(stream, seed)` became `Entities::new(stream, seed, root: Option<&std::path::Path>, jar: Option<std::path::PathBuf>)`. Its `let jar = data_jar();` line is gone (the parameter takes its place), and the item catalog lookup uses `root` instead of `assets::minecraft_map::root().as_deref()`.
+  - `data_jar()` moved from `minecraft_entities.rs` into `minecraft_world.rs` (right after `load()`) as `pub(crate) fn data_jar()`, unchanged apart from dropping its doc line and its inline comment.
+  - Callers: the load completion in `minecraft_world.rs` passes `assets::minecraft_map::root().as_deref()` and `data_jar()`, and `minecraft_inventory.rs` calls `crate::minecraft_world::data_jar()` for the GUI assets.
+  - `minecraft_entities.rs` no longer names `assets`, its last tie to `render_anim`.
+- **Tests:** none added. `render_anim` 42, `minecraft_survival` 111, total unchanged (153).
+- **Checks:** `check -p launcher --locked`, `test -p render_anim --locked`.
+- **Owner test** (loot, recipes, stations and enchantments come from the jar exactly as before):
+  1. Load a Minecraft match with the regression kit. The log has "Minecraft recipes: N with the item catalog ...", and no "Minecraft data JAR not found" warning.
+  2. Open the inventory: the item icons and the GUI textures show. Place the crafting table and craft sticks from planks: the recipe works and the stack sizes are right (sticks stack to 64).
+  3. Place the furnace and smelt raw iron with coal: an iron ingot comes out.
+  4. Mine stone with the pickaxe: it drops cobblestone; with silk touch, an ore drops itself.
+  5. Kill a cow from the spawn egg: it drops beef and leather (mob loot).
+  6. Place the enchanting table with bookshelves around it and open it with some levels: three enchantment offers show.
+- **Kit:** `minecraft:oak_planks` x64, `minecraft:crafting_table` x1, `minecraft:furnace` x1, `minecraft:raw_iron` x16, `minecraft:coal` x16, `minecraft:diamond_pickaxe` x1 with silk touch, `minecraft:cow_spawn_egg` x2, `minecraft:enchanting_table` x1, `minecraft:bookshelf` x15, `minecraft:experience_bottle` x64 (all in the regression kit).
+- **Decisions:**
+  - The `Mob and block loot and the recipes ...` comment above the jar block in `minecraft_entities.rs` stays where it is: the file is an existing file and only the lines the seam needs changed.
+  - `data_jar()` goes after `load()` in `minecraft_world.rs`, next to the other asset-root code of the loader.
+  - The call to `data_jar()` now runs just before `Entities::new` instead of just after the level server thread spawns. It only reads the file system, so nothing a player can see changes.
+  - A6's owner test step 9 was reworded (poison drops about two hearts and never kills); the step itself is unchanged.

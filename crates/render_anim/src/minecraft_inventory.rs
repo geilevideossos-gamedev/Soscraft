@@ -573,7 +573,7 @@ impl InventoryUi {
         if self.gui.as_ref().is_none_or(|gui| gui.generation != generation) && self.gui_failed != Some(generation) {
             let empty = HashMap::new();
             let language = self.language.as_ref().unwrap_or(&empty);
-            self.gui = crate::minecraft_gui::GuiAssets::load(packs, language, crate::minecraft_entities::data_jar().as_deref(), images);
+            self.gui = crate::minecraft_gui::GuiAssets::load(packs, language, crate::minecraft_world::data_jar().as_deref(), images);
             if self.gui.is_none() {
                 self.gui_failed = Some(generation);
             }

@@ -159,7 +159,7 @@ fn player_candidate(player: &PlayerView) -> PlayerCandidate {
 }
 
 impl Entities {
-    pub(crate) fn new(stream: &TerrainStream, seed: i64) -> Self {
+    pub(crate) fn new(stream: &TerrainStream, seed: i64, root: Option<&std::path::Path>, jar: Option<std::path::PathBuf>) -> Self {
         let mut sim = ServerSim::new(stream.world_gen(), stream.states.clone(), "minecraft:overworld");
         sim.set_entity_storage(stream.storage());
         if let Ok(weather) = std::env::var("IW4L_MINECRAFT_WEATHER") {
@@ -172,14 +172,13 @@ impl Entities {
         let mut server = ServerHandle::spawn(sim);
         // Mob and block loot and the recipes (stack sizes), from the game's
         // data JAR when MinecraftOSS has one.
-        let jar = data_jar();
         let mut inventory = Inventory::default();
         let mut loot = None;
         let mut stations = std::sync::Arc::default();
         let mut enchantments = None;
         if let Some(jar) = jar {
             server.load_loot(jar.clone(), seed as u64);
-            let catalog = minecraft_terrain::crafting::find_item_catalog(assets::minecraft_map::root().as_deref(), &jar);
+            let catalog = minecraft_terrain::crafting::find_item_catalog(root, &jar);
             match minecraft_terrain::crafting::load_recipes(&jar, catalog.as_deref()) {
                 Ok((recipes, catalog_error)) => {
                     match (catalog_error, catalog.as_deref()) {
@@ -971,28 +970,6 @@ fn loot_tool_with(enchantments: Option<serde_json::Value>) -> ItemStack {
 fn bob_offset(id: i32) -> f32 {
     let hash = (id as u32).wrapping_mul(0x9e37_79b9).rotate_left(13).wrapping_mul(0x85eb_ca6b);
     hash as f32 / u32::MAX as f32 * std::f32::consts::TAU
-}
-
-/// The game's JAR with its loot tables and recipes.
-pub(crate) fn data_jar() -> Option<std::path::PathBuf> {
-    let root = assets::minecraft_map::root()?;
-    // The client JAR fetched from Mojang, or the one a checkout's harness got.
-    let fetched = root.join(assets::minecraft_setup::CLIENT_JAR);
-    if fetched.is_file() {
-        return Some(fetched);
-    }
-    let root = root.join("harness/.gradle/loom-cache/minecraftMaven/net/minecraft");
-    for entry in std::fs::read_dir(root).ok()?.flatten() {
-        if !entry.file_name().to_string_lossy().starts_with("minecraft-common-") {
-            continue;
-        }
-        for jar in std::fs::read_dir(entry.path().join("26.3")).ok()?.flatten() {
-            if jar.path().extension().is_some_and(|ext| ext == "jar") {
-                return Some(jar.path());
-            }
-        }
-    }
-    None
 }
 
 /// A mob hit as one number: the kind in the top byte, the id below.

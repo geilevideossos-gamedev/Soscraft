@@ -323,6 +323,26 @@ fn load() -> Result<Loaded, String> {
     })
 }
 
+pub(crate) fn data_jar() -> Option<std::path::PathBuf> {
+    let root = assets::minecraft_map::root()?;
+    let fetched = root.join(assets::minecraft_setup::CLIENT_JAR);
+    if fetched.is_file() {
+        return Some(fetched);
+    }
+    let root = root.join("harness/.gradle/loom-cache/minecraftMaven/net/minecraft");
+    for entry in std::fs::read_dir(root).ok()?.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with("minecraft-common-") {
+            continue;
+        }
+        for jar in std::fs::read_dir(entry.path().join("26.3")).ok()?.flatten() {
+            if jar.path().extension().is_some_and(|ext| ext == "jar") {
+                return Some(jar.path());
+            }
+        }
+    }
+    None
+}
+
 /// The sky's sun and moon phases, laid out as MinecraftOSS lays them out.
 fn celestial_image(packs: &PackStack) -> anyhow::Result<image::RgbaImage> {
     let mut celestial = image::RgbaImage::new(32 * 9, 32);
@@ -467,7 +487,7 @@ fn update(
                 runtime.minimap = Default::default();
                 runtime.containers = Default::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
-                let mut entities = crate::minecraft_entities::Entities::new(&world.stream, world.seed);
+                let mut entities = crate::minecraft_entities::Entities::new(&world.stream, world.seed, assets::minecraft_map::root().as_deref(), data_jar());
                 entities.set_game_rules(&world.game_rules);
                 runtime.containers.set_book(entities.stations.clone());
                 runtime.inventory_ui.set_station_data(entities.stations.clone(), entities.enchantments.clone(), world.seed as i32);
