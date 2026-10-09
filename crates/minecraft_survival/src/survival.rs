@@ -114,6 +114,7 @@ impl SurvivalRules {
 #[derive(Default)]
 pub struct Survival {
     pub status: SurvivalStatus,
+    pub score: i32,
     pub rules: SurvivalRules,
     killed: bool,
     pub eye_in_water: bool,
@@ -193,10 +194,25 @@ impl Survival {
         let level = self.status.experience_level;
         let progress = self.status.experience_progress;
         let total = self.status.total_experience;
+        let score = self.score;
         self.respawn();
         self.status.experience_level = level;
         self.status.experience_progress = progress;
         self.status.total_experience = total;
+        self.score = score;
+    }
+
+    pub fn restore(&mut self, status: SurvivalStatus, fire_ticks: i32, score: i32) {
+        self.status = status;
+        self.fire_ticks = fire_ticks;
+        self.score = score;
+        self.synced = Some(0);
+        self.last_health = status.health.ceil() as i32;
+        self.display_health = self.last_health;
+    }
+
+    pub fn fire_ticks(&self) -> i32 {
+        self.fire_ticks
     }
 
     pub fn set_game_mode(&mut self, mode: &minecraft_terrain::game_mode::PlayerMode) {
@@ -663,6 +679,8 @@ impl Survival {
             return None;
         }
         let before = self.status.experience_level;
+        let gained = i32::try_from(points).unwrap_or(i32::MAX);
+        self.score = self.score.saturating_add(gained);
         self.status.give_experience_points(points);
         let level = self.status.experience_level;
         let rested = self

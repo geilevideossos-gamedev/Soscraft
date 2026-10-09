@@ -115,7 +115,7 @@ IW4L_MINECRAFT_KIT=minecraft:diamond_helmet,minecraft:diamond_chestplate,minecra
 
 ### 5. The Minecraft kit only goes to a player without a saved inventory
 
-Commit: (filled in by the next entry)
+Commit: ce55298
 
 - **Changed:** `joining_inventory` (`minecraft_survival/src/player.rs`) gives the `IW4L_MINECRAFT_KIT` stacks only when the joining player's file has no `Inventory` key. A file with an `Inventory`, even an empty list, keeps exactly its stacks and the log says `Minecraft kit skipped: the player file already holds an inventory`. Round-6 worlds have player files with only the game mode in them, and those players still get the kit once. A temporary world (`temp`) has no files, so its player gets the kit on every start, as before.
 - **Tests:** `player`: `the_kit_only_goes_to_a_player_without_a_saved_inventory` (a saved stack stays alone, an emptied inventory stays empty, a new player gets the kit). `server`: `a_mode_only_player_file_still_gets_the_kit_and_a_saved_inventory_does_not` (a mode-only file gets the kit and keeps its creative mode, a saved empty inventory gets nothing, a second UUID still gets the kit).
@@ -130,4 +130,37 @@ Commit: (filled in by the next entry)
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:dirt*16,minecraft:oak_log*2,minecraft:stone_pickaxe
+```
+
+### 6. Minecraft health, hunger, experience and effects are saved
+
+Commit: (filled in by the next entry)
+
+- **Changed:**
+  - `player_nbt.rs`: `PlayerData::stats` (`Stats`: the `SurvivalStatus`, the fire ticks and the score) is written with the keys and types of 26.3 (checked with javap: `LivingEntity.addAdditionalSaveData`/`readAdditionalSaveData`, `Player.addAdditionalSaveData`, `FoodData.addAdditionalSaveData`/`readAdditionalSaveData`, `Entity.saveWithoutId`): `Health`, `AbsorptionAmount`, `foodSaturationLevel`, `foodExhaustionLevel` and `XpP` as floats, `foodLevel`, `foodTickTimer`, `XpLevel`, `XpTotal` and `Score` as ints, `Air` and `Fire` as shorts. Missing keys read with vanilla's defaults (food 20, saturation 5, air 300). A file without `Health` has no stats, so a round-6 player keeps the survival carried over in the process.
+  - `active_effects` holds our nine effects as `MobEffectInstance.CODEC` writes them (`id`, `amplifier` byte, `duration` int with -1 for infinite, `ambient`, `show_particles`, `show_icon`) and is left out when empty. Effects this game does not simulate (speed, haste, ...) stay in the file untouched.
+  - `attributes`: slowness, weakness and absorption put vanilla's effect modifiers (`minecraft:effect.slowness` on `movement_speed`, `effect.weakness` on `attack_damage`, `effect.absorption` on `max_absorption`, amount times amplifier + 1, checked in `MobEffects`) into the attribute list, and an ended effect takes its modifier out. Vanilla does not rebuild effect modifiers when it loads a player, so without this a file opened in Minecraft would lose its absorption hearts at the first hit, or keep a slowness modifier forever. Other attributes and modifiers stay as they are.
+  - On load the effects are added first and `AbsorptionAmount` is set after them, since `add_effect` raises the absorption.
+  - `survival.rs`: `Survival::restore` puts saved stats back and keeps MW2's health from overwriting them (the first sync sets MW2 health from the saved hearts, without a damage flash); `fire_ticks()`; a `score` that grows with the experience points gained (vanilla's `increaseScore` in `giveExperiencePoints`), is reset by a death and kept with `keep_inventory`.
+  - Vendored `third_party/minecraftoss/player/src/survival.rs` (MinecraftOSS patch): `FoodData::tick_timer`/`set_tick_timer`.
+  - `player.rs`: `Player::dead` and `Player::arrived`, kept by `observe_life(pm_type)`. A dead player is saved with `Health` 0, as vanilla saves one.
+  - `server::join`: saved stats come back; a player saved dead (health 0 or less) loads as a fresh respawn, keeping experience under `keep_inventory`; otherwise the survival carried over in the process, as before.
+  - `render_anim/src/minecraft_world.rs`: `observe_life` runs before the frame's game code; the survival is not reset while the player is dead or spectating before they first arrive in the world after a load (that reset would wipe the restored stats during the MW2 spawn menu), and MW2 health is not synced into it then; `close_world` carries the survival over only for a temporary world, because a saved world has it in the player file.
+- **Tests:** `player_nbt`: `health_hunger_and_experience_use_vanilla_keys_and_tag_types`, `stats_round_trip_and_absorption_is_restored_after_the_effects`, `effects_are_saved_like_mob_effect_instance_with_infinite_as_minus_one`, `effects_this_game_does_not_simulate_survive_and_ended_ones_are_removed`, `effect_attribute_modifiers_follow_the_effects`, `missing_food_and_air_keys_take_vanilla_defaults`. `player`: `a_player_arrives_when_first_alive_and_is_dead_until_respawned`, `a_player_saves_its_stats_and_a_dead_one_saves_no_health`. `server`: `a_joining_player_gets_back_the_health_hunger_and_experience_they_saved` (including the first MW2 sync: health set to 33 of 100, no damage), `a_player_saved_dead_comes_back_with_full_health_and_nothing_carried` (also with `keep_inventory`).
+- **Decisions:**
+  - Known limit, unchanged MW2 match flow: a match that ends goes through intermission, which resets health, hunger and experience before the world is saved. Quitting through the menu, or the next match after a quit, keeps them.
+  - `carried_survival` stays for the temporary world only; in a saved world the player file is the truth, as in vanilla.
+  - The fire ticks are saved as they run in `Survival` (-20 when not burning, vanilla's value for players).
+- **Clippy:** no new findings in `minecraft_survival` or `render_anim` (`--no-deps`). The vendored `minecraftoss-player` tests do not compile in this repo (they read scenario CSV files that are not vendored), before and after this commit.
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=survivaltest` and the kit below. Start.
+  2. Throw experience bottles until you are level 5 or more. Build a 6-block pillar and jump off it (fall damage). Sprint around until the hunger bar drops by two or more. Eat a golden apple: yellow absorption hearts appear. **Screenshot 1:** the HUD (hearts, hunger, level).
+  3. Within two minutes (before the absorption runs out), quit through the menu and start again.
+  4. Expected: the same red and yellow hearts, the same hunger and the same level and bar, and no damage flash or hurt sound when the loading screen goes away. **Screenshot 2:** the HUD.
+  5. Type `/effect give @s minecraft:poison 60`, quit and start again: still poisoned (green hearts), and it wears off within the minute.
+  6. Optional: open `saves\survivaltest` in Minecraft 26.3: the same hearts (with the yellow ones), hunger and level.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:experience_bottle*64,minecraft:golden_apple*4,minecraft:cobblestone*64,minecraft:bread*16
 ```

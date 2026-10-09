@@ -10,7 +10,7 @@ use minecraftoss_player::inventory::{Inventory, ItemStack};
 
 use crate::death::DeathWatch;
 use crate::offhand::Blocking;
-use crate::player_nbt::{PlayerData, SLOTS};
+use crate::player_nbt::{PlayerData, SLOTS, Stats};
 use crate::survival::Survival;
 
 pub struct Player {
@@ -25,6 +25,8 @@ pub struct Player {
     pub selected: usize,
     pub hand: Hand,
     pub steps: Steps,
+    pub dead: bool,
+    pub arrived: bool,
 }
 
 #[derive(Default)]
@@ -71,6 +73,18 @@ impl Player {
             selected: 0,
             hand: Hand::default(),
             steps: Steps::default(),
+            dead: false,
+            arrived: false,
+        }
+    }
+
+    pub fn observe_life(&mut self, pm_type: i32) {
+        let (in_world, died) = crate::death::life_state(pm_type);
+        if died {
+            self.dead = true;
+        } else if in_world {
+            self.dead = false;
+            self.arrived = true;
         }
     }
 
@@ -86,10 +100,19 @@ impl Player {
         for stack in loose {
             let _ = inventory.add_item(stack, self.selected);
         }
+        let mut status = self.survival.status;
+        if self.dead {
+            status.health = 0.0;
+        }
         PlayerData {
             mode: Some(self.mode),
             inventory: Some(inventory.slots),
             selected: self.selected,
+            stats: Some(Stats {
+                status,
+                fire: self.survival.fire_ticks(),
+                score: self.survival.score,
+            }),
         }
     }
 }
@@ -249,9 +272,57 @@ mod tests {
         assert!(emptied.slots.iter().all(Option::is_none));
         let new = joining_inventory(recipes, None, Some("dirt*3"));
         assert_eq!(
-            new.slots[9].as_ref().map(|stack| (stack.id.as_str(), stack.count)),
+            new.slots[9]
+                .as_ref()
+                .map(|stack| (stack.id.as_str(), stack.count)),
             Some(("minecraft:dirt", 3))
         );
+    }
+
+    fn steve() -> Player {
+        let mut chat = CommandServer::new(HOST);
+        chat.join(HOST, "Steve");
+        Player::new(
+            chat.profile(HOST).unwrap(),
+            PlayerMode::new(GameMode::Survival),
+            Survival::default(),
+            Inventory::default(),
+        )
+    }
+
+    #[test]
+    fn a_player_arrives_when_first_alive_and_is_dead_until_respawned() {
+        let mut player = steve();
+        assert!(!player.arrived && !player.dead);
+        player.observe_life(playerstate_iw4::PM_TYPE_SPECTATOR);
+        assert!(!player.arrived && !player.dead);
+        player.observe_life(0);
+        assert!(player.arrived && !player.dead);
+        player.observe_life(playerstate_iw4::PM_TYPE_DEAD);
+        assert!(player.dead);
+        player.observe_life(playerstate_iw4::PM_TYPE_INTERMISSION);
+        assert!(player.dead);
+        player.observe_life(0);
+        assert!(!player.dead);
+        player.observe_life(playerstate_iw4::PM_TYPE_INTERMISSION);
+        assert!(!player.dead);
+    }
+
+    #[test]
+    fn a_player_saves_its_stats_and_a_dead_one_saves_no_health() {
+        let mut player = steve();
+        player.survival.observe(100, 100);
+        player.survival.status.health = 9.0;
+        player.survival.status.experience_level = 4;
+        player.survival.score = 33;
+        let stats = player.data().stats.unwrap();
+        assert_eq!(stats.status.health, 9.0);
+        assert_eq!(stats.status.experience_level, 4);
+        assert_eq!(stats.score, 33);
+        assert_eq!(stats.fire, player.survival.fire_ticks());
+        player.observe_life(playerstate_iw4::PM_TYPE_DEAD);
+        assert_eq!(player.data().stats.unwrap().status.health, 0.0);
+        assert_eq!(player.survival.status.health, 9.0);
     }
 
     #[test]

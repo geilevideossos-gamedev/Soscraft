@@ -477,7 +477,7 @@ fn update(
                         save.set_host(&host.uuid);
                     }
                 }
-                let player = minecraft_survival::server::join(globals.save.as_ref(), &globals.data.recipes, &profile, std::env::var("IW4L_MINECRAFT_GAMEMODE").ok().as_deref(), std::env::var("IW4L_MINECRAFT_KIT").ok().as_deref(), runtime.carried_survival.take());
+                let player = minecraft_survival::server::join(globals.save.as_ref(), &globals.data.recipes, &globals.game_rules, &profile, std::env::var("IW4L_MINECRAFT_GAMEMODE").ok().as_deref(), std::env::var("IW4L_MINECRAFT_KIT").ok().as_deref(), runtime.carried_survival.take());
                 let uuid = player.uuid.clone();
                 players.insert(uuid.clone(), player);
                 runtime.environment_accumulator = 0.0;
@@ -559,6 +559,9 @@ fn update(
         puppet.active = false;
         return;
     };
+    if let Some(ps) = presented.player(local.0) {
+        player.observe_life(ps.pm_type);
+    }
     let host_alive = presented.player(local.0).is_some_and(|ps| ps.pm_type == 0);
     let host_pose = presented
         .player(local.0)
@@ -566,7 +569,7 @@ fn update(
         .map(|ps| minecraft_commands::Pose { feet: sim::voxel::to_block(origin, ps.origin), yaw: minecraft_yaw(ps.viewangles[1]), pitch: ps.viewangles[0] })
         .or_else(|| player.survival.last_feet().map(|feet| minecraft_commands::Pose { feet, yaw: 0.0, pitch: 0.0 }));
     let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, level, player, &mut ui.chat.sent, host_pose, host_alive);
-    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, .. } = player;
+    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, arrived, .. } = player;
     let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
     if !delivered.is_empty() {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
@@ -607,13 +610,14 @@ fn update(
     }
     ui.game_mode = ui_game_mode(player_mode.mode);
     death_watch.observe(in_world, died, survival.status.experience_level, keep_inventory);
-    if dead {
+    if dead && *arrived {
         if keep_inventory || death_watch.switched_teams() {
             survival.respawn_keeping_experience();
         } else {
             survival.respawn();
         }
-    } else if !sim::voxel::player_damage_pending()
+    } else if !dead
+        && !sim::voxel::player_damage_pending()
         && let Some(health) = authority.0.player(local.0).map(|p| (p.health, p.max_health))
     {
         survival.observe(health.0, health.1);
@@ -2290,6 +2294,7 @@ fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
     let mut server = runtime.server.take();
     let local = runtime.local.take();
     if let (Some(server), Some(local)) = (server.as_mut(), local.as_ref())
+        && server.globals.save.is_none()
         && let Some(player) = server.players.get_mut(local)
     {
         runtime.carried_survival = Some(std::mem::take(&mut player.survival));

@@ -96,6 +96,7 @@ pub fn starting_game_mode(saved: Option<PlayerMode>, chosen: Option<&str>) -> Pl
 pub fn join(
     save: Option<&WorldSave>,
     recipes: &Arc<RecipeBook>,
+    rules: &GameRules,
     profile: &Profile,
     chosen_mode: Option<&str>,
     kit: Option<&str>,
@@ -117,8 +118,22 @@ pub fn join(
         chosen_mode,
     );
     let inventory = joining_inventory(recipes.clone(), saved.inventory, kit);
-    #[allow(clippy::unwrap_or_default)]
-    let survival = carried.unwrap_or_else(Survival::default);
+    let survival = match (saved.stats, carried) {
+        (Some(stats), _) => {
+            let mut survival = Survival::default();
+            survival.restore(stats.status, stats.fire, stats.score);
+            if stats.status.health <= 0.0 {
+                if crate::death::keeps_belongings(rules.keep_inventory(), mode.mode) {
+                    survival.respawn_keeping_experience();
+                } else {
+                    survival.respawn();
+                }
+            }
+            survival
+        }
+        (None, Some(carried)) => carried,
+        (None, None) => Survival::default(),
+    };
     let mut player = Player::new(profile, mode, survival, inventory);
     player.selected = saved.selected;
     player
@@ -220,6 +235,7 @@ pub fn autosave(
 mod tests {
     use super::*;
     use minecraftoss_player::inventory::ItemStack;
+    use minecraftoss_player::survival::EffectKind;
 
     #[test]
     fn a_player_starts_in_survival_or_in_the_mode_their_file_saved() {
@@ -291,8 +307,9 @@ mod tests {
     fn a_joining_player_gets_the_inventory_and_mode_their_file_saved() {
         let (_dir, save) = world("join");
         let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
         let steve = profile("Steve");
-        let mut player = join(Some(&save), &recipes, &steve, None, None, None);
+        let mut player = join(Some(&save), &recipes, &rules, &steve, None, None, None);
         assert_eq!(player.mode, PlayerMode::new(GameMode::Survival));
         assert!(player.inventory.slots.iter().all(Option::is_none));
         player.mode = PlayerMode::new(GameMode::Creative);
@@ -300,7 +317,7 @@ mod tests {
         player.inventory.slots[38] = Some(ItemStack::new("minecraft:iron_chestplate", 1));
         player.selected = 2;
         save.write_player(&player.uuid.0, &player.data()).unwrap();
-        let again = join(Some(&save), &recipes, &steve, None, None, None);
+        let again = join(Some(&save), &recipes, &rules, &steve, None, None, None);
         assert_eq!(again.mode, PlayerMode::new(GameMode::Creative));
         assert_eq!(again.selected, 2);
         assert_eq!(held(&again, 2), Some(("minecraft:diamond", 3)));
@@ -309,6 +326,7 @@ mod tests {
         let alex = join(
             Some(&save),
             &recipes,
+            &rules,
             &profile("Alex"),
             Some("adventure"),
             None,
@@ -322,22 +340,122 @@ mod tests {
     fn a_mode_only_player_file_still_gets_the_kit_and_a_saved_inventory_does_not() {
         let (_dir, save) = world("kit");
         let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
         let steve = profile("Steve");
         let mode_only = PlayerData {
             mode: Some(PlayerMode::new(GameMode::Creative)),
             ..PlayerData::default()
         };
         save.write_player(&steve.uuid, &mode_only).unwrap();
-        let first = join(Some(&save), &recipes, &steve, None, Some("dirt*5"), None);
+        let first = join(
+            Some(&save),
+            &recipes,
+            &rules,
+            &steve,
+            None,
+            Some("dirt*5"),
+            None,
+        );
         assert_eq!(first.mode.mode, GameMode::Creative);
         assert_eq!(held(&first, 9), Some(("minecraft:dirt", 5)));
         let mut emptied = first;
         emptied.inventory.slots.fill(None);
         save.write_player(&steve.uuid, &emptied.data()).unwrap();
-        let again = join(Some(&save), &recipes, &steve, None, Some("dirt*5"), None);
+        let again = join(
+            Some(&save),
+            &recipes,
+            &rules,
+            &steve,
+            None,
+            Some("dirt*5"),
+            None,
+        );
         assert!(again.inventory.slots.iter().all(Option::is_none));
-        let alex = join(Some(&save), &recipes, &profile("Alex"), None, Some("dirt*5"), None);
+        let alex = join(
+            Some(&save),
+            &recipes,
+            &rules,
+            &profile("Alex"),
+            None,
+            Some("dirt*5"),
+            None,
+        );
         assert_eq!(held(&alex, 9), Some(("minecraft:dirt", 5)));
+    }
+
+    #[test]
+    fn a_joining_player_gets_back_the_health_hunger_and_experience_they_saved() {
+        let (_dir, save) = world("stats");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let steve = profile("Steve");
+        let mut player = join(Some(&save), &recipes, &rules, &steve, None, None, None);
+        player.survival.observe(100, 100);
+        player.survival.status.health = 6.5;
+        player.survival.status.food.level = 9;
+        player.survival.status.experience_level = 12;
+        player.survival.score = 250;
+        player
+            .survival
+            .status
+            .add_effect(EffectKind::Regeneration, 400, 1);
+        save.write_player(&steve.uuid, &player.data()).unwrap();
+        let mut carried = Survival::default();
+        carried.status.health = 2.0;
+        let mut again = join(
+            Some(&save),
+            &recipes,
+            &rules,
+            &steve,
+            None,
+            None,
+            Some(carried),
+        );
+        assert_eq!(again.survival.status.health, 6.5);
+        assert_eq!(again.survival.status.food.level, 9);
+        assert_eq!(again.survival.status.experience_level, 12);
+        assert_eq!(again.survival.score, 250);
+        assert!(
+            again
+                .survival
+                .status
+                .effect(EffectKind::Regeneration)
+                .is_some()
+        );
+        let settle = again.survival.settle(100, 100);
+        assert_eq!((settle.set, settle.damage), (Some(33), None));
+        assert_eq!(again.survival.vitals().display_health, 7);
+    }
+
+    #[test]
+    fn a_player_saved_dead_comes_back_with_full_health_and_nothing_carried() {
+        let (_dir, save) = world("dead");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let steve = profile("Steve");
+        let mut player = join(Some(&save), &recipes, &rules, &steve, None, None, None);
+        player.survival.status.experience_level = 12;
+        player.observe_life(playerstate_iw4::PM_TYPE_DEAD);
+        save.write_player(&steve.uuid, &player.data()).unwrap();
+        let mut carried = Survival::default();
+        carried.status.health = 2.0;
+        let again = join(
+            Some(&save),
+            &recipes,
+            &rules,
+            &steve,
+            None,
+            None,
+            Some(carried),
+        );
+        assert_eq!(again.survival.status.health, 20.0);
+        assert_eq!(again.survival.status.experience_level, 0);
+        assert!(!again.dead);
+        let mut keeping = GameRules::default();
+        keeping.set("keep_inventory", "true").unwrap();
+        let kept = join(Some(&save), &recipes, &keeping, &steve, None, None, None);
+        assert_eq!(kept.survival.status.health, 20.0);
+        assert_eq!(kept.survival.status.experience_level, 12);
     }
 
     #[test]
@@ -353,7 +471,16 @@ mod tests {
         std::fs::write(&path, b"broken").unwrap();
         std::fs::write(minecraft_terrain::level_storage::old_path(&path), b"broken").unwrap();
         let recipes = Arc::new(RecipeBook::default());
-        let player = join(Some(&save), &recipes, &steve, None, Some("dirt"), None);
+        let rules = GameRules::default();
+        let player = join(
+            Some(&save),
+            &recipes,
+            &rules,
+            &steve,
+            None,
+            Some("dirt"),
+            None,
+        );
         assert_eq!(player.mode, PlayerMode::new(GameMode::Survival));
         assert_eq!(held(&player, 9), Some(("minecraft:dirt", 1)));
     }
@@ -361,12 +488,14 @@ mod tests {
     #[test]
     fn a_temporary_world_gives_the_kit_and_the_survival_carried_over() {
         let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
         let mut carried = Survival::default();
         carried.observe(100, 100);
         carried.status.health = 7.0;
         let player = join(
             None,
             &recipes,
+            &rules,
             &profile("Steve"),
             Some("creative"),
             Some("dirt*2"),

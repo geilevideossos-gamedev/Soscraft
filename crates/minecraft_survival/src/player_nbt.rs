@@ -5,12 +5,68 @@ use minecraft_terrain::item_nbt::{components_tag, saved_components, tag_json};
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_player::crafting::RecipeBook;
 use minecraftoss_player::inventory::ItemStack;
+use minecraftoss_player::survival::{EffectKind, SurvivalStatus};
 
 use crate::guns::{HOTBAR, WEAPON_PREFIX};
 
 pub const STORAGE: usize = 36;
 pub const SLOTS: usize = 43;
 const MAX_COUNT: u8 = 99;
+const INFINITE: i32 = -1;
+pub const EFFECTS: [(EffectKind, &str); 9] = [
+    (EffectKind::Hunger, "minecraft:hunger"),
+    (EffectKind::Poison, "minecraft:poison"),
+    (EffectKind::Regeneration, "minecraft:regeneration"),
+    (EffectKind::Absorption, "minecraft:absorption"),
+    (EffectKind::Resistance, "minecraft:resistance"),
+    (EffectKind::FireResistance, "minecraft:fire_resistance"),
+    (EffectKind::Nausea, "minecraft:nausea"),
+    (EffectKind::Slowness, "minecraft:slowness"),
+    (EffectKind::Weakness, "minecraft:weakness"),
+];
+
+struct EffectModifier {
+    effect: EffectKind,
+    attribute: &'static str,
+    base: f64,
+    id: &'static str,
+    amount: f64,
+    operation: &'static str,
+}
+
+const MODIFIERS: [EffectModifier; 3] = [
+    EffectModifier {
+        effect: EffectKind::Slowness,
+        attribute: "minecraft:movement_speed",
+        base: 0.10000000149011612,
+        id: "minecraft:effect.slowness",
+        amount: -0.15000000596046448,
+        operation: "add_multiplied_total",
+    },
+    EffectModifier {
+        effect: EffectKind::Weakness,
+        attribute: "minecraft:attack_damage",
+        base: 1.0,
+        id: "minecraft:effect.weakness",
+        amount: -4.0,
+        operation: "add_value",
+    },
+    EffectModifier {
+        effect: EffectKind::Absorption,
+        attribute: "minecraft:max_absorption",
+        base: 0.0,
+        id: "minecraft:effect.absorption",
+        amount: 4.0,
+        operation: "add_value",
+    },
+];
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stats {
+    pub status: SurvivalStatus,
+    pub fire: i32,
+    pub score: i32,
+}
 pub const EQUIPMENT: [(usize, &str); 7] = [
     (36, "feet"),
     (37, "legs"),
@@ -20,13 +76,25 @@ pub const EQUIPMENT: [(usize, &str); 7] = [
     (41, "body"),
     (42, "saddle"),
 ];
-const OWNED: [&str; 6] = [
+const OWNED: [&str; 18] = [
     "playerGameType",
     "previousPlayerGameType",
     "abilities",
     "Inventory",
     "equipment",
     "SelectedItemSlot",
+    "Health",
+    "AbsorptionAmount",
+    "foodLevel",
+    "foodTickTimer",
+    "foodSaturationLevel",
+    "foodExhaustionLevel",
+    "XpLevel",
+    "XpP",
+    "XpTotal",
+    "Score",
+    "Air",
+    "Fire",
 ];
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -34,6 +102,7 @@ pub struct PlayerData {
     pub mode: Option<PlayerMode>,
     pub inventory: Option<Vec<Option<ItemStack>>>,
     pub selected: usize,
+    pub stats: Option<Stats>,
 }
 
 impl PlayerData {
@@ -58,6 +127,7 @@ impl PlayerData {
                 .and_then(|slot| usize::try_from(slot).ok())
                 .filter(|slot| *slot < HOTBAR)
                 .unwrap_or(0),
+            stats: read_stats(tag),
         }
     }
 
@@ -86,6 +156,10 @@ impl PlayerData {
             "SelectedItemSlot".to_owned(),
             Tag::Int(self.selected as i32),
         );
+        if let Some(stats) = &self.stats {
+            stats_entries(stats, &mut entries);
+        }
+        entries.extend(self.effect_entries(None, None));
         entries
     }
 
@@ -94,12 +168,191 @@ impl PlayerData {
             Some(Tag::Compound(map)) => map,
             _ => BTreeMap::new(),
         };
+        let effects = merged.remove("active_effects");
+        let attributes = merged.remove("attributes");
         for key in OWNED {
             merged.remove(key);
         }
         merged.extend(self.entries());
+        merged.extend(self.effect_entries(effects.as_ref(), attributes.as_ref()));
         Tag::Compound(merged)
     }
+
+    fn effect_entries(
+        &self,
+        effects: Option<&Tag>,
+        attributes: Option<&Tag>,
+    ) -> Vec<(String, Tag)> {
+        let status = self.stats.as_ref().map(|stats| &stats.status);
+        let mut list: Vec<Tag> = effects
+            .and_then(Tag::as_list)
+            .unwrap_or(&[])
+            .iter()
+            .filter(|effect| effect_kind(effect).is_none())
+            .cloned()
+            .collect();
+        list.extend(status.map_or_else(Vec::new, effect_tags));
+        let mut entries = Vec::new();
+        if !list.is_empty() {
+            entries.push(("active_effects".to_owned(), Tag::List(list)));
+        }
+        if let Some(attributes) = attributes_with(attributes, status) {
+            entries.push(("attributes".to_owned(), attributes));
+        }
+        entries
+    }
+}
+
+fn compound(entries: Vec<(&str, Tag)>) -> Tag {
+    Tag::Compound(
+        entries
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect(),
+    )
+}
+
+fn stats_entries(stats: &Stats, entries: &mut BTreeMap<String, Tag>) {
+    let status = &stats.status;
+    let whole = |value: u32| Tag::Int(i32::try_from(value).unwrap_or(i32::MAX));
+    let short = |value: i32| Tag::Short(value.clamp(i16::MIN.into(), i16::MAX.into()) as i16);
+    let values = [
+        ("Health", Tag::Float(status.health)),
+        ("AbsorptionAmount", Tag::Float(status.absorption)),
+        ("foodLevel", Tag::Int(i32::from(status.food.level))),
+        ("foodTickTimer", whole(status.food.tick_timer())),
+        ("foodSaturationLevel", Tag::Float(status.food.saturation)),
+        ("foodExhaustionLevel", Tag::Float(status.food.exhaustion)),
+        ("XpLevel", whole(status.experience_level)),
+        ("XpP", Tag::Float(status.experience_progress)),
+        ("XpTotal", whole(status.total_experience)),
+        ("Score", Tag::Int(stats.score)),
+        ("Air", short(status.air)),
+        ("Fire", short(stats.fire)),
+    ];
+    for (key, value) in values {
+        entries.insert(key.to_owned(), value);
+    }
+}
+
+fn read_stats(tag: &Tag) -> Option<Stats> {
+    let health = tag.get("Health")?.as_f64()? as f32;
+    let float = |key: &str, default: f32| {
+        tag.get(key)
+            .and_then(Tag::as_f64)
+            .map_or(default, |v| v as f32)
+    };
+    let int = |key: &str, default: i64| tag.get(key).and_then(Tag::as_i64).unwrap_or(default);
+    let whole = |key: &str| int(key, 0).clamp(0, i64::from(i32::MAX)) as u32;
+    let mut status = SurvivalStatus::default();
+    for effect in tag
+        .get("active_effects")
+        .and_then(Tag::as_list)
+        .unwrap_or(&[])
+    {
+        let Some(kind) = effect_kind(effect) else {
+            continue;
+        };
+        let amplifier = effect.get("amplifier").and_then(Tag::as_i64).unwrap_or(0) as u8;
+        let duration = match effect.get("duration").and_then(Tag::as_i64).unwrap_or(0) {
+            -1 => u32::MAX,
+            ticks if ticks > 0 => ticks.min(i64::from(i32::MAX)) as u32,
+            _ => continue,
+        };
+        status.add_effect(kind, duration, amplifier);
+    }
+    status.health = health.min(status.max_health);
+    status.absorption = float("AbsorptionAmount", 0.0).max(0.0);
+    status.food.level = int("foodLevel", 20).clamp(0, 20) as u8;
+    status.food.set_tick_timer(whole("foodTickTimer"));
+    status.food.saturation = float("foodSaturationLevel", 5.0);
+    status.food.exhaustion = float("foodExhaustionLevel", 0.0);
+    status.experience_level = whole("XpLevel");
+    status.experience_progress = float("XpP", 0.0);
+    status.total_experience = whole("XpTotal");
+    status.air = int("Air", i64::from(status.max_air)) as i32;
+    Some(Stats {
+        status,
+        fire: int("Fire", 0) as i32,
+        score: int("Score", 0) as i32,
+    })
+}
+
+fn effect_kind(effect: &Tag) -> Option<EffectKind> {
+    let id = effect.get("id")?.as_str()?;
+    EFFECTS
+        .iter()
+        .find(|(_, known)| *known == id)
+        .map(|(kind, _)| *kind)
+}
+
+fn effect_tags(status: &SurvivalStatus) -> Vec<Tag> {
+    EFFECTS
+        .iter()
+        .filter_map(|&(kind, id)| {
+            let effect = status.effect(kind)?;
+            Some(compound(vec![
+                ("id", Tag::String(id.to_owned())),
+                ("amplifier", Tag::Byte(effect.amplifier as i8)),
+                (
+                    "duration",
+                    Tag::Int(i32::try_from(effect.duration).unwrap_or(INFINITE)),
+                ),
+                ("ambient", Tag::Byte(0)),
+                ("show_particles", Tag::Byte(1)),
+                ("show_icon", Tag::Byte(1)),
+            ]))
+        })
+        .collect()
+}
+
+fn attributes_with(previous: Option<&Tag>, status: Option<&SurvivalStatus>) -> Option<Tag> {
+    let mut list: Vec<Tag> = previous
+        .and_then(Tag::as_list)
+        .map_or_else(Vec::new, <[Tag]>::to_vec);
+    for entry in &mut list {
+        if let Tag::Compound(map) = entry
+            && let Some(Tag::List(modifiers)) = map.get_mut("modifiers")
+        {
+            modifiers.retain(|modifier| {
+                let id = modifier.get("id").and_then(Tag::as_str);
+                !MODIFIERS.iter().any(|known| Some(known.id) == id)
+            });
+            if modifiers.is_empty() {
+                map.remove("modifiers");
+            }
+        }
+    }
+    for known in &MODIFIERS {
+        let Some(effect) = status.and_then(|status| status.effect(known.effect)) else {
+            continue;
+        };
+        let modifier = compound(vec![
+            ("id", Tag::String(known.id.to_owned())),
+            (
+                "amount",
+                Tag::Double(known.amount * (f64::from(effect.amplifier) + 1.0)),
+            ),
+            ("operation", Tag::String(known.operation.to_owned())),
+        ]);
+        let entry = list
+            .iter_mut()
+            .find(|entry| entry.get("id").and_then(Tag::as_str) == Some(known.attribute));
+        match entry {
+            Some(Tag::Compound(map)) => match map.get_mut("modifiers") {
+                Some(Tag::List(modifiers)) => modifiers.push(modifier),
+                _ => {
+                    map.insert("modifiers".to_owned(), Tag::List(vec![modifier]));
+                }
+            },
+            _ => list.push(compound(vec![
+                ("id", Tag::String(known.attribute.to_owned())),
+                ("base", Tag::Double(known.base)),
+                ("modifiers", Tag::List(vec![modifier])),
+            ])),
+        }
+    }
+    (!list.is_empty()).then_some(Tag::List(list))
 }
 
 pub fn stack_tag(stack: &ItemStack) -> Option<Tag> {
@@ -174,15 +427,6 @@ mod tests {
         ItemStack::new(id, count)
     }
 
-    fn compound(entries: Vec<(&str, Tag)>) -> Tag {
-        Tag::Compound(
-            entries
-                .into_iter()
-                .map(|(key, value)| (key.to_owned(), value))
-                .collect(),
-        )
-    }
-
     fn filled() -> Vec<Option<ItemStack>> {
         let mut slots = vec![None; SLOTS];
         slots[0] = Some(stack("minecraft:cobblestone", 64));
@@ -251,6 +495,7 @@ mod tests {
             mode: Some(mode),
             inventory: Some(slots),
             selected: 8,
+            ..PlayerData::default()
         };
         let tag = data.merged(None);
         let recipes = RecipeBook::default();
@@ -337,6 +582,7 @@ mod tests {
             mode: Some(PlayerMode::new(GameMode::Survival)),
             inventory: Some(vec![None; SLOTS]),
             selected: 1,
+            ..PlayerData::default()
         };
         let merged = data.merged(Some(previous.clone()));
         assert_eq!(merged.get("recipeBook"), previous.get("recipeBook"));
@@ -401,6 +647,227 @@ mod tests {
             written.get("components"),
             Some(&compound(vec![("minecraft:damage", Tag::Int(3))]))
         );
+    }
+
+    fn hurt_and_fed() -> Stats {
+        let mut status = SurvivalStatus::default();
+        status.health = 13.5;
+        status.food.level = 17;
+        status.food.saturation = 2.25;
+        status.food.exhaustion = 1.5;
+        status.food.set_tick_timer(42);
+        status.experience_level = 7;
+        status.experience_progress = 0.25;
+        status.total_experience = 120;
+        status.air = 140;
+        Stats {
+            status,
+            fire: 35,
+            score: 120,
+        }
+    }
+
+    fn with_stats(stats: Stats) -> PlayerData {
+        PlayerData {
+            stats: Some(stats),
+            ..PlayerData::default()
+        }
+    }
+
+    #[test]
+    fn health_hunger_and_experience_use_vanilla_keys_and_tag_types() {
+        let entries = with_stats(hurt_and_fed()).entries();
+        let expected = [
+            ("Health", Tag::Float(13.5)),
+            ("AbsorptionAmount", Tag::Float(0.0)),
+            ("foodLevel", Tag::Int(17)),
+            ("foodTickTimer", Tag::Int(42)),
+            ("foodSaturationLevel", Tag::Float(2.25)),
+            ("foodExhaustionLevel", Tag::Float(1.5)),
+            ("XpLevel", Tag::Int(7)),
+            ("XpP", Tag::Float(0.25)),
+            ("XpTotal", Tag::Int(120)),
+            ("Score", Tag::Int(120)),
+            ("Air", Tag::Short(140)),
+            ("Fire", Tag::Short(35)),
+        ];
+        for (key, tag) in expected {
+            assert_eq!(entries.get(key), Some(&tag), "{key}");
+        }
+        assert!(!entries.contains_key("active_effects"));
+        assert!(!entries.contains_key("attributes"));
+        let no_stats = PlayerData::default().entries();
+        assert!(!no_stats.contains_key("Health"));
+        assert!(!no_stats.contains_key("foodLevel"));
+    }
+
+    #[test]
+    fn stats_round_trip_and_absorption_is_restored_after_the_effects() {
+        let mut stats = hurt_and_fed();
+        stats.fire = -20;
+        stats.status.add_effect(EffectKind::Absorption, 1200, 1);
+        stats
+            .status
+            .add_effect(EffectKind::Regeneration, u32::MAX, 1);
+        stats.status.add_effect(EffectKind::Poison, 300, 0);
+        stats.status.absorption = 3.0;
+        let tag = with_stats(stats).merged(None);
+        let read = PlayerData::read(&tag, &RecipeBook::default())
+            .stats
+            .unwrap();
+        assert_eq!(read, stats);
+        assert_eq!(read.status.absorption, 3.0);
+        assert_eq!(
+            read.status
+                .effect(EffectKind::Regeneration)
+                .map(|e| e.duration),
+            Some(u32::MAX)
+        );
+    }
+
+    #[test]
+    fn effects_are_saved_like_mob_effect_instance_with_infinite_as_minus_one() {
+        let mut stats = hurt_and_fed();
+        stats
+            .status
+            .add_effect(EffectKind::Regeneration, u32::MAX, 1);
+        stats.status.add_effect(EffectKind::Weakness, 600, 0);
+        let entries = with_stats(stats).entries();
+        let effects = entries["active_effects"].as_list().unwrap();
+        assert_eq!(
+            effects[0],
+            compound(vec![
+                ("ambient", Tag::Byte(0)),
+                ("amplifier", Tag::Byte(1)),
+                ("duration", Tag::Int(-1)),
+                ("id", Tag::String("minecraft:regeneration".to_owned())),
+                ("show_icon", Tag::Byte(1)),
+                ("show_particles", Tag::Byte(1)),
+            ])
+        );
+        assert_eq!(
+            effects[1].get("id"),
+            Some(&Tag::String("minecraft:weakness".to_owned()))
+        );
+        assert_eq!(effects[1].get("duration"), Some(&Tag::Int(600)));
+    }
+
+    #[test]
+    fn effects_this_game_does_not_simulate_survive_and_ended_ones_are_removed() {
+        let effect = |id: &str| {
+            compound(vec![
+                ("id", Tag::String(id.to_owned())),
+                ("amplifier", Tag::Byte(0)),
+                ("duration", Tag::Int(400)),
+            ])
+        };
+        let previous = compound(vec![(
+            "active_effects",
+            Tag::List(vec![effect("minecraft:speed"), effect("minecraft:poison")]),
+        )]);
+        let merged = with_stats(hurt_and_fed()).merged(Some(previous.clone()));
+        assert_eq!(
+            merged.get("active_effects"),
+            Some(&Tag::List(vec![effect("minecraft:speed")]))
+        );
+        let read = PlayerData::read(&previous, &RecipeBook::default());
+        assert_eq!(read.stats, None);
+        let only_ours = compound(vec![(
+            "active_effects",
+            Tag::List(vec![effect("minecraft:poison")]),
+        )]);
+        let merged = with_stats(hurt_and_fed()).merged(Some(only_ours));
+        assert_eq!(merged.get("active_effects"), None);
+    }
+
+    #[test]
+    fn effect_attribute_modifiers_follow_the_effects() {
+        let modifier = |id: &str, amount: f64, operation: &str| {
+            compound(vec![
+                ("id", Tag::String(id.to_owned())),
+                ("amount", Tag::Double(amount)),
+                ("operation", Tag::String(operation.to_owned())),
+            ])
+        };
+        let sprinting = modifier("minecraft:sprinting", 0.3, "add_multiplied_total");
+        let previous = compound(vec![(
+            "attributes",
+            Tag::List(vec![
+                compound(vec![
+                    ("id", Tag::String("minecraft:movement_speed".to_owned())),
+                    ("base", Tag::Double(0.10000000149011612)),
+                    (
+                        "modifiers",
+                        Tag::List(vec![
+                            modifier("minecraft:effect.slowness", -0.3, "add_multiplied_total"),
+                            sprinting.clone(),
+                        ]),
+                    ),
+                ]),
+                compound(vec![
+                    ("id", Tag::String("minecraft:attack_damage".to_owned())),
+                    ("base", Tag::Double(1.0)),
+                    (
+                        "modifiers",
+                        Tag::List(vec![modifier(
+                            "minecraft:effect.weakness",
+                            -4.0,
+                            "add_value",
+                        )]),
+                    ),
+                ]),
+            ]),
+        )]);
+        let mut stats = hurt_and_fed();
+        stats.status.add_effect(EffectKind::Absorption, 2400, 1);
+        let merged = with_stats(stats).merged(Some(previous));
+        let attributes = merged.get("attributes").and_then(Tag::as_list).unwrap();
+        assert_eq!(attributes.len(), 3);
+        assert_eq!(
+            attributes[0].get("modifiers"),
+            Some(&Tag::List(vec![sprinting]))
+        );
+        assert_eq!(attributes[1].get("modifiers"), None);
+        assert_eq!(attributes[1].get("base"), Some(&Tag::Double(1.0)));
+        assert_eq!(
+            attributes[2],
+            compound(vec![
+                ("id", Tag::String("minecraft:max_absorption".to_owned())),
+                ("base", Tag::Double(0.0)),
+                (
+                    "modifiers",
+                    Tag::List(vec![modifier(
+                        "minecraft:effect.absorption",
+                        8.0,
+                        "add_value"
+                    )]),
+                ),
+            ])
+        );
+        let mut slow = hurt_and_fed();
+        slow.status.add_effect(EffectKind::Slowness, 100, 2);
+        let fresh = with_stats(slow).entries();
+        let speed = &fresh["attributes"].as_list().unwrap()[0];
+        assert_eq!(
+            speed.get("modifiers").and_then(Tag::as_list).unwrap()[0].get("amount"),
+            Some(&Tag::Double(-0.15000000596046448 * 3.0))
+        );
+        assert_eq!(speed.get("base"), Some(&Tag::Double(0.10000000149011612)));
+    }
+
+    #[test]
+    fn missing_food_and_air_keys_take_vanilla_defaults() {
+        let tag = compound(vec![("Health", Tag::Float(30.0))]);
+        let stats = PlayerData::read(&tag, &RecipeBook::default())
+            .stats
+            .unwrap();
+        assert_eq!(stats.status.health, 20.0);
+        assert_eq!(stats.status.food.level, 20);
+        assert_eq!(stats.status.food.saturation, 5.0);
+        assert_eq!(stats.status.food.tick_timer(), 0);
+        assert_eq!(stats.status.air, 300);
+        assert_eq!((stats.fire, stats.score), (0, 0));
+        assert_eq!(stats.status.experience_level, 0);
     }
 
     #[test]
