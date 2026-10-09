@@ -5564,6 +5564,42 @@ mod tests {
     }
 
     #[test]
+    fn magma_cubes_spawn_in_three_sizes_and_come_back_as_magma_cubes() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(TerrainGenerator::nether(registries.clone(), 0).unwrap()), "minecraft:the_nether").unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, 0, 256).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:the_nether");
+        server.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        server.set_players(&[[0.5, 100.0, 0.5]], 2);
+        let mut sizes = std::collections::BTreeSet::new();
+        for _ in 0..40 {
+            server.summon("minecraft:magma_cube", [0.5, 100.0, 0.5], None, 0.0).unwrap();
+        }
+        for e in server.mobs.slimes() {
+            assert!(e.slime.magma);
+            sizes.insert(e.slime.size);
+        }
+        assert!(sizes.iter().all(|size| [1, 2, 4].contains(size)) && sizes.len() > 1, "{sizes:?}");
+        let tags = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        for (id, tag) in &tags {
+            let cube = &server.mobs.slimes().iter().find(|e| e.id == *id).unwrap().slime;
+            assert_eq!(tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str), Some("minecraft:magma_cube"));
+            let armor = tag.get("attributes").and_then(minecraftoss_core::nbt::Tag::as_list).and_then(|list| list.iter().find(|a| a.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) == Some("minecraft:armor"))).and_then(|a| a.get("base")).and_then(minecraftoss_core::nbt::Tag::as_f64);
+            assert_eq!(armor, Some(f64::from(cube.size * 3)));
+            let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+            let back = crate::server_mobs::spawn_saved(&mut loaded, tag).expect("magma cubes load");
+            let back = &loaded.slime_mut(back).unwrap().slime;
+            assert!(back.magma && back.size == cube.size);
+        }
+    }
+
+    #[test]
     fn nether_lava_spreads_farther_and_faster_and_the_nether_sea_is_at_32() {
         let Ok(paths) = DataPaths::discover() else { return };
         let Ok(registries) = Registries::load(&paths) else { return };

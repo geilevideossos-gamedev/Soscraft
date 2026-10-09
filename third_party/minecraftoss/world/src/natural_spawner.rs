@@ -230,6 +230,7 @@ enum Rules {
     Stray,
     /// `Slime.checkSlimeSpawnRules` (swamp surfaces, slime chunks).
     Slime,
+    MagmaCube,
     ZombifiedPiglin,
     /// `Bat.checkBatSpawnRules` (below the surface, in the dark).
     Bat,
@@ -292,6 +293,7 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "spider" => (1.4, 0.9, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "enderman" => (0.6, 2.9, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "slime" => (0.52, 0.52, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        "magma_cube" => (0.52, 0.52, Placement::OnGround, MotionBlockingNoLeaves, true, false),
         "zombie_horse" => (1.396_484_4, 1.6, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "bat" => (0.5, 0.9, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "glow_squid" => (0.8, 0.8, Placement::InWater, MotionBlockingNoLeaves, false, false),
@@ -311,6 +313,7 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "zombified_piglin" => Rules::ZombifiedPiglin,
         "camel_husk" => Rules::Other,
         "slime" => Rules::Slime,
+        "magma_cube" => Rules::MagmaCube,
         "bat" => Rules::Bat,
         "glow_squid" => Rules::GlowSquid,
         _ if monster => Rules::Monster,
@@ -320,11 +323,11 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         _ if monster => Walk::Monster,
         // Cube mobs and squid keep `PathfinderMob`'s 0; bats are no
         // pathfinders (`Mob.checkSpawnRules`).
-        "slime" | "bat" | "glow_squid" => Walk::Neutral,
+        "slime" | "magma_cube" | "bat" | "glow_squid" => Walk::Neutral,
         _ => Walk::Animal,
     };
     // Animals stay (`Animal.removeWhenFarAway`) except the overrides.
-    let remove_far = monster || matches!(short, "slime" | "zombie_horse" | "axolotl" | "bat" | "glow_squid");
+    let remove_far = monster || matches!(short, "slime" | "magma_cube" | "zombie_horse" | "axolotl" | "bat" | "glow_squid");
     let cluster = match short {
         "horse" | "donkey" | "mule" | "llama" | "camel" | "zombie_horse" => 6,
         "wolf" => 8,

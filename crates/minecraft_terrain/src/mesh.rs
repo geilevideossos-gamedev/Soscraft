@@ -499,6 +499,7 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     textures.insert(ResourceId::parse(crate::trident::TEXTURE)?, ());
     textures.insert(ResourceId::parse("minecraft:entity/spider/spider")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/slime/slime")?, ());
+    textures.insert(ResourceId::parse("minecraft:entity/slime/magmacube")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/enderman/enderman")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/enderman/enderman_eyes")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/witch/witch")?, ());

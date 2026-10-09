@@ -582,6 +582,7 @@ impl CreatureSpawns {
                 self.dark_enough(level, context, pos) && self.mob_spawn_rules(level, kind, info, pos) && level.sky_brightness(sky.below()) >= 15
             }
             Rules::Slime => self.slime_spawn_rules(level, context, kind, info, pos),
+            Rules::MagmaCube => context.difficulty != 0,
             Rules::ZombifiedPiglin => {
                 let below = self.registries.blocks.block(self.registries.blocks.block_of(level.block(pos.below()))).name.as_str() == "minecraft:nether_wart_block";
                 context.difficulty != 0 && !below
@@ -869,7 +870,7 @@ impl CreatureSpawns {
                 level.random().next_f32();
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
             }
-            "minecraft:slime" => {
+            "minecraft:slime" | "minecraft:magma_cube" => {
                 // `AgeableMob.finalizeSpawn` without babies, `Mob`'s part,
                 // then `AbstractCubeMob.setSpawnSize`.
                 if matches!(group, MonsterGroup::None) {
@@ -882,6 +883,9 @@ impl CreatureSpawns {
                     scale += 1;
                 }
                 Self::set_cube_size(&mut tag, 1 << scale);
+                if kind == "minecraft:magma_cube" {
+                    set_attribute_base(&mut tag, "minecraft:armor", f64::from((1 << scale) * 3));
+                }
                 // A size other than the default 1 changes the synced size:
                 // `onSyncedDataUpdated` turns the cube to its head yaw, the
                 // constructor's roll from its own unseeded random.

@@ -2633,7 +2633,7 @@ impl EntityWorld {
             EntityKey::Skeleton(id) => self.skeletons.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.skeleton.body)),
             EntityKey::Creeper(id) => self.creepers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.creeper.body)),
             EntityKey::Spider(id) => self.spiders.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.spider.body)),
-            EntityKey::Slime(id) => self.slimes.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.slime.body)),
+            EntityKey::Slime(id) => self.slimes.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage_after_armor(damage, e.slime.armor(), 0.0)), &mut e.slime.body)),
             EntityKey::Enderman(id) => self.endermen.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.enderman.body)),
             EntityKey::Witch(id) => self.witches.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, false, false), &mut e.witch.body)),
             EntityKey::IronGolem(id) => self.iron_golems.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.golem.body)),
@@ -3005,7 +3005,7 @@ impl EntityWorld {
                 projectile_knockback(&mut entity.spider.body, &mut entity.random, hit.velocity);
             }
         } else if let Some(entity) = self.slimes.iter_mut().find(|entity| entity.id == id) {
-            let result = entity.hurt(hit.damage);
+            let result = entity.hurt(damage_after_armor(hit.damage, entity.slime.armor(), 0.0));
             outcome = Some(result);
             if result.applied {
                 projectile_knockback(&mut entity.slime.body, &mut entity.random, hit.velocity);
@@ -3388,7 +3388,7 @@ impl EntityWorld {
             add(e.id, "minecraft:spider", &e.spider.body, e.spider.eye_height(), e.spider.health > 0.0);
         }
         for e in &self.slimes {
-            add(e.id, "minecraft:slime", &e.slime.body, e.slime.eye_height(), e.slime.health > 0.0);
+            add(e.id, e.slime.type_id(), &e.slime.body, e.slime.eye_height(), e.slime.health > 0.0);
         }
         for e in &self.endermen {
             add(e.id, "minecraft:enderman", &e.enderman.body, e.enderman.eye_height(), e.enderman.health > 0.0);
@@ -3467,7 +3467,7 @@ impl EntityWorld {
             }
             (hit, false)
         } else if let Some(e) = self.slimes.iter_mut().find(|e| e.id == victim) {
-            let hit = e.hurt(damage);
+            let hit = e.hurt(damage_after_armor(damage, e.slime.armor(), 0.0));
             if hit.applied {
                 e.ai.state.hurt_by = Some((by, e.tick_count));
             }
@@ -3736,7 +3736,8 @@ impl EntityWorld {
         }
         for e in &mut self.slimes {
             let context = EntityLootContext { cube_size: Some(e.slime.size), ..plain };
-            let Some((order, mut death)) = death_of(e.id, &mut e.slime.damage, "minecraft:slime", Some("minecraft:slime"), context) else { continue };
+            let kind = e.slime.type_id();
+            let Some((order, mut death)) = death_of(e.id, &mut e.slime.damage, kind, Some(kind), context) else { continue };
             // `Slime.setSize`: `xpReward` is the size.
             if earns(&death, true) {
                 death.experience = e.slime.size;
@@ -3808,8 +3809,8 @@ impl EntityWorld {
         if self.creepers.iter().any(|e| e.id == id) {
             return Some("minecraft:creeper");
         }
-        if self.slimes.iter().any(|e| e.id == id) {
-            return Some("minecraft:slime");
+        if let Some(e) = self.slimes.iter().find(|e| e.id == id) {
+            return Some(e.slime.type_id());
         }
         if self.endermen.iter().any(|e| e.id == id) {
             return Some("minecraft:enderman");
@@ -4490,7 +4491,7 @@ impl EntityWorld {
         out.extend(self.skeletons.iter().map(|e| entry(e.skeleton.kind.type_id(), &e.skeleton.body, e.skeleton.persistence_required)));
         out.extend(self.creepers.iter().map(|e| entry("minecraft:creeper", &e.creeper.body, e.creeper.persistence_required)));
         out.extend(self.spiders.iter().map(|e| entry("minecraft:spider", &e.spider.body, e.spider.persistence_required)));
-        out.extend(self.slimes.iter().map(|e| entry("minecraft:slime", &e.slime.body, e.slime.persistence_required)));
+        out.extend(self.slimes.iter().map(|e| entry(e.slime.type_id(), &e.slime.body, e.slime.persistence_required)));
         // `requiresCustomPersistence`: carrying a block keeps it.
         out.extend(self.endermen.iter().map(|e| entry("minecraft:enderman", &e.enderman.body, e.enderman.persistence_required || e.carried().is_some())));
         out.extend(self.witches.iter().map(|e| entry("minecraft:witch", &e.witch.body, e.witch.persistence_required)));
@@ -6964,6 +6965,32 @@ mod tests {
         assert_eq!(zombie_attack_damage(&Zombie::new(DVec3::ZERO)), 3.0);
         assert_eq!((entity.zombie.eye_height(), entity.zombie.kind.type_id()), (1.79, "minecraft:zombified_piglin"));
         assert_eq!(world.entity_type(id), Some("minecraft:zombified_piglin"));
+    }
+
+    #[test]
+    fn a_magma_cube_is_an_armoured_fire_proof_slime_that_hurts_even_when_tiny_and_splits_into_magma() {
+        let big = crate::slime::Slime::magma(DVec3::new(0.5, 1.0, 0.5), 4);
+        assert_eq!((big.type_id(), big.attack_damage(), big.armor()), ("minecraft:magma_cube", 6.0, 12.0));
+        let tiny = crate::slime::Slime::magma(DVec3::ZERO, 1);
+        assert!(tiny.can_deal_damage() && !crate::slime::Slime::new(DVec3::ZERO, 1).can_deal_damage());
+        let mut world = EntityWorld::default();
+        let mut burning = crate::slime::Slime::magma(DVec3::new(0.5, 1.0, 0.5), 2);
+        burning.body.fire_ticks = 100;
+        let id = world.spawn_slime(burning, false);
+        world.tick(&mut Floor);
+        let cube = world.slime_mut(id).unwrap();
+        assert_eq!((cube.slime.body.fire_ticks, cube.slime.health), (0, 4.0));
+        assert_eq!(world.entity_type(id), Some("minecraft:magma_cube"));
+        let blasted = world.player_blast(Some(7), id, 3.0, DVec3::new(0.5, 1.0, 2.5), 0.0).unwrap();
+        assert!(blasted.applied);
+        let cube = world.slime_mut(id).unwrap();
+        assert!((cube.slime.health - (4.0 - damage_after_armor(3.0, 6.0, 0.0))).abs() < 1e-6, "{}", cube.slime.health);
+        cube.hurt(100.0);
+        for _ in 0..21 {
+            world.tick(&mut Floor);
+        }
+        assert!(world.slimes().len() >= 2);
+        assert!(world.slimes().iter().all(|e| e.slime.magma && e.slime.size == 1), "the halves are magma cubes too");
     }
 
     #[test]

@@ -971,6 +971,7 @@ impl Entities {
         );
         horse_render::append_horses(&mut out.models, &mut out.translucent, w.cows().iter(), poses, atlas, light, partial);
         slime_render::append_slimes(&mut out.models, &mut out.translucent, w.slimes().iter(), poses, atlas, light, partial);
+        magma_cube_render::append_magma_cubes(&mut out.models, w.slimes().iter(), poses, atlas, light, partial);
         orb_render::append_orbs(&mut out.translucent, &self.orbs, &self.orb_pickups, partial, atlas, forward, light);
         let carried = enderman_render::append_endermen(
             &mut out.models,

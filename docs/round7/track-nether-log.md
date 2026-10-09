@@ -341,3 +341,31 @@ Previous commit: cdcaf137
 ```
 IW4L_MINECRAFT_KIT=minecraft:zombified_piglin_spawn_egg*4,minecraft:diamond_sword,minecraft:lava_bucket,minecraft:flint_and_steel,minecraft:obsidian*14
 ```
+
+### 17. Minecraft magma cubes (E2-21)
+
+Previous commit: 91e2589c
+
+- **Changed** (checked with javap on the 26.3 jar: `MagmaCube`, `AbstractCubeMob`, `MagmaCubeModel`, `MagmaCubeRenderer`, `AbstractCubeMobRenderer`):
+  - Vendored `third_party/minecraftoss/entities` (MinecraftOSS patch): `Slime.magma`, a slime variant on the same cube goals and move control (`MagmaCube` extends `AbstractCubeMob` as `Slime` does):
+    - attack damage is its size plus 2 (`getAttackDamage`), and it hurts even at size 1 (`canDealDamage` is only `isEffectiveAi`), so a small one also chases with the aggressive hop timing;
+    - armour 3 per size step (`setSize`), applied to player hits, arrows, blasts (MW2 included) and mob hits;
+    - fire immune (entry 14);
+    - hops four times as rarely (`getJumpDelay` x4), jumps 0.1 per size higher (`jumpFromGround`), and in lava jumps out at 0.22 plus 0.05 per size (`jumpInLiquid`);
+    - its squash fades slower (`decreaseSquish` x0.9);
+    - sounds `entity.magma_cube.*` (the jump has no small version);
+    - it splits into magma cubes, saves and dies as `minecraft:magma_cube` (its loot table and experience from the size).
+  - Vendored `third_party/minecraftoss/world` (MinecraftOSS patch): natural spawning knows it: fire immune, `checkMagmaCubeSpawnRules` (only not in peaceful), the cube mobs' walk target and despawn, and the slime's `finalizeSpawn` (sizes 1, 2 or 4) with the armour attribute.
+  - `minecraft_terrain/src/server_mobs.rs`: `minecraft:magma_cube` is simulated, loaded and saved with its size.
+  - New `minecraft_terrain/src/magma_cube_render.rs`: `MagmaCubeModel`, eight 8x1x8 slices round a 4-block core from `entity/slime/magmacube`, the slices spreading 1.7 pixels per step as it stretches on take-off (`setupAnim`), sized and squashed by `applySizeAndSquish` (no slight downscale), lit at block light 15 (`MagmaCubeRenderer.getBlockLightLevel`). `slime_render.rs` skips magma cubes; `minecraft_survival/src/entities.rs` draws them (one call line); `mesh.rs` loads the texture.
+- **Tests:** `world` (entities): `a_magma_cube_is_an_armoured_fire_proof_slime_that_hurts_even_when_tiny_and_splits_into_magma`. `magma_cube_render`: `a_magma_cube_is_eight_slices_round_a_core_that_spread_as_it_leaps` (9 cubes, 216 vertices, the slice UVs and spread). `server`: `magma_cubes_spawn_in_three_sizes_and_come_back_as_magma_cubes` (40 summoned in the Nether: sizes 1, 2 and 4, armour 3 per size saved, each loads back as a magma cube of its size).
+- **Decisions:** the landing particles stay undrawn for magma cubes as for slimes (only their random draws are kept); vanilla's are flames.
+- **Test steps** (any world):
+  1. Use 4 magma cube spawn eggs on flat ground: cubes of different sizes appear, dark red and glowing in the dark, hopping slowly and high. **Screenshot 14.**
+  2. Let them come: even the smallest hurts you. Pour the lava bucket next to them: they swim in it and leap out, unhurt.
+  3. Kill a big one: it splits into smaller magma cubes; the medium and big ones drop magma cream sometimes. **Screenshot 15.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:magma_cube_spawn_egg*4,minecraft:diamond_sword,minecraft:lava_bucket,minecraft:cobblestone*64
+```

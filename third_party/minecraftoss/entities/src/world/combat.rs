@@ -265,7 +265,7 @@ impl EntityWorld {
             }
             hit
         } else if let Some(e) = self.slimes.iter_mut().find(|e| e.id == id) {
-            let hit = e.hurt(amount);
+            let hit = e.hurt(damage_after_armor(amount, e.slime.armor(), 0.0));
             if hit.applied {
                 e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
             }
