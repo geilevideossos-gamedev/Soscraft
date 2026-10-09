@@ -26,6 +26,7 @@ mod minecraft_gui;
 mod minecraft_hotbar;
 mod minecraft_inventory;
 mod minecraft_loading;
+mod minecraft_portal;
 mod minecraft_screens;
 mod minecraft_suggestions;
 mod minecraft_tooltip;

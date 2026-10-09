@@ -199,6 +199,7 @@ pub struct HudTessPass {
     pub minecraft: TessJob,
     pub minecraft_fire: TessJob,
     pub minecraft_loading: TessJob,
+    pub minecraft_portal: TessJob,
 }
 
 /// What the HUD tess flush systems' own bodies cost this frame.

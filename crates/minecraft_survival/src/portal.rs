@@ -22,6 +22,8 @@ const DECAY_PER_TICK: i32 = 4;
 const CREATIVE_DELAY: &str = "players_nether_portal_creative_delay";
 const DEFAULT_DELAY: &str = "players_nether_portal_default_delay";
 const ENTERING_THE_NETHER: &str = "allow_entering_nether_using_portals";
+const EFFECT_RISE: f32 = 0.0125;
+const EFFECT_FALL: f32 = 0.05;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PortalKind {
@@ -121,11 +123,54 @@ pub struct PortalProcess {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PortalEffect {
+    pub intensity: f32,
+    pub previous: f32,
+}
+
+impl PortalEffect {
+    pub fn tick(&mut self, inside: bool) -> bool {
+        self.previous = self.intensity;
+        let (change, triggered) = if inside {
+            (EFFECT_RISE, self.intensity == 0.0)
+        } else if self.intensity > 0.0 {
+            (-EFFECT_FALL, false)
+        } else {
+            (0.0, false)
+        };
+        self.intensity = (self.intensity + change).clamp(0.0, 1.0);
+        triggered
+    }
+
+    pub fn shown(&self, partial: f32) -> f32 {
+        self.previous + (self.intensity - self.previous) * partial.clamp(0.0, 1.0)
+    }
+}
+
+pub fn overlay_alpha(intensity: f32) -> f32 {
+    if intensity < 1.0 {
+        let squared = intensity * intensity;
+        squared * squared * 0.8 + 0.2
+    } else {
+        intensity
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Portal {
     pub process: Option<PortalProcess>,
     pub clock: f64,
     pub travel: Option<PortalTravel>,
     pub travel_sound: bool,
+    pub effect: PortalEffect,
+    pub age: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Stepped {
+    pub due: Option<PortalProcess>,
+    pub triggered: bool,
+    pub inside: bool,
 }
 
 impl Portal {
@@ -197,10 +242,11 @@ pub fn step(
     rules: &GameRules,
     feet: Option<[f64; 3]>,
     seconds: f64,
-) -> Option<PortalProcess> {
+) -> Stepped {
     let ticks = player.portal.ticks(seconds);
     let can_use = feet.is_some() && !player.dead && !player.remote;
     let invulnerable = player.mode.invulnerable();
+    let mut stepped = Stepped::default();
     for _ in 0..ticks {
         let entry = feet
             .filter(|_| can_use)
@@ -210,16 +256,20 @@ pub fn step(
                 .portal
                 .set_inside(&mut player.portal_cooldown, PortalKind::Nether, entry);
         }
-        if let Some(due) = player
+        player.portal.age += 1;
+        let inside = entry.is_some();
+        stepped.inside |= inside;
+        stepped.triggered |= player.portal.effect.tick(inside);
+        stepped.due = player
             .portal
             .tick(&mut player.portal_cooldown, can_use, |kind| {
                 kind.transition_time(invulnerable, rules)
-            })
-        {
-            return Some(due);
+            });
+        if stepped.due.is_some() {
+            break;
         }
     }
-    None
+    stepped
 }
 
 pub fn within_border(x: f64, z: f64) -> bool {
@@ -495,6 +545,7 @@ pub fn set_off(player: &mut Player, travel: PortalTravel) {
     let reason = crate::switch::loading_reason(false, player.dimension, travel.to);
     player.portal.travel = Some(travel);
     player.portal.travel_sound = true;
+    player.portal.effect = PortalEffect::default();
     player.travel_to(travel.to, None, reason);
 }
 
@@ -817,6 +868,44 @@ mod tests {
         assert_eq!(place.feet, across);
         assert!(near(place.motion[2], 0.2) && !place.on_ground);
         assert_eq!(travel.target_place().feet, [100.5, 70.0, -199.5]);
+    }
+
+    #[test]
+    fn the_overlay_fades_in_over_eighty_ticks_and_out_over_twenty_and_sounds_from_zero() {
+        let mut effect = PortalEffect::default();
+        assert!(
+            effect.tick(true),
+            "stepping in from nothing triggers the sound"
+        );
+        assert!(!effect.tick(true));
+        for _ in 2..79 {
+            assert!(!effect.tick(true));
+        }
+        assert!(effect.intensity < 1.0);
+        effect.tick(true);
+        assert!(effect.intensity > 0.999, "{}", effect.intensity);
+        assert!(!effect.tick(true), "no sound while it is up");
+        assert_eq!(effect.intensity, 1.0);
+        for left in (0..20).rev() {
+            assert!(!effect.tick(false));
+            assert!((effect.intensity - left as f32 * 0.05).abs() < 1e-5);
+        }
+        assert!(!effect.tick(false));
+        assert_eq!(effect.intensity, 0.0);
+        let mut short = PortalEffect::default();
+        short.tick(true);
+        short.tick(false);
+        assert_eq!(short.intensity, 0.0);
+        assert!(short.tick(true), "back to zero, the sound plays again");
+        let halfway = PortalEffect {
+            intensity: 0.5,
+            previous: 0.4,
+        };
+        assert!((halfway.shown(0.5) - 0.45).abs() < 1e-6);
+        assert_eq!(halfway.shown(2.0), 0.5);
+        assert!((overlay_alpha(0.5) - 0.25).abs() < 1e-6);
+        assert!((overlay_alpha(0.0125) - 0.2).abs() < 1e-6);
+        assert_eq!(overlay_alpha(1.0), 1.0);
     }
 
     #[test]

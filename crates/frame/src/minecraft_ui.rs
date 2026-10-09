@@ -194,6 +194,14 @@ pub struct MinecraftUi {
     pub chat: crate::McChat,
     pub creative: crate::McCreative,
     pub level_loading: Option<McLevelLoading>,
+    pub portal_frames: Option<(Handle<Image>, u32)>,
+    pub portal_overlay: Option<McPortalOverlay>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct McPortalOverlay {
+    pub alpha: f32,
+    pub frame: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

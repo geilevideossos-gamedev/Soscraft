@@ -207,3 +207,25 @@ Previous commit: f837e707
 ```
 IW4L_MINECRAFT_KIT=minecraft:obsidian*64,minecraft:flint_and_steel,minecraft:diamond_pickaxe+efficiency=5,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:torch*64
 ```
+
+### 11. Minecraft nether portals tint the screen and sound when you step in (E2-11)
+
+Previous commit: eeceab2e
+
+- **Changed:**
+  - `minecraft_survival/src/portal.rs`: `PortalEffect`, `LocalPlayer.handlePortalTransitionEffect` (javap): each tick inside a nether portal (the `CONFUSION` transition) the intensity rises by 0.0125, outside it falls by 0.05, between 0 and 1; stepping in at 0 triggers the sound. `shown(partial)` lerps the last two ticks as `Gui` does, and `overlay_alpha` is `extractPortalOverlay`'s `i^4 * 0.8 + 0.2` below 1. The effect follows touching the portal, not the trip's process, as vanilla's client does, so the arrival portal tints the screen too while its cooldown keeps the player from going back. `step` now returns `Stepped { due, triggered, inside }`, `Portal.age` counts the ticks for the animation, and `set_off` resets the effect, as vanilla starts a new `LocalPlayer` in the new level.
+  - `frame/src/minecraft_ui.rs` (appended): `MinecraftUi.portal_frames` (the `block/nether_portal` animation strip, loaded once with the world by a call line in `minecraft_world.rs`) and `MinecraftUi.portal_overlay: Option<McPortalOverlay { alpha, frame }>`.
+  - New `hud/src/minecraft_portal.rs` (with its line in `hud/src/lib.rs`, `gpu_list.rs` and `plugin.rs`): one quad over the whole screen with the strip's current frame (one a tick, as the sprite animates), white with the overlay's alpha, drawn above the fire overlay and below the hotbar, in first and third person alike (vanilla draws it outside the first-person camera overlays).
+  - `render_anim/src/minecraft_portal.rs`: `block.portal.trigger` at volume 0.25 and pitch 0.8 to 1.2 (`SimpleSoundInstance.forLocalAmbience`), container screens close while inside (`Screen.isAllowedInPortal`; the chat stays open, as `ChatScreen` allows it), and the overlay value each frame. The portal loading screen behind a trip is S3's `NETHER_PORTAL` background (E1-9).
+- **Tests:** `portal`: `the_overlay_fades_in_over_eighty_ticks_and_out_over_twenty_and_sounds_from_zero` (the sound only from 0, full after 80 ticks, gone 20 ticks after, the lerp, the alpha curve). `hud::minecraft_portal`: `the_portal_overlay_covers_the_screen_with_one_animation_frame`.
+- **Decisions:** none new.
+- **Test steps** (the world `n2` of entry 10 and its kit; these also cover entries 6 to 10):
+  1. Stand in front of a lit portal and step in: a faint purple swirl covers the screen at once and the portal trigger sound plays; the swirl grows stronger over about 4 seconds. **Screenshot 6** (about 2 seconds in).
+  2. Step out after about 2 seconds: the swirl fades away within half a second. Step back in: the sound plays again.
+  3. Stand in the portal and press E: the inventory closes at once. Press T: the chat stays open (close it again).
+  4. Stay in the portal: at full purple the portal loading screen comes, then the Nether. You arrive in the exit portal: the travel sound plays, then the trigger sound and the swirl start again while you stand there, and you do not go back. **Screenshot 7.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:obsidian*64,minecraft:flint_and_steel,minecraft:diamond_pickaxe+efficiency=5,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:torch*64
+```

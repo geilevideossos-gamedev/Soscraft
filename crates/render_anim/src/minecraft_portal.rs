@@ -1,28 +1,58 @@
 use std::collections::BTreeMap;
 
+use bevy::prelude::*;
+use frame::MinecraftUi;
+use frame::minecraft_ui::McPortalOverlay;
 use minecraft_survival::level::Level;
 use minecraft_survival::player::Player;
 use minecraft_survival::portal;
 use minecraft_survival::server::Globals;
-use minecraft_terrain::pack::PackStack;
+use minecraft_terrain::pack::{PackStack, ResourceId};
 use minecraft_terrain::terrain::Dimension;
 
 use crate::minecraft_sounds::Sounds;
 
+const TRIGGER_SOUND: &str = "minecraft:block.portal.trigger";
 const TRAVEL_SOUND: &str = "minecraft:block.portal.travel";
 const PORTAL_SOUND_VOLUME: f32 = 0.25;
+const PORTAL_SPRITE: &str = "minecraft:block/nether_portal";
 
+fn portal_pitch(sounds: &mut Sounds) -> f32 {
+    sounds.random() * 0.4 + 0.8
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn step(
     player: &mut Player,
     levels: &BTreeMap<Dimension, Level>,
     globals: &Globals,
     feet: Option<[f64; 3]>,
     seconds: f64,
+    mut sounds: Option<&mut Sounds>,
+    packs: &PackStack,
+    ui: &mut MinecraftUi,
 ) {
     let Some(level) = levels.get(&player.dimension) else {
+        ui.portal_overlay = None;
         return;
     };
-    let Some(due) = portal::step(player, &level.terrain, &globals.game_rules, feet, seconds) else {
+    let stepped = portal::step(player, &level.terrain, &globals.game_rules, feet, seconds);
+    if stepped.inside {
+        ui.inventory_open = false;
+    }
+    if stepped.triggered
+        && let Some(sounds) = sounds.as_deref_mut()
+    {
+        let pitch = portal_pitch(sounds);
+        sounds.play(packs, TRIGGER_SOUND, None, PORTAL_SOUND_VOLUME, pitch);
+    }
+    let partial = (player.portal.clock / portal::TICK_SECONDS) as f32;
+    let shown = player.portal.effect.shown(partial);
+    ui.portal_overlay = (shown > 0.0).then(|| McPortalOverlay {
+        alpha: portal::overlay_alpha(shown),
+        frame: player.portal.age,
+    });
+    let Some(due) = stepped.due else {
         return;
     };
     let Some(travel) = portal::depart(player, &level.terrain, &globals.registries, due) else {
@@ -40,6 +70,7 @@ pub(crate) fn step(
         travel.target
     );
     portal::set_off(player, travel);
+    ui.portal_overlay = None;
 }
 
 pub(crate) fn arriving(player: &mut Player, sounds: Option<&mut Sounds>, packs: &PackStack) {
@@ -51,7 +82,35 @@ pub(crate) fn arriving(player: &mut Player, sounds: Option<&mut Sounds>, packs: 
     }
     player.portal.travel_sound = false;
     if let Some(sounds) = sounds {
-        let pitch = sounds.random() * 0.4 + 0.8;
+        let pitch = portal_pitch(sounds);
         sounds.play(packs, TRAVEL_SOUND, None, PORTAL_SOUND_VOLUME, pitch);
     }
+}
+
+pub(crate) fn frames(
+    packs: &PackStack,
+    images: &mut Assets<Image>,
+) -> Option<(Handle<Image>, u32)> {
+    let id = ResourceId::parse(PORTAL_SPRITE).ok()?;
+    let bytes = packs.texture(&id).ok()??;
+    let strip = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+        .ok()?
+        .to_rgba8();
+    let (width, height) = strip.dimensions();
+    let frames = (height / width.max(1)).max(1);
+    let image = Image {
+        sampler: bevy::image::ImageSampler::nearest(),
+        ..Image::new(
+            bevy::render::render_resource::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            bevy::render::render_resource::TextureDimension::D2,
+            strip.into_raw(),
+            bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+            bevy::asset::RenderAssetUsages::default(),
+        )
+    };
+    Some((images.add(image), frames))
 }
