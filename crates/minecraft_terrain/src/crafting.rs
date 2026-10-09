@@ -439,11 +439,17 @@ pub fn give_kit(inventory: &mut Inventory, spec: &str) -> usize {
     given
 }
 
+const KIT_DAMAGE: &str = "minecraft:damage";
+
 pub fn kit_stack(recipes: &RecipeBook, id: &str, size: u8, enchantments: &[(String, i32)]) -> ItemStack {
     let mut stack = recipes.stack(id, size);
     if !enchantments.is_empty() {
         let mut components = serde_json::Map::new();
         for (enchantment, level) in enchantments {
+            if enchantment == KIT_DAMAGE {
+                components.insert(KIT_DAMAGE.to_owned(), serde_json::json!((*level).max(0)));
+                continue;
+            }
             minecraftoss_entities::enchant::add_enchantment(id, &mut components, enchantment, *level);
         }
         stack.components = Some(serde_json::Value::Object(components));
@@ -649,6 +655,15 @@ mod tests {
         assert_eq!(components(1), Some(json!({"minecraft:enchantments": {"minecraft:unbreaking": 1}, "minecraft:dyed_color": 0x3C44AA})));
         assert_eq!(components(2), Some(json!({"minecraft:potion_contents": {"potion": "minecraft:red"}})));
         assert_eq!(components(3), None);
+    }
+
+    #[test]
+    fn kit_damage_wears_the_item_down() {
+        let mut inventory = Inventory::default();
+        assert_eq!(give_kit(&mut inventory, "elytra+damage=430,diamond_sword+sharpness=5+damage=12"), 2);
+        let components = |slot: usize| inventory.slots[HOTBAR + slot].as_ref().unwrap().components.clone();
+        assert_eq!(components(0), Some(json!({"minecraft:damage": 430})));
+        assert_eq!(components(1), Some(json!({"minecraft:enchantments": {"minecraft:sharpness": 5}, "minecraft:damage": 12})));
     }
 
     fn write_jar(path: &Path, recipes: &[(&str, Value)], tags: &[(&str, Value)]) {

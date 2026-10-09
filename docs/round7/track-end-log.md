@@ -417,3 +417,20 @@ Previous commit: d49f75d2
 ```
 IW4L_MINECRAFT_KIT=minecraft:ender_eye*32,minecraft:end_portal_frame*2,minecraft:diamond_pickaxe+efficiency=5
 ```
+
+## Second run, group elytra: gliding and firework rockets
+
+### 15. Minecraft test kits can set an item's damage
+
+Previous commit: 2f684111
+
+- **Why:** the elytra steps need an elytra one point from worn out. Gliding there takes over 7 minutes, and `/give` takes no components yet.
+- **Changed:** `minecraft_terrain/src/crafting.rs`: in `kit_stack`, a `+damage=N` part sets the `minecraft:damage` component (at least 0) instead of an enchantment. `minecraft:damage` is not an enchantment, so no real kit entry changes.
+- **Tests:** `crafting`: `kit_damage_wears_the_item_down` (`elytra+damage=430` and `diamond_sword+sharpness=5+damage=12`).
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=kittest` (a new world) and the kit below. Start, open the inventory: the sword's durability bar is just short of full, and the elytra's bar is red and almost empty. **Screenshot 1.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra+damage=430,minecraft:diamond_sword+sharpness=5+damage=12
+```
