@@ -601,7 +601,6 @@ fn update(
         puppet.active = false;
         return;
     }
-    let loaded: Vec<Dimension> = levels.keys().copied().collect();
     let Some(level) = levels.get_mut(&player.dimension) else {
         ui.active = false;
         ui.inventory_open = false;
@@ -609,6 +608,23 @@ fn update(
         return;
     };
     if player.switching.is_some() {
+        if player.switching.is_some_and(|switch| switch.respawn) {
+            if let Some(switch) = player.switching.as_mut() {
+                switch.respawn = false;
+            }
+            if minecraft_survival::respawn::respawn_in(globals, level, player, |_| None) {
+                show_chat(&mut ui.chat, inventory_ui, &world.packs, &[minecraft_survival::player::missing_respawn_message()]);
+            }
+            if player.switching.is_some_and(|switch| !switch.left) {
+                ui.active = false;
+                ui.inventory_open = false;
+                puppet.active = false;
+                return;
+            }
+        }
+        if player.arrival.is_none() && player.place.is_none_or(|place| place.dimension != player.dimension) {
+            player.arrival = Some(minecraft_survival::respawn::level_spawn(&globals.spawn, level));
+        }
         let ps = presented.player(local.0).filter(|ps| ps.pm_type == 0);
         if let Some(ps) = ps.filter(|_| player.arrival.is_some()) {
             place_player(player, &mut authority.0, local.0, ps, origin, spawn_gate, now_ms);
@@ -628,10 +644,15 @@ fn update(
         return;
     }
     if let Some(ps) = presented.player(local.0) {
-        if player.observe_life(ps.pm_type) && player.respawn.is_none_or(|respawn| respawn.forced) {
-            let open = |pos| minecraft_survival::level::open_for_respawn(&level.terrain, &globals.registries, pos);
-            if player.arrive_at_respawn(&loaded, open, |_| None) {
+        if player.observe_life(ps.pm_type) {
+            if minecraft_survival::respawn::respawn(globals, level, player) {
                 show_chat(&mut ui.chat, inventory_ui, &world.packs, &[minecraft_survival::player::missing_respawn_message()]);
+            }
+            if player.switching.is_some() {
+                ui.active = false;
+                ui.inventory_open = false;
+                puppet.active = false;
+                return;
             }
         }
         if ps.pm_type == 0 {
@@ -2477,6 +2498,7 @@ fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u
     for closed in server.close_empty_levels(ticks) {
         runtime.origins.remove(&closed);
     }
+    server.prepare_respawns();
     server.open_levels(VIEW_DISTANCE);
     let failed: Vec<(Dimension, String)> = server.finish_opening().into_iter().filter_map(|(dimension, opened)| opened.err().map(|error| (dimension, error))).collect();
     let Some(player) = server.players.get(local) else {

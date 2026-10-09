@@ -302,15 +302,43 @@ impl Server {
         }
     }
 
+    pub fn prepare_respawns(&mut self) {
+        for player in self.players.values_mut() {
+            if player.dead && player.respawning.is_none() {
+                let point = crate::respawn::respawn_point(player);
+                player.respawning = Some(crate::respawn::respawn_dimension(
+                    &self.globals.spawn,
+                    point.as_ref(),
+                ));
+            }
+        }
+    }
+
     pub fn open_levels(&mut self, view_distance: i32) {
+        let respawns = self.players.values().filter_map(|player| {
+            let dimension = player.respawning?;
+            let point = crate::respawn::respawn_point(player)
+                .filter(|point| point.at.dimension == dimension)
+                .map(|point| {
+                    let (x, y, z) = point.at.pos;
+                    Place::standing(
+                        dimension,
+                        [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5],
+                        0.0,
+                        0.0,
+                    )
+                });
+            Some((dimension, point))
+        });
         let waiting: Vec<(Dimension, Option<Place>)> = self
             .players
             .values()
-            .filter(|player| !self.levels.contains_key(&player.dimension))
             .map(|player| {
                 let arrival = player.arrival.filter(|place| place.dimension == player.dimension);
                 (player.dimension, arrival)
             })
+            .chain(respawns)
+            .filter(|(dimension, _)| !self.levels.contains_key(dimension))
             .collect();
         for (dimension, arrival) in waiting {
             if self.opening.contains_key(&dimension) {
@@ -385,7 +413,11 @@ impl Server {
     }
 
     pub fn close_empty_levels(&mut self, ticks: u32) -> Vec<Dimension> {
-        let occupied: Vec<Dimension> = self.players.values().map(|player| player.dimension).collect();
+        let occupied: Vec<Dimension> = self
+            .players
+            .values()
+            .flat_map(|player| std::iter::once(player.dimension).chain(player.respawning))
+            .collect();
         let keeps_empty_levels = self.globals.save.is_none();
         let mut closing = Vec::new();
         for (&dimension, level) in &mut self.levels {
@@ -1554,5 +1586,93 @@ mod tests {
         server.close_empty_levels(0);
         assert_eq!(overworld_weather(&server), Some(storm));
         assert_eq!(server.levels[&Dimension::Overworld].empty_ticks, 0);
+    }
+
+    #[test]
+    fn a_death_in_the_nether_loads_the_respawn_level_at_once_and_the_respawn_switches_there() {
+        use crate::respawn::{respawn, respawn_in};
+        use crate::switch::LoadingReason;
+        let Some(registries) = registries() else {
+            return;
+        };
+        let (_dir, save) = world("respawn-switch");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let mut steve = join(Some(&save), &recipes, &rules, joining(&profile("Steve")));
+        steve.arrive(Place::standing(Dimension::Nether, [5.5, 70.0, 5.5], 0.0, 0.0));
+        let id = steve.uuid.clone();
+        let globals = Globals {
+            spawn: RespawnData {
+                yaw: 90.0,
+                ..crate::save::world_spawn(Dimension::Overworld, (8, 64, -4))
+            },
+            ..test_globals(registries, Some(save))
+        };
+        let mut server = server_with(globals, vec![steve]);
+        server.open_levels(2);
+        wait_for_levels(&mut server);
+        assert_eq!(server.levels.keys().copied().collect::<Vec<_>>(), vec![Dimension::Nether]);
+        server.players.get_mut(&id).unwrap().observe_life(playerstate_iw4::PM_TYPE_DEAD);
+        server.prepare_respawns();
+        assert_eq!(server.players[&id].respawning, Some(Dimension::Overworld));
+        server.open_levels(2);
+        assert_eq!(wait_for_levels(&mut server), vec![(Dimension::Overworld, Ok(()))]);
+        assert_eq!(server.players[&id].dimension, Dimension::Nether, "the dead player stays where they died");
+        assert!(server.close_empty_levels(EMPTY_TIME).is_empty(), "the level the player respawns into stays open");
+
+        let steve = server.players.get_mut(&id).unwrap();
+        assert!(steve.observe_life(0));
+        assert!(!respawn(&server.globals, &server.levels[&Dimension::Nether], steve));
+        assert_eq!(steve.respawning, None);
+        let switch = steve.switching.expect("the respawn switches dimension");
+        assert_eq!(
+            (switch.from, switch.to, switch.reason, switch.respawn, switch.arrival),
+            (Dimension::Nether, Dimension::Overworld, LoadingReason::Other, true, None)
+        );
+        assert!(!respawn_in(&server.globals, &server.levels[&Dimension::Overworld], steve, |_| None));
+        let (x, y, z) = server.levels[&Dimension::Overworld].terrain.stream.player_spawn;
+        assert_eq!(
+            steve.arrival,
+            Some(Place::standing(Dimension::Overworld, [x, y, z], 90.0, 0.0)),
+            "the world spawn is the overworld's own spawn, facing the spawn angle"
+        );
+
+        let anchor = crate::player_nbt::Respawn {
+            at: crate::player_nbt::GlobalPos {
+                dimension: Dimension::Nether,
+                pos: (5, 70, 5),
+            },
+            yaw: -90.0,
+            pitch: 0.0,
+            forced: true,
+        };
+        steve.switching = None;
+        steve.set_respawn(Some(anchor));
+        steve.observe_life(playerstate_iw4::PM_TYPE_DEAD);
+        assert!(steve.observe_life(0));
+        assert!(!respawn(&server.globals, &server.levels[&Dimension::Overworld], steve));
+        assert_eq!(steve.switching.map(|switch| (switch.to, switch.respawn)), Some((Dimension::Nether, true)));
+        assert!(!respawn_in(&server.globals, &server.levels[&Dimension::Nether], steve, |_| None));
+        assert_eq!(
+            steve.arrival,
+            Some(Place::standing(Dimension::Nether, [5.5, 70.0, 5.5], -90.0, 0.0))
+        );
+
+        load_chunks_around(server.levels.get_mut(&Dimension::Nether).unwrap(), (5, 0, 5));
+        let steve = server.players.get_mut(&id).unwrap();
+        steve.switching = None;
+        steve.set_respawn(Some(crate::player_nbt::Respawn {
+            at: crate::player_nbt::GlobalPos {
+                dimension: Dimension::Nether,
+                pos: (5, 0, 5),
+            },
+            ..anchor
+        }));
+        assert!(
+            respawn_in(&server.globals, &server.levels[&Dimension::Nether], steve, |_| None),
+            "a point in the bedrock floor is missing"
+        );
+        assert_eq!(steve.respawn, None);
+        assert_eq!(steve.switching.map(|switch| (switch.to, switch.arrival)), Some((Dimension::Overworld, None)));
     }
 }

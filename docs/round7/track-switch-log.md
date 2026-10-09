@@ -244,7 +244,7 @@ Commit: 7789ff18
 
 ### 12. Minecraft level loading screen looks like vanilla (E1-9)
 
-Commit: filled in by the next entry
+Commit: 7dcc3aae
 
 - **Changed:**
   - `frame/src/minecraft_ui.rs` (appended): `MinecraftUi.level_loading: Option<McLevelLoading { reason, background, background_st, menu_background }>` with `McLoadingReason { NetherPortal, EndPortal, Other }`.
@@ -263,3 +263,35 @@ Commit: filled in by the next entry
   - No progress bar: vanilla shows it only when the server reports a load stage, and a remote client has none.
 - **Test steps:** with entry 13 (the respawn switch shows the `OTHER` screen). The Nether and End portal screens can't be reached in game until `/execute in` (S4, after track C) or portals (N2).
 - **Kit:** none.
+
+### 13. Minecraft players respawn in their respawn dimension (E1-10)
+
+Commit: filled in by `git log` under this subject
+
+- **Changed:**
+  - New `minecraft_survival/src/respawn.rs` (the pure respawn rules of the plan's ownership table):
+    - `respawn_dimension(world spawn, point)`: the point's dimension, or the world spawn's (overworld when unknown), as `RespawnConfig.getDimensionOrDefault` and `MinecraftServer.findRespawnDimension`.
+    - `respawn_target(world spawn, point, open, spawn_block)`: the point if its block (bed or anchor, through `spawn_block`) or a forced point's two open blocks are there, else the world spawn with `missing` set, as `findRespawnPositionAndUseSpawnBlock` gives `TeleportTransition.missingRespawnBlock`.
+    - `level_spawn` is a level's own spawn, facing the world spawn's angles when the world spawn is in that level; for the overworld that is MW2 map origin.
+    - `respawn_in(globals, level, player, spawn_block)` places the respawn in the loaded level, or switches on when the point is missing and the world spawn is in another dimension. It clears the point and answers whether "block.minecraft.spawn.not_valid" is due.
+    - `respawn(globals, level, player)` respawns in the level the player is in, or starts a switch with reason `OTHER` (dead) and `Switch.respawn` set.
+  - `minecraft_survival/src/server.rs`: `Server::prepare_respawns` gives a dead player their `respawning` dimension. `open_levels` opens it at once (with a point there as the known spawn), and `close_empty_levels` keeps it open while the player is dead, so the level is ready by the time MW2 shows them alive again.
+  - `render_anim/src/minecraft_world.rs`: when MW2 shows the player alive again, `respawn` decides. In the same dimension they are teleported to the point or the spawn, facing its angles. In another dimension the switch of entry 11 runs, and once the target level is shown the point is checked there (`respawn_in`), before the player is placed. A switching player with no arrival and no place in the level goes to the level's spawn.
+- **Tests:** `respawn`: `the_respawn_dimension_is_the_point_s_or_else_the_world_spawn_s`, `a_respawn_goes_to_the_point_or_else_the_world_spawn_and_says_when_the_point_is_gone` (no point, a Nether anchor, a missing one, a bed's stand-up spot). `server`: `a_death_in_the_nether_loads_the_respawn_level_at_once_and_the_respawn_switches_there` (death in the Nether opens the overworld while the player is still dead and keeps it open; the respawn switches with `OTHER` and arrives at the overworld's spawn facing the spawn yaw; a Nether point from the overworld switches to the Nether and arrives at the point; a point inside the bedrock floor is missing, is cleared and sends the player to the overworld spawn).
+- **Decisions:**
+  - Until N5 plugs beds and anchors into `spawn_block`, a bed or anchor point from a vanilla save (not forced) is kept but not used: the player respawns at the world spawn, as before this entry in the overworld.
+  - A point in a level that has not loaded its chunks there yet counts as open (the check needs the blocks; vanilla loads the chunk synchronously). That only matters for forced points in chunks never visited; N5's anchor check will load the chunk first.
+  - The respawn always teleports to the spawn facing its angles, as vanilla's respawn does, even in the overworld where MW2 already put the player at map origin.
+- **Test steps** (the owner test for the whole group S3, entries 11 to 13; `/execute in` comes with S4, so the Nether and End portal screens can't be reached yet):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=s3test` (a new world) and `IW4L_MINECRAFT_DIMENSION=the_nether`. Start. Within 5 seconds of standing in the Nether cave, type `/kill`. While you are dead, the log says `Minecraft minecraft:overworld level opened` if it had closed, or nothing if it is still open.
+  2. When MW2 respawns you: the loading screen shows a flat dark background with the darker tiled menu pattern and "Loading terrain..." in white above the middle. Then you stand at the overworld spawn on solid ground, with all terrain drawn. You did not fall through. **Screenshot 1 (loading screen), screenshot 2 (overworld).** This is the return to a level that was still open (entry 11's `reshow`). The log says `Minecraft player leaves minecraft:the_nether for minecraft:overworld`, `Minecraft level shown: minecraft:overworld` and `Minecraft player arrived in minecraft:overworld`.
+  3. About 15 seconds later the log says `Minecraft minecraft:the_nether level saved and closed`.
+  4. Quit. Keep `IW4L_MINECRAFT_DIMENSION=the_nether` and start again. Wait 20 seconds (the log says the overworld saved and closed), then build a small netherrack tower and `/kill`. While dead the log says `Minecraft minecraft:overworld level opened in ... ms`. On respawn: the loading screen again, then the overworld spawn. **Screenshot 3.**
+  5. Shoot and blow up some netherrack before step 4's `/kill` if you like: craters and block breaks still work in the Nether, as in S2.
+  6. Quit. Set `IW4L_MINECRAFT_DIMENSION=the_end` and start on the obsidian platform. Type `/kill`. On respawn: the loading screen, then the overworld spawn. **Screenshot 4.**
+  7. Quit. Remove the `IW4L_MINECRAFT_DIMENSION` line and start: you are at the overworld spawn where you respawned.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:obsidian*64,minecraft:netherrack*64,minecraft:cobblestone*64,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:torch*64,minecraft:cooked_beef*32
+```
