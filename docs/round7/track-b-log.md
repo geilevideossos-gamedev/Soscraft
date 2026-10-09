@@ -595,3 +595,22 @@ The glue still needed in the game files (today `render_anim/src/minecraft_*.rs`,
 20. **The armour glint texture** (`minecraft_world.rs` and `crates/render/src/extract.rs`): `Loaded` gets `armor_glint_texture: Option<Arc<image::RgbaImage>>`, loaded beside the item glint (:304) with `minecraft_terrain::glint::armor_glint_texture(&packs).ok().flatten().map(Arc::new)`; `MinecraftWorldView` gets `pub armor_glint_texture: Option<Arc<image::RgbaImage>>`, set beside `view.glint_texture` (:465) and cleared beside it (:2513). In `extract_minecraft_world` (`render/src/extract.rs:937`) add `mut armor_glint_of: Local<Option<(usize, std::sync::Arc<render_gpu::MinecraftAtlasImage>)>>` (the system then has 8 parameters) and set `frame.armor_glint_texture` from `view.armor_glint_texture` exactly as `frame.glint_texture` is set from `view.glint_texture` (:1012-1025). Until then the armour shimmers with the item glint's image at the armour's scale.
 21. **The inventory character's gear** (`minecraft_world.rs` and `crates/render/src/extract.rs`): `MinecraftWorldView` gets `pub puppet_gear: (Vec<u8>, Vec<u32>)`; item 19's `draw_body_gear` sets it to `(bytemuck::cast_slice(&section_vertices(&meshes.puppet)).to_vec(), meshes.puppet.indices)` every frame (empty when the inventory is shut, and cleared with the other meshes at :2514). `extract_minecraft_world` adds `frame.puppet_gear = std::mem::take(&mut view.puppet_gear);` beside `frame.backdrop = view.backdrop;` (:994).
 22. **The server knows each player's real UUID** (`minecraft_terrain/src/server.rs` and `minecraft_world.rs`; review fix 2): nothing calls `EntityWorld::set_player_uuid` today, so `uuid_of(PLAYER_TARGET + 0)` is a made-up fallback UUID and a thrown trident saves that as its `Owner`. Add `Command::PlayerUuid { player: u64, uuid: u128 }` with `ServerHandle::set_player_uuid(player, uuid)`, handled in `server_loop` as `sim.mobs.set_player_uuid(player, uuid)`, and send it when the world opens with `PLAYER` and `minecraftoss_entities::gossip::parse_uuid` of the save's host UUID (`minecraft_save.rs:93`, the same UUID item 17 gives the openers). Several players: the host sends it for each player as it joins. Tridents saved before this keep the old fallback `Owner`; with the vanilla rule of review fix 2 anyone can still pick those up.
+
+## Group: throw glue
+
+The second half of the track wires the throwables into the game (After the split items 1 to 14, without item 3, which is track C's). The game state moved with the crate split: `Entities` is `minecraft_survival/src/entities.rs`, the player's hand timers are `minecraft_survival/src/player.rs` `Hand`, and the adapter is `render_anim/src/minecraft_world.rs`.
+
+### 1. Minecraft throws carry their thrower and the stack they came from
+
+Commit: (next entry)
+
+- **Changed:** `entities.rs` `Entities::throw` takes the thrown stack and launches it with `Thrown::launch` (`Throw { owner: PLAYER, item, components, .. }`), so a potion carries its own contents and every throw names its thrower. `minecraft_world.rs` passes the stack. `server.rs`: the hand bridge (`ServerSim::note_held`, its `held` map and the `TickInput.pickup` call to it) is gone, since every throw now brings its components (After the split item 1).
+- **Tests:** server: `a_throw_without_its_stack_takes_it_from_the_throwers_hand` removed with the bridge it tested; the throws in the other tests already carry their stacks.
+- **Test steps:**
+  1. Spawn a pig and throw the splash Poison at it: it flashes red from poison. Put the second Poison in the offhand (F), select the stick and throw again: same.
+  2. Throw the splash Harming at a cow: it takes the hit.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=splash_potion@poison*2,splash_potion@harming,stick,pig_spawn_egg*2,cow_spawn_egg*2
+```

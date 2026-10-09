@@ -224,8 +224,9 @@ impl Entities {
         self.server.set_weather(weather, duration);
     }
 
-    pub fn throw(&mut self, item: &str, eye: DVec3, yaw: f32, pitch: f32, motion: DVec3, on_ground: bool) -> bool {
-        let Some(thrown) = minecraft_terrain::thrown::Thrown::throw(item, eye, yaw, pitch, motion, on_ground, &mut self.random) else {
+    pub fn throw(&mut self, stack: &ItemStack, eye: DVec3, yaw: f32, pitch: f32, motion: DVec3, on_ground: bool) -> bool {
+        let throw = minecraft_terrain::thrown::Throw { owner: PLAYER, item: &stack.id, components: stack.components.as_ref(), eye, yaw, pitch, motion, on_ground };
+        let Some(thrown) = minecraft_terrain::thrown::Thrown::launch(&throw, &mut self.random) else {
             return false;
         };
         self.server.throw(thrown);

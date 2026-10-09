@@ -1129,7 +1129,7 @@ fn update(
                 let motion = glam::DVec3::new(f64::from(ps.velocity[0]), f64::from(ps.velocity[2]), -f64::from(ps.velocity[1]))
                     / (f64::from(sim::voxel::BLOCK) * 20.0);
                 if !(pearl && hand.pearl_cooldown > 0)
-                    && entities.throw(&stack.id, glam::DVec3::from_array(eye), mc_yaw, ps.viewangles[0], motion, on_ground)
+                    && entities.throw(stack, glam::DVec3::from_array(eye), mc_yaw, ps.viewangles[0], motion, on_ground)
                 {
                     let slot = &mut inventory.slots[slot];
                     if let Some(left) = slot.as_mut().filter(|_| game_mode.consumes_items()) {

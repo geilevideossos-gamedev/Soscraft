@@ -67,7 +67,6 @@ pub struct ServerSim {
     potion_breaks: Vec<minecraftoss_entities::world::PotionBreak>,
     sound_random: minecraftoss_player::rng::LegacyRandom,
     player_potions: Vec<crate::potions::PlayerPotionHit>,
-    held: std::collections::HashMap<u64, [Option<minecraftoss_player::inventory::ItemStack>; 2]>,
     clouds: Vec<crate::effect_cloud::EffectCloud>,
     tridents: Vec<crate::trident::ThrownTrident>,
     next_trident: i32,
@@ -249,7 +248,6 @@ impl ServerSim {
             potion_breaks: Vec::new(),
             sound_random: minecraftoss_player::rng::LegacyRandom::new(0x5EED_B0771E),
             player_potions: Vec::new(),
-            held: std::collections::HashMap::new(),
             clouds: Vec::new(),
             tridents: Vec::new(),
             next_trident: TRIDENT_IDS,
@@ -714,12 +712,7 @@ impl ServerSim {
         std::mem::take(&mut self.explosions)
     }
 
-    pub fn throw(&mut self, mut thrown: crate::thrown::Thrown) {
-        if thrown.components.is_none() {
-            if let Some(held) = self.held.get(&thrown.owner) {
-                thrown.components = held.iter().flatten().find(|s| s.id == thrown.item).and_then(|s| s.components.clone());
-            }
-        }
+    pub fn throw(&mut self, thrown: crate::thrown::Thrown) {
         self.thrown.push(thrown);
     }
 
@@ -905,11 +898,6 @@ impl ServerSim {
             self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::splash::FIRE_SOUND, pos: center, volume: 0.5, pitch: 2.6 + (a - b) * 0.8 });
             self.level.set_block(at, unlit, update::ALL, update::LIMIT);
         }
-    }
-
-    pub fn note_held(&mut self, player: u64, inventory: &minecraftoss_player::inventory::Inventory, selected: usize) {
-        let slot = |index: usize| inventory.slots.get(index).cloned().flatten();
-        self.held.insert(player, [slot(selected), slot(OFFHAND_SLOT)]);
     }
 
     pub fn take_pearl_teleports(&mut self) -> Vec<(u64, [f64; 3])> {
@@ -1462,7 +1450,6 @@ pub struct TickInput {
 }
 
 const PLAYER_HEIGHT: f64 = 1.8;
-const OFFHAND_SLOT: usize = 40;
 const TRIDENT_IDS: i32 = 0x3000_0000;
 pub type PickedStack = (i32, [f64; 3], String, i32, Option<String>);
 const TNT_BLAST_RADIUS: f32 = 4.0;
@@ -1806,9 +1793,6 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::Tick(input) => {
                     let started = std::time::Instant::now();
                     let input = *input;
-                    if let (Some((_, inventory, selected)), Some(player)) = (input.pickup.as_ref(), input.mob_players.first()) {
-                        sim.note_held(player.id, inventory, *selected);
-                    }
                     // `MinecraftServer.autoSave`: every five minutes.
                     sim.ticks_since_save += 1;
                     if sim.ticks_since_save >= 6000 {
@@ -3959,26 +3943,6 @@ mod tests {
         assert_eq!(near, 5.0);
         assert_eq!(cow_health(&server, 14.5), Some(10.0));
         assert_eq!(server.level.sounds.iter().filter(|s| s.event == crate::thrown::BREAK_SOUND).count(), 1);
-    }
-
-    #[test]
-    fn a_throw_without_its_stack_takes_it_from_the_throwers_hand() {
-        let Some((mut server, _)) = door_world() else { return };
-        let mut inventory = minecraftoss_player::inventory::Inventory::default();
-        let mut potion = minecraftoss_player::inventory::ItemStack::new("minecraft:splash_potion", 1);
-        potion.components = Some(serde_json::json!({"minecraft:potion_contents": {"potion": "minecraft:poison"}}));
-        inventory.slots[3] = Some(potion);
-        let mut offhand = minecraftoss_player::inventory::ItemStack::new("minecraft:lingering_potion", 1);
-        offhand.components = Some(serde_json::json!({"minecraft:potion_contents": {"potion": "minecraft:regeneration"}}));
-        inventory.slots[40] = Some(offhand);
-        server.note_held(0, &inventory, 3);
-        server.throw(thrown_down("minecraft:splash_potion", 1));
-        server.throw(thrown_down_by(5, "minecraft:splash_potion", 2));
-        let tints: Vec<_> = server.thrown_views().iter().map(|v| v.tint).collect();
-        assert_eq!(tints, vec![Some(8889187), Some(crate::thrown::BOTTLE_COLOR)]);
-        server.note_held(0, &inventory, 0);
-        server.throw(thrown_down("minecraft:splash_potion", 3));
-        assert_eq!(server.thrown_views()[2].tint, Some(crate::thrown::BOTTLE_COLOR));
     }
 
     #[test]
