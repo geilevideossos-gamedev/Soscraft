@@ -211,6 +211,8 @@ impl ServerSim {
         if let Err(e) = level.set_dimension(dimension_type) {
             eprintln!("world simulation without environment: {e}");
         }
+        level.sea_level = worldgen.library.generation.sea_level;
+        level.fast_lava = level.sky.as_ref().is_some_and(|sky| crate::environment::dimension_value(&sky.environment, "gameplay/fast_lava").as_bool());
         let mob_tables = crate::server_mobs::MobTables::new(&level, &states);
         // Natural spawning, when the entity catalog can create mobs.
         if level.registries().entities.is_some() {
@@ -5375,5 +5377,58 @@ mod tests {
         assert_eq!(answers.len(), 1);
         assert_eq!(blocks.property(answers[0], "east"), Some("true"));
         assert_eq!(blocks.property(answers[0], "west"), Some("false"));
+    }
+
+    #[test]
+    fn nether_lava_spreads_farther_and_faster_and_the_nether_sea_is_at_32() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let level_of = |terrain: TerrainGenerator, dimension_type: &str| {
+            let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(terrain), dimension_type).unwrap());
+            let states = Arc::new(BlockStates::new(registries.clone(), 0, 0, 256).unwrap());
+            ServerSim::new(worldgen, states, dimension_type)
+        };
+        let nether = level_of(TerrainGenerator::nether(registries.clone(), 0).unwrap(), "minecraft:the_nether");
+        assert_eq!((nether.level.sea_level, nether.level.fast_lava), (32, true));
+        let end = level_of(TerrainGenerator::end(registries.clone(), 0).unwrap(), "minecraft:the_end");
+        assert_eq!((end.level.sea_level, end.level.fast_lava), (0, false));
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let lava = registries.blocks.block_by_name("minecraft:lava").unwrap();
+        let reach = |dimension_type: &str, ticks: usize| {
+            let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+            let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+            let mut server = ServerSim::new(worldgen.clone(), states, dimension_type);
+            assert_eq!(server.level.sea_level, 63);
+            for x in -1..=1 {
+                for z in -1..=1 {
+                    server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+                }
+            }
+            for x in -9..=9 {
+                for z in -9..=9 {
+                    server.player_edit_block((x, 200, z), Some(&Block::new("minecraft:stone")), PlayerEdit::Place);
+                }
+            }
+            server.player_edit_block((0, 201, 0), Some(&Block::new("minecraft:lava").with("level", "0")), PlayerEdit::Place);
+            for _ in 0..ticks {
+                server.set_players(&[[0.5, 202.0, 0.5]], 2);
+                server.set_simulation_area((0, 0), 4);
+                server.tick();
+            }
+            let mut farthest = 0;
+            for x in -9..=9 {
+                for z in -9..=9 {
+                    if registries.blocks.block_of(server.level.block(minecraftoss_core::BlockPos::new(x, 201, z))) == lava {
+                        farthest = farthest.max(x.abs() + z.abs());
+                    }
+                }
+            }
+            farthest
+        };
+        assert_eq!(reach("minecraft:overworld", 300), 3, "overworld lava drops two levels a block");
+        assert_eq!(reach("minecraft:the_nether", 300), 7, "Nether lava drops one level a block");
+        assert!(reach("minecraft:overworld", 75) <= 2, "overworld lava waits 30 ticks a step");
+        assert!(reach("minecraft:the_nether", 75) >= 6, "Nether lava waits 10 ticks a step");
     }
 }
