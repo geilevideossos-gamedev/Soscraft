@@ -135,6 +135,10 @@ fn read_properties(
             Some(',') => reader.skip(),
             Some(']') => break,
             Some(_) => return Err(unclosed(reader)),
+            None if tag => {
+                reader.cursor = value_at;
+                return Err(unclosed(reader));
+            }
             None => {}
         }
     }
@@ -666,6 +670,15 @@ pub(crate) mod tests {
             (key(&unclosed), unclosed.cursor),
             ("argument.block.property.unclosed".into(), Some(22))
         );
+        let open_tag = parse("#logs[axis=y ", true).unwrap_err();
+        assert_eq!(
+            (key(&open_tag), open_tag.cursor),
+            ("argument.block.property.unclosed".into(), Some(11))
+        );
+        let after_comma = parse("#logs[axis=y,", true).unwrap_err();
+        assert_eq!(after_comma.cursor, Some(13));
+        let open_block = parse("oak_stairs[facing=east ", false).unwrap_err();
+        assert_eq!(open_block.cursor, Some(23));
         let duplicate = parse("#stairs[half=top,half=top]", true).unwrap_err();
         assert_eq!(
             (key(&duplicate), duplicate.cursor),

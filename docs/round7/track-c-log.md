@@ -870,7 +870,7 @@ Commit: the commit that adds this entry (branch `track-c`, adversarial review of
 
 ### What changed
 
-- `Experience::needed` computed `112 + (level - 30) * 9` with plain `i32` arithmetic. From level 238,609,325 up, that overflows. A debug or test build then panics, for example after `/xp set @s 2147483647 levels` and any `/xp query @s points`, `/xp add` or `/xp set ... points`. Java's `Player.getXpNeededForNextLevel` wraps silently. The multiplication and addition now wrap the same way, so every build gives vanilla's number and none crashes.
+- `Experience::needed` computed `112 + (level - 30) * 9` with plain `i32` arithmetic. From level 238,609,312 up, that overflows. A debug or test build then panics, for example after `/xp set @s 2147483647 levels` and any `/xp query @s points`, `/xp add` or `/xp set ... points`. Java's `Player.getXpNeededForNextLevel` wraps silently. The multiplication and addition now wrap the same way, so every build gives vanilla's number and none crashes.
 
 ### Tests added
 
@@ -889,3 +889,31 @@ IW4L_MINECRAFT_KIT=stone*64
 2. `/xp add @s 10`: "Gave 10 experience points to Steve".
 
 Kit: none needed.
+
+## Minecraft block tag errors point at the last value like vanilla
+
+Commit: the commit that adds this entry (branch `track-c`, adversarial review of the whole track). It also corrects the overflow level in the previous entry (238,609,312, where the addition overflows first).
+
+### What changed
+
+- A block tag with loose properties whose input ends right after a value, such as `/fill ... replace #minecraft:logs[axis=y`, put the "Expected closing ]" error at the end of the input. 26.3 `BlockStateParser.readVagueProperties` (checked with javap) keeps the start of the last value and moves the cursor back to it, so the context line ends at `[axis=` with `y` underlined. `read_properties` now does the same for tags. Plain blocks (`readProperties`) have no such reset and still point at the end, and so does a tag list that ends after a comma.
+
+### Tests added
+
+- `blocks::tests::block_states_parse_properties_and_nbt_like_vanilla`: `#logs[axis=y ` points at 11 (the `y`), `#logs[axis=y,` at 13 (the end), and `oak_stairs[facing=east ` at 23 (the end).
+
+### In-game test steps
+
+`/fill` needs the glue and the block tags (see the `/setblock` and `/fill` entries). Once they are in:
+
+```
+IW4L_MINECRAFT_KIT=stone*64
+```
+
+1. `/fill ~1 ~ ~1 ~2 ~1 ~2 stone replace #minecraft:logs[axis=y`: red "Expected closing ] for block state properties", and the grey line ends in `[axis=` followed by a red underlined `y` and `<--[HERE]`. Screenshot.
+
+Kit: none needed.
+
+### Decisions
+
+- **Known difference, not fixed: malformed input can report a different error first.** The `/setblock` entry says block data is checked when the command runs with the same red line. That holds for a well-formed block state. When the state is also malformed, the parse-time error wins here: `stonee[` gives "Expected closing ]" where vanilla, which checks the id while parsing, gives "Unknown block type 'minecraft:stonee'". In the same way, `oak_stairs[foo]` gives "Expected value for property 'foo'" where vanilla gives "Block minecraft:oak_stairs does not have property 'foo'". Fixing this needs block data inside the argument parser, which the parser does not have.
