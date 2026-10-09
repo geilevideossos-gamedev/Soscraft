@@ -3926,7 +3926,7 @@ impl EntityWorld {
 
     /// Names the source of an applied hit on a mob (see
     /// [`DamageState::credit`]).
-    fn credit(&mut self, id: u64, result: DamageResult, attacker: &'static str, direct: bool) {
+    pub fn credit(&mut self, id: u64, result: DamageResult, attacker: &'static str, direct: bool) {
         if let Some(damage) = self.damage_state_mut(id) {
             damage.credit(result, attacker, direct);
         }

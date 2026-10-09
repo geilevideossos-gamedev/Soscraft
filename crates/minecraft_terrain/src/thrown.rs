@@ -645,6 +645,7 @@ pub fn hurt_by(
     } else {
         return false;
     };
+    world.credit(id, hit, "minecraft:player", true);
     if hit.applied {
         world.villager_hurt_by(id, PLAYER_TARGET + player);
     }
@@ -1109,6 +1110,21 @@ mod tests {
         assert!((mean - 7.0).abs() < 0.1, "{mean}");
         assert!((break_pitch(0.0) - 0.9).abs() < 1e-6 && (break_pitch(1.0) - 1.0).abs() < 1e-6);
         assert_eq!(sound_cell(DVec3::new(-0.2, 64.9, 3.0)), [-0.5, 64.5, 3.5]);
+    }
+
+    #[test]
+    fn a_mob_killed_by_a_thrown_trident_is_the_throwers_kill() {
+        let mut world = EntityWorld::default();
+        let mut zombie = minecraftoss_entities::zombie::Zombie::new(DVec3::new(0.5, 64.0, 0.5));
+        zombie.health = 1.0;
+        let id = world.spawn_zombie(zombie, true);
+        let mut random = LegacyRandom::new(4);
+        assert!(hurt_by(&mut world, id, crate::trident::DAMAGE, crate::trident::DAMAGE_TYPE, DVec3::Z, 0, &mut random));
+        let deaths = world.take_deaths();
+        assert_eq!(deaths.len(), 1);
+        assert!(deaths[0].context.killed_by_player, "it drops its experience and player-only loot");
+        assert_eq!(deaths[0].context.attacker, Some("minecraft:player"));
+        assert!(deaths[0].experience > 0);
     }
 
     #[test]

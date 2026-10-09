@@ -480,7 +480,7 @@ IW4L_MINECRAFT_KIT=trident+loyalty=3
 
 ### 2. Anyone picks up a Minecraft trident whose thrower is not in the world, like vanilla
 
-Commit: (next entry)
+Commit: 08a22bf
 
 - **Defect:** a trident whose thrower was not in the level (a loaded trident before its thrower joins, or one whose thrower left) could be picked up by nobody, and saving a trident with no known thrower wrote a made-up `Owner` UUID (the fallback UUID of an unknown entity ID, different every session). Vanilla (`ThrownTrident.playerTouch`, 26.3 javap): `ownedBy(player) || getOwner() == null`, so while the owner entity is not in the level anyone may take it; an entity with no owner saves no `Owner`.
 - **Changed:** `trident.rs`: `taken_by(player, owner_here)` refuses others only while the thrower is in the level; `to_tag(owner: Option<u128>)` writes `Owner` only when known. `server.rs`: `pickup_tridents(player, players, take)` asks whether the thrower is among the level's players; a trident saves with its own `owner_uuid`.
@@ -492,6 +492,21 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=trident
+```
+
+### 3. Mobs killed by a player's Minecraft trident or thrown item count as the player's kill
+
+Commit: (next entry)
+
+- **Defect:** `thrown::hurt_by` (tridents for 8, wind charges for 1, snowballs, eggs and pearls for 0) hurt the mob and turned it on the thrower but never named the player as the damage's source, so a cow or zombie killed by a thrown trident died as if nobody killed it: no experience orbs and no player-only loot. Vanilla: the damage source of a thrown trident or item names its owner (`damageSources().trident(this, owner)`, `thrown(this, owner)`), and `LivingEntity.hurtServer` remembers the player (`resolvePlayerResponsibleForDamage`), even for a 0-damage snowball.
+- **Changed:** `thrown.rs` `hurt_by` credits every hit to `minecraft:player` (`EntityWorld::credit`, the same call the player's melee, blasts and splash potions use). Vendored `minecraftoss-entities`: `EntityWorld::credit` is public.
+- **Tests:** thrown: `a_mob_killed_by_a_thrown_trident_is_the_throwers_kill` (killed by the player, attacker `minecraft:player`, experience dropped).
+- **Test steps** (after glue items 9 and 10):
+  1. Spawn a cow and throw the trident at it twice (8 each): when it dies, green experience orbs come out with the beef and leather. Screenshot.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=trident,cow_spawn_egg*2
 ```
 
 ## After the split
