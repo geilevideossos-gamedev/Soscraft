@@ -94,6 +94,7 @@ pub struct Entities {
     pub experience_found: f32,
     pub weather: minecraft_terrain::server::WeatherView,
     pub weather_data: Option<WeatherData>,
+    pub world_weather: Option<WeatherData>,
     pub stations: std::sync::Arc<minecraft_terrain::stations::StationBook>,
     pub enchantments: Option<std::sync::Arc<minecraftoss_entities::enchant::Enchantments>>,
     pub recipes: std::sync::Arc<minecraftoss_player::crafting::RecipeBook>,
@@ -216,6 +217,7 @@ impl Entities {
             experience_found: 0.0,
             weather: Default::default(),
             weather_data,
+            world_weather: None,
             stations: data.stations.clone(),
             enchantments: data.enchantments.clone(),
             recipes: data.recipes.clone(),
@@ -237,6 +239,7 @@ impl Entities {
 
     pub fn set_weather(&mut self, weather: &'static str, duration: i32) {
         self.server.set_weather(weather, duration);
+        self.world_weather = minecraft_terrain::server::weather_parameters(weather, duration);
     }
 
     pub fn set_weather_data(&mut self, data: WeatherData) {

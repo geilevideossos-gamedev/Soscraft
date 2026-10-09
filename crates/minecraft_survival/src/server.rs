@@ -412,6 +412,31 @@ impl Server {
         finished
     }
 
+    pub fn follow_weather_commands(&mut self) {
+        let mut commanded = None;
+        for (&dimension, level) in &mut self.levels {
+            if let Some(weather) = level
+                .entities
+                .as_mut()
+                .and_then(|entities| entities.world_weather.take())
+            {
+                commanded = Some((dimension, weather));
+            }
+        }
+        let Some((from, weather)) = commanded else {
+            return;
+        };
+        self.globals.weather = Some(weather);
+        for (&dimension, level) in &mut self.levels {
+            if dimension != from
+                && has_weather(dimension)
+                && let Some(entities) = level.entities.as_mut()
+            {
+                entities.set_weather_data(weather);
+            }
+        }
+    }
+
     pub fn close_empty_levels(&mut self, ticks: u32) -> Vec<Dimension> {
         let occupied: Vec<Dimension> = self
             .players
@@ -1586,6 +1611,54 @@ mod tests {
         server.close_empty_levels(0);
         assert_eq!(overworld_weather(&server), Some(storm));
         assert_eq!(server.levels[&Dimension::Overworld].empty_ticks, 0);
+    }
+
+    #[test]
+    fn a_weather_command_in_any_dimension_sets_the_world_s_weather() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let (_dir, save) = world("weather-command");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let mut steve = join(Some(&save), &recipes, &rules, joining(&profile("Steve")));
+        steve.arrive(Place::standing(Dimension::Nether, [5.5, 70.0, 5.5], 0.0, 0.0));
+        let alex = join(Some(&save), &recipes, &rules, joining(&profile("Alex")));
+        let globals = Globals {
+            spawn: crate::save::world_spawn(Dimension::Overworld, (8, 64, -4)),
+            ..test_globals(registries, Some(save))
+        };
+        let mut server = server_with(globals, vec![steve, alex]);
+        server.open_levels(2);
+        wait_for_levels(&mut server);
+        fn entities(server: &mut Server, dimension: Dimension) -> &mut Entities {
+            server
+                .levels
+                .get_mut(&dimension)
+                .unwrap()
+                .entities
+                .as_mut()
+                .unwrap()
+        }
+        let thunder = minecraft_terrain::server::weather_parameters("thunder", 6000);
+        entities(&mut server, Dimension::Nether).set_weather("thunder", 6000);
+        server.follow_weather_commands();
+        assert_eq!(server.globals.weather, thunder, "MinecraftServer.setWeatherParameters");
+        assert_eq!(entities(&mut server, Dimension::Overworld).weather_data, thunder);
+        assert_eq!(entities(&mut server, Dimension::Nether).world_weather, None);
+        assert_eq!(entities(&mut server, Dimension::Nether).weather_data, None);
+        let clear = minecraft_terrain::server::weather_parameters("clear", 900);
+        entities(&mut server, Dimension::Overworld).set_weather("clear", 900);
+        server.follow_weather_commands();
+        assert_eq!(server.globals.weather, clear);
+        assert_eq!(
+            entities(&mut server, Dimension::Overworld).weather_data,
+            thunder,
+            "the overworld runs the command itself and gets no copy"
+        );
+        server.globals.weather = thunder;
+        server.follow_weather_commands();
+        assert_eq!(server.globals.weather, thunder, "no command, nothing changes");
     }
 
     #[test]

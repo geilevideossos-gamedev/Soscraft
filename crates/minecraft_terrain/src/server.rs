@@ -1189,6 +1189,16 @@ pub fn advance_weather_timers(data: &mut crate::level_storage::WeatherData, rand
     *data = crate::level_storage::WeatherData { clear_weather_time: weather.clear_time, rain_time: weather.rain_time, thunder_time: weather.thunder_time, raining: weather.raining, thundering: weather.thundering };
 }
 
+pub fn weather_parameters(weather: &str, duration: i32) -> Option<crate::level_storage::WeatherData> {
+    let (clear_weather_time, rain_time, raining, thundering) = match weather {
+        "clear" => (duration, 0, false, false),
+        "rain" => (0, duration, true, false),
+        "thunder" => (0, duration, true, true),
+        _ => return None,
+    };
+    Some(crate::level_storage::WeatherData { clear_weather_time, rain_time, thunder_time: rain_time, raining, thundering })
+}
+
 pub const OVERWORLD_CLOCK: &str = "minecraft:overworld";
 pub const THE_END_CLOCK: &str = "minecraft:the_end";
 
@@ -1831,6 +1841,25 @@ mod tests {
             server.tick();
             assert_eq!(server.weather_data().is_some(), reports, "{dimension}");
             assert_eq!(server.weather(None).rain_level > 0.0, reports, "{dimension}");
+        }
+    }
+
+    #[test]
+    fn a_weather_command_sets_the_world_s_weather_like_set_weather_parameters() {
+        use crate::level_storage::WeatherData;
+        assert_eq!(weather_parameters("clear", 900), Some(WeatherData { clear_weather_time: 900, ..WeatherData::default() }));
+        assert_eq!(weather_parameters("rain", 600), Some(WeatherData { rain_time: 600, thunder_time: 600, raining: true, ..WeatherData::default() }));
+        assert_eq!(weather_parameters("thunder", 300), Some(WeatherData { rain_time: 300, thunder_time: 300, raining: true, thundering: true, ..WeatherData::default() }));
+        assert_eq!(weather_parameters("snow", 300), None);
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut overworld = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for (weather, duration) in [("clear", 900), ("rain", 600), ("thunder", 300)] {
+            overworld.set_weather_for(weather, duration);
+            assert_eq!(overworld.weather_data(), weather_parameters(weather, duration), "{weather}");
         }
     }
 

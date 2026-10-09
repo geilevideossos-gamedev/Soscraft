@@ -2523,6 +2523,7 @@ fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u
         return Vec::new();
     };
     let ticks = std::mem::take(&mut server.globals.level_ticks);
+    server.follow_weather_commands();
     for closed in server.close_empty_levels(ticks) {
         runtime.origins.remove(&closed);
     }

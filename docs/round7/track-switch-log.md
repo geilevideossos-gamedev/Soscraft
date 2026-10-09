@@ -432,3 +432,26 @@ IW4L_MINECRAFT_KIT=minecraft:obsidian*64,minecraft:netherrack*64,minecraft:cobbl
 - **Known gaps (brief section 8):** a level-wide script `RadiusDamage` and killstreak turret bullets from before a switch still reach the new level; MW2 player damage from old ordnance is not filtered (the MW2 map is shared); the air support weapon names are from MW2's stock scripts and are checked in game (entry 17).
 - **MinecraftOSS patches in this group:** `core/src/environment.rs` (`DimensionPresentation.has_ceiling`).
 - **For the later tracks:** a living player travels with `Player::travel_to` (portals in N2 and X2), which waits for a remote killstreak; `switch_to` is only for the respawn and failed loads. The next free `pm_flags` bit for the glide is below `MC_NO_SKY` (`0x0400_0000`).
+
+## Review fixes
+
+An adversarial review of the whole track (base fc6d4bd, last track commit ef2cb99b). Each fix is its own commit; an entry names the previous commit's hash, its own hash is in `git log` under its subject.
+
+### 20. Minecraft /weather changes the world's weather from every dimension
+
+Previous commit: ef2cb99b
+
+- **Defect:** since S1 the world's weather lives in `Globals.weather`, but `/weather` still went only to the `ServerSim` of the level the command ran in. In the Nether or the End that level cannot have weather and never reports it, so the command answered as done and changed nothing: back in the overworld the old weather went on. Vanilla's `WeatherCommand` calls `MinecraftServer.setWeatherParameters` (checked with javap), which sets the server's weather whatever level the source is in.
+- **Changed:**
+  - `minecraft_terrain/src/server.rs`: `weather_parameters(weather, duration)`, the `WeatherData` that `setWeatherParameters` writes (clear: the clear time; rain and thunder: the rain and thunder time both the duration), the same numbers `ServerSim::set_weather_for` gives a level.
+  - `minecraft_survival/src/entities.rs`: `Entities.world_weather`; `Entities::set_weather` still sends the command to its level and also keeps the world's new weather there.
+  - `minecraft_survival/src/server.rs`: `Server::follow_weather_commands` takes that weather from whichever level ran the command into `Globals.weather` and hands it to every other open level that has weather (the overworld when the command ran elsewhere). The level that ran it keeps its own command, so its rain fades in as before.
+  - `render_anim/src/minecraft_world.rs` (`follow_levels`, one line): runs it every frame before the empty levels are counted.
+- **Tests:** `minecraft_terrain::server`: `a_weather_command_sets_the_world_s_weather_like_set_weather_parameters` (the three kinds, an unknown one, and the same numbers as an overworld `ServerSim` after `set_weather_for`). `server`: `a_weather_command_in_any_dimension_sets_the_world_s_weather` (thunder typed in the Nether reaches `Globals` and the open overworld, the Nether still reports no weather; clear typed in the overworld reaches `Globals` and is not copied back over the overworld's own command; no command changes nothing).
+- **After track C:** C's `Host::set_weather` sends the command to the overworld's `Entities` when the overworld is loaded. With this fix that reaches `Globals` from any dimension while the overworld is open; when it is closed, C's version should fall back to the command level's `Entities` (any level's `set_weather` now carries the world weather).
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=s4test`, `IW4L_MINECRAFT_DIMENSION=the_nether`, and no `IW4L_MINECRAFT_WEATHER` line. Start.
+  2. In the Nether, type `/weather thunder 600s`. The chat says the weather changed.
+  3. Type `/kill`. After the respawn in the overworld it is raining with thunder. **Screenshot 1.**
+  4. Quit and start again: the dimension line is still there, so you start in the Nether. Type `/weather clear 600s`, then `/kill`: after the respawn the overworld is clear. **Screenshot 2.**
+- **Kit:** none needed; any kit works.
