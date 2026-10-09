@@ -143,7 +143,7 @@ Commit: cf24de6
 
 ### 3. Minecraft chat remembers sent commands across restarts like vanilla
 
-Commit: (filled in by the next commit, or see `git log`)
+Commit: 4a8ee15
 
 - **Changed:** `hud/src/minecraft_chat.rs`: a `CommandHistory` kept in `update_chat` (a `Local`, so per client like vanilla's file). On the first frame with a `LaunchIdentity` it reads `<artifacts>/command_history.txt` (beside `settings.cfg`, so `C:\Games\Mashup\2010-Rust-Rewrite-Mashup\iw4l-artifacts\command_history.txt` for the release build) and puts its lines at the front of the chat's Up/Down history, as vanilla's `ChatComponent` fills `recentChat` from `CommandHistory`. Every line sent that frame that starts with `/` goes through `add_command` (vanilla `CommandHistory.addCommand`: a repeat of the last line is skipped, the oldest goes at 50) and, when something changed, the whole file is rewritten, one command per line. A missing file is normal; other read or write errors go to the log. The session history of all sent lines (100, plain chat too) is unchanged. `MINECRAFT-SURVIVAL.md` updated.
 - **Checked with javap (26.3):** `CommandHistory` uses `command_history.txt` in the game folder, `MAX_PERSISTED_COMMAND_HISTORY` 50, `addCommand` skips `peekLast` and removes the first at 50, `save` writes every line with `newLine`; `ChatComponent.addRecentChat` keeps 100 and passes only lines starting with `/` to the command history.
@@ -153,6 +153,20 @@ Commit: (filled in by the next commit, or see `git log`)
   1. Press T, send `/time set day`, then `/gamerule keep_inventory true`, then the plain line `hello`.
   2. Quit the game. `iw4l-artifacts\command_history.txt` holds the two commands, not `hello`.
   3. Start again, press T, then Up: `/gamerule keep_inventory true`; Up again: `/time set day`; Down twice: back to the empty line. Screenshot 1.
+- **Kit:** none needed.
+
+### 4. Minecraft chat stays on screen while the player is dead like vanilla
+
+Commit: (filled in by the next commit, or see `git log`)
+
+- **Changed:** `hud/src/minecraft_inventory.rs update_minecraft_hud`: the pure `minecraft_layers(active, in_world)` says what to draw: the whole Minecraft HUD while alive, only the chat while dead in a Minecraft world, nothing elsewhere. `in_world` is the loaded zone being the Minecraft map (`LaunchIdentity.zone`, as the compass already checks) and the world not loading. While dead it still hides the hotbar, vitals and screens and resets the screen input as before, then paints only `minecraft_chat::draw` (closed chat: the last 10 lines fading by age). The chat input itself still closes on death (`update_chat` and `minecraft_world.rs` both close it while `active` is false), as in vanilla, where the death screen replaces the chat screen. `MINECRAFT-SURVIVAL.md` updated.
+- **Checked with javap (26.3):** `Hud.extractChat` draws whenever there is a player and the HUD isn't hidden; it isn't gated on being alive, so vanilla shows the death message behind the death screen.
+- **Tests:** `minecraft_inventory::only_the_chat_shows_while_dead_in_a_minecraft_world`.
+- **Decision:** the brief planned a `MinecraftUi.in_world` flag set in `minecraft_world.rs`, which the crate split owns. The HUD can tell the same from the loaded zone, and the chat is cleared whenever a match starts or ends anyway, so no change is needed there after the split either.
+- **Test steps** (Minecraft map):
+  1. Press T and send `hello`, then press T and send `/kill`. While dead (killcam or Killed By card up), `hello` and `<name> was killed` stay bottom left above where the hotbar was, and fade out about 10 s after they arrived. Screenshot 1 while dead.
+  2. Press T while dead: the chat doesn't open. After respawning T opens it again.
+  3. Load an MW2 map (not Minecraft) and die there: no Minecraft chat lines show.
 - **Kit:** none needed.
 
 ## After the split
