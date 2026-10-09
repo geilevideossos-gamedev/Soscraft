@@ -939,7 +939,7 @@ IW4L_MINECRAFT_KIT=cobblestone*64
 
 ### 2. Minecraft blocks, items and armour are drawn on the MW2 body every frame
 
-Commit: (next entry)
+Commit: 597acac
 
 - **Changed:** `minecraft_world.rs` (After the split item 19): `Runtime.gear_items` (an `ItemVisuals` cache of its own, dropped when the world closes) and a new system `draw_body_gear`, run in `ClientSet::Present` after `update` (which rebuilds `view.particles`) and after `WorkerCmdSet::SkinModel` (where the bodies are posed and `PosedGearFrame` is filled). It hands the posed bodies and `McBodyGear` to the body group's `gear_meshes` and appends the world part (every living body with gear, the F5 body included, the inventory's character apart) to `view.particles`, the section-vertex buffer the dropped and held items already use, with its glint flags. `docs/MINECRAFT-SURVIVAL.md` now says what the third-person body shows.
 - **Tests:** none new: the system only moves `gear_meshes`' output (tested with the body group: `only_bodies_with_gear_get_a_rig_and_the_puppet_is_kept_apart`, the hand frames, the armour frames and `append_body_gear`) into the buffer as the items mesh is moved; the draw needs a GPU.
@@ -956,4 +956,20 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=cobblestone*64,torch*64,diamond_sword+sharpness=5,lever*8,trident,diamond_helmet,iron_chestplate,leather_leggings@red,iron_boots,golden_helmet,leather_helmet@red,chainmail_helmet,turtle_helmet,netherite_chestplate,copper_chestplate,leather_chestplate@blue,chainmail_leggings,diamond_boots
+```
+
+### 3. Enchanted Minecraft armour on the MW2 body shimmers with the vanilla armour glint
+
+Commit: (next entry)
+
+- **Changed:** After the split item 20. `minecraft_world.rs`: `Loaded.armor_glint_texture` (`minecraft_terrain::glint::armor_glint_texture`, `misc/enchanted_glint_armor` from the packs, loaded with the item glint) and `MinecraftWorldView.armor_glint_texture`, set when the world opens and cleared when it stops. `render/src/extract.rs` `extract_minecraft_world` converts it once per world (its own `Local`, as the item glint) into `MinecraftWorldFrame.armor_glint_texture`, which the Minecraft world pass already uploads and binds at binding 7 (body group entry 7). `docs/MINECRAFT-SURVIVAL.md`: worn armour now shimmers.
+- **Tests:** none new: `the_armour_glint_comes_from_its_own_texture` (glint), `the_glint_flags_the_meshes_write_pick_the_item_and_armour_glints` (render_gpu) and `an_enchanted_piece_shimmers_on_its_first_layer_only` (armor_render) cover the parts; the extract is the item glint's code with the other image.
+- **Test steps** (survival mode):
+  1. Wear the enchanted diamond helmet and iron chestplate and the plain iron leggings and boots. F5: the helmet and chestplate shimmer with broad, slow purple streaks (wider than the sword's), the leggings and boots don't. Screenshot 1.
+  2. Swap in the enchanted leather chestplate: the brown leather shimmers, its darker trim does not. Screenshot 2.
+  3. Hold the enchanted sword next to it: the sword's glint is the finer item glint. Screenshot 3.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=diamond_helmet+protection=4,iron_chestplate+protection=4,iron_leggings,iron_boots,leather_chestplate+unbreaking=3,diamond_sword+sharpness=5
 ```

@@ -58,6 +58,7 @@ pub struct MinecraftWorldView {
     /// The ten destroy stages side by side.
     pub crack_texture: Option<Arc<image::RgbaImage>>,
     pub glint_texture: Option<Arc<image::RgbaImage>>,
+    pub armor_glint_texture: Option<Arc<image::RgbaImage>>,
     /// Mob models (cut out, back-face culled, translucent) and entity
     /// shadows, as `mesh::Vertex` bytes and indices.
     pub entity_meshes: [(Vec<u8>, Vec<u32>); 4],
@@ -77,6 +78,7 @@ struct Loaded {
     cloud_mask: Option<CloudMask>,
     crack_texture: Arc<image::RgbaImage>,
     glint_texture: Option<Arc<image::RgbaImage>>,
+    armor_glint_texture: Option<Arc<image::RgbaImage>>,
 }
 
 #[derive(Default)]
@@ -260,6 +262,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
     let cloud_mask = CloudMask::from_pack(&packs).ok();
     let crack_texture = Arc::new(crate::minecraft_mining::crack_strip(&packs).map_err(|e| e.to_string())?);
     let glint_texture = minecraft_terrain::glint::glint_texture(&packs).ok().flatten().map(Arc::new);
+    let armor_glint_texture = minecraft_terrain::glint::armor_glint_texture(&packs).ok().flatten().map(Arc::new);
     let loaded = Loaded {
         packs,
         atlas: build.atlas,
@@ -267,6 +270,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         cloud_mask,
         crack_texture,
         glint_texture,
+        armor_glint_texture,
     };
     let mut day = DayCycle::default();
     if let Some(ticks) = opened.day_ticks {
@@ -464,6 +468,7 @@ fn update(
                 view.celestial = Some(world.celestial.clone());
                 view.crack_texture = Some(world.crack_texture.clone());
                 view.glint_texture = world.glint_texture.clone();
+                view.armor_glint_texture = world.armor_glint_texture.clone();
                 runtime.mining = Default::default();
                 runtime.minimap = Default::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
@@ -2472,6 +2477,7 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
         view.celestial = None;
         view.crack_texture = None;
         view.glint_texture = None;
+        view.armor_glint_texture = None;
         view.particles = Default::default();
         view.entity_meshes = Default::default();
         view.hand = Default::default();
