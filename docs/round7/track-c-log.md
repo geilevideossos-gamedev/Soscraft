@@ -1383,3 +1383,52 @@ Kit: `minecraft:cobblestone` 64, `minecraft:diamond_pickaxe` 1.
 ### Decisions
 
 - **Small and local, so it is done here rather than left for track B**: two lines in `update`, no new state.
+
+## After track D (glue group)
+
+- **`/spawnpoint`**: track D's per-player respawn point is not on `minecraft-survival` yet (no respawn commit in `git log minecraft-survival`), so `CommandWorld::set_respawn` keeps its default and `/spawnpoint` still answers "No player was found". Once track D lands:
+  1. `Host::set_respawn(player, respawn)`: find the player by id (`player_mut`) and store the `Respawn` in track D's per-player respawn field, keyed by the player's UUID; return `true`. Track D's player file writes it under vanilla's `respawn` key (`{dimension, pos: [x, y, z], yaw, pitch, forced: true}`).
+  2. Respawning reads it before the world spawn, as the `/spawnpoint` entry's "After the split" notes describe (forced: only room to stand is checked, otherwise the world spawn and `block.minecraft.spawn.not_valid`), and faces the stored yaw and pitch.
+  3. Add a test next to `commands::tests::experience_commands_fill_the_named_players_bar`: `/spawnpoint Alex 10 64 -4 90 0` sets Alex's point only, and `/spawnpoint` without a position takes the source's feet.
+- **Containers replaced by `/setblock` or `/fill`** drop their items instead of vanishing (see the `/setblock` and `/fill` entry).
+
+## Testing the glue group
+
+### Final verification
+
+- `test -p minecraft_commands -p minecraft_survival --locked`: 114 and 144 passed. `test -p minecraft_terrain --locked`: 479 passed, 3 ignored (the existing timing and local-pack diagnostics). `test -p frame --locked`: 14 passed. The tests that need the 26.3 data ran (`MINECRAFTOSS_ROOT` set by `scripts/cargo-slot.ps1`).
+- `clippy -p minecraft_survival -p minecraft_commands -p minecraft_terrain -p frame -p render_anim --all-targets -- -A clippy::approx_constant`: nothing on the lines this group touched; the warnings left are older (`entities.rs` 75 and 587, `server.rs` 313, 1106 and 1246, `minecraft_world.rs` 122, 378 and 387, and files the group did not touch).
+- `check -p launcher --locked` passes after every commit. The new `command_blocks.rs` passes `rustfmt --check` on its committed content, and the group adds no comments.
+
+### Commits, oldest first
+
+| Commit | Subject |
+| --- | --- |
+| eefc73b | Minecraft commands act on the player they name |
+| 2fec35a | Minecraft /clear empties the named player's inventory |
+| 6fafe57 | Minecraft /xp fills the named player's experience bar and chimes like vanilla |
+| 8b6ca64 | Minecraft /enchant enchants the named player's held item |
+| cf013fd | Minecraft /setblock and /fill change blocks on the level's server thread |
+| d36e020 | Minecraft /locate searches on the level's server thread |
+| 131ccc8 | Minecraft /kit reads the .env again for every call |
+| 62e91aa | Minecraft /execute in looks up the server's loaded levels |
+| c0d10ad | Minecraft chat keeps the command hints up to date |
+| 6f9b45c | Minecraft hands stay still while an MW2 grenade is up |
+
+### One kit for the whole group
+
+```
+IW4L_MINECRAFT_KIT=diamond_pickaxe+efficiency=5,diamond_sword,stick,stone*64,stone*30,oak_log*10,iron_boots,torch*64,bread*16,cobblestone*64,oak_fence*16,lectern,white_bed
+```
+
+13 stacks: `minecraft:diamond_pickaxe` 1 (Efficiency V), `minecraft:diamond_sword` 1, `minecraft:stick` 1, `minecraft:stone` 64 and 30, `minecraft:oak_log` 10, `minecraft:iron_boots` 1, `minecraft:torch` 64, `minecraft:bread` 16, `minecraft:cobblestone` 64, `minecraft:oak_fence` 16, `minecraft:lectern` 1, `minecraft:white_bed` 1.
+
+### Order
+
+Load a fresh world with this kit, then follow the entries' own steps in this order:
+
+1. The grenade entry (it uses the cobblestone and the pickaxe; place a few blocks only).
+2. The `/clear` entry, steps 1 to 3 as written ("Found 94", "Removed 70", "Removed 10"). Step 4 then removes everything left, so it reads "Removed 190 item(s) from player Steve" with this kit if you placed no cobblestone (24 stone, the pickaxe, sword, stick, boots, 64 torches, 16 bread, 64 cobblestone, 16 fences, the lectern and the bed), fewer by each cobblestone you placed.
+3. The `/kit` entry, steps 2 to 4: `/kit` gives the whole kit back, one line per entry. Step 3's count is for that entry's own kit; with this one the fifth `/kit` after the `/clear` is the first that no longer fits the 36 slots: from its sword on, what does not merge into a stack drops at your feet.
+4. `/clear`, then `/kit` once, then the `/enchant`, `/xp`, `/setblock` and `/fill`, `/locate` and `/execute in` entries.
+5. The suggestion steps wait for the chat UI group.
