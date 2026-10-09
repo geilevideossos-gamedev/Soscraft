@@ -152,6 +152,9 @@ pub fn join(
     if let Some(ender) = saved.ender {
         player.ender = ender;
     }
+    player.respawn = saved.respawn;
+    player.last_death = saved.last_death;
+    player.dead = dead;
     player.place = Some(Place::standing(Dimension::Overworld, spawn, 0.0, 0.0));
     match saved.place {
         Some(_) if dead => {}
@@ -470,12 +473,15 @@ mod tests {
             carried: Some(carried),
             ..joining(&steve)
         };
-        let again = join(Some(&save), &recipes, &rules, carrying);
+        let mut again = join(Some(&save), &recipes, &rules, carrying);
         assert_eq!(again.survival.status.health, 20.0);
         assert_eq!(again.survival.status.experience_level, 0);
-        assert!(!again.dead);
+        assert!(again.dead);
         assert_eq!(again.arrival, None);
         assert_eq!(again.place.map(|place| place.feet), Some(SPAWN));
+        assert_eq!(again.last_death.map(|death| death.pos), Some((40, 12, 40)));
+        assert!(again.observe_life(0));
+        assert!(!again.dead);
         let mut keeping = GameRules::default();
         keeping.set("keep_inventory", "true").unwrap();
         let kept = join(Some(&save), &recipes, &keeping, joining(&steve));
@@ -520,6 +526,40 @@ mod tests {
         assert_eq!(back.arrival, None);
         assert_eq!(back.dimension, Dimension::Overworld);
         assert_eq!(back.place.map(|place| place.feet), Some(SPAWN));
+    }
+
+    #[test]
+    fn the_respawn_point_comes_back_and_a_player_saved_dead_respawns_there() {
+        let (_dir, save) = world("respawn");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let steve = profile("Steve");
+        let mut player = join(Some(&save), &recipes, &rules, joining(&steve));
+        let point = crate::player_nbt::Respawn {
+            at: crate::player_nbt::GlobalPos {
+                dimension: Dimension::Overworld,
+                pos: (30, 70, -30),
+            },
+            yaw: 45.0,
+            pitch: 0.0,
+            forced: true,
+        };
+        player.set_respawn(Some(point));
+        save.write_player(&steve.uuid, &player.data()).unwrap();
+        let alive = join(Some(&save), &recipes, &rules, joining(&steve));
+        assert_eq!(alive.respawn, Some(point));
+        assert!(!alive.dead);
+        let mut dying = alive;
+        dying.observe_life(playerstate_iw4::PM_TYPE_DEAD);
+        save.write_player(&steve.uuid, &dying.data()).unwrap();
+        let mut back = join(Some(&save), &recipes, &rules, joining(&steve));
+        assert!(back.dead);
+        assert!(back.observe_life(0));
+        assert!(!back.arrive_at_respawn(&[Dimension::Overworld], |_| Some(true), |_| None));
+        assert_eq!(
+            back.arrival.map(|place| (place.feet, place.yaw)),
+            Some(([30.5, 70.0, -29.5], 45.0))
+        );
     }
 
     #[test]

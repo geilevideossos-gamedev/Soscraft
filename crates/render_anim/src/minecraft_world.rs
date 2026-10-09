@@ -556,6 +556,7 @@ fn update(
         puppet.active = false;
         return;
     };
+    let loaded: Vec<Dimension> = levels.keys().copied().collect();
     let Some(level) = levels.get_mut(&player.dimension) else {
         ui.active = false;
         ui.inventory_open = false;
@@ -563,7 +564,12 @@ fn update(
         return;
     };
     if let Some(ps) = presented.player(local.0) {
-        player.observe_life(ps.pm_type);
+        if player.observe_life(ps.pm_type) && player.respawn.is_none_or(|respawn| respawn.forced) {
+            let open = |pos| minecraft_survival::level::open_for_respawn(&level.terrain, &globals.registries, pos);
+            if player.arrive_at_respawn(&loaded, open, |_| None) {
+                show_chat(&mut ui.chat, inventory_ui, &world.packs, &[minecraft_survival::player::missing_respawn_message()]);
+            }
+        }
         if ps.pm_type == 0 {
             place_player(player, &mut authority.0, local.0, ps, origin, spawn_gate, now_ms);
         }

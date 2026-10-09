@@ -96,6 +96,20 @@ impl Place {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlobalPos {
+    pub dimension: Dimension,
+    pub pos: (i32, i32, i32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Respawn {
+    pub at: GlobalPos,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub forced: bool,
+}
+
 pub const EQUIPMENT: [(usize, &str); 7] = [
     (36, "feet"),
     (37, "legs"),
@@ -105,7 +119,7 @@ pub const EQUIPMENT: [(usize, &str); 7] = [
     (41, "body"),
     (42, "saddle"),
 ];
-const OWNED: [&str; 19] = [
+const OWNED: [&str; 21] = [
     "playerGameType",
     "previousPlayerGameType",
     "abilities",
@@ -125,6 +139,8 @@ const OWNED: [&str; 19] = [
     "Score",
     "Air",
     "Fire",
+    "respawn",
+    "LastDeathLocation",
 ];
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -136,6 +152,8 @@ pub struct PlayerData {
     pub place: Option<Place>,
     pub uuid: Option<String>,
     pub ender: Option<Vec<Option<ItemStack>>>,
+    pub respawn: Option<Respawn>,
+    pub last_death: Option<GlobalPos>,
 }
 
 impl PlayerData {
@@ -169,6 +187,8 @@ impl PlayerData {
             ender: tag
                 .get("EnderItems")
                 .map(|list| slots(list, ENDER_SLOTS, recipes)),
+            respawn: tag.get("respawn").and_then(read_respawn),
+            last_death: tag.get("LastDeathLocation").and_then(global_pos),
         }
     }
 
@@ -211,6 +231,15 @@ impl PlayerData {
             entries.insert(
                 "EnderItems".to_owned(),
                 slot_list(ender.iter().take(ENDER_SLOTS)),
+            );
+        }
+        if let Some(respawn) = &self.respawn {
+            entries.insert("respawn".to_owned(), respawn_tag(respawn));
+        }
+        if let Some(death) = &self.last_death {
+            entries.insert(
+                "LastDeathLocation".to_owned(),
+                global_pos_tag(death, Vec::new()),
             );
         }
         entries
@@ -286,6 +315,54 @@ fn stats_entries(stats: &Stats, entries: &mut BTreeMap<String, Tag>) {
     for (key, value) in values {
         entries.insert(key.to_owned(), value);
     }
+}
+
+fn global_pos_tag(at: &GlobalPos, extra: Vec<(&str, Tag)>) -> Tag {
+    let (x, y, z) = at.pos;
+    let mut entries = vec![
+        (
+            "dimension",
+            Tag::String(at.dimension.dimension_type().to_owned()),
+        ),
+        ("pos", Tag::IntArray(vec![x, y, z])),
+    ];
+    entries.extend(extra);
+    compound(entries)
+}
+
+fn global_pos(tag: &Tag) -> Option<GlobalPos> {
+    let dimension = tag.get("dimension")?.as_str()?;
+    let [x, y, z] = tag.get("pos")?.as_ints()?[..] else {
+        return None;
+    };
+    Some(GlobalPos {
+        dimension: Dimension::parse(dimension).unwrap_or(Dimension::Overworld),
+        pos: (x, y, z),
+    })
+}
+
+fn respawn_tag(respawn: &Respawn) -> Tag {
+    let mut extra = vec![
+        ("yaw", Tag::Float(respawn.yaw)),
+        ("pitch", Tag::Float(respawn.pitch)),
+    ];
+    if respawn.forced {
+        extra.push(("forced", Tag::Byte(1)));
+    }
+    global_pos_tag(&respawn.at, extra)
+}
+
+fn read_respawn(tag: &Tag) -> Option<Respawn> {
+    let angle = |key: &str| tag.get(key).and_then(Tag::as_f64).unwrap_or(0.0) as f32;
+    Some(Respawn {
+        at: global_pos(tag)?,
+        yaw: angle("yaw"),
+        pitch: angle("pitch"),
+        forced: tag
+            .get("forced")
+            .and_then(Tag::as_i64)
+            .is_some_and(|forced| forced != 0),
+    })
 }
 
 fn place_entries(place: &Place, entries: &mut BTreeMap<String, Tag>) {
@@ -1132,6 +1209,99 @@ mod tests {
         assert_eq!(
             PlayerData::read(&compound(Vec::new()), &RecipeBook::default()).ender,
             None
+        );
+    }
+
+    fn bed() -> Respawn {
+        Respawn {
+            at: GlobalPos {
+                dimension: Dimension::Overworld,
+                pos: (-12, 70, 340),
+            },
+            yaw: 90.0,
+            pitch: 0.0,
+            forced: false,
+        }
+    }
+
+    #[test]
+    fn the_respawn_point_and_last_death_use_vanilla_s_layout() {
+        let point = Respawn {
+            forced: true,
+            pitch: 12.5,
+            ..bed()
+        };
+        let death = GlobalPos {
+            dimension: Dimension::Overworld,
+            pos: (5, -40, 7),
+        };
+        let entries = PlayerData {
+            respawn: Some(point),
+            last_death: Some(death),
+            ..PlayerData::default()
+        }
+        .entries();
+        assert_eq!(
+            entries["respawn"],
+            compound(vec![
+                ("dimension", Tag::String("minecraft:overworld".to_owned())),
+                ("pos", Tag::IntArray(vec![-12, 70, 340])),
+                ("yaw", Tag::Float(90.0)),
+                ("pitch", Tag::Float(12.5)),
+                ("forced", Tag::Byte(1)),
+            ])
+        );
+        assert_eq!(
+            entries["LastDeathLocation"],
+            compound(vec![
+                ("dimension", Tag::String("minecraft:overworld".to_owned())),
+                ("pos", Tag::IntArray(vec![5, -40, 7])),
+            ])
+        );
+        let read = PlayerData::read(&Tag::Compound(entries), &RecipeBook::default());
+        assert_eq!(read.respawn, Some(point));
+        assert_eq!(read.last_death, Some(death));
+        let unforced = PlayerData {
+            respawn: Some(bed()),
+            ..PlayerData::default()
+        }
+        .entries();
+        assert_eq!(unforced["respawn"].get("forced"), None);
+    }
+
+    #[test]
+    fn a_cleared_respawn_point_and_death_leave_the_file() {
+        let previous = PlayerData {
+            respawn: Some(bed()),
+            last_death: Some(bed().at),
+            ..PlayerData::default()
+        }
+        .merged(None);
+        assert!(previous.get("respawn").is_some());
+        let cleared = PlayerData::default().merged(Some(previous));
+        assert_eq!(cleared.get("respawn"), None);
+        assert_eq!(cleared.get("LastDeathLocation"), None);
+        let without_dimension = compound(vec![(
+            "respawn",
+            compound(vec![("pos", Tag::IntArray(vec![1, 2, 3]))]),
+        )]);
+        assert_eq!(
+            PlayerData::read(&without_dimension, &RecipeBook::default()).respawn,
+            None
+        );
+        let nether = compound(vec![(
+            "LastDeathLocation",
+            compound(vec![
+                ("dimension", Tag::String("minecraft:the_nether".to_owned())),
+                ("pos", Tag::IntArray(vec![1, 2, 3])),
+            ]),
+        )]);
+        assert_eq!(
+            PlayerData::read(&nether, &RecipeBook::default()).last_death,
+            Some(GlobalPos {
+                dimension: Dimension::Nether,
+                pos: (1, 2, 3)
+            })
         );
     }
 

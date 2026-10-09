@@ -6,7 +6,7 @@ use minecraft_terrain::containers::Containers;
 use minecraft_terrain::environment::DimensionEnvironment;
 use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
 use minecraft_terrain::terrain::TerrainStream;
-use minecraftoss_core::{Chunk, ChunkPos};
+use minecraftoss_core::{Chunk, ChunkPos, Registries};
 use minecraftoss_player::inventory::Inventory;
 
 use crate::entities::{Entities, SentItemUse};
@@ -24,6 +24,23 @@ pub struct Terrain {
     pub stream: TerrainStream,
     pub scene: HandcraftedScene,
     pub environment: DimensionEnvironment,
+}
+
+pub fn open_for_respawn(
+    terrain: &Terrain,
+    registries: &Registries,
+    pos: (i32, i32, i32),
+) -> Option<bool> {
+    terrain
+        .scene
+        .generated_chunk((pos.0.div_euclid(16), pos.2.div_euclid(16)))?;
+    let Some(block) = Scene::block(&terrain.scene, pos) else {
+        return Some(true);
+    };
+    Some(terrain.stream.states.state_of(block).is_none_or(|state| {
+        registries.blocks.collision_boxes(state).is_empty()
+            && registries.blocks.state(state).fluid.is_none()
+    }))
 }
 
 pub fn spill(containers: &mut Containers, entities: &mut Entities, pos: (i32, i32, i32)) {

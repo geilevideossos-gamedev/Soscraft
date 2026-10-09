@@ -194,7 +194,7 @@ IW4L_MINECRAFT_KIT=minecraft:cobblestone*64
 
 ### 8. Each Minecraft player has their own ender chest
 
-Commit: (filled in by the next entry)
+Commit: 4bffa75
 
 - **Changed:**
   - `player.rs`: `Player::ender`, 27 slots, owned by the player as in vanilla (`Player.enderChestInventory`).
@@ -214,3 +214,27 @@ Commit: (filled in by the next entry)
 ```
 IW4L_MINECRAFT_KIT=minecraft:ender_chest*2,minecraft:diamond*8,minecraft:diamond_pickaxe
 ```
+
+### 9. Minecraft respawn points are saved
+
+Commit: (filled in by the next entry)
+
+- **Changed:**
+  - `player_nbt.rs`: `GlobalPos` and `Respawn` (a `GlobalPos`, yaw, pitch and `forced`), saved as 26.3's `respawn` (`ServerPlayer$RespawnConfig.CODEC`: `dimension` string, `pos` int array, `yaw` and `pitch` floats, `forced` as a byte and only when true, since it is an `optionalFieldOf` with default false) and `LastDeathLocation` (`GlobalPos.CODEC`: `dimension`, `pos`), checked with javap. Both are removed from the file when they are cleared. A `respawn` without a dimension is ignored, an unknown dimension reads as the overworld.
+  - `player.rs`, the respawn API for tracks B and C:
+    - `Player::respawn` and `Player::last_death`.
+    - `set_respawn(Option<Respawn>) -> bool` sets or clears the point and returns true when the position moved, which is when vanilla says "Respawn point set". `/spawnpoint` sets `forced: true` (vanilla's `SpawnPointCommand`), a bed `forced: false`.
+    - `arrive_at_respawn(loaded, open, bed) -> bool` runs vanilla's respawn choice (`ServerPlayer.findRespawnPositionAndUseSpawnBlock`/`findRespawnAndUseSpawnBlock`, `PlayerList.respawn`): the `bed` resolver comes first; a forced point needs its block and the one above open (vanilla's `isPossibleToRespawnInThis`, taken as no collision and no fluid) and puts the player at the block's bottom centre with the point's yaw and pitch. A point in a dimension that is not loaded is kept and the world spawn is used (`createDefault`). A missing point is cleared (vanilla copies it to the respawned player only when it was found) and the call returns true for the chat message.
+    - `respawn_place` and `missing_respawn_message` (`block.minecraft.spawn.not_valid`, what the client shows for `NO_RESPAWN_BLOCK_AVAILABLE`).
+    - `observe_life` now returns whether the player has just respawned, and remembers `LastDeathLocation` at the block where the player last stood alive (`Player.die` stores `blockPosition()`).
+  - `level.rs`: `open_for_respawn(terrain, registries, pos)`, which answers "unknown" for a chunk that is not loaded (such a point is trusted, and the spawn gate holds the player until it loads).
+  - `server::join`: brings back the point and the last death; a player saved dead now loads dead, so their first spawn is a respawn and goes to the point.
+  - `render_anim/src/minecraft_world.rs`: when MW2 respawns the player, they arrive at their respawn point through the arrival of commit 7, or get the chat message and the world spawn when the point is blocked. Bed points (`forced: false`) are left alone until track B passes the bed stand-up search (vanilla's `BedBlock.findStandUpPosition`) as the `bed` resolver and drops the `respawn.forced` condition next to `arrive_at_respawn`; until then such a point (for example one set by sleeping in Minecraft) is kept and the world spawn is used.
+- **Tests:** `player_nbt`: `the_respawn_point_and_last_death_use_vanilla_s_layout`, `a_cleared_respawn_point_and_death_leave_the_file`. `player`: `a_death_is_remembered_where_the_player_last_stood_and_a_respawn_is_reported`, `setting_a_respawn_point_tells_whether_it_moved`, `a_forced_respawn_point_needs_two_open_blocks_and_a_bed_needs_a_stand_up_spot`, `a_respawn_goes_to_the_point_or_clears_a_missing_one`. `server`: `the_respawn_point_comes_back_and_a_player_saved_dead_respawns_there`; `a_player_saved_dead_comes_back_with_full_health_and_nothing_carried` now expects the player to load dead, with the death spot remembered.
+- **Decisions:** nothing in this track sets a respawn point; `/spawnpoint` (track C) and beds (track B) call `set_respawn`. An MW2 team switch counts as a death for `LastDeathLocation`, as MW2 kills the player for it.
+- **Test steps:**
+  1. Keep `IW4L_MINECRAFT_WORLD=survivaltest`. Walk away from the spawn, note the spot, and type `/kill`. While the death screen shows, quit through the menu.
+  2. Start again. Expected: you appear at the world spawn with full health and hunger (not at the death spot), and your items lie at the death spot. **Screenshot 1.**
+  3. Optional: open the world in Minecraft 26.3 and hold a recovery compass (`/give @s minecraft:recovery_compass`): it points to where you died.
+  4. Once track C's `/spawnpoint` is in the build: stand somewhere, type `/spawnpoint`, walk away and `/kill`: you respawn on that spot facing the way you faced. Quit and start again, `/kill` again: still there. Fill the spot with two blocks of stone and `/kill`: the chat says "You have no home bed or charged respawn anchor, or it was obstructed" and you respawn at the world spawn.
+- **Kit:** any; none is needed for steps 1-3.

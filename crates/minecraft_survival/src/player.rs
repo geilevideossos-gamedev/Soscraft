@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use minecraft_commands::PlayerId;
 use minecraft_commands::server::Profile;
+use minecraft_commands::{Clientbound, PlayerId, Text};
 use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_terrain::game_mode::PlayerMode;
 use minecraftoss_player::Block;
@@ -10,7 +10,7 @@ use minecraftoss_player::inventory::{Inventory, ItemStack};
 
 use crate::death::DeathWatch;
 use crate::offhand::Blocking;
-use crate::player_nbt::{ENDER_SLOTS, Place, PlayerData, SLOTS, Stats};
+use crate::player_nbt::{ENDER_SLOTS, GlobalPos, Place, PlayerData, Respawn, SLOTS, Stats};
 use crate::survival::Survival;
 
 pub struct Player {
@@ -30,6 +30,8 @@ pub struct Player {
     pub place: Option<Place>,
     pub arrival: Option<Place>,
     pub ender: Vec<Option<ItemStack>>,
+    pub respawn: Option<Respawn>,
+    pub last_death: Option<GlobalPos>,
 }
 
 #[derive(Default)]
@@ -81,6 +83,8 @@ impl Player {
             place: None,
             arrival: None,
             ender: vec![None; ENDER_SLOTS],
+            respawn: None,
+            last_death: None,
         }
     }
 
@@ -90,14 +94,56 @@ impl Player {
         self.arrival = Some(place);
     }
 
-    pub fn observe_life(&mut self, pm_type: i32) {
+    pub fn set_respawn(&mut self, respawn: Option<Respawn>) -> bool {
+        let moved = respawn.is_some_and(|new| self.respawn.map(|old| old.at) != Some(new.at));
+        self.respawn = respawn;
+        moved
+    }
+
+    pub fn arrive_at_respawn(
+        &mut self,
+        loaded: &[Dimension],
+        open: impl Fn((i32, i32, i32)) -> Option<bool>,
+        bed: impl FnOnce(&Respawn) -> Option<Place>,
+    ) -> bool {
+        let Some(respawn) = self.respawn else {
+            return false;
+        };
+        if !loaded.contains(&respawn.at.dimension) {
+            return false;
+        }
+        match respawn_place(&respawn, open, bed) {
+            Some(place) => {
+                self.arrive(place);
+                false
+            }
+            None => {
+                self.respawn = None;
+                true
+            }
+        }
+    }
+
+    pub fn observe_life(&mut self, pm_type: i32) -> bool {
         let (in_world, died) = crate::death::life_state(pm_type);
+        let respawned = in_world && self.dead;
+        if died && !self.dead {
+            self.last_death = self.place.map(|place| GlobalPos {
+                dimension: place.dimension,
+                pos: (
+                    place.feet[0].floor() as i32,
+                    place.feet[1].floor() as i32,
+                    place.feet[2].floor() as i32,
+                ),
+            });
+        }
         if died {
             self.dead = true;
         } else if in_world {
             self.dead = false;
             self.arrived = true;
         }
+        respawned
     }
 
     pub fn data(&self) -> PlayerData {
@@ -128,7 +174,36 @@ impl Player {
             place: self.place,
             uuid: Some(self.uuid.0.clone()),
             ender: Some(self.ender.clone()),
+            respawn: self.respawn,
+            last_death: self.last_death,
         }
+    }
+}
+
+pub fn respawn_place(
+    respawn: &Respawn,
+    open: impl Fn((i32, i32, i32)) -> Option<bool>,
+    bed: impl FnOnce(&Respawn) -> Option<Place>,
+) -> Option<Place> {
+    if let Some(place) = bed(respawn) {
+        return Some(place);
+    }
+    let (x, y, z) = respawn.at.pos;
+    if !respawn.forced || open((x, y, z)) == Some(false) || open((x, y + 1, z)) == Some(false) {
+        return None;
+    }
+    Some(Place::standing(
+        respawn.at.dimension,
+        [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5],
+        respawn.yaw,
+        respawn.pitch,
+    ))
+}
+
+pub fn missing_respawn_message() -> Clientbound {
+    Clientbound::System {
+        text: Text::translate("block.minecraft.spawn.not_valid", Vec::new()),
+        overlay: false,
     }
 }
 
@@ -321,6 +396,118 @@ mod tests {
         assert!(!player.dead);
         player.observe_life(playerstate_iw4::PM_TYPE_INTERMISSION);
         assert!(!player.dead);
+    }
+
+    fn spawn_point(pos: (i32, i32, i32), forced: bool) -> Respawn {
+        Respawn {
+            at: GlobalPos {
+                dimension: Dimension::Overworld,
+                pos,
+            },
+            yaw: -90.0,
+            pitch: 10.0,
+            forced,
+        }
+    }
+
+    #[test]
+    fn a_death_is_remembered_where_the_player_last_stood_and_a_respawn_is_reported() {
+        let mut player = steve();
+        player.place = Some(Place::standing(
+            Dimension::Overworld,
+            [10.7, 63.0, -4.2],
+            0.0,
+            0.0,
+        ));
+        assert!(!player.observe_life(0));
+        assert!(!player.observe_life(playerstate_iw4::PM_TYPE_DEAD));
+        assert_eq!(
+            player.last_death,
+            Some(GlobalPos {
+                dimension: Dimension::Overworld,
+                pos: (10, 63, -5)
+            })
+        );
+        player.place = None;
+        assert!(!player.observe_life(playerstate_iw4::PM_TYPE_DEAD));
+        assert!(player.last_death.is_some());
+        assert!(player.observe_life(0));
+        assert!(!player.observe_life(0));
+        let data = player.data();
+        assert_eq!(data.last_death, player.last_death);
+    }
+
+    #[test]
+    fn setting_a_respawn_point_tells_whether_it_moved() {
+        let mut player = steve();
+        assert!(player.set_respawn(Some(spawn_point((1, 64, 1), true))));
+        assert!(!player.set_respawn(Some(spawn_point((1, 64, 1), false))));
+        assert!(player.set_respawn(Some(spawn_point((2, 64, 1), true))));
+        assert!(!player.set_respawn(None));
+        assert_eq!(player.respawn, None);
+        player.set_respawn(Some(spawn_point((3, 70, 3), true)));
+        assert_eq!(player.data().respawn, Some(spawn_point((3, 70, 3), true)));
+    }
+
+    #[test]
+    fn a_forced_respawn_point_needs_two_open_blocks_and_a_bed_needs_a_stand_up_spot() {
+        let point = spawn_point((4, 64, -8), true);
+        let placed = respawn_place(&point, |_| Some(true), |_| None).unwrap();
+        assert_eq!(placed.feet, [4.5, 64.0, -7.5]);
+        assert_eq!((placed.yaw, placed.pitch), (-90.0, 10.0));
+        assert!(placed.on_ground);
+        assert_eq!(
+            respawn_place(&point, |_| None, |_| None).map(|p| p.feet),
+            Some([4.5, 64.0, -7.5])
+        );
+        assert_eq!(
+            respawn_place(&point, |pos| Some(pos.1 != 65), |_| None),
+            None
+        );
+        assert_eq!(
+            respawn_place(&point, |pos| Some(pos.1 != 64), |_| None),
+            None
+        );
+        let bed = spawn_point((4, 64, -8), false);
+        assert_eq!(respawn_place(&bed, |_| Some(true), |_| None), None);
+        let beside = Place::standing(Dimension::Overworld, [5.5, 64.0, -7.5], 90.0, 0.0);
+        assert_eq!(
+            respawn_place(&bed, |_| Some(true), |_| Some(beside)),
+            Some(beside)
+        );
+    }
+
+    #[test]
+    fn a_respawn_goes_to_the_point_or_clears_a_missing_one() {
+        let mut player = steve();
+        let loaded = [Dimension::Overworld];
+        assert!(!player.arrive_at_respawn(&loaded, |_| Some(true), |_| None));
+        assert_eq!(player.arrival, None);
+        player.set_respawn(Some(spawn_point((4, 64, -8), true)));
+        assert!(!player.arrive_at_respawn(&loaded, |_| Some(true), |_| None));
+        assert_eq!(
+            player.arrival.map(|place| place.feet),
+            Some([4.5, 64.0, -7.5])
+        );
+        assert_eq!(player.place, player.arrival);
+        assert!(player.respawn.is_some());
+        player.arrival = None;
+        assert!(player.arrive_at_respawn(&loaded, |_| Some(false), |_| None));
+        assert_eq!(player.respawn, None);
+        assert_eq!(player.arrival, None);
+        let mut nether = spawn_point((4, 64, -8), true);
+        nether.at.dimension = Dimension::Nether;
+        player.set_respawn(Some(nether));
+        assert!(!player.arrive_at_respawn(&loaded, |_| Some(false), |_| None));
+        assert_eq!(player.respawn, Some(nether));
+        assert_eq!(player.arrival, None);
+        assert_eq!(
+            missing_respawn_message(),
+            Clientbound::System {
+                text: Text::translate("block.minecraft.spawn.not_valid", Vec::new()),
+                overlay: false,
+            }
+        );
     }
 
     #[test]
