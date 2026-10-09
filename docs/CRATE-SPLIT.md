@@ -1,5 +1,7 @@
 # Crate split: `minecraft_survival` and `minecraft_net`
 
+**Done in `5a7a4e4`..`636e433`** (A1 to C5 on `crate-split`, based on `70a01b2`), followed by the docs commit D1. No step was skipped: the optional B7 and C5 stayed clean pure moves, so both were done. D1 updated only [MINECRAFT-SURVIVAL.md](MINECRAFT-SURVIVAL.md), because PROGRESS.md belongs to the round's orchestrator. The commit-by-commit record is in [round7/track-split-log.md](round7/track-split-log.md).
+
 This is roadmap item 1.2 in [../CLAUDE.md](../CLAUDE.md) and Phase 1 item 4 in [PROGRESS.md](PROGRESS.md). It is the plan that agents follow commit by commit. Every line number refers to `d426239` on `minecraft-survival`.
 
 **Goal.** The Minecraft game state leaves `crates/render_anim` for a new crate without bevy, `crates/minecraft_survival`. It is split into three kinds of state:

@@ -20,7 +20,7 @@ const ENCHANTMENTS: &str = "minecraft:enchantments";
 const VANISHING_CURSE: &str = "minecraft:vanishing_curse";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FallLocation {
+pub enum FallLocation {
     Generic,
     Ladder,
     Vines,
@@ -32,7 +32,7 @@ pub(crate) enum FallLocation {
 }
 
 impl FallLocation {
-    pub(crate) fn of_climbable(block: &str) -> Self {
+    pub fn of_climbable(block: &str) -> Self {
         match block.strip_prefix("minecraft:").unwrap_or(block) {
             "ladder" => Self::Ladder,
             trapdoor if trapdoor.ends_with("_trapdoor") => Self::Ladder,
@@ -59,14 +59,14 @@ impl FallLocation {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MobAttack {
+pub enum MobAttack {
     Melee,
     Arrow,
     Explosion,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DamageCause {
+pub enum DamageCause {
     Generic,
     Hazard(Hazard),
     Fall,
@@ -84,7 +84,7 @@ pub(crate) enum DamageCause {
 }
 
 impl DamageCause {
-    pub(crate) fn mob(
+    pub fn mob(
         attack: MobAttack,
         source: Option<u64>,
         type_id: Option<&'static str>,
@@ -185,7 +185,7 @@ struct CombatEntry {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct CombatTracker {
+pub struct CombatTracker {
     entries: Vec<CombatEntry>,
     last_damage: u64,
     in_combat: bool,
@@ -194,9 +194,9 @@ pub(crate) struct CombatTracker {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DeathLine {
-    pub(crate) message: String,
-    pub(crate) killer: String,
+pub struct DeathLine {
+    pub message: String,
+    pub killer: String,
 }
 
 struct DeathKey {
@@ -206,7 +206,7 @@ struct DeathKey {
 }
 
 impl CombatTracker {
-    pub(crate) fn record(
+    pub fn record(
         &mut self,
         tick: u64,
         cause: DamageCause,
@@ -228,13 +228,13 @@ impl CombatTracker {
         }
     }
 
-    pub(crate) fn hurt_by(&mut self, tick: u64, cause: DamageCause) {
+    pub fn hurt_by(&mut self, tick: u64, cause: DamageCause) {
         if let Some((id, type_id)) = cause.living_attacker() {
             self.hurt_by = Some((id, type_id, tick));
         }
     }
 
-    pub(crate) fn tick(&mut self, tick: u64) {
+    pub fn tick(&mut self, tick: u64) {
         if self
             .hurt_by
             .is_some_and(|(.., at)| tick.saturating_sub(at) > KILL_CREDIT_TICKS)
@@ -341,7 +341,7 @@ impl CombatTracker {
         }
     }
 
-    pub(crate) fn death_line(
+    pub fn death_line(
         &self,
         language: &HashMap<String, String>,
         present: impl Fn(u64) -> bool,
@@ -381,7 +381,7 @@ fn entity_name(language: &HashMap<String, String>, type_id: &str) -> String {
         .unwrap_or_else(|| path.to_owned())
 }
 
-pub(crate) fn death_experience(level: u32, keep_inventory: bool) -> i32 {
+pub fn death_experience(level: u32, keep_inventory: bool) -> i32 {
     if keep_inventory {
         return 0;
     }
@@ -390,11 +390,11 @@ pub(crate) fn death_experience(level: u32, keep_inventory: bool) -> i32 {
         .min(MAX_DEATH_EXPERIENCE) as i32
 }
 
-pub(crate) fn keeps_belongings(keep_inventory: bool, mode: GameMode) -> bool {
+pub fn keeps_belongings(keep_inventory: bool, mode: GameMode) -> bool {
     keep_inventory || mode == GameMode::Spectator
 }
 
-pub(crate) fn life_state(pm_type: i32) -> (bool, bool) {
+pub fn life_state(pm_type: i32) -> (bool, bool) {
     let in_world = matches!(
         pm_type,
         0 | playerstate_iw4::PM_TYPE_NORMAL_LINKED | playerstate_iw4::PM_TYPE_LAST_STAND
@@ -407,20 +407,20 @@ pub(crate) fn life_state(pm_type: i32) -> (bool, bool) {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct DeathSpot {
-    pub(crate) feet: [f64; 3],
-    pub(crate) eye: [f64; 3],
+pub struct DeathSpot {
+    pub feet: [f64; 3],
+    pub eye: [f64; 3],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Death {
-    pub(crate) spot: DeathSpot,
-    pub(crate) experience: i32,
-    pub(crate) keep_inventory: bool,
+pub struct Death {
+    pub spot: DeathSpot,
+    pub experience: i32,
+    pub keep_inventory: bool,
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct DeathWatch {
+pub struct DeathWatch {
     in_world: bool,
     switching_teams: bool,
     switched_teams: bool,
@@ -429,7 +429,7 @@ pub(crate) struct DeathWatch {
 }
 
 impl DeathWatch {
-    pub(crate) fn observe(&mut self, in_world: bool, died: bool, level: u32, keep_inventory: bool) {
+    pub fn observe(&mut self, in_world: bool, died: bool, level: u32, keep_inventory: bool) {
         if self.in_world && died {
             if self.switching_teams {
                 self.switched_teams = true;
@@ -450,23 +450,23 @@ impl DeathWatch {
         }
     }
 
-    pub(crate) fn switch_teams(&mut self) {
+    pub fn switch_teams(&mut self) {
         if self.in_world {
             self.switching_teams = true;
         }
     }
 
-    pub(crate) fn switched_teams(&self) -> bool {
+    pub fn switched_teams(&self) -> bool {
         self.switched_teams
     }
 
-    pub(crate) fn stood(&mut self, spot: DeathSpot) {
+    pub fn stood(&mut self, spot: DeathSpot) {
         if self.in_world {
             self.spot = Some(spot);
         }
     }
 
-    pub(crate) fn take(&mut self) -> Option<Death> {
+    pub fn take(&mut self) -> Option<Death> {
         self.pending.take()
     }
 }
@@ -481,7 +481,7 @@ fn vanishes(stack: &ItemStack) -> bool {
         .is_some_and(|level| level > 0)
 }
 
-pub(crate) fn death_drops(
+pub fn death_drops(
     inventory: &mut Inventory,
     stays: impl Fn(&ItemStack) -> bool,
 ) -> Vec<ItemStack> {

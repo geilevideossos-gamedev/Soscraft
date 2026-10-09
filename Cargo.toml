@@ -44,6 +44,8 @@ members = [
     "crates/input_iw4",
     "crates/launcher",
     "crates/minecraft_commands",
+    "crates/minecraft_net",
+    "crates/minecraft_survival",
     "crates/minecraft_terrain",
     "crates/lighting_iw4",
     "crates/marks_iw4",
@@ -149,6 +151,8 @@ lighting_iw4 = { path = "crates/lighting_iw4" }
 marks_iw4 = { path = "crates/marks_iw4" }
 math_iw4 = { path = "crates/math_iw4" }
 minecraft_commands = { path = "crates/minecraft_commands" }
+minecraft_net = { path = "crates/minecraft_net" }
+minecraft_survival = { path = "crates/minecraft_survival" }
 master_protocol = { path = "crates/master_protocol" }
 movement_iw4 = { path = "crates/movement_iw4" }
 net = { path = "crates/net" }

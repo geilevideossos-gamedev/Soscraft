@@ -6,6 +6,7 @@ publish = false
 description = "Minecraft terrain streaming, lighting and section meshing, ported from MinecraftOSS engine/viewer at 9e4108d."
 
 [dependencies]
+minecraft_net = { path = "../minecraft_net" }
 minecraftoss-core = { path = "../../third_party/minecraftoss/core" }
 minecraftoss-world = { path = "../../third_party/minecraftoss/world" }
 minecraftoss-generator = { path = "../../third_party/minecraftoss/generator" }

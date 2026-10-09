@@ -40,17 +40,12 @@ pub use plugin::RenderAnimPlugin;
 
 mod minecraft_camera;
 mod minecraft_chat;
-mod minecraft_death;
-mod minecraft_entities;
 mod minecraft_gui;
 mod minecraft_hand;
 mod minecraft_inventory;
 mod minecraft_mining;
 mod minecraft_minimap;
-mod minecraft_offhand;
-mod minecraft_save;
 mod minecraft_sounds;
 mod minecraft_spawn_gate;
-mod minecraft_survival;
 pub mod minecraft_world;
 pub mod skate;
