@@ -178,16 +178,12 @@ pub struct ServerTnt {
 
 fn stack_of(item: &str, count: i32, components: Option<&str>) -> minecraftoss_core::item::ItemStack {
     let mut stack = minecraftoss_core::item::ItemStack::new(item, count);
-    stack.components = components.map(|json| minecraftoss_core::nbt::Tag::String(json.to_owned()));
+    stack.components = components.and_then(crate::item_nbt::components_from_text);
     stack
 }
 
 fn components_of(stack: &minecraftoss_core::item::ItemStack) -> Option<String> {
-    match &stack.components {
-        Some(minecraftoss_core::nbt::Tag::String(json)) => Some(json.clone()),
-        Some(other) => Some(format!("{other:?}")),
-        None => None,
-    }
+    stack.components.as_ref().map(crate::item_nbt::components_text)
 }
 
 impl ServerSim {
@@ -993,7 +989,7 @@ impl ServerSim {
             })
             .min_by(|a, b| a.0.total_cmp(&b.0));
         match dropped {
-            Some((_, data)) => data.stack.components = Some(minecraftoss_core::nbt::Tag::String(components.to_owned())),
+            Some((_, data)) => data.stack.components = crate::item_nbt::components_from_text(components),
             None => {
                 self.level.spawn_item_with(centre, stack_of(item, 1, Some(components)), [0.0; 3], 10, 0);
             }
@@ -3947,7 +3943,7 @@ mod tests {
         server.level.explode(minecraftoss_world::level::explosion::Explosion { center: [8.5, 200.5, 8.5], radius: 2.0, fire: false, interaction: minecraftoss_world::level::explosion::BlockInteraction::DestroyWithDecay, source: None });
         server.tick();
         assert!(server.take_changes().contains(&((8, 200, 8), None)));
-        let contents = r#"{"minecraft:container":[{"slot":0,"item":{"id":"minecraft:diamond","count":3}}]}"#;
+        let contents = r#"{"minecraft:container":[{"item":{"count":3,"id":"minecraft:diamond"},"slot":0}]}"#;
         server.keep_dropped_contents((8, 200, 8), "minecraft:red_shulker_box", contents);
         let boxes: Vec<_> = server.items().into_iter().filter(|i| i.item == "minecraft:red_shulker_box").collect();
         assert_eq!(boxes.len(), 1, "{boxes:?}");
@@ -4216,5 +4212,33 @@ mod tests {
             assert!(crate::server_mobs::load_level_entity(&mut server.level, tag));
         }
         assert_eq!(state(&server), before);
+    }
+
+    #[test]
+    fn an_enchanted_dropped_item_saves_its_components_as_vanilla_nbt() {
+        use minecraftoss_core::nbt::Tag;
+        let Some((mut server, _)) = door_world() else { return };
+        let components = r#"{"minecraft:custom_name":"Excalibur","minecraft:enchantments":{"minecraft:sharpness":5}}"#;
+        let id = server.spawn_item("minecraft:diamond_sword", 1, Some(components), [8.5, 201.0, 8.5], [0.0; 3], 10, 0);
+        assert_eq!(alive(&server, id).and_then(|i| i.components).as_deref(), Some(components));
+        let sword = |server: &ServerSim| crate::server_mobs::level_entity_tags(&server.level, |_| true).into_iter().find(|tag| tag.get("Item").and_then(|item| item.get("id")).and_then(Tag::as_str) == Some("minecraft:diamond_sword"));
+        let saved = sword(&server).expect("the sword is saved");
+        let saved_components = saved.get("Item").and_then(|item| item.get("components")).expect("components");
+        assert_eq!(saved_components.get("minecraft:enchantments").and_then(|e| e.get("minecraft:sharpness")), Some(&Tag::Int(5)));
+        assert_eq!(saved_components.get("minecraft:custom_name"), Some(&Tag::String("Excalibur".to_owned())));
+        server.level.entities.clear();
+        assert!(crate::server_mobs::load_level_entity(&mut server.level, &saved));
+        let loaded = server.items().into_iter().find(|i| i.item == "minecraft:diamond_sword");
+        assert_eq!(loaded.and_then(|i| i.components).as_deref(), Some(components));
+        let mut old = saved.clone();
+        if let Tag::Compound(map) = &mut old {
+            if let Some(Tag::Compound(item)) = map.get_mut("Item") {
+                item.insert("components".to_owned(), Tag::String(components.to_owned()));
+            }
+        }
+        server.level.entities.clear();
+        assert!(crate::server_mobs::load_level_entity(&mut server.level, &old));
+        let resaved = sword(&server).expect("the old sword is saved again");
+        assert_eq!(resaved.get("Item").and_then(|item| item.get("components")), Some(saved_components));
     }
 }

@@ -71,3 +71,4 @@ pub mod falling_render;
 pub mod enchantment_names;
 pub mod glint;
 pub mod game_mode;
+pub mod item_nbt;

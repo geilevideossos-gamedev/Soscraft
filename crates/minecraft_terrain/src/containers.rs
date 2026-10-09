@@ -526,7 +526,7 @@ pub fn structure_loot(
         .map(|stack| ItemStack {
             count: stack.count.clamp(1, 255) as u8,
             max: recipes.max_stack(&stack.id),
-            components: stack.components.as_ref().map(crate::server_mobs::tag_json),
+            components: stack.components.as_ref().map(crate::item_nbt::tag_json),
             id: stack.id,
         })
         .collect();

@@ -23,7 +23,7 @@ const REMOVED_OVERRIDE: &str = "!minecraft:enchantment_glint_override";
 pub fn has_glint(stack: &ItemStack) -> bool {
     let components = stack.components.as_ref().and_then(Value::as_object);
     let component = |key: &str| components.and_then(|map| map.get(key));
-    if let Some(glint) = component(OVERRIDE).and_then(Value::as_bool) {
+    if let Some(glint) = component(OVERRIDE).and_then(flag) {
         return glint;
     }
     if DEFAULT_GLINT.contains(&stack.id.as_str()) && component(REMOVED_OVERRIDE).is_none() {
@@ -34,6 +34,10 @@ pub fn has_glint(stack: &ItemStack) -> bool {
         .is_some_and(|map| !map.is_empty());
     enchanted
         || (stack.id == "minecraft:compass" && component("minecraft:lodestone_tracker").is_some())
+}
+
+fn flag(value: &Value) -> Option<bool> {
+    value.as_bool().or_else(|| value.as_i64().map(|v| v != 0))
 }
 
 pub fn glint_texture(packs: &PackStack) -> Result<Option<RgbaImage>> {
@@ -98,6 +102,18 @@ mod tests {
         assert!(!has_glint(&stack(
             "minecraft:nether_star",
             Some(json!({"!minecraft:enchantment_glint_override": {}}))
+        )));
+    }
+
+    #[test]
+    fn a_glint_override_saved_as_a_byte_still_counts() {
+        assert!(!has_glint(&stack(
+            "minecraft:enchanted_book",
+            Some(json!({"minecraft:enchantment_glint_override": 0}))
+        )));
+        assert!(has_glint(&stack(
+            "minecraft:diamond_sword",
+            Some(json!({"minecraft:enchantment_glint_override": 1}))
         )));
     }
 
