@@ -1097,6 +1097,9 @@ impl ServerSim {
         for (x, y, z) in self.level.take_changed_block_entities() {
             let chunk = self.level.chunk(minecraftoss_core::BlockPos::new(x, y, z).chunk());
             let Some(tag) = chunk.and_then(|chunk| chunk.block_entities.entities.get(&(x, y, z))) else {
+                if chunk.is_some() {
+                    self.block_entity_changes.push(((x, y, z), None));
+                }
                 continue;
             };
             if tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str).is_some_and(|kind| !crate::containers::owns_block_entity(kind)) {
@@ -4362,5 +4365,28 @@ mod tests {
         let unloaded = server.take_block_entity_changes();
         assert_eq!(positions(&unloaded), vec![hopper], "a chunk's last changes are handed over before it leaves");
         assert_eq!(unloaded[0].1.as_ref().map(dirt), Some(1));
+    }
+
+    #[test]
+    fn a_broken_dropper_hands_over_that_its_items_are_gone() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        if server.level.registries().block_entities.is_none() {
+            return;
+        }
+        let dropper = (8, 200, 8);
+        place(&mut server, &mut scene, dropper, Block::new("minecraft:dropper").with("facing", "up").with("triggered", "false"));
+        server.take_changes();
+        server.take_block_entity_changes();
+        let at = minecraftoss_core::BlockPos::new(dropper.0, dropper.1, dropper.2);
+        assert!(server.level.replace_block_item(at, 0, minecraftoss_core::item::ItemStack::new("minecraft:dirt", 5)));
+        let filled = server.take_block_entity_changes();
+        assert_eq!(filled.len(), 1);
+        assert!(filled[0].1.is_some());
+        take(&mut server, &mut scene, dropper);
+        assert_eq!(
+            server.take_block_entity_changes(),
+            vec![(dropper, None)],
+            "the chunk map must not keep the items for a dropper placed there later"
+        );
     }
 }

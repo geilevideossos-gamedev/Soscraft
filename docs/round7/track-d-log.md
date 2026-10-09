@@ -466,10 +466,26 @@ IW4L_MINECRAFT_KIT=minecraft:chest,minecraft:campfire*2,minecraft:dirt*64,minecr
 
 ### 17. Quitting a Minecraft world keeps the hoppers' last moves
 
-Commit: (filled in by the next entry)
+Commit: fb71ba1
 
 - **Defect:** entry 13 (c5efeed) says the closing save asks the server for its last block entity changes (`Entities::finish_block_entity_changes`, called from `Server::save_and_close`). It never ran: `save_and_close` in `render_anim/src/minecraft_world.rs` drops every level's `Entities` (stopping the server thread) before it calls `Server::save_and_close`, so that call always found no entities. The hopper, dropper and comparator changes the server made since the frame's last stream tick, including those already polled and waiting in `Entities`, were lost on quit, and the world was saved as it stood a frame or more earlier.
 - **Changed:** `save_and_close` in `render_anim/src/minecraft_world.rs` (three lines) passes each level's last server changes to its chunk map through `minecraft_survival::level::save_server_block_entities(..., true)` before it drops the level's entities. The containers' last changes are still written by `Server::save_and_close`, after the server's, as before.
 - **Tests:** none new: the closing order lives in the `render_anim` glue, which cannot be built without a whole world. The server side, which hands over the changes in its output, is covered by the hopper test of entry 13. `check -p launcher` and the `render_anim` `minecraft_world` tests pass.
 - **Test steps:** as entry 13, steps 1 to 6 (the hopper test needs a world prepared in vanilla 26.3). At step 4, quit through the menu while the dirt is still moving. Expected after the restart: exactly 128 dirt in total, and the hoppers and dropper hold the dirt where it was when you quit (open the world in Minecraft 26.3 to see their contents).
 - **Kit:** none (see entry 13).
+
+### 18. A broken Minecraft hopper, dispenser or dropper no longer comes back full
+
+Commit: (filled in by the next entry)
+
+- **Defect (item duplication):** the server-side half of entry 16. The server level only reported block entities whose keys changed (c5efeed), never one it removed. When a hopper, dispenser or dropper holding items was broken, its items dropped, but the chunk map kept the last tag the server had handed over for that position. A dropper or dispenser placed there again before the chunk was written got those items back (a hopper usually overwrote them on its first tick, a dropper never does), in the saved file and after the chunk reloaded in play.
+- **Changed:**
+  - Vendored `third_party/minecraftoss/world/src/level/mod.rs` (MinecraftOSS patch, one line): `Level::set_block` also records the position in `changed_block_entities` when it removes a block entity.
+  - `minecraft_terrain/src/server.rs`: `collect_block_entity_changes` hands over `None` for a recorded position whose block entity is gone (its chunk still loaded). The chunk map drops the old tag, and a block placed there later gets its empty default. A block entity that is replaced in the same batch is handed over with its new tag, as before; for a chest or other container the containers write `None` too (entry 16).
+- **Tests:** `server`: `a_broken_dropper_hands_over_that_its_items_are_gone` (real data: a filled dropper is handed over, broken, then handed over as `None`; it fails without the fix). `hoppers_hand_their_changed_items_to_the_chunk_map_and_leave_chests_to_the_containers` and the `minecraftoss-world` `level` tests pass unchanged.
+- **Test steps:** items can only get into a dropper through vanilla 26.3 (see entry 13).
+  1. Copy `iw4l-artifacts\saves\savetest` into `.minecraft\saves` and open it in Minecraft 26.3. Place a dropper and put 64 dirt into it. Keep one more dropper and a pickaxe in your inventory, and no dirt. Save and quit, and copy the world folder back over `iw4l-artifacts\saves\savetest`.
+  2. Start our game with `IW4L_MINECRAFT_WORLD=savetest`. Break the dropper with the pickaxe and pick up the 64 dirt and the dropper.
+  3. Place a dropper on the same spot. Quit through the menu and start again.
+  4. Break the dropper again and pick everything up. Expected: 64 dirt in total. Before this fix the dropper held the 64 dirt again, so there were 128. **Screenshot 1:** the inventory.
+- **Kit:** none: the world keeps the inventory vanilla saved.

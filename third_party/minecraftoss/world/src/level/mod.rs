@@ -404,6 +404,7 @@ impl<'a> Level<'a> {
         if remove_block_entity {
             chunk.block_entities.entities.remove(&(pos.x, pos.y, pos.z));
             chunk.block_entities.pending.remove(&(pos.x, pos.y, pos.z));
+            self.changed_block_entities.insert((pos.x, pos.y, pos.z));
         }
         self.changed.insert((pos.x, pos.y, pos.z));
         self.block_log.push((pos.x, pos.y, pos.z));
