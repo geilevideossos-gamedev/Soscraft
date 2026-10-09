@@ -817,6 +817,10 @@ impl ServerSim {
         let mob_targets = crate::thrown::targets(&self.mobs);
         let mut tridents = std::mem::take(&mut self.tridents);
         for trident in &mut tridents {
+            let chunk = ChunkPos::new((trident.position.x.floor() as i32) >> 4, (trident.position.z.floor() as i32) >> 4);
+            if self.level.chunk(chunk).is_none() {
+                continue;
+            }
             if trident.owner == crate::trident::UNKNOWN_OWNER {
                 if let Some(player) = players.iter().find(|p| trident.owner_uuid == Some(self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + p.id))) {
                     trident.owner = player.id;
@@ -4165,6 +4169,22 @@ mod tests {
         let near = player_at(0, [9.5, 200.0, 8.5], true);
         again.tick_tridents(&[near]);
         assert_eq!(again.pickup_tridents(&near, |_| true).len(), 1);
+    }
+
+    #[test]
+    fn a_trident_waits_where_the_world_is_not_loaded() {
+        let Some((mut server, _)) = door_world() else { return };
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(8);
+        let stack = minecraftoss_player::inventory::ItemStack::new(crate::trident::ITEM, 1);
+        let throw = crate::thrown::Throw { owner: 0, item: crate::trident::ITEM, components: None, eye: glam::DVec3::new(500.5, 204.0, 500.5), yaw: 0.0, pitch: 0.0, motion: glam::DVec3::ZERO, on_ground: true };
+        server.throw_trident(crate::trident::ThrownTrident::launch(&throw, stack, false, &mut random));
+        let start = server.trident_views()[0].position;
+        for _ in 0..200 {
+            server.tick_tridents(&[]);
+        }
+        let views = server.trident_views();
+        assert_eq!(views.len(), 1, "it is kept, not lost below the world");
+        assert_eq!(views[0].position, start);
     }
 
     #[test]

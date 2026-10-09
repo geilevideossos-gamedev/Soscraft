@@ -184,7 +184,7 @@ IW4L_MINECRAFT_KIT=wind_charge*64,cow_spawn_egg*6,dirt*16
 
 ### 10. Minecraft tridents are saved with the world and still know their thrower
 
-Commit: (next entry)
+Commit: 2593421
 
 - **Changed:** `trident.rs`: `ThrownTrident::to_tag(owner_uuid)` writes the vanilla `minecraft:trident` entity (`Pos`, `Motion`, `Rotation`, `Owner` as the thrower's UUID ints, `LeftOwner`, `HasBeenShot`, `life`, `shake`, `inGround`, `inBlockState`, `pickup`, `damage`, `crit`, `PierceLevel`, `SoundEvent`, `DealtDamage` and the `item` stack with its components); `from_tag` reads it back. `ThrownTrident.owner_uuid` (set from `EntityWorld::uuid_of(PLAYER_TARGET + owner)` when thrown). `server.rs`: tridents are saved with their chunk's entities (autosave, unload and shutdown), taken out when the chunk unloads, and a loaded one finds its thrower again by UUID on the first tick that player is in the world; until then nobody can pick it up and a Loyalty one waits. `server_mobs::json_tag` is crate-public for the item components.
 - **Tests:** trident: `a_stuck_trident_saves_as_the_vanilla_entity_and_loads_back`. server: `a_saved_trident_comes_back_and_still_knows_its_thrower`.
@@ -198,11 +198,30 @@ Commit: (next entry)
 IW4L_MINECRAFT_KIT=trident,trident+loyalty=3
 ```
 
+### 11. Minecraft tridents wait where the world is not loaded
+
+Commit: (next entry)
+
+- **Changed:** `server.rs` `tick_tridents` skips a trident whose chunk is not loaded, as vanilla doesn't tick entities there. Before, a trident thrown or returning into unloaded ground found no blocks, fell out of the world and was lost.
+- **Tests:** server: `a_trident_waits_where_the_world_is_not_loaded`.
+- **Test steps** (after glue items 9 and 10):
+  1. Stand at the edge of a cliff over the sea and throw the trident as far out as you can at a low render distance: it never disappears; fly or swim out and it lies on the sea floor or in the ground where it came down.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=trident
+```
+
+### Group summary: throwables
+
+- Without glue, right-click already throws bottles o' enchanting, splash and lingering potions and wind charges (their contents come from the thrower's hand through `ServerSim::note_held`), with the vanilla flight, break sounds, experience, effects on mobs, water dousing, lingering clouds and wind pushes on mobs and items. Witch and player potions break with the glass sound.
+- The glue (items 1 to 14 below) adds what the client has to do: the potion swirl and crumbs, tinted bottles and the trident model in flight, potion effects, trident hits and wind pushes on the player, the trident's charge and release, Riptide, per-item cooldowns and the keyed pearl teleports.
+
 ## After the split
 
 The glue still needed in the game files (today `render_anim/src/minecraft_*.rs`, after the split their new crate). Each item names the function, its inputs and the call site.
 
-1. **Throws carry the thrower and the stack.** In `use_hands` (`minecraft_world.rs`, the throwables branch, now at about line 1181) and `Entities::throw` (`minecraft_entities.rs:269`): build a `minecraft_terrain::thrown::Throw { owner: PLAYER (the local player's ID), item: &stack.id, components: stack.components.as_ref(), eye, yaw, pitch, motion, on_ground }` and call `Thrown::launch(&throw, &mut self.random)` instead of `Thrown::throw`. With several players the server makes the throw from the player's own state.
+1. **Throws carry the thrower and the stack.** In `use_hands` (`minecraft_world.rs`, the throwables branch, now at about line 1181) and `Entities::throw` (`minecraft_entities.rs:269`): build a `minecraft_terrain::thrown::Throw { owner: PLAYER (the local player's ID), item: &stack.id, components: stack.components.as_ref(), eye, yaw, pitch, motion, on_ground }` and call `Thrown::launch(&throw, &mut self.random)` instead of `Thrown::throw`. With several players the server makes the throw from the player's own state. Once the components arrive with every throw, the hand bridge `ServerSim::note_held` (entry 5) and the `TickInput.pickup` call to it can go.
 2. **Pearl teleports by player.** In `Entities::poll` (`minecraft_entities.rs:672`): read `output.pearl_teleports` and keep only the entries whose player is the local player (instead of every `output.pearl_landings` entry). `pearl_landings` can then be dropped from `Output`.
 3. **`/give` with potion contents** (track C's crate, `minecraft_commands/src/args.rs:248`, and the call in `minecraft_chat.rs:209`): parse `potion_contents={potion:"minecraft:x"}` in the item argument and build the stack with `minecraft_terrain::crafting::kit_potion_stack(recipes, id, 1, &enchantments, potion)` instead of `kit_stack`.
 4. **Potion break swirl and crumbs.** `Entities` (`minecraft_entities.rs`) gets a `spell: minecraft_terrain::spell_particles::SpellParticles` (`SpellParticles::new(seed)`, cleared with the other particles on a world change). In `Entities::poll`, for each `output.potion_breaks` entry: `self.spell.burst(b.position, b.color, b.instant)` and `minecraft_mining`'s particles `spawn_potion_crumbs(spell_particles::break_center(b.position).as_vec3(), &ResourceId::parse("minecraft:item/potion_overlay"))` (a new `Mining::potion_burst` beside `eat_burst`, `minecraft_mining.rs:153`). Tick it with `self.portal.tick()` (`minecraft_entities.rs:618`) and draw it with `self.spell.append_mesh(&mut out.translucent, atlas, forward, partial, light)` beside `self.portal.append_mesh` (`minecraft_entities.rs:917`).
@@ -213,6 +232,6 @@ The glue still needed in the game files (today `render_anim/src/minecraft_*.rs`,
 9. **Trident charge and release.** In `use_hands` (`minecraft_world.rs`, beside the shield's `Blocking`): right-click with a trident starts a `Charging { slot, ticks }` hand state when `trident::can_start(&inventory, stack, wet)` (`wet`: the player is in water or in rain); the held trident uses its raised (`using_item`) pose while charging; count game ticks while the key is held; on release call `trident::release(&mut inventory, slot, ticks, creative, wet, &mut random)`. On `Release::Throw(stack)`: `server.throw_trident(ThrownTrident::launch(&Throw { owner: PLAYER, item, components, eye, yaw, pitch, motion, on_ground }, stack, creative, &mut random))` and play `trident::throw_sound(&stack)` at volume 1, pitch 1. On `Release::Riptide`: item 11.
 10. **Tridents drawn.** Keep `snapshot.tridents` in `Entities::poll` and call `minecraft_terrain::trident::append_tridents(&mut out.items, &self.tridents, partial, atlas, light)` beside the thrown sprites (`minecraft_entities.rs:905`).
 11. **Riptide.** On `Release::Riptide { strength, sound }`: add `trident::riptide_push(yaw, pitch, strength)` to the player's velocity (in blocks a tick, MW2 units are `BLOCK * 20` per second), lift by 1.2 blocks if on the ground, start a 20-tick spin attack that hits mobs it touches for 8, and play `sound`.
-12. **Players struck.** In `Entities::poll` read `output.players_struck` for the local player: hurt it by `damage` with armour, as `DamageCause` trident from the thrower, knocked back along `velocity`.
+12. **Players struck.** In `Entities::poll` read `output.players_struck` for the local player: hurt it by `damage` with armour, from the thrower, as a trident (`kind` `minecraft:trident`, 8) or wind charge (`minecraft:wind_charge`, 1) hit, knocked back along `velocity`.
 13. **Per-item throw cooldowns.** `use_hands` (`minecraft_world.rs:1186`) and the cooldown overlay (`minecraft_world.rs:771`): replace the pearl-only `hand.pearl_cooldown` with a cooldown per item from `Throwable::cooldown()` (pearl 20 ticks, wind charge 10), shown on each item's slot.
 14. **Wind pushes the player.** In `Entities::poll` read `output.players_pushed` for the local player and add the push (blocks a tick) to the MW2 velocity; as vanilla's `Player.currentImpulseImpactPos`, ignore the fall damage of the fall that follows a wind push until the player lands.
