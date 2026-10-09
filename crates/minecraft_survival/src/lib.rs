@@ -3,6 +3,7 @@ pub mod cooldowns;
 pub mod data;
 pub mod death;
 pub mod entities;
+pub mod gear;
 pub mod guns;
 pub mod impulse;
 pub mod level;

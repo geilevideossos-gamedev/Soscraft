@@ -392,6 +392,7 @@ fn update(
     (hud_input, settings): (Option<Res<frame::HudInputView>>, Option<Res<frame::GameSettings>>),
     real_time: Res<Time<Real>>,
     mc_camera: Option<Res<frame::McCamera>>,
+    mut body_gear: ResMut<crate::anim::minecraft_gear::McBodyGear>,
 ) {
     let pad = active_pad.and_then(|active| active.0).and_then(|entity| gamepads.get(entity).ok());
     for _ in torn_down.read() {
@@ -419,6 +420,9 @@ fn update(
         }
     }
     ui.loading_world = runtime.loading.is_some() || (runtime.world.is_some() && runtime.spawn_gate.holding(now_ms));
+    if runtime.server.is_none() {
+        body_gear.clear();
+    }
     let Some(mut authority) = authority else {
         return;
     };
@@ -1948,6 +1952,14 @@ fn update(
         let vertices = minecraft_terrain::mesh::section_vertices(&mesh);
         bytes.extend_from_slice(bytemuck::cast_slice(&vertices));
         indices.extend(mesh.indices.iter().map(|i| i + base));
+    }
+    if alive {
+        match minecraft_survival::gear::body_gear(inventory, *selected, player_mode) {
+            Some(gear) => body_gear.set(local.0.0, gear),
+            None => body_gear.remove(local.0.0),
+        }
+    } else {
+        body_gear.remove(local.0.0);
     }
     view.cracks = mining.crack_mesh(&terrain.scene, &terrain.stream.states, &world.packs);
     if globals.game_rules.bool("advance_time") && !globals.day.paused {

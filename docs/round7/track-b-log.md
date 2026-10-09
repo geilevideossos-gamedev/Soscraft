@@ -915,3 +915,24 @@ Commit: (next entry)
 - **Tests:** none new; `minecraft_terrain` 579 passed (3 ignored), `minecraft_survival` 151, `render_anim` 48.
 - **Test steps:** none: no behaviour changes. The previous entry's steps cover the group.
 - **Kit:** none.
+
+## Group: body glue
+
+After the split items 18 to 21: each player's held items and worn armour reach the MW2 body, in third person, in the inventory's character box and in the death cam.
+
+### 1. Each Minecraft player's worn and held items reach the MW2 body every frame
+
+Commit: (next entry)
+
+- **Changed:** new `minecraft_survival/src/gear.rs`: `body_gear(inventory, selected, mode)`, the server side's read of one player's gear (the body group's `minecraft_terrain::body_gear` with `guns::weapon_of` as the gun test), `None` for a spectator (vanilla draws no spectator to other players). The adapter (`minecraft_world.rs` `update`, After the split item 18) runs it every frame on the local `Player` (held in `Server.players` by UUID) after the mobs and the inventory screen have had their say, and writes the result into `McBodyGear` under the player's MW2 client number while the player is alive; a dead or spectating player's entry is removed, and the map is cleared while no Minecraft world is open. `McBodyGear.hides_gun` already drives the kit weapon, so from this commit the MW2 body puts its gun away in third person while a Minecraft item or an empty hand is selected.
+- **Tests:** gear: `a_player_shows_the_selected_item_the_offhand_and_the_worn_armour`, `a_selected_mw2_gun_stays_the_bodys_gun`, `a_spectator_shows_no_gear`.
+- **Decision:** the gear is read from the player's own server state each frame and only copied per MW2 client number for the renderer. With several players the host reads every `Player` the same way and sends each one's gear on change (vanilla's `ClientboundSetEquipmentPacket`); each client then `set`s it under that player's client number. The gun can come back one frame late, because `update` is not ordered before the scene's model list (After the split item 18); not worth an ordering edge that could make a cycle.
+- **Test steps** (survival mode):
+  1. Select the cobblestone and press F5: the MW2 body holds no gun (the cobblestone itself shows from the next entry on). Select the gun slot: the gun is back. Screenshot of each.
+  2. Select an empty hotbar slot: no gun either, as a vanilla player's empty hand.
+  3. `/gamemode spectator`, F5: the body keeps its last gun (spectators show no Minecraft gear). `/gamemode survival` again.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=cobblestone*64
+```
