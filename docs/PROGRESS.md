@@ -12,6 +12,28 @@ Started 2026-10-09 on `minecraft-survival` at 3c2c62b. The owner's brief for thi
 - Each track agent keeps `docs/round7/track-<name>-log.md` with its commits, decisions and the owner's in-game test steps.
 - The workflow scripts used by the orchestrator: a track runner (commit groups in order, then an adversarial review, then clippy). If a session dies, re-create the worktree state from `git worktree list` and continue the track from its log.
 
+## Where everything stands (stopped 2026-10-09 for a PC shutdown)
+
+All agents and builds were stopped on the owner's request. Every branch is committed and pushed to `origin`. Nothing is running. Resume from this section.
+
+- `minecraft-survival` (main, `C:\Dev\mashup-crafting`): Phase 1 done, track A and the crate split merged. Last code merge 6315039.
+- **Track B** (`track-b`, worktree `C:\Dev\mc-wt\track-b`, target `D:\iw4l-wt\track-b`), head c1c9c4b:
+  - Early half done and reviewed (throwables, lids and body gear behind APIs, up to ba18264 plus review fixes). Main merged in as 984bd51.
+  - Second half, group `throw-glue`, was in progress: done 4749db4, 243bc13, cc5a400, 643656a, e1228a3, c1c9c4b (throw sources, pearls per thrower, crumbs and specks, swirl and glass, potion colours in flight, cloud specks).
+  - Next: finish `throw-glue` (potion effects on the player from splashes, clouds and witch potions; trident hold-and-release, the 3D trident in hand and in flight). Then group `lids-glue` (log items 15-17: terrain.rs hook, per-frame open-lid draw, opener block events), then `body-glue` (publish held items and armour per player to the MW2 body, death cam, other players, inventory character box). Then review and clippy, then merge.
+  - Restart with the track runner (see "How to continue") with `base` 984bd51 and only the unfinished groups; the agent reads `docs/round7/track-b-log.md` ("After the split" list) to see what is done.
+- **Track C** (`track-c`, worktree `C:\Dev\mc-wt\track-c`, target `D:\iw4l-wt\track-c`), head 2a3d60e:
+  - Early half done and reviewed (suggestion engine, /clear /xp /enchant /setblock /fill /spawnpoint /locate /execute /kit, creative tab reader). Main merged in as 44759b7.
+  - Second half, group `glue`, is finished: eefc73b..2a3d60e (commands act on the named player, /clear, /xp, /enchant, /setblock and /fill and /locate on the level server thread, /kit re-reads .env, /execute in looks up loaded levels, command hints kept up to date, and track A's leftover: hands stay still while an MW2 grenade is up). /spawnpoint glue waits for track D (`Player.respawn`).
+  - Next: group `chat-ui` (suggestion list, grey inline text, Tab cycling, usage lines and input colours in `hud/src/minecraft_chat.rs`), then `creative` (creative inventory screen with the tabs, search, saved hotbars), then review and clippy, then merge after track B or D, whichever is first.
+- **Track D** (`track-d`, worktree `C:\Dev\mc-wt\track-d`, target `D:\iw4l-wt\track-d`), head b681b6d:
+  - Groups `world-basics` (33a04dd, a8ed2a4, 2c5e8d3) and `player-file` (382dcc5, ce55298, 1397259, f484535, 4bffa75, f025a7a) are done.
+  - Group `block-entities` was in progress: done 50f39ce (block entities saved with their chunk) and f6822d8 (chests, barrels, shulker boxes). b681b6d is a WIP commit of the furnace and campfire step (brief commit 12): it touches `minecraft_terrain/src/campfire.rs` and the vendored `minecraftoss/player/src/crafting.rs`, is unfinished and was not built or tested. Check it, finish it or reset it before going on.
+  - Next: finish brief commit 12 (furnaces, smokers, blast furnaces, brewing stands, campfires keep their progress), commit 13 (hoppers, dispensers, droppers), then group `compat` (brief commit 14: end-to-end save test, Saving section of the docs, owner test), then review and clippy, then merge. The phase 3 plan also asks track D to add the `PortalCooldown` and `seenCredits` player keys.
+- **Merge order:** D first (phase 3 waits for it), then B and C. Expect conflicts in `render_anim/src/minecraft_world.rs` and `minecraft_survival/src/{entities,player,commands}.rs` between B, C and D. Merge each in its own worktree as described in "How to continue", full suite there, then fast-forward main and push.
+- **After A-D are merged:** release build 1 with `--profile play` (back up the current `iw4l-survival.exe` as `iw4l-survival-3c2c62b.exe`), then phase 3 per `docs/round7/e0-phase3-plan.md`, starting with the dimension switch groups S1-S4.
+- **Disk:** D: had about 12 GB free. The target dirs are `D:\iw4l-target` (main; protected from deletion, only subfolders may be removed), `D:\iw4l-wt\track-b`, `track-c` and `track-d`. Delete a track's dir after it is merged.
+- **Workflow scripts:** the track runner the orchestrator used lived in the session scratchpad and is gone with it. It ran, per track: one agent per commit group in order (each told the worktree, branch, target dir, briefs, files to avoid, and to log every commit with owner test steps in `docs/round7/track-<x>-log.md`), then an adversarial review agent that fixes real defects in new commits, then a verify agent (clippy on touched crates with `'--' -A clippy::approx_constant`, tests of touched crates, combined kit line in the log).
 ## Phase 1
 | Item | State | Notes |
 |---|---|---|
@@ -77,6 +99,7 @@ The 41 minutes of the last round were not reproduced: a clean release build alon
 - Elytra: a new 20 Hz glide mode in MW2 movement, guns still usable.
 - Throwables kit syntax: `id@potion` for potion contents (`#` starts a comment in `.env`).
 ## Log
+- 2026-10-09: stopped for a PC shutdown; all branches committed (track D with one WIP commit) and pushed. See "Where everything stands".
 - 2026-10-09: crate split merged (6315039) and pushed; track D started; the split worktree was removed, so `D:\iw4l-target` belongs to the main checkout again.
 - 2026-10-09: track A merged (80cacc3) and pushed.
 - 2026-10-09: item 1 merged and pushed (65f6402). Crate split, track A and early track C started.
