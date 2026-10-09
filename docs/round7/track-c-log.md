@@ -1352,3 +1352,34 @@ Kit: none needed.
 
 - **The hints live in `McChat`**, next to the input they complete, as the brief planned; in multiplayer the host sends each friend theirs and the friend's client writes them there.
 - **The static lists are compared by length, not rebuilt every frame.** They only change while a world loads; cloning about 5,000 ids per frame would be wasted work.
+
+## Minecraft hands stay still while an MW2 grenade is up
+
+Commit: the commit that adds this entry. It is the leftover from track A's "After the split" notes (track A commit 4, the grenade showing over a Minecraft item).
+
+### What changed
+
+- `render_anim/src/minecraft_world.rs` `update`: while the local player's MW2 weapon state is in the offhand family (`WeaponState::OffhandInit` to `OffhandEnd`, 0x10 to 0x15, the same range as `weapon_iw4`'s `in_offhand_family`), the hand counts as busy, so the left button neither punches, nor breaks in creative, nor mines; and it is not idle, so the right button neither uses nor places the selected Minecraft item. The state is read from that player's own playerstate (`ps.weaponstate_primary`).
+
+### Tests added
+
+None: the check is one range over `weapon_iw4`'s named states inside the frame update, which has no unit harness. The in-game steps cover it.
+
+### In-game test steps
+
+Pick a class with Frag and Flash.
+
+```
+IW4L_MINECRAFT_KIT=cobblestone*64,diamond_pickaxe
+```
+
+1. Select the cobblestone, look at the ground and hold G (cook the frag). While it is up, right-click: no block is placed. Release to throw. Screenshot mid-throw.
+2. Select the pickaxe, look at a block, press G and hold the left button during the throw: the block does not start breaking and the crack shows only after the gun is back.
+3. Look at a cow, press B (flash) and left-click during the throw: the cow is not hit.
+4. After each throw, right-click places and left-click mines again as before.
+
+Kit: `minecraft:cobblestone` 64, `minecraft:diamond_pickaxe` 1.
+
+### Decisions
+
+- **Small and local, so it is done here rather than left for track B**: two lines in `update`, no new state.

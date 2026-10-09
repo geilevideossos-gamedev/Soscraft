@@ -852,7 +852,8 @@ fn update(
         if !attack_held {
             hand.miss_time = 0;
         }
-        let busy = survival.eating().is_some() || hand.blocking.is_some() || hand.miss_time > 0;
+        let mw2_offhand = (weapon_iw4::WeaponState::OffhandInit as i32..=weapon_iw4::WeaponState::OffhandEnd as i32).contains(&ps.weaponstate_primary);
+        let busy = survival.eating().is_some() || hand.blocking.is_some() || hand.miss_time > 0 || mw2_offhand;
         let mut creative_press = false;
         let mut punched = false;
         if ui.holding_item && (buttons.just_pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, true)) && !busy {
@@ -951,7 +952,7 @@ fn update(
             blocking.ticks = blocking.ticks.saturating_add(hand_ticks);
         }
         hand.place_delay = hand.place_delay.saturating_sub(hand_ticks);
-        let idle = survival.eating().is_none() && hand.blocking.is_none();
+        let idle = survival.eating().is_none() && hand.blocking.is_none() && !mw2_offhand;
         let (use_pressed, use_down) = if ui.holding_item {
             (buttons.just_pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, true), use_held)
         } else {
