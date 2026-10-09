@@ -32,6 +32,8 @@ pub struct Player {
     pub ender: Vec<Option<ItemStack>>,
     pub respawn: Option<Respawn>,
     pub last_death: Option<GlobalPos>,
+    pub portal_cooldown: i32,
+    pub seen_credits: bool,
 }
 
 #[derive(Default)]
@@ -85,6 +87,8 @@ impl Player {
             ender: vec![None; ENDER_SLOTS],
             respawn: None,
             last_death: None,
+            portal_cooldown: 0,
+            seen_credits: false,
         }
     }
 
@@ -176,6 +180,8 @@ impl Player {
             ender: Some(self.ender.clone()),
             respawn: self.respawn,
             last_death: self.last_death,
+            portal_cooldown: Some(self.portal_cooldown),
+            seen_credits: Some(self.seen_credits),
         }
     }
 }

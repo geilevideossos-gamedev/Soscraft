@@ -153,6 +153,8 @@ pub struct PlayerData {
     pub ender: Option<Vec<Option<ItemStack>>>,
     pub respawn: Option<Respawn>,
     pub last_death: Option<GlobalPos>,
+    pub portal_cooldown: Option<i32>,
+    pub seen_credits: Option<bool>,
 }
 
 impl PlayerData {
@@ -188,6 +190,14 @@ impl PlayerData {
                 .map(|list| slots(list, ENDER_SLOTS, recipes)),
             respawn: tag.get("respawn").and_then(read_respawn),
             last_death: tag.get("LastDeathLocation").and_then(global_pos),
+            portal_cooldown: tag
+                .get("PortalCooldown")
+                .and_then(Tag::as_i64)
+                .map(|ticks| ticks.clamp(i32::MIN.into(), i32::MAX.into()) as i32),
+            seen_credits: tag
+                .get("seenCredits")
+                .and_then(Tag::as_i64)
+                .map(|seen| seen != 0),
         }
     }
 
@@ -240,6 +250,12 @@ impl PlayerData {
                 "LastDeathLocation".to_owned(),
                 global_pos_tag(death, Vec::new()),
             );
+        }
+        if let Some(ticks) = self.portal_cooldown {
+            entries.insert("PortalCooldown".to_owned(), Tag::Int(ticks));
+        }
+        if let Some(seen) = self.seen_credits {
+            entries.insert("seenCredits".to_owned(), Tag::Byte(i8::from(seen)));
         }
         entries
     }
@@ -1239,6 +1255,44 @@ mod tests {
                 dimension: Dimension::Nether,
                 pos: (1, 2, 3)
             })
+        );
+    }
+
+    #[test]
+    fn the_portal_cooldown_and_seen_credits_are_an_int_and_a_byte_like_vanilla() {
+        let entries = PlayerData {
+            portal_cooldown: Some(300),
+            seen_credits: Some(true),
+            ..PlayerData::default()
+        }
+        .entries();
+        assert_eq!(entries["PortalCooldown"], Tag::Int(300));
+        assert_eq!(entries["seenCredits"], Tag::Byte(1));
+        let read = PlayerData::read(&Tag::Compound(entries), &RecipeBook::default());
+        assert_eq!(
+            (read.portal_cooldown, read.seen_credits),
+            (Some(300), Some(true))
+        );
+        let unseen = PlayerData {
+            portal_cooldown: Some(0),
+            seen_credits: Some(false),
+            ..PlayerData::default()
+        }
+        .merged(Some(compound(vec![
+            ("PortalCooldown", Tag::Int(12)),
+            ("seenCredits", Tag::Byte(1)),
+        ])));
+        assert_eq!(unseen.get("PortalCooldown"), Some(&Tag::Int(0)));
+        assert_eq!(unseen.get("seenCredits"), Some(&Tag::Byte(0)));
+        let missing = PlayerData::read(&compound(Vec::new()), &RecipeBook::default());
+        assert_eq!((missing.portal_cooldown, missing.seen_credits), (None, None));
+        let kept = PlayerData::default().merged(Some(unseen));
+        assert_eq!(kept.get("PortalCooldown"), Some(&Tag::Int(0)));
+        assert_eq!(kept.get("seenCredits"), Some(&Tag::Byte(0)));
+        let short = compound(vec![("PortalCooldown", Tag::Short(40))]);
+        assert_eq!(
+            PlayerData::read(&short, &RecipeBook::default()).portal_cooldown,
+            Some(40)
         );
     }
 

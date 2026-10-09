@@ -160,6 +160,8 @@ pub fn join(
     }
     player.respawn = saved.respawn;
     player.last_death = saved.last_death;
+    player.portal_cooldown = saved.portal_cooldown.unwrap_or(0);
+    player.seen_credits = saved.seen_credits.unwrap_or(false);
     player.dead = dead;
     player.place = Some(Place::standing(Dimension::Overworld, spawn, 0.0, 0.0));
     match saved.place {

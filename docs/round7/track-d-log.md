@@ -370,10 +370,27 @@ IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5
 
 ### Minecraft station saving passes clippy
 
-Commit: (filled in by the next entry)
+Commit: bda50b5
 
 - **Changed:** `campfire.rs` and `containers.rs`: the loading of saved campfires, furnaces and brewing stands (c2a10e3) no longer uses `unwrap_or_default`, which the workspace `clippy.toml` disallows; a saved item list of the wrong length still leaves the slots empty. No behaviour change.
 - **Tests:** none new; the `containers` and `campfire` tests pass unchanged.
 - **Decisions:** clippy on `minecraft_terrain` still stops at 16 errors that were there before this track (`spider_render.rs`, `horse_render.rs`, `villager_render.rs`, `wolf_render.rs`), so the crates that depend on it (`minecraft_survival`) cannot be linted until those are fixed. None of the warnings left are in code of this group.
 - **Test steps:** none; entries 12 and 13 cover the behaviour.
+- **Kit:** none.
+
+## Group: compat
+
+### 14a. Minecraft player files keep the portal cooldown and seen credits like vanilla
+
+Commit: (filled in by the next entry)
+
+- **Changed:**
+  - `player_nbt.rs`: `PlayerData::portal_cooldown` and `seen_credits`, read and written as 26.3 does (checked with javap): `PortalCooldown` is an int that `Entity.saveWithoutId` always writes and `Entity.load` reads with `getIntOr(..., 0)`; `seenCredits` is a boolean (a byte) that `ServerPlayer.addAdditionalSaveData` always writes and `readAdditionalSaveData` reads with `getBooleanOr(..., false)`. Any number type is read, as vanilla's numeric tags are.
+  - `player.rs`: `Player::portal_cooldown` and `Player::seen_credits`, saved by `Player::data` on every write. `server::join` restores them (0 and false for a file without them).
+- **Tests:** `player_nbt`: `the_portal_cooldown_and_seen_credits_are_an_int_and_a_byte_like_vanilla` (types, round trip, a merge that overwrites the old values, missing keys read as absent and left alone by a writer that does not set them, a short read as an int). The end-to-end test of the next entry checks them through a real player file.
+- **Decisions:**
+  - Nothing counts the cooldown down or sets it yet: there are no portals. The dimension switch sets it on travel (`Entity.setPortalCooldown()` takes `getDimensionChangingDelay`: 10 ticks for a player, checked with javap, 300 for other entities) and counts it down every tick (`processPortalCooldown`); the End exit sets `seen_credits` in `ServerPlayer.showEndCredits`, so later exits skip the credits as in vanilla.
+  - `PlayerData` keeps them as `Option`s, so a writer that does not know them (a mode-only write) leaves the file's values, while every `Player` write sets both, as vanilla always writes them.
+  - `entered_nether_pos` (the Nether advancement's start point) is not read yet; the merge writer keeps it in the file untouched.
+- **Test steps:** none; nothing changes in game. Before this commit the merge writer already kept both keys of a file written by Minecraft; now the game holds them per player, ready for the dimension switch. The combined test of the next entry looks at them.
 - **Kit:** none.
