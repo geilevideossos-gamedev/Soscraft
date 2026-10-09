@@ -1786,7 +1786,7 @@ fn update(
         }
         if entities.ticks() % minecraft_terrain::openers::RECHECK_TICKS == 0 {
             let key = minecraft_survival::level::opener_key(local_uuid);
-            let open_cells = inventory_ui.block().map(|opened| opened.cells.clone()).unwrap_or_default();
+            let open_cells = inventory_ui.block().map_or_else(Vec::new, |opened| opened.cells.clone());
             opener_events.extend(openers.recheck(|player, pos| player != key || open_cells.contains(&pos)));
         }
         for event in opener_events {

@@ -654,6 +654,7 @@ pub mod compile_profile {
 }
 
 /// `SectionCompiler.compile`: one section's faces and visibility set.
+#[allow(clippy::too_many_arguments)]
 fn compile_section(
     states: &BlockStates,
     hood: &Neighborhood,

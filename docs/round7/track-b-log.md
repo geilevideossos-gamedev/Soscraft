@@ -883,7 +883,7 @@ IW4L_MINECRAFT_KIT=red_shulker_box,chest*2
 
 ### 3. Minecraft chests, ender chests and shulker boxes open and close their lids for each player like vanilla
 
-Commit: (next entry)
+Commit: 32932fb
 
 - **Changed:** `minecraft_survival` `level.rs` (After the split item 17): `Level` (one per dimension, server side) gets `openers: Openers`. New `opener_key(uuid)`: the player's UUID as its 128-bit number (`parse_uuid`, with a stable hash for a malformed one). `toggle_openers(openers, scene, cells, uuid, open, spectator)` feeds every counted cell of an opened or closed screen (both halves of a double chest) to `Openers::open`/`close` under that player's key; `opener_outcome(scene, event)` is what each event does: its block event (`Level.blockEvent(pos, block, 1, count)`), the vanilla open or close sound on the first opener and the last one leaving, and the barrel's `open` state. `leave_containers`/`leave(level, uuid)` close everything a player had open when it leaves the world, so a barrel is saved shut (`ServerPlayer.disconnect` closes the menu before the save). `entities.rs` gets `Entities::ticks()`.
 - The adapter (`minecraft_world.rs`) replaces its own sound and barrel code: each screen opened or closed goes through `toggle_openers` with the local player's UUID (spectators are not counted); every `RECHECK_TICKS` (5) client ticks `Openers::recheck` drops the local player from any container its screen no longer shows, leaving other players' entries to them. Each event goes to `entities.lids.block_event` (the lid starts to move), plays its sound at `openers::sound`'s spot (a double chest once from its middle, a barrel from its front face) at volume 0.5 and pitch 0.9 to 1, and writes the barrel's `open` state. A counted block that is broken, blown up or replaced is `removed` before its screen closes, so it plays no close sound. The shulker box's lid space is checked only while its lid is shut (`ShulkerBoxBlock.canOpen`). `close_world` calls `level::leave` on every level for the local player before saving. `docs/MINECRAFT-SURVIVAL.md` says which lids now move.
@@ -905,3 +905,13 @@ Commit: (next entry)
 ```
 IW4L_MINECRAFT_KIT=red_shulker_box,chest*4,trapped_chest,copper_chest,ender_chest,barrel,oak_slab*16,water_bucket,furnace,brewing_stand,cobblestone*64
 ```
+
+### 4. Minecraft lid glue passes clippy
+
+Commit: (next entry)
+
+- **Changed:** `terrain.rs` `compile_section` (9 arguments since entry 1) allows `clippy::too_many_arguments`, like `build_section_blocks` beside it; the adapter's recheck names its empty fallback (`map_or_else(Vec::new, ..)`), as `clippy.toml` asks instead of `unwrap_or_default`.
+- **Clippy:** `clippy -p minecraft_survival -p minecraft_terrain -p render_anim --locked --all-targets -- -A clippy::approx_constant` reports nothing on the lines this group added or changed; the warnings left in those files were there before (`entities.rs` 76 and 619, `minecraft_world.rs` 122, 377 and 386).
+- **Tests:** none new; `minecraft_terrain` 579 passed (3 ignored), `minecraft_survival` 151, `render_anim` 48.
+- **Test steps:** none: no behaviour changes. The previous entry's steps cover the group.
+- **Kit:** none.
