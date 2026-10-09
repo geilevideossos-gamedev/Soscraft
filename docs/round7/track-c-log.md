@@ -1259,3 +1259,34 @@ Kit: `minecraft:lectern` 1, `minecraft:white_bed` 1.
 
 - **Server thread rather than a thread of its own.** That is where vanilla searches, it already holds the POIs, and the answer travels the same way as the block edits. A long search stalls mobs (not the game), as vanilla's stalls the server; the 20 s cap bounds it.
 - **POI ids are the code registry of 26.3** (`PoiTypes`), listed from `PoiType::ALL`; the tags come from the data like the others.
+
+## Minecraft /kit reads the .env again for every call
+
+Commit: the commit that adds this entry.
+
+### What changed
+
+- `Host::kit_line` reads `IW4L_MINECRAFT_KIT` from the `.env` the game started with, found the way `asset_transport::load_dotenv` finds it (next to the exe, otherwise the nearest one above the working directory), with `minecraft_commands::kit::read_env_file`. A changed line counts at the next `/kit` without a restart. Without any `.env` it falls back to the process environment, so a kit given on the command line still works.
+- `commands::env_file()` is that search. `run` only does it in a frame that has chat input.
+- `Host::give` no longer needs the level's entities: the stack is built from the world's recipe book (`GameData::recipes`, the one the entities use), it goes into the target's inventory, and only the drops of what does not fit and the pickup pops need the level. So `/give` and `/kit` work the same before the mobs are up.
+
+### Tests added
+
+- `commands::tests::kit_reads_the_env_file_again_and_gives_like_give`: a CRLF `.env` with another key first, `/kit` and `/kit Alex` with `/give`'s lines, 70 stone split into stacks and an enchanted sword in both inventories, the file changed to `torch*8`, and the key removed.
+
+### In-game test steps
+
+```
+IW4L_MINECRAFT_KIT=diamond_pickaxe+efficiency=5,diamond_sword,stone*64,oak_log*64,torch*64,bread*16
+```
+
+1. Load the world, then `/clear`.
+2. `/kit`: one "Gave ..." line per entry, and the items are back, the pickaxe enchanted. Screenshot.
+3. Run `/kit` six more times: the seventh is the first that no longer fits the 36 slots, and its torches drop at your feet. Screenshot.
+4. Without restarting, change the `.env` line to `IW4L_MINECRAFT_KIT=torch*8` and save. `/kit`: "Gave 8 [Torch] to Steve". Put the line back afterwards.
+
+Kit: `minecraft:diamond_pickaxe` 1 (Efficiency V), `minecraft:diamond_sword` 1, `minecraft:stone` 64, `minecraft:oak_log` 64, `minecraft:torch` 64, `minecraft:bread` 16.
+
+### Decisions
+
+- **The `.env` found at start is the one read again.** Reading only the exe's folder would miss the developer setup, where the `.env` sits in the repository above the working directory.

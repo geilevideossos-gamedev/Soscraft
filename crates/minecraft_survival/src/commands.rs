@@ -1,5 +1,6 @@
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 
 use minecraft_commands::{
     Answer, BlockEdit, Clientbound, Clock, CommandData, CommandRegistries, CommandServer,
@@ -43,9 +44,29 @@ pub struct Host<'a> {
     pub levels: &'a mut BTreeMap<Dimension, Level>,
     pub players: &'a mut BTreeMap<PlayerUuid, Player>,
     pub presence: Vec<(PlayerUuid, Presence)>,
+    pub env_file: Option<PathBuf>,
     pub rules_changed: bool,
     pub mode_changed: Vec<PlayerId>,
     pub teleports: Vec<(PlayerId, [f64; 3])>,
+}
+
+pub fn env_file() -> Option<PathBuf> {
+    let beside_exe = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join(".env")));
+    if let Some(candidate) = beside_exe.filter(|candidate| candidate.is_file()) {
+        return Some(candidate);
+    }
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let candidate = dir.join(".env");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
 }
 
 impl Host<'_> {
@@ -307,18 +328,18 @@ impl CommandWorld for Host<'_> {
 
     fn give(&mut self, player: PlayerId, item: &ItemArg, count: u32) -> bool {
         let feet = self.presence(player).pose.map(|pose| pose.feet);
-        let Some((player, Some(entities))) = self.player_in_level(player) else {
-            return false;
-        };
         let stack = minecraft_terrain::crafting::kit_stack(
-            &entities.recipes,
+            &self.data.recipes,
             &item.id,
             1,
             &item.enchantments,
         );
+        let Some((player, entities)) = self.player_in_level(player) else {
+            return false;
+        };
         let (dropped, added) =
             give_stacks(&mut player.inventory, player.selected, &stack, count);
-        if let Some(feet) = feet {
+        if let (Some(feet), Some(entities)) = (feet, entities) {
             for stack in &dropped {
                 entities.drop_given(stack, feet);
             }
@@ -596,6 +617,14 @@ impl CommandWorld for Host<'_> {
         Answer::Later
     }
 
+    fn kit_line(&self) -> Option<String> {
+        let key = minecraft_commands::kit::KIT_KEY;
+        match &self.env_file {
+            Some(path) => minecraft_commands::kit::read_env_file(path, key),
+            None => std::env::var(key).ok(),
+        }
+    }
+
     fn level_up(&mut self, player: PlayerId) {
         let feet = self.presence(player).pose.map(|pose| pose.feet);
         let Some((player, entities)) = self.player_in_level(player) else {
@@ -795,6 +824,7 @@ pub fn run(
         levels: &mut *levels,
         players: &mut *players,
         presence,
+        env_file: if sent.is_empty() { None } else { env_file() },
         rules_changed: false,
         mode_changed: Vec::new(),
         teleports: Vec::new(),
@@ -859,6 +889,7 @@ pub(crate) mod tests {
         pub(crate) players: BTreeMap<PlayerUuid, Player>,
         pub(crate) presence: Vec<(PlayerUuid, Presence)>,
         pub(crate) server: CommandServer,
+        pub(crate) env_file: Option<PathBuf>,
     }
 
     impl Parts {
@@ -872,6 +903,7 @@ pub(crate) mod tests {
                 players: BTreeMap::new(),
                 presence: Vec::new(),
                 server: CommandServer::new(HOST),
+                env_file: None,
             };
             parts.join(HOST, "Steve", [4.5, 70.0, -2.5]);
             parts
@@ -922,6 +954,7 @@ pub(crate) mod tests {
                 levels: &mut self.levels,
                 players: &mut self.players,
                 presence: self.presence.clone(),
+                env_file: self.env_file.clone(),
                 rules_changed: false,
                 mode_changed: Vec::new(),
                 teleports: Vec::new(),
@@ -987,6 +1020,9 @@ pub(crate) mod tests {
             "commands.fill.failed" => "No blocks were filled",
             "argument.pos.unloaded" => "That position is not loaded",
             "argument.dimension.invalid" => "Unknown dimension '%s'",
+            "commands.give.success.single" => "Gave %s %s to %s",
+            "block.minecraft.stone" => "Stone",
+            "block.minecraft.torch" => "Torch",
             "commands.locate.structure.success" => "The nearest %s is at %s (%s blocks away)",
             "commands.locate.biome.success" => "The nearest %s is at %s (%s blocks away)",
             "commands.locate.structure.not_found" => {
@@ -1285,6 +1321,56 @@ pub(crate) mod tests {
         let host = parts.host();
         assert_eq!(host.dimension(HOST), "minecraft:overworld");
         assert_eq!(host.loaded("minecraft:overworld", [0, 64, 0]), Loaded::Unloaded);
+    }
+
+    #[test]
+    fn kit_reads_the_env_file_again_and_gives_like_give() {
+        let mut parts = Parts::new();
+        parts.join(FRIEND, "Alex", [0.5, 64.0, 0.5]);
+        let path = std::env::temp_dir().join(format!("iw4l-kit-{}.env", std::process::id()));
+        let kit = "IW4L_GAMES=C:\\Games\r\nIW4L_MINECRAFT_KIT=stone*70,diamond_sword+sharpness=5\r\n";
+        std::fs::write(&path, kit).unwrap();
+        parts.env_file = Some(path.clone());
+        let (lines, _) = parts.send(HOST, &["/kit", "/kit Alex"]);
+        assert_eq!(
+            lines,
+            vec![
+                "Gave 70 [Stone] to Steve",
+                "Gave 1 [Diamond Sword] to Steve",
+                "Gave 70 [Stone] to Alex",
+                "Gave 1 [Diamond Sword] to Alex",
+            ]
+        );
+        for id in [HOST, FRIEND] {
+            let slots = &parts.player(id).inventory.slots;
+            let stone: u32 = slots
+                .iter()
+                .flatten()
+                .filter(|stack| stack.id == "minecraft:stone")
+                .map(|stack| u32::from(stack.count))
+                .sum();
+            assert_eq!(stone, 70);
+            let sword = slots
+                .iter()
+                .flatten()
+                .find(|stack| stack.id == "minecraft:diamond_sword")
+                .unwrap();
+            let components = sword.components.as_ref().unwrap();
+            assert_eq!(
+                components["minecraft:enchantments"]["minecraft:sharpness"],
+                5
+            );
+        }
+        std::fs::write(&path, "IW4L_MINECRAFT_KIT=torch*8\n").unwrap();
+        let (lines, _) = parts.send(HOST, &["/kit"]);
+        assert_eq!(lines, vec!["Gave 8 [Torch] to Steve"]);
+        std::fs::write(&path, "IW4L_GAMES=C:\\Games\n").unwrap();
+        let (lines, _) = parts.send(HOST, &["/kit"]);
+        assert_eq!(
+            lines,
+            vec!["No IW4L_MINECRAFT_KIT in the .env next to the game"]
+        );
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
