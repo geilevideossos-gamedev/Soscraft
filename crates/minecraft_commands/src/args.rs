@@ -176,10 +176,10 @@ impl ArgKind {
             Self::Bool => reader.read_bool().map(Arg::Bool),
             Self::Item => item(reader).map(Arg::Item),
             Self::Vec3 => vec3(reader).map(Arg::Vec3),
-            Self::Resource(_) => {
-                let at = reader.cursor;
-                resource_id(reader).map(|id| Arg::Resource { id, at })
-            }
+            Self::Resource(_) => resource_id(reader).map(|id| Arg::Resource {
+                id,
+                at: reader.cursor,
+            }),
             Self::Nbt => nbt(reader).map(Arg::Nbt),
             Self::ItemPredicate => {
                 let at = reader.cursor;

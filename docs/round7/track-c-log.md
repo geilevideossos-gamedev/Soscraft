@@ -622,3 +622,26 @@ Kit: `minecraft:diamond_pickaxe` 1 (Efficiency V), `minecraft:diamond_sword` 1, 
 
 1. **`CommandWorld::kit_line`**: `std::env::current_exe()`'s directory joined with `.env`, then `minecraft_commands::kit::read_env_file(&path, KIT_KEY)`. When the exe has no `.env`, fall back to `std::env::var(KIT_KEY).ok()` so a kit given on the command line still works.
 2. `/kit` gives through the existing `give`, so nothing else is needed. In multiplayer the host's `.env` is the only kit; friends get it through `/kit <name>` from the host.
+
+## Minecraft resource errors point after the id like vanilla
+
+Commit: the commit that adds this entry (branch `track-c`, group "commands").
+
+### What changed
+
+- `ArgKind::Resource` now records the error position after the id instead of before it. 26.3 `ResourceArgument.parse` reads the id and then throws `argument.resource.not_found` with the reader's context, which is the end of the id (checked with javap; there is no `setCursor` before the throw, unlike `ItemParser`, which resets to the start). The chat context line of `/effect` and `/enchant` with an unknown id now matches vanilla: "...@s glowing<--[HERE]" instead of "...t give @s glowing" with the id underlined.
+- `/locate biome` and `poi` already did this in their own argument.
+
+### Tests added
+
+- `commands::tests::effect_defaults_to_thirty_seconds_amplifier_zero` and `enchant::tests::enchant_fails_in_the_vanilla_order` expect the vanilla context.
+
+### In-game test steps
+
+```
+IW4L_MINECRAFT_KIT=stone*64
+```
+
+1. `/effect give @s nope`: red "Can't find element 'minecraft:nope' of type 'minecraft:mob_effect'" and a grey "...ve @s nope<--[HERE]" with nothing underlined. Screenshot.
+
+Kit: none needed.

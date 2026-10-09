@@ -227,7 +227,7 @@ mod tests {
             texts(&out),
             vec![
                 "Can't find element 'minecraft:nope' of type 'minecraft:enchantment'",
-                "...nchant @s nope<--[HERE]"
+                "...nt @s nope<--[HERE]"
             ]
         );
         let out = run(

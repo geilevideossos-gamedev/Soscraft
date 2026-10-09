@@ -1437,7 +1437,7 @@ mod tests {
             texts(&out),
             vec![
                 "Can't find element 'minecraft:glowing' of type 'minecraft:mob_effect'",
-                "...t give @s glowing<--[HERE]"
+                "...@s glowing<--[HERE]"
             ]
         );
         let out = run(
