@@ -130,3 +130,18 @@ Previous commit: 6a3ceba
 - **Decisions:** the process runs on the player (by UUID) and ticks on its own clock in the adapter's frame, not inside a level's mob tick, so a level that is not ticking (the player is held behind the loading screen) never advances it.
 - **Test steps:** nothing visible yet; travel and the overlay come with entries 10 and 11, whose steps cover this entry.
 - **Kit:** none.
+
+### 7. Minecraft portal travel scales coordinates by eight (E2-7)
+
+Previous commit: 118bb95c
+
+- **Changed:** `minecraft_survival/src/portal.rs`, all checked with javap on the 26.3 jar:
+  - `destination(feet, scale)`: `NetherPortalBlock.getPortalDestination` scales x and z by `DimensionType.getTeleportationScale` (the data pack's `coordinate_scale`s through `switch::teleport_scale`, 1/8 into the Nether, 8 out of it) and keeps y, then `WorldBorder.clampToBounds` with the default border (centre 0, size 59,999,968: from -29,999,984 to 29,999,984 less 1e-5) and `BlockPos.containing`. `within_border` is `WorldBorder.isWithinBounds`. `nether_portal_leads_to`: the Nether leads to the overworld, anything else to the Nether.
+  - `largest_rectangle_around(center, axis, 21, 21, matches)`: `BlockUtil.getLargestRectangleAround` with its per-column bounds and `getMaxRectangleLocation`'s histogram stack, ties kept by the first (taller) rectangle as vanilla's strict comparisons do.
+  - `relative_position`: `PortalShape.getRelativePosition` for the player's 0.6 x 1.8 box (where along the portal, how high, and how far in front of its middle). `exit_position` and `PortalTravel::exit`: `NetherPortalBlock.createDimensionTransition`: the same place in the exit portal, the yaw turned by 0 when both portals share an axis and by 90 when they don't, the pitch kept, and the momentum kept and turned with the yaw (`Relative.DELTA` includes `ROTATE_DELTA`; `PositionMoveRotation.calculateAbsolute` turns it by `Vec3.yRot(-turn)`).
+  - `PortalTravel` (kind, target dimension, target block, entry axis, relative place, yaw, pitch, motion, and whether the trip may build a portal: not for a spectator, as `getExitPortal`) and `depart(player, terrain, registries, due)`, which measures the entry portal in the player's level (`getDimensionTransitionFromExit`; a player no longer in a portal block counts as axis X at the middle, as vanilla).
+  - `render_anim/src/minecraft_portal.rs`: a finished wait now logs where the portal leads (`Minecraft portal at ... leads to minecraft:the_nether near (100, 70, -200)`).
+- **Tests:** `portal`: `eight_hundred_blocks_out_is_a_hundred_in_the_nether_and_back` (and the border clamp at both edges), `the_largest_rectangle_is_found_around_a_block_of_any_portal_shape` (a 4x5 portal, an L shape from four starting blocks, a lone block, the 21-block limit, the histogram), `the_player_keeps_its_place_in_the_portal_and_turns_with_its_axis` (relative place, clamping, a portal too narrow, the exit on the same and the other axis, the yaw, the turned momentum).
+- **Decisions:** the world border is vanilla's default; the fork has no `/worldborder` yet, so a later border command only needs to replace `within_border` and `clamp_to_border`.
+- **Test steps:** nothing visible yet (entry 10).
+- **Kit:** none.

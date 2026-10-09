@@ -15,14 +15,23 @@ pub(crate) fn step(
     let Some(level) = levels.get(&player.dimension) else {
         return;
     };
-    if let Some(due) =
-        minecraft_survival::portal::step(player, &level.terrain, &globals.game_rules, feet, seconds)
-    {
-        diag::info!(
+    let Some(due) = minecraft_survival::portal::step(
+        player,
+        &level.terrain,
+        &globals.game_rules,
+        feet,
+        seconds,
+    ) else {
+        return;
+    };
+    match minecraft_survival::portal::depart(player, &level.terrain, &globals.registries, due) {
+        Some(travel) => diag::info!(
             World,
-            "Minecraft player stood long enough in the {:?} portal at {:?}",
-            due.kind,
-            due.entry
-        );
+            "Minecraft portal at {:?} leads to {} near {:?}",
+            due.entry,
+            travel.to.dimension_type(),
+            travel.target
+        ),
+        None => diag::warn!(World, "Minecraft portal at {:?} leads nowhere", due.entry),
     }
 }
