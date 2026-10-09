@@ -727,3 +727,39 @@ Previous commit: ed0e28f5
 - **Tests:** none new.
 - **Test steps:** none; nothing changes in game.
 - **Kit:** none.
+
+### 31. Docs: Minecraft Nether state (E2-30)
+
+Previous commit: 764dfa21
+
+- **Changed:**
+  - `docs/MINECRAFT-SURVIVAL.md`: a new section "The Nether (round 7, track NETHER)" with the dimension rules, the level, portals, the Nether mobs, the rules of this group, and what is left for N6; the Limitations' way in and out of the Nether (portals, the respawn at an anchor or bed); the roadmap's "Nether travel" now points at that section and lists N6; the Mobs limitation lists only the missing Nether mobs; the `IW4L_MINECRAFT_DIMENSION` row says the Nether arrival comes through a found or built portal (since entry 10); the Crate layout names `dimension.rs`, `portal.rs`, `portal_forcer.rs`, `respawn_block.rs`, the two adapters and `dials.rs`.
+  - `docs/NETHER-END.md`: the strider correction of the brief (natural spawning gives striders `Rules::Other`, which refuses, so they never spawn; they do not go dormant).
+- **Tests:** none.
+- **Test steps:** none; docs only.
+- **Kit:** none.
+
+## Group N5 summary
+
+- **Commits:** 56c1e7a7 (water evaporates in the Nether, tests), 549e0168 (E2-13, beds explode in the Nether and the End), 9d9f8b7e (beds set your respawn point, with overlay messages), 6c0c6570 (E2-14, respawn anchors), 83d9b9f2 (E2-15, respawning at an anchor or bed, else the overworld), ed0e28f5 (E2-16, compasses and clocks), 764dfa21 (clippy), and this entry (E2-30, docs).
+- **Checks:** `test -p minecraft_terrain` (658 passed, 3 ignored as before), `test -p minecraft_survival` (297 and the vanilla world test), `test -p render_anim` (67), `test -p hud` (133), `test -p frame` (16), `test -p minecraftoss-entities -p minecraftoss-world --tests` (81 and 62) and `check -p launcher` are green; clippy as in entry 30. `minecraftoss-player` was not touched by this group.
+- **MinecraftOSS patches in this group:** `entities` (`world.rs`: `PlayerHitKind::BadRespawnPoint` and `EntityWorld::bad_respawn_point_blast`; `bin/check_zombie_player_hits.rs` takes the new kind), `world` (`level/explosion.rs`: `Level::explode_shielded`).
+- **Handed on:**
+  - The End track: `ServerSim::respawn_point_blast` is the bad respawn point blast; the End's crystals keep using `ServerSim::blast`. Beds explode in the End through this group's code, and anchors explode there as everywhere outside the Nether. `MinecraftUi.overlay_message` (appended to `frame/src/minecraft_ui.rs`) and `render_anim::minecraft_respawn::show_overlay` can carry any action bar line (for example the End's credits or a boss message).
+  - "Finish survival" (N6 and after): sleeping through the night (lying down, skipping it, `NOT_SAFE`), lodestones and lodestone compasses (`dials.rs` already evaluates the `lodestone` target as spinning and takes the compass definition's false branch), piglins and their bartering, brutes, hoglins, zoglins and striders.
+  - Multiplayer: the respawn point, the anchor depletion and the bed rules work on the `Player` (by UUID) and the level; only the adapter's local player uses beds and anchors and sees dials so far.
+- **Known gaps:** no sleeping; no anchor particles or ambient hum; no bucket smoke when water evaporates; dropped and third-person compasses and clocks keep their default frame; a villager asleep in a bed is not woken by a player using it.
+- **N6** (piglins, hoglins, striders, bartering, brutes, zoglins, lodestones) stays out of scope this round, as the plan says; group N5 is the last group of this track this round.
+- **Owner test for the whole group** (one new world `IW4L_MINECRAFT_WORLD=n5`, survival, by day; screenshots numbered across the entries):
+  1. Overworld beds: entry 26 steps 1 to 4 (screenshot 30), then entry 28 step 1 (respawn beside the bed, screenshot 33).
+  2. Dials in the overworld: entry 29 steps 1 and 2 (screenshot 36) and the recovery compass as corrected in entry 30.
+  3. Overworld anchors: entry 27 steps 4 and 5 (screenshot 32).
+  4. Build and light a portal and go to the Nether: entry 24 steps 1 to 3 (screenshot 27) and entry 29 step 3 (screenshot 37).
+  5. Beds in the Nether: entry 25 steps 1 to 3 (screenshots 28 and 29); after the bed death you respawn beside your overworld bed, so go back through the portal.
+  6. Anchors in the Nether: entry 27 steps 1 to 3 (screenshot 31), then entry 28 steps 2 and 3 (screenshots 34 and 35).
+  7. Entry 28 steps 4 and 5 (the bed respawn after a Nether death, and a broken bed).
+- **Kit (23 stacks):**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:water_bucket,minecraft:ice*4,minecraft:wet_sponge*2,minecraft:netherrack*32,minecraft:red_bed,minecraft:red_bed,minecraft:red_bed,minecraft:straw_bed,minecraft:totem_of_undying,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:respawn_anchor*4,minecraft:glowstone*32,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:compass,minecraft:clock,minecraft:recovery_compass,minecraft:cobblestone*64,minecraft:cooked_beef*16,minecraft:diamond_pickaxe
+```
