@@ -140,7 +140,7 @@ struct Runtime {
     steps: StepState,
     sounds: Option<crate::minecraft_sounds::Sounds>,
     inventory_ui: crate::minecraft_inventory::InventoryUi,
-    entities: Option<crate::minecraft_entities::Entities>,
+    entities: Option<minecraft_survival::entities::Entities>,
     survival: minecraft_survival::survival::Survival,
     player_mode: minecraft_terrain::game_mode::PlayerMode,
     containers: minecraft_terrain::containers::Containers,
@@ -487,7 +487,7 @@ fn update(
                 runtime.minimap = Default::default();
                 runtime.containers = Default::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
-                let mut entities = crate::minecraft_entities::Entities::new(&world.stream, world.seed, assets::minecraft_map::root().as_deref(), data_jar());
+                let mut entities = minecraft_survival::entities::Entities::new(&world.stream, world.seed, assets::minecraft_map::root().as_deref(), data_jar());
                 entities.set_game_rules(&world.game_rules);
                 runtime.containers.set_book(entities.stations.clone());
                 runtime.inventory_ui.set_station_data(entities.stations.clone(), entities.enchantments.clone(), world.seed as i32);
@@ -927,7 +927,7 @@ fn update(
             let strength = minecraft_survival::survival::attack_strength(hand.attack_ticks, speed);
             let sprinting = ps.pm_flags & playerstate_iw4::pm_flags::SPRINTING != 0;
             let falling = steps.air_peak.is_some_and(|peak| peak > feet[1]);
-            let blow = crate::minecraft_entities::Blow {
+            let blow = minecraft_survival::entities::Blow {
                 sprinting,
                 can_critical: falling && !on_ground && !water.wet() && !sprinting,
                 can_sweep: on_ground && !sprinting && held.as_ref().is_some_and(|s| s.id.ends_with("_sword")),
@@ -1180,7 +1180,7 @@ fn update(
                     hand.swing = Some(0.0);
                 }
                 let change = outcome.change.clone();
-                let sent = crate::minecraft_entities::SentItemUse { slot, held: stack.id.clone(), eye: eye_block, yaw: mc_yaw, pitch: ps.viewangles[0], outcome };
+                let sent = minecraft_survival::entities::SentItemUse { slot, held: stack.id.clone(), eye: eye_block, yaw: mc_yaw, pitch: ps.viewangles[0], outcome };
                 match change {
                     minecraft_terrain::bucket::Change::Set(pos, block) => {
                         write_blocks(world, shapes, shape_ids, entities, vec![(pos, scene_block(&block))]);
@@ -1511,7 +1511,7 @@ fn update(
     // The mobs: a server tick when due, the blocks it changed, its hits on
     // the player, the mobs' boxes for bullets and their meshes.
     if let Some(entities) = entities.as_mut() {
-        let player = crate::minecraft_entities::PlayerView {
+        let player = minecraft_survival::entities::PlayerView {
             feet,
             alive,
             attackable: alive && player_mode.attackable_by_mobs(),
@@ -2114,7 +2114,7 @@ fn apply_streamed(
     registries: &Registries,
     shapes: &mut HashMap<BlockStateId, u16>,
     shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
-    entities: &mut Option<crate::minecraft_entities::Entities>,
+    entities: &mut Option<minecraft_survival::entities::Entities>,
     (loaded, forgotten): (Vec<Arc<minecraftoss_core::Chunk>>, Vec<minecraftoss_core::ChunkPos>),
 ) {
     for chunk in loaded {
@@ -2163,7 +2163,7 @@ fn stream_around_spawn(
     world: &mut Loaded,
     shapes: &mut HashMap<BlockStateId, u16>,
     shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
-    entities: &mut Option<crate::minecraft_entities::Entities>,
+    entities: &mut Option<minecraft_survival::entities::Entities>,
     light: &mut Option<SkyLight>,
     gate: &mut crate::minecraft_spawn_gate::SpawnGate,
     view: &mut MinecraftWorldView,
@@ -2246,7 +2246,7 @@ fn shape_id(
     })
 }
 
-fn spill(containers: &mut minecraft_terrain::containers::Containers, entities: &mut crate::minecraft_entities::Entities, pos: (i32, i32, i32)) {
+fn spill(containers: &mut minecraft_terrain::containers::Containers, entities: &mut minecraft_survival::entities::Entities, pos: (i32, i32, i32)) {
     let (items, experience) = containers.remove(pos);
     for stack in items {
         entities.world_items.drop_item_stack(stack, pos);
@@ -2258,7 +2258,7 @@ fn write_blocks(
     world: &mut Loaded,
     shapes: &mut HashMap<BlockStateId, u16>,
     shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
-    entities: &mut crate::minecraft_entities::Entities,
+    entities: &mut minecraft_survival::entities::Entities,
     writes: Vec<((i32, i32, i32), Option<minecraft_terrain::scene::Block>)>,
 ) {
     let positions: Vec<_> = writes.iter().map(|(p, _)| *p).collect();
@@ -2280,11 +2280,11 @@ fn write_blocks(
 }
 
 fn finish_item_use(
-    entities: &mut crate::minecraft_entities::Entities,
+    entities: &mut minecraft_survival::entities::Entities,
     sounds: Option<&mut crate::minecraft_sounds::Sounds>,
     packs: &PackStack,
     origin: [f64; 3],
-    used: crate::minecraft_entities::SentItemUse,
+    used: minecraft_survival::entities::SentItemUse,
     consumes: bool,
 ) {
     let mut heard = used.outcome.sounds;
@@ -2318,7 +2318,7 @@ fn finish_item_use(
 
 fn hold_off_death(
     survival: &mut minecraft_survival::survival::Survival,
-    entities: &mut crate::minecraft_entities::Entities,
+    entities: &mut minecraft_survival::entities::Entities,
     sounds: Option<&mut crate::minecraft_sounds::Sounds>,
     packs: &PackStack,
     struck: bool,
@@ -2342,7 +2342,7 @@ fn obstacles(
     predicted: &playerstate_iw4::PlayerState,
     authority: &sim::SimWorld,
     local: sim::ClientId,
-    entities: &crate::minecraft_entities::Entities,
+    entities: &minecraft_survival::entities::Entities,
 ) -> Vec<[f64; 6]> {
     let hull = |ps: &playerstate_iw4::PlayerState| {
         let (mins, maxs) = sim::voxel::player_hull(ps);
@@ -2499,7 +2499,7 @@ fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
 }
 
 fn save_and_close(
-    entities: Option<crate::minecraft_entities::Entities>,
+    entities: Option<minecraft_survival::entities::Entities>,
     world: Option<Loaded>,
     loading: Option<mpsc::Receiver<Result<Loaded, String>>>,
     loader: Option<std::thread::JoinHandle<()>>,

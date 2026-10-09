@@ -35,17 +35,17 @@ const PLAYER: u64 = 0;
 /// `Player.getEyeHeight` standing.
 const EYE_HEIGHT: f32 = 1.62;
 const SERVER_ITEM: u32 = 1 << 31;
-type Hits = Vec<(f32, Option<[f64; 3]>, Option<[f64; 2]>, minecraft_survival::death::DamageCause)>;
+type Hits = Vec<(f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause)>;
 type Changes = Vec<((i32, i32, i32), Option<Block>)>;
 
-pub(crate) struct Blow {
+pub struct Blow {
     pub sprinting: bool,
     pub can_critical: bool,
     pub can_sweep: bool,
     pub reach: f64,
 }
 
-pub(crate) struct SentItemUse {
+pub struct SentItemUse {
     pub slot: usize,
     pub held: String,
     pub eye: DVec3,
@@ -54,7 +54,7 @@ pub(crate) struct SentItemUse {
     pub outcome: minecraft_terrain::bucket::ItemUse,
 }
 
-pub(crate) struct Entities {
+pub struct Entities {
     server: ServerHandle,
     /// The mobs the player tracks, as of the last server tick.
     world: EntityWorld,
@@ -66,12 +66,12 @@ pub(crate) struct Entities {
     clock: f64,
     ticks: u64,
     /// The player's inventory: vanilla slots, stacking and recipes.
-    pub(crate) inventory: Inventory,
+    pub inventory: Inventory,
     /// The selected hotbar slot.
-    pub(crate) selected: usize,
+    pub selected: usize,
     /// Item entities as the client shows them: the server's, and drops the
     /// client spawned that the server has not taken yet.
-    pub(crate) world_items: WorldItems,
+    pub world_items: WorldItems,
     /// Client drops handed to the server: the command count that sent each.
     server_handed: HashMap<u32, (u64, ItemEntity)>,
     burning_items: Vec<u32>,
@@ -84,23 +84,23 @@ pub(crate) struct Entities {
     seed: i64,
     /// Sounds the mob world made since the last take: event, block point,
     /// volume, pitch.
-    pub(crate) sounds: Vec<(String, DVec3, f32, f32)>,
+    pub sounds: Vec<(String, DVec3, f32, f32)>,
     random: minecraftoss_player::rng::LegacyRandom,
     thrown: Vec<(String, [f64; 3], [f64; 3], i32)>,
     orbs: Vec<ServerOrb>,
     falling: minecraft_terrain::falling_render::FallingBlocks,
     orb_pickups: Vec<minecraft_terrain::orb_render::OrbPickup>,
-    pub(crate) pearl_landings: Vec<DVec3>,
-    pub(crate) destroyed: Vec<((i32, i32, i32), Block)>,
-    pub(crate) experience_found: f32,
-    pub(crate) weather: minecraft_terrain::server::WeatherView,
-    pub(crate) stations: std::sync::Arc<minecraft_terrain::stations::StationBook>,
-    pub(crate) enchantments: Option<std::sync::Arc<minecraftoss_entities::enchant::Enchantments>>,
+    pub pearl_landings: Vec<DVec3>,
+    pub destroyed: Vec<((i32, i32, i32), Block)>,
+    pub experience_found: f32,
+    pub weather: minecraft_terrain::server::WeatherView,
+    pub stations: std::sync::Arc<minecraft_terrain::stations::StationBook>,
+    pub enchantments: Option<std::sync::Arc<minecraftoss_entities::enchant::Enchantments>>,
     item_use_waiting: Option<SentItemUse>,
-    pub(crate) item_uses_done: Vec<SentItemUse>,
+    pub item_uses_done: Vec<SentItemUse>,
     eggs_waiting: minecraft_terrain::spawn_egg::EggsWaiting,
-    pub(crate) command_summons: Vec<Result<String, String>>,
-    pub(crate) difficulty: i32,
+    pub command_summons: Vec<Result<String, String>>,
+    pub difficulty: i32,
     spawn_mobs: bool,
     block_drops: bool,
 }
@@ -115,7 +115,7 @@ type BrokenBlock = ((i32, i32, i32), Block, Option<f32>);
 /// translucent) and their shadows, in `mesh::Vertex`s; and what goes with
 /// the particles (held items, puffs, flames, potions).
 #[derive(Default)]
-pub(crate) struct MobMeshes {
+pub struct MobMeshes {
     pub models: ChunkMesh,
     pub culled: ChunkMesh,
     pub translucent: ChunkMesh,
@@ -124,7 +124,7 @@ pub(crate) struct MobMeshes {
 }
 
 /// The player as the mobs see it this frame.
-pub(crate) struct PlayerView {
+pub struct PlayerView {
     pub feet: [f64; 3],
     pub alive: bool,
     pub attackable: bool,
@@ -159,7 +159,7 @@ fn player_candidate(player: &PlayerView) -> PlayerCandidate {
 }
 
 impl Entities {
-    pub(crate) fn new(stream: &TerrainStream, seed: i64, root: Option<&std::path::Path>, jar: Option<std::path::PathBuf>) -> Self {
+    pub fn new(stream: &TerrainStream, seed: i64, root: Option<&std::path::Path>, jar: Option<std::path::PathBuf>) -> Self {
         let mut sim = ServerSim::new(stream.world_gen(), stream.states.clone(), "minecraft:overworld");
         sim.set_entity_storage(stream.storage());
         if let Ok(weather) = std::env::var("IW4L_MINECRAFT_WEATHER") {
@@ -255,17 +255,17 @@ impl Entities {
         }
     }
 
-    pub(crate) fn set_game_rules(&mut self, rules: &minecraft_terrain::game_rules::GameRules) {
+    pub fn set_game_rules(&mut self, rules: &minecraft_terrain::game_rules::GameRules) {
         self.spawn_mobs = rules.bool("spawn_mobs");
         self.block_drops = rules.bool("block_drops");
         self.server.set_game_rules(rules.clone());
     }
 
-    pub(crate) fn set_weather(&mut self, weather: &'static str, duration: i32) {
+    pub fn set_weather(&mut self, weather: &'static str, duration: i32) {
         self.server.set_weather(weather, duration);
     }
 
-    pub(crate) fn throw(&mut self, item: &str, eye: DVec3, yaw: f32, pitch: f32, motion: DVec3, on_ground: bool) -> bool {
+    pub fn throw(&mut self, item: &str, eye: DVec3, yaw: f32, pitch: f32, motion: DVec3, on_ground: bool) -> bool {
         let Some(thrown) = minecraft_terrain::thrown::Thrown::throw(item, eye, yaw, pitch, motion, on_ground, &mut self.random) else {
             return false;
         };
@@ -273,23 +273,23 @@ impl Entities {
         true
     }
 
-    pub(crate) fn random_float(&mut self) -> f32 {
+    pub fn random_float(&mut self) -> f32 {
         self.random.next_float()
     }
 
-    pub(crate) fn load_chunk(&mut self, chunk: &std::sync::Arc<minecraftoss_core::Chunk>) {
+    pub fn load_chunk(&mut self, chunk: &std::sync::Arc<minecraftoss_core::Chunk>) {
         self.server.load_chunk(chunk);
     }
 
-    pub(crate) fn unload_chunk(&mut self, pos: minecraftoss_core::ChunkPos) {
+    pub fn unload_chunk(&mut self, pos: minecraftoss_core::ChunkPos) {
         self.server.unload_chunk(pos);
     }
 
-    pub(crate) fn award_experience(&mut self, at: [f64; 3], amount: i32) {
+    pub fn award_experience(&mut self, at: [f64; 3], amount: i32) {
         self.server.award_experience(at, amount);
     }
 
-    pub(crate) fn award_block_experience(&mut self, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)]) {
+    pub fn award_block_experience(&mut self, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)]) {
         if !self.block_drops {
             return;
         }
@@ -308,7 +308,7 @@ impl Entities {
 
     /// Block loot for what the weapons broke, dropped as vanilla drops it
     /// (`Block.popResource`); a blast keeps each drop one time in its power.
-    pub(crate) fn drop_blocks(&mut self, broken: &[BrokenBlock], mut kept: HashMap<(i32, i32, i32), serde_json::Value>, by_hand: &[(i32, i32, i32)]) {
+    pub fn drop_blocks(&mut self, broken: &[BrokenBlock], mut kept: HashMap<(i32, i32, i32), serde_json::Value>, by_hand: &[(i32, i32, i32)]) {
         if !self.block_drops {
             return;
         }
@@ -444,7 +444,7 @@ impl Entities {
     }
 
     /// A held item's model under a view-space pose, lit at `light_at`.
-    pub(crate) fn held_item_mesh(
+    pub fn held_item_mesh(
         &mut self,
         posed: &[(glam::Mat4, String, bool)],
         light_at: glam::Vec3,
@@ -463,7 +463,7 @@ impl Entities {
         mesh
     }
 
-    pub(crate) fn punch(&mut self, eye: DVec3, look: DVec3, yaw: f32, attack_damage: f64, strength: f32, blow: Blow) -> bool {
+    pub fn punch(&mut self, eye: DVec3, look: DVec3, yaw: f32, attack_damage: f64, strength: f32, blow: Blow) -> bool {
         let Some((hit, _)) = self.world.mob_on_ray(eye, look, blow.reach) else {
             return false;
         };
@@ -481,49 +481,49 @@ impl Entities {
         true
     }
 
-    pub(crate) fn mob_distance(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
+    pub fn mob_distance(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
         self.world.mob_on_ray(eye, look, reach).map(|(_, distance)| distance)
     }
 
     /// A block the player placed, for the level the mobs walk in.
-    pub(crate) fn placed(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32)) {
+    pub fn placed(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32)) {
         self.server.player_edit(scene, pos, PlayerEdit::Place);
     }
 
-    pub(crate) fn keep_dropped_contents(&mut self, pos: (i32, i32, i32), id: &str, components: &serde_json::Value) {
+    pub fn keep_dropped_contents(&mut self, pos: (i32, i32, i32), id: &str, components: &serde_json::Value) {
         self.server.keep_dropped_contents(pos, id, &components.to_string());
     }
 
-    pub(crate) fn use_block(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32), facing: &'static str) -> bool {
+    pub fn use_block(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32), facing: &'static str) -> bool {
         self.server.use_block(scene, pos, facing)
     }
 
-    pub(crate) fn item_on_block(&mut self, pos: (i32, i32, i32), action: minecraft_terrain::server::ItemOnBlock, sent: SentItemUse) {
+    pub fn item_on_block(&mut self, pos: (i32, i32, i32), action: minecraft_terrain::server::ItemOnBlock, sent: SentItemUse) {
         self.server.item_on_block(pos, action);
         self.item_use_waiting = Some(sent);
     }
 
-    pub(crate) fn awaits_item_use(&self) -> bool {
+    pub fn awaits_item_use(&self) -> bool {
         self.item_use_waiting.is_some()
     }
 
-    pub(crate) fn hatch_egg(&mut self, slot: usize, kind: String, position: [f64; 3], spends: bool) {
+    pub fn hatch_egg(&mut self, slot: usize, kind: String, position: [f64; 3], spends: bool) {
         if self.eggs_waiting.send_from(&self.inventory, slot, spends) {
             let y_rot = minecraftoss_core::entity_data::wrap_degrees(self.random.next_float() * 360.0);
             self.server.hatch_egg(kind, position, y_rot);
         }
     }
 
-    pub(crate) fn summon(&mut self, kind: String, position: [f64; 3], nbt: Option<minecraftoss_core::nbt::Tag>) {
+    pub fn summon(&mut self, kind: String, position: [f64; 3], nbt: Option<minecraftoss_core::nbt::Tag>) {
         self.server.summon(kind, position, nbt);
     }
 
-    pub(crate) fn drop_given(&mut self, stack: &ItemStack, feet: [f64; 3]) {
+    pub fn drop_given(&mut self, stack: &ItemStack, feet: [f64; 3]) {
         let components = stack.components.as_ref().map(|c| c.to_string());
         self.server.spawn_item(&stack.id, i32::from(stack.count), components.as_deref(), feet, [0.0; 3], 0, 0);
     }
 
-    pub(crate) fn animate_tick<S: minecraft_terrain::scene::Scene + ?Sized>(&mut self, scene: &S, feet: [f64; 3]) -> Vec<minecraft_terrain::display_ticks::AmbientSound> {
+    pub fn animate_tick<S: minecraft_terrain::scene::Scene + ?Sized>(&mut self, scene: &S, feet: [f64; 3]) -> Vec<minecraft_terrain::display_ticks::AmbientSound> {
         let at = (feet[0].floor() as i32, feet[1].floor() as i32, feet[2].floor() as i32);
         let tick = minecraft_terrain::display_ticks::animate_tick(scene, at, &mut self.random);
         for (start, motion) in tick.portal_particles {
@@ -533,16 +533,16 @@ impl Entities {
     }
 
     /// Client ticks run so far.
-    pub(crate) fn client_ticks(&self) -> u64 {
+    pub fn client_ticks(&self) -> u64 {
         self.ticks
     }
 
     /// Blocks the player's weapons broke, for the level the mobs walk in.
-    pub(crate) fn broke(&mut self, positions: &[(i32, i32, i32)]) {
+    pub fn broke(&mut self, positions: &[(i32, i32, i32)]) {
         self.server.player_breaks(positions);
     }
 
-    pub(crate) fn mined(&mut self, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)], creative: bool) {
+    pub fn mined(&mut self, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)], creative: bool) {
         let silk_touch = self.hand_has_silk_touch();
         let how: Vec<_> = broken.iter().map(|(pos, _, blast)| (*pos, how_broken(*pos, *blast, by_hand, silk_touch, creative))).collect();
         self.server.player_mines(&how);
@@ -562,7 +562,7 @@ impl Entities {
 
     /// A bullet on a mob: an attack with the bullet's damage from where it
     /// was fired.
-    pub(crate) fn shoot(&mut self, key: u64, damage: f32, from: [f64; 3], yaw: f32) {
+    pub fn shoot(&mut self, key: u64, damage: f32, from: [f64; 3], yaw: f32) {
         let Some(hit) = decode(key) else {
             return;
         };
@@ -580,20 +580,20 @@ impl Entities {
             .mob_action(hit, Some(attack), &minecraftoss_player::inventory::Inventory::default(), 0, false);
     }
 
-    pub(crate) fn blast(&mut self, key: u64, damage: f32, center: [f64; 3], impact: f32, by_player: bool, slow_ticks: i32) {
+    pub fn blast(&mut self, key: u64, damage: f32, center: [f64; 3], impact: f32, by_player: bool, slow_ticks: i32) {
         let Some(hit) = decode(key) else {
             return;
         };
         self.server.mob_blast(hit, damage * BLAST_HEALTH_SCALE, center, impact, by_player.then_some(PLAYER), slow_ticks);
     }
 
-    pub(crate) fn weapon_blast(&mut self, center: [f64; 3], power: f32) {
+    pub fn weapon_blast(&mut self, center: [f64; 3], power: f32) {
         self.server.weapon_blast(center, power);
     }
 
     /// Sends a server tick when one is due and takes what came back: block
     /// changes to show, and mob hits on the player in MW2 damage.
-    pub(crate) fn tick(
+    pub fn tick(
         &mut self,
         dt: f64,
         day_ticks: i64,
@@ -722,11 +722,11 @@ impl Entities {
                     PlayerHitKind::Explosion { knockback } => [-knockback.x, -knockback.z],
                 };
                 let attack = match hit.kind {
-                    PlayerHitKind::Melee { .. } => minecraft_survival::death::MobAttack::Melee,
-                    PlayerHitKind::Arrow { .. } => minecraft_survival::death::MobAttack::Arrow,
-                    PlayerHitKind::Explosion { .. } => minecraft_survival::death::MobAttack::Explosion,
+                    PlayerHitKind::Melee { .. } => crate::death::MobAttack::Melee,
+                    PlayerHitKind::Arrow { .. } => crate::death::MobAttack::Arrow,
+                    PlayerHitKind::Explosion { .. } => crate::death::MobAttack::Explosion,
                 };
-                let cause = minecraft_survival::death::DamageCause::mob(attack, hit.source, hit.source.and_then(|id| self.world.entity_type(id)));
+                let cause = crate::death::DamageCause::mob(attack, hit.source, hit.source.and_then(|id| self.world.entity_type(id)));
                 let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. }) || hit.source.is_some();
                 let damage = difficulty_scaled(hit.damage, self.difficulty, scales);
                 if damage > 0.0 {
@@ -745,12 +745,12 @@ impl Entities {
         (changes, hits)
     }
 
-    pub(crate) fn mob_present(&self, id: u64) -> bool {
+    pub fn mob_present(&self, id: u64) -> bool {
         self.world.entity_type(id).is_some()
     }
 
     /// Every living mob's key and box in blocks, for bullets.
-    pub(crate) fn boxes(&self) -> Vec<(u64, [f64; 6])> {
+    pub fn boxes(&self) -> Vec<(u64, [f64; 6])> {
         let w = &self.world;
         let mut out = Vec::new();
         let mut add = |hit: MobHit, body: &minecraftoss_entities::movement::Body| {
@@ -811,14 +811,14 @@ impl Entities {
     }
 
     /// Steps the client-side puffs, which settle on the scene's blocks.
-    pub(crate) fn tick_scene(&mut self, scene: &HandcraftedScene, ticks: u32) {
+    pub fn tick_scene(&mut self, scene: &HandcraftedScene, ticks: u32) {
         for _ in 0..ticks {
             self.poof.tick(scene);
         }
     }
 
     /// The mobs this frame, drawn with the viewer's renderers.
-    pub(crate) fn meshes(
+    pub fn meshes(
         &mut self,
         scene: &HandcraftedScene,
         packs: &PackStack,

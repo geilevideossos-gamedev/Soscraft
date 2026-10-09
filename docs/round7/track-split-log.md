@@ -181,3 +181,25 @@ A6 is commit `a47014b`.
   - `data_jar()` goes after `load()` in `minecraft_world.rs`, next to the other asset-root code of the loader.
   - The call to `data_jar()` now runs just before `Entities::new` instead of just after the level server thread spawns. It only reads the file system, so nothing a player can see changes.
   - A6's owner test step 9 was reworded (poison drops about two hearts and never kills); the step itself is unchanged.
+
+## A8. Minecraft mobs and the level server handle move to minecraft_survival
+
+A7 is commit `7e88587`.
+
+- **What changed:**
+  - `git mv crates/render_anim/src/minecraft_entities.rs crates/minecraft_survival/src/entities.rs` (`R`), with its 51 `pub(crate)` turned into `pub` and its 5 `minecraft_survival::death::` paths turned into `crate::death::`. No other line of it changed (checked by normalising the rename diff). Its `//!` and `///` comments stay (owner decision 1).
+  - `minecraft_survival/src/lib.rs` gains `pub mod entities;`.
+  - `render_anim`: `mod minecraft_entities;` is gone, and `crate::minecraft_entities::` became `minecraft_survival::entities::` in `minecraft_world.rs` (14 sites) and `minecraft_chat.rs` (1).
+  - `Entities` moves whole (owner decision 3): the client mirrors and mesh code stay in it, since they come from `minecraft_terrain` and use no bevy.
+- **Tests:** the 6 `entities` tests moved with the file. `minecraft_survival` 117, `render_anim` 36, total unchanged (153). Matches the recomputed table.
+- **Checks:** `check -p launcher --locked` (no new warning in `minecraft_survival` or `render_anim`), `test -p minecraft_survival --locked`, `test -p render_anim --locked`; the staged `lib.rs` passes `rustfmt --check --edition 2024`.
+- **Owner test** (mobs, items, XP orbs and the level server must work exactly as before):
+  1. Load a Minecraft match with the regression kit. Passive mobs spawn around you; at night, hostile mobs spawn and come for you.
+  2. Spawn a cow and a zombie from the eggs. Shoot the cow with a gun and hit the zombie with the sword: both take damage, flash red and die with their drops and XP orbs; the orbs fly to you and the XP bar fills.
+  3. Let the zombie hit you: you take damage and the killed-by card names the zombie if it kills you.
+  4. Throw an egg and an ender pearl: the egg breaks (sometimes a chick), the pearl teleports you with the portal particles.
+  5. Drop an item with the drop key: it lies on the ground, bobs, and you pick it up again by walking over it.
+  6. Mine a block: it drops as an item entity. Light a TNT-free fire next to dropped wood: it burns.
+  7. Type `/weather rain`: rain starts. Type `/summon minecraft:cow`: a cow appears.
+- **Kit:** `minecraft:cow_spawn_egg` x2, `minecraft:zombie_spawn_egg` x2, `minecraft:diamond_sword` x1, `minecraft:egg` x16, `minecraft:ender_pearl` x16, `minecraft:oak_planks` x64, `minecraft:flint_and_steel` x1, `minecraft:cobblestone` x64 (all in the regression kit).
+- **Decisions:** none beyond the owner decisions.
