@@ -358,11 +358,12 @@ impl CommandWorld for Host<'_> {
 
     fn give(&mut self, player: PlayerId, item: &ItemArg, count: u32) -> bool {
         let feet = self.presence(player).pose.map(|pose| pose.feet);
-        let stack = minecraft_terrain::crafting::kit_stack(
+        let stack = minecraft_terrain::crafting::kit_potion_stack(
             &self.data.recipes,
             &item.id,
             1,
             &item.enchantments,
+            item.potion.as_deref(),
         );
         let Some((player, entities)) = self.player_in_level(player) else {
             return false;
@@ -682,6 +683,23 @@ impl CommandWorld for Host<'_> {
             Some(path) => minecraft_commands::kit::read_env_file(path, key),
             None => std::env::var(key).ok(),
         }
+    }
+
+    fn kit_entries(&self, line: &str) -> Vec<(ItemArg, u32)> {
+        minecraft_terrain::crafting::kit(line)
+            .into_iter()
+            .map(|(entry, count)| {
+                let (id, enchantments) = minecraft_terrain::crafting::kit_enchantments(&entry);
+                let (id, potion) = minecraft_terrain::crafting::kit_potion(id);
+                let item = ItemArg {
+                    id: id.to_owned(),
+                    enchantments,
+                    potion,
+                    at: 0,
+                };
+                (item, count)
+            })
+            .collect()
     }
 
     fn level_up(&mut self, player: PlayerId) {
@@ -1925,6 +1943,71 @@ pub(crate) mod tests {
             vec!["No IW4L_MINECRAFT_KIT in the .env next to the game"]
         );
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn kit_gives_potions_and_colours_like_the_start_kit() {
+        let mut parts = Parts::new();
+        let path =
+            std::env::temp_dir().join(format!("iw4l-kit-potions-{}.env", std::process::id()));
+        let line = "potion@healing*2,tipped_arrow@minecraft:poison*4,leather_chestplate@red,splash_potion@,diamond_sword+sharpness=2@x*0";
+        std::fs::write(
+            &path,
+            format!(
+                "IW4L_MINECRAFT_KIT={line}
+"
+            ),
+        )
+        .unwrap();
+        parts.env_file = Some(path.clone());
+        let (lines, _) = parts.send(HOST, &["/kit"]);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(lines.len(), 4, "{lines:?}");
+        let mut start = Inventory::default();
+        minecraft_terrain::crafting::give_kit(&mut start, line);
+        let stacks = |inventory: &Inventory| {
+            let mut stacks: Vec<(String, u8, String)> = inventory
+                .slots
+                .iter()
+                .flatten()
+                .map(|stack| {
+                    let components = stack
+                        .components
+                        .as_ref()
+                        .map_or_else(String::new, ToString::to_string);
+                    (stack.id.clone(), stack.count, components)
+                })
+                .collect();
+            stacks.sort();
+            stacks
+        };
+        let given = stacks(&parts.player(HOST).inventory);
+        assert_eq!(given, stacks(&start));
+        let potion = given
+            .iter()
+            .find(|(id, _, _)| id == "minecraft:potion")
+            .unwrap();
+        assert_eq!(potion.1, 2);
+        assert!(
+            potion
+                .2
+                .contains("\"minecraft:potion_contents\":{\"potion\":\"minecraft:healing\"}")
+        );
+        let arrows = given
+            .iter()
+            .find(|(id, _, _)| id == "minecraft:tipped_arrow")
+            .unwrap();
+        assert!(arrows.2.contains("minecraft:poison"), "{arrows:?}");
+        let splash = given
+            .iter()
+            .find(|(id, _, _)| id == "minecraft:splash_potion")
+            .unwrap();
+        assert_eq!(splash.2, "", "an empty @ adds nothing");
+        assert!(
+            given
+                .iter()
+                .any(|(id, _, _)| id == "minecraft:leather_chestplate")
+        );
     }
 
     #[test]

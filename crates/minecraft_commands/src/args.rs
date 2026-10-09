@@ -51,6 +51,7 @@ pub enum ArgKind {
 pub struct ItemArg {
     pub id: String,
     pub enchantments: Vec<(String, i32)>,
+    pub potion: Option<String>,
     pub at: usize,
 }
 
@@ -348,6 +349,7 @@ fn item(reader: &mut StringReader) -> Result<ItemArg, CommandError> {
     Ok(ItemArg {
         id,
         enchantments,
+        potion: None,
         at,
     })
 }
@@ -893,6 +895,7 @@ mod tests {
             Arg::Item(ItemArg {
                 id: "minecraft:".into(),
                 enchantments: Vec::new(),
+                potion: None,
                 at: 0
             })
         );

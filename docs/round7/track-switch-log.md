@@ -562,3 +562,30 @@ Previous commit: f0c30259
   4. Type `/time set 18000`, then `/time pause`: `Paused clock minecraft:the_end`. Send `/execute in minecraft:overworld run time query time`: the overworld clock did not move. **Screenshot 3.**
   5. Quit through the menu and start again (you start in the End where you left). `/time query time` still says about 18000, as the clock is paused and saved. `/time resume`: `Resumed clock minecraft:the_end`. **Screenshot 4.**
 - **Kit:** none needed; any kit works.
+
+### 26. Minecraft /kit gives potion and colour entries like the start kit
+
+Previous commit: 2d9fe216
+
+- **Defect:** track C's `/kit` read the kit line with the `/give` item parser, which stops at `@`, so `splash_potion@poison` or `leather_leggings@red` were skipped without a word, while the start kit gives them (track B's `@` syntax).
+- **Changed:**
+  - `minecraft_commands/src/args.rs`: `ItemArg.potion`, the potion or dye named after `@`. The `/give` parser leaves it empty.
+  - `minecraft_commands/src/server.rs` and `kit.rs`: `/kit` reads its entries through `CommandWorld::kit_entries(line)`. By default that is the old `kit_entries`, so a world that doesn't override it behaves as before.
+  - `minecraft_survival/src/commands.rs` (`Host`): `kit_entries` reuses the start kit's parser (`crafting::kit`, `kit_enchantments` and `kit_potion`, in the order `give_kit` uses them), and `give` builds the stack with `kit_potion_stack`, so a potion gets `minecraft:potion_contents` and a dyeable item `minecraft:dyed_color`, exactly as at the start. `/give` passes no potion and builds the same stacks as before.
+- **Tests:** `minecraft_survival::commands`: `kit_gives_potions_and_colours_like_the_start_kit` (`/kit` with potions, tipped arrows, a coloured chestplate, an empty `@` and a zero count gives four entries, and the stacks equal `give_kit`'s for the same line, the healing potion's `potion_contents` included). Track C's `kit` tests still pass unchanged.
+- **Test steps:**
+  1. In the `.env`, set the kit below and `IW4L_MINECRAFT_WORLD=e26test` (a new world). Start: the backpack holds the kit.
+  2. Drop or `/clear` everything, then type `/kit`. The chat shows one `Gave ...` line per entry, eight in all, and the splash potions, the lingering potion, the tipped arrows and the red leather leggings come back like at the start: hover each to see its effect, and the leggings are red. **Screenshot 1.**
+  3. Throw a splash potion of poison at your feet: you get poisoned. **Screenshot 2.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:splash_potion@poison*2,minecraft:splash_potion@strong_healing,minecraft:lingering_potion@regeneration,minecraft:tipped_arrow@slowness*8,minecraft:leather_leggings@red,minecraft:bow,minecraft:diamond_sword+sharpness=5,minecraft:cooked_beef*16
+```
+
+## After track C: final checks
+
+- **Commits:** entries 24 to 26 on top of the merge 9dbec02a.
+- **Clippy:** `clippy -p minecraft_commands -p minecraft_survival -p render_anim --locked --all-targets --no-deps -- -A clippy::approx_constant` has no finding on a line of entries 24 to 26 (one in a new test was fixed before the commit). The rest are older: `entities.rs` 78 and 706, `minecraft_world.rs` 131, 401 and 410, and many more in `render_anim`.
+- **Tests:** `minecraft_commands` 116, `minecraft_survival` 255 and the vanilla world test, `render_anim` 67, `hud` 130 and `frame` 16 pass, and `check -p launcher` is green.
+- **Owner test for all three:** entry 24 (world `e24test`), then entry 25 in the same world, then entry 26 in a new world `e26test`, each with its own kit.

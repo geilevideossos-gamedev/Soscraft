@@ -164,6 +164,9 @@ pub trait CommandWorld {
     fn kit_line(&self) -> Option<String> {
         None
     }
+    fn kit_entries(&self, line: &str) -> Vec<(ItemArg, u32)> {
+        crate::kit::kit_entries(line)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

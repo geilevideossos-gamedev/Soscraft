@@ -70,7 +70,7 @@ fn kit(ctx: &mut Ctx) -> Result<i32, CommandError> {
             cursor: None,
         });
     };
-    let entries = kit_entries(&line);
+    let entries = ctx.world.kit_entries(&line);
     if entries.is_empty() {
         return Err(CommandError {
             text: Text::literal(format!("{KIT_KEY} has no items")),
