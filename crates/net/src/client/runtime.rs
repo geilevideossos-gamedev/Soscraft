@@ -705,7 +705,7 @@ fn apply_weapon_switch_requests(
 }
 
 pub fn sample_client_input(
-    (skate, mut minecraft, mc_keys): (Option<Res<frame::SkateMode>>, Option<ResMut<frame::MinecraftUi>>, Option<Res<frame::McActionInput>>),
+    (skate, mut minecraft): (Option<Res<frame::SkateMode>>, Option<ResMut<frame::MinecraftUi>>),
     time: Res<Time<Real>>,
     mut actions: ResMut<ClientActionInput>,
     mut look: ResMut<LookState>,
@@ -719,7 +719,7 @@ pub fn sample_client_input(
     clock: Res<FrameClock>,
     mut action_inbox: Option<ResMut<ClientActionInbox>>,
     mut request_ids: Option<ResMut<crate::ActionRequestIds>>,
-    view: Option<Res<frame::ViewSubject>>,
+    (view, mc_keys): (Option<Res<frame::ViewSubject>>, Option<Res<frame::McActionInput>>),
     (trace, aim_cursor): (
         Option<ResMut<ClientPhaseTrace>>,
         (ResMut<LocationCursor>, Res<crate::ViewweaponAim>),

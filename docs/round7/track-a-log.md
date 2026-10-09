@@ -84,7 +84,7 @@ IW4L_MINECRAFT_KIT=minecraft:cobblestone*64
 
 ### 5. The pad's tactical button always throws, and holding D-pad down uses the offhand item with a gun
 
-Commit: (filled in by the next commit)
+Commit: e06f414
 
 - **Changed:** the pad's tactical button (LB in the default layout) already throws since commit 3, because the offhand latch no longer reads `+smoke`. `minecraft_presses` (`console/src/binds.rs`) now also holds swap hands while the fixed D-pad down (the pad's swap-hands button, `hud/src/minecraft_inventory.rs:266`) is held outside screens, so with a gun selected holding D-pad down eats, blocks or places with the offhand item like F.
 - **Tests:** `holding_the_pads_d_pad_down_holds_swap_hands_but_its_tactical_button_does_not` (not in screens, not off the map, not for LB or RB).
@@ -98,6 +98,14 @@ Commit: (filled in by the next commit)
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:golden_apple*16
 ```
+
+### 6. The input sampler takes the Minecraft keys beside the view subject
+
+Commit: (filled in by the next commit, or see `git log`)
+
+- **Changed:** commit 3 put `McActionInput` into the first parameter tuple of `sample_client_input` (`net/src/client/runtime.rs`), which made clippy report a new `type_complexity` there. It now sits in a pair with `view`. No behaviour change.
+- **Checks:** `clippy -p console -p frame -p net -p render_anim -p render --tests -- --cap-lints warn` shows no warning on a line this group added; the rest are older (`too_many_arguments` and `type_complexity` on system signatures). Without `--cap-lints warn` clippy stops at older `approx_constant` errors in `minecraft_terrain`, which this track doesn't touch.
+- **Test steps:** none of its own (commit 3's steps cover it).
 
 ## After the split
 
