@@ -718,11 +718,19 @@ impl RecipeBook {
     }
 
     pub fn cooking_for(&self, kind: CookingKind, input: &ItemStack) -> Option<&SmeltingRecipe> {
+        self.cooking_entry_for(kind, input).map(|(_, recipe)| recipe)
+    }
+
+    pub fn cooking_entry_for(&self, kind: CookingKind, input: &ItemStack) -> Option<(&str, &SmeltingRecipe)> {
         self.smelting
             .iter()
             .filter(|entry| entry.kind == kind)
             .find(|entry| self.matches_ingredient(&entry.ingredient, &input.id))
-            .map(|entry| &entry.recipe)
+            .map(|entry| (entry.id.as_str(), &entry.recipe))
+    }
+
+    pub fn cooking_recipe(&self, id: &str) -> Option<&SmeltingRecipe> {
+        self.smelting.iter().find(|entry| entry.id == id).map(|entry| &entry.recipe)
     }
 
     pub fn matching(

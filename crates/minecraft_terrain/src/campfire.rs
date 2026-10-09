@@ -61,6 +61,22 @@ pub struct Campfire {
 }
 
 impl Campfire {
+    pub fn with_times(
+        items: [Option<ItemStack>; SLOTS],
+        progress: [u32; SLOTS],
+        total: [u32; SLOTS],
+    ) -> Self {
+        Self {
+            items,
+            progress,
+            total,
+        }
+    }
+
+    pub fn cooking_times(&self) -> ([u32; SLOTS], [u32; SLOTS]) {
+        (self.progress, self.total)
+    }
+
     pub fn place(&mut self, stack: &ItemStack, ticks: u32) -> bool {
         let Some(slot) = self.items.iter().position(Option::is_none) else {
             return false;
