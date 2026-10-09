@@ -298,6 +298,49 @@ mod tests {
         assert_eq!(end.presentation.skybox, Skybox::End);
     }
 
+    fn sky_in(registries: &Registries, dimension: &str, biome: &str, clock_ticks: i64) -> SkyState {
+        let biome = registries.biomes.id(biome).unwrap().0;
+        let mut env = DimensionEnvironment::load(registries, dimension).unwrap();
+        env.tick(clock_ticks, 0.0, 0.0, [0.5, 64.0, 0.5], |_, _, _| biome, true);
+        env.sky_state(&View { partial_tick: 1.0, forward: Vec3::Z, camera_y: 64.0, render_distance: 8, rain_level: 0.0, thunder_level: 0.0 })
+    }
+
+    #[test]
+    fn the_nether_sky_keeps_no_time_and_takes_each_biome_fog() {
+        let Some(registries) = registries() else { return };
+        let noon = sky_in(&registries, "minecraft:the_nether", "minecraft:nether_wastes", 6000);
+        let midnight = sky_in(&registries, "minecraft:the_nether", "minecraft:nether_wastes", 18_000);
+        for (a, b) in [(noon.fog, midnight.fog), (noon.sky, midnight.sky), (noon.light, midnight.light), (noon.sun_direction, midnight.sun_direction)] {
+            assert_eq!(a, b);
+        }
+        assert_eq!((noon.star_brightness, noon.sky_light_factor), (midnight.star_brightness, midnight.sky_light_factor));
+        assert_eq!(noon.skybox, Skybox::None);
+        assert_eq!(noon.cloud_alpha, 0.0);
+        assert!((noon.fog.x / noon.fog.y - 0x33 as f32 / 0x08 as f32).abs() < 1e-3, "nether_wastes fog #330808: {:?}", noon.fog);
+        let deltas = sky_in(&registries, "minecraft:the_nether", "minecraft:basalt_deltas", 6000);
+        assert!((deltas.fog.x / deltas.fog.z - 0x68 as f32 / 0x70 as f32).abs() < 1e-3, "basalt_deltas fog #685f70: {:?}", deltas.fog);
+    }
+
+    #[test]
+    fn the_end_sky_is_its_skybox_over_a_dark_purple_fog_with_no_stars() {
+        let Some(registries) = registries() else { return };
+        let noon = sky_in(&registries, "minecraft:the_end", "minecraft:the_end", 6000);
+        let midnight = sky_in(&registries, "minecraft:the_end", "minecraft:end_highlands", 18_000);
+        assert_eq!(noon.skybox, Skybox::End);
+        assert_eq!((noon.star_brightness, noon.cloud_alpha), (0.0, 0.0));
+        assert_eq!(noon.fog, midnight.fog);
+        assert!((noon.fog.x / noon.fog.y - 0x18 as f32 / 0x13 as f32).abs() < 1e-3, "the_end fog #181318: {:?}", noon.fog);
+        assert_eq!(noon.fog.x, noon.fog.z);
+    }
+
+    #[test]
+    fn only_the_overworld_has_clouds() {
+        let Some(registries) = registries() else { return };
+        assert!(sky_in(&registries, "minecraft:overworld", "minecraft:plains", 6000).cloud_alpha > 0.0);
+        assert_eq!(sky_in(&registries, "minecraft:the_nether", "minecraft:nether_wastes", 6000).cloud_alpha, 0.0);
+        assert_eq!(sky_in(&registries, "minecraft:the_end", "minecraft:the_end", 6000).cloud_alpha, 0.0);
+    }
+
     #[test]
     fn only_the_nether_has_a_ceiling() {
         let Some(registries) = registries() else { return };

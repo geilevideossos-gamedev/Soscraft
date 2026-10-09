@@ -34,6 +34,7 @@ pub enum ItemOnBlock {
     Ignite,
     PrimeTnt,
     BoneMeal { face: &'static str },
+    EnderEye,
 }
 
 pub struct ServerSim {
@@ -555,18 +556,11 @@ impl ServerSim {
         let level = &self.level;
         let loaded = |p: glam::DVec3| level.chunk(ChunkPos::new((p.x.floor() as i32) >> 4, (p.z.floor() as i32) >> 4)).is_some();
         self.mobs.check_despawn(&feet, difficulty == 0, &loaded);
-        // Dormant monsters go in peaceful and beyond 128 blocks (they never
-        // idle: they do not tick).
-        self.dormant.retain(|(group, _)| {
+        self.dormant.retain(|(group, tag)| {
             let root = &group[0];
-            if root.persistent || minecraftoss_world::natural_spawner::spawning::MobCategory::of_type(&root.kind) != Some(minecraftoss_world::natural_spawner::spawning::MobCategory::Monster) {
-                return true;
-            }
-            if difficulty == 0 {
-                return false;
-            }
             let at = glam::DVec3::from_array(root.pos);
-            feet.iter().map(|p| p.distance_squared(at)).min_by(f64::total_cmp).is_none_or(|d| d <= 128.0 * 128.0)
+            let nearest = feet.iter().map(|p| p.distance_squared(at)).min_by(f64::total_cmp);
+            !crate::dormant::despawns(&root.kind, root.persistent, tag, difficulty == 0, nearest)
         });
     }
 
@@ -1246,7 +1240,53 @@ impl ServerSim {
             ItemOnBlock::Ignite => self.level.place_fire(at),
             ItemOnBlock::PrimeTnt => self.level.ignite_tnt(at),
             ItemOnBlock::BoneMeal { face } => self.bone_meal(pos, face),
+            ItemOnBlock::EnderEye => self.level.place_ender_eye(at).is_some(),
         }
+    }
+
+    pub fn create_end_platform(&mut self, origin: BlockPos) {
+        self.level.create_end_platform(minecraftoss_core::BlockPos::new(origin.0, origin.1, origin.2), true);
+    }
+
+    pub fn dormant_uuids(&self, kind: &str) -> Vec<[i32; 4]> {
+        self.dormant
+            .iter()
+            .filter(|(group, _)| group.first().is_some_and(|root| root.kind == kind))
+            .filter_map(|(_, tag)| match tag.get("UUID") {
+                Some(minecraftoss_core::nbt::Tag::IntArray(uuid)) => uuid.as_slice().try_into().ok(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn discard_dormant(&mut self, uuid: [i32; 4]) {
+        self.dormant.retain(|(_, tag)| !matches!(tag.get("UUID"), Some(minecraftoss_core::nbt::Tag::IntArray(found)) if found.as_slice() == uuid));
+    }
+
+    pub fn scan_dragon_fight(&mut self, origin: BlockPos, exit_portal_location: Option<BlockPos>) -> DragonFightScan {
+        let at = |pos: BlockPos| minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
+        let origin = at(origin);
+        let mut location = exit_portal_location.map(at);
+        let previously_killed = self.level.has_active_exit_portal();
+        if !previously_killed {
+            match self.level.find_exit_portal(origin) {
+                Some(found) => {
+                    location.get_or_insert(found);
+                }
+                None => location = Some(self.level.spawn_exit_portal(origin, location, false)),
+            }
+        }
+        let mut dragon_uuid = self.dormant_uuids(ENDER_DRAGON).first().copied();
+        let dragon_seen = dragon_uuid.is_some();
+        let mut dragon_killed = !dragon_seen;
+        if let Some(uuid) = dragon_uuid.filter(|_| !previously_killed) {
+            self.discard_dormant(uuid);
+            dragon_uuid = None;
+        }
+        if !previously_killed {
+            dragon_killed = false;
+        }
+        DragonFightScan { previously_killed, dragon_killed, dragon_seen, dragon_uuid, exit_portal_location: location.map(|pos| (pos.x, pos.y, pos.z)) }
     }
 
     /// The players the level can see (fire spreads near them), and the
@@ -1536,6 +1576,17 @@ pub enum Command {
 }
 
 pub type Job = Box<dyn FnOnce(&mut ServerSim) -> Box<dyn std::any::Any + Send> + Send>;
+
+pub const ENDER_DRAGON: &str = "minecraft:ender_dragon";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DragonFightScan {
+    pub previously_killed: bool,
+    pub dragon_killed: bool,
+    pub dragon_seen: bool,
+    pub dragon_uuid: Option<[i32; 4]>,
+    pub exit_portal_location: Option<BlockPos>,
+}
 
 pub fn advance_weather_timers(data: &mut crate::level_storage::WeatherData, random: &mut impl minecraftoss_core::random::RandomSource) {
     let mut weather = minecraftoss_world::level::time::Weather {
@@ -4778,6 +4829,247 @@ mod tests {
         assert_eq!(commands.len(), 2);
         assert_eq!(commands[0].as_deref(), Ok("minecraft:cow"));
         assert!(commands[1].is_err());
+    }
+
+    #[test]
+    fn dormant_shulkers_stay_far_from_players_while_dormant_monsters_go() {
+        let Some((mut server, _)) = door_world() else { return };
+        let fresh = minecraftoss_core::snbt::parse_compound("{}").unwrap();
+        server.summon("minecraft:shulker", [8.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
+        server.summon("minecraft:pillager", [9.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
+        let kinds = |server: &ServerSim| server.dormant.iter().map(|(group, _)| group[0].kind.clone()).collect::<Vec<_>>();
+        assert_eq!(kinds(&server), ["minecraft:shulker", "minecraft:pillager"]);
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: glam::DVec3::new(3008.5, 200.0, 8.5),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        };
+        server.despawn_mobs(&[player], 2);
+        assert_eq!(kinds(&server), ["minecraft:shulker"]);
+        server.despawn_mobs(&[player], 0);
+        assert_eq!(kinds(&server), ["minecraft:shulker"], "shulkers are allowed in peaceful");
+    }
+
+    #[test]
+    fn twelve_eyes_in_an_inward_ring_of_frames_open_the_end_portal() {
+        use minecraftoss_world::level::end_portal::{FILL_SOUND, OPEN_SOUND};
+        let Some((mut server, _)) = door_world() else { return };
+        let centre = (8, 201, 8);
+        let mut frames = Vec::new();
+        for i in -1..=1 {
+            frames.push(((centre.0 + i, centre.1, centre.2 - 2), "south"));
+            frames.push(((centre.0 + i, centre.1, centre.2 + 2), "north"));
+            frames.push(((centre.0 - 2, centre.1, centre.2 + i), "east"));
+            frames.push(((centre.0 + 2, centre.1, centre.2 + i), "west"));
+        }
+        for &(pos, facing) in &frames {
+            let frame = Block::new("minecraft:end_portal_frame").with("facing", facing).with("eye", "false");
+            server.player_edit_block(pos, Some(&frame), PlayerEdit::Place);
+        }
+        server.player_edit_block(centre, Some(&Block::new("minecraft:cobblestone")), PlayerEdit::Place);
+        server.take_changes();
+        server.level.sounds.clear();
+        assert!(!server.item_on_block((8, 199, 8), ItemOnBlock::EnderEye), "stone takes no eye");
+        for (i, &(pos, _)) in frames.iter().enumerate() {
+            assert!(server.item_on_block(pos, ItemOnBlock::EnderEye));
+            assert!(!server.item_on_block(pos, ItemOnBlock::EnderEye), "a filled frame takes no second eye");
+            let sounds: Vec<_> = server.level.sounds.drain(..).map(|s| (s.event, s.pos)).collect();
+            let fill = (FILL_SOUND, [f64::from(pos.0) + 0.5, f64::from(pos.1) + 0.5, f64::from(pos.2) + 0.5]);
+            if i + 1 < frames.len() {
+                assert_eq!(sounds, [fill]);
+                assert!(server.items().iter().all(|item| item.item != "minecraft:cobblestone"), "eye {i} opened nothing");
+            } else {
+                assert_eq!(sounds, [fill, (OPEN_SOUND, [8.5, 201.5, 8.5])]);
+            }
+        }
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        for x in 7..=9 {
+            for z in 7..=9 {
+                assert_eq!(block_at(&changes, (x, 201, z)).map(|b| b.id.key()), Some("minecraft:end_portal".to_owned()));
+            }
+        }
+        for &(pos, facing) in &frames {
+            let frame = block_at(&changes, pos);
+            assert_eq!((property(&frame, "eye").as_deref(), property(&frame, "facing").as_deref()), (Some("true"), Some(facing)));
+        }
+        assert!(server.items().iter().any(|item| item.item == "minecraft:cobblestone"), "the cobblestone inside dropped");
+    }
+
+    #[test]
+    fn a_frame_facing_out_keeps_the_portal_shut() {
+        let Some((mut server, _)) = door_world() else { return };
+        let mut frames = Vec::new();
+        for i in -1..=1 {
+            frames.push(((8 + i, 201, 6), if i == 0 { "north" } else { "south" }));
+            frames.push(((8 + i, 201, 10), "north"));
+            frames.push(((6, 201, 8 + i), "east"));
+            frames.push(((10, 201, 8 + i), "west"));
+        }
+        for &(pos, facing) in &frames {
+            let frame = Block::new("minecraft:end_portal_frame").with("facing", facing).with("eye", "false");
+            server.player_edit_block(pos, Some(&frame), PlayerEdit::Place);
+            assert!(server.item_on_block(pos, ItemOnBlock::EnderEye));
+        }
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert!(changes.values().flatten().all(|b| b.id.key() != "minecraft:end_portal"));
+        assert!(server.level.sounds.iter().all(|s| s.event != minecraftoss_world::level::end_portal::OPEN_SOUND));
+    }
+
+    fn end_world(chunks: impl Iterator<Item = (i32, i32)>) -> Option<ServerSim> {
+        let paths = DataPaths::discover().ok()?;
+        let registries = Arc::new(Registries::load(&paths).ok()?);
+        let generator = TerrainGenerator::end(registries.clone(), 0).ok()?;
+        let states = Arc::new(BlockStates::new(registries, 0, generator.chunk_min_y, generator.chunk_height).ok()?);
+        let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(generator), "minecraft:the_end").ok()?);
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:the_end");
+        for (x, z) in chunks {
+            server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+        }
+        Some(server)
+    }
+
+    #[test]
+    fn the_end_platform_is_rebuilt_and_drops_what_it_breaks() {
+        let Some(mut server) = end_world((5..=7).flat_map(|x| (-1..=1).map(move |z| (x, z)))) else { return };
+        let name = |server: &ServerSim, pos: BlockPos| {
+            let state = server.level.block(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2));
+            let blocks = &server.level.registries().blocks;
+            blocks.block(blocks.block_of(state)).name.as_str().to_owned()
+        };
+        assert_eq!(name(&server, (100, 48, 0)), "minecraft:obsidian", "the End generates its platform");
+        server.player_edit_block((101, 50, 0), Some(&Block::new("minecraft:cobblestone")), PlayerEdit::Place);
+        server.player_edit_block((99, 48, -1), None, PlayerEdit::Break);
+        server.player_edit_block((102, 48, 2), Some(&Block::new("minecraft:dirt")), PlayerEdit::Place);
+        server.take_changes();
+        let before = server.items().len();
+        server.create_end_platform((100, 49, 0));
+        for x in 98..=102 {
+            for z in -2..=2 {
+                assert_eq!(name(&server, (x, 48, z)), "minecraft:obsidian", "{x} 48 {z}");
+                for y in 49..=51 {
+                    assert_eq!(name(&server, (x, y, z)), "minecraft:air", "{x} {y} {z}");
+                }
+            }
+        }
+        let count = |server: &ServerSim, id: &str| server.items().iter().filter(|item| item.item == id).count();
+        assert_eq!(server.items().len(), before + 2);
+        assert_eq!((count(&server, "minecraft:cobblestone"), count(&server, "minecraft:dirt")), (1, 1));
+        assert_eq!(count(&server, "minecraft:obsidian"), 0);
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(block_at(&changes, (101, 50, 0)), None);
+        assert_eq!(block_at(&changes, (99, 48, -1)).map(|b| b.id.key()), Some("minecraft:obsidian".to_owned()));
+        assert!(!changes.contains_key(&(100, 48, 0)), "blocks already right are left alone");
+        server.create_end_platform((100, 49, 0));
+        assert!(server.take_changes().is_empty(), "a whole platform changes nothing");
+        assert_eq!(server.items().len(), before + 2);
+    }
+
+    #[test]
+    fn a_first_fight_scan_builds_the_inactive_podium_and_later_scans_find_it() {
+        let Some(mut server) = end_world((-1..=1).flat_map(|x| (-1..=1).map(move |z| (x, z)))) else { return };
+        let block = |server: &ServerSim, pos: BlockPos| {
+            let state = server.level.block(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2));
+            let blocks = &server.level.registries().blocks;
+            blocks.block(blocks.block_of(state)).name.as_str().to_owned()
+        };
+        let top = server.level.exit_portal_location(minecraftoss_core::BlockPos::new(0, 0, 0));
+        assert!(top.y > 40 && block(&server, (0, top.y, 0)) == "minecraft:end_stone", "{top:?}");
+        server.take_changes();
+        let scan = server.scan_dragon_fight((0, 0, 0), None);
+        let at = (0, top.y, 0);
+        assert_eq!(scan, DragonFightScan { previously_killed: false, dragon_killed: false, dragon_seen: false, dragon_uuid: None, exit_portal_location: Some(at) });
+        for y in 0..4 {
+            assert_eq!(block(&server, (0, at.1 + y, 0)), "minecraft:bedrock", "pillar {y}");
+        }
+        for (x, z) in [(3, 0), (-3, 1), (2, 2), (-1, -3)] {
+            assert_eq!(block(&server, (x, at.1, z)), "minecraft:bedrock", "rim {x} {z}");
+        }
+        for (x, z) in [(1, 0), (-2, 1), (1, 1)] {
+            assert_eq!(block(&server, (x, at.1, z)), "minecraft:air", "inside {x} {z}");
+            assert_eq!(block(&server, (x, at.1 - 1, z)), "minecraft:bedrock", "floor {x} {z}");
+        }
+        assert_eq!(block(&server, (3, at.1 - 1, 1)), "minecraft:end_stone");
+        assert_eq!(block(&server, (0, at.1 + 2, -1)), "minecraft:wall_torch");
+        let torch = server.level.block(minecraftoss_core::BlockPos::new(1, at.1 + 2, 0));
+        assert_eq!(server.level.registries().blocks.property(torch, "facing"), Some("east"));
+        assert!(server.level.unsupported.is_empty(), "{:?}", server.level.unsupported);
+        assert_eq!(server.level.find_exit_portal(minecraftoss_core::BlockPos::new(0, 0, 0)), Some(minecraftoss_core::BlockPos::new(0, at.1, 0)));
+        server.take_changes();
+        let again = server.scan_dragon_fight((0, 0, 0), None);
+        assert_eq!(again.exit_portal_location, Some(at), "the podium is found, not built twice");
+        assert!(server.take_changes().is_empty());
+        server.summon(ENDER_DRAGON, [0.5, 128.0, 0.5], None, 0.0).expect("a dragon waits dormant");
+        assert_eq!(server.dormant_uuids(ENDER_DRAGON).len(), 1);
+        let discarded = server.scan_dragon_fight((0, 0, 0), Some(at));
+        assert_eq!((discarded.dragon_killed, discarded.dragon_seen, discarded.dragon_uuid), (false, true, None));
+        assert!(server.dormant_uuids(ENDER_DRAGON).is_empty(), "a dragon without an exit portal goes");
+        assert!(server.level.place_configured_feature("minecraft:end_podium_active", minecraftoss_core::BlockPos::new(0, at.1, 0)));
+        assert_eq!(block(&server, (1, at.1, 0)), "minecraft:end_portal");
+        assert!(server.level.has_active_exit_portal());
+        let killed = server.scan_dragon_fight((0, 0, 0), Some(at));
+        assert_eq!(killed, DragonFightScan { previously_killed: true, dragon_killed: true, dragon_seen: false, dragon_uuid: None, exit_portal_location: Some(at) });
+        server.summon(ENDER_DRAGON, [0.5, 128.0, 0.5], None, 0.0).expect("a dragon waits dormant");
+        let alive = server.scan_dragon_fight((0, 0, 0), Some(at));
+        assert_eq!((alive.previously_killed, alive.dragon_killed), (true, false));
+        assert_eq!(alive.dragon_uuid, server.dormant_uuids(ENDER_DRAGON).first().copied());
+        assert!(alive.dragon_uuid.is_some());
+    }
+
+    #[test]
+    fn an_end_gateway_in_the_arena_counts_as_an_active_exit_portal() {
+        let Some(mut server) = end_world((-1..=1).flat_map(|x| (-1..=1).map(move |z| (x, z)))) else { return };
+        assert!(!server.level.has_active_exit_portal());
+        assert!(server.level.place_configured_feature("minecraft:end_gateway_return", minecraftoss_core::BlockPos::new(8, 90, 8)));
+        assert!(server.level.has_active_exit_portal(), "TheEndGatewayBlockEntity extends TheEndPortalBlockEntity");
+        server.take_changes();
+        let scan = server.scan_dragon_fight((0, 0, 0), None);
+        assert_eq!(scan, DragonFightScan { previously_killed: true, dragon_killed: true, dragon_seen: false, dragon_uuid: None, exit_portal_location: None });
+        assert!(server.take_changes().is_empty(), "no podium is built");
+    }
+
+    #[test]
+    fn features_placed_in_a_live_level_keep_their_entities_spawners_and_gateway_exits() {
+        use minecraftoss_core::nbt::Tag;
+        use minecraftoss_generator::feature::World;
+        let Some((mut server, _)) = door_world() else { return };
+        server.level.take_changed_block_entities();
+        server.level.unsupported.clear();
+        let block_entity = |server: &ServerSim, pos: (i32, i32, i32)| server.level.chunk(ChunkPos::new(pos.0 >> 4, pos.2 >> 4)).and_then(|c| c.block_entities.entities.get(&pos).cloned());
+        assert!(server.level.place_configured_feature("minecraft:end_gateway_return", minecraftoss_core::BlockPos::new(8, 210, 8)));
+        let gateway = block_entity(&server, (8, 210, 8)).expect("the gateway has its block entity");
+        assert_eq!(gateway.get("exit_portal"), Some(&Tag::IntArray(vec![100, 50, 0])));
+        assert_eq!(gateway.get("ExactTeleport"), Some(&Tag::Byte(1)));
+        assert!(server.level.take_changed_block_entities().contains(&(8, 210, 8)));
+        server.player_edit_block((4, 205, 4), Some(&Block::new("minecraft:spawner")), PlayerEdit::Place);
+        World::set_spawner_entity(&mut server.level, 4, 205, 4, "minecraft:blaze");
+        let spawner = block_entity(&server, (4, 205, 4)).expect("the spawner has its block entity");
+        let kind = spawner.get("SpawnData").and_then(|d| d.get("entity")).and_then(|e| e.get("id")).and_then(Tag::as_str);
+        assert_eq!(kind, Some("minecraft:blaze"));
+        World::set_gateway_exit(&mut server.level, 4, 205, 4, (1, 2, 3), false);
+        assert_eq!(block_entity(&server, (4, 205, 4)).and_then(|s| s.get("exit_portal").cloned()), None, "a spawner takes no exit");
+        let uuid = World::next_uuid(&mut server.level);
+        assert_ne!(uuid, World::next_uuid(&mut server.level));
+        let shulker = minecraftoss_core::snbt::parse_compound(&format!("{{id:\"minecraft:shulker\",Pos:[8.5d,206.0d,8.5d],UUID:[I;{},{},{},{}]}}", uuid[0], uuid[1], uuid[2], uuid[3])).unwrap();
+        World::add_entity(&mut server.level, shulker);
+        server.take_spawned();
+        assert!(server.dormant.iter().any(|(group, _)| group[0].kind == "minecraft:shulker"), "the entity joins the server");
+        assert_eq!(server.level.unsupported, Vec::<String>::new());
     }
 
     #[test]

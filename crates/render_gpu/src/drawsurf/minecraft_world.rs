@@ -97,6 +97,10 @@ pub struct MinecraftWorldFrame {
     /// The first-person hand or held item in view space, and its projection.
     pub hand: (Vec<u8>, Vec<u32>),
     pub hand_clip: [f32; 16],
+    pub end_sky_texture: Option<Arc<MinecraftAtlasImage>>,
+    pub end_portal_texture: Option<Arc<MinecraftAtlasImage>>,
+    pub end_portal_colors: [[f32; 4]; 16],
+    pub end_portal_time: f32,
 }
 
 #[repr(C)]
@@ -110,6 +114,8 @@ struct TerrainView {
     /// The block at map origin.
     origin: [f32; 4],
     environment: [[f32; 4]; 16],
+    end_portal_colors: [[f32; 4]; 16],
+    end_portal: [f32; 4],
     glint: [f32; 4],
 }
 
@@ -136,10 +142,14 @@ struct TerrainGpu {
     clouds: Option<(Arc<MinecraftClouds>, Buffer, Buffer, u32)>,
     cloud_top: f32,
     camera_above_clouds: bool,
+    clouds_shown: bool,
     crack_texture: Option<(Arc<MinecraftAtlasImage>, TextureView)>,
     glint: Option<(Arc<MinecraftAtlasImage>, TextureView)>,
     armor_glint: Option<(Arc<MinecraftAtlasImage>, TextureView)>,
     glint_sampler: Option<Sampler>,
+    end_sky: Option<(Arc<MinecraftAtlasImage>, TextureView)>,
+    end_portal: Option<(Arc<MinecraftAtlasImage>, TextureView)>,
+    repeat_sampler: Option<Sampler>,
     /// This frame's particles and cracks: vertices, indices, index count.
     particles: Option<(Buffer, Buffer, u32)>,
     cracks: Option<(Buffer, Buffer, u32)>,
@@ -199,6 +209,15 @@ fn layout() -> BindGroupLayoutDescriptor {
             texture_2d(TextureSampleType::Float { filterable: true })
                 .visibility(ShaderStages::FRAGMENT)
                 .build(7, ShaderStages::FRAGMENT),
+            texture_2d(TextureSampleType::Float { filterable: true })
+                .visibility(ShaderStages::FRAGMENT)
+                .build(8, ShaderStages::FRAGMENT),
+            texture_2d(TextureSampleType::Float { filterable: true })
+                .visibility(ShaderStages::FRAGMENT)
+                .build(9, ShaderStages::FRAGMENT),
+            sampler(SamplerBindingType::Filtering)
+                .visibility(ShaderStages::FRAGMENT)
+                .build(10, ShaderStages::FRAGMENT),
         ],
     )
 }
@@ -307,6 +326,13 @@ fn prepare_terrain(
     {
         let (view, _) = upload_atlas(&device, &queue, &armor);
         gpu.armor_glint = Some((armor, view));
+        gpu.bind = None;
+    }
+    let end_sky = frame.end_sky_texture.clone();
+    let end_portal = frame.end_portal_texture.clone();
+    let sky_changed = upload_or_blank(&device, &queue, &mut gpu.end_sky, end_sky);
+    let portal_changed = upload_or_blank(&device, &queue, &mut gpu.end_portal, end_portal);
+    if sky_changed || portal_changed {
         gpu.bind = None;
     }
     let (particle_vertices, particle_indices) = std::mem::take(&mut frame.particles);
@@ -421,6 +447,7 @@ fn prepare_terrain(
         None => gpu.clouds = None,
     }
     gpu.camera_above_clouds = frame.environment[3][1] > gpu.cloud_top;
+    gpu.clouds_shown = clouds_shown(&frame.environment);
     if gpu.view.is_none() {
         gpu.view = Some(device.create_buffer(&BufferDescriptor {
             label: Some("iw4l_minecraft_terrain_view"),
@@ -446,6 +473,15 @@ fn prepare_terrain(
             mipmap_filter: MipmapFilterMode::Nearest,
             ..default()
         }));
+        gpu.repeat_sampler = Some(device.create_sampler(&SamplerDescriptor {
+            label: Some("iw4l_minecraft_repeat"),
+            address_mode_u: AddressMode::Repeat,
+            address_mode_v: AddressMode::Repeat,
+            mag_filter: FilterMode::Nearest,
+            min_filter: FilterMode::Nearest,
+            mipmap_filter: MipmapFilterMode::Nearest,
+            ..default()
+        }));
     }
     if gpu.bind.is_none()
         && let (Some(view), Some((_, atlas)), Some((_, celestial)), Some((_, cracks)), Some(sampler), Some((_, glint)), Some(glint_sampler)) = (
@@ -457,6 +493,7 @@ fn prepare_terrain(
             gpu.glint.as_ref(),
             gpu.glint_sampler.as_ref(),
         )
+        && let (Some((_, end_sky)), Some((_, end_portal)), Some(repeat_sampler)) = (gpu.end_sky.as_ref(), gpu.end_portal.as_ref(), gpu.repeat_sampler.as_ref())
     {
         let armor_glint = gpu.armor_glint.as_ref().map_or(glint, |(_, view)| view);
         let layout = registry.bind_group_layout(&device, &layout());
@@ -500,6 +537,18 @@ fn prepare_terrain(
                     binding: 7,
                     resource: BindingResource::TextureView(armor_glint),
                 },
+                BindGroupEntry {
+                    binding: 8,
+                    resource: BindingResource::TextureView(end_sky),
+                },
+                BindGroupEntry {
+                    binding: 9,
+                    resource: BindingResource::TextureView(end_portal),
+                },
+                BindGroupEntry {
+                    binding: 10,
+                    resource: BindingResource::Sampler(repeat_sampler),
+                },
             ],
         );
         gpu.bind = Some(bind);
@@ -540,6 +589,8 @@ fn prepare_terrain(
         environment: frame.environment,
         hand_clip: frame.hand_clip,
         glint: [shift[0], shift[1], frame::minecraft_ui::GLINT_STRENGTH, 0.0],
+        end_portal_colors: frame.end_portal_colors,
+        end_portal: [frame.end_portal_time, 0.0, 0.0, 0.0],
         ..TerrainView::default()
     };
     if let Some(exec) = published.as_ref().map(|p| &p.exec_frame)
@@ -560,6 +611,26 @@ fn prepare_terrain(
     if let Some(buffer) = gpu.view.as_ref() {
         queue.write_buffer(buffer, 0, bytemuck::bytes_of(&view));
     }
+}
+
+fn upload_or_blank(
+    device: &RenderDevice,
+    queue: &RenderQueue,
+    held: &mut Option<(Arc<MinecraftAtlasImage>, TextureView)>,
+    image: Option<Arc<MinecraftAtlasImage>>,
+) -> bool {
+    let image = match image {
+        Some(image) if held.as_ref().is_none_or(|(old, _)| !Arc::ptr_eq(old, &image)) => image,
+        None if held.is_none() => Arc::new(no_glint()),
+        _ => return false,
+    };
+    let (view, _) = upload_atlas(device, queue, &image);
+    *held = Some((image, view));
+    true
+}
+
+fn clouds_shown(environment: &[[f32; 4]; 16]) -> bool {
+    environment[11][1] > 0.0
 }
 
 fn no_glint() -> MinecraftAtlasImage {
@@ -730,6 +801,7 @@ fn draw_terrain(
         pass.draw_indexed(0..*count, 0, 0..1);
     }
     if !gpu.camera_above_clouds
+        && gpu.clouds_shown
         && let Some((_, vertices, indices, count)) = gpu.clouds.as_ref()
     {
         pass.set_render_pipeline(&clouds);
@@ -766,6 +838,7 @@ fn draw_terrain(
         pass.set_viewport(vp.x as f32, vp.y as f32, vp.z as f32, vp.w as f32, depth_min, depth_max);
     }
     if gpu.camera_above_clouds
+        && gpu.clouds_shown
         && let Some((_, vertices, indices, count)) = gpu.clouds.as_ref()
     {
         pass.set_render_pipeline(&clouds);
@@ -793,6 +866,8 @@ struct TerrainView {
     view: vec4<f32>,
     origin: vec4<f32>,
     environment: Environment,
+    end_portal_colors: array<vec4<f32>, 16>,
+    end_portal: vec4<f32>,
     glint: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> view: TerrainView;
@@ -803,6 +878,9 @@ struct TerrainView {
 @group(0) @binding(5) var glint_texture: texture_2d<f32>;
 @group(0) @binding(6) var glint_sampler: sampler;
 @group(0) @binding(7) var armor_glint_texture: texture_2d<f32>;
+@group(0) @binding(8) var end_sky_texture: texture_2d<f32>;
+@group(0) @binding(9) var end_portal_texture: texture_2d<f32>;
+@group(0) @binding(10) var repeat_sampler: sampler;
 
 // Map units per block, as `sim::voxel::BLOCK`.
 const BLOCK: f32 = 36.0;
@@ -861,6 +939,7 @@ struct Out {
     @location(1) colour: vec4<f32>,
     @location(2) world_pos: vec3<f32>,
     @location(3) glint: f32,
+    @location(4) screen: vec4<f32>,
 }
 
 @vertex
@@ -879,7 +958,32 @@ fn vertex(
     out.colour = vec4<f32>(colour.rgb * lightmap(level.x, level.y), colour.a);
     out.world_pos = position;
     out.glint = flags.x;
+    out.screen = vec4<f32>((out.clip.xy + out.clip.w) * 0.5, out.clip.zw);
     return out;
+}
+
+const END_PORTAL_ALPHA_BELOW: f32 = 0.375;
+const END_GATEWAY_ALPHA_BELOW: f32 = 0.1875;
+
+fn end_portal_uv(layer: f32, screen: vec2<f32>) -> vec2<f32> {
+    let scale = (4.5 - layer / 4.0) * 2.0;
+    let angle = radians((layer * layer * 4321.0 + layer * 9.0) * 2.0);
+    let c = cos(angle);
+    let s = sin(angle);
+    let turned = scale * vec2<f32>(screen.x * c - screen.y * s, screen.x * s + screen.y * c);
+    let moved = turned + vec2<f32>(17.0 / layer, (2.0 + layer / 1.5) * (view.end_portal.x * 1.5));
+    return moved * 0.5 + 0.25;
+}
+
+fn end_portal_colour(projected: vec4<f32>, gateway: bool) -> vec3<f32> {
+    let screen = projected.xy / projected.w;
+    var color = textureSampleLevel(end_sky_texture, repeat_sampler, screen, 0.0).rgb * view.end_portal_colors[0].rgb;
+    let layers = select(15, 16, gateway);
+    for (var i = 0; i < layers; i++) {
+        let texel = textureSampleLevel(end_portal_texture, repeat_sampler, end_portal_uv(f32(i + 1), screen), 0.0);
+        color += texel.rgb * view.end_portal_colors[i].rgb;
+    }
+    return color;
 }
 
 // Minecraft's values are display values, as the target's are.
@@ -908,6 +1012,10 @@ fn opaque(in: Out) -> @location(0) vec4<f32> {
     let entity_sheet = in.colour.a < 0.75;
     let level_zero = vec2<f32>(0.0);
     let texel = textureSampleGrad(atlas, atlas_sampler, in.uv, select(dpdx(in.uv), level_zero, entity_sheet), select(dpdy(in.uv), level_zero, entity_sheet));
+    if in.colour.a < END_PORTAL_ALPHA_BELOW {
+        let portal = end_portal_colour(in.screen, in.colour.a < END_GATEWAY_ALPHA_BELOW);
+        return vec4<f32>(mix(portal, view.environment.fog.rgb, fog_value(in.world_pos)), 1.0);
+    }
     if texel.a < select(0.5, 0.1, entity_sheet) {
         discard;
     }
@@ -925,6 +1033,28 @@ fn translucent(in: Out) -> @location(0) vec4<f32> {
 struct SkyOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) ndc: vec2<f32>,
+}
+
+const SKYBOX_NONE_ABOVE: f32 = 1.5;
+const SKYBOX_END_ABOVE: f32 = 0.5;
+const END_SKY_SHADE: f32 = 40.0 / 255.0;
+
+fn end_sky_uv(ray: vec3<f32>) -> vec2<f32> {
+    let size = abs(ray);
+    var local: vec3<f32>;
+    if size.y >= size.x && size.y >= size.z {
+        local = select(ray, vec3<f32>(ray.x, -ray.y, -ray.z), ray.y > 0.0);
+    } else if size.z >= size.x {
+        local = select(vec3<f32>(ray.x, ray.z, -ray.y), vec3<f32>(ray.x, -ray.z, ray.y), ray.z > 0.0);
+    } else {
+        local = select(vec3<f32>(-ray.y, ray.x, ray.z), vec3<f32>(ray.y, -ray.x, ray.z), ray.x > 0.0);
+    }
+    return (local.xz / -local.y + 1.0) * 8.0;
+}
+
+fn end_sky(ray: vec3<f32>) -> vec3<f32> {
+    let texel = textureSampleLevel(end_sky_texture, repeat_sampler, end_sky_uv(ray), 0.0);
+    return mix(view.environment.fog.rgb, texel.rgb * END_SKY_SHADE, texel.a);
 }
 
 @vertex
@@ -976,9 +1106,15 @@ fn stars(ray: vec3<f32>) -> f32 {
 @fragment
 fn sky_fragment(in: SkyOut) -> @location(0) vec4<f32> {
     let environment = view.environment;
+    if environment.ambient.w > SKYBOX_NONE_ABOVE {
+        return vec4<f32>(environment.fog.rgb, 1.0);
+    }
     let far = view.rel_from_clip * vec4<f32>(in.ndc, 0.5, 1.0);
     let map_ray = far.xyz / far.w;
     let ray = normalize(vec3<f32>(map_ray.x, map_ray.z, -map_ray.y));
+    if environment.ambient.w > SKYBOX_END_ABOVE {
+        return vec4<f32>(end_sky(ray), 1.0);
+    }
     // SkyRenderer's 16-block-high fan has a 512-block radius. Its fog value
     // interpolates between the center and rim vertex distances.
     var color = environment.fog.rgb;
@@ -1500,5 +1636,125 @@ mod tests {
         assert!(super::patch_writes(&outside, &atlas).is_empty());
         let short = super::MinecraftAtlasImage { width: 256, height: 256, levels: atlas.levels[..2].to_vec() };
         assert_eq!(super::patch_writes(&patch, &short).len(), 2);
+    }
+
+    fn wgsl_float(name: &str) -> f32 {
+        let module = naga::front::wgsl::parse_str(super::TERRAIN_WGSL).unwrap();
+        let (_, constant) = module.constants.iter().find(|(_, constant)| constant.name.as_deref() == Some(name)).unwrap();
+        match module.global_expressions[constant.init] {
+            naga::Expression::Literal(naga::Literal::F32(value)) => value,
+            ref other => panic!("{name} is {other:?}"),
+        }
+    }
+
+    #[test]
+    fn only_a_dimension_without_a_skybox_shows_the_fog_colour_as_its_sky() {
+        let none_above = wgsl_float("SKYBOX_NONE_ABOVE");
+        assert!(1.0 < none_above && none_above < 2.0, "render_anim sends 0 for the overworld, 1 for the End and 2 for none");
+        assert!(super::TERRAIN_WGSL.contains("if environment.ambient.w > SKYBOX_NONE_ABOVE {
+        return vec4<f32>(environment.fog.rgb, 1.0);"));
+    }
+
+    #[test]
+    fn end_portal_faces_are_told_apart_by_their_vertex_alpha() {
+        let portal_below = wgsl_float("END_PORTAL_ALPHA_BELOW");
+        let gateway_below = wgsl_float("END_GATEWAY_ALPHA_BELOW");
+        let byte = |value: u8| f32::from(value) / 255.0;
+        assert!(byte(31) < gateway_below, "minecraft_terrain::end_portal_look::END_GATEWAY_ALPHA");
+        assert!(gateway_below < byte(63) && byte(63) < portal_below, "minecraft_terrain::end_portal_look::END_PORTAL_ALPHA");
+        assert!(portal_below < byte(127), "minecraft_terrain::special_models::ENTITY_SHEET_ALPHA");
+        let source = super::TERRAIN_WGSL;
+        assert!(source.contains("let layers = select(15, 16, gateway);"));
+        assert!(source.contains("out.screen = vec4<f32>((out.clip.xy + out.clip.w) * 0.5, out.clip.zw);"));
+    }
+
+    #[test]
+    fn the_end_textures_and_portal_uniforms_match_in_rust_and_wgsl() {
+        let module = naga::front::wgsl::parse_str(super::TERRAIN_WGSL).unwrap();
+        let bindings: Vec<(u32, String)> = module
+            .global_variables
+            .iter()
+            .filter_map(|(_, var)| Some((var.binding.as_ref()?.binding, var.name.clone()?)))
+            .collect();
+        for (binding, name) in [(8, "end_sky_texture"), (9, "end_portal_texture"), (10, "repeat_sampler")] {
+            assert!(bindings.contains(&(binding, name.to_owned())), "{name}");
+        }
+        let (_, view) = module.types.iter().find(|(_, ty)| ty.name.as_deref() == Some("TerrainView")).unwrap();
+        let naga::TypeInner::Struct { members, .. } = &view.inner else {
+            panic!("TerrainView is not a struct");
+        };
+        let offset = |name: &str| members.iter().find(|member| member.name.as_deref() == Some(name)).unwrap().offset as usize;
+        assert_eq!(offset("end_portal_colors"), std::mem::offset_of!(super::TerrainView, end_portal_colors));
+        assert_eq!(offset("end_portal"), std::mem::offset_of!(super::TerrainView, end_portal));
+    }
+
+    fn end_sky_uv(ray: bevy::math::Vec3) -> bevy::math::Vec2 {
+        let size = ray.abs();
+        let local = if size.y >= size.x && size.y >= size.z {
+            if ray.y > 0.0 { bevy::math::Vec3::new(ray.x, -ray.y, -ray.z) } else { ray }
+        } else if size.z >= size.x {
+            if ray.z > 0.0 { bevy::math::Vec3::new(ray.x, -ray.z, ray.y) } else { bevy::math::Vec3::new(ray.x, ray.z, -ray.y) }
+        } else if ray.x > 0.0 {
+            bevy::math::Vec3::new(ray.y, -ray.x, ray.z)
+        } else {
+            bevy::math::Vec3::new(-ray.y, ray.x, ray.z)
+        };
+        (bevy::math::Vec2::new(local.x, local.z) / -local.y + 1.0) * 8.0
+    }
+
+    #[test]
+    fn the_end_sky_tiles_its_texture_sixteen_times_on_each_face_of_vanillas_cube() {
+        let turns = [
+            bevy::math::Mat3::IDENTITY,
+            bevy::math::Mat3::from_rotation_x(std::f32::consts::FRAC_PI_2),
+            bevy::math::Mat3::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+            bevy::math::Mat3::from_rotation_x(std::f32::consts::PI),
+            bevy::math::Mat3::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            bevy::math::Mat3::from_rotation_z(-std::f32::consts::FRAC_PI_2),
+        ];
+        let corners = [([-100.0, -100.0, -100.0], [0.0, 0.0]), ([-100.0, -100.0, 100.0], [0.0, 16.0]), ([100.0, -100.0, 100.0], [16.0, 16.0]), ([100.0, -100.0, -100.0], [16.0, 0.0])]
+            .map(|(position, uv)| (bevy::math::Vec3::from_array(position), bevy::math::Vec2::from_array(uv)));
+        let mixed = |s: f32, t: f32| {
+            let [(p0, u0), (p1, u1), (p2, u2), (p3, u3)] = corners;
+            let along = |a: bevy::math::Vec3, b: bevy::math::Vec3, c: bevy::math::Vec3, d: bevy::math::Vec3| a.lerp(d, s).lerp(b.lerp(c, s), t);
+            let along_uv = |a: bevy::math::Vec2, b: bevy::math::Vec2, c: bevy::math::Vec2, d: bevy::math::Vec2| a.lerp(d, s).lerp(b.lerp(c, s), t);
+            (along(p0, p1, p2, p3), along_uv(u0, u1, u2, u3))
+        };
+        for turn in turns {
+            for s in [0.05, 0.3, 0.5, 0.77, 0.95] {
+                for t in [0.05, 0.4, 0.5, 0.62, 0.95] {
+                    let (point, uv) = mixed(s, t);
+                    let got = end_sky_uv((turn * point).normalize());
+                    assert!((got - uv).abs().max_element() < 1e-3, "{turn:?} at {s},{t}: {got} against {uv}");
+                }
+            }
+        }
+        let source = super::TERRAIN_WGSL;
+        for line in [
+            "local = select(ray, vec3<f32>(ray.x, -ray.y, -ray.z), ray.y > 0.0);",
+            "local = select(vec3<f32>(ray.x, ray.z, -ray.y), vec3<f32>(ray.x, -ray.z, ray.y), ray.z > 0.0);",
+            "local = select(vec3<f32>(-ray.y, ray.x, ray.z), vec3<f32>(ray.y, -ray.x, ray.z), ray.x > 0.0);",
+            "return (local.xz / -local.y + 1.0) * 8.0;",
+        ] {
+            assert!(source.contains(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn the_end_sky_is_drawn_for_the_end_skybox_only_and_shaded_like_vanilla() {
+        let end_above = wgsl_float("SKYBOX_END_ABOVE");
+        assert!(0.0 < end_above && end_above < 1.0, "render_anim sends 0 for the overworld and 1 for the End");
+        assert!((wgsl_float("END_SKY_SHADE") - 0x28 as f32 / 255.0).abs() < 1e-6, "SkyRenderer.buildEndSky colour -14145496");
+        assert!(super::TERRAIN_WGSL.contains("return mix(view.environment.fog.rgb, texel.rgb * END_SKY_SHADE, texel.a);"));
+    }
+
+    #[test]
+    fn clouds_show_only_while_the_cloud_colour_has_alpha() {
+        let mut environment = [[0.0; 4]; 16];
+        assert!(!super::clouds_shown(&environment));
+        environment[11][1] = 1.0 / 255.0;
+        assert!(super::clouds_shown(&environment));
+        environment[11][1] = 0.8;
+        assert!(super::clouds_shown(&environment));
     }
 }

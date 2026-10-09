@@ -8,6 +8,7 @@
 //! placement order and block-update side effects that change results.
 
 pub mod blocks;
+pub mod end_portal;
 pub mod entities;
 pub mod java_set;
 pub mod kinds;
@@ -668,6 +669,10 @@ pub trait World {
     fn load_block_entity(&mut self, _x: i32, _y: i32, _z: i32, _nbt: &Tag) {
         self.note_unsupported("block entities from features");
     }
+    fn drop_and_destroy(&mut self, _pos: BlockPos) -> bool {
+        self.note_unsupported("block drops from features");
+        false
+    }
 }
 
 impl World for Region {
@@ -783,6 +788,7 @@ pub const GAMEPLAY_FEATURES: &[&str] = &[
     "minecraft:dark_oak", "minecraft:pale_oak_bonemeal",
     "minecraft:red_poplar", "minecraft:orange_poplar", "minecraft:yellow_poplar",
     "minecraft:huge_brown_mushroom", "minecraft:huge_red_mushroom",
+    "minecraft:end_podium_active", "minecraft:end_podium_inactive", "minecraft:end_gateway_delayed", "minecraft:end_island",
 ];
 
 /// `BlockState.getPostProcessPos`.

@@ -8,7 +8,7 @@ use minecraft_survival::switch::LoadingReason;
 use minecraft_terrain::pack::{PackStack, ResourceId};
 
 const END_PORTAL_LAYERS: usize = 15;
-const END_PORTAL_SHADER: &str = "shaders/core/rendertype_end_portal.fsh";
+pub(crate) const END_PORTAL_SHADER: &str = "shaders/core/rendertype_end_portal.fsh";
 const END_CANVAS_WIDTH: u32 = 960;
 const PANORAMA_CANVAS_WIDTH: u32 = 480;
 const PANORAMA_FOV_DEGREES: f32 = 85.0;

@@ -12,6 +12,7 @@ pub mod burning;
 pub mod container;
 pub mod dispenser;
 pub mod drops;
+pub mod end_portal;
 pub mod entity;
 pub mod explosion;
 pub mod falling;
@@ -860,6 +861,22 @@ impl<'a> Level<'a> {
     }
 }
 
+impl Level<'_> {
+    pub fn place_configured_feature(&mut self, name: &str, pos: BlockPos) -> bool {
+        let Some(id) = self.lib.feature_by_name(name) else { return false };
+        self.with_feature_random(|ctx, random| minecraftoss_generator::feature::place_feature(ctx, random, id, pos))
+    }
+
+    fn feature_block_entity(&mut self, pos: BlockPos, kind: Option<&str>) -> Option<&mut minecraftoss_core::nbt::Tag> {
+        let nbt = self.chunks.get_mut(&pos.chunk())?.block_entities.entities.get_mut(&(pos.x, pos.y, pos.z))?;
+        if kind.is_some_and(|kind| nbt.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) != Some(kind)) {
+            return None;
+        }
+        self.changed_block_entities.insert((pos.x, pos.y, pos.z));
+        Some(nbt)
+    }
+}
+
 impl World for Level<'_> {
     fn block_at(&self, x: i32, y: i32, z: i32) -> BlockStateId {
         self.block(BlockPos::new(x, y, z))
@@ -933,5 +950,44 @@ impl World for Level<'_> {
 
     fn note_unsupported(&mut self, kind: &str) {
         self.unsupported.push(kind.to_owned());
+    }
+
+    fn add_entity(&mut self, entity: minecraftoss_core::nbt::Tag) {
+        self.spawned.push(entity);
+    }
+
+    fn next_uuid(&mut self) -> [i32; 4] {
+        crate::natural_spawner::SpawnLevel::next_uuid(self)
+    }
+
+    fn set_loot_table(&mut self, x: i32, y: i32, z: i32, table: &str, seed: i64) {
+        if let Some(nbt) = self.feature_block_entity(BlockPos::new(x, y, z), None) {
+            minecraftoss_core::block_entity::set_loot_table(nbt, table, seed);
+        }
+    }
+
+    fn set_spawner_entity(&mut self, x: i32, y: i32, z: i32, entity: &str) {
+        use minecraftoss_core::nbt::Tag;
+        let Some(Tag::Compound(map)) = self.feature_block_entity(BlockPos::new(x, y, z), Some("minecraft:mob_spawner")) else { return };
+        if let Tag::Compound(data) = map.entry("SpawnData".to_owned()).or_insert_with(|| Tag::Compound(Default::default())) {
+            if let Tag::Compound(spawned) = data.entry("entity".to_owned()).or_insert_with(|| Tag::Compound(Default::default())) {
+                spawned.insert("id".to_owned(), Tag::String(entity.to_owned()));
+            }
+        }
+    }
+
+    fn set_gateway_exit(&mut self, x: i32, y: i32, z: i32, exit: (i32, i32, i32), exact: bool) {
+        use minecraftoss_core::nbt::Tag;
+        let Some(Tag::Compound(map)) = self.feature_block_entity(BlockPos::new(x, y, z), Some("minecraft:end_gateway")) else { return };
+        map.insert("exit_portal".to_owned(), Tag::IntArray(vec![exit.0, exit.1, exit.2]));
+        if exact {
+            map.insert("ExactTeleport".to_owned(), Tag::Byte(1));
+        } else {
+            map.remove("ExactTeleport");
+        }
+    }
+
+    fn drop_and_destroy(&mut self, pos: BlockPos) -> bool {
+        self.destroy_block_drops(pos, true, update::LIMIT)
     }
 }

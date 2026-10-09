@@ -1463,7 +1463,9 @@ pub(crate) fn entity_face(face: &crate::model::Face) -> bool {
 }
 
 fn entity_face_alpha(face: &crate::model::Face) -> f32 {
-    if crate::special_models::unmipped_sheet(&face.texture) {
+    if let Some(alpha) = crate::end_portal_look::face_alpha(&face.texture) {
+        alpha
+    } else if crate::special_models::unmipped_sheet(&face.texture) {
         crate::special_models::ENTITY_SHEET_ALPHA
     } else {
         1.0

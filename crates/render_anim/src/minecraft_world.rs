@@ -70,6 +70,7 @@ pub struct MinecraftWorldView {
     /// draws them (vanilla's fixed 70 degree hand field of view).
     pub hand: (Vec<u8>, Vec<u32>),
     pub hand_clip: [f32; 16],
+    pub end_look: crate::minecraft_end_look::EndFrame,
 }
 
 struct Loaded {
@@ -80,6 +81,7 @@ struct Loaded {
     crack_texture: Arc<image::RgbaImage>,
     glint_texture: Option<Arc<image::RgbaImage>>,
     armor_glint_texture: Option<Arc<image::RgbaImage>>,
+    end_look: Arc<crate::minecraft_end_look::EndLook>,
 }
 
 #[derive(Default)]
@@ -267,6 +269,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
     let crack_texture = Arc::new(crate::minecraft_mining::crack_strip(&packs).map_err(|e| e.to_string())?);
     let glint_texture = minecraft_terrain::glint::glint_texture(&packs).ok().flatten().map(Arc::new);
     let armor_glint_texture = minecraft_terrain::glint::armor_glint_texture(&packs).ok().flatten().map(Arc::new);
+    let end_look = Arc::new(crate::minecraft_end_look::EndLook::load(&packs));
     let loaded = Loaded {
         packs,
         atlas: build.atlas,
@@ -275,6 +278,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         crack_texture,
         glint_texture,
         armor_glint_texture,
+        end_look,
     };
     let mut day = DayCycle::default();
     if let Some(ticks) = opened.day_ticks {
@@ -488,6 +492,7 @@ fn update(
                 view.crack_texture = Some(world.crack_texture.clone());
                 view.glint_texture = world.glint_texture.clone();
                 view.armor_glint_texture = world.armor_glint_texture.clone();
+                view.end_look.look = Some(world.end_look.clone());
                 runtime.mining = Default::default();
                 runtime.minimap = Default::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
@@ -660,6 +665,7 @@ fn update(
             place_player(player, &mut authority.0, local.0, ps, origin, spawn_gate, now_ms);
         }
         authority.0.set_minecraft_abilities(local.0, ability_bits(&player.mode) | sky_bits(&level.terrain.environment) | playerstate_iw4::pm_flags::MC_INVULNERABLE);
+        crate::minecraft_end::arriving(player, level);
         let at = player.place.filter(|place| place.dimension == player.dimension).map_or(origin, |place| place.feet);
         let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
         stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, at, aspect, now_ms);
@@ -689,6 +695,7 @@ fn update(
             place_player(player, &mut authority.0, local.0, ps, origin, spawn_gate, now_ms);
         }
     }
+    crate::minecraft_end::step(player, levels, globals, presented.player(local.0).filter(|ps| ps.pm_type == 0).map(|ps| sim::voxel::to_block(origin, ps.origin)), time.delta_secs_f64());
     let arriving_at = player.arrival.map(|place| place.feet);
     let host_alive = presented.player(local.0).is_some_and(|ps| ps.pm_type == 0);
     let host_pose = presented
@@ -699,6 +706,7 @@ fn update(
     let presence = vec![(local_uuid.clone(), minecraft_survival::commands::Presence { pose: host_pose, alive: host_alive })];
     let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, levels, players, local_uuid, &mut ui.chat.sent, presence);
     ui.chat.command_level = players.get(local_uuid).map_or(0, |player| globals.chat.level(player.id));
+    crate::minecraft_end::tick_fight(levels, players, globals, time.delta_secs_f64());
     let Some(player) = players.get_mut(local_uuid) else {
         ui.active = false;
         ui.inventory_open = false;
@@ -1287,6 +1295,7 @@ fn update(
                         .or_else(|| minecraft_terrain::flint::flint_use(&player, &outlined, &catalog, stack, || entities.random_float()))
                         .or_else(|| minecraft_terrain::flint::fire_charge_use(&player, &outlined, &catalog, stack, || entities.random_float()))
                         .or_else(|| minecraft_terrain::berries::bone_meal_use(&player, &outlined, stack))
+                        .or_else(|| minecraft_terrain::ender_eye::eye_use(&player, &outlined, stack))
                 }
             {
                 if !outcome.consumed || matches!(outcome.change, minecraft_terrain::bucket::Change::Set(..)) {
@@ -2198,7 +2207,7 @@ fn update(
         [sky.moon_direction.x, sky.moon_direction.y, sky.moon_direction.z, sky.rain_brightness],
         // The brightness option at its default.
         [sky.cloud.x, sky.cloud.y, sky.cloud.z, 0.5],
-        [aspect, 0.0, sky.star_brightness, sky.star_angle],
+        [aspect, sky.cloud_alpha, sky.star_brightness, sky.star_angle],
         [sky.moon_phase as f32, (game_time as f32) * 0.03, 96.0, 160.0],
         [
             sky.fog_start,
@@ -2223,6 +2232,7 @@ fn update(
             sky.block_factor,
         ],
     ];
+    view.end_look.portal_time = crate::minecraft_end_look::portal_time(game_time);
 
     // Clouds, rebuilt when the camera crosses a cloud cell.
     if let Some(mask) = &world.cloud_mask {
@@ -2807,6 +2817,7 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
         view.crack_texture = None;
         view.glint_texture = None;
         view.armor_glint_texture = None;
+        view.end_look = Default::default();
         view.particles = Default::default();
         view.puppet_gear = Default::default();
         view.entity_meshes = Default::default();

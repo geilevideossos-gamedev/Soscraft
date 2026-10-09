@@ -284,6 +284,9 @@ pub struct ChunkMap {
     pending_send: HashSet<ChunkPos>,
     /// The tracking view the generation queue was last built for.
     queued_for: Option<TrackingView>,
+    tickets: Vec<(ChunkPos, i32)>,
+    tracked_tickets: Vec<(ChunkPos, i32)>,
+    queued_tickets: Vec<(ChunkPos, i32)>,
     /// How long the last tick's steps took, in milliseconds (profiling):
     /// tracking, collecting, waiting for the world lock, scheduling, sending.
     pub last_tick_ms: [f64; 7],
@@ -301,6 +304,10 @@ pub struct ChunkMap {
 /// Euclidean distance so each ring starts at its sides.
 fn priority(center: ChunkPos, pos: ChunkPos) -> (i32, i32) {
     (center.chebyshev(pos), center.distance_squared(pos))
+}
+
+pub fn ticketed(tickets: &[(ChunkPos, i32)], pos: ChunkPos, margin: i32) -> bool {
+    tickets.iter().any(|&(centre, radius)| centre.chebyshev(pos) <= radius + margin)
 }
 
 fn neighbours(pos: ChunkPos) -> impl Iterator<Item = ChunkPos> {
@@ -559,6 +566,9 @@ impl ChunkMap {
             view: None,
             pending_send: HashSet::new(),
             queued_for: None,
+            tickets: Vec::new(),
+            tracked_tickets: Vec::new(),
+            queued_tickets: Vec::new(),
         }
     }
 
@@ -614,6 +624,18 @@ impl ChunkMap {
         self.chunks.get(&pos)
     }
 
+    pub fn set_tickets(&mut self, tickets: &[(ChunkPos, i32)]) {
+        self.tickets = tickets.to_vec();
+    }
+
+    pub fn tickets(&self) -> &[(ChunkPos, i32)] {
+        &self.tickets
+    }
+
+    fn tracks(&self, pos: ChunkPos) -> bool {
+        self.view.is_some_and(|view| view.contains(pos)) || ticketed(&self.tracked_tickets, pos, 0)
+    }
+
     /// Runs one server tick for the single tracked player and returns what to
     /// send to the client, in order.
     pub fn tick(&mut self, player_chunk: ChunkPos) -> Vec<ChunkEvent> {
@@ -637,7 +659,7 @@ impl ChunkMap {
     /// `ChunkMap.updateChunkTracking` / `applyChunkTrackingView`.
     fn update_tracking(&mut self, player_chunk: ChunkPos, events: &mut Vec<ChunkEvent>) {
         let next = TrackingView::new(player_chunk, self.view_distance);
-        if self.view == Some(next) {
+        if self.view == Some(next) && self.tracked_tickets == self.tickets {
             return;
         }
         if self.view.is_none_or(|last| last.center != next.center) {
@@ -645,23 +667,36 @@ impl ChunkMap {
         }
         let (mut entered, mut left) = (Vec::new(), Vec::new());
         TrackingView::difference(self.view, Some(next), |pos| entered.push(pos), |pos| left.push(pos));
-        for pos in entered {
-            if self.chunks.contains_key(&pos) {
-                self.pending_send.insert(pos);
+        let (old, new) = (std::mem::take(&mut self.tracked_tickets), self.tickets.clone());
+        let mut squares = Vec::new();
+        for &(centre, radius) in old.iter().chain(&new) {
+            for x in centre.x - radius..=centre.x + radius {
+                for z in centre.z - radius..=centre.z + radius {
+                    squares.push(ChunkPos::new(x, z));
+                }
             }
         }
-        for pos in left {
-            if !self.pending_send.remove(&pos) {
+        let was = |pos: ChunkPos| self.view.is_some_and(|view| view.contains(pos)) || ticketed(&old, pos, 0);
+        let is = |pos: ChunkPos| next.contains(pos) || ticketed(&new, pos, 0);
+        let mut seen = HashSet::new();
+        let changed: Vec<(ChunkPos, bool)> = entered.into_iter().chain(left).chain(squares).filter(|&pos| seen.insert(pos)).filter(|&pos| was(pos) != is(pos)).map(|pos| (pos, is(pos))).collect();
+        for (pos, tracked) in changed {
+            if tracked {
+                if self.chunks.contains_key(&pos) {
+                    self.pending_send.insert(pos);
+                }
+            } else if !self.pending_send.remove(&pos) {
                 events.push(ChunkEvent::Forget(pos));
             }
         }
         self.view = Some(next);
+        self.tracked_tickets = new;
     }
 
     fn collect_finished(&mut self) {
         for chunk in self.finished.try_iter().collect::<Vec<_>>() {
             // `onChunkReadyToSend`: tracked chunks become pending immediately.
-            if self.view.is_some_and(|view| view.contains(chunk.pos)) {
+            if self.tracks(chunk.pos) {
                 self.pending_send.insert(chunk.pos);
             }
             self.chunks.insert(chunk.pos, chunk);
@@ -672,39 +707,53 @@ impl ChunkMap {
     /// fell out of range.
     fn schedule(&mut self) {
         let Some(view) = self.view else { return };
-        if self.queued_for == Some(view) {
+        if self.queued_for == Some(view) && self.queued_tickets == self.tickets {
             return;
         }
         self.queued_for = Some(view);
+        self.queued_tickets = self.tickets.clone();
+        let tickets = self.tickets.clone();
         let center = view.center;
         // Loaded chunks are kept a few rings beyond the generated area so
         // small back-and-forth movement does not regenerate them.
         let keep = self.view_distance + 5;
-        self.chunks.retain(|&pos, _| center.chebyshev(pos) <= keep);
-        self.shared.biomes.lock().expect("biome cache").retain(|&pos, _| center.chebyshev(pos) <= keep + 1);
+        self.chunks.retain(|&pos, _| center.chebyshev(pos) <= keep || ticketed(&tickets, pos, 5));
+        self.shared.biomes.lock().expect("biome cache").retain(|&pos, _| center.chebyshev(pos) <= keep + 1 || ticketed(&tickets, pos, 6));
 
         // Tracked chunks must be block ticking, their 3x3 FULL: FEATURES two
         // rings out, TERRAIN three.
         // The tracked set dilated by two chunks (FEATURES) and three
         // (TERRAIN), as separable Chebyshev max filters on a dense grid.
         let half = self.view_distance + 1 + 3;
-        let size = (2 * half + 1) as usize;
-        let origin = (center.x - half, center.z - half);
-        let mut tracked = vec![false; size * size];
+        let (mut min, mut max) = ((center.x - half, center.z - half), (center.x + half, center.z + half));
+        for &(at, radius) in &tickets {
+            min = (min.0.min(at.x - radius - 3), min.1.min(at.z - radius - 3));
+            max = (max.0.max(at.x + radius + 3), max.1.max(at.z + radius + 3));
+        }
+        let (size_x, size) = ((max.0 - min.0 + 1) as usize, (max.1 - min.1 + 1) as usize);
+        let origin = min;
+        let mut tracked = vec![false; size_x * size];
         view.for_each(|pos| tracked[(pos.x - origin.0) as usize * size + (pos.z - origin.1) as usize] = true);
+        for &(at, radius) in &tickets {
+            for x in at.x - radius..=at.x + radius {
+                for z in at.z - radius..=at.z + radius {
+                    tracked[(x - origin.0) as usize * size + (z - origin.1) as usize] = true;
+                }
+            }
+        }
         let dilate = |mask: &[bool], radius: i32| -> Vec<bool> {
-            let mut along_z = vec![false; size * size];
-            for x in 0..size {
+            let mut along_z = vec![false; size_x * size];
+            for x in 0..size_x {
                 for z in 0..size {
                     let lo = (z as i32 - radius).max(0) as usize;
                     let hi = (z as i32 + radius).min(size as i32 - 1) as usize;
                     along_z[x * size + z] = (lo..=hi).any(|k| mask[x * size + k]);
                 }
             }
-            let mut out = vec![false; size * size];
-            for x in 0..size {
+            let mut out = vec![false; size_x * size];
+            for x in 0..size_x {
                 let lo = (x as i32 - radius).max(0) as usize;
-                let hi = (x as i32 + radius).min(size as i32 - 1) as usize;
+                let hi = (x as i32 + radius).min(size_x as i32 - 1) as usize;
                 for z in 0..size {
                     out[x * size + z] = (lo..=hi).any(|k| along_z[k * size + z]);
                 }
@@ -714,7 +763,7 @@ impl ChunkMap {
         let features = dilate(&tracked, 2);
         let terrain = dilate(&tracked, 3);
         let mut wanted: Vec<(ChunkPos, Need)> = Vec::new();
-        for x in 0..size {
+        for x in 0..size_x {
             for z in 0..size {
                 let i = x * size + z;
                 if terrain[i] {
@@ -731,7 +780,7 @@ impl ChunkMap {
         let dropped: Vec<ChunkPos> = world
             .slots
             .iter()
-            .filter(|&(&pos, slot)| !matches!(slot, Slot::Out { .. }) && center.chebyshev(pos) > keep)
+            .filter(|&(&pos, slot)| !matches!(slot, Slot::Out { .. }) && center.chebyshev(pos) > keep && !ticketed(&tickets, pos, 5))
             .map(|(&pos, _)| pos)
             .collect();
         let dropped: Vec<(ChunkPos, Slot)> = dropped.into_iter().filter_map(|pos| world.slots.remove(&pos).map(|slot| (pos, slot))).collect();
@@ -927,6 +976,13 @@ impl ChunkMap {
         let Some(view) = self.view else { return true };
         let mut all = true;
         view.for_each(|pos| all &= self.chunks.contains_key(&pos));
+        for &(at, radius) in &self.tracked_tickets {
+            for x in at.x - radius..=at.x + radius {
+                for z in at.z - radius..=at.z + radius {
+                    all &= self.chunks.contains_key(&ChunkPos::new(x, z));
+                }
+            }
+        }
         all && self.pending_send.is_empty()
     }
 }

@@ -41,6 +41,8 @@ pub use plugin::RenderAnimPlugin;
 mod minecraft_camera;
 mod minecraft_chat;
 mod minecraft_creative;
+mod minecraft_end;
+pub mod minecraft_end_look;
 mod minecraft_gui;
 mod minecraft_hand;
 mod minecraft_inventory;
