@@ -314,6 +314,18 @@ mod tests {
     }
 
     #[test]
+    fn water_evaporates_once_the_nether_environment_is_sampled() {
+        let Some(registries) = registries() else { return };
+        let wastes = registries.biomes.id("minecraft:nether_wastes").unwrap().0;
+        let plains = registries.biomes.id("minecraft:plains").unwrap().0;
+        for (dimension, biome, evaporates) in [("minecraft:overworld", plains, false), ("minecraft:the_nether", wastes, true), ("minecraft:the_end", plains, false)] {
+            let mut env = DimensionEnvironment::load(&registries, dimension).unwrap();
+            env.tick(0, 0.0, 0.0, [0.5, 70.0, 0.5], |_, _, _| biome, true);
+            assert_eq!(env.water_evaporates(), evaporates, "{dimension}");
+        }
+    }
+
+    #[test]
     fn a_dimension_value_ignores_the_biomes() {
         let dimension = serde_json::json!({"minecraft:gameplay/fast_lava": true, "minecraft:visual/fog_start_distance": 10.0});
         let biome = serde_json::json!({"minecraft:gameplay/water_evaporates": true, "minecraft:visual/fog_start_distance": 2.0});

@@ -5802,6 +5802,33 @@ mod tests {
     }
 
     #[test]
+    fn in_the_nether_mined_ice_leaves_no_water_and_a_wet_sponge_dries() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        for (dimension_type, melted, sponge) in [("minecraft:overworld", Some("minecraft:water"), "minecraft:wet_sponge"), ("minecraft:the_nether", None, "minecraft:sponge")] {
+            let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+            let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+            let mut server = ServerSim::new(worldgen.clone(), states, dimension_type);
+            for x in -1..=1 {
+                for z in -1..=1 {
+                    server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+                }
+            }
+            for x in 8..=10 {
+                server.player_edit_block((x, 199, 8), Some(&Block::new("minecraft:stone")), PlayerEdit::Place);
+            }
+            server.player_edit_block((8, 200, 8), Some(&Block::new("minecraft:ice")), PlayerEdit::Place);
+            let changes = mined_to(&mut server, &[((8, 200, 8), HowBroken::Mined)]);
+            assert_eq!(changes.get(&(8, 200, 8)), Some(&melted.map(str::to_owned)), "{dimension_type}: mined ice on stone");
+            server.player_edit_block((10, 200, 8), Some(&Block::new("minecraft:wet_sponge")), PlayerEdit::Place);
+            let placed = server.level.block(minecraftoss_core::BlockPos::new(10, 200, 8));
+            assert_eq!(registries.blocks.block(registries.blocks.block_of(placed)).name.as_str(), sponge, "{dimension_type}: a placed wet sponge");
+        }
+    }
+
+    #[test]
     fn a_blast_hurts_mobs_and_players_breaks_blocks_and_may_start_fires() {
         let Ok(paths) = DataPaths::discover() else { return };
         let Ok(registries) = Registries::load(&paths) else { return };

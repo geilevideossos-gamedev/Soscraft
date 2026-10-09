@@ -564,3 +564,26 @@ IW4L_MINECRAFT_KIT=minecraft:blaze_spawn_egg*4,minecraft:diamond_sword,minecraft
 ```
 IW4L_MINECRAFT_KIT=minecraft:ghast_spawn_egg*4,minecraft:blaze_spawn_egg*4,minecraft:diamond_sword,minecraft:shield,minecraft:diamond_chestplate,minecraft:golden_apple*4,minecraft:cooked_beef*16,minecraft:cobblestone*64,minecraft:water_bucket
 ```
+
+## Group N5: Nether rules
+
+E2-13 to E2-16, then E2-30, and a check that water evaporates in the Nether.
+
+### 24. Minecraft water evaporates in the Nether
+
+Previous commit: 9d787dbd
+
+- **Changed:** tests only; nothing had to be fixed. The brief found `water_evaporates` already wired: the client's bucket reads the player's level's environment (`minecraft_world.rs`, `bucket::Catalog`), and the server level reads its own dimension's `gameplay/water_evaporates` for mined ice (`ice.rs`) and dispensers; a placed wet sponge dries where the level is the Nether (`plants.rs`, `WetSpongeBlock.onPlace`). Since N1 every level carries its own dimension, so these now run in a real Nether level.
+- **Tests:** `server`: `in_the_nether_mined_ice_leaves_no_water_and_a_wet_sponge_dries` (an overworld level and a Nether level side by side: ice mined on stone turns to water in the overworld and to air in the Nether; a placed wet sponge stays wet in the overworld and turns into a dry sponge in the Nether). `environment`: `water_evaporates_once_the_nether_environment_is_sampled` (the Nether's sampled environment says water evaporates, the overworld's and the End's do not). The older `bucket::water_evaporates_where_the_dimension_says_so_but_lava_does_not` covers the bucket's hiss.
+- **Decisions:** none.
+- **Known gaps:** the bucket's 8 large smoke puffs (`BucketItem.emptyContents`) are not drawn, only the hiss plays.
+- **Test steps** (in the Nether: through a portal, or `IW4L_MINECRAFT_DIMENSION=the_nether`):
+  1. Pour the water bucket on netherrack: it hisses and no water appears; the bucket is empty. **Screenshot 27.**
+  2. Place ice on netherrack and mine it without silk touch: it leaves nothing. The ice block drops nothing either, as in vanilla.
+  3. Place a wet sponge: it turns into a dry sponge at once.
+  4. In the overworld the same ice leaves water and the wet sponge stays wet.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:water_bucket,minecraft:ice*4,minecraft:wet_sponge*2,minecraft:netherrack*16,minecraft:diamond_pickaxe
+```
