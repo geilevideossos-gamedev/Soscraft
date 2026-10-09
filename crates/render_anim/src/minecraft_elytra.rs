@@ -52,10 +52,17 @@ pub(crate) fn step(
 fn flight(ps: &PlayerState, may: bool) -> Flight {
     let per_tick = f64::from(sim::voxel::BLOCK) * 20.0;
     let [x, y, z] = ps.velocity.map(f64::from);
+    let gliding = may && ps.pm_flags & MC_GLIDING != 0;
     Flight {
-        gliding: may && ps.pm_flags & MC_GLIDING != 0,
+        gliding,
         motion: [x / per_tick, z / per_tick, -y / per_tick],
+        against_wall: gliding && against_wall(ps),
     }
+}
+
+fn against_wall(ps: &PlayerState) -> bool {
+    let (mins, maxs) = sim::voxel::player_hull(ps);
+    sim::voxel::touches_wall(ps.origin, mins, maxs)
 }
 
 pub(crate) fn launch_rocket(

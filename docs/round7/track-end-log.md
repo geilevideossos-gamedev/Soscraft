@@ -556,3 +556,29 @@ Written with entry 18, in its commit.
 ```
 IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:elytra+damage=420,minecraft:elytra+unbreaking=3,minecraft:diamond_chestplate,minecraft:water_bucket,minecraft:cobblestone*64,minecraft:ladder*16,minecraft:golden_apple*8,minecraft:firework_rocket*128
 ```
+
+## Review of the second run (eye-throw and elytra)
+
+### 19. Minecraft elytra hurt only when they hit a wall
+
+Previous commit: 4bd081e8
+
+- **Defect:** `Elytra::step` hurt the glider whenever the horizontal speed fell by more than 0.3 blocks between two samples. Vanilla's `LivingEntity.handleFallFlyingCollisions` first checks `horizontalCollision` (javap 26.3: `getfield horizontalCollision`, `ifeq` to the return), and entry 16 left that out. So a glider took "kinetic energy" damage where vanilla gives none: flying into a cobweb at speed (the web zeroes the motion, 1.5 blocks per tick cost 12 health), an explosion or other push against the flight, and a long frame while pulling up hard after a dive.
+- **Changed:**
+  - `sim/src/voxel.rs`: `touches_wall(origin, mins, maxs)`: the player's hull, widened by 0.05 blocks on its four sides, with its top lowered and its bottom raised by the same, overlaps a block. That reaches past the 0.125-unit gap that MW2 traces keep from a wall and leaves the floor and the ceiling out.
+  - `minecraft_survival/src/elytra.rs`: `Flight.against_wall`; the wall damage counts only while it is set.
+  - `render_anim/src/minecraft_elytra.rs`: sets `against_wall` while gliding, from the authority's player hull and origin.
+- **Tests:**
+  - `sim` `voxel`: `a_body_against_a_wall_touches_it_but_not_the_floor_below_or_open_air`.
+  - `elytra`: `speed_lost_away_from_a_wall_does_not_hurt` (a web-like stop without a wall: no damage; the same stop against a wall: 12).
+  - `flying_into_a_wall_hurts_by_the_speed_lost_like_vanilla` now flies against a wall.
+- **Decision:** vanilla knows the collision of the tick's move; here the host samples the server's player state once a frame, so a wall touched in that sample stands in for it. A glider that hits a wall and lands in the same tick still takes no wall damage (the glide has ended by then), as before this entry.
+- **Test steps:**
+  1. Keep `IW4L_MINECRAFT_WORLD=elytratest` (or a new world) and the kit below, elytra in the chest armour slot.
+  2. Hang a few cobwebs in the air: stand on a 3-block pillar of cobblestone and place them on its side, then break the pillar. `/tp` 30 blocks away and 15 up, glide, dive to pick up speed and fly into the webs: you stop in the web without damage and without the fall sound. **Screenshot 1** of the full health bar while in the web.
+  3. Repeat entry 16's step 6 (dive into a cobblestone wall): you still take damage with the fall sound. **Screenshot 2.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:cobweb*16,minecraft:cobblestone*64,minecraft:golden_apple*8
+```

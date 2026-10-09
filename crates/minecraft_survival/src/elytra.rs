@@ -17,6 +17,7 @@ const WALL_GRACE: f64 = 3.0;
 pub struct Flight {
     pub gliding: bool,
     pub motion: [f64; 3],
+    pub against_wall: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -73,7 +74,10 @@ impl Elytra {
         let mut glided = Glided::default();
         let speed = flight.motion[0].hypot(flight.motion[2]);
         if flight.gliding {
-            glided.wall_damage = self.last_speed.and_then(|old| wall_damage(old, speed));
+            glided.wall_damage = self
+                .last_speed
+                .filter(|_| flight.against_wall)
+                .and_then(|old| wall_damage(old, speed));
             self.last_speed = Some(speed);
         } else {
             self.last_speed = None;
@@ -135,6 +139,7 @@ mod tests {
     const GLIDING: Flight = Flight {
         gliding: true,
         motion: [1.0, -0.2, 0.0],
+        against_wall: false,
     };
 
     #[test]
@@ -206,6 +211,7 @@ mod tests {
         let fast = Flight {
             gliding: true,
             motion: [1.2, -0.3, 0.9],
+            against_wall: true,
         };
         assert_eq!(
             elytra.step(fast, 0.01, &mut inventory, true).wall_damage,
@@ -214,6 +220,7 @@ mod tests {
         let stopped = Flight {
             gliding: true,
             motion: [0.0, -0.3, 0.9],
+            against_wall: true,
         };
         let hit = elytra.step(stopped, 0.01, &mut inventory, true).wall_damage;
         assert!((hit.unwrap() - 3.0).abs() < 1e-5, "{hit:?}");
@@ -222,6 +229,7 @@ mod tests {
         let landed = Flight {
             gliding: false,
             motion: [0.0; 3],
+            against_wall: true,
         };
         assert_eq!(
             lander.step(landed, 0.01, &mut inventory, true).wall_damage,
@@ -230,10 +238,38 @@ mod tests {
     }
 
     #[test]
+    fn speed_lost_away_from_a_wall_does_not_hurt() {
+        let mut inventory = wearing(None);
+        let mut elytra = Elytra::default();
+        let fast = Flight {
+            gliding: true,
+            motion: [1.5, -0.3, 0.0],
+            against_wall: false,
+        };
+        elytra.step(fast, 0.05, &mut inventory, true);
+        let webbed = Flight {
+            motion: [0.0; 3],
+            ..fast
+        };
+        assert_eq!(
+            elytra.step(webbed, 0.05, &mut inventory, true).wall_damage,
+            None
+        );
+        elytra.step(fast, 0.05, &mut inventory, true);
+        let walled = Flight {
+            against_wall: true,
+            ..webbed
+        };
+        let hit = elytra.step(walled, 0.05, &mut inventory, true).wall_damage;
+        assert!((hit.unwrap() - 12.0).abs() < 1e-5, "{hit:?}");
+    }
+
+    #[test]
     fn a_slow_glide_counts_at_most_one_block_of_fall() {
         let slow = Flight {
             gliding: true,
             motion: [1.0, -0.4, 0.0],
+            against_wall: false,
         };
         assert_eq!(fall_peak(Some(100.0), 60.0, slow), Some(61.0));
         assert_eq!(fall_peak(Some(60.5), 60.0, slow), Some(60.5));
@@ -241,11 +277,13 @@ mod tests {
         let dive = Flight {
             gliding: true,
             motion: [1.0, -0.6, 0.0],
+            against_wall: false,
         };
         assert_eq!(fall_peak(Some(100.0), 60.0, dive), Some(100.0));
         let falling = Flight {
             gliding: false,
             motion: [0.0, -0.1, 0.0],
+            against_wall: false,
         };
         assert_eq!(fall_peak(Some(100.0), 60.0, falling), Some(100.0));
     }
