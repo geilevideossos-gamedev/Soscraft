@@ -39,6 +39,7 @@ pub struct Player {
     pub respawning: Option<Dimension>,
     pub remote: bool,
     pub held: Option<Switch>,
+    pub portal: crate::portal::Portal,
 }
 
 #[derive(Default)]
@@ -99,6 +100,7 @@ impl Player {
             respawning: None,
             remote: false,
             held: None,
+            portal: crate::portal::Portal::default(),
         }
     }
 

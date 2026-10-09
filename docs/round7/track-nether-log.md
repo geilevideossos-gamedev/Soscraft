@@ -109,3 +109,24 @@ IW4L_MINECRAFT_KIT=minecraft:tnt*4,minecraft:flint_and_steel
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:netherrack*64,minecraft:lava_bucket,minecraft:tnt*4,minecraft:flint_and_steel
 ```
+
+## Group N2: portal travel
+
+E2-6 to E2-11.
+
+### 6. Minecraft players wait in nether portals like vanilla (E2-6)
+
+Previous commit: 6a3ceba
+
+- **Changed:**
+  - New `minecraft_survival/src/portal.rs` (owned by this track; the End track fills only the End arm):
+    - `PortalKind { Nether, End, Gateway }` with `transition_time(invulnerable, rules)`: `NetherPortalBlock.getPortalTransitionTime` (checked with javap) is the game rule `players_nether_portal_creative_delay` (0) for an invulnerable player and `players_nether_portal_default_delay` (80) otherwise, never below 0. End portals and gateways use `Portal`'s default 0 until the End track fills their arm.
+    - `PortalProcess { kind, entry, time, inside }` and `Portal::set_inside` / `Portal::tick`, vanilla's `Entity.setAsInsidePortal` and `Entity.handlePortal` with `PortalProcessor` (javap): on cooldown, touching a portal only resets the cooldown to `DIMENSION_CHANGING_DELAY` (10, `Player.getDimensionChangingDelay`); otherwise it starts the process or flags it inside this tick, moving its entry only on a tick that starts outside. Each tick the cooldown drops by one; inside, `portalTime++ >= transitionTime` triggers (so 81 ticks in survival, the first tick in creative) and sets the cooldown to 10; outside, the time drops by 4 and the process is dropped at 0.
+    - `touched_portal(feet, axis_at)`: the player's 0.6 x 1.8 box, deflated by 1e-5 as `Entity.checkInsideBlocks`, against the portal block's shape (6/16 to 10/16 across its axis, `NetherPortalBlock.SHAPES`). `portal_axis_in(terrain, pos)` reads the `axis` of a `minecraft:nether_portal` in the level's scene.
+    - `step(player, terrain, rules, feet, seconds)`: the player's own 20 Hz clock (`Portal.clock`), so it never depends on the mob tick; a dead player, one in a remote killstreak (the passenger analogue of `canUsePortal`) or one with no body neither touches nor counts.
+  - `minecraft_survival/src/player.rs`: one field, `Player.portal` (the cooldown was already `Player.portal_cooldown`, saved as `PortalCooldown`).
+  - New `render_anim/src/minecraft_portal.rs` and one call line in `minecraft_world.rs` after the commands: each frame the local player's portal steps with the presented feet. While the player is switching the frame returns before it, so the cooldown and the timer freeze behind the loading screen, as vanilla's `ServerPlayer.processPortalCooldown` skips while `isChangingDimension`. For now a finished wait is only logged (`Minecraft player stood long enough in the Nether portal at ...`); travel comes with entry 10.
+- **Tests:** `portal`: `a_survival_player_travels_after_eighty_ticks_and_a_creative_one_at_once` (81 ticks, 1 tick, a game rule of 20 gives 21), `stepping_out_takes_four_ticks_off_a_tick_and_forgets_the_portal_at_zero` (41 inside, 5 outside leaves 21, the rest counts), `the_cooldown_is_refreshed_inside_and_blocks_travel_until_it_runs_out` (300 ticks in the arrival portal start nothing, then 10 ticks outside), `a_player_who_cannot_use_portals_waits_without_counting`, `the_entry_moves_only_on_a_tick_that_starts_outside_and_another_kind_starts_afresh`, `a_player_touches_a_portal_only_through_its_thin_middle`, `the_clock_hands_out_whole_ticks`.
+- **Decisions:** the process runs on the player (by UUID) and ticks on its own clock in the adapter's frame, not inside a level's mob tick, so a level that is not ticking (the player is held behind the loading screen) never advances it.
+- **Test steps:** nothing visible yet; travel and the overlay come with entries 10 and 11, whose steps cover this entry.
+- **Kit:** none.
