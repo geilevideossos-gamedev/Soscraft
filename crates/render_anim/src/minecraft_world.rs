@@ -64,6 +64,7 @@ pub struct MinecraftWorldView {
     pub entity_meshes: [(Vec<u8>, Vec<u32>); 4],
     /// The black card behind the inventory's character, in blocks.
     pub backdrop: Option<[[f32; 3]; 4]>,
+    pub puppet_gear: (Vec<u8>, Vec<u32>),
     /// The first-person hand or held item: section vertex bytes in view
     /// space (x right, y up, z back) and indices, with the projection that
     /// draws them (vanilla's fixed 70 degree hand field of view).
@@ -2389,6 +2390,7 @@ fn draw_body_gear(
     gear: Res<crate::anim::minecraft_gear::McBodyGear>,
     puppet: Res<frame::InventoryPuppet>,
 ) {
+    view.puppet_gear = Default::default();
     let Runtime { world: Some(world), light: Some(light), gear_items, .. } = &mut *runtime else {
         return;
     };
@@ -2397,6 +2399,7 @@ fn draw_body_gear(
     let base = (bytes.len() / std::mem::size_of::<minecraft_terrain::mesh::SectionVertex>()) as u32;
     bytes.extend_from_slice(bytemuck::cast_slice(&minecraft_terrain::mesh::section_vertices(&meshes.world)));
     indices.extend(meshes.world.indices.iter().map(|i| i + base));
+    view.puppet_gear = (bytemuck::cast_slice(&minecraft_terrain::mesh::section_vertices(&meshes.puppet)).to_vec(), meshes.puppet.indices);
 }
 
 fn save_before_exit(mut exit: MessageReader<AppExit>, mut runtime: NonSendMut<Runtime>) {
@@ -2479,6 +2482,7 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
         view.glint_texture = None;
         view.armor_glint_texture = None;
         view.particles = Default::default();
+        view.puppet_gear = Default::default();
         view.entity_meshes = Default::default();
         view.hand = Default::default();
         view.cracks = Default::default();

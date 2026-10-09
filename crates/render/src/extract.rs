@@ -998,6 +998,7 @@ pub fn extract_minecraft_world(
     frame.cracks = std::mem::take(&mut view.cracks);
     frame.entity_meshes = std::mem::take(&mut view.entity_meshes);
     frame.backdrop = view.backdrop;
+    frame.puppet_gear = std::mem::take(&mut view.puppet_gear);
     frame.hand = std::mem::take(&mut view.hand);
     if throwing {
         frame.hand = Default::default();

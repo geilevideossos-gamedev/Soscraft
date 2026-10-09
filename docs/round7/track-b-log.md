@@ -960,7 +960,7 @@ IW4L_MINECRAFT_KIT=cobblestone*64,torch*64,diamond_sword+sharpness=5,lever*8,tri
 
 ### 3. Enchanted Minecraft armour on the MW2 body shimmers with the vanilla armour glint
 
-Commit: (next entry)
+Commit: d3aa887
 
 - **Changed:** After the split item 20. `minecraft_world.rs`: `Loaded.armor_glint_texture` (`minecraft_terrain::glint::armor_glint_texture`, `misc/enchanted_glint_armor` from the packs, loaded with the item glint) and `MinecraftWorldView.armor_glint_texture`, set when the world opens and cleared when it stops. `render/src/extract.rs` `extract_minecraft_world` converts it once per world (its own `Local`, as the item glint) into `MinecraftWorldFrame.armor_glint_texture`, which the Minecraft world pass already uploads and binds at binding 7 (body group entry 7). `docs/MINECRAFT-SURVIVAL.md`: worn armour now shimmers.
 - **Tests:** none new: `the_armour_glint_comes_from_its_own_texture` (glint), `the_glint_flags_the_meshes_write_pick_the_item_and_armour_glints` (render_gpu) and `an_enchanted_piece_shimmers_on_its_first_layer_only` (armor_render) cover the parts; the extract is the item glint's code with the other image.
@@ -972,4 +972,20 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=diamond_helmet+protection=4,iron_chestplate+protection=4,iron_leggings,iron_boots,leather_chestplate+unbreaking=3,diamond_sword+sharpness=5
+```
+
+### 4. The inventory's character wears its Minecraft armour and holds its items
+
+Commit: (next entry)
+
+- **Changed:** After the split item 21. `minecraft_world.rs`: `MinecraftWorldView.puppet_gear` (section vertex bytes and indices), which `draw_body_gear` fills every frame with `gear_meshes`' puppet part (empty while the inventory is shut or no world is open) and `stop` clears. `render/src/extract.rs` moves it into `MinecraftWorldFrame.puppet_gear`, which the Minecraft world pass draws in the view model's depth band right after the character box's black card (body group entry 8), so the character's MW2 body and its gear hide each other and no wall comes between.
+- **Tests:** none new: the routing of the character's gear is `only_bodies_with_gear_get_a_rig_and_the_puppet_is_kept_apart`, and its frames follow the character's posed bones (with the box's place, turn and scale) as the world body's do; the draw needs a GPU.
+- **Test steps** (survival mode):
+  1. Wear the enchanted diamond helmet, the iron chestplate, the red leather leggings and the iron boots, select the cobblestone and put the torch in the offhand (F). Open the inventory (E): the character in the box wears the same armour and holds the cobblestone in its right hand and the torch in its left; the helmet shimmers. Move the mouse over the box: the gear turns with the character. Screenshot 1.
+  2. Take the helmet off in the inventory: it leaves the character's head at once. Put it back. Screenshot 2.
+  3. Close the inventory and press F5: the gear is back on the body in the world, with nothing left floating in front of the camera. Screenshot 3.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=diamond_helmet+protection=4,iron_chestplate,leather_leggings@red,iron_boots,cobblestone*64,torch*64
 ```
