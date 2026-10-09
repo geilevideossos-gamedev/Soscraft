@@ -397,7 +397,7 @@ Commit: 2ea7273
 
 ### 14. Minecraft worlds saved by iw4l open in vanilla 26.3
 
-Commit: (filled in by the next entry)
+Commit: 24d08a5
 
 - **Changed:**
   - New end-to-end test `crates/minecraft_survival/tests/vanilla_world.rs`, on the real 26.3 data under `MINECRAFTOSS_ROOT` (it does nothing when the data is missing, like the other real-data tests). It goes through the same calls as the game:
@@ -430,3 +430,17 @@ Commit: (filled in by the next entry)
 ```
 IW4L_MINECRAFT_KIT=minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:shield,minecraft:diamond_sword+sharpness=5,minecraft:diamond_pickaxe+efficiency=5,minecraft:golden_apple*4,minecraft:experience_bottle*64,minecraft:chest*2,minecraft:barrel,minecraft:red_shulker_box,minecraft:ender_chest,minecraft:furnace,minecraft:brewing_stand,minecraft:campfire,minecraft:coal*16,minecraft:raw_iron*32,minecraft:beef*4,minecraft:blaze_powder*2,minecraft:nether_wart*4,minecraft:glass_bottle*3,minecraft:water_bucket,minecraft:cobblestone*64,minecraft:enchanted_book+mending,minecraft:diamond*8,minecraft:bread*16
 ```
+
+## Group: review
+
+Defects found by the adversarial review of the whole track (base 6315039) and fixed one per commit.
+
+### 15. The Minecraft player file code passes rustfmt
+
+Commit: (filled in by the next entry)
+
+- **Defect:** `crates/minecraft_survival/src/player_nbt.rs` is a new file of this track, so its staged content must pass `rustfmt --check --edition 2024`. One assertion added by 2ea7273 in `the_portal_cooldown_and_seen_credits_are_an_int_and_a_byte_like_vanilla` was over the line width.
+- **Changed:** that assertion is wrapped the way rustfmt wraps it. No behaviour change.
+- **Tests:** none new; the `player_nbt` tests pass unchanged.
+- **Test steps:** none.
+- **Kit:** none.

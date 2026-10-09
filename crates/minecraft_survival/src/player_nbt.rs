@@ -1285,7 +1285,10 @@ mod tests {
         assert_eq!(unseen.get("PortalCooldown"), Some(&Tag::Int(0)));
         assert_eq!(unseen.get("seenCredits"), Some(&Tag::Byte(0)));
         let missing = PlayerData::read(&compound(Vec::new()), &RecipeBook::default());
-        assert_eq!((missing.portal_cooldown, missing.seen_credits), (None, None));
+        assert_eq!(
+            (missing.portal_cooldown, missing.seen_credits),
+            (None, None)
+        );
         let kept = PlayerData::default().merged(Some(unseen));
         assert_eq!(kept.get("PortalCooldown"), Some(&Tag::Int(0)));
         assert_eq!(kept.get("seenCredits"), Some(&Tag::Byte(0)));
