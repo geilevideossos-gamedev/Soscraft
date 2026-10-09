@@ -35,6 +35,7 @@ pub enum ArgKind {
     Vec3,
     Resource(Registry),
     Nbt,
+    ItemPredicate,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,6 +43,13 @@ pub struct ItemArg {
     pub id: String,
     pub enchantments: Vec<(String, i32)>,
     pub at: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ItemPredicate {
+    Any,
+    Item(String),
+    Tag(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -80,6 +88,7 @@ pub enum Arg {
     Vec3(Coordinates),
     Resource { id: String, at: usize },
     Nbt(String),
+    ItemPredicate { predicate: ItemPredicate, at: usize },
 }
 
 impl ArgKind {
@@ -154,6 +163,21 @@ impl ArgKind {
                 resource_id(reader).map(|id| Arg::Resource { id, at })
             }
             Self::Nbt => nbt(reader).map(Arg::Nbt),
+            Self::ItemPredicate => {
+                let at = reader.cursor;
+                let predicate = match reader.peek() {
+                    Some('*') => {
+                        reader.skip();
+                        ItemPredicate::Any
+                    }
+                    Some('#') => {
+                        reader.skip();
+                        ItemPredicate::Tag(resource_id(reader)?)
+                    }
+                    _ => ItemPredicate::Item(resource_id(reader)?),
+                };
+                Ok(Arg::ItemPredicate { predicate, at })
+            }
         }
     }
 }

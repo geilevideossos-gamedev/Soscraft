@@ -1,9 +1,11 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use minecraftoss_player::{Difficulty, GameMode};
 use minecraftoss_world::game_rules::{GameRules, Rule, Value};
 
 use crate::args::{Arg, ItemArg, Selector};
+use crate::clear::ItemFilter;
 use crate::permissions::{ALL, OWNERS, OpList};
 use crate::players::offline_uuid;
 use crate::protocol::{
@@ -53,6 +55,11 @@ pub struct CommandRegistries {
     pub enchantments: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommandData {
+    pub item_tags: BTreeMap<String, Vec<String>>,
+}
+
 pub fn registered(list: &[String], id: &str) -> bool {
     list.is_empty() || list.iter().any(|known| known == id)
 }
@@ -89,6 +96,9 @@ pub trait CommandWorld {
         position: [f64; 3],
         nbt: Option<&str>,
     ) -> Result<(), Text>;
+    fn clear(&mut self, _player: PlayerId, _filter: &ItemFilter, _max: i32) -> Option<i32> {
+        None
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,6 +117,7 @@ pub struct CommandServer {
     warnings: Vec<String>,
     random: u64,
     registries: CommandRegistries,
+    data: CommandData,
 }
 
 impl Default for CommandServer {
@@ -122,6 +133,7 @@ impl Default for CommandServer {
             warnings: Vec::new(),
             random: nanos | 1,
             registries: CommandRegistries::default(),
+            data: CommandData::default(),
         }
     }
 }
@@ -324,6 +336,14 @@ impl CommandServer {
         &mut self.registries
     }
 
+    pub fn data(&self) -> &CommandData {
+        &self.data
+    }
+
+    pub fn data_mut(&mut self) -> &mut CommandData {
+        &mut self.data
+    }
+
     pub fn feedback(
         &self,
         source: PlayerId,
@@ -482,6 +502,7 @@ pub(crate) mod tests {
         pub(crate) effects: Vec<(PlayerId, String, Option<u32>, u8)>,
         pub(crate) cleared: Vec<(PlayerId, Option<String>)>,
         pub(crate) summoned: Vec<(String, [f64; 3], Option<String>)>,
+        pub(crate) inventories: Vec<(PlayerId, minecraftoss_player::inventory::Inventory)>,
     }
 
     impl CommandWorld for FakeWorld {
@@ -606,6 +627,11 @@ pub(crate) mod tests {
                 .push((kind.to_owned(), position, nbt.map(str::to_owned)));
             Ok(())
         }
+
+        fn clear(&mut self, player: PlayerId, filter: &ItemFilter, max: i32) -> Option<i32> {
+            let (_, inventory) = self.inventories.iter_mut().find(|(id, _)| *id == player)?;
+            Some(crate::clear::clear_inventory(inventory, filter, max))
+        }
     }
 
     pub(crate) fn lang(key: &str) -> Option<String> {
@@ -685,6 +711,16 @@ pub(crate) mod tests {
             "commands.summon.invalidPosition" => "Invalid position for summon",
             "argument.nbt.expected.value" => "Expected value",
             "argument.pos3d.incomplete" => "Incomplete (expected 3 coordinates)",
+            "command.expected.separator" => {
+                "Expected whitespace to end one argument, but found trailing data"
+            }
+            "arguments.item.tag.unknown" => "Unknown item tag '%s'",
+            "clear.failed.multiple" => "No items were found on %s players",
+            "clear.failed.single" => "No items were found on player %s",
+            "commands.clear.success.multiple" => "Removed %s item(s) from %s players",
+            "commands.clear.success.single" => "Removed %s item(s) from player %s",
+            "commands.clear.test.multiple" => "Found %s matching item(s) on %s players",
+            "commands.clear.test.single" => "Found %s matching item(s) on player %s",
             _ => return None,
         };
         Some(text.to_owned())

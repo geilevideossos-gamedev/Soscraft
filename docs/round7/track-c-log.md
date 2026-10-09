@@ -109,3 +109,59 @@ The trait is unchanged, so `render_anim` compiles as it is. The glue is:
    - The grey inline text is `suggestion_suffix(current, &list[i].apply(original))`.
    - When the list is hidden or empty, show `usage` (resolved with the language), anchored at `usage_start`.
    - Colour the input with `spans`.
+
+## Minecraft /clear removes items like vanilla
+
+Commit: the commit that adds this entry (branch `track-c`, group "commands").
+
+### What changed
+
+- New `crates/minecraft_commands/src/clear.rs`, checked against 26.3 `ClearInventoryCommands`, `Inventory.clearOrCountMatchingItems` and `ContainerHelper` with javap:
+  - The tree is `/clear [<targets>] [<item>] [<maxCount>]` at level 2. `maxCount` is an integer from 0. Without it everything matching is removed (vanilla passes -1). With 0 the items are only counted.
+  - `ItemFilter` (`Any` or a list of ids) is what the world matches against.
+  - `clear_stack`, `clear_stacks` and `clear_inventory` are the vanilla loop, so the glue only calls one function. `clear_inventory` walks the 36 storage slots, the 4 armour slots and the offhand (the first 41 slots, the vanilla `Inventory` container), then the 2x2 crafting grid, then the carried stack, each with the remaining maximum.
+  - Messages follow 26.3's `CommandResponseTracker`: nothing found gives `clear.failed.single` (one target) or `clear.failed.multiple`. Otherwise the single or multiple `commands.clear.test.*` or `commands.clear.success.*` line goes to the source and is broadcast to ops. It is single when exactly one player had matching items.
+- New `crates/minecraft_commands/src/tracker.rs`: `Tracker`, the vanilla `CommandResponseTracker` (total, the only element, the only non-zero element). The commands that come next use it too.
+- `ArgKind::ItemPredicate` parses `*`, `#tag` and an item id into `Arg::ItemPredicate`. An unknown item gives `argument.item.id.invalid` and an unknown tag `arguments.item.tag.unknown`, both pointing at the argument as vanilla's context does.
+- `CommandData` is new server data next to `CommandRegistries`, reached through `CommandServer::data` and `data_mut`. It starts with `item_tags` (tag id to member ids). `CommandRegistries` is unchanged, so `render_anim` builds it as before.
+- `CommandWorld::clear(player, &ItemFilter, max) -> Option<i32>` defaults to `None`, which counts as nothing found, so `/clear` answers "No items were found on player Steve" until the glue lands.
+- Suggestions: an item predicate suggests the item ids, and `#` plus the item tags when the argument is empty or starts with `#`. `CommandHints` gains `item_tags`, filled by `from_server`.
+
+### Tests added
+
+- `clear::tests` (5):
+  - Stacks clear in order up to the maximum; a dry run counts without removing.
+  - The inventory clears storage, armour, offhand, the crafting grid and the cursor, and leaves slots 41 and 42 alone.
+  - `/clear @s minecraft:stone 0` counts, then `100`, then the rest, then the failure line, then `/clear` with no arguments.
+  - Two players: single and multiple lines, a tag, an unknown tag with its context line, an unknown player, and level 0.
+  - Unknown item ids against the registry, trailing component syntax, and a world without inventories.
+- `tracker::tests` (1): single and counts follow the vanilla tracker.
+- `suggest::tests::item_predicates_suggest_items_and_hash_tags`, plus `item_tags` in the hints test.
+
+### In-game test steps
+
+`/clear` reaches the inventory only once the glue is in (see "After the split"). Until then every `/clear` answers "No items were found on player Steve", which is the first check.
+
+```
+IW4L_MINECRAFT_KIT=stone*64,stone*30,oak_log*10,iron_boots
+```
+
+1. `/clear @s minecraft:stone 0`: "Found 94 matching item(s) on player Steve". Nothing disappears. Screenshot.
+2. `/clear @s stone 70`: "Removed 70 item(s) from player Steve", and 24 stone are left.
+3. `/clear @s #minecraft:logs`: "Removed 10 item(s) from player Steve".
+4. `/clear`: "Removed 25 item(s) from player Steve" (the 24 stone and the boots). A second `/clear` answers in red "No items were found on player Steve". Screenshot.
+5. `/clear @s #minecraft:nope`: red "Unknown item tag 'minecraft:nope'" and the context line.
+
+Kit: `minecraft:stone` 64 and 30, `minecraft:oak_log` 10, `minecraft:iron_boots` 1.
+
+### Decisions
+
+- **Component predicates are not parsed.** Vanilla accepts `stone[count=1]` and `*[damage~...]`; here the `[` is trailing data and gives "Expected whitespace to end one argument". Nothing in the fork's items needs component tests yet.
+- **No `*` suggestion.** Vanilla's packrat grammar suggests ids and tags; `*` is typed by hand.
+- **The error cursor of an unknown item or tag is the start of the argument** (the `#` for a tag), where vanilla's `ResourceLookupRule` stores the error.
+- **A target the world cannot clear counts as 0**, so the vanilla failure line shows instead of an invented message.
+
+### After the split
+
+1. **`CommandWorld::clear`** in the glue: find the player's `Inventory` (the host's is `entities.inventory`) and return `Some(minecraft_commands::clear_inventory(inventory, filter, max))`. When anything was removed, mark the inventory changed so the client and the save see it. In multiplayer each player's inventory is keyed by its `PlayerId` and UUID.
+2. **Item tags**: fill `server.data_mut().item_tags` once at load from the 26.3 jar, `data/minecraft/tags/item/**.json`, resolving nested `#` references (the same walk as `minecraftoss_core::tags::Tags::load`, but keeping ids). Keys are `minecraft:<path>` without the `#`.

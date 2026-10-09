@@ -1,4 +1,5 @@
 pub mod args;
+pub mod clear;
 pub mod commands;
 pub mod permissions;
 pub mod players;
@@ -7,9 +8,11 @@ pub mod reader;
 pub mod server;
 pub mod suggest;
 pub mod text;
+pub mod tracker;
 pub mod tree;
 
 pub use args::ItemArg;
+pub use clear::{ItemFilter, clear_inventory};
 pub use commands::{difficulty_id, difficulty_name};
 pub use players::offline_uuid;
 pub use protocol::{
@@ -17,7 +20,7 @@ pub use protocol::{
 };
 pub use reader::CommandError;
 pub use server::{
-    Clock, CommandRegistries, CommandServer, CommandWorld, Pose, Weather, error_line,
+    Clock, CommandData, CommandRegistries, CommandServer, CommandWorld, Pose, Weather, error_line,
 };
 pub use suggest::{CommandHints, Completion, Suggestion, complete};
 pub use text::{Content, Resolved, Text};

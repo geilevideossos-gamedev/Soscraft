@@ -32,6 +32,8 @@ pub struct CommandHints {
     pub effects: Vec<String>,
     pub enchantments: Vec<String>,
     pub hit: Option<[f64; 3]>,
+    #[serde(default)]
+    pub item_tags: Vec<String>,
 }
 
 impl CommandHints {
@@ -44,6 +46,7 @@ impl CommandHints {
             effects: registries.effects.clone(),
             enchantments: registries.enchantments.clone(),
             hit: None,
+            item_tags: server.data().item_tags.keys().cloned().collect(),
         }
     }
 
@@ -231,15 +234,20 @@ impl<'a> Found<'a> {
     ) {
         let typed = self.typed(start).to_lowercase();
         for id in ids {
-            let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
-            let full = format!("{namespace}:{path}");
-            let hit = if typed.contains(':') {
-                matches_sub_str(&typed, &full)
-            } else {
-                matches_sub_str(&typed, namespace) || matches_sub_str(&typed, path)
-            };
-            if hit {
+            if let Some(full) = resource_match(&typed, id) {
                 self.add(start, format!("{full}{suffix}"));
+            }
+        }
+    }
+
+    fn tags<'s>(&mut self, start: usize, ids: impl IntoIterator<Item = &'s str>) {
+        let typed = self.typed(start).to_lowercase();
+        let Some(rest) = typed.strip_prefix('#') else {
+            return;
+        };
+        for id in ids {
+            if let Some(full) = resource_match(rest, id) {
+                self.add(start, format!("#{full}"));
             }
         }
     }
@@ -247,6 +255,17 @@ impl<'a> Found<'a> {
     fn finish(self) -> Vec<Suggestion> {
         client_order(merge(self.input, self.list), self.input)
     }
+}
+
+fn resource_match(typed: &str, id: &str) -> Option<String> {
+    let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
+    let full = format!("{namespace}:{path}");
+    let hit = if typed.contains(':') {
+        matches_sub_str(typed, &full)
+    } else {
+        matches_sub_str(typed, namespace) || matches_sub_str(typed, path)
+    };
+    hit.then_some(full)
 }
 
 fn merge(input: &str, found: Vec<Suggestion>) -> Vec<Suggestion> {
@@ -330,6 +349,7 @@ fn suggest_argument(
         ArgKind::Resource(registry) => {
             found.resources(start, hints.ids(registry).iter().map(String::as_str), "")
         }
+        ArgKind::ItemPredicate => item_predicate(start, hints, found),
         ArgKind::Greedy | ArgKind::Int { .. } | ArgKind::Nbt => {}
     }
 }
@@ -396,6 +416,21 @@ fn item(start: usize, hints: &CommandHints, found: &mut Found) {
         Some('+') => kit_enchantments(after, hints, found),
         Some(_) => {}
     }
+}
+
+fn item_predicate(start: usize, hints: &CommandHints, found: &mut Found) {
+    let typed = found.typed(start);
+    let tags = hints.item_tags.iter().map(String::as_str);
+    if typed.starts_with('#') {
+        found.tags(start, tags);
+        return;
+    }
+    if typed.is_empty() {
+        for tag in tags {
+            found.add(start, format!("#{tag}"));
+        }
+    }
+    found.resources(start, hints.items.iter().map(String::as_str), "");
 }
 
 fn components(mut at: usize, found: &mut Found) {
@@ -605,6 +640,7 @@ mod tests {
             effects: owned(&["minecraft:regeneration", "minecraft:speed"]),
             enchantments: owned(&["minecraft:efficiency", "minecraft:sharpness"]),
             hit: None,
+            item_tags: owned(&["minecraft:logs", "minecraft:planks"]),
         }
     }
 
@@ -649,6 +685,7 @@ mod tests {
         assert_eq!(
             texts(&at_end("/", OWNERS)),
             vec![
+                "clear",
                 "deop",
                 "difficulty",
                 "effect",
@@ -749,6 +786,25 @@ mod tests {
         );
         assert!(at_end("/give @s diamond_sword[]", OWNERS).list.is_empty());
         assert!(at_end("/give @s notanitem[", OWNERS).list.is_empty());
+    }
+
+    #[test]
+    fn item_predicates_suggest_items_and_hash_tags() {
+        let empty = at_end("/clear @s ", OWNERS);
+        assert_eq!(texts(&empty)[0], "#minecraft:logs");
+        assert!(texts(&empty).contains(&"minecraft:stone"));
+        let tag = at_end("/clear @s #lo", OWNERS);
+        assert_eq!(texts(&tag), vec!["#minecraft:logs"]);
+        assert_eq!(tag.list[0].range, 10..13);
+        assert_eq!(
+            texts(&at_end("/clear @s #minecraft:p", OWNERS)),
+            vec!["#minecraft:planks"]
+        );
+        assert_eq!(
+            texts(&at_end("/clear @s sto", OWNERS)),
+            vec!["minecraft:stone"]
+        );
+        assert!(at_end("/clear @s stone ", OWNERS).list.is_empty());
     }
 
     #[test]
@@ -1021,6 +1077,13 @@ mod tests {
             owned(&["minecraft:sharpness"]).as_slice()
         );
         assert_eq!(hints.hit, None);
+        assert!(hints.item_tags.is_empty());
+        server
+            .data_mut()
+            .item_tags
+            .insert("minecraft:logs".into(), owned(&["minecraft:oak_log"]));
+        let hints = CommandHints::from_server(&server);
+        assert_eq!(hints.item_tags, owned(&["minecraft:logs"]));
         let json = serde_json::to_string(&hints).unwrap();
         assert_eq!(serde_json::from_str::<CommandHints>(&json).unwrap(), hints);
     }

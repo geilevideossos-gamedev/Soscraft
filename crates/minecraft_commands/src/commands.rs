@@ -174,6 +174,7 @@ fn build() -> Vec<Node> {
                         .then(Node::argument("nbt", ArgKind::Nbt).executes(summon)),
                 ),
         ),
+        crate::clear::node(),
     ])
 }
 
@@ -869,6 +870,7 @@ mod tests {
         assert_eq!(
             texts(&out),
             vec![
+                "/clear [<targets>]",
                 "/deop <targets>",
                 "/difficulty [easy|hard|normal|peaceful]",
                 "/effect (clear|give)",
