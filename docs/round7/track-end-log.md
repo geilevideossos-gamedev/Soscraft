@@ -345,3 +345,255 @@ Previous commit: 849a5103
 ```
 IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*24,minecraft:ender_eye*32,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_shovel+efficiency=5,minecraft:cobblestone*64,minecraft:oak_sapling*4,minecraft:bone_meal*32,minecraft:dirt*8
 ```
+
+## Second run, group eye-throw: eyes of ender find the stronghold
+
+### 14. Minecraft eyes of ender fly toward the nearest stronghold like vanilla (E3 eye throw, B1-8)
+
+Previous commit: d49f75d2
+
+- **Changed:**
+  - New `minecraft_terrain/src/eye_of_ender.rs`:
+    - `EyeOfEnder` is vanilla's entity. `launch` puts it at the middle of the thrower's body (`getY(0.5)`) and calls `signal_to`: a target more than 12 blocks away horizontally becomes the point 12 blocks toward it and 8 up, `life` goes back to 0, and the eye will drop when `nextInt(5) > 0`. `tick` is the server half of `EyeOfEnder.tick`: the new position is the old one plus the motion, the motion is steered (`steer`, vanilla's `updateDeltaMovement`: the horizontal speed eases toward the distance by 0.0025, the vertical speed by 0.015 toward +1 or -1, both times 0.8 within a block), and the eye ends on its 81st tick.
+    - `Eyes` holds the level's eyes on the server thread. `locate` is `findNearestMapStructure(#eye_of_ender_located, blockPosition, 100)`: the tag is read from the data pack once per level, and the search is `/locate`'s own (`locate::nearest_structure`: rings by chunk centre, aiming at the ring chunk's corner at y 0). `launch` adds the eye and plays `entity.ender_eye.launch` at the thrower's feet (volume 1, pitch `lerp(r, 0.33, 0.5)`). `tick` plays `entity.ender_eye.death` where an eye ends (volume 1, pitch 1). The eye then either drops as one ender eye item (`ItemEntity(level, x, y, z, stack)`: launch `(r·0.2−0.1, 0.2, r·0.2−0.1)`, no pickup delay, the thrown stack's components kept) or records level event 2003 at its block. `snapshot` sends the eyes and the breaks.
+    - Client side: `EyeTrails` keeps the eyes of the last snapshot. Every client tick each eye leaves one portal particle half a block below and a quarter step back, with ±0.3 jitter and its motion as the particle's motion (vanilla's `spawnParticles`). A break (event 2003) gives 8 ender eye crumbs (`gaussian·0.15, r·0.2, gaussian·0.15`) and a ring of 80 portal particles 5 blocks out (motions −5 and −7 toward the centre). `append_eyes` draws the eye as a camera-facing ender eye sprite at full brightness, the size of a snowball (`ThrownItemRenderer(ctx, 1.0, true)`), hidden for its first 2 ticks within 3.5 blocks of the camera.
+  - `minecraft_terrain/src/ender_eye.rs`: `eye_use` now also does `EnderEyeItem.use`. An eye aimed at an empty frame still fills it, and an eye aimed at a filled frame passes (vanilla's PASS). Anywhere else it asks the server to throw the eye (`Change::ThrowEye(EyeThrow { feet, middle, components })`). The middle comes from the body height: 1.8, crouching 1.5, swimming 0.6.
+  - `minecraft_terrain/src/bucket.rs`: the `Change::ThrowEye` arm.
+  - `minecraft_terrain/src/server.rs`:
+    - `ServerSim.worldgen` (the level's generator, kept from `new`) and `ServerSim.eyes`.
+    - `throw_eye` searches, launches and answers whether an eye flew. `Command::ThrowEye { owner, throw }` answers through the existing `item_uses`.
+    - `tick_eyes` runs after the tridents, and `EntitySnapshot.eyes` carries the eyes.
+  - `minecraft_survival/src/entities.rs`:
+    - `Entities::throw_eye` sends the throw for this player and waits for the answer, as for an item on a block.
+    - The trails tick before the portal particles, the snapshot's eyes and breaks are taken in, and the eyes are drawn after the thrown items.
+  - `minecraft_survival/src/offhand.rs`: an eye of ender counts as an item with a use, so the tactical key uses it from the offhand (both throwing and filling a frame).
+  - `render_anim/src/minecraft_world.rs`: one call line, the `Change::ThrowEye` arm calling `entities.throw_eye`.
+- **Checked with javap (26.3):**
+  - `EnderEyeItem.use`: `getPlayerPOVHitResult(.., Fluid.NONE)`; PASS on any `end_portal_frame`; `findNearestMapStructure(EYE_OF_ENDER_LOCATED, player.blockPosition(), 100, false)`; CONSUME without a result; `new EyeOfEnder(level, getX(), getY(0.5), getZ())`, `setItem`, `signalTo(Vec3.atLowerCornerOf(found))`; `ENDER_EYE_LAUNCH` at the player (NEUTRAL, volume 1, pitch `Mth.lerp(nextFloat, 0.33, 0.5)`); `consume(1, player)`.
+  - `EyeOfEnder`: `TOO_FAR_DISTANCE` 12, `TOO_FAR_SIGNAL_HEIGHT` 8, `MIN_CAMERA_DISTANCE_SQUARED` 12.25; `signalTo`, `tick`, `updateDeltaMovement`; `spawnParticles` (4 bubbles in water, else one portal particle at `p ± 0.3`, `p.y − 0.5`); `life > 80`, `ENDER_EYE_DEATH` (1, 1), then `ItemEntity` or level event 2003; `getLightLevelDependentMagicValue` 1.
+  - `ItemEntity(Level, x, y, z, ItemStack)`: pickup delay 0 and the launch above.
+  - `LevelEventHandler` event 2003: 8 ender eye item particles at `x + 0.5, y, z + 0.5`. Then for `a` from 0 in steps of π/20 while below 2π, two portal particles at `cos·5, −0.4, sin·5` with motions `cos·−5` and `cos·−7`: 40 steps, 80 particles.
+  - `EntityRenderers`: `EYE_OF_ENDER` is `lambda$static$13`, which is `ThrownItemRenderer(ctx, 1.0F, true)`.
+- **Tests:**
+  - `eye_of_ender`:
+    - `a_far_target_aims_12_out_and_8_up`, which also checks that a target exactly 12 blocks away is kept.
+    - `the_first_ticks_match_hand_worked_vanilla_numbers`: motion 0.03, 0.015, then 0.05985, 0.029775.
+    - `steering_sinks_toward_a_lower_target_and_brakes_within_a_block`.
+    - `the_eye_ends_on_its_81st_tick_and_a_new_signal_restarts_its_life`.
+    - `four_eyes_in_five_drop`: 10000 seeds, each matching `nextInt(5) > 0`.
+    - `the_launch_pitch_spans_a_third_to_a_half`.
+    - `a_shattered_eye_leaves_8_crumbs_and_a_ring_of_80_portal_particles`.
+    - `the_trail_starts_half_a_block_below_and_a_quarter_step_back`.
+    - `a_thrown_eye_sounds_flies_and_then_drops_or_shatters`: on a live level with 12 seeds. The launch sound plays at the feet. After 80 ticks the eye still flies, toward its target and above the hand. Then the death sound plays where it ends, and it leaves either one named eye item with the vanilla launch or one break. Both cases happen.
+    - `eyes_of_ender_look_for_the_stronghold_and_find_none_in_the_nether`: the tag is the stronghold. A Nether level finds none, and its `ServerSim::throw_eye` answers no and launches nothing.
+    - Ignored: `an_overworld_eye_finds_a_stronghold_ring_chunk_corner`. It resolves all 128 rings, which takes 2.4 s in a test build.
+  - `ender_eye`:
+    - `a_filled_frame_passes_the_eye_on`. It was `a_filled_frame_or_another_block_passes_the_eye_on`; its stone and air cases now throw.
+    - `anywhere_else_the_eye_is_thrown_from_the_middle_of_the_body`: 0.9 up when standing, 0.75 when crouching, and the stack's name is kept.
+  - `offhand`: `only_items_with_a_use_take_the_tactical_key` now checks the eye too.
+- **Decisions:**
+  - **Server-owned:** the client only asks. The server searches, launches and answers. The eye leaves the stack only on the server's yes, through the item-use answer the frame fill already uses. Each eye keeps its thrower's player key (`owner`), and the answer goes back to the thrower who waits for it. Vanilla's eye has no owner; the key is kept for multiplayer tracking.
+  - **Search time:** the search runs on the server thread like `/locate`, with `/locate`'s 20 s cap. A timeout counts as "not found", so the eye stays in the hand. The first throw in a level resolves all 128 stronghold rings (vanilla does that at world load); later throws reuse them.
+  - **Nether and End:** the stronghold can't generate there, so nothing is found and the eye stays in the hand without a sound, as in vanilla. A world without structures finds nothing either.
+  - **Saving:** eyes in flight are not saved, like the other thrown items here. Vanilla saves the item but neither the target nor the life, so a reloaded eye flies on for 80 ticks without steering. Here an eye in flight at quit (at most 4 s) is lost.
+  - **Under water:** vanilla leaves 4 bubbles a tick instead of the portal particle. There is no bubble particle yet, so the portal trail shows under water too.
+  - **Trail timing:** the trail starts from the server's latest position and motion each client tick, while vanilla's client moves its own copy by the synced motion. They differ by at most one tick.
+  - **Straight above:** vanilla divides by zero when the eye is exactly above or below its target (NaN). Here the horizontal motion is then zero.
+  - **Adventure mode:** throwing goes through the same item-on-block chain as the frame fill, which needs a game mode that may build. So in adventure mode the eye isn't thrown, although vanilla allows it. Spectators can't throw in either.
+  - **Not done:** the `used_ender_eye` advancement trigger, the `used` statistic and the `projectile_shoot` game event (there are no advancements, statistics or sculk yet).
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=eyetest` (a new world) and the kit below. Start in the overworld.
+  2. Type `/locate structure minecraft:stronghold` and note the coordinates.
+  3. Look straight ahead and right-click with an eye of ender. The launch sound plays, and the eye leaves your chest. It flies about 12 blocks toward the stronghold while rising about 8, glowing and leaving a purple particle trail. One eye goes from the stack. **Screenshot 1** while it flies, with the `/locate` answer still in the chat.
+  4. After about 4 seconds it plays a short sound. It either falls as an item you can pick up, or breaks into eye crumbs and a purple ring.
+  5. Walk about 100 blocks to the side and throw again, then do the same from a third place. Each eye flies toward the `/locate` coordinates. **Screenshot 2** from the third place.
+  6. Throw 10 eyes in a row: about 8 drop and 2 break.
+  7. Place an end portal frame and right-click it with an eye: the eye goes in with the fill sound. Right-click the filled frame: nothing happens and the stack stays the same.
+  8. Put eyes in the offhand slot, hold a gun and press the tactical key: an eye flies.
+  9. Type `/gamemode creative` and throw: the stack doesn't shrink. Type `/gamemode survival`.
+  10. Quit, add the line `IW4L_MINECRAFT_DIMENSION=the_end` to the `.env` and start: you are in the End. Right-click with an eye: nothing happens, there is no sound, and the stack stays. **Screenshot 3.** Quit and remove the line again.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ender_eye*32,minecraft:end_portal_frame*2,minecraft:diamond_pickaxe+efficiency=5
+```
+
+## Second run, group elytra: gliding and firework rockets
+
+### 15. Minecraft test kits can set an item's damage
+
+Previous commit: 2f684111
+
+- **Why:** the elytra steps need an elytra one point from worn out. Gliding there takes over 7 minutes, and `/give` takes no components yet.
+- **Changed:** `minecraft_terrain/src/crafting.rs`: in `kit_stack`, a `+damage=N` part sets the `minecraft:damage` component (at least 0) instead of an enchantment. `minecraft:damage` is not an enchantment, so no real kit entry changes.
+- **Tests:** `crafting`: `kit_damage_wears_the_item_down` (`elytra+damage=430` and `diamond_sword+sharpness=5+damage=12`).
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=kittest` (a new world) and the kit below. Start, open the inventory: the sword's durability bar is just short of full, and the elytra's bar is red and almost empty. **Screenshot 1.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra+damage=430,minecraft:diamond_sword+sharpness=5+damage=12
+```
+
+### 16. Minecraft elytra glide on MW2 movement (E3-27)
+
+Previous commit: 9a9a5777
+
+- **Changed:**
+  - `playerstate_iw4/src/playerstate.rs`: two new pm_flags bits, the next free ones below `MC_NO_SKY`: `MC_MAY_GLIDE` (0x0400_0000, set by the game while the chest slot holds a usable glider) and `MC_GLIDING` (0x0200_0000, the glide itself). They travel in `pm_flags`, so deltas and prediction carry them.
+  - New `movement_iw4/src/glide.rs`, a pmove mode beside creative flight (decision 4):
+    - `prepare` runs each pmove after the fluid and climb samples. A fresh jump press (jump down now, up in the last command) in the air starts the glide when `MC_MAY_GLIDE` is set, as `LocalPlayer.aiStep` calls `tryToStartFallFlying`. Being on the ground, in water or lava, on a climbable, flying (creative), mantling or without `MC_MAY_GLIDE` stops it (`canGlide`, `isInLiquid`, the `onClimbable` check of `travelFallFlying`). While gliding, the jump, stance and sprint keys are dropped, so the player stays standing and MW2 guns stay ready.
+    - `glide_move` steps `LivingEntity.updateFallFlyingMovement` in blocks per tick: gravity 0.08 scaled by `-1 + 0.75·cos²(pitch)`, the lift when falling, the climb when looking up (`speed·-sin(pitch)·0.04`, times 3.2 upward), the turn toward the look (0.1), then the drag 0.99, 0.98, 0.99 (the float constants widened as Java does). For a frame of `t` ticks the push is applied with the exact fraction of the drag, `v·dᵗ + a·d·(1−dᵗ)/(1−d)`, which equals the vanilla tick at `t = 1`, as `fly.rs` scales by frame time. The move is the MW2 `step_slide_move` without MW2 gravity, so walls clip the speed as vanilla's `move` zeroes the blocked axis. Landing (the ground trace finds ground) ends the glide. In a cobweb the step is vanilla's: one tick of motion scaled by the web, then no momentum.
+  - `movement_iw4/src/single.rs`: the `prepare` call, and the glide branch before the mantle and walk code (after the linked-player branch).
+  - `sim/src/frame.rs`, `carrier.rs`: `set_may_glide(id, may)`, which also ends a glide when the elytra goes.
+  - New `minecraft_survival/src/elytra.rs`:
+    - `can_glide` is the item half of `LivingEntity.canGlide`: the chest slot (38) holds an item with the `glider` component (the elytra, unless a `!minecraft:glider` patch removes it, or any item given one) whose next damage won't break it (`nextDamageWillBreak`). So an elytra stops gliding at 1 durability and gliding never destroys it.
+    - `Elytra::step` (one per player, `Player.elytra`) counts the gliding ticks (`fallFlyTicks`) on a 20 Hz clock and wears the elytra 1 point on every 20th (`updateFallFlying`: `(ticks+1) % 10 == 0`, and every second one of those). Unbreaking spares the point with chance `level/(level+1)` (the non-armour rule of `unbreaking.json`: the elytra isn't in `#enchantable/armor`). A player with infinite materials (creative) doesn't wear it.
+    - `wall_damage` is `handleFallFlyingCollisions`: `(old horizontal speed − new)·10 − 3` when above 0. `Elytra::step` takes the speeds from the server's player state of the last frame and this one.
+    - `fall_peak` is `checkFallDistanceAccumulation`: while gliding slower than 0.5 blocks per tick downward, at most 1 block of fall counts, so a gentle landing doesn't hurt and a dive does.
+  - `minecraft_survival/src/death.rs`: `DamageCause::FlyIntoWall` with the message id `flyIntoWall` ("experienced kinetic energy"). `survival.rs`: it costs no exhaustion (`fly_into_wall.json`: `exhaustion` 0). It bypasses armour (`Armor::default()`), and it isn't a fall, so the `fall_damage` rule doesn't turn it off.
+  - New `render_anim/src/minecraft_elytra.rs`: each frame it sets `MC_MAY_GLIDE` (alive, not a spectator, `can_glide`), applies `fall_peak` to the fall tracking, runs `Elytra::step`, and on a wall hit hurts the player and plays the fall sound by damage and the hurt sound. `minecraft_world.rs`: one call line after the End step.
+- **Checked with javap (26.3):** `LivingEntity.travel` (fluid first, then `travelFallFlying`), `travelFallFlying` (climbable: `travelInAir` and stop; old horizontal speed, `updateFallFlyingMovement`, `move`, `handleFallFlyingCollisions` on the server), `updateFallFlyingMovement` (as above), `handleFallFlyingCollisions` (`getFallDamageSound((int)f)`, `flyIntoWall`), `updateFallFlying` (only while fall flying: `checkFallDistanceAccumulation`, `canGlide` or stop, the wear on multiples of 20 of `fallFlyTicks+1` on a random glider slot), `canGlide` (not on ground, no vehicle, no levitation, a slot passing `canGlideUsing`), `canGlideUsing` (`GLIDER`, the `EQUIPPABLE` slot matches, `!nextDamageWillBreak`), `Entity.checkFallDistanceAccumulation` (`y > -0.5` and `fallDistance > 1` give 1), `Player.tryToStartFallFlying` (not fall flying, `canGlide`, not in liquid), `LocalPlayer.aiStep` (jump pressed this tick and not last tick, no fly toggle this tick, not on a climbable). Data: `fly_into_wall.json`, the `bypasses_armor` and `no_knockback` tags, `unbreaking.json`.
+- **Tests:**
+  - `glide`: `one_tick_matches_hand_worked_vanilla_numbers` (level flight at 1 block per tick gives 0.99178201, −0.01764000; climbing at −30° from 1.5 gives 1.46060889, 0.06235250), `gliding_from_rest_covers_the_vanilla_path_at_any_frame_rate` (40 vanilla ticks cover 7.79 forward and 4.87 down; 50 ms and 8 ms frames land within 0.3 blocks of it at the same speed), `a_fresh_jump_in_the_air_starts_gliding_only_with_a_usable_elytra`, `water_climbables_flight_and_a_worn_out_elytra_stop_the_glide`, `landing_ends_the_glide`, `a_wall_takes_the_horizontal_speed_but_not_the_glide`, `cobwebs_hold_a_glider_without_momentum`.
+  - `sim` `frame`: `an_elytra_lets_a_player_glide_until_it_is_taken_off` (also that both bits are free of every other flag).
+  - `elytra`: `only_a_worn_glider_short_of_its_last_point_lets_a_player_glide`, `gliding_wears_one_point_every_twenty_ticks_but_not_in_creative`, `unbreaking_spares_its_share_of_the_wear`, `flying_into_a_wall_hurts_by_the_speed_lost_like_vanilla`, `a_slow_glide_counts_at_most_one_block_of_fall`.
+  - `death`: `flying_into_a_wall_is_kinetic_energy_even_after_a_long_fall` (also the `.player` form while a zombie has kill credit).
+- **Decisions:**
+  - **Hull:** the glider keeps the standing MW2 hull. The vanilla fall-flying pose is 0.6 blocks high, so vanilla gliders pass 1-block holes; here they don't.
+  - **Creative flight wins:** a double tap in the air first starts a glide (the first press), then the second press turns creative flight on and the glide ends. Vanilla lets a flying player keep the fall-flying flag; here the two never mix.
+  - **Lava** stops a glide like water (vanilla's start check `isInLiquid` covers both; decision 4 names water).
+  - **Levitation and slow falling** don't exist for players yet, so they are not checked. When they come (E3-26), the levitation check goes next to `can_glide` and slow falling into the glide's gravity.
+  - **Wall damage** is measured between frames from the server's player state. The natural speed loss of a frame stays far below the 0.3 blocks per tick that would hurt, so only a wall hit counts, as in vanilla.
+  - **Server-owned:** the glide runs in the authority's pmove, and the wear, the wall damage and the fall tracking run on the host's per-player state (`Player.elytra`, keyed by UUID like the rest).
+  - **Not done:** the elytra on the MW2 body (no wing model on the MW2 rig yet; the body plays its in-air animation), the `elytra_glide` game event (no sculk yet) and the `aviate_one_cm` statistic.
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=elytratest` (a new world) and the kit below. Start in survival.
+  2. Open the inventory and put the plain elytra in the chest armour slot.
+  3. Type `/tp ~ ~40 ~`. While falling, press jump once: the fall turns into a glide. Look down to dive and speed up, look level to glide far, look up to trade speed for height. **Screenshot 1** mid-glide.
+  4. On the ground, jump and keep jump held: nothing happens in the air. Release it and press it again at the top: the glide starts.
+  5. Glide in, look slightly down and land at a shallow angle: no damage. Then `/tp ~ ~40 ~`, glide and dive steeply into the ground: fall damage.
+  6. Build a cobblestone wall 4 blocks high, `/tp` 30 blocks away and 15 up, glide and dive toward it to pick up speed, then hit it head on: you take damage with the fall sound and stop. **Screenshot 2** of the health bar. If it kills you, the chat says "... experienced kinetic energy".
+  7. Glide into water (empty the water bucket below a ledge): the glide stops and you swim. Glide onto a ladder on a wall: the glide stops and you hold on.
+  8. While gliding, fire an MW2 gun: it shoots; sprint and crouch do nothing.
+  9. After a few seconds of gliding, the elytra in the inventory shows a durability bar. **Screenshot 3.**
+  10. Swap in the elytra with `+damage=420` and glide from high up: after about 11 seconds the glide stops and you fall. The elytra stays, with a red bar, and pressing jump in the air does nothing more. **Screenshot 4** of the elytra in the slot.
+  11. Wear the diamond chestplate instead: pressing jump in the air does nothing.
+  12. `/gamemode creative`, wear the plain elytra and glide for 20 seconds: its bar doesn't move. Double-tap jump while gliding: creative flight takes over.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:elytra+damage=420,minecraft:elytra+unbreaking=3,minecraft:diamond_chestplate,minecraft:water_bucket,minecraft:cobblestone*64,minecraft:ladder*16,minecraft:golden_apple*8
+```
+
+### 17. Minecraft firework rockets boost elytra flight (E3-28)
+
+Previous commit: 20afd35e
+
+- **Changed:**
+  - `playerstate_iw4/src/playerstate.rs`: a new field `mc_rocket_time`, the milliseconds of rocket boost left. `net/src/transport/netfields.rs`: it is replicated and validated exactly (appended at the end of the table), so the countdown sits in the pmove state and prediction matches, as decision 4 asks.
+  - `movement_iw4/src/glide.rs`:
+    - `launch_rocket(ps, ticks)` lights a rocket only while gliding (`FireworkRocketItem.use` passes otherwise).
+    - `boost` is the attached `FireworkRocketEntity.tick`: each tick the motion becomes `v + look·0.1 + (look·1.5 − v)·0.5`. For a frame of `t` ticks it uses the exact fraction, `v·0.5ᵗ + look·1.7·(1 − 0.5ᵗ)`, which equals the vanilla tick at `t = 1`. `glide_move` spends the countdown by the frame time and boosts for the part of the frame it covers, then glides. Off the glide the countdown still burns down (the attached rocket lives on but pushes only a fall-flying player).
+  - `sim/src/frame.rs`, `carrier.rs`: `launch_rocket(id, ticks)`.
+  - New `minecraft_terrain/src/firework.rs`: `flight_duration` (the `fireworks` component's `flight_duration`; the item's default component is 1, and a `fireworks` patch without the field is 0), `lifetime` (`10·(1 + flight) + nextInt(6) + nextInt(7)`), `boost_ticks` (the lifetime plus one: the rocket pushes on its ticks 0 to `lifetime` and explodes after), and `rocket_use`, an item use for a gliding player that is spent and plays `entity.firework_rocket.launch` at volume 3.
+  - `minecraft_terrain/src/bucket.rs`: `Change::Rocket(ticks)`.
+  - `render_anim/src/minecraft_elytra.rs`: `launch_rocket` lights it on the authority's player state, swings the hand and spends the rocket (not in creative) with the launch sound. `minecraft_world.rs`: two call lines, the `rocket_use` link of the item-use chain and the `Change::Rocket` arm.
+  - `minecraft_survival/src/offhand.rs`: a firework rocket counts as an item with a use, so rockets in the offhand boost with the tactical key while an MW2 gun stays in the hand.
+- **Checked with javap (26.3):** `FireworkRocketItem.use` (only while `isFallFlying`: a `FireworkRocketEntity(level, stack, player)` attached to the player, `consume(1, player)`, SUCCESS; PASS otherwise), `FireworkRocketItem.useOn` (PASS while fall flying), `FireworkRocketEntity.<init>` (`lifetime = 10·(1 + flightDuration) + nextInt(6) + nextInt(7)`, starting from 1 plus the `fireworks` component's duration), `FireworkRocketEntity.tick` (attached and fall flying: the push above with 1.5 and 0.1; the launch sound `FIREWORK_ROCKET_LAUNCH` at life 0, volume 3, pitch 1; `life++`, explode when `life > lifetime`).
+- **Tests:**
+  - `glide`: `rocket_pushes_converge_and_level_flight_settles_at_33_5_metres_a_second` (one push from rest is 0.85; pushes alone converge on 1.7; level flight with a rocket settles at 1.6726 blocks per tick forward, 33.5 m/s, matching the hand-run vanilla ticks; two half-tick pushes equal one), `a_rocket_burns_down_by_frame_time_and_only_lights_while_gliding` (only a glider lights it; a second, shorter rocket doesn't cut the first; frame time spends it, also after landing; two ticks of boost at 50 ms and 10 ms frames match vanilla's).
+  - `sim` `frame`: `an_elytra_lets_a_player_glide_and_a_rocket_lights_only_while_gliding` (was `an_elytra_lets_a_player_glide_until_it_is_taken_off`).
+  - `firework`: `a_rocket_flies_one_unless_its_fireworks_say_otherwise`, `the_boost_lasts_vanillas_lifetime_and_one_tick_more` (21 to 32 ticks for a plain rocket), `a_rocket_boosts_only_a_gliding_player_and_is_spent`.
+  - `offhand`: `only_items_with_a_use_take_the_tactical_key` now checks the rocket too.
+- **Decisions:**
+  - **Overlapping rockets:** in vanilla two attached rockets both push every tick. Here one countdown holds the longer of the two, so a second rocket extends the boost but doesn't double it.
+  - **Not done:**
+    - Rockets with firework stars don't hurt the wearer when they end (vanilla: 5 + 2 per explosion, `fireworks` damage). Plain rockets, the only ones a kit can give, have none.
+    - No rocket model at the hand and no spark trail: there is no firework particle yet.
+    - Using a rocket on a block while not gliding doesn't launch a free rocket into the sky (`useOn`): that needs a new entity, its renderer and the firework particles, more than this group could take on. Until then nothing happens and the rocket stays in the hand, as for any use that passes.
+  - **Adventure mode:** the rocket goes through the same item-use chain as the eye of ender, which needs a game mode that may build, so in adventure mode it does nothing (vanilla allows it).
+  - **Server-owned:** the countdown lives in the authority's player state. The client asks through the item use and the authority lights it; prediction replays it from the replicated field.
+- **Test steps:**
+  1. Keep `IW4L_MINECRAFT_WORLD=elytratest` (or a new world) and the kit below. Put the elytra in the chest armour slot.
+  2. Type `/tp ~ ~40 ~`, press jump to glide, select the rockets in the hotbar and right-click: the launch sound plays, you shoot forward along your look at about 34 m/s for 1 to 1.5 seconds, and one rocket leaves the stack. **Screenshot 1** during the boost.
+  3. Look up 45° and fire a rocket: you climb steeply. Keep firing: you can climb as high as you like.
+  4. On the ground or falling without gliding, right-click a rocket: nothing happens and the stack stays.
+  5. Put the rockets in the offhand slot, select an MW2 gun, glide and press the tactical key: you boost while the gun stays in your hands and fires. **Screenshot 2.**
+  6. Fire a rocket and land at once: the push stops with the glide.
+  7. `/gamemode creative`: rockets boost without leaving the stack. `/gamemode survival` afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:firework_rocket*128,minecraft:cobblestone*64,minecraft:golden_apple*8
+```
+
+### 18. The Minecraft elytra wear passes clippy
+
+Previous commit: a38f4ca7
+
+- **Changed:** the one clippy finding on this group's lines, in `minecraft_survival/src/elytra.rs`: the every-20th-tick check uses `is_multiple_of` (`manual_is_multiple_of`).
+- **Tests:** none new; the elytra tests pass as before.
+- **Test steps:** none; nothing changes in game.
+- **Kit:** none.
+
+### Group elytra summary
+
+Written with entry 18, in its commit.
+
+- **Commits:** entries 15 to 18 (a kit helper, E3-27, E3-28, and the clippy entry).
+- **Tests** (`test -p <crate> --locked`, `MINECRAFTOSS_ROOT` set by `cargo-slot.ps1`): `movement_iw4` 49, `sim` 71, `minecraft_survival` 280 and the vanilla world test, `minecraft_terrain` 670 (4 ignored), `render_anim` 70 pass; `playerstate_iw4` and `net` have no unit tests of their own and build. `check -p launcher` is green.
+- **Clippy:** `clippy -p movement_iw4 -p minecraft_survival -p minecraft_terrain -p render_anim -p sim -p playerstate_iw4 -p net --all-targets --no-deps --locked -- -A clippy::approx_constant` has no finding on a line this group changed after entry 18 (checked against `git diff 2f684111`). The other warnings are older.
+- **New files** (`rustfmt --check` on the staged content is empty): `movement_iw4/src/glide.rs`, `minecraft_survival/src/elytra.rs`, `minecraft_terrain/src/firework.rs`, `render_anim/src/minecraft_elytra.rs`.
+- **Not done in this group, and why:**
+  - **The elytra on the MW2 body:** the wings need their texture in the entity atlas, whose list sits in `minecraft_terrain/src/mesh.rs` (the Nether track's file this run), plus the `ElytraModel` wings and their glide pose on the MW2 rig. Left for after the Nether track merges.
+  - **A rocket placed on the ground** flying up as an entity: a new entity with its renderer and the firework particles; not small (entry 17).
+  - **Rocket stars hurting the wearer**, the spark trail and the rocket at the hand (entry 17).
+  - **The 0.6-block glide hitbox**, levitation and slow falling (entry 16).
+- **Owner test for the group:** in the new world `elytratest` with the kit below: entry 16's steps, then entry 17's. Entry 15's step is optional (its kit line is in entry 15).
+- **Kit for the group** (10 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:elytra+damage=420,minecraft:elytra+unbreaking=3,minecraft:diamond_chestplate,minecraft:water_bucket,minecraft:cobblestone*64,minecraft:ladder*16,minecraft:golden_apple*8,minecraft:firework_rocket*128
+```
+
+## Review of the second run (eye-throw and elytra)
+
+### 19. Minecraft elytra hurt only when they hit a wall
+
+Previous commit: 4bd081e8
+
+- **Defect:** `Elytra::step` hurt the glider whenever the horizontal speed fell by more than 0.3 blocks between two samples. Vanilla's `LivingEntity.handleFallFlyingCollisions` first checks `horizontalCollision` (javap 26.3: `getfield horizontalCollision`, `ifeq` to the return), and entry 16 left that out. So a glider took "kinetic energy" damage where vanilla gives none: flying into a cobweb at speed (the web zeroes the motion, 1.5 blocks per tick cost 12 health), an explosion or other push against the flight, and a long frame while pulling up hard after a dive.
+- **Changed:**
+  - `sim/src/voxel.rs`: `touches_wall(origin, mins, maxs)`: the player's hull, widened by 0.05 blocks on its four sides, with its top lowered and its bottom raised by the same, overlaps a block. That reaches past the 0.125-unit gap that MW2 traces keep from a wall and leaves the floor and the ceiling out.
+  - `minecraft_survival/src/elytra.rs`: `Flight.against_wall`; the wall damage counts only while it is set.
+  - `render_anim/src/minecraft_elytra.rs`: sets `against_wall` while gliding, from the authority's player hull and origin.
+- **Tests:**
+  - `sim` `voxel`: `a_body_against_a_wall_touches_it_but_not_the_floor_below_or_open_air`.
+  - `elytra`: `speed_lost_away_from_a_wall_does_not_hurt` (a web-like stop without a wall: no damage; the same stop against a wall: 12).
+  - `flying_into_a_wall_hurts_by_the_speed_lost_like_vanilla` now flies against a wall.
+- **Decision:** vanilla knows the collision of the tick's move; here the host samples the server's player state once a frame, so a wall touched in that sample stands in for it. A glider that hits a wall and lands in the same tick still takes no wall damage (the glide has ended by then), as before this entry.
+- **Test steps:**
+  1. Keep `IW4L_MINECRAFT_WORLD=elytratest` (or a new world) and the kit below, elytra in the chest armour slot.
+  2. Hang a few cobwebs in the air: stand on a 3-block pillar of cobblestone and place them on its side, then break the pillar. `/tp` 30 blocks away and 15 up, glide, dive to pick up speed and fly into the webs: you stop in the web without damage and without the fall sound. **Screenshot 1** of the full health bar while in the web.
+  3. Repeat entry 16's step 6 (dive into a cobblestone wall): you still take damage with the fall sound. **Screenshot 2.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:cobweb*16,minecraft:cobblestone*64,minecraft:golden_apple*8
+```
+
+## Final check of the second run
+
+### 20. The track END log sums up its second final check
+
+Previous commit: c36cf09f
+
+- **Clippy:** `clippy -p minecraft_survival -p minecraft_terrain -p movement_iw4 -p net -p playerstate_iw4 -p render_anim -p sim --locked --all-targets -- -A clippy::approx_constant` exits 0. No warning falls on a line the track added since d49f75d2 (every reported location checked against `git diff -U0 d49f75d2..HEAD`). The ones in touched files (`minecraft_terrain` `server.rs` 337, 1502 and 1715, `sim` `frame.rs` 81, 626, 724 and 932, `sim` `voxel.rs` 47, 325 and 381) are on older lines, and the new files have none.
+- **Tests** (`test -p <crate> --locked`, `MINECRAFTOSS_ROOT` set by `cargo-slot.ps1`): `minecraft_survival` 281 and the vanilla world test, `minecraft_terrain` 670 (4 ignored), `movement_iw4` 49, `sim` 72, `render_anim` 70 pass; `playerstate_iw4` and `net` have no unit tests of their own and build. No fixes were needed.
+- **Test steps:** none new. The owner's test of the second run is, in order: entry 14 in the new world `eyetest`; entry 15 in `kittest` (optional); entries 16, 17 and 19 in `elytratest`. The first run's steps are listed in entry 13. Each is a new world, and the kit goes to a player only in a world where they have no inventory yet, so the one kit line below serves every world of the whole track.
+- **Kit for the whole track** (21 stacks; the 32 eyes fill two stacks of 16 and the 128 rockets two of 64):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ender_eye*32,minecraft:end_portal_frame*24,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_shovel+efficiency=5,minecraft:cobblestone*64,minecraft:oak_sapling*4,minecraft:bone_meal*32,minecraft:dirt*8,minecraft:elytra,minecraft:elytra+damage=420,minecraft:elytra+unbreaking=3,minecraft:elytra+damage=430,minecraft:diamond_sword+sharpness=5+damage=12,minecraft:diamond_chestplate,minecraft:water_bucket,minecraft:ladder*16,minecraft:golden_apple*8,minecraft:firework_rocket*128,minecraft:cobweb*16
+```

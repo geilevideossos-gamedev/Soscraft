@@ -291,6 +291,14 @@ impl SimWorld {
         self.frame().push_velocity(id, delta)
     }
 
+    pub fn set_may_glide(&mut self, id: ClientId, may: bool) -> bool {
+        self.frame().set_may_glide(id, may)
+    }
+
+    pub fn launch_rocket(&mut self, id: ClientId, boost_ticks: i32) -> bool {
+        self.frame().launch_rocket(id, boost_ticks)
+    }
+
     pub fn set_sprint_blocked(&mut self, id: ClientId, blocked: bool) -> bool {
         self.frame().set_sprint_blocked(id, blocked)
     }

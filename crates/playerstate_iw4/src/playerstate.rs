@@ -119,6 +119,7 @@ pub struct PlayerState {
     pub kill_cam_look_at_entity: i32,
     pub kill_cam_client_num: i32,
     pub recoil_scale: i32,
+    pub mc_rocket_time: i32,
 }
 
 pub mod eflags {
@@ -177,6 +178,10 @@ pub mod pm_flags {
     pub const SPRINT_BLOCKED: u32 = 0x0002_0000;
 
     pub const LAST_STAND: u32 = 0x0040_0000;
+
+    pub const MC_GLIDING: u32 = 0x0200_0000;
+
+    pub const MC_MAY_GLIDE: u32 = 0x0400_0000;
 
     pub const MC_NO_SKY: u32 = 0x0800_0000;
 
@@ -341,6 +346,7 @@ impl PlayerState {
         kill_cam_look_at_entity: 0,
         kill_cam_client_num: 0,
         recoil_scale: 0,
+        mc_rocket_time: 0,
     };
 
     pub fn anim(&self) -> AnimPair {

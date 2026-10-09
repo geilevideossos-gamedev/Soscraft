@@ -75,6 +75,8 @@ pub struct ServerSim {
     players_struck: Vec<crate::thrown::PlayerStruck>,
     players_pushed: Vec<(u64, glam::DVec3)>,
     thrown_hits: Vec<crate::thrown::ThrownHit>,
+    worldgen: &'static WorldGen,
+    eyes: crate::eye_of_ender::Eyes,
 }
 
 /// What a player's hit or use on a mob did, for the client to present.
@@ -179,6 +181,7 @@ pub struct EntitySnapshot {
     pub thrown_views: Vec<crate::thrown::ThrownView>,
     pub clouds: Vec<crate::effect_cloud::CloudView>,
     pub tridents: Vec<crate::trident::TridentView>,
+    pub eyes: crate::eye_of_ender::EyeSnapshot,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -253,6 +256,8 @@ impl ServerSim {
             players_struck: Vec::new(),
             players_pushed: Vec::new(),
             thrown_hits: Vec::new(),
+            worldgen,
+            eyes: crate::eye_of_ender::Eyes::default(),
         }
     }
 
@@ -924,6 +929,20 @@ impl ServerSim {
         self.thrown.iter().map(crate::thrown::Thrown::view).collect()
     }
 
+    pub fn throw_eye(&mut self, owner: u64, throw: &crate::ender_eye::EyeThrow) -> bool {
+        let Some(found) = self.eyes.locate(self.worldgen, throw.feet) else { return false };
+        self.eyes.launch(&mut self.level, owner, throw, found);
+        true
+    }
+
+    pub fn tick_eyes(&mut self) {
+        self.eyes.tick(&mut self.level);
+    }
+
+    pub fn eye_snapshot(&mut self) -> crate::eye_of_ender::EyeSnapshot {
+        self.eyes.snapshot()
+    }
+
     pub fn take_player_potions(&mut self) -> Vec<crate::potions::PlayerPotionHit> {
         std::mem::take(&mut self.player_potions)
     }
@@ -1567,6 +1586,7 @@ pub enum Command {
     Tick(Box<TickInput>),
     Throw(Box<crate::thrown::Thrown>),
     ThrowTrident(Box<crate::trident::ThrownTrident>),
+    ThrowEye { owner: u64, throw: Box<crate::ender_eye::EyeThrow> },
     Save,
     SetWeather { weather: &'static str, duration: i32 },
     WeatherData(crate::level_storage::WeatherData),
@@ -1899,6 +1919,10 @@ impl ServerHandle {
         self.send(Command::ThrowTrident(Box::new(trident)));
     }
 
+    pub fn throw_eye(&mut self, owner: u64, throw: crate::ender_eye::EyeThrow) {
+        self.send(Command::ThrowEye { owner, throw: Box::new(throw) });
+    }
+
     pub fn save(&mut self) {
         self.send(Command::Save);
     }
@@ -1996,6 +2020,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::Throw(thrown) => sim.throw(*thrown),
                 Command::ThrowTrident(trident) => sim.throw_trident(*trident),
+                Command::ThrowEye { owner, throw } => out.item_uses.push(sim.throw_eye(owner, &throw)),
                 Command::SetWeather { weather, duration } => {
                     sim.set_weather_for(weather, duration);
                 }
@@ -2046,6 +2071,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.tick_clouds(&bodies);
                     sim.tick_thrown(&bodies);
                     sim.tick_tridents(&bodies);
+                    sim.tick_eyes();
                     out.pearl_teleports.extend(sim.take_pearl_teleports());
                     out.thrown_hits.extend(sim.take_thrown_hits());
                     sim.spawn_trade_experience();
@@ -2087,7 +2113,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     }
                     // After the items, one experience orb.
                     out.orbs_taken.extend(sim.take_experience(pickup_feet));
-                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views() });
+                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot() });
                     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
                     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), started.elapsed().as_secs_f64() * 1000.0));
                 }

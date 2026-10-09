@@ -696,6 +696,7 @@ fn update(
         }
     }
     crate::minecraft_end::step(player, levels, globals, presented.player(local.0).filter(|ps| ps.pm_type == 0).map(|ps| sim::voxel::to_block(origin, ps.origin)), time.delta_secs_f64());
+    crate::minecraft_elytra::step(player, &mut authority.0, local.0, origin, time.delta_secs_f64(), sounds.as_mut(), &world.packs);
     let arriving_at = player.arrival.map(|place| place.feet);
     let host_alive = presented.player(local.0).is_some_and(|ps| ps.pm_type == 0);
     let host_pose = presented
@@ -1296,6 +1297,7 @@ fn update(
                         .or_else(|| minecraft_terrain::flint::fire_charge_use(&player, &outlined, &catalog, stack, || entities.random_float()))
                         .or_else(|| minecraft_terrain::berries::bone_meal_use(&player, &outlined, stack))
                         .or_else(|| minecraft_terrain::ender_eye::eye_use(&player, &outlined, stack))
+                        .or_else(|| minecraft_terrain::firework::rocket_use(stack, ps.pm_flags & playerstate_iw4::pm_flags::MC_GLIDING != 0, || entities.random_float()))
                 }
             {
                 if !outcome.consumed || matches!(outcome.change, minecraft_terrain::bucket::Change::Set(..)) {
@@ -1309,6 +1311,8 @@ fn update(
                         finish_item_use(entities, inventory, sounds.as_mut(), &world.packs, origin, sent, game_mode.consumes_items());
                     }
                     minecraft_terrain::bucket::Change::Server(pos, action) => entities.item_on_block(pos, action, sent),
+                    minecraft_terrain::bucket::Change::ThrowEye(throw) => entities.throw_eye(throw, sent),
+                    minecraft_terrain::bucket::Change::Rocket(boost_ticks) => crate::minecraft_elytra::launch_rocket(&mut authority.0, local.0, boost_ticks, &mut hand.swing, || finish_item_use(entities, inventory, sounds.as_mut(), &world.packs, origin, sent, game_mode.consumes_items())),
                 }
                 HandUse::Consumed
             } else if let Some(stack) = held.as_ref()

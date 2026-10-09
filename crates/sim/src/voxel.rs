@@ -1041,6 +1041,7 @@ const PUSH_GAP: f64 = 1e-3;
 const STEP_OUT: f64 = 1.05;
 const SIDE_OUT: f64 = 1.0;
 const CLIMB_OUT: f64 = 3.0;
+const WALL_REACH: f32 = 0.05;
 
 pub fn player_hull(ps: &playerstate_iw4::PlayerState) -> ([f32; 3], [f32; 3]) {
     let height = match movement_iw4::stance_surface_type(ps) {
@@ -1304,6 +1305,20 @@ pub fn stuck(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> Option<[f32; 3
     let world = guard.as_ref()?;
     let (lo, hi) = block_bounds(mins, maxs);
     world.stuck_in(to_block(world.origin, origin), lo, hi)
+}
+
+pub fn touches_wall(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> bool {
+    let Ok(guard) = WORLD.read() else {
+        return false;
+    };
+    guard.as_ref().is_some_and(|world| touches_wall_in(world, origin, mins, maxs))
+}
+
+fn touches_wall_in(world: &VoxelWorld, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> bool {
+    let reach = WALL_REACH * BLOCK;
+    let wide = [mins[0] - reach, mins[1] - reach, mins[2] + reach];
+    let tall = [maxs[0] + reach, maxs[1] + reach, maxs[2] - reach];
+    trace_in(world, origin, origin, wide, tall, None).startsolid != 0
 }
 
 #[cfg(test)]
@@ -1700,6 +1715,17 @@ mod tests {
         let w = world(&tunnel);
         let (lo, hi) = body([4.5, 0.0, 4.5], 50.0 / 36.0);
         assert_eq!(w.way_out(lo, hi, None), None);
+    }
+
+    #[test]
+    fn a_body_against_a_wall_touches_it_but_not_the_floor_below_or_open_air() {
+        let w = world(&[([4, 0, 4], 1), ([5, 1, 4], 1), ([5, 2, 4], 1)]);
+        let (mins, maxs) = player_hull(&playerstate_iw4::PlayerState::ZERO);
+        let at = |x: f64| to_map([0.0; 3], [x, 1.0 + 1e-3, 4.5]);
+        assert!(touches_wall_in(&w, at(4.7 - 0.125 / 36.0), mins, maxs));
+        assert!(!touches_wall_in(&w, at(4.5), mins, maxs));
+        assert!(!touches_wall_in(&w, to_map([0.0; 3], [4.5, 1.0, 4.5]), mins, maxs));
+        assert!(!touches_wall_in(&w, to_map([0.0; 3], [10.5, 5.0, 10.5]), mins, maxs));
     }
 
     #[test]

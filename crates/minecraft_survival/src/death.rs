@@ -71,6 +71,7 @@ pub enum DamageCause {
     Hazard(Hazard),
     Fall,
     EnderPearl,
+    FlyIntoWall,
     Drown,
     Starve,
     Magic,
@@ -128,6 +129,7 @@ impl DamageCause {
             Self::Hazard(Hazard::InWall) => "inWall",
             Self::Hazard(Hazard::Cramming) => "cramming",
             Self::Fall | Self::EnderPearl => "fall",
+            Self::FlyIntoWall => "flyIntoWall",
             Self::Drown => "drown",
             Self::Starve => "starve",
             Self::Magic => "magic",
@@ -542,6 +544,11 @@ mod tests {
             ),
             ("death.attack.magic", "%1$s was killed by magic"),
             ("death.attack.outOfWorld", "%1$s fell out of the world"),
+            ("death.attack.flyIntoWall", "%1$s experienced kinetic energy"),
+            (
+                "death.attack.flyIntoWall.player",
+                "%1$s experienced kinetic energy while trying to escape %2$s",
+            ),
             ("death.fell.accident.generic", "%1$s fell from a high place"),
             ("death.fell.accident.ladder", "%1$s fell off a ladder"),
             ("death.fell.accident.vines", "%1$s fell off some vines"),
@@ -593,6 +600,25 @@ mod tests {
         assert_eq!(
             line(&tracker),
             says("%1$s burned to death", "burned to death")
+        );
+    }
+
+    #[test]
+    fn flying_into_a_wall_is_kinetic_energy_even_after_a_long_fall() {
+        let mut tracker = CombatTracker::default();
+        tracker.record(1, DamageCause::FlyIntoWall, 6.0, None, 0.0);
+        assert_eq!(
+            line(&tracker),
+            says("%1$s experienced kinetic energy", "experienced kinetic energy")
+        );
+        tracker.hurt_by(2, zombie_bite());
+        tracker.record(2, DamageCause::FlyIntoWall, 6.0, None, 0.0);
+        assert_eq!(
+            line(&tracker),
+            says(
+                "%1$s experienced kinetic energy while trying to escape Zombie",
+                "Zombie"
+            )
         );
     }
 
