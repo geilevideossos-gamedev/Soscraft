@@ -527,3 +527,32 @@ Previous commit: 20afd35e
 ```
 IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:firework_rocket*128,minecraft:cobblestone*64,minecraft:golden_apple*8
 ```
+
+### 18. The Minecraft elytra wear passes clippy
+
+Previous commit: a38f4ca7
+
+- **Changed:** the one clippy finding on this group's lines, in `minecraft_survival/src/elytra.rs`: the every-20th-tick check uses `is_multiple_of` (`manual_is_multiple_of`).
+- **Tests:** none new; the elytra tests pass as before.
+- **Test steps:** none; nothing changes in game.
+- **Kit:** none.
+
+### Group elytra summary
+
+Written with entry 18, in its commit.
+
+- **Commits:** entries 15 to 18 (a kit helper, E3-27, E3-28, and the clippy entry).
+- **Tests** (`test -p <crate> --locked`, `MINECRAFTOSS_ROOT` set by `cargo-slot.ps1`): `movement_iw4` 49, `sim` 71, `minecraft_survival` 280 and the vanilla world test, `minecraft_terrain` 670 (4 ignored), `render_anim` 70 pass; `playerstate_iw4` and `net` have no unit tests of their own and build. `check -p launcher` is green.
+- **Clippy:** `clippy -p movement_iw4 -p minecraft_survival -p minecraft_terrain -p render_anim -p sim -p playerstate_iw4 -p net --all-targets --no-deps --locked -- -A clippy::approx_constant` has no finding on a line this group changed after entry 18 (checked against `git diff 2f684111`). The other warnings are older.
+- **New files** (`rustfmt --check` on the staged content is empty): `movement_iw4/src/glide.rs`, `minecraft_survival/src/elytra.rs`, `minecraft_terrain/src/firework.rs`, `render_anim/src/minecraft_elytra.rs`.
+- **Not done in this group, and why:**
+  - **The elytra on the MW2 body:** the wings need their texture in the entity atlas, whose list sits in `minecraft_terrain/src/mesh.rs` (the Nether track's file this run), plus the `ElytraModel` wings and their glide pose on the MW2 rig. Left for after the Nether track merges.
+  - **A rocket placed on the ground** flying up as an entity: a new entity with its renderer and the firework particles; not small (entry 17).
+  - **Rocket stars hurting the wearer**, the spark trail and the rocket at the hand (entry 17).
+  - **The 0.6-block glide hitbox**, levitation and slow falling (entry 16).
+- **Owner test for the group:** in the new world `elytratest` with the kit below: entry 16's steps, then entry 17's. Entry 15's step is optional (its kit line is in entry 15).
+- **Kit for the group** (10 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:elytra+damage=420,minecraft:elytra+unbreaking=3,minecraft:diamond_chestplate,minecraft:water_bucket,minecraft:cobblestone*64,minecraft:ladder*16,minecraft:golden_apple*8,minecraft:firework_rocket*128
+```

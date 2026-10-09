@@ -87,7 +87,10 @@ impl Elytra {
                 continue;
             }
             self.fall_fly_ticks += 1;
-            if self.fall_fly_ticks % WEAR_TICKS == 0 && wears && wear(inventory, &mut self.random) {
+            if self.fall_fly_ticks.is_multiple_of(WEAR_TICKS)
+                && wears
+                && wear(inventory, &mut self.random)
+            {
                 glided.worn += 1;
             }
         }
