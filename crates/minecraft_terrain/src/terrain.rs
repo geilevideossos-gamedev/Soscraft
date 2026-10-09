@@ -43,6 +43,7 @@ pub struct BlockStates {
     light_table: minecraftoss_core::light::LightTable,
     /// `DimensionType.hasSkyLight`.
     sky_light: bool,
+    nether_shade: bool,
     /// `BlockState.isSolidRender`, which closes a cell in `VisGraph`.
     solid_render: Vec<bool>,
     face_culling: crate::face_culling::FaceCulling,
@@ -107,6 +108,7 @@ impl BlockStates {
             blocks,
             light_table,
             sky_light: true,
+            nether_shade: false,
             solid_render,
             face_culling,
             ao_occluder,
@@ -653,6 +655,12 @@ pub mod compile_profile {
     }
 }
 
+fn nether_cardinal_light(registries: &Registries, dimension_type: &str) -> bool {
+    minecraftoss_core::Identifier::parse(dimension_type)
+        .and_then(|id| registries.datapack.read_json("dimension_type", &id))
+        .is_ok_and(|json| json.get("cardinal_light").and_then(|light| light.as_str()) == Some("nether"))
+}
+
 /// `SectionCompiler.compile`: one section's faces and visibility set.
 #[allow(clippy::too_many_arguments)]
 fn compile_section(
@@ -667,6 +675,7 @@ fn compile_section(
     apart: &[BlockPos],
 ) -> Result<(ChunkMesh, VisibilitySet)> {
     let origin = (sx * 16, sy * 16, sz * 16);
+    mesh::set_section_nether_shade(states.nether_shade);
     let started = Instant::now();
     let view = View::new(states, hood, (origin.0 - 1, origin.1 - 1, origin.2 - 1), (18, 18, 18));
     compile_profile::add(compile_profile::VIEW, started);
@@ -1037,6 +1046,7 @@ impl TerrainStream {
         .map_err(|e| anyhow!(e))?;
         let mut states = BlockStates::new(registries, seed, generator.chunk_min_y, generator.chunk_height)?;
         states.sky_light = dimension != Dimension::Nether;
+        states.nether_shade = nether_cardinal_light(states.registries(), dimension.dimension_type());
         let states = Arc::new(states);
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
         // Generation and section building run at background priority, so
@@ -2290,6 +2300,7 @@ mod tests {
         let level = crate::level_storage::LevelStorage::open(dir.path()).unwrap();
         let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::Nether, Some(level.root()), None).unwrap();
         assert!(!stream.states.sky_light);
+        assert!(stream.states.nether_shade, "the Nether's cardinal lighting");
         assert_eq!(stream.states.section_range(), (0, 15), "the Nether is 256 blocks high from 0");
         let (x, y, z) = stream.player_spawn;
         assert!((32.0..123.0).contains(&y), "the stand-in floor is under the roof: {:?}", stream.player_spawn);
@@ -2356,6 +2367,7 @@ mod tests {
         assert_eq!(stream.player_spawn, (100.5, 49.0, 0.5));
         assert_eq!(stream.server.stats().generated, 0, "the End needs no search");
         assert!(stream.states.sky_light);
+        assert!(!stream.states.nether_shade);
         assert_eq!(stream.states.section_range(), (0, 15), "the End is 256 blocks high from 0");
         let blocks = &registries.blocks;
         let end_stone = blocks.block_by_name("minecraft:end_stone").unwrap();

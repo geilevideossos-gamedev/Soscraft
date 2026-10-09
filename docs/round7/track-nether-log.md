@@ -41,7 +41,7 @@ IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:c
 
 ### 3. Minecraft Nether terrain and structures generate in a test (E2-3)
 
-Commit: see `git log` under this subject.
+Commit: 955de45
 
 - **Changed:** a test only; nothing had to be fixed (S1's E1-4 already ran the Nether generator around 0,0).
 - **Tests:** `terrain`: `nether_fortresses_bastions_and_every_nether_feature_generate` (seed 77, real 26.3 data):
@@ -54,3 +54,23 @@ Commit: see `git log` under this subject.
   1. `/locate structure minecraft:fortress`, then `/tp` to the answer at y 70. Nether brick bridges and halls stand there. **Screenshot 2.**
   2. `/locate structure minecraft:bastion_remnant`, then `/tp` there: blackstone walls with gold. **Screenshot 3.** (Its piglins wait dormant until N6.)
 - **Kit:** none needed; any kit works.
+
+### 4. Minecraft Nether blocks and mobs are lit like vanilla's Nether (E2-5)
+
+Commit: see `git log` under this subject.
+
+- **Changed:**
+  - `minecraft_terrain/src/terrain.rs`: `BlockStates.nether_shade`, set by `TerrainStream::for_dimension_at` when the dimension type's `cardinal_light` is `nether`. Each section build (`compile_section`) hands it to its worker thread.
+  - `minecraft_terrain/src/mesh.rs`: `face_shade(direction)` is vanilla's `CardinalLighting.byFace`: DEFAULT is down 0.5, up 1.0, north and south 0.8, west and east 0.6; NETHER (checked with javap) is up and down 0.9. Block faces (`bake_quads`, `append_block`, `block_preview`) and fluids use it: a fluid's top is `up`, its bottom `down`, and its sides `up` times `north` or `west`, as 26.3's `FluidRenderer` does. So Nether lava sides are 0.72 and 0.54 instead of 0.8 and 0.6. Section workers read their own level's flag; other block meshes (falling blocks, open lids, the placement preview) follow the player's level.
+  - `minecraft_terrain/src/cow_render.rs`: `nether_entity_lighting()`. `mesh.rs`'s dropped-item shading (`level_item_shade`) is now the entity shade, so items on the ground take the Nether's second light from below too (`Lighting.updateLevel` sets the level entry to `NETHER_DIFFUSE_LIGHT_0/1`, checked with javap).
+  - `render_anim/src/minecraft_world.rs` (one call line): every frame sets `set_nether_entity_lighting` from the player's level's `rules.nether_cardinal_light`. It existed since upstream but was never called, so mobs, armour, orbs and items in the Nether are now lit from below instead of from above.
+- **Tests:** `mesh`: `nether_faces_are_shaded_from_above_and_below_alike` (a cube's six faces give 0.5, 1.0, 0.8, 0.8, 0.6, 0.6 by default and 0.9, 0.9, 0.8, 0.8, 0.6, 0.6 in the Nether; the fluid side products). `terrain`: the Nether stream has `nether_shade`, the End stream not.
+- **Not done:** the MW2 player and weapon models keep the default two lights (`render_gpu`'s `mc_entity_shade`): telling that shader the dimension needs a slot in the environment uniform, which the End track owns with the sky shader this round.
+- **Test steps** (with `IW4L_MINECRAFT_DIMENSION=the_nether`):
+  1. Look at a netherrack wall and the floor in front of it: the floor is as bright as the walls facing north and south, a little darker than in the overworld, and the underside of an overhang is as bright as the floor (in the overworld it is much darker). **Screenshot 4.**
+  2. Drop a stack of cobblestone and look at it on the ground: its bottom and top are lit alike.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:netherrack*64
+```

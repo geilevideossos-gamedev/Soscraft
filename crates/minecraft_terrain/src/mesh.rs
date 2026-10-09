@@ -858,9 +858,7 @@ fn face_normal(direction: &str) -> Result<Vec3> {
 fn level_item_shade(normal: Vec3) -> f32 {
     // entity.vsh uses Lighting.Entry.LEVEL and minecraft_mix_light for
     // dropped item quads, in addition to the sampled world lightmap.
-    let light0 = Vec3::new(0.2, 1.0, -0.7).normalize();
-    let light1 = Vec3::new(-0.2, 1.0, 0.7).normalize();
-    ((normal.dot(light0).max(0.0) + normal.dot(light1).max(0.0)) * 0.6 + 0.4).min(1.0)
+    crate::cow_render::entity_shade(normal)
 }
 impl ItemVisuals {
     pub fn clear(&mut self) {
@@ -2086,12 +2084,7 @@ pub(crate) fn bake_quads(block: &Block, model: &ResolvedModel, atlas: &Atlas) ->
             let shade = if entity {
                 crate::cow_render::entity_shade(quad_normal(&corners).unwrap_or(Vec3::Y))
             } else {
-                match element.shade_direction_override.as_deref().unwrap_or(dir) {
-                    "up" => 1.0,
-                    "down" => 0.5,
-                    "north" | "south" => 0.8,
-                    _ => 0.6,
-                }
+                face_shade(element.shade_direction_override.as_deref().unwrap_or(dir))
             };
             let light_offset = if entity {
                 (0, 0, 0)
@@ -2298,12 +2291,7 @@ pub(crate) fn append_block<'m, S: Scene>(
             let shade = if entity {
                 crate::cow_render::entity_shade(quad_normal(&corners).unwrap_or(Vec3::Y))
             } else {
-                match element.shade_direction_override.as_deref().unwrap_or(dir) {
-                    "up" => 1.0,
-                    "down" => 0.5,
-                    "north" | "south" => 0.8,
-                    _ => 0.6,
-                }
+                face_shade(element.shade_direction_override.as_deref().unwrap_or(dir))
             };
             let biome = *biome.get_or_insert_with(|| scene.biome_at(tint_kind.biome_pos((x, y, z))));
             let tint = tint_kind.tint(face.tint_index, biome, tint_source);
@@ -2438,6 +2426,22 @@ fn fluid_quad(
     mesh.faces += 1;
 }
 thread_local! {
+    static SECTION_NETHER_SHADE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+pub(crate) fn set_section_nether_shade(nether: bool) {
+    SECTION_NETHER_SHADE.with(|shade| shade.set(Some(nether)));
+}
+pub(crate) fn face_shade(direction: &str) -> f32 {
+    let nether = SECTION_NETHER_SHADE.with(std::cell::Cell::get).unwrap_or_else(crate::cow_render::nether_entity_lighting);
+    match direction {
+        "up" | "down" if nether => 0.9,
+        "up" => 1.0,
+        "down" => 0.5,
+        "north" | "south" => 0.8,
+        _ => 0.6,
+    }
+}
+thread_local! {
     /// Checks only: fluid with no faces showing goes the whole way through
     /// [`append_fluid`] instead of stopping early.
     pub(crate) static FLUID_FULL_PATH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -2561,7 +2565,7 @@ fn append_fluid<S: Scene>(
                 [x + 1.0, y + ne - 0.001, z],
             ],
             uv(texture, coords),
-            color(1.0),
+            color(face_shade("up")),
             sky,
             light.get_block(pos) as f32,
             water,
@@ -2581,7 +2585,7 @@ fn append_fluid<S: Scene>(
                 [x, y + 0.001, z + 1.0],
             ],
             uv(&still, [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
-            color(0.5),
+            color(face_shade("down")),
             light.get(down) as f32,
             light.get_block(down) as f32,
             water,
@@ -2641,7 +2645,7 @@ fn append_fluid<S: Scene>(
                     [0.0, 0.5],
                 ],
             ),
-            color(shade),
+            color(face_shade("up") * shade),
             sky,
             light.get_block(pos) as f32,
             water,
@@ -2763,12 +2767,7 @@ pub fn block_preview<S: Scene>(
             let shade = if entity {
                 crate::cow_render::entity_shade(quad_normal(&corners).unwrap_or(Vec3::Y))
             } else {
-                match element.shade_direction_override.as_deref().unwrap_or(dir) {
-                    "up" => 1.0,
-                    "down" => 0.5,
-                    "north" | "south" => 0.8,
-                    _ => 0.6,
-                }
+                face_shade(element.shade_direction_override.as_deref().unwrap_or(dir))
             };
             let tint = tint_kind.tint(face.tint_index, biome, tint_source);
             let alpha = entity_face_alpha(face);
@@ -3828,6 +3827,38 @@ mod tests {
         fn revision(&self) -> u64 {
             0
         }
+    }
+
+    #[test]
+    fn nether_faces_are_shaded_from_above_and_below_alike() {
+        let stone = ResourceId::parse("minecraft:block/stone").unwrap();
+        let atlas = Atlas {
+            pixels: RgbaImage::new(16, 16),
+            mipmaps: vec![],
+            slots: HashMap::from([(stone.clone(), [0.0, 0.0, 1.0, 1.0])]),
+            missing: vec![],
+            animated: vec![],
+            animated_tiles: vec![],
+            translucent: HashMap::new(),
+        };
+        let tint = BiomeTint { grass: None, foliage: None, dry_foliage: None };
+        let block = Block::new("minecraft:stone");
+        let variants = vec![(test_box_model(&stone, [0.0; 3], [1.0; 3]), 1)];
+        let scene = Placed(HashMap::from([((8, 6, 8), block.clone())]));
+        let light = SkyLight::build(&scene);
+        let shades = |nether: bool| {
+            set_section_nether_shade(nether);
+            let mut mesh = ChunkMesh::default();
+            append_block(&scene, (8, 6, 8), &block, || Ok(variants.as_slice()), |_, _| false, &atlas, &tint, &light, &mut mesh, &mut Vec::new()).unwrap();
+            mesh.vertices.iter().step_by(4).map(|v| v.color[0]).collect::<Vec<f32>>()
+        };
+        assert_eq!(shades(false), vec![0.5, 1.0, 0.8, 0.8, 0.6, 0.6], "CardinalLighting.DEFAULT");
+        assert_eq!(shades(true), vec![0.9, 0.9, 0.8, 0.8, 0.6, 0.6], "CardinalLighting.NETHER");
+        let quads = bake_quads(&block, &variants[0].0, &atlas).unwrap();
+        assert_eq!(quads.len(), 6);
+        assert_eq!(face_shade("up") * face_shade("north"), 0.9 * 0.8, "Nether lava sides are shaded by up times north");
+        set_section_nether_shade(false);
+        assert_eq!(face_shade("up") * face_shade("west"), 0.6);
     }
 
     #[test]
