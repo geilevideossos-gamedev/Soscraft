@@ -942,6 +942,11 @@ pub fn extract_minecraft_world(
     mut cracks_of: Local<Option<(usize, std::sync::Arc<render_gpu::MinecraftAtlasImage>)>>,
     mut glint_of: Local<Option<(usize, std::sync::Arc<render_gpu::MinecraftAtlasImage>)>>,
 ) {
+    let throwing = main_world
+        .get_resource::<net::LocalPresentClient>()
+        .zip(main_world.get_resource::<net::PresentedSnapshot>())
+        .and_then(|(local, presented)| presented.viewweapon_player(local.0))
+        .is_some_and(render_anim::occupancy::fpv_present::mw2_throw_in_view);
     let Some(mut view) = main_world.get_resource_mut::<render_anim::minecraft_world::MinecraftWorldView>() else {
         return;
     };
@@ -993,6 +998,9 @@ pub fn extract_minecraft_world(
     frame.entity_meshes = std::mem::take(&mut view.entity_meshes);
     frame.backdrop = view.backdrop;
     frame.hand = std::mem::take(&mut view.hand);
+    if throwing {
+        frame.hand = Default::default();
+    }
     frame.hand_clip = view.hand_clip;
     frame.crack_texture = view.crack_texture.as_ref().map(|image| {
         let key = std::sync::Arc::as_ptr(image) as usize;

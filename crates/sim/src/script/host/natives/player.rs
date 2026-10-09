@@ -537,8 +537,16 @@ fn register_death(registry: &mut NativeRegistry) {
                 runtime.minecraft_obituary =
                     Some((victim.0, args.get(1).cloned().unwrap_or(Value::Undefined)));
             }
+            let hidden = super::super::players::hides_minecraft_obituary(
+                runtime.minecraft_hit,
+                args.get(1),
+                runtime.minecraft_killer,
+            );
             let weapon = weapon_arg(world, args, 2)?;
             let means = string(args, 3)?;
+            if hidden {
+                return Ok(Value::Undefined);
+            }
             let tick = tick(world);
             script_player::obituary(
                 &mut FrameWorld::from_world(world),

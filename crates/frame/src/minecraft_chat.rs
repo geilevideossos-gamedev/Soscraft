@@ -17,6 +17,7 @@ pub struct McChat {
     pub open: bool,
     pub input: String,
     pub cursor: usize,
+    pub highlight: usize,
     pub history: Vec<String>,
     pub history_pos: usize,
     pub draft: String,
@@ -33,6 +34,7 @@ impl McChat {
         self.open = false;
         self.input.clear();
         self.cursor = 0;
+        self.highlight = 0;
         self.draft.clear();
         self.scroll = 0;
         self.new_since_scroll = false;
@@ -56,6 +58,7 @@ mod tests {
             open: true,
             input: "/se".into(),
             cursor: 3,
+            highlight: 1,
             history: vec!["hello".into()],
             scroll: 4,
             ..McChat::default()
@@ -66,6 +69,7 @@ mod tests {
         chat.clear_messages();
         assert!(!chat.open);
         assert!(chat.input.is_empty() && chat.cursor == 0 && chat.scroll == 0);
+        assert_eq!(chat.highlight, 0);
         assert!(chat.lines.is_empty() && chat.received.is_empty() && chat.sent.is_empty());
         assert_eq!(chat.history, vec!["hello".to_owned()]);
     }
