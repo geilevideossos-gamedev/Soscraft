@@ -184,6 +184,7 @@ fn build() -> Vec<Node> {
         crate::blocks::fill_node(),
         crate::spawnpoint::node(),
         crate::locate::node(),
+        crate::execute::node(),
     ])
 }
 
@@ -636,7 +637,11 @@ fn format_double(value: f64) -> Text {
     literal(format!("{value:.6}"))
 }
 
-fn teleport_all(ctx: &mut Ctx, position: [f64; 3]) -> Result<Vec<PlayerId>, CommandError> {
+fn teleport_all(
+    ctx: &mut Ctx,
+    dimension: &str,
+    position: [f64; 3],
+) -> Result<Vec<PlayerId>, CommandError> {
     if !in_spawnable_bounds(position) {
         return Err(CommandError::new(
             "commands.teleport.invalidPosition",
@@ -645,7 +650,12 @@ fn teleport_all(ctx: &mut Ctx, position: [f64; 3]) -> Result<Vec<PlayerId>, Comm
     }
     let mut moved = Vec::new();
     for player in ctx.targets("targets")? {
-        if ctx.world.teleport(player, position) {
+        let teleported = if ctx.world.dimension(player) == dimension {
+            ctx.world.teleport(player, position)
+        } else {
+            ctx.world.teleport_to_dimension(player, dimension, position)
+        };
+        if teleported {
             moved.push(player);
         }
     }
@@ -657,7 +667,8 @@ fn teleport_to_location(ctx: &mut Ctx) -> Result<i32, CommandError> {
         return Err(CommandError::new("command.unknown.argument", Vec::new()));
     };
     let position = location.position(ctx.pose());
-    let moved = teleport_all(ctx, position)?;
+    let dimension = ctx.dimension();
+    let moved = teleport_all(ctx, &dimension, position)?;
     let [x, y, z] = position.map(format_double);
     let text = match moved.as_slice() {
         [] => return Ok(0),
@@ -682,7 +693,8 @@ fn teleport_to_player(ctx: &mut Ctx) -> Result<i32, CommandError> {
             Vec::new(),
         ));
     };
-    let moved = teleport_all(ctx, pose.feet)?;
+    let dimension = ctx.world.dimension(destination);
+    let moved = teleport_all(ctx, &dimension, pose.feet)?;
     let name = ctx.display_name(destination);
     let text = match moved.as_slice() {
         [] => return Ok(0),
@@ -884,6 +896,7 @@ mod tests {
                 "/difficulty [easy|hard|normal|peaceful]",
                 "/effect (clear|give)",
                 "/enchant <targets> <enchantment> [<level>]",
+                "/execute (in|positioned|run)",
                 "/experience (add|query|set)",
                 "/fill <from> <to> <block> [destroy|hollow|keep|outline|replace|strict]",
                 "/gamemode <gamemode> [<target>]",

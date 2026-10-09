@@ -21,6 +21,7 @@ pub enum Registry {
     Structure,
     Biome,
     PointOfInterest,
+    Dimension,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

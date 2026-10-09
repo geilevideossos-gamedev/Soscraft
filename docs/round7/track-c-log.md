@@ -524,3 +524,55 @@ Kit: none needed.
    - `LocateKind::Poi`: answer `None` until there is a POI manager.
 3. **The answer**, back on the main thread: `Found(pos, id)` becomes `Some(Located { pos, id })`, the other two `None`. Then `server.reply(source, minecraft_commands::locate_answer(&request, found.as_ref()).map(|(text, _)| text), false, rules)` gives the lines for that player.
 4. **Threads**: `Structures::starts_in` caches the starts it makes in the shared `WorldGen`, which the chunk generator reuses; the search only adds starts the generator would make anyway.
+
+## Minecraft /execute in parses dimensions like vanilla
+
+Commit: the commit that adds this entry (branch `track-c`, group "commands").
+
+### What changed
+
+- New `crates/minecraft_commands/src/execute.rs`, checked against 26.3 `ExecuteCommand`, `DimensionArgument`, `CommandSourceStack.withLevel` and `DimensionType.getTeleportationScale` with javap:
+  - `/execute run <command>` redirects to the root, so any command the source may use can follow (and `/execute ... run execute ...` nests).
+  - `/execute in <dimension> ...` redirects back to `/execute` with a modifier. The dimension is read as an id. If the server has not loaded that level, the modifier fails with `argument.dimension.invalid` ("Unknown dimension 'minecraft:the_nether'"), which is vanilla's answer for a level that does not exist. Otherwise, when the level differs from the source's, the source moves there and its x and z are multiplied by the source level's coordinate scale divided by the target's (1/8 into the Nether, 8 out of it), as `withLevel` does.
+  - `/execute positioned <pos> ...` (cheap, so included) sets the source position, keeping the rotation and level.
+  - The other subcommands (`as`, `at`, `align`, `anchored`, `facing`, `rotated`, `if`, `unless`, `store`, `summon`, `on`) are not parsed; they need forking sources, conditions or entities.
+- `Ctx` gains `at` (a position override) and `dimension` (a level override). `Ctx::pose()` and `Ctx::dimension()` use them, so `~` coordinates, `/setblock`, `/fill`, `/locate` and `/spawnpoint` after `execute in` or `positioned` work in that level and position.
+- `/tp` teleports into the source's level (vanilla `teleportToPos(source.getLevel())`), and `/tp <player>` into that player's level. A target in another level goes through `CommandWorld::teleport_to_dimension`.
+- `CommandWorld::dimension_scale(dimension) -> Option<f64>` is `Some(coordinate scale)` for a loaded level. The default loads only the overworld (scale 1). `teleport_to_dimension(player, dimension, position) -> bool` defaults to `false`.
+- `Registry::Dimension` with `CommandHints::dimensions` (the overworld by default), suggested after `in` as vanilla suggests `source.levels()`.
+
+### Tests added
+
+- `execute::tests` (3):
+  - The Nether and End are unknown until loaded; `in minecraft:overworld run tp ~ ~10 ~`, `run seed`, nested `execute`, an incomplete `execute in`, and level 0.
+  - With a loaded Nether at scale 8: in from the overworld (80, 64, -16) gives (10, 64, -2) and a dimension teleport; `/locate` under `execute in` asks in the Nether from the scaled origin; back out multiplies by 8; the same level is a plain teleport; `/tp <player>` goes to that player's level.
+  - `positioned` alone and before `in`.
+- `suggest::tests::execute_suggests_its_subcommands_dimensions_and_any_command_after_run`: subcommands, dimensions, the root commands after `run` from the right position, a command's own suggestions after `run`, the colours of the last stage only, and `<pos> -> execute`.
+- `commands::tests::help_lists_smart_usages_of_visible_commands` lists `/execute (in|positioned|run)`.
+
+### In-game test steps
+
+These work as soon as this commit is in; the overworld is the only loaded level until phase 3.
+
+```
+IW4L_MINECRAFT_KIT=stone*64
+```
+
+1. `/execute in minecraft:the_nether run tp ~ ~ ~`: red "Unknown dimension 'minecraft:the_nether'", and you do not move. Screenshot.
+2. `/execute in minecraft:the_end run seed`: red "Unknown dimension 'minecraft:the_end'".
+3. `/execute in minecraft:overworld run tp ~ ~10 ~`: you go up 10 blocks with "Teleported Steve to ...".
+4. `/execute positioned 0 100 0 run tp ~ ~ ~`: you land at 0.5 100 0.5.
+5. Type `/execute in ` and press Tab once the chat shows suggestions (track A): only `minecraft:overworld` is offered.
+
+Kit: none needed.
+
+### Decisions
+
+- **`in` checks loaded levels, not the dimension registry**, exactly as `DimensionArgument.getDimension` (`server.getLevel(key)`). Until phase 3 only the overworld answers.
+- **No forks.** `as` and `at` run the rest once per entity in vanilla; the flat stages only carry one source, so they stay out until there are entities to select.
+
+### After the split
+
+1. **Phase 3**: `CommandWorld::dimension_scale` returns `Some(scale)` for every loaded level (the dimension type's `coordinate_scale`: overworld 1, Nether 8, End 1), and `dimension(player)` returns the player's level.
+2. **`teleport_to_dimension`**: move the player to that level at the position (vanilla `teleportTo(level, x, y, z, ...)`: load the target chunk, keep velocity at zero, send the respawn and position packets in multiplayer) and return `true`.
+3. **Hints**: fill `CommandHints::dimensions` with the loaded levels.

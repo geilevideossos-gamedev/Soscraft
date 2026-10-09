@@ -52,6 +52,8 @@ pub struct CommandHints {
     pub poi_types: Vec<String>,
     #[serde(default)]
     pub poi_tags: Vec<String>,
+    #[serde(default)]
+    pub dimensions: Vec<String>,
 }
 
 impl CommandHints {
@@ -74,6 +76,7 @@ impl CommandHints {
             biome_tags: server.data().biome_tags.keys().cloned().collect(),
             poi_types: server.data().poi_types.clone(),
             poi_tags: server.data().poi_tags.keys().cloned().collect(),
+            dimensions: vec![crate::server::OVERWORLD.to_owned()],
         }
     }
 
@@ -85,6 +88,7 @@ impl CommandHints {
             Registry::Structure => &self.structures,
             Registry::Biome => &self.biomes,
             Registry::PointOfInterest => &self.poi_types,
+            Registry::Dimension => &self.dimensions,
         }
     }
 
@@ -93,7 +97,10 @@ impl CommandHints {
             Registry::Structure => &self.structure_tags,
             Registry::Biome => &self.biome_tags,
             Registry::PointOfInterest => &self.poi_tags,
-            Registry::EntityType | Registry::MobEffect | Registry::Enchantment => &[],
+            Registry::EntityType
+            | Registry::MobEffect
+            | Registry::Enchantment
+            | Registry::Dimension => &[],
         }
     }
 }
@@ -742,6 +749,7 @@ mod tests {
             structures: owned(&["minecraft:village_plains", "minecraft:igloo"]),
             structure_tags: owned(&["minecraft:village"]),
             biomes: owned(&["minecraft:cherry_grove", "minecraft:desert"]),
+            dimensions: owned(&["minecraft:overworld"]),
             ..CommandHints::default()
         }
     }
@@ -792,6 +800,7 @@ mod tests {
                 "difficulty",
                 "effect",
                 "enchant",
+                "execute",
                 "experience",
                 "fill",
                 "gamemode",
@@ -1125,6 +1134,37 @@ mod tests {
             vec!["minecraft:cherry_grove"]
         );
         assert!(at_end("/locate poi ", OWNERS).list.is_empty());
+    }
+
+    #[test]
+    fn execute_suggests_its_subcommands_dimensions_and_any_command_after_run() {
+        assert_eq!(
+            texts(&at_end("/execute ", OWNERS)),
+            vec!["in", "positioned", "run"]
+        );
+        assert_eq!(
+            texts(&at_end("/execute in ", OWNERS)),
+            vec!["minecraft:overworld"]
+        );
+        assert_eq!(
+            texts(&at_end("/execute in minecraft:overworld ", OWNERS)),
+            vec!["in", "positioned", "run"]
+        );
+        let run = at_end("/execute in minecraft:overworld run ", OWNERS);
+        assert_eq!(texts(&run), texts(&at_end("/", OWNERS)));
+        assert_eq!(run.start, 36);
+        assert_eq!(
+            texts(&at_end("/execute run gamemode c", OWNERS)),
+            vec!["creative"]
+        );
+        assert_eq!(
+            at_end("/execute in minecraft:overworld run gamemode creative", OWNERS).spans,
+            vec![(0..45, GRAY), (45..53, AQUA)]
+        );
+        assert_eq!(
+            usage_lines(&at_end("/execute positioned ", OWNERS)),
+            vec![("<pos> -> execute".to_owned(), GRAY)]
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@ pub mod blocks;
 pub mod clear;
 pub mod commands;
 pub mod enchant;
+pub mod execute;
 pub mod experience;
 pub mod locate;
 pub mod permissions;

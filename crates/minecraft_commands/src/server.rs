@@ -146,6 +146,17 @@ pub trait CommandWorld {
     fn locate(&mut self, _source: PlayerId, _request: &LocateRequest) -> Answer<Option<Located>> {
         Answer::Now(None)
     }
+    fn dimension_scale(&self, dimension: &str) -> Option<f64> {
+        (dimension == OVERWORLD).then_some(1.0)
+    }
+    fn teleport_to_dimension(
+        &mut self,
+        _player: PlayerId,
+        _dimension: &str,
+        _position: [f64; 3],
+    ) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -194,6 +205,8 @@ pub struct Ctx<'a> {
     pub args: Vec<(&'static str, Arg)>,
     pub literals: Vec<&'static str>,
     pub out: Vec<Outgoing>,
+    pub at: Option<Pose>,
+    pub dimension: Option<String>,
 }
 
 pub(crate) fn system(to: PlayerId, text: Text) -> Outgoing {
@@ -226,11 +239,15 @@ impl Ctx<'_> {
     }
 
     pub fn pose(&self) -> Pose {
-        self.world.pose(self.source).unwrap_or(Pose::ORIGIN)
+        self.at
+            .or_else(|| self.world.pose(self.source))
+            .unwrap_or(Pose::ORIGIN)
     }
 
     pub fn dimension(&self) -> String {
-        self.world.dimension(self.source)
+        self.dimension
+            .clone()
+            .unwrap_or_else(|| self.world.dimension(self.source))
     }
 
     pub fn display_name(&self, player: PlayerId) -> Text {
@@ -498,6 +515,8 @@ impl CommandServer {
             args: Vec::new(),
             literals: Vec::new(),
             out: Vec::new(),
+            at: None,
+            dimension: None,
         };
         let result = run_stages(&mut ctx, &parsed).and_then(|()| exec(&mut ctx));
         let mut out = ctx.out;
@@ -593,6 +612,9 @@ pub(crate) mod tests {
         pub(crate) located: Vec<Located>,
         pub(crate) located_requests: Vec<LocateRequest>,
         pub(crate) later: bool,
+        pub(crate) levels: Vec<(String, f64)>,
+        pub(crate) player_dimensions: Vec<(PlayerId, String)>,
+        pub(crate) dimension_teleports: Vec<(PlayerId, String, [f64; 3])>,
     }
 
     impl CommandWorld for FakeWorld {
@@ -791,6 +813,30 @@ pub(crate) mod tests {
                 .find(|located| request.targets.contains(&located.id));
             Answer::Now(found.cloned())
         }
+
+        fn dimension(&self, player: PlayerId) -> String {
+            let set = self.player_dimensions.iter().rev().find(|(id, _)| *id == player);
+            set.map_or_else(|| OVERWORLD.to_owned(), |(_, dimension)| dimension.clone())
+        }
+
+        fn dimension_scale(&self, dimension: &str) -> Option<f64> {
+            if dimension == OVERWORLD {
+                return Some(1.0);
+            }
+            let level = self.levels.iter().find(|(id, _)| id == dimension);
+            level.map(|(_, scale)| *scale)
+        }
+
+        fn teleport_to_dimension(
+            &mut self,
+            player: PlayerId,
+            dimension: &str,
+            position: [f64; 3],
+        ) -> bool {
+            self.dimension_teleports
+                .push((player, dimension.to_owned(), position));
+            true
+        }
     }
 
     pub(crate) fn lang(key: &str) -> Option<String> {
@@ -962,6 +1008,7 @@ pub(crate) mod tests {
                 "Could not find a structure of type \"%s\" nearby"
             }
             "commands.locate.structure.success" => "The nearest %s is at %s (%s blocks away)",
+            "argument.dimension.invalid" => "Unknown dimension '%s'",
             "commands.fill.toobig" => {
                 "Too many blocks in the specified area (maximum %s, but specified %s)"
             }
@@ -1275,6 +1322,8 @@ pub(crate) mod tests {
                 args: Vec::new(),
                 literals: Vec::new(),
                 out: Vec::new(),
+                at: None,
+                dimension: None,
             };
             let result = run_stages(&mut ctx, &parsed).and_then(|()| exec(&mut ctx));
             let texts: Vec<String> = ctx
