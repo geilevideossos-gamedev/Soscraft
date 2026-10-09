@@ -72,6 +72,7 @@ pub struct ServerSim {
     tridents: Vec<crate::trident::ThrownTrident>,
     next_trident: i32,
     players_struck: Vec<crate::thrown::PlayerStruck>,
+    players_pushed: Vec<(u64, glam::DVec3)>,
 }
 
 /// What a player's hit or use on a mob did, for the client to present.
@@ -253,6 +254,7 @@ impl ServerSim {
             tridents: Vec::new(),
             next_trident: TRIDENT_IDS,
             players_struck: Vec::new(),
+            players_pushed: Vec::new(),
         }
     }
 
@@ -782,6 +784,22 @@ impl ServerSim {
         std::mem::take(&mut self.players_struck)
     }
 
+    pub fn take_players_pushed(&mut self) -> Vec<(u64, glam::DVec3)> {
+        std::mem::take(&mut self.players_pushed)
+    }
+
+    fn wind_burst(&mut self, center: glam::DVec3, players: &[crate::thrown::PlayerBody]) {
+        let pushes = {
+            let Self { level, states, mob_tables, mobs, .. } = self;
+            let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
+            crate::wind::burst(&world, mobs, center, players)
+        };
+        self.players_pushed.extend(pushes);
+        self.level.wind_burst(center.to_array(), crate::wind::RADIUS, crate::wind::KNOCKBACK);
+        let (a, b) = (self.sound_random.next_float(), self.sound_random.next_float());
+        self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::wind::BURST_SOUND, pos: center.to_array(), volume: 4.0, pitch: crate::wind::burst_pitch(a, b) });
+    }
+
     pub fn tick_tridents(&mut self, players: &[crate::thrown::PlayerBody]) {
         use crate::trident::TridentEvent;
         if self.tridents.is_empty() {
@@ -916,6 +934,7 @@ impl ServerSim {
         let mut awards = Vec::new();
         let mut splashes = Vec::new();
         let mut lingering = Vec::new();
+        let mut bursts = Vec::new();
         {
             let Self { level, states, mob_tables, thrown, pearl_landings, potion_breaks, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
@@ -942,6 +961,10 @@ impl ServerSim {
                         let amount = crate::thrown::bottle_experience(t.random());
                         let direction = landed.face.map_or(-landed.velocity, crate::thrown::face_normal);
                         awards.push((crate::thrown::sound_cell(at), pitch, landed.at, direction, amount));
+                    }
+                    Throwable::WindCharge => {
+                        let center = if landed.mob.is_some() { t.position() } else { crate::wind::burst_point(landed.at, landed.face) };
+                        bursts.push((landed.mob, landed.velocity, t.owner, t.random().next_long(), center));
                     }
                     Throwable::SplashPotion | Throwable::LingeringPotion => {
                         let contents = t.contents();
@@ -987,6 +1010,16 @@ impl ServerSim {
             self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::thrown::BREAK_SOUND, pos: crate::thrown::sound_cell(at), volume: 1.0, pitch });
         }
         self.clouds.append(&mut lingering);
+        for (mob, velocity, owner, seed, center) in bursts {
+            match mob.map(|id| (id, crate::thrown::struck_player(id))) {
+                Some((_, Some(player))) => self.players_struck.push(crate::thrown::PlayerStruck { player, by: owner, damage: crate::wind::DAMAGE, kind: crate::wind::DAMAGE_TYPE, velocity }),
+                Some((id, None)) => {
+                    crate::thrown::hurt_by(&mut self.mobs, id, crate::wind::DAMAGE, crate::wind::DAMAGE_TYPE, velocity, owner, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
+                }
+                None => {}
+            }
+            self.wind_burst(center, players);
+        }
         for (mob, velocity, owner, seed) in struck {
             crate::thrown::hurt(&mut self.mobs, mob, velocity, owner, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
         }
@@ -1447,6 +1480,7 @@ pub struct Output {
     pub potion_breaks: Vec<minecraftoss_entities::world::PotionBreak>,
     pub player_potions: Vec<crate::potions::PlayerPotionHit>,
     pub players_struck: Vec<crate::thrown::PlayerStruck>,
+    pub players_pushed: Vec<(u64, glam::DVec3)>,
     /// Creeper blasts this tick (`ClientboundExplodePacket`).
     pub explosions: Vec<minecraftoss_entities::creeper::CreeperExplosion>,
     /// Sounds mobs made this tick.
@@ -1803,6 +1837,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.player_potions.extend(sim.take_player_potions());
                     out.player_splashes.extend(witch_splashes);
                     out.players_struck.extend(sim.take_players_struck());
+                    out.players_pushed.extend(sim.take_players_pushed());
                     out.potion_breaks.extend(sim.take_potion_breaks());
                     out.explosions.extend(sim.take_explosions());
                     out.mob_sounds.extend(sim.mobs.take_sounds());
@@ -4106,6 +4141,44 @@ mod tests {
         let struck = server.take_players_struck();
         assert_eq!(struck.len(), 1);
         assert_eq!((struck[0].player, struck[0].by, struck[0].damage, struck[0].kind), (2, 0, 8.0, "minecraft:trident"));
+    }
+
+    #[test]
+    fn a_wind_charge_bursts_on_the_ground_and_throws_cows_and_its_thrower_up() {
+        let Some((mut server, _)) = door_world() else { return };
+        if server.summon("minecraft:cow", [9.6, 200.0, 8.5], None, 0.0).is_err() {
+            return;
+        }
+        let before = server.mobs.cows()[0].cow.health;
+        server.throw(thrown_down_by(3, "minecraft:wind_charge", 9));
+        let players = [player_at(3, [7.5, 200.0, 8.5], true), player_at(4, [20.5, 200.0, 8.5], true)];
+        let mut pushed = Vec::new();
+        for _ in 0..10 {
+            server.tick_thrown(&players);
+            pushed.extend(server.take_players_pushed());
+        }
+        assert!(server.thrown_view().is_empty());
+        let cow = &server.mobs.cows()[0];
+        assert_eq!(cow.cow.health, before, "the burst itself hurts nobody");
+        assert!(cow.cow.body.velocity.x > 0.0 && cow.cow.body.velocity.y > 0.0, "{:?}", cow.cow.body.velocity);
+        assert_eq!(pushed.len(), 1);
+        assert_eq!(pushed[0].0, 3);
+        assert!(pushed[0].1.x < 0.0 && pushed[0].1.y > 0.0, "{pushed:?}");
+        assert!(server.level.sounds.iter().any(|s| s.event == crate::wind::BURST_SOUND && (s.volume - 4.0).abs() < 1e-6));
+        assert!(server.take_potion_breaks().is_empty());
+    }
+
+    #[test]
+    fn a_wind_charge_hits_a_mob_for_1_before_it_bursts() {
+        let Some((mut server, _)) = door_world() else { return };
+        if server.summon("minecraft:cow", [8.5, 200.0, 8.5], None, 0.0).is_err() {
+            return;
+        }
+        server.throw(thrown_down_by(0, "minecraft:wind_charge", 10));
+        for _ in 0..10 {
+            server.tick_thrown(&[]);
+        }
+        assert_eq!(cow_health(&server, 8.5).or_else(|| server.mobs.cows().first().map(|c| c.cow.health)), Some(9.0));
     }
 
     #[test]

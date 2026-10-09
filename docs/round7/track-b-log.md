@@ -143,7 +143,7 @@ IW4L_MINECRAFT_KIT=lingering_potion@harming*2,lingering_potion@poison*2,lingerin
 
 ### 8. Minecraft tridents are thrown, stick, hit for 8 and come back with Loyalty like vanilla
 
-Commit: (next entry)
+Commit: eeffd7c
 
 - **Changed:** new `trident.rs`. `release(inventory, slot, used_ticks, creative, wet, random)` is `TridentItem.releaseUsing`: nothing before 10 ticks of charge, nothing when the next use would break it or when it has Riptide outside water and rain; otherwise it costs one durability (Unbreaking spares it with chance L/(L+1), creative never wears it) and gives `Release::Throw(stack)` (taken from the hand, except in creative) or `Release::Riptide { strength, sound }`. `can_start` is `TridentItem.use`. `ThrownTrident::launch` (`spawnProjectileFromRotation(0, 2.5, 1)` from the eyes less 0.1, with the thrower's motion) and `tick` (`ThrownTrident.tick` with `AbstractArrow.tick`): flight under 0.05 gravity and 0.99 drag, the first mob or player in its path (not the thrower until it has left it) is struck once (`Struck`, then it bounces back by (-0.01, -0.1, -0.01) and turns 170-190 degrees), otherwise it sticks 0.05 back from the block it hit with `item.trident.hit_ground` and shakes for 7 ticks; it falls again when that block goes; a plain trident despawns after 1200 ticks in the ground, a Loyalty one never does. Loyalty L: after a hit or 4 ticks in the ground it flies back without collision (`v*0.95 + toward the eyes * 0.05 L`, rising 0.015 L of the height gap a tick) with one `item.trident.return`; if its thrower died it drops as an item. `touched_by`/`taken_by`: only the thrower picks it up, once it stopped (in the ground or returning) and stopped shaking; a creative throw is just removed. `TridentView` and `append_tridents` draw the `TridentModel` (pole, base, three spikes, `entity/trident/trident`, 32x32) turned as `ThrownTridentRenderer` (Y by yaw - 90, Z by pitch + 90) with the glint when enchanted.
 - `server.rs`: `Command::ThrowTrident`/`ServerHandle::throw_trident`, `ServerSim::tick_tridents` (struck mobs take 8 `minecraft:trident` damage after armour, knocked back along the flight, and turn on the thrower; struck players go to the new `Output.players_struck`), `pickup_tridents` (run with the item pickup, so a trident the thrower walks over goes into the inventory through the existing `Output.picked`, no glue needed), `EntitySnapshot.tridents`. `thrown.rs`: `hurt_by` (any damage and damage type; `hurt` is its 0-damage case), `PlayerStruck`. `mesh.rs` adds the trident texture to the atlas.
@@ -159,6 +159,27 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=trident,trident+loyalty=3,zombie_spawn_egg*4
+```
+
+### 9. Minecraft wind charges burst and knock back like vanilla
+
+Commit: (next entry)
+
+- **Changed:** `thrown.rs`: `Throwable::WindCharge` (`WindChargeItem.use`: thrown level at 1.5 from the eyes themselves, sound `entity.wind_charge.throw`), flying straight with no gravity and no drag (`AbstractWindCharge`, inertia 1), bursting where it climbs 30 blocks above the world. `Throwable::cooldown` (pearl 20 ticks, wind charge 10) for the client's per-item cooldown. Right-click throws it with no glue.
+- New `wind.rs`: `burst_point` (a quarter block off the face it hit, or where it struck a mob), `exposure` (`ServerExplosion.getSeenPercent`: the share of the box's sample grid with a clear line to the centre), `push` (`hurtEntities` with the wind charge's calculator: within twice the 1.2 radius, `(1 - d) * exposure * 1.22` along centre-to-eyes, no damage), `burst` (pushes every mob and returns each player's push). `server.rs`: a landed wind charge first hurts the mob or player it struck for 1 (`minecraft:wind_charge`), then bursts: mobs and players pushed, level items, orbs, TNT and falling blocks pushed too (vendored `Level::wind_burst`, push only), `entity.wind_charge.wind_burst` at volume 4, pitch about 0.7. New `Output.players_pushed: Vec<(player, push)>`.
+- Vendored `minecraftoss-world`: `Level::wind_burst(center, radius, knockback)`.
+- **Tests:** wind: `a_burst_pushes_away_and_weakens_with_distance`, `a_wall_shields_what_is_behind_it`, `it_bursts_a_quarter_block_off_the_face_it_hit`. thrown: `a_wind_charge_flies_straight_from_the_eye_without_slowing`, `a_wind_charge_bursts_where_it_climbs_out_of_the_world`. server: `a_wind_charge_bursts_on_the_ground_and_throws_cows_and_its_thrower_up`, `a_wind_charge_hits_a_mob_for_1_before_it_bursts`.
+- **Decisions:** blocks the burst should trigger (doors, trapdoors, fence gates, buttons, levers, bells, lit candles) and the gust particles are left for later (the vendored explosion has no trigger-block behaviour yet); the charge is drawn as its item sprite, not `WindChargeRenderer`'s swirl. The player's own push and the fall-damage reset need the movement glue (item 14).
+- **Test steps:**
+  1. Right-click a wind charge at the ground 4 blocks away: it flies straight and fast and bursts with the whoosh. Right-clicking again within half a second still throws (the cooldown comes with glue item 13).
+  2. Spawn three cows close together and throw a wind charge at the ground between them: they fly up and apart and take no damage.
+  3. Throw one straight at a cow: it flashes red once (1 damage) and is flung.
+  4. Drop some dirt items and burst a charge next to them: they jump away.
+  5. After the glue (item 14): a charge at your feet launches you up and you take no fall damage from that jump.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=wind_charge*64,cow_spawn_egg*6,dirt*16
 ```
 
 ## After the split
@@ -177,3 +198,5 @@ The glue still needed in the game files (today `render_anim/src/minecraft_*.rs`,
 10. **Tridents drawn.** Keep `snapshot.tridents` in `Entities::poll` and call `minecraft_terrain::trident::append_tridents(&mut out.items, &self.tridents, partial, atlas, light)` beside the thrown sprites (`minecraft_entities.rs:905`).
 11. **Riptide.** On `Release::Riptide { strength, sound }`: add `trident::riptide_push(yaw, pitch, strength)` to the player's velocity (in blocks a tick, MW2 units are `BLOCK * 20` per second), lift by 1.2 blocks if on the ground, start a 20-tick spin attack that hits mobs it touches for 8, and play `sound`.
 12. **Players struck.** In `Entities::poll` read `output.players_struck` for the local player: hurt it by `damage` with armour, as `DamageCause` trident from the thrower, knocked back along `velocity`.
+13. **Per-item throw cooldowns.** `use_hands` (`minecraft_world.rs:1186`) and the cooldown overlay (`minecraft_world.rs:771`): replace the pearl-only `hand.pearl_cooldown` with a cooldown per item from `Throwable::cooldown()` (pearl 20 ticks, wind charge 10), shown on each item's slot.
+14. **Wind pushes the player.** In `Entities::poll` read `output.players_pushed` for the local player and add the push (blocks a tick) to the MW2 velocity; as vanilla's `Player.currentImpulseImpactPos`, ignore the fall damage of the fall that follows a wind push until the player lands.

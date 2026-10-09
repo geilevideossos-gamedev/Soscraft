@@ -37,6 +37,7 @@ pub enum Throwable {
     ExperienceBottle,
     SplashPotion,
     LingeringPotion,
+    WindCharge,
 }
 
 impl Throwable {
@@ -48,6 +49,7 @@ impl Throwable {
             "minecraft:experience_bottle" => Some(Self::ExperienceBottle),
             "minecraft:splash_potion" => Some(Self::SplashPotion),
             "minecraft:lingering_potion" => Some(Self::LingeringPotion),
+            "minecraft:wind_charge" => Some(Self::WindCharge),
             _ => None,
         }
     }
@@ -60,19 +62,20 @@ impl Throwable {
             Self::ExperienceBottle => "minecraft:entity.experience_bottle.throw",
             Self::SplashPotion => "minecraft:entity.splash_potion.throw",
             Self::LingeringPotion => "minecraft:entity.lingering_potion.throw",
+            Self::WindCharge => "minecraft:entity.wind_charge.throw",
         }
     }
 
     pub fn pitch_offset(self) -> f32 {
         match self {
-            Self::Snowball | Self::Egg | Self::EnderPearl => 0.0,
+            Self::Snowball | Self::Egg | Self::EnderPearl | Self::WindCharge => 0.0,
             Self::ExperienceBottle | Self::SplashPotion | Self::LingeringPotion => -20.0,
         }
     }
 
     pub fn power(self) -> f32 {
         match self {
-            Self::Snowball | Self::Egg | Self::EnderPearl => POWER,
+            Self::Snowball | Self::Egg | Self::EnderPearl | Self::WindCharge => POWER,
             Self::ExperienceBottle => 0.7,
             Self::SplashPotion | Self::LingeringPotion => 0.5,
         }
@@ -87,6 +90,19 @@ impl Throwable {
             Self::Snowball | Self::Egg | Self::EnderPearl => GRAVITY,
             Self::ExperienceBottle => 0.07,
             Self::SplashPotion | Self::LingeringPotion => minecraftoss_entities::potion::GRAVITY,
+            Self::WindCharge => 0.0,
+        }
+    }
+
+    pub fn drag(self) -> bool {
+        self != Self::WindCharge
+    }
+
+    pub fn cooldown(self) -> Option<u32> {
+        match self {
+            Self::EnderPearl => Some(PEARL_COOLDOWN),
+            Self::WindCharge => Some(crate::wind::COOLDOWN_TICKS),
+            _ => None,
         }
     }
 }
@@ -287,7 +303,8 @@ impl Thrown {
 
     pub fn launch(throw: &Throw, random: &mut LegacyRandom) -> Option<Self> {
         let kind = Throwable::of(throw.item)?;
-        let start = throw.eye - DVec3::new(0.0, 0.1, 0.0);
+        let below = if kind == Throwable::WindCharge { 0.0 } else { 0.1 };
+        let start = throw.eye - DVec3::new(0.0, below, 0.0);
         let direction = shot_direction_offset(throw.yaw, throw.pitch, kind.pitch_offset());
         let mut flight = ThrownPotion::shoot(
             Potion::Healing,
@@ -371,6 +388,21 @@ impl Thrown {
         owner: Option<(DVec3, DVec3)>,
     ) -> Option<Landed> {
         self.previous = self.flight.position;
+        if self.kind == Throwable::WindCharge && self.flight.position.y.floor() as i32 > world.max_y() + 30 {
+            self.flight.alive = false;
+            return Some(Landed {
+                at: self.flight.position,
+                before: self.previous,
+                mob: None,
+                velocity: self.flight.velocity,
+                block: None,
+                face: None,
+            });
+        }
+        if !self.kind.drag() {
+            let inertia = if self.flight.in_water { 0.8_f32 } else { 0.99_f32 };
+            self.flight.velocity /= f64::from(inertia);
+        }
         self.flight.velocity.y += minecraftoss_entities::potion::GRAVITY - self.kind.gravity();
         let hit = self.flight.tick(world, targets, owner)?;
         let velocity = self.flight.velocity;
@@ -1033,6 +1065,38 @@ mod tests {
         assert_eq!((kind.pitch_offset(), kind.power(), kind.gravity()), (-20.0, 0.5, 0.05));
         assert_eq!(kind.sound(), "minecraft:entity.lingering_potion.throw");
         assert_eq!(throw("minecraft:lingering_potion", 0.0).view().tint, Some(BOTTLE_COLOR));
+    }
+
+    #[test]
+    fn a_wind_charge_flies_straight_from_the_eye_without_slowing() {
+        let kind = Throwable::WindCharge;
+        assert_eq!(Throwable::of("minecraft:wind_charge"), Some(kind));
+        assert_eq!((kind.pitch_offset(), kind.power(), kind.gravity(), kind.drag()), (0.0, 1.5, 0.0, false));
+        assert_eq!((kind.cooldown(), Throwable::EnderPearl.cooldown(), Throwable::Snowball.cooldown()), (Some(10), Some(20), None));
+        assert_eq!(kind.sound(), "minecraft:entity.wind_charge.throw");
+        let mut charge = throw("minecraft:wind_charge", 0.0);
+        assert!((charge.position().y - 70.0).abs() < 1e-9);
+        let before = charge.velocity();
+        let world = Blocks::default();
+        for _ in 0..10 {
+            assert!(charge.tick(&world, &[], None).is_none());
+        }
+        assert!((charge.velocity() - before).length() < 1e-9, "{:?} {:?}", charge.velocity(), before);
+    }
+
+    #[test]
+    fn a_wind_charge_bursts_where_it_climbs_out_of_the_world() {
+        let world = Blocks::default();
+        let mut charge = throw("minecraft:wind_charge", -90.0);
+        let mut burst = None;
+        for _ in 0..400 {
+            if let Some(landed) = charge.tick(&world, &[], None) {
+                burst = Some(landed);
+                break;
+            }
+        }
+        let burst = burst.expect("it bursts above the world");
+        assert!(burst.at.y > f64::from(world.max_y() + 30) && burst.mob.is_none() && burst.face.is_none());
     }
 
     #[test]
