@@ -796,6 +796,21 @@ pub fn pump(
     delivered
 }
 
+pub fn take_jobs_of(
+    jobs: &mut Vec<Box<dyn Any + Send>>,
+    source: PlayerId,
+) -> Vec<Box<dyn Any + Send>> {
+    let (taken, kept) = std::mem::take(jobs).into_iter().partition(|job| {
+        job.downcast_ref::<CommandJob>().is_none_or(|job| match job {
+            CommandJob::Edit { source: from, .. } | CommandJob::Located { source: from, .. } => {
+                *from == source
+            }
+        })
+    });
+    *jobs = kept;
+    taken
+}
+
 pub fn answer_jobs(
     chat: &CommandServer,
     rules: &GameRules,
@@ -877,7 +892,7 @@ pub fn run(
     drop(host);
     let mut finished = Vec::new();
     for entities in levels.values_mut().filter_map(|level| level.entities.as_mut()) {
-        finished.append(&mut entities.command_jobs);
+        finished.extend(take_jobs_of(&mut entities.command_jobs, id));
     }
     delivered.extend(answer_jobs(&globals.chat, &globals.game_rules, id, finished));
     if rules_changed {
@@ -1363,6 +1378,69 @@ pub(crate) mod tests {
         let host = parts.host();
         assert_eq!(host.dimension(HOST), "minecraft:overworld");
         assert_eq!(host.loaded("minecraft:overworld", [0, 64, 0]), Loaded::Unloaded);
+    }
+
+    #[test]
+    fn each_player_takes_only_the_answers_to_their_own_commands() {
+        use minecraft_commands::blocks::{BlockInput, EditKind, FillMode};
+        let mut parts = Parts::new();
+        parts.join(FRIEND, "Alex", [0.5, 64.0, 0.5]);
+        let edit = |source: PlayerId, count: i32| -> Box<dyn Any + Send> {
+            Box::new(CommandJob::Edit {
+                source,
+                edit: BlockEdit {
+                    kind: EditKind::SetBlock,
+                    dimension: minecraft_commands::OVERWORLD.to_owned(),
+                    from: [1, 2, 3],
+                    to: [1, 2, 3],
+                    block: BlockInput::default(),
+                    mode: FillMode::Replace,
+                    filter: None,
+                    strict: false,
+                },
+                count,
+            })
+        };
+        let located = |source: PlayerId| -> Box<dyn Any + Send> {
+            Box::new(CommandJob::Located {
+                source,
+                request: LocateRequest {
+                    kind: LocateKind::Structure,
+                    printable: "minecraft:fortress".to_owned(),
+                    tag: false,
+                    targets: Vec::new(),
+                    dimension: minecraft_commands::OVERWORLD.to_owned(),
+                    origin: [0, 64, 0],
+                },
+                search: Search::NotFound,
+            })
+        };
+        let mut jobs = vec![edit(HOST, 1), edit(FRIEND, 1), located(FRIEND), edit(HOST, 0)];
+        let steve = take_jobs_of(&mut jobs, HOST);
+        assert_eq!(steve.len(), 2);
+        assert_eq!(jobs.len(), 2);
+        let alex = take_jobs_of(&mut jobs, FRIEND);
+        assert!(jobs.is_empty());
+        let answers = |to: PlayerId, finished| {
+            answer_jobs(&parts.server, &parts.rules, to, finished)
+                .iter()
+                .map(line)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            answers(HOST, steve),
+            vec!["Changed the block at 1, 2, 3", "Could not set the block"]
+        );
+        assert_eq!(
+            answers(FRIEND, alex),
+            vec![
+                "Changed the block at 1, 2, 3",
+                "Could not find a structure of type \"minecraft:fortress\" nearby",
+            ]
+        );
+        let mut other: Vec<Box<dyn Any + Send>> = vec![Box::new(5_i32)];
+        assert_eq!(take_jobs_of(&mut other, FRIEND).len(), 1);
+        assert!(other.is_empty());
     }
 
     pub(crate) fn test_level(stream: TerrainStream) -> Option<Level> {

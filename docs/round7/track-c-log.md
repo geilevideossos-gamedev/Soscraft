@@ -1786,3 +1786,27 @@ Load a fresh world with this kit and type `/gamemode creative`, then follow the 
 3. The variants entry, steps 1 to 6 (screenshot 8).
 4. The saved hotbars entry, steps 1 to 6 (screenshots 6 and 7); its kit items are in this kit.
 5. Last, the operator tab (tabs entry, step 10) if wanted: it needs `minecraft_operator_items=true` in `iw4l-artifacts\settings.cfg` and a restart.
+
+# Second half: review fixes
+
+Branch `track-c`, adversarial review of the whole track (base 44759b7). The previous commit is 555f750 (the creative group's clippy pass).
+
+## Minecraft command answers reach the player who sent the command
+
+Commit: the commit that adds this entry.
+
+### What changed
+
+- **The defect:** `commands::run` is called once per player (`from`), but it emptied every level's `command_jobs` and answered them for `from` only. Each answer is a reply to the job's own `source`, so once a second player runs commands, the first `run` of a frame would take the friend's finished `/setblock`, `/fill` and `/locate` jobs, filter the friend's own answer out (it does not reach `from`) and drop it for good.
+- New `commands::take_jobs_of(jobs, source)`: takes the finished jobs that `source` started and leaves the others in the level for their own player's `run`. A result that is not a command job is taken by whoever comes first, as before. `run` uses it for every level.
+
+### Tests added
+
+- `commands::tests::each_player_takes_only_the_answers_to_their_own_commands`: Steve's two edits and Alex's edit and `/locate` sit in one queue. Steve's `run` takes his two and leaves Alex's, Alex's takes the rest, each gets their own lines, and a foreign result is taken.
+
+### In-game test steps
+
+Nothing changes for one player; this matters once friends join. Kit: none needed.
+
+1. `/setblock ~ ~-1 ~ gold_block`: "Changed the block at x, y, z" still shows.
+2. `/locate structure minecraft:village_plains`: the answer still shows.
