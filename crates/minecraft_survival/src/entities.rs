@@ -240,6 +240,10 @@ impl Entities {
         self.server.set_weather(weather, duration);
     }
 
+    pub fn set_player_uuid(&mut self, uuid: &minecraft_net::PlayerUuid) {
+        self.server.set_player_uuid(PLAYER, crate::level::opener_key(uuid));
+    }
+
     pub fn throw(&mut self, stack: &ItemStack, eye: DVec3, yaw: f32, pitch: f32, motion: DVec3, on_ground: bool) -> bool {
         let throw = minecraft_terrain::thrown::Throw { owner: PLAYER, item: &stack.id, components: stack.components.as_ref(), eye, yaw, pitch, motion, on_ground };
         let Some(thrown) = minecraft_terrain::thrown::Thrown::launch(&throw, &mut self.random) else {

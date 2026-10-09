@@ -501,6 +501,7 @@ fn update(
                 #[allow(clippy::unwrap_or_default)]
                 let player = minecraft_survival::player::Player::new(&profile, minecraft_survival::server::starting_game_mode(saved_mode.map(|(mode, _)| mode), std::env::var("IW4L_MINECRAFT_GAMEMODE").ok().as_deref()), runtime.carried_survival.take().unwrap_or_else(minecraft_survival::survival::Survival::default), inventory);
                 let uuid = player.uuid.clone();
+                entities.set_player_uuid(&uuid);
                 players.insert(uuid.clone(), player);
                 runtime.environment_accumulator = 0.0;
                 runtime.environment_primed = false;

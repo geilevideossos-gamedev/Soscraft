@@ -791,6 +791,10 @@ impl ServerSim {
         std::mem::take(&mut self.players_pushed)
     }
 
+    pub fn set_player_uuid(&mut self, player: u64, uuid: u128) {
+        self.mobs.set_player_uuid(player, uuid);
+    }
+
     fn wind_burst(&mut self, center: glam::DVec3, players: &[crate::thrown::PlayerBody]) {
         let pushes = {
             let Self { level, states, mob_tables, mobs, .. } = self;
@@ -1423,6 +1427,7 @@ pub enum Command {
     Save,
     SetWeather { weather: &'static str, duration: i32 },
     GameRules(Box<crate::game_rules::GameRules>),
+    PlayerUuid { player: u64, uuid: u128 },
 }
 
 /// The client state a server tick reads.
@@ -1667,6 +1672,10 @@ impl ServerHandle {
         self.send(Command::GameRules(Box::new(rules)));
     }
 
+    pub fn set_player_uuid(&mut self, player: u64, uuid: u128) {
+        self.send(Command::PlayerUuid { player, uuid });
+    }
+
     pub fn hatch_egg(&mut self, kind: String, position: [f64; 3], y_rot: f32) {
         self.send(Command::HatchEgg { kind, position, y_rot });
     }
@@ -1789,6 +1798,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::SetWeather { weather, duration } => {
                     sim.set_weather_for(weather, duration);
                 }
+                Command::PlayerUuid { player, uuid } => sim.set_player_uuid(player, uuid),
                 Command::GameRules(rules) => sim.apply_game_rules(&rules),
                 Command::Save => {
                     sim.ticks_since_save = 0;
@@ -4188,6 +4198,18 @@ mod tests {
         let struck = server.take_players_struck();
         assert_eq!(struck.len(), 1);
         assert_eq!((struck[0].player, struck[0].by, struck[0].damage, struck[0].kind), (2, 0, 8.0, "minecraft:trident"));
+    }
+
+    #[test]
+    fn a_trident_saves_its_throwers_own_uuid() {
+        let Some((mut server, _)) = door_world() else { return };
+        let host = 0xb50a_d385_829d_3141_a216_7e7d_7539_ba7f;
+        server.set_player_uuid(0, host);
+        server.throw_trident(trident_down(0, None, 5));
+        assert_eq!(server.tridents[0].owner_uuid, Some(host));
+        let tag = server.tridents[0].to_tag(server.tridents[0].owner_uuid);
+        assert_eq!(tag.get("Owner"), Some(&minecraftoss_core::nbt::Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(host).to_vec())));
+        assert_eq!(server.mobs.uuid_of(crate::thrown::PLAYER_TARGET), host);
     }
 
     #[test]

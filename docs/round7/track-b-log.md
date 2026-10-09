@@ -529,7 +529,7 @@ IW4L_MINECRAFT_KIT=chest*2
 Commit: af7a188
 
 - **A trident waiting in a chunk that was never loaded is lost when the world closes.** Entry 11 keeps a trident that flew or came back into an unloaded chunk in memory, but `ServerSim::save_all_entities` (autosave and shutdown) only writes the loaded chunks' entities, so quitting while it waits there drops it and the item in it. Vanilla saves it: the entity section of the unloaded chunk is queued for loading (`PersistentEntitySectionManager.ensureChunkQueuedForLoad`) and written with that chunk's other entities. It is not fixed here because writing the trident alone into that chunk's entity file would replace the entities already saved there, or the generation mobs of a chunk never saved (`load_chunk` only uses `chunk.generation.entities` when no entity file exists); the fix needs the entity storage to merge into a chunk it has not loaded, which belongs with the per-level storage of the crate split. Until then it only happens to a trident thrown beyond the loaded area.
-- **The server never learns the player's real UUID** (review fix 2, After the split item 22).
+- **The server never learns the player's real UUID** (review fix 2, After the split item 22). Fixed by "Review fixes of the glue" entry 2.
 - **Checked and found right** (26.3 javap where it matters): projectile entity hits stop at the clip point (`EntityHitResult(entity, location)`), so a wind charge bursts where it struck a mob while a lingering cloud forms at the struck mob's position (`ThrownLingeringPotion.onHitAsPotion`); splash potions have no direct-hit bonus (`ThrownSplashPotion.onHitAsPotion`); shulker and chest lid timings, opener sounds and positions, potion table, colours and duration scaling, the trident's flight, deflection, Loyalty and despawn, the armour draw order, slot parts, inflation and first-layer glint.
 - **Test steps:** none.
 - **Kit:** none.
@@ -1076,4 +1076,20 @@ Commit: (this entry; the review started at `5c66e92`)
 
 ```
 IW4L_MINECRAFT_KIT=wind_charge*64,cobblestone*64
+```
+
+### 2. The Minecraft server learns the player's own UUID, so tridents and villager gossip are saved under it
+
+Commit: (this entry; the previous one is `04128c7`)
+
+- **Defect:** After the split item 22 (review note 5 of the first half) was left out of the glue: nothing called `EntityWorld::set_player_uuid`, so the server thread knew the player only by a made-up UUID (`fallback_uuid` of its entity ID). A thrown trident saved that as its `Owner`, and villagers kept their gossip about the player under it, so vanilla opening the world (or a later multiplayer host keyed by real UUIDs) would not know either belongs to the player.
+- **Changed:** `minecraft_terrain/src/server.rs`: new `Command::PlayerUuid { player, uuid }`, `ServerHandle::set_player_uuid(player, uuid)` and `ServerSim::set_player_uuid`, handled in `server_loop`. `minecraft_survival/src/entities.rs`: `Entities::set_player_uuid(&PlayerUuid)` sends the local player's (`PLAYER`) number (`level::opener_key`, the vanilla 128-bit value of the UUID). The adapter sends it when the world opens, right after the player is made and before the first server tick.
+- **Tests:** server: `a_trident_saves_its_throwers_own_uuid` (the thrown trident's `Owner` tag is the player's UUID as four ints).
+- **Decision:** tridents saved before this keep the made-up `Owner`; by review fix 2 of the first half anyone may pick those up, which is vanilla's rule for a thrower who is not in the world.
+- **Test steps** (survival mode):
+  1. Throw the trident at the ground a few blocks away and leave it there. Save and quit to the menu, open the world again and walk over the trident: it goes back into your inventory. Screenshot of the hotbar.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=trident
 ```
