@@ -545,3 +545,22 @@ Previous commit: 45b0216c
 ```
 IW4L_MINECRAFT_KIT=minecraft:blaze_spawn_egg*4,minecraft:diamond_sword,minecraft:shield,minecraft:water_bucket,minecraft:cobblestone*64,minecraft:diamond_chestplate,minecraft:golden_apple*4,minecraft:cooked_beef*16
 ```
+
+## Group N4 summary
+
+- **Commits:** 45b0216c (E2-23, ghasts and their fireballs, with plan decision 2), e9e65b32 (E2-24, blazes and small fireballs), and this entry.
+- **Checks:** `test -p minecraftoss-entities --tests` (81), `test -p minecraftoss-world --tests` (62), `test -p minecraft_terrain` (651 passed, 3 ignored as before), `test -p minecraft_survival` (284 and the vanilla world test), `test -p render_anim` (67) and `check -p launcher` are green. `clippy -p minecraft_terrain -p minecraft_survival -p minecraftoss-entities -p minecraftoss-world -p render_anim --locked --tests --no-deps -- -A clippy::approx_constant` has no finding on a line of this group; the rest are older (`server.rs`, `server_mobs.rs`, `mesh.rs`, `entities.rs`, the render_anim occupancy files and more).
+- **MinecraftOSS patches in this group:** `entities` (new `ghast.rs`, `blaze.rs`, `fireball.rs`, `world/ghasts.rs`, `world/blazes.rs`, `world/fireballs.rs`; `movement.rs` `travel_flying`; `monster_ai.rs` the ghast and blaze goals and states; `world.rs`, `world/combat.rs`, `world/pushing.rs`, `world/hazards.rs` the wiring; `bin/check_zombie_player_hits.rs` the new hit kind), `world` (`natural_spawner.rs`, `natural_spawner/spawning.rs` the ghast and blaze spawn rules; `level/explosion.rs` `light_fire`).
+- **Handed on:**
+  - The End track's X3 rebases on these mob wiring files (`minecraft_survival/src/entities.rs` keys 16 to 18, `server_mobs.rs`, `client_mobs.rs`, `mesh.rs`, vendored `world.rs`), keeping both sides. `fireball.rs` (an `AbstractHurtingProjectile` with `Shooter`, `deflect` and the pick box) can take the dragon's fireball as a further kind; `EntityWorld::fireball_on_ray`, `deflect_fireball` and `push_fireball` already reach MW2 bullets, grenades and the swing.
+  - Multiplayer: deflection, hits and blasts carry the player's id (`Shooter::Player`), never `PLAYER`; only the adapter's local player sends them so far.
+- **Known gaps:** arrows and snowballs do not send ghast fireballs back (players have no bow; thrown snowballs do not look for fireballs); a fireball never strikes another fireball; the fireballs' smoke trails and the blaze's smoke are not drawn; a saved fireball comes back without its owner; the MW2 knife has no hit on Minecraft mobs at all, so the left-click swing is the melee that deflects.
+- **N6** (piglins, hoglins, striders, bartering, brutes, zoglins, lodestones) stays out of scope this round.
+- **Owner test for the whole group** (one new world, survival, `/difficulty normal`, best in the Nether: `IW4L_MINECRAFT_WORLD=n4` with `IW4L_MINECRAFT_DIMENSION=the_nether`; screenshots numbered across the entries):
+  1. Entry 22 steps 1 to 6 (ghasts: the open mouth and fireballs, a burst that breaks blocks and leaves fire, a fireball swung back to kill its ghast, one shot back with the MW2 rifle, a grenade that only pushes one, no griefing without `mob_griefing`), screenshots 20 to 22.
+  2. Entry 23 steps 1 to 7 (blazes: the glow and rods, the flare and three-shot volleys that set you alight, fire where they land, the climb, the strike up close, water, no fires without `mob_griefing`, a fortress spawner's blazes), screenshots 23 to 26.
+- **Kit (9 stacks):**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ghast_spawn_egg*4,minecraft:blaze_spawn_egg*4,minecraft:diamond_sword,minecraft:shield,minecraft:diamond_chestplate,minecraft:golden_apple*4,minecraft:cooked_beef*16,minecraft:cobblestone*64,minecraft:water_bucket
+```
