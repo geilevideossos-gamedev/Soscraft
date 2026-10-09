@@ -177,6 +177,8 @@ fn build() -> Vec<Node> {
                 ),
         ),
         crate::clear::node(),
+        crate::experience::node(),
+        crate::experience::alias(),
     ])
 }
 
@@ -876,6 +878,7 @@ mod tests {
                 "/deop <targets>",
                 "/difficulty [easy|hard|normal|peaceful]",
                 "/effect (clear|give)",
+                "/experience (add|query|set)",
                 "/gamemode <gamemode> [<target>]",
                 "/gamerule <rule> [<value>]",
                 "/give <targets> <item> [<count>]",
@@ -888,6 +891,7 @@ mod tests {
                 "/time (add|pause|query|resume|set)",
                 "/tp -> teleport",
                 "/weather (clear|rain|thunder)",
+                "/xp -> experience",
             ]
         );
         let out = run(&mut server, &mut world, HOST, "help weather");

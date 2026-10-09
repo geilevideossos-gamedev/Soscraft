@@ -6,6 +6,7 @@ use minecraftoss_world::game_rules::{GameRules, Rule, Value};
 
 use crate::args::{Arg, ItemArg, Selector};
 use crate::clear::ItemFilter;
+use crate::experience::Experience;
 use crate::permissions::{ALL, OWNERS, OpList};
 use crate::players::offline_uuid;
 use crate::protocol::{
@@ -98,6 +99,12 @@ pub trait CommandWorld {
     ) -> Result<(), Text>;
     fn clear(&mut self, _player: PlayerId, _filter: &ItemFilter, _max: i32) -> Option<i32> {
         None
+    }
+    fn experience(&self, _player: PlayerId) -> Option<Experience> {
+        None
+    }
+    fn set_experience(&mut self, _player: PlayerId, _experience: Experience) -> bool {
+        false
     }
 }
 
@@ -518,6 +525,7 @@ pub(crate) mod tests {
         pub(crate) cleared: Vec<(PlayerId, Option<String>)>,
         pub(crate) summoned: Vec<(String, [f64; 3], Option<String>)>,
         pub(crate) inventories: Vec<(PlayerId, minecraftoss_player::inventory::Inventory)>,
+        pub(crate) experience: Vec<(PlayerId, Experience)>,
     }
 
     impl CommandWorld for FakeWorld {
@@ -647,6 +655,19 @@ pub(crate) mod tests {
             let (_, inventory) = self.inventories.iter_mut().find(|(id, _)| *id == player)?;
             Some(crate::clear::clear_inventory(inventory, filter, max))
         }
+
+        fn experience(&self, player: PlayerId) -> Option<Experience> {
+            let (_, experience) = self.experience.iter().find(|(id, _)| *id == player)?;
+            Some(*experience)
+        }
+
+        fn set_experience(&mut self, player: PlayerId, experience: Experience) -> bool {
+            let Some((_, known)) = self.experience.iter_mut().find(|(id, _)| *id == player) else {
+                return false;
+            };
+            *known = experience;
+            true
+        }
     }
 
     pub(crate) fn lang(key: &str) -> Option<String> {
@@ -736,6 +757,27 @@ pub(crate) mod tests {
             "commands.clear.success.single" => "Removed %s item(s) from player %s",
             "commands.clear.test.multiple" => "Found %s matching item(s) on %s players",
             "commands.clear.test.single" => "Found %s matching item(s) on player %s",
+            "commands.experience.add.levels.success.multiple" => {
+                "Gave %s experience levels to %s players"
+            }
+            "commands.experience.add.levels.success.single" => "Gave %s experience levels to %s",
+            "commands.experience.add.points.success.multiple" => {
+                "Gave %s experience points to %s players"
+            }
+            "commands.experience.add.points.success.single" => "Gave %s experience points to %s",
+            "commands.experience.query.levels" => "%s has %s experience levels",
+            "commands.experience.query.points" => "%s has %s experience points",
+            "commands.experience.set.levels.success.multiple" => {
+                "Set %s experience levels on %s players"
+            }
+            "commands.experience.set.levels.success.single" => "Set %s experience levels on %s",
+            "commands.experience.set.points.invalid" => {
+                "Cannot set experience points above the maximum points for the player's current level"
+            }
+            "commands.experience.set.points.success.multiple" => {
+                "Set %s experience points on %s players"
+            }
+            "commands.experience.set.points.success.single" => "Set %s experience points on %s",
             _ => return None,
         };
         Some(text.to_owned())

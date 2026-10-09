@@ -698,6 +698,7 @@ mod tests {
                 "deop",
                 "difficulty",
                 "effect",
+                "experience",
                 "gamemode",
                 "gamerule",
                 "give",
@@ -710,6 +711,7 @@ mod tests {
                 "time",
                 "tp",
                 "weather",
+                "xp",
             ]
         );
         let ga = at_end("/ga", OWNERS);
@@ -953,6 +955,15 @@ mod tests {
         );
         assert_eq!(texts(&at_end("/tp", OWNERS)), Vec::<&str>::new());
         assert_eq!(texts(&at_end("/t", OWNERS)), vec!["teleport", "time", "tp"]);
+        assert_eq!(texts(&at_end("/xp ", OWNERS)), vec!["add", "query", "set"]);
+        assert_eq!(
+            texts(&at_end("/xp add @s 5 ", OWNERS)),
+            vec!["levels", "points"]
+        );
+        assert_eq!(
+            usage_lines(&at_end("/xp query ", OWNERS)),
+            vec![("<target> (levels|points)".to_owned(), GRAY)]
+        );
     }
 
     #[test]

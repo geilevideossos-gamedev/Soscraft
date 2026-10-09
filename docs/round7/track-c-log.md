@@ -203,3 +203,52 @@ Kit: none needed (the line above is any valid kit).
 ### Decisions
 
 - **Stages instead of nested contexts.** The parse stays one flat list of nodes, arguments and literals, with the stage boundaries recorded. It keeps the existing lookups (`ctx.arg`) working and is enough for redirects whose modifier changes one source. Forking modifiers that run the rest once per target (`execute as @a`) are not supported.
+
+## Minecraft /xp and /experience add, set and query experience like vanilla
+
+Commit: the commit that adds this entry (branch `track-c`, group "commands").
+
+### What changed
+
+- New `crates/minecraft_commands/src/experience.rs`, checked against 26.3 `ExperienceCommand`, `ExperienceCommand$Type`, `Player.giveExperiencePoints`, `giveExperienceLevels`, `getXpNeededForNextLevel` and `ServerPlayer.setExperiencePoints` with javap:
+  - The tree is `/experience add <target> <amount> [points|levels]`, `/experience set <target> <amount> [points|levels]` and `/experience query <target> (points|levels)`, at level 2. `/xp` redirects to `/experience`. The argument is called `target` in 26.3, even where it takes several players. `set` takes amounts from 0, `query` takes one player.
+  - `Experience { level, progress, total }` holds vanilla's three fields. Its methods are the vanilla float math: `needed`, `points` (`Mth.floor(progress * needed)`), `give_points` (with negative points walking levels down), `give_levels` (saturating, and a reset below 0), `set_points` (refused at or above the points for the next level, then clamped to `(needed - 1) / needed`) and `set_levels`.
+  - Messages follow the response tracker: `add` counts every target, `set` counts the targets that changed, and nothing changed gives `commands.experience.set.points.invalid`. The query goes to the source only.
+- `CommandWorld::experience(player) -> Option<Experience>` and `set_experience(player, Experience) -> bool`. They default to `None` and `false`, so until the glue lands every target counts as not found and the answer is "No player was found".
+
+### Tests added
+
+- `experience::tests` (5):
+  - Points cross level thresholds, including vanilla's float rounding (giving back 6 of 11 points leaves 4 showing, not 5) and 1395 points landing exactly on level 30.
+  - Levels saturate at `i32::MAX` and reset below zero.
+  - Setting points stays below the next level.
+  - `/xp add`, `/xp query`, `/experience add`, a refused `set`, `set` points and levels, negative levels and the integer bound.
+  - Two players with single and multiple lines, a `set` that only one player passes, the single-player query, a world without experience, and level 0.
+- `suggest::tests::redirects_suggest_and_colour_the_target_command` covers `/xp ` and its units and usage.
+
+### In-game test steps
+
+The experience bar only follows once the glue is in. Until then `/xp ...` answers "No player was found".
+
+```
+IW4L_MINECRAFT_KIT=stone*64
+```
+
+1. `/xp add @s 5 levels`: "Gave 5 experience levels to Steve", and the bar shows 5. Screenshot.
+2. `/xp query @s levels`: "Steve has 5 experience levels".
+3. `/xp add @s 10`: "Gave 10 experience points to Steve", and the bar fills to about half (17 points are needed at level 5).
+4. `/xp set @s 30 points`: red "Cannot set experience points above the maximum points for the player's current level".
+5. `/experience set @s 30 levels`, then `/xp add @s -40 levels`: the bar is back at 0. Screenshot.
+
+Kit: none needed.
+
+### Decisions
+
+- **A target the world has no experience for is skipped.** When none is left the answer is "No player was found"; vanilla never gets there because every player has experience.
+- **The level-up sound is the glue's job** (see below), since it depends on the player's tick count.
+
+### After the split
+
+1. **`CommandWorld::experience`**: `Some(Experience { level, progress, total })` from the player's `survival::Status` (`experience_level`, `experience_progress`, `total_experience`).
+2. **`CommandWorld::set_experience`**: write the three fields back (levels and totals are `u32` there, and the command never gives negative values) and return `true`.
+3. **Sound**: vanilla plays `minecraft:entity.player.levelup` when a positive level change lands on a multiple of 5 and the last one was more than 100 ticks ago, at volume `0.75 * min(level, 30) / 30`. The glue can compare the old and new level in `set_experience`.
