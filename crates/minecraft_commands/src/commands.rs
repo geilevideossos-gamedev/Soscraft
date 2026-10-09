@@ -179,6 +179,7 @@ fn build() -> Vec<Node> {
         crate::clear::node(),
         crate::experience::node(),
         crate::experience::alias(),
+        crate::enchant::node(),
     ])
 }
 
@@ -878,6 +879,7 @@ mod tests {
                 "/deop <targets>",
                 "/difficulty [easy|hard|normal|peaceful]",
                 "/effect (clear|give)",
+                "/enchant <targets> <enchantment> [<level>]",
                 "/experience (add|query|set)",
                 "/gamemode <gamemode> [<target>]",
                 "/gamerule <rule> [<value>]",

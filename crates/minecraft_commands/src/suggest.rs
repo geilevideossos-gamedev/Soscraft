@@ -698,6 +698,7 @@ mod tests {
                 "deop",
                 "difficulty",
                 "effect",
+                "enchant",
                 "experience",
                 "gamemode",
                 "gamerule",

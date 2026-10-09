@@ -1,6 +1,7 @@
 pub mod args;
 pub mod clear;
 pub mod commands;
+pub mod enchant;
 pub mod experience;
 pub mod permissions;
 pub mod players;
@@ -15,6 +16,7 @@ pub mod tree;
 pub use args::ItemArg;
 pub use clear::{ItemFilter, clear_inventory};
 pub use commands::{difficulty_id, difficulty_name};
+pub use enchant::{Enchanted, EnchantmentInfo};
 pub use experience::Experience;
 pub use players::offline_uuid;
 pub use protocol::{

@@ -6,6 +6,7 @@ use minecraftoss_world::game_rules::{GameRules, Rule, Value};
 
 use crate::args::{Arg, ItemArg, Selector};
 use crate::clear::ItemFilter;
+use crate::enchant::{Enchanted, EnchantmentInfo};
 use crate::experience::Experience;
 use crate::permissions::{ALL, OWNERS, OpList};
 use crate::players::offline_uuid;
@@ -105,6 +106,12 @@ pub trait CommandWorld {
     }
     fn set_experience(&mut self, _player: PlayerId, _experience: Experience) -> bool {
         false
+    }
+    fn enchantment(&self, _id: &str) -> Option<EnchantmentInfo> {
+        None
+    }
+    fn enchant(&mut self, _player: PlayerId, _enchantment: &str, _level: i32) -> Option<Enchanted> {
+        None
     }
 }
 
@@ -509,6 +516,8 @@ pub(crate) mod tests {
     pub(crate) const HOST: PlayerId = PlayerId(0);
     pub(crate) const FRIEND: PlayerId = PlayerId(1);
 
+    pub(crate) type Held = Option<(String, Vec<(String, i32)>)>;
+
     #[derive(Debug, Default)]
     pub(crate) struct FakeWorld {
         pub(crate) rules: GameRules,
@@ -526,6 +535,7 @@ pub(crate) mod tests {
         pub(crate) summoned: Vec<(String, [f64; 3], Option<String>)>,
         pub(crate) inventories: Vec<(PlayerId, minecraftoss_player::inventory::Inventory)>,
         pub(crate) experience: Vec<(PlayerId, Experience)>,
+        pub(crate) held: Vec<(PlayerId, Held)>,
     }
 
     impl CommandWorld for FakeWorld {
@@ -668,6 +678,33 @@ pub(crate) mod tests {
             *known = experience;
             true
         }
+
+        fn enchantment(&self, id: &str) -> Option<EnchantmentInfo> {
+            let (max_level, curse) = match id {
+                "minecraft:sharpness" | "minecraft:smite" => (5, false),
+                "minecraft:unbreaking" => (3, false),
+                "minecraft:mending" => (1, false),
+                "minecraft:binding_curse" => (1, true),
+                _ => return None,
+            };
+            Some(EnchantmentInfo { max_level, curse })
+        }
+
+        fn enchant(&mut self, player: PlayerId, enchantment: &str, level: i32) -> Option<Enchanted> {
+            let (_, held) = self.held.iter_mut().find(|(id, _)| *id == player)?;
+            let Some((item, enchantments)) = held else {
+                return Some(Enchanted::Itemless);
+            };
+            let damage = ["minecraft:sharpness", "minecraft:smite"];
+            let exclusive = |known: &str| {
+                known == enchantment || damage.contains(&known) && damage.contains(&enchantment)
+            };
+            if item == "minecraft:stick" || enchantments.iter().any(|(known, _)| exclusive(known)) {
+                return Some(Enchanted::Incompatible(Text::hover_name(item.clone())));
+            }
+            enchantments.push((enchantment.to_owned(), level));
+            Some(Enchanted::Applied)
+        }
     }
 
     pub(crate) fn lang(key: &str) -> Option<String> {
@@ -778,6 +815,28 @@ pub(crate) mod tests {
                 "Set %s experience points on %s players"
             }
             "commands.experience.set.points.success.single" => "Set %s experience points on %s",
+            "commands.enchant.failed" => {
+                "Nothing changed. Targets either have no item in their hands or the enchantment could not be applied"
+            }
+            "commands.enchant.failed.entity" => "%s is not a valid entity for this command",
+            "commands.enchant.failed.incompatible" => "%s cannot support that enchantment",
+            "commands.enchant.failed.itemless" => "%s is not holding any item",
+            "commands.enchant.failed.level" => {
+                "%s is higher than the maximum level of %s supported by that enchantment"
+            }
+            "commands.enchant.success.multiple" => "Applied enchantment %s to %s entities",
+            "commands.enchant.success.single" => "Applied enchantment %s to %s's item",
+            "enchantment.minecraft.binding_curse" => "Curse of Binding",
+            "enchantment.minecraft.mending" => "Mending",
+            "enchantment.minecraft.sharpness" => "Sharpness",
+            "enchantment.minecraft.smite" => "Smite",
+            "enchantment.minecraft.unbreaking" => "Unbreaking",
+            "enchantment.level.1" => "I",
+            "enchantment.level.2" => "II",
+            "enchantment.level.3" => "III",
+            "enchantment.level.4" => "IV",
+            "enchantment.level.5" => "V",
+            "item.minecraft.stick" => "Stick",
             _ => return None,
         };
         Some(text.to_owned())

@@ -252,3 +252,52 @@ Kit: none needed.
 1. **`CommandWorld::experience`**: `Some(Experience { level, progress, total })` from the player's `survival::Status` (`experience_level`, `experience_progress`, `total_experience`).
 2. **`CommandWorld::set_experience`**: write the three fields back (levels and totals are `u32` there, and the command never gives negative values) and return `true`.
 3. **Sound**: vanilla plays `minecraft:entity.player.levelup` when a positive level change lands on a multiple of 5 and the last one was more than 100 ticks ago, at volume `0.75 * min(level, 30) / 30`. The glue can compare the old and new level in `set_experience`.
+
+## Minecraft /enchant enchants the held item like vanilla
+
+Commit: the commit that adds this entry (branch `track-c`, group "commands").
+
+### What changed
+
+- New `crates/minecraft_commands/src/enchant.rs`, checked against 26.3 `EnchantCommand` and `Enchantment.getFullname` with javap:
+  - The tree is `/enchant <targets> <enchantment> [<level>]` at level 2, with the level an integer from 0 and 1 by default.
+  - The order is vanilla's. An unknown enchantment is an argument error with its context. Then the targets are resolved, then the level is checked against the maximum (`commands.enchant.failed.level`). Then each target: no item gives `failed.itemless`, an item that cannot take it or already has a clashing one gives `failed.incompatible` (with the item's plain name), and a target the world cannot enchant gives `failed.entity`. These three only stop the command when there is one target; with several, that target is skipped. Nothing applied gives `commands.enchant.failed`.
+  - `full_name` is `Enchantment.getFullname`: the description in grey (red for a curse), plus a space and `enchantment.level.N` unless both the level and the maximum are 1.
+- `CommandWorld::enchantment(id) -> Option<EnchantmentInfo { max_level, curse }>` and `enchant(player, id, level) -> Option<Enchanted>`, where `Enchanted` is `Applied`, `Itemless` or `Incompatible(Text)`. Both default to `None`, so `/enchant` answers "Can't find element ... of type 'minecraft:enchantment'" until the glue lands.
+- `Text::hover_name(id)` (new `Content::HoverName`) resolves to the item's name without brackets, for `getHoverName().getString()`.
+
+### Tests added
+
+- `enchant::tests` (4):
+  - Sharpness V with its grey span, Mending with no numeral, Curse of Binding in red, Unbreaking I.
+  - Failures in order: the level, an unknown player before the level, the same enchantment twice, a stick, an empty hand, an unknown id with context, and the integer bound.
+  - Several players: one skipped without an item, a clashing enchantment (Smite after Sharpness) skipped, "to 2 entities", "Nothing changed", a world that cannot enchant, and a player below level 2.
+  - `full_name` with and without the numeral, and a missing numeral key.
+- `text::tests::item_names_try_item_then_block_keys_in_brackets` covers `hover_name`.
+
+### In-game test steps
+
+`/enchant` needs the glue; until then it answers "Can't find element 'minecraft:sharpness' of type 'minecraft:enchantment'".
+
+```
+IW4L_MINECRAFT_KIT=diamond_sword,stick
+```
+
+1. Hold the sword. `/enchant @s sharpness 5`: "Applied enchantment Sharpness V to Steve's item" with the name in grey, and the sword glints. Screenshot.
+2. `/enchant @s sharpness 6`: red "6 is higher than the maximum level of 5 supported by that enchantment".
+3. `/enchant @s sharpness`: red "Diamond Sword cannot support that enchantment" (vanilla refuses an enchantment the item already has).
+4. `/enchant @s smite`: the same red line, since Smite and Sharpness exclude each other.
+5. Hold the stick, `/enchant @s unbreaking`: red "Stick cannot support that enchantment". Empty hand: red "Steve is not holding any item". Screenshot.
+
+Kit: `minecraft:diamond_sword` 1, `minecraft:stick` 1.
+
+### Decisions
+
+- **A target the world cannot enchant takes vanilla's non-living path** (`commands.enchant.failed.entity`), since that is vanilla's answer for a target without a hand.
+- **Item names in the incompatible line come from the world as `Text`**, so a renamed item can show its own name later.
+
+### After the split
+
+1. **`CommandWorld::enchantment`**: from `minecraftoss_entities::enchant::Enchantments` (the list the enchanting table already loads): `max_level` of the entry, and `curse` from `tag_contains("minecraft:curse", id)`.
+2. **`CommandWorld::enchant`**: the player's main-hand stack (`inventory.slots[selected]` for the host). Empty: `Itemless`. Otherwise read its enchantments (`stored_enchantments` for an enchanted book, as `getEnchantmentsForCrafting` does). It is incompatible unless `can_enchant(item)` holds and every existing enchantment passes `compatible(existing, new)`, which is false for the same enchantment. Then `add_enchantment` with `max(existing, level)` capped at 255, skipping level 0 (vanilla's `ItemEnchantments.Mutable.upgrade`), and answer `Applied`. The incompatible name is `Text::hover_name(item_id)`.
+3. **Registry ids**: fill `registries().enchantments` from the same list so suggestions and `registered()` know them.
