@@ -27,6 +27,41 @@ pub struct Weather {
     pub thunder_level: f32,
 }
 
+impl Weather {
+    pub fn advance_timers(&mut self, random: &mut impl RandomSource) {
+        let mut uniform = |min: i32, max: i32| random.next_i32_bound(max - min + 1) + min;
+        let w = self;
+        if w.clear_time > 0 {
+            w.clear_time -= 1;
+            w.thunder_time = if w.thundering { 0 } else { 1 };
+            w.rain_time = if w.raining { 0 } else { 1 };
+            w.thundering = false;
+            w.raining = false;
+        } else {
+            if w.thunder_time > 0 {
+                w.thunder_time -= 1;
+                if w.thunder_time == 0 {
+                    w.thundering = !w.thundering;
+                }
+            } else if w.thundering {
+                w.thunder_time = uniform(3600, 15600);
+            } else {
+                w.thunder_time = uniform(12000, 180000);
+            }
+            if w.rain_time > 0 {
+                w.rain_time -= 1;
+                if w.rain_time == 0 {
+                    w.raining = !w.raining;
+                }
+            } else if w.raining {
+                w.rain_time = uniform(12000, 24000);
+            } else {
+                w.rain_time = uniform(12000, 180000);
+            }
+        }
+    }
+}
+
 /// A dimension's time and sky: its environment, clocks and weather.
 pub struct Sky {
     pub environment: EnvironmentSystem,
@@ -134,40 +169,12 @@ impl Level<'_> {
     pub(super) fn advance_weather_cycle(&mut self) {
         let Some(sky) = &mut self.sky else { return };
         let random = &mut self.random;
-        let mut uniform = |min: i32, max: i32| random.next_i32_bound(max - min + 1) + min;
         if !sky.can_have_weather {
             return;
         }
         let w = &mut sky.weather;
         if sky.advance_weather {
-            if w.clear_time > 0 {
-                w.clear_time -= 1;
-                w.thunder_time = if w.thundering { 0 } else { 1 };
-                w.rain_time = if w.raining { 0 } else { 1 };
-                w.thundering = false;
-                w.raining = false;
-            } else {
-                if w.thunder_time > 0 {
-                    w.thunder_time -= 1;
-                    if w.thunder_time == 0 {
-                        w.thundering = !w.thundering;
-                    }
-                } else if w.thundering {
-                    w.thunder_time = uniform(3600, 15600);
-                } else {
-                    w.thunder_time = uniform(12000, 180000);
-                }
-                if w.rain_time > 0 {
-                    w.rain_time -= 1;
-                    if w.rain_time == 0 {
-                        w.raining = !w.raining;
-                    }
-                } else if w.raining {
-                    w.rain_time = uniform(12000, 24000);
-                } else {
-                    w.rain_time = uniform(12000, 180000);
-                }
-            }
+            w.advance_timers(random);
         }
         w.thunder_level = (w.thunder_level + if w.thundering { 0.01 } else { -0.01 }).clamp(0.0, 1.0);
         w.rain_level = (w.rain_level + if w.raining { 0.01 } else { -0.01 }).clamp(0.0, 1.0);

@@ -276,6 +276,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         day,
         end_clock: opened.end_clock,
         weather: opened.weather,
+        weather_random: minecraft_survival::server::weather_random(seed),
         chat,
         data: Default::default(),
         level_writer: None,
@@ -1478,6 +1479,7 @@ fn update(
         }
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
         globals.autosave_ticks += mob_ticks;
+        globals.advance_weather(&[*dimension], mob_ticks);
         for _ in 0..mob_ticks {
             for sound in entities.animate_tick(&terrain.scene, feet) {
                 if let Some(sounds) = sounds.as_mut() {

@@ -32,7 +32,7 @@ IW4L_MINECRAFT_KIT=minecraft:cobblestone*64
 
 ### 2. Minecraft levels share the world's clocks (E1-2)
 
-Commit: filled in by the next entry
+Commit: 0c4e7fb
 
 - **Changed:**
   - Vendored `third_party/minecraftoss/world/src/level/time.rs` (MinecraftOSS patch): `Level::set_clock(name, ticks)` sets one named clock of the level, whatever its default clock is.
@@ -50,4 +50,24 @@ Commit: filled in by the next entry
   2. Type `/time set 12000`. Wait 30 seconds: the sun goes down. **Screenshot 1.**
   3. Quit through the menu and start again: the sun is where it was. Type `/time query daytime`: about 12600 or more.
   4. Optional: open `iw4l-artifacts\saves\dimtest\data\minecraft\world_clocks.dat` with an NBT viewer: it holds `minecraft:overworld` and `minecraft:the_end`.
+- **Kit:** none needed; any kit works.
+
+### 3. Minecraft weather keeps changing while nobody is in the overworld (E1-3)
+
+Commit: filled in by the next entry
+
+- **Changed:**
+  - Vendored `third_party/minecraftoss/world/src/level/time.rs` (MinecraftOSS patch): the rain and thunder timers of `advance_weather_cycle` moved unchanged into `Weather::advance_timers(random)`, which the level still calls, so the server can run them without a level.
+  - `minecraft_terrain/src/server.rs`: `advance_weather_timers(&mut WeatherData, random)` runs those timers on the saved form. `ServerSim::weather_data` answers only in a level that can have weather (`canHaveWeather`: sky light, no ceiling, not the End), so a Nether or End level never writes its frozen copy back over the world's weather.
+  - `minecraft_survival/src/server.rs`: `Globals.weather_random` and `Globals::advance_weather(ticking, ticks)`: when none of the ticking levels has weather (`has_weather`: the overworld), the server's `WeatherData` counts down and changes by itself, honouring `advance_weather`; a world with no weather yet starts it as vanilla does from an empty `WeatherData`. While the overworld ticks, its `ServerSim` keeps running the weather and reporting it back, as before.
+  - `render_anim/src/minecraft_world.rs`: `Globals` gets its weather random (from the seed), and each frame passes the server ticks of the player's level to `advance_weather`.
+- **Tests:** `minecraft_terrain::server`: `weather_timers_run_outside_a_level_like_the_overworld_runs_them` (rain stops when its timer ends, a new delay is drawn in vanilla's range, `/weather clear` time clears both, an empty `WeatherData` draws both timers), `only_a_level_that_can_have_weather_reports_the_world_s_weather` (overworld yes, Nether and End no, and they never rain). `server`: `the_weather_keeps_changing_while_no_level_that_has_weather_ticks` (frozen while the overworld ticks, counts in the Nether, stops with `advance_weather` false, a fresh world starts its timers).
+- **Decisions:**
+  - Vanilla always ticks the overworld, so its level random draws the next durations. Here the overworld may be closed, so the server keeps its own random (seeded from the world seed); the durations follow the same ranges.
+  - Rain and thunder levels (the fade) stay per level, as in vanilla. A level that opens takes the server's `WeatherData` through `Entities::new`, which starts it already raining when it rains (track D's `prepareWeather`). Handing the weather back to an overworld level that stayed open while the player was away comes with the level reuse of S2.
+- **Test steps:** nothing visible changes in the overworld until the Nether can be entered (S2/S3). Check that the weather still works:
+  1. Keep `IW4L_MINECRAFT_WORLD=dimtest` and remove any `IW4L_MINECRAFT_WEATHER` line. Start.
+  2. Type `/weather rain 60`. It rains. **Screenshot 1.**
+  3. Wait about a minute: the rain stops by itself.
+  4. Quit and start again: still clear, and the log says `Minecraft weather: clear from weather.dat`.
 - **Kit:** none needed; any kit works.

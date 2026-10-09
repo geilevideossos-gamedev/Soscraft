@@ -12,6 +12,7 @@ use minecraft_terrain::game_rules::GameRules;
 use minecraft_terrain::level_storage::{RespawnData, WeatherData};
 use minecraft_terrain::server::{ClockTicks, OVERWORLD_CLOCK, THE_END_CLOCK};
 use minecraftoss_core::Registries;
+use minecraftoss_core::random::LegacyRandom;
 use minecraftoss_player::Difficulty;
 use minecraftoss_player::crafting::RecipeBook;
 
@@ -38,6 +39,7 @@ pub struct Globals {
     pub day: DayCycle,
     pub end_clock: DayCycle,
     pub weather: Option<WeatherData>,
+    pub weather_random: LegacyRandom,
     pub chat: CommandServer,
     pub data: GameData,
     pub level_writer: Option<JoinHandle<()>>,
@@ -60,6 +62,20 @@ impl Globals {
         }
     }
 
+    pub fn advance_weather(&mut self, ticking: &[Dimension], ticks: u32) {
+        if ticks == 0
+            || ticking.iter().any(|&dimension| has_weather(dimension))
+            || !self.game_rules.bool("advance_weather")
+        {
+            return;
+        }
+        let mut weather = self.weather.unwrap_or_default();
+        for _ in 0..ticks {
+            minecraft_terrain::server::advance_weather_timers(&mut weather, &mut self.weather_random);
+        }
+        self.weather = Some(weather);
+    }
+
     pub fn advance_clocks(&mut self, seconds: f64) {
         let advancing = self.game_rules.bool("advance_time");
         if advancing && !self.day.paused {
@@ -71,6 +87,14 @@ impl Globals {
             self.end_clock.advance(seconds);
         }
     }
+}
+
+pub fn has_weather(dimension: Dimension) -> bool {
+    dimension == Dimension::Overworld
+}
+
+pub fn weather_random(seed: i64) -> LegacyRandom {
+    LegacyRandom::new(seed ^ 0x5745_4154_4845_52)
 }
 
 pub fn default_clock(dimension: Dimension) -> Option<&'static str> {
@@ -660,11 +684,49 @@ mod tests {
             day: DayCycle::default(),
             end_clock: crate::save::END_CLOCK_START,
             weather: None,
+            weather_random: weather_random(1),
             chat: CommandServer::new(crate::commands::HOST),
             data: GameData::default(),
             level_writer: None,
             autosave_ticks: 0,
         }
+    }
+
+    #[test]
+    fn the_weather_keeps_changing_while_no_level_that_has_weather_ticks() {
+        assert!(has_weather(Dimension::Overworld));
+        assert!(!has_weather(Dimension::Nether));
+        assert!(!has_weather(Dimension::End));
+        let Some(registries) = registries() else {
+            return;
+        };
+        let rain = WeatherData {
+            rain_time: 3,
+            raining: true,
+            ..WeatherData::default()
+        };
+        let mut globals = Globals {
+            weather: Some(rain),
+            ..test_globals(registries.clone(), None)
+        };
+        let rain_left = |globals: &Globals| globals.weather.map(|w| (w.rain_time, w.raining));
+        globals.advance_weather(&[Dimension::Overworld], 10);
+        assert_eq!(globals.weather, Some(rain));
+        globals.advance_weather(&[Dimension::Nether], 2);
+        assert_eq!(rain_left(&globals), Some((1, true)));
+        globals.game_rules.set("advance_weather", "false").unwrap();
+        globals.advance_weather(&[Dimension::End], 5);
+        assert_eq!(rain_left(&globals), Some((1, true)));
+        globals.game_rules.set("advance_weather", "true").unwrap();
+        globals.advance_weather(&[], 1);
+        assert_eq!(rain_left(&globals), Some((0, false)));
+        let mut fresh = test_globals(registries, None);
+        fresh.advance_weather(&[Dimension::Nether, Dimension::End], 1);
+        let drawn = fresh.weather.expect("a fresh world starts its weather");
+        assert!(
+            (12_000..=180_000).contains(&drawn.rain_time) && !drawn.raining,
+            "{drawn:?}"
+        );
     }
 
     #[test]

@@ -941,7 +941,7 @@ impl ServerSim {
     }
 
     pub fn weather_data(&self) -> Option<crate::level_storage::WeatherData> {
-        self.level.sky.as_ref().map(|sky| crate::level_storage::WeatherData {
+        self.level.sky.as_ref().filter(|sky| sky.can_have_weather).map(|sky| crate::level_storage::WeatherData {
             clear_weather_time: sky.weather.clear_time,
             rain_time: sky.weather.rain_time,
             thunder_time: sky.weather.thunder_time,
@@ -1173,6 +1173,19 @@ pub enum Command {
     Save,
     SetWeather { weather: &'static str, duration: i32 },
     GameRules(Box<crate::game_rules::GameRules>),
+}
+
+pub fn advance_weather_timers(data: &mut crate::level_storage::WeatherData, random: &mut impl minecraftoss_core::random::RandomSource) {
+    let mut weather = minecraftoss_world::level::time::Weather {
+        clear_time: data.clear_weather_time,
+        rain_time: data.rain_time,
+        thunder_time: data.thunder_time,
+        raining: data.raining,
+        thundering: data.thundering,
+        ..Default::default()
+    };
+    weather.advance_timers(random);
+    *data = crate::level_storage::WeatherData { clear_weather_time: weather.clear_time, rain_time: weather.rain_time, thunder_time: weather.thunder_time, raining: weather.raining, thundering: weather.thundering };
 }
 
 pub const OVERWORLD_CLOCK: &str = "minecraft:overworld";
@@ -1775,6 +1788,44 @@ mod tests {
         clear.set_weather_data(&WeatherData { clear_weather_time: 300, ..WeatherData::default() });
         assert_eq!(clear.weather(None), WeatherView::default());
         assert_eq!(clear.weather_data().map(|w| w.clear_weather_time), Some(300));
+    }
+
+    #[test]
+    fn weather_timers_run_outside_a_level_like_the_overworld_runs_them() {
+        use crate::level_storage::WeatherData;
+        let mut random = minecraftoss_core::random::LegacyRandom::new(5);
+        let mut weather = WeatherData { rain_time: 2, raining: true, thunder_time: 4, ..WeatherData::default() };
+        advance_weather_timers(&mut weather, &mut random);
+        assert_eq!(weather, WeatherData { rain_time: 1, raining: true, thunder_time: 3, ..WeatherData::default() });
+        advance_weather_timers(&mut weather, &mut random);
+        assert_eq!((weather.rain_time, weather.raining, weather.thunder_time), (0, false, 2));
+        advance_weather_timers(&mut weather, &mut random);
+        assert!((12_000..=180_000).contains(&weather.rain_time), "{weather:?}");
+        assert!(!weather.raining);
+        let mut cleared = WeatherData { clear_weather_time: 2, rain_time: 50, raining: true, thundering: true, ..WeatherData::default() };
+        advance_weather_timers(&mut cleared, &mut random);
+        assert_eq!(cleared, WeatherData { clear_weather_time: 1, rain_time: 0, thunder_time: 0, raining: false, thundering: false });
+        let mut fresh = WeatherData::default();
+        advance_weather_timers(&mut fresh, &mut random);
+        assert!((12_000..=180_000).contains(&fresh.rain_time) && (12_000..=180_000).contains(&fresh.thunder_time), "{fresh:?}");
+    }
+
+    #[test]
+    fn only_a_level_that_can_have_weather_reports_the_world_s_weather() {
+        use crate::level_storage::WeatherData;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let rainy = WeatherData { rain_time: 600, raining: true, ..WeatherData::default() };
+        for (dimension, reports) in [("minecraft:overworld", true), ("minecraft:the_nether", false), ("minecraft:the_end", false)] {
+            let mut server = ServerSim::new(worldgen.clone(), states.clone(), dimension);
+            server.set_weather_data(&rainy);
+            server.tick();
+            assert_eq!(server.weather_data().is_some(), reports, "{dimension}");
+            assert_eq!(server.weather(None).rain_level > 0.0, reports, "{dimension}");
+        }
     }
 
     #[test]
