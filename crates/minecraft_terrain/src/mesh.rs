@@ -1102,6 +1102,28 @@ impl ItemVisuals {
         Ok(())
     }
 
+    pub fn append_open_lids<S: Scene>(&mut self, mesh: &mut ChunkMesh, lids: &[crate::lids::PosedLid], level: &S, packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
+        if self.tint.is_none() {
+            self.tint = Some(BiomeTint::from_pack(packs)?);
+        }
+        let Some(tint) = self.tint.as_ref() else {
+            return Ok(());
+        };
+        for lid in lids {
+            let Some(model) = crate::lids::lid_model(&lid.block, lid.progress)? else {
+                continue;
+            };
+            let variants = [(model, 1)];
+            let mut dry = lid.block.clone();
+            dry.properties.remove("waterlogged");
+            let scene = MovingBlockScene { level, block: &dry, at: lid.cell };
+            let mut transparent = Vec::new();
+            append_block(&scene, lid.cell, &dry, || Ok(variants.as_slice()), |_, _| false, atlas, tint, sky_light, mesh, &mut transparent)?;
+            mesh.indices.extend(transparent);
+        }
+        Ok(())
+    }
+
     /// Items mobs hold (`ItemInHandLayer`, `CrossedArmsItemLayer`): each
     /// under its holder's pose, then its display transform, tinted as its
     /// item definition says, lit at its point.
@@ -3826,6 +3848,56 @@ mod tests {
         let elsewhere = terrain(other);
         assert!(reseeded.vertices.iter().zip(&elsewhere.vertices).all(|(a, b)| a.uv == b.uv), "the variant follows the seed");
         assert!(reseeded.vertices.iter().zip(&moving.vertices).any(|(a, b)| a.uv != b.uv));
+    }
+
+    #[test]
+    fn a_shut_lid_drawn_apart_is_its_section_block_and_leaves_the_water_to_the_section() {
+        let sheets = ["minecraft:entity/chest/normal", "minecraft:entity/shulker/shulker_red"].map(|id| ResourceId::parse(id).unwrap());
+        let atlas = Atlas {
+            pixels: RgbaImage::new(128, 64),
+            mipmaps: vec![],
+            slots: HashMap::from([(sheets[0].clone(), [0.0, 0.0, 0.5, 1.0]), (sheets[1].clone(), [0.5, 0.0, 1.0, 1.0])]),
+            missing: vec![],
+            animated: vec![],
+            animated_tiles: vec![],
+            translucent: HashMap::new(),
+        };
+        let tint = BiomeTint { grass: None, foliage: None, dry_foliage: None };
+        let packs = PackStack::open(vec![]).unwrap();
+        let cell = (8, 6, 8);
+        for (block, wet, faces) in [
+            (Block::new("minecraft:chest").with("facing", "east").with("waterlogged", "true"), true, 18),
+            (Block::new("minecraft:red_shulker_box").with("facing", "north"), false, 12),
+        ] {
+            let mut placed = Placed((0..16).flat_map(|x| (0..16).map(move |z| ((x, 0, z), Block::new("minecraft:stone")))).collect());
+            placed.0.insert(cell, block.clone());
+            placed.0.insert((9, 6, 8), Block::new("minecraft:glowstone"));
+            let light = SkyLight::build(&placed);
+            let variants = resolve_block_variants(&packs, &block).unwrap();
+            let mut whole = ChunkMesh::default();
+            let mut whole_transparent = Vec::new();
+            append_block(&placed, cell, &block, || Ok(variants.as_slice()), |_, _| false, &atlas, &tint, &light, &mut whole, &mut whole_transparent).unwrap();
+            let mut visuals = ItemVisuals { tint: Some(BiomeTint { grass: None, foliage: None, dry_foliage: None }), ..ItemVisuals::default() };
+            let mut lid = ChunkMesh::default();
+            let posed = crate::lids::PosedLid { cell, block: block.clone(), progress: 0.0 };
+            visuals.append_open_lids(&mut lid, &[posed], &placed, &packs, &atlas, &light).unwrap();
+            let mut left = ChunkMesh::default();
+            let mut left_transparent = Vec::new();
+            append_baked(&placed, cell, &[], TintKind::of(&block), wet, |_, _| false, |_| false, &atlas, &tint, &light, &mut left, &mut left_transparent).unwrap();
+            let n = lid.vertices.len();
+            assert_eq!(lid.faces, faces);
+            assert_eq!((lid.faces + left.faces, n + left.vertices.len()), (whole.faces, whole.vertices.len()));
+            assert_eq!(whole.vertices[..n], lid.vertices[..], "{}", block.id.path);
+            assert_eq!(whole.vertices[n..], left.vertices[..]);
+            assert_eq!(whole.indices, lid.indices.iter().copied().chain(left.indices.iter().map(|i| i + n as u32)).collect::<Vec<_>>());
+            assert_eq!(whole_transparent, left_transparent.iter().map(|i| i + n as u32).collect::<Vec<_>>());
+            assert_eq!(wet, left.faces > 0, "only a waterlogged chest leaves water behind");
+            let mut open = ChunkMesh::default();
+            let posed = crate::lids::PosedLid { cell, block: block.clone(), progress: 1.0 };
+            visuals.append_open_lids(&mut open, &[posed], &placed, &packs, &atlas, &light).unwrap();
+            assert_eq!(open.faces, lid.faces);
+            assert!(open.vertices.iter().zip(&lid.vertices).any(|(a, b)| a.position != b.position), "{}", block.id.path);
+        }
     }
 
     #[test]

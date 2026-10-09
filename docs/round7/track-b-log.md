@@ -246,7 +246,7 @@ Commit: b36fe90
 
 ### 3. Minecraft block entity lids tick open and shut like vanilla
 
-Commit: (next entry)
+Commit: 66ef4c3
 
 - **Changed:** new `lids.rs` (client side, one per level, keyed by `BlockPos`):
   - `LidKind::of(block)`: shulker boxes, and chests, trapped chests, ender chests and copper chests (waxed too). `lid_model(block, progress)` gives entry 1's or entry 2's model.
@@ -257,6 +257,16 @@ Commit: (next entry)
 - **Tests:** `a_shulker_lid_opens_in_ten_ticks_and_closes_in_ten`, `only_counts_of_zero_and_one_move_a_shulker_lid`, `a_lid_half_a_tick_on_is_halfway_between_its_ticks`, `a_chest_lid_clamps_and_turns_back_from_where_it_is`, `a_new_lid_waits_for_its_section_before_it_moves`, `a_closed_lid_goes_back_to_its_section_once`, `a_lid_reopened_while_closing_turns_back_without_a_jump`, `a_lid_shut_before_its_section_returned_it_is_taken_apart_again`, `a_broken_box_leaves_no_lid_and_gives_its_cell_back`, `a_count_that_opens_nothing_makes_no_lid`, `both_halves_of_a_double_chest_swing_as_the_wider_open_one`, `every_chest_and_shulker_box_has_a_lid`, `apart_cells_name_their_section_once_per_change`.
 - **Decisions:** a lid waits for its section before it moves (a frame or two late) rather than showing two lids; a lid only goes back to its section one tick after it shut, when it is drawn shut at every partial tick. The lids are client state like vanilla's client block entities; the server keeps the openers (entry 5). Vanilla does not save lid progress, so neither does this.
 - **Test steps:** nothing changes in game yet (After the split, items 15 to 17).
+- **Kit:** none.
+
+### 4. Minecraft open lids are drawn every frame apart from their section
+
+Commit: (next entry)
+
+- **Changed:** `mesh.rs`: `ItemVisuals::append_open_lids(mesh, lids, level, packs, atlas, light)` draws each `PosedLid` (from `Lids::posed`) at its real cell through `append_block`, the same function the section build uses, with `lid_model(block, progress)`: same light (an entity sheet is lit at its own cell), same entity shading, same atlas regions. The block is drawn dry (no `waterlogged`), because the section keeps a waterlogged chest's water (glue item 15 draws only the fluid for an apart cell).
+- **Tests:** `a_shut_lid_drawn_apart_is_its_section_block_and_leaves_the_water_to_the_section`: for a waterlogged east chest and a north red shulker box, the frame pass at progress 0 gives exactly the section's model vertices and indices, `append_baked` with no quads (what the section keeps of an apart cell) gives exactly the rest (the water, none for the box), and at progress 1 the lid has moved.
+- **Decision:** the frame pass goes into the entities' `items` mesh, like falling blocks and primed TNT. The crack overlay and the selection outline stay the closed block's while a lid is open, as before.
+- **Test steps:** nothing changes in game yet (After the split, items 15 and 16).
 - **Kit:** none.
 
 ## After the split
@@ -277,3 +287,14 @@ The glue still needed in the game files (today `render_anim/src/minecraft_*.rs`,
 12. **Players struck.** In `Entities::poll` read `output.players_struck` for the local player: hurt it by `damage` with armour, from the thrower, as a trident (`kind` `minecraft:trident`, 8) or wind charge (`minecraft:wind_charge`, 1) hit, knocked back along `velocity`.
 13. **Per-item throw cooldowns.** `use_hands` (`minecraft_world.rs:1186`) and the cooldown overlay (`minecraft_world.rs:771`): replace the pearl-only `hand.pearl_cooldown` with a cooldown per item from `Throwable::cooldown()` (pearl 20 ticks, wind charge 10), shown on each item's slot.
 14. **Wind pushes the player.** In `Entities::poll` read `output.players_pushed` for the local player and add the push (blocks a tick) to the MW2 velocity; as vanilla's `Player.currentImpulseImpactPos`, ignore the fall damage of the fall that follows a wind push until the player lands.
+15. **Sections leave apart cells to the frame pass** (`crates/minecraft_terrain/src/terrain.rs`, off limits in this part of the track; the lids group's entries 3 and 4 build everything it calls):
+    - `TerrainStream` gets `apart: crate::lids::ApartCells` (`Default::default()` in the constructor; not cleared on a view-distance change, so rebuilt sections still skip the cells).
+    - New `pub fn draw_apart(&mut self, pos: BlockPos, apart: bool)`: `if let Some(section) = self.apart.set(pos, apart) { if self.sections.section(section).is_some() { self.sections.set_dirty(section, true); self.player_sections.insert(section); self.serials.remove(&section); } }`. Only the cell's own section rebuilds: no relight, no `record_edits`, no neighbours (shulker boxes and chests are `noOcclusion`, so no neighbour face depends on them). Removing the serial drops a compile already in flight from before the change, so `cell_settled` can't turn true on a mesh that still holds the cell.
+    - `CompileJob` gets `apart: Vec<BlockPos>`, filled in `frame()` where the jobs are pushed (`apart: self.apart.in_section(pos)`), and `compile_section` passes `&job.apart` to both `build_section_blocks` calls.
+    - `build_section_blocks(.., apart: &[BlockPos])`: right after `let index = usize::from(state.0);` add `if apart.contains(&pos) { mesh::append_baked(view, pos, &[], states.tint_kind[index], states.holds_fluid[index], |_, _| false, |_| false, atlas, tint, light, &mut mesh, &mut transparent)?; continue; }`. It is the same on both build paths, so `MINECRAFTOSS_MESH_CHECK` still holds, and a waterlogged chest keeps its water (entry 4's test proves the split adds up to the whole cell).
+    - Test, modelled on the section tests that call `build_section_blocks` (`ModelCache::default()`, `Neighborhood::of`, `View::new`): a section with a shulker box and stone around it, built with `apart = [cell]`, has no vertex inside the box's cell and every other vertex unchanged, on the baked and the unbaked path.
+16. **Lids in the client entities** (`minecraft_entities.rs`):
+    - `Entities` gets `lids: minecraft_terrain::lids::Lids` (`Default`, cleared with the other client state on a world or dimension change; one per level).
+    - `Entities::tick` (:610), inside `if ticked` beside `self.falling.tick_sent()`: `self.lids.tick();`.
+    - `Entities::meshes` (:903), after `append_moving_blocks`: `self.lids.settle(scene, cell_settled); let lids = self.lids.posed(scene, partial); let _ = self.items.append_open_lids(&mut out.items, &lids, scene, packs, atlas, light);`.
+    - `minecraft_world.rs`, right after the `entities.meshes(..)` call (:1908): `for (pos, apart) in entities.lids.take_apart_changes() { world.stream.draw_apart(pos, apart); }` (before the next frame's `world.stream.frame`, :1457).
