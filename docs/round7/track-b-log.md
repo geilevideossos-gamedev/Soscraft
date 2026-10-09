@@ -1093,3 +1093,13 @@ Commit: (this entry; the previous one is `04128c7`)
 ```
 IW4L_MINECRAFT_KIT=trident
 ```
+
+### 3. The Minecraft state doc lists the new throwables and drops the limits the track removed
+
+Commit: (this entry; the previous one is `1603069`)
+
+- **Defect:** `docs/MINECRAFT-SURVIVAL.md` still said the held trident model is not drawn (fixed by throw-glue entry 11), that witch potions don't reach the player (entry 7) and that pearl landings have no player key (entry 2), and its item list named only snowballs, eggs and ender pearls.
+- **Changed:** the doc only: the Items list names bottles o' enchanting, splash and lingering potions, wind charges and tridents (charge, Loyalty, Riptide); the network note says which server outputs carry the player's ID; the held trident leaves the "Not drawn" list; the witch line becomes the trident limits left open (no Riptide spin attack or pose, no slowdown or raised arm while charging, the generic death message).
+- **Tests:** none (doc only).
+- **Test steps:** none.
+- **Kit:** none.
