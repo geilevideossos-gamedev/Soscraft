@@ -1128,3 +1128,36 @@ Kit: none needed.
 ### Decisions
 
 - **The chime is decided by the command, the rest timer by the player.** Only the command knows whether it added or set; only the player knows its tick count, so `level_up` carries the one to the other.
+
+## Minecraft /enchant enchants the named player's held item
+
+Commit: the commit that adds this entry.
+
+### What changed
+
+- `Host::enchantment(id)` reads the enchantment registry the world already loads (`GameData::enchantments`, from the jar): `max_level`, and `curse` when `#minecraft:curse` holds it.
+- `Host::enchant(player, id, level)` works on the target's main-hand slot (`inventory.slots[selected]`), as 26.3 `EnchantCommand` does (checked with javap): an empty hand is `Itemless`; the item must be in the enchantment's supported items (`canEnchant`) and every enchantment it already has must be compatible (`isEnchantmentCompatible` over `getEnchantmentsForCrafting`: `stored_enchantments` for an enchanted book, which also makes the same enchantment twice incompatible), otherwise `Incompatible` with the item's name. Then `ItemEnchantments.Mutable.upgrade`: the level becomes the higher of the two, capped at 255, through `minecraftoss_entities::enchant::add_enchantment`, so the glint and tooltips follow the components as for any enchanted item.
+- `registries().enchantments` was already filled from the same registry when the world loads (`render_anim`, since the split), so suggestions after `/enchant @s ` and `+` in `/give` list the ids.
+
+### Tests added
+
+- `commands::tests::enchant_upgrades_the_named_players_held_item`, on a small registry: Sharpness V, the level cap, Smite against Sharpness, Sharpness again at a lower level, Unbreaking III next to it (the component holds both), a curse on a stick, another player's selected slot, an empty hand, the curse flag and an unknown id, and the stored enchantments of a book.
+
+### In-game test steps
+
+```
+IW4L_MINECRAFT_KIT=diamond_sword,stick
+```
+
+1. Hold the sword. `/enchant @s sharpness 5`: "Applied enchantment Sharpness V to Steve's item", the sword glints and its tooltip lists Sharpness V. Screenshot.
+2. `/enchant @s sharpness 6`: red "6 is higher than the maximum level of 5 supported by that enchantment".
+3. `/enchant @s sharpness`: red "Diamond Sword cannot support that enchantment".
+4. `/enchant @s smite`: the same red line.
+5. `/enchant @s unbreaking 3`: applied; the tooltip lists both. Screenshot.
+6. Hold the stick, `/enchant @s sharpness`: red "Stick cannot support that enchantment". Select an empty slot, `/enchant @s unbreaking`: red "Steve is not holding any item".
+
+Kit: `minecraft:diamond_sword` 1, `minecraft:stick` 1.
+
+### Decisions
+
+- **A stick takes no enchantment, not even Unbreaking**, because vanilla's `supported_items` for Unbreaking is `#minecraft:enchantable/durability`. The test registry lets a stick take Unbreaking only to reach the other player's slot.

@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use minecraft_commands::{
-    Clientbound, Clock, CommandData, CommandRegistries, CommandServer, CommandWorld, Experience,
-    ItemArg, ItemFilter, PlayerId, Pose, Serverbound, Text, Weather,
+    Clientbound, Clock, CommandData, CommandRegistries, CommandServer, CommandWorld, Enchanted,
+    EnchantmentInfo, Experience, ItemArg, ItemFilter, PlayerId, Pose, Serverbound, Text, Weather,
 };
 use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_terrain::day_cycle::DayCycle;
@@ -472,6 +472,44 @@ impl CommandWorld for Host<'_> {
         true
     }
 
+    fn enchantment(&self, id: &str) -> Option<EnchantmentInfo> {
+        let book = self.data.enchantments.as_ref()?;
+        let index = book.index(id)?;
+        Some(EnchantmentInfo {
+            max_level: book.list[index].max_level,
+            curse: book.tag_contains("minecraft:curse", id),
+        })
+    }
+
+    fn enchant(&mut self, player: PlayerId, enchantment: &str, level: i32) -> Option<Enchanted> {
+        let book = self.data.enchantments.clone()?;
+        let wanted = book.index(enchantment)?;
+        let player = self.player_mut(player)?;
+        let selected = player.selected;
+        let Some(stack) = player.inventory.slots.get_mut(selected).and_then(Option::as_mut) else {
+            return Some(Enchanted::Itemless);
+        };
+        let compatible = book.list[wanted].can_enchant(&stack.id)
+            && held_enchantments(stack)
+                .iter()
+                .all(|id| book.index(id).is_none_or(|known| book.compatible(known, wanted)));
+        if !compatible {
+            return Some(Enchanted::Incompatible(Text::hover_name(stack.id.clone())));
+        }
+        let mut components = match stack.components.take() {
+            Some(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        minecraftoss_entities::enchant::add_enchantment(
+            &stack.id,
+            &mut components,
+            enchantment,
+            level,
+        );
+        stack.components = Some(serde_json::Value::Object(components));
+        Some(Enchanted::Applied)
+    }
+
     fn level_up(&mut self, player: PlayerId) {
         let feet = self.presence(player).pose.map(|pose| pose.feet);
         let Some((player, entities)) = self.player_in_level(player) else {
@@ -487,6 +525,20 @@ impl CommandWorld for Host<'_> {
             ));
         }
     }
+}
+
+fn held_enchantments(stack: &ItemStack) -> Vec<String> {
+    let key = if stack.id == "minecraft:enchanted_book" {
+        "minecraft:stored_enchantments"
+    } else {
+        "minecraft:enchantments"
+    };
+    stack
+        .components
+        .as_ref()
+        .and_then(|components| components.get(key))
+        .and_then(serde_json::Value::as_object)
+        .map_or_else(Vec::new, |map| map.keys().cloned().collect())
 }
 
 pub fn command_data(stream: &TerrainStream) -> CommandData {
@@ -713,6 +765,20 @@ pub(crate) mod tests {
             "commands.experience.set.points.invalid" => {
                 "Cannot set experience points above the maximum points for the player's current level"
             }
+            "commands.enchant.success.single" => "Applied enchantment %s to %s's item",
+            "commands.enchant.failed.incompatible" => "%s cannot support that enchantment",
+            "commands.enchant.failed.itemless" => "%s is not holding any item",
+            "commands.enchant.failed.level" => {
+                "%s is higher than the maximum level of %s supported by that enchantment"
+            }
+            "enchantment.minecraft.sharpness" => "Sharpness",
+            "enchantment.minecraft.unbreaking" => "Unbreaking",
+            "enchantment.minecraft.binding_curse" => "Curse of Binding",
+            "enchantment.level.1" => "I",
+            "enchantment.level.3" => "III",
+            "enchantment.level.5" => "V",
+            "item.minecraft.diamond_sword" => "Diamond Sword",
+            "item.minecraft.stick" => "Stick",
             _ => return None,
         };
         Some(text.to_owned())
@@ -836,6 +902,107 @@ pub(crate) mod tests {
             }
         ));
         assert_eq!(host.experience(HOST), Some(Experience::default()));
+    }
+
+    fn enchantment_book() -> minecraftoss_entities::enchant::Enchantments {
+        use serde_json::json;
+        let sword = "minecraft:diamond_sword";
+        let definitions = vec![
+            (
+                "minecraft:sharpness".to_owned(),
+                json!({"max_level": 5, "supported_items": [sword], "exclusive_set": ["minecraft:smite"]}),
+            ),
+            (
+                "minecraft:smite".to_owned(),
+                json!({"max_level": 5, "supported_items": [sword], "exclusive_set": ["minecraft:sharpness"]}),
+            ),
+            (
+                "minecraft:unbreaking".to_owned(),
+                json!({"max_level": 3, "supported_items": [sword, "minecraft:stick"]}),
+            ),
+            (
+                "minecraft:binding_curse".to_owned(),
+                json!({"max_level": 1, "supported_items": ["minecraft:iron_helmet"]}),
+            ),
+        ];
+        let tags = HashMap::from([(
+            "minecraft:curse".to_owned(),
+            json!({"values": ["minecraft:binding_curse"]}),
+        )]);
+        minecraftoss_entities::enchant::Enchantments::new(
+            definitions,
+            &tags,
+            &HashMap::new(),
+            HashMap::new(),
+        )
+    }
+
+    #[test]
+    fn enchant_upgrades_the_named_players_held_item() {
+        let mut parts = Parts::new();
+        parts.data.enchantments = Some(std::sync::Arc::new(enchantment_book()));
+        parts.join(FRIEND, "Alex", [0.5, 64.0, 0.5]);
+        parts.player(HOST).inventory.slots[0] =
+            Some(ItemStack::new("minecraft:diamond_sword", 1));
+        parts.player(FRIEND).inventory.slots[0] = Some(ItemStack::new("minecraft:stick", 1));
+        parts.player(FRIEND).inventory.slots[3] =
+            Some(ItemStack::new("minecraft:diamond_sword", 1));
+        let (lines, _) = parts.send(
+            HOST,
+            &[
+                "/enchant @s sharpness 5",
+                "/enchant @s sharpness 6",
+                "/enchant @s minecraft:smite",
+                "/enchant @s sharpness 2",
+                "/enchant @s unbreaking 3",
+                "/enchant Alex binding_curse",
+            ],
+        );
+        assert_eq!(
+            lines,
+            vec![
+                "Applied enchantment Sharpness V to Steve's item",
+                "6 is higher than the maximum level of 5 supported by that enchantment",
+                "Diamond Sword cannot support that enchantment",
+                "Diamond Sword cannot support that enchantment",
+                "Applied enchantment Unbreaking III to Steve's item",
+                "Stick cannot support that enchantment",
+            ]
+        );
+        let sword = parts.player(HOST).inventory.slots[0].clone().unwrap();
+        assert_eq!(
+            sword.components,
+            Some(serde_json::json!({"minecraft:enchantments": {
+                "minecraft:sharpness": 5,
+                "minecraft:unbreaking": 3
+            }}))
+        );
+        parts.player(FRIEND).selected = 3;
+        parts.player(HOST).selected = 8;
+        let (lines, _) = parts.send(HOST, &["/enchant Alex unbreaking", "/enchant @s unbreaking"]);
+        assert_eq!(
+            lines,
+            vec![
+                "Applied enchantment Unbreaking I to Alex's item",
+                "Steve is not holding any item",
+            ]
+        );
+        let host = parts.host();
+        assert_eq!(
+            host.enchantment("minecraft:binding_curse"),
+            Some(EnchantmentInfo {
+                max_level: 1,
+                curse: true
+            })
+        );
+        assert_eq!(host.enchantment("minecraft:nope"), None);
+        assert_eq!(
+            held_enchantments(&ItemStack {
+                components: Some(serde_json::json!({"minecraft:stored_enchantments": {"minecraft:mending": 1}})),
+                ..ItemStack::new("minecraft:enchanted_book", 1)
+            }),
+            vec!["minecraft:mending".to_owned()]
+        );
     }
 
     #[test]
