@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
+use minecraft_net::Dimension;
 use minecraft_terrain::game_mode::PlayerMode;
 use minecraft_terrain::item_nbt::{components_tag, saved_components, tag_json};
+use minecraft_terrain::level_storage::{uuid_from_ints, uuid_to_ints};
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_player::crafting::RecipeBook;
 use minecraftoss_player::inventory::ItemStack;
@@ -67,6 +69,32 @@ pub struct Stats {
     pub fire: i32,
     pub score: i32,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Place {
+    pub dimension: Dimension,
+    pub feet: [f64; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub motion: [f64; 3],
+    pub on_ground: bool,
+    pub fall_distance: f64,
+}
+
+impl Place {
+    pub fn standing(dimension: Dimension, feet: [f64; 3], yaw: f32, pitch: f32) -> Self {
+        Self {
+            dimension,
+            feet,
+            yaw,
+            pitch,
+            motion: [0.0; 3],
+            on_ground: true,
+            fall_distance: 0.0,
+        }
+    }
+}
+
 pub const EQUIPMENT: [(usize, &str); 7] = [
     (36, "feet"),
     (37, "legs"),
@@ -103,6 +131,8 @@ pub struct PlayerData {
     pub inventory: Option<Vec<Option<ItemStack>>>,
     pub selected: usize,
     pub stats: Option<Stats>,
+    pub place: Option<Place>,
+    pub uuid: Option<String>,
 }
 
 impl PlayerData {
@@ -128,6 +158,11 @@ impl PlayerData {
                 .filter(|slot| *slot < HOTBAR)
                 .unwrap_or(0),
             stats: read_stats(tag),
+            place: read_place(tag),
+            uuid: tag
+                .get("UUID")
+                .and_then(Tag::as_ints)
+                .and_then(|ints| uuid_from_ints(&ints)),
         }
     }
 
@@ -160,6 +195,12 @@ impl PlayerData {
             stats_entries(stats, &mut entries);
         }
         entries.extend(self.effect_entries(None, None));
+        if let Some(place) = &self.place {
+            place_entries(place, &mut entries);
+        }
+        if let Some(ints) = self.uuid.as_deref().and_then(uuid_to_ints) {
+            entries.insert("UUID".to_owned(), Tag::IntArray(ints.to_vec()));
+        }
         entries
     }
 
@@ -232,6 +273,59 @@ fn stats_entries(stats: &Stats, entries: &mut BTreeMap<String, Tag>) {
     ];
     for (key, value) in values {
         entries.insert(key.to_owned(), value);
+    }
+}
+
+fn place_entries(place: &Place, entries: &mut BTreeMap<String, Tag>) {
+    let doubles = |values: [f64; 3]| Tag::List(values.into_iter().map(Tag::Double).collect());
+    let values = [
+        ("Pos", doubles(place.feet)),
+        ("Motion", doubles(place.motion)),
+        (
+            "Rotation",
+            Tag::List(vec![Tag::Float(place.yaw), Tag::Float(place.pitch)]),
+        ),
+        ("OnGround", Tag::Byte(i8::from(place.on_ground))),
+        ("fall_distance", Tag::Double(place.fall_distance)),
+        (
+            "Dimension",
+            Tag::String(place.dimension.dimension_type().to_owned()),
+        ),
+    ];
+    for (key, value) in values {
+        entries.insert(key.to_owned(), value);
+    }
+}
+
+fn read_place(tag: &Tag) -> Option<Place> {
+    let feet = triple(tag.get("Pos")?).filter(|feet| feet.iter().all(|v| v.is_finite()))?;
+    let rotation = tag.get("Rotation").and_then(Tag::as_list).unwrap_or(&[]);
+    let angle = |index: usize| rotation.get(index).and_then(Tag::as_f64).unwrap_or(0.0) as f32;
+    Some(Place {
+        dimension: tag
+            .get("Dimension")
+            .and_then(Tag::as_str)
+            .and_then(Dimension::parse)
+            .unwrap_or(Dimension::Overworld),
+        feet,
+        yaw: angle(0),
+        pitch: angle(1),
+        motion: tag.get("Motion").and_then(triple).unwrap_or([0.0; 3]),
+        on_ground: tag
+            .get("OnGround")
+            .and_then(Tag::as_i64)
+            .is_some_and(|on| on != 0),
+        fall_distance: tag
+            .get("fall_distance")
+            .and_then(Tag::as_f64)
+            .unwrap_or(0.0),
+    })
+}
+
+fn triple(tag: &Tag) -> Option<[f64; 3]> {
+    match tag.as_list()? {
+        [x, y, z] => Some([x.as_f64()?, y.as_f64()?, z.as_f64()?]),
+        _ => None,
     }
 }
 
@@ -868,6 +962,126 @@ mod tests {
         assert_eq!(stats.status.air, 300);
         assert_eq!((stats.fire, stats.score), (0, 0));
         assert_eq!(stats.status.experience_level, 0);
+    }
+
+    fn up_a_hill() -> Place {
+        Place {
+            dimension: Dimension::Overworld,
+            feet: [100.5, 72.0, -33.25],
+            yaw: -135.0,
+            pitch: 20.5,
+            motion: [0.0, -0.0784000015258789, 0.0],
+            on_ground: true,
+            fall_distance: 0.0,
+        }
+    }
+
+    #[test]
+    fn the_place_is_saved_as_entity_pos_rotation_and_dimension() {
+        let uuid = "12345678-9abc-def0-1234-56789abcdef0".to_owned();
+        let entries = PlayerData {
+            place: Some(Place {
+                fall_distance: 2.5,
+                on_ground: false,
+                ..up_a_hill()
+            }),
+            uuid: Some(uuid.clone()),
+            ..PlayerData::default()
+        }
+        .entries();
+        assert_eq!(
+            entries["Pos"],
+            Tag::List(vec![
+                Tag::Double(100.5),
+                Tag::Double(72.0),
+                Tag::Double(-33.25)
+            ])
+        );
+        assert_eq!(
+            entries["Rotation"],
+            Tag::List(vec![Tag::Float(-135.0), Tag::Float(20.5)])
+        );
+        assert_eq!(
+            entries["Motion"],
+            Tag::List(vec![
+                Tag::Double(0.0),
+                Tag::Double(-0.0784000015258789),
+                Tag::Double(0.0)
+            ])
+        );
+        assert_eq!(entries["OnGround"], Tag::Byte(0));
+        assert_eq!(entries["fall_distance"], Tag::Double(2.5));
+        assert_eq!(
+            entries["Dimension"],
+            Tag::String("minecraft:overworld".to_owned())
+        );
+        assert_eq!(
+            entries["UUID"],
+            Tag::IntArray(uuid_to_ints(&uuid).unwrap().to_vec())
+        );
+        let read = PlayerData::read(&Tag::Compound(entries), &RecipeBook::default());
+        assert_eq!(read.uuid, Some(uuid));
+        assert_eq!(read.place.map(|place| place.fall_distance), Some(2.5));
+    }
+
+    #[test]
+    fn a_place_round_trips_and_an_unknown_place_keeps_the_file_s_position() {
+        let place = up_a_hill();
+        let tag = PlayerData {
+            place: Some(place),
+            ..PlayerData::default()
+        }
+        .merged(None);
+        assert_eq!(
+            PlayerData::read(&tag, &RecipeBook::default()).place,
+            Some(place)
+        );
+        let nether = compound(vec![
+            (
+                "Pos",
+                Tag::List(vec![Tag::Double(1.0), Tag::Double(40.0), Tag::Double(2.0)]),
+            ),
+            ("Dimension", Tag::String("minecraft:the_nether".to_owned())),
+        ]);
+        let kept = PlayerData::default().merged(Some(nether.clone()));
+        assert_eq!(kept.get("Pos"), nether.get("Pos"));
+        assert_eq!(kept.get("Dimension"), nether.get("Dimension"));
+        let read = PlayerData::read(&nether, &RecipeBook::default())
+            .place
+            .unwrap();
+        assert_eq!(read.dimension, Dimension::Nether);
+        assert_eq!((read.yaw, read.pitch, read.on_ground), (0.0, 0.0, false));
+        assert_eq!(read.motion, [0.0; 3]);
+    }
+
+    #[test]
+    fn a_broken_or_unknown_position_reads_safely() {
+        let short = compound(vec![(
+            "Pos",
+            Tag::List(vec![Tag::Double(1.0), Tag::Double(2.0)]),
+        )]);
+        assert_eq!(PlayerData::read(&short, &RecipeBook::default()).place, None);
+        let nan = compound(vec![(
+            "Pos",
+            Tag::List(vec![
+                Tag::Double(f64::NAN),
+                Tag::Double(2.0),
+                Tag::Double(3.0),
+            ]),
+        )]);
+        assert_eq!(PlayerData::read(&nan, &RecipeBook::default()).place, None);
+        let moon = compound(vec![
+            (
+                "Pos",
+                Tag::List(vec![Tag::Double(1.0), Tag::Double(2.0), Tag::Double(3.0)]),
+            ),
+            ("Dimension", Tag::String("minecraft:the_moon".to_owned())),
+        ]);
+        let read = PlayerData::read(&moon, &RecipeBook::default())
+            .place
+            .unwrap();
+        assert_eq!(read.dimension, Dimension::Overworld);
+        assert_eq!(read.feet, [1.0, 2.0, 3.0]);
     }
 
     #[test]

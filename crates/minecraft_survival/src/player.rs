@@ -10,7 +10,7 @@ use minecraftoss_player::inventory::{Inventory, ItemStack};
 
 use crate::death::DeathWatch;
 use crate::offhand::Blocking;
-use crate::player_nbt::{PlayerData, SLOTS, Stats};
+use crate::player_nbt::{Place, PlayerData, SLOTS, Stats};
 use crate::survival::Survival;
 
 pub struct Player {
@@ -27,6 +27,8 @@ pub struct Player {
     pub steps: Steps,
     pub dead: bool,
     pub arrived: bool,
+    pub place: Option<Place>,
+    pub arrival: Option<Place>,
 }
 
 #[derive(Default)]
@@ -75,7 +77,15 @@ impl Player {
             steps: Steps::default(),
             dead: false,
             arrived: false,
+            place: None,
+            arrival: None,
         }
+    }
+
+    pub fn arrive(&mut self, place: Place) {
+        self.dimension = place.dimension;
+        self.place = Some(place);
+        self.arrival = Some(place);
     }
 
     pub fn observe_life(&mut self, pm_type: i32) {
@@ -113,6 +123,8 @@ impl Player {
                 fire: self.survival.fire_ticks(),
                 score: self.survival.score,
             }),
+            place: self.place,
+            uuid: Some(self.uuid.0.clone()),
         }
     }
 }

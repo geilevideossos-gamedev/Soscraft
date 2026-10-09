@@ -134,7 +134,7 @@ IW4L_MINECRAFT_KIT=minecraft:dirt*16,minecraft:oak_log*2,minecraft:stone_pickaxe
 
 ### 6. Minecraft health, hunger, experience and effects are saved
 
-Commit: (filled in by the next entry)
+Commit: 1397259
 
 - **Changed:**
   - `player_nbt.rs`: `PlayerData::stats` (`Stats`: the `SurvivalStatus`, the fire ticks and the score) is written with the keys and types of 26.3 (checked with javap: `LivingEntity.addAdditionalSaveData`/`readAdditionalSaveData`, `Player.addAdditionalSaveData`, `FoodData.addAdditionalSaveData`/`readAdditionalSaveData`, `Entity.saveWithoutId`): `Health`, `AbsorptionAmount`, `foodSaturationLevel`, `foodExhaustionLevel` and `XpP` as floats, `foodLevel`, `foodTickTimer`, `XpLevel`, `XpTotal` and `Score` as ints, `Air` and `Fire` as shorts. Missing keys read with vanilla's defaults (food 20, saturation 5, air 300). A file without `Health` has no stats, so a round-6 player keeps the survival carried over in the process.
@@ -163,4 +163,31 @@ Commit: (filled in by the next entry)
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:experience_bottle*64,minecraft:golden_apple*4,minecraft:cobblestone*64,minecraft:bread*16
+```
+
+### 7. Minecraft players come back where they left, facing the same way
+
+Commit: (filled in by the next entry)
+
+- **Changed:**
+  - `player_nbt.rs`: `Place` (dimension, feet, yaw, pitch, motion, on the ground, fall distance) and the player's `UUID`, written as 26.3's `Entity.saveWithoutId` and `ServerPlayer.addAdditionalSaveData` write them (checked with javap): `Pos` and `Motion` as lists of doubles, `Rotation` as two floats (yaw, pitch), `OnGround` as a byte, `fall_distance` as a double, `Dimension` as the level id string and `UUID` as four ints. Vanilla reads a missing `Pos` as 0,0,0, so a player who never spawned is saved at the world spawn. An unknown dimension reads as the overworld, as vanilla's "Unknown respawn dimension, defaulting to overworld".
+  - `player.rs`: `Player::place` (where the player stands, as last seen alive) and `Player::arrival`; `Player::arrive(place)` sets the dimension and queues the move. This is the call the dimension switch can use to put a player into a level at a position.
+  - `server.rs`: `join` takes a `Joining` (profile, world spawn, chosen mode, kit, carried survival). A saved overworld place becomes the arrival; a place in the Nether or the End starts at the world spawn until the dimension switch exists (the log says so, and the file keeps that place until the player has stood in the overworld); a player saved dead starts at the world spawn.
+  - sim (`frame.rs`, `carrier.rs`): `teleport_facing` moves a player like `teleport` and turns the view the way a spawn does (`delta_angles` from the last command angles, as `script_player::spawn`); `set_minecraft_abilities` now also turns flying on when it is asked for together with may-fly (it still cannot fly without it).
+  - `render_anim/src/minecraft_world.rs`: `place_player` records the place every frame the player is alive (MW2 velocity in blocks per tick for `Motion`, the fall since the highest point in the air for `fall_distance`), and on the first alive frame after a load moves the player there through `teleport_facing` (yaw turned back with `minecraft_yaw`, which is its own inverse), keeps a creative player flying, and restores the fall height. Before the player spawns, the world streams and the spawn gate waits around the saved place instead of the world spawn; if an arrival lands where the chunks are not loaded, the loading screen comes back until they are. The gate checks the chunks around the player's feet instead of around the map origin.
+- **Tests:** `player_nbt`: `the_place_is_saved_as_entity_pos_rotation_and_dimension`, `a_place_round_trips_and_an_unknown_place_keeps_the_file_s_position`, `a_broken_or_unknown_position_reads_safely`. `server`: `a_joining_player_arrives_where_they_were_saved_facing_the_same_way` (overworld place, Nether place back at the spawn, new player at the spawn), and `a_player_saved_dead_comes_back_with_full_health_and_nothing_carried` now also checks that a dead player does not arrive at their death spot. `sim`: `a_teleport_facing_a_way_turns_the_view_as_a_spawn_does`, `a_player_who_may_fly_can_be_put_back_in_the_air_flying`. `render_anim`: `the_yaw_turns_from_mw2_to_minecraft_and_back_with_the_same_formula` (0, 90, 180 and -90 both ways).
+- **Decisions:**
+  - `Motion` and `OnGround` are saved for Minecraft but not pushed into MW2: the arrival stops the player, as a spawn does, and MW2 finds the ground itself.
+  - The yaw is stored in Minecraft's convention (0 faces +Z), the pitch is MW2's pitch unchanged (both are positive looking down).
+- **Test steps:**
+  1. Keep `IW4L_MINECRAFT_WORLD=survivaltest` (or any saved world). Start.
+  2. Type `/tp ~200 ~ ~200`, wait for the terrain, then build a 3-block pillar and stand on it. Turn to face a landmark (a tree or a hill) and look a little down. **Screenshot 1.**
+  3. Quit through the menu and start again.
+  4. Expected: the loading screen stays until the terrain there is in, then you are on the pillar facing the same landmark at the same angle. **Screenshot 2.**
+  5. Type `/gamemode creative`, double-jump to fly, hover ten blocks up, quit and start again: you are still hovering there, flying. **Screenshot 3.** Type `/gamemode survival` afterwards.
+  6. Optional: open the world in Minecraft 26.3: you stand at the same spot facing the same way.
+- **Kit:** any; `minecraft:cobblestone*64` is enough.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64
 ```

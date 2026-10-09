@@ -397,6 +397,23 @@ impl FrameWorld<'_> {
         true
     }
 
+    pub fn teleport_facing(&mut self, id: ClientId, origin: [f32; 3], angles: [f32; 3]) -> bool {
+        if !self.teleport(id, origin) {
+            return false;
+        }
+        let commanded = self.old_cmd_angles(id);
+        let Some(ps) = self.player_mut(id) else {
+            return false;
+        };
+        ps.viewangles = angles;
+        if let Some(cmd) = commanded {
+            ps.delta_angles = std::array::from_fn(|axis| {
+                angles[axis] - cmd[axis] as f32 * movement_iw4::SHORT2ANGLE
+            });
+        }
+        true
+    }
+
     pub fn set_legs_anim(&mut self, id: ClientId, legs_anim: i32) -> bool {
         let Some(ps) = self.player_mut(id) else {
             return false;
@@ -442,7 +459,7 @@ impl FrameWorld<'_> {
         if bits & MC_MAY_FLY == 0 {
             ps.pm_flags &= !MC_FLYING;
         }
-        if bits & MC_NOCLIP != 0 {
+        if bits & MC_NOCLIP != 0 || bits & (MC_MAY_FLY | MC_FLYING) == MC_MAY_FLY | MC_FLYING {
             ps.pm_flags |= MC_FLYING;
         }
         true
@@ -1116,5 +1133,43 @@ mod tests {
         );
         assert!(sim.set_minecraft_abilities(id, MC_FLYING));
         assert_eq!(flags(&mut sim, id), SPRINT_BLOCKED);
+    }
+
+    #[test]
+    fn a_player_who_may_fly_can_be_put_back_in_the_air_flying() {
+        let mut sim = crate::SimWorld::default();
+        let id = ClientId(1);
+        sim.frame().ensure_player(id).pm_flags = SPRINT_BLOCKED;
+        assert!(sim.set_minecraft_abilities(id, MC_MAY_FLY | MC_FLYING));
+        assert_eq!(flags(&mut sim, id), SPRINT_BLOCKED | MC_FLYING | MC_MAY_FLY);
+        assert!(sim.set_minecraft_abilities(id, MC_MAY_FLY));
+        assert_eq!(flags(&mut sim, id), SPRINT_BLOCKED | MC_FLYING | MC_MAY_FLY);
+    }
+
+    #[test]
+    fn a_teleport_facing_a_way_turns_the_view_as_a_spawn_does() {
+        let mut sim = crate::SimWorld::default();
+        let id = ClientId(1);
+        assert!(!sim.teleport_facing(id, [0.0; 3], [0.0; 3]));
+        {
+            let mut frame = sim.frame();
+            let ps = frame.ensure_player(id);
+            ps.origin = [10.0, 20.0, 30.0];
+            ps.velocity = [5.0, 0.0, -3.0];
+            ps.viewangles = [5.0, 45.0, 0.0];
+            frame.old_cmd_angles_mut().push((id, [0, 8192, 0]));
+        }
+        let teleport =
+            sim.player(id).map_or(0, |ps| ps.e_flags) & playerstate_iw4::eflags::TELEPORT;
+        assert!(sim.teleport_facing(id, [100.0, -50.0, 8.0], [-20.0, 135.0, 0.0]));
+        let ps = sim.player(id).unwrap();
+        assert_eq!(ps.origin, [100.0, -50.0, 8.0]);
+        assert_eq!(ps.velocity, [0.0; 3]);
+        assert_eq!(ps.viewangles, [-20.0, 135.0, 0.0]);
+        assert_eq!(
+            ps.delta_angles,
+            [-20.0, 135.0 - 8192.0 * movement_iw4::SHORT2ANGLE, 0.0]
+        );
+        assert_ne!(ps.e_flags & playerstate_iw4::eflags::TELEPORT, teleport);
     }
 }
