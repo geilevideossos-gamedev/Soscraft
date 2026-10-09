@@ -27,11 +27,12 @@ Design briefs: `docs/round7/a1-grenade-keys.md`, `a2-chat.md`, `b1-throwables.md
 | Track | Branch | State |
 |---|---|---|
 | A. Controls and chat | track-a | merged (80cacc3, full suite 1315 passed). Left for after the split: mouse buttons still mine/place while a grenade is up with a Minecraft item selected (see `docs/round7/track-a-log.md`) |
-| B. Items, blocks, player model | track-b | early part running (worktree `C:\Dev\mc-wt\track-b`, target `D:\iw4l-wt\track-b`); render_anim glue after it, on top of the split |
-| C. Commands | track-c | early part running (minecraft_commands, creative tab reader; worktree `C:\Dev\mc-wt\track-c`, target `D:\iw4l-wt\track-c`); chat UI and glue after track A and the split |
+| B. Items, blocks, player model | track-b | early half done (throwables, lids, body gear in minecraft_terrain and render_anim/anim, reviewed); main merged in as 984bd51; second half (game glue) running. Log `docs/round7/track-b-log.md` |
+| C. Commands | track-c | early half done (suggestion engine, /clear /xp /enchant /setblock /fill /spawnpoint /locate /execute /kit, creative tab reader; reviewed, 6 fixes); main merged in as 44759b7; second half (command glue, chat suggestions UI, creative screen) running. Log `docs/round7/track-c-log.md` |
 | D. Saving everything | track-d | running (worktree `C:\Dev\mc-wt\track-d`, target `D:\iw4l-wt\track-d`, recycled from track A) |
 
 ## Phase 3 (after track D)
+Briefs: `docs/round7/e0-phase3-plan.md` (order, groups, ownership, estimate), `e1-dimension-switch.md`, `e2-nether.md`, `e3-end.md`. Planned for this round: the switch (S1-S4), Nether N1-N5, End X1-X4 (a dragon that can be killed, exit portal, credits). Left for "finish survival": N6 (piglin/hoglin brains, striders, bartering), X5 (dragon strafing, breath, perching, egg teleport), X6 (gateways, item frames, shulkers, levitation).
 | Track | State |
 |---|---|
 | Dimension switch | not started |
@@ -70,6 +71,11 @@ The 41 minutes of the last round were not reproduced: a clean release build alon
 - Grenade keys (track A): Ctrl+G and Shift+G clash (the bind system has no chords; Ctrl is MW2 prone and the creative-flight sink key, Shift is sprint). Lethal goes to G and tactical to B, F only swaps hands as in vanilla, and holding F with a gun selected uses the offhand item. Retail MW2 binds G to the lethal too. All rebindable.
 - Shulker lids (track B): chests and ender chests get the same vanilla lid animation as shulker boxes, as vanilla has it.
 
+- Killstreaks: air support (airstrike, stealth bomber, harrier, AC-130, chopper, predator) is refused in a dimension with a ceiling (the Nether); the streak is kept and a line says it is unavailable. It works in the End and the Overworld. MW2 guns, grenades and craters work in every dimension with vanilla blast resistance.
+- End credits: as vanilla, once per player (`seenCredits`), Esc skips, the trip home loads behind them.
+- Ghast fireballs are deflected by MW2 bullets as well as melee (vanilla `AIM_DEFLECT` for redirectable projectiles on any hit).
+- Elytra: a new 20 Hz glide mode in MW2 movement, guns still usable.
+- Throwables kit syntax: `id@potion` for potion contents (`#` starts a comment in `.env`).
 ## Log
 - 2026-10-09: crate split merged (6315039) and pushed; track D started; the split worktree was removed, so `D:\iw4l-target` belongs to the main checkout again.
 - 2026-10-09: track A merged (80cacc3) and pushed.
