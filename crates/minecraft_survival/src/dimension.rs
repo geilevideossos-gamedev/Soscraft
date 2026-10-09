@@ -81,6 +81,7 @@ pub struct DimensionRules {
     pub has_ceiling: bool,
     pub nether_cardinal_light: bool,
     pub bed_rule: BedRule,
+    pub straw_bed_rule: BedRule,
     pub respawn_anchor_works: bool,
     pub water_evaporates: bool,
     pub fast_lava: bool,
@@ -104,6 +105,13 @@ impl DimensionRules {
         let flag = |key: &str| json.get(key).and_then(Json::as_bool).unwrap_or(false);
         let attribute = |name: &str| dimension_value(environment, name);
         let height = int("height", 256);
+        let bed_rule = |name: &str| {
+            match attribute(name) {
+                Value::Json(rule) => BedRule::parse(&rule),
+                _ => None,
+            }
+            .unwrap_or_else(BedRule::can_sleep_when_dark)
+        };
         Self {
             dimension,
             coordinate_scale: json
@@ -117,11 +125,8 @@ impl DimensionRules {
             has_ceiling: flag("has_ceiling"),
             nether_cardinal_light: json.get("cardinal_light").and_then(Json::as_str)
                 == Some("nether"),
-            bed_rule: match attribute("gameplay/bed_rule") {
-                Value::Json(rule) => BedRule::parse(&rule),
-                _ => None,
-            }
-            .unwrap_or_else(BedRule::can_sleep_when_dark),
+            bed_rule: bed_rule("gameplay/bed_rule"),
+            straw_bed_rule: bed_rule("gameplay/straw_bed_rule"),
             respawn_anchor_works: attribute("gameplay/respawn_anchor_works").as_bool(),
             water_evaporates: attribute("gameplay/water_evaporates").as_bool(),
             fast_lava: attribute("gameplay/fast_lava").as_bool(),
@@ -208,6 +213,8 @@ mod tests {
         assert!(overworld.has_skylight && !overworld.has_ceiling);
         assert!(!overworld.nether_cardinal_light);
         assert_eq!(overworld.bed_rule, BedRule::can_sleep_when_dark());
+        assert_eq!(overworld.straw_bed_rule.can_set_spawn, BedRuleTest::Never);
+        assert!(overworld.straw_bed_rule.destroy_on_leave && !overworld.straw_bed_rule.destroy_on_use);
         assert!(!overworld.respawn_anchor_works && !overworld.water_evaporates);
         assert!(!overworld.fast_lava && overworld.nether_portal_spawns_piglin);
 
@@ -222,6 +229,8 @@ mod tests {
         assert_eq!(nether.bed_rule.can_sleep, BedRuleTest::Never);
         assert_eq!(nether.bed_rule.can_set_spawn, BedRuleTest::Never);
         assert!(nether.bed_rule.destroy_on_use && !nether.bed_rule.destroy_on_leave);
+        assert!(nether.straw_bed_rule.destroy_on_use);
+        assert_eq!(nether.straw_bed_rule.error_message, None);
         assert!(nether.respawn_anchor_works && nether.water_evaporates);
         assert!(nether.fast_lava && !nether.nether_portal_spawns_piglin);
 
@@ -229,7 +238,7 @@ mod tests {
         assert_eq!(end.coordinate_scale, 1.0);
         assert_eq!((end.min_y, end.height, end.logical_height), (0, 256, 256));
         assert!(end.has_skylight && !end.has_ceiling && !end.nether_cardinal_light);
-        assert!(end.bed_rule.destroy_on_use);
+        assert!(end.bed_rule.destroy_on_use && end.straw_bed_rule.destroy_on_use);
         assert_eq!(end.bed_rule.can_set_spawn, BedRuleTest::Never);
         assert!(!end.respawn_anchor_works && !end.water_evaporates);
         assert!(!end.fast_lava && !end.nether_portal_spawns_piglin);

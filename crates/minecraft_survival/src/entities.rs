@@ -705,6 +705,10 @@ impl Entities {
         self.server.blast(blast);
     }
 
+    pub fn explode_respawn_point(&mut self, blast: minecraft_terrain::server::Blast) {
+        self.server.respawn_point_blast(blast);
+    }
+
     /// Sends a server tick when one is due and takes what came back: block
     /// changes to show, and mob hits on the player in MW2 damage.
     pub fn tick(
@@ -868,17 +872,20 @@ impl Entities {
                 let toward = match hit.kind {
                     PlayerHitKind::Melee { attacker, .. } => [attacker.x - player.feet[0], attacker.z - player.feet[2]],
                     PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } => [-velocity.x, -velocity.z],
-                    PlayerHitKind::Explosion { knockback } => [-knockback.x, -knockback.z],
+                    PlayerHitKind::Explosion { knockback } | PlayerHitKind::BadRespawnPoint { knockback } => [-knockback.x, -knockback.z],
                 };
                 let attack = match hit.kind {
                     PlayerHitKind::Melee { .. } => crate::death::MobAttack::Melee,
                     PlayerHitKind::Arrow { .. } => crate::death::MobAttack::Arrow,
-                    PlayerHitKind::Explosion { .. } => crate::death::MobAttack::Explosion,
+                    PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. } => crate::death::MobAttack::Explosion,
                     PlayerHitKind::Fireball { ignite_ticks, .. } if ignite_ticks > 0 => crate::death::MobAttack::SmallFireball,
                     PlayerHitKind::Fireball { .. } => crate::death::MobAttack::Fireball,
                 };
-                let cause = crate::death::DamageCause::mob(attack, hit.source, hit.source.and_then(|id| self.world.entity_type(id)));
-                let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. }) || hit.source.is_some();
+                let cause = match hit.kind {
+                    PlayerHitKind::BadRespawnPoint { .. } => crate::death::DamageCause::BadRespawnPoint,
+                    _ => crate::death::DamageCause::mob(attack, hit.source, hit.source.and_then(|id| self.world.entity_type(id))),
+                };
+                let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. }) || hit.source.is_some();
                 let damage = difficulty_scaled(hit.damage, self.difficulty, scales);
                 if damage > 0.0 {
                     hits.push((damage, from, Some(toward), cause));

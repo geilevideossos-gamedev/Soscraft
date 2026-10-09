@@ -580,6 +580,7 @@ pub enum PlayerHitKind {
     /// push `ServerExplosion` hands the player (`hitPlayers`).
     Explosion { knockback: DVec3 },
     Fireball { velocity: DVec3, ignite_ticks: i32 },
+    BadRespawnPoint { knockback: DVec3 },
 }
 
 /// A mob's death as its drops see it (`LivingEntity.die`,
@@ -2768,6 +2769,16 @@ impl EntityWorld {
 
     pub fn blast(&mut self, world: &impl World, blast: CreeperExplosion, players: &[PlayerCandidate]) {
         self.apply_explosion(world, None, blast, players);
+    }
+
+    pub fn bad_respawn_point_blast(&mut self, world: &impl World, blast: CreeperExplosion, players: &[PlayerCandidate]) {
+        let before = self.player_hits.len();
+        self.apply_explosion(world, None, blast, players);
+        for hit in &mut self.player_hits[before..] {
+            if let PlayerHitKind::Explosion { knockback } = hit.kind {
+                hit.kind = PlayerHitKind::BadRespawnPoint { knockback };
+            }
+        }
     }
 
     /// `ServerExplosion.hurtEntities` for a creeper's blast: every mob and

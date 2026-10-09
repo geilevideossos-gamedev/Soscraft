@@ -79,6 +79,7 @@ pub enum DamageCause {
     Wither,
     Kill,
     OutOfWorld,
+    BadRespawnPoint,
     Mob {
         id: u64,
         type_id: &'static str,
@@ -137,6 +138,7 @@ impl DamageCause {
             Self::Wither => "wither",
             Self::Kill => "genericKill",
             Self::OutOfWorld => "outOfWorld",
+            Self::BadRespawnPoint => "badRespawnPoint",
             Self::Mob {
                 attack: MobAttack::Melee,
                 ..
@@ -183,6 +185,13 @@ impl DamageCause {
                 attack: MobAttack::Melee,
                 ..
             } => Some((minecraftoss_player::survival::EffectKind::Wither, 200)),
+            _ => None,
+        }
+    }
+
+    fn link_key(self) -> Option<&'static str> {
+        match self {
+            Self::BadRespawnPoint => Some("death.attack.badRespawnPoint.link"),
             _ => None,
         }
     }
@@ -359,6 +368,13 @@ impl CombatTracker {
             };
         }
         let key = format!("death.attack.{}", last.cause.message_id());
+        if last.cause.link_key().is_some() {
+            return DeathKey {
+                key: format!("{key}.message"),
+                attacker: None,
+                cause: Some(last.cause),
+            };
+        }
         if let Some(attacker) = last.cause.entity() {
             return DeathKey {
                 key,
@@ -390,7 +406,16 @@ impl CombatTracker {
             .get(&death.key)
             .cloned()
             .unwrap_or_else(|| death.key.clone());
-        let attacker = death.attacker.map(|type_id| entity_name(language, type_id));
+        let attacker = death
+            .attacker
+            .map(|type_id| entity_name(language, type_id))
+            .or_else(|| {
+                let key = death.cause?.link_key()?;
+                Some(format!(
+                    "[{}]",
+                    language.get(key).map_or(key, String::as_str)
+                ))
+            });
         let message = attacker
             .as_deref()
             .map_or_else(|| template.clone(), |name| template.replace(ATTACKER, name));
@@ -599,6 +624,14 @@ mod tests {
             ("entity.minecraft.arrow", "Arrow"),
             ("block.minecraft.magma_block", "Magma Block"),
             ("block.minecraft.lava", "Lava"),
+            (
+                "death.attack.badRespawnPoint.message",
+                "%1$s was killed by %2$s",
+            ),
+            (
+                "death.attack.badRespawnPoint.link",
+                "Intentional Game Design",
+            ),
         ]
         .into_iter()
         .map(|(key, text)| (key.to_owned(), text.to_owned()))
@@ -622,6 +655,21 @@ mod tests {
             message: message.to_owned(),
             killer: killer.to_owned(),
         }
+    }
+
+    #[test]
+    fn a_bed_blast_is_intentional_game_design_even_after_a_mob_hit() {
+        let mut tracker = CombatTracker::default();
+        tracker.hurt_by(1, zombie_bite());
+        tracker.record(1, zombie_bite(), 3.0, None, 0.0);
+        tracker.record(2, DamageCause::BadRespawnPoint, 20.0, None, 0.0);
+        assert_eq!(
+            line(&tracker),
+            says(
+                "%1$s was killed by [Intentional Game Design]",
+                "[Intentional Game Design]"
+            )
+        );
     }
 
     #[test]

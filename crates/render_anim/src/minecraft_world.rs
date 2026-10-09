@@ -1240,6 +1240,11 @@ fn update(
                     hand.swing = Some(0.0);
                 }
                 HandUse::Consumed
+            } else if let Some(respawn_use) = (main && !(player.crouching && has_item)).then(|| crate::minecraft_respawn::use_block(&player, terrain, &globals.registries)).flatten() {
+                write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, respawn_use.writes.clone());
+                crate::minecraft_respawn::finish(respawn_use, entities, sounds.as_mut(), &world.packs, origin);
+                hand.swing = Some(0.0);
+                HandUse::Consumed
             } else if let Some(pos) = used {
                 hand.swing = Some(0.0);
                 if let Some(block) = minecraftoss_player::World::block(&terrain.scene, pos)

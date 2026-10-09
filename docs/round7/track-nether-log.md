@@ -587,3 +587,29 @@ Previous commit: 9d787dbd
 ```
 IW4L_MINECRAFT_KIT=minecraft:water_bucket,minecraft:ice*4,minecraft:wet_sponge*2,minecraft:netherrack*16,minecraft:diamond_pickaxe
 ```
+
+### 25. Minecraft beds explode in the Nether and the End (E2-13)
+
+Previous commit: 56c1e7a7
+
+- **Changed** (checked with javap on the 26.3 jar: `AbstractBedBlock.useWithoutItem`, `BedBlock.destroyOnUse`, `StrawBedBlock.destroyOnUse`/`destroyBed`, `BedRule`, `EnvironmentAttributes.STRAW_BED_RULE`, `DamageSources.badRespawnPointExplosion`, `CombatTracker.getDeathMessage`):
+  - New `minecraft_survival/src/respawn_block.rs`: `use_bed(world, registries, rules, pos)`, `AbstractBedBlock.useWithoutItem`: a bed whose other half is missing or is another bed does nothing; a foot is used through its head; the bed's rule (`gameplay/bed_rule`, or `gameplay/straw_bed_rule` for the 26.3 straw bed) with `destroy_on_use` removes the head and, when it is the same bed, the foot, without drops, and a bed (not a straw bed) explodes at the head's centre with power 5 and fire (`badRespawnPointExplosion`); a straw bed only breaks with `block.straw_bed.break_leave`. Otherwise an occupied bed and a free one are told apart for entry 26. `BlockView` reads a level's blocks.
+  - `minecraft_survival/src/dimension.rs`: `DimensionRules.straw_bed_rule` (the overworld's never sets the spawn and is destroyed on leaving; the Nether's and the End's are destroyed on use).
+  - Vendored `third_party/minecraftoss/entities/src/world.rs` (MinecraftOSS patch): `PlayerHitKind::BadRespawnPoint` and `EntityWorld::bad_respawn_point_blast`, the public blast whose player hits carry the bed's damage type; mobs take it as an explosion with no attacker, as before. `bin/check_zombie_player_hits.rs` takes the new kind as an explosion.
+  - `minecraft_terrain/src/server.rs`: `ServerSim::respawn_point_blast` and `Command::RespawnPointBlast`: E2-12's blast (vanilla explosion damage, plan decision 5, block breaking with `block_explosion_drop_decay`, fire) with the bed's damage type.
+  - `minecraft_survival`: `DamageCause::BadRespawnPoint` (`badRespawnPoint`): the death line is `death.attack.badRespawnPoint.message` with `[Intentional Game Design]` (`death.attack.badRespawnPoint.link` in square brackets), whatever hurt the player before, as `CombatTracker` does for `intentional_game_design`; it scales with difficulty as `bad_respawn_point` does (`scaling: always`). `Entities::explode_respawn_point`.
+  - New `render_anim/src/minecraft_respawn.rs` and one arm in `minecraft_world.rs`'s use chain (main hand, not while sneaking with an item, before the generic block use): the bed's blocks go through `write_blocks` (scene, collision, server), then the blast or the straw bed's sound.
+- **Tests:** `respawn_block`: `a_bed_explodes_from_its_head_in_the_nether_and_the_end_but_not_the_overworld` (either half, both dimensions; the overworld sleeps or finds the bed occupied), `a_straw_bed_just_breaks_and_half_a_bed_does_nothing`. `death`: `a_bed_blast_is_intentional_game_design_even_after_a_mob_hit`. `dimension`: the straw bed rules of the three dimensions. `server`: `a_blast_hurts_mobs_and_players_breaks_blocks_and_may_start_fires` also blows up a respawn point: one blast heard, the player hit as `BadRespawnPoint` with no source, mobs and blocks as before.
+- **Decisions:**
+  - Using a bed in the overworld does nothing yet (entry 26 sets the spawn there).
+  - A villager asleep in the bed is not woken (`kickVillagerOutOfBed`); the bed counts as occupied.
+- **Test steps** (in the Nether, survival; take off nothing yet):
+  1. Put on the diamond armour and hold the totem in the offhand. Place a red bed on netherrack and use it (right-click): it explodes with fire, the bed is gone and drops nothing. **Screenshot 28.**
+  2. Use the second bed with no armour and no totem at full health: you die, and the chat says "<name> was killed by [Intentional Game Design]". **Screenshot 29.**
+  3. Place the straw bed and use it: it breaks with a rustle and does not explode.
+  4. In the End (`IW4L_MINECRAFT_DIMENSION=the_end` for one start), a bed explodes the same way.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:red_bed,minecraft:red_bed,minecraft:red_bed,minecraft:straw_bed,minecraft:totem_of_undying,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:netherrack*32,minecraft:cooked_beef*16
+```
