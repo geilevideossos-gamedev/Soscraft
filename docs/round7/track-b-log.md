@@ -800,7 +800,7 @@ IW4L_MINECRAFT_KIT=trident,trident+loyalty=3,trident,zombie_spawn_egg*4
 
 ### 13. Minecraft wind charges get their own half-second cooldown like ender pearls
 
-Commit: (next entry)
+Commit: 26d85c9
 
 - **Changed:** new `minecraft_survival/src/cooldowns.rs`: `Cooldowns` is vanilla's `ItemCooldowns` per item ID: `start(item, ticks)` replaces that item's cooldown, `tick(n)` drops the ones that ran out, `active(item)` blocks its use (the other hand is tried, as `useItem` passes), `shown(partial)` is each item's `getCooldownPercent` for the slot overlay. `player.rs` `Hand.cooldowns` replaces `pearl_cooldown` (one field and its test line). The adapter starts `Throwable::cooldown()` after a throw (ender pearl 20 ticks, wind charge 10) and hands every running cooldown to the hotbar overlay (After the split item 13).
 - **Tests:** cooldowns: `a_cooldown_blocks_only_its_own_item_until_it_runs_out`, `the_slot_overlay_shrinks_with_the_time_left`; player: `a_joining_player_has_no_hand_or_fall_timers_running` checks the empty cooldowns.
@@ -811,4 +811,22 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=wind_charge*64,ender_pearl*16
+```
+
+### 14. A Minecraft wind charge burst launches the player without fall damage like vanilla
+
+Commit: (next entry)
+
+- **Changed:** `entities.rs` keeps the local player's (`PLAYER`) `Output.players_pushed` in `Entities.player_pushes`; the adapter adds each to the MW2 velocity through the new `sim` `push_velocity(id, delta)` (`SimWorld` and `FrameWorld`; prediction picks it up from the next snapshot like any server-side change), except for spectators and flying players (`ServerExplosion` skips them). New `minecraft_survival/src/impulse.rs` `launch_velocity(push, gravity)`: an upward push is turned into the MW2 launch speed that reaches vanilla's height under the player's own gravity (vanilla flies with 0.08 gravity and 0.98 drag a tick, MW2 with `ps.gravity`, 800 units/s^2 = 22 blocks/s^2, and no drag), and its sideways part into the speed that lands as far off as vanilla's 0.91-a-tick air friction carries it in that flight; a push along the ground or down is carried as it is (blocks a tick times 20). `survival.rs` `start_impulse(feet_y)` and `impulse_fall(distance, feet_y)` are `ServerPlayer.setCurrentExplosionCause` for a wind charge and `LivingEntity.causeFallDamage`: the next fall only counts below where the player was pushed, and the context ends on landing at or above it, on a fall that hurts, or on a landing once its 40-tick grace has run out. The adapter runs the landing distance through `impulse_fall` (After the split item 14).
+- **Tests:** impulse: `a_push_up_reaches_the_vanilla_height_under_mw2_gravity` (a push of 1 a tick climbs 5.92 blocks in vanilla and in MW2), `a_push_up_and_away_lands_as_far_off_as_in_vanilla`, `a_push_along_the_ground_or_down_is_carried_as_it_is`. survival: `a_wind_charge_jump_only_counts_the_fall_below_where_it_burst`, `a_short_drop_after_a_wind_charge_keeps_the_grace_for_two_seconds`. sim: `a_push_adds_to_the_players_velocity`.
+- **Decisions:** matching vanilla's height and distance under MW2 gravity is the vanilla-like choice; copying the raw speed would throw the player about twice as high (MW2 has less gravity and no drag). Explosions other than wind charges still don't push the player, as before.
+- **Test steps** (survival mode):
+  1. Look straight down and right-click a wind charge at your feet: you are thrown about 5 to 6 blocks up with the burst sound, and land with no damage. Screenshot at the top of the jump.
+  2. Stand on the edge of a 10-block drop, throw a wind charge at your feet so it throws you off the edge: you take the damage of the drop below where you stood (about 3 hearts for 10 blocks), not of the extra height of the jump.
+  3. Throw one at a wall 2 blocks in front of you while standing still: you are pushed back away from the wall.
+  4. Creative mode, flying (double jump): a wind charge at your feet doesn't move you.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=wind_charge*64,cobblestone*64
 ```

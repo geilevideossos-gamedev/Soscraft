@@ -141,6 +141,8 @@ pub struct Survival {
     creative: bool,
     may_fly: bool,
     no_physics: bool,
+    impulse: Option<f64>,
+    impulse_grace: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -249,6 +251,7 @@ impl Survival {
 
     pub fn tick(&mut self, motion: &Motion) -> Breath {
         self.tick += 1;
+        self.impulse_grace = self.impulse_grace.saturating_sub(1);
         self.in_water = motion.in_water;
         self.combat.tick(self.tick);
         let before = self.status.health;
@@ -355,10 +358,27 @@ impl Survival {
                 .is_some()
         {
             self.record(before, DamageCause::Fall, distance as f32);
+            self.impulse = None;
             damage
         } else {
             0
         }
+    }
+
+    pub fn start_impulse(&mut self, feet_y: f64) {
+        self.impulse = Some(feet_y);
+        self.impulse_grace = self.impulse_grace.max(crate::impulse::FALL_GRACE_TICKS);
+    }
+
+    pub fn impulse_fall(&mut self, distance: f64, feet_y: f64) -> f64 {
+        let Some(impact) = self.impulse else {
+            return distance;
+        };
+        let counted = distance.min(impact - feet_y);
+        if counted <= 0.0 || self.impulse_grace == 0 {
+            self.impulse = None;
+        }
+        counted.max(0.0)
     }
 
     fn record(&mut self, before: f32, cause: DamageCause, fall_distance: f32) {
@@ -1109,6 +1129,32 @@ mod tests {
         assert_eq!(attack_strength(12, 1.6), 1.0);
         assert_eq!(attack_strength(5, 4.0), 1.0);
         assert!(attack_strength(4, 4.0) < 1.0);
+    }
+
+    #[test]
+    fn a_wind_charge_jump_only_counts_the_fall_below_where_it_burst() {
+        let mut survival = fresh();
+        survival.start_impulse(64.0);
+        assert_eq!(survival.impulse_fall(9.0, 64.0), 0.0);
+        assert_eq!(survival.impulse_fall(9.0, 64.0), 9.0);
+        survival.start_impulse(64.0);
+        assert_eq!(survival.impulse_fall(12.0, 60.0), 4.0);
+        assert_eq!(survival.fall(4.0, None, false), 1);
+        assert_eq!(survival.impulse_fall(12.0, 60.0), 12.0);
+    }
+
+    #[test]
+    fn a_short_drop_after_a_wind_charge_keeps_the_grace_for_two_seconds() {
+        let mut survival = fresh();
+        survival.start_impulse(70.0);
+        assert_eq!(survival.impulse_fall(5.0, 68.0), 2.0);
+        assert_eq!(survival.fall(2.0, None, false), 0);
+        assert_eq!(survival.impulse_fall(10.0, 67.0), 3.0);
+        for _ in 0..40 {
+            survival.tick(&standing([0.5, 67.0, 0.5]));
+        }
+        assert_eq!(survival.impulse_fall(10.0, 66.0), 4.0);
+        assert_eq!(survival.impulse_fall(10.0, 66.0), 10.0);
     }
 
     #[test]

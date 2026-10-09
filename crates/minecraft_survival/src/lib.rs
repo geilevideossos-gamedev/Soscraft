@@ -4,6 +4,7 @@ pub mod data;
 pub mod death;
 pub mod entities;
 pub mod guns;
+pub mod impulse;
 pub mod level;
 pub mod offhand;
 pub mod player;

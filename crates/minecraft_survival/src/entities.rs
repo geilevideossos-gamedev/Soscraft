@@ -91,6 +91,7 @@ pub struct Entities {
     orb_pickups: Vec<minecraft_terrain::orb_render::OrbPickup>,
     pub pearl_landings: Vec<DVec3>,
     pub player_potions: Vec<minecraft_terrain::potions::PlayerPotionHit>,
+    pub player_pushes: Vec<DVec3>,
     pub item_crumbs: Vec<(String, DVec3, Vec<Vec3>)>,
     pub potion_crumbs: Vec<DVec3>,
     pub destroyed: Vec<((i32, i32, i32), Block)>,
@@ -208,6 +209,7 @@ impl Entities {
             orb_pickups: Vec::new(),
             pearl_landings: Vec::new(),
             player_potions: Vec::new(),
+            player_pushes: Vec::new(),
             item_crumbs: Vec::new(),
             potion_crumbs: Vec::new(),
             destroyed: Vec::new(),
@@ -665,6 +667,7 @@ impl Entities {
                 self.pearl_landings.push(DVec3::from_array(landing));
             }
             self.player_potions.extend(output.player_potions.into_iter().filter(|hit| hit.player == PLAYER));
+            self.player_pushes.extend(output.players_pushed.iter().filter(|(player, _)| *player == PLAYER).map(|(_, push)| *push));
             for broken in &output.potion_breaks {
                 self.spell.burst(broken.position, broken.color, broken.instant);
                 self.potion_crumbs.push(minecraft_terrain::spell_particles::break_center(broken.position));

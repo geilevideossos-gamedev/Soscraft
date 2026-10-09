@@ -397,6 +397,16 @@ impl FrameWorld<'_> {
         true
     }
 
+    pub fn push_velocity(&mut self, id: ClientId, delta: [f32; 3]) -> bool {
+        let Some(ps) = self.player_mut(id) else {
+            return false;
+        };
+        for (velocity, delta) in ps.velocity.iter_mut().zip(delta) {
+            *velocity += delta;
+        }
+        true
+    }
+
     pub fn set_legs_anim(&mut self, id: ClientId, legs_anim: i32) -> bool {
         let Some(ps) = self.player_mut(id) else {
             return false;
@@ -1116,5 +1126,18 @@ mod tests {
         );
         assert!(sim.set_minecraft_abilities(id, MC_FLYING));
         assert_eq!(flags(&mut sim, id), SPRINT_BLOCKED);
+    }
+
+    #[test]
+    fn a_push_adds_to_the_players_velocity() {
+        let mut sim = crate::SimWorld::default();
+        let id = ClientId(2);
+        assert!(!sim.push_velocity(id, [0.0, 0.0, 300.0]));
+        sim.frame().ensure_player(id).velocity = [10.0, -20.0, 0.0];
+        assert!(sim.push_velocity(id, [5.0, 0.0, 300.0]));
+        assert_eq!(
+            sim.frame().player(id).map(|ps| ps.velocity),
+            Some([15.0, -20.0, 300.0])
+        );
     }
 }

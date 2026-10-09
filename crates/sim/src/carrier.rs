@@ -283,6 +283,10 @@ impl SimWorld {
         self.frame().set_health(id, health)
     }
 
+    pub fn push_velocity(&mut self, id: ClientId, delta: [f32; 3]) -> bool {
+        self.frame().push_velocity(id, delta)
+    }
+
     pub fn set_sprint_blocked(&mut self, id: ClientId, blocked: bool) -> bool {
         self.frame().set_sprint_blocked(id, blocked)
     }

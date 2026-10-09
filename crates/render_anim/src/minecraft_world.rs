@@ -694,7 +694,7 @@ fn update(
             .any(|dy| block_at(dy).is_some_and(|(_, b)| minecraft_survival::survival::breaks_fall(&b.id.key())));
         if on_ground {
             if let Some(peak) = steps.air_peak.take().filter(|_| !caught) {
-                let fall = peak - feet[1];
+                let fall = survival.impulse_fall(peak - feet[1], feet[1]);
                 let landed_on = under.as_ref().map(|(_, b)| b.id.key());
                 let crouching = ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
                 let damage = survival.fall(fall, landed_on.as_deref(), crouching);
@@ -1606,6 +1606,12 @@ fn update(
             if let Some(sounds) = sounds.as_mut() {
                 sounds.play(&world.packs, "minecraft:entity.player.teleport", Some(at(landing.to_array())), 1.0, 1.0);
             }
+        }
+        let pushed = alive && player_mode.mode != minecraftoss_player::GameMode::Spectator && ps.pm_flags & playerstate_iw4::pm_flags::MC_FLYING == 0;
+        for push in std::mem::take(&mut entities.player_pushes).into_iter().filter(|_| pushed) {
+            let launch = minecraft_survival::impulse::launch_velocity(push, f64::from(ps.gravity) / f64::from(sim::voxel::BLOCK)) * f64::from(sim::voxel::BLOCK);
+            authority.0.push_velocity(local.0, [launch.x as f32, -launch.z as f32, launch.y as f32]);
+            survival.start_impulse(feet[1]);
         }
         for hit in std::mem::take(&mut entities.player_potions).into_iter().filter(|_| alive) {
             if let Some(sound) = survival.take_potion(&hit.potion, Some(hit.at.to_array()), || entities.random_float())
