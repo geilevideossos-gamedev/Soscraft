@@ -15,6 +15,7 @@ use crate::protocol::{
     Clientbound, Outgoing, PlayerId, Recipient, Serverbound, allowed_in_chat, normalize_chat,
 };
 use crate::reader::CommandError;
+use crate::spawnpoint::Respawn;
 use crate::text::{GRAY, RED, Text};
 use crate::tree::{Parsed, parse, runnable};
 
@@ -131,6 +132,9 @@ pub trait CommandWorld {
     }
     fn edit_blocks(&mut self, _source: PlayerId, _edit: &BlockEdit) -> Answer<i32> {
         Answer::Now(0)
+    }
+    fn set_respawn(&mut self, _player: PlayerId, _respawn: &Respawn) -> bool {
+        false
     }
 }
 
@@ -562,6 +566,7 @@ pub(crate) mod tests {
         pub(crate) loaded: Option<Loaded>,
         pub(crate) blocks: crate::blocks::tests::Blocks,
         pub(crate) edits: Vec<BlockEdit>,
+        pub(crate) respawns: Vec<(PlayerId, Option<Respawn>)>,
     }
 
     impl CommandWorld for FakeWorld {
@@ -740,6 +745,14 @@ pub(crate) mod tests {
             self.edits.push(edit.clone());
             Answer::Now(crate::blocks::apply_edit(edit, &mut self.blocks))
         }
+
+        fn set_respawn(&mut self, player: PlayerId, respawn: &Respawn) -> bool {
+            let Some((_, known)) = self.respawns.iter_mut().find(|(id, _)| *id == player) else {
+                return false;
+            };
+            *known = Some(respawn.clone());
+            true
+        }
     }
 
     pub(crate) fn lang(key: &str) -> Option<String> {
@@ -888,6 +901,14 @@ pub(crate) mod tests {
             "arguments.block.tag.unknown" => "Unknown block tag '%s'",
             "commands.fill.failed" => "No blocks were filled",
             "commands.fill.success" => "Successfully filled %s block(s)",
+            "argument.pos.outofbounds" => "That position is outside the allowed boundaries",
+            "argument.rotation.incomplete" => "Incomplete (expected 2 coordinates)",
+            "commands.spawnpoint.success.multiple" => {
+                "Set spawn point to %s, %s, %s [%s] in %s for %s players"
+            }
+            "commands.spawnpoint.success.single" => {
+                "Set spawn point to %s, %s, %s [%s] in %s for %s"
+            }
             "commands.fill.toobig" => {
                 "Too many blocks in the specified area (maximum %s, but specified %s)"
             }

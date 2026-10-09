@@ -39,6 +39,7 @@ pub enum ArgKind {
     BlockPos,
     BlockState,
     BlockPredicate,
+    Rotation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,6 +95,7 @@ pub enum Arg {
     ItemPredicate { predicate: ItemPredicate, at: usize },
     BlockPos(Coordinates),
     Block(crate::blocks::ParsedBlock),
+    Rotation([WorldCoordinate; 2]),
 }
 
 impl ArgKind {
@@ -186,6 +188,7 @@ impl ArgKind {
             Self::BlockPos => block_pos(reader).map(Arg::BlockPos),
             Self::BlockState => crate::blocks::parse_block(reader, false).map(Arg::Block),
             Self::BlockPredicate => crate::blocks::parse_block(reader, true).map(Arg::Block),
+            Self::Rotation => rotation(reader).map(Arg::Rotation),
         }
     }
 }
@@ -533,6 +536,24 @@ fn int_coordinate(reader: &mut StringReader) -> Result<WorldCoordinate, CommandE
         f64::from(reader.read_int()?)
     };
     Ok(WorldCoordinate { value, relative })
+}
+
+fn rotation(reader: &mut StringReader) -> Result<[WorldCoordinate; 2], CommandError> {
+    let start = reader.cursor;
+    let incomplete = |reader: &mut StringReader| {
+        reader.cursor = start;
+        CommandError::new("argument.rotation.incomplete", Vec::new()).at(start)
+    };
+    if !reader.can_read() {
+        return Err(incomplete(reader));
+    }
+    let yaw = world_coordinate(reader, false)?;
+    if reader.peek() != Some(' ') {
+        return Err(incomplete(reader));
+    }
+    reader.skip();
+    let pitch = world_coordinate(reader, false)?;
+    Ok([yaw, pitch])
 }
 
 fn block_pos(reader: &mut StringReader) -> Result<Coordinates, CommandError> {
@@ -964,6 +985,27 @@ mod tests {
         assert_eq!(key(&parse("").unwrap_err()), "argument.pos.missing.int");
         assert_eq!(key(&parse("1 ^ 3").unwrap_err()), "argument.pos.mixed");
         assert!(matches!(parse("^ ^1 ^"), Ok(Coordinates::Local(_))));
+    }
+
+    #[test]
+    fn rotations_read_yaw_then_pitch() {
+        let parse = |text: &str| ArgKind::Rotation.parse(&mut StringReader::new(text), &[]);
+        let absolute = WorldCoordinate {
+            value: 90.0,
+            relative: false,
+        };
+        let relative = WorldCoordinate {
+            value: -5.0,
+            relative: true,
+        };
+        assert_eq!(parse("90 ~-5"), Ok(Arg::Rotation([absolute, relative])));
+        let incomplete = parse("90").unwrap_err();
+        assert_eq!(
+            (key(&incomplete), incomplete.cursor),
+            ("argument.rotation.incomplete".into(), Some(0))
+        );
+        assert_eq!(key(&parse("").unwrap_err()), "argument.rotation.incomplete");
+        assert_eq!(key(&parse("^ 1").unwrap_err()), "argument.pos.mixed");
     }
 
     #[test]

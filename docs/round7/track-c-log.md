@@ -411,3 +411,50 @@ Kit: none needed.
 1. Same as `/setblock`. In addition, `BlockAccess::block_entity_matches(pos, nbt)` should parse the SNBT and compare it with the block entity's saved tag the way `NbtUtils.compareNbt(expected, actual, true)` does (every given key must match; lists match as subsets). Returning false keeps NBT predicates from matching.
 2. **Chunks inside the box that are not loaded**: vanilla loads them synchronously. The glue can generate or load them on the server thread before running the loop, or skip them and count only what changed; skipping is the safer first step.
 3. **Block tags**: as in the `/setblock` notes, `block_tags` from `data/minecraft/tags/block/**.json`.
+
+## Minecraft /spawnpoint sets each player's respawn point like vanilla
+
+Commit: the commit that adds this entry (branch `track-c`, group "commands").
+
+### What changed
+
+- New `crates/minecraft_commands/src/spawnpoint.rs`, checked against 26.3 `SetSpawnCommand`, `RotationArgument`, `WorldCoordinates.ZERO_ROTATION`, `Level.isInSpawnableBounds` and `Mth.wrapDegrees` with javap:
+  - `/spawnpoint [<targets>] [<pos>] [<rotation>]` at level 2. Without a position it is the block at the source's feet; without a rotation it is yaw 0 and pitch 0 (`ZERO_ROTATION` is absolute).
+  - A given position must be in spawnable bounds (x and z within ±30,000,000, y within ±20,000,000), otherwise `argument.pos.outofbounds`. Unlike `/setblock` it need not be loaded.
+  - The rotation is `<yaw> <pitch>`, each a number or a `~` offset from the source's own angle. The yaw is wrapped to [-180, 180) and the pitch clamped to [-90, 90].
+  - `Respawn { dimension, pos, yaw, pitch, forced: true }` goes to every target (vanilla `RespawnConfig(respawnData, true)`).
+  - **The message keeps vanilla's quirk**: 26.3 passes seven arguments (x, y, z, yaw, pitch, dimension, player or count) to `commands.spawnpoint.success.single` and `.multiple`, whose en_us texts have six `%s`. So the line reads "Set spawn point to 10, 64, -4 [0.0] in 0.0 for minecraft:overworld", exactly as in vanilla. The newer `.new` keys with both angles are unused in 26.3.
+  - `java_float` prints floats as Java's `Float.toString` does ("0.0", "-45.5", "1.0E-4").
+- `ArgKind::Rotation` reads `<yaw> <pitch>` with `argument.rotation.incomplete`.
+- `CommandWorld::set_respawn(player, &Respawn) -> bool`, default `false`, so `/spawnpoint` answers "No player was found" until the glue lands.
+
+### Tests added
+
+- `spawnpoint::tests` (3): Java float printing, `wrap_degrees` and the bounds; the seven-argument line with defaults, a position and rotation, relative angles that wrap and clamp, out of bounds, an incomplete rotation; two players, a world without respawn points, and level 0.
+- `args::tests::rotations_read_yaw_then_pitch`.
+
+### In-game test steps
+
+`/spawnpoint` needs the glue and the per-player respawn point. Until then it answers "No player was found".
+
+```
+IW4L_MINECRAFT_KIT=stone*64
+```
+
+1. Stand somewhere recognisable and run `/spawnpoint`: "Set spawn point to x, y, z [0.0] in 0.0 for minecraft:overworld" (the missing player name is vanilla's). Screenshot.
+2. Walk 50 blocks away and `/kill`: you respawn at the point from step 1, not at the world spawn. Screenshot.
+3. `/spawnpoint @s ~ ~ ~ 90 0`, `/kill`: you respawn there looking west (yaw 90).
+4. `/spawnpoint @s 0 30000000 0`: red "That position is outside the allowed boundaries".
+
+Kit: none needed.
+
+### Decisions
+
+- **The vanilla seven-argument message is kept**, as the brief asked, including the multiple form ("for minecraft:overworld players").
+- **A target the world cannot store a respawn point for is skipped**; with none left the answer is "No player was found".
+
+### After the split
+
+1. **`CommandWorld::set_respawn`**: store the `Respawn` per player (keyed by its UUID) and return `true`. Track D's player file saves it under the vanilla `respawn` key: `{dimension, pos: [x, y, z], yaw, pitch, forced: true}`.
+2. **Respawning**: when the player respawns, use the stored point before the world spawn. Vanilla (`ServerPlayer.findRespawnPositionAndUseSpawnBlock`) checks a forced point only for room to stand (no bed or anchor needed); if the spot is blocked it falls back to the world spawn and says `block.minecraft.spawn.not_valid`. Face the stored yaw and pitch.
+3. **Dimension**: the stored dimension decides the respawn level once there are several (phase 3).

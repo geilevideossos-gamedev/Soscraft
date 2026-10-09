@@ -9,6 +9,7 @@ pub mod players;
 pub mod protocol;
 pub mod reader;
 pub mod server;
+pub mod spawnpoint;
 pub mod suggest;
 pub mod text;
 pub mod tracker;
@@ -25,6 +26,7 @@ pub use protocol::{
     Clientbound, MAX_CHAT_LENGTH, Outgoing, PlayerId, Recipient, Serverbound, normalize_chat,
 };
 pub use reader::CommandError;
+pub use spawnpoint::Respawn;
 pub use server::{
     Answer, Clock, CommandData, CommandRegistries, CommandServer, CommandWorld, OVERWORLD, Pose,
     Weather, error_line,

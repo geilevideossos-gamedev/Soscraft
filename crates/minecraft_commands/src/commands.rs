@@ -182,6 +182,7 @@ fn build() -> Vec<Node> {
         crate::enchant::node(),
         crate::blocks::setblock_node(),
         crate::blocks::fill_node(),
+        crate::spawnpoint::node(),
     ])
 }
 
@@ -892,6 +893,7 @@ mod tests {
                 "/op <targets>",
                 "/seed",
                 "/setblock <pos> <block> [destroy|keep|replace|strict]",
+                "/spawnpoint [<targets>]",
                 "/summon <entity> [<pos>]",
                 "/teleport (<destination>|<location>|<targets>)",
                 "/time (add|pause|query|resume|set)",

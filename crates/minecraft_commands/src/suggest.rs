@@ -384,7 +384,7 @@ fn suggest_argument(
                 block_state(start, hints, found);
             }
         }
-        ArgKind::Greedy | ArgKind::Int { .. } | ArgKind::Nbt => {}
+        ArgKind::Greedy | ArgKind::Int { .. } | ArgKind::Nbt | ArgKind::Rotation => {}
     }
 }
 
@@ -754,6 +754,7 @@ mod tests {
                 "op",
                 "seed",
                 "setblock",
+                "spawnpoint",
                 "summon",
                 "teleport",
                 "time",
