@@ -31,6 +31,10 @@ impl<'a> Edit<'a> {
         a.min(b)..a.max(b)
     }
 
+    pub(crate) fn highlighted(&self) -> &str {
+        &self.text[self.selection()]
+    }
+
     pub(crate) fn move_to(&mut self, pos: usize, extend: bool) {
         *self.cursor = boundary(self.text, pos);
         if !extend {
@@ -160,8 +164,7 @@ mod tests {
         }
 
         fn selected(&mut self) -> String {
-            let range = self.edit().selection();
-            self.text[range].to_owned()
+            self.edit().highlighted().to_owned()
         }
     }
 

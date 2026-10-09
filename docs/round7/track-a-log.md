@@ -111,7 +111,7 @@ Commit: aabe9a1
 
 ### 1. Minecraft chat selects text with Shift and Ctrl+A like vanilla
 
-Commit: (filled in by the next commit, or see `git log`)
+Commit: 37b241e
 
 - **Changed:** `frame::McChat` has a `highlight` (the other end of the selection; `close` resets it, `open` and Up/Down set it to the cursor, as vanilla `setValue` does). New `crates/hud/src/minecraft_edit.rs`: a pure `Edit` over (text, cursor, highlight, limit) with vanilla `EditBox` rules: `move_to(pos, extend)`, `step(dir, words, extend)`, `select_all`, `insert` (replaces the selection, filters `§` and control characters, room is the limit minus the length plus the selected length, nothing at all happens when there is no room), `delete(dir, words)` (a selection goes first, else one character or one word). `previous_char`, `next_char` and `word_position` moved there unchanged. `hud/src/minecraft_chat.rs`: keys arrive as `Typed { key, code, text, mods }`; `fold_typed` walks the frame's `KeyboardInput` messages in order and gives each key the Ctrl, Shift and Alt state at its own press (the state before the frame comes from `ButtonInput` through `held_before`), so a fast Ctrl+key in one frame no longer types the letter. `apply_typed` replaces `apply_key`: Shift with Left, Right, Home and End extends, Ctrl+Left/Right moves by word (with Shift it selects the word), Ctrl+A selects all (lowercased logical key, or the physical A key when the layout's letter isn't ASCII; Shift and Alt must be up), Backspace and Delete eat the selection first, and a key typed while Ctrl is down and Alt up types nothing (AltGr still types). `draw` puts a light box over the selection with vanilla's edges (`selection_box`) and redraws the selected text blue without shadow. `MINECRAFT-SURVIVAL.md` chat lines updated.
 - **Tests:** `minecraft_edit`: `shift_with_the_arrows_home_and_end_extends_the_selection`, `a_plain_arrow_drops_the_selection_and_steps_from_the_cursor`, `ctrl_shift_left_selects_a_word`, `select_all_puts_the_cursor_at_the_end`, `deleting_eats_the_selection_first`, `words_delete_like_vanilla`, `typing_replaces_the_selection`, `insert_room_counts_the_selected_length`, `inserted_text_loses_section_signs_and_control_characters`, `positions_never_split_a_character`. `minecraft_chat`: `modifiers_apply_to_the_keys_pressed_while_they_were_down`, `a_modifier_is_held_before_the_frame_unless_this_frame_changed_it`, `ctrl_a_selects_everything_and_typing_replaces_it` (Caps Lock `A`, Ctrl+Shift+A does nothing, a Cyrillic layout's A key), `ctrl_types_nothing_but_alt_gr_still_types`, `shift_selects_and_a_plain_arrow_steps_from_the_cursor`, `opening_and_walking_the_history_drop_the_selection`, `the_selection_box_spans_the_selected_text_like_vanilla`. `frame`: `clearing_messages_keeps_the_sent_history` also checks the highlight.
@@ -123,6 +123,22 @@ Commit: (filled in by the next commit, or see `git log`)
   4. Press Shift+Left three times: `ig ` is selected. Press Left: the box goes and the cursor sits just before `b` (one step left of where it was, like vanilla). Screenshot 2.
   5. Press Shift+Home, then type `y`: the line is `ybig `. Press End, then Ctrl+Backspace: the whole `ybig ` goes (a word and the spaces after it, like vanilla).
   6. Hold Ctrl and press B: nothing is typed. On a German keyboard AltGr+Q types `@`.
+- **Kit:** none needed.
+
+### 2. Minecraft chat copies, cuts and pastes with Ctrl+C, Ctrl+X and Ctrl+V like vanilla
+
+Commit: (filled in by the next commit, or see `git log`)
+
+- **Changed:** `hud/src/minecraft_chat.rs`: a `ChatClipboard` trait (`get`, `set`) implemented for bevy's `Clipboard` (already in the build through `system_clipboard`; arboard on Windows) and for `()` when the resource is missing. `update_chat` takes `Option<ResMut<Clipboard>>` and passes it down through `handle_frame` to `apply_typed`. The shortcut letter (`a`, `c`, `v`, `x`) comes from the lowercased logical key, or the physical key when the layout's letter isn't ASCII, with Ctrl down and Shift and Alt up, as vanilla's `isCopy`, `isPaste` and `isCut`. Ctrl+C copies the selection, Ctrl+X copies it and then inserts nothing over it, Ctrl+V inserts the clipboard through `Edit::insert` (so it replaces the selection, filters `§` and control characters and keeps the 256 limit). Copying or cutting an empty selection leaves the clipboard alone (vanilla `KeyboardHandler.setClipboard` ignores ""). An empty or unreadable clipboard pastes "" like vanilla, which still removes the selection. Read and write errors other than "no text on the clipboard" go to the log as `minecraft chat paste failed` / `copy failed`. `Edit::highlighted` added. `MINECRAFT-SURVIVAL.md` chat lines updated.
+- **Tests:** `ctrl_v_pastes_the_clipboard_without_typing_v` (`/gamerule keep_inventory true` with a CRLF pastes as exactly the command, `a§b<tab>c` gives `abc`, Caps Lock `V` pastes, Ctrl+Shift+V doesn't), `a_paste_replaces_the_selection_and_stops_at_256` (250 characters with 10 selected take 16 of 30, an empty clipboard removes the selection), `ctrl_c_copies_and_ctrl_x_cuts_the_selection` (nothing selected leaves the clipboard alone, copy, cut, paste at Home, Ctrl+A then Ctrl+C, Ctrl+Shift+C does nothing).
+- **Decision:** the clipboard is read at the moment of the key, like vanilla; bevy's desktop clipboard answers at once, so there is no pending state to wait for.
+- **Test steps** (Minecraft map; the old name `keepInventory` doesn't exist in 26.3, only `keep_inventory`):
+  1. In Notepad type `/gamerule keep_inventory true` and copy it. In game press T, then Ctrl+V: the line shows exactly `/gamerule keep_inventory true` and no `v`. Screenshot 1. Press Enter: `Game rule keep_inventory is now set to true`.
+  2. Press T, type `/gamerule keepInventory true`, Enter: red `Incorrect argument for command` and the grey `<--[HERE]` line, because 26.3 only knows `keep_inventory`.
+  3. Press T, type `hello big world`, press Ctrl+A, then Ctrl+C, then type `x` (the line is `x`), then Ctrl+V: `xhello big world`. Screenshot 2.
+  4. Press Ctrl+Shift+Left (`world` selected), Ctrl+X (gone), Home, Ctrl+V: `worldxhello big `.
+  5. Back in Notepad, paste: `world` is on the system clipboard.
+  6. Copy a long paragraph (more than 256 characters) in Notepad and paste it into the chat: it stops at 256 characters.
 - **Kit:** none needed.
 
 ## After the split

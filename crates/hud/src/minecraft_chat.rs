@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use bevy::clipboard::{Clipboard, ClipboardError};
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
@@ -83,6 +84,44 @@ pub(crate) fn fold_typed(mut held: [bool; 6], events: &[KeyboardInput]) -> Vec<T
         }
     }
     typed
+}
+
+pub(crate) trait ChatClipboard {
+    fn get(&mut self) -> String;
+    fn set(&mut self, text: &str);
+}
+
+impl ChatClipboard for Clipboard {
+    fn get(&mut self) -> String {
+        match self.fetch_text().poll_result() {
+            Some(Ok(text)) => text,
+            None | Some(Err(ClipboardError::ContentNotAvailable)) => String::new(),
+            Some(Err(error)) => {
+                diag::warn!(Ui, "minecraft chat paste failed: {error}");
+                String::new()
+            }
+        }
+    }
+
+    fn set(&mut self, text: &str) {
+        if let Err(error) = self.set_text(text.to_owned()) {
+            diag::warn!(Ui, "minecraft chat copy failed: {error}");
+        }
+    }
+}
+
+impl ChatClipboard for () {
+    fn get(&mut self) -> String {
+        String::new()
+    }
+
+    fn set(&mut self, _: &str) {}
+}
+
+fn copy(clipboard: &mut dyn ChatClipboard, text: &str) {
+    if !text.is_empty() {
+        clipboard.set(text);
+    }
 }
 
 fn shortcut(typed: &Typed) -> Option<char> {
@@ -199,7 +238,13 @@ pub(crate) fn open(chat: &mut McChat, opener: Opener, now: f64) {
     chat.opened_at = now;
 }
 
-pub(crate) fn handle_frame(chat: &mut McChat, opener: Option<Opener>, typed: &[Typed], now: f64) {
+pub(crate) fn handle_frame(
+    chat: &mut McChat,
+    opener: Option<Opener>,
+    typed: &[Typed],
+    clipboard: &mut dyn ChatClipboard,
+    now: f64,
+) {
     if !chat.open {
         if let Some(opener) = opener {
             open(chat, opener, now);
@@ -210,11 +255,11 @@ pub(crate) fn handle_frame(chat: &mut McChat, opener: Option<Opener>, typed: &[T
         if !chat.open {
             break;
         }
-        apply_typed(chat, typed);
+        apply_typed(chat, typed, clipboard);
     }
 }
 
-pub(crate) fn apply_typed(chat: &mut McChat, typed: &Typed) {
+pub(crate) fn apply_typed(chat: &mut McChat, typed: &Typed, clipboard: &mut dyn ChatClipboard) {
     let Mods { ctrl, shift, alt } = typed.mods;
     match typed.key {
         Key::Escape => chat.close(),
@@ -234,6 +279,15 @@ pub(crate) fn apply_typed(chat: &mut McChat, typed: &Typed) {
         Key::End => edit(chat).move_to(usize::MAX, shift),
         _ => match shortcut(typed) {
             Some('a') => edit(chat).select_all(),
+            Some('c') => copy(clipboard, edit(chat).highlighted()),
+            Some('v') => {
+                let text = clipboard.get();
+                edit(chat).insert(&text);
+            }
+            Some('x') => {
+                copy(clipboard, edit(chat).highlighted());
+                edit(chat).insert("");
+            }
             _ => {
                 if let Some(text) = typed.text.as_deref().filter(|_| !ctrl || alt) {
                     edit(chat).insert(text);
@@ -387,6 +441,7 @@ pub(crate) fn update_chat(
     hud_input: Option<Res<frame::HudInputView>>,
     mc_keys: Option<Res<frame::McActionInput>>,
     time: Res<Time>,
+    mut clipboard: Option<ResMut<Clipboard>>,
 ) {
     let events: Vec<KeyboardInput> = typed.read().cloned().collect();
     let held = MODIFIERS.map(|code| {
@@ -428,7 +483,12 @@ pub(crate) fn update_chat(
     )
     .filter(|_| !ui.inventory_open);
     let was_open = ui.chat.open;
-    handle_frame(&mut ui.chat, opener, &events, now);
+    let mut none = ();
+    let clipboard: &mut dyn ChatClipboard = match clipboard.as_deref_mut() {
+        Some(clipboard) => clipboard,
+        None => &mut none,
+    };
+    handle_frame(&mut ui.chat, opener, &events, clipboard, now);
     if was_open && ui.chat.open {
         let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
         for y in notches {
@@ -564,6 +624,27 @@ mod tests {
         }
     }
 
+    struct Board(String);
+
+    impl ChatClipboard for Board {
+        fn get(&mut self) -> String {
+            self.0.clone()
+        }
+
+        fn set(&mut self, text: &str) {
+            self.0 = text.to_owned();
+        }
+    }
+
+    fn apply_typed(chat: &mut McChat, typed: &Typed) {
+        super::apply_typed(chat, typed, &mut ());
+    }
+
+    fn shortcut_key(chat: &mut McChat, letter: &str, mods: Mods, clipboard: &mut Board) {
+        let typed = with(Key::Character(letter.into()), Some(letter), mods);
+        super::apply_typed(chat, &typed, clipboard);
+    }
+
     fn apply_key(chat: &mut McChat, key: &Key, text: Option<&str>, ctrl: bool) {
         let mods = Mods {
             ctrl,
@@ -653,13 +734,19 @@ mod tests {
     fn t_opens_empty_and_slash_opens_with_a_slash_without_typing_the_key() {
         let mut chat = McChat::default();
         let t = [key("t")];
-        handle_frame(&mut chat, opener(true, false, true, &t), &t, 2.0);
+        handle_frame(&mut chat, opener(true, false, true, &t), &t, &mut (), 2.0);
         assert!(chat.open);
         assert_eq!(chat.input, "");
         assert_eq!(chat.opened_at, 2.0);
         let mut chat = McChat::default();
         let slash = [key("/")];
-        handle_frame(&mut chat, opener(false, true, true, &slash), &slash, 0.0);
+        handle_frame(
+            &mut chat,
+            opener(false, true, true, &slash),
+            &slash,
+            &mut (),
+            0.0,
+        );
         assert_eq!((chat.input.as_str(), chat.cursor), ("/", 1));
         let mut chat = McChat::default();
         let shift_seven = [key("/")];
@@ -671,18 +758,20 @@ mod tests {
             &mut chat,
             opener(false, false, true, &shift_seven),
             &shift_seven,
+            &mut (),
             0.0,
         );
         assert_eq!(chat.input, "/");
         assert_eq!(opener(false, false, true, &[key("t")]), None);
         let mut chat = McChat::default();
-        handle_frame(&mut chat, None, &[key("t")], 0.0);
+        handle_frame(&mut chat, None, &[key("t")], &mut (), 0.0);
         assert!(!chat.open && chat.input.is_empty());
-        handle_frame(&mut chat, Some(Opener::Chat), &[], 0.0);
+        handle_frame(&mut chat, Some(Opener::Chat), &[], &mut (), 0.0);
         handle_frame(
             &mut chat,
             opener(true, false, true, &[key("t")]),
             &[key("t")],
+            &mut (),
             0.0,
         );
         assert_eq!(chat.input, "t");
@@ -1005,5 +1094,67 @@ mod tests {
             selection_box("hello", [5, 0], false, 20, width),
             Some(([24, 3], 0..5))
         );
+    }
+
+    #[test]
+    fn ctrl_v_pastes_the_clipboard_without_typing_v() {
+        let mut chat = open_chat();
+        let mut clipboard = Board("/gamerule keep_inventory true\r\n".to_owned());
+        shortcut_key(&mut chat, "v", CTRL, &mut clipboard);
+        assert_eq!(chat.input, "/gamerule keep_inventory true");
+        assert_eq!((chat.cursor, chat.highlight), (29, 29));
+        let mut chat = open_chat();
+        let mut clipboard = Board("a\u{a7}b\tc".to_owned());
+        shortcut_key(&mut chat, "V", CTRL, &mut clipboard);
+        assert_eq!(chat.input, "abc");
+        shortcut_key(&mut chat, "V", CTRL_SHIFT, &mut clipboard);
+        assert_eq!(chat.input, "abc");
+    }
+
+    #[test]
+    fn a_paste_replaces_the_selection_and_stops_at_256() {
+        let mut chat = open_chat();
+        typed(&mut chat, &"a".repeat(250));
+        apply_typed(&mut chat, &with(Key::Home, None, Mods::default()));
+        for _ in 0..10 {
+            apply_typed(&mut chat, &with(Key::ArrowRight, None, SHIFT));
+        }
+        let mut clipboard = Board("b".repeat(30));
+        shortcut_key(&mut chat, "v", CTRL, &mut clipboard);
+        assert_eq!(chat.input.len(), MC_CHAT_INPUT_LIMIT);
+        assert_eq!(&chat.input[..16], "b".repeat(16));
+        assert_eq!((chat.cursor, chat.highlight), (16, 16));
+        let mut chat = open_chat();
+        typed(&mut chat, "keep this");
+        apply_typed(&mut chat, &with(Key::ArrowLeft, None, CTRL_SHIFT));
+        shortcut_key(&mut chat, "v", CTRL, &mut Board(String::new()));
+        assert_eq!(chat.input, "keep ");
+    }
+
+    #[test]
+    fn ctrl_c_copies_and_ctrl_x_cuts_the_selection() {
+        let mut chat = open_chat();
+        typed(&mut chat, "hello big world");
+        let mut clipboard = Board("old".to_owned());
+        shortcut_key(&mut chat, "c", CTRL, &mut clipboard);
+        assert_eq!(clipboard.0, "old");
+        shortcut_key(&mut chat, "x", CTRL, &mut clipboard);
+        assert_eq!(clipboard.0, "old");
+        assert_eq!(chat.input, "hello big world");
+        apply_typed(&mut chat, &with(Key::ArrowLeft, None, CTRL_SHIFT));
+        shortcut_key(&mut chat, "c", CTRL, &mut clipboard);
+        assert_eq!(clipboard.0, "world");
+        assert_eq!(chat.input, "hello big world");
+        shortcut_key(&mut chat, "x", CTRL, &mut clipboard);
+        assert_eq!(clipboard.0, "world");
+        assert_eq!((chat.input.as_str(), chat.cursor), ("hello big ", 10));
+        apply_typed(&mut chat, &with(Key::Home, None, Mods::default()));
+        shortcut_key(&mut chat, "v", CTRL, &mut clipboard);
+        assert_eq!(chat.input, "worldhello big ");
+        shortcut_key(&mut chat, "a", CTRL, &mut clipboard);
+        shortcut_key(&mut chat, "c", CTRL, &mut clipboard);
+        assert_eq!(clipboard.0, "worldhello big ");
+        shortcut_key(&mut chat, "c", CTRL_SHIFT, &mut Board(String::new()));
+        assert_eq!(chat.input, "worldhello big ");
     }
 }
