@@ -252,6 +252,9 @@ impl Survival {
     pub fn tick(&mut self, motion: &Motion) -> Breath {
         self.tick += 1;
         self.impulse_grace = self.impulse_grace.saturating_sub(1);
+        if self.impulse_grace == 0 && (motion.on_ground || motion.in_water) {
+            self.impulse = None;
+        }
         self.in_water = motion.in_water;
         self.combat.tick(self.tick);
         let before = self.status.health;
@@ -1151,10 +1154,35 @@ mod tests {
         assert_eq!(survival.fall(2.0, None, false), 0);
         assert_eq!(survival.impulse_fall(10.0, 67.0), 3.0);
         for _ in 0..40 {
-            survival.tick(&standing([0.5, 67.0, 0.5]));
+            survival.tick(&Motion {
+                feet: [0.5, 67.0, 0.5],
+                ..Motion::default()
+            });
         }
         assert_eq!(survival.impulse_fall(10.0, 66.0), 4.0);
         assert_eq!(survival.impulse_fall(10.0, 66.0), 10.0);
+    }
+
+    #[test]
+    fn a_wind_charge_grace_ends_on_the_ground_or_in_water_once_two_seconds_are_up() {
+        let mut survival = fresh();
+        survival.start_impulse(64.0);
+        assert_eq!(survival.impulse_fall(1.0, 63.0), 1.0);
+        for _ in 0..39 {
+            survival.tick(&standing([0.5, 63.0, 0.5]));
+        }
+        assert_eq!(survival.impulse_fall(3.0, 60.0), 3.0);
+        survival.tick(&standing([0.5, 60.0, 0.5]));
+        assert_eq!(survival.impulse_fall(10.0, 70.0), 10.0);
+        survival.start_impulse(64.0);
+        for _ in 0..40 {
+            survival.tick(&Motion {
+                feet: [0.5, 50.0, 0.5],
+                in_water: true,
+                ..Motion::default()
+            });
+        }
+        assert_eq!(survival.impulse_fall(10.0, 70.0), 10.0);
     }
 
     #[test]

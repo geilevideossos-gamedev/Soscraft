@@ -1057,3 +1057,23 @@ Commit: (next entry)
 ```
 IW4L_MINECRAFT_KIT=diamond_helmet+protection=4,iron_chestplate+protection=4,leather_leggings@red,iron_boots,cobblestone*64,torch*64,diamond_sword+sharpness=5,trident,golden_helmet,leather_helmet@red,chainmail_helmet,turtle_helmet,netherite_chestplate,copper_chestplate,leather_chestplate@blue,chainmail_leggings,diamond_boots
 ```
+
+## Review fixes of the glue
+
+Defects found by the adversarial review of the whole track (base `984bd51`, up to `5c66e92`), each fixed in its own commit.
+
+### 1. A Minecraft wind charge's fall grace ends on the ground once its two seconds are up
+
+Commit: (this entry; the review started at `5c66e92`)
+
+- **Defect:** throw-glue entry 14 (`ac27e8b`) only ended the wind charge's impulse context on a landing. A player who landed lower than the burst within the 40-tick grace kept it for good while walking about, so a later fall that ended above the burst point counted 0 blocks and hurt nothing (burst at y 64, land at 63, walk up to 80, fall to 70: no damage instead of 3 and a half hearts). Vanilla (26.3 javap, `ServerGamePacketListenerImpl.handlePlayerPositionChange`) calls `tryResetCurrentImpulseContext` on every move packet while the player is on the ground, has landed in a liquid, is on a ladder, flying or a spectator, after the fall check, so the context ends on the ground as soon as the grace has run out.
+- **Changed:** `survival.rs` `Survival::tick`: once the grace is 0, a tick on the ground or in water ends the impulse. The adapter checks the landing before it runs the ticks, so the landing that ends a flight still uses the context, as vanilla checks the fall before the reset.
+- **Tests:** survival: new `a_wind_charge_grace_ends_on_the_ground_or_in_water_once_two_seconds_are_up`; `a_short_drop_after_a_wind_charge_keeps_the_grace_for_two_seconds` now runs its 40 ticks in the air, where vanilla keeps the context until the next landing.
+- **Decision:** ladders and flying don't end it yet (the survival tick doesn't know them); a ladder or flight always ends in a landing or water, which does.
+- **Test steps** (survival mode):
+  1. Stand on a 1-block step next to a 6-block-high pillar of cobblestone. Throw a wind charge at your feet, land on the ground beside the step (1 block lower), wait 3 seconds, climb the pillar and jump off it onto the step: you take the fall damage of the 5-block drop (1 heart). Screenshot of the health bar.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=wind_charge*64,cobblestone*64
+```
