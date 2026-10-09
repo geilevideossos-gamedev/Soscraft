@@ -100,6 +100,12 @@ pub fn sound_cell(at: DVec3) -> [f64; 3] {
     (at.floor() + DVec3::splat(0.5)).to_array()
 }
 
+pub fn douse_cells(block: Pos, face: Face) -> [Pos; 6] {
+    let (dx, dy, dz) = face.offset();
+    let (x, y, z) = (block.0 + dx, block.1 + dy, block.2 + dz);
+    [(x, y, z), block, (x, y, z - 1), (x + 1, y, z), (x, y, z + 1), (x - 1, y, z)]
+}
+
 pub fn face_normal(face: Face) -> DVec3 {
     let (x, y, z) = face.offset();
     DVec3::new(f64::from(x), f64::from(y), f64::from(z))
@@ -998,6 +1004,12 @@ mod tests {
         assert!((mean - 7.0).abs() < 0.1, "{mean}");
         assert!((break_pitch(0.0) - 0.9).abs() < 1e-6 && (break_pitch(1.0) - 1.0).abs() < 1e-6);
         assert_eq!(sound_cell(DVec3::new(-0.2, 64.9, 3.0)), [-0.5, 64.5, 3.5]);
+    }
+
+    #[test]
+    fn water_douses_the_face_cell_the_struck_block_and_the_four_sides() {
+        assert_eq!(douse_cells((0, 64, 0), Face::Up), [(0, 65, 0), (0, 64, 0), (0, 65, -1), (1, 65, 0), (0, 65, 1), (-1, 65, 0)]);
+        assert_eq!(douse_cells((3, 64, 0), Face::West)[..2], [(2, 64, 0), (3, 64, 0)]);
     }
 
     #[test]

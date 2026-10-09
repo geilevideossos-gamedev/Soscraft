@@ -6,6 +6,70 @@ use minecraftoss_entities::potion::splash_scale;
 use minecraftoss_entities::world::{EntityWorld, PlayerSplash};
 
 pub const SPENT_TICKS: i32 = 20;
+pub const CANDLE_SOUND: &str = "minecraft:block.candle.extinguish";
+pub const FIRE_SOUND: &str = "minecraft:block.fire.extinguish";
+const WET_REACH_SQ: f64 = 16.0;
+
+fn boxes_meet(a: (DVec3, DVec3), b: (DVec3, DVec3)) -> bool {
+    a.0.x < b.1.x
+        && a.1.x > b.0.x
+        && a.0.y < b.1.y
+        && a.1.y > b.0.y
+        && a.0.z < b.1.z
+        && a.1.z > b.0.z
+}
+
+fn wet_area(at: DVec3) -> (DVec3, DVec3) {
+    let (min, max) = minecraftoss_entities::potion::bounds_at(at);
+    let grow = DVec3::new(4.0, 2.0, 4.0);
+    (min - grow, max + grow)
+}
+
+pub fn wet(
+    world: &mut EntityWorld,
+    at: DVec3,
+    owner: u64,
+    players: &[PlayerBody],
+) -> Vec<PlayerPotionHit> {
+    let area = wet_area(at);
+    for target in crate::thrown::targets(world) {
+        if !boxes_meet(area, (target.min, target.max)) {
+            continue;
+        }
+        let feet = DVec3::new(
+            (target.min.x + target.max.x) / 2.0,
+            target.min.y,
+            (target.min.z + target.max.z) / 2.0,
+        );
+        if feet.distance_squared(at) >= WET_REACH_SQ {
+            continue;
+        }
+        if let Some(enderman) = world.enderman_mut(target.id) {
+            if enderman.hurt(1.0).applied {
+                blame_player(world, target.id, owner);
+            }
+            if let Some(enderman) = world.enderman_mut(target.id) {
+                enderman.dodge_pending = true;
+            }
+        }
+        if let Some(body) = world.body_mut(target.id) {
+            body.fire_ticks = body.fire_ticks.min(0);
+        }
+    }
+    players
+        .iter()
+        .filter(|p| {
+            p.targetable()
+                && boxes_meet(area, p.bounds())
+                && p.feet.distance_squared(at) < WET_REACH_SQ
+        })
+        .map(|p| PlayerPotionHit {
+            player: p.id,
+            potion: PlayerPotion::Extinguish,
+            at,
+        })
+        .collect()
+}
 
 pub fn splashed(effect: &PotionEffect, scale: f64, duration_scale: f32) -> Option<PotionEffect> {
     let duration =
@@ -38,6 +102,8 @@ pub fn blame_player(world: &mut EntityWorld, id: u64, player: u64) {
     } else if let Some(e) = world.witch_mut(id) {
         e.ai.state.hurt_by = Some((by, e.tick_count));
     } else if let Some(e) = world.iron_golem_mut(id) {
+        e.ai.state.hurt_by = Some((by, e.tick_count));
+    } else if let Some(e) = world.enderman_mut(id) {
         e.ai.state.hurt_by = Some((by, e.tick_count));
     }
 }

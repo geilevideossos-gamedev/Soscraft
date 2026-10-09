@@ -705,6 +705,27 @@ impl ServerSim {
         self.thrown.push(thrown);
     }
 
+    fn douse_fire(&mut self, (x, y, z): BlockPos) {
+        let at = minecraftoss_core::BlockPos::new(x, y, z);
+        let state = self.level.block(at);
+        let registries = self.level.registries();
+        let tagged = |name: &str| registries.block_tags.id(name).is_some_and(|tag| registries.block_in_tag(state, tag));
+        let lit = registries.blocks.property(state, "lit") == Some("true");
+        let (fire, candle, campfire) = (tagged("minecraft:fire"), lit && (tagged("minecraft:candles") || tagged("minecraft:candle_cakes")), lit && tagged("minecraft:campfires"));
+        let unlit = registries.blocks.with_property(state, "lit", "false");
+        let center = [f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5];
+        if fire {
+            self.level.destroy_block_drops(at, false, update::LIMIT);
+        } else if let (true, Some(unlit)) = (candle, unlit) {
+            self.level.set_block(at, unlit, update::ALL, update::LIMIT);
+            self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::splash::CANDLE_SOUND, pos: center, volume: 1.0, pitch: 1.0 });
+        } else if let (true, Some(unlit)) = (campfire, unlit) {
+            let (a, b) = (self.sound_random.next_float(), self.sound_random.next_float());
+            self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::splash::FIRE_SOUND, pos: center, volume: 0.5, pitch: 2.6 + (a - b) * 0.8 });
+            self.level.set_block(at, unlit, update::ALL, update::LIMIT);
+        }
+    }
+
     pub fn note_held(&mut self, player: u64, inventory: &minecraftoss_player::inventory::Inventory, selected: usize) {
         let slot = |index: usize| inventory.slots.get(index).cloned().flatten();
         self.held.insert(player, [slot(selected), slot(OFFHAND_SLOT)]);
@@ -783,7 +804,11 @@ impl ServerSim {
                         potion_breaks.push(minecraftoss_entities::world::PotionBreak { position: at, color: contents.color(), instant: contents.instant_potion() });
                         let pitch = crate::thrown::break_pitch(t.random().next_float());
                         let scale = crate::potions::duration_scale(&t.item, t.components.as_ref());
-                        splashes.push((at, t.margin(), t.owner, contents.all_effects(), scale, pitch));
+                        let douse = match (contents.is_water(), landed.block, landed.face) {
+                            (true, Some(block), Some(face)) => Some(crate::thrown::douse_cells(block, face)),
+                            _ => None,
+                        };
+                        splashes.push((at, t.margin(), t.owner, contents.is_water(), douse, contents.all_effects(), scale, pitch));
                     }
                 }
             }
@@ -793,7 +818,14 @@ impl ServerSim {
             self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::thrown::BREAK_SOUND, pos: cell, volume: 1.0, pitch });
             self.level.award_experience_toward(hit.to_array(), direction.to_array(), amount);
         }
-        for (at, margin, owner, effects, scale, pitch) in splashes {
+        for (at, margin, owner, water, douse, effects, scale, pitch) in splashes {
+            for cell in douse.into_iter().flatten() {
+                self.douse_fire(cell);
+            }
+            if water {
+                let wet = crate::splash::wet(&mut self.mobs, at, owner, players);
+                self.player_potions.extend(wet);
+            }
             let hits = crate::splash::splash(&mut self.mobs, at, margin, owner, &effects, scale, players);
             self.player_potions.extend(hits);
             self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::thrown::BREAK_SOUND, pos: crate::thrown::sound_cell(at), volume: 1.0, pitch });
@@ -3738,6 +3770,68 @@ mod tests {
         assert_eq!(poisoned.iter().map(|p| p.0).collect::<Vec<_>>(), vec![1, 2], "{hits:?}");
         assert!(poisoned[0].1 > poisoned[1].1);
         assert!(poisoned[0].1 <= 900);
+    }
+
+    fn level_block(server: &ServerSim, (x, y, z): BlockPos) -> Option<Block> {
+        let state = server.level.block(minecraftoss_core::BlockPos::new(x, y, z));
+        if server.level.registries().blocks.is_air(state) {
+            None
+        } else {
+            server.states.block(state).cloned()
+        }
+    }
+
+    #[test]
+    fn splash_water_puts_out_fire_candles_and_campfires_around_where_it_lands() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        for (x, z) in [(9, 8), (7, 8), (8, 9), (6, 8)] {
+            place(&mut server, &mut scene, (x, 199, z), Block::new("minecraft:stone"));
+        }
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:fire"));
+        place(&mut server, &mut scene, (7, 200, 8), Block::new("minecraft:fire"));
+        place(&mut server, &mut scene, (6, 200, 8), Block::new("minecraft:fire"));
+        place(&mut server, &mut scene, (9, 200, 8), Block::new("minecraft:candle").with("lit", "true").with("candles", "2"));
+        place(&mut server, &mut scene, (8, 200, 9), Block::new("minecraft:campfire").with("lit", "true").with("facing", "north"));
+        assert_eq!(level_block(&server, (6, 200, 8)).map(|b| b.id.key()), Some("minecraft:fire".to_owned()));
+        server.level.sounds.clear();
+        server.throw(thrown_potion(0, "minecraft:splash_potion", "minecraft:water", 4));
+        for _ in 0..20 {
+            server.tick_thrown(&[]);
+        }
+        assert_eq!(level_block(&server, (8, 200, 8)), None);
+        assert_eq!(level_block(&server, (7, 200, 8)), None);
+        assert_eq!(level_block(&server, (6, 200, 8)).map(|b| b.id.key()), Some("minecraft:fire".to_owned()), "two blocks off it keeps burning");
+        assert_eq!(level_block(&server, (9, 200, 8)).and_then(|b| b.properties.get("lit").cloned()).as_deref(), Some("false"));
+        assert_eq!(level_block(&server, (9, 200, 8)).and_then(|b| b.properties.get("candles").cloned()).as_deref(), Some("2"));
+        assert_eq!(level_block(&server, (8, 200, 9)).and_then(|b| b.properties.get("lit").cloned()).as_deref(), Some("false"));
+        let events: Vec<_> = server.level.sounds.iter().map(|s| s.event).collect();
+        assert!(events.contains(&crate::splash::CANDLE_SOUND) && events.contains(&crate::splash::FIRE_SOUND), "{events:?}");
+        let breaks = server.take_potion_breaks();
+        assert_eq!((breaks.len(), breaks[0].color, breaks[0].instant), (1, crate::potions::DEFAULT_COLOR, false));
+    }
+
+    #[test]
+    fn splash_water_puts_out_burning_mobs_and_players_and_stings_endermen() {
+        let Some((mut server, _)) = door_world() else { return };
+        if server.summon("minecraft:cow", [9.5, 200.0, 8.5], None, 0.0).is_err() || server.summon("minecraft:enderman", [10.5, 200.0, 8.5], None, 0.0).is_err() {
+            return;
+        }
+        let cow = server.mobs.cows()[0].id;
+        server.mobs.body_mut(cow).unwrap().fire_ticks = 100;
+        let enderman = server.mobs.endermen()[0].id;
+        let before = server.mobs.endermen()[0].enderman.health;
+        server.throw(thrown_potion(3, "minecraft:splash_potion", "minecraft:water", 5));
+        let players = [player_at(3, [8.5, 200.0, 8.5], true), player_at(4, [30.5, 200.0, 8.5], true)];
+        let mut hits = Vec::new();
+        for _ in 0..20 {
+            server.tick_thrown(&players);
+            hits.extend(server.take_player_potions());
+        }
+        assert_eq!(server.mobs.body_mut(cow).unwrap().fire_ticks, 0);
+        let after = server.mobs.endermen().iter().find(|e| e.id == enderman).unwrap();
+        assert_eq!(after.enderman.health, before - 1.0);
+        assert!(after.dodge_pending);
+        assert_eq!(hits.iter().map(|h| (h.player, h.potion.clone())).collect::<Vec<_>>(), vec![(3, crate::potions::PlayerPotion::Extinguish)]);
     }
 
     #[test]

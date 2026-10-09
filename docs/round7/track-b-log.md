@@ -81,7 +81,7 @@ IW4L_MINECRAFT_KIT=experience_bottle*16,witch_spawn_egg*2
 
 ### 5. Minecraft splash potions are thrown and splash their effects like vanilla
 
-Commit: (next entry)
+Commit: 90002b2
 
 - **Changed:** new `potions.rs`: the 26.3 `Potions` table (46 potions, read with javap) and the effects' colours; `PotionContents` reads `minecraft:potion_contents` (a bare potion ID, or `potion`, `custom_color` and `custom_effects`) with `all_effects`, `scaled_effects` (`withScaledDuration`), `has_effects`, `instant_potion` (`Potion.hasInstantEffects`) and `color` (the level-weighted mix, `0x385DC6` when empty); `duration_scale` reads `minecraft:potion_duration_scale` (lingering 0.25, tipped arrow 0.125 by default). `PotionEffect` crosses to a mob effect or a player `EffectKind` where those exist. `PlayerPotion` (an effect, a heal, a harm naming the thrower, putting out fire) and `PlayerPotionHit` (player ID, what, where); `apply_to_player(status, potion)` applies it to a `SurvivalStatus` and returns the damage a harm still has to deal; `drink_hits` is what drinking a potion does, from the same table.
 - New `splash.rs`: `ThrownSplashPotion.onHitAsPotion`: every living mob and player whose box (grown by the potion's margin) is within 4 blocks of the potion's box gets each effect at `1 - distance/4`: instant health and damage on mobs through the vendored `EntityWorld::splash_instant` (undead the other way round, endermen dodge), lasting effects scaled `(int)(scale * duration * durationScale + 0.5)` and dropped when they would end within 20 ticks. A mob hurt by a player's potion turns on that player (`blame_player`). `of_witch` turns a witch's `PlayerSplash` into the same `PlayerPotionHit`.
@@ -100,6 +100,26 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=splash_potion@harming*3,splash_potion@strong_healing,splash_potion@poison*2,splash_potion@slowness*2,cow_spawn_egg*4,zombie_spawn_egg*2,pig_spawn_egg*2,spider_spawn_egg*2
+```
+
+### 6. Minecraft splash water bottles put out fire, campfires, candles and burning mobs and players like vanilla
+
+Commit: (next entry)
+
+- **Changed:** `thrown.rs`: `douse_cells(block, face)`: the cell in front of the struck face, the struck block and the front cell's four horizontal neighbours (`AbstractThrownPotion.onHitBlock`, north, east, south, west). `server.rs` `douse_fire`: `#fire` is removed without drops (`destroyBlock(pos, false)`), a lit `#candles`/`#candle_cakes` block goes out with `block.candle.extinguish` (volume 1, pitch 1), a lit `#campfires` block goes out with event 1009's `block.fire.extinguish` (volume 0.5, pitch 2.6 plus or minus 0.8); the tags are read from the runtime data. Only a water potion that struck a block douses (`#douses_fire` is water).
+- `splash.rs` `wet` (`affectEntitiesAround` for water: `#extinguishes_entities` and `#hurts_water_sensitive_entities`): every mob in the potion's box grown 4, 2, 4 whose feet are within 4 blocks stops burning; an enderman (the only water-sensitive mob we have) takes 1 damage, turns on the thrower and teleports away. Players in reach get `PlayerPotion::Extinguish`.
+- **Tests:** thrown: `water_douses_the_face_cell_the_struck_block_and_the_four_sides`. server: `splash_water_puts_out_fire_candles_and_campfires_around_where_it_lands` (a fire two blocks off keeps burning; the candle keeps its count), `splash_water_puts_out_burning_mobs_and_players_and_stings_endermen`.
+- **Decision:** players get the extinguish whether they burn or not; the client ignores it when they don't (the server doesn't know the player's fire).
+- **Test steps:**
+  1. Place netherrack in a plus shape, light fire on each arm and on a block 2 blocks away. Light a campfire (it lights itself when placed) and a candle (flint and steel) right next to where you will aim.
+  2. Throw the water bottle at the middle: the fires within one block, the campfire and the candle go out with the hiss; the fire 2 blocks away keeps burning.
+  3. Use flint and steel on the block a cow stands on so it catches fire, then throw water next to it: it stops burning.
+  4. Spawn an enderman and throw water at it: it teleports away and takes a hit.
+  5. After the glue (item 6): stand in fire until you burn, throw water at your feet: your flames go out.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=splash_potion@water*6,netherrack*16,campfire*2,candle*4,flint_and_steel,cow_spawn_egg*2,enderman_spawn_egg
 ```
 
 ## After the split
