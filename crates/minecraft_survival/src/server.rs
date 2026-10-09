@@ -516,17 +516,35 @@ pub fn join(
     player.dead = dead;
     player.place = Some(Place::standing(Dimension::Overworld, spawn, 0.0, 0.0));
     match saved.place {
-        Some(_) if dead => {}
-        Some(place) if place.dimension == Dimension::Overworld => player.arrive(place),
-        Some(place) => diag::info!(
-            World,
-            "Minecraft player {} was saved in {}, which cannot be entered yet: back at the world spawn",
-            profile.name,
-            place.dimension.dimension_type()
-        ),
-        None => {}
+        Some(place) if !dead => player.arrive(place),
+        _ => {}
     }
     player
+}
+
+pub fn debug_dimension(value: &str) -> Result<Option<Dimension>, String> {
+    let name = value.trim().to_ascii_lowercase();
+    if name.is_empty() {
+        return Ok(None);
+    }
+    Dimension::parse(&name).map(Some).ok_or_else(|| {
+        format!(
+            "Minecraft dimension `{}` unknown: IW4L_MINECRAFT_DIMENSION takes overworld, the_nether or the_end",
+            value.trim()
+        )
+    })
+}
+
+pub fn start_in(player: &mut Player, dimension: Dimension, overworld_spawn: [f64; 3]) {
+    if player.dimension == dimension {
+        return;
+    }
+    if dimension == Dimension::Overworld {
+        player.arrive(Place::standing(dimension, overworld_spawn, 0.0, 0.0));
+        return;
+    }
+    player.dimension = dimension;
+    player.arrival = None;
 }
 
 struct WorldFiles {
@@ -895,9 +913,42 @@ mod tests {
         ));
         save.write_player(&steve.uuid, &nether.data()).unwrap();
         let back = join(Some(&save), &recipes, &rules, joining(&steve));
-        assert_eq!(back.arrival, None);
-        assert_eq!(back.dimension, Dimension::Overworld);
-        assert_eq!(back.place.map(|place| place.feet), Some(SPAWN));
+        assert_eq!(back.dimension, Dimension::Nether);
+        assert_eq!(back.arrival, nether.place);
+        assert_eq!(back.place, nether.place);
+    }
+
+    #[test]
+    fn the_debug_dimension_names_a_dimension_with_or_without_its_namespace() {
+        assert_eq!(debug_dimension("the_nether"), Ok(Some(Dimension::Nether)));
+        assert_eq!(debug_dimension(" minecraft:the_end "), Ok(Some(Dimension::End)));
+        assert_eq!(debug_dimension("Overworld"), Ok(Some(Dimension::Overworld)));
+        assert_eq!(debug_dimension(""), Ok(None));
+        let error = debug_dimension("the_moon").unwrap_err();
+        assert!(error.contains("`the_moon`") && error.contains("IW4L_MINECRAFT_DIMENSION"), "{error}");
+    }
+
+    #[test]
+    fn a_debug_start_keeps_a_saved_place_in_that_dimension_and_waits_for_its_level_otherwise() {
+        let (_dir, save) = world("debug-start");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let steve = profile("Steve");
+        let mut player = join(Some(&save), &recipes, &rules, joining(&steve));
+        let cave = Place::standing(Dimension::Nether, [5.5, 70.0, 5.5], 90.0, 0.0);
+        player.arrive(cave);
+        save.write_player(&steve.uuid, &player.data()).unwrap();
+        let mut kept = join(Some(&save), &recipes, &rules, joining(&steve));
+        start_in(&mut kept, Dimension::Nether, SPAWN);
+        assert_eq!((kept.dimension, kept.arrival), (Dimension::Nether, Some(cave)));
+        let mut end = join(Some(&save), &recipes, &rules, joining(&steve));
+        start_in(&mut end, Dimension::End, SPAWN);
+        assert_eq!((end.dimension, end.arrival), (Dimension::End, None));
+        assert_eq!(end.place, Some(cave), "where to go back to if the End fails to open");
+        let mut home = join(Some(&save), &recipes, &rules, joining(&steve));
+        start_in(&mut home, Dimension::Overworld, SPAWN);
+        let spawn = Place::standing(Dimension::Overworld, SPAWN, 0.0, 0.0);
+        assert_eq!((home.dimension, home.arrival), (Dimension::Overworld, Some(spawn)));
     }
 
     #[test]

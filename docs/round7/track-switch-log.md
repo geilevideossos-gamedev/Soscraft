@@ -153,7 +153,7 @@ Commit: eaf9f07
 
 ### 8. MW2 collision switches to the player's new Minecraft level (E1-7)
 
-Commit: filled in by the next entry (or `git log` under this subject)
+Commit: 4ac9b0e4
 
 - **Changed:**
   - `sim/src/voxel.rs`: `switch_level(origin)` keeps the one voxel world and its brush table, moves the block at map origin to `origin`, drops every chunk and every shape but the empty one, drains the queued block events and the mob boxes, and bumps the revision. Until the new level's chunks arrive, `awaiting_ground` holds the player still, as at a world load.
@@ -165,3 +165,33 @@ Commit: filled in by the next entry (or `git log` under this subject)
   - **Handed to S3:** coming back to a level that is still open (within its 15 seconds) needs its collision, sections and light sent again from its scene; the switch of E1-8 does that, with the loading screen and leaving the old level.
 - **Test steps:** with entry 9 (start in the Nether).
 - **Kit:** none.
+
+### 9. IW4L_MINECRAFT_DIMENSION starts the player in the Nether or the End (E1-12)
+
+Commit: filled in by the next entry (or `git log` under this subject)
+
+- **Changed:**
+  - `minecraft_survival/src/server.rs`:
+    - `join` puts a player saved in the Nether or the End back there, at the saved place (track D's fallback to the overworld spawn is gone); their level opens through `open_levels`. A player saved dead still respawns at the world spawn.
+    - `debug_dimension(value)` reads `IW4L_MINECRAFT_DIMENSION`: `overworld`, `the_nether` or `the_end`, with or without `minecraft:` and in any case; empty means unset, anything else is an error naming the variable.
+    - `start_in(player, dimension, overworld_spawn)`: a player already in that dimension keeps their saved place; the overworld puts them at its spawn (map origin); the Nether or the End leaves them waiting for that level with no arrival, so they arrive at the stream's spawn (the stand-in Nether floor, or `END_SPAWN_POINT` on the End's obsidian platform). Their old place stays as where to go back to if the level fails to open.
+  - `render_anim/src/minecraft_world.rs` (load completion): applies the variable after the join and logs `Minecraft player starts in <dimension> from IW4L_MINECRAFT_DIMENSION`, or warns.
+- **Tests:** `server`: `the_debug_dimension_names_a_dimension_with_or_without_its_namespace`, `a_debug_start_keeps_a_saved_place_in_that_dimension_and_waits_for_its_level_otherwise`; `a_joining_player_arrives_where_they_were_saved_facing_the_same_way` now expects a player saved in the Nether to come back in the Nether.
+- **Checked:** the End generator places the 5x5 obsidian platform at y 48 around (100, 0) in the void east of the main island, whose edge is near x 90 (a probe of seed 77, not committed).
+- **Decisions:**
+  - The overworld still opens with the world, as in vanilla, so a new world's spawn is found; it closes 15 seconds after a start elsewhere.
+  - **Until S3** (E1-10), dying in the Nether or the End respawns at that dimension's map origin (its first arrival point), because the MW2 spawn is map origin; the respawn switch to the overworld comes with S3.
+  - The Nether and End skies, fog and clouds are still the overworld's (X1b).
+- **Test steps** (the owner test for the whole group S2):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=s2test` (a new world) and add `IW4L_MINECRAFT_DIMENSION=the_nether`. Start. After the loading you stand in a Nether cave on netherrack under the bedrock roof (the sky still looks like the overworld's). The log says `Minecraft player starts in minecraft:the_nether`, `Minecraft minecraft:the_nether level opened in ... ms` and `Minecraft level shown: minecraft:the_nether`. **Screenshot 1.**
+  2. About 15 seconds after the start the log says `Minecraft minecraft:overworld level saved and closed in ... ms`.
+  3. Shoot netherrack: it breaks. Build a 3x3 obsidian wall with netherrack beside it and throw a frag at it: the netherrack craters, the obsidian holds. Light a TNT next to netherrack. **Screenshot 2.**
+  4. Walk about 20 blocks, build a cobblestone tower, and stand beside it facing it. Quit through the menu. Remove the `IW4L_MINECRAFT_DIMENSION` line and start again: you are back in the Nether beside the tower, facing it. **Screenshot 3.**
+  5. Quit. Add `IW4L_MINECRAFT_DIMENSION=the_end` and start: you stand on a 5x5 obsidian platform over the void, with the main island to the west. Don't step off. **Screenshot 4.**
+  6. Quit. Set `IW4L_MINECRAFT_DIMENSION=overworld` and start: you stand at the overworld spawn. **Screenshot 5.**
+  7. Quit. Set `IW4L_MINECRAFT_DIMENSION=moon` and start: the log warns `Minecraft dimension `moon` unknown`, and you start where you quit (the overworld spawn). Remove the line afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:obsidian*64,minecraft:netherrack*64,minecraft:cobblestone*64,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:torch*64,minecraft:cooked_beef*32
+```

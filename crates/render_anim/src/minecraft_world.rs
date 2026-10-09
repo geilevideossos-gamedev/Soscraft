@@ -481,7 +481,15 @@ fn update(
                 let chosen_mode = std::env::var("IW4L_MINECRAFT_GAMEMODE").ok();
                 let kit = std::env::var("IW4L_MINECRAFT_KIT").ok();
                 let joining = minecraft_survival::server::Joining { profile: &profile, spawn: view.origin, chosen_mode: chosen_mode.as_deref(), kit: kit.as_deref(), carried: runtime.carried_survival.take() };
-                let player = minecraft_survival::server::join(globals.save.as_ref(), &globals.data.recipes, &globals.game_rules, joining);
+                let mut player = minecraft_survival::server::join(globals.save.as_ref(), &globals.data.recipes, &globals.game_rules, joining);
+                match minecraft_survival::server::debug_dimension(&std::env::var("IW4L_MINECRAFT_DIMENSION").unwrap_or_default()) {
+                    Ok(Some(dimension)) => {
+                        minecraft_survival::server::start_in(&mut player, dimension, view.origin);
+                        diag::info!(World, "Minecraft player starts in {} from IW4L_MINECRAFT_DIMENSION", dimension.dimension_type());
+                    }
+                    Ok(None) => {}
+                    Err(error) => diag::warn!(World, "{error}"),
+                }
                 let uuid = player.uuid.clone();
                 players.insert(uuid.clone(), player);
                 runtime.environment_accumulator = 0.0;
