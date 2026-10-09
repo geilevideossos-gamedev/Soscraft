@@ -74,6 +74,14 @@ struct SpawnerData {
     constant: bool,
 }
 
+pub struct StructureHere {
+    pub name: String,
+    pub in_box: bool,
+    pub in_piece: bool,
+}
+
+pub type StructureFinder = Arc<dyn Fn(BlockPos) -> Vec<StructureHere> + Send + Sync>;
+
 /// One biome's creature list (`WeightedList<SpawnerData>`).
 #[derive(Clone, Debug, Default)]
 struct Creatures {
@@ -334,6 +342,8 @@ pub struct CreatureSpawns {
     by_category: Vec<[Creatures; spawning::MobCategory::COUNT]>,
     /// Each biome's `spawn_costs`: energy budget and charge by type.
     costs: Vec<std::collections::HashMap<String, (f64, f64)>>,
+    structure_spawns: Vec<(String, [Option<(bool, Creatures)>; spawning::MobCategory::COUNT])>,
+    fortress_enemies: Creatures,
     reduced_water_ambient: Option<TagId>,
     /// `DimensionType.monsterSpawnBlockLightLimit` and the upper bound of
     /// the uniform `monsterSpawnLightTest` (lower bound 0).
@@ -435,6 +445,31 @@ impl CreatureSpawns {
             let p = attributes.get("minecraft:gameplay/creature_world_gen_spawn_probability").map(attribute_argument).and_then(Value::as_f64);
             probability.push(p.map_or(0.1, |p| p as f32));
         }
+        let mut structure_spawns = Vec::new();
+        for id in pack.list("worldgen/structure")? {
+            let json = pack.read_json("worldgen/structure", &id)?;
+            let mut lists: [Option<(bool, Creatures)>; spawning::MobCategory::COUNT] = Default::default();
+            for (name, spawn_override) in json["spawn_overrides"].as_object().into_iter().flatten() {
+                let Some(category) = spawning::MobCategory::parse(name) else { continue };
+                let mut list = Creatures::default();
+                for entry in spawn_override["spawns"].as_array().into_iter().flatten() {
+                    let kind = entry["type"].as_str().ok_or("structure spawn lacks a type")?.to_owned();
+                    let weight = entry["weight"].as_i64().ok_or("structure spawn lacks a weight")? as i32;
+                    let (min, max, constant) = int_provider(&entry["count"])?;
+                    list.total += weight;
+                    list.entries.push(SpawnerData { kind, weight, min, max, constant });
+                }
+                lists[category as usize] = Some((spawn_override["bounding_box"].as_str() == Some("piece"), list));
+            }
+            if lists.iter().any(Option::is_some) {
+                structure_spawns.push((id.to_string(), lists));
+            }
+        }
+        let mut fortress_enemies = Creatures::default();
+        for (kind, weight, min, max) in [("blaze", 10, 2, 3), ("zombified_piglin", 5, 4, 4), ("wither_skeleton", 8, 5, 5), ("skeleton", 2, 5, 5), ("magma_cube", 3, 4, 4)] {
+            fortress_enemies.total += weight;
+            fortress_enemies.entries.push(SpawnerData { kind: format!("minecraft:{kind}"), weight, min, max, constant: min == max });
+        }
         let sounds = |kind: &str| -> Result<Vec<String>, String> { Ok(pack.list(kind)?.into_iter().map(|id| id.as_str().to_owned()).collect()) };
         let tag = |tags: &minecraftoss_core::tags::Tags, name: &str| tags.id(name).ok_or_else(|| format!("unknown tag {name}"));
         let dimension = pack.read_json("dimension_type", &minecraftoss_core::Identifier::parse(dimension_type)?)?;
@@ -446,6 +481,8 @@ impl CreatureSpawns {
             creatures,
             by_category,
             costs,
+            structure_spawns,
+            fortress_enemies,
             reduced_water_ambient: registries.biome_tags.id("minecraft:reduced_water_ambient_spawns"),
             monster_block_light_limit: dimension["monster_spawn_block_light_limit"].as_i64().unwrap_or(0) as i32,
             monster_light_test_max,

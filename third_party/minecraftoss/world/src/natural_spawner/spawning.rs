@@ -12,7 +12,7 @@
 //! outposts, fortresses), spawn costs and enchanted spawn equipment are not
 //! ported and are noted when reached.
 
-use super::{place, set, set_attribute_base, spawn_aabb, type_info, CreatureSpawns, Creatures, Group, RandomRef, Rules, SpawnLevel, SpawnerData, TypeInfo, Walk};
+use super::{place, set, set_attribute_base, spawn_aabb, type_info, CreatureSpawns, Creatures, Group, RandomRef, Rules, SpawnLevel, SpawnerData, StructureHere, TypeInfo, Walk};
 use minecraftoss_core::block::flags;
 use minecraftoss_core::entity_data::finalize_mob;
 use minecraftoss_core::nbt::Tag;
@@ -188,6 +188,7 @@ pub struct SpawnContext<'a> {
     pub obstacles: Vec<[f64; 6]>,
     /// Boxes of chickens nobody rides (a baby zombie's jockey search).
     pub chickens: Vec<[f64; 6]>,
+    pub structures: &'a dyn Fn(BlockPos) -> Vec<StructureHere>,
 }
 
 /// `SpawnState`'s tests around one spawn: the spawn potential (`canSpawn`)
@@ -366,10 +367,28 @@ impl CreatureSpawns {
         self.costs[usize::from(level.biome(pos).0)].get(kind).copied()
     }
 
-    /// A biome's spawn list for a category (`mobsAt` without structures).
-    fn mobs_at(&self, level: &dyn SpawnLevel, category: MobCategory, pos: BlockPos) -> &Creatures {
+    pub fn kinds_at(&self, level: &dyn SpawnLevel, structures: &dyn Fn(BlockPos) -> Vec<StructureHere>, category: MobCategory, pos: BlockPos) -> Vec<String> {
+        self.mobs_at(level, structures, category, pos).entries.iter().map(|entry| entry.kind.clone()).collect()
+    }
+
+    fn mobs_at(&self, level: &dyn SpawnLevel, structures: &dyn Fn(BlockPos) -> Vec<StructureHere>, category: MobCategory, pos: BlockPos) -> std::borrow::Cow<'_, Creatures> {
+        let here = structures(pos);
+        if category == MobCategory::Monster && here.iter().any(|s| s.name == "minecraft:fortress" && s.in_box) {
+            let below = self.registries.blocks.block(self.registries.blocks.block_of(level.block(pos.below()))).name.as_str() == "minecraft:nether_bricks";
+            if below {
+                return std::borrow::Cow::Borrowed(&self.fortress_enemies);
+            }
+        }
+        for structure in &here {
+            let spawns = self.structure_spawns.iter().find(|(name, _)| *name == structure.name).and_then(|(_, lists)| lists[category as usize].as_ref());
+            if let Some((piece, list)) = spawns {
+                if (*piece && structure.in_piece) || (!*piece && structure.in_box) {
+                    return std::borrow::Cow::Borrowed(list);
+                }
+            }
+        }
         let biome = level.biome(pos);
-        &self.by_category[usize::from(biome.0)][category as usize]
+        std::borrow::Cow::Borrowed(&self.by_category[usize::from(biome.0)][category as usize])
     }
 
     /// `NaturalSpawner.spawnCategoryForPosition`: up to three groups
@@ -418,7 +437,7 @@ impl CreatureSpawns {
                     continue;
                 }
                 if current.is_none() {
-                    let Some(data) = self.random_spawn_mob_at(level, category, pos) else { break };
+                    let Some(data) = self.random_spawn_mob_at(level, context, category, pos) else { break };
                     // `count.sample`: a constant draws nothing.
                     max = if data.constant { data.min } else { level.random().next_i32_bound(data.max - data.min + 1) + data.min };
                     current = Some(data);
@@ -506,7 +525,7 @@ impl CreatureSpawns {
     }
 
     /// `getRandomSpawnMobAt`.
-    fn random_spawn_mob_at(&self, level: &mut dyn SpawnLevel, category: MobCategory, pos: BlockPos) -> Option<SpawnerData> {
+    fn random_spawn_mob_at(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, category: MobCategory, pos: BlockPos) -> Option<SpawnerData> {
         let biome = level.biome(pos);
         if category == MobCategory::WaterAmbient
             && self.reduced_water_ambient.is_some_and(|t| self.registries.biome_in_tag(biome, t))
@@ -514,7 +533,7 @@ impl CreatureSpawns {
         {
             return None;
         }
-        let list = self.mobs_at(level, category, pos).clone();
+        let list = self.mobs_at(level, context.structures, category, pos).into_owned();
         list.pick(level.random()).cloned()
     }
 
@@ -534,7 +553,7 @@ impl CreatureSpawns {
             return false;
         }
         // `canSpawnMobAt`: the list here holds the same `SpawnerData`.
-        let here = self.mobs_at(level, type_category, pos);
+        let here = self.mobs_at(level, context.structures, type_category, pos);
         if !here.entries.iter().any(|e| e.kind == data.kind && e.min == data.min && e.max == data.max && e.constant == data.constant) {
             return false;
         }

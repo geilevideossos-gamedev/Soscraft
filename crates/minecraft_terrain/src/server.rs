@@ -226,7 +226,11 @@ impl ServerSim {
         // Natural spawning, when the entity catalog can create mobs.
         if level.registries().entities.is_some() {
             match minecraftoss_world::natural_spawner::CreatureSpawns::load(worldgen.terrain.registries.clone(), dimension_type, false) {
-                Ok(spawns) => level.natural_spawning = Some(minecraftoss_world::level::spawning::NaturalSpawning::new(Arc::new(spawns))),
+                Ok(spawns) => {
+                    let mut natural = minecraftoss_world::level::spawning::NaturalSpawning::new(Arc::new(spawns));
+                    natural.structures = Some(minecraftoss_world::level::spawning::structures_of(worldgen));
+                    level.natural_spawning = Some(natural);
+                }
                 Err(e) => eprintln!("natural spawning unavailable: {e}"),
             }
         }
@@ -5416,6 +5420,56 @@ mod tests {
         assert_eq!(answers.len(), 1);
         assert_eq!(blocks.property(answers[0], "east"), Some("true"));
         assert_eq!(blocks.property(answers[0], "west"), Some("false"));
+    }
+
+    #[test]
+    fn fortress_monsters_spawn_on_its_nether_bricks_and_structures_override_their_biome() {
+        use minecraftoss_world::natural_spawner::spawning::MobCategory;
+        type BlockPos = minecraftoss_core::BlockPos;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(TerrainGenerator::nether(registries.clone(), 77).unwrap()), "minecraft:the_nether").unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, 0, 256).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen.clone(), states, "minecraft:the_nether");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let at = match crate::locate::nearest_structure(&worldgen, &["minecraft:fortress".to_owned()], [0, 64, 0], crate::locate::STRUCTURE_RADIUS, deadline) {
+            crate::locate::Search::Found(at, _) => at,
+            other => panic!("no fortress near the origin of seed 77: {other:?}"),
+        };
+        let fortress = worldgen.structures.id("minecraft:fortress").unwrap();
+        let start = worldgen.structures.starts_in(&worldgen.library, &worldgen.terrain, ChunkPos::new(at[0] >> 4, at[2] >> 4)).iter().find(|start| start.structure == fortress).cloned().expect("the fortress starts in its chunk");
+        let pieces: Vec<minecraftoss_generator::feature::template::BoundingBox> = start.pieces.lock().unwrap().iter().map(|piece| piece.base().bbox).collect();
+        let bbox = start.bounding_box();
+        let in_a_piece = |pos: BlockPos| pieces.iter().any(|piece| piece.is_inside(pos));
+        let inside = pieces[0].center();
+        let between = (bbox.min_x..=bbox.max_x)
+            .flat_map(|x| (bbox.min_z..=bbox.max_z).map(move |z| BlockPos::new(x, bbox.min_y + 2, z)))
+            .find(|&pos| !in_a_piece(pos) && !in_a_piece(pos.below()))
+            .expect("a spot inside the fortress's bounds but outside its pieces");
+        let far = BlockPos::new(at[0] + 2000, 64, at[2] + 2000);
+        for pos in [inside, between, far] {
+            server.load_chunk(&map.load_now(ChunkPos::new(pos.x >> 4, pos.z >> 4)));
+        }
+        let natural = server.level.natural_spawning.as_ref().unwrap();
+        let (spawns, finder) = (natural.spawns.clone(), natural.structures.clone().unwrap());
+        let here = finder(inside);
+        assert!(here.iter().any(|s| s.name == "minecraft:fortress" && s.in_box && s.in_piece), "{:?}", here.iter().map(|s| (&s.name, s.in_box, s.in_piece)).collect::<Vec<_>>());
+        assert!(finder(between).iter().any(|s| s.name == "minecraft:fortress" && s.in_box && !s.in_piece));
+        assert!(finder(far).is_empty());
+        let enemies: Vec<String> = ["blaze", "zombified_piglin", "wither_skeleton", "skeleton", "magma_cube"].iter().map(|kind| format!("minecraft:{kind}")).collect();
+        let bricks = Block::new("minecraft:nether_bricks");
+        let netherrack = Block::new("minecraft:netherrack");
+        let kinds = |server: &mut ServerSim, pos: BlockPos, below: &Block, category: MobCategory| {
+            server.player_edit_block((pos.x, pos.y - 1, pos.z), Some(below), PlayerEdit::Place);
+            spawns.kinds_at(&server.level, &*finder, category, pos)
+        };
+        assert_eq!(kinds(&mut server, inside, &netherrack, MobCategory::Monster), enemies, "a fortress piece spawns its monsters on any block");
+        assert_eq!(kinds(&mut server, between, &bricks, MobCategory::Monster), enemies, "nether bricks inside the fortress's bounds spawn them too");
+        let biome = kinds(&mut server, between, &netherrack, MobCategory::Monster);
+        assert_ne!(biome, enemies, "elsewhere in the bounds the biome decides");
+        assert!(kinds(&mut server, inside, &netherrack, MobCategory::Creature).iter().all(|kind| kind == "minecraft:strider"), "only monsters are overridden");
     }
 
     #[test]

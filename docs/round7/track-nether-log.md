@@ -293,3 +293,20 @@ Previous commit: 2f111564
 - **Decisions:** the End's endermites, dragon and wither stay out of `of_type` here; the End track adds them with their mobs.
 - **Test steps:** nothing visible yet; the fire-immune mobs come with entries 16 to 18, whose steps cover this entry.
 - **Kit:** none.
+
+### 15. Minecraft fortresses spawn their own monsters (E2-19)
+
+Previous commit: dfb165d1
+
+- **Changed:**
+  - Vendored `third_party/minecraftoss/world/src/natural_spawner.rs` and `natural_spawner/spawning.rs` (MinecraftOSS patch): natural spawning's `mobsAt` now sees structures, as 26.3's `NaturalSpawner.mobsAt` and `ChunkGenerator.getMobsAt` do (checked with javap):
+    - `isInNetherFortressBounds`: a monster spot whose block below is nether bricks, inside the bounds of a fortress start, draws from `NetherFortressStructure.FORTRESS_ENEMIES` (blaze 10 for 2-3, zombified piglin 5 for 4, wither skeleton 8 for 5, skeleton 2 for 5, magma cube 3 for 4; javap of its static block).
+    - Otherwise every structure referencing the spot's chunk whose `spawn_overrides` (read from each `worldgen/structure` file of the data pack) has the category replaces the biome's list when the spot is inside one of the start's pieces (`bounding_box: piece`, `structureHasPieceAt`) or its whole bounds (`full`). So fortress pieces spawn the same five, swamp huts witches and cats, monuments guardians, outposts pillagers, and ancient cities and trial chambers nothing.
+    - `CreatureSpawns::kinds_at`, the list a spot draws from, for tests.
+  - `SpawnContext.structures`, `StructureHere` (a structure referencing the spot's chunk: inside a start's bounds, inside one of its pieces) and `NaturalSpawning.structures`, set by the server.
+  - Vendored `third_party/minecraftoss/world/src/level/spawning.rs` (MinecraftOSS patch): `structures_of(worldgen)`, the server level's finder: the generator's structure references of the chunk (`Structures::references`, the starts within eight chunks, which are a pure function of the seed and already made for the chunks around the player), kept per chunk.
+  - `minecraft_terrain/src/server.rs` (`ServerSim::new` only): natural spawning gets the finder.
+- **Tests:** `server`: `fortress_monsters_spawn_on_its_nether_bricks_and_structures_override_their_biome` (seed 77's fortress: a spot in a piece draws the five on netherrack, a spot inside the bounds but outside every piece draws them on nether bricks and the biome's list on netherrack, a spot 2000 blocks off sees no structure, creatures are not overridden).
+- **Decisions:** structures referencing a chunk are checked in registry order (vanilla walks a hash map, so any order is as good). Blazes, magma cubes, zombified piglins and wither skeletons the fortress draws wait dormant until their own entries (16 to 18, and N4 for blazes) make them live.
+- **Test steps** (after entry 18, with `IW4L_MINECRAFT_DIMENSION=the_nether`; see the group summary): in a fortress at night-like darkness, wither skeletons, zombified piglins and magma cubes appear on its bridges and halls.
+- **Kit:** none.

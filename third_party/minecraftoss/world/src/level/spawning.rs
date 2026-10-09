@@ -8,7 +8,7 @@ use super::Level;
 use crate::distance::PlayerChunkCounter;
 use crate::natural_spawner::spawning::{SpawnContext, MOON_BRIGHTNESS_PER_PHASE};
 use crate::natural_spawner::tick::{CensusMob, SpawnPlayer, TickInput, TickReport};
-use crate::natural_spawner::{CreatureSpawns, SpawnLevel};
+use crate::natural_spawner::{CreatureSpawns, SpawnLevel, StructureFinder, StructureHere};
 use minecraftoss_core::chunk::HeightmapKind;
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_core::random::RandomSource;
@@ -36,6 +36,7 @@ pub struct NaturalSpawning {
     pub simulation: HashSet<ChunkPos>,
     /// What the last tick's spawning decided.
     pub report: TickReport,
+    pub structures: Option<StructureFinder>,
 }
 
 impl NaturalSpawning {
@@ -51,6 +52,7 @@ impl NaturalSpawning {
             respawn: None,
             simulation: HashSet::new(),
             report: TickReport::default(),
+            structures: None,
         }
     }
 
@@ -120,6 +122,7 @@ impl SpawnInputs {
         census: &[CensusMob],
         in_loaded: &'a dyn Fn(ChunkPos) -> bool,
         slime_chance: &'a dyn Fn(BiomeId) -> f32,
+        structures: &'a dyn Fn(BlockPos) -> Vec<StructureHere>,
     ) -> SpawnContext<'a> {
         let mut obstacles: Vec<[f64; 6]> = census.iter().map(|m| m.bb).collect();
         obstacles.extend(self.feet.iter().map(|p| [p[0] - 0.3, p[1], p[2] - 0.3, p[0] + 0.3, p[1] + 1.8, p[2] + 0.3]));
@@ -138,6 +141,7 @@ impl SpawnInputs {
             can_spawn_in_chunk: in_loaded,
             obstacles,
             chickens,
+            structures,
         }
     }
 }
@@ -168,7 +172,9 @@ impl Level<'_> {
         let slime_chance = |b: BiomeId| inputs.slime_chances.get(usize::from(b.0)).copied().unwrap_or(0.0);
         let simulation = std::mem::take(&mut natural.simulation);
         let in_simulation = |c: ChunkPos| simulation.contains(&c);
-        let mut context = inputs.context(natural.respawn, &census, &in_loaded, &slime_chance);
+        let finder = natural.structures.clone();
+        let structures = |pos: BlockPos| finder.as_ref().map_or_else(Vec::new, |find| find(pos));
+        let mut context = inputs.context(natural.respawn, &census, &in_loaded, &slime_chance, &structures);
         let mut input = TickInput {
             counter: &mut natural.counter,
             players: &players,
@@ -205,12 +211,36 @@ impl Level<'_> {
         let inputs = self.spawn_inputs(&natural.players);
         let in_loaded = |c: ChunkPos| inputs.loaded.contains(&c);
         let slime_chance = |b: BiomeId| inputs.slime_chances.get(usize::from(b.0)).copied().unwrap_or(0.0);
-        let mut context = inputs.context(natural.respawn, &natural.census, &in_loaded, &slime_chance);
+        let finder = natural.structures.clone();
+        let structures = |pos: BlockPos| finder.as_ref().map_or_else(Vec::new, |find| find(pos));
+        let mut context = inputs.context(natural.respawn, &natural.census, &in_loaded, &slime_chance, &structures);
         let spawns = natural.spawns.clone();
         let result = spawns.summon(self, &mut context, kind, at, nbt, y_rot);
         self.natural_spawning = Some(natural);
         result
     }
+}
+
+pub fn structures_of(worldgen: &'static crate::chunk_map::WorldGen) -> StructureFinder {
+    let cache = std::sync::Mutex::new(std::collections::HashMap::new());
+    Arc::new(move |pos: BlockPos| {
+        let chunk = ChunkPos::new(pos.x >> 4, pos.z >> 4);
+        let references = {
+            let mut cache = cache.lock().expect("structure references");
+            if cache.len() > 4096 {
+                cache.clear();
+            }
+            cache.entry(chunk).or_insert_with(|| worldgen.structures.references(&worldgen.library, &worldgen.terrain, chunk)).clone()
+        };
+        references
+            .iter()
+            .map(|(id, starts)| StructureHere {
+                name: worldgen.structures.defs[usize::from(id.0)].name.clone(),
+                in_box: starts.iter().any(|start| start.bounding_box().is_inside(pos)),
+                in_piece: starts.iter().any(|start| start.pieces.lock().expect("structure pieces").iter().any(|piece| piece.base().bbox.is_inside(pos))),
+            })
+            .collect()
+    })
 }
 
 impl SpawnLevel for Level<'_> {
