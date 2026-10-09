@@ -1737,3 +1737,52 @@ Kit: none needed.
 - **The registry order is read, not written down**: the potion order from the bytecode, and data-driven registries (enchantments, paintings) in id order as 26.3 loads them.
 - **Suspicious stews and the ominous banner stay plain.** The stews' effects are code in each flower's constructor and the banner's patterns are code in `Raid`; reading them needs more of the bytecode interpreter than the tabs reader has. The plain items still show once.
 - **Variant icons share their item's icon** (potion colours, painting pictures and light levels look alike), as the icon cache is per item id.
+
+## Minecraft creative inventory code passes clippy
+
+Commit: the commit that adds this entry. The previous commit is d1f0062 (the variants).
+
+### What changed
+
+- `clippy -p frame -p hud -p minecraft_survival -p render_anim -p minecraft_terrain -p console --all-targets -- -A clippy::approx_constant` found four warnings in the group's code:
+  - three uses of the workspace's disallowed `unwrap_or_default` (`creative_variants.rs` and twice in `render_anim/src/minecraft_creative.rs`), now `unwrap_or_else(Vec::new)` or `unwrap_or_else(String::new)`;
+  - the HUD system's parameter tuple that the clipboard made too complex, now the `Extras` type next to the existing `Typing` one.
+- The warnings left are in code the group did not touch (`render_anim/src/minecraft_inventory.rs` 587 and `console/src/user_settings.rs` 58 and 237).
+
+### Tests added
+
+None. `test -p minecraft_terrain -p minecraft_survival -p console -p frame -p hud --locked` and `test -p render_anim --locked` pass.
+
+### In-game test steps
+
+Nothing changes in game. Kit: none needed.
+
+## Testing the creative group
+
+### Commits, oldest first
+
+| Commit | Subject |
+| --- | --- |
+| 20ebfb8 | Minecraft creative inventory has the vanilla tabs |
+| 1cbbb6d | Minecraft creative inventory searches items like vanilla |
+| c87d3e5 | Minecraft creative players save and load hotbars like vanilla |
+| d1f0062 | Minecraft creative tabs hold every potion, enchanted book and variant like vanilla |
+| (this one) | Minecraft creative inventory code passes clippy |
+
+### One kit for the whole group
+
+```
+IW4L_MINECRAFT_KIT=stone*64,diamond_sword,iron_helmet,torch*64,diamond_pickaxe
+```
+
+`minecraft:stone` 64, `minecraft:diamond_sword` 1, `minecraft:iron_helmet` 1, `minecraft:torch` 64, `minecraft:diamond_pickaxe` 1.
+
+### Order
+
+Load a fresh world with this kit and type `/gamemode creative`, then follow the entries' own steps in this order:
+
+1. The tabs entry, steps 1 to 9 (screenshots 1 to 3). Step 7's shift-click on the trash empties the inventory, so run `/kit` afterwards to get the kit back.
+2. The search entry, steps 1 to 5 (screenshots 4 and 5).
+3. The variants entry, steps 1 to 6 (screenshot 8).
+4. The saved hotbars entry, steps 1 to 6 (screenshots 6 and 7); its kit items are in this kit.
+5. Last, the operator tab (tabs entry, step 10) if wanted: it needs `minecraft_operator_items=true` in `iw4l-artifacts\settings.cfg` and a restart.

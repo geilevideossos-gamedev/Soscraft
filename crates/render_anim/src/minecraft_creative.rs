@@ -90,7 +90,8 @@ pub(crate) fn search_lines(
     if let Some(flight) =
         component("minecraft:fireworks").and_then(|fireworks| fireworks.get("flight_duration"))
     {
-        let label = text("item.minecraft.firework_rocket.flight".to_owned()).unwrap_or_default();
+        let label =
+            text("item.minecraft.firework_rocket.flight".to_owned()).unwrap_or_else(String::new);
         lines.push(format!("{label} {flight}"));
     }
     lines
@@ -367,7 +368,7 @@ impl CreativeUi {
                         self.variants.as_deref(),
                     )
                 })
-                .unwrap_or_default()
+                .unwrap_or_else(Vec::new)
                 .into_iter()
                 .map(unlocked)
                 .collect(),

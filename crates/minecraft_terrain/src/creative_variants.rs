@@ -174,7 +174,7 @@ impl VariantData {
         let test_block_modes = class(read(&format!("{TEST_BLOCK_MODE_CLASS}.class")))
             .map(|class| enum_names(&class))
             .transpose()?
-            .unwrap_or_default();
+            .unwrap_or_else(Vec::new);
         let mut json_files = |folder: &str| -> Vec<(String, Value)> {
             let mut found: Vec<(String, Value)> = names
                 .iter()

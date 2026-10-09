@@ -163,6 +163,12 @@ fn title(ui: &MinecraftUi, gui: &frame::McGui) -> String {
     }
 }
 
+type Extras<'w> = (
+    Option<Res<'w, frame::McActionInput>>,
+    Option<Res<'w, frame::LaunchIdentity>>,
+    Option<ResMut<'w, bevy::clipboard::Clipboard>>,
+);
+
 type Typing<'w, 's> = (
     Res<'w, ButtonInput<KeyCode>>,
     Res<'w, ButtonInput<MouseButton>>,
@@ -189,7 +195,7 @@ pub(crate) fn update_minecraft_hud(
         Option<Res<frame::HudInputView>>,
         Option<ResMut<frame::GameSettings>>,
     ),
-    (mc_keys, identity, mut clipboard): (Option<Res<frame::McActionInput>>, Option<Res<frame::LaunchIdentity>>, Option<ResMut<bevy::clipboard::Clipboard>>),
+    (mc_keys, identity, mut clipboard): Extras,
 ) {
     let Some(mut ui) = ui else {
         pass.minecraft = TessJob::Hide;
