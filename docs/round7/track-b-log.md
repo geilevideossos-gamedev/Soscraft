@@ -869,7 +869,7 @@ IW4L_MINECRAFT_KIT=red_shulker_box,chest*2
 
 ### 2. Minecraft open lids are drawn every frame by the client entities
 
-Commit: (next entry)
+Commit: f38f8c6
 
 - **Changed:** `minecraft_survival` `entities.rs` (After the split item 16): `Entities` (one per level, so a world or dimension change starts with none) gets `pub lids: Lids`. Each client tick (`Entities::tick`, beside `falling.tick_sent`) ticks them; `Entities::meshes`, after the moving blocks, settles them against `cell_settled`, poses them at the frame's partial tick and draws them into the items mesh with `ItemVisuals::append_open_lids`. The adapter (`minecraft_world.rs`), right after `entities.meshes`, hands each `take_apart_changes` entry to the previous entry's `TerrainStream::draw_apart`, so the section lets go of a lid that starts to open and takes it back once it is shut.
 - **Tests:** none new: the glue only calls `Lids` (`lids.rs`, 13 tests), `append_open_lids` (`mesh.rs`) and `draw_apart` (previous entry), which are tested where they are.
@@ -879,4 +879,29 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=red_shulker_box,chest*2
+```
+
+### 3. Minecraft chests, ender chests and shulker boxes open and close their lids for each player like vanilla
+
+Commit: (next entry)
+
+- **Changed:** `minecraft_survival` `level.rs` (After the split item 17): `Level` (one per dimension, server side) gets `openers: Openers`. New `opener_key(uuid)`: the player's UUID as its 128-bit number (`parse_uuid`, with a stable hash for a malformed one). `toggle_openers(openers, scene, cells, uuid, open, spectator)` feeds every counted cell of an opened or closed screen (both halves of a double chest) to `Openers::open`/`close` under that player's key; `opener_outcome(scene, event)` is what each event does: its block event (`Level.blockEvent(pos, block, 1, count)`), the vanilla open or close sound on the first opener and the last one leaving, and the barrel's `open` state. `leave_containers`/`leave(level, uuid)` close everything a player had open when it leaves the world, so a barrel is saved shut (`ServerPlayer.disconnect` closes the menu before the save). `entities.rs` gets `Entities::ticks()`.
+- The adapter (`minecraft_world.rs`) replaces its own sound and barrel code: each screen opened or closed goes through `toggle_openers` with the local player's UUID (spectators are not counted); every `RECHECK_TICKS` (5) client ticks `Openers::recheck` drops the local player from any container its screen no longer shows, leaving other players' entries to them. Each event goes to `entities.lids.block_event` (the lid starts to move), plays its sound at `openers::sound`'s spot (a double chest once from its middle, a barrel from its front face) at volume 0.5 and pitch 0.9 to 1, and writes the barrel's `open` state. A counted block that is broken, blown up or replaced is `removed` before its screen closes, so it plays no close sound. The shulker box's lid space is checked only while its lid is shut (`ShulkerBoxBlock.canOpen`). `close_world` calls `level::leave` on every level for the local player before saving. `docs/MINECRAFT-SURVIVAL.md` says which lids now move.
+- **Tests:** level: `a_player_uuid_is_its_vanilla_number`, `a_double_chest_opens_both_halves_and_sounds_once_from_its_middle`, `a_second_player_keeps_a_shulker_box_open_and_a_spectator_is_not_counted`, `furnaces_and_empty_cells_count_no_openers`, `a_barrel_shows_open_until_its_player_leaves_the_world`.
+- **Decisions:** the openers live on the server's `Level` and are keyed by player UUID, while the lids stay client state on `Entities` fed by the block event, as vanilla splits them; with several players the server sends each `block_event` to the clients near it (After the split item 17, last point). The recheck can only judge the local player's screen today, so it never drops another player's entry; a player who leaves is closed out by `leave`. Not done (brief commit 7): an opening shulker box does not grow its collision or push players and mobs.
+- **Test steps** (survival mode):
+  1. Place a red shulker box on the floor. Open it: the lid rises half a block and turns three quarters round in half a second, with the open sound. Close it: it comes back down in half a second with the close sound. Screenshot 1, mid-animation.
+  2. Break it and place it on a wall, then on a ceiling, and open it each time: the lid slides out of the wall, and down out of the ceiling. Screenshots 2 and 3.
+  3. Open the box, press Escape and open it again at once: the lid turns back from where it was, with no jump. Screenshot 4.
+  4. Put a bottom slab on top of a box on the floor: it doesn't open. Swap it for a top slab: it opens. Then open the box, put the bottom slab back on top while it stands open (from outside, after closing the screen quickly) and watch: it still shuts normally. Screenshot 5.
+  5. Open a box, close it and break it at once: no lid is left floating and there is no second close sound. Screenshot 6.
+  6. Watch from 10 blocks away while a box opens and shuts: no flicker, and never a second, closed lid inside the open one. Screenshot 7.
+  7. Open and close a barrel: it shows open while the screen is up, and the sound comes from its front face. Then close the game window while a barrel is open, start again and say whether it shows shut (it should). Screenshot 8.
+  8. A single chest, a trapped chest, a copper chest and an ender chest swing their lids up about the back edge, slowing at the top; a double chest swings both halves together and plays one sound from its middle. Screenshot 9.
+  9. Pour water on a chest so it is waterlogged and open it: the water stays while the lid moves. Screenshot 10.
+  10. A furnace and a brewing stand open with no sound, as before.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=red_shulker_box,chest*4,trapped_chest,copper_chest,ender_chest,barrel,oak_slab*16,water_bucket,furnace,brewing_stand,cobblestone*64
 ```

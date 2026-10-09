@@ -265,6 +265,10 @@ impl Entities {
         self.random.next_float()
     }
 
+    pub fn ticks(&self) -> u64 {
+        self.ticks
+    }
+
     pub fn load_chunk(&mut self, chunk: &std::sync::Arc<minecraftoss_core::Chunk>) {
         self.server.load_chunk(chunk);
     }

@@ -186,7 +186,7 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 - Translucent faces are not sorted by camera distance within a 16-block section. Inside one block, smaller faces are drawn first.
 - Blockstates rotated about X (horizontal logs, upside-down stairs, ceiling vines) are drawn rotated, but still cull with the old full-cube rule, so they may draw a few hidden faces.
 - `uvlock` only applies to faces it turns half round. Faces it would turn a quarter (some stair tops, fence and wall caps) keep the model's texture direction, and the face `rotation` key is not read.
-- Block entities never animate: no chest lids, bell swing or banner wave. There are no banner or shield patterns and no sign text. Heads use the default skin, and the conduit always shows its inactive shell.
+- Chest, ender chest, copper chest and shulker box lids open and close like vanilla, but an opening shulker box does not grow its collision or push anyone. Other block entities never animate: no bell swing, banner wave or enchanting table book. There are no banner or shield patterns and no sign text. Heads use the default skin, and the conduit always shows its inactive shell.
 - Not drawn: the copper golem statue and the held trident model. Each half of a double chest is lit separately.
 - No lava fog and no rain particles.
 - Missing particles: bone meal, smoke, fizz, item break, TNT and campfire smoke.
