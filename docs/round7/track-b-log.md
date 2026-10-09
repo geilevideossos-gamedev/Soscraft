@@ -307,13 +307,28 @@ Brief: `b3-held-armour.md`. The brief puts `body_gear` in `minecraft_survival.rs
 
 ### 1. Minecraft players' worn and held items are read per player for the body
 
-Commit: (next entry)
+Commit: c72043b
 
 - **Changed:** new `body_gear.rs`: `BodyGear { main, off, armor: [head, chest, legs, feet], hides_gun }` of `GearItem { id, glint, dye }`, from `body_gear(slots, selected, is_gun)`: the selected hotbar slot, the offhand (40) and the armour slots 39, 38, 37, 36 (`ARMOR_SLOTS`). An MW2 gun (`is_gun`, the glue passes `weapon_of(stack).is_some()`) is never drawn as a Minecraft item; `hides_gun` is true whenever the selection is not a gun, an empty hand included (vanilla draws an empty hand empty). `glint` is `glint::has_glint` (vanilla `hasFoil`), `dye` is `dyed_color(stack)`: the `minecraft:dyed_color` component (a bare RGB int as 26.3 writes it, or the older `{rgb}` form), `None` when undyed.
 - **Tests:** `armour_is_read_head_to_feet_and_the_hands_from_the_selection_and_offhand`, `a_selected_gun_is_left_to_the_mw2_body`, `an_empty_hand_puts_the_gun_away_too`, `glint_and_dye_come_from_the_stack`.
 - **Decision:** the gear is read from the server-owned inventory of each player (keyed by the player's UUID on the server, like the inventory itself); what the renderer keeps is a copy per MW2 client number (entry 4), filled from that.
 - **Test steps:** nothing changes in game yet (After the split, item 18).
 - **Kit:** none.
+
+### 2. The Minecraft kit dyes leather armour
+
+Commit: (next entry)
+
+- **Changed:** `crafting.rs` `kit_potion_stack`: an `@` entry on an item in the runtime `#minecraft:dyeable` tag (leather armour, leather horse armour, wolf armour) that names one of the 16 dyes gets `minecraft:dyed_color` with that dye's `textureDiffuseColor`, which is what one dye on undyed leather gives in vanilla (`DyedItemColor.applyDyes` with a single colour keeps it); every other `@` entry is still a potion. `special_models::dye_rgb` (the existing dye table, as an RGB int).
+- **Tests:** `kit_dyes_dyeable_items_with_a_dye_name` (`leather_chestplate@red` is 0xB02E26, `leather_boots@minecraft:blue+unbreaking` is 0x3C44AA with its enchantment, `potion@red` stays a potion, plain leather stays undyed).
+- **Decision:** the crafting grid has no armour dye recipe yet (`crafting_special_armordye`), so this is the only way to get dyed leather for the body test.
+- **Test steps:**
+  1. Start with the kit below and open the inventory: the five leather pieces are in the first five slots. Their icons all stay brown, because item icons still draw the undyed colour; the dye shows on the body once the gear is drawn (entry 6 and its glue).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=leather_helmet@red,leather_chestplate@blue,leather_leggings@green,leather_boots@black,leather_chestplate
+```
 
 ## After the split
 

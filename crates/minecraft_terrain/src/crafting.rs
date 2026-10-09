@@ -458,7 +458,11 @@ pub fn kit_potion_stack(recipes: &RecipeBook, id: &str, size: u8, enchantments: 
             Some(serde_json::Value::Object(components)) => components,
             _ => serde_json::Map::new(),
         };
-        components.insert("minecraft:potion_contents".to_owned(), serde_json::json!({ "potion": potion }));
+        let dye = crate::special_models::dye_rgb(potion.strip_prefix("minecraft:").unwrap_or(potion)).filter(|_| recipes.item_in_tag("minecraft:dyeable", id));
+        match dye {
+            Some(rgb) => components.insert("minecraft:dyed_color".to_owned(), serde_json::json!(rgb)),
+            None => components.insert("minecraft:potion_contents".to_owned(), serde_json::json!({ "potion": potion })),
+        };
         stack.components = Some(serde_json::Value::Object(components));
     }
     stack
@@ -636,6 +640,17 @@ mod tests {
         assert_eq!(inventory.slots[HOTBAR + 2].as_ref().map(|s| s.components.is_none()), Some(true));
     }
 
+    #[test]
+    fn kit_dyes_dyeable_items_with_a_dye_name() {
+        let mut inventory = inventory();
+        assert_eq!(give_kit(&mut inventory, "leather_chestplate@red,leather_boots@minecraft:blue+unbreaking,potion@red,leather_chestplate"), 4);
+        let components = |slot: usize| inventory.slots[HOTBAR + slot].as_ref().unwrap().components.clone();
+        assert_eq!(components(0), Some(json!({"minecraft:dyed_color": 0xB02E26})));
+        assert_eq!(components(1), Some(json!({"minecraft:enchantments": {"minecraft:unbreaking": 1}, "minecraft:dyed_color": 0x3C44AA})));
+        assert_eq!(components(2), Some(json!({"minecraft:potion_contents": {"potion": "minecraft:red"}})));
+        assert_eq!(components(3), None);
+    }
+
     fn write_jar(path: &Path, recipes: &[(&str, Value)], tags: &[(&str, Value)]) {
         let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
         let entries = recipes
@@ -748,6 +763,7 @@ mod tests {
                 json!({"values": ["minecraft:oak_log", "#minecraft:birch_logs"]}),
             ),
             ("birch_logs", json!({"values": ["minecraft:birch_log"]})),
+            ("dyeable", json!({"values": ["minecraft:leather_chestplate", "minecraft:leather_boots"]})),
             (
                 "planks",
                 json!({"values": ["minecraft:oak_planks", "minecraft:birch_planks"]}),

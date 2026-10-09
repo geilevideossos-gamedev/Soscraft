@@ -183,6 +183,10 @@ pub(crate) fn dye_color(name: &str) -> Option<[f32; 3]> {
         .map(|&(_, rgb)| [rgb >> 16, rgb >> 8, rgb].map(|channel| (channel & 255) as f32 / 255.0))
 }
 
+pub(crate) fn dye_rgb(name: &str) -> Option<u32> {
+    DYES.iter().find(|(dye, _)| *dye == name).map(|&(_, rgb)| rgb)
+}
+
 pub(crate) fn banner_dye(block: &Block) -> Option<[f32; 3]> {
     let path = block.id.path.as_str();
     let color = path
