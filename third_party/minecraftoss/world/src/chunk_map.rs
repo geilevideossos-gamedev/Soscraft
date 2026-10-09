@@ -252,7 +252,10 @@ struct Evicted {
     /// Block changes not yet written into it (see `ChunkMap::edits`); the
     /// saver or a reload writes them, off the thread that dropped it.
     edits: Arc<Vec<(BlockPos, BlockStateId)>>,
+    entities: Arc<BlockEntityEdits>,
 }
+
+type BlockEntityEdits = std::collections::BTreeMap<(i32, i32, i32), Option<minecraftoss_core::nbt::Tag>>;
 
 impl Evicted {
     /// The chunk as it is saved or reloaded: its status set and its edits
@@ -260,7 +263,7 @@ impl Evicted {
     fn resolve(self, registries: &minecraftoss_core::Registries) -> Chunk {
         let mut chunk = Arc::try_unwrap(self.chunk).unwrap_or_else(|shared| (*shared).clone());
         chunk.status = self.status;
-        apply_edits(&mut chunk, &self.edits, registries);
+        apply_edits(&mut chunk, &self.edits, &self.entities, registries);
         chunk
     }
 }
@@ -290,6 +293,8 @@ pub struct ChunkMap {
     /// written in one copy when the chunk is sent again, dropped or saved.
     edits: HashMap<ChunkPos, Vec<(BlockPos, BlockStateId)>>,
     queued_edits: HashMap<ChunkPos, usize>,
+    entity_edits: HashMap<ChunkPos, BlockEntityEdits>,
+    queued_entity_edits: HashSet<ChunkPos>,
 }
 
 /// Generation order: the player ticket level (chessboard distance), then
@@ -547,6 +552,8 @@ impl ChunkMap {
             chunks: HashMap::new(),
             edits: HashMap::new(),
             queued_edits: HashMap::new(),
+            entity_edits: HashMap::new(),
+            queued_entity_edits: HashSet::new(),
             last_tick_ms: [0.0; 7],
             view_distance: view_distance.clamp(MIN_VIEW_DISTANCE, EXTENDED_VIEW_DISTANCE),
             view: None,
@@ -748,7 +755,9 @@ impl ChunkMap {
                 };
                 let edits = Arc::new(self.edits.remove(&pos).unwrap_or_default());
                 self.queued_edits.remove(&pos);
-                evicted.insert(pos, Evicted { chunk, status, edits });
+                let entities = Arc::new(self.entity_edits.remove(&pos).unwrap_or_default());
+                self.queued_entity_edits.remove(&pos);
+                evicted.insert(pos, Evicted { chunk, status, edits, entities });
             }
             drop(evicted);
             self.shared.evicted_ready.notify_one();
@@ -772,13 +781,28 @@ impl ChunkMap {
         self.set_blocks(&[(pos, state)]);
     }
 
+    pub fn set_block_entities(&mut self, changes: &[(BlockPos, Option<minecraftoss_core::nbt::Tag>)]) {
+        for (pos, tag) in changes {
+            let chunk = pos.chunk();
+            if self.chunks.contains_key(&chunk) {
+                self.entity_edits.entry(chunk).or_default().insert((pos.x, pos.y, pos.z), tag.clone());
+                self.queued_entity_edits.remove(&chunk);
+            }
+        }
+    }
+
     /// Writes a chunk's waiting edits into its FULL slot and sendable copy.
     fn write_edits(&mut self, pos: ChunkPos) {
-        let Some(edits) = self.edits.remove(&pos) else { return };
+        let entities = self.entity_edits.remove(&pos);
+        self.queued_entity_edits.remove(&pos);
+        let edits = self.edits.remove(&pos);
+        if edits.is_none() && entities.is_none() {
+            return;
+        }
         self.queued_edits.remove(&pos);
         let mut world = self.shared.world.lock().expect("chunk world");
         if let Some(Slot::Final(chunk)) = world.slots.get_mut(&pos) {
-            apply_edits(Arc::make_mut(chunk), &edits, &self.generator.registries);
+            apply_edits(Arc::make_mut(chunk), &edits.unwrap_or_default(), &entities.unwrap_or_default(), &self.generator.registries);
             let updated = chunk.clone();
             world.unsaved.insert(pos);
             drop(world);
@@ -793,14 +817,16 @@ impl ChunkMap {
     }
 
     pub fn queue_unsaved(&mut self) -> usize {
-        let edited: Vec<ChunkPos> = self.edits.iter().filter(|&(pos, edits)| self.queued_edits.get(pos) != Some(&edits.len())).map(|(&pos, _)| pos).collect();
+        let mut edited: Vec<ChunkPos> = self.edits.iter().filter(|&(pos, edits)| self.queued_edits.get(pos) != Some(&edits.len())).map(|(&pos, _)| pos).collect();
+        edited.extend(self.entity_edits.keys().filter(|pos| !self.queued_entity_edits.contains(pos)).copied());
         self.queued_edits = self.edits.iter().map(|(&pos, edits)| (pos, edits.len())).collect();
-        queue_snapshots(&self.shared, &self.edits, edited)
+        self.queued_entity_edits = self.entity_edits.keys().copied().collect();
+        queue_snapshots(&self.shared, &self.edits, &self.entity_edits, edited)
     }
 
     /// Saves every chunk in memory and writes the region files.
     pub fn save_all(&mut self) {
-        let edited: Vec<ChunkPos> = self.edits.keys().copied().collect();
+        let edited: HashSet<ChunkPos> = self.edits.keys().chain(self.entity_edits.keys()).copied().collect();
         for pos in edited {
             self.write_edits(pos);
         }
@@ -817,7 +843,7 @@ impl ChunkMap {
             return;
         }
         // A chunk sent again carries its edits.
-        let edited: Vec<ChunkPos> = self.pending_send.iter().filter(|pos| self.edits.contains_key(pos)).copied().collect();
+        let edited: Vec<ChunkPos> = self.pending_send.iter().filter(|pos| self.edits.contains_key(pos) || self.entity_edits.contains_key(pos)).copied().collect();
         for pos in edited {
             self.write_edits(pos);
         }
@@ -976,7 +1002,7 @@ fn saver(shared: &Shared) {
     }
 }
 
-fn queue_snapshots(shared: &Shared, edits: &HashMap<ChunkPos, Vec<(BlockPos, BlockStateId)>>, edited: Vec<ChunkPos>) -> usize {
+fn queue_snapshots(shared: &Shared, edits: &HashMap<ChunkPos, Vec<(BlockPos, BlockStateId)>>, entities: &HashMap<ChunkPos, BlockEntityEdits>, edited: Vec<ChunkPos>) -> usize {
     let mut world = shared.world.lock().expect("chunk world");
     let mut unsaved = std::mem::take(&mut world.unsaved);
     if shared.storage.is_none() {
@@ -986,7 +1012,7 @@ fn queue_snapshots(shared: &Shared, edits: &HashMap<ChunkPos, Vec<(BlockPos, Blo
     let snapshots: Vec<Evicted> = unsaved
         .into_iter()
         .filter_map(|pos| match world.slots.get(&pos) {
-            Some(Slot::Final(chunk)) => Some(Evicted { chunk: chunk.clone(), status: ChunkStatus::Full, edits: Arc::new(edits.get(&pos).cloned().unwrap_or_else(Vec::new)) }),
+            Some(Slot::Final(chunk)) => Some(Evicted { chunk: chunk.clone(), status: ChunkStatus::Full, edits: Arc::new(edits.get(&pos).cloned().unwrap_or_else(Vec::new)), entities: Arc::new(entities.get(&pos).cloned().unwrap_or_default()) }),
             _ => None,
         })
         .collect();
@@ -1002,12 +1028,13 @@ fn queue_snapshots(shared: &Shared, edits: &HashMap<ChunkPos, Vec<(BlockPos, Blo
 }
 
 /// Block changes written into a chunk, with its heightmaps.
-fn apply_edits(chunk: &mut Chunk, edits: &[(BlockPos, BlockStateId)], registries: &minecraftoss_core::Registries) {
+fn apply_edits(chunk: &mut Chunk, edits: &[(BlockPos, BlockStateId)], entities: &BlockEntityEdits, registries: &minecraftoss_core::Registries) {
     // The light no longer matches the blocks: it is solved again from them
     // (as the level does) rather than sent stale.
     if !edits.is_empty() {
         chunk.light = None;
     }
+    let mut touched = std::collections::BTreeSet::new();
     for &(pos, state) in edits {
         if pos.y < chunk.min_y() || pos.y >= chunk.min_y() + chunk.height() {
             continue;
@@ -1016,6 +1043,41 @@ fn apply_edits(chunk: &mut Chunk, edits: &[(BlockPos, BlockStateId)], registries
         chunk.set_block_raw(x, pos.y, z, state, registries);
         for kind in HeightmapKind::FINAL {
             chunk.update_heightmap(kind, x, pos.y, z, state, registries);
+        }
+        touched.insert((pos.x, pos.y, pos.z));
+    }
+    for (&pos, tag) in entities {
+        if pos.1 < chunk.min_y() || pos.1 >= chunk.min_y() + chunk.height() {
+            continue;
+        }
+        let store = &mut chunk.block_entities;
+        store.pending.remove(&pos);
+        match tag {
+            Some(tag) => store.entities.insert(pos, tag.clone()),
+            None => store.entities.remove(&pos),
+        };
+        touched.insert(pos);
+    }
+    match_block_entities(chunk, touched, registries);
+}
+
+fn match_block_entities(chunk: &mut Chunk, positions: std::collections::BTreeSet<(i32, i32, i32)>, registries: &minecraftoss_core::Registries) {
+    let Some(catalog) = registries.block_entities.as_ref() else { return };
+    for pos in positions {
+        let (x, y, z) = pos;
+        let state = chunk.block((x & 15) as usize, y, (z & 15) as usize);
+        let name = registries.blocks.block(registries.blocks.block_of(state)).name.as_str();
+        let kind = catalog.type_of(name);
+        let store = &mut chunk.block_entities;
+        let held = store.entities.get(&pos).or_else(|| store.pending.get(&pos)).map(|tag| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str));
+        if held.is_some_and(|held| held != kind) {
+            store.entities.remove(&pos);
+            store.pending.remove(&pos);
+        }
+        if !store.entities.contains_key(&pos) && !store.pending.contains_key(&pos) {
+            if let Some(nbt) = catalog.default_nbt(name, pos) {
+                store.entities.insert(pos, nbt);
+            }
         }
     }
 }
@@ -1296,6 +1358,7 @@ fn generate_terrain(shared: &Shared, worldgen: &WorldGen, pos: ChunkPos) -> Chun
 mod tests {
     use super::*;
     use crate::storage::tests::{full_chunk, synthetic_registries, test_dir, STONE};
+    use minecraftoss_core::nbt::Tag;
 
     fn shared(storage: ChunkStorage, registries: Arc<minecraftoss_core::Registries>) -> Arc<Shared> {
         Arc::new(Shared {
@@ -1340,9 +1403,9 @@ mod tests {
             world.slots.insert(proto, Slot::Proto { chunk: Box::new(full_chunk(proto, &registries, (0, 0), 5, Vec::new())), decorated: true });
             world.unsaved.extend([edited, proto, ChunkPos::new(9, 9)]);
         }
-        assert_eq!(queue_snapshots(&shared, &HashMap::new(), Vec::new()), 1);
+        assert_eq!(queue_snapshots(&shared, &HashMap::new(), &HashMap::new(), Vec::new()), 1);
         assert!(shared.world.lock().unwrap().unsaved.is_empty());
-        assert_eq!(queue_snapshots(&shared, &HashMap::new(), Vec::new()), 0);
+        assert_eq!(queue_snapshots(&shared, &HashMap::new(), &HashMap::new(), Vec::new()), 0);
         drain(&shared);
         let reopened = ChunkStorage::new(&world_dir, "minecraft:overworld", registries.clone(), 0, 32);
         let saved = reopened.load(edited).unwrap().expect("queued chunk saved");
@@ -1364,7 +1427,7 @@ mod tests {
                 world.slots.insert(pos, Slot::Final(Arc::new(full_chunk(pos, &registries, (0, 0), height, Vec::new()))));
                 world.unsaved.insert(pos);
             }
-            assert_eq!(queue_snapshots(&shared, &HashMap::new(), Vec::new()), 1);
+            assert_eq!(queue_snapshots(&shared, &HashMap::new(), &HashMap::new(), Vec::new()), 1);
             drain(&shared);
             let reopened = ChunkStorage::new(&dir.0, "minecraft:overworld", registries.clone(), 0, 32);
             assert_eq!(column_height(&reopened.load(pos).unwrap().unwrap()), height);
@@ -1380,7 +1443,7 @@ mod tests {
         let sent = Arc::new(full_chunk(pos, &registries, (0, 0), 2, Vec::new()));
         shared.world.lock().unwrap().slots.insert(pos, Slot::Final(sent.clone()));
         let edits: HashMap<ChunkPos, Vec<(BlockPos, BlockStateId)>> = HashMap::from([(pos, vec![(BlockPos::new(0, 2, 0), STONE), (BlockPos::new(0, 3, 0), STONE)])]);
-        assert_eq!(queue_snapshots(&shared, &edits, vec![pos]), 1);
+        assert_eq!(queue_snapshots(&shared, &edits, &HashMap::new(), vec![pos]), 1);
         match shared.world.lock().unwrap().slots.get(&pos) {
             Some(Slot::Final(chunk)) => assert!(Arc::ptr_eq(chunk, &sent)),
             _ => panic!("the slot stays final"),
@@ -1389,6 +1452,79 @@ mod tests {
         assert_eq!(column_height(&sent), 2);
         let reopened = ChunkStorage::new(&dir.0, "minecraft:overworld", registries.clone(), 0, 32);
         assert_eq!(column_height(&reopened.load(pos).unwrap().unwrap()), 4);
+    }
+
+    fn base64(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for group in bytes.chunks(3) {
+            let at = |i: usize| u32::from(group.get(i).copied().unwrap_or(0));
+            let bits = (at(0) << 16) | (at(1) << 8) | at(2);
+            for i in 0..=group.len() {
+                out.push(ALPHABET[((bits >> (18 - 6 * i)) & 63) as usize] as char);
+            }
+        }
+        out
+    }
+
+    fn registries_with_stone_entities(dir: &std::path::Path) -> Arc<minecraftoss_core::Registries> {
+        synthetic_registries(dir);
+        let default = entity_tag((0, 0, 0), Vec::new());
+        let catalog = serde_json::json!({"schema_version": 1, "minecraft_version": "26.3",
+            "defaults": {"minecraft:stone": {"type": "minecraft:test", "nbt": base64(&minecraftoss_core::nbt::write(&default, ""))}}});
+        std::fs::write(dir.join("block_entities.json"), catalog.to_string()).unwrap();
+        let missing = dir.join("missing.json");
+        let paths = minecraftoss_core::registries::DataPaths { block_catalog: dir.join("catalog.json"), datapack: dir.join("datapack"), block_entity_catalog: dir.join("block_entities.json"), entity_catalog: missing.clone(), item_catalog: missing };
+        Arc::new(minecraftoss_core::Registries::load(&paths).unwrap())
+    }
+
+    fn entity_tag((x, y, z): (i32, i32, i32), extra: Vec<(&str, Tag)>) -> Tag {
+        let mut map: std::collections::BTreeMap<String, Tag> = [("id", Tag::String("minecraft:test".to_owned())), ("x", Tag::Int(x)), ("y", Tag::Int(y)), ("z", Tag::Int(z))].into_iter().map(|(k, v)| (k.to_owned(), v)).collect();
+        map.extend(extra.into_iter().map(|(k, v)| (k.to_owned(), v)));
+        Tag::Compound(map)
+    }
+
+    #[test]
+    fn changed_block_entities_are_saved_with_their_chunk_and_follow_their_blocks() {
+        let dir = test_dir("block-entities");
+        let registries = registries_with_stone_entities(&dir.0);
+        let shared = shared(ChunkStorage::new(&dir.0, "minecraft:overworld", registries.clone(), 0, 32), registries.clone());
+        let pos = ChunkPos::new(1, -1);
+        let (x, z) = (16, -16);
+        let mut chunk = full_chunk(pos, &registries, (0, 0), 3, Vec::new());
+        chunk.block_entities.entities.insert((x, 2, z), entity_tag((x, 2, z), vec![("count", Tag::Int(1))]));
+        let sent = Arc::new(chunk);
+        shared.world.lock().unwrap().slots.insert(pos, Slot::Final(sent.clone()));
+        let edits = HashMap::from([(pos, vec![(BlockPos::new(x, 2, z), BlockStateId::AIR), (BlockPos::new(x, 3, z), STONE)])]);
+        let changed = BlockEntityEdits::from([((x, 1, z), Some(entity_tag((x, 1, z), vec![("count", Tag::Int(5))]))), ((x, 2, z), Some(entity_tag((x, 2, z), vec![("count", Tag::Int(9))])))]);
+        assert_eq!(queue_snapshots(&shared, &edits, &HashMap::from([(pos, changed)]), vec![pos]), 1);
+        drain(&shared);
+        assert!(sent.block_entities.entities.contains_key(&(x, 2, z)), "the shared chunk is not written");
+        let saved = ChunkStorage::new(&dir.0, "minecraft:overworld", registries.clone(), 0, 32).load(pos).unwrap().expect("saved");
+        let held = &saved.block_entities.entities;
+        assert_eq!(held.get(&(x, 1, z)), Some(&entity_tag((x, 1, z), vec![("count", Tag::Int(5))])), "a changed block entity comes back");
+        assert!(!held.contains_key(&(x, 2, z)), "a broken block's block entity goes with it");
+        assert_eq!(held.get(&(x, 3, z)), Some(&entity_tag((x, 3, z), Vec::new())), "a placed block gets its default one");
+        assert!(!held.contains_key(&(x, 0, z)), "blocks nobody touched stay as they were");
+    }
+
+    #[test]
+    fn a_cleared_block_entity_whose_block_stays_comes_back_as_its_default() {
+        let dir = test_dir("cleared");
+        let registries = registries_with_stone_entities(&dir.0);
+        let pos = ChunkPos::new(0, 0);
+        let mut chunk = full_chunk(pos, &registries, (4, 5), 2, Vec::new());
+        chunk.block_entities.entities.insert((4, 1, 5), entity_tag((4, 1, 5), vec![("count", Tag::Int(3))]));
+        let mut other = entity_tag((4, 0, 5), Vec::new());
+        if let Tag::Compound(map) = &mut other {
+            map.insert("id".to_owned(), Tag::String("minecraft:other".to_owned()));
+        }
+        chunk.block_entities.pending.insert((4, 0, 5), other);
+        let evicted = Evicted { chunk: Arc::new(chunk), status: ChunkStatus::Full, edits: Arc::new(vec![(BlockPos::new(4, 0, 5), STONE)]), entities: Arc::new(BlockEntityEdits::from([((4, 1, 5), None)])) };
+        let resolved = evicted.resolve(&registries);
+        assert_eq!(resolved.block_entities.entities.get(&(4, 1, 5)), Some(&entity_tag((4, 1, 5), Vec::new())));
+        assert_eq!(resolved.block_entities.entities.get(&(4, 0, 5)), Some(&entity_tag((4, 0, 5), Vec::new())), "a block entity of another type gives way");
+        assert!(resolved.block_entities.pending.is_empty());
     }
 
     #[test]
@@ -1406,7 +1542,7 @@ mod tests {
             world.slots.insert(pos, Slot::Final(Arc::new(full_chunk(pos, &registries, (0, 0), 6, Vec::new()))));
             world.unsaved.insert(pos);
         }
-        assert_eq!(queue_snapshots(&shared, &HashMap::new(), Vec::new()), 1);
+        assert_eq!(queue_snapshots(&shared, &HashMap::new(), &HashMap::new(), Vec::new()), 1);
         let until = Instant::now() + std::time::Duration::from_secs(20);
         let saved = loop {
             let reopened = ChunkStorage::new(&dir.0, "minecraft:overworld", registries.clone(), 0, 32);

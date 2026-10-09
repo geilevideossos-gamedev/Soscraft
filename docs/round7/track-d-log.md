@@ -217,7 +217,7 @@ IW4L_MINECRAFT_KIT=minecraft:ender_chest*2,minecraft:diamond*8,minecraft:diamond
 
 ### 9. Minecraft respawn points are saved
 
-Commit: (filled in by the next entry)
+Commit: f025a7a
 
 - **Changed:**
   - `player_nbt.rs`: `GlobalPos` and `Respawn` (a `GlobalPos`, yaw, pitch and `forced`), saved as 26.3's `respawn` (`ServerPlayer$RespawnConfig.CODEC`: `dimension` string, `pos` int array, `yaw` and `pitch` floats, `forced` as a byte and only when true, since it is an `optionalFieldOf` with default false) and `LastDeathLocation` (`GlobalPos.CODEC`: `dimension`, `pos`), checked with javap. Both are removed from the file when they are cleared. A `respawn` without a dimension is ignored, an unknown dimension reads as the overworld.
@@ -238,3 +238,23 @@ Commit: (filled in by the next entry)
   3. Optional: open the world in Minecraft 26.3 and hold a recovery compass (`/give @s minecraft:recovery_compass`): it points to where you died.
   4. Once track C's `/spawnpoint` is in the build: stand somewhere, type `/spawnpoint`, walk away and `/kill`: you respawn on that spot facing the way you faced. Quit and start again, `/kill` again: still there. Fill the spot with two blocks of stone and `/kill`: the chat says "You have no home bed or charged respawn anchor, or it was obstructed" and you respawn at the world spawn.
 - **Kit:** any; none is needed for steps 1-3.
+
+## Group: block entities
+
+### 10. Changed Minecraft block entities are saved with their chunk
+
+Commit: (filled in by the next entry)
+
+- **Changed:**
+  - Vendored `third_party/minecraftoss/world/src/chunk_map.rs` (MinecraftOSS patch): `ChunkMap::set_block_entities(&[(BlockPos, Option<Tag>)])` beside `set_blocks`. Like block edits, the changes wait per chunk until the chunk is sent again, saved, autosaved or dropped, so a shared chunk is copied once and not every frame. The latest change for a position wins (`None` clears it), a changed chunk is queued again by the next autosave (`queue_unsaved`), and a chunk dropped from memory (`Evicted`) carries its changes to the saver or to its reload.
+  - `apply_edits` writes the block edits, then the block entity changes, then keeps every touched position's block entity in step with its block, as 26.3's `LevelChunk.setBlockState` does: a block entity whose block no longer takes its type (from the block entity catalog) is removed, and a block that takes one and has none gets its default (`EntityBlock.newBlockEntity`). So a broken chest's contents leave the file, and a placed chest, sign, lectern or banner gets the block entity vanilla expects.
+  - `minecraft_terrain/src/terrain.rs`: `TerrainStream::record_block_entities` beside `record_edits`. Nothing calls it yet; the next commits do.
+- **Tests:** `chunk_map`: `changed_block_entities_are_saved_with_their_chunk_and_follow_their_blocks` (an autosave snapshot writes a changed block entity, drops the one of a broken block, gives a placed block its default, leaves the shared chunk and untouched blocks alone; read back from a new `ChunkStorage`), `a_cleared_block_entity_whose_block_stays_comes_back_as_its_default` (through a dropped chunk's `resolve`, also replacing a pending tag of another type). The four older `queue_snapshots` tests pass an empty change map.
+- **Decisions:** the type check and the default come from the block entity catalog the game already loads (`artifacts/block-entity-catalog/26.3.json`); without a catalog block entities are written as given and not checked.
+- **Test steps:** nothing changes in our game with this commit alone.
+  1. Optional: in a saved world, place a chest, a sign and a lectern, quit through the menu and open the world in Minecraft 26.3: all three are there and the chest opens (empty).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:chest,minecraft:oak_sign,minecraft:lectern
+```
