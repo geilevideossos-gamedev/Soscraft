@@ -943,7 +943,10 @@ fn preflight_match_install(
             self.0.read(module)
         }
     }
-    let sources = Sources(std::mem::take(&mut prepared.scripts));
+    let minecraft = assets::minecraft_map::is_minecraft_load(zone);
+    let mut scripts = std::mem::take(&mut prepared.scripts);
+    let kill_trigger_off = minecraft && assets::minecraft_map::disarm_proxy_script(&mut scripts);
+    let sources = Sources(scripts);
     let gametype = kind
         .script_tokens()
         .iter()
@@ -968,8 +971,18 @@ fn preflight_match_install(
             Default::default()
         }
     };
+    let mut entities = sim::script::parse_entity_string(sources.0.entities().unwrap_or(""));
+    if minecraft {
+        let hurt_off = assets::minecraft_map::disarm_proxy_entities(&mut entities);
+        diag::info!(
+            Sim,
+            "Minecraft map: {} kill triggers off: {hurt_off} trigger_hurt, {} killTrigger",
+            assets::minecraft_map::PROXY_MAP,
+            u8::from(kill_trigger_off)
+        );
+    }
     let script_level = sim::script::LevelData {
-        entities: sim::script::parse_entity_string(sources.0.entities().unwrap_or("")),
+        entities,
         keys,
         tables: sources
             .0

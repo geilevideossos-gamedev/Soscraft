@@ -18,6 +18,56 @@ pub fn is_minecraft_load(zone: &str) -> bool {
     is_minecraft(zone) || zone.split_once(':').is_some_and(|(_, rest)| is_minecraft(rest))
 }
 
+pub fn disarm_proxy_entities(entities: &mut [Vec<(String, String)>]) -> usize {
+    let mut disarmed = 0;
+    for entity in entities.iter_mut().filter(|pairs| kills_players(pairs)) {
+        entity.clear();
+        disarmed += 1;
+    }
+    disarmed
+}
+
+fn kills_players(pairs: &[(String, String)]) -> bool {
+    pairs.iter().any(|(key, value)| {
+        key.eq_ignore_ascii_case("classname") && value.eq_ignore_ascii_case("trigger_hurt")
+    })
+}
+
+pub fn disarm_proxy_script(scripts: &mut crate::ScriptSources) -> bool {
+    let module = format!("maps/mp/{PROXY_MAP}");
+    let Ok(bytes) = scripts.read(&module) else {
+        return false;
+    };
+    let source = String::from_utf8(bytes)
+        .unwrap_or_else(|error| error.into_bytes().into_iter().map(char::from).collect());
+    let mut disarmed = false;
+    let kept: String = source
+        .split_inclusive('\n')
+        .map(|line| {
+            if calls_kill_trigger(line) {
+                disarmed = true;
+                &line[line.trim_end_matches(['\r', '\n']).len()..]
+            } else {
+                line
+            }
+        })
+        .collect();
+    if disarmed {
+        scripts.insert_source(&module, kept);
+    }
+    disarmed
+}
+
+fn calls_kill_trigger(line: &str) -> bool {
+    let code = line
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let call = code.strip_prefix("thread").unwrap_or(&code);
+    call.starts_with("killtrigger(") && call.ends_with(");")
+}
+
 /// Where the world's Minecraft files are: a MinecraftOSS checkout named by
 /// `MINECRAFTOSS_ROOT`, else the files fetched from Mojang once they are in.
 pub fn root() -> Option<std::path::PathBuf> {
@@ -82,4 +132,118 @@ pub fn list_mp_maps(root_dir: &GamesRoot) -> Vec<String> {
     maps.sort();
     maps.dedup();
     maps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entity(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect()
+    }
+
+    fn source(scripts: &crate::ScriptSources, module: &str) -> String {
+        String::from_utf8(scripts.read(module).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn proxy_trigger_hurts_are_emptied_in_place_and_other_entities_kept() {
+        let mut entities = vec![
+            entity(&[("classname", "worldspawn")]),
+            entity(&[
+                ("dmg", "10000"),
+                ("classname", "trigger_hurt"),
+                ("origin", "304 704 -1952"),
+                ("model", "?15"),
+            ]),
+            entity(&[("classname", "script_model"), ("model", "foliage_tree")]),
+            entity(&[
+                ("classname", "trigger_radius"),
+                ("targetname", "flag_primary"),
+            ]),
+            entity(&[("CLASSNAME", "Trigger_Hurt")]),
+            entity(&[("classname", "mp_dm_spawn"), ("origin", "0 0 0")]),
+        ];
+        let before = entities.clone();
+        assert_eq!(disarm_proxy_entities(&mut entities), 2);
+        assert_eq!(entities.len(), before.len());
+        assert!(entities[1].is_empty());
+        assert!(entities[4].is_empty());
+        for index in [0, 2, 3, 5] {
+            assert_eq!(entities[index], before[index]);
+        }
+        assert_eq!(disarm_proxy_entities(&mut entities), 0);
+    }
+
+    #[test]
+    fn the_proxy_map_script_loses_its_kill_trigger_and_keeps_the_rest() {
+        let main = [
+            "main()",
+            "{",
+            "\tmaps\\mp\\_load::main();",
+            "",
+            "\tgame[ \"attackers\" ] = \"allies\";",
+            "\tthread killTrigger( (1080, 1645, -156 - 30), 40, 30 );",
+            "}",
+        ];
+        let utility = [
+            "killTrigger( pos, radius, height )",
+            "{",
+            "\ttrig = spawn( \"trigger_radius\", pos, 0, radius, height );",
+            "}",
+            "",
+        ]
+        .join("\n");
+        let mut scripts = crate::ScriptSources::default();
+        scripts.insert_source("maps/mp/mp_rust", main.join("\n"));
+        scripts.insert_source("maps/mp/_utility", utility.clone());
+        assert!(disarm_proxy_script(&mut scripts));
+        let mut kept = main;
+        kept[5] = "";
+        assert_eq!(source(&scripts, "maps/mp/mp_rust"), kept.join("\n"));
+        assert_eq!(source(&scripts, "maps/mp/_utility"), utility);
+        assert!(!disarm_proxy_script(&mut scripts));
+    }
+
+    #[test]
+    fn a_kill_trigger_call_goes_whatever_its_spacing_and_line_endings() {
+        let main = [
+            "main()",
+            "{",
+            "\tambientPlay( \"ambient_mp_duststorm\" );",
+            "\tthread\tKillTrigger((1, 2, 3), 40, 30);",
+            "  killtrigger ( (4, 5, 6), 8, 9 ) ;",
+            "}",
+            "",
+        ];
+        let mut scripts = crate::ScriptSources::default();
+        scripts.insert_source("maps/mp/mp_rust", main.join("\r\n"));
+        assert!(disarm_proxy_script(&mut scripts));
+        let mut kept = main;
+        kept[3] = "";
+        kept[4] = "";
+        assert_eq!(source(&scripts, "maps/mp/mp_rust"), kept.join("\r\n"));
+    }
+
+    #[test]
+    fn scripts_without_the_proxy_map_or_its_kill_trigger_are_left_alone() {
+        let mut scripts = crate::ScriptSources::default();
+        assert!(!disarm_proxy_script(&mut scripts));
+        let main = [
+            "main()",
+            "{",
+            "\tlevel thread killTriggers();",
+            "\tkillTriggerDebug( pos );",
+            "\tthread killTrigger( pos, 40,",
+            "\t\t30 );",
+            "}",
+        ]
+        .join("\n");
+        scripts.insert_source("maps/mp/mp_rust", main.clone());
+        assert!(!disarm_proxy_script(&mut scripts));
+        assert_eq!(source(&scripts, "maps/mp/mp_rust"), main);
+    }
 }
