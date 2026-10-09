@@ -653,6 +653,9 @@ impl CreativeUi {
             }
         }
         ui.clicks = rest;
+        if !self.creative_mode {
+            ui.screen = McScreen::Inventory;
+        }
         dropped
     }
 }
@@ -872,6 +875,35 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn losing_creative_turns_the_creative_screen_into_the_inventory() {
+        let creative_mode = PlayerMode::new(minecraft_terrain::game_mode::GameMode::Creative);
+        let survival_mode = PlayerMode::new(minecraft_terrain::game_mode::GameMode::Survival);
+        let mut inventory = Inventory::default();
+        let mut ui = MinecraftUi {
+            screen: McScreen::Creative(McTabKind::Category),
+            ..MinecraftUi::default()
+        };
+        ui.clicks.push(McClick::Slot {
+            slot: McSlot::Inventory(4),
+            right: false,
+            shift: false,
+        });
+        let mut creative = CreativeUi {
+            started: true,
+            ..CreativeUi::default()
+        };
+        creative.prepare(true, false);
+        creative.apply(&mut ui, &creative_mode, &mut inventory, &|_| true);
+        assert_eq!(ui.screen, McScreen::Creative(McTabKind::Category));
+        creative.prepare(false, false);
+        creative.apply(&mut ui, &survival_mode, &mut inventory, &|_| true);
+        assert_eq!(ui.screen, McScreen::Inventory);
+        assert_eq!(ui.clicks.len(), 1);
+        creative.apply(&mut ui, &survival_mode, &mut inventory, &|_| true);
+        assert_eq!(ui.screen, McScreen::Inventory);
     }
 
     #[test]

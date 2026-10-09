@@ -1810,3 +1810,23 @@ Nothing changes for one player; this matters once friends join. Kit: none needed
 
 1. `/setblock ~ ~-1 ~ gold_block`: "Changed the block at x, y, z" still shows.
 2. `/locate structure minecraft:village_plains`: the answer still shows.
+
+## Minecraft creative screen turns back into the inventory when creative ends
+
+Commit: the commit that adds this entry. The previous commit is 896e289 (command answers per player).
+
+### What changed
+
+- **The defect:** the creative screen only ever switched one way. `CreativeUi::refresh` turns the open survival inventory into the creative screen when the player becomes creative (vanilla `InventoryScreen.containerTick`), but nothing turned the creative screen back when the player stopped being creative. A player whose mode another op changes while the screen is open would keep the creative grid, with every grid click refused by the server.
+- `CreativeUi::apply` (`render_anim/src/minecraft_creative.rs`): after the frame's creative clicks, a player without infinite materials gets the plain inventory screen, as 26.3 `CreativeModeInventoryScreen.containerTick` opens an `InventoryScreen` when `hasInfiniteMaterials()` is false (checked with javap). The clicks that are not creative ones stay for the inventory's own handling.
+
+### Tests added
+
+- `render_anim` `minecraft_creative::tests::losing_creative_turns_the_creative_screen_into_the_inventory`: the screen stays while creative, becomes the inventory once creative ends, and the other click is kept.
+
+### In-game test steps
+
+One player cannot change game mode with a screen open (the chat cannot open over it), so this shows only once a friend with op can run `/gamemode` on you. Kit: none needed.
+
+1. In creative, press E: the creative screen opens as before. Screenshot not needed.
+2. Close it, `/gamemode survival`, press E: the survival inventory, as before.
