@@ -103,7 +103,7 @@ pub(crate) fn apply_explosion_blast(world: &mut FrameWorld, tick: Tick, blast: &
     if !world.publishes_snapshot() {
         return;
     }
-    if crate::voxel::active() {
+    if crate::voxel::active() && !crate::voxel::fired_before_switch(blast.killcam_entity_start_time) {
         if let Some(power) = crater_power(
             blast.inner_damage,
             blast.radius,
@@ -409,7 +409,7 @@ pub(crate) fn apply_script_blast(
             },
         );
     }
-    if world.publishes_snapshot() && crate::voxel::active() {
+    if world.publishes_snapshot() && crate::voxel::active() && !crate::voxel::spawned_before_switch(blast.inflictor) {
         if let Some(power) = script_crater_power(
             blast.means,
             blast.max,

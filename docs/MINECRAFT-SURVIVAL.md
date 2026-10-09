@@ -126,7 +126,7 @@ The MW2 netcode is host-authoritative and goes through the `iw4l-master` QUIC re
 - Nothing Minecraft goes over the network: blocks, mobs, items, inventories, containers, hunger, time of day and weather are all host-only.
 - Chat goes through serde message types made for the network (`Serverbound` chat and command lines without a sender, `Clientbound` system and player messages with translatable text that each client resolves in its own language), but they only travel inside the host for now.
 - The level's server thread (`minecraft_terrain/src/server.rs`) knows one player, its entity `0` (`PLAYER` in `minecraft_survival/src/entities.rs`). What it hands back for a player (picked-up stacks, XP, item uses, egg and summon answers) has no player key yet; pearl teleports, potion splashes, trident and wind charge hits and wind pushes carry the player's ID. Chunks stream around the host only.
-- The game state lives in `crates/minecraft_survival`, a crate without bevy (see [Crate layout](#crate-layout)): one `Server` per world, one `Level` per dimension (terrain, mobs, containers) and one `Player` per UUID (inventory, health, hunger, XP, game mode). Only the overworld level and the host's player exist so far. The survival state is not in the MW2 sim or the server thread.
+- The game state lives in `crates/minecraft_survival`, a crate without bevy (see [Crate layout](#crate-layout)): one `Server` per world, one `Level` per dimension (terrain, mobs, containers) and one `Player` per UUID (inventory, health, hunger, XP, game mode). Only the host's player exists so far. The survival state is not in the MW2 sim or the server thread.
 - Commands run on the host only, behind a `CommandWorld` trait that `minecraft_survival::commands::Host` implements for the host's player. Players are known by the vanilla offline UUID of their name, so `ops.json` already works for friends once they can join: a friend has level 0 until `/op` makes them an operator.
 
 ### Saving (overworld, one file per player)
@@ -159,7 +159,7 @@ The MW2 netcode is host-authoritative and goes through the `iw4l-master` QUIC re
   - MW2 guns (`iw4:weapon/<n>`) in the inventory, a chest or on the ground: the number is the match's weapon index, and Minecraft has no such item. The guns you own come back to the hotbar on every spawn.
   - What the game does not simulate yet: recipe book unlocks, advancements and statistics (no `advancements/` or `stats/` folders), item cooldowns, the F5 view, sign text, lectern books, jukebox discs, decorated pot, chiseled bookshelf and shelf items, bees in hives, brushable block loot, crafter items, beacons, conduits, bells, spawners, trial spawners and vaults, sculk blocks, command blocks and enchanting tables. Their block entities stay as generated or as Minecraft saved them. A name or components on a placed block item are dropped, except on shulker boxes.
   - A hopper feeding the player's chest or furnace, or a comparator reading one, works on the level's own copy of it, which the player does not see. That waits for one container truth on the server ("Finish survival").
-  - The Nether and the End: there is no dimension switch yet. A player saved there (in Minecraft) starts at the world spawn, and the file keeps that place until they stand in the overworld. Nothing is written for those dimensions.
+  - The Nether and the End are saved like the overworld, in `dimensions/minecraft/the_nether/` and `dimensions/minecraft/the_end/`, when their level closes (15 seconds after the last player leaves it) and with every autosave. A player saved there comes back there.
   - Multiplayer: only the host joins, but every player file is per UUID, ready for friends.
   - `level.dat`'s game time stands still while time is paused, where vanilla keeps counting it. It only shows in `/time query gametime`.
   - A match that ends goes through MW2's intermission, which resets health, hunger and XP before the save. Quitting through the menu keeps them.
@@ -167,8 +167,10 @@ The MW2 netcode is host-authoritative and goes through the `iw4l-master` QUIC re
 ## Limitations
 
 ### Persistence and multiplayer
-- No Minecraft multiplayer. Saving covers the overworld and one file per player; see [Saving](#saving-overworld-one-file-per-player) for what is not saved.
-- Overworld only. There is no Nether or End travel yet (see the roadmap below).
+- No Minecraft multiplayer. Saving covers all three dimensions and one file per player; see [Saving](#saving-overworld-one-file-per-player) for what is not saved.
+- The Nether and the End can be entered only with `IW4L_MINECRAFT_DIMENSION` so far, and left by dying (the respawn goes to the overworld spawn, or to a forced respawn point). There are no portals yet, `/execute in` reaches only a level that is already open and can't move a player into another dimension yet, and their sky, fog and clouds are still the overworld's (see the roadmap below).
+- **Several levels, one MW2 world.** The server holds a level per dimension, but the MW2 side has one collision world (`sim::voxel`), which mirrors the local player's level. Bots and every MW2 entity live in it, so they follow the host into the Nether. Friends in other dimensions need a collision world per dimension (multiplayer work).
+- **MW2 in other dimensions.** Guns, grenades and craters work in every dimension with vanilla blast resistance. Air support (predator, airstrikes, harrier, helicopters, AC-130 and the care package markers) is refused where the dimension has a ceiling (the Nether): the streak stays on the hotbar and the chat says why. A dimension switch waits while the player flies a remote killstreak. Projectile and script-model blasts from before a switch leave the new level alone, but a level-wide script blast and killstreak turret bullets fired before a switch still reach it.
 - The chat is local: there are no other players to talk to.
 - Commands so far: `/help`, `/seed`, `/op`, `/deop`, `/difficulty`, `/gamerule`, `/time`, `/weather`, `/gamemode`, `/give`, `/tp`, `/teleport`, `/effect` and `/summon`, and `/kill` for players only. There are no mob targets, no `/tp` rotation or `facing` arguments, no item components other than enchantments, no effects beyond the nine simulated ones and the instant three, no summoning of entities the server doesn't simulate, no vanilla `/tp -> teleport` redirect line in `/help`, no `/time rate`, timelines or `/time of`, no `/defaultgamemode`, `/execute`, functions or command blocks, and no tab completion yet.
 
@@ -178,12 +180,7 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 
 ### Nether travel (about 3.5-4.5 days after the crate split)
 - **Already there:** portals light, shimmer and break. The Nether terrain generator exists.
-- **Runtime dimension switch**, in this order:
-  1. save the old level and drop it;
-  2. load the new level behind the loading screen;
-  3. hold the player until the arrival chunk has collision;
-  4. teleport.
-  It also needs the one-time loading split from the per-level parts.
+- **Runtime dimension switch** (done, track SWITCH): levels open on demand and close 15 seconds after the last player leaves, the player waits behind vanilla's loading screen until the arrival chunk has collision, and death in the Nether or End respawns in the respawn dimension. Still to wire: `/execute in` teleports into another dimension and the portals.
 - **Portal travel:**
   - the 80-tick timer in the portal, with a cooldown;
   - x8 / ÷8 coordinate scaling and the world-border clamp;
@@ -270,14 +267,18 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 Since the crate split ([CRATE-SPLIT.md](CRATE-SPLIT.md)), the Minecraft game state lives outside the render crate. New game state goes into `minecraft_survival`, kept per dimension in a `Level` or per player in a `Player`, never in the adapter.
 
 - **`crates/minecraft_survival`** (edition 2024, no bevy): the headless game state and rules.
-  - `server.rs`: one `Server` per open world, with `globals` (seed, registries, world folder, game rules, difficulty, day clock, the chat `CommandServer`, game data, autosave timer), `levels` (a `Level` per `Dimension`) and `players` (a `Player` per `PlayerUuid`). The autosave and the closing save run from here.
-  - `level.rs`: a `Level` holds its `entities` (the level's server thread and mobs), `containers` and `terrain` (the `TerrainStream`, block scene and environment). Block writes, container ticks and chunk streaming run on it. Only the overworld is loaded so far.
-  - `player.rs`: a `Player` holds the name, dimension, survival stats, game mode, death watch, inventory, selected slot and the hand and fall timers. The kit fills the inventory when the player joins. Only the host joins so far.
+  - `server.rs`: one `Server` per open world, with `globals` (seed, registries, world folder, game rules, difficulty, the world spawn with its dimension, the overworld and End clocks, the weather, the chat `CommandServer`, game data, autosave timer and the saves of closing levels), `levels` (a `Level` per open `Dimension`), `opening` (a `LevelLoader` per dimension being built) and `players` (a `Player` per `PlayerUuid`). The autosave and the closing save run from here.
+    - A level opens when a player needs it: `LevelLoader` builds its terrain on a `minecraft-level-load` thread, runs the arrival search there (`prepare`), and `finish_opening` starts its mobs. A generator that panics fails the level, never the game.
+    - A level nobody is in saves and closes after 300 ticks (vanilla's empty time and portal ticket), on a `minecraft-level-save` thread that the next opening of that dimension joins first. A dead player keeps their respawn level open.
+    - Weather and clocks are server-wide, as in 26.3: every level takes both clocks each tick, and the server runs the weather timers while no level that has weather ticks.
+  - `level.rs`: a `Level` holds its `dimension`, `entities` (the level's server thread and mobs), `containers`, `terrain` (the `TerrainStream`, block scene and environment) and `empty_ticks`. Block writes, container ticks and chunk streaming run on it.
+  - `player.rs`: a `Player` holds the name, dimension, survival stats, game mode, death watch, inventory, selected slot, the hand and fall timers, the respawn point, and the dimension switch in progress (`switching`) or held for a remote killstreak (`held`). `travel_to` and `teleport_into` move a living player to another dimension; `switch_to` is the immediate switch the respawn uses. The kit fills the inventory when the player joins. Only the host joins so far.
+  - `switch.rs`: the loading reason of a switch (`determineLevelLoadingReason`), dimension ids and the teleport scale. `respawn.rs`: where a player respawns (`respawn_target`, `respawn_in`), in another dimension through a switch.
   - The rules: `survival.rs` (health, hunger, air, fire, effects, XP, falls), `death.rs`, `offhand.rs` (shield, totem, hand use), `guns.rs`, `commands.rs` (the `CommandWorld` host), `entities.rs` (the server thread handle and the client copies of its mobs, items and orbs), `save.rs` (world folder, `level.dat`, player files), `player_nbt.rs` (what a player file holds, in vanilla's keys) and `data.rs` (recipes, loot, stations and enchantments, read from the jar once per world).
 - **`crates/minecraft_net`** (serde only): the shared ids `Dimension` and `PlayerUuid`. Network messages come with multiplayer.
 - **`crates/minecraft_terrain`** (edition 2021, unchanged by the split apart from re-exporting `Dimension`): world generation, the `TerrainStream`, the level server thread (`server.rs`), containers, crafting, stations, game modes, item-use rules, packs and all meshing.
 - **`crates/minecraft_commands`**: the command tree, `CommandServer`, the `CommandWorld` trait and the chat protocol.
-- **`crates/render_anim`**: the Bevy adapter `minecraft_world.rs`. Its `Runtime` holds the loading thread, the client assets, the `Server`, the local player's UUID, the survival stats carried to the next match, and presentation. Each frame `update()` looks up the local `Player` and its `Level`, reads the MW2 player state, runs the player's actions and the game procedures, writes health, damage, teleports and abilities back into MW2, and draws the world. The inventory screens, mining progress, sounds, spawn gate, hand, minimap, GUI, camera and the MW2 collision mirror (`sim::voxel`) stay here; the player actions, menus and mining progress move out with multiplayer (CRATE-SPLIT.md section 6).
+- **`crates/render_anim`**: the Bevy adapter `minecraft_world.rs`. Its `Runtime` holds the loading thread, the client assets, the `Server`, the local player's UUID, the survival stats carried to the next match, the map origin of each open level and the level shown, and presentation. Each frame `follow_levels` closes and opens levels and shows the local player's level when it changes; `update()` looks up the local `Player` and its `Level`, reads the MW2 player state, runs the player's actions and the game procedures, writes health, damage, teleports and abilities back into MW2, and draws the world. A dimension switch leaves the old level (closing screens, handing over picked-up stacks), clears the collision world, holds the player invulnerable behind the loading screen (`minecraft_loading.rs`, drawn by `hud/src/minecraft_loading.rs`) and lets them in when the spawn gate has the arrival's chunks. The inventory screens, mining progress, sounds, spawn gate, hand, minimap, GUI, camera and the MW2 collision mirror (`sim::voxel`) stay here; the player actions, menus and mining progress move out with multiplayer (CRATE-SPLIT.md section 6).
 
 ## Testing workflow
 
@@ -323,6 +324,7 @@ Other switches:
 | `IW4L_MINECRAFT_TIME` | Start time in ticks |
 | `IW4L_MINECRAFT_WEATHER` | `clear`, `rain` or `thunder` |
 | `IW4L_MINECRAFT_GAMEMODE` | Game mode to switch to on world load, over the saved one: `survival`, `creative`, `adventure` or `spectator` (or vanilla's ids 0 to 3) |
+| `IW4L_MINECRAFT_DIMENSION` | Starts the player in `overworld`, `the_nether` or `the_end` (with or without `minecraft:`), over the saved dimension: at the saved place when it is in that dimension, else at the Nether stand-in floor or the End platform |
 | `MINECRAFTOSS_DEBUG_SERVER=1` | Logs server changes and chest placement |
 | `MINECRAFTOSS_MESH_CHECK=1` | Checks baked sections against unbaked ones |
 | `MINECRAFTOSS_GEN_THREADS`, `MINECRAFTOSS_SECTION_THREADS` | Thread counts for world generation and section building |

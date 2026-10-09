@@ -1276,6 +1276,11 @@ impl ServerSim {
         self.level.set_time(ticks);
     }
 
+    pub fn set_clocks(&mut self, clocks: ClockTicks) {
+        self.level.set_clock(OVERWORLD_CLOCK, clocks.overworld);
+        self.level.set_clock(THE_END_CLOCK, clocks.the_end);
+    }
+
     pub fn set_weather(&mut self, weather: &str) -> bool {
         const LASTING: i32 = 1_000_000_000;
         self.set_weather_for(weather, LASTING)
@@ -1292,7 +1297,7 @@ impl ServerSim {
     }
 
     pub fn weather_data(&self) -> Option<crate::level_storage::WeatherData> {
-        self.level.sky.as_ref().map(|sky| crate::level_storage::WeatherData {
+        self.level.sky.as_ref().filter(|sky| sky.can_have_weather).map(|sky| crate::level_storage::WeatherData {
             clear_weather_time: sky.weather.clear_time,
             rain_time: sky.weather.rain_time,
             thunder_time: sky.weather.thunder_time,
@@ -1524,6 +1529,7 @@ pub enum Command {
     ThrowTrident(Box<crate::trident::ThrownTrident>),
     Save,
     SetWeather { weather: &'static str, duration: i32 },
+    WeatherData(crate::level_storage::WeatherData),
     GameRules(Box<crate::game_rules::GameRules>),
     PlayerUuid { player: u64, uuid: u128 },
     Job(Job),
@@ -1531,9 +1537,41 @@ pub enum Command {
 
 pub type Job = Box<dyn FnOnce(&mut ServerSim) -> Box<dyn std::any::Any + Send> + Send>;
 
+pub fn advance_weather_timers(data: &mut crate::level_storage::WeatherData, random: &mut impl minecraftoss_core::random::RandomSource) {
+    let mut weather = minecraftoss_world::level::time::Weather {
+        clear_time: data.clear_weather_time,
+        rain_time: data.rain_time,
+        thunder_time: data.thunder_time,
+        raining: data.raining,
+        thundering: data.thundering,
+        ..Default::default()
+    };
+    weather.advance_timers(random);
+    *data = crate::level_storage::WeatherData { clear_weather_time: weather.clear_time, rain_time: weather.rain_time, thunder_time: weather.thunder_time, raining: weather.raining, thundering: weather.thundering };
+}
+
+pub fn weather_parameters(weather: &str, duration: i32) -> Option<crate::level_storage::WeatherData> {
+    let (clear_weather_time, rain_time, raining, thundering) = match weather {
+        "clear" => (duration, 0, false, false),
+        "rain" => (0, duration, true, false),
+        "thunder" => (0, duration, true, true),
+        _ => return None,
+    };
+    Some(crate::level_storage::WeatherData { clear_weather_time, rain_time, thunder_time: rain_time, raining, thundering })
+}
+
+pub const OVERWORLD_CLOCK: &str = "minecraft:overworld";
+pub const THE_END_CLOCK: &str = "minecraft:the_end";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ClockTicks {
+    pub overworld: i64,
+    pub the_end: i64,
+}
+
 /// The client state a server tick reads.
 pub struct TickInput {
-    pub day_ticks: i64,
+    pub clocks: ClockTicks,
     pub players: Vec<[f64; 3]>,
     pub difficulty: i32,
     pub simulation_center: (i32, i32),
@@ -1780,6 +1818,10 @@ impl ServerHandle {
         self.send(Command::PlayerUuid { player, uuid });
     }
 
+    pub fn set_weather_data(&mut self, data: crate::level_storage::WeatherData) {
+        self.send(Command::WeatherData(data));
+    }
+
     pub fn hatch_egg(&mut self, kind: String, position: [f64; 3], y_rot: f32) {
         self.send(Command::HatchEgg { kind, position, y_rot });
     }
@@ -1907,6 +1949,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.set_weather_for(weather, duration);
                 }
                 Command::PlayerUuid { player, uuid } => sim.set_player_uuid(player, uuid),
+                Command::WeatherData(data) => sim.set_weather_data(&data),
                 Command::GameRules(rules) => sim.apply_game_rules(&rules),
                 Command::Job(job) => out.jobs.push(job(&mut sim)),
                 Command::Save => {
@@ -1922,7 +1965,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                         sim.ticks_since_save = 0;
                         sim.save_all_entities();
                     }
-                    sim.set_time(input.day_ticks);
+                    sim.set_clocks(input.clocks);
                     sim.set_players(&input.players, input.difficulty);
                     // Living, non-spectating players draw experience orbs.
                     sim.level.living_players = input.mob_players.iter().filter(|p| p.alive && !p.spectator).map(|p| (p.position.to_array(), f64::from(p.eye_height))).collect();
@@ -2161,6 +2204,88 @@ mod tests {
         clear.set_weather_data(&WeatherData { clear_weather_time: 300, ..WeatherData::default() });
         assert_eq!(clear.weather(None), WeatherView::default());
         assert_eq!(clear.weather_data().map(|w| w.clear_weather_time), Some(300));
+    }
+
+    #[test]
+    fn weather_timers_run_outside_a_level_like_the_overworld_runs_them() {
+        use crate::level_storage::WeatherData;
+        let mut random = minecraftoss_core::random::LegacyRandom::new(5);
+        let mut weather = WeatherData { rain_time: 2, raining: true, thunder_time: 4, ..WeatherData::default() };
+        advance_weather_timers(&mut weather, &mut random);
+        assert_eq!(weather, WeatherData { rain_time: 1, raining: true, thunder_time: 3, ..WeatherData::default() });
+        advance_weather_timers(&mut weather, &mut random);
+        assert_eq!((weather.rain_time, weather.raining, weather.thunder_time), (0, false, 2));
+        advance_weather_timers(&mut weather, &mut random);
+        assert!((12_000..=180_000).contains(&weather.rain_time), "{weather:?}");
+        assert!(!weather.raining);
+        let mut cleared = WeatherData { clear_weather_time: 2, rain_time: 50, raining: true, thundering: true, ..WeatherData::default() };
+        advance_weather_timers(&mut cleared, &mut random);
+        assert_eq!(cleared, WeatherData { clear_weather_time: 1, rain_time: 0, thunder_time: 0, raining: false, thundering: false });
+        let mut fresh = WeatherData::default();
+        advance_weather_timers(&mut fresh, &mut random);
+        assert!((12_000..=180_000).contains(&fresh.rain_time) && (12_000..=180_000).contains(&fresh.thunder_time), "{fresh:?}");
+    }
+
+    #[test]
+    fn only_a_level_that_can_have_weather_reports_the_world_s_weather() {
+        use crate::level_storage::WeatherData;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let rainy = WeatherData { rain_time: 600, raining: true, ..WeatherData::default() };
+        for (dimension, reports) in [("minecraft:overworld", true), ("minecraft:the_nether", false), ("minecraft:the_end", false)] {
+            let mut server = ServerSim::new(worldgen.clone(), states.clone(), dimension);
+            server.set_weather_data(&rainy);
+            server.tick();
+            assert_eq!(server.weather_data().is_some(), reports, "{dimension}");
+            assert_eq!(server.weather(None).rain_level > 0.0, reports, "{dimension}");
+        }
+    }
+
+    #[test]
+    fn a_weather_command_sets_the_world_s_weather_like_set_weather_parameters() {
+        use crate::level_storage::WeatherData;
+        assert_eq!(weather_parameters("clear", 900), Some(WeatherData { clear_weather_time: 900, ..WeatherData::default() }));
+        assert_eq!(weather_parameters("rain", 600), Some(WeatherData { rain_time: 600, thunder_time: 600, raining: true, ..WeatherData::default() }));
+        assert_eq!(weather_parameters("thunder", 300), Some(WeatherData { rain_time: 300, thunder_time: 300, raining: true, thundering: true, ..WeatherData::default() }));
+        assert_eq!(weather_parameters("snow", 300), None);
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut overworld = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for (weather, duration) in [("clear", 900), ("rain", 600), ("thunder", 300)] {
+            overworld.set_weather_for(weather, duration);
+            assert_eq!(overworld.weather_data(), weather_parameters(weather, duration), "{weather}");
+        }
+    }
+
+    #[test]
+    fn every_level_follows_the_world_clocks_and_time_set_moves_only_a_default_clock() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let clock = |server: &ServerSim, name: &str| server.level.sky.as_ref().and_then(|sky| sky.clocks.get(name).copied());
+        for (dimension, default) in [("minecraft:overworld", Some(OVERWORLD_CLOCK)), ("minecraft:the_nether", None), ("minecraft:the_end", Some(THE_END_CLOCK))] {
+            let mut server = ServerSim::new(worldgen.clone(), states.clone(), dimension);
+            server.set_clocks(ClockTicks { overworld: 13_000, the_end: 250 });
+            assert_eq!(server.level.overworld_clock(), 13_000, "{dimension}");
+            assert_eq!(clock(&server, THE_END_CLOCK), Some(250), "{dimension}");
+            server.tick();
+            assert_eq!((server.level.overworld_clock(), clock(&server, THE_END_CLOCK)), (13_001, Some(251)), "{dimension}: both clocks run in every level");
+            server.set_time(500);
+            let expected = match default {
+                Some(OVERWORLD_CLOCK) => (500, Some(251)),
+                Some(_) => (13_001, Some(500)),
+                None => (13_001, Some(251)),
+            };
+            assert_eq!((server.level.overworld_clock(), clock(&server, THE_END_CLOCK)), expected, "{dimension}");
+        }
     }
 
     /// Creatures the SPAWN step generated join the server's mobs with their

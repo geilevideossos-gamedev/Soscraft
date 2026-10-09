@@ -38,6 +38,7 @@ const EYE_HEIGHT: f32 = 1.62;
 const SERVER_ITEM: u32 = 1 << 31;
 type Hits = Vec<(f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause)>;
 type Changes = Vec<((i32, i32, i32), Option<Block>)>;
+type Picked = (i32, [f64; 3], String, i32, Option<String>);
 
 pub struct Blow {
     pub sprinting: bool,
@@ -101,6 +102,7 @@ pub struct Entities {
     pub experience_found: f32,
     pub weather: minecraft_terrain::server::WeatherView,
     pub weather_data: Option<WeatherData>,
+    pub world_weather: Option<WeatherData>,
     pub stations: std::sync::Arc<minecraft_terrain::stations::StationBook>,
     pub enchantments: Option<std::sync::Arc<minecraftoss_entities::enchant::Enchantments>>,
     pub recipes: std::sync::Arc<minecraftoss_player::crafting::RecipeBook>,
@@ -168,14 +170,16 @@ fn player_candidate(player: &PlayerView) -> PlayerCandidate {
 }
 
 impl Entities {
-    pub fn new(stream: &TerrainStream, seed: i64, data: &crate::data::GameData, saved_weather: Option<&WeatherData>) -> Self {
-        let mut sim = ServerSim::new(stream.world_gen(), stream.states.clone(), "minecraft:overworld");
+    pub fn new(stream: &TerrainStream, dimension: minecraft_net::Dimension, seed: i64, data: &crate::data::GameData, saved_weather: Option<&WeatherData>, forced_weather: Option<&str>) -> Self {
+        let mut sim = ServerSim::new(stream.world_gen(), stream.states.clone(), dimension.dimension_type());
         sim.set_entity_storage(stream.storage());
-        if let Some(saved) = saved_weather {
+        let has_weather = crate::server::has_weather(dimension);
+        if let Some(saved) = saved_weather.filter(|_| has_weather) {
             sim.set_weather_data(saved);
             diag::info!(World, "Minecraft weather: {} from weather.dat", weather_name(saved));
         }
-        if let Ok(weather) = std::env::var("IW4L_MINECRAFT_WEATHER")
+        if has_weather
+            && let Some(weather) = forced_weather
             && !weather.trim().is_empty()
         {
             if sim.set_weather(weather.trim()) {
@@ -230,6 +234,7 @@ impl Entities {
             experience_found: 0.0,
             weather: Default::default(),
             weather_data,
+            world_weather: None,
             stations: data.stations.clone(),
             enchantments: data.enchantments.clone(),
             recipes: data.recipes.clone(),
@@ -252,6 +257,12 @@ impl Entities {
 
     pub fn set_weather(&mut self, weather: &'static str, duration: i32) {
         self.server.set_weather(weather, duration);
+        self.world_weather = minecraft_terrain::server::weather_parameters(weather, duration);
+    }
+
+    pub fn set_weather_data(&mut self, data: WeatherData) {
+        self.server.set_weather_data(data);
+        self.weather_data = Some(data);
     }
 
     pub fn set_player_uuid(&mut self, uuid: &minecraft_net::PlayerUuid) {
@@ -518,6 +529,19 @@ impl Entities {
         self.item_use_waiting.is_some()
     }
 
+    pub fn leave(&mut self, inventory: &mut Inventory, selected: usize, feet: Option<[f64; 3]>) {
+        let picked = std::mem::take(&mut self.server_picked);
+        for rest in take_picked(inventory, selected, picked) {
+            if let Some(feet) = feet {
+                self.server.spawn_item(&rest.id, i32::from(rest.count), rest.components.map(|c| c.to_string()).as_deref(), feet, [0.0; 3], 0, 0);
+            }
+        }
+        self.item_use_waiting = None;
+        self.pearl_landings.clear();
+        self.player_potions.clear();
+        self.player_pushes.clear();
+    }
+
     pub fn hatch_egg(&mut self, inventory: &Inventory, slot: usize, kind: String, position: [f64; 3], spends: bool) {
         if self.eggs_waiting.send_from(inventory, slot, spends) {
             let y_rot = minecraftoss_core::entity_data::wrap_degrees(self.random.next_float() * 360.0);
@@ -626,7 +650,7 @@ impl Entities {
         inventory: &mut Inventory,
         selected: usize,
         dt: f64,
-        day_ticks: i64,
+        clocks: minecraft_terrain::server::ClockTicks,
         bright_outside: bool,
         player: &PlayerView,
     ) -> (Changes, Hits) {
@@ -658,7 +682,7 @@ impl Entities {
             let center = ((feet.x.floor() as i32) >> 4, (feet.z.floor() as i32) >> 4);
             let candidate = player_candidate(player);
             self.server.tick(TickInput {
-                day_ticks,
+                clocks,
                 players: if player.alive { vec![player.feet] } else { Vec::new() },
                 difficulty: self.difficulty,
                 simulation_center: center,
@@ -1074,6 +1098,17 @@ fn decode(key: u64) -> Option<MobHit> {
     })
 }
 
+fn take_picked(inventory: &mut Inventory, selected: usize, picked: Vec<Picked>) -> Vec<ItemStack> {
+    let mut rests = Vec::new();
+    for (_, _, item, count, components) in picked {
+        let mut stack = ItemStack::new(&item, count.clamp(0, 255) as u8);
+        stack.components = components.as_deref().and_then(|c| serde_json::from_str(c).ok());
+        stack.max = stack.max.min(inventory.recipes.max_stack(&item));
+        rests.extend(inventory.add_item(stack, selected));
+    }
+    rests
+}
+
 fn weather_name(weather: &WeatherData) -> &'static str {
     match (weather.raining, weather.thundering) {
         (true, true) => "thunder",
@@ -1177,5 +1212,33 @@ mod tests {
         assert_eq!(tool.id, LOOT_TOOL);
         assert_eq!(tool.components, Some(serde_json::json!({ "minecraft:enchantments": { "minecraft:silk_touch": 1 } })));
         assert_eq!(loot_tool_with(None).components, None);
+    }
+
+    #[test]
+    fn stacks_the_old_level_let_the_player_pick_up_reach_the_inventory_on_leaving() {
+        let mut inventory = Inventory::default();
+        inventory.slots[0] = Some(ItemStack::new("minecraft:dirt", 60));
+        let picked = vec![
+            (7, [1.0, 64.0, 1.0], "minecraft:dirt".to_owned(), 10, None),
+            (8, [1.0, 64.0, 1.0], "minecraft:diamond_sword".to_owned(), 1, Some(r#"{"minecraft:damage":5}"#.to_owned())),
+        ];
+        assert!(take_picked(&mut inventory, 0, picked).is_empty());
+        let count = |id: &str| inventory.slots.iter().flatten().filter(|stack| stack.id == id).map(|stack| u32::from(stack.count)).sum::<u32>();
+        assert_eq!(count("minecraft:dirt"), 70);
+        let sword = inventory.slots.iter().flatten().find(|stack| stack.id == "minecraft:diamond_sword").expect("the sword");
+        assert_eq!(sword.components, Some(serde_json::json!({ "minecraft:damage": 5 })));
+    }
+
+    #[test]
+    fn stacks_that_no_longer_fit_on_leaving_come_back_to_be_dropped() {
+        let mut inventory = Inventory::default();
+        for slot in inventory.slots.iter_mut().take(36) {
+            *slot = Some(ItemStack::new("minecraft:stone", 64));
+        }
+        let picked = vec![(7, [1.0, 64.0, 1.0], "minecraft:dirt".to_owned(), 10, Some(r#"{"minecraft:custom_name":"x"}"#.to_owned()))];
+        let rests = take_picked(&mut inventory, 0, picked);
+        assert_eq!(rests.len(), 1, "the part that did not fit is not lost");
+        assert_eq!((rests[0].id.as_str(), rests[0].count), ("minecraft:dirt", 10));
+        assert_eq!(rests[0].components, Some(serde_json::json!({ "minecraft:custom_name": "x" })));
     }
 }

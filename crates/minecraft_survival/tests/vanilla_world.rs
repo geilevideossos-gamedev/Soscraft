@@ -602,8 +602,16 @@ fn a_saved_world_comes_back_whole_with_vanilla_keys_and_tag_types() {
         map.set_block_entities(&changes);
     }
     let save = first.save.take().unwrap();
-    save.write(SPAWN, Some(day), &rules, Difficulty::Hard)
-        .unwrap();
+    save.write(
+        &minecraft_survival::save::world_spawn(Dimension::Overworld, SPAWN),
+        Some(minecraft_survival::save::WorldClocks {
+            overworld: day,
+            the_end: minecraft_survival::save::END_CLOCK_START,
+        }),
+        &rules,
+        Difficulty::Hard,
+    )
+    .unwrap();
     save.write_weather(&weather).unwrap();
     save.write_player(&uuid, &player.data()).unwrap();
     drop(save);
@@ -614,7 +622,7 @@ fn a_saved_world_comes_back_whole_with_vanilla_keys_and_tag_types() {
     let again = open_world(&saves.0, Some("compat"), None, 77);
     assert!(again.warnings.is_empty(), "{:?}", again.warnings);
     assert_eq!(again.seed, SEED);
-    assert_eq!(again.spawn, Some(SPAWN));
+    assert_eq!(again.spawn.as_ref().map(|spawn| spawn.pos), Some(SPAWN));
     assert_eq!(again.day_ticks, Some(13_500.0));
     assert_eq!(again.difficulty, Difficulty::Hard);
     assert_eq!(again.weather, Some(weather));

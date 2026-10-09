@@ -410,13 +410,111 @@ pub fn activate(brushes: &[SimBrush], origin: [f64; 3], shapes: Vec<Vec<[f32; 6]
             shapes,
         });
     }
+    set_level_switch(LevelSwitch::Never);
     bump();
+}
+
+pub fn switch_level(origin: [f64; 3]) {
+    if let Ok(mut world) = WORLD.write()
+        && let Some(world) = world.as_mut()
+    {
+        world.switch(origin);
+    }
+    let _ = take_events();
+    set_mob_boxes(Vec::new());
+    set_level_switch(LevelSwitch::Pending);
+    bump();
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum LevelSwitch {
+    #[default]
+    Never,
+    Pending,
+    At { ms: i32, models: u32 },
+}
+
+impl LevelSwitch {
+    fn stamped(self, ms: i32, next_model: u32) -> Self {
+        match self {
+            Self::Pending => Self::At { ms, models: crate::script::host::entities::SPAWNED_PRESENCE_BASE.saturating_add(next_model) },
+            other => other,
+        }
+    }
+
+    fn fired_before(self, born_ms: i32) -> bool {
+        match self {
+            Self::Never => false,
+            Self::Pending => true,
+            Self::At { ms, .. } => born_ms < ms,
+        }
+    }
+
+    fn spawned_before(self, model: crate::ScriptModelId) -> bool {
+        let wire = model.to_wire();
+        wire >= crate::script::host::entities::SPAWNED_PRESENCE_BASE
+            && match self {
+                Self::Never => false,
+                Self::Pending => true,
+                Self::At { models, .. } => wire < models,
+            }
+    }
+}
+
+static LEVEL_SWITCH: std::sync::Mutex<LevelSwitch> = std::sync::Mutex::new(LevelSwitch::Never);
+
+fn set_level_switch(switch: LevelSwitch) {
+    if let Ok(mut held) = LEVEL_SWITCH.lock() {
+        *held = switch;
+    }
+}
+
+fn level_switch() -> LevelSwitch {
+    LEVEL_SWITCH.lock().map_or(LevelSwitch::Never, |held| *held)
+}
+
+pub(crate) fn stamp_level_switch(ms: i32, next_model: u32) {
+    if let Ok(mut held) = LEVEL_SWITCH.lock() {
+        *held = held.stamped(ms, next_model);
+    }
+}
+
+pub(crate) fn fired_before_switch(born_ms: i32) -> bool {
+    level_switch().fired_before(born_ms)
+}
+
+pub(crate) fn spawned_before_switch(inflictor: Option<crate::ScriptModelId>) -> bool {
+    inflictor.is_some_and(|model| level_switch().spawned_before(model))
+}
+
+const NEEDS_SKY: [&str; 11] = [
+    "airdrop_marker",
+    "airdrop_mega_marker",
+    "airdrop_sentry_marker",
+    "killstreak_ac130",
+    "killstreak_harrier_airstrike",
+    "killstreak_helicopter",
+    "killstreak_helicopter_flares",
+    "killstreak_helicopter_minigun",
+    "killstreak_precision_airstrike",
+    "killstreak_predator_missile",
+    "killstreak_stealth_airstrike",
+];
+
+pub fn needs_sky(weapon: &str) -> bool {
+    let weapon = weapon.to_ascii_lowercase();
+    NEEDS_SKY.contains(&weapon.strip_suffix("_mp").unwrap_or(&weapon))
+}
+
+pub fn refused_without_sky(pm_flags: u32, weapon: &str) -> bool {
+    pm_flags & playerstate_iw4::pm_flags::MC_NO_SKY != 0 && needs_sky(weapon)
 }
 
 pub fn deactivate() {
     if let Ok(mut world) = WORLD.write() {
         *world = None;
     }
+    set_level_switch(LevelSwitch::Never);
     let _ = take_events();
     let _ = take_player_damage();
     let _ = take_totem_pops();
@@ -632,6 +730,13 @@ pub fn to_map(origin: [f64; 3], b: [f64; 3]) -> [f32; 3] {
 impl VoxelWorld {
     fn has_chunks_around(&self, cx: i32, cz: i32, radius: i32) -> bool {
         (cx - radius..=cx + radius).all(|x| (cz - radius..=cz + radius).all(|z| self.chunks.contains_key(&(x, z))))
+    }
+
+    fn switch(&mut self, origin: [f64; 3]) {
+        self.origin = origin;
+        self.chunks.clear();
+        self.shapes = vec![Vec::new()];
+        self.fluids = vec![0];
     }
 
     fn awaits_ground(&self, origin: [f32; 3]) -> bool {
@@ -1226,6 +1331,71 @@ mod tests {
 
     const SOURCE: u16 = 3;
     const FLOWING: u16 = 4;
+
+    #[test]
+    fn a_level_switch_drops_the_old_level_and_waits_for_ground_at_the_new_origin() {
+        let mut w = world(&[([1, 0, 1], 1)]);
+        w.brushes = 7;
+        assert!(!w.awaits_ground([0.0; 3]));
+        w.switch([100.5, 49.0, 0.5]);
+        assert!(w.chunks.is_empty());
+        assert_eq!(w.origin, [100.5, 49.0, 0.5]);
+        assert_eq!((w.shapes.len(), w.fluids.len()), (1, 1));
+        assert!(w.shapes[0].is_empty());
+        assert!(w.awaits_ground([0.0; 3]));
+        assert_eq!(to_block(w.origin, [36.0, 0.0, 0.0]), [101.5, 49.0, 0.5]);
+        assert_eq!(w.brushes, 7, "the map's brushes stay");
+    }
+
+    #[test]
+    fn only_air_support_needs_the_sky() {
+        for weapon in [
+            "killstreak_predator_missile_mp",
+            "killstreak_precision_airstrike_mp",
+            "killstreak_stealth_airstrike_mp",
+            "killstreak_harrier_airstrike_mp",
+            "killstreak_helicopter_mp",
+            "killstreak_helicopter_flares_mp",
+            "killstreak_helicopter_minigun_mp",
+            "killstreak_ac130_mp",
+            "airdrop_marker_mp",
+            "airdrop_mega_marker_mp",
+            "airdrop_sentry_marker_mp",
+            "KILLSTREAK_AC130_MP",
+        ] {
+            assert!(needs_sky(weapon), "{weapon}");
+        }
+        for weapon in ["killstreak_uav_mp", "killstreak_counter_uav_mp", "killstreak_emp_mp", "killstreak_nuke_mp", "frag_grenade_mp", "m4_mp", "ac130_105mm_mp", ""] {
+            assert!(!needs_sky(weapon), "{weapon}");
+        }
+        let no_sky = playerstate_iw4::pm_flags::MC_NO_SKY | playerstate_iw4::pm_flags::MC_INVULNERABLE;
+        assert!(refused_without_sky(no_sky, "killstreak_predator_missile_mp"));
+        assert!(!refused_without_sky(no_sky, "killstreak_uav_mp"));
+        assert!(!refused_without_sky(no_sky, "m4_mp"));
+        assert!(!refused_without_sky(playerstate_iw4::pm_flags::MC_INVULNERABLE, "killstreak_predator_missile_mp"), "under the sky");
+    }
+
+    #[test]
+    fn ordnance_from_before_a_level_switch_is_left_behind() {
+        let base = crate::script::host::entities::SPAWNED_PRESENCE_BASE;
+        let model = |serial: u32| crate::ScriptModelId::from_wire(base + serial);
+        let map_model = crate::ScriptModelId::from_wire(12);
+        let never = LevelSwitch::Never;
+        assert!(!never.fired_before(0) && !never.spawned_before(model(0)));
+        assert_eq!(never.stamped(5_000, 3), never, "no switch, nothing to stamp");
+        let pending = LevelSwitch::Pending;
+        assert!(pending.fired_before(i32::MAX) && pending.spawned_before(model(u32::from(u16::MAX))));
+        assert!(!pending.spawned_before(map_model), "the map's own models never left a level");
+        let at = pending.stamped(5_000, 3);
+        assert_eq!(at, LevelSwitch::At { ms: 5_000, models: base + 3 });
+        assert_eq!(at.stamped(9_000, 7), at, "the first tick after the switch keeps its stamp");
+        assert!(at.fired_before(4_950), "a grenade thrown a tick before the switch");
+        assert!(!at.fired_before(5_000), "a projectile born in the switch's own tick");
+        assert!(!at.fired_before(7_000));
+        assert!(at.spawned_before(model(2)), "a bomb spawned before the switch");
+        assert!(!at.spawned_before(model(3)) && !at.spawned_before(model(40)));
+        assert!(!at.spawned_before(map_model));
+    }
 
     fn pool(depth: i32) -> VoxelWorld {
         let mut blocks = Vec::new();

@@ -9,13 +9,13 @@ use bevy::input::gamepad::GamepadButton;
 use bevy::prelude::*;
 use minecraft_terrain::clouds::CloudMask;
 use minecraft_terrain::day_cycle::{DayCycle, Skybox};
-use minecraft_terrain::environment::{DimensionEnvironment, View};
+use minecraft_terrain::environment::View;
 use minecraft_terrain::lighting::SkyLight;
 use minecraft_terrain::mesh::{Atlas, AtlasAnimation, AtlasPatch, SectionMesh, Vertex};
 use minecraft_terrain::pack::PackStack;
 use minecraft_terrain::scene::HandcraftedScene;
 use minecraft_terrain::sections::{CullCamera, SectionPos};
-use minecraft_terrain::terrain::{Dimension, TerrainStream};
+use minecraft_terrain::terrain::Dimension;
 use minecraftoss_core::BlockStateId;
 use minecraftoss_core::registries::{DataPaths, Registries};
 
@@ -110,6 +110,11 @@ struct Runtime {
     gear_items: minecraft_terrain::mesh::ItemVisuals,
     loader: Option<std::thread::JoinHandle<()>>,
     closing: Vec<std::thread::JoinHandle<()>>,
+    shown: Option<Dimension>,
+    origins: HashMap<Dimension, [f64; 3]>,
+    switch_screen: Option<minecraft_survival::switch::LoadingReason>,
+    loading_backgrounds: Option<crate::minecraft_loading::LoadingBackgrounds>,
+    refused_air: Option<u32>,
 }
 
 impl Drop for Runtime {
@@ -233,23 +238,23 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
     let registries = Arc::new(Registries::load(&paths)?);
     let packs = PackStack::open(vec![root.join("resourcepacks/local/minecraft-26.3")])
         .map_err(|e| e.to_string())?;
-    let stream = TerrainStream::for_dimension_at(
+    let terrain = minecraft_survival::level::Terrain::open(
         registries.clone(),
         seed,
         VIEW_DISTANCE,
         Dimension::Overworld,
-        opened.save.as_ref().map(minecraft_survival::save::WorldSave::path),
-        opened.spawn,
-    )
-    .map_err(|e| e.to_string())?;
+        opened.save.as_ref(),
+        opened.spawn.as_ref().filter(|spawn| minecraft_survival::save::spawn_dimension(spawn) == Dimension::Overworld).map(|spawn| spawn.pos),
+    )?;
+    let spawn = opened.spawn.clone().unwrap_or_else(|| minecraft_survival::save::world_spawn(Dimension::Overworld, terrain.stream.world_spawn));
     if let Some(save) = &opened.save
-        && let Err(error) = save.write(stream.world_spawn, None, &opened.game_rules, opened.difficulty)
+        && let Err(error) = save.write(&spawn, None, &opened.game_rules, opened.difficulty)
     {
         diag::warn!(World, "Minecraft level.dat not written: {error}");
     }
     let mut chat = minecraft_commands::CommandServer::new(minecraft_survival::commands::HOST);
     *chat.registries_mut() = minecraft_survival::commands::registries(&packs);
-    *chat.data_mut() = minecraft_survival::commands::command_data(&stream);
+    *chat.data_mut() = minecraft_survival::commands::command_data(&terrain.stream);
     if let Some(save) = &opened.save
         && let Err(error) = chat.open_ops(&save.ops_path())
     {
@@ -257,9 +262,6 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
     }
     let build = minecraft_terrain::mesh::build(&HandcraftedScene::default(), &packs)
         .map_err(|e| e.to_string())?;
-    let scene = HandcraftedScene::streamed(stream.states.clone());
-    let environment =
-        DimensionEnvironment::load(&registries, Dimension::Overworld.dimension_type())?;
     let celestial = Arc::new(celestial_image(&packs).map_err(|e| e.to_string())?);
     let cloud_mask = CloudMask::from_pack(&packs).ok();
     let crack_texture = Arc::new(crate::minecraft_mining::crack_strip(&packs).map_err(|e| e.to_string())?);
@@ -285,16 +287,21 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         save: opened.save,
         game_rules: opened.game_rules,
         difficulty: opened.difficulty,
+        spawn,
         day,
+        end_clock: opened.end_clock,
         weather: opened.weather,
+        weather_random: minecraft_survival::server::weather_random(seed),
+        forced_weather: std::env::var("IW4L_MINECRAFT_WEATHER").ok(),
         chat,
         data: Default::default(),
         level_writer: None,
         autosave_ticks: 0,
+        level_ticks: 0,
+        closing: Vec::new(),
     };
-    let terrain = minecraft_survival::level::Terrain { stream, scene, environment };
-    let level = minecraft_survival::level::Level { dimension: Dimension::Overworld, entities: None, containers: Default::default(), terrain, openers: Default::default() };
-    Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), players: std::collections::BTreeMap::new() }))
+    let level = minecraft_survival::level::Level::new(Dimension::Overworld, terrain);
+    Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), opening: Default::default(), players: std::collections::BTreeMap::new() }))
 }
 
 pub(crate) fn data_jar() -> Option<std::path::PathBuf> {
@@ -435,10 +442,17 @@ fn update(
             view.active = true;
         }
     }
-    ui.loading_world = runtime.loading.is_some() || (runtime.world.is_some() && runtime.spawn_gate.holding(now_ms));
+    ui.loading_world = runtime.loading.is_some() || (runtime.world.is_some() && (runtime.spawn_gate.holding(now_ms) || awaiting_level(&runtime)));
     if runtime.server.is_none() {
         body_gear.clear();
     }
+    if runtime.switch_screen.is_some() && !local_switching(&runtime) && !runtime.spawn_gate.holding(now_ms) {
+        runtime.switch_screen = None;
+    }
+    let aspect = windows.single().map(|w| w.width() / w.height().max(1.0)).unwrap_or(16.0 / 9.0);
+    let game_time = runtime.server.as_ref().map_or(0.0, |server| server.globals.day.ticks);
+    let reason = runtime.switch_screen;
+    ui.level_loading = runtime.loading_backgrounds.as_mut().and_then(|backgrounds| backgrounds.frame(reason, game_time, time.delta_secs_f64(), aspect, &mut images));
     let Some(mut authority) = authority else {
         return;
     };
@@ -450,7 +464,7 @@ fn update(
         runtime.loader = None;
         match result {
             Ok((world, mut server)) => {
-                let minecraft_survival::server::Server { globals, levels, players } = &mut server;
+                let minecraft_survival::server::Server { globals, levels, players, .. } = &mut server;
                 let Some(level) = levels.get_mut(&Dimension::Overworld) else {
                     diag::warn!(World, "Minecraft world failed to load: no overworld");
                     view.active = false;
@@ -477,9 +491,7 @@ fn update(
                 runtime.minimap = Default::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
                 globals.data = minecraft_survival::data::GameData::load(assets::minecraft_map::root().as_deref(), data_jar());
-                let mut entities = minecraft_survival::entities::Entities::new(&level.terrain.stream, globals.seed, &globals.data, globals.weather.as_ref());
-                entities.set_game_rules(&globals.game_rules);
-                level.containers.set_book(globals.data.stations.clone());
+                minecraft_survival::server::start_level(globals, level);
                 runtime.inventory_ui.set_station_data(globals.data.stations.clone(), globals.data.enchantments.clone(), globals.seed as i32);
                 globals.chat.registries_mut().enchantments = globals.data.enchantments.as_ref().map_or_else(Vec::new, |book| book.list.iter().map(|enchantment| enchantment.id.clone()).collect());
                 // Game ticks since sunrise to start at: 6000 noon, 13000
@@ -499,9 +511,19 @@ fn update(
                 let chosen_mode = std::env::var("IW4L_MINECRAFT_GAMEMODE").ok();
                 let kit = std::env::var("IW4L_MINECRAFT_KIT").ok();
                 let joining = minecraft_survival::server::Joining { profile: &profile, spawn: view.origin, chosen_mode: chosen_mode.as_deref(), kit: kit.as_deref(), carried: runtime.carried_survival.take() };
-                let player = minecraft_survival::server::join(globals.save.as_ref(), &globals.data.recipes, &globals.game_rules, joining);
+                let mut player = minecraft_survival::server::join(globals.save.as_ref(), &globals.data.recipes, &globals.game_rules, joining);
+                match minecraft_survival::server::debug_dimension(std::env::var("IW4L_MINECRAFT_DIMENSION").as_deref().unwrap_or("")) {
+                    Ok(Some(dimension)) => {
+                        minecraft_survival::server::start_in(&mut player, dimension, view.origin);
+                        diag::info!(World, "Minecraft player starts in {} from IW4L_MINECRAFT_DIMENSION", dimension.dimension_type());
+                    }
+                    Ok(None) => {}
+                    Err(error) => diag::warn!(World, "{error}"),
+                }
                 let uuid = player.uuid.clone();
-                entities.set_player_uuid(&uuid);
+                if let Some(entities) = level.entities.as_mut() {
+                    entities.set_player_uuid(&uuid);
+                }
                 players.insert(uuid.clone(), player);
                 runtime.environment_accumulator = 0.0;
                 runtime.environment_primed = false;
@@ -521,13 +543,15 @@ fn update(
                     level.terrain.stream.player_spawn
                 );
                 runtime.fire_frames = fire_frames(&world.packs).map(|(image, frames)| (images.add(image), frames));
-                level.entities = Some(entities);
+                runtime.loading_backgrounds = Some(crate::minecraft_loading::LoadingBackgrounds::load(&world.packs, &mut images));
                 runtime.server = Some(server);
                 runtime.local = Some(uuid);
                 runtime.world = Some(world);
                 runtime.shapes.clear();
                 runtime.shape_ids.clear();
                 runtime.spawn_gate.start(now_ms);
+                runtime.shown = Some(Dimension::Overworld);
+                runtime.origins = HashMap::from([(Dimension::Overworld, view.origin)]);
             }
             Err(error) => {
                 diag::warn!(World, "Minecraft world failed to load: {error}");
@@ -536,6 +560,7 @@ fn update(
         }
     }
 
+    let failed = follow_levels(&mut runtime, &mut view, now_ms);
     let origin = view.origin;
     let Runtime {
         world,
@@ -557,6 +582,9 @@ fn update(
         atlas_animation,
         animation_clock,
         spawn_gate,
+        shown,
+        switch_screen,
+        refused_air,
         ..
     } = &mut *runtime;
     let (Some(world), Some(server), Some(local_uuid)) = (world.as_mut(), server.as_mut(), local_uuid.as_ref()) else {
@@ -565,7 +593,7 @@ fn update(
         puppet.active = false;
         return;
     };
-    let minecraft_survival::server::Server { globals, levels, players } = server;
+    let minecraft_survival::server::Server { globals, levels, players, .. } = server;
     if globals.autosave_ticks >= minecraft_survival::save::AUTOSAVE_TICKS {
         globals.autosave_ticks = 0;
         minecraft_survival::server::autosave(globals, levels, players);
@@ -576,18 +604,84 @@ fn update(
         puppet.active = false;
         return;
     };
-    let loaded: Vec<Dimension> = levels.keys().copied().collect();
+    if player.dead {
+        player.held = None;
+    }
+    player.set_remote(in_remote_killstreak(&presented, local.0));
+    if player.switching.is_some() {
+        for (dimension, error) in &failed {
+            show_chat(&mut ui.chat, inventory_ui, &world.packs, &[minecraft_survival::switch::failed_message(*dimension, error)]);
+        }
+    }
+    if let Some(switch) = player.switching.filter(|switch| !switch.left) {
+        if let Some(switching) = player.switching.as_mut() {
+            switching.left = true;
+        }
+        *switch_screen = Some(switch.reason);
+        if let Some(level) = levels.get_mut(&switch.from) {
+            leave_level(level, player, &mut ui, inventory_ui);
+        }
+        sim::voxel::switch_level(origin);
+        *shown = None;
+        authority.0.set_minecraft_abilities(local.0, ability_bits(&player.mode) | playerstate_iw4::pm_flags::MC_INVULNERABLE);
+        diag::info!(World, "Minecraft player leaves {} for {}", switch.from.dimension_type(), switch.to.dimension_type());
+        ui.active = false;
+        ui.inventory_open = false;
+        puppet.active = false;
+        return;
+    }
     let Some(level) = levels.get_mut(&player.dimension) else {
         ui.active = false;
         ui.inventory_open = false;
         puppet.active = false;
         return;
     };
-    if let Some(ps) = presented.player(local.0) {
-        if player.observe_life(ps.pm_type) && player.respawn.is_none_or(|respawn| respawn.forced) {
-            let open = |pos| minecraft_survival::level::open_for_respawn(&level.terrain, &globals.registries, pos);
-            if player.arrive_at_respawn(&loaded, open, |_| None) {
+    if player.switching.is_some() {
+        if player.switching.is_some_and(|switch| switch.respawn) {
+            if let Some(switch) = player.switching.as_mut() {
+                switch.respawn = false;
+            }
+            if minecraft_survival::respawn::respawn_in(globals, level, player, |_| None) {
                 show_chat(&mut ui.chat, inventory_ui, &world.packs, &[minecraft_survival::player::missing_respawn_message()]);
+            }
+            if player.switching.is_some_and(|switch| !switch.left) {
+                ui.active = false;
+                ui.inventory_open = false;
+                puppet.active = false;
+                return;
+            }
+        }
+        if player.arrival.is_none() && player.place.is_none_or(|place| place.dimension != player.dimension) {
+            player.arrival = Some(minecraft_survival::respawn::level_spawn(&globals.spawn, level));
+        }
+        let ps = presented.player(local.0).filter(|ps| ps.pm_type == 0);
+        if let Some(ps) = ps.filter(|_| player.arrival.is_some()) {
+            place_player(player, &mut authority.0, local.0, ps, origin, spawn_gate, now_ms);
+        }
+        authority.0.set_minecraft_abilities(local.0, ability_bits(&player.mode) | sky_bits(&level.terrain.environment) | playerstate_iw4::pm_flags::MC_INVULNERABLE);
+        let at = player.place.filter(|place| place.dimension == player.dimension).map_or(origin, |place| place.feet);
+        let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
+        stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, at, aspect, now_ms);
+        globals.advance_clocks(time.delta_secs_f64());
+        if ps.is_some() && player.arrival.is_none() && !spawn_gate.waiting() {
+            player.switching = None;
+            diag::info!(World, "Minecraft player arrived in {} at {:?}", player.dimension.dimension_type(), at);
+        }
+        ui.active = false;
+        ui.inventory_open = false;
+        puppet.active = false;
+        return;
+    }
+    if let Some(ps) = presented.player(local.0) {
+        if player.observe_life(ps.pm_type) {
+            if minecraft_survival::respawn::respawn(globals, level, player) {
+                show_chat(&mut ui.chat, inventory_ui, &world.packs, &[minecraft_survival::player::missing_respawn_message()]);
+            }
+            if player.switching.is_some() {
+                ui.active = false;
+                ui.inventory_open = false;
+                puppet.active = false;
+                return;
             }
         }
         if ps.pm_type == 0 {
@@ -610,6 +704,7 @@ fn update(
         puppet.active = false;
         return;
     };
+    let loaded: Vec<Dimension> = levels.keys().copied().collect();
     let Some(level) = levels.get_mut(&player.dimension) else {
         ui.active = false;
         ui.inventory_open = false;
@@ -617,7 +712,7 @@ fn update(
         return;
     };
     let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, arrived, ender, .. } = player;
-    let minecraft_survival::level::Level { entities, containers, terrain, openers, .. } = level;
+    let minecraft_survival::level::Level { entities, containers, terrain, openers, dimension, .. } = level;
     if !delivered.is_empty() {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
     }
@@ -651,7 +746,7 @@ fn update(
     let keep_inventory = minecraft_survival::death::keeps_belongings(globals.game_rules.keep_inventory(), player_mode.mode);
     survival.rules = minecraft_survival::survival::SurvivalRules::of(&globals.game_rules, globals.difficulty);
     survival.set_game_mode(player_mode);
-    authority.0.set_minecraft_abilities(local.0, ability_bits(player_mode));
+    authority.0.set_minecraft_abilities(local.0, ability_bits(player_mode) | sky_bits(&terrain.environment));
     if alive && player_mode.abilities.may_fly {
         player_mode.abilities.flying = authority.0.player(local.0).is_some_and(|p| p.pm_flags & playerstate_iw4::pm_flags::MC_FLYING != 0);
     }
@@ -1543,7 +1638,7 @@ fn update(
         let bright_outside = terrain.environment.sky_light_level() > 11.0;
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
         let ticks_before = entities.client_ticks();
-        let (changes, hits) = entities.tick(inventory, *selected, dt, globals.day.ticks as i64, bright_outside, &player);
+        let (changes, hits) = entities.tick(inventory, *selected, dt, globals.clock_ticks(), bright_outside, &player);
         globals.weather = entities.weather_data.or(globals.weather);
         let summoned = std::mem::take(&mut entities.command_summons);
         if !summoned.is_empty() {
@@ -1552,6 +1647,8 @@ fn update(
         }
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
         globals.autosave_ticks += mob_ticks;
+        globals.level_ticks += mob_ticks;
+        globals.advance_weather(&[*dimension], mob_ticks);
         for _ in 0..mob_ticks {
             for sound in entities.animate_tick(&terrain.scene, feet) {
                 if let Some(sounds) = sounds.as_mut() {
@@ -1898,6 +1995,14 @@ fn update(
         }
         crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
         ui.weapon_request = inventory_ui.weapon_request(inventory, selected, ps.weapon).filter(|_| player_mode.interacts());
+        let refused = ui.weapon_request.filter(|&weapon| sky_bits(&terrain.environment) != 0 && sim::voxel::needs_sky(authority.0.weapon_script_name(weapon)));
+        if refused.is_some() && *refused_air != refused {
+            show_chat(&mut ui.chat, inventory_ui, &world.packs, &[minecraft_survival::switch::air_support_unavailable()]);
+        }
+        *refused_air = refused;
+        if refused.is_some() {
+            ui.weapon_request = None;
+        }
         inventory_ui.animation_tick = atlas_animation.ticks();
         containers.with_ender(ender, |containers| inventory_ui.publish(&mut ui, inventory, *selected, &world.packs, &mut images, containers));
 
@@ -2026,11 +2131,7 @@ fn update(
         body_gear.remove(local.0.0);
     }
     view.cracks = mining.crack_mesh(&terrain.scene, &terrain.stream.states, &world.packs);
-    if globals.game_rules.bool("advance_time") && !globals.day.paused {
-        globals.day.advance(dt);
-    } else if let Some(save) = globals.save.as_mut() {
-        save.shift_day(-dt * 20.0);
-    }
+    globals.advance_clocks(dt);
     let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
     view.eye_light = [
         f32::from(light.get(eye_block)),
@@ -2049,7 +2150,7 @@ fn update(
         *environment_accumulator = (*environment_accumulator % TICK_SECONDS).min(TICK_SECONDS);
         let scene = &terrain.scene;
         terrain.environment.tick(
-            globals.day.ticks.floor() as i64,
+            globals.default_clock_ticks(*dimension),
             weather.rain_level,
             weather.thunder_level,
             eye,
@@ -2438,6 +2539,19 @@ fn ability_bits(mode: &minecraft_terrain::game_mode::PlayerMode) -> u32 {
         .fold(0, |bits, (_, bit)| bits | bit)
 }
 
+fn sky_bits(environment: &minecraft_terrain::environment::DimensionEnvironment) -> u32 {
+    if environment.presentation.has_ceiling { playerstate_iw4::pm_flags::MC_NO_SKY } else { 0 }
+}
+
+fn in_remote_killstreak(presented: &net::PresentedSnapshot, local: sim::ClientId) -> bool {
+    let missile = presented.snapshot().and_then(|snapshot| snapshot.meta.for_client(local)).is_some_and(|meta| meta.remote_missile.is_some());
+    missile || presented.player(local).is_some_and(|ps| remote_view(ps.pm_type, ps.other_flags))
+}
+
+fn remote_view(pm_type: i32, other_flags: u32) -> bool {
+    pm_type == playerstate_iw4::PM_TYPE_NORMAL_LINKED || other_flags & playerstate_iw4::other_flags::AC130 != 0
+}
+
 fn ui_game_mode(mode: minecraftoss_player::GameMode) -> frame::McGameMode {
     match mode {
         minecraftoss_player::GameMode::Survival => frame::McGameMode::Survival,
@@ -2503,6 +2617,11 @@ fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
             minecraft_survival::level::leave(level, local);
         }
     }
+    runtime.shown = None;
+    runtime.origins.clear();
+    runtime.switch_screen = None;
+    runtime.loading_backgrounds = None;
+    runtime.refused_air = None;
     if let (Some(server), Some(local)) = (server.as_mut(), local.as_ref())
         && server.globals.save.is_none()
         && let Some(player) = server.players.get_mut(local)
@@ -2557,6 +2676,116 @@ fn save_and_close(
     server.save_and_close(started);
 }
 
+fn awaiting_level(runtime: &Runtime) -> bool {
+    let (Some(server), Some(local)) = (runtime.server.as_ref(), runtime.local.as_ref()) else {
+        return false;
+    };
+    server.players.get(local).is_some_and(|player| !server.levels.contains_key(&player.dimension) || runtime.shown != Some(player.dimension))
+}
+
+fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u64) -> Vec<(Dimension, String)> {
+    let (Some(server), Some(local)) = (runtime.server.as_mut(), runtime.local.as_ref()) else {
+        return Vec::new();
+    };
+    let ticks = std::mem::take(&mut server.globals.level_ticks);
+    server.follow_weather_commands();
+    for closed in server.close_empty_levels(ticks) {
+        runtime.origins.remove(&closed);
+    }
+    server.prepare_respawns();
+    server.open_levels(VIEW_DISTANCE);
+    let failed: Vec<(Dimension, String)> = server.finish_opening().into_iter().filter_map(|(dimension, opened)| opened.err().map(|error| (dimension, error))).collect();
+    let Some(player) = server.players.get(local) else {
+        return failed;
+    };
+    let dimension = player.dimension;
+    let Some(level) = server.levels.get_mut(&dimension).filter(|_| runtime.shown != Some(dimension)) else {
+        return failed;
+    };
+    let (x, y, z) = level.terrain.stream.player_spawn;
+    let arrived = player.arrival.or(player.place).filter(|place| place.dimension == dimension).map(|place| place.feet);
+    let origin = *runtime.origins.entry(dimension).or_insert_with(|| match dimension {
+        Dimension::Overworld => [x, y, z],
+        _ => arrived.unwrap_or([x, y, z]),
+    });
+    if let Some(entities) = level.entities.as_mut() {
+        entities.set_player_uuid(local);
+    }
+    sim::voxel::switch_level(origin);
+    view.origin = origin;
+    view.generation += 1;
+    view.uploads.clear();
+    view.removed.clear();
+    view.visible.clear();
+    view.particles = Default::default();
+    view.entity_meshes = Default::default();
+    view.cracks = Default::default();
+    view.clouds = None;
+    view.light_volume = None;
+    runtime.shapes.clear();
+    runtime.shape_ids.clear();
+    let chunks = level.terrain.stream.reshow(&level.terrain.scene);
+    apply_streamed(&server.globals.registries, &mut runtime.shapes, &mut runtime.shape_ids, (chunks, Vec::new()));
+    runtime.light = Some(SkyLight::streamed());
+    runtime.light_volume_at = None;
+    runtime.cloud_center = None;
+    runtime.environment_accumulator = 0.0;
+    runtime.environment_primed = false;
+    runtime.mining = Default::default();
+    runtime.minimap = Default::default();
+    runtime.spawn_gate.start(now_ms);
+    runtime.shown = Some(dimension);
+    diag::info!(World, "Minecraft level shown: {} with {:?} at map origin", dimension.dimension_type(), origin);
+    failed
+}
+
+fn local_switching(runtime: &Runtime) -> bool {
+    let (Some(server), Some(local)) = (runtime.server.as_ref(), runtime.local.as_ref()) else {
+        return false;
+    };
+    server.players.get(local).is_some_and(|player| player.switching.is_some())
+}
+
+fn leave_level(
+    level: &mut minecraft_survival::level::Level,
+    player: &mut minecraft_survival::player::Player,
+    ui: &mut frame::MinecraftUi,
+    inventory_ui: &mut crate::minecraft_inventory::InventoryUi,
+) {
+    let minecraft_survival::player::Player { uuid, inventory, selected, ender, survival, hand, steps, place, .. } = player;
+    ui.inventory_open = false;
+    if let Some(entities) = level.entities.as_mut() {
+        entities.leave(inventory, *selected, place.map(|place| place.feet));
+        let roll = entities.random_float();
+        let thrown = level.containers.with_ender(ender, |containers| inventory_ui.apply_input(ui, inventory, selected, containers, &mut || roll));
+        if let Some(place) = place.as_ref() {
+            let thrower = crate::minecraft_inventory::Thrower {
+                eye: glam::DVec3::new(place.feet[0], place.feet[1] + crate::minecraft_spawn_gate::SPAWN_EYE_HEIGHT, place.feet[2]),
+                yaw: place.yaw,
+                pitch: place.pitch,
+            };
+            crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
+        }
+        let mut writes = Vec::new();
+        for event in level.openers.leave(minecraft_survival::level::opener_key(uuid)) {
+            let outcome = minecraft_survival::level::opener_outcome(&level.terrain.scene, &event);
+            let (cell, id, count) = outcome.block_event;
+            entities.lids.block_event(&level.terrain.scene, cell, id, count);
+            writes.extend(outcome.state.map(|(cell, state)| (cell, Some(state))));
+        }
+        if !writes.is_empty() {
+            minecraft_survival::level::write_blocks(&mut level.terrain, entities, writes);
+        }
+    }
+    survival.stop_eating();
+    hand.blocking = None;
+    hand.charging = None;
+    hand.swing = None;
+    hand.recent.clear();
+    steps.air_peak = None;
+    steps.last = None;
+}
+
 fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
     if close_world(runtime, false) || view.active {
         sim::voxel::deactivate();
@@ -2579,6 +2808,20 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
         view.clouds = None;
         view.light_volume = None;
         view.generation += 1;
+    }
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::remote_view;
+
+    #[test]
+    fn a_linked_player_or_one_in_the_ac130_is_in_a_remote_killstreak() {
+        assert!(!remote_view(0, 0), "on foot");
+        assert!(remote_view(playerstate_iw4::PM_TYPE_NORMAL_LINKED, 0), "the chopper gunner links the player to the helicopter");
+        assert!(remote_view(0, playerstate_iw4::other_flags::AC130));
+        assert!(!remote_view(playerstate_iw4::PM_TYPE_DEAD, 0));
+        assert!(!remote_view(0, playerstate_iw4::other_flags::PLAYER));
     }
 }
 

@@ -193,6 +193,23 @@ pub struct MinecraftUi {
     pub killed_by: Option<(u32, String)>,
     pub chat: crate::McChat,
     pub creative: crate::McCreative,
+    pub level_loading: Option<McLevelLoading>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum McLoadingReason {
+    NetherPortal,
+    EndPortal,
+    #[default]
+    Other,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct McLevelLoading {
+    pub reason: McLoadingReason,
+    pub background: Option<Handle<Image>>,
+    pub background_st: [f32; 4],
+    pub menu_background: Option<Handle<Image>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

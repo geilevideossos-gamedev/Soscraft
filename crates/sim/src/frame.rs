@@ -460,11 +460,11 @@ impl FrameWorld<'_> {
     }
 
     pub fn set_minecraft_abilities(&mut self, id: ClientId, bits: u32) -> bool {
-        use playerstate_iw4::pm_flags::{MC_FLYING, MC_INVULNERABLE, MC_MAY_FLY, MC_NOCLIP};
+        use playerstate_iw4::pm_flags::{MC_FLYING, MC_INVULNERABLE, MC_MAY_FLY, MC_NOCLIP, MC_NO_SKY};
         let Some(ps) = self.player_mut(id) else {
             return false;
         };
-        let held = MC_INVULNERABLE | MC_MAY_FLY | MC_NOCLIP;
+        let held = MC_INVULNERABLE | MC_MAY_FLY | MC_NOCLIP | MC_NO_SKY;
         ps.pm_flags = (ps.pm_flags & !held) | (bits & held);
         if bits & MC_MAY_FLY == 0 {
             ps.pm_flags &= !MC_FLYING;
@@ -1143,6 +1143,20 @@ mod tests {
         );
         assert!(sim.set_minecraft_abilities(id, MC_FLYING));
         assert_eq!(flags(&mut sim, id), SPRINT_BLOCKED);
+    }
+
+    #[test]
+    fn the_no_sky_flag_is_set_and_cleared_with_the_abilities() {
+        use playerstate_iw4::pm_flags::MC_NO_SKY;
+        let mut sim = crate::SimWorld::default();
+        let id = ClientId(1);
+        sim.frame().ensure_player(id).pm_flags = SPRINT_BLOCKED;
+        assert!(sim.set_minecraft_abilities(id, MC_NO_SKY | MC_INVULNERABLE));
+        assert_eq!(flags(&mut sim, id), SPRINT_BLOCKED | MC_NO_SKY | MC_INVULNERABLE);
+        assert!(sim.set_minecraft_abilities(id, MC_INVULNERABLE));
+        assert_eq!(flags(&mut sim, id), SPRINT_BLOCKED | MC_INVULNERABLE);
+        let mc = MC_INVULNERABLE | MC_MAY_FLY | MC_NOCLIP | MC_FLYING;
+        assert_eq!(MC_NO_SKY & (mc | SPRINT_BLOCKED | playerstate_iw4::pm_flags::LAST_STAND), 0, "a bit of its own");
     }
 
     #[test]

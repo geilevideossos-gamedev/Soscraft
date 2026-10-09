@@ -294,6 +294,12 @@ impl CommandWorld for Host<'_> {
             .and_then(|level| level.entities.as_mut())
         {
             entities.set_weather(kind, duration);
+        } else if let Some(entities) = self
+            .levels
+            .values_mut()
+            .find_map(|level| level.entities.as_mut())
+        {
+            entities.set_weather(kind, duration);
         }
     }
 
@@ -1552,6 +1558,7 @@ pub(crate) mod tests {
                 environment,
             },
             openers: Default::default(),
+            empty_ticks: 0,
         })
     }
 

@@ -344,30 +344,27 @@ Fork-specific work:
 
 ## What the game hard-wires to the overworld today
 
+Rechecked after the dimension switch (track SWITCH, branch `dim-switch`). Items marked **fixed** are kept so the history of this list stays readable.
+
 - **Dimension literals:**
-  - `crates/render_anim/src/minecraft_world.rs:279` opens the stream for `Dimension::Overworld`, and `:300` loads only the Overworld environment.
-  - `crates/render_anim/src/minecraft_entities.rs:163` starts `ServerSim::new(..., "minecraft:overworld")`.
-  - `crates/render_anim/src/minecraft_save.rs:16` defines `OVERWORLD`. It is used for the spawn's dimension (`:150`), the only clock written (`:168`), the only dimension folder created (`:259`), the only spawn read back (`:262`) and the only clock read back (`:276`).
-  - `/time` always uses the overworld clock (`crates/minecraft_commands/src/commands.rs:15`). Vanilla uses the executing level's default clock.
+  - **Fixed.** Every level is built by `Terrain::open` for its own dimension (`crates/minecraft_survival/src/level.rs`), its mobs start with that dimension type (`Entities::new(.., dimension)`), and the world spawn, clocks and dimension folders are written from the server's `Globals` (`crates/minecraft_survival/src/server.rs`, `save.rs`).
+  - `/time` still uses the overworld clock in every dimension. `server::default_clock(dimension)` gives the executing level's clock; it is wired after track C's command dimension.
   - `crates/assets/src/minecraft_map.rs:6` names the MW2 map `minecraft:overworld`. It is a map id, not a dimension, and can stay.
-- **One level, one `Loaded`.** `load()` builds a single `Loaded` (`crates/render_anim/src/minecraft_world.rs:256-324`). That struct mixes per-world state (packs, registries, seed, save, rules, chat) with per-dimension state (`stream`, `scene`, `environment`) (`crates/render_anim/src/minecraft_world.rs:73-91`).
-- **Server and client in one stream.** `TerrainStream` holds the server `ChunkMap` together with the client's sections, light and workers (`crates/minecraft_terrain/src/terrain.rs:943-971`).
-- **One simulated level.** `ServerSim` holds one `Level` and one `EntityWorld` (`crates/minecraft_terrain/src/server.rs:39-67`), and `server_loop` owns exactly one (`crates/minecraft_terrain/src/server.rs:1425-1561`).
-- **One player.** The chunk map tracks a single player (`third_party/minecraftoss/world/src/chunk_map.rs:610-612`). The server tick assumes player 0 (`crates/minecraft_terrain/src/server.rs:1508-1517`).
-- **Saved terrain comes from the client.** The host scene's block edits are pushed into the `ChunkMap` (`crates/render_anim/src/minecraft_world.rs:1567-1568`), so the saved terrain is the client copy, not the `Level`'s.
-- **Time comes from the client.** `DayCycle` lives in the client `Runtime` (`crates/render_anim/src/minecraft_world.rs:130`), and the server only receives day ticks (`crates/minecraft_terrain/src/server.rs:1493`).
+- **One level, one `Loaded`.** **Fixed.** `Server` holds `Globals` (per world) and a `Level` per open dimension; `LevelLoader` opens any dimension on its own thread, and an empty level saves and closes after 300 ticks.
+- **Server and client in one stream.** Unchanged: each level's `TerrainStream` still holds the server `ChunkMap` with the client's sections, light and workers.
+- **One simulated level.** Each open level has its own `ServerSim`, but only the local player's level ticks. One loop for all levels comes with multiplayer.
+- **One player.** Unchanged: the chunk map tracks a single player, and the server tick assumes player 0.
+- **Saved terrain comes from the client.** Unchanged.
+- **Time comes from the client.** **Fixed.** The overworld and End clocks are server-wide (`Globals.day`, `Globals.end_clock`), and every level takes both each tick (`Level::set_clock`).
 - **Per-level copies of server-wide state.**
-  - Clocks are copied into every level (`third_party/minecraftoss/world/src/level/time.rs:62-65`).
-  - Entity ids are counted per level (`third_party/minecraftoss/world/src/level/mod.rs:152`, `:260`) and per entity world (`third_party/minecraftoss/entities/src/world.rs:2266`, `:2362`).
-- **Containers.** They are keyed by `BlockPos` alone, and the per-player ender chest sits in the same struct (`crates/minecraft_terrain/src/containers.rs:428-437`).
-- **Collision.** There is one global voxel world (`crates/sim/src/voxel.rs:41`), switched with `activate` and `deactivate` (`crates/sim/src/voxel.rs:403-429`).
+  - Clocks: **fixed**, see above. Weather: **fixed**, `Globals.weather` runs while no level that has weather ticks and is handed back to the overworld.
+  - Entity ids are still counted per level and per entity world.
+- **Containers.** Per level now (`Level.containers`), still keyed by `BlockPos` alone, with the per-player ender chest in the same struct.
+- **Collision.** One voxel world mirrors the local player's level: `voxel::switch_level(origin)` drops the old level's chunks and keeps a map origin per level (the overworld's is its spawn, the Nether's and End's the first arrival in them). Bots and MW2 entities follow the host's level. A voxel world per dimension comes with multiplayer.
 - **Spawn.**
-  - The Nether spawn is a fork stand-in that searches for a floor near chunk 0,0 (`crates/minecraft_terrain/src/terrain.rs:1001-1030`, `:1084-1087`). Vanilla has no Nether spawn: players arrive through `PortalForcer`.
-  - Respawn goes to the Overworld origin (see Respawn).
-- **Resources per stream.**
-  - Each `TerrainStream` starts three quarters of the hardware threads for generation and half minus one for section building (`crates/minecraft_terrain/src/terrain.rs:1054-1063`), plus a chunk saver thread (`third_party/minecraftoss/world/src/chunk_map.rs:519`).
-  - Each makes its own temporary session folder when there is no save (`crates/minecraft_terrain/src/terrain.rs:1068`).
-  - Each `ServerSim` leaks its `WorldGen` (`crates/minecraft_terrain/src/server.rs:197`).
+  - The Nether stand-in floor search (`crates/minecraft_terrain/src/terrain.rs`) is only used for `IW4L_MINECRAFT_DIMENSION=the_nether` without a saved Nether place; a known arrival skips it. Portal arrivals (N2) will come from `PortalForcer`'s search through `LevelLoader`'s `prepare`.
+  - **Fixed:** respawn follows `RespawnConfig` and the world spawn's dimension (`crates/minecraft_survival/src/respawn.rs`). Beds and anchors plug into its `spawn_block` (N5).
+- **Resources per stream.** Unchanged per stream. A switch keeps the old level open for 15 seconds, so one player can hold two streams; friends need a shared thread budget.
 
 ## Reuse plan
 

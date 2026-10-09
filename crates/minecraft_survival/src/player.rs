@@ -12,6 +12,7 @@ use crate::death::DeathWatch;
 use crate::offhand::Blocking;
 use crate::player_nbt::{ENDER_SLOTS, GlobalPos, Place, PlayerData, Respawn, SLOTS, Stats};
 use crate::survival::Survival;
+use crate::switch::{LoadingReason, Switch, loading_reason};
 
 pub struct Player {
     pub uuid: PlayerUuid,
@@ -34,6 +35,10 @@ pub struct Player {
     pub last_death: Option<GlobalPos>,
     pub portal_cooldown: i32,
     pub seen_credits: bool,
+    pub switching: Option<Switch>,
+    pub respawning: Option<Dimension>,
+    pub remote: bool,
+    pub held: Option<Switch>,
 }
 
 #[derive(Default)]
@@ -90,6 +95,10 @@ impl Player {
             last_death: None,
             portal_cooldown: 0,
             seen_credits: false,
+            switching: None,
+            respawning: None,
+            remote: false,
+            held: None,
         }
     }
 
@@ -97,6 +106,37 @@ impl Player {
         self.dimension = place.dimension;
         self.place = Some(place);
         self.arrival = Some(place);
+    }
+
+    pub fn switch_to(&mut self, to: Dimension, arrival: Option<Place>, reason: LoadingReason) {
+        let switch = Switch::new(self.dimension, to, arrival, reason);
+        self.dimension = to;
+        self.arrival = switch.arrival;
+        self.switching = Some(switch);
+    }
+
+    pub fn travel_to(&mut self, to: Dimension, arrival: Option<Place>, reason: LoadingReason) {
+        if self.remote {
+            self.held = Some(Switch::new(self.dimension, to, arrival, reason));
+        } else {
+            self.switch_to(to, arrival, reason);
+        }
+    }
+
+    pub fn teleport_into(&mut self, place: Place) -> bool {
+        if place.dimension == self.dimension {
+            return false;
+        }
+        let reason = loading_reason(self.dead, self.dimension, place.dimension);
+        self.travel_to(place.dimension, Some(place), reason);
+        true
+    }
+
+    pub fn set_remote(&mut self, remote: bool) {
+        self.remote = remote;
+        if let Some(switch) = self.held.take_if(|_| !remote) {
+            self.switch_to(switch.to, switch.arrival, switch.reason);
+        }
     }
 
     pub fn set_respawn(&mut self, respawn: Option<Respawn>) -> bool {
@@ -515,6 +555,76 @@ mod tests {
                 overlay: false,
             }
         );
+    }
+
+    #[test]
+    fn a_switching_player_keeps_where_it_stood_until_it_arrives() {
+        let mut player = steve();
+        let home = Place::standing(Dimension::Overworld, [800.5, 70.0, -1600.5], 45.0, 0.0);
+        player.arrive(home);
+        player.arrival = None;
+        let roof = Place::standing(Dimension::Nether, [100.5, 128.0, -200.5], 45.0, 0.0);
+        player.switch_to(Dimension::Nether, Some(roof), LoadingReason::NetherPortal);
+        assert_eq!(player.dimension, Dimension::Nether);
+        assert_eq!(player.arrival, Some(roof));
+        assert_eq!(player.place, Some(home), "where to go back to if the Nether fails to load");
+        let switch = player.switching.expect("switching");
+        assert_eq!((switch.from, switch.to, switch.reason), (Dimension::Overworld, Dimension::Nether, LoadingReason::NetherPortal));
+        assert!(!switch.left && !switch.respawn);
+        player.switch_to(Dimension::End, Some(roof), LoadingReason::EndPortal);
+        assert_eq!(player.arrival, None, "an arrival in another dimension is not taken");
+        assert_eq!(player.switching.map(|switch| switch.from), Some(Dimension::Nether));
+    }
+
+    #[test]
+    fn a_teleport_into_another_dimension_travels_there() {
+        let mut player = steve();
+        let home = Place::standing(Dimension::Overworld, [800.5, 70.0, -1600.5], 45.0, 0.0);
+        player.arrive(home);
+        player.arrival = None;
+        let near = Place::standing(Dimension::Overworld, [10.5, 64.0, 10.5], 0.0, 0.0);
+        assert!(!player.teleport_into(near), "the same dimension is a plain teleport");
+        assert!(player.switching.is_none());
+        let roof = Place::standing(Dimension::Nether, [100.5, 70.0, -200.5], 45.0, 0.0);
+        assert!(player.teleport_into(roof));
+        assert_eq!(player.dimension, Dimension::Nether);
+        assert_eq!(player.arrival, Some(roof));
+        let switch = player.switching.expect("travelling");
+        assert_eq!((switch.from, switch.reason), (Dimension::Overworld, LoadingReason::NetherPortal));
+        player.switching = None;
+        player.set_remote(true);
+        let end = Place::standing(Dimension::End, [100.5, 49.0, 0.5], 0.0, 0.0);
+        assert!(player.teleport_into(end));
+        assert_eq!(player.dimension, Dimension::Nether, "held until the killstreak ends");
+        player.set_remote(false);
+        assert_eq!(player.switching.map(|switch| (switch.from, switch.to, switch.reason)), Some((Dimension::Nether, Dimension::End, LoadingReason::NetherPortal)));
+    }
+
+    #[test]
+    fn travel_waits_while_the_player_is_in_a_remote_killstreak() {
+        let mut player = steve();
+        let home = Place::standing(Dimension::Overworld, [800.5, 70.0, -1600.5], 45.0, 0.0);
+        player.arrive(home);
+        let roof = Place::standing(Dimension::Nether, [100.5, 128.0, -200.5], 45.0, 0.0);
+        player.set_remote(true);
+        player.travel_to(Dimension::Nether, Some(roof), LoadingReason::NetherPortal);
+        assert_eq!(player.dimension, Dimension::Overworld, "still flying the killstreak");
+        assert!(player.switching.is_none());
+        player.set_remote(true);
+        assert!(player.switching.is_none() && player.held.is_some());
+        player.set_remote(false);
+        assert_eq!(player.dimension, Dimension::Nether);
+        assert_eq!(player.arrival, Some(roof));
+        let switch = player.switching.expect("the held switch goes on");
+        assert_eq!((switch.from, switch.to, switch.reason), (Dimension::Overworld, Dimension::Nether, LoadingReason::NetherPortal));
+        assert!(player.held.is_none());
+        player.switching = None;
+        player.travel_to(Dimension::Overworld, None, LoadingReason::NetherPortal);
+        assert_eq!(player.switching.map(|switch| switch.to), Some(Dimension::Overworld), "no killstreak, no wait");
+        player.switching = None;
+        player.set_remote(true);
+        player.switch_to(Dimension::End, None, LoadingReason::Other);
+        assert_eq!(player.dimension, Dimension::End, "a respawn never waits");
     }
 
     #[test]

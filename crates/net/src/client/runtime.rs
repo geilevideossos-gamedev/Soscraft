@@ -254,6 +254,26 @@ pub struct WeaponSelect {
     pub mapped_index: u32,
 }
 
+fn needs_missing_sky(
+    ps: &playerstate_iw4::PlayerState,
+    world: &sim::SimWorld,
+    weapon: u32,
+) -> bool {
+    sim::voxel::refused_without_sky(ps.pm_flags, world.weapon_script_name(weapon))
+}
+
+fn slot_needs_missing_sky(
+    ps: &playerstate_iw4::PlayerState,
+    world: &sim::SimWorld,
+    slot: usize,
+) -> bool {
+    ps.action_slot_type.get(slot) == Some(&1)
+        && ps
+            .action_slot_param
+            .get(slot)
+            .is_some_and(|&weapon| needs_missing_sky(ps, world, weapon.max(0) as u32))
+}
+
 pub fn follow_held_weapon_select(
     select: &mut WeaponSelect,
     ps_weapon: u32,
@@ -985,6 +1005,7 @@ pub fn sample_client_input(
             && let Some(target) = ui.weapon_request
             && target != select.index
             && ps.weapons.contains(&(target as i32))
+            && !needs_missing_sky(ps, prediction.0.world(), target)
             && input_iw4::weapon_select::weapon_cycle_allowed(ps, clock.time(), select.time, 0, 0)
         {
             select.index = target;
@@ -993,7 +1014,10 @@ pub fn sample_client_input(
             input_iw4::set_ads(&mut actions.client, false);
         }
     }
-    let slots = std::mem::take(&mut actions.client.action_slots);
+    let mut slots = std::mem::take(&mut actions.client.action_slots);
+    slots.retain(|&slot| {
+        !ps.is_some_and(|ps| slot_needs_missing_sky(ps, prediction.0.world(), slot))
+    });
     if let (Some(inbox), Some(ids)) = (action_inbox.as_mut(), request_ids.as_mut()) {
         for &slot in &slots {
             let request_id = ids.allocate();
