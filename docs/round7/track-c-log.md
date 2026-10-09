@@ -1493,3 +1493,19 @@ Kit: none needed.
 - **The "Command Suggestions" option is always on**, its vanilla default; there is no options screen for it.
 - **Suggestions follow the input, not the cursor**, as vanilla: moving the cursor with the arrows or Home keeps the list until the next edit.
 - **The language lives in `McChat`** as a shared map, filled once by `render_anim`; the usage lines are resolved when drawn, so a language that loads late still shows.
+
+## Minecraft chat display tests build against the per-player command host
+
+Commit: the commit that adds this entry. It fixes the `render_anim` test build that eefc73b ("Minecraft commands act on the player they name") broke: the glue group ran the `minecraft_survival` tests but not `render_anim`'s, whose `minecraft_chat` tests still built the old one-player `Host`.
+
+### What changed
+
+- `render_anim/src/minecraft_chat.rs` tests only: `Parts` now holds the levels, the players by UUID and their presence, as `minecraft_survival`'s own test helper does, and builds the host player from the command server's profile. `pump` takes the sender's id, `mode_changed` is the list of changed players, and the checks read the player's survival and game mode through `Parts::player`.
+
+### Tests added
+
+None; the five existing tests (`sent_lines_come_back_as_resolved_chat_lines`, `host_commands_reach_survival_the_clock_and_the_rules`, `gamemode_switches_the_host_player_mode`, `death_messages_are_plain_system_lines`, `summon_answers_follow_the_feedback_rule`) build and pass again. `test -p render_anim --locked`: 35 passed.
+
+### In-game test steps
+
+Nothing changes in game. Kit: none needed.
