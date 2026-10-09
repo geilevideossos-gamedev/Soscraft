@@ -555,18 +555,11 @@ impl ServerSim {
         let level = &self.level;
         let loaded = |p: glam::DVec3| level.chunk(ChunkPos::new((p.x.floor() as i32) >> 4, (p.z.floor() as i32) >> 4)).is_some();
         self.mobs.check_despawn(&feet, difficulty == 0, &loaded);
-        // Dormant monsters go in peaceful and beyond 128 blocks (they never
-        // idle: they do not tick).
-        self.dormant.retain(|(group, _)| {
+        self.dormant.retain(|(group, tag)| {
             let root = &group[0];
-            if root.persistent || minecraftoss_world::natural_spawner::spawning::MobCategory::of_type(&root.kind) != Some(minecraftoss_world::natural_spawner::spawning::MobCategory::Monster) {
-                return true;
-            }
-            if difficulty == 0 {
-                return false;
-            }
             let at = glam::DVec3::from_array(root.pos);
-            feet.iter().map(|p| p.distance_squared(at)).min_by(f64::total_cmp).is_none_or(|d| d <= 128.0 * 128.0)
+            let nearest = feet.iter().map(|p| p.distance_squared(at)).min_by(f64::total_cmp);
+            !crate::dormant::despawns(&root.kind, root.persistent, tag, difficulty == 0, nearest)
         });
     }
 
@@ -4778,6 +4771,40 @@ mod tests {
         assert_eq!(commands.len(), 2);
         assert_eq!(commands[0].as_deref(), Ok("minecraft:cow"));
         assert!(commands[1].is_err());
+    }
+
+    #[test]
+    fn dormant_shulkers_stay_far_from_players_while_dormant_monsters_go() {
+        let Some((mut server, _)) = door_world() else { return };
+        let fresh = minecraftoss_core::snbt::parse_compound("{}").unwrap();
+        server.summon("minecraft:shulker", [8.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
+        server.summon("minecraft:pillager", [9.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
+        let kinds = |server: &ServerSim| server.dormant.iter().map(|(group, _)| group[0].kind.clone()).collect::<Vec<_>>();
+        assert_eq!(kinds(&server), ["minecraft:shulker", "minecraft:pillager"]);
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: glam::DVec3::new(3008.5, 200.0, 8.5),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        };
+        server.despawn_mobs(&[player], 2);
+        assert_eq!(kinds(&server), ["minecraft:shulker"]);
+        server.despawn_mobs(&[player], 0);
+        assert_eq!(kinds(&server), ["minecraft:shulker"], "shulkers are allowed in peaceful");
     }
 
     #[test]
