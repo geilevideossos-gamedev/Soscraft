@@ -1951,14 +1951,7 @@ pub(crate) mod tests {
         let path =
             std::env::temp_dir().join(format!("iw4l-kit-potions-{}.env", std::process::id()));
         let line = "potion@healing*2,tipped_arrow@minecraft:poison*4,leather_chestplate@red,splash_potion@,diamond_sword+sharpness=2@x*0";
-        std::fs::write(
-            &path,
-            format!(
-                "IW4L_MINECRAFT_KIT={line}
-"
-            ),
-        )
-        .unwrap();
+        std::fs::write(&path, format!("IW4L_MINECRAFT_KIT={line}\n")).unwrap();
         parts.env_file = Some(path.clone());
         let (lines, _) = parts.send(HOST, &["/kit"]);
         std::fs::remove_file(&path).unwrap();
