@@ -10,7 +10,7 @@ use minecraftoss_player::inventory::{Inventory, ItemStack};
 
 use crate::death::DeathWatch;
 use crate::offhand::Blocking;
-use crate::player_nbt::{Place, PlayerData, SLOTS, Stats};
+use crate::player_nbt::{ENDER_SLOTS, Place, PlayerData, SLOTS, Stats};
 use crate::survival::Survival;
 
 pub struct Player {
@@ -29,6 +29,7 @@ pub struct Player {
     pub arrived: bool,
     pub place: Option<Place>,
     pub arrival: Option<Place>,
+    pub ender: Vec<Option<ItemStack>>,
 }
 
 #[derive(Default)]
@@ -79,6 +80,7 @@ impl Player {
             arrived: false,
             place: None,
             arrival: None,
+            ender: vec![None; ENDER_SLOTS],
         }
     }
 
@@ -125,6 +127,7 @@ impl Player {
             }),
             place: self.place,
             uuid: Some(self.uuid.0.clone()),
+            ender: Some(self.ender.clone()),
         }
     }
 }

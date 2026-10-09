@@ -538,6 +538,17 @@ impl Containers {
         self.book = book;
     }
 
+    pub fn with_ender<R>(
+        &mut self,
+        items: &mut Vec<Option<ItemStack>>,
+        act: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        std::mem::swap(&mut self.ender, items);
+        let result = act(self);
+        std::mem::swap(&mut self.ender, items);
+        result
+    }
+
     pub fn is_new(&self, pos: BlockPos) -> bool {
         !self.chests.contains_key(&pos)
     }
@@ -1565,6 +1576,29 @@ mod tests {
         assert_eq!(store.cells(&here)[0].as_ref().map(|s| s.count), Some(5));
         let chest = Opened::new((0, 64, 0), &block("minecraft:chest", &[]), None).unwrap();
         assert!(store.cells(&chest).iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn each_player_opens_their_own_ender_inventory() {
+        let mut store = Containers::default();
+        let mut steve = player();
+        let ender = Opened::new((0, 64, 0), &block("minecraft:ender_chest", &[]), None).unwrap();
+        let mut steve_items = Vec::new();
+        let mut alex_items = vec![None; CHEST_SLOTS];
+        steve.slots[12] = Some(steve.recipes.stack("minecraft:diamond", 5));
+        store.with_ender(&mut steve_items, |store| {
+            store.quick_move_from_player(&ender, &mut steve, 12);
+        });
+        assert_eq!(steve_items.len(), CHEST_SLOTS);
+        assert_eq!(steve_items[0].as_ref().map(|s| s.count), Some(5));
+        let seen_by_alex = store.with_ender(&mut alex_items, |store| store.cells(&ender));
+        assert!(seen_by_alex.iter().all(Option::is_none));
+        let seen_by_steve = store.with_ender(&mut steve_items, |store| store.cells(&ender));
+        assert_eq!(seen_by_steve[0].as_ref().map(|s| s.count), Some(5));
+        assert!(
+            store.cells(&ender).iter().all(Option::is_none),
+            "the level keeps no ender items"
+        );
     }
 
     #[test]

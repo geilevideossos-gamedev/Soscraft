@@ -149,6 +149,9 @@ pub fn join(
     };
     let mut player = Player::new(profile, mode, survival, inventory);
     player.selected = saved.selected;
+    if let Some(ender) = saved.ender {
+        player.ender = ender;
+    }
     player.place = Some(Place::standing(Dimension::Overworld, spawn, 0.0, 0.0));
     match saved.place {
         Some(_) if dead => {}
@@ -517,6 +520,23 @@ mod tests {
         assert_eq!(back.arrival, None);
         assert_eq!(back.dimension, Dimension::Overworld);
         assert_eq!(back.place.map(|place| place.feet), Some(SPAWN));
+    }
+
+    #[test]
+    fn each_player_gets_back_their_own_ender_chest() {
+        let (_dir, save) = world("ender");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let steve = profile("Steve");
+        let mut player = join(Some(&save), &recipes, &rules, joining(&steve));
+        assert_eq!(player.ender, vec![None; crate::player_nbt::ENDER_SLOTS]);
+        player.ender[3] = Some(ItemStack::new("minecraft:emerald", 9));
+        save.write_player(&steve.uuid, &player.data()).unwrap();
+        let again = join(Some(&save), &recipes, &rules, joining(&steve));
+        assert_eq!(again.ender[3].as_ref().map(|stack| stack.count), Some(9));
+        let alex = profile("Alex");
+        let alex = join(Some(&save), &recipes, &rules, joining(&alex));
+        assert!(alex.ender.iter().all(Option::is_none));
     }
 
     #[test]

@@ -13,6 +13,7 @@ use crate::guns::{HOTBAR, WEAPON_PREFIX};
 
 pub const STORAGE: usize = 36;
 pub const SLOTS: usize = 43;
+pub const ENDER_SLOTS: usize = 27;
 const MAX_COUNT: u8 = 99;
 const INFINITE: i32 = -1;
 pub const EFFECTS: [(EffectKind, &str); 9] = [
@@ -104,13 +105,14 @@ pub const EQUIPMENT: [(usize, &str); 7] = [
     (41, "body"),
     (42, "saddle"),
 ];
-const OWNED: [&str; 18] = [
+const OWNED: [&str; 19] = [
     "playerGameType",
     "previousPlayerGameType",
     "abilities",
     "Inventory",
     "equipment",
     "SelectedItemSlot",
+    "EnderItems",
     "Health",
     "AbsorptionAmount",
     "foodLevel",
@@ -133,6 +135,7 @@ pub struct PlayerData {
     pub stats: Option<Stats>,
     pub place: Option<Place>,
     pub uuid: Option<String>,
+    pub ender: Option<Vec<Option<ItemStack>>>,
 }
 
 impl PlayerData {
@@ -163,6 +166,9 @@ impl PlayerData {
                 .get("UUID")
                 .and_then(Tag::as_ints)
                 .and_then(|ints| uuid_from_ints(&ints)),
+            ender: tag
+                .get("EnderItems")
+                .map(|list| slots(list, ENDER_SLOTS, recipes)),
         }
     }
 
@@ -200,6 +206,12 @@ impl PlayerData {
         }
         if let Some(ints) = self.uuid.as_deref().and_then(uuid_to_ints) {
             entries.insert("UUID".to_owned(), Tag::IntArray(ints.to_vec()));
+        }
+        if let Some(ender) = &self.ender {
+            entries.insert(
+                "EnderItems".to_owned(),
+                slot_list(ender.iter().take(ENDER_SLOTS)),
+            );
         }
         entries
     }
@@ -1082,6 +1094,45 @@ mod tests {
             .unwrap();
         assert_eq!(read.dimension, Dimension::Overworld);
         assert_eq!(read.feet, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn the_ender_chest_is_saved_as_ender_items_with_slot_bytes() {
+        let mut ender = vec![None; ENDER_SLOTS];
+        ender[0] = Some(stack("minecraft:diamond", 5));
+        ender[26] = Some(stack("minecraft:ender_pearl", 16));
+        let data = PlayerData {
+            ender: Some(ender.clone()),
+            ..PlayerData::default()
+        };
+        let tag = data.merged(None);
+        let items = tag.get("EnderItems").and_then(Tag::as_list).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].get("Slot"), Some(&Tag::Byte(0)));
+        assert_eq!(items[1].get("Slot"), Some(&Tag::Byte(26)));
+        assert_eq!(items[1].get("count"), Some(&Tag::Int(16)));
+        let read = PlayerData::read(&tag, &RecipeBook::default());
+        let back: Vec<Option<(String, u8)>> = read
+            .ender
+            .unwrap()
+            .into_iter()
+            .map(|cell| cell.map(|s| (s.id, s.count)))
+            .collect();
+        let had: Vec<Option<(String, u8)>> = ender
+            .into_iter()
+            .map(|cell| cell.map(|s| (s.id, s.count)))
+            .collect();
+        assert_eq!(back, had);
+        let emptied = PlayerData {
+            ender: Some(vec![None; ENDER_SLOTS]),
+            ..PlayerData::default()
+        }
+        .merged(Some(tag));
+        assert_eq!(emptied.get("EnderItems"), Some(&Tag::List(Vec::new())));
+        assert_eq!(
+            PlayerData::read(&compound(Vec::new()), &RecipeBook::default()).ender,
+            None
+        );
     }
 
     #[test]

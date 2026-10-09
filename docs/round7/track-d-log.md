@@ -167,7 +167,7 @@ IW4L_MINECRAFT_KIT=minecraft:experience_bottle*64,minecraft:golden_apple*4,minec
 
 ### 7. Minecraft players come back where they left, facing the same way
 
-Commit: (filled in by the next entry)
+Commit: f484535
 
 - **Changed:**
   - `player_nbt.rs`: `Place` (dimension, feet, yaw, pitch, motion, on the ground, fall distance) and the player's `UUID`, written as 26.3's `Entity.saveWithoutId` and `ServerPlayer.addAdditionalSaveData` write them (checked with javap): `Pos` and `Motion` as lists of doubles, `Rotation` as two floats (yaw, pitch), `OnGround` as a byte, `fall_distance` as a double, `Dimension` as the level id string and `UUID` as four ints. Vanilla reads a missing `Pos` as 0,0,0, so a player who never spawned is saved at the world spawn. An unknown dimension reads as the overworld, as vanilla's "Unknown respawn dimension, defaulting to overworld".
@@ -190,4 +190,27 @@ Commit: (filled in by the next entry)
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64
+```
+
+### 8. Each Minecraft player has their own ender chest
+
+Commit: (filled in by the next entry)
+
+- **Changed:**
+  - `player.rs`: `Player::ender`, 27 slots, owned by the player as in vanilla (`Player.enderChestInventory`).
+  - `player_nbt.rs`: `EnderItems`, written like `Inventory` (`PlayerEnderChestContainer.storeAsSlots`: a `Slot` byte per stack, checked with javap) and always present, even empty, as vanilla writes it. `join` gives a player back their own list.
+  - `minecraft_terrain/src/containers.rs`: `Containers::with_ender(items, act)` lends a player's ender items to the level's containers for the length of `act` and takes them back. The level keeps no ender items of its own any more.
+  - `render_anim/src/minecraft_world.rs`: the inventory screen's input (`apply_input`) and its picture (`publish`) run inside `with_ender` with the local player's list, so every container action works on that player's ender chest.
+- **Tests:** `player_nbt`: `the_ender_chest_is_saved_as_ender_items_with_slot_bytes` (slots 0 and 26, read back, an emptied chest writes an empty list). `server`: `each_player_gets_back_their_own_ender_chest` (a second UUID starts with an empty one). `containers`: `each_player_opens_their_own_ender_inventory`. The older `every_ender_chest_opens_the_players_one_ender_inventory` still passes unchanged.
+- **Decisions:** lending the list (a swap in and out) keeps every `Containers` function as it was instead of adding a player parameter to each of them; with several players, each one's screen runs with their own list.
+- **Test steps:**
+  1. Keep `IW4L_MINECRAFT_WORLD=survivaltest` and use the kit below in a new world (or `/give` the items). Start.
+  2. Place the two ender chests twenty blocks apart. Put the diamonds into the first. Open the second: the diamonds are in it. **Screenshot 1.**
+  3. Break the first ender chest with the pickaxe: nothing of its contents drops.
+  4. Quit through the menu and start again. Open the second ender chest: the diamonds are still there. **Screenshot 2.**
+  5. Optional: open the world in Minecraft 26.3 and open an ender chest: the same diamonds.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ender_chest*2,minecraft:diamond*8,minecraft:diamond_pickaxe
 ```

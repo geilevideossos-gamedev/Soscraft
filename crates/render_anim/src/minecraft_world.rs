@@ -576,7 +576,7 @@ fn update(
         .map(|ps| minecraft_commands::Pose { feet: sim::voxel::to_block(origin, ps.origin), yaw: minecraft_yaw(ps.viewangles[1]), pitch: ps.viewangles[0] })
         .or_else(|| player.survival.last_feet().map(|feet| minecraft_commands::Pose { feet, yaw: 0.0, pitch: 0.0 }));
     let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, level, player, &mut ui.chat.sent, host_pose, host_alive);
-    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, arrived, .. } = player;
+    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, arrived, ender, .. } = player;
     let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
     if !delivered.is_empty() {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
@@ -1650,7 +1650,7 @@ fn update(
         }
         let was_open = inventory_ui.block().cloned();
         let roll = entities.random_float();
-        let thrown = inventory_ui.apply_input(&mut ui, inventory, selected, containers, &mut || roll);
+        let thrown = containers.with_ender(ender, |containers| inventory_ui.apply_input(&mut ui, inventory, selected, containers, &mut || roll));
         if let Some(pos) = open_table {
             inventory_ui.open_table(&mut ui, pos);
         }
@@ -1775,7 +1775,7 @@ fn update(
         crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
         ui.weapon_request = inventory_ui.weapon_request(inventory, selected, ps.weapon).filter(|_| player_mode.interacts());
         inventory_ui.animation_tick = atlas_animation.ticks();
-        inventory_ui.publish(&mut ui, inventory, *selected, &world.packs, &mut images, containers);
+        containers.with_ender(ender, |containers| inventory_ui.publish(&mut ui, inventory, *selected, &world.packs, &mut images, containers));
 
         if let Some(sounds) = sounds.as_mut() {
             for (event, position, volume, pitch) in std::mem::take(&mut entities.sounds) {
