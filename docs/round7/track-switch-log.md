@@ -320,7 +320,7 @@ Commit: 33350004
 
 ### 15. MW2 ordnance from before a dimension switch leaves the new level alone (E1-13)
 
-Commit: filled in by `git log` under this subject
+Commit: 0511fa8b
 
 - **Changed:**
   - `sim/src/voxel.rs`: `LevelSwitch { Never, Pending, At { ms, models } }`. `switch_level` marks a switch as pending, and the first authority tick after it stamps the level time and the next script model id (`stamp_level_switch`). `activate` and `deactivate` forget it. `fired_before_switch(born_ms)` is true for a projectile born before that tick, and `spawned_before_switch(inflictor)` for a script model the scripts spawned before it (spawned script model ids count up from `SPAWNED_PRESENCE_BASE`; the map's own models never count).
@@ -340,3 +340,19 @@ Commit: filled in by `git log` under this subject
 ```
 IW4L_MINECRAFT_KIT=minecraft:netherrack*64,minecraft:cobblestone*64,minecraft:cooked_beef*32
 ```
+
+### 16. Minecraft travel waits for a remote killstreak to end (E1-13)
+
+Commit: filled in by `git log` under this subject
+
+- **Changed:**
+  - `minecraft_survival/src/player.rs`: `Player.remote` (the player is flying a remote killstreak) and `Player.held`. `Player::travel_to(to, arrival, reason)` is the way a living player travels (`/execute in` after track C, the portals of N2 and X2): while `remote` is set the switch is held, and `Player::set_remote(false)` starts it then, from the dimension the player is in at that moment. `switch_to` stays immediate, as the respawn and a level that fails to load use it.
+  - `render_anim/src/minecraft_world.rs`: each frame the adapter sets `remote` from the presented snapshot: the player is linked to something (`PM_TYPE_NORMAL_LINKED`, the chopper gunner and the AC-130 link the player to the aircraft), has the AC-130 flag (`other_flags::AC130`), or steers a predator missile (`remote_missile`). A dead player's held switch is dropped.
+- **Tests:** `player`: `travel_waits_while_the_player_is_in_a_remote_killstreak` (held while remote, starts when it ends with the right `from`, no wait without a killstreak, a respawn `switch_to` never waits). `render_anim`: `a_linked_player_or_one_in_the_ac130_is_in_a_remote_killstreak`.
+- **Decisions:**
+  - Vanilla's rule is `Entity.canUsePortal(allowPassengers)`, which is `(allowPassengers || !isPassenger()) && isAlive()` (checked with javap). A player in a remote killstreak is the analogue of a passenger. The brief asks for a wait rather than a refusal, so a `/execute in` typed while steering a predator happens when the missile is gone instead of being lost.
+  - Being linked counts as remote whatever the link is: in MW2 multiplayer only killstreaks link a player.
+- **Test steps:** nothing in game starts a living switch yet (`/execute in` waits for track C). After track C:
+  1. In the overworld, `give killstreak/predator` in the console and use it. While steering the missile, type nothing; after it hits, type `/execute in minecraft:the_nether run tp ~ 128 ~`: the switch starts at once.
+  2. Use another predator, and while steering it press the chat key and send `/execute in minecraft:the_nether run tp ~ 128 ~` (chat works while the missile flies). Nothing happens until the missile hits; then the Nether loading screen shows. **Screenshot 1.**
+- **Kit:** none needed.

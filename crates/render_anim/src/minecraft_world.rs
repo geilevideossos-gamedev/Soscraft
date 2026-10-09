@@ -579,6 +579,10 @@ fn update(
         puppet.active = false;
         return;
     };
+    if player.dead {
+        player.held = None;
+    }
+    player.set_remote(in_remote_killstreak(&presented, local.0));
     if player.switching.is_some() {
         for (dimension, error) in &failed {
             show_chat(&mut ui.chat, inventory_ui, &world.packs, &[minecraft_survival::switch::failed_message(*dimension, error)]);
@@ -2385,6 +2389,15 @@ fn ability_bits(mode: &minecraft_terrain::game_mode::PlayerMode) -> u32 {
         .fold(0, |bits, (_, bit)| bits | bit)
 }
 
+fn in_remote_killstreak(presented: &net::PresentedSnapshot, local: sim::ClientId) -> bool {
+    let missile = presented.snapshot().and_then(|snapshot| snapshot.meta.for_client(local)).is_some_and(|meta| meta.remote_missile.is_some());
+    missile || presented.player(local).is_some_and(|ps| remote_view(ps.pm_type, ps.other_flags))
+}
+
+fn remote_view(pm_type: i32, other_flags: u32) -> bool {
+    pm_type == playerstate_iw4::PM_TYPE_NORMAL_LINKED || other_flags & playerstate_iw4::other_flags::AC130 != 0
+}
+
 fn ui_game_mode(mode: minecraftoss_player::GameMode) -> frame::McGameMode {
     match mode {
         minecraftoss_player::GameMode::Survival => frame::McGameMode::Survival,
@@ -2598,6 +2611,20 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
         view.clouds = None;
         view.light_volume = None;
         view.generation += 1;
+    }
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::remote_view;
+
+    #[test]
+    fn a_linked_player_or_one_in_the_ac130_is_in_a_remote_killstreak() {
+        assert!(!remote_view(0, 0), "on foot");
+        assert!(remote_view(playerstate_iw4::PM_TYPE_NORMAL_LINKED, 0), "the chopper gunner links the player to the helicopter");
+        assert!(remote_view(0, playerstate_iw4::other_flags::AC130));
+        assert!(!remote_view(playerstate_iw4::PM_TYPE_DEAD, 0));
+        assert!(!remote_view(0, playerstate_iw4::other_flags::PLAYER));
     }
 }
 
