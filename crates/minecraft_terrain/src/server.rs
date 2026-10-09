@@ -5032,6 +5032,18 @@ mod tests {
     }
 
     #[test]
+    fn an_end_gateway_in_the_arena_counts_as_an_active_exit_portal() {
+        let Some(mut server) = end_world((-1..=1).flat_map(|x| (-1..=1).map(move |z| (x, z)))) else { return };
+        assert!(!server.level.has_active_exit_portal());
+        assert!(server.level.place_configured_feature("minecraft:end_gateway_return", minecraftoss_core::BlockPos::new(8, 90, 8)));
+        assert!(server.level.has_active_exit_portal(), "TheEndGatewayBlockEntity extends TheEndPortalBlockEntity");
+        server.take_changes();
+        let scan = server.scan_dragon_fight((0, 0, 0), None);
+        assert_eq!(scan, DragonFightScan { previously_killed: true, dragon_killed: true, dragon_seen: false, dragon_uuid: None, exit_portal_location: None });
+        assert!(server.take_changes().is_empty(), "no podium is built");
+    }
+
+    #[test]
     fn features_placed_in_a_live_level_keep_their_entities_spawners_and_gateway_exits() {
         use minecraftoss_core::nbt::Tag;
         use minecraftoss_generator::feature::World;

@@ -14,6 +14,7 @@ pub const FILL_SOUND: &str = "minecraft:block.end_portal_frame.fill";
 pub const OPEN_SOUND: &str = "minecraft:block.end_portal.spawn";
 pub const OBSIDIAN: &str = "minecraft:obsidian";
 pub const AIR: &str = "minecraft:air";
+pub const END_GATEWAY: &str = "minecraft:end_gateway";
 pub const ARENA_SIZE_CHUNKS: i32 = 8;
 pub const PODIUM_ACTIVE: &str = "minecraft:end_podium_active";
 pub const PODIUM_INACTIVE: &str = "minecraft:end_podium_inactive";
@@ -117,7 +118,12 @@ impl Level<'_> {
             .block_entities
             .entities
             .iter()
-            .filter(|(_, nbt)| nbt.get("id").and_then(Tag::as_str) == Some(END_PORTAL))
+            .filter(|(_, nbt)| {
+                matches!(
+                    nbt.get("id").and_then(Tag::as_str),
+                    Some(END_PORTAL | END_GATEWAY)
+                )
+            })
             .map(|(&(x, y, z), _)| BlockPos::new(x, y, z))
             .collect();
         portals.sort_by_key(|pos| (pos.y, pos.z, pos.x));

@@ -308,3 +308,25 @@ Written with entry 11, in its commit.
   - Throwing an eye of ender toward a stronghold. Brief E3 leaves it to track B's commit 8, which hasn't landed on `minecraft-survival`, and it isn't one of X2's commits. Until it lands, `/locate structure minecraft:stronghold` finds one.
   - The end gateway beam (X6) and the end flash (E3-29), as in X1b.
 - **Owner test for the group:** entry 7's steps, then entry 8's and entry 9's, in the world `x2test` with entry 7's kit; then entry 10's steps in the new world `x2fight`.
+
+## Review of groups X1 and X2
+
+### 12. Minecraft End gateways count as an exit portal in the dragon fight scan
+
+Previous commit: 8a6d4d1c
+
+- **Defect:** `hasActiveExitPortal` and `findExitPortal` look for `instanceof TheEndPortalBlockEntity`, and `TheEndGatewayBlockEntity extends TheEndPortalBlockEntity`. Entry 10's vendored `Level::end_portals_in` only took block entities with the id `minecraft:end_portal`, so an End whose arena holds a gateway but no lit exit portal (a vanilla save without fight data after a kill, or a gateway set by a command) scanned as never killed and got a second, inactive podium.
+- **Changed:** vendored `world/src/level/end_portal.rs` (MinecraftOSS patch): `end_portals_in` takes `minecraft:end_portal` and `minecraft:end_gateway` block entities (new `END_GATEWAY`), for both `has_active_exit_portal` and `find_exit_portal`.
+- **Checked with javap (26.3):** `EnderDragonFight.hasActiveExitPortal` and `findExitPortal` (`instanceof TheEndPortalBlockEntity`), `TheEndGatewayBlockEntity extends TheEndPortalBlockEntity`.
+- **Tests:** `minecraft_terrain` `server`: `an_end_gateway_in_the_arena_counts_as_an_active_exit_portal` (a gateway placed in the arena of an End level: the scan says killed before and builds no podium). It fails without the fix.
+- **Decision:** vanilla's `getChunk` loads every arena chunk the scan walks; here the scan reads the chunks the server already has once `isArenaLoaded` holds (the far row and the 3x3 at the origin). The lit exit portal sits at the origin, so it is always seen; a lone gateway in an arena chunk that hasn't streamed in yet is missed. Left as is.
+- **Test steps:** optional, as no gateway exists before X4:
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x2gate` (a new world) and the kit below. Build the ring of entry 2, fill it and jump in. Wait until the log says `Minecraft End dragon fight scanned: exit portal at Some((0, ..., 0)), dragon killed before false`.
+  2. Type `/setblock 92 52 0 minecraft:end_gateway` (a gateway floating west of the platform), then quit through the menu.
+  3. With the game closed, delete `dimensions/minecraft/the_end/data/minecraft/ender_dragon_fight.dat` from the world folder, and start again (you come back in the End).
+  4. Within a few seconds the log says `Minecraft End dragon fight scanned: exit portal at None, dragon killed before true`. Type `/gamemode creative` and `/tp 0 90 0`: there is still only the one podium of step 1. **Screenshot 1.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:diamond_pickaxe+efficiency=5,minecraft:cobblestone*64
+```
