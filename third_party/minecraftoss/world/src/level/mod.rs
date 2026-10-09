@@ -116,6 +116,7 @@ pub struct Level<'a> {
     /// Every block set, in order, for the points of interest
     /// (`ServerLevel.updatePOIOnBlockStateChange`), until taken.
     block_log: Vec<(i32, i32, i32)>,
+    changed_block_entities: BTreeSet<(i32, i32, i32)>,
     void_air: BlockStateId,
     /// `#minecraft:washed_away_by_fluids`.
     washed_away: minecraftoss_core::tags::TagId,
@@ -240,6 +241,7 @@ impl<'a> Level<'a> {
             lava_source_conversion: false,
             changed: BTreeSet::new(),
             block_log: Vec::new(),
+            changed_block_entities: BTreeSet::new(),
             void_air: lib.registries.blocks.parse_state("minecraft:void_air").expect("void_air exists"),
             washed_away: lib.registries.block_tags.require("minecraft:washed_away_by_fluids").expect("tag exists"),
             kinds: redstone::Kinds::new(&lib.registries),
@@ -325,6 +327,10 @@ impl<'a> Level<'a> {
         std::mem::take(&mut self.changed).into_iter().collect()
     }
 
+    pub fn take_changed_block_entities(&mut self) -> Vec<(i32, i32, i32)> {
+        std::mem::take(&mut self.changed_block_entities).into_iter().collect()
+    }
+
     pub fn can_survive_at(&self, state: BlockStateId, pos: BlockPos) -> bool {
         self.can_survive_state(state, pos)
     }
@@ -398,6 +404,7 @@ impl<'a> Level<'a> {
         if remove_block_entity {
             chunk.block_entities.entities.remove(&(pos.x, pos.y, pos.z));
             chunk.block_entities.pending.remove(&(pos.x, pos.y, pos.z));
+            self.changed_block_entities.insert((pos.x, pos.y, pos.z));
         }
         self.changed.insert((pos.x, pos.y, pos.z));
         self.block_log.push((pos.x, pos.y, pos.z));

@@ -447,7 +447,7 @@ pub fn run(
         diag::warn!(World, "{warning}");
     }
     if mode_changed {
-        crate::server::save_player_mode(globals, player.mode);
+        crate::server::save_player(globals, player);
     }
     Handled {
         delivered,

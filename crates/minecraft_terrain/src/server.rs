@@ -64,6 +64,7 @@ pub struct ServerSim {
     merchant_closing: bool,
     thrown: Vec<crate::thrown::Thrown>,
     pearl_landings: Vec<[f64; 3]>,
+    block_entity_changes: Vec<(BlockPos, Option<minecraftoss_core::nbt::Tag>)>,
 }
 
 /// What a player's hit or use on a mob did, for the client to present.
@@ -178,16 +179,12 @@ pub struct ServerTnt {
 
 fn stack_of(item: &str, count: i32, components: Option<&str>) -> minecraftoss_core::item::ItemStack {
     let mut stack = minecraftoss_core::item::ItemStack::new(item, count);
-    stack.components = components.map(|json| minecraftoss_core::nbt::Tag::String(json.to_owned()));
+    stack.components = components.and_then(crate::item_nbt::components_from_text);
     stack
 }
 
 fn components_of(stack: &minecraftoss_core::item::ItemStack) -> Option<String> {
-    match &stack.components {
-        Some(minecraftoss_core::nbt::Tag::String(json)) => Some(json.clone()),
-        Some(other) => Some(format!("{other:?}")),
-        None => None,
-    }
+    stack.components.as_ref().map(crate::item_nbt::components_text)
 }
 
 impl ServerSim {
@@ -234,6 +231,7 @@ impl ServerSim {
             merchant_closing: false,
             thrown: Vec::new(),
             pearl_landings: Vec::new(),
+            block_entity_changes: Vec::new(),
         }
     }
 
@@ -390,7 +388,9 @@ impl ServerSim {
     /// generation made. A chunk sent again keeps the entities it has.
     pub fn load_chunk(&mut self, chunk: &Chunk) {
         let fresh = self.level.chunk(chunk.pos).is_none();
-        self.level.insert_chunk(chunk.clone());
+        let mut copy = chunk.clone();
+        crate::containers::leave_to_client(&mut copy.block_entities);
+        self.level.insert_chunk(copy);
         if !fresh {
             return;
         }
@@ -752,6 +752,7 @@ impl ServerSim {
 
     /// A chunk leaves the level; its entities are saved and taken out.
     pub fn unload_chunk(&mut self, pos: ChunkPos) {
+        self.collect_block_entity_changes();
         self.save_chunk_entities(pos, true);
         self.level.remove_chunk(pos);
         self.mobs.pois.unload_chunk(pos.x, pos.z);
@@ -934,6 +935,32 @@ impl ServerSim {
         true
     }
 
+    pub fn weather_data(&self) -> Option<crate::level_storage::WeatherData> {
+        self.level.sky.as_ref().map(|sky| crate::level_storage::WeatherData {
+            clear_weather_time: sky.weather.clear_time,
+            rain_time: sky.weather.rain_time,
+            thunder_time: sky.weather.thunder_time,
+            raining: sky.weather.raining,
+            thundering: sky.weather.thundering,
+        })
+    }
+
+    pub fn set_weather_data(&mut self, data: &crate::level_storage::WeatherData) {
+        let Some(sky) = &mut self.level.sky else { return };
+        let weather = &mut sky.weather;
+        weather.clear_time = data.clear_weather_time;
+        weather.rain_time = data.rain_time;
+        weather.thunder_time = data.thunder_time;
+        weather.raining = data.raining;
+        weather.thundering = data.thundering;
+        if sky.can_have_weather && data.raining {
+            weather.rain_level = 1.0;
+            if data.thundering {
+                weather.thunder_level = 1.0;
+            }
+        }
+    }
+
     pub fn apply_game_rules(&mut self, rules: &crate::game_rules::GameRules) {
         let level = &mut self.level;
         level.random_tick_speed = rules.int("random_tick_speed");
@@ -993,7 +1020,7 @@ impl ServerSim {
             })
             .min_by(|a, b| a.0.total_cmp(&b.0));
         match dropped {
-            Some((_, data)) => data.stack.components = Some(minecraftoss_core::nbt::Tag::String(components.to_owned())),
+            Some((_, data)) => data.stack.components = crate::item_nbt::components_from_text(components),
             None => {
                 self.level.spawn_item_with(centre, stack_of(item, 1, Some(components)), [0.0; 3], 10, 0);
             }
@@ -1064,6 +1091,26 @@ impl ServerSim {
                 (id, position, stack.id, stack.count, components)
             })
             .collect()
+    }
+
+    fn collect_block_entity_changes(&mut self) {
+        for (x, y, z) in self.level.take_changed_block_entities() {
+            let chunk = self.level.chunk(minecraftoss_core::BlockPos::new(x, y, z).chunk());
+            let Some(tag) = chunk.and_then(|chunk| chunk.block_entities.entities.get(&(x, y, z))) else {
+                if chunk.is_some() {
+                    self.block_entity_changes.push(((x, y, z), None));
+                }
+                continue;
+            };
+            if tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str).is_some_and(|kind| !crate::containers::owns_block_entity(kind)) {
+                self.block_entity_changes.push(((x, y, z), Some(tag.clone())));
+            }
+        }
+    }
+
+    pub fn take_block_entity_changes(&mut self) -> Vec<(BlockPos, Option<minecraftoss_core::nbt::Tag>)> {
+        self.collect_block_entity_changes();
+        std::mem::take(&mut self.block_entity_changes)
     }
 
     /// Positions changed since the last call, with the block now there.
@@ -1167,6 +1214,7 @@ pub struct WeatherView {
 pub struct Output {
     /// Blocks that changed, with the block now there.
     pub changes: Vec<(BlockPos, Option<Block>)>,
+    pub block_entities: Vec<(BlockPos, Option<minecraftoss_core::nbt::Tag>)>,
     pub destroyed: Vec<(BlockPos, Block)>,
     /// Entity snapshots, after a tick.
     pub entities: Option<EntitySnapshot>,
@@ -1198,6 +1246,7 @@ pub struct Output {
     pub item_uses: Vec<bool>,
     pub pearl_landings: Vec<[f64; 3]>,
     pub weather: Option<WeatherView>,
+    pub weather_data: Option<crate::level_storage::WeatherData>,
     /// How many commands the server has handled so far.
     pub handled: u64,
     /// The last tick's phases, light solves and total milliseconds.
@@ -1529,6 +1578,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
                     out.mobs = Some(Box::new(sim.tracked_mobs(input.tracking.0, input.tracking.1)));
                     out.weather = Some(sim.weather(input.players.first().copied()));
+                    out.weather_data = sim.weather_data();
                     let pickup_feet = input.pickup.as_ref().map(|(feet, _, _)| *feet);
                     if let Some((feet, mut inventory, selected)) = input.pickup {
                         let recipes = inventory.recipes.clone();
@@ -1550,6 +1600,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
             }
         }
         out.changes = sim.take_changes();
+        out.block_entities = sim.take_block_entity_changes();
         out.destroyed = sim.take_destroyed();
         out.handled = handled;
         if outputs.send(out).is_err() {
@@ -1679,6 +1730,37 @@ mod tests {
         server.apply_game_rules(&crate::game_rules::GameRules::default());
         assert_eq!(server.level.random_tick_speed, 3);
         assert!(server.mobs.mob_griefing());
+    }
+
+    #[test]
+    fn saved_weather_comes_back_already_raining_and_keeps_counting_down() {
+        use crate::level_storage::WeatherData;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen.clone(), states.clone(), "minecraft:overworld");
+        server.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        assert!(server.set_weather_for("thunder", 900));
+        for _ in 0..150 {
+            server.tick();
+        }
+        let saved = server.weather_data().expect("the overworld has weather");
+        assert_eq!(saved, WeatherData { clear_weather_time: 0, rain_time: 750, thunder_time: 750, raining: true, thundering: true });
+        let mut loaded = ServerSim::new(worldgen.clone(), states.clone(), "minecraft:overworld");
+        loaded.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        assert_eq!(loaded.weather(None), WeatherView::default());
+        loaded.set_weather_data(&saved);
+        let stormy = loaded.weather(None);
+        assert_eq!((stormy.rain_level, stormy.thunder_level), (1.0, 1.0));
+        loaded.tick();
+        assert_eq!(loaded.weather_data().map(|w| (w.rain_time, w.thunder_time, w.raining)), Some((749, 749, true)));
+        let mut clear = ServerSim::new(worldgen, states, "minecraft:overworld");
+        clear.set_weather_data(&WeatherData { clear_weather_time: 300, ..WeatherData::default() });
+        assert_eq!(clear.weather(None), WeatherView::default());
+        assert_eq!(clear.weather_data().map(|w| w.clear_weather_time), Some(300));
     }
 
     /// Creatures the SPAWN step generated join the server's mobs with their
@@ -3947,7 +4029,7 @@ mod tests {
         server.level.explode(minecraftoss_world::level::explosion::Explosion { center: [8.5, 200.5, 8.5], radius: 2.0, fire: false, interaction: minecraftoss_world::level::explosion::BlockInteraction::DestroyWithDecay, source: None });
         server.tick();
         assert!(server.take_changes().contains(&((8, 200, 8), None)));
-        let contents = r#"{"minecraft:container":[{"slot":0,"item":{"id":"minecraft:diamond","count":3}}]}"#;
+        let contents = r#"{"minecraft:container":[{"item":{"count":3,"id":"minecraft:diamond"},"slot":0}]}"#;
         server.keep_dropped_contents((8, 200, 8), "minecraft:red_shulker_box", contents);
         let boxes: Vec<_> = server.items().into_iter().filter(|i| i.item == "minecraft:red_shulker_box").collect();
         assert_eq!(boxes.len(), 1, "{boxes:?}");
@@ -4216,5 +4298,95 @@ mod tests {
             assert!(crate::server_mobs::load_level_entity(&mut server.level, tag));
         }
         assert_eq!(state(&server), before);
+    }
+
+    #[test]
+    fn an_enchanted_dropped_item_saves_its_components_as_vanilla_nbt() {
+        use minecraftoss_core::nbt::Tag;
+        let Some((mut server, _)) = door_world() else { return };
+        let components = r#"{"minecraft:custom_name":"Excalibur","minecraft:enchantments":{"minecraft:sharpness":5}}"#;
+        let id = server.spawn_item("minecraft:diamond_sword", 1, Some(components), [8.5, 201.0, 8.5], [0.0; 3], 10, 0);
+        assert_eq!(alive(&server, id).and_then(|i| i.components).as_deref(), Some(components));
+        let sword = |server: &ServerSim| crate::server_mobs::level_entity_tags(&server.level, |_| true).into_iter().find(|tag| tag.get("Item").and_then(|item| item.get("id")).and_then(Tag::as_str) == Some("minecraft:diamond_sword"));
+        let saved = sword(&server).expect("the sword is saved");
+        let saved_components = saved.get("Item").and_then(|item| item.get("components")).expect("components");
+        assert_eq!(saved_components.get("minecraft:enchantments").and_then(|e| e.get("minecraft:sharpness")), Some(&Tag::Int(5)));
+        assert_eq!(saved_components.get("minecraft:custom_name"), Some(&Tag::String("Excalibur".to_owned())));
+        server.level.entities.clear();
+        assert!(crate::server_mobs::load_level_entity(&mut server.level, &saved));
+        let loaded = server.items().into_iter().find(|i| i.item == "minecraft:diamond_sword");
+        assert_eq!(loaded.and_then(|i| i.components).as_deref(), Some(components));
+        let mut old = saved.clone();
+        if let Tag::Compound(map) = &mut old {
+            if let Some(Tag::Compound(item)) = map.get_mut("Item") {
+                item.insert("components".to_owned(), Tag::String(components.to_owned()));
+            }
+        }
+        server.level.entities.clear();
+        assert!(crate::server_mobs::load_level_entity(&mut server.level, &old));
+        let resaved = sword(&server).expect("the old sword is saved again");
+        assert_eq!(resaved.get("Item").and_then(|item| item.get("components")), Some(saved_components));
+    }
+
+    #[test]
+    fn hoppers_hand_their_changed_items_to_the_chunk_map_and_leave_chests_to_the_containers() {
+        use minecraftoss_core::nbt::Tag;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        if server.level.registries().block_entities.is_none() {
+            return;
+        }
+        let (hopper, chest) = ((8, 201, 8), (8, 200, 8));
+        place(&mut server, &mut scene, chest, Block::new("minecraft:chest").with("facing", "north").with("type", "single").with("waterlogged", "false"));
+        place(&mut server, &mut scene, hopper, Block::new("minecraft:hopper").with("facing", "down").with("enabled", "true"));
+        server.take_changes();
+        server.take_block_entity_changes();
+        let at = |pos: BlockPos| minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
+        let dirt = |tag: &Tag| tag.get("Items").and_then(Tag::as_list).map_or(0, |items| items.iter().filter_map(|item| item.get("count").and_then(Tag::as_i64)).sum::<i64>());
+        let positions = |changes: &[(BlockPos, Option<Tag>)]| changes.iter().map(|(pos, _)| *pos).collect::<Vec<_>>();
+        assert!(server.level.replace_block_item(at(hopper), 0, minecraftoss_core::item::ItemStack::new("minecraft:dirt", 3)));
+        let filled = server.take_block_entity_changes();
+        assert_eq!(positions(&filled), vec![hopper]);
+        assert_eq!(filled[0].1.as_ref().map(dirt), Some(3));
+        server.tick();
+        let moved = server.take_block_entity_changes();
+        assert_eq!(positions(&moved), vec![hopper], "the chest's items stay the containers'");
+        let tag = moved[0].1.as_ref().unwrap();
+        assert_eq!(tag.get("id").and_then(Tag::as_str), Some("minecraft:hopper"));
+        assert_eq!((dirt(tag), tag.get("TransferCooldown").and_then(Tag::as_i64)), (2, Some(8)));
+        assert_eq!(server.level.block_container_items(at(chest)).map(|items| items.iter().map(|s| s.count).sum::<i32>()), Some(1));
+        ticked(&mut server, 40);
+        let emptied = server.take_block_entity_changes();
+        assert_eq!(positions(&emptied), vec![hopper]);
+        assert_eq!(emptied[0].1.as_ref().map(dirt), Some(0));
+        ticked(&mut server, 5);
+        assert!(server.take_block_entity_changes().is_empty(), "an idle hopper changes nothing");
+        server.level.replace_block_item(at(hopper), 0, minecraftoss_core::item::ItemStack::new("minecraft:dirt", 1));
+        server.unload_chunk(ChunkPos::new(0, 0));
+        let unloaded = server.take_block_entity_changes();
+        assert_eq!(positions(&unloaded), vec![hopper], "a chunk's last changes are handed over before it leaves");
+        assert_eq!(unloaded[0].1.as_ref().map(dirt), Some(1));
+    }
+
+    #[test]
+    fn a_broken_dropper_hands_over_that_its_items_are_gone() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        if server.level.registries().block_entities.is_none() {
+            return;
+        }
+        let dropper = (8, 200, 8);
+        place(&mut server, &mut scene, dropper, Block::new("minecraft:dropper").with("facing", "up").with("triggered", "false"));
+        server.take_changes();
+        server.take_block_entity_changes();
+        let at = minecraftoss_core::BlockPos::new(dropper.0, dropper.1, dropper.2);
+        assert!(server.level.replace_block_item(at, 0, minecraftoss_core::item::ItemStack::new("minecraft:dirt", 5)));
+        let filled = server.take_block_entity_changes();
+        assert_eq!(filled.len(), 1);
+        assert!(filled[0].1.is_some());
+        take(&mut server, &mut scene, dropper);
+        assert_eq!(
+            server.take_block_entity_changes(),
+            vec![(dropper, None)],
+            "the chunk map must not keep the items for a dropper placed there later"
+        );
     }
 }

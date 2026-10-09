@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use minecraft_net::Dimension;
 use minecraft_terrain::bucket::Sound;
-use minecraft_terrain::containers::Containers;
+use minecraft_terrain::containers::{Containers, block_entity_kind};
 use minecraft_terrain::environment::DimensionEnvironment;
 use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
 use minecraft_terrain::terrain::TerrainStream;
-use minecraftoss_core::{Chunk, ChunkPos};
+use minecraftoss_core::{Chunk, ChunkPos, Registries};
 use minecraftoss_player::inventory::Inventory;
 
 use crate::entities::{Entities, SentItemUse};
@@ -26,8 +26,25 @@ pub struct Terrain {
     pub environment: DimensionEnvironment,
 }
 
+pub fn open_for_respawn(
+    terrain: &Terrain,
+    registries: &Registries,
+    pos: (i32, i32, i32),
+) -> Option<bool> {
+    terrain
+        .scene
+        .generated_chunk((pos.0.div_euclid(16), pos.2.div_euclid(16)))?;
+    let Some(block) = Scene::block(&terrain.scene, pos) else {
+        return Some(true);
+    };
+    Some(terrain.stream.states.state_of(block).is_none_or(|state| {
+        registries.blocks.collision_boxes(state).is_empty()
+            && registries.blocks.state(state).fluid.is_none()
+    }))
+}
+
 pub fn spill(containers: &mut Containers, entities: &mut Entities, pos: (i32, i32, i32)) {
-    let (items, experience) = containers.remove(pos);
+    let (items, experience) = containers.remove(pos, &entities.recipes);
     for stack in items {
         entities.world_items.drop_item_stack(stack, pos);
     }
@@ -91,15 +108,40 @@ pub fn finish_item_use(
     heard
 }
 
+pub fn save_block_entities(containers: &mut Containers, terrain: &mut Terrain) {
+    let scene = &terrain.scene;
+    let changes =
+        containers.take_block_entities(|pos| Scene::block(scene, pos).and_then(block_entity_kind));
+    terrain.stream.record_block_entities(&changes);
+}
+
+pub fn save_server_block_entities(entities: &mut Entities, terrain: &mut Terrain, closing: bool) {
+    let changes = if closing {
+        entities.finish_block_entity_changes()
+    } else {
+        entities.take_block_entity_changes()
+    };
+    terrain.stream.record_block_entities(&changes);
+}
+
 pub fn stream_tick(
     terrain: &mut Terrain,
     entities: &mut Option<Entities>,
+    containers: &mut Containers,
     block: (i32, i32, i32),
 ) -> (Vec<Arc<Chunk>>, Vec<ChunkPos>) {
+    save_block_entities(containers, terrain);
+    if let Some(entities) = entities.as_mut() {
+        save_server_block_entities(entities, terrain, false);
+    }
     let (loaded, forgotten) = terrain.stream.server_tick(block, &mut terrain.scene);
+    for pos in &forgotten {
+        containers.forget_chunk((pos.x, pos.z));
+    }
     if let Some(entities) = entities.as_mut() {
         for chunk in &loaded {
             entities.load_chunk(chunk);
+            containers.load_chunk(chunk, &entities.recipes);
         }
         for &pos in &forgotten {
             entities.unload_chunk(pos);

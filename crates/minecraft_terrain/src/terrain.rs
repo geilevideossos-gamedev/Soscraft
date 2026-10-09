@@ -1291,6 +1291,17 @@ impl TerrainStream {
         self.server.set_blocks(&edits);
     }
 
+    pub fn record_block_entities(&mut self, changes: &[(BlockPos, Option<minecraftoss_core::nbt::Tag>)]) {
+        if changes.is_empty() {
+            return;
+        }
+        let changes: Vec<_> = changes
+            .iter()
+            .map(|((x, y, z), tag)| (minecraftoss_core::BlockPos::new(*x, *y, *z), tag.clone()))
+            .collect();
+        self.server.set_block_entities(&changes);
+    }
+
     /// An edit at these positions: nearby sections rebuild for the player
     /// (`LevelRenderer.setBlockDirty`), and nearby chunks relight; sections
     /// whose light changed rebuild when that finishes.

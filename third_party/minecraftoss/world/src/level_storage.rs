@@ -21,6 +21,7 @@ pub const VERSION_NAME: &str = "26.3";
 pub const VERSION_SERIES: &str = "main";
 pub const SERVER_BRAND: &str = "iw4l";
 pub const WORLD_CLOCKS: &str = "world_clocks";
+pub const WEATHER: &str = "weather";
 pub const PLAYERS_FOLDER: &str = "players";
 const LOCK_CONTENT: &str = "\u{2603}";
 
@@ -94,6 +95,15 @@ impl ClockState {
     pub fn ticks(&self) -> f64 {
         self.total_ticks as f64 + f64::from(self.partial_tick)
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WeatherData {
+    pub clear_weather_time: i32,
+    pub rain_time: i32,
+    pub thunder_time: i32,
+    pub raining: bool,
+    pub thundering: bool,
 }
 
 pub struct LevelStorage {
@@ -374,6 +384,35 @@ impl LevelStorage {
             })
             .collect();
         self.write_saved(WORLD_CLOCKS, Tag::Compound(data))
+    }
+
+    pub fn read_weather(&self) -> Result<Option<WeatherData>, String> {
+        let Some(data) = self.read_saved(WEATHER)? else {
+            return Ok(None);
+        };
+        let number = |key: &str| {
+            data.get(key)
+                .and_then(Tag::as_i64)
+                .ok_or_else(|| format!("weather lacks {key}"))
+        };
+        Ok(Some(WeatherData {
+            clear_weather_time: number("clear_weather_time")? as i32,
+            rain_time: number("rain_time")? as i32,
+            thunder_time: number("thunder_time")? as i32,
+            raining: number("raining")? != 0,
+            thundering: number("thundering")? != 0,
+        }))
+    }
+
+    pub fn write_weather(&self, weather: &WeatherData) -> Result<(), String> {
+        let data = compound(vec![
+            ("clear_weather_time", Tag::Int(weather.clear_weather_time)),
+            ("rain_time", Tag::Int(weather.rain_time)),
+            ("thunder_time", Tag::Int(weather.thunder_time)),
+            ("raining", Tag::Byte(i8::from(weather.raining))),
+            ("thundering", Tag::Byte(i8::from(weather.thundering))),
+        ]);
+        self.write_saved(WEATHER, data)
     }
 
     pub fn read_game_rules(&self) -> Result<GameRules, String> {
@@ -814,6 +853,47 @@ mod tests {
         let overworld = data.get("minecraft:overworld").unwrap();
         assert_eq!(overworld.get("total_ticks"), Some(&Tag::Long(30_250)));
         assert_eq!(overworld.get("rate"), Some(&Tag::Float(1.0)));
+    }
+
+    #[test]
+    fn weather_lives_in_data_minecraft_weather_dat_with_its_five_keys() {
+        let dir = test_dir("weather");
+        let storage = LevelStorage::open(&dir.0).unwrap();
+        assert_eq!(storage.read_weather().unwrap(), None);
+        let stormy = WeatherData {
+            clear_weather_time: 0,
+            rain_time: 4_321,
+            thunder_time: 987,
+            raining: true,
+            thundering: true,
+        };
+        storage.write_weather(&stormy).unwrap();
+        assert_eq!(storage.read_weather().unwrap(), Some(stormy));
+        let path = dir.0.join("data").join("minecraft").join("weather.dat");
+        let root = nbt::read(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(root.get("DataVersion"), Some(&Tag::Int(DATA_VERSION)));
+        assert_eq!(
+            root.get("data"),
+            Some(&compound(vec![
+                ("clear_weather_time", Tag::Int(0)),
+                ("rain_time", Tag::Int(4_321)),
+                ("thunder_time", Tag::Int(987)),
+                ("raining", Tag::Byte(1)),
+                ("thundering", Tag::Byte(1)),
+            ]))
+        );
+        let clear = WeatherData {
+            clear_weather_time: 12_000,
+            ..WeatherData::default()
+        };
+        storage.write_weather(&clear).unwrap();
+        assert_eq!(storage.read_weather().unwrap(), Some(clear));
+        std::fs::write(&path, b"broken").unwrap();
+        assert_eq!(storage.read_weather().unwrap(), Some(stormy));
+        storage
+            .write_saved(WEATHER, compound(vec![("raining", Tag::Byte(1))]))
+            .unwrap();
+        assert!(storage.read_weather().is_err());
     }
 
     #[test]

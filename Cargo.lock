@@ -3933,7 +3933,9 @@ dependencies = [
  "minecraft_terrain",
  "minecraftoss-core",
  "minecraftoss-entities",
+ "minecraftoss-generator",
  "minecraftoss-player",
+ "minecraftoss-world",
  "playerstate_iw4",
  "serde_json",
 ]

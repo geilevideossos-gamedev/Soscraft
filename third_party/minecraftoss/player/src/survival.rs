@@ -73,6 +73,14 @@ impl Default for FoodData {
 }
 
 impl FoodData {
+    pub fn tick_timer(&self) -> u32 {
+        self.tick_timer
+    }
+
+    pub fn set_tick_timer(&mut self, ticks: u32) {
+        self.tick_timer = ticks;
+    }
+
     pub fn add_exhaustion(&mut self, amount: f32) {
         self.exhaustion = (self.exhaustion + amount).min(40.0);
     }

@@ -17,5 +17,9 @@ minecraftoss-player = { path = "../../third_party/minecraftoss/player" }
 glam = "0.29"
 serde_json = { workspace = true }
 
+[dev-dependencies]
+minecraftoss-generator = { path = "../../third_party/minecraftoss/generator" }
+minecraftoss-world = { path = "../../third_party/minecraftoss/world" }
+
 [lints]
 workspace = true

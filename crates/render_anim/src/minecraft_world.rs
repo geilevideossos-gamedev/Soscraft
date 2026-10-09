@@ -264,6 +264,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
     if let Some(ticks) = opened.day_ticks {
         day.set(ticks);
     }
+    day.paused = opened.time_paused;
     let globals = minecraft_survival::server::Globals {
         seed,
         registries,
@@ -271,6 +272,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         game_rules: opened.game_rules,
         difficulty: opened.difficulty,
         day,
+        weather: opened.weather,
         chat,
         data: Default::default(),
         level_writer: None,
@@ -456,8 +458,7 @@ fn update(
                 runtime.minimap = Default::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
                 globals.data = minecraft_survival::data::GameData::load(assets::minecraft_map::root().as_deref(), data_jar());
-                let mut entities = minecraft_survival::entities::Entities::new(&level.terrain.stream, globals.seed, &globals.data);
-                let inventory = minecraft_survival::player::starting_inventory(globals.data.recipes.clone(), std::env::var("IW4L_MINECRAFT_KIT").ok().as_deref());
+                let mut entities = minecraft_survival::entities::Entities::new(&level.terrain.stream, globals.seed, &globals.data, globals.weather.as_ref());
                 entities.set_game_rules(&globals.game_rules);
                 level.containers.set_book(globals.data.stations.clone());
                 runtime.inventory_ui.set_station_data(globals.data.stations.clone(), globals.data.enchantments.clone(), globals.seed as i32);
@@ -476,12 +477,10 @@ fn update(
                         save.set_host(&host.uuid);
                     }
                 }
-                let saved_mode = globals.save.as_ref().map(minecraft_survival::save::WorldSave::host_mode);
-                if let Some((_, Some(warning))) = &saved_mode {
-                    diag::warn!(World, "{warning}");
-                }
-                #[allow(clippy::unwrap_or_default)]
-                let player = minecraft_survival::player::Player::new(&profile, minecraft_survival::server::starting_game_mode(saved_mode.map(|(mode, _)| mode), std::env::var("IW4L_MINECRAFT_GAMEMODE").ok().as_deref()), runtime.carried_survival.take().unwrap_or_else(minecraft_survival::survival::Survival::default), inventory);
+                let chosen_mode = std::env::var("IW4L_MINECRAFT_GAMEMODE").ok();
+                let kit = std::env::var("IW4L_MINECRAFT_KIT").ok();
+                let joining = minecraft_survival::server::Joining { profile: &profile, spawn: view.origin, chosen_mode: chosen_mode.as_deref(), kit: kit.as_deref(), carried: runtime.carried_survival.take() };
+                let player = minecraft_survival::server::join(globals.save.as_ref(), &globals.data.recipes, &globals.game_rules, joining);
                 let uuid = player.uuid.clone();
                 players.insert(uuid.clone(), player);
                 runtime.environment_accumulator = 0.0;
@@ -547,18 +546,35 @@ fn update(
         return;
     };
     let minecraft_survival::server::Server { globals, levels, players } = server;
+    if globals.autosave_ticks >= minecraft_survival::save::AUTOSAVE_TICKS {
+        globals.autosave_ticks = 0;
+        minecraft_survival::server::autosave(globals, levels, players);
+    }
     let Some(player) = players.get_mut(local_uuid) else {
         ui.active = false;
         ui.inventory_open = false;
         puppet.active = false;
         return;
     };
+    let loaded: Vec<Dimension> = levels.keys().copied().collect();
     let Some(level) = levels.get_mut(&player.dimension) else {
         ui.active = false;
         ui.inventory_open = false;
         puppet.active = false;
         return;
     };
+    if let Some(ps) = presented.player(local.0) {
+        if player.observe_life(ps.pm_type) && player.respawn.is_none_or(|respawn| respawn.forced) {
+            let open = |pos| minecraft_survival::level::open_for_respawn(&level.terrain, &globals.registries, pos);
+            if player.arrive_at_respawn(&loaded, open, |_| None) {
+                show_chat(&mut ui.chat, inventory_ui, &world.packs, &[minecraft_survival::player::missing_respawn_message()]);
+            }
+        }
+        if ps.pm_type == 0 {
+            place_player(player, &mut authority.0, local.0, ps, origin, spawn_gate, now_ms);
+        }
+    }
+    let arriving_at = player.arrival.map(|place| place.feet);
     let host_alive = presented.player(local.0).is_some_and(|ps| ps.pm_type == 0);
     let host_pose = presented
         .player(local.0)
@@ -566,7 +582,7 @@ fn update(
         .map(|ps| minecraft_commands::Pose { feet: sim::voxel::to_block(origin, ps.origin), yaw: minecraft_yaw(ps.viewangles[1]), pitch: ps.viewangles[0] })
         .or_else(|| player.survival.last_feet().map(|feet| minecraft_commands::Pose { feet, yaw: 0.0, pitch: 0.0 }));
     let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, level, player, &mut ui.chat.sent, host_pose, host_alive);
-    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, .. } = player;
+    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, arrived, ender, .. } = player;
     let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
     if !delivered.is_empty() {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
@@ -585,7 +601,7 @@ fn update(
     let Some(ps) = presented.player(local.0) else {
         ui.active = false;
         puppet.active = false;
-        stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, light, spawn_gate, &mut view, aspect, now_ms);
+        stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, arriving_at.unwrap_or(origin), aspect, now_ms);
         return;
     };
 
@@ -607,13 +623,14 @@ fn update(
     }
     ui.game_mode = ui_game_mode(player_mode.mode);
     death_watch.observe(in_world, died, survival.status.experience_level, keep_inventory);
-    if dead {
+    if dead && *arrived {
         if keep_inventory || death_watch.switched_teams() {
             survival.respawn_keeping_experience();
         } else {
             survival.respawn();
         }
-    } else if !sim::voxel::player_damage_pending()
+    } else if !dead
+        && !sim::voxel::player_damage_pending()
         && let Some(health) = authority.0.player(local.0).map(|p| (p.health, p.max_health))
     {
         survival.observe(health.0, health.1);
@@ -630,7 +647,7 @@ fn update(
         feet[1].floor() as i32,
         feet[2].floor() as i32,
     );
-    let streamed = minecraft_survival::level::stream_tick(terrain, entities, block);
+    let streamed = minecraft_survival::level::stream_tick(terrain, entities, containers, block);
     apply_streamed(&globals.registries, shapes, shape_ids, streamed);
 
     // Minecraft's yaw: 0 facing +Z (map -Y), turning towards -X.
@@ -1405,7 +1422,7 @@ fn update(
     view.uploads.extend(update.uploads);
     view.removed.extend(update.removed);
     view.visible = update.visible;
-    observe_spawn(terrain, spawn_gate, origin, cull_at, now_ms);
+    observe_spawn(terrain, spawn_gate, feet, cull_at, now_ms);
     let Some(light) = light.as_mut() else {
         return;
     };
@@ -1450,6 +1467,7 @@ fn update(
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
         let ticks_before = entities.client_ticks();
         let (changes, hits) = entities.tick(inventory, *selected, dt, globals.day.ticks as i64, bright_outside, &player);
+        globals.weather = entities.weather_data.or(globals.weather);
         let summoned = std::mem::take(&mut entities.command_summons);
         if !summoned.is_empty() {
             let answers = minecraft_survival::commands::summon_answers(&globals.chat, &globals.game_rules, summoned);
@@ -1457,10 +1475,6 @@ fn update(
         }
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
         globals.autosave_ticks += mob_ticks;
-        if globals.autosave_ticks >= minecraft_survival::save::AUTOSAVE_TICKS {
-            globals.autosave_ticks = 0;
-            minecraft_survival::server::autosave(globals, terrain, *player_mode);
-        }
         for _ in 0..mob_ticks {
             for sound in entities.animate_tick(&terrain.scene, feet) {
                 if let Some(sounds) = sounds.as_mut() {
@@ -1642,7 +1656,7 @@ fn update(
         }
         let was_open = inventory_ui.block().cloned();
         let roll = entities.random_float();
-        let thrown = inventory_ui.apply_input(&mut ui, inventory, selected, containers, &mut || roll);
+        let thrown = containers.with_ender(ender, |containers| inventory_ui.apply_input(&mut ui, inventory, selected, containers, &mut || roll));
         if let Some(pos) = open_table {
             inventory_ui.open_table(&mut ui, pos);
         }
@@ -1767,7 +1781,7 @@ fn update(
         crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
         ui.weapon_request = inventory_ui.weapon_request(inventory, selected, ps.weapon).filter(|_| player_mode.interacts());
         inventory_ui.animation_tick = atlas_animation.ticks();
-        inventory_ui.publish(&mut ui, inventory, *selected, &world.packs, &mut images, containers);
+        containers.with_ender(ender, |containers| inventory_ui.publish(&mut ui, inventory, *selected, &world.packs, &mut images, containers));
 
         if let Some(sounds) = sounds.as_mut() {
             for (event, position, volume, pitch) in std::mem::take(&mut entities.sounds) {
@@ -2082,15 +2096,17 @@ fn stream_around_spawn(
     shapes: &mut HashMap<BlockStateId, u16>,
     shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
     entities: &mut Option<minecraft_survival::entities::Entities>,
+    containers: &mut minecraft_terrain::containers::Containers,
     light: &mut Option<SkyLight>,
     gate: &mut crate::minecraft_spawn_gate::SpawnGate,
     view: &mut MinecraftWorldView,
+    at: [f64; 3],
     aspect: f32,
     now_ms: u64,
 ) {
-    let [x, y, z] = view.origin;
+    let [x, y, z] = at;
     let spawn_block = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
-    let streamed = minecraft_survival::level::stream_tick(terrain, entities, spawn_block);
+    let streamed = minecraft_survival::level::stream_tick(terrain, entities, containers, spawn_block);
     apply_streamed(registries, shapes, shape_ids, streamed);
     let camera = CullCamera {
         position: glam::DVec3::new(x, y + crate::minecraft_spawn_gate::SPAWN_EYE_HEIGHT, z),
@@ -2109,7 +2125,42 @@ fn stream_around_spawn(
             light.set_chunk_column(chunk, column);
         }
     }
-    observe_spawn(terrain, gate, view.origin, camera.position, now_ms);
+    observe_spawn(terrain, gate, at, camera.position, now_ms);
+}
+
+fn place_player(
+    player: &mut minecraft_survival::player::Player,
+    authority: &mut sim::SimWorld,
+    id: sim::ClientId,
+    ps: &playerstate_iw4::PlayerState,
+    origin: [f64; 3],
+    gate: &mut crate::minecraft_spawn_gate::SpawnGate,
+    now_ms: u64,
+) {
+    let Some(place) = player.arrival.take() else {
+        let feet = sim::voxel::to_block(origin, ps.origin);
+        player.place = Some(minecraft_survival::player_nbt::Place {
+            dimension: player.dimension,
+            feet,
+            yaw: minecraft_yaw(ps.viewangles[1]),
+            pitch: ps.viewangles[0],
+            motion: sim::voxel::to_block([0.0; 3], ps.velocity).map(|v| v * TICK_SECONDS),
+            on_ground: ps.ground_entity_num != playerstate_iw4::ENTITYNUM_NONE,
+            fall_distance: player.steps.air_peak.map_or(0.0, |peak| (peak - feet[1]).max(0.0)),
+        });
+        return;
+    };
+    authority.teleport_facing(id, sim::voxel::to_map(origin, place.feet), [place.pitch, minecraft_yaw(place.yaw), 0.0]);
+    if player.mode.abilities.flying {
+        authority.set_minecraft_abilities(id, ability_bits(&player.mode) | playerstate_iw4::pm_flags::MC_FLYING);
+    }
+    player.steps.last = None;
+    player.steps.air_peak = (place.fall_distance > 0.0).then_some(place.feet[1] + place.fall_distance);
+    let chunk = |block: f64| (block.floor() as i32) >> 4;
+    if !gate.waiting() && !sim::voxel::chunks_ready_around(chunk(place.feet[0]), chunk(place.feet[2]), crate::minecraft_spawn_gate::SPAWN_CHUNK_RADIUS) {
+        gate.start(now_ms);
+    }
+    player.place = Some(place);
 }
 
 fn observe_spawn(terrain: &minecraft_survival::level::Terrain, gate: &mut crate::minecraft_spawn_gate::SpawnGate, origin: [f64; 3], eye: glam::DVec3, now_ms: u64) {
@@ -2293,6 +2344,7 @@ fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
     let mut server = runtime.server.take();
     let local = runtime.local.take();
     if let (Some(server), Some(local)) = (server.as_mut(), local.as_ref())
+        && server.globals.save.is_none()
         && let Some(player) = server.players.get_mut(local)
     {
         runtime.carried_survival = Some(std::mem::take(&mut player.survival));
@@ -2302,7 +2354,7 @@ fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
     let loader = runtime.loader.take();
     let open = world.is_some() || loading.is_some();
     if server.is_some() || open || loader.is_some() {
-        let close = move || save_and_close(server, world, loading, loader, local);
+        let close = move || save_and_close(server, world, loading, loader);
         if blocking {
             close();
         } else {
@@ -2325,10 +2377,12 @@ fn save_and_close(
     world: Option<Loaded>,
     loading: Option<mpsc::Receiver<Result<(Loaded, minecraft_survival::server::Server), String>>>,
     loader: Option<std::thread::JoinHandle<()>>,
-    local: Option<minecraft_net::PlayerUuid>,
 ) {
     let started = std::time::Instant::now();
     for level in server.iter_mut().flat_map(|server| server.levels.values_mut()) {
+        if let Some(entities) = level.entities.as_mut() {
+            minecraft_survival::level::save_server_block_entities(entities, &mut level.terrain, true);
+        }
         drop(level.entities.take());
     }
     if let Some(loader) = loader {
@@ -2339,7 +2393,7 @@ fn save_and_close(
         return;
     };
     drop(world);
-    server.save_and_close(local.as_ref(), started);
+    server.save_and_close(started);
 }
 
 fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
@@ -2362,5 +2416,25 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
         view.clouds = None;
         view.light_volume = None;
         view.generation += 1;
+    }
+}
+
+#[cfg(test)]
+mod yaw_tests {
+    use super::minecraft_yaw;
+
+    fn same_angle(a: f32, b: f32) -> bool {
+        (a - b).rem_euclid(360.0).min((b - a).rem_euclid(360.0)) < 1e-3
+    }
+
+    #[test]
+    fn the_yaw_turns_from_mw2_to_minecraft_and_back_with_the_same_formula() {
+        for (mw2, minecraft) in [(-90.0, 0.0), (0.0, -90.0), (90.0, 180.0), (180.0, 90.0)] {
+            assert!(same_angle(minecraft_yaw(mw2), minecraft), "{mw2} -> {}", minecraft_yaw(mw2));
+            assert!(same_angle(minecraft_yaw(minecraft), mw2), "{minecraft} -> {}", minecraft_yaw(minecraft));
+        }
+        for mw2 in [-170.0, -33.5, 12.25, 135.0] {
+            assert!(same_angle(minecraft_yaw(minecraft_yaw(mw2)), mw2), "{mw2}");
+        }
     }
 }

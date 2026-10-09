@@ -279,6 +279,10 @@ impl SimWorld {
         self.frame().teleport(id, origin)
     }
 
+    pub fn teleport_facing(&mut self, id: ClientId, origin: [f32; 3], angles: [f32; 3]) -> bool {
+        self.frame().teleport_facing(id, origin, angles)
+    }
+
     pub fn set_health(&mut self, id: ClientId, health: i32) -> bool {
         self.frame().set_health(id, health)
     }
