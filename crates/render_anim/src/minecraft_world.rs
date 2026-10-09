@@ -694,6 +694,7 @@ fn update(
             place_player(player, &mut authority.0, local.0, ps, origin, spawn_gate, now_ms);
         }
     }
+    crate::minecraft_end::step(player, levels, globals, presented.player(local.0).filter(|ps| ps.pm_type == 0).map(|ps| sim::voxel::to_block(origin, ps.origin)), time.delta_secs_f64());
     let arriving_at = player.arrival.map(|place| place.feet);
     let host_alive = presented.player(local.0).is_some_and(|ps| ps.pm_type == 0);
     let host_pose = presented

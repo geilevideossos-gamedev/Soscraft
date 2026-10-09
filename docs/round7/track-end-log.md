@@ -162,3 +162,37 @@ Written with entry 6, in its commit.
 - **Clippy:** `clippy -p minecraft_terrain -p render_gpu -p render_anim -p render --all-targets --no-deps -- -A clippy::approx_constant` had one finding on this group's lines: the `Local` of entry 5 in `render/src/extract.rs` was a very complex type, now named `EndLookImages` (in entry 6's commit). The other warnings are older.
 - **Not done in this group:** the gateway beam (X6) and the end flash (E3-29).
 - **Owner test for the group:** in the world `x1btest`, entry 4's steps, then entry 5's with its kit, then entry 6's.
+
+## Group X2: into the End
+
+### 7. Minecraft end portals take players to the End (E3-5)
+
+Previous commit: 32e3fe6b
+
+- **Changed:**
+  - New `minecraft_survival/src/the_end.rs`:
+    - `touched_end_portal(feet, is_portal)` is the player's box (0.6 by 1.8, deflated by 1e-5) against `EndPortalBlock`'s shape `Block.column(16, 6, 12)`, the band 6/16 to 12/16 of the block.
+    - `portal_tick(cooldown, touched)` is `Entity.processPortalCooldown` and `setAsInsidePortal` for a portal whose transition time is 0: the cooldown counts down every tick; touching the portal with no cooldown takes the player and sets it to 10 (`Player.getDimensionChangingDelay`), and touching it during the cooldown sets it back to 10.
+    - `step` runs those ticks on a per-player clock (`Player.end`, `EndTravel`), for a living player who isn't in a remote killstreak.
+    - `travel` is `EndPortalBlock.getPortalDestination`. Outside the End, the player switches to the End with `END_PORTAL` and arrives at `END_SPAWN_POINT` (100, 50, 0) as a player does: (100.5, 49, 0.5), facing west (yaw 90), keeping pitch and motion (`Relative.X_ROT` and `DELTA`). In the End, the player goes to the dimension of their respawn point, or of the world spawn without one, and the switch is marked as a respawn, so `respawn_in` places them at the point (or the level's spawn) once that level is shown, as `findRespawnPositionAndUseSpawnBlock` does. A respawn point in the End itself places them at once.
+  - `minecraft_survival/src/player.rs`: one field, `Player.end`.
+  - New `render_anim/src/minecraft_end.rs`: the adapter step, which logs each trip. `minecraft_world.rs` gets one call line after the player is placed, before the commands run.
+- **Checked with javap (26.3):** `EndPortalBlock` (`SHAPE = Block.column(16, 6, 12)`, `getEntityInsideCollisionShape` is that shape, `entityInside`, `getPortalDestination`: `END_SPAWN_POINT` bottom centre minus 1 in y for a player, `createEndPlatform(below, true)`, `Direction.WEST.toYRot()`, relatives `DELTA` plus `X_ROT`; from the End `findRespawnPositionAndUseSpawnBlock(false, DO_NOTHING)`), `Entity.setAsInsidePortal` (on cooldown it only sets the cooldown again), `Entity.processPortalCooldown`, `Player.getDimensionChangingDelay` (10).
+- **Tests:** `the_end`: `the_portal_is_touched_only_between_six_and_twelve_sixteenths_of_its_block`, `the_portal_takes_a_player_at_once_then_waits_ten_ticks_after_they_leave_it`, `the_travel_clock_counts_whole_ticks`, `the_end_arrival_is_on_the_platform_facing_west_keeping_pitch_and_motion`, `an_end_portal_in_the_overworld_or_the_nether_switches_to_the_end_platform`, `the_exit_portal_goes_to_the_respawn_point_s_dimension_or_the_world_spawn_s`.
+- **Decisions:**
+  - **Hand-over to the Nether track:** its `minecraft_survival/src/portal.rs` (with `PortalKind::End`) isn't on `minecraft-survival` yet, so the End keeps its own portal tick here. When it lands, the End arm goes into `PortalKind` (`touched_end_portal` as its check, `travel` as its destination), and `EndTravel.clock`, `the_end::step` and `portal_tick` go away, because the Nether's `Portal::tick` also counts the cooldown down. Two counters would halve it.
+  - As in the Nether's `Portal`, the trip starts in the tick the portal is touched. Vanilla notices the portal during the move and teleports at the start of the next tick, one tick later.
+  - The motion is kept on the arrival `Place`, but MW2 movement starts the player still: the switch holds the player frozen until the platform's chunks are in.
+  - **Credits (X4):** vanilla shows the credits on the first exit (`seenCredits`). Until X4 the exit portal never shows them and leaves `seen_credits` unset, so X4's first exit still shows them.
+  - The exit portal itself only appears with the dragon's death (X4); until then a test places one with `/setblock`.
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x2test` (a new world) and the kit below. Start on flat ground.
+  2. Build the ring of entry 2 (12 frames facing inward around a cleared 3x3) and fill it with eyes. Look at a pitch you will recognise (a little down) and step into the starfield. The end portal loading screen shows at once, then you stand on the obsidian platform over the void facing west, toward the main island, with the same pitch. **Screenshot 1.** Type `/tp ~ ~ ~`: about 100.5, 49, 0.5.
+  3. Stand on the platform and type `/setblock ~2 ~ ~ minecraft:end_portal`, then walk into it. The loading screen shows and you arrive at the overworld spawn (no credits yet). **Screenshot 2.**
+  4. Walk back through the ring's portal into the End, and in the End type `/kill`: you respawn at the overworld spawn as before.
+  5. Optional: in the overworld type `/spawnpoint` somewhere away from the spawn, go to the End again, and use the exit block of step 3: you arrive at that point.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_shovel+efficiency=5,minecraft:cobblestone*64
+```
