@@ -156,6 +156,7 @@ pub fn publish_posed_gear(
 #[derive(Resource, Default)]
 pub struct McBodyGear {
     by_client: HashMap<u32, BodyGear>,
+    corpses: HashMap<u32, bool>,
 }
 
 impl McBodyGear {
@@ -167,8 +168,15 @@ impl McBodyGear {
         self.by_client.remove(&client);
     }
 
+    pub fn died(&mut self, client: u32) {
+        if let Some(gear) = self.by_client.remove(&client) {
+            self.corpses.insert(client, gear.hides_gun);
+        }
+    }
+
     pub fn clear(&mut self) {
         self.by_client.clear();
+        self.corpses.clear();
     }
 
     pub fn get(&self, client: u32) -> Option<&BodyGear> {
@@ -176,10 +184,13 @@ impl McBodyGear {
     }
 
     pub fn shown_weapon(&self, client: Option<u32>, corpse: bool, weapon: u32) -> u32 {
-        let hidden = !corpse
-            && client
-                .and_then(|client| self.get(client))
-                .is_some_and(|gear| gear.hides_gun);
+        let hidden = client.is_some_and(|client| {
+            if corpse {
+                self.corpses.get(&client).copied().unwrap_or(false)
+            } else {
+                self.get(client).is_some_and(|gear| gear.hides_gun)
+            }
+        });
         if hidden { 0 } else { weapon }
     }
 }
@@ -695,6 +706,34 @@ mod tests {
         );
         let forward = hand.transform_vector3(Vec3::Y).normalize();
         assert!(forward.abs_diff_eq(Vec3::Y, 1e-5), "{forward}");
+    }
+
+    #[test]
+    fn a_corpse_puts_its_gun_away_when_its_player_died_holding_a_minecraft_item() {
+        let mut gear = McBodyGear::default();
+        let holding = |hides_gun| BodyGear {
+            hides_gun,
+            ..BodyGear::default()
+        };
+        gear.set(2, holding(true));
+        gear.set(5, holding(false));
+        assert_eq!(gear.shown_weapon(Some(2), true, 7), 7);
+        gear.died(2);
+        gear.died(5);
+        assert!(gear.get(2).is_none());
+        assert_eq!(gear.shown_weapon(Some(2), true, 7), 0);
+        assert_eq!(gear.shown_weapon(Some(5), true, 7), 7);
+        assert_eq!(gear.shown_weapon(Some(2), false, 7), 7);
+        gear.died(2);
+        assert_eq!(gear.shown_weapon(Some(2), true, 7), 0);
+        gear.set(2, holding(false));
+        assert_eq!(gear.shown_weapon(Some(2), true, 7), 0);
+        gear.died(2);
+        assert_eq!(gear.shown_weapon(Some(2), true, 7), 7);
+        gear.set(2, holding(true));
+        gear.died(2);
+        gear.clear();
+        assert_eq!(gear.shown_weapon(Some(2), true, 7), 7);
     }
 
     #[test]

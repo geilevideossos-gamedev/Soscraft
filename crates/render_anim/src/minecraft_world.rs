@@ -1972,6 +1972,8 @@ fn update(
             Some(gear) => body_gear.set(local.0.0, gear),
             None => body_gear.remove(local.0.0),
         }
+    } else if dead {
+        body_gear.died(local.0.0);
     } else {
         body_gear.remove(local.0.0);
     }

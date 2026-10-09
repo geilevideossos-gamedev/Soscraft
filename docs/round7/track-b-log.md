@@ -976,7 +976,7 @@ IW4L_MINECRAFT_KIT=diamond_helmet+protection=4,iron_chestplate+protection=4,iron
 
 ### 4. The inventory's character wears its Minecraft armour and holds its items
 
-Commit: (next entry)
+Commit: 5cdd676
 
 - **Changed:** After the split item 21. `minecraft_world.rs`: `MinecraftWorldView.puppet_gear` (section vertex bytes and indices), which `draw_body_gear` fills every frame with `gear_meshes`' puppet part (empty while the inventory is shut or no world is open) and `stop` clears. `render/src/extract.rs` moves it into `MinecraftWorldFrame.puppet_gear`, which the Minecraft world pass draws in the view model's depth band right after the character box's black card (body group entry 8), so the character's MW2 body and its gear hide each other and no wall comes between.
 - **Tests:** none new: the routing of the character's gear is `only_bodies_with_gear_get_a_rig_and_the_puppet_is_kept_apart`, and its frames follow the character's posed bones (with the box's place, turn and scale) as the world body's do; the draw needs a GPU.
@@ -988,4 +988,24 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=diamond_helmet+protection=4,iron_chestplate,leather_leggings@red,iron_boots,cobblestone*64,torch*64
+```
+
+### 5. The MW2 corpse in the death cam has no gun when its player died holding a Minecraft item
+
+Commit: (next entry)
+
+- **Changed:** `minecraft_gear.rs`: `McBodyGear.died(client)` moves a living player's entry out and keeps only whether it had its gun put away, per MW2 client number; `shown_weapon` for a corpse now puts the gun away when that player's last death came with a Minecraft item or an empty hand selected (a corpse of a player who died holding a gun, or of an MW2 bot, keeps its gun as before). `clear` forgets both. The adapter (`minecraft_world.rs`) calls `died` while the local player is dead (MW2 `PM_TYPE_DEAD` and the other dead types), `remove` while spectating or in intermission.
+- **Tests:** minecraft_gear: `a_corpse_puts_its_gun_away_when_its_player_died_holding_a_minecraft_item` (the death keeps the hand of the last living frame; dying again with no living frame in between keeps it; a new life changes the corpse rule only at the next death; `clear` forgets it). `a_minecraft_item_in_hand_puts_the_mw2_gun_away_but_not_on_a_corpse` still holds while the player lives.
+- **Decisions:**
+  - Vanilla drops a dead player's items and armour at once (`LivingEntity.dropAllDeathLoot` from `die`), so the dying body shows no gear; the MW2 corpse therefore wears and holds nothing, and now has no gun either when none was held. With `keep_inventory` vanilla would keep the gear on the dying body; that, like gear on corpses in general, stays later work (the corpse's bones are not published, and several corpses of one client can't yet be told apart).
+  - The rule is kept per client, not per corpse: an older corpse of the same player still lying there follows the latest death. MW2 sinks corpses after a few seconds, so this shows only on a quick second death.
+- **Screenshot 2 ("items at the head" in the death cam), checked again on the split code:** they were the death drops. Nothing drew a Minecraft item on the body before this group (the first-person item is built in view space and skipped while dead, F5 or in the inventory). On death the adapter (`minecraft_world.rs:1846`) spawns every stack with `WorldItems::drop_on_death(stack, death.spot.eye)` (`third_party/minecraftoss/player/src/items.rs:254-270`, vanilla `Player.drop(stack, true, false)`): 0.3 below the eyes, flying up 0.2 and up to 0.5 sideways. `Entities::server_items_tick` (`minecraft_survival/src/entities.rs:347`) hands each one to the server and draws it where it was until the server's copy arrives, so a slow server tick right after a death keeps them hanging at the head a little longer. That delay is the death-at-height work's (Phase 1 item 1), not this track's.
+- **Test steps** (survival mode, with `keep_inventory` off, the default):
+  1. Select the cobblestone and type `/kill`. In the death cam the corpse holds no gun and no cobblestone; the drops fly out from eye height and land within about a second. Screenshot 1.
+  2. Respawn, select the gun slot and `/kill` again: the corpse has its gun as before. Screenshot 2.
+  3. Press Tab during each death cam and note whether an MW2 bot is in the match; a standing soldier is a bot (it wears the other kit). If a standing soldier appears with no other player on Tab, say so. Screenshot 3.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=cobblestone*64
 ```
