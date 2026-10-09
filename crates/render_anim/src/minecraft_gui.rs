@@ -51,11 +51,12 @@ const LOOSE_SPRITES: [&str; 2] = [
     "container/slot_highlight_front",
 ];
 
-const TEXT_PREFIXES: [&str; 4] = [
+const TEXT_PREFIXES: [&str; 5] = [
     "container.",
     "item.modifiers.",
     "gui.experience.",
     "item.minecraft.smithing_template.",
+    "multiplayer.downloadingTerrain",
 ];
 
 pub(crate) const PUPPET_HEIGHT: f32 = 60.0 / 70.0;

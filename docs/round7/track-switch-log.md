@@ -222,7 +222,7 @@ Commit: 079cb532
 
 ### 11. Minecraft players travel between dimensions behind a loading screen (E1-8)
 
-Commit: filled in by the next entry
+Commit: 7789ff18
 
 - **Changed:**
   - New `minecraft_survival/src/switch.rs`: `LoadingReason { NetherPortal, EndPortal, Other }` and `loading_reason(dead, from, to)`, as vanilla's `ClientPacketListener.determineLevelLoadingReason` (checked with javap: dead gives `OTHER`, then the Nether on either side gives `NETHER_PORTAL`, then the End on either side `END_PORTAL`, else `OTHER`). `Switch { from, to, arrival, reason, respawn, left }`, and `failed_message`, the red chat line of a level that failed to load.
@@ -240,4 +240,26 @@ Commit: filled in by the next entry
   - The player is held (frozen and invulnerable, the level not ticking) until the gate lets them in, instead of vanilla's 60-tick `hasClientLoaded` timeout with the level ticking: here the client and the server are one frame loop, so a level that ticks while its chunks are missing would let mobs hit a player who cannot move.
   - A remote killstreak (AC-130, predator, chopper gunner) does not hold a switch yet; that rule comes with the ordnance work of S4 (E1-13).
 - **Test steps:** nothing starts a switch on its own yet; entry 13 (respawning after death in the Nether) is the first trigger, and its steps test this entry too.
+- **Kit:** none.
+
+### 12. Minecraft level loading screen looks like vanilla (E1-9)
+
+Commit: filled in by the next entry
+
+- **Changed:**
+  - `frame/src/minecraft_ui.rs` (appended): `MinecraftUi.level_loading: Option<McLevelLoading { reason, background, background_st, menu_background }>` with `McLoadingReason { NetherPortal, EndPortal, Other }`.
+  - New `hud/src/minecraft_loading.rs`, drawn last so it covers the whole HUD: the background over the whole screen, the in-world menu background tiled in 32 GUI pixel squares for `Other`, and `multiplayer.downloadingTerrain` ("Loading terrain..." from the pack's language file) in white with its shadow, centred 50 GUI pixels above the middle. These are the numbers of vanilla's `LevelLoadingScreen.extractRenderState` with no chunk status view, checked with javap. `hud/src/{lib,plugin,gpu_list}.rs` register it, three lines and a field.
+  - New `render_anim/src/minecraft_loading.rs`, which builds the backgrounds of `LevelLoadingScreen.extractBackground` (checked with javap) from the packs at run time:
+    - **`NETHER_PORTAL`:** the `block/nether_portal` sprite stretched over the screen, opaque as `GUI_OPAQUE_TEXTURED_BACKGROUND` draws it, one animation frame a tick.
+    - **`END_PORTAL`:** the end portal effect. `environment/end_sky` times the first colour, plus 15 layers of `entity/end_portal/end_portal` (`RenderPipelines.END_PORTAL` sets `PORTAL_LAYERS` 15), each scaled, turned and shifted as the pack's `rendertype_end_portal.fsh` does. The colours are read from that shader in the pack at run time, so no Mojang numbers are in our code. It is painted on the CPU into a 960-pixel-wide picture once each time the screen opens.
+    - **`OTHER`:** the title panorama cube (`panorama_0..5` on the cube faces in `CubeMapTexture`'s order). It is drawn upside down and tilted 10 degrees at an 85 degree field of view, as `CubeMap.render`, and spins 0.1 degrees a tick as `Panorama`. It is painted into a 480-pixel-wide picture, so the upscale gives the blur, and `gui/inworld_menu_background` goes on top.
+    - Pictures that change are double-buffered, as the minimap is, so the screen never shows a missing texture.
+  - `render_anim/src/minecraft_gui.rs`: the GUI's language strings also take `multiplayer.downloadingTerrain`.
+  - `render_anim/src/minecraft_world.rs`: the backgrounds load with the world, and `ui.level_loading` shows from the moment a switch leaves its level until 500 ms after the gate lets the player in.
+- **Tests:** `render_anim::minecraft_loading`: `the_end_portal_colours_come_from_the_shader_source` (a made-up shader text), `an_end_portal_layer_scales_turns_and_shifts_the_screen_like_the_shader`, `a_painted_end_portal_is_the_sky_and_the_layers_added_up`, `the_nether_portal_background_steps_one_frame_a_tick`, `a_cube_map_direction_picks_its_face_like_gl`, `the_panorama_looks_from_the_upside_down_cube_tilted_ten_degrees`, `the_canvas_keeps_the_window_shape_and_the_spin_wraps`. `hud::minecraft_loading`: `the_menu_background_tiles_the_screen_in_thirty_two_pixel_squares`, `loading_terrain_sits_centred_fifty_pixels_above_the_middle`.
+- **Decisions:**
+  - The downloaded 26.3 pack holds the jar's 1x1 placeholder panorama (the real pictures are asset-index objects the setup does not fetch), so `OTHER` shows a flat colour under the menu background today. The cube is drawn properly, so a pack with a real panorama shows it.
+  - The end portal drifts with `GameTime` (the overworld clock's place in its 24000-tick day) by less than a texel a second, so the picture is painted once a screen instead of every frame. This keeps a debug build smooth.
+  - No progress bar: vanilla shows it only when the server reports a load stage, and a remote client has none.
+- **Test steps:** with entry 13 (the respawn switch shows the `OTHER` screen). The Nether and End portal screens can't be reached in game until `/execute in` (S4, after track C) or portals (N2).
 - **Kit:** none.

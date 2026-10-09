@@ -24,6 +24,7 @@ mod minecraft_fire;
 mod minecraft_gui;
 mod minecraft_hotbar;
 mod minecraft_inventory;
+mod minecraft_loading;
 mod minecraft_screens;
 mod minecraft_tooltip;
 mod minecraft_vitals;

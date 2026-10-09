@@ -109,6 +109,7 @@ struct Runtime {
     shown: Option<Dimension>,
     origins: HashMap<Dimension, [f64; 3]>,
     switch_screen: Option<minecraft_survival::switch::LoadingReason>,
+    loading_backgrounds: Option<crate::minecraft_loading::LoadingBackgrounds>,
 }
 
 impl Drop for Runtime {
@@ -428,6 +429,10 @@ fn update(
     if runtime.switch_screen.is_some() && !local_switching(&runtime) && !runtime.spawn_gate.holding(now_ms) {
         runtime.switch_screen = None;
     }
+    let aspect = windows.single().map(|w| w.width() / w.height().max(1.0)).unwrap_or(16.0 / 9.0);
+    let game_time = runtime.server.as_ref().map_or(0.0, |server| server.globals.day.ticks);
+    let reason = runtime.switch_screen;
+    ui.level_loading = runtime.loading_backgrounds.as_mut().and_then(|backgrounds| backgrounds.frame(reason, game_time, time.delta_secs_f64(), aspect, &mut images));
     let Some(mut authority) = authority else {
         return;
     };
@@ -514,6 +519,7 @@ fn update(
                     level.terrain.stream.player_spawn
                 );
                 runtime.fire_frames = fire_frames(&world.packs).map(|(image, frames)| (images.add(image), frames));
+                runtime.loading_backgrounds = Some(crate::minecraft_loading::LoadingBackgrounds::load(&world.packs, &mut images));
                 runtime.server = Some(server);
                 runtime.local = Some(uuid);
                 runtime.world = Some(world);
@@ -603,7 +609,6 @@ fn update(
         return;
     };
     if player.switching.is_some() {
-        let aspect = windows.single().map(|w| w.width() / w.height().max(1.0)).unwrap_or(16.0 / 9.0);
         let ps = presented.player(local.0).filter(|ps| ps.pm_type == 0);
         if let Some(ps) = ps.filter(|_| player.arrival.is_some()) {
             place_player(player, &mut authority.0, local.0, ps, origin, spawn_gate, now_ms);
@@ -2402,6 +2407,8 @@ fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
     let local = runtime.local.take();
     runtime.shown = None;
     runtime.origins.clear();
+    runtime.switch_screen = None;
+    runtime.loading_backgrounds = None;
     if let (Some(server), Some(local)) = (server.as_mut(), local.as_ref())
         && server.globals.save.is_none()
         && let Some(player) = server.players.get_mut(local)
