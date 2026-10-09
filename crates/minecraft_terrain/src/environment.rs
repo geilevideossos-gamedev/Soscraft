@@ -322,6 +322,18 @@ mod tests {
     }
 
     #[test]
+    fn the_end_sky_is_its_skybox_over_a_dark_purple_fog_with_no_stars() {
+        let Some(registries) = registries() else { return };
+        let noon = sky_in(&registries, "minecraft:the_end", "minecraft:the_end", 6000);
+        let midnight = sky_in(&registries, "minecraft:the_end", "minecraft:end_highlands", 18_000);
+        assert_eq!(noon.skybox, Skybox::End);
+        assert_eq!((noon.star_brightness, noon.cloud_alpha), (0.0, 0.0));
+        assert_eq!(noon.fog, midnight.fog);
+        assert!((noon.fog.x / noon.fog.y - 0x18 as f32 / 0x13 as f32).abs() < 1e-3, "the_end fog #181318: {:?}", noon.fog);
+        assert_eq!(noon.fog.x, noon.fog.z);
+    }
+
+    #[test]
     fn only_the_overworld_has_clouds() {
         let Some(registries) = registries() else { return };
         assert!(sky_in(&registries, "minecraft:overworld", "minecraft:plains", 6000).cloud_alpha > 0.0);

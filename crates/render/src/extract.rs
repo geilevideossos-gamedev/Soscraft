@@ -931,10 +931,12 @@ pub fn extract_model_lighting_tiles(
     );
 }
 
+type EndLookImages = [Option<std::sync::Arc<render_gpu::MinecraftAtlasImage>>; 2];
+
 fn minecraft_end_look_images(
     end: &render_anim::minecraft_end_look::EndFrame,
-    held: &mut Option<(usize, [Option<std::sync::Arc<render_gpu::MinecraftAtlasImage>>; 2])>,
-) -> [Option<std::sync::Arc<render_gpu::MinecraftAtlasImage>>; 2] {
+    held: &mut Option<(usize, EndLookImages)>,
+) -> EndLookImages {
     let Some(look) = end.look.as_ref() else {
         return [None, None];
     };
@@ -969,7 +971,7 @@ pub fn extract_minecraft_world(
     mut cracks_of: Local<Option<(usize, std::sync::Arc<render_gpu::MinecraftAtlasImage>)>>,
     mut glint_of: Local<Option<(usize, std::sync::Arc<render_gpu::MinecraftAtlasImage>)>>,
     mut armor_glint_of: Local<Option<(usize, std::sync::Arc<render_gpu::MinecraftAtlasImage>)>>,
-    mut end_look_of: Local<Option<(usize, [Option<std::sync::Arc<render_gpu::MinecraftAtlasImage>>; 2])>>,
+    mut end_look_of: Local<Option<(usize, EndLookImages)>>,
 ) {
     let throwing = main_world
         .get_resource::<net::LocalPresentClient>()

@@ -136,3 +136,29 @@ Previous commit: 1597f7a8
 ```
 IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:diamond_shovel+efficiency=5,minecraft:diamond_pickaxe+efficiency=5,minecraft:cobblestone*64
 ```
+
+### 6. Minecraft End sky is drawn with its texture (E3-7)
+
+Previous commit: 436de3d8
+
+- **Defect:** the End drew the overworld sky with the End's colours: a sky disc, a sun and moon at fixed angles. Its clouds and stars were already gone (entry 4: the End has no cloud colour and no star brightness).
+- **Changed:** `render_gpu/src/drawsurf/minecraft_world.rs` (the sky shader): for the `end` skybox (mode 1), `sky_fragment` draws `SkyRenderer.renderEndSky` per pixel: the view ray picks the face of vanilla's 200-block cube (`buildEndSky`: the bottom quad turned by `rotationX(±π/2)`, `rotationX(π)` and `rotationZ(±π/2)`), the texture tiles 16 times across each face (UVs 0 to 16, repeating), its colour is multiplied by `#282828`, and it blends over the fog colour by its alpha (`END_SKY` pipeline: `position_tex_color` with translucent blending, over the cleared fog colour). No sun, moon, stars, sunrise or clouds, and no fog on the sky itself, as `position_tex_color` has none. The End's terrain fog was already vanilla's: `the_end.json`'s `#181318` mixed toward its black sky colour.
+- **Checked with javap (26.3):** `SkyRenderer.render` (`END` → `renderEndSky`, then the end flash only when its intensity is above 1e-5), `SkyRenderer.buildEndSky` (the six turns, the corners at ±100 with UVs 0 and 16, colour -14145496 = `#ff282828`), `renderEndSky` (`END_SKY` pipeline, `textures/environment/end_sky.png`), `RenderPipelines.END_SKY` (`core/position_tex_color`, `BlendFunction.TRANSLUCENT`).
+- **Tests:** `render_gpu`: `the_end_sky_tiles_its_texture_sixteen_times_on_each_face_of_vanillas_cube` (points across each of vanilla's six turned quads map to their interpolated UVs), `the_end_sky_is_drawn_for_the_end_skybox_only_and_shaded_like_vanilla`. `minecraft_terrain` `environment`: `the_end_sky_is_its_skybox_over_a_dark_purple_fog_with_no_stars`.
+- **Decisions:** the end flash of 26.3 (`renderEndFlash`, brief E3-29) is left for later: the End sky has no flash yet.
+- **Test steps:**
+  1. Keep `IW4L_MINECRAFT_WORLD=x1btest` and set `IW4L_MINECRAFT_DIMENSION=the_end`. Start on the obsidian platform. Look around and up: a very dark grey-purple speckled sky on every side, with no sun, moon, stars or clouds. **Screenshot 8.**
+  2. Look straight up, then straight down past the platform's edge into the void: the same speckled texture, tiled evenly, with straight seams where the cube's faces meet. **Screenshot 9.**
+  3. Look toward the main island to the west: the end stone fades into the dark purple fog in the distance. **Screenshot 10.**
+  4. Quit and set `IW4L_MINECRAFT_DIMENSION=overworld` (remove it afterwards): the overworld sky is unchanged.
+- **Kit:** none needed.
+
+### Group X1b summary
+
+Written with entry 6, in its commit.
+
+- **Commits:** entries 4 to 6 (E2-4, E3-3, E3-7).
+- **Tests:** with `MINECRAFTOSS_ROOT` set, `minecraft_terrain` 652 pass (3 ignored), `render_gpu` 33, `render_anim` 70 and `render` 0; `check -p launcher` is green.
+- **Clippy:** `clippy -p minecraft_terrain -p render_gpu -p render_anim -p render --all-targets --no-deps -- -A clippy::approx_constant` had one finding on this group's lines: the `Local` of entry 5 in `render/src/extract.rs` was a very complex type, now named `EndLookImages` (in entry 6's commit). The other warnings are older.
+- **Not done in this group:** the gateway beam (X6) and the end flash (E3-29).
+- **Owner test for the group:** in the world `x1btest`, entry 4's steps, then entry 5's with its kit, then entry 6's.

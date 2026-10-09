@@ -1036,6 +1036,26 @@ struct SkyOut {
 }
 
 const SKYBOX_NONE_ABOVE: f32 = 1.5;
+const SKYBOX_END_ABOVE: f32 = 0.5;
+const END_SKY_SHADE: f32 = 40.0 / 255.0;
+
+fn end_sky_uv(ray: vec3<f32>) -> vec2<f32> {
+    let size = abs(ray);
+    var local: vec3<f32>;
+    if size.y >= size.x && size.y >= size.z {
+        local = select(ray, vec3<f32>(ray.x, -ray.y, -ray.z), ray.y > 0.0);
+    } else if size.z >= size.x {
+        local = select(vec3<f32>(ray.x, ray.z, -ray.y), vec3<f32>(ray.x, -ray.z, ray.y), ray.z > 0.0);
+    } else {
+        local = select(vec3<f32>(-ray.y, ray.x, ray.z), vec3<f32>(ray.y, -ray.x, ray.z), ray.x > 0.0);
+    }
+    return (local.xz / -local.y + 1.0) * 8.0;
+}
+
+fn end_sky(ray: vec3<f32>) -> vec3<f32> {
+    let texel = textureSampleLevel(end_sky_texture, repeat_sampler, end_sky_uv(ray), 0.0);
+    return mix(view.environment.fog.rgb, texel.rgb * END_SKY_SHADE, texel.a);
+}
 
 @vertex
 fn sky_vertex(@builtin(vertex_index) index: u32) -> SkyOut {
@@ -1092,6 +1112,9 @@ fn sky_fragment(in: SkyOut) -> @location(0) vec4<f32> {
     let far = view.rel_from_clip * vec4<f32>(in.ndc, 0.5, 1.0);
     let map_ray = far.xyz / far.w;
     let ray = normalize(vec3<f32>(map_ray.x, map_ray.z, -map_ray.y));
+    if environment.ambient.w > SKYBOX_END_ABOVE {
+        return vec4<f32>(end_sky(ray), 1.0);
+    }
     // SkyRenderer's 16-block-high fan has a 512-block radius. Its fog value
     // interpolates between the center and rim vertex distances.
     var color = environment.fog.rgb;
@@ -1663,6 +1686,66 @@ mod tests {
         let offset = |name: &str| members.iter().find(|member| member.name.as_deref() == Some(name)).unwrap().offset as usize;
         assert_eq!(offset("end_portal_colors"), std::mem::offset_of!(super::TerrainView, end_portal_colors));
         assert_eq!(offset("end_portal"), std::mem::offset_of!(super::TerrainView, end_portal));
+    }
+
+    fn end_sky_uv(ray: bevy::math::Vec3) -> bevy::math::Vec2 {
+        let size = ray.abs();
+        let local = if size.y >= size.x && size.y >= size.z {
+            if ray.y > 0.0 { bevy::math::Vec3::new(ray.x, -ray.y, -ray.z) } else { ray }
+        } else if size.z >= size.x {
+            if ray.z > 0.0 { bevy::math::Vec3::new(ray.x, -ray.z, ray.y) } else { bevy::math::Vec3::new(ray.x, ray.z, -ray.y) }
+        } else if ray.x > 0.0 {
+            bevy::math::Vec3::new(ray.y, -ray.x, ray.z)
+        } else {
+            bevy::math::Vec3::new(-ray.y, ray.x, ray.z)
+        };
+        (bevy::math::Vec2::new(local.x, local.z) / -local.y + 1.0) * 8.0
+    }
+
+    #[test]
+    fn the_end_sky_tiles_its_texture_sixteen_times_on_each_face_of_vanillas_cube() {
+        let turns = [
+            bevy::math::Mat3::IDENTITY,
+            bevy::math::Mat3::from_rotation_x(std::f32::consts::FRAC_PI_2),
+            bevy::math::Mat3::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+            bevy::math::Mat3::from_rotation_x(std::f32::consts::PI),
+            bevy::math::Mat3::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            bevy::math::Mat3::from_rotation_z(-std::f32::consts::FRAC_PI_2),
+        ];
+        let corners = [([-100.0, -100.0, -100.0], [0.0, 0.0]), ([-100.0, -100.0, 100.0], [0.0, 16.0]), ([100.0, -100.0, 100.0], [16.0, 16.0]), ([100.0, -100.0, -100.0], [16.0, 0.0])]
+            .map(|(position, uv)| (bevy::math::Vec3::from_array(position), bevy::math::Vec2::from_array(uv)));
+        let mixed = |s: f32, t: f32| {
+            let [(p0, u0), (p1, u1), (p2, u2), (p3, u3)] = corners;
+            let along = |a: bevy::math::Vec3, b: bevy::math::Vec3, c: bevy::math::Vec3, d: bevy::math::Vec3| a.lerp(d, s).lerp(b.lerp(c, s), t);
+            let along_uv = |a: bevy::math::Vec2, b: bevy::math::Vec2, c: bevy::math::Vec2, d: bevy::math::Vec2| a.lerp(d, s).lerp(b.lerp(c, s), t);
+            (along(p0, p1, p2, p3), along_uv(u0, u1, u2, u3))
+        };
+        for turn in turns {
+            for s in [0.05, 0.3, 0.5, 0.77, 0.95] {
+                for t in [0.05, 0.4, 0.5, 0.62, 0.95] {
+                    let (point, uv) = mixed(s, t);
+                    let got = end_sky_uv((turn * point).normalize());
+                    assert!((got - uv).abs().max_element() < 1e-3, "{turn:?} at {s},{t}: {got} against {uv}");
+                }
+            }
+        }
+        let source = super::TERRAIN_WGSL;
+        for line in [
+            "local = select(ray, vec3<f32>(ray.x, -ray.y, -ray.z), ray.y > 0.0);",
+            "local = select(vec3<f32>(ray.x, ray.z, -ray.y), vec3<f32>(ray.x, -ray.z, ray.y), ray.z > 0.0);",
+            "local = select(vec3<f32>(-ray.y, ray.x, ray.z), vec3<f32>(ray.y, -ray.x, ray.z), ray.x > 0.0);",
+            "return (local.xz / -local.y + 1.0) * 8.0;",
+        ] {
+            assert!(source.contains(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn the_end_sky_is_drawn_for_the_end_skybox_only_and_shaded_like_vanilla() {
+        let end_above = wgsl_float("SKYBOX_END_ABOVE");
+        assert!(0.0 < end_above && end_above < 1.0, "render_anim sends 0 for the overworld and 1 for the End");
+        assert!((wgsl_float("END_SKY_SHADE") - 0x28 as f32 / 255.0).abs() < 1e-6, "SkyRenderer.buildEndSky colour -14145496");
+        assert!(super::TERRAIN_WGSL.contains("return mix(view.environment.fog.rgb, texel.rgb * END_SKY_SHADE, texel.a);"));
     }
 
     #[test]
