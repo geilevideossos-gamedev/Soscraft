@@ -75,6 +75,7 @@ pub(crate) enum DamageCause {
     Starve,
     Magic,
     Kill,
+    OutOfWorld,
     Mob {
         id: u64,
         type_id: &'static str,
@@ -131,6 +132,7 @@ impl DamageCause {
             Self::Starve => "starve",
             Self::Magic => "magic",
             Self::Kill => "genericKill",
+            Self::OutOfWorld => "outOfWorld",
             Self::Mob {
                 attack: MobAttack::Melee,
                 ..
@@ -148,6 +150,10 @@ impl DamageCause {
 
     fn is_fall(self) -> bool {
         matches!(self, Self::Fall | Self::EnderPearl)
+    }
+
+    fn always_most_significant_fall(self) -> bool {
+        self == Self::OutOfWorld
     }
 
     fn entity(self) -> Option<&'static str> {
@@ -257,12 +263,17 @@ impl CombatTracker {
         let mut fall: Option<(&CombatEntry, f32)> = None;
         let mut located: Option<(&CombatEntry, f32)> = None;
         for (index, entry) in self.entries.iter().enumerate() {
-            if entry.cause.is_fall()
-                && entry.fall_distance > 0.0
-                && fall.is_none_or(|(_, farthest)| entry.fall_distance > farthest)
+            let distance = if entry.cause.always_most_significant_fall() {
+                f32::MAX
+            } else {
+                entry.fall_distance
+            };
+            if (entry.cause.is_fall() || entry.cause.always_most_significant_fall())
+                && distance > 0.0
+                && fall.is_none_or(|(_, farthest)| distance > farthest)
             {
                 let before = index.checked_sub(1).map_or(entry, |i| &self.entries[i]);
-                fall = Some((before, entry.fall_distance));
+                fall = Some((before, distance));
             }
             if entry.location.is_some() && located.is_none_or(|(_, hardest)| entry.damage > hardest)
             {
@@ -285,7 +296,7 @@ impl CombatTracker {
         if last.cause.is_fall()
             && let Some(fall) = self.most_significant_fall()
         {
-            if fall.cause.is_fall() {
+            if fall.cause.is_fall() || fall.cause.always_most_significant_fall() {
                 return DeathKey {
                     key: fall
                         .location
@@ -530,6 +541,7 @@ mod tests {
                 "%1$s walked into the danger zone due to %2$s",
             ),
             ("death.attack.magic", "%1$s was killed by magic"),
+            ("death.attack.outOfWorld", "%1$s fell out of the world"),
             ("death.fell.accident.generic", "%1$s fell from a high place"),
             ("death.fell.accident.ladder", "%1$s fell off a ladder"),
             ("death.fell.accident.vines", "%1$s fell off some vines"),
@@ -581,6 +593,21 @@ mod tests {
         assert_eq!(
             line(&tracker),
             says("%1$s burned to death", "burned to death")
+        );
+    }
+
+    #[test]
+    fn the_void_kills_out_of_the_world_and_counts_as_the_highest_fall() {
+        let mut tracker = CombatTracker::default();
+        tracker.record(1, DamageCause::OutOfWorld, 4.0, None, 0.0);
+        assert_eq!(
+            line(&tracker),
+            says("%1$s fell out of the world", "fell out of the world")
+        );
+        tracker.record(2, DamageCause::Fall, 3.0, None, 6.0);
+        assert_eq!(
+            line(&tracker),
+            says("%1$s fell from a high place", "fell from a high place")
         );
     }
 

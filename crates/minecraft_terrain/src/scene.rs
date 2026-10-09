@@ -530,6 +530,9 @@ impl PlayerWorld for HandcraftedScene {
                 |state| states.registries().blocks.is(state, minecraftoss_core::block::flags::REPLACEABLE),
             )
     }
+    fn min_y(&self) -> i32 {
+        self.states.as_ref().map_or(-64, |states| states.vertical_range().start)
+    }
 }
 fn face_direction(face: minecraftoss_player::Face) -> minecraftoss_core::pos::Direction {
     use minecraftoss_core::pos::Direction;
@@ -565,6 +568,20 @@ mod collision_tests {
         assert!(fence.iter().any(|b| b[4] == 1.5), "{fence:?}");
         assert_eq!(PlayerWorld::collision_boxes(&scene, (2, 100, 0)), vec![[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]]);
         assert_eq!(PlayerWorld::collision_boxes(&scene, (3, 100, 0)), vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]);
+    }
+
+    #[test]
+    fn a_streamed_scene_starts_at_its_dimension_floor() {
+        use minecraftoss_core::registries::DataPaths;
+        use minecraftoss_core::Registries;
+        assert_eq!(PlayerWorld::min_y(&HandcraftedScene::new()), -64);
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let overworld = HandcraftedScene::streamed(Arc::new(crate::terrain::BlockStates::new(registries.clone(), 0, -64, 384).unwrap()));
+        let nether = HandcraftedScene::streamed(Arc::new(crate::terrain::BlockStates::new(registries, 0, 0, 256).unwrap()));
+        assert_eq!(PlayerWorld::min_y(&overworld), -64);
+        assert_eq!(PlayerWorld::min_y(&nether), 0);
     }
 
     #[test]

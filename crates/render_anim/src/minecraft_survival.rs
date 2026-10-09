@@ -16,6 +16,8 @@ const FIRE_IMMUNE_TICKS: i32 = 20;
 const FIRE_IGNITE_TICKS: i32 = 160;
 const LAVA_IGNITE_TICKS: i32 = 300;
 const LAVA_DAMAGE: f32 = 4.0;
+const OUT_OF_WORLD_DAMAGE: f32 = 4.0;
+const OUT_OF_WORLD_DEPTH: i32 = 64;
 const BURN_DAMAGE: f32 = 1.0;
 const BURN_INTERVAL: i32 = 20;
 pub(crate) const ATTACK_EXHAUSTION: f32 = 0.1;
@@ -383,6 +385,9 @@ impl Survival {
             }
             self.fire_ticks -= 1;
         }
+        if motion.feet[1] < f64::from(world.min_y() - OUT_OF_WORLD_DEPTH) {
+            self.fall_out_of_world(&mut random, &mut heard);
+        }
         let stride = (0..3)
             .map(|k| (motion.feet[k] - from[k]).powi(2))
             .sum::<f64>()
@@ -494,6 +499,31 @@ impl Survival {
             });
         }
         landed.is_some()
+    }
+
+    fn fall_out_of_world(
+        &mut self,
+        random: &mut impl FnMut() -> f32,
+        heard: &mut Vec<PlayerSound>,
+    ) {
+        let before = self.status.health;
+        let resistance = self.status.effect(EffectKind::Resistance);
+        self.status.remove_effect(EffectKind::Resistance);
+        let landed = self.status.hurt(OUT_OF_WORLD_DAMAGE, Armor::default(), 0.0);
+        if let Some(effect) = resistance {
+            self.status
+                .add_effect(EffectKind::Resistance, effect.duration, effect.amplifier);
+        }
+        self.record(before, DamageCause::OutOfWorld, 0.0);
+        if landed.is_some() && self.status.health <= 0.0 {
+            self.killed = true;
+        } else if landed == Some(true) {
+            heard.push(PlayerSound {
+                event: "minecraft:entity.player.hurt",
+                volume: 1.0,
+                pitch: (random() - random()) * 0.2 + 1.0,
+            });
+        }
     }
 
     pub(crate) fn hurt(
@@ -1955,6 +1985,11 @@ mod tests {
             ("death.attack.drown", "%1$s drowned"),
             ("death.attack.magic", "%1$s was killed by magic"),
             ("death.attack.generic", "%1$s died"),
+            ("death.attack.outOfWorld", "%1$s fell out of the world"),
+            (
+                "death.attack.outOfWorld.player",
+                "%1$s didn't want to live in the same world as %2$s",
+            ),
             ("death.fell.accident.ladder", "%1$s fell off a ladder"),
             ("entity.minecraft.zombie", "Zombie"),
             ("block.minecraft.lava", "Lava"),
@@ -2219,5 +2254,105 @@ mod tests {
         assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(3));
         let mut full = fresh();
         assert!(!full.start_eating(0, &stack));
+    }
+
+    struct Floor(i32);
+
+    impl World for Floor {
+        fn block(&self, _: (i32, i32, i32)) -> Option<minecraftoss_player::Block> {
+            None
+        }
+
+        fn set_block(&mut self, _: (i32, i32, i32), _: Option<minecraftoss_player::Block>) {}
+
+        fn min_y(&self) -> i32 {
+            self.0
+        }
+    }
+
+    fn falling(
+        survival: &mut Survival,
+        world: &Floor,
+        y: f64,
+        armor: Armor,
+        ticks: u32,
+    ) -> Vec<&'static str> {
+        let motion = Motion {
+            feet: [0.5, y, 0.5],
+            height: 1.8,
+            ..Motion::default()
+        };
+        let mut heard = Vec::new();
+        for _ in 0..ticks {
+            let from = survival.last_feet().unwrap_or(motion.feet);
+            survival.tick(&motion);
+            let sounds = survival.hazards(world, &motion, from, armor, || 0.25);
+            heard.extend(sounds.into_iter().map(|sound| sound.event));
+        }
+        heard
+    }
+
+    #[test]
+    fn the_void_hurts_four_every_ten_ticks_through_armor_and_resistance_below_the_floor() {
+        let iron = Armor {
+            value: Some((15.0, 0.0)),
+        };
+        let mut above = unfed();
+        assert!(falling(&mut above, &Floor(-64), -128.0, iron, 40).is_empty());
+        assert_eq!(above.status.health, 20.0);
+        let mut below = unfed();
+        below.status.add_effect(EffectKind::Resistance, 400, 4);
+        let heard = falling(&mut below, &Floor(-64), -128.01, iron, 40);
+        assert_eq!(below.status.health, 4.0);
+        assert_eq!(count(&heard, "minecraft:entity.player.hurt"), 4);
+        let resistance = below.status.effect(EffectKind::Resistance);
+        assert_eq!(resistance.map(|effect| effect.amplifier), Some(4));
+        let mut nether = unfed();
+        falling(&mut nether, &Floor(0), -63.9, Armor::default(), 40);
+        assert_eq!(nether.status.health, 20.0);
+        falling(&mut nether, &Floor(0), -64.1, Armor::default(), 40);
+        assert_eq!(nether.status.health, 4.0);
+    }
+
+    #[test]
+    fn creative_and_spectator_players_fall_out_of_the_world_past_a_totem() {
+        use minecraft_terrain::game_mode::PlayerMode;
+        for mode in [GameMode::Creative, GameMode::Spectator] {
+            let mut survival = unfed();
+            survival.set_game_mode(&PlayerMode::new(mode));
+            let mut inventory = Inventory::default();
+            inventory.slots[40] = Some(ItemStack::new("minecraft:totem_of_undying", 1));
+            let heard = falling(&mut survival, &Floor(-64), -200.0, Armor::default(), 41);
+            assert_eq!(survival.status.health, 0.0, "{mode:?}");
+            assert_eq!(count(&heard, "minecraft:entity.player.hurt"), 4);
+            assert!(survival.killed());
+            assert!(!survival.protect(&mut inventory, 0));
+            assert!(inventory.slots[40].is_some());
+            assert_eq!(
+                death(&survival),
+                said("%1$s fell out of the world", "fell out of the world")
+            );
+            assert_eq!(survival.settle(100, 100).damage, Some((100, None)));
+        }
+    }
+
+    #[test]
+    fn falling_out_of_the_world_after_a_zombie_hit_names_the_zombie() {
+        let mut survival = unfed();
+        let zombie = DamageCause::mob(
+            crate::minecraft_death::MobAttack::Melee,
+            Some(4),
+            Some("minecraft:zombie"),
+        );
+        assert!(survival.hurt(2.0, Armor::default(), None, zombie));
+        falling(&mut survival, &Floor(-64), -130.0, Armor::default(), 60);
+        assert_eq!(survival.status.health, 0.0);
+        assert_eq!(
+            death(&survival),
+            said(
+                "%1$s didn't want to live in the same world as Zombie",
+                "Zombie"
+            )
+        );
     }
 }
