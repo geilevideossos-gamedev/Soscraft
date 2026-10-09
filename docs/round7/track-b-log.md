@@ -664,7 +664,7 @@ IW4L_MINECRAFT_KIT=experience_bottle*64,splash_potion@poison,splash_potion@harmi
 
 ### 5. Minecraft splash and lingering potions show their colour in flight
 
-Commit: (next entry)
+Commit: e1228a3
 
 - **Changed:** `entities.rs` keeps the snapshot's `thrown_views` and draws them with `thrown::append_views`: a splash or lingering potion is its bottle over `item/potion_overlay` tinted with the contents' colour (`ThrownItemRenderer`), every other throw its item sprite as before. `EntitySnapshot.thrown`, `ServerSim::thrown_view` and `thrown::append_sprites` are gone (After the split item 5).
 - **Tests:** thrown: `a_potion_in_flight_is_its_tinted_overlay_under_its_bottle`. The server tests that looked at `thrown_view` read `thrown_views`.
@@ -675,4 +675,19 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=splash_potion@poison,splash_potion@harming,lingering_potion@regeneration,snowball*16,experience_bottle*16
+```
+
+### 6. Minecraft lingering potion clouds are drawn with their drifting specks
+
+Commit: (next entry)
+
+- **Changed:** `entities.rs` keeps the snapshot's `clouds` and, every client tick before the specks move, gives each one `AreaEffectCloud.clientTick`'s particles through `SpellParticles::cloud` (a disc of `ceil(pi r^2)` still specks in the cloud's colour, or a few white and coloured ones while it waits its first 10 ticks); they draw with the potion swirl of entry 4 (After the split item 8).
+- **Tests:** none new; the particles are entry 7 of the throwables group (`a_cloud_fills_its_circle_each_tick`).
+- **Test steps:**
+  1. Throw the lingering Poison at the ground 4 blocks away: a flat disc of green specks covers about 3 blocks around the spot and shrinks away over about 25 seconds. Screenshot at the start and after 15 seconds.
+  2. Throw the lingering Regeneration: the disc is pink.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=lingering_potion@poison,lingering_potion@regeneration
 ```

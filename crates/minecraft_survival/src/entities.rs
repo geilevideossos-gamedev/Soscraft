@@ -84,6 +84,7 @@ pub struct Entities {
     pub sounds: Vec<(String, DVec3, f32, f32)>,
     random: minecraftoss_player::rng::LegacyRandom,
     thrown: Vec<minecraft_terrain::thrown::ThrownView>,
+    clouds: Vec<minecraft_terrain::effect_cloud::CloudView>,
     orbs: Vec<ServerOrb>,
     falling: minecraft_terrain::falling_render::FallingBlocks,
     orb_pickups: Vec<minecraft_terrain::orb_render::OrbPickup>,
@@ -198,6 +199,7 @@ impl Entities {
             sounds: Vec::new(),
             random: minecraftoss_player::rng::LegacyRandom::new((seed ^ 0x1735) as u64),
             thrown: Vec::new(),
+            clouds: Vec::new(),
             orbs: Vec::new(),
             falling: Default::default(),
             orb_pickups: Vec::new(),
@@ -584,6 +586,9 @@ impl Entities {
                 }
             }
             self.portal.tick();
+            for cloud in &self.clouds {
+                self.spell.cloud(cloud.position, cloud.radius, cloud.color, cloud.waiting);
+            }
             self.spell.tick();
             minecraft_terrain::orb_render::tick_pickups(&mut self.orb_pickups, orb_pickup_target);
             if self.ticks % 600 == 0 {
@@ -634,6 +639,7 @@ impl Entities {
             }
             if let Some(mut snapshot) = output.entities {
                 self.thrown = std::mem::take(&mut snapshot.thrown_views);
+                self.clouds = std::mem::take(&mut snapshot.clouds);
                 self.orbs = snapshot.orbs.clone();
                 self.falling.receive(std::mem::take(&mut snapshot.falling), std::mem::take(&mut snapshot.tnt), &output.changes, self.ticks);
                 self.server_snapshot = Some(snapshot);
