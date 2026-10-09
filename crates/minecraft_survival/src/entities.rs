@@ -83,7 +83,7 @@ pub struct Entities {
     /// volume, pitch.
     pub sounds: Vec<(String, DVec3, f32, f32)>,
     random: minecraftoss_player::rng::LegacyRandom,
-    thrown: Vec<(String, [f64; 3], [f64; 3], i32)>,
+    thrown: Vec<minecraft_terrain::thrown::ThrownView>,
     orbs: Vec<ServerOrb>,
     falling: minecraft_terrain::falling_render::FallingBlocks,
     orb_pickups: Vec<minecraft_terrain::orb_render::OrbPickup>,
@@ -633,7 +633,7 @@ impl Entities {
                 self.orb_pickups.push(minecraft_terrain::orb_render::OrbPickup::new(orb, orb_pickup_target));
             }
             if let Some(mut snapshot) = output.entities {
-                self.thrown = snapshot.thrown.clone();
+                self.thrown = std::mem::take(&mut snapshot.thrown_views);
                 self.orbs = snapshot.orbs.clone();
                 self.falling.receive(std::mem::take(&mut snapshot.falling), std::mem::take(&mut snapshot.tnt), &output.changes, self.ticks);
                 self.server_snapshot = Some(snapshot);
@@ -882,17 +882,7 @@ impl Entities {
         let moving = self.falling.moving_blocks(scene, partial);
         let _ = self.items.append_moving_blocks(&mut out.items, &moving, scene, packs, atlas, light);
         let _ = self.items.append_primed_tnt(&mut out.items, &self.falling.primed_tnt(partial), packs, atlas, light);
-        minecraft_terrain::thrown::append_sprites(
-            &mut out.items,
-            self.thrown
-                .iter()
-                .map(|(item, previous, now, age)| (item.as_str(), DVec3::from_array(*previous).lerp(DVec3::from_array(*now), f64::from(partial)), *age))
-                .filter(|(_, at, age)| minecraft_terrain::thrown::shown(*age, *at, camera))
-                .map(|(item, at, _)| (item, at)),
-            atlas,
-            forward,
-            light,
-        );
+        minecraft_terrain::thrown::append_views(&mut out.items, &self.thrown, partial, camera, atlas, forward, light);
         self.poof.append_mesh(&mut out.items, atlas, forward, partial, light);
         self.portal.append_mesh(&mut out.items, atlas, forward, partial, light);
         self.spell.append_mesh(&mut out.translucent, atlas, forward, partial, light);

@@ -174,7 +174,6 @@ pub struct EntitySnapshot {
     pub tnt: Vec<ServerTnt>,
     pub falling: Vec<ServerFallingBlock>,
     pub orbs: Vec<ServerOrb>,
-    pub thrown: Vec<(String, [f64; 3], [f64; 3], i32)>,
     pub thrown_views: Vec<crate::thrown::ThrownView>,
     pub clouds: Vec<crate::effect_cloud::CloudView>,
     pub tridents: Vec<crate::trident::TridentView>,
@@ -921,10 +920,6 @@ impl ServerSim {
             self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::thrown::BREAK_SOUND, pos: crate::thrown::sound_cell(broken.position), volume: 1.0, pitch });
             self.potion_breaks.push(broken);
         }
-    }
-
-    pub fn thrown_view(&self) -> Vec<(String, [f64; 3], [f64; 3], i32)> {
-        self.thrown.iter().map(|t| (t.item.clone(), t.previous.to_array(), t.position().to_array(), t.age())).collect()
     }
 
     pub fn thrown_views(&self) -> Vec<crate::thrown::ThrownView> {
@@ -1878,7 +1873,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     }
                     // After the items, one experience orb.
                     out.orbs_taken.extend(sim.take_experience(pickup_feet));
-                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown: sim.thrown_view(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views() });
+                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views() });
                     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
                     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), started.elapsed().as_secs_f64() * 1000.0));
                 }
@@ -3865,7 +3860,7 @@ mod tests {
         assert_eq!(landings.len(), 1);
         assert_eq!(landings[0].0, 0);
         assert!(landings[0].1[1] >= 200.0 && landings[0].1[1] < 202.0, "{landings:?}");
-        assert!(server.thrown_view().is_empty());
+        assert!(server.thrown_views().is_empty());
     }
 
     #[test]
@@ -3892,7 +3887,7 @@ mod tests {
         server.throw(thrown_down("minecraft:ender_pearl", 3));
         server.throw(thrown_down("minecraft:snowball", 4));
         server.tick_thrown(&[]);
-        let left: Vec<String> = server.thrown_view().into_iter().map(|t| t.0).collect();
+        let left: Vec<String> = server.thrown_views().into_iter().map(|t| t.item).collect();
         assert_eq!(left, vec!["minecraft:snowball".to_owned()]);
         assert!(server.take_pearl_teleports().is_empty());
     }
@@ -3919,7 +3914,7 @@ mod tests {
             for _ in 0..40 {
                 server.tick_thrown(&[]);
             }
-            assert!(server.thrown_view().is_empty());
+            assert!(server.thrown_views().is_empty());
             let orbs: Vec<_> = server.level.entities.iter().filter(|e| !e.removed && e.orb_data().is_some()).collect();
             let total: i32 = orbs.iter().map(|e| e.orb_data().map_or(0, |d| d.value * d.count)).sum();
             assert!((3..=11).contains(&total), "{total}");
@@ -4209,7 +4204,7 @@ mod tests {
             server.tick_thrown(&players);
             pushed.extend(server.take_players_pushed());
         }
-        assert!(server.thrown_view().is_empty());
+        assert!(server.thrown_views().is_empty());
         let cow = &server.mobs.cows()[0];
         assert_eq!(cow.cow.health, before, "the burst itself hurts nobody");
         assert!(cow.cow.body.velocity.x > 0.0 && cow.cow.body.velocity.y > 0.0, "{:?}", cow.cow.body.velocity);

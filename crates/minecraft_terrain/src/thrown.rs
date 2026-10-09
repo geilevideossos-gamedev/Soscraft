@@ -770,49 +770,6 @@ pub fn append_views<'a>(mesh: &mut ChunkMesh, views: impl IntoIterator<Item = &'
     }
 }
 
-pub fn append_sprites<'a>(
-    mesh: &mut ChunkMesh,
-    items: impl IntoIterator<Item = (&'a str, DVec3)>,
-    atlas: &Atlas,
-    forward: Vec3,
-    light: &SkyLight,
-) {
-    let right = forward.cross(Vec3::Y).normalize_or_zero();
-    let up = right.cross(forward).normalize_or_zero();
-    for (item, at) in items {
-        let Some(id) = texture(item).filter(|id| atlas.contains(id)) else {
-            continue;
-        };
-        let cell = (
-            at.x.floor() as i32,
-            at.y.floor() as i32,
-            at.z.floor() as i32,
-        );
-        let (sky, block) = (light.get(cell) as f32, light.get_block(cell) as f32);
-        let center = at.as_vec3() + up * 0.125;
-        let [u0, v0, u1, v1] = atlas.region(&id);
-        let start = mesh.vertices.len() as u32;
-        for (corner, uv) in [
-            (Vec2::new(-0.25, -0.25), [u0, v1]),
-            (Vec2::new(0.25, -0.25), [u1, v1]),
-            (Vec2::new(0.25, 0.25), [u1, v0]),
-            (Vec2::new(-0.25, 0.25), [u0, v0]),
-        ] {
-            let point = center + right * corner.x + up * corner.y;
-            mesh.vertices.push(Vertex {
-                position: point.to_array(),
-                uv,
-                color: [1.0; 4],
-                sky_light: sky,
-                block_light: block,
-            });
-        }
-        mesh.indices
-            .extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
-        mesh.faces += 1;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1215,6 +1172,24 @@ mod tests {
             assert_eq!(motion.y, 0.0);
         }
         assert!(portal.iter().any(|(_, m)| m.x.abs() > 0.5));
+    }
+
+    #[test]
+    fn a_potion_in_flight_is_its_tinted_overlay_under_its_bottle() {
+        let mut view = throw("minecraft:splash_potion", 0.0).view();
+        view.tint = Some(0xFF0000);
+        let drawn: Vec<(String, [f32; 4])> = layers(&view).into_iter().map(|(id, color)| (id.key(), color)).collect();
+        assert_eq!(
+            drawn,
+            vec![
+                ("minecraft:item/potion_overlay".to_owned(), [1.0, 0.0, 0.0, 1.0]),
+                ("minecraft:item/splash_potion".to_owned(), [1.0; 4])
+            ]
+        );
+        let snowball = throw("minecraft:snowball", 0.0).view();
+        assert_eq!(snowball.tint, None);
+        let drawn: Vec<String> = layers(&snowball).into_iter().map(|(id, _)| id.key()).collect();
+        assert_eq!(drawn, vec!["minecraft:item/snowball".to_owned()]);
     }
 
     #[test]

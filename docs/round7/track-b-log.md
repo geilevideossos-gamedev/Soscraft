@@ -648,7 +648,7 @@ IW4L_MINECRAFT_KIT=snowball*16,egg*16,brown_egg*16,blue_egg*16,ender_pearl*16
 
 ### 4. Minecraft potions and bottles o' enchanting break with the vanilla swirl and glass crumbs
 
-Commit: (next entry)
+Commit: 643656a
 
 - **Changed:** `entities.rs`: `Entities.spell` (`SpellParticles`, seeded from the world seed) swirls every `Output.potion_breaks` entry (`burst`: 100 `effect` or `instant_effect` specks in the potion's colour; thrown bottles o' enchanting and potions and witches' potions alike), ticks with the portal specks and draws into the translucent entity mesh. Each break also queues its block's bottom centre in `Entities.potion_crumbs`, which the adapter spawns as `LevelEventHandler`'s 8 `splash_potion` item crumbs with the item's particle texture (`Mining::potion_crumbs` over `BlockParticles::spawn_potion_crumbs`). `thrown.rs` `SPLASH_POTION` (After the split item 4).
 - **Tests:** none new; the swirl and the crumbs are entry 4 of the throwables group (`a_break_swirls_a_hundred_spells_of_its_colour_from_the_block_bottom`, `a_potion_breaks_into_eight_untinted_crumbs_flying_out_and_up`).
@@ -660,4 +660,19 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=experience_bottle*64,splash_potion@poison,splash_potion@harming,witch_spawn_egg*2
+```
+
+### 5. Minecraft splash and lingering potions show their colour in flight
+
+Commit: (next entry)
+
+- **Changed:** `entities.rs` keeps the snapshot's `thrown_views` and draws them with `thrown::append_views`: a splash or lingering potion is its bottle over `item/potion_overlay` tinted with the contents' colour (`ThrownItemRenderer`), every other throw its item sprite as before. `EntitySnapshot.thrown`, `ServerSim::thrown_view` and `thrown::append_sprites` are gone (After the split item 5).
+- **Tests:** thrown: `a_potion_in_flight_is_its_tinted_overlay_under_its_bottle`. The server tests that looked at `thrown_view` read `thrown_views`.
+- **Test steps:**
+  1. Throw the splash Poison, the splash Harming and the lingering Regeneration high into the air and watch them fly: each bottle shows its potion's colour (green, dark red, pink) on the way, not a grey bottle. Screenshot in flight.
+  2. Throw a snowball and a bottle o' enchanting: they look as before.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=splash_potion@poison,splash_potion@harming,lingering_potion@regeneration,snowball*16,experience_bottle*16
 ```
