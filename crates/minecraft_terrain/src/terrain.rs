@@ -1003,6 +1003,10 @@ fn nether_spawn(server: &mut ChunkMap) -> (f64, f64, f64) {
     (0.5, 64.0, 0.5)
 }
 
+fn block_centre((x, y, z): (i32, i32, i32)) -> (f64, f64, f64) {
+    (f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5)
+}
+
 impl TerrainStream {
     pub fn new(registries: Arc<Registries>, seed: i64, view_distance: i32) -> Result<Self> {
         Self::for_dimension(registries, seed, view_distance, Dimension::Overworld, None)
@@ -1055,12 +1059,18 @@ impl TerrainStream {
                 let world_spawn = known_spawn.unwrap_or_else(|| spawn::world_spawn(&mut server));
                 (world_spawn, spawn::player_spawn(&mut server, world_spawn, spawn::DEFAULT_RESPAWN_RADIUS, unseeded()))
             }
-            Dimension::Nether => {
-                let (x, y, z) = nether_spawn(&mut server);
-                ((x as i32, y as i32, z as i32), (x, y, z))
-            }
+            Dimension::Nether => match known_spawn {
+                Some(known) => (known, block_centre(known)),
+                None => {
+                    let (x, y, z) = nether_spawn(&mut server);
+                    ((x as i32, y as i32, z as i32), (x, y, z))
+                }
+            },
             // ServerLevel.END_SPAWN_POINT: the obsidian platform at 100, 49, 0.
-            Dimension::End => ((100, 49, 0), (100.5, 49.0, 0.5)),
+            Dimension::End => {
+                let known = known_spawn.unwrap_or((100, 49, 0));
+                (known, block_centre(known))
+            }
         };
         eprintln!("spawn found in {:.2}s ({} chunks generated)", searching.elapsed().as_secs_f64(), server.stats().generated);
         let (min_section, max_section) = states.section_range();
@@ -2160,5 +2170,137 @@ mod tests {
         let reopened = level.chunk_storage("minecraft:overworld", registries, -64, 384).load(column).unwrap().unwrap();
         assert_eq!(reopened.block(8, 300, 8), gold);
         assert!(dir.path().join("dimensions/minecraft/overworld/region/r.0.-1.mca").is_file());
+    }
+
+    fn count_blocks(registries: &Registries, chunk: &Chunk, counts: &mut HashMap<String, u32>) {
+        let blocks = &registries.blocks;
+        let min_y = chunk.min_section_y() * 16;
+        let max_y = min_y + chunk.sections().len() as i32 * 16;
+        for y in min_y..max_y {
+            for z in 0..16usize {
+                for x in 0..16usize {
+                    let name = blocks.block(blocks.block_of(chunk.block(x, y, z))).name.to_string();
+                    *counts.entry(name).or_default() += 1;
+                }
+            }
+        }
+    }
+
+    fn count(counts: &HashMap<String, u32>, name: &str) -> u32 {
+        counts.get(name).copied().unwrap_or(0)
+    }
+
+    #[test]
+    fn nether_chunks_generate_light_and_tick_around_the_origin() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let dir = crate::test_dir::tempdir().unwrap();
+        let level = crate::level_storage::LevelStorage::open(dir.path()).unwrap();
+        let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::Nether, Some(level.root()), None).unwrap();
+        assert!(!stream.states.sky_light);
+        assert_eq!(stream.states.section_range(), (0, 15), "the Nether is 256 blocks high from 0");
+        let (x, y, z) = stream.player_spawn;
+        assert!((32.0..123.0).contains(&y), "the stand-in floor is under the roof: {:?}", stream.player_spawn);
+        let blocks = &registries.blocks;
+        let bedrock = blocks.block_by_name("minecraft:bedrock").unwrap();
+        let mut counts = HashMap::new();
+        let mut scene = HandcraftedScene::streamed(stream.states.clone());
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                let chunk = stream.server.load_now(minecraftoss_core::ChunkPos::new(cx, cz));
+                for zz in 0..16usize {
+                    for xx in 0..16usize {
+                        assert_eq!(blocks.block_of(chunk.block(xx, 0, zz)), bedrock, "bedrock floor at chunk {cx},{cz}");
+                        assert_eq!(blocks.block_of(chunk.block(xx, 127, zz)), bedrock, "bedrock roof at chunk {cx},{cz}");
+                        assert!(blocks.is_air(chunk.block(xx, 200, zz)), "nothing above the roof at chunk {cx},{cz}");
+                    }
+                }
+                count_blocks(&registries, &chunk, &mut counts);
+                scene.insert_chunk(chunk);
+            }
+        }
+        let (bx, by, bz) = (x.floor() as i32, y as i32, z.floor() as i32);
+        let chunk = stream.server.load_now(minecraftoss_core::ChunkPos::new(bx >> 4, bz >> 4));
+        let (fx, fz) = ((bx & 15) as usize, (bz & 15) as usize);
+        assert!(blocks.is_air(chunk.block(fx, by, fz)) && blocks.is_air(chunk.block(fx, by + 1, fz)), "the player stands in two blocks of air");
+        for name in ["minecraft:netherrack", "minecraft:lava"] {
+            assert!(count(&counts, name) > 0, "no {name} in {counts:?}");
+        }
+        for name in ["minecraft:stone", "minecraft:dirt", "minecraft:grass_block", "minecraft:water", "minecraft:end_stone"] {
+            assert_eq!(count(&counts, name), 0, "{name} in the Nether");
+        }
+        assert!(count(&counts, "minecraft:netherrack") > count(&counts, "minecraft:lava"), "{counts:?}");
+        let hood = Neighborhood::of(&scene, (0, 0)).expect("the chunks around 0,0 are loaded");
+        light_chunk(&stream.states, &hood);
+        let mut sim = crate::server::ServerSim::new(stream.world_gen(), stream.states.clone(), "minecraft:the_nether");
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                sim.load_chunk(&stream.server.load_now(minecraftoss_core::ChunkPos::new(cx, cz)));
+            }
+        }
+        sim.set_clocks(crate::server::ClockTicks { overworld: 6000, the_end: 0 });
+        for _ in 0..40 {
+            sim.tick();
+        }
+        assert_eq!(sim.weather_data(), None, "the Nether has no weather");
+        drop(sim);
+        drop(stream);
+        assert!(dir.path().join("dimensions/minecraft/the_nether/region").is_dir(), "the Nether saves under its own dimension folder");
+        let known = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::Nether, Some(level.root()), Some((5, 70, -3))).unwrap();
+        assert_eq!(known.world_spawn, (5, 70, -3), "a known Nether spawn is kept");
+        assert_eq!(known.player_spawn, (5.5, 70.0, -2.5));
+        assert_eq!(known.server.stats().generated, 0, "and nothing is searched");
+    }
+
+    #[test]
+    fn end_chunks_generate_the_main_island_around_the_origin() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let dir = crate::test_dir::tempdir().unwrap();
+        let level = crate::level_storage::LevelStorage::open(dir.path()).unwrap();
+        let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::End, Some(level.root()), None).unwrap();
+        assert_eq!(stream.world_spawn, (100, 49, 0), "ServerLevel.END_SPAWN_POINT");
+        assert_eq!(stream.player_spawn, (100.5, 49.0, 0.5));
+        assert_eq!(stream.server.stats().generated, 0, "the End needs no search");
+        assert!(stream.states.sky_light);
+        assert_eq!(stream.states.section_range(), (0, 15), "the End is 256 blocks high from 0");
+        let blocks = &registries.blocks;
+        let end_stone = blocks.block_by_name("minecraft:end_stone").unwrap();
+        let mut counts = HashMap::new();
+        let mut scene = HandcraftedScene::streamed(stream.states.clone());
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                let chunk = stream.server.load_now(minecraftoss_core::ChunkPos::new(cx, cz));
+                count_blocks(&registries, &chunk, &mut counts);
+                scene.insert_chunk(chunk);
+            }
+        }
+        let centre = stream.server.load_now(minecraftoss_core::ChunkPos::new(0, 0));
+        assert!((0..256).any(|y| blocks.block_of(centre.block(8, y, 8)) == end_stone), "the main island covers 0,0");
+        assert!(count(&counts, "minecraft:end_stone") > 10_000, "{counts:?}");
+        assert!(count(&counts, "minecraft:obsidian") > 0, "the end spikes stand on the island: {counts:?}");
+        for name in ["minecraft:stone", "minecraft:netherrack", "minecraft:dirt", "minecraft:water", "minecraft:lava"] {
+            assert_eq!(count(&counts, name), 0, "{name} in the End around 0,0");
+        }
+        let hood = Neighborhood::of(&scene, (0, 0)).expect("the chunks around 0,0 are loaded");
+        light_chunk(&stream.states, &hood);
+        let mut sim = crate::server::ServerSim::new(stream.world_gen(), stream.states.clone(), "minecraft:the_end");
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                sim.load_chunk(&stream.server.load_now(minecraftoss_core::ChunkPos::new(cx, cz)));
+            }
+        }
+        for _ in 0..40 {
+            sim.tick();
+        }
+        assert_eq!(sim.weather_data(), None, "the End has no weather");
+        drop(sim);
+        drop(stream);
+        assert!(dir.path().join("dimensions/minecraft/the_end/region").is_dir(), "the End saves under its own dimension folder");
+        let far = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::End, Some(level.root()), Some((1200, 60, 0))).unwrap();
+        assert_eq!(far.world_spawn, (1200, 60, 0), "a known End spawn is kept");
+        assert_eq!(far.player_spawn, (1200.5, 60.0, 0.5));
     }
 }

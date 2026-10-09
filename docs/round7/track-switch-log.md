@@ -54,7 +54,7 @@ Commit: 0c4e7fb
 
 ### 3. Minecraft weather keeps changing while nobody is in the overworld (E1-3)
 
-Commit: filled in by the next entry
+Commit: 70ad059
 
 - **Changed:**
   - Vendored `third_party/minecraftoss/world/src/level/time.rs` (MinecraftOSS patch): the rain and thunder timers of `advance_weather_cycle` moved unchanged into `Weather::advance_timers(random)`, which the level still calls, so the server can run them without a level.
@@ -67,7 +67,20 @@ Commit: filled in by the next entry
   - Rain and thunder levels (the fade) stay per level, as in vanilla. A level that opens takes the server's `WeatherData` through `Entities::new`, which starts it already raining when it rains (track D's `prepareWeather`). Handing the weather back to an overworld level that stayed open while the player was away comes with the level reuse of S2.
 - **Test steps:** nothing visible changes in the overworld until the Nether can be entered (S2/S3). Check that the weather still works:
   1. Keep `IW4L_MINECRAFT_WORLD=dimtest` and remove any `IW4L_MINECRAFT_WEATHER` line. Start.
-  2. Type `/weather rain 60`. It rains. **Screenshot 1.**
+  2. Type `/weather rain 60s` (a plain 60 would be 60 ticks, 3 seconds). It rains. **Screenshot 1.**
   3. Wait about a minute: the rain stops by itself.
   4. Quit and start again: still clear, and the log says `Minecraft weather: clear from weather.dat`.
 - **Kit:** none needed; any kit works.
+
+### 4. Minecraft Nether and End terrain generates in a test (E1-4)
+
+Commit: filled in by the next entry
+
+- **Changed:**
+  - `minecraft_terrain/src/terrain.rs`: `TerrainStream::for_dimension_at` keeps a known spawn for the Nether and the End too, at the block's bottom centre, instead of always searching the stand-in Nether floor around chunk 0,0 or always using the End platform. The search and `ServerLevel.END_SPAWN_POINT` (100, 49, 0) stay the fallbacks. S2's level loader passes the saved or arrival position here.
+  - The new tests are the first run of the Nether and End generators in the fork (NETHER-END.md said they had never run). Nothing panicked and nothing had to be patched: no MinecraftOSS patch in this commit.
+- **Tests:** `terrain`: `nether_chunks_generate_light_and_tick_around_the_origin` generates the 5x5 chunks around 0,0 of seed 77 into a real world folder. Every column has bedrock at y 0 and 127 and air above the roof, the dimension is 256 blocks from y 0 without sky light, the stand-in spawn has two air blocks under the roof, there is netherrack and lava and no overworld or End block; then the chunks are lit, a Nether `ServerSim` ticks them 40 times with the world clocks, the region files land in `dimensions/minecraft/the_nether/region`, and a known spawn is kept with no chunk generated. `end_chunks_generate_the_main_island_around_the_origin` does the same for the End: the platform spawn with no search, end stone under 0,0 and more than 10,000 blocks of it, obsidian from the end spikes, no overworld or Nether block, lighting, 40 ticks of an End `ServerSim`, its region folder, and a known spawn kept.
+  - What the run produced (seed 77, chunks -2..2): the Nether has netherrack, lava, magma, blackstone, gravel, soul sand and soil, quartz and gold ore, ancient debris, glowstone and a crimson forest (nylium, stems, wart blocks, shroomlights, roots, fungi, weeping vines); the End has end stone and the end spikes with their iron bar cages, bedrock tops and fire.
+- **Decisions:** the smoke tests stop at what the headless crates can run (generation, light, the server level). Section meshes need the resource pack and run in game; they are not tested here.
+- **Test steps:** none in game; the Nether and the End can be entered from S2 on (`IW4L_MINECRAFT_DIMENSION`).
+- **Kit:** none.
