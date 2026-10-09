@@ -1,21 +1,29 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use minecraft_commands::{
     Clientbound, Clock, CommandRegistries, CommandServer, CommandWorld, ItemArg, PlayerId, Pose,
     Serverbound, Text, Weather,
 };
+use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_terrain::day_cycle::DayCycle;
-use minecraft_terrain::game_mode::{GameMode, PlayerMode};
+use minecraft_terrain::game_mode::GameMode;
 use minecraft_terrain::game_rules::{GameRules, Rule, Value};
 use minecraftoss_player::Difficulty;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::survival::{Armor, EffectKind};
 
+use crate::entities::Entities;
 use crate::level::Level;
 use crate::player::Player;
 use crate::server::Globals;
 
 pub const HOST: PlayerId = PlayerId(0);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Presence {
+    pub pose: Option<Pose>,
+    pub alive: bool,
+}
 
 pub struct Host<'a> {
     pub seed: i64,
@@ -23,16 +31,55 @@ pub struct Host<'a> {
     pub difficulty: &'a mut Difficulty,
     pub day: &'a mut DayCycle,
     pub save: Option<&'a mut crate::save::WorldSave>,
-    pub survival: &'a mut crate::survival::Survival,
-    pub entities: Option<&'a mut crate::entities::Entities>,
-    pub inventory: &'a mut Inventory,
-    pub selected: usize,
-    pub player_mode: &'a mut PlayerMode,
+    pub data: &'a crate::data::GameData,
+    pub levels: &'a mut BTreeMap<Dimension, Level>,
+    pub players: &'a mut BTreeMap<PlayerUuid, Player>,
+    pub presence: Vec<(PlayerUuid, Presence)>,
     pub rules_changed: bool,
-    pub mode_changed: bool,
-    pub pose: Option<Pose>,
-    pub alive: bool,
-    pub teleports: Vec<[f64; 3]>,
+    pub mode_changed: Vec<PlayerId>,
+    pub teleports: Vec<(PlayerId, [f64; 3])>,
+}
+
+impl Host<'_> {
+    fn player(&self, id: PlayerId) -> Option<&Player> {
+        self.players.values().find(|player| player.id == id)
+    }
+
+    fn player_mut(&mut self, id: PlayerId) -> Option<&mut Player> {
+        self.players.values_mut().find(|player| player.id == id)
+    }
+
+    fn presence_mut(&mut self, id: PlayerId) -> Option<&mut Presence> {
+        let uuid = self.player(id)?.uuid.clone();
+        self.presence
+            .iter_mut()
+            .find(|(known, _)| *known == uuid)
+            .map(|(_, presence)| presence)
+    }
+
+    fn presence(&self, id: PlayerId) -> Presence {
+        let Some(player) = self.player(id) else {
+            return Presence::default();
+        };
+        self.presence
+            .iter()
+            .find(|(known, _)| *known == player.uuid)
+            .map_or_else(Presence::default, |(_, presence)| *presence)
+    }
+
+    fn player_in_level(&mut self, id: PlayerId) -> Option<(&mut Player, Option<&mut Entities>)> {
+        let player = self.players.values_mut().find(|player| player.id == id)?;
+        let entities = self
+            .levels
+            .get_mut(&player.dimension)
+            .and_then(|level| level.entities.as_mut());
+        Some((player, entities))
+    }
+
+    fn entities_of(&mut self, id: PlayerId) -> Option<&mut Entities> {
+        let dimension = self.player(id).map_or(Dimension::Overworld, |player| player.dimension);
+        self.levels.get_mut(&dimension)?.entities.as_mut()
+    }
 }
 
 pub fn registries(packs: &minecraft_terrain::pack::PackStack) -> CommandRegistries {
@@ -211,41 +258,48 @@ impl CommandWorld for Host<'_> {
             Weather::Rain => "rain",
             Weather::Thunder => "thunder",
         };
-        if let Some(entities) = self.entities.as_mut() {
+        if let Some(entities) = self
+            .levels
+            .get_mut(&Dimension::Overworld)
+            .and_then(|level| level.entities.as_mut())
+        {
             entities.set_weather(kind, duration);
         }
     }
 
     fn kill(&mut self, player: PlayerId) -> bool {
-        if player != HOST {
+        let Some(player) = self.player_mut(player) else {
             return false;
-        }
-        self.survival.kill(crate::death::DamageCause::Kill);
+        };
+        player.survival.kill(crate::death::DamageCause::Kill);
         true
     }
 
     fn game_mode(&self, player: PlayerId) -> Option<GameMode> {
-        (player == HOST).then_some(self.player_mode.mode)
+        self.player(player).map(|player| player.mode.mode)
     }
 
     fn set_game_mode(&mut self, player: PlayerId, mode: GameMode) -> bool {
-        let changed = player == HOST && self.player_mode.set(mode);
-        self.mode_changed |= changed;
+        let changed = self
+            .player_mut(player)
+            .is_some_and(|known| known.mode.set(mode));
+        if changed {
+            self.mode_changed.push(player);
+        }
         changed
     }
 
     fn pose(&self, player: PlayerId) -> Option<Pose> {
-        if player == HOST { self.pose } else { None }
+        self.presence(player).pose
     }
 
     fn max_stack(&self, item: &str) -> u32 {
-        self.entities
-            .as_ref()
-            .map_or(64, |entities| u32::from(entities.recipes.max_stack(item)))
+        u32::from(self.data.recipes.max_stack(item))
     }
 
     fn give(&mut self, player: PlayerId, item: &ItemArg, count: u32) -> bool {
-        let (true, Some(entities)) = (player == HOST, self.entities.as_mut()) else {
+        let feet = self.presence(player).pose.map(|pose| pose.feet);
+        let Some((player, Some(entities))) = self.player_in_level(player) else {
             return false;
         };
         let stack = minecraft_terrain::crafting::kit_stack(
@@ -254,8 +308,9 @@ impl CommandWorld for Host<'_> {
             1,
             &item.enchantments,
         );
-        let (dropped, added) = give_stacks(self.inventory, self.selected, &stack, count);
-        if let Some(feet) = self.pose.map(|pose| pose.feet) {
+        let (dropped, added) =
+            give_stacks(&mut player.inventory, player.selected, &stack, count);
+        if let Some(feet) = feet {
             for stack in &dropped {
                 entities.drop_given(stack, feet);
             }
@@ -273,13 +328,13 @@ impl CommandWorld for Host<'_> {
     }
 
     fn teleport(&mut self, player: PlayerId, position: [f64; 3]) -> bool {
-        if player != HOST || !self.alive {
+        let Some(presence) = self.presence_mut(player).filter(|presence| presence.alive) else {
             return false;
-        }
-        self.teleports.push(position);
-        if let Some(pose) = self.pose.as_mut() {
+        };
+        if let Some(pose) = presence.pose.as_mut() {
             pose.feet = position;
         }
+        self.teleports.push((player, position));
         true
     }
 
@@ -290,19 +345,23 @@ impl CommandWorld for Host<'_> {
         ticks: Option<u32>,
         amplifier: u8,
     ) -> bool {
-        if player != HOST || self.survival.status.health <= 0.0 {
+        let Some(survival) = self
+            .player_mut(player)
+            .map(|player| &mut player.survival)
+            .filter(|survival| survival.status.health > 0.0)
+        else {
             return false;
-        }
+        };
         let times = ticks.unwrap_or(1).clamp(1, 40);
         match effect {
             "minecraft:instant_health" => {
                 let heal = 4_i32.wrapping_shl(u32::from(amplifier)).max(0) as f32;
-                self.survival.status.heal(heal * times as f32);
+                survival.status.heal(heal * times as f32);
                 return true;
             }
             "minecraft:instant_damage" => {
                 let damage = 6_i32.wrapping_shl(u32::from(amplifier)).max(0) as f32;
-                self.survival.hurt(
+                survival.hurt(
                     damage,
                     Armor::default(),
                     None,
@@ -313,7 +372,7 @@ impl CommandWorld for Host<'_> {
             "minecraft:saturation" => {
                 let food = u32::from(amplifier) + 1;
                 for _ in 0..times {
-                    self.survival
+                    survival
                         .status
                         .food
                         .eat(food.min(20) as u8, 2.0 * food as f32);
@@ -325,17 +384,17 @@ impl CommandWorld for Host<'_> {
         let Some(kind) = effect_kind(effect) else {
             return false;
         };
-        let status = &mut self.survival.status;
+        let status = &mut survival.status;
         let before = status.effect(kind);
         status.add_effect(kind, ticks.unwrap_or(u32::MAX), amplifier);
         status.effect(kind) != before
     }
 
     fn effect_clear(&mut self, player: PlayerId, effect: Option<&str>) -> bool {
-        if player != HOST {
+        let Some(survival) = self.player_mut(player).map(|player| &mut player.survival) else {
             return false;
-        }
-        let status = &mut self.survival.status;
+        };
+        let status = &mut survival.status;
         match effect {
             Some(effect) => match effect_kind(effect).filter(|kind| status.effect(*kind).is_some())
             {
@@ -358,7 +417,7 @@ impl CommandWorld for Host<'_> {
                     EffectKind::Weakness,
                 ];
                 let any = kinds.iter().any(|kind| status.effect(*kind).is_some());
-                self.survival.clear_effects();
+                survival.clear_effects();
                 any
             }
         }
@@ -366,7 +425,7 @@ impl CommandWorld for Host<'_> {
 
     fn summon(
         &mut self,
-        _source: PlayerId,
+        source: PlayerId,
         kind: &str,
         position: [f64; 3],
         nbt: Option<&str>,
@@ -375,7 +434,7 @@ impl CommandWorld for Host<'_> {
             .map(minecraftoss_core::snbt::parse_compound)
             .transpose()
             .map_err(|error| nbt_error(&error))?;
-        let Some(entities) = self.entities.as_mut() else {
+        let Some(entities) = self.entities_of(source) else {
             return Err(Text::translate("commands.summon.failed", Vec::new()));
         };
         entities.summon(kind.to_owned(), position, tag);
@@ -384,6 +443,7 @@ impl CommandWorld for Host<'_> {
 }
 
 pub fn pump(
+    from: PlayerId,
     sent: &mut Vec<String>,
     server: &mut CommandServer,
     world: &mut dyn CommandWorld,
@@ -393,62 +453,74 @@ pub fn pump(
         let Some(message) = Serverbound::from_input(&line) else {
             continue;
         };
-        let level = server.level(HOST);
+        let level = server.level(from);
         delivered.extend(
             server
-                .handle(HOST, message, world)
+                .handle(from, message, world)
                 .into_iter()
-                .filter(|out| out.to.reaches(HOST, level))
+                .filter(|out| out.to.reaches(from, level))
                 .map(|out| out.message),
         );
     }
     delivered
 }
 
+#[derive(Default)]
 pub struct Handled {
     pub delivered: Vec<Clientbound>,
-    pub teleports: Vec<[f64; 3]>,
+    pub teleports: Vec<(PlayerUuid, [f64; 3])>,
 }
 
 pub fn run(
     globals: &mut Globals,
-    level: &mut Level,
-    player: &mut Player,
+    levels: &mut BTreeMap<Dimension, Level>,
+    players: &mut BTreeMap<PlayerUuid, Player>,
+    from: &PlayerUuid,
     sent: &mut Vec<String>,
-    pose: Option<Pose>,
-    alive: bool,
+    presence: Vec<(PlayerUuid, Presence)>,
 ) -> Handled {
+    let Some(id) = players.get(from).map(|player| player.id) else {
+        return Handled::default();
+    };
     let mut host = Host {
         seed: globals.seed,
         rules: &mut globals.game_rules,
         difficulty: &mut globals.difficulty,
         day: &mut globals.day,
         save: globals.save.as_mut(),
-        survival: &mut player.survival,
-        entities: level.entities.as_mut(),
-        inventory: &mut player.inventory,
-        selected: player.selected,
-        player_mode: &mut player.mode,
+        data: &globals.data,
+        levels: &mut *levels,
+        players: &mut *players,
+        presence,
         rules_changed: false,
-        mode_changed: false,
-        pose,
-        alive,
+        mode_changed: Vec::new(),
         teleports: Vec::new(),
     };
-    let delivered = pump(sent, &mut globals.chat, &mut host);
-    let mode_changed = host.mode_changed;
+    let delivered = pump(id, sent, &mut globals.chat, &mut host);
+    let rules_changed = host.rules_changed;
+    let mode_changed = std::mem::take(&mut host.mode_changed);
     let teleports = std::mem::take(&mut host.teleports);
-    if host.rules_changed
-        && let Some(entities) = level.entities.as_mut()
-    {
-        entities.set_game_rules(&globals.game_rules);
+    drop(host);
+    if rules_changed {
+        for entities in levels.values_mut().filter_map(|level| level.entities.as_mut()) {
+            entities.set_game_rules(&globals.game_rules);
+        }
     }
     for warning in globals.chat.take_warnings() {
         diag::warn!(World, "{warning}");
     }
-    if mode_changed {
+    if let Some(player) = players.get(from)
+        && mode_changed.contains(&player.id)
+    {
         crate::server::save_player_mode(globals, player.mode);
     }
+    let teleports = teleports
+        .into_iter()
+        .filter_map(|(id, to)| {
+            let player = players.values().find(|player| player.id == id)?;
+            Some((player.uuid.clone(), to))
+        })
+        .collect();
     Handled {
         delivered,
         teleports,
@@ -463,55 +535,181 @@ pub fn death_message(line: String) -> Clientbound {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    struct Parts {
-        rules: GameRules,
-        difficulty: Difficulty,
-        day: DayCycle,
-        survival: crate::survival::Survival,
-        inventory: Inventory,
-        player_mode: PlayerMode,
+    use minecraft_terrain::game_mode::PlayerMode;
+
+    pub(crate) const FRIEND: PlayerId = PlayerId(1);
+
+    pub(crate) struct Parts {
+        pub(crate) rules: GameRules,
+        pub(crate) difficulty: Difficulty,
+        pub(crate) day: DayCycle,
+        pub(crate) data: crate::data::GameData,
+        pub(crate) levels: BTreeMap<Dimension, Level>,
+        pub(crate) players: BTreeMap<PlayerUuid, Player>,
+        pub(crate) presence: Vec<(PlayerUuid, Presence)>,
+        pub(crate) server: CommandServer,
     }
 
     impl Parts {
-        fn new() -> Self {
-            let mut survival = crate::survival::Survival::default();
-            survival.observe(100, 100);
-            Self {
+        pub(crate) fn new() -> Self {
+            let mut parts = Self {
                 rules: GameRules::default(),
                 difficulty: Difficulty::Normal,
                 day: DayCycle::default(),
-                survival,
-                inventory: Inventory::default(),
-                player_mode: PlayerMode::default(),
-            }
+                data: crate::data::GameData::default(),
+                levels: BTreeMap::new(),
+                players: BTreeMap::new(),
+                presence: Vec::new(),
+                server: CommandServer::new(HOST),
+            };
+            parts.join(HOST, "Steve", [4.5, 70.0, -2.5]);
+            parts
         }
 
-        fn host(&mut self) -> Host<'_> {
+        pub(crate) fn join(&mut self, id: PlayerId, name: &str, feet: [f64; 3]) -> PlayerUuid {
+            self.server.join(id, name);
+            let mut survival = crate::survival::Survival::default();
+            survival.observe(100, 100);
+            let player = Player::new(
+                self.server.profile(id).unwrap(),
+                PlayerMode::default(),
+                survival,
+                Inventory::default(),
+            );
+            let uuid = player.uuid.clone();
+            let pose = Pose {
+                feet,
+                yaw: 0.0,
+                pitch: 0.0,
+            };
+            self.presence.push((
+                uuid.clone(),
+                Presence {
+                    pose: Some(pose),
+                    alive: true,
+                },
+            ));
+            self.players.insert(uuid.clone(), player);
+            uuid
+        }
+
+        pub(crate) fn player(&mut self, id: PlayerId) -> &mut Player {
+            self.players
+                .values_mut()
+                .find(|player| player.id == id)
+                .unwrap()
+        }
+
+        pub(crate) fn host(&mut self) -> Host<'_> {
             Host {
                 seed: 42,
                 rules: &mut self.rules,
                 difficulty: &mut self.difficulty,
                 day: &mut self.day,
                 save: None,
-                survival: &mut self.survival,
-                entities: None,
-                inventory: &mut self.inventory,
-                selected: 0,
-                player_mode: &mut self.player_mode,
+                data: &self.data,
+                levels: &mut self.levels,
+                players: &mut self.players,
+                presence: self.presence.clone(),
                 rules_changed: false,
-                mode_changed: false,
-                pose: Some(Pose {
-                    feet: [4.5, 70.0, -2.5],
-                    yaw: 0.0,
-                    pitch: 0.0,
-                }),
-                alive: true,
+                mode_changed: Vec::new(),
                 teleports: Vec::new(),
             }
         }
+
+        pub(crate) fn send(
+            &mut self,
+            from: PlayerId,
+            lines: &[&str],
+        ) -> (Vec<String>, Vec<(PlayerId, [f64; 3])>) {
+            let mut sent: Vec<String> = lines.iter().map(|line| (*line).to_owned()).collect();
+            let mut server = std::mem::take(&mut self.server);
+            let mut host = self.host();
+            let delivered = pump(from, &mut sent, &mut server, &mut host);
+            let teleports = std::mem::take(&mut host.teleports);
+            drop(host);
+            self.server = server;
+            (delivered.iter().map(line).collect(), teleports)
+        }
+    }
+
+    pub(crate) fn lang(key: &str) -> Option<String> {
+        let text = match key {
+            "chat.square_brackets" => "[%s]",
+            "chat.coordinates" => "%s, %s, %s",
+            "commands.kill.success.single" => "Killed %s",
+            "commands.kill.success.multiple" => "Killed %s entities",
+            "commands.gamemode.success.self" => "Set own game mode to %s",
+            "commands.gamemode.success.other" => "Set %s's game mode to %s",
+            "gameMode.creative" => "Creative Mode",
+            "commands.teleport.success.location.single" => "Teleported %s to %s, %s, %s",
+            "commands.effect.give.success.single" => "Applied effect %s to %s",
+            "argument.entity.notfound.player" => "No player was found",
+            "effect.minecraft.regeneration" => "Regeneration",
+            _ => return None,
+        };
+        Some(text.to_owned())
+    }
+
+    pub(crate) fn line(message: &Clientbound) -> String {
+        message
+            .chat_text()
+            .map_or_else(String::new, |text| text.resolve(&lang).text)
+    }
+
+    #[test]
+    fn commands_act_on_the_player_they_name_and_not_the_host() {
+        let mut parts = Parts::new();
+        parts.join(FRIEND, "Alex", [100.5, 64.0, 100.5]);
+        parts.player(FRIEND).survival.status.health = 10.0;
+        let (lines, teleports) = parts.send(
+            HOST,
+            &[
+                "/gamemode creative Alex",
+                "/effect give Alex regeneration 10",
+                "/tp Alex ~ ~5 ~",
+                "/kill Alex",
+            ],
+        );
+        assert_eq!(
+            lines,
+            vec![
+                "Set Alex's game mode to Creative Mode",
+                "Applied effect Regeneration to Alex",
+                "Teleported Alex to 4.500000, 75.000000, -2.500000",
+                "Killed Alex",
+            ]
+        );
+        assert_eq!(teleports, vec![(FRIEND, [4.5, 75.0, -2.5])]);
+        assert_eq!(parts.player(FRIEND).mode.mode, GameMode::Creative);
+        assert_eq!(parts.player(HOST).mode.mode, GameMode::Survival);
+        assert!(
+            parts
+                .player(FRIEND)
+                .survival
+                .status
+                .effect(EffectKind::Regeneration)
+                .is_some()
+        );
+        assert!(
+            parts
+                .player(HOST)
+                .survival
+                .status
+                .effect(EffectKind::Regeneration)
+                .is_none()
+        );
+        assert!(parts.player(HOST).survival.status.health > 0.0);
+        let mut host = parts.host();
+        assert_eq!(host.game_mode(PlayerId(7)), None);
+        assert!(!host.kill(PlayerId(7)));
+        assert!(!host.teleport(PlayerId(7), [0.0; 3]));
+        assert_eq!(host.mode_changed, Vec::<PlayerId>::new());
+        assert!(host.set_game_mode(FRIEND, GameMode::Adventure));
+        assert_eq!(host.mode_changed, vec![FRIEND]);
     }
 
     #[test]
@@ -550,9 +748,8 @@ mod tests {
 
     #[test]
     fn host_effects_reach_survival_and_teleports_wait_for_the_world() {
-        let mut server = CommandServer::new(HOST);
-        server.join(HOST, "Steve");
-        server.registries_mut().effects = [
+        let mut parts = Parts::new();
+        parts.server.registries_mut().effects = [
             "minecraft:regeneration",
             "minecraft:speed",
             "minecraft:instant_health",
@@ -560,53 +757,46 @@ mod tests {
         ]
         .map(String::from)
         .to_vec();
-        let mut parts = Parts::new();
-        parts.survival.status.health = 10.0;
-        let mut sent: Vec<String> = Vec::new();
-        for line in [
-            "/effect give @s regeneration 10 1",
-            "/effect give @s speed",
-            "/effect give @s instant_health",
-            "/tp ~ ~10 ~",
-            "/tp 2000 120 2000",
-            "/effect give @s minecraft:regeneration infinite",
-        ] {
-            sent.push(line.into());
-        }
-        let mut host = parts.host();
-        let delivered = pump(&mut sent, &mut server, &mut host);
+        parts.player(HOST).survival.status.health = 10.0;
+        let (delivered, teleports) = parts.send(
+            HOST,
+            &[
+                "/effect give @s regeneration 10 1",
+                "/effect give @s speed",
+                "/effect give @s instant_health",
+                "/tp ~ ~10 ~",
+                "/tp 2000 120 2000",
+                "/effect give @s minecraft:regeneration infinite",
+            ],
+        );
         assert_eq!(
-            host.teleports,
-            vec![[4.5, 80.0, -2.5], [2000.5, 120.0, 2000.5]]
+            teleports,
+            vec![(HOST, [4.5, 80.0, -2.5]), (HOST, [2000.5, 120.0, 2000.5])]
         );
         assert_eq!(delivered.len(), 6);
-        let regeneration = parts
-            .survival
-            .status
-            .effect(EffectKind::Regeneration)
-            .unwrap();
+        let survival = &mut parts.player(HOST).survival;
+        let regeneration = survival.status.effect(EffectKind::Regeneration).unwrap();
         assert_eq!(regeneration.amplifier, 1);
         assert_eq!(regeneration.duration, 200);
-        assert_eq!(parts.survival.status.health, 14.0);
-        let mut host = parts.host();
-        host.alive = false;
-        sent.push("/effect give @s regeneration infinite 1".into());
-        sent.push("/tp 0 64 0".into());
-        pump(&mut sent, &mut server, &mut host);
-        assert!(host.teleports.is_empty());
+        assert_eq!(survival.status.health, 14.0);
+        parts.presence[0].1.alive = false;
+        let (_, teleports) = parts.send(
+            HOST,
+            &["/effect give @s regeneration infinite 1", "/tp 0 64 0"],
+        );
+        assert!(teleports.is_empty());
+        let survival = &mut parts.player(HOST).survival;
         assert_eq!(
-            parts
-                .survival
+            survival
                 .status
                 .effect(EffectKind::Regeneration)
                 .unwrap()
                 .duration,
             u32::MAX
         );
-        parts.survival.status.tick_effects();
+        survival.status.tick_effects();
         assert_eq!(
-            parts
-                .survival
+            survival
                 .status
                 .effect(EffectKind::Regeneration)
                 .unwrap()

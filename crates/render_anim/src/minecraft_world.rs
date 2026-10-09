@@ -547,6 +547,14 @@ fn update(
         return;
     };
     let minecraft_survival::server::Server { globals, levels, players } = server;
+    let host_alive = presented.player(local.0).is_some_and(|ps| ps.pm_type == 0);
+    let host_pose = presented
+        .player(local.0)
+        .filter(|_| host_alive)
+        .map(|ps| minecraft_commands::Pose { feet: sim::voxel::to_block(origin, ps.origin), yaw: minecraft_yaw(ps.viewangles[1]), pitch: ps.viewangles[0] })
+        .or_else(|| players.get(local_uuid).and_then(|player| player.survival.last_feet()).map(|feet| minecraft_commands::Pose { feet, yaw: 0.0, pitch: 0.0 }));
+    let presence = vec![(local_uuid.clone(), minecraft_survival::commands::Presence { pose: host_pose, alive: host_alive })];
+    let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, levels, players, local_uuid, &mut ui.chat.sent, presence);
     let Some(player) = players.get_mut(local_uuid) else {
         ui.active = false;
         ui.inventory_open = false;
@@ -559,13 +567,6 @@ fn update(
         puppet.active = false;
         return;
     };
-    let host_alive = presented.player(local.0).is_some_and(|ps| ps.pm_type == 0);
-    let host_pose = presented
-        .player(local.0)
-        .filter(|_| host_alive)
-        .map(|ps| minecraft_commands::Pose { feet: sim::voxel::to_block(origin, ps.origin), yaw: minecraft_yaw(ps.viewangles[1]), pitch: ps.viewangles[0] })
-        .or_else(|| player.survival.last_feet().map(|feet| minecraft_commands::Pose { feet, yaw: 0.0, pitch: 0.0 }));
-    let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, level, player, &mut ui.chat.sent, host_pose, host_alive);
     let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, .. } = player;
     let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
     if !delivered.is_empty() {
@@ -1548,7 +1549,7 @@ fn update(
             }
             finish_item_use(entities, inventory, sounds.as_mut(), &world.packs, origin, used, player_mode.consumes_items());
         }
-        for to in teleports.iter().filter(|_| alive) {
+        for to in teleports.iter().filter(|(uuid, _)| alive && uuid == local_uuid).map(|(_, to)| to) {
             authority.0.teleport(local.0, sim::voxel::to_map(origin, *to));
             steps.air_peak = None;
         }

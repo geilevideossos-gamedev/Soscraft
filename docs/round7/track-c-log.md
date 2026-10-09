@@ -1021,3 +1021,44 @@ Load a fresh world with this kit and follow the entries' own steps in this order
    7. The `/spawnpoint` entry, last.
 3. **Once track A's chat uses the suggestion engine**, run the suggestion entry, the block suggestion entry and step 5 of the `/execute` entry.
 4. **Creative tabs** have nothing to test in game until the creative screen lands.
+
+# Second half: the glue
+
+Branch `track-c`, group "glue". The crate split moved the command glue to `crates/minecraft_survival/src/commands.rs`, so the methods the first half left on their defaults are implemented there, against the `Server`, its `Level`s and its `Player`s.
+
+## Minecraft commands act on the player they name
+
+Commit: the commit that adds this entry.
+
+### What changed
+
+- `Host` no longer holds one player's survival, inventory and game mode. It borrows the server's `levels` (a `Level` per `Dimension`) and `players` (a `Player` per `PlayerUuid`), and every `CommandWorld` method finds the player by the `PlayerId` it is given: `/kill`, `/gamemode`, `/effect`, `/give` and `/tp` now act on the target, not on whoever typed the command.
+- What the game knows of each player's body comes in as `Presence { pose, alive }` per UUID. `/tp` moves the target's pose, so a later `~` in the same batch starts from there, as before.
+- `/give` drops what does not fit in the level the target stands in, `/summon` spawns in the source's level, and `/weather` goes to the overworld level, as vanilla keeps the weather there.
+- `run(globals, levels, players, from, sent, presence)` replaces `run(globals, level, player, ...)`. `pump` takes the sender's id. `Handled.teleports` is keyed by UUID; `render_anim` applies only the local player's.
+- `render_anim/src/minecraft_world.rs`: the command call moves above the lookup of the local player and its level, and reads the fallback pose through `players`.
+
+### Tests added
+
+- `commands::tests::commands_act_on_the_player_they_name_and_not_the_host`: the host runs `/gamemode creative Alex`, `/effect give Alex regeneration 10`, `/tp Alex ~ ~5 ~` and `/kill Alex`. Each line names Alex, Alex alone changes (the `~` are the host's), unknown ids answer nothing, and only the changed player is marked for saving.
+- `host_effects_reach_survival_and_teleports_wait_for_the_world` now runs through the shared `Parts` helper, which builds real `Player`s by UUID.
+
+### In-game test steps
+
+Nothing new to see: the same commands must still work on yourself.
+
+```
+IW4L_MINECRAFT_KIT=stone*64
+```
+
+1. `/gamemode creative`, then `/gamemode survival`: both answer and switch.
+2. `/tp ~ ~5 ~`: you go up 5 blocks.
+3. `/give @s diamond 3`: the diamonds arrive with the pickup pop.
+4. `/effect give @s regeneration 10`, then `/kill`: you die and respawn as before.
+
+Kit: none needed.
+
+### Decisions
+
+- **Presence is per UUID and comes from the game each frame.** The MW2 sim owns the bodies, so the command server reads poses from it instead of storing a second copy.
+- **`/weather` acts on the overworld**, like vanilla's `MinecraftServer.setWeatherParameters`, whatever level the source is in.
