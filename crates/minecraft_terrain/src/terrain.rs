@@ -2396,6 +2396,84 @@ mod tests {
     }
 
     #[test]
+    fn nether_fortresses_bastions_and_every_nether_feature_generate() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let dir = crate::test_dir::tempdir().unwrap();
+        let level = crate::level_storage::LevelStorage::open(dir.path()).unwrap();
+        let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::Nether, Some(level.root()), Some((0, 64, 0))).unwrap();
+        let gen = stream.world_gen();
+        for name in ["minecraft:fortress", "minecraft:bastion_remnant", "minecraft:nether_fossil", "minecraft:ruined_portal_nether"] {
+            let structure = gen.structures.defs.iter().find(|def| def.name == name).unwrap_or_else(|| panic!("{name} is registered"));
+            assert!(!format!("{:?}", structure.kind).starts_with("Unsupported"), "{name} generates: {:?}", structure.kind);
+        }
+        let mut unsupported = Vec::new();
+        for biome in ["nether_wastes", "crimson_forest", "warped_forest", "soul_sand_valley", "basalt_deltas"] {
+            let id = minecraftoss_core::Identifier::parse(&format!("minecraft:{biome}")).unwrap();
+            let json = registries.datapack.read_json("worldgen/biome", &id).unwrap();
+            let names: Vec<String> = json["features"].as_array().into_iter().flatten().flat_map(|step| step.as_array().into_iter().flatten()).filter_map(|name| name.as_str().map(str::to_owned)).collect();
+            assert!(!names.is_empty(), "{biome} has features");
+            for name in names {
+                let placed = gen.library.placed_by_name(&name).or_else(|| gen.library.placed_by_name(name.trim_start_matches("minecraft:"))).unwrap_or_else(|| panic!("{biome} feature {name} is loaded"));
+                if let minecraftoss_generator::feature::kinds::Feature::Unsupported(kind) = gen.library.feature(gen.library.placed(placed).feature) {
+                    unsupported.push(format!("{biome} {name}: {kind}"));
+                }
+            }
+        }
+        assert!(unsupported.is_empty(), "unsupported Nether features: {unsupported:?}");
+        let deadline = Instant::now() + std::time::Duration::from_secs(120);
+        let blocks = &registries.blocks;
+        let mut sim = crate::server::ServerSim::new(gen.clone(), stream.states.clone(), "minecraft:the_nether");
+        let mut found = Vec::new();
+        for (structure, own, block_entity) in [
+            ("minecraft:fortress", ["minecraft:nether_bricks", "minecraft:nether_brick_fence", "minecraft:spawner"], "minecraft:blaze"),
+            ("minecraft:bastion_remnant", ["minecraft:polished_blackstone_bricks", "minecraft:blackstone", "minecraft:gilded_blackstone"], "minecraft:chests/bastion"),
+        ] {
+            let at = match crate::locate::nearest_structure(&gen, &[structure.to_owned()], [0, 64, 0], crate::locate::STRUCTURE_RADIUS, deadline) {
+                crate::locate::Search::Found(at, _) => at,
+                other => panic!("no {structure} near the origin of seed 77: {other:?}"),
+            };
+            let (cx, cz) = (at[0] >> 4, at[2] >> 4);
+            let mut counts = HashMap::new();
+            let mut tags = Vec::new();
+            let mut mobs = Vec::new();
+            for x in cx - 2..=cx + 2 {
+                for z in cz - 2..=cz + 2 {
+                    let chunk = stream.server.load_now(minecraftoss_core::ChunkPos::new(x, z));
+                    for xx in 0..16usize {
+                        for zz in 0..16usize {
+                            assert!(blocks.is_air(chunk.block(xx, 200, zz)), "nothing above the roof at chunk {x},{z}");
+                        }
+                    }
+                    count_blocks(&registries, &chunk, &mut counts);
+                    tags.extend(chunk.block_entities.pending.values().chain(chunk.block_entities.entities.values()).map(|tag| format!("{tag:?}")));
+                    mobs.extend(chunk.generation.entities.iter().flat_map(minecraftoss_world::natural_spawner::tick::census_of));
+                    sim.load_chunk(&chunk);
+                }
+            }
+            for name in own {
+                assert!(count(&counts, name) > 0, "no {name} around the {structure} at {at:?}: {counts:?}");
+            }
+            assert!(tags.iter().any(|tag| tag.contains(block_entity)), "no block entity with {block_entity} around the {structure}: {tags:?}");
+            for name in ["minecraft:stone", "minecraft:grass_block", "minecraft:water", "minecraft:end_stone"] {
+                assert_eq!(count(&counts, name), 0, "{name} around the {structure}");
+            }
+            let kinds: Vec<(&str, bool)> = mobs.iter().map(|mob| (mob.kind.as_str(), mob.persistent)).collect();
+            if structure == "minecraft:bastion_remnant" {
+                assert!(kinds.contains(&("minecraft:piglin", true)) && kinds.contains(&("minecraft:piglin_brute", true)), "a bastion holds piglins and brutes: {kinds:?}");
+            }
+            assert!(kinds.iter().all(|(_, persistent)| *persistent), "the {structure}'s mobs never despawn: {kinds:?}");
+            found.push((structure, at));
+        }
+        sim.set_clocks(crate::server::ClockTicks { overworld: 6000, the_end: 0 });
+        for _ in 0..40 {
+            sim.tick();
+        }
+        assert_eq!(found.len(), 2, "{found:?}");
+    }
+
+    #[test]
     fn a_level_shown_again_sends_its_chunks_and_light_again() {
         let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
         let Ok(registries) = Registries::load(&paths) else { return };

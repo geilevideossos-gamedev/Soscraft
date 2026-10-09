@@ -25,7 +25,7 @@ Commit: f39da09
 
 ### 2. Minecraft Nether lava flows faster and its sea level is 32 (E2-2)
 
-Commit: see `git log` under this subject.
+Commit: 24c89d4
 
 - **Changed:** `minecraft_terrain/src/server.rs` (`ServerSim::new` only): the level's `sea_level` is its chunk generator's (`ServerLevel.getSeaLevel` reads `NoiseGeneratorSettings.seaLevel`: 63 in the overworld, 32 in the Nether, 0 in the End), and `fast_lava` is the dimension's `gameplay/fast_lava` value (true in the Nether), so Nether lava ticks every 10 ticks instead of 30 and loses one level a block instead of two (the vendored `fluid.rs` already had both numbers). Before, every level kept 63 and slow lava.
 - **Tests:** `server`: `nether_lava_spreads_farther_and_faster_and_the_nether_sea_is_at_32` (a Nether `ServerSim` has sea level 32 and fast lava, an End one 0 and slow lava; a lava source on a stone floor reaches 3 blocks in the overworld and 7 in the Nether after 300 ticks, and after 75 ticks at most 2 in the overworld but 6 or more in the Nether).
@@ -38,3 +38,19 @@ Commit: see `git log` under this subject.
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:lava_bucket,minecraft:bucket
 ```
+
+### 3. Minecraft Nether terrain and structures generate in a test (E2-3)
+
+Commit: see `git log` under this subject.
+
+- **Changed:** a test only; nothing had to be fixed (S1's E1-4 already ran the Nether generator around 0,0).
+- **Tests:** `terrain`: `nether_fortresses_bastions_and_every_nether_feature_generate` (seed 77, real 26.3 data):
+  - `fortress`, `bastion_remnant`, `nether_fossil` and `ruined_portal_nether` are registered with a generator of their own, and no placed feature of the five Nether biomes is `Feature::Unsupported`.
+  - `/locate`'s search (track C) finds the nearest fortress at (-144, -416) and bastion at (320, 0). The 5x5 chunks around each generate with nothing above the roof and no overworld or End block: the fortress has nether bricks, nether brick fences and a spawner whose block entity spawns blazes; the bastion has polished blackstone bricks, blackstone, gilded blackstone and a `chests/bastion` loot chest.
+  - The bastion's generated mobs are piglins and piglin brutes, all with `PersistenceRequired`, so the dormant despawn (`server.rs`, `despawn_mobs`) keeps them (the brief's risk); the fortress generates no mob.
+  - A Nether `ServerSim` loads all of those chunks and ticks 40 times.
+- **Decisions:** the test checks the top-level placed features only; features nested in selectors run in the block checks.
+- **Test steps** (with `IW4L_MINECRAFT_DIMENSION=the_nether`, creative is easiest):
+  1. `/locate structure minecraft:fortress`, then `/tp` to the answer at y 70. Nether brick bridges and halls stand there. **Screenshot 2.**
+  2. `/locate structure minecraft:bastion_remnant`, then `/tp` there: blackstone walls with gold. **Screenshot 3.** (Its piglins wait dormant until N6.)
+- **Kit:** none needed; any kit works.
