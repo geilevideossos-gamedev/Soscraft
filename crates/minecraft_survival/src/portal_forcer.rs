@@ -21,6 +21,8 @@ use crate::server::{Arrival, Server};
 
 const FREE_MARGIN: f64 = 1.0e-6;
 
+type Arrived = (Place, Vec<((i32, i32, i32), BlockStateId)>);
+
 pub const NETHER_SEARCH_RADIUS: i32 = 16;
 pub const OVERWORLD_SEARCH_RADIUS: i32 = 128;
 pub const BUILD_RADIUS: i32 = 16;
@@ -541,10 +543,7 @@ pub fn collision_free(world: &mut impl CollisionWorld, feet: [f64; 3]) -> [f64; 
     best.map_or(feet, |(point, _)| [point[0], point[1] - grow[1], point[2]])
 }
 
-pub fn arrive(
-    terrain: &mut Terrain,
-    travel: &PortalTravel,
-) -> Option<(Place, Vec<((i32, i32, i32), BlockStateId)>)> {
+pub fn arrive(terrain: &mut Terrain, travel: &PortalTravel) -> Option<Arrived> {
     let (min_y, height, logical_height) = (
         terrain.rules.min_y,
         terrain.rules.height,

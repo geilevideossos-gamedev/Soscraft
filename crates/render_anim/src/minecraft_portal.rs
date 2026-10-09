@@ -28,7 +28,7 @@ pub(crate) fn step(
     globals: &Globals,
     feet: Option<[f64; 3]>,
     seconds: f64,
-    mut sounds: Option<&mut Sounds>,
+    sounds: Option<&mut Sounds>,
     packs: &PackStack,
     ui: &mut MinecraftUi,
 ) {
@@ -41,7 +41,7 @@ pub(crate) fn step(
         ui.inventory_open = false;
     }
     if stepped.triggered
-        && let Some(sounds) = sounds.as_deref_mut()
+        && let Some(sounds) = sounds
     {
         let pitch = portal_pitch(sounds);
         sounds.play(packs, TRIGGER_SOUND, None, PORTAL_SOUND_VOLUME, pitch);

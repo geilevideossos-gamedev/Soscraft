@@ -242,3 +242,38 @@ Previous commit: 70ae2991
   2. Go through the portal, step out of the Nether portal, wait 2 seconds, step back in and return within 15 seconds.
   3. Back in the overworld, jump onto the pillar: it holds you. Walk into the hole: you drop into it. **Screenshot 8.**
 - **Kit:** the kit of entry 10.
+
+### 13. Minecraft portal travel passes clippy
+
+Previous commit: 245fdc4b
+
+- **Changed:** the two clippy findings on this group's lines: `portal_forcer::arrive` returns a named `Arrived` (`type_complexity`), and the adapter's trigger sound takes the sounds without a needless `as_deref_mut`.
+- **Clippy:** `clippy -p minecraft_survival -p minecraft_terrain -p render_anim -p hud -p frame --locked --tests --no-deps -- -A clippy::approx_constant` has no other finding on a line of this group; the rest are older (`entities.rs`, `fluid.rs`, `minecraft_inventory.rs`, `minecraft_sounds.rs` and many more).
+- **Tests:** none new.
+- **Test steps:** none; nothing changes in game.
+- **Kit:** none.
+
+## Group N2 summary
+
+- **Commits:** 118bb95c (E2-6), b39687f9 (E2-7), 08d856f3 (E2-8), f837e707 (E2-9), eeceab2e (E2-10), 70ae2991 (E2-11), 245fdc4b (the collision fix of entry 12), and this entry.
+- **Checks:** `test -p minecraft_survival` (279 and the vanilla world test), `test -p minecraft_terrain` (639 passed, 3 ignored as before), `test -p render_anim` (67), `test -p hud` (131), `test -p frame` (16) and `check -p launcher` are green; clippy as in entry 13.
+- **MinecraftOSS patches in this group:** none.
+- **Handed on:**
+  - The End track's X2 fills `PortalKind::End` (and `Gateway`) in `portal.rs`: their transition time (0 today, vanilla's `Portal` default) and their trip; `Portal::set_inside` and `Portal::tick` already take any kind, and `set_off` takes any `PortalTravel`.
+  - N3 (E2-20, zombified piglins) adds the portal piglins of `NetherPortalBlock.randomTick` (`nether_portal_spawns_piglin`, `nextInt(2000) < difficulty`, outside peaceful); they need the zombified piglin first.
+  - Multiplayer: every piece of state is on the `Player` (by UUID) or the level, and `arrive_through_portals` and the loader serve every player; only the adapter steps the local player's portal so far.
+- **Known gaps:**
+  - A spectator who finds no portal arrives at the scaled target point; vanilla does not teleport a spectator then (the search runs after the loading screen has started here).
+  - The trip's momentum (kept and turned in the arrival `Place`) is not handed to the MW2 movement; the player starts at rest after the loading screen, as with every teleport.
+  - A portal in a chunk evicted from memory moments ago, whose save has not reached the region file yet, is not found until it is written.
+- **Owner test for the whole group** (one new world, one kit; the screenshots are numbered across the entries):
+  1. Entry 10 steps 1 to 3 (to the Nether through a portal you build at 800, -1600), with entry 11 step 1 while you wait in the portal.
+  2. Entry 11 steps 2 and 3 in the Nether arrival portal's neighbourhood (build a second lit portal there if you like, or use the arrival portal after its cooldown: step out first).
+  3. Entry 11 step 4 and entry 10 step 4 (back to the overworld portal).
+  4. Entry 12 steps 1 to 3 (a quick return keeps your blocks solid).
+  5. Entry 10 steps 5 to 9 (the same portal again, a new overworld portal from 40 blocks away in the Nether, creative, the game rule, and the debug start).
+- **Kit (6 stacks):**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:obsidian*64,minecraft:flint_and_steel,minecraft:diamond_pickaxe+efficiency=5,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:torch*64
+```
