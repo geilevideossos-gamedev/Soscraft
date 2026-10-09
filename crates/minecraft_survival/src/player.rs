@@ -4,10 +4,12 @@ use minecraft_commands::PlayerId;
 use minecraft_commands::server::Profile;
 use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_terrain::game_mode::PlayerMode;
+use minecraftoss_player::Block;
 use minecraftoss_player::crafting::RecipeBook;
 use minecraftoss_player::inventory::Inventory;
 
 use crate::death::DeathWatch;
+use crate::offhand::Blocking;
 use crate::survival::Survival;
 
 pub struct Player {
@@ -20,6 +22,33 @@ pub struct Player {
     pub death_watch: DeathWatch,
     pub inventory: Inventory,
     pub selected: usize,
+    pub hand: Hand,
+    pub steps: Steps,
+}
+
+#[derive(Default)]
+pub struct Hand {
+    pub swing: Option<f32>,
+    pub clock: f64,
+    pub place_delay: u32,
+    pub pearl_cooldown: u32,
+    pub recent: Vec<((i32, i32, i32), Block, f64)>,
+    pub attack_ticks: u32,
+    pub attack_item: Option<String>,
+    pub miss_time: u32,
+    pub blocking: Option<Blocking>,
+    pub swing_offhand: bool,
+    pub use_by_key: bool,
+    pub offhand_key_was: bool,
+    pub creative_delay: u32,
+}
+
+#[derive(Default)]
+pub struct Steps {
+    pub last: Option<[f64; 3]>,
+    pub move_dist: f32,
+    pub next_step: f32,
+    pub air_peak: Option<f64>,
 }
 
 impl Player {
@@ -39,6 +68,8 @@ impl Player {
             death_watch: DeathWatch::default(),
             inventory,
             selected: 0,
+            hand: Hand::default(),
+            steps: Steps::default(),
         }
     }
 }
@@ -94,6 +125,25 @@ mod tests {
             Some(5)
         );
         assert_eq!(player.selected, 0);
+    }
+
+    #[test]
+    fn a_joining_player_has_no_hand_or_fall_timers_running() {
+        let mut chat = CommandServer::new(HOST);
+        chat.join(HOST, "Alex");
+        let player = Player::new(
+            chat.profile(HOST).unwrap(),
+            PlayerMode::new(GameMode::Survival),
+            Survival::default(),
+            Inventory::default(),
+        );
+        assert_eq!(player.hand.pearl_cooldown, 0);
+        assert_eq!(player.hand.place_delay, 0);
+        assert!(player.hand.blocking.is_none());
+        assert!(player.hand.swing.is_none());
+        assert!(player.hand.recent.is_empty());
+        assert!(player.steps.last.is_none());
+        assert!(player.steps.air_peak.is_none());
     }
 
     #[test]

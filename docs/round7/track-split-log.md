@@ -423,3 +423,27 @@ B5 is commit `b275419`.
   - The `let mut selected = entities.selected; ... entities.selected = selected;` copy in `update()` is gone: the inventory screen and the weapon request now change the player's selected slot directly. Nothing read the slot between those two lines, so the result is the same.
   - The closures that went through `entities.as_ref()` and the first `hold_off_death` call (now `if entities.is_some()`) keep their check on the level's mobs, so nothing changes even for a level without `Entities` (which never happens after the load).
   - `punch` gives `mob_action` the player's inventory by reference instead of a temporary clone, and gets `#[allow(clippy::too_many_arguments)]` like `update`; methods take the player's inventory (or held stack) as their first argument.
+
+## B7. Minecraft hand and fall timers belong to the player
+
+B6 is commit `cb2909c`. (Its entry says "60 lines" for `update()`: the exact count is 54 changed lines in the body of `update()`, and 62 in `minecraft_world.rs` with the helpers, the binding and the completion.)
+
+- **What changed:**
+  - `HandState` and `StepState` moved whole from `render_anim/src/minecraft_world.rs` into `minecraft_survival/src/player.rs` as `Hand` and `Steps`: the same fields, types and `Default` derive, with `pub` fields and without their doc comments (new file, no comments).
+  - `Player` gains `hand: Hand` and `steps: Steps`, both default in `Player::new`.
+  - `Runtime` loses `hand` and `steps`; `update()` takes them from the player (`let Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, .. } = player;`), so no other line of `update()` changed.
+- **Tests added** (1, in `player.rs`): `a_joining_player_has_no_hand_or_fall_timers_running` (no pearl cooldown, place delay, raised shield, swing, recent placements, last position or fall peak on a new player). Totals: `minecraft_survival` 124 (123 + 1), `render_anim` 34; the moved total stays 153.
+- **Checks:** `check -p launcher --locked` (no new warning), `test -p minecraft_survival --locked`, `test -p render_anim --locked`; the staged `player.rs` passes `rustfmt --check --edition 2024` with empty output.
+- **Owner test** (hand use, attacks, placing, footsteps and falls must work exactly as before):
+  1. Load a Minecraft match with `IW4L_MINECRAFT_WORLD=split` and the regression kit.
+  2. Walk on grass, stone and planks: footstep sounds play at the usual pace. Fall from 6 blocks or more: the fall damage and the big fall sound; fall 2 blocks: no damage.
+  3. Hold the place button with planks: blocks go down at the usual repeat rate (about 5 per second). Mine stone with the pickaxe: the hand swings and the crack grows.
+  4. Hit a zombie from the spawn egg with the sword, waiting between hits: full-strength hits; spam-click: weak hits.
+  5. Throw an ender pearl: the hotbar shows the pearl cooldown for a second, and a second pearl can't be thrown until it ends.
+  6. Raise the shield with the tactical key (shield in the offhand) against the zombie: the hits are blocked; let go and they hurt again.
+  7. Throw a pearl, then leave the match right away and load it again: the new match starts without a pearl cooldown and without fall damage on the first landing.
+- **Kit:** `minecraft:oak_planks` x64, `minecraft:diamond_pickaxe` x1, `minecraft:diamond_sword` x1, `minecraft:zombie_spawn_egg` x2, `minecraft:ender_pearl` x16, `minecraft:shield` x1, `minecraft:cobblestone` x64 (all in the regression kit).
+- **Not done here:** nothing. C1-C5 and D1 are the next group.
+- **Decisions:**
+  - B7 is done: it stays a pure move of the two structs (the diff in `minecraft_world.rs` only deletes them and the two `Runtime` fields and adds `hand, steps` to the player binding).
+  - As the plan's section 2.2 says, the hand and step timers now start fresh with each loaded world instead of carrying over from the previous match in the same game session. While no world is loaded `update()` returns before touching them, so before this change a pearl cooldown, a raised shield or a fall peak left at the end of one match carried into the first frames of the next; the most visible case was fall damage on the first landing of a new match if the last one ended in mid-air. Vanilla doesn't keep item cooldowns or a raised shield over a rejoin either, so this is the vanilla-like choice.

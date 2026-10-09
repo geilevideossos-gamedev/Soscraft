@@ -79,39 +79,6 @@ struct Loaded {
     glint_texture: Option<Arc<image::RgbaImage>>,
 }
 
-/// The hand's swing and the timers of mining and placing by hand.
-#[derive(Default)]
-struct HandState {
-    /// Ticks into a swing, while one runs.
-    swing: Option<f32>,
-    /// Seconds towards the next hand-mining and placing tick.
-    clock: f64,
-    /// Ticks until another placement while the button is held
-    /// (`rightClickDelay`).
-    place_delay: u32,
-    pearl_cooldown: u32,
-    recent: Vec<((i32, i32, i32), minecraftoss_player::Block, f64)>,
-    attack_ticks: u32,
-    attack_item: Option<String>,
-    miss_time: u32,
-    blocking: Option<minecraft_survival::offhand::Blocking>,
-    swing_offhand: bool,
-    use_by_key: bool,
-    offhand_key_was: bool,
-    creative_delay: u32,
-}
-
-/// The player's walk, for vanilla's step and fall sounds.
-#[derive(Default)]
-struct StepState {
-    last: Option<[f64; 3]>,
-    /// `Entity.moveDist` and `nextStep`.
-    move_dist: f32,
-    next_step: f32,
-    /// The highest point since leaving the ground.
-    air_peak: Option<f64>,
-}
-
 #[derive(Default)]
 struct Runtime {
     loading: Option<mpsc::Receiver<Result<(Loaded, minecraft_survival::server::Server), String>>>,
@@ -127,8 +94,6 @@ struct Runtime {
     cloud_center: Option<(i32, i32)>,
     mining: crate::minecraft_mining::Mining,
     minimap: crate::minecraft_minimap::Minimap,
-    hand: HandState,
-    steps: StepState,
     sounds: Option<crate::minecraft_sounds::Sounds>,
     inventory_ui: crate::minecraft_inventory::InventoryUi,
     /// Shape id of each block state already seen.
@@ -567,9 +532,7 @@ fn update(
         mining,
         inventory_ui,
         sounds,
-        hand,
         minimap,
-        steps,
         fire_frames,
         atlas_animation,
         animation_clock,
@@ -595,7 +558,7 @@ fn update(
         puppet.active = false;
         return;
     };
-    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, .. } = player;
+    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, .. } = player;
     let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
     let host_alive = presented.player(local.0).is_some_and(|ps| ps.pm_type == 0);
     let host_pose = presented
