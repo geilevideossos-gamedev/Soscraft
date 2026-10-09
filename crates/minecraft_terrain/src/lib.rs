@@ -7,7 +7,9 @@ pub use minecraftoss_world::level_storage;
 pub mod block_particles;
 #[cfg(test)]
 mod test_dir;
+pub mod class_file;
 pub mod clouds;
+pub mod creative_tabs;
 pub mod day_cycle;
 pub mod environment;
 pub(crate) mod face_culling;

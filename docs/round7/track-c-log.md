@@ -645,3 +645,168 @@ IW4L_MINECRAFT_KIT=stone*64
 1. `/effect give @s nope`: red "Can't find element 'minecraft:nope' of type 'minecraft:mob_effect'" and a grey "...ve @s nope<--[HERE]" with nothing underlined. Screenshot.
 
 Kit: none needed.
+
+## Minecraft creative tabs are read from the game jar
+
+Commit: the commit that adds this entry (branch `track-c`, group "creative-tabs").
+
+### What changed
+
+- New `crates/minecraft_terrain/src/class_file.rs`, a small Java class reader:
+  - `ClassFile::parse` reads the constant pool (every tag, with the extra slot after a long or double), fields, methods with their `Code` (`max_locals` and the bytecode) and the `BootstrapMethods` table.
+  - Lookups: `utf8`, `class_name`, `string`, `integer`, `member` (field, method and interface method references), `handle` (method handles), `invoke_dynamic` (name, descriptor, bootstrap and its arguments), `method` and `method_with`.
+  - `instructions(code)` decodes the bytecode with each operand: constant pool indexes, local slots (also for the short `aload_1` forms), immediates, absolute jump targets, `iinc`, `wide`, and the padded `tableswitch` and `lookupswitch`. Truncated code and jumps out of the method are errors.
+  - `parameters(descriptor)` and `returns_value(descriptor)`.
+- New `crates/minecraft_terrain/src/creative_tabs.rs`, which reads the vanilla creative tabs from the owner's 26.3 `client.jar` at runtime. No Mojang data is committed. It was checked with javap against 26.3 `CreativeModeTabs`, `CreativeModeTab$Builder`, `Items`, `Blocks`, `references/BlockItemIds`, `references/ItemIds`, `references/BlockItemId`, `ColorCollection`, `WeatheringCopperCollection` and its `$ByState`, `DyeColor`, `Raid.getOminousBannerTemplate` and `CreativeModeInventoryScreen`.
+  - **API**
+    - `creative_tabs(jar) -> CreativeTabs` never fails. If the reader fails it logs "creative tabs fall back to registry order: <why>" and returns `fallback_tabs`. Entries it had to skip are logged in one line.
+    - `read_creative_tabs(jar)` is the strict form. `read_tabs(load, known)` takes a class loader and the known item ids, so the tests run without a jar.
+    - `CreativeTabs { tabs, fallback, skipped }`.
+    - Each `CreativeTab` has `id` (`minecraft:building_blocks`), `title` (`itemGroup.buildingBlocks`), `row` (`Top` or `Bottom`), `column`, `kind` (`Category`, `Hotbar`, `Search` or `Inventory`), `aligned_right`, `show_title`, `scroll_bar`, `background` (`items`, `item_search` or `inventory`), `icon` (an item id), `operator` and `entries` in vanilla order.
+    - `TabEntry { item, variants, in_tab, in_search }` follows vanilla's `TabVisibility`.
+    - `CreativeTab::displayed()` and `item_ids()` give what the tab itself shows. `CreativeTabs::tab(id)`, `shown(operator)` and `search(operator)`.
+    - `registry_order(load, known)` and `fallback_tabs(items, reason)`.
+  - **Item ids**
+    - The known ids are the jar's `assets/minecraft/items/*.json`, the same list the commands use. An entry or icon outside it is skipped and logged.
+    - An `Items` or `Blocks` field becomes an id from the first try that is a known item:
+      1. the field name in lower case;
+      2. the strings of the matching `net/minecraft/references` statement, last first (`BlockItemId.create(block, item)` puts the item last);
+      3. the reference field name in lower case.
+    - This covers the three odd field names (`CUT_STANDSTONE_SLAB` is `cut_sandstone_slab`, `DRY_SHORT_GRASS` is `short_dry_grass`, `DRY_TALL_GRASS` is `tall_dry_grass`).
+    - In 26.3 the id strings sit in `BlockItemIds` and `ItemIds`, not in `Items.<clinit>` as the brief expected.
+    - A `ColorCollection` field is `<color>_<base>` for the 16 dye colours in record order, where `base` is the reference string (`DYED_TERRACOTTA` is `terracotta`).
+    - A `WeatheringCopperCollection` field is the four weathering states, then the four waxed ones, with the prefixes of `WeatheringCopperCollection.PREFIXES`. `COPPER_BLOCK` takes its special names from `COPPER_BLOCK_SPECIAL_NAMES` (`copper_block`, `exposed_copper` and so on).
+  - **Tabs**
+    - A small symbolic interpreter runs `CreativeModeTabs.<clinit>` (the tab keys and textures) and `bootstrap`. That gives the colour order list, each builder call (row, column, title, icon, display lambda, aligned right, hidden title, no scroll bar, type, background) and each `Registry.register`.
+    - Then it runs each tab's icon lambda and display lambda.
+    - It follows lambdas and method references (`output::accept`), `registerColoredItems` with the bootstrap's gameplay colour order, `copperBlockFamilies`, `ColorCollection` and `WeatheringCopperCollection` `forEach`, `pick` and the accessors, `Optional.ifPresent` on registry lookups, and `new ItemStack(item)`.
+  - **Generators** become one entry each with `Variants`:
+    - `Potions`
+    - `EnchantedBooks { all_levels }`: the maximum level is in the tab only, all levels in search only.
+    - `Instruments { tag }`
+    - `SuspiciousStews`, `OminousBottles` and `Fireworks`
+    - `Paintings { tag, in_tag }`: the predicate lambda is run for a painting inside and outside the tag.
+    - `OminousBanner`: the white banner.
+    - `TestBlockModes` and `LightLevels`: the op tab's loops.
+  - **Operator tab:** a display lambda that asks `hasPermissions()` marks its tab `operator`. Its content is read as if allowed.
+  - **Search** is computed, not interpreted, as vanilla's search lambda does at runtime: the search-visible entries of every category tab in registry order, then the Search tab's own entries. Duplicates of item and variants are dropped, and operator tabs count only when `operator` is true.
+  - **Shown tabs** follow vanilla's `shouldDisplay`: a category tab without displayed items is hidden. Operator tabs are hidden unless allowed.
+- **Result on the owner's 26.3 jar**
+  - 14 tabs at vanilla's rows and columns.
+  - Icons: bricks, cyan wool, grass block, oak sign, redstone, bookshelf, compass, diamond pickaxe, netherite sword, golden apple, iron ingot, creeper spawn egg, command block and chest.
+  - Entries per tab: Building 475, Colored 278, Natural 254, Functional 238, Redstone 70, Tools 149, Combat 79, Food 47, Ingredients 153 (152 shown), Spawn Eggs 89, Operator 13.
+  - Search has 1638 entries, or 1625 without the operator tab.
+  - Nothing is skipped.
+  - The 23 items in no tab are vanilla's too: air, 16 explorer maps, `filled_map`, `knowledge_book`, `petrified_oak_slab`, `written_book`, and the wither and ender dragon spawn eggs.
+  - Reading takes well under a second.
+- `lib.rs` gains `pub mod class_file;` and `pub mod creative_tabs;`.
+
+### Tests added
+
+- `class_file::tests` (5):
+  - A synthetic class with a long constant, a field, a method and an invokedynamic bootstrap.
+  - Operand decoding with negative immediates, short load forms, `wide` loads and `iinc`, and backward and forward jumps.
+  - Switch padding.
+  - Broken code and classes.
+  - Descriptor parameters.
+- `creative_tabs::tests` (6), on synthetic bytecode built by a small test assembler (classes `ItemIds`, `Items`, `Blocks` and `CreativeModeTabs`):
+  - **Copper and colour id rules.**
+  - **A full read:**
+    - three tabs with keys from `createKey`, titles, rows, columns, aligned right, a search background and type;
+    - an icon from `new ItemStack(Blocks.BRICKS)`;
+    - stone, two wool colours in the bootstrap's colour order, waxed copper through `waxed().forEach(output::accept)`;
+    - the `CUT_STANDSTONE_SLAB` typo resolved through the reference, and melon seeds from `create(stem, seeds)`;
+    - an unknown field logged, a potion generator, and enchanted books through `Optional.ifPresent` with their visibilities;
+    - cut copper's eight states;
+    - an operator tab with a `hasPermissions` branch, a loop run once, `setModeOnStack`, and a negated painting predicate.
+  - **Search:** union, de-duplication and the operator filter; shown tabs.
+  - **Unknown ids:** an unknown entry or icon is skipped and logged.
+  - **Fallback:** a missing tabs class; registry order from `Items` and without it; the fallback tabs; an unreadable jar.
+  - **`the_real_tabs_match_vanilla`**, against the 26.3 jar and skipped without it:
+    - the layout equals the fallback table, and the icons and per-tab counts match;
+    - the first Building and Colored entries are right, and the copper order is right;
+    - every generator entry with its visibility;
+    - the search sizes, and the exact list of items in no tab;
+    - the registry order.
+
+Run it with `MINECRAFTOSS_ROOT=C:\Games\Mashup\2010-Rust-Rewrite-Mashup\iw4l-artifacts\minecraft-26.3`.
+
+### In-game test steps
+
+Nothing changes in game yet. The reader has no caller until the creative screen lands after the split (see below), so there is nothing to screenshot.
+
+Kit: none needed.
+
+### Decisions
+
+- **Interpretation, not a hard-coded list.** The tab contents are code in 26.3, so the reader interprets just enough bytecode, and every result is checked against the jar's item list. Only naming rules that are stable code conventions are written in Rust: the 16 dye colours in `ColorCollection` record order, and the copper prefixes. The real-jar test checks both.
+- **Forward-only interpretation.**
+  - A loop body runs once, because backward jumps are never taken.
+  - A condition on a known number is evaluated, and one on an unknown value falls through.
+  - So `hasPermissions()` reads as allowed and marks the tab, and the op tab's test block and light loops each give one entry with their `Variants`.
+- **Generators are not expanded here.** Each becomes one entry that names its item and the kind of variants. Expanding them needs registry data (potions, enchantments, painting variants, instruments, stew effects), and the screen reads that after the split.
+- **The ominous banner is `minecraft:white_banner` with `OminousBanner`.** 26.3 `Raid.getOminousBannerTemplate` uses `Items.BANNER.white()`.
+- **Fallback.**
+  - Any failure gives the 14-tab layout with empty category tabs. Vanilla hides those, so only Saved Hotbars, Search and Inventory show.
+  - The Search tab then holds every item in registry order: the `Items.<clinit>` order when that class is readable, otherwise the sorted ids.
+  - The layout table is the one place the tab layout is written down, and the real-jar test checks it against the jar.
+- **One broken tab does not sink the others.** A display lambda that fails leaves its tab empty and is logged.
+
+### After the split
+
+The creative screen goes in after the split. That covers the UI, the search box, the tabs and saving hotbars.
+
+1. **Data**
+   - Each client reads `minecraft_terrain::creative_tabs::creative_tabs(&jar)` once at world load, off the main thread, and keeps it in the client state.
+   - The tabs are client-side in vanilla too: the server never sends them.
+2. **Opening**
+   - In creative (`hasInfiniteMaterials`), E opens `McScreen::Creative { tab, scroll }` instead of the survival inventory.
+   - The selected tab is kept between openings, as vanilla's static `selectedTab`. It starts at Building Blocks and falls back to it when the kept tab is not shown.
+3. **Layout** (26.3 `CreativeModeInventoryScreen`, javap)
+   - The image is 195 x 136.
+   - Tabs are 26 x 32.
+     - x = `column * 27`, or `195 - 27 * (7 - column) + 1` when aligned right.
+     - y = -32 for the top row and 136 for the bottom.
+     - The sprites are `container/creative_inventory/tab_top_selected_<n>`, `tab_top_unselected_<n>` and the same for `tab_bottom_`, with n from 1 to 7.
+   - The grid is 9 x 5 slots from (9, 18). The scroller is 12 x 15, `container/creative_inventory/scroller` or `scroller_disabled`.
+   - The background is `textures/gui/container/creative_inventory/tab_<background>.png`. The title shows unless `show_title` is false.
+   - The search box sits at (82, 6), 80 wide, at most 50 characters, without a border and with white text. It shows only on the Search tab.
+   - The Inventory tab has the armour slots, the offhand slot, the player model and the trash slot (tooltip `inventory.binSlot`).
+4. **Which tabs show**
+   - `shown(operator)`, with `operator` = the player may use game master blocks (level 2 or more) and the "Operator Items Tab" option is on. Vanilla's default for that option is off, so add the option.
+   - The tab tooltip is the title.
+   - Hovering an item shows its tooltip. On the search tab it also shows the tags matching a `#` query (`updateVisibleTags`).
+5. **Contents**
+   - A category tab shows `tab.displayed()`.
+   - Search shows `search(operator)`, filtered by the query:
+     - Empty shows everything.
+     - `#tag` uses the item tags the commands already load, with an optional namespace before `:`.
+     - Otherwise it is vanilla's name search over the localised names and the ids (`SessionSearchTrees.creativeNameSearch`).
+     - Each change scrolls back to the top.
+   - Saved Hotbars shows the nine saved rows.
+   - Scrolling moves by rows (`canScroll` when there are more than 5 rows).
+6. **Variants**
+   - Expand each `Variants` entry into stacks. Until a kind is expanded, show its plain item once, and drop it when the tab already has the plain item (the painting).
+   - What each kind holds:
+     - `Potions`: every potion in registry order with `potion_contents`, filtered by the enabled features.
+     - `EnchantedBooks`: the `data/minecraft/enchantment` registry. Without `all_levels` only the maximum level; with it, every level from the minimum to the maximum, all as `stored_enchantments`.
+     - `Instruments { tag }`: the members of `data/minecraft/tags/instrument/goat_horns.json` with `instrument`.
+     - `SuspiciousStews`: one stew per distinct effect list of the suspicious-effect blocks (the flowers).
+     - `OminousBottles`: amplifier 0 to 4.
+     - `Fireworks`: flight duration 1, 2 and 3.
+     - `Paintings { tag, in_tag }`: `data/minecraft/painting_variant` entries in or out of `#minecraft:placeable`, sorted by area and then width (26.3 `PAINTING_COMPARATOR`).
+     - `OminousBanner`: the white banner with the raid patterns and the name `block.minecraft.ominous_banner`.
+     - `TestBlockModes`: one test block per `mode` (start, log, fail, accept).
+     - `LightLevels`: light blocks from level 15 down to 0.
+7. **Clicks (server-owned)**
+   - Add `McClick::CreativeSet { slot, stack }`, vanilla's `ServerboundSetCreativeModeSlotPacket`.
+   - The server accepts it only from a player in creative, for a valid slot or a drop (-1), with a known item id and a count no larger than the item's maximum stack size.
+   - It writes the slot in that player's inventory, keyed by `PlayerId` and UUID.
+   - Picking, shift-click, Q and the trash slot follow 26.3 `CreativeModeInventoryScreen.slotClicked`. Check it with javap when building it.
+8. **Hotbars**
+   - The file is per client: `hotbar.nbt` next to the game, not in the world, with nine hotbars of nine stacks (`HotbarManager.NUM_HOTBAR_GROUPS`).
+   - In creative, holding C (`saveToolbarActivator`) and pressing 1 to 9 saves the current hotbar. It shows the overlay `inventory.hotbarSaved` with both keys.
+   - Holding X (`loadToolbarActivator`) and pressing a digit loads it. Each of the nine stacks goes through `CreativeSet` slots 36 to 44.
+9. **Multiplayer**
+   - Every friend reads their own jar, so the tabs need no network messages.
+   - The host checks every `CreativeSet` again, as above.
