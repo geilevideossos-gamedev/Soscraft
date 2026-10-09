@@ -1290,3 +1290,36 @@ Kit: `minecraft:diamond_pickaxe` 1 (Efficiency V), `minecraft:diamond_sword` 1, 
 ### Decisions
 
 - **The `.env` found at start is the one read again.** Reading only the exe's folder would miss the developer setup, where the `.env` sits in the repository above the working directory.
+
+## Minecraft /execute in looks up the server's loaded levels
+
+Commit: the commit that adds this entry.
+
+### What changed
+
+- `Host::dimension_scale` answers only for a level the server has loaded, through `level_of` and `loaded_dimension`, the one lookup from a dimension id to a level (added with `/setblock`). Until phase 3 only the overworld is in `Server::levels`, so `/execute in minecraft:the_nether` and `minecraft:the_end` answer vanilla's red "Unknown dimension '...'" (`DimensionArgument.getDimension` throws it for a level the server does not have). Phase 3 only has to put its levels in the map; nothing in the commands changes.
+- The scale is the dimension type's `coordinate_scale`, read from the game data (`commands::coordinate_scale`: 1 in the overworld, 8 in the Nether, 1 in the End), so `execute in` divides or multiplies x and z like `CommandSourceStack.withLevel`.
+- `Host::dimension(player)` (added with `/setblock`) is the player's own level, which is where `~`, `/setblock`, `/fill`, `/locate` and `/spawnpoint` act without `execute in`.
+- `teleport_to_dimension` stays on its default (refused): there is no second level to move a player into until the dimension switch.
+
+### Tests added
+
+- `commands::tests::execute_in_finds_only_loaded_levels`: with no level even the overworld is unknown; with the overworld loaded (needs the data), `in minecraft:overworld run seed` runs and the Nether and the End are unknown; the coordinate scales read from the data (8 for the Nether, 1 for the End and for an unknown id); `dimension_scale` for a loaded and an unloaded level.
+
+### In-game test steps
+
+```
+IW4L_MINECRAFT_KIT=stone*64
+```
+
+1. `/execute in minecraft:the_nether run tp ~ ~ ~`: red "Unknown dimension 'minecraft:the_nether'", and you do not move. Screenshot.
+2. `/execute in minecraft:the_end run seed`: red "Unknown dimension 'minecraft:the_end'".
+3. `/execute in minecraft:overworld run tp ~ ~10 ~`: you go up 10 blocks.
+4. `/execute in minecraft:overworld run setblock ~ ~-1 ~ gold_block`: the gold appears under you, as without `execute`.
+5. `/execute positioned 0 100 0 run tp ~ ~ ~`: you land at 0.5 100 0.5.
+
+Kit: none needed.
+
+### Decisions
+
+- **The lookup is by the level map, not by the `Dimension` enum.** `Dimension::parse` also accepts `nether` and `end`; vanilla only knows `minecraft:the_nether` and `minecraft:the_end`, so the lookup compares full ids.

@@ -544,6 +544,12 @@ impl CommandWorld for Host<'_> {
             .to_owned()
     }
 
+    fn dimension_scale(&self, dimension: &str) -> Option<f64> {
+        let level = level_of(self.levels, dimension)?;
+        let datapack = &level.terrain.stream.states.registries().datapack;
+        Some(coordinate_scale(datapack, dimension))
+    }
+
     fn loaded(&self, dimension: &str, pos: [i32; 3]) -> Loaded {
         level_of(self.levels, dimension).map_or(Loaded::Unloaded, |level| {
             crate::command_blocks::loaded_at(&level.terrain.scene, pos)
@@ -665,6 +671,14 @@ pub fn loaded_dimension(levels: &BTreeMap<Dimension, Level>, id: &str) -> Option
 
 pub fn level_of<'l>(levels: &'l BTreeMap<Dimension, Level>, id: &str) -> Option<&'l Level> {
     levels.get(&loaded_dimension(levels, id)?)
+}
+
+pub fn coordinate_scale(datapack: &minecraftoss_core::datapack::DataPack, id: &str) -> f64 {
+    minecraftoss_core::Identifier::parse(id)
+        .and_then(|id| datapack.read_json("dimension_type", &id))
+        .ok()
+        .and_then(|json| json["coordinate_scale"].as_f64())
+        .unwrap_or(1.0)
 }
 
 pub enum CommandJob {
@@ -1021,6 +1035,7 @@ pub(crate) mod tests {
             "argument.pos.unloaded" => "That position is not loaded",
             "argument.dimension.invalid" => "Unknown dimension '%s'",
             "commands.give.success.single" => "Gave %s %s to %s",
+            "commands.seed.success" => "Seed: %s",
             "block.minecraft.stone" => "Stone",
             "block.minecraft.torch" => "Torch",
             "commands.locate.structure.success" => "The nearest %s is at %s (%s blocks away)",
@@ -1321,6 +1336,71 @@ pub(crate) mod tests {
         let host = parts.host();
         assert_eq!(host.dimension(HOST), "minecraft:overworld");
         assert_eq!(host.loaded("minecraft:overworld", [0, 64, 0]), Loaded::Unloaded);
+    }
+
+    pub(crate) fn test_level(stream: TerrainStream) -> Option<Level> {
+        let registries = stream.states.registries().clone();
+        let environment = minecraft_terrain::environment::DimensionEnvironment::load(
+            &registries,
+            Dimension::Overworld.dimension_type(),
+        )
+        .ok()?;
+        let scene = minecraft_terrain::scene::HandcraftedScene::streamed(stream.states.clone());
+        Some(Level {
+            dimension: Dimension::Overworld,
+            entities: None,
+            containers: Default::default(),
+            terrain: crate::level::Terrain {
+                stream,
+                scene,
+                environment,
+            },
+        })
+    }
+
+    #[test]
+    fn execute_in_finds_only_loaded_levels() {
+        let mut parts = Parts::new();
+        let (lines, _) = parts.send(HOST, &["/execute in minecraft:overworld run seed"]);
+        assert_eq!(lines, vec!["Unknown dimension 'minecraft:overworld'"]);
+        assert_eq!(loaded_dimension(&parts.levels, "minecraft:overworld"), None);
+        let Some(level) = test_stream().and_then(test_level) else {
+            return;
+        };
+        parts.levels.insert(Dimension::Overworld, level);
+        let (lines, _) = parts.send(
+            HOST,
+            &[
+                "/execute in minecraft:overworld run seed",
+                "/execute in minecraft:the_nether run seed",
+                "/execute in minecraft:the_end run seed",
+            ],
+        );
+        assert_eq!(
+            lines,
+            vec![
+                "Seed: [42]",
+                "Unknown dimension 'minecraft:the_nether'",
+                "Unknown dimension 'minecraft:the_end'",
+            ]
+        );
+        let datapack = parts.levels[&Dimension::Overworld]
+            .terrain
+            .stream
+            .states
+            .registries()
+            .datapack
+            .clone();
+        assert_eq!(coordinate_scale(&datapack, "minecraft:the_nether"), 8.0);
+        assert_eq!(coordinate_scale(&datapack, "minecraft:the_end"), 1.0);
+        assert_eq!(coordinate_scale(&datapack, "minecraft:nope"), 1.0);
+        let host = parts.host();
+        assert_eq!(host.dimension_scale("minecraft:overworld"), Some(1.0));
+        assert_eq!(host.dimension_scale("minecraft:the_nether"), None);
+        assert_eq!(
+            host.loaded("minecraft:overworld", [0, 64, 0]),
+            Loaded::Unloaded
+        );
     }
 
     #[test]
