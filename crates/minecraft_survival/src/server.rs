@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
@@ -17,7 +17,8 @@ use minecraftoss_player::Difficulty;
 use minecraftoss_player::crafting::RecipeBook;
 
 use crate::data::GameData;
-use crate::level::Level;
+use crate::entities::Entities;
+use crate::level::{Level, Terrain};
 use crate::player::{Player, joining_inventory};
 use crate::player_nbt::{Place, PlayerData};
 use crate::save::{WorldClocks, WorldSave};
@@ -26,6 +27,7 @@ use crate::survival::Survival;
 pub struct Server {
     pub globals: Globals,
     pub levels: BTreeMap<Dimension, Level>,
+    pub opening: BTreeMap<Dimension, LevelLoader>,
     pub players: BTreeMap<PlayerUuid, Player>,
 }
 
@@ -113,7 +115,235 @@ pub fn default_clock(dimension: Dimension) -> Option<&'static str> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Arrival {
+    pub feet: [f64; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub motion: [f64; 3],
+}
+
+impl Arrival {
+    pub fn at(feet: [f64; 3]) -> Self {
+        Self {
+            feet,
+            yaw: 0.0,
+            pitch: 0.0,
+            motion: [0.0; 3],
+        }
+    }
+
+    pub fn of(place: &Place) -> Self {
+        Self {
+            feet: place.feet,
+            yaw: place.yaw,
+            pitch: place.pitch,
+            motion: place.motion,
+        }
+    }
+
+    pub fn place(self, dimension: Dimension) -> Place {
+        Place {
+            motion: self.motion,
+            on_ground: self.motion == [0.0; 3],
+            ..Place::standing(dimension, self.feet, self.yaw, self.pitch)
+        }
+    }
+}
+
+type Opened = Result<(Terrain, Arrival), String>;
+
+pub struct LevelLoader {
+    result: mpsc::Receiver<Opened>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl LevelLoader {
+    pub fn open<F>(
+        globals: &mut Globals,
+        dimension: Dimension,
+        view_distance: i32,
+        known_spawn: Option<(i32, i32, i32)>,
+        prepare: F,
+    ) -> Self
+    where
+        F: FnOnce(&mut Terrain) -> Arrival + Send + 'static,
+    {
+        let registries = globals.registries.clone();
+        let seed = globals.seed;
+        let save = globals.save.clone();
+        let (send, result) = mpsc::channel();
+        let thread = std::thread::Builder::new()
+            .name("minecraft-level-load".into())
+            .spawn(move || {
+                let started = Instant::now();
+                let opened = Terrain::open(
+                    registries,
+                    seed,
+                    view_distance,
+                    dimension,
+                    save.as_ref(),
+                    known_spawn,
+                )
+                .map(|mut terrain| {
+                    let arrival = prepare(&mut terrain);
+                    (terrain, arrival)
+                });
+                if opened.is_ok() {
+                    diag::info!(
+                        World,
+                        "Minecraft {} level opened in {} ms",
+                        dimension.dimension_type(),
+                        started.elapsed().as_millis()
+                    );
+                }
+                let _ = send.send(opened);
+            })
+            .map_err(|error| diag::warn!(World, "Minecraft level thread not started: {error}"))
+            .ok();
+        Self { result, thread }
+    }
+
+    pub fn poll(&mut self) -> Option<Opened> {
+        match self.result.try_recv() {
+            Ok(opened) => Some(opened),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Some(Err("the level loader stopped".to_owned()))
+            }
+        }
+    }
+}
+
+impl Drop for LevelLoader {
+    fn drop(&mut self) {
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+pub fn start_level(globals: &Globals, level: &mut Level) {
+    let mut entities = Entities::new(
+        &level.terrain.stream,
+        level.dimension,
+        globals.seed,
+        &globals.data,
+        globals.weather.as_ref(),
+    );
+    entities.set_game_rules(&globals.game_rules);
+    level.containers.set_book(globals.data.stations.clone());
+    level.entities = Some(entities);
+}
+
+fn block_of(feet: [f64; 3]) -> (i32, i32, i32) {
+    (
+        feet[0].floor() as i32,
+        feet[1].floor() as i32,
+        feet[2].floor() as i32,
+    )
+}
+
+fn spawn_place(spawn: &RespawnData) -> Place {
+    let (x, y, z) = spawn.pos;
+    Place::standing(
+        crate::save::spawn_dimension(spawn),
+        [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5],
+        spawn.yaw,
+        spawn.pitch,
+    )
+}
+
 impl Server {
+    pub fn known_spawn(&self, dimension: Dimension, arrival: Option<Place>) -> Option<(i32, i32, i32)> {
+        match dimension {
+            Dimension::Overworld => (crate::save::spawn_dimension(&self.globals.spawn)
+                == Dimension::Overworld)
+                .then_some(self.globals.spawn.pos),
+            _ => arrival
+                .filter(|place| place.dimension == dimension)
+                .map(|place| block_of(place.feet)),
+        }
+    }
+
+    pub fn open_levels(&mut self, view_distance: i32) {
+        let waiting: Vec<(Dimension, Option<Place>)> = self
+            .players
+            .values()
+            .filter(|player| !self.levels.contains_key(&player.dimension))
+            .map(|player| {
+                let arrival = player.arrival.filter(|place| place.dimension == player.dimension);
+                (player.dimension, arrival)
+            })
+            .collect();
+        for (dimension, arrival) in waiting {
+            if self.opening.contains_key(&dimension) {
+                continue;
+            }
+            let known_spawn = self.known_spawn(dimension, arrival);
+            let loader = LevelLoader::open(
+                &mut self.globals,
+                dimension,
+                view_distance,
+                known_spawn,
+                move |terrain| match arrival {
+                    Some(place) => Arrival::of(&place),
+                    None => {
+                        let (x, y, z) = terrain.stream.player_spawn;
+                        Arrival::at([x, y, z])
+                    }
+                },
+            );
+            self.opening.insert(dimension, loader);
+        }
+    }
+
+    pub fn finish_opening(&mut self) -> Vec<(Dimension, Result<(), String>)> {
+        let ready: Vec<(Dimension, Opened)> = self
+            .opening
+            .iter_mut()
+            .filter_map(|(&dimension, loader)| loader.poll().map(|opened| (dimension, opened)))
+            .collect();
+        let mut finished = Vec::new();
+        for (dimension, opened) in ready {
+            self.opening.remove(&dimension);
+            let waiting = self
+                .players
+                .values_mut()
+                .filter(|player| player.dimension == dimension);
+            match opened {
+                Ok((terrain, arrival)) => {
+                    let mut level = Level::new(dimension, terrain);
+                    start_level(&self.globals, &mut level);
+                    self.levels.insert(dimension, level);
+                    for player in waiting {
+                        if player.place.is_none_or(|place| place.dimension != dimension) {
+                            player.arrive(arrival.place(dimension));
+                        }
+                    }
+                    finished.push((dimension, Ok(())));
+                }
+                Err(error) => {
+                    diag::warn!(
+                        World,
+                        "Minecraft {} level failed to open: {error}",
+                        dimension.dimension_type()
+                    );
+                    let spawn = spawn_place(&self.globals.spawn);
+                    for player in waiting {
+                        let back = player
+                            .place
+                            .filter(|place| place.dimension != dimension)
+                            .unwrap_or(spawn);
+                        player.arrive(back);
+                    }
+                    finished.push((dimension, Err(error)));
+                }
+            }
+        }
+        finished
+    }
+
     pub fn save_and_close(mut self, started: Instant) {
         let save = self.globals.save.take();
         if let Some(writer) = self.globals.level_writer.take() {
@@ -826,6 +1056,7 @@ mod tests {
         let server = Server {
             globals,
             levels: BTreeMap::new(),
+            opening: BTreeMap::new(),
             players: BTreeMap::from([(uuid.clone(), player)]),
         };
         server.save_and_close(Instant::now());
@@ -865,5 +1096,160 @@ mod tests {
         assert_eq!(player.survival.status.health, 7.0);
         assert_eq!(player.mode.mode, GameMode::Creative);
         assert_eq!(held(&player, 9), Some(("minecraft:dirt", 2)));
+    }
+
+    fn wait_for_levels(server: &mut Server) -> Vec<(Dimension, Result<(), String>)> {
+        let started = Instant::now();
+        let mut finished = Vec::new();
+        while !server.opening.is_empty() {
+            assert!(
+                started.elapsed().as_secs() < 600,
+                "levels still opening after ten minutes"
+            );
+            finished.extend(server.finish_opening());
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        finished
+    }
+
+    fn server_with(globals: Globals, players: Vec<Player>) -> Server {
+        Server {
+            globals,
+            levels: BTreeMap::new(),
+            opening: BTreeMap::new(),
+            players: players
+                .into_iter()
+                .map(|player| (player.uuid.clone(), player))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_level_opens_on_its_own_thread_for_the_players_in_its_dimension() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let (_dir, save) = world("open-levels");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let mut steve = join(Some(&save), &recipes, &rules, joining(&profile("Steve")));
+        let cave = Place::standing(Dimension::Nether, [5.5, 70.0, 5.5], 90.0, 10.0);
+        steve.arrive(cave);
+        let mut alex = join(Some(&save), &recipes, &rules, joining(&profile("Alex")));
+        alex.dimension = Dimension::End;
+        let (steve_id, alex_id) = (steve.uuid.clone(), alex.uuid.clone());
+        let mut server = server_with(
+            test_globals(registries, Some(save)),
+            vec![steve, alex],
+        );
+        assert_eq!(server.known_spawn(Dimension::Nether, Some(cave)), Some((5, 70, 5)));
+        assert_eq!(server.known_spawn(Dimension::End, Some(cave)), None);
+        assert_eq!(
+            server.known_spawn(Dimension::Overworld, Some(cave)),
+            Some(server.globals.spawn.pos)
+        );
+        server.open_levels(2);
+        assert_eq!(
+            server.opening.keys().copied().collect::<Vec<_>>(),
+            vec![Dimension::Nether, Dimension::End]
+        );
+        server.open_levels(2);
+        assert_eq!(server.opening.len(), 2, "a level opening is not opened again");
+        let mut finished = wait_for_levels(&mut server);
+        finished.sort_by_key(|(dimension, _)| *dimension);
+        assert_eq!(
+            finished,
+            vec![(Dimension::Nether, Ok(())), (Dimension::End, Ok(()))]
+        );
+        for dimension in [Dimension::Nether, Dimension::End] {
+            let level = &server.levels[&dimension];
+            assert_eq!(level.dimension, dimension);
+            assert!(level.entities.is_some(), "{dimension:?} has its mobs");
+        }
+        assert!(!server.levels.contains_key(&Dimension::Overworld));
+        assert_eq!(
+            server.levels[&Dimension::Nether].terrain.stream.player_spawn,
+            (5.5, 70.0, 5.5)
+        );
+        let steve = &server.players[&steve_id];
+        assert_eq!(steve.arrival, Some(cave));
+        assert_eq!(steve.place, Some(cave));
+        let alex = &server.players[&alex_id];
+        let platform = Place::standing(Dimension::End, [100.5, 49.0, 0.5], 0.0, 0.0);
+        assert_eq!(alex.arrival, Some(platform), "ServerLevel.END_SPAWN_POINT");
+        assert_eq!(alex.place, Some(platform));
+        let dimensions = server.globals.save.as_ref().unwrap().path().join("dimensions/minecraft");
+        for folder in ["the_nether", "the_end"] {
+            assert!(dimensions.join(folder).join("region").is_dir(), "{folder}");
+        }
+        server.open_levels(2);
+        assert!(server.opening.is_empty(), "an open level is not opened again");
+    }
+
+    #[test]
+    fn a_level_that_fails_to_open_sends_its_players_back() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let (_dir, save) = world("failed-level");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let mut steve = join(Some(&save), &recipes, &rules, joining(&profile("Steve")));
+        let home = steve.place.expect("a joining player stands somewhere");
+        steve.dimension = Dimension::End;
+        steve.arrival = None;
+        let mut alex = join(Some(&save), &recipes, &rules, joining(&profile("Alex")));
+        alex.arrive(Place::standing(Dimension::End, [3.5, 60.0, 3.5], 0.0, 0.0));
+        let (steve_id, alex_id) = (steve.uuid.clone(), alex.uuid.clone());
+        let spawn = RespawnData {
+            yaw: 90.0,
+            ..crate::save::world_spawn(Dimension::Overworld, (8, 64, -4))
+        };
+        let globals = Globals {
+            spawn,
+            ..test_globals(registries, Some(save))
+        };
+        let mut server = server_with(globals, vec![steve, alex]);
+        let loader = LevelLoader::open(
+            &mut server.globals,
+            Dimension::End,
+            2,
+            None,
+            |_terrain: &mut Terrain| -> Arrival { panic!("the arrival search fails") },
+        );
+        server.opening.insert(Dimension::End, loader);
+        let finished = wait_for_levels(&mut server);
+        assert_eq!(finished.len(), 1);
+        assert!(finished[0].1.is_err(), "{finished:?}");
+        assert!(server.levels.is_empty());
+        let steve = &server.players[&steve_id];
+        assert_eq!((steve.dimension, steve.arrival), (Dimension::Overworld, Some(home)));
+        let alex = &server.players[&alex_id];
+        assert_eq!(
+            alex.arrival,
+            Some(Place::standing(
+                Dimension::Overworld,
+                [8.5, 64.0, -3.5],
+                90.0,
+                0.0
+            )),
+            "with nowhere else to go, the world spawn"
+        );
+        assert_eq!(alex.dimension, Dimension::Overworld);
+    }
+
+    #[test]
+    fn an_arrival_keeps_its_angles_and_motion() {
+        let place = Place {
+            motion: [0.2, 0.0, -0.1],
+            on_ground: false,
+            ..Place::standing(Dimension::End, [1.0, 2.0, 3.0], 30.0, -5.0)
+        };
+        let arrival = Arrival::of(&place);
+        assert_eq!(arrival.place(Dimension::End), place);
+        assert_eq!(
+            Arrival::at([0.5, 64.0, 0.5]).place(Dimension::Nether),
+            Place::standing(Dimension::Nether, [0.5, 64.0, 0.5], 0.0, 0.0)
+        );
     }
 }

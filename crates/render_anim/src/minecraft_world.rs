@@ -9,13 +9,13 @@ use bevy::input::gamepad::GamepadButton;
 use bevy::prelude::*;
 use minecraft_terrain::clouds::CloudMask;
 use minecraft_terrain::day_cycle::{DayCycle, Skybox};
-use minecraft_terrain::environment::{DimensionEnvironment, View};
+use minecraft_terrain::environment::View;
 use minecraft_terrain::lighting::SkyLight;
 use minecraft_terrain::mesh::{Atlas, AtlasAnimation, AtlasPatch, SectionMesh, Vertex};
 use minecraft_terrain::pack::PackStack;
 use minecraft_terrain::scene::HandcraftedScene;
 use minecraft_terrain::sections::{CullCamera, SectionPos};
-use minecraft_terrain::terrain::{Dimension, TerrainStream};
+use minecraft_terrain::terrain::Dimension;
 use minecraftoss_core::BlockStateId;
 use minecraftoss_core::registries::{DataPaths, Registries};
 
@@ -222,16 +222,15 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
     let registries = Arc::new(Registries::load(&paths)?);
     let packs = PackStack::open(vec![root.join("resourcepacks/local/minecraft-26.3")])
         .map_err(|e| e.to_string())?;
-    let stream = TerrainStream::for_dimension_at(
+    let terrain = minecraft_survival::level::Terrain::open(
         registries.clone(),
         seed,
         VIEW_DISTANCE,
         Dimension::Overworld,
-        opened.save.as_ref().map(minecraft_survival::save::WorldSave::path),
+        opened.save.as_ref(),
         opened.spawn.as_ref().filter(|spawn| minecraft_survival::save::spawn_dimension(spawn) == Dimension::Overworld).map(|spawn| spawn.pos),
-    )
-    .map_err(|e| e.to_string())?;
-    let spawn = opened.spawn.clone().unwrap_or_else(|| minecraft_survival::save::world_spawn(Dimension::Overworld, stream.world_spawn));
+    )?;
+    let spawn = opened.spawn.clone().unwrap_or_else(|| minecraft_survival::save::world_spawn(Dimension::Overworld, terrain.stream.world_spawn));
     if let Some(save) = &opened.save
         && let Err(error) = save.write(&spawn, None, &opened.game_rules, opened.difficulty)
     {
@@ -246,9 +245,6 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
     }
     let build = minecraft_terrain::mesh::build(&HandcraftedScene::default(), &packs)
         .map_err(|e| e.to_string())?;
-    let scene = HandcraftedScene::streamed(stream.states.clone());
-    let environment =
-        DimensionEnvironment::load(&registries, Dimension::Overworld.dimension_type())?;
     let celestial = Arc::new(celestial_image(&packs).map_err(|e| e.to_string())?);
     let cloud_mask = CloudMask::from_pack(&packs).ok();
     let crack_texture = Arc::new(crate::minecraft_mining::crack_strip(&packs).map_err(|e| e.to_string())?);
@@ -282,9 +278,8 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         level_writer: None,
         autosave_ticks: 0,
     };
-    let terrain = minecraft_survival::level::Terrain { stream, scene, environment };
-    let level = minecraft_survival::level::Level { dimension: Dimension::Overworld, entities: None, containers: Default::default(), terrain };
-    Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), players: std::collections::BTreeMap::new() }))
+    let level = minecraft_survival::level::Level::new(Dimension::Overworld, terrain);
+    Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), opening: Default::default(), players: std::collections::BTreeMap::new() }))
 }
 
 pub(crate) fn data_jar() -> Option<std::path::PathBuf> {
@@ -424,7 +419,7 @@ fn update(
             view.active = true;
         }
     }
-    ui.loading_world = runtime.loading.is_some() || (runtime.world.is_some() && runtime.spawn_gate.holding(now_ms));
+    ui.loading_world = runtime.loading.is_some() || (runtime.world.is_some() && (runtime.spawn_gate.holding(now_ms) || awaiting_level(&runtime)));
     let Some(mut authority) = authority else {
         return;
     };
@@ -436,7 +431,7 @@ fn update(
         runtime.loader = None;
         match result {
             Ok((world, mut server)) => {
-                let minecraft_survival::server::Server { globals, levels, players } = &mut server;
+                let minecraft_survival::server::Server { globals, levels, players, .. } = &mut server;
                 let Some(level) = levels.get_mut(&Dimension::Overworld) else {
                     diag::warn!(World, "Minecraft world failed to load: no overworld");
                     view.active = false;
@@ -462,9 +457,7 @@ fn update(
                 runtime.minimap = Default::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
                 globals.data = minecraft_survival::data::GameData::load(assets::minecraft_map::root().as_deref(), data_jar());
-                let mut entities = minecraft_survival::entities::Entities::new(&level.terrain.stream, globals.seed, &globals.data, globals.weather.as_ref());
-                entities.set_game_rules(&globals.game_rules);
-                level.containers.set_book(globals.data.stations.clone());
+                minecraft_survival::server::start_level(globals, level);
                 runtime.inventory_ui.set_station_data(globals.data.stations.clone(), globals.data.enchantments.clone(), globals.seed as i32);
                 globals.chat.registries_mut().enchantments = globals.data.enchantments.as_ref().map_or_else(Vec::new, |book| book.list.iter().map(|enchantment| enchantment.id.clone()).collect());
                 // Game ticks since sunrise to start at: 6000 noon, 13000
@@ -505,7 +498,6 @@ fn update(
                     level.terrain.stream.player_spawn
                 );
                 runtime.fire_frames = fire_frames(&world.packs).map(|(image, frames)| (images.add(image), frames));
-                level.entities = Some(entities);
                 runtime.server = Some(server);
                 runtime.local = Some(uuid);
                 runtime.world = Some(world);
@@ -520,6 +512,7 @@ fn update(
         }
     }
 
+    follow_levels(&mut runtime);
     let origin = view.origin;
     let Runtime {
         world,
@@ -549,7 +542,7 @@ fn update(
         puppet.active = false;
         return;
     };
-    let minecraft_survival::server::Server { globals, levels, players } = server;
+    let minecraft_survival::server::Server { globals, levels, players, .. } = server;
     if globals.autosave_ticks >= minecraft_survival::save::AUTOSAVE_TICKS {
         globals.autosave_ticks = 0;
         minecraft_survival::server::autosave(globals, levels, players);
@@ -2395,6 +2388,21 @@ fn save_and_close(
     };
     drop(world);
     server.save_and_close(started);
+}
+
+fn awaiting_level(runtime: &Runtime) -> bool {
+    let (Some(server), Some(local)) = (runtime.server.as_ref(), runtime.local.as_ref()) else {
+        return false;
+    };
+    server.players.get(local).is_some_and(|player| !server.levels.contains_key(&player.dimension))
+}
+
+fn follow_levels(runtime: &mut Runtime) {
+    let Some(server) = runtime.server.as_mut() else {
+        return;
+    };
+    server.open_levels(VIEW_DISTANCE);
+    server.finish_opening();
 }
 
 fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {

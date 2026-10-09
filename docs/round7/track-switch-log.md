@@ -87,7 +87,7 @@ Commit: b10d6d6
 
 ### 5. Minecraft server-wide state passes clippy
 
-Commit: filled in by the next entry (or `git log` under this subject)
+Commit: d75e873
 
 - **Changed:** three clippy findings on lines of entries 1 and 3: `spawn_dimension` names its overworld fallback instead of `unwrap_or_default` (disallowed by `clippy.toml`), `Globals::advance_weather` starts a world without weather from a named `NEW_WORLD_WEATHER` (all timers 0, as a new vanilla `WeatherData`), and the weather random's seed constant is grouped in equal digits.
 - **Clippy:** `clippy -p minecraft_survival --tests --no-deps` has only the two older `entities.rs` findings (`type_complexity`, `manual_is_multiple_of`). `minecraft_terrain` and `render_anim` were not clippy-clean before this track (`approx_constant` errors in the mob renderers); with `-A clippy::approx_constant` none of their findings is on a line of this group. `minecraftoss-world` has no finding in `level_storage.rs` or `level/time.rs`.
@@ -107,3 +107,25 @@ IW4L_MINECRAFT_KIT=minecraft:cobblestone*64
 - **After track C:** `/time` per dimension (`commands.time.no_default_clock` in the Nether, the `minecraft:the_end` clock in the End) through `server::default_clock`.
 - **Handed to S2:** `WorldSave::create_dimension` when a level opens; `for_dimension_at` with the arrival as known spawn for the Nether and End; giving `Globals.weather` back to an overworld level that stayed open (a `set_weather_data` command on its `ServerSim`); `IW4L_MINECRAFT_WEATHER` applied only where `has_weather`.
 - **MinecraftOSS patches in this group:** `world/src/level_storage.rs` (per-dimension saved data), `world/src/level/time.rs` (`Level::set_clock`, `Weather::advance_timers`).
+
+## Group S2: levels open and close
+
+### 6. Minecraft levels open on demand for any dimension (E1-5)
+
+Commit: filled in by the next entry (or `git log` under this subject)
+
+- **Changed:**
+  - `minecraft_survival/src/level.rs`: `Level::new(dimension, terrain)` and `Terrain::open(registries, seed, view_distance, dimension, save, known_spawn)`, which creates the dimension's folders (`WorldSave::create_dimension`), builds the terrain stream, the streamed scene and the dimension's environment. `load()` builds the overworld through it.
+  - `minecraft_survival/src/server.rs`:
+    - `Arrival { feet, yaw, pitch, motion }`, where a player stands when a level opens (E2's portal search and the End's kept velocity fill it later).
+    - `LevelLoader::open(globals, dimension, view_distance, known_spawn, prepare)` builds the `Terrain` on a `minecraft-level-load` thread and then runs `prepare: FnOnce(&mut Terrain) -> Arrival + Send` there, before any player is placed. `poll` hands back the terrain and the arrival, or an error; a loader that stops (a panic in a generator or in `prepare`) is an error, never a crash. Dropping a loader joins its thread.
+    - `Server.opening` holds the loaders by dimension. `Server::open_levels(view_distance)` opens the level of every player whose dimension has none (one loader per dimension, whoever asks). The known spawn is the world spawn for the overworld (when the world spawn is there) and the player's arrival block for the Nether and the End; without one the stream's own spawn is the arrival (the stand-in Nether floor or `END_SPAWN_POINT`).
+    - `Server::finish_opening()` builds the level's mobs (`start_level`: `Entities`, game rules, station book) on the main thread, inserts the level, and places each waiting player who has no place in that dimension at the arrival. A level that fails to open sends its players back to where they stood in another dimension, or else to the world spawn, with a warning in the log.
+  - `minecraft_survival/src/entities.rs` (`Entities::new` only): takes the dimension, starts its `ServerSim` with that dimension type instead of always `minecraft:overworld`, and applies `weather.dat` and `IW4L_MINECRAFT_WEATHER` only in a dimension that has weather (the overworld).
+  - `render_anim/src/minecraft_world.rs`: `load()` uses `Terrain::open` and `Level::new`; the load completion uses `start_level`; each frame `follow_levels` opens and finishes levels, and `ui.loading_world` also holds while the local player's level is still opening.
+- **Tests:** `server`: `a_level_opens_on_its_own_thread_for_the_players_in_its_dimension` (a player saved in the Nether and one sent to the End with no place there: one loader per dimension, never twice, both levels open with their mobs and folders, the Nether keeps the saved place as its known spawn and arrival, the End arrival is `END_SPAWN_POINT`), `a_level_that_fails_to_open_sends_its_players_back` (a `prepare` that panics: the error comes back, no level is inserted, one player returns to their overworld place and the other, with nowhere else, to the world spawn with its yaw), `an_arrival_keeps_its_angles_and_motion`.
+- **Decisions:** the overworld still opens with the world, as every vanilla level exists while the server runs; it is also where a new world's spawn is searched. A level that fails to open retries when a player asks for it again.
+- **Test steps:** nothing changes in game yet; the Nether and the End can be entered from entry 9 on. Check that the world still loads and the weather variable still works:
+  1. Keep `IW4L_MINECRAFT_WORLD=dimtest` and add `IW4L_MINECRAFT_WEATHER=rain`. Start: it rains, the log says `Minecraft weather: rain from IW4L_MINECRAFT_WEATHER`. **Screenshot 1.**
+  2. Remove the weather line again.
+- **Kit:** none needed; any kit works.

@@ -10,6 +10,7 @@ use minecraftoss_core::{Chunk, ChunkPos, Registries};
 use minecraftoss_player::inventory::Inventory;
 
 use crate::entities::{Entities, SentItemUse};
+use crate::save::WorldSave;
 
 type Writes = Vec<((i32, i32, i32), Option<Block>)>;
 
@@ -24,6 +25,48 @@ pub struct Terrain {
     pub stream: TerrainStream,
     pub scene: HandcraftedScene,
     pub environment: DimensionEnvironment,
+}
+
+impl Level {
+    pub fn new(dimension: Dimension, terrain: Terrain) -> Self {
+        Self {
+            dimension,
+            entities: None,
+            containers: Containers::default(),
+            terrain,
+        }
+    }
+}
+
+impl Terrain {
+    pub fn open(
+        registries: Arc<Registries>,
+        seed: i64,
+        view_distance: i32,
+        dimension: Dimension,
+        save: Option<&WorldSave>,
+        known_spawn: Option<(i32, i32, i32)>,
+    ) -> Result<Self, String> {
+        if let Some(save) = save {
+            save.create_dimension(dimension)?;
+        }
+        let stream = TerrainStream::for_dimension_at(
+            registries.clone(),
+            seed,
+            view_distance,
+            dimension,
+            save.map(WorldSave::path),
+            known_spawn,
+        )
+        .map_err(|error| error.to_string())?;
+        let scene = HandcraftedScene::streamed(stream.states.clone());
+        let environment = DimensionEnvironment::load(&registries, dimension.dimension_type())?;
+        Ok(Self {
+            stream,
+            scene,
+            environment,
+        })
+    }
 }
 
 pub fn open_for_respawn(

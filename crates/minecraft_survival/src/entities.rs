@@ -159,14 +159,16 @@ fn player_candidate(player: &PlayerView) -> PlayerCandidate {
 }
 
 impl Entities {
-    pub fn new(stream: &TerrainStream, seed: i64, data: &crate::data::GameData, saved_weather: Option<&WeatherData>) -> Self {
-        let mut sim = ServerSim::new(stream.world_gen(), stream.states.clone(), "minecraft:overworld");
+    pub fn new(stream: &TerrainStream, dimension: minecraft_net::Dimension, seed: i64, data: &crate::data::GameData, saved_weather: Option<&WeatherData>) -> Self {
+        let mut sim = ServerSim::new(stream.world_gen(), stream.states.clone(), dimension.dimension_type());
         sim.set_entity_storage(stream.storage());
-        if let Some(saved) = saved_weather {
+        let has_weather = crate::server::has_weather(dimension);
+        if let Some(saved) = saved_weather.filter(|_| has_weather) {
             sim.set_weather_data(saved);
             diag::info!(World, "Minecraft weather: {} from weather.dat", weather_name(saved));
         }
-        if let Ok(weather) = std::env::var("IW4L_MINECRAFT_WEATHER")
+        if has_weather
+            && let Ok(weather) = std::env::var("IW4L_MINECRAFT_WEATHER")
             && !weather.trim().is_empty()
         {
             if sim.set_weather(weather.trim()) {
