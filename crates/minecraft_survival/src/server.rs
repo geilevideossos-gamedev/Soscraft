@@ -185,6 +185,7 @@ type Opened = Result<(Terrain, Arrival), String>;
 pub struct LevelLoader {
     result: mpsc::Receiver<Opened>,
     thread: Option<JoinHandle<()>>,
+    pub requested: Option<Place>,
 }
 
 impl LevelLoader {
@@ -237,7 +238,11 @@ impl LevelLoader {
             })
             .map_err(|error| diag::warn!(World, "Minecraft level thread not started: {error}"))
             .ok();
-        Self { result, thread }
+        Self {
+            result,
+            thread,
+            requested: None,
+        }
     }
 
     pub fn poll(&mut self) -> Option<Opened> {
@@ -345,7 +350,7 @@ impl Server {
                 continue;
             }
             let known_spawn = self.known_spawn(dimension, arrival);
-            let loader = LevelLoader::open(
+            let mut loader = LevelLoader::open(
                 &mut self.globals,
                 dimension,
                 view_distance,
@@ -358,18 +363,23 @@ impl Server {
                     }
                 },
             );
+            loader.requested = arrival;
             self.opening.insert(dimension, loader);
         }
     }
 
     pub fn finish_opening(&mut self) -> Vec<(Dimension, Result<(), String>)> {
-        let ready: Vec<(Dimension, Opened)> = self
+        let ready: Vec<(Dimension, Opened, Option<Place>)> = self
             .opening
             .iter_mut()
-            .filter_map(|(&dimension, loader)| loader.poll().map(|opened| (dimension, opened)))
+            .filter_map(|(&dimension, loader)| {
+                loader
+                    .poll()
+                    .map(|opened| (dimension, opened, loader.requested))
+            })
             .collect();
         let mut finished = Vec::new();
-        for (dimension, opened) in ready {
+        for (dimension, opened, requested) in ready {
             self.opening.remove(&dimension);
             let waiting = self
                 .players
@@ -381,7 +391,10 @@ impl Server {
                     start_level(&self.globals, &mut level);
                     self.levels.insert(dimension, level);
                     for player in waiting {
-                        if player.place.is_none_or(|place| place.dimension != dimension) {
+                        let own = player.arrival.filter(|place| place.dimension == dimension);
+                        if player.place.is_none_or(|place| place.dimension != dimension)
+                            && own.is_none_or(|own| Some(own) == requested)
+                        {
                             player.arrive(arrival.place(dimension));
                         }
                     }
@@ -1461,6 +1474,52 @@ mod tests {
         assert_eq!((steve.dimension, steve.arrival), (Dimension::Overworld, Some(home)));
         let switch = steve.switching.expect("still switching, back home");
         assert_eq!((switch.to, switch.arrival), (Dimension::Overworld, Some(home)));
+    }
+
+    #[test]
+    fn players_switching_into_one_level_each_arrive_where_they_were_sent() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let (_dir, save) = world("switch-together");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let roofs = [
+            Place::standing(Dimension::Nether, [100.5, 128.0, -200.5], 30.0, 0.0),
+            Place::standing(Dimension::Nether, [-60.5, 128.0, 40.5], -90.0, 0.0),
+        ];
+        let mut players = Vec::new();
+        for (name, roof) in ["Steve", "Alex"].into_iter().zip(roofs) {
+            let mut player = join(Some(&save), &recipes, &rules, joining(&profile(name)));
+            player.arrival = None;
+            player.switch_to(Dimension::Nether, Some(roof), crate::switch::LoadingReason::NetherPortal);
+            players.push(player);
+        }
+        let mut carl = join(Some(&save), &recipes, &rules, joining(&profile("Carl")));
+        carl.dimension = Dimension::Nether;
+        carl.arrival = None;
+        players.push(carl);
+        let ids: Vec<PlayerUuid> = players.iter().map(|player| player.uuid.clone()).collect();
+        let mut server = server_with(test_globals(registries, Some(save)), players);
+        server.open_levels(2);
+        assert_eq!(server.opening.len(), 1, "one level for all of them");
+        let requested = server.opening[&Dimension::Nether].requested;
+        assert!(requested.is_none_or(|place| roofs.contains(&place)));
+        assert_eq!(wait_for_levels(&mut server), vec![(Dimension::Nether, Ok(()))]);
+        for (id, roof) in ids.iter().zip(roofs) {
+            assert_eq!(
+                server.players[id].arrival,
+                Some(roof),
+                "each player keeps their own arrival"
+            );
+        }
+        let (x, y, z) = server.levels[&Dimension::Nether].terrain.stream.player_spawn;
+        let opened = requested.map_or(Arrival::at([x, y, z]), |place| Arrival::of(&place));
+        assert_eq!(
+            server.players[&ids[2]].arrival,
+            Some(opened.place(Dimension::Nether)),
+            "a player with no arrival of their own takes the level's"
+        );
     }
 
     #[test]

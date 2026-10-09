@@ -455,3 +455,13 @@ Previous commit: ef2cb99b
   3. Type `/kill`. After the respawn in the overworld it is raining with thunder. **Screenshot 1.**
   4. Quit and start again: the dimension line is still there, so you start in the Nether. Type `/weather clear 600s`, then `/kill`: after the respawn the overworld is clear. **Screenshot 2.**
 - **Kit:** none needed; any kit works.
+
+### 21. Minecraft players switching into one level each arrive where they were sent
+
+Previous commit: c07acad6
+
+- **Defect (per-player state):** `Server::finish_opening` gave every player waiting for a level the one arrival its loader was opened with, which is the first waiting player's. A second player switching into the same Nether at another place (another `/execute in`, a portal later, or a saved place) was put at the first player's arrival instead of their own.
+- **Changed:** `minecraft_survival/src/server.rs`: `LevelLoader.requested` is the arrival the loader was opened for (`open_levels` sets it). When the level opens, a waiting player with no arrival in that level, or with exactly that one, takes the loader's arrival (which a portal search in `prepare` will fill later); a player with an arrival of their own keeps it and is placed there.
+- **Tests:** `server`: `players_switching_into_one_level_each_arrive_where_they_were_sent` (two players switching into the Nether at two roofs and a third with no arrival: one loader, each keeps their own roof, the third takes the level's arrival). Checked to fail before the fix.
+- **Test steps:** none in game: it needs two players, which comes with multiplayer. Single player behaves as before.
+- **Kit:** none.
