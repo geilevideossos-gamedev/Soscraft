@@ -59,7 +59,7 @@ Briefs: `docs/round7/e0-phase3-plan.md` (order, groups, ownership, estimate), `e
 |---|---|
 | Dimension switch | merged (9dbec02a + /execute in f0c30259, /time per dimension 2d9fe216, /kit @-entries 89f07c23, test race fix 3aef2ebe; full suite 1755 passed). Log `docs/round7/track-switch-log.md` |
 | Nether | running: groups N1-N5, worktree `C:\Dev\mc-wt\nether`, branch `nether`, target `D:\iw4l-wt\nether`, log `docs/round7/track-nether-log.md`. N6 (brain mobs) is left for finish survival. |
-| End | X1a, X1b (with the Nether sky) and X2 merged (d49f75d2, full suite 1813 passed). Now running on branch `end`: the eye of ender throw and elytra with firework rockets (E3-27, E3-28). X3-X4 (crystals, the dragon, exit portal, credits) after the Nether merges. Log `docs/round7/track-end-log.md` |
+| End | X1a, X1b (with the Nether sky) and X2 merged (d49f75d2); eye of ender throw and elytra with firework rockets merged (d9eabf74, full suite 1846 passed). Next: X3-X4 (crystals, the dragon, exit portal, egg, credits) on branch `end` after the Nether merges. Log `docs/round7/track-end-log.md` |
 
 ## Release builds
 | # | When | Commit | State |
@@ -99,6 +99,7 @@ The 41 minutes of the last round were not reproduced: a clean release build alon
 - Elytra: a new 20 Hz glide mode in MW2 movement, guns still usable.
 - Throwables kit syntax: `id@potion` for potion contents (`#` starts a comment in `.env`).
 ## Log
+- 2026-10-10: End part 2 (eye throw, elytra, rockets) merged (d9eabf74) and pushed.
 - 2026-10-09: End part 1 merged (d49f75d2) and pushed; End part 2 (eye throw, elytra) started.
 - 2026-10-09: dimension switch merged (3aef2ebe) and pushed; Nether and End tracks started.
 - 2026-10-09: dimension switch finished on its branch; merge onto main running.
