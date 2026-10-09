@@ -125,6 +125,7 @@ pub trait CommandWorld {
     fn set_experience(&mut self, _player: PlayerId, _experience: Experience) -> bool {
         false
     }
+    fn level_up(&mut self, _player: PlayerId) {}
     fn enchantment(&self, _id: &str) -> Option<EnchantmentInfo> {
         None
     }
@@ -607,6 +608,7 @@ pub(crate) mod tests {
         pub(crate) summoned: Vec<(String, [f64; 3], Option<String>)>,
         pub(crate) inventories: Vec<(PlayerId, minecraftoss_player::inventory::Inventory)>,
         pub(crate) experience: Vec<(PlayerId, Experience)>,
+        pub(crate) level_ups: Vec<PlayerId>,
         pub(crate) held: Vec<(PlayerId, Held)>,
         pub(crate) loaded: Option<Loaded>,
         pub(crate) blocks: crate::blocks::tests::Blocks,
@@ -760,6 +762,10 @@ pub(crate) mod tests {
             };
             *known = experience;
             true
+        }
+
+        fn level_up(&mut self, player: PlayerId) {
+            self.level_ups.push(player);
         }
 
         fn enchantment(&self, id: &str) -> Option<EnchantmentInfo> {

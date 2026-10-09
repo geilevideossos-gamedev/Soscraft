@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use minecraft_commands::{
-    Clientbound, Clock, CommandData, CommandRegistries, CommandServer, CommandWorld, ItemArg,
-    ItemFilter, PlayerId, Pose, Serverbound, Text, Weather,
+    Clientbound, Clock, CommandData, CommandRegistries, CommandServer, CommandWorld, Experience,
+    ItemArg, ItemFilter, PlayerId, Pose, Serverbound, Text, Weather,
 };
 use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_terrain::day_cycle::DayCycle;
@@ -19,6 +19,7 @@ use crate::player::Player;
 use crate::server::Globals;
 
 pub const HOST: PlayerId = PlayerId(0);
+pub const LEVEL_UP_SOUND: &str = "minecraft:entity.player.levelup";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Presence {
@@ -450,6 +451,42 @@ impl CommandWorld for Host<'_> {
             max,
         ))
     }
+
+    fn experience(&self, player: PlayerId) -> Option<Experience> {
+        let status = &self.player(player)?.survival.status;
+        Some(Experience {
+            level: i32::try_from(status.experience_level).unwrap_or(i32::MAX),
+            progress: status.experience_progress,
+            total: i32::try_from(status.total_experience).unwrap_or(i32::MAX),
+        })
+    }
+
+    fn set_experience(&mut self, player: PlayerId, experience: Experience) -> bool {
+        let Some(player) = self.player_mut(player) else {
+            return false;
+        };
+        let status = &mut player.survival.status;
+        status.experience_level = experience.level.max(0) as u32;
+        status.experience_progress = experience.progress;
+        status.total_experience = experience.total.max(0) as u32;
+        true
+    }
+
+    fn level_up(&mut self, player: PlayerId) {
+        let feet = self.presence(player).pose.map(|pose| pose.feet);
+        let Some((player, entities)) = self.player_in_level(player) else {
+            return;
+        };
+        let chime = player.survival.level_up_chime();
+        if let (Some(volume), Some(entities), Some(feet)) = (chime, entities, feet) {
+            entities.sounds.push((
+                LEVEL_UP_SOUND.to_owned(),
+                glam::DVec3::from_array(feet),
+                volume,
+                1.0,
+            ));
+        }
+    }
 }
 
 pub fn command_data(stream: &TerrainStream) -> CommandData {
@@ -670,6 +707,12 @@ pub(crate) mod tests {
             "commands.clear.test.single" => "Found %s matching item(s) on player %s",
             "commands.clear.success.single" => "Removed %s item(s) from player %s",
             "clear.failed.single" => "No items were found on player %s",
+            "commands.experience.add.levels.success.single" => "Gave %s experience levels to %s",
+            "commands.experience.add.points.success.single" => "Gave %s experience points to %s",
+            "commands.experience.query.levels" => "%s has %s experience levels",
+            "commands.experience.set.points.invalid" => {
+                "Cannot set experience points above the maximum points for the player's current level"
+            }
             _ => return None,
         };
         Some(text.to_owned())
@@ -742,6 +785,57 @@ pub(crate) mod tests {
         );
         assert_eq!(steve.cursor.as_ref().map(|s| s.count), Some(1));
         assert_eq!(parts.host().clear(PlayerId(7), &ItemFilter::Any, -1), None);
+    }
+
+    #[test]
+    fn experience_commands_fill_the_named_players_bar() {
+        let mut parts = Parts::new();
+        parts.join(FRIEND, "Alex", [0.5, 64.0, 0.5]);
+        let (lines, _) = parts.send(
+            HOST,
+            &[
+                "/xp add Alex 5 levels",
+                "/xp query Alex levels",
+                "/xp add @s 10",
+                "/xp query @s levels",
+                "/xp set Alex 30 points",
+            ],
+        );
+        assert_eq!(
+            lines,
+            vec![
+                "Gave 5 experience levels to Alex",
+                "Alex has 5 experience levels",
+                "Gave 10 experience points to Steve",
+                "Steve has 1 experience levels",
+                "Cannot set experience points above the maximum points for the player's current level",
+            ]
+        );
+        let alex = &mut parts.player(FRIEND).survival;
+        assert_eq!(
+            (alex.status.experience_level, alex.status.total_experience),
+            (5, 0)
+        );
+        assert_eq!(alex.level_up_chime(), None);
+        let steve = &mut parts.player(HOST).survival;
+        assert_eq!(
+            (steve.status.experience_level, steve.status.total_experience),
+            (1, 10)
+        );
+        assert!((steve.status.experience_progress - 3.0 / 9.0).abs() < 1e-5);
+        assert!(steve.level_up_chime().is_some());
+        let mut host = parts.host();
+        assert!(host.experience(PlayerId(7)).is_none());
+        assert!(!host.set_experience(PlayerId(7), Experience::default()));
+        assert!(host.set_experience(
+            HOST,
+            Experience {
+                level: -3,
+                progress: 0.0,
+                total: -1
+            }
+        ));
+        assert_eq!(host.experience(HOST), Some(Experience::default()));
     }
 
     #[test]

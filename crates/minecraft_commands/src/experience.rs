@@ -132,9 +132,21 @@ fn amount(ctx: &Ctx) -> i32 {
     }
 }
 
+pub fn chimes(levels: bool, amount: i32, before: &Experience, after: &Experience) -> bool {
+    if amount <= 0 {
+        return false;
+    }
+    if levels {
+        after.level % 5 == 0
+    } else {
+        after.level.div_euclid(5) > before.level.div_euclid(5)
+    }
+}
+
 fn change(
     ctx: &mut Ctx,
     apply: impl Fn(&mut Experience, i32) -> bool,
+    chimes: impl Fn(&Experience, &Experience) -> bool,
 ) -> Result<Tracker, CommandError> {
     let amount = amount(ctx);
     let mut tracker = Tracker::default();
@@ -142,9 +154,13 @@ fn change(
         let Some(mut experience) = ctx.world.experience(player) else {
             continue;
         };
+        let before = experience;
         let changed = apply(&mut experience, amount);
         if changed && !ctx.world.set_experience(player, experience) {
             continue;
+        }
+        if changed && chimes(&before, &experience) {
+            ctx.world.level_up(player);
         }
         tracker.track(player, i32::from(changed));
     }
@@ -174,14 +190,19 @@ fn respond(ctx: &mut Ctx, tracker: Tracker, key: &str) {
 
 fn add(ctx: &mut Ctx) -> Result<i32, CommandError> {
     let levels = unit(ctx) == "levels";
-    let tracker = change(ctx, |experience, amount| {
-        if levels {
-            experience.give_levels(amount);
-        } else {
-            experience.give_points(amount);
-        }
-        true
-    })?;
+    let amount = amount(ctx);
+    let tracker = change(
+        ctx,
+        |experience, amount| {
+            if levels {
+                experience.give_levels(amount);
+            } else {
+                experience.give_points(amount);
+            }
+            true
+        },
+        |before, after| chimes(levels, amount, before, after),
+    )?;
     let key = format!("commands.experience.add.{}", unit(ctx));
     respond(ctx, tracker, &key);
     Ok(tracker.total)
@@ -189,14 +210,18 @@ fn add(ctx: &mut Ctx) -> Result<i32, CommandError> {
 
 fn set(ctx: &mut Ctx) -> Result<i32, CommandError> {
     let levels = unit(ctx) == "levels";
-    let tracker = change(ctx, |experience, amount| {
-        if levels {
-            experience.set_levels(amount);
-            true
-        } else {
-            experience.set_points(amount)
-        }
-    })?;
+    let tracker = change(
+        ctx,
+        |experience, amount| {
+            if levels {
+                experience.set_levels(amount);
+                true
+            } else {
+                experience.set_points(amount)
+            }
+        },
+        |_, _| false,
+    )?;
     if tracker.count(true) == 0 {
         return Err(CommandError::new(
             "commands.experience.set.points.invalid",
@@ -305,6 +330,31 @@ mod tests {
             experience: vec![(HOST, Experience::default())],
             ..FakeWorld::default()
         }
+    }
+
+    #[test]
+    fn only_added_experience_landing_on_every_fifth_level_chimes() {
+        let mut server = server();
+        let mut world = world();
+        let mut chimed = |command: &str| {
+            run(&mut server, &mut world, HOST, command);
+            !std::mem::take(&mut world.level_ups).is_empty()
+        };
+        assert!(chimed("xp add @s 5 levels"));
+        assert!(!chimed("xp add @s 3 levels"));
+        assert!(chimed("xp add @s 2 levels"));
+        assert!(!chimed("xp add @s -5 levels"));
+        assert!(!chimed("xp set @s 15 levels"));
+        assert!(!chimed("xp set @s 3 points"));
+        assert!(!chimed("xp add @s 30"));
+        assert!(chimed("xp add @s 300"));
+        assert!(!chimed("xp add @s -300"));
+        assert!(!chimed("xp add @s 0 levels"));
+        let start = at(4, 0.0, 0);
+        assert!(chimes(false, 9, &start, &at(5, 0.0, 9)));
+        assert!(chimes(false, 400, &start, &at(12, 0.0, 400)));
+        assert!(!chimes(false, 1, &at(5, 0.0, 0), &at(6, 0.0, 1)));
+        assert!(!chimes(true, 2, &at(i32::MAX - 1, 0.0, 0), &at(i32::MAX, 0.0, 0)));
     }
 
     #[test]

@@ -1087,10 +1087,44 @@ IW4L_MINECRAFT_KIT=stone*64,stone*30,oak_log*10,iron_boots
 2. `/clear @s stone 70`: "Removed 70 item(s) from player Steve", 24 stone left.
 3. `/clear @s #minecraft:logs`: "Removed 10 item(s) from player Steve".
 4. `/clear`: "Removed 25 item(s) from player Steve" (24 stone and the boots). A second `/clear` answers in red "No items were found on player Steve". Screenshot.
-5. Put a stone in the 2x2 crafting grid, `/kit` is not needed: `/give @s stone 1`, drag it into the grid, close nothing, `/clear` is typed after closing the inventory: the grid is empty when you reopen it.
 
 Kit: `minecraft:stone` 64 and 30, `minecraft:oak_log` 10, `minecraft:iron_boots` 1.
 
 ### Decisions
 
+- **The crafting grid and the cursor are only covered by the unit test.** The chat cannot be open while the inventory screen holds items there, so there is no in-game step for them. (An earlier draft of this entry had a garbled step 5 about the grid; it was removed in the next commit.)
 - **Tags come from the unpacked data pack the world generator reads** (`datapacks/local/minecraft-26.3`), not from the jar: it is the same 26.3 data, already on disk, and read on the loading thread.
+
+## Minecraft /xp fills the named player's experience bar and chimes like vanilla
+
+Commit: the commit that adds this entry.
+
+### What changed
+
+- `Host::experience` and `set_experience` read and write the target's `survival.status` (`experience_level`, `experience_progress`, `total_experience`). The command never sets negative values; the glue clamps at 0 anyway.
+- **The level-up chime.** New `CommandWorld::level_up(player)` (default: nothing). `experience.rs` calls it after an `add` whose vanilla `giveExperienceLevels` would play `minecraft:entity.player.levelup`: for levels, a positive amount landing on a multiple of 5; for points, a positive amount crossing one (`chimes`, checked against 26.3 `Player.giveExperienceLevels` and `giveExperiencePoints`, which call it once per level crossed). `set` never chimes, as `ServerPlayer.setExperienceLevels` and `setExperiencePoints` do not.
+- `Survival::level_up_chime` is the rest of vanilla's check, moved out of `gain_experience` (which now calls it): nothing within 100 ticks of the last chime, volume `0.75 * min(level, 30) / 30`. The glue pushes the sound at the player's feet into its level's sounds, which `render_anim` plays.
+
+### Tests added
+
+- `experience::tests::only_added_experience_landing_on_every_fifth_level_chimes` (`minecraft_commands`): add 5 levels chimes, 3 more does not, 2 more (to 10) does, removing levels, `set` levels and points, a small points add, a large one crossing level 20, negative points and 0 levels; and `chimes` at its edges.
+- `commands::tests::experience_commands_fill_the_named_players_bar` (`minecraft_survival`): `/xp add Alex 5 levels` changes Alex only and chimes for Alex, the query, 10 points to Steve (level 1, 3 of 9), the refused `set`, unknown ids, and clamping at 0.
+
+### In-game test steps
+
+```
+IW4L_MINECRAFT_KIT=stone*64
+```
+
+1. `/xp add @s 5 levels`: "Gave 5 experience levels to Steve", the bar shows 5 and the level-up chime plays. Screenshot.
+2. `/xp add @s 3 levels`: no chime (level 8). `/xp add @s 2 levels`: chime (level 10).
+3. `/xp query @s levels`: "Steve has 10 experience levels".
+4. `/xp set @s 30 points`: red "Cannot set experience points above the maximum points for the player's current level".
+5. `/experience set @s 30 levels`: the bar shows 30, no chime. `/xp add @s -40 levels`: the bar is back at 0. Screenshot.
+6. `/xp set @s 2147483647 levels`, then `/xp query @s points`: "Steve has 0 experience points" and the game keeps running.
+
+Kit: none needed.
+
+### Decisions
+
+- **The chime is decided by the command, the rest timer by the player.** Only the command knows whether it added or set; only the player knows its tick count, so `level_up` carries the one to the other.
