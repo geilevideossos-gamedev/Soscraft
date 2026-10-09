@@ -42,6 +42,7 @@ pub struct Globals {
     pub end_clock: DayCycle,
     pub weather: Option<WeatherData>,
     pub weather_random: LegacyRandom,
+    pub forced_weather: Option<String>,
     pub chat: CommandServer,
     pub data: GameData,
     pub level_writer: Option<JoinHandle<()>>,
@@ -264,13 +265,19 @@ impl Drop for LevelLoader {
     }
 }
 
-pub fn start_level(globals: &Globals, level: &mut Level) {
+pub fn start_level(globals: &mut Globals, level: &mut Level) {
+    let forced_weather = if has_weather(level.dimension) {
+        globals.forced_weather.take()
+    } else {
+        None
+    };
     let mut entities = Entities::new(
         &level.terrain.stream,
         level.dimension,
         globals.seed,
         &globals.data,
         globals.weather.as_ref(),
+        forced_weather.as_deref(),
     );
     entities.set_game_rules(&globals.game_rules);
     level.containers.set_book(globals.data.stations.clone());
@@ -388,7 +395,7 @@ impl Server {
             match opened {
                 Ok((terrain, arrival)) => {
                     let mut level = Level::new(dimension, terrain);
-                    start_level(&self.globals, &mut level);
+                    start_level(&mut self.globals, &mut level);
                     self.levels.insert(dimension, level);
                     for player in waiting {
                         let own = player.arrival.filter(|place| place.dimension == dimension);
@@ -1116,6 +1123,7 @@ mod tests {
             end_clock: crate::save::END_CLOCK_START,
             weather: None,
             weather_random: weather_random(1),
+            forced_weather: None,
             chat: CommandServer::new(crate::commands::HOST),
             data: GameData::default(),
             level_writer: None,
@@ -1670,6 +1678,61 @@ mod tests {
         server.close_empty_levels(0);
         assert_eq!(overworld_weather(&server), Some(storm));
         assert_eq!(server.levels[&Dimension::Overworld].empty_ticks, 0);
+    }
+
+    #[test]
+    fn the_weather_variable_starts_the_overworld_once_and_not_again_when_it_reopens() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let (_dir, save) = world("forced-weather");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let cave = Place::standing(Dimension::Nether, [5.5, 70.0, 5.5], 0.0, 0.0);
+        let home = Place::standing(Dimension::Overworld, [8.5, 64.0, -3.5], 0.0, 0.0);
+        let mut steve = join(Some(&save), &recipes, &rules, joining(&profile("Steve")));
+        steve.arrive(cave);
+        let id = steve.uuid.clone();
+        let globals = Globals {
+            spawn: crate::save::world_spawn(Dimension::Overworld, (8, 64, -4)),
+            forced_weather: Some("thunder".to_owned()),
+            ..test_globals(registries, Some(save))
+        };
+        let mut server = server_with(globals, vec![steve]);
+        let thundering = |server: &Server| {
+            server.levels[&Dimension::Overworld]
+                .entities
+                .as_ref()
+                .unwrap()
+                .weather_data
+                .map(|weather| weather.thundering)
+        };
+        server.open_levels(2);
+        wait_for_levels(&mut server);
+        assert_eq!(
+            server.globals.forced_weather.as_deref(),
+            Some("thunder"),
+            "the Nether has no weather to force"
+        );
+        server.players.get_mut(&id).unwrap().arrive(home);
+        server.open_levels(2);
+        wait_for_levels(&mut server);
+        assert_eq!(thundering(&server), Some(true));
+        assert_eq!(server.globals.forced_weather, None);
+        server.players.get_mut(&id).unwrap().arrive(cave);
+        assert_eq!(
+            server.close_empty_levels(EMPTY_TIME),
+            vec![Dimension::Overworld]
+        );
+        server.globals.weather = minecraft_terrain::server::weather_parameters("clear", 900);
+        server.players.get_mut(&id).unwrap().arrive(home);
+        server.open_levels(2);
+        wait_for_levels(&mut server);
+        assert_eq!(
+            thundering(&server),
+            Some(false),
+            "a reopened overworld goes on with the world's weather"
+        );
     }
 
     #[test]

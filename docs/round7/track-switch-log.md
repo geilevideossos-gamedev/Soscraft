@@ -465,3 +465,17 @@ Previous commit: c07acad6
 - **Tests:** `server`: `players_switching_into_one_level_each_arrive_where_they_were_sent` (two players switching into the Nether at two roofs and a third with no arrival: one loader, each keeps their own roof, the third takes the level's arrival). Checked to fail before the fix.
 - **Test steps:** none in game: it needs two players, which comes with multiplayer. Single player behaves as before.
 - **Kit:** none.
+
+### 22. IW4L_MINECRAFT_WEATHER sets the weather once at the start, not at every overworld reopen
+
+Previous commit: c96e3a93
+
+- **Defect:** `Entities::new` read `IW4L_MINECRAFT_WEATHER` every time a level with weather started. Since S2 the overworld closes 15 seconds after the player leaves it and starts again on the way back, so the variable overrode the world's live weather on every return (a `/weather clear` typed earlier came back as rain). The switches table says it overrides the saved weather at the start.
+- **Changed:** `minecraft_survival/src/server.rs`: `Globals.forced_weather` holds the variable, read once with the world (`render_anim/src/minecraft_world.rs`, `load()`, one line). `start_level` hands it to the first level that has weather and clears it; `Entities::new` takes it as a parameter instead of reading the environment (`minecraft_survival/src/entities.rs`, two lines). The log line `Minecraft weather: rain from IW4L_MINECRAFT_WEATHER` is unchanged.
+- **Tests:** `server`: `the_weather_variable_starts_the_overworld_once_and_not_again_when_it_reopens` (a Nether start keeps it, the overworld takes it and thunders, and after closing and reopening the overworld goes on with the world's clear weather).
+- **Test steps** (with entry 20's fix):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=s4test`, `IW4L_MINECRAFT_WEATHER=rain` and `IW4L_MINECRAFT_DIMENSION=the_nether`. Start. The log says `Minecraft weather: rain from IW4L_MINECRAFT_WEATHER` (the overworld opens with the world and takes it).
+  2. In the Nether, type `/weather clear 600s`.
+  3. Wait 20 seconds (the log says `Minecraft minecraft:overworld level saved and closed`), then `/kill`. After the respawn the overworld is clear, not raining. **Screenshot 1.**
+  4. Remove the weather and dimension lines afterwards.
+- **Kit:** none.

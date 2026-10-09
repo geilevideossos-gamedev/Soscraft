@@ -278,6 +278,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         end_clock: opened.end_clock,
         weather: opened.weather,
         weather_random: minecraft_survival::server::weather_random(seed),
+        forced_weather: std::env::var("IW4L_MINECRAFT_WEATHER").ok(),
         chat,
         data: Default::default(),
         level_writer: None,
