@@ -250,6 +250,13 @@ impl CommandServer {
         self.profile(id).map(|player| player.name.as_str())
     }
 
+    pub fn player_names(&self) -> Vec<String> {
+        self.players
+            .iter()
+            .map(|player| player.name.clone())
+            .collect()
+    }
+
     pub fn is_op(&self, id: PlayerId) -> bool {
         self.host == Some(id)
             || self

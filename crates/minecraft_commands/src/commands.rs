@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use minecraftoss_player::Difficulty;
 use minecraftoss_world::game_rules::Value;
 
-use crate::args::{Arg, ArgKind, TICKS_PER_DAY, marker_ticks};
+use crate::args::{Arg, ArgKind, Registry, TICKS_PER_DAY, marker_ticks};
 use crate::permissions::{ADMINS, GAMEMASTERS};
 use crate::players::game_mode_key;
 use crate::protocol::PlayerId;
@@ -45,6 +45,7 @@ fn teleport_node(name: &'static str) -> Node {
 
 fn effect_node() -> Node {
     let players = ArgKind::Players { single: false };
+    let effect = ArgKind::Resource(Registry::MobEffect);
     let amplifier = || {
         Node::argument("amplifier", ArgKind::Int { min: 0, max: 255 })
             .executes(give_effect)
@@ -56,13 +57,13 @@ fn effect_node() -> Node {
             Node::literal("clear").executes(clear_effects).then(
                 Node::argument("targets", players)
                     .executes(clear_effects)
-                    .then(Node::argument("effect", ArgKind::Resource).executes(clear_effects)),
+                    .then(Node::argument("effect", effect).executes(clear_effects)),
             ),
         )
         .then(
             Node::literal("give").then(
                 Node::argument("targets", players).then(
-                    Node::argument("effect", ArgKind::Resource)
+                    Node::argument("effect", effect)
                         .executes(give_effect)
                         .then(
                             Node::argument(
@@ -165,7 +166,7 @@ fn build() -> Vec<Node> {
         teleport_node("tp"),
         effect_node(),
         Node::literal("summon").requires(GAMEMASTERS).then(
-            Node::argument("entity", ArgKind::Resource)
+            Node::argument("entity", ArgKind::Resource(Registry::EntityType))
                 .executes(summon)
                 .then(
                     Node::argument("pos", ArgKind::Vec3)

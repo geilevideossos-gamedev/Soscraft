@@ -68,7 +68,7 @@ impl Node {
         self.permission <= level
     }
 
-    fn is_literal(&self) -> bool {
+    pub fn is_literal(&self) -> bool {
         matches!(self.kind, NodeKind::Literal(_))
     }
 }
@@ -88,6 +88,7 @@ pub fn sorted(mut nodes: Vec<Node>) -> Vec<Node> {
 #[derive(Clone, Debug)]
 pub struct Parsed<'t> {
     pub nodes: Vec<&'t Node>,
+    pub ranges: Vec<std::ops::Range<usize>>,
     pub args: Vec<(&'static str, Arg)>,
     pub literals: Vec<&'static str>,
     pub cursor: usize,
@@ -95,14 +96,19 @@ pub struct Parsed<'t> {
 }
 
 pub fn parse<'t>(roots: &'t [Node], input: &str, level: u8) -> Parsed<'t> {
+    parse_from(roots, input, 0, level)
+}
+
+pub fn parse_from<'t>(roots: &'t [Node], input: &str, from: usize, level: u8) -> Parsed<'t> {
     let start = Parsed {
         nodes: Vec::new(),
+        ranges: Vec::new(),
         args: Vec::new(),
         literals: Vec::new(),
-        cursor: 0,
+        cursor: from,
         errors: Vec::new(),
     };
-    parse_nodes(roots, input, 0, level, start)
+    parse_nodes(roots, input, from, level, start)
 }
 
 fn relevant<'t>(children: &'t [Node], input: &str, start: usize) -> Vec<&'t Node> {
@@ -158,6 +164,7 @@ fn parse_nodes<'t>(
             continue;
         }
         next.nodes.push(child);
+        next.ranges.push(start..reader.cursor);
         next.cursor = reader.cursor;
         next.errors.clear();
         if input.len().saturating_sub(reader.cursor) >= 2 {

@@ -14,6 +14,13 @@ pub const TIME_MARKERS: [(&str, i32); 6] = [
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Registry {
+    EntityType,
+    MobEffect,
+    Enchantment,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArgKind {
     Players { single: bool },
     Time { min: i32 },
@@ -26,7 +33,7 @@ pub enum ArgKind {
     Bool,
     Item,
     Vec3,
-    Resource,
+    Resource(Registry),
     Nbt,
 }
 
@@ -142,7 +149,7 @@ impl ArgKind {
             Self::Bool => reader.read_bool().map(Arg::Bool),
             Self::Item => item(reader).map(Arg::Item),
             Self::Vec3 => vec3(reader).map(Arg::Vec3),
-            Self::Resource => {
+            Self::Resource(_) => {
                 let at = reader.cursor;
                 resource_id(reader).map(|id| Arg::Resource { id, at })
             }
@@ -247,7 +254,7 @@ fn players(reader: &mut StringReader, single: bool) -> Result<Selector, CommandE
 pub const ENCHANTMENT_COMPONENTS: [&str; 2] =
     ["minecraft:enchantments", "minecraft:stored_enchantments"];
 
-fn allowed_in_id(c: char) -> bool {
+pub(crate) fn allowed_in_id(c: char) -> bool {
     c.is_ascii_digit() || c.is_ascii_lowercase() || matches!(c, '_' | ':' | '/' | '.' | '-')
 }
 
