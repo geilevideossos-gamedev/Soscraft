@@ -101,11 +101,29 @@ IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:golden_apple*16
 
 ### 6. The input sampler takes the Minecraft keys beside the view subject
 
-Commit: (filled in by the next commit, or see `git log`)
+Commit: aabe9a1
 
 - **Changed:** commit 3 put `McActionInput` into the first parameter tuple of `sample_client_input` (`net/src/client/runtime.rs`), which made clippy report a new `type_complexity` there. It now sits in a pair with `view`. No behaviour change.
 - **Checks:** `clippy -p console -p frame -p net -p render_anim -p render --tests -- --cap-lints warn` shows no warning on a line this group added; the rest are older (`too_many_arguments` and `type_complexity` on system signatures). Without `--cap-lints warn` clippy stops at older `approx_constant` errors in `minecraft_terrain`, which this track doesn't touch.
 - **Test steps:** none of its own (commit 3's steps cover it).
+
+## Group: chat
+
+### 1. Minecraft chat selects text with Shift and Ctrl+A like vanilla
+
+Commit: (filled in by the next commit, or see `git log`)
+
+- **Changed:** `frame::McChat` has a `highlight` (the other end of the selection; `close` resets it, `open` and Up/Down set it to the cursor, as vanilla `setValue` does). New `crates/hud/src/minecraft_edit.rs`: a pure `Edit` over (text, cursor, highlight, limit) with vanilla `EditBox` rules: `move_to(pos, extend)`, `step(dir, words, extend)`, `select_all`, `insert` (replaces the selection, filters `§` and control characters, room is the limit minus the length plus the selected length, nothing at all happens when there is no room), `delete(dir, words)` (a selection goes first, else one character or one word). `previous_char`, `next_char` and `word_position` moved there unchanged. `hud/src/minecraft_chat.rs`: keys arrive as `Typed { key, code, text, mods }`; `fold_typed` walks the frame's `KeyboardInput` messages in order and gives each key the Ctrl, Shift and Alt state at its own press (the state before the frame comes from `ButtonInput` through `held_before`), so a fast Ctrl+key in one frame no longer types the letter. `apply_typed` replaces `apply_key`: Shift with Left, Right, Home and End extends, Ctrl+Left/Right moves by word (with Shift it selects the word), Ctrl+A selects all (lowercased logical key, or the physical A key when the layout's letter isn't ASCII; Shift and Alt must be up), Backspace and Delete eat the selection first, and a key typed while Ctrl is down and Alt up types nothing (AltGr still types). `draw` puts a light box over the selection with vanilla's edges (`selection_box`) and redraws the selected text blue without shadow. `MINECRAFT-SURVIVAL.md` chat lines updated.
+- **Tests:** `minecraft_edit`: `shift_with_the_arrows_home_and_end_extends_the_selection`, `a_plain_arrow_drops_the_selection_and_steps_from_the_cursor`, `ctrl_shift_left_selects_a_word`, `select_all_puts_the_cursor_at_the_end`, `deleting_eats_the_selection_first`, `words_delete_like_vanilla`, `typing_replaces_the_selection`, `insert_room_counts_the_selected_length`, `inserted_text_loses_section_signs_and_control_characters`, `positions_never_split_a_character`. `minecraft_chat`: `modifiers_apply_to_the_keys_pressed_while_they_were_down`, `a_modifier_is_held_before_the_frame_unless_this_frame_changed_it`, `ctrl_a_selects_everything_and_typing_replaces_it` (Caps Lock `A`, Ctrl+Shift+A does nothing, a Cyrillic layout's A key), `ctrl_types_nothing_but_alt_gr_still_types`, `shift_selects_and_a_plain_arrow_steps_from_the_cursor`, `opening_and_walking_the_history_drop_the_selection`, `the_selection_box_spans_the_selected_text_like_vanilla`. `frame`: `clearing_messages_keeps_the_sent_history` also checks the highlight.
+- **Decisions:** vanilla draws the selection by inverting what is under it and adding blue; the HUD painter can't blend like that, so the box is a solid `0xC0C0FF` and the selected text is redrawn `0x1F1FFF` (vanilla's inverted `0xE0E0E0` plus blue). The 256 limit still counts characters, not UTF-16 units as vanilla does (the same for everything but emoji and other characters outside the BMP). Rust's `is_control` also drops the C1 control characters U+0080 to U+009F, which vanilla lets through.
+- **Test steps** (Minecraft map):
+  1. Press T and type `hello big world`. Press Ctrl+A: the whole line shows as a light box with blue text. Screenshot 1.
+  2. Type `x`: the line is just `x`. Press Backspace, type `hello big world` again.
+  3. Press Ctrl+Shift+Left: `world` is selected. Press Backspace: `hello big ` is left.
+  4. Press Shift+Left three times: `ig ` is selected. Press Left: the box goes and the cursor sits just before `b` (one step left of where it was, like vanilla). Screenshot 2.
+  5. Press Shift+Home, then type `y`: the line is `ybig `. Press End, then Ctrl+Backspace: the whole `ybig ` goes (a word and the spaces after it, like vanilla).
+  6. Hold Ctrl and press B: nothing is typed. On a German keyboard AltGr+Q types `@`.
+- **Kit:** none needed.
 
 ## After the split
 

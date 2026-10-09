@@ -1,10 +1,13 @@
+use std::ops::Range;
+
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use frame::minecraft_chat::{MC_CHAT_HISTORY, MC_CHAT_INPUT_LIMIT};
 use frame::{McAction, McChat, McChatLine, McFont, MinecraftUi};
-use minecraft_commands::protocol::{allowed_in_chat, normalize_chat};
+use minecraft_commands::protocol::normalize_chat;
 
+use crate::minecraft_edit::{Edit, previous_char};
 use crate::minecraft_gui::{Painter, TextLine};
 
 const CHAT_WIDTH: i32 = 320;
@@ -21,11 +24,96 @@ const INPUT_TEXT: u32 = 0xFFE0_E0E0;
 const CURSOR: u32 = 0xFFD0_D0D0;
 const SCROLL_NOTCH: f32 = 7.0;
 const BLINK_MILLIS: f64 = 300.0;
+const SELECTION: u32 = 0xFFC0_C0FF;
+const SELECTED_TEXT: u32 = 0xFF1F_1FFF;
+const MODIFIERS: [KeyCode; 6] = [
+    KeyCode::ControlLeft,
+    KeyCode::ControlRight,
+    KeyCode::ShiftLeft,
+    KeyCode::ShiftRight,
+    KeyCode::AltLeft,
+    KeyCode::AltRight,
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Opener {
     Chat,
     Command,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Mods {
+    pub(crate) ctrl: bool,
+    pub(crate) shift: bool,
+    pub(crate) alt: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Typed {
+    pub(crate) key: Key,
+    pub(crate) code: KeyCode,
+    pub(crate) text: Option<String>,
+    pub(crate) mods: Mods,
+}
+
+pub(crate) fn held_before(pressed: bool, just_pressed: bool, just_released: bool) -> bool {
+    if just_pressed == just_released {
+        pressed
+    } else {
+        !pressed
+    }
+}
+
+pub(crate) fn fold_typed(mut held: [bool; 6], events: &[KeyboardInput]) -> Vec<Typed> {
+    let mut typed = Vec::new();
+    for event in events {
+        if let Some(i) = MODIFIERS.iter().position(|code| *code == event.key_code) {
+            held[i] = event.state.is_pressed();
+        } else if event.state.is_pressed() {
+            typed.push(Typed {
+                key: event.logical_key.clone(),
+                code: event.key_code,
+                text: event.text.as_ref().map(ToString::to_string),
+                mods: Mods {
+                    ctrl: held[0] || held[1],
+                    shift: held[2] || held[3],
+                    alt: held[4] || held[5],
+                },
+            });
+        }
+    }
+    typed
+}
+
+fn shortcut(typed: &Typed) -> Option<char> {
+    let Mods { ctrl, shift, alt } = typed.mods;
+    if !ctrl || shift || alt {
+        return None;
+    }
+    let mut chars = match &typed.key {
+        Key::Character(text) => text.chars(),
+        _ => "".chars(),
+    };
+    match (chars.next(), chars.next()) {
+        (Some(c), None) if c.is_ascii() => Some(c.to_ascii_lowercase()),
+        (Some(_), None) => match typed.code {
+            KeyCode::KeyA => Some('a'),
+            KeyCode::KeyC => Some('c'),
+            KeyCode::KeyV => Some('v'),
+            KeyCode::KeyX => Some('x'),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn edit(chat: &mut McChat) -> Edit<'_> {
+    Edit::new(
+        &mut chat.input,
+        &mut chat.cursor,
+        &mut chat.highlight,
+        MC_CHAT_INPUT_LIMIT,
+    )
 }
 
 pub(crate) fn alpha(age_ticks: f64, focused: bool) -> f64 {
@@ -82,9 +170,9 @@ pub(crate) fn opener(
     chat: bool,
     command: bool,
     command_bound: bool,
-    typed: &[(Key, Option<String>)],
+    typed: &[Typed],
 ) -> Option<Opener> {
-    let slash_typed = typed.iter().any(|(_, text)| text.as_deref() == Some("/"));
+    let slash_typed = typed.iter().any(|typed| typed.text.as_deref() == Some("/"));
     if command {
         Some(Opener::Command)
     } else if chat {
@@ -103,6 +191,7 @@ pub(crate) fn open(chat: &mut McChat, opener: Opener, now: f64) {
         Opener::Command => "/".to_owned(),
     };
     chat.cursor = chat.input.len();
+    chat.highlight = chat.cursor;
     chat.history_pos = chat.history.len();
     chat.draft.clear();
     chat.scroll = 0;
@@ -110,29 +199,24 @@ pub(crate) fn open(chat: &mut McChat, opener: Opener, now: f64) {
     chat.opened_at = now;
 }
 
-pub(crate) fn handle_frame(
-    chat: &mut McChat,
-    opener: Option<Opener>,
-    typed: &[(Key, Option<String>)],
-    ctrl: bool,
-    now: f64,
-) {
+pub(crate) fn handle_frame(chat: &mut McChat, opener: Option<Opener>, typed: &[Typed], now: f64) {
     if !chat.open {
         if let Some(opener) = opener {
             open(chat, opener, now);
         }
         return;
     }
-    for (key, text) in typed {
+    for typed in typed {
         if !chat.open {
             break;
         }
-        apply_key(chat, key, text.as_deref(), ctrl);
+        apply_typed(chat, typed);
     }
 }
 
-pub(crate) fn apply_key(chat: &mut McChat, key: &Key, text: Option<&str>, ctrl: bool) {
-    match key {
+pub(crate) fn apply_typed(chat: &mut McChat, typed: &Typed) {
+    let Mods { ctrl, shift, alt } = typed.mods;
+    match typed.key {
         Key::Escape => chat.close(),
         Key::Enter => {
             send(chat);
@@ -142,56 +226,21 @@ pub(crate) fn apply_key(chat: &mut McChat, key: &Key, text: Option<&str>, ctrl: 
         Key::ArrowDown => move_in_history(chat, 1),
         Key::PageUp => scroll_chat(chat, FOCUSED_LINES as i32 - 1),
         Key::PageDown => scroll_chat(chat, 1 - FOCUSED_LINES as i32),
-        Key::Backspace => {
-            let to = if ctrl {
-                word_position(&chat.input, chat.cursor, -1)
-            } else {
-                previous_char(&chat.input, chat.cursor)
-            };
-            chat.input.replace_range(to..chat.cursor, "");
-            chat.cursor = to;
-        }
-        Key::Delete => {
-            let to = if ctrl {
-                word_position(&chat.input, chat.cursor, 1)
-            } else {
-                next_char(&chat.input, chat.cursor)
-            };
-            chat.input.replace_range(chat.cursor..to, "");
-        }
-        Key::ArrowLeft => {
-            chat.cursor = if ctrl {
-                word_position(&chat.input, chat.cursor, -1)
-            } else {
-                previous_char(&chat.input, chat.cursor)
-            };
-        }
-        Key::ArrowRight => {
-            chat.cursor = if ctrl {
-                word_position(&chat.input, chat.cursor, 1)
-            } else {
-                next_char(&chat.input, chat.cursor)
-            };
-        }
-        Key::Home => chat.cursor = 0,
-        Key::End => chat.cursor = chat.input.len(),
-        _ => {
-            if let Some(text) = text {
-                insert(chat, text);
+        Key::Backspace => edit(chat).delete(-1, ctrl),
+        Key::Delete => edit(chat).delete(1, ctrl),
+        Key::ArrowLeft => edit(chat).step(-1, ctrl, shift),
+        Key::ArrowRight => edit(chat).step(1, ctrl, shift),
+        Key::Home => edit(chat).move_to(0, shift),
+        Key::End => edit(chat).move_to(usize::MAX, shift),
+        _ => match shortcut(typed) {
+            Some('a') => edit(chat).select_all(),
+            _ => {
+                if let Some(text) = typed.text.as_deref().filter(|_| !ctrl || alt) {
+                    edit(chat).insert(text);
+                }
             }
-        }
+        },
     }
-}
-
-fn insert(chat: &mut McChat, text: &str) {
-    let room = MC_CHAT_INPUT_LIMIT.saturating_sub(chat.input.chars().count());
-    let added: String = text
-        .chars()
-        .filter(|c| allowed_in_chat(*c))
-        .take(room)
-        .collect();
-    chat.input.insert_str(chat.cursor, &added);
-    chat.cursor += added.len();
 }
 
 fn send(chat: &mut McChat) {
@@ -224,6 +273,7 @@ fn move_in_history(chat: &mut McChat, dir: i32) {
     }
     chat.history_pos = target;
     chat.cursor = chat.input.len();
+    chat.highlight = chat.cursor;
 }
 
 pub(crate) fn scroll_chat(chat: &mut McChat, delta: i32) {
@@ -240,42 +290,6 @@ pub(crate) fn scroll_chat(chat: &mut McChat, delta: i32) {
 fn wheel_delta(y: f32, shift: bool) -> i32 {
     let y = y.clamp(-1.0, 1.0);
     (if shift { y } else { y * SCROLL_NOTCH }) as i32
-}
-
-fn previous_char(text: &str, at: usize) -> usize {
-    text[..at]
-        .chars()
-        .next_back()
-        .map_or(0, |c| at - c.len_utf8())
-}
-
-fn next_char(text: &str, at: usize) -> usize {
-    text[at..]
-        .chars()
-        .next()
-        .map_or(text.len(), |c| at + c.len_utf8())
-}
-
-fn word_position(text: &str, at: usize, dir: i32) -> usize {
-    let bytes = text.as_bytes();
-    let mut i = at;
-    if dir < 0 {
-        while i > 0 && bytes[i - 1] == b' ' {
-            i -= 1;
-        }
-        while i > 0 && bytes[i - 1] != b' ' {
-            i -= 1;
-        }
-    } else {
-        i = text[at..].find(' ').map_or(text.len(), |space| at + space);
-        while i < text.len() && bytes[i] == b' ' {
-            i += 1;
-        }
-    }
-    while !text.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
 }
 
 pub(crate) fn wrap(font: Option<&McFont>, line: &McChatLine) -> Vec<McChatLine> {
@@ -340,6 +354,29 @@ fn input_view(font: &McFont, input: &str, cursor: usize, inner: i32) -> usize {
     start
 }
 
+pub(crate) fn selection_box(
+    shown: &str,
+    [cursor, highlight]: [usize; 2],
+    insert: bool,
+    inner: i32,
+    width: impl Fn(&str) -> i32,
+) -> Option<([i32; 2], Range<usize>)> {
+    if cursor == highlight {
+        return None;
+    }
+    let cursor_x = if shown.is_empty() {
+        4
+    } else {
+        4 + width(&shown[..cursor]) + i32::from(!insert)
+    };
+    let highlight_x = 4 + width(&shown[..highlight]) - 1;
+    let right = 4 + inner;
+    Some((
+        [cursor_x.min(right), highlight_x.min(right)],
+        cursor.min(highlight)..cursor.max(highlight),
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn update_chat(
     keys: Res<ButtonInput<KeyCode>>,
@@ -351,16 +388,15 @@ pub(crate) fn update_chat(
     mc_keys: Option<Res<frame::McActionInput>>,
     time: Res<Time>,
 ) {
-    let events: Vec<(Key, Option<String>)> = typed
-        .read()
-        .filter(|event| event.state.is_pressed())
-        .map(|event| {
-            (
-                event.logical_key.clone(),
-                event.text.as_ref().map(ToString::to_string),
-            )
-        })
-        .collect();
+    let events: Vec<KeyboardInput> = typed.read().cloned().collect();
+    let held = MODIFIERS.map(|code| {
+        held_before(
+            keys.pressed(code),
+            keys.just_pressed(code),
+            keys.just_released(code),
+        )
+    });
+    let events = fold_typed(held, &events);
     let notches: Vec<f32> = wheel.read().map(|event| event.y).collect();
     let Some(mut ui) = ui else {
         return;
@@ -391,9 +427,8 @@ pub(crate) fn update_chat(
         &events,
     )
     .filter(|_| !ui.inventory_open);
-    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     let was_open = ui.chat.open;
-    handle_frame(&mut ui.chat, opener, &events, ctrl, now);
+    handle_frame(&mut ui.chat, opener, &events, now);
     if was_open && ui.chat.open {
         let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
         for y in notches {
@@ -464,10 +499,18 @@ pub(crate) fn draw(p: &mut Painter, chat: &McChat, now: f64) {
     let before_width = font.width(before);
     let y = height - 10;
     p.text(&shown_text, 4, y, INPUT_TEXT, true);
+    let insert = cursor < chat.input.len() || chat.input.chars().count() >= MC_CHAT_INPUT_LIMIT;
+    let ends = [cursor, chat.highlight].map(|at| at.saturating_sub(start).min(shown_text.len()));
+    if let Some(([x0, x1], selected)) =
+        selection_box(&shown_text, ends, insert, inner, |text| font.width(text))
+    {
+        p.fill(x0, y - 1, x1, y + 10, SELECTION);
+        let x = 4 + font.width(&shown_text[..selected.start]);
+        p.text(&shown_text[selected], x, y, SELECTED_TEXT, false);
+    }
     if ((now - chat.opened_at) * 1000.0 / BLINK_MILLIS) as i64 % 2 != 0 {
         return;
     }
-    let insert = cursor < chat.input.len() || chat.input.chars().count() >= MC_CHAT_INPUT_LIMIT;
     let end = if before.is_empty() {
         4
     } else {
@@ -483,16 +526,70 @@ pub(crate) fn draw(p: &mut Painter, chat: &McChat, now: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::input::keyboard::NativeKeyCode;
     use frame::McGlyph;
 
-    fn key(c: &str) -> (Key, Option<String>) {
-        (Key::Character(c.into()), Some(c.to_owned()))
+    const NO_CODE: KeyCode = KeyCode::Unidentified(NativeKeyCode::Unidentified);
+    const CTRL: Mods = Mods {
+        ctrl: true,
+        shift: false,
+        alt: false,
+    };
+    const SHIFT: Mods = Mods {
+        ctrl: false,
+        shift: true,
+        alt: false,
+    };
+    const CTRL_SHIFT: Mods = Mods {
+        ctrl: true,
+        shift: true,
+        alt: false,
+    };
+
+    fn key(c: &str) -> Typed {
+        Typed {
+            key: Key::Character(c.into()),
+            code: NO_CODE,
+            text: Some(c.to_owned()),
+            mods: Mods::default(),
+        }
+    }
+
+    fn with(key: Key, text: Option<&str>, mods: Mods) -> Typed {
+        Typed {
+            key,
+            code: NO_CODE,
+            text: text.map(str::to_owned),
+            mods,
+        }
+    }
+
+    fn apply_key(chat: &mut McChat, key: &Key, text: Option<&str>, ctrl: bool) {
+        let mods = Mods {
+            ctrl,
+            ..Mods::default()
+        };
+        apply_typed(chat, &with(key.clone(), text, mods));
     }
 
     fn typed(chat: &mut McChat, text: &str) {
         for c in text.chars() {
-            let (k, t) = key(&c.to_string());
-            apply_key(chat, &k, t.as_deref(), false);
+            apply_typed(chat, &key(&c.to_string()));
+        }
+    }
+
+    fn event(code: KeyCode, key: Key, text: Option<&str>, pressed: bool) -> KeyboardInput {
+        KeyboardInput {
+            key_code: code,
+            logical_key: key,
+            state: if pressed {
+                bevy::input::ButtonState::Pressed
+            } else {
+                bevy::input::ButtonState::Released
+            },
+            text: text.map(Into::into),
+            repeat: false,
+            window: Entity::PLACEHOLDER,
         }
     }
 
@@ -556,19 +653,13 @@ mod tests {
     fn t_opens_empty_and_slash_opens_with_a_slash_without_typing_the_key() {
         let mut chat = McChat::default();
         let t = [key("t")];
-        handle_frame(&mut chat, opener(true, false, true, &t), &t, false, 2.0);
+        handle_frame(&mut chat, opener(true, false, true, &t), &t, 2.0);
         assert!(chat.open);
         assert_eq!(chat.input, "");
         assert_eq!(chat.opened_at, 2.0);
         let mut chat = McChat::default();
         let slash = [key("/")];
-        handle_frame(
-            &mut chat,
-            opener(false, true, true, &slash),
-            &slash,
-            false,
-            0.0,
-        );
+        handle_frame(&mut chat, opener(false, true, true, &slash), &slash, 0.0);
         assert_eq!((chat.input.as_str(), chat.cursor), ("/", 1));
         let mut chat = McChat::default();
         let shift_seven = [key("/")];
@@ -580,20 +671,18 @@ mod tests {
             &mut chat,
             opener(false, false, true, &shift_seven),
             &shift_seven,
-            false,
             0.0,
         );
         assert_eq!(chat.input, "/");
         assert_eq!(opener(false, false, true, &[key("t")]), None);
         let mut chat = McChat::default();
-        handle_frame(&mut chat, None, &[key("t")], false, 0.0);
+        handle_frame(&mut chat, None, &[key("t")], 0.0);
         assert!(!chat.open && chat.input.is_empty());
-        handle_frame(&mut chat, Some(Opener::Chat), &[], false, 0.0);
+        handle_frame(&mut chat, Some(Opener::Chat), &[], 0.0);
         handle_frame(
             &mut chat,
             opener(true, false, true, &[key("t")]),
             &[key("t")],
-            false,
             0.0,
         );
         assert_eq!(chat.input, "t");
@@ -765,7 +854,7 @@ mod tests {
     #[test]
     fn input_is_capped_at_256_chars() {
         let mut chat = open_chat();
-        let (k, _) = key("a");
+        let k = Key::Character("a".into());
         apply_key(&mut chat, &k, Some(&"é".repeat(300)), false);
         assert_eq!(chat.input.chars().count(), MC_CHAT_INPUT_LIMIT);
         typed(&mut chat, "z");
@@ -780,5 +869,141 @@ mod tests {
         assert_eq!(input_view(&font, &text, 10, 316), 0);
         assert_eq!(input_view(&font, &text, 100, 316), 48);
         assert_eq!(input_view(&font, "abc", 3, 316), 0);
+    }
+
+    #[test]
+    fn modifiers_apply_to_the_keys_pressed_while_they_were_down() {
+        let ctrl = |pressed| event(KeyCode::ControlLeft, Key::Control, None, pressed);
+        let v = event(KeyCode::KeyV, Key::Character("v".into()), Some("v"), true);
+        let typed = fold_typed([false; 6], &[ctrl(true), v.clone(), ctrl(false)]);
+        assert_eq!(typed.len(), 1);
+        assert_eq!(typed[0].mods, CTRL);
+        assert_eq!(typed[0].code, KeyCode::KeyV);
+        let typed = fold_typed([false; 6], &[v.clone(), ctrl(true)]);
+        assert_eq!(typed[0].mods, Mods::default());
+        let mut held = [false; 6];
+        held[1] = true;
+        let typed = fold_typed(held, &[v.clone(), ctrl(false)]);
+        assert_eq!(typed[0].mods, CTRL);
+        let alt_gr = event(KeyCode::AltRight, Key::AltGraph, None, true);
+        let at = event(KeyCode::KeyQ, Key::Character("@".into()), Some("@"), true);
+        let typed = fold_typed([false; 6], &[alt_gr, at]);
+        assert!(typed[0].mods.alt && !typed[0].mods.ctrl);
+        let released = event(KeyCode::KeyV, Key::Character("v".into()), None, false);
+        assert!(fold_typed([false; 6], &[released]).is_empty());
+    }
+
+    #[test]
+    fn a_modifier_is_held_before_the_frame_unless_this_frame_changed_it() {
+        assert!(!held_before(false, false, false));
+        assert!(held_before(true, false, false));
+        assert!(!held_before(true, true, false));
+        assert!(held_before(false, false, true));
+        assert!(!held_before(false, true, true));
+        assert!(held_before(true, true, true));
+    }
+
+    #[test]
+    fn ctrl_a_selects_everything_and_typing_replaces_it() {
+        let mut chat = open_chat();
+        typed(&mut chat, "hello big world");
+        apply_typed(
+            &mut chat,
+            &with(Key::Character("a".into()), Some("a"), CTRL),
+        );
+        assert_eq!((chat.cursor, chat.highlight), (15, 0));
+        typed(&mut chat, "x");
+        assert_eq!(chat.input, "x");
+        typed(&mut chat, "yz");
+        apply_typed(
+            &mut chat,
+            &with(Key::Character("A".into()), Some("A"), CTRL),
+        );
+        assert_eq!((chat.cursor, chat.highlight), (3, 0));
+        apply_typed(&mut chat, &with(Key::End, None, Mods::default()));
+        let shifted = with(Key::Character("A".into()), Some("A"), CTRL_SHIFT);
+        apply_typed(&mut chat, &shifted);
+        assert_eq!((chat.input.as_str(), chat.highlight), ("xyz", 3));
+        let mut cyrillic = with(Key::Character("ф".into()), Some("ф"), CTRL);
+        cyrillic.code = KeyCode::KeyA;
+        apply_typed(&mut chat, &cyrillic);
+        assert_eq!((chat.input.as_str(), chat.highlight), ("xyz", 0));
+    }
+
+    #[test]
+    fn ctrl_types_nothing_but_alt_gr_still_types() {
+        let mut chat = open_chat();
+        apply_typed(
+            &mut chat,
+            &with(Key::Character("b".into()), Some("b"), CTRL),
+        );
+        assert_eq!(chat.input, "");
+        let ctrl_alt = Mods {
+            ctrl: true,
+            shift: false,
+            alt: true,
+        };
+        let at = Key::Character("@".into());
+        apply_typed(&mut chat, &with(at.clone(), Some("@"), ctrl_alt));
+        let alt_gr = Mods {
+            alt: true,
+            ..Mods::default()
+        };
+        apply_typed(&mut chat, &with(at, Some("@"), alt_gr));
+        assert_eq!(chat.input, "@@");
+    }
+
+    #[test]
+    fn shift_selects_and_a_plain_arrow_steps_from_the_cursor() {
+        let mut chat = open_chat();
+        typed(&mut chat, "hello big world");
+        apply_typed(&mut chat, &with(Key::ArrowLeft, None, CTRL_SHIFT));
+        assert_eq!(&chat.input[chat.cursor..chat.highlight], "world");
+        apply_typed(&mut chat, &with(Key::Home, None, SHIFT));
+        assert_eq!((chat.cursor, chat.highlight), (0, 15));
+        apply_typed(&mut chat, &with(Key::ArrowRight, None, SHIFT));
+        assert_eq!((chat.cursor, chat.highlight), (1, 15));
+        apply_typed(&mut chat, &with(Key::ArrowLeft, None, Mods::default()));
+        assert_eq!((chat.cursor, chat.highlight), (0, 0));
+        apply_typed(&mut chat, &with(Key::End, None, SHIFT));
+        apply_key(&mut chat, &Key::Backspace, None, true);
+        assert_eq!((chat.input.as_str(), chat.cursor), ("", 0));
+    }
+
+    #[test]
+    fn opening_and_walking_the_history_drop_the_selection() {
+        let mut chat = McChat {
+            history: vec!["one".into()],
+            highlight: 7,
+            ..McChat::default()
+        };
+        open(&mut chat, Opener::Command, 0.0);
+        assert_eq!((chat.cursor, chat.highlight), (1, 1));
+        typed(&mut chat, "abc");
+        apply_typed(&mut chat, &with(Key::Home, None, SHIFT));
+        apply_key(&mut chat, &Key::ArrowUp, None, false);
+        assert_eq!((chat.input.as_str(), chat.highlight), ("one", 3));
+        apply_typed(&mut chat, &with(Key::Home, None, SHIFT));
+        apply_key(&mut chat, &Key::ArrowDown, None, false);
+        assert_eq!((chat.input.as_str(), chat.highlight), ("/abc", 4));
+    }
+
+    #[test]
+    fn the_selection_box_spans_the_selected_text_like_vanilla() {
+        let font = font();
+        let width = |text: &str| font.width(text);
+        assert_eq!(selection_box("hello", [2, 2], true, 316, width), None);
+        assert_eq!(
+            selection_box("hello", [5, 0], false, 316, width),
+            Some(([35, 3], 0..5))
+        );
+        assert_eq!(
+            selection_box("hello", [0, 5], true, 316, width),
+            Some(([4, 33], 0..5))
+        );
+        assert_eq!(
+            selection_box("hello", [5, 0], false, 20, width),
+            Some(([24, 3], 0..5))
+        );
     }
 }
