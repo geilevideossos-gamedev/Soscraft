@@ -833,7 +833,7 @@ IW4L_MINECRAFT_KIT=wind_charge*64,cobblestone*64
 
 ### 15. A Minecraft Riptide trident launches the player in water or rain
 
-Commit: (next entry)
+Commit: 1e35931
 
 - **Changed:** the adapter turns a `Release::Riptide { strength, sound }` (entry 12's release in water or rain, one durability spent) into a push: `trident::riptide_push(yaw, pitch, strength)` (1.5 blocks a tick at level 1, plus 0.75 a level, where the player looks), through entry 14's `push_velocity`, and plays the level's riptide sound (`item.trident.riptide_1` to `_3`, volume 1, pitch 1). New `impulse::riptide_velocity(push, on_ground, gravity)`: entry 14's `launch_velocity`, and from the ground the extra speed that climbs vanilla's 1.2-block lift (`player.move(0, 1.2, 0)`) on top (After the split item 11).
 - **Tests:** impulse: `a_riptide_from_the_ground_climbs_its_lift_higher`.
@@ -847,4 +847,22 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=trident+riptide=3,trident+riptide=1,water_bucket*4
+```
+
+## Group: lid glue
+
+After the split items 15 to 17: the lids group's models, client lids, frame pass and server openers reach the game.
+
+### 1. Minecraft terrain sections leave an opening lid's cell to the frame pass
+
+Commit: (next entry)
+
+- **Changed:** `terrain.rs` (After the split item 15): `TerrainStream` keeps `apart: lids::ApartCells` (kept across a view-distance change, so rebuilt sections still skip the cells). New `draw_apart(pos, apart)`: when the cell's state changes, only its own section is marked dirty for the player (`player_sections`, so `cell_settled` waits for it) and its serial is dropped, so a compile already in flight from before the change can't settle it; no relight, no `record_edits`, no neighbours (shulker boxes and chests are `noOcclusion`). `CompileJob.apart` carries the section's apart cells to the worker, and `build_section_blocks(.., apart)` draws an apart cell as `append_baked` with no quads, on both build paths: nothing of the block, but a waterlogged chest keeps its water (the lids group's entry 4 proves the frame pass adds exactly the rest).
+- **Tests:** terrain: `an_apart_shulker_box_leaves_its_cell_empty_and_every_other_face_alone` (a red shulker box walled in stone: built apart it has no vertex inside its cell, every other vertex is bit-for-bit the same and the face count drops by the box's quads, on the baked and the unbaked path, and both paths still agree).
+- **Test steps:** nothing changes in game yet: no cell is taken apart until the next entry.
+  1. Place a shulker box and a chest and look at them from a few angles: they look as before, with no hole. Screenshot.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=red_shulker_box,chest*2
 ```
