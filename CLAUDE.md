@@ -38,12 +38,23 @@ Play online with 2-4 friends in one persistent Minecraft world, with MW2 weapons
   - New files must pass `rustfmt --check` on their staged content.
 - **Mojang files:** never commit any. Vanilla assets and data are read at runtime from the downloaded 26.3 packs and jar.
 - **Cargo**
-  - Always pass `-j 8`, and run one cargo command at a time. More jobs or parallel builds have crashed the PC.
-  - Set `CARGO_TARGET_DIR=D:\iw4l-target`.
-  - Use PowerShell, not Git Bash, because Git Bash's `link.exe` shadows MSVC.
-- **Release build:** `cargo build --release --locked -j 8 -p launcher`.
+  - Run cargo only through `scripts\cargo-slot.ps1` from PowerShell, e.g. `& scripts\cargo-slot.ps1 test -p render_anim --locked`.
+    - It adds `-j 8`, refuses other job counts and `cargo fmt`, and sets `CARGO_TARGET_DIR` (default `D:\iw4l-target`, or `+target=D:\dir`).
+    - It holds one of two machine-wide slots, so at most two cargo processes run at once. More have run the PC out of memory.
+    - `--release`, `--workspace`, `--profile` and `+exclusive` take both slots, so a release build or the full suite runs alone.
+    - If its shell is killed, cargo and rustc die with it.
+  - One target dir per worktree. Two worktrees must never share one: cargo's mtime check would reuse the other worktree's build of a crate whose files are older there.
+  - Builds link with rust-lld (`.cargo/config.toml`). Dev and test builds optimise dependencies at opt-level 1 and skip debug info (`Cargo.toml`), so no `CARGO_INCREMENTAL` or `CARGO_PROFILE_DEV_DEBUG` variables are needed.
+  - Use PowerShell, not Git Bash, for cargo.
+- **Build workflow**
+  - While implementing: `check -p` and `test -p` on only the crates that changed, and `check -p launcher` before a commit that touches game code.
+  - Once per track: clippy on the touched crates, and the full suite `scripts\full-suite.ps1` (workspace tests without doc-tests, plus the five minecraftoss crates with their stand-in files) after the track is merged.
+  - Parallel tracks: one git worktree in `C:\Dev\mc-wt\<name>`, one branch and one target dir each, merged into `minecraft-survival` one at a time with the full suite after each merge.
+  - Release builds only when the owner asks for one.
+- **Release build:** `cargo build --release --locked -j 8 -p launcher` (fat LTO: about 17 min clean, 13 min after an edit).
   - Output: `D:\iw4l-target\release\iw4l.exe`.
-  - Copy it to `C:\Games\Mashup\2010-Rust-Rewrite-Mashup\iw4l-survival.exe`.
+  - Copy it to `C:\Games\Mashup\2010-Rust-Rewrite-Mashup\iw4l-survival.exe`, after keeping the old one as `iw4l-survival-<old commit>.exe`.
+  - A mid-round test build may use `--profile play` instead (the same code at opt-level 3 without fat LTO: about 10 min clean, seconds after an edit; output `D:\iw4l-target\play\iw4l.exe`). The last build of a round is always `--release`.
 - **Test kit:** `IW4L_MINECRAFT_KIT=` in the `.env` next to the exe.
   - At most 27 stacks, because it only fills the 27 backpack slots.
   - Always give the kit line in its own code block so it isn't cut when copied.
