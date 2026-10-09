@@ -2712,13 +2712,17 @@ impl EntityWorld {
         }
     }
 
+    pub fn blast(&mut self, world: &impl World, blast: CreeperExplosion, players: &[PlayerCandidate]) {
+        self.apply_explosion(world, None, blast, players);
+    }
+
     /// `ServerExplosion.hurtEntities` for a creeper's blast: every mob and
     /// player in reach takes damage and a push away from the centre, both
     /// scaled by how much of it the blast sees through the terrain
     /// (`getSeenPercent`). Players get theirs as hits to apply (the
     /// harness's probe players are not in the entity lookup, so only when
     /// players are pickable).
-    fn apply_explosion(&mut self, world: &impl World, source_id: u64, blast: CreeperExplosion, players: &[PlayerCandidate]) {
+    fn apply_explosion(&mut self, world: &impl World, source: Option<u64>, blast: CreeperExplosion, players: &[PlayerCandidate]) {
         let reach = blast.radius * 2.0_f32;
         if reach < 1.0e-5_f32 {
             return;
@@ -2735,12 +2739,13 @@ impl EntityWorld {
             Some((damage, direction * impact))
         };
         for key in self.order.clone() {
-            if key.id() == source_id {
+            if Some(key.id()) == source {
                 continue;
             }
             let Some((body, eye_height)) = self.blast_target(key) else { continue };
             if let Some((damage, push)) = impact(&body, eye_height) {
-                if let Some(result) = self.hurt_by_blast(key, damage, push, Blaster::Mob(source_id)) {
+                let blaster = source.map_or(Blaster::Nobody, Blaster::Mob);
+                if let (Some(result), Some(source_id)) = (self.hurt_by_blast(key, damage, push, blaster), source) {
                     // `explosion(creeper, creeper)`: the creeper is the
                     // source's entity and its direct one.
                     self.credit(key.id(), result, "minecraft:creeper", true);
@@ -2765,7 +2770,7 @@ impl EntityWorld {
             let mut body = Body::new(player.position, 0.6, height);
             body.on_ground = true;
             if let Some((damage, knockback)) = impact(&body, player.eye_height) {
-                self.player_hits.push(PlayerHit { player_id: player.id, damage, kind: PlayerHitKind::Explosion { knockback }, source: Some(source_id) });
+                self.player_hits.push(PlayerHit { player_id: player.id, damage, kind: PlayerHitKind::Explosion { knockback }, source });
             }
         }
     }
@@ -5012,7 +5017,7 @@ impl EntityWorld {
                         self.push_entities(EntityKey::Creeper(id), &*world, game_time, ticks);
                     }
                     if let Some(explosion) = explosion {
-                        self.apply_explosion(&*world, id, explosion, players);
+                        self.apply_explosion(&*world, Some(id), explosion, players);
                         self.explosions.push(explosion);
                     }
                     continue;

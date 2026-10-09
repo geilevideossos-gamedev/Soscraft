@@ -671,6 +671,10 @@ impl Entities {
         self.server.weapon_blast(center, power);
     }
 
+    pub fn explode(&mut self, blast: minecraft_terrain::server::Blast) {
+        self.server.blast(blast);
+    }
+
     /// Sends a server tick when one is due and takes what came back: block
     /// changes to show, and mob hits on the player in MW2 damage.
     pub fn tick(

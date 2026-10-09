@@ -74,6 +74,15 @@ pub struct ServerSim {
     players_struck: Vec<crate::thrown::PlayerStruck>,
     players_pushed: Vec<(u64, glam::DVec3)>,
     thrown_hits: Vec<crate::thrown::ThrownHit>,
+    blasts: Vec<Blast>,
+    block_explosion_drop_decay: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Blast {
+    pub center: [f64; 3],
+    pub power: f32,
+    pub fire: bool,
 }
 
 /// What a player's hit or use on a mob did, for the client to present.
@@ -254,6 +263,8 @@ impl ServerSim {
             players_struck: Vec::new(),
             players_pushed: Vec::new(),
             thrown_hits: Vec::new(),
+            blasts: Vec::new(),
+            block_explosion_drop_decay: true,
         }
     }
 
@@ -622,6 +633,7 @@ impl ServerSim {
         // (`ServerExplosion.explode`: `hurtEntities`, then the blocks).
         self.drop_death_loot();
         self.explode_creepers();
+        self.explode_blasts(players);
         self.sound_potion_breaks();
     }
 
@@ -702,6 +714,26 @@ impl ServerSim {
             let interaction = if self.mobs.mob_griefing() { BlockInteraction::DestroyWithDecay } else { BlockInteraction::Keep };
             self.level.explode(Explosion { center: blast.position.to_array(), radius: blast.radius, fire: false, interaction, source: None });
             self.explosions.push(blast);
+        }
+    }
+
+    pub fn blast(&mut self, blast: Blast) {
+        self.blasts.push(blast);
+    }
+
+    fn explode_blasts(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
+        use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
+        for blast in std::mem::take(&mut self.blasts) {
+            let explosion = minecraftoss_entities::creeper::CreeperExplosion { position: glam::DVec3::from_array(blast.center), radius: blast.power, powered: false };
+            {
+                let Self { level, states, mobs, mob_tables, .. } = &mut *self;
+                let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
+                mobs.blast(&world, explosion, players);
+            }
+            self.drop_death_loot();
+            let interaction = if self.block_explosion_drop_decay { BlockInteraction::DestroyWithDecay } else { BlockInteraction::Destroy };
+            self.level.explode(Explosion { center: blast.center, radius: blast.power, fire: blast.fire, interaction, source: None });
+            self.explosions.push(explosion);
         }
     }
 
@@ -1335,6 +1367,7 @@ impl ServerSim {
         level.lava_source_conversion = rules.bool("lava_source_conversion");
         level.tnt_explodes = rules.bool("tnt_explodes");
         level.tnt_explosion_drop_decay = rules.bool("tnt_explosion_drop_decay");
+        self.block_explosion_drop_decay = rules.bool("block_explosion_drop_decay");
         level.set_advance_weather(rules.bool("advance_weather"));
         self.mobs.set_mob_griefing(rules.bool("mob_griefing"));
         self.mobs.set_mob_drops(rules.bool("mob_drops"));
@@ -1523,6 +1556,7 @@ pub enum Command {
     MobAction { hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, infinite: bool },
     MobBlast { hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64>, slow_ticks: i32 },
     WeaponBlast { center: [f64; 3], power: f32 },
+    Blast(Blast),
     /// An operation on the player's trading screen.
     Merchant { op: MerchantOp, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, feet: [f64; 3] },
     /// One server tick, with the player's state for it.
@@ -1842,6 +1876,10 @@ impl ServerHandle {
         self.send(Command::WeaponBlast { center, power });
     }
 
+    pub fn blast(&mut self, blast: Blast) {
+        self.send(Command::Blast(blast));
+    }
+
     pub fn throw(&mut self, thrown: crate::thrown::Thrown) {
         self.send(Command::Throw(Box::new(thrown)));
     }
@@ -1942,6 +1980,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::MobBlast { hit, damage, center, impact, player, slow_ticks } => sim.mob_blast(hit, damage, center, impact, player, slow_ticks),
                 Command::WeaponBlast { center, power } => sim.weapon_blast(center, power),
+                Command::Blast(blast) => sim.blast(blast),
                 Command::Merchant { op, inventory, selected, feet } => {
                     out.merchant.push(sim.merchant(op, *inventory, selected, feet));
                 }
@@ -5430,5 +5469,84 @@ mod tests {
         assert_eq!(reach("minecraft:the_nether", 300), 7, "Nether lava drops one level a block");
         assert!(reach("minecraft:overworld", 75) <= 2, "overworld lava waits 30 ticks a step");
         assert!(reach("minecraft:the_nether", 75) >= 6, "Nether lava waits 10 ticks a step");
+    }
+
+    #[test]
+    fn a_blast_hurts_mobs_and_players_breaks_blocks_and_may_start_fires() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let fire = registries.blocks.block_by_name("minecraft:fire").unwrap();
+        let planks = registries.blocks.block_by_name("minecraft:oak_planks").unwrap();
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: glam::DVec3::new(-2.5, 201.0, 0.5),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        };
+        let blow_up = |fire_on: bool| {
+            let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+            let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+            let mut server = ServerSim::new(worldgen.clone(), states, "minecraft:overworld");
+            for x in -1..=1 {
+                for z in -1..=1 {
+                    server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+                }
+            }
+            for x in -8..=8 {
+                for z in -8..=8 {
+                    server.player_edit_block((x, 200, z), Some(&Block::new("minecraft:obsidian")), PlayerEdit::Place);
+                }
+            }
+            for z in -2..=2 {
+                server.player_edit_block((1, 201, z), Some(&Block::new("minecraft:oak_planks")), PlayerEdit::Place);
+            }
+            let zombie = server.mobs.spawn_zombie(minecraftoss_entities::zombie::Zombie::new(glam::DVec3::new(0.5, 201.0, 3.5)), true);
+            server.take_changes();
+            server.blast(Blast { center: [0.5, 201.5, 0.5], power: 5.0, fire: fire_on });
+            server.set_players(&[player.position.to_array()], 2);
+            server.set_simulation_area((0, 0), 4);
+            server.tick();
+            server.tick_mobs(&[player], false);
+            let hits = server.mobs.take_player_hits();
+            let blasts = server.take_explosions();
+            let health = server.mobs.zombies().iter().find(|z| z.id == zombie).map_or(0.0, |z| z.zombie.health);
+            let mut fires = 0;
+            let mut planks_left = 0;
+            for x in -8..=8 {
+                for z in -8..=8 {
+                    let block = registries.blocks.block_of(server.level.block(minecraftoss_core::BlockPos::new(x, 201, z)));
+                    fires += usize::from(block == fire);
+                    planks_left += usize::from(block == planks);
+                }
+            }
+            (hits, blasts, health, fires, planks_left)
+        };
+        let (hits, blasts, health, fires, planks_left) = blow_up(true);
+        assert_eq!(blasts.len(), 1, "the client hears the blast");
+        assert_eq!(blasts[0].radius, 5.0);
+        let hit = hits.iter().find(|h| matches!(h.kind, minecraftoss_entities::world::PlayerHitKind::Explosion { .. })).expect("the blast hits the player");
+        assert_eq!(hit.source, None, "a block's blast has no attacker");
+        assert!(hit.damage > 10.0, "a close power 5 blast hurts: {}", hit.damage);
+        assert!(health < 20.0, "the zombie is hurt: {health}");
+        assert!(planks_left < 5, "the blast breaks the planks: {planks_left} left");
+        assert!(fires > 0, "fire lands on the obsidian");
+        let (_, _, _, fires, _) = blow_up(false);
+        assert_eq!(fires, 0, "a blast without fire starts none");
     }
 }

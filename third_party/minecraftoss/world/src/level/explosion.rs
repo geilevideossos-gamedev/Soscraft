@@ -17,6 +17,8 @@ use super::{update, Level};
 use minecraftoss_core::loot::LootParams;
 use minecraftoss_core::random::RandomSource;
 use minecraftoss_core::{BlockPos, BlockStateId};
+use minecraftoss_generator::feature::update::base_fire_state;
+use minecraftoss_generator::feature::Ctx;
 use std::collections::HashSet;
 
 /// `Explosion.BlockInteraction`.
@@ -106,15 +108,27 @@ impl Level<'_> {
 
     /// `ServerExplosion.explode`; returns the number of blocks it picked.
     pub fn explode(&mut self, ex: Explosion) -> usize {
-        let to_blow = self.exploded_positions(&ex);
+        let mut to_blow = self.exploded_positions(&ex);
         self.hurt_entities(&ex);
         if ex.interaction != BlockInteraction::Keep {
-            self.interact_with_blocks(&ex, to_blow.clone());
+            self.interact_with_blocks(&ex, &mut to_blow);
         }
         if ex.fire {
-            self.unsupported.push("fire from explosions".to_owned());
+            self.create_fire(&to_blow);
         }
         to_blow.len()
+    }
+
+    fn create_fire(&mut self, positions: &[BlockPos]) {
+        let lib = self.lib;
+        let blocks = &lib.registries.blocks;
+        for &pos in positions {
+            if self.random.next_i32_bound(3) == 0 && blocks.is_air(self.block(pos)) && blocks.is(self.block(pos.below()), minecraftoss_core::block::flags::SOLID_RENDER) {
+                let ctx: Ctx = Ctx { lib, region: self };
+                let fire = base_fire_state(&ctx, pos);
+                self.set_block(pos, fire, update::ALL, update::LIMIT);
+            }
+        }
     }
 
     /// `ExplosionDamageCalculator.getBlockExplosionResistance`.
@@ -290,7 +304,7 @@ impl Level<'_> {
     }
 
     /// `ServerExplosion.interactWithBlocks`.
-    fn interact_with_blocks(&mut self, ex: &Explosion, mut targets: Vec<BlockPos>) {
+    fn interact_with_blocks(&mut self, ex: &Explosion, targets: &mut [BlockPos]) {
         // `Util.shuffle`.
         let mut i = targets.len();
         while i > 1 {
@@ -299,7 +313,7 @@ impl Level<'_> {
             i -= 1;
         }
         let mut stacks: Vec<(BlockPos, Stack)> = Vec::new();
-        for pos in targets {
+        for &pos in targets.iter() {
             let state = self.block(pos);
             self.on_explosion_hit(state, pos, ex, &mut stacks);
         }

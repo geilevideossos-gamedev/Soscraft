@@ -57,7 +57,7 @@ Commit: 955de45
 
 ### 4. Minecraft Nether blocks and mobs are lit like vanilla's Nether (E2-5)
 
-Commit: see `git log` under this subject.
+Commit: e87a02b
 
 - **Changed:**
   - `minecraft_terrain/src/terrain.rs`: `BlockStates.nether_shade`, set by `TerrainStream::for_dimension_at` when the dimension type's `cardinal_light` is `nether`. Each section build (`compile_section`) hands it to its worker thread.
@@ -67,10 +67,31 @@ Commit: see `git log` under this subject.
 - **Tests:** `mesh`: `nether_faces_are_shaded_from_above_and_below_alike` (a cube's six faces give 0.5, 1.0, 0.8, 0.8, 0.6, 0.6 by default and 0.9, 0.9, 0.8, 0.8, 0.6, 0.6 in the Nether; the fluid side products). `terrain`: the Nether stream has `nether_shade`, the End stream not.
 - **Not done:** the MW2 player and weapon models keep the default two lights (`render_gpu`'s `mc_entity_shade`): telling that shader the dimension needs a slot in the environment uniform, which the End track owns with the sky shader this round.
 - **Test steps** (with `IW4L_MINECRAFT_DIMENSION=the_nether`):
-  1. Look at a netherrack wall and the floor in front of it: the floor is as bright as the walls facing north and south, a little darker than in the overworld, and the underside of an overhang is as bright as the floor (in the overworld it is much darker). **Screenshot 4.**
+  1. Look at a netherrack overhang: its underside is as bright as the floor (both 0.9), where in the overworld an underside is half as bright as a floor. Walls facing north and south stay a little darker than the floor, walls facing east and west darker still. **Screenshot 4.** (Corrected in entry 5.)
   2. Drop a stack of cobblestone and look at it on the ground: its bottom and top are lit alike.
 - **Kit:**
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:netherrack*64
+```
+
+### 5. Minecraft explosions can start fires (E2-12)
+
+Commit: see `git log` under this subject.
+
+- **Changed:**
+  - Vendored `third_party/minecraftoss/world/src/level/explosion.rs` (MinecraftOSS patch): `ServerExplosion.createFire`. An explosion with `fire` no longer logs "fire from explosions" as unsupported: after the blocks break, each picked position draws `random.nextInt(3)`, and on 0 an air block over a solid-render block becomes `BaseFireBlock.getState` (soul fire on soul fire bases, else fire), set with `setBlockAndUpdate`. As in vanilla (javap), `interactWithBlocks` shuffles the picked list in place, and the fire pass walks that shuffled list.
+  - Vendored `third_party/minecraftoss/entities/src/world.rs` (MinecraftOSS patch): `EntityWorld::blast(world, blast, players)`, the public entity-world blast: `apply_explosion` takes an optional source, so a blast nobody caused hurts and pushes every mob (`Blaster::Nobody`, no kill credit) and hands each player in reach an explosion hit with no attacker. A creeper's blast is unchanged.
+  - `minecraft_terrain/src/server.rs`: `Blast { center, power, fire }`, `ServerSim::blast` and `Command::Blast` (`ServerHandle::blast`). Blasts run at the end of the mob tick, after the creepers': the entity world hurts the mobs and players, their loot drops, then `Level::explode` breaks the blocks with the `block_explosion_drop_decay` game rule (`ExplosionInteraction.BLOCK`, now read in `apply_game_rules`) and starts the fires; the client hears it like a creeper's.
+  - `minecraft_survival/src/entities.rs`: `Entities::explode(Blast)` sends it (`Entities::blast` was already the MW2 hit on one mob).
+- **Tests:** `server`: `a_blast_hurts_mobs_and_players_breaks_blocks_and_may_start_fires` (a power 5 blast with fire on an obsidian floor: the client hears one blast, the player takes an explosion hit of more than 10 with no attacker, a zombie is hurt, the planks beside it break, and fire lands on the obsidian; the same blast without fire starts none). The vendored `minecraftoss-world` and `minecraftoss-entities` tests pass with the full suite's stand-in files.
+- **Decisions:**
+  - Plan decision 5: beds, anchors and crystals hurt players and mobs through this blast (vanilla explosion damage), not the MW2 blast rule. The player's death cause for a bed (`bad_respawn_point`, "Intentional Game Design") comes with E2-13 in N5; until then a hit with no attacker reads as a plain explosion.
+  - The blast waits for the next server tick's mob step, because the players' bodies it needs come with the tick.
+- **Test steps:** nothing in game makes a fiery blast yet (beds and anchors come in N5). Check that creepers and TNT still blow up as before:
+  1. Place TNT on grass and light it: it explodes, breaks blocks and starts no fire. **Screenshot 5.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:tnt*4,minecraft:flint_and_steel
 ```
