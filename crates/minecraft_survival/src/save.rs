@@ -195,7 +195,7 @@ pub fn world_spawn(dimension: Dimension, pos: (i32, i32, i32)) -> RespawnData {
 }
 
 pub fn spawn_dimension(spawn: &RespawnData) -> Dimension {
-    Dimension::parse(&spawn.dimension).unwrap_or_default()
+    Dimension::parse(&spawn.dimension).unwrap_or(Dimension::Overworld)
 }
 
 fn day_cycle(clock: &ClockState) -> DayCycle {

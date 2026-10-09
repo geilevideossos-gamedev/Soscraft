@@ -74,7 +74,7 @@ Commit: 70ad059
 
 ### 4. Minecraft Nether and End terrain generates in a test (E1-4)
 
-Commit: filled in by the next entry
+Commit: b10d6d6
 
 - **Changed:**
   - `minecraft_terrain/src/terrain.rs`: `TerrainStream::for_dimension_at` keeps a known spawn for the Nether and the End too, at the block's bottom centre, instead of always searching the stand-in Nether floor around chunk 0,0 or always using the End platform. The search and `ServerLevel.END_SPAWN_POINT` (100, 49, 0) stay the fallbacks. S2's level loader passes the saved or arrival position here.
@@ -84,3 +84,26 @@ Commit: filled in by the next entry
 - **Decisions:** the smoke tests stop at what the headless crates can run (generation, light, the server level). Section meshes need the resource pack and run in game; they are not tested here.
 - **Test steps:** none in game; the Nether and the End can be entered from S2 on (`IW4L_MINECRAFT_DIMENSION`).
 - **Kit:** none.
+
+### 5. Minecraft server-wide state passes clippy
+
+Commit: filled in by the next entry (or `git log` under this subject)
+
+- **Changed:** three clippy findings on lines of entries 1 and 3: `spawn_dimension` names its overworld fallback instead of `unwrap_or_default` (disallowed by `clippy.toml`), `Globals::advance_weather` starts a world without weather from a named `NEW_WORLD_WEATHER` (all timers 0, as a new vanilla `WeatherData`), and the weather random's seed constant is grouped in equal digits.
+- **Clippy:** `clippy -p minecraft_survival --tests --no-deps` has only the two older `entities.rs` findings (`type_complexity`, `manual_is_multiple_of`). `minecraft_terrain` and `render_anim` were not clippy-clean before this track (`approx_constant` errors in the mob renderers); with `-A clippy::approx_constant` none of their findings is on a line of this group. `minecraftoss-world` has no finding in `level_storage.rs` or `level/time.rs`.
+- **Tests:** none new; `minecraft_survival`, `minecraft_terrain` (489 passed, 3 ignored as before), `minecraftoss-world` and `render_anim` pass, and `check -p launcher` is green.
+- **Test steps:** none; nothing changes in game.
+- **Kit:** none.
+
+## Group S1 summary
+
+- **Owner test for the whole group** (one start, kit below, `IW4L_MINECRAFT_WORLD=dimtest`, no `IW4L_MINECRAFT_TIME` or `IW4L_MINECRAFT_WEATHER` line): run the steps of entries 1, 2 and 3 in order in the same session. Nothing in the Nether or the End can be seen yet; that starts with S2's `IW4L_MINECRAFT_DIMENSION`.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64
+```
+
+- **After track C:** `/time` per dimension (`commands.time.no_default_clock` in the Nether, the `minecraft:the_end` clock in the End) through `server::default_clock`.
+- **Handed to S2:** `WorldSave::create_dimension` when a level opens; `for_dimension_at` with the arrival as known spawn for the Nether and End; giving `Globals.weather` back to an overworld level that stayed open (a `set_weather_data` command on its `ServerSim`); `IW4L_MINECRAFT_WEATHER` applied only where `has_weather`.
+- **MinecraftOSS patches in this group:** `world/src/level_storage.rs` (per-dimension saved data), `world/src/level/time.rs` (`Level::set_clock`, `Weather::advance_timers`).

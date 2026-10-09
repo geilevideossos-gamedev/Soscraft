@@ -69,7 +69,7 @@ impl Globals {
         {
             return;
         }
-        let mut weather = self.weather.unwrap_or_default();
+        let mut weather = self.weather.unwrap_or(NEW_WORLD_WEATHER);
         for _ in 0..ticks {
             minecraft_terrain::server::advance_weather_timers(&mut weather, &mut self.weather_random);
         }
@@ -89,12 +89,20 @@ impl Globals {
     }
 }
 
+const NEW_WORLD_WEATHER: WeatherData = WeatherData {
+    clear_weather_time: 0,
+    rain_time: 0,
+    thunder_time: 0,
+    raining: false,
+    thundering: false,
+};
+
 pub fn has_weather(dimension: Dimension) -> bool {
     dimension == Dimension::Overworld
 }
 
 pub fn weather_random(seed: i64) -> LegacyRandom {
-    LegacyRandom::new(seed ^ 0x5745_4154_4845_52)
+    LegacyRandom::new(seed ^ 0x0057_4541_5448_4552)
 }
 
 pub fn default_clock(dimension: Dimension) -> Option<&'static str> {
