@@ -71,13 +71,10 @@ pub struct MinecraftWorldView {
 }
 
 struct Loaded {
-    stream: TerrainStream,
-    scene: HandcraftedScene,
     packs: PackStack,
     atlas: Arc<Atlas>,
     registries: Arc<Registries>,
     seed: i64,
-    environment: DimensionEnvironment,
     celestial: Arc<image::RgbaImage>,
     cloud_mask: Option<CloudMask>,
     crack_texture: Arc<image::RgbaImage>,
@@ -125,8 +122,9 @@ struct StepState {
 
 #[derive(Default)]
 struct Runtime {
-    loading: Option<mpsc::Receiver<Result<Loaded, String>>>,
+    loading: Option<mpsc::Receiver<Result<(Loaded, minecraft_survival::level::Terrain), String>>>,
     world: Option<Loaded>,
+    server: Option<minecraft_survival::server::Server>,
     day: DayCycle,
     environment_accumulator: f64,
     environment_primed: bool,
@@ -140,10 +138,8 @@ struct Runtime {
     steps: StepState,
     sounds: Option<crate::minecraft_sounds::Sounds>,
     inventory_ui: crate::minecraft_inventory::InventoryUi,
-    entities: Option<minecraft_survival::entities::Entities>,
     survival: minecraft_survival::survival::Survival,
     player_mode: minecraft_terrain::game_mode::PlayerMode,
-    containers: minecraft_terrain::containers::Containers,
     /// Shape id of each block state already seen.
     shapes: HashMap<BlockStateId, u16>,
     /// Boxes of each shape id, to reuse an id for a repeated shape.
@@ -253,7 +249,7 @@ pub(crate) fn register(app: &mut App) {
         );
 }
 
-fn load() -> Result<Loaded, String> {
+fn load() -> Result<(Loaded, minecraft_survival::level::Terrain), String> {
     let root = assets::minecraft_map::root().ok_or_else(assets::minecraft_setup::status)?;
     let opened = minecraft_survival::save::open_world(
         &minecraft_survival::save::saves_dir(),
@@ -302,14 +298,11 @@ fn load() -> Result<Loaded, String> {
     let cloud_mask = CloudMask::from_pack(&packs).ok();
     let crack_texture = Arc::new(crate::minecraft_mining::crack_strip(&packs).map_err(|e| e.to_string())?);
     let glint_texture = minecraft_terrain::glint::glint_texture(&packs).ok().flatten().map(Arc::new);
-    Ok(Loaded {
-        stream,
-        scene,
+    let loaded = Loaded {
         packs,
         atlas: build.atlas,
         registries,
         seed,
-        environment,
         celestial,
         cloud_mask,
         crack_texture,
@@ -320,7 +313,8 @@ fn load() -> Result<Loaded, String> {
         difficulty: opened.difficulty,
         level_writer: None,
         chat,
-    })
+    };
+    Ok((loaded, minecraft_survival::level::Terrain { stream, scene, environment }))
 }
 
 pub(crate) fn data_jar() -> Option<std::path::PathBuf> {
@@ -471,10 +465,10 @@ fn update(
         runtime.loading = None;
         runtime.loader = None;
         match result {
-            Ok(mut world) => {
+            Ok((mut world, terrain)) => {
                 let host = settings.as_deref().map_or_else(|| "Player".to_owned(), |settings| settings.player_name.clone());
                 world.chat.join(minecraft_survival::commands::HOST, host);
-                let (x, y, z) = world.stream.player_spawn;
+                let (x, y, z) = terrain.stream.player_spawn;
                 view.origin = [x, y, z];
                 view.atlas = Some(world.atlas.clone());
                 view.atlas_patches.clear();
@@ -485,14 +479,13 @@ fn update(
                 view.glint_texture = world.glint_texture.clone();
                 runtime.mining = Default::default();
                 runtime.minimap = Default::default();
-                runtime.containers = Default::default();
+                let mut containers = minecraft_terrain::containers::Containers::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
-                let mut entities = minecraft_survival::entities::Entities::new(&world.stream, world.seed, assets::minecraft_map::root().as_deref(), data_jar());
+                let mut entities = minecraft_survival::entities::Entities::new(&terrain.stream, world.seed, assets::minecraft_map::root().as_deref(), data_jar());
                 entities.set_game_rules(&world.game_rules);
-                runtime.containers.set_book(entities.stations.clone());
+                containers.set_book(entities.stations.clone());
                 runtime.inventory_ui.set_station_data(entities.stations.clone(), entities.enchantments.clone(), world.seed as i32);
                 world.chat.registries_mut().enchantments = entities.enchantments.as_ref().map_or_else(Vec::new, |book| book.list.iter().map(|enchantment| enchantment.id.clone()).collect());
-                runtime.entities = Some(entities);
                 runtime.day = DayCycle::default();
                 if let Some(ticks) = world.saved_day {
                     runtime.day.set(ticks);
@@ -532,9 +525,10 @@ fn update(
                     World,
                     "Minecraft world ready: seed {} spawn {:?}",
                     world.seed,
-                    world.stream.player_spawn
+                    terrain.stream.player_spawn
                 );
                 runtime.fire_frames = fire_frames(&world.packs).map(|(image, frames)| (images.add(image), frames));
+                runtime.server = Some(minecraft_survival::server::Server { levels: std::collections::BTreeMap::from([(Dimension::Overworld, minecraft_survival::level::Level { dimension: Dimension::Overworld, entities: Some(entities), containers, terrain })]) });
                 runtime.world = Some(world);
                 runtime.shapes.clear();
                 runtime.shape_ids.clear();
@@ -550,6 +544,7 @@ fn update(
     let origin = view.origin;
     let Runtime {
         world,
+        server,
         shapes,
         shape_ids,
         day,
@@ -560,7 +555,6 @@ fn update(
         light_volume_age,
         cloud_center,
         mining,
-        entities,
         inventory_ui,
         sounds,
         hand,
@@ -568,7 +562,6 @@ fn update(
         steps,
         survival,
         player_mode,
-        containers,
         fire_frames,
         atlas_animation,
         animation_clock,
@@ -577,12 +570,13 @@ fn update(
         autosave_ticks,
         ..
     } = &mut *runtime;
-    let Some(world) = world.as_mut() else {
+    let (Some(world), Some(level)) = (world.as_mut(), server.as_mut().and_then(|server| server.levels.get_mut(&Dimension::Overworld))) else {
         ui.active = false;
         ui.inventory_open = false;
         puppet.active = false;
         return;
     };
+    let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
     let host_alive = presented.player(local.0).is_some_and(|ps| ps.pm_type == 0);
     let host_pose = presented
         .player(local.0)
@@ -635,7 +629,7 @@ fn update(
     let Some(ps) = presented.player(local.0) else {
         ui.active = false;
         puppet.active = false;
-        stream_around_spawn(world, shapes, shape_ids, entities, light, spawn_gate, &mut view, aspect, now_ms);
+        stream_around_spawn(world, terrain, shapes, shape_ids, entities, light, spawn_gate, &mut view, aspect, now_ms);
         return;
     };
 
@@ -680,7 +674,7 @@ fn update(
         feet[1].floor() as i32,
         feet[2].floor() as i32,
     );
-    let streamed = world.stream.server_tick(block, &mut world.scene);
+    let streamed = terrain.stream.server_tick(block, &mut terrain.scene);
     apply_streamed(&world.registries, shapes, shape_ids, entities, streamed);
 
     // Minecraft's yaw: 0 facing +Z (map -Y), turning towards -X.
@@ -708,7 +702,7 @@ fn update(
         let horizontal = ((feet[0] - last[0]).hypot(feet[2] - last[2]).hypot(if climbing { feet[1] - last[1] } else { 0.0 }) * 0.6) as f32;
         let block_at = |dy: f64| {
             let pos = (feet[0].floor() as i32, (feet[1] - dy).floor() as i32, feet[2].floor() as i32);
-            minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned().map(|b| (pos, b))
+            minecraft_terrain::scene::Scene::block(&terrain.scene, pos).cloned().map(|b| (pos, b))
         };
         let under = block_at(0.2);
         if climbing {
@@ -725,7 +719,7 @@ fn update(
                 steps.next_step = steps.move_dist as i32 as f32 + 1.0;
                 let sounding = on_ground
                     || block.id.path == "powder_snow"
-                    || world.stream.states.state_of(block).is_some_and(|state| {
+                    || terrain.stream.states.state_of(block).is_some_and(|state| {
                         world.registries.block_tags.id("minecraft:climbable").is_some_and(|tag| world.registries.block_in_tag(state, tag))
                     });
                 // Snow layers and carpets sound instead of what they lie on.
@@ -734,7 +728,7 @@ fn update(
                     p == "snow" || p.ends_with("_carpet") || p == "moss_carpet"
                 });
                 let (pos, block) = inside.as_ref().map_or((*pos, block), |(p, b)| (*p, b));
-                if sounding && let (Some(sounds), Some(kind)) = (sounds.as_mut(), world.scene.sound_type(block)) {
+                if sounding && let (Some(sounds), Some(kind)) = (sounds.as_mut(), terrain.scene.sound_type(block)) {
                     sounds.play(&world.packs, &kind.step, Some(centre(pos)), kind.volume * 0.15, kind.pitch);
                 }
             }
@@ -755,7 +749,7 @@ fn update(
                     let voice = (sounds.random() - sounds.random()) * 0.2 + 1.0;
                     sounds.play(&world.packs, "minecraft:entity.player.hurt", None, 1.0, voice);
                     if let Some((pos, block)) = under.as_ref()
-                        && let Some(kind) = world.scene.sound_type(block)
+                        && let Some(kind) = terrain.scene.sound_type(block)
                     {
                         sounds.play(&world.packs, &kind.fall, Some(centre(*pos)), kind.volume * 0.5, kind.pitch * 0.75);
                     }
@@ -828,7 +822,7 @@ fn update(
             if motion.in_lava {
                 steps.air_peak = steps.air_peak.map(|peak| feet[1] + (peak - feet[1]) * 0.5);
             }
-            let heard = survival.hazards(&world.scene, &motion, from, armor, || entities.as_mut().map_or(0.5, |e| e.random_float()));
+            let heard = survival.hazards(&terrain.scene, &motion, from, armor, || entities.as_mut().map_or(0.5, |e| e.random_float()));
             if let Some(entities) = entities.as_mut() {
                 hold_off_death(survival, entities, sounds.as_mut(), &world.packs, false);
             }
@@ -852,7 +846,7 @@ fn update(
             for (pos, stack) in ticked.drops {
                 entities.world_items.spawn_block_drop(stack, pos);
             }
-            let lit = |pos| minecraft_terrain::scene::Scene::block(&world.scene, pos).map(minecraft_terrain::campfire::is_lit);
+            let lit = |pos| minecraft_terrain::scene::Scene::block(&terrain.scene, pos).map(minecraft_terrain::campfire::is_lit);
             for (pos, stack) in containers.cook(lit, &entities.inventory.recipes) {
                 entities.world_items.drop_item_stack(stack, pos);
             }
@@ -864,7 +858,7 @@ fn update(
                 .rev()
                 .find(|(at, _)| *at == pos)
                 .and_then(|(_, block)| block.clone())
-                .or_else(|| minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned());
+                .or_else(|| minecraft_terrain::scene::Scene::block(&terrain.scene, pos).cloned());
             if let Some(block) = current.filter(|block| block.properties.contains_key(name)) {
                 writes.push((pos, Some(block.with(name, if on { "true" } else { "false" }))));
             }
@@ -876,7 +870,7 @@ fn update(
             }
         }
         if !writes.is_empty() {
-            write_blocks(world, shapes, shape_ids, entities, writes);
+            write_blocks(terrain, &world.registries, shapes, shape_ids, entities, writes);
         }
     }
     let game_mode = *player_mode;
@@ -937,7 +931,7 @@ fn update(
                 punched = true;
                 hand.attack_ticks = 0;
                 survival.exhaust(minecraft_survival::survival::ATTACK_EXHAUSTION);
-            } else if player.target(&minecraft_terrain::doors::Outlined(&world.scene), game_mode.block_reach()).is_none() {
+            } else if player.target(&minecraft_terrain::doors::Outlined(&terrain.scene), game_mode.block_reach()).is_none() {
                 hand.attack_ticks = 0;
                 hand.miss_time = if game_mode.instant_break() { 0 } else { 10 };
             } else {
@@ -980,7 +974,7 @@ fn update(
         }
         if ui.holding_item && attack_held && !busy && game_mode.may_build() && game_mode.instant_break() {
             let held = entities.inventory.slots[entities.selected].as_ref().map(|stack| stack.id.as_str());
-            if let Some(hit) = player.target(&minecraft_terrain::doors::Outlined(&world.scene), game_mode.block_reach())
+            if let Some(hit) = player.target(&minecraft_terrain::doors::Outlined(&terrain.scene), game_mode.block_reach())
                 && !punched
                 && entities.mob_distance(eye_block, look, game_mode.entity_reach()).is_none_or(|distance| distance > hit.distance)
                 && minecraft_terrain::game_mode::can_destroy_in_creative(held)
@@ -995,7 +989,7 @@ fn update(
             }
         } else if ui.holding_item && attack_held && !busy && game_mode.may_build() {
             for _ in 0..hand_ticks {
-                if let Some(hit) = player.target(&minecraft_terrain::doors::Outlined(&world.scene), 4.5) {
+                if let Some(hit) = player.target(&minecraft_terrain::doors::Outlined(&terrain.scene), 4.5) {
                     // A hand mines as vanilla's `getDestroyProgress`: a
                     // block's hardness times thirty ticks.
                     all_events.push(sim::voxel::VoxelEvent::Shot {
@@ -1036,42 +1030,42 @@ fn update(
             player.selected = slot;
             let held = entities.inventory.slots[slot].clone();
             let table = player
-                .target(&minecraft_terrain::doors::Outlined(&world.scene), 5.0)
+                .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
                 .map(|hit| hit.pos)
-                .filter(|&pos| minecraft_terrain::scene::Scene::block(&world.scene, pos).is_some_and(minecraft_terrain::crafting::is_crafting_table))
+                .filter(|&pos| minecraft_terrain::scene::Scene::block(&terrain.scene, pos).is_some_and(minecraft_terrain::crafting::is_crafting_table))
                 .filter(|_| main && minecraft_terrain::crafting::opens_table(player.crouching, has_item));
             let station = player
-                .target(&minecraft_terrain::doors::Outlined(&world.scene), 5.0)
+                .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
                 .map(|hit| hit.pos)
                 .filter(|_| main && table.is_none() && minecraft_terrain::crafting::opens_table(player.crouching, has_item))
                 .and_then(|pos| {
-                    let block = minecraft_terrain::scene::Scene::block(&world.scene, pos)?;
-                    let partner = minecraft_terrain::containers::chest_partner(pos, block).and_then(|at| minecraft_terrain::scene::Scene::block(&world.scene, at));
+                    let block = minecraft_terrain::scene::Scene::block(&terrain.scene, pos)?;
+                    let partner = minecraft_terrain::containers::chest_partner(pos, block).and_then(|at| minecraft_terrain::scene::Scene::block(&terrain.scene, at));
                     minecraft_terrain::containers::Opened::new(pos, block, partner)
                 });
             let workshop = player
-                .target(&minecraft_terrain::doors::Outlined(&world.scene), 5.0)
+                .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
                 .map(|hit| hit.pos)
                 .filter(|_| main && table.is_none() && station.is_none() && minecraft_terrain::crafting::opens_table(player.crouching, has_item))
-                .and_then(|pos| minecraft_terrain::scene::Scene::block(&world.scene, pos).and_then(minecraft_terrain::stations::Workshop::of).map(|kind| (pos, kind)));
+                .and_then(|pos| minecraft_terrain::scene::Scene::block(&terrain.scene, pos).and_then(minecraft_terrain::stations::Workshop::of).map(|kind| (pos, kind)));
             let campfire = player
-                .target(&minecraft_terrain::doors::Outlined(&world.scene), 5.0)
+                .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
                 .map(|hit| hit.pos)
-                .filter(|&pos| minecraft_terrain::scene::Scene::block(&world.scene, pos).is_some_and(minecraft_terrain::campfire::is_campfire))
+                .filter(|&pos| minecraft_terrain::scene::Scene::block(&terrain.scene, pos).is_some_and(minecraft_terrain::campfire::is_campfire))
                 .filter(|_| !(player.crouching && has_item));
             let placeable = held.as_ref().is_some_and(|stack| {
                 let id = if stack.id == "minecraft:redstone" { "minecraft:redstone_wire" } else { stack.id.as_str() };
                 minecraft_terrain::pack::ResourceId::parse(id).is_ok_and(|id| {
-                    world.stream.states.state_of(&minecraft_terrain::scene::Block { id, properties: Default::default() }).is_some()
+                    terrain.stream.states.state_of(&minecraft_terrain::scene::Block { id, properties: Default::default() }).is_some()
                 })
             });
             let used = if main && table.is_none() && station.is_none() && workshop.is_none() && !(player.crouching && has_item) {
                 let facing = minecraft_terrain::doors::facing(f64::from(mc_yaw));
                 player
-                    .target(&minecraft_terrain::doors::Outlined(&world.scene), 5.0)
+                    .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
                     .map(|hit| hit.pos)
-                    .filter(|&pos| !minecraftoss_player::World::block(&world.scene, pos).is_some_and(|block| minecraft_terrain::berries::bone_meal_passes(&block, held.as_ref())))
-                    .filter(|&pos| entities.use_block(&world.scene, pos, facing))
+                    .filter(|&pos| !minecraftoss_player::World::block(&terrain.scene, pos).is_some_and(|block| minecraft_terrain::berries::bone_meal_passes(&block, held.as_ref())))
+                    .filter(|&pos| entities.use_block(&terrain.scene, pos, facing))
             } else {
                 None
             };
@@ -1090,15 +1084,15 @@ fn update(
             } else if let Some(opened) = station {
                 if use_pressed {
                     let conductor = |(x, y, z): (i32, i32, i32)| {
-                        minecraft_terrain::scene::Scene::block(&world.scene, (x, y + 1, z))
-                            .and_then(|b| world.stream.states.state_of(b))
+                        minecraft_terrain::scene::Scene::block(&terrain.scene, (x, y + 1, z))
+                            .and_then(|b| terrain.stream.states.state_of(b))
                             .is_some_and(|state| world.registries.blocks.is(state, minecraftoss_core::block::flags::REDSTONE_CONDUCTOR))
                     };
                     let blocked = match opened.station {
                         minecraft_terrain::containers::Station::Chest | minecraft_terrain::containers::Station::Ender => opened.cells.iter().any(|&pos| conductor(pos)),
                         minecraft_terrain::containers::Station::Shulker => {
-                            let facing = minecraft_terrain::scene::Scene::block(&world.scene, opened.cells[0]).and_then(|b| b.properties.get("facing").cloned()).unwrap_or_else(|| "up".to_owned());
-                            minecraft_terrain::containers::lid_obstructed(opened.cells[0], &facing, |at| minecraftoss_player::World::collision_boxes(&world.scene, at))
+                            let facing = minecraft_terrain::scene::Scene::block(&terrain.scene, opened.cells[0]).and_then(|b| b.properties.get("facing").cloned()).unwrap_or_else(|| "up".to_owned());
+                            minecraft_terrain::containers::lid_obstructed(opened.cells[0], &facing, |at| minecraftoss_player::World::collision_boxes(&terrain.scene, at))
                         }
                         _ => false,
                     };
@@ -1125,8 +1119,8 @@ fn update(
                 HandUse::Consumed
             } else if let Some(pos) = used {
                 hand.swing = Some(0.0);
-                if let Some(block) = minecraftoss_player::World::block(&world.scene, pos)
-                    && minecraft_terrain::doors::note_plays(&block, minecraftoss_player::World::block(&world.scene, (pos.0, pos.1 + 1, pos.2)).as_ref())
+                if let Some(block) = minecraftoss_player::World::block(&terrain.scene, pos)
+                    && minecraft_terrain::doors::note_plays(&block, minecraftoss_player::World::block(&terrain.scene, (pos.0, pos.1 + 1, pos.2)).as_ref())
                     && let Some(sound) = minecraft_terrain::doors::toggle_sound(&block)
                     && let Some(sounds) = sounds.as_mut()
                 {
@@ -1136,13 +1130,13 @@ fn update(
                 }
                 HandUse::Consumed
             } else if let Some(stack) = held.as_ref()
-                && let Some(outcome) = minecraft_terrain::bottle::bottle_use(&player, &world.scene, stack)
+                && let Some(outcome) = minecraft_terrain::bottle::bottle_use(&player, &terrain.scene, stack)
             {
                 use minecraft_terrain::bottle::{self, BottleUse};
                 hand.swing = Some(0.0);
                 let (result, heard) = match outcome {
                     BottleUse::Block { pos, block, result, sounds: events } => {
-                        write_blocks(world, shapes, shape_ids, entities, vec![(pos, block.and_then(|b| scene_block(&b)))]);
+                        write_blocks(terrain, &world.registries, shapes, shape_ids, entities, vec![(pos, block.and_then(|b| scene_block(&b)))]);
                         let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
                         (Some(result), events.into_iter().map(|event| (event, Some(centre))).collect())
                     }
@@ -1168,8 +1162,8 @@ fn update(
                 && !entities.awaits_item_use()
                 && game_mode.may_build()
                 && let Some(outcome) = {
-                    let catalog = minecraft_terrain::bucket::Catalog { states: &world.stream.states, water_evaporates: world.environment.water_evaporates() };
-                    let outlined = minecraft_terrain::doors::Outlined(&world.scene);
+                    let catalog = minecraft_terrain::bucket::Catalog { states: &terrain.stream.states, water_evaporates: terrain.environment.water_evaporates() };
+                    let outlined = minecraft_terrain::doors::Outlined(&terrain.scene);
                     minecraft_terrain::bucket::bucket_use(&player, &outlined, &catalog, stack, || entities.random_float())
                         .or_else(|| minecraft_terrain::flint::flint_use(&player, &outlined, &catalog, stack, || entities.random_float()))
                         .or_else(|| minecraft_terrain::flint::fire_charge_use(&player, &outlined, &catalog, stack, || entities.random_float()))
@@ -1183,7 +1177,7 @@ fn update(
                 let sent = minecraft_survival::entities::SentItemUse { slot, held: stack.id.clone(), eye: eye_block, yaw: mc_yaw, pitch: ps.viewangles[0], outcome };
                 match change {
                     minecraft_terrain::bucket::Change::Set(pos, block) => {
-                        write_blocks(world, shapes, shape_ids, entities, vec![(pos, scene_block(&block))]);
+                        write_blocks(terrain, &world.registries, shapes, shape_ids, entities, vec![(pos, scene_block(&block))]);
                         finish_item_use(entities, sounds.as_mut(), &world.packs, origin, sent, game_mode.consumes_items());
                     }
                     minecraft_terrain::bucket::Change::Server(pos, action) => entities.item_on_block(pos, action, sent),
@@ -1191,7 +1185,7 @@ fn update(
                 HandUse::Consumed
             } else if let Some(stack) = held.as_ref()
                 && game_mode.may_build()
-                && let Some(egg) = minecraft_terrain::spawn_egg::egg_use(&player, &minecraft_terrain::doors::Outlined(&world.scene), &stack.id)
+                && let Some(egg) = minecraft_terrain::spawn_egg::egg_use(&player, &minecraft_terrain::doors::Outlined(&terrain.scene), &stack.id)
             {
                 if let minecraft_terrain::spawn_egg::EggUse::Spawn { kind, position } = egg {
                     entities.hatch_egg(slot, kind, position, game_mode.consumes_items());
@@ -1226,9 +1220,9 @@ fn update(
                     HandUse::Passed
                 }
             } else if let Some((pos, writes)) = held.as_ref().filter(|_| game_mode.may_build()).and_then(|stack| {
-                let outlined = minecraft_terrain::doors::Outlined(&world.scene);
+                let outlined = minecraft_terrain::doors::Outlined(&terrain.scene);
                 let mut staged = minecraft_terrain::placing::Staged::new(&outlined);
-                let soil = minecraft_terrain::berries::Ground { states: &world.stream.states };
+                let soil = minecraft_terrain::berries::Ground { states: &terrain.stream.states };
                 let pos = minecraft_terrain::berries::plant(&player, &mut staged, &stack.id, &soil, || entities.random_float())?;
                 Some((pos, staged.into_writes()))
             }) {
@@ -1240,10 +1234,10 @@ fn update(
                     }
                 }
                 let writes = writes.into_iter().map(|(at, block)| (at, block.and_then(|b| scene_block(&b)))).collect();
-                write_blocks(world, shapes, shape_ids, entities, writes);
+                write_blocks(terrain, &world.registries, shapes, shape_ids, entities, writes);
                 hand.swing = Some(0.0);
-                if let Some(block) = minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned()
-                    && let (Some(sounds), Some(kind)) = (sounds.as_mut(), world.scene.sound_type(&block))
+                if let Some(block) = minecraft_terrain::scene::Scene::block(&terrain.scene, pos).cloned()
+                    && let (Some(sounds), Some(kind)) = (sounds.as_mut(), terrain.scene.sound_type(&block))
                 {
                     let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
                     sounds.play(&world.packs, &kind.place, Some(Vec3::from_array(sim::voxel::to_map(origin, centre))), (kind.volume + 1.0) / 2.0, kind.pitch * 0.8);
@@ -1258,12 +1252,12 @@ fn update(
                 hand.blocking = Some(minecraft_survival::offhand::Blocking::start(slot));
                 HandUse::Consumed
             } else if placeable {
-                let outlined = minecraft_terrain::doors::Outlined(&world.scene);
+                let outlined = minecraft_terrain::doors::Outlined(&terrain.scene);
                 let mut staged = minecraft_terrain::placing::Staged::new(&outlined);
                 let opening = held.as_ref().filter(|stack| minecraft_terrain::doors::Opening::of(&stack.id).is_some());
                 let sturdy = |below: (i32, i32, i32)| {
-                    minecraft_terrain::scene::Scene::block(&world.scene, below)
-                        .and_then(|b| world.stream.states.state_of(b))
+                    minecraft_terrain::scene::Scene::block(&terrain.scene, below)
+                        .and_then(|b| terrain.stream.states.state_of(b))
                         .is_some_and(|state| {
                             world.registries.blocks.is_face_sturdy(state, minecraftoss_core::pos::Direction::Up, minecraftoss_core::SupportType::Full)
                         })
@@ -1288,7 +1282,7 @@ fn update(
                         &|block: Option<&minecraftoss_player::Block>| {
                             block.is_none_or(|b| {
                                 scene_block(b)
-                                    .and_then(|b| world.stream.states.state_of(&b))
+                                    .and_then(|b| terrain.stream.states.state_of(&b))
                                     .is_some_and(|state| world.registries.blocks.is(state, minecraftoss_core::block::flags::REPLACEABLE))
                             })
                         },
@@ -1308,33 +1302,33 @@ fn update(
                     let boxes = block
                         .as_ref()
                         .filter(|b| b.id.key() != minecraft_terrain::scaffolding::SCAFFOLDING)
-                        .and_then(|b| world.stream.states.state_of(b))
+                        .and_then(|b| terrain.stream.states.state_of(b))
                         .map_or_else(Vec::new, |state| world.registries.blocks.collision_boxes(state));
                     minecraft_terrain::placing::obstructed(*pos, &boxes, &bodies)
                 });
                 let survives = placed.is_none_or(|pos| {
                     writes.iter().find(|(at, _)| *at == pos).and_then(|(_, block)| block.as_ref()).is_none_or(|block| {
-                        let view = minecraft_terrain::placing::SurviveView::new(&world.scene, light.as_ref());
-                        minecraft_terrain::placing::may_place(&world.stream.world_gen().library, &view, pos, block)
+                        let view = minecraft_terrain::placing::SurviveView::new(&terrain.scene, light.as_ref());
+                        minecraft_terrain::placing::may_place(&terrain.stream.world_gen().library, &view, pos, block)
                     })
                 });
                 if let Some(pos) = placed.filter(|_| !blocked && survives) {
                     let now = time.elapsed_secs_f64();
                     hand.recent.retain(|(_, _, at)| now - at < RECENT_PLACE_SECONDS);
                     let written: Vec<_> = writes.iter().map(|(p, _)| *p).collect();
-                    write_blocks(world, shapes, shape_ids, entities, writes);
+                    write_blocks(terrain, &world.registries, shapes, shape_ids, entities, writes);
                     if let Some(stack) = held.as_ref().filter(|stack| minecraft_terrain::containers::is_shulker_box(&stack.id))
-                        && minecraft_terrain::scene::Scene::block(&world.scene, pos).and_then(minecraft_terrain::containers::Station::of) == Some(minecraft_terrain::containers::Station::Shulker)
+                        && minecraft_terrain::scene::Scene::block(&terrain.scene, pos).and_then(minecraft_terrain::containers::Station::of) == Some(minecraft_terrain::containers::Station::Shulker)
                     {
                         containers.place_shulker(pos, stack, &entities.inventory.recipes);
                     }
                     if !game_mode.consumes_items() {
                         entities.inventory.slots[slot].clone_from(&held);
                     }
-                    hand.recent.extend(written.into_iter().filter_map(|p| minecraftoss_player::World::block(&world.scene, p).map(|b| (p, b, now))));
+                    hand.recent.extend(written.into_iter().filter_map(|p| minecraftoss_player::World::block(&terrain.scene, p).map(|b| (p, b, now))));
                     hand.swing = Some(0.0);
-                    if let Some(block) = minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned()
-                        && let (Some(sounds), Some(kind)) = (sounds.as_mut(), world.scene.sound_type(&block))
+                    if let Some(block) = minecraft_terrain::scene::Scene::block(&terrain.scene, pos).cloned()
+                        && let (Some(sounds), Some(kind)) = (sounds.as_mut(), terrain.scene.sound_type(&block))
                     {
                         let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
                         let at = Vec3::from_array(sim::voxel::to_map(origin, centre));
@@ -1344,7 +1338,7 @@ fn update(
                 } else {
                     entities.inventory.slots[slot] = held;
                     hand.place_delay = 0;
-                    if player.target(&minecraft_terrain::doors::Outlined(&world.scene), 5.0).is_some() { HandUse::Failed } else { HandUse::Passed }
+                    if player.target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0).is_some() { HandUse::Failed } else { HandUse::Passed }
                 }
             } else {
                 HandUse::Passed
@@ -1393,8 +1387,8 @@ fn update(
             match *event {
                 sim::voxel::VoxelEvent::Shot { block, .. } => {
                     let pos = (block[0], block[1], block[2]);
-                    if let Some(kind) = minecraft_terrain::scene::Scene::block(&world.scene, pos)
-                        .and_then(|b| world.scene.sound_type(b))
+                    if let Some(kind) = minecraft_terrain::scene::Scene::block(&terrain.scene, pos)
+                        .and_then(|b| terrain.scene.sound_type(b))
                     {
                         let centre = [block[0] as f64 + 0.5, block[1] as f64 + 0.5, block[2] as f64 + 0.5];
                         sounds.play(&world.packs, &kind.hit, Some(at(centre)), (kind.volume + 1.0) / 4.0, kind.pitch * 0.5);
@@ -1409,8 +1403,8 @@ fn update(
         }
     }
     let mut refs = crate::minecraft_mining::WorldRefs {
-        stream: &mut world.stream,
-        scene: &mut world.scene,
+        stream: &mut terrain.stream,
+        scene: &mut terrain.scene,
         packs: &world.packs,
         atlas: &world.atlas,
         registries: &world.registries,
@@ -1422,7 +1416,7 @@ fn update(
             if blast.is_some() {
                 continue;
             }
-            if let Some(kind) = world.scene.sound_type(block) {
+            if let Some(kind) = terrain.scene.sound_type(block) {
                 let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
                 sounds.play(&world.packs, &kind.break_sound, Some(at(centre)), (kind.volume + 1.0) / 2.0, kind.pitch * 0.8);
             }
@@ -1474,13 +1468,13 @@ fn update(
         yaw_degrees: (-cull_forward.x).atan2(cull_forward.z).to_degrees(),
         pitch_degrees: (-cull_forward.y).asin().to_degrees(),
     };
-    let update = world
+    let update = terrain
         .stream
-        .frame(&world.scene, &camera, FADE_MILLIS, &world.atlas, &world.packs);
+        .frame(&terrain.scene, &camera, FADE_MILLIS, &world.atlas, &world.packs);
     view.uploads.extend(update.uploads);
     view.removed.extend(update.removed);
     view.visible = update.visible;
-    observe_spawn(world, spawn_gate, origin, cull_at, now_ms);
+    observe_spawn(terrain, spawn_gate, origin, cull_at, now_ms);
     let Some(light) = light.as_mut() else {
         return;
     };
@@ -1494,7 +1488,7 @@ fn update(
     // The minimap's picture, and its corners on the map.
     let minimap_shown = settings.as_deref().is_none_or(|s| s.minimap_shown(true));
     ui.minimap = minimap_shown
-        .then(|| minimap.update(time.delta_secs_f64(), feet, &world.scene, &world.packs, &world.atlas, &mut images))
+        .then(|| minimap.update(time.delta_secs_f64(), feet, &terrain.scene, &world.packs, &world.atlas, &mut images))
         .flatten()
         .map(|(image, [bx, bz])| {
             let corner = |x: i32, z: i32| {
@@ -1505,7 +1499,7 @@ fn update(
         });
     // The Overworld clock and the environment attributes of MinecraftOSS.
     let dt = time.delta_secs_f64();
-    let partial = mining.tick(&world.scene, dt);
+    let partial = mining.tick(&terrain.scene, dt);
     view.particles = mining.particle_mesh(&world.atlas, forward, partial, light);
 
     // The mobs: a server tick when due, the blocks it changed, its hits on
@@ -1521,7 +1515,7 @@ fn update(
             yaw: mc_yaw,
             pitch: ps.viewangles[0],
         };
-        let bright_outside = world.environment.sky_light_level() > 11.0;
+        let bright_outside = terrain.environment.sky_light_level() > 11.0;
         entities.difficulty = minecraft_commands::difficulty_id(world.difficulty);
         let ticks_before = entities.client_ticks();
         let (changes, hits) = entities.tick(dt, day.ticks as i64, bright_outside, &player);
@@ -1534,10 +1528,10 @@ fn update(
         *autosave_ticks += mob_ticks;
         if *autosave_ticks >= minecraft_survival::save::AUTOSAVE_TICKS {
             *autosave_ticks = 0;
-            autosave(world, day.ticks, *player_mode);
+            autosave(world, terrain, day.ticks, *player_mode);
         }
         for _ in 0..mob_ticks {
-            for sound in entities.animate_tick(&world.scene, feet) {
+            for sound in entities.animate_tick(&terrain.scene, feet) {
                 if let Some(sounds) = sounds.as_mut() {
                     sounds.play(&world.packs, sound.event, Some(at(sound.at)), sound.volume, sound.pitch);
                 }
@@ -1547,21 +1541,21 @@ fn update(
             let registries = &world.registries;
             let mut positions = Vec::with_capacity(changes.len());
             for (pos, block) in changes {
-                let state = block.as_ref().and_then(|b| world.stream.states.state_of(b));
+                let state = block.as_ref().and_then(|b| terrain.stream.states.state_of(b));
                 let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, registries, state));
                 sim::voxel::set_block_shape(pos.0, pos.1, pos.2, shape);
-                let before = minecraftoss_player::World::block(&world.scene, pos);
-                let shulker_before = minecraft_terrain::scene::Scene::block(&world.scene, pos)
+                let before = minecraftoss_player::World::block(&terrain.scene, pos);
+                let shulker_before = minecraft_terrain::scene::Scene::block(&terrain.scene, pos)
                     .filter(|b| minecraft_terrain::containers::Station::of(b) == Some(minecraft_terrain::containers::Station::Shulker))
                     .map(|b| b.id.key());
-                world.scene.set(pos, block);
+                terrain.scene.set(pos, block);
                 if let Some(id) = shulker_before
-                    && minecraft_terrain::scene::Scene::block(&world.scene, pos).and_then(minecraft_terrain::containers::Station::of) != Some(minecraft_terrain::containers::Station::Shulker)
+                    && minecraft_terrain::scene::Scene::block(&terrain.scene, pos).and_then(minecraft_terrain::containers::Station::of) != Some(minecraft_terrain::containers::Station::Shulker)
                     && let Some(components) = containers.take_shulker(pos)
                 {
                     entities.keep_dropped_contents(pos, &id, &components);
                 }
-                if let (Some(before), Some(after)) = (before, minecraftoss_player::World::block(&world.scene, pos))
+                if let (Some(before), Some(after)) = (before, minecraftoss_player::World::block(&terrain.scene, pos))
                     && let Some(sound) = minecraft_terrain::doors::release_sound(&before, &after).or_else(|| {
                         let toggled = minecraft_terrain::doors::powered_toggle(&before, &after);
                         let now = time.elapsed_secs_f64();
@@ -1580,16 +1574,16 @@ fn update(
                 positions.push(pos);
             }
             for &pos in &positions {
-                if !minecraft_terrain::scene::Scene::block(&world.scene, pos).is_some_and(|b| minecraft_terrain::containers::Station::of(b).is_some() || minecraft_terrain::campfire::is_campfire(b)) {
+                if !minecraft_terrain::scene::Scene::block(&terrain.scene, pos).is_some_and(|b| minecraft_terrain::containers::Station::of(b).is_some() || minecraft_terrain::campfire::is_campfire(b)) {
                     spill(containers, entities, pos);
                 }
             }
-            world.stream.record_edits(&world.scene, &positions);
-            world.stream.mark_edited(&world.scene, &positions);
+            terrain.stream.record_edits(&terrain.scene, &positions);
+            terrain.stream.mark_edited(&terrain.scene, &positions);
         }
         for (pos, block) in std::mem::take(&mut entities.destroyed) {
-            mining.burst(&world.packs, &world.scene, &world.atlas, pos, &block);
-            if let (Some(sounds), Some(kind)) = (sounds.as_mut(), world.scene.sound_type(&block)) {
+            mining.burst(&world.packs, &terrain.scene, &world.atlas, pos, &block);
+            if let (Some(sounds), Some(kind)) = (sounds.as_mut(), terrain.scene.sound_type(&block)) {
                 let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
                 sounds.play(&world.packs, &kind.break_sound, Some(at(centre)), (kind.volume + 1.0) / 2.0, kind.pitch * 0.8);
             }
@@ -1691,21 +1685,21 @@ fn update(
         }
         if inventory_ui.table().is_some_and(|pos| {
             !minecraft_terrain::crafting::within_table_reach(eye, pos)
-                || !minecraft_terrain::scene::Scene::block(&world.scene, pos).is_some_and(minecraft_terrain::crafting::is_crafting_table)
+                || !minecraft_terrain::scene::Scene::block(&terrain.scene, pos).is_some_and(minecraft_terrain::crafting::is_crafting_table)
         }) {
             ui.inventory_open = false;
         }
         if inventory_ui.block().is_some_and(|opened| {
             opened.cells.iter().any(|&pos| {
                 !minecraft_terrain::crafting::within_table_reach(eye, pos)
-                    || minecraft_terrain::scene::Scene::block(&world.scene, pos).and_then(minecraft_terrain::containers::Station::of) != Some(opened.station)
+                    || minecraft_terrain::scene::Scene::block(&terrain.scene, pos).and_then(minecraft_terrain::containers::Station::of) != Some(opened.station)
             })
         }) {
             ui.inventory_open = false;
         }
         if inventory_ui.bench().is_some_and(|(pos, kind)| {
             !minecraft_terrain::crafting::within_table_reach(eye, pos)
-                || minecraft_terrain::scene::Scene::block(&world.scene, pos).and_then(minecraft_terrain::stations::Workshop::of) != Some(kind)
+                || minecraft_terrain::scene::Scene::block(&terrain.scene, pos).and_then(minecraft_terrain::stations::Workshop::of) != Some(kind)
         }) {
             ui.inventory_open = false;
         }
@@ -1726,7 +1720,7 @@ fn update(
             let storage = matches!(opened.station, minecraft_terrain::containers::Station::Chest | minecraft_terrain::containers::Station::Barrel);
             for &pos in opened.cells.iter().filter(|_| storage) {
                 if containers.is_new(pos)
-                    && let Some(chunk) = world.scene.generated_chunk((pos.0.div_euclid(16), pos.2.div_euclid(16)))
+                    && let Some(chunk) = terrain.scene.generated_chunk((pos.0.div_euclid(16), pos.2.div_euclid(16)))
                     && let Some(entity) = chunk.block_entities.entities.get(&pos).or_else(|| chunk.block_entities.pending.get(&pos))
                     && let Some((items, seed)) = minecraft_terrain::containers::structure_loot(&world.registries, entity, pos, world.seed, &entities.inventory.recipes)
                 {
@@ -1742,13 +1736,13 @@ fn update(
         }
         if let Some((pos, kind)) = open_bench.take() {
             if kind == minecraft_terrain::stations::Workshop::Enchanting {
-                let block_at = |at: (i32, i32, i32)| minecraft_terrain::scene::Scene::block(&world.scene, at);
+                let block_at = |at: (i32, i32, i32)| minecraft_terrain::scene::Scene::block(&terrain.scene, at);
                 inventory_ui.shelves = minecraft_terrain::stations::bookshelves(
                     pos,
                     |at| block_at(at).is_some_and(|b| b.id.key() == "minecraft:bookshelf"),
                     |at| {
                         block_at(at).is_none_or(|b| {
-                            world.stream.states.state_of(b).is_some_and(|state| world.registries.blocks.is(state, minecraftoss_core::block::flags::REPLACEABLE))
+                            terrain.stream.states.state_of(b).is_some_and(|state| world.registries.blocks.is(state, minecraftoss_core::block::flags::REPLACEABLE))
                         })
                     },
                 );
@@ -1764,7 +1758,7 @@ fn update(
             }
         }
         if let Some(pos) = inventory_ui.anvil_used.take() {
-            let block = minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned();
+            let block = minecraft_terrain::scene::Scene::block(&terrain.scene, pos).cloned();
             let worn = entities.random_float() < 0.12;
             let next = block.as_ref().filter(|_| worn).map(|b| match b.id.key().as_str() {
                 "minecraft:anvil" => Some("minecraft:chipped_anvil"),
@@ -1778,7 +1772,7 @@ fn update(
                     worn.properties = block.as_ref().map_or_else(Default::default, |b| b.properties.clone());
                     worn
                 });
-                write_blocks(world, shapes, shape_ids, entities, vec![(pos, state)]);
+                write_blocks(terrain, &world.registries, shapes, shape_ids, entities, vec![(pos, state)]);
             }
             let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
             let pitch = entities.random_float() * 0.1 + 0.9;
@@ -1791,7 +1785,7 @@ fn update(
             let Some(opened) = opened else { continue };
             let sound = match opened.station {
                 minecraft_terrain::containers::Station::Chest => {
-                    let path = minecraft_terrain::scene::Scene::block(&world.scene, opened.cells[0]).map_or_else(|| "chest".to_owned(), |b| b.id.path.clone());
+                    let path = minecraft_terrain::scene::Scene::block(&terrain.scene, opened.cells[0]).map_or_else(|| "chest".to_owned(), |b| b.id.path.clone());
                     Some(minecraft_terrain::containers::chest_sound(&path, open))
                 }
                 minecraft_terrain::containers::Station::Ender => Some(if open { "minecraft:block.ender_chest.open" } else { "minecraft:block.ender_chest.close" }),
@@ -1806,11 +1800,11 @@ fn update(
                 sounds.play(&world.packs, event, Some(at(centre)), 0.5, pitch);
             }
             if opened.station == minecraft_terrain::containers::Station::Barrel
-                && let Some(block) = minecraft_terrain::scene::Scene::block(&world.scene, opened.cells[0]).cloned()
+                && let Some(block) = minecraft_terrain::scene::Scene::block(&terrain.scene, opened.cells[0]).cloned()
                 && block.properties.contains_key("open")
             {
                 let state = block.with("open", if open { "true" } else { "false" });
-                write_blocks(world, shapes, shape_ids, entities, vec![(opened.cells[0], Some(state))]);
+                write_blocks(terrain, &world.registries, shapes, shape_ids, entities, vec![(opened.cells[0], Some(state))]);
             }
         }
         entities.experience_found += inventory_ui.take_experience() as f32;
@@ -1853,7 +1847,7 @@ fn update(
         }
         let placeable = |stack: &minecraftoss_player::inventory::ItemStack| {
             let id = if stack.id == "minecraft:redstone" { "minecraft:redstone_wire" } else { stack.id.as_str() };
-            minecraft_terrain::pack::ResourceId::parse(id).is_ok_and(|id| world.stream.states.state_of(&minecraft_terrain::scene::Block { id, properties: Default::default() }).is_some())
+            minecraft_terrain::pack::ResourceId::parse(id).is_ok_and(|id| terrain.stream.states.state_of(&minecraft_terrain::scene::Block { id, properties: Default::default() }).is_some())
         };
         let offhand_stack = entities.inventory.slots[minecraft_survival::offhand::OFFHAND].clone();
         let aims_at_campfire = || {
@@ -1862,7 +1856,7 @@ fn update(
             aim.pitch = f64::from(ps.viewangles[0]);
             aim.swimming = ps.view_height_current < CRAWLING_BELOW_VIEW_HEIGHT;
             ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) == 0
-                && aim.target(&minecraft_terrain::doors::Outlined(&world.scene), 5.0).is_some_and(|hit| minecraft_terrain::scene::Scene::block(&world.scene, hit.pos).is_some_and(minecraft_terrain::campfire::is_campfire))
+                && aim.target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0).is_some_and(|hit| minecraft_terrain::scene::Scene::block(&terrain.scene, hit.pos).is_some_and(minecraft_terrain::campfire::is_campfire))
         };
         ui.offhand_usable = alive
             && !holding
@@ -1914,26 +1908,26 @@ fn update(
         }
 
         sim::voxel::set_mob_boxes(entities.boxes());
-        entities.tick_scene(&world.scene, mob_ticks);
-        let sky_darken = (15.0 - world.environment.sky_light_level()).clamp(0.0, 15.0) as u8;
+        entities.tick_scene(&terrain.scene, mob_ticks);
+        let sky_darken = (15.0 - terrain.environment.sky_light_level()).clamp(0.0, 15.0) as u8;
         let campfire_items: Vec<_> = containers
             .campfires()
             .filter(|(pos, _)| minecraft_terrain::campfire::shown(*pos, glam::DVec3::from_array(eye)))
             .filter_map(|(pos, campfire)| {
-                let block = minecraft_terrain::scene::Scene::block(&world.scene, pos).filter(|b| minecraft_terrain::campfire::is_campfire(b))?;
+                let block = minecraft_terrain::scene::Scene::block(&terrain.scene, pos).filter(|b| minecraft_terrain::campfire::is_campfire(b))?;
                 Some(campfire.held_items(pos, block.properties.get("facing").map_or("south", String::as_str)))
             })
             .flatten()
             .collect();
         let meshes = entities.meshes(
-            &world.scene,
+            &terrain.scene,
             &world.packs,
             &world.atlas,
             light,
             forward,
             glam::DVec3::from_array(eye),
             sky_darken,
-            &|pos| world.stream.cell_settled(pos),
+            &|pos| terrain.stream.cell_settled(pos),
             &campfire_items,
         );
         let raw = |mesh: &minecraft_terrain::mesh::ChunkMesh| {
@@ -1952,7 +1946,7 @@ fn update(
         bytes.extend_from_slice(bytemuck::cast_slice(&vertices));
         indices.extend(mesh.indices.iter().map(|i| i + base));
     }
-    view.cracks = mining.crack_mesh(&world.scene, &world.stream.states, &world.packs);
+    view.cracks = mining.crack_mesh(&terrain.scene, &terrain.stream.states, &world.packs);
     if world.game_rules.bool("advance_time") && !day.paused {
         day.advance(dt);
     } else if let Some(save) = world.save.as_mut() {
@@ -1964,18 +1958,18 @@ fn update(
         f32::from(light.get_block(eye_block)),
     ];
     let weather = entities.as_ref().map_or_else(minecraft_terrain::server::WeatherView::default, |e| e.weather);
-    let rains_here = world
+    let rains_here = terrain
         .scene
         .noise_biome((eye_block.0 >> 2, eye_block.1 >> 2, eye_block.2 >> 2))
         .is_some_and(|biome| world.registries.biomes.get(biome).has_precipitation);
-    world
+    terrain
         .environment
         .update_rain_fog(weather.rain_level, light.get(eye_block), rains_here, (dt * 20.0) as f32);
     *environment_accumulator += dt;
     if !*environment_primed || *environment_accumulator >= TICK_SECONDS {
         *environment_accumulator = (*environment_accumulator % TICK_SECONDS).min(TICK_SECONDS);
-        let scene = &world.scene;
-        world.environment.tick(
+        let scene = &terrain.scene;
+        terrain.environment.tick(
             day.ticks.floor() as i64,
             weather.rain_level,
             weather.thunder_level,
@@ -1986,7 +1980,7 @@ fn update(
         *environment_primed = true;
     }
     let partial_tick = (*environment_accumulator / TICK_SECONDS).clamp(0.0, 1.0) as f32;
-    let sky = world.environment.sky_state(&View {
+    let sky = terrain.environment.sky_state(&View {
         partial_tick,
         forward,
         camera_y: eye[1] as f32,
@@ -2160,7 +2154,8 @@ fn apply_streamed(
 
 #[allow(clippy::too_many_arguments)]
 fn stream_around_spawn(
-    world: &mut Loaded,
+    world: &Loaded,
+    terrain: &mut minecraft_survival::level::Terrain,
     shapes: &mut HashMap<BlockStateId, u16>,
     shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
     entities: &mut Option<minecraft_survival::entities::Entities>,
@@ -2172,7 +2167,7 @@ fn stream_around_spawn(
 ) {
     let [x, y, z] = view.origin;
     let spawn_block = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
-    let streamed = world.stream.server_tick(spawn_block, &mut world.scene);
+    let streamed = terrain.stream.server_tick(spawn_block, &mut terrain.scene);
     apply_streamed(&world.registries, shapes, shape_ids, entities, streamed);
     let camera = CullCamera {
         position: glam::DVec3::new(x, y + crate::minecraft_spawn_gate::SPAWN_EYE_HEIGHT, z),
@@ -2182,7 +2177,7 @@ fn stream_around_spawn(
         yaw_degrees: 0.0,
         pitch_degrees: 0.0,
     };
-    let update = world.stream.frame(&world.scene, &camera, FADE_MILLIS, &world.atlas, &world.packs);
+    let update = terrain.stream.frame(&terrain.scene, &camera, FADE_MILLIS, &world.atlas, &world.packs);
     view.uploads.extend(update.uploads);
     view.removed.extend(update.removed);
     view.visible = update.visible;
@@ -2191,17 +2186,17 @@ fn stream_around_spawn(
             light.set_chunk_column(chunk, column);
         }
     }
-    observe_spawn(world, gate, view.origin, camera.position, now_ms);
+    observe_spawn(terrain, gate, view.origin, camera.position, now_ms);
 }
 
-fn observe_spawn(world: &Loaded, gate: &mut crate::minecraft_spawn_gate::SpawnGate, origin: [f64; 3], eye: glam::DVec3, now_ms: u64) {
+fn observe_spawn(terrain: &minecraft_survival::level::Terrain, gate: &mut crate::minecraft_spawn_gate::SpawnGate, origin: [f64; 3], eye: glam::DVec3, now_ms: u64) {
     if !gate.waiting() {
         return;
     }
     let spawn_chunk = ((origin[0].floor() as i32) >> 4, (origin[2].floor() as i32) >> 4);
     let chunks_ready = sim::voxel::chunks_ready_around(spawn_chunk.0, spawn_chunk.1, crate::minecraft_spawn_gate::SPAWN_CHUNK_RADIUS);
     let eye = eye.floor();
-    let section_visible = world.stream.section_compiled_and_visible((eye.x as i32, eye.y as i32, eye.z as i32), FADE_MILLIS);
+    let section_visible = terrain.stream.section_compiled_and_visible((eye.x as i32, eye.y as i32, eye.z as i32), FADE_MILLIS);
     gate.observe(now_ms, chunks_ready, section_visible);
 }
 
@@ -2255,7 +2250,8 @@ fn spill(containers: &mut minecraft_terrain::containers::Containers, entities: &
 }
 
 fn write_blocks(
-    world: &mut Loaded,
+    terrain: &mut minecraft_survival::level::Terrain,
+    registries: &Registries,
     shapes: &mut HashMap<BlockStateId, u16>,
     shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
     entities: &mut minecraft_survival::entities::Entities,
@@ -2263,16 +2259,16 @@ fn write_blocks(
 ) {
     let positions: Vec<_> = writes.iter().map(|(p, _)| *p).collect();
     for (at, block) in writes {
-        let state = block.as_ref().and_then(|b| world.stream.states.state_of(b));
-        let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, &world.registries, state));
+        let state = block.as_ref().and_then(|b| terrain.stream.states.state_of(b));
+        let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, registries, state));
         sim::voxel::set_block_shape(at.0, at.1, at.2, shape);
-        world.scene.set(at, block);
+        terrain.scene.set(at, block);
     }
-    world.stream.record_edits(&world.scene, &positions);
-    world.stream.mark_edited(&world.scene, &positions);
+    terrain.stream.record_edits(&terrain.scene, &positions);
+    terrain.stream.mark_edited(&terrain.scene, &positions);
     for &at in &positions {
-        if minecraft_terrain::scene::Scene::block(&world.scene, at).is_some() {
-            entities.placed(&world.scene, at);
+        if minecraft_terrain::scene::Scene::block(&terrain.scene, at).is_some() {
+            entities.placed(&terrain.scene, at);
         } else {
             entities.broke(&[at]);
         }
@@ -2433,17 +2429,17 @@ fn mc_vitals(vitals: minecraft_survival::survival::Vitals) -> frame::McVitals {
     }
 }
 
-fn autosave(world: &mut Loaded, day_ticks: f64, mode: minecraft_terrain::game_mode::PlayerMode) {
+fn autosave(world: &mut Loaded, terrain: &mut minecraft_survival::level::Terrain, day_ticks: f64, mode: minecraft_terrain::game_mode::PlayerMode) {
     let Some(save) = world.save.clone() else {
         return;
     };
     let started = std::time::Instant::now();
-    let chunks = world.stream.queue_save();
+    let chunks = terrain.stream.queue_save();
     if let Some(previous) = world.level_writer.take() {
         let _ = previous.join();
     }
     let path = save.path().display().to_string();
-    let spawn = world.stream.world_spawn;
+    let spawn = terrain.stream.world_spawn;
     let rules = world.game_rules.clone();
     let difficulty = world.difficulty;
     world.level_writer = std::thread::Builder::new()
@@ -2472,15 +2468,15 @@ fn save_before_exit(mut exit: MessageReader<AppExit>, mut runtime: NonSendMut<Ru
 }
 
 fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
-    let entities = runtime.entities.take();
+    let server = runtime.server.take();
     let world = runtime.world.take();
     let loading = runtime.loading.take();
     let loader = runtime.loader.take();
     let day_ticks = runtime.day.ticks;
     let player_mode = runtime.player_mode;
     let open = world.is_some() || loading.is_some();
-    if entities.is_some() || open || loader.is_some() {
-        let close = move || save_and_close(entities, world, loading, loader, day_ticks, player_mode);
+    if server.is_some() || open || loader.is_some() {
+        let close = move || save_and_close(server, world, loading, loader, day_ticks, player_mode);
         if blocking {
             close();
         } else {
@@ -2499,29 +2495,34 @@ fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
 }
 
 fn save_and_close(
-    entities: Option<minecraft_survival::entities::Entities>,
+    mut server: Option<minecraft_survival::server::Server>,
     world: Option<Loaded>,
-    loading: Option<mpsc::Receiver<Result<Loaded, String>>>,
+    loading: Option<mpsc::Receiver<Result<(Loaded, minecraft_survival::level::Terrain), String>>>,
     loader: Option<std::thread::JoinHandle<()>>,
     day_ticks: f64,
     player_mode: minecraft_terrain::game_mode::PlayerMode,
 ) {
     let started = std::time::Instant::now();
-    drop(entities);
+    for level in server.iter_mut().flat_map(|server| server.levels.values_mut()) {
+        drop(level.entities.take());
+    }
     if let Some(loader) = loader {
         let _ = loader.join();
     }
     drop(loading);
-    let Some(mut world) = world else {
+    let (Some(mut world), Some(server)) = (world, server) else {
         return;
     };
     let save = world.save.take();
     if let Some(writer) = world.level_writer.take() {
         let _ = writer.join();
     }
-    let spawn = world.stream.world_spawn;
+    let Some(spawn) = server.levels.get(&Dimension::Overworld).map(|level| level.terrain.stream.world_spawn) else {
+        return;
+    };
     let rules = std::mem::take(&mut world.game_rules);
     let difficulty = world.difficulty;
+    drop(server);
     drop(world);
     let Some(save) = save else {
         return;

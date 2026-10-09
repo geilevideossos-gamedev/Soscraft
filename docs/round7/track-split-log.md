@@ -262,3 +262,36 @@ A9 is commit `ec1bb14`.
 - **Decisions:**
   - Serde writes a dimension as its vanilla resource key (`"minecraft:overworld"`, `"minecraft:the_nether"`, `"minecraft:the_end"`, the same strings as `dimension_type()`) through `#[serde(rename)]`, and `PlayerUuid` as a plain string (`#[serde(transparent)]`), the way vanilla writes dimension keys and UUIDs in its JSON. The plan only asked for the derives; nothing serialises either type yet, so this changes no behaviour.
   - `PlayerUuid` derives `Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord`, enough for the `BTreeMap<PlayerUuid, Player>` of B5.
+
+## B2. Minecraft terrain, mobs and containers belong to a per-dimension Level
+
+B1 is commit `4ac0b2e`.
+
+- **What changed:**
+  - New `minecraft_survival/src/level.rs` (no comments, rustfmt-clean): `Level { dimension, entities: Option<Entities>, containers, terrain }` and `Terrain { stream, scene, environment }`, in that field order so a level drops its mobs (and their server thread, which saves entities) before its chunks.
+  - New `minecraft_survival/src/server.rs` (same rules): `Server { levels: BTreeMap<Dimension, Level> }`. `globals` and `players` come in B3 and B5.
+  - `minecraft_survival/src/lib.rs` gains `pub mod level;` and `pub mod server;`.
+  - `render_anim/src/minecraft_world.rs`:
+    - `Loaded` loses `stream`, `scene` and `environment`; `load()` returns `(Loaded, Terrain)` and the loader channel carries that pair.
+    - `Runtime` loses `entities` and `containers` and gains `server: Option<Server>`.
+    - Load completion builds the containers as a local (`Containers::default()` plus `set_book`, as before), and stores `Server { levels: {Overworld: Level { dimension: Overworld, entities: Some(entities), containers, terrain }} }` right before `runtime.world`, in the same frame as before.
+    - `update()` binds the overworld level together with the world check, then `let Level { entities, containers, terrain, .. } = level;`, so the `entities` and `containers` bindings keep their types and their uses don't change. `world.scene`, `world.stream` and `world.environment` became `terrain.scene`, `terrain.stream` and `terrain.environment` (119 token replacements, three of them split over two lines).
+    - Helpers: `stream_around_spawn(world: &Loaded, terrain, ...)`, `observe_spawn(terrain, ...)`, `write_blocks(terrain, registries, ...)` (its 7 callers pass `&world.registries`) and `autosave(world, terrain, ...)`.
+    - `close_world` takes `runtime.server` instead of `runtime.entities`. `save_and_close` keeps the old order: it takes and drops every level's `entities`, joins the loader and drops `loading`, joins the level writer, reads the overworld's `world_spawn`, drops the server (chunks are saved) and the client assets, then writes `level.dat` and the player file.
+- **Tests added:** none (`Level`, `Terrain` and `Server` are plain data). `minecraft_survival` 119, `render_anim` 34, total unchanged (153).
+- **Checks:** `check -p launcher --locked` (no new warning), `test -p minecraft_survival --locked`, `test -p render_anim --locked`; the staged `level.rs`, `server.rs` and `lib.rs` pass `rustfmt --check --edition 2024` with empty output.
+- **Owner test** (this is the plan's checkpoint after B2, focused on saving and reloading; the whole game must play as before):
+  1. Load a Minecraft match with `IW4L_MINECRAFT_WORLD=split`. The kit is in the backpack, the terrain streams in around you and the spawn screen lifts as before.
+  2. Place cobblestone and planks, then a chest, and put a few items in it. Smelt raw iron with coal in a placed furnace.
+  3. Spawn a cow and a zombie from the eggs, and drop an item on the ground.
+  4. Type `/time set 13000` and `/gamemode creative`.
+  5. Leave the match. The log says "Minecraft world saved in N ms".
+  6. Load the match again: same seed and terrain, your placed blocks, the cow and zombie (saved mobs), the dropped item, the evening time and creative mode are back. The chest and furnace start empty, as before this change: containers, the inventory and weather are not saved yet (docs/MINECRAFT-SURVIVAL.md), and the kit is given again.
+  7. Stay 5 minutes: the log says "Minecraft autosave: N chunks queued". Quit the game from the menu, start it again and load the match: your edits are there.
+  8. Walk far enough that chunks unload and come back: mobs in them come back too.
+- **Kit:** `minecraft:cobblestone` x64, `minecraft:oak_planks` x64, `minecraft:chest` x2, `minecraft:furnace` x1, `minecraft:raw_iron` x16, `minecraft:coal` x16, `minecraft:cow_spawn_egg` x2, `minecraft:zombie_spawn_egg` x2 (all in the regression kit).
+- **Not done here:** the plan's checkpoint release build (the orchestrator builds it).
+- **Decisions:**
+  - The `Server` is stored at the end of the completion block, next to `runtime.world`, instead of where `runtime.entities` was stored: the completion still reads `terrain.stream.player_spawn` for its log line after `Entities::new`. Nothing reads the server in between.
+  - The overworld is bound in the same `let ... else` as the world, so the "no world" branch (hide the UI and return) covers both; the server and the world are always set and taken together.
+  - `save_and_close` returns early only if the server has no overworld level, which can't happen: every server built today has one.
