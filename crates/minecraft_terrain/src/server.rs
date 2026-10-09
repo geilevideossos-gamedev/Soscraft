@@ -72,6 +72,7 @@ pub struct ServerSim {
     next_trident: i32,
     players_struck: Vec<crate::thrown::PlayerStruck>,
     players_pushed: Vec<(u64, glam::DVec3)>,
+    thrown_hits: Vec<crate::thrown::ThrownHit>,
 }
 
 /// What a player's hit or use on a mob did, for the client to present.
@@ -253,6 +254,7 @@ impl ServerSim {
             next_trident: TRIDENT_IDS,
             players_struck: Vec::new(),
             players_pushed: Vec::new(),
+            thrown_hits: Vec::new(),
         }
     }
 
@@ -900,6 +902,10 @@ impl ServerSim {
         }
     }
 
+    pub fn take_thrown_hits(&mut self) -> Vec<crate::thrown::ThrownHit> {
+        std::mem::take(&mut self.thrown_hits)
+    }
+
     pub fn take_pearl_teleports(&mut self) -> Vec<(u64, [f64; 3])> {
         std::mem::take(&mut self.pearl_landings)
     }
@@ -943,7 +949,7 @@ impl ServerSim {
         let mut lingering = Vec::new();
         let mut bursts = Vec::new();
         {
-            let Self { level, states, mob_tables, thrown, pearl_landings, potion_breaks, .. } = self;
+            let Self { level, states, mob_tables, thrown, pearl_landings, potion_breaks, thrown_hits, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
             for t in thrown.iter_mut() {
                 let mut targets = mob_targets.clone();
@@ -952,6 +958,9 @@ impl ServerSim {
                 let hurts = matches!(t.kind, Throwable::Snowball | Throwable::Egg | Throwable::EnderPearl);
                 if let Some(mob) = landed.mob.filter(|&id| hurts && crate::thrown::struck_player(id).is_none()) {
                     struck.push((mob, landed.velocity, t.owner, t.random().next_long()));
+                }
+                if hurts {
+                    thrown_hits.push(crate::thrown::ThrownHit { item: t.item.clone(), kind: t.kind, at: landed.at });
                 }
                 match t.kind {
                     Throwable::Egg => {
@@ -1500,6 +1509,7 @@ pub struct Output {
     pub bone_meal_used: Vec<BlockPos>,
     pub item_uses: Vec<bool>,
     pub pearl_teleports: Vec<(u64, [f64; 3])>,
+    pub thrown_hits: Vec<crate::thrown::ThrownHit>,
     pub weather: Option<WeatherView>,
     /// How many commands the server has handled so far.
     pub handled: u64,
@@ -1829,6 +1839,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.tick_thrown(&bodies);
                     sim.tick_tridents(&bodies);
                     out.pearl_teleports.extend(sim.take_pearl_teleports());
+                    out.thrown_hits.extend(sim.take_thrown_hits());
                     sim.spawn_trade_experience();
                     out.merchant.extend(sim.check_merchant(&input.mob_players));
                     out.player_hits.extend(sim.mobs.take_player_hits());
@@ -3855,6 +3866,24 @@ mod tests {
         assert_eq!(landings[0].0, 0);
         assert!(landings[0].1[1] >= 200.0 && landings[0].1[1] < 202.0, "{landings:?}");
         assert!(server.thrown_view().is_empty());
+    }
+
+    #[test]
+    fn snowballs_eggs_and_pearls_report_where_they_hit() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.throw(thrown_down("minecraft:snowball", 1));
+        server.throw(thrown_down("minecraft:brown_egg", 2));
+        server.throw(thrown_down("minecraft:ender_pearl", 3));
+        server.throw(thrown_down("minecraft:experience_bottle", 4));
+        let mut hits = Vec::new();
+        for _ in 0..20 {
+            server.tick_thrown(&[player_at(0, [40.0, 250.0, 40.0], true)]);
+            hits.extend(server.take_thrown_hits());
+        }
+        let mut items: Vec<(&str, crate::thrown::Throwable)> = hits.iter().map(|h| (h.item.as_str(), h.kind)).collect();
+        items.sort_by_key(|(item, _)| *item);
+        assert_eq!(items, vec![("minecraft:brown_egg", crate::thrown::Throwable::Egg), ("minecraft:ender_pearl", crate::thrown::Throwable::EnderPearl), ("minecraft:snowball", crate::thrown::Throwable::Snowball)]);
+        assert!(hits.iter().all(|h| h.at.y >= 199.9 && h.at.y < 202.0 && (h.at.x - 8.5).abs() < 0.5), "{hits:?}");
     }
 
     #[test]

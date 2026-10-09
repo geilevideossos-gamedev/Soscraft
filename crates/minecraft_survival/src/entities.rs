@@ -87,6 +87,7 @@ pub struct Entities {
     falling: minecraft_terrain::falling_render::FallingBlocks,
     orb_pickups: Vec<minecraft_terrain::orb_render::OrbPickup>,
     pub pearl_landings: Vec<DVec3>,
+    pub item_crumbs: Vec<(String, DVec3, Vec<Vec3>)>,
     pub destroyed: Vec<((i32, i32, i32), Block)>,
     pub experience_found: f32,
     pub weather: minecraft_terrain::server::WeatherView,
@@ -198,6 +199,7 @@ impl Entities {
             falling: Default::default(),
             orb_pickups: Vec::new(),
             pearl_landings: Vec::new(),
+            item_crumbs: Vec::new(),
             destroyed: Vec::new(),
             experience_found: 0.0,
             weather: Default::default(),
@@ -632,11 +634,17 @@ impl Entities {
                 self.server_snapshot = Some(snapshot);
             }
             for (_, landing) in output.pearl_teleports.into_iter().filter(|&(player, _)| player == PLAYER) {
-                let at = DVec3::from_array(landing);
-                for _ in 0..16 {
-                    self.portal.emit_enderman(at, 0.6, 1.8);
+                self.pearl_landings.push(DVec3::from_array(landing));
+            }
+            for hit in output.thrown_hits {
+                if hit.kind == minecraft_terrain::thrown::Throwable::EnderPearl {
+                    for (start, motion) in minecraft_terrain::thrown::pearl_portal(hit.at, &mut self.random) {
+                        self.portal.emit(start, motion);
+                    }
+                } else {
+                    let velocities = minecraft_terrain::thrown::hit_crumbs(hit.kind, &mut self.random);
+                    self.item_crumbs.push((hit.item, hit.at, velocities));
                 }
-                self.pearl_landings.push(at);
             }
             if let Some(weather) = output.weather {
                 self.weather = weather;

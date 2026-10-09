@@ -617,7 +617,7 @@ IW4L_MINECRAFT_KIT=splash_potion@poison*2,splash_potion@harming,stick,pig_spawn_
 
 ### 2. A Minecraft ender pearl moves only the player who threw it
 
-Commit: (next entry)
+Commit: 243bc13
 
 - **Changed:** `entities.rs` reads `Output.pearl_teleports` and keeps only the local player's (`PLAYER`) landings; `server.rs` drops `Output.pearl_landings`, which carried every pearl's landing without its thrower (After the split item 2).
 - **Tests:** none new; `each_pearl_teleports_its_own_thrower_and_dies_with_it` covers the keyed list.
@@ -627,4 +627,21 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=ender_pearl*16
+```
+
+### 3. Minecraft snowballs and eggs break into crumbs and pearls into portal specks where they hit
+
+Commit: (next entry)
+
+- **Changed:** `thrown.rs`: `ThrownHit { item, kind, at }`; `hit_crumbs` is the client's entity event 3 (26.3 javap): a snowball breaks into 8 still `item/snowball` crumbs (`Snowball.handleEntityEvent`), an egg into 8 crumbs of its own item each pushed `(nextFloat - 0.5) * 0.08` on every axis (`ThrownEgg.handleEntityEvent`); `pearl_portal` is `ThrownEnderpearl.onHit`'s 32 `PORTAL` specks at the hit point, `nextDouble() * 2` up, moving `(gaussian, 0, gaussian)`. `server.rs`: every snowball, egg and pearl hit reaches `Output.thrown_hits` (`ServerSim::take_thrown_hits`), whoever threw it.
+- `block_particles.rs` `spawn_item_crumbs(at, velocities, texture)` (the `BreakingItemParticle` start the potion crumbs use). `entities.rs` turns each hit into portal specks or `item_crumbs`, which the adapter spawns with the item's particle texture through the new `Mining::item_crumbs`. The pearl's old 16 enderman-style specks at the landing are gone.
+- **Tests:** thrown: `snowballs_and_eggs_break_into_eight_crumbs_and_pearls_into_portal_specks`. block_particles: `item_crumbs_start_where_the_item_broke_with_their_own_push`. server: `snowballs_eggs_and_pearls_report_where_they_hit`.
+- **Test steps:**
+  1. Throw a snowball at a wall 4 blocks away: a little puff of white snowball crumbs drops where it hit. Screenshot.
+  2. Throw an egg (and a brown and a blue one) at the ground: egg crumbs scatter a little. Screenshot.
+  3. Throw an ender pearl: purple portal specks rise around the spot where it lands, and you are moved there. Screenshot.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=snowball*16,egg*16,brown_egg*16,blue_egg*16,ender_pearl*16
 ```

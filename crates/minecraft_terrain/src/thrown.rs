@@ -166,6 +166,37 @@ pub fn throw_pitch(random: f32) -> f32 {
     0.4 / (random * 0.4 + 0.8)
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ThrownHit {
+    pub item: String,
+    pub kind: Throwable,
+    pub at: DVec3,
+}
+
+pub fn hit_crumbs(kind: Throwable, random: &mut LegacyRandom) -> Vec<Vec3> {
+    match kind {
+        Throwable::Snowball => vec![Vec3::ZERO; 8],
+        Throwable::Egg => (0..8)
+            .map(|_| {
+                let mut speed = || (random.next_float() - 0.5) * 0.08;
+                let (x, y) = (speed(), speed());
+                Vec3::new(x, y, speed())
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+pub fn pearl_portal(at: DVec3, random: &mut LegacyRandom) -> Vec<(DVec3, DVec3)> {
+    (0..32)
+        .map(|_| {
+            let start = at + DVec3::Y * (random.next_double() * 2.0);
+            let x = random.next_gaussian();
+            (start, DVec3::new(x, 0.0, random.next_gaussian()))
+        })
+        .collect()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlayerBody {
     pub id: u64,
@@ -1162,6 +1193,27 @@ mod tests {
         }
         assert_eq!(floor.and_then(|f| f.face), Some(Face::Up));
         assert_eq!(face_normal(Face::West), DVec3::new(-1.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn snowballs_and_eggs_break_into_eight_crumbs_and_pearls_into_portal_specks() {
+        let mut random = LegacyRandom::new(5);
+        assert_eq!(hit_crumbs(Throwable::Snowball, &mut random), vec![Vec3::ZERO; 8]);
+        let egg = hit_crumbs(Throwable::Egg, &mut random);
+        assert_eq!(egg.len(), 8);
+        assert!(egg.iter().all(|v| v.abs().max_element() <= 0.04));
+        assert!(egg.iter().any(|v| v.length() > 0.0));
+        assert!(hit_crumbs(Throwable::EnderPearl, &mut random).is_empty());
+        assert!(hit_crumbs(Throwable::SplashPotion, &mut random).is_empty());
+        let at = DVec3::new(3.5, 64.0, -2.5);
+        let portal = pearl_portal(at, &mut random);
+        assert_eq!(portal.len(), 32);
+        for (start, motion) in &portal {
+            assert_eq!((start.x, start.z), (at.x, at.z));
+            assert!(start.y >= at.y && start.y < at.y + 2.0);
+            assert_eq!(motion.y, 0.0);
+        }
+        assert!(portal.iter().any(|(_, m)| m.x.abs() > 0.5));
     }
 
     #[test]

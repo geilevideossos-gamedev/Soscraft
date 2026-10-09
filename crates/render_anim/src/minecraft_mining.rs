@@ -159,6 +159,15 @@ impl Mining {
         }
     }
 
+    pub(crate) fn item_crumbs(&mut self, packs: &PackStack, at: glam::Vec3, velocities: &[glam::Vec3], texture: &ResourceId) {
+        if self.particles.is_none() {
+            self.particles = BlockParticles::new(packs).ok();
+        }
+        if let Some(particles) = self.particles.as_mut() {
+            particles.spawn_item_crumbs(at, velocities, texture);
+        }
+    }
+
     /// Steps the break particles at 20 ticks a second.
     pub(crate) fn tick(&mut self, scene: &HandcraftedScene, dt: f64) -> f32 {
         self.tick_clock += dt;

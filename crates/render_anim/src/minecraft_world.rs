@@ -1512,6 +1512,15 @@ fn update(
             terrain.stream.record_edits(&terrain.scene, &positions);
             terrain.stream.mark_edited(&terrain.scene, &positions);
         }
+        for (item, at, velocities) in std::mem::take(&mut entities.item_crumbs) {
+            if let Some(texture) = minecraft_terrain::pack::ResourceId::parse(&item)
+                .ok()
+                .and_then(|id| minecraft_terrain::model::item_particle_texture(&world.packs, &id).ok().flatten())
+                .filter(|texture| world.atlas.contains(texture))
+            {
+                mining.item_crumbs(&world.packs, at.as_vec3(), &velocities, &texture);
+            }
+        }
         for (pos, block) in std::mem::take(&mut entities.destroyed) {
             mining.burst(&world.packs, &terrain.scene, &world.atlas, pos, &block);
             if let (Some(sounds), Some(kind)) = (sounds.as_mut(), terrain.scene.sound_type(&block)) {
