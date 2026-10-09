@@ -810,11 +810,15 @@ impl Containers {
     pub fn take_block_entities(&mut self, kind_at: impl Fn(BlockPos) -> Option<&'static str>) -> Vec<(BlockPos, Option<Tag>)> {
         std::mem::take(&mut self.dirty)
             .into_iter()
-            .filter_map(|pos| {
-                let kind = kind_at(pos)?;
-                Some((pos, self.block_entity_tag(pos, kind)))
+            .filter_map(|pos| match kind_at(pos) {
+                Some(kind) => Some((pos, self.block_entity_tag(pos, kind))),
+                None => (!self.holds(pos)).then_some((pos, None)),
             })
             .collect()
+    }
+
+    fn holds(&self, pos: BlockPos) -> bool {
+        self.chests.contains_key(&pos) || self.ovens.contains_key(&pos) || self.brewers.contains_key(&pos) || self.campfires.contains_key(&pos)
     }
 
     pub fn fill(&mut self, pos: BlockPos, items: Vec<ItemStack>, seed: u64) {
@@ -2189,6 +2193,36 @@ mod tests {
         store.forget_chunk((0, 0));
         assert!(store.take_block_entities(kind).is_empty());
         assert!(store.is_new(barrel), "an unloaded chunk's containers are read again when it comes back");
+    }
+
+    #[test]
+    fn a_broken_container_clears_what_it_saved_so_one_placed_there_starts_empty() {
+        let (recipes, book) = kitchen();
+        let mut store = Containers::default();
+        store.set_book(book);
+        let mut inventory = Inventory::default().with_recipes(recipes);
+        let recipes = inventory.recipes.clone();
+        let chest = (0, 64, 0);
+        let opened = Opened::new(chest, &block("minecraft:chest", &[]), None).unwrap();
+        inventory.cursor = Some(recipes.stack("minecraft:dirt", 5));
+        store.click(&opened, &mut inventory, 0, false, false, 0.0);
+        assert_eq!(store.place_food(FIRE, &recipes.stack("minecraft:beef", 1), &recipes), Some(true));
+        let standing = |pos: BlockPos| match pos {
+            (0, 64, 0) => Some("minecraft:chest"),
+            FIRE => Some(CAMPFIRE),
+            _ => None,
+        };
+        let written: Vec<_> = store.take_block_entities(standing).into_iter().map(|(pos, tag)| (pos, tag.is_some())).collect();
+        assert_eq!(written, vec![(chest, true), (FIRE, true)]);
+        assert_eq!(store.remove(chest, &recipes).0.len(), 1);
+        assert_eq!(store.remove(FIRE, &recipes).0.len(), 1);
+        assert_eq!(
+            store.take_block_entities(|_| None),
+            vec![(chest, None), (FIRE, None)],
+            "the chunk map must not keep the items of a broken chest or campfire for a block placed there later"
+        );
+        assert!(store.is_new(chest));
+        assert!(store.take_block_entities(|_| None).is_empty());
     }
 
     #[test]

@@ -437,10 +437,29 @@ Defects found by the adversarial review of the whole track (base 6315039) and fi
 
 ### 15. The Minecraft player file code passes rustfmt
 
-Commit: (filled in by the next entry)
+Commit: 2501d43
 
 - **Defect:** `crates/minecraft_survival/src/player_nbt.rs` is a new file of this track, so its staged content must pass `rustfmt --check --edition 2024`. One assertion added by 2ea7273 in `the_portal_cooldown_and_seen_credits_are_an_int_and_a_byte_like_vanilla` was over the line width.
 - **Changed:** that assertion is wrapped the way rustfmt wraps it. No behaviour change.
 - **Tests:** none new; the `player_nbt` tests pass unchanged.
 - **Test steps:** none.
 - **Kit:** none.
+
+### 16. A broken Minecraft chest, furnace or campfire no longer comes back full
+
+Commit: (filled in by the next entry)
+
+- **Defect (item duplication):** `Containers::take_block_entities` skipped every changed position whose block is no container any more. So when a chest, barrel, furnace, smoker, blast furnace, brewing stand or campfire was broken, nothing told the chunk map, and the chunk map kept the last tag written for that position (block entity edits wait per chunk until it is saved or dropped, the latest per position wins). The chunk map then only removed it because the block had become air. Placing the same kind of block there again before the chunk was written (and without opening it) brought that tag back: the chest was saved full again, although its items had already dropped when it was broken. The same happened in play when the chunk was unloaded and loaded again, since the chunk map applies its edits then too.
+- **Changed:** `take_block_entities` writes `None` (no block entity) for a changed position whose block is no container of ours when the containers no longer hold anything there, which is a container that was removed. The chunk map then drops the old tag, and a block placed there later gets its empty default, as in vanilla (`LevelChunk.setBlockState` removes the old block entity). A position the containers still hold whose block is something else is still left alone, as before.
+- **Tests:** `containers`: `a_broken_container_clears_what_it_saved_so_one_placed_there_starts_empty` (a filled chest and a campfire with food are written, broken, and then written as `None`; it fails without the fix). The existing tests pass unchanged.
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=duptest` and the kit below. Start.
+  2. Place the chest and put the 64 dirt into it. Place the campfire, put the 4 beef on it at once.
+  3. Within 30 seconds (before the beef is cooked): break the chest with the pickaxe and pick up the dirt and the chest. Break the campfire (it drops charcoal, like vanilla) and pick up the beef.
+  4. Place the chest again on the same spot, and the second campfire where the first one stood. Do not open the chest. **Screenshot 1:** the inventory with the 64 dirt and 4 beef.
+  5. Quit through the menu and start again. Open the chest. Expected: it is empty and the campfire has no beef on it. Before this fix the chest held the 64 dirt again and the beef was back on the campfire. **Screenshot 2:** the open chest.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:chest,minecraft:campfire*2,minecraft:dirt*64,minecraft:beef*4,minecraft:diamond_pickaxe+efficiency=5
+```
