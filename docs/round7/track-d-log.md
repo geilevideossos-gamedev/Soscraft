@@ -380,9 +380,9 @@ Commit: bda50b5
 
 ## Group: compat
 
-### 14a. Minecraft player files keep the portal cooldown and seen credits like vanilla
+### Minecraft player files keep the portal cooldown and seen credits like vanilla
 
-Commit: (filled in by the next entry)
+Commit: 2ea7273
 
 - **Changed:**
   - `player_nbt.rs`: `PlayerData::portal_cooldown` and `seen_credits`, read and written as 26.3 does (checked with javap): `PortalCooldown` is an int that `Entity.saveWithoutId` always writes and `Entity.load` reads with `getIntOr(..., 0)`; `seenCredits` is a boolean (a byte) that `ServerPlayer.addAdditionalSaveData` always writes and `readAdditionalSaveData` reads with `getBooleanOr(..., false)`. Any number type is read, as vanilla's numeric tags are.
@@ -392,5 +392,41 @@ Commit: (filled in by the next entry)
   - Nothing counts the cooldown down or sets it yet: there are no portals. The dimension switch sets it on travel (`Entity.setPortalCooldown()` takes `getDimensionChangingDelay`: 10 ticks for a player, checked with javap, 300 for other entities) and counts it down every tick (`processPortalCooldown`); the End exit sets `seen_credits` in `ServerPlayer.showEndCredits`, so later exits skip the credits as in vanilla.
   - `PlayerData` keeps them as `Option`s, so a writer that does not know them (a mode-only write) leaves the file's values, while every `Player` write sets both, as vanilla always writes them.
   - `entered_nether_pos` (the Nether advancement's start point) is not read yet; the merge writer keeps it in the file untouched.
-- **Test steps:** none; nothing changes in game. Before this commit the merge writer already kept both keys of a file written by Minecraft; now the game holds them per player, ready for the dimension switch. The combined test of the next entry looks at them.
+- **Test steps:** none; nothing changes in game. Before this commit the merge writer already kept both keys of a file written by Minecraft; now the game holds them per player, ready for the dimension switch. The end-to-end test of the next entry checks them in a real player file.
 - **Kit:** none.
+
+### 14. Minecraft worlds saved by iw4l open in vanilla 26.3
+
+Commit: (filled in by the next entry)
+
+- **Changed:**
+  - New end-to-end test `crates/minecraft_survival/tests/vanilla_world.rs`, on the real 26.3 data under `MINECRAFTOSS_ROOT` (it does nothing when the data is missing, like the other real-data tests). It goes through the same calls as the game:
+    - `open_world` creates a world folder; `server::join` brings in a player (who gets the kit), whose inventory, armour, offhand, selected slot, health, hunger, XP, score, air, three effects (one infinite) with their absorption, place and view, forced respawn point, portal cooldown and seen credits are then set.
+    - The player moves cobblestone, an enchanted sword and bread into a chest, raw iron and coal into a furnace and emeralds into their ender chest through `Containers` (`quick_move_from_player`, `click`, `with_ender`); the furnace cooks for 250 ticks (one ingot done, the next one cooking).
+    - A real `ChunkMap` with the world's `ChunkStorage` generates chunk 0,0 of the seed, takes the chest and furnace blocks (`set_blocks`) and their block entities from `take_block_entities` (`set_block_entities`), and writes the region file when it closes. `WorldSave::write`, `write_weather` (thunder) and `write_player` write the rest, in the closing save's order.
+    - It then checks the files as vanilla would read them: the folder layout, every key of the player file and its tag type (exactly the set of keys written, the items with a `Slot` byte and an int `count`, the equipment names, abilities, effects, attributes, the `Pos`/`Motion` doubles and `Rotation` floats, `respawn`), `level.dat`'s `Data` keys, `weather.dat`, and the chest and furnace block entities (their keys and types, and the real block entity catalog's `load_and_save` gives each one back unchanged).
+    - Finally it opens the world again: seed, spawn, time, difficulty and weather come back; the player rejoins without a second kit with the same slots, components, ender chest, stats, effects, arrival place, respawn point, portal cooldown and seen credits; the chunk loads from the region file with the same blocks; the chest has the same cells, the furnace the same progress and `RecipesUsed`, and 400 more ticks of the reloaded furnace end exactly like 400 ticks of the one that never left.
+  - `minecraft_survival/Cargo.toml`: `minecraftoss-world` and `minecraftoss-generator` as dev-dependencies for the chunk map in that test (`Cargo.lock` lists them).
+  - `docs/MINECRAFT-SURVIVAL.md`: the Saving section now says what is saved, the file layout, and what is not saved and why. The persistence limitation and the `/time pause` remark in the commands limitation are updated, and the crate layout names `player_nbt.rs`.
+- **Tests:** `vanilla_world`: `a_saved_world_comes_back_whole_with_vanilla_keys_and_tag_types`. A wrong expected tag type (the furnace's `speed_multiplier` as a double) makes it fail, so it does run on the real data here.
+- **Decisions:**
+  - The test is an integration test (`tests/`), so it only uses what the game can call, and does not touch `server.rs` or `level.rs`, which tracks B and C also change. It cannot build a whole `Server`, because a `Level` needs a `TerrainStream` that searches for the world spawn and starts the mesh workers; it uses the chunk map and the same save functions instead.
+  - Vanilla writes more player keys than we do (`Invulnerable`, `HurtTime`, `DeathTime`, `recipeBook`, ...). Each one we leave out is read with its default by Minecraft, and a file Minecraft wrote keeps them through our merge, so the test checks that our keys are exactly the expected ones and have vanilla's types rather than that they are all of vanilla's keys.
+- **Test steps:** the combined in-game test of the whole track. Use a new world, so the kit is given once.
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=compat` and the kit below, and remove any `IW4L_MINECRAFT_WEATHER` and `IW4L_MINECRAFT_TIME` lines. Start. The log says `Minecraft kit: 27 stacks from IW4L_MINECRAFT_KIT`.
+  2. Type `/tp ~150 ~ ~150` and wait for the terrain.
+  3. The player: put on the four armour pieces and put the shield in the offhand. Move the sword to hotbar slot 4 and select it. Throw experience bottles until you are level 5 or more (keep at least 10). Build a 6-block pillar of cobblestone and jump off it. Sprint until the hunger bar drops by two or more. Eat a golden apple (yellow hearts).
+  4. The containers: place the two chests apart (not as a double chest). In the first, put the diamonds in a middle slot and the enchanted book in the last slot. Put the bread in the barrel and 32 cobblestone in the shulker box. Put the 10 experience bottles in the ender chest.
+  5. The stations: place the water bucket and fill the 3 bottles. Place the brewing stand and put in the 3 water bottles, the nether wart and the blaze powder. Place the furnace and put in the raw iron and the coal. Place the campfire and put the 4 beef on it.
+  6. Throw (Q) the enchanted pickaxe next to the first chest. Type `/weather thunder`, `/time set night` and `/time pause`.
+  7. After about 10 seconds, stand 3 blocks from the first chest, facing it. **Screenshot 1:** the open inventory. **Screenshot 2:** the HUD and the view (hearts with the yellow ones, hunger, level, the pickaxe on the ground, the night sky with rain). **Screenshot 3:** the furnace screen. **Screenshot 4:** the brewing stand screen. Then quit through the menu at once, within two minutes of eating the golden apple (or the yellow hearts run out).
+  8. Start again with the same `.env`. Expected: the log says `Minecraft kit skipped: the player file already holds an inventory` and `Minecraft weather: thunder from weather.dat`; you stand on the same spot facing the same way; it is night, it thunders, and the sun and moon do not move.
+  9. **Screenshots 5 to 8:** the same views as 1 to 4. The same armour, offhand, selected slot, slots, hearts (yellow ones too), hunger and level. The furnace goes on from the same arrow and output count, and the brewing stand finishes about 20 seconds after it started, not 20 seconds after the restart.
+  10. Check the rest: the first chest, the barrel, the shulker box and the ender chest hold the same stacks in the same slots; the pickaxe still lies there with its glint; the beef on the campfire is cooked about 30 seconds after it went on. Take the iron ingots out of the furnace with a shift-click: you get experience for each one, including those smelted before the restart. **Screenshot 9:** the open ender chest. **Screenshot 10:** the XP bar after taking the ingots.
+  11. Type `/time resume` and `/weather clear`.
+  12. Optional, the round trip: copy `iw4l-artifacts\saves\compat` into `.minecraft\saves` and open it in Minecraft 26.3. Expected: the same spot and view, inventory, armour, offhand, hearts, hunger, level and effects, the same chests, barrel, shulker box and ender chest, the furnace and brewing stand where our game left them, and the dropped pickaxe. **Screenshot 11.** Move one stack in the first chest, save and quit, copy the world folder back over `iw4l-artifacts\saves\compat` and start our game: the stack is where Minecraft left it. **Screenshot 12.**
+- **Kit** (27 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:shield,minecraft:diamond_sword+sharpness=5,minecraft:diamond_pickaxe+efficiency=5,minecraft:golden_apple*4,minecraft:experience_bottle*64,minecraft:chest*2,minecraft:barrel,minecraft:red_shulker_box,minecraft:ender_chest,minecraft:furnace,minecraft:brewing_stand,minecraft:campfire,minecraft:coal*16,minecraft:raw_iron*32,minecraft:beef*4,minecraft:blaze_powder*2,minecraft:nether_wart*4,minecraft:glass_bottle*3,minecraft:water_bucket,minecraft:cobblestone*64,minecraft:enchanted_book+mending,minecraft:diamond*8,minecraft:bread*16
+```
