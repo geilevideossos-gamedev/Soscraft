@@ -287,6 +287,7 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "zombie" | "zombie_villager" | "witch" | "husk" => (0.6, 1.95, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "skeleton" | "stray" | "bogged" | "parched" => (0.6, 1.99, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "zombified_piglin" => (0.6, 1.95, Placement::OnGround, MotionBlockingNoLeaves, true, false),
+        "wither_skeleton" => (0.7, 2.4, Placement::OnGround, MotionBlockingNoLeaves, true, false),
         // A husk's mount (its room is tried; it never spawns on its own).
         "camel_husk" => (1.7, 2.375, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "creeper" => (0.6, 1.7, Placement::OnGround, MotionBlockingNoLeaves, false, false),
@@ -300,7 +301,7 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         _ => return None,
     };
     let short = kind.trim_start_matches("minecraft:");
-    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin");
+    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin" | "wither_skeleton");
     let rules = match short {
         _ if animal_rules => Rules::Animal,
         "wolf" => Rules::SpawnableOn("minecraft:wolves_spawnable_on"),

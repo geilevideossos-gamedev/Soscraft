@@ -74,6 +74,7 @@ pub enum DamageCause {
     Drown,
     Starve,
     Magic,
+    Wither,
     Kill,
     OutOfWorld,
     Mob {
@@ -131,6 +132,7 @@ impl DamageCause {
             Self::Drown => "drown",
             Self::Starve => "starve",
             Self::Magic => "magic",
+            Self::Wither => "wither",
             Self::Kill => "genericKill",
             Self::OutOfWorld => "outOfWorld",
             Self::Mob {
@@ -145,6 +147,17 @@ impl DamageCause {
                 attack: MobAttack::Explosion,
                 ..
             } => "explosion.player",
+        }
+    }
+
+    pub fn melee_effect(self) -> Option<(minecraftoss_player::survival::EffectKind, u32)> {
+        match self {
+            Self::Mob {
+                type_id: "minecraft:wither_skeleton",
+                attack: MobAttack::Melee,
+                ..
+            } => Some((minecraftoss_player::survival::EffectKind::Wither, 200)),
+            _ => None,
         }
     }
 
@@ -541,6 +554,7 @@ mod tests {
                 "%1$s walked into the danger zone due to %2$s",
             ),
             ("death.attack.magic", "%1$s was killed by magic"),
+            ("death.attack.wither", "%1$s withered away"),
             ("death.attack.outOfWorld", "%1$s fell out of the world"),
             ("death.fell.accident.generic", "%1$s fell from a high place"),
             ("death.fell.accident.ladder", "%1$s fell off a ladder"),
@@ -584,6 +598,20 @@ mod tests {
     #[test]
     fn no_damage_dies_generically() {
         assert_eq!(line(&CombatTracker::default()), says("%1$s died", "died"));
+    }
+
+    #[test]
+    fn wither_withers_away_and_only_a_wither_skeleton_s_blow_brings_it() {
+        let mut tracker = CombatTracker::default();
+        tracker.record(1, DamageCause::Wither, 1.0, None, 0.0);
+        assert_eq!(line(&tracker), says("%1$s withered away", "withered away"));
+        let blow = DamageCause::mob(MobAttack::Melee, Some(4), Some("minecraft:wither_skeleton"));
+        assert_eq!(
+            blow.melee_effect(),
+            Some((minecraftoss_player::survival::EffectKind::Wither, 200))
+        );
+        assert_eq!(zombie_bite().melee_effect(), None);
+        assert_eq!(skeleton_arrow().melee_effect(), None);
     }
 
     #[test]

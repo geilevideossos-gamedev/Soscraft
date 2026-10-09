@@ -259,6 +259,7 @@ pub struct McVitals {
     pub experience_progress: f32,
     pub on_fire: bool,
     pub eye_in_lava: bool,
+    pub withered: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

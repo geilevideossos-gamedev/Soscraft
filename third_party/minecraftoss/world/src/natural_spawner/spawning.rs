@@ -839,7 +839,7 @@ impl CreatureSpawns {
             }
             // `AbstractSkeleton.finalizeSpawn`, which strays, bogged and
             // parched do not override.
-            "minecraft:skeleton" | "minecraft:stray" | "minecraft:bogged" | "minecraft:parched" => {
+            "minecraft:skeleton" | "minecraft:stray" | "minecraft:bogged" | "minecraft:parched" | "minecraft:wither_skeleton" => {
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
                 self.finalize_skeleton(level, context, &mut tag, difficulty);
             }
@@ -955,12 +955,18 @@ impl CreatureSpawns {
 
     /// `AbstractSkeleton.finalizeSpawn` after `Mob`'s part.
     fn finalize_skeleton(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, tag: &mut Tag, difficulty: DifficultyInstance) {
+        let wither = tag.get("id").and_then(Tag::as_str) == Some("minecraft:wither_skeleton");
         Self::populate_armor(level, tag, difficulty);
-        equip(tag, "mainhand", "minecraft:bow");
-        Self::roll_enchantments(level, tag, difficulty);
+        equip(tag, "mainhand", if wither { "minecraft:stone_sword" } else { "minecraft:bow" });
+        if !wither {
+            Self::roll_enchantments(level, tag, difficulty);
+        }
         let loot = level.random().next_f32() < 0.55 * difficulty.special_multiplier();
         set(tag, "CanPickUpLoot", byte(loot));
         Self::halloween_head(level, context, tag);
+        if wither {
+            set_attribute_base(tag, "minecraft:attack_damage", 4.0);
+        }
     }
 
     /// `Zombie.finalizeSpawn` after `Mob`'s part: the entity to add is the

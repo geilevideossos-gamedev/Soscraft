@@ -491,7 +491,7 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     textures.insert(ResourceId::parse("minecraft:entity/zombie/zombie")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/player/wide/steve")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/skeleton/skeleton")?, ());
-    for skin in ["stray", "stray_overlay", "bogged", "bogged_overlay", "parched"] {
+    for skin in ["stray", "stray_overlay", "bogged", "bogged_overlay", "parched", "wither_skeleton"] {
         textures.insert(ResourceId::parse(&format!("minecraft:entity/skeleton/{skin}"))?, ());
     }
     textures.insert(ResourceId::parse("minecraft:entity/creeper/creeper")?, ());

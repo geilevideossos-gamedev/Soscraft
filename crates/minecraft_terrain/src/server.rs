@@ -5600,6 +5600,35 @@ mod tests {
     }
 
     #[test]
+    fn wither_skeletons_carry_stone_swords_and_come_back_with_them() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(TerrainGenerator::nether(registries.clone(), 0).unwrap()), "minecraft:the_nether").unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, 0, 256).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:the_nether");
+        server.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        server.set_players(&[[0.5, 100.0, 0.5]], 2);
+        server.summon("minecraft:wither_skeleton", [0.5, 100.0, 0.5], None, 0.0).unwrap();
+        let skeleton = &server.mobs.skeletons()[0];
+        assert_eq!(skeleton.skeleton.kind, minecraftoss_entities::skeleton::SkeletonKind::WitherSkeleton);
+        assert_eq!((skeleton.skeleton.main_hand.as_deref(), skeleton.skeleton.holds_bow), (Some("minecraft:stone_sword"), false));
+        let id = skeleton.id;
+        let tags = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        let (_, tag) = tags.iter().find(|(tag_id, _)| *tag_id == id).unwrap();
+        let attack = tag.get("attributes").and_then(minecraftoss_core::nbt::Tag::as_list).and_then(|list| list.iter().find(|a| a.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) == Some("minecraft:attack_damage"))).and_then(|a| a.get("base")).and_then(minecraftoss_core::nbt::Tag::as_f64);
+        assert_eq!(attack, Some(4.0));
+        let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+        let back = crate::server_mobs::spawn_saved(&mut loaded, tag).expect("wither skeletons load");
+        let back = &loaded.skeleton_mut(back).unwrap().skeleton;
+        assert_eq!((back.kind, back.main_hand.as_deref(), back.body.height), (minecraftoss_entities::skeleton::SkeletonKind::WitherSkeleton, Some("minecraft:stone_sword"), 2.4));
+    }
+
+    #[test]
     fn nether_lava_spreads_farther_and_faster_and_the_nether_sea_is_at_32() {
         let Ok(paths) = DataPaths::discover() else { return };
         let Ok(registries) = Registries::load(&paths) else { return };

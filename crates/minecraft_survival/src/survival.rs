@@ -59,6 +59,7 @@ pub struct Vitals {
     pub food: u8,
     pub saturation: f32,
     pub poisoned: bool,
+    pub withered: bool,
     pub hunger: bool,
     pub regen_index: i32,
     pub blink: bool,
@@ -274,11 +275,19 @@ impl Survival {
         self.in_water = motion.in_water;
         self.combat.tick(self.tick);
         let before = self.status.health;
+        let withering = self.status.effect(EffectKind::Wither).is_some_and(|effect| {
+            effect.duration % (40_u32 >> effect.amplifier.min(31)).max(1) == 0
+        });
         self.status.tick_effects();
         if self.invulnerable {
             self.status.health = self.status.health.max(before);
         }
-        self.record(before, DamageCause::Magic, 0.0);
+        let cause = if withering {
+            DamageCause::Wither
+        } else {
+            DamageCause::Magic
+        };
+        self.record(before, cause, 0.0);
         if let Some(last) = self.last_feet {
             let d: [f64; 3] = std::array::from_fn(|k| motion.feet[k] - last[k]);
             let horizontal = d[0].hypot(d[2]);
@@ -603,6 +612,9 @@ impl Survival {
         if landed {
             self.combat.hurt_by(self.tick, cause);
             self.record(before, cause, 0.0);
+            if let Some((kind, ticks)) = cause.melee_effect() {
+                self.status.add_effect(kind, ticks, 0);
+            }
         }
         if landed && from.is_some() {
             self.source = from;
@@ -848,6 +860,7 @@ impl Survival {
             EffectKind::Nausea,
             EffectKind::Slowness,
             EffectKind::Weakness,
+            EffectKind::Wither,
         ] {
             self.status.remove_effect(kind);
         }
@@ -866,6 +879,7 @@ impl Survival {
             food: self.status.food.level,
             saturation: self.status.food.saturation,
             poisoned: self.status.effect(EffectKind::Poison).is_some(),
+            withered: self.status.effect(EffectKind::Wither).is_some(),
             hunger: self.status.effect(EffectKind::Hunger).is_some(),
             regen_index: if regen {
                 (self.tick % (max + 5.0).ceil() as u64) as i32
@@ -994,6 +1008,35 @@ mod tests {
         let mut survival = Survival::default();
         survival.observe(100, 100);
         survival
+    }
+
+    #[test]
+    fn a_wither_skeleton_s_blow_withers_and_wither_hurts_every_two_seconds_to_the_end() {
+        let mut survival = fresh();
+        let blow = DamageCause::mob(
+            crate::death::MobAttack::Melee,
+            Some(4),
+            Some("minecraft:wither_skeleton"),
+        );
+        assert!(survival.hurt(8.0, Armor::default(), None, blow));
+        assert_eq!(
+            survival.status.effect(EffectKind::Wither).map(|e| e.duration),
+            Some(200)
+        );
+        assert!(survival.vitals().withered);
+        let mut status = SurvivalStatus::default();
+        status.health = 3.0;
+        status.add_effect(EffectKind::Wither, 200, 0);
+        for _ in 0..120 {
+            status.tick_effects();
+        }
+        assert_eq!(status.health, 0.0, "unlike poison, wither kills");
+        let mut fast = SurvivalStatus::default();
+        fast.add_effect(EffectKind::Wither, 40, 1);
+        for _ in 0..40 {
+            fast.tick_effects();
+        }
+        assert_eq!(fast.health, 18.0, "every 20 ticks at level II");
     }
 
     #[test]

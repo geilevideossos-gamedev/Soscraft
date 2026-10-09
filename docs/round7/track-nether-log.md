@@ -379,3 +379,34 @@ Previous commit: 27534fff
 - **Tests:** `zombie`: `zombified_piglins_and_husks_never_burn_in_daylight`.
 - **Test steps:** none beyond entry 16 (a helmeted zombified piglin in the overworld sun keeps its helmet whole).
 - **Kit:** none.
+
+### 19. Minecraft wither skeletons and the wither effect (E2-22)
+
+Previous commit: 899359fa
+
+- **Changed** (checked with javap on the 26.3 jar: `WitherSkeleton`, `AbstractSkeleton`, `WitherMobEffect`, `Gui.HeartType`, `EntityTypes`, `LayerDefinitions`):
+  - Vendored `third_party/minecraftoss/entities` (MinecraftOSS patch):
+    - `skeleton.rs`: `SkeletonKind::WitherSkeleton`: 0.7 x 2.4 with eyes at 2.1, 20 health, sounds `entity.wither_skeleton.*`, no bow; `Skeleton.main_hand` (the held item other than a bow) and `melee_damage` (4 for a wither skeleton after `finalizeSpawn`, 2 for other skeletons, plus the sword's bonus: stone 4).
+    - `monster_ai.rs`: `MonsterKind::WitherSkeleton`: `AbstractSkeleton.registerGoals` with the melee goal `reassessWeaponGoal` picks without a bow (`MeleeAttackGoal(this, 1.2, false)`, which raises its arms while attacking), and as targets `WitherSkeleton.registerGoals`'s piglins (none live yet: the goal only rolls) before the skeleton's own. Lava costs 8 on its paths. `MeleeAttackGoal` takes the speed vanilla gives it (1.0 for the others, as before). Iron golems now also hunt zombified piglins, magma cubes and wither skeletons (`Enemy`).
+    - `world.rs`: a skeleton's melee hit lands on its target (a player as a `PlayerHit`, a mob through `mob_hits_mob`); a wither skeleton's hit gives a mob wither for 200 ticks (`WitherSkeleton.doHurtTarget`). A player's kill may drop the sword (8.5%, worn at random) and adds 1 to 3 experience for it.
+    - `effects.rs`: `MobEffect::Wither` (`minecraft:wither`, colour 7561558): 1 damage every 40 ticks, halved a level, which can kill. `add_mob_effect` turns it away from wither skeletons (`canBeAffected`).
+  - Vendored `third_party/minecraftoss/player/src/survival.rs` (MinecraftOSS patch): `EffectKind::Wither` for players, ticking the same way.
+  - Vendored `third_party/minecraftoss/world` (MinecraftOSS patch): natural spawning knows the type (fire immune, the monster rules, so the fortress's draws of entry 15 now spawn them live), and its `finalizeSpawn` is `AbstractSkeleton`'s with `WitherSkeleton.populateDefaultEquipmentSlots` (a stone sword), no equipment enchantments, and `ATTACK_DAMAGE` 4.
+  - `minecraft_survival`: a wither skeleton's melee blow that lands gives the player wither for 200 ticks (`DamageCause::melee_effect`); wither damage is `DamageCause::Wither` ("withered away"); `/effect` and saving know `minecraft:wither`; `Vitals.withered`.
+  - `hud/src/minecraft_vitals.rs` and `frame/src/minecraft_ui.rs` (one field): withered hearts (`hud/heart/withered_*`), which win over normal and absorbing hearts but not over poisoned ones (`Gui.HeartType.forPlayer`). `render_anim/src/minecraft_world.rs`: one field line in the vitals hand-over.
+  - `minecraft_terrain`: `minecraft:wither_skeleton` is simulated, loaded and saved with its sword; `skeleton_render.rs` draws it on the skeleton model with `wither_skeleton.png`, scaled 1.2 (`LayerDefinitions`' `MeshTransformer.scaling(1.2)`), its armour scaled alike, and the held sword (any skeleton's held weapon is drawn now).
+- **Tests:** `world` (entities): `a_wither_skeleton_strikes_with_its_stone_sword_and_wither_hurts_mobs_but_not_it` (it closes in on a player and hits for 8, is immune to wither, and wither takes 2 health off a zombie in 41 ticks). `survival`: `a_wither_skeleton_s_blow_withers_and_wither_hurts_every_two_seconds_to_the_end` (200 ticks of wither, black hearts, wither kills from 3 health, every 20 ticks at level II). `death`: `wither_withers_away_and_only_a_wither_skeleton_s_blow_brings_it`. `minecraft_vitals`: `wither_turns_the_hearts_black_unless_poison_turns_them_green`. `server`: `wither_skeletons_carry_stone_swords_and_come_back_with_them` (attack damage 4 saved).
+- **Decisions:**
+  - A wither skeleton that picks up a bow keeps the bow goals of a plain skeleton (no flaming arrows); none spawns with one.
+  - The player's other mob-hit effects (a husk's hunger, tipped arrows) are still not applied on the player side; only the wither blow is, through the damage cause, so the effect needs no new field in the hit.
+  - `poof_particles::tests::a_puff_rises_and_fades_within_its_lifetime` failed once in the full `minecraft_terrain` run and passed twice on its own: it draws from an unseeded random (older than this track).
+- **Test steps** (survival, `/difficulty normal`):
+  1. Use 4 wither skeleton spawn eggs: tall black skeletons with stone swords appear and run at you with raised arms. **Screenshot 16.**
+  2. Let one hit you: your hearts turn black and you lose half a heart every two seconds for 10 seconds. **Screenshot 17** (black hearts).
+  3. Kill them with the sword: coal and bones drop, a wither skeleton skull rarely (2.5%), sometimes the stone sword.
+  4. In the Nether, find a fortress (`/locate structure minecraft:fortress`, then `/tp`): wither skeletons, zombified piglins and magma cubes spawn on its bridges in the dark. **Screenshot 18.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:wither_skeleton_spawn_egg*4,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:golden_apple*4,minecraft:cooked_beef*16,minecraft:diamond_chestplate
+```

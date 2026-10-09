@@ -600,6 +600,7 @@ pub struct MobDeath {
 /// `Items.BOW`'s durability.
 const BOW_DURABILITY: u32 = 384;
 const GOLDEN_SWORD_DURABILITY: u32 = 32;
+const STONE_SWORD_DURABILITY: u32 = 131;
 
 /// A reported death: its order and what its drops see.
 fn death_of(id: u64, damage: &mut DamageState, kind: &'static str, table: Option<&'static str>, context: EntityLootContext) -> Option<(u64, MobDeath)> {
@@ -926,6 +927,7 @@ impl crate::skeleton::SkeletonKind {
             SkeletonKind::Stray => "entity.stray.step",
             SkeletonKind::Bogged => "entity.bogged.step",
             SkeletonKind::Parched => "entity.parched.step",
+            SkeletonKind::WitherSkeleton => "entity.wither_skeleton.step",
         }))
     }
 }
@@ -2457,7 +2459,9 @@ impl EntityWorld {
     /// (`AbstractSkeleton.registerGoals`, the bow goal from
     /// `reassessWeaponGoal`), facing `yaw`.
     pub fn spawn_skeleton_active(&mut self, skeleton: Skeleton, yaw: f32) -> u64 {
-        let mut ai = MonsterAi::of_kind(crate::monster_ai::MonsterKind::Skeleton, &skeleton.body, yaw);
+        let melee = skeleton.kind == crate::skeleton::SkeletonKind::WitherSkeleton && !skeleton.holds_bow;
+        let kind = if melee { crate::monster_ai::MonsterKind::WitherSkeleton } else { crate::monster_ai::MonsterKind::Skeleton };
+        let mut ai = MonsterAi::of_kind(kind, &skeleton.body, yaw);
         ai.state.eye_height = skeleton.eye_height();
         // `AbstractSkeleton.reassessWeaponGoal`: the kind's interval, its
         // hard one on hard.
@@ -3679,11 +3683,23 @@ impl EntityWorld {
                 death.equipment.push(bow);
                 e.skeleton.holds_bow = false;
             }
+            if mob_drops && death.context.killed_by_player && e.skeleton.main_hand.is_some() && e.random.next_float() < 0.085 {
+                let item = e.skeleton.main_hand.take().unwrap_or_default();
+                let mut stack = ItemStack::new(&item, 1);
+                stack.max = 1;
+                if item == "minecraft:stone_sword" {
+                    let spread = e.random.next_int(STONE_SWORD_DURABILITY - 3);
+                    let wear = STONE_SWORD_DURABILITY - e.random.next_int(1 + spread);
+                    stack.components = Some(serde_json::json!({ "minecraft:damage": wear }));
+                }
+                death.equipment.push(stack);
+            }
             // `Mob.getBaseExperienceReward`: 5, and 1 to 3 more for a bow
             // still held that is not preserved.
             if earns(&death, true) {
                 let bow = if e.skeleton.holds_bow && chance <= 1.0 { 1 + e.random.next_int(3) as i32 } else { 0 };
-                death.experience = 5 + bow;
+                let sword = if e.skeleton.main_hand.is_some() { 1 + e.random.next_int(3) as i32 } else { 0 };
+                death.experience = 5 + bow + sword;
             }
             deaths.push((order, death));
         }
@@ -4909,6 +4925,7 @@ impl EntityWorld {
                     let monsters_burn = self.monsters_burn;
                     let (difficulty, bright_outside) = (self.difficulty, self.bright_outside);
                     let mobs = self.mob_candidates();
+                    let mut melee = None;
                     let (fired, stepped) = {
                         let entity = &mut self.skeletons[index];
                         if let Some(ai) = entity.ai.as_deref_mut() {
@@ -4956,8 +4973,11 @@ impl EntityWorld {
                             (None, true)
                         } else {
                             entity.skeleton.body.trim_small_velocity();
+                            let at = entity.skeleton.body.position;
                             let fired = if entity.skeleton.health > 0.0 && !entity.no_ai && entity.ai.is_some() {
-                                entity.tick_monster_ai(world, players, game_time, difficulty, bright_outside, arrow_shoot_seed, arrow_damage_seed, &mut self.projectile_seed_random)
+                                let fired = entity.tick_monster_ai(world, players, game_time, difficulty, bright_outside, arrow_shoot_seed, arrow_damage_seed, &mut self.projectile_seed_random);
+                                melee = entity.ai.as_deref_mut().and_then(|ai| ai.state.attack.take()).map(|target| (target, at, entity.skeleton.melee_damage()));
+                                fired
                             } else if entity.skeleton.health > 0.0 && !entity.no_ai {
                                 entity.tick_bow(
                                     world,
@@ -4985,6 +5005,19 @@ impl EntityWorld {
                             let eye = entity.skeleton.eye_height();
                             let burns = monsters_burn && entity.skeleton.kind.burns_in_daylight();
                             burn_undead(world, &mut entity.random, &mut entity.skeleton.body, eye, burns, entity.skeleton.head_item);
+                        }
+                    }
+                    if let Some((target, attacker, damage)) = melee {
+                        let wither = self.skeletons[index].skeleton.kind == crate::skeleton::SkeletonKind::WitherSkeleton;
+                        match target {
+                            crate::monster_ai::Target::Player(player_id) => {
+                                self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0 }, source: Some(id) });
+                            }
+                            crate::monster_ai::Target::Mob(victim) | crate::monster_ai::Target::Villager(victim) => {
+                                if self.mob_hits_mob(id, victim, damage, attacker, 0.0).is_some_and(|hit| hit.applied) && wither {
+                                    self.add_mob_effect(victim, crate::effects::EffectInstance::new(MobEffect::Wither, 200, 0));
+                                }
+                            }
                         }
                     }
                     if let Some(arrow) = fired {
@@ -6991,6 +7024,35 @@ mod tests {
         }
         assert!(world.slimes().len() >= 2);
         assert!(world.slimes().iter().all(|e| e.slime.magma && e.slime.size == 1), "the halves are magma cubes too");
+    }
+
+    #[test]
+    fn a_wither_skeleton_strikes_with_its_stone_sword_and_wither_hurts_mobs_but_not_it() {
+        let mut skeleton = Skeleton::of_kind(crate::skeleton::SkeletonKind::WitherSkeleton, DVec3::new(0.5, 1.0, 0.5));
+        skeleton.main_hand = Some("minecraft:stone_sword".to_owned());
+        assert_eq!((skeleton.body.width, skeleton.body.height, skeleton.eye_height(), skeleton.melee_damage(), skeleton.holds_bow), (0.7, 2.4, 2.1, 8.0, false));
+        let mut world = EntityWorld::default();
+        let id = world.spawn_skeleton_active(skeleton, 0.0);
+        assert_eq!(world.entity_type(id), Some("minecraft:wither_skeleton"));
+        assert!(world.skeletons()[0].ai.as_ref().unwrap().state.kind == crate::monster_ai::MonsterKind::WitherSkeleton);
+        let player = candidate(7, DVec3::new(0.5, 1.0, 2.5));
+        let mut hits = Vec::new();
+        for _ in 0..80 {
+            world.tick_with_players(&mut Floor, &[player]);
+            hits.extend(world.take_player_hits());
+        }
+        assert!(!hits.is_empty(), "it closes in and strikes");
+        assert_eq!((hits[0].damage, hits[0].source), (8.0, Some(id)));
+        assert!(matches!(hits[0].kind, PlayerHitKind::Melee { .. }));
+        let wither = || crate::effects::EffectInstance::new(MobEffect::Wither, 200, 0);
+        assert!(!world.add_mob_effect(id, wither()), "wither skeletons shrug off wither");
+        let zombie = world.spawn_zombie(Zombie::new(DVec3::new(30.5, 1.0, 0.5)), true);
+        assert!(world.add_mob_effect(zombie, wither()));
+        for _ in 0..41 {
+            world.tick(&mut Floor);
+        }
+        let health = world.zombies().iter().find(|e| e.id == zombie).unwrap().zombie.health;
+        assert_eq!(health, 18.0, "wither hurts a mob every 40 ticks");
     }
 
     #[test]

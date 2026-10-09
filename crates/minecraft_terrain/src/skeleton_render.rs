@@ -162,21 +162,25 @@ pub fn append_skeletons<'a>(
             4 => part(limbs[3]),
             _ => Quat::IDENTITY,
         };
+        let scale = if kind == SkeletonKind::WitherSkeleton { 1.2 } else { 1.0 };
         let mut draw = |parts: &[Part], id: &ResourceId, size: [f32; 2]| {
             let region = atlas.entity_region(id);
             for (from, to, uv, pivot, mirror, uv_size, pose) in parts {
-                cube_tinted_pose_mirror(mesh, feet, rotation, 1.0, region, sky, block, *from, *to, *uv, *pivot, pose_of(*pose, pivot[0]), [1.0; 3], size, *uv_size, *mirror);
+                cube_tinted_pose_mirror(mesh, feet, rotation, scale, region, sky, block, *from, *to, *uv, *pivot, pose_of(*pose, pivot[0]), [1.0; 3], size, *uv_size, *mirror);
             }
         };
         // `SkeletonModel.translateToHand`: the arm a pixel further out.
-        if holding_bow {
+        let item = if holding_bow { Some("minecraft:bow".to_owned()) } else { entity.skeleton.main_hand.clone() };
+        if let Some(item) = item {
             let pivot = if kind == SkeletonKind::Parched { -5.5 } else { -5.0 } + 1.0;
-            let hand = crate::cow_render::right_hand_pose(feet, rotation, Vec3::new(pivot, 2.0, 0.0), part(limbs[0]), false);
-            held.push(crate::mesh::HeldItem { pose: hand, light: mob.light_probe.as_vec3(), id: "minecraft:bow".to_owned(), display: crate::mesh::HeldDisplay::RightHand, first_tint: None });
+            let arm = crate::cow_render::right_hand_pose(glam::DVec3::ZERO, Quat::IDENTITY, Vec3::new(pivot, 2.0, 0.0), part(limbs[0]), false);
+            let hand = glam::Mat4::from_translation(feet.as_vec3()) * glam::Mat4::from_quat(rotation) * glam::Mat4::from_scale(Vec3::splat(scale)) * arm;
+            held.push(crate::mesh::HeldItem { pose: hand, light: mob.light_probe.as_vec3(), id: item, display: crate::mesh::HeldDisplay::RightHand, first_tint: None });
         }
         match kind {
             SkeletonKind::Parched => draw(&PARCHED, &texture("parched"), [64., 64.]),
             SkeletonKind::Skeleton => draw(&SKELETON, &texture("skeleton"), [64., 32.]),
+            SkeletonKind::WitherSkeleton => draw(&SKELETON, &texture("wither_skeleton"), [64., 32.]),
             SkeletonKind::Stray => {
                 draw(&SKELETON, &texture("stray"), [64., 32.]);
                 draw(&clothing(0.25), &texture("stray_overlay"), [64., 32.]);
@@ -197,7 +201,7 @@ pub fn append_skeletons<'a>(
                 arms: [(Vec3::new(-arm_x, 2.0, 0.0), part(limbs[0])), (Vec3::new(arm_x, 2.0, 0.0), part(limbs[1]))],
                 legs: [(Vec3::new(-1.9, 12.0, 0.0), part(limbs[2])), (Vec3::new(1.9, 12.0, 0.0), part(limbs[3]))],
             };
-            crate::armor_render::append_humanoid_armor(mesh, atlas, feet, rotation, 1.0, &armor_parts, &entity.skeleton.armor, sky, block);
+            crate::armor_render::append_humanoid_armor(mesh, atlas, feet, rotation, scale, &armor_parts, &entity.skeleton.armor, sky, block);
             marks.push((mesh.vertices.len(), mob.overlay(0.0)));
         }
         // `BoggedModel.setupAnim`: the mushrooms show until sheared.

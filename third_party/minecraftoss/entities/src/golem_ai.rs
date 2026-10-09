@@ -62,7 +62,7 @@ pub struct GolemState {
 
 pub fn golem_goals() -> GoalSelector<MonsterGoalContext> {
     let mut selector = GoalSelector::default();
-    selector.add(1, MeleeAttackGoal { hits: true, raises_arms: false, follow_unseen: true, gives_up_in_light: false });
+    selector.add(1, MeleeAttackGoal { hits: true, raises_arms: false, follow_unseen: true, gives_up_in_light: false, speed: 1.0 });
     selector.add(2, MoveTowardsTargetGoal { target: None, wanted: DVec3::ZERO });
     selector.add(2, MoveBackToVillageGoal { wanted: DVec3::ZERO });
     selector.add(4, VillageStrollGoal { wanted: DVec3::ZERO });

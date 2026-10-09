@@ -60,7 +60,15 @@ fn noise(tick: u64, index: usize) -> u64 {
     x ^ (x >> 33)
 }
 
-fn heart_sprite(poisoned: bool, absorbing: bool, blinking: bool, half: bool) -> &'static str {
+fn heart_sprite(poisoned: bool, withered: bool, absorbing: bool, blinking: bool, half: bool) -> &'static str {
+    if withered && !poisoned {
+        return match (blinking, half) {
+            (false, false) => "gui:hud/heart/withered_full",
+            (false, true) => "gui:hud/heart/withered_half",
+            (true, false) => "gui:hud/heart/withered_full_blinking",
+            (true, true) => "gui:hud/heart/withered_half_blinking",
+        };
+    }
     match (absorbing, poisoned, blinking, half) {
         (true, _, false, false) => "gui:hud/heart/absorbing_full",
         (true, _, false, true) => "gui:hud/heart/absorbing_half",
@@ -110,19 +118,20 @@ pub(crate) fn hearts(v: &frame::McVitals) -> Vec<Heart> {
         if l >= containers {
             let r = q - containers * 2;
             if r < absorption {
-                layers.push(heart_sprite(false, true, false, r + 1 == absorption));
+                layers.push(heart_sprite(v.poisoned, v.withered, true, false, r + 1 == absorption));
             }
         }
         if v.blink && q < v.display_health {
             layers.push(heart_sprite(
                 v.poisoned,
+                v.withered,
                 false,
                 true,
                 q + 1 == v.display_health,
             ));
         }
         if q < health {
-            layers.push(heart_sprite(v.poisoned, false, false, q + 1 == health));
+            layers.push(heart_sprite(v.poisoned, v.withered, false, false, q + 1 == health));
         }
         out.push(Heart {
             column: (l % 10) as usize,
@@ -195,6 +204,17 @@ mod tests {
 
     fn fill(heart: &Heart) -> Option<&'static str> {
         heart.layers.get(1).copied()
+    }
+
+    #[test]
+    fn wither_turns_the_hearts_black_unless_poison_turns_them_green() {
+        let mut v = vitals(7.0, 20);
+        v.withered = true;
+        let black = hearts(&v);
+        assert!(black.iter().any(|h| fill(h) == Some("gui:hud/heart/withered_full")));
+        assert!(black.iter().any(|h| fill(h) == Some("gui:hud/heart/withered_half")));
+        v.poisoned = true;
+        assert!(hearts(&v).iter().all(|h| fill(h).is_none_or(|f| f.starts_with("gui:hud/heart/poisoned"))));
     }
 
     #[test]

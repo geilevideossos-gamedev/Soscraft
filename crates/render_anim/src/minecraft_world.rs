@@ -2592,6 +2592,7 @@ fn mc_vitals(vitals: minecraft_survival::survival::Vitals) -> frame::McVitals {
         experience_progress: vitals.experience_progress,
         on_fire: vitals.on_fire,
         eye_in_lava: vitals.eye_in_lava,
+        withered: vitals.withered,
     }
 }
 

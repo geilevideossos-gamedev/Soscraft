@@ -15,6 +15,7 @@ pub enum SkeletonKind {
     Bogged,
     /// `Parched`: its arrows weaken.
     Parched,
+    WitherSkeleton,
 }
 
 impl SkeletonKind {
@@ -25,6 +26,7 @@ impl SkeletonKind {
             Self::Stray => "minecraft:stray",
             Self::Bogged => "minecraft:bogged",
             Self::Parched => "minecraft:parched",
+            Self::WitherSkeleton => "minecraft:wither_skeleton",
         }
     }
 
@@ -35,6 +37,7 @@ impl SkeletonKind {
             Self::Stray => "stray",
             Self::Bogged => "bogged",
             Self::Parched => "parched",
+            Self::WitherSkeleton => "wither_skeleton",
         }
     }
 
@@ -47,7 +50,7 @@ impl SkeletonKind {
     pub fn max_health(self) -> f32 {
         match self {
             Self::Bogged | Self::Parched => 16.0,
-            Self::Skeleton | Self::Stray => 20.0,
+            Self::Skeleton | Self::Stray | Self::WitherSkeleton => 20.0,
         }
     }
 
@@ -65,7 +68,7 @@ impl SkeletonKind {
     /// plain arrow's `POTION_DURATION_SCALE` is 1).
     pub fn arrow_effect(self) -> Option<(EffectKind, u32)> {
         match self {
-            Self::Skeleton => None,
+            Self::Skeleton | Self::WitherSkeleton => None,
             Self::Stray => Some((EffectKind::Slowness, 600)),
             Self::Bogged => Some((EffectKind::Poison, 100)),
             Self::Parched => Some((EffectKind::Weakness, 600)),
@@ -93,6 +96,7 @@ pub struct Skeleton {
     /// The main hand's drop chance (`Mob.dropChances`); above 1 the bow
     /// drops whoever killed it, unworn (`isPreserved`).
     pub bow_drop_chance: f32,
+    pub main_hand: Option<String>,
 }
 
 impl Skeleton {
@@ -108,6 +112,7 @@ impl Skeleton {
             holds_bow: true,
             armor: Default::default(),
             bow_drop_chance: 0.085,
+            main_hand: None,
         }
     }
 
@@ -116,10 +121,27 @@ impl Skeleton {
         let mut skeleton = Self::new(position);
         skeleton.kind = kind;
         skeleton.health = kind.max_health();
+        if kind == SkeletonKind::WitherSkeleton {
+            skeleton.body = Body::new(position, 0.7, 2.4);
+            skeleton.holds_bow = false;
+        }
         skeleton
     }
 
     pub fn eye_height(&self) -> f32 {
-        1.74
+        if self.kind == SkeletonKind::WitherSkeleton { 2.1 } else { 1.74 }
+    }
+
+    pub fn melee_damage(&self) -> f32 {
+        let weapon = match self.main_hand.as_deref() {
+            Some("minecraft:wooden_sword" | "minecraft:golden_sword") => 3.0,
+            Some("minecraft:stone_sword") => 4.0,
+            Some("minecraft:iron_sword") => 5.0,
+            Some("minecraft:diamond_sword") => 6.0,
+            Some("minecraft:netherite_sword") => 7.0,
+            _ => 0.0,
+        };
+        let base = if self.kind == SkeletonKind::WitherSkeleton { 4.0 } else { 2.0 };
+        base + weapon
     }
 }

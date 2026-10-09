@@ -442,6 +442,9 @@ impl EntityWorld {
 
     /// `LivingEntity.addEffect` on a mob, by ID, if it can take it.
     pub fn add_mob_effect(&mut self, id: u64, effect: EffectInstance) -> bool {
+        if effect.effect == MobEffect::Wither && self.entity_type(id) == Some("minecraft:wither_skeleton") {
+            return false;
+        }
         let Some((effects, undead, spider)) = self.mob_effects_mut(id) else { return false };
         can_be_affected(effect.effect, undead, spider) && effects.add(effect)
     }

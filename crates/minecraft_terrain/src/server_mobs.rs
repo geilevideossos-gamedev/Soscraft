@@ -408,6 +408,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:stray",
     "minecraft:villager",
     "minecraft:witch",
+    "minecraft:wither_skeleton",
     "minecraft:wolf",
     "minecraft:zombie",
     "minecraft:zombie_villager",
@@ -588,12 +589,13 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             }
             id
         }
-        "minecraft:skeleton" | "minecraft:stray" | "minecraft:bogged" | "minecraft:parched" if tag.get("Passengers").is_none() => {
+        "minecraft:skeleton" | "minecraft:stray" | "minecraft:bogged" | "minecraft:parched" | "minecraft:wither_skeleton" if tag.get("Passengers").is_none() => {
             use minecraftoss_entities::skeleton::SkeletonKind;
             let kind = match kind {
                 "minecraft:stray" => SkeletonKind::Stray,
                 "minecraft:bogged" => SkeletonKind::Bogged,
                 "minecraft:parched" => SkeletonKind::Parched,
+                "minecraft:wither_skeleton" => SkeletonKind::WitherSkeleton,
                 _ => SkeletonKind::Skeleton,
             };
             let mut skeleton = minecraftoss_entities::skeleton::Skeleton::of_kind(kind, pos);
@@ -603,6 +605,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             // Its bow is the main hand's (a summoned skeleton has none; a
             // natural spawn's `finalizeSpawn` gave it one).
             skeleton.holds_bow = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| i.get("id")).and_then(Tag::as_str) == Some("minecraft:bow");
+            skeleton.main_hand = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| i.get("id")).and_then(Tag::as_str).filter(|item| *item != "minecraft:bow").map(str::to_owned);
             skeleton.armor = armor_slots(tag);
             skeleton.persistence_required = persistent;
             if let Some(health) = health {

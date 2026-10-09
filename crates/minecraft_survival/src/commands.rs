@@ -158,6 +158,7 @@ pub fn effect_kind(effect: &str) -> Option<EffectKind> {
         "nausea" => EffectKind::Nausea,
         "slowness" => EffectKind::Slowness,
         "weakness" => EffectKind::Weakness,
+        "wither" => EffectKind::Wither,
         _ => return None,
     })
 }
@@ -475,6 +476,7 @@ impl CommandWorld for Host<'_> {
                     EffectKind::Nausea,
                     EffectKind::Slowness,
                     EffectKind::Weakness,
+                    EffectKind::Wither,
                 ];
                 let any = kinds.iter().any(|kind| status.effect(*kind).is_some());
                 survival.clear_effects();

@@ -15,7 +15,7 @@ pub const STORAGE: usize = 36;
 pub const SLOTS: usize = 43;
 pub const ENDER_SLOTS: usize = 27;
 const INFINITE: i32 = -1;
-pub const EFFECTS: [(EffectKind, &str); 9] = [
+pub const EFFECTS: [(EffectKind, &str); 10] = [
     (EffectKind::Hunger, "minecraft:hunger"),
     (EffectKind::Poison, "minecraft:poison"),
     (EffectKind::Regeneration, "minecraft:regeneration"),
@@ -25,6 +25,7 @@ pub const EFFECTS: [(EffectKind, &str); 9] = [
     (EffectKind::Nausea, "minecraft:nausea"),
     (EffectKind::Slowness, "minecraft:slowness"),
     (EffectKind::Weakness, "minecraft:weakness"),
+    (EffectKind::Wither, "minecraft:wither"),
 ];
 
 struct EffectModifier {
