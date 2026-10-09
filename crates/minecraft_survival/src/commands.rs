@@ -21,6 +21,8 @@ pub struct Host<'a> {
     pub save: Option<&'a mut crate::save::WorldSave>,
     pub survival: &'a mut crate::survival::Survival,
     pub entities: Option<&'a mut crate::entities::Entities>,
+    pub inventory: &'a mut Inventory,
+    pub selected: usize,
     pub player_mode: &'a mut PlayerMode,
     pub rules_changed: bool,
     pub mode_changed: bool,
@@ -233,9 +235,9 @@ impl CommandWorld for Host<'_> {
     }
 
     fn max_stack(&self, item: &str) -> u32 {
-        self.entities.as_ref().map_or(64, |entities| {
-            u32::from(entities.inventory.recipes.max_stack(item))
-        })
+        self.entities
+            .as_ref()
+            .map_or(64, |entities| u32::from(entities.recipes.max_stack(item)))
     }
 
     fn give(&mut self, player: PlayerId, item: &ItemArg, count: u32) -> bool {
@@ -243,13 +245,12 @@ impl CommandWorld for Host<'_> {
             return false;
         };
         let stack = minecraft_terrain::crafting::kit_stack(
-            &entities.inventory.recipes,
+            &entities.recipes,
             &item.id,
             1,
             &item.enchantments,
         );
-        let selected = entities.selected;
-        let (dropped, added) = give_stacks(&mut entities.inventory, selected, &stack, count);
+        let (dropped, added) = give_stacks(self.inventory, self.selected, &stack, count);
         if let Some(feet) = self.pose.map(|pose| pose.feet) {
             for stack in &dropped {
                 entities.drop_given(stack, feet);
@@ -416,6 +417,7 @@ mod tests {
         difficulty: Difficulty,
         day: DayCycle,
         survival: crate::survival::Survival,
+        inventory: Inventory,
         player_mode: PlayerMode,
     }
 
@@ -428,6 +430,7 @@ mod tests {
                 difficulty: Difficulty::Normal,
                 day: DayCycle::default(),
                 survival,
+                inventory: Inventory::default(),
                 player_mode: PlayerMode::default(),
             }
         }
@@ -441,6 +444,8 @@ mod tests {
                 save: None,
                 survival: &mut self.survival,
                 entities: None,
+                inventory: &mut self.inventory,
+                selected: 0,
                 player_mode: &mut self.player_mode,
                 rules_changed: false,
                 mode_changed: false,

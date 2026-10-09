@@ -386,3 +386,40 @@ B4 is commit `3385f09`.
   - The `Runtime` field is `local`, as in the plan; `update()` binds it as `local_uuid`, because `local` is already its `LocalPresentClient` parameter.
   - `close_world` takes the survival with `std::mem::take` and leaves the player in the server, so the save thread still reads its mode. `save_and_close` writes the player file only if the local player exists, which is always the case once a world has loaded.
   - The carried survival falls back with `unwrap_or_else(Survival::default)`, because `clippy.toml` disallows `unwrap_or_default`.
+
+## B6. Minecraft inventories belong to the player
+
+B5 is commit `b275419`.
+
+- **What changed:**
+  - `minecraft_survival/src/player.rs`: `Player` gains `inventory: Inventory` and `selected: usize` (slot 0 at creation); `Player::new` takes the inventory. New `starting_inventory(recipes, kit)`: an inventory on the world's recipe book with the kit given into the backpack, with the same "Minecraft kit: N stacks from IW4L_MINECRAFT_KIT" log line.
+  - `minecraft_survival/src/entities.rs`: `Entities` loses `inventory` and `selected`, and `Entities::new` no longer builds an inventory or gives the kit. The methods that used them take the player's part instead: `punch`, `hatch_egg`, `tick` and `server_items_tick` take the inventory (and the selected slot); `award_block_experience`, `drop_blocks` and `mined` take the held stack, and the hand-enchantment helpers read it instead of `self`. `drop_blocks` reads `self.recipes`.
+  - `minecraft_survival/src/commands.rs`: `Host` gains `inventory: &'a mut Inventory` and `selected: usize`; `/give` fills that inventory, and the stack sizes come from `entities.recipes`. The test helper `Parts` gets an `Inventory::default()`.
+  - `render_anim/src/minecraft_world.rs`:
+    - The load completion builds the inventory with `starting_inventory(globals.data.recipes, IW4L_MINECRAFT_KIT)` right after `Entities::new`, where the kit was given before, and hands it to `Player::new`.
+    - `update()` binds `inventory` and `selected` from the player. `entities.inventory` became `inventory`, `entities.selected` and `e.selected` became `*selected`, and `entities.inventory.recipes` became `entities.recipes` (60 lines). The four closures that went through `entities.as_ref()` keep that check (`|_|`).
+    - `finish_item_use` takes the inventory; `hold_off_death` takes the inventory and the selected slot instead of `Entities`.
+  - `render_anim/src/minecraft_chat.rs`: the test helper `Parts` gets an `Inventory::default()`.
+- **Tests added** (1, in `player.rs`): `the_kit_fills_the_backpack_and_the_inventory_uses_the_world_recipes` (no kit: an empty inventory; a kit: its stacks split at the stack size into backpack slots 9 onwards; both on the world's recipe book). The B5 test now also checks that the player keeps the inventory it was given and starts on slot 0. Totals: `minecraft_survival` 123 (122 + 1), `render_anim` 34; the moved total stays 153.
+- **Checks:** `check -p launcher --locked` (no new warning), `test -p minecraft_survival --locked`, `test -p render_anim --locked`; the staged `player.rs` and `commands.rs` pass `rustfmt --check --edition 2024` with empty output.
+- **Owner test** (this is the plan's checkpoint after B6: the full regression, with extra inventory steps; everything must play exactly as before):
+  1. Load a Minecraft match with `IW4L_MINECRAFT_WORLD=split` and the regression kit. The log says "Minecraft kit: 27 stacks from IW4L_MINECRAFT_KIT"; the kit is in the backpack, and hearts, hunger and XP show.
+  2. Open the inventory and move a few stacks between the backpack and the hotbar. Select slots with the number keys and the mouse wheel: the held item shows in the hand. Select a gun: it is raised.
+  3. Mine stone with the pickaxe and shoot a block with a gun. Both drop items, which you pick up with the pop sound; a silk-touch ore drops itself.
+  4. Place a crafting table, a furnace and a chest. Craft something, smelt raw iron with coal, and put items in the chest.
+  5. Place the ender chest and put an item in it. Break it: the item doesn't drop. Place it again, and the item is still there.
+  6. Eat beef. Hold the shield up against a zombie from the spawn egg. Throw a pearl (teleport and fall damage) and an egg: each throw takes one from the stack. Hatch a cow from its egg: one egg is used.
+  7. Pour the water bucket and scoop it up again; light a fire with flint and steel; fill a glass bottle at the water.
+  8. Fall from 6 blocks or more (fall damage and sound), then swim in water and stand in lava briefly.
+  9. Die with the totem in the offhand (it pops). Die again without it: items and XP drop, and guns stay.
+  10. Type `/give @s minecraft:diamond 5`: the diamonds land in the inventory with the pickup sound. Type `/gamemode creative`, place some planks (the stack doesn't shrink), then `/tp ~ ~10 ~`, `/time set 13000`, `/weather rain` and `/summon minecraft:cow`. Then `/gamemode survival`.
+  11. Leave the match, and check the log for "Minecraft world saved". Start the match again: the same seed and terrain, your placed blocks and your game mode are back, and the kit is in the backpack again (the inventory is not saved yet).
+  12. Wait 5 minutes (autosave, "Minecraft autosave: N chunks queued"), then quit the game from the menu. On the next start, the world loads with your edits.
+- **Kit:** the regression kit above (27 stacks).
+- **Not done here:** the plan's checkpoint release build (the orchestrator builds it).
+- **Decisions:**
+  - The kit is still given right after `Entities::new` on the main thread, so its log line keeps its place; the adapter reads `IW4L_MINECRAFT_KIT` and `starting_inventory` takes it as an argument, which keeps it testable.
+  - Recipe reads that went through `entities.inventory.recipes` use `entities.recipes`, the same `Arc` from `GameData` that B4 added for this, so those lines only lose a token; the player's inventory holds the same book.
+  - The `let mut selected = entities.selected; ... entities.selected = selected;` copy in `update()` is gone: the inventory screen and the weapon request now change the player's selected slot directly. Nothing read the slot between those two lines, so the result is the same.
+  - The closures that went through `entities.as_ref()` and the first `hold_off_death` call (now `if entities.is_some()`) keep their check on the level's mobs, so nothing changes even for a level without `Entities` (which never happens after the load).
+  - `punch` gives `mob_action` the player's inventory by reference instead of a temporary clone, and gets `#[allow(clippy::too_many_arguments)]` like `update`; methods take the player's inventory (or held stack) as their first argument.

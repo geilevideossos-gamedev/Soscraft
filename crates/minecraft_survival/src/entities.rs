@@ -65,10 +65,6 @@ pub struct Entities {
     items: ItemVisuals,
     clock: f64,
     ticks: u64,
-    /// The player's inventory: vanilla slots, stacking and recipes.
-    pub inventory: Inventory,
-    /// The selected hotbar slot.
-    pub selected: usize,
     /// Item entities as the client shows them: the server's, and drops the
     /// client spawned that the server has not taken yet.
     pub world_items: WorldItems,
@@ -173,15 +169,9 @@ impl Entities {
         let mut server = ServerHandle::spawn(sim);
         // Mob and block loot and the recipes (stack sizes), from the game's
         // data JAR when MinecraftOSS has one.
-        let mut inventory = Inventory::default();
         if let Some(jar) = &data.jar {
             server.load_loot(jar.clone(), seed as u64);
             server.set_recipe_book(data.recipes.clone());
-        }
-        inventory.recipes = data.recipes.clone();
-        if let Ok(kit) = std::env::var("IW4L_MINECRAFT_KIT") {
-            let given = minecraft_terrain::crafting::give_kit(&mut inventory, &kit);
-            diag::info!(World, "Minecraft kit: {given} stacks from IW4L_MINECRAFT_KIT");
         }
         Self {
             server,
@@ -192,8 +182,6 @@ impl Entities {
             items: ItemVisuals::default(),
             clock: 0.0,
             ticks: 0,
-            inventory,
-            selected: 0,
             world_items: WorldItems::default(),
             server_handed: HashMap::new(),
             burning_items: Vec::new(),
@@ -260,11 +248,11 @@ impl Entities {
         self.server.award_experience(at, amount);
     }
 
-    pub fn award_block_experience(&mut self, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)]) {
+    pub fn award_block_experience(&mut self, held: Option<&ItemStack>, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)]) {
         if !self.block_drops {
             return;
         }
-        let silk_touch = self.hand_has_silk_touch();
+        let silk_touch = Self::hand_has_silk_touch(held);
         for (pos, block, blast) in broken {
             if silk_touch && blast.is_none() && by_hand.contains(pos) {
                 continue;
@@ -279,12 +267,12 @@ impl Entities {
 
     /// Block loot for what the weapons broke, dropped as vanilla drops it
     /// (`Block.popResource`); a blast keeps each drop one time in its power.
-    pub fn drop_blocks(&mut self, broken: &[BrokenBlock], mut kept: HashMap<(i32, i32, i32), serde_json::Value>, by_hand: &[(i32, i32, i32)]) {
+    pub fn drop_blocks(&mut self, held: Option<&ItemStack>, broken: &[BrokenBlock], mut kept: HashMap<(i32, i32, i32), serde_json::Value>, by_hand: &[(i32, i32, i32)]) {
         if !self.block_drops {
             return;
         }
         let tool = ItemStack::new(LOOT_TOOL, 1);
-        let hand_tool = self.hand_tool();
+        let hand_tool = Self::hand_tool(held);
         for (pos, block, blast) in broken {
             let block = minecraftoss_player::Block { id: block.id.key(), properties: block.properties.clone() };
             let tool = if blast.is_none() && by_hand.contains(pos) { &hand_tool } else { &tool };
@@ -301,7 +289,7 @@ impl Entities {
                     continue;
                 }
                 if drop.components.is_none() {
-                    drop.max = drop.max.min(self.inventory.recipes.max_stack(&drop.id));
+                    drop.max = drop.max.min(self.recipes.max_stack(&drop.id));
                 }
                 if drop.id == block.id
                     && let Some(components) = kept.remove(pos)
@@ -312,7 +300,7 @@ impl Entities {
             }
             if let Some(components) = kept.remove(pos) {
                 let mut boxed = ItemStack::new(block.id.clone(), 1);
-                boxed.max = boxed.max.min(self.inventory.recipes.max_stack(&boxed.id));
+                boxed.max = boxed.max.min(self.recipes.max_stack(&boxed.id));
                 boxed.components = Some(components);
                 self.world_items.spawn_block_drop(boxed, *pos);
             }
@@ -323,7 +311,7 @@ impl Entities {
     /// `server_items_tick` does for a server-simulated world: client drops
     /// go to the server, stacks the server offered go into the inventory,
     /// and the server's items are mirrored for drawing.
-    fn server_items_tick(&mut self, feet: DVec3) {
+    fn server_items_tick(&mut self, inventory: &mut Inventory, selected: usize, feet: DVec3) {
         let entities = std::mem::take(&mut self.world_items.entities);
         let to_hand: Vec<ItemEntity> = entities
             .iter()
@@ -347,14 +335,14 @@ impl Entities {
         let target = feet + DVec3::Y * 0.81;
         self.world_items.tick_pickup_effects(target);
         for (id, position, item, count, components) in std::mem::take(&mut self.server_picked) {
-            let recipes = self.inventory.recipes.clone();
+            let recipes = inventory.recipes.clone();
             let make_stack = |item: &str, count: i32| {
                 let mut stack = ItemStack::new(item, count.clamp(0, 255) as u8);
                 stack.components = components.as_deref().and_then(|c| serde_json::from_str(c).ok());
                 stack.max = stack.max.min(recipes.max_stack(item));
                 stack
             };
-            let taken = match self.inventory.add_item(make_stack(&item, count), self.selected) {
+            let taken = match inventory.add_item(make_stack(&item, count), selected) {
                 None => count,
                 Some(rest) => {
                     let rest_count = i32::from(rest.count);
@@ -385,7 +373,7 @@ impl Entities {
             self.world_items.entities.sort_by_key(|e| e.entity_id);
             return;
         };
-        let recipes = self.inventory.recipes.clone();
+        let recipes = inventory.recipes.clone();
         self.burning_items = snapshot.items.iter().filter(|item| item.on_fire).map(|item| mirrored(item.id)).collect();
         self.world_items.entities = snapshot
             .items
@@ -434,7 +422,8 @@ impl Entities {
         mesh
     }
 
-    pub fn punch(&mut self, eye: DVec3, look: DVec3, yaw: f32, attack_damage: f64, strength: f32, blow: Blow) -> bool {
+    #[allow(clippy::too_many_arguments)]
+    pub fn punch(&mut self, inventory: &Inventory, selected: usize, eye: DVec3, look: DVec3, yaw: f32, attack_damage: f64, strength: f32, blow: Blow) -> bool {
         let Some((hit, _)) = self.world.mob_on_ray(eye, look, blow.reach) else {
             return false;
         };
@@ -448,7 +437,7 @@ impl Entities {
             can_critical: blow.can_critical,
             can_sweep: blow.can_sweep,
         };
-        self.server.mob_action(hit, Some(attack), &self.inventory.clone(), self.selected, false);
+        self.server.mob_action(hit, Some(attack), inventory, selected, false);
         true
     }
 
@@ -478,8 +467,8 @@ impl Entities {
         self.item_use_waiting.is_some()
     }
 
-    pub fn hatch_egg(&mut self, slot: usize, kind: String, position: [f64; 3], spends: bool) {
-        if self.eggs_waiting.send_from(&self.inventory, slot, spends) {
+    pub fn hatch_egg(&mut self, inventory: &Inventory, slot: usize, kind: String, position: [f64; 3], spends: bool) {
+        if self.eggs_waiting.send_from(inventory, slot, spends) {
             let y_rot = minecraftoss_core::entity_data::wrap_degrees(self.random.next_float() * 360.0);
             self.server.hatch_egg(kind, position, y_rot);
         }
@@ -513,22 +502,22 @@ impl Entities {
         self.server.player_breaks(positions);
     }
 
-    pub fn mined(&mut self, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)], creative: bool) {
-        let silk_touch = self.hand_has_silk_touch();
+    pub fn mined(&mut self, held: Option<&ItemStack>, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)], creative: bool) {
+        let silk_touch = Self::hand_has_silk_touch(held);
         let how: Vec<_> = broken.iter().map(|(pos, _, blast)| (*pos, how_broken(*pos, *blast, by_hand, silk_touch, creative))).collect();
         self.server.player_mines(&how);
     }
 
-    fn hand_enchantments(&self) -> Option<serde_json::Value> {
-        self.inventory.slots[self.selected].as_ref()?.components.as_ref()?.get("minecraft:enchantments").cloned()
+    fn hand_enchantments(held: Option<&ItemStack>) -> Option<serde_json::Value> {
+        held?.components.as_ref()?.get("minecraft:enchantments").cloned()
     }
 
-    fn hand_has_silk_touch(&self) -> bool {
-        has_silk_touch(self.hand_enchantments().as_ref())
+    fn hand_has_silk_touch(held: Option<&ItemStack>) -> bool {
+        has_silk_touch(Self::hand_enchantments(held).as_ref())
     }
 
-    fn hand_tool(&self) -> ItemStack {
-        loot_tool_with(self.hand_enchantments())
+    fn hand_tool(held: Option<&ItemStack>) -> ItemStack {
+        loot_tool_with(Self::hand_enchantments(held))
     }
 
     /// A bullet on a mob: an attack with the bullet's damage from where it
@@ -566,6 +555,8 @@ impl Entities {
     /// changes to show, and mob hits on the player in MW2 damage.
     pub fn tick(
         &mut self,
+        inventory: &mut Inventory,
+        selected: usize,
         dt: f64,
         day_ticks: i64,
         bright_outside: bool,
@@ -601,7 +592,7 @@ impl Entities {
                 simulation_distance: 8,
                 pickup: player
                     .picks_up
-                    .then(|| (player.feet, Box::new(self.inventory.clone()), self.selected)),
+                    .then(|| (player.feet, Box::new(inventory.clone()), selected)),
                 mob_players: vec![candidate],
                 mob_views: vec![(
                     PLAYER,
@@ -656,7 +647,7 @@ impl Entities {
                 }
             }
             for summoned in output.summoned {
-                let egg = self.eggs_waiting.answer(&mut self.inventory, summoned.is_ok());
+                let egg = self.eggs_waiting.answer(inventory, summoned.is_ok());
                 if let (Some(egg), Err(error)) = (egg, summoned) {
                     diag::warn!(World, "Minecraft {egg} hatched nothing: {error}");
                 }
@@ -706,7 +697,7 @@ impl Entities {
             }
         }
         if ticked {
-            self.server_items_tick(DVec3::from_array(player.feet));
+            self.server_items_tick(inventory, selected, DVec3::from_array(player.feet));
             // `ItemEntity.playerTouch`'s pickup pop.
             for _ in 0..self.world_items.take_pickup_sounds() {
                 let pitch = ((self.random.next_float() - self.random.next_float()) * 0.7 + 1.0) * 2.0;

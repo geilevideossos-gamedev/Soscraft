@@ -492,6 +492,7 @@ fn update(
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
                 globals.data = minecraft_survival::data::GameData::load(assets::minecraft_map::root().as_deref(), data_jar());
                 let mut entities = minecraft_survival::entities::Entities::new(&level.terrain.stream, globals.seed, &globals.data);
+                let inventory = minecraft_survival::player::starting_inventory(globals.data.recipes.clone(), std::env::var("IW4L_MINECRAFT_KIT").ok().as_deref());
                 entities.set_game_rules(&globals.game_rules);
                 level.containers.set_book(globals.data.stations.clone());
                 runtime.inventory_ui.set_station_data(globals.data.stations.clone(), globals.data.enchantments.clone(), globals.seed as i32);
@@ -514,7 +515,7 @@ fn update(
                 if let Some((_, Some(warning))) = &saved_mode {
                     diag::warn!(World, "{warning}");
                 }
-                let player = minecraft_survival::player::Player::new(&profile, starting_game_mode(saved_mode.map(|(mode, _)| mode)), runtime.carried_survival.take().unwrap_or_else(minecraft_survival::survival::Survival::default));
+                let player = minecraft_survival::player::Player::new(&profile, starting_game_mode(saved_mode.map(|(mode, _)| mode)), runtime.carried_survival.take().unwrap_or_else(minecraft_survival::survival::Survival::default), inventory);
                 let uuid = player.uuid.clone();
                 players.insert(uuid.clone(), player);
                 runtime.environment_accumulator = 0.0;
@@ -594,7 +595,7 @@ fn update(
         puppet.active = false;
         return;
     };
-    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, .. } = player;
+    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, .. } = player;
     let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
     let host_alive = presented.player(local.0).is_some_and(|ps| ps.pm_type == 0);
     let host_pose = presented
@@ -610,6 +611,8 @@ fn update(
         save: globals.save.as_mut(),
         survival,
         entities: entities.as_mut(),
+        inventory,
+        selected: *selected,
         player_mode,
         rules_changed: false,
         mode_changed: false,
@@ -792,12 +795,12 @@ fn update(
             hand.swing = None;
         }
     }
-    let holding = entities.as_ref().is_some_and(|e| {
-        e.inventory.slots[e.selected].as_ref().is_none_or(|s| minecraft_survival::guns::weapon_of(s).is_none())
+    let holding = entities.as_ref().is_some_and(|_| {
+        inventory.slots[*selected].as_ref().is_none_or(|s| minecraft_survival::guns::weapon_of(s).is_none())
     });
     ui.holding_item = alive && holding && player_mode.interacts();
     ui.empty_hand = ui.holding_item
-        && entities.as_ref().is_some_and(|e| e.inventory.slots[e.selected].is_none());
+        && entities.as_ref().is_some_and(|_| inventory.slots[*selected].is_none());
     hand.clock += dt_hand;
     let hand_ticks = (hand.clock / TICK_SECONDS) as u32;
     hand.clock -= f64::from(hand_ticks) * TICK_SECONDS;
@@ -806,7 +809,7 @@ fn update(
     ui.cooldowns = if hand.pearl_cooldown > 0 { vec![("minecraft:ender_pearl".to_owned(), pearl_left)] } else { Vec::new() };
     hand.miss_time = hand.miss_time.saturating_sub(hand_ticks);
     hand.attack_ticks = hand.attack_ticks.saturating_add(hand_ticks);
-    let main_hand = entities.as_ref().and_then(|e| e.inventory.slots[e.selected].as_ref().map(|s| s.id.clone()));
+    let main_hand = entities.as_ref().and_then(|_| inventory.slots[*selected].as_ref().map(|s| s.id.clone()));
     if hand.attack_item != main_hand {
         hand.attack_item = main_hand;
         hand.attack_ticks = 0;
@@ -825,7 +828,7 @@ fn update(
             crouching: ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0,
             height: hull_maxs[2] / sim::voxel::BLOCK,
         };
-        let armor = entities.as_ref().map_or_else(minecraftoss_player::survival::Armor::default, |e| minecraft_survival::survival::armor(&e.inventory));
+        let armor = entities.as_ref().map_or_else(minecraftoss_player::survival::Armor::default, |_| minecraft_survival::survival::armor(inventory));
         for _ in 0..hand_ticks {
             let from = survival.last_feet().unwrap_or(feet);
             let breath = survival.tick(&motion);
@@ -842,8 +845,8 @@ fn update(
                 steps.air_peak = steps.air_peak.map(|peak| feet[1] + (peak - feet[1]) * 0.5);
             }
             let heard = survival.hazards(&terrain.scene, &motion, from, armor, || entities.as_mut().map_or(0.5, |e| e.random_float()));
-            if let Some(entities) = entities.as_mut() {
-                hold_off_death(survival, entities, sounds.as_mut(), &world.packs, false);
+            if entities.is_some() {
+                hold_off_death(survival, inventory, *selected, sounds.as_mut(), &world.packs, false);
             }
             if survival.stuck() {
                 steps.air_peak = steps.air_peak.map(|_| feet[1]);
@@ -859,14 +862,14 @@ fn update(
         let mut props = Vec::new();
         let mut brewed = Vec::new();
         for _ in 0..hand_ticks {
-            let ticked = containers.tick(&entities.inventory.recipes);
+            let ticked = containers.tick(&entities.recipes);
             props.extend(ticked.props);
             brewed.extend(ticked.brewed);
             for (pos, stack) in ticked.drops {
                 entities.world_items.spawn_block_drop(stack, pos);
             }
             let lit = |pos| minecraft_terrain::scene::Scene::block(&terrain.scene, pos).map(minecraft_terrain::campfire::is_lit);
-            for (pos, stack) in containers.cook(lit, &entities.inventory.recipes) {
+            for (pos, stack) in containers.cook(lit, &entities.recipes) {
                 entities.world_items.drop_item_stack(stack, pos);
             }
         }
@@ -900,7 +903,7 @@ fn update(
     if survival.eating().is_some() && !use_live {
         survival.stop_eating();
     }
-    let shield_held = entities.as_ref().is_some_and(|e| hand.blocking.is_some_and(|blocking| blocking.holds_shield(&e.inventory, e.selected)));
+    let shield_held = entities.as_ref().is_some_and(|_| hand.blocking.is_some_and(|blocking| blocking.holds_shield(inventory, *selected)));
     if !use_live || !shield_held {
         hand.blocking = None;
     }
@@ -916,7 +919,7 @@ fn update(
         let mut player = minecraftoss_player::Player::new(glam::DVec3::from_array(feet));
         player.yaw = f64::from(mc_yaw);
         player.pitch = f64::from(ps.viewangles[0]);
-        player.selected = entities.selected;
+        player.selected = *selected;
         player.crouching = ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
         player.swimming = ps.view_height_current < CRAWLING_BELOW_VIEW_HEIGHT;
         let eye_block = player.eye();
@@ -934,8 +937,8 @@ fn update(
         if ui.holding_item && (buttons.just_pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, true)) && !busy {
             hand.swing = Some(0.0);
             hand.swing_offhand = false;
-            let held = entities.inventory.slots[entities.selected].clone();
-            let (damage, speed) = entities.inventory.recipes.attack_attributes(held.as_ref());
+            let held = inventory.slots[*selected].clone();
+            let (damage, speed) = entities.recipes.attack_attributes(held.as_ref());
             let damage = (damage + survival.status.attack_damage_modifier()).max(0.0);
             let strength = minecraft_survival::survival::attack_strength(hand.attack_ticks, speed);
             let sprinting = ps.pm_flags & playerstate_iw4::pm_flags::SPRINTING != 0;
@@ -946,7 +949,7 @@ fn update(
                 can_sweep: on_ground && !sprinting && held.as_ref().is_some_and(|s| s.id.ends_with("_sword")),
                 reach: game_mode.entity_reach(),
             };
-            if entities.punch(eye_block, look, mc_yaw, damage, strength, blow) {
+            if entities.punch(inventory, *selected, eye_block, look, mc_yaw, damage, strength, blow) {
                 punched = true;
                 hand.attack_ticks = 0;
                 survival.exhaust(minecraft_survival::survival::ATTACK_EXHAUSTION);
@@ -962,7 +965,7 @@ fn update(
                 break;
             };
             let roll = entities.random_float();
-            let bite = survival.chew(&mut entities.inventory, entities.selected, || roll);
+            let bite = survival.chew(inventory, *selected, || roll);
             let (sound, finished) = match bite {
                 minecraft_survival::survival::Bite::Nothing => continue,
                 minecraft_survival::survival::Bite::Chew(sound) => (sound, None),
@@ -992,7 +995,7 @@ fn update(
             }
         }
         if ui.holding_item && attack_held && !busy && game_mode.may_build() && game_mode.instant_break() {
-            let held = entities.inventory.slots[entities.selected].as_ref().map(|stack| stack.id.as_str());
+            let held = inventory.slots[*selected].as_ref().map(|stack| stack.id.as_str());
             if let Some(hit) = player.target(&minecraft_terrain::doors::Outlined(&terrain.scene), game_mode.block_reach())
                 && !punched
                 && entities.mob_distance(eye_block, look, game_mode.entity_reach()).is_none_or(|distance| distance > hit.distance)
@@ -1038,16 +1041,16 @@ fn update(
         let hands = if place {
             hand.place_delay = 4;
             hand.use_by_key = !ui.holding_item;
-            minecraft_survival::offhand::hand_slots(entities.selected, !ui.holding_item)
+            minecraft_survival::offhand::hand_slots(*selected, !ui.holding_item)
         } else {
             Vec::new()
         };
-        let has_item = entities.inventory.slots[entities.selected].is_some() || entities.inventory.slots[minecraft_survival::offhand::OFFHAND].is_some();
+        let has_item = inventory.slots[*selected].is_some() || inventory.slots[minecraft_survival::offhand::OFFHAND].is_some();
         let used = minecraft_survival::offhand::use_hands(&hands, |slot| {
             use minecraft_survival::offhand::HandUse;
             let main = slot != minecraft_survival::offhand::OFFHAND;
             player.selected = slot;
-            let held = entities.inventory.slots[slot].clone();
+            let held = inventory.slots[slot].clone();
             let table = player
                 .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
                 .map(|hit| hit.pos)
@@ -1123,10 +1126,10 @@ fn update(
                 HandUse::Consumed
             } else if let Some(pos) = campfire
                 && let Some(stack) = held.as_ref()
-                && let Some(placed) = containers.place_food(pos, stack, &entities.inventory.recipes)
+                && let Some(placed) = containers.place_food(pos, stack, &entities.recipes)
             {
                 if placed {
-                    let slot = &mut entities.inventory.slots[slot];
+                    let slot = &mut inventory.slots[slot];
                     if let Some(left) = slot.as_mut().filter(|_| game_mode.consumes_items()) {
                         left.count -= 1;
                         if left.count == 0 {
@@ -1167,7 +1170,7 @@ fn update(
                     }
                 };
                 if let Some(result) = result
-                    && let Some(rest) = bottle::filled_result(&mut entities.inventory, slot, result)
+                    && let Some(rest) = bottle::filled_result(inventory, slot, result)
                 {
                     entities.world_items.toss(rest, eye_block, mc_yaw, ps.viewangles[0]);
                 }
@@ -1197,7 +1200,7 @@ fn update(
                 match change {
                     minecraft_terrain::bucket::Change::Set(pos, block) => {
                         write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, vec![(pos, scene_block(&block))]);
-                        finish_item_use(entities, sounds.as_mut(), &world.packs, origin, sent, game_mode.consumes_items());
+                        finish_item_use(entities, inventory, sounds.as_mut(), &world.packs, origin, sent, game_mode.consumes_items());
                     }
                     minecraft_terrain::bucket::Change::Server(pos, action) => entities.item_on_block(pos, action, sent),
                 }
@@ -1207,7 +1210,7 @@ fn update(
                 && let Some(egg) = minecraft_terrain::spawn_egg::egg_use(&player, &minecraft_terrain::doors::Outlined(&terrain.scene), &stack.id)
             {
                 if let minecraft_terrain::spawn_egg::EggUse::Spawn { kind, position } = egg {
-                    entities.hatch_egg(slot, kind, position, game_mode.consumes_items());
+                    entities.hatch_egg(inventory, slot, kind, position, game_mode.consumes_items());
                 }
                 hand.swing = Some(0.0);
                 HandUse::Consumed
@@ -1219,7 +1222,7 @@ fn update(
                 if !(pearl && hand.pearl_cooldown > 0)
                     && entities.throw(&stack.id, glam::DVec3::from_array(eye), mc_yaw, ps.viewangles[0], motion, on_ground)
                 {
-                    let slot = &mut entities.inventory.slots[slot];
+                    let slot = &mut inventory.slots[slot];
                     if let Some(left) = slot.as_mut().filter(|_| game_mode.consumes_items()) {
                         left.count -= 1;
                         if left.count == 0 {
@@ -1245,7 +1248,7 @@ fn update(
                 let pos = minecraft_terrain::berries::plant(&player, &mut staged, &stack.id, &soil, || entities.random_float())?;
                 Some((pos, staged.into_writes()))
             }) {
-                let slot = &mut entities.inventory.slots[slot];
+                let slot = &mut inventory.slots[slot];
                 if let Some(left) = slot.as_mut().filter(|_| game_mode.consumes_items()) {
                     left.count -= 1;
                     if left.count == 0 {
@@ -1284,7 +1287,7 @@ fn update(
                 let placed = match opening {
                     _ if !game_mode.may_build() && (opening.is_some() || held.as_ref().is_some_and(|s| s.id == minecraft_terrain::scaffolding::SCAFFOLDING)) => None,
                     Some(stack) => minecraft_terrain::doors::place(&player, &mut staged, &stack.id, &sturdy).inspect(|_| {
-                        let slot = &mut entities.inventory.slots[slot];
+                        let slot = &mut inventory.slots[slot];
                         if let Some(left) = slot.as_mut() {
                             left.count -= 1;
                             if left.count == 0 {
@@ -1295,7 +1298,7 @@ fn update(
                     None if held.as_ref().is_some_and(|s| s.id == minecraft_terrain::scaffolding::SCAFFOLDING) => minecraft_terrain::scaffolding::place(
                         &player,
                         &mut staged,
-                        &mut entities.inventory,
+                        inventory,
                         ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0,
                         &sturdy,
                         &|block: Option<&minecraftoss_player::Block>| {
@@ -1306,7 +1309,7 @@ fn update(
                             })
                         },
                     ),
-                    None => player.place_selected(&mut staged, &mut entities.inventory, game_mode.mode),
+                    None => player.place_selected(&mut staged, inventory, game_mode.mode),
                 };
                 let writes: Vec<_> = staged
                     .into_writes()
@@ -1339,10 +1342,10 @@ fn update(
                     if let Some(stack) = held.as_ref().filter(|stack| minecraft_terrain::containers::is_shulker_box(&stack.id))
                         && minecraft_terrain::scene::Scene::block(&terrain.scene, pos).and_then(minecraft_terrain::containers::Station::of) == Some(minecraft_terrain::containers::Station::Shulker)
                     {
-                        containers.place_shulker(pos, stack, &entities.inventory.recipes);
+                        containers.place_shulker(pos, stack, &entities.recipes);
                     }
                     if !game_mode.consumes_items() {
-                        entities.inventory.slots[slot].clone_from(&held);
+                        inventory.slots[slot].clone_from(&held);
                     }
                     hand.recent.extend(written.into_iter().filter_map(|p| minecraftoss_player::World::block(&terrain.scene, p).map(|b| (p, b, now))));
                     hand.swing = Some(0.0);
@@ -1355,7 +1358,7 @@ fn update(
                     }
                     HandUse::Consumed
                 } else {
-                    entities.inventory.slots[slot] = held;
+                    inventory.slots[slot] = held;
                     hand.place_delay = 0;
                     if player.target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0).is_some() { HandUse::Failed } else { HandUse::Passed }
                 }
@@ -1444,7 +1447,7 @@ fn update(
     survival.exhaust(minecraft_survival::survival::MINE_EXHAUSTION * broken.iter().filter(|(.., blast)| blast.is_none()).count() as f32);
     if let Some(entities) = entities.as_mut() {
         let positions: Vec<_> = broken.iter().map(|(pos, ..)| *pos).collect();
-        entities.mined(&broken, &hand_mined, !player_mode.drops_from_breaking());
+        entities.mined(inventory.slots[*selected].as_ref(), &broken, &hand_mined, !player_mode.drops_from_breaking());
         let kept: HashMap<_, _> = broken
             .iter()
             .filter(|(_, block, _)| minecraft_terrain::containers::Station::of(block) == Some(minecraft_terrain::containers::Station::Shulker))
@@ -1455,8 +1458,8 @@ fn update(
             .filter(|(pos, _, blast)| player_mode.drops_from_breaking() || blast.is_some() || kept.get(pos).is_some_and(|components| components.get(minecraft_terrain::containers::CONTAINER).is_some()))
             .cloned()
             .collect();
-        entities.award_block_experience(&dropping, &hand_mined);
-        entities.drop_blocks(&dropping, kept, &hand_mined);
+        entities.award_block_experience(inventory.slots[*selected].as_ref(), &dropping, &hand_mined);
+        entities.drop_blocks(inventory.slots[*selected].as_ref(), &dropping, kept, &hand_mined);
         for &pos in &positions {
             spill(containers, entities, pos);
         }
@@ -1537,7 +1540,7 @@ fn update(
         let bright_outside = terrain.environment.sky_light_level() > 11.0;
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
         let ticks_before = entities.client_ticks();
-        let (changes, hits) = entities.tick(dt, globals.day.ticks as i64, bright_outside, &player);
+        let (changes, hits) = entities.tick(inventory, *selected, dt, globals.day.ticks as i64, bright_outside, &player);
         let summoned = std::mem::take(&mut entities.command_summons);
         if !summoned.is_empty() {
             let answers = minecraft_survival::commands::summon_answers(&globals.chat, &globals.game_rules, summoned);
@@ -1607,11 +1610,11 @@ fn update(
                 sounds.play(&world.packs, &kind.break_sound, Some(at(centre)), (kind.volume + 1.0) / 2.0, kind.pitch * 0.8);
             }
         }
-        let armor = minecraft_survival::survival::armor(&entities.inventory);
+        let armor = minecraft_survival::survival::armor(inventory);
         for (amount, from, toward, cause) in hits.into_iter().filter(|_| !player_mode.invulnerable()) {
             let blocked = hand.blocking.filter(|blocking| blocking.raised()).map_or(0.0, |_| minecraft_survival::offhand::blocked_damage(mc_yaw, toward, amount));
             if let Some(blocking) = hand.blocking.filter(|_| blocked > 0.0) {
-                if entities.inventory.wear_tool(blocking.slot, minecraft_survival::offhand::shield_wear(blocked)) {
+                if inventory.wear_tool(blocking.slot, minecraft_survival::offhand::shield_wear(blocked)) {
                     hand.blocking = None;
                     let pitch = 0.8 + entities.random_float() * 0.4;
                     if let Some(sounds) = sounds.as_mut() {
@@ -1634,7 +1637,7 @@ fn update(
                 hand.swing = Some(0.0);
                 hand.swing_offhand = used.slot == minecraft_survival::offhand::OFFHAND;
             }
-            finish_item_use(entities, sounds.as_mut(), &world.packs, origin, used, player_mode.consumes_items());
+            finish_item_use(entities, inventory, sounds.as_mut(), &world.packs, origin, used, player_mode.consumes_items());
         }
         for to in teleports.iter().filter(|_| alive) {
             authority.0.teleport(local.0, sim::voxel::to_map(origin, *to));
@@ -1651,7 +1654,7 @@ fn update(
                 sounds.play(&world.packs, "minecraft:entity.player.teleport", Some(at(landing.to_array())), 1.0, 1.0);
             }
         }
-        hold_off_death(survival, entities, sounds.as_mut(), &world.packs, totem_popped);
+        hold_off_death(survival, inventory, *selected, sounds.as_mut(), &world.packs, totem_popped);
         if alive
             && !sim::voxel::player_damage_pending()
             && let Some(player) = authority.0.player(local.0).copied()
@@ -1723,15 +1726,14 @@ fn update(
             ui.inventory_open = false;
         }
         inventory_ui.level = survival.status.experience_level;
-        inventory_ui.sync_weapons(&mut entities.inventory, &owned);
-        if std::mem::take(&mut ui.swap_hands) && alive && minecraft_survival::offhand::swap_hands(&mut entities.inventory, entities.selected) {
+        inventory_ui.sync_weapons(inventory, &owned);
+        if std::mem::take(&mut ui.swap_hands) && alive && minecraft_survival::offhand::swap_hands(inventory, *selected) {
             survival.stop_eating();
             hand.blocking = None;
         }
-        let mut selected = entities.selected;
         let was_open = inventory_ui.block().cloned();
         let roll = entities.random_float();
-        let thrown = inventory_ui.apply_input(&mut ui, &mut entities.inventory, &mut selected, containers, &mut || roll);
+        let thrown = inventory_ui.apply_input(&mut ui, inventory, selected, containers, &mut || roll);
         if let Some(pos) = open_table {
             inventory_ui.open_table(&mut ui, pos);
         }
@@ -1741,7 +1743,7 @@ fn update(
                 if containers.is_new(pos)
                     && let Some(chunk) = terrain.scene.generated_chunk((pos.0.div_euclid(16), pos.2.div_euclid(16)))
                     && let Some(entity) = chunk.block_entities.entities.get(&pos).or_else(|| chunk.block_entities.pending.get(&pos))
-                    && let Some((items, seed)) = minecraft_terrain::containers::structure_loot(&globals.registries, entity, pos, globals.seed, &entities.inventory.recipes)
+                    && let Some((items, seed)) = minecraft_terrain::containers::structure_loot(&globals.registries, entity, pos, globals.seed, &entities.recipes)
                 {
                     containers.fill(pos, items, seed);
                 }
@@ -1847,17 +1849,16 @@ fn update(
         if let Some(death) = death_watch.take()
             && !death.keep_inventory
         {
-            for stack in minecraft_survival::death::death_drops(&mut entities.inventory, |stack| minecraft_survival::guns::weapon_of(stack).is_some()) {
+            for stack in minecraft_survival::death::death_drops(inventory, |stack| minecraft_survival::guns::weapon_of(stack).is_some()) {
                 entities.world_items.drop_on_death(stack, glam::DVec3::from_array(death.spot.eye));
             }
             entities.award_experience(death.spot.feet, death.experience);
             hand.blocking = None;
         }
         crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
-        ui.weapon_request = inventory_ui.weapon_request(&entities.inventory, &mut selected, ps.weapon).filter(|_| player_mode.interacts());
-        entities.selected = selected;
+        ui.weapon_request = inventory_ui.weapon_request(inventory, selected, ps.weapon).filter(|_| player_mode.interacts());
         inventory_ui.animation_tick = atlas_animation.ticks();
-        inventory_ui.publish(&mut ui, &entities.inventory, selected, &world.packs, &mut images, containers);
+        inventory_ui.publish(&mut ui, inventory, *selected, &world.packs, &mut images, containers);
 
         if let Some(sounds) = sounds.as_mut() {
             for (event, position, volume, pitch) in std::mem::take(&mut entities.sounds) {
@@ -1868,7 +1869,7 @@ fn update(
             let id = if stack.id == "minecraft:redstone" { "minecraft:redstone_wire" } else { stack.id.as_str() };
             minecraft_terrain::pack::ResourceId::parse(id).is_ok_and(|id| terrain.stream.states.state_of(&minecraft_terrain::scene::Block { id, properties: Default::default() }).is_some())
         };
-        let offhand_stack = entities.inventory.slots[minecraft_survival::offhand::OFFHAND].clone();
+        let offhand_stack = inventory.slots[minecraft_survival::offhand::OFFHAND].clone();
         let aims_at_campfire = || {
             let mut aim = minecraftoss_player::Player::new(glam::DVec3::from_array(feet));
             aim.yaw = f64::from(mc_yaw);
@@ -1880,21 +1881,21 @@ fn update(
         ui.offhand_usable = alive
             && !holding
             && offhand_stack.as_ref().is_some_and(|stack| {
-                minecraft_survival::offhand::has_use(stack, placeable(stack), &survival.status.food, player_mode.mode) || (containers.cooks_on_campfire(stack, &entities.inventory.recipes) && aims_at_campfire())
+                minecraft_survival::offhand::has_use(stack, placeable(stack), &survival.status.food, player_mode.mode) || (containers.cooks_on_campfire(stack, &entities.recipes) && aims_at_campfire())
             });
         ui.offhand_busy = alive && !holding && (survival.eating().is_some() || hand.blocking.is_some());
         ui.using_item = alive && (survival.eating().is_some() || hand.blocking.is_some());
-        sim::voxel::set_death_protected(local.0.0, alive && !survival.killed() && minecraft_survival::offhand::totem_slot(&entities.inventory, entities.selected).is_some());
+        sim::voxel::set_death_protected(local.0.0, alive && !survival.killed() && minecraft_survival::offhand::totem_slot(inventory, *selected).is_some());
         // The held item in view; an empty hand is MW2's own hands.
         view.hand = Default::default();
         let swing = hand.swing.map_or(0.0, |t| (t / crate::minecraft_hand::SWING_TICKS).clamp(0.0, 1.0));
         ui.hand_swing = if hand.swing_offhand { 0.0 } else { swing };
-        let main_stack = entities.inventory.slots[entities.selected].clone().filter(|_| ui.holding_item);
+        let main_stack = inventory.slots[*selected].clone().filter(|_| ui.holding_item);
         let offhand_stack = offhand_stack.filter(|_| ui.holding_item || ui.offhand_busy);
         if !puppet.active && !mc_detached && (main_stack.is_some() || offhand_stack.is_some()) {
             let eye_light_at = glam::Vec3::new(eye[0] as f32, eye[1] as f32, eye[2] as f32);
             let mut posed = Vec::new();
-            for (slot, stack, arm) in [(entities.selected, main_stack, 1.0), (minecraft_survival::offhand::OFFHAND, offhand_stack, -1.0)] {
+            for (slot, stack, arm) in [(*selected, main_stack, 1.0), (minecraft_survival::offhand::OFFHAND, offhand_stack, -1.0)] {
                 let Some(stack) = stack else {
                     continue;
                 };
@@ -2297,6 +2298,7 @@ fn write_blocks(
 
 fn finish_item_use(
     entities: &mut minecraft_survival::entities::Entities,
+    inventory: &mut minecraftoss_player::inventory::Inventory,
     sounds: Option<&mut crate::minecraft_sounds::Sounds>,
     packs: &PackStack,
     origin: [f64; 3],
@@ -2305,10 +2307,10 @@ fn finish_item_use(
 ) {
     let mut heard = used.outcome.sounds;
     let spends = consumes || used.outcome.result.is_some();
-    if entities.inventory.slots.get(used.slot).and_then(Option::as_ref).is_some_and(|stack| stack.id == used.held) {
+    if inventory.slots.get(used.slot).and_then(Option::as_ref).is_some_and(|stack| stack.id == used.held) {
         if used.outcome.consumed
             && spends
-            && let Some(slot) = entities.inventory.slots.get_mut(used.slot)
+            && let Some(slot) = inventory.slots.get_mut(used.slot)
             && let Some(stack) = slot.as_mut()
         {
             stack.count -= 1;
@@ -2317,11 +2319,11 @@ fn finish_item_use(
             }
         }
         if let Some(result) = used.outcome.result
-            && let Some(rest) = minecraft_terrain::bottle::filled_result(&mut entities.inventory, used.slot, result)
+            && let Some(rest) = minecraft_terrain::bottle::filled_result(inventory, used.slot, result)
         {
             entities.world_items.toss(rest, used.eye, used.yaw, used.pitch);
         }
-        if spends && entities.inventory.wear_tool(used.slot, used.outcome.wear) {
+        if spends && inventory.wear_tool(used.slot, used.outcome.wear) {
             heard.push(minecraft_terrain::flint::break_sound(entities.random_float()));
         }
     }
@@ -2334,13 +2336,14 @@ fn finish_item_use(
 
 fn hold_off_death(
     survival: &mut minecraft_survival::survival::Survival,
-    entities: &mut minecraft_survival::entities::Entities,
+    inventory: &mut minecraftoss_player::inventory::Inventory,
+    selected: usize,
     sounds: Option<&mut crate::minecraft_sounds::Sounds>,
     packs: &PackStack,
     struck: bool,
 ) {
     if (struck || survival.status.health <= 0.0)
-        && survival.protect(&mut entities.inventory, entities.selected)
+        && survival.protect(inventory, selected)
         && let Some(sounds) = sounds
     {
         sounds.play(packs, minecraft_survival::offhand::TOTEM_SOUND, None, 1.0, 1.0);

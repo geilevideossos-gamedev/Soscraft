@@ -58,6 +58,7 @@ mod tests {
         difficulty: Difficulty,
         day: DayCycle,
         survival: minecraft_survival::survival::Survival,
+        inventory: minecraftoss_player::inventory::Inventory,
         player_mode: PlayerMode,
     }
 
@@ -70,6 +71,7 @@ mod tests {
                 difficulty: Difficulty::Normal,
                 day: DayCycle::default(),
                 survival,
+                inventory: minecraftoss_player::inventory::Inventory::default(),
                 player_mode: PlayerMode::default(),
             }
         }
@@ -83,6 +85,8 @@ mod tests {
                 save: None,
                 survival: &mut self.survival,
                 entities: None,
+                inventory: &mut self.inventory,
+                selected: 0,
                 player_mode: &mut self.player_mode,
                 rules_changed: false,
                 mode_changed: false,
