@@ -953,3 +953,71 @@ None. `suggest::tests::block_arguments_suggest_whole_coordinates_and_block_ids` 
 Nothing changes in game. The steps in the block suggestion entry above still apply.
 
 Kit: none needed.
+
+## Testing the whole track
+
+Commit: the commit that adds this section (branch `track-c`, final verification). It changes only this log.
+
+### Final verification
+
+- `clippy -p minecraft_commands -p minecraft_terrain --locked --all-targets -- -A clippy::approx_constant`: nothing on `minecraft_commands`. The warnings left in `minecraft_terrain` are all in files the track did not touch (`mesh.rs`, `server_mobs.rs`, `item_icon.rs` and others); `class_file.rs`, `creative_tabs.rs` and `locate.rs` have none.
+- `test -p minecraft_commands --locked`: 113 passed. `test -p minecraft_terrain --locked`: 478 passed, 3 ignored (the existing timing and local-pack diagnostics).
+- Every new `.rs` file passes `rustfmt --check` on its committed content, and the track adds no comments.
+
+### Commits, oldest first
+
+| Commit | Subject |
+| --- | --- |
+| e1ae2b8 | Minecraft commands suggest completions like vanilla |
+| bfc330e | Minecraft /clear removes items like vanilla |
+| 3cc8bb8 | Minecraft commands can redirect like vanilla |
+| 4adb791 | Minecraft /xp and /experience add, set and query experience like vanilla |
+| 470433a | Minecraft /enchant enchants the held item like vanilla |
+| 8424078 | Minecraft /setblock places blocks like vanilla |
+| c9f6934 | Minecraft /fill fills areas like vanilla |
+| d4ea858 | Minecraft /spawnpoint sets each player's respawn point like vanilla |
+| 9ebf5d3 | Minecraft /locate finds structures and biomes like vanilla |
+| 410015a | Minecraft /execute in parses dimensions like vanilla |
+| fe350b8 | Minecraft /kit gives the .env kit again |
+| fbc0253 | Minecraft resource errors point after the id like vanilla |
+| 5aa18ba | Minecraft creative tabs are read from the game jar |
+| fe4fe8a | Minecraft suggestion engine passes rustfmt again |
+| 18a4b0f | Minecraft block suggestions offer [ only for blocks with properties |
+| 4e8a127 | Minecraft experience math wraps like vanilla at huge levels |
+| ebc7f49 | Minecraft block tag errors point at the last value like vanilla |
+| 680f714 | Minecraft /kit test steps overflow the inventory for real |
+| 19a00cc | Minecraft block suggestions pass the workspace clippy rules |
+
+### One kit for every entry
+
+```
+IW4L_MINECRAFT_KIT=diamond_pickaxe+efficiency=5,diamond_sword,stick,stone*64,stone*30,oak_log*10,iron_boots,torch*64,bread*16
+```
+
+9 stacks: `minecraft:diamond_pickaxe` 1 (Efficiency V), `minecraft:diamond_sword` 1, `minecraft:stick` 1, `minecraft:stone` 64 and 30, `minecraft:oak_log` 10, `minecraft:iron_boots` 1, `minecraft:torch` 64, `minecraft:bread` 16. It covers the `/clear`, `/enchant` and `/kit` steps. Every other entry needs no items.
+
+### Order
+
+Load a fresh world with this kit and follow the entries' own steps in this order. Two numbers differ from the entries with this kit; they are given below.
+
+1. **Works now, with this branch alone:**
+   1. The redirect entry: `/help`, `/tp ~ ~5 ~`, `/tp`.
+   2. The `/execute` entry, steps 1 to 4.
+   3. The resource error entry: `/effect give @s nope`.
+   4. Without the glue, every other new command gives its default answer, which is the check for now:
+      - `/clear`: "No items were found on player Steve".
+      - `/xp` and `/spawnpoint`: "No player was found".
+      - `/enchant @s sharpness`: "Can't find element 'minecraft:sharpness' of type 'minecraft:enchantment'".
+      - `/setblock` and `/fill`: "That position is not loaded".
+      - `/locate structure minecraft:village_plains`: "Could not find a structure of type "minecraft:village_plains" nearby".
+      - `/kit`: "No IW4L_MINECRAFT_KIT in the .env next to the game".
+2. **Once the glue from the "After the split" notes is in**, in this order, because `/clear` needs the fresh kit and `/spawnpoint`'s `/kill` drops the inventory:
+   1. The `/clear` entry, steps 1 to 5. Step 4 now reads "Removed 108 item(s) from player Steve" (24 stone, the pickaxe, sword, stick, boots, 64 torches and 16 bread), and the inventory is empty afterwards.
+   2. The `/kit` entry, steps 2 to 4. Skip its step 1: the inventory is already empty. With this kit the sixth `/kit` is the first that no longer fits, and its 64 torches drop at your feet. Restore the `.env` line afterwards.
+   3. The `/enchant` entry. Hold one of the swords, then the sticks.
+   4. The `/xp` entry, then the experience wrap entry.
+   5. The `/setblock` entry, the `/fill` entry and the block tag error entry.
+   6. The `/locate` entry.
+   7. The `/spawnpoint` entry, last.
+3. **Once track A's chat uses the suggestion engine**, run the suggestion entry, the block suggestion entry and step 5 of the `/execute` entry.
+4. **Creative tabs** have nothing to test in game until the creative screen lands.
