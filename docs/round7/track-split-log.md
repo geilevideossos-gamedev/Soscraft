@@ -353,3 +353,36 @@ B3 is commit `96fff5a`.
   - `Globals.data` is a plain `GameData` (not an `Option`), filled with the empty default by the loader thread and loaded at the completion, as the plan says, so the jar is still read on the main thread at the same point of the load.
   - The jar is now read just before the level server thread starts instead of just after it, so that thread receives `load_loot` a moment later and the "Minecraft weather" log line (when `IW4L_MINECRAFT_WEATHER` is set) comes after the recipe lines. The commands reach the level server in the same order (`load_loot`, then `set_recipe_book`), and the main thread does the same work.
   - `set_recipe_book` is sent whenever there is a jar, where before it was sent only when the recipes parsed. If they fail to parse, the level server now gets an empty book instead of none; the only reader (sheep wool colour mixing) treats both the same (`matching` finds nothing and it falls back to a parent's colour with the same random draw).
+
+## B5. Minecraft players are kept by UUID
+
+B4 is commit `3385f09`.
+
+- **What changed:**
+  - New `minecraft_survival/src/player.rs` (no comments, rustfmt-clean): `Player { uuid, id, name, dimension, survival, mode, death_watch }` and `Player::new(profile, mode, survival)`, which builds the player from the chat server's `Profile` (its offline UUID, id and name) in the overworld with a fresh `DeathWatch`.
+  - `Server` gains `players: BTreeMap<PlayerUuid, Player>`; the loader builds it empty. `minecraft_survival/src/lib.rs` gains `pub mod player;`.
+  - `render_anim/src/minecraft_world.rs`:
+    - `Runtime` loses `survival`, `player_mode` and `death_watch`, and gains `local: Option<PlayerUuid>` and `carried_survival: Option<Survival>` (owner decision 2).
+    - Load completion: right after `chat.join(HOST, name)` it takes the host's profile; where it chose the starting game mode it now inserts `Player::new(&profile, starting_game_mode(...), carried_survival.take() or a new Survival)`, and it sets `runtime.local` next to `runtime.server`.
+    - `update()` looks up the local player, then the level by `player.dimension`, and binds `let Player { survival, mode: player_mode, death_watch, .. } = player;`, so every use in the body is unchanged.
+    - `close_world` takes the local player's `Survival` into `runtime.carried_survival` before the server goes to the save thread; `save_and_close` takes the local UUID instead of the mode and writes the player file from that player's mode.
+    - `stop()` no longer resets the death watch: it is dropped with the server, and the next load starts a new one.
+  - `render_anim/Cargo.toml` gains `minecraft_net.workspace = true`; `Cargo.lock` only gains that dependency line.
+- **Tests added** (1, in `player.rs`): `a_joining_player_starts_in_the_overworld_with_the_survival_it_carries` (UUID, id and name from the profile, the overworld, the carried health, the given mode and a fresh death watch). Totals: `minecraft_survival` 122 (121 + 1), `render_anim` 34; the moved total stays 153.
+- **Checks:** `check -p launcher --offline` (lock update), `check -p launcher --locked` (no new warning), `test -p minecraft_survival --locked`, `test -p render_anim --locked` (the chat tests); the staged `player.rs`, `server.rs` and `lib.rs` pass `rustfmt --check --edition 2024` with empty output.
+- **Owner test** (health, hunger, XP, game mode and deaths must work exactly as before, and survival still carries from one Minecraft match to the next):
+  1. Load a Minecraft match with `IW4L_MINECRAFT_WORLD=split` and the regression kit. Hearts, hunger and XP show.
+  2. Drink a few experience bottles and fall about 4 blocks, so you have some XP levels and are missing a heart or two.
+  3. Leave the match and load it again. The XP level, hearts and hunger are as you left them (they carry over within one game session, as before), and the kit is in the backpack again.
+  4. Type `/gamemode creative`, leave the match: the log says "Minecraft world saved". Load again: creative mode is back. Type `/gamemode survival`.
+  5. Fall from 6 blocks or more until you die: the death message and the killed-by card show, items (not guns) and XP drop, and you respawn normally.
+  6. Leave and load the match again, then die once more (`/kill`): the death is handled the same way as in step 5, with "Killed <name>" in the chat.
+  7. Type `/effect give @s minecraft:regeneration 10 1` with a heart missing: the hearts come back.
+- **Kit:** `minecraft:experience_bottle` x64, `minecraft:cobblestone` x64 (both in the regression kit).
+- **Not done here:** nothing.
+- **Decisions:**
+  - The player is inserted where the completion chose the game mode (after `Entities::new`) instead of right after `chat.join`, because its mode comes from `starting_game_mode`. The profile is taken right after `chat.join`; a missing profile fails the load like a missing overworld ("no host profile"), which can't happen because `join` always adds it.
+  - `render_anim` names `PlayerUuid` for `Runtime.local`, so it depends on `minecraft_net` directly. The plan's section 1.2 lists only `minecraft_survival`, but a re-export would break "`lib.rs` holds only `pub mod` lines".
+  - The `Runtime` field is `local`, as in the plan; `update()` binds it as `local_uuid`, because `local` is already its `LocalPresentClient` parameter.
+  - `close_world` takes the survival with `std::mem::take` and leaves the player in the server, so the save thread still reads its mode. `save_and_close` writes the player file only if the local player exists, which is always the case once a world has loaded.
+  - The carried survival falls back with `unwrap_or_else(Survival::default)`, because `clippy.toml` disallows `unwrap_or_default`.

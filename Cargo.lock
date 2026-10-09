@@ -5255,6 +5255,7 @@ dependencies = [
  "lighting_iw4",
  "math_iw4",
  "minecraft_commands",
+ "minecraft_net",
  "minecraft_survival",
  "minecraft_terrain",
  "minecraftoss-core",

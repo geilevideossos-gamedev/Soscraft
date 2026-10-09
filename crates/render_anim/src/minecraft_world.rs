@@ -117,6 +117,8 @@ struct Runtime {
     loading: Option<mpsc::Receiver<Result<(Loaded, minecraft_survival::server::Server), String>>>,
     world: Option<Loaded>,
     server: Option<minecraft_survival::server::Server>,
+    local: Option<minecraft_net::PlayerUuid>,
+    carried_survival: Option<minecraft_survival::survival::Survival>,
     environment_accumulator: f64,
     environment_primed: bool,
     light: Option<SkyLight>,
@@ -129,8 +131,6 @@ struct Runtime {
     steps: StepState,
     sounds: Option<crate::minecraft_sounds::Sounds>,
     inventory_ui: crate::minecraft_inventory::InventoryUi,
-    survival: minecraft_survival::survival::Survival,
-    player_mode: minecraft_terrain::game_mode::PlayerMode,
     /// Shape id of each block state already seen.
     shapes: HashMap<BlockStateId, u16>,
     /// Boxes of each shape id, to reuse an id for a repeated shape.
@@ -139,7 +139,6 @@ struct Runtime {
     atlas_animation: AtlasAnimation,
     animation_clock: f64,
     spawn_gate: crate::minecraft_spawn_gate::SpawnGate,
-    death_watch: minecraft_survival::death::DeathWatch,
     loader: Option<std::thread::JoinHandle<()>>,
     closing: Vec<std::thread::JoinHandle<()>>,
 }
@@ -314,7 +313,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
     };
     let terrain = minecraft_survival::level::Terrain { stream, scene, environment };
     let level = minecraft_survival::level::Level { dimension: Dimension::Overworld, entities: None, containers: Default::default(), terrain };
-    Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]) }))
+    Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), players: std::collections::BTreeMap::new() }))
 }
 
 pub(crate) fn data_jar() -> Option<std::path::PathBuf> {
@@ -466,7 +465,7 @@ fn update(
         runtime.loader = None;
         match result {
             Ok((world, mut server)) => {
-                let minecraft_survival::server::Server { globals, levels } = &mut server;
+                let minecraft_survival::server::Server { globals, levels, players } = &mut server;
                 let Some(level) = levels.get_mut(&Dimension::Overworld) else {
                     diag::warn!(World, "Minecraft world failed to load: no overworld");
                     view.active = false;
@@ -474,6 +473,11 @@ fn update(
                 };
                 let host = settings.as_deref().map_or_else(|| "Player".to_owned(), |settings| settings.player_name.clone());
                 globals.chat.join(minecraft_survival::commands::HOST, host);
+                let Some(profile) = globals.chat.profile(minecraft_survival::commands::HOST).cloned() else {
+                    diag::warn!(World, "Minecraft world failed to load: no host profile");
+                    view.active = false;
+                    return;
+                };
                 let (x, y, z) = level.terrain.stream.player_spawn;
                 view.origin = [x, y, z];
                 view.atlas = Some(world.atlas.clone());
@@ -510,7 +514,9 @@ fn update(
                 if let Some((_, Some(warning))) = &saved_mode {
                     diag::warn!(World, "{warning}");
                 }
-                runtime.player_mode = starting_game_mode(saved_mode.map(|(mode, _)| mode));
+                let player = minecraft_survival::player::Player::new(&profile, starting_game_mode(saved_mode.map(|(mode, _)| mode)), runtime.carried_survival.take().unwrap_or_else(minecraft_survival::survival::Survival::default));
+                let uuid = player.uuid.clone();
+                players.insert(uuid.clone(), player);
                 runtime.environment_accumulator = 0.0;
                 runtime.environment_primed = false;
                 runtime.light = Some(SkyLight::streamed());
@@ -531,6 +537,7 @@ fn update(
                 runtime.fire_frames = fire_frames(&world.packs).map(|(image, frames)| (images.add(image), frames));
                 level.entities = Some(entities);
                 runtime.server = Some(server);
+                runtime.local = Some(uuid);
                 runtime.world = Some(world);
                 runtime.shapes.clear();
                 runtime.shape_ids.clear();
@@ -547,6 +554,7 @@ fn update(
     let Runtime {
         world,
         server,
+        local: local_uuid,
         shapes,
         shape_ids,
         environment_accumulator,
@@ -561,28 +569,32 @@ fn update(
         hand,
         minimap,
         steps,
-        survival,
-        player_mode,
         fire_frames,
         atlas_animation,
         animation_clock,
         spawn_gate,
-        death_watch,
         ..
     } = &mut *runtime;
-    let (Some(world), Some(server)) = (world.as_mut(), server.as_mut()) else {
+    let (Some(world), Some(server), Some(local_uuid)) = (world.as_mut(), server.as_mut(), local_uuid.as_ref()) else {
         ui.active = false;
         ui.inventory_open = false;
         puppet.active = false;
         return;
     };
-    let minecraft_survival::server::Server { globals, levels } = server;
-    let Some(level) = levels.get_mut(&Dimension::Overworld) else {
+    let minecraft_survival::server::Server { globals, levels, players } = server;
+    let Some(player) = players.get_mut(local_uuid) else {
         ui.active = false;
         ui.inventory_open = false;
         puppet.active = false;
         return;
     };
+    let Some(level) = levels.get_mut(&player.dimension) else {
+        ui.active = false;
+        ui.inventory_open = false;
+        puppet.active = false;
+        return;
+    };
+    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, .. } = player;
     let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
     let host_alive = presented.player(local.0).is_some_and(|ps| ps.pm_type == 0);
     let host_pose = presented
@@ -2477,14 +2489,19 @@ fn save_before_exit(mut exit: MessageReader<AppExit>, mut runtime: NonSendMut<Ru
 }
 
 fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
-    let server = runtime.server.take();
+    let mut server = runtime.server.take();
+    let local = runtime.local.take();
+    if let (Some(server), Some(local)) = (server.as_mut(), local.as_ref())
+        && let Some(player) = server.players.get_mut(local)
+    {
+        runtime.carried_survival = Some(std::mem::take(&mut player.survival));
+    }
     let world = runtime.world.take();
     let loading = runtime.loading.take();
     let loader = runtime.loader.take();
-    let player_mode = runtime.player_mode;
     let open = world.is_some() || loading.is_some();
     if server.is_some() || open || loader.is_some() {
-        let close = move || save_and_close(server, world, loading, loader, player_mode);
+        let close = move || save_and_close(server, world, loading, loader, local);
         if blocking {
             close();
         } else {
@@ -2507,7 +2524,7 @@ fn save_and_close(
     world: Option<Loaded>,
     loading: Option<mpsc::Receiver<Result<(Loaded, minecraft_survival::server::Server), String>>>,
     loader: Option<std::thread::JoinHandle<()>>,
-    player_mode: minecraft_terrain::game_mode::PlayerMode,
+    local: Option<minecraft_net::PlayerUuid>,
 ) {
     let started = std::time::Instant::now();
     for level in server.iter_mut().flat_map(|server| server.levels.values_mut()) {
@@ -2530,6 +2547,7 @@ fn save_and_close(
     let rules = std::mem::take(&mut server.globals.game_rules);
     let difficulty = server.globals.difficulty;
     let day_ticks = server.globals.day.ticks;
+    let player_mode = local.and_then(|uuid| server.players.get(&uuid)).map(|player| player.mode);
     drop(server);
     drop(world);
     let Some(save) = save else {
@@ -2538,7 +2556,9 @@ fn save_and_close(
     if let Err(error) = save.write(spawn, Some(day_ticks), &rules, difficulty) {
         diag::warn!(World, "Minecraft level.dat not written: {error}");
     }
-    if let Err(error) = save.write_host(&player_mode) {
+    if let Some(player_mode) = player_mode
+        && let Err(error) = save.write_host(&player_mode)
+    {
         diag::warn!(World, "Minecraft player file not written: {error}");
     }
     diag::info!(
@@ -2553,7 +2573,6 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
     if close_world(runtime, false) || view.active {
         sim::voxel::deactivate();
         runtime.spawn_gate = Default::default();
-        runtime.death_watch = Default::default();
         view.active = false;
         view.atlas = None;
         view.atlas_patches.clear();
