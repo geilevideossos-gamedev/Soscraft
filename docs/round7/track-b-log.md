@@ -526,13 +526,32 @@ IW4L_MINECRAFT_KIT=chest*2
 
 ### 5. Review notes: found and left open
 
-Commit: (next entry)
+Commit: af7a188
 
 - **A trident waiting in a chunk that was never loaded is lost when the world closes.** Entry 11 keeps a trident that flew or came back into an unloaded chunk in memory, but `ServerSim::save_all_entities` (autosave and shutdown) only writes the loaded chunks' entities, so quitting while it waits there drops it and the item in it. Vanilla saves it: the entity section of the unloaded chunk is queued for loading (`PersistentEntitySectionManager.ensureChunkQueuedForLoad`) and written with that chunk's other entities. It is not fixed here because writing the trident alone into that chunk's entity file would replace the entities already saved there, or the generation mobs of a chunk never saved (`load_chunk` only uses `chunk.generation.entities` when no entity file exists); the fix needs the entity storage to merge into a chunk it has not loaded, which belongs with the per-level storage of the crate split. Until then it only happens to a trident thrown beyond the loaded area.
 - **The server never learns the player's real UUID** (review fix 2, After the split item 22).
 - **Checked and found right** (26.3 javap where it matters): projectile entity hits stop at the clip point (`EntityHitResult(entity, location)`), so a wind charge bursts where it struck a mob while a lingering cloud forms at the struck mob's position (`ThrownLingeringPotion.onHitAsPotion`); splash potions have no direct-hit bonus (`ThrownSplashPotion.onHitAsPotion`); shulker and chest lid timings, opener sounds and positions, potion table, colours and duration scaling, the trident's flight, deflection, Loyalty and despawn, the armour draw order, slot parts, inflation and first-layer glint.
 - **Test steps:** none.
 - **Kit:** none.
+
+## Final check
+
+### Track B log gets its final checks and one kit for the whole track
+
+Commit: (next entry)
+
+- **Changed:** this log only: review note 5's hash, and the kit below.
+- **Clippy:** `clippy -p minecraft_terrain -p render_anim -p render_gpu -p minecraftoss-entities -p minecraftoss-world --locked --all-targets -- -A clippy::approx_constant` reports no warning on any line the track added or changed (`git diff -U0 071dada..HEAD`). The warnings left in the files it touched were there before (`occupancy/remote_body.rs`'s argument counts and complex types, `anim/remote_body.rs`, `mesh.rs`, `model.rs`, `server.rs`, `server_mobs.rs`, `block_particles.rs`), and the two vendored crates report none.
+- **Tests:** `minecraft_terrain` 572 passed (3 ignored), `render_anim` 165, `render_gpu` 27, `minecraftoss-entities` 64, `minecraftoss-world` 55; none failed.
+- **Test steps:** none new. Each entry above has its own steps, and the kit below covers most of them in one world. One shulker box does for the floor, wall and ceiling steps (break it and place it again), and cobblestone can be dropped where wind charges step 4 says dirt. Not covered, use those entries' own kits:
+  - Throwables: the tipped arrows (entry 1), eggs (entry 2), the witch and the enderman (entries 4 and 6, or `/summon minecraft:witch` and `/summon minecraft:enderman`), the second and third Harming, Healing II, Slowness and the spider (entry 5, steps 1 to 3), Lingering Poison (entry 7, step 2).
+  - Lids: the trapped, copper and ender chests and the waterlogged chest (group steps 8 and 9).
+  - Body: the other leather pieces (entry 2), the lever (entry 5), the other armour textures (entry 6, step 3, and group step 6), the enchanted leather chestplate (entry 7, step 2).
+- **Kit:** one kit for the whole track, 27 stacks (potions, tridents and the shulker box take one slot each):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:experience_bottle*64,minecraft:snowball*16,minecraft:ender_pearl*16,minecraft:wind_charge*64,minecraft:splash_potion@harming,minecraft:splash_potion@poison,minecraft:splash_potion@water,minecraft:lingering_potion@harming,minecraft:trident,minecraft:trident+loyalty=3,minecraft:cow_spawn_egg*16,minecraft:zombie_spawn_egg*4,minecraft:flint_and_steel,minecraft:netherrack*16,minecraft:campfire,minecraft:candle*4,minecraft:red_shulker_box,minecraft:chest*4,minecraft:barrel,minecraft:oak_slab*16,minecraft:diamond_helmet+protection=4,minecraft:iron_chestplate+protection=4,minecraft:leather_leggings@red,minecraft:iron_boots,minecraft:cobblestone*64,minecraft:torch*64,minecraft:diamond_sword+sharpness=5
+```
 
 ## After the split
 
