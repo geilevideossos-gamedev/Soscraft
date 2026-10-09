@@ -106,6 +106,8 @@ struct Runtime {
     spawn_gate: crate::minecraft_spawn_gate::SpawnGate,
     loader: Option<std::thread::JoinHandle<()>>,
     closing: Vec<std::thread::JoinHandle<()>>,
+    shown: Option<Dimension>,
+    origins: HashMap<Dimension, [f64; 3]>,
 }
 
 impl Drop for Runtime {
@@ -506,6 +508,8 @@ fn update(
                 runtime.shapes.clear();
                 runtime.shape_ids.clear();
                 runtime.spawn_gate.start(now_ms);
+                runtime.shown = Some(Dimension::Overworld);
+                runtime.origins = HashMap::from([(Dimension::Overworld, view.origin)]);
             }
             Err(error) => {
                 diag::warn!(World, "Minecraft world failed to load: {error}");
@@ -514,7 +518,7 @@ fn update(
         }
     }
 
-    follow_levels(&mut runtime);
+    follow_levels(&mut runtime, &mut view, now_ms);
     let origin = view.origin;
     let Runtime {
         world,
@@ -2340,6 +2344,8 @@ fn save_before_exit(mut exit: MessageReader<AppExit>, mut runtime: NonSendMut<Ru
 fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
     let mut server = runtime.server.take();
     let local = runtime.local.take();
+    runtime.shown = None;
+    runtime.origins.clear();
     if let (Some(server), Some(local)) = (server.as_mut(), local.as_ref())
         && server.globals.save.is_none()
         && let Some(player) = server.players.get_mut(local)
@@ -2397,17 +2403,55 @@ fn awaiting_level(runtime: &Runtime) -> bool {
     let (Some(server), Some(local)) = (runtime.server.as_ref(), runtime.local.as_ref()) else {
         return false;
     };
-    server.players.get(local).is_some_and(|player| !server.levels.contains_key(&player.dimension))
+    server.players.get(local).is_some_and(|player| !server.levels.contains_key(&player.dimension) || runtime.shown != Some(player.dimension))
 }
 
-fn follow_levels(runtime: &mut Runtime) {
-    let Some(server) = runtime.server.as_mut() else {
+fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u64) {
+    let (Some(server), Some(local)) = (runtime.server.as_mut(), runtime.local.as_ref()) else {
         return;
     };
     let ticks = std::mem::take(&mut server.globals.level_ticks);
-    server.close_empty_levels(ticks);
+    for closed in server.close_empty_levels(ticks) {
+        runtime.origins.remove(&closed);
+    }
     server.open_levels(VIEW_DISTANCE);
     server.finish_opening();
+    let Some(player) = server.players.get(local) else {
+        return;
+    };
+    let dimension = player.dimension;
+    let Some(level) = server.levels.get(&dimension).filter(|_| runtime.shown != Some(dimension)) else {
+        return;
+    };
+    let (x, y, z) = level.terrain.stream.player_spawn;
+    let arrived = player.arrival.or(player.place).filter(|place| place.dimension == dimension).map(|place| place.feet);
+    let origin = *runtime.origins.entry(dimension).or_insert_with(|| match dimension {
+        Dimension::Overworld => [x, y, z],
+        _ => arrived.unwrap_or([x, y, z]),
+    });
+    sim::voxel::switch_level(origin);
+    view.origin = origin;
+    view.generation += 1;
+    view.uploads.clear();
+    view.removed.clear();
+    view.visible.clear();
+    view.particles = Default::default();
+    view.entity_meshes = Default::default();
+    view.cracks = Default::default();
+    view.clouds = None;
+    view.light_volume = None;
+    runtime.shapes.clear();
+    runtime.shape_ids.clear();
+    runtime.light = Some(SkyLight::streamed());
+    runtime.light_volume_at = None;
+    runtime.cloud_center = None;
+    runtime.environment_accumulator = 0.0;
+    runtime.environment_primed = false;
+    runtime.mining = Default::default();
+    runtime.minimap = Default::default();
+    runtime.spawn_gate.start(now_ms);
+    runtime.shown = Some(dimension);
+    diag::info!(World, "Minecraft level shown: {} with {:?} at map origin", dimension.dimension_type(), origin);
 }
 
 fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {

@@ -132,7 +132,7 @@ Commit: 9c0b000
 
 ### 7. Minecraft levels nobody is in save and close after 15 seconds (E1-6)
 
-Commit: filled in by the next entry (or `git log` under this subject)
+Commit: eaf9f07
 
 - **Changed:**
   - `minecraft_survival/src/level.rs`: `Level.empty_ticks`.
@@ -149,4 +149,19 @@ Commit: filled in by the next entry (or `git log` under this subject)
   - A temporary world (`IW4L_MINECRAFT_WORLD=temp`) keeps its empty levels open: its chunks live in a session folder that is deleted when the level closes, so closing would regenerate the level on the next visit.
   - Only the player's level ticks, as before; vanilla stops ticking entities in a level empty for 300 ticks, and here an empty level is not ticked at all.
 - **Test steps:** the overworld closes when the player starts in another dimension (entry 9); then the log shows `Minecraft minecraft:overworld level saved and closed` about 15 seconds after the start. Nothing to test on its own.
+- **Kit:** none.
+
+### 8. MW2 collision switches to the player's new Minecraft level (E1-7)
+
+Commit: filled in by the next entry (or `git log` under this subject)
+
+- **Changed:**
+  - `sim/src/voxel.rs`: `switch_level(origin)` keeps the one voxel world and its brush table, moves the block at map origin to `origin`, drops every chunk and every shape but the empty one, drains the queued block events and the mob boxes, and bumps the revision. Until the new level's chunks arrive, `awaiting_ground` holds the player still, as at a world load.
+  - `render_anim/src/minecraft_world.rs`: the adapter keeps one map origin per loaded level (`Runtime.origins`) and the level it shows (`Runtime.shown`). When the local player's level is open and is not the one shown, `follow_levels` switches the voxel world to that level's origin and starts its presentation afresh: shape tables, light, light volume, clouds, environment, mining, minimap, particles and mob meshes, a new `view.generation` (the renderer drops the old sections), and the spawn gate. `ui.loading_world` holds until the player's level is shown. A closed level forgets its origin.
+  - The overworld's origin stays its `player_spawn`, so the MW2 spawn at map origin is still the overworld spawn. The Nether and the End take the player's first arrival point in them as their origin.
+- **Tests:** `voxel`: `a_level_switch_drops_the_old_level_and_waits_for_ground_at_the_new_origin` (no chunk, the new origin, only the empty shape, the player at map origin waits for ground, map points convert from the new origin, the brush table stays). The drained events are a process-wide queue other sim tests use, so the test checks the world itself.
+- **Decisions:**
+  - The time of the switch, for MW2 ordnance fired before it (E1-13), is recorded with E1-13 in S4, where it is used.
+  - **Handed to S3:** coming back to a level that is still open (within its 15 seconds) needs its collision, sections and light sent again from its scene; the switch of E1-8 does that, with the loading screen and leaving the old level.
+- **Test steps:** with entry 9 (start in the Nether).
 - **Kit:** none.

@@ -413,6 +413,17 @@ pub fn activate(brushes: &[SimBrush], origin: [f64; 3], shapes: Vec<Vec<[f32; 6]
     bump();
 }
 
+pub fn switch_level(origin: [f64; 3]) {
+    if let Ok(mut world) = WORLD.write()
+        && let Some(world) = world.as_mut()
+    {
+        world.switch(origin);
+    }
+    let _ = take_events();
+    set_mob_boxes(Vec::new());
+    bump();
+}
+
 pub fn deactivate() {
     if let Ok(mut world) = WORLD.write() {
         *world = None;
@@ -632,6 +643,13 @@ pub fn to_map(origin: [f64; 3], b: [f64; 3]) -> [f32; 3] {
 impl VoxelWorld {
     fn has_chunks_around(&self, cx: i32, cz: i32, radius: i32) -> bool {
         (cx - radius..=cx + radius).all(|x| (cz - radius..=cz + radius).all(|z| self.chunks.contains_key(&(x, z))))
+    }
+
+    fn switch(&mut self, origin: [f64; 3]) {
+        self.origin = origin;
+        self.chunks.clear();
+        self.shapes = vec![Vec::new()];
+        self.fluids = vec![0];
     }
 
     fn awaits_ground(&self, origin: [f32; 3]) -> bool {
@@ -1226,6 +1244,21 @@ mod tests {
 
     const SOURCE: u16 = 3;
     const FLOWING: u16 = 4;
+
+    #[test]
+    fn a_level_switch_drops_the_old_level_and_waits_for_ground_at_the_new_origin() {
+        let mut w = world(&[([1, 0, 1], 1)]);
+        w.brushes = 7;
+        assert!(!w.awaits_ground([0.0; 3]));
+        w.switch([100.5, 49.0, 0.5]);
+        assert!(w.chunks.is_empty());
+        assert_eq!(w.origin, [100.5, 49.0, 0.5]);
+        assert_eq!((w.shapes.len(), w.fluids.len()), (1, 1));
+        assert!(w.shapes[0].is_empty());
+        assert!(w.awaits_ground([0.0; 3]));
+        assert_eq!(to_block(w.origin, [36.0, 0.0, 0.0]), [101.5, 49.0, 0.5]);
+        assert_eq!(w.brushes, 7, "the map's brushes stay");
+    }
 
     fn pool(depth: i32) -> VoxelWorld {
         let mut blocks = Vec::new();
