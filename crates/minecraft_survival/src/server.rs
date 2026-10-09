@@ -60,6 +60,9 @@ impl Server {
         let weather = self.globals.weather;
         let players = player_files(&self.players);
         for level in self.levels.values_mut() {
+            if let Some(entities) = level.entities.as_mut() {
+                crate::level::save_server_block_entities(entities, &mut level.terrain, true);
+            }
             crate::level::save_block_entities(&mut level.containers, &mut level.terrain);
         }
         drop(self);

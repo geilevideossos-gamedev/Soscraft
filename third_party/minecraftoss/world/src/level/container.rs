@@ -102,6 +102,14 @@ impl Level<'_> {
         self.chunks.get_mut(&pos.chunk())?.block_entities.entities.get_mut(&(pos.x, pos.y, pos.z))
     }
 
+    pub(super) fn set_block_entity_value(&mut self, pos: BlockPos, key: &str, value: Tag) {
+        let Some(Tag::Compound(map)) = self.block_entity_mut(pos) else { return };
+        if map.get(key) != Some(&value) {
+            map.insert(key.to_owned(), value);
+            self.changed_block_entities.insert((pos.x, pos.y, pos.z));
+        }
+    }
+
     /// `ChestBlock.isChestBlockedAt` (cats are not simulated).
     fn chest_blocked(&self, pos: BlockPos) -> bool {
         let above = self.block(pos.above());
@@ -157,9 +165,7 @@ impl Level<'_> {
 
     fn write_items(&mut self, pos: BlockPos, items: &[Stack]) {
         let list: Vec<Tag> = items.iter().enumerate().filter(|(_, s)| !s.is_empty()).map(|(i, s)| s.to_tag(i)).collect();
-        if let Some(Tag::Compound(map)) = self.block_entity_mut(pos) {
-            map.insert("Items".to_owned(), Tag::List(list));
-        }
+        self.set_block_entity_value(pos, "Items", Tag::List(list));
     }
 
     /// `item replace block ... container.N with ...`: the block entity's own
@@ -299,18 +305,15 @@ impl Level<'_> {
     }
 
     fn set_hopper_cooldown(&mut self, pos: BlockPos, value: i32) {
-        if let Some(Tag::Compound(map)) = self.block_entity_mut(pos) {
-            map.insert("TransferCooldown".to_owned(), Tag::Int(value));
-        }
+        self.set_block_entity_value(pos, "TransferCooldown", Tag::Int(value));
     }
 
     /// `HopperBlockEntity.pushItemsTick`.
     pub(super) fn hopper_tick(&mut self, pos: BlockPos) {
         let cooldown = self.hopper_cooldown(pos) - 1;
-        self.set_hopper_cooldown(pos, cooldown);
+        self.set_hopper_cooldown(pos, cooldown.max(0));
         self.hopper_ticked.insert(pos, self.game_time);
         if cooldown <= 0 {
-            self.set_hopper_cooldown(pos, 0);
             self.hopper_try_move(pos);
         }
     }

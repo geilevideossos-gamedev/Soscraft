@@ -133,7 +133,7 @@ fn saved_int(value: u32) -> Tag {
 }
 
 pub fn owns_block_entity(kind: &str) -> bool {
-    CHEST_KINDS.contains(&kind)
+    CHEST_KINDS.contains(&kind) || cooking_kind(kind).is_some() || kind == BREWING_STAND || kind == CAMPFIRE
 }
 
 pub fn leave_to_client(store: &mut BlockEntityStore) {
@@ -2208,6 +2208,12 @@ mod tests {
         assert!(store.entities[&(0, 64, 0)].get("Items").is_none());
         assert_eq!(store.entities[&(1, 64, 0)].get("Items"), Some(&items));
         assert!(store.pending[&(2, 64, 0)].get("Items").is_none());
+        for kind in ["minecraft:furnace", "minecraft:blast_furnace", BREWING_STAND, CAMPFIRE] {
+            assert!(owns_block_entity(kind), "{kind}");
+        }
+        for kind in ["minecraft:hopper", "minecraft:dispenser", "minecraft:dropper", "minecraft:comparator"] {
+            assert!(!owns_block_entity(kind), "the level saves {kind}");
+        }
     }
 
     const FURNACE: BlockPos = (0, 64, 0);

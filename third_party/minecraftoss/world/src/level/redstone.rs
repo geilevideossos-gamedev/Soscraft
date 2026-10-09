@@ -246,10 +246,7 @@ impl Level<'_> {
     }
 
     fn set_comparator_output(&mut self, pos: BlockPos, value: i32) {
-        let key = (pos.x, pos.y, pos.z);
-        if let Some(Tag::Compound(map)) = self.chunks.get_mut(&pos.chunk()).and_then(|c| c.block_entities.entities.get_mut(&key)) {
-            map.insert("OutputSignal".to_owned(), Tag::Int(value));
-        }
+        self.set_block_entity_value(pos, "OutputSignal", Tag::Int(value));
     }
 
     /// `BlockState.getOwnSignal`.

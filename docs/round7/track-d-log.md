@@ -296,7 +296,7 @@ IW4L_MINECRAFT_KIT=minecraft:chest*3,minecraft:trapped_chest,minecraft:barrel,mi
 
 ### 12. Minecraft furnaces, brewing stands and campfires keep cooking after a restart
 
-Commit: (filled in by the next entry). It finishes b681b6d, a work-in-progress commit made before a PC shutdown that only added the vendor accessors and the campfire time getters.
+Commit: c2a10e3. It finishes b681b6d, a work-in-progress commit made before a PC shutdown that only added the vendor accessors and the campfire time getters.
 
 - **Changed:**
   - `minecraft_terrain/src/containers.rs`:
@@ -330,4 +330,40 @@ Commit: (filled in by the next entry). It finishes b681b6d, a work-in-progress c
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:furnace,minecraft:smoker,minecraft:blast_furnace,minecraft:brewing_stand,minecraft:campfire,minecraft:soul_campfire,minecraft:coal*64,minecraft:raw_iron*64,minecraft:potato*16,minecraft:beef*8,minecraft:blaze_powder*4,minecraft:nether_wart*8,minecraft:glass_bottle*3,minecraft:water_bucket,minecraft:diamond_pickaxe+efficiency=5,minecraft:cobblestone*64
+```
+
+### 13. Minecraft hoppers, dispensers and droppers keep their items
+
+Commit: (filled in by the next entry)
+
+- **Changed:**
+  - Vendored `third_party/minecraftoss/world/src/level/` (MinecraftOSS patch):
+    - `mod.rs`: `Level` keeps the positions whose block entity it changed, `take_changed_block_entities` hands them over.
+    - `container.rs`: `set_block_entity_value` writes one key of a block entity and records the position only when the value really changes. `write_items` (every hopper, dispenser and dropper slot change) and `set_hopper_cooldown` use it. `hopper_tick` writes the final `TransferCooldown` once (`cooldown.max(0)`) instead of writing -1 and then 0, the same result as vanilla's two writes, so an idle hopper is not recorded every tick.
+    - `redstone.rs`: `set_comparator_output` uses it too, so comparators keep their `OutputSignal`.
+  - `minecraft_terrain/src/server.rs`: `ServerSim::take_block_entity_changes` gives the changed block entities' tags, except the types `Containers` owns; `Output.block_entities` carries them to the client after every batch of commands. `unload_chunk` collects a chunk's changes before it leaves the level.
+  - `minecraft_terrain/src/containers.rs`: `owns_block_entity` now also covers furnaces, smokers, blast furnaces, brewing stands and campfires, so the level neither saves them nor keeps their `Items` (`leave_to_client`). The level does not simulate them, so nothing changes in play; it only stops the level from holding a stale copy of their items.
+  - `minecraft_survival/src/entities.rs`: the poll keeps `output.block_entities`; `take_block_entity_changes`, and `finish_block_entity_changes`, which asks the server to save and waits for its last output when the world closes.
+  - `minecraft_survival/src/level.rs`: `save_server_block_entities`; `stream_tick` passes the server's changes to the chunk map (`record_block_entities`) before the chunk map ticks. `server.rs`: the closing save takes the server's last changes before the containers'.
+- **Tests:** `server`: `hoppers_hand_their_changed_items_to_the_chunk_map_and_leave_chests_to_the_containers` (real data: a hopper above a chest; filling the hopper, each move and the emptied hopper are handed over with `Items` and `TransferCooldown`, the chest never is, an idle hopper changes nothing, and a chunk's last change is handed over when it unloads). `containers`: `only_the_containers_own_block_entities_and_the_level_leaves_their_items_alone` also checks which types each side owns.
+- **Decisions:**
+  - Only real changes are handed over, so idle hoppers and comparators cost nothing; a hopper that is cooling down is written every tick, as vanilla marks it changed.
+  - The chunk map drops a chunk when the player leaves its view distance, before the server unloads it, so a change made in the very last ticks before that would be lost. Hoppers only tick within the simulation distance (8 chunks), which is inside the view distance, so nothing is moving there by then.
+  - A hopper feeding the player's chest or furnace, and a comparator reading one, still work on the level's own copy, which the player does not see (brief risk "Two container truths", left for "Finish survival").
+- **Not simulated and therefore not saved** (their block entities stay exactly as generated or as vanilla saved them, or get the empty default when placed):
+  - sign text (signs cannot be edited yet), lectern books, jukebox discs, decorated pot items, chiseled bookshelf and shelf items, beehive and bee nest bees, brushable block loot, crafter items, beacon effects, conduits, bells, end gateways, spawners and trial spawners, vaults, creaking hearts, sculk sensors, catalysts and shriekers, command, structure and jigsaw blocks, and enchanting tables;
+  - a name or other components on a placed block item: only shulker boxes take their contents and name from the item; a named chest, furnace or banner (patterns) is placed plain;
+  - the ender chest saves nothing in the block, like vanilla: its items are in each player's file (entry 8).
+- **Test steps:** in our game nothing can put items into a hopper or dropper yet (they have no screen, and hoppers neither pick up dropped items nor read the player's chests), so the items are put in with vanilla Minecraft 26.3.
+  1. Copy `iw4l-artifacts\saves\savetest` into `.minecraft\saves` and open it in Minecraft 26.3. Place a dropper on the ground, a hopper on top of it and a second hopper on top of that one (each points down into the block below). Put a lever on the side of the top hopper and switch it on, so the top hopper is locked.
+  2. Put 64 dirt into the top hopper and 64 dirt into the dropper. Keep a pickaxe and no other dirt in your inventory. Save and quit, and copy the world folder back over `iw4l-artifacts\saves\savetest`.
+  3. Start our game with `IW4L_MINECRAFT_WORLD=savetest`. Switch the lever off: the dirt moves down into the dropper, about 2.5 a second. **Screenshot 1** after 10 seconds.
+  4. Quit through the menu right away and start again.
+  5. Wait 60 seconds. Break the top hopper, the second hopper and the dropper with the pickaxe and pick everything up.
+  6. Expected: exactly 128 dirt, plus the two hoppers and the dropper. Before this commit the hoppers came back as vanilla saved them after a restart, so the dirt moved before quitting was there twice. **Screenshot 2:** the inventory.
+  7. Optional: repeat step 3 and 4 with fresh dirt, then open the world in Minecraft 26.3 again: the hoppers and the dropper hold the dirt where our game left it.
+- **Kit:** none: the world keeps the inventory vanilla saved, so the kit is skipped. For a fresh world, the pickaxe:
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5
 ```

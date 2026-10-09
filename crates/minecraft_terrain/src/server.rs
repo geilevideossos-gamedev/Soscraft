@@ -64,6 +64,7 @@ pub struct ServerSim {
     merchant_closing: bool,
     thrown: Vec<crate::thrown::Thrown>,
     pearl_landings: Vec<[f64; 3]>,
+    block_entity_changes: Vec<(BlockPos, Option<minecraftoss_core::nbt::Tag>)>,
 }
 
 /// What a player's hit or use on a mob did, for the client to present.
@@ -230,6 +231,7 @@ impl ServerSim {
             merchant_closing: false,
             thrown: Vec::new(),
             pearl_landings: Vec::new(),
+            block_entity_changes: Vec::new(),
         }
     }
 
@@ -750,6 +752,7 @@ impl ServerSim {
 
     /// A chunk leaves the level; its entities are saved and taken out.
     pub fn unload_chunk(&mut self, pos: ChunkPos) {
+        self.collect_block_entity_changes();
         self.save_chunk_entities(pos, true);
         self.level.remove_chunk(pos);
         self.mobs.pois.unload_chunk(pos.x, pos.z);
@@ -1090,6 +1093,23 @@ impl ServerSim {
             .collect()
     }
 
+    fn collect_block_entity_changes(&mut self) {
+        for (x, y, z) in self.level.take_changed_block_entities() {
+            let chunk = self.level.chunk(minecraftoss_core::BlockPos::new(x, y, z).chunk());
+            let Some(tag) = chunk.and_then(|chunk| chunk.block_entities.entities.get(&(x, y, z))) else {
+                continue;
+            };
+            if tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str).is_some_and(|kind| !crate::containers::owns_block_entity(kind)) {
+                self.block_entity_changes.push(((x, y, z), Some(tag.clone())));
+            }
+        }
+    }
+
+    pub fn take_block_entity_changes(&mut self) -> Vec<(BlockPos, Option<minecraftoss_core::nbt::Tag>)> {
+        self.collect_block_entity_changes();
+        std::mem::take(&mut self.block_entity_changes)
+    }
+
     /// Positions changed since the last call, with the block now there.
     pub fn take_changes(&mut self) -> Vec<(BlockPos, Option<Block>)> {
         let changed = self.level.take_changed();
@@ -1191,6 +1211,7 @@ pub struct WeatherView {
 pub struct Output {
     /// Blocks that changed, with the block now there.
     pub changes: Vec<(BlockPos, Option<Block>)>,
+    pub block_entities: Vec<(BlockPos, Option<minecraftoss_core::nbt::Tag>)>,
     pub destroyed: Vec<(BlockPos, Block)>,
     /// Entity snapshots, after a tick.
     pub entities: Option<EntitySnapshot>,
@@ -1576,6 +1597,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
             }
         }
         out.changes = sim.take_changes();
+        out.block_entities = sim.take_block_entity_changes();
         out.destroyed = sim.take_destroyed();
         out.handled = handled;
         if outputs.send(out).is_err() {
@@ -4301,5 +4323,44 @@ mod tests {
         assert!(crate::server_mobs::load_level_entity(&mut server.level, &old));
         let resaved = sword(&server).expect("the old sword is saved again");
         assert_eq!(resaved.get("Item").and_then(|item| item.get("components")), Some(saved_components));
+    }
+
+    #[test]
+    fn hoppers_hand_their_changed_items_to_the_chunk_map_and_leave_chests_to_the_containers() {
+        use minecraftoss_core::nbt::Tag;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        if server.level.registries().block_entities.is_none() {
+            return;
+        }
+        let (hopper, chest) = ((8, 201, 8), (8, 200, 8));
+        place(&mut server, &mut scene, chest, Block::new("minecraft:chest").with("facing", "north").with("type", "single").with("waterlogged", "false"));
+        place(&mut server, &mut scene, hopper, Block::new("minecraft:hopper").with("facing", "down").with("enabled", "true"));
+        server.take_changes();
+        server.take_block_entity_changes();
+        let at = |pos: BlockPos| minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
+        let dirt = |tag: &Tag| tag.get("Items").and_then(Tag::as_list).map_or(0, |items| items.iter().filter_map(|item| item.get("count").and_then(Tag::as_i64)).sum::<i64>());
+        let positions = |changes: &[(BlockPos, Option<Tag>)]| changes.iter().map(|(pos, _)| *pos).collect::<Vec<_>>();
+        assert!(server.level.replace_block_item(at(hopper), 0, minecraftoss_core::item::ItemStack::new("minecraft:dirt", 3)));
+        let filled = server.take_block_entity_changes();
+        assert_eq!(positions(&filled), vec![hopper]);
+        assert_eq!(filled[0].1.as_ref().map(dirt), Some(3));
+        server.tick();
+        let moved = server.take_block_entity_changes();
+        assert_eq!(positions(&moved), vec![hopper], "the chest's items stay the containers'");
+        let tag = moved[0].1.as_ref().unwrap();
+        assert_eq!(tag.get("id").and_then(Tag::as_str), Some("minecraft:hopper"));
+        assert_eq!((dirt(tag), tag.get("TransferCooldown").and_then(Tag::as_i64)), (2, Some(8)));
+        assert_eq!(server.level.block_container_items(at(chest)).map(|items| items.iter().map(|s| s.count).sum::<i32>()), Some(1));
+        ticked(&mut server, 40);
+        let emptied = server.take_block_entity_changes();
+        assert_eq!(positions(&emptied), vec![hopper]);
+        assert_eq!(emptied[0].1.as_ref().map(dirt), Some(0));
+        ticked(&mut server, 5);
+        assert!(server.take_block_entity_changes().is_empty(), "an idle hopper changes nothing");
+        server.level.replace_block_item(at(hopper), 0, minecraftoss_core::item::ItemStack::new("minecraft:dirt", 1));
+        server.unload_chunk(ChunkPos::new(0, 0));
+        let unloaded = server.take_block_entity_changes();
+        assert_eq!(positions(&unloaded), vec![hopper], "a chunk's last changes are handed over before it leaves");
+        assert_eq!(unloaded[0].1.as_ref().map(dirt), Some(1));
     }
 }

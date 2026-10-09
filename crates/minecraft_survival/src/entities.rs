@@ -74,6 +74,7 @@ pub struct Entities {
     burning_items: Vec<u32>,
     /// Stacks the server let the player pick up, not yet in the inventory.
     server_picked: Vec<(i32, [f64; 3], String, i32, Option<String>)>,
+    block_entity_changes: Vec<((i32, i32, i32), Option<minecraftoss_core::nbt::Tag>)>,
     server_snapshot: Option<EntitySnapshot>,
     server_handled: u64,
     loot: Option<std::sync::Arc<LootBook>>,
@@ -195,6 +196,7 @@ impl Entities {
             server_handed: HashMap::new(),
             burning_items: Vec::new(),
             server_picked: Vec::new(),
+            block_entity_changes: Vec::new(),
             server_snapshot: None,
             server_handled: 0,
             loot: data.loot.clone(),
@@ -484,6 +486,19 @@ impl Entities {
         }
     }
 
+    pub fn take_block_entity_changes(&mut self) -> Vec<((i32, i32, i32), Option<minecraftoss_core::nbt::Tag>)> {
+        std::mem::take(&mut self.block_entity_changes)
+    }
+
+    pub fn finish_block_entity_changes(&mut self) -> Vec<((i32, i32, i32), Option<minecraftoss_core::nbt::Tag>)> {
+        self.server.save();
+        self.server.wait_idle();
+        for output in self.server.poll() {
+            self.block_entity_changes.extend(output.block_entities);
+        }
+        self.take_block_entity_changes()
+    }
+
     pub fn summon(&mut self, kind: String, position: [f64; 3], nbt: Option<minecraftoss_core::nbt::Tag>) {
         self.server.summon(kind, position, nbt);
     }
@@ -667,6 +682,7 @@ impl Entities {
             }
             self.command_summons.extend(output.command_summons);
             changes.extend(output.changes);
+            self.block_entity_changes.extend(output.block_entities);
             self.destroyed.extend(output.destroyed);
             self.experience_found += output.orbs_taken.iter().map(|orb| orb.2 as f32).sum::<f32>();
             for sound in &output.mob_sounds {

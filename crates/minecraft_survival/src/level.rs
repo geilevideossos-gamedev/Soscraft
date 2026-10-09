@@ -115,6 +115,15 @@ pub fn save_block_entities(containers: &mut Containers, terrain: &mut Terrain) {
     terrain.stream.record_block_entities(&changes);
 }
 
+pub fn save_server_block_entities(entities: &mut Entities, terrain: &mut Terrain, closing: bool) {
+    let changes = if closing {
+        entities.finish_block_entity_changes()
+    } else {
+        entities.take_block_entity_changes()
+    };
+    terrain.stream.record_block_entities(&changes);
+}
+
 pub fn stream_tick(
     terrain: &mut Terrain,
     entities: &mut Option<Entities>,
@@ -122,6 +131,9 @@ pub fn stream_tick(
     block: (i32, i32, i32),
 ) -> (Vec<Arc<Chunk>>, Vec<ChunkPos>) {
     save_block_entities(containers, terrain);
+    if let Some(entities) = entities.as_mut() {
+        save_server_block_entities(entities, terrain, false);
+    }
     let (loaded, forgotten) = terrain.stream.server_tick(block, &mut terrain.scene);
     for pos in &forgotten {
         containers.forget_chunk((pos.x, pos.z));
