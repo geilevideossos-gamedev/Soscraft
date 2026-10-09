@@ -38,8 +38,9 @@ pub(crate) fn load_user_settings(
         return;
     };
     persistence.path = Some(path.clone());
+    let mut moved = false;
     match fs::read_to_string(&path) {
-        Ok(source) => parse_settings(&source, &mut settings, &mut binds),
+        Ok(source) => moved = parse_settings(&source, &mut settings, &mut binds),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
             // Do not replace settings we could not read with session defaults.
@@ -51,7 +52,7 @@ pub(crate) fn load_user_settings(
         }
     }
     settings.sanitize();
-    persistence.last_payload = Some(serialize_settings(&settings, &binds));
+    persistence.last_payload = (!moved).then(|| serialize_settings(&settings, &binds));
 }
 
 pub(crate) fn consume_menu_binding(
@@ -343,7 +344,7 @@ fn parse_into<T: std::str::FromStr>(value: &str, slot: &mut T) {
 fn serialize_settings(settings: &frame::GameSettings, binds: &KeyBinds) -> String {
     let safe_name = settings.player_name.replace(['\n', '\r', '='], " ");
     let mut lines = vec![
-        "// IW4L user settings v3".to_owned(),
+        "// IW4L user settings v4".to_owned(),
         format!(
             "resolution={}x{}",
             settings.resolution.width, settings.resolution.height
@@ -384,7 +385,7 @@ fn serialize_settings(settings: &frame::GameSettings, binds: &KeyBinds) -> Strin
     lines.join("\n")
 }
 
-fn parse_settings(source: &str, settings: &mut frame::GameSettings, binds: &mut KeyBinds) {
+fn parse_settings(source: &str, settings: &mut frame::GameSettings, binds: &mut KeyBinds) -> bool {
     let mut bind_script = String::new();
     for raw in source.lines() {
         let line = raw.trim();
@@ -495,6 +496,14 @@ fn parse_settings(source: &str, settings: &mut frame::GameSettings, binds: &mut 
     ) {
         binds.apply_minecraft_defaults();
     }
+    let moved = matches!(
+        source.lines().next().map(str::trim),
+        Some(
+            "// IW4L user settings v1"
+                | "// IW4L user settings v2"
+                | "// IW4L user settings v3"
+        )
+    ) && binds.move_old_grenade_keys();
     if !binds.has_pad_binds() {
         binds.apply_pad_layout(usize::from(settings.pad_layout.min(4)));
     }
@@ -507,6 +516,7 @@ fn parse_settings(source: &str, settings: &mut frame::GameSettings, binds: &mut 
     {
         binds.set(BindButton::Key(KeyCode::Digit4), 21);
     }
+    moved
 }
 
 pub(crate) fn native_menu_settings(
@@ -700,6 +710,9 @@ mod minecraft_bind_tests {
     use super::*;
 
     const E: BindButton = BindButton::Key(KeyCode::KeyE);
+    const F: BindButton = BindButton::Key(KeyCode::KeyF);
+    const G: BindButton = BindButton::Key(KeyCode::KeyG);
+    const B: BindButton = BindButton::Key(KeyCode::KeyB);
     const F5: BindButton = BindButton::Key(KeyCode::F5);
     const F6: BindButton = BindButton::Key(KeyCode::F6);
 
@@ -714,25 +727,110 @@ mod minecraft_bind_tests {
     fn older_settings_get_the_vanilla_minecraft_keys() {
         for header in ["// IW4L user settings v1", "// IW4L user settings v2"] {
             let binds = load(&format!(
-                "{header}\nshow_blood=true\nunbindall\nbind e +activate\nbind f +frag\n"
+                "{header}\nshow_blood=true\nunbindall\nbind e +activate\nbind f +frag\nbind g +smoke\n"
             ));
             assert_eq!(binds.minecraft_binding(E), Some("mc_inventory"), "{header}");
             assert_eq!(binds.minecraft_binding(F5), Some("mc_perspective"), "{header}");
+            assert_eq!(binds.minecraft_binding(F), Some("mc_swaphands"), "{header}");
             assert_eq!(binds.iter_minecraft().count(), 6, "{header}");
             assert_eq!(binds.binding_name(E), Some("+activate"), "{header}");
-            assert_eq!(
-                binds.binding_name(BindButton::Key(KeyCode::KeyF)),
-                Some("+frag"),
-                "{header}"
-            );
+            assert_eq!(binds.binding_name(F), None, "{header}");
+            assert_eq!(binds.binding_name(G), Some("+frag"), "{header}");
+            assert_eq!(binds.binding_name(B), Some("+smoke"), "{header}");
         }
     }
 
     #[test]
     fn current_settings_keep_their_minecraft_keys_unbound() {
-        let binds = load("// IW4L user settings v3\nunbindall\nbind e +activate\n");
-        assert_eq!(binds.iter_minecraft().count(), 0);
-        assert_eq!(binds.binding_name(E), Some("+activate"));
+        for header in ["// IW4L user settings v3", "// IW4L user settings v4"] {
+            let binds = load(&format!("{header}\nunbindall\nbind e +activate\n"));
+            assert_eq!(binds.iter_minecraft().count(), 0, "{header}");
+            assert_eq!(binds.binding_name(E), Some("+activate"), "{header}");
+        }
+    }
+
+    #[test]
+    fn old_grenade_keys_move_to_g_and_b() {
+        for header in [
+            "// IW4L user settings v1",
+            "// IW4L user settings v2",
+            "// IW4L user settings v3",
+        ] {
+            let binds = load(&format!(
+                "{header}\nunbindall\nbind e +activate\nbind f +frag\nbind g +smoke\nbind f mc_swaphands\nbind BUTTON_RSHLDR +frag\nbind BUTTON_LSHLDR +smoke\n"
+            ));
+            assert_eq!(binds.binding_name(G), Some("+frag"), "{header}");
+            assert_eq!(binds.binding_name(B), Some("+smoke"), "{header}");
+            assert_eq!(binds.binding_name(F), None, "{header}");
+            assert_eq!(binds.minecraft_binding(F), Some("mc_swaphands"), "{header}");
+            assert_eq!(
+                binds.binding_name(BindButton::Pad(crate::PadButton::RightBumper)),
+                Some("+frag"),
+                "{header}"
+            );
+            let saved = serialize_settings(&frame::GameSettings::default(), &binds);
+            assert_eq!(saved.lines().next(), Some("// IW4L user settings v4"));
+            assert!(saved.lines().any(|line| line == "bind g +frag"));
+            assert!(saved.lines().any(|line| line == "bind b +smoke"));
+            assert!(saved.lines().any(|line| line == "bind f mc_swaphands"));
+            assert!(!saved.lines().any(|line| line == "bind f +frag"));
+            let again = load(&saved);
+            assert_eq!(again.list_lines(), binds.list_lines(), "{header}");
+            let rerun = load(&saved.replacen("settings v4", "settings v3", 1));
+            assert_eq!(rerun.list_lines(), binds.list_lines(), "{header}");
+        }
+    }
+
+    #[test]
+    fn only_a_moved_grenade_pair_asks_for_the_file_to_be_rewritten() {
+        let parse = |source: &str| {
+            let mut binds = KeyBinds::default();
+            binds.apply_defaults();
+            let moved = parse_settings(source, &mut frame::GameSettings::default(), &mut binds);
+            (moved, binds)
+        };
+        let (moved, binds) = parse("// IW4L user settings v3\nunbindall\nbind f +frag\nbind g +smoke\n");
+        assert!(moved);
+        let saved = serialize_settings(&frame::GameSettings::default(), &binds);
+        assert!(!parse(&saved).0);
+        assert!(!parse("// IW4L user settings v2\nunbindall\nbind e +activate\n").0);
+        assert!(!parse("// IW4L user settings v4\nunbindall\nbind f +frag\nbind g +smoke\n").0);
+    }
+
+    #[test]
+    fn customised_grenade_keys_are_left_alone() {
+        let old = "unbindall\nbind f +frag\nbind g +smoke\nbind f mc_swaphands\n";
+        for (header, extra) in [
+            ("// IW4L user settings v3", "bind mouse4 +frag\n"),
+            ("// IW4L user settings v3", "bind b +melee\n"),
+            ("// IW4L user settings v2", "bind b +melee\n"),
+            ("// IW4L user settings v4", ""),
+        ] {
+            let binds = load(&format!("{header}\n{old}{extra}"));
+            assert_eq!(binds.binding_name(F), Some("+frag"), "{header} {extra}");
+            assert_eq!(binds.binding_name(G), Some("+smoke"), "{header} {extra}");
+        }
+        let binds = load("// IW4L user settings v3\nunbindall\nbind h +frag\nbind g +smoke\n");
+        assert_eq!(binds.binding_name(BindButton::Key(KeyCode::KeyH)), Some("+frag"));
+        assert_eq!(binds.binding_name(G), Some("+smoke"));
+        assert_eq!(binds.binding_name(B), None);
+    }
+
+    #[test]
+    fn a_rebound_grenade_key_survives_a_restart() {
+        let mut binds = KeyBinds::default();
+        binds.apply_defaults();
+        let frag = input_iw4::command_id_lookup("+frag").expect("command");
+        let mouse4 = BindButton::Mouse(MouseButton::Back);
+        binds.clear_command_on(frag, false);
+        binds.set(mouse4, frag);
+        let saved = serialize_settings(&frame::GameSettings::default(), &binds);
+        assert!(saved.lines().any(|line| line == "bind MOUSE4 +frag"));
+        let loaded = load(&saved);
+        assert_eq!(loaded.binding_name(mouse4), Some("+frag"));
+        assert_eq!(loaded.binding_name(G), None);
+        assert_eq!(loaded.binding_name(B), Some("+smoke"));
+        assert_eq!(loaded.list_lines(), binds.list_lines());
     }
 
     #[test]
@@ -743,7 +841,7 @@ mod minecraft_bind_tests {
         binds.clear_command_on(perspective, false);
         binds.set(F6, perspective);
         let saved = serialize_settings(&frame::GameSettings::default(), &binds);
-        assert_eq!(saved.lines().next(), Some("// IW4L user settings v3"));
+        assert_eq!(saved.lines().next(), Some("// IW4L user settings v4"));
         assert!(saved.lines().any(|line| line == "bind F6 mc_perspective"));
         assert!(!saved.lines().any(|line| line == "bind F5 mc_perspective"));
         let loaded = load(&saved);
@@ -768,6 +866,9 @@ mod minecraft_bind_tests {
         assert_eq!(dvars.get("ui_bind_mc_command"), Some("SLASH"));
         assert_eq!(dvars.get("ui_bind_mc_inventory"), Some("e"));
         assert_eq!(dvars.get("ui_bind_+activate"), Some("e"));
+        assert_eq!(dvars.get("ui_bind_+frag"), Some("g | R-BUMPER"));
+        assert_eq!(dvars.get("ui_bind_+smoke"), Some("b | L-BUMPER"));
+        assert_eq!(dvars.get("ui_bind_mc_swaphands"), Some("f"));
     }
 }
 

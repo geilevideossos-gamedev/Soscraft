@@ -1,0 +1,220 @@
+# Track A log: controls and chat
+
+Branch `track-a`, worktree `C:\Dev\mc-wt\track-a`. Briefs: `a1-grenade-keys.md`, `a2-chat.md`.
+
+A commit can't name its own hash, so each entry is written with its commit and its hash is filled in by the next commit; the last entry's hash is in `git log` under its subject.
+
+## Group: grenade keys
+
+### 1. Minecraft keys never take a grenade key outside a Minecraft screen
+
+Commit: ffca2a5
+
+- **Changed:** `console/src/binds.rs minecraft_presses`. The old rule let the swap-hands key keep its MW2 binding only while a gun was selected (`holding_item`), so with a Minecraft item or an empty hand F swapped hands instead of throwing. Now any Minecraft key that is also bound to `+frag` or `+smoke` in the MW2 layer keeps its throw while no Minecraft screen is open, whatever is in hand. Inside a screen the Minecraft action still wins (F swaps the hovered slot like vanilla). `holding_item` is gone from `MinecraftKeyState` and from `console/src/plugin/mod.rs`.
+- **Tests:** `a_grenade_key_keeps_its_throw_outside_minecraft_screens` replaces `swap_hands_takes_its_key_only_while_a_minecraft_item_is_in_hand`; `a_rebound_swap_hands_key_follows_the_same_rule` and `only_just_pressed_keys_fire_their_action` updated.
+- **Decision:** the throw wins over every Minecraft action on the same key, not only swap hands, because the owner wants the grenade to work whatever is held. A key bound only to a Minecraft action still takes the key as before.
+- **Test steps** (pick a class with Frag and Flash):
+  1. Select cobblestone and press G: a frag flies, nothing is placed or swapped.
+  2. Select an empty slot and press G: a frag flies.
+  3. Open the inventory (E), hover the cobblestone and press F: it goes to the offhand. Press G: nothing is thrown while the inventory is open.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64
+```
+
+### 2. Lethal and tactical grenades move to G and B, so F only swaps hands
+
+Commit: f7e1a42
+
+- **Changed:** `console/assets/default_controls.cfg` binds `G +frag` and `B +smoke`; F keeps only `mc_swaphands`. The pad layouts are unchanged (RB lethal, LB tactical). `settings.cfg` is now written as v4. New `KeyBinds::move_old_grenade_keys` (`console/src/binds.rs`): when a v1, v2 or v3 file has `+frag` on exactly F and `+smoke` on exactly G (keyboard and mouse; pad buttons don't count) and B is unbound in both layers, it moves them to G and B. Any other choice is left alone, and a second run changes nothing. `parse_settings` returns whether it moved them, and `load_user_settings` then leaves `last_payload` empty so the upgraded file is written once at start; other old files are still only rewritten when something changes, as before.
+- **Tests:** binds: `the_defaults_put_the_grenades_on_g_and_b_and_leave_f_to_swap_hands`, `the_old_grenade_pair_moves_once_and_only_when_untouched`; `the_defaults_bind_the_vanilla_minecraft_keys_beside_the_mw2_ones`, `rebinding_swap_hands_leaves_the_mw2_key_alone`, `unbinding_a_key_clears_both_layers` and `only_just_pressed_keys_fire_their_action` updated. user_settings: `old_grenade_keys_move_to_g_and_b` (v1 to v3, saved as v4, loading again changes nothing), `only_a_moved_grenade_pair_asks_for_the_file_to_be_rewritten`, `customised_grenade_keys_are_left_alone` (MOUSE4 lethal, B taken, v4 file, lethal on H), `a_rebound_grenade_key_survives_a_restart`; `older_settings_get_the_vanilla_minecraft_keys`, `current_settings_keep_their_minecraft_keys_unbound` (v3 and v4) and the controls-menu test (`ui_bind_+frag` is `g | R-BUMPER`, `ui_bind_+smoke` is `b | L-BUMPER`) updated.
+- **Decisions:** the move needs the exact old pair and a free B in both layers (a Minecraft action on B counts as taken). Off the Minecraft map MW2 plays exactly as before apart from the keys: G lethal, B tactical, F nothing. MW2's own retail PC default for the lethal is G too.
+- **Test steps** (pick a class with Frag and Flash):
+  1. Start once with your current `settings.cfg` and quit. `iw4l-artifacts\settings.cfg` starts with `// IW4L user settings v4` and holds `bind g +frag`, `bind b +smoke` and `bind f mc_swaphands`, and no `bind f +frag`.
+  2. Options > Controls > Actions: the lethal row ("Throw Frag/Use Equipment") starts with g and the tactical row ("Throw Special Grenade") with b (the pad button follows after a bar). Controls > Minecraft shows f for Swap Item With Off Hand. Screenshot both.
+  3. On the Minecraft map with a gun selected: G throws a frag, B a flash, F does nothing visible.
+  4. On an MW2 map (not Minecraft): G throws a frag, B a flash.
+  5. Actions page: rebind the lethal to MOUSE4, restart: it is still MOUSE4 and G does nothing. Rebind it back to G.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64
+```
+
+### 3. With a gun selected, the swap-hands key uses the offhand item, so the tactical key always throws
+
+Commit: 0d87b80
+
+- **Changed:** before, the tactical key (`+smoke`) latched `MinecraftUi.offhand_key` and lost its SMOKE bit when a gun was selected and the offhand item had a use, so with food in the offhand G ate instead of throwing. Now `frame::McActionInput` also carries held bits (`hold`, `is_held`), filled by `minecraft_presses` for a Minecraft key it took, outside screens only (`console/src/binds.rs`, fed with `inputs.pressed` in `console/src/plugin/mod.rs`). `sample_client_input` (`net/src/client/runtime.rs`) latches the offhand use from the held swap-hands key through the new pure `frame::minecraft_ui::offhand_key_latch` and no longer strips SMOKE. `render_anim` reads `offhand_key` as before, so no `minecraft_*` file changed. Swapping with a gun selected stays a no-op (`minecraft_offhand::swap_hands`).
+- **Tests:** frame: `a_held_minecraft_key_is_held_apart_from_its_press`, `the_offhand_key_latches_what_it_could_do_when_pressed` (press, hold, release, not usable at the press stays not usable). binds: `a_held_swap_hands_key_stays_held_until_released` (not in screens, not off the map, not for B or G, not when the key also throws).
+- **Decision:** the held bit is only set outside Minecraft screens, so holding F in the inventory and closing it doesn't start eating, and a key that keeps its grenade throw never holds swap hands.
+- **Test steps** (pick a class with Frag and Flash):
+  1. Put the golden apples in the offhand (F with them selected), select a gun and hold F: you eat (gun hidden, walking slowed). Release early: eating stops.
+  2. Still with the apples in the offhand and the gun selected, press B: a flash flies and nothing is eaten.
+  3. Put the shield in the offhand, gun selected, hold F: the shield goes up while held.
+  4. Put cobblestone in the offhand, gun selected, hold F while looking at the ground: blocks are placed.
+  5. Put the snowballs in the offhand, gun selected, press F: a snowball is thrown.
+  6. Put the stick in the offhand, gun selected, press F: nothing happens, the gun stays and the stick stays in the offhand.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:golden_apple*16,minecraft:shield,minecraft:snowball*16,minecraft:stick
+```
+
+### 4. MW2 grenade throws show while a Minecraft item or an empty hand is selected
+
+Commit: 8ee0cd0
+
+- **Changed:** new `pub fn mw2_throw_in_view(ps)` in `render_anim/src/occupancy/fpv_present.rs`: true while `weap_flags & OFFHAND_VIEW` is set, which MW2 sets from OffhandPrepare to the throw and clears at OffhandInit (gun going down) and OffhandEnd (gun coming up). While it is true: `occupy_fpv_scene` no longer hides the MW2 viewmodel for a selected Minecraft item, `skin_fpv_geometry` keeps the grenade draws for an empty hand (`hands_only` false), and `apply_fpv_placement` leaves the hands in MW2's place instead of Minecraft's arm pose. `render/src/extract.rs extract_minecraft_world` sends no first-person Minecraft item (main hand and offhand) to the GPU while it is true. No `minecraft_*` file changed.
+- **Tests:** `fpv_present.rs a_grenade_shows_only_while_the_offhand_view_is_up` (weapon states 0x0F to 0x16, with and without the flag).
+- **Decision:** the grenade shows only while the offhand view is up, not during the quick drop and quick raise around it, because with a Minecraft item selected those would show the hidden gun going down and coming back up.
+- **After the split** (needs `render_anim/src/minecraft_world.rs`): Minecraft attack, mining and use still work during the throw. See "After the split" below.
+- **Test steps** (pick a class with Frag and Flash):
+  1. Select cobblestone and press G: MW2's hand with the frag comes up, the cobblestone disappears, the frag is thrown and the cobblestone comes back. Screenshot mid-throw.
+  2. Hold G with cobblestone selected: the frag cooks in view until you release it.
+  3. Select cobblestone and press B: the flash shows and flies the same way.
+  4. Select an empty slot and press G: both MW2 hands and the frag show in MW2's position for the throw, then the empty hand goes back to the Minecraft arm position.
+  5. With a gun selected, G and B look exactly as before.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64
+```
+
+### 5. The pad's tactical button always throws, and holding D-pad down uses the offhand item with a gun
+
+Commit: e06f414
+
+- **Changed:** the pad's tactical button (LB in the default layout) already throws since commit 3, because the offhand latch no longer reads `+smoke`. `minecraft_presses` (`console/src/binds.rs`) now also holds swap hands while the fixed D-pad down (the pad's swap-hands button, `hud/src/minecraft_inventory.rs:266`) is held outside screens, so with a gun selected holding D-pad down eats, blocks or places with the offhand item like F.
+- **Tests:** `holding_the_pads_d_pad_down_holds_swap_hands_but_its_tactical_button_does_not` (not in screens, not off the map, not for LB or RB).
+- **Decision:** D-pad down keeps its MW2 `+actionslot 2` too, as before. MW2's multiplayer scripts give out action slots 1, 3 and 4 (night vision, attachment mode, killstreaks), so slot 2 has nothing to clash with. Not checked in game data, only from memory of the MW2 scripts; if it ever does something, the owner will see it on step 3.
+- **Test steps** (controller, default layout, a class with Frag and Flash):
+  1. Cobblestone selected: RB throws a frag, LB a flash, both visible.
+  2. Golden apples in the offhand, gun selected: hold D-pad down, you eat. Press LB: a flash flies and nothing is eaten.
+  3. Gun selected, nothing in the offhand: tap D-pad down, nothing happens.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:golden_apple*16
+```
+
+### 6. The input sampler takes the Minecraft keys beside the view subject
+
+Commit: aabe9a1
+
+- **Changed:** commit 3 put `McActionInput` into the first parameter tuple of `sample_client_input` (`net/src/client/runtime.rs`), which made clippy report a new `type_complexity` there. It now sits in a pair with `view`. No behaviour change.
+- **Checks:** `clippy -p console -p frame -p net -p render_anim -p render --tests -- --cap-lints warn` shows no warning on a line this group added; the rest are older (`too_many_arguments` and `type_complexity` on system signatures). Without `--cap-lints warn` clippy stops at older `approx_constant` errors in `minecraft_terrain`, which this track doesn't touch.
+- **Test steps:** none of its own (commit 3's steps cover it).
+
+## Group: chat
+
+### 1. Minecraft chat selects text with Shift and Ctrl+A like vanilla
+
+Commit: 37b241e
+
+- **Changed:** `frame::McChat` has a `highlight` (the other end of the selection; `close` resets it, `open` and Up/Down set it to the cursor, as vanilla `setValue` does). New `crates/hud/src/minecraft_edit.rs`: a pure `Edit` over (text, cursor, highlight, limit) with vanilla `EditBox` rules: `move_to(pos, extend)`, `step(dir, words, extend)`, `select_all`, `insert` (replaces the selection, filters `§` and control characters, room is the limit minus the length plus the selected length, nothing at all happens when there is no room), `delete(dir, words)` (a selection goes first, else one character or one word). `previous_char`, `next_char` and `word_position` moved there unchanged. `hud/src/minecraft_chat.rs`: keys arrive as `Typed { key, code, text, mods }`; `fold_typed` walks the frame's `KeyboardInput` messages in order and gives each key the Ctrl, Shift and Alt state at its own press (the state before the frame comes from `ButtonInput` through `held_before`), so a fast Ctrl+key in one frame no longer types the letter. `apply_typed` replaces `apply_key`: Shift with Left, Right, Home and End extends, Ctrl+Left/Right moves by word (with Shift it selects the word), Ctrl+A selects all (lowercased logical key, or the physical A key when the layout's letter isn't ASCII; Shift and Alt must be up), Backspace and Delete eat the selection first, and a key typed while Ctrl is down and Alt up types nothing (AltGr still types). `draw` puts a light box over the selection with vanilla's edges (`selection_box`) and redraws the selected text blue without shadow. `MINECRAFT-SURVIVAL.md` chat lines updated.
+- **Tests:** `minecraft_edit`: `shift_with_the_arrows_home_and_end_extends_the_selection`, `a_plain_arrow_drops_the_selection_and_steps_from_the_cursor`, `ctrl_shift_left_selects_a_word`, `select_all_puts_the_cursor_at_the_end`, `deleting_eats_the_selection_first`, `words_delete_like_vanilla`, `typing_replaces_the_selection`, `insert_room_counts_the_selected_length`, `inserted_text_loses_section_signs_and_control_characters`, `positions_never_split_a_character`. `minecraft_chat`: `modifiers_apply_to_the_keys_pressed_while_they_were_down`, `a_modifier_is_held_before_the_frame_unless_this_frame_changed_it`, `ctrl_a_selects_everything_and_typing_replaces_it` (Caps Lock `A`, Ctrl+Shift+A does nothing, a Cyrillic layout's A key), `ctrl_types_nothing_but_alt_gr_still_types`, `shift_selects_and_a_plain_arrow_steps_from_the_cursor`, `opening_and_walking_the_history_drop_the_selection`, `the_selection_box_spans_the_selected_text_like_vanilla`. `frame`: `clearing_messages_keeps_the_sent_history` also checks the highlight.
+- **Decisions:** vanilla draws the selection by inverting what is under it and adding blue; the HUD painter can't blend like that, so the box is a solid `0xC0C0FF` and the selected text is redrawn `0x1F1FFF` (vanilla's inverted `0xE0E0E0` plus blue). The 256 limit still counts characters, not UTF-16 units as vanilla does (the same for everything but emoji and other characters outside the BMP). Rust's `is_control` also drops the C1 control characters U+0080 to U+009F, which vanilla lets through.
+- **Test steps** (Minecraft map):
+  1. Press T and type `hello big world`. Press Ctrl+A: the whole line shows as a light box with blue text. Screenshot 1.
+  2. Type `x`: the line is just `x`. Press Backspace, type `hello big world` again.
+  3. Press Ctrl+Shift+Left: `world` is selected. Press Backspace: `hello big ` is left.
+  4. Press Shift+Left three times: `ig ` is selected. Press Left: the box goes and the cursor sits just before `b` (one step left of where it was, like vanilla). Screenshot 2.
+  5. Press Shift+Home, then type `y`: the line is `ybig `. Press End, then Ctrl+Backspace: the whole `ybig ` goes (a word and the spaces after it, like vanilla).
+  6. Hold Ctrl and press B: nothing is typed. On a German keyboard AltGr+Q types `@`.
+- **Kit:** none needed.
+
+### 2. Minecraft chat copies, cuts and pastes with Ctrl+C, Ctrl+X and Ctrl+V like vanilla
+
+Commit: cf24de6
+
+- **Changed:** `hud/src/minecraft_chat.rs`: a `ChatClipboard` trait (`get`, `set`) implemented for bevy's `Clipboard` (already in the build through `system_clipboard`; arboard on Windows) and for `()` when the resource is missing. `update_chat` takes `Option<ResMut<Clipboard>>` and passes it down through `handle_frame` to `apply_typed`. The shortcut letter (`a`, `c`, `v`, `x`) comes from the lowercased logical key, or the physical key when the layout's letter isn't ASCII, with Ctrl down and Shift and Alt up, as vanilla's `isCopy`, `isPaste` and `isCut`. Ctrl+C copies the selection, Ctrl+X copies it and then inserts nothing over it, Ctrl+V inserts the clipboard through `Edit::insert` (so it replaces the selection, filters `§` and control characters and keeps the 256 limit). Copying or cutting an empty selection leaves the clipboard alone (vanilla `KeyboardHandler.setClipboard` ignores ""). An empty or unreadable clipboard pastes "" like vanilla, which still removes the selection. Read and write errors other than "no text on the clipboard" go to the log as `minecraft chat paste failed` / `copy failed`. `Edit::highlighted` added. `MINECRAFT-SURVIVAL.md` chat lines updated.
+- **Tests:** `ctrl_v_pastes_the_clipboard_without_typing_v` (`/gamerule keep_inventory true` with a CRLF pastes as exactly the command, `a§b<tab>c` gives `abc`, Caps Lock `V` pastes, Ctrl+Shift+V doesn't), `a_paste_replaces_the_selection_and_stops_at_256` (250 characters with 10 selected take 16 of 30, an empty clipboard removes the selection), `ctrl_c_copies_and_ctrl_x_cuts_the_selection` (nothing selected leaves the clipboard alone, copy, cut, paste at Home, Ctrl+A then Ctrl+C, Ctrl+Shift+C does nothing).
+- **Decision:** the clipboard is read at the moment of the key, like vanilla; bevy's desktop clipboard answers at once, so there is no pending state to wait for.
+- **Test steps** (Minecraft map; the old name `keepInventory` doesn't exist in 26.3, only `keep_inventory`):
+  1. In Notepad type `/gamerule keep_inventory true` and copy it. In game press T, then Ctrl+V: the line shows exactly `/gamerule keep_inventory true` and no `v`. Screenshot 1. Press Enter: `Game rule keep_inventory is now set to true`.
+  2. Press T, type `/gamerule keepInventory true`, Enter: red `Incorrect argument for command` and the grey `<--[HERE]` line, because 26.3 only knows `keep_inventory`.
+  3. Press T, type `hello big world`, press Ctrl+A, then Ctrl+C, then type `x` (the line is `x`), then Ctrl+V: `xhello big world`. Screenshot 2.
+  4. Press Ctrl+Shift+Left (`world` selected), Ctrl+X (gone), Home, Ctrl+V: `worldxhello big `.
+  5. Back in Notepad, paste: `world` is on the system clipboard.
+  6. Copy a long paragraph (more than 256 characters) in Notepad and paste it into the chat: it stops at 256 characters.
+- **Kit:** none needed.
+
+### 3. Minecraft chat remembers sent commands across restarts like vanilla
+
+Commit: 4a8ee15
+
+- **Changed:** `hud/src/minecraft_chat.rs`: a `CommandHistory` kept in `update_chat` (a `Local`, so per client like vanilla's file). On the first frame with a `LaunchIdentity` it reads `<artifacts>/command_history.txt` (beside `settings.cfg`, so `C:\Games\Mashup\2010-Rust-Rewrite-Mashup\iw4l-artifacts\command_history.txt` for the release build) and puts its lines at the front of the chat's Up/Down history, as vanilla's `ChatComponent` fills `recentChat` from `CommandHistory`. Every line sent that frame that starts with `/` goes through `add_command` (vanilla `CommandHistory.addCommand`: a repeat of the last line is skipped, the oldest goes at 50) and, when something changed, the whole file is rewritten, one command per line. A missing file is normal; other read or write errors go to the log. The session history of all sent lines (100, plain chat too) is unchanged. `MINECRAFT-SURVIVAL.md` updated.
+- **Checked with javap (26.3):** `CommandHistory` uses `command_history.txt` in the game folder, `MAX_PERSISTED_COMMAND_HISTORY` 50, `addCommand` skips `peekLast` and removes the first at 50, `save` writes every line with `newLine`; `ChatComponent.addRecentChat` keeps 100 and passes only lines starting with `/` to the command history.
+- **Tests:** `the_command_history_keeps_fifty_lines_and_skips_a_repeat`, `sent_commands_come_back_after_a_restart` (a temp folder: plain chat isn't saved, the file holds the two commands, a fresh chat loads them and Up gives the last one; no artifacts folder means nothing is saved).
+- **Decision:** the file sits in `iw4l-artifacts` (the game's own folder, where vanilla would keep it in `.minecraft`) and is written with `\n` line ends; vanilla reads both.
+- **Test steps** (Minecraft map):
+  1. Press T, send `/time set day`, then `/gamerule keep_inventory true`, then the plain line `hello`.
+  2. Quit the game. `iw4l-artifacts\command_history.txt` holds the two commands, not `hello`.
+  3. Start again, press T, then Up: `/gamerule keep_inventory true`; Up again: `/time set day`; Down twice: back to the empty line. Screenshot 1.
+- **Kit:** none needed.
+
+### 4. Minecraft chat stays on screen while the player is dead like vanilla
+
+Commit: 465f841
+
+- **Changed:** `hud/src/minecraft_inventory.rs update_minecraft_hud`: the pure `minecraft_layers(active, in_world)` says what to draw: the whole Minecraft HUD while alive, only the chat while dead in a Minecraft world, nothing elsewhere. `in_world` is the loaded zone being the Minecraft map (`LaunchIdentity.zone`, as the compass already checks) and the world not loading. While dead it still hides the hotbar, vitals and screens and resets the screen input as before, then paints only `minecraft_chat::draw` (closed chat: the last 10 lines fading by age). The chat input itself still closes on death (`update_chat` and `minecraft_world.rs` both close it while `active` is false), as in vanilla, where the death screen replaces the chat screen. `MINECRAFT-SURVIVAL.md` updated.
+- **Checked with javap (26.3):** `Hud.extractChat` draws whenever there is a player and the HUD isn't hidden; it isn't gated on being alive, so vanilla shows the death message behind the death screen.
+- **Tests:** `minecraft_inventory::only_the_chat_shows_while_dead_in_a_minecraft_world`.
+- **Decision:** the brief planned a `MinecraftUi.in_world` flag set in `minecraft_world.rs`, which the crate split owns. The HUD can tell the same from the loaded zone, and the chat is cleared whenever a match starts or ends anyway, so no change is needed there after the split either.
+- **Test steps** (Minecraft map):
+  1. Press T and send `hello`, then press T and send `/kill`. While dead (killcam or Killed By card up), `hello` and `<name> was killed` stay bottom left above where the hotbar was, and fade out about 10 s after they arrived. Screenshot 1 while dead.
+  2. Press T while dead: the chat doesn't open. After respawning T opens it again.
+  3. Load an MW2 map (not Minecraft) and die there: no Minecraft chat lines show.
+- **Kit:** none needed.
+
+### 5. Minecraft death messages leave the MW2 kill feed
+
+Commit: 3e228ed
+
+- **Changed:** both kill feed lines a Minecraft death made are gone, the chat line (`minecraft_world.rs`, under `show_death_messages`) is unchanged:
+  - `sim/src/damage.rs apply_block_world_damage` no longer calls `push_print` with the death line for every client (it showed as a `KillfeedLine::Notify` text line); the `victim` name it needed is gone too. `push_minecraft_death` stays, so the Killed By card still gets its killer.
+  - The script `obituary()` native (`sim/src/script/host/natives/player.rs`) still records `minecraft_obituary` (the damage code still uses it to know the stand-in was credited), but skips `script_player::obituary`, so no `EV_OBITUARY` skull line, when the new pure `players::hides_minecraft_obituary(minecraft_hit, attacker, minecraft_killer)` holds: the hit is a Minecraft one and the attacker passed to `obituary` is the `trigger_hurt` stand-in. If the gametype credits a real MW2 player instead, the normal obituary is sent. MW2 damage never sets `minecraft_hit`, so MW2 deaths on any map keep their kill feed.
+  - The gametype callbacks still run, so the death animation, the killcam rules and the Killed By card are as before. `MINECRAFT-SURVIVAL.md` updated.
+- **Tests:** `players::only_a_minecraft_death_credited_to_the_stand_in_leaves_the_kill_feed` (not for an MW2 hit, another attacker, an undefined attacker, no attacker or no stand-in yet).
+- **Decision:** order kept as the brief asked (chat while dead landed first, commit 4), so the death message is never shown nowhere. Multiplayer delivery of the message to every player's chat is left for after the split (see below).
+- **Test steps** (Minecraft map; `keepInventory` doesn't exist in 26.3, the rule is `keep_inventory`):
+  1. Run `/gamerule keep_inventory false`. Place the lava and walk in. Bottom left shows `<name> tried to swim in lava` for about 10 s, also while dead. The MW2 kill feed on the left stays empty, the Killed By card says Lava and the death animation plays. Screenshot 1 while dead.
+  2. Tower about 20 dirt, jump off: `<name> fell from a high place` in the chat, nothing in the kill feed.
+  3. Run `/summon minecraft:skeleton ~ ~ ~6` and let it kill you: `<name> was shot by Skeleton`, Killed By card Skeleton. Screenshot 2.
+  4. Run `/gamerule show_death_messages false`, then `/kill`: no chat line and no kill feed line, but the Killed By card still shows. Run `/gamerule show_death_messages true` afterwards.
+  5. Throw a frag at your feet (G): the MW2 kill feed shows its normal MW2 line.
+  6. On an MW2 map, die to an enemy or a grenade: the kill feed is as before.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:lava_bucket,minecraft:dirt*64,minecraft:water_bucket
+```
+
+## Group: review fixes
+
+Adversarial review of the whole track (base 105d982).
+
+### 1. A quick tap of the swap-hands key with a gun selected still uses the offhand item
+
+Commit: (filled in by the next commit, or see `git log`)
+
+- **Defect:** commit 3 of the grenade group latched the offhand use from the swap-hands key's held state only (`inputs.pressed`). A tap whose press and release land in the same frame is never pressed at the sample, so with a gun selected a quick F (or D-pad down) tap threw no snowball and placed no block. The tactical latch it replaced read `kb.smoke.active || kb.smoke.was_pressed`, which caught such taps; this was a regression, more likely at low frame rates.
+- **Changed:** `console/src/binds.rs minecraft_presses` holds a Minecraft key's action, and D-pad down's swap hands, while the key is held or was just pressed this frame, still only outside Minecraft screens. A tap now holds for its one frame, so `offhand_key_latch` latches and `minecraft_world` sees the rising edge.
+- **Tests:** `a_swap_hands_tap_inside_one_frame_still_holds_for_that_frame` (F and D-pad down, not in screens, not off the map, not for B or G).
+- **Test steps** (pick a class with Frag and Flash):
+  1. Put the snowballs in the offhand, select a gun and tap F as quickly as you can, ten times: every tap throws a snowball.
+  2. Put cobblestone in the offhand, gun selected, look at the ground and tap F quickly: each tap places one block.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:snowball*16,minecraft:cobblestone*64
+```
+
+## After the split
+
+Changes this track needs in files the crate split owns, with the exact edit.
+
+- **Block Minecraft attack, mining and use while an MW2 grenade is up** (from commit 4). In `minecraft_world.rs update` (or wherever the split moves it), after `let busy = survival.eating().is_some() || hand.blocking.is_some() || hand.miss_time > 0;` (about line 898) compute `let mw2_offhand = (0x10..=0x15).contains(&ps.weaponstate_primary);` (OffhandInit to OffhandEnd; or make `weapon_iw4::offhand::in_offhand_family` at `weapon_iw4/src/offhand.rs:128` `pub` and call it) and add `|| mw2_offhand` to `busy`, so the hits at about 901, 961 and 976 stop. Change `let idle = survival.eating().is_none() && hand.blocking.is_none();` (about line 997) to `... && !mw2_offhand`, so no item is used or placed. In the split this is the per-player server check: the player's own MW2 weapon state, read from that UUID's playerstate.
+- **Send Minecraft death messages to every player's chat** (from chat commit 5). Today `minecraft_world.rs` (about lines 1638 to 1643, where `show_death_messages` is read) pushes `death_message(death.line(name))`, a `Text::literal` already resolved in the host's language, into the host's own `ui.chat` only. In the split, the server-side death handling for a player (by UUID) should keep the `DeathLine` translation key and its arguments (victim name, killer name or entity id, item name) and, when `show_death_messages` is on, broadcast it through the command server as a `Clientbound` translatable system message to every connected player like vanilla `ServerPlayer.die` (`broadcastSystemMessage`, following team visibility), so each client resolves it in its own language and it lands in each client's `McChat.received`. Nothing goes to the MW2 kill feed (`sim` no longer prints it and the stand-in obituary is skipped). The Killed By card keeps coming from `push_minecraft_death`.

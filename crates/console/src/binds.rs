@@ -336,6 +336,34 @@ impl KeyBinds {
         }
     }
 
+    pub fn move_old_grenade_keys(&mut self) -> bool {
+        let f = BindButton::Key(KeyCode::KeyF);
+        let g = BindButton::Key(KeyCode::KeyG);
+        let b = BindButton::Key(KeyCode::KeyB);
+        let (Some(frag), Some(smoke)) = (command_id_lookup("+frag"), command_id_lookup("+smoke"))
+        else {
+            return false;
+        };
+        let keys = |id: u32| -> Vec<BindButton> {
+            self.map
+                .iter()
+                .filter(|(button, bound)| **bound == id && !button.is_pad())
+                .map(|(button, _)| *button)
+                .collect()
+        };
+        if keys(frag) != [f]
+            || keys(smoke) != [g]
+            || self.map.contains_key(&b)
+            || self.minecraft.contains_key(&b)
+        {
+            return false;
+        }
+        self.map.remove(&f);
+        self.map.insert(g, frag);
+        self.map.insert(b, smoke);
+        true
+    }
+
     pub fn apply_script(&mut self, script: &str) -> Vec<String> {
         self.apply_script_inner(script, true)
     }
@@ -525,13 +553,13 @@ pub(crate) struct MinecraftKeyState {
     pub(crate) active: bool,
     pub(crate) use_hint: bool,
     pub(crate) screen_open: bool,
-    pub(crate) holding_item: bool,
 }
 
 pub(crate) fn minecraft_presses(
     binds: &KeyBinds,
     state: MinecraftKeyState,
     just_pressed: impl Fn(BindButton) -> bool,
+    held: impl Fn(BindButton) -> bool,
 ) -> (HashSet<BindButton>, frame::McActionInput) {
     let mut suppressed = HashSet::new();
     let mut presses = frame::McActionInput::default();
@@ -546,15 +574,22 @@ pub(crate) fn minecraft_presses(
         let use_wins = !state.screen_open
             && state.use_hint
             && matches!(binds.binding_name(button), Some("+activate" | "+usereload"));
-        let gun_keeps_key =
-            action == frame::McAction::SwapHands && !state.screen_open && !state.holding_item;
-        if use_wins || gun_keeps_key {
+        let throw_keeps_key = !state.screen_open
+            && matches!(binds.binding_name(button), Some("+frag" | "+smoke"));
+        if use_wins || throw_keeps_key {
             continue;
         }
         suppressed.insert(button);
         if just_pressed(button) {
             presses.press(action);
         }
+        if !state.screen_open && (held(button) || just_pressed(button)) {
+            presses.hold(action);
+        }
+    }
+    let dpad_down = BindButton::Pad(PadButton::DpadDown);
+    if !state.screen_open && (held(dpad_down) || just_pressed(dpad_down)) {
+        presses.hold(frame::McAction::SwapHands);
     }
     (suppressed, presses)
 }
@@ -652,6 +687,8 @@ mod minecraft_bind_tests {
 
     const E: BindButton = BindButton::Key(KeyCode::KeyE);
     const F: BindButton = BindButton::Key(KeyCode::KeyF);
+    const G: BindButton = BindButton::Key(KeyCode::KeyG);
+    const B: BindButton = BindButton::Key(KeyCode::KeyB);
     const X: BindButton = BindButton::Key(KeyCode::KeyX);
 
     fn id(name: &str) -> u32 {
@@ -664,12 +701,11 @@ mod minecraft_bind_tests {
         binds
     }
 
-    fn state(use_hint: bool, screen_open: bool, holding_item: bool) -> MinecraftKeyState {
+    fn state(use_hint: bool, screen_open: bool) -> MinecraftKeyState {
         MinecraftKeyState {
             active: true,
             use_hint,
             screen_open,
-            holding_item,
         }
     }
 
@@ -678,7 +714,7 @@ mod minecraft_bind_tests {
         state: MinecraftKeyState,
         key: BindButton,
     ) -> (HashSet<BindButton>, McActionInput) {
-        minecraft_presses(binds, state, |button| button == key)
+        minecraft_presses(binds, state, |button| button == key, |button| button == key)
     }
 
     #[test]
@@ -697,27 +733,94 @@ mod minecraft_bind_tests {
         }
         assert_eq!(binds.iter_minecraft().count(), expected.len());
         assert_eq!(binds.binding_name(E), Some("+activate"));
-        assert_eq!(binds.binding_name(F), Some("+frag"));
+        assert_eq!(binds.binding_name(F), None);
         assert!(binds.iter().all(|(_, id)| !input_iw4::is_minecraft_command(id)));
+    }
+
+    #[test]
+    fn the_defaults_put_the_grenades_on_g_and_b_and_leave_f_to_swap_hands() {
+        let binds = defaults();
+        assert_eq!(binds.binding_name(G), Some("+frag"));
+        assert_eq!(binds.binding_name(B), Some("+smoke"));
+        assert_eq!(binds.minecraft_binding(G), None);
+        assert_eq!(binds.minecraft_binding(B), None);
+        assert_eq!(binds.binding_name(F), None);
+        assert_eq!(binds.minecraft_binding(F), Some("mc_swaphands"));
+        let keys = |command: &str| {
+            let mut keys: Vec<BindButton> = binds
+                .iter()
+                .filter(|(button, bound)| *bound == id(command) && !button.is_pad())
+                .map(|(button, _)| button)
+                .collect();
+            keys.sort_by_key(|button| host_keynum(*button));
+            keys
+        };
+        assert_eq!(keys("+frag"), vec![G]);
+        assert_eq!(keys("+smoke"), vec![B]);
+        assert_eq!(
+            binds.binding_name(BindButton::Pad(PadButton::RightBumper)),
+            Some("+frag")
+        );
+        assert_eq!(
+            binds.binding_name(BindButton::Pad(PadButton::LeftBumper)),
+            Some("+smoke")
+        );
+        let mut moved = binds.clone();
+        assert!(!moved.move_old_grenade_keys());
+        assert_eq!(moved.list_lines(), binds.list_lines());
+    }
+
+    #[test]
+    fn the_old_grenade_pair_moves_once_and_only_when_untouched() {
+        let old = "bind f +frag\nbind g +smoke\nbind f mc_swaphands\nbind BUTTON_RSHLDR +frag";
+        let mut binds = KeyBinds::default();
+        let _ = binds.apply_config_script(old);
+        assert!(binds.move_old_grenade_keys());
+        assert_eq!(binds.binding_name(G), Some("+frag"));
+        assert_eq!(binds.binding_name(B), Some("+smoke"));
+        assert_eq!(binds.binding_name(F), None);
+        assert_eq!(binds.minecraft_binding(F), Some("mc_swaphands"));
+        assert_eq!(
+            binds.binding_name(BindButton::Pad(PadButton::RightBumper)),
+            Some("+frag")
+        );
+        let once = binds.list_lines();
+        assert!(!binds.move_old_grenade_keys());
+        assert_eq!(binds.list_lines(), once);
+        for customised in [
+            "bind mouse4 +frag",
+            "bind b +melee",
+            "bind b mc_drop",
+            "bind h +smoke",
+            "unbind g",
+        ] {
+            let mut binds = KeyBinds::default();
+            let _ = binds.apply_config_script(old);
+            let _ = binds.apply_config_script(customised);
+            let before = binds.list_lines();
+            assert!(!binds.move_old_grenade_keys(), "{customised}");
+            assert_eq!(binds.list_lines(), before, "{customised}");
+        }
     }
 
     #[test]
     fn rebinding_swap_hands_leaves_the_mw2_key_alone() {
         let mut binds = defaults();
+        binds.set(F, id("+melee"));
         let swap = id("mc_swaphands");
         binds.clear_command_on(swap, false);
         binds.set(X, swap);
         assert_eq!(binds.minecraft_binding(X), Some("mc_swaphands"));
         assert_eq!(binds.minecraft_binding(F), None);
-        assert_eq!(binds.binding_name(F), Some("+frag"));
+        assert_eq!(binds.binding_name(F), Some("+melee"));
     }
 
     #[test]
     fn unbinding_a_key_clears_both_layers() {
         let mut binds = defaults();
-        let _ = binds.apply_script("unbind F");
-        assert_eq!(binds.binding_name(F), None);
-        assert_eq!(binds.minecraft_binding(F), None);
+        let _ = binds.apply_script("unbind E");
+        assert_eq!(binds.binding_name(E), None);
+        assert_eq!(binds.minecraft_binding(E), None);
         let _ = binds.apply_script("unbindall");
         assert_eq!(binds.iter().count() + binds.iter_minecraft().count(), 0);
     }
@@ -770,45 +873,52 @@ mod minecraft_bind_tests {
     #[test]
     fn the_inventory_key_takes_e_from_mw2_use_unless_a_use_hint_shows() {
         let binds = defaults();
-        let (suppressed, presses) = press(&binds, state(false, false, true), E);
+        let (suppressed, presses) = press(&binds, state(false, false), E);
         assert!(suppressed.contains(&E));
         assert!(presses.just_pressed(McAction::Inventory));
-        let (suppressed, presses) = press(&binds, state(true, false, true), E);
+        let (suppressed, presses) = press(&binds, state(true, false), E);
         assert!(!suppressed.contains(&E));
         assert!(!presses.just_pressed(McAction::Inventory));
-        let (suppressed, presses) = press(&binds, state(true, true, true), E);
+        let (suppressed, presses) = press(&binds, state(true, true), E);
         assert!(suppressed.contains(&E));
         assert!(presses.just_pressed(McAction::Inventory));
     }
 
     #[test]
-    fn swap_hands_takes_its_key_only_while_a_minecraft_item_is_in_hand() {
-        let binds = defaults();
-        let takes = |use_hint, screen_open, holding_item| {
-            let (suppressed, presses) = press(&binds, state(use_hint, screen_open, holding_item), F);
-            assert_eq!(suppressed.contains(&F), presses.just_pressed(McAction::SwapHands));
-            suppressed.contains(&F)
-        };
-        assert!(takes(false, false, true));
-        assert!(!takes(false, false, false));
-        assert!(takes(false, true, false));
-        assert!(takes(true, false, true));
-        assert!(takes(true, true, false));
-        let (suppressed, _) = press(&binds, MinecraftKeyState::default(), F);
-        assert!(suppressed.is_empty());
+    fn a_grenade_key_keeps_its_throw_outside_minecraft_screens() {
+        for grenade in ["+frag", "+smoke"] {
+            let mut binds = defaults();
+            binds.set(F, id(grenade));
+            let takes = |use_hint, screen_open| {
+                let (suppressed, presses) = press(&binds, state(use_hint, screen_open), F);
+                assert_eq!(suppressed.contains(&F), presses.just_pressed(McAction::SwapHands));
+                suppressed.contains(&F)
+            };
+            assert!(!takes(false, false), "{grenade}");
+            assert!(!takes(true, false), "{grenade}");
+            assert!(takes(false, true), "{grenade}");
+            assert!(takes(true, true), "{grenade}");
+            let (suppressed, _) = press(&binds, MinecraftKeyState::default(), F);
+            assert!(suppressed.is_empty());
+        }
+        let mut binds = defaults();
+        binds.set(F, id("+melee"));
+        let (suppressed, presses) = press(&binds, state(false, false), F);
+        assert!(suppressed.contains(&F));
+        assert!(presses.just_pressed(McAction::SwapHands));
     }
 
     #[test]
     fn a_use_hint_keeps_swap_hands_off_a_key_bound_to_mw2_use() {
         let mut binds = defaults();
         binds.set(F, id("+activate"));
-        let (suppressed, presses) = press(&binds, state(true, false, true), F);
+        let (suppressed, presses) = press(&binds, state(true, false), F);
         assert!(!suppressed.contains(&F));
         assert!(!presses.just_pressed(McAction::SwapHands));
-        let (suppressed, presses) = press(&binds, state(true, true, true), F);
+        let (suppressed, presses) = press(&binds, state(true, true), F);
         assert!(suppressed.contains(&F));
         assert!(presses.just_pressed(McAction::SwapHands));
-        let (suppressed, presses) = press(&binds, state(false, false, true), F);
+        let (suppressed, presses) = press(&binds, state(false, false), F);
         assert!(suppressed.contains(&F));
         assert!(presses.just_pressed(McAction::SwapHands));
     }
@@ -819,22 +929,27 @@ mod minecraft_bind_tests {
         let swap = id("mc_swaphands");
         binds.clear_command_on(swap, false);
         binds.set(X, swap);
-        let (suppressed, presses) = press(&binds, state(false, false, true), X);
+        let (suppressed, presses) = press(&binds, state(false, false), X);
         assert!(suppressed.contains(&X) && !suppressed.contains(&F));
         assert!(presses.just_pressed(McAction::SwapHands));
-        let (suppressed, presses) = press(&binds, state(false, false, false), X);
+        binds.set(X, id("+smoke"));
+        let (suppressed, presses) = press(&binds, state(false, false), X);
         assert!(!suppressed.contains(&X));
         assert!(!presses.just_pressed(McAction::SwapHands));
+        let (suppressed, presses) = press(&binds, state(false, true), X);
+        assert!(suppressed.contains(&X));
+        assert!(presses.just_pressed(McAction::SwapHands));
     }
 
     #[test]
     fn only_just_pressed_keys_fire_their_action() {
         let binds = defaults();
-        let (suppressed, presses) = minecraft_presses(&binds, state(false, false, true), |_| false);
+        let (suppressed, presses) = minecraft_presses(&binds, state(false, false), |_| false, |_| false);
         assert_eq!(suppressed.len(), 6);
+        assert!(suppressed.contains(&F) && !suppressed.contains(&G) && !suppressed.contains(&B));
         assert!(McAction::ALL.iter().all(|a| !presses.just_pressed(*a)));
         let q = BindButton::Key(KeyCode::KeyQ);
-        let (_, presses) = press(&binds, state(false, false, false), q);
+        let (_, presses) = press(&binds, state(false, false), q);
         assert!(presses.just_pressed(McAction::Drop));
         assert!(McAction::ALL
             .iter()
@@ -843,12 +958,70 @@ mod minecraft_bind_tests {
     }
 
     #[test]
+    fn a_held_swap_hands_key_stays_held_until_released() {
+        let binds = defaults();
+        let holding = |binds: &KeyBinds, state, key: BindButton| {
+            let (_, presses) = minecraft_presses(binds, state, |_| false, |button| button == key);
+            assert!(!presses.just_pressed(McAction::SwapHands));
+            presses.is_held(McAction::SwapHands)
+        };
+        assert!(holding(&binds, state(false, false), F));
+        assert!(holding(&binds, state(true, false), F));
+        assert!(!holding(&binds, state(false, false), B));
+        assert!(!holding(&binds, state(false, false), G));
+        assert!(!holding(&binds, state(false, true), F));
+        assert!(!holding(&binds, MinecraftKeyState::default(), F));
+        let (_, presses) = minecraft_presses(&binds, state(false, false), |_| false, |_| false);
+        assert!(McAction::ALL.iter().all(|a| !presses.is_held(*a)));
+        let mut thrown = defaults();
+        thrown.set(F, id("+smoke"));
+        assert!(!holding(&thrown, state(false, false), F));
+    }
+
+    #[test]
+    fn holding_the_pads_d_pad_down_holds_swap_hands_but_its_tactical_button_does_not() {
+        let binds = defaults();
+        let held = |state, button: PadButton| {
+            let pad = BindButton::Pad(button);
+            let (suppressed, presses) =
+                minecraft_presses(&binds, state, |_| false, |b| b == pad);
+            assert!(!suppressed.contains(&pad));
+            presses.is_held(McAction::SwapHands)
+        };
+        assert!(held(state(false, false), PadButton::DpadDown));
+        assert!(!held(state(false, true), PadButton::DpadDown));
+        assert!(!held(MinecraftKeyState::default(), PadButton::DpadDown));
+        assert!(!held(state(false, false), PadButton::LeftBumper));
+        assert!(!held(state(false, false), PadButton::RightBumper));
+        assert_eq!(
+            binds.binding_name(BindButton::Pad(PadButton::LeftBumper)),
+            Some("+smoke")
+        );
+    }
+
+    #[test]
+    fn a_swap_hands_tap_inside_one_frame_still_holds_for_that_frame() {
+        let binds = defaults();
+        let tapped = |state, key: BindButton| {
+            let (_, presses) = minecraft_presses(&binds, state, |button| button == key, |_| false);
+            presses.is_held(McAction::SwapHands)
+        };
+        for key in [F, BindButton::Pad(PadButton::DpadDown)] {
+            assert!(tapped(state(false, false), key));
+            assert!(!tapped(state(false, true), key));
+            assert!(!tapped(MinecraftKeyState::default(), key));
+        }
+        assert!(!tapped(state(false, false), B));
+        assert!(!tapped(state(false, false), G));
+    }
+
+    #[test]
     fn only_minecraft_actions_with_a_key_count_as_bound() {
         let mut binds = defaults();
-        let (_, presses) = minecraft_presses(&binds, state(false, false, true), |_| false);
+        let (_, presses) = minecraft_presses(&binds, state(false, false), |_| false, |_| false);
         assert!(McAction::ALL.iter().all(|a| presses.is_bound(*a)));
         binds.clear_command_on(id("mc_command"), false);
-        let (_, presses) = minecraft_presses(&binds, state(false, false, true), |_| false);
+        let (_, presses) = minecraft_presses(&binds, state(false, false), |_| false, |_| false);
         assert!(!presses.is_bound(McAction::Command));
         assert!(presses.is_bound(McAction::Chat));
         let (_, presses) = press(&binds, MinecraftKeyState::default(), E);

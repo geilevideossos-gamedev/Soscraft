@@ -7,17 +7,18 @@ Started 2026-10-09 on `minecraft-survival` at 3c2c62b. The owner's brief for thi
 - The full suite is `scripts\full-suite.ps1` (workspace tests without doc-tests, then the five minecraftoss crates with their stand-in scenario files).
 - Track worktrees live in `C:\Dev\mc-wt\<name>` on branch `<name>`, each with its own target dir `D:\iw4l-wt\<name>`. Worktrees never share a target dir: cargo's freshness check would reuse another worktree's build of a crate whose files are older there.
 - D: is short on space (one debug target dir is about 11 GB with the suite and clippy, 6-8 GB without). Delete a track's target dir once the track is merged.
-- Merge tracks into `minecraft-survival` one at a time in `C:\Dev\mashup-crafting`, run the full suite after each merge, then push to `origin`.
+- Merging a track: in the track's worktree run `git checkout --detach minecraft-survival` and `git merge --no-ff <track>`, run `scripts\full-suite.ps1 +target=<the track's target dir>` there (so the merged code is built in a dir that has only seen this worktree), then `git merge --ff-only <merge commit>` in `C:\Dev\mashup-crafting` and push to `origin`.
+- PowerShell drops a bare `--` when calling a script, so pass it quoted: `& scripts\cargo-slot.ps1 clippy -p x --locked '--' -A clippy::approx_constant`.
 - Each track agent keeps `docs/round7/track-<name>-log.md` with its commits, decisions and the owner's in-game test steps.
 - The workflow scripts used by the orchestrator: a track runner (commit groups in order, then an adversarial review, then clippy). If a session dies, re-create the worktree state from `git worktree list` and continue the track from its log.
 
 ## Phase 1
 | Item | State | Notes |
 |---|---|---|
-| 1. Death at a fixed height | implementing | Cause: the Minecraft world loads on mp_rust as a proxy map. Its `trigger_hurt` (origin 304 704 -1952, hull 15) starts `_load.gsc` `hurtPlayersThink`, which makes a touching player `suicide()` every 0.5 s: feet at or below spawn Y - 24 (down to spawn Y - 86) within about 100 blocks of the spawn, so with the logged spawn at Y 119 every death came at Y 95 or lower. A second mp_rust `killTrigger` pocket (radius about 1.5 blocks, 4-7 blocks below spawn, 30 blocks east and 46 north) does the same. The suicide records the victim as attacker, hence "Killed By FNG" (the default title) with the player's own name. Fix: drop both on Minecraft loads; add vanilla void damage below min Y - 64. |
+| 1. Death at a fixed height | done (0550ebb, 65f6402) | Cause: the Minecraft world loads on mp_rust as a proxy map. Its `trigger_hurt` (origin 304 704 -1952, hull 15) starts `_load.gsc` `hurtPlayersThink`, which makes a touching player `suicide()` every 0.5 s: feet at or below spawn Y - 24 (down to spawn Y - 86) within about 100 blocks of the spawn, so with the logged spawn at Y 119 every death came at Y 95 or lower. A second mp_rust `killTrigger` pocket (radius about 1.5 blocks, 4-7 blocks below spawn, 30 blocks east and 46 north) does the same. The suicide records the victim as attacker, hence "Killed By FNG" (the default title) with the player's own name. Fix: both are disarmed on Minecraft loads (trigger_hurt entities emptied in place, the killTrigger line removed from the proxy script); vanilla void damage below min Y - 64 (4 every 10 ticks, through creative, spectator, armour and totems, "fell out of the world"). |
 | 2. Faster builds | done | rust-lld linker, `[profile.dev] debug = 0`, dependencies at opt-level 1 in dev and test, suite without doc-tests, `--profile play` for mid-round test exes. Times below. |
 | 3. Upstream | done | `upstream/main` is f608f85, our merge base: nothing new to merge (checked 2026-10-09). |
-| 4. Crate split | planned | `docs/CRATE-SPLIT.md` (22 commits, phases A to D). Runs in worktree `C:\Dev\mc-wt\split` after item 1. |
+| 4. Crate split | done (merged as 6315039, full suite 1328 passed; the known flaky poof_particles test failed once and passed on re-run) | 24 commits 5a7a4e4..ee818cd, all from `docs/CRATE-SPLIT.md` including the optional B7 and C5. `minecraft_survival` holds `Server` (globals), `Level` per dimension and `Player` per UUID; `minecraft_net` holds `Dimension` and `PlayerUuid`. Log: `docs/round7/track-split-log.md`. |
 | 5. Nether and End report | done | `docs/NETHER-END.md` |
 
 ## Phase 2
@@ -25,10 +26,10 @@ Design briefs: `docs/round7/a1-grenade-keys.md`, `a2-chat.md`, `b1-throwables.md
 
 | Track | Branch | State |
 |---|---|---|
-| A. Controls and chat | track-a | not started; can run during the split (it touches console, hud, net, sim, ui) |
-| B. Items, blocks, player model | track-b | not started; minecraft_terrain and MW2-body parts can run during the split, the render_anim glue after it |
-| C. Commands | track-c | not started; minecraft_commands parts can run during the split, the glue after it (C23 partial work in `git stash`) |
-| D. Saving everything | track-d | after the split |
+| A. Controls and chat | track-a | merged (80cacc3, full suite 1315 passed). Left for after the split: mouse buttons still mine/place while a grenade is up with a Minecraft item selected (see `docs/round7/track-a-log.md`) |
+| B. Items, blocks, player model | track-b | early part running (worktree `C:\Dev\mc-wt\track-b`, target `D:\iw4l-wt\track-b`); render_anim glue after it, on top of the split |
+| C. Commands | track-c | early part running (minecraft_commands, creative tab reader; worktree `C:\Dev\mc-wt\track-c`, target `D:\iw4l-wt\track-c`); chat UI and glue after track A and the split |
+| D. Saving everything | track-d | running (worktree `C:\Dev\mc-wt\track-d`, target `D:\iw4l-wt\track-d`, recycled from track A) |
 
 ## Phase 3 (after track D)
 | Track | State |
@@ -63,10 +64,14 @@ The 41 minutes of the last round were not reproduced: a clean release build alon
 
 ## Decisions
 - Build: the owner's mid-round test exe is built with the existing `--profile play` (no fat LTO, same code); the last build of the round is `--release`. Tests never used the release profile, so no extra test profile was needed.
+- Build: dev and test builds are not incremental (`70a01b2`): incremental caches took 8-11 GB per target dir on a disk with 9 GB left. `C:\Dev\mc-wt\.cargo\config.toml` sets the same for worktrees made before that commit. `D:\iw4l-target` itself is protected from deletion by a permission rule; only its `debug\incremental` was removed.
 - Build: the full suite runs at merge time in the main target dir, not in each track's dir, to save disk; clippy runs per track.
 - Crate split: a `git mv` rename counts as an existing file (not reformatted, existing comments kept). Survival stats keep carrying over between matches as today until track D saves them. `Entities` moves whole.
 - Grenade keys (track A): Ctrl+G and Shift+G clash (the bind system has no chords; Ctrl is MW2 prone and the creative-flight sink key, Shift is sprint). Lethal goes to G and tactical to B, F only swaps hands as in vanilla, and holding F with a gun selected uses the offhand item. Retail MW2 binds G to the lethal too. All rebindable.
 - Shulker lids (track B): chests and ender chests get the same vanilla lid animation as shulker boxes, as vanilla has it.
 
 ## Log
+- 2026-10-09: crate split merged (6315039) and pushed; track D started; the split worktree was removed, so `D:\iw4l-target` belongs to the main checkout again.
+- 2026-10-09: track A merged (80cacc3) and pushed.
+- 2026-10-09: item 1 merged and pushed (65f6402). Crate split, track A and early track C started.
 - 2026-10-09: plan written, `scripts/cargo-slot.ps1` added. Upstream checked (nothing new). Research for items 1, 4, 5 and the Phase 2 briefs done. Build changes measured and committed.

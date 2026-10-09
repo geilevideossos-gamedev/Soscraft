@@ -1,0 +1,21 @@
+[package]
+name = "minecraft_survival"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Headless Minecraft game state and rules without bevy: the world server, a level per dimension and a player per UUID."
+
+[dependencies]
+diag.workspace = true
+minecraft_commands.workspace = true
+minecraft_net.workspace = true
+playerstate_iw4.workspace = true
+minecraft_terrain = { path = "../minecraft_terrain" }
+minecraftoss-core = { path = "../../third_party/minecraftoss/core" }
+minecraftoss-entities = { path = "../../third_party/minecraftoss/entities" }
+minecraftoss-player = { path = "../../third_party/minecraftoss/player" }
+glam = "0.29"
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

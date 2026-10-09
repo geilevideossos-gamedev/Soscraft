@@ -19,6 +19,7 @@ mod mantle_hint;
 mod menus;
 mod minecraft_chat;
 mod minecraft_clicks;
+mod minecraft_edit;
 mod minecraft_fire;
 mod minecraft_gui;
 mod minecraft_hotbar;
