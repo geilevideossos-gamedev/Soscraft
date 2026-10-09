@@ -171,6 +171,10 @@ fn shortcut(typed: &Typed) -> Option<char> {
     crate::minecraft_chat::shortcut(typed)
 }
 
+pub(crate) fn search_digit_swaps(hovered: Option<McSlot>, has_stack: bool, carrying: bool) -> bool {
+    !carrying && hovered.is_some_and(|slot| !matches!(slot, McSlot::Creative(_)) || has_stack)
+}
+
 pub(crate) fn type_search(
     creative: &mut McCreative,
     typed: &Typed,
@@ -732,6 +736,19 @@ mod tests {
             Some(&("#minecraft:stone_tool_materials".to_owned(), DARK_PURPLE))
         );
         assert_eq!(texts(&ui, McSlot::Inventory(0)).len(), 2);
+    }
+
+    #[test]
+    fn a_number_key_on_the_search_tab_swaps_only_where_vanilla_does() {
+        let grid = Some(McSlot::Creative(3));
+        let hotbar = Some(McSlot::Inventory(2));
+        assert!(search_digit_swaps(grid, true, false));
+        assert!(!search_digit_swaps(grid, false, false));
+        assert!(search_digit_swaps(hotbar, false, false));
+        assert!(search_digit_swaps(hotbar, true, false));
+        assert!(!search_digit_swaps(None, false, false));
+        assert!(!search_digit_swaps(grid, true, true));
+        assert!(!search_digit_swaps(hotbar, true, true));
     }
 
     #[test]

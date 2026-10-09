@@ -413,7 +413,7 @@ pub(crate) fn update_minecraft_hud(
             let pad_choice = [pad_just(GamepadButton::LeftTrigger), pad_just(GamepadButton::RightTrigger), pad_just(GamepadButton::RightTrigger2)];
             let creative_consumed = if matches!(ui.screen, McScreen::Creative(_)) {
                 let held = MODIFIERS.map(|code| crate::minecraft_chat::held_before(keys.pressed(code), keys.just_pressed(code), keys.just_released(code)));
-                let search_swap = searching && pressed_digit.is_some() && hovered.and_then(|slot| stack_at(&ui, slot)).is_some() && matches!(hovered, Some(McSlot::Creative(_)));
+                let search_swap = searching && pressed_digit.is_some() && crate::minecraft_creative::search_digit_swaps(hovered, hovered.and_then(|slot| stack_at(&ui, slot)).is_some(), ui.cursor.is_some());
                 let typed: Vec<crate::minecraft_chat::Typed> = crate::minecraft_chat::fold_typed(held, &events)
                     .into_iter()
                     .filter(|typed| !(search_swap && digits.contains(&typed.code)))

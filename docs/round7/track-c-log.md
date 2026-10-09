@@ -1830,3 +1830,29 @@ One player cannot change game mode with a screen open (the chat cannot open over
 
 1. In creative, press E: the creative screen opens as before. Screenshot not needed.
 2. Close it, `/gamemode survival`, press E: the survival inventory, as before.
+
+## Minecraft creative search tab swaps on number keys only where vanilla does
+
+Commit: the commit that adds this entry. The previous commit is c4a1f8e (the creative screen after creative ends).
+
+### What changed
+
+- **The defect:** on the Search tab a number key swapped only over a grid slot holding a stack, and did so even with a stack on the cursor. 26.3 `CreativeModeInventoryScreen.keyPressed` (checked with javap) tries the hotbar swap when the hovered slot is not a grid slot or holds an item, and `AbstractContainerScreen.checkHotbarKeyPressed` only swaps with an empty cursor and a hovered slot; otherwise the digit is typed into the search box. So over a hotbar slot vanilla swaps (we typed the digit), and with a stack on the cursor vanilla types the digit (we put a full stack in the hotbar).
+- New `hud` `minecraft_creative::search_digit_swaps(hovered, has_stack, carrying)` holds that rule; `minecraft_inventory.rs` uses it for the Search tab. A swap over a hotbar slot goes through the inventory's own number swap, as on the other tabs.
+
+### Tests added
+
+- `hud` `minecraft_creative::tests::a_number_key_on_the_search_tab_swaps_only_where_vanilla_does`: a grid stack and a hotbar slot (empty or not) swap, an empty grid slot and no slot type the digit, and nothing swaps with a stack on the cursor.
+
+### In-game test steps
+
+```
+IW4L_MINECRAFT_KIT=torch*64,stone*64
+```
+
+`minecraft:torch` 64, `minecraft:stone` 64.
+
+1. `/gamemode creative`, E, Search tab. Hover a grid stack and press 3: a full stack lands in hotbar slot 3 and no `3` is typed.
+2. Hover the torches in the bottom hotbar row and press 5: they swap with hotbar slot 5, and no `5` is typed. Screenshot.
+3. Pick up the stone onto the cursor, hover a grid stack and press 4: `4` is typed into the box and the hotbar does not change.
+4. With the mouse over no slot, press 7: `7` is typed.
