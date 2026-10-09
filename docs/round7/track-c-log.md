@@ -576,3 +576,49 @@ Kit: none needed.
 1. **Phase 3**: `CommandWorld::dimension_scale` returns `Some(scale)` for every loaded level (the dimension type's `coordinate_scale`: overworld 1, Nether 8, End 1), and `dimension(player)` returns the player's level.
 2. **`teleport_to_dimension`**: move the player to that level at the position (vanilla `teleportTo(level, x, y, z, ...)`: load the target chunk, keep velocity at zero, send the respawn and position packets in multiplayer) and return `true`.
 3. **Hints**: fill `CommandHints::dimensions` with the loaded levels.
+
+## Minecraft /kit gives the .env kit again
+
+Commit: the commit that adds this entry (branch `track-c`, group "commands").
+
+### What changed
+
+- New `crates/minecraft_commands/src/kit.rs`, a fork-only command:
+  - `/kit [<targets>]` at level 4 (owners only, so the host but not an op at level 2 or 3).
+  - `CommandWorld::kit_line() -> Option<String>` asks the world for the `IW4L_MINECRAFT_KIT` value, re-read from the `.env` next to the exe each time, so a changed `.env` counts without a restart. It defaults to `None`.
+  - `kit_entries` reads the line with the same syntax as the load-time kit (`item[+enchantment[=level]...][*count]`, comma-separated) through the `/give` item parser. Entries that do not parse, or have a count of 0, are skipped as at load.
+  - Each entry goes through `CommandWorld::give` like `/give`, so what does not fit drops at the player's feet. Each given entry prints `/give`'s own line ("Gave 64 [Stone] to Steve"); an id the registry does not know prints `/give`'s red "Unknown item" line and the rest continue.
+  - No kit gives a red "No IW4L_MINECRAFT_KIT in the .env next to the game", and a kit without valid entries "IW4L_MINECRAFT_KIT has no items".
+- `env_value(text, key)` and `read_env_file(path, key)` read one key from `.env` text the way `dotenvy` does: `export` prefixes, `#` comment lines, single or double quotes, an inline ` #` comment, and the first definition wins.
+
+### Tests added
+
+- `kit::tests` (3): `.env` parsing (CRLF, comments, `export`, quotes, inline comments, empty values, a missing key) and a re-read file that changed; kit entries with counts, enchantments, a namespace, and every kind of bad entry; `/kit` giving each entry with its line, an unknown item, `/kit @a`, a level 3 op refused, an empty kit and no kit.
+- `commands::tests::help_lists_smart_usages_of_visible_commands` lists `/kit [<targets>]`.
+
+### In-game test steps
+
+`/kit` needs the glue (below); until then it answers "No IW4L_MINECRAFT_KIT in the .env next to the game".
+
+```
+IW4L_MINECRAFT_KIT=diamond_pickaxe+efficiency=5,diamond_sword,stone*64,oak_log*64,torch*64,bread*16
+```
+
+1. Load the world with the kit above, then `/clear` (or drop everything).
+2. `/kit`: one "Gave ..." line per entry, and the items are back. Screenshot.
+3. Fill the inventory (`/kit` three more times): the stacks that do not fit lie at your feet. Screenshot.
+4. Change the `.env` line to `IW4L_MINECRAFT_KIT=torch*8` without restarting, `/kit`: "Gave 8 [Torch] to Steve".
+
+Kit: `minecraft:diamond_pickaxe` 1 (Efficiency V), `minecraft:diamond_sword` 1, `minecraft:stone` 64, `minecraft:oak_log` 64, `minecraft:torch` 64, `minecraft:bread` 16.
+
+### Decisions
+
+- **Level 4.** The orchestrator asked for an op-only command; the brief's level 2 would let any game master fill their inventory.
+- **One line per entry**, using `/give`'s messages, instead of an invented summary line. A 27-stack kit is long, but every line is a vanilla text.
+- **The two failure lines are plain English**; there is no vanilla key for a fork-only command.
+- **`.env` is read in `minecraft_commands`** (`read_env_file`) rather than through `dotenvy`, which only sets variables that are not set yet and would keep the old value.
+
+### After the split
+
+1. **`CommandWorld::kit_line`**: `std::env::current_exe()`'s directory joined with `.env`, then `minecraft_commands::kit::read_env_file(&path, KIT_KEY)`. When the exe has no `.env`, fall back to `std::env::var(KIT_KEY).ok()` so a kit given on the command line still works.
+2. `/kit` gives through the existing `give`, so nothing else is needed. In multiplayer the host's `.env` is the only kit; friends get it through `/kit <name>` from the host.

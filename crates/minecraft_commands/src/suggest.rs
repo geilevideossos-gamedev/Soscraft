@@ -808,6 +808,7 @@ mod tests {
                 "give",
                 "help",
                 "kill",
+                "kit",
                 "locate",
                 "op",
                 "seed",

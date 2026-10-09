@@ -185,6 +185,7 @@ fn build() -> Vec<Node> {
         crate::spawnpoint::node(),
         crate::locate::node(),
         crate::execute::node(),
+        crate::kit::node(),
     ])
 }
 
@@ -904,6 +905,7 @@ mod tests {
                 "/give <targets> <item> [<count>]",
                 "/help [<command>]",
                 "/kill [<targets>]",
+                "/kit [<targets>]",
                 "/locate (biome|poi|structure)",
                 "/op <targets>",
                 "/seed",

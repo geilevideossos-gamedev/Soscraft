@@ -5,6 +5,7 @@ pub mod commands;
 pub mod enchant;
 pub mod execute;
 pub mod experience;
+pub mod kit;
 pub mod locate;
 pub mod permissions;
 pub mod players;

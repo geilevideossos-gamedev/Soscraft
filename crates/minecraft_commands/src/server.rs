@@ -157,6 +157,9 @@ pub trait CommandWorld {
     ) -> bool {
         false
     }
+    fn kit_line(&self) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -615,6 +618,7 @@ pub(crate) mod tests {
         pub(crate) levels: Vec<(String, f64)>,
         pub(crate) player_dimensions: Vec<(PlayerId, String)>,
         pub(crate) dimension_teleports: Vec<(PlayerId, String, [f64; 3])>,
+        pub(crate) kit: Option<String>,
     }
 
     impl CommandWorld for FakeWorld {
@@ -836,6 +840,10 @@ pub(crate) mod tests {
             self.dimension_teleports
                 .push((player, dimension.to_owned(), position));
             true
+        }
+
+        fn kit_line(&self) -> Option<String> {
+            self.kit.clone()
         }
     }
 
