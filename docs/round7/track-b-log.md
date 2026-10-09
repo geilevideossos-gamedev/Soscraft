@@ -1012,7 +1012,7 @@ IW4L_MINECRAFT_KIT=cobblestone*64
 
 ### 6. Minecraft items sit at the vanilla fist point of the MW2 hand tags, and the log names the body's bind sizes
 
-Commit: (next entry)
+Commit: 889f674
 
 - **Checked:** the hand frames against the hand tags. MW2 attaches the world gun (and the riot shield, on the left) with its model axes on the tag (`xmodel_runtime::build_body_head_weapon_dobj`: X along the barrel, Y left, Z up), so `hand_frame`'s Rz(-90 degrees) gives vanilla's hand frame (x right, y forward, z up) on both hands, and the left hand needs no mirrored frame: its mirror is the display's, as in vanilla. The gun's origin sits in the middle of the fist, where its grip passes through. Vanilla's item point is not the middle of the fist: `ItemInHandLayer.submitArmWithItem` steps 10 pixels down the arm from the shoulder pivot (the arm runs 2 above it to 10 below, the hand being its last 4) and 2 forward (the arm's front face), with the 1 sideways only taking the off-centre pivot back to the arm's middle. So the item hangs from the fist's front, bottom edge: 2 pixels ahead of the middle of the hand and 2 below it.
 - **Changed:** `GEAR_FIT.hand_offset` from (0, 1, -1) to (0, 2, -2) pixels (right, forward, up; mirrored in x for the left hand), the vanilla point above. `GearBones::measures()` gives the kit's bind-pose sizes in map units (shoulder and hip spans, neck to spine and to head, both arms and legs joint to joint, each hand tag's place from its wrist and its X and Z axes), and the `remote kits` log line prints them after the missing bones, so the rest of `GEAR_FIT` (head, torso, girths, sole) can be tuned from numbers rather than guessed. `McBodyGear::shown_weapon` compares the corpse entry with `Some(&true)` instead of copying it out.
@@ -1026,4 +1026,34 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=cobblestone*64,torch*64,diamond_sword,trident
+```
+
+### 7. Minecraft body glue passes clippy
+
+Commit: (next entry)
+
+- **Changed:** `render/src/extract.rs` `extract_minecraft_world` (8 parameters since entry 3) allows `clippy::too_many_arguments`, as the Bevy systems with many parameters elsewhere do.
+- **Clippy:** `clippy -p minecraft_survival -p render_anim -p render --locked --all-targets -- -A clippy::approx_constant` reports nothing on the lines this group added or changed; the warnings left in those files were there before (`minecraft_world.rs` 126, 390 and 399, `extract.rs` 715 and 809 and the type-complexity ones).
+- **Tests:** none new; `minecraft_survival` 154 passed, `render_anim` 50, `render` all passed; `check -p launcher` is green.
+- **Test steps:** none: no behaviour changes.
+- **Kit:** none.
+
+### Group summary: body glue
+
+- **In:** each player's held items and worn armour are read from its own server state (`minecraft_survival::gear`) every frame into `McBodyGear` by MW2 client number (entry 1); the MW2 body puts its gun away and holds the main-hand item in its right hand and the offhand item in its left, with the armour on, in third person (entry 2); enchanted armour shimmers with vanilla's armour glint (entry 3); the inventory's character wears and holds the same (entry 4); the death cam's corpse has no gun when a Minecraft item was held (entry 5); the item hangs at vanilla's fist point and the log prints the body's bind sizes for tuning (entry 6). After the split items 18 to 21 are all in.
+- **Screenshot 2:** the items at the head were the death drops (entry 5).
+- **Not done:** gear on corpses with `keep_inventory`, vanilla's arm swing and use poses on the MW2 rig, armour trims, heads and carved pumpkins on the head, the elytra, a held potion's colour, and gear on other players' bodies over the network (the multiplayer track's equipment message; the renderer already draws any client number `McBodyGear` holds). The rest of `GEAR_FIT` waits for the owner's screenshots and the new log line.
+- **Test steps** (survival mode):
+  1. Start the game and send the two `Minecraft gear bones missing: ...; bind sizes: ...` lines from `iw4l-artifacts/logs/latest.log`.
+  2. Wear the enchanted diamond helmet, enchanted iron chestplate, red leather leggings and iron boots (shift-click them). F5, back and front: Minecraft armour on the head, torso and arms, hips and legs, boots on the feet; the helmet and chestplate shimmer with broad purple streaks, the leggings are red under the darker trim. Walk, crouch, go prone and look up and down: the sleeves bend at the elbows and the legs at the knees. Screenshots 1 and 2.
+  3. Select the cobblestone and put the torch in the offhand (F): in F5 the cobblestone hangs from the right fist, the torch from the left, and there is no gun. Select the sword: it shimmers with the finer item glint. Select the trident: the 3D trident. Screenshot 3.
+  4. Select the gun slot: the gun is back, the right hand is empty, the torch stays in the left hand. Screenshot 4.
+  5. Open the inventory (E): the character in the box wears the armour and holds the items, and they turn with it. Screenshot 5.
+  6. Select the cobblestone and `/kill`: the corpse holds no gun and nothing else, the drops fly out from eye height. Respawn, select the gun and `/kill`: the corpse has its gun. Press Tab in each death cam and say whether a bot is in the match. Screenshot 6.
+  7. Swap in the golden, red leather, chainmail and turtle helmets, the netherite, copper and blue leather chestplates, the chainmail leggings and the diamond boots: each shows its own texture. Screenshot 7.
+  8. For anything floating off the body or a hand, sunk into it, too big, too small or turned wrongly, say which and by about how much.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=diamond_helmet+protection=4,iron_chestplate+protection=4,leather_leggings@red,iron_boots,cobblestone*64,torch*64,diamond_sword+sharpness=5,trident,golden_helmet,leather_helmet@red,chainmail_helmet,turtle_helmet,netherite_chestplate,copper_chestplate,leather_chestplate@blue,chainmail_leggings,diamond_boots
 ```

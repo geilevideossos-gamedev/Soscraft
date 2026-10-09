@@ -933,6 +933,7 @@ pub fn extract_model_lighting_tiles(
 
 /// Moves the Minecraft world's new section meshes and state to the render
 /// world, converting the atlas once per world.
+#[allow(clippy::too_many_arguments)]
 pub fn extract_minecraft_world(
     mut main_world: ResMut<bevy::render::MainWorld>,
     mut frame: ResMut<render_gpu::MinecraftWorldFrame>,
