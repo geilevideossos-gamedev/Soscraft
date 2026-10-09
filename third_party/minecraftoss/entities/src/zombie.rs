@@ -41,7 +41,7 @@ impl ZombieKind {
 
     /// `Zombie.isSunSensitive`: all but husks burn in daylight.
     pub fn burns_in_daylight(self) -> bool {
-        self != Self::Husk
+        !matches!(self, Self::Husk | Self::ZombifiedPiglin)
     }
 
     /// `convertsInWater` and `convertsToWhenDrowning`: a zombie becomes a
@@ -175,6 +175,12 @@ mod tests {
         assert_eq!(zombie.in_water_time, -1);
         assert!(!zombie.tick_drowning(true, false));
         assert_eq!(zombie.in_water_time, 0);
+    }
+
+    #[test]
+    fn zombified_piglins_and_husks_never_burn_in_daylight() {
+        assert!(ZombieKind::Zombie.burns_in_daylight() && ZombieKind::Drowned.burns_in_daylight());
+        assert!(!ZombieKind::ZombifiedPiglin.burns_in_daylight() && !ZombieKind::Husk.burns_in_daylight());
     }
 
     #[test]

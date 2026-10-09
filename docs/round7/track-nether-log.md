@@ -291,7 +291,7 @@ Previous commit: 2f111564
   - Vendored `third_party/minecraftoss/world/src/natural_spawner/spawning.rs` (MinecraftOSS patch): `MobCategory::of_type` knows wither skeletons, piglin brutes and zoglins as monsters, so the caps count them and peaceful refuses them.
 - **Tests:** `hazards`: `the_nether_mobs_and_the_bosses_are_immune_to_fire`, `a_fire_immune_mob_puts_its_fire_out_and_shrugs_off_fire_but_not_cactus`. `spawning`: `every_nether_monster_has_the_monster_category`.
 - **Decisions:** the End's endermites, dragon and wither stay out of `of_type` here; the End track adds them with their mobs.
-- **Test steps:** nothing visible yet; the fire-immune mobs come with entries 16 to 18, whose steps cover this entry.
+- **Test steps:** nothing visible yet; the fire-immune mobs come with entries 16, 17 and 19, whose steps cover this entry.
 - **Kit:** none.
 
 ### 15. Minecraft fortresses spawn their own monsters (E2-19)
@@ -307,7 +307,7 @@ Previous commit: dfb165d1
   - Vendored `third_party/minecraftoss/world/src/level/spawning.rs` (MinecraftOSS patch): `structures_of(worldgen)`, the server level's finder: the generator's structure references of the chunk (`Structures::references`, the starts within eight chunks, which are a pure function of the seed and already made for the chunks around the player), kept per chunk.
   - `minecraft_terrain/src/server.rs` (`ServerSim::new` only): natural spawning gets the finder.
 - **Tests:** `server`: `fortress_monsters_spawn_on_its_nether_bricks_and_structures_override_their_biome` (seed 77's fortress: a spot in a piece draws the five on netherrack, a spot inside the bounds but outside every piece draws them on nether bricks and the biome's list on netherrack, a spot 2000 blocks off sees no structure, creatures are not overridden).
-- **Decisions:** structures referencing a chunk are checked in registry order (vanilla walks a hash map, so any order is as good). Blazes, magma cubes, zombified piglins and wither skeletons the fortress draws wait dormant until their own entries (16 to 18, and N4 for blazes) make them live.
+- **Decisions:** structures referencing a chunk are checked in registry order (vanilla walks a hash map, so any order is as good). Blazes, magma cubes, zombified piglins and wither skeletons the fortress draws wait dormant until their own entries (16, 17 and 19, and N4 for blazes) make them live.
 - **Test steps** (after entry 18, with `IW4L_MINECRAFT_DIMENSION=the_nether`; see the group summary): in a fortress at night-like darkness, wither skeletons, zombified piglins and magma cubes appear on its bridges and halls.
 - **Kit:** none.
 
@@ -317,7 +317,7 @@ Previous commit: cdcaf137
 
 - **Changed** (all checked with javap on the 26.3 jar: `ZombifiedPiglin`, `Zombie`, `NetherPortalBlock`, `AdultPiglinModel`, `BabyPiglinModel`, `AbstractPiglinModel`, `PlayerModel.createMesh`, `ZombifiedPiglinRenderer`):
   - Vendored `third_party/minecraftoss/entities` (MinecraftOSS patch):
-    - `zombie.rs`: `ZombieKind::ZombifiedPiglin`: 0.6 x 1.95 with eyes at 1.79 (a baby's at 0.78), 5 attack damage, never converts in water, sounds `entity.zombified_piglin.*`, steps like a zombie. It stays sun sensitive as `Zombie` is: its fire immunity (entry 14) puts the fire out, and a helmet still wears in daylight.
+    - `zombie.rs`: `ZombieKind::ZombifiedPiglin`: 0.6 x 1.95 with eyes at 1.79 (a baby's at 0.78), 5 attack damage, never converts in water, sounds `entity.zombified_piglin.*`, steps like a zombie. It does not burn in daylight (corrected in entry 18).
     - `monster_ai.rs`: `MonsterKind::ZombifiedPiglin`: `Zombie.registerGoals` with `ZombifiedPiglin.addBehaviourGoals` (the spear goal at 1, `ZombieAttackGoal` at 2, the stroll at 7), and as targets `HurtByTargetGoal` with `setAlertOthers`, players only when it is angry at them (`NearestAttackableTargetGoal(Player, 10, true, false, isAngryAt)`), and `ResetUniversalAngerTargetGoal` (universal anger is off). Lava costs 8 on its paths. `zombified_piglin_step` is `customServerAiStep`: the first anger sound 0 to 20 ticks after it first takes a target (`entity.zombified_piglin.angry` at twice the volume and 1.8 times the pitch), `NeutralMob.updatePersistentAnger` (20 to 39 seconds, as the enderman's), and `maybeAlertOthers` every 4 to 6 seconds while it sees its target.
     - `world.rs`: the zombie tick runs that step, adds the 0.05 speed of an angry adult, says `entity.zombified_piglin.angry` instead of its ambient sound while angry, alerts the piglins within its follow range (35) and 10 up or down that have no target (only its own kind, as `getEntitiesOfClass(ZombifiedPiglin)`), and hits for 5 plus the golden sword's 3. A player's kill may drop its weapon (8.5%, worn at random as a bow is) and its experience counts 1 to 3 more for each item it wears or holds (`Mob.getBaseExperienceReward`).
   - Vendored `third_party/minecraftoss/world` (MinecraftOSS patch):
@@ -369,3 +369,13 @@ Previous commit: 91e2589c
 ```
 IW4L_MINECRAFT_KIT=minecraft:magma_cube_spawn_egg*4,minecraft:diamond_sword,minecraft:lava_bucket,minecraft:cobblestone*64
 ```
+
+### 18. Minecraft zombified piglins do not burn in daylight
+
+Previous commit: 27534fff
+
+- **Defect:** entry 16 left zombified piglins sun sensitive, as `Zombie.isSunSensitive` reads. But 26.3's `Mob.aiStep` burns a mob in daylight only when its type is in `#minecraft:burn_in_daylight` (checked with javap; the tag lists skeletons, strays, wither skeletons, bogged, zombies, zombie horses, zombie villagers, drowned, zombie nautili and phantoms), and zombified piglins are not in it. Their fire immunity hid the flames, but a helmet on one still lost durability in the overworld sun.
+- **Changed:** vendored `entities/src/zombie.rs` (MinecraftOSS patch): `ZombieKind::burns_in_daylight` is false for zombified piglins, as for husks. Entry 16's text is corrected.
+- **Tests:** `zombie`: `zombified_piglins_and_husks_never_burn_in_daylight`.
+- **Test steps:** none beyond entry 16 (a helmeted zombified piglin in the overworld sun keeps its helmet whole).
+- **Kit:** none.
