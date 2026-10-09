@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, HashMap};
 
 use minecraft_commands::{
-    Clientbound, Clock, CommandRegistries, CommandServer, CommandWorld, ItemArg, PlayerId, Pose,
-    Serverbound, Text, Weather,
+    Clientbound, Clock, CommandData, CommandRegistries, CommandServer, CommandWorld, ItemArg,
+    ItemFilter, PlayerId, Pose, Serverbound, Text, Weather,
 };
 use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_terrain::day_cycle::DayCycle;
+use minecraft_terrain::terrain::TerrainStream;
 use minecraft_terrain::game_mode::GameMode;
 use minecraft_terrain::game_rules::{GameRules, Rule, Value};
 use minecraftoss_player::Difficulty;
@@ -440,6 +441,23 @@ impl CommandWorld for Host<'_> {
         entities.summon(kind.to_owned(), position, tag);
         Ok(())
     }
+
+    fn clear(&mut self, player: PlayerId, filter: &ItemFilter, max: i32) -> Option<i32> {
+        let player = self.player_mut(player)?;
+        Some(minecraft_commands::clear_inventory(
+            &mut player.inventory,
+            filter,
+            max,
+        ))
+    }
+}
+
+pub fn command_data(stream: &TerrainStream) -> CommandData {
+    let worldgen = stream.world_gen();
+    CommandData {
+        item_tags: minecraft_terrain::locate::tags(&worldgen, "item"),
+        ..CommandData::default()
+    }
 }
 
 pub fn pump(
@@ -649,6 +667,9 @@ pub(crate) mod tests {
             "commands.effect.give.success.single" => "Applied effect %s to %s",
             "argument.entity.notfound.player" => "No player was found",
             "effect.minecraft.regeneration" => "Regeneration",
+            "commands.clear.test.single" => "Found %s matching item(s) on player %s",
+            "commands.clear.success.single" => "Removed %s item(s) from player %s",
+            "clear.failed.single" => "No items were found on player %s",
             _ => return None,
         };
         Some(text.to_owned())
@@ -658,6 +679,82 @@ pub(crate) mod tests {
         message
             .chat_text()
             .map_or_else(String::new, |text| text.resolve(&lang).text)
+    }
+
+    pub(crate) fn test_stream() -> Option<TerrainStream> {
+        let paths = minecraftoss_core::registries::DataPaths::discover().ok()?;
+        let registries = minecraftoss_core::Registries::load(&paths).ok()?;
+        TerrainStream::for_dimension(
+            std::sync::Arc::new(registries),
+            0,
+            2,
+            Dimension::Overworld,
+            None,
+        )
+        .ok()
+    }
+
+    #[test]
+    fn clear_takes_items_from_the_named_player_like_vanilla() {
+        let mut parts = Parts::new();
+        parts.join(FRIEND, "Alex", [0.5, 64.0, 0.5]);
+        parts.server.data_mut().item_tags.insert(
+            "minecraft:logs".into(),
+            vec!["minecraft:oak_log".into(), "minecraft:birch_log".into()],
+        );
+        let steve = &mut parts.player(HOST).inventory;
+        steve.slots[0] = Some(ItemStack::new("minecraft:stone", 64));
+        steve.slots[1] = Some(ItemStack::new("minecraft:stone", 30));
+        steve.slots[2] = Some(ItemStack::new("minecraft:oak_log", 10));
+        steve.slots[36] = Some(ItemStack::new("minecraft:iron_boots", 1));
+        steve.cursor = Some(ItemStack::new("minecraft:stone", 1));
+        parts.player(FRIEND).inventory.slots[4] = Some(ItemStack::new("minecraft:stone", 5));
+        let (lines, _) = parts.send(
+            HOST,
+            &[
+                "/clear @s minecraft:stone 0",
+                "/clear @s stone 70",
+                "/clear @s #minecraft:logs",
+                "/clear Alex",
+                "/clear Alex",
+            ],
+        );
+        assert_eq!(
+            lines,
+            vec![
+                "Found 95 matching item(s) on player Steve",
+                "Removed 70 item(s) from player Steve",
+                "Removed 10 item(s) from player Steve",
+                "Removed 5 item(s) from player Alex",
+                "No items were found on player Alex",
+            ]
+        );
+        let steve = &parts.player(HOST).inventory;
+        let left: Vec<(usize, &str, u8)> = steve
+            .slots
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, stack)| stack.as_ref().map(|s| (slot, s.id.as_str(), s.count)))
+            .collect();
+        assert_eq!(
+            left,
+            vec![(1, "minecraft:stone", 24), (36, "minecraft:iron_boots", 1)]
+        );
+        assert_eq!(steve.cursor.as_ref().map(|s| s.count), Some(1));
+        assert_eq!(parts.host().clear(PlayerId(7), &ItemFilter::Any, -1), None);
+    }
+
+    #[test]
+    fn command_data_reads_the_item_tags_of_the_game_data() {
+        let Some(stream) = test_stream() else {
+            return;
+        };
+        let data = command_data(&stream);
+        let logs = &data.item_tags["minecraft:logs"];
+        for log in ["minecraft:oak_log", "minecraft:crimson_stem"] {
+            assert!(logs.iter().any(|id| id == log), "{log} in #logs");
+        }
+        assert!(!logs.iter().any(|id| id.starts_with('#')));
     }
 
     #[test]

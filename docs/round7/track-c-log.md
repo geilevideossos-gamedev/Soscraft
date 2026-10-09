@@ -1062,3 +1062,35 @@ Kit: none needed.
 
 - **Presence is per UUID and comes from the game each frame.** The MW2 sim owns the bodies, so the command server reads poses from it instead of storing a second copy.
 - **`/weather` acts on the overworld**, like vanilla's `MinecraftServer.setWeatherParameters`, whatever level the source is in.
+
+## Minecraft /clear empties the named player's inventory
+
+Commit: the commit that adds this entry.
+
+### What changed
+
+- `Host::clear` finds the target by id and runs `minecraft_commands::clear_inventory` on that player's `Inventory`: the 41 storage, armour and offhand slots, the 2x2 crafting grid and the stack on the cursor. The inventory screen reads the same `Inventory` every frame, so it follows at once.
+- New `commands::command_data(&TerrainStream) -> CommandData`, called once on the loading thread (`render_anim` `load()`, next to `registries`). It fills `item_tags` from the game data's `tags/item` (`minecraft_terrain::locate::tags`, nested `#` references expanded), so `/clear @s #minecraft:logs` and the `#` suggestions know the tags.
+
+### Tests added
+
+- `commands::tests::clear_takes_items_from_the_named_player_like_vanilla`: counting with 0, a partial clear, a tag, another player by name, the failure line, which slots are left (the boots, 24 stone, the cursor), and an unknown id.
+- `commands::tests::command_data_reads_the_item_tags_of_the_game_data` (needs the 26.3 data, skipped without it): `#minecraft:logs` holds oak logs and crimson stems, with no `#` left.
+
+### In-game test steps
+
+```
+IW4L_MINECRAFT_KIT=stone*64,stone*30,oak_log*10,iron_boots
+```
+
+1. `/clear @s minecraft:stone 0`: "Found 94 matching item(s) on player Steve" (your name), nothing disappears. Screenshot.
+2. `/clear @s stone 70`: "Removed 70 item(s) from player Steve", 24 stone left.
+3. `/clear @s #minecraft:logs`: "Removed 10 item(s) from player Steve".
+4. `/clear`: "Removed 25 item(s) from player Steve" (24 stone and the boots). A second `/clear` answers in red "No items were found on player Steve". Screenshot.
+5. Put a stone in the 2x2 crafting grid, `/kit` is not needed: `/give @s stone 1`, drag it into the grid, close nothing, `/clear` is typed after closing the inventory: the grid is empty when you reopen it.
+
+Kit: `minecraft:stone` 64 and 30, `minecraft:oak_log` 10, `minecraft:iron_boots` 1.
+
+### Decisions
+
+- **Tags come from the unpacked data pack the world generator reads** (`datapacks/local/minecraft-26.3`), not from the jar: it is the same 26.3 data, already on disk, and read on the loading thread.

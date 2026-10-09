@@ -238,6 +238,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
     }
     let mut chat = minecraft_commands::CommandServer::new(minecraft_survival::commands::HOST);
     *chat.registries_mut() = minecraft_survival::commands::registries(&packs);
+    *chat.data_mut() = minecraft_survival::commands::command_data(&stream);
     if let Some(save) = &opened.save
         && let Err(error) = chat.open_ops(&save.ops_path())
     {
