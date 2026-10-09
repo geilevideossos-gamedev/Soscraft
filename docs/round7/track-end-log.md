@@ -221,3 +221,29 @@ Previous commit: 40f26f27
 ```
 IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_shovel+efficiency=5,minecraft:cobblestone*64
 ```
+
+### 9. Minecraft End arena chunks stay loaded while a player is near (E3-8)
+
+Previous commit: 5022ed08
+
+- **Changed:**
+  - Vendored `third_party/minecraftoss/world/src/chunk_map.rs` (MinecraftOSS patch): the chunk map takes ticket squares beside the player's view, `set_tickets(&[(centre, radius)])`. A chunk is tracked when the view or a ticket covers it: it is generated with its 3x3 decorated (block ticking, as the view's chunks are), kept while a ticket covers it within 5 rings, and sent. `update_tracking` sends what enters the view or a ticket and forgets what leaves both, never a chunk the other still covers. `schedule` builds the wanted grid over the view and the tickets, nearest the player first, so the view comes before the arena. `is_idle` waits for the ticket chunks too. With no ticket, every step is as before.
+  - `minecraft_terrain/src/terrain.rs`: `TerrainStream::set_tickets`, one method that hands the tickets to the chunk map. The file is E1's, but the stream owns the chunk map privately and nothing else reaches it.
+  - New `minecraft_survival/src/the_end/dragon_fight.rs` (a submodule of `the_end`, so `lib.rs` keeps its order): `DragonFight` with the player part of `EnderDragonFight.tick`. Every 20 ticks (the first tick at once, `ticksSinceLastPlayerScan` starts at 21) it takes the players of the End level who are alive and within 192 blocks of (0, 128, 0) (`EntitySelector.withinDistance`, feet distance squared). While there is one, the level's stream holds the ticket at chunk (0, 0) with radius 8: vanilla's `addTicketWithRadius(DRAGON, (0, 0), 9)` gives level 24 there, so chunks -8 to 8 are block ticking (level 32) and ring 9 is FULL, which the chunk map's 3x3 rule gives too. With nobody near, the ticket goes (`removeTicketWithRadius`).
+  - `minecraft_survival/src/level.rs`: one field, `Level.dragon_fight`, made on the End level's first tick. `commands.rs`: the test level gets the field.
+  - `render_anim/src/minecraft_end.rs`: `tick_fight` ticks the End level's fight with every player and logs `Minecraft End arena held for N players` and `Minecraft End arena released`. `minecraft_world.rs` gets one call line after the commands run.
+- **Checked with javap (26.3):** `EnderDragonFight.tick` (the player scan every 20 ticks, the ticket while the boss event has players, its removal otherwise), `EnderDragonFight.init` (`validPlayer` is `ENTITY_STILL_ALIVE` and `withinDistance(origin.x, 128 + origin.y, origin.z, 192)`), `ARENA_TICKET_LEVEL` 9, `TicketStorage.addTicketWithRadius` (`ChunkLevel.byStatus(FULL) - radius`), `EntitySelector.withinDistance` (`distanceToSqr <= range²`).
+- **Tests:** `dragon_fight`: `the_arena_ticket_keeps_chunks_minus_eight_to_eight_ticking`, `players_count_within_192_blocks_of_the_dragon_spawn_while_alive`, `the_ticket_follows_the_players_scanned_every_twenty_ticks`, `the_fight_clock_counts_whole_ticks`, `the_arena_ticket_loads_the_arena_beside_the_view_and_lets_it_go` (a real End stream at view distance 2 on the platform: the island centre is out of view; a player on the platform holds the arena and chunks (-8, -8) to (8, 8) stream in while ring 9 stays out; 200 blocks south the next scan releases it and the arena chunks are forgotten while the view stays). The chunk map, terrain and survival suites pass as before.
+- **Decisions:**
+  - Here the client and the server share one scene, so the arena's chunks go to the scene too, as the view's do (vanilla keeps ticket chunks on the server). From the platform the main island is built and drawn out to the fog.
+  - Only levels that a player is in tick in this game. The fight therefore ticks while any player is in the End, and with nobody near it releases the ticket at the next scan, as vanilla does before the level goes idle.
+  - The scan with `isArenaLoaded`, the saved fight and the podium follow in entry 10. The dragon and the crystals come in X3.
+- **Test steps:**
+  1. Keep `IW4L_MINECRAFT_WORLD=x2test`. Go into the End through the ring's portal. The log says `Minecraft End arena held for 1 players` within a second of arriving.
+  2. Look west from the platform: the main island and its obsidian pillars are drawn all the way into the fog, beyond the usual 8 chunks around you. **Screenshot 5.**
+  3. Type `/gamemode creative`, fly 200 blocks south (`/tp 100 60 220`) and hover. Within a second the log says `Minecraft End arena released`. Fly back to the platform (`/tp 100 50 0`): `held for 1 players` again.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:diamond_pickaxe+efficiency=5,minecraft:cobblestone*64
+```

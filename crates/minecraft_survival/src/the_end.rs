@@ -1,3 +1,5 @@
+pub mod dragon_fight;
+
 use std::any::Any;
 
 use minecraft_net::Dimension;
@@ -192,7 +194,7 @@ pub fn travel(globals: &Globals, level: &Level, player: &mut Player) -> Trip {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::commands::HOST;
     use crate::player_nbt::GlobalPos;
@@ -202,7 +204,7 @@ mod tests {
     use minecraft_terrain::game_mode::{GameMode, PlayerMode};
     use minecraftoss_player::inventory::Inventory;
 
-    fn player(dimension: Dimension) -> Player {
+    pub(crate) fn player(dimension: Dimension) -> Player {
         let mut chat = CommandServer::new(HOST);
         chat.join(HOST, "Steve");
         let mut player = Player::new(

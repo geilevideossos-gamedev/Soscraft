@@ -706,6 +706,7 @@ fn update(
     let presence = vec![(local_uuid.clone(), minecraft_survival::commands::Presence { pose: host_pose, alive: host_alive })];
     let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, levels, players, local_uuid, &mut ui.chat.sent, presence);
     ui.chat.command_level = players.get(local_uuid).map_or(0, |player| globals.chat.level(player.id));
+    crate::minecraft_end::tick_fight(levels, players, time.delta_secs_f64());
     let Some(player) = players.get_mut(local_uuid) else {
         ui.active = false;
         ui.inventory_open = false;

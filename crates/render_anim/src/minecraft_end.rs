@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use minecraft_net::PlayerUuid;
 use minecraft_survival::level::Level;
 use minecraft_survival::player::Player;
 use minecraft_survival::server::Globals;
@@ -42,5 +43,23 @@ pub(crate) fn arriving(player: &mut Player, level: &mut Level) {
             "Minecraft End platform rebuilt at {:?}",
             minecraft_survival::the_end::platform_origin()
         );
+    }
+}
+
+pub(crate) fn tick_fight(
+    levels: &mut BTreeMap<Dimension, Level>,
+    players: &BTreeMap<PlayerUuid, Player>,
+    seconds: f64,
+) {
+    if let Some(level) = levels.get_mut(&Dimension::End) {
+        match minecraft_survival::the_end::dragon_fight::tick_level(
+            level,
+            players.values(),
+            seconds,
+        ) {
+            Some(0) => diag::info!(World, "Minecraft End arena released"),
+            Some(count) => diag::info!(World, "Minecraft End arena held for {count} players"),
+            None => {}
+        }
     }
 }

@@ -1414,6 +1414,10 @@ impl TerrainStream {
         !self.player_sections.contains(&(x >> 4, y >> 4, z >> 4))
     }
 
+    pub fn set_tickets(&mut self, tickets: &[(minecraftoss_core::ChunkPos, i32)]) {
+        self.server.set_tickets(tickets);
+    }
+
     /// Everything in view is generated, sent, lit and built.
     pub fn is_settled(&self) -> bool {
         let queue = self.work.0.lock().expect("terrain work queue");
