@@ -1,4 +1,5 @@
 use minecraft_net::Dimension;
+use minecraftoss_core::block::FluidKind;
 use minecraftoss_core::{BlockStateId, Registries};
 
 use crate::dimension::{BedRule, DimensionRules};
@@ -12,6 +13,13 @@ pub const TOO_FAR_AWAY: &str = "block.minecraft.bed.too_far_away";
 pub const OBSTRUCTED: &str = "block.minecraft.bed.obstructed";
 pub const OCCUPIED: &str = "block.minecraft.bed.occupied";
 pub const SPAWN_SET: &str = "block.minecraft.set_spawn";
+pub const GLOWSTONE: &str = "minecraft:glowstone";
+pub const MAX_CHARGES: u8 = 4;
+pub const ANCHOR_CHARGE_SOUND: &str = "minecraft:block.respawn_anchor.charge";
+pub const ANCHOR_SET_SPAWN_SOUND: &str = "minecraft:block.respawn_anchor.set_spawn";
+pub const ANCHOR_DEPLETE_SOUND: &str = "minecraft:block.respawn_anchor.deplete";
+
+const HORIZONTAL: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
 
 pub trait BlockView {
     fn state_at(&mut self, pos: Pos) -> BlockStateId;
@@ -65,6 +73,20 @@ pub struct Sleeper {
 pub struct Rest {
     pub respawn: Option<Respawn>,
     pub problem: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Fuel {
+    pub main: bool,
+    pub held: bool,
+    pub offhand: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AnchorUse {
+    Charge { pos: Pos, state: BlockStateId },
+    SetSpawn(Respawn),
+    Explode { pos: Pos, shielded: bool },
 }
 
 pub fn horizontal(facing: &str) -> Option<(i32, i32)> {
@@ -455,5 +477,256 @@ mod rest_tests {
         assert!(!set_respawn(&mut point, at((1, 64, 1))));
         assert!(set_respawn(&mut point, at((2, 64, 1))));
         assert_eq!(point, Some(at((2, 64, 1))));
+    }
+}
+
+pub fn is_anchor(registries: &Registries, state: BlockStateId) -> bool {
+    let blocks = &registries.blocks;
+    blocks
+        .block(blocks.block_of(state))
+        .is_a("RespawnAnchorBlock")
+}
+
+pub fn charges(registries: &Registries, state: BlockStateId) -> u8 {
+    registries
+        .blocks
+        .property(state, "charges")
+        .and_then(|charges| charges.parse().ok())
+        .unwrap_or(0)
+}
+
+pub fn with_charges(
+    registries: &Registries,
+    state: BlockStateId,
+    charges: u8,
+) -> Option<BlockStateId> {
+    registries
+        .blocks
+        .with_property(state, "charges", &charges.to_string())
+}
+
+fn water_would_flow(world: &mut impl BlockView, registries: &Registries, pos: Pos) -> bool {
+    let water = |state: BlockStateId| {
+        registries
+            .blocks
+            .state(state)
+            .fluid
+            .filter(|fluid| fluid.kind == FluidKind::Water)
+    };
+    let Some(fluid) = water(world.state_at(pos)) else {
+        return false;
+    };
+    if fluid.source {
+        return true;
+    }
+    fluid.amount >= 2 && water(world.state_at((pos.0, pos.1 - 1, pos.2))).is_none()
+}
+
+pub fn shielded_by_water(world: &mut impl BlockView, registries: &Registries, pos: Pos) -> bool {
+    let water_above = registries
+        .blocks
+        .state(world.state_at((pos.0, pos.1 + 1, pos.2)))
+        .fluid
+        .is_some_and(|fluid| fluid.kind == FluidKind::Water);
+    HORIZONTAL
+        .iter()
+        .any(|&side| water_would_flow(world, registries, step(pos, side)))
+        || water_above
+}
+
+pub fn use_anchor(
+    world: &mut impl BlockView,
+    registries: &Registries,
+    rules: &DimensionRules,
+    pos: Pos,
+    dimension: Dimension,
+    fuel: Fuel,
+) -> Option<AnchorUse> {
+    let state = world.state_at(pos);
+    if !is_anchor(registries, state) {
+        return None;
+    }
+    let charge = charges(registries, state);
+    let chargeable = charge < MAX_CHARGES;
+    if fuel.held && chargeable {
+        return Some(AnchorUse::Charge {
+            pos,
+            state: with_charges(registries, state, charge + 1)?,
+        });
+    }
+    if !fuel.main || (fuel.offhand && chargeable) || charge == 0 {
+        return None;
+    }
+    if rules.respawn_anchor_works {
+        return Some(AnchorUse::SetSpawn(Respawn {
+            at: GlobalPos { dimension, pos },
+            yaw: 0.0,
+            pitch: 0.0,
+            forced: false,
+        }));
+    }
+    Some(AnchorUse::Explode {
+        pos,
+        shielded: shielded_by_water(world, registries, pos),
+    })
+}
+
+#[cfg(test)]
+mod anchor_tests {
+    use super::tests::{Blocks, registries};
+    use super::*;
+
+    const MAIN_GLOWSTONE: Fuel = Fuel {
+        main: true,
+        held: true,
+        offhand: false,
+    };
+    const EMPTY_HAND: Fuel = Fuel {
+        main: true,
+        held: false,
+        offhand: false,
+    };
+
+    fn anchor(world: &mut Blocks, pos: Pos, charges: u8) {
+        world.set(pos, &format!("minecraft:respawn_anchor[charges={charges}]"));
+    }
+
+    fn used(world: &mut Blocks, dimension: Dimension, fuel: Fuel) -> Option<AnchorUse> {
+        let registries = world.registries;
+        let rules = DimensionRules::load(registries, dimension).unwrap();
+        use_anchor(world, registries, &rules, (0, 64, 0), dimension, fuel)
+    }
+
+    #[test]
+    fn glowstone_charges_an_anchor_up_to_four_from_either_hand() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let mut world = Blocks::new(&registries);
+        for charge in 0..MAX_CHARGES {
+            anchor(&mut world, (0, 64, 0), charge);
+            let Some(AnchorUse::Charge { pos, state }) =
+                used(&mut world, Dimension::Overworld, MAIN_GLOWSTONE)
+            else {
+                panic!("charge {charge} takes glowstone");
+            };
+            assert_eq!(pos, (0, 64, 0));
+            assert_eq!(charges(&registries, state), charge + 1);
+        }
+        anchor(&mut world, (0, 64, 0), 2);
+        let offhand = Fuel {
+            main: false,
+            held: true,
+            offhand: true,
+        };
+        assert!(matches!(
+            used(&mut world, Dimension::Nether, offhand),
+            Some(AnchorUse::Charge { .. })
+        ));
+        let main_empty_offhand_glowstone = Fuel {
+            main: true,
+            held: false,
+            offhand: true,
+        };
+        assert_eq!(
+            used(&mut world, Dimension::Nether, main_empty_offhand_glowstone),
+            None,
+            "the main hand passes to the offhand's glowstone"
+        );
+        anchor(&mut world, (0, 64, 0), 4);
+        assert!(
+            matches!(
+                used(&mut world, Dimension::Nether, MAIN_GLOWSTONE),
+                Some(AnchorUse::SetSpawn(_))
+            ),
+            "a full anchor is used as with an empty hand"
+        );
+    }
+
+    #[test]
+    fn a_charged_anchor_sets_the_spawn_in_the_nether_and_explodes_elsewhere() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let mut world = Blocks::new(&registries);
+        anchor(&mut world, (0, 64, 0), 0);
+        for dimension in [Dimension::Nether, Dimension::Overworld] {
+            assert_eq!(
+                used(&mut world, dimension, EMPTY_HAND),
+                None,
+                "an empty anchor does nothing"
+            );
+        }
+        anchor(&mut world, (0, 64, 0), 1);
+        assert_eq!(
+            used(&mut world, Dimension::Nether, EMPTY_HAND),
+            Some(AnchorUse::SetSpawn(Respawn {
+                at: GlobalPos {
+                    dimension: Dimension::Nether,
+                    pos: (0, 64, 0),
+                },
+                yaw: 0.0,
+                pitch: 0.0,
+                forced: false,
+            }))
+        );
+        let offhand_use = Fuel {
+            main: false,
+            held: false,
+            offhand: false,
+        };
+        assert_eq!(used(&mut world, Dimension::Nether, offhand_use), None);
+        for dimension in [Dimension::Overworld, Dimension::End] {
+            assert_eq!(
+                used(&mut world, dimension, EMPTY_HAND),
+                Some(AnchorUse::Explode {
+                    pos: (0, 64, 0),
+                    shielded: false,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn flowing_water_beside_or_any_water_above_keeps_the_blocks_around_an_anchor() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let shielded = |placed: &[(Pos, &str)]| {
+            let mut world = Blocks::new(&registries);
+            anchor(&mut world, (0, 64, 0), 1);
+            for &(pos, text) in placed {
+                world.set(pos, text);
+            }
+            shielded_by_water(&mut world, &registries, (0, 64, 0))
+        };
+        assert!(!shielded(&[]));
+        assert!(shielded(&[((1, 64, 0), "minecraft:water[level=0]")]));
+        assert!(shielded(&[((0, 64, -1), "minecraft:water[level=6]")]));
+        assert!(
+            !shielded(&[((0, 64, -1), "minecraft:water[level=7]")]),
+            "the thinnest flowing water would not flow on"
+        );
+        assert!(shielded(&[(
+            (0, 64, 1),
+            "minecraft:oak_slab[type=bottom,waterlogged=true]"
+        )]));
+        assert!(
+            !shielded(&[
+                ((0, 64, 1), "minecraft:water[level=3]"),
+                ((0, 63, 1), "minecraft:water[level=0]")
+            ]),
+            "flowing water over water would not flow"
+        );
+        assert!(
+            shielded(&[((0, 64, 1), "minecraft:water[level=3]")]),
+            "flowing water over air would"
+        );
+        assert!(shielded(&[((0, 65, 0), "minecraft:water[level=6]")]));
+        assert!(!shielded(&[((1, 64, 0), "minecraft:lava[level=0]")]));
+        assert!(
+            !shielded(&[((1, 65, 0), "minecraft:water[level=0]")]),
+            "only straight above counts"
+        );
     }
 }

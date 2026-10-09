@@ -8,13 +8,15 @@ use minecraft_survival::entities::Entities;
 use minecraft_survival::level::Terrain;
 use minecraft_survival::player_nbt::Respawn;
 use minecraft_survival::respawn_block::{
-    self, BAD_RESPAWN_POINT_POWER, BedUse, BlockView, OCCUPIED, Pos, SPAWN_SET, Sleeper,
+    self, ANCHOR_CHARGE_SOUND, ANCHOR_SET_SPAWN_SOUND, AnchorUse, BAD_RESPAWN_POINT_POWER, BedUse,
+    BlockView, Fuel, GLOWSTONE, OCCUPIED, Pos, SPAWN_SET, Sleeper,
 };
 use minecraft_terrain::pack::PackStack;
 use minecraft_terrain::scene::{Block, Scene};
 use minecraft_terrain::server::Blast;
 use minecraft_terrain::terrain::Dimension;
 use minecraftoss_core::{BlockStateId, Registries};
+use minecraftoss_player::inventory::Inventory;
 
 use crate::minecraft_inventory::InventoryUi;
 use crate::minecraft_sounds::Sounds;
@@ -33,13 +35,29 @@ impl BlockView for SceneView<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Hand<'a> {
+    pub(crate) main: bool,
+    pub(crate) held: Option<&'a str>,
+    pub(crate) offhand: Option<&'a str>,
+}
+
 #[derive(Default)]
 pub(crate) struct RespawnBlockUse {
     pub(crate) writes: Vec<(Pos, Option<Block>)>,
-    blast: Option<Blast>,
+    blast: Option<(Blast, Option<Pos>)>,
     sounds: Vec<(&'static str, [f64; 3])>,
-    respawn: Option<Respawn>,
+    respawn: Option<(Respawn, Option<[f64; 3]>)>,
     overlay: Option<String>,
+    spends: bool,
+}
+
+fn bad_respawn_point(center: [f64; 3]) -> Blast {
+    Blast {
+        center,
+        power: BAD_RESPAWN_POINT_POWER,
+        fire: true,
+    }
 }
 
 pub(crate) fn use_block(
@@ -47,6 +65,7 @@ pub(crate) fn use_block(
     terrain: &Terrain,
     registries: &Registries,
     dimension: Dimension,
+    hand: Hand,
 ) -> Option<RespawnBlockUse> {
     let pos = aim
         .target(
@@ -54,8 +73,21 @@ pub(crate) fn use_block(
             BLOCK_REACH,
         )?
         .pos;
-    let mut used = RespawnBlockUse::default();
     let mut view = SceneView(terrain);
+    let fuel = Fuel {
+        main: hand.main,
+        held: hand.held == Some(GLOWSTONE),
+        offhand: hand.main && hand.offhand == Some(GLOWSTONE),
+    };
+    if let Some(anchor) =
+        respawn_block::use_anchor(&mut view, registries, &terrain.rules, pos, dimension, fuel)
+    {
+        return Some(use_anchor(anchor, terrain));
+    }
+    if !hand.main {
+        return None;
+    }
+    let mut used = RespawnBlockUse::default();
     match respawn_block::use_bed(&mut view, registries, &terrain.rules, pos)? {
         BedUse::Destroy {
             removed,
@@ -65,11 +97,7 @@ pub(crate) fn use_block(
         } => {
             let head = respawn_block::centre(removed[0]);
             used.writes = removed.into_iter().map(|at| (at, None)).collect();
-            used.blast = blast.map(|center| Blast {
-                center,
-                power: BAD_RESPAWN_POINT_POWER,
-                fire: true,
-            });
+            used.blast = blast.map(|center| (bad_respawn_point(center), None));
             used.sounds.extend(sound.map(|event| (event, head)));
             used.overlay = message;
         }
@@ -85,7 +113,7 @@ pub(crate) fn use_block(
             match respawn_block::rest_in_bed(&mut view, registries, &terrain.rules, &bed, &sleeper)
             {
                 Ok(rest) => {
-                    used.respawn = rest.respawn;
+                    used.respawn = rest.respawn.map(|point| (point, None));
                     used.overlay = rest.problem;
                 }
                 Err(problem) => used.overlay = Some(problem.to_owned()),
@@ -96,26 +124,57 @@ pub(crate) fn use_block(
     Some(used)
 }
 
+fn use_anchor(anchor: AnchorUse, terrain: &Terrain) -> RespawnBlockUse {
+    let mut used = RespawnBlockUse::default();
+    match anchor {
+        AnchorUse::Charge { pos, state } => {
+            used.writes = vec![(pos, terrain.stream.states.block(state).cloned())];
+            used.sounds
+                .push((ANCHOR_CHARGE_SOUND, respawn_block::centre(pos)));
+            used.spends = true;
+        }
+        AnchorUse::SetSpawn(point) => {
+            used.respawn = Some((point, Some(respawn_block::centre(point.at.pos))));
+        }
+        AnchorUse::Explode { pos, shielded } => {
+            used.writes = vec![(pos, None)];
+            used.blast = Some((
+                bad_respawn_point(respawn_block::centre(pos)),
+                shielded.then_some(pos),
+            ));
+        }
+    }
+    used
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn finish(
     used: RespawnBlockUse,
     entities: &mut Entities,
     respawn: &mut Option<Respawn>,
+    inventory: &mut Inventory,
+    slot: usize,
+    consumes: bool,
     sounds: Option<&mut Sounds>,
     packs: &PackStack,
     origin: [f64; 3],
     ui: &mut MinecraftUi,
     inventory_ui: &InventoryUi,
 ) {
-    if let Some(blast) = used.blast {
-        entities.explode_respawn_point(blast);
+    if let Some((blast, shield)) = used.blast {
+        entities.explode_respawn_point(blast, shield);
     }
-    if let Some(sounds) = sounds {
-        for (event, at) in used.sounds {
-            let at = Vec3::from_array(sim::voxel::to_map(origin, at));
-            sounds.play(packs, event, Some(at), 1.0, 1.0);
+    if used.spends
+        && consumes
+        && let Some(stack) = inventory.slots.get_mut(slot)
+        && let Some(held) = stack.as_mut()
+    {
+        held.count -= 1;
+        if held.count == 0 {
+            *stack = None;
         }
     }
+    let mut heard = used.sounds;
     let loaded;
     let language = match inventory_ui.language() {
         Some(language) => language,
@@ -124,7 +183,7 @@ pub(crate) fn finish(
             &loaded
         }
     };
-    if let Some(point) = used.respawn
+    if let Some((point, sound)) = used.respawn
         && respawn_block::set_respawn(respawn, point)
     {
         let line = Clientbound::System {
@@ -132,9 +191,16 @@ pub(crate) fn finish(
             overlay: false,
         };
         crate::minecraft_chat::show(&mut ui.chat, &[line], language);
+        heard.extend(sound.map(|at| (ANCHOR_SET_SPAWN_SOUND, at)));
     }
     if let Some(key) = used.overlay {
         show_overlay(ui, language, &key);
+    }
+    if let Some(sounds) = sounds {
+        for (event, at) in heard {
+            let at = Vec3::from_array(sim::voxel::to_map(origin, at));
+            sounds.play(packs, event, Some(at), 1.0, 1.0);
+        }
     }
 }
 

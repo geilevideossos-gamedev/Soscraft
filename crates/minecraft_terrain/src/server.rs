@@ -74,7 +74,7 @@ pub struct ServerSim {
     players_struck: Vec<crate::thrown::PlayerStruck>,
     players_pushed: Vec<(u64, glam::DVec3)>,
     thrown_hits: Vec<crate::thrown::ThrownHit>,
-    blasts: Vec<(Blast, bool)>,
+    blasts: Vec<(Blast, BlastSource)>,
     block_explosion_drop_decay: bool,
 }
 
@@ -83,6 +83,12 @@ pub struct Blast {
     pub center: [f64; 3],
     pub power: f32,
     pub fire: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum BlastSource {
+    Nobody,
+    RespawnPoint { shield: Option<BlockPos> },
 }
 
 /// What a player's hit or use on a mob did, for the client to present.
@@ -723,11 +729,11 @@ impl ServerSim {
     }
 
     pub fn blast(&mut self, blast: Blast) {
-        self.blasts.push((blast, false));
+        self.blasts.push((blast, BlastSource::Nobody));
     }
 
-    pub fn respawn_point_blast(&mut self, blast: Blast) {
-        self.blasts.push((blast, true));
+    pub fn respawn_point_blast(&mut self, blast: Blast, shield: Option<BlockPos>) {
+        self.blasts.push((blast, BlastSource::RespawnPoint { shield }));
     }
 
     fn explode_fireballs(&mut self) {
@@ -752,20 +758,24 @@ impl ServerSim {
 
     fn explode_blasts(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
         use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
-        for (blast, respawn_point) in std::mem::take(&mut self.blasts) {
+        for (blast, source) in std::mem::take(&mut self.blasts) {
             let explosion = minecraftoss_entities::creeper::CreeperExplosion { position: glam::DVec3::from_array(blast.center), radius: blast.power, powered: false };
             {
                 let Self { level, states, mobs, mob_tables, .. } = &mut *self;
                 let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
-                if respawn_point {
-                    mobs.bad_respawn_point_blast(&world, explosion, players);
-                } else {
+                if source == BlastSource::Nobody {
                     mobs.blast(&world, explosion, players);
+                } else {
+                    mobs.bad_respawn_point_blast(&world, explosion, players);
                 }
             }
             self.drop_death_loot();
             let interaction = if self.block_explosion_drop_decay { BlockInteraction::DestroyWithDecay } else { BlockInteraction::Destroy };
-            self.level.explode(Explosion { center: blast.center, radius: blast.power, fire: blast.fire, interaction, source: None });
+            let exploded = Explosion { center: blast.center, radius: blast.power, fire: blast.fire, interaction, source: None };
+            match source {
+                BlastSource::RespawnPoint { shield: Some((x, y, z)) } => self.level.explode_shielded(exploded, minecraftoss_core::BlockPos::new(x, y, z)),
+                _ => self.level.explode(exploded),
+            };
             self.explosions.push(explosion);
         }
     }
@@ -1594,7 +1604,7 @@ pub enum Command {
     MobBlast { hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64>, slow_ticks: i32 },
     WeaponBlast { center: [f64; 3], power: f32 },
     Blast(Blast),
-    RespawnPointBlast(Blast),
+    RespawnPointBlast { blast: Blast, shield: Option<BlockPos> },
     DeflectFireball { id: u64, look: [f64; 3], player: u64, by_attack: bool },
     PushFireball { id: u64, push: [f64; 3] },
     /// An operation on the player's trading screen.
@@ -1920,8 +1930,8 @@ impl ServerHandle {
         self.send(Command::Blast(blast));
     }
 
-    pub fn respawn_point_blast(&mut self, blast: Blast) {
-        self.send(Command::RespawnPointBlast(blast));
+    pub fn respawn_point_blast(&mut self, blast: Blast, shield: Option<BlockPos>) {
+        self.send(Command::RespawnPointBlast { blast, shield });
     }
 
     pub fn deflect_fireball(&mut self, id: u64, look: [f64; 3], player: u64, by_attack: bool) {
@@ -2033,7 +2043,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::MobBlast { hit, damage, center, impact, player, slow_ticks } => sim.mob_blast(hit, damage, center, impact, player, slow_ticks),
                 Command::WeaponBlast { center, power } => sim.weapon_blast(center, power),
                 Command::Blast(blast) => sim.blast(blast),
-                Command::RespawnPointBlast(blast) => sim.respawn_point_blast(blast),
+                Command::RespawnPointBlast { blast, shield } => sim.respawn_point_blast(blast, shield),
                 Command::DeflectFireball { id, look, player, by_attack } => {
                     sim.deflect_fireball(id, look, player, by_attack);
                 }
@@ -5870,7 +5880,7 @@ mod tests {
             spectator: false,
             attackable: true,
         };
-        let blow_up = |fire_on: bool, respawn_point: bool| {
+        let blow_up = |fire_on: bool, respawn_point: bool, shield: Option<BlockPos>| {
             let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
             let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
             let mut server = ServerSim::new(worldgen.clone(), states, "minecraft:overworld");
@@ -5890,7 +5900,7 @@ mod tests {
             let zombie = server.mobs.spawn_zombie(minecraftoss_entities::zombie::Zombie::new(glam::DVec3::new(0.5, 201.0, 3.5)), true);
             server.take_changes();
             if respawn_point {
-                server.respawn_point_blast(Blast { center: [0.5, 201.5, 0.5], power: 5.0, fire: fire_on });
+                server.respawn_point_blast(Blast { center: [0.5, 201.5, 0.5], power: 5.0, fire: fire_on }, shield);
             } else {
                 server.blast(Blast { center: [0.5, 201.5, 0.5], power: 5.0, fire: fire_on });
             }
@@ -5912,7 +5922,7 @@ mod tests {
             }
             (hits, blasts, health, fires, planks_left)
         };
-        let (hits, blasts, health, fires, planks_left) = blow_up(true, false);
+        let (hits, blasts, health, fires, planks_left) = blow_up(true, false, None);
         assert_eq!(blasts.len(), 1, "the client hears the blast");
         assert_eq!(blasts[0].radius, 5.0);
         let hit = hits.iter().find(|h| matches!(h.kind, minecraftoss_entities::world::PlayerHitKind::Explosion { .. })).expect("the blast hits the player");
@@ -5921,15 +5931,20 @@ mod tests {
         assert!(health < 20.0, "the zombie is hurt: {health}");
         assert!(planks_left < 5, "the blast breaks the planks: {planks_left} left");
         assert!(fires > 0, "fire lands on the obsidian");
-        let (_, _, _, fires, _) = blow_up(false, false);
+        let (_, _, _, fires, _) = blow_up(false, false, None);
         assert_eq!(fires, 0, "a blast without fire starts none");
-        let (hits, blasts, health, fires, planks_left) = blow_up(true, true);
+        let (hits, blasts, health, fires, planks_left) = blow_up(true, true, None);
         assert_eq!(blasts.len(), 1, "the client hears a bed's blast");
         assert!(!hits.iter().any(|h| matches!(h.kind, minecraftoss_entities::world::PlayerHitKind::Explosion { .. })));
         let hit = hits.iter().find(|h| matches!(h.kind, minecraftoss_entities::world::PlayerHitKind::BadRespawnPoint { .. })).expect("a bed's blast is a bad respawn point");
         assert_eq!(hit.source, None);
         assert!(hit.damage > 10.0, "a bed's blast hurts as much: {}", hit.damage);
         assert!(health < 20.0 && planks_left < 5 && fires > 0, "and does the same to mobs and blocks");
+        let (hits, blasts, health, fires, planks_left) = blow_up(true, true, Some((0, 201, 0)));
+        assert_eq!(blasts.len(), 1, "the client hears an anchor's blast beside water");
+        assert!(hits.iter().any(|h| matches!(h.kind, minecraftoss_entities::world::PlayerHitKind::BadRespawnPoint { .. }) && h.damage > 10.0));
+        assert!(health < 20.0, "it hurts mobs as much");
+        assert_eq!((planks_left, fires), (5, 0), "water at its centre keeps every block and starts no fire");
     }
 
     #[test]

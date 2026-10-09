@@ -1241,9 +1241,9 @@ fn update(
                     hand.swing = Some(0.0);
                 }
                 HandUse::Consumed
-            } else if let Some(respawn_use) = (main && !(player.crouching && has_item)).then(|| crate::minecraft_respawn::use_block(&player, terrain, &globals.registries, *dimension)).flatten() {
+            } else if let Some(respawn_use) = (!(player.crouching && has_item)).then(|| crate::minecraft_respawn::use_block(&player, terrain, &globals.registries, *dimension, crate::minecraft_respawn::Hand { main, held: held.as_ref().map(|stack| stack.id.as_str()), offhand: inventory.slots[minecraft_survival::offhand::OFFHAND].as_ref().map(|stack| stack.id.as_str()) })).flatten() {
                 write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, respawn_use.writes.clone());
-                crate::minecraft_respawn::finish(respawn_use, entities, respawn, sounds.as_mut(), &world.packs, origin, &mut ui, inventory_ui);
+                crate::minecraft_respawn::finish(respawn_use, entities, respawn, inventory, slot, game_mode.consumes_items(), sounds.as_mut(), &world.packs, origin, &mut ui, inventory_ui);
                 hand.swing = Some(0.0);
                 HandUse::Consumed
             } else if let Some(pos) = used {

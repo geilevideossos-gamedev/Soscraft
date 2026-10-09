@@ -21,6 +21,8 @@ use minecraftoss_generator::feature::update::base_fire_state;
 use minecraftoss_generator::feature::Ctx;
 use std::collections::HashSet;
 
+const WATER_RESISTANCE: f32 = 100.0;
+
 /// `Explosion.BlockInteraction`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockInteraction {
@@ -108,7 +110,15 @@ impl Level<'_> {
 
     /// `ServerExplosion.explode`; returns the number of blocks it picked.
     pub fn explode(&mut self, ex: Explosion) -> usize {
-        let mut to_blow = self.exploded_positions(&ex);
+        self.explode_from(ex, None)
+    }
+
+    pub fn explode_shielded(&mut self, ex: Explosion, shield: BlockPos) -> usize {
+        self.explode_from(ex, Some(shield))
+    }
+
+    fn explode_from(&mut self, ex: Explosion, shield: Option<BlockPos>) -> usize {
+        let mut to_blow = self.exploded_positions(&ex, shield);
         self.hurt_entities(&ex);
         if ex.interaction != BlockInteraction::Keep {
             self.interact_with_blocks(&ex, &mut to_blow);
@@ -156,7 +166,7 @@ impl Level<'_> {
 
     /// `ServerExplosion.calculateExplodedPositions`, in the iteration order
     /// of vanilla's `HashSet`.
-    fn exploded_positions(&mut self, ex: &Explosion) -> Vec<BlockPos> {
+    fn exploded_positions(&mut self, ex: &Explosion, shield: Option<BlockPos>) -> Vec<BlockPos> {
         let mut seen = HashSet::new();
         let mut inserted = Vec::new();
         for xx in 0..16 {
@@ -180,7 +190,8 @@ impl Level<'_> {
                         if self.outside(pos.y) || pos.x.abs() >= 30_000_000 || pos.z.abs() >= 30_000_000 {
                             break;
                         }
-                        if let Some(resistance) = self.explosion_resistance(state) {
+                        let resistance = if shield == Some(pos) { Some(WATER_RESISTANCE) } else { self.explosion_resistance(state) };
+                        if let Some(resistance) = resistance {
                             remaining -= (resistance + 0.3f32) * 0.3f32;
                         }
                         if remaining > 0.0 && seen.insert(pos) {

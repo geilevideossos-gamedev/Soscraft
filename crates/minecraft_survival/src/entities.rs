@@ -705,8 +705,8 @@ impl Entities {
         self.server.blast(blast);
     }
 
-    pub fn explode_respawn_point(&mut self, blast: minecraft_terrain::server::Blast) {
-        self.server.respawn_point_blast(blast);
+    pub fn explode_respawn_point(&mut self, blast: minecraft_terrain::server::Blast, shield: Option<(i32, i32, i32)>) {
+        self.server.respawn_point_blast(blast, shield);
     }
 
     /// Sends a server tick when one is due and takes what came back: block

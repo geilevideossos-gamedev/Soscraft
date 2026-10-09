@@ -637,3 +637,26 @@ Previous commit: 549e0168
 ```
 IW4L_MINECRAFT_KIT=minecraft:red_bed,minecraft:red_bed,minecraft:stone*16
 ```
+
+### 27. Minecraft respawn anchors charge with glowstone and set your spawn (E2-14)
+
+Previous commit: 9d9f8b7e
+
+- **Changed** (checked with javap on the 26.3 jar: `RespawnAnchorBlock.useItemOn`, `useWithoutItem`, `charge`, `canSetSpawn`, `explode`, `isWaterThatWouldFlow` and its `RespawnAnchorBlock$1` damage calculator, `ServerPlayer.setRespawnPosition`, `ServerExplosion.explode`):
+  - `minecraft_survival/src/respawn_block.rs`: `use_anchor(world, registries, rules, pos, dimension, fuel)`: glowstone in the hand in use charges an anchor below 4 by one; with the main hand, glowstone in the offhand of a chargeable anchor passes the use on to the offhand; an anchor with no charge passes (so the held item is used, a block placed against it); otherwise, where `gameplay/respawn_anchor_works` holds (the Nether), it sets the respawn point at the anchor (yaw and pitch 0, not forced); anywhere else it explodes. `shielded_by_water`: source water or flowing water of amount 2 or more over no water beside it, or any water right above, as `isWaterThatWouldFlow`.
+  - Vendored `third_party/minecraftoss/world/src/level/explosion.rs` (MinecraftOSS patch): `Level::explode_shielded(explosion, pos)`: the rays read water's resistance (100) at that block, as the anchor's `ExplosionDamageCalculator` does when water is near, so the rays die at the centre: no block breaks and no fire starts, while mobs and players are hurt as before.
+  - `minecraft_terrain/src/server.rs`: `ServerSim::respawn_point_blast(blast, shield)` and `Command::RespawnPointBlast { blast, shield }` (the bed of entry 25 passes no shield). `Entities::explode_respawn_point(blast, shield)`.
+  - `render_anim/src/minecraft_respawn.rs`: charging writes the anchor's next charge (scene, collision, server, light), plays `block.respawn_anchor.charge` and spends one glowstone outside creative (`ItemStack.consume`); setting the spawn shows "Respawn point set" and plays `block.respawn_anchor.set_spawn` only when the point moved (else nothing, `CONSUME`); exploding removes the anchor without a drop and sends the bad respawn point blast (power 5, fire) from its centre, shielded when water is near. The use chain's arm now runs for either hand (beds stay main hand only).
+- **Tests:** `respawn_block`: `glowstone_charges_an_anchor_up_to_four_from_either_hand` (0 to 4, the offhand charging, the main hand passing to the offhand's glowstone, a full anchor used as with an empty hand), `a_charged_anchor_sets_the_spawn_in_the_nether_and_explodes_elsewhere` (an empty anchor passes; the Nether's point; the offhand never uses it empty-handed; overworld and End blasts), `flowing_water_beside_or_any_water_above_keeps_the_blocks_around_an_anchor` (source, flowing amounts 2 and 1, waterlogged slab, flowing over water, water above, lava, water diagonally above). `server`: the blast test also blows up a shielded respawn point: the player and the zombie are hurt, all 5 planks stay and no fire starts.
+- **Decisions:** the anchor's light (`charges` 1 to 4 give light 3, 7, 11, 15) and comparator output come with the block state; its ambient sound and portal particles (`animateTick`) are not played or drawn.
+- **Test steps** (survival):
+  1. In the Nether, place a respawn anchor and use it with glowstone in your hand 4 times: each time it hums and its top glows brighter; the glowstone stack drops by 4. **Screenshot 31** (4 charges).
+  2. With an empty hand (or glowstone, now that it is full), use it: "Respawn point set" shows in the chat with a deep sound. Use it again: nothing more.
+  3. Put a second anchor down, put glowstone in your offhand and use the anchor with your hand empty: the offhand's glowstone charges it.
+  4. In the overworld, charge an anchor once and use it with an empty hand: it explodes (bring the totem and armour), breaks blocks and sets fires. **Screenshot 32.**
+  5. Charge another overworld anchor, pour water next to it, then use it: it explodes and hurts you but breaks no block and starts no fire.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:respawn_anchor*4,minecraft:glowstone*32,minecraft:water_bucket,minecraft:totem_of_undying,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:cobblestone*64,minecraft:cooked_beef*16
+```
