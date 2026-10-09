@@ -63,6 +63,13 @@ pub fn failed_message(dimension: Dimension, error: &str) -> Clientbound {
     }
 }
 
+pub fn air_support_unavailable() -> Clientbound {
+    Clientbound::System {
+        text: Text::literal("Air support is unavailable under this dimension's ceiling"),
+        overlay: false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,6 +143,18 @@ mod tests {
         assert_eq!(
             line,
             "minecraft:the_end could not be loaded: the level loader stopped"
+        );
+    }
+
+    #[test]
+    fn refused_air_support_says_why_in_the_chat() {
+        let Clientbound::System { text, overlay } = air_support_unavailable() else {
+            panic!("a system line");
+        };
+        assert!(!overlay, "an overlay line would not show");
+        assert_eq!(
+            text.resolve(&|_| None).text,
+            "Air support is unavailable under this dimension's ceiling"
         );
     }
 }

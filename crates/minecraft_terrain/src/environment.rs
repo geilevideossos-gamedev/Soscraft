@@ -297,4 +297,13 @@ mod tests {
         let end = DimensionEnvironment::load(&registries, "minecraft:the_end").unwrap();
         assert_eq!(end.presentation.skybox, Skybox::End);
     }
+
+    #[test]
+    fn only_the_nether_has_a_ceiling() {
+        let Some(registries) = registries() else { return };
+        for (dimension, ceiling) in [("minecraft:overworld", false), ("minecraft:the_nether", true), ("minecraft:the_end", false)] {
+            let env = DimensionEnvironment::load(&registries, dimension).unwrap();
+            assert_eq!(env.presentation.has_ceiling, ceiling, "{dimension}");
+        }
+    }
 }

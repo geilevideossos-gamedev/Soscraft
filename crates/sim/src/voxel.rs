@@ -487,6 +487,29 @@ pub(crate) fn spawned_before_switch(inflictor: Option<crate::ScriptModelId>) -> 
     inflictor.is_some_and(|model| level_switch().spawned_before(model))
 }
 
+const NEEDS_SKY: [&str; 11] = [
+    "airdrop_marker",
+    "airdrop_mega_marker",
+    "airdrop_sentry_marker",
+    "killstreak_ac130",
+    "killstreak_harrier_airstrike",
+    "killstreak_helicopter",
+    "killstreak_helicopter_flares",
+    "killstreak_helicopter_minigun",
+    "killstreak_precision_airstrike",
+    "killstreak_predator_missile",
+    "killstreak_stealth_airstrike",
+];
+
+pub fn needs_sky(weapon: &str) -> bool {
+    let weapon = weapon.to_ascii_lowercase();
+    NEEDS_SKY.contains(&weapon.strip_suffix("_mp").unwrap_or(&weapon))
+}
+
+pub fn refused_without_sky(pm_flags: u32, weapon: &str) -> bool {
+    pm_flags & playerstate_iw4::pm_flags::MC_NO_SKY != 0 && needs_sky(weapon)
+}
+
 pub fn deactivate() {
     if let Ok(mut world) = WORLD.write() {
         *world = None;
@@ -1322,6 +1345,34 @@ mod tests {
         assert!(w.awaits_ground([0.0; 3]));
         assert_eq!(to_block(w.origin, [36.0, 0.0, 0.0]), [101.5, 49.0, 0.5]);
         assert_eq!(w.brushes, 7, "the map's brushes stay");
+    }
+
+    #[test]
+    fn only_air_support_needs_the_sky() {
+        for weapon in [
+            "killstreak_predator_missile_mp",
+            "killstreak_precision_airstrike_mp",
+            "killstreak_stealth_airstrike_mp",
+            "killstreak_harrier_airstrike_mp",
+            "killstreak_helicopter_mp",
+            "killstreak_helicopter_flares_mp",
+            "killstreak_helicopter_minigun_mp",
+            "killstreak_ac130_mp",
+            "airdrop_marker_mp",
+            "airdrop_mega_marker_mp",
+            "airdrop_sentry_marker_mp",
+            "KILLSTREAK_AC130_MP",
+        ] {
+            assert!(needs_sky(weapon), "{weapon}");
+        }
+        for weapon in ["killstreak_uav_mp", "killstreak_counter_uav_mp", "killstreak_emp_mp", "killstreak_nuke_mp", "frag_grenade_mp", "m4_mp", "ac130_105mm_mp", ""] {
+            assert!(!needs_sky(weapon), "{weapon}");
+        }
+        let no_sky = playerstate_iw4::pm_flags::MC_NO_SKY | playerstate_iw4::pm_flags::MC_INVULNERABLE;
+        assert!(refused_without_sky(no_sky, "killstreak_predator_missile_mp"));
+        assert!(!refused_without_sky(no_sky, "killstreak_uav_mp"));
+        assert!(!refused_without_sky(no_sky, "m4_mp"));
+        assert!(!refused_without_sky(playerstate_iw4::pm_flags::MC_INVULNERABLE, "killstreak_predator_missile_mp"), "under the sky");
     }
 
     #[test]

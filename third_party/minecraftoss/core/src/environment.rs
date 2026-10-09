@@ -829,6 +829,7 @@ pub struct DimensionPresentation {
     /// `DimensionType.cardinalLightType` is `nether`: entities take the
     /// second diffuse light from below.
     pub nether_cardinal_light: bool,
+    pub has_ceiling: bool,
 }
 
 impl EnvironmentSystem {
@@ -865,6 +866,7 @@ impl EnvironmentSystem {
             default_clock: json.get("default_clock").and_then(Json::as_str).map(str::to_owned),
             min_y: json.get("min_y").and_then(Json::as_i64).unwrap_or(0) as i32,
             nether_cardinal_light: json.get("cardinal_light").and_then(Json::as_str) == Some("nether"),
+            has_ceiling: flag("has_ceiling"),
         };
         Ok((system, presentation))
     }

@@ -110,6 +110,7 @@ struct Runtime {
     origins: HashMap<Dimension, [f64; 3]>,
     switch_screen: Option<minecraft_survival::switch::LoadingReason>,
     loading_backgrounds: Option<crate::minecraft_loading::LoadingBackgrounds>,
+    refused_air: Option<u32>,
 }
 
 impl Drop for Runtime {
@@ -560,6 +561,7 @@ fn update(
         spawn_gate,
         shown,
         switch_screen,
+        refused_air,
         ..
     } = &mut *runtime;
     let (Some(world), Some(server), Some(local_uuid)) = (world.as_mut(), server.as_mut(), local_uuid.as_ref()) else {
@@ -633,7 +635,7 @@ fn update(
         if let Some(ps) = ps.filter(|_| player.arrival.is_some()) {
             place_player(player, &mut authority.0, local.0, ps, origin, spawn_gate, now_ms);
         }
-        authority.0.set_minecraft_abilities(local.0, ability_bits(&player.mode) | playerstate_iw4::pm_flags::MC_INVULNERABLE);
+        authority.0.set_minecraft_abilities(local.0, ability_bits(&player.mode) | sky_bits(&level.terrain.environment) | playerstate_iw4::pm_flags::MC_INVULNERABLE);
         let at = player.place.filter(|place| place.dimension == player.dimension).map_or(origin, |place| place.feet);
         let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
         stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, at, aspect, now_ms);
@@ -706,7 +708,7 @@ fn update(
     let keep_inventory = minecraft_survival::death::keeps_belongings(globals.game_rules.keep_inventory(), player_mode.mode);
     survival.rules = minecraft_survival::survival::SurvivalRules::of(&globals.game_rules, globals.difficulty);
     survival.set_game_mode(player_mode);
-    authority.0.set_minecraft_abilities(local.0, ability_bits(player_mode));
+    authority.0.set_minecraft_abilities(local.0, ability_bits(player_mode) | sky_bits(&terrain.environment));
     if alive && player_mode.abilities.may_fly {
         player_mode.abilities.flying = authority.0.player(local.0).is_some_and(|p| p.pm_flags & playerstate_iw4::pm_flags::MC_FLYING != 0);
     }
@@ -1871,6 +1873,14 @@ fn update(
         }
         crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
         ui.weapon_request = inventory_ui.weapon_request(inventory, selected, ps.weapon).filter(|_| player_mode.interacts());
+        let refused = ui.weapon_request.filter(|&weapon| sky_bits(&terrain.environment) != 0 && sim::voxel::needs_sky(authority.0.weapon_script_name(weapon)));
+        if refused.is_some() && *refused_air != refused {
+            show_chat(&mut ui.chat, inventory_ui, &world.packs, &[minecraft_survival::switch::air_support_unavailable()]);
+        }
+        *refused_air = refused;
+        if refused.is_some() {
+            ui.weapon_request = None;
+        }
         inventory_ui.animation_tick = atlas_animation.ticks();
         containers.with_ender(ender, |containers| inventory_ui.publish(&mut ui, inventory, *selected, &world.packs, &mut images, containers));
 
@@ -2389,6 +2399,10 @@ fn ability_bits(mode: &minecraft_terrain::game_mode::PlayerMode) -> u32 {
         .fold(0, |bits, (_, bit)| bits | bit)
 }
 
+fn sky_bits(environment: &minecraft_terrain::environment::DimensionEnvironment) -> u32 {
+    if environment.presentation.has_ceiling { playerstate_iw4::pm_flags::MC_NO_SKY } else { 0 }
+}
+
 fn in_remote_killstreak(presented: &net::PresentedSnapshot, local: sim::ClientId) -> bool {
     let missile = presented.snapshot().and_then(|snapshot| snapshot.meta.for_client(local)).is_some_and(|meta| meta.remote_missile.is_some());
     missile || presented.player(local).is_some_and(|ps| remote_view(ps.pm_type, ps.other_flags))
@@ -2443,6 +2457,7 @@ fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
     runtime.origins.clear();
     runtime.switch_screen = None;
     runtime.loading_backgrounds = None;
+    runtime.refused_air = None;
     if let (Some(server), Some(local)) = (server.as_mut(), local.as_ref())
         && server.globals.save.is_none()
         && let Some(player) = server.players.get_mut(local)

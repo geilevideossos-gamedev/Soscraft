@@ -178,6 +178,8 @@ pub mod pm_flags {
 
     pub const LAST_STAND: u32 = 0x0040_0000;
 
+    pub const MC_NO_SKY: u32 = 0x0800_0000;
+
     pub const MC_INVULNERABLE: u32 = 0x1000_0000;
 
     pub const MC_MAY_FLY: u32 = 0x2000_0000;

@@ -343,7 +343,7 @@ IW4L_MINECRAFT_KIT=minecraft:netherrack*64,minecraft:cobblestone*64,minecraft:co
 
 ### 16. Minecraft travel waits for a remote killstreak to end (E1-13)
 
-Commit: filled in by `git log` under this subject
+Commit: e001c779
 
 - **Changed:**
   - `minecraft_survival/src/player.rs`: `Player.remote` (the player is flying a remote killstreak) and `Player.held`. `Player::travel_to(to, arrival, reason)` is the way a living player travels (`/execute in` after track C, the portals of N2 and X2): while `remote` is set the switch is held, and `Player::set_remote(false)` starts it then, from the dimension the player is in at that moment. `switch_to` stays immediate, as the respawn and a level that fails to load use it.
@@ -353,6 +353,32 @@ Commit: filled in by `git log` under this subject
   - Vanilla's rule is `Entity.canUsePortal(allowPassengers)`, which is `(allowPassengers || !isPassenger()) && isAlive()` (checked with javap). A player in a remote killstreak is the analogue of a passenger. The brief asks for a wait rather than a refusal, so a `/execute in` typed while steering a predator happens when the missile is gone instead of being lost.
   - Being linked counts as remote whatever the link is: in MW2 multiplayer only killstreaks link a player.
 - **Test steps:** nothing in game starts a living switch yet (`/execute in` waits for track C). After track C:
-  1. In the overworld, `give killstreak/predator` in the console and use it. While steering the missile, type nothing; after it hits, type `/execute in minecraft:the_nether run tp ~ 128 ~`: the switch starts at once.
-  2. Use another predator, and while steering it press the chat key and send `/execute in minecraft:the_nether run tp ~ 128 ~` (chat works while the missile flies). Nothing happens until the missile hits; then the Nether loading screen shows. **Screenshot 1.**
+  1. In the overworld, `give killstreak/predator` in the console and select the predator on the hotbar to fly it.
+  2. While steering the missile, open chat and send `/execute in minecraft:the_nether run tp ~ 128 ~`. Nothing happens until the missile hits; then the Nether loading screen shows. **Screenshot 1.**
 - **Kit:** none needed.
+
+### 17. MW2 air support is unavailable under the Nether roof (E1-14)
+
+Commit: filled in by `git log` under this subject
+
+- **Changed:**
+  - `playerstate_iw4/src/playerstate.rs`: `pm_flags::MC_NO_SKY` = `0x0800_0000`, the bit below the other `MC_*` bits, unused by IW4 and the fork. Glide takes the next free bit after this group.
+  - `sim/src/frame.rs` (`set_minecraft_abilities`): `MC_NO_SKY` is one of the bits the abilities set and clear.
+  - `sim/src/voxel.rs`: `needs_sky(weapon)` names the air support weapons: the predator, precision airstrike, stealth bomber, harrier, attack helicopter, pave low, chopper gunner and AC-130 (`killstreak_<name>_mp`), and the care package, emergency airdrop and sentry gun markers (`airdrop_marker_mp`, `airdrop_mega_marker_mp`, `airdrop_sentry_marker_mp`, the weapon column of `mp/killstreakTable.csv`). `refused_without_sky(pm_flags, weapon)` is the rule both selects use. The UAV, counter-UAV, EMP and nuke stay usable.
+  - Vendored `third_party/minecraftoss/core/src/environment.rs` (MinecraftOSS patch): `DimensionPresentation.has_ceiling`, read from the dimension type's `has_ceiling` in the data pack (true only for `minecraft:the_nether`).
+  - `render_anim/src/minecraft_world.rs`: the abilities carry `MC_NO_SKY` in a level whose dimension type has a ceiling, also while switching into it. When the hotbar asks for an air support weapon there, the weapon is not raised, and "Air support is unavailable under this dimension's ceiling" shows in the chat once per selection (`switch::air_support_unavailable`). The streak stays in the hotbar and works again under the sky.
+  - `net/src/client/runtime.rs`: the client's weapon select skips an air support weapon while `MC_NO_SKY` is set, both for the hotbar's weapon request and for MW2's action slots (which are also no longer sent to the server for it).
+- **Tests:** `voxel`: `only_air_support_needs_the_sky` (every air support weapon, in any case, refused only with `MC_NO_SKY`; UAV, counter-UAV, EMP, nuke, guns and the AC-130's own cannons are not). `frame`: `the_no_sky_flag_is_set_and_cleared_with_the_abilities` (and it shares no bit with the other `MC_*` flags, sprint blocking or last stand). `minecraft_terrain::environment`: `only_the_nether_has_a_ceiling`. `switch`: `refused_air_support_says_why_in_the_chat`.
+- **Decisions:**
+  - Taken by the owner: air support is refused where the dimension type has a ceiling (the Nether), the streak is kept, and a line says why; the End and the overworld allow it. Bombs that miss the End islands fall into the void.
+  - The line is our own English text: vanilla has no such rule, and an MW2 string would need the zone's localisation in the Minecraft chat. It is a normal chat line, as overlay lines are not drawn.
+  - The authority check (the server refusing the weapon) comes with multiplayer, as the plan says; here the host's own client is the only one.
+  - **Check in game:** the weapon names are MW2's from memory of the stock scripts; they could not be read from the zone here. If one air support streak still works in the Nether, its weapon name is different and goes into `NEEDS_SKY`.
+- **Test steps:**
+  1. Keep `IW4L_MINECRAFT_WORLD=s3test` and set `IW4L_MINECRAFT_DIMENSION=the_nether`. Start.
+  2. Open the console, type `give killstreak/predator` (accept the suggestion) and close it. The predator lands on the hotbar. Select it: it is not raised, and the chat says "Air support is unavailable under this dimension's ceiling". **Screenshot 1.** It stays on the hotbar.
+  3. `give killstreak/airdrop` and select it: the same line, no smoke grenade in hand.
+  4. `give killstreak/uav` and select it: the UAV works in the Nether.
+  5. `/kill`. After the respawn in the overworld, select the predator: you fly it as usual. **Screenshot 2.**
+  6. Quit. Set `IW4L_MINECRAFT_DIMENSION=the_end` and start on the obsidian platform. `give killstreak/predator` and use it: it works over the End. **Screenshot 3.**
+- **Kit:** none needed; any kit with a free hotbar slot.
