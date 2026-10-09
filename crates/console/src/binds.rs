@@ -336,6 +336,34 @@ impl KeyBinds {
         }
     }
 
+    pub fn move_old_grenade_keys(&mut self) -> bool {
+        let f = BindButton::Key(KeyCode::KeyF);
+        let g = BindButton::Key(KeyCode::KeyG);
+        let b = BindButton::Key(KeyCode::KeyB);
+        let (Some(frag), Some(smoke)) = (command_id_lookup("+frag"), command_id_lookup("+smoke"))
+        else {
+            return false;
+        };
+        let keys = |id: u32| -> Vec<BindButton> {
+            self.map
+                .iter()
+                .filter(|(button, bound)| **bound == id && !button.is_pad())
+                .map(|(button, _)| *button)
+                .collect()
+        };
+        if keys(frag) != [f]
+            || keys(smoke) != [g]
+            || self.map.contains_key(&b)
+            || self.minecraft.contains_key(&b)
+        {
+            return false;
+        }
+        self.map.remove(&f);
+        self.map.insert(g, frag);
+        self.map.insert(b, smoke);
+        true
+    }
+
     pub fn apply_script(&mut self, script: &str) -> Vec<String> {
         self.apply_script_inner(script, true)
     }
@@ -651,6 +679,8 @@ mod minecraft_bind_tests {
 
     const E: BindButton = BindButton::Key(KeyCode::KeyE);
     const F: BindButton = BindButton::Key(KeyCode::KeyF);
+    const G: BindButton = BindButton::Key(KeyCode::KeyG);
+    const B: BindButton = BindButton::Key(KeyCode::KeyB);
     const X: BindButton = BindButton::Key(KeyCode::KeyX);
 
     fn id(name: &str) -> u32 {
@@ -695,27 +725,94 @@ mod minecraft_bind_tests {
         }
         assert_eq!(binds.iter_minecraft().count(), expected.len());
         assert_eq!(binds.binding_name(E), Some("+activate"));
-        assert_eq!(binds.binding_name(F), Some("+frag"));
+        assert_eq!(binds.binding_name(F), None);
         assert!(binds.iter().all(|(_, id)| !input_iw4::is_minecraft_command(id)));
+    }
+
+    #[test]
+    fn the_defaults_put_the_grenades_on_g_and_b_and_leave_f_to_swap_hands() {
+        let binds = defaults();
+        assert_eq!(binds.binding_name(G), Some("+frag"));
+        assert_eq!(binds.binding_name(B), Some("+smoke"));
+        assert_eq!(binds.minecraft_binding(G), None);
+        assert_eq!(binds.minecraft_binding(B), None);
+        assert_eq!(binds.binding_name(F), None);
+        assert_eq!(binds.minecraft_binding(F), Some("mc_swaphands"));
+        let keys = |command: &str| {
+            let mut keys: Vec<BindButton> = binds
+                .iter()
+                .filter(|(button, bound)| *bound == id(command) && !button.is_pad())
+                .map(|(button, _)| button)
+                .collect();
+            keys.sort_by_key(|button| host_keynum(*button));
+            keys
+        };
+        assert_eq!(keys("+frag"), vec![G]);
+        assert_eq!(keys("+smoke"), vec![B]);
+        assert_eq!(
+            binds.binding_name(BindButton::Pad(PadButton::RightBumper)),
+            Some("+frag")
+        );
+        assert_eq!(
+            binds.binding_name(BindButton::Pad(PadButton::LeftBumper)),
+            Some("+smoke")
+        );
+        let mut moved = binds.clone();
+        assert!(!moved.move_old_grenade_keys());
+        assert_eq!(moved.list_lines(), binds.list_lines());
+    }
+
+    #[test]
+    fn the_old_grenade_pair_moves_once_and_only_when_untouched() {
+        let old = "bind f +frag\nbind g +smoke\nbind f mc_swaphands\nbind BUTTON_RSHLDR +frag";
+        let mut binds = KeyBinds::default();
+        let _ = binds.apply_config_script(old);
+        assert!(binds.move_old_grenade_keys());
+        assert_eq!(binds.binding_name(G), Some("+frag"));
+        assert_eq!(binds.binding_name(B), Some("+smoke"));
+        assert_eq!(binds.binding_name(F), None);
+        assert_eq!(binds.minecraft_binding(F), Some("mc_swaphands"));
+        assert_eq!(
+            binds.binding_name(BindButton::Pad(PadButton::RightBumper)),
+            Some("+frag")
+        );
+        let once = binds.list_lines();
+        assert!(!binds.move_old_grenade_keys());
+        assert_eq!(binds.list_lines(), once);
+        for customised in [
+            "bind mouse4 +frag",
+            "bind b +melee",
+            "bind b mc_drop",
+            "bind h +smoke",
+            "unbind g",
+        ] {
+            let mut binds = KeyBinds::default();
+            let _ = binds.apply_config_script(old);
+            let _ = binds.apply_config_script(customised);
+            let before = binds.list_lines();
+            assert!(!binds.move_old_grenade_keys(), "{customised}");
+            assert_eq!(binds.list_lines(), before, "{customised}");
+        }
     }
 
     #[test]
     fn rebinding_swap_hands_leaves_the_mw2_key_alone() {
         let mut binds = defaults();
+        binds.set(F, id("+melee"));
         let swap = id("mc_swaphands");
         binds.clear_command_on(swap, false);
         binds.set(X, swap);
         assert_eq!(binds.minecraft_binding(X), Some("mc_swaphands"));
         assert_eq!(binds.minecraft_binding(F), None);
-        assert_eq!(binds.binding_name(F), Some("+frag"));
+        assert_eq!(binds.binding_name(F), Some("+melee"));
     }
 
     #[test]
     fn unbinding_a_key_clears_both_layers() {
         let mut binds = defaults();
-        let _ = binds.apply_script("unbind F");
-        assert_eq!(binds.binding_name(F), None);
-        assert_eq!(binds.minecraft_binding(F), None);
+        let _ = binds.apply_script("unbind E");
+        assert_eq!(binds.binding_name(E), None);
+        assert_eq!(binds.minecraft_binding(E), None);
         let _ = binds.apply_script("unbindall");
         assert_eq!(binds.iter().count() + binds.iter_minecraft().count(), 0);
     }
@@ -840,8 +937,8 @@ mod minecraft_bind_tests {
     fn only_just_pressed_keys_fire_their_action() {
         let binds = defaults();
         let (suppressed, presses) = minecraft_presses(&binds, state(false, false), |_| false);
-        assert_eq!(suppressed.len(), 5);
-        assert!(!suppressed.contains(&F));
+        assert_eq!(suppressed.len(), 6);
+        assert!(suppressed.contains(&F) && !suppressed.contains(&G) && !suppressed.contains(&B));
         assert!(McAction::ALL.iter().all(|a| !presses.just_pressed(*a)));
         let q = BindButton::Key(KeyCode::KeyQ);
         let (_, presses) = press(&binds, state(false, false), q);
