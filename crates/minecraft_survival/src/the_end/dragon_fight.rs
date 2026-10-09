@@ -86,7 +86,7 @@ impl FightData {
             exit_portal_location: ints(tag.get("exit_portal_location"))
                 .filter(|pos| pos.len() == 3)
                 .map(|pos| (pos[0], pos[1], pos[2])),
-            gateways: ints(tag.get("gateways")).unwrap_or_default(),
+            gateways: ints(tag.get("gateways")).into_iter().flatten().collect(),
             respawn_crystals: match tag.get("respawn_crystals") {
                 Some(Tag::List(crystals)) => crystals.clone(),
                 _ => Vec::new(),
@@ -411,14 +411,14 @@ mod tests {
         let steve = vec![uuid("steve")];
         assert_eq!(fight.tick(Vec::new, true), (Vec::new(), false));
         fight.ticks_since_last_player_scan = TIME_BETWEEN_PLAYER_SCANS;
-        assert_eq!(fight.tick(|| steve.clone(), false).1, false);
-        assert_eq!(fight.tick(|| steve.clone(), true).1, true);
+        assert!(!fight.tick(|| steve.clone(), false).1);
+        assert!(fight.tick(|| steve.clone(), true).1);
         let (_send, answer) = mpsc::channel();
         fight.scanning = Some(answer);
-        assert_eq!(fight.tick(|| steve.clone(), true).1, false, "one at a time");
+        assert!(!fight.tick(|| steve.clone(), true).1, "one at a time");
         fight.scanning = None;
         fight.data.needs_state_scanning = false;
-        assert_eq!(fight.tick(|| steve.clone(), true).1, false);
+        assert!(!fight.tick(|| steve.clone(), true).1);
     }
 
     #[test]

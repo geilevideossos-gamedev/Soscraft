@@ -282,3 +282,29 @@ Previous commit: 7f4e5a3b
 ```
 IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:diamond_pickaxe+efficiency=5,minecraft:cobblestone*64
 ```
+
+### 11. The Minecraft End fight data passes clippy
+
+Previous commit: ade7b05a
+
+- **Changed:** the clippy findings on this group's lines, all in `minecraft_survival/src/the_end/dragon_fight.rs`. The saved gateways are read without `unwrap_or_default` (disallowed by `clippy.toml`), and four test checks of a bool use `assert!`.
+- **Tests:** none new; the fight and End tests pass as before.
+- **Test steps:** none; nothing changes in game.
+- **Kit:** none.
+
+### Group X2 summary
+
+Written with entry 11, in its commit.
+
+- **Commits:** entries 7 to 11 (E3-5, E3-6, E3-8, E3-10, and the clippy entry).
+- **Tests:** with `MINECRAFTOSS_ROOT` set, `minecraft_survival` 274 (and the vanilla world test), `minecraft_terrain` 654 (3 ignored), `minecraftoss-generator` 28, `minecraftoss-world` 60 and `render_anim` 70 pass; `check -p launcher` is green.
+- **Clippy:** `clippy -p minecraft_survival -p minecraft_terrain -p render_anim -p minecraftoss-generator -p minecraftoss-world --all-targets --no-deps -- -A clippy::approx_constant` has no finding on this group's lines after entry 11. The others are older (`server.rs` 332, 1483 and 1695, `minecraft_world.rs` 133, 405 and 414, and more in those crates).
+- **MinecraftOSS patches in this group:** `world/src/chunk_map.rs` (tickets), `world/src/level/end_portal.rs` (the platform and the exit portal scan), `world/src/level/mod.rs` (`drop_and_destroy` on the live level), `generator/src/feature/end_portal.rs` (the exit portal pattern), `generator/src/feature/kinds/the_end.rs` (`end_podium`), `generator/src/feature/mod.rs` (`World::drop_and_destroy`, the End features in `GAMEPLAY_FEATURES`).
+- **Hand-overs:**
+  - **Nether track:** when `portal.rs` with `PortalKind::End` reaches `minecraft-survival`, entry 7's portal tick moves into its End arm and `EndTravel.clock`, `the_end::step` and `portal_tick` go (see entry 7).
+  - **X3:** the dragon (`findOrCreateDragon` after the scan, the 1200-tick search), the crystal count every 100 ticks and the boss bar hook into `DragonFight::tick`. Its dragon goes into the fight's `data.dragon_uuid`.
+  - **X4:** the credits on the first exit (`seen_credits` is never set yet), the active podium and the egg on a kill (`spawn_exit_portal(.., true)` is ready), the gateways from `data.gateways`, and the respawn stages.
+- **Not done in this group:**
+  - Throwing an eye of ender toward a stronghold. Brief E3 leaves it to track B's commit 8, which hasn't landed on `minecraft-survival`, and it isn't one of X2's commits. Until it lands, `/locate structure minecraft:stronghold` finds one.
+  - The end gateway beam (X6) and the end flash (E3-29), as in X1b.
+- **Owner test for the group:** entry 7's steps, then entry 8's and entry 9's, in the world `x2test` with entry 7's kit; then entry 10's steps in the new world `x2fight`.
