@@ -679,7 +679,7 @@ IW4L_MINECRAFT_KIT=splash_potion@poison,splash_potion@harming,lingering_potion@r
 
 ### 6. Minecraft lingering potion clouds are drawn with their drifting specks
 
-Commit: (next entry)
+Commit: c1c9c4b
 
 - **Changed:** `entities.rs` keeps the snapshot's `clouds` and, every client tick before the specks move, gives each one `AreaEffectCloud.clientTick`'s particles through `SpellParticles::cloud` (a disc of `ceil(pi r^2)` still specks in the cloud's colour, or a few white and coloured ones while it waits its first 10 ticks); they draw with the potion swirl of entry 4 (After the split item 8).
 - **Tests:** none new; the particles are entry 7 of the throwables group (`a_cloud_fills_its_circle_each_tick`).
@@ -690,4 +690,24 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=lingering_potion@poison,lingering_potion@regeneration
+```
+
+### 7. Minecraft splash potions, lingering clouds and witches' potions reach the player
+
+Commit: (next entry)
+
+- **Changed:** `survival.rs` `Survival::take_potion(potion, from, random)`: a lasting effect or a heal goes through `potions::apply_to_player`; a harm is magic damage past armour with no exhaustion (the `magic` and `indirect_magic` damage types have exhaustion 0), from where the potion broke, and does nothing while invulnerable (creative); `Extinguish` is `Entity.extinguishFire`: a burning player stops burning (`clearFire`, fire ticks to at most 0) and hears `entity.generic.extinguish_fire` at volume 0.7, pitch `1.6 + (a - b) * 0.4`. `entities.rs` keeps the local player's (`PLAYER`) `Output.player_potions` (player splashes, witch splashes and lingering cloud touches) in `Entities.player_potions`, and the adapter feeds them to that player's `Survival` after the pearl landings, so a totem still saves a player a harming splash would kill (After the split item 6).
+- **Tests:** survival: `a_splash_gives_its_effect_heals_and_harms_past_armour`, `a_creative_player_takes_splash_effects_but_no_harm`, `splash_water_puts_out_a_burning_player_with_the_hiss`.
+- **Decisions:** a creative player still takes the lasting effects (vanilla's `LivingEntity.isAffectedByPotions` is only `!isDeadOrDying`; `Player` doesn't override it). A harming death reads "was killed by magic" for every thrower: vanilla's `indirectMagic` names the thrower ("was killed by Witch using magic"), but the witch's splash carries no witch ID yet, and with one player in the world the only player thrower is the victim. Effects the player doesn't have yet (speed, strength, night vision...) still do nothing.
+- **Test steps** (survival mode):
+  1. Throw the splash Poison straight up so it lands on you: you are poisoned (green hearts) and lose health down to half a heart. Screenshot of the hearts.
+  2. Throw the splash Harming 3 blocks in front of your feet: you lose about 2 hearts (less than the 3 a direct hit gives). Throw splash Healing II at your feet: you get 4 hearts back.
+  3. Throw the lingering Poison at your feet and stand in the cloud: you are poisoned again about once a second; step out and it stops being renewed.
+  4. Light netherrack with flint and steel and stand in the fire until you burn, step out and throw the splash Water at your feet: the flames go out with the hiss.
+  5. Spawn a witch, stand 6 blocks from it: its potions poison you (green hearts) and hurt you.
+  6. Switch to creative (`/gamemode creative`) and throw Harming at your feet: no damage.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=splash_potion@poison*2,splash_potion@harming*2,splash_potion@strong_healing*2,lingering_potion@poison,splash_potion@water*2,netherrack*4,flint_and_steel,witch_spawn_egg*2
 ```

@@ -1583,6 +1583,13 @@ fn update(
                 sounds.play(&world.packs, "minecraft:entity.player.teleport", Some(at(landing.to_array())), 1.0, 1.0);
             }
         }
+        for hit in std::mem::take(&mut entities.player_potions).into_iter().filter(|_| alive) {
+            if let Some(sound) = survival.take_potion(&hit.potion, Some(hit.at.to_array()), || entities.random_float())
+                && let Some(sounds) = sounds.as_mut()
+            {
+                sounds.play(&world.packs, sound.event, None, sound.volume, sound.pitch);
+            }
+        }
         hold_off_death(survival, inventory, *selected, sounds.as_mut(), &world.packs, totem_popped);
         if alive
             && !sim::voxel::player_damage_pending()

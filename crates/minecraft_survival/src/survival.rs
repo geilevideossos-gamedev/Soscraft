@@ -1,6 +1,7 @@
 use crate::death::{CombatTracker, DamageCause, DeathLine, FallLocation};
 use glam::DVec3;
 use minecraftoss_entities::inside_blocks::{BlockEffect, Hazard, block_effects};
+use minecraft_terrain::potions::PlayerPotion;
 use minecraftoss_entities::movement::Body;
 use minecraftoss_player::GameMode;
 use minecraftoss_player::World;
@@ -568,6 +569,48 @@ impl Survival {
             self.source = from;
         }
         landed
+    }
+
+    pub fn take_potion(
+        &mut self,
+        potion: &PlayerPotion,
+        from: Option<[f64; 3]>,
+        mut random: impl FnMut() -> f32,
+    ) -> Option<PlayerSound> {
+        match potion {
+            PlayerPotion::Harm { amount, .. } => {
+                self.hurt_magic(*amount, from);
+                None
+            }
+            PlayerPotion::Extinguish => {
+                let burning = self.fire_ticks > 0;
+                self.fire_ticks = self.fire_ticks.min(0);
+                burning.then(|| {
+                    let (a, b) = (random(), random());
+                    PlayerSound {
+                        event: "minecraft:entity.generic.extinguish_fire",
+                        volume: 0.7,
+                        pitch: 1.6 + (a - b) * 0.4,
+                    }
+                })
+            }
+            other => {
+                let _ = minecraft_terrain::potions::apply_to_player(&mut self.status, other);
+                None
+            }
+        }
+    }
+
+    fn hurt_magic(&mut self, damage: f32, from: Option<[f64; 3]>) {
+        if self.invulnerable {
+            return;
+        }
+        let before = self.status.health;
+        let landed = self.status.hurt(damage, Armor::default(), 0.0).is_some();
+        self.record(before, DamageCause::Magic, 0.0);
+        if landed && from.is_some() {
+            self.source = from;
+        }
     }
 
     pub fn kill(&mut self, cause: DamageCause) {
@@ -1245,6 +1288,77 @@ mod tests {
         );
         survival.drink_potion("minecraft:water");
         survival.drink_potion("minecraft:swiftness");
+    }
+
+    #[test]
+    fn a_splash_gives_its_effect_heals_and_harms_past_armour() {
+        use minecraft_terrain::potions::PotionEffect;
+        let mut survival = fresh();
+        survival.status.health = 10.0;
+        let poison = PlayerPotion::Effect(PotionEffect::new("minecraft:poison", 450, 1));
+        assert_eq!(survival.take_potion(&poison, None, || 0.5), None);
+        assert_eq!(
+            survival
+                .status
+                .effect(EffectKind::Poison)
+                .map(|e| (e.duration, e.amplifier)),
+            Some((450, 1))
+        );
+        survival.take_potion(&PlayerPotion::Heal(4.0), None, || 0.5);
+        assert!((survival.status.health - 14.0).abs() < 1e-6);
+        let exhaustion = survival.status.food.exhaustion;
+        let harm = PlayerPotion::Harm {
+            amount: 6.0,
+            by: Some(0),
+        };
+        survival.take_potion(&harm, Some([1.0, 64.0, 2.0]), || 0.5);
+        assert!((survival.status.health - 8.0).abs() < 1e-6);
+        assert_eq!(survival.status.food.exhaustion, exhaustion);
+        assert_eq!(survival.source, Some([1.0, 64.0, 2.0]));
+        assert_eq!(
+            survival.combat.death_line(&std::collections::HashMap::new(), |_| false).message,
+            "death.attack.magic"
+        );
+    }
+
+    #[test]
+    fn a_creative_player_takes_splash_effects_but_no_harm() {
+        use minecraft_terrain::potions::PotionEffect;
+        let mut survival = fresh();
+        survival.set_game_mode(&minecraft_terrain::game_mode::PlayerMode::new(GameMode::Creative));
+        let harm = PlayerPotion::Harm {
+            amount: 12.0,
+            by: None,
+        };
+        survival.take_potion(&harm, None, || 0.5);
+        assert_eq!(survival.status.health, 20.0);
+        let slow = PlayerPotion::Effect(PotionEffect::new("minecraft:slowness", 100, 0));
+        survival.take_potion(&slow, None, || 0.5);
+        assert!(survival.status.effect(EffectKind::Slowness).is_some());
+    }
+
+    #[test]
+    fn splash_water_puts_out_a_burning_player_with_the_hiss() {
+        let mut survival = fresh();
+        assert_eq!(
+            survival.take_potion(&PlayerPotion::Extinguish, None, || 0.5),
+            None
+        );
+        survival.fire_ticks = 120;
+        assert!(survival.vitals().on_fire);
+        let sound = survival.take_potion(&PlayerPotion::Extinguish, None, || 0.5);
+        assert_eq!(
+            sound,
+            Some(PlayerSound {
+                event: "minecraft:entity.generic.extinguish_fire",
+                volume: 0.7,
+                pitch: 1.6
+            })
+        );
+        assert!(!survival.vitals().on_fire);
+        survival.fire_ticks = -20;
+        survival.take_potion(&PlayerPotion::Extinguish, None, || 0.5);
+        assert_eq!(survival.fire_ticks, -20);
     }
 
     #[test]
