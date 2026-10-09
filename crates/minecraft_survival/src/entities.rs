@@ -583,7 +583,7 @@ impl Entities {
         inventory: &mut Inventory,
         selected: usize,
         dt: f64,
-        day_ticks: i64,
+        clocks: minecraft_terrain::server::ClockTicks,
         bright_outside: bool,
         player: &PlayerView,
     ) -> (Changes, Hits) {
@@ -610,7 +610,7 @@ impl Entities {
             let center = ((feet.x.floor() as i32) >> 4, (feet.z.floor() as i32) >> 4);
             let candidate = player_candidate(player);
             self.server.tick(TickInput {
-                day_ticks,
+                clocks,
                 players: if player.alive { vec![player.feet] } else { Vec::new() },
                 difficulty: self.difficulty,
                 simulation_center: center,

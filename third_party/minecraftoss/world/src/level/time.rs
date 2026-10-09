@@ -98,6 +98,14 @@ impl Level<'_> {
         }
     }
 
+    pub fn set_clock(&mut self, clock: &str, ticks: i64) {
+        if let Some(sky) = &mut self.sky {
+            if let Some(total) = sky.clocks.get_mut(clock) {
+                *total = ticks;
+            }
+        }
+    }
+
     /// `/weather clear|rain|thunder <duration>` (`setWeatherParameters`).
     pub fn set_weather(&mut self, clear_time: i32, rain_time: i32, raining: bool, thundering: bool) {
         if let Some(sky) = &mut self.sky {

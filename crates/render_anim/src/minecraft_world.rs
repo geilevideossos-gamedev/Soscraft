@@ -274,6 +274,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         difficulty: opened.difficulty,
         spawn,
         day,
+        end_clock: opened.end_clock,
         weather: opened.weather,
         chat,
         data: Default::default(),
@@ -585,7 +586,7 @@ fn update(
         .or_else(|| player.survival.last_feet().map(|feet| minecraft_commands::Pose { feet, yaw: 0.0, pitch: 0.0 }));
     let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, level, player, &mut ui.chat.sent, host_pose, host_alive);
     let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, arrived, ender, .. } = player;
-    let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
+    let minecraft_survival::level::Level { entities, containers, terrain, dimension, .. } = level;
     if !delivered.is_empty() {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
     }
@@ -1468,7 +1469,7 @@ fn update(
         let bright_outside = terrain.environment.sky_light_level() > 11.0;
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
         let ticks_before = entities.client_ticks();
-        let (changes, hits) = entities.tick(inventory, *selected, dt, globals.day.ticks as i64, bright_outside, &player);
+        let (changes, hits) = entities.tick(inventory, *selected, dt, globals.clock_ticks(), bright_outside, &player);
         globals.weather = entities.weather_data.or(globals.weather);
         let summoned = std::mem::take(&mut entities.command_summons);
         if !summoned.is_empty() {
@@ -1892,11 +1893,7 @@ fn update(
         indices.extend(mesh.indices.iter().map(|i| i + base));
     }
     view.cracks = mining.crack_mesh(&terrain.scene, &terrain.stream.states, &world.packs);
-    if globals.game_rules.bool("advance_time") && !globals.day.paused {
-        globals.day.advance(dt);
-    } else if let Some(save) = globals.save.as_mut() {
-        save.shift_day(-dt * 20.0);
-    }
+    globals.advance_clocks(dt);
     let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
     view.eye_light = [
         f32::from(light.get(eye_block)),
@@ -1915,7 +1912,7 @@ fn update(
         *environment_accumulator = (*environment_accumulator % TICK_SECONDS).min(TICK_SECONDS);
         let scene = &terrain.scene;
         terrain.environment.tick(
-            globals.day.ticks.floor() as i64,
+            globals.default_clock_ticks(*dimension),
             weather.rain_level,
             weather.thunder_level,
             eye,

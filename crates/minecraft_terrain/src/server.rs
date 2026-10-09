@@ -920,6 +920,11 @@ impl ServerSim {
         self.level.set_time(ticks);
     }
 
+    pub fn set_clocks(&mut self, clocks: ClockTicks) {
+        self.level.set_clock(OVERWORLD_CLOCK, clocks.overworld);
+        self.level.set_clock(THE_END_CLOCK, clocks.the_end);
+    }
+
     pub fn set_weather(&mut self, weather: &str) -> bool {
         const LASTING: i32 = 1_000_000_000;
         self.set_weather_for(weather, LASTING)
@@ -1170,9 +1175,18 @@ pub enum Command {
     GameRules(Box<crate::game_rules::GameRules>),
 }
 
+pub const OVERWORLD_CLOCK: &str = "minecraft:overworld";
+pub const THE_END_CLOCK: &str = "minecraft:the_end";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ClockTicks {
+    pub overworld: i64,
+    pub the_end: i64,
+}
+
 /// The client state a server tick reads.
 pub struct TickInput {
-    pub day_ticks: i64,
+    pub clocks: ClockTicks,
     pub players: Vec<[f64; 3]>,
     pub difficulty: i32,
     pub simulation_center: (i32, i32),
@@ -1539,7 +1553,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                         sim.ticks_since_save = 0;
                         sim.save_all_entities();
                     }
-                    sim.set_time(input.day_ticks);
+                    sim.set_clocks(input.clocks);
                     sim.set_players(&input.players, input.difficulty);
                     // Living, non-spectating players draw experience orbs.
                     sim.level.living_players = input.mob_players.iter().filter(|p| p.alive && !p.spectator).map(|p| (p.position.to_array(), f64::from(p.eye_height))).collect();
@@ -1761,6 +1775,31 @@ mod tests {
         clear.set_weather_data(&WeatherData { clear_weather_time: 300, ..WeatherData::default() });
         assert_eq!(clear.weather(None), WeatherView::default());
         assert_eq!(clear.weather_data().map(|w| w.clear_weather_time), Some(300));
+    }
+
+    #[test]
+    fn every_level_follows_the_world_clocks_and_time_set_moves_only_a_default_clock() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let clock = |server: &ServerSim, name: &str| server.level.sky.as_ref().and_then(|sky| sky.clocks.get(name).copied());
+        for (dimension, default) in [("minecraft:overworld", Some(OVERWORLD_CLOCK)), ("minecraft:the_nether", None), ("minecraft:the_end", Some(THE_END_CLOCK))] {
+            let mut server = ServerSim::new(worldgen.clone(), states.clone(), dimension);
+            server.set_clocks(ClockTicks { overworld: 13_000, the_end: 250 });
+            assert_eq!(server.level.overworld_clock(), 13_000, "{dimension}");
+            assert_eq!(clock(&server, THE_END_CLOCK), Some(250), "{dimension}");
+            server.tick();
+            assert_eq!((server.level.overworld_clock(), clock(&server, THE_END_CLOCK)), (13_001, Some(251)), "{dimension}: both clocks run in every level");
+            server.set_time(500);
+            let expected = match default {
+                Some(OVERWORLD_CLOCK) => (500, Some(251)),
+                Some(_) => (13_001, Some(500)),
+                None => (13_001, Some(251)),
+            };
+            assert_eq!((server.level.overworld_clock(), clock(&server, THE_END_CLOCK)), expected, "{dimension}");
+        }
     }
 
     /// Creatures the SPAWN step generated join the server's mobs with their

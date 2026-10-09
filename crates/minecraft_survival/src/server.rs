@@ -10,6 +10,7 @@ use minecraft_terrain::day_cycle::DayCycle;
 use minecraft_terrain::game_mode::{GameMode, PlayerMode, from_id, parse};
 use minecraft_terrain::game_rules::GameRules;
 use minecraft_terrain::level_storage::{RespawnData, WeatherData};
+use minecraft_terrain::server::{ClockTicks, OVERWORLD_CLOCK, THE_END_CLOCK};
 use minecraftoss_core::Registries;
 use minecraftoss_player::Difficulty;
 use minecraftoss_player::crafting::RecipeBook;
@@ -18,7 +19,7 @@ use crate::data::GameData;
 use crate::level::Level;
 use crate::player::{Player, joining_inventory};
 use crate::player_nbt::{Place, PlayerData};
-use crate::save::WorldSave;
+use crate::save::{WorldClocks, WorldSave};
 use crate::survival::Survival;
 
 pub struct Server {
@@ -35,11 +36,49 @@ pub struct Globals {
     pub difficulty: Difficulty,
     pub spawn: RespawnData,
     pub day: DayCycle,
+    pub end_clock: DayCycle,
     pub weather: Option<WeatherData>,
     pub chat: CommandServer,
     pub data: GameData,
     pub level_writer: Option<JoinHandle<()>>,
     pub autosave_ticks: u32,
+}
+
+impl Globals {
+    pub fn clock_ticks(&self) -> ClockTicks {
+        ClockTicks {
+            overworld: self.day.ticks.floor() as i64,
+            the_end: self.end_clock.ticks.floor() as i64,
+        }
+    }
+
+    pub fn default_clock_ticks(&self, dimension: Dimension) -> i64 {
+        let clocks = self.clock_ticks();
+        match default_clock(dimension) {
+            Some(THE_END_CLOCK) => clocks.the_end,
+            _ => clocks.overworld,
+        }
+    }
+
+    pub fn advance_clocks(&mut self, seconds: f64) {
+        let advancing = self.game_rules.bool("advance_time");
+        if advancing && !self.day.paused {
+            self.day.advance(seconds);
+        } else if let Some(save) = self.save.as_mut() {
+            save.shift_day(-seconds * 20.0);
+        }
+        if advancing {
+            self.end_clock.advance(seconds);
+        }
+    }
+}
+
+pub fn default_clock(dimension: Dimension) -> Option<&'static str> {
+    match dimension {
+        Dimension::Overworld => Some(OVERWORLD_CLOCK),
+        Dimension::Nether => None,
+        Dimension::End => Some(THE_END_CLOCK),
+    }
 }
 
 impl Server {
@@ -162,7 +201,7 @@ pub fn join(
 
 struct WorldFiles {
     spawn: RespawnData,
-    day: DayCycle,
+    clocks: WorldClocks,
     rules: GameRules,
     difficulty: Difficulty,
     weather: Option<WeatherData>,
@@ -173,7 +212,10 @@ impl WorldFiles {
     fn of(globals: &Globals, players: &BTreeMap<PlayerUuid, Player>) -> Self {
         Self {
             spawn: globals.spawn.clone(),
-            day: globals.day,
+            clocks: WorldClocks {
+                overworld: globals.day,
+                the_end: globals.end_clock,
+            },
             rules: globals.game_rules.clone(),
             difficulty: globals.difficulty,
             weather: globals.weather,
@@ -185,7 +227,7 @@ impl WorldFiles {
     }
 
     fn write(&self, save: &WorldSave, prefix: &str) {
-        if let Err(error) = save.write(&self.spawn, Some(self.day), &self.rules, self.difficulty) {
+        if let Err(error) = save.write(&self.spawn, Some(self.clocks), &self.rules, self.difficulty) {
             diag::warn!(World, "{prefix} level.dat not written: {error}");
         }
         if let Some(weather) = self.weather
@@ -607,6 +649,73 @@ mod tests {
         Registries::load(&paths).ok().map(Arc::new)
     }
 
+    fn test_globals(registries: Arc<Registries>, save: Option<WorldSave>) -> Globals {
+        Globals {
+            seed: 1,
+            registries,
+            save,
+            game_rules: GameRules::default(),
+            difficulty: Difficulty::Normal,
+            spawn: RespawnData::default(),
+            day: DayCycle::default(),
+            end_clock: crate::save::END_CLOCK_START,
+            weather: None,
+            chat: CommandServer::new(crate::commands::HOST),
+            data: GameData::default(),
+            level_writer: None,
+            autosave_ticks: 0,
+        }
+    }
+
+    #[test]
+    fn the_end_clock_runs_beside_the_day_and_each_level_reads_its_default_clock() {
+        assert_eq!(default_clock(Dimension::Overworld), Some("minecraft:overworld"));
+        assert_eq!(default_clock(Dimension::Nether), None);
+        assert_eq!(default_clock(Dimension::End), Some("minecraft:the_end"));
+        let Some(registries) = registries() else {
+            return;
+        };
+        let mut globals = test_globals(registries, None);
+        assert_eq!(
+            globals.clock_ticks(),
+            ClockTicks {
+                overworld: 1000,
+                the_end: 0
+            }
+        );
+        globals.advance_clocks(1.0);
+        assert_eq!(
+            globals.clock_ticks(),
+            ClockTicks {
+                overworld: 1020,
+                the_end: 20
+            }
+        );
+        assert_eq!(globals.default_clock_ticks(Dimension::Overworld), 1020);
+        assert_eq!(globals.default_clock_ticks(Dimension::Nether), 1020);
+        globals.end_clock.ticks = 5.0;
+        assert_eq!(globals.default_clock_ticks(Dimension::End), 5);
+        globals.end_clock.paused = true;
+        globals.advance_clocks(1.0);
+        assert_eq!(
+            globals.clock_ticks(),
+            ClockTicks {
+                overworld: 1040,
+                the_end: 5
+            }
+        );
+        globals.end_clock.paused = false;
+        globals.game_rules.set("advance_time", "false").unwrap();
+        globals.advance_clocks(1.0);
+        assert_eq!(
+            globals.clock_ticks(),
+            ClockTicks {
+                overworld: 1040,
+                the_end: 5
+            }
+        );
+    }
+
     #[test]
     fn closing_with_no_overworld_loaded_still_writes_level_dat_and_the_player_files() {
         let Some(registries) = registries() else {
@@ -630,21 +739,18 @@ mod tests {
             ..WeatherData::default()
         };
         let globals = Globals {
-            seed: 1,
-            registries,
-            save: Some(save),
-            game_rules: rules.clone(),
             difficulty: Difficulty::Hard,
             spawn: spawn.clone(),
             day: DayCycle {
                 ticks: 13_000.0,
                 paused: false,
             },
+            end_clock: DayCycle {
+                ticks: 77.0,
+                paused: true,
+            },
             weather: Some(weather),
-            chat: CommandServer::new(crate::commands::HOST),
-            data: GameData::default(),
-            level_writer: None,
-            autosave_ticks: 0,
+            ..test_globals(registries, Some(save))
         };
         let uuid = player.uuid.clone();
         let server = Server {
@@ -657,6 +763,7 @@ mod tests {
         assert!(opened.warnings.is_empty(), "{:?}", opened.warnings);
         assert_eq!(opened.spawn, Some(spawn));
         assert_eq!(opened.day_ticks, Some(13_000.0));
+        assert_eq!((opened.end_clock.ticks, opened.end_clock.paused), (77.0, true));
         assert_eq!(opened.difficulty, Difficulty::Hard);
         assert_eq!(opened.weather, Some(weather));
         let save = opened.save.unwrap();

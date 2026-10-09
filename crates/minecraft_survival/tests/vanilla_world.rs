@@ -604,7 +604,10 @@ fn a_saved_world_comes_back_whole_with_vanilla_keys_and_tag_types() {
     let save = first.save.take().unwrap();
     save.write(
         &minecraft_survival::save::world_spawn(Dimension::Overworld, SPAWN),
-        Some(day),
+        Some(minecraft_survival::save::WorldClocks {
+            overworld: day,
+            the_end: minecraft_survival::save::END_CLOCK_START,
+        }),
         &rules,
         Difficulty::Hard,
     )

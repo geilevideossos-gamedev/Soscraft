@@ -8,7 +8,7 @@ A commit can't name its own hash, so each entry is written with its commit and i
 
 ### 1. Minecraft world spawn lives in the server, not the overworld level (E1-1)
 
-Commit: filled in by the next entry
+Commit: 771827f
 
 - **Changed:**
   - `minecraft_survival/src/server.rs`: `Globals.spawn` holds the world spawn as level.dat's `RespawnData` (dimension, position, yaw, pitch), as vanilla's `MinecraftServer` owns it. A new private `WorldFiles` (spawn, clock, rules, difficulty, weather and every player's file) is taken from `Globals` and written by both `Server::save_and_close` and `autosave`.
@@ -29,3 +29,25 @@ Commit: filled in by the next entry
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64
 ```
+
+### 2. Minecraft levels share the world's clocks (E1-2)
+
+Commit: filled in by the next entry
+
+- **Changed:**
+  - Vendored `third_party/minecraftoss/world/src/level/time.rs` (MinecraftOSS patch): `Level::set_clock(name, ticks)` sets one named clock of the level, whatever its default clock is.
+  - `minecraft_terrain/src/server.rs`: `ClockTicks { overworld, the_end }` with `OVERWORLD_CLOCK` and `THE_END_CLOCK`. `TickInput.day_ticks` became `TickInput.clocks`, and every server tick sets both clocks in the level through `ServerSim::set_clocks`, instead of only the level's default clock. Before, a Nether level (no default clock) kept its own overworld clock counting from 0, so mobs' day schedule and the regional difficulty there ignored the time of day.
+  - `minecraft_survival/src/server.rs`: `Globals.end_clock` is the server's `minecraft:the_end` clock beside `Globals.day` (the overworld clock), as 26.3's `ServerClockManager` keeps one set of clocks for the whole server (checked with javap: `tick()` advances every clock when `advance_time` is on, each clock keeps its own `paused`). New `Globals::clock_ticks`, `Globals::default_clock_ticks(dimension)` and `Globals::advance_clocks(seconds)` (the old frame code for the overworld clock and the game time shift, moved from the adapter, plus the End clock), and `default_clock(dimension)`: `minecraft:overworld`, none for the Nether, `minecraft:the_end` (the `default_clock` of each 26.3 dimension type).
+  - `minecraft_survival/src/save.rs`: `WorldSave::write` takes `WorldClocks { overworld, the_end }`, and `data/minecraft/world_clocks.dat` now holds both clocks. `OpenedWorld::end_clock` reads the End clock back (0 and running for a world that has none, as `ServerClockManager.init` starts a missing clock).
+  - `minecraft_survival/src/entities.rs`: `Entities::tick` takes the `ClockTicks` (two lines).
+  - `render_anim/src/minecraft_world.rs`: `Globals` gets `opened.end_clock`, the entity tick gets `globals.clock_ticks()`, the frame calls `globals.advance_clocks(dt)`, and the client environment of a level runs on that level's default clock (the End clock in the End).
+- **Tests:** `minecraft_terrain::server`: `every_level_follows_the_world_clocks_and_time_set_moves_only_a_default_clock` (overworld, Nether and End levels all take both clocks, both run on a tick, and `set_time` moves the overworld clock, the End clock or nothing in the Nether). `save`: `the_end_clock_is_saved_beside_the_overworld_clock` (`total_ticks` and `paused` in `world_clocks.dat`, read back, a temporary world starts at 0). `server`: `the_end_clock_runs_beside_the_day_and_each_level_reads_its_default_clock` (`default_clock` for each dimension, both clocks advance 20 ticks a second, a paused End clock stays, `advance_time` false stops both), and `closing_with_no_overworld_loaded_still_writes_level_dat_and_the_player_files` now also checks the paused End clock.
+- **Decisions:**
+  - **After track C:** `/time` in a level without a default clock answering `commands.time.no_default_clock`, and `/time` in the End naming and moving `minecraft:the_end`, need the command's dimension (track C's `Ctx.dimension`, not merged here). `default_clock(dimension)` is the lookup they will use; until then `/time` keeps acting on the overworld clock from every dimension.
+  - The MW2 `game_time` shift still follows the overworld clock only, as before.
+- **Test steps:** nothing changes in the overworld. Check that the clock still runs and saves:
+  1. Keep `IW4L_MINECRAFT_WORLD=dimtest` and remove any `IW4L_MINECRAFT_TIME` line. Start.
+  2. Type `/time set 12000`. Wait 30 seconds: the sun goes down. **Screenshot 1.**
+  3. Quit through the menu and start again: the sun is where it was. Type `/time query daytime`: about 12600 or more.
+  4. Optional: open `iw4l-artifacts\saves\dimtest\data\minecraft\world_clocks.dat` with an NBT viewer: it holds `minecraft:overworld` and `minecraft:the_end`.
+- **Kit:** none needed; any kit works.
