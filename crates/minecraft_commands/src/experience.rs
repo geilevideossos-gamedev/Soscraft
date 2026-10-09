@@ -25,7 +25,7 @@ pub fn floor(value: f32) -> i32 {
 impl Experience {
     pub fn needed(&self) -> i32 {
         if self.level >= 30 {
-            112 + (self.level - 30) * 9
+            (self.level - 30).wrapping_mul(9).wrapping_add(112)
         } else if self.level >= 15 {
             37 + (self.level - 15) * 5
         } else {
@@ -280,6 +280,11 @@ mod tests {
         let mut top = at(i32::MAX - 1, 0.0, 0);
         top.give_levels(5);
         assert_eq!(top.level, i32::MAX);
+        assert_eq!(top.needed(), 2_147_483_481);
+        assert_eq!(at(477_218_606, 0.0, 0).needed(), 0);
+        assert_eq!(at(1_000_000_000, 0.0, 0).needed(), 410_065_250);
+        top.give_points(5);
+        assert_eq!((top.level, top.total), (i32::MAX, 5));
     }
 
     #[test]
@@ -337,6 +342,11 @@ mod tests {
             texts(&out)[0],
             "Unknown or incomplete command. See below for error"
         );
+        run(&mut server, &mut world, HOST, "xp set @s 2147483647 levels");
+        let out = run(&mut server, &mut world, HOST, "xp query @s points");
+        assert_eq!(texts(&out), vec!["Steve has 0 experience points"]);
+        let out = run(&mut server, &mut world, HOST, "xp set @s 100 points");
+        assert_eq!(texts(&out), vec!["Set 100 experience points on Steve"]);
     }
 
     #[test]

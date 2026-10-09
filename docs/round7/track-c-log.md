@@ -863,3 +863,29 @@ Kit: none needed.
 ### Decisions
 
 - **No `{` suggestion yet.** Vanilla also suggests `{` for a block with a block entity, and `[` or `{` after a block tag whose members have them. The hints do not carry block entities or tag members, so those stay out until the glue sends them.
+
+## Minecraft experience math wraps like vanilla at huge levels
+
+Commit: the commit that adds this entry (branch `track-c`, adversarial review of the whole track).
+
+### What changed
+
+- `Experience::needed` computed `112 + (level - 30) * 9` with plain `i32` arithmetic. From level 238,609,325 up, that overflows. A debug or test build then panics, for example after `/xp set @s 2147483647 levels` and any `/xp query @s points`, `/xp add` or `/xp set ... points`. Java's `Player.getXpNeededForNextLevel` wraps silently. The multiplication and addition now wrap the same way, so every build gives vanilla's number and none crashes.
+
+### Tests added
+
+- `experience::tests::levels_saturate_and_reset_below_zero` checks Java's wrapped values at levels `i32::MAX` (2,147,483,481), 477,218,606 (0) and 1,000,000,000 (410,065,250), plus giving points at `i32::MAX`.
+- `experience::tests::xp_adds_sets_and_queries_like_vanilla` runs `/xp set @s 2147483647 levels`, `/xp query @s points` and `/xp set @s 100 points` end to end.
+
+### In-game test steps
+
+`/xp` needs the glue (see the `/xp` entry). Once it is in:
+
+```
+IW4L_MINECRAFT_KIT=stone*64
+```
+
+1. `/xp set @s 2147483647 levels`, then `/xp query @s points`: "Steve has 0 experience points", and the game keeps running.
+2. `/xp add @s 10`: "Gave 10 experience points to Steve".
+
+Kit: none needed.
