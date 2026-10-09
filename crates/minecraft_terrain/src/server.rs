@@ -63,7 +63,7 @@ pub struct ServerSim {
     /// The client was asked to close its trading screen.
     merchant_closing: bool,
     thrown: Vec<crate::thrown::Thrown>,
-    pearl_landings: Vec<[f64; 3]>,
+    pearl_landings: Vec<(u64, [f64; 3])>,
 }
 
 /// What a player's hit or use on a mob did, for the client to present.
@@ -690,7 +690,7 @@ impl ServerSim {
         self.thrown.push(thrown);
     }
 
-    pub fn take_pearl_landings(&mut self) -> Vec<[f64; 3]> {
+    pub fn take_pearl_teleports(&mut self) -> Vec<(u64, [f64; 3])> {
         std::mem::take(&mut self.pearl_landings)
     }
 
@@ -698,25 +698,24 @@ impl ServerSim {
         self.thrown.iter().map(|t| (t.item.clone(), t.previous.to_array(), t.position().to_array(), t.age())).collect()
     }
 
-    pub fn tick_thrown(&mut self, thrower: Option<[f64; 3]>) {
+    pub fn tick_thrown(&mut self, players: &[crate::thrown::PlayerBody]) {
         use crate::thrown::Throwable;
-        if thrower.is_none() {
-            self.thrown.retain(|t| t.kind != Throwable::EnderPearl);
-        }
+        self.thrown.retain(|t| t.kind != Throwable::EnderPearl || players.iter().any(|p| p.id == t.owner && p.alive));
         if self.thrown.is_empty() {
             return;
         }
-        let targets = crate::thrown::targets(&self.mobs);
-        let owner = thrower.map(|f| (glam::DVec3::new(f[0] - 0.3, f[1], f[2] - 0.3), glam::DVec3::new(f[0] + 0.3, f[1] + 1.8, f[2] + 0.3)));
+        let mob_targets = crate::thrown::targets(&self.mobs);
         let mut struck = Vec::new();
         let mut hatched = Vec::new();
         {
             let Self { level, states, mob_tables, thrown, pearl_landings, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
             for t in thrown.iter_mut() {
-                let Some(landed) = t.tick(&world, &targets, owner) else { continue };
-                if let Some(mob) = landed.mob {
-                    struck.push((mob, landed.velocity, t.random().next_long()));
+                let mut targets = mob_targets.clone();
+                targets.extend(crate::thrown::player_targets(players, t.owner));
+                let Some(landed) = t.tick(&world, &targets, crate::thrown::owner_box(players, t.owner)) else { continue };
+                if let Some(mob) = landed.mob.filter(|&id| crate::thrown::struck_player(id).is_none()) {
+                    struck.push((mob, landed.velocity, t.owner, t.random().next_long()));
                 }
                 match t.kind {
                     Throwable::Egg => {
@@ -724,14 +723,14 @@ impl ServerSim {
                             hatched.push((crate::thrown::hatch_point(landed.at, landed.before).to_array(), t.yaw(), crate::thrown::chick_variant(&t.item)));
                         }
                     }
-                    Throwable::EnderPearl => pearl_landings.push(landed.before.to_array()),
+                    Throwable::EnderPearl => pearl_landings.push((t.owner, landed.before.to_array())),
                     Throwable::Snowball => {}
                 }
             }
             thrown.retain(crate::thrown::Thrown::alive);
         }
-        for (mob, velocity, seed) in struck {
-            crate::thrown::hurt(&mut self.mobs, mob, velocity, 0, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
+        for (mob, velocity, owner, seed) in struck {
+            crate::thrown::hurt(&mut self.mobs, mob, velocity, owner, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
         }
         for (at, yaw, variant) in hatched {
             if let Ok(nbt) = minecraftoss_core::snbt::parse_compound(&format!("{{Age:-24000,variant:\"{variant}\"}}")) {
@@ -1197,6 +1196,7 @@ pub struct Output {
     pub bone_meal_used: Vec<BlockPos>,
     pub item_uses: Vec<bool>,
     pub pearl_landings: Vec<[f64; 3]>,
+    pub pearl_teleports: Vec<(u64, [f64; 3])>,
     pub weather: Option<WeatherView>,
     /// How many commands the server has handled so far.
     pub handled: u64,
@@ -1516,8 +1516,11 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     let held = input.pickup.as_ref().and_then(|(_, inventory, selected)| inventory.slots.get(*selected).and_then(Option::as_ref).map(|s| s.id.clone()));
                     sim.mobs.set_player_main_hand(0, held.as_deref());
                     sim.tick_mobs(&input.mob_players, input.bright_outside);
-                    sim.tick_thrown(input.players.first().copied());
-                    out.pearl_landings.extend(sim.take_pearl_landings());
+                    let bodies: Vec<_> = input.mob_players.iter().map(crate::thrown::PlayerBody::of).collect();
+                    sim.tick_thrown(&bodies);
+                    let teleports = sim.take_pearl_teleports();
+                    out.pearl_landings.extend(teleports.iter().map(|&(_, at)| at));
+                    out.pearl_teleports.extend(teleports);
                     sim.spawn_trade_experience();
                     out.merchant.extend(sim.check_merchant(&input.mob_players));
                     out.player_hits.extend(sim.mobs.take_player_hits());
@@ -3508,17 +3511,28 @@ mod tests {
         crate::thrown::Thrown::throw(item, glam::DVec3::new(8.5, 203.0, 8.5), 0.0, 90.0, glam::DVec3::ZERO, true, &mut random).expect("a throwable")
     }
 
+    fn player_at(id: u64, feet: [f64; 3], alive: bool) -> crate::thrown::PlayerBody {
+        crate::thrown::PlayerBody { id, feet: glam::DVec3::from_array(feet), alive, spectator: false }
+    }
+
+    fn thrown_down_by(owner: u64, item: &str, seed: u64) -> crate::thrown::Thrown {
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(seed);
+        let throw = crate::thrown::Throw { owner, item, components: None, eye: glam::DVec3::new(8.5, 203.0, 8.5), yaw: 0.0, pitch: 90.0, motion: glam::DVec3::ZERO, on_ground: true };
+        crate::thrown::Thrown::launch(&throw, &mut random).expect("a throwable")
+    }
+
     #[test]
     fn a_pearl_reports_where_the_player_lands() {
         let Some((mut server, _)) = door_world() else { return };
         server.throw(thrown_down("minecraft:ender_pearl", 3));
         let mut landings = Vec::new();
         for _ in 0..20 {
-            server.tick_thrown(Some([40.0, 250.0, 40.0]));
-            landings.extend(server.take_pearl_landings());
+            server.tick_thrown(&[player_at(0, [40.0, 250.0, 40.0], true)]);
+            landings.extend(server.take_pearl_teleports());
         }
         assert_eq!(landings.len(), 1);
-        assert!(landings[0][1] >= 200.0 && landings[0][1] < 202.0, "{landings:?}");
+        assert_eq!(landings[0].0, 0);
+        assert!(landings[0].1[1] >= 200.0 && landings[0].1[1] < 202.0, "{landings:?}");
         assert!(server.thrown_view().is_empty());
     }
 
@@ -3527,10 +3541,24 @@ mod tests {
         let Some((mut server, _)) = door_world() else { return };
         server.throw(thrown_down("minecraft:ender_pearl", 3));
         server.throw(thrown_down("minecraft:snowball", 4));
-        server.tick_thrown(None);
+        server.tick_thrown(&[]);
         let left: Vec<String> = server.thrown_view().into_iter().map(|t| t.0).collect();
         assert_eq!(left, vec!["minecraft:snowball".to_owned()]);
-        assert!(server.take_pearl_landings().is_empty());
+        assert!(server.take_pearl_teleports().is_empty());
+    }
+
+    #[test]
+    fn each_pearl_teleports_its_own_thrower_and_dies_with_it() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.throw(thrown_down_by(1, "minecraft:ender_pearl", 3));
+        server.throw(thrown_down_by(2, "minecraft:ender_pearl", 5));
+        let players = [player_at(1, [40.0, 250.0, 40.0], true), player_at(2, [-40.0, 250.0, 40.0], false)];
+        let mut teleports = Vec::new();
+        for _ in 0..20 {
+            server.tick_thrown(&players);
+            teleports.extend(server.take_pearl_teleports());
+        }
+        assert_eq!(teleports.iter().map(|t| t.0).collect::<Vec<_>>(), vec![1]);
     }
 
     #[test]
@@ -3541,7 +3569,7 @@ mod tests {
             server.throw(thrown_down("minecraft:brown_egg", seed));
         }
         for _ in 0..20 {
-            server.tick_thrown(None);
+            server.tick_thrown(&[]);
         }
         let chickens: Vec<_> = server.mobs.chickens().iter().skip(before).collect();
         assert!(!chickens.is_empty());

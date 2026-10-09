@@ -3,6 +3,7 @@ use minecraftoss_entities::health::DamageResult;
 use minecraftoss_entities::monster_ai::Target;
 use minecraftoss_entities::movement::Body;
 use minecraftoss_entities::potion::{Potion, PotionTarget, ThrownPotion};
+use minecraftoss_entities::tempt::PlayerCandidate;
 use minecraftoss_entities::world::{DamageSourceKind, EntityWorld};
 use minecraftoss_player::World;
 use minecraftoss_player::rng::LegacyRandom;
@@ -16,10 +17,11 @@ pub const POWER: f32 = 1.5;
 pub const INACCURACY: f32 = 1.0;
 pub const PEARL_DAMAGE: f32 = 5.0;
 pub const PEARL_COOLDOWN: u32 = 20;
-const OWNER: u64 = u64::MAX;
 const KNOCKBACK: f64 = 0.4;
 const THROWN: &str = "minecraft:thrown";
-const PLAYER_TARGET: u64 = u64::MAX / 2;
+pub const PLAYER_TARGET: u64 = u64::MAX / 2;
+const PLAYER_HALF_WIDTH: f64 = 0.3;
+const PLAYER_HEIGHT: f64 = 1.8;
 const HIDDEN_TICKS: i32 = 2;
 const HIDDEN_NEAR: f64 = 12.25;
 const CHICK_NUDGE: f64 = 0.25;
@@ -48,10 +50,85 @@ impl Throwable {
             Self::EnderPearl => "minecraft:entity.ender_pearl.throw",
         }
     }
+
+    pub fn pitch_offset(self) -> f32 {
+        match self {
+            Self::Snowball | Self::Egg | Self::EnderPearl => 0.0,
+        }
+    }
+
+    pub fn power(self) -> f32 {
+        match self {
+            Self::Snowball | Self::Egg | Self::EnderPearl => POWER,
+        }
+    }
+
+    pub fn inaccuracy(self) -> f32 {
+        INACCURACY
+    }
+
+    pub fn gravity(self) -> f64 {
+        match self {
+            Self::Snowball | Self::Egg | Self::EnderPearl => GRAVITY,
+        }
+    }
 }
 
 pub fn throw_pitch(random: f32) -> f32 {
     0.4 / (random * 0.4 + 0.8)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerBody {
+    pub id: u64,
+    pub feet: DVec3,
+    pub alive: bool,
+    pub spectator: bool,
+}
+
+impl PlayerBody {
+    pub fn of(candidate: &PlayerCandidate) -> Self {
+        Self { id: candidate.id, feet: candidate.position, alive: candidate.alive, spectator: candidate.spectator }
+    }
+
+    pub fn bounds(&self) -> (DVec3, DVec3) {
+        let half = DVec3::new(PLAYER_HALF_WIDTH, 0.0, PLAYER_HALF_WIDTH);
+        (self.feet - half, self.feet + half + DVec3::Y * PLAYER_HEIGHT)
+    }
+
+    pub fn targetable(&self) -> bool {
+        self.alive && !self.spectator
+    }
+}
+
+pub fn struck_player(id: u64) -> Option<u64> {
+    id.checked_sub(PLAYER_TARGET)
+}
+
+pub fn player_targets(players: &[PlayerBody], owner: u64) -> Vec<PotionTarget> {
+    players
+        .iter()
+        .filter(|p| p.targetable())
+        .map(|p| {
+            let (min, max) = p.bounds();
+            PotionTarget { id: PLAYER_TARGET + p.id, min, max, owner: p.id == owner }
+        })
+        .collect()
+}
+
+pub fn owner_box(players: &[PlayerBody], owner: u64) -> Option<(DVec3, DVec3)> {
+    players.iter().find(|p| p.id == owner && p.targetable()).map(PlayerBody::bounds)
+}
+
+pub struct Throw<'a> {
+    pub owner: u64,
+    pub item: &'a str,
+    pub components: Option<&'a serde_json::Value>,
+    pub eye: DVec3,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub motion: DVec3,
+    pub on_ground: bool,
 }
 
 pub fn chick_variant(item: &str) -> &'static str {
@@ -73,10 +150,14 @@ pub fn chicks(random: &mut LegacyRandom) -> usize {
 }
 
 pub fn shot_direction(yaw: f32, pitch: f32) -> DVec3 {
-    let (y, x) = (yaw.to_radians(), pitch.to_radians());
+    shot_direction_offset(yaw, pitch, 0.0)
+}
+
+pub fn shot_direction_offset(yaw: f32, pitch: f32, offset: f32) -> DVec3 {
+    let (y, x, lifted) = (yaw.to_radians(), pitch.to_radians(), (pitch + offset).to_radians());
     DVec3::new(
         f64::from(-y.sin() * x.cos()),
-        f64::from(-x.sin()),
+        f64::from(-lifted.sin()),
         f64::from(y.cos() * x.cos()),
     )
 }
@@ -85,6 +166,8 @@ pub fn shot_direction(yaw: f32, pitch: f32) -> DVec3 {
 pub struct Thrown {
     pub item: String,
     pub kind: Throwable,
+    pub owner: u64,
+    pub components: Option<serde_json::Value>,
     pub previous: DVec3,
     flight: ThrownPotion,
     random: LegacyRandom,
@@ -108,22 +191,29 @@ impl Thrown {
         on_ground: bool,
         random: &mut LegacyRandom,
     ) -> Option<Self> {
-        let kind = Throwable::of(item)?;
-        let start = eye - DVec3::new(0.0, 0.1, 0.0);
-        let direction = shot_direction(yaw, pitch);
+        Self::launch(&Throw { owner: 0, item, components: None, eye, yaw, pitch, motion, on_ground }, random)
+    }
+
+    pub fn launch(throw: &Throw, random: &mut LegacyRandom) -> Option<Self> {
+        let kind = Throwable::of(throw.item)?;
+        let start = throw.eye - DVec3::new(0.0, 0.1, 0.0);
+        let direction = shot_direction_offset(throw.yaw, throw.pitch, kind.pitch_offset());
         let mut flight = ThrownPotion::shoot(
             Potion::Healing,
-            OWNER,
+            PLAYER_TARGET + throw.owner,
             start,
             direction,
-            POWER,
-            INACCURACY,
+            kind.power(),
+            kind.inaccuracy(),
             random,
         );
-        flight.velocity += DVec3::new(motion.x, if on_ground { 0.0 } else { motion.y }, motion.z);
+        let motion = throw.motion;
+        flight.velocity += DVec3::new(motion.x, if throw.on_ground { 0.0 } else { motion.y }, motion.z);
         Some(Self {
-            item: item.to_owned(),
+            item: throw.item.to_owned(),
             kind,
+            owner: throw.owner,
+            components: throw.components.cloned(),
             previous: start,
             flight,
             random: LegacyRandom::new(random.next_long()),
@@ -161,7 +251,7 @@ impl Thrown {
         owner: Option<(DVec3, DVec3)>,
     ) -> Option<Landed> {
         self.previous = self.flight.position;
-        self.flight.velocity.y += minecraftoss_entities::potion::GRAVITY - GRAVITY;
+        self.flight.velocity.y += minecraftoss_entities::potion::GRAVITY - self.kind.gravity();
         let hit = self.flight.tick(world, targets, owner)?;
         Some(Landed {
             at: hit.location,
@@ -632,6 +722,69 @@ mod tests {
     fn the_throw_sound_is_pitched_down_at_random() {
         assert!((throw_pitch(0.0) - 0.5).abs() < 1e-6);
         assert!((throw_pitch(1.0) - 1.0 / 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn snowballs_eggs_and_pearls_leave_level_at_one_and_a_half_under_light_gravity() {
+        for kind in [Throwable::Snowball, Throwable::Egg, Throwable::EnderPearl] {
+            assert_eq!((kind.pitch_offset(), kind.power(), kind.inaccuracy(), kind.gravity()), (0.0, 1.5, 1.0, 0.03), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_pitch_offset_lifts_only_the_rise_of_the_throw() {
+        let level = shot_direction_offset(0.0, 0.0, -20.0);
+        assert!((level.y - 20.0_f32.to_radians().sin() as f64).abs() < 1e-6);
+        assert!((level.z - 1.0).abs() < 1e-6);
+        let flat = shot_direction(90.0, 0.0);
+        assert!((flat.x + 1.0).abs() < 1e-6 && flat.y.abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_throw_remembers_its_thrower() {
+        let mut random = LegacyRandom::new(3);
+        let throw = Throw { owner: 9, item: "minecraft:snowball", components: None, eye: DVec3::ZERO, yaw: 0.0, pitch: 0.0, motion: DVec3::ZERO, on_ground: true };
+        assert_eq!(Thrown::launch(&throw, &mut random).map(|t| t.owner), Some(9));
+        assert_eq!(throw_owner("minecraft:egg"), 0);
+    }
+
+    fn throw_owner(item: &str) -> u64 {
+        throw(item, 0.0).owner
+    }
+
+    #[test]
+    fn players_are_struck_by_their_id_and_the_thrower_is_marked() {
+        let players = [
+            PlayerBody { id: 0, feet: DVec3::ZERO, alive: true, spectator: false },
+            PlayerBody { id: 1, feet: DVec3::X, alive: true, spectator: false },
+            PlayerBody { id: 2, feet: DVec3::Z, alive: true, spectator: true },
+            PlayerBody { id: 3, feet: DVec3::Y, alive: false, spectator: false },
+        ];
+        let targets = player_targets(&players, 1);
+        assert_eq!(targets.iter().map(|t| (struck_player(t.id), t.owner)).collect::<Vec<_>>(), vec![(Some(0), false), (Some(1), true)]);
+        assert_eq!(targets[1].min, DVec3::new(0.7, 0.0, -0.3));
+        assert_eq!(targets[1].max, DVec3::new(1.3, 1.8, 0.3));
+        assert_eq!(owner_box(&players, 2), None);
+        assert_eq!(struck_player(7), None);
+    }
+
+    #[test]
+    fn a_throw_straight_up_spares_its_thrower_until_it_falls_back_on_it() {
+        let world = Blocks::default();
+        let mut random = LegacyRandom::new(5);
+        let throw = Throw { owner: 4, item: "minecraft:snowball", components: None, eye: DVec3::new(0.0, 70.0, 0.0), yaw: 0.0, pitch: -90.0, motion: DVec3::ZERO, on_ground: true };
+        let mut thrown = Thrown::launch(&throw, &mut random).unwrap();
+        let thrower = PotionTarget { id: PLAYER_TARGET + 4, min: DVec3::new(-5.0, 68.38, -5.0), max: DVec3::new(5.0, 70.18, 5.0), owner: true };
+        let mut landed = None;
+        for _ in 0..300 {
+            if let Some(hit) = thrown.tick(&world, &[thrower], Some((thrower.min, thrower.max))) {
+                landed = Some(hit);
+                break;
+            }
+        }
+        let landed = landed.expect("it comes back down");
+        assert_eq!(landed.mob.and_then(struck_player), Some(4));
+        assert!(thrown.age() > 50, "{}", thrown.age());
     }
 
     #[test]
