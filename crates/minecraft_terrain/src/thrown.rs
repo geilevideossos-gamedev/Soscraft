@@ -27,6 +27,7 @@ const HIDDEN_NEAR: f64 = 12.25;
 const CHICK_NUDGE: f64 = 0.25;
 pub const BOTTLE_COLOR: u32 = 0x385DC6;
 pub const BREAK_SOUND: &str = "minecraft:entity.splash_potion.break";
+pub const SPLASH_POTION: &str = "minecraft:splash_potion";
 const FACE_EPSILON: f64 = 1.0e-5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

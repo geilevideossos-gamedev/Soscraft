@@ -1521,6 +1521,17 @@ fn update(
                 mining.item_crumbs(&world.packs, at.as_vec3(), &velocities, &texture);
             }
         }
+        let potion_crumbs = std::mem::take(&mut entities.potion_crumbs);
+        if !potion_crumbs.is_empty()
+            && let Some(texture) = minecraft_terrain::pack::ResourceId::parse(minecraft_terrain::thrown::SPLASH_POTION)
+                .ok()
+                .and_then(|id| minecraft_terrain::model::item_particle_texture(&world.packs, &id).ok().flatten())
+                .filter(|texture| world.atlas.contains(texture))
+        {
+            for center in potion_crumbs {
+                mining.potion_crumbs(&world.packs, center.as_vec3(), &texture);
+            }
+        }
         for (pos, block) in std::mem::take(&mut entities.destroyed) {
             mining.burst(&world.packs, &terrain.scene, &world.atlas, pos, &block);
             if let (Some(sounds), Some(kind)) = (sounds.as_mut(), terrain.scene.sound_type(&block)) {

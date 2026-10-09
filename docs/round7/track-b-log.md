@@ -631,7 +631,7 @@ IW4L_MINECRAFT_KIT=ender_pearl*16
 
 ### 3. Minecraft snowballs and eggs break into crumbs and pearls into portal specks where they hit
 
-Commit: (next entry)
+Commit: cc5a400
 
 - **Changed:** `thrown.rs`: `ThrownHit { item, kind, at }`; `hit_crumbs` is the client's entity event 3 (26.3 javap): a snowball breaks into 8 still `item/snowball` crumbs (`Snowball.handleEntityEvent`), an egg into 8 crumbs of its own item each pushed `(nextFloat - 0.5) * 0.08` on every axis (`ThrownEgg.handleEntityEvent`); `pearl_portal` is `ThrownEnderpearl.onHit`'s 32 `PORTAL` specks at the hit point, `nextDouble() * 2` up, moving `(gaussian, 0, gaussian)`. `server.rs`: every snowball, egg and pearl hit reaches `Output.thrown_hits` (`ServerSim::take_thrown_hits`), whoever threw it.
 - `block_particles.rs` `spawn_item_crumbs(at, velocities, texture)` (the `BreakingItemParticle` start the potion crumbs use). `entities.rs` turns each hit into portal specks or `item_crumbs`, which the adapter spawns with the item's particle texture through the new `Mining::item_crumbs`. The pearl's old 16 enderman-style specks at the landing are gone.
@@ -644,4 +644,20 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=snowball*16,egg*16,brown_egg*16,blue_egg*16,ender_pearl*16
+```
+
+### 4. Minecraft potions and bottles o' enchanting break with the vanilla swirl and glass crumbs
+
+Commit: (next entry)
+
+- **Changed:** `entities.rs`: `Entities.spell` (`SpellParticles`, seeded from the world seed) swirls every `Output.potion_breaks` entry (`burst`: 100 `effect` or `instant_effect` specks in the potion's colour; thrown bottles o' enchanting and potions and witches' potions alike), ticks with the portal specks and draws into the translucent entity mesh. Each break also queues its block's bottom centre in `Entities.potion_crumbs`, which the adapter spawns as `LevelEventHandler`'s 8 `splash_potion` item crumbs with the item's particle texture (`Mining::potion_crumbs` over `BlockParticles::spawn_potion_crumbs`). `thrown.rs` `SPLASH_POTION` (After the split item 4).
+- **Tests:** none new; the swirl and the crumbs are entry 4 of the throwables group (`a_break_swirls_a_hundred_spells_of_its_colour_from_the_block_bottom`, `a_potion_breaks_into_eight_untinted_crumbs_flying_out_and_up`).
+- **Test steps:**
+  1. Throw a bottle o' enchanting at the ground: it breaks with the glass sound, a cloud of blue specks swirls up and out from the spot and a few glass crumbs jump out. Screenshot while the specks rise. (This is screenshot 5's complaint.)
+  2. Throw the splash Poison: the swirl is green. Throw Harming: the specks are the dark red instant kind (smaller star-like sprites). Screenshot each.
+  3. Stand 6 blocks from a witch in survival: her potions break with the same swirl in their colour.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=experience_bottle*64,splash_potion@poison,splash_potion@harming,witch_spawn_egg*2
 ```

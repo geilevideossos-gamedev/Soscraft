@@ -62,6 +62,7 @@ pub struct Entities {
     client: ClientMobs,
     poof: PoofParticles,
     portal: PortalParticles,
+    spell: minecraft_terrain::spell_particles::SpellParticles,
     items: ItemVisuals,
     clock: f64,
     ticks: u64,
@@ -88,6 +89,7 @@ pub struct Entities {
     orb_pickups: Vec<minecraft_terrain::orb_render::OrbPickup>,
     pub pearl_landings: Vec<DVec3>,
     pub item_crumbs: Vec<(String, DVec3, Vec<Vec3>)>,
+    pub potion_crumbs: Vec<DVec3>,
     pub destroyed: Vec<((i32, i32, i32), Block)>,
     pub experience_found: f32,
     pub weather: minecraft_terrain::server::WeatherView,
@@ -180,6 +182,7 @@ impl Entities {
             client: ClientMobs::default(),
             poof: PoofParticles::default(),
             portal: PortalParticles::default(),
+            spell: minecraft_terrain::spell_particles::SpellParticles::new((seed ^ 0x5be1) as u64),
             items: ItemVisuals::default(),
             clock: 0.0,
             ticks: 0,
@@ -200,6 +203,7 @@ impl Entities {
             orb_pickups: Vec::new(),
             pearl_landings: Vec::new(),
             item_crumbs: Vec::new(),
+            potion_crumbs: Vec::new(),
             destroyed: Vec::new(),
             experience_found: 0.0,
             weather: Default::default(),
@@ -580,6 +584,7 @@ impl Entities {
                 }
             }
             self.portal.tick();
+            self.spell.tick();
             minecraft_terrain::orb_render::tick_pickups(&mut self.orb_pickups, orb_pickup_target);
             if self.ticks % 600 == 0 {
                 diag::info!(World, "Minecraft mobs: {} tracked", self.boxes().len());
@@ -635,6 +640,10 @@ impl Entities {
             }
             for (_, landing) in output.pearl_teleports.into_iter().filter(|&(player, _)| player == PLAYER) {
                 self.pearl_landings.push(DVec3::from_array(landing));
+            }
+            for broken in &output.potion_breaks {
+                self.spell.burst(broken.position, broken.color, broken.instant);
+                self.potion_crumbs.push(minecraft_terrain::spell_particles::break_center(broken.position));
             }
             for hit in output.thrown_hits {
                 if hit.kind == minecraft_terrain::thrown::Throwable::EnderPearl {
@@ -886,6 +895,7 @@ impl Entities {
         );
         self.poof.append_mesh(&mut out.items, atlas, forward, partial, light);
         self.portal.append_mesh(&mut out.items, atlas, forward, partial, light);
+        self.spell.append_mesh(&mut out.translucent, atlas, forward, partial, light);
         let held: Vec<_> =
             skeleton_items.into_iter().chain(zombie_items).chain(villager_items).chain(witch_items).chain(placed_items.iter().cloned()).collect();
         let _ = self.items.append_held_items(&mut out.items, &held, packs, atlas, light);
