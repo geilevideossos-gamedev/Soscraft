@@ -128,6 +128,13 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
     } else {
         collision.climb(ps.origin)
     };
+    let gliding = crate::glide::prepare(
+        ps,
+        cmd,
+        context.old_buttons,
+        water.wet() || lava > 0.0,
+        crate::climb::climbing(ps, climb),
+    );
     crate::swim::hold_sprint(ps, water, pml.msec);
     let mut sprint = context.sprint;
     if ps.pm_flags & 3 != 0 {
@@ -200,6 +207,17 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
 
     if let Some(flight) = flight {
         crate::fly::fly_move(ps, &mut pml, cmd, flight, stuck, bounds, collision);
+        drop_timers(ps, &pml);
+        return PmoveResult {
+            pml,
+            bounds,
+            stance_event,
+            reset_torso,
+        };
+    }
+
+    if gliding {
+        crate::glide::glide_move(ps, &mut pml, cmd, stuck, bounds, collision);
         drop_timers(ps, &pml);
         return PmoveResult {
             pml,

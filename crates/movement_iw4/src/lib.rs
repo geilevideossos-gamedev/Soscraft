@@ -19,6 +19,7 @@ mod events;
 mod fly;
 mod footstep;
 mod friction;
+mod glide;
 mod ground;
 mod integrate;
 mod is_in_air;

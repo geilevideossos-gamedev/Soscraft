@@ -434,3 +434,54 @@ Previous commit: 2f684111
 ```
 IW4L_MINECRAFT_KIT=minecraft:elytra+damage=430,minecraft:diamond_sword+sharpness=5+damage=12
 ```
+
+### 16. Minecraft elytra glide on MW2 movement (E3-27)
+
+Previous commit: 9a9a5777
+
+- **Changed:**
+  - `playerstate_iw4/src/playerstate.rs`: two new pm_flags bits, the next free ones below `MC_NO_SKY`: `MC_MAY_GLIDE` (0x0400_0000, set by the game while the chest slot holds a usable glider) and `MC_GLIDING` (0x0200_0000, the glide itself). They travel in `pm_flags`, so deltas and prediction carry them.
+  - New `movement_iw4/src/glide.rs`, a pmove mode beside creative flight (decision 4):
+    - `prepare` runs each pmove after the fluid and climb samples. A fresh jump press (jump down now, up in the last command) in the air starts the glide when `MC_MAY_GLIDE` is set, as `LocalPlayer.aiStep` calls `tryToStartFallFlying`. Being on the ground, in water or lava, on a climbable, flying (creative), mantling or without `MC_MAY_GLIDE` stops it (`canGlide`, `isInLiquid`, the `onClimbable` check of `travelFallFlying`). While gliding, the jump, stance and sprint keys are dropped, so the player stays standing and MW2 guns stay ready.
+    - `glide_move` steps `LivingEntity.updateFallFlyingMovement` in blocks per tick: gravity 0.08 scaled by `-1 + 0.75·cos²(pitch)`, the lift when falling, the climb when looking up (`speed·-sin(pitch)·0.04`, times 3.2 upward), the turn toward the look (0.1), then the drag 0.99, 0.98, 0.99 (the float constants widened as Java does). For a frame of `t` ticks the push is applied with the exact fraction of the drag, `v·dᵗ + a·d·(1−dᵗ)/(1−d)`, which equals the vanilla tick at `t = 1`, as `fly.rs` scales by frame time. The move is the MW2 `step_slide_move` without MW2 gravity, so walls clip the speed as vanilla's `move` zeroes the blocked axis. Landing (the ground trace finds ground) ends the glide. In a cobweb the step is vanilla's: one tick of motion scaled by the web, then no momentum.
+  - `movement_iw4/src/single.rs`: the `prepare` call, and the glide branch before the mantle and walk code (after the linked-player branch).
+  - `sim/src/frame.rs`, `carrier.rs`: `set_may_glide(id, may)`, which also ends a glide when the elytra goes.
+  - New `minecraft_survival/src/elytra.rs`:
+    - `can_glide` is the item half of `LivingEntity.canGlide`: the chest slot (38) holds an item with the `glider` component (the elytra, unless a `!minecraft:glider` patch removes it, or any item given one) whose next damage won't break it (`nextDamageWillBreak`). So an elytra stops gliding at 1 durability and gliding never destroys it.
+    - `Elytra::step` (one per player, `Player.elytra`) counts the gliding ticks (`fallFlyTicks`) on a 20 Hz clock and wears the elytra 1 point on every 20th (`updateFallFlying`: `(ticks+1) % 10 == 0`, and every second one of those). Unbreaking spares the point with chance `level/(level+1)` (the non-armour rule of `unbreaking.json`: the elytra isn't in `#enchantable/armor`). A player with infinite materials (creative) doesn't wear it.
+    - `wall_damage` is `handleFallFlyingCollisions`: `(old horizontal speed − new)·10 − 3` when above 0. `Elytra::step` takes the speeds from the server's player state of the last frame and this one.
+    - `fall_peak` is `checkFallDistanceAccumulation`: while gliding slower than 0.5 blocks per tick downward, at most 1 block of fall counts, so a gentle landing doesn't hurt and a dive does.
+  - `minecraft_survival/src/death.rs`: `DamageCause::FlyIntoWall` with the message id `flyIntoWall` ("experienced kinetic energy"). `survival.rs`: it costs no exhaustion (`fly_into_wall.json`: `exhaustion` 0). It bypasses armour (`Armor::default()`), and it isn't a fall, so the `fall_damage` rule doesn't turn it off.
+  - New `render_anim/src/minecraft_elytra.rs`: each frame it sets `MC_MAY_GLIDE` (alive, not a spectator, `can_glide`), applies `fall_peak` to the fall tracking, runs `Elytra::step`, and on a wall hit hurts the player and plays the fall sound by damage and the hurt sound. `minecraft_world.rs`: one call line after the End step.
+- **Checked with javap (26.3):** `LivingEntity.travel` (fluid first, then `travelFallFlying`), `travelFallFlying` (climbable: `travelInAir` and stop; old horizontal speed, `updateFallFlyingMovement`, `move`, `handleFallFlyingCollisions` on the server), `updateFallFlyingMovement` (as above), `handleFallFlyingCollisions` (`getFallDamageSound((int)f)`, `flyIntoWall`), `updateFallFlying` (only while fall flying: `checkFallDistanceAccumulation`, `canGlide` or stop, the wear on multiples of 20 of `fallFlyTicks+1` on a random glider slot), `canGlide` (not on ground, no vehicle, no levitation, a slot passing `canGlideUsing`), `canGlideUsing` (`GLIDER`, the `EQUIPPABLE` slot matches, `!nextDamageWillBreak`), `Entity.checkFallDistanceAccumulation` (`y > -0.5` and `fallDistance > 1` give 1), `Player.tryToStartFallFlying` (not fall flying, `canGlide`, not in liquid), `LocalPlayer.aiStep` (jump pressed this tick and not last tick, no fly toggle this tick, not on a climbable). Data: `fly_into_wall.json`, the `bypasses_armor` and `no_knockback` tags, `unbreaking.json`.
+- **Tests:**
+  - `glide`: `one_tick_matches_hand_worked_vanilla_numbers` (level flight at 1 block per tick gives 0.99178201, −0.01764000; climbing at −30° from 1.5 gives 1.46060889, 0.06235250), `gliding_from_rest_covers_the_vanilla_path_at_any_frame_rate` (40 vanilla ticks cover 7.79 forward and 4.87 down; 50 ms and 8 ms frames land within 0.3 blocks of it at the same speed), `a_fresh_jump_in_the_air_starts_gliding_only_with_a_usable_elytra`, `water_climbables_flight_and_a_worn_out_elytra_stop_the_glide`, `landing_ends_the_glide`, `a_wall_takes_the_horizontal_speed_but_not_the_glide`, `cobwebs_hold_a_glider_without_momentum`.
+  - `sim` `frame`: `an_elytra_lets_a_player_glide_until_it_is_taken_off` (also that both bits are free of every other flag).
+  - `elytra`: `only_a_worn_glider_short_of_its_last_point_lets_a_player_glide`, `gliding_wears_one_point_every_twenty_ticks_but_not_in_creative`, `unbreaking_spares_its_share_of_the_wear`, `flying_into_a_wall_hurts_by_the_speed_lost_like_vanilla`, `a_slow_glide_counts_at_most_one_block_of_fall`.
+  - `death`: `flying_into_a_wall_is_kinetic_energy_even_after_a_long_fall` (also the `.player` form while a zombie has kill credit).
+- **Decisions:**
+  - **Hull:** the glider keeps the standing MW2 hull. The vanilla fall-flying pose is 0.6 blocks high, so vanilla gliders pass 1-block holes; here they don't.
+  - **Creative flight wins:** a double tap in the air first starts a glide (the first press), then the second press turns creative flight on and the glide ends. Vanilla lets a flying player keep the fall-flying flag; here the two never mix.
+  - **Lava** stops a glide like water (vanilla's start check `isInLiquid` covers both; decision 4 names water).
+  - **Levitation and slow falling** don't exist for players yet, so they are not checked. When they come (E3-26), the levitation check goes next to `can_glide` and slow falling into the glide's gravity.
+  - **Wall damage** is measured between frames from the server's player state. The natural speed loss of a frame stays far below the 0.3 blocks per tick that would hurt, so only a wall hit counts, as in vanilla.
+  - **Server-owned:** the glide runs in the authority's pmove, and the wear, the wall damage and the fall tracking run on the host's per-player state (`Player.elytra`, keyed by UUID like the rest).
+  - **Not done:** the elytra on the MW2 body (no wing model on the MW2 rig yet; the body plays its in-air animation), the `elytra_glide` game event (no sculk yet) and the `aviate_one_cm` statistic.
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=elytratest` (a new world) and the kit below. Start in survival.
+  2. Open the inventory and put the plain elytra in the chest armour slot.
+  3. Type `/tp ~ ~40 ~`. While falling, press jump once: the fall turns into a glide. Look down to dive and speed up, look level to glide far, look up to trade speed for height. **Screenshot 1** mid-glide.
+  4. On the ground, jump and keep jump held: nothing happens in the air. Release it and press it again at the top: the glide starts.
+  5. Glide in, look slightly down and land at a shallow angle: no damage. Then `/tp ~ ~40 ~`, glide and dive steeply into the ground: fall damage.
+  6. Build a cobblestone wall 4 blocks high, `/tp` 30 blocks away and 15 up, glide and dive toward it to pick up speed, then hit it head on: you take damage with the fall sound and stop. **Screenshot 2** of the health bar. If it kills you, the chat says "... experienced kinetic energy".
+  7. Glide into water (empty the water bucket below a ledge): the glide stops and you swim. Glide onto a ladder on a wall: the glide stops and you hold on.
+  8. While gliding, fire an MW2 gun: it shoots; sprint and crouch do nothing.
+  9. After a few seconds of gliding, the elytra in the inventory shows a durability bar. **Screenshot 3.**
+  10. Swap in the elytra with `+damage=420` and glide from high up: after about 11 seconds the glide stops and you fall. The elytra stays, with a red bar, and pressing jump in the air does nothing more. **Screenshot 4** of the elytra in the slot.
+  11. Wear the diamond chestplate instead: pressing jump in the air does nothing.
+  12. `/gamemode creative`, wear the plain elytra and glide for 20 seconds: its bar doesn't move. Double-tap jump while gliding: creative flight takes over.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:elytra+damage=420,minecraft:elytra+unbreaking=3,minecraft:diamond_chestplate,minecraft:water_bucket,minecraft:cobblestone*64,minecraft:ladder*16,minecraft:golden_apple*8
+```

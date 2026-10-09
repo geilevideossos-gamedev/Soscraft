@@ -424,6 +424,19 @@ impl FrameWorld<'_> {
         true
     }
 
+    pub fn set_may_glide(&mut self, id: ClientId, may: bool) -> bool {
+        use playerstate_iw4::pm_flags::{MC_GLIDING, MC_MAY_GLIDE};
+        let Some(ps) = self.player_mut(id) else {
+            return false;
+        };
+        if may {
+            ps.pm_flags |= MC_MAY_GLIDE;
+        } else {
+            ps.pm_flags &= !(MC_MAY_GLIDE | MC_GLIDING);
+        }
+        true
+    }
+
     pub fn set_legs_anim(&mut self, id: ClientId, legs_anim: i32) -> bool {
         let Some(ps) = self.player_mut(id) else {
             return false;
@@ -1208,5 +1221,24 @@ mod tests {
             sim.frame().player(id).map(|ps| ps.velocity),
             Some([15.0, -20.0, 300.0])
         );
+    }
+
+    #[test]
+    fn an_elytra_lets_a_player_glide_until_it_is_taken_off() {
+        use playerstate_iw4::pm_flags::{LAST_STAND, MC_GLIDING, MC_MAY_GLIDE, MC_NO_SKY};
+        let mut sim = crate::SimWorld::default();
+        let id = ClientId(3);
+        assert!(!sim.set_may_glide(id, true));
+        sim.frame().ensure_player(id).pm_flags = SPRINT_BLOCKED;
+        assert!(sim.set_may_glide(id, true));
+        assert_eq!(flags(&mut sim, id), SPRINT_BLOCKED | MC_MAY_GLIDE);
+        sim.frame().ensure_player(id).pm_flags |= MC_GLIDING;
+        assert!(sim.set_minecraft_abilities(id, MC_MAY_FLY));
+        assert_eq!(flags(&mut sim, id), SPRINT_BLOCKED | MC_MAY_GLIDE | MC_GLIDING | MC_MAY_FLY);
+        assert!(sim.set_may_glide(id, false));
+        assert_eq!(flags(&mut sim, id), SPRINT_BLOCKED | MC_MAY_FLY);
+        let taken = MC_INVULNERABLE | MC_MAY_FLY | MC_NOCLIP | MC_FLYING | MC_NO_SKY | SPRINT_BLOCKED | LAST_STAND;
+        assert_eq!((MC_MAY_GLIDE | MC_GLIDING) & taken, 0, "bits of their own");
+        assert_ne!(MC_MAY_GLIDE, MC_GLIDING);
     }
 }

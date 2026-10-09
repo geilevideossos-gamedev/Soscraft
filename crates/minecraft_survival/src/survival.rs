@@ -599,7 +599,12 @@ impl Survival {
             return false;
         }
         let before = self.status.health;
-        let landed = self.status.hurt(damage, armor, HURT_EXHAUSTION).is_some();
+        let exhaustion = if cause == DamageCause::FlyIntoWall {
+            0.0
+        } else {
+            HURT_EXHAUSTION
+        };
+        let landed = self.status.hurt(damage, armor, exhaustion).is_some();
         if landed {
             self.combat.hurt_by(self.tick, cause);
             self.record(before, cause, 0.0);

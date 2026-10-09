@@ -4,6 +4,7 @@ pub mod cooldowns;
 pub mod creative;
 pub mod data;
 pub mod death;
+pub mod elytra;
 pub mod entities;
 pub mod gear;
 pub mod guns;
