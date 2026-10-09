@@ -1,8 +1,12 @@
 use minecraft_commands::text::RED;
 use minecraft_commands::{Clientbound, Text};
 use minecraft_net::Dimension;
+use minecraftoss_core::Registries;
+use minecraftoss_core::ident::Identifier;
 
 use crate::player_nbt::Place;
+
+const DIMENSIONS: [Dimension; 3] = [Dimension::Overworld, Dimension::Nether, Dimension::End];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LoadingReason {
@@ -61,6 +65,35 @@ pub fn failed_message(dimension: Dimension, error: &str) -> Clientbound {
         .color(RED),
         overlay: false,
     }
+}
+
+pub fn dimension_named(id: &str) -> Option<Dimension> {
+    let id = Identifier::parse(id).ok()?;
+    DIMENSIONS
+        .into_iter()
+        .find(|dimension| dimension.dimension_type() == id.as_str())
+}
+
+pub fn coordinate_scale(registries: &Registries, dimension: Dimension) -> Result<f64, String> {
+    let id = Identifier::parse(dimension.dimension_type())?;
+    registries
+        .datapack
+        .read_json("dimension_type", &id)?
+        .get("coordinate_scale")
+        .and_then(serde_json::Value::as_f64)
+        .ok_or_else(|| format!("{} has no coordinate_scale", dimension.dimension_type()))
+}
+
+pub fn teleport_scale(
+    registries: &Registries,
+    from: Dimension,
+    to: Dimension,
+) -> Result<f64, String> {
+    Ok(coordinate_scale(registries, from)? / coordinate_scale(registries, to)?)
+}
+
+pub fn scaled(feet: [f64; 3], scale: f64) -> [f64; 3] {
+    [feet[0] * scale, feet[1], feet[2] * scale]
 }
 
 pub fn air_support_unavailable() -> Clientbound {
@@ -143,6 +176,49 @@ mod tests {
         assert_eq!(
             line,
             "minecraft:the_end could not be loaded: the level loader stopped"
+        );
+    }
+
+    #[test]
+    fn a_dimension_is_named_by_its_id_with_or_without_the_namespace() {
+        assert_eq!(
+            dimension_named("minecraft:the_nether"),
+            Some(Dimension::Nether)
+        );
+        assert_eq!(dimension_named("the_end"), Some(Dimension::End));
+        assert_eq!(dimension_named("overworld"), Some(Dimension::Overworld));
+        assert_eq!(dimension_named("nether"), None, "not a dimension id");
+        assert_eq!(dimension_named("example:the_nether"), None);
+        assert_eq!(
+            dimension_named("Minecraft:The_End"),
+            None,
+            "ids are lower case"
+        );
+        for dimension in DIMENSIONS {
+            assert_eq!(dimension_named(dimension.dimension_type()), Some(dimension));
+        }
+    }
+
+    #[test]
+    fn the_teleport_scale_divides_the_coordinate_scales() {
+        let Some(registries) = minecraftoss_core::registries::DataPaths::discover()
+            .ok()
+            .and_then(|paths| Registries::load(&paths).ok())
+        else {
+            return;
+        };
+        let scale = |from, to| teleport_scale(&registries, from, to).unwrap();
+        assert_eq!(scale(Dimension::Overworld, Dimension::Nether), 1.0 / 8.0);
+        assert_eq!(scale(Dimension::Nether, Dimension::Overworld), 8.0);
+        assert_eq!(scale(Dimension::Overworld, Dimension::End), 1.0);
+        assert_eq!(scale(Dimension::End, Dimension::Nether), 1.0 / 8.0);
+        assert_eq!(scale(Dimension::Nether, Dimension::Nether), 1.0);
+        assert_eq!(
+            scaled(
+                [800.0, 70.0, -1600.0],
+                scale(Dimension::Overworld, Dimension::Nether)
+            ),
+            [100.0, 70.0, -200.0]
         );
     }
 

@@ -359,7 +359,7 @@ Commit: e001c779
 
 ### 17. MW2 air support is unavailable under the Nether roof (E1-14)
 
-Commit: filled in by `git log` under this subject
+Commit: b7ca1a57
 
 - **Changed:**
   - `playerstate_iw4/src/playerstate.rs`: `pm_flags::MC_NO_SKY` = `0x0800_0000`, the bit below the other `MC_*` bits, unused by IW4 and the fork. Glide takes the next free bit after this group.
@@ -382,3 +382,18 @@ Commit: filled in by `git log` under this subject
   5. `/kill`. After the respawn in the overworld, select the predator: you fly it as usual. **Screenshot 2.**
   6. Quit. Set `IW4L_MINECRAFT_DIMENSION=the_end` and start on the obsidian platform. `give killstreak/predator` and use it: it works over the End. **Screenshot 3.**
 - **Kit:** none needed; any kit with a free hotbar slot.
+
+### 18. Minecraft players can be teleported into another dimension (E1-11, the part without track C)
+
+Commit: filled in by `git log` under this subject
+
+- **Changed:**
+  - `minecraft_survival/src/switch.rs`:
+    - `dimension_named(id)`: the dimension a `DimensionArgument` id names (`minecraft:the_nether`, or `the_nether` with the default namespace, as `Identifier` parses it). Lenient names like `nether` are not ids and give `None`, as vanilla's `argument.dimension.invalid`.
+    - `coordinate_scale(registries, dimension)` reads the dimension type's `coordinate_scale` from the data pack at run time, and `teleport_scale(registries, from, to)` divides them, as `DimensionType.getTeleportationScale` (checked with javap: `from.coordinateScale() / to.coordinateScale()`). `scaled(feet, scale)` scales x and z and keeps y, as `CommandSourceStack.withLevel` moves the command's position (checked with javap).
+  - `minecraft_survival/src/player.rs`: `Player::teleport_into(place)`: a place in the player's own dimension is a plain teleport (`false`); a place in another dimension starts `travel_to` with that place as the arrival and the reason of `loading_reason` (so it waits for a remote killstreak like any travel) and answers `true`.
+- **Tests:** `switch`: `a_dimension_is_named_by_its_id_with_or_without_the_namespace`, `the_teleport_scale_divides_the_coordinate_scales` (1/8 into the Nether, 8 out of it, 1 between the overworld and the End, and (800, 70, -1600) becomes (100, 70, -200) in the Nether). `player`: `a_teleport_into_another_dimension_travels_there` (same dimension is plain, the Nether arrival and reason, a remote killstreak holds an End teleport until it ends).
+- **After track C** (`Ctx.dimension` and `/execute in`, C commit 12, merged on `minecraft-survival` but not on this branch): give `CommandWorld::teleport` the target dimension (`minecraft_commands/src/server.rs`), and in the adapter's teleport (`minecraft_world.rs`, where `commands::run` hands back `teleports`) call `player.teleport_into(Place::standing(dimension, feet, yaw, pitch))` and only do the plain MW2 teleport when it answers `false`. If track C's `Ctx.dimension` is a string, `dimension_named` turns it into a `Dimension`; if C does not scale the position, `teleport_scale` and `scaled` do it. The brief's `FakeWorld` test (`/execute in minecraft:the_nether run tp ~ ~ ~` from (800, 70, -1600) asks for (100, 70, -200) in the Nether) goes with that wiring, in `minecraft_commands`.
+- **Decisions:** none new. A teleport into another dimension uses the loading screen of that pair (`NETHER_PORTAL` with the Nether on either side, `END_PORTAL` with the End), as vanilla's client picks it from the two dimensions whatever moved the player.
+- **Test steps:** none in game until the wiring after track C; then the brief's owner steps 1, 2 and 7 (`/execute in ... run tp`).
+- **Kit:** none.
