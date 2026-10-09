@@ -641,3 +641,32 @@ C5 is commit `636e433`.
 | `minecraft_commands` | 53 | 53 |
 
 All 153 `render_anim` tests from the baseline are still there: 119 moved to `minecraft_survival` and 34 stayed. The track added 14 tests, 12 in `minecraft_survival` and 2 in `minecraft_net`.
+
+## E1. Minecraft crate split lines pass clippy
+
+D1 is commit `6552158`.
+
+- **What changed** (two lint attributes, no behaviour change):
+  - Final verification ran `clippy -p minecraft_net -p minecraft_survival -p minecraft_terrain -p render_anim --locked --all-targets -- -A clippy::approx_constant` (the crates of `git diff --stat 70a01b2..HEAD`) and matched every warning against the lines the track added (`git diff -U0 -M 70a01b2..HEAD`). Two warnings fell on those lines:
+    - `minecraft_survival/src/entities.rs`, `pub fn meshes(`: `too_many_arguments` (10/7). The line changed only from `pub(crate)` to `pub` in A8; the warning was already there in `render_anim` at `70a01b2`. It gets `#[allow(clippy::too_many_arguments)]`, as B6 gave `punch`.
+    - `render_anim/src/minecraft_world.rs`, the `let player = Player::new(...)` of the load completion (B5): `unwrap_or_default` on `runtime.carried_survival.take().unwrap_or_else(Survival::default)`. The statement gets `#[allow(clippy::unwrap_or_default)]`.
+  - Every other warning in the touched crates sits on lines the track didn't change (for example `type_complexity` on `server_picked` and `manual_is_multiple_of` on `self.ticks % 600` in the moved `entities.rs`).
+- **Tests added:** none. Re-run after this commit: `minecraft_survival` 131 passed, `render_anim` 34 passed, `minecraft_net` 2 passed, `minecraft_terrain` 464 passed and 3 ignored. All unchanged from D1. `minecraft_commands` (53) is not touched by the track.
+- **Checks:** clippy as above (no warning left on the track's lines), `check -p launcher --locked` (no new warning), `test -p` for the four crates.
+- **Owner test** (nothing visible changes):
+  1. Load a Minecraft match with `IW4L_MINECRAFT_WORLD=split` and the regression kit. Mobs show around you, and hearts, hunger and XP show.
+  2. Drink a few experience bottles, leave the match and load it again: the XP level is as you left it.
+- **Kit:** `minecraft:experience_bottle` x64 (in the regression kit).
+- **Decisions:**
+  - The `meshes` warning came with the file, but its line is one the track changed, so it is fixed here with the same attribute B6 used.
+  - The fallback stays `unwrap_or_else(Survival::default)`: `clippy.toml` disallows `unwrap_or_default` so that each site names its fallback, and `clippy::unwrap_or_default` asks for exactly that method. The attribute silences the style lint at this one statement. The other choices were worse: a `match` triggers `manual_unwrap_or_default`, and a plain `Survival` field would change the plan's `carried_survival: Option<Survival>`.
+
+## Owner test for the whole track
+
+Every commit above is a pure move or a seam, so one full pass covers the track. Play D1's owner test (the full regression), then A3 to C5 for the details of each area: deaths, guns and the offhand, vitals, hazards, mobs, chat commands, the jar data, players and inventories, hand and fall timers, saving, block edits, containers, chunk streaming, and command handling. The C3 and C5 steps add a few items with `/give` and `/gamerule`.
+
+Combined kit line for the `.env` next to `iw4l-survival.exe` (27 stacks; covers every commit's steps):
+
+```
+IW4L_MINECRAFT_KIT=diamond_pickaxe+silk_touch=1,diamond_sword,shield,cooked_beef*32,cobblestone*64,oak_planks*64,crafting_table,furnace,chest*2,ender_chest,coal*16,raw_iron*16,water_bucket,lava_bucket,flint_and_steel,ender_pearl*16,egg*16,zombie_spawn_egg*2,cow_spawn_egg*2,totem_of_undying,shulker_box,anvil,enchanting_table,bookshelf*15,experience_bottle*64,torch*64,glass_bottle*4
+```

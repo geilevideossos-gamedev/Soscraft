@@ -480,6 +480,7 @@ fn update(
                 if let Some((_, Some(warning))) = &saved_mode {
                     diag::warn!(World, "{warning}");
                 }
+                #[allow(clippy::unwrap_or_default)]
                 let player = minecraft_survival::player::Player::new(&profile, minecraft_survival::server::starting_game_mode(saved_mode.map(|(mode, _)| mode), std::env::var("IW4L_MINECRAFT_GAMEMODE").ok().as_deref()), runtime.carried_survival.take().unwrap_or_else(minecraft_survival::survival::Survival::default), inventory);
                 let uuid = player.uuid.clone();
                 players.insert(uuid.clone(), player);

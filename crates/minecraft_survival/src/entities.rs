@@ -780,6 +780,7 @@ impl Entities {
     }
 
     /// The mobs this frame, drawn with the viewer's renderers.
+    #[allow(clippy::too_many_arguments)]
     pub fn meshes(
         &mut self,
         scene: &HandcraftedScene,
