@@ -990,36 +990,7 @@ pub struct TerrainStream {
 
 pub use minecraft_net::Dimension;
 
-/// A standing spot in the Nether near the origin: two air blocks over a
-/// solid block, below the bedrock roof, searched outward from chunk 0,0.
-fn nether_spawn(server: &mut ChunkMap) -> (f64, f64, f64) {
-    let registries = server.generator().registries.clone();
-    let blocks = &registries.blocks;
-    for ring in 0..4i32 {
-        for cz in -ring..=ring {
-            for cx in -ring..=ring {
-                if cx.abs().max(cz.abs()) != ring {
-                    continue;
-                }
-                let chunk = server.load_now(minecraftoss_core::ChunkPos::new(cx, cz));
-                for z in 0..16usize {
-                    for x in 0..16usize {
-                        for y in (32..110).rev() {
-                            let floor = chunk.block(x, y - 1, z);
-                            let solid = blocks.is(floor, minecraftoss_core::block::flags::SOLID_RENDER);
-                            if solid && blocks.is_air(chunk.block(x, y, z)) && blocks.is_air(chunk.block(x, y + 1, z)) {
-                                let bx = f64::from(cx * 16 + x as i32) + 0.5;
-                                let bz = f64::from(cz * 16 + z as i32) + 0.5;
-                                return (bx, f64::from(y), bz);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    (0.5, 64.0, 0.5)
-}
+const NETHER_FALLBACK_SPAWN: (i32, i32, i32) = (0, 64, 0);
 
 fn block_centre((x, y, z): (i32, i32, i32)) -> (f64, f64, f64) {
     (f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5)
@@ -1078,13 +1049,10 @@ impl TerrainStream {
                 let world_spawn = known_spawn.unwrap_or_else(|| spawn::world_spawn(&mut server));
                 (world_spawn, spawn::player_spawn(&mut server, world_spawn, spawn::DEFAULT_RESPAWN_RADIUS, unseeded()))
             }
-            Dimension::Nether => match known_spawn {
-                Some(known) => (known, block_centre(known)),
-                None => {
-                    let (x, y, z) = nether_spawn(&mut server);
-                    ((x as i32, y as i32, z as i32), (x, y, z))
-                }
-            },
+            Dimension::Nether => {
+                let known = known_spawn.unwrap_or(NETHER_FALLBACK_SPAWN);
+                (known, block_centre(known))
+            }
             // ServerLevel.END_SPAWN_POINT: the obsidian platform at 100, 49, 0.
             Dimension::End => {
                 let known = known_spawn.unwrap_or((100, 49, 0));
@@ -2310,8 +2278,8 @@ mod tests {
         assert!(!stream.states.sky_light);
         assert!(stream.states.nether_shade, "the Nether's cardinal lighting");
         assert_eq!(stream.states.section_range(), (0, 15), "the Nether is 256 blocks high from 0");
-        let (x, y, z) = stream.player_spawn;
-        assert!((32.0..123.0).contains(&y), "the stand-in floor is under the roof: {:?}", stream.player_spawn);
+        assert_eq!(stream.player_spawn, (0.5, 64.0, 0.5));
+        assert_eq!(stream.server.stats().generated, 0, "no stand-in spawn is searched");
         let blocks = &registries.blocks;
         let bedrock = blocks.block_by_name("minecraft:bedrock").unwrap();
         let mut counts = HashMap::new();
@@ -2330,10 +2298,6 @@ mod tests {
                 scene.insert_chunk(chunk);
             }
         }
-        let (bx, by, bz) = (x.floor() as i32, y as i32, z.floor() as i32);
-        let chunk = stream.server.load_now(minecraftoss_core::ChunkPos::new(bx >> 4, bz >> 4));
-        let (fx, fz) = ((bx & 15) as usize, (bz & 15) as usize);
-        assert!(blocks.is_air(chunk.block(fx, by, fz)) && blocks.is_air(chunk.block(fx, by + 1, fz)), "the player stands in two blocks of air");
         for name in ["minecraft:netherrack", "minecraft:lava"] {
             assert!(count(&counts, name) > 0, "no {name} in {counts:?}");
         }

@@ -655,6 +655,7 @@ fn update(
         if player.arrival.is_none() && player.place.is_none_or(|place| place.dimension != player.dimension) {
             player.arrival = Some(minecraft_survival::respawn::level_spawn(&globals.spawn, level));
         }
+        crate::minecraft_portal::arriving(player, sounds.as_mut(), &world.packs);
         let ps = presented.player(local.0).filter(|ps| ps.pm_type == 0);
         if let Some(ps) = ps.filter(|_| player.arrival.is_some()) {
             place_player(player, &mut authority.0, local.0, ps, origin, spawn_gate, now_ms);
@@ -2704,6 +2705,7 @@ fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u
     server.prepare_respawns();
     server.open_levels(VIEW_DISTANCE);
     let failed: Vec<(Dimension, String)> = server.finish_opening().into_iter().filter_map(|(dimension, opened)| opened.err().map(|error| (dimension, error))).collect();
+    minecraft_survival::portal_forcer::arrive_through_portals(server);
     let Some(player) = server.players.get(local) else {
         return failed;
     };

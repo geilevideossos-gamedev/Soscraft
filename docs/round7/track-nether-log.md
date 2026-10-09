@@ -172,3 +172,38 @@ Previous commit: 08d856f3
 - **Decisions:** none new; the build happens where the trip is resolved (entry 10).
 - **Test steps:** nothing visible yet (entry 10).
 - **Kit:** none.
+
+### 10. Minecraft players travel through nether portals (E2-10)
+
+Previous commit: f837e707
+
+- **Changed:**
+  - `minecraft_survival/src/portal.rs`: `Portal.travel` (the trip being resolved) and `Portal.travel_sound`. `set_off(player, travel)` starts the switch with `Player::travel_to` (so it waits for a remote killstreak like any trip) and the loading reason of the pair (`NETHER_PORTAL`). `may_enter`: the `allow_entering_nether_using_portals` game rule, which vanilla's `ServerLevel.isAllowedToEnterPortal` checks for the Nether only.
+  - `minecraft_survival/src/portal_forcer.rs`:
+    - `arrive(terrain, travel)`: vanilla's `getExitPortal` in the target level: the closest portal (entry 8) measured with `largest_rectangle_around`, or else, unless the player is a spectator, a new one (entry 9, built into the level with `build`); then the exit spot (entry 7) made free with `collision_free`, `PortalShape.findCollisionFreePosition`: the player's centre may move within its own width and one block up, and the closest free point of that box (the box minus every block collision box grown by half the player) wins, as `CollisionGetter.findFreePosition` and `VoxelShape.closestPointTo` do, cut on the boxes' edges.
+    - `travel_into(players, dimension, registries)`: the trip of the first player waiting for that level. A player waiting for the Nether with no trip and no arrival (only `IW4L_MINECRAFT_DIMENSION=the_nether` does that) comes as vanilla's `getDimensionTransitionFromExit` brings an entity that is not in a portal block: from where it stands, scaled by 1/8, axis X, the middle of the portal.
+    - `arrive_through_portals(server)`: a trip into a level that is already open (a return within its 15 seconds, or a level opened for a search) is resolved on the main thread once the player has left the old level, so behind the loading screen; blocks it builds also go to the open level's server as a job (`ServerSim::command_place` with the strict flags), so a level that is not ticking gets them too. A trip whose player is no longer bound there is dropped.
+  - `minecraft_survival/src/server.rs` (`open_levels` and `finish_opening` only): a level opened for a trip takes the trip's target block as its known spawn (no stand-in search) and resolves the trip in `prepare` on the loader thread, so the portal search, the build and the new chunks are done before the scene streams; a player whose own trip is still waiting is not given another player's arrival.
+  - `minecraft_terrain/src/terrain.rs`: the stand-in `nether_spawn` search is gone. A Nether stream with no known spawn (only a level opened for `/locate`) keeps (0, 64, 0) and generates nothing for it.
+  - `render_anim/src/minecraft_portal.rs`: a finished wait measures the entry portal (`depart`), honours the game rule and sets off; `arriving` plays `block.portal.travel` once the arrival is known (volume 0.25, pitch 0.8 to 1.2, vanilla's level event 1032 after `PLAY_PORTAL_SOUND`). `minecraft_world.rs` has two more call lines: `arrive_through_portals` in `follow_levels` after the levels finish opening, and `arriving` in the switch's hold before the player is placed.
+- **Tests:** `portal_forcer`: `an_exit_spot_inside_a_wall_moves_to_the_nearest_free_place` (an exit 0.1 into a wall moves to touch it, on either axis; a free spot stays; a spot with no free place nearby stays as vanilla keeps it). `server`: `a_portal_trip_builds_its_exit_and_the_next_trip_finds_it` (seed 1: a trip from (800.5, -1599.5) opens the Nether with (100, 70, -200) as its known spawn, builds a Z portal and puts the player in it with the yaw and pitch kept; a second player from an X portal while the Nether is open waits until it has left, then lands in the same portal turned by 90; a debug start into the Nether comes through a portal at (-5, 64, 10) for a player standing at (-40, 64, 80); the End takes no portal trip). `terrain`: the Nether stream test now checks that no stand-in spawn is searched (nothing generated, (0.5, 64, 0.5)).
+- **Decisions:**
+  - With the game rule off, vanilla still computes the destination (and may build the exit portal) before refusing the teleport; here the trip is refused before anything is searched or built, so nothing appears in a level nobody can reach.
+  - The trip's momentum is kept and turned with the yaw in the arrival `Place`, but the MW2 movement starts the player at rest after the loading screen, as every teleport does.
+  - `IW4L_MINECRAFT_DIMENSION=the_nether` with no saved place in the Nether now arrives through a portal at the scaled position of where the player stood (vanilla's not-in-a-portal fallback), so the Nether has no stand-in spawn left.
+  - Portal piglins (`NetherPortalBlock.randomTick` spawning zombified piglins in overworld portals): not done, as zombified piglins come with N3 (E2-20); that commit adds them.
+- **Test steps** (a new world; the purple overlay and the trigger sound come with entry 11):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=n2` and no `IW4L_MINECRAFT_DIMENSION` line. Start. Type `/gamemode creative`, `/tp 800 120 -1600`, fly down to the ground and type `/gamemode survival`.
+  2. Build an obsidian frame 4 wide and 5 high (a 2x3 opening), light it with the flint and steel, and walk into it. Stand still: after about 4 seconds the purple portal loading screen shows "Loading terrain...", then you stand in a new obsidian portal in the Nether and hear the portal travel whoosh. **Screenshot 1.**
+  3. Type `/tp ~ ~ ~`: the chat shows about (100, y, -200). **Screenshot 2.**
+  4. Stay in the arrival portal for 10 seconds: nothing happens. Step out, wait a second, step back in: after about 4 seconds you are back in the overworld, standing in the portal you built. **Screenshot 3.**
+  5. Walk 10 blocks away and back into the same portal: you arrive in the same Nether portal, no second one is built.
+  6. In the Nether, walk at least 40 blocks away, build and light a second portal and go through: the overworld gets a new portal near 8 times those coordinates (about 320 blocks or more from the first). **Screenshot 4.**
+  7. `/gamemode creative` and walk into a portal: you travel at once. `/gamemode survival` afterwards.
+  8. `/gamerule allow_entering_nether_using_portals false` in the overworld: standing in a portal does nothing. Set it back to `true`.
+  9. Quit, set `IW4L_MINECRAFT_WORLD=n2start` (a new world) and `IW4L_MINECRAFT_DIMENSION=the_nether`, start: you stand in an obsidian portal in the Nether (no portal was there before; it was built for you). **Screenshot 5.** Remove the dimension line afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:obsidian*64,minecraft:flint_and_steel,minecraft:diamond_pickaxe+efficiency=5,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:torch*64
+```

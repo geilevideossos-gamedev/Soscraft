@@ -371,15 +371,25 @@ impl Server {
             if self.opening.contains_key(&dimension) {
                 continue;
             }
-            let known_spawn = self.known_spawn(dimension, arrival);
+            let travel = match arrival {
+                Some(_) => None,
+                None => crate::portal_forcer::travel_into(
+                    &mut self.players,
+                    dimension,
+                    &self.globals.registries,
+                ),
+            };
+            let entering = arrival.or(travel.map(|travel| travel.target_place()));
+            let known_spawn = self.known_spawn(dimension, entering);
             let mut loader = LevelLoader::open(
                 &mut self.globals,
                 dimension,
                 view_distance,
                 known_spawn,
-                move |terrain| match arrival {
-                    Some(place) => Arrival::of(&place),
-                    None => {
+                move |terrain| match (arrival, travel) {
+                    (Some(place), _) => Arrival::of(&place),
+                    (None, Some(travel)) => crate::portal_forcer::arrival(terrain, &travel),
+                    (None, None) => {
                         let (x, y, z) = terrain.stream.player_spawn;
                         Arrival::at([x, y, z])
                     }
@@ -416,6 +426,7 @@ impl Server {
                         let own = player.arrival.filter(|place| place.dimension == dimension);
                         if player.place.is_none_or(|place| place.dimension != dimension)
                             && own.is_none_or(|own| Some(own) == requested)
+                            && !crate::portal_forcer::waits_for_portal(player, dimension)
                         {
                             player.arrive(arrival.place(dimension));
                         }
@@ -2010,5 +2021,68 @@ mod tests {
         );
         assert_eq!(steve.respawn, None);
         assert_eq!(steve.switching.map(|switch| (switch.to, switch.arrival)), Some((Dimension::Overworld, None)));
+    }
+
+    #[test]
+    fn a_portal_trip_builds_its_exit_and_the_next_trip_finds_it() {
+        use crate::portal::{PortalAxis, PortalKind, PortalTravel, portal_axis_in, set_off};
+        let Some(registries) = registries() else {
+            return;
+        };
+        let (_dir, save) = world("portal-trip");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let travel = PortalTravel {
+            kind: PortalKind::Nether,
+            to: Dimension::Nether,
+            target: (100, 70, -200),
+            entry_axis: PortalAxis::Z,
+            relative: [0.5, 0.0, 0.0],
+            yaw: 30.0,
+            pitch: 5.0,
+            motion: [0.0; 3],
+            creates: true,
+        };
+        let mut steve = join(Some(&save), &recipes, &rules, joining(&profile("Steve")));
+        steve.arrive(Place::standing(Dimension::Overworld, [800.5, 70.0, -1599.5], 30.0, 5.0));
+        set_off(&mut steve, travel);
+        let steve_id = steve.uuid.clone();
+        let mut server = server_with(test_globals(registries, Some(save.clone())), vec![steve]);
+        server.open_levels(2);
+        assert_eq!(server.opening.keys().copied().collect::<Vec<_>>(), vec![Dimension::Nether]);
+        assert_eq!(server.players[&steve_id].portal.travel, None, "the loader took the trip");
+        assert_eq!(wait_for_levels(&mut server), vec![(Dimension::Nether, Ok(()))]);
+        assert_eq!(server.levels[&Dimension::Nether].terrain.stream.player_spawn, (100.5, 70.0, -199.5));
+        let block = |feet: [f64; 3]| (feet[0].floor() as i32, feet[1].floor() as i32, feet[2].floor() as i32);
+        let first = server.players[&steve_id].arrival.expect("arrived");
+        assert_eq!((first.dimension, first.yaw, first.pitch), (Dimension::Nether, 30.0, 5.0));
+        let terrain = &server.levels[&Dimension::Nether].terrain;
+        assert_eq!(portal_axis_in(terrain, block(first.feet)), Some(PortalAxis::Z), "{first:?}");
+        assert!((first.feet[0] - 100.5).abs() <= 18.0 && (first.feet[2] + 199.5).abs() <= 18.0);
+        let mut alex = join(Some(&save), &recipes, &rules, joining(&profile("Alex")));
+        alex.arrive(Place::standing(Dimension::Overworld, [810.5, 70.0, -1590.5], 0.0, 0.0));
+        set_off(&mut alex, PortalTravel { target: (101, 70, -199), entry_axis: PortalAxis::X, yaw: 0.0, ..travel });
+        let alex_id = alex.uuid.clone();
+        server.players.insert(alex_id.clone(), alex);
+        server.open_levels(2);
+        assert!(server.opening.is_empty(), "the open Nether takes the trip on the main thread");
+        crate::portal_forcer::arrive_through_portals(&mut server);
+        assert!(server.players[&alex_id].arrival.is_none(), "it waits until the player has left");
+        server.players.get_mut(&alex_id).unwrap().switching.as_mut().unwrap().left = true;
+        crate::portal_forcer::arrive_through_portals(&mut server);
+        let second = server.players[&alex_id].arrival.expect("arrived");
+        let terrain = &server.levels[&Dimension::Nether].terrain;
+        assert_eq!(portal_axis_in(terrain, block(second.feet)), Some(PortalAxis::Z));
+        assert_eq!(second.yaw, 90.0, "an X portal leads into a Z portal turned by 90");
+        assert_eq!(block(second.feet).0, block(first.feet).0, "the same portal, not a new one");
+        assert!((second.feet[2] - first.feet[2]).abs() < 2.0 && second.feet[1] == first.feet[1]);
+        assert_eq!(server.players[&alex_id].portal.travel, None);
+        let mut debug = join(Some(&save), &recipes, &rules, joining(&profile("Herobrine")));
+        debug.arrive(Place::standing(Dimension::Overworld, [-40.0, 64.0, 80.0], 0.0, 0.0));
+        start_in(&mut debug, Dimension::Nether, SPAWN);
+        let mut players = BTreeMap::from([(debug.uuid.clone(), debug)]);
+        let start = crate::portal_forcer::travel_into(&mut players, Dimension::Nether, &server.globals.registries).expect("a debug start comes through a portal");
+        assert_eq!((start.target, start.entry_axis, start.relative), ((-5, 64, 10), PortalAxis::X, [0.5, 0.0, 0.0]));
+        assert!(crate::portal_forcer::travel_into(&mut players, Dimension::End, &server.globals.registries).is_none());
     }
 }

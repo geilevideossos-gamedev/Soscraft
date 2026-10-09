@@ -1,14 +1,25 @@
-use std::collections::HashMap;
+use std::any::Any;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use minecraft_net::Dimension;
+use minecraft_net::{Dimension, PlayerUuid};
+use minecraft_terrain::game_mode::GameMode;
+use minecraft_terrain::server::ServerSim;
 use minecraft_terrain::terrain::TerrainStream;
 use minecraftoss_core::block::flags;
 use minecraftoss_core::palette::PalettedContainer;
 use minecraftoss_core::{BlockId, BlockStateId, Chunk, ChunkPos, HeightmapKind, Registries};
 
 use crate::level::Terrain;
-use crate::portal::{NETHER_PORTAL, PortalAxis, Rect, clamp_to_border, within_border};
+use crate::player::Player;
+use crate::player_nbt::Place;
+use crate::portal::{
+    NETHER_PORTAL, PLAYER_HEIGHT, PLAYER_WIDTH, PORTAL_SEARCH_LIMIT, PortalAxis, PortalKind,
+    PortalTravel, Rect, clamp_to_border, destination, largest_rectangle_around, within_border,
+};
+use crate::server::{Arrival, Server};
+
+const FREE_MARGIN: f64 = 1.0e-6;
 
 pub const NETHER_SEARCH_RADIUS: i32 = 16;
 pub const OVERWORLD_SEARCH_RADIUS: i32 = 128;
@@ -432,6 +443,248 @@ impl PortalWorld for ChunkWorld<'_> {
     }
 }
 
+pub trait CollisionWorld {
+    fn collision_boxes(&mut self, pos: (i32, i32, i32)) -> Vec<[f64; 6]>;
+}
+
+impl CollisionWorld for ChunkWorld<'_> {
+    fn collision_boxes(&mut self, (x, y, z): (i32, i32, i32)) -> Vec<[f64; 6]> {
+        let state = self.state((x, y, z));
+        let (x, y, z) = (f64::from(x), f64::from(y), f64::from(z));
+        self.registries
+            .blocks
+            .collision_boxes(state)
+            .into_iter()
+            .map(|b| [b[0] + x, b[1] + y, b[2] + z, b[3] + x, b[4] + y, b[5] + z])
+            .collect()
+    }
+}
+
+fn overlaps(a: &[f64; 6], b: &[f64; 6]) -> bool {
+    (0..3).all(|i| a[i] < b[i + 3] && a[i + 3] > b[i])
+}
+
+pub fn collision_free(world: &mut impl CollisionWorld, feet: [f64; 3]) -> [f64; 3] {
+    let grow = [PLAYER_WIDTH / 2.0, PLAYER_HEIGHT / 2.0, PLAYER_WIDTH / 2.0];
+    let centre = [feet[0], feet[1] + grow[1], feet[2]];
+    let allowed = [
+        centre[0] - grow[0] - FREE_MARGIN,
+        centre[1] - FREE_MARGIN,
+        centre[2] - grow[2] - FREE_MARGIN,
+        centre[0] + grow[0] + FREE_MARGIN,
+        centre[1] + 1.0 + FREE_MARGIN,
+        centre[2] + grow[2] + FREE_MARGIN,
+    ];
+    let area: [f64; 6] = std::array::from_fn(|i| {
+        if i < 3 {
+            allowed[i] - grow[i]
+        } else {
+            allowed[i] + grow[i - 3]
+        }
+    });
+    let mut forbidden = Vec::new();
+    let span = |i: usize| area[i].floor() as i32..=area[i + 3].floor() as i32;
+    for x in span(0) {
+        for y in span(1) {
+            for z in span(2) {
+                for b in world.collision_boxes((x, y, z)) {
+                    if overlaps(&b, &area) {
+                        forbidden.push(std::array::from_fn::<f64, 6, _>(|i| {
+                            if i < 3 {
+                                b[i] - grow[i]
+                            } else {
+                                b[i] + grow[i - 3]
+                            }
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    if forbidden.is_empty() {
+        return feet;
+    }
+    let cuts: [Vec<f64>; 3] = std::array::from_fn(|i| {
+        let mut cuts = vec![allowed[i], allowed[i + 3]];
+        for f in &forbidden {
+            for value in [f[i], f[i + 3]] {
+                if value > allowed[i] && value < allowed[i + 3] {
+                    cuts.push(value);
+                }
+            }
+        }
+        cuts.sort_by(f64::total_cmp);
+        cuts.dedup();
+        cuts
+    });
+    let mut best: Option<([f64; 3], f64)> = None;
+    for xs in cuts[0].windows(2) {
+        for ys in cuts[1].windows(2) {
+            for zs in cuts[2].windows(2) {
+                let cell = [xs[0], ys[0], zs[0], xs[1], ys[1], zs[1]];
+                let middle: [f64; 3] = std::array::from_fn(|i| (cell[i] + cell[i + 3]) / 2.0);
+                let blocked = forbidden
+                    .iter()
+                    .any(|f| (0..3).all(|i| middle[i] > f[i] && middle[i] < f[i + 3]));
+                if blocked {
+                    continue;
+                }
+                let point: [f64; 3] =
+                    std::array::from_fn(|i| centre[i].clamp(cell[i], cell[i + 3]));
+                let distance: f64 = (0..3).map(|i| (point[i] - centre[i]).powi(2)).sum();
+                if best.is_none_or(|(_, best)| distance < best) {
+                    best = Some((point, distance));
+                }
+            }
+        }
+    }
+    best.map_or(feet, |(point, _)| [point[0], point[1] - grow[1], point[2]])
+}
+
+pub fn arrive(
+    terrain: &mut Terrain,
+    travel: &PortalTravel,
+) -> Option<(Place, Vec<((i32, i32, i32), BlockStateId)>)> {
+    let (min_y, height, logical_height) = (
+        terrain.rules.min_y,
+        terrain.rules.height,
+        terrain.rules.logical_height,
+    );
+    let mut world = ChunkWorld::new(&mut terrain.stream);
+    let (rect, axis, placed) =
+        match find_closest(&mut world, travel.target, search_radius(travel.to)) {
+            Some(found) => {
+                let axis = world.portal_axis(found)?;
+                let rect = largest_rectangle_around(
+                    found,
+                    axis,
+                    PORTAL_SEARCH_LIMIT,
+                    PORTAL_SEARCH_LIMIT,
+                    |pos| world.portal_axis(pos) == Some(axis),
+                );
+                (rect, axis, Vec::new())
+            }
+            None if travel.creates => {
+                world.generates = true;
+                let top = build_top(min_y, height, logical_height);
+                let (rect, placed) =
+                    create_portal(&mut world, travel.target, travel.entry_axis, min_y, top)?;
+                (rect, travel.entry_axis, placed)
+            }
+            None => return None,
+        };
+    let written = build(terrain, &placed);
+    let mut place = travel.exit(rect, axis);
+    place.feet = collision_free(&mut ChunkWorld::new(&mut terrain.stream), place.feet);
+    Some((place, written))
+}
+
+pub fn arrival(terrain: &mut Terrain, travel: &PortalTravel) -> Arrival {
+    match arrive(terrain, travel) {
+        Some((place, _)) => Arrival::of(&place),
+        None => {
+            diag::warn!(
+                World,
+                "Minecraft found no portal near {:?} in {} and could build none",
+                travel.target,
+                travel.to.dimension_type()
+            );
+            Arrival::of(&travel.target_place())
+        }
+    }
+}
+
+pub fn travel_into(
+    players: &mut BTreeMap<PlayerUuid, Player>,
+    dimension: Dimension,
+    registries: &Registries,
+) -> Option<PortalTravel> {
+    let waiting = |player: &Player| {
+        player.dimension == dimension
+            && player
+                .arrival
+                .is_none_or(|arrival| arrival.dimension != dimension)
+    };
+    for player in players.values_mut() {
+        if waiting(player)
+            && let Some(travel) = player
+                .portal
+                .travel
+                .take_if(|travel| travel.to == dimension)
+        {
+            return Some(travel);
+        }
+    }
+    if dimension != Dimension::Nether {
+        return None;
+    }
+    players
+        .values()
+        .filter(|player| waiting(player) && !player.dead)
+        .find_map(|player| {
+            let place = player.place.filter(|place| place.dimension != dimension)?;
+            let scale =
+                crate::switch::teleport_scale(registries, place.dimension, dimension).ok()?;
+            Some(PortalTravel {
+                kind: PortalKind::Nether,
+                to: dimension,
+                target: destination(place.feet, scale),
+                entry_axis: PortalAxis::X,
+                relative: [0.5, 0.0, 0.0],
+                yaw: place.yaw,
+                pitch: place.pitch,
+                motion: [0.0; 3],
+                creates: player.mode.mode != GameMode::Spectator,
+            })
+        })
+}
+
+pub fn waits_for_portal(player: &Player, dimension: Dimension) -> bool {
+    player
+        .portal
+        .travel
+        .is_some_and(|travel| travel.to == dimension)
+}
+
+pub fn arrive_through_portals(server: &mut Server) {
+    let Server {
+        levels, players, ..
+    } = server;
+    for player in players.values_mut() {
+        let Some(travel) = player.portal.travel else {
+            continue;
+        };
+        if travel.to != player.dimension {
+            player.portal.travel = None;
+            continue;
+        }
+        if player.switching.is_some_and(|switch| !switch.left) {
+            continue;
+        }
+        let Some(level) = levels.get_mut(&travel.to) else {
+            continue;
+        };
+        player.portal.travel = None;
+        let place = match arrive(&mut level.terrain, &travel) {
+            Some((place, written)) => {
+                if let Some(entities) = level.entities.as_mut().filter(|_| !written.is_empty()) {
+                    entities.run_job(Box::new(
+                        move |sim: &mut ServerSim| -> Box<dyn Any + Send> {
+                            for (pos, state) in written {
+                                sim.command_place(pos, state, &[], true);
+                            }
+                            Box::new(())
+                        },
+                    ));
+                }
+                place
+            }
+            None => travel.target_place(),
+        };
+        player.arrive(place);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -776,6 +1029,61 @@ mod tests {
             max_y: 255,
         };
         assert!(create_portal(&mut squeezed, (0, 10, 0), PortalAxis::X, 0, 75).is_none());
+    }
+
+    struct Walls(Vec<(i32, i32, i32)>);
+
+    impl CollisionWorld for Walls {
+        fn collision_boxes(&mut self, (x, y, z): (i32, i32, i32)) -> Vec<[f64; 6]> {
+            if !self.0.contains(&(x, y, z)) {
+                return Vec::new();
+            }
+            let (x, y, z) = (f64::from(x), f64::from(y), f64::from(z));
+            vec![[x, y, z, x + 1.0, y + 1.0, z + 1.0]]
+        }
+    }
+
+    #[test]
+    fn an_exit_spot_inside_a_wall_moves_to_the_nearest_free_place() {
+        let floor: Vec<_> = (-2..3)
+            .flat_map(|x| (-2..4).map(move |z| (x, 63, z)))
+            .collect();
+        let mut open = Walls(floor.clone());
+        assert_eq!(
+            collision_free(&mut open, [0.5, 64.0, 0.5]),
+            [0.5, 64.0, 0.5]
+        );
+        let mut wall = Walls(
+            floor
+                .iter()
+                .copied()
+                .chain([(0, 64, 1), (0, 65, 1)])
+                .collect(),
+        );
+        let moved = collision_free(&mut wall, [0.5, 64.0, 0.9]);
+        assert!((moved[2] - 0.7).abs() < 1e-9, "{moved:?}");
+        assert_eq!((moved[0], moved[1]), (0.5, 64.0));
+        let mut side = Walls(
+            floor
+                .iter()
+                .copied()
+                .chain([(1, 64, 0), (1, 65, 0)])
+                .collect(),
+        );
+        let moved = collision_free(&mut side, [0.9, 64.0, 0.5]);
+        assert!(
+            (moved[0] - 0.7).abs() < 1e-9 && moved[2] == 0.5,
+            "{moved:?}"
+        );
+        let mut buried = Walls(
+            (-2..3)
+                .flat_map(|x| (62..68).flat_map(move |y| (-2..3).map(move |z| (x, y, z))))
+                .collect(),
+        );
+        assert_eq!(
+            collision_free(&mut buried, [0.5, 64.0, 0.5]),
+            [0.5, 64.0, 0.5]
+        );
     }
 
     #[test]

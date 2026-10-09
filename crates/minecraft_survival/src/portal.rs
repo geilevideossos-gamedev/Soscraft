@@ -21,6 +21,7 @@ const PORTAL_THICKNESS: (f64, f64) = (6.0 / 16.0, 10.0 / 16.0);
 const DECAY_PER_TICK: i32 = 4;
 const CREATIVE_DELAY: &str = "players_nether_portal_creative_delay";
 const DEFAULT_DELAY: &str = "players_nether_portal_default_delay";
+const ENTERING_THE_NETHER: &str = "allow_entering_nether_using_portals";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PortalKind {
@@ -123,6 +124,8 @@ pub struct PortalProcess {
 pub struct Portal {
     pub process: Option<PortalProcess>,
     pub clock: f64,
+    pub travel: Option<PortalTravel>,
+    pub travel_sound: bool,
 }
 
 impl Portal {
@@ -264,9 +267,9 @@ pub fn largest_rectangle_around(
     axis: PortalAxis,
     limit_along: i32,
     limit_up: i32,
-    matches: impl Fn((i32, i32, i32)) -> bool,
+    mut matches: impl FnMut((i32, i32, i32)) -> bool,
 ) -> Rect {
-    let limit = |from: (i32, i32, i32), along: i32, up: i32, most: i32| {
+    let mut limit = |from: (i32, i32, i32), along: i32, up: i32, most: i32| {
         let mut count = 0;
         let mut at = from;
         while count < most {
@@ -482,6 +485,17 @@ pub fn depart(
         motion: place.motion,
         creates: player.mode.mode != GameMode::Spectator,
     })
+}
+
+pub fn may_enter(rules: &GameRules, to: Dimension) -> bool {
+    to != Dimension::Nether || rules.bool(ENTERING_THE_NETHER)
+}
+
+pub fn set_off(player: &mut Player, travel: PortalTravel) {
+    let reason = crate::switch::loading_reason(false, player.dimension, travel.to);
+    player.portal.travel = Some(travel);
+    player.portal.travel_sound = true;
+    player.travel_to(travel.to, None, reason);
 }
 
 #[cfg(test)]
