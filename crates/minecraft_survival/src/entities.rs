@@ -700,6 +700,7 @@ impl Entities {
                     self.poof.spawn(feet, width, height);
                 }
             }
+            hits.extend(output.players_struck.iter().filter(|struck| struck.player == PLAYER).map(|struck| struck_hit(player.feet, struck)));
             for hit in output.player_hits.into_iter().filter(|h| h.player_id == PLAYER) {
                 let from = match hit.kind {
                     PlayerHitKind::Melee { attacker, .. } => Some(attacker.to_array()),
@@ -912,6 +913,11 @@ impl Entities {
     }
 }
 
+fn struck_hit(feet: [f64; 3], struck: &minecraft_terrain::thrown::PlayerStruck) -> (f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause) {
+    let from = DVec3::from_array(feet) - struck.velocity.normalize_or_zero();
+    (struck.damage, Some(from.to_array()), Some([-struck.velocity.x, -struck.velocity.z]), crate::death::DamageCause::Generic)
+}
+
 fn difficulty_scaled(damage: f32, difficulty: i32, scales: bool) -> f32 {
     if !scales {
         return damage;
@@ -1029,6 +1035,22 @@ mod tests {
         assert_eq!(HEALTH_SCALE, 0.2);
         assert_eq!(BLAST_HEALTH_SCALE, 0.8);
         assert_eq!(BLAST_HEALTH_SCALE, 4.0 * HEALTH_SCALE);
+    }
+
+    #[test]
+    fn a_thrown_trident_hits_the_player_for_8_from_where_it_flew_in() {
+        let struck = minecraft_terrain::thrown::PlayerStruck {
+            player: PLAYER,
+            by: 3,
+            damage: minecraft_terrain::trident::DAMAGE,
+            kind: minecraft_terrain::trident::DAMAGE_TYPE,
+            velocity: DVec3::new(2.0, 0.0, 0.0),
+        };
+        let (damage, from, toward, cause) = struck_hit([10.0, 64.0, 5.0], &struck);
+        assert_eq!(damage, 8.0);
+        assert_eq!(from, Some([9.0, 64.0, 5.0]));
+        assert_eq!(toward, Some([-2.0, -0.0]));
+        assert_eq!(cause, crate::death::DamageCause::Generic);
     }
 
     #[test]

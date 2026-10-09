@@ -714,7 +714,7 @@ IW4L_MINECRAFT_KIT=splash_potion@poison*2,splash_potion@harming*2,splash_potion@
 
 ### 8. Drinking a Minecraft potion gives every vanilla potion's effects
 
-Commit: (next entry)
+Commit: 2857372
 
 - **Changed:** `survival.rs` `Survival::drink_potion(item, components)` is `PotionContents.onConsume`: the drunk stack's `minecraft:potion_contents` (its potion, custom effects and all) through `potions::drink_hits` at the item's `potion_duration_scale`, each applied with entry 7's `take_potion`, instead of its own list of eight potions. It runs for every finished use; a stack without potion contents does nothing. Harming drunk is magic damage without exhaustion, as before (After the split item 7).
 - **Tests:** survival: `a_drunk_potion_gives_its_custom_effects_and_every_strong_and_long_form`; `potions_apply_their_vanilla_effects`, `a_potion_of_harming_kills_by_magic_and_a_respawn_forgets_it` and `an_invulnerable_player_takes_no_hits_falls_lava_fire_poison_or_harming` drink through the components now.
@@ -727,4 +727,20 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=potion@strong_healing,potion@long_weakness,potion@strong_turtle_master,potion@long_poison,cow_spawn_egg*2,zombie_spawn_egg
+```
+
+### 9. A Minecraft trident or wind charge that strikes the player hurts them
+
+Commit: (next entry)
+
+- **Changed:** `entities.rs`: the local player's (`PLAYER`) `Output.players_struck` join the mob hits `Entities::tick` returns, so the adapter hurts the player with them past armour, a raised shield blocks them, and a totem saves the player as for any hit: a trident for 8, a wind charge's direct hit for 1, from just behind the player along the flight (`struck_hit`). They are not scaled by difficulty: only hits whose cause is a living non-player are (`DamageScaling.WHEN_CAUSED_BY_LIVING_NON_PLAYER`), and only players throw tridents and wind charges here (After the split item 12).
+- **Tests:** entities: `a_thrown_trident_hits_the_player_for_8_from_where_it_flew_in`.
+- **Decisions:** the death message is the generic "died": vanilla's "was impaled by" and "was blown up by" name the thrower, and with one player the only thrower is the victim; it gets a name with multiplayer. The hit's knockback is left out, as for every other hit on the MW2 body today (the hits path has no knockback).
+- **Test steps** (once the trident charge entry below makes the trident throwable; survival mode):
+  1. Take the armour off, look straight up, hold right-click with the plain trident for a second and release: it flies up, falls back on you and takes 4 hearts. Screenshot of the hearts.
+  2. Put the diamond chestplate on and do it again: it takes less.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=trident,diamond_chestplate
 ```
