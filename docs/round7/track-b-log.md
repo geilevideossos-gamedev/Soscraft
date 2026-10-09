@@ -908,7 +908,7 @@ IW4L_MINECRAFT_KIT=red_shulker_box,chest*4,trapped_chest,copper_chest,ender_ches
 
 ### 4. Minecraft lid glue passes clippy
 
-Commit: (next entry)
+Commit: daec061
 
 - **Changed:** `terrain.rs` `compile_section` (9 arguments since entry 1) allows `clippy::too_many_arguments`, like `build_section_blocks` beside it; the adapter's recheck names its empty fallback (`map_or_else(Vec::new, ..)`), as `clippy.toml` asks instead of `unwrap_or_default`.
 - **Clippy:** `clippy -p minecraft_survival -p minecraft_terrain -p render_anim --locked --all-targets -- -A clippy::approx_constant` reports nothing on the lines this group added or changed; the warnings left in those files were there before (`entities.rs` 76 and 619, `minecraft_world.rs` 122, 377 and 386).
@@ -922,7 +922,7 @@ After the split items 18 to 21: each player's held items and worn armour reach t
 
 ### 1. Each Minecraft player's worn and held items reach the MW2 body every frame
 
-Commit: (next entry)
+Commit: ce7dbd8
 
 - **Changed:** new `minecraft_survival/src/gear.rs`: `body_gear(inventory, selected, mode)`, the server side's read of one player's gear (the body group's `minecraft_terrain::body_gear` with `guns::weapon_of` as the gun test), `None` for a spectator (vanilla draws no spectator to other players). The adapter (`minecraft_world.rs` `update`, After the split item 18) runs it every frame on the local `Player` (held in `Server.players` by UUID) after the mobs and the inventory screen have had their say, and writes the result into `McBodyGear` under the player's MW2 client number while the player is alive; a dead or spectating player's entry is removed, and the map is cleared while no Minecraft world is open. `McBodyGear.hides_gun` already drives the kit weapon, so from this commit the MW2 body puts its gun away in third person while a Minecraft item or an empty hand is selected.
 - **Tests:** gear: `a_player_shows_the_selected_item_the_offhand_and_the_worn_armour`, `a_selected_mw2_gun_stays_the_bodys_gun`, `a_spectator_shows_no_gear`.
@@ -935,4 +935,25 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=cobblestone*64
+```
+
+### 2. Minecraft blocks, items and armour are drawn on the MW2 body every frame
+
+Commit: (next entry)
+
+- **Changed:** `minecraft_world.rs` (After the split item 19): `Runtime.gear_items` (an `ItemVisuals` cache of its own, dropped when the world closes) and a new system `draw_body_gear`, run in `ClientSet::Present` after `update` (which rebuilds `view.particles`) and after `WorkerCmdSet::SkinModel` (where the bodies are posed and `PosedGearFrame` is filled). It hands the posed bodies and `McBodyGear` to the body group's `gear_meshes` and appends the world part (every living body with gear, the F5 body included, the inventory's character apart) to `view.particles`, the section-vertex buffer the dropped and held items already use, with its glint flags. `docs/MINECRAFT-SURVIVAL.md` now says what the third-person body shows.
+- **Tests:** none new: the system only moves `gear_meshes`' output (tested with the body group: `only_bodies_with_gear_get_a_rig_and_the_puppet_is_kept_apart`, the hand frames, the armour frames and `append_body_gear`) into the buffer as the items mesh is moved; the draw needs a GPU.
+- **Decision:** the gear is drawn with the dropped items, in the opaque item pass, so it needs no new buffer: it is lit at `j_spine4` from the light volume like a mob, and an enchanted item shimmers through the item glint flag. Until the next entries the armour glint shows the item glint's image at the armour's scale, and the inventory's character still has no gear.
+- **Test steps** (survival mode):
+  1. Select the cobblestone and press F5: the block is in the right hand, small and turned as a vanilla player holds it, and there is no gun. Press F5 again for the front view. Screenshots 1 (back) and 2 (front).
+  2. Put the torch in the offhand (F): it is in the left hand. Select the sword: it is in the right hand and shimmers. Screenshot 3.
+  3. Select the lever: a flat item in the hand. Select the gun slot: the gun is back, the right hand is empty, the torch stays in the left hand. Screenshot 4.
+  4. Wear the diamond helmet, iron chestplate, red leather leggings and iron boots (shift-click them). F5, back and front: Minecraft armour on the head, torso and both arms, hips and legs, boots on the feet. Walk, crouch, go prone and look up and down: the sleeves bend at the elbows and the legs at the knees. Screenshots 5 and 6.
+  5. Swap in the golden, red leather, chainmail and turtle helmets, the netherite, copper and blue leather chestplates, the chainmail leggings and the diamond boots: each shows its own texture, the leather red or blue under its darker trim. Screenshot 7.
+  6. Select the trident: the 3D trident is in the hand. Screenshot 8.
+  7. For anything floating off the body or the hand, sunk into it, too big, too small or turned wrongly, say which and by about how much: every size and offset is in `GEAR_FIT` (`render_anim/src/anim/minecraft_gear.rs`).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=cobblestone*64,torch*64,diamond_sword+sharpness=5,lever*8,trident,diamond_helmet,iron_chestplate,leather_leggings@red,iron_boots,golden_helmet,leather_helmet@red,chainmail_helmet,turtle_helmet,netherite_chestplate,copper_chestplate,leather_chestplate@blue,chainmail_leggings,diamond_boots
 ```

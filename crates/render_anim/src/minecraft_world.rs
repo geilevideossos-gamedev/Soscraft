@@ -104,6 +104,7 @@ struct Runtime {
     atlas_animation: AtlasAnimation,
     animation_clock: f64,
     spawn_gate: crate::minecraft_spawn_gate::SpawnGate,
+    gear_items: minecraft_terrain::mesh::ItemVisuals,
     loader: Option<std::thread::JoinHandle<()>>,
     closing: Vec<std::thread::JoinHandle<()>>,
 }
@@ -193,6 +194,13 @@ pub(crate) fn register(app: &mut App) {
             Update,
             update
                 .after(frame::PresentedPublished)
+                .in_set(frame::ClientSet::Present),
+        )
+        .add_systems(
+            Update,
+            draw_body_gear
+                .after(update)
+                .after(frame::WorkerCmdSet::SkinModel)
                 .in_set(frame::ClientSet::Present),
         )
         .add_systems(
@@ -2369,6 +2377,23 @@ fn mc_vitals(vitals: minecraft_survival::survival::Vitals) -> frame::McVitals {
     }
 }
 
+fn draw_body_gear(
+    mut view: ResMut<MinecraftWorldView>,
+    mut runtime: NonSendMut<Runtime>,
+    posed: Res<crate::anim::minecraft_gear::PosedGearFrame>,
+    gear: Res<crate::anim::minecraft_gear::McBodyGear>,
+    puppet: Res<frame::InventoryPuppet>,
+) {
+    let Runtime { world: Some(world), light: Some(light), gear_items, .. } = &mut *runtime else {
+        return;
+    };
+    let meshes = crate::anim::minecraft_gear::gear_meshes(&posed, &gear, view.origin, puppet.active.then_some(puppet.client), gear_items, &world.packs, &world.atlas, light);
+    let (bytes, indices) = &mut view.particles;
+    let base = (bytes.len() / std::mem::size_of::<minecraft_terrain::mesh::SectionVertex>()) as u32;
+    bytes.extend_from_slice(bytemuck::cast_slice(&minecraft_terrain::mesh::section_vertices(&meshes.world)));
+    indices.extend(meshes.world.indices.iter().map(|i| i + base));
+}
+
 fn save_before_exit(mut exit: MessageReader<AppExit>, mut runtime: NonSendMut<Runtime>) {
     if exit.read().last().is_some() {
         close_world(&mut runtime, true);
@@ -2389,6 +2414,7 @@ fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
         runtime.carried_survival = Some(std::mem::take(&mut player.survival));
     }
     let world = runtime.world.take();
+    runtime.gear_items = Default::default();
     let loading = runtime.loading.take();
     let loader = runtime.loader.take();
     let open = world.is_some() || loading.is_some();
