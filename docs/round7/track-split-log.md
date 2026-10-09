@@ -199,7 +199,47 @@ A7 is commit `7e88587`.
   3. Let the zombie hit you: you take damage and the killed-by card names the zombie if it kills you.
   4. Throw an egg and an ender pearl: the egg breaks (sometimes a chick), the pearl teleports you with the portal particles.
   5. Drop an item with the drop key: it lies on the ground, bobs, and you pick it up again by walking over it.
-  6. Mine a block: it drops as an item entity. Light a TNT-free fire next to dropped wood: it burns.
+  6. Mine a block: it drops as an item entity. Pour the lava bucket and throw a few planks into it: they burn up.
   7. Type `/weather rain`: rain starts. Type `/summon minecraft:cow`: a cow appears.
-- **Kit:** `minecraft:cow_spawn_egg` x2, `minecraft:zombie_spawn_egg` x2, `minecraft:diamond_sword` x1, `minecraft:egg` x16, `minecraft:ender_pearl` x16, `minecraft:oak_planks` x64, `minecraft:flint_and_steel` x1, `minecraft:cobblestone` x64 (all in the regression kit).
+- **Kit:** `minecraft:cow_spawn_egg` x2, `minecraft:zombie_spawn_egg` x2, `minecraft:diamond_sword` x1, `minecraft:egg` x16, `minecraft:ender_pearl` x16, `minecraft:oak_planks` x64, `minecraft:lava_bucket` x1, `minecraft:cobblestone` x64 (all in the regression kit).
 - **Decisions:** none beyond the owner decisions.
+
+## A9. Minecraft chat commands run from minecraft_survival
+
+A8 is commit `1d8f688`.
+
+- **What changed:**
+  - **Seam:** `pump(chat: &mut McChat, ...)` became `pump(sent: &mut Vec<String>, ...)` and takes the lines with `std::mem::take(sent)`. The caller in `minecraft_world.rs` passes `&mut ui.chat.sent`.
+  - **New `minecraft_survival/src/commands.rs`** (no comments, formatted with `rustfmt --edition 2024`, the staged content passes `rustfmt --check`): `HOST`, `Host` and its `CommandWorld` impl, `registries`, `effect_kind`, `give_stacks`, `nbt_error` (private), `summon_answers`, `pump` and `death_message`, moved from `render_anim/src/minecraft_chat.rs`, now `pub`, with `minecraft_survival::x::` paths turned into `crate::x::`. Compared with the old lines with whitespace, braces and commas stripped, the code is identical apart from the `pump` seam (rustfmt only added closure braces and trailing commas).
+  - `minecraft_survival/src/lib.rs` gains `pub mod commands;`.
+  - **`render_anim/src/minecraft_chat.rs` keeps** `show` and the 5 tests that call it. Its top-level imports shrink to what `show` needs (`HashMap`, `McChat`, `McChatLine`, `Clientbound`), and its test module imports the rest, including `HOST`, `Host`, `death_message`, `pump` and `summon_answers` from `minecraft_survival::commands`. Its 4 `pump(&mut chat, ...)` calls became `pump(&mut chat.sent, ...)`.
+  - `minecraft_world.rs`: `crate::minecraft_chat::{HOST, registries, Host, pump, summon_answers, death_message}` became `minecraft_survival::commands::` at all 9 sites; the 3 `crate::minecraft_chat::show` calls stay.
+- **Tests:** `leftover_given_items_drop_at_the_feet` and `host_effects_reach_survival_and_teleports_wait_for_the_world` moved to `commands.rs`; the second uses a plain `Vec<String>` instead of `McChat::default()`. No test was added or weakened. `minecraft_survival` 119, `render_anim` 34, total unchanged (153). Matches the recomputed table.
+- **Checks:** `check -p launcher --locked` (no new warning in `minecraft_survival` or `render_anim`), `test -p minecraft_survival --locked`, `test -p render_anim --locked`; the staged `commands.rs` and `lib.rs` pass `rustfmt --check --edition 2024` with empty output.
+- **Owner test** (chat and commands must work exactly as before; this is also the plan's checkpoint after A9, so the full regression from section 7 follows):
+  1. Load a Minecraft match in a world folder (`IW4L_MINECRAFT_WORLD=split`). The kit is in the backpack, and hearts, hunger and XP show.
+  2. Open the chat, type `hello`: it shows as `<name> hello`. Type `/frob`: the red unknown-command error and the grey `frob<--[HERE]` line show.
+  3. Type `/gamemode creative`, `/give @s minecraft:diamond 5`, `/tp ~ ~10 ~`, `/time set 13000`, `/weather rain`, `/summon minecraft:cow` and `/effect give @s minecraft:regeneration 10 1`. Each works and answers in the chat (the diamonds land in the backpack with the pickup sound, you are lifted 10 blocks, night falls, rain starts, a cow appears). Then `/gamemode survival`.
+  4. Mine stone with the pickaxe and shoot a block with a gun. Both drop items, and a silk-touch ore drops itself.
+  5. Place a crafting table, a furnace and a chest. Craft something, smelt raw iron with coal, and put items in the chest.
+  6. Place the ender chest and put an item in it. Break it: the item doesn't drop. Place it again, and the item is still there.
+  7. Eat beef. Hold the shield up against a zombie from the spawn egg. Throw a pearl (teleport and fall damage) and an egg.
+  8. Fall from 6 blocks or more (fall damage and sound), then swim in water and stand in lava briefly.
+  9. Die with the totem in the offhand (it pops). Die again without it: items and XP drop, guns stay, and the chat shows the death message. Respawn and type `/kill`: the chat answers "Killed <name>" and you die.
+  10. Leave the match, and check the log for "Minecraft world saved". Start the match again: the same seed and terrain, your placed blocks and your game mode are back.
+  11. Wait 5 minutes (autosave, "Minecraft autosave: N chunks queued"), then quit the game from the menu. On the next start, the world loads with your edits.
+- **Kit:** the regression kit above (27 stacks).
+- **Not done here:** the plan's checkpoint release build. The track may not pass `--release`; the orchestrator builds it.
+- **Decisions:**
+  - The test helper `Parts` (with `Parts::host`) is needed by tests on both sides of the split, so it is duplicated: `commands.rs` has its own copy for the moved test, and `minecraft_chat.rs` keeps the original for its 4 tests that pump commands. A `#[cfg(test)]` helper can't be shared across crates.
+  - `nbt_error` stays private in `commands.rs`, as it was in `minecraft_chat.rs`; only the items the adapter calls are `pub`.
+
+## Test totals after A9
+
+| Crate | Baseline (`70a01b2`) | After A9 |
+|---|---|---|
+| `minecraft_survival` | - | 119 |
+| `render_anim` | 153 | 34 |
+| sum | 153 | 153 |
+
+No test was lost: save 12, death 25, offhand 10, survival 64, entities 6 and commands 2 moved (119). `minecraft_terrain` (464 passed, 3 ignored) and `minecraft_commands` (53) were not touched by A1-A9.

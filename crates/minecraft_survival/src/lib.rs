@@ -1,3 +1,4 @@
+pub mod commands;
 pub mod death;
 pub mod entities;
 pub mod guns;

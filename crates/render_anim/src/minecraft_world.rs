@@ -286,8 +286,8 @@ fn load() -> Result<Loaded, String> {
     {
         diag::warn!(World, "Minecraft level.dat not written: {error}");
     }
-    let mut chat = minecraft_commands::CommandServer::new(crate::minecraft_chat::HOST);
-    *chat.registries_mut() = crate::minecraft_chat::registries(&packs);
+    let mut chat = minecraft_commands::CommandServer::new(minecraft_survival::commands::HOST);
+    *chat.registries_mut() = minecraft_survival::commands::registries(&packs);
     if let Some(save) = &opened.save
         && let Err(error) = chat.open_ops(&save.ops_path())
     {
@@ -473,7 +473,7 @@ fn update(
         match result {
             Ok(mut world) => {
                 let host = settings.as_deref().map_or_else(|| "Player".to_owned(), |settings| settings.player_name.clone());
-                world.chat.join(crate::minecraft_chat::HOST, host);
+                world.chat.join(minecraft_survival::commands::HOST, host);
                 let (x, y, z) = world.stream.player_spawn;
                 view.origin = [x, y, z];
                 view.atlas = Some(world.atlas.clone());
@@ -507,7 +507,7 @@ fn update(
                 }
                 if let Some(save) = world.save.as_mut() {
                     save.started(runtime.day.ticks);
-                    if let Some(host) = world.chat.profile(crate::minecraft_chat::HOST) {
+                    if let Some(host) = world.chat.profile(minecraft_survival::commands::HOST) {
                         save.set_host(&host.uuid);
                     }
                 }
@@ -589,7 +589,7 @@ fn update(
         .filter(|_| host_alive)
         .map(|ps| minecraft_commands::Pose { feet: sim::voxel::to_block(origin, ps.origin), yaw: minecraft_yaw(ps.viewangles[1]), pitch: ps.viewangles[0] })
         .or_else(|| survival.last_feet().map(|feet| minecraft_commands::Pose { feet, yaw: 0.0, pitch: 0.0 }));
-    let mut host = crate::minecraft_chat::Host {
+    let mut host = minecraft_survival::commands::Host {
         seed: world.seed,
         rules: &mut world.game_rules,
         difficulty: &mut world.difficulty,
@@ -604,7 +604,7 @@ fn update(
         alive: host_alive,
         teleports: Vec::new(),
     };
-    let delivered = crate::minecraft_chat::pump(&mut ui.chat, &mut world.chat, &mut host);
+    let delivered = minecraft_survival::commands::pump(&mut ui.chat.sent, &mut world.chat, &mut host);
     let mode_changed = host.mode_changed;
     let teleports = std::mem::take(&mut host.teleports);
     if host.rules_changed
@@ -1527,7 +1527,7 @@ fn update(
         let (changes, hits) = entities.tick(dt, day.ticks as i64, bright_outside, &player);
         let summoned = std::mem::take(&mut entities.command_summons);
         if !summoned.is_empty() {
-            let answers = crate::minecraft_chat::summon_answers(&world.chat, &world.game_rules, summoned);
+            let answers = minecraft_survival::commands::summon_answers(&world.chat, &world.game_rules, summoned);
             show_chat(&mut ui.chat, inventory_ui, &world.packs, &answers);
         }
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
@@ -1658,8 +1658,8 @@ fn update(
                 if let Some(death) = &death
                     && world.game_rules.bool("show_death_messages")
                 {
-                    let name = world.chat.name(crate::minecraft_chat::HOST).unwrap_or("Player");
-                    crate::minecraft_chat::show(&mut ui.chat, &[crate::minecraft_chat::death_message(death.line(name))], &HashMap::new());
+                    let name = world.chat.name(minecraft_survival::commands::HOST).unwrap_or("Player");
+                    crate::minecraft_chat::show(&mut ui.chat, &[minecraft_survival::commands::death_message(death.line(name))], &HashMap::new());
                 }
                 sim::voxel::push_player_damage(local.0.0, amount, from.map(|b| sim::voxel::to_map(origin, b)), death);
             }
