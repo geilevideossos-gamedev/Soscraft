@@ -10,6 +10,7 @@ use crate::portal_forcer::ChunkWorld;
 use crate::server::Globals;
 
 pub type Pos = (i32, i32, i32);
+type StandTry<'a> = (Pos, &'a [(i32, i32)], bool);
 
 pub const BAD_RESPAWN_POINT_POWER: f32 = 5.0;
 pub const STRAW_BED_BREAK_SOUND: &str = "minecraft:block.straw_bed.break_leave";
@@ -982,7 +983,7 @@ pub fn bed_stand_up(
     let above = bed_above(forward);
     let below = (head.0, head.1 - 1, head.2);
     if is_bed(registries, world.state_at(below)) {
-        let tries: [(Pos, &[(i32, i32)], bool); 6] = [
+        let tries: [StandTry; 6] = [
             (head, &surround, true),
             (below, &surround, true),
             (head, &above, true),

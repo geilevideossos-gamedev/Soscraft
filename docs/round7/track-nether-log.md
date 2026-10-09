@@ -716,3 +716,14 @@ Previous commit: 83d9b9f2
 ```
 IW4L_MINECRAFT_KIT=minecraft:compass,minecraft:clock,minecraft:recovery_compass,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:cooked_beef*16
 ```
+
+### 30. Minecraft Nether rules pass clippy
+
+Previous commit: ed0e28f5
+
+- **Changed:** the three clippy findings on this group's lines: `dials.rs` picks a range entry with `rev().find` instead of `filter().last()` (`double_ended_iterator_last`), `respawn_block.rs` names the bunk bed's tries `StandTry` (`type_complexity`), and `minecraft_respawn.rs` loads the language with `unwrap_or_else` (the workspace denies `unwrap_or_default`).
+- **Clippy:** `clippy -p minecraft_terrain -p minecraft_survival -p render_anim -p hud -p frame -p minecraftoss-entities -p minecraftoss-world --locked --tests --no-deps -- -A clippy::approx_constant` has no other finding on a line of this group (checked against `git diff -U0 9d787dbd`); the rest are older.
+- **Correction to entry 29, test step 4:** a death in the Nether respawns in the overworld, where the recovery compass spins. Test it instead in the overworld: die there (`/kill`), respawn, and the recovery compass points back at where you died; take it through a portal and it spins in the Nether.
+- **Tests:** none new.
+- **Test steps:** none; nothing changes in game.
+- **Kit:** none.

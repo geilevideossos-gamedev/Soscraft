@@ -233,12 +233,12 @@ impl Dials {
                 let entries = model.get("entries")?.as_array()?;
                 let picked = entries
                     .iter()
-                    .filter(|entry| {
+                    .rev()
+                    .find(|entry| {
                         entry["threshold"]
                             .as_f64()
                             .is_some_and(|threshold| threshold as f32 <= value)
                     })
-                    .last()
                     .map(|entry| &entry["model"])
                     .or_else(|| model.get("fallback"))?;
                 self.leaf(picked, context)

@@ -179,7 +179,8 @@ pub(crate) fn finish(
     let language = match inventory_ui.language() {
         Some(language) => language,
         None => {
-            loaded = minecraft_terrain::item_icons::language(packs).unwrap_or_default();
+            loaded =
+                minecraft_terrain::item_icons::language(packs).unwrap_or_else(|_| HashMap::new());
             &loaded
         }
     };
