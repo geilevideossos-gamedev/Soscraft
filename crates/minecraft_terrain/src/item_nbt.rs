@@ -1,5 +1,11 @@
+use std::collections::BTreeMap;
+
 use minecraftoss_core::nbt::Tag;
+use minecraftoss_player::crafting::RecipeBook;
+use minecraftoss_player::inventory::ItemStack;
 use serde_json::Value;
+
+const MAX_COUNT: u8 = 99;
 
 pub fn tag_json(tag: &Tag) -> Value {
     match tag {
@@ -63,6 +69,73 @@ pub fn components_text(tag: &Tag) -> String {
         Tag::String(text) => text.clone(),
         _ => tag_json(tag).to_string(),
     }
+}
+
+fn vanilla(id: &str) -> bool {
+    id.split_once(':')
+        .is_none_or(|(namespace, _)| namespace == "minecraft")
+}
+
+pub fn stack_tag(stack: &ItemStack) -> Option<Tag> {
+    if stack.count == 0 || !vanilla(&stack.id) {
+        return None;
+    }
+    let mut map = BTreeMap::new();
+    map.insert("id".to_owned(), Tag::String(stack.id.clone()));
+    map.insert(
+        "count".to_owned(),
+        Tag::Int(i32::from(stack.count.min(MAX_COUNT))),
+    );
+    if let Some(components) = stack.components.as_ref().and_then(components_tag) {
+        map.insert("components".to_owned(), components);
+    }
+    Some(Tag::Compound(map))
+}
+
+pub fn stack_of(tag: &Tag, recipes: &RecipeBook) -> Option<ItemStack> {
+    let id = tag.get("id")?.as_str()?;
+    let count = tag.get("count").map_or(Some(1), Tag::as_i64)?;
+    if count <= 0 {
+        return None;
+    }
+    let mut stack = recipes.stack(id, count.min(i64::from(u8::MAX)) as u8);
+    stack.components = tag
+        .get("components")
+        .and_then(saved_components)
+        .map(|components| tag_json(&components));
+    Some(stack)
+}
+
+pub fn slot_list<'a>(cells: impl Iterator<Item = &'a Option<ItemStack>>) -> Tag {
+    Tag::List(
+        cells
+            .enumerate()
+            .filter_map(|(slot, cell)| {
+                let Tag::Compound(mut map) = stack_tag(cell.as_ref()?)? else {
+                    return None;
+                };
+                map.insert("Slot".to_owned(), Tag::Byte(slot as u8 as i8));
+                Some(Tag::Compound(map))
+            })
+            .collect(),
+    )
+}
+
+pub fn slots(list: &Tag, size: usize, recipes: &RecipeBook) -> Vec<Option<ItemStack>> {
+    let mut slots = vec![None; size];
+    for entry in list.as_list().unwrap_or(&[]) {
+        let Some(slot) = entry
+            .get("Slot")
+            .and_then(Tag::as_i64)
+            .map(|slot| usize::from(slot as u8))
+        else {
+            continue;
+        };
+        if slot < size {
+            slots[slot] = stack_of(entry, recipes);
+        }
+    }
+    slots
 }
 
 #[cfg(test)]

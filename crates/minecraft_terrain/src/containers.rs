@@ -1,14 +1,17 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use serde_json::{json, Value};
 
+use minecraftoss_core::chunk::BlockEntityStore;
+use minecraftoss_core::nbt::Tag;
 use minecraftoss_player::crafting::{CookingKind, RecipeBook};
 use minecraftoss_player::furnace::Furnace;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 
 use crate::campfire::Campfire;
 use crate::crafting::{move_into, result_order};
+use crate::item_nbt::{slot_list, slots, tag_json};
 use crate::scene::{Block, BlockPos};
 use crate::stations::StationBook;
 
@@ -33,6 +36,9 @@ const COPPER_CHESTS: [&str; 4] = [
     "weathered_copper_chest",
     "oxidized_copper_chest",
 ];
+const SHULKER_BOX: &str = "minecraft:shulker_box";
+const CHEST_KINDS: [&str; 4] = ["minecraft:chest", "minecraft:trapped_chest", "minecraft:barrel", SHULKER_BOX];
+const OWNED_KEYS: [&str; 4] = ["Items", "LootTable", "LootTableSeed", "CustomName"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Station {
@@ -83,6 +89,62 @@ impl Station {
 pub fn is_shulker_box(id: &str) -> bool {
     let path = id.strip_prefix("minecraft:").unwrap_or(id);
     path == "shulker_box" || path.ends_with("_shulker_box")
+}
+
+pub fn block_entity_kind(block: &Block) -> Option<&'static str> {
+    match Station::of(block)? {
+        Station::Chest if block.id.path == "trapped_chest" => Some("minecraft:trapped_chest"),
+        Station::Chest => Some("minecraft:chest"),
+        Station::Barrel => Some("minecraft:barrel"),
+        Station::Shulker => Some(SHULKER_BOX),
+        _ => None,
+    }
+}
+
+pub fn owns_block_entity(kind: &str) -> bool {
+    CHEST_KINDS.contains(&kind)
+}
+
+pub fn leave_to_client(store: &mut BlockEntityStore) {
+    for tag in store.entities.values_mut().chain(store.pending.values_mut()) {
+        let owned = tag.get("id").and_then(Tag::as_str).is_some_and(owns_block_entity);
+        if let (true, Tag::Compound(map)) = (owned, tag) {
+            map.remove("Items");
+        }
+    }
+}
+
+fn text_tag(text: &Value) -> Option<Tag> {
+    match text {
+        Value::Object(map) if map.len() == 1 => match map.get("text") {
+            Some(Value::String(plain)) => Some(Tag::String(plain.clone())),
+            _ => Some(crate::item_nbt::json_tag(text)),
+        },
+        Value::String(_) | Value::Object(_) => Some(crate::item_nbt::json_tag(text)),
+        Value::Array(list) if !list.is_empty() => Some(crate::item_nbt::json_tag(text)),
+        _ => None,
+    }
+}
+
+fn block_entity(base: Option<&Tag>, kind: &str, pos: BlockPos, entries: Vec<(&str, Tag)>) -> Tag {
+    let mut map = match base {
+        Some(Tag::Compound(map)) if map.get("id").and_then(Tag::as_str) == Some(kind) => map.clone(),
+        _ => Default::default(),
+    };
+    for key in OWNED_KEYS.iter().chain(&["keepPacked"]) {
+        map.remove(*key);
+    }
+    map.insert("id".to_owned(), Tag::String(kind.to_owned()));
+    for (key, value) in [("x", pos.0), ("y", pos.1), ("z", pos.2)] {
+        map.insert(key.to_owned(), Tag::Int(value));
+    }
+    if !matches!(map.get("components"), Some(Tag::Compound(_))) {
+        map.insert("components".to_owned(), Tag::Compound(Default::default()));
+    }
+    for (key, value) in entries {
+        map.insert(key.to_owned(), value);
+    }
+    Tag::Compound(map)
 }
 
 pub fn chest_sound(path: &str, open: bool) -> &'static str {
@@ -434,6 +496,8 @@ pub struct Containers {
     brewers: HashMap<BlockPos, Brewer>,
     campfires: HashMap<BlockPos, Campfire>,
     book: Arc<StationBook>,
+    saved: HashMap<BlockPos, Tag>,
+    dirty: BTreeSet<BlockPos>,
 }
 
 #[derive(Default)]
@@ -553,6 +617,60 @@ impl Containers {
         !self.chests.contains_key(&pos)
     }
 
+    pub fn block_entity_tag(&self, pos: BlockPos, kind: &str) -> Option<Tag> {
+        let cells = self.chests.get(&pos).filter(|_| CHEST_KINDS.contains(&kind))?;
+        let mut entries = Vec::new();
+        if kind != SHULKER_BOX || cells.iter().any(Option::is_some) {
+            entries.push(("Items", slot_list(cells.iter())));
+        }
+        if let Some(name) = self.names.get(&pos).and_then(text_tag) {
+            entries.push(("CustomName", name));
+        }
+        Some(block_entity(self.saved.get(&pos), kind, pos, entries))
+    }
+
+    pub fn import(&mut self, pos: BlockPos, tag: &Tag, recipes: &RecipeBook) {
+        let Some(kind) = tag.get("id").and_then(Tag::as_str) else {
+            return;
+        };
+        if !CHEST_KINDS.contains(&kind) || tag.get("LootTable").is_some() || self.chests.contains_key(&pos) {
+            return;
+        }
+        let items = tag.get("Items").map_or_else(|| vec![None; CHEST_SLOTS], |list| slots(list, CHEST_SLOTS, recipes));
+        self.chests.insert(pos, items);
+        match tag.get("CustomName") {
+            Some(name) => self.names.insert(pos, tag_json(name)),
+            None => self.names.remove(&pos),
+        };
+        self.saved.insert(pos, tag.clone());
+    }
+
+    pub fn load_chunk(&mut self, chunk: &minecraftoss_core::Chunk, recipes: &RecipeBook) {
+        let store = &chunk.block_entities;
+        let pending = store.pending.iter().filter(|(pos, _)| !store.entities.contains_key(pos));
+        for (pos, tag) in store.entities.iter().chain(pending) {
+            self.import(*pos, tag, recipes);
+        }
+    }
+
+    pub fn forget_chunk(&mut self, (x, z): (i32, i32)) {
+        let outside = |pos: &BlockPos| (pos.0 >> 4, pos.2 >> 4) != (x, z);
+        self.chests.retain(|pos, _| outside(pos));
+        self.names.retain(|pos, _| outside(pos));
+        self.saved.retain(|pos, _| outside(pos));
+        self.dirty.retain(outside);
+    }
+
+    pub fn take_block_entities(&mut self, kind_at: impl Fn(BlockPos) -> Option<&'static str>) -> Vec<(BlockPos, Option<Tag>)> {
+        std::mem::take(&mut self.dirty)
+            .into_iter()
+            .filter_map(|pos| {
+                let kind = kind_at(pos)?;
+                Some((pos, self.block_entity_tag(pos, kind)))
+            })
+            .collect()
+    }
+
     pub fn fill(&mut self, pos: BlockPos, items: Vec<ItemStack>, seed: u64) {
         let mut random = minecraftoss_player::rng::LegacyRandom::new(seed);
         let mut slots: Vec<usize> = (0..CHEST_SLOTS).collect();
@@ -566,6 +684,7 @@ impl Containers {
             cells[slot] = Some(item);
         }
         self.chests.insert(pos, cells);
+        self.dirty.insert(pos);
     }
 
     pub fn oven(&self, pos: BlockPos) -> Option<&Oven> {
@@ -589,15 +708,18 @@ impl Containers {
             Some(name) => self.names.insert(pos, name.clone()),
             None => self.names.remove(&pos),
         };
+        self.saved.remove(&pos);
+        self.dirty.insert(pos);
     }
 
     pub fn take_shulker(&mut self, pos: BlockPos) -> Option<Value> {
         let mut components = serde_json::Map::new();
-        if let Some(cells) = self
-            .chests
-            .remove(&pos)
-            .filter(|cells| cells.iter().any(Option::is_some))
-        {
+        self.saved.remove(&pos);
+        let held = self.chests.remove(&pos);
+        if held.is_some() {
+            self.dirty.insert(pos);
+        }
+        if let Some(cells) = held.filter(|cells| cells.iter().any(Option::is_some)) {
             components.insert(CONTAINER.to_owned(), container_component(&cells));
         }
         if let Some(name) = self.names.remove(&pos) {
@@ -615,7 +737,9 @@ impl Containers {
 
     pub fn remove(&mut self, pos: BlockPos) -> (Vec<ItemStack>, f32) {
         self.names.remove(&pos);
+        self.saved.remove(&pos);
         if let Some(cells) = self.chests.remove(&pos) {
+            self.dirty.insert(pos);
             return (cells.into_iter().flatten().collect(), 0.0);
         }
         if let Some(brewer) = self.brewers.remove(&pos) {
@@ -747,6 +871,7 @@ impl Containers {
             _ => {
                 for (pos, half) in opened.cells.iter().zip(cells.chunks(CHEST_SLOTS)) {
                     self.chests.insert(*pos, half.to_vec());
+                    self.dirty.insert(*pos);
                 }
             }
         }
@@ -1732,5 +1857,183 @@ mod tests {
         let shulker_below_the_lid = |at: BlockPos| if at == (3, 64, 3) { full.to_vec() } else { Vec::new() };
         assert!(!lid_obstructed((3, 64, 3), "up", shulker_below_the_lid));
         assert!(lid_obstructed((3, 64, 3), "up", |at: BlockPos| if at == (3, 65, 3) { bottom_slab.to_vec() } else { Vec::new() }));
+    }
+
+    const CHESTS: [(&str, &str); 4] = [
+        ("minecraft:chest", "minecraft:chest"),
+        ("minecraft:trapped_chest", "minecraft:trapped_chest"),
+        ("minecraft:barrel", "minecraft:barrel"),
+        ("minecraft:red_shulker_box", "minecraft:shulker_box"),
+    ];
+
+    fn compound(entries: Vec<(&str, Tag)>) -> Tag {
+        Tag::Compound(entries.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
+    }
+
+    fn catalog(blocks: &[(&str, &str)]) -> minecraftoss_core::block_entity::BlockEntities {
+        let dir = crate::test_dir::tempdir().unwrap();
+        let path = dir.path().join("block_entities.json");
+        let defaults: serde_json::Map<String, Value> = blocks
+            .iter()
+            .map(|(block, kind)| (block.to_string(), json!({"type": kind, "nbt": "CgAAAA=="})))
+            .collect();
+        std::fs::write(&path, json!({"schema_version": 1, "minecraft_version": "26.3", "defaults": defaults}).to_string()).unwrap();
+        minecraftoss_core::block_entity::BlockEntities::load(&path).unwrap()
+    }
+
+    fn enchanted_sword(inventory: &Inventory) -> ItemStack {
+        let mut sword = inventory.recipes.stack("minecraft:iron_sword", 1);
+        sword.components = Some(json!({"minecraft:damage": 4, "minecraft:enchantments": {"minecraft:sharpness": 5}}));
+        sword
+    }
+
+    fn vanilla_saves_the_same_chests(catalog: &minecraftoss_core::block_entity::BlockEntities) {
+        let mut inventory = player();
+        let mut store = Containers::default();
+        for (i, (id, kind)) in CHESTS.into_iter().enumerate() {
+            let pos = (i as i32 * 2, 64, -3);
+            let opened = Opened::new(pos, &block(id, &[]), None).unwrap();
+            inventory.cursor = Some(enchanted_sword(&inventory));
+            store.click(&opened, &mut inventory, 3, false, false, 0.0);
+            inventory.cursor = Some(inventory.recipes.stack("minecraft:dirt", 40));
+            store.click(&opened, &mut inventory, 26, false, false, 0.0);
+            let tag = store.block_entity_tag(pos, kind).unwrap();
+            assert_eq!(catalog.load_and_save(id, pos, &tag).as_ref(), Some(&tag), "{id}");
+            assert_eq!(tag.get("Items").and_then(Tag::as_list).map(<[Tag]>::len), Some(2));
+            let empty = (pos.0, 70, pos.2);
+            store.cells(&Opened::new(empty, &block(id, &[]), None).unwrap());
+            let tag = store.block_entity_tag(empty, kind).unwrap();
+            assert_eq!(catalog.load_and_save(id, empty, &tag).as_ref(), Some(&tag), "an empty {id}");
+            assert_eq!(tag.get("Items").is_some(), kind != SHULKER_BOX, "an empty shulker box saves no Items");
+            for name in [json!("Loot"), json!({"text": "Loot"}), json!({"text": "Loot", "color": "red"})] {
+                let named = (pos.0, 76, pos.2);
+                let saved = compound(vec![("id", Tag::String(kind.to_owned())), ("CustomName", crate::item_nbt::json_tag(&name))]);
+                store.import(named, &saved, &inventory.recipes);
+                let tag = store.block_entity_tag(named, kind).unwrap();
+                assert_eq!(catalog.load_and_save(id, named, &tag).as_ref(), Some(&tag), "{id} named {name}");
+                store.forget_chunk((named.0 >> 4, named.2 >> 4));
+            }
+        }
+    }
+
+    #[test]
+    fn chests_barrels_and_shulker_boxes_save_what_vanilla_loads_and_saves_again() {
+        vanilla_saves_the_same_chests(&catalog(&CHESTS));
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else {
+            return;
+        };
+        let Ok(registries) = minecraftoss_core::Registries::load(&paths) else {
+            return;
+        };
+        if let Some(real) = registries.block_entities.as_ref() {
+            vanilla_saves_the_same_chests(real);
+        }
+    }
+
+    #[test]
+    fn a_saved_chest_comes_back_with_its_items_its_name_and_keys_it_does_not_know() {
+        let mut inventory = player();
+        let mut store = Containers::default();
+        let pos = (5, 64, 5);
+        let opened = Opened::new(pos, &block("minecraft:chest", &[]), None).unwrap();
+        inventory.cursor = Some(enchanted_sword(&inventory));
+        store.click(&opened, &mut inventory, 3, false, false, 0.0);
+        inventory.cursor = Some(inventory.recipes.stack("minecraft:dirt", 40));
+        store.click(&opened, &mut inventory, 26, false, false, 0.0);
+        let mut tag = store.block_entity_tag(pos, "minecraft:chest").unwrap();
+        if let Tag::Compound(map) = &mut tag {
+            map.insert("CustomName".to_owned(), Tag::String("Loot".to_owned()));
+            map.insert("lock".to_owned(), compound(vec![("items", Tag::String("minecraft:stick".to_owned()))]));
+        }
+        let mut again = Containers::default();
+        again.import(pos, &tag, &inventory.recipes);
+        assert!(!again.is_new(pos));
+        assert_eq!(again.cells(&opened), store.cells(&opened));
+        assert_eq!(again.custom_name(pos).as_deref(), Some("Loot"));
+        assert_eq!(again.block_entity_tag(pos, "minecraft:chest").as_ref(), Some(&tag));
+        let other = compound(vec![("id", Tag::String("minecraft:chest".to_owned())), ("Items", Tag::List(Vec::new()))]);
+        again.import(pos, &other, &inventory.recipes);
+        assert_eq!(again.cells(&opened), store.cells(&opened), "a chest already loaded keeps what it holds");
+        let hopper = (5, 63, 5);
+        again.import(hopper, &compound(vec![("id", Tag::String("minecraft:hopper".to_owned())), ("Items", Tag::List(Vec::new()))]), &inventory.recipes);
+        assert!(again.is_new(hopper), "hoppers are not the containers' own");
+        assert!(again.block_entity_tag(pos, "minecraft:furnace").is_none());
+    }
+
+    #[test]
+    fn an_opened_loot_chest_saves_its_items_and_no_loot_table() {
+        let recipes = book();
+        let mut store = Containers::default();
+        let pos = (9, 40, 9);
+        let loot = compound(vec![
+            ("id", Tag::String("minecraft:chest".to_owned())),
+            ("LootTable", Tag::String("minecraft:chests/simple_dungeon".to_owned())),
+            ("LootTableSeed", Tag::Long(5)),
+        ]);
+        store.import(pos, &loot, &recipes);
+        assert!(store.is_new(pos), "the loot is rolled when the chest is first opened");
+        store.fill(pos, vec![recipes.stack("minecraft:bread", 6)], 42);
+        let written = store.take_block_entities(|_| Some("minecraft:chest"));
+        assert_eq!(written.len(), 1);
+        let tag = written[0].1.as_ref().unwrap();
+        assert!(tag.get("LootTable").is_none() && tag.get("LootTableSeed").is_none());
+        let bread: i64 = tag
+            .get("Items")
+            .and_then(Tag::as_list)
+            .unwrap()
+            .iter()
+            .filter_map(|item| item.get("count").and_then(Tag::as_i64))
+            .sum();
+        assert_eq!(bread, 6);
+        let mut reopened = Containers::default();
+        reopened.import(pos, tag, &recipes);
+        assert!(!reopened.is_new(pos), "a looted chest never fills again");
+    }
+
+    #[test]
+    fn only_changed_containers_are_written_and_never_a_block_they_do_not_own() {
+        let mut store = Containers::default();
+        let mut inventory = player();
+        let barrel = (0, 64, 0);
+        let opened = Opened::new(barrel, &block("minecraft:barrel", &[]), None).unwrap();
+        let kind = |pos: BlockPos| (pos == barrel).then_some("minecraft:barrel");
+        store.cells(&opened);
+        assert!(store.take_block_entities(kind).is_empty(), "opening alone changes nothing");
+        inventory.cursor = Some(inventory.recipes.stack("minecraft:dirt", 5));
+        store.click(&opened, &mut inventory, 0, false, false, 0.0);
+        let written: Vec<_> = store.take_block_entities(kind).into_iter().map(|(pos, tag)| (pos, tag.is_some())).collect();
+        assert_eq!(written, vec![(barrel, true)]);
+        assert!(store.take_block_entities(kind).is_empty());
+        assert!(store.remove((0, 63, 0)).0.is_empty());
+        assert!(store.take_block_entities(|_| Some("minecraft:barrel")).is_empty(), "a block the containers never held is left alone");
+        inventory.cursor = Some(inventory.recipes.stack("minecraft:dirt", 5));
+        store.click(&opened, &mut inventory, 1, false, false, 0.0);
+        assert!(store.take_block_entities(|_| None).is_empty(), "a block that is no container any more is not written");
+        store.remove(barrel);
+        assert_eq!(store.take_block_entities(kind), vec![(barrel, None)], "an emptied barrel goes back to its default");
+        inventory.cursor = Some(inventory.recipes.stack("minecraft:dirt", 5));
+        store.click(&opened, &mut inventory, 2, false, false, 0.0);
+        store.forget_chunk((0, 0));
+        assert!(store.take_block_entities(kind).is_empty());
+        assert!(store.is_new(barrel), "an unloaded chunk's containers are read again when it comes back");
+    }
+
+    #[test]
+    fn only_the_containers_own_block_entities_and_the_level_leaves_their_items_alone() {
+        assert_eq!(block_entity_kind(&block("minecraft:trapped_chest", &[])), Some("minecraft:trapped_chest"));
+        assert_eq!(block_entity_kind(&block("minecraft:waxed_copper_chest", &[])), Some("minecraft:chest"));
+        assert_eq!(block_entity_kind(&block("minecraft:lime_shulker_box", &[])), Some("minecraft:shulker_box"));
+        assert_eq!(block_entity_kind(&block("minecraft:ender_chest", &[])), None);
+        assert_eq!(block_entity_kind(&block("minecraft:hopper", &[])), None);
+        let items = Tag::List(vec![compound(vec![("Slot", Tag::Byte(0)), ("id", Tag::String("minecraft:dirt".to_owned())), ("count", Tag::Int(3))])]);
+        let mut store = BlockEntityStore::default();
+        for (pos, kind) in [((0, 64, 0), "minecraft:chest"), ((1, 64, 0), "minecraft:hopper")] {
+            store.entities.insert(pos, compound(vec![("id", Tag::String(kind.to_owned())), ("Items", items.clone())]));
+        }
+        store.pending.insert((2, 64, 0), compound(vec![("id", Tag::String("minecraft:barrel".to_owned())), ("Items", items.clone())]));
+        leave_to_client(&mut store);
+        assert!(store.entities[&(0, 64, 0)].get("Items").is_none());
+        assert_eq!(store.entities[&(1, 64, 0)].get("Items"), Some(&items));
+        assert!(store.pending[&(2, 64, 0)].get("Items").is_none());
     }
 }

@@ -59,6 +59,9 @@ impl Server {
         let day = self.globals.day;
         let weather = self.globals.weather;
         let players = player_files(&self.players);
+        for level in self.levels.values_mut() {
+            crate::level::save_block_entities(&mut level.containers, &mut level.terrain);
+        }
         drop(self);
         let Some(save) = save else {
             return;
@@ -217,7 +220,10 @@ pub fn autosave(
     let started = Instant::now();
     let chunks: usize = levels
         .values_mut()
-        .map(|level| level.terrain.stream.queue_save())
+        .map(|level| {
+            crate::level::save_block_entities(&mut level.containers, &mut level.terrain);
+            level.terrain.stream.queue_save()
+        })
         .sum();
     if let Some(previous) = globals.level_writer.take() {
         let _ = previous.join();

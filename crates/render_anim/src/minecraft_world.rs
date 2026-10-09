@@ -601,7 +601,7 @@ fn update(
     let Some(ps) = presented.player(local.0) else {
         ui.active = false;
         puppet.active = false;
-        stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, light, spawn_gate, &mut view, arriving_at.unwrap_or(origin), aspect, now_ms);
+        stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, arriving_at.unwrap_or(origin), aspect, now_ms);
         return;
     };
 
@@ -647,7 +647,7 @@ fn update(
         feet[1].floor() as i32,
         feet[2].floor() as i32,
     );
-    let streamed = minecraft_survival::level::stream_tick(terrain, entities, block);
+    let streamed = minecraft_survival::level::stream_tick(terrain, entities, containers, block);
     apply_streamed(&globals.registries, shapes, shape_ids, streamed);
 
     // Minecraft's yaw: 0 facing +Z (map -Y), turning towards -X.
@@ -2096,6 +2096,7 @@ fn stream_around_spawn(
     shapes: &mut HashMap<BlockStateId, u16>,
     shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
     entities: &mut Option<minecraft_survival::entities::Entities>,
+    containers: &mut minecraft_terrain::containers::Containers,
     light: &mut Option<SkyLight>,
     gate: &mut crate::minecraft_spawn_gate::SpawnGate,
     view: &mut MinecraftWorldView,
@@ -2105,7 +2106,7 @@ fn stream_around_spawn(
 ) {
     let [x, y, z] = at;
     let spawn_block = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
-    let streamed = minecraft_survival::level::stream_tick(terrain, entities, spawn_block);
+    let streamed = minecraft_survival::level::stream_tick(terrain, entities, containers, spawn_block);
     apply_streamed(registries, shapes, shape_ids, streamed);
     let camera = CullCamera {
         position: glam::DVec3::new(x, y + crate::minecraft_spawn_gate::SPAWN_EYE_HEIGHT, z),

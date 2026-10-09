@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use minecraft_net::Dimension;
 use minecraft_terrain::bucket::Sound;
-use minecraft_terrain::containers::Containers;
+use minecraft_terrain::containers::{Containers, block_entity_kind};
 use minecraft_terrain::environment::DimensionEnvironment;
 use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
 use minecraft_terrain::terrain::TerrainStream;
@@ -108,15 +108,28 @@ pub fn finish_item_use(
     heard
 }
 
+pub fn save_block_entities(containers: &mut Containers, terrain: &mut Terrain) {
+    let scene = &terrain.scene;
+    let changes =
+        containers.take_block_entities(|pos| Scene::block(scene, pos).and_then(block_entity_kind));
+    terrain.stream.record_block_entities(&changes);
+}
+
 pub fn stream_tick(
     terrain: &mut Terrain,
     entities: &mut Option<Entities>,
+    containers: &mut Containers,
     block: (i32, i32, i32),
 ) -> (Vec<Arc<Chunk>>, Vec<ChunkPos>) {
+    save_block_entities(containers, terrain);
     let (loaded, forgotten) = terrain.stream.server_tick(block, &mut terrain.scene);
+    for pos in &forgotten {
+        containers.forget_chunk((pos.x, pos.z));
+    }
     if let Some(entities) = entities.as_mut() {
         for chunk in &loaded {
             entities.load_chunk(chunk);
+            containers.load_chunk(chunk, &entities.recipes);
         }
         for &pos in &forgotten {
             entities.unload_chunk(pos);

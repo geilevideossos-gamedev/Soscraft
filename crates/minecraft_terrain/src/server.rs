@@ -386,7 +386,9 @@ impl ServerSim {
     /// generation made. A chunk sent again keeps the entities it has.
     pub fn load_chunk(&mut self, chunk: &Chunk) {
         let fresh = self.level.chunk(chunk.pos).is_none();
-        self.level.insert_chunk(chunk.clone());
+        let mut copy = chunk.clone();
+        crate::containers::leave_to_client(&mut copy.block_entities);
+        self.level.insert_chunk(copy);
         if !fresh {
             return;
         }

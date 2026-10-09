@@ -2,19 +2,18 @@ use std::collections::BTreeMap;
 
 use minecraft_net::Dimension;
 use minecraft_terrain::game_mode::PlayerMode;
-use minecraft_terrain::item_nbt::{components_tag, saved_components, tag_json};
+pub use minecraft_terrain::item_nbt::{slot_list, slots, stack_of, stack_tag};
 use minecraft_terrain::level_storage::{uuid_from_ints, uuid_to_ints};
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_player::crafting::RecipeBook;
 use minecraftoss_player::inventory::ItemStack;
 use minecraftoss_player::survival::{EffectKind, SurvivalStatus};
 
-use crate::guns::{HOTBAR, WEAPON_PREFIX};
+use crate::guns::HOTBAR;
 
 pub const STORAGE: usize = 36;
 pub const SLOTS: usize = 43;
 pub const ENDER_SLOTS: usize = 27;
-const MAX_COUNT: u8 = 99;
 const INFINITE: i32 = -1;
 pub const EFFECTS: [(EffectKind, &str); 9] = [
     (EffectKind::Hunger, "minecraft:hunger"),
@@ -536,68 +535,6 @@ fn attributes_with(previous: Option<&Tag>, status: Option<&SurvivalStatus>) -> O
         }
     }
     (!list.is_empty()).then_some(Tag::List(list))
-}
-
-pub fn stack_tag(stack: &ItemStack) -> Option<Tag> {
-    if stack.count == 0 || stack.id.starts_with(WEAPON_PREFIX) {
-        return None;
-    }
-    let mut map = BTreeMap::new();
-    map.insert("id".to_owned(), Tag::String(stack.id.clone()));
-    map.insert(
-        "count".to_owned(),
-        Tag::Int(i32::from(stack.count.min(MAX_COUNT))),
-    );
-    if let Some(components) = stack.components.as_ref().and_then(components_tag) {
-        map.insert("components".to_owned(), components);
-    }
-    Some(Tag::Compound(map))
-}
-
-pub fn stack_of(tag: &Tag, recipes: &RecipeBook) -> Option<ItemStack> {
-    let id = tag.get("id")?.as_str()?;
-    let count = tag.get("count").map_or(Some(1), Tag::as_i64)?;
-    if count <= 0 {
-        return None;
-    }
-    let mut stack = recipes.stack(id, count.min(i64::from(u8::MAX)) as u8);
-    stack.components = tag
-        .get("components")
-        .and_then(saved_components)
-        .map(|components| tag_json(&components));
-    Some(stack)
-}
-
-pub fn slot_list<'a>(cells: impl Iterator<Item = &'a Option<ItemStack>>) -> Tag {
-    Tag::List(
-        cells
-            .enumerate()
-            .filter_map(|(slot, cell)| {
-                let Tag::Compound(mut map) = stack_tag(cell.as_ref()?)? else {
-                    return None;
-                };
-                map.insert("Slot".to_owned(), Tag::Byte(slot as u8 as i8));
-                Some(Tag::Compound(map))
-            })
-            .collect(),
-    )
-}
-
-pub fn slots(list: &Tag, size: usize, recipes: &RecipeBook) -> Vec<Option<ItemStack>> {
-    let mut slots = vec![None; size];
-    for entry in list.as_list().unwrap_or(&[]) {
-        let Some(slot) = entry
-            .get("Slot")
-            .and_then(Tag::as_i64)
-            .map(|slot| usize::from(slot as u8))
-        else {
-            continue;
-        };
-        if slot < size {
-            slots[slot] = stack_of(entry, recipes);
-        }
-    }
-    slots
 }
 
 #[cfg(test)]

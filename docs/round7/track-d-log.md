@@ -243,7 +243,7 @@ Commit: f025a7a
 
 ### 10. Changed Minecraft block entities are saved with their chunk
 
-Commit: (filled in by the next entry)
+Commit: 50f39ce
 
 - **Changed:**
   - Vendored `third_party/minecraftoss/world/src/chunk_map.rs` (MinecraftOSS patch): `ChunkMap::set_block_entities(&[(BlockPos, Option<Tag>)])` beside `set_blocks`. Like block edits, the changes wait per chunk until the chunk is sent again, saved, autosaved or dropped, so a shared chunk is copied once and not every frame. The latest change for a position wins (`None` clears it), a changed chunk is queued again by the next autosave (`queue_unsaved`), and a chunk dropped from memory (`Evicted`) carries its changes to the saver or to its reload.
@@ -257,4 +257,39 @@ Commit: (filled in by the next entry)
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:chest,minecraft:oak_sign,minecraft:lectern
+```
+
+### 11. Minecraft chests, barrels and shulker boxes keep their contents
+
+Commit: (filled in by the next entry)
+
+- **Changed:**
+  - `minecraft_terrain/src/containers.rs`: `Containers` now loads its chests, trapped and copper chests, barrels and shulker boxes from their chunk's block entities and writes them back.
+    - `load_chunk`/`import` read a container block entity when its chunk loads: `Items` with their `Slot` bytes and components, and `CustomName`. The tag is kept, so keys the game does not use (`lock`, `components`, ...) are written back unchanged.
+    - `block_entity_tag(pos, kind)` writes the block entity as 26.3 saves it (`RandomizableContainer`, `BaseContainerBlockEntity.saveAdditional`, checked with javap and the block entity catalog): `id`, `x`, `y`, `z`, `components`, `Items` (always for chests and barrels, only when not empty for shulker boxes, `ContainerHelper.saveAllItems(..., false)`) and `CustomName` (a plain text component as a string).
+    - Every change (a click, a filled loot chest, a placed or broken shulker box, a broken container) marks the position; `take_block_entities` hands the changed ones to the chunk map once a frame through `TerrainStream::record_block_entities`. A position whose block is no container of ours is never written, so a hopper or other block the server level owns is left alone; a container block the containers no longer hold goes back to its default.
+    - `forget_chunk` drops a chunk's containers when it unloads; they are read again when it comes back.
+    - Loot: a chest whose block entity has a `LootTable` is not read (vanilla's `tryLoadLootTable` wins over `Items`), so the first opening still rolls its loot from the chunk. Rolling fills the chest, which is then saved with `Items` and without `LootTable`, so a looted structure chest never fills again (the bug in the brief).
+    - `leave_to_client`: the server level's copy of a chunk keeps no `Items` of these containers. Hoppers and comparators work on the server level's copies, which do not follow the player's chests (brief risk "Two container truths"). Before this commit those copies were always empty, because nothing was saved; with saved chests a hopper under one would otherwise have pulled items the chest still showed.
+  - `minecraft_terrain/src/item_nbt.rs`: `stack_tag`, `stack_of`, `slot_list` and `slots` moved here from `minecraft_survival/src/player_nbt.rs` (which re-exports them), so player files and block entities write stacks the same way. Only items in the `minecraft` namespace are saved, which still leaves out the MW2 guns (`iw4:weapon/<n>`).
+  - `minecraft_survival/src/level.rs`: `save_block_entities`; `stream_tick` takes the level's containers, saves the changed ones before the chunk map ticks, forgets those of unloaded chunks and reads those of loaded ones. `server.rs`: the autosave and the closing save write the changed containers before the chunks are queued.
+  - `render_anim/src/minecraft_world.rs`: three lines pass the containers to `stream_tick` (and through `stream_around_spawn`).
+- **Tests:** `containers`: `chests_barrels_and_shulker_boxes_save_what_vanilla_loads_and_saves_again` (chest, trapped chest, barrel and shulker box, full, empty and named three ways: `BlockEntities::load_and_save` gives the same tag back, with a synthetic catalog and with the real one under `MINECRAFTOSS_ROOT`), `a_saved_chest_comes_back_with_its_items_its_name_and_keys_it_does_not_know`, `an_opened_loot_chest_saves_its_items_and_no_loot_table`, `only_changed_containers_are_written_and_never_a_block_they_do_not_own`, `only_the_containers_own_block_entities_and_the_level_leaves_their_items_alone`. The `player_nbt` tests run unchanged on the moved stack functions.
+- **Decisions:**
+  - Containers are read when their chunk loads instead of when they are first opened, so a chest broken without being opened still drops what it holds.
+  - A guns stack put into a chest is not saved, like in the player file.
+  - Hoppers feeding chests stay for "Finish survival" (one container truth on the server), as the brief says.
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=savetest` and the kit below. Start.
+  2. Place a chest, a trapped chest, a barrel and the shulker box, and two chests side by side as a double chest. Put the sword in a middle slot of the chest, cobblestone in the last slot of each container, and fill both halves of the double chest a little. **Screenshot 1:** each open container.
+  3. Quit through the menu and start again.
+  4. Expected: every container holds the same stacks in the same slots, and the sword is still enchanted. **Screenshot 2:** each open container.
+  5. Break the shulker box: it drops with its contents. Place it again and open it: the same contents.
+  6. Walk 400 blocks away, come back and open the chests again: still the same.
+  7. Open a village or other structure chest, take one item, quit and start again: the chest still lacks that item and is not filled again. **Screenshot 3.**
+  8. Optional: open `saves\savetest` in Minecraft 26.3: the same contents in every container.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:chest*3,minecraft:trapped_chest,minecraft:barrel,minecraft:red_shulker_box,minecraft:diamond_sword+sharpness=5,minecraft:cobblestone*64,minecraft:dirt*64,minecraft:diamond_pickaxe+efficiency=5
 ```
