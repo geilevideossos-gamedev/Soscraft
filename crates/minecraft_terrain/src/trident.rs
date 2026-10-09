@@ -559,9 +559,9 @@ impl ThrownTrident {
         {
             return None;
         }
-        match (self.pickup, self.no_physics) {
-            (Pickup::Allowed, _) | (Pickup::CreativeOnly, true) => Some(Some(self.stack.clone())),
-            (Pickup::CreativeOnly, false) => Some(None),
+        match self.pickup {
+            Pickup::Allowed => Some(Some(self.stack.clone())),
+            Pickup::CreativeOnly => Some(None),
         }
     }
 
@@ -1205,6 +1205,36 @@ mod tests {
         assert!(thrown.touched_by(&near) && !thrown.touched_by(&far));
         thrown.pickup = Pickup::CreativeOnly;
         assert_eq!(thrown.taken_by(4), Some(None));
+    }
+
+    #[test]
+    fn a_creative_loyal_trident_coming_back_is_taken_without_a_copy() {
+        let world = floor();
+        let mut random = LegacyRandom::new(12);
+        let throw = Throw {
+            owner: 1,
+            item: ITEM,
+            components: None,
+            eye: DVec3::new(0.5, 62.62, 0.5),
+            yaw: 0.0,
+            pitch: 20.0,
+            motion: DVec3::ZERO,
+            on_ground: true,
+        };
+        let mut thrown = ThrownTrident::launch(&throw, loyal(3), true, &mut random);
+        let owner = owner_at(DVec3::new(0.5, 61.0, 0.5), true);
+        for _ in 0..200 {
+            thrown.tick(&world, &[], Some(owner));
+            if thrown.no_physics && thrown.shake == 0 {
+                break;
+            }
+        }
+        assert!(thrown.no_physics, "it is on its way back");
+        assert_eq!(
+            thrown.taken_by(1),
+            Some(None),
+            "a creative throw leaves the trident in the hand and adds no second one"
+        );
     }
 
     fn view(yaw: f32, pitch: f32) -> TridentView {

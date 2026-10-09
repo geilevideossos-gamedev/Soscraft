@@ -430,7 +430,7 @@ IW4L_MINECRAFT_KIT=diamond_helmet+protection=4,iron_chestplate,leather_leggings@
 
 ### 9. Minecraft body gear code passes clippy
 
-Commit: (next entry)
+Commit: 2bc09cf
 
 - **Changed:** `anim/remote_body.rs` takes `GearBones::NONE` (new, the gear bones of a kit without a DObj; `GearBones::default()` is it) instead of `unwrap_or_default()`, which the workspace's `clippy.toml` disallows. Five test asserts on a single vertex range no longer build a one-element array of ranges (`single_range_in_vec_init`).
 - **Tests:** unchanged; `clippy -p minecraft_terrain`, `-p render_anim` and `-p render_gpu` (`--all-targets`, with `-A clippy::approx_constant` for the 16 deny-level `approx_constant` errors `minecraft_terrain` already had) report nothing in this group's code; the warnings left in the files it touched (`occupancy/remote_body.rs`'s argument counts and complex types, `mesh.rs` and `model.rs`) were there before.
@@ -456,6 +456,26 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=diamond_helmet+protection=4,iron_chestplate+protection=4,leather_leggings@red,iron_boots,golden_helmet,leather_helmet@red,chainmail_helmet,turtle_helmet,netherite_chestplate,copper_chestplate,leather_chestplate@blue+unbreaking=3,chainmail_leggings,diamond_boots+feather_falling=4,leather_boots,cobblestone*64,torch*64,diamond_sword+sharpness=5,lever*8,shield
+```
+
+## Review fixes
+
+Defects found by the adversarial review of the whole track (base `071dada`), each fixed in its own commit.
+
+### 1. A creative Minecraft trident that comes back with Loyalty adds no second trident
+
+Commit: (next entry)
+
+- **Defect:** `ThrownTrident::taken_by` gave the stack back for a `CreativeOnly` trident on its way back (`no_physics`), so a Loyalty trident thrown in creative (which leaves the original in the hand) put a second trident in the inventory when it returned. Vanilla (`AbstractArrow.tryPickup`, 26.3 javap): `CREATIVE_ONLY` returns `player.hasInfiniteMaterials()` first, so the creative thrower takes it with nothing added; only the `ThrownTrident.tryPickup` fallback (`isNoPhysics && ownedBy && inventory.add`) could add it, and it is never reached by a creative player.
+- **Changed:** `trident.rs` `taken_by`: a `CreativeOnly` trident is always removed with nothing given.
+- **Tests:** trident: `a_creative_loyal_trident_coming_back_is_taken_without_a_copy`.
+- **Decision:** the server does not know the touching player's game mode, so a `CreativeOnly` trident touched by its owner after switching to survival is also removed with nothing given (vanilla would give it back while it returns, and leave it while it is stuck); a creative throw is the case that matters.
+- **Test steps** (after glue items 9 and 10):
+  1. `/gamemode creative`, hold the Loyalty trident, charge and throw it at the ground: the trident stays in your hand, the thrown copy comes back and vanishes on you. Open the inventory: still exactly one Loyalty trident. Screenshot.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=trident+loyalty=3
 ```
 
 ## After the split
