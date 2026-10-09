@@ -394,6 +394,7 @@ fn publish_client_action_input(
             screen_open: inventory_open,
         },
         |button| !gated && inputs.just_pressed(button),
+        |button| !gated && inputs.pressed(button),
     );
     *mc_keys = presses;
     let mut current = [0; input_iw4::KEY_COUNT];

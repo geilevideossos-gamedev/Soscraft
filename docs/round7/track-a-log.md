@@ -25,7 +25,7 @@ IW4L_MINECRAFT_KIT=minecraft:cobblestone*64
 
 ### 2. Lethal and tactical grenades move to G and B, so F only swaps hands
 
-Commit: (filled in by the next commit)
+Commit: f7e1a42
 
 - **Changed:** `console/assets/default_controls.cfg` binds `G +frag` and `B +smoke`; F keeps only `mc_swaphands`. The pad layouts are unchanged (RB lethal, LB tactical). `settings.cfg` is now written as v4. New `KeyBinds::move_old_grenade_keys` (`console/src/binds.rs`): when a v1, v2 or v3 file has `+frag` on exactly F and `+smoke` on exactly G (keyboard and mouse; pad buttons don't count) and B is unbound in both layers, it moves them to G and B. Any other choice is left alone, and a second run changes nothing. `parse_settings` returns whether it moved them, and `load_user_settings` then leaves `last_payload` empty so the upgraded file is written once at start; other old files are still only rewritten when something changes, as before.
 - **Tests:** binds: `the_defaults_put_the_grenades_on_g_and_b_and_leave_f_to_swap_hands`, `the_old_grenade_pair_moves_once_and_only_when_untouched`; `the_defaults_bind_the_vanilla_minecraft_keys_beside_the_mw2_ones`, `rebinding_swap_hands_leaves_the_mw2_key_alone`, `unbinding_a_key_clears_both_layers` and `only_just_pressed_keys_fire_their_action` updated. user_settings: `old_grenade_keys_move_to_g_and_b` (v1 to v3, saved as v4, loading again changes nothing), `only_a_moved_grenade_pair_asks_for_the_file_to_be_rewritten`, `customised_grenade_keys_are_left_alone` (MOUSE4 lethal, B taken, v4 file, lethal on H), `a_rebound_grenade_key_survives_a_restart`; `older_settings_get_the_vanilla_minecraft_keys`, `current_settings_keep_their_minecraft_keys_unbound` (v3 and v4) and the controls-menu test (`ui_bind_+frag` is `g | R-BUMPER`, `ui_bind_+smoke` is `b | L-BUMPER`) updated.
@@ -40,4 +40,24 @@ Commit: (filled in by the next commit)
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64
+```
+
+### 3. With a gun selected, the swap-hands key uses the offhand item, so the tactical key always throws
+
+Commit: (filled in by the next commit)
+
+- **Changed:** before, the tactical key (`+smoke`) latched `MinecraftUi.offhand_key` and lost its SMOKE bit when a gun was selected and the offhand item had a use, so with food in the offhand G ate instead of throwing. Now `frame::McActionInput` also carries held bits (`hold`, `is_held`), filled by `minecraft_presses` for a Minecraft key it took, outside screens only (`console/src/binds.rs`, fed with `inputs.pressed` in `console/src/plugin/mod.rs`). `sample_client_input` (`net/src/client/runtime.rs`) latches the offhand use from the held swap-hands key through the new pure `frame::minecraft_ui::offhand_key_latch` and no longer strips SMOKE. `render_anim` reads `offhand_key` as before, so no `minecraft_*` file changed. Swapping with a gun selected stays a no-op (`minecraft_offhand::swap_hands`).
+- **Tests:** frame: `a_held_minecraft_key_is_held_apart_from_its_press`, `the_offhand_key_latches_what_it_could_do_when_pressed` (press, hold, release, not usable at the press stays not usable). binds: `a_held_swap_hands_key_stays_held_until_released` (not in screens, not off the map, not for B or G, not when the key also throws).
+- **Decision:** the held bit is only set outside Minecraft screens, so holding F in the inventory and closing it doesn't start eating, and a key that keeps its grenade throw never holds swap hands.
+- **Test steps** (pick a class with Frag and Flash):
+  1. Put the golden apples in the offhand (F with them selected), select a gun and hold F: you eat (gun hidden, walking slowed). Release early: eating stops.
+  2. Still with the apples in the offhand and the gun selected, press B: a flash flies and nothing is eaten.
+  3. Put the shield in the offhand, gun selected, hold F: the shield goes up while held.
+  4. Put cobblestone in the offhand, gun selected, hold F while looking at the ground: blocks are placed.
+  5. Put the snowballs in the offhand, gun selected, press F: a snowball is thrown.
+  6. Put the stick in the offhand, gun selected, press F: nothing happens, the gun stays and the stick stays in the offhand.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:golden_apple*16,minecraft:shield,minecraft:snowball*16,minecraft:stick
 ```

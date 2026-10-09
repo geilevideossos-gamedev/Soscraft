@@ -271,6 +271,15 @@ impl McAction {
 pub struct McActionInput {
     pressed: u8,
     bound: u8,
+    held: u8,
+}
+
+pub fn offhand_key_latch(latched: Option<bool>, held: bool, usable: bool) -> Option<bool> {
+    match latched {
+        _ if !held => None,
+        None => Some(usable),
+        latched => latched,
+    }
 }
 
 impl McActionInput {
@@ -280,6 +289,14 @@ impl McActionInput {
 
     pub fn just_pressed(&self, action: McAction) -> bool {
         self.pressed & (1 << action as u8) != 0
+    }
+
+    pub fn hold(&mut self, action: McAction) {
+        self.held |= 1 << action as u8;
+    }
+
+    pub fn is_held(&self, action: McAction) -> bool {
+        self.held & (1 << action as u8) != 0
     }
 
     pub fn bind(&mut self, action: McAction) {
@@ -293,6 +310,7 @@ impl McActionInput {
     pub fn clear(&mut self) {
         self.pressed = 0;
         self.bound = 0;
+        self.held = 0;
     }
 }
 
@@ -374,6 +392,31 @@ mod tests {
         }
         input.clear();
         assert_eq!(input, McActionInput::default());
+    }
+
+    #[test]
+    fn a_held_minecraft_key_is_held_apart_from_its_press() {
+        let mut input = McActionInput::default();
+        input.hold(McAction::SwapHands);
+        assert!(input.is_held(McAction::SwapHands));
+        assert!(!input.just_pressed(McAction::SwapHands));
+        assert!(McAction::ALL
+            .iter()
+            .filter(|a| **a != McAction::SwapHands)
+            .all(|a| !input.is_held(*a)));
+        input.clear();
+        assert_eq!(input, McActionInput::default());
+    }
+
+    #[test]
+    fn the_offhand_key_latches_what_it_could_do_when_pressed() {
+        assert_eq!(offhand_key_latch(None, false, true), None);
+        assert_eq!(offhand_key_latch(None, true, true), Some(true));
+        assert_eq!(offhand_key_latch(Some(true), true, false), Some(true));
+        assert_eq!(offhand_key_latch(Some(true), false, true), None);
+        assert_eq!(offhand_key_latch(None, true, false), Some(false));
+        assert_eq!(offhand_key_latch(Some(false), true, true), Some(false));
+        assert_eq!(offhand_key_latch(Some(false), false, true), None);
     }
 
     #[test]

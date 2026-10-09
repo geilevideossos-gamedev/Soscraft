@@ -705,7 +705,7 @@ fn apply_weapon_switch_requests(
 }
 
 pub fn sample_client_input(
-    (skate, mut minecraft): (Option<Res<frame::SkateMode>>, Option<ResMut<frame::MinecraftUi>>),
+    (skate, mut minecraft, mc_keys): (Option<Res<frame::SkateMode>>, Option<ResMut<frame::MinecraftUi>>, Option<Res<frame::McActionInput>>),
     time: Res<Time<Real>>,
     mut actions: ResMut<ClientActionInput>,
     mut look: ResMut<LookState>,
@@ -1079,15 +1079,8 @@ pub fn sample_client_input(
         cmd.buttons &= !(playerstate_iw4::buttons::ATTACK | playerstate_iw4::buttons::ADS);
     }
     if let Some(ui) = minecraft.as_mut() {
-        let smoke = ui.active && (actions.client.kb.smoke.active || actions.client.kb.smoke.was_pressed);
-        ui.offhand_key = match ui.offhand_key {
-            _ if !smoke => None,
-            None => Some(ui.offhand_usable),
-            latched => latched,
-        };
-        if ui.offhand_key == Some(true) {
-            cmd.buttons &= !playerstate_iw4::buttons::SMOKE;
-        }
+        let swap_held = ui.active && mc_keys.as_ref().is_some_and(|keys| keys.is_held(frame::McAction::SwapHands));
+        ui.offhand_key = frame::minecraft_ui::offhand_key_latch(ui.offhand_key, swap_held, ui.offhand_usable);
         if ui.active && ui.offhand_busy {
             cmd.buttons &= !(playerstate_iw4::buttons::ATTACK | playerstate_iw4::buttons::ADS);
         }
