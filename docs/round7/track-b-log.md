@@ -271,7 +271,7 @@ Commit: 8695be2
 
 ### 5. Minecraft containers count their openers per player like vanilla
 
-Commit: (next entry)
+Commit: d919dff
 
 - **Changed:** new `openers.rs` (server side, one per level): `Openers` keeps, per container cell, the set of player UUIDs that have it open (`ContainerOpenersCounter` and `ShulkerBoxBlockEntity.openCount`, 26.3, javap). `open(pos, uuid, spectator)` (spectators are not counted, as `startOpen` skips them; a player counts once) and `close(pos, uuid)` give an `OpenerEvent { pos, count, change }`: its `block_event()` is `Level.blockEvent(pos, block, 1, count)` for every client's `Lids::block_event`, and its `change` is `Opened` on the first opener and `Closed` when the last one leaves (`onOpen`/`onClose`: the sound, the barrel's `open`). `recheck(has_open)` is `recheckOpeners` (every `RECHECK_TICKS` = 5), `leave(uuid)` closes what a leaving player had open, `removed(pos)` forgets a broken container without a close. `Openers::counted(block)`: chests, trapped and copper chests, ender chests, shulker boxes and barrels.
 - `sound(block, pos, change)`: the vanilla event and where it plays, at volume 0.5 (`pitch(random)` is 0.9 to 1): shulker boxes and ender chests at the block centre; a single chest at its centre; a double chest once, from its right half moved half a block towards the left one (`ChestBlockEntity.playSound` skips the left half and moves the right one's along `getConnectedDirection`); copper chests with their weathering sounds; a barrel from its opening face (`BarrelBlockEntity.playSound`: centre plus half its facing). `opened_state(block, change)`: the barrel's `open` property (`BarrelBlockEntity.updateBlockState`).
@@ -300,6 +300,20 @@ Commit: (next entry)
 ```
 IW4L_MINECRAFT_KIT=shulker_box,red_shulker_box*4,chest*2,trapped_chest,copper_chest,ender_chest,barrel*2,water_bucket,cobblestone*64,oak_slab*16,stone*32
 ```
+
+## Group: body items and armour
+
+Brief: `b3-held-armour.md`. The brief puts `body_gear` in `minecraft_survival.rs` and the resources in `frame`; both are off limits in this part of the track, so the pure parts live in `minecraft_terrain` (`body_gear.rs`, `body_render.rs`, `armor_render.rs`) and the MW2 side in `render_anim/src/anim/minecraft_gear.rs`, with the few lines in the upstream body files (`anim/remote_body.rs`, `anim/dobj_pose.rs`, `occupancy/remote_body.rs`). The glue is After the split items 18 onwards.
+
+### 1. Minecraft players' worn and held items are read per player for the body
+
+Commit: (next entry)
+
+- **Changed:** new `body_gear.rs`: `BodyGear { main, off, armor: [head, chest, legs, feet], hides_gun }` of `GearItem { id, glint, dye }`, from `body_gear(slots, selected, is_gun)`: the selected hotbar slot, the offhand (40) and the armour slots 39, 38, 37, 36 (`ARMOR_SLOTS`). An MW2 gun (`is_gun`, the glue passes `weapon_of(stack).is_some()`) is never drawn as a Minecraft item; `hides_gun` is true whenever the selection is not a gun, an empty hand included (vanilla draws an empty hand empty). `glint` is `glint::has_glint` (vanilla `hasFoil`), `dye` is `dyed_color(stack)`: the `minecraft:dyed_color` component (a bare RGB int as 26.3 writes it, or the older `{rgb}` form), `None` when undyed.
+- **Tests:** `armour_is_read_head_to_feet_and_the_hands_from_the_selection_and_offhand`, `a_selected_gun_is_left_to_the_mw2_body`, `an_empty_hand_puts_the_gun_away_too`, `glint_and_dye_come_from_the_stack`.
+- **Decision:** the gear is read from the server-owned inventory of each player (keyed by the player's UUID on the server, like the inventory itself); what the renderer keeps is a copy per MW2 client number (entry 4), filled from that.
+- **Test steps:** nothing changes in game yet (After the split, item 18).
+- **Kit:** none.
 
 ## After the split
 
@@ -338,3 +352,4 @@ The glue still needed in the game files (today `render_anim/src/minecraft_*.rs`,
     - :1079-1082, the shulker box's check: `entities.lids.lid_closed(opened.cells[0]) && lid_obstructed(..)` (`ShulkerBoxBlock.canOpen` checks the space only while the lid is `CLOSED`).
     - Several players (roadmap 1.4): `Openers` stays per level on the server; each `OpenerEvent::block_event()` goes to every client near `pos` as a `minecraft_net` `BlockEvent { pos, id: 1, param: count }`, which feeds that client's `Lids::block_event`; the server plays the sound for everyone near.
     - Once items 15 to 17 are in, update `docs/MINECRAFT-SURVIVAL.md:187` (it says no block entity animates).
+18. **Each player's body gear, every frame** (`minecraft_world.rs` `update`, after `inventory_ui.publish` at about :1827; with several players, the server for each player and then the equipment messages): `let gear = minecraft_terrain::body_gear::body_gear(&entities.inventory.slots, entities.selected, |stack| crate::minecraft_inventory::weapon_of(stack).is_some());` for the local player while `alive && player_mode.interacts()`.
