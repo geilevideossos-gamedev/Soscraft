@@ -9,6 +9,8 @@ use minecraftoss_entities::world::ZombieEntity;
 
 type Part = ([f32; 3], [f32; 3], [f32; 2], Option<[f32; 3]>);
 
+type Ear = (Part, [f32; 3], Option<([f32; 3], f32)>);
+
 const fn part(from: [f32; 3], size: [f32; 3], uv: [f32; 2]) -> Part {
     (
         from,
@@ -34,7 +36,7 @@ const fn inflated(from: [f32; 3], size: [f32; 3], uv: [f32; 2], grow: f32) -> Pa
 struct Model {
     head_pivot: [f32; 3],
     head: &'static [Part],
-    ears: [(Part, [f32; 3], Option<([f32; 3], f32)>); 2],
+    ears: [Ear; 2],
     ear_angle: f32,
     body_pivot: [f32; 3],
     body: &'static [Part],

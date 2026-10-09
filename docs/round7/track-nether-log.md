@@ -427,12 +427,42 @@ Previous commit: d37cfa4b
 - **Tests:** `server`: `a_fortress_spawner_spawns_blazes_near_a_player_and_waits_between_rounds` (seed 77's fortress spawner, a player 3 blocks off: blazes within its range, at most 6, then a wait of 200 to 799; a player 40 blocks off: nothing and the first wait of 20 does not run down; `spawner_blocks_work` off: nothing).
 - **Decisions:** blazes from fortress spawners wait dormant until N4 brings blazes to life, and count toward the spawner's limit of 6 meanwhile. The flames and smoke of a spawn (level event 2004), the mob turning inside the cage and the spin-up on the client are not drawn.
 - **Test steps** (overworld, survival, `/difficulty normal`):
-  1. Find a dungeon (a mossy cobblestone room with a spawner and chests underground), or `/setblock ~2 ~ ~ minecraft:spawner` and use a zombie spawn egg on it. Stand within 16 blocks in the dark: zombies (or the dungeon's skeletons or spiders) appear around it, two to four at a time, then nothing for 10 to 40 seconds. **Screenshot 19.**
+  1. Find a dungeon (a mossy cobblestone room with a spawner and chests, underground, often open to a cave; corrected in entry 21: a spawn egg used on a spawner does not change its mob yet). Stand within 16 blocks in the dark: zombies (or the dungeon's skeletons or spiders) appear around it, two to four at a time, then nothing for 10 to 40 seconds. **Screenshot 19.**
   2. Kill them and stay: new ones come after the wait, never more than 6 of its kind around it at once.
   3. `/gamerule spawner_blocks_work false`: nothing more spawns. Set it back to `true`.
   4. In the Nether, a fortress spawner (a cage on a nether brick stair room) needs N4's blazes to show them; until then nothing visible happens there.
 - **Kit:**
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:spawner,minecraft:zombie_spawn_egg*2,minecraft:skeleton_spawn_egg*2,minecraft:diamond_sword,minecraft:torch*64,minecraft:cobblestone*64
+IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword,minecraft:torch*64,minecraft:cobblestone*64
+```
+
+### 21. Minecraft Nether mobs pass clippy
+
+Previous commit: bf1a728f
+
+- **Changed:** the one clippy finding on this group's lines: `piglin_render`'s ear tuple is a named `Ear` (`type_complexity`). Entry 20's test step 1 and kit are corrected: a spawn egg used on a spawner does nothing yet (the egg's `EggUse::Spawner` was never handled), so the steps use a generated dungeon.
+- **Clippy:** `clippy -p minecraft_terrain -p minecraft_survival -p hud -p frame -p minecraftoss-entities -p minecraftoss-world -p minecraftoss-player --locked --tests --no-deps -- -A clippy::approx_constant` has no other finding on a line of this group; the rest are older.
+- **Tests:** none new.
+- **Test steps:** none; nothing changes in game.
+- **Kit:** none.
+
+## Group N3 summary
+
+- **Commits:** dfb165d1 (E2-18, fire immunity), cdcaf137 (E2-19, fortress and structure spawns), 91e2589c (E2-20, zombified piglins and portal piglins), 27534fff (E2-21, magma cubes), 899359fa (a fix to entry 16: zombified piglins do not burn in daylight), d37cfa4b (E2-22, wither skeletons and the wither effect), bf1a728f (E2-25, monster spawners), and this entry.
+- **Checks:** `test -p minecraft_terrain` (647 passed, 3 ignored as before; `poof_particles` failed once on its unseeded random and passed when run again), `test -p minecraft_survival` (281), `test -p hud` (132), `test -p frame` (16), `minecraftoss-entities` (71), `minecraftoss-world` (60) and `minecraftoss-player` (184) with the full suite's stand-in files, and `check -p launcher` are green; clippy as in entry 21.
+- **MinecraftOSS patches in this group:** `entities` (`world/hazards.rs` fire immunity; `zombie.rs`, `skeleton.rs`, `slime.rs` the new kinds; `monster_ai.rs` the zombified piglin and wither skeleton goals, the melee goal's speed, `is_enemy`; `world.rs`, `world/slimes.rs`, `world/combat.rs`, `world/witches.rs` their ticks, hits, armour and drops; `effects.rs` and `potion.rs` the wither effect; `golem_ai.rs`, `wolf_ai.rs` the melee speed field), `world` (`natural_spawner.rs`, `natural_spawner/spawning.rs` categories, structure overrides, the new types' rules and finalizing, `spawner_may_spawn`; `level/spawning.rs` the structure finder, portal piglins and spawners; `level/random_tick.rs` the portal's random tick; `level/time.rs` `environment_flag`), `player` (`survival.rs` the player's wither).
+- **Handed on to N4 (ghasts and blazes):** `fire_immune` already lists blazes and ghasts; fortress spawners already spawn blazes (dormant until simulated) and the fortress override already draws them; `spawner_may_spawn` treats a type without spawn rules as needing room only; `MobEffect::Wither` and `Target::Mob` melee hits are in place.
+- **Known gaps:** who a zombified piglin was angry at is not saved (only for how long); a spawn egg used on a spawner does nothing; spawner flames, the turning mob in the cage and magma cube landing flames are not drawn; a wither skeleton holding a bow shoots plain arrows; a husk's hunger and tipped arrows still do not reach the player (older than this group).
+- **Owner test for the whole group** (one new world `IW4L_MINECRAFT_WORLD=n3`, survival, `/difficulty normal`; screenshots numbered across the entries):
+  1. Entry 16 steps 1 to 4 (zombified piglins: neutral, the group's anger, fire, drops), screenshots 11 and 12.
+  2. Entry 17 steps 1 to 3 (magma cubes), screenshots 14 and 15.
+  3. Entry 19 steps 1 to 3 (wither skeletons and black hearts), screenshots 16 and 17.
+  4. Entry 16 step 5 (portal piglins: build and light the portal, `/difficulty hard`, `/gamerule random_tick_speed 1000`, wait; then set both back), screenshot 13.
+  5. Go through the portal, then entry 19 step 4 (a fortress's wither skeletons, zombified piglins and magma cubes), screenshot 18.
+  6. Entry 20 steps 1 to 3 in the overworld (a dungeon's spawner), screenshot 19.
+- **Kit (15 stacks):**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:zombified_piglin_spawn_egg*4,minecraft:magma_cube_spawn_egg*4,minecraft:wither_skeleton_spawn_egg*4,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:diamond_chestplate,minecraft:diamond_pickaxe+efficiency=5,minecraft:lava_bucket,minecraft:flint_and_steel,minecraft:obsidian*14,minecraft:cooked_beef*32,minecraft:golden_apple*4,minecraft:torch*64,minecraft:cobblestone*64,minecraft:cobblestone*64
 ```
