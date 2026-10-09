@@ -275,6 +275,7 @@ fn follow_range_base(kind: &str) -> f64 {
     match kind {
         "minecraft:zombie" | "minecraft:zombie_villager" | "minecraft:husk" | "minecraft:drowned" | "minecraft:zombified_piglin" => 35.0,
         "minecraft:enderman" => 64.0,
+        "minecraft:ghast" => 100.0,
         _ => 16.0,
     }
 }
@@ -579,6 +580,7 @@ impl CreatureSpawns {
         let rules = match info.rules {
             Rules::Monster => self.dark_enough(level, context, pos),
             Rules::SurfaceMonster => self.dark_enough(level, context, pos) && level.sky_brightness(pos) >= 15,
+            Rules::Ghast => level.random().next_i32_bound(20) == 0,
             _ => self.natural_spawn_rules(level, context, kind, &info, pos),
         };
         if !rules {
@@ -614,6 +616,7 @@ impl CreatureSpawns {
                 context.difficulty != 0 && !below
             }
             Rules::Bat => self.bat_spawn_rules(level, kind, info, pos),
+            Rules::Ghast => context.difficulty != 0 && level.random().next_i32_bound(20) == 0 && self.mob_spawn_rules(level, kind, info, pos),
             // `pos.y <= seaLevel - 33`, unlit, in water: no random draws.
             Rules::GlowSquid => {
                 let state = level.block(pos);
@@ -950,7 +953,7 @@ impl CreatureSpawns {
                 Self::ageable_monster(level, &mut tag, group);
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
             }
-            "minecraft:creeper" | "minecraft:enderman" | "minecraft:bat" => finalize_mob(&mut tag, &mut RandomRef(level.random())),
+            "minecraft:creeper" | "minecraft:enderman" | "minecraft:bat" | "minecraft:ghast" => finalize_mob(&mut tag, &mut RandomRef(level.random())),
             _ => {
                 level.note_unsupported(&format!("finalizeSpawn of {kind}"));
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
@@ -1193,5 +1196,14 @@ mod tests {
             assert_eq!(MobCategory::of_type(&format!("minecraft:{kind}")), Some(MobCategory::Monster), "{kind}");
         }
         assert_eq!(MobCategory::of_type("minecraft:strider"), Some(MobCategory::Creature));
+    }
+
+    #[test]
+    fn a_ghast_spawns_alone_in_its_four_block_box_on_any_floor_and_goes_when_far() {
+        let info = super::type_info("minecraft:ghast").unwrap();
+        assert_eq!((info.width, info.height, info.cluster, info.fire_immune, info.remove_far), (4.0, 4.0, 1, true, true));
+        assert_eq!(info.rules, super::Rules::Ghast);
+        assert!(matches!(info.walk, super::Walk::Neutral));
+        assert_eq!(super::follow_range_base("minecraft:ghast"), 100.0);
     }
 }

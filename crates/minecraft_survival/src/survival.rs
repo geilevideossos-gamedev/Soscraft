@@ -607,6 +607,9 @@ impl Survival {
         if !self.rules.allows(cause) || (self.invulnerable && cause != DamageCause::Kill) {
             return false;
         }
+        if cause.burns() && (self.status.effect(EffectKind::FireResistance).is_some() || !self.rules.fire_damage) {
+            return false;
+        }
         let before = self.status.health;
         let landed = self.status.hurt(damage, armor, HURT_EXHAUSTION).is_some();
         if landed {
@@ -1037,6 +1040,23 @@ mod tests {
             fast.tick_effects();
         }
         assert_eq!(fast.health, 18.0, "every 20 ticks at level II");
+    }
+
+    #[test]
+    fn fire_resistance_and_the_fire_damage_rule_keep_fireballs_off() {
+        let fireball = DamageCause::mob(crate::death::MobAttack::Fireball, Some(4), Some("minecraft:ghast"));
+        let mut survival = fresh();
+        assert!(survival.hurt(6.0, Armor::default(), None, fireball));
+        assert_eq!(survival.status.health, 14.0);
+        let mut resistant = fresh();
+        resistant.status.add_effect(EffectKind::FireResistance, 600, 0);
+        assert!(!resistant.hurt(6.0, Armor::default(), None, fireball));
+        assert_eq!(resistant.status.health, 20.0);
+        let mut ruled = fresh();
+        ruled.rules.fire_damage = false;
+        assert!(!ruled.hurt(6.0, Armor::default(), None, fireball));
+        let blast = DamageCause::mob(crate::death::MobAttack::Explosion, Some(4), Some("minecraft:ghast"));
+        assert!(resistant.hurt(4.0, Armor::default(), None, blast), "its blast is no fire");
     }
 
     #[test]

@@ -637,6 +637,7 @@ impl ServerSim {
         // (`ServerExplosion.explode`: `hurtEntities`, then the blocks).
         self.drop_death_loot();
         self.explode_creepers();
+        self.explode_fireballs();
         self.explode_blasts(players);
         self.sound_potion_breaks();
     }
@@ -723,6 +724,23 @@ impl ServerSim {
 
     pub fn blast(&mut self, blast: Blast) {
         self.blasts.push(blast);
+    }
+
+    fn explode_fireballs(&mut self) {
+        use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
+        for blast in self.mobs.take_fireball_blasts() {
+            let interaction = if self.mobs.mob_griefing() { BlockInteraction::DestroyWithDecay } else { BlockInteraction::Keep };
+            self.level.explode(Explosion { center: blast.position.to_array(), radius: blast.power, fire: blast.fire, interaction, source: None });
+            self.explosions.push(minecraftoss_entities::creeper::CreeperExplosion { position: blast.position, radius: blast.power, powered: false });
+        }
+    }
+
+    pub fn deflect_fireball(&mut self, id: u64, look: [f64; 3], player: u64, by_attack: bool) -> bool {
+        self.mobs.deflect_fireball(id, glam::DVec3::from_array(look), player, by_attack)
+    }
+
+    pub fn push_fireball(&mut self, id: u64, push: [f64; 3]) -> bool {
+        self.mobs.push_fireball(id, glam::DVec3::from_array(push))
     }
 
     fn explode_blasts(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
@@ -1565,6 +1583,8 @@ pub enum Command {
     MobBlast { hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64>, slow_ticks: i32 },
     WeaponBlast { center: [f64; 3], power: f32 },
     Blast(Blast),
+    DeflectFireball { id: u64, look: [f64; 3], player: u64, by_attack: bool },
+    PushFireball { id: u64, push: [f64; 3] },
     /// An operation on the player's trading screen.
     Merchant { op: MerchantOp, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, feet: [f64; 3] },
     /// One server tick, with the player's state for it.
@@ -1888,6 +1908,14 @@ impl ServerHandle {
         self.send(Command::Blast(blast));
     }
 
+    pub fn deflect_fireball(&mut self, id: u64, look: [f64; 3], player: u64, by_attack: bool) {
+        self.send(Command::DeflectFireball { id, look, player, by_attack });
+    }
+
+    pub fn push_fireball(&mut self, id: u64, push: [f64; 3]) {
+        self.send(Command::PushFireball { id, push });
+    }
+
     pub fn throw(&mut self, thrown: crate::thrown::Thrown) {
         self.send(Command::Throw(Box::new(thrown)));
     }
@@ -1989,6 +2017,12 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::MobBlast { hit, damage, center, impact, player, slow_ticks } => sim.mob_blast(hit, damage, center, impact, player, slow_ticks),
                 Command::WeaponBlast { center, power } => sim.weapon_blast(center, power),
                 Command::Blast(blast) => sim.blast(blast),
+                Command::DeflectFireball { id, look, player, by_attack } => {
+                    sim.deflect_fireball(id, look, player, by_attack);
+                }
+                Command::PushFireball { id, push } => {
+                    sim.push_fireball(id, push);
+                }
                 Command::Merchant { op, inventory, selected, feet } => {
                     out.merchant.push(sim.merchant(op, *inventory, selected, feet));
                 }
@@ -5840,5 +5874,84 @@ mod tests {
         assert!(fires > 0, "fire lands on the obsidian");
         let (_, _, _, fires, _) = blow_up(false);
         assert_eq!(fires, 0, "a blast without fire starts none");
+    }
+
+    #[test]
+    fn ghast_fireballs_blow_up_walls_unless_mobs_may_not_grief_and_ghasts_keep_their_power() {
+        use minecraftoss_entities::fireball::{Fireball, FireballKind, Shooter};
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let planks = registries.blocks.block_by_name("minecraft:oak_planks").unwrap();
+        let shoot = |griefing: bool| {
+            let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+            let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+            let mut server = ServerSim::new(worldgen.clone(), states, "minecraft:overworld");
+            for x in -1..=1 {
+                for z in -1..=1 {
+                    server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+                }
+            }
+            for x in -2..=2 {
+                for y in 200..=204 {
+                    server.player_edit_block((x, y, 8), Some(&Block::new("minecraft:oak_planks")), PlayerEdit::Place);
+                }
+            }
+            server.take_changes();
+            server.mobs.set_mob_griefing(griefing);
+            server.summon("minecraft:ghast", [0.5, 200.0, -6.5], None, 0.0).unwrap();
+            let ghast = server.mobs.ghasts()[0].id;
+            server.mobs.ghast_mut(ghast).unwrap().no_ai = true;
+            server.mobs.spawn_fireball(Fireball::shoot(FireballKind::Large { explosion_power: 1 }, Shooter::Mob(ghast), glam::DVec3::new(0.5, 201.5, -2.0), glam::DVec3::Z));
+            server.set_players(&[[0.5, 200.0, -30.5]], 2);
+            server.set_simulation_area((0, 0), 4);
+            let mut blasts = Vec::new();
+            for _ in 0..40 {
+                server.tick();
+                server.tick_mobs(&[], false);
+                blasts.extend(server.take_explosions());
+            }
+            let mut left = 0;
+            for x in -2..=2 {
+                for y in 200..=204 {
+                    left += usize::from(registries.blocks.block_of(server.level.block(minecraftoss_core::BlockPos::new(x, y, 8))) == planks);
+                }
+            }
+            (blasts, left, server.mobs.fireballs().len())
+        };
+        let (blasts, left, flying) = shoot(true);
+        assert_eq!((blasts.len(), flying), (1, 0), "the fireball bursts on the wall and the client hears it");
+        assert_eq!(blasts[0].radius, 1.0);
+        assert!((7.0..=8.0).contains(&blasts[0].position.z), "{:?}", blasts[0].position);
+        assert!(left < 25, "a power 1 blast breaks planks: {left} left");
+        let (blasts, left, _) = shoot(false);
+        assert_eq!((blasts.len(), left), (1, 25), "without mob griefing it breaks nothing");
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen.clone(), states, "minecraft:overworld");
+        server.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        server.set_players(&[[0.5, 200.0, 0.5]], 2);
+        let powerful = minecraftoss_core::snbt::parse_compound("{ExplosionPower:3b}").unwrap();
+        server.summon("minecraft:ghast", [0.5, 200.0, 0.5], Some(&powerful), 0.0).unwrap();
+        assert_eq!(server.dormant_count(), 0, "ghasts are simulated");
+        let ghast = server.mobs.ghasts()[0].id;
+        assert_eq!(server.mobs.ghasts()[0].ghast.explosion_power, 3);
+        server.mobs.spawn_fireball(Fireball::shoot(FireballKind::Large { explosion_power: 3 }, Shooter::Mob(ghast), glam::DVec3::new(0.5, 202.5, 4.5), glam::DVec3::Z));
+        let tags = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+        for (_, tag) in &tags {
+            crate::server_mobs::spawn_saved(&mut loaded, tag).expect("ghasts and fireballs load");
+        }
+        assert_eq!(loaded.ghasts()[0].ghast.explosion_power, 3);
+        let fireball = &loaded.fireballs()[0].fireball;
+        assert_eq!(fireball.kind, FireballKind::Large { explosion_power: 3 });
+        assert!((fireball.velocity - glam::DVec3::new(0.0, 0.0, 0.1)).length() < 1e-9);
+        let id = server.mobs.fireballs()[0].id;
+        assert!(server.deflect_fireball(id, [0.0, 0.0, -1.0], 0, true));
+        assert_eq!(server.mobs.fireballs()[0].fireball.owner, Some(Shooter::Player(0)));
     }
 }

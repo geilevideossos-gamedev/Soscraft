@@ -176,6 +176,9 @@ impl EntityWorld {
         if let Some(e) = self.chickens.iter().find(|e| e.id == id) {
             return Some((e.chicken.body.clone(), e.chicken.health));
         }
+        if let Some(e) = self.ghasts.iter().find(|e| e.id == id) {
+            return Some((e.ghast.body.clone(), e.ghast.health));
+        }
         None
     }
 
@@ -212,6 +215,8 @@ impl EntityWorld {
             (&mut e.pig.body, &mut e.random)
         } else if let Some(e) = self.chickens.iter_mut().find(|e| e.id == id) {
             (&mut e.chicken.body, &mut e.random)
+        } else if let Some(e) = self.ghasts.iter_mut().find(|e| e.id == id) {
+            (&mut e.ghast.body, &mut e.random)
         } else {
             return;
         };
@@ -301,6 +306,12 @@ impl EntityWorld {
             e.hurt(amount, source)
         } else if let Some(e) = self.chickens.iter_mut().find(|e| e.id == id) {
             e.hurt_with_source(amount, source)
+        } else if let Some(e) = self.ghasts.iter_mut().find(|e| e.id == id) {
+            let hit = e.hurt(amount);
+            if hit.applied {
+                e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
+            }
+            hit
         } else {
             return None;
         };

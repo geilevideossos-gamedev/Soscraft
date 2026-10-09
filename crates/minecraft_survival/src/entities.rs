@@ -490,7 +490,16 @@ impl Entities {
 
     #[allow(clippy::too_many_arguments)]
     pub fn punch(&mut self, inventory: &Inventory, selected: usize, eye: DVec3, look: DVec3, yaw: f32, attack_damage: f64, strength: f32, blow: Blow) -> bool {
-        let Some((hit, _)) = self.world.mob_on_ray(eye, look, blow.reach) else {
+        let mob = self.world.mob_on_ray(eye, look, blow.reach);
+        if let Some((fireball, distance)) = self.world.fireball_on_ray(eye, look, blow.reach)
+            && mob.is_none_or(|(_, nearest)| distance < nearest)
+        {
+            self.server.deflect_fireball(fireball, look.normalize_or_zero().to_array(), PLAYER, true);
+            let feet = eye - DVec3::Y * f64::from(EYE_HEIGHT);
+            self.sounds.push(("minecraft:entity.player.attack.nodamage".to_owned(), feet, 1.0, 1.0));
+            return true;
+        }
+        let Some((hit, _)) = mob else {
             return false;
         };
         let attack = minecraftoss_entities::world::PlayerAttack {
@@ -508,7 +517,12 @@ impl Entities {
     }
 
     pub fn mob_distance(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
-        self.world.mob_on_ray(eye, look, reach).map(|(_, distance)| distance)
+        let mob = self.world.mob_on_ray(eye, look, reach).map(|(_, distance)| distance);
+        let fireball = self.world.fireball_on_ray(eye, look, reach).map(|(_, distance)| distance);
+        match (mob, fireball) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// A block the player placed, for the level the mobs walk in.
@@ -643,6 +657,14 @@ impl Entities {
     /// A bullet on a mob: an attack with the bullet's damage from where it
     /// was fired.
     pub fn shoot(&mut self, key: u64, damage: f32, from: [f64; 3], yaw: f32) {
+        if let Some(id) = fireball_of(key) {
+            if let Some(entity) = self.world.fireballs().iter().find(|e| e.id == id) {
+                let center = entity.fireball.position + DVec3::Y * (entity.fireball.kind.size() / 2.0);
+                let aim = (center - DVec3::from_array(from)).normalize_or_zero();
+                self.server.deflect_fireball(id, aim.to_array(), PLAYER, true);
+            }
+            return;
+        }
         let Some(hit) = decode(key) else {
             return;
         };
@@ -661,6 +683,14 @@ impl Entities {
     }
 
     pub fn blast(&mut self, key: u64, damage: f32, center: [f64; 3], impact: f32, by_player: bool, slow_ticks: i32) {
+        if let Some(id) = fireball_of(key) {
+            if let Some(entity) = self.world.fireballs().iter().find(|e| e.id == id) {
+                let eye = entity.fireball.position + DVec3::Y * (entity.fireball.kind.size() * 0.85);
+                let push = (eye - DVec3::from_array(center)).normalize_or_zero() * f64::from(impact);
+                self.server.push_fireball(id, push.to_array());
+            }
+            return;
+        }
         let Some(hit) = decode(key) else {
             return;
         };
@@ -830,13 +860,14 @@ impl Entities {
                 };
                 let toward = match hit.kind {
                     PlayerHitKind::Melee { attacker, .. } => [attacker.x - player.feet[0], attacker.z - player.feet[2]],
-                    PlayerHitKind::Arrow { velocity, .. } => [-velocity.x, -velocity.z],
+                    PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } => [-velocity.x, -velocity.z],
                     PlayerHitKind::Explosion { knockback } => [-knockback.x, -knockback.z],
                 };
                 let attack = match hit.kind {
                     PlayerHitKind::Melee { .. } => crate::death::MobAttack::Melee,
                     PlayerHitKind::Arrow { .. } => crate::death::MobAttack::Arrow,
                     PlayerHitKind::Explosion { .. } => crate::death::MobAttack::Explosion,
+                    PlayerHitKind::Fireball { .. } => crate::death::MobAttack::Fireball,
                 };
                 let cause = crate::death::DamageCause::mob(attack, hit.source, hit.source.and_then(|id| self.world.entity_type(id)));
                 let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. }) || hit.source.is_some();
@@ -919,6 +950,18 @@ impl Entities {
         for e in w.chickens().iter().filter(|e| e.chicken.health > 0.0) {
             add(MobHit::Chicken(e.id), &e.chicken.body);
         }
+        for e in w.ghasts().iter().filter(|e| e.ghast.health > 0.0) {
+            add(MobHit::Ghast(e.id), &e.ghast.body);
+        }
+        out
+    }
+
+    pub fn shot_boxes(&self) -> Vec<(u64, [f64; 6])> {
+        let mut out = self.boxes();
+        for e in self.world.fireballs().iter().filter(|e| e.fireball.alive && e.fireball.kind.redirectable()) {
+            let (min, max) = minecraftoss_entities::fireball::pick_box(e.fireball.kind, e.fireball.position);
+            out.push((FIREBALL_KEY | (e.id & ((1 << 56) - 1)), [min.x, min.y, min.z, max.x, max.y, max.z]));
+        }
         out
     }
 
@@ -983,6 +1026,7 @@ impl Entities {
             self.ticks.rotate_left(32) ^ (partial.to_bits() as u64),
         );
         let witch_items = witch_render::append_witches(&mut out.models, w.witches().iter(), poses, atlas, light, partial);
+        ghast_render::append_ghasts(&mut out.models, w.ghasts().iter(), poses, atlas, light, partial);
         let poppies = golem_render::append_iron_golems(&mut out.models, w.iron_golems().iter(), poses, atlas, light, partial);
         wolf_render::append_wolves(&mut out.models, w.wolves().iter(), poses, atlas, light, partial, w.game_time());
         flame_render::append_flames(
@@ -1004,6 +1048,12 @@ impl Entities {
             atlas,
             forward,
             light,
+        );
+        ghast_render::append_fireballs(
+            &mut out.items,
+            w.fireballs().iter().filter(|f| f.fireball.alive).map(|f| (f, f.previous_position.lerp(f.fireball.position, f64::from(partial)))),
+            atlas,
+            forward,
         );
         if let Ok(items) = self.items.mesh(&self.world_items, packs, atlas, light, partial) {
             let base = out.items.vertices.len() as u32;
@@ -1105,6 +1155,7 @@ fn encode(hit: MobHit) -> u64 {
         MobHit::Sheep(_) => 13,
         MobHit::Pig(_) => 14,
         MobHit::Chicken(_) => 15,
+        MobHit::Ghast(_) => 16,
     };
     (kind << 56) | (hit.id() & ((1 << 56) - 1))
 }
@@ -1128,8 +1179,15 @@ fn decode(key: u64) -> Option<MobHit> {
         13 => MobHit::Sheep(id),
         14 => MobHit::Pig(id),
         15 => MobHit::Chicken(id),
+        16 => MobHit::Ghast(id),
         _ => return None,
     })
+}
+
+const FIREBALL_KEY: u64 = 17 << 56;
+
+fn fireball_of(key: u64) -> Option<u64> {
+    (key >> 56 == FIREBALL_KEY >> 56).then_some(key & ((1 << 56) - 1))
 }
 
 fn take_picked(inventory: &mut Inventory, selected: usize, picked: Vec<Picked>) -> Vec<ItemStack> {

@@ -63,6 +63,7 @@ pub enum MobAttack {
     Melee,
     Arrow,
     Explosion,
+    Fireball,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,7 +94,7 @@ impl DamageCause {
         let type_id = type_id.or(match attack {
             MobAttack::Explosion => Some("minecraft:creeper"),
             MobAttack::Arrow => Some(OWNERLESS_ARROW),
-            MobAttack::Melee => None,
+            MobAttack::Melee | MobAttack::Fireball => None,
         });
         match (source, type_id) {
             (Some(id), Some(type_id)) => Self::Mob {
@@ -147,7 +148,21 @@ impl DamageCause {
                 attack: MobAttack::Explosion,
                 ..
             } => "explosion.player",
+            Self::Mob {
+                attack: MobAttack::Fireball,
+                ..
+            } => "fireball",
         }
+    }
+
+    pub fn burns(self) -> bool {
+        matches!(
+            self,
+            Self::Mob {
+                attack: MobAttack::Fireball,
+                ..
+            }
+        )
     }
 
     pub fn melee_effect(self) -> Option<(minecraftoss_player::survival::EffectKind, u32)> {
@@ -567,6 +582,8 @@ mod tests {
             ("entity.minecraft.skeleton", "Skeleton"),
             ("entity.minecraft.zombie", "Zombie"),
             ("entity.minecraft.creeper", "Creeper"),
+            ("entity.minecraft.ghast", "Ghast"),
+            ("death.attack.fireball", "%1$s was fireballed by %2$s"),
             ("entity.minecraft.arrow", "Arrow"),
             ("block.minecraft.magma_block", "Magma Block"),
             ("block.minecraft.lava", "Lava"),
@@ -658,6 +675,20 @@ mod tests {
         assert_eq!(line(&tracker), says("%1$s was shot by Arrow", "Arrow"));
         tracker.record(2, DamageCause::Hazard(Hazard::Lava), 4.0, None, 0.0);
         assert_eq!(line(&tracker), says("%1$s tried to swim in lava", "Lava"));
+    }
+
+    #[test]
+    fn a_ghast_fireball_fireballs_the_player_and_its_blast_blows_them_up() {
+        let mut tracker = CombatTracker::default();
+        let direct = DamageCause::mob(MobAttack::Fireball, Some(5), Some("minecraft:ghast"));
+        assert!(direct.burns());
+        tracker.record(1, direct, 6.0, None, 0.0);
+        assert_eq!(line(&tracker), says("%1$s was fireballed by Ghast", "Ghast"));
+        let blast = DamageCause::mob(MobAttack::Explosion, Some(5), Some("minecraft:ghast"));
+        assert!(!blast.burns());
+        tracker.record(1, blast, 9.0, None, 0.0);
+        assert_eq!(line(&tracker), says("%1$s was blown up by Ghast", "Ghast"));
+        assert_eq!(DamageCause::mob(MobAttack::Fireball, None, None), DamageCause::Generic);
     }
 
     #[test]

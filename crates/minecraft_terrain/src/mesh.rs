@@ -500,6 +500,9 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     textures.insert(ResourceId::parse("minecraft:entity/spider/spider")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/slime/slime")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/slime/magmacube")?, ());
+    textures.insert(ResourceId::parse("minecraft:entity/ghast/ghast")?, ());
+    textures.insert(ResourceId::parse("minecraft:entity/ghast/ghast_shooting")?, ());
+    textures.insert(ResourceId::parse(crate::ghast_render::FIRE_CHARGE)?, ());
     textures.insert(ResourceId::parse("minecraft:entity/enderman/enderman")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/enderman/enderman_eyes")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/witch/witch")?, ());

@@ -424,6 +424,41 @@ impl Body {
         self.jump_out_of_fluid(world, old_y);
     }
 
+    pub fn travel_flying(&mut self, world: &impl World, input: DVec3, speed: f32, yaw: f32, fluid: FluidFrame) {
+        let length = input.length_squared();
+        if length >= 1.0e-7 {
+            let movement = (if length > 1.0 { input / length.sqrt() } else { input }) * f64::from(speed);
+            let (sin, cos) = minecraft_sin_cos(f64::from(yaw));
+            self.velocity += DVec3::new(movement.x * cos - movement.z * sin, movement.y, movement.z * cos + movement.x * sin);
+        }
+        let requested = self.requested_move();
+        let displacement = move_body(world, Bounds::standing(self.position, self.width, self.height), requested, self.on_ground, self.step_height);
+        let moved = displacement.length_squared();
+        if moved > 1.0e-7 || requested.length_squared() - moved < 1.0e-7 {
+            let from = self.position;
+            self.position += displacement;
+            self.moves.push(crate::inside_blocks::Move { from, to: self.position, delta: Some(requested) });
+        }
+        self.horizontal_collision = (requested.x - displacement.x).abs() >= 1.0e-5_f32 as f64 || (requested.z - displacement.z).abs() >= 1.0e-5_f32 as f64;
+        self.vertical_collision = requested.y != displacement.y;
+        self.on_ground = self.vertical_collision && requested.y < 0.0;
+        self.check_supporting_block(world, displacement);
+        if !self.touching_water {
+            self.update_fluid(world, false);
+        }
+        self.fall_distance = 0.0;
+        self.restitute(world, requested, displacement);
+        self.emission = self.movement_emission(world, displacement, self.touching_water);
+        let drag = if fluid.in_water() {
+            0.8_f32
+        } else if fluid.in_lava() {
+            0.5
+        } else {
+            0.91
+        };
+        self.velocity *= f64::from(drag);
+    }
+
     /// Performs dry travel after AI/controller input. Returns the accumulated
     /// fall distance on landing so the shared damage pipeline can handle it.
     pub fn travel_air(

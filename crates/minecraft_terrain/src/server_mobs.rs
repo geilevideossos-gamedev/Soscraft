@@ -394,6 +394,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:creeper",
     "minecraft:donkey",
     "minecraft:enderman",
+    "minecraft:ghast",
     "minecraft:horse",
     "minecraft:husk",
     "minecraft:iron_golem",
@@ -777,6 +778,32 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             }
             id
         }
+        "minecraft:ghast" => {
+            let mut ghast = minecraftoss_entities::ghast::Ghast::new(pos);
+            ghast.yaw = yaw;
+            ghast.persistence_required = persistent;
+            ghast.explosion_power = int(tag, "ExplosionPower").unwrap_or(1);
+            if let Some(health) = health {
+                ghast.health = health;
+            }
+            let id = world.spawn_ghast(ghast, no_ai);
+            let entity = world.ghast_mut(id)?;
+            entity.random = random;
+            if let Some(range) = attribute_value(tag, "minecraft:follow_range") {
+                entity.ai.state.follow_range = range;
+            }
+            id
+        }
+        "minecraft:fireball" => {
+            let motion = tag.get("Motion").and_then(Tag::as_list).map(|m| DVec3::new(m.first().and_then(Tag::as_f64).unwrap_or(0.0), m.get(1).and_then(Tag::as_f64).unwrap_or(0.0), m.get(2).and_then(Tag::as_f64).unwrap_or(0.0))).unwrap_or(DVec3::ZERO);
+            let kind = minecraftoss_entities::fireball::FireballKind::Large { explosion_power: int(tag, "ExplosionPower").unwrap_or(1) };
+            let mut fireball = minecraftoss_entities::fireball::Fireball::shoot(kind, minecraftoss_entities::fireball::Shooter::Mob(0), pos, motion);
+            fireball.owner = None;
+            fireball.velocity = motion;
+            fireball.acceleration_power = tag.get("acceleration_power").and_then(Tag::as_f64).unwrap_or(minecraftoss_entities::fireball::ACCELERATION_POWER);
+            fireball.left_owner = int(tag, "LeftOwner").unwrap_or(1) != 0;
+            return Some(world.spawn_fireball(fireball));
+        }
         "minecraft:splash_potion" => {
             // A potion in flight (`ThrowableItemProjectile.Item`), its thrower
             // forgotten.
@@ -1064,6 +1091,10 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         let w = &e.witch;
         add(e.id, "minecraft:witch", &w.body, w.yaw, w.health, w.persistence_required, Vec::new());
     }
+    for e in world.ghasts() {
+        let g = &e.ghast;
+        add(e.id, "minecraft:ghast", &g.body, g.yaw, g.health, g.persistence_required, vec![("ExplosionPower", Tag::Byte(g.explosion_power.clamp(-128, 127) as i8))]);
+    }
     for e in world.iron_golems() {
         let g = &e.golem;
         let fields = vec![("PlayerCreated", Tag::Byte(i8::from(g.player_created))), ("anger_end_time", Tag::Long(e.ai.state.enderman.anger_end_time))];
@@ -1234,6 +1265,23 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
                 map.insert("active_effects".to_owned(), Tag::List(effects.iter().map(|e| effect_tag(e, true)).collect()));
             }
         }
+    }
+    for f in world.fireballs() {
+        let fireball = &f.fireball;
+        if !keep(fireball.position) || !fireball.alive {
+            continue;
+        }
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("id".to_owned(), Tag::String(fireball.kind.type_id().to_owned()));
+        map.insert("Pos".to_owned(), doubles(fireball.position.to_array()));
+        map.insert("Motion".to_owned(), doubles(fireball.velocity.to_array()));
+        map.insert("Rotation".to_owned(), Tag::List(vec![Tag::Float(0.0), Tag::Float(0.0)]));
+        map.insert("acceleration_power".to_owned(), Tag::Double(fireball.acceleration_power));
+        map.insert("LeftOwner".to_owned(), Tag::Byte(i8::from(fireball.left_owner)));
+        let minecraftoss_entities::fireball::FireballKind::Large { explosion_power } = fireball.kind;
+        map.insert("ExplosionPower".to_owned(), Tag::Byte(explosion_power.clamp(-128, 127) as i8));
+        map.insert("UUID".to_owned(), fresh_uuid(f.id, fireball.position));
+        out.push((f.id, Tag::Compound(map)));
     }
     // Splash potions in flight (`ThrowableItemProjectile`).
     for p in world.potions() {
