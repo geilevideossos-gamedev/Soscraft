@@ -163,7 +163,7 @@ IW4L_MINECRAFT_KIT=trident,trident+loyalty=3,zombie_spawn_egg*4
 
 ### 9. Minecraft wind charges burst and knock back like vanilla
 
-Commit: (next entry)
+Commit: d37208e
 
 - **Changed:** `thrown.rs`: `Throwable::WindCharge` (`WindChargeItem.use`: thrown level at 1.5 from the eyes themselves, sound `entity.wind_charge.throw`), flying straight with no gravity and no drag (`AbstractWindCharge`, inertia 1), bursting where it climbs 30 blocks above the world. `Throwable::cooldown` (pearl 20 ticks, wind charge 10) for the client's per-item cooldown. Right-click throws it with no glue.
 - New `wind.rs`: `burst_point` (a quarter block off the face it hit, or where it struck a mob), `exposure` (`ServerExplosion.getSeenPercent`: the share of the box's sample grid with a clear line to the centre), `push` (`hurtEntities` with the wind charge's calculator: within twice the 1.2 radius, `(1 - d) * exposure * 1.22` along centre-to-eyes, no damage), `burst` (pushes every mob and returns each player's push). `server.rs`: a landed wind charge first hurts the mob or player it struck for 1 (`minecraft:wind_charge`), then bursts: mobs and players pushed, level items, orbs, TNT and falling blocks pushed too (vendored `Level::wind_burst`, push only), `entity.wind_charge.wind_burst` at volume 4, pitch about 0.7. New `Output.players_pushed: Vec<(player, push)>`.
@@ -180,6 +180,22 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=wind_charge*64,cow_spawn_egg*6,dirt*16
+```
+
+### 10. Minecraft tridents are saved with the world and still know their thrower
+
+Commit: (next entry)
+
+- **Changed:** `trident.rs`: `ThrownTrident::to_tag(owner_uuid)` writes the vanilla `minecraft:trident` entity (`Pos`, `Motion`, `Rotation`, `Owner` as the thrower's UUID ints, `LeftOwner`, `HasBeenShot`, `life`, `shake`, `inGround`, `inBlockState`, `pickup`, `damage`, `crit`, `PierceLevel`, `SoundEvent`, `DealtDamage` and the `item` stack with its components); `from_tag` reads it back. `ThrownTrident.owner_uuid` (set from `EntityWorld::uuid_of(PLAYER_TARGET + owner)` when thrown). `server.rs`: tridents are saved with their chunk's entities (autosave, unload and shutdown), taken out when the chunk unloads, and a loaded one finds its thrower again by UUID on the first tick that player is in the world; until then nobody can pick it up and a Loyalty one waits. `server_mobs::json_tag` is crate-public for the item components.
+- **Tests:** trident: `a_stuck_trident_saves_as_the_vanilla_entity_and_loads_back`. server: `a_saved_trident_comes_back_and_still_knows_its_thrower`.
+- **Decision:** before this a trident stuck in the ground when the world closed was lost with the item in it; now it stays, as in vanilla. Thrown snowballs, potions and clouds are still not saved (they live a few seconds).
+- **Test steps** (after glue items 9 and 10):
+  1. Throw the plain trident into a hill, save and quit to the menu, open the world again: it is still stuck there; walk over it to take it back.
+  2. Do the same with the Loyalty trident thrown at the ground just before quitting: after reopening it flies back to you.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=trident,trident+loyalty=3
 ```
 
 ## After the split

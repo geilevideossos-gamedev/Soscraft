@@ -947,7 +947,7 @@ pub(crate) fn tag_json(tag: &Tag) -> serde_json::Value {
 
 /// JSON as NBT: whole numbers as ints, others as doubles, booleans as
 /// bytes.
-fn json_tag(value: &serde_json::Value) -> Tag {
+pub(crate) fn json_tag(value: &serde_json::Value) -> Tag {
     use serde_json::Value;
     match value {
         Value::Object(map) => Tag::Compound(map.iter().map(|(k, v)| (k.clone(), json_tag(v))).collect()),

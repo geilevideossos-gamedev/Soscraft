@@ -460,6 +460,10 @@ impl ServerSim {
     /// dormant.
     fn add_saved_entity(&mut self, tag: minecraftoss_core::nbt::Tag) {
         self.mobs.set_day_time(self.level.overworld_clock());
+        if let Some(trident) = crate::trident::ThrownTrident::from_tag(&tag) {
+            self.throw_trident(trident);
+            return;
+        }
         if crate::server_mobs::load_level_entity(&mut self.level, &tag) {
             return;
         }
@@ -479,7 +483,9 @@ impl ServerSim {
         let mut tags: Vec<minecraftoss_core::nbt::Tag> = crate::server_mobs::mob_tags(&self.mobs, inside, &self.mob_tags).into_iter().map(|(_, tag)| tag).collect();
         tags.extend(self.dormant.iter().filter(|(group, _)| inside(glam::DVec3::from_array(group[0].pos))).map(|(_, tag)| tag.clone()));
         tags.extend(crate::server_mobs::level_entity_tags(&self.level, inside));
+        tags.extend(self.tridents.iter().filter(|t| t.alive && inside(t.position)).map(|t| t.to_tag(t.owner_uuid.unwrap_or_else(|| self.mobs.uuid_of(crate::thrown::PLAYER_TARGET.wrapping_add(t.owner))))));
         if unload {
+            self.tridents.retain(|t| !inside(t.position));
             self.mobs.remove_where(inside);
             self.dormant.retain(|(group, _)| !inside(glam::DVec3::from_array(group[0].pos)));
             self.level.entities.retain(|e| !(inside(glam::DVec3::from_array(e.pos)) && (e.item_data().is_some() || e.orb_data().is_some())));
@@ -771,6 +777,9 @@ impl ServerSim {
     }
 
     pub fn throw_trident(&mut self, mut trident: crate::trident::ThrownTrident) {
+        if trident.owner_uuid.is_none() && trident.owner != crate::trident::UNKNOWN_OWNER {
+            trident.owner_uuid = Some(self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + trident.owner));
+        }
         trident.id = self.next_trident;
         self.next_trident = self.next_trident.wrapping_add(1).max(TRIDENT_IDS);
         self.tridents.push(trident);
@@ -808,6 +817,11 @@ impl ServerSim {
         let mob_targets = crate::thrown::targets(&self.mobs);
         let mut tridents = std::mem::take(&mut self.tridents);
         for trident in &mut tridents {
+            if trident.owner == crate::trident::UNKNOWN_OWNER {
+                if let Some(player) = players.iter().find(|p| trident.owner_uuid == Some(self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + p.id))) {
+                    trident.owner = player.id;
+                }
+            }
             let mut targets = mob_targets.clone();
             targets.extend(crate::thrown::player_targets(players, trident.owner));
             let owner = players.iter().find(|p| p.id == trident.owner).map(crate::trident::TridentOwner::of);
@@ -4128,6 +4142,29 @@ mod tests {
         let picked = server.pickup_tridents(&full, |_| true);
         assert_eq!(picked.iter().map(|p| (p.0, p.2.as_str(), p.3)).collect::<Vec<_>>(), vec![(TRIDENT_IDS, crate::trident::ITEM, 1)]);
         assert!(server.trident_views().is_empty());
+    }
+
+    #[test]
+    fn a_saved_trident_comes_back_and_still_knows_its_thrower() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.throw_trident(trident_down(0, None, 5));
+        let me = [player_at(0, [30.5, 200.0, 8.5], true)];
+        for _ in 0..30 {
+            server.tick_tridents(&me);
+        }
+        let tags: Vec<_> = server.tridents.iter().map(|t| t.to_tag(t.owner_uuid.unwrap())).collect();
+        assert_eq!(tags.len(), 1);
+        let Some((mut again, _)) = door_world() else { return };
+        for tag in tags {
+            again.add_saved_entity(tag);
+        }
+        assert_eq!(again.trident_views().len(), 1);
+        let stranger = player_at(7, [9.5, 200.0, 8.5], true);
+        again.tick_tridents(&[stranger]);
+        assert!(again.pickup_tridents(&stranger, |_| true).is_empty());
+        let near = player_at(0, [9.5, 200.0, 8.5], true);
+        again.tick_tridents(&[near]);
+        assert_eq!(again.pickup_tridents(&near, |_| true).len(), 1);
     }
 
     #[test]

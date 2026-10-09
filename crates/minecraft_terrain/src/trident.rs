@@ -3,10 +3,12 @@ use crate::mesh::{Atlas, ChunkMesh};
 use crate::pack::ResourceId;
 use crate::thrown::{PlayerBody, Throw, shot_direction};
 use glam::{DVec3, Quat};
+use minecraftoss_core::nbt::Tag;
 use minecraftoss_entities::potion::PotionTarget;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_player::{Block, Pos, World};
+use std::collections::BTreeMap;
 
 pub const TEXTURE: &str = "minecraft:entity/trident/trident";
 pub const TEXTURE_SIZE: [f32; 2] = [32.0, 32.0];
@@ -31,6 +33,8 @@ const DESPAWN_TICKS: i32 = 1200;
 const SHAKE_TICKS: i32 = 7;
 const FALL_CHECK: f64 = 0.06;
 const SPREAD: f64 = 0.0172275;
+pub const UNKNOWN_OWNER: u64 = u64::MAX;
+const ENTITY: &str = "minecraft:trident";
 
 pub fn enchantment(stack: &ItemStack, id: &str) -> i32 {
     crate::stations::enchantments_of(stack)
@@ -187,6 +191,7 @@ pub enum TridentEvent {
 pub struct ThrownTrident {
     pub id: i32,
     pub owner: u64,
+    pub owner_uuid: Option<u128>,
     pub stack: ItemStack,
     pub pickup: Pickup,
     pub loyalty: i32,
@@ -275,6 +280,7 @@ impl ThrownTrident {
         Self {
             id: 0,
             owner: throw.owner,
+            owner_uuid: None,
             loyalty: loyalty(&stack),
             foil: crate::glint::has_glint(&stack),
             stack,
@@ -557,6 +563,167 @@ impl ThrownTrident {
             (Pickup::Allowed, _) | (Pickup::CreativeOnly, true) => Some(Some(self.stack.clone())),
             (Pickup::CreativeOnly, false) => Some(None),
         }
+    }
+
+    pub fn to_tag(&self, owner: u128) -> Tag {
+        let doubles =
+            |v: DVec3| Tag::List(vec![Tag::Double(v.x), Tag::Double(v.y), Tag::Double(v.z)]);
+        let mut item = BTreeMap::new();
+        item.insert("id".to_owned(), Tag::String(self.stack.id.clone()));
+        item.insert(
+            "count".to_owned(),
+            Tag::Int(i32::from(self.stack.count.max(1))),
+        );
+        if let Some(components) = &self.stack.components {
+            item.insert(
+                "components".to_owned(),
+                crate::server_mobs::json_tag(components),
+            );
+        }
+        let mut map = BTreeMap::new();
+        map.insert("id".to_owned(), Tag::String(ENTITY.to_owned()));
+        map.insert("Pos".to_owned(), doubles(self.position));
+        map.insert("Motion".to_owned(), doubles(self.velocity));
+        map.insert(
+            "Rotation".to_owned(),
+            Tag::List(vec![Tag::Float(self.yaw), Tag::Float(self.pitch)]),
+        );
+        map.insert(
+            "Owner".to_owned(),
+            Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(owner).to_vec()),
+        );
+        map.insert("LeftOwner".to_owned(), Tag::Byte(i8::from(self.left_owner)));
+        map.insert("HasBeenShot".to_owned(), Tag::Byte(1));
+        map.insert(
+            "life".to_owned(),
+            Tag::Short(self.life.clamp(0, 32767) as i16),
+        );
+        map.insert(
+            "shake".to_owned(),
+            Tag::Byte(self.shake.clamp(0, 127) as i8),
+        );
+        map.insert("inGround".to_owned(), Tag::Byte(i8::from(self.in_ground)));
+        map.insert(
+            "pickup".to_owned(),
+            Tag::Byte(match self.pickup {
+                Pickup::Allowed => 1,
+                Pickup::CreativeOnly => 2,
+            }),
+        );
+        map.insert("damage".to_owned(), Tag::Double(2.0));
+        map.insert("crit".to_owned(), Tag::Byte(0));
+        map.insert("PierceLevel".to_owned(), Tag::Byte(0));
+        map.insert(
+            "SoundEvent".to_owned(),
+            Tag::String(HIT_GROUND_SOUND.to_owned()),
+        );
+        map.insert(
+            "DealtDamage".to_owned(),
+            Tag::Byte(i8::from(self.dealt_damage)),
+        );
+        map.insert("item".to_owned(), Tag::Compound(item));
+        if let Some(state) = &self.last_state {
+            let mut block = BTreeMap::new();
+            block.insert("Name".to_owned(), Tag::String(state.id.clone()));
+            if !state.properties.is_empty() {
+                block.insert(
+                    "Properties".to_owned(),
+                    Tag::Compound(
+                        state
+                            .properties
+                            .iter()
+                            .map(|(k, v)| (k.clone(), Tag::String(v.clone())))
+                            .collect(),
+                    ),
+                );
+            }
+            map.insert("inBlockState".to_owned(), Tag::Compound(block));
+        }
+        Tag::Compound(map)
+    }
+
+    pub fn from_tag(tag: &Tag) -> Option<Self> {
+        if tag.get("id").and_then(Tag::as_str) != Some(ENTITY) {
+            return None;
+        }
+        let triple = |key: &str| -> Option<DVec3> {
+            let list = tag.get(key)?.as_list()?;
+            let at = |i: usize| match list.get(i)? {
+                Tag::Double(v) => Some(*v),
+                Tag::Float(v) => Some(f64::from(*v)),
+                _ => None,
+            };
+            Some(DVec3::new(at(0)?, at(1)?, at(2)?))
+        };
+        let number = |key: &str| -> i64 {
+            match tag.get(key) {
+                Some(Tag::Byte(v)) => i64::from(*v),
+                Some(Tag::Short(v)) => i64::from(*v),
+                Some(Tag::Int(v)) => i64::from(*v),
+                Some(Tag::Long(v)) => *v,
+                _ => 0,
+            }
+        };
+        let position = triple("Pos")?;
+        let item = tag.get("item")?;
+        let mut stack = ItemStack::new(item.get("id").and_then(Tag::as_str).unwrap_or(ITEM), 1);
+        stack.max = 1;
+        stack.components = item.get("components").map(crate::server_mobs::tag_json);
+        let rotation = tag.get("Rotation").and_then(Tag::as_list);
+        let angle = |i: usize| match rotation.and_then(|r| r.get(i)) {
+            Some(Tag::Float(v)) => *v,
+            _ => 0.0,
+        };
+        let last_state = tag.get("inBlockState").and_then(|state| {
+            let mut block = Block::new(state.get("Name")?.as_str()?);
+            if let Some(Tag::Compound(properties)) = state.get("Properties") {
+                for (key, value) in properties {
+                    if let Some(value) = value.as_str() {
+                        block = block.with(key, value);
+                    }
+                }
+            }
+            Some(block)
+        });
+        let owner_uuid = tag
+            .get("Owner")
+            .and_then(Tag::as_ints)
+            .and_then(|ints| <[i32; 4]>::try_from(ints).ok())
+            .map(minecraftoss_entities::gossip::uuid_from_ints);
+        Some(Self {
+            id: 0,
+            owner: UNKNOWN_OWNER,
+            owner_uuid,
+            loyalty: loyalty(&stack),
+            foil: crate::glint::has_glint(&stack),
+            stack,
+            pickup: if number("pickup") == 2 {
+                Pickup::CreativeOnly
+            } else {
+                Pickup::Allowed
+            },
+            position,
+            previous: position,
+            velocity: triple("Motion").unwrap_or(DVec3::ZERO),
+            yaw: angle(0),
+            pitch: angle(1),
+            previous_yaw: angle(0),
+            previous_pitch: angle(1),
+            in_ground: number("inGround") != 0,
+            in_ground_time: 0,
+            life: number("life") as i32,
+            shake: number("shake") as i32,
+            dealt_damage: number("DealtDamage") != 0,
+            no_physics: false,
+            left_owner: number("LeftOwner") != 0,
+            returning: 0,
+            tick_count: 0,
+            alive: true,
+            last_state,
+            random: LegacyRandom::new(
+                position.x.to_bits() ^ position.y.to_bits().rotate_left(21) ^ position.z.to_bits(),
+            ),
+        })
     }
 
     pub fn view(&self) -> TridentView {
@@ -965,6 +1132,48 @@ mod tests {
             "{events:?}"
         );
         assert!(!thrown.alive);
+    }
+
+    #[test]
+    fn a_stuck_trident_saves_as_the_vanilla_entity_and_loads_back() {
+        let world = floor();
+        let mut thrown = launched(loyal(2), 30.0, 1);
+        while !thrown.in_ground {
+            thrown.tick(&world, &[], None);
+        }
+        let tag = thrown.to_tag(0x1234_5678_9abc_def0_1122_3344_5566_7788);
+        assert_eq!(
+            tag.get("id").and_then(Tag::as_str),
+            Some("minecraft:trident")
+        );
+        assert_eq!(tag.get("inGround"), Some(&Tag::Byte(1)));
+        assert_eq!(
+            tag.get("inBlockState")
+                .and_then(|b| b.get("Name"))
+                .and_then(Tag::as_str),
+            Some("minecraft:stone")
+        );
+        let back = ThrownTrident::from_tag(&tag).expect("a trident");
+        assert_eq!(back.owner, UNKNOWN_OWNER);
+        assert_eq!(
+            back.owner_uuid,
+            Some(0x1234_5678_9abc_def0_1122_3344_5566_7788)
+        );
+        assert_eq!(
+            (back.position, back.in_ground, back.shake, back.loyalty),
+            (thrown.position, true, thrown.shake, 2)
+        );
+        assert_eq!(back.stack, thrown.stack);
+        assert_eq!(back.pickup, Pickup::Allowed);
+        let mut back = back;
+        for _ in 0..10 {
+            back.tick(&world, &[], None);
+        }
+        assert!(
+            back.in_ground && back.alive,
+            "it stays stuck in the same stone"
+        );
+        assert!(ThrownTrident::from_tag(&Tag::Compound(BTreeMap::new())).is_none());
     }
 
     #[test]
