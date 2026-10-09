@@ -172,6 +172,9 @@ weapon_iw4 = { path = "crates/weapon_iw4" }
 xmodel_runtime = { path = "crates/xmodel_runtime" }
 glam = "0.32.1"
 
+[workspace.lints.rust]
+linker_messages = "allow"
+
 # Transcribing a retail constant at full precision is the requirement, not a
 # style slip. `clippy::excessive_precision` fired on
 # `0.0005882352706976235` — the exact f32 read out of the retail image with
@@ -235,3 +238,9 @@ strip = "symbols"
 inherits = "play"
 debug = 1
 strip = "none"
+
+[profile.dev]
+debug = 0
+
+[profile.dev.package."*"]
+opt-level = 1
