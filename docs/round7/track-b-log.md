@@ -731,7 +731,7 @@ IW4L_MINECRAFT_KIT=potion@strong_healing,potion@long_weakness,potion@strong_turt
 
 ### 9. A Minecraft trident or wind charge that strikes the player hurts them
 
-Commit: (next entry)
+Commit: 9ac2c01
 
 - **Changed:** `entities.rs`: the local player's (`PLAYER`) `Output.players_struck` join the mob hits `Entities::tick` returns, so the adapter hurts the player with them past armour, a raised shield blocks them, and a totem saves the player as for any hit: a trident for 8, a wind charge's direct hit for 1, from just behind the player along the flight (`struck_hit`). They are not scaled by difficulty: only hits whose cause is a living non-player are (`DamageScaling.WHEN_CAUSED_BY_LIVING_NON_PLAYER`), and only players throw tridents and wind charges here (After the split item 12).
 - **Tests:** entities: `a_thrown_trident_hits_the_player_for_8_from_where_it_flew_in`.
@@ -743,4 +743,19 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=trident,diamond_chestplate
+```
+
+### 10. Thrown Minecraft tridents are drawn as the 3D trident
+
+Commit: (next entry)
+
+- **Changed:** `entities.rs` keeps the snapshot's `tridents` and draws them with `trident::append_tridents` beside the thrown items: the `TridentModel` (pole, base and three spikes) turned along its flight as `ThrownTridentRenderer` does, stuck at its angle in the ground, shimmering when enchanted (After the split item 10).
+- **Tests:** none new; the model and its turn are the throwables group's entry 8 (`the_spikes_lead_along_the_heading`, `the_model_is_a_pole_a_base_and_three_spikes_on_a_32_sheet`).
+- **Test steps** (once the trident charge entry below makes the trident throwable):
+  1. Throw the plain trident at the ground 10 blocks away: a 3D trident flies spikes first and sticks in the ground at an angle, shaking for a moment. Screenshot of it stuck.
+  2. Throw the Loyalty trident: it shimmers purple in flight and on its way back.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=trident,trident+loyalty=3
 ```

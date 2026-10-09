@@ -85,6 +85,7 @@ pub struct Entities {
     random: minecraftoss_player::rng::LegacyRandom,
     thrown: Vec<minecraft_terrain::thrown::ThrownView>,
     clouds: Vec<minecraft_terrain::effect_cloud::CloudView>,
+    tridents: Vec<minecraft_terrain::trident::TridentView>,
     orbs: Vec<ServerOrb>,
     falling: minecraft_terrain::falling_render::FallingBlocks,
     orb_pickups: Vec<minecraft_terrain::orb_render::OrbPickup>,
@@ -201,6 +202,7 @@ impl Entities {
             random: minecraftoss_player::rng::LegacyRandom::new((seed ^ 0x1735) as u64),
             thrown: Vec::new(),
             clouds: Vec::new(),
+            tridents: Vec::new(),
             orbs: Vec::new(),
             falling: Default::default(),
             orb_pickups: Vec::new(),
@@ -642,6 +644,7 @@ impl Entities {
             if let Some(mut snapshot) = output.entities {
                 self.thrown = std::mem::take(&mut snapshot.thrown_views);
                 self.clouds = std::mem::take(&mut snapshot.clouds);
+                self.tridents = std::mem::take(&mut snapshot.tridents);
                 self.orbs = snapshot.orbs.clone();
                 self.falling.receive(std::mem::take(&mut snapshot.falling), std::mem::take(&mut snapshot.tnt), &output.changes, self.ticks);
                 self.server_snapshot = Some(snapshot);
@@ -893,6 +896,7 @@ impl Entities {
         let _ = self.items.append_moving_blocks(&mut out.items, &moving, scene, packs, atlas, light);
         let _ = self.items.append_primed_tnt(&mut out.items, &self.falling.primed_tnt(partial), packs, atlas, light);
         minecraft_terrain::thrown::append_views(&mut out.items, &self.thrown, partial, camera, atlas, forward, light);
+        minecraft_terrain::trident::append_tridents(&mut out.items, &self.tridents, partial, atlas, light);
         self.poof.append_mesh(&mut out.items, atlas, forward, partial, light);
         self.portal.append_mesh(&mut out.items, atlas, forward, partial, light);
         self.spell.append_mesh(&mut out.translucent, atlas, forward, partial, light);
