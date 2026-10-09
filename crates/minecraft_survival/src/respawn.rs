@@ -57,7 +57,7 @@ pub fn level_spawn(spawn: &RespawnData, level: &Level) -> Place {
 }
 
 pub fn respawn_point(player: &Player) -> Option<Respawn> {
-    player.respawn.filter(|respawn| respawn.forced)
+    player.respawn
 }
 
 pub fn respawn_in(
@@ -84,13 +84,13 @@ pub fn respawn_in(
     respawned.missing
 }
 
-pub fn respawn(globals: &Globals, level: &Level, player: &mut Player) -> bool {
+pub fn respawn(globals: &Globals, level: &mut Level, player: &mut Player) -> bool {
     let target = player
         .respawning
         .take()
         .unwrap_or_else(|| respawn_dimension(&globals.spawn, respawn_point(player).as_ref()));
     if target == level.dimension {
-        return respawn_in(globals, level, player, |_| None);
+        return crate::respawn_block::respawn_at_block(globals, level, player);
     }
     player.switch_to(
         target,

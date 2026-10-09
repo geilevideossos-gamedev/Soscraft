@@ -660,3 +660,34 @@ Previous commit: 9d9f8b7e
 ```
 IW4L_MINECRAFT_KIT=minecraft:respawn_anchor*4,minecraft:glowstone*32,minecraft:water_bucket,minecraft:totem_of_undying,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:cobblestone*64,minecraft:cooked_beef*16
 ```
+
+### 28. Minecraft players respawn at their anchor or bed, else in the Overworld (E2-15)
+
+Previous commit: 6c0c6570
+
+- **Changed** (checked with javap on the 26.3 jar: `ServerPlayer.findRespawnAndUseSpawnBlock`, `findRespawnPositionAndUseSpawnBlock`, `RespawnPosAngle.of`/`calculateLookAtYaw`, `RespawnAnchorBlock.findStandUpPosition` and its `RESPAWN_HORIZONTAL_OFFSETS`/`RESPAWN_OFFSETS`, `AbstractBedBlock.findStandUpPosition`, `findBunkBedStandUpPosition`, `bedStandUpOffsets`, `bedSurroundStandUpOffsets`, `bedAboveStandUpOffsets`, `isBunkBed`, `Direction.isFacingAngle`, `DismountHelper.findSafeDismountLocation`/`nonClimbableShape`, `BlockGetter.getBlockFloorHeight`, `EntityType.isBlockDangerous`, `NodeEvaluator.isBurningBlock`, `PlayerList.respawn`):
+  - `minecraft_survival/src/respawn_block.rs`: `spawn_block(world, registries, rules, point, dark, consume)`, the `spawn_block` hook of S3's `respawn.rs`:
+    - an anchor with a charge (or any anchor for a forced point) where anchors work: the first safe spot of its 25 offsets (the 8 around it, the same one lower, one higher, then on top), first avoiding dangerous blocks (fire, lava, magma, lit campfires, lava cauldrons, wither roses, berry bushes, cactus, powder snow), then not; a point that is not forced spends a charge;
+    - a bed whose rule sets the spawn there: the bed's 10 spots around it and the 2 above it, starting on the side away from where the player looked when they set it, with the bunk-bed order when a bed is below;
+    - a spot is safe when its floor (the block's collision top, or the block below's when it reaches 1) is below 1, the player's 0.6 by 1.8 box there meets no collision, neither it nor the block above is in `#invalid_spawn_inside`, and it is inside the world border;
+    - the player faces the block (`calculateLookAtYaw`) with pitch 0.
+    - `respawn_at_block(globals, level, player)` reads the respawn level's loaded or saved chunks (`ChunkWorld`, never generating), respawns through `respawn_in`, writes the spent charge (scene, chunk map, server) and plays `block.respawn_anchor.deplete` there.
+  - `minecraft_survival/src/respawn.rs` (S3's): `respawn_point` now hands back beds and anchors too, not only forced points, so a dead player's level opens around their anchor or bed; `respawn` (same level) goes through `respawn_at_block` and takes the level mutably.
+  - `render_anim/src/minecraft_world.rs`: the respawn after a switch calls `respawn_at_block` (one changed call line).
+  - A missing point (bed gone, anchor empty or obstructed, an anchor outside the Nether) is cleared and "You have no home bed or charged respawn anchor, or it was obstructed" shows, then the player goes to the overworld's spawn through S3's switch.
+- **Tests:** `respawn_block`: `an_anchor_respawn_stands_beside_it_facing_it_and_spends_a_charge` (north first, the charge spent, a forced point keeps it, past stone and lava, an empty anchor and an overworld anchor are no spawn), `an_anchor_walled_in_on_its_level_lets_the_player_up_or_down` (on top last; nothing when that is walled too), `a_bed_respawn_stands_on_the_side_away_from_the_player_s_look_or_around_it` (west or east of the head by the saved yaw, past the foot when walled, none in the Nether or with the bed gone), `the_respawn_looks_at_the_block`. `server`: `a_nether_death_respawns_beside_a_charged_anchor_and_spends_a_charge` (a real Nether level: two deaths beside the anchor spend 2 then 1, the third finds it empty, clears the point and switches to the overworld).
+- **Decisions:**
+  - The facing yaw keeps vanilla's float-rounded degree constant, so a player north of the block faces -0.000005 degrees, as vanilla.
+  - `Mth.atan2`'s table approximation is replaced by the exact `atan2` (they agree on the four axes; elsewhere by far less than a degree).
+  - Respawning in creative also spends a charge, as vanilla's death respawn does.
+- **Test steps** (survival; one new world, e.g. `IW4L_MINECRAFT_WORLD=n5`):
+  1. In the overworld, place a bed by day and use it ("Respawn point set"). Walk 30 blocks away, `/kill`: you stand next to the bed, facing it. **Screenshot 33.**
+  2. Go to the Nether (build and light a portal). Place an anchor, charge it 4 times, use it ("Respawn point set"). `/kill`: you respawn next to it facing it, hear its deep deplete sound, and its top shows 3 charges. **Screenshot 34.**
+  3. `/kill` three more times: each time beside the anchor, the charges drop to 0. `/kill` once more: the chat says "You have no home bed or charged respawn anchor, or it was obstructed" and you respawn at the overworld spawn after the loading screen (not at the bed: the anchor replaced it). **Screenshot 35.**
+  4. Use the bed again, go back to the Nether and `/kill` there: the loading screen, then you stand next to your bed in the overworld.
+  5. Break the bed, `/kill`: the no-home-bed message, and the overworld spawn.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:red_bed,minecraft:respawn_anchor*2,minecraft:glowstone*16,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:netherrack*32,minecraft:diamond_pickaxe,minecraft:cooked_beef*16
+```

@@ -3,7 +3,11 @@ use minecraftoss_core::block::FluidKind;
 use minecraftoss_core::{BlockStateId, Registries};
 
 use crate::dimension::{BedRule, DimensionRules};
-use crate::player_nbt::{GlobalPos, Respawn};
+use crate::level::Level;
+use crate::player::Player;
+use crate::player_nbt::{GlobalPos, Place, Respawn};
+use crate::portal_forcer::ChunkWorld;
+use crate::server::Globals;
 
 pub type Pos = (i32, i32, i32);
 
@@ -20,6 +24,29 @@ pub const ANCHOR_SET_SPAWN_SOUND: &str = "minecraft:block.respawn_anchor.set_spa
 pub const ANCHOR_DEPLETE_SOUND: &str = "minecraft:block.respawn_anchor.deplete";
 
 const HORIZONTAL: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
+const ANCHOR_SIDES: [(i32, i32); 8] = [
+    (0, -1),
+    (-1, 0),
+    (0, 1),
+    (1, 0),
+    (-1, -1),
+    (1, -1),
+    (-1, 1),
+    (1, 1),
+];
+const PLAYER_HALF_WIDTH: f64 = 0.3;
+const PLAYER_HEIGHT: f64 = 1.8;
+const COLLISION_EPSILON: f64 = 1.0e-7;
+const DARK_SKY_LIGHT: f32 = 11.0;
+const DANGEROUS: [&str; 7] = [
+    "minecraft:lava",
+    "minecraft:magma_block",
+    "minecraft:lava_cauldron",
+    "minecraft:wither_rose",
+    "minecraft:sweet_berry_bush",
+    "minecraft:cactus",
+    "minecraft:powder_snow",
+];
 
 pub trait BlockView {
     fn state_at(&mut self, pos: Pos) -> BlockStateId;
@@ -728,5 +755,541 @@ mod anchor_tests {
             !shielded(&[((1, 65, 0), "minecraft:water[level=0]")]),
             "only straight above counts"
         );
+    }
+}
+
+impl BlockView for ChunkWorld<'_> {
+    fn state_at(&mut self, pos: Pos) -> BlockStateId {
+        self.state(pos)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpawnBlock {
+    pub feet: [f64; 3],
+    pub yaw: f32,
+    pub depleted: Option<(Pos, BlockStateId)>,
+}
+
+fn tagged(registries: &Registries, state: BlockStateId, tag: &str) -> bool {
+    registries
+        .block_tags
+        .id(tag)
+        .is_some_and(|tag| registries.block_in_tag(state, tag))
+}
+
+fn dangerous(registries: &Registries, state: BlockStateId) -> bool {
+    let blocks = &registries.blocks;
+    let name = blocks.block(blocks.block_of(state)).name.as_str();
+    tagged(registries, state, "minecraft:fire")
+        || DANGEROUS.contains(&name)
+        || (tagged(registries, state, "minecraft:campfires")
+            && blocks.property(state, "lit") == Some("true"))
+}
+
+fn non_climbable_top(world: &mut impl BlockView, registries: &Registries, pos: Pos) -> f64 {
+    let blocks = &registries.blocks;
+    let state = world.state_at(pos);
+    let open_trapdoor = blocks.block(blocks.block_of(state)).is_a("TrapDoorBlock")
+        && blocks.property(state, "open") == Some("true");
+    if tagged(registries, state, "minecraft:climbable") || open_trapdoor {
+        return f64::NEG_INFINITY;
+    }
+    blocks
+        .collision_boxes(state)
+        .iter()
+        .map(|b| b[4])
+        .fold(f64::NEG_INFINITY, f64::max)
+}
+
+fn floor_height(world: &mut impl BlockView, registries: &Registries, pos: Pos) -> f64 {
+    let top = non_climbable_top(world, registries, pos);
+    if top.is_finite() {
+        return top;
+    }
+    let below = non_climbable_top(world, registries, (pos.0, pos.1 - 1, pos.2));
+    if below >= 1.0 {
+        below - 1.0
+    } else {
+        f64::NEG_INFINITY
+    }
+}
+
+fn collides(world: &mut impl BlockView, registries: &Registries, body: [f64; 6]) -> bool {
+    let span = |min: f64, max: f64| {
+        (min - COLLISION_EPSILON).floor() as i32 - 1..=(max + COLLISION_EPSILON).floor() as i32 + 1
+    };
+    for x in span(body[0], body[3]) {
+        for y in span(body[1], body[4]) {
+            for z in span(body[2], body[5]) {
+                let state = world.state_at((x, y, z));
+                let (x, y, z) = (f64::from(x), f64::from(y), f64::from(z));
+                let hit = registries
+                    .blocks
+                    .collision_boxes(state)
+                    .iter()
+                    .map(|b| [b[0] + x, b[1] + y, b[2] + z, b[3] + x, b[4] + y, b[5] + z])
+                    .any(|b| {
+                        (0..3).all(|i| {
+                            b[i] < body[i + 3] - COLLISION_EPSILON
+                                && b[i + 3] > body[i] + COLLISION_EPSILON
+                        })
+                    });
+                if hit {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+pub fn safe_dismount(
+    world: &mut impl BlockView,
+    registries: &Registries,
+    pos: Pos,
+    check_dangerous: bool,
+) -> Option<[f64; 3]> {
+    if check_dangerous && dangerous(registries, world.state_at(pos)) {
+        return None;
+    }
+    let floor = floor_height(world, registries, pos);
+    if !floor.is_finite() || floor >= 1.0 {
+        return None;
+    }
+    let below = (pos.0, pos.1 - 1, pos.2);
+    if check_dangerous && floor <= 0.0 && dangerous(registries, world.state_at(below)) {
+        return None;
+    }
+    let feet = [
+        f64::from(pos.0) + 0.5,
+        f64::from(pos.1) + floor,
+        f64::from(pos.2) + 0.5,
+    ];
+    let body = [
+        feet[0] - PLAYER_HALF_WIDTH,
+        feet[1],
+        feet[2] - PLAYER_HALF_WIDTH,
+        feet[0] + PLAYER_HALF_WIDTH,
+        feet[1] + PLAYER_HEIGHT,
+        feet[2] + PLAYER_HALF_WIDTH,
+    ];
+    if collides(world, registries, body) {
+        return None;
+    }
+    let above = (pos.0, pos.1 + 1, pos.2);
+    if tagged(
+        registries,
+        world.state_at(pos),
+        "minecraft:invalid_spawn_inside",
+    ) || tagged(
+        registries,
+        world.state_at(above),
+        "minecraft:invalid_spawn_inside",
+    ) {
+        return None;
+    }
+    let inside = crate::portal::within_border(body[0], body[2])
+        && crate::portal::within_border(body[3], body[5]);
+    inside.then_some(feet)
+}
+
+pub fn anchor_stand_up(
+    world: &mut impl BlockView,
+    registries: &Registries,
+    pos: Pos,
+) -> Option<[f64; 3]> {
+    let offsets: Vec<(i32, i32, i32)> = ANCHOR_SIDES
+        .iter()
+        .map(|&(dx, dz)| (dx, 0, dz))
+        .chain(ANCHOR_SIDES.iter().map(|&(dx, dz)| (dx, -1, dz)))
+        .chain(ANCHOR_SIDES.iter().map(|&(dx, dz)| (dx, 1, dz)))
+        .chain(std::iter::once((0, 1, 0)))
+        .collect();
+    [true, false].into_iter().find_map(|check_dangerous| {
+        offsets.iter().find_map(|&(dx, dy, dz)| {
+            safe_dismount(
+                world,
+                registries,
+                (pos.0 + dx, pos.1 + dy, pos.2 + dz),
+                check_dangerous,
+            )
+        })
+    })
+}
+
+fn clockwise((dx, dz): (i32, i32)) -> (i32, i32) {
+    (-dz, dx)
+}
+
+fn facing_angle((dx, dz): (i32, i32), yaw: f32) -> bool {
+    let radians = yaw * (std::f32::consts::PI / 180.0);
+    dx as f32 * -radians.sin() + dz as f32 * radians.cos() > 0.0
+}
+
+fn bed_surround(forward: (i32, i32), side: (i32, i32)) -> [(i32, i32); 10] {
+    let (fx, fz) = forward;
+    let (sx, sz) = side;
+    [
+        (sx, sz),
+        (sx - fx, sz - fz),
+        (sx - fx * 2, sz - fz * 2),
+        (-fx * 2, -fz * 2),
+        (-sx - fx * 2, -sz - fz * 2),
+        (-sx - fx, -sz - fz),
+        (-sx, -sz),
+        (-sx + fx, -sz + fz),
+        (fx, fz),
+        (sx + fx, sz + fz),
+    ]
+}
+
+fn bed_above(forward: (i32, i32)) -> [(i32, i32); 2] {
+    [(0, 0), (-forward.0, -forward.1)]
+}
+
+fn stand_at(
+    world: &mut impl BlockView,
+    registries: &Registries,
+    pos: Pos,
+    offsets: &[(i32, i32)],
+    check_dangerous: bool,
+) -> Option<[f64; 3]> {
+    offsets.iter().find_map(|&(dx, dz)| {
+        safe_dismount(
+            world,
+            registries,
+            (pos.0 + dx, pos.1, pos.2 + dz),
+            check_dangerous,
+        )
+    })
+}
+
+pub fn bed_stand_up(
+    world: &mut impl BlockView,
+    registries: &Registries,
+    head: Pos,
+    forward: (i32, i32),
+    yaw: f32,
+) -> Option<[f64; 3]> {
+    let right = clockwise(forward);
+    let side = if facing_angle(right, yaw) {
+        (-right.0, -right.1)
+    } else {
+        right
+    };
+    let surround = bed_surround(forward, side);
+    let above = bed_above(forward);
+    let below = (head.0, head.1 - 1, head.2);
+    if is_bed(registries, world.state_at(below)) {
+        let tries: [(Pos, &[(i32, i32)], bool); 6] = [
+            (head, &surround, true),
+            (below, &surround, true),
+            (head, &above, true),
+            (head, &surround, false),
+            (below, &surround, false),
+            (head, &above, false),
+        ];
+        return tries
+            .into_iter()
+            .find_map(|(pos, offsets, check)| stand_at(world, registries, pos, offsets, check));
+    }
+    let offsets: Vec<(i32, i32)> = surround.iter().chain(above.iter()).copied().collect();
+    stand_at(world, registries, head, &offsets, true)
+        .or_else(|| stand_at(world, registries, head, &offsets, false))
+}
+
+pub fn look_at_yaw(feet: [f64; 3], (x, _, z): Pos) -> f32 {
+    let dx = f64::from(x) + 0.5 - feet[0];
+    let dz = f64::from(z) + 0.5 - feet[2];
+    let length = (dx * dx + dz * dz).sqrt();
+    let (dx, dz) = if length < 1.0e-4 {
+        (0.0, 0.0)
+    } else {
+        (dx / length, dz / length)
+    };
+    let mut yaw = (dz.atan2(dx) * 57.295_776_367_187_5 - 90.0) % 360.0;
+    if yaw >= 180.0 {
+        yaw -= 360.0;
+    }
+    if yaw < -180.0 {
+        yaw += 360.0;
+    }
+    yaw as f32
+}
+
+pub fn spawn_block(
+    world: &mut impl BlockView,
+    registries: &Registries,
+    rules: &DimensionRules,
+    respawn: &Respawn,
+    dark: bool,
+    consume: bool,
+) -> Option<SpawnBlock> {
+    let pos = respawn.at.pos;
+    let state = world.state_at(pos);
+    let blocks = &registries.blocks;
+    if is_anchor(registries, state) {
+        let charge = charges(registries, state);
+        if (!respawn.forced && charge == 0) || !rules.respawn_anchor_works {
+            return None;
+        }
+        let feet = anchor_stand_up(world, registries, pos)?;
+        let depleted = (!respawn.forced && consume)
+            .then(|| with_charges(registries, state, charge - 1).map(|state| (pos, state)))
+            .flatten();
+        return Some(SpawnBlock {
+            feet,
+            yaw: look_at_yaw(feet, pos),
+            depleted,
+        });
+    }
+    if is_bed(registries, state) {
+        let straw = blocks.block(blocks.block_of(state)).is_a("StrawBedBlock");
+        let rule = if straw {
+            &rules.straw_bed_rule
+        } else {
+            &rules.bed_rule
+        };
+        if !rule.can_set_spawn.holds(dark) {
+            return None;
+        }
+        let forward = horizontal(blocks.property(state, "facing")?)?;
+        let feet = bed_stand_up(world, registries, pos, forward, respawn.yaw)?;
+        return Some(SpawnBlock {
+            feet,
+            yaw: look_at_yaw(feet, pos),
+            depleted: None,
+        });
+    }
+    None
+}
+
+pub fn respawn_at_block(globals: &Globals, level: &mut Level, player: &mut Player) -> bool {
+    let dark = level.terrain.environment.sky_light_level() <= DARK_SKY_LIGHT;
+    let found = crate::respawn::respawn_point(player)
+        .filter(|point| point.at.dimension == level.dimension)
+        .and_then(|point| {
+            let mut world = ChunkWorld::new(&mut level.terrain.stream);
+            spawn_block(
+                &mut world,
+                &globals.registries,
+                &level.terrain.rules,
+                &point,
+                dark,
+                true,
+            )
+        });
+    let dimension = level.dimension;
+    let place = found.map(|block| Place::standing(dimension, block.feet, block.yaw, 0.0));
+    let missing = crate::respawn::respawn_in(globals, level, player, |_| place);
+    if let Some((pos, state)) = found.and_then(|block| block.depleted) {
+        deplete(level, pos, state);
+    }
+    missing
+}
+
+fn deplete(level: &mut Level, pos: Pos, state: BlockStateId) {
+    let terrain = &mut level.terrain;
+    let block = terrain.stream.states.block(state).cloned();
+    match level.entities.as_mut() {
+        Some(entities) => {
+            crate::level::write_blocks(terrain, entities, vec![(pos, block)]);
+            let center = centre(pos);
+            entities.sounds.push((
+                ANCHOR_DEPLETE_SOUND.to_owned(),
+                glam::DVec3::from_array(center),
+                1.0,
+                1.0,
+            ));
+        }
+        None => {
+            terrain.scene.set(pos, block);
+            terrain.stream.record_edits(&terrain.scene, &[pos]);
+            terrain.stream.mark_edited(&terrain.scene, &[pos]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod spawn_tests {
+    use super::tests::{Blocks, registries};
+    use super::*;
+
+    fn floor(world: &mut Blocks, y: i32) {
+        for x in -4..=4 {
+            for z in -4..=4 {
+                world.set((x, y, z), "minecraft:stone");
+            }
+        }
+    }
+
+    fn point(dimension: Dimension, pos: Pos, yaw: f32, forced: bool) -> Respawn {
+        Respawn {
+            at: GlobalPos { dimension, pos },
+            yaw,
+            pitch: 0.0,
+            forced,
+        }
+    }
+
+    #[test]
+    fn an_anchor_respawn_stands_beside_it_facing_it_and_spends_a_charge() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let nether = DimensionRules::load(&registries, Dimension::Nether).unwrap();
+        let mut world = Blocks::new(&registries);
+        floor(&mut world, 63);
+        world.set((0, 64, 0), "minecraft:respawn_anchor[charges=4]");
+        let anchor = point(Dimension::Nether, (0, 64, 0), 0.0, false);
+        let found = spawn_block(&mut world, &registries, &nether, &anchor, true, true).unwrap();
+        assert_eq!(found.feet, [0.5, 64.0, -0.5], "north of it first");
+        assert!(found.yaw.abs() < 1.0e-4, "facing south, at the anchor");
+        let (pos, state) = found.depleted.unwrap();
+        assert_eq!((pos, charges(&registries, state)), ((0, 64, 0), 3));
+        let forced = point(Dimension::Nether, (0, 64, 0), 0.0, true);
+        assert_eq!(
+            spawn_block(&mut world, &registries, &nether, &forced, true, true)
+                .unwrap()
+                .depleted,
+            None,
+            "a forced point keeps the charge"
+        );
+        world.set((0, 64, -1), "minecraft:stone");
+        world.set((-1, 64, 0), "minecraft:lava[level=0]");
+        let found = spawn_block(&mut world, &registries, &nether, &anchor, true, true).unwrap();
+        assert_eq!(
+            found.feet,
+            [0.5, 64.0, 1.5],
+            "past stone and lava to the south"
+        );
+        assert!((found.yaw + 180.0).abs() < 1.0e-4);
+        world.set((0, 64, 0), "minecraft:respawn_anchor[charges=0]");
+        assert_eq!(
+            spawn_block(&mut world, &registries, &nether, &anchor, true, true),
+            None,
+            "an empty anchor is no spawn"
+        );
+        world.set((0, 64, 0), "minecraft:respawn_anchor[charges=2]");
+        let overworld = DimensionRules::load(&registries, Dimension::Overworld).unwrap();
+        assert_eq!(
+            spawn_block(&mut world, &registries, &overworld, &anchor, false, true),
+            None,
+            "anchors do not work outside the Nether"
+        );
+    }
+
+    #[test]
+    fn an_anchor_walled_in_on_its_level_lets_the_player_up_or_down() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let nether = DimensionRules::load(&registries, Dimension::Nether).unwrap();
+        let mut world = Blocks::new(&registries);
+        floor(&mut world, 63);
+        for &(dx, dz) in &ANCHOR_SIDES {
+            world.set((dx, 64, dz), "minecraft:stone");
+            world.set((dx, 65, dz), "minecraft:stone");
+        }
+        world.set((0, 64, 0), "minecraft:respawn_anchor[charges=1]");
+        let anchor = point(Dimension::Nether, (0, 64, 0), 0.0, false);
+        let found = spawn_block(&mut world, &registries, &nether, &anchor, true, true).unwrap();
+        assert_eq!(found.feet, [0.5, 65.0, 0.5], "on top of it, last");
+        for &(dx, dz) in &ANCHOR_SIDES {
+            world.set((dx, 66, dz), "minecraft:stone");
+            world.set((dx, 67, dz), "minecraft:stone");
+        }
+        world.set((0, 65, 0), "minecraft:stone");
+        assert_eq!(
+            spawn_block(&mut world, &registries, &nether, &anchor, true, true),
+            None
+        );
+    }
+
+    #[test]
+    fn a_bed_respawn_stands_on_the_side_away_from_the_player_s_look_or_around_it() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let overworld = DimensionRules::load(&registries, Dimension::Overworld).unwrap();
+        let mut world = Blocks::new(&registries);
+        floor(&mut world, 63);
+        world.set(
+            (0, 64, 0),
+            "minecraft:red_bed[facing=north,part=foot,occupied=false]",
+        );
+        world.set(
+            (0, 64, -1),
+            "minecraft:red_bed[facing=north,part=head,occupied=false]",
+        );
+        let facing_east = point(Dimension::Overworld, (0, 64, -1), -90.0, false);
+        let found = spawn_block(
+            &mut world,
+            &registries,
+            &overworld,
+            &facing_east,
+            false,
+            true,
+        )
+        .unwrap();
+        assert_eq!(found.feet, [-0.5, 64.0, -0.5], "west of the head");
+        assert_eq!(found.depleted, None);
+        let facing_west = point(Dimension::Overworld, (0, 64, -1), 90.0, false);
+        let found = spawn_block(
+            &mut world,
+            &registries,
+            &overworld,
+            &facing_west,
+            false,
+            true,
+        )
+        .unwrap();
+        assert_eq!(found.feet, [1.5, 64.0, -0.5], "east of the head");
+        world.set((1, 64, -1), "minecraft:stone");
+        world.set((1, 64, 0), "minecraft:stone");
+        world.set((1, 64, 1), "minecraft:stone");
+        let found = spawn_block(
+            &mut world,
+            &registries,
+            &overworld,
+            &facing_west,
+            false,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            found.feet,
+            [0.5, 64.0, 1.5],
+            "past the foot when the side is walled"
+        );
+        let nether = DimensionRules::load(&registries, Dimension::Nether).unwrap();
+        assert_eq!(
+            spawn_block(&mut world, &registries, &nether, &facing_west, true, true),
+            None,
+            "a bed is no spawn where it cannot set one"
+        );
+        world.set((0, 64, -1), "minecraft:stone");
+        assert_eq!(
+            spawn_block(
+                &mut world,
+                &registries,
+                &overworld,
+                &facing_west,
+                false,
+                true
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn the_respawn_looks_at_the_block() {
+        let near = |feet: [f64; 3], yaw: f32| (look_at_yaw(feet, (0, 64, 0)) - yaw).abs() < 1.0e-4;
+        assert!(near([0.5, 64.0, -0.5], 0.0));
+        assert!(near([0.5, 64.0, 1.5], -180.0));
+        assert!(near([1.5, 64.0, 0.5], 90.0));
+        assert!(near([-0.5, 64.0, 0.5], -90.0));
+        assert!(near([1.5, 64.0, -0.5], 45.0));
     }
 }

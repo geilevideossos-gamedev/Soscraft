@@ -1969,7 +1969,7 @@ mod tests {
 
         let steve = server.players.get_mut(&id).unwrap();
         assert!(steve.observe_life(0));
-        assert!(!respawn(&server.globals, &server.levels[&Dimension::Nether], steve));
+        assert!(!respawn(&server.globals, server.levels.get_mut(&Dimension::Nether).unwrap(), steve));
         assert_eq!(steve.respawning, None);
         let switch = steve.switching.expect("the respawn switches dimension");
         assert_eq!(
@@ -1997,7 +1997,7 @@ mod tests {
         steve.set_respawn(Some(anchor));
         steve.observe_life(playerstate_iw4::PM_TYPE_DEAD);
         assert!(steve.observe_life(0));
-        assert!(!respawn(&server.globals, &server.levels[&Dimension::Overworld], steve));
+        assert!(!respawn(&server.globals, server.levels.get_mut(&Dimension::Overworld).unwrap(), steve));
         assert_eq!(steve.switching.map(|switch| (switch.to, switch.respawn)), Some((Dimension::Nether, true)));
         assert!(!respawn_in(&server.globals, &server.levels[&Dimension::Nether], steve, |_| None));
         assert_eq!(
@@ -2021,6 +2021,91 @@ mod tests {
         );
         assert_eq!(steve.respawn, None);
         assert_eq!(steve.switching.map(|switch| (switch.to, switch.arrival)), Some((Dimension::Overworld, None)));
+    }
+
+    #[test]
+    fn a_nether_death_respawns_beside_a_charged_anchor_and_spends_a_charge() {
+        use crate::player_nbt::{GlobalPos, Respawn};
+        use crate::respawn::respawn;
+        let Some(registries) = registries() else {
+            return;
+        };
+        let (_dir, save) = world("anchor-respawn");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let mut steve = join(Some(&save), &recipes, &rules, joining(&profile("Steve")));
+        steve.arrive(Place::standing(Dimension::Nether, [5.5, 100.0, 5.5], 0.0, 0.0));
+        let id = steve.uuid.clone();
+        let mut server = server_with(test_globals(registries, Some(save)), vec![steve]);
+        server.open_levels(2);
+        wait_for_levels(&mut server);
+        let nether = server.levels.get_mut(&Dimension::Nether).unwrap();
+        load_chunks_around(nether, (5, 100, 5));
+        let states = nether.terrain.stream.states.clone();
+        let block = |text: &str| {
+            let state = states.registries().blocks.parse_state(text).unwrap();
+            states.block(state).cloned()
+        };
+        let mut written = Vec::new();
+        for x in 2..=8 {
+            for z in 2..=8 {
+                for y in 99..=104 {
+                    let placed = match y {
+                        99 => block("minecraft:obsidian"),
+                        _ => None,
+                    };
+                    nether.terrain.scene.set((x, y, z), placed);
+                    written.push((x, y, z));
+                }
+            }
+        }
+        nether
+            .terrain
+            .scene
+            .set((5, 100, 5), block("minecraft:respawn_anchor[charges=2]"));
+        nether.terrain.stream.record_edits(&nether.terrain.scene, &written);
+        let anchor = Respawn {
+            at: GlobalPos {
+                dimension: Dimension::Nether,
+                pos: (5, 100, 5),
+            },
+            yaw: 0.0,
+            pitch: 0.0,
+            forced: false,
+        };
+        let steve = server.players.get_mut(&id).unwrap();
+        steve.set_respawn(Some(anchor));
+        steve.observe_life(playerstate_iw4::PM_TYPE_DEAD);
+        assert!(steve.observe_life(0));
+        let nether = server.levels.get_mut(&Dimension::Nether).unwrap();
+        assert!(!respawn(&server.globals, nether, steve), "the anchor is there");
+        assert!(steve.switching.is_none(), "the anchor is in the level the player died in");
+        let arrival = steve.arrival.unwrap();
+        assert_eq!((arrival.dimension, arrival.feet), (Dimension::Nether, [5.5, 100.0, 4.5]), "north of the anchor");
+        assert!(arrival.yaw.abs() < 1.0e-4 && arrival.pitch == 0.0, "facing it");
+        assert_eq!(steve.respawn, Some(anchor));
+        let charged = |level: &Level| {
+            minecraft_terrain::scene::Scene::block(&level.terrain.scene, (5, 100, 5))
+                .and_then(|block| block.properties.get("charges").cloned())
+        };
+        assert_eq!(charged(nether), Some("1".to_owned()), "a charge is spent");
+        steve.observe_life(playerstate_iw4::PM_TYPE_DEAD);
+        assert!(steve.observe_life(0));
+        assert!(!respawn(&server.globals, nether, steve));
+        assert_eq!(charged(nether), Some("0".to_owned()));
+        steve.observe_life(playerstate_iw4::PM_TYPE_DEAD);
+        assert!(steve.observe_life(0));
+        steve.arrival = None;
+        assert!(
+            respawn(&server.globals, nether, steve),
+            "an empty anchor is missing"
+        );
+        assert_eq!(steve.respawn, None);
+        assert_eq!(
+            steve.switching.map(|switch| switch.to),
+            Some(Dimension::Overworld),
+            "and the player goes to the overworld's spawn"
+        );
     }
 
     #[test]

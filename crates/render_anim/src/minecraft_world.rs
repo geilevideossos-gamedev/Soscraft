@@ -643,7 +643,7 @@ fn update(
             if let Some(switch) = player.switching.as_mut() {
                 switch.respawn = false;
             }
-            if minecraft_survival::respawn::respawn_in(globals, level, player, |_| None) {
+            if minecraft_survival::respawn_block::respawn_at_block(globals, level, player) {
                 show_chat(&mut ui.chat, inventory_ui, &world.packs, &[minecraft_survival::player::missing_respawn_message()]);
             }
             if player.switching.is_some_and(|switch| !switch.left) {
