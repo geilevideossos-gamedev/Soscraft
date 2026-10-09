@@ -36,6 +36,7 @@ pub enum Throwable {
     EnderPearl,
     ExperienceBottle,
     SplashPotion,
+    LingeringPotion,
 }
 
 impl Throwable {
@@ -46,6 +47,7 @@ impl Throwable {
             "minecraft:ender_pearl" => Some(Self::EnderPearl),
             "minecraft:experience_bottle" => Some(Self::ExperienceBottle),
             "minecraft:splash_potion" => Some(Self::SplashPotion),
+            "minecraft:lingering_potion" => Some(Self::LingeringPotion),
             _ => None,
         }
     }
@@ -57,13 +59,14 @@ impl Throwable {
             Self::EnderPearl => "minecraft:entity.ender_pearl.throw",
             Self::ExperienceBottle => "minecraft:entity.experience_bottle.throw",
             Self::SplashPotion => "minecraft:entity.splash_potion.throw",
+            Self::LingeringPotion => "minecraft:entity.lingering_potion.throw",
         }
     }
 
     pub fn pitch_offset(self) -> f32 {
         match self {
             Self::Snowball | Self::Egg | Self::EnderPearl => 0.0,
-            Self::ExperienceBottle | Self::SplashPotion => -20.0,
+            Self::ExperienceBottle | Self::SplashPotion | Self::LingeringPotion => -20.0,
         }
     }
 
@@ -71,7 +74,7 @@ impl Throwable {
         match self {
             Self::Snowball | Self::Egg | Self::EnderPearl => POWER,
             Self::ExperienceBottle => 0.7,
-            Self::SplashPotion => 0.5,
+            Self::SplashPotion | Self::LingeringPotion => 0.5,
         }
     }
 
@@ -83,7 +86,7 @@ impl Throwable {
         match self {
             Self::Snowball | Self::Egg | Self::EnderPearl => GRAVITY,
             Self::ExperienceBottle => 0.07,
-            Self::SplashPotion => minecraftoss_entities::potion::GRAVITY,
+            Self::SplashPotion | Self::LingeringPotion => minecraftoss_entities::potion::GRAVITY,
         }
     }
 }
@@ -168,6 +171,14 @@ impl PlayerBody {
     pub fn targetable(&self) -> bool {
         self.alive && !self.spectator
     }
+}
+
+pub fn target_feet(target: &PotionTarget) -> DVec3 {
+    DVec3::new((target.min.x + target.max.x) / 2.0, target.min.y, (target.min.z + target.max.z) / 2.0)
+}
+
+pub fn targets_by_id(targets: &[PotionTarget], id: u64) -> Option<DVec3> {
+    targets.iter().find(|t| t.id == id).map(target_feet)
 }
 
 pub fn struck_player(id: u64) -> Option<u64> {
@@ -324,7 +335,7 @@ impl Thrown {
     }
 
     pub fn tint(&self) -> Option<u32> {
-        matches!(self.kind, Throwable::SplashPotion).then(|| self.contents().color())
+        matches!(self.kind, Throwable::SplashPotion | Throwable::LingeringPotion).then(|| self.contents().color())
     }
 
     pub fn view(&self) -> ThrownView {
@@ -992,6 +1003,15 @@ mod tests {
         assert_eq!(throw("minecraft:snowball", 0.0).view().tint, None);
         let plain = throw("minecraft:splash_potion", 0.0);
         assert_eq!(plain.view().tint, Some(BOTTLE_COLOR));
+    }
+
+    #[test]
+    fn a_lingering_potion_flies_like_a_splash_potion() {
+        let kind = Throwable::LingeringPotion;
+        assert_eq!(Throwable::of("minecraft:lingering_potion"), Some(kind));
+        assert_eq!((kind.pitch_offset(), kind.power(), kind.gravity()), (-20.0, 0.5, 0.05));
+        assert_eq!(kind.sound(), "minecraft:entity.lingering_potion.throw");
+        assert_eq!(throw("minecraft:lingering_potion", 0.0).view().tint, Some(BOTTLE_COLOR));
     }
 
     #[test]

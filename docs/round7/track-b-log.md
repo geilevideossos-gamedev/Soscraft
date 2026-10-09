@@ -104,7 +104,7 @@ IW4L_MINECRAFT_KIT=splash_potion@harming*3,splash_potion@strong_healing,splash_p
 
 ### 6. Minecraft splash water bottles put out fire, campfires, candles and burning mobs and players like vanilla
 
-Commit: (next entry)
+Commit: a293969
 
 - **Changed:** `thrown.rs`: `douse_cells(block, face)`: the cell in front of the struck face, the struck block and the front cell's four horizontal neighbours (`AbstractThrownPotion.onHitBlock`, north, east, south, west). `server.rs` `douse_fire`: `#fire` is removed without drops (`destroyBlock(pos, false)`), a lit `#candles`/`#candle_cakes` block goes out with `block.candle.extinguish` (volume 1, pitch 1), a lit `#campfires` block goes out with event 1009's `block.fire.extinguish` (volume 0.5, pitch 2.6 plus or minus 0.8); the tags are read from the runtime data. Only a water potion that struck a block douses (`#douses_fire` is water).
 - `splash.rs` `wet` (`affectEntitiesAround` for water: `#extinguishes_entities` and `#hurts_water_sensitive_entities`): every mob in the potion's box grown 4, 2, 4 whose feet are within 4 blocks stops burning; an enderman (the only water-sensitive mob we have) takes 1 damage, turns on the thrower and teleports away. Players in reach get `PlayerPotion::Extinguish`.
@@ -122,6 +122,25 @@ Commit: (next entry)
 IW4L_MINECRAFT_KIT=splash_potion@water*6,netherrack*16,campfire*2,candle*4,flint_and_steel,cow_spawn_egg*2,enderman_spawn_egg
 ```
 
+### 7. Minecraft lingering potions leave a shrinking effect cloud like vanilla
+
+Commit: (next entry)
+
+- **Changed:** `thrown.rs`: `Throwable::LingeringPotion` (as the splash potion, sound `entity.lingering_potion.throw`, tinted in flight). On landing it does the water part of a splash (douse, wet), breaks with its colour and sound, and when it has effects leaves an effect cloud at the mob or player it struck, or where it broke (`ThrownLingeringPotion.onHitAsPotion`).
+- New `effect_cloud.rs`: `EffectCloud::lingering`: radius 3, -0.5 per use, -3/600 per tick, 600 ticks after a 10-tick wait, the potion's effects at the lingering item's `potion_duration_scale` (0.25). `tick(visitors)` is `AreaEffectCloud.serverTick`: gone after `duration + wait` ticks or below radius 0.5; every 5 ticks it touches each visitor whose box meets its 0.5-high slab and whose feet are inside the radius, unless touched in the last 20 ticks or unable to take any of its effects. `CloudView` (position, radius, colour, waiting) for the client.
+- `server.rs`: `ServerSim::tick_clouds(players)` (run before the throws each tick, so a new cloud first ticks on the next one, as a fresh entity does): touched mobs get the effects (instant ones at half strength through `splash_instant`, the thrower blamed), touched players get `Output.player_potions` hits. `EntitySnapshot.clouds` carries the views. `spell_particles.rs` `SpellParticles::cloud(position, radius, colour, waiting)`: one client tick of the cloud's `entity_effect` particles (`AreaEffectCloud.clientTick`: `ceil(pi r^2)` motionless particles over the disc, or 2 white or coloured ones at 0.2 while waiting).
+- **Tests:** effect_cloud: `a_lingering_cloud_carries_a_quarter_of_the_potion`, `the_cloud_is_gone_by_tick_610`, `a_victim_waits_20_ticks_and_each_use_shrinks_the_cloud`, `only_those_inside_the_radius_and_able_are_touched`, `a_cloud_without_effects_touches_nobody`. spell_particles: `a_cloud_fills_its_circle_each_tick`. thrown: `a_lingering_potion_flies_like_a_splash_potion`. server: `a_lingering_poison_cloud_poisons_whoever_stands_in_it_once_a_second` (5 touches 20 ticks apart, 225-tick poison each, the fifth use ends the cloud), `a_lingering_harming_cloud_hurts_a_cow_at_half_strength` (3 damage).
+- **Decisions:** clouds are not saved yet (vanilla saves them; they live 30 s at most). Without the glue the cloud is invisible but works.
+- **Test steps:**
+  1. Spawn a cow, throw Lingering Harming at the ground next to it: about every second it flashes red and loses health while it stays inside; the effect stops after 4 or 5 hits as the cloud shrinks.
+  2. Spawn a spider and throw Lingering Poison under it: it keeps flashing from poison while inside.
+  3. After the glue (items 6 and 8): the cloud shows as a disc of drifting purple-green specks that shrinks over about 25 s, and standing in Lingering Poison poisons you again about once a second.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=lingering_potion@harming*2,lingering_potion@poison*2,lingering_potion@regeneration,cow_spawn_egg*4,spider_spawn_egg*2
+```
+
 ## After the split
 
 The glue still needed in the game files (today `render_anim/src/minecraft_*.rs`, after the split their new crate). Each item names the function, its inputs and the call site.
@@ -133,3 +152,4 @@ The glue still needed in the game files (today `render_anim/src/minecraft_*.rs`,
 5. **Potions drawn in flight.** In `Entities::poll` (`minecraft_entities.rs:667`) keep `snapshot.thrown_views` (as `self.thrown` is kept today) and in the mesh build (`minecraft_entities.rs:905`) call `minecraft_terrain::thrown::append_views(&mut out.items, &self.thrown_views, partial, camera, atlas, forward, light)` instead of `append_sprites`. `EntitySnapshot.thrown` can then go.
 6. **Potions on the player.** In `Entities::poll` collect `output.player_potions` whose `player` is the local player, and where the pearl landings are applied (`minecraft_world.rs:1610`), for each: `if let Some(damage) = minecraft_terrain::potions::apply_to_player(&mut survival.status, &hit.potion)` then hurt the player with `damage` past armour (`Armor::default()`), from `hit.at`, as `DamageCause::Magic` (indirect magic when `by` is set), skipped while invulnerable (creative). `PlayerPotion::Extinguish` also stops the burning overlay.
 7. **Drinking uses the table.** `MinecraftSurvival::drink_potion` (`minecraft_survival.rs:573`) takes the stack's components and does `for hit in potions::drink_hits(&PotionContents::from_components(components), potions::duration_scale(id, components))` with the same `apply_to_player` and harm handling, instead of its own list (it then covers turtle master, custom effects and every long and strong form).
+8. **Lingering clouds drawn.** In the client tick beside `self.portal.tick()` (`minecraft_entities.rs:618`): for each `snapshot.clouds` view, `self.spell.cloud(view.position, view.radius, view.color, view.waiting)` (keep the last snapshot's `clouds` like `self.orbs`), then `self.spell.tick()`; the particles draw with item 4's `append_mesh`.

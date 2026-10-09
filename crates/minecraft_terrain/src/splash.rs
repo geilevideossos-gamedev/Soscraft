@@ -36,12 +36,7 @@ pub fn wet(
         if !boxes_meet(area, (target.min, target.max)) {
             continue;
         }
-        let feet = DVec3::new(
-            (target.min.x + target.max.x) / 2.0,
-            target.min.y,
-            (target.min.z + target.max.z) / 2.0,
-        );
-        if feet.distance_squared(at) >= WET_REACH_SQ {
+        if crate::thrown::target_feet(&target).distance_squared(at) >= WET_REACH_SQ {
             continue;
         }
         if let Some(enderman) = world.enderman_mut(target.id) {

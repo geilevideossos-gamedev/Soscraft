@@ -60,6 +60,7 @@ pub mod doors;
 pub mod thrown;
 pub mod potions;
 pub mod splash;
+pub mod effect_cloud;
 pub mod bottle;
 pub mod bucket;
 pub mod flint;

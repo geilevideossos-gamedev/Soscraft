@@ -125,6 +125,36 @@ impl SpellParticles {
         }
     }
 
+    pub fn cloud(&mut self, center: DVec3, radius: f32, color: u32, waiting: bool) {
+        if waiting && self.random.next_boolean() {
+            return;
+        }
+        let (count, spread) = if waiting {
+            (2, 0.2)
+        } else {
+            (
+                (std::f32::consts::PI * radius * radius).ceil() as i32,
+                radius,
+            )
+        };
+        for _ in 0..count {
+            let angle = self.random.next_float() * std::f32::consts::TAU;
+            let distance = self.random.next_float().sqrt() * spread;
+            let at = center
+                + DVec3::new(
+                    f64::from(angle.cos() * distance),
+                    0.0,
+                    f64::from(angle.sin() * distance),
+                );
+            let color = if waiting && self.random.next_boolean() {
+                [1.0; 3]
+            } else {
+                rgb(color)
+            };
+            self.spawn(SpellKind::Effect, at, DVec3::ZERO, color, 1.0);
+        }
+    }
+
     pub fn spawn(
         &mut self,
         kind: SpellKind,
@@ -285,6 +315,27 @@ mod tests {
             spells.tick();
         }
         assert!(spells.is_empty());
+    }
+
+    #[test]
+    fn a_cloud_fills_its_circle_each_tick() {
+        let mut spells = SpellParticles::new(3);
+        let center = DVec3::new(0.5, 64.0, 0.5);
+        spells.cloud(center, 3.0, 8889187, false);
+        assert_eq!(spells.len(), 29);
+        assert!(spells.particles.iter().all(|s| {
+            let d = s.position - center;
+            d.y == 0.0 && d.x * d.x + d.z * d.z <= 9.0 + 1e-6
+        }));
+        let mut waiting = SpellParticles::new(4);
+        for _ in 0..40 {
+            waiting.cloud(center, 3.0, 8889187, true);
+        }
+        assert!(
+            waiting.len() < 80 && waiting.len() > 20,
+            "{}",
+            waiting.len()
+        );
     }
 
     #[test]

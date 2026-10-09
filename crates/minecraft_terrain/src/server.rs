@@ -68,6 +68,7 @@ pub struct ServerSim {
     sound_random: minecraftoss_player::rng::LegacyRandom,
     player_potions: Vec<crate::potions::PlayerPotionHit>,
     held: std::collections::HashMap<u64, [Option<minecraftoss_player::inventory::ItemStack>; 2]>,
+    clouds: Vec<crate::effect_cloud::EffectCloud>,
 }
 
 /// What a player's hit or use on a mob did, for the client to present.
@@ -171,6 +172,7 @@ pub struct EntitySnapshot {
     pub orbs: Vec<ServerOrb>,
     pub thrown: Vec<(String, [f64; 3], [f64; 3], i32)>,
     pub thrown_views: Vec<crate::thrown::ThrownView>,
+    pub clouds: Vec<crate::effect_cloud::CloudView>,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -243,6 +245,7 @@ impl ServerSim {
             sound_random: minecraftoss_player::rng::LegacyRandom::new(0x5EED_B0771E),
             player_potions: Vec::new(),
             held: std::collections::HashMap::new(),
+            clouds: Vec::new(),
         }
     }
 
@@ -705,6 +708,63 @@ impl ServerSim {
         self.thrown.push(thrown);
     }
 
+    pub fn tick_clouds(&mut self, players: &[crate::thrown::PlayerBody]) {
+        use crate::effect_cloud::{Visitor, INSTANT_SCALE};
+        use crate::potions::{PlayerPotion, PlayerPotionHit};
+        if self.clouds.is_empty() {
+            return;
+        }
+        let mob_targets = crate::thrown::targets(&self.mobs);
+        let mut clouds = std::mem::take(&mut self.clouds);
+        for cloud in &mut clouds {
+            let mut visitors = Vec::new();
+            for target in &mob_targets {
+                let able = |mobs: &mut minecraftoss_entities::world::EntityWorld, effect: &crate::potions::PotionEffect| match effect.mob_effect() {
+                    Some(mob) => mobs.mob_effects_mut(target.id).is_some_and(|(_, undead, spider)| minecraftoss_entities::effects::can_be_affected(mob.effect, undead, spider)),
+                    None => true,
+                };
+                let affected = cloud.effects.iter().any(|effect| able(&mut self.mobs, effect));
+                visitors.push(Visitor { key: target.id, feet: crate::thrown::target_feet(target), min: target.min, max: target.max, affected });
+            }
+            for player in players.iter().filter(|p| p.targetable()) {
+                let (min, max) = player.bounds();
+                visitors.push(Visitor { key: crate::thrown::PLAYER_TARGET + player.id, feet: player.feet, min, max, affected: true });
+            }
+            let by = cloud.owner.map(|o| crate::thrown::PLAYER_TARGET + o);
+            for key in cloud.tick(&visitors) {
+                for effect in &cloud.effects {
+                    if let Some(player) = crate::thrown::struck_player(key) {
+                        let potion = if effect.instantaneous() {
+                            match crate::potions::instant_amount(effect, false, INSTANT_SCALE) {
+                                Some(PlayerPotion::Harm { amount, .. }) => PlayerPotion::Harm { amount, by: cloud.owner },
+                                Some(other) => other,
+                                None => continue,
+                            }
+                        } else {
+                            PlayerPotion::Effect(effect.clone())
+                        };
+                        self.player_potions.push(PlayerPotionHit { player, potion, at: cloud.position });
+                    } else if let Some(mob) = effect.mob_effect() {
+                        if effect.instantaneous() {
+                            let hit = self.mobs.splash_instant(key, mob.effect, mob.amplifier, INSTANT_SCALE, cloud.position, by);
+                            if let (Some(owner), true) = (cloud.owner, hit.is_some_and(|h| h.applied)) {
+                                crate::splash::blame_player(&mut self.mobs, key, owner);
+                            }
+                        } else {
+                            self.mobs.add_mob_effect(key, mob);
+                        }
+                    }
+                }
+            }
+        }
+        clouds.retain(|cloud| cloud.alive);
+        self.clouds = clouds;
+    }
+
+    pub fn cloud_views(&self) -> Vec<crate::effect_cloud::CloudView> {
+        self.clouds.iter().map(crate::effect_cloud::EffectCloud::view).collect()
+    }
+
     fn douse_fire(&mut self, (x, y, z): BlockPos) {
         let at = minecraftoss_core::BlockPos::new(x, y, z);
         let state = self.level.block(at);
@@ -771,6 +831,7 @@ impl ServerSim {
         let mut hatched = Vec::new();
         let mut awards = Vec::new();
         let mut splashes = Vec::new();
+        let mut lingering = Vec::new();
         {
             let Self { level, states, mob_tables, thrown, pearl_landings, potion_breaks, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
@@ -798,7 +859,7 @@ impl ServerSim {
                         let direction = landed.face.map_or(-landed.velocity, crate::thrown::face_normal);
                         awards.push((crate::thrown::sound_cell(at), pitch, landed.at, direction, amount));
                     }
-                    Throwable::SplashPotion => {
+                    Throwable::SplashPotion | Throwable::LingeringPotion => {
                         let contents = t.contents();
                         let at = t.position();
                         potion_breaks.push(minecraftoss_entities::world::PotionBreak { position: at, color: contents.color(), instant: contents.instant_potion() });
@@ -808,7 +869,18 @@ impl ServerSim {
                             (true, Some(block), Some(face)) => Some(crate::thrown::douse_cells(block, face)),
                             _ => None,
                         };
-                        splashes.push((at, t.margin(), t.owner, contents.is_water(), douse, contents.all_effects(), scale, pitch));
+                        if t.kind == Throwable::LingeringPotion {
+                            if contents.has_effects() {
+                                let struck = landed.mob.and_then(|id| match crate::thrown::struck_player(id) {
+                                    Some(player) => players.iter().find(|p| p.id == player).map(|p| p.feet),
+                                    None => crate::thrown::targets_by_id(&mob_targets, id),
+                                });
+                                lingering.push(crate::effect_cloud::EffectCloud::lingering(struck.unwrap_or(at), Some(t.owner), &contents, scale));
+                            }
+                            splashes.push((at, t.margin(), t.owner, contents.is_water(), douse, Vec::new(), scale, pitch));
+                        } else {
+                            splashes.push((at, t.margin(), t.owner, contents.is_water(), douse, contents.all_effects(), scale, pitch));
+                        }
                     }
                 }
             }
@@ -830,6 +902,7 @@ impl ServerSim {
             self.player_potions.extend(hits);
             self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::thrown::BREAK_SOUND, pos: crate::thrown::sound_cell(at), volume: 1.0, pitch });
         }
+        self.clouds.append(&mut lingering);
         for (mob, velocity, owner, seed) in struck {
             crate::thrown::hurt(&mut self.mobs, mob, velocity, owner, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
         }
@@ -1623,6 +1696,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.mobs.set_player_main_hand(0, held.as_deref());
                     sim.tick_mobs(&input.mob_players, input.bright_outside);
                     let bodies: Vec<_> = input.mob_players.iter().map(crate::thrown::PlayerBody::of).collect();
+                    sim.tick_clouds(&bodies);
                     sim.tick_thrown(&bodies);
                     let teleports = sim.take_pearl_teleports();
                     out.pearl_landings.extend(teleports.iter().map(|&(_, at)| at));
@@ -1655,7 +1729,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     }
                     // After the items, one experience orb.
                     out.orbs_taken.extend(sim.take_experience(pickup_feet));
-                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown: sim.thrown_view(), thrown_views: sim.thrown_views() });
+                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown: sim.thrown_view(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views() });
                     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
                     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), started.elapsed().as_secs_f64() * 1000.0));
                 }
@@ -3832,6 +3906,55 @@ mod tests {
         assert_eq!(after.enderman.health, before - 1.0);
         assert!(after.dodge_pending);
         assert_eq!(hits.iter().map(|h| (h.player, h.potion.clone())).collect::<Vec<_>>(), vec![(3, crate::potions::PlayerPotion::Extinguish)]);
+    }
+
+    #[test]
+    fn a_lingering_poison_cloud_poisons_whoever_stands_in_it_once_a_second() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.throw(thrown_potion(0, "minecraft:lingering_potion", "minecraft:poison", 6));
+        let players = [player_at(1, [9.0, 200.0, 8.5], true), player_at(2, [13.5, 200.0, 8.5], true)];
+        let mut poisoned = Vec::new();
+        let mut radii = Vec::new();
+        let mut gone = None;
+        for tick in 0..140 {
+            server.tick_clouds(&players);
+            server.tick_thrown(&players);
+            let views = server.cloud_views();
+            radii.extend(views.iter().map(|c| c.radius));
+            if let Some(view) = views.first() {
+                assert!(view.position.distance(glam::DVec3::new(8.5, 200.0, 8.5)) < 0.05, "{view:?}");
+            } else if !radii.is_empty() && gone.is_none() {
+                gone = Some(tick);
+            }
+            for hit in server.take_player_potions() {
+                if let crate::potions::PlayerPotion::Effect(effect) = hit.potion {
+                    poisoned.push((tick, hit.player, effect.duration));
+                }
+            }
+        }
+        assert_eq!(server.take_potion_breaks().len(), 1);
+        assert_eq!(poisoned.len(), 5, "{poisoned:?}");
+        assert!(poisoned.iter().all(|&(_, player, duration)| player == 1 && duration == 225));
+        assert!(poisoned.windows(2).all(|w| w[1].0 - w[0].0 == 20), "{poisoned:?}");
+        assert!(radii.windows(2).all(|w| w[1] <= w[0]));
+        assert_eq!(gone, Some(poisoned[4].0), "the fifth use shrinks it below half a block");
+    }
+
+    #[test]
+    fn a_lingering_harming_cloud_hurts_a_cow_at_half_strength() {
+        let Some((mut server, _)) = door_world() else { return };
+        if server.summon("minecraft:cow", [9.5, 200.0, 8.5], None, 0.0).is_err() {
+            return;
+        }
+        server.throw(thrown_potion(0, "minecraft:lingering_potion", "minecraft:harming", 7));
+        let mut health = Vec::new();
+        for _ in 0..40 {
+            server.tick_clouds(&[]);
+            server.tick_thrown(&[]);
+            health.push(cow_health(&server, 9.5).unwrap_or(0.0));
+        }
+        health.dedup();
+        assert_eq!(health[..2], [10.0, 7.0], "{health:?}");
     }
 
     #[test]
