@@ -635,58 +635,11 @@ impl Survival {
         self.status.food.add_exhaustion(amount);
     }
 
-    pub fn drink_potion(&mut self, potion: &str) {
-        let name = potion.strip_prefix("minecraft:").unwrap_or(potion);
-        let (base, long, strong) = match name.split_once('_') {
-            Some(("long", base)) => (base, true, false),
-            Some(("strong", base)) => (base, false, true),
-            _ => (name, false, false),
-        };
-        let pick = |normal: u32, extended: u32, boosted: u32| {
-            if long {
-                extended
-            } else if strong {
-                boosted
-            } else {
-                normal
-            }
-        };
-        let level = u8::from(strong);
-        match base {
-            "fire_resistance" => {
-                self.status
-                    .add_effect(EffectKind::FireResistance, pick(3600, 9600, 3600), 0)
-            }
-            "slowness" => {
-                self.status
-                    .add_effect(EffectKind::Slowness, pick(1800, 4800, 400), level * 3)
-            }
-            "turtle_master" => {
-                let ticks = pick(400, 800, 400);
-                self.status
-                    .add_effect(EffectKind::Slowness, ticks, if strong { 5 } else { 3 });
-                self.status
-                    .add_effect(EffectKind::Resistance, ticks, if strong { 3 } else { 2 });
-            }
-            "healing" => self.status.heal(f32::from(4u8 << level)),
-            "harming" if !self.invulnerable => {
-                let before = self.status.health;
-                let _ = self
-                    .status
-                    .hurt(f32::from(6u8 << level), Armor::default(), 0.0);
-                self.record(before, DamageCause::Magic, 0.0);
-            }
-            "poison" => self
-                .status
-                .add_effect(EffectKind::Poison, pick(900, 1800, 432), level),
-            "regeneration" => {
-                self.status
-                    .add_effect(EffectKind::Regeneration, pick(900, 1800, 450), level)
-            }
-            "weakness" => self
-                .status
-                .add_effect(EffectKind::Weakness, pick(1800, 4800, 1800), 0),
-            _ => {}
+    pub fn drink_potion(&mut self, item: &str, components: Option<&serde_json::Value>) {
+        use minecraft_terrain::potions::{PotionContents, drink_hits, duration_scale};
+        let contents = PotionContents::from_components(components);
+        for potion in drink_hits(&contents, duration_scale(item, components)) {
+            self.take_potion(&potion, None, || 0.0);
         }
     }
 
@@ -793,13 +746,10 @@ impl Survival {
             }
             FoodUseTick::Finished { overflow } => {
                 let id = using.stack.id.clone();
-                let potion =
-                    minecraft_terrain::stations::potion_of(&using.stack).map(str::to_owned);
+                let components = using.stack.components.clone();
                 self.eating = None;
                 apply_consumed_food_effects(&id, &mut self.status, &mut random);
-                if let Some(potion) = potion {
-                    self.drink_potion(&potion);
-                }
+                self.drink_potion(&id, components.as_ref());
                 if id == minecraft_terrain::bottle::MILK_BUCKET {
                     self.clear_effects();
                 }
@@ -1247,15 +1197,20 @@ mod tests {
         assert!((fighter.status.food.exhaustion - 0.305).abs() < 1e-6);
     }
 
+    fn drink(survival: &mut Survival, potion: &str) {
+        let components = serde_json::json!({"minecraft:potion_contents": {"potion": potion}});
+        survival.drink_potion("minecraft:potion", Some(&components));
+    }
+
     #[test]
     fn potions_apply_their_vanilla_effects() {
         let mut survival = fresh();
         survival.status.health = 10.0;
-        survival.drink_potion("minecraft:strong_healing");
+        drink(&mut survival, "minecraft:strong_healing");
         assert!((survival.status.health - 18.0).abs() < 1e-6);
-        survival.drink_potion("minecraft:harming");
+        drink(&mut survival, "minecraft:harming");
         assert!((survival.status.health - 12.0).abs() < 1e-6);
-        survival.drink_potion("minecraft:long_poison");
+        drink(&mut survival, "minecraft:long_poison");
         assert_eq!(
             survival
                 .status
@@ -1263,7 +1218,7 @@ mod tests {
                 .map(|e| (e.duration, e.amplifier)),
             Some((1800, 0))
         );
-        survival.drink_potion("minecraft:strong_turtle_master");
+        drink(&mut survival, "minecraft:strong_turtle_master");
         assert_eq!(
             survival
                 .status
@@ -1278,7 +1233,7 @@ mod tests {
                 .map(|e| e.amplifier),
             Some(3)
         );
-        survival.drink_potion("minecraft:long_fire_resistance");
+        drink(&mut survival, "minecraft:long_fire_resistance");
         assert_eq!(
             survival
                 .status
@@ -1286,8 +1241,45 @@ mod tests {
                 .map(|e| e.duration),
             Some(9600)
         );
-        survival.drink_potion("minecraft:water");
-        survival.drink_potion("minecraft:swiftness");
+        drink(&mut survival, "minecraft:water");
+        drink(&mut survival, "minecraft:swiftness");
+    }
+
+    #[test]
+    fn a_drunk_potion_gives_its_custom_effects_and_every_strong_and_long_form() {
+        let mut survival = fresh();
+        let components = serde_json::json!({"minecraft:potion_contents": {
+            "potion": "minecraft:strong_poison",
+            "custom_effects": [{"id": "minecraft:regeneration", "amplifier": 1, "duration": 100}]
+        }});
+        survival.drink_potion("minecraft:potion", Some(&components));
+        assert_eq!(
+            survival
+                .status
+                .effect(EffectKind::Poison)
+                .map(|e| (e.duration, e.amplifier)),
+            Some((432, 1))
+        );
+        assert_eq!(
+            survival
+                .status
+                .effect(EffectKind::Regeneration)
+                .map(|e| (e.duration, e.amplifier)),
+            Some((100, 1))
+        );
+        drink(&mut survival, "minecraft:long_weakness");
+        assert_eq!(
+            survival.status.effect(EffectKind::Weakness).map(|e| e.duration),
+            Some(4800)
+        );
+        drink(&mut survival, "minecraft:long_turtle_master");
+        assert_eq!(
+            survival
+                .status
+                .effect(EffectKind::Resistance)
+                .map(|e| (e.duration, e.amplifier)),
+            Some((800, 2))
+        );
     }
 
     #[test]
@@ -2226,7 +2218,7 @@ mod tests {
     fn a_potion_of_harming_kills_by_magic_and_a_respawn_forgets_it() {
         let mut survival = fresh();
         survival.status.health = 5.0;
-        survival.drink_potion("minecraft:harming");
+        drink(&mut survival, "minecraft:harming");
         assert_eq!(survival.status.health, 0.0);
         assert_eq!(
             death(&survival),
@@ -2258,8 +2250,8 @@ mod tests {
         let mut survival = creative();
         assert!(!survival.hurt(6.0, Armor::default(), Some([1.0, 2.0, 3.0]), DamageCause::Generic));
         assert_eq!(survival.fall(30.0, None, false), 0);
-        survival.drink_potion("minecraft:harming");
-        survival.drink_potion("minecraft:strong_poison");
+        drink(&mut survival, "minecraft:harming");
+        drink(&mut survival, "minecraft:strong_poison");
         let in_lava = Motion {
             in_lava: true,
             ..standing_in([0.5, 1.0, 0.5])

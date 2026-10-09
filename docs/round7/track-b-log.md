@@ -694,7 +694,7 @@ IW4L_MINECRAFT_KIT=lingering_potion@poison,lingering_potion@regeneration
 
 ### 7. Minecraft splash potions, lingering clouds and witches' potions reach the player
 
-Commit: (next entry)
+Commit: c2c2290
 
 - **Changed:** `survival.rs` `Survival::take_potion(potion, from, random)`: a lasting effect or a heal goes through `potions::apply_to_player`; a harm is magic damage past armour with no exhaustion (the `magic` and `indirect_magic` damage types have exhaustion 0), from where the potion broke, and does nothing while invulnerable (creative); `Extinguish` is `Entity.extinguishFire`: a burning player stops burning (`clearFire`, fire ticks to at most 0) and hears `entity.generic.extinguish_fire` at volume 0.7, pitch `1.6 + (a - b) * 0.4`. `entities.rs` keeps the local player's (`PLAYER`) `Output.player_potions` (player splashes, witch splashes and lingering cloud touches) in `Entities.player_potions`, and the adapter feeds them to that player's `Survival` after the pearl landings, so a totem still saves a player a harming splash would kill (After the split item 6).
 - **Tests:** survival: `a_splash_gives_its_effect_heals_and_harms_past_armour`, `a_creative_player_takes_splash_effects_but_no_harm`, `splash_water_puts_out_a_burning_player_with_the_hiss`.
@@ -710,4 +710,21 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=splash_potion@poison*2,splash_potion@harming*2,splash_potion@strong_healing*2,lingering_potion@poison,splash_potion@water*2,netherrack*4,flint_and_steel,witch_spawn_egg*2
+```
+
+### 8. Drinking a Minecraft potion gives every vanilla potion's effects
+
+Commit: (next entry)
+
+- **Changed:** `survival.rs` `Survival::drink_potion(item, components)` is `PotionContents.onConsume`: the drunk stack's `minecraft:potion_contents` (its potion, custom effects and all) through `potions::drink_hits` at the item's `potion_duration_scale`, each applied with entry 7's `take_potion`, instead of its own list of eight potions. It runs for every finished use; a stack without potion contents does nothing. Harming drunk is magic damage without exhaustion, as before (After the split item 7).
+- **Tests:** survival: `a_drunk_potion_gives_its_custom_effects_and_every_strong_and_long_form`; `potions_apply_their_vanilla_effects`, `a_potion_of_harming_kills_by_magic_and_a_respawn_forgets_it` and `an_invulnerable_player_takes_no_hits_falls_lava_fire_poison_or_harming` drink through the components now.
+- **Decision:** potions the player has no effect for (swiftness, leaping, night vision...) still do nothing, now from the table, so they work once the effect exists.
+- **Test steps** (survival mode):
+  1. Take some damage, drink the Healing II potion: 4 hearts come back.
+  2. Drink the long Weakness potion: punching a cow takes more hits than before. Drink the strong Turtle Master: hits on you hurt much less for 20 s.
+  3. Drink the long Poison potion: your hearts turn green and you lose health down to half a heart, for 1:30.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=potion@strong_healing,potion@long_weakness,potion@strong_turtle_master,potion@long_poison,cow_spawn_egg*2,zombie_spawn_egg
 ```
