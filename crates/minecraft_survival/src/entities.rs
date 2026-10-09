@@ -88,6 +88,7 @@ pub struct Entities {
     tridents: Vec<minecraft_terrain::trident::TridentView>,
     orbs: Vec<ServerOrb>,
     falling: minecraft_terrain::falling_render::FallingBlocks,
+    pub lids: minecraft_terrain::lids::Lids,
     orb_pickups: Vec<minecraft_terrain::orb_render::OrbPickup>,
     pub pearl_landings: Vec<DVec3>,
     pub player_potions: Vec<minecraft_terrain::potions::PlayerPotionHit>,
@@ -206,6 +207,7 @@ impl Entities {
             tridents: Vec::new(),
             orbs: Vec::new(),
             falling: Default::default(),
+            lids: Default::default(),
             orb_pickups: Vec::new(),
             pearl_landings: Vec::new(),
             player_potions: Vec::new(),
@@ -596,6 +598,7 @@ impl Entities {
             self.clock = (self.clock - TICK_SECONDS).min(TICK_SECONDS);
             self.ticks += 1;
             self.falling.tick_sent();
+            self.lids.tick();
             // Packets first, then the client level's entity ticks.
             self.client.tick();
             for enderman in self.world.endermen() {
@@ -909,6 +912,9 @@ impl Entities {
         self.falling.settle(scene, cell_settled, self.ticks);
         let moving = self.falling.moving_blocks(scene, partial);
         let _ = self.items.append_moving_blocks(&mut out.items, &moving, scene, packs, atlas, light);
+        self.lids.settle(scene, cell_settled);
+        let lids = self.lids.posed(scene, partial);
+        let _ = self.items.append_open_lids(&mut out.items, &lids, scene, packs, atlas, light);
         let _ = self.items.append_primed_tnt(&mut out.items, &self.falling.primed_tnt(partial), packs, atlas, light);
         minecraft_terrain::thrown::append_views(&mut out.items, &self.thrown, partial, camera, atlas, forward, light);
         minecraft_terrain::trident::append_tridents(&mut out.items, &self.tridents, partial, atlas, light);

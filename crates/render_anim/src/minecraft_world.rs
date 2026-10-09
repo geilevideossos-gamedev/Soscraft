@@ -1927,6 +1927,9 @@ fn update(
             &|pos| terrain.stream.cell_settled(pos),
             &campfire_items,
         );
+        for (pos, apart) in entities.lids.take_apart_changes() {
+            terrain.stream.draw_apart(pos, apart);
+        }
         let raw = |mesh: &minecraft_terrain::mesh::ChunkMesh| {
             (bytemuck::cast_slice::<_, u8>(&mesh.vertices).to_vec(), mesh.indices.clone())
         };

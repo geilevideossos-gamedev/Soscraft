@@ -855,12 +855,26 @@ After the split items 15 to 17: the lids group's models, client lids, frame pass
 
 ### 1. Minecraft terrain sections leave an opening lid's cell to the frame pass
 
-Commit: (next entry)
+Commit: f2afc59
 
 - **Changed:** `terrain.rs` (After the split item 15): `TerrainStream` keeps `apart: lids::ApartCells` (kept across a view-distance change, so rebuilt sections still skip the cells). New `draw_apart(pos, apart)`: when the cell's state changes, only its own section is marked dirty for the player (`player_sections`, so `cell_settled` waits for it) and its serial is dropped, so a compile already in flight from before the change can't settle it; no relight, no `record_edits`, no neighbours (shulker boxes and chests are `noOcclusion`). `CompileJob.apart` carries the section's apart cells to the worker, and `build_section_blocks(.., apart)` draws an apart cell as `append_baked` with no quads, on both build paths: nothing of the block, but a waterlogged chest keeps its water (the lids group's entry 4 proves the frame pass adds exactly the rest).
 - **Tests:** terrain: `an_apart_shulker_box_leaves_its_cell_empty_and_every_other_face_alone` (a red shulker box walled in stone: built apart it has no vertex inside its cell, every other vertex is bit-for-bit the same and the face count drops by the box's quads, on the baked and the unbaked path, and both paths still agree).
 - **Test steps:** nothing changes in game yet: no cell is taken apart until the next entry.
   1. Place a shulker box and a chest and look at them from a few angles: they look as before, with no hole. Screenshot.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=red_shulker_box,chest*2
+```
+
+### 2. Minecraft open lids are drawn every frame by the client entities
+
+Commit: (next entry)
+
+- **Changed:** `minecraft_survival` `entities.rs` (After the split item 16): `Entities` (one per level, so a world or dimension change starts with none) gets `pub lids: Lids`. Each client tick (`Entities::tick`, beside `falling.tick_sent`) ticks them; `Entities::meshes`, after the moving blocks, settles them against `cell_settled`, poses them at the frame's partial tick and draws them into the items mesh with `ItemVisuals::append_open_lids`. The adapter (`minecraft_world.rs`), right after `entities.meshes`, hands each `take_apart_changes` entry to the previous entry's `TerrainStream::draw_apart`, so the section lets go of a lid that starts to open and takes it back once it is shut.
+- **Tests:** none new: the glue only calls `Lids` (`lids.rs`, 13 tests), `append_open_lids` (`mesh.rs`) and `draw_apart` (previous entry), which are tested where they are.
+- **Test steps:** nothing changes in game yet: nothing feeds the lids a block event until the next entry.
+  1. Open and close a shulker box and a chest: they look and sound as before. Screenshot.
 - **Kit:**
 
 ```
