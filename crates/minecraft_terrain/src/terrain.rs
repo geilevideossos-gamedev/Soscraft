@@ -970,33 +970,7 @@ pub struct TerrainStream {
     stats: Stats,
 }
 
-/// Which dimension a streamed world generates.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Dimension {
-    #[default]
-    Overworld,
-    Nether,
-    End,
-}
-
-impl Dimension {
-    pub fn parse(name: &str) -> Option<Self> {
-        Some(match name.trim_start_matches("minecraft:") {
-            "overworld" => Self::Overworld,
-            "nether" | "the_nether" => Self::Nether,
-            "end" | "the_end" => Self::End,
-            _ => return None,
-        })
-    }
-
-    pub fn dimension_type(self) -> &'static str {
-        match self {
-            Self::Overworld => "minecraft:overworld",
-            Self::Nether => "minecraft:the_nether",
-            Self::End => "minecraft:the_end",
-        }
-    }
-}
+pub use minecraft_net::Dimension;
 
 /// A standing spot in the Nether near the origin: two air blocks over a
 /// solid block, below the bedrock roof, searched outward from chunk 0,0.

@@ -180,7 +180,7 @@ pub(crate) fn update_minecraft_hud(
         Option<Res<frame::HudInputView>>,
         Option<ResMut<frame::GameSettings>>,
     ),
-    mc_keys: Option<Res<frame::McActionInput>>,
+    (mc_keys, identity): (Option<Res<frame::McActionInput>>, Option<Res<frame::LaunchIdentity>>),
 ) {
     let Some(mut ui) = ui else {
         pass.minecraft = TessJob::Hide;
@@ -189,12 +189,23 @@ pub(crate) fn update_minecraft_hud(
     let opened_by_world = std::mem::take(&mut ui.screen_opened);
     let swept: Vec<Vec2> = moves.read().map(|moved| moved.position).collect();
     let window = windows.single().ok();
-    let Some(window) = window.filter(|_| ui.active && surface.is_ready()) else {
+    let in_world = !ui.loading_world && identity.as_ref().is_some_and(|identity| assets::minecraft_map::is_minecraft_load(&identity.zone));
+    let (hud_shown, chat_shown) = minecraft_layers(ui.active, in_world);
+    let Some(window) = window.filter(|_| hud_shown && surface.is_ready()) else {
         pass.minecraft = TessJob::Hide;
         ui.character_box = None;
         for _ in wheel.read() {}
         input.open = false;
         input.clicks.reset();
+        if let Some((window, gui)) = window.zip(ui.gui.clone()).filter(|_| chat_shown && surface.is_ready()) {
+            let space = GuiSpace::new([window.physical_width(), window.physical_height()], [surface.width(), surface.height()], [window.width(), window.height()]);
+            hud_images.insert_runtime(GUI_MATERIAL, gui.image.clone());
+            let mut painter = Painter::new(&gui, space);
+            crate::minecraft_chat::draw(&mut painter, &ui.chat, time.elapsed_secs_f64());
+            if !painter.quads.is_empty() {
+                pass.minecraft = TessJob::Quads(painter.quads);
+            }
+        }
         return;
     };
     let now = time.elapsed_secs_f64();
@@ -661,6 +672,10 @@ fn neighbour(slots: &[SlotSpec], from: McSlot, nav: Nav) -> Option<McSlot> {
         .map(|(_, slot)| slot)
 }
 
+pub(crate) fn minecraft_layers(active: bool, in_world: bool) -> (bool, bool) {
+    (active, active || in_world)
+}
+
 fn pad_direction(pad: &Gamepad) -> Option<Nav> {
     let dpad = [
         (GamepadButton::DPadUp, Nav::Up),
@@ -762,6 +777,13 @@ fn draw_pad_legend(p: &mut Painter<'_>, layout: &Layout, origin: [i32; 2], style
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_chat_shows_while_dead_in_a_minecraft_world() {
+        assert_eq!(minecraft_layers(true, true), (true, true));
+        assert_eq!(minecraft_layers(false, true), (false, true));
+        assert_eq!(minecraft_layers(false, false), (false, false));
+    }
 
     fn font() -> McFont {
         let glyph = frame::McGlyph { rect: [0, 0, 8, 8], scale: 1.0, ascent: 7, advance: 6.0 };

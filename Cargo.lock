@@ -3915,6 +3915,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "minecraft_net"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "minecraft_survival"
+version = "0.1.0"
+dependencies = [
+ "diag",
+ "glam 0.29.3",
+ "minecraft_commands",
+ "minecraft_net",
+ "minecraft_terrain",
+ "minecraftoss-core",
+ "minecraftoss-entities",
+ "minecraftoss-player",
+ "playerstate_iw4",
+ "serde_json",
+]
+
+[[package]]
 name = "minecraft_terrain"
 version = "0.1.0"
 dependencies = [
@@ -3922,6 +3946,7 @@ dependencies = [
  "bytemuck",
  "glam 0.29.3",
  "image",
+ "minecraft_net",
  "minecraftoss-core",
  "minecraftoss-entities",
  "minecraftoss-generator",
@@ -5230,6 +5255,8 @@ dependencies = [
  "lighting_iw4",
  "math_iw4",
  "minecraft_commands",
+ "minecraft_net",
+ "minecraft_survival",
  "minecraft_terrain",
  "minecraftoss-core",
  "minecraftoss-entities",

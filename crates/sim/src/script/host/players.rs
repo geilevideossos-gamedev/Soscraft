@@ -89,6 +89,14 @@ pub(crate) fn minecraft_damage(
         .is_some_and(|(victim, attacker)| victim == hit.victim.0 && Some(attacker) == killer)
 }
 
+pub(crate) fn hides_minecraft_obituary(
+    minecraft_hit: bool,
+    attacker: Option<&Value>,
+    killer: Option<u64>,
+) -> bool {
+    minecraft_hit && killer.is_some_and(|killer| attacker == Some(&Value::Object(killer)))
+}
+
 pub(crate) fn minecraft_killer(world: &mut World, victim: u32) -> Option<Value> {
     let victim_team = match player_object(world, victim) {
         Value::Object(object) => world.resource_mut::<Runtime>().object_field(object, "team"),
@@ -1251,7 +1259,21 @@ pub(crate) fn apply_player_links(world: &mut World) {
 
 #[cfg(test)]
 mod tests {
-    use super::minecraft_holds_health;
+    use super::{hides_minecraft_obituary, minecraft_holds_health};
+    use crate::script::Value;
+
+    #[test]
+    fn only_a_minecraft_death_credited_to_the_stand_in_leaves_the_kill_feed() {
+        let stand_in = Value::Object(42);
+        let enemy = Value::Object(7);
+        let undefined = Value::Undefined;
+        assert!(hides_minecraft_obituary(true, Some(&stand_in), Some(42)));
+        assert!(!hides_minecraft_obituary(false, Some(&stand_in), Some(42)));
+        assert!(!hides_minecraft_obituary(true, Some(&enemy), Some(42)));
+        assert!(!hides_minecraft_obituary(true, Some(&undefined), Some(42)));
+        assert!(!hides_minecraft_obituary(true, None, Some(42)));
+        assert!(!hides_minecraft_obituary(true, Some(&stand_in), None));
+    }
 
     #[test]
     fn a_live_minecraft_player_keeps_its_max_health() {

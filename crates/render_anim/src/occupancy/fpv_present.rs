@@ -414,9 +414,10 @@ pub fn occupy_fpv_scene(
     tess: Option<Res<render_scene::TessMaterials>>,
     fpv_meshes: Option<Res<PreparedFpvMeshes>>,
 ) {
+    let throwing = presented.viewweapon_player(local.0).is_some_and(mw2_throw_in_view);
     if (skate.active && !skate.bones.is_empty())
         || puppet.as_ref().is_some_and(|p| p.active)
-        || minecraft.as_ref().is_some_and(|ui| ui.active && ui.holding_item && !ui.empty_hand)
+        || minecraft.as_ref().is_some_and(|ui| ui.active && ui.holding_item && !ui.empty_hand && !throwing)
         || minecraft.as_ref().is_some_and(|ui| ui.active && ui.offhand_busy)
         || minecraft.as_ref().is_some_and(|ui| ui.active && !ui.game_mode.shows_hotbar())
         || presented.viewweapon_player(local.0).is_none()
@@ -763,6 +764,8 @@ fn skin_fpv_geometry(
     mut status: ResMut<FpvStatusGap>,
     gaps: Res<RenderPresentationGaps>,
     minecraft: Option<Res<frame::MinecraftUi>>,
+    presented: Res<PresentedSnapshot>,
+    local: Res<LocalPresentClient>,
     mut lenses: Query<
         &mut Transform,
         (
@@ -800,7 +803,8 @@ fn skin_fpv_geometry(
                 return;
             }
             // An empty hand on a Minecraft map shows the hands without the gun.
-            let hands_only = minecraft.as_ref().is_some_and(|ui| ui.active && ui.empty_hand);
+            let throwing = presented.viewweapon_player(local.0).is_some_and(mw2_throw_in_view);
+            let hands_only = minecraft.as_ref().is_some_and(|ui| ui.active && ui.empty_hand && !throwing);
             if fpv_plan.rig_generation != rig.generation() || fpv_plan.hands_only != hands_only {
                 crate::install_prepared_fpv_plan(&mut fpv_plan, &rig.geometry, handle);
                 if hands_only {
@@ -1129,9 +1133,13 @@ pub fn apply_fpv_placement(
         );
     }
     *transform = placed;
-    if let Some(ui) = minecraft.as_ref().filter(|ui| ui.active && ui.empty_hand) {
+    if let Some(ui) = minecraft.as_ref().filter(|ui| ui.active && ui.empty_hand && !mw2_throw_in_view(ps)) {
         minecraft_hand_placement(&mut transform, ui.hand_swing);
     }
+}
+
+pub fn mw2_throw_in_view(ps: &PlayerState) -> bool {
+    ps.weap_flags & playerstate_iw4::weap_flags::OFFHAND_VIEW != 0
 }
 
 /// The bare hands where Minecraft holds its arm: lower and further right
@@ -1239,4 +1247,22 @@ pub fn register_fpv_present_systems(app: &mut App) {
             )
                 .in_set(ClientSet::Present),
         );
+}
+
+#[cfg(test)]
+mod minecraft_throw_tests {
+    use super::*;
+
+    #[test]
+    fn a_grenade_shows_only_while_the_offhand_view_is_up() {
+        for weaponstate in 0x0F..=0x16 {
+            let mut ps = PlayerState::ZERO;
+            ps.weaponstate_primary = weaponstate;
+            assert!(!mw2_throw_in_view(&ps), "{weaponstate:#x}");
+            ps.weap_flags = playerstate_iw4::weap_flags::OFFHAND_VIEW;
+            assert!(mw2_throw_in_view(&ps), "{weaponstate:#x}");
+            ps.weap_flags = playerstate_iw4::weap_flags::HOLD_BREATH;
+            assert!(!mw2_throw_in_view(&ps), "{weaponstate:#x}");
+        }
+    }
 }
