@@ -127,7 +127,7 @@ Commit: 37b241e
 
 ### 2. Minecraft chat copies, cuts and pastes with Ctrl+C, Ctrl+X and Ctrl+V like vanilla
 
-Commit: (filled in by the next commit, or see `git log`)
+Commit: cf24de6
 
 - **Changed:** `hud/src/minecraft_chat.rs`: a `ChatClipboard` trait (`get`, `set`) implemented for bevy's `Clipboard` (already in the build through `system_clipboard`; arboard on Windows) and for `()` when the resource is missing. `update_chat` takes `Option<ResMut<Clipboard>>` and passes it down through `handle_frame` to `apply_typed`. The shortcut letter (`a`, `c`, `v`, `x`) comes from the lowercased logical key, or the physical key when the layout's letter isn't ASCII, with Ctrl down and Shift and Alt up, as vanilla's `isCopy`, `isPaste` and `isCut`. Ctrl+C copies the selection, Ctrl+X copies it and then inserts nothing over it, Ctrl+V inserts the clipboard through `Edit::insert` (so it replaces the selection, filters `§` and control characters and keeps the 256 limit). Copying or cutting an empty selection leaves the clipboard alone (vanilla `KeyboardHandler.setClipboard` ignores ""). An empty or unreadable clipboard pastes "" like vanilla, which still removes the selection. Read and write errors other than "no text on the clipboard" go to the log as `minecraft chat paste failed` / `copy failed`. `Edit::highlighted` added. `MINECRAFT-SURVIVAL.md` chat lines updated.
 - **Tests:** `ctrl_v_pastes_the_clipboard_without_typing_v` (`/gamerule keep_inventory true` with a CRLF pastes as exactly the command, `a§b<tab>c` gives `abc`, Caps Lock `V` pastes, Ctrl+Shift+V doesn't), `a_paste_replaces_the_selection_and_stops_at_256` (250 characters with 10 selected take 16 of 30, an empty clipboard removes the selection), `ctrl_c_copies_and_ctrl_x_cuts_the_selection` (nothing selected leaves the clipboard alone, copy, cut, paste at Home, Ctrl+A then Ctrl+C, Ctrl+Shift+C does nothing).
@@ -139,6 +139,20 @@ Commit: (filled in by the next commit, or see `git log`)
   4. Press Ctrl+Shift+Left (`world` selected), Ctrl+X (gone), Home, Ctrl+V: `worldxhello big `.
   5. Back in Notepad, paste: `world` is on the system clipboard.
   6. Copy a long paragraph (more than 256 characters) in Notepad and paste it into the chat: it stops at 256 characters.
+- **Kit:** none needed.
+
+### 3. Minecraft chat remembers sent commands across restarts like vanilla
+
+Commit: (filled in by the next commit, or see `git log`)
+
+- **Changed:** `hud/src/minecraft_chat.rs`: a `CommandHistory` kept in `update_chat` (a `Local`, so per client like vanilla's file). On the first frame with a `LaunchIdentity` it reads `<artifacts>/command_history.txt` (beside `settings.cfg`, so `C:\Games\Mashup\2010-Rust-Rewrite-Mashup\iw4l-artifacts\command_history.txt` for the release build) and puts its lines at the front of the chat's Up/Down history, as vanilla's `ChatComponent` fills `recentChat` from `CommandHistory`. Every line sent that frame that starts with `/` goes through `add_command` (vanilla `CommandHistory.addCommand`: a repeat of the last line is skipped, the oldest goes at 50) and, when something changed, the whole file is rewritten, one command per line. A missing file is normal; other read or write errors go to the log. The session history of all sent lines (100, plain chat too) is unchanged. `MINECRAFT-SURVIVAL.md` updated.
+- **Checked with javap (26.3):** `CommandHistory` uses `command_history.txt` in the game folder, `MAX_PERSISTED_COMMAND_HISTORY` 50, `addCommand` skips `peekLast` and removes the first at 50, `save` writes every line with `newLine`; `ChatComponent.addRecentChat` keeps 100 and passes only lines starting with `/` to the command history.
+- **Tests:** `the_command_history_keeps_fifty_lines_and_skips_a_repeat`, `sent_commands_come_back_after_a_restart` (a temp folder: plain chat isn't saved, the file holds the two commands, a fresh chat loads them and Up gives the last one; no artifacts folder means nothing is saved).
+- **Decision:** the file sits in `iw4l-artifacts` (the game's own folder, where vanilla would keep it in `.minecraft`) and is written with `\n` line ends; vanilla reads both.
+- **Test steps** (Minecraft map):
+  1. Press T, send `/time set day`, then `/gamerule keep_inventory true`, then the plain line `hello`.
+  2. Quit the game. `iw4l-artifacts\command_history.txt` holds the two commands, not `hello`.
+  3. Start again, press T, then Up: `/gamerule keep_inventory true`; Up again: `/time set day`; Down twice: back to the empty line. Screenshot 1.
 - **Kit:** none needed.
 
 ## After the split

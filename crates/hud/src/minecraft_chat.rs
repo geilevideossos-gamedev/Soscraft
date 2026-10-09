@@ -1,4 +1,5 @@
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 
 use bevy::clipboard::{Clipboard, ClipboardError};
 use bevy::input::keyboard::{Key, KeyboardInput};
@@ -25,6 +26,8 @@ const INPUT_TEXT: u32 = 0xFFE0_E0E0;
 const CURSOR: u32 = 0xFFD0_D0D0;
 const SCROLL_NOTCH: f32 = 7.0;
 const BLINK_MILLIS: f64 = 300.0;
+const COMMAND_HISTORY_FILE: &str = "command_history.txt";
+const COMMAND_HISTORY_LIMIT: usize = 50;
 const SELECTION: u32 = 0xFFC0_C0FF;
 const SELECTED_TEXT: u32 = 0xFF1F_1FFF;
 const MODIFIERS: [KeyCode; 6] = [
@@ -116,6 +119,67 @@ impl ChatClipboard for () {
     }
 
     fn set(&mut self, _: &str) {}
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct CommandHistory {
+    loaded: bool,
+    path: Option<PathBuf>,
+    commands: Vec<String>,
+}
+
+impl CommandHistory {
+    pub(crate) fn load(&mut self, artifacts: &Path, chat: &mut McChat) {
+        self.loaded = true;
+        if artifacts.as_os_str().is_empty() {
+            return;
+        }
+        let path = artifacts.join(COMMAND_HISTORY_FILE);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => self.commands = text.lines().map(str::to_owned).collect(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => diag::warn!(
+                Ui,
+                "failed to read {}, command history will be missing: {error}",
+                path.display()
+            ),
+        }
+        chat.history.splice(0..0, self.commands.iter().cloned());
+        self.path = Some(path);
+    }
+
+    pub(crate) fn remember(&mut self, sent: &[String]) {
+        let mut changed = false;
+        for command in sent.iter().filter(|line| line.starts_with('/')) {
+            changed |= add_command(&mut self.commands, command);
+        }
+        let Some(path) = self.path.as_ref().filter(|_| changed) else {
+            return;
+        };
+        let text: String = self
+            .commands
+            .iter()
+            .map(|line| format!("{line}\n"))
+            .collect();
+        if let Err(error) = std::fs::write(path, text) {
+            diag::warn!(
+                Ui,
+                "failed to write {}, command history will be missing: {error}",
+                path.display()
+            );
+        }
+    }
+}
+
+pub(crate) fn add_command(commands: &mut Vec<String>, command: &str) -> bool {
+    if commands.last().is_some_and(|last| last == command) {
+        return false;
+    }
+    if commands.len() >= COMMAND_HISTORY_LIMIT {
+        commands.remove(0);
+    }
+    commands.push(command.to_owned());
+    true
 }
 
 fn copy(clipboard: &mut dyn ChatClipboard, text: &str) {
@@ -442,6 +506,8 @@ pub(crate) fn update_chat(
     mc_keys: Option<Res<frame::McActionInput>>,
     time: Res<Time>,
     mut clipboard: Option<ResMut<Clipboard>>,
+    identity: Option<Res<frame::LaunchIdentity>>,
+    mut commands: Local<CommandHistory>,
 ) {
     let events: Vec<KeyboardInput> = typed.read().cloned().collect();
     let held = MODIFIERS.map(|code| {
@@ -458,6 +524,11 @@ pub(crate) fn update_chat(
     };
     let now = time.elapsed_secs_f64();
     let ui = &mut *ui;
+    if !commands.loaded
+        && let Some(identity) = identity.as_deref()
+    {
+        commands.load(&identity.artifacts, &mut ui.chat);
+    }
     receive(&mut ui.chat, ui.gui.as_deref().map(|gui| &gui.font), now);
     let blocked =
         menus.captures_input() || hud_input.as_ref().is_some_and(|input| input.console_open);
@@ -488,7 +559,9 @@ pub(crate) fn update_chat(
         Some(clipboard) => clipboard,
         None => &mut none,
     };
+    let sent_before = ui.chat.sent.len();
     handle_frame(&mut ui.chat, opener, &events, clipboard, now);
+    commands.remember(&ui.chat.sent[sent_before..]);
     if was_open && ui.chat.open {
         let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
         for y in notches {
@@ -1156,5 +1229,57 @@ mod tests {
         assert_eq!(clipboard.0, "worldhello big ");
         shortcut_key(&mut chat, "c", CTRL_SHIFT, &mut Board(String::new()));
         assert_eq!(chat.input, "worldhello big ");
+    }
+
+    #[test]
+    fn the_command_history_keeps_fifty_lines_and_skips_a_repeat() {
+        let mut commands = Vec::new();
+        assert!(add_command(&mut commands, "/a"));
+        assert!(!add_command(&mut commands, "/a"));
+        assert!(add_command(&mut commands, "/b"));
+        assert!(add_command(&mut commands, "/a"));
+        assert_eq!(commands, ["/a", "/b", "/a"]);
+        let mut commands: Vec<String> = (0..50).map(|i| format!("/{i}")).collect();
+        assert!(add_command(&mut commands, "/new"));
+        assert_eq!(commands.len(), 50);
+        assert_eq!(
+            (commands[0].as_str(), commands[49].as_str()),
+            ("/1", "/new")
+        );
+    }
+
+    #[test]
+    fn sent_commands_come_back_after_a_restart() {
+        let dir = std::env::temp_dir().join(format!("iw4l-chat-history-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut chat = McChat::default();
+        let mut history = CommandHistory::default();
+        history.load(&dir, &mut chat);
+        assert!(history.loaded && chat.history.is_empty());
+        for line in ["hello", "/gamerule keep_inventory true", "/time set day"] {
+            open(&mut chat, Opener::Chat, 0.0);
+            typed(&mut chat, line);
+            apply_key(&mut chat, &Key::Enter, None, false);
+        }
+        history.remember(&chat.sent);
+        history.remember(&["/time set day".to_owned()]);
+        let text = std::fs::read_to_string(dir.join(COMMAND_HISTORY_FILE)).unwrap();
+        assert_eq!(text, "/gamerule keep_inventory true\n/time set day\n");
+        let mut restarted = McChat::default();
+        CommandHistory::default().load(&dir, &mut restarted);
+        assert_eq!(
+            restarted.history,
+            ["/gamerule keep_inventory true", "/time set day"]
+        );
+        open(&mut restarted, Opener::Chat, 0.0);
+        apply_key(&mut restarted, &Key::ArrowUp, None, false);
+        assert_eq!(restarted.input, "/time set day");
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut nowhere = McChat::default();
+        let mut unsaved = CommandHistory::default();
+        unsaved.load(Path::new(""), &mut nowhere);
+        unsaved.remember(&["/kill".to_owned()]);
+        assert!(unsaved.loaded && unsaved.path.is_none());
     }
 }
