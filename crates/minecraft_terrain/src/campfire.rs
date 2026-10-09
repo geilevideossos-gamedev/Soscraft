@@ -1,6 +1,9 @@
 use glam::{DVec3, Mat4, Vec3};
+use minecraftoss_core::nbt::Tag;
+use minecraftoss_player::crafting::RecipeBook;
 use minecraftoss_player::inventory::ItemStack;
 
+use crate::item_nbt::{slot_list, slots};
 use crate::mesh::{HeldDisplay, HeldItem};
 use crate::scene::{Block, BlockPos};
 
@@ -61,16 +64,36 @@ pub struct Campfire {
 }
 
 impl Campfire {
-    pub fn with_times(
-        items: [Option<ItemStack>; SLOTS],
-        progress: [u32; SLOTS],
-        total: [u32; SLOTS],
-    ) -> Self {
+    pub fn from_tag(tag: &Tag, recipes: &RecipeBook) -> Self {
+        let times = |key: &str| {
+            let mut out = [0; SLOTS];
+            let saved = tag.get(key).and_then(Tag::as_ints).unwrap_or_default();
+            for (time, value) in out.iter_mut().zip(saved) {
+                *time = value.max(0) as u32;
+            }
+            out
+        };
+        let items = tag
+            .get("Items")
+            .map(|list| slots(list, SLOTS, recipes))
+            .and_then(|list| list.try_into().ok())
+            .unwrap_or_default();
         Self {
             items,
-            progress,
-            total,
+            progress: times("CookingTimes"),
+            total: times("CookingTotalTimes"),
         }
+    }
+
+    pub fn entries(&self) -> Vec<(&'static str, Tag)> {
+        let times = |list: [u32; SLOTS]| {
+            Tag::IntArray(list.map(|time| time.min(i32::MAX as u32) as i32).to_vec())
+        };
+        vec![
+            ("Items", slot_list(self.items.iter())),
+            ("CookingTimes", times(self.progress)),
+            ("CookingTotalTimes", times(self.total)),
+        ]
     }
 
     pub fn cooking_times(&self) -> ([u32; SLOTS], [u32; SLOTS]) {

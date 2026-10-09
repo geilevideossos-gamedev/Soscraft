@@ -261,7 +261,7 @@ IW4L_MINECRAFT_KIT=minecraft:chest,minecraft:oak_sign,minecraft:lectern
 
 ### 11. Minecraft chests, barrels and shulker boxes keep their contents
 
-Commit: (filled in by the next entry)
+Commit: f6822d8
 
 - **Changed:**
   - `minecraft_terrain/src/containers.rs`: `Containers` now loads its chests, trapped and copper chests, barrels and shulker boxes from their chunk's block entities and writes them back.
@@ -292,4 +292,42 @@ Commit: (filled in by the next entry)
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:chest*3,minecraft:trapped_chest,minecraft:barrel,minecraft:red_shulker_box,minecraft:diamond_sword+sharpness=5,minecraft:cobblestone*64,minecraft:dirt*64,minecraft:diamond_pickaxe+efficiency=5
+```
+
+### 12. Minecraft furnaces, brewing stands and campfires keep cooking after a restart
+
+Commit: (filled in by the next entry). It finishes b681b6d, a work-in-progress commit made before a PC shutdown that only added the vendor accessors and the campfire time getters.
+
+- **Changed:**
+  - `minecraft_terrain/src/containers.rs`:
+    - `Oven::from_tag` and its block entity entries: `cooking_time_spent`, `cooking_total_time`, `lit_time_remaining`, `lit_total_time`, `speed_multiplier`, `Items` (always, `ContainerHelper.saveAllItems`) and `RecipesUsed` (recipe id to count), as 26.3's `AbstractFurnaceBlockEntity.saveAdditional` writes them (checked with javap). The same for smokers and blast furnaces.
+    - `Oven.experience` (a float) became `recipes_used`, a map from cooking recipe id to the number of finished smelts, like vanilla. Taking the output works the experience out from the recipes (`Oven::take_experience`), and a broken furnace spills it (`Oven::experience`), so experience earned before a restart is still paid.
+    - `Brewer::from_tag` and its entries: `BrewTime`, `total_brew_time`, `Items`, `Fuel`, `total_fuel`, `speed_multiplier` (`BrewingStandBlockEntity`). As in vanilla's `loadAdditional`, a brewing stand loaded mid-brew remembers its ingredient from slot 3, so it goes on brewing instead of starting over.
+    - `block_entity_kind` now also gives `minecraft:furnace`, `minecraft:smoker`, `minecraft:blast_furnace`, `minecraft:brewing_stand` and `minecraft:campfire` (for campfires and soul campfires); `block_entity_tag` and `import` handle them. A named furnace or brewing stand keeps its `CustomName`, and the screen shows it.
+    - Changes are marked for saving when a station is clicked, when food is put on a campfire, when it is broken, and on every tick that changes its times, fuel or items. An idle furnace or a cold campfire is not written again.
+    - `forget_chunk` also drops the furnaces, brewing stands and campfires of an unloaded chunk (after they were written), and `load_chunk` reads them back when it returns. So they only tick in loaded chunks, like vanilla block entities.
+    - `remove` takes the recipe book to work out a broken furnace's experience; `minecraft_survival/src/level.rs` `spill` passes it.
+  - `minecraft_terrain/src/campfire.rs`: `Campfire::from_tag` and `entries`: `Items` (always), `CookingTimes` and `CookingTotalTimes` as int arrays of four (`CampfireBlockEntity`). This replaces b681b6d's `with_times`.
+  - Vendored `third_party/minecraftoss/player/src/crafting.rs` (from b681b6d): `RecipeBook::cooking_entry_for` (the recipe with its id) and `cooking_recipe(id)`.
+- **Tests:** `containers`: `furnaces_brewing_stands_and_campfires_save_what_vanilla_loads_and_saves_again` (a furnace, brewing stand and soul campfire mid-cook, plus every station empty and named: `BlockEntities::load_and_save` gives the same tag back, with a synthetic catalog and with the real one under `MINECRAFTOSS_ROOT`), `a_saved_furnace_brewing_stand_and_campfire_go_on_where_they_stopped` (the exact saved times after 250 ticks; a copy loaded from the tags runs the next 400 ticks exactly like the original, finishes the brew and both beefs, and pays all three smelts' experience on taking), `only_working_stations_are_written_and_an_unloaded_chunk_stops_them`. `experience_rounds_by_chance` and `a_furnace_smelts_with_fuel_and_pays_experience_on_taking` now check `recipes_used`.
+- **Decisions:**
+  - Vanilla rolls the experience fraction once per recipe; we use the click's one roll for each recipe, which gives the same odds per recipe.
+  - Our brewing stand only knows 400-tick brews and 20 fuel uses, so it writes `total_brew_time` 400, `total_fuel` 20 and `speed_multiplier` 1, and a loaded `BrewTime` or `Fuel` above that is capped.
+  - An empty campfire is not held, so its block entity goes back to the empty default.
+  - Behaviour change from the brief: furnaces, brewing stands and campfires stop while their chunk is unloaded (vanilla) instead of cooking anywhere in the world.
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=savetest` and the kit below. Start.
+  2. Place a furnace and put 20 raw iron and 2 coal in it. Place a smoker with the potatoes and a coal, and a blast furnace with 10 raw iron and a coal. Do not take anything out.
+  3. Place the water bucket on the ground and fill the 3 bottles. Place the brewing stand and put in the 3 water bottles, the nether wart and the blaze powder.
+  4. Place the campfire and put 4 beef on it, and the soul campfire with 2 beef.
+  5. After about 10 seconds: **Screenshot 1:** the furnace screen (flame and arrow). **Screenshot 2:** the brewing stand screen (bubbles about halfway). **Screenshot 3:** the campfires with the beef on them.
+  6. Quit through the menu at once and start again.
+  7. Expected: the furnaces are still lit and go on from the same arrow and output count, the brewing stand finishes its brew (about 20 seconds after it started, not 20 seconds after the restart), and the beef on both campfires is cooked about 30 seconds after it was put on, not 30 seconds after the restart. **Screenshots 4 to 6:** the same views as 1 to 3.
+  8. Take the iron ingots out of the furnace with a shift-click: you get experience for every ingot, including those smelted before the restart (0.7 each). **Screenshot 7:** the XP bar before and after.
+  9. Put more raw iron in, `/tp` 400 blocks away, wait 20 seconds, and come back: the furnace has not moved on while you were away, and goes on once you are back.
+  10. Optional: open `saves\savetest` in Minecraft 26.3: the furnace, brewing stand and campfires show the same progress.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:furnace,minecraft:smoker,minecraft:blast_furnace,minecraft:brewing_stand,minecraft:campfire,minecraft:soul_campfire,minecraft:coal*64,minecraft:raw_iron*64,minecraft:potato*16,minecraft:beef*8,minecraft:blaze_powder*4,minecraft:nether_wart*8,minecraft:glass_bottle*3,minecraft:water_bucket,minecraft:diamond_pickaxe+efficiency=5,minecraft:cobblestone*64
 ```

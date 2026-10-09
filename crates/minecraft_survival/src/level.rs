@@ -44,7 +44,7 @@ pub fn open_for_respawn(
 }
 
 pub fn spill(containers: &mut Containers, entities: &mut Entities, pos: (i32, i32, i32)) {
-    let (items, experience) = containers.remove(pos);
+    let (items, experience) = containers.remove(pos, &entities.recipes);
     for stack in items {
         entities.world_items.drop_item_stack(stack, pos);
     }

@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use serde_json::{json, Value};
@@ -9,7 +9,7 @@ use minecraftoss_player::crafting::{CookingKind, RecipeBook};
 use minecraftoss_player::furnace::Furnace;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 
-use crate::campfire::Campfire;
+use crate::campfire::{self, Campfire};
 use crate::crafting::{move_into, result_order};
 use crate::item_nbt::{slot_list, slots, tag_json};
 use crate::scene::{Block, BlockPos};
@@ -39,6 +39,8 @@ const COPPER_CHESTS: [&str; 4] = [
 const SHULKER_BOX: &str = "minecraft:shulker_box";
 const CHEST_KINDS: [&str; 4] = ["minecraft:chest", "minecraft:trapped_chest", "minecraft:barrel", SHULKER_BOX];
 const OWNED_KEYS: [&str; 4] = ["Items", "LootTable", "LootTableSeed", "CustomName"];
+const BREWING_STAND: &str = "minecraft:brewing_stand";
+const CAMPFIRE: &str = "minecraft:campfire";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Station {
@@ -92,13 +94,42 @@ pub fn is_shulker_box(id: &str) -> bool {
 }
 
 pub fn block_entity_kind(block: &Block) -> Option<&'static str> {
+    if campfire::is_campfire(block) {
+        return Some(CAMPFIRE);
+    }
     match Station::of(block)? {
         Station::Chest if block.id.path == "trapped_chest" => Some("minecraft:trapped_chest"),
         Station::Chest => Some("minecraft:chest"),
         Station::Barrel => Some("minecraft:barrel"),
         Station::Shulker => Some(SHULKER_BOX),
-        _ => None,
+        Station::Oven(kind) => Some(oven_kind(kind)),
+        Station::Brewer => Some(BREWING_STAND),
+        Station::Ender => None,
     }
+}
+
+fn oven_kind(kind: CookingKind) -> &'static str {
+    match kind {
+        CookingKind::Furnace => "minecraft:furnace",
+        CookingKind::Smoker => "minecraft:smoker",
+        CookingKind::BlastFurnace => "minecraft:blast_furnace",
+    }
+}
+
+fn cooking_kind(kind: &str) -> Option<CookingKind> {
+    [CookingKind::Furnace, CookingKind::Smoker, CookingKind::BlastFurnace]
+        .into_iter()
+        .find(|cooking| oven_kind(*cooking) == kind)
+}
+
+fn int(tag: &Tag, key: &str, default: u32) -> u32 {
+    tag.get(key)
+        .and_then(Tag::as_i64)
+        .map_or(default, |value| value.clamp(0, i64::from(i32::MAX)) as u32)
+}
+
+fn saved_int(value: u32) -> Tag {
+    Tag::Int(value.min(i32::MAX as u32) as i32)
 }
 
 pub fn owns_block_entity(kind: &str) -> bool {
@@ -307,7 +338,7 @@ impl Opened {
 #[derive(Clone, Debug)]
 pub struct Oven {
     pub furnace: Furnace,
-    pub experience: f32,
+    pub recipes_used: BTreeMap<String, u32>,
 }
 
 fn cooking_ticks(base: u32, speed: f32) -> u32 {
@@ -322,8 +353,48 @@ impl Oven {
     pub fn new(kind: CookingKind) -> Self {
         Self {
             furnace: Furnace::new(kind),
-            experience: 0.0,
+            recipes_used: BTreeMap::new(),
         }
+    }
+
+    pub fn from_tag(kind: CookingKind, tag: &Tag, recipes: &RecipeBook) -> Self {
+        let mut oven = Self::new(kind);
+        let furnace = &mut oven.furnace;
+        if let Some(list) = tag.get("Items") {
+            furnace.slots = slots(list, 3, recipes).try_into().unwrap_or_default();
+        }
+        furnace.cook_progress = int(tag, "cooking_time_spent", 0);
+        furnace.cook_total = int(tag, "cooking_total_time", 0);
+        furnace.lit_remaining = int(tag, "lit_time_remaining", 0);
+        furnace.lit_total = int(tag, "lit_total_time", 0);
+        furnace.speed_multiplier = tag
+            .get("speed_multiplier")
+            .and_then(Tag::as_f64)
+            .map_or(1.0, |speed| speed as f32);
+        for (id, count) in tag.get("RecipesUsed").and_then(Tag::as_compound).into_iter().flatten() {
+            if let Some(count) = count.as_i64().filter(|count| *count > 0) {
+                oven.recipes_used.insert(id.clone(), count.min(i64::from(i32::MAX)) as u32);
+            }
+        }
+        oven
+    }
+
+    fn entries(&self) -> Vec<(&'static str, Tag)> {
+        let f = &self.furnace;
+        let used = self
+            .recipes_used
+            .iter()
+            .map(|(id, count)| (id.clone(), saved_int(*count)))
+            .collect();
+        vec![
+            ("cooking_time_spent", saved_int(f.cook_progress)),
+            ("cooking_total_time", saved_int(f.cook_total)),
+            ("lit_time_remaining", saved_int(f.lit_remaining)),
+            ("lit_total_time", saved_int(f.lit_total)),
+            ("speed_multiplier", Tag::Float(f.speed_multiplier)),
+            ("Items", slot_list(f.slots.iter())),
+            ("RecipesUsed", Tag::Compound(used)),
+        ]
     }
 
     pub fn is_lit(&self) -> bool {
@@ -337,11 +408,11 @@ impl Oven {
         self.furnace.tick(recipes);
         if self.furnace.completed_recipes > done {
             let kind = self.furnace.kind;
-            if let Some(recipe) = input
+            if let Some((id, _)) = input
                 .as_ref()
-                .and_then(|input| recipes.cooking_for(kind, input))
+                .and_then(|input| recipes.cooking_entry_for(kind, input))
             {
-                self.experience += recipe.experience;
+                *self.recipes_used.entry(id.to_owned()).or_default() += 1;
             }
         }
         lit != self.is_lit()
@@ -365,11 +436,27 @@ impl Oven {
             });
     }
 
-    pub fn take_experience(&mut self, roll: f32) -> u32 {
-        let total = std::mem::take(&mut self.experience);
-        let whole = total.floor();
-        let part = total - whole;
-        whole as u32 + u32::from(part > 0.0 && roll < part)
+    fn recipe_experience(recipes: &RecipeBook, id: &str, count: u32) -> f32 {
+        count as f32 * recipes.cooking_recipe(id).map_or(0.0, |recipe| recipe.experience)
+    }
+
+    pub fn experience(&self, recipes: &RecipeBook) -> f32 {
+        self.recipes_used
+            .iter()
+            .map(|(id, count)| Self::recipe_experience(recipes, id, *count))
+            .sum()
+    }
+
+    pub fn take_experience(&mut self, roll: f32, recipes: &RecipeBook) -> u32 {
+        std::mem::take(&mut self.recipes_used)
+            .into_iter()
+            .map(|(id, count)| {
+                let total = Self::recipe_experience(recipes, &id, count);
+                let whole = total.floor();
+                let part = total - whole;
+                whole as u32 + u32::from(part > 0.0 && roll < part)
+            })
+            .sum()
     }
 
     pub fn progress(&self) -> [f32; 2] {
@@ -412,6 +499,31 @@ pub struct Brewer {
 }
 
 impl Brewer {
+    pub fn from_tag(tag: &Tag, recipes: &RecipeBook) -> Self {
+        let mut brewer = Self::default();
+        if let Some(list) = tag.get("Items") {
+            brewer.slots = slots(list, BREWER_SLOTS, recipes).try_into().unwrap_or_default();
+        }
+        brewer.brew_time = int(tag, "BrewTime", 0).min(BREW_TICKS);
+        brewer.fuel = int(tag, "Fuel", 0).min(FUEL_USES);
+        if brewer.brew_time > 0 {
+            brewer.ingredient = brewer.slots[REAGENT].as_ref().map(|stack| stack.id.clone());
+        }
+        brewer.shown = brewer.bottles();
+        brewer
+    }
+
+    fn entries(&self) -> Vec<(&'static str, Tag)> {
+        vec![
+            ("BrewTime", saved_int(self.brew_time)),
+            ("total_brew_time", saved_int(BREW_TICKS)),
+            ("Items", slot_list(self.slots.iter())),
+            ("Fuel", saved_int(self.fuel)),
+            ("total_fuel", saved_int(FUEL_USES)),
+            ("speed_multiplier", Tag::Float(1.0)),
+        ]
+    }
+
     fn brewable(&self, book: &StationBook, recipes: &RecipeBook) -> bool {
         let Some(reagent) = self.slots[REAGENT].as_ref() else {
             return false;
@@ -618,12 +730,23 @@ impl Containers {
     }
 
     pub fn block_entity_tag(&self, pos: BlockPos, kind: &str) -> Option<Tag> {
-        let cells = self.chests.get(&pos).filter(|_| CHEST_KINDS.contains(&kind))?;
-        let mut entries = Vec::new();
-        if kind != SHULKER_BOX || cells.iter().any(Option::is_some) {
-            entries.push(("Items", slot_list(cells.iter())));
-        }
-        if let Some(name) = self.names.get(&pos).and_then(text_tag) {
+        let mut entries = if CHEST_KINDS.contains(&kind) {
+            let cells = self.chests.get(&pos)?;
+            let mut entries = Vec::new();
+            if kind != SHULKER_BOX || cells.iter().any(Option::is_some) {
+                entries.push(("Items", slot_list(cells.iter())));
+            }
+            entries
+        } else if let Some(cooking) = cooking_kind(kind) {
+            self.ovens.get(&pos).filter(|oven| oven.furnace.kind == cooking)?.entries()
+        } else if kind == BREWING_STAND {
+            self.brewers.get(&pos)?.entries()
+        } else if kind == CAMPFIRE {
+            self.campfires.get(&pos)?.entries()
+        } else {
+            return None;
+        };
+        if let Some(name) = self.names.get(&pos).and_then(text_tag).filter(|_| kind != CAMPFIRE) {
             entries.push(("CustomName", name));
         }
         Some(block_entity(self.saved.get(&pos), kind, pos, entries))
@@ -633,11 +756,31 @@ impl Containers {
         let Some(kind) = tag.get("id").and_then(Tag::as_str) else {
             return;
         };
-        if !CHEST_KINDS.contains(&kind) || tag.get("LootTable").is_some() || self.chests.contains_key(&pos) {
+        if CHEST_KINDS.contains(&kind) {
+            if tag.get("LootTable").is_some() || self.chests.contains_key(&pos) {
+                return;
+            }
+            let items = tag.get("Items").map_or_else(|| vec![None; CHEST_SLOTS], |list| slots(list, CHEST_SLOTS, recipes));
+            self.chests.insert(pos, items);
+        } else if let Some(cooking) = cooking_kind(kind) {
+            if self.ovens.contains_key(&pos) {
+                return;
+            }
+            self.ovens.insert(pos, Oven::from_tag(cooking, tag, recipes));
+        } else if kind == BREWING_STAND {
+            if self.brewers.contains_key(&pos) {
+                return;
+            }
+            self.brewers.insert(pos, Brewer::from_tag(tag, recipes));
+        } else if kind == CAMPFIRE {
+            let campfire = Campfire::from_tag(tag, recipes);
+            if self.campfires.contains_key(&pos) || campfire.is_empty() {
+                return;
+            }
+            self.campfires.insert(pos, campfire);
+        } else {
             return;
         }
-        let items = tag.get("Items").map_or_else(|| vec![None; CHEST_SLOTS], |list| slots(list, CHEST_SLOTS, recipes));
-        self.chests.insert(pos, items);
         match tag.get("CustomName") {
             Some(name) => self.names.insert(pos, tag_json(name)),
             None => self.names.remove(&pos),
@@ -656,6 +799,9 @@ impl Containers {
     pub fn forget_chunk(&mut self, (x, z): (i32, i32)) {
         let outside = |pos: &BlockPos| (pos.0 >> 4, pos.2 >> 4) != (x, z);
         self.chests.retain(|pos, _| outside(pos));
+        self.ovens.retain(|pos, _| outside(pos));
+        self.brewers.retain(|pos, _| outside(pos));
+        self.campfires.retain(|pos, _| outside(pos));
         self.names.retain(|pos, _| outside(pos));
         self.saved.retain(|pos, _| outside(pos));
         self.dirty.retain(outside);
@@ -735,7 +881,7 @@ impl Containers {
         }
     }
 
-    pub fn remove(&mut self, pos: BlockPos) -> (Vec<ItemStack>, f32) {
+    pub fn remove(&mut self, pos: BlockPos, recipes: &RecipeBook) -> (Vec<ItemStack>, f32) {
         self.names.remove(&pos);
         self.saved.remove(&pos);
         if let Some(cells) = self.chests.remove(&pos) {
@@ -743,13 +889,19 @@ impl Containers {
             return (cells.into_iter().flatten().collect(), 0.0);
         }
         if let Some(brewer) = self.brewers.remove(&pos) {
+            self.dirty.insert(pos);
             return (brewer.slots.into_iter().flatten().collect(), 0.0);
         }
         if let Some(campfire) = self.campfires.remove(&pos) {
+            self.dirty.insert(pos);
             return (campfire.take_contents(), 0.0);
         }
         match self.ovens.remove(&pos) {
-            Some(mut oven) => (oven.furnace.take_contents(), oven.experience),
+            Some(mut oven) => {
+                self.dirty.insert(pos);
+                let experience = oven.experience(recipes);
+                (oven.furnace.take_contents(), experience)
+            }
             None => (Vec::new(), 0.0),
         }
     }
@@ -760,7 +912,11 @@ impl Containers {
 
     pub fn place_food(&mut self, pos: BlockPos, stack: &ItemStack, recipes: &RecipeBook) -> Option<bool> {
         let (_, ticks) = self.book.campfire_cooking(&stack.id, recipes)?;
-        Some(self.campfires.entry(pos).or_default().place(stack, ticks))
+        let placed = self.campfires.entry(pos).or_default().place(stack, ticks);
+        if placed {
+            self.dirty.insert(pos);
+        }
+        Some(placed)
     }
 
     pub fn cooks_on_campfire(&self, stack: &ItemStack, recipes: &RecipeBook) -> bool {
@@ -776,7 +932,11 @@ impl Containers {
                 continue;
             };
             let book = &self.book;
+            let before = campfire.cooking_times();
             let done = campfire.tick(lit, |item| book.campfire_cooking(&item.id, recipes).map(|(cooked, _)| cooked));
+            if !done.is_empty() || campfire.cooking_times() != before {
+                self.dirty.insert(pos);
+            }
             popped.extend(done.into_iter().map(|stack| (pos, stack)));
         }
         self.campfires.retain(|_, campfire| !campfire.is_empty());
@@ -786,12 +946,20 @@ impl Containers {
     pub fn tick(&mut self, recipes: &RecipeBook) -> Ticked {
         let mut ticked = Ticked::default();
         for (pos, oven) in &mut self.ovens {
+            let before = (oven.data(), oven.furnace.completed_recipes);
             if oven.tick(recipes) {
                 ticked.props.push((*pos, "lit", oven.is_lit()));
             }
+            if (oven.data(), oven.furnace.completed_recipes) != before {
+                self.dirty.insert(*pos);
+            }
         }
         for (pos, brewer) in &mut self.brewers {
+            let before = brewer.data();
             let (brewed, drop) = brewer.tick(&self.book, recipes);
+            if brewed || brewer.data() != before {
+                self.dirty.insert(*pos);
+            }
             if brewed {
                 ticked.brewed.push(*pos);
             }
@@ -860,12 +1028,14 @@ impl Containers {
                     *slot = cell;
                 }
                 oven.refresh(&before, recipes);
+                self.dirty.insert(opened.cells[0]);
             }
             Station::Brewer => {
                 let brewer = self.brewers.entry(opened.cells[0]).or_default();
                 for (slot, cell) in brewer.slots.iter_mut().zip(cells) {
                     *slot = cell;
                 }
+                self.dirty.insert(opened.cells[0]);
             }
             Station::Ender => self.ender = cells,
             _ => {
@@ -877,12 +1047,12 @@ impl Containers {
         }
     }
 
-    fn take_output(&mut self, opened: &Opened, roll: f32) -> u32 {
+    fn take_output(&mut self, opened: &Opened, roll: f32, recipes: &RecipeBook) -> u32 {
         match opened.station {
             Station::Oven(_) => self
                 .ovens
                 .get_mut(&opened.cells[0])
-                .map_or(0, |oven| oven.take_experience(roll)),
+                .map_or(0, |oven| oven.take_experience(roll, recipes)),
             _ => 0,
         }
     }
@@ -931,7 +1101,7 @@ impl Containers {
         self.store(opened, cells, &inventory.recipes);
         Changed {
             experience: if taken {
-                self.take_output(opened, roll)
+                self.take_output(opened, roll, &inventory.recipes)
             } else {
                 0
             },
@@ -1062,7 +1232,7 @@ impl Containers {
         self.store(opened, cells, &inventory.recipes);
         Changed {
             experience: if taken && output {
-                self.take_output(opened, roll)
+                self.take_output(opened, roll, &inventory.recipes)
             } else {
                 0
             },
@@ -1130,7 +1300,7 @@ impl Containers {
         }
         self.store(opened, cells, &inventory.recipes);
         let experience = if output {
-            self.take_output(opened, roll)
+            self.take_output(opened, roll, &inventory.recipes)
         } else {
             0
         };
@@ -1371,7 +1541,7 @@ mod tests {
         assert_eq!(inventory.cursor.as_ref().map(|s| s.count), Some(8));
         store.click(&opened, &mut inventory, 4, false, false, 0.0);
         assert_eq!(store.cells(&opened)[4].as_ref().map(|s| s.count), Some(9));
-        let (dropped, _) = store.remove((0, 64, 0));
+        let (dropped, _) = store.remove((0, 64, 0), &inventory.recipes);
         assert_eq!(dropped.len(), 1);
         assert!(store.cells(&opened).iter().all(Option::is_none));
     }
@@ -1432,7 +1602,8 @@ mod tests {
         assert_eq!(lit, vec![((0, 64, 0), "lit", true)]);
         let oven = store.oven((0, 64, 0)).unwrap();
         assert_eq!(oven.furnace.slots[2].as_ref().map(|s| s.count), Some(2));
-        assert!((oven.experience - 1.4).abs() < 1e-4);
+        assert_eq!(oven.recipes_used, BTreeMap::from([("minecraft:iron_ingot".to_owned(), 2)]));
+        assert!((oven.experience(&inventory.recipes) - 1.4).abs() < 1e-4);
         let changed = store.click(&opened, &mut inventory, 2, false, true, 0.9);
         assert_eq!(changed.experience, 1);
         assert_eq!(
@@ -1568,12 +1739,14 @@ mod tests {
 
     #[test]
     fn experience_rounds_by_chance() {
+        let recipes = book();
         let mut oven = Oven::new(CookingKind::Furnace);
-        oven.experience = 2.25;
-        assert_eq!(oven.take_experience(0.2), 3);
-        oven.experience = 2.25;
-        assert_eq!(oven.take_experience(0.3), 2);
-        assert_eq!(oven.take_experience(0.0), 0);
+        let used = BTreeMap::from([("minecraft:iron_ingot".to_owned(), 3), ("minecraft:unknown".to_owned(), 9)]);
+        oven.recipes_used = used.clone();
+        assert_eq!(oven.take_experience(0.05, &recipes), 3);
+        oven.recipes_used = used;
+        assert_eq!(oven.take_experience(0.2, &recipes), 2);
+        assert_eq!(oven.take_experience(0.0, &recipes), 0);
     }
 
     #[test]
@@ -1696,7 +1869,7 @@ mod tests {
         inventory.slots[12] = Some(inventory.recipes.stack("minecraft:diamond", 5));
         store.quick_move_from_player(&here, &mut inventory, 12);
         assert_eq!(store.cells(&there)[0].as_ref().map(|s| s.count), Some(5));
-        let (spilled, _) = store.remove((0, 64, 0));
+        let (spilled, _) = store.remove((0, 64, 0), &inventory.recipes);
         assert!(spilled.is_empty(), "breaking an ender chest drops nothing of the inventory");
         assert_eq!(store.cells(&here)[0].as_ref().map(|s| s.count), Some(5));
         let chest = Opened::new((0, 64, 0), &block("minecraft:chest", &[]), None).unwrap();
@@ -1828,8 +2001,8 @@ mod tests {
         let mut left: Vec<_> = store.campfires().map(|(pos, _)| pos).collect();
         left.sort_unstable();
         assert_eq!(left, vec![unlit, unloaded]);
-        assert_eq!(store.remove(unloaded).0.len(), 1);
-        let (spilled, experience) = store.remove(unlit);
+        assert_eq!(store.remove(unloaded, &recipes).0.len(), 1);
+        let (spilled, experience) = store.remove(unlit, &recipes);
         assert_eq!((spilled.len(), spilled[0].id.as_str(), experience), (1, "minecraft:beef", 0.0));
         assert_eq!(store.campfires().count(), 0);
     }
@@ -2004,12 +2177,12 @@ mod tests {
         let written: Vec<_> = store.take_block_entities(kind).into_iter().map(|(pos, tag)| (pos, tag.is_some())).collect();
         assert_eq!(written, vec![(barrel, true)]);
         assert!(store.take_block_entities(kind).is_empty());
-        assert!(store.remove((0, 63, 0)).0.is_empty());
+        assert!(store.remove((0, 63, 0), &inventory.recipes).0.is_empty());
         assert!(store.take_block_entities(|_| Some("minecraft:barrel")).is_empty(), "a block the containers never held is left alone");
         inventory.cursor = Some(inventory.recipes.stack("minecraft:dirt", 5));
         store.click(&opened, &mut inventory, 1, false, false, 0.0);
         assert!(store.take_block_entities(|_| None).is_empty(), "a block that is no container any more is not written");
-        store.remove(barrel);
+        store.remove(barrel, &inventory.recipes);
         assert_eq!(store.take_block_entities(kind), vec![(barrel, None)], "an emptied barrel goes back to its default");
         inventory.cursor = Some(inventory.recipes.stack("minecraft:dirt", 5));
         store.click(&opened, &mut inventory, 2, false, false, 0.0);
@@ -2035,5 +2208,195 @@ mod tests {
         assert!(store.entities[&(0, 64, 0)].get("Items").is_none());
         assert_eq!(store.entities[&(1, 64, 0)].get("Items"), Some(&items));
         assert!(store.pending[&(2, 64, 0)].get("Items").is_none());
+    }
+
+    const FURNACE: BlockPos = (0, 64, 0);
+    const STAND: BlockPos = (2, 64, 0);
+    const FIRE: BlockPos = (4, 64, 0);
+    const KITCHEN: [(&str, &str); 6] = [
+        ("minecraft:furnace", "minecraft:furnace"),
+        ("minecraft:smoker", "minecraft:smoker"),
+        ("minecraft:blast_furnace", "minecraft:blast_furnace"),
+        ("minecraft:brewing_stand", BREWING_STAND),
+        ("minecraft:campfire", CAMPFIRE),
+        ("minecraft:soul_campfire", CAMPFIRE),
+    ];
+
+    fn kitchen() -> (RecipeBook, Arc<StationBook>) {
+        let dir = crate::test_dir::tempdir().unwrap();
+        let jar = dir.path().join("client.jar");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&jar).unwrap());
+        let recipes = [
+            ("iron_ingot", json!({"type": "minecraft:smelting", "ingredient": "minecraft:raw_iron", "result": {"id": "minecraft:iron_ingot"}, "cookingtime": 200, "experience": 0.7})),
+            ("cooked_beef_from_campfire_cooking", json!({"type": "minecraft:campfire_cooking", "ingredient": "minecraft:beef", "result": {"id": "minecraft:cooked_beef"}, "cookingtime": 600})),
+            ("brewing/potion_water_nether_wart", json!({"type": "minecraft:brewing", "input": {"item": "minecraft:potion", "potion_contents": {"potions": "minecraft:water"}}, "reagent": {"item": "minecraft:nether_wart"}, "output": {"id": "minecraft:potion", "components": {"minecraft:potion_contents": {"potion": "minecraft:awkward"}}}})),
+        ];
+        for (name, value) in recipes {
+            zip.start_file(format!("data/minecraft/recipe/{name}.json"), zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(value.to_string().as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        (RecipeBook::from_jar(&jar).unwrap(), Arc::new(StationBook::from_jar(&jar).unwrap()))
+    }
+
+    fn run(store: &mut Containers, recipes: &RecipeBook, ticks: u32) -> Vec<String> {
+        let mut events = Vec::new();
+        for _ in 0..ticks {
+            let ticked = store.tick(recipes);
+            events.extend(ticked.brewed.iter().map(|pos| format!("brewed {pos:?}")));
+            events.extend(store.cook(|_| Some(true), recipes).into_iter().map(|(pos, stack)| format!("{} {pos:?}", stack.id)));
+        }
+        events
+    }
+
+    fn busy_kitchen() -> (Containers, Inventory) {
+        let (recipes, book) = kitchen();
+        let mut store = Containers::default();
+        store.set_book(book);
+        let mut inventory = Inventory::default().with_recipes(recipes);
+        let furnace = Opened::new(FURNACE, &block("minecraft:furnace", &[]), None).unwrap();
+        let stand = Opened::new(STAND, &block("minecraft:brewing_stand", &[]), None).unwrap();
+        inventory.slots[10] = Some(inventory.recipes.stack("minecraft:raw_iron", 3));
+        inventory.slots[11] = Some(inventory.recipes.stack("minecraft:coal", 2));
+        store.quick_move_from_player(&furnace, &mut inventory, 10);
+        store.quick_move_from_player(&furnace, &mut inventory, 11);
+        for slot in 12..15 {
+            inventory.slots[slot] = Some(crate::bottle::water_bottle());
+        }
+        inventory.slots[15] = Some(inventory.recipes.stack("minecraft:nether_wart", 2));
+        inventory.slots[16] = Some(inventory.recipes.stack("minecraft:blaze_powder", 2));
+        for slot in [16, 15, 12, 13, 14] {
+            store.quick_move_from_player(&stand, &mut inventory, slot);
+        }
+        let beef = inventory.recipes.stack("minecraft:beef", 2);
+        for _ in 0..2 {
+            assert_eq!(store.place_food(FIRE, &beef, &inventory.recipes), Some(true));
+        }
+        let recipes = inventory.recipes.clone();
+        assert!(run(&mut store, &recipes, 250).is_empty());
+        (store, inventory)
+    }
+
+    fn vanilla_saves_the_same_kitchen(catalog: &minecraftoss_core::block_entity::BlockEntities) {
+        let (mut store, inventory) = busy_kitchen();
+        for (id, pos, kind) in [("minecraft:furnace", FURNACE, "minecraft:furnace"), ("minecraft:brewing_stand", STAND, BREWING_STAND), ("minecraft:soul_campfire", FIRE, CAMPFIRE)] {
+            let tag = store.block_entity_tag(pos, kind).unwrap();
+            assert_eq!(catalog.load_and_save(id, pos, &tag).as_ref(), Some(&tag), "{id}");
+        }
+        for (i, (id, kind)) in KITCHEN.into_iter().enumerate() {
+            let pos = (i as i32 * 2, 70, 5);
+            let named = compound(vec![("id", Tag::String(kind.to_owned())), ("CustomName", Tag::String("Kitchen".to_owned()))]);
+            store.import(pos, &named, &inventory.recipes);
+            if kind == CAMPFIRE {
+                assert!(store.block_entity_tag(pos, kind).is_none(), "an empty campfire is left to its default");
+                continue;
+            }
+            let tag = store.block_entity_tag(pos, kind).unwrap();
+            assert_eq!(catalog.load_and_save(id, pos, &tag).as_ref(), Some(&tag), "an empty named {id}");
+            assert_eq!(tag.get("Items"), Some(&Tag::List(Vec::new())), "{id} always saves Items");
+            assert_eq!(store.custom_name(pos).as_deref(), Some("Kitchen"));
+        }
+    }
+
+    #[test]
+    fn furnaces_brewing_stands_and_campfires_save_what_vanilla_loads_and_saves_again() {
+        vanilla_saves_the_same_kitchen(&catalog(&KITCHEN));
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else {
+            return;
+        };
+        let Ok(registries) = minecraftoss_core::Registries::load(&paths) else {
+            return;
+        };
+        if let Some(real) = registries.block_entities.as_ref() {
+            vanilla_saves_the_same_kitchen(real);
+        }
+    }
+
+    #[test]
+    fn a_saved_furnace_brewing_stand_and_campfire_go_on_where_they_stopped() {
+        let (mut store, inventory) = busy_kitchen();
+        let recipes = &inventory.recipes;
+        let kinds = [(FURNACE, "minecraft:furnace"), (STAND, BREWING_STAND), (FIRE, CAMPFIRE)];
+        let mut again = Containers::default();
+        again.set_book(store.book.clone());
+        for (pos, kind) in kinds {
+            let tag = store.block_entity_tag(pos, kind).unwrap();
+            again.import(pos, &tag, recipes);
+            assert_eq!(again.block_entity_tag(pos, kind), Some(tag), "{kind}");
+        }
+        let tag = store.block_entity_tag(FURNACE, "minecraft:furnace").unwrap();
+        assert_eq!(tag.get("cooking_time_spent"), Some(&Tag::Int(50)));
+        assert_eq!(tag.get("cooking_total_time"), Some(&Tag::Int(200)));
+        assert_eq!(tag.get("lit_time_remaining"), Some(&Tag::Int(1351)));
+        assert_eq!(tag.get("lit_total_time"), Some(&Tag::Int(1600)));
+        assert_eq!(tag.get("RecipesUsed"), Some(&compound(vec![("minecraft:iron_ingot", Tag::Int(1))])));
+        let tag = store.block_entity_tag(STAND, BREWING_STAND).unwrap();
+        assert_eq!((tag.get("BrewTime"), tag.get("Fuel")), (Some(&Tag::Int(151)), Some(&Tag::Int(19))));
+        let tag = store.block_entity_tag(FIRE, CAMPFIRE).unwrap();
+        assert_eq!(tag.get("CookingTimes"), Some(&Tag::IntArray(vec![250, 250, 0, 0])));
+        assert_eq!(tag.get("CookingTotalTimes"), Some(&Tag::IntArray(vec![600, 600, 0, 0])));
+        let later = run(&mut store, recipes, 400);
+        assert_eq!(run(&mut again, recipes, 400), later);
+        assert!(later.contains(&format!("brewed {STAND:?}")), "{later:?}");
+        assert_eq!(later.iter().filter(|event| event.starts_with("minecraft:cooked_beef")).count(), 2);
+        for (pos, kind) in kinds {
+            assert_eq!(again.block_entity_tag(pos, kind), store.block_entity_tag(pos, kind), "{kind} later");
+        }
+        assert!(again.block_entity_tag(FIRE, CAMPFIRE).is_none(), "the campfire is empty again");
+        let oven = again.oven(FURNACE).unwrap();
+        assert_eq!(oven.furnace.slots[2].as_ref().map(|s| s.count), Some(3));
+        assert_eq!(oven.recipes_used.get("minecraft:iron_ingot"), Some(&3));
+        let opened = Opened::new(FURNACE, &block("minecraft:furnace", &[]), None).unwrap();
+        let mut taker = inventory.clone();
+        assert_eq!(again.click(&opened, &mut taker, 2, false, true, 0.0).experience, 3);
+        assert!(again.oven(FURNACE).unwrap().recipes_used.is_empty(), "taking the output pays the experience once");
+    }
+
+    #[test]
+    fn only_working_stations_are_written_and_an_unloaded_chunk_stops_them() {
+        assert_eq!(block_entity_kind(&block("minecraft:smoker", &[("lit", "true")])), Some("minecraft:smoker"));
+        assert_eq!(block_entity_kind(&block("minecraft:blast_furnace", &[])), Some("minecraft:blast_furnace"));
+        assert_eq!(block_entity_kind(&block("minecraft:brewing_stand", &[])), Some(BREWING_STAND));
+        assert_eq!(block_entity_kind(&block("minecraft:soul_campfire", &[])), Some(CAMPFIRE));
+        let (recipes, book) = kitchen();
+        let mut store = Containers::default();
+        store.set_book(book);
+        let mut inventory = Inventory::default().with_recipes(recipes);
+        let recipes = inventory.recipes.clone();
+        let kind = |pos: BlockPos| match pos {
+            FURNACE => Some("minecraft:furnace"),
+            FIRE => Some(CAMPFIRE),
+            _ => None,
+        };
+        let written = |store: &mut Containers| store.take_block_entities(kind).into_iter().map(|(pos, tag)| (pos, tag.is_some())).collect::<Vec<_>>();
+        let furnace = Opened::new(FURNACE, &block("minecraft:furnace", &[]), None).unwrap();
+        store.cells(&furnace);
+        store.tick(&recipes);
+        assert!(written(&mut store).is_empty(), "an idle furnace changes nothing");
+        inventory.slots[10] = Some(recipes.stack("minecraft:raw_iron", 1));
+        inventory.slots[11] = Some(recipes.stack("minecraft:coal", 1));
+        store.quick_move_from_player(&furnace, &mut inventory, 10);
+        store.quick_move_from_player(&furnace, &mut inventory, 11);
+        assert_eq!(written(&mut store), vec![(FURNACE, true)]);
+        store.tick(&recipes);
+        assert_eq!(written(&mut store), vec![(FURNACE, true)], "a burning furnace changes every tick");
+        assert!(store.block_entity_tag(FURNACE, "minecraft:smoker").is_none(), "a furnace is never saved as a smoker");
+        let saved = store.block_entity_tag(FURNACE, "minecraft:furnace").unwrap();
+        store.place_food(FIRE, &recipes.stack("minecraft:beef", 1), &recipes);
+        store.cook(|_| Some(false), &recipes);
+        assert_eq!(written(&mut store), vec![(FIRE, true)]);
+        store.cook(|_| Some(false), &recipes);
+        assert!(written(&mut store).is_empty(), "cold food on an unlit campfire changes nothing");
+        store.forget_chunk((0, 0));
+        assert!(store.oven(FURNACE).is_none());
+        assert_eq!(store.campfires().count(), 0);
+        store.tick(&recipes);
+        store.cook(|_| Some(true), &recipes);
+        assert!(written(&mut store).is_empty(), "nothing cooks in an unloaded chunk");
+        store.import(FURNACE, &saved, &recipes);
+        assert_eq!(store.oven(FURNACE).map(Oven::data), Some([1600, 1600, 1, 200]));
+        let (spilled, experience) = store.remove(FURNACE, &recipes);
+        assert_eq!((spilled.len(), experience), (1, 0.0));
+        assert_eq!(written(&mut store), vec![(FURNACE, false)], "a broken furnace goes back to its default");
     }
 }
