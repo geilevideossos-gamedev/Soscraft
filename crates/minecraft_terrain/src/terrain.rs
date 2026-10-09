@@ -1149,9 +1149,10 @@ impl TerrainStream {
         self.sections = Sections::new(self.sections.view_distance(), min_section, max_section);
         let mut chunks = Vec::new();
         for pos in scene.generated_chunks().collect::<Vec<_>>() {
-            let chunk = scene.generated_chunk(pos).expect("listed").clone();
+            let mut chunk = scene.generated_chunk(pos).expect("listed").clone();
             let empty = self.empty_sections(scene, &chunk);
             self.sections.chunk_loaded(pos, empty);
+            self.apply_scene_edits(scene, &mut chunk);
             chunks.push(chunk);
         }
         self.serials.clear();
@@ -1160,6 +1161,20 @@ impl TerrainStream {
         self.work.0.lock().expect("terrain work queue").compile.retain(|_, _| false);
         self.light_changes = self.lights.iter().map(|(&pos, light)| (pos, Some(light.clone()))).collect();
         chunks
+    }
+
+    fn apply_scene_edits(&self, scene: &HandcraftedScene, chunk: &mut Arc<Chunk>) {
+        let (placed, cleared) = scene.chunk_edits((chunk.pos.x, chunk.pos.z));
+        if placed.is_none() && cleared.is_none() {
+            return;
+        }
+        let registries = self.states.registries().clone();
+        let chunk = Arc::make_mut(chunk);
+        let placed = placed.into_iter().flat_map(|placed| placed.iter()).map(|(&pos, block)| (pos, self.states.state_of(block).unwrap_or(BlockStateId::AIR)));
+        let cleared = cleared.into_iter().flat_map(|cleared| cleared.iter()).map(|&pos| (pos, BlockStateId::AIR));
+        for ((x, y, z), state) in placed.chain(cleared) {
+            chunk.set_block_raw((x & 15) as usize, y, (z & 15) as usize, state, &registries);
+        }
     }
 
     fn now(&self) -> u64 {
@@ -2476,9 +2491,24 @@ mod tests {
         let light = Arc::new(SkyLight::streamed());
         stream.lights.insert((6, 0), light.clone());
         stream.light_changes.clear();
+        let registries = stream.states.registries().clone();
+        let blocks = &registries.blocks;
+        let solid = generated
+            .iter()
+            .flat_map(|&(cx, cz)| (0..256).flat_map(move |y| (0..16).map(move |x| (cx * 16 + x, y, cz * 16))))
+            .find(|&(x, y, z)| !blocks.is_air(scene.generated_chunk((x >> 4, z >> 4)).unwrap().block((x & 15) as usize, y, 0)))
+            .expect("some end stone near the platform");
+        scene.set(solid, None);
+        scene.set((100, 200, 0), Some(Block::new("minecraft:obsidian")));
         let again = stream.reshow(&scene);
         let shown: HashSet<ChunkPos> = again.iter().map(|chunk| (chunk.pos.x, chunk.pos.z)).collect();
         assert_eq!(shown, generated, "every chunk the scene holds is sent again for collision");
+        let sent_again = |pos: (i32, i32)| again.iter().find(|chunk| (chunk.pos.x, chunk.pos.z) == pos).unwrap();
+        let broken = sent_again((solid.0 >> 4, solid.2 >> 4)).block((solid.0 & 15) as usize, solid.1, 0);
+        assert!(blocks.is_air(broken), "a block broken before the trip stays broken for collision");
+        let placed = sent_again((6, 0)).block(4, 200, 0);
+        assert_eq!(blocks.block(blocks.block_of(placed)).name.as_str(), "minecraft:obsidian", "a block placed before the trip stays solid");
+        assert!(!blocks.is_air(scene.generated_chunk((solid.0 >> 4, solid.2 >> 4)).unwrap().block((solid.0 & 15) as usize, solid.1, 0)), "the scene's own chunk is left alone");
         assert_eq!(stream.light_changes.len(), 1);
         assert!(stream.light_changes[0].0 == (6, 0) && stream.light_changes[0].1.as_ref().is_some_and(|l| Arc::ptr_eq(l, &light)));
         assert!(stream.server_tick((100, 49, 0), &mut scene).0.is_empty(), "the server does not send them twice");

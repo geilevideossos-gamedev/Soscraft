@@ -229,3 +229,16 @@ Previous commit: eeceab2e
 ```
 IW4L_MINECRAFT_KIT=minecraft:obsidian*64,minecraft:flint_and_steel,minecraft:diamond_pickaxe+efficiency=5,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:torch*64
 ```
+
+### 12. Minecraft blocks changed before a trip keep their collision when the player comes back
+
+Previous commit: 70ae2991
+
+- **Defect:** a level shown again within its 15 seconds (S3's `TerrainStream::reshow`) handed the MW2 collision the scene's chunks as they were first sent, without the scene's edits. So after a portal trip there and back, blocks the player had placed in that level (the portal frame, a pillar, a floor) had no collision, and blocks they had broken were invisible walls, until the chunk was sent again. Portal round trips make such quick returns the normal case.
+- **Changed:** `minecraft_terrain/src/terrain.rs`: `reshow` hands back each chunk with the scene's placed and cleared blocks written into a copy (`apply_scene_edits`); the scene's own chunks and the section rebuild are unchanged.
+- **Tests:** `terrain`: `a_level_shown_again_sends_its_chunks_and_light_again` now breaks a block and places obsidian before the reshow: the chunks handed back have the air and the obsidian, and the scene's chunk is left alone. Checked to fail before the fix.
+- **Test steps** (the world `n2` and the kit of entry 10):
+  1. In the overworld, build a 3-block cobblestone pillar beside your portal and dig a 2-deep hole in front of it.
+  2. Go through the portal, step out of the Nether portal, wait 2 seconds, step back in and return within 15 seconds.
+  3. Back in the overworld, jump onto the pillar: it holds you. Walk into the hole: you drop into it. **Screenshot 8.**
+- **Kit:** the kit of entry 10.
