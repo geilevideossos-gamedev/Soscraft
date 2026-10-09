@@ -2404,7 +2404,7 @@ mod tests {
         let mut scene = HandcraftedScene::streamed(stream.states.clone());
         let started = Instant::now();
         let mut sent = 0;
-        while scene.generated_chunk((6, 0)).is_none() {
+        while scene.generated_chunk((6, 0)).is_none() || !stream.server.is_idle() {
             assert!(started.elapsed().as_secs() < 600, "no chunks around the End platform");
             sent += stream.server_tick((100, 49, 0), &mut scene).0.len();
             std::thread::sleep(std::time::Duration::from_millis(10));
