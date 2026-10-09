@@ -410,6 +410,7 @@ pub fn activate(brushes: &[SimBrush], origin: [f64; 3], shapes: Vec<Vec<[f32; 6]
             shapes,
         });
     }
+    set_level_switch(LevelSwitch::Never);
     bump();
 }
 
@@ -421,13 +422,76 @@ pub fn switch_level(origin: [f64; 3]) {
     }
     let _ = take_events();
     set_mob_boxes(Vec::new());
+    set_level_switch(LevelSwitch::Pending);
     bump();
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum LevelSwitch {
+    #[default]
+    Never,
+    Pending,
+    At { ms: i32, models: u32 },
+}
+
+impl LevelSwitch {
+    fn stamped(self, ms: i32, next_model: u32) -> Self {
+        match self {
+            Self::Pending => Self::At { ms, models: crate::script::host::entities::SPAWNED_PRESENCE_BASE.saturating_add(next_model) },
+            other => other,
+        }
+    }
+
+    fn fired_before(self, born_ms: i32) -> bool {
+        match self {
+            Self::Never => false,
+            Self::Pending => true,
+            Self::At { ms, .. } => born_ms < ms,
+        }
+    }
+
+    fn spawned_before(self, model: crate::ScriptModelId) -> bool {
+        let wire = model.to_wire();
+        wire >= crate::script::host::entities::SPAWNED_PRESENCE_BASE
+            && match self {
+                Self::Never => false,
+                Self::Pending => true,
+                Self::At { models, .. } => wire < models,
+            }
+    }
+}
+
+static LEVEL_SWITCH: std::sync::Mutex<LevelSwitch> = std::sync::Mutex::new(LevelSwitch::Never);
+
+fn set_level_switch(switch: LevelSwitch) {
+    if let Ok(mut held) = LEVEL_SWITCH.lock() {
+        *held = switch;
+    }
+}
+
+fn level_switch() -> LevelSwitch {
+    LEVEL_SWITCH.lock().map_or(LevelSwitch::Never, |held| *held)
+}
+
+pub(crate) fn stamp_level_switch(ms: i32, next_model: u32) {
+    if let Ok(mut held) = LEVEL_SWITCH.lock() {
+        *held = held.stamped(ms, next_model);
+    }
+}
+
+pub(crate) fn fired_before_switch(born_ms: i32) -> bool {
+    level_switch().fired_before(born_ms)
+}
+
+pub(crate) fn spawned_before_switch(inflictor: Option<crate::ScriptModelId>) -> bool {
+    inflictor.is_some_and(|model| level_switch().spawned_before(model))
 }
 
 pub fn deactivate() {
     if let Ok(mut world) = WORLD.write() {
         *world = None;
     }
+    set_level_switch(LevelSwitch::Never);
     let _ = take_events();
     let _ = take_player_damage();
     let _ = take_totem_pops();
@@ -1258,6 +1322,28 @@ mod tests {
         assert!(w.awaits_ground([0.0; 3]));
         assert_eq!(to_block(w.origin, [36.0, 0.0, 0.0]), [101.5, 49.0, 0.5]);
         assert_eq!(w.brushes, 7, "the map's brushes stay");
+    }
+
+    #[test]
+    fn ordnance_from_before_a_level_switch_is_left_behind() {
+        let base = crate::script::host::entities::SPAWNED_PRESENCE_BASE;
+        let model = |serial: u32| crate::ScriptModelId::from_wire(base + serial);
+        let map_model = crate::ScriptModelId::from_wire(12);
+        let never = LevelSwitch::Never;
+        assert!(!never.fired_before(0) && !never.spawned_before(model(0)));
+        assert_eq!(never.stamped(5_000, 3), never, "no switch, nothing to stamp");
+        let pending = LevelSwitch::Pending;
+        assert!(pending.fired_before(i32::MAX) && pending.spawned_before(model(u32::from(u16::MAX))));
+        assert!(!pending.spawned_before(map_model), "the map's own models never left a level");
+        let at = pending.stamped(5_000, 3);
+        assert_eq!(at, LevelSwitch::At { ms: 5_000, models: base + 3 });
+        assert_eq!(at.stamped(9_000, 7), at, "the first tick after the switch keeps its stamp");
+        assert!(at.fired_before(4_950), "a grenade thrown a tick before the switch");
+        assert!(!at.fired_before(5_000), "a projectile born in the switch's own tick");
+        assert!(!at.fired_before(7_000));
+        assert!(at.spawned_before(model(2)), "a bomb spawned before the switch");
+        assert!(!at.spawned_before(model(3)) && !at.spawned_before(model(40)));
+        assert!(!at.spawned_before(map_model));
     }
 
     fn pool(depth: i32) -> VoxelWorld {

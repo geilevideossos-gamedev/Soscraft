@@ -224,6 +224,10 @@ fn advance_time_system(world: &mut World) {
         request.input.canonicalize();
         tick = request.tick;
     }
+    if world.resource::<StepRequest>().reason.advances_authority_world() {
+        let next_model = world.get_resource::<crate::script::Runtime>().map_or(0, |runtime| runtime.next_spawned_presence);
+        crate::voxel::stamp_level_switch(crate::level_time_ms(tick), next_model);
+    }
     let mut frame = frame_world(world);
     frame.mark_running();
     frame.begin_entity_frame(tick);

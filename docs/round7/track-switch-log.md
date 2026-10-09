@@ -298,7 +298,7 @@ IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:obsidian*64,
 
 ### 14. The Minecraft dimension switch passes clippy
 
-Commit: filled in by `git log` under this subject
+Commit: 33350004
 
 - **Changed:** the two clippy findings on lines of this group. `Entities::leave`'s helper takes `Vec<Picked>` with a `type Picked` (`type_complexity`), and the loading backgrounds read the end portal colours with `map_or_else` instead of `unwrap_or_default` (disallowed by `clippy.toml`).
 - **Clippy:** `clippy -p minecraft_survival -p minecraft_terrain -p render_anim -p hud -p frame --tests --no-deps -- -A clippy::approx_constant` has no other finding on a line of this group. The rest are older: `entities.rs` 76 and 620, `terrain.rs` 657, `minecraft_world.rs` 126, 384 and 393, `hud/src/plugin.rs` and `gpu_list.rs`, and many more in those crates.
@@ -315,3 +315,28 @@ Commit: filled in by `git log` under this subject
   - E1-13: a switch should wait while the player is in a remote killstreak. Ordnance fired before a switch must leave the new level alone; the switch moment to record is the leave step in `minecraft_world.rs`, where `voxel::switch_level` runs.
 - **After track C:** E1-11 as above, plus `/time` per dimension from S1.
 - **MinecraftOSS patches in this group:** none.
+
+## Group S4: MW2 in other dimensions
+
+### 15. MW2 ordnance from before a dimension switch leaves the new level alone (E1-13)
+
+Commit: filled in by `git log` under this subject
+
+- **Changed:**
+  - `sim/src/voxel.rs`: `LevelSwitch { Never, Pending, At { ms, models } }`. `switch_level` marks a switch as pending, and the first authority tick after it stamps the level time and the next script model id (`stamp_level_switch`). `activate` and `deactivate` forget it. `fired_before_switch(born_ms)` is true for a projectile born before that tick, and `spawned_before_switch(inflictor)` for a script model the scripts spawned before it (spawned script model ids count up from `SPAWNED_PRESENCE_BASE`; the map's own models never count).
+  - `sim/src/step.rs` (`advance_time_system`, four lines): stamps the switch at the start of every authority tick.
+  - `sim/src/damage.rs` (two conditions): a projectile blast (`ExplosionBlast.killcam_entity_start_time`, the projectile's spawn time) or a script `RadiusDamage` whose inflictor was spawned before the switch makes no crater and no mob blast. MW2 player damage, glass and MW2 entities are untouched: they live on the MW2 map, which every dimension shares.
+  - The adapter already calls `switch_level` when the player leaves a level and again when the new level is shown, so ordnance fired during the loading screen is left behind too.
+- **Tests:** `voxel`: `ordnance_from_before_a_level_switch_is_left_behind` (no switch leaves everything alone; a pending switch leaves everything behind; the stamp keeps the first tick; a grenade born a tick before the switch is left behind, one born in the switch's tick is not; a bomb spawned before it is, a later one and the map's own models are not).
+- **Decisions:**
+  - The stamp is taken by the sim, not the adapter, so it is the sim's own level time, and a switch between two sim ticks counts from the next one.
+  - A script blast with no inflictor (a level-wide `RadiusDamage`) still craters, as there is nothing to date it by. Killstreak bullets (helicopter turrets) still chip blocks after a switch: bullets carry no spawn time. Both are left as known gaps (brief section 8).
+- **Test steps:** a living switch can't be started in game yet (`/execute in` waits for track C, portals for N2), so this is checked by the unit test. Check that MW2 craters still work in every dimension:
+  1. Keep `IW4L_MINECRAFT_WORLD=s3test` and set `IW4L_MINECRAFT_DIMENSION=the_nether`. Start. Throw a frag at netherrack: it craters. **Screenshot 1.**
+  2. `/kill`. After the respawn in the overworld, throw a frag at the ground: it craters. **Screenshot 2.**
+  3. After track C (`/execute in`): in the overworld, throw a frag at the ground, then at once open chat and type `/execute in minecraft:the_nether run tp ~ 128 ~` before it explodes (about 3 seconds; type the command once beforehand so Up and Enter bring it back). In the Nether there is no crater near your arrival from that frag. **Screenshot 3.** The overworld spot has no crater either: the frag's blast happened after the overworld stopped being shown, and MW2 ordnance only reaches the level the player sees.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:netherrack*64,minecraft:cobblestone*64,minecraft:cooked_beef*32
+```
