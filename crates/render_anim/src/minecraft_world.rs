@@ -73,18 +73,10 @@ pub struct MinecraftWorldView {
 struct Loaded {
     packs: PackStack,
     atlas: Arc<Atlas>,
-    registries: Arc<Registries>,
-    seed: i64,
     celestial: Arc<image::RgbaImage>,
     cloud_mask: Option<CloudMask>,
     crack_texture: Arc<image::RgbaImage>,
     glint_texture: Option<Arc<image::RgbaImage>>,
-    saved_day: Option<f64>,
-    save: Option<minecraft_survival::save::WorldSave>,
-    game_rules: minecraft_terrain::game_rules::GameRules,
-    difficulty: minecraftoss_player::Difficulty,
-    level_writer: Option<std::thread::JoinHandle<()>>,
-    chat: minecraft_commands::CommandServer,
 }
 
 /// The hand's swing and the timers of mining and placing by hand.
@@ -122,10 +114,9 @@ struct StepState {
 
 #[derive(Default)]
 struct Runtime {
-    loading: Option<mpsc::Receiver<Result<(Loaded, minecraft_survival::level::Terrain), String>>>,
+    loading: Option<mpsc::Receiver<Result<(Loaded, minecraft_survival::server::Server), String>>>,
     world: Option<Loaded>,
     server: Option<minecraft_survival::server::Server>,
-    day: DayCycle,
     environment_accumulator: f64,
     environment_primed: bool,
     light: Option<SkyLight>,
@@ -151,7 +142,6 @@ struct Runtime {
     death_watch: minecraft_survival::death::DeathWatch,
     loader: Option<std::thread::JoinHandle<()>>,
     closing: Vec<std::thread::JoinHandle<()>>,
-    autosave_ticks: u32,
 }
 
 impl Drop for Runtime {
@@ -249,7 +239,7 @@ pub(crate) fn register(app: &mut App) {
         );
 }
 
-fn load() -> Result<(Loaded, minecraft_survival::level::Terrain), String> {
+fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
     let root = assets::minecraft_map::root().ok_or_else(assets::minecraft_setup::status)?;
     let opened = minecraft_survival::save::open_world(
         &minecraft_survival::save::saves_dir(),
@@ -301,20 +291,29 @@ fn load() -> Result<(Loaded, minecraft_survival::level::Terrain), String> {
     let loaded = Loaded {
         packs,
         atlas: build.atlas,
-        registries,
-        seed,
         celestial,
         cloud_mask,
         crack_texture,
         glint_texture,
-        saved_day: opened.day_ticks,
+    };
+    let mut day = DayCycle::default();
+    if let Some(ticks) = opened.day_ticks {
+        day.set(ticks);
+    }
+    let globals = minecraft_survival::server::Globals {
+        seed,
+        registries,
         save: opened.save,
         game_rules: opened.game_rules,
         difficulty: opened.difficulty,
-        level_writer: None,
+        day,
         chat,
+        level_writer: None,
+        autosave_ticks: 0,
     };
-    Ok((loaded, minecraft_survival::level::Terrain { stream, scene, environment }))
+    let terrain = minecraft_survival::level::Terrain { stream, scene, environment };
+    let level = minecraft_survival::level::Level { dimension: Dimension::Overworld, entities: None, containers: Default::default(), terrain };
+    Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]) }))
 }
 
 pub(crate) fn data_jar() -> Option<std::path::PathBuf> {
@@ -465,10 +464,16 @@ fn update(
         runtime.loading = None;
         runtime.loader = None;
         match result {
-            Ok((mut world, terrain)) => {
+            Ok((world, mut server)) => {
+                let minecraft_survival::server::Server { globals, levels } = &mut server;
+                let Some(level) = levels.get_mut(&Dimension::Overworld) else {
+                    diag::warn!(World, "Minecraft world failed to load: no overworld");
+                    view.active = false;
+                    return;
+                };
                 let host = settings.as_deref().map_or_else(|| "Player".to_owned(), |settings| settings.player_name.clone());
-                world.chat.join(minecraft_survival::commands::HOST, host);
-                let (x, y, z) = terrain.stream.player_spawn;
+                globals.chat.join(minecraft_survival::commands::HOST, host);
+                let (x, y, z) = level.terrain.stream.player_spawn;
                 view.origin = [x, y, z];
                 view.atlas = Some(world.atlas.clone());
                 view.atlas_patches.clear();
@@ -479,33 +484,27 @@ fn update(
                 view.glint_texture = world.glint_texture.clone();
                 runtime.mining = Default::default();
                 runtime.minimap = Default::default();
-                let mut containers = minecraft_terrain::containers::Containers::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
-                let mut entities = minecraft_survival::entities::Entities::new(&terrain.stream, world.seed, assets::minecraft_map::root().as_deref(), data_jar());
-                entities.set_game_rules(&world.game_rules);
-                containers.set_book(entities.stations.clone());
-                runtime.inventory_ui.set_station_data(entities.stations.clone(), entities.enchantments.clone(), world.seed as i32);
-                world.chat.registries_mut().enchantments = entities.enchantments.as_ref().map_or_else(Vec::new, |book| book.list.iter().map(|enchantment| enchantment.id.clone()).collect());
-                runtime.day = DayCycle::default();
-                if let Some(ticks) = world.saved_day {
-                    runtime.day.set(ticks);
-                }
+                let mut entities = minecraft_survival::entities::Entities::new(&level.terrain.stream, globals.seed, assets::minecraft_map::root().as_deref(), data_jar());
+                entities.set_game_rules(&globals.game_rules);
+                level.containers.set_book(entities.stations.clone());
+                runtime.inventory_ui.set_station_data(entities.stations.clone(), entities.enchantments.clone(), globals.seed as i32);
+                globals.chat.registries_mut().enchantments = entities.enchantments.as_ref().map_or_else(Vec::new, |book| book.list.iter().map(|enchantment| enchantment.id.clone()).collect());
                 // Game ticks since sunrise to start at: 6000 noon, 13000
                 // dusk, 18000 midnight.
                 if let Some(ticks) = std::env::var("IW4L_MINECRAFT_TIME")
                     .ok()
                     .and_then(|t| t.trim().parse::<f64>().ok())
                 {
-                    runtime.day.set(ticks);
+                    globals.day.set(ticks);
                 }
-                if let Some(save) = world.save.as_mut() {
-                    save.started(runtime.day.ticks);
-                    if let Some(host) = world.chat.profile(minecraft_survival::commands::HOST) {
+                if let Some(save) = globals.save.as_mut() {
+                    save.started(globals.day.ticks);
+                    if let Some(host) = globals.chat.profile(minecraft_survival::commands::HOST) {
                         save.set_host(&host.uuid);
                     }
                 }
-                runtime.autosave_ticks = 0;
-                let saved_mode = world.save.as_ref().map(minecraft_survival::save::WorldSave::host_mode);
+                let saved_mode = globals.save.as_ref().map(minecraft_survival::save::WorldSave::host_mode);
                 if let Some((_, Some(warning))) = &saved_mode {
                     diag::warn!(World, "{warning}");
                 }
@@ -524,11 +523,12 @@ fn update(
                 diag::info!(
                     World,
                     "Minecraft world ready: seed {} spawn {:?}",
-                    world.seed,
-                    terrain.stream.player_spawn
+                    globals.seed,
+                    level.terrain.stream.player_spawn
                 );
                 runtime.fire_frames = fire_frames(&world.packs).map(|(image, frames)| (images.add(image), frames));
-                runtime.server = Some(minecraft_survival::server::Server { levels: std::collections::BTreeMap::from([(Dimension::Overworld, minecraft_survival::level::Level { dimension: Dimension::Overworld, entities: Some(entities), containers, terrain })]) });
+                level.entities = Some(entities);
+                runtime.server = Some(server);
                 runtime.world = Some(world);
                 runtime.shapes.clear();
                 runtime.shape_ids.clear();
@@ -547,7 +547,6 @@ fn update(
         server,
         shapes,
         shape_ids,
-        day,
         environment_accumulator,
         environment_primed,
         light,
@@ -567,10 +566,16 @@ fn update(
         animation_clock,
         spawn_gate,
         death_watch,
-        autosave_ticks,
         ..
     } = &mut *runtime;
-    let (Some(world), Some(level)) = (world.as_mut(), server.as_mut().and_then(|server| server.levels.get_mut(&Dimension::Overworld))) else {
+    let (Some(world), Some(server)) = (world.as_mut(), server.as_mut()) else {
+        ui.active = false;
+        ui.inventory_open = false;
+        puppet.active = false;
+        return;
+    };
+    let minecraft_survival::server::Server { globals, levels } = server;
+    let Some(level) = levels.get_mut(&Dimension::Overworld) else {
         ui.active = false;
         ui.inventory_open = false;
         puppet.active = false;
@@ -584,11 +589,11 @@ fn update(
         .map(|ps| minecraft_commands::Pose { feet: sim::voxel::to_block(origin, ps.origin), yaw: minecraft_yaw(ps.viewangles[1]), pitch: ps.viewangles[0] })
         .or_else(|| survival.last_feet().map(|feet| minecraft_commands::Pose { feet, yaw: 0.0, pitch: 0.0 }));
     let mut host = minecraft_survival::commands::Host {
-        seed: world.seed,
-        rules: &mut world.game_rules,
-        difficulty: &mut world.difficulty,
-        day,
-        save: world.save.as_mut(),
+        seed: globals.seed,
+        rules: &mut globals.game_rules,
+        difficulty: &mut globals.difficulty,
+        day: &mut globals.day,
+        save: globals.save.as_mut(),
         survival,
         entities: entities.as_mut(),
         player_mode,
@@ -598,19 +603,19 @@ fn update(
         alive: host_alive,
         teleports: Vec::new(),
     };
-    let delivered = minecraft_survival::commands::pump(&mut ui.chat.sent, &mut world.chat, &mut host);
+    let delivered = minecraft_survival::commands::pump(&mut ui.chat.sent, &mut globals.chat, &mut host);
     let mode_changed = host.mode_changed;
     let teleports = std::mem::take(&mut host.teleports);
     if host.rules_changed
         && let Some(entities) = entities.as_mut()
     {
-        entities.set_game_rules(&world.game_rules);
+        entities.set_game_rules(&globals.game_rules);
     }
-    for warning in world.chat.take_warnings() {
+    for warning in globals.chat.take_warnings() {
         diag::warn!(World, "{warning}");
     }
     if mode_changed {
-        save_player_mode(world, *player_mode);
+        save_player_mode(globals, *player_mode);
     }
     if !delivered.is_empty() {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
@@ -629,7 +634,7 @@ fn update(
     let Some(ps) = presented.player(local.0) else {
         ui.active = false;
         puppet.active = false;
-        stream_around_spawn(world, terrain, shapes, shape_ids, entities, light, spawn_gate, &mut view, aspect, now_ms);
+        stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, light, spawn_gate, &mut view, aspect, now_ms);
         return;
     };
 
@@ -642,8 +647,8 @@ fn update(
     if sim::voxel::take_team_switches().contains(&local.0.0) {
         death_watch.switch_teams();
     }
-    let keep_inventory = minecraft_survival::death::keeps_belongings(world.game_rules.keep_inventory(), player_mode.mode);
-    survival.rules = minecraft_survival::survival::SurvivalRules::of(&world.game_rules, world.difficulty);
+    let keep_inventory = minecraft_survival::death::keeps_belongings(globals.game_rules.keep_inventory(), player_mode.mode);
+    survival.rules = minecraft_survival::survival::SurvivalRules::of(&globals.game_rules, globals.difficulty);
     survival.set_game_mode(player_mode);
     authority.0.set_minecraft_abilities(local.0, ability_bits(player_mode));
     if alive && player_mode.abilities.may_fly {
@@ -675,7 +680,7 @@ fn update(
         feet[2].floor() as i32,
     );
     let streamed = terrain.stream.server_tick(block, &mut terrain.scene);
-    apply_streamed(&world.registries, shapes, shape_ids, entities, streamed);
+    apply_streamed(&globals.registries, shapes, shape_ids, entities, streamed);
 
     // Minecraft's yaw: 0 facing +Z (map -Y), turning towards -X.
     let mc_yaw = minecraft_yaw(ps.viewangles[1]);
@@ -720,7 +725,7 @@ fn update(
                 let sounding = on_ground
                     || block.id.path == "powder_snow"
                     || terrain.stream.states.state_of(block).is_some_and(|state| {
-                        world.registries.block_tags.id("minecraft:climbable").is_some_and(|tag| world.registries.block_in_tag(state, tag))
+                        globals.registries.block_tags.id("minecraft:climbable").is_some_and(|tag| globals.registries.block_in_tag(state, tag))
                     });
                 // Snow layers and carpets sound instead of what they lie on.
                 let inside = block_at(-0.01).filter(|(_, b)| {
@@ -870,7 +875,7 @@ fn update(
             }
         }
         if !writes.is_empty() {
-            write_blocks(terrain, &world.registries, shapes, shape_ids, entities, writes);
+            write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, writes);
         }
     }
     let game_mode = *player_mode;
@@ -1086,7 +1091,7 @@ fn update(
                     let conductor = |(x, y, z): (i32, i32, i32)| {
                         minecraft_terrain::scene::Scene::block(&terrain.scene, (x, y + 1, z))
                             .and_then(|b| terrain.stream.states.state_of(b))
-                            .is_some_and(|state| world.registries.blocks.is(state, minecraftoss_core::block::flags::REDSTONE_CONDUCTOR))
+                            .is_some_and(|state| globals.registries.blocks.is(state, minecraftoss_core::block::flags::REDSTONE_CONDUCTOR))
                     };
                     let blocked = match opened.station {
                         minecraft_terrain::containers::Station::Chest | minecraft_terrain::containers::Station::Ender => opened.cells.iter().any(|&pos| conductor(pos)),
@@ -1136,7 +1141,7 @@ fn update(
                 hand.swing = Some(0.0);
                 let (result, heard) = match outcome {
                     BottleUse::Block { pos, block, result, sounds: events } => {
-                        write_blocks(terrain, &world.registries, shapes, shape_ids, entities, vec![(pos, block.and_then(|b| scene_block(&b)))]);
+                        write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, vec![(pos, block.and_then(|b| scene_block(&b)))]);
                         let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
                         (Some(result), events.into_iter().map(|event| (event, Some(centre))).collect())
                     }
@@ -1177,7 +1182,7 @@ fn update(
                 let sent = minecraft_survival::entities::SentItemUse { slot, held: stack.id.clone(), eye: eye_block, yaw: mc_yaw, pitch: ps.viewangles[0], outcome };
                 match change {
                     minecraft_terrain::bucket::Change::Set(pos, block) => {
-                        write_blocks(terrain, &world.registries, shapes, shape_ids, entities, vec![(pos, scene_block(&block))]);
+                        write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, vec![(pos, scene_block(&block))]);
                         finish_item_use(entities, sounds.as_mut(), &world.packs, origin, sent, game_mode.consumes_items());
                     }
                     minecraft_terrain::bucket::Change::Server(pos, action) => entities.item_on_block(pos, action, sent),
@@ -1234,7 +1239,7 @@ fn update(
                     }
                 }
                 let writes = writes.into_iter().map(|(at, block)| (at, block.and_then(|b| scene_block(&b)))).collect();
-                write_blocks(terrain, &world.registries, shapes, shape_ids, entities, writes);
+                write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, writes);
                 hand.swing = Some(0.0);
                 if let Some(block) = minecraft_terrain::scene::Scene::block(&terrain.scene, pos).cloned()
                     && let (Some(sounds), Some(kind)) = (sounds.as_mut(), terrain.scene.sound_type(&block))
@@ -1259,7 +1264,7 @@ fn update(
                     minecraft_terrain::scene::Scene::block(&terrain.scene, below)
                         .and_then(|b| terrain.stream.states.state_of(b))
                         .is_some_and(|state| {
-                            world.registries.blocks.is_face_sturdy(state, minecraftoss_core::pos::Direction::Up, minecraftoss_core::SupportType::Full)
+                            globals.registries.blocks.is_face_sturdy(state, minecraftoss_core::pos::Direction::Up, minecraftoss_core::SupportType::Full)
                         })
                 };
                 let placed = match opening {
@@ -1283,7 +1288,7 @@ fn update(
                             block.is_none_or(|b| {
                                 scene_block(b)
                                     .and_then(|b| terrain.stream.states.state_of(&b))
-                                    .is_some_and(|state| world.registries.blocks.is(state, minecraftoss_core::block::flags::REPLACEABLE))
+                                    .is_some_and(|state| globals.registries.blocks.is(state, minecraftoss_core::block::flags::REPLACEABLE))
                             })
                         },
                     ),
@@ -1303,7 +1308,7 @@ fn update(
                         .as_ref()
                         .filter(|b| b.id.key() != minecraft_terrain::scaffolding::SCAFFOLDING)
                         .and_then(|b| terrain.stream.states.state_of(b))
-                        .map_or_else(Vec::new, |state| world.registries.blocks.collision_boxes(state));
+                        .map_or_else(Vec::new, |state| globals.registries.blocks.collision_boxes(state));
                     minecraft_terrain::placing::obstructed(*pos, &boxes, &bodies)
                 });
                 let survives = placed.is_none_or(|pos| {
@@ -1316,7 +1321,7 @@ fn update(
                     let now = time.elapsed_secs_f64();
                     hand.recent.retain(|(_, _, at)| now - at < RECENT_PLACE_SECONDS);
                     let written: Vec<_> = writes.iter().map(|(p, _)| *p).collect();
-                    write_blocks(terrain, &world.registries, shapes, shape_ids, entities, writes);
+                    write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, writes);
                     if let Some(stack) = held.as_ref().filter(|stack| minecraft_terrain::containers::is_shulker_box(&stack.id))
                         && minecraft_terrain::scene::Scene::block(&terrain.scene, pos).and_then(minecraft_terrain::containers::Station::of) == Some(minecraft_terrain::containers::Station::Shulker)
                     {
@@ -1407,7 +1412,7 @@ fn update(
         scene: &mut terrain.scene,
         packs: &world.packs,
         atlas: &world.atlas,
-        registries: &world.registries,
+        registries: &globals.registries,
     };
     let mut broken = mining.apply(events, &mut refs, time.elapsed_secs_f64());
     broken.extend(mining.break_now(&creative_broken, &mut refs));
@@ -1516,19 +1521,19 @@ fn update(
             pitch: ps.viewangles[0],
         };
         let bright_outside = terrain.environment.sky_light_level() > 11.0;
-        entities.difficulty = minecraft_commands::difficulty_id(world.difficulty);
+        entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
         let ticks_before = entities.client_ticks();
-        let (changes, hits) = entities.tick(dt, day.ticks as i64, bright_outside, &player);
+        let (changes, hits) = entities.tick(dt, globals.day.ticks as i64, bright_outside, &player);
         let summoned = std::mem::take(&mut entities.command_summons);
         if !summoned.is_empty() {
-            let answers = minecraft_survival::commands::summon_answers(&world.chat, &world.game_rules, summoned);
+            let answers = minecraft_survival::commands::summon_answers(&globals.chat, &globals.game_rules, summoned);
             show_chat(&mut ui.chat, inventory_ui, &world.packs, &answers);
         }
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
-        *autosave_ticks += mob_ticks;
-        if *autosave_ticks >= minecraft_survival::save::AUTOSAVE_TICKS {
-            *autosave_ticks = 0;
-            autosave(world, terrain, day.ticks, *player_mode);
+        globals.autosave_ticks += mob_ticks;
+        if globals.autosave_ticks >= minecraft_survival::save::AUTOSAVE_TICKS {
+            globals.autosave_ticks = 0;
+            autosave(globals, terrain, *player_mode);
         }
         for _ in 0..mob_ticks {
             for sound in entities.animate_tick(&terrain.scene, feet) {
@@ -1538,7 +1543,7 @@ fn update(
             }
         }
         if !changes.is_empty() {
-            let registries = &world.registries;
+            let registries = &globals.registries;
             let mut positions = Vec::with_capacity(changes.len());
             for (pos, block) in changes {
                 let state = block.as_ref().and_then(|b| terrain.stream.states.state_of(b));
@@ -1650,9 +1655,9 @@ fn update(
                     sim::voxel::MinecraftDeath { message: line.message, killer: line.killer }
                 });
                 if let Some(death) = &death
-                    && world.game_rules.bool("show_death_messages")
+                    && globals.game_rules.bool("show_death_messages")
                 {
-                    let name = world.chat.name(minecraft_survival::commands::HOST).unwrap_or("Player");
+                    let name = globals.chat.name(minecraft_survival::commands::HOST).unwrap_or("Player");
                     crate::minecraft_chat::show(&mut ui.chat, &[minecraft_survival::commands::death_message(death.line(name))], &HashMap::new());
                 }
                 sim::voxel::push_player_damage(local.0.0, amount, from.map(|b| sim::voxel::to_map(origin, b)), death);
@@ -1722,7 +1727,7 @@ fn update(
                 if containers.is_new(pos)
                     && let Some(chunk) = terrain.scene.generated_chunk((pos.0.div_euclid(16), pos.2.div_euclid(16)))
                     && let Some(entity) = chunk.block_entities.entities.get(&pos).or_else(|| chunk.block_entities.pending.get(&pos))
-                    && let Some((items, seed)) = minecraft_terrain::containers::structure_loot(&world.registries, entity, pos, world.seed, &entities.inventory.recipes)
+                    && let Some((items, seed)) = minecraft_terrain::containers::structure_loot(&globals.registries, entity, pos, globals.seed, &entities.inventory.recipes)
                 {
                     containers.fill(pos, items, seed);
                 }
@@ -1742,7 +1747,7 @@ fn update(
                     |at| block_at(at).is_some_and(|b| b.id.key() == "minecraft:bookshelf"),
                     |at| {
                         block_at(at).is_none_or(|b| {
-                            terrain.stream.states.state_of(b).is_some_and(|state| world.registries.blocks.is(state, minecraftoss_core::block::flags::REPLACEABLE))
+                            terrain.stream.states.state_of(b).is_some_and(|state| globals.registries.blocks.is(state, minecraftoss_core::block::flags::REPLACEABLE))
                         })
                     },
                 );
@@ -1772,7 +1777,7 @@ fn update(
                     worn.properties = block.as_ref().map_or_else(Default::default, |b| b.properties.clone());
                     worn
                 });
-                write_blocks(terrain, &world.registries, shapes, shape_ids, entities, vec![(pos, state)]);
+                write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, vec![(pos, state)]);
             }
             let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
             let pitch = entities.random_float() * 0.1 + 0.9;
@@ -1804,7 +1809,7 @@ fn update(
                 && block.properties.contains_key("open")
             {
                 let state = block.with("open", if open { "true" } else { "false" });
-                write_blocks(terrain, &world.registries, shapes, shape_ids, entities, vec![(opened.cells[0], Some(state))]);
+                write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, vec![(opened.cells[0], Some(state))]);
             }
         }
         entities.experience_found += inventory_ui.take_experience() as f32;
@@ -1947,9 +1952,9 @@ fn update(
         indices.extend(mesh.indices.iter().map(|i| i + base));
     }
     view.cracks = mining.crack_mesh(&terrain.scene, &terrain.stream.states, &world.packs);
-    if world.game_rules.bool("advance_time") && !day.paused {
-        day.advance(dt);
-    } else if let Some(save) = world.save.as_mut() {
+    if globals.game_rules.bool("advance_time") && !globals.day.paused {
+        globals.day.advance(dt);
+    } else if let Some(save) = globals.save.as_mut() {
         save.shift_day(-dt * 20.0);
     }
     let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
@@ -1961,7 +1966,7 @@ fn update(
     let rains_here = terrain
         .scene
         .noise_biome((eye_block.0 >> 2, eye_block.1 >> 2, eye_block.2 >> 2))
-        .is_some_and(|biome| world.registries.biomes.get(biome).has_precipitation);
+        .is_some_and(|biome| globals.registries.biomes.get(biome).has_precipitation);
     terrain
         .environment
         .update_rain_fog(weather.rain_level, light.get(eye_block), rains_here, (dt * 20.0) as f32);
@@ -1970,7 +1975,7 @@ fn update(
         *environment_accumulator = (*environment_accumulator % TICK_SECONDS).min(TICK_SECONDS);
         let scene = &terrain.scene;
         terrain.environment.tick(
-            day.ticks.floor() as i64,
+            globals.day.ticks.floor() as i64,
             weather.rain_level,
             weather.thunder_level,
             eye,
@@ -1992,7 +1997,7 @@ fn update(
     let right = forward.cross(glam::Vec3::Y).normalize_or(glam::Vec3::X);
     let up = right.cross(forward).normalize_or(glam::Vec3::Y);
     let put = |v: glam::Vec3| [v.x, v.y, v.z, 0.0];
-    let game_time = day.ticks;
+    let game_time = globals.day.ticks;
     view.environment = [
         put(forward),
         put(right),
@@ -2156,6 +2161,7 @@ fn apply_streamed(
 fn stream_around_spawn(
     world: &Loaded,
     terrain: &mut minecraft_survival::level::Terrain,
+    registries: &Registries,
     shapes: &mut HashMap<BlockStateId, u16>,
     shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
     entities: &mut Option<minecraft_survival::entities::Entities>,
@@ -2168,7 +2174,7 @@ fn stream_around_spawn(
     let [x, y, z] = view.origin;
     let spawn_block = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
     let streamed = terrain.stream.server_tick(spawn_block, &mut terrain.scene);
-    apply_streamed(&world.registries, shapes, shape_ids, entities, streamed);
+    apply_streamed(registries, shapes, shape_ids, entities, streamed);
     let camera = CullCamera {
         position: glam::DVec3::new(x, y + crate::minecraft_spawn_gate::SPAWN_EYE_HEIGHT, z),
         forward: glam::Vec3::Z,
@@ -2371,14 +2377,14 @@ fn starting_game_mode(saved: Option<minecraft_terrain::game_mode::PlayerMode>) -
     mode
 }
 
-fn save_player_mode(world: &mut Loaded, mode: minecraft_terrain::game_mode::PlayerMode) {
-    let Some(save) = world.save.clone() else {
+fn save_player_mode(globals: &mut minecraft_survival::server::Globals, mode: minecraft_terrain::game_mode::PlayerMode) {
+    let Some(save) = globals.save.clone() else {
         return;
     };
-    if let Some(previous) = world.level_writer.take() {
+    if let Some(previous) = globals.level_writer.take() {
         let _ = previous.join();
     }
-    world.level_writer = std::thread::Builder::new()
+    globals.level_writer = std::thread::Builder::new()
         .name("minecraft-player-save".into())
         .spawn(move || {
             if let Err(error) = save.write_host(&mode) {
@@ -2429,20 +2435,21 @@ fn mc_vitals(vitals: minecraft_survival::survival::Vitals) -> frame::McVitals {
     }
 }
 
-fn autosave(world: &mut Loaded, terrain: &mut minecraft_survival::level::Terrain, day_ticks: f64, mode: minecraft_terrain::game_mode::PlayerMode) {
-    let Some(save) = world.save.clone() else {
+fn autosave(globals: &mut minecraft_survival::server::Globals, terrain: &mut minecraft_survival::level::Terrain, mode: minecraft_terrain::game_mode::PlayerMode) {
+    let Some(save) = globals.save.clone() else {
         return;
     };
     let started = std::time::Instant::now();
     let chunks = terrain.stream.queue_save();
-    if let Some(previous) = world.level_writer.take() {
+    if let Some(previous) = globals.level_writer.take() {
         let _ = previous.join();
     }
     let path = save.path().display().to_string();
     let spawn = terrain.stream.world_spawn;
-    let rules = world.game_rules.clone();
-    let difficulty = world.difficulty;
-    world.level_writer = std::thread::Builder::new()
+    let rules = globals.game_rules.clone();
+    let difficulty = globals.difficulty;
+    let day_ticks = globals.day.ticks;
+    globals.level_writer = std::thread::Builder::new()
         .name("minecraft-level-save".into())
         .spawn(move || {
             if let Err(error) = save.write(spawn, Some(day_ticks), &rules, difficulty) {
@@ -2472,11 +2479,10 @@ fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
     let world = runtime.world.take();
     let loading = runtime.loading.take();
     let loader = runtime.loader.take();
-    let day_ticks = runtime.day.ticks;
     let player_mode = runtime.player_mode;
     let open = world.is_some() || loading.is_some();
     if server.is_some() || open || loader.is_some() {
-        let close = move || save_and_close(server, world, loading, loader, day_ticks, player_mode);
+        let close = move || save_and_close(server, world, loading, loader, player_mode);
         if blocking {
             close();
         } else {
@@ -2497,9 +2503,8 @@ fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
 fn save_and_close(
     mut server: Option<minecraft_survival::server::Server>,
     world: Option<Loaded>,
-    loading: Option<mpsc::Receiver<Result<(Loaded, minecraft_survival::level::Terrain), String>>>,
+    loading: Option<mpsc::Receiver<Result<(Loaded, minecraft_survival::server::Server), String>>>,
     loader: Option<std::thread::JoinHandle<()>>,
-    day_ticks: f64,
     player_mode: minecraft_terrain::game_mode::PlayerMode,
 ) {
     let started = std::time::Instant::now();
@@ -2510,18 +2515,19 @@ fn save_and_close(
         let _ = loader.join();
     }
     drop(loading);
-    let (Some(mut world), Some(server)) = (world, server) else {
+    let (Some(world), Some(mut server)) = (world, server) else {
         return;
     };
-    let save = world.save.take();
-    if let Some(writer) = world.level_writer.take() {
+    let save = server.globals.save.take();
+    if let Some(writer) = server.globals.level_writer.take() {
         let _ = writer.join();
     }
     let Some(spawn) = server.levels.get(&Dimension::Overworld).map(|level| level.terrain.stream.world_spawn) else {
         return;
     };
-    let rules = std::mem::take(&mut world.game_rules);
-    let difficulty = world.difficulty;
+    let rules = std::mem::take(&mut server.globals.game_rules);
+    let difficulty = server.globals.difficulty;
+    let day_ticks = server.globals.day.ticks;
     drop(server);
     drop(world);
     let Some(save) = save else {

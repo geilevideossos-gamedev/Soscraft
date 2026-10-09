@@ -295,3 +295,33 @@ B1 is commit `4ac0b2e`.
   - The `Server` is stored at the end of the completion block, next to `runtime.world`, instead of where `runtime.entities` was stored: the completion still reads `terrain.stream.player_spawn` for its log line after `Entities::new`. Nothing reads the server in between.
   - The overworld is bound in the same `let ... else` as the world, so the "no world" branch (hide the UI and return) covers both; the server and the world are always set and taken together.
   - `save_and_close` returns early only if the server has no overworld level, which can't happen: every server built today has one.
+
+## B3. Minecraft world-wide state is kept in Server globals
+
+B2 is commit `fd3a993`.
+
+- **What changed:**
+  - `minecraft_survival/src/server.rs`: `Server` gains `globals: Globals` (first field, as in the plan's section 2.1), and new `Globals { seed, registries, save, game_rules, difficulty, day, chat, level_writer, autosave_ticks }`. `data` comes in B4. The file stays comment-free and rustfmt-clean.
+  - `render_anim/src/minecraft_world.rs`:
+    - `Loaded` keeps only the client assets (`packs`, `atlas`, `celestial`, `cloud_mask`, `crack_texture`, `glint_texture`); `registries`, `seed`, `save`, `game_rules`, `difficulty`, `level_writer`, `chat` and `saved_day` are gone. `Runtime` loses `day` and `autosave_ticks`.
+    - `load()` now builds the whole `Server` on the loader thread and returns `(Loaded, Server)`: `Globals` with the saved clock read into `day` (`DayCycle::default()` then `set(saved ticks)`, as the completion did) and `autosave_ticks: 0`, and the overworld `Level` with `entities: None` and default containers.
+    - The completion binds `globals` and the overworld level from the loaded server, and keeps its steps in today's order: chat join, `Entities::new` (now on `level.terrain.stream`), `set_book` on `level.containers`, the station data and the enchantment names, `IW4L_MINECRAFT_TIME`, `save.started` and `set_host`, the starting game mode, then `level.entities = Some(entities)` and `runtime.server = Some(server)`.
+    - `update()` binds `let Server { globals, levels } = server;` and then the overworld level. `world.game_rules`, `.save`, `.chat`, `.seed`, `.difficulty` and `.registries` became `globals.*` (33 sites), the `day` binding became `globals.day` (6 sites plus `day: &mut globals.day` in `Host`), and `*autosave_ticks` became `globals.autosave_ticks` (3). `Host` borrows the disjoint `globals` fields.
+    - `save_player_mode(globals, mode)` and `autosave(globals, terrain, mode)` take `&mut Globals`; `autosave` reads the day ticks from `globals.day` itself (passing `globals.day.ticks` next to `globals` would not borrow-check). `stream_around_spawn` takes `&Registries` next to the terrain.
+    - `close_world` no longer reads a day; `save_and_close` takes the save, the level writer, the rules, the difficulty and the day ticks from `server.globals`, with the same order as before (entities, loader, writer, chunks, then `level.dat` and the player file).
+- **Tests added:** none (plain data). `minecraft_survival` 119, `render_anim` 34, total unchanged (153).
+- **Checks:** `check -p launcher --locked` (no new warning), `test -p minecraft_survival --locked`, `test -p render_anim --locked`; the staged `server.rs` passes `rustfmt --check --edition 2024` with empty output.
+- **Owner test** (rules, difficulty, time, chat and saving must work exactly as before):
+  1. Load a Minecraft match with `IW4L_MINECRAFT_WORLD=split`. The log says "Minecraft world ready: seed N spawn ..." with the same seed as before, and the time of day is where you left it.
+  2. Type `/time set 13000`: dusk falls. Type `/gamerule advance_time false`: the sun stops; `/gamerule advance_time true` starts it again.
+  3. Type `/difficulty peaceful`: hostile mobs vanish; `/difficulty normal` brings them back at night.
+  4. Type `/gamerule keep_inventory true`, fall to your death: you keep your items and XP. Then `/gamerule keep_inventory false`.
+  5. Spawn a zombie from the egg and let it kill you: the chat shows "<name> was slain by Zombie". Type `/gamerule show_death_messages false` and die again: no death message.
+  6. Type `/summon minecraft:cow`: the chat answers and a cow appears. Open a chest in a village or other structure if one is near: it is filled with loot.
+  7. Type `/gamemode creative`, leave the match: the log says "Minecraft world saved". Load again: creative mode and the time of day are back.
+  8. Stay 5 minutes: the log says "Minecraft autosave: N chunks queued".
+- **Kit:** `minecraft:zombie_spawn_egg` x2, `minecraft:cobblestone` x64 (all in the regression kit).
+- **Not done here:** nothing.
+- **Decisions:**
+  - The completion keeps its steps in the order they run today (`Entities::new` before the time and the game mode). The plan's list puts `Entities::new` last, but none of these steps reads another's result, and keeping the order keeps the diff to path changes.
+  - If a loaded server had no overworld level the completion would warn "Minecraft world failed to load: no overworld" and stop, like a failed load; `load()` always builds one, so this can't happen. The same goes for the second `let ... else` in `update()`, which hides the Minecraft UI exactly as the "no world" branch does.
