@@ -496,7 +496,7 @@ IW4L_MINECRAFT_KIT=trident
 
 ### 3. Mobs killed by a player's Minecraft trident or thrown item count as the player's kill
 
-Commit: (next entry)
+Commit: 1720ab8
 
 - **Defect:** `thrown::hurt_by` (tridents for 8, wind charges for 1, snowballs, eggs and pearls for 0) hurt the mob and turned it on the thrower but never named the player as the damage's source, so a cow or zombie killed by a thrown trident died as if nobody killed it: no experience orbs and no player-only loot. Vanilla: the damage source of a thrown trident or item names its owner (`damageSources().trident(this, owner)`, `thrown(this, owner)`), and `LivingEntity.hurtServer` remembers the player (`resolvePlayerResponsibleForDamage`), even for a 0-damage snowball.
 - **Changed:** `thrown.rs` `hurt_by` credits every hit to `minecraft:player` (`EntityWorld::credit`, the same call the player's melee, blasts and splash potions use). Vendored `minecraftoss-entities`: `EntityWorld::credit` is public.
@@ -507,6 +507,21 @@ Commit: (next entry)
 
 ```
 IW4L_MINECRAFT_KIT=trident,cow_spawn_egg*2
+```
+
+### 4. A Minecraft double chest half still drawn by its section stays shut
+
+Commit: (next entry)
+
+- **Defect:** `Lids::posed` gave each half of a double chest the wider-open half's progress even when that half had not left its section yet (its cell waiting for the rebuild, `Sending(true)`/`Rebuilding(true)`, or already handed back). Its section still drew the closed lid there, so for a frame or more the frame pass drew a moving lid over a closed one: the two-lid look the lids group set out to avoid (lids test step 6). It happens when the two halves' cells sit in different sections (a chest across a section border), or when one half shuts a tick before the other.
+- **Changed:** `lids.rs` `posed`: only a half drawn apart takes the other half's progress; a half its section still draws keeps its own (0).
+- **Tests:** lids: `both_halves_of_a_double_chest_swing_as_the_wider_open_one` now opens the second half before its section is rebuilt and checks it stays shut until it is apart, then swings with the first.
+- **Test steps** (after glue items 15 to 17):
+  1. Place a double chest across a chunk border (stand on the border shown by F3+G, one half on each side). Open and close it several times from 3 blocks away: both halves swing together and no closed lid shows inside an open one. Screenshot mid-swing.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=chest*2
 ```
 
 ## After the split

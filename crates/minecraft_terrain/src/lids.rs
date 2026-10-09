@@ -300,10 +300,10 @@ impl Lids {
                 let kind = LidKind::of(block).filter(|&kind| kind == entry.lid.kind())?;
                 let own = entry.lid.progress(partial);
                 let partner = match kind {
-                    LidKind::Chest => {
+                    LidKind::Chest if entry.drawn == Drawn::Apart => {
                         paired(scene, cell, block).and_then(|at| self.entries.get(&at))
                     }
-                    LidKind::Shulker => None,
+                    _ => None,
                 };
                 let progress = partner.map_or(own, |other| own.max(other.lid.progress(partial)));
                 Some(PosedLid {
@@ -610,6 +610,15 @@ mod tests {
             lids.tick();
         }
         lids.block_event(&scene, left, SET_OPEN_COUNT, 1);
+        let waiting = lids.posed(&scene, 1.0);
+        assert_eq!(
+            (waiting[0].cell, waiting[0].progress),
+            (left, 0.0),
+            "a half its section still draws stays shut, so no second lid shows"
+        );
+        assert!((waiting[1].progress - 0.5).abs() < 1e-6);
+        assert_eq!(lids.take_apart_changes(), vec![(left, true)]);
+        lids.settle(&scene, |_| true);
         let posed = lids.posed(&scene, 1.0);
         assert_eq!(posed.len(), 2);
         assert!(posed.iter().all(|lid| (lid.progress - 0.5).abs() < 1e-6));
