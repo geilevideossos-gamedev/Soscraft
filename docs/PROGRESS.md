@@ -25,9 +25,9 @@ Design briefs: `docs/round7/a1-grenade-keys.md`, `a2-chat.md`, `b1-throwables.md
 
 | Track | Branch | State |
 |---|---|---|
-| A. Controls and chat | track-a | running (worktree `C:\Dev\mc-wt	rack-a`, target `D:\iw4l-wt	rack-a`) |
+| A. Controls and chat | track-a | running (worktree `C:\Dev\mc-wt\track-a`, target `D:\iw4l-wt\track-a`) |
 | B. Items, blocks, player model | track-b | not started; minecraft_terrain and MW2-body parts can run during the split, the render_anim glue after it |
-| C. Commands | track-c | early part running (minecraft_commands, creative tab reader; worktree `C:\Dev\mc-wt	rack-c`, target `D:\iw4l-wt	rack-c`); chat UI and glue after track A and the split |
+| C. Commands | track-c | early part running (minecraft_commands, creative tab reader; worktree `C:\Dev\mc-wt\track-c`, target `D:\iw4l-wt\track-c`); chat UI and glue after track A and the split |
 | D. Saving everything | track-d | after the split |
 
 ## Phase 3 (after track D)
