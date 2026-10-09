@@ -4,6 +4,7 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 
 use minecraft_commands::CommandServer;
+use minecraft_commands::server::Profile;
 use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_terrain::day_cycle::DayCycle;
 use minecraft_terrain::game_mode::{GameMode, PlayerMode, from_id, parse};
@@ -11,11 +12,14 @@ use minecraft_terrain::game_rules::GameRules;
 use minecraft_terrain::level_storage::WeatherData;
 use minecraftoss_core::Registries;
 use minecraftoss_player::Difficulty;
+use minecraftoss_player::crafting::RecipeBook;
 
 use crate::data::GameData;
-use crate::level::{Level, Terrain};
-use crate::player::Player;
+use crate::level::Level;
+use crate::player::{Player, joining_inventory};
+use crate::player_nbt::PlayerData;
 use crate::save::WorldSave;
+use crate::survival::Survival;
 
 pub struct Server {
     pub globals: Globals,
@@ -38,7 +42,7 @@ pub struct Globals {
 }
 
 impl Server {
-    pub fn save_and_close(mut self, local: Option<&PlayerUuid>, started: Instant) {
+    pub fn save_and_close(mut self, started: Instant) {
         let save = self.globals.save.take();
         if let Some(writer) = self.globals.level_writer.take() {
             let _ = writer.join();
@@ -54,9 +58,7 @@ impl Server {
         let difficulty = self.globals.difficulty;
         let day = self.globals.day;
         let weather = self.globals.weather;
-        let player_mode = local
-            .and_then(|uuid| self.players.get(uuid))
-            .map(|player| player.mode);
+        let players = player_files(&self.players);
         drop(self);
         let Some(save) = save else {
             return;
@@ -69,11 +71,7 @@ impl Server {
         {
             diag::warn!(World, "Minecraft weather.dat not written: {error}");
         }
-        if let Some(player_mode) = player_mode
-            && let Err(error) = save.write_host(&player_mode)
-        {
-            diag::warn!(World, "Minecraft player file not written: {error}");
-        }
+        write_players(&save, &players, "Minecraft player file not written");
         diag::info!(
             World,
             "Minecraft world saved in {} ms: {}",
@@ -95,39 +93,95 @@ pub fn starting_game_mode(saved: Option<PlayerMode>, chosen: Option<&str>) -> Pl
     mode
 }
 
-pub fn save_player_mode(globals: &mut Globals, mode: PlayerMode) {
+pub fn join(
+    save: Option<&WorldSave>,
+    recipes: &Arc<RecipeBook>,
+    profile: &Profile,
+    chosen_mode: Option<&str>,
+    kit: Option<&str>,
+    carried: Option<Survival>,
+) -> Player {
+    let saved = match save.map(|save| save.read_player(&profile.uuid, recipes)) {
+        Some(Ok(Some(saved))) => saved,
+        Some(Err(error)) => {
+            diag::warn!(
+                World,
+                "Minecraft player file unreadable, starting it again: {error}"
+            );
+            PlayerData::default()
+        }
+        Some(Ok(None)) | None => PlayerData::default(),
+    };
+    let mode = starting_game_mode(
+        saved.mode.or_else(|| save.map(WorldSave::default_mode)),
+        chosen_mode,
+    );
+    let inventory = joining_inventory(recipes.clone(), saved.inventory, kit);
+    #[allow(clippy::unwrap_or_default)]
+    let survival = carried.unwrap_or_else(Survival::default);
+    let mut player = Player::new(profile, mode, survival, inventory);
+    player.selected = saved.selected;
+    player
+}
+
+fn player_files(players: &BTreeMap<PlayerUuid, Player>) -> Vec<(String, PlayerData)> {
+    players
+        .values()
+        .map(|player| (player.uuid.0.clone(), player.data()))
+        .collect()
+}
+
+fn write_players(save: &WorldSave, players: &[(String, PlayerData)], failed: &str) {
+    for (uuid, data) in players {
+        if let Err(error) = save.write_player(uuid, data) {
+            diag::warn!(World, "{failed}: {error}");
+        }
+    }
+}
+
+pub fn save_player(globals: &mut Globals, player: &Player) {
     let Some(save) = globals.save.clone() else {
         return;
     };
     if let Some(previous) = globals.level_writer.take() {
         let _ = previous.join();
     }
+    let file = [(player.uuid.0.clone(), player.data())];
     globals.level_writer = std::thread::Builder::new()
         .name("minecraft-player-save".into())
-        .spawn(move || {
-            if let Err(error) = save.write_host(&mode) {
-                diag::warn!(World, "Minecraft player file not written: {error}");
-            }
-        })
+        .spawn(move || write_players(&save, &file, "Minecraft player file not written"))
         .map_err(|error| diag::warn!(World, "Minecraft player file thread not started: {error}"))
         .ok();
 }
 
-pub fn autosave(globals: &mut Globals, terrain: &mut Terrain, mode: PlayerMode) {
+pub fn autosave(
+    globals: &mut Globals,
+    levels: &mut BTreeMap<Dimension, Level>,
+    players: &BTreeMap<PlayerUuid, Player>,
+) {
     let Some(save) = globals.save.clone() else {
         return;
     };
+    let Some(spawn) = levels
+        .get(&Dimension::Overworld)
+        .map(|level| level.terrain.stream.world_spawn)
+    else {
+        return;
+    };
     let started = Instant::now();
-    let chunks = terrain.stream.queue_save();
+    let chunks: usize = levels
+        .values_mut()
+        .map(|level| level.terrain.stream.queue_save())
+        .sum();
     if let Some(previous) = globals.level_writer.take() {
         let _ = previous.join();
     }
     let path = save.path().display().to_string();
-    let spawn = terrain.stream.world_spawn;
     let rules = globals.game_rules.clone();
     let difficulty = globals.difficulty;
     let day = globals.day;
     let weather = globals.weather;
+    let players = player_files(players);
     globals.level_writer = std::thread::Builder::new()
         .name("minecraft-level-save".into())
         .spawn(move || {
@@ -142,12 +196,11 @@ pub fn autosave(globals: &mut Globals, terrain: &mut Terrain, mode: PlayerMode) 
                     "Minecraft autosave: weather.dat not written: {error}"
                 );
             }
-            if let Err(error) = save.write_host(&mode) {
-                diag::warn!(
-                    World,
-                    "Minecraft autosave: player file not written: {error}"
-                );
-            }
+            write_players(
+                &save,
+                &players,
+                "Minecraft autosave: player file not written",
+            );
         })
         .map_err(|error| {
             diag::warn!(
@@ -166,6 +219,7 @@ pub fn autosave(globals: &mut Globals, terrain: &mut Terrain, mode: PlayerMode) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minecraftoss_player::inventory::ItemStack;
 
     #[test]
     fn a_player_starts_in_survival_or_in_the_mode_their_file_saved() {
@@ -199,5 +253,105 @@ mod tests {
         );
         let same = starting_game_mode(Some(PlayerMode::new(GameMode::Creative)), Some("1"));
         assert_eq!(same, PlayerMode::new(GameMode::Creative));
+    }
+
+    struct TestDir(std::path::PathBuf);
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn world(name: &str) -> (TestDir, WorldSave) {
+        let dir = std::env::temp_dir().join(format!(
+            "minecraft_survival-server-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let save = crate::save::open_world(&dir, None, Some("1"), 2)
+            .save
+            .expect("a world folder");
+        (TestDir(dir), save)
+    }
+
+    fn profile(name: &str) -> Profile {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        chat.join(crate::commands::HOST, name);
+        chat.profile(crate::commands::HOST).unwrap().clone()
+    }
+
+    fn held(player: &Player, slot: usize) -> Option<(&str, u8)> {
+        player.inventory.slots[slot]
+            .as_ref()
+            .map(|stack| (stack.id.as_str(), stack.count))
+    }
+
+    #[test]
+    fn a_joining_player_gets_the_inventory_and_mode_their_file_saved() {
+        let (_dir, save) = world("join");
+        let recipes = Arc::new(RecipeBook::default());
+        let steve = profile("Steve");
+        let mut player = join(Some(&save), &recipes, &steve, None, None, None);
+        assert_eq!(player.mode, PlayerMode::new(GameMode::Survival));
+        assert!(player.inventory.slots.iter().all(Option::is_none));
+        player.mode = PlayerMode::new(GameMode::Creative);
+        player.inventory.slots[2] = Some(ItemStack::new("minecraft:diamond", 3));
+        player.inventory.slots[38] = Some(ItemStack::new("minecraft:iron_chestplate", 1));
+        player.selected = 2;
+        save.write_player(&player.uuid.0, &player.data()).unwrap();
+        let again = join(Some(&save), &recipes, &steve, None, None, None);
+        assert_eq!(again.mode, PlayerMode::new(GameMode::Creative));
+        assert_eq!(again.selected, 2);
+        assert_eq!(held(&again, 2), Some(("minecraft:diamond", 3)));
+        assert_eq!(held(&again, 38), Some(("minecraft:iron_chestplate", 1)));
+        assert!(Arc::ptr_eq(&again.inventory.recipes, &recipes));
+        let alex = join(
+            Some(&save),
+            &recipes,
+            &profile("Alex"),
+            Some("adventure"),
+            None,
+            None,
+        );
+        assert_eq!(alex.mode.mode, GameMode::Adventure);
+        assert!(alex.inventory.slots.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn an_unreadable_player_file_starts_the_player_again() {
+        let (_dir, save) = world("broken");
+        let steve = profile("Steve");
+        let path = save
+            .path()
+            .join("players")
+            .join("data")
+            .join(format!("{}.dat", steve.uuid));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"broken").unwrap();
+        std::fs::write(minecraft_terrain::level_storage::old_path(&path), b"broken").unwrap();
+        let recipes = Arc::new(RecipeBook::default());
+        let player = join(Some(&save), &recipes, &steve, None, Some("dirt"), None);
+        assert_eq!(player.mode, PlayerMode::new(GameMode::Survival));
+        assert_eq!(held(&player, 9), Some(("minecraft:dirt", 1)));
+    }
+
+    #[test]
+    fn a_temporary_world_gives_the_kit_and_the_survival_carried_over() {
+        let recipes = Arc::new(RecipeBook::default());
+        let mut carried = Survival::default();
+        carried.observe(100, 100);
+        carried.status.health = 7.0;
+        let player = join(
+            None,
+            &recipes,
+            &profile("Steve"),
+            Some("creative"),
+            Some("dirt*2"),
+            Some(carried),
+        );
+        assert_eq!(player.survival.status.health, 7.0);
+        assert_eq!(player.mode.mode, GameMode::Creative);
+        assert_eq!(held(&player, 9), Some(("minecraft:dirt", 2)));
     }
 }

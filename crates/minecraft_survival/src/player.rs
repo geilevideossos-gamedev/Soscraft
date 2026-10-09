@@ -6,10 +6,11 @@ use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_terrain::game_mode::PlayerMode;
 use minecraftoss_player::Block;
 use minecraftoss_player::crafting::RecipeBook;
-use minecraftoss_player::inventory::Inventory;
+use minecraftoss_player::inventory::{Inventory, ItemStack};
 
 use crate::death::DeathWatch;
 use crate::offhand::Blocking;
+use crate::player_nbt::{PlayerData, SLOTS};
 use crate::survival::Survival;
 
 pub struct Player {
@@ -72,6 +73,46 @@ impl Player {
             steps: Steps::default(),
         }
     }
+
+    pub fn data(&self) -> PlayerData {
+        let mut inventory = self.inventory.clone();
+        let loose: Vec<ItemStack> = inventory
+            .crafting
+            .iter_mut()
+            .chain(inventory.workbench.iter_mut())
+            .chain(std::iter::once(&mut inventory.cursor))
+            .filter_map(Option::take)
+            .collect();
+        for stack in loose {
+            let _ = inventory.add_item(stack, self.selected);
+        }
+        PlayerData {
+            mode: Some(self.mode),
+            inventory: Some(inventory.slots),
+            selected: self.selected,
+        }
+    }
+}
+
+pub fn joining_inventory(
+    recipes: Arc<RecipeBook>,
+    saved: Option<Vec<Option<ItemStack>>>,
+    kit: Option<&str>,
+) -> Inventory {
+    let Some(slots) = saved else {
+        return starting_inventory(recipes, kit);
+    };
+    let mut inventory = starting_inventory(recipes, None);
+    inventory.slots = slots;
+    inventory.slots.resize(SLOTS, None);
+    if let Some(kit) = kit {
+        let given = minecraft_terrain::crafting::give_kit(&mut inventory, kit);
+        diag::info!(
+            World,
+            "Minecraft kit: {given} stacks from IW4L_MINECRAFT_KIT"
+        );
+    }
+    inventory
 }
 
 pub fn starting_inventory(recipes: Arc<RecipeBook>, kit: Option<&str>) -> Inventory {
@@ -177,6 +218,66 @@ mod tests {
                 (11, "minecraft:diamond_sword", 1)
             ]
         );
+    }
+
+    #[test]
+    fn a_saved_inventory_comes_back_in_its_slots_with_the_world_recipes() {
+        let recipes = Arc::new(RecipeBook::default());
+        let mut slots = vec![None; SLOTS];
+        slots[4] = Some(ItemStack::new("minecraft:bread", 6));
+        slots[39] = Some(ItemStack::new("minecraft:iron_helmet", 1));
+        slots[40] = Some(ItemStack::new("minecraft:shield", 1));
+        let inventory = joining_inventory(recipes.clone(), Some(slots.clone()), None);
+        assert!(Arc::ptr_eq(&inventory.recipes, &recipes));
+        assert_eq!(inventory.slots, slots);
+        let short = joining_inventory(recipes.clone(), Some(vec![None; 36]), None);
+        assert_eq!(short.slots.len(), SLOTS);
+        let fresh = joining_inventory(recipes, None, Some("dirt"));
+        assert_eq!(
+            fresh.slots[9].as_ref().map(|stack| stack.id.as_str()),
+            Some("minecraft:dirt")
+        );
+    }
+
+    #[test]
+    fn a_player_saves_its_mode_and_slots_with_loose_stacks_put_back() {
+        let mut chat = CommandServer::new(HOST);
+        chat.join(HOST, "Steve");
+        let mut inventory = Inventory::default();
+        inventory.slots[0] = Some(ItemStack::new("minecraft:stone", 5));
+        inventory.slots[40] = Some(ItemStack::new("minecraft:shield", 1));
+        inventory.cursor = Some(ItemStack::new("minecraft:stone", 3));
+        inventory.crafting[1] = Some(ItemStack::new("minecraft:oak_planks", 2));
+        inventory.workbench[8] = Some(ItemStack::new("minecraft:stick", 4));
+        let mut player = Player::new(
+            chat.profile(HOST).unwrap(),
+            PlayerMode::new(GameMode::Creative),
+            Survival::default(),
+            inventory,
+        );
+        player.selected = 6;
+        let data = player.data();
+        assert_eq!(data.mode, Some(PlayerMode::new(GameMode::Creative)));
+        assert_eq!(data.selected, 6);
+        let slots = data.inventory.unwrap();
+        assert_eq!(slots.len(), SLOTS);
+        let held = |id: &str| -> u32 {
+            slots
+                .iter()
+                .flatten()
+                .filter(|stack| stack.id == id)
+                .map(|stack| u32::from(stack.count))
+                .sum()
+        };
+        assert_eq!(held("minecraft:stone"), 8);
+        assert_eq!(held("minecraft:oak_planks"), 2);
+        assert_eq!(held("minecraft:stick"), 4);
+        assert_eq!(
+            slots[40].as_ref().map(|stack| stack.id.as_str()),
+            Some("minecraft:shield")
+        );
+        assert!(player.inventory.cursor.is_some());
+        assert!(player.inventory.crafting[1].is_some());
     }
 
     #[test]

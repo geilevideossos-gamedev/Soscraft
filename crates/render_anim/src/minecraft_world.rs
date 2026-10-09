@@ -459,7 +459,6 @@ fn update(
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
                 globals.data = minecraft_survival::data::GameData::load(assets::minecraft_map::root().as_deref(), data_jar());
                 let mut entities = minecraft_survival::entities::Entities::new(&level.terrain.stream, globals.seed, &globals.data, globals.weather.as_ref());
-                let inventory = minecraft_survival::player::starting_inventory(globals.data.recipes.clone(), std::env::var("IW4L_MINECRAFT_KIT").ok().as_deref());
                 entities.set_game_rules(&globals.game_rules);
                 level.containers.set_book(globals.data.stations.clone());
                 runtime.inventory_ui.set_station_data(globals.data.stations.clone(), globals.data.enchantments.clone(), globals.seed as i32);
@@ -478,12 +477,7 @@ fn update(
                         save.set_host(&host.uuid);
                     }
                 }
-                let saved_mode = globals.save.as_ref().map(minecraft_survival::save::WorldSave::host_mode);
-                if let Some((_, Some(warning))) = &saved_mode {
-                    diag::warn!(World, "{warning}");
-                }
-                #[allow(clippy::unwrap_or_default)]
-                let player = minecraft_survival::player::Player::new(&profile, minecraft_survival::server::starting_game_mode(saved_mode.map(|(mode, _)| mode), std::env::var("IW4L_MINECRAFT_GAMEMODE").ok().as_deref()), runtime.carried_survival.take().unwrap_or_else(minecraft_survival::survival::Survival::default), inventory);
+                let player = minecraft_survival::server::join(globals.save.as_ref(), &globals.data.recipes, &profile, std::env::var("IW4L_MINECRAFT_GAMEMODE").ok().as_deref(), std::env::var("IW4L_MINECRAFT_KIT").ok().as_deref(), runtime.carried_survival.take());
                 let uuid = player.uuid.clone();
                 players.insert(uuid.clone(), player);
                 runtime.environment_accumulator = 0.0;
@@ -549,6 +543,10 @@ fn update(
         return;
     };
     let minecraft_survival::server::Server { globals, levels, players } = server;
+    if globals.autosave_ticks >= minecraft_survival::save::AUTOSAVE_TICKS {
+        globals.autosave_ticks = 0;
+        minecraft_survival::server::autosave(globals, levels, players);
+    }
     let Some(player) = players.get_mut(local_uuid) else {
         ui.active = false;
         ui.inventory_open = false;
@@ -1460,10 +1458,6 @@ fn update(
         }
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
         globals.autosave_ticks += mob_ticks;
-        if globals.autosave_ticks >= minecraft_survival::save::AUTOSAVE_TICKS {
-            globals.autosave_ticks = 0;
-            minecraft_survival::server::autosave(globals, terrain, *player_mode);
-        }
         for _ in 0..mob_ticks {
             for sound in entities.animate_tick(&terrain.scene, feet) {
                 if let Some(sounds) = sounds.as_mut() {
@@ -2305,7 +2299,7 @@ fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
     let loader = runtime.loader.take();
     let open = world.is_some() || loading.is_some();
     if server.is_some() || open || loader.is_some() {
-        let close = move || save_and_close(server, world, loading, loader, local);
+        let close = move || save_and_close(server, world, loading, loader);
         if blocking {
             close();
         } else {
@@ -2328,7 +2322,6 @@ fn save_and_close(
     world: Option<Loaded>,
     loading: Option<mpsc::Receiver<Result<(Loaded, minecraft_survival::server::Server), String>>>,
     loader: Option<std::thread::JoinHandle<()>>,
-    local: Option<minecraft_net::PlayerUuid>,
 ) {
     let started = std::time::Instant::now();
     for level in server.iter_mut().flat_map(|server| server.levels.values_mut()) {
@@ -2342,7 +2335,7 @@ fn save_and_close(
         return;
     };
     drop(world);
-    server.save_and_close(local.as_ref(), started);
+    server.save_and_close(started);
 }
 
 fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {

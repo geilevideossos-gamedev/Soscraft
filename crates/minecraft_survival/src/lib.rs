@@ -6,6 +6,7 @@ pub mod guns;
 pub mod level;
 pub mod offhand;
 pub mod player;
+pub mod player_nbt;
 pub mod save;
 pub mod server;
 pub mod survival;

@@ -62,7 +62,7 @@ Commit: a8ed2a4
 
 ### 3. Minecraft /time pause survives a restart
 
-Commit: (filled in by the next entry)
+Commit: 2c5e8d3
 
 - **Changed:**
   - `WorldSave::write` takes the whole `DayCycle` instead of its ticks, and the overworld clock in `data/minecraft/world_clocks.dat` gets its `paused` flag from it. Before, `paused` was always written as false. The key and its type (`Codec.BOOL`, a byte) are those of 26.3's `ClockState.CODEC`, checked with javap.
@@ -80,3 +80,35 @@ Commit: (filled in by the next entry)
   5. Type `/time resume`, quit and start again: the sun moves again.
   6. Optional: open the world in Minecraft 26.3 after step 3: time stands still there too.
 - **Kit:** none needed; any kit works.
+
+## Group: player file
+
+### 4. Minecraft player files hold the inventory, armour and offhand like vanilla
+
+Commit: (filled in by the next entry)
+
+- **Changed:**
+  - New `minecraft_survival/src/player_nbt.rs`: `PlayerData` is what a player file holds, with `read` (from the file's NBT) and `entries`/`merged` (to it). Slots 0-35 go to `Inventory` as `ItemStackWithSlot` (a `Slot` byte, then `id`, `count` as an int and `components` as a compound), and slots 36-42 go to `equipment` under `feet`, `legs`, `chest`, `head`, `offhand`, `body` and `saddle`, as 26.3's `EntityEquipment.CODEC` writes them (checked with javap: `Player.addAdditionalSaveData`, `Inventory.save`/`load`, `ItemStackWithSlot.CODEC` with `ExtraCodecs.UNSIGNED_BYTE`, `ItemStack.MAP_CODEC` with `count` in 1-99, `EquipmentSlot` names). `SelectedItemSlot` is an int.
+  - The merge writer keeps every key it does not own (`recipeBook`, `XpSeed`, `seenCredits`, ...) and first removes the keys it owns, so armour that was taken off leaves `equipment`, and an empty `equipment` is left out as vanilla leaves it out. `Inventory` is always written, even empty, as vanilla does.
+  - `save.rs`: `WorldSave::read_player(uuid)` and `write_player(uuid, &PlayerData)` replace `host_mode`/`write_host`; `default_mode` is the level's game type for a player without a file.
+  - `server.rs`: `join` builds a joining player from their file (game mode, inventory and selected slot), for any UUID; an unreadable file gives a warning and the player starts again. `save_and_close` and `autosave` write the file of every player in `Server.players`, and a game mode change (`save_player`) writes the whole file instead of the mode only. `autosave` now queues every level's chunks.
+  - `player.rs`: `Player::data` and `joining_inventory`.
+  - `render_anim/src/minecraft_world.rs`: the load completion calls `server::join`; the autosave check moved to the top of the frame, where every level and player can be borrowed (it runs one frame later than before); `close_world` no longer passes the local UUID.
+  - `commands.rs`: one line, a game mode change saves the player through `server::save_player`.
+- **Tests:** `player_nbt`: `storage_slots_go_to_inventory_with_a_slot_byte_and_armour_to_equipment`, `the_inventory_comes_back_from_its_file_in_the_same_slots`, `guns_and_empty_stacks_are_not_saved`, `an_empty_inventory_is_still_written_and_read_back_as_present`, `merging_keeps_unknown_keys_and_drops_armour_that_was_taken_off`, `slots_read_as_unsigned_bytes_and_bad_entries_are_skipped`, `counts_are_ints_capped_at_vanilla_s_limit_and_old_string_components_load`, `a_selected_slot_outside_the_hotbar_reads_as_the_first`. `player`: `a_saved_inventory_comes_back_in_its_slots_with_the_world_recipes`, `a_player_saves_its_mode_and_slots_with_loose_stacks_put_back`. `server`: `a_joining_player_gets_the_inventory_and_mode_their_file_saved`, `an_unreadable_player_file_starts_the_player_again`, `a_temporary_world_gives_the_kit_and_the_survival_carried_over`. The three game-mode tests in `save` now go through `write_player`/`read_player`/`default_mode` (same assertions; the merge test also checks that a foreign `seenCredits` survives).
+- **Decisions:**
+  - MW2 guns (`iw4:weapon/<n>`) are not saved: the number is the match's weapon index and vanilla rejects unknown items. On every spawn `sync_weapons` puts the guns you own back into free hotbar slots, as before.
+  - Stacks left on the cursor or in a crafting grid go into the saved inventory, as vanilla's menu does when a player leaves (`clearContainer`); the inventory in play is not changed.
+  - Until commit 5 the kit is still added to free backpack slots on every start, also on top of a saved inventory.
+- **Clippy:** `clippy -p minecraft_survival --tests --no-deps` has only the two older `entities.rs` findings (`type_complexity`, `manual_is_multiple_of`). Without `--no-deps` it stops in `minecraft_terrain`, which was not clippy-clean before this track.
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=savetest` and the kit below. Start.
+  2. Put on the four armour pieces and put the shield in the offhand. Move the sword to hotbar slot 4 and select it, and put the cobblestone in the top row of the backpack. **Screenshot 1:** the open inventory.
+  3. Quit through the menu. Remove the `IW4L_MINECRAFT_KIT` line (until the next commit the kit is still added on every start), then start again.
+  4. Expected: the same armour, the shield in the offhand, every item in the same slot, hotbar slot 4 selected and the sword still enchanted. **Screenshot 2:** the open inventory.
+  5. Optional: copy `iw4l-artifacts\saves\savetest` into `.minecraft\saves` and open it in Minecraft 26.3: the inventory, armour and offhand are the same there.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:shield,minecraft:diamond_sword+sharpness=5,minecraft:cobblestone*64,minecraft:torch*16
+```
