@@ -32,8 +32,8 @@ All agents and builds were stopped on the owner's request. Every branch is commi
   - Next: finish brief commit 12 (furnaces, smokers, blast furnaces, brewing stands, campfires keep their progress), commit 13 (hoppers, dispensers, droppers), then group `compat` (brief commit 14: end-to-end save test, Saving section of the docs, owner test), then review and clippy, then merge. The phase 3 plan also asks track D to add the `PortalCooldown` and `seenCredits` player keys.
 - **Merge order:** D first (phase 3 waits for it), then B and C. Expect conflicts in `render_anim/src/minecraft_world.rs` and `minecraft_survival/src/{entities,player,commands}.rs` between B, C and D. Merge each in its own worktree as described in "How to continue", full suite there, then fast-forward main and push.
 - **After A-D are merged:** release build 1 with `--profile play` (back up the current `iw4l-survival.exe` as `iw4l-survival-3c2c62b.exe`), then phase 3 per `docs/round7/e0-phase3-plan.md`, starting with the dimension switch groups S1-S4.
-- **Disk:** D: had about 12 GB free. The target dirs are `D:\iw4l-target` (main; protected from deletion, only subfolders may be removed), `D:\iw4l-wt\track-b`, `track-c` and `track-d`. Delete a track's dir after it is merged.
-- **Workflow scripts:** the track runner the orchestrator used lived in the session scratchpad and is gone with it. It ran, per track: one agent per commit group in order (each told the worktree, branch, target dir, briefs, files to avoid, and to log every commit with owner test steps in `docs/round7/track-<x>-log.md`), then an adversarial review agent that fixes real defects in new commits, then a verify agent (clippy on touched crates with `'--' -A clippy::approx_constant`, tests of touched crates, combined kit line in the log).
+- **Disk:** after the restart D: had 7.8 GB free; deleting the stale `D:\iw4l-target\debug` cache (25.4 GB, rebuilt on demand) and the old incremental caches in the track dirs left 32.6 GB free. The merged branches `track-a` and `crate-split` were deleted locally. The target dirs are `D:\iw4l-target` (main; protected from deletion, only subfolders may be removed), `D:\iw4l-wt\track-b`, `track-c` and `track-d`. Delete a track's dir after it is merged.
+- **Workflow script:** the track runner is saved as `.claude/workflows/track-runner.js` (run it as the workflow `track-runner` or by that path). Args: `{track, worktree, branch, target, base, briefs, groups:[{key,prompt}], avoid, notes, skipReview}`. Per track it runs one agent per commit group in order (each continues from what is already committed), then an adversarial review agent that fixes real defects in new commits, then a verify agent (clippy and tests of the touched crates, combined kit line in the track log). The full suite runs at merge time, not in the runner.
 ## Phase 1
 | Item | State | Notes |
 |---|---|---|
@@ -99,6 +99,7 @@ The 41 minutes of the last round were not reproduced: a clean release build alon
 - Elytra: a new 20 Hz glide mode in MW2 movement, guns still usable.
 - Throwables kit syntax: `id@potion` for potion contents (`#` starts a comment in `.env`).
 ## Log
+- 2026-10-09: resumed after the restart: disk freed, track runner saved in the repo, tracks B, C and D restarted from their heads.
 - 2026-10-09: stopped for a PC shutdown; all branches committed (track D with one WIP commit) and pushed. See "Where everything stands".
 - 2026-10-09: crate split merged (6315039) and pushed; track D started; the split worktree was removed, so `D:\iw4l-target` belongs to the main checkout again.
 - 2026-10-09: track A merged (80cacc3) and pushed.
