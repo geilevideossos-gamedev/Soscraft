@@ -793,6 +793,7 @@ fn update(
 
     // Minecraft's yaw: 0 facing +Z (map -Y), turning towards -X.
     let mc_yaw = minecraft_yaw(ps.viewangles[1]);
+    inventory_ui.dials.step(time.delta_secs_f64(), &world.packs, &minecraft_terrain::dials::DialContext { dimension: *dimension, feet, yaw: mc_yaw, spawn: Some((minecraft_survival::save::spawn_dimension(&globals.spawn), globals.spawn.pos)), last_death: player.last_death.map(|death| (death.dimension, death.pos)), sun_angle: terrain.environment.sun_angle_degrees(1.0) });
     let aim = {
         let mut aim = minecraftoss_player::Player::new(glam::DVec3::from_array(feet));
         aim.yaw = f64::from(mc_yaw);
@@ -2078,7 +2079,7 @@ fn update(
                     .map(|eating| crate::minecraft_hand::eat_transform(eating.remaining_ticks() as f32, (hand.clock / TICK_SECONDS) as f32, eating.info.consume_ticks, arm));
                 let swung = if using || eat.is_some() || hand.swing_offhand != (slot == minecraft_survival::offhand::OFFHAND) { 0.0 } else { swing };
                 let glint = minecraft_terrain::glint::has_glint(&stack);
-                posed.push((eat.unwrap_or(glam::Mat4::IDENTITY) * crate::minecraft_hand::item_pose(display, swung, 0.0, arm), stack.id, glint));
+                posed.push((eat.unwrap_or(glam::Mat4::IDENTITY) * crate::minecraft_hand::item_pose(display, swung, 0.0, arm), inventory_ui.dials.key(&stack.id).to_owned(), glint));
             }
             let mesh = entities.held_item_mesh(&posed, eye_light_at, &world.packs, &world.atlas, light);
             let vertices = minecraft_terrain::mesh::section_vertices(&mesh);

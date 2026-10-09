@@ -18,9 +18,13 @@ pub fn item_icon_at(
     icon_size: usize,
     clock: &crate::item_icon::SpriteClock,
 ) -> Result<Option<RgbaImage>> {
+    let (key, dial) = crate::dials::split(key);
+    if dial.is_some() {
+        clock.mark_animated();
+    }
     let id = ResourceId::parse(key)?;
     let definition = packs.item_definition(&id)?;
-    let model = definition.as_ref().and_then(|value| item_model_reference(&value["model"]));
+    let model = dial.or_else(|| definition.as_ref().and_then(|value| item_model_reference(&value["model"])));
     let tints = definition
         .as_ref()
         .map(|value| item_model_tints(packs, &value["model"]))

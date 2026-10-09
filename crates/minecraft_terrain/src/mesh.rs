@@ -876,8 +876,13 @@ impl ItemVisuals {
     }
     fn model<'a>(&'a mut self, id: &str, packs: &PackStack) -> Result<Option<&'a ItemVisual>> {
         if !self.models.contains_key(id) {
-            let resource = ResourceId::parse(id)?;
-            let Some(model) = crate::model::resolve_item_model(packs, &resource)? else {
+            let (key, dial) = crate::dials::split(id);
+            let resource = ResourceId::parse(key)?;
+            let resolved = match dial {
+                Some(leaf) => Some(crate::model::resolve_item_leaf(packs, &resource, leaf)?),
+                None => crate::model::resolve_item_model(packs, &resource)?,
+            };
+            let Some(model) = resolved else {
                 return Ok(None);
             };
             if model.elements.is_empty() {

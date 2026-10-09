@@ -691,3 +691,28 @@ Previous commit: 6c0c6570
 ```
 IW4L_MINECRAFT_KIT=minecraft:red_bed,minecraft:respawn_anchor*2,minecraft:glowstone*16,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:netherrack*32,minecraft:diamond_pickaxe,minecraft:cooked_beef*16
 ```
+
+### 29. Minecraft compasses and clocks move, and spin outside the Overworld (E2-16)
+
+Previous commit: 83d9b9f2
+
+- **Changed** (checked with javap on the 26.3 jar: `CompassAngleState` (`calculate`, `getRotationTowardsCompassTarget`, `getRandomlySpinningRotation`, `isValidCompassTargetPos`, `getAngleFromEntityToPos`, `getWrappedVisualRotationY`), `NeedleDirectionHelper` and its standard wobbler `NeedleDirectionHelper$1`, `Time` and `Time$TimeSource` (random, daytime from `visual/sun_angle`, moon phase), `CompassAngleState$CompassTarget`; the 26.3 `items/compass.json`, `clock.json` and `recovery_compass.json`):
+  - New `minecraft_terrain/src/dials.rs`: `Dials` evaluates the item definitions of `minecraft:clock`, `minecraft:compass` and `minecraft:recovery_compass` once per 20 Hz tick against a `DialContext` (the player's dimension, feet and yaw, the world spawn, the last death, the sun angle): `minecraft:condition` takes its false branch (no lodestones yet), `minecraft:select` on `minecraft:context_dimension` picks the case of the player's dimension, and `minecraft:range_dispatch` picks the last entry whose threshold is at most the property's value times `scale`. The `minecraft:compass` value points at its target (`spawn` the world spawn, `recovery` the last death) from the player's feet, relative to their yaw, through a wobbling needle (factor 0.8); with no target in the player's dimension, or standing on it, the needle chases a random value each tick and spins. `minecraft:time` with `daytime` is the sun angle over 360 through a needle of factor 0.9, with `random` it spins. The chosen leaf model is carried in the item's key, `minecraft:compass#minecraft:item/compass_07`.
+  - `minecraft_terrain`: `item_icons::item_icon_at` draws a keyed item with its leaf model and marks the icon animated (`SpriteClock::mark_animated`), so the inventory's animated icon cells redraw it every tick as the needle turns; `ItemVisuals` (held and posed items) builds the keyed leaf through the new `model::resolve_item_leaf` (the tail of `resolve_item_model_in`, which now calls it), caching one model per leaf.
+  - `render_anim`: `InventoryUi.dials`; the icons use `dials.key(id)`; `minecraft_world.rs` steps the dials once a frame (one call line after the player's yaw) and the first-person held item takes its key (one changed line).
+- **Tests:** `dials`: `a_needle_swings_toward_its_target_and_settles_there`, `a_compass_points_at_the_overworld_spawn_and_spins_in_the_nether` (spawn ahead shows `compass_16`, behind `compass_00`, the Nether and standing on the spawn spin over many frames), `a_clock_tells_the_sun_in_the_overworld_and_spins_elsewhere` (sun angle 90 is `clock_16`, 0 is `clock_00`, the End spins), `vanilla_compasses_and_clocks_get_their_frame_as_icon_and_held_model` (the 26.3 pack: keys for all three, a different icon behind than ahead, marked animated, the leaf model resolves), `a_dial_key_carries_the_model_it_shows`.
+- **Decisions:**
+  - Vanilla updates a needle only on a tick its item is drawn; here the needles turn every tick whether shown or not (they settle the same way).
+  - All compasses in the inventory share one needle per target, as vanilla's one property instance per item model does; the random spin is not offset per item (`hash(seed)`).
+  - Dropped compasses and clocks, and those held in third person, keep the default frame.
+  - Lodestone compasses stay with N6 (lodestones are out of scope this round).
+- **Test steps** (survival or creative):
+  1. In the overworld, hold the compass and turn on the spot: the red needle keeps pointing at the world spawn, swinging a little as it settles; in the hotbar the icon turns the same way. **Screenshot 36.**
+  2. Hold the clock: the dial shows the sun's position (noon at the top); `/time set midnight` turns it to the night side over a moment.
+  3. Go to the Nether: compass and clock both spin wildly, in the hand and in the hotbar. **Screenshot 37.**
+  4. `/kill` in the Nether, respawn, hold the recovery compass there: it points at where you died; in the overworld it spins.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:compass,minecraft:clock,minecraft:recovery_compass,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:cooked_beef*16
+```

@@ -140,14 +140,17 @@ pub fn resolve_item_model_in(pack: &PackStack, item: &ResourceId, context: Optio
     let Some(reference) = crate::interface::item_model_reference(&definition["model"]) else {
         return Ok(None);
     };
+    resolve_item_leaf(pack, item, reference).map(Some)
+}
+pub fn resolve_item_leaf(pack: &PackStack, item: &ResourceId, reference: &str) -> Result<ResolvedModel> {
     let model_id = ResourceId::parse(reference)?;
     let inherited = load_parented(pack, &model_id, &mut HashSet::new())?;
     if inherited.get("builtin").and_then(Value::as_str) == Some("generated") {
-        return generated_item_model(pack, &model_id, &inherited).map(Some);
+        return generated_item_model(pack, &model_id, &inherited);
     }
     let choice = serde_json::json!({"model": reference});
     let block = Block::new(&item.key());
-    resolve_choices(pack, &block, &[&choice]).map(Some)
+    resolve_choices(pack, &block, &[&choice])
 }
 fn item_geometry(pack: &PackStack, item: &ResourceId, model: &Value, context: Option<&str>) -> Result<ResolvedModel> {
     let mut elements = Vec::new();
