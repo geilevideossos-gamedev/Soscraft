@@ -57,9 +57,9 @@ Design briefs: `docs/round7/a1-grenade-keys.md`, `a2-chat.md`, `b1-throwables.md
 Briefs: `docs/round7/e0-phase3-plan.md` (order, groups, ownership, estimate), `e1-dimension-switch.md`, `e2-nether.md`, `e3-end.md`. Planned for this round: the switch (S1-S4), Nether N1-N5, End X1-X4 (a dragon that can be killed, exit portal, credits). Left for "finish survival": N6 (piglin/hoglin brains, striders, bartering), X5 (dragon strafing, breath, perching, egg teleport), X6 (gateways, item frames, shulkers, levitation).
 | Track | State |
 |---|---|
-| Dimension switch | running: groups S1-S4 of `docs/round7/e0-phase3-plan.md`, worktree `C:\Dev\mc-wt\switch`, branch `dim-switch`, target `D:\iw4l-wt\switch` (recycled from track D), log `docs/round7/track-switch-log.md` |
-| Nether | not started |
-| End | not started |
+| Dimension switch | done on `dim-switch` (25 commits fc6d4bd..ef2cb99b incl. 4 review fixes; S1-S4 of the plan); merging onto main now, with `/execute in` travel, `/time` per dimension and the `/kit` @-entry fix wired on top. Log `docs/round7/track-switch-log.md` |
+| Nether | next, after the switch merge: groups N1-N5 of `docs/round7/e0-phase3-plan.md` |
+| End | next, after the switch merge, in parallel with the Nether: groups X1-X4 |
 
 ## Release builds
 | # | When | Commit | State |
@@ -99,6 +99,7 @@ The 41 minutes of the last round were not reproduced: a clean release build alon
 - Elytra: a new 20 Hz glide mode in MW2 movement, guns still usable.
 - Throwables kit syntax: `id@potion` for potion contents (`#` starts a comment in `.env`).
 ## Log
+- 2026-10-09: dimension switch finished on its branch; merge onto main running.
 - 2026-10-09: tracks B and C merged; release build 1 (play profile, 4ac8b27) installed and pushed.
 - 2026-10-09: track D merged (fc6d4bd) and pushed; the dimension switch started.
 - 2026-10-09: resumed after the restart: disk freed, track runner saved in the repo, tracks B, C and D restarted from their heads.
