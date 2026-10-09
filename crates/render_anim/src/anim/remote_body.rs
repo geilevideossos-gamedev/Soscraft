@@ -431,6 +431,7 @@ pub struct PreparedRemoteKit {
     pub dobj: Option<std::sync::Arc<xmodel_runtime::DObj>>,
     pub bolt_bones: [Option<u16>; 4],
     pub head_bone: Option<usize>,
+    pub gear_bones: crate::anim::minecraft_gear::GearBones,
 }
 
 impl PreparedRemoteKit {
@@ -548,6 +549,10 @@ impl PreparedRemoteKits {
                                 .and_then(|bone| u16::try_from(bone).ok())
                         }),
                         head_bone: dobj.as_ref().and_then(|dobj| dobj.find("j_head")),
+                        gear_bones: dobj
+                            .as_deref()
+                            .map(crate::anim::minecraft_gear::GearBones::resolve)
+                            .unwrap_or_default(),
                         dobj,
                     },
                 );

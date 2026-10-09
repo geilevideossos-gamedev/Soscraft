@@ -317,7 +317,7 @@ Commit: c72043b
 
 ### 2. The Minecraft kit dyes leather armour
 
-Commit: (next entry)
+Commit: 2583171
 
 - **Changed:** `crafting.rs` `kit_potion_stack`: an `@` entry on an item in the runtime `#minecraft:dyeable` tag (leather armour, leather horse armour, wolf armour) that names one of the 16 dyes gets `minecraft:dyed_color` with that dye's `textureDiffuseColor`, which is what one dye on undyed leather gives in vanilla (`DyedItemColor.applyDyes` with a single colour keeps it); every other `@` entry is still a potion. `special_models::dye_rgb` (the existing dye table, as an RGB int).
 - **Tests:** `kit_dyes_dyeable_items_with_a_dye_name` (`leather_chestplate@red` is 0xB02E26, `leather_boots@minecraft:blue+unbreaking` is 0x3C44AA with its enchantment, `potion@red` stays a potion, plain leather stays undyed).
@@ -329,6 +329,18 @@ Commit: (next entry)
 ```
 IW4L_MINECRAFT_KIT=leather_helmet@red,leather_chestplate@blue,leather_leggings@green,leather_boots@black,leather_chestplate
 ```
+
+### 3. MW2 bodies publish their limb and hand bones for Minecraft gear
+
+Commit: (next entry)
+
+- **Changed:** new `render_anim/src/anim/minecraft_gear.rs`: `GEAR_BONES` (19 names: `j_head`, `j_neck`, `j_spine4`, `j_spineupper`, `j_spinelower`, shoulder, elbow, wrist, hip, knee and ankle on each side, `tag_weapon_right`, `tag_weapon_left`; indices `HEAD`, `SHOULDERS[side]` and so on, right side first). `GearBones::resolve(dobj)` finds each by name and keeps its bind pose in body model space (`dobj.compose(&dobj.bind_locals(), IDENTITY)`, so a bone of the attached head model is in body space too); `missing()` names the ones the kit lacks. `GearBones::posed(world, placement)` gives each found joint's `PosedJoint { posed: placement * world[i] (map space), bind }`, and `PosedJoint::skin()` is `posed * bind^-1`, the same skinning delta the MW2 mesh uses (`DObj::skin_matrices`). `PosedGearFrame` (a resource, one `PosedGear { client, joints }` per posed body, keyed by MW2 client number) and `publish_posed_gear`.
+- `anim/remote_body.rs`: `PreparedRemoteKit.gear_bones`, resolved in `PreparedRemoteKits::prepare` beside `head_bone`. `anim/dobj_pose.rs`: `begin_dobj_pose_frame` clears the gear frame with the others. `occupancy/remote_body.rs`: the resource is registered, `pose_one_remote` publishes the gear bones of every living body right after `publish_posed_player_head` (so live bodies, the F5 body at the predicted origin, skating bodies and the inventory puppet, but never corpses), and `prepare_remote_kits` logs `remote kits: axis=.. Minecraft gear bones missing: [..]` for both kits.
+- **Tests:** `gear_bones_are_found_by_name_with_their_bind_pose`, `posed_joints_are_placed_and_skin_from_the_bind_pose` (a bent elbow carries a point below it round the elbow, the shoulder's point stays), `a_body_publishes_once_per_client_and_without_a_client_not_at_all`.
+- **Decision:** the armour is placed from the bind pose and carried by each bone's skinning delta, not from assumed MW2 bone axes: whatever the joints' own axes are, a piece rides its bone exactly as the MW2 mesh around it does. Only the two hand tags are used with their own axes (IW weapon tags: X along the barrel, Y left, Z up, which the world gun attaches with).
+- **Test steps:**
+  1. Start the game and open `iw4l-artifacts/logs/latest.log`: find `Minecraft gear bones missing` and send the two lines (an empty list is the hoped-for answer).
+- **Kit:** none.
 
 ## After the split
 

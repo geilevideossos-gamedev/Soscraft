@@ -78,6 +78,7 @@ pub fn register_remote_body_systems(app: &mut App) {
         .add_systems(Update, prepare_remote_kits.in_set(ClientSet::Load))
         .init_resource::<crate::anim::dobj_pose::HostDObjPoseFrame>()
         .init_resource::<crate::anim::dobj_pose::PosedPlayerFrame>()
+        .init_resource::<crate::anim::minecraft_gear::PosedGearFrame>()
         .add_systems(
             Update,
             sync_remote_bodies
@@ -157,6 +158,15 @@ fn prepare_remote_kits(
         weapons.0.len(),
         started.elapsed().as_secs_f64() * 1000.0
     );
+    for axis in [false, true] {
+        if let Some(kit) = kits.get(axis, 0) {
+            diag::info!(
+                World,
+                "remote kits: axis={axis} Minecraft gear bones missing: {:?}",
+                kit.gear_bones.missing()
+            );
+        }
+    }
 }
 
 fn finish_body_draw_plan(mut plan: ResMut<RemoteBodyDrawPlan>) {
@@ -485,6 +495,7 @@ struct RemotePoseFrame<'a> {
     submit: &'a mut RemoteBodySkinnedQueue,
     dobj_poses: &'a mut crate::anim::dobj_pose::HostDObjPoseFrame,
     posed_players: &'a mut crate::anim::dobj_pose::PosedPlayerFrame,
+    posed_gear: &'a mut crate::anim::minecraft_gear::PosedGearFrame,
     scene: &'a render_scene::GfxScene,
     last_cache_hits: &'a HashSet<u32>,
     pending: Vec<PendingBodySkin<'a>>,
@@ -538,6 +549,7 @@ fn pose_remote_bodies(
         ResMut<crate::anim::dobj_pose::PosedPlayerFrame>,
         Res<HostGfxScene>,
         Option<Res<FrameClock>>,
+        ResMut<crate::anim::minecraft_gear::PosedGearFrame>,
     ),
     mut roots: Query<
         (
@@ -555,7 +567,8 @@ fn pose_remote_bodies(
         ),
     >,
 ) {
-    let (cameras, lod_skinned, mut dobj_poses, mut posed_players, gfx, cg_clock) = dpvs;
+    let (cameras, lod_skinned, mut dobj_poses, mut posed_players, gfx, cg_clock, mut posed_gear) =
+        dpvs;
     submit.clear();
     for (_, _, _, mut bolts, _) in &mut roots {
         *bolts = RemoteFxBolts::default();
@@ -666,6 +679,7 @@ fn pose_remote_bodies(
         submit: &mut submit,
         dobj_poses: &mut dobj_poses,
         posed_players: &mut posed_players,
+        posed_gear: &mut posed_gear,
         scene: &gfx.scene,
         last_cache_hits: &last_cache_hits,
         pending: Vec::new(),
@@ -811,6 +825,7 @@ impl<'a> RemotePoseFrame<'a> {
         let ramp = self.ramp;
         let dobj_poses = &mut *self.dobj_poses;
         let posed_players = &mut *self.posed_players;
+        let posed_gear = &mut *self.posed_gear;
         let world_gun_gap = &mut self.world_gun_gap;
         let result = (|| {
             let origin = transform.translation.to_array();
@@ -899,6 +914,13 @@ impl<'a> RemotePoseFrame<'a> {
                     transform,
                     posed_players,
                 )?;
+                crate::anim::minecraft_gear::publish_posed_gear(
+                    posed_gear,
+                    &kit.gear_bones,
+                    &world,
+                    identity.client().map(|client| client.0),
+                    transform.to_matrix(),
+                );
             }
             let hash = hash_skin_matrices(&skin);
             let pose_same = pose_hashes.remember_pose_hash(persist_key, hash);
