@@ -42,3 +42,5 @@ pub mod minecraft_gui;
 pub use minecraft_gui::{McFont, McGlyph, McGui, McScaling, McSprite};
 pub mod minecraft_chat;
 pub use minecraft_chat::{McChat, McChatLine};
+pub mod minecraft_creative;
+pub use minecraft_creative::{McCreative, McCreativeTab, McTabKind};

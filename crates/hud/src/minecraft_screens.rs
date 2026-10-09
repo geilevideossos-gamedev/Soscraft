@@ -212,6 +212,7 @@ pub(crate) fn layout(screen: McScreen) -> Layout {
             ]);
             player_inventory(&mut slots, 84);
         }
+        McScreen::Creative(kind) => return crate::minecraft_creative::layout(kind, 0),
     }
     Layout {
         screen,
@@ -260,6 +261,7 @@ impl Layout {
             McScreen::Grindstone => "grindstone",
             McScreen::Stonecutter => "stonecutter",
             McScreen::Smithing => "smithing",
+            McScreen::Creative(_) => "creative_inventory/tab_items",
         }
     }
 }

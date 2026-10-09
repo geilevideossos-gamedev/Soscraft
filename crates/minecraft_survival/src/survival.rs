@@ -702,15 +702,23 @@ impl Survival {
         self.score = self.score.saturating_add(gained);
         self.status.give_experience_points(points);
         let level = self.status.experience_level;
-        let rested = self
-            .level_up_at
-            .is_none_or(|at| self.tick.saturating_sub(at) > 100);
-        if level > before && level.is_multiple_of(5) && rested {
-            self.level_up_at = Some(self.tick);
-            Some(if level > 30 { 1.0 } else { level as f32 / 30.0 } * 0.75)
+        if level > before && level.is_multiple_of(5) {
+            self.level_up_chime()
         } else {
             None
         }
+    }
+
+    pub fn level_up_chime(&mut self) -> Option<f32> {
+        let level = self.status.experience_level;
+        let rested = self
+            .level_up_at
+            .is_none_or(|at| self.tick.saturating_sub(at) > 100);
+        if !rested {
+            return None;
+        }
+        self.level_up_at = Some(self.tick);
+        Some(if level > 30 { 1.0 } else { level as f32 / 30.0 } * 0.75)
     }
 
     pub fn can_sprint(&self) -> bool {

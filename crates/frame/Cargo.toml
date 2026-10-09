@@ -7,6 +7,7 @@ description = "Shared frame TOC labels and session identity. No plugins, no syst
 
 [dependencies]
 bevy.workspace = true
+minecraft_commands.workspace = true
 
 [lints]
 workspace = true

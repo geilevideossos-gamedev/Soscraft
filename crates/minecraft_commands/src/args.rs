@@ -14,6 +14,17 @@ pub const TIME_MARKERS: [(&str, i32); 6] = [
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Registry {
+    EntityType,
+    MobEffect,
+    Enchantment,
+    Structure,
+    Biome,
+    PointOfInterest,
+    Dimension,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArgKind {
     Players { single: bool },
     Time { min: i32 },
@@ -26,8 +37,14 @@ pub enum ArgKind {
     Bool,
     Item,
     Vec3,
-    Resource,
+    Resource(Registry),
     Nbt,
+    ItemPredicate,
+    BlockPos,
+    BlockState,
+    BlockPredicate,
+    Rotation,
+    ResourceOrTag(Registry),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,6 +52,13 @@ pub struct ItemArg {
     pub id: String,
     pub enchantments: Vec<(String, i32)>,
     pub at: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ItemPredicate {
+    Any,
+    Item(String),
+    Tag(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -73,6 +97,16 @@ pub enum Arg {
     Vec3(Coordinates),
     Resource { id: String, at: usize },
     Nbt(String),
+    ItemPredicate { predicate: ItemPredicate, at: usize },
+    BlockPos(Coordinates),
+    Block(crate::blocks::ParsedBlock),
+    Rotation([WorldCoordinate; 2]),
+    ResourceOrTag {
+        id: String,
+        tag: bool,
+        at: usize,
+        end: usize,
+    },
 }
 
 impl ArgKind {
@@ -142,11 +176,44 @@ impl ArgKind {
             Self::Bool => reader.read_bool().map(Arg::Bool),
             Self::Item => item(reader).map(Arg::Item),
             Self::Vec3 => vec3(reader).map(Arg::Vec3),
-            Self::Resource => {
-                let at = reader.cursor;
-                resource_id(reader).map(|id| Arg::Resource { id, at })
-            }
+            Self::Resource(_) => resource_id(reader).map(|id| Arg::Resource {
+                id,
+                at: reader.cursor,
+            }),
             Self::Nbt => nbt(reader).map(Arg::Nbt),
+            Self::ItemPredicate => {
+                let at = reader.cursor;
+                let predicate = match reader.peek() {
+                    Some('*') => {
+                        reader.skip();
+                        ItemPredicate::Any
+                    }
+                    Some('#') => {
+                        reader.skip();
+                        ItemPredicate::Tag(resource_id(reader)?)
+                    }
+                    _ => ItemPredicate::Item(resource_id(reader)?),
+                };
+                Ok(Arg::ItemPredicate { predicate, at })
+            }
+            Self::BlockPos => block_pos(reader).map(Arg::BlockPos),
+            Self::BlockState => crate::blocks::parse_block(reader, false).map(Arg::Block),
+            Self::BlockPredicate => crate::blocks::parse_block(reader, true).map(Arg::Block),
+            Self::Rotation => rotation(reader).map(Arg::Rotation),
+            Self::ResourceOrTag(_) => {
+                let at = reader.cursor;
+                let tag = reader.peek() == Some('#');
+                if tag {
+                    reader.skip();
+                }
+                let id = resource_id(reader).inspect_err(|_| reader.cursor = at)?;
+                Ok(Arg::ResourceOrTag {
+                    id,
+                    tag,
+                    at,
+                    end: reader.cursor,
+                })
+            }
         }
     }
 }
@@ -247,7 +314,7 @@ fn players(reader: &mut StringReader, single: bool) -> Result<Selector, CommandE
 pub const ENCHANTMENT_COMPONENTS: [&str; 2] =
     ["minecraft:enchantments", "minecraft:stored_enchantments"];
 
-fn allowed_in_id(c: char) -> bool {
+pub(crate) fn allowed_in_id(c: char) -> bool {
     c.is_ascii_digit() || c.is_ascii_lowercase() || matches!(c, '_' | ':' | '/' | '.' | '-')
 }
 
@@ -475,6 +542,76 @@ fn vec3(reader: &mut StringReader) -> Result<Coordinates, CommandError> {
     })
 }
 
+fn int_coordinate(reader: &mut StringReader) -> Result<WorldCoordinate, CommandError> {
+    if reader.peek() == Some('^') {
+        return Err(CommandError::new("argument.pos.mixed", Vec::new()).at(reader.cursor));
+    }
+    if !reader.can_read() {
+        return Err(CommandError::new("argument.pos.missing.int", Vec::new()).at(reader.cursor));
+    }
+    let relative = reader.peek() == Some('~');
+    if relative {
+        reader.skip();
+    }
+    let value = if !reader.can_read() || reader.peek() == Some(' ') {
+        0.0
+    } else if relative {
+        reader.read_double()?
+    } else {
+        f64::from(reader.read_int()?)
+    };
+    Ok(WorldCoordinate { value, relative })
+}
+
+fn rotation(reader: &mut StringReader) -> Result<[WorldCoordinate; 2], CommandError> {
+    let start = reader.cursor;
+    let incomplete = |reader: &mut StringReader| {
+        reader.cursor = start;
+        CommandError::new("argument.rotation.incomplete", Vec::new()).at(start)
+    };
+    if !reader.can_read() {
+        return Err(incomplete(reader));
+    }
+    let yaw = world_coordinate(reader, false)?;
+    if reader.peek() != Some(' ') {
+        return Err(incomplete(reader));
+    }
+    reader.skip();
+    let pitch = world_coordinate(reader, false)?;
+    Ok([yaw, pitch])
+}
+
+fn block_pos(reader: &mut StringReader) -> Result<Coordinates, CommandError> {
+    let start = reader.cursor;
+    if reader.peek() == Some('^') {
+        let mut offsets = [0.0; 3];
+        for (axis, offset) in offsets.iter_mut().enumerate() {
+            if axis > 0 {
+                if reader.peek() != Some(' ') {
+                    return Err(incomplete(reader, start));
+                }
+                reader.skip();
+            }
+            *offset = local_coordinate(reader, start)?;
+        }
+        return Ok(Coordinates::Local(offsets));
+    }
+    let mut axes = [WorldCoordinate {
+        value: 0.0,
+        relative: false,
+    }; 3];
+    for (axis, coordinate) in axes.iter_mut().enumerate() {
+        if axis > 0 {
+            if reader.peek() != Some(' ') {
+                return Err(incomplete(reader, start));
+            }
+            reader.skip();
+        }
+        *coordinate = int_coordinate(reader)?;
+    }
+    Ok(Coordinates::World(axes))
+}
+
 impl Coordinates {
     pub fn position(&self, pose: crate::server::Pose) -> [f64; 3] {
         match *self {
@@ -505,7 +642,7 @@ impl Coordinates {
     }
 }
 
-fn nbt(reader: &mut StringReader) -> Result<String, CommandError> {
+pub(crate) fn nbt(reader: &mut StringReader) -> Result<String, CommandError> {
     let start = reader.cursor;
     if reader.peek() != Some('{') {
         return Err(CommandError::new("argument.nbt.expected.compound", Vec::new()).at(start));
@@ -847,6 +984,53 @@ mod tests {
             coordinates("^ ^ ^3").unwrap().position(down),
             [0.0, 61.0, 0.0]
         ));
+    }
+
+    #[test]
+    fn block_positions_read_integers_or_relative_offsets() {
+        let parse = |text: &str| match ArgKind::BlockPos.parse(&mut StringReader::new(text), &[]) {
+            Ok(Arg::BlockPos(coordinates)) => Ok(coordinates),
+            Ok(other) => panic!("{other:?}"),
+            Err(error) => Err(error),
+        };
+        let pose = crate::server::Pose {
+            feet: [10.7, 64.0, -3.2],
+            yaw: 0.0,
+            pitch: 0.0,
+        };
+        assert_eq!(parse("1 2 3").unwrap().position(pose), [1.0, 2.0, 3.0]);
+        assert_eq!(parse("~ ~-1 ~0.5").unwrap().position(pose), [10.7, 63.0, -2.7]);
+        assert_eq!(parse("-4 ~ 5").unwrap().position(pose), [-4.0, 64.0, 5.0]);
+        assert_eq!(key(&parse("1.5 2 3").unwrap_err()), "parsing.int.invalid");
+        let incomplete = parse("1 2").unwrap_err();
+        assert_eq!(
+            (key(&incomplete), incomplete.cursor),
+            ("argument.pos3d.incomplete".into(), Some(0))
+        );
+        assert_eq!(key(&parse("").unwrap_err()), "argument.pos.missing.int");
+        assert_eq!(key(&parse("1 ^ 3").unwrap_err()), "argument.pos.mixed");
+        assert!(matches!(parse("^ ^1 ^"), Ok(Coordinates::Local(_))));
+    }
+
+    #[test]
+    fn rotations_read_yaw_then_pitch() {
+        let parse = |text: &str| ArgKind::Rotation.parse(&mut StringReader::new(text), &[]);
+        let absolute = WorldCoordinate {
+            value: 90.0,
+            relative: false,
+        };
+        let relative = WorldCoordinate {
+            value: -5.0,
+            relative: true,
+        };
+        assert_eq!(parse("90 ~-5"), Ok(Arg::Rotation([absolute, relative])));
+        let incomplete = parse("90").unwrap_err();
+        assert_eq!(
+            (key(&incomplete), incomplete.cursor),
+            ("argument.rotation.incomplete".into(), Some(0))
+        );
+        assert_eq!(key(&parse("").unwrap_err()), "argument.rotation.incomplete");
+        assert_eq!(key(&parse("^ 1").unwrap_err()), "argument.pos.mixed");
     }
 
     #[test]

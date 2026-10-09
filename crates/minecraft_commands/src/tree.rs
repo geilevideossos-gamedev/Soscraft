@@ -3,6 +3,13 @@ use crate::reader::{CommandError, StringReader};
 use crate::server::Ctx;
 
 pub type Exec = fn(&mut Ctx) -> Result<i32, CommandError>;
+pub type Modifier = fn(&mut Ctx) -> Result<(), CommandError>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Redirect {
+    Root,
+    Command(&'static str),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeKind {
@@ -16,6 +23,8 @@ pub struct Node {
     pub permission: u8,
     pub children: Vec<Node>,
     pub exec: Option<Exec>,
+    pub redirect: Option<Redirect>,
+    pub modifier: Option<Modifier>,
 }
 
 impl Node {
@@ -25,6 +34,8 @@ impl Node {
             permission: 0,
             children: Vec::new(),
             exec: None,
+            redirect: None,
+            modifier: None,
         }
     }
 
@@ -51,6 +62,17 @@ impl Node {
         self
     }
 
+    pub fn redirect(mut self, target: Redirect) -> Self {
+        self.redirect = Some(target);
+        self
+    }
+
+    pub fn redirect_with(mut self, target: Redirect, modifier: Modifier) -> Self {
+        self.redirect = Some(target);
+        self.modifier = Some(modifier);
+        self
+    }
+
     pub fn name(&self) -> &'static str {
         match self.kind {
             NodeKind::Literal(name) | NodeKind::Argument(name, _) => name,
@@ -68,7 +90,7 @@ impl Node {
         self.permission <= level
     }
 
-    fn is_literal(&self) -> bool {
+    pub fn is_literal(&self) -> bool {
         matches!(self.kind, NodeKind::Literal(_))
     }
 }
@@ -86,23 +108,64 @@ pub fn sorted(mut nodes: Vec<Node>) -> Vec<Node> {
 }
 
 #[derive(Clone, Debug)]
+pub struct Stage<'t> {
+    pub root: Option<&'t Node>,
+    pub start: usize,
+    pub nodes: usize,
+    pub args: usize,
+    pub literals: usize,
+}
+
+#[derive(Clone, Debug)]
 pub struct Parsed<'t> {
     pub nodes: Vec<&'t Node>,
+    pub ranges: Vec<std::ops::Range<usize>>,
     pub args: Vec<(&'static str, Arg)>,
     pub literals: Vec<&'static str>,
     pub cursor: usize,
     pub errors: Vec<CommandError>,
+    pub stages: Vec<Stage<'t>>,
+}
+
+impl Parsed<'_> {
+    pub fn stage_nodes(&self, index: usize) -> std::ops::Range<usize> {
+        let start = self.stages.get(index).map_or(self.nodes.len(), |stage| stage.nodes);
+        let end = self
+            .stages
+            .get(index + 1)
+            .map_or(self.nodes.len(), |next| next.nodes);
+        start..end
+    }
 }
 
 pub fn parse<'t>(roots: &'t [Node], input: &str, level: u8) -> Parsed<'t> {
+    parse_from(roots, input, 0, level)
+}
+
+pub fn parse_from<'t>(roots: &'t [Node], input: &str, from: usize, level: u8) -> Parsed<'t> {
     let start = Parsed {
         nodes: Vec::new(),
+        ranges: Vec::new(),
         args: Vec::new(),
         literals: Vec::new(),
-        cursor: 0,
+        cursor: from,
         errors: Vec::new(),
+        stages: vec![Stage {
+            root: None,
+            start: from,
+            nodes: 0,
+            args: 0,
+            literals: 0,
+        }],
     };
-    parse_nodes(roots, input, 0, level, start)
+    parse_nodes(roots, roots, input, from, level, start)
+}
+
+fn redirect_target(roots: &[Node], target: Redirect) -> Option<&Node> {
+    match target {
+        Redirect::Root => None,
+        Redirect::Command(name) => roots.iter().find(|node| node.name() == name),
+    }
 }
 
 fn relevant<'t>(children: &'t [Node], input: &str, start: usize) -> Vec<&'t Node> {
@@ -122,6 +185,7 @@ fn relevant<'t>(children: &'t [Node], input: &str, start: usize) -> Vec<&'t Node
 }
 
 fn parse_nodes<'t>(
+    roots: &'t [Node],
     children: &'t [Node],
     input: &str,
     start: usize,
@@ -158,10 +222,27 @@ fn parse_nodes<'t>(
             continue;
         }
         next.nodes.push(child);
+        next.ranges.push(start..reader.cursor);
         next.cursor = reader.cursor;
         next.errors.clear();
-        if input.len().saturating_sub(reader.cursor) >= 2 {
+        if let Some(target) = child.redirect {
+            if reader.cursor < input.len() {
+                let root = redirect_target(roots, target);
+                let from = reader.cursor + 1;
+                next.stages.push(Stage {
+                    root,
+                    start: from,
+                    nodes: next.nodes.len(),
+                    args: next.args.len(),
+                    literals: next.literals.len(),
+                });
+                let children = root.map_or(roots, |node| node.children.as_slice());
+                return parse_nodes(roots, children, input, from, level, next);
+            }
+            potentials.push(next);
+        } else if input.len().saturating_sub(reader.cursor) >= 2 {
             potentials.push(parse_nodes(
+                roots,
                 &child.children,
                 input,
                 reader.cursor + 1,
@@ -215,6 +296,12 @@ pub fn smart_usage(node: &Node, level: u8, optional: bool, deep: bool) -> Option
     } else {
         ("(", ")")
     };
+    if !deep && let Some(target) = node.redirect {
+        return Some(match target {
+            Redirect::Root => format!("{me} ..."),
+            Redirect::Command(name) => format!("{me} -> {name}"),
+        });
+    }
     if !deep {
         let children: Vec<&Node> = node
             .children

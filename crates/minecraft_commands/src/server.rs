@@ -1,19 +1,27 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use minecraftoss_player::{Difficulty, GameMode};
 use minecraftoss_world::game_rules::{GameRules, Rule, Value};
 
 use crate::args::{Arg, ItemArg, Selector};
+use crate::blocks::{BlockEdit, Loaded};
+use crate::clear::ItemFilter;
+use crate::enchant::{Enchanted, EnchantmentInfo};
+use crate::experience::Experience;
+use crate::locate::{LocateRequest, Located};
 use crate::permissions::{ALL, OWNERS, OpList};
 use crate::players::offline_uuid;
 use crate::protocol::{
     Clientbound, Outgoing, PlayerId, Recipient, Serverbound, allowed_in_chat, normalize_chat,
 };
 use crate::reader::CommandError;
+use crate::spawnpoint::Respawn;
 use crate::text::{GRAY, RED, Text};
-use crate::tree::{parse, runnable};
+use crate::tree::{Parsed, parse, runnable};
 
 pub const SEND_COMMAND_FEEDBACK: &str = "send_command_feedback";
+pub const OVERWORLD: &str = "minecraft:overworld";
 pub const LOG_ADMIN_COMMANDS: &str = "log_admin_commands";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +61,25 @@ pub struct CommandRegistries {
     pub enchantments: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommandData {
+    pub item_tags: BTreeMap<String, Vec<String>>,
+    pub blocks: BTreeMap<String, Vec<(String, Vec<String>)>>,
+    pub block_tags: BTreeMap<String, Vec<String>>,
+    pub structures: Vec<String>,
+    pub structure_tags: BTreeMap<String, Vec<String>>,
+    pub biomes: Vec<String>,
+    pub biome_tags: BTreeMap<String, Vec<String>>,
+    pub poi_types: Vec<String>,
+    pub poi_tags: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Answer<T> {
+    Now(T),
+    Later,
+}
+
 pub fn registered(list: &[String], id: &str) -> bool {
     list.is_empty() || list.iter().any(|known| known == id)
 }
@@ -89,6 +116,51 @@ pub trait CommandWorld {
         position: [f64; 3],
         nbt: Option<&str>,
     ) -> Result<(), Text>;
+    fn clear(&mut self, _player: PlayerId, _filter: &ItemFilter, _max: i32) -> Option<i32> {
+        None
+    }
+    fn experience(&self, _player: PlayerId) -> Option<Experience> {
+        None
+    }
+    fn set_experience(&mut self, _player: PlayerId, _experience: Experience) -> bool {
+        false
+    }
+    fn level_up(&mut self, _player: PlayerId) {}
+    fn enchantment(&self, _id: &str) -> Option<EnchantmentInfo> {
+        None
+    }
+    fn enchant(&mut self, _player: PlayerId, _enchantment: &str, _level: i32) -> Option<Enchanted> {
+        None
+    }
+    fn dimension(&self, _player: PlayerId) -> String {
+        OVERWORLD.to_owned()
+    }
+    fn loaded(&self, _dimension: &str, _pos: [i32; 3]) -> Loaded {
+        Loaded::Unloaded
+    }
+    fn edit_blocks(&mut self, _source: PlayerId, _edit: &BlockEdit) -> Answer<i32> {
+        Answer::Now(0)
+    }
+    fn set_respawn(&mut self, _player: PlayerId, _respawn: &Respawn) -> bool {
+        false
+    }
+    fn locate(&mut self, _source: PlayerId, _request: &LocateRequest) -> Answer<Option<Located>> {
+        Answer::Now(None)
+    }
+    fn dimension_scale(&self, dimension: &str) -> Option<f64> {
+        (dimension == OVERWORLD).then_some(1.0)
+    }
+    fn teleport_to_dimension(
+        &mut self,
+        _player: PlayerId,
+        _dimension: &str,
+        _position: [f64; 3],
+    ) -> bool {
+        false
+    }
+    fn kit_line(&self) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,6 +179,7 @@ pub struct CommandServer {
     warnings: Vec<String>,
     random: u64,
     registries: CommandRegistries,
+    data: CommandData,
 }
 
 impl Default for CommandServer {
@@ -122,6 +195,7 @@ impl Default for CommandServer {
             warnings: Vec::new(),
             random: nanos | 1,
             registries: CommandRegistries::default(),
+            data: CommandData::default(),
         }
     }
 }
@@ -135,6 +209,8 @@ pub struct Ctx<'a> {
     pub args: Vec<(&'static str, Arg)>,
     pub literals: Vec<&'static str>,
     pub out: Vec<Outgoing>,
+    pub at: Option<Pose>,
+    pub dimension: Option<String>,
 }
 
 pub(crate) fn system(to: PlayerId, text: Text) -> Outgoing {
@@ -167,7 +243,15 @@ impl Ctx<'_> {
     }
 
     pub fn pose(&self) -> Pose {
-        self.world.pose(self.source).unwrap_or(Pose::ORIGIN)
+        self.at
+            .or_else(|| self.world.pose(self.source))
+            .unwrap_or(Pose::ORIGIN)
+    }
+
+    pub fn dimension(&self) -> String {
+        self.dimension
+            .clone()
+            .unwrap_or_else(|| self.world.dimension(self.source))
     }
 
     pub fn display_name(&self, player: PlayerId) -> Text {
@@ -250,6 +334,13 @@ impl CommandServer {
         self.profile(id).map(|player| player.name.as_str())
     }
 
+    pub fn player_names(&self) -> Vec<String> {
+        self.players
+            .iter()
+            .map(|player| player.name.clone())
+            .collect()
+    }
+
     pub fn is_op(&self, id: PlayerId) -> bool {
         self.host == Some(id)
             || self
@@ -317,6 +408,14 @@ impl CommandServer {
         &mut self.registries
     }
 
+    pub fn data(&self) -> &CommandData {
+        &self.data
+    }
+
+    pub fn data_mut(&mut self) -> &mut CommandData {
+        &mut self.data
+    }
+
     pub fn feedback(
         &self,
         source: PlayerId,
@@ -342,6 +441,19 @@ impl CommandServer {
             );
         }
         out
+    }
+
+    pub fn reply(
+        &self,
+        source: PlayerId,
+        result: Result<Text, CommandError>,
+        broadcast: bool,
+        rules: &GameRules,
+    ) -> Vec<Outgoing> {
+        match result {
+            Ok(text) => self.feedback(source, text, broadcast, rules),
+            Err(error) => vec![error_line(source, error.text)],
+        }
     }
 
     pub fn take_warnings(&mut self) -> Vec<String> {
@@ -404,17 +516,34 @@ impl CommandServer {
             source: from,
             level,
             input: command,
-            args: parsed.args,
-            literals: parsed.literals,
+            args: Vec::new(),
+            literals: Vec::new(),
             out: Vec::new(),
+            at: None,
+            dimension: None,
         };
-        let result = exec(&mut ctx);
+        let result = run_stages(&mut ctx, &parsed).and_then(|()| exec(&mut ctx));
         let mut out = ctx.out;
         if let Err(error) = result {
             out.extend(report(from, error, command));
         }
         out
     }
+}
+
+fn run_stages(ctx: &mut Ctx, parsed: &Parsed) -> Result<(), CommandError> {
+    for (index, stage) in parsed.stages.iter().enumerate() {
+        let next = parsed.stages.get(index + 1);
+        let args = next.map_or(parsed.args.len(), |next| next.args);
+        let literals = next.map_or(parsed.literals.len(), |next| next.literals);
+        ctx.args = parsed.args[stage.args..args].to_vec();
+        ctx.literals = parsed.literals[stage.literals..literals].to_vec();
+        let modifier = next.and_then(|next| parsed.nodes[next.nodes - 1].modifier);
+        if let Some(modify) = modifier {
+            modify(ctx)?;
+        }
+    }
+    Ok(())
 }
 
 fn report(to: PlayerId, error: CommandError, input: &str) -> Vec<Outgoing> {
@@ -460,6 +589,8 @@ pub(crate) mod tests {
     pub(crate) const HOST: PlayerId = PlayerId(0);
     pub(crate) const FRIEND: PlayerId = PlayerId(1);
 
+    pub(crate) type Held = Option<(String, Vec<(String, i32)>)>;
+
     #[derive(Debug, Default)]
     pub(crate) struct FakeWorld {
         pub(crate) rules: GameRules,
@@ -475,6 +606,21 @@ pub(crate) mod tests {
         pub(crate) effects: Vec<(PlayerId, String, Option<u32>, u8)>,
         pub(crate) cleared: Vec<(PlayerId, Option<String>)>,
         pub(crate) summoned: Vec<(String, [f64; 3], Option<String>)>,
+        pub(crate) inventories: Vec<(PlayerId, minecraftoss_player::inventory::Inventory)>,
+        pub(crate) experience: Vec<(PlayerId, Experience)>,
+        pub(crate) level_ups: Vec<PlayerId>,
+        pub(crate) held: Vec<(PlayerId, Held)>,
+        pub(crate) loaded: Option<Loaded>,
+        pub(crate) blocks: crate::blocks::tests::Blocks,
+        pub(crate) edits: Vec<BlockEdit>,
+        pub(crate) respawns: Vec<(PlayerId, Option<Respawn>)>,
+        pub(crate) located: Vec<Located>,
+        pub(crate) located_requests: Vec<LocateRequest>,
+        pub(crate) later: bool,
+        pub(crate) levels: Vec<(String, f64)>,
+        pub(crate) player_dimensions: Vec<(PlayerId, String)>,
+        pub(crate) dimension_teleports: Vec<(PlayerId, String, [f64; 3])>,
+        pub(crate) kit: Option<String>,
     }
 
     impl CommandWorld for FakeWorld {
@@ -599,6 +745,112 @@ pub(crate) mod tests {
                 .push((kind.to_owned(), position, nbt.map(str::to_owned)));
             Ok(())
         }
+
+        fn clear(&mut self, player: PlayerId, filter: &ItemFilter, max: i32) -> Option<i32> {
+            let (_, inventory) = self.inventories.iter_mut().find(|(id, _)| *id == player)?;
+            Some(crate::clear::clear_inventory(inventory, filter, max))
+        }
+
+        fn experience(&self, player: PlayerId) -> Option<Experience> {
+            let (_, experience) = self.experience.iter().find(|(id, _)| *id == player)?;
+            Some(*experience)
+        }
+
+        fn set_experience(&mut self, player: PlayerId, experience: Experience) -> bool {
+            let Some((_, known)) = self.experience.iter_mut().find(|(id, _)| *id == player) else {
+                return false;
+            };
+            *known = experience;
+            true
+        }
+
+        fn level_up(&mut self, player: PlayerId) {
+            self.level_ups.push(player);
+        }
+
+        fn enchantment(&self, id: &str) -> Option<EnchantmentInfo> {
+            let (max_level, curse) = match id {
+                "minecraft:sharpness" | "minecraft:smite" => (5, false),
+                "minecraft:unbreaking" => (3, false),
+                "minecraft:mending" => (1, false),
+                "minecraft:binding_curse" => (1, true),
+                _ => return None,
+            };
+            Some(EnchantmentInfo { max_level, curse })
+        }
+
+        fn enchant(&mut self, player: PlayerId, enchantment: &str, level: i32) -> Option<Enchanted> {
+            let (_, held) = self.held.iter_mut().find(|(id, _)| *id == player)?;
+            let Some((item, enchantments)) = held else {
+                return Some(Enchanted::Itemless);
+            };
+            let damage = ["minecraft:sharpness", "minecraft:smite"];
+            let exclusive = |known: &str| {
+                known == enchantment || damage.contains(&known) && damage.contains(&enchantment)
+            };
+            if item == "minecraft:stick" || enchantments.iter().any(|(known, _)| exclusive(known)) {
+                return Some(Enchanted::Incompatible(Text::hover_name(item.clone())));
+            }
+            enchantments.push((enchantment.to_owned(), level));
+            Some(Enchanted::Applied)
+        }
+
+        fn loaded(&self, _dimension: &str, _pos: [i32; 3]) -> Loaded {
+            self.loaded.unwrap_or(Loaded::Unloaded)
+        }
+
+        fn edit_blocks(&mut self, _source: PlayerId, edit: &BlockEdit) -> Answer<i32> {
+            self.edits.push(edit.clone());
+            Answer::Now(crate::blocks::apply_edit(edit, &mut self.blocks))
+        }
+
+        fn set_respawn(&mut self, player: PlayerId, respawn: &Respawn) -> bool {
+            let Some((_, known)) = self.respawns.iter_mut().find(|(id, _)| *id == player) else {
+                return false;
+            };
+            *known = Some(respawn.clone());
+            true
+        }
+
+        fn locate(&mut self, _source: PlayerId, request: &LocateRequest) -> Answer<Option<Located>> {
+            self.located_requests.push(request.clone());
+            if self.later {
+                return Answer::Later;
+            }
+            let found = self
+                .located
+                .iter()
+                .find(|located| request.targets.contains(&located.id));
+            Answer::Now(found.cloned())
+        }
+
+        fn dimension(&self, player: PlayerId) -> String {
+            let set = self.player_dimensions.iter().rev().find(|(id, _)| *id == player);
+            set.map_or_else(|| OVERWORLD.to_owned(), |(_, dimension)| dimension.clone())
+        }
+
+        fn dimension_scale(&self, dimension: &str) -> Option<f64> {
+            if dimension == OVERWORLD {
+                return Some(1.0);
+            }
+            let level = self.levels.iter().find(|(id, _)| id == dimension);
+            level.map(|(_, scale)| *scale)
+        }
+
+        fn teleport_to_dimension(
+            &mut self,
+            player: PlayerId,
+            dimension: &str,
+            position: [f64; 3],
+        ) -> bool {
+            self.dimension_teleports
+                .push((player, dimension.to_owned(), position));
+            true
+        }
+
+        fn kit_line(&self) -> Option<String> {
+            self.kit.clone()
+        }
     }
 
     pub(crate) fn lang(key: &str) -> Option<String> {
@@ -678,6 +930,103 @@ pub(crate) mod tests {
             "commands.summon.invalidPosition" => "Invalid position for summon",
             "argument.nbt.expected.value" => "Expected value",
             "argument.pos3d.incomplete" => "Incomplete (expected 3 coordinates)",
+            "command.expected.separator" => {
+                "Expected whitespace to end one argument, but found trailing data"
+            }
+            "arguments.item.tag.unknown" => "Unknown item tag '%s'",
+            "clear.failed.multiple" => "No items were found on %s players",
+            "clear.failed.single" => "No items were found on player %s",
+            "commands.clear.success.multiple" => "Removed %s item(s) from %s players",
+            "commands.clear.success.single" => "Removed %s item(s) from player %s",
+            "commands.clear.test.multiple" => "Found %s matching item(s) on %s players",
+            "commands.clear.test.single" => "Found %s matching item(s) on player %s",
+            "commands.experience.add.levels.success.multiple" => {
+                "Gave %s experience levels to %s players"
+            }
+            "commands.experience.add.levels.success.single" => "Gave %s experience levels to %s",
+            "commands.experience.add.points.success.multiple" => {
+                "Gave %s experience points to %s players"
+            }
+            "commands.experience.add.points.success.single" => "Gave %s experience points to %s",
+            "commands.experience.query.levels" => "%s has %s experience levels",
+            "commands.experience.query.points" => "%s has %s experience points",
+            "commands.experience.set.levels.success.multiple" => {
+                "Set %s experience levels on %s players"
+            }
+            "commands.experience.set.levels.success.single" => "Set %s experience levels on %s",
+            "commands.experience.set.points.invalid" => {
+                "Cannot set experience points above the maximum points for the player's current level"
+            }
+            "commands.experience.set.points.success.multiple" => {
+                "Set %s experience points on %s players"
+            }
+            "commands.experience.set.points.success.single" => "Set %s experience points on %s",
+            "commands.enchant.failed" => {
+                "Nothing changed. Targets either have no item in their hands or the enchantment could not be applied"
+            }
+            "commands.enchant.failed.entity" => "%s is not a valid entity for this command",
+            "commands.enchant.failed.incompatible" => "%s cannot support that enchantment",
+            "commands.enchant.failed.itemless" => "%s is not holding any item",
+            "commands.enchant.failed.level" => {
+                "%s is higher than the maximum level of %s supported by that enchantment"
+            }
+            "commands.enchant.success.multiple" => "Applied enchantment %s to %s entities",
+            "commands.enchant.success.single" => "Applied enchantment %s to %s's item",
+            "enchantment.minecraft.binding_curse" => "Curse of Binding",
+            "enchantment.minecraft.mending" => "Mending",
+            "enchantment.minecraft.sharpness" => "Sharpness",
+            "enchantment.minecraft.smite" => "Smite",
+            "enchantment.minecraft.unbreaking" => "Unbreaking",
+            "enchantment.level.1" => "I",
+            "enchantment.level.2" => "II",
+            "enchantment.level.3" => "III",
+            "enchantment.level.4" => "IV",
+            "enchantment.level.5" => "V",
+            "item.minecraft.stick" => "Stick",
+            "argument.block.id.invalid" => "Unknown block type '%s'",
+            "argument.block.property.duplicate" => {
+                "Property '%s' can only be set once for block %s"
+            }
+            "argument.block.property.invalid" => "Block %s does not accept '%s' for %s property",
+            "argument.block.property.novalue" => "Expected value for property '%s' on block %s",
+            "argument.block.property.unclosed" => "Expected closing ] for block state properties",
+            "argument.block.property.unknown" => "Block %s does not have property '%s'",
+            "argument.block.tag.disallowed" => "Tags aren't allowed here; only actual blocks are",
+            "argument.pos.outofworld" => "That position is out of this world!",
+            "argument.pos.unloaded" => "That position is not loaded",
+            "commands.setblock.failed" => "Could not set the block",
+            "commands.setblock.success" => "Changed the block at %s, %s, %s",
+            "arguments.block.tag.unknown" => "Unknown block tag '%s'",
+            "commands.fill.failed" => "No blocks were filled",
+            "commands.fill.success" => "Successfully filled %s block(s)",
+            "argument.pos.outofbounds" => "That position is outside the allowed boundaries",
+            "argument.rotation.incomplete" => "Incomplete (expected 2 coordinates)",
+            "commands.spawnpoint.success.multiple" => {
+                "Set spawn point to %s, %s, %s [%s] in %s for %s players"
+            }
+            "commands.spawnpoint.success.single" => {
+                "Set spawn point to %s, %s, %s [%s] in %s for %s"
+            }
+            "argument.resource_tag.not_found" => "Can't find tag '%s' of type '%s'",
+            "chat.coordinates" => "%s, %s, %s",
+            "commands.locate.biome.not_found" => {
+                "Could not find a biome of type \"%s\" within a reasonable distance"
+            }
+            "commands.locate.biome.success" => "The nearest %s is at %s (%s blocks away)",
+            "commands.locate.poi.not_found" => {
+                "Could not find a point of interest of type \"%s\" within a reasonable distance"
+            }
+            "commands.locate.poi.success" => "The nearest %s is at %s (%s blocks away)",
+            "commands.locate.structure.invalid" => "There is no structure with type \"%s\"",
+            "commands.locate.structure.not_found" => {
+                "Could not find a structure of type \"%s\" nearby"
+            }
+            "commands.locate.structure.success" => "The nearest %s is at %s (%s blocks away)",
+            "argument.dimension.invalid" => "Unknown dimension '%s'",
+            "commands.fill.toobig" => {
+                "Too many blocks in the specified area (maximum %s, but specified %s)"
+            }
+            "parsing.int.invalid" => "Invalid integer '%s'",
             _ => return None,
         };
         Some(text.to_owned())
@@ -941,6 +1290,79 @@ pub(crate) mod tests {
         let out = run(&mut server, &mut world, FRIEND, "weather clear");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0, Recipient::Player(FRIEND));
+    }
+
+    #[test]
+    fn redirects_run_each_modifier_with_its_own_arguments() {
+        use crate::args::ArgKind;
+        use crate::tree::{Node, Redirect, sorted};
+        fn value(ctx: &Ctx) -> i32 {
+            match ctx.arg("value") {
+                Some(Arg::Int(value)) => *value,
+                _ => -1,
+            }
+        }
+        fn note(ctx: &mut Ctx) -> Result<(), CommandError> {
+            if value(ctx) == 0 {
+                return Err(CommandError::new("commands.help.failed", Vec::new()));
+            }
+            let line = format!("modifier {} of {}", value(ctx), ctx.args.len());
+            ctx.out.push(system(ctx.source, Text::literal(line)));
+            Ok(())
+        }
+        fn show(ctx: &mut Ctx) -> Result<i32, CommandError> {
+            let line = format!("command {} of {}", value(ctx), ctx.args.len());
+            ctx.out.push(system(ctx.source, Text::literal(line)));
+            Ok(1)
+        }
+        let digit = ArgKind::Int { min: 0, max: 9 };
+        let roots = sorted(vec![
+            Node::literal("wrap")
+                .then(Node::argument("value", digit).redirect_with(Redirect::Root, note)),
+            Node::literal("again").redirect(Redirect::Command("wrap")),
+            Node::literal("show").then(Node::argument("value", digit).executes(show)),
+        ]);
+        let mut server = server();
+        let mut world = FakeWorld::default();
+        let mut lines = |input: &str| {
+            let parsed = parse(&roots, input, OWNERS);
+            let exec = runnable(&parsed, input).unwrap();
+            let mut ctx = Ctx {
+                server: &mut server,
+                world: &mut world,
+                source: HOST,
+                level: OWNERS,
+                input,
+                args: Vec::new(),
+                literals: Vec::new(),
+                out: Vec::new(),
+                at: None,
+                dimension: None,
+            };
+            let result = run_stages(&mut ctx, &parsed).and_then(|()| exec(&mut ctx));
+            let texts: Vec<String> = ctx
+                .out
+                .iter()
+                .map(|out| out.message.chat_text().unwrap().resolve(&lang).text)
+                .collect();
+            (result, texts, parsed.stages.len())
+        };
+        let (result, texts, stages) = lines("wrap 1 again 2 show 3");
+        assert_eq!(result, Ok(1));
+        assert_eq!(
+            texts,
+            vec!["modifier 1 of 1", "modifier 2 of 1", "command 3 of 1"]
+        );
+        assert_eq!(stages, 4);
+        let (result, texts, _) = lines("wrap 0 show 3");
+        assert!(result.is_err());
+        assert!(texts.is_empty());
+        let parsed = parse(&roots, "wrap 1", OWNERS);
+        assert_eq!(parsed.stages.len(), 1);
+        assert!(runnable(&parsed, "wrap 1").is_err());
+        let parsed = parse(&roots, "wrap 1 frob", OWNERS);
+        assert_eq!((parsed.cursor, parsed.stages.len()), (7, 2));
+        assert_eq!(parsed.stages[1].start, 7);
     }
 
     #[test]

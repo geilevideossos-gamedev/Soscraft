@@ -108,6 +108,7 @@ pub struct Entities {
     pub item_uses_done: Vec<SentItemUse>,
     eggs_waiting: minecraft_terrain::spawn_egg::EggsWaiting,
     pub command_summons: Vec<Result<String, String>>,
+    pub command_jobs: Vec<Box<dyn std::any::Any + Send>>,
     pub difficulty: i32,
     spawn_mobs: bool,
     block_drops: bool,
@@ -236,6 +237,7 @@ impl Entities {
             item_uses_done: Vec::new(),
             eggs_waiting: Default::default(),
             command_summons: Vec::new(),
+            command_jobs: Vec::new(),
             difficulty: 2,
             spawn_mobs: true,
             block_drops: true,
@@ -540,6 +542,10 @@ impl Entities {
         self.server.summon(kind, position, nbt);
     }
 
+    pub fn run_job(&mut self, job: minecraft_terrain::server::Job) {
+        self.server.run_job(job);
+    }
+
     pub fn drop_given(&mut self, stack: &ItemStack, feet: [f64; 3]) {
         let components = stack.components.as_ref().map(|c| c.to_string());
         self.server.spawn_item(&stack.id, i32::from(stack.count), components.as_deref(), feet, [0.0; 3], 0, 0);
@@ -737,6 +743,7 @@ impl Entities {
                 }
             }
             self.command_summons.extend(output.command_summons);
+            self.command_jobs.extend(output.jobs);
             changes.extend(output.changes);
             self.block_entity_changes.extend(output.block_entities);
             self.destroyed.extend(output.destroyed);

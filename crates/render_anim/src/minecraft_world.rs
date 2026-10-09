@@ -249,6 +249,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
     }
     let mut chat = minecraft_commands::CommandServer::new(minecraft_survival::commands::HOST);
     *chat.registries_mut() = minecraft_survival::commands::registries(&packs);
+    *chat.data_mut() = minecraft_survival::commands::command_data(&stream);
     if let Some(save) = &opened.save
         && let Err(error) = chat.open_ops(&save.ops_path())
     {
@@ -600,7 +601,21 @@ fn update(
         .filter(|_| host_alive)
         .map(|ps| minecraft_commands::Pose { feet: sim::voxel::to_block(origin, ps.origin), yaw: minecraft_yaw(ps.viewangles[1]), pitch: ps.viewangles[0] })
         .or_else(|| player.survival.last_feet().map(|feet| minecraft_commands::Pose { feet, yaw: 0.0, pitch: 0.0 }));
-    let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, level, player, &mut ui.chat.sent, host_pose, host_alive);
+    let presence = vec![(local_uuid.clone(), minecraft_survival::commands::Presence { pose: host_pose, alive: host_alive })];
+    let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, levels, players, local_uuid, &mut ui.chat.sent, presence);
+    ui.chat.command_level = players.get(local_uuid).map_or(0, |player| globals.chat.level(player.id));
+    let Some(player) = players.get_mut(local_uuid) else {
+        ui.active = false;
+        ui.inventory_open = false;
+        puppet.active = false;
+        return;
+    };
+    let Some(level) = levels.get_mut(&player.dimension) else {
+        ui.active = false;
+        ui.inventory_open = false;
+        puppet.active = false;
+        return;
+    };
     let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, arrived, ender, .. } = player;
     let minecraft_survival::level::Level { entities, containers, terrain, openers, .. } = level;
     if !delivered.is_empty() {
@@ -671,6 +686,17 @@ fn update(
 
     // Minecraft's yaw: 0 facing +Z (map -Y), turning towards -X.
     let mc_yaw = minecraft_yaw(ps.viewangles[1]);
+    let aim = {
+        let mut aim = minecraftoss_player::Player::new(glam::DVec3::from_array(feet));
+        aim.yaw = f64::from(mc_yaw);
+        aim.pitch = f64::from(ps.viewangles[0]);
+        aim.crouching = ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
+        aim.target(&minecraft_terrain::doors::Outlined(&terrain.scene), player_mode.block_reach())
+    };
+    minecraft_survival::commands::refresh_hints(&mut ui.chat.hints, &globals.chat, loaded.iter().copied(), aim.map(|hit| (hit.point.to_array(), [hit.pos.0, hit.pos.1, hit.pos.2])));
+    if ui.chat.language.is_empty() && let Some(language) = inventory_ui.language() {
+        ui.chat.language = std::sync::Arc::new(language.clone());
+    }
     let mut all_events = sim::voxel::take_events();
     let mut hand_mined = Vec::new();
     let mut creative_broken = Vec::new();
@@ -896,7 +922,8 @@ fn update(
         if !attack_held {
             hand.miss_time = 0;
         }
-        let busy = survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some() || hand.miss_time > 0;
+        let mw2_offhand = (weapon_iw4::WeaponState::OffhandInit as i32..=weapon_iw4::WeaponState::OffhandEnd as i32).contains(&ps.weaponstate_primary);
+        let busy = survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some() || hand.miss_time > 0 || mw2_offhand;
         let mut creative_press = false;
         let mut punched = false;
         if ui.holding_item && (buttons.just_pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, true)) && !busy {
@@ -998,7 +1025,7 @@ fn update(
             charging.ticks = charging.ticks.saturating_add(hand_ticks);
         }
         hand.place_delay = hand.place_delay.saturating_sub(hand_ticks);
-        let idle = survival.eating().is_none() && hand.blocking.is_none() && hand.charging.is_none();
+        let idle = survival.eating().is_none() && hand.blocking.is_none() && hand.charging.is_none() && !mw2_offhand;
         let (use_pressed, use_down) = if ui.holding_item {
             (buttons.just_pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, true), use_held)
         } else {
@@ -1635,7 +1662,7 @@ fn update(
             }
             finish_item_use(entities, inventory, sounds.as_mut(), &world.packs, origin, used, player_mode.consumes_items());
         }
-        for to in teleports.iter().filter(|_| alive) {
+        for to in teleports.iter().filter(|(uuid, _)| alive && uuid == local_uuid).map(|(_, to)| to) {
             authority.0.teleport(local.0, sim::voxel::to_map(origin, *to));
             steps.air_peak = None;
         }
@@ -1742,7 +1769,13 @@ fn update(
         }
         let was_open = inventory_ui.block().cloned();
         let roll = entities.random_float();
-        let thrown = containers.with_ender(ender, |containers| inventory_ui.apply_input(&mut ui, inventory, selected, containers, &mut || roll));
+        let operator = ui.chat.command_level >= 2 && settings.as_deref().is_some_and(|settings| settings.minecraft_operator_items);
+        inventory_ui.creative.prepare(!player_mode.consumes_items(), operator);
+        inventory_ui.creative.set_item_tags(&globals.chat.data().item_tags);
+        let known = |id: &str| globals.chat.registries().items.iter().any(|item| item == id);
+        let creative_thrown = inventory_ui.creative.apply(&mut ui, player_mode, inventory, &known);
+        inventory_ui.creative.hotbar_key(&mut ui, player_mode, inventory, &known);
+        let thrown: Vec<_> = creative_thrown.into_iter().chain(containers.with_ender(ender, |containers| inventory_ui.apply_input(&mut ui, inventory, selected, containers, &mut || roll))).collect();
         if let Some(pos) = open_table {
             inventory_ui.open_table(&mut ui, pos);
         }

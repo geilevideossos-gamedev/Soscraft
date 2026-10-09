@@ -3,14 +3,14 @@ use std::sync::OnceLock;
 use minecraftoss_player::Difficulty;
 use minecraftoss_world::game_rules::Value;
 
-use crate::args::{Arg, ArgKind, TICKS_PER_DAY, marker_ticks};
+use crate::args::{Arg, ArgKind, Registry, TICKS_PER_DAY, marker_ticks};
 use crate::permissions::{ADMINS, GAMEMASTERS};
 use crate::players::game_mode_key;
 use crate::protocol::PlayerId;
 use crate::reader::{CommandError, literal};
 use crate::server::{Ctx, SEND_COMMAND_FEEDBACK, Weather, registered, system};
 use crate::text::{GREEN, Text};
-use crate::tree::{Node, parse, smart_usage, smart_usages, sorted};
+use crate::tree::{Node, Redirect, parse, smart_usage, smart_usages, sorted};
 
 pub const CLOCK: &str = "minecraft:overworld";
 const RAIN_DELAY: (i32, i32) = (12_000, 180_000);
@@ -45,6 +45,7 @@ fn teleport_node(name: &'static str) -> Node {
 
 fn effect_node() -> Node {
     let players = ArgKind::Players { single: false };
+    let effect = ArgKind::Resource(Registry::MobEffect);
     let amplifier = || {
         Node::argument("amplifier", ArgKind::Int { min: 0, max: 255 })
             .executes(give_effect)
@@ -56,13 +57,13 @@ fn effect_node() -> Node {
             Node::literal("clear").executes(clear_effects).then(
                 Node::argument("targets", players)
                     .executes(clear_effects)
-                    .then(Node::argument("effect", ArgKind::Resource).executes(clear_effects)),
+                    .then(Node::argument("effect", effect).executes(clear_effects)),
             ),
         )
         .then(
             Node::literal("give").then(
                 Node::argument("targets", players).then(
-                    Node::argument("effect", ArgKind::Resource)
+                    Node::argument("effect", effect)
                         .executes(give_effect)
                         .then(
                             Node::argument(
@@ -162,10 +163,12 @@ fn build() -> Vec<Node> {
             ),
         ),
         teleport_node("teleport"),
-        teleport_node("tp"),
+        Node::literal("tp")
+            .requires(GAMEMASTERS)
+            .redirect(Redirect::Command("teleport")),
         effect_node(),
         Node::literal("summon").requires(GAMEMASTERS).then(
-            Node::argument("entity", ArgKind::Resource)
+            Node::argument("entity", ArgKind::Resource(Registry::EntityType))
                 .executes(summon)
                 .then(
                     Node::argument("pos", ArgKind::Vec3)
@@ -173,6 +176,16 @@ fn build() -> Vec<Node> {
                         .then(Node::argument("nbt", ArgKind::Nbt).executes(summon)),
                 ),
         ),
+        crate::clear::node(),
+        crate::experience::node(),
+        crate::experience::alias(),
+        crate::enchant::node(),
+        crate::blocks::setblock_node(),
+        crate::blocks::fill_node(),
+        crate::spawnpoint::node(),
+        crate::locate::node(),
+        crate::execute::node(),
+        crate::kit::node(),
     ])
 }
 
@@ -193,7 +206,7 @@ fn help_command(ctx: &mut Ctx) -> Result<i32, CommandError> {
         return Err(CommandError::new("commands.help.failed", Vec::new()));
     };
     let parsed = parse(tree(), &command, ctx.level);
-    let Some(last) = parsed.nodes.last() else {
+    let Some(last) = parsed.nodes[..parsed.stage_nodes(0).end].last() else {
         return Err(CommandError::new("commands.help.failed", Vec::new()));
     };
     let usages = smart_usages(&last.children, last.exec.is_some(), ctx.level);
@@ -625,7 +638,11 @@ fn format_double(value: f64) -> Text {
     literal(format!("{value:.6}"))
 }
 
-fn teleport_all(ctx: &mut Ctx, position: [f64; 3]) -> Result<Vec<PlayerId>, CommandError> {
+fn teleport_all(
+    ctx: &mut Ctx,
+    dimension: &str,
+    position: [f64; 3],
+) -> Result<Vec<PlayerId>, CommandError> {
     if !in_spawnable_bounds(position) {
         return Err(CommandError::new(
             "commands.teleport.invalidPosition",
@@ -634,7 +651,12 @@ fn teleport_all(ctx: &mut Ctx, position: [f64; 3]) -> Result<Vec<PlayerId>, Comm
     }
     let mut moved = Vec::new();
     for player in ctx.targets("targets")? {
-        if ctx.world.teleport(player, position) {
+        let teleported = if ctx.world.dimension(player) == dimension {
+            ctx.world.teleport(player, position)
+        } else {
+            ctx.world.teleport_to_dimension(player, dimension, position)
+        };
+        if teleported {
             moved.push(player);
         }
     }
@@ -646,7 +668,8 @@ fn teleport_to_location(ctx: &mut Ctx) -> Result<i32, CommandError> {
         return Err(CommandError::new("command.unknown.argument", Vec::new()));
     };
     let position = location.position(ctx.pose());
-    let moved = teleport_all(ctx, position)?;
+    let dimension = ctx.dimension();
+    let moved = teleport_all(ctx, &dimension, position)?;
     let [x, y, z] = position.map(format_double);
     let text = match moved.as_slice() {
         [] => return Ok(0),
@@ -671,7 +694,8 @@ fn teleport_to_player(ctx: &mut Ctx) -> Result<i32, CommandError> {
             Vec::new(),
         ));
     };
-    let moved = teleport_all(ctx, pose.feet)?;
+    let dimension = ctx.world.dimension(destination);
+    let moved = teleport_all(ctx, &dimension, pose.feet)?;
     let name = ctx.display_name(destination);
     let text = match moved.as_slice() {
         [] => return Ok(0),
@@ -868,21 +892,31 @@ mod tests {
         assert_eq!(
             texts(&out),
             vec![
+                "/clear [<targets>]",
                 "/deop <targets>",
                 "/difficulty [easy|hard|normal|peaceful]",
                 "/effect (clear|give)",
+                "/enchant <targets> <enchantment> [<level>]",
+                "/execute (in|positioned|run)",
+                "/experience (add|query|set)",
+                "/fill <from> <to> <block> [destroy|hollow|keep|outline|replace|strict]",
                 "/gamemode <gamemode> [<target>]",
                 "/gamerule <rule> [<value>]",
                 "/give <targets> <item> [<count>]",
                 "/help [<command>]",
                 "/kill [<targets>]",
+                "/kit [<targets>]",
+                "/locate (biome|poi|structure)",
                 "/op <targets>",
                 "/seed",
+                "/setblock <pos> <block> [destroy|keep|replace|strict]",
+                "/spawnpoint [<targets>]",
                 "/summon <entity> [<pos>]",
                 "/teleport (<destination>|<location>|<targets>)",
                 "/time (add|pause|query|resume|set)",
-                "/tp (<destination>|<location>|<targets>)",
+                "/tp -> teleport",
                 "/weather (clear|rain|thunder)",
+                "/xp -> experience",
             ]
         );
         let out = run(&mut server, &mut world, HOST, "help weather");
@@ -1403,7 +1437,7 @@ mod tests {
             texts(&out),
             vec![
                 "Can't find element 'minecraft:glowing' of type 'minecraft:mob_effect'",
-                "...t give @s glowing<--[HERE]"
+                "...@s glowing<--[HERE]"
             ]
         );
         let out = run(

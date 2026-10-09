@@ -30,7 +30,7 @@ const COMMAND_HISTORY_FILE: &str = "command_history.txt";
 const COMMAND_HISTORY_LIMIT: usize = 50;
 const SELECTION: u32 = 0xFFC0_C0FF;
 const SELECTED_TEXT: u32 = 0xFF1F_1FFF;
-const MODIFIERS: [KeyCode; 6] = [
+pub(crate) const MODIFIERS: [KeyCode; 6] = [
     KeyCode::ControlLeft,
     KeyCode::ControlRight,
     KeyCode::ShiftLeft,
@@ -188,7 +188,7 @@ fn copy(clipboard: &mut dyn ChatClipboard, text: &str) {
     }
 }
 
-fn shortcut(typed: &Typed) -> Option<char> {
+pub(crate) fn shortcut(typed: &Typed) -> Option<char> {
     let Mods { ctrl, shift, alt } = typed.mods;
     if !ctrl || shift || alt {
         return None;
@@ -300,6 +300,8 @@ pub(crate) fn open(chat: &mut McChat, opener: Opener, now: f64) {
     chat.scroll = 0;
     chat.new_since_scroll = false;
     chat.opened_at = now;
+    chat.suggestions = Default::default();
+    crate::minecraft_suggestions::update(chat);
 }
 
 pub(crate) fn handle_frame(
@@ -325,14 +327,23 @@ pub(crate) fn handle_frame(
 
 pub(crate) fn apply_typed(chat: &mut McChat, typed: &Typed, clipboard: &mut dyn ChatClipboard) {
     let Mods { ctrl, shift, alt } = typed.mods;
+    if crate::minecraft_suggestions::key(chat, typed) {
+        return;
+    }
+    let before = chat.input.clone();
     match typed.key {
         Key::Escape => chat.close(),
         Key::Enter => {
             send(chat);
             chat.close();
         }
-        Key::ArrowUp => move_in_history(chat, -1),
-        Key::ArrowDown => move_in_history(chat, 1),
+        Key::ArrowUp | Key::ArrowDown => {
+            move_in_history(chat, if typed.key == Key::ArrowUp { -1 } else { 1 });
+            if chat.input != before {
+                crate::minecraft_suggestions::browsed(chat);
+            }
+            return;
+        }
         Key::PageUp => scroll_chat(chat, FOCUSED_LINES as i32 - 1),
         Key::PageDown => scroll_chat(chat, 1 - FOCUSED_LINES as i32),
         Key::Backspace => edit(chat).delete(-1, ctrl),
@@ -358,6 +369,9 @@ pub(crate) fn apply_typed(chat: &mut McChat, typed: &Typed, clipboard: &mut dyn 
                 }
             }
         },
+    }
+    if chat.open && chat.input != before {
+        crate::minecraft_suggestions::edited(chat);
     }
 }
 
@@ -631,7 +645,18 @@ pub(crate) fn draw(p: &mut Painter, chat: &McChat, now: f64) {
     let before = &chat.input[start..cursor];
     let before_width = font.width(before);
     let y = height - 10;
-    p.text(&shown_text, 4, y, INPUT_TEXT, true);
+    let accents = crate::minecraft_suggestions::input_accents(
+        &chat.suggestions.spans,
+        start,
+        shown_text.len(),
+    );
+    let line = TextLine {
+        text: shown_text.clone(),
+        color: INPUT_TEXT,
+        italic: false,
+        accents,
+    };
+    p.line(false, &line, 4, y, true);
     let insert = cursor < chat.input.len() || chat.input.chars().count() >= MC_CHAT_INPUT_LIMIT;
     let ends = [cursor, chat.highlight].map(|at| at.saturating_sub(start).min(shown_text.len()));
     if let Some(([x0, x1], selected)) =
@@ -641,6 +666,11 @@ pub(crate) fn draw(p: &mut Painter, chat: &McChat, now: f64) {
         let x = 4 + font.width(&shown_text[..selected.start]);
         p.text(&shown_text[selected], x, y, SELECTED_TEXT, false);
     }
+    if !insert && let Some(inline) = chat.suggestions.inline.as_deref() {
+        let x = 4 + before_width;
+        p.text(inline, x, y, crate::minecraft_suggestions::INLINE, true);
+    }
+    crate::minecraft_suggestions::draw(p, chat, inner);
     if ((now - chat.opened_at) * 1000.0 / BLINK_MILLIS) as i64 % 2 != 0 {
         return;
     }

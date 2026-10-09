@@ -17,6 +17,7 @@ pub enum Content {
     Translate { key: String, args: Vec<Text> },
     ItemName(String),
     EntityName(String),
+    HoverName(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -64,6 +65,10 @@ impl Text {
 
     pub fn entity(id: impl Into<String>) -> Self {
         Self::of(Content::EntityName(id.into()))
+    }
+
+    pub fn hover_name(id: impl Into<String>) -> Self {
+        Self::of(Content::HoverName(id.into()))
     }
 
     pub fn color(mut self, color: u32) -> Self {
@@ -126,12 +131,9 @@ impl Text {
                 fill(&pattern, args, lang, color, out, pieces);
             }
             Content::ItemName(id) => {
-                let (namespace, path) = split_id(id);
-                let name = lang(&format!("item.{namespace}.{path}"))
-                    .or_else(|| lang(&format!("block.{namespace}.{path}")))
-                    .unwrap_or_else(|| id.clone());
-                push(out, pieces, &format!("[{name}]"), color);
+                push(out, pieces, &format!("[{}]", item_name(lang, id)), color);
             }
+            Content::HoverName(id) => push(out, pieces, &item_name(lang, id), color),
             Content::EntityName(id) => {
                 let (namespace, path) = split_id(id);
                 let name =
@@ -143,6 +145,13 @@ impl Text {
             child.emit(lang, color, out, pieces);
         }
     }
+}
+
+fn item_name(lang: &dyn Fn(&str) -> Option<String>, id: &str) -> String {
+    let (namespace, path) = split_id(id);
+    lang(&format!("item.{namespace}.{path}"))
+        .or_else(|| lang(&format!("block.{namespace}.{path}")))
+        .unwrap_or_else(|| id.to_owned())
 }
 
 fn split_id(id: &str) -> (&str, &str) {
@@ -286,6 +295,11 @@ mod tests {
             "[Diamond]"
         );
         assert_eq!(Text::item("stone").resolve(&lang).text, "[Stone]");
+        assert_eq!(Text::hover_name("stone").resolve(&lang).text, "Stone");
+        assert_eq!(
+            Text::hover_name("minecraft:diamond").resolve(&lang).text,
+            "Diamond"
+        );
         assert_eq!(
             Text::item("minecraft:nothing").resolve(&lang).text,
             "[minecraft:nothing]"

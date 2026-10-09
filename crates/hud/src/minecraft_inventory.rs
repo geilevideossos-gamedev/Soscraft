@@ -3,11 +3,12 @@ use bevy::input::gamepad::{Gamepad, GamepadButton};
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use frame::minecraft_ui::MC_HOTBAR;
-use frame::{McAction, McClick, McFont, McScreen, McSlot, McStack, MinecraftUi, PromptStyle};
+use frame::{McAction, McClick, McFont, McGameMode, McScreen, McSlot, McStack, McTabKind, MinecraftUi, PromptStyle};
 
 use crate::gaps::HudPresentationGaps;
 use crate::gpu_list::{HudTessPass, TessJob};
 use crate::images::HudImages;
+use crate::minecraft_chat::MODIFIERS;
 use crate::minecraft_clicks::{Clicks, Menu, Target};
 use crate::minecraft_gui::{ANIMATED_ICON_MATERIAL, DARK_GREEN, GLINT_MATERIAL, GRAY, GUI_MATERIAL, GuiSpace, ICON_MATERIAL, Painter, TextLine, WHITE, YELLOW};
 use crate::minecraft_screens::{
@@ -29,14 +30,18 @@ fn left_name(ui: &MinecraftUi) -> String {
 }
 
 pub(crate) fn scroll_to(font: &McFont, value: &str, display: usize, pos: usize) -> usize {
+    scroll_within(font, value, display, pos, NAME_WIDTH)
+}
+
+pub(crate) fn scroll_within(font: &McFont, value: &str, display: usize, pos: usize, width: i32) -> usize {
     let chars: Vec<char> = value.chars().collect();
     let len = chars.len();
     let mut display = display.min(len);
     let rest: String = chars[display..].iter().collect();
-    let end = font.head_by_width(&rest, NAME_WIDTH).chars().count() + display;
+    let end = font.head_by_width(&rest, width).chars().count() + display;
     if pos == display {
         let mut fits = 0;
-        let mut left = NAME_WIDTH as f32;
+        let mut left = width as f32;
         for &c in chars.iter().rev() {
             left -= font.advance(c);
             if left < 0.0 {
@@ -76,6 +81,8 @@ pub(crate) struct ScreenInput {
     cyclers: [Cycler; 3],
     cycle_clock: f64,
     highlight: crate::minecraft_hotbar::Highlight,
+    creative: crate::minecraft_creative::CreativeInput,
+    overlay: Option<(String, f64)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,6 +133,8 @@ pub(crate) fn stack_at(ui: &MinecraftUi, slot: McSlot) -> Option<&McStack> {
         McSlot::WorkbenchResult => ui.workbench_result.as_ref(),
         McSlot::Container(i) => ui.container.get(i)?.as_ref(),
         McSlot::Output => ui.output.as_ref(),
+        McSlot::Creative(i) => ui.creative.items.get(i)?.as_ref(),
+        McSlot::Trash => None,
     }
 }
 
@@ -154,6 +163,12 @@ fn title(ui: &MinecraftUi, gui: &frame::McGui) -> String {
     }
 }
 
+type Extras<'w> = (
+    Option<Res<'w, frame::McActionInput>>,
+    Option<Res<'w, frame::LaunchIdentity>>,
+    Option<ResMut<'w, bevy::clipboard::Clipboard>>,
+);
+
 type Typing<'w, 's> = (
     Res<'w, ButtonInput<KeyCode>>,
     Res<'w, ButtonInput<MouseButton>>,
@@ -180,7 +195,7 @@ pub(crate) fn update_minecraft_hud(
         Option<Res<frame::HudInputView>>,
         Option<ResMut<frame::GameSettings>>,
     ),
-    (mc_keys, identity): (Option<Res<frame::McActionInput>>, Option<Res<frame::LaunchIdentity>>),
+    (mc_keys, identity, mut clipboard): Extras,
 ) {
     let Some(mut ui) = ui else {
         pass.minecraft = TessJob::Hide;
@@ -223,8 +238,10 @@ pub(crate) fn update_minecraft_hud(
 
     let open_before = ui.inventory_open;
     let hotbar = ui.game_mode.shows_hotbar();
-    let typing = ui.inventory_open && ui.screen == McScreen::Anvil && ui.container.first().is_some_and(Option::is_some);
-    let text: String = typed.read().filter(|event| event.state.is_pressed()).filter_map(|event| event.text.as_ref()).flat_map(|text| text.chars()).filter(|c| !c.is_control()).collect();
+    let searching = ui.inventory_open && ui.screen == McScreen::Creative(McTabKind::Search);
+    let typing = searching || (ui.inventory_open && ui.screen == McScreen::Anvil && ui.container.first().is_some_and(Option::is_some));
+    let events: Vec<bevy::input::keyboard::KeyboardInput> = typed.read().cloned().collect();
+    let text: String = events.iter().filter(|event| event.state.is_pressed()).filter_map(|event| event.text.as_ref()).flat_map(|text| text.chars()).filter(|c| !c.is_control()).collect();
     if !blocked && ((mc(McAction::Inventory) && !typing && !ui.chat.open && (hotbar || ui.inventory_open)) || (ui.inventory_open && keys.just_pressed(KeyCode::Escape))) {
         ui.inventory_open = !ui.inventory_open && !keys.just_pressed(KeyCode::Escape);
     } else if ui.inventory_open && (menus.captures_input() || pad_just(GamepadButton::East)) {
@@ -234,6 +251,12 @@ pub(crate) fn update_minecraft_hud(
     }
     if ui.inventory_open && !open_before {
         ui.screen = McScreen::Inventory;
+        if ui.game_mode == McGameMode::Creative
+            && let Some(screen) = crate::minecraft_creative::screen_of(&ui.creative)
+        {
+            crate::minecraft_creative::reopen(&mut ui.creative);
+            ui.screen = screen;
+        }
     }
     if open_before && !ui.inventory_open {
         ui.clicks.push(McClick::Close);
@@ -255,7 +278,8 @@ pub(crate) fn update_minecraft_hud(
         KeyCode::Digit8,
         KeyCode::Digit9,
     ];
-    let digit = digits.iter().position(|k| keys.just_pressed(*k)).filter(|_| !typing);
+    let pressed_digit = digits.iter().position(|k| keys.just_pressed(*k));
+    let digit = pressed_digit.filter(|_| !typing);
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     let mut wheel_steps = 0i32;
@@ -269,7 +293,12 @@ pub(crate) fn update_minecraft_hud(
             ui.select = Some((ui.selected as i32 + wheel_steps).rem_euclid(9) as usize);
         }
         if let Some(digit) = digit.filter(|_| hotbar) {
-            ui.select = Some(digit);
+            let (load, save) = (keys.pressed(KeyCode::KeyX), keys.pressed(KeyCode::KeyC));
+            if ui.game_mode == McGameMode::Creative && (load || save) {
+                ui.creative.hotbar_key = Some((digit, load));
+            } else {
+                ui.select = Some(digit);
+            }
         }
         if mc(McAction::Drop) && hotbar {
             ui.drop_selected = Some(ctrl);
@@ -316,10 +345,22 @@ pub(crate) fn update_minecraft_hud(
     let highlighted = highlighted.map(|stack| (stack.id.clone(), stack_name(stack, &ui, weapons, strings, &mut gaps)));
     input.highlight.advance(f64::from(dt), highlighted);
     crate::minecraft_hotbar::draw_hud(&mut painter, &ui, weapons, input.highlight.shown());
+    if let Some(message) = ui.creative.saved.take() {
+        input.overlay = Some((message, now));
+    }
+    if let Some((message, since)) = input.overlay.as_ref() {
+        match crate::minecraft_creative::overlay_alpha(now - since) {
+            Some(alpha) => crate::minecraft_creative::draw_overlay(&mut painter, message, alpha),
+            None => input.overlay = None,
+        }
+    }
     crate::minecraft_chat::draw(&mut painter, &ui.chat, now);
 
     if ui.inventory_open {
-        let layout = crate::minecraft_screens::layout(ui.screen);
+        let layout = match ui.screen {
+            McScreen::Creative(kind) => crate::minecraft_creative::layout(kind, ui.creative.first_shown()),
+            screen => crate::minecraft_screens::layout(screen),
+        };
         let origin = layout.origin([space.width, space.height]);
         let mouse = window.physical_cursor_position().map(|m| space.mouse([m.x, m.y]));
         let rel_mouse = mouse.map(|[x, y]| [x - f64::from(origin[0]), y - f64::from(origin[1])]);
@@ -352,7 +393,7 @@ pub(crate) fn update_minecraft_hud(
         let hovered = if pad_pointer { input.focus } else { mouse_hovered };
         let target = match (hovered, pointer) {
             (Some(slot), _) => Target::Slot(slot),
-            (None, Some(rel)) if layout.outside(rel) => Target::Outside,
+            (None, Some(rel)) if layout.outside(rel) && !crate::minecraft_creative::over_tab(&ui, rel) => Target::Outside,
             _ => Target::Nothing,
         };
         let screen_buttons = screen_buttons(&buttons, pad);
@@ -370,6 +411,37 @@ pub(crate) fn update_minecraft_hud(
             input.clicks.reset();
         } else {
             let pad_choice = [pad_just(GamepadButton::LeftTrigger), pad_just(GamepadButton::RightTrigger), pad_just(GamepadButton::RightTrigger2)];
+            let creative_consumed = if matches!(ui.screen, McScreen::Creative(_)) {
+                let held = MODIFIERS.map(|code| crate::minecraft_chat::held_before(keys.pressed(code), keys.just_pressed(code), keys.just_released(code)));
+                let search_swap = searching && pressed_digit.is_some() && crate::minecraft_creative::search_digit_swaps(hovered, hovered.and_then(|slot| stack_at(&ui, slot)).is_some(), ui.cursor.is_some());
+                let typed: Vec<crate::minecraft_chat::Typed> = crate::minecraft_chat::fold_typed(held, &events)
+                    .into_iter()
+                    .filter(|typed| !(search_swap && digits.contains(&typed.code)))
+                    .collect();
+                if search_swap
+                    && let (Some(slot), Some(hotbar)) = (hovered, pressed_digit)
+                {
+                    ui.clicks.push(McClick::Swap { slot, hotbar });
+                }
+                let mut none = ();
+                let clipboard: &mut dyn crate::minecraft_chat::ChatClipboard = match clipboard.as_deref_mut() {
+                    Some(clipboard) => clipboard,
+                    None => &mut none,
+                };
+                let frame = crate::minecraft_creative::CreativeFrame {
+                    mouse: pointer.filter(|_| !pad_pointer),
+                    pressed: screen_buttons.pressed,
+                    released: screen_buttons.released,
+                    held: screen_buttons.held,
+                    wheel: wheel_steps,
+                    typed: &typed,
+                    chat_key: mc(McAction::Chat),
+                    now,
+                };
+                crate::minecraft_creative::input(&mut ui, &mut input.creative, frame, Some(&gui.font), clipboard)
+            } else {
+                [false; 2]
+            };
             let consumed = station_input(
                 &mut ui,
                 &mut input,
@@ -401,7 +473,15 @@ pub(crate) fn update_minecraft_hud(
             {
                 clicks.push(McClick::Slot { slot, right: false, shift: true });
             }
+            if buttons.just_pressed(MouseButton::Middle)
+                && ui.game_mode == McGameMode::Creative
+                && ui.cursor.is_none()
+                && let Some(slot) = hovered.filter(|&slot| stack_at(&ui, slot).is_some())
+            {
+                clicks.push(McClick::Clone(slot));
+            }
             for (button, taken) in consumed.into_iter().enumerate() {
+                let taken = taken || creative_consumed[button];
                 if screen_buttons.pressed[button] && !taken {
                     let idle = input.clicks.drag.is_none();
                     clicks.extend(input.clicks.press(&view, target, button, shift, now));
@@ -458,13 +538,20 @@ pub(crate) fn update_minecraft_hud(
                 level,
             },
         };
-        let hole = (ui.screen == McScreen::Inventory).then(|| {
-            let [x0, y0, x1, y1] = PUPPET_BOX;
-            [origin[0] + x0, origin[1] + y0, origin[0] + x1, origin[1] + y1]
-        });
+        let puppet_box = match ui.screen {
+            McScreen::Inventory => Some(PUPPET_BOX),
+            McScreen::Creative(McTabKind::Inventory) => Some(crate::minecraft_creative::PUPPET_BOX),
+            _ => None,
+        };
+        let hole = puppet_box.map(|[x0, y0, x1, y1]| [origin[0] + x0, origin[1] + y0, origin[0] + x1, origin[1] + y1]);
         painter.gradient([0, 0, space.width, space.height], hole, 0xC010_1010, 0xD010_1010);
-        crate::minecraft_screens::draw_background(&mut painter, &screen);
-        crate::minecraft_screens::draw_labels(&mut painter, &screen);
+        if matches!(ui.screen, McScreen::Creative(_)) {
+            crate::minecraft_creative::draw_background(&mut painter, &ui, weapons, origin, &input.creative, now);
+            crate::minecraft_creative::draw_labels(&mut painter, &ui, origin);
+        } else {
+            crate::minecraft_screens::draw_background(&mut painter, &screen);
+            crate::minecraft_screens::draw_labels(&mut painter, &screen);
+        }
         if ui.screen == McScreen::Anvil {
             crate::minecraft_screens::anvil_cost(&mut painter, &screen);
         }
@@ -476,26 +563,38 @@ pub(crate) fn update_minecraft_hud(
         }
         let item_tooltip = hovered
             .filter(|_| ui.cursor.is_none())
-            .and_then(|slot| stack_at(&ui, slot))
-            .map(|stack| (tooltip_lines(stack, &ui, weapons, strings, &mut gaps), true));
+            .and_then(|slot| stack_at(&ui, slot).map(|stack| (slot, stack)))
+            .map(|(slot, stack)| {
+                let mut lines = tooltip_lines(stack, &ui, weapons, strings, &mut gaps);
+                if matches!(ui.screen, McScreen::Creative(_)) {
+                    lines.splice(1..1, crate::minecraft_creative::extra_lines(&ui, slot, stack));
+                }
+                (lines, true)
+            });
         let recipe_tooltip = crate::minecraft_screens::hovered_recipe(&screen)
             .and_then(|index| ui.choices.get(index))
             .and_then(|choice| choice.icon.as_ref())
             .map(|stack| (tooltip_lines(stack, &ui, weapons, strings, &mut gaps), true));
-        let tooltip = item_tooltip.or(recipe_tooltip).or_else(|| crate::minecraft_screens::station_tooltip(&painter, &screen));
+        let creative_tooltip = || {
+            let rel = rel_mouse.filter(|_| matches!(ui.screen, McScreen::Creative(_)))?;
+            crate::minecraft_creative::tooltip(&painter, &ui, rel, hovered).map(|lines| (lines, false))
+        };
+        let tooltip = item_tooltip.or(recipe_tooltip).or_else(|| crate::minecraft_screens::station_tooltip(&painter, &screen)).or_else(creative_tooltip);
         if let (Some((lines, gap)), Some(_)) = (tooltip, pointer) {
             painter.tooltip(&lines, pointer_gui, gap);
         }
         if let Some(style) = prompts {
             draw_pad_legend(&mut painter, &layout, origin, style, ui.cursor.is_some(), hovered.is_some_and(is_result));
         }
-        if ui.screen == McScreen::Inventory {
-            let [bx0, by0, bx1, by1] = PUPPET_BOX;
-            let [x0, y0] = space.window((origin[0] + bx0) as f32, (origin[1] + by0) as f32);
-            let [x1, y1] = space.window((origin[0] + bx1) as f32, (origin[1] + by1) as f32);
+        if let Some(puppet) = puppet_box {
+            let [bx0, by0, bx1, by1] = puppet;
+            let height = if puppet == PUPPET_BOX { (by1 - by0) as f32 } else { crate::minecraft_creative::PUPPET_HEIGHT };
+            let middle = (by0 + by1) as f32 * 0.5;
+            let [x0, y0] = space.window((origin[0] + bx0) as f32, origin[1] as f32 + middle - height * 0.5);
+            let [x1, y1] = space.window((origin[0] + bx1) as f32, origin[1] as f32 + middle + height * 0.5);
             ui.character_box = Some([(x0 + x1) * 0.5, (y0 + y1) * 0.5, x1 - x0, y1 - y0]);
             if pointer.is_some() {
-                ui.puppet_turn = puppet_turn(origin, pointer_gui);
+                ui.puppet_turn = puppet_turn_in(puppet, origin, pointer_gui);
             }
         } else {
             ui.character_box = None;
@@ -504,8 +603,8 @@ pub(crate) fn update_minecraft_hud(
     pass.minecraft = if painter.quads.is_empty() { TessJob::Hide } else { TessJob::Quads(painter.quads) };
 }
 
-pub(crate) fn puppet_turn(origin: [i32; 2], mouse: [i32; 2]) -> [f32; 3] {
-    let [bx0, by0, bx1, by1] = PUPPET_BOX;
+pub(crate) fn puppet_turn_in(puppet: [i32; 4], origin: [i32; 2], mouse: [i32; 2]) -> [f32; 3] {
+    let [bx0, by0, bx1, by1] = puppet;
     let cx = (origin[0] + bx0 + origin[0] + bx1) as f32 / 2.0;
     let cy = (origin[1] + by0 + origin[1] + by1) as f32 / 2.0;
     let across = ((cx - mouse[0] as f32) / 40.0).atan();
@@ -806,11 +905,11 @@ mod tests {
 
     #[test]
     fn the_puppet_turns_toward_the_mouse_like_vanilla() {
-        let [yaw, pitch, tilt] = puppet_turn([0, 0], [50, 43]);
+        let [yaw, pitch, tilt] = puppet_turn_in(PUPPET_BOX, [0, 0], [50, 43]);
         assert!(yaw.abs() < 0.5 && pitch.abs() < 1e-6 && tilt.abs() < 1e-6);
-        let [yaw, _, _] = puppet_turn([0, 0], [90, 43]);
+        let [yaw, _, _] = puppet_turn_in(PUPPET_BOX, [0, 0], [90, 43]);
         assert!((yaw - (-39.5f32 / 40.0).atan() * 20.0).abs() < 1e-4);
-        let [_, pitch, tilt] = puppet_turn([0, 0], [50, 3]);
+        let [_, pitch, tilt] = puppet_turn_in(PUPPET_BOX, [0, 0], [50, 3]);
         assert!((tilt - 1.0f32.atan() * 20.0).abs() < 1e-4);
         assert!((pitch + tilt).abs() < 1e-6);
     }
