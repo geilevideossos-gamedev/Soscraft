@@ -71,6 +71,7 @@ pub mod berries;
 pub mod campfire;
 pub mod containers;
 pub mod lids;
+pub mod openers;
 pub mod stations;
 pub mod experience;
 pub mod orb_render;

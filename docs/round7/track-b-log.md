@@ -261,13 +261,45 @@ Commit: 66ef4c3
 
 ### 4. Minecraft open lids are drawn every frame apart from their section
 
-Commit: (next entry)
+Commit: 8695be2
 
 - **Changed:** `mesh.rs`: `ItemVisuals::append_open_lids(mesh, lids, level, packs, atlas, light)` draws each `PosedLid` (from `Lids::posed`) at its real cell through `append_block`, the same function the section build uses, with `lid_model(block, progress)`: same light (an entity sheet is lit at its own cell), same entity shading, same atlas regions. The block is drawn dry (no `waterlogged`), because the section keeps a waterlogged chest's water (glue item 15 draws only the fluid for an apart cell).
 - **Tests:** `a_shut_lid_drawn_apart_is_its_section_block_and_leaves_the_water_to_the_section`: for a waterlogged east chest and a north red shulker box, the frame pass at progress 0 gives exactly the section's model vertices and indices, `append_baked` with no quads (what the section keeps of an apart cell) gives exactly the rest (the water, none for the box), and at progress 1 the lid has moved.
 - **Decision:** the frame pass goes into the entities' `items` mesh, like falling blocks and primed TNT. The crack overlay and the selection outline stay the closed block's while a lid is open, as before.
 - **Test steps:** nothing changes in game yet (After the split, items 15 and 16).
 - **Kit:** none.
+
+### 5. Minecraft containers count their openers per player like vanilla
+
+Commit: (next entry)
+
+- **Changed:** new `openers.rs` (server side, one per level): `Openers` keeps, per container cell, the set of player UUIDs that have it open (`ContainerOpenersCounter` and `ShulkerBoxBlockEntity.openCount`, 26.3, javap). `open(pos, uuid, spectator)` (spectators are not counted, as `startOpen` skips them; a player counts once) and `close(pos, uuid)` give an `OpenerEvent { pos, count, change }`: its `block_event()` is `Level.blockEvent(pos, block, 1, count)` for every client's `Lids::block_event`, and its `change` is `Opened` on the first opener and `Closed` when the last one leaves (`onOpen`/`onClose`: the sound, the barrel's `open`). `recheck(has_open)` is `recheckOpeners` (every `RECHECK_TICKS` = 5), `leave(uuid)` closes what a leaving player had open, `removed(pos)` forgets a broken container without a close. `Openers::counted(block)`: chests, trapped and copper chests, ender chests, shulker boxes and barrels.
+- `sound(block, pos, change)`: the vanilla event and where it plays, at volume 0.5 (`pitch(random)` is 0.9 to 1): shulker boxes and ender chests at the block centre; a single chest at its centre; a double chest once, from its right half moved half a block towards the left one (`ChestBlockEntity.playSound` skips the left half and moves the right one's along `getConnectedDirection`); copper chests with their weathering sounds; a barrel from its opening face (`BarrelBlockEntity.playSound`: centre plus half its facing). `opened_state(block, change)`: the barrel's `open` property (`BarrelBlockEntity.updateBlockState`).
+- **Tests:** `the_first_opener_opens_it_and_the_last_one_shuts_it`, `spectators_look_inside_without_opening_it`, `a_player_who_leaves_shuts_what_only_it_had_open`, `a_recheck_forgets_players_who_no_longer_have_it_open`, `a_broken_container_forgets_its_openers_without_a_sound`, `opening_sounds_come_from_where_vanilla_plays_them`, `a_barrel_shows_open_while_someone_has_it_open`.
+- **Decisions:** a set of UUIDs instead of vanilla's bare counter, so the count can't drift when a player's close goes missing (vanilla needs its 5-tick recheck for that); the events and sounds are the same. This also covers brief commit 6 (the barrel sounds from its front face) once glue item 17 uses it.
+- **Test steps:** nothing changes in game yet (After the split, item 17).
+- **Kit:** none.
+
+### Group summary: lids
+
+- Built and tested in `minecraft_terrain`: the shulker box and chest models posed by a progress (entries 1 and 2), the client lids ticking like vanilla and handing a cell between its section and the frame pass (entry 3), the frame pass itself (entry 4) and the server's per-player openers with the vanilla block events and sounds (entry 5).
+- Nothing shows in game until After the split items 15 (the section skip, in `terrain.rs`), 16 (the lids in `Entities`) and 17 (opening and closing feed the openers) are in.
+- Not done (brief commit 7, deferred there too): an opening shulker box does not yet grow its collision or push players and mobs (`Shulker.getProgressAabb`, `moveCollidedEntities`).
+- **Test steps** (after glue items 15 to 17):
+  1. Place a red shulker box on the floor. Open it: the lid rises half a block and turns three quarters round in half a second. Close it: it comes back down in half a second. Screenshot 1, mid-animation.
+  2. Do the same with a box on a wall and one on a ceiling: the lid slides out of the wall, and down out of the ceiling. Screenshots 2 and 3.
+  3. Open a box, press Escape and open it again at once: the lid turns back from where it was, with no jump. Screenshot 4.
+  4. A bottom slab on top of a box keeps it shut (nothing opens); a top slab lets it open. Screenshot 5.
+  5. Open a box, close it and break it at once: no lid is left floating, and there is no second close sound. Screenshot 6.
+  6. Watch from 10 blocks away while a box opens and shuts: no flicker, and never a second, closed lid inside the open one. Screenshot 7.
+  7. Open and close a barrel: the sound comes from its front face. Then close the game window while a barrel is open, start again and say whether it still shows open. Screenshot 8.
+  8. A single chest, a trapped chest, a copper chest and an ender chest swing their lids up about the back edge, slowing at the top; a double chest swings both halves together and plays one sound from its middle. Screenshot 9.
+  9. Pour water on a chest so it is waterlogged and open it: the water stays while the lid moves. Screenshot 10.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=shulker_box,red_shulker_box*4,chest*2,trapped_chest,copper_chest,ender_chest,barrel*2,water_bucket,cobblestone*64,oak_slab*16,stone*32
+```
 
 ## After the split
 
@@ -298,3 +330,11 @@ The glue still needed in the game files (today `render_anim/src/minecraft_*.rs`,
     - `Entities::tick` (:610), inside `if ticked` beside `self.falling.tick_sent()`: `self.lids.tick();`.
     - `Entities::meshes` (:903), after `append_moving_blocks`: `self.lids.settle(scene, cell_settled); let lids = self.lids.posed(scene, partial); let _ = self.items.append_open_lids(&mut out.items, &lids, scene, packs, atlas, light);`.
     - `minecraft_world.rs`, right after the `entities.meshes(..)` call (:1908): `for (pos, apart) in entities.lids.take_apart_changes() { world.stream.draw_apart(pos, apart); }` (before the next frame's `world.stream.frame`, :1457).
+17. **Opening and closing drive the openers, the lids and the sounds** (`minecraft_world.rs`; with several players, the server):
+    - The world (per level, beside `containers`) gets `openers: minecraft_terrain::openers::Openers`; the local player's UUID is `minecraftoss_entities::gossip::parse_uuid(host)` of the save's host UUID (`minecraft_save.rs:93`).
+    - The loop at :1769-1795 (`for (opened, open) in [...]`): for each `pos` of `opened.cells` whose block (`Scene::block(&world.scene, pos)`) is `Openers::counted`, `let event = if open { world.openers.open(pos, uuid, spectator) } else { world.openers.close(pos, uuid) }` (`spectator`: `player_mode.mode == GameMode::Spectator`). For each event: `let (at, id, count) = event.block_event(); entities.lids.block_event(&world.scene, at, id, count);` and, when `event.change` is `Some(change)`, play `openers::sound(&block, pos, change)` at its `position` and `volume` with pitch `openers::pitch(entities.random_float())`, and `write_blocks` the `openers::opened_state(&block, change)` (the barrel's `open`) as the loop does today. This replaces today's sound and barrel code; ovens and brewing stands keep no openers and no sound, as now.
+    - Where a counted block is broken or replaced (the paths that `spill` or `take_shulker`, :1534 and :1563, and the server's block changes), call `world.openers.removed(pos)` before the inventory screen closes, so breaking an open box plays no close sound.
+    - Every `openers::RECHECK_TICKS` server ticks: `world.openers.recheck(|player, pos| player == uuid && inventory_ui.block().is_some_and(|o| o.contains(pos)))`; on death, a world close or a dimension change: `world.openers.leave(uuid)`; feed their events as above.
+    - :1079-1082, the shulker box's check: `entities.lids.lid_closed(opened.cells[0]) && lid_obstructed(..)` (`ShulkerBoxBlock.canOpen` checks the space only while the lid is `CLOSED`).
+    - Several players (roadmap 1.4): `Openers` stays per level on the server; each `OpenerEvent::block_event()` goes to every client near `pos` as a `minecraft_net` `BlockEvent { pos, id: 1, param: count }`, which feeds that client's `Lids::block_event`; the server plays the sound for everyone near.
+    - Once items 15 to 17 are in, update `docs/MINECRAFT-SURVIVAL.md:187` (it says no block entity animates).
