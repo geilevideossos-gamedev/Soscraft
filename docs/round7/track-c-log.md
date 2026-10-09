@@ -832,3 +832,34 @@ Kit: none needed.
 ### Decisions
 
 - **The check is the printed diff, not the exit code.** rustfmt reading stdin with `--check` exits 0 even when it prints a diff. That is how the violation slipped through. A new file passes only when the command prints nothing.
+
+## Minecraft block suggestions offer [ only for blocks with properties
+
+Commit: the commit that adds this entry (branch `track-c`, adversarial review of the whole track).
+
+### What changed
+
+- A complete block id in `/setblock`, `/fill` or a `/fill` filter suggested `[` for every block. 26.3 `BlockStateParser.suggestOpenPropertiesOrNbt` (checked with javap) suggests `[` only when the block's state definition has properties. So `stone`, `glass` and `gold_block` get nothing, and `oak_stairs` gets `[`. Item ids are different: `ItemParser.suggestStartComponents` always suggests `[`, so `/give` is unchanged.
+- `CommandHints` gains `blocks_with_properties` (serde default). `CommandHints::from_server` fills it from `CommandData::blocks` with the ids that have at least one property, so the glue needs nothing new.
+
+### Tests added
+
+- `suggest::tests::block_arguments_suggest_whole_coordinates_and_block_ids` now expects nothing after `glass`, and `[` at 26..26 after `oak_stairs`, both as a block and as a `/fill` filter.
+- `suggest::tests::hints_come_from_the_server_players_and_registries` checks `blocks` and `blocks_with_properties` from the command data.
+
+### In-game test steps
+
+The chat does not use the engine yet (see the first entry). Once it does:
+
+```
+IW4L_MINECRAFT_KIT=stone*64
+```
+
+1. Type `/setblock ~ ~ ~ stone`. No `[` suggestion shows.
+2. Type `/setblock ~ ~ ~ oak_stairs`. The list shows `[`. Screenshot.
+
+Kit: none needed.
+
+### Decisions
+
+- **No `{` suggestion yet.** Vanilla also suggests `{` for a block with a block entity, and `[` or `{` after a block tag whose members have them. The hints do not carry block entities or tag members, so those stay out until the glue sends them.

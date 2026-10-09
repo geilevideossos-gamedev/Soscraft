@@ -54,6 +54,8 @@ pub struct CommandHints {
     pub poi_tags: Vec<String>,
     #[serde(default)]
     pub dimensions: Vec<String>,
+    #[serde(default)]
+    pub blocks_with_properties: Vec<String>,
 }
 
 impl CommandHints {
@@ -77,6 +79,13 @@ impl CommandHints {
             poi_types: server.data().poi_types.clone(),
             poi_tags: server.data().poi_tags.keys().cloned().collect(),
             dimensions: vec![crate::server::OVERWORLD.to_owned()],
+            blocks_with_properties: server
+                .data()
+                .blocks
+                .iter()
+                .filter(|(_, properties)| !properties.is_empty())
+                .map(|(id, _)| id.clone())
+                .collect(),
         }
     }
 
@@ -521,11 +530,10 @@ fn item_predicate(start: usize, hints: &CommandHints, found: &mut Found) {
 fn block_state(start: usize, hints: &CommandHints, found: &mut Found) {
     let typed = found.typed(start);
     let length = id_length(typed);
-    let known = resource_id(&mut StringReader::new(&typed[..length]))
-        .is_ok_and(|id| hints.blocks.contains(&id));
-    if !known {
+    let id = resource_id(&mut StringReader::new(&typed[..length])).unwrap_or_default();
+    if !hints.blocks.contains(&id) {
         found.resources(start, hints.blocks.iter().map(String::as_str), "");
-    } else if length == typed.len() {
+    } else if length == typed.len() && hints.blocks_with_properties.contains(&id) {
         found.add(start + length, "[");
     }
 }
@@ -750,6 +758,7 @@ mod tests {
             structure_tags: owned(&["minecraft:village"]),
             biomes: owned(&["minecraft:cherry_grove", "minecraft:desert"]),
             dimensions: owned(&["minecraft:overworld"]),
+            blocks_with_properties: owned(&["minecraft:oak_stairs"]),
             ..CommandHints::default()
         }
     }
@@ -1093,7 +1102,17 @@ mod tests {
             texts(&at_end("/setblock ~ ~ ~ st", OWNERS)),
             vec!["minecraft:stone", "minecraft:oak_stairs"]
         );
-        assert_eq!(texts(&at_end("/setblock ~ ~ ~ glass", OWNERS)), vec!["["]);
+        assert!(at_end("/setblock ~ ~ ~ glass", OWNERS).list.is_empty());
+        let stairs = at_end("/setblock ~ ~ ~ oak_stairs", OWNERS);
+        assert_eq!(texts(&stairs), vec!["["]);
+        assert_eq!(stairs.list[0].range, 26..26);
+        assert_eq!(
+            texts(&at_end(
+                "/fill ~ ~ ~ ~ ~ ~ glass replace oak_stairs",
+                OWNERS
+            )),
+            vec!["["]
+        );
         assert_eq!(
             texts(&at_end("/setblock ~ ~ ~ glass ", OWNERS)),
             vec!["destroy", "keep", "replace", "strict"]
@@ -1325,8 +1344,21 @@ mod tests {
             .data_mut()
             .item_tags
             .insert("minecraft:logs".into(), owned(&["minecraft:oak_log"]));
+        server
+            .data_mut()
+            .blocks
+            .insert("minecraft:stone".into(), Vec::new());
+        server.data_mut().blocks.insert(
+            "minecraft:oak_log".into(),
+            vec![("axis".into(), owned(&["x", "y", "z"]))],
+        );
         let hints = CommandHints::from_server(&server);
         assert_eq!(hints.item_tags, owned(&["minecraft:logs"]));
+        assert_eq!(
+            hints.blocks,
+            owned(&["minecraft:oak_log", "minecraft:stone"])
+        );
+        assert_eq!(hints.blocks_with_properties, owned(&["minecraft:oak_log"]));
         let json = serde_json::to_string(&hints).unwrap();
         assert_eq!(serde_json::from_str::<CommandHints>(&json).unwrap(), hints);
     }
