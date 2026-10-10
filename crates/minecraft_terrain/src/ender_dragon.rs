@@ -6,7 +6,9 @@ use minecraftoss_core::nbt::Tag;
 use minecraftoss_player::mth::{atan2, cos, sin};
 use minecraftoss_player::rng::LegacyRandom;
 
+use crate::effect_cloud::{Breath, EffectCloud};
 use crate::end_crystal::{DamageKind, EndDamage};
+use crate::potions::PotionEffect;
 
 pub const ENDER_DRAGON: &str = "minecraft:ender_dragon";
 pub const MAX_HEALTH: f32 = 200.0;
@@ -41,6 +43,15 @@ pub const EYE_HEIGHT: f64 = 6.8;
 pub const SHOOT_SOUND: &str = "minecraft:entity.ender_dragon.shoot";
 pub const SHOOT_VOLUME: f32 = 10.0;
 pub const FIREBALL_CHARGE: i32 = 5;
+pub const FLAME_RADIUS: f32 = 5.0;
+pub const FLAME_DURATION: i32 = 200;
+pub const FLAME_TICKS: i32 = 200;
+pub const FLAME_ATTACKS: i32 = 4;
+pub const ROAR_TICKS: i32 = 40;
+pub const SCAN_IDLE_TICKS: i32 = 100;
+pub const SCAN_ATTACK_RANGE: f64 = 20.0;
+pub const SCAN_CHARGE_RANGE: f64 = 150.0;
+pub const CHARGE_RECOVERY_TICKS: i32 = 10;
 const DEG: f32 = 0.017_453_292;
 const NODE_COUNT: usize = 24;
 const NODE_ADJACENCY: [u32; NODE_COUNT] = [
@@ -130,6 +141,13 @@ pub fn sample_at(samples: &[Sample], back: usize, partial: f32) -> Sample {
 pub enum Phase {
     HoldingPattern,
     StrafePlayer,
+    LandingApproach,
+    Landing,
+    Takeoff,
+    SittingFlaming,
+    SittingScanning,
+    SittingAttacking,
+    ChargingPlayer,
     Dying,
     Hovering,
 }
@@ -139,6 +157,13 @@ impl Phase {
         match self {
             Phase::HoldingPattern => 0,
             Phase::StrafePlayer => 1,
+            Phase::LandingApproach => 2,
+            Phase::Landing => 3,
+            Phase::Takeoff => 4,
+            Phase::SittingFlaming => 5,
+            Phase::SittingScanning => 6,
+            Phase::SittingAttacking => 7,
+            Phase::ChargingPlayer => 8,
             Phase::Dying => 9,
             Phase::Hovering => 10,
         }
@@ -147,6 +172,13 @@ impl Phase {
     pub fn by_id(id: i32) -> Self {
         match id {
             1 => Phase::StrafePlayer,
+            2 => Phase::LandingApproach,
+            3 => Phase::Landing,
+            4 => Phase::Takeoff,
+            5 => Phase::SittingFlaming,
+            6 => Phase::SittingScanning,
+            7 => Phase::SittingAttacking,
+            8 => Phase::ChargingPlayer,
             9 => Phase::Dying,
             10 => Phase::Hovering,
             _ => Phase::HoldingPattern,
@@ -154,15 +186,30 @@ impl Phase {
     }
 
     pub fn is_sitting(self) -> bool {
-        self == Phase::Hovering
+        matches!(
+            self,
+            Phase::SittingFlaming
+                | Phase::SittingScanning
+                | Phase::SittingAttacking
+                | Phase::Hovering
+        )
     }
 
     pub fn fly_speed(self) -> f32 {
         match self {
-            Phase::HoldingPattern | Phase::StrafePlayer => 0.6,
-            Phase::Dying => 3.0,
+            Phase::Landing => 1.5,
+            Phase::ChargingPlayer | Phase::Dying => 3.0,
             Phase::Hovering => 1.0,
+            _ => 0.6,
         }
+    }
+
+    pub fn turn_speed(self, velocity: DVec3) -> f32 {
+        if self != Phase::Landing {
+            return turn_speed(velocity);
+        }
+        let speed = velocity.x.hypot(velocity.z) as f32 + 1.0;
+        speed.min(40.0) / speed
     }
 }
 
@@ -449,6 +496,25 @@ pub struct Strafe {
     pub clockwise: bool,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Course {
+    pub path: Option<Path>,
+    pub target: Option<DVec3>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Flame {
+    pub ticks: i32,
+    pub count: i32,
+    pub cloud: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Charge {
+    pub target: Option<DVec3>,
+    pub time_since_charge: i32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlayerBody {
     pub id: u64,
@@ -456,11 +522,16 @@ pub struct PlayerBody {
     pub height: f64,
     pub eye_height: f64,
     pub attackable: bool,
+    pub crouching: bool,
 }
 
 impl PlayerBody {
     pub fn eye(&self) -> DVec3 {
         self.feet + DVec3::new(0.0, self.eye_height, 0.0)
+    }
+
+    pub fn visibility(&self) -> f64 {
+        if self.crouching { 0.8 } else { 1.0 }
     }
 }
 
@@ -472,6 +543,7 @@ pub struct DragonEnv<'a> {
     pub crystals: &'a [(u64, DVec3)],
     pub death_experience: Option<i32>,
     pub sees: &'a dyn Fn(DVec3, DVec3) -> bool,
+    pub empty: &'a dyn Fn(i32, i32, i32) -> bool,
 }
 
 pub fn view_vector(x_rot: f32, y_rot: f32) -> DVec3 {
@@ -600,6 +672,7 @@ pub struct DragonEvents {
     pub player_hits: Vec<(u64, f32, DVec3)>,
     pub experience: Vec<(DVec3, i32)>,
     pub fireballs: Vec<(DVec3, DVec3)>,
+    pub clouds: Vec<EffectCloud>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -655,6 +728,15 @@ pub struct EnderDragon {
     pub holding: Holding,
     pub strafe: Strafe,
     pub pending_strafe: Option<u64>,
+    pub approach: Course,
+    pub landing_target: Option<DVec3>,
+    pub takeoff: Course,
+    pub takeoff_first_tick: bool,
+    pub flame: Flame,
+    pub flame_out: bool,
+    pub scanning_time: i32,
+    pub attacking_ticks: i32,
+    pub charge: Charge,
     pub hover_target: Option<DVec3>,
     pub death_target: Option<DVec3>,
     pub hurt_time: i32,
@@ -686,6 +768,7 @@ pub struct DragonView {
     pub hurt_time: i32,
     pub death_time: i32,
     pub sitting: bool,
+    pub phase: i32,
     pub parts: [DVec3; 8],
     pub tick_count: i32,
     pub nearest_crystal: Option<u64>,
@@ -763,6 +846,15 @@ impl EnderDragon {
             holding: Holding::default(),
             strafe: Strafe::default(),
             pending_strafe: None,
+            approach: Course::default(),
+            landing_target: None,
+            takeoff: Course::default(),
+            takeoff_first_tick: false,
+            flame: Flame::default(),
+            flame_out: false,
+            scanning_time: 0,
+            attacking_ticks: 0,
+            charge: Charge::default(),
             hover_target: None,
             death_target: None,
             hurt_time: int("HurtTime").unwrap_or(0),
@@ -819,6 +911,10 @@ impl EnderDragon {
         if self.phase == phase {
             return;
         }
+        if self.phase == Phase::SittingFlaming && self.flame.cloud {
+            self.flame.cloud = false;
+            self.flame_out = true;
+        }
         self.phase = phase;
         match phase {
             Phase::HoldingPattern => {
@@ -833,6 +929,19 @@ impl EnderDragon {
                     ..Strafe::default()
                 }
             }
+            Phase::LandingApproach => self.approach = Course::default(),
+            Phase::Landing => self.landing_target = None,
+            Phase::Takeoff => {
+                self.takeoff_first_tick = true;
+                self.takeoff = Course::default();
+            }
+            Phase::SittingFlaming => {
+                self.flame.ticks = 0;
+                self.flame.count += 1;
+            }
+            Phase::SittingScanning => self.scanning_time = 0,
+            Phase::SittingAttacking => self.attacking_ticks = 0,
+            Phase::ChargingPlayer => self.charge = Charge::default(),
             Phase::Hovering => self.hover_target = None,
             Phase::Dying => self.death_target = None,
         }
@@ -861,7 +970,7 @@ impl EnderDragon {
             self.sitting_damage_received += before - self.health;
             if self.sitting_damage_received > 0.25 * MAX_HEALTH {
                 self.sitting_damage_received = 0.0;
-                self.set_phase(Phase::HoldingPattern);
+                self.set_phase(Phase::Takeoff);
             }
         }
         hurt
@@ -950,6 +1059,7 @@ impl EnderDragon {
             hurt_time: self.hurt_time,
             death_time: self.death_time,
             sitting: self.phase.is_sitting(),
+            phase: self.phase.id(),
             parts: self.parts,
             tick_count: self.tick_count,
             nearest_crystal: self.nearest_crystal,
@@ -1099,6 +1209,11 @@ impl EnderDragon {
         let target = match self.phase {
             Phase::HoldingPattern => self.holding.target,
             Phase::StrafePlayer => self.strafe.target,
+            Phase::LandingApproach => self.approach.target,
+            Phase::Landing => self.landing_target,
+            Phase::Takeoff => self.takeoff.target,
+            Phase::ChargingPlayer => self.charge.target,
+            Phase::SittingFlaming | Phase::SittingScanning | Phase::SittingAttacking => None,
             Phase::Hovering => self.hover_target,
             Phase::Dying => self.death_target,
         };
@@ -1120,6 +1235,27 @@ impl EnderDragon {
                 }
             }
             Phase::StrafePlayer => self.strafe_tick(env, events),
+            Phase::LandingApproach => {
+                let distance = self
+                    .approach
+                    .target
+                    .map_or(0.0, |target| target.distance_squared(self.position));
+                if !(100.0..=22500.0).contains(&distance) {
+                    self.approach_new_target(env);
+                }
+            }
+            Phase::Landing => self.landing_tick(env),
+            Phase::Takeoff => self.takeoff_tick(env),
+            Phase::SittingFlaming => self.flaming_tick(env, events),
+            Phase::SittingScanning => self.scanning_tick(env),
+            Phase::SittingAttacking => {
+                let ticks = self.attacking_ticks;
+                self.attacking_ticks += 1;
+                if ticks >= ROAR_TICKS {
+                    self.set_phase(Phase::SittingFlaming);
+                }
+            }
+            Phase::ChargingPlayer => self.charge_tick(),
             Phase::Hovering => {
                 if self.hover_target.is_none() {
                     self.hover_target = Some(self.position);
@@ -1163,6 +1299,10 @@ impl EnderDragon {
         if self.holding.path.as_ref().is_some_and(Path::is_done) {
             let podium = self.podium(env);
             let alive = env.alive_crystals.unwrap_or(0);
+            if self.random.next_int((alive + 3).max(1) as u32) == 0 {
+                self.set_phase(Phase::LandingApproach);
+                return;
+            }
             let at = DVec3::new(
                 f64::from(podium.0),
                 f64::from(podium.1),
@@ -1292,6 +1432,205 @@ impl EnderDragon {
         }
     }
 
+    fn approach_new_target(&mut self, env: &DragonEnv) {
+        if self.approach.path.as_ref().is_none_or(Path::is_done) {
+            let nodes = self.node_list(env);
+            let gone = Self::crystals_gone(env);
+            let start = closest_node(&nodes, self.position, gone);
+            let podium = self.podium(env);
+            let at = DVec3::new(
+                f64::from(podium.0),
+                f64::from(podium.1),
+                f64::from(podium.2),
+            );
+            let toward = match nearest_player(env.players, at, |_| true) {
+                Some(player) => {
+                    let away = normalize(DVec3::new(player.feet.x, 0.0, player.feet.z));
+                    DVec3::new(-away.x * 40.0, 105.0, -away.z * 40.0)
+                }
+                None => DVec3::new(40.0, f64::from(podium.1), 0.0),
+            };
+            let goal = closest_node(&nodes, toward, gone);
+            let last = Node {
+                x: podium.0,
+                y: podium.1,
+                z: podium.2,
+            };
+            self.approach.path = find_path(&nodes, start, goal, gone, Some(last));
+            if let Some(path) = self.approach.path.as_mut() {
+                path.next += 1;
+            }
+        }
+        if let Some(target) = next_waypoint(&mut self.random, &mut self.approach.path) {
+            self.approach.target = Some(target);
+        }
+        if self.approach.path.as_ref().is_some_and(Path::is_done) {
+            self.set_phase(Phase::Landing);
+        }
+    }
+
+    fn landing_tick(&mut self, env: &DragonEnv) {
+        let podium = self.podium(env);
+        let target = *self.landing_target.get_or_insert(DVec3::new(
+            f64::from(podium.0) + 0.5,
+            f64::from(podium.1),
+            f64::from(podium.2) + 0.5,
+        ));
+        if target.distance_squared(self.position) < 1.0 {
+            self.flame.count = 0;
+            self.set_phase(Phase::SittingScanning);
+        }
+    }
+
+    fn takeoff_tick(&mut self, env: &DragonEnv) {
+        if self.takeoff_first_tick || self.takeoff.path.is_none() {
+            self.takeoff_first_tick = false;
+            self.takeoff_new_target(env);
+        } else if distance_to_center_sqr(self.podium(env), self.position) >= 100.0 {
+            self.set_phase(Phase::HoldingPattern);
+        }
+    }
+
+    fn takeoff_new_target(&mut self, env: &DragonEnv) {
+        let nodes = self.node_list(env);
+        let gone = Self::crystals_gone(env);
+        let start = closest_node(&nodes, self.position, gone);
+        let look = self.head_look_vector(env);
+        let ahead = DVec3::new(-look.x * 40.0, 105.0, -look.z * 40.0);
+        let mut goal = closest_node(&nodes, ahead, gone) as i32;
+        if env.alive_crystals.is_none_or(|alive| alive <= 0) {
+            goal -= 12;
+            goal &= 7;
+            goal += 12;
+        } else {
+            goal %= 12;
+            if goal < 0 {
+                goal += 12;
+            }
+        }
+        self.takeoff.path = find_path(&nodes, start, goal as usize, gone, None);
+        if let Some(path) = self.takeoff.path.as_mut() {
+            path.next += 1;
+        }
+        if let Some(target) = next_waypoint(&mut self.random, &mut self.takeoff.path) {
+            self.takeoff.target = Some(target);
+        }
+    }
+
+    pub fn head_look_vector(&self, env: &DragonEnv) -> DVec3 {
+        match self.phase {
+            Phase::Landing | Phase::Takeoff => {
+                let distance = distance_to_center_sqr(self.podium(env), self.position).sqrt();
+                let far = (distance as f32 / 4.0).max(1.0);
+                view_vector(-(6.0 / far) * 1.5 * 5.0, self.y_rot)
+            }
+            phase if phase.is_sitting() => view_vector(-45.0, self.y_rot),
+            _ => view_vector(self.x_rot, self.y_rot),
+        }
+    }
+
+    fn flaming_tick(&mut self, env: &DragonEnv, events: &mut DragonEvents) {
+        self.flame.ticks += 1;
+        if self.flame.ticks >= FLAME_TICKS {
+            if self.flame.count >= FLAME_ATTACKS {
+                self.set_phase(Phase::Takeoff);
+            } else {
+                self.set_phase(Phase::SittingScanning);
+            }
+            return;
+        }
+        if self.flame.ticks != 10 {
+            return;
+        }
+        let head = self.parts[HEAD];
+        let away = normalize(DVec3::new(
+            head.x - self.position.x,
+            0.0,
+            head.z - self.position.z,
+        ));
+        let x = head.x + away.x * f64::from(FLAME_RADIUS) / 2.0;
+        let z = head.z + away.z * f64::from(FLAME_RADIUS) / 2.0;
+        let start = head.y + 0.5;
+        let mut y = start;
+        while (env.empty)(x.floor() as i32, y.floor() as i32, z.floor() as i32) {
+            y -= 1.0;
+            if y < 0.0 {
+                y = start;
+                break;
+            }
+        }
+        let y = f64::from(y.floor() as i32 + 1);
+        events.clouds.push(EffectCloud::dragon_breath(
+            DVec3::new(x, y, z),
+            FLAME_RADIUS,
+            FLAME_DURATION,
+            0.0,
+            PotionEffect::new("minecraft:instant_damage", 0, 0),
+            Breath::Flame(self.id),
+        ));
+        self.flame.cloud = true;
+    }
+
+    fn scanning_tick(&mut self, env: &DragonEnv) {
+        self.scanning_time += 1;
+        let (here, eye) = (self.position, self.eye());
+        let in_view = |player: &PlayerBody, range: f64| {
+            let reach = (range * player.visibility()).max(2.0);
+            player.feet.distance_squared(here) <= reach * reach && (env.sees)(eye, player.eye())
+        };
+        let near = nearest_player(env.players, here, |player| {
+            (player.feet.y - here.y).abs() <= 10.0 && in_view(player, SCAN_ATTACK_RANGE)
+        });
+        if let Some(player) = near {
+            if self.scanning_time > 25 {
+                self.set_phase(Phase::SittingAttacking);
+                return;
+            }
+            let angle = self.facing_angle(player.feet);
+            if angle < 0.0 || angle > 10.0 {
+                let head = self.parts[HEAD];
+                let (dx, dz) = (player.feet.x - head.x, player.feet.z - head.z);
+                let turn = wrap_degrees_f64(
+                    180.0 - atan2(dx, dz) * 57.295_776_367_187_5 - f64::from(self.y_rot),
+                )
+                .clamp(-100.0, 100.0);
+                self.y_rot_a *= 0.8;
+                let distance = (dx * dx + dz * dz).sqrt() as f32 + 1.0;
+                let capped = distance.min(40.0);
+                self.y_rot_a += turn as f32 * (0.7 / capped / distance);
+                self.y_rot += self.y_rot_a;
+            }
+        } else if self.scanning_time >= SCAN_IDLE_TICKS {
+            let charged = nearest_player(env.players, here, |player| {
+                in_view(player, SCAN_CHARGE_RANGE)
+            });
+            self.set_phase(Phase::Takeoff);
+            if let Some(player) = charged {
+                self.set_phase(Phase::ChargingPlayer);
+                self.charge.target = Some(player.feet);
+            }
+        }
+    }
+
+    fn charge_tick(&mut self) {
+        let Some(target) = self.charge.target else {
+            self.set_phase(Phase::HoldingPattern);
+            return;
+        };
+        if self.charge.time_since_charge > 0 {
+            let time = self.charge.time_since_charge;
+            self.charge.time_since_charge += 1;
+            if time >= CHARGE_RECOVERY_TICKS {
+                self.set_phase(Phase::HoldingPattern);
+                return;
+            }
+        }
+        let distance = target.distance_squared(self.position);
+        if !(100.0..=22500.0).contains(&distance) {
+            self.charge.time_since_charge += 1;
+        }
+    }
+
     pub fn eye(&self) -> DVec3 {
         self.position + DVec3::new(0.0, EYE_HEIGHT, 0.0)
     }
@@ -1332,7 +1671,8 @@ impl EnderDragon {
             let turn = wrap_degrees(180.0 - atan2(dx, dz) as f32 * 57.295_776 - self.y_rot)
                 .clamp(-50.0, 50.0);
             self.y_rot_a *= 0.8;
-            self.y_rot_a += turn * turn_speed(self.velocity);
+            self.y_rot_a += turn * self.phase.turn_speed(self.velocity);
+
             self.y_rot += self.y_rot_a * 0.1;
         }
         let near = (2.0 / (distance + 1.0)) as f32;
@@ -1511,6 +1851,7 @@ mod tests {
             crystals: &[],
             death_experience: None,
             sees: &|_, _| true,
+            empty: &|_, _, _| true,
         }
     }
 
@@ -1686,10 +2027,13 @@ mod tests {
         let id = dragons.add(&tag).unwrap();
         assert!(id > FIRST_ID, "dragon ids never meet the entity world's");
         assert_eq!(dragons.by_uuid(dragon.uuid).map(|d| d.id), Some(id));
+        for id in 0..=10 {
+            assert_eq!(Phase::by_id(id).id(), id, "vanilla's phase ids");
+        }
         assert_eq!(
-            Phase::by_id(3),
+            Phase::by_id(11),
             Phase::HoldingPattern,
-            "phases not ported yet fall back"
+            "unknown ids fall back"
         );
     }
 
@@ -1887,11 +2231,7 @@ mod tests {
         assert_eq!(dragon.phase, Phase::Hovering);
         dragon.damage_cooldown = 0;
         dragon.hurt_part(HEAD, &EndDamage::attack(30.0, 0), &mut events);
-        assert_eq!(
-            dragon.phase,
-            Phase::HoldingPattern,
-            "past 50 damage it takes off"
-        );
+        assert_eq!(dragon.phase, Phase::Takeoff, "past 50 damage it takes off");
         assert_eq!(dragon.sitting_damage_received, 0.0);
     }
 
@@ -1936,6 +2276,7 @@ mod tests {
             crystals: &near,
             death_experience: None,
             sees: &|_, _| true,
+            empty: &|_, _, _| true,
         };
         for _ in 0..200 {
             dragon.tick(&env);
@@ -1971,6 +2312,7 @@ mod tests {
             crystals: &[],
             death_experience: None,
             sees: &|_, _| true,
+            empty: &|_, _, _| true,
         };
         dragon.tick(&gone);
         assert_eq!(
@@ -2012,6 +2354,7 @@ mod tests {
                 height: 1.8,
                 eye_height: 1.62,
                 attackable: true,
+                crouching: false,
             },
             PlayerBody {
                 id: 4,
@@ -2019,6 +2362,7 @@ mod tests {
                 height: 1.8,
                 eye_height: 1.62,
                 attackable: false,
+                crouching: false,
             },
         ];
         let env = DragonEnv {
@@ -2029,6 +2373,7 @@ mod tests {
             crystals: &[],
             death_experience: None,
             sees: &|_, _| true,
+            empty: &|_, _, _| true,
         };
         let events = dragon.tick(&env);
         assert!(
@@ -2055,6 +2400,7 @@ mod tests {
             height: 1.8,
             eye_height: 1.62,
             attackable,
+            crouching: false,
         }
     }
 
@@ -2277,5 +2623,284 @@ mod tests {
         busy.strafe.attack_target = Some(4);
         busy.crystal_destroyed(9, Some(4), &mut events);
         assert_eq!(busy.pending_strafe, None, "only a circling dragon turns");
+    }
+
+    fn ground(_: i32, y: i32, _: i32) -> bool {
+        y >= 62
+    }
+
+    fn podium_top() -> i32 {
+        62
+    }
+
+    fn podium_env<'a>(
+        players: &'a [PlayerBody],
+        sees: &'a dyn Fn(DVec3, DVec3) -> bool,
+        alive: Option<i32>,
+    ) -> DragonEnv<'a> {
+        DragonEnv {
+            height: &flat,
+            podium_top: &podium_top,
+            alive_crystals: alive,
+            players,
+            crystals: &[],
+            death_experience: None,
+            sees,
+            empty: &ground,
+        }
+    }
+
+    fn phases_of(dragon: &mut EnderDragon, env: &DragonEnv, ticks: usize) -> Vec<(usize, Phase)> {
+        let mut seen = vec![(0, dragon.phase)];
+        for tick in 1..=ticks {
+            dragon.tick(env);
+            if seen.last().map(|(_, phase)| *phase) != Some(dragon.phase) {
+                seen.push((tick, dragon.phase));
+            }
+        }
+        seen
+    }
+
+    #[test]
+    fn the_new_phases_keep_vanilla_speeds_and_sitting() {
+        assert_eq!(Phase::Landing.fly_speed(), 1.5);
+        assert_eq!(Phase::ChargingPlayer.fly_speed(), 3.0);
+        assert_eq!(Phase::LandingApproach.fly_speed(), 0.6);
+        assert_eq!(Phase::Takeoff.fly_speed(), 0.6);
+        let sitting: Vec<Phase> = (0..=10)
+            .map(Phase::by_id)
+            .filter(|phase| phase.is_sitting())
+            .collect();
+        assert_eq!(
+            sitting,
+            [
+                Phase::SittingFlaming,
+                Phase::SittingScanning,
+                Phase::SittingAttacking,
+                Phase::Hovering
+            ]
+        );
+        let slow = DVec3::new(0.3, 0.0, 0.4);
+        assert_eq!(Phase::Landing.turn_speed(slow), 1.0);
+        assert!((Phase::Takeoff.turn_speed(slow) - 0.7 / 1.5 / 1.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_circling_dragon_at_the_end_of_its_path_sometimes_turns_to_land() {
+        let sees = |_: DVec3, _: DVec3| true;
+        let env = podium_env(&[], &sees, Some(0));
+        let mut dragon = dragon_at(DVec3::new(0.5, 100.0, 0.5), 0.0);
+        let seen = phases_of(&mut dragon, &env, 3000);
+        assert_eq!(
+            seen.get(1).map(|(_, phase)| *phase),
+            Some(Phase::LandingApproach),
+            "{seen:?}"
+        );
+    }
+
+    #[test]
+    fn a_landing_dragon_flies_in_perches_on_the_podium_and_takes_off_with_nobody_near() {
+        let sees = |_: DVec3, _: DVec3| true;
+        let env = podium_env(&[], &sees, Some(0));
+        let mut dragon = dragon_at(DVec3::new(0.5, 110.0, 60.5), 0.0);
+        dragon.set_phase(Phase::LandingApproach);
+        let mut sat_at = None;
+        let mut seen = vec![(0, dragon.phase)];
+        for tick in 1..=4000 {
+            dragon.tick(&env);
+            if seen.last().map(|(_, phase)| *phase) != Some(dragon.phase) {
+                seen.push((tick, dragon.phase));
+                if dragon.phase == Phase::SittingScanning {
+                    sat_at = Some(dragon.position);
+                }
+            }
+            if dragon.phase == Phase::HoldingPattern {
+                break;
+            }
+        }
+        let order: Vec<Phase> = seen.iter().map(|(_, phase)| *phase).collect();
+        assert_eq!(
+            order,
+            [
+                Phase::LandingApproach,
+                Phase::Landing,
+                Phase::SittingScanning,
+                Phase::Takeoff,
+                Phase::HoldingPattern
+            ],
+            "{seen:?}"
+        );
+        let sat = sat_at.expect("it sat down");
+        assert!(
+            sat.distance_squared(DVec3::new(0.5, 62.0, 0.5)) < 1.0,
+            "on the podium: {sat:?}"
+        );
+        assert_eq!(seen[3].0 - seen[2].0, SCAN_IDLE_TICKS as usize - 1);
+        assert!(
+            distance_to_center_sqr((0, 62, 0), dragon.position) >= 100.0,
+            "it leaves the podium before circling"
+        );
+    }
+
+    fn perched() -> EnderDragon {
+        let mut dragon = dragon_at(DVec3::new(0.5, 62.0, 0.5), -90.0);
+        dragon.set_phase(Phase::SittingScanning);
+        dragon
+    }
+
+    #[test]
+    fn a_perched_dragon_turns_to_a_player_roars_and_breathes_flame_four_times() {
+        let sees = |_: DVec3, _: DVec3| true;
+        let players = [player(4, DVec3::new(8.0, 63.0, 0.5), true)];
+        let env = podium_env(&players, &sees, Some(0));
+        let mut dragon = perched();
+        let before = dragon.y_rot;
+        let mut clouds = Vec::new();
+        let mut seen = vec![(0, dragon.phase)];
+        let mut flames_out = 0;
+        for tick in 1..=1400 {
+            let events = dragon.tick(&env);
+            clouds.extend(events.clouds.into_iter().map(|cloud| (tick, cloud)));
+            if dragon.flame_out {
+                dragon.flame_out = false;
+                flames_out += 1;
+            }
+            if seen.last().map(|(_, phase)| *phase) != Some(dragon.phase) {
+                seen.push((tick, dragon.phase));
+            }
+            if tick == 10 {
+                assert_ne!(dragon.y_rot, before, "it turns toward the player");
+            }
+            if dragon.phase == Phase::Takeoff {
+                break;
+            }
+        }
+        let order: Vec<Phase> = seen.iter().map(|(_, phase)| *phase).collect();
+        let mut expected = vec![Phase::SittingScanning];
+        for _ in 0..3 {
+            expected.extend([
+                Phase::SittingAttacking,
+                Phase::SittingFlaming,
+                Phase::SittingScanning,
+            ]);
+        }
+        expected.extend([
+            Phase::SittingAttacking,
+            Phase::SittingFlaming,
+            Phase::Takeoff,
+        ]);
+        assert_eq!(order, expected, "{seen:?}");
+        assert_eq!(seen[1].0, 26, "it roars after 25 ticks of watching");
+        assert_eq!(seen[2].0 - seen[1].0, ROAR_TICKS as usize, "the roar");
+        assert_eq!(seen[3].0 - seen[2].0, FLAME_TICKS as usize - 1);
+        assert_eq!(clouds.len(), 4, "one flame each time");
+        assert_eq!(flames_out, 4, "each flame goes out when it stops");
+        let (tick, flame) = &clouds[0];
+        assert_eq!(*tick, seen[2].0 + 9, "the flame comes on its tenth tick");
+        assert_eq!(flame.breath, Some(Breath::Flame(dragon.id)));
+        assert_eq!(
+            (flame.radius, flame.duration),
+            (FLAME_RADIUS, FLAME_DURATION)
+        );
+        assert_eq!(flame.radius_per_tick, 0.0);
+        assert_eq!(flame.position.y, 62.0, "on the ground in front of the head");
+        assert_eq!(
+            crate::potions::instant_amount(
+                &flame.effects[0],
+                false,
+                crate::effect_cloud::INSTANT_SCALE
+            ),
+            Some(crate::potions::PlayerPotion::Harm {
+                amount: 3.0,
+                by: None
+            }),
+            "Harming I at half strength"
+        );
+    }
+
+    #[test]
+    fn a_perched_dragon_with_nobody_near_charges_a_player_it_sees_within_150() {
+        let sees = |_: DVec3, _: DVec3| true;
+        let blind = |_: DVec3, _: DVec3| false;
+        let far = [player(4, DVec3::new(60.0, 70.0, 0.5), true)];
+        let mut dragon = perched();
+        let seen = phases_of(&mut dragon, &podium_env(&far, &sees, Some(0)), 100);
+        assert_eq!(
+            seen,
+            [(0, Phase::SittingScanning), (100, Phase::ChargingPlayer)]
+        );
+        assert_eq!(dragon.charge.target, Some(far[0].feet));
+        let mut unseen = perched();
+        let seen = phases_of(&mut unseen, &podium_env(&far, &blind, Some(0)), 100);
+        assert_eq!(seen, [(0, Phase::SittingScanning), (100, Phase::Takeoff)]);
+        let crouched = [PlayerBody {
+            crouching: true,
+            ..player(4, DVec3::new(17.0, 63.0, 0.5), true)
+        }];
+        assert_eq!(crouched[0].visibility(), 0.8);
+        let mut sneaked = perched();
+        let seen = phases_of(&mut sneaked, &podium_env(&crouched, &sees, Some(0)), 30);
+        assert_eq!(
+            seen,
+            [(0, Phase::SittingScanning)],
+            "a crouching player 17 blocks off is beyond 20 times 0.8"
+        );
+    }
+
+    #[test]
+    fn a_charging_dragon_turns_back_ten_ticks_after_it_reaches_its_target() {
+        let sees = |_: DVec3, _: DVec3| true;
+        let env = podium_env(&[], &sees, Some(0));
+        let mut dragon = dragon_at(DVec3::new(0.5, 80.0, 0.5), 0.0);
+        dragon.set_phase(Phase::ChargingPlayer);
+        let target = DVec3::new(0.5, 70.0, -50.0);
+        dragon.charge.target = Some(target);
+        let mut reached = None;
+        for tick in 1..=400 {
+            dragon.tick(&env);
+            if reached.is_none() && dragon.charge.time_since_charge > 0 {
+                reached = Some(tick);
+                assert!(dragon.position.distance_squared(target) < 100.0);
+            }
+            if dragon.phase == Phase::HoldingPattern {
+                let at = reached.expect("it reached its target first");
+                assert!((at + 5..=at + 10).contains(&tick), "{at} {tick}");
+                break;
+            }
+        }
+        assert_eq!(dragon.phase, Phase::HoldingPattern);
+        let mut lost = dragon_at(DVec3::new(0.5, 80.0, 0.5), 0.0);
+        lost.set_phase(Phase::ChargingPlayer);
+        lost.tick(&env);
+        assert_eq!(lost.phase, Phase::HoldingPattern, "no target, no charge");
+    }
+
+    #[test]
+    fn hurting_a_flaming_dragon_past_50_puts_its_flame_out_and_it_takes_off() {
+        let sees = |_: DVec3, _: DVec3| true;
+        let players = [player(4, DVec3::new(8.0, 63.0, 0.5), true)];
+        let env = podium_env(&players, &sees, Some(0));
+        let mut dragon = perched();
+        dragon.set_phase(Phase::SittingFlaming);
+        for _ in 0..12 {
+            dragon.tick(&env);
+        }
+        assert!(dragon.flame.cloud);
+        let mut events = DragonEvents::default();
+        dragon.hurt_part(HEAD, &EndDamage::attack(30.0, 4), &mut events);
+        dragon.damage_cooldown = 0;
+        dragon.hurt_part(HEAD, &EndDamage::attack(30.0, 4), &mut events);
+        assert_eq!(dragon.phase, Phase::Takeoff);
+        assert!(dragon.flame_out && !dragon.flame.cloud);
+        let look = dragon.head_look_vector(&env);
+        let far =
+            (distance_to_center_sqr((0, 62, 0), dragon.position).sqrt() as f32 / 4.0).max(1.0);
+        assert_eq!(look, view_vector(-(6.0 / far) * 7.5, dragon.y_rot));
+        dragon.set_phase(Phase::SittingScanning);
+        assert_eq!(
+            dragon.head_look_vector(&env),
+            view_vector(-45.0, dragon.y_rot),
+            "a sitting head looks down"
+        );
     }
 }

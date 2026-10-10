@@ -439,6 +439,7 @@ mod tests {
             hurt_time: 0,
             death_time: 0,
             sitting: false,
+            phase: 0,
             parts: [glam::DVec3::ZERO; 8],
             tick_count: 0,
             nearest_crystal: None,

@@ -37,7 +37,7 @@ pub struct CloudView {
     pub waiting: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct EffectCloud {
     pub position: DVec3,
     pub owner: Option<u64>,

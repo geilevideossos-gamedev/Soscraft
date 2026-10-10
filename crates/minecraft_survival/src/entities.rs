@@ -994,6 +994,10 @@ impl Entities {
                 let pitch = 0.8 + self.random.next_float() * 0.3;
                 self.sounds.push((FLAP_SOUND.to_owned(), dragon.position, SOUND_VOLUME, pitch));
             }
+            if dragon.phase == minecraft_terrain::ender_dragon::Phase::SittingAttacking.id() {
+                let pitch = 0.8 + self.random.next_float() * 0.3;
+                self.sounds.push((GROWL_SOUND.to_owned(), dragon.position, 2.5, pitch));
+            }
             if dragon.sitting {
                 continue;
             }

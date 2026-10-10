@@ -1092,3 +1092,45 @@ Previous commit: 88cb6d83
 ```
 IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:cobblestone*64,minecraft:water_bucket,minecraft:diamond_sword+sharpness=5
 ```
+
+### 39. Minecraft ender dragon perches on the portal and breathes fire (E3-16)
+
+Previous commit: f3608d26
+
+- **Changed:**
+  - `minecraft_terrain/src/ender_dragon.rs`, all eleven `EnderDragonPhase`s now (saved by their vanilla ids 0 to 10; `isSitting` for the three sitting phases and hovering; each phase's state lives on the dragon like vanilla's per-phase instances, reset by `begin`):
+    - **The landing roll:** the holding pattern at the end of a path first rolls `nextInt(crystals + 3) == 0` for `LandingApproach`, then the strafe roll of entry 38.
+    - `LandingApproach` (`DragonLandingApproachPhase`): a path from the closest node to the node closest to 40 blocks out on the far side of the island from the attackable player nearest the podium (height 105), or to (40, podium height, 0) with nobody near, ending at the podium's `MOTION_BLOCKING_NO_LEAVES` top; once the path is flown it turns to `Landing`.
+    - `Landing` (`DragonLandingPhase`): flies at fly speed 1.5 with the turn speed `min(s, 40) / s` to the podium top's bottom centre; within one block it resets the flame count and sits scanning.
+    - `SittingScanning`: the nearest attackable player within 20 blocks (times 0.8 while crouching, `getVisibilityPercent`), within 10 blocks up or down and in sight; after 25 ticks with one it turns to `SittingAttacking`, before that it turns its head and body toward them (`yRotA` toward the head-to-player bearing, at most 100 degrees). With nobody for 100 ticks it takes off, and charges the nearest player in sight within 150 blocks if there is one.
+    - `SittingAttacking`: the roar, 40 ticks, then `SittingFlaming`.
+    - `SittingFlaming`: on its tenth tick a breath cloud (`AreaEffectCloud`: Harming I, radius 5, 200 ticks, waits 20) on the ground 2.5 blocks beyond the head, found by stepping down from the head until a block is not air; after 200 ticks it scans again, or takes off after its fourth flame. Leaving the phase puts its flame out (`end()` discards the cloud).
+    - `Takeoff`: a path to the ring node closest to 40 blocks along the head's look (`getHeadLookVector`: pitched down by `6 / max(distance / 4, 1) · 7.5` degrees at the podium), and the holding pattern once it is 10 blocks from the podium.
+    - `ChargingPlayer`: flies at fly speed 3 at where the player stood; once within 10 blocks it turns back to circling 10 ticks later (`timeSinceCharge`).
+    - A sitting dragon that takes more than 50 now takes off (`TAKEOFF`) instead of circling at once. `head_look_vector`, `DragonEnv.empty`, `PlayerBody.crouching`, `DragonEvents.clouds`, `DragonView.phase`.
+  - `minecraft_terrain/src/server.rs` (End region): the dragons tick with the air test of the level; their flame clouds join the level's clouds, and a dragon whose flame went out has it removed (`Breath::Flame` of that dragon). A player counts as crouching at an eye height from 1 to 1.5.
+  - `minecraft_terrain/src/effect_cloud.rs`: clouds compare equal (for the dragon's events).
+  - `minecraft_survival/src/entities.rs`: while the dragon sits attacking, the client plays `entity.ender_dragon.growl` every tick at volume 2.5 (`DragonSittingAttackingPhase.doClientTick`). `dragon_render.rs`: its test view has a phase.
+- **Checked with javap (26.3):** `DragonHoldingPatternPhase.findNewTarget` (the `nextInt(i + 3)` landing roll first), `DragonLandingApproachPhase` (`doServerTick`, `findNewTarget`, `NEAR_EGG_TARGETING`), `DragonLandingPhase` (`doServerTick`, `getFlySpeed` 1.5, `getTurnSpeed`), `DragonTakeoffPhase` (`doServerTick`, `findNewTarget`, `navigateToNextPathNode`), `AbstractDragonSittingPhase` (`isSitting`, `onHurt`), `DragonSittingScanningPhase` (`doServerTick`, the 20-block and 10-high scan, `CHARGE_TARGETING` range 150), `DragonSittingAttackingPhase` (`doServerTick`, `doClientTick`), `DragonSittingFlamingPhase` (`doServerTick`, `begin`, `end`, `resetFlameCount`), `DragonChargePlayerPhase` (`doServerTick`, `getFlySpeed` 3, `setTarget`), `EnderDragon` (`hurt(part)`'s `TAKEOFF`, `getHeadLookVector`), `TargetingConditions.test` (range times `getVisibilityPercent`, line of sight through `Sensing`), `LivingEntity.getVisibilityPercent` (0.8 while discrete).
+- **Tests:** `ender_dragon`: `the_new_phases_keep_vanilla_speeds_and_sitting`, `a_circling_dragon_at_the_end_of_its_path_sometimes_turns_to_land`, `a_landing_dragon_flies_in_perches_on_the_podium_and_takes_off_with_nobody_near` (approach, landing within a block of the podium top, 99 ticks of scanning, takeoff, circling 10 blocks out), `a_perched_dragon_turns_to_a_player_roars_and_breathes_flame_four_times` (scan 25 ticks, roar 40, four flames of 200 ticks each put out when they stop, then takeoff; the flame on its tenth tick on the ground, Harming I for 3 at half strength), `a_perched_dragon_with_nobody_near_charges_a_player_it_sees_within_150` (or takes off when it sees nobody; a crouching player 17 blocks away is not seen), `a_charging_dragon_turns_back_ten_ticks_after_it_reaches_its_target`, `hurting_a_flaming_dragon_past_50_puts_its_flame_out_and_it_takes_off` (and the head look vectors); the phase id test now checks all eleven ids, and `a_sitting_dragon_takes_off_after_a_quarter_of_its_health` expects `Takeoff`. `server`: `a_landing_dragon_perches_on_the_podium_breathes_flame_and_the_flame_goes_out_when_it_takes_off` (an End level of seed 0 with the podium built: approach, landing on the pillar top, scanning a player beside the podium, the roar, the flame cloud in front of the head; two head shots of 30 make it take off and the flame goes); `the_fight_dragon_spawns_over_the_island_and_circles_it_while_the_arena_is_loaded` follows the targets of every flying phase and loads the dragon back in the phase it was saved in.
+- **Decisions:**
+  - **One tick, two phase ticks:** as vanilla's `aiStep`, a phase that changes runs the new phase's tick in the same tick, so the roar lasts 40 ticks after the switch and a flame 199.
+  - **The sitting roar** is a growl started on every client tick of `SittingAttacking`, as vanilla does; the growls overlap into one long roar.
+  - **Arrows:** a sitting dragon's immunity to arrows and wind charges (`AbstractDragonSittingPhase.onHurt`) has nothing to act on yet, as no arrow hits the dragon here; MW2 bullets and grenades hurt a sitting dragon like a flying one.
+  - **Crouching** is read from the eye height (1.27 while crouching); invisibility does not shrink the scan (no invisibility effect on the player's body here).
+  - **Not drawn:** the breath particles streaming from the mouth while landing and flaming (`doClientTick`'s dragon breath particles); the flame cloud itself is drawn like the fireball's (entry 38).
+  - **A flame put out by a hit** (takeoff on damage) goes at the next server tick; vanilla discards it at once.
+- **Test steps** (survival; `/difficulty normal`; MW2 weapons):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x5perch` (a new world), `IW4L_MINECRAFT_DIMENSION=the_end` and the kit below. Start on the obsidian platform.
+  2. Shoot all ten pillar crystals (the caged ones too), so the dragon lands more often (a landing roll of one in 3 at each path's end). Walk to the island centre and stand on the podium's rim about 5 blocks from the bedrock pillar.
+  3. Wait: the dragon leaves its circle, swings round to approach from across the island, and lands on top of the bedrock pillar. **Screenshot 1** (perched).
+  4. It turns its head to you, roars for two seconds, then a purple cloud of breath spreads on the ground in front of its head for 10 seconds; standing in it costs 1.5 hearts a second. **Screenshot 2** (the breath on the podium). Step out of it.
+  5. Stay near: it roars and breathes three more times, then takes off and circles again.
+  6. On its next landing, shoot its head while it sits: after about 50 damage (a few rifle bursts) it takes off at once, and its breath cloud vanishes.
+  7. On another landing, walk more than 20 blocks away (or 10 blocks above or below it): after 5 seconds it takes off and charges straight at where you stand, then circles again. **Screenshot 3** (the charge).
+  8. Remove the `IW4L_MINECRAFT_DIMENSION` line afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:cobblestone*64,minecraft:water_bucket,minecraft:diamond_sword+sharpness=5
+```

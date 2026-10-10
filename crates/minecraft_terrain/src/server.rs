@@ -1466,22 +1466,27 @@ impl ServerSim {
                 },
                 eye_height: f64::from(player.eye_height),
                 attackable: player.alive && !player.spectator && player.attackable,
+                crouching: (1.0..1.5).contains(&player.eye_height),
             })
             .collect();
         self.end_players = bodies.clone();
         let mut experience = Vec::new();
         {
-            let Self { level, states, mob_tables, dragons, fight_dragon, alive_crystals, end_sounds, end_hits, dragons_killed, crystals: self_crystals, fight, dragon_drops, dragon_fireballs, .. } = self;
+            let Self { level, states, mob_tables, dragons, fight_dragon, alive_crystals, end_sounds, end_hits, dragons_killed, crystals: self_crystals, fight, dragon_drops, dragon_fireballs, clouds, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
             let height = |x: i32, z: i32| world.level.borrow().height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlockingNoLeaves, x, z);
             let sees = |from: glam::DVec3, to: glam::DVec3| minecraftoss_entities::sight::line_of_sight(&world, from, to);
+            let empty = |x: i32, y: i32, z: i32| {
+                let level = world.level.borrow();
+                level.registries().blocks.is_air(level.block(minecraftoss_core::BlockPos::new(x, y, z)))
+            };
             let crystals: Vec<(u64, glam::DVec3)> = self_crystals.list.iter().map(|crystal| (crystal.id, crystal.position)).collect();
             for dragon in &mut dragons.list {
                 let origin = dragon.fight_origin;
                 let top = || world.level.borrow().height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlocking, origin.0, origin.2);
                 let ours = *fight_dragon == Some(dragon.uuid);
                 let death_experience = crate::ender_dragon::death_experience(ours, fight.previously_killed, *dragon_drops);
-                let env = crate::ender_dragon::DragonEnv { height: &height, podium_top: &top, alive_crystals: ours.then_some(*alive_crystals), players: &bodies, crystals: &crystals, death_experience, sees: &sees };
+                let env = crate::ender_dragon::DragonEnv { height: &height, podium_top: &top, alive_crystals: ours.then_some(*alive_crystals), players: &bodies, crystals: &crystals, death_experience, sees: &sees, empty: &empty };
                 let events = dragon.tick(&env);
                 end_sounds.extend(events.sounds.into_iter().map(|(event, position, volume, pitch)| minecraftoss_entities::world::MobSound { event: event.to_owned(), position, volume, pitch, category: "hostile" }));
                 end_hits.extend(events.player_hits.into_iter().map(|(player_id, damage, attacker)| minecraftoss_entities::world::PlayerHit { player_id, damage, kind: minecraftoss_entities::world::PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0 }, source: Some(dragon.id) }));
@@ -1489,7 +1494,13 @@ impl ServerSim {
                 for (from, direction) in events.fireballs {
                     dragon_fireballs.shoot(dragon.id, from, direction);
                 }
+                clouds.extend(events.clouds);
             }
+            for dragon in dragons.list.iter_mut().filter(|dragon| dragon.flame_out) {
+                dragon.flame_out = false;
+                clouds.retain(|cloud| cloud.breath != Some(crate::effect_cloud::Breath::Flame(dragon.id)));
+            }
+
             dragons_killed.extend(dragons.list.iter().filter(|dragon| dragon.removed).map(|dragon| dragon.uuid));
             dragons.list.retain(|dragon| !dragon.removed);
         }
@@ -7012,7 +7023,7 @@ mod tests {
             server.tick_end(&[player]);
             let dragon = &server.dragons.list[0];
             lowest = lowest.min(dragon.position.y);
-            if let Some(target) = dragon.holding.target {
+            for target in [dragon.holding.target, dragon.strafe.target, dragon.approach.target, dragon.takeoff.target].into_iter().flatten() {
                 targets.insert((target.x as i32, target.z as i32));
             }
         }
@@ -7035,7 +7046,7 @@ mod tests {
         let mut loaded = crate::ender_dragon::Dragons::default();
         loaded.add(&tags[0]).expect("the dragon loads back");
         assert_eq!(loaded.list[0].uuid, uuid);
-        assert_eq!(loaded.list[0].phase, crate::ender_dragon::Phase::HoldingPattern);
+        assert_eq!(loaded.list[0].phase, server.dragons.list[0].phase, "it keeps its phase");
     }
 
     #[test]
@@ -7385,5 +7396,57 @@ mod tests {
         server.tick_end(&[player]);
         assert!(server.dragon_fireballs.views().is_empty(), "a fireball goes with its dragon");
     }
+
+    #[test]
+    fn a_landing_dragon_perches_on_the_podium_breathes_flame_and_the_flame_goes_out_when_it_takes_off() {
+        use crate::end_crystal::{EndDamage, EndTarget};
+        use crate::ender_dragon::Phase;
+        use minecraftoss_generator::feature::World as _;
+        let Some(mut server) = end_world((-5..=4).flat_map(|x| (-5..=4).map(move |z| (x, z)))) else { return };
+        server.scan_dragon_fight((0, 0, 0), None);
+        let top = server.level.height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlockingNoLeaves, 0, 0);
+        let ground = server.level.height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlockingNoLeaves, 6, 0);
+        let player = end_player([6.5, f64::from(ground), 0.5]);
+        server.set_players(&[player.position.to_array()], 2);
+        server.find_or_create_dragon((0, 0, 0));
+        {
+            let dragon = &mut server.dragons.list[0];
+            dragon.position = glam::DVec3::new(0.5, 100.0, 60.5);
+            dragon.set_phase(Phase::LandingApproach);
+        }
+        let bodies = [crate::thrown::PlayerBody::of(&player)];
+        let id = server.dragons.list[0].id;
+        let flame = crate::effect_cloud::Breath::Flame(id);
+        let mut sat = None;
+        let mut phases = vec![Phase::LandingApproach];
+        for _ in 0..4000 {
+            server.tick_clouds(&bodies);
+            server.tick_end(&[player]);
+            let dragon = &server.dragons.list[0];
+            if phases.last() != Some(&dragon.phase) {
+                phases.push(dragon.phase);
+            }
+            if dragon.phase.is_sitting() && sat.is_none() {
+                sat = Some(dragon.position);
+            }
+            if server.clouds.iter().any(|cloud| cloud.breath == Some(flame)) {
+                break;
+            }
+        }
+        assert_eq!(phases, [Phase::LandingApproach, Phase::Landing, Phase::SittingScanning, Phase::SittingAttacking, Phase::SittingFlaming]);
+        let sat = sat.expect("it perched");
+        assert!(sat.distance_squared(glam::DVec3::new(0.5, f64::from(top), 0.5)) < 1.0, "on the podium's pillar at {top}: {sat:?}");
+        let cloud = server.clouds.iter().find(|cloud| cloud.breath == Some(flame)).expect("the flame");
+        assert_eq!(cloud.radius, crate::ender_dragon::FLAME_RADIUS);
+        assert!(cloud.position.distance(sat) < 10.5, "{:?}", cloud.position);
+        for _ in 0..2 {
+            server.dragons.list[0].damage_cooldown = 0;
+            server.end_hit(EndTarget::DragonPart { id, part: crate::ender_dragon::HEAD }, EndDamage::attack(30.0, player.id));
+        }
+        assert_eq!(server.dragons.list[0].phase, Phase::Takeoff, "past 50 damage it takes off");
+        server.tick_end(&[player]);
+        assert!(server.clouds.iter().all(|cloud| cloud.breath != Some(flame)), "and its flame goes out");
+    }
 }
+
 
