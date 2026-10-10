@@ -464,3 +464,18 @@ Adversarial review of the whole track, base 4c4900e6 to 48cd53cf. Each fix below
 ```
 IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:firework_rocket*16,minecraft:cobblestone*32
 ```
+
+## Final check
+
+Base 4c4900e6 to 77f4eddd.
+
+- **Clippy** (`-p minecraft_terrain -p minecraft_survival -p render_anim -p render_gpu -p minecraftoss-generator -p minecraftoss-player -p minecraftoss-world --all-targets`, `-A clippy::approx_constant`, with the stand-in scenario files the full suite makes for `minecraftoss-player`): no finding on any line the track added; the findings in the touched files (`mesh.rs`, `model.rs`, `server.rs`, `scene.rs`, `item_icon.rs`, `entities.rs`, `minecraft_world.rs`) are on older lines and stay.
+- **Tests:** `minecraft_terrain` 763 passed (4 ignored), `minecraft_survival` 326 and `vanilla_world` 1, `render_anim` 70, `render_gpu` 33, `minecraftoss-player` 187, `minecraftoss-world` 63, `minecraftoss-generator` 28. No failures.
+
+### Combined kit
+
+One kit for a test session of the whole track, 27 stacks. It covers the main items of every entry; the extra items of single steps (spawn eggs, firework rockets, the fire resistance potion, copper, signs, fence gates, anvil, piston, panes, slabs, saplings) are in each entry's own kit or come from `/give`.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:lava_bucket,minecraft:water_bucket,minecraft:flint_and_steel,minecraft:netherrack*8,minecraft:campfire*4,minecraft:hay_block*4,minecraft:beef*4,minecraft:tnt*16,minecraft:bone_meal*64,minecraft:wheat_seeds*16,minecraft:iron_hoe,minecraft:iron_shovel,minecraft:iron_axe,minecraft:shield,minecraft:cobblestone*64,minecraft:pointed_dripstone*32,minecraft:farmland*16,minecraft:oak_log*16,minecraft:oak_stairs*16,minecraft:magma_block*4,minecraft:totem_of_undying,minecraft:diamond_boots+feather_falling=4,minecraft:diamond_boots+frost_walker=2,minecraft:diamond_chestplate+fire_protection=4,minecraft:red_stained_glass*16,minecraft:blue_stained_glass*16,minecraft:elytra
+```
