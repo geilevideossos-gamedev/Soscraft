@@ -1871,7 +1871,6 @@ impl ServerSim {
         if let Some(dragon) = self.dragons.list.iter_mut().find(|dragon| Some(dragon.uuid) == self.fight_dragon) {
             dragon.crystal_destroyed(destroyed.id, destroyed.player.or(nearest), &mut events);
         }
-
         self.end_events(events);
     }
 
@@ -7648,5 +7647,3 @@ mod tests {
         assert!(server.clouds.iter().all(|cloud| cloud.breath != Some(flame)), "and its flame goes out");
     }
 }
-
-

@@ -1206,7 +1206,6 @@ impl Entities {
         );
         minecraft_terrain::dragon_fireball::append_fireballs(&mut out.items, &self.dragon_fireballs, atlas, forward, partial);
         ghast_render::append_fireballs(
-
             &mut out.items,
             w.fireballs().iter().filter(|f| f.fireball.alive).map(|f| (f, f.previous_position.lerp(f.fireball.position, f64::from(partial)))),
             atlas,

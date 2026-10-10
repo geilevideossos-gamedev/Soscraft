@@ -1729,7 +1729,6 @@ impl EnderDragon {
                 .clamp(-50.0, 50.0);
             self.y_rot_a *= 0.8;
             self.y_rot_a += turn * self.phase.turn_speed(self.velocity);
-
             self.y_rot += self.y_rot_a * 0.1;
         }
         let near = (2.0 / (distance + 1.0)) as f32;

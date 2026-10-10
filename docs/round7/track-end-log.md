@@ -1315,3 +1315,12 @@ Previous commit: a76fe438
 ```
 IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:cobblestone*64,minecraft:water_bucket,minecraft:diamond_sword+sharpness=5
 ```
+
+### 48. Stray blank lines from the X5 commits are gone
+
+Previous commit: 42469747
+
+- **Defect:** the X5 commits added blank lines that no change needed, against the fork's rule to edit only the lines a change needs. One was inside the existing `ghast_render::append_fireballs(` call in `minecraft_survival/src/entities.rs`, one in `fly_toward` in `ender_dragon.rs`, one before `self.end_events(events)` in `ServerSim`'s crystal handling, and two at the end of `server.rs`.
+- **Changed:** those five blank lines are removed. No code or test changes.
+- **Tests:** none needed; `check -p launcher` is green.
+- **Test steps:** none (no behaviour change).
