@@ -450,3 +450,17 @@ Adversarial review of the whole track, base 4c4900e6 to 48cd53cf. Each fix below
 - **Tests:** `ambient_particles`, unchanged in what they check.
 - **Test steps:** none, nothing changes in game.
 - **Kit:** none.
+
+### 2. Minecraft elytra crashes that kill are heard as the death
+
+- **Defect:** f474b657 made every Minecraft death play `entity.player.death` in place of the hurt sound of the blow that killed, and stopped the hurt sound for lethal falls and drowning. A lethal elytra crash into a wall (`fly_into_wall`) still played `entity.player.hurt` together with the death sound, where `LivingEntity.hurtServer` plays only the death sound when the blow kills.
+- **Changed:** `render_anim/src/minecraft_elytra.rs`: the crash plays its fall sound as before, and the hurt voice only while the player is still alive, as the fall and drowning paths already do. The voice's two random draws stay where they were.
+- **Tests:** none new: the change is one condition in the per-frame adapter, the same one the fall path in `minecraft_world.rs` has, and the death sound itself is covered by `the_burn_that_kills_is_heard_as_the_death_not_as_a_hurt`.
+- **Test steps:**
+  1. Drop from about 18 blocks without the elytra to fall to 2 or 3 hearts. Then put on the elytra, climb to about 30 blocks and glide fast straight into a cliff wall. When the crash kills, only the death sound plays (one short groan), with no hurt grunt before it. **Screenshot 6** of the death screen.
+  2. Glide into a wall softly at full health: the crash thud and the hurt grunt still play.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:firework_rocket*16,minecraft:cobblestone*32
+```
