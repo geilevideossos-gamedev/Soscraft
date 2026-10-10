@@ -369,3 +369,27 @@ IW4L_MINECRAFT_KIT=minecraft:diamond_boots+frost_walker=2,minecraft:magma_block*
 - **Tests:** `protection` and `transform`, unchanged in what they check.
 - **Test steps:** none, nothing changes in game.
 - **Kit:** none.
+
+## Group rendering
+
+Rendering correctness from the Rendering limitations. Base: 628fffc5.
+
+### 1. Minecraft block textures turn with uvlock quarter turns and face rotation
+
+- **Changed:**
+  - `minecraft_terrain/src/model.rs`: `Face` gained `uv_rotation` (vanilla's `Quadrant` shift) and `corner_uvs`, which gives each of the four vertices its UV as `CuboidFace.getU`/`getV` do: vertex i takes the UV rect's corner (i + shift) mod 4 in `UVs.getVertexU`/`getVertexV` order. The face `rotation` key is read as `Quadrant.parseJson` does (0, 90, 180 or 270 after `positiveModulo` 360; anything else fails the model).
+  - `uv_locked` is now `FaceBakery.bakeVertex`'s uvlock step in full: each vertex's UV (after the face's own turn) goes through `BlockModelRotation.inverseFaceTransformation(direction)` about the tile centre, the inverse of `BlockMath.getFaceTransformation` (`VANILLA_UV_TRANSFORM_GLOBAL_TO_LOCAL(new face) . rotation . VANILLA_UV_TRANSFORM_LOCAL_TO_GLOBAL(face)`), skipped when that is the identity. The result is stored back as a rect plus a vertex shift, which holds every turn a proper rotation can make. Before, only half turns were applied and quarter turns were dropped.
+  - `mesh.rs` (six quad builders) and `item_icon.rs` (`model_icon`) take their UVs from `corner_uvs`; `block_icon`, which reads raw model JSON, applies the face's `rotation` too.
+- **Tests:** `model`: `uvlock_keeps_textures_upright_where_the_face_turns_half_round` (now with the shift), `uvlock_turns_quarter_turned_faces_like_vanilla`, `uvlocked_cube_faces_keep_their_world_texture_for_every_turn` (all 16 x/y turns and six faces: the UV at every world corner is the unrotated cube's UV there), `face_rotation_turns_the_texture_by_quarters`, and `vanilla_uvlocked_stairs_and_horizontal_logs_keep_their_texture_direction` (with `MINECRAFTOSS_ROOT`: every oak stair facing, half and three shapes, and the horizontal oak log's top face turned 180).
+- **Decisions:** vanilla turns the UV as if v pointed up (it puts u and v into x and y of the face frame); this is copied as is, and the world-lock test confirms it gives world-locked textures for every turn.
+- **Test steps:**
+  1. Place a full oak planks block, then oak stairs facing each of the four directions next to it (turn to place them): the plank grain on every stair top runs the same way as on the planks block, whichever way the stair faces. Before, the stairs facing east and west had their top grain turned across. **Screenshot 1** looking down on the row.
+  2. Place upside-down stairs (click the upper half of a block side) facing east and west: the same, on their bottoms and tops.
+  3. Place oak logs lying along x and along z (click the side of a block): the bark lines run along the log on all four long sides. **Screenshot 2.**
+  4. Place an anvil: the grey metal on its narrow sides (the feet, waist and the ends of the top) shows the texture at its true proportions instead of stretched across. Place a piston beside a lever and flip the lever: the extended piston base's sides show the piston side texture unstretched. **Screenshot 3.**
+  5. Build an oak fence and a cobblestone wall line in an L shape: the texture on the arms going east-west matches the ones going north-south.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:oak_planks*16,minecraft:oak_stairs*16,minecraft:oak_log*16,minecraft:piston*4,minecraft:lever*2,minecraft:anvil,minecraft:oak_fence*16,minecraft:cobblestone_wall*16
+```

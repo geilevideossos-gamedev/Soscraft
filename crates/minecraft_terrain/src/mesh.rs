@@ -427,13 +427,7 @@ pub fn build_item_model(packs: &PackStack, item: &ResourceId) -> Result<Option<B
         for face in &element.faces {
             let corners = element_corners(element, &face.direction)?;
             let [u0, v0, u1, v1] = atlas.region(&face.texture);
-            let [a, b, c, d] = face.uv;
-            let uv = [
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
-            ];
+            let uv = face.corner_uvs().map(|[s, t]| [u0 + (u1 - u0) * s, v0 + (v1 - v0) * t]);
             let tint = face
                 .tint_index
                 .and_then(|index| tints.get(index))
@@ -1010,13 +1004,7 @@ impl ItemVisuals {
                         let corners = element_corners(element, &face.direction)?;
                         let entity = entity_face(face);
                         let [u0, v0, u1, v1] = if entity { atlas.entity_region(&face.texture) } else { atlas.region(&face.texture) };
-                        let [a, b, c, d] = face.uv;
-                        let uv = [
-                            [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
-                            [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
-                            [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
-                            [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
-                        ];
+                        let uv = face.corner_uvs().map(|[s, t]| [u0 + (u1 - u0) * s, v0 + (v1 - v0) * t]);
                         let tint = face
                             .tint_index
                             .and_then(|index| visual.tints.get(index))
@@ -1232,13 +1220,7 @@ impl ItemVisuals {
                     let corners = element_corners(element, &face.direction)?;
                     let entity = entity_face(face);
                     let [u0, v0, u1, v1] = if entity { atlas.entity_region(&face.texture) } else { atlas.region(&face.texture) };
-                    let [a, b, c, d] = face.uv;
-                    let uv = [
-                        [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
-                        [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
-                        [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
-                        [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
-                    ];
+                    let uv = face.corner_uvs().map(|[s, t]| [u0 + (u1 - u0) * s, v0 + (v1 - v0) * t]);
                     let local_normal = if entity { quad_normal(&corners).unwrap_or(Vec3::Y) } else { face_normal(&face.direction)? };
                     let normal = pose.transform_vector3(local_normal).normalize();
                     let shade = level_item_shade(normal) * if white { 4.0 } else { 1.0 };
@@ -2092,13 +2074,7 @@ pub(crate) fn bake_quads(block: &Block, model: &ResolvedModel, atlas: &Atlas) ->
             let delta = direction(dir)?;
             let entity = entity_face(face);
             let [u0, v0, u1, v1] = if entity { atlas.entity_region(&face.texture) } else { atlas.region(&face.texture) };
-            let [a, b, c, d] = face.uv;
-            let uv = [
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
-            ];
+            let uv = face.corner_uvs().map(|[s, t]| [u0 + (u1 - u0) * s, v0 + (v1 - v0) * t]);
             let shade = if entity {
                 crate::cow_render::entity_shade(quad_normal(&corners).unwrap_or(Vec3::Y))
             } else {
@@ -2299,13 +2275,7 @@ pub(crate) fn append_block<'m, S: Scene>(
             let delta = direction(dir)?;
             let entity = entity_face(face);
             let [u0, v0, u1, v1] = if entity { atlas.entity_region(&face.texture) } else { atlas.region(&face.texture) };
-            let [a, b, c, d] = face.uv;
-            let uv = [
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
-            ];
+            let uv = face.corner_uvs().map(|[s, t]| [u0 + (u1 - u0) * s, v0 + (v1 - v0) * t]);
             let shade = if entity {
                 crate::cow_render::entity_shade(quad_normal(&corners).unwrap_or(Vec3::Y))
             } else {
@@ -2775,13 +2745,7 @@ pub fn block_preview<S: Scene>(
             } else {
                 atlas.region(&face.texture)
             };
-            let [a, b, c, d] = face.uv;
-            let uv = [
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
-            ];
+            let uv = face.corner_uvs().map(|[s, t]| [u0 + (u1 - u0) * s, v0 + (v1 - v0) * t]);
             let shade = if entity {
                 crate::cow_render::entity_shade(quad_normal(&corners).unwrap_or(Vec3::Y))
             } else {
@@ -3222,6 +3186,7 @@ mod tests {
             tint: tint_index.is_some(),
             tint_index,
             force_translucent: false,
+            uv_rotation: 0,
         };
         let visual = || ItemVisual {
             hand: None,
@@ -3581,6 +3546,7 @@ mod tests {
             tint: tint_index.is_some(),
             tint_index,
             force_translucent: false,
+            uv_rotation: 0,
         };
         let mut visuals = ItemVisuals::default();
         visuals.models.insert(
@@ -3687,6 +3653,7 @@ mod tests {
                         tint: false,
                         tint_index: None,
                         force_translucent: false,
+                        uv_rotation: 0,
                     }],
                     rotation_y: 0,
                     rotation_x: 0,
@@ -3824,6 +3791,7 @@ mod tests {
                         tint: false,
                         tint_index: None,
                         force_translucent: false,
+                        uv_rotation: 0,
                     })
                     .to_vec(),
             }],
@@ -4469,6 +4437,7 @@ mod tests {
                         tint: false,
                         tint_index: None,
                         force_translucent: false,
+                        uv_rotation: 0,
                     })
                     .to_vec(),
             }],
@@ -4669,6 +4638,7 @@ mod tests {
                     tint: false,
                     tint_index: None,
                     force_translucent: false,
+                    uv_rotation: 0,
                 })
                 .collect(),
         }

@@ -14,6 +14,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 - A translucent pass for stained glass and panes, ice, honey, slime, tinted glass and the nether portal. Fluids are only hidden by faces that actually cover them, and clouds are ordered against blended terrain.
 - Animated textures from `.mcmeta` (fire, lava, water, portal, sea lantern, prismarine, sculk, stonecutter and more), in the world and in icons.
 - The break-crack overlay follows the block's real model.
+- Model face textures turn like vanilla's `FaceBakery`: a face's `rotation` turns its texture by quarters (horizontal logs, doors, pistons, anvils), and `uvlock` keeps the texture locked to the world for every blockstate turn, quarter turns included (stair tops, fences, walls, glass panes), in the world, on dropped and held blocks and in icons.
 - Block-entity models: chests (double, trapped, ender, copper), shulker boxes, banners, heads, bell, conduit, decorated pot and books. They are used in the world, as icons, as dropped items and as held items.
 - Falling blocks and primed TNT are meshed like terrain, with no flicker.
 - Water like vanilla: seagrass, kelp, bubble columns and waterlogged blocks hold water, there are no faces between water cells, and water is single-sided apart from the vanilla backward surface.
@@ -224,7 +225,6 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 ### Rendering
 - Translucent faces are not sorted by camera distance within a 16-block section. Inside one block, smaller faces are drawn first.
 - Blockstates rotated about X (horizontal logs, upside-down stairs, ceiling vines) are drawn rotated, but still cull with the old full-cube rule, so they may draw a few hidden faces.
-- `uvlock` only applies to faces it turns half round. Faces it would turn a quarter (some stair tops, fence and wall caps) keep the model's texture direction, and the face `rotation` key is not read.
 - Chest, ender chest, copper chest and shulker box lids open and close like vanilla, but an opening shulker box does not grow its collision or push anyone. Other block entities never animate: no bell swing, banner wave or enchanting table book. There are no banner or shield patterns and no sign text. Heads use the default skin, and the conduit always shows its inactive shell.
 - Not drawn: the copper golem statue. Each half of a double chest is lit separately.
 - With the eyes in lava, vanilla's lava fog (`LavaFogEnvironment`) closes in: colour #991A00, from 0.25 to 1 block (0 to 5 with Fire Resistance, -8 to half the render distance for spectators), no sky, sun or clouds. Like the other fog it follows the eyes, not a third-person camera. The falling rain and snow streaks are not drawn: rain darkens the sky, splashes on the ground and sounds (below), but nothing falls through the air.

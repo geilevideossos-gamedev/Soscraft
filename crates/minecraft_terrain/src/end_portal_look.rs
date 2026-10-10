@@ -37,6 +37,7 @@ pub(crate) fn block_model(block: &Block) -> Option<ResolvedModel> {
             tint: false,
             tint_index: None,
             force_translucent: false,
+            uv_rotation: 0,
         })
         .collect();
     Some(ResolvedModel {

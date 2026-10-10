@@ -108,6 +108,10 @@ pub fn block_icon(
             let Some(bounds) = face_uv(face, name, from, to) else {
                 continue;
             };
+            let shift = face
+                .get("rotation")
+                .and_then(Value::as_i64)
+                .map_or(0, |degrees| (degrees.rem_euclid(360) / 90) as usize);
             let tint = face
                 .get("tintindex")
                 .and_then(Value::as_u64)
@@ -132,9 +136,9 @@ pub fn block_icon(
                         vertices[triangle[2]],
                     ],
                     [
-                        uv(triangle[0], bounds),
-                        uv(triangle[1], bounds),
-                        uv(triangle[2], bounds),
+                        uv((triangle[0] + shift) % 4, bounds),
+                        uv((triangle[1] + shift) % 4, bounds),
+                        uv((triangle[2] + shift) % 4, bounds),
                     ],
                 );
             }
@@ -196,8 +200,7 @@ pub fn model_icon(
                 let point = gui.transform_point3(Vec3::from_array(corner));
                 [(0.5 + point.x) * size, (0.5 - point.y) * size, point.z]
             });
-            let [a, b, c, d] = face.uv;
-            let uvs = [[a, b], [a, d], [c, d], [c, b]];
+            let uvs = face.corner_uvs();
             for triangle in [[0, 1, 2], [0, 2, 3]] {
                 raster_triangle(
                     &mut output,
