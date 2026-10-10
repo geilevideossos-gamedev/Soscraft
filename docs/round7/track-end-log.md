@@ -1016,3 +1016,18 @@ Previous commit: b2e8a03d
 ```
 IW4L_MINECRAFT_KIT=minecraft:end_crystal*8,minecraft:obsidian*8,minecraft:golden_apple*8,minecraft:diamond_chestplate
 ```
+
+### 36. Minecraft ender dragon growls on while it dies
+
+Previous commit: f62433d7
+
+- **Defect:** the client stopped the dragon's growl once its health reached 0, so the dying dragon fell silent as it rose. 26.3's `EnderDragon.aiStep` counts `growlTime` down on the client before its dead-or-dying branch, held back only while the phase sits (`isSitting`), and `DragonDeathPhase` does not sit, so vanilla's dragon keeps growling through its death.
+- **Changed:** `minecraft_survival/src/entities.rs` (`dragon_voices`, one line): only a sitting dragon skips the growl.
+- **Checked with javap (26.3):** `EnderDragon.aiStep` (the client growl: `isSilent`, `isSitting`, `--growlTime < 0`, volume 2.5, `200 + nextInt(200)`, before `isDeadOrDying`).
+- **Tests:** none new: the growl timer lives in `Entities::dragon_voices`, which runs only on a server snapshot; the `minecraft_survival` tests pass as before.
+- **Test steps** (survival; in `x4dragon` or any End world with a dragon to kill): kill the dragon and listen while it rises under its rays for 10 seconds: besides the death roar, a growl may sound now and then, as before its death.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
+```

@@ -988,7 +988,7 @@ impl Entities {
                 let pitch = 0.8 + self.random.next_float() * 0.3;
                 self.sounds.push((FLAP_SOUND.to_owned(), dragon.position, SOUND_VOLUME, pitch));
             }
-            if dragon.sitting || dragon.health <= 0.0 {
+            if dragon.sitting {
                 continue;
             }
             let growl = self.growls.entry(dragon.id).or_insert(100);
