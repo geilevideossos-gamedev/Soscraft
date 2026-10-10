@@ -1281,7 +1281,7 @@ fn update(
                 }
                 HandUse::Consumed
             } else if let Some(stack) = held.as_ref()
-                && let Some(outcome) = minecraft_terrain::bottle::bottle_use(&player, &terrain.scene, stack)
+                && let Some(outcome) = minecraft_terrain::bottle::bottle_use(&player, &terrain.scene, stack, !entities.awaits_item_use() && entities.dragon_breath_near(player.pos, if player.crouching { 1.5 } else { 1.8 }))
             {
                 use minecraft_terrain::bottle::{self, BottleUse};
                 hand.swing = Some(0.0);
@@ -1292,6 +1292,11 @@ fn update(
                         (Some(result), events.into_iter().map(|event| (event, Some(centre))).collect())
                     }
                     BottleUse::Fill { result } => (Some(result), vec![(bottle::FILL_SOUND, None)]),
+                    BottleUse::Breath(outcome) => {
+                        let sent = minecraft_survival::entities::SentItemUse { slot, held: stack.id.clone(), eye: eye_block, yaw: mc_yaw, pitch: ps.viewangles[0], outcome };
+                        entities.bottle_breath(player.pos, if player.crouching { 1.5 } else { 1.8 }, sent);
+                        (None, Vec::new())
+                    }
                     BottleUse::Drink => {
                         hand.swing = None;
                         survival.start_using(bottle::drink(slot, stack));
@@ -1342,6 +1347,7 @@ fn update(
                     minecraft_terrain::bucket::Change::Server(pos, action) => entities.item_on_block(pos, action, sent),
                     minecraft_terrain::bucket::Change::ThrowEye(throw) => entities.throw_eye(throw, sent),
                     minecraft_terrain::bucket::Change::Rocket(boost_ticks) => crate::minecraft_elytra::launch_rocket(&mut authority.0, local.0, boost_ticks, &mut hand.swing, || finish_item_use(entities, inventory, sounds.as_mut(), &world.packs, origin, sent, game_mode.consumes_items())),
+                    minecraft_terrain::bucket::Change::Breath => entities.bottle_breath(player.pos, if player.crouching { 1.5 } else { 1.8 }, sent),
                 }
                 HandUse::Consumed
             } else if let Some(stack) = held.as_ref()
@@ -1529,6 +1535,17 @@ fn update(
     let events: Vec<_> = events
         .into_iter()
         .filter(|event| player_mode.may_build() || !matches!(event, sim::voxel::VoxelEvent::Shot { .. } | sim::voxel::VoxelEvent::Ray { .. }))
+        .filter(|event| match *event {
+            sim::voxel::VoxelEvent::Shot { block, .. } => {
+                let pos = (block[0], block[1], block[2]);
+                let egg = minecraft_terrain::scene::Scene::block(&terrain.scene, pos).is_some_and(minecraft_terrain::dragon_egg::is_egg);
+                if let Some(entities) = entities.as_mut().filter(|_| egg) {
+                    entities.attack_block(&terrain.scene, pos);
+                }
+                !egg
+            }
+            _ => true,
+        })
         .collect();
     if let Some(entities) = entities.as_mut() {
         for shot in mob_shots {

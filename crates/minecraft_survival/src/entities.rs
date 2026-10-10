@@ -96,6 +96,7 @@ pub struct Entities {
     tridents: Vec<minecraft_terrain::trident::TridentView>,
     crystals: Vec<minecraft_terrain::end_crystal::CrystalView>,
     dragons: Vec<minecraft_terrain::ender_dragon::DragonView>,
+    dragon_fireballs: Vec<minecraft_terrain::dragon_fireball::FireballView>,
     growls: HashMap<u64, i32>,
     dragons_killed: Vec<[i32; 4]>,
     fight_reports: Vec<minecraft_terrain::server::FightReport>,
@@ -239,6 +240,7 @@ impl Entities {
             tridents: Vec::new(),
             crystals: Vec::new(),
             dragons: Vec::new(),
+            dragon_fireballs: Vec::new(),
             growls: HashMap::new(),
             dragons_killed: Vec::new(),
             fight_reports: Vec::new(),
@@ -573,6 +575,10 @@ impl Entities {
         self.server.use_block(scene, pos, facing)
     }
 
+    pub fn attack_block(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32)) -> bool {
+        self.server.attack_block(scene, pos)
+    }
+
     pub fn item_on_block(&mut self, pos: (i32, i32, i32), action: minecraft_terrain::server::ItemOnBlock, sent: SentItemUse) {
         self.server.item_on_block(pos, action);
         self.item_use_waiting = Some(sent);
@@ -581,6 +587,15 @@ impl Entities {
     pub fn throw_eye(&mut self, throw: minecraft_terrain::ender_eye::EyeThrow, sent: SentItemUse) {
         self.server.throw_eye(PLAYER, throw);
         self.item_use_waiting = Some(sent);
+    }
+
+    pub fn bottle_breath(&mut self, feet: DVec3, height: f64, sent: SentItemUse) {
+        self.server.bottle_breath(feet, height);
+        self.item_use_waiting = Some(sent);
+    }
+
+    pub fn dragon_breath_near(&self, feet: DVec3, height: f64) -> bool {
+        minecraft_terrain::effect_cloud::breath_near(&self.clouds, minecraft_terrain::effect_cloud::bottle_reach(feet, height))
     }
 
     pub fn awaits_item_use(&self) -> bool {
@@ -892,6 +907,10 @@ impl Entities {
                 self.tridents = std::mem::take(&mut snapshot.tridents);
                 self.crystals = std::mem::take(&mut snapshot.crystals);
                 self.dragons = std::mem::take(&mut snapshot.dragons);
+                self.dragon_fireballs = std::mem::take(&mut snapshot.dragon_fireballs);
+                for at in std::mem::take(&mut snapshot.breath_bursts) {
+                    self.spell.burst(at, minecraft_terrain::effect_cloud::BREATH_COLOR, false);
+                }
                 self.dragon_voices();
                 self.orbs = snapshot.orbs.clone();
                 self.falling.receive(std::mem::take(&mut snapshot.falling), std::mem::take(&mut snapshot.tnt), &output.changes, self.ticks);
@@ -905,6 +924,11 @@ impl Entities {
             for broken in &output.potion_breaks {
                 self.spell.burst(broken.position, broken.color, broken.instant);
                 self.potion_crumbs.push(minecraft_terrain::spell_particles::break_center(broken.position));
+            }
+            for (from, to) in output.egg_teleports {
+                for (start, motion) in minecraft_terrain::dragon_egg::teleport_particles(from, to, &mut self.random) {
+                    self.portal.emit(start, motion);
+                }
             }
             for hit in output.thrown_hits {
                 if hit.kind == minecraft_terrain::thrown::Throwable::EnderPearl {
@@ -1038,6 +1062,10 @@ impl Entities {
             if dragon_flapping(dragon.o_flap_time, dragon.flap_time) {
                 let pitch = 0.8 + self.random.next_float() * 0.3;
                 self.sounds.push((FLAP_SOUND.to_owned(), dragon.position, SOUND_VOLUME, pitch));
+            }
+            if dragon.phase == minecraft_terrain::ender_dragon::Phase::SittingAttacking.id() {
+                let pitch = 0.8 + self.random.next_float() * 0.3;
+                self.sounds.push((GROWL_SOUND.to_owned(), dragon.position, 2.5, pitch));
             }
             if dragon.sitting {
                 continue;
@@ -1228,6 +1256,7 @@ impl Entities {
             forward,
             light,
         );
+        minecraft_terrain::dragon_fireball::append_fireballs(&mut out.items, &self.dragon_fireballs, atlas, forward, partial);
         ghast_render::append_fireballs(
             &mut out.items,
             w.fireballs().iter().filter(|f| f.fireball.alive).map(|f| (f, f.previous_position.lerp(f.fireball.position, f64::from(partial)))),

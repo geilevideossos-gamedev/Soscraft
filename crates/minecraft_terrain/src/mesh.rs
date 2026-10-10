@@ -504,6 +504,7 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     textures.insert(ResourceId::parse(crate::end_crystal_render::BEAM_TEXTURE)?, ());
     textures.insert(ResourceId::parse(crate::dragon_render::TEXTURE)?, ());
     textures.insert(ResourceId::parse(crate::dragon_render::EYES)?, ());
+    textures.insert(ResourceId::parse(crate::dragon_fireball::TEXTURE)?, ());
     textures.insert(ResourceId::parse(WHITE_TEXTURE)?, ());
     textures.insert(ResourceId::parse("minecraft:entity/enderman/enderman")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/enderman/enderman_eyes")?, ());

@@ -1049,3 +1049,298 @@ Previous commit: 8dddc195
 ```
 IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:end_crystal*16,minecraft:obsidian*16,minecraft:end_stone*4,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket,minecraft:cooked_beef*32,minecraft:shield,minecraft:totem_of_undying,minecraft:ender_pearl*16,minecraft:torch*64,minecraft:oak_planks*64
 ```
+
+## Fourth run, group X5-phases: a dragon that fights back
+
+E3-15 and E3-16 of the brief: the phase machine beyond the holding pattern, with plan decision 9 (the dragon targets the players of the End level, never `PLAYER = 0`). Base: 88cb6d83.
+
+### 38. Minecraft ender dragon strafes players and spits fireballs (E3-15)
+
+Previous commit: 88cb6d83
+
+- **Changed:**
+  - `minecraft_terrain/src/ender_dragon.rs`:
+    - `Phase::StrafePlayer` (id 1) is `DragonStrafePlayerPhase`: the target player by id, its own path and clockwise flag, and `fireball_charge`. Each tick a finished path re-aims at the player, `strafe_lift` (`min(0.4 + horizontal distance / 80 − 1, 10)`) above them; a target nearer than 10 or farther than 150 blocks finds a new path round the rings (inner ring while no crystal is alive). Within 64 blocks and in sight (dragon eye at 6.8 to the player's eye, at most 128 blocks, `LivingEntity.hasLineOfSight` through `minecraftoss_entities::sight`) the charge rises by one a tick, otherwise it falls; at 5 with the player within 10 degrees ahead (`acos` of the facing and the horizontal direction, plus 0.5) it plays `entity.ender_dragon.shoot` (level event 1017: volume 10, at the dragon's block), spits a fireball from one block behind the head's look and one block above the head toward the player's middle, ends its path and goes back to the holding pattern. A strafe whose player is gone goes back to the holding pattern.
+    - The holding pattern at the end of a path picks the attackable player nearest to the podium (`TargetingConditions.forCombat().ignoreLineOfSight()`, any distance) and strafes them if `nextInt((int)(d + 2)) == 0` or `nextInt(crystals + 2) == 0`, with `d` the squared distance from the podium block's centre over 512. `strafePlayer`'s path is vanilla's `findPath(closest node, node closest to the player, final node over the player's block)`; `find_path` takes the final node (`reconstructPath` appends it, also to a partial path).
+    - `crystal_destroyed`: after the head damage, a circling dragon turns to strafe the player behind the loss (`DragonHoldingPatternPhase.onCrystalDestroyed`, only an attackable player).
+    - `aiStep`'s second `doServerTick` when the first one changed the phase. `view_vector` is `Entity.calculateViewVector`; `nearest_player`, `distance_to_center_sqr`, `block_center`; `PlayerBody.eye_height`; `DragonEnv.sees`; `DragonEvents.fireballs`. The holding pattern's circle goal and waypoint draw are shared helpers now (same draws as before).
+  - New `minecraft_terrain/src/dragon_fireball.rs`: `DragonFireball` (`DragonFireball` of 26.3: the vendored `AbstractHurtingProjectile` flight of `minecraftoss_entities::fireball`, 1 by 1, acceleration 0.1, inertia 0.95) and `DragonFireballs`. A burst (`onHit`) leaves `breath_cloud` at the first living entity whose box meets the fireball's box grown by 4, 2, 4 with its feet within 4 blocks, else where it burst (`cloud_position`), plays `entity.dragon_fireball.explode` (level event 2006: volume 1, pitch 0.9 to 1). `append_fireballs` is `DragonFireballRenderer`: a camera-facing quad of `entity/enderdragon/dragon_fireball` scaled by 2, full bright.
+  - `minecraft_terrain/src/effect_cloud.rs`: `EffectCloud::dragon_breath` and `Breath` (fireball or a dragon's flame): the `AreaEffectCloud` defaults (wait 20 ticks, reapply after 20, no shrinking on use) with the breath colour. The fireball's cloud: Harming II, radius 3 growing to 7 over its 600 ticks.
+  - `minecraft_terrain/src/server.rs` (End region): `tick_dragon_fireballs` before the dragons (a fireball goes when its dragon is gone or its chunk is not loaded, like `AbstractHurtingProjectile.tick`); the dragons tick with the line of sight through `MobWorld`; their fireballs are spawned; a destroyed crystal without a player behind it names the attackable player nearest to it (`CRYSTAL_DESTROY_TARGETING`: none in peaceful). `EntitySnapshot.dragon_fireballs` and `breath_bursts`. `mesh.rs` loads the fireball texture.
+  - `minecraft_survival/src/entities.rs`: draws the fireballs and a burst of breath-coloured spell particles where one bursts (four lines).
+- **Checked with javap (26.3):** `DragonStrafePlayerPhase` (`doServerTick`, `findNewTarget`, `setTarget`, `navigateToNextPathNode`, `begin`), `DragonHoldingPatternPhase` (`findNewTarget`, `strafePlayer`, `onCrystalDestroyed`, `NEW_TARGET_TARGETING`), `EnderDragon` (`aiStep`, `findClosestNode` both forms, `findPath`, `reconstructPath`, `onCrystalDestroyed`, `CRYSTAL_DESTROY_TARGETING` range 64, `canAttack`), `EnderDragonPhase` (ids 0 to 10), `EnderDragonPhaseManager.setPhase`, `DragonFireball` (`onHit`, the cloud), `AreaEffectCloud` (constructor defaults), `TargetingConditions.test`, `Entity.calculateViewVector`, `LevelEventHandler` events 1017 and 2006, `DragonFireballRenderer`, `DragonBreathParticle` (its colours).
+- **Tests:** `ender_dragon`: `the_view_vector_and_strafe_lift_match_vanilla`, `a_path_can_end_at_a_node_of_its_own`, `a_circling_dragon_at_the_end_of_its_path_strafes_the_nearest_attackable_player` (never a creative one), `a_strafing_dragon_spits_a_fireball_after_five_ticks_with_the_player_in_sight_ahead` (where it starts, where it aims, the sound), `without_sight_or_out_of_range_or_facing_away_the_charge_runs_down`, `a_strafe_without_its_player_falls_back_to_circling` (also a saved strafe), `breaking_a_crystal_makes_a_circling_dragon_strafe_the_player_behind_it`. `dragon_fireball`: `a_dragon_fireball_flies_like_a_hurting_projectile_from_its_aim`, `the_breath_cloud_lands_on_a_living_entity_within_four_blocks`, `the_fireball_cloud_harms_for_6_and_grows_from_3_to_7_over_600_ticks`. `server`: `a_strafing_dragon_s_fireball_bursts_into_a_breath_cloud_that_harms_the_player` (an End level of seed 0: the shot and burst sounds, the cloud on the player, Harming II for 6 after 20 ticks and again 20 later, a fireball goes with its dragon); `the_fight_dragon_spawns_over_the_island_and_circles_it_while_the_arena_is_loaded` now also hears the strafe's sounds.
+- **Decisions:**
+  - **The landing roll comes with entry 39:** until then a circling dragon at the end of a path only rolls for the strafe.
+  - **Players by id:** the strafed player is looked up by id among the End level's players each tick; one who left the level ends the strafe (vanilla keeps the stale entity and flies at its last position).
+  - **A lost crystal turns the dragon on its next tick** (vanilla in the hit's tick); the head damage still comes at once.
+  - **What a fireball hits:** players and mobs, not end crystals or the dragon's own parts (vanilla can burst one on a crystal it passes).
+  - **Not saved:** fireballs and breath clouds are not saved with their chunk (the lingering potion clouds here are not either).
+  - **Drawn:** the clouds with the spell particles in the dragon breath colour (#CB00E5, the middle of `DragonBreathParticle`'s range), the burst as the potion splash burst in that colour (100 particles, vanilla 200); the fireball's breath trail is not drawn.
+  - **Death message:** breath harm is magic damage, "was killed by magic" (vanilla: "was killed by Ender Dragon using magic"), as a cloud's harm here can only name a player.
+  - The shoot sound's pitch is drawn from the dragon's random (vanilla draws it on the client).
+- **Test steps** (survival; `/difficulty normal`):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x5strafe` (a new world), `IW4L_MINECRAFT_DIMENSION=the_end` and the kit below. Start on the obsidian platform and walk onto the main island toward the pillars.
+  2. Watch the dragon: now and then it leaves its circle and swoops at you; when it faces you within about 64 blocks you hear a short roar and it spits a purple fireball, then circles again. **Screenshot 1** (a fireball in flight).
+  3. Where it bursts (on you, or the ground near you) a purple cloud spreads with a burst of purple sparks and a hiss. Standing in it hurts 3 hearts about every second (after a second's delay); it slowly widens over 30 seconds and then goes. **Screenshot 2** (the cloud).
+  4. Step out of it: no more damage.
+  5. Shoot a pillar crystal while the dragon circles: it turns and swoops at you at once.
+  6. Type `/gamemode creative`: it never swoops at you or spits at you. `/gamemode survival` afterwards.
+  7. Remove the `IW4L_MINECRAFT_DIMENSION` line afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:cobblestone*64,minecraft:water_bucket,minecraft:diamond_sword+sharpness=5
+```
+
+### 39. Minecraft ender dragon perches on the portal and breathes fire (E3-16)
+
+Previous commit: f3608d26
+
+- **Changed:**
+  - `minecraft_terrain/src/ender_dragon.rs`, all eleven `EnderDragonPhase`s now (saved by their vanilla ids 0 to 10; `isSitting` for the three sitting phases and hovering; each phase's state lives on the dragon like vanilla's per-phase instances, reset by `begin`):
+    - **The landing roll:** the holding pattern at the end of a path first rolls `nextInt(crystals + 3) == 0` for `LandingApproach`, then the strafe roll of entry 38.
+    - `LandingApproach` (`DragonLandingApproachPhase`): a path from the closest node to the node closest to 40 blocks out on the far side of the island from the attackable player nearest the podium (height 105), or to (40, podium height, 0) with nobody near, ending at the podium's `MOTION_BLOCKING_NO_LEAVES` top; once the path is flown it turns to `Landing`.
+    - `Landing` (`DragonLandingPhase`): flies at fly speed 1.5 with the turn speed `min(s, 40) / s` to the podium top's bottom centre; within one block it resets the flame count and sits scanning.
+    - `SittingScanning`: the nearest attackable player within 20 blocks (times 0.8 while crouching, `getVisibilityPercent`), within 10 blocks up or down and in sight; after 25 ticks with one it turns to `SittingAttacking`, before that it turns its head and body toward them (`yRotA` toward the head-to-player bearing, at most 100 degrees). With nobody for 100 ticks it takes off, and charges the nearest player in sight within 150 blocks if there is one.
+    - `SittingAttacking`: the roar, 40 ticks, then `SittingFlaming`.
+    - `SittingFlaming`: on its tenth tick a breath cloud (`AreaEffectCloud`: Harming I, radius 5, 200 ticks, waits 20) on the ground 2.5 blocks beyond the head, found by stepping down from the head until a block is not air; after 200 ticks it scans again, or takes off after its fourth flame. Leaving the phase puts its flame out (`end()` discards the cloud).
+    - `Takeoff`: a path to the ring node closest to 40 blocks along the head's look (`getHeadLookVector`: pitched down by `6 / max(distance / 4, 1) · 7.5` degrees at the podium), and the holding pattern once it is 10 blocks from the podium.
+    - `ChargingPlayer`: flies at fly speed 3 at where the player stood; once within 10 blocks it turns back to circling 10 ticks later (`timeSinceCharge`).
+    - A sitting dragon that takes more than 50 now takes off (`TAKEOFF`) instead of circling at once. `head_look_vector`, `DragonEnv.empty`, `PlayerBody.crouching`, `DragonEvents.clouds`, `DragonView.phase`.
+  - `minecraft_terrain/src/server.rs` (End region): the dragons tick with the air test of the level; their flame clouds join the level's clouds, and a dragon whose flame went out has it removed (`Breath::Flame` of that dragon). A player counts as crouching at an eye height from 1 to 1.5.
+  - `minecraft_terrain/src/effect_cloud.rs`: clouds compare equal (for the dragon's events).
+  - `minecraft_survival/src/entities.rs`: while the dragon sits attacking, the client plays `entity.ender_dragon.growl` every tick at volume 2.5 (`DragonSittingAttackingPhase.doClientTick`). `dragon_render.rs`: its test view has a phase.
+- **Checked with javap (26.3):** `DragonHoldingPatternPhase.findNewTarget` (the `nextInt(i + 3)` landing roll first), `DragonLandingApproachPhase` (`doServerTick`, `findNewTarget`, `NEAR_EGG_TARGETING`), `DragonLandingPhase` (`doServerTick`, `getFlySpeed` 1.5, `getTurnSpeed`), `DragonTakeoffPhase` (`doServerTick`, `findNewTarget`, `navigateToNextPathNode`), `AbstractDragonSittingPhase` (`isSitting`, `onHurt`), `DragonSittingScanningPhase` (`doServerTick`, the 20-block and 10-high scan, `CHARGE_TARGETING` range 150), `DragonSittingAttackingPhase` (`doServerTick`, `doClientTick`), `DragonSittingFlamingPhase` (`doServerTick`, `begin`, `end`, `resetFlameCount`), `DragonChargePlayerPhase` (`doServerTick`, `getFlySpeed` 3, `setTarget`), `EnderDragon` (`hurt(part)`'s `TAKEOFF`, `getHeadLookVector`), `TargetingConditions.test` (range times `getVisibilityPercent`, line of sight through `Sensing`), `LivingEntity.getVisibilityPercent` (0.8 while discrete).
+- **Tests:** `ender_dragon`: `the_new_phases_keep_vanilla_speeds_and_sitting`, `a_circling_dragon_at_the_end_of_its_path_sometimes_turns_to_land`, `a_landing_dragon_flies_in_perches_on_the_podium_and_takes_off_with_nobody_near` (approach, landing within a block of the podium top, 99 ticks of scanning, takeoff, circling 10 blocks out), `a_perched_dragon_turns_to_a_player_roars_and_breathes_flame_four_times` (scan 25 ticks, roar 40, four flames of 200 ticks each put out when they stop, then takeoff; the flame on its tenth tick on the ground, Harming I for 3 at half strength), `a_perched_dragon_with_nobody_near_charges_a_player_it_sees_within_150` (or takes off when it sees nobody; a crouching player 17 blocks away is not seen), `a_charging_dragon_turns_back_ten_ticks_after_it_reaches_its_target`, `hurting_a_flaming_dragon_past_50_puts_its_flame_out_and_it_takes_off` (and the head look vectors); the phase id test now checks all eleven ids, and `a_sitting_dragon_takes_off_after_a_quarter_of_its_health` expects `Takeoff`. `server`: `a_landing_dragon_perches_on_the_podium_breathes_flame_and_the_flame_goes_out_when_it_takes_off` (an End level of seed 0 with the podium built: approach, landing on the pillar top, scanning a player beside the podium, the roar, the flame cloud in front of the head; two head shots of 30 make it take off and the flame goes); `the_fight_dragon_spawns_over_the_island_and_circles_it_while_the_arena_is_loaded` follows the targets of every flying phase and loads the dragon back in the phase it was saved in.
+- **Decisions:**
+  - **One tick, two phase ticks:** as vanilla's `aiStep`, a phase that changes runs the new phase's tick in the same tick, so the roar lasts 40 ticks after the switch and a flame 199.
+  - **The sitting roar** is a growl started on every client tick of `SittingAttacking`, as vanilla does; the growls overlap into one long roar.
+  - **Arrows:** a sitting dragon's immunity to arrows and wind charges (`AbstractDragonSittingPhase.onHurt`) has nothing to act on yet, as no arrow hits the dragon here; MW2 bullets and grenades hurt a sitting dragon like a flying one.
+  - **Crouching** is read from the eye height (1.27 while crouching); invisibility does not shrink the scan (no invisibility effect on the player's body here).
+  - **Not drawn:** the breath particles streaming from the mouth while landing and flaming (`doClientTick`'s dragon breath particles); the flame cloud itself is drawn like the fireball's (entry 38).
+  - **A flame put out by a hit** (takeoff on damage) goes at the next server tick; vanilla discards it at once.
+- **Test steps** (survival; `/difficulty normal`; MW2 weapons):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x5perch` (a new world), `IW4L_MINECRAFT_DIMENSION=the_end` and the kit below. Start on the obsidian platform.
+  2. Shoot all ten pillar crystals (the caged ones too), so the dragon lands more often (a landing roll of one in 3 at each path's end). Walk to the island centre and stand on the podium's rim about 5 blocks from the bedrock pillar.
+  3. Wait: the dragon leaves its circle, swings round to approach from across the island, and lands on top of the bedrock pillar. **Screenshot 1** (perched).
+  4. It turns its head to you, roars for two seconds, then a purple cloud of breath spreads on the ground in front of its head for 10 seconds; standing in it costs 1.5 hearts a second. **Screenshot 2** (the breath on the podium). Step out of it.
+  5. Stay near: it roars and breathes three more times, then takes off and circles again.
+  6. On its next landing, shoot its head while it sits: after about 50 damage (a few rifle bursts) it takes off at once, and its breath cloud vanishes.
+  7. On another landing, walk more than 20 blocks away (or 10 blocks above or below it): after 5 seconds it takes off and charges straight at where you stand, then circles again. **Screenshot 3** (the charge).
+  8. Remove the `IW4L_MINECRAFT_DIMENSION` line afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:cobblestone*64,minecraft:water_bucket,minecraft:diamond_sword+sharpness=5
+```
+
+### 40. The track END log sums up group X5-phases
+
+Previous commit: 011bc34c
+
+- **Commits:** f3608d26 (E3-15, strafing and fireballs with their breath clouds), 011bc34c (E3-16, the landing, the sitting phases with the flame on the podium, takeoff and the charge), and this entry.
+- **Tests** (`test -p <crate> --locked`, `MINECRAFTOSS_ROOT` set by `cargo-slot.ps1`): `minecraft_terrain` 761 (4 ignored) and `minecraft_survival` 333 with the vanilla world test pass; `check -p launcher` is green.
+- **Clippy:** `clippy -p minecraft_terrain -p minecraft_survival --all-targets --no-deps --locked -- -A clippy::approx_constant` reports nothing in `ender_dragon.rs`, `dragon_fireball.rs` or `effect_cloud.rs`; each location it reports in `server.rs`, `entities.rs` and `mesh.rs` blames to 88cb6d83 or earlier. No fix needed.
+- **New files** (`rustfmt --check` on the staged content is empty): `minecraft_terrain/src/dragon_fireball.rs` (edition 2021). `ender_dragon.rs` still passes.
+- **Plan decision 9 kept:** the strafe, the landing approach, the scan and the charge pick from the players of the End level each tick, by id; the breath clouds are level state; nothing uses `PLAYER = 0`.
+- **Not done in this group** (the other X5 groups): the wing knockback and `checkWalls` block breaking (E3-17), the knockback on the dragon from players' hits, the egg teleport (E3-20) and bottling dragon's breath (the clouds carry `Breath` for it). Also not drawn: the dragon breath particles of the mouth and the fireball's trail.
+- **Owner test for the group** (survival, `/difficulty normal`, in one new End world `x5` with `IW4L_MINECRAFT_DIMENSION=the_end`, removed afterwards; the kit of entry 39):
+  1. Entry 38 steps 2 to 6: strafes, fireballs and their clouds; screenshots 1 and 2.
+  2. Entry 39 steps 2 to 7: shoot the crystals, the perch, the roar, the flame, the takeoff on damage, the charge; screenshots 3 to 5 (entry 39's 1 to 3).
+
+## Fourth run, group X5-body-egg: the dragon's body, the egg and its breath
+
+E3-17 and E3-20 of the brief, with bottling dragon's breath. Base: 38da4a26 (group X5-phases).
+
+### 41. Minecraft ender dragon's wings throw players and mobs (E3-17)
+
+Previous commit: 38da4a26
+
+- **Changed:**
+  - `minecraft_terrain/src/ender_dragon.rs`: `EnderDragon.aiStep`'s contact pass while the dragon was not hurt recently. After the body and wings take their new places, each wing's box grown by 4, 2, 4 and moved 2 down (`knockBack`) pushes every attackable player and every mob in it by `wing_push`: `(dx / d · 4, 0.2, dz / d · 4)` away from the body's centre, with `d` the squared horizontal distance but at least 0.1 (`Entity.push`), and hurts it for 5 (`mobAttack`) unless the dragon sits. The head and neck (their boxes grown by 1, from where they were before this tick, as before) now also bite mobs for 10. `PlayerBody.bounds`, `DragonEnv.mobs` (each mob's box), `DragonEvents.player_pushes` and `mob_hits` (push, then damage, in vanilla's order), `knockback` (`LivingEntity.knockback(0.4, ...)`: half the old motion less 0.4 toward the attacker, and up by 0.4 off the ground).
+  - `minecraft_terrain/src/server.rs` (End region): the dragons see the mobs' boxes (`thrown::targets`). A player's push goes out with the other pushes (`players_pushed`, which MW2 movement takes through `push_velocity` as for a wind charge); a mob's push adds to its motion, then its damage lands as a hurt without an attacker's blame, and a full hit knocks it back from the dragon.
+- **Checked with javap (26.3):** `EnderDragon` (`aiStep`: the wing boxes `inflate(4, 2, 4).move(0, -2, 0)` after `tickPart` of the body and wings, the head and neck boxes `inflate(1)` before theirs, `wasHurtRecently`, `EntitySelector.NO_CREATIVE_OR_SPECTATOR`; `knockBack`: the body box's centre, `max(dx² + dz², 0.1)`, `push(dx / d · 4, 0.2, dz / d · 4)`, 5 damage unless sitting and unless the target was hurt by a mob in the last 2 ticks; `hurt`: 10 damage), `LivingEntity.knockback`.
+- **Tests:** `ender_dragon`: `the_wing_push_and_the_knockback_match_vanilla` (hand-worked pushes at 2 blocks, at 0.1 blocks and at (3, 4); the knockback on the ground and in the air), `the_wings_throw_players_and_mobs_and_hurt_them_only_in_flight` (a player beside the right wing is pushed out and hurt for 5, a creative one is left alone, a mob beside the left wing is pushed the other way and hurt for 5, a mob at the head is bitten for 10, nothing while the dragon was hurt recently, a sitting dragon pushes without harm). `server`: `the_dragon_s_wings_throw_a_player_and_an_enderman_and_hurt_them` (an End level of seed 0: the player's push and the 5 damage, an enderman down to 35 health and thrown away from the dragon).
+- **Decisions:**
+  - **The wing's 5 damage** lands on a player whenever the client's hurt cooldown lets it; vanilla also skips it within 2 ticks of the player's last hurt by a mob (`getLastHurtByMobTimestamp`), which the hurt cooldown covers in all but rare cases (the dragon's own hits are forgotten by the server's fight memory at once, as the dragon is not one of its mobs).
+  - **A player's push is not halved** by the hit's knockback (vanilla's knockback halves the motion when the 5 damage lands): no mob hit knocks the MW2 player back here, so the push alone throws them, at its full vanilla strength.
+  - **Mobs:** the dragon's damage reaches a mob as a hurt without blame (the shared blast hurt with no push), so armour counts as for `mobAttack` and an enderman does not teleport, as for a hit with a living attacker.
+- **Test steps** (survival; `/difficulty normal`; MW2 weapons):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x5wings` (a new world), `IW4L_MINECRAFT_DIMENSION=the_end` and the kit below. Start on the obsidian platform, walk onto the main island and build a cobblestone tower about 15 blocks high under the dragon's circle (about 30 to 60 blocks from the centre).
+  2. Stand on top and wait for the dragon to fly past close: when a wing sweeps over or beside you, you are flung far away from its body and lose 2.5 hearts (less with the armour on). **Screenshot 1** (in the air, thrown).
+  3. Let it come at you head first (a strafe or a charge): its head bites for 5 hearts.
+  4. Watch an enderman near its flight path: it is flung away the same way.
+  5. Shoot all crystals, wait for it to perch on the podium, and walk up beside a wing: you are pushed off, but take no damage from the wing while it sits.
+  6. Remove the `IW4L_MINECRAFT_DIMENSION` line afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:cobblestone*128,minecraft:water_bucket,minecraft:diamond_sword+sharpness=5
+```
+
+### 42. Minecraft ender dragon breaks blocks it flies through (E3-17)
+
+Previous commit: 4cb7fa52
+
+- **Changed:**
+  - `minecraft_terrain/src/ender_dragon.rs`: `checkWalls` at the end of `aiStep`, on the head, neck and body boxes where they now are (the order of vanilla, each box checked even after a hit). Each block cell the box touches (`floor` of its corners, inclusive) is left alone when it is air or `#dragon_transparent` (light, fire); a `#dragon_immune` block, or any block while `mob_griefing` is off, holds the dragon; any other block is removed (`removeBlock`, no drops), unless removing it changes nothing (a water or lava block, which becomes itself). A box that removed something sends level event 2008 (an explosion particle) at a cell drawn from the dragon's random within the box. The dragon is `inWall` when a box was held: it flaps at half speed and flies at 0.8 of its step, as the flight code already did with the flag. `Wall` (`Pass`, `Immune`, `Breaks`, `Stays`), `DragonEnv.wall` and `griefing`, `DragonEvents.broken` and `wall_bursts`. A block one box removed counts as gone for the next box of the same tick, as in vanilla. The lines entry 41 added are now as `rustfmt` lays them out.
+  - `minecraft_terrain/src/server.rs` (End region): the dragons see each block through the vanilla tags `#dragon_immune` and `#dragon_transparent` (read from the data at runtime) and the level's `mob_griefing` rule; the blocks a dragon broke are removed from the level at once (`Level::remove_block`), so the client gets them as block changes.
+- **Checked with javap (26.3):** `EnderDragon.checkWalls` (the cell loop, `isAir`, `DRAGON_TRANSPARENT`, `MOB_GRIEFING`, `DRAGON_IMMUNE`, `removeBlock(pos, false)`, the random cell for level event 2008), `EnderDragon.aiStep` (`inWall = checkWalls(head) | checkWalls(neck) | checkWalls(body)` after the parts tick), `LevelEventHandler` (2008: `EXPLOSION` at the cell's centre), the tags `dragon_immune` and `dragon_transparent` of the 26.3 data.
+- **Tests:** `ender_dragon`: `the_dragon_breaks_what_its_head_neck_and_body_fly_through_but_not_immune_blocks` (every cell of the three boxes once, head first, a burst inside each box, not held; a single block in the body box alone; immune blocks, or griefing off, hold it without breaking; water neither breaks nor holds; a held dragon flies a shorter step). `server`: `the_dragon_breaks_cobblestone_it_flies_through_but_not_end_stone` (an End level of seed 0 filled with cobblestone around the dragon: more than 50 blocks broken, all within its head, neck and body, sent as air; filled with end stone: nothing changes and the dragon is held).
+- **Decisions:**
+  - **No drops:** vanilla's `removeBlock` drops nothing, so nothing drops here either (the brief's "drops vanilla gives" are none).
+  - **Not drawn:** the explosion particle of level event 2008 (no explosion particle is drawn in the Minecraft world yet, not even for TNT); the dragon still draws its cell from its random (`DragonEvents.wall_bursts`), but the server does not send it to the clients yet.
+  - **Unloaded cells** count as air (vanilla would load the chunk; the dragon only flies over the loaded arena).
+- **Test steps** (survival; `/difficulty normal`):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x5walls` (a new world), `IW4L_MINECRAFT_DIMENSION=the_end` and the kit below. Start on the obsidian platform and walk onto the main island.
+  2. Under the dragon's circle (about 40 blocks from the centre), build a wall of cobblestone and oak planks about 6 wide and 20 high, the top at about 80 to 90 (watch the height the dragon passes at). Next to it, build the same wall from end stone and obsidian.
+  3. Wait for the dragon to pass through the cobblestone wall: it tears a dragon-shaped hole in it without dropping anything. **Screenshot 1** (the hole).
+  4. When it passes through the end stone wall: nothing breaks, and it slows down while inside.
+  5. Type `/gamerule mob_griefing false` and repair the cobblestone wall: the dragon now passes through it without breaking it, slowed down. `/gamerule mob_griefing true` afterwards.
+  6. Remove the `IW4L_MINECRAFT_DIMENSION` line afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*256,minecraft:oak_planks*128,minecraft:end_stone*128,minecraft:obsidian*64,minecraft:golden_apple*16,minecraft:diamond_chestplate,minecraft:diamond_boots+feather_falling=4,minecraft:diamond_pickaxe+efficiency=5
+```
+
+### 43. Minecraft dragon eggs teleport when clicked or hit (E3-20)
+
+Previous commit: 81dec3e3
+
+- **Changed:**
+  - New `minecraft_terrain/src/dragon_egg.rs`: `DragonEggBlock.teleport`. Up to 1000 tries (`TRIES`) at an offset of `nextInt(16) − nextInt(16)`, `nextInt(8) − nextInt(8)`, `nextInt(16) − nextInt(16)` from the egg (`offset`, the draws in vanilla's order), the first into air above a block that is not air, inside the build height and the world border (`teleport_target`, `within_border`). `teleport_particles` is level event 2015 on the client (`singleBlockTeleportationParticles`): 128 portal particles along the line between the two spots, each with a motion of up to 0.1 a tick. `is_egg`.
+  - `minecraft_terrain/src/server.rs`: `ServerSim::teleport_egg` runs for an attack (`attack`) and a use (`useWithoutItem`) on a dragon egg, with the level's random: the egg is set at its new spot (flags 2, `update::CLIENTS`) and removed from the old one (`removeBlock`); an egg that finds no spot stays, and the click is still used. The server's use and attack tables take the egg's states, so a client sends its clicks on an egg. `Output.egg_teleports` carries each jump (old and new spot) to the clients.
+  - `minecraft_survival/src/entities.rs`: `Entities::attack_block`; each jump in an output emits the portal particles.
+  - `render_anim/src/minecraft_world.rs` (one filter): a shot or hand-mining hit on a dragon egg is an attack on it instead of mining progress, so the egg jumps away rather than cracking (vanilla's `startDestroyBlock` calls `attack` first, and the egg is gone from the spot being mined). Right-clicking an egg already went through `use_block`.
+- **Checked with javap (26.3):** `DragonEggBlock` (`useWithoutItem`, `attack`, `teleport`: 1000 tries, the six draws, `isAir` at the spot and not below, `WorldBorder.isWithinBounds`, `isInsideBuildHeight`, level event 2015 with `packDifferenceInPosition(.., 16, 8, 16)`, `setBlock(.., 2)`, `removeBlock(.., false)`), `LevelEventHandler` (2015: `unpackDifferenceInPosition`, `singleBlockTeleportationParticles`: 128 `PORTAL` particles, `lerp(t, new, old)`, motion `(nextFloat − 0.5) · 0.2`).
+- **Tests:** `dragon_egg`: `only_the_dragon_egg_teleports`, `an_offset_draws_two_horizontal_two_vertical_and_two_horizontal_ints` (the bounds in order, offsets within 15, 7 and 15), `the_egg_lands_on_the_first_free_spot_drawn_or_stays_after_a_thousand_tries` (an egg in a full box stays put after 6000 draws; the border), `the_portal_particles_stream_between_the_two_spots` (128, within the box between the spots, the first particle hand-worked from the same random). `server`: `a_dragon_egg_jumps_to_a_free_spot_nearby_when_clicked_or_hit` (an End level of seed 0: an attack and then a use each move the egg within 15, 7 and 15 onto a solid block, leave air behind, send both changes and one jump; air is no egg).
+- **Decisions:**
+  - **What counts as a hit:** a MW2 bullet or a hand-mining tick on the egg is an attack (vanilla's left click); every such hit makes it jump again, as holding the button on a new spot starts a new attack in vanilla. A creative player's instant break of the egg with a Minecraft item still breaks it, as vanilla's creative left click does.
+  - **No sound:** vanilla's teleport plays none, only the particles.
+- **Test steps** (survival):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x5egg` (a new world) and the kit below. On flat ground, place the dragon egg.
+  2. Right-click it: it vanishes and reappears up to 15 blocks away on the ground, with a stream of purple portal particles between the two spots. **Screenshot 1** (the particles).
+  3. With the egg selected or any Minecraft item in hand, hold left-click on it: it jumps away again instead of cracking.
+  4. Switch to an MW2 weapon and shoot it: it jumps away at each hit, without cracks.
+  5. In creative (`/gamemode creative`), left-click it with a Minecraft item: it breaks instead. `/gamemode survival` afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:dragon_egg,minecraft:cobblestone*64,minecraft:torch*16
+```
+
+### 44. Minecraft glass bottles catch the dragon's breath
+
+Previous commit: 0733e118
+
+- **Changed:**
+  - `minecraft_terrain/src/effect_cloud.rs`: `bottle_breath` is `BottleItem.use`'s first half: the first live dragon's cloud (one with `Breath`, as vanilla's owner is an `EnderDragon`: the fireball's and the perched flame's) whose box meets the player's box grown by 2 (`bottle_reach`) loses half a block of radius (`setRadius`, clamped at 0). `CloudView.breath` and `breath_near` let the client see a breath cloud in reach.
+  - `minecraft_terrain/src/bottle.rs`: `bottle_use` takes whether a breath cloud is in reach: a glass bottle not used on a cauldron or mud (a block's `useItemOn` comes first) fills with dragon's breath before any water (`BottleUse::Breath`); `breath_use` is the item use: one `minecraft:dragon_breath` in place of the bottle and `item.bottle.fill_dragonbreath` at the player (volume 1, pitch 1). `minecraft_terrain/src/bucket.rs`: `Change::Breath`.
+  - `minecraft_terrain/src/server.rs`: `Command::BottleBreath` with the player's feet and height; the server shrinks its own cloud and answers the item use (so a cloud gone in the meantime fills nothing).
+  - `minecraft_survival/src/entities.rs`: `dragon_breath_near`, `bottle_breath` (the waiting item use, answered like an eye throw). `render_anim/src/minecraft_world.rs` (three lines): the bottle check passes the breath test, and a breath use goes to the server and fills the bottle when it answers.
+- **Checked with javap (26.3):** `BottleItem.use` (the `AreaEffectCloud` search in the player's box `inflate(2.0)`, `isAlive() && getOwner() instanceof EnderDragon`, the first found, `setRadius(getRadius() − 0.5)`, `BOTTLE_FILL_DRAGONBREATH` at the player, volume 1, pitch 1, `turnBottleIntoItem` with `Items.DRAGON_BREATH`, then the water ray only when no cloud was found), `AreaEffectCloud.setRadius` (clamped to 0 to 32).
+- **Tests:** `effect_cloud`: `a_glass_bottle_takes_half_a_block_from_a_dragon_s_breath_within_two_blocks` (the reach box, a potion's cloud is passed over, the shrink, a cloud shrunk out of reach, the radius stops at 0, a dead cloud fills nothing). `bottle`: `a_glass_bottle_in_reach_of_dragon_s_breath_fills_with_it_before_water` (breath before a water source, the result and sound, a water bottle drinks, a cauldron still comes first); the other bottle tests pass `false`. `server`: `a_glass_bottle_near_the_dragon_s_breath_fills_and_shrinks_the_cloud` (a fireball's cloud: 3 to 2.5, none out of reach or 4.5 blocks above).
+- **Decisions:**
+  - **The client asks first:** the client offers a breath use only when its last snapshot shows a breath cloud in reach and no other item use is waiting; the server decides with its own clouds.
+  - **A cloud shrunk to nothing** stays until its time is up, as in vanilla (a cloud without a radius change per tick, like the perched flame, is only removed by its duration).
+  - **Creative:** the bottle becomes the breath as a water bottle does here (vanilla's creative keeps the empty bottle).
+- **Test steps** (survival; `/difficulty normal`; MW2 weapons):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x5breath` (a new world), `IW4L_MINECRAFT_DIMENSION=the_end` and the kit below. Walk onto the main island.
+  2. Wait for a purple fireball to burst near you (entry 38), or for the perched dragon's flame on the podium (entry 39).
+  3. Stand next to the cloud's edge (within 2 blocks), select the glass bottles and right-click: you get a bottle of dragon's breath with a bubbly fill sound, and the cloud gets smaller. **Screenshot 1** (the bottles in the hotbar, the smaller cloud).
+  4. Right-click a few more times: each bottle shrinks it by half a block; once it is too far, nothing happens.
+  5. Away from any cloud, pour the water bucket and right-click the water with a glass bottle: a water bottle, as before.
+  6. Remove the `IW4L_MINECRAFT_DIMENSION` line afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:glass_bottle*16,minecraft:water_bucket,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:cobblestone*64
+```
+
+### 45. The Minecraft state doc covers the dragon that fights back
+
+Previous commit: 65a0d56e
+
+- **Changed:** `docs/MINECRAFT-SURVIVAL.md`, the End: what X5 added (the phases with the fireballs, the perch and the flame, the wings and the head, the block breaking, the egg's teleport, bottling the breath), with the roadmap's "Done" now X1 to X5. What is left of the dragon fight: the knockback on the dragon from players' hits, a sitting dragon's immunity to arrows, and the mouth's breath particles, the fireball's trail and the explosion particle where it breaks blocks. X6 (the outer End) is unchanged; dragon's breath bottles left "also missing".
+- **Group X5-body-egg summary:**
+  - **Commits:** 4cb7fa52 (E3-17, the wings and the head on players and mobs), 81dec3e3 (E3-17, `checkWalls`), 0733e118 (E3-20, the egg's teleport), 65a0d56e (bottling dragon's breath), and this entry.
+  - **Tests** (`test -p <crate> --locked`, `MINECRAFTOSS_ROOT` set by `cargo-slot.ps1`): `minecraft_terrain` 774 (4 ignored), `minecraft_survival` 333 with the vanilla world test, and `render_anim` 73 pass; `check -p launcher` is green.
+  - **Clippy:** `clippy -p minecraft_terrain -p minecraft_survival -p render_anim --all-targets --no-deps --locked -- -A clippy::approx_constant` reports nothing on a line of this group's four commits (each location blames to an earlier commit). No fix needed.
+  - **New files** (`rustfmt --check` on the staged content is empty): `minecraft_terrain/src/dragon_egg.rs` (edition 2021). `ender_dragon.rs` still passes; the new lines in `effect_cloud.rs` and `bottle.rs` are laid out as `rustfmt` would.
+  - **Plan decision 9 kept:** the wings, the head and the bottling act on each player by id from the End level's players; the egg's jumps and the breath clouds are level state on the server thread.
+- **Owner test for the group** (one new End world `x5b` with `IW4L_MINECRAFT_DIMENSION=the_end`, removed afterwards; `/difficulty normal`; the kit below):
+  1. Entry 41 steps 2 to 5: the wings fling you and hurt, the head bites, an enderman is flung, a sitting dragon only pushes; screenshot 1.
+  2. Entry 42 steps 2 to 5: the cobblestone wall gets a hole, the end stone wall holds, nothing breaks with `mob_griefing` off; screenshot 2 (entry 42's 1).
+  3. Entry 44 steps 2 to 5: bottle the breath of a fireball's cloud or the perched flame; screenshot 3 (entry 44's 1).
+  4. Kill the dragon (shoot the crystals first) and walk up to the egg on the exit portal's pillar. Entry 43 steps 2 to 5 with that egg: right-click, hand hit, gunshot, creative break; screenshot 4 (entry 43's 1).
+- **Kit** (16 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:cobblestone*256,minecraft:oak_planks*64,minecraft:end_stone*128,minecraft:obsidian*32,minecraft:glass_bottle*16,minecraft:water_bucket,minecraft:dragon_egg
+```
+
+### 46. The track END log counts the stacks of the X5-body-egg kit right
+
+Previous commit: 600c03d2
+
+- **Changed:** entry 45's kit holds 16 stacks (cobblestone 256 fills 4 and end stone 128 fills 2), not 12. No code or test changes.
+
+## Fourth run, review of group X5
+
+The adversarial review of X5 (base 88cb6d83). Each defect it found is fixed in its own commit below.
+
+### 47. Minecraft ender dragon leaves players alone in peaceful
+
+Previous commit: a76fe438
+
+- **Defect:** the dragon picked any survival or adventure player of the End level whatever the difficulty. In peaceful it strafed players and spat fireballs at them, roared at a player beside the podium and flamed them, charged, and turned on whoever broke a crystal. In vanilla all of these go through `LivingEntity.canAttack`, which refuses every player in peaceful: `NEW_TARGET_TARGETING`, `NEAR_EGG_TARGETING`, the scan's targeting, `CHARGE_TARGETING` (all `forCombat`) and `DragonHoldingPatternPhase.onCrystalDestroyed`. A peaceful dragon still circles, lands from (40, podium, 0), sits for 100 ticks and takes off.
+- **Changed:**
+  - `minecraft_terrain/src/ender_dragon.rs`: `DragonEnv.peaceful` and `DragonEnv::targets` (no players in peaceful). The strafe roll, the landing approach's bearing, the scan, the charge and the crystal strafe now pick from `targets()`.
+  - `minecraft_terrain/src/server.rs`: the dragons get the level's difficulty.
+- **Checked with javap (26.3):** `TargetingConditions.test` (a combat test with a source asks `source.canAttack(target)`), `DragonHoldingPatternPhase.onCrystalDestroyed` (`canAttack`).
+- **Tests:** `ender_dragon`: `in_peaceful_the_dragon_strafes_watches_and_charges_nobody`. Five dragons circle 2000 ticks each beside a survival player and never strafe. A broken crystal turns the dragon on nobody. A perched dragon that roars at a player 7.5 blocks away at tick 26 in normal only takes off at tick 100 in peaceful. The other test `DragonEnv`s are not peaceful.
+- **Decisions:**
+  - **The wings still push players in peaceful**, as vanilla's `NO_CREATIVE_OR_SPECTATOR` has no difficulty test. The damage of the wings and the head is already nothing in peaceful (`difficulty_scaled`).
+  - **A strafe already under way keeps its player** when the difficulty turns peaceful, as vanilla keeps `attackTarget`.
+- **Test steps** (survival; MW2 weapons):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x5calm` (a new world), `IW4L_MINECRAFT_DIMENSION=the_end` and the kit below. Type `/difficulty peaceful`, walk onto the main island and stand on the podium's rim about 5 blocks from the bedrock pillar.
+  2. Watch the dragon for a few minutes: it circles and now and then lands on the pillar, but it never swoops at you or spits a fireball. When it perches it does not turn to you, roar or breathe; it takes off again after 5 seconds. **Screenshot 1** (the dragon perched, no purple cloud).
+  3. Shoot a pillar crystal: the dragon does not turn on you.
+  4. Type `/difficulty normal`: within a few circles it swoops at you and spits fireballs again (entry 38).
+  5. Remove the `IW4L_MINECRAFT_DIMENSION` line afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:cobblestone*64,minecraft:water_bucket,minecraft:diamond_sword+sharpness=5
+```
+
+### 48. Stray blank lines from the X5 commits are gone
+
+Previous commit: 42469747
+
+- **Defect:** the X5 commits added blank lines that no change needed, against the fork's rule to edit only the lines a change needs. One was inside the existing `ghast_render::append_fireballs(` call in `minecraft_survival/src/entities.rs`, one in `fly_toward` in `ender_dragon.rs`, one before `self.end_events(events)` in `ServerSim`'s crystal handling, and two at the end of `server.rs`.
+- **Changed:** those five blank lines are removed. No code or test changes.
+- **Tests:** none needed; `check -p launcher` is green.
+- **Test steps:** none (no behaviour change).
+
+## Final check of the fourth run
+
+### 49. The track END log sums up its fourth final check
+
+Previous commit: 2fa096de
+
+- **Commits of the fourth run** (since 88cb6d83): f3608d26 (E3-15), 011bc34c (E3-16), 38da4a26 (X5-phases summary), 4cb7fa52 and 81dec3e3 (E3-17), 0733e118 (E3-20), 65a0d56e (bottling dragon's breath), 600c03d2 (state doc), a76fe438 (kit count), 42469747 and 2fa096de (review fixes), and this entry.
+- **Touched crates** (`git diff --stat 88cb6d83..2fa096de`): `minecraft_terrain`, `minecraft_survival`, `render_anim`.
+- **Clippy:** `clippy -p minecraft_terrain -p minecraft_survival -p render_anim --locked --all-targets -- -A clippy::approx_constant` has no finding on a line the fourth run added: each location reported in its files (`mesh.rs`, `server.rs`, `entities.rs`, `minecraft_world.rs`) blames to 88cb6d83 or earlier (`git blame 88cb6d83..2fa096de`), and nothing is reported in `ender_dragon.rs`, `dragon_fireball.rs`, `dragon_egg.rs`, `effect_cloud.rs`, `bottle.rs`, `bucket.rs` or `dragon_render.rs`. No fix needed.
+- **Tests** (`test -p <crate> --locked`): `minecraft_terrain` 775 (4 ignored), `minecraft_survival` 333 with the vanilla world test, and `render_anim` 73 pass, none failed. The full suite runs at merge time.
+- **Test steps:** none new. The owner's test of the fourth run is, in order (survival, `/difficulty normal` unless said otherwise, `IW4L_MINECRAFT_DIMENSION=the_end` for each world and removed afterwards):
+  1. The X5-phases group test of entry 40 in the new world `x5`: strafes, fireballs and their clouds, the perch, the roar, the flame, the takeoff and the charge; screenshots 1 to 5.
+  2. The X5-body-egg group test of entry 45 in the new world `x5b`: the wings and the head, the block breaking, bottling the breath, then the kill and the egg's teleport; screenshots 6 to 9 (entry 45's 1 to 4).
+  3. Entry 47 in the new world `x5calm`: a peaceful dragon circles and perches but never attacks; screenshot 10 (entry 47's 1).
+- **Kit for the fourth run** (20 stacks). A kit goes to a player only in a world where they have no inventory yet, so this one line serves every world above (its items cover each kit from entry 38 to 47):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:diamond_sword+sharpness=5,minecraft:diamond_pickaxe+efficiency=5,minecraft:cobblestone*256,minecraft:oak_planks*128,minecraft:end_stone*128,minecraft:obsidian*64,minecraft:glass_bottle*16,minecraft:water_bucket,minecraft:dragon_egg,minecraft:torch*16
+```
