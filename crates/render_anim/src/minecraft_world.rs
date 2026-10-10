@@ -1685,7 +1685,8 @@ fn update(
         globals.level_ticks += mob_ticks;
         globals.advance_weather(&[*dimension], mob_ticks);
         for _ in 0..mob_ticks {
-            for sound in entities.animate_tick(&terrain.scene, feet) {
+            let rain = entities.rain_tick(&terrain.scene, eye);
+            for sound in entities.animate_tick(&terrain.scene, feet).into_iter().chain(rain) {
                 if let Some(sounds) = sounds.as_mut() {
                     sounds.play(&world.packs, sound.event, Some(at(sound.at)), sound.volume, sound.pitch);
                 }

@@ -19,6 +19,7 @@ const EMITTER_TICKS: i32 = 8;
 const EMITTER_FLASHES: usize = 6;
 const MAX_BLAST_PARTICLES: usize = 512;
 const SMALL_BLAST_RADIUS: f32 = 2.0;
+const SPLASH_SPRITES: u32 = 4;
 
 type Boxes = Vec<([f64; 3], [f64; 3])>;
 
@@ -33,6 +34,7 @@ pub enum Kind {
     Explosion,
     ExplosionEmitter,
     HappyVillager,
+    Rain,
 }
 
 #[derive(Clone, Debug)]
@@ -174,6 +176,47 @@ impl Particle {
         particle
     }
 
+    fn rain(at: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::Rain, at, DVec3::ZERO, random);
+        particle.sprite = random.next_int(SPLASH_SPRITES);
+        particle.velocity.x *= f64::from(0.3_f32);
+        particle.velocity.y = f64::from(random.next_float() * 0.2 + 0.1);
+        particle.velocity.z *= f64::from(0.3_f32);
+        particle.size = f64::from(0.01_f32);
+        particle.gravity = 0.06;
+        particle.lifetime = (8.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32;
+        particle
+    }
+
+    fn drip<S: Scene + ?Sized>(
+        &mut self,
+        scene: &S,
+        cache: &mut HashMap<BlockPos, Boxes>,
+        random: &mut LegacyRandom,
+    ) -> bool {
+        self.previous = self.position;
+        let left = self.lifetime;
+        self.lifetime -= 1;
+        if left <= 0 {
+            return false;
+        }
+        self.velocity.y -= f64::from(self.gravity);
+        self.travel(self.velocity, scene, cache);
+        self.velocity *= f64::from(0.98_f32);
+        if self.on_ground {
+            if random.next_float() < 0.5 {
+                return false;
+            }
+            self.velocity.x *= f64::from(0.7_f32);
+            self.velocity.z *= f64::from(0.7_f32);
+        }
+        let cell = self.position.floor();
+        let pos = (cell.x as i32, cell.y as i32, cell.z as i32);
+        let inside = self.position - cell;
+        let top = crate::rain::surface(scene, pos, inside.x, inside.z);
+        !(top > 0.0 && self.position.y < cell.y + top)
+    }
+
     fn linger(&mut self) -> bool {
         self.previous = self.position;
         let left = self.lifetime;
@@ -214,6 +257,7 @@ impl Particle {
             }
             Kind::ExplosionEmitter => return None,
             Kind::HappyVillager => "glint".to_owned(),
+            Kind::Rain => format!("splash_{}", self.sprite),
         };
         ResourceId::parse(&format!("minecraft:particle/{name}")).ok()
     }
@@ -228,7 +272,8 @@ impl Particle {
             | Kind::Poof
             | Kind::Explosion
             | Kind::ExplosionEmitter
-            | Kind::HappyVillager => self.quad_size,
+            | Kind::HappyVillager
+            | Kind::Rain => self.quad_size,
         }
     }
 
@@ -429,6 +474,8 @@ pub struct AmbientParticles {
     random: LegacyRandom,
     campfires: (Option<u64>, Vec<BlockPos>),
     blasts: Vec<(DVec3, f32, usize)>,
+    temperature: minecraftoss_generator::temperature::BiomeTemperature,
+    rain_sound_time: i32,
 }
 
 impl AmbientParticles {
@@ -438,7 +485,40 @@ impl AmbientParticles {
             random: LegacyRandom::new(seed),
             campfires: (None, Vec::new()),
             blasts: Vec::new(),
+            temperature: minecraftoss_generator::temperature::BiomeTemperature::new(),
+            rain_sound_time: 0,
         }
+    }
+
+    pub fn rain_tick(
+        &mut self,
+        scene: &HandcraftedScene,
+        camera: DVec3,
+        rain_level: f32,
+    ) -> Vec<crate::display_ticks::AmbientSound> {
+        if rain_level <= 0.0 {
+            return Vec::new();
+        }
+        let height = |x, z| crate::rain::motion_blocking_height(scene, x, z);
+        let temperature = &self.temperature;
+        let rains = |pos| crate::rain::rains_at(scene, temperature, pos);
+        let world = crate::rain::RainWorld {
+            height: &height,
+            min_y: scene.vertical_range().start,
+            rains_at: &rains,
+        };
+        let tick = crate::rain::rain_tick(
+            scene,
+            &world,
+            camera,
+            rain_level,
+            &mut self.random,
+            &mut self.rain_sound_time,
+        );
+        for (kind, at, motion) in tick.particles {
+            self.add(kind, at, motion);
+        }
+        tick.sounds
     }
 
     pub fn explosion(&mut self, center: DVec3, radius: f32, blocks: usize, interacts: bool) {
@@ -588,6 +668,7 @@ impl AmbientParticles {
             Kind::Explosion => Particle::huge_explosion(at, motion.x, random),
             Kind::ExplosionEmitter => Particle::emitter(at, random),
             Kind::HappyVillager => Particle::happy_villager(at, motion, random),
+            Kind::Rain => Particle::rain(at, random),
         };
         self.particles.push(particle);
         if self.particles.len() > CAP {
@@ -613,6 +694,7 @@ impl AmbientParticles {
             }
             Kind::Explosion => particle.hold(),
             Kind::HappyVillager => particle.linger(),
+            Kind::Rain => particle.drip(scene, &mut cache, random),
             Kind::CosySmoke | Kind::SignalSmoke => particle.drift(scene, &mut cache, random),
             _ => {
                 let alive = particle.tick(scene, &mut cache);
@@ -1094,6 +1176,31 @@ mod tests {
         assert!((particles.particles[0].position - at).length() < 0.5);
         particles.tick(&scene);
         assert!(particles.is_empty());
+    }
+
+    #[test]
+    fn rain_splashes_hop_up_and_die_on_the_ground_or_in_water() {
+        let mut particles = AmbientParticles::new(18);
+        particles.add(Kind::Rain, DVec3::new(0.5, 65.0, 0.5), DVec3::ZERO);
+        let splash = particles.particles[0].clone();
+        assert!(splash.velocity.y >= 0.1 && splash.velocity.y < 0.3 + 1e-6);
+        assert!(splash.velocity.x.abs() < 0.1 && splash.sprite < 4);
+        assert!((8..=40).contains(&splash.lifetime));
+        let scene = Blocks(HashMap::from([((0, 64, 0), Block::new("minecraft:stone"))]));
+        for _ in 0..60 {
+            particles.tick(&scene);
+        }
+        assert!(particles.is_empty());
+        let water = Blocks(HashMap::from([(
+            (0, 64, 0),
+            Block::new("minecraft:water").with("level", "0"),
+        )]));
+        particles.add(Kind::Rain, DVec3::new(0.5, 64.5, 0.5), DVec3::ZERO);
+        particles.tick(&water);
+        assert!(
+            particles.is_empty(),
+            "a splash inside water is gone at once"
+        );
     }
 
     #[test]

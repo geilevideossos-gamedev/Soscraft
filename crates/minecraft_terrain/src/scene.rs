@@ -379,6 +379,25 @@ impl HandcraftedScene {
     pub fn block_count(&self) -> usize {
         self.blocks.values().map(|chunk| chunk.len()).sum()
     }
+    pub fn column_top(&self, x: i32, z: i32, solid: impl Fn(&Block) -> bool) -> Option<i32> {
+        let chunk = (x.div_euclid(16), z.div_euclid(16));
+        let edited = self
+            .blocks
+            .get(&chunk)
+            .into_iter()
+            .flat_map(|blocks| blocks.range((x, i32::MIN, i32::MIN)..=(x, i32::MAX, i32::MAX)))
+            .filter(|(&(_, _, bz), block)| bz == z && solid(block))
+            .map(|(&(_, y, _), _)| y)
+            .max();
+        let generated = self.generated.get(&chunk).and_then(|column| {
+            let base = column.min_section_y();
+            column.sections().iter().enumerate().rev().filter(|(_, section)| !section.is_empty()).find_map(|(index, _)| {
+                let bottom = (base + index as i32) * 16;
+                (bottom..bottom + 16).rev().find(|&y| Scene::block(self, (x, y, z)).is_some_and(&solid))
+            })
+        });
+        edited.max(generated)
+    }
     pub fn campfires(&self) -> Vec<BlockPos> {
         let edited = self
             .blocks

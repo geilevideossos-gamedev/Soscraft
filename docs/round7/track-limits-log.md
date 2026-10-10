@@ -172,3 +172,27 @@ IW4L_MINECRAFT_KIT=minecraft:flint_and_steel,minecraft:netherrack*8,minecraft:sh
 ```
 IW4L_MINECRAFT_KIT=minecraft:lava_bucket,minecraft:netherrack*4,minecraft:flint_and_steel,minecraft:totem_of_undying,minecraft:cobblestone*64
 ```
+
+### 9. Minecraft rain splashes on the ground and patters
+
+- **Changed:**
+  - New `minecraft_terrain/src/rain.rs`: `rain_tick` is 26.3's `ClientLevel.tickWeatherEffects` (checked with javap; it moved there from `WeatherEffectRenderer`). With weather radius 10 it tries (int)(0.225 x 21 x 21 x rain^2) columns a tick (99 in full rain): a random column within 10 blocks of the camera, its `MOTION_BLOCKING` height, kept when above the world bottom, within 10 blocks up or down of the camera and raining there (`Biome.getPrecipitationAt`: precipitation and a height-adjusted temperature of 0.15 or more, from the vendored `BiomeTemperature` noises); a `rain` particle (or `smoke` over lava, magma or a lit campfire) at a random spot of the block below, at the top of its collision shape over that spot or its fluid surface, whichever is higher. Then `random.nextInt(3) < rainSoundTime++` plays `weather.rain` (0.2, pitch 1) at the last splash's block, or `weather.rain.above` (0.1, pitch 0.5) when that block is more than 1 above the camera and the camera's own column is covered.
+  - `motion_blocking_height` (`Heightmap.Types.MOTION_BLOCKING`: a legacy-solid block other than cobwebs and bamboo saplings, or any fluid) uses the new `HandcraftedScene::column_top`, which looks at the column's edits and walks the generated chunk's non-empty sections from the top, so a tick stays cheap.
+  - `ambient_particles.rs`: `Rain` (`WaterDropParticle`): a random `splash_0` to `splash_3`, hopping up 0.1 to 0.3 with sideways motion x 0.3, gravity 0.06 a tick, friction 0.98, box 0.01, lifetime 8 / (0.2 + 0.8 r) counted down; on the ground it vanishes half the time, and it vanishes inside a block's collision shape or fluid. `AmbientParticles::rain_tick` keeps vanilla's `rainSoundTime` and the temperature noises.
+  - `entities.rs`: `rain_tick(scene, camera)` with the level's rain level; `minecraft_world.rs` runs it with the display tick each client tick and plays its sounds with the display tick's (two lines).
+- **Tests:** `rain`: `full_rain_drops_ninety_nine_splashes_on_the_ground_around_the_camera`, `no_splashes_on_snow_or_ground_far_above_or_below`, `rain_on_lava_magma_or_a_lit_campfire_smokes_and_slabs_catch_it_halfway`, `the_rain_sound_comes_every_few_ticks_from_the_last_splash_spot`, `rain_heard_on_a_roof_above_the_camera_is_muffled`, `the_heightmap_finds_the_top_motion_blocking_block`. `ambient_particles`: `rain_splashes_hop_up_and_die_on_the_ground_or_in_water`.
+- **Decisions:**
+  - The camera is the player's eye; in third person vanilla uses the camera position, a few blocks off.
+  - The temperature uses sea level 63, the overworld's, since only levels with weather get a rain level and only the overworld has weather.
+  - The biome is the quart-resolution noise biome at the block, as the rain fog already uses, not vanilla's zoomed `BiomeManager` lookup; near biome borders the rain line can be up to a few blocks off.
+  - The falling streaks (`WeatherEffectRenderer`) and the rain fog stay as they are: drawing streaks is a new pass in `render_gpu`, which this track leaves to the End track's sky work.
+- **Test steps:**
+  1. `/weather rain` in a plains biome: small water splashes pop up from the ground all around, and rain patters. **Screenshot 14** looking down at the grass.
+  2. Stand under a roof (place a few blocks two above your head): the patter turns into the duller "rain on roof" sound now and then.
+  3. Walk to a lava pool or place a magma block in the rain: small smoke puffs rise from them instead of splashes.
+  4. In a snowy biome (`/locate biome minecraft:snowy_plains`, then `/tp` there): no splashes and no rain sound.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:magma_block*4,minecraft:lava_bucket,minecraft:campfire
+```
