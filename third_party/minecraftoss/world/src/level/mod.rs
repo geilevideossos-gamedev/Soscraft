@@ -197,6 +197,7 @@ pub struct Level<'a> {
     pub tnt_explodes: bool,
     pub tnt_explosion_drop_decay: bool,
     pub explosion_effects: Vec<explosion::ExplosionEffect>,
+    pub level_events: Vec<(i32, BlockPos, i32)>,
     /// Entity-ticking chunks in vanilla's iteration order, when known.
     pub ticking_chunks: Option<Vec<ChunkPos>>,
     /// Chunk light solved for readers without `&mut` (`World::light`).
@@ -287,6 +288,7 @@ impl<'a> Level<'a> {
             tnt_explodes: true,
             tnt_explosion_drop_decay: false,
             explosion_effects: Vec::new(),
+            level_events: Vec::new(),
             ticking_chunks: None,
             random_counts: Default::default(),
             lazy_light: std::cell::RefCell::new(Default::default()),

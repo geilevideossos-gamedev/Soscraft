@@ -378,6 +378,17 @@ fn pour(
     })
 }
 
+pub fn evaporated(outcome: &ItemUse) -> Option<Pos> {
+    let Change::Server(pos, ItemOnBlock::EmptyBucket { water: true }) = outcome.change else {
+        return None;
+    };
+    outcome
+        .sounds
+        .iter()
+        .any(|sound| sound.event == EVAPORATE_SOUND)
+        .then_some(pos)
+}
+
 fn empty_contents(
     player: &Player,
     world: &impl World,
@@ -620,9 +631,14 @@ mod tests {
         assert_eq!(water.sounds[0].event, EVAPORATE_SOUND);
         assert_eq!(water.sounds[0].volume, 0.5);
         assert!((water.sounds[0].pitch - (2.6 + 0.5 * 0.8)).abs() < 1e-6);
+        assert!(evaporated(&water).is_some());
         assert_eq!(water.result.map(|r| r.id), Some(BUCKET.to_owned()));
         let lava = bucket_use(&player, &world, &rules, &held(LAVA_BUCKET), no_random).unwrap();
         assert_eq!(events(&lava), vec![EMPTY_LAVA_SOUND]);
+        assert_eq!(evaporated(&lava), None);
+        let kept = Rules { evaporates: false };
+        let poured = bucket_use(&player, &world, &kept, &held(WATER_BUCKET), no_random).unwrap();
+        assert_eq!(evaporated(&poured), None);
     }
 
     #[test]

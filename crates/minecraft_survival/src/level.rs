@@ -127,6 +127,9 @@ pub fn finish_item_use(
     used: SentItemUse,
     consumes: bool,
 ) -> Vec<Sound> {
+    if let Some(pos) = minecraft_terrain::bucket::evaporated(&used.outcome) {
+        entities.evaporation_smoke(pos);
+    }
     let mut heard = used.outcome.sounds;
     let spends = consumes || used.outcome.result.is_some();
     if inventory

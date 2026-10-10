@@ -1802,6 +1802,7 @@ pub struct Output {
     /// Creeper blasts this tick (`ClientboundExplodePacket`).
     pub explosions: Vec<minecraftoss_entities::creeper::CreeperExplosion>,
     pub explosion_effects: Vec<minecraftoss_world::level::explosion::ExplosionEffect>,
+    pub level_events: Vec<(i32, (i32, i32, i32), i32)>,
     /// Sounds mobs made this tick.
     pub mob_sounds: Vec<minecraftoss_entities::world::MobSound>,
     /// Items the player picked up: (entity ID, position, item, count, components).
@@ -2203,6 +2204,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.potion_breaks.extend(sim.take_potion_breaks());
                     out.explosions.extend(sim.take_explosions());
                     out.explosion_effects.extend(sim.take_explosion_effects());
+                    out.level_events.extend(sim.level.level_events.drain(..).map(|(id, pos, data)| (id, (pos.x, pos.y, pos.z), data)));
                     out.mob_sounds.extend(sim.mobs.take_sounds());
                     out.mob_sounds.extend(sim.level.sounds.drain(..).map(|s| minecraftoss_entities::world::MobSound { event: s.event.to_owned(), position: glam::DVec3::from_array(s.pos), volume: s.volume, pitch: s.pitch, category: "ambient" }));
                     sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
@@ -4792,6 +4794,7 @@ mod tests {
         assert!(server.item_on_block((8, 200, 8), ItemOnBlock::EmptyBucket { water: false }));
         let hardened = server.take_changes().into_iter().find(|(pos, _)| *pos == (8, 200, 8)).and_then(|(_, b)| b);
         assert_eq!(hardened.map(|b| b.id.key()), Some("minecraft:obsidian".to_owned()), "lava poured beside the flowing water hardens");
+        assert_eq!(server.level.level_events.drain(..).collect::<Vec<_>>(), vec![(1501, minecraftoss_core::BlockPos::new(8, 200, 8), 0)], "and fizzes");
     }
 
     #[test]

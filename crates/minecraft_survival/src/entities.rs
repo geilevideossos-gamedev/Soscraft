@@ -638,6 +638,20 @@ impl Entities {
         tick.sounds
     }
 
+    fn present(&mut self, effects: minecraft_terrain::display_ticks::DisplayTick) {
+        for sound in effects.sounds {
+            self.sounds.push((sound.event.to_owned(), DVec3::from_array(sound.at), sound.volume, sound.pitch));
+        }
+        for (kind, at, motion) in effects.particles {
+            self.ambient.add(kind, at, motion);
+        }
+    }
+
+    pub fn evaporation_smoke(&mut self, pos: (i32, i32, i32)) {
+        let effects = minecraft_terrain::level_events::evaporation(pos, &mut self.random);
+        self.present(effects);
+    }
+
     pub fn campfire_tick(&mut self, scene: &HandcraftedScene, food: impl Fn((i32, i32, i32)) -> [bool; 4]) {
         self.ambient.campfire_tick(scene, food);
     }
@@ -878,6 +892,10 @@ impl Entities {
             for blast in &output.explosions {
                 let pitch = (1.0 + (self.random.next_float() - self.random.next_float()) * 0.2) * 0.7;
                 self.sounds.push(("minecraft:entity.generic.explode".to_owned(), blast.position, 4.0, pitch));
+            }
+            for &(id, pos, data) in &output.level_events {
+                let effects = minecraft_terrain::level_events::level_event(id, pos, data, &mut self.random);
+                self.present(effects);
             }
             for effect in &output.explosion_effects {
                 self.ambient.explosion(DVec3::from_array(effect.center), effect.radius, effect.blocks, effect.interacts);

@@ -95,3 +95,24 @@ IW4L_MINECRAFT_KIT=minecraft:campfire*4,minecraft:soul_campfire,minecraft:hay_bl
 ```
 IW4L_MINECRAFT_KIT=minecraft:tnt*16,minecraft:flint_and_steel,minecraft:creeper_spawn_egg*2
 ```
+
+### 5. Minecraft lava fizzes when water hardens it, and water steams away in the Nether
+
+- **Changed:**
+  - Vendored `level/fluid.rs`: the level records vanilla's level event 1501 (`LiquidBlock.fizz`, `LavaFluid.fizz`) in `Level.level_events` (one field in `level/mod.rs`) where lava turns into obsidian or cobblestone beside water and into basalt over soul soil beside blue ice (`shouldSpreadLiquid`), where lava flowing down into water makes stone (`LavaFluid.spreadTo`, which fizzes whether or not the water was a block of water), and where lava flowing into a block destroys it (`LavaFluid.beforeDestroyingBlock`). `server.rs` sends them as `Output.level_events`.
+  - New `minecraft_terrain/src/level_events.rs`: the client's `LevelEventHandler` for the events handled so far. 1501 plays `block.lava.extinguish` at the block centre (volume 0.5, pitch 2.6 + (r - r) x 0.8) and puts 8 `large_smoke` at y + 1.2 over random spots of the block. `evaporation` is 26.3's `BucketItem.emptyContents` particle packet for water that evaporates: 8 `large_smoke` at random spots inside the block (`RandomizationType.ALTERNATIVE` with a 1 x 1 x 1 spread from the block corner and no speed).
+  - `bucket.rs`: `evaporated(outcome)` names the block where a water bucket's use evaporated. `minecraft_survival/src/level.rs` (`finish_item_use`) puffs the steam once the server took the use, and `entities.rs` presents level events and the steam (`present`, `evaporation_smoke`).
+- **Tests:** `level_events`: `lava_fizzes_with_a_hiss_and_eight_puffs_over_the_block`, `other_level_events_do_nothing_yet`, `evaporating_water_puffs_eight_smokes_inside_the_block`. `bucket`: `water_evaporates_where_the_dimension_says_so_but_lava_does_not` checks `evaporated`. `server`: `a_poured_bucket_flows_and_an_empty_one_takes_the_source_back` checks the fizz of the lava that hardens into obsidian.
+- **Decisions:**
+  - Level event 1009 (fire put out by a player or a splash) is only a sound in vanilla, so "fire extinguish" needs no particles. CampfireBlock.dowse's 20 smoke bursts are made by the client that douses (bucket or shovel); they come with the shovel dousing item of the "blocks and items" group, which owns that client path, and are recorded as missing in the state doc.
+  - Level events are a list of (id, position, data) as vanilla sends them, so later effects (bone meal 1505) use the same path.
+- **Test steps:**
+  1. Pour the water bucket next to a lava pool: where the water meets lava, the lava turns to obsidian or cobblestone with a hiss and a puff of dark smoke. **Screenshot 8.**
+  2. Pour lava from a ledge onto water below: stone forms with the same hiss and smoke.
+  3. Pour lava next to a torch on the ground so it flows over it: the torch drops with a hiss.
+  4. In the Nether (`/execute in minecraft:the_nether run tp @s ~ 100 ~` or a portal), pour the water bucket on the ground: a hiss and a puff of steam-smoke, and no water. **Screenshot 9.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:water_bucket*2,minecraft:lava_bucket*2,minecraft:bucket*2,minecraft:torch*4,minecraft:cobblestone*32
+```

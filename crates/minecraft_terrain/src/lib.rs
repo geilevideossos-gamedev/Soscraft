@@ -5,6 +5,7 @@ pub use minecraftoss_core::fast_hash;
 pub use minecraftoss_world::game_rules;
 pub use minecraftoss_world::level_storage;
 pub mod ambient_particles;
+pub mod level_events;
 pub mod block_particles;
 #[cfg(test)]
 mod test_dir;
