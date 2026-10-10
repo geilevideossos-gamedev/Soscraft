@@ -1473,6 +1473,7 @@ impl ServerSim {
         let mut experience = Vec::new();
         let mob_boxes: Vec<(u64, (glam::DVec3, glam::DVec3))> = crate::thrown::targets(&self.mobs).iter().map(|target| (target.id, (target.min, target.max))).collect();
         let mut mob_hits = Vec::new();
+        let griefing = self.mobs.mob_griefing();
         {
             let Self { level, states, mob_tables, dragons, fight_dragon, alive_crystals, end_sounds, end_hits, dragons_killed, crystals: self_crystals, fight, dragon_drops, dragon_fireballs, clouds, players_pushed, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
@@ -1483,13 +1484,35 @@ impl ServerSim {
                 level.registries().blocks.is_air(level.block(minecraftoss_core::BlockPos::new(x, y, z)))
             };
             let crystals: Vec<(u64, glam::DVec3)> = self_crystals.list.iter().map(|crystal| (crystal.id, crystal.position)).collect();
+            let (immune, transparent) = {
+                let level = world.level.borrow();
+                (level.registries().block_tags.id("minecraft:dragon_immune"), level.registries().block_tags.id("minecraft:dragon_transparent"))
+            };
+            let wall = |x: i32, y: i32, z: i32| {
+                let level = world.level.borrow();
+                let state = level.block(minecraftoss_core::BlockPos::new(x, y, z));
+                let registries = level.registries();
+                let tagged = |tag: Option<minecraftoss_core::tags::TagId>| tag.is_some_and(|tag| registries.block_in_tag(state, tag));
+                if registries.blocks.is_air(state) || tagged(transparent) {
+                    crate::ender_dragon::Wall::Pass
+                } else if tagged(immune) {
+                    crate::ender_dragon::Wall::Immune
+                } else if level.fluid_legacy_block(level.fluid_state(state)) == state {
+                    crate::ender_dragon::Wall::Stays
+                } else {
+                    crate::ender_dragon::Wall::Breaks
+                }
+            };
             for dragon in &mut dragons.list {
                 let origin = dragon.fight_origin;
                 let top = || world.level.borrow().height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlocking, origin.0, origin.2);
                 let ours = *fight_dragon == Some(dragon.uuid);
                 let death_experience = crate::ender_dragon::death_experience(ours, fight.previously_killed, *dragon_drops);
-                let env = crate::ender_dragon::DragonEnv { height: &height, podium_top: &top, alive_crystals: ours.then_some(*alive_crystals), players: &bodies, crystals: &crystals, death_experience, sees: &sees, empty: &empty, mobs: &mob_boxes };
+                let env = crate::ender_dragon::DragonEnv { height: &height, podium_top: &top, alive_crystals: ours.then_some(*alive_crystals), players: &bodies, crystals: &crystals, death_experience, sees: &sees, empty: &empty, mobs: &mob_boxes, wall: &wall, griefing };
                 let events = dragon.tick(&env);
+                for &(x, y, z) in &events.broken {
+                    world.level.borrow_mut().remove_block(minecraftoss_core::BlockPos::new(x, y, z), false);
+                }
                 players_pushed.extend(events.player_pushes);
                 mob_hits.extend(events.mob_hits.into_iter().map(|(id, push, damage)| (id, push, damage, dragon.position)));
                 end_sounds.extend(events.sounds.into_iter().map(|(event, position, volume, pitch)| minecraftoss_entities::world::MobSound { event: event.to_owned(), position, volume, pitch, category: "hostile" }));
@@ -7440,6 +7463,46 @@ mod tests {
         let enderman = &server.mobs.endermen()[0];
         assert_eq!(enderman.enderman.health, 35.0, "the wing hurts it for 5");
         assert!(enderman.enderman.body.velocity.x < -0.5, "thrown away from the dragon");
+    }
+
+    #[test]
+    fn the_dragon_breaks_cobblestone_it_flies_through_but_not_end_stone() {
+        use crate::ender_dragon::{part_box, BODY, HEAD, NECK};
+        let Some(mut server) = end_world((-5..=4).flat_map(|x| (-5..=4).map(move |z| (x, z)))) else { return };
+        server.find_or_create_dragon((0, 0, 0));
+        server.dragons.list[0].position = glam::DVec3::new(0.5, 110.0, 0.5);
+        let away = end_player([60.5, 110.0, 60.5]);
+        let fill = |server: &mut ServerSim, name: &str| {
+            let state = server.level.registries().blocks.parse_state(name).unwrap();
+            for x in -12..=12 {
+                for y in 100..=120 {
+                    for z in -12..=12 {
+                        server.level.set_block(minecraftoss_core::BlockPos::new(x, y, z), state, update::CLIENTS, update::LIMIT);
+                    }
+                }
+            }
+        };
+        fill(&mut server, "minecraft:cobblestone");
+        server.take_changes();
+        server.tick_end(&[away]);
+        let parts = server.dragons.list[0].parts;
+        let inside = |pos: BlockPos| {
+            [HEAD, NECK, BODY].iter().any(|&part| {
+                let (low, high) = part_box(parts[part], part);
+                (low.x.floor() as i32..=high.x.floor() as i32).contains(&pos.0) && (low.y.floor() as i32..=high.y.floor() as i32).contains(&pos.1) && (low.z.floor() as i32..=high.z.floor() as i32).contains(&pos.2)
+            })
+        };
+        let changes = server.take_changes();
+        let broken: Vec<BlockPos> = changes.iter().filter(|(_, block)| block.is_none()).map(|(pos, _)| *pos).collect();
+        assert!(broken.len() > 50, "{}", broken.len());
+        assert!(broken.iter().all(|&pos| inside(pos) && block_name(&server, pos) == "minecraft:air"));
+        assert!(!server.dragons.list[0].in_wall, "cobblestone does not hold it");
+        fill(&mut server, "minecraft:end_stone");
+        server.take_changes();
+        server.tick_end(&[away]);
+        let near = |&(pos, _): &(BlockPos, Option<Block>)| (-12..=12).contains(&pos.0) && (100..=120).contains(&pos.1) && (-12..=12).contains(&pos.2);
+        assert!(!server.take_changes().iter().any(near), "end stone is dragon immune");
+        assert!(server.dragons.list[0].in_wall);
     }
 
     #[test]

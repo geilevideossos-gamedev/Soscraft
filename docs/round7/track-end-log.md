@@ -1178,3 +1178,29 @@ Previous commit: 38da4a26
 ```
 IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:cobblestone*128,minecraft:water_bucket,minecraft:diamond_sword+sharpness=5
 ```
+
+### 42. Minecraft ender dragon breaks blocks it flies through (E3-17)
+
+Previous commit: 4cb7fa52
+
+- **Changed:**
+  - `minecraft_terrain/src/ender_dragon.rs`: `checkWalls` at the end of `aiStep`, on the head, neck and body boxes where they now are (the order of vanilla, each box checked even after a hit). Each block cell the box touches (`floor` of its corners, inclusive) is left alone when it is air or `#dragon_transparent` (light, fire); a `#dragon_immune` block, or any block while `mob_griefing` is off, holds the dragon; any other block is removed (`removeBlock`, no drops), unless removing it changes nothing (a water or lava block, which becomes itself). A box that removed something sends level event 2008 (an explosion particle) at a cell drawn from the dragon's random within the box. The dragon is `inWall` when a box was held: it flaps at half speed and flies at 0.8 of its step, as the flight code already did with the flag. `Wall` (`Pass`, `Immune`, `Breaks`, `Stays`), `DragonEnv.wall` and `griefing`, `DragonEvents.broken` and `wall_bursts`. A block one box removed counts as gone for the next box of the same tick, as in vanilla. The lines entry 41 added are now as `rustfmt` lays them out.
+  - `minecraft_terrain/src/server.rs` (End region): the dragons see each block through the vanilla tags `#dragon_immune` and `#dragon_transparent` (read from the data at runtime) and the level's `mob_griefing` rule; the blocks a dragon broke are removed from the level at once (`Level::remove_block`), so the client gets them as block changes.
+- **Checked with javap (26.3):** `EnderDragon.checkWalls` (the cell loop, `isAir`, `DRAGON_TRANSPARENT`, `MOB_GRIEFING`, `DRAGON_IMMUNE`, `removeBlock(pos, false)`, the random cell for level event 2008), `EnderDragon.aiStep` (`inWall = checkWalls(head) | checkWalls(neck) | checkWalls(body)` after the parts tick), `LevelEventHandler` (2008: `EXPLOSION` at the cell's centre), the tags `dragon_immune` and `dragon_transparent` of the 26.3 data.
+- **Tests:** `ender_dragon`: `the_dragon_breaks_what_its_head_neck_and_body_fly_through_but_not_immune_blocks` (every cell of the three boxes once, head first, a burst inside each box, not held; a single block in the body box alone; immune blocks, or griefing off, hold it without breaking; water neither breaks nor holds; a held dragon flies a shorter step). `server`: `the_dragon_breaks_cobblestone_it_flies_through_but_not_end_stone` (an End level of seed 0 filled with cobblestone around the dragon: more than 50 blocks broken, all within its head, neck and body, sent as air; filled with end stone: nothing changes and the dragon is held).
+- **Decisions:**
+  - **No drops:** vanilla's `removeBlock` drops nothing, so nothing drops here either (the brief's "drops vanilla gives" are none).
+  - **Not drawn:** the explosion particle of level event 2008 (no explosion particle is drawn in the Minecraft world yet, not even for TNT); the dragon still draws its cell from its random (`DragonEvents.wall_bursts`), but the server does not send it to the clients yet.
+  - **Unloaded cells** count as air (vanilla would load the chunk; the dragon only flies over the loaded arena).
+- **Test steps** (survival; `/difficulty normal`):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x5walls` (a new world), `IW4L_MINECRAFT_DIMENSION=the_end` and the kit below. Start on the obsidian platform and walk onto the main island.
+  2. Under the dragon's circle (about 40 blocks from the centre), build a wall of cobblestone and oak planks about 6 wide and 20 high, the top at about 80 to 90 (watch the height the dragon passes at). Next to it, build the same wall from end stone and obsidian.
+  3. Wait for the dragon to pass through the cobblestone wall: it tears a dragon-shaped hole in it without dropping anything. **Screenshot 1** (the hole).
+  4. When it passes through the end stone wall: nothing breaks, and it slows down while inside.
+  5. Type `/gamerule mob_griefing false` and repair the cobblestone wall: the dragon now passes through it without breaking it, slowed down. `/gamerule mob_griefing true` afterwards.
+  6. Remove the `IW4L_MINECRAFT_DIMENSION` line afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*256,minecraft:oak_planks*128,minecraft:end_stone*128,minecraft:obsidian*64,minecraft:golden_apple*16,minecraft:diamond_chestplate,minecraft:diamond_boots+feather_falling=4,minecraft:diamond_pickaxe+efficiency=5
+```

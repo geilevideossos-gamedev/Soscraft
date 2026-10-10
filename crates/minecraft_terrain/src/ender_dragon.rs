@@ -556,6 +556,16 @@ pub struct DragonEnv<'a> {
     pub sees: &'a dyn Fn(DVec3, DVec3) -> bool,
     pub empty: &'a dyn Fn(i32, i32, i32) -> bool,
     pub mobs: &'a [(u64, (DVec3, DVec3))],
+    pub wall: &'a dyn Fn(i32, i32, i32) -> Wall,
+    pub griefing: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wall {
+    Pass,
+    Immune,
+    Breaks,
+    Stays,
 }
 
 pub fn wing_push(center: DVec3, feet: DVec3) -> DVec3 {
@@ -708,6 +718,8 @@ pub struct DragonEvents {
     pub player_hits: Vec<(u64, f32, DVec3)>,
     pub player_pushes: Vec<(u64, DVec3)>,
     pub mob_hits: Vec<(u64, DVec3, f32)>,
+    pub broken: Vec<(i32, i32, i32)>,
+    pub wall_bursts: Vec<(i32, i32, i32)>,
     pub experience: Vec<(DVec3, i32)>,
     pub fireballs: Vec<(DVec3, DVec3)>,
     pub clouds: Vec<EffectCloud>,
@@ -1760,9 +1772,7 @@ impl EnderDragon {
                     bounds.0.y,
                     (bounds.0.z + bounds.1.z) / 2.0,
                 );
-                events
-                    .mob_hits
-                    .push((id, wing_push(center, feet), damage));
+                events.mob_hits.push((id, wing_push(center, feet), damage));
             }
         }
     }
@@ -1843,6 +1853,50 @@ impl EnderDragon {
             ));
         }
         self.parts = parts;
+        let mut in_wall = false;
+        for part in [HEAD, NECK, BODY] {
+            in_wall |= self.check_walls(part_box(self.parts[part], part), env, events);
+        }
+        self.in_wall = in_wall;
+    }
+
+    fn check_walls(
+        &mut self,
+        area: (DVec3, DVec3),
+        env: &DragonEnv,
+        events: &mut DragonEvents,
+    ) -> bool {
+        let (low, high) = (area.0.floor(), area.1.floor());
+        let (x0, y0, z0) = (low.x as i32, low.y as i32, low.z as i32);
+        let (x1, y1, z1) = (high.x as i32, high.y as i32, high.z as i32);
+        let mut hit = false;
+        let mut removed = false;
+        for x in x0..=x1 {
+            for y in y0..=y1 {
+                for z in z0..=z1 {
+                    if events.broken.contains(&(x, y, z)) {
+                        continue;
+                    }
+                    match (env.wall)(x, y, z) {
+                        Wall::Pass => {}
+                        Wall::Immune => hit = true,
+                        _ if !env.griefing => hit = true,
+                        Wall::Breaks => {
+                            events.broken.push((x, y, z));
+                            removed = true;
+                        }
+                        Wall::Stays => {}
+                    }
+                }
+            }
+        }
+        if removed {
+            let x = x0 + self.random.next_int((x1 - x0 + 1) as u32) as i32;
+            let y = y0 + self.random.next_int((y1 - y0 + 1) as u32) as i32;
+            let z = z0 + self.random.next_int((z1 - z0 + 1) as u32) as i32;
+            events.wall_bursts.push((x, y, z));
+        }
+        hit
     }
 }
 
@@ -1936,6 +1990,8 @@ mod tests {
             sees: &|_, _| true,
             empty: &|_, _, _| true,
             mobs: &[],
+            wall: &|_, _, _| Wall::Pass,
+            griefing: true,
         }
     }
 
@@ -2362,6 +2418,8 @@ mod tests {
             sees: &|_, _| true,
             empty: &|_, _, _| true,
             mobs: &[],
+            wall: &|_, _, _| Wall::Pass,
+            griefing: true,
         };
         for _ in 0..200 {
             dragon.tick(&env);
@@ -2399,6 +2457,8 @@ mod tests {
             sees: &|_, _| true,
             empty: &|_, _, _| true,
             mobs: &[],
+            wall: &|_, _, _| Wall::Pass,
+            griefing: true,
         };
         dragon.tick(&gone);
         assert_eq!(
@@ -2461,6 +2521,8 @@ mod tests {
             sees: &|_, _| true,
             empty: &|_, _, _| true,
             mobs: &[],
+            wall: &|_, _, _| Wall::Pass,
+            griefing: true,
         };
         let events = dragon.tick(&env);
         assert!(
@@ -2480,6 +2542,102 @@ mod tests {
         );
     }
 
+    fn cells(area: (DVec3, DVec3)) -> Vec<(i32, i32, i32)> {
+        let (low, high) = (area.0.floor(), area.1.floor());
+        let mut cells = Vec::new();
+        for x in low.x as i32..=high.x as i32 {
+            for y in low.y as i32..=high.y as i32 {
+                for z in low.z as i32..=high.z as i32 {
+                    cells.push((x, y, z));
+                }
+            }
+        }
+        cells
+    }
+
+    #[test]
+    fn the_dragon_breaks_what_its_head_neck_and_body_fly_through_but_not_immune_blocks() {
+        let height = flat;
+        let top = || 64;
+        let mut dragon = dragon_at(DVec3::new(0.5, 100.0, 0.5), 0.0);
+        dragon.tick(&env(&height, &top, None));
+        let solid = |_: i32, _: i32, _: i32| Wall::Breaks;
+        let mut breaking = dragon.clone();
+        let events = breaking.tick(&DragonEnv {
+            wall: &solid,
+            ..env(&height, &top, None)
+        });
+        let mut expected = Vec::new();
+        for part in [HEAD, NECK, BODY] {
+            for cell in cells(part_box(breaking.parts[part], part)) {
+                if !expected.contains(&cell) {
+                    expected.push(cell);
+                }
+            }
+        }
+        assert_eq!(events.broken, expected, "each block once, head first");
+        assert_eq!(
+            events.wall_bursts.len(),
+            3,
+            "a burst for each part that broke some"
+        );
+        for (burst, part) in events.wall_bursts.iter().zip([HEAD, NECK, BODY]) {
+            assert!(cells(part_box(breaking.parts[part], part)).contains(burst));
+        }
+        assert!(!breaking.in_wall, "breaking through does not slow it");
+        let body = cells(part_box(dragon.parts[BODY], BODY));
+        let one = body[body.len() / 2];
+        let single = move |x: i32, y: i32, z: i32| {
+            if (x, y, z) == one {
+                Wall::Breaks
+            } else {
+                Wall::Pass
+            }
+        };
+        let mut lone = dragon.clone();
+        let events = lone.tick(&DragonEnv {
+            wall: &single,
+            ..env(&height, &top, None)
+        });
+        assert_eq!(events.broken, vec![one]);
+        assert_eq!(events.wall_bursts.len(), 1);
+        for (wall, griefing) in [
+            (Wall::Immune, true),
+            (Wall::Breaks, false),
+            (Wall::Stays, false),
+        ] {
+            let blocks = move |_: i32, _: i32, _: i32| wall;
+            let mut stuck = dragon.clone();
+            let events = stuck.tick(&DragonEnv {
+                wall: &blocks,
+                griefing,
+                ..env(&height, &top, None)
+            });
+            assert!(events.broken.is_empty() && events.wall_bursts.is_empty());
+            assert!(stuck.in_wall, "{wall:?} with griefing {griefing} holds it");
+        }
+        let water = |_: i32, _: i32, _: i32| Wall::Stays;
+        let mut wet = dragon.clone();
+        let events = wet.tick(&DragonEnv {
+            wall: &water,
+            ..env(&height, &top, None)
+        });
+        assert!(
+            events.broken.is_empty() && !wet.in_wall,
+            "water neither breaks nor holds"
+        );
+        let start = wet.position;
+        let mut free = wet.clone();
+        free.in_wall = false;
+        wet.in_wall = true;
+        wet.tick(&env(&height, &top, None));
+        free.tick(&env(&height, &top, None));
+        assert!(
+            wet.position.distance(start) < free.position.distance(start),
+            "a dragon in a wall flies at 0.8 of its speed"
+        );
+    }
+
     #[test]
     fn the_wing_push_and_the_knockback_match_vanilla() {
         let push = wing_push(DVec3::new(0.0, 70.0, 0.0), DVec3::new(2.0, 64.0, 0.0));
@@ -2489,9 +2647,15 @@ mod tests {
         let far = wing_push(DVec3::ZERO, DVec3::new(3.0, 0.0, 4.0));
         assert!((far - DVec3::new(0.48, f64::from(0.2_f32), 0.64)).length() < 1e-12);
         let thrown = knockback(DVec3::new(0.2, -0.1, 0.0), true, -1.0, 0.0);
-        assert!((thrown - DVec3::new(0.5, 0.35, 0.0)).length() < 1e-12, "{thrown:?}");
+        assert!(
+            (thrown - DVec3::new(0.5, 0.35, 0.0)).length() < 1e-12,
+            "{thrown:?}"
+        );
         let airborne = knockback(DVec3::new(0.0, 0.3, 0.6), false, 0.0, 2.0);
-        assert!((airborne - DVec3::new(0.0, 0.3, -0.1)).length() < 1e-12, "{airborne:?}");
+        assert!(
+            (airborne - DVec3::new(0.0, 0.3, -0.1)).length() < 1e-12,
+            "{airborne:?}"
+        );
     }
 
     #[test]
@@ -2545,7 +2709,11 @@ mod tests {
             players: &players,
             ..env(&height, &top, None)
         });
-        assert_eq!(events.player_pushes.len(), 1, "a sitting dragon still pushes");
+        assert_eq!(
+            events.player_pushes.len(),
+            1,
+            "a sitting dragon still pushes"
+        );
         assert!(
             events.player_hits.iter().all(|hit| hit.1 != WING_DAMAGE),
             "but its wings do no harm"
@@ -2807,6 +2975,8 @@ mod tests {
             sees,
             empty: &ground,
             mobs: &[],
+            wall: &|_, _, _| Wall::Pass,
+            griefing: true,
         }
     }
 
