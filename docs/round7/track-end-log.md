@@ -1258,3 +1258,25 @@ Previous commit: 0733e118
 ```
 IW4L_MINECRAFT_KIT=minecraft:glass_bottle*16,minecraft:water_bucket,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:cobblestone*64
 ```
+
+### 45. The Minecraft state doc covers the dragon that fights back
+
+Previous commit: 65a0d56e
+
+- **Changed:** `docs/MINECRAFT-SURVIVAL.md`, the End: what X5 added (the phases with the fireballs, the perch and the flame, the wings and the head, the block breaking, the egg's teleport, bottling the breath), with the roadmap's "Done" now X1 to X5. What is left of the dragon fight: the knockback on the dragon from players' hits, a sitting dragon's immunity to arrows, and the mouth's breath particles, the fireball's trail and the explosion particle where it breaks blocks. X6 (the outer End) is unchanged; dragon's breath bottles left "also missing".
+- **Group X5-body-egg summary:**
+  - **Commits:** 4cb7fa52 (E3-17, the wings and the head on players and mobs), 81dec3e3 (E3-17, `checkWalls`), 0733e118 (E3-20, the egg's teleport), 65a0d56e (bottling dragon's breath), and this entry.
+  - **Tests** (`test -p <crate> --locked`, `MINECRAFTOSS_ROOT` set by `cargo-slot.ps1`): `minecraft_terrain` 774 (4 ignored), `minecraft_survival` 333 with the vanilla world test, and `render_anim` 73 pass; `check -p launcher` is green.
+  - **Clippy:** `clippy -p minecraft_terrain -p minecraft_survival -p render_anim --all-targets --no-deps --locked -- -A clippy::approx_constant` reports nothing on a line of this group's four commits (each location blames to an earlier commit). No fix needed.
+  - **New files** (`rustfmt --check` on the staged content is empty): `minecraft_terrain/src/dragon_egg.rs` (edition 2021). `ender_dragon.rs` still passes; the new lines in `effect_cloud.rs` and `bottle.rs` are laid out as `rustfmt` would.
+  - **Plan decision 9 kept:** the wings, the head and the bottling act on each player by id from the End level's players; the egg's jumps and the breath clouds are level state on the server thread.
+- **Owner test for the group** (one new End world `x5b` with `IW4L_MINECRAFT_DIMENSION=the_end`, removed afterwards; `/difficulty normal`; the kit below):
+  1. Entry 41 steps 2 to 5: the wings fling you and hurt, the head bites, an enderman is flung, a sitting dragon only pushes; screenshot 1.
+  2. Entry 42 steps 2 to 5: the cobblestone wall gets a hole, the end stone wall holds, nothing breaks with `mob_griefing` off; screenshot 2 (entry 42's 1).
+  3. Entry 44 steps 2 to 5: bottle the breath of a fireball's cloud or the perched flame; screenshot 3 (entry 44's 1).
+  4. Kill the dragon (shoot the crystals first) and walk up to the egg on the exit portal's pillar. Entry 43 steps 2 to 5 with that egg: right-click, hand hit, gunshot, creative break; screenshot 4 (entry 43's 1).
+- **Kit** (12 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:cobblestone*256,minecraft:oak_planks*64,minecraft:end_stone*128,minecraft:obsidian*32,minecraft:glass_bottle*16,minecraft:water_bucket,minecraft:dragon_egg
+```
