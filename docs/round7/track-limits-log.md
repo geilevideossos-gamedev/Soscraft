@@ -243,3 +243,21 @@ Block and item limitations from the Blocks and items, Survival and combat and Mo
 ```
 IW4L_MINECRAFT_KIT=minecraft:pointed_dripstone*32,minecraft:stone*64
 ```
+
+### 2. Minecraft farmland and dirt paths placed under a solid block become dirt
+
+- **Changed:**
+  - New `minecraft_terrain::placing::base_if_covered`: 26.3's `FarmlandBlock.getStateForPlacement` and `PathBlock.getStateForPlacement` (javap) place dirt when the block can't survive: the block above is legacy-solid (`BlockState.isSolid`, the registry's `LEGACY_SOLID` flag, so signs, pressure plates and the other `forceSolidOn` blocks count) and, for farmland, not in `#maintains_farmland` (crops, stems, moving pistons and fence gates) or, for a path, not a fence gate. It reads the block above from the client scene, the same place the survive check reads.
+  - `render_anim/src/minecraft_world.rs`: the placed blocks go through it before they are written (one line).
+- **Tests:** `placing`: `farmland_and_paths_placed_under_a_solid_block_become_dirt` (stone and a sign above make dirt; air, a torch, a fence gate and, for farmland, wheat keep it; other blocks pass through).
+- **Decisions:** `PathBlock`'s `pushEntitiesUp` is left out: the placement is already refused when a body is in the way.
+- **Test steps:**
+  1. Stack two stone blocks, break the lower one and place farmland into the gap (aim at the side of the neighbouring ground): it becomes dirt. **Screenshot 3.**
+  2. Do the same with a dirt path: dirt. A sign hung on a wall right above the gap also makes it dirt.
+  3. Place a fence gate on a block, break the block under the gate and place farmland into that gap: it stays farmland. Again with a dirt path: it stays a path.
+  4. Farmland and paths in the open still place as usual.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:farmland*16,minecraft:dirt_path*16,minecraft:stone*16,minecraft:oak_fence_gate*4,minecraft:torch*8,minecraft:oak_sign*4
+```

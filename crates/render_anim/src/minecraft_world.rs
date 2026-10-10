@@ -1445,7 +1445,7 @@ fn update(
                 let writes: Vec<_> = staged
                     .into_writes()
                     .into_iter()
-                    .map(|(pos, block)| (pos, block.and_then(|b| scene_block(&b))))
+                    .map(|(pos, block)| (pos, block.and_then(|b| scene_block(&b)).map(|b| minecraft_terrain::placing::base_if_covered(&terrain.scene, pos, b))))
                     .collect();
                 if std::env::var_os("MINECRAFTOSS_DEBUG_SERVER").is_some() && writes.iter().any(|(_, b)| b.as_ref().is_some_and(|b| b.id.path.ends_with("chest"))) {
                     eprintln!("chest placement: crouching {} pm_flags {:#x} view height {} yaw {} placed {:?} writes {:?}", player.crouching, ps.pm_flags, ps.view_height_current, player.yaw, placed, writes);

@@ -182,6 +182,41 @@ pub fn may_place(
     }
 }
 
+pub fn base_if_covered(
+    scene: &crate::scene::HandcraftedScene,
+    pos: Pos,
+    block: crate::scene::Block,
+) -> crate::scene::Block {
+    let key = block.id.key();
+    let farmland = key == "minecraft:farmland";
+    if !farmland && key != "minecraft:dirt_path" {
+        return block;
+    }
+    let Some(states) = scene.states() else {
+        return block;
+    };
+    let registries = states.registries();
+    let blocks = &registries.blocks;
+    let above = crate::scene::Scene::block(scene, (pos.0, pos.1 + 1, pos.2))
+        .and_then(|above| states.state_of(above));
+    let covered = above.is_some_and(|state| {
+        let keeps = if farmland {
+            registries
+                .block_tags
+                .id("minecraft:maintains_farmland")
+                .is_some_and(|tag| registries.block_in_tag(state, tag))
+        } else {
+            blocks.block(blocks.block_of(state)).is_a("FenceGateBlock")
+        };
+        blocks.is(state, minecraftoss_core::block::flags::LEGACY_SOLID) && !keeps
+    });
+    if covered {
+        crate::scene::Block::new("minecraft:dirt")
+    } else {
+        block
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,6 +362,36 @@ mod tests {
         assert!(staged.sturdy_center((1, 0, 0), up));
         assert!(!staged.sturdy_center((2, 0, 0), up));
         assert!(!staged.sturdy_center((0, 1, 0), up));
+    }
+
+    #[test]
+    fn farmland_and_paths_placed_under_a_solid_block_become_dirt() {
+        use crate::scene::Block as SceneBlock;
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else {
+            return;
+        };
+        let Ok(registries) = minecraftoss_core::Registries::load(&paths) else {
+            return;
+        };
+        let states = crate::terrain::BlockStates::new(std::sync::Arc::new(registries), 0, -64, 384)
+            .unwrap();
+        let scene = crate::scene::HandcraftedScene::streamed(std::sync::Arc::new(states));
+        let placed = |scene: &crate::scene::HandcraftedScene, id: &str, above: Option<&str>| {
+            let mut scene = scene.clone();
+            scene.set((0, 11, 0), above.map(SceneBlock::new));
+            base_if_covered(&scene, (0, 10, 0), SceneBlock::new(id))
+                .id
+                .key()
+        };
+        for id in ["minecraft:farmland", "minecraft:dirt_path"] {
+            assert_eq!(placed(&scene, id, None), id);
+            assert_eq!(placed(&scene, id, Some("minecraft:torch")), id);
+            assert_eq!(placed(&scene, id, Some("minecraft:stone")), "minecraft:dirt");
+            assert_eq!(placed(&scene, id, Some("minecraft:oak_sign")), "minecraft:dirt");
+            assert_eq!(placed(&scene, id, Some("minecraft:oak_fence_gate")), id);
+        }
+        assert_eq!(placed(&scene, "minecraft:farmland", Some("minecraft:wheat")), "minecraft:farmland");
+        assert_eq!(placed(&scene, "minecraft:stone", Some("minecraft:stone")), "minecraft:stone");
     }
 
     #[test]
