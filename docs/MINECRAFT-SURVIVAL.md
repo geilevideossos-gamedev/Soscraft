@@ -85,7 +85,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 ### World simulation (integrated server thread)
 - Fluids flow, and lava meeting water hardens. Fire spreads. TNT explodes.
 - Nether portals: a 2-21 x 3-21 obsidian frame lights, shimmers with particles and hum, and collapses when the frame breaks.
-- Simulated mobs: cow, mooshroom, horse, donkey, pig, chicken, sheep, zombie, husk, zombie villager, skeleton, stray, bogged, parched, creeper, spider, slime, enderman, witch, iron golem, wolf, bat and villager. Other kinds stay dormant.
+- Simulated mobs: cow, mooshroom, horse, donkey, pig, chicken, sheep, zombie, husk, zombie villager, skeleton, stray, bogged, parched, creeper, spider, slime, enderman, witch, iron golem, wolf, bat and villager, the Nether mobs below, and the ender dragon and end crystals. Other kinds stay dormant.
 
 ### The Nether (round 7, track NETHER)
 - **Dimension rules** come from each dimension type of the 26.3 data pack (`minecraft_survival/src/dimension.rs`): coordinate scale, heights, ceiling, cardinal light, the bed and straw bed rules, whether respawn anchors work, whether water evaporates, fast lava and portal piglins.
@@ -105,6 +105,21 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
   - Compasses (to the world spawn), recovery compasses (to the last death) and clocks (the sun) turn with a wobbling needle in the hotbar, the inventory and the first-person hand, and spin where their target is in another dimension or the dimension has no daytime.
   - Overlay messages (the action bar above the hotbar) show, as vanilla's `Gui.setOverlayMessage`.
 - **Not done yet, left for N6 ("finish survival"):** piglins (the bastion's wait dormant), piglin brutes, hoglins and zoglins, striders (they never spawn: their spawn rules are not ported), piglin bartering, lodestones and lodestone compasses, and sleeping through the night. Also missing: Nether ambient particles and sounds, lava fog, the smoke of fireballs, blazes and evaporating water, spawner and magma cube flames, the anchor's particles and hum, and turning compasses that are dropped or held in third person. The Nether's sky, sun, stars and clouds come with the End track (X1b).
+
+### The End (round 7, track END)
+- **Getting there** (`minecraft_survival/src/the_end.rs`, adapter `render_anim/src/minecraft_end.rs`):
+  - Eyes of ender fill end portal frames (with the fill sound) and open the portal once all 12 frames of an inward ring hold one (with the portal sound). Thrown anywhere else, an eye flies about 12 blocks toward the nearest stronghold, rising 8, and after 4 s drops (4 in 5) or shatters.
+  - End portals and gateways are drawn with vanilla's starfield layers. Stepping into an end portal goes to the End at once with the portal travel sound, onto the obsidian platform at 100, 49, 0 facing west, keeping the pitch; the platform is rebuilt on every arrival and drops what it breaks.
+  - The End sky is its tiled texture with no sun, moon, stars or clouds. The arena around the island centre stays loaded while a player is within 192 blocks.
+- **The dragon fight** (`minecraft_survival/src/the_end/dragon_fight.rs`, saved per End level in `dimensions/minecraft/the_end/data/minecraft/ender_dragon_fight.dat` with vanilla's keys):
+  - The first visit builds the inactive exit podium and spawns the dragon, which flies its holding pattern between the 24 path nodes, beats its wings and growls, and strikes players its head and neck touch.
+  - End crystals sit on the pillars over fire, explode with power 6 when hit (not when a blast destroys them) and can be placed on obsidian or bedrock. The dragon heals 1 every 10 ticks from the nearest crystal within reach, shown by a beam; breaking that crystal costs it 10 on the head.
+  - A pink boss bar shows its health to the players within 192 blocks, and its world fog hides the End sky.
+  - MW2 bullets, grenades and Minecraft hits hurt it through its 8 body parts with one flat MW2 hit location: the head and neck take the damage, the other parts a quarter and 1; only players and explosions hurt it.
+  - Its death is vanilla's: it flies to the podium, rises for 10 s under white rays with a level-wide roar, and drops 12000 experience on the first kill (level 68 from 0) and 500 after. The exit portal then opens, the dragon egg appears on the pillar after the first kill, and the next of the 20 end gateways appears 96 blocks out at height 75.
+  - Four end crystals on the exit portal's rim respawn it: the portal goes out, the crystals beam at each pillar in turn, which explodes and is rebuilt with an invulnerable crystal, and a new dragon comes (500 experience, no egg). Breaking one of the four stops it.
+- **Going home:** the exit portal takes players to their respawn point (bed, anchor or `/spawnpoint`, else the world spawn) keeping everything. The first time, the credits roll from the jar's texts (the End Poem with the player's name, the credits, the post-credits line) over the End starfield while the trip loads behind them; Space speeds them up, Ctrl more, Up scrolls back and Escape skips them. `seenCredits` is saved per player, so they show once.
+- **Elytra and rockets:** an elytra in the chest slot glides on MW2 movement (a fresh jump in the air), wears 1 durability a second, hurts on wall hits, and firework rockets boost it.
 
 ### MW2 integration and UI
 - [upstream] Guns sit in the hotbar with unlimited ammo. Skate 3 works on block collision.
@@ -202,21 +217,11 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 - **Portal travel, the Nether's rules and its first mobs** (done, track NETHER, groups N1 to N5): see [The Nether](#the-nether-round-7-track-nether).
 - **Left (N6):** piglins and their bartering, piglin brutes, hoglins, zoglins, striders and lodestones. The Nether sky, fog and clouds are the End track's (X1b).
 
-### The End (about 4-6 weeks after the dimension switch, mostly the dragon)
-- **Already generated by MinecraftOSS:**
-  - End terrain and outer islands;
-  - obsidian spikes with iron-bar cages and end crystals;
-  - small islands and chorus plants;
-  - end cities with loot, shulkers and elytra item frames;
-  - strongholds (ring placement, a portal room with 12 frames that each get an eye 10% of the time, a silverfish spawner).
-- **Missing:**
-  - eyes of ender: throwing one toward the nearest stronghold, inserting it into a frame, and filling the portal once all 12 frames have eyes;
-  - end portal travel, the End spawn platform at 100, 50, 0, the End sky, and the return through the exit portal;
-  - the Ender Dragon fight: the phase machine, multipart hitboxes for MW2 bullets, crystal healing, the boss bar, the exit podium, the egg and the XP;
-  - the 20 end gateways at radius 96 and gateway teleports;
-  - simulated end crystals, shulkers and their bullets;
-  - elytra flight on MW2 movement;
-  - chorus fruit teleport.
+### The End
+- **Done (track END, groups X1 to X4):** see [The End](#the-end-round-7-track-end): eyes of ender, end portals and travel, the platform, the sky, the arena, crystals, the flying dragon with its boss bar, part damage, crystal healing, its death, the exit portal home with the credits, the egg, the gateways' placement and the respawn with four crystals; also elytra and firework rockets.
+- **Left for X5 (a dragon that fights back):** strafing players and its acid fireballs with their dragon's breath clouds, the landing approach, perching on the portal with its flame breath and the sitting, scanning and charging phases, the takeoff phase, the wing knockback, breaking blocks as it flies (`checkWalls`), knockback on the dragon from players' hits, and the dragon egg teleporting when clicked or hit. Until then the dragon only circles, heals and strikes with its head.
+- **Left for X6 (the outer End):** end gateways throwing players (and pearls) to the outer islands with the return gateway, the gateway beam, item frames showing and dropping their item (the elytra in end ships), shulkers peeking, shooting homing bullets and teleporting, levitation, and the End sky flashes.
+- **Also missing:** the dragon's dissolve while it dies and the explosion particles around it, the credits vignette and music (no Minecraft music is played yet), the elytra and its glide pose on the MW2 body, chorus fruit teleport, end rod particles and dragon's breath bottles.
 
 ### Rendering
 - Translucent faces are not sorted by camera distance within a 16-block section. Inside one block, smaller faces are drawn first.

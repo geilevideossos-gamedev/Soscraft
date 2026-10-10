@@ -939,3 +939,39 @@ Previous commit: ffd73868
 - **Tests:** none new; the touched crates pass as before.
 - **Test steps:** none; nothing changes in game.
 - **Kit:** none.
+
+### 33. The Minecraft state doc covers the End
+
+Previous commit: 2ab82999
+
+- **Changed:** `docs/MINECRAFT-SURVIVAL.md`: a new section "The End (round 7, track END)" under Implemented (getting there, the dragon fight, going home with the credits, elytra and rockets), the simulated mobs line names the ender dragon and end crystals, and the roadmap's End part now says what is done and what is left: X5 (strafing and fireballs with breath clouds, the landing, perching with flame breath and the sitting phases, takeoff, wing knockback, block breaking, knockback from players' hits, the egg teleport), X6 (gateway teleports with the return gateway and the beam, item frames, shulkers and their bullets, levitation, the End flashes) and the smaller gaps.
+- **Tests:** none; docs only.
+- **Test steps:** none.
+- **Kit:** none.
+
+### Group X4 summary
+
+Written with entry 33, in its commit.
+
+- **Commits:** 4484b1eb (E3-18, the death), 033a52e1 (E3-19, exit portal, egg and gateway), 4c7667cf (E3-21, the exit portal home and the credits), ffd73868 (E3-22, the respawn with four crystals), 2ab82999 (clippy), and this entry (docs).
+- **Tests** (`test -p <crate> --locked`, `MINECRAFTOSS_ROOT` set by `cargo-slot.ps1`): `minecraft_terrain` 740 (4 ignored), `minecraft_survival` 332 and the vanilla world test, `render_anim` 73, `hud` 138, `frame` 23, `minecraftoss-generator` 28 and `minecraftoss-world` 63 pass; `check -p launcher` is green.
+- **Clippy:** see entry 32.
+- **New files** (`rustfmt --check` on the staged content is empty): `minecraft_terrain/src/dragon_respawn.rs` (edition 2021), `frame/src/minecraft_credits.rs` and `hud/src/minecraft_credits.rs` (2024). The track's earlier files edited here (`ender_dragon.rs`, `dragon_render.rs`, `end_crystal.rs`, the vendored `end_portal.rs` pair, `the_end.rs`, `the_end/dragon_fight.rs`, `render_anim/src/minecraft_end.rs`) still pass.
+- **MinecraftOSS patches in this group:** `world/src/level/end_portal.rs` (`find_exit_portal_match`, `dismantle_exit_portal`), `generator/src/feature/end_portal.rs` (`ExitPortal::cells`).
+- **Plan decisions kept:** 3 (credits like vanilla: once per player through `seenCredits`, Escape skips, the trip home loads behind them, the texts read from the jar at runtime), 9 (the dragon's experience, the kill, the exit portal, the egg, the gateways and the respawn all go through the fight of the End level and its saved data; the credits and the hold are per player by UUID; nothing uses `PLAYER = 0`).
+- **Not done in this group, and why:**
+  - **X5 and X6** are out of scope this round (see entry 33 and the state doc). X3 and X4 took the whole run, so no X5 commit (E3-16 perching, E3-20 egg teleport) was started.
+  - **Small gaps:** the dragon's dissolve and explosion particles while dying (no dissolve pass, no explosion particle), the gateway beam and event 3000's emitter, the credits vignette and music, the respawn's stage time is saved as the start of its stage.
+- **Owner test for the group** (one new world, survival; screenshots numbered as in the entries):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x4` (a new world) and the kit below; no `IW4L_MINECRAFT_DIMENSION` line. In the overworld walk about 50 blocks from the spawn and type `/spawnpoint`.
+  2. Build the ring of 12 frames facing inward around a cleared 3x3, fill it with eyes and step in.
+  3. Entry 28 steps 2 to 4: shoot the crystals and kill the dragon; the roar, the rays and the experience flood to level 68. Screenshots 1 and 2.
+  4. Entry 29 steps 1 and 2: the lit exit portal, the egg on the pillar and the gateway. Screenshots 3 and 4.
+  5. Entry 31 steps 1 to 4: four crystals on the rim respawn the dragon; kill it again for 500 experience and no second egg. Screenshots 8 to 10.
+  6. Quit while in the End and start again: you are still in the End, the portal and the egg are there, and no dragon or bar comes back (brief step 13).
+  7. Entry 30 steps 3 to 7: walk into the exit portal; the credits roll, Escape takes you to your `/spawnpoint` with everything; later exits have no credits, also after a restart. Screenshots 5 to 7.
+- **Kit for the group** (14 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:end_crystal*16,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket,minecraft:cooked_beef*32
+```
