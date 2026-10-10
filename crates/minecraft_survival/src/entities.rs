@@ -66,6 +66,7 @@ pub struct Entities {
     portal: PortalParticles,
     eyes: minecraft_terrain::eye_of_ender::EyeTrails,
     spell: minecraft_terrain::spell_particles::SpellParticles,
+    ambient: minecraft_terrain::ambient_particles::AmbientParticles,
     items: ItemVisuals,
     clock: f64,
     ticks: u64,
@@ -207,6 +208,7 @@ impl Entities {
             portal: PortalParticles::default(),
             eyes: minecraft_terrain::eye_of_ender::EyeTrails::default(),
             spell: minecraft_terrain::spell_particles::SpellParticles::new((seed ^ 0x5be1) as u64),
+            ambient: minecraft_terrain::ambient_particles::AmbientParticles::new((seed ^ 0xa3b1) as u64),
             items: ItemVisuals::default(),
             clock: 0.0,
             ticks: 0,
@@ -630,6 +632,9 @@ impl Entities {
         for (start, motion) in tick.portal_particles {
             self.portal.emit(start, motion);
         }
+        for (kind, start, motion) in tick.particles {
+            self.ambient.add(kind, start, motion);
+        }
         tick.sounds
     }
 
@@ -996,6 +1001,7 @@ impl Entities {
     pub fn tick_scene(&mut self, scene: &HandcraftedScene, ticks: u32) {
         for _ in 0..ticks {
             self.poof.tick(scene);
+            self.ambient.tick(scene);
         }
     }
 
@@ -1100,6 +1106,7 @@ impl Entities {
         minecraft_terrain::eye_of_ender::append_eyes(&mut out.items, self.eyes.views(), partial, camera, atlas, forward);
         minecraft_terrain::trident::append_tridents(&mut out.items, &self.tridents, partial, atlas, light);
         self.poof.append_mesh(&mut out.items, atlas, forward, partial, light);
+        self.ambient.append_mesh(&mut out.items, atlas, forward, partial, light);
         self.portal.append_mesh(&mut out.items, atlas, forward, partial, light);
         self.spell.append_mesh(&mut out.translucent, atlas, forward, partial, light);
         let held: Vec<_> =

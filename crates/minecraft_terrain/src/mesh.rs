@@ -677,6 +677,9 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
         for id in crate::spell_particles::textures() {
             textures.insert(id, ());
         }
+        for id in crate::ambient_particles::textures() {
+            textures.insert(id, ());
+        }
         textures.insert(ResourceId::parse("minecraft:misc/shadow")?, ());
     }
     let atlas = make_atlas(packs, textures.into_keys().collect())?;
