@@ -1049,3 +1049,46 @@ Previous commit: 8dddc195
 ```
 IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:end_crystal*16,minecraft:obsidian*16,minecraft:end_stone*4,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket,minecraft:cooked_beef*32,minecraft:shield,minecraft:totem_of_undying,minecraft:ender_pearl*16,minecraft:torch*64,minecraft:oak_planks*64
 ```
+
+## Fourth run, group X5-phases: a dragon that fights back
+
+E3-15 and E3-16 of the brief: the phase machine beyond the holding pattern, with plan decision 9 (the dragon targets the players of the End level, never `PLAYER = 0`). Base: 88cb6d83.
+
+### 38. Minecraft ender dragon strafes players and spits fireballs (E3-15)
+
+Previous commit: 88cb6d83
+
+- **Changed:**
+  - `minecraft_terrain/src/ender_dragon.rs`:
+    - `Phase::StrafePlayer` (id 1) is `DragonStrafePlayerPhase`: the target player by id, its own path and clockwise flag, and `fireball_charge`. Each tick a finished path re-aims at the player, `strafe_lift` (`min(0.4 + horizontal distance / 80 − 1, 10)`) above them; a target nearer than 10 or farther than 150 blocks finds a new path round the rings (inner ring while no crystal is alive). Within 64 blocks and in sight (dragon eye at 6.8 to the player's eye, at most 128 blocks, `LivingEntity.hasLineOfSight` through `minecraftoss_entities::sight`) the charge rises by one a tick, otherwise it falls; at 5 with the player within 10 degrees ahead (`acos` of the facing and the horizontal direction, plus 0.5) it plays `entity.ender_dragon.shoot` (level event 1017: volume 10, at the dragon's block), spits a fireball from one block behind the head's look and one block above the head toward the player's middle, ends its path and goes back to the holding pattern. A strafe whose player is gone goes back to the holding pattern.
+    - The holding pattern at the end of a path picks the attackable player nearest to the podium (`TargetingConditions.forCombat().ignoreLineOfSight()`, any distance) and strafes them if `nextInt((int)(d + 2)) == 0` or `nextInt(crystals + 2) == 0`, with `d` the squared distance from the podium block's centre over 512. `strafePlayer`'s path is vanilla's `findPath(closest node, node closest to the player, final node over the player's block)`; `find_path` takes the final node (`reconstructPath` appends it, also to a partial path).
+    - `crystal_destroyed`: after the head damage, a circling dragon turns to strafe the player behind the loss (`DragonHoldingPatternPhase.onCrystalDestroyed`, only an attackable player).
+    - `aiStep`'s second `doServerTick` when the first one changed the phase. `view_vector` is `Entity.calculateViewVector`; `nearest_player`, `distance_to_center_sqr`, `block_center`; `PlayerBody.eye_height`; `DragonEnv.sees`; `DragonEvents.fireballs`. The holding pattern's circle goal and waypoint draw are shared helpers now (same draws as before).
+  - New `minecraft_terrain/src/dragon_fireball.rs`: `DragonFireball` (`DragonFireball` of 26.3: the vendored `AbstractHurtingProjectile` flight of `minecraftoss_entities::fireball`, 1 by 1, acceleration 0.1, inertia 0.95) and `DragonFireballs`. A burst (`onHit`) leaves `breath_cloud` at the first living entity whose box meets the fireball's box grown by 4, 2, 4 with its feet within 4 blocks, else where it burst (`cloud_position`), plays `entity.dragon_fireball.explode` (level event 2006: volume 1, pitch 0.9 to 1). `append_fireballs` is `DragonFireballRenderer`: a camera-facing quad of `entity/enderdragon/dragon_fireball` scaled by 2, full bright.
+  - `minecraft_terrain/src/effect_cloud.rs`: `EffectCloud::dragon_breath` and `Breath` (fireball or a dragon's flame): the `AreaEffectCloud` defaults (wait 20 ticks, reapply after 20, no shrinking on use) with the breath colour. The fireball's cloud: Harming II, radius 3 growing to 7 over its 600 ticks.
+  - `minecraft_terrain/src/server.rs` (End region): `tick_dragon_fireballs` before the dragons (a fireball goes when its dragon is gone or its chunk is not loaded, like `AbstractHurtingProjectile.tick`); the dragons tick with the line of sight through `MobWorld`; their fireballs are spawned; a destroyed crystal without a player behind it names the attackable player nearest to it (`CRYSTAL_DESTROY_TARGETING`: none in peaceful). `EntitySnapshot.dragon_fireballs` and `breath_bursts`. `mesh.rs` loads the fireball texture.
+  - `minecraft_survival/src/entities.rs`: draws the fireballs and a burst of breath-coloured spell particles where one bursts (four lines).
+- **Checked with javap (26.3):** `DragonStrafePlayerPhase` (`doServerTick`, `findNewTarget`, `setTarget`, `navigateToNextPathNode`, `begin`), `DragonHoldingPatternPhase` (`findNewTarget`, `strafePlayer`, `onCrystalDestroyed`, `NEW_TARGET_TARGETING`), `EnderDragon` (`aiStep`, `findClosestNode` both forms, `findPath`, `reconstructPath`, `onCrystalDestroyed`, `CRYSTAL_DESTROY_TARGETING` range 64, `canAttack`), `EnderDragonPhase` (ids 0 to 10), `EnderDragonPhaseManager.setPhase`, `DragonFireball` (`onHit`, the cloud), `AreaEffectCloud` (constructor defaults), `TargetingConditions.test`, `Entity.calculateViewVector`, `LevelEventHandler` events 1017 and 2006, `DragonFireballRenderer`, `DragonBreathParticle` (its colours).
+- **Tests:** `ender_dragon`: `the_view_vector_and_strafe_lift_match_vanilla`, `a_path_can_end_at_a_node_of_its_own`, `a_circling_dragon_at_the_end_of_its_path_strafes_the_nearest_attackable_player` (never a creative one), `a_strafing_dragon_spits_a_fireball_after_five_ticks_with_the_player_in_sight_ahead` (where it starts, where it aims, the sound), `without_sight_or_out_of_range_or_facing_away_the_charge_runs_down`, `a_strafe_without_its_player_falls_back_to_circling` (also a saved strafe), `breaking_a_crystal_makes_a_circling_dragon_strafe_the_player_behind_it`. `dragon_fireball`: `a_dragon_fireball_flies_like_a_hurting_projectile_from_its_aim`, `the_breath_cloud_lands_on_a_living_entity_within_four_blocks`, `the_fireball_cloud_harms_for_6_and_grows_from_3_to_7_over_600_ticks`. `server`: `a_strafing_dragon_s_fireball_bursts_into_a_breath_cloud_that_harms_the_player` (an End level of seed 0: the shot and burst sounds, the cloud on the player, Harming II for 6 after 20 ticks and again 20 later, a fireball goes with its dragon); `the_fight_dragon_spawns_over_the_island_and_circles_it_while_the_arena_is_loaded` now also hears the strafe's sounds.
+- **Decisions:**
+  - **The landing roll comes with entry 39:** until then a circling dragon at the end of a path only rolls for the strafe.
+  - **Players by id:** the strafed player is looked up by id among the End level's players each tick; one who left the level ends the strafe (vanilla keeps the stale entity and flies at its last position).
+  - **A lost crystal turns the dragon on its next tick** (vanilla in the hit's tick); the head damage still comes at once.
+  - **What a fireball hits:** players and mobs, not end crystals or the dragon's own parts (vanilla can burst one on a crystal it passes).
+  - **Not saved:** fireballs and breath clouds are not saved with their chunk (the lingering potion clouds here are not either).
+  - **Drawn:** the clouds with the spell particles in the dragon breath colour (#CB00E5, the middle of `DragonBreathParticle`'s range), the burst as the potion splash burst in that colour (100 particles, vanilla 200); the fireball's breath trail is not drawn.
+  - **Death message:** breath harm is magic damage, "was killed by magic" (vanilla: "was killed by Ender Dragon using magic"), as a cloud's harm here can only name a player.
+  - The shoot sound's pitch is drawn from the dragon's random (vanilla draws it on the client).
+- **Test steps** (survival; `/difficulty normal`):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x5strafe` (a new world), `IW4L_MINECRAFT_DIMENSION=the_end` and the kit below. Start on the obsidian platform and walk onto the main island toward the pillars.
+  2. Watch the dragon: now and then it leaves its circle and swoops at you; when it faces you within about 64 blocks you hear a short roar and it spits a purple fireball, then circles again. **Screenshot 1** (a fireball in flight).
+  3. Where it bursts (on you, or the ground near you) a purple cloud spreads with a burst of purple sparks and a hiss. Standing in it hurts 3 hearts about every second (after a second's delay); it slowly widens over 30 seconds and then goes. **Screenshot 2** (the cloud).
+  4. Step out of it: no more damage.
+  5. Shoot a pillar crystal while the dragon circles: it turns and swoops at you at once.
+  6. Type `/gamemode creative`: it never swoops at you or spits at you. `/gamemode survival` afterwards.
+  7. Remove the `IW4L_MINECRAFT_DIMENSION` line afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:cobblestone*64,minecraft:water_bucket,minecraft:diamond_sword+sharpness=5
+```

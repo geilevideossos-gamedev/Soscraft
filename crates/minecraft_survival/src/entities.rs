@@ -93,6 +93,7 @@ pub struct Entities {
     tridents: Vec<minecraft_terrain::trident::TridentView>,
     crystals: Vec<minecraft_terrain::end_crystal::CrystalView>,
     dragons: Vec<minecraft_terrain::ender_dragon::DragonView>,
+    dragon_fireballs: Vec<minecraft_terrain::dragon_fireball::FireballView>,
     growls: HashMap<u64, i32>,
     dragons_killed: Vec<[i32; 4]>,
     fight_reports: Vec<minecraft_terrain::server::FightReport>,
@@ -233,6 +234,7 @@ impl Entities {
             tridents: Vec::new(),
             crystals: Vec::new(),
             dragons: Vec::new(),
+            dragon_fireballs: Vec::new(),
             growls: HashMap::new(),
             dragons_killed: Vec::new(),
             fight_reports: Vec::new(),
@@ -845,6 +847,10 @@ impl Entities {
                 self.tridents = std::mem::take(&mut snapshot.tridents);
                 self.crystals = std::mem::take(&mut snapshot.crystals);
                 self.dragons = std::mem::take(&mut snapshot.dragons);
+                self.dragon_fireballs = std::mem::take(&mut snapshot.dragon_fireballs);
+                for at in std::mem::take(&mut snapshot.breath_bursts) {
+                    self.spell.burst(at, minecraft_terrain::effect_cloud::BREATH_COLOR, false);
+                }
                 self.dragon_voices();
                 self.orbs = snapshot.orbs.clone();
                 self.falling.receive(std::mem::take(&mut snapshot.falling), std::mem::take(&mut snapshot.tnt), &output.changes, self.ticks);
@@ -1176,7 +1182,9 @@ impl Entities {
             forward,
             light,
         );
+        minecraft_terrain::dragon_fireball::append_fireballs(&mut out.items, &self.dragon_fireballs, atlas, forward, partial);
         ghast_render::append_fireballs(
+
             &mut out.items,
             w.fireballs().iter().filter(|f| f.fireball.alive).map(|f| (f, f.previous_position.lerp(f.fireball.position, f64::from(partial)))),
             atlas,

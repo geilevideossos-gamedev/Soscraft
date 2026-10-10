@@ -37,6 +37,10 @@ pub const DRAGON_DEATH_SOUND: &str = "minecraft:entity.ender_dragon.death";
 pub const FIRST_KILL_EXPERIENCE: i32 = 12000;
 pub const LATER_KILL_EXPERIENCE: i32 = 500;
 pub const DEATH_TICKS: i32 = 200;
+pub const EYE_HEIGHT: f64 = 6.8;
+pub const SHOOT_SOUND: &str = "minecraft:entity.ender_dragon.shoot";
+pub const SHOOT_VOLUME: f32 = 10.0;
+pub const FIREBALL_CHARGE: i32 = 5;
 const DEG: f32 = 0.017_453_292;
 const NODE_COUNT: usize = 24;
 const NODE_ADJACENCY: [u32; NODE_COUNT] = [
@@ -125,6 +129,7 @@ pub fn sample_at(samples: &[Sample], back: usize, partial: f32) -> Sample {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     HoldingPattern,
+    StrafePlayer,
     Dying,
     Hovering,
 }
@@ -133,6 +138,7 @@ impl Phase {
     pub fn id(self) -> i32 {
         match self {
             Phase::HoldingPattern => 0,
+            Phase::StrafePlayer => 1,
             Phase::Dying => 9,
             Phase::Hovering => 10,
         }
@@ -140,6 +146,7 @@ impl Phase {
 
     pub fn by_id(id: i32) -> Self {
         match id {
+            1 => Phase::StrafePlayer,
             9 => Phase::Dying,
             10 => Phase::Hovering,
             _ => Phase::HoldingPattern,
@@ -152,7 +159,7 @@ impl Phase {
 
     pub fn fly_speed(self) -> f32 {
         match self {
-            Phase::HoldingPattern => 0.6,
+            Phase::HoldingPattern | Phase::StrafePlayer => 0.6,
             Phase::Dying => 3.0,
             Phase::Hovering => 1.0,
         }
@@ -353,6 +360,7 @@ pub fn find_path(
     from: usize,
     to: usize,
     crystals_gone: bool,
+    last: Option<Node>,
 ) -> Option<Path> {
     let mut search = [Search {
         heap: -1,
@@ -368,7 +376,7 @@ pub fn find_path(
     while !open.items.is_empty() {
         let current = open.pop(&mut search);
         if nodes[current] == target {
-            return Some(reconstruct(nodes, &search, current));
+            return Some(reconstruct(nodes, &search, current, last));
         }
         if nodes[current].distance(target) < nodes[closest].distance(target) {
             closest = current;
@@ -395,16 +403,30 @@ pub fn find_path(
             }
         }
     }
-    (closest != from).then(|| reconstruct(nodes, &search, closest))
+    (closest != from).then(|| reconstruct(nodes, &search, closest, last))
 }
 
-fn reconstruct(nodes: &[Node; NODE_COUNT], search: &[Search; NODE_COUNT], end: usize) -> Path {
+pub fn strafe_lift(dx: f64, dz: f64) -> f64 {
+    (f64::from(0.4_f32) + (dx * dx + dz * dz).sqrt() / 80.0 - 1.0).min(10.0)
+}
+
+pub fn block_center(at: DVec3) -> DVec3 {
+    at.floor() + DVec3::splat(0.5)
+}
+
+fn reconstruct(
+    nodes: &[Node; NODE_COUNT],
+    search: &[Search; NODE_COUNT],
+    end: usize,
+    last: Option<Node>,
+) -> Path {
     let mut list = vec![nodes[end]];
     let mut at = end;
     while let Some(previous) = search[at].came_from {
         list.insert(0, nodes[previous]);
         at = previous;
     }
+    list.extend(last);
     Path {
         nodes: list,
         next: 0,
@@ -418,12 +440,28 @@ pub struct Holding {
     pub clockwise: bool,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Strafe {
+    pub path: Option<Path>,
+    pub target: Option<DVec3>,
+    pub attack_target: Option<u64>,
+    pub fireball_charge: i32,
+    pub clockwise: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlayerBody {
     pub id: u64,
     pub feet: DVec3,
     pub height: f64,
+    pub eye_height: f64,
     pub attackable: bool,
+}
+
+impl PlayerBody {
+    pub fn eye(&self) -> DVec3 {
+        self.feet + DVec3::new(0.0, self.eye_height, 0.0)
+    }
 }
 
 pub struct DragonEnv<'a> {
@@ -433,6 +471,89 @@ pub struct DragonEnv<'a> {
     pub players: &'a [PlayerBody],
     pub crystals: &'a [(u64, DVec3)],
     pub death_experience: Option<i32>,
+    pub sees: &'a dyn Fn(DVec3, DVec3) -> bool,
+}
+
+pub fn view_vector(x_rot: f32, y_rot: f32) -> DVec3 {
+    let pitch = f64::from(x_rot * DEG);
+    let yaw = f64::from(-y_rot * DEG);
+    let (yaw_cos, yaw_sin) = (cos(yaw), sin(yaw));
+    let (pitch_cos, pitch_sin) = (cos(pitch), sin(pitch));
+    DVec3::new(
+        f64::from(yaw_sin * pitch_cos),
+        f64::from(-pitch_sin),
+        f64::from(yaw_cos * pitch_cos),
+    )
+}
+
+pub fn nearest_player(
+    players: &[PlayerBody],
+    at: DVec3,
+    accept: impl Fn(&PlayerBody) -> bool,
+) -> Option<PlayerBody> {
+    let mut best: Option<(f64, PlayerBody)> = None;
+    for player in players.iter().filter(|player| player.attackable) {
+        if !accept(player) {
+            continue;
+        }
+        let distance = player.feet.distance_squared(at);
+        if best.is_none_or(|(nearest, _)| distance < nearest) {
+            best = Some((distance, *player));
+        }
+    }
+    best.map(|(_, player)| player)
+}
+
+pub fn distance_to_center_sqr(block: (i32, i32, i32), at: DVec3) -> f64 {
+    let center = DVec3::new(
+        f64::from(block.0) + 0.5,
+        f64::from(block.1) + 0.5,
+        f64::from(block.2) + 0.5,
+    );
+    center.distance_squared(at)
+}
+
+fn circle_goal(
+    random: &mut LegacyRandom,
+    start: usize,
+    clockwise: &mut bool,
+    inner: bool,
+) -> usize {
+    let mut goal = start as i32;
+    if random.next_int(8) == 0 {
+        *clockwise = !*clockwise;
+        goal += 6;
+    }
+    if *clockwise {
+        goal += 1;
+    } else {
+        goal -= 1;
+    }
+    if inner {
+        goal -= 12;
+        goal &= 7;
+        goal += 12;
+    } else {
+        goal %= 12;
+        if goal < 0 {
+            goal += 12;
+        }
+    }
+    goal as usize
+}
+
+fn next_waypoint(random: &mut LegacyRandom, path: &mut Option<Path>) -> Option<DVec3> {
+    let path = path.as_mut().filter(|path| !path.is_done())?;
+    let node = path.nodes[path.next];
+    path.next += 1;
+    let base = f64::from(node.y);
+    let y = loop {
+        let y = f64::from(node.y as f32 + random.next_float() * 20.0);
+        if y >= base {
+            break y;
+        }
+    };
+    Some(DVec3::new(f64::from(node.x), y, f64::from(node.z)))
 }
 
 pub fn death_experience(
@@ -478,6 +599,7 @@ pub struct DragonEvents {
     pub sounds: Vec<(&'static str, DVec3, f32, f32)>,
     pub player_hits: Vec<(u64, f32, DVec3)>,
     pub experience: Vec<(DVec3, i32)>,
+    pub fireballs: Vec<(DVec3, DVec3)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -531,6 +653,8 @@ pub struct EnderDragon {
     pub parts: [DVec3; 8],
     pub phase: Phase,
     pub holding: Holding,
+    pub strafe: Strafe,
+    pub pending_strafe: Option<u64>,
     pub hover_target: Option<DVec3>,
     pub death_target: Option<DVec3>,
     pub hurt_time: i32,
@@ -637,6 +761,8 @@ impl EnderDragon {
             parts: [position; 8],
             phase: Phase::Hovering,
             holding: Holding::default(),
+            strafe: Strafe::default(),
+            pending_strafe: None,
             hover_target: None,
             death_target: None,
             hurt_time: int("HurtTime").unwrap_or(0),
@@ -699,6 +825,12 @@ impl EnderDragon {
                 self.holding = Holding {
                     clockwise: self.holding.clockwise,
                     ..Holding::default()
+                }
+            }
+            Phase::StrafePlayer => {
+                self.strafe = Strafe {
+                    clockwise: self.strafe.clockwise,
+                    ..Strafe::default()
                 }
             }
             Phase::Hovering => self.hover_target = None,
@@ -855,14 +987,19 @@ impl EnderDragon {
         player: Option<u64>,
         events: &mut DragonEvents,
     ) -> Hurt {
-        if self.nearest_crystal != Some(crystal) {
-            return Hurt::default();
+        let hurt = if self.nearest_crystal == Some(crystal) {
+            self.hurt_part(
+                HEAD,
+                &EndDamage::explosion(CRYSTAL_DESTROYED_DAMAGE, player),
+                events,
+            )
+        } else {
+            Hurt::default()
+        };
+        if self.phase == Phase::HoldingPattern {
+            self.pending_strafe = player.or(self.pending_strafe);
         }
-        self.hurt_part(
-            HEAD,
-            &EndDamage::explosion(CRYSTAL_DESTROYED_DAMAGE, player),
-            events,
-        )
+        hurt
     }
 
     pub fn tick(&mut self, env: &DragonEnv) -> DragonEvents {
@@ -946,9 +1083,22 @@ impl EnderDragon {
             return;
         }
         self.history.record(self.position.y, self.y_rot);
-        self.phase_tick(env);
+        if let Some(id) = self.pending_strafe.take() {
+            let player = env.players.iter().find(|player| player.id == id);
+            if let Some(player) = player.filter(|player| player.attackable) {
+                if self.phase == Phase::HoldingPattern {
+                    self.strafe_player(player, env);
+                }
+            }
+        }
+        let before = self.phase;
+        self.phase_tick(env, events);
+        if self.phase != before {
+            self.phase_tick(env, events);
+        }
         let target = match self.phase {
             Phase::HoldingPattern => self.holding.target,
+            Phase::StrafePlayer => self.strafe.target,
             Phase::Hovering => self.hover_target,
             Phase::Dying => self.death_target,
         };
@@ -958,7 +1108,7 @@ impl EnderDragon {
         self.place_parts(events, env);
     }
 
-    fn phase_tick(&mut self, env: &DragonEnv) {
+    fn phase_tick(&mut self, env: &DragonEnv, events: &mut DragonEvents) {
         match self.phase {
             Phase::HoldingPattern => {
                 let distance = self
@@ -969,6 +1119,7 @@ impl EnderDragon {
                     self.find_new_target(env);
                 }
             }
+            Phase::StrafePlayer => self.strafe_tick(env, events),
             Phase::Hovering => {
                 if self.hover_target.is_none() {
                     self.hover_target = Some(self.position);
@@ -997,55 +1148,164 @@ impl EnderDragon {
         env.alive_crystals.is_none_or(|alive| alive == 0)
     }
 
+    fn node_list(&mut self, env: &DragonEnv) -> [Node; NODE_COUNT] {
+        *self
+            .nodes
+            .get_or_insert_with(|| nodes(|x, z| (env.height)(x, z)))
+    }
+
+    pub fn podium(&self, env: &DragonEnv) -> (i32, i32, i32) {
+        let (x, _, z) = self.fight_origin;
+        (x, (env.height)(x, z), z)
+    }
+
     fn find_new_target(&mut self, env: &DragonEnv) {
-        if self.holding.path.as_ref().is_none_or(Path::is_done) {
-            let nodes = *self
-                .nodes
-                .get_or_insert_with(|| nodes(|x, z| (env.height)(x, z)));
-            let gone = Self::crystals_gone(env);
-            let start = closest_node(&nodes, self.position, gone);
-            let mut goal = start as i32;
-            if self.random.next_int(8) == 0 {
-                self.holding.clockwise = !self.holding.clockwise;
-                goal += 6;
-            }
-            if self.holding.clockwise {
-                goal += 1;
-            } else {
-                goal -= 1;
-            }
-            if env.alive_crystals.is_none_or(|alive| alive < 0) {
-                goal -= 12;
-                goal &= 7;
-                goal += 12;
-            } else {
-                goal %= 12;
-                if goal < 0 {
-                    goal += 12;
+        if self.holding.path.as_ref().is_some_and(Path::is_done) {
+            let podium = self.podium(env);
+            let alive = env.alive_crystals.unwrap_or(0);
+            let at = DVec3::new(
+                f64::from(podium.0),
+                f64::from(podium.1),
+                f64::from(podium.2),
+            );
+            if let Some(player) = nearest_player(env.players, at, |_| true) {
+                let odds = distance_to_center_sqr(podium, player.feet) / 512.0;
+                if self.random.next_int((odds + 2.0) as i32 as u32) == 0
+                    || self.random.next_int((alive + 2).max(1) as u32) == 0
+                {
+                    self.strafe_player(&player, env);
+                    return;
                 }
             }
-            self.holding.path = find_path(&nodes, start, goal as usize, gone);
+        }
+        if self.holding.path.as_ref().is_none_or(Path::is_done) {
+            let nodes = self.node_list(env);
+            let gone = Self::crystals_gone(env);
+            let start = closest_node(&nodes, self.position, gone);
+            let inner = env.alive_crystals.is_none_or(|alive| alive < 0);
+            let goal = circle_goal(&mut self.random, start, &mut self.holding.clockwise, inner);
+            self.holding.path = find_path(&nodes, start, goal, gone, None);
             if let Some(path) = self.holding.path.as_mut() {
                 path.next += 1;
             }
         }
-        self.navigate_to_next_node();
+        if let Some(target) = next_waypoint(&mut self.random, &mut self.holding.path) {
+            self.holding.target = Some(target);
+        }
     }
 
-    fn navigate_to_next_node(&mut self) {
-        let Some(path) = self.holding.path.as_mut().filter(|path| !path.is_done()) else {
+    fn strafe_player(&mut self, player: &PlayerBody, env: &DragonEnv) {
+        self.set_phase(Phase::StrafePlayer);
+        self.strafe.attack_target = Some(player.id);
+        let nodes = self.node_list(env);
+        let gone = Self::crystals_gone(env);
+        let start = closest_node(&nodes, self.position, gone);
+        let goal = closest_node(&nodes, player.feet, gone);
+        let (x, z) = (player.feet.x.floor() as i32, player.feet.z.floor() as i32);
+        let (dx, dz) = (
+            f64::from(x) - self.position.x,
+            f64::from(z) - self.position.z,
+        );
+        let last = Node {
+            x,
+            y: (player.feet.y + strafe_lift(dx, dz)).floor() as i32,
+            z,
+        };
+        self.strafe.path = find_path(&nodes, start, goal, gone, Some(last));
+        if let Some(path) = self.strafe.path.as_mut() {
+            path.next += 1;
+            if let Some(target) = next_waypoint(&mut self.random, &mut self.strafe.path) {
+                self.strafe.target = Some(target);
+            }
+        }
+    }
+
+    fn strafe_tick(&mut self, env: &DragonEnv, events: &mut DragonEvents) {
+        let target = self
+            .strafe
+            .attack_target
+            .and_then(|id| env.players.iter().find(|player| player.id == id))
+            .copied();
+        let Some(target) = target else {
+            self.set_phase(Phase::HoldingPattern);
             return;
         };
-        let node = path.nodes[path.next];
-        path.next += 1;
-        let base = f64::from(node.y);
-        let y = loop {
-            let y = f64::from(node.y as f32 + self.random.next_float() * 20.0);
-            if y >= base {
-                break y;
+        if self.strafe.path.as_ref().is_some_and(Path::is_done) {
+            let (dx, dz) = (
+                target.feet.x - self.position.x,
+                target.feet.z - self.position.z,
+            );
+            self.strafe.target = Some(target.feet + DVec3::new(0.0, strafe_lift(dx, dz), 0.0));
+        }
+        let distance = self
+            .strafe
+            .target
+            .map_or(0.0, |at| at.distance_squared(self.position));
+        if !(100.0..=22500.0).contains(&distance) {
+            self.strafe_new_target(env);
+        }
+        let near = target.feet.distance_squared(self.position) < 4096.0;
+        if !near || !(env.sees)(self.eye(), target.eye()) {
+            if self.strafe.fireball_charge > 0 {
+                self.strafe.fireball_charge -= 1;
             }
-        };
-        self.holding.target = Some(DVec3::new(f64::from(node.x), y, f64::from(node.z)));
+            return;
+        }
+        self.strafe.fireball_charge += 1;
+        let angle = self.facing_angle(target.feet);
+        if self.strafe.fireball_charge < FIREBALL_CHARGE || !(0.0..10.0).contains(&angle) {
+            return;
+        }
+        let view = view_vector(self.x_rot, self.y_rot);
+        let head = self.parts[HEAD];
+        let from = DVec3::new(head.x - view.x, head.y + 1.0, head.z - view.z);
+        let aim = target.feet + DVec3::new(0.0, target.height * 0.5, 0.0) - from;
+        let pitch = self.voice_pitch();
+        events.sounds.push((
+            SHOOT_SOUND,
+            block_center(self.position),
+            SHOOT_VOLUME,
+            pitch,
+        ));
+        events.fireballs.push((from, normalize(aim)));
+        self.strafe.fireball_charge = 0;
+        if let Some(path) = self.strafe.path.as_mut() {
+            path.next = path.next.max(path.nodes.len());
+        }
+        self.set_phase(Phase::HoldingPattern);
+    }
+
+    fn strafe_new_target(&mut self, env: &DragonEnv) {
+        if self.strafe.path.as_ref().is_none_or(Path::is_done) {
+            let nodes = self.node_list(env);
+            let gone = Self::crystals_gone(env);
+            let start = closest_node(&nodes, self.position, gone);
+            let inner = env.alive_crystals.is_none_or(|alive| alive <= 0);
+            let goal = circle_goal(&mut self.random, start, &mut self.strafe.clockwise, inner);
+            self.strafe.path = find_path(&nodes, start, goal, gone, None);
+            if let Some(path) = self.strafe.path.as_mut() {
+                path.next += 1;
+            }
+        }
+        if let Some(target) = next_waypoint(&mut self.random, &mut self.strafe.path) {
+            self.strafe.target = Some(target);
+        }
+    }
+
+    pub fn eye(&self) -> DVec3 {
+        self.position + DVec3::new(0.0, EYE_HEIGHT, 0.0)
+    }
+
+    fn facing_angle(&self, toward: DVec3) -> f32 {
+        let to = normalize(DVec3::new(
+            toward.x - self.position.x,
+            0.0,
+            toward.z - self.position.z,
+        ));
+        let yaw = f64::from(self.y_rot * DEG);
+        let facing = normalize(DVec3::new(f64::from(sin(yaw)), 0.0, f64::from(-cos(yaw))));
+        let dot = facing.dot(to) as f32;
+        (f64::from(dot).acos() * 57.295_776_367_187_5) as f32 + 0.5
     }
 
     fn fly_toward(&mut self, target: DVec3) {
@@ -1250,6 +1510,7 @@ mod tests {
             players: &[],
             crystals: &[],
             death_experience: None,
+            sees: &|_, _| true,
         }
     }
 
@@ -1331,7 +1592,7 @@ mod tests {
     #[test]
     fn a_path_follows_the_node_graph_to_its_goal() {
         let nodes = nodes(flat);
-        let path = find_path(&nodes, 0, 1, false).expect("a path");
+        let path = find_path(&nodes, 0, 1, false, None).expect("a path");
         assert_eq!(path.nodes.first(), Some(&nodes[0]));
         assert_eq!(path.nodes.last(), Some(&nodes[1]));
         for pair in path.nodes.windows(2) {
@@ -1339,10 +1600,10 @@ mod tests {
             let to = nodes.iter().position(|n| *n == pair[1]).unwrap();
             assert!(NODE_ADJACENCY[from] & (1 << to) != 0, "{from} -> {to}");
         }
-        let across = find_path(&nodes, 0, 6, false).expect("across the ring");
+        let across = find_path(&nodes, 0, 6, false, None).expect("across the ring");
         assert_eq!(across.nodes.last(), Some(&nodes[6]));
         assert!(across.nodes.len() > 2);
-        let inner = find_path(&nodes, 12, 13, true).expect("an inner path");
+        let inner = find_path(&nodes, 12, 13, true, None).expect("an inner path");
         assert!(
             inner
                 .nodes
@@ -1674,6 +1935,7 @@ mod tests {
             players: &[],
             crystals: &near,
             death_experience: None,
+            sees: &|_, _| true,
         };
         for _ in 0..200 {
             dragon.tick(&env);
@@ -1708,6 +1970,7 @@ mod tests {
             players: &[],
             crystals: &[],
             death_experience: None,
+            sees: &|_, _| true,
         };
         dragon.tick(&gone);
         assert_eq!(
@@ -1747,12 +2010,14 @@ mod tests {
                 id: 3,
                 feet: head + DVec3::new(0.5, 0.0, 0.0),
                 height: 1.8,
+                eye_height: 1.62,
                 attackable: true,
             },
             PlayerBody {
                 id: 4,
                 feet: head + DVec3::new(0.5, 0.0, 0.0),
                 height: 1.8,
+                eye_height: 1.62,
                 attackable: false,
             },
         ];
@@ -1763,6 +2028,7 @@ mod tests {
             players: &players,
             crystals: &[],
             death_experience: None,
+            sees: &|_, _| true,
         };
         let events = dragon.tick(&env);
         assert!(
@@ -1780,5 +2046,236 @@ mod tests {
             dragon.tick(&env).player_hits.is_empty(),
             "not while it was hurt recently"
         );
+    }
+
+    fn player(id: u64, feet: DVec3, attackable: bool) -> PlayerBody {
+        PlayerBody {
+            id,
+            feet,
+            height: 1.8,
+            eye_height: 1.62,
+            attackable,
+        }
+    }
+
+    fn with_players<'a>(
+        base: DragonEnv<'a>,
+        players: &'a [PlayerBody],
+        sees: &'a dyn Fn(DVec3, DVec3) -> bool,
+    ) -> DragonEnv<'a> {
+        DragonEnv {
+            players,
+            sees,
+            ..base
+        }
+    }
+
+    #[test]
+    fn the_view_vector_and_strafe_lift_match_vanilla() {
+        let ahead = view_vector(0.0, 0.0);
+        assert!((ahead - DVec3::Z).length() < 1e-6, "{ahead:?}");
+        let west = view_vector(0.0, 90.0);
+        assert!((west - DVec3::NEG_X).length() < 1e-6, "{west:?}");
+        let up = view_vector(-45.0, 0.0);
+        assert!((up.y - 0.707_106_8).abs() < 1e-3 && (up.z - 0.707_106_8).abs() < 1e-3);
+        assert!((strafe_lift(80.0, 0.0) - f64::from(0.4_f32)).abs() < 1e-12);
+        assert_eq!(strafe_lift(0.0, 1000.0), 10.0);
+        assert!((strafe_lift(0.0, 0.0) + 0.6).abs() < 1e-6);
+        assert_eq!(
+            block_center(DVec3::new(-0.2, 64.9, 3.5)),
+            DVec3::new(-0.5, 64.5, 3.5)
+        );
+    }
+
+    #[test]
+    fn a_path_can_end_at_a_node_of_its_own() {
+        let nodes = nodes(flat);
+        let last = Node { x: 7, y: 70, z: -3 };
+        let path = find_path(&nodes, 0, 1, false, Some(last)).expect("a path");
+        assert_eq!(path.nodes.last(), Some(&last));
+        assert_eq!(path.nodes[path.nodes.len() - 2], nodes[1]);
+        let same = find_path(&nodes, 4, 4, false, Some(last)).expect("from a node to itself");
+        assert_eq!(same.nodes, vec![nodes[4], last]);
+    }
+
+    #[test]
+    fn a_circling_dragon_at_the_end_of_its_path_strafes_the_nearest_attackable_player() {
+        let height = flat;
+        let top = || 64;
+        let sees = |_: DVec3, _: DVec3| true;
+        let players = [
+            player(3, DVec3::new(2.0, 63.0, 1.0), false),
+            player(4, DVec3::new(40.0, 63.0, 0.0), true),
+            player(5, DVec3::new(90.0, 63.0, 0.0), true),
+        ];
+        assert_eq!(
+            nearest_player(&players, DVec3::new(0.0, 63.0, 0.0), |_| true).map(|p| p.id),
+            Some(4),
+            "creative players are never picked"
+        );
+        assert_eq!(
+            distance_to_center_sqr((0, 63, 0), DVec3::new(0.5, 63.5, 2.5)),
+            4.0
+        );
+        let mut strafed = None;
+        for seed in 0..20 {
+            let mut dragon = dragon_at(DVec3::new(0.5, 100.0, 0.5), seed as f32 * 18.0);
+            dragon.random = LegacyRandom::new(seed);
+            let env = with_players(env(&height, &top, Some(10)), &players, &sees);
+            for _ in 0..2000 {
+                dragon.tick(&env);
+                if dragon.phase == Phase::StrafePlayer {
+                    strafed = Some(dragon);
+                    break;
+                }
+            }
+            if strafed.is_some() {
+                break;
+            }
+        }
+        let dragon = strafed.expect("sooner or later it strafes a player");
+        assert_eq!(dragon.strafe.attack_target, Some(4));
+        let path = dragon.strafe.path.as_ref().expect("a path to the player");
+        let last = path.nodes.last().expect("a last node");
+        assert_eq!((last.x, last.z), (40, 0), "it ends over the player");
+        assert!((53..=73).contains(&last.y), "{last:?}");
+        let mut alone = dragon_at(DVec3::new(0.5, 100.0, 0.5), 0.0);
+        let creative = [players[0]];
+        let env = with_players(env(&height, &top, Some(10)), &creative, &sees);
+        for _ in 0..3000 {
+            alone.tick(&env);
+            assert_ne!(alone.phase, Phase::StrafePlayer, "nobody to strafe");
+        }
+    }
+
+    fn strafing(target: DVec3) -> EnderDragon {
+        let mut dragon = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
+        dragon.set_phase(Phase::StrafePlayer);
+        dragon.strafe.attack_target = Some(4);
+        dragon.strafe.target = Some(target);
+        dragon
+    }
+
+    #[test]
+    fn a_strafing_dragon_spits_a_fireball_after_five_ticks_with_the_player_in_sight_ahead() {
+        let height = flat;
+        let top = || 64;
+        let sees = |_: DVec3, _: DVec3| true;
+        let players = [player(4, DVec3::new(0.0, 90.0, -40.0), true)];
+        let env = with_players(env(&height, &top, Some(10)), &players, &sees);
+        let mut dragon = strafing(DVec3::new(0.0, 100.0, -80.0));
+        let mut shots = Vec::new();
+        for tick in 1..=10 {
+            let before = (dragon.parts[HEAD], dragon.y_rot, dragon.position);
+            let events = dragon.tick(&env);
+            if !events.fireballs.is_empty() {
+                shots.push((tick, events, before));
+                break;
+            }
+            assert_eq!(dragon.strafe.fireball_charge, tick);
+        }
+        let (tick, events, (head, y_rot, at)) = shots.pop().expect("a fireball");
+        assert_eq!(tick, FIREBALL_CHARGE);
+        assert_eq!(dragon.phase, Phase::HoldingPattern, "then it circles again");
+        let (from, direction) = events.fireballs[0];
+        let view = view_vector(0.0, wrap_degrees(y_rot));
+        assert_eq!(
+            from,
+            DVec3::new(head.x - view.x, head.y + 1.0, head.z - view.z)
+        );
+        let aim = (DVec3::new(0.0, 90.9, -40.0) - from).normalize();
+        assert!((direction - aim).length() < 1e-9);
+        let shot = events
+            .sounds
+            .iter()
+            .find(|sound| sound.0 == SHOOT_SOUND)
+            .expect("the shoot sound");
+        assert_eq!(shot.2, SHOOT_VOLUME);
+        assert_eq!(shot.1, block_center(at));
+    }
+
+    #[test]
+    fn without_sight_or_out_of_range_or_facing_away_the_charge_runs_down() {
+        let height = flat;
+        let top = || 64;
+        let blind = |_: DVec3, _: DVec3| false;
+        let near = [player(4, DVec3::new(0.0, 90.0, -40.0), true)];
+        let dark = with_players(env(&height, &top, Some(10)), &near, &blind);
+        let mut dragon = strafing(DVec3::new(0.0, 100.0, -80.0));
+        dragon.strafe.fireball_charge = 3;
+        for expected in [2, 1, 0, 0] {
+            assert!(dragon.tick(&dark).fireballs.is_empty());
+            assert_eq!(dragon.strafe.fireball_charge, expected);
+        }
+        let sees = |_: DVec3, _: DVec3| true;
+        let far = [player(4, DVec3::new(0.0, 90.0, -70.0), true)];
+        let distant = with_players(env(&height, &top, Some(10)), &far, &sees);
+        let mut dragon = strafing(DVec3::new(0.0, 100.0, -80.0));
+        for _ in 0..10 {
+            assert!(
+                dragon.tick(&distant).fireballs.is_empty(),
+                "64 blocks or more away"
+            );
+        }
+        let behind = [player(4, DVec3::new(0.0, 90.0, 40.0), true)];
+        let back = with_players(env(&height, &top, Some(10)), &behind, &sees);
+        let mut dragon = strafing(DVec3::new(0.0, 100.0, -80.0));
+        for _ in 0..3 {
+            assert!(dragon.tick(&back).fireballs.is_empty(), "not behind it");
+        }
+        assert!(
+            dragon.strafe.fireball_charge >= 3,
+            "the charge still builds"
+        );
+    }
+
+    #[test]
+    fn a_strafe_without_its_player_falls_back_to_circling() {
+        let height = flat;
+        let top = || 64;
+        let mut dragon = strafing(DVec3::new(0.0, 100.0, -80.0));
+        dragon.tick(&env(&height, &top, Some(10)));
+        assert_eq!(dragon.phase, Phase::HoldingPattern);
+        let tag = strafing(DVec3::ZERO).to_tag();
+        assert_eq!(tag.get("DragonPhase"), Some(&Tag::Int(1)));
+        let mut loaded = EnderDragon::from_tag(&tag, 3).unwrap();
+        assert_eq!(loaded.phase, Phase::StrafePlayer);
+        loaded.tick(&env(&height, &top, Some(10)));
+        assert_eq!(
+            loaded.phase,
+            Phase::HoldingPattern,
+            "a saved strafe has no player"
+        );
+    }
+
+    #[test]
+    fn breaking_a_crystal_makes_a_circling_dragon_strafe_the_player_behind_it() {
+        let height = flat;
+        let top = || 64;
+        let sees = |_: DVec3, _: DVec3| true;
+        let players = [
+            player(4, DVec3::new(30.0, 70.0, 0.0), true),
+            player(5, DVec3::new(-30.0, 70.0, 0.0), false),
+        ];
+        let env = with_players(env(&height, &top, Some(10)), &players, &sees);
+        let mut dragon = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
+        let mut events = DragonEvents::default();
+        dragon.crystal_destroyed(9, Some(4), &mut events);
+        assert_eq!(
+            dragon.phase,
+            Phase::HoldingPattern,
+            "it turns on its next tick"
+        );
+        dragon.tick(&env);
+        assert_eq!(dragon.phase, Phase::StrafePlayer);
+        assert_eq!(dragon.strafe.attack_target, Some(4));
+        let mut calm = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
+        calm.crystal_destroyed(9, Some(5), &mut events);
+        calm.tick(&env);
+        assert_eq!(calm.phase, Phase::HoldingPattern, "not a creative player");
+        let mut busy = strafing(DVec3::new(0.0, 100.0, -80.0));
+        busy.strafe.attack_target = Some(4);
+        busy.crystal_destroyed(9, Some(4), &mut events);
+        assert_eq!(busy.pending_strafe, None, "only a circling dragon turns");
     }
 }

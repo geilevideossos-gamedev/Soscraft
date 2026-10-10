@@ -11,6 +11,14 @@ pub const MINIMAL_RADIUS: f32 = 0.5;
 pub const HEIGHT: f64 = 0.5;
 pub const INSTANT_SCALE: f64 = 0.5;
 const CHECK_EVERY: i32 = 5;
+pub const BREATH_WAIT_TIME: i32 = 20;
+pub const BREATH_COLOR: u32 = 0xCB00E5;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Breath {
+    Fireball,
+    Flame(u64),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Visitor {
@@ -44,6 +52,7 @@ pub struct EffectCloud {
     pub effects: Vec<PotionEffect>,
     pub color: u32,
     pub alive: bool,
+    pub breath: Option<Breath>,
     victims: HashMap<u64, i32>,
 }
 
@@ -68,6 +77,34 @@ impl EffectCloud {
             effects: contents.scaled_effects(duration_scale),
             color: contents.color(),
             alive: true,
+            breath: None,
+            victims: HashMap::new(),
+        }
+    }
+
+    pub fn dragon_breath(
+        position: DVec3,
+        radius: f32,
+        duration: i32,
+        radius_per_tick: f32,
+        effect: PotionEffect,
+        breath: Breath,
+    ) -> Self {
+        Self {
+            position,
+            owner: None,
+            radius,
+            radius_on_use: 0.0,
+            radius_per_tick,
+            duration,
+            duration_on_use: 0,
+            wait_time: BREATH_WAIT_TIME,
+            reapplication_delay: REAPPLICATION_DELAY,
+            tick_count: 0,
+            effects: vec![effect],
+            color: BREATH_COLOR,
+            alive: true,
+            breath: Some(breath),
             victims: HashMap::new(),
         }
     }
