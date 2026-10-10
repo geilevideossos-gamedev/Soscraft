@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::sync::mpsc;
 
 use minecraft_net::{Dimension, PlayerUuid};
-use minecraft_terrain::server::{DragonFightScan, Job, ServerSim};
+use minecraft_terrain::server::{DragonFightScan, FightLink, Job, ServerSim};
 use minecraftoss_core::ChunkPos;
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_core::random::LegacyRandom;
@@ -167,7 +167,7 @@ pub struct DragonFight {
     pub dirty: bool,
     pub ticks_since_dragon_seen: u32,
     pub creating: Option<mpsc::Receiver<[i32; 4]>>,
-    pub linked: Option<Option<[i32; 4]>>,
+    pub linked: Option<FightLink>,
     pub progress: f32,
 }
 
@@ -222,9 +222,9 @@ pub fn dragon_job(send: mpsc::Sender<[i32; 4]>) -> Job {
     })
 }
 
-pub fn link_job(dragon: Option<[i32; 4]>) -> Job {
+pub fn link_job(link: FightLink) -> Job {
     Box::new(move |sim: &mut ServerSim| -> Box<dyn Any + Send> {
-        sim.set_fight_dragon(dragon);
+        sim.link_fight(link);
         Box::new(())
     })
 }
@@ -348,17 +348,24 @@ impl DragonFight {
         };
         self.creating = None;
         self.data.dragon_uuid = Some(uuid);
-        self.linked = Some(Some(uuid));
         self.dirty = true;
         Some(uuid)
     }
 
+    pub fn link_state(&self) -> FightLink {
+        FightLink {
+            dragon: self.data.dragon_uuid,
+            previously_killed: self.data.previously_killed,
+        }
+    }
+
     pub fn link(&mut self, entities: &mut Entities) {
-        if self.data.needs_state_scanning || self.linked == Some(self.data.dragon_uuid) {
+        let link = self.link_state();
+        if self.data.needs_state_scanning || self.linked == Some(link) {
             return;
         }
-        entities.run_job(link_job(self.data.dragon_uuid));
-        self.linked = Some(self.data.dragon_uuid);
+        entities.run_job(link_job(link));
+        self.linked = Some(link);
     }
 
     pub fn start_scan(&mut self, entities: &mut Entities) {

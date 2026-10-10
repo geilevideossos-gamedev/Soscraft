@@ -249,6 +249,103 @@ pub fn append_beams<'a>(
     }
 }
 
+pub const RAY_SEED: u64 = 432;
+const HALF_SQRT_3: f32 = 0.866_025_4;
+const RAY_EDGE: [f32; 4] = [1.0, 0.0, 1.0, 0.0];
+
+pub fn ray_fade(progress: f32) -> f32 {
+    let fade = if progress > 0.8 {
+        (progress - 0.8) / 0.2
+    } else {
+        0.0
+    };
+    fade.min(1.0)
+}
+
+pub fn ray_count(progress: f32) -> usize {
+    ((progress + progress * progress) / 2.0 * 60.0)
+        .floor()
+        .max(0.0) as usize
+}
+
+pub fn ray_triangles(progress: f32) -> Vec<([Vec3; 3], f32)> {
+    let fade = ray_fade(progress);
+    let mut random = minecraftoss_player::rng::LegacyRandom::new(RAY_SEED);
+    let mut turn = glam::Quat::IDENTITY;
+    let mut triangles = Vec::new();
+    let tau = std::f32::consts::TAU;
+    for _ in 0..ray_count(progress) {
+        let mut angles = [0.0; 6];
+        for angle in &mut angles {
+            *angle = random.next_float() * tau;
+        }
+        angles[5] += progress * std::f32::consts::FRAC_PI_2;
+        let xyz = |x: f32, y: f32, z: f32| {
+            glam::Quat::from_rotation_x(x)
+                * glam::Quat::from_rotation_y(y)
+                * glam::Quat::from_rotation_z(z)
+        };
+        turn = turn * xyz(angles[0], angles[1], angles[2]) * xyz(angles[3], angles[4], angles[5]);
+        let length = random.next_float() * 20.0 + 5.0 + fade * 10.0;
+        let width = random.next_float() * 2.0 + 1.0 + fade * 2.0;
+        let corners = [
+            Vec3::new(-HALF_SQRT_3 * width, length, -0.5 * width),
+            Vec3::new(HALF_SQRT_3 * width, length, -0.5 * width),
+            Vec3::new(0.0, length, width),
+        ]
+        .map(|corner| turn * corner);
+        for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+            triangles.push(([Vec3::ZERO, corners[a], corners[b]], 1.0 - fade));
+        }
+    }
+    triangles
+}
+
+pub fn append_rays<'a>(
+    mesh: &mut ChunkMesh,
+    dragons: impl IntoIterator<Item = &'a DragonView>,
+    atlas: &Atlas,
+    partial: f32,
+) {
+    let Some(white) = ResourceId::parse(crate::mesh::WHITE_TEXTURE)
+        .ok()
+        .filter(|white| atlas.contains(white))
+        .map(|white| atlas.entity_region(&white))
+    else {
+        return;
+    };
+    let uv = [(white[0] + white[2]) / 2.0, (white[1] + white[3]) / 2.0];
+    for dragon in dragons.into_iter().filter(|dragon| dragon.death_time > 0) {
+        let progress =
+            (dragon.death_time as f32 + partial) / crate::ender_dragon::DEATH_TICKS as f32;
+        let feet = dragon
+            .previous_position
+            .lerp(dragon.position, f64::from(partial));
+        let origin = entity_pose(feet.as_vec3(), &Pose::of(dragon, partial))
+            * Mat4::from_translation(Vec3::new(0.0, -1.0, -2.0));
+        for (corners, alpha) in ray_triangles(progress) {
+            let start = mesh.vertices.len() as u32;
+            for (i, corner) in corners.into_iter().enumerate() {
+                let color = if i == 0 {
+                    [1.0, 1.0, 1.0, alpha]
+                } else {
+                    RAY_EDGE
+                };
+                mesh.vertices.push(crate::mesh::Vertex {
+                    position: origin.transform_point3(corner).to_array(),
+                    uv,
+                    color,
+                    sky_light: 15.0,
+                    block_light: 15.0,
+                });
+            }
+            mesh.indices
+                .extend_from_slice(&[start, start + 1, start + 2]);
+            mesh.faces += 1;
+        }
+    }
+}
+
 pub fn append_dragons<'a>(
     mesh: &mut ChunkMesh,
     dragons: impl IntoIterator<Item = &'a DragonView>,
@@ -433,5 +530,33 @@ mod tests {
             head.x > 3.0 && tail.x < -3.0,
             "facing +x at yaw 90: {head:?} {tail:?}"
         );
+    }
+
+    #[test]
+    fn the_death_rays_grow_in_number_and_fade_in_the_last_fifth() {
+        assert_eq!(ray_count(0.0), 0);
+        assert_eq!(ray_count(0.5), 22);
+        assert_eq!(ray_count(1.0), 60);
+        assert_eq!((ray_fade(0.5), ray_fade(0.8)), (0.0, 0.0));
+        assert!((ray_fade(0.9) - 0.5).abs() < 1e-5);
+        assert!((ray_fade(1.0) - 1.0).abs() < 1e-6);
+        assert_eq!(ray_fade(2.0), 1.0);
+        let early = ray_triangles(0.5);
+        assert_eq!(early.len(), 66, "three faces a ray");
+        for (corners, alpha) in &early {
+            assert_eq!(corners[0], Vec3::ZERO, "every ray starts at the body");
+            assert_eq!(*alpha, 1.0);
+            for corner in &corners[1..] {
+                let length = corner.length();
+                assert!((5.0..=29.0).contains(&length), "{length}");
+            }
+        }
+        assert_eq!(
+            ray_triangles(0.5)[..3],
+            early[..3],
+            "the same rays every frame"
+        );
+        let late = ray_triangles(0.95);
+        assert!(late.iter().all(|(_, alpha)| (alpha - 0.25).abs() < 1e-5));
     }
 }

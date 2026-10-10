@@ -33,6 +33,10 @@ pub const HURT_SOUND: &str = "minecraft:entity.ender_dragon.hurt";
 pub const DEATH_SOUND: &str = "minecraft:entity.generic.death";
 pub const FLAP_SOUND: &str = "minecraft:entity.ender_dragon.flap";
 pub const GROWL_SOUND: &str = "minecraft:entity.ender_dragon.growl";
+pub const DRAGON_DEATH_SOUND: &str = "minecraft:entity.ender_dragon.death";
+pub const FIRST_KILL_EXPERIENCE: i32 = 12000;
+pub const LATER_KILL_EXPERIENCE: i32 = 500;
+pub const DEATH_TICKS: i32 = 200;
 const DEG: f32 = 0.017_453_292;
 const NODE_COUNT: usize = 24;
 const NODE_ADJACENCY: [u32; NODE_COUNT] = [
@@ -428,6 +432,31 @@ pub struct DragonEnv<'a> {
     pub alive_crystals: Option<i32>,
     pub players: &'a [PlayerBody],
     pub crystals: &'a [(u64, DVec3)],
+    pub death_experience: Option<i32>,
+}
+
+pub fn death_experience(
+    fight_dragon: bool,
+    previously_killed: bool,
+    mob_drops: bool,
+) -> Option<i32> {
+    mob_drops.then_some(if fight_dragon && !previously_killed {
+        FIRST_KILL_EXPERIENCE
+    } else {
+        LATER_KILL_EXPERIENCE
+    })
+}
+
+pub fn experience_share(total: i32, part: f32) -> i32 {
+    (total as f32 * part).floor() as i32
+}
+
+pub fn heard_at(event: &str, position: DVec3, camera: DVec3) -> DVec3 {
+    if event != DRAGON_DEATH_SOUND {
+        return position;
+    }
+    let center = position.floor() + DVec3::splat(0.5);
+    camera + normalize(center - camera) * 2.0
 }
 
 pub const CRYSTAL_RANGE: f64 = 32.0;
@@ -448,6 +477,7 @@ pub fn crystal_in_reach(dragon: DVec3, crystal: DVec3) -> bool {
 pub struct DragonEvents {
     pub sounds: Vec<(&'static str, DVec3, f32, f32)>,
     pub player_hits: Vec<(u64, f32, DVec3)>,
+    pub experience: Vec<(DVec3, i32)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -846,7 +876,7 @@ impl EnderDragon {
             self.damage_cooldown -= 1;
         }
         if self.dead_or_dying() {
-            self.tick_death();
+            self.tick_death(env, &mut events);
         }
         if !self.dead_or_dying() && !self.removed {
             let roll = self.random.next_int(1000) as i32;
@@ -864,14 +894,32 @@ impl EnderDragon {
         events
     }
 
-    fn tick_death(&mut self) {
+    fn tick_death(&mut self, env: &DragonEnv, events: &mut DragonEvents) {
         self.death_time += 1;
+        if let Some(total) = env
+            .death_experience
+            .filter(|_| self.death_time > 150 && self.death_time % 5 == 0)
+        {
+            events
+                .experience
+                .push((self.position, experience_share(total, 0.08)));
+        }
+        if self.death_time == 1 {
+            events
+                .sounds
+                .push((DRAGON_DEATH_SOUND, self.position, SOUND_VOLUME, 1.0));
+        }
         let rise = DVec3::new(0.0, 0.1, 0.0);
         self.position += rise;
         for part in &mut self.parts {
             *part += rise;
         }
-        if self.death_time >= 200 {
+        if self.death_time >= DEATH_TICKS {
+            if let Some(total) = env.death_experience {
+                events
+                    .experience
+                    .push((self.position, experience_share(total, 0.2)));
+            }
             self.removed = true;
         }
     }
@@ -1201,6 +1249,7 @@ mod tests {
             alive_crystals: alive,
             players: &[],
             crystals: &[],
+            death_experience: None,
         }
     }
 
@@ -1481,6 +1530,91 @@ mod tests {
         );
     }
 
+    fn die(total: Option<i32>) -> (Vec<DragonEvents>, EnderDragon) {
+        let mut dragon = dragon_at(DVec3::new(0.0, 70.0, 0.0), 0.0);
+        dragon.health = 0.0;
+        let height = flat;
+        let top = || 64;
+        let env = DragonEnv {
+            death_experience: total,
+            ..env(&height, &top, None)
+        };
+        let mut ticks = Vec::new();
+        while !dragon.removed {
+            ticks.push(dragon.tick(&env));
+        }
+        (ticks, dragon)
+    }
+
+    #[test]
+    fn the_death_adds_up_to_12000_experience_on_the_first_kill_and_500_after() {
+        assert_eq!(death_experience(true, false, true), Some(12000));
+        assert_eq!(death_experience(true, true, true), Some(500));
+        assert_eq!(
+            death_experience(false, false, true),
+            Some(500),
+            "a dragon outside the fight"
+        );
+        assert_eq!(death_experience(true, false, false), None, "mob_drops off");
+        for (total, share, last) in [(12000, 960, 2400), (500, 40, 100)] {
+            let (ticks, dragon) = die(Some(total));
+            assert_eq!(ticks.len(), 200);
+            assert_eq!(dragon.death_time, DEATH_TICKS);
+            let awards: Vec<(usize, i32)> = ticks
+                .iter()
+                .enumerate()
+                .flat_map(|(tick, events)| {
+                    events.experience.iter().map(move |(_, xp)| (tick + 1, *xp))
+                })
+                .collect();
+            let mut expected: Vec<(usize, i32)> =
+                (155..=200).step_by(5).map(|tick| (tick, share)).collect();
+            expected.push((200, last));
+            assert_eq!(awards, expected);
+            assert_eq!(awards.iter().map(|(_, xp)| xp).sum::<i32>(), total);
+        }
+        let (ticks, _) = die(None);
+        assert!(ticks.iter().all(|events| events.experience.is_empty()));
+    }
+
+    #[test]
+    fn the_dying_dragon_roars_once_and_rises_twenty_blocks() {
+        let (ticks, dragon) = die(Some(500));
+        let roars: Vec<usize> = ticks
+            .iter()
+            .enumerate()
+            .filter(|(_, events)| {
+                events
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.0 == DRAGON_DEATH_SOUND)
+            })
+            .map(|(tick, _)| tick + 1)
+            .collect();
+        assert_eq!(roars, [1]);
+        assert_eq!(ticks[0].sounds[0].2, SOUND_VOLUME);
+        assert!(
+            (dragon.position.y - 90.0).abs() < 1e-6,
+            "{:?}",
+            dragon.position
+        );
+        let last = ticks[199].experience[1].0;
+        assert!(
+            (last.y - 90.0).abs() < 1e-6,
+            "the last share comes after the last rise"
+        );
+    }
+
+    #[test]
+    fn the_death_roar_is_heard_two_blocks_from_the_camera_toward_the_dragon() {
+        let camera = DVec3::new(100.5, 50.62, 0.5);
+        let heard = heard_at(DRAGON_DEATH_SOUND, DVec3::new(0.2, 80.7, 0.9), camera);
+        let toward = (DVec3::new(0.5, 80.5, 0.5) - camera).normalize();
+        assert!((heard - (camera + toward * 2.0)).length() < 1e-9);
+        let elsewhere = DVec3::new(3.0, 4.0, 5.0);
+        assert_eq!(heard_at(HURT_SOUND, elsewhere, camera), elsewhere);
+    }
+
     #[test]
     fn a_sitting_dragon_takes_off_after_a_quarter_of_its_health() {
         let mut random = LegacyRandom::new(4);
@@ -1539,6 +1673,7 @@ mod tests {
             alive_crystals: None,
             players: &[],
             crystals: &near,
+            death_experience: None,
         };
         for _ in 0..200 {
             dragon.tick(&env);
@@ -1572,6 +1707,7 @@ mod tests {
             alive_crystals: None,
             players: &[],
             crystals: &[],
+            death_experience: None,
         };
         dragon.tick(&gone);
         assert_eq!(
@@ -1626,6 +1762,7 @@ mod tests {
             alive_crystals: None,
             players: &players,
             crystals: &[],
+            death_experience: None,
         };
         let events = dragon.tick(&env);
         assert!(

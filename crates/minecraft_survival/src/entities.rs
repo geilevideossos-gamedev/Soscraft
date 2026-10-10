@@ -892,8 +892,10 @@ impl Entities {
             self.block_entity_changes.extend(output.block_entities);
             self.destroyed.extend(output.destroyed);
             self.experience_found += output.orbs_taken.iter().map(|orb| orb.2 as f32).sum::<f32>();
+            let camera = DVec3::from_array(player.feet) + DVec3::Y * f64::from(EYE_HEIGHT);
             for sound in &output.mob_sounds {
-                self.sounds.push((sound.event.clone(), sound.position, sound.volume, sound.pitch));
+                let heard = minecraft_terrain::ender_dragon::heard_at(&sound.event, sound.position, camera);
+                self.sounds.push((sound.event.clone(), heard, sound.volume, sound.pitch));
             }
             for sound in output.mob_results.iter().flat_map(|result| result.sounds.iter()) {
                 self.sounds.push((sound.event.clone(), sound.position, sound.volume, sound.pitch));
@@ -1143,6 +1145,7 @@ impl Entities {
         end_crystal_render::append_crystals(&mut out.models, &self.crystals, atlas, light, partial);
         dragon_render::append_dragons(&mut out.models, &self.dragons, atlas, light, partial);
         dragon_render::append_beams(&mut out.models, &self.dragons, &self.crystals, atlas, light, partial);
+        dragon_render::append_rays(&mut out.translucent, &self.dragons, atlas, partial);
         blaze_render::append_blazes(&mut out.models, w.blazes().iter(), poses, atlas, light, partial);
         let poppies = golem_render::append_iron_golems(&mut out.models, w.iron_golems().iter(), poses, atlas, light, partial);
         wolf_render::append_wolves(&mut out.models, w.wolves().iter(), poses, atlas, light, partial, w.game_time());

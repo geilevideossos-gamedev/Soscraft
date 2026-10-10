@@ -90,6 +90,8 @@ pub struct ServerSim {
     end_sounds: Vec<minecraftoss_entities::world::MobSound>,
     end_hits: Vec<minecraftoss_entities::world::PlayerHit>,
     dragons_killed: Vec<[i32; 4]>,
+    fight: FightLink,
+    dragon_drops: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -306,6 +308,8 @@ impl ServerSim {
             end_sounds: Vec::new(),
             end_hits: Vec::new(),
             dragons_killed: Vec::new(),
+            fight: FightLink::default(),
+            dragon_drops: true,
         }
     }
 
@@ -1443,20 +1447,27 @@ impl ServerSim {
                 attackable: player.alive && !player.spectator && player.attackable,
             })
             .collect();
-        let Self { level, dragons, fight_dragon, alive_crystals, end_sounds, end_hits, dragons_killed, crystals: self_crystals, .. } = self;
+        let Self { level, dragons, fight_dragon, alive_crystals, end_sounds, end_hits, dragons_killed, crystals: self_crystals, fight, dragon_drops, .. } = self;
         let level = &*level;
         let height = |x: i32, z: i32| level.height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlockingNoLeaves, x, z);
         let crystals: Vec<(u64, glam::DVec3)> = self_crystals.list.iter().map(|crystal| (crystal.id, crystal.position)).collect();
+        let mut experience = Vec::new();
         for dragon in &mut dragons.list {
             let origin = dragon.fight_origin;
             let top = || level.height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlocking, origin.0, origin.2);
-            let env = crate::ender_dragon::DragonEnv { height: &height, podium_top: &top, alive_crystals: (*fight_dragon == Some(dragon.uuid)).then_some(*alive_crystals), players: &bodies, crystals: &crystals };
+            let ours = *fight_dragon == Some(dragon.uuid);
+            let death_experience = crate::ender_dragon::death_experience(ours, fight.previously_killed, *dragon_drops);
+            let env = crate::ender_dragon::DragonEnv { height: &height, podium_top: &top, alive_crystals: ours.then_some(*alive_crystals), players: &bodies, crystals: &crystals, death_experience };
             let events = dragon.tick(&env);
             end_sounds.extend(events.sounds.into_iter().map(|(event, position, volume, pitch)| minecraftoss_entities::world::MobSound { event: event.to_owned(), position, volume, pitch, category: "hostile" }));
             end_hits.extend(events.player_hits.into_iter().map(|(player_id, damage, attacker)| minecraftoss_entities::world::PlayerHit { player_id, damage, kind: minecraftoss_entities::world::PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0 }, source: Some(dragon.id) }));
+            experience.extend(events.experience);
         }
         dragons_killed.extend(dragons.list.iter().filter(|dragon| dragon.removed).map(|dragon| dragon.uuid));
         dragons.list.retain(|dragon| !dragon.removed);
+        for (position, amount) in experience {
+            self.level.award_experience(position.to_array(), amount);
+        }
     }
 
     fn end_events(&mut self, events: crate::ender_dragon::DragonEvents) {
@@ -1495,8 +1506,9 @@ impl ServerSim {
         uuid
     }
 
-    pub fn set_fight_dragon(&mut self, uuid: Option<[i32; 4]>) {
-        self.fight_dragon = uuid;
+    pub fn link_fight(&mut self, link: FightLink) {
+        self.fight_dragon = link.dragon;
+        self.fight = link;
     }
 
     pub fn dragon_views(&self) -> Vec<crate::ender_dragon::DragonView> {
@@ -1677,6 +1689,7 @@ impl ServerSim {
         level.set_advance_weather(rules.bool("advance_weather"));
         self.mobs.set_mob_griefing(rules.bool("mob_griefing"));
         self.mobs.set_mob_drops(rules.bool("mob_drops"));
+        self.dragon_drops = rules.bool("mob_drops");
         if let Some(natural) = &mut self.level.natural_spawning {
             natural.spawner_blocks_work = rules.bool("spawner_blocks_work");
         }
@@ -1889,6 +1902,12 @@ pub enum Command {
 pub type Job = Box<dyn FnOnce(&mut ServerSim) -> Box<dyn std::any::Any + Send> + Send>;
 
 pub const ENDER_DRAGON: &str = "minecraft:ender_dragon";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FightLink {
+    pub dragon: Option<[i32; 4]>,
+    pub previously_killed: bool,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DragonFightScan {
@@ -6794,6 +6813,45 @@ mod tests {
         }
         assert!(server.dragons.list.is_empty(), "it rose and went");
         assert_eq!(server.take_dragons_killed(), vec![uuid]);
+    }
+
+    fn orb_experience(server: &ServerSim) -> i32 {
+        server.level.entities.iter().filter(|entity| !entity.removed).filter_map(|entity| entity.orb_data()).map(|orb| orb.value * orb.count).sum()
+    }
+
+    fn kill_dragon(server: &mut ServerSim, link: FightLink) -> [i32; 4] {
+        use crate::end_crystal::{EndDamage, EndTarget};
+        let uuid = server.find_or_create_dragon((0, 0, 0));
+        server.link_fight(FightLink { dragon: Some(uuid), ..link });
+        server.tick_end(&[]);
+        let id = server.dragons.list[0].id;
+        server.end_hit(EndTarget::DragonPart { id, part: crate::ender_dragon::HEAD }, EndDamage::attack(500.0, 0));
+        for _ in 0..600 {
+            server.tick_end(&[]);
+            if server.dragons.list.is_empty() {
+                break;
+            }
+        }
+        assert!(server.dragons.list.is_empty(), "it rose and went");
+        uuid
+    }
+
+    #[test]
+    fn the_first_dragon_drops_12000_experience_and_a_later_one_500() {
+        let Some(mut server) = end_world((-5..=4).flat_map(|x| (-5..=4).map(move |z| (x, z)))) else { return };
+        let first = kill_dragon(&mut server, FightLink::default());
+        assert_eq!(server.take_dragons_killed(), vec![first]);
+        assert_eq!(orb_experience(&server), 12000);
+        let sounds = server.take_end_sounds();
+        assert_eq!(sounds.iter().filter(|sound| sound.event == crate::ender_dragon::DRAGON_DEATH_SOUND).count(), 1);
+        let second = kill_dragon(&mut server, FightLink { previously_killed: true, ..FightLink::default() });
+        assert_ne!(first, second);
+        assert_eq!(orb_experience(&server), 12500);
+        let mut rules = crate::game_rules::GameRules::default();
+        rules.set("mob_drops", "false").unwrap();
+        server.apply_game_rules(&rules);
+        kill_dragon(&mut server, FightLink { previously_killed: true, ..FightLink::default() });
+        assert_eq!(orb_experience(&server), 12500, "no experience without mob_drops");
     }
 
     #[test]

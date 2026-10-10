@@ -819,3 +819,34 @@ Written with entry 27, in its commit.
 ```
 IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:end_crystal*16,minecraft:obsidian*16,minecraft:end_stone*4,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket,minecraft:cooked_beef*32,minecraft:shield,minecraft:totem_of_undying,minecraft:ender_pearl*16,minecraft:torch*64,minecraft:oak_planks*64
 ```
+
+## Third run, group X4: the dragon dies, going home
+
+E3-18, E3-19, E3-21 and E3-22 of the brief, with plan decisions 3 and 9, and the End docs. Base: 89f9fd97 (group X3).
+
+### 28. Minecraft ender dragon dies like vanilla (E3-18)
+
+Previous commit: 89f9fd97
+
+- **Changed:**
+  - `minecraft_terrain/src/ender_dragon.rs`: `tick_death` is `EnderDragon.tickDeath`. Its first tick plays `entity.ender_dragon.death` (level event 1028, `DRAGON_DEATH_SOUND`); every fifth tick after tick 150 it awards `floor(xp · 0.08)` and on tick 200 `floor(xp · 0.2)` as experience orbs at the dragon, where `xp` is 12000 for the fight's dragon before any was killed (`!hasPreviouslyKilledDragon`) and 500 otherwise, and nothing with `mob_drops` off (`death_experience`, `DragonEnv.death_experience`, `DragonEvents.experience`). It still rises 0.1 a tick and goes after 200 ticks. `heard_at` places the death roar as vanilla's global event does: 2 blocks from the listener toward the dragon's block, at volume 5, so it is heard in the whole level.
+  - `minecraft_terrain/src/server.rs` (End region): `FightLink` (the fight's dragon and whether one was killed before) replaces `set_fight_dragon` with `link_fight`; the dragons tick with their death experience and the orbs go to the level (`ExperienceOrb.award`). `apply_game_rules` keeps `mob_drops` for the dragon (one line).
+  - `minecraft_survival/src/the_end/dragon_fight.rs`: `link_state` sends the dragon and `previously_killed` to the server whenever either changes.
+  - `minecraft_terrain/src/dragon_render.rs`: `append_rays` is `EnderDragonRenderer.submitRays`: `floor((t + t²)/2 · 60)` rays (t the death time over 200) from (0, -1, -2) in the dragon's pose, each a three-sided fan turned by the last one's turn and two more random Euler turns from a random seeded 432 (the same rays every frame), 5 to 25 blocks long and 1 to 3 wide, growing by up to 10 and 2 and fading out over the last fifth; white at the body, transparent magenta at the tips. `mesh.rs`: a generated white tile (`WHITE_TEXTURE`) joins the entity atlas so untextured geometry can be drawn there.
+  - `minecraft_survival/src/entities.rs`: the rays go into the translucent mesh (one line), and mob sounds pass through `heard_at` (one line).
+- **Checked with javap (26.3):** `EnderDragon.tickDeath` (the 180-200 explosion emitter, the 12000/500 rule, `MOB_DROPS`, `ExperienceOrb.award`, event 1028 at tick 1 unless silent, `move(0, 0.1, 0)`, `setDragonKilled` and removal at 200), `EnderDragon.aiStep` (the explosion particles while dying), `LevelEventHandler.globalLevelEvent` (1028: `ENDER_DRAGON_DEATH`, hostile, volume 5, pitch 1, 2 blocks from the camera), `EnderDragonRenderer.submit` and `lambda$submitRays$0`.
+- **Tests:** `ender_dragon`: `the_death_adds_up_to_12000_experience_on_the_first_kill_and_500_after` (shares of 960 and 2400, or 40 and 100, on ticks 155 to 200; nothing with `mob_drops` off), `the_dying_dragon_roars_once_and_rises_twenty_blocks`, `the_death_roar_is_heard_two_blocks_from_the_camera_toward_the_dragon`. `dragon_render`: `the_death_rays_grow_in_number_and_fade_in_the_last_fifth`. `server`: `the_first_dragon_drops_12000_experience_and_a_later_one_500` (an End level of seed 0: the orbs of the first kill hold 12000, a later fight dragon adds 500, none with `mob_drops` off; one death roar).
+- **Decisions:**
+  - **No dissolve and no explosion particles:** vanilla draws the dying dragon with the `dragon_explosion_alpha` cut-out that eats it away, and puffs explosion particles around it every tick (emitters from tick 180). The entity shader has no dissolve pass and the game has no Minecraft explosion particle yet, so the dragon stays whole under its rays.
+  - **The rays blend over the scene** in the translucent entity pass (vanilla adds them, `LIGHTNING` blending). On the dark End sky they look the same.
+  - **The roar reaches the End level only:** vanilla's global event goes to every player on the server; here sounds go to the players of the level.
+- **Test steps** (survival; MW2 weapons):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x4dragon` (a new world), `IW4L_MINECRAFT_DIMENSION=the_end` and the kit below. Start on the platform. Note your experience level (0).
+  2. `/gamemode creative`, fly to the island centre and pillar up near the middle, `/gamemode survival` on top. Shoot the crystals, then the dragon until the bar is empty.
+  3. It flies to the podium and stops: a loud roar plays wherever you stand, and white rays burst from its body, more and longer each second, while it rises. **Screenshot 1.**
+  4. In the last seconds a flood of experience orbs falls from it. Go down and collect them: from level 0 you reach level 68. **Screenshot 2** of the level number.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
+```
