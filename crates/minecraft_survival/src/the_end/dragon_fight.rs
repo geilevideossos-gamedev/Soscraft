@@ -549,8 +549,10 @@ mod tests {
 
     #[test]
     fn a_dragon_is_due_once_the_scan_is_done_without_one_or_after_1200_ticks_unseen() {
-        let mut fight = DragonFight::default();
-        fight.players = vec![uuid("steve")];
+        let mut fight = DragonFight {
+            players: vec![uuid("steve")],
+            ..DragonFight::default()
+        };
         assert!(!fight.dragon_due(false, true), "not before the state scan");
         fight.data.needs_state_scanning = false;
         assert!(!fight.dragon_due(false, false), "not while the arena loads");

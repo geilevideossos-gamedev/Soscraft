@@ -784,3 +784,38 @@ Previous commit: 8bf65034
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
 ```
+
+### 27. The Minecraft dragon fight passes clippy
+
+Previous commit: af14e52b
+
+- **Changed:** the two clippy findings on this group's lines, in `minecraft_survival`: `entities.rs`'s `end_target_of` builds the dragon part with `then_some` (`unnecessary_lazy_evaluations`), and a `dragon_fight` test makes its fight with the players in the struct (`field_reassign_with_default`).
+- **Clippy:** `clippy -p minecraft_terrain -p minecraft_survival -p render_anim -p hud -p frame -p sim --all-targets --no-deps --locked -- -A clippy::approx_constant` has no other finding on a line this group added or changed (every reported location checked against `git diff -U0 af3cc119`); the rest are older. The vendored `minecraftoss-entities`, linted as its own workspace (`clippy --manifest-path third_party\minecraftoss\entities\Cargo.toml --offline --all-targets`, the `Cargo.lock` it made deleted afterwards), has none on this group's lines either.
+- **Tests:** none new; the touched crates pass as before.
+- **Test steps:** none; nothing changes in game.
+- **Kit:** none.
+
+### Group X3 summary
+
+Written with entry 27, in its commit.
+
+- **Commits:** 63ff26c8 (the End entry's travel sound), 039c31d8 (E3-9, end crystals), 5a6fd423 (E3-11, the dragon's holding pattern), 2b3167b1 (E3-12, the boss bar), 8bf65034 (E3-13, damage through the parts, and the kill reported to the fight), af14e52b (E3-14, crystal healing), and this entry (clippy).
+- **Tests** (`test -p <crate> --locked`, `MINECRAFTOSS_ROOT` set by `cargo-slot.ps1`): `minecraft_terrain` 728 (4 ignored), `minecraft_survival` 328 and the vanilla world test, `render_anim` 71, `hud` 135, `frame` 17, `sim` 73 and `minecraftoss-entities` 83 pass; `check -p launcher` is green.
+- **New files** (`rustfmt --check` on the staged content is empty): `minecraft_terrain/src/end_crystal.rs`, `end_crystal_render.rs`, `posed_cube.rs`, `ender_dragon.rs`, `dragon_render.rs` (edition 2021), `hud/src/minecraft_boss.rs` (2024). The track's earlier files edited here (`the_end/dragon_fight.rs`, `render_anim/src/minecraft_end.rs`) still pass.
+- **MinecraftOSS patches in this group:** `entities/src/world.rs` (`EntityWorld::blast_by_player`, the public blast with a player attacker, through `apply_explosion_by`).
+- **Plan decisions kept:** 5 (crystal blasts are vanilla explosions through the public blast, credited to the player), 6 (one flat MW2 hit location on every part, the vanilla part rule, MW2 grenades count as explosions, no headshot stacking), 9 (the dragon, the crystals and the boss bar take the players of the End level from the tick, never `PLAYER = 0`; the fight, its dragon UUID, its kill and its crystal count are saved or kept per End level, and each player's bar comes from the fight's own player list by UUID).
+- **Not done in this group, and why:**
+  - **X5 (out of scope this round):** the landing approach, perching, sitting phases, breath and fireballs, strafing, the charge, the takeoff phase, the wing knockback, `checkWalls` block breaking, and the egg teleport. The dragon only circles and strikes with its head and neck.
+  - **X4 (the next group):** the death's rays, sound and experience (E3-18; the dragon already rises and goes), the exit portal, egg and gateway on the kill (E3-19; the fight already marks the kill), the exit portal home with the credits (E3-21), and the respawn with four crystals (E3-22; placing crystals in the End does not try it yet).
+  - **Small gaps:** no knockback on the dragon from players' hits; no boss music (the game has no Minecraft music); a crystal's blast reaches mobs, players and other crystals one tick late; a player killed by a crystal blast is "blown up" without the name of who set it off.
+- **Owner test for the group** (one new world, survival; screenshots numbered across the entries):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x3` and the kit below; no `IW4L_MINECRAFT_DIMENSION` line. Build the ring of 12 frames around a cleared 3x3, fill it with eyes and step in: the portal whoosh plays as you land on the platform (entry 21).
+  2. Entry 23 steps 2 to 5 (the dragon circling, its sounds, its head's strike), screenshots 1 and 2; entry 24 steps 2 to 4 (the boss bar and the plain fog sky), screenshot 3.
+  3. Entry 22 steps 2 to 8 on the platform and one pillar (crystals, their fire, blasts, placing, grenades, the sword), using the end crystals of the kit; then entry 26 steps 2 to 4 (the heal beam), screenshot 6, before you shoot all the pillar crystals.
+  4. Entry 25 steps 1 to 7 (hits on the parts, grenades, the sword, the death and its report), screenshots 4 and 5.
+  5. Entry 23 step 7 (a summoned dragon hovers) after the fight. Then `/kill`: you respawn in the overworld (the exit portal home comes with X4), and no bar shows there (entry 24 step 5).
+- **Kit for the group** (22 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:end_crystal*16,minecraft:obsidian*16,minecraft:end_stone*4,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket,minecraft:cooked_beef*32,minecraft:shield,minecraft:totem_of_undying,minecraft:ender_pearl*16,minecraft:torch*64,minecraft:oak_planks*64
+```

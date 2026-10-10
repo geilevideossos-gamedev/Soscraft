@@ -1317,7 +1317,7 @@ fn end_target_of(key: u64) -> Option<EndTarget> {
     if let Some(id) = crystal_of(key) {
         return Some(EndTarget::Crystal(id));
     }
-    (key >> 56 == DRAGON_KEY >> 56).then(|| EndTarget::DragonPart {
+    (key >> 56 == DRAGON_KEY >> 56).then_some(EndTarget::DragonPart {
         id: (key & (FLAT_HIT - 1)) >> 3,
         part: (key & 7) as usize,
     })
