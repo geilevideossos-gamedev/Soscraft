@@ -261,3 +261,25 @@ IW4L_MINECRAFT_KIT=minecraft:pointed_dripstone*32,minecraft:stone*64
 ```
 IW4L_MINECRAFT_KIT=minecraft:farmland*16,minecraft:dirt_path*16,minecraft:stone*16,minecraft:oak_fence_gate*4,minecraft:torch*8,minecraft:oak_sign*4
 ```
+
+### 3. Minecraft shovels douse campfires, and doused campfires smoke
+
+- **Changed:**
+  - `minecraft_terrain/src/campfire.rs`: `douse_use` is 26.3's `CampfireBlock.useItemOn` dousing branch (javap; in 26.3 it moved from `ShovelItem` into the campfire, keyed on the item tag `#douses_campfires`, which holds `#shovels`): a lit campfire or soul campfire the player aims at (block reach 4.5) becomes unlit, the shovel wears by 1 (`hurtAndBreak`, so not in creative) and level event 1009 with data 0 plays `block.fire.extinguish` at the block centre (volume 0.5, pitch 2.6 + (r - r) x 0.8). Sneaking skips it, as `useItemOn` is skipped for a sneaking player holding an item. `doused` tells whether an item use put a lit campfire out: a shovel's unlit write, or a water bucket emptied into it (the outcome carries the campfire douse sound, which an evaporating Nether pour does not).
+  - `ambient_particles.rs`: `douse` is `CampfireBlock.douse` on the client: 20 times `makeParticles(signal, true)`, a cosy or signal smoke puff from the block and a `smoke` puff at y + 0.4 within a quarter block of the centre rising at 0.005.
+  - `minecraft_survival` `entities.rs`: `campfire_douse` hands the burst to the ambient particles. `render_anim/src/minecraft_world.rs`: the shovel joins the item-use chain, and a douse found by `doused` bursts (three lines).
+- **Tests:** `campfire`: `a_shovel_douses_a_lit_campfire_with_a_hiss_and_wears_by_one`, `a_douse_by_shovel_or_water_bucket_bursts_with_the_campfire_smoke`. `ambient_particles`: `a_doused_campfire_bursts_into_twenty_puffs_and_twenty_low_smokes`.
+- **Decisions:**
+  - A splash water potion's douse stays without the burst: vanilla runs `douse` there on the server only, where it makes no particles.
+  - The shovel goes through the same item-use chain as buckets and flint and steel, which only runs where the player may build, so adventure players can't douse with a shovel (vanilla lets them). Recorded in the state doc's limitations.
+- **Test steps:**
+  1. Place a campfire (it lights) and right-click it with a shovel: it goes out with a hiss and a big burst of smoke. **Screenshot 4** right after the click.
+  2. Hover the shovel in the inventory: it lost 1 durability (the bar under the icon moves after a few uses).
+  3. Light it again with flint and steel, sneak and right-click it with the shovel: nothing happens.
+  4. Place a campfire on a hay bale and douse it: the burst uses the tall signal smoke.
+  5. Light it again and pour a water bucket on it: it goes out with the extinguish sound, the same burst, and is waterlogged.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:campfire*4,minecraft:iron_shovel,minecraft:wooden_shovel,minecraft:flint_and_steel,minecraft:hay_block*2,minecraft:water_bucket
+```

@@ -3,11 +3,19 @@ use minecraftoss_core::nbt::Tag;
 use minecraftoss_player::crafting::RecipeBook;
 use minecraftoss_player::inventory::ItemStack;
 
+use crate::bucket::{Change, ItemUse, Sound, centre};
 use crate::item_nbt::{slot_list, slots};
 use crate::mesh::{HeldDisplay, HeldItem};
-use crate::scene::{Block, BlockPos};
+use crate::scene::{Block, BlockPos, HandcraftedScene, Scene};
+use crate::server::ItemOnBlock;
 
 pub const SLOTS: usize = 4;
+pub const DOUSES_CAMPFIRES: &str = "minecraft:douses_campfires";
+pub const DOUSE_SOUND: &str = "minecraft:block.fire.extinguish";
+const DOUSE_VOLUME: f32 = 0.5;
+const DOUSE_PITCH: f32 = 2.6;
+const DOUSE_PITCH_SPREAD: f32 = 0.8;
+const DOUSE_WEAR: u32 = 1;
 const COOL_SPEED: u32 = 2;
 const ITEM_HEIGHT: f32 = 0.449_218_75;
 const ITEM_OFFSET: f32 = 0.3125;
@@ -21,6 +29,56 @@ pub fn is_campfire(block: &Block) -> bool {
 
 pub fn is_lit(block: &Block) -> bool {
     is_campfire(block) && block.properties.get("lit").map(String::as_str) == Some("true")
+}
+
+pub fn douse_use(
+    player: &minecraftoss_player::Player,
+    world: &impl minecraftoss_player::World,
+    douses: bool,
+    mut random: impl FnMut() -> f32,
+) -> Option<ItemUse> {
+    if !douses || player.crouching {
+        return None;
+    }
+    let hit = crate::bucket::aim(player, world, false)?;
+    let block = world.block(hit.pos).filter(|block| {
+        block.property("lit") == Some("true")
+            && matches!(
+                block.id.as_str(),
+                "minecraft:campfire" | "minecraft:soul_campfire"
+            )
+    })?;
+    let pitch = DOUSE_PITCH + (random() - random()) * DOUSE_PITCH_SPREAD;
+    Some(ItemUse {
+        change: Change::Set(hit.pos, block.with("lit", "false")),
+        result: None,
+        wear: DOUSE_WEAR,
+        consumed: false,
+        sounds: vec![Sound {
+            event: DOUSE_SOUND,
+            at: Some(centre(hit.pos)),
+            volume: DOUSE_VOLUME,
+            pitch,
+        }],
+    })
+}
+
+pub fn doused(scene: &HandcraftedScene, outcome: &ItemUse) -> Option<(BlockPos, bool)> {
+    let pos = match &outcome.change {
+        Change::Set(pos, block) if block.property("lit") == Some("false") => *pos,
+        Change::Server(pos, ItemOnBlock::EmptyBucket { water: true })
+            if outcome
+                .sounds
+                .iter()
+                .any(|sound| sound.event == crate::bucket::CAMPFIRE_DOUSE_SOUND) =>
+        {
+            *pos
+        }
+        _ => return None,
+    };
+    let block = Scene::block(scene, pos).filter(|block| is_lit(block))?;
+    let signal = block.properties.get("signal_fire").is_some_and(|v| v == "true");
+    Some((pos, signal))
 }
 
 pub fn shown(pos: BlockPos, camera: DVec3) -> bool {
@@ -191,6 +249,94 @@ mod tests {
         let fixed =
             Mat4::from_rotation_y(180f32.to_radians()) * Mat4::from_translation(Vec3::splat(-0.5));
         (pose * fixed).transform_point3(Vec3::splat(0.5))
+    }
+
+    #[derive(Default)]
+    struct Blocks(std::collections::HashMap<minecraftoss_player::Pos, minecraftoss_player::Block>);
+
+    impl minecraftoss_player::World for Blocks {
+        fn block(&self, pos: minecraftoss_player::Pos) -> Option<minecraftoss_player::Block> {
+            self.0.get(&pos).cloned()
+        }
+
+        fn set_block(
+            &mut self,
+            pos: minecraftoss_player::Pos,
+            block: Option<minecraftoss_player::Block>,
+        ) {
+            match block {
+                Some(block) => self.0.insert(pos, block),
+                None => self.0.remove(&pos),
+            };
+        }
+    }
+
+    fn above(block: minecraftoss_player::Block) -> (minecraftoss_player::Player, Blocks) {
+        let mut world = Blocks::default();
+        world.0.insert((0, 0, 0), block);
+        let mut player = minecraftoss_player::Player::new(DVec3::new(0.5, 2.0, 0.5));
+        player.pitch = 90.0;
+        (player, world)
+    }
+
+    #[test]
+    fn a_shovel_douses_a_lit_campfire_with_a_hiss_and_wears_by_one() {
+        let lit = minecraftoss_player::Block::new("minecraft:soul_campfire")
+            .with("lit", "true")
+            .with("signal_fire", "true");
+        let (player, world) = above(lit.clone());
+        let mut rolls = [0.75, 0.25].into_iter();
+        let used = douse_use(&player, &world, true, || rolls.next().unwrap()).unwrap();
+        assert_eq!(used.change, Change::Set((0, 0, 0), lit.clone().with("lit", "false")));
+        assert_eq!((used.wear, used.consumed, used.result.is_none()), (1, false, true));
+        assert_eq!(used.sounds.len(), 1);
+        let hiss = &used.sounds[0];
+        assert_eq!((hiss.event, hiss.at, hiss.volume), (DOUSE_SOUND, Some([0.5, 0.5, 0.5]), 0.5));
+        assert!((hiss.pitch - 3.0).abs() < 1e-6);
+        assert!(douse_use(&player, &world, false, || 0.5).is_none(), "not a shovel");
+        let mut sneaking = player.clone();
+        sneaking.crouching = true;
+        assert!(douse_use(&sneaking, &world, true, || 0.5).is_none());
+        let (player, world) = above(lit.with("lit", "false"));
+        assert!(douse_use(&player, &world, true, || 0.5).is_none());
+        let (player, world) = above(minecraftoss_player::Block::new("minecraft:stone"));
+        assert!(douse_use(&player, &world, true, || 0.5).is_none());
+    }
+
+    #[test]
+    fn a_douse_by_shovel_or_water_bucket_bursts_with_the_campfire_smoke() {
+        let mut scene = HandcraftedScene::default();
+        scene.set(
+            (2, 64, 2),
+            Some(
+                Block::new("minecraft:campfire")
+                    .with("lit", "true")
+                    .with("signal_fire", "true"),
+            ),
+        );
+        let used = |change: Change, sounds: Vec<Sound>| ItemUse {
+            change,
+            result: None,
+            wear: 0,
+            consumed: false,
+            sounds,
+        };
+        let unlit = minecraftoss_player::Block::new("minecraft:campfire").with("lit", "false");
+        let shovel = used(Change::Set((2, 64, 2), unlit.clone()), Vec::new());
+        assert_eq!(doused(&scene, &shovel), Some(((2, 64, 2), true)));
+        let bucket = |sounds| {
+            used(
+                Change::Server((2, 64, 2), ItemOnBlock::EmptyBucket { water: true }),
+                sounds,
+            )
+        };
+        let douse = Sound::at_block(crate::bucket::CAMPFIRE_DOUSE_SOUND, (2, 64, 2));
+        assert_eq!(doused(&scene, &bucket(vec![douse])), Some(((2, 64, 2), true)));
+        assert_eq!(doused(&scene, &bucket(Vec::new())), None, "evaporated in the Nether");
+        let elsewhere = used(Change::Set((3, 64, 2), unlit), Vec::new());
+        assert_eq!(doused(&scene, &elsewhere), None);
+        scene.set((2, 64, 2), Some(Block::new("minecraft:campfire").with("lit", "false")));
+        assert_eq!(doused(&scene, &shovel), None);
     }
 
     #[test]

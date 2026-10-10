@@ -664,6 +664,10 @@ impl Entities {
         self.present(effects);
     }
 
+    pub fn campfire_douse(&mut self, pos: (i32, i32, i32), signal: bool) {
+        self.ambient.douse(pos, signal);
+    }
+
     pub fn rain_tick(&mut self, scene: &HandcraftedScene, camera: [f64; 3]) -> Vec<minecraft_terrain::display_ticks::AmbientSound> {
         self.ambient.rain_tick(scene, DVec3::from_array(camera), self.weather.rain_level)
     }

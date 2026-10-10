@@ -13,6 +13,7 @@ const FULL_BRIGHT: f32 = 15.0;
 const BIG_SMOKE_SPRITES: u32 = 12;
 const CAMPFIRE_FADE_TICKS: i32 = 60;
 const CAMPFIRE_SLOT_OFFSET: f32 = 0.3125;
+const DOUSE_PUFFS: usize = 20;
 const SIDE_STEPS: [(i32, i32); 4] = [(0, 1), (-1, 0), (0, -1), (1, 0)];
 const EXPLOSION_SPRITES: i32 = 16;
 const EMITTER_TICKS: i32 = 8;
@@ -630,6 +631,22 @@ impl AmbientParticles {
         }
     }
 
+    pub fn douse(&mut self, pos: BlockPos, signal: bool) {
+        for _ in 0..DOUSE_PUFFS {
+            self.campfire_puff(pos, signal);
+            let random = &mut self.random;
+            let sign = |random: &mut LegacyRandom| if random.next_boolean() { 1.0 } else { -1.0 };
+            let x = f64::from(pos.0) + 0.5 + random.next_double() / 4.0 * sign(random);
+            let y = f64::from(pos.1) + 0.4;
+            let z = f64::from(pos.2) + 0.5 + random.next_double() / 4.0 * sign(random);
+            self.add(
+                Kind::Smoke,
+                DVec3::new(x, y, z),
+                DVec3::new(0.0, 0.005, 0.0),
+            );
+        }
+    }
+
     fn campfire_puff(&mut self, pos: BlockPos, signal: bool) {
         let random = &mut self.random;
         let sign = |random: &mut LegacyRandom| if random.next_boolean() { 1.0 } else { -1.0 };
@@ -973,6 +990,31 @@ mod tests {
             "{ticks_with_smoke}"
         );
         assert!(puffs > 2 * ticks_with_smoke && puffs < 3 * ticks_with_smoke);
+    }
+
+    #[test]
+    fn a_doused_campfire_bursts_into_twenty_puffs_and_twenty_low_smokes() {
+        for (signal, kind) in [(false, Kind::CosySmoke), (true, Kind::SignalSmoke)] {
+            let mut particles = AmbientParticles::new(10);
+            particles.douse((4, 70, -3), signal);
+            assert_eq!(particles.len(), 40);
+            let puffs: Vec<_> = particles.particles.iter().filter(|p| p.kind == kind).collect();
+            let smokes: Vec<_> = particles
+                .particles
+                .iter()
+                .filter(|p| p.kind == Kind::Smoke)
+                .collect();
+            assert_eq!((puffs.len(), smokes.len()), (20, 20));
+            for puff in puffs {
+                assert!((4.5 - 1.0 / 3.0..=4.5 + 1.0 / 3.0).contains(&puff.position.x));
+                assert!((70.0..72.0).contains(&puff.position.y));
+            }
+            for smoke in smokes {
+                assert!((4.25..=4.75).contains(&smoke.position.x));
+                assert!((-2.75..=-2.25).contains(&smoke.position.z));
+                assert_eq!(smoke.position.y, 70.4);
+            }
+        }
     }
 
     #[test]

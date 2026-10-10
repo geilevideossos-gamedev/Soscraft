@@ -1310,12 +1310,16 @@ fn update(
                         .or_else(|| minecraft_terrain::flint::flint_use(&player, &outlined, &catalog, stack, || entities.random_float()))
                         .or_else(|| minecraft_terrain::flint::fire_charge_use(&player, &outlined, &catalog, stack, || entities.random_float()))
                         .or_else(|| minecraft_terrain::berries::bone_meal_use(&player, &outlined, stack))
+                        .or_else(|| minecraft_terrain::campfire::douse_use(&player, &outlined, entities.recipes.item_in_tag(minecraft_terrain::campfire::DOUSES_CAMPFIRES, &stack.id), || entities.random_float()))
                         .or_else(|| minecraft_terrain::ender_eye::eye_use(&player, &outlined, stack))
                         .or_else(|| minecraft_terrain::firework::rocket_use(stack, ps.pm_flags & playerstate_iw4::pm_flags::MC_GLIDING != 0, || entities.random_float()))
                 }
             {
                 if !outcome.consumed || matches!(outcome.change, minecraft_terrain::bucket::Change::Set(..)) {
                     hand.swing = Some(0.0);
+                }
+                if let Some((pos, signal)) = minecraft_terrain::campfire::doused(&terrain.scene, &outcome) {
+                    entities.campfire_douse(pos, signal);
                 }
                 let change = outcome.change.clone();
                 let sent = minecraft_survival::entities::SentItemUse { slot, held: stack.id.clone(), eye: eye_block, yaw: mc_yaw, pitch: ps.viewangles[0], outcome };
