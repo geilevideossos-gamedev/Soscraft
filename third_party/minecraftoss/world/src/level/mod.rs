@@ -688,6 +688,8 @@ impl<'a> Level<'a> {
         } else if self.is_a(state, "ScaffoldingBlock") {
             let block = self.block_id(state);
             self.schedule_block_tick_priority(pos, block, 1, redstone::priority::NORMAL);
+        } else if self.is_a(state, "FrostedIceBlock") {
+            self.frosted_ice_on_place(state, pos);
         }
     }
 
@@ -708,6 +710,8 @@ impl<'a> Level<'a> {
             self.tnt_block_changed(pos);
         } else if self.name(state) == "minecraft:sponge" {
             self.sponge_try_absorb(pos);
+        } else if self.is_a(state, "FrostedIceBlock") {
+            self.frosted_ice_neighbor_changed(state, pos, source);
         }
     }
 
@@ -827,6 +831,8 @@ impl<'a> Level<'a> {
             self.scaffolding_tick(state, pos);
         } else if self.is_a(state, "SpeleothemBlock") {
             self.speleothem_tick(state, pos);
+        } else if self.is_a(state, "FrostedIceBlock") {
+            self.frosted_ice_tick(state, pos);
         } else if SUPPORTED_BY_TICK.iter().any(|class| self.is_a(state, class)) {
             if !self.can_survive_state(state, pos) {
                 self.destroy_block_drops(pos, true, update::LIMIT);

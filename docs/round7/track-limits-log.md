@@ -340,3 +340,25 @@ IW4L_MINECRAFT_KIT=minecraft:diamond_boots+feather_falling=4,minecraft:diamond_b
 ```
 IW4L_MINECRAFT_KIT=minecraft:iron_hoe,minecraft:iron_shovel,minecraft:iron_axe,minecraft:shield,minecraft:wheat_seeds*16,minecraft:oak_log*8,minecraft:exposed_copper*4,minecraft:waxed_copper_block*4,minecraft:grass_block*16,minecraft:poppy*2
 ```
+
+### 7. Minecraft Frost Walker freezes water and frosted ice melts like vanilla
+
+- **Changed:**
+  - `minecraft_terrain/src/protection.rs`: the book also reads `minecraft:damage_immunity` (an empty effect with damage tag requirements) and `minecraft:location_changed` `replace_disk` effects, and every enchantment's `slots`; an enchantment only counts on an armour piece in a slot it names (`any`, `armor` or the slot itself). `ReplaceDisk.apply` (javap): from the block containing the feet plus the offset (one below), every cell of the layer within the level's radius (`clamped` linear, 3 + 1 a level above the first for Frost Walker, so 2 + level) whose centre is closer than the radius to the feet horizontally and that passes the predicate becomes the state. The requirements are `is_on_ground` and not riding (the fork has no vehicles).
+  - `transform.rs`: block predicates gained `matching_fluids` (water and lava sources, flowing fluids, waterlogged blocks and water plants) and `unobstructed`, which asks the caller.
+  - `minecraft_survival` `survival.rs`: `location_changed` is `LivingEntity.baseTick`'s `onChangedBlock`: it runs the disk only when the feet's block changed since the last tick (and the player is alive). A damage the worn enchantments make the player immune to (`EnchantmentHelper.isImmuneToDamage`) is turned away whole: hazards, falls and hits.
+  - `minecraftoss-world`: `FrostedIceBlock` (javap): `onPlace` schedules a tick in 60 to 120; the tick ages it (`setBlock` flag 2) when one roll in three or fewer than 4 frosted neighbours, and light (`getMaxLocalRawBrightness`, block light in the End) above 11 minus age minus light dampening; at age 3 it melts into water (evaporates in the Nether) and ages its frosted neighbours, rescheduling those that did not melt; otherwise it ticks again in 20 to 40. `neighborChanged` from a frosted block melts one with fewer than 2 frosted neighbours. Its random tick stays `IceBlock`'s, as in vanilla.
+  - `render_anim/src/minecraft_world.rs`: each survival tick, the frozen cells are written like placed blocks, with the MW2 bodies, mobs and other players as the obstacles (four lines).
+- **Tests:** `protection`: `frost_walker_freezes_still_open_water_around_the_feet_on_the_ground`, `frost_walker_shields_from_hot_floors_and_only_counts_on_the_feet`, and the jar test now checks Frost Walker II (radius 4, 45 cells) and its immunities. `survival`: `frost_walker_spares_hot_floors_and_freezes_water_when_the_feet_enter_a_new_block`. `server`: `frosted_ice_ages_in_the_light_and_melts_back_into_water`, `frosted_ice_left_with_one_frosted_neighbour_melts_when_that_neighbour_changes`.
+- **Decisions:**
+  - In 26.3 every age change re-places the block, so `onPlace` schedules 60 to 120 ticks before the tick's own 20 to 40, and the level keeps only the first tick per block: frosted ice ages every 3 to 6 seconds, not every 1 to 2. The fork's ticks deduplicate the same way, and the test pins it.
+  - The disk is computed on the client from its own copy of the blocks and sent as placed blocks, like the other player-made changes, until the player moves server-side with multiplayer.
+- **Test steps:**
+  1. Put on the Frost Walker II boots and walk from the shore onto a lake: ice forms under and around you as you walk. **Screenshot 9** on the lake.
+  2. Stop on the ice in daylight: within about 15 seconds the ice cracks through its stages and melts back into water, the edges first; walking on keeps making new ice.
+  3. Stand on magma blocks with the boots: no damage. Take them off: the magma burns.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_boots+frost_walker=2,minecraft:magma_block*8,minecraft:water_bucket,minecraft:cobblestone*32
+```

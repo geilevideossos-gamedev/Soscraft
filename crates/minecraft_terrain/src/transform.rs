@@ -61,17 +61,56 @@ impl BlockFacts for BlockStates {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-enum Predicate {
+pub(crate) enum Predicate {
     Tag(String, Pos),
     Blocks(Vec<String>, Pos),
+    Fluids(Vec<String>, Pos),
+    Unobstructed,
     All(Vec<Predicate>),
     Any(Vec<Predicate>),
     Not(Box<Predicate>),
     True,
 }
 
+fn ids(json: &Value) -> Option<Vec<String>> {
+    match json {
+        Value::String(id) => Some(vec![id.clone()]),
+        Value::Array(ids) => ids
+            .iter()
+            .map(|id| id.as_str().map(str::to_owned))
+            .collect(),
+        _ => None,
+    }
+}
+
+fn fluid_of(block: Option<&Block>) -> Option<&'static str> {
+    let block = block?;
+    let source = block.property("level").is_none_or(|level| level == "0");
+    match block.id.as_str() {
+        "minecraft:water" if source => Some("minecraft:water"),
+        "minecraft:water" => Some("minecraft:flowing_water"),
+        "minecraft:lava" if source => Some("minecraft:lava"),
+        "minecraft:lava" => Some("minecraft:flowing_lava"),
+        "minecraft:kelp"
+        | "minecraft:kelp_plant"
+        | "minecraft:seagrass"
+        | "minecraft:tall_seagrass"
+        | "minecraft:bubble_column" => Some("minecraft:water"),
+        _ if block.property("waterlogged") == Some("true") => Some("minecraft:water"),
+        _ => None,
+    }
+}
+
+fn fluid_matches(wanted: &str, fluid: &str) -> bool {
+    match wanted {
+        "#minecraft:water" => matches!(fluid, "minecraft:water" | "minecraft:flowing_water"),
+        "#minecraft:lava" => matches!(fluid, "minecraft:lava" | "minecraft:flowing_lava"),
+        _ => wanted == fluid,
+    }
+}
+
 impl Predicate {
-    fn parse(json: &Value) -> Option<Self> {
+    pub(crate) fn parse(json: &Value) -> Option<Self> {
         let offset = || -> Option<Pos> {
             match json.get("offset") {
                 None => Some((0, 0, 0)),
@@ -88,17 +127,9 @@ impl Predicate {
             "minecraft:matching_block_tag" => {
                 Some(Self::Tag(json["tag"].as_str()?.to_owned(), offset()?))
             }
-            "minecraft:matching_blocks" => {
-                let blocks = match &json["blocks"] {
-                    Value::String(id) => vec![id.clone()],
-                    Value::Array(ids) => ids
-                        .iter()
-                        .map(|id| id.as_str().map(str::to_owned))
-                        .collect::<Option<_>>()?,
-                    _ => return None,
-                };
-                Some(Self::Blocks(blocks, offset()?))
-            }
+            "minecraft:matching_blocks" => Some(Self::Blocks(ids(&json["blocks"])?, offset()?)),
+            "minecraft:matching_fluids" => Some(Self::Fluids(ids(&json["fluids"])?, offset()?)),
+            "minecraft:unobstructed" if json.get("offset").is_none() => Some(Self::Unobstructed),
             "minecraft:all_of" => Some(Self::All(list("predicates")?)),
             "minecraft:any_of" => Some(Self::Any(list("predicates")?)),
             "minecraft:not" => Some(Self::Not(Box::new(Self::parse(&json["predicate"])?))),
@@ -107,7 +138,13 @@ impl Predicate {
         }
     }
 
-    fn test(&self, world: &impl World, facts: &impl BlockFacts, pos: Pos) -> bool {
+    pub(crate) fn test(
+        &self,
+        world: &impl World,
+        facts: &impl BlockFacts,
+        pos: Pos,
+        unobstructed: &dyn Fn(Pos) -> bool,
+    ) -> bool {
         match self {
             Self::Tag(tag, by) => facts.in_tag(world.block(offset(pos, *by)).as_ref(), tag),
             Self::Blocks(ids, by) => {
@@ -118,9 +155,12 @@ impl Predicate {
                     None => wanted == id,
                 })
             }
-            Self::All(all) => all.iter().all(|p| p.test(world, facts, pos)),
-            Self::Any(any) => any.iter().any(|p| p.test(world, facts, pos)),
-            Self::Not(inner) => !inner.test(world, facts, pos),
+            Self::Fluids(wanted, by) => fluid_of(world.block(offset(pos, *by)).as_ref())
+                .is_some_and(|fluid| wanted.iter().any(|wanted| fluid_matches(wanted, fluid))),
+            Self::Unobstructed => unobstructed(pos),
+            Self::All(all) => all.iter().all(|p| p.test(world, facts, pos, unobstructed)),
+            Self::Any(any) => any.iter().any(|p| p.test(world, facts, pos, unobstructed)),
+            Self::Not(inner) => !inner.test(world, facts, pos, unobstructed),
             Self::True => true,
         }
     }
@@ -178,7 +218,7 @@ impl Provider {
             Self::State(block) => Some(block.clone()),
             Self::Rules(rules, fallback) => rules
                 .iter()
-                .find(|(predicate, _)| predicate.test(world, facts, pos))
+                .find(|(predicate, _)| predicate.test(world, facts, pos, &|_| true))
                 .map_or_else(
                     || fallback.as_ref()?.state_at(world, facts, pos),
                     |(_, then)| then.state_at(world, facts, pos),

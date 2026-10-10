@@ -3974,6 +3974,44 @@ mod tests {
     }
 
     #[test]
+    fn frosted_ice_ages_in_the_light_and_melts_back_into_water() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:glowstone"));
+        place(&mut server, &mut scene, (9, 200, 8), Block::new("minecraft:frosted_ice").with("age", "0"));
+        server.take_changes();
+        let mut ages = Vec::new();
+        let mut melted = None;
+        for tick in 0..600 {
+            server.tick();
+            for (pos, block) in server.take_changes() {
+                match block {
+                    Some(block) if pos == (9, 200, 8) && block.id.path == "frosted_ice" => ages.push(block.properties["age"].clone()),
+                    Some(block) if pos == (9, 200, 8) && block.id.path == "water" => {
+                        melted.get_or_insert(tick);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(ages, ["1", "2", "3"]);
+        assert!(melted.is_some_and(|tick| tick >= 4 * 60), "every age change places the block again, which schedules 60 to 120 ticks: {melted:?}");
+    }
+
+    #[test]
+    fn frosted_ice_left_with_one_frosted_neighbour_melts_when_that_neighbour_changes() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        for x in 8..=10 {
+            place(&mut server, &mut scene, (x, 200, 8), Block::new("minecraft:frosted_ice").with("age", "0"));
+        }
+        server.take_changes();
+        take(&mut server, &mut scene, (10, 200, 8));
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        let water = |pos| changes.get(&pos).cloned().flatten().is_some_and(|block: Block| block.id.path == "water");
+        assert!(water((9, 200, 8)), "one frosted neighbour left: it melts");
+        assert!(water((8, 200, 8)), "and so does the last one");
+    }
+
+    #[test]
     fn a_placement_that_cannot_survive_is_refused_by_the_client_and_the_server() {
         let Some((mut server, mut scene)) = door_world() else { return };
         place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:sand"));
