@@ -1324,3 +1324,23 @@ Previous commit: 42469747
 - **Changed:** those five blank lines are removed. No code or test changes.
 - **Tests:** none needed; `check -p launcher` is green.
 - **Test steps:** none (no behaviour change).
+
+## Final check of the fourth run
+
+### 49. The track END log sums up its fourth final check
+
+Previous commit: 2fa096de
+
+- **Commits of the fourth run** (since 88cb6d83): f3608d26 (E3-15), 011bc34c (E3-16), 38da4a26 (X5-phases summary), 4cb7fa52 and 81dec3e3 (E3-17), 0733e118 (E3-20), 65a0d56e (bottling dragon's breath), 600c03d2 (state doc), a76fe438 (kit count), 42469747 and 2fa096de (review fixes), and this entry.
+- **Touched crates** (`git diff --stat 88cb6d83..2fa096de`): `minecraft_terrain`, `minecraft_survival`, `render_anim`.
+- **Clippy:** `clippy -p minecraft_terrain -p minecraft_survival -p render_anim --locked --all-targets -- -A clippy::approx_constant` has no finding on a line the fourth run added: each location reported in its files (`mesh.rs`, `server.rs`, `entities.rs`, `minecraft_world.rs`) blames to 88cb6d83 or earlier (`git blame 88cb6d83..2fa096de`), and nothing is reported in `ender_dragon.rs`, `dragon_fireball.rs`, `dragon_egg.rs`, `effect_cloud.rs`, `bottle.rs`, `bucket.rs` or `dragon_render.rs`. No fix needed.
+- **Tests** (`test -p <crate> --locked`): `minecraft_terrain` 775 (4 ignored), `minecraft_survival` 333 with the vanilla world test, and `render_anim` 73 pass, none failed. The full suite runs at merge time.
+- **Test steps:** none new. The owner's test of the fourth run is, in order (survival, `/difficulty normal` unless said otherwise, `IW4L_MINECRAFT_DIMENSION=the_end` for each world and removed afterwards):
+  1. The X5-phases group test of entry 40 in the new world `x5`: strafes, fireballs and their clouds, the perch, the roar, the flame, the takeoff and the charge; screenshots 1 to 5.
+  2. The X5-body-egg group test of entry 45 in the new world `x5b`: the wings and the head, the block breaking, bottling the breath, then the kill and the egg's teleport; screenshots 6 to 9 (entry 45's 1 to 4).
+  3. Entry 47 in the new world `x5calm`: a peaceful dragon circles and perches but never attacks; screenshot 10 (entry 47's 1).
+- **Kit for the fourth run** (20 stacks). A kit goes to a player only in a world where they have no inventory yet, so this one line serves every world above (its items cover each kit from entry 38 to 47):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:diamond_sword+sharpness=5,minecraft:diamond_pickaxe+efficiency=5,minecraft:cobblestone*256,minecraft:oak_planks*128,minecraft:end_stone*128,minecraft:obsidian*64,minecraft:glass_bottle*16,minecraft:water_bucket,minecraft:dragon_egg,minecraft:torch*16
+```
