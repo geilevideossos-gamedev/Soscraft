@@ -157,6 +157,7 @@ pub fn finish_item_use(
                 .toss(rest, used.eye, used.yaw, used.pitch);
         }
         if spends && inventory.wear_tool(used.slot, used.outcome.wear) {
+            entities.broken_items.push(used.held.clone());
             heard.push(minecraft_terrain::flint::break_sound(
                 entities.random_float(),
             ));

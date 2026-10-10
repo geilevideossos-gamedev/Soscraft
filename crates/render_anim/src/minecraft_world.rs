@@ -1770,6 +1770,7 @@ fn update(
             if let Some(blocking) = hand.blocking.filter(|_| blocked > 0.0) {
                 if inventory.wear_tool(blocking.slot, minecraft_survival::offhand::shield_wear(blocked)) {
                     hand.blocking = None;
+                    entities.broken_items.push(minecraft_survival::offhand::SHIELD.to_owned());
                     let pitch = 0.8 + entities.random_float() * 0.4;
                     if let Some(sounds) = sounds.as_mut() {
                         sounds.play(&world.packs, minecraft_survival::offhand::BREAK_SOUND, None, 0.8, pitch);
@@ -1792,6 +1793,9 @@ fn update(
                 hand.swing_offhand = used.slot == minecraft_survival::offhand::OFFHAND;
             }
             finish_item_use(entities, inventory, sounds.as_mut(), &world.packs, origin, used, player_mode.consumes_items());
+        }
+        for item in std::mem::take(&mut entities.broken_items) {
+            mining.break_burst(&world.packs, &world.atlas, glam::DVec3::from_array(eye).as_vec3(), mc_yaw, ps.viewangles[0], &item);
         }
         for to in teleports.iter().filter(|(uuid, _)| alive && uuid == local_uuid).map(|(_, to)| to) {
             authority.0.teleport(local.0, sim::voxel::to_map(origin, *to));

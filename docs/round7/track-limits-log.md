@@ -138,3 +138,19 @@ IW4L_MINECRAFT_KIT=minecraft:water_bucket*2,minecraft:lava_bucket*2,minecraft:bu
 ```
 IW4L_MINECRAFT_KIT=minecraft:bone_meal*64,minecraft:wheat_seeds*16,minecraft:oak_sapling*4,minecraft:iron_hoe,minecraft:water_bucket,minecraft:dirt*16,minecraft:grass_block*8
 ```
+
+### 7. Minecraft tools burst into pieces when they break
+
+- **Changed:**
+  - `Entities.broken_items` collects the items that broke in the local player's hands this frame: `minecraft_survival/src/level.rs` (`finish_item_use`, where a worn-out flint and steel already played `entity.item.break`) and `minecraft_world.rs` where a blocking shield wears out (one line each).
+  - `minecraft_world.rs` turns them into `Mining::break_burst` after the item uses (three lines), which is `LivingEntity.spawnItemParticles(stack, 5)`: the existing eating crumbs (`BlockParticles::spawn_eating`, the same `ITEM` particle maths: 0.6 in front of the eyes, up to 0.15 to the side and 0.3 to 0.9 down, drifting along the look) with the item's particle texture, 5 of them.
+- **Tests:** none new: the burst is the eating crumbs' code (`block_particles` tests) with count 5, and the two sites only push the item id.
+- **Decisions:** the burst starts at the eyes and follows the yaw and pitch at the frame the break is seen, as vanilla's client does when it handles the break entity event. Only flint and steel and the shield wear out in the player's hands today (tools don't wear from mining or hitting yet).
+- **Test steps:**
+  1. Light netherrack with flint and steel over and over (64 uses): on the last one it breaks with the crack sound and grey-metal bits fall in front of you. **Screenshot 12** right at the break.
+  2. Hold a shield up (right mouse) in front of a skeleton until the shield breaks: shield bits burst out the same way.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:flint_and_steel,minecraft:netherrack*8,minecraft:shield,minecraft:skeleton_spawn_egg
+```
