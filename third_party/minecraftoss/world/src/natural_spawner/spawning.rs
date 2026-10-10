@@ -383,10 +383,10 @@ impl CreatureSpawns {
         }
         for structure in &here {
             let spawns = self.structure_spawns.iter().find(|(name, _)| *name == structure.name).and_then(|(_, lists)| lists[category as usize].as_ref());
-            if let Some((piece, list)) = spawns {
-                if (*piece && structure.in_piece) || (!*piece && structure.in_box) {
-                    return std::borrow::Cow::Borrowed(list);
-                }
+            if let Some((piece, list)) = spawns
+                && ((*piece && structure.in_piece) || (!*piece && structure.in_box))
+            {
+                return std::borrow::Cow::Borrowed(list);
             }
         }
         let biome = level.biome(pos);

@@ -785,3 +785,38 @@ Previous commit: bbf1db34
 - **Tests:** none new.
 - **Test steps:** none; nothing changes in game.
 - **Kit:** none.
+
+## Final verification of the track
+
+### 34. Minecraft Nether mobs and spawns pass the vendored crates' clippy
+
+Previous commit: 87567d46
+
+- **Why:** `cargo clippy -p minecraftoss-entities -p minecraftoss-world` from the repo root lints only workspace members, and the vendored crates are excluded from the workspace, so the earlier clippy entries (13, 21, 30) never linted them. Run as their own workspace (`clippy --manifest-path third_party\minecraftoss\<crate>\Cargo.toml --offline --all-targets -- -A clippy::approx_constant`, with the full suite's stand-in files; the `Cargo.lock` this makes in each crate folder was deleted afterwards), they had six findings on this track's lines.
+- **Changed** (MinecraftOSS patches, behaviour unchanged):
+  - `entities/src/world.rs` and `entities/src/world/combat.rs`: the blaze arm, last in the mob hit chains of E2-24 (e9e65b32), finds its blaze with `?` instead of `if let ... else { return None }` (`question_mark`).
+  - `entities/src/world.rs` (`take_deaths`): the zombified piglin's and wither skeleton's sword drops (91e2589c, d37cfa4b) take the hand with `unwrap_or_else(String::new)`; the workspace's `clippy.toml` denies `unwrap_or_default`.
+  - `world/src/natural_spawner.rs`: a `StructureSpawns` alias for a structure's spawn override lists (cdcaf137, `type_complexity`).
+  - `world/src/natural_spawner/spawning.rs`: the structure override check is one `if let ... &&` (cdcaf137, `collapsible_if`; the crate is edition 2024).
+- **Clippy:** the workspace crates (`clippy -p frame -p hud -p minecraft_survival -p minecraft_terrain -p render_anim --locked --all-targets -- -A clippy::approx_constant`) and the three vendored crates now have no finding on a line the track added or changed (checked with `git blame` against 3aef2ebe, and every finding within a few lines of a track hunk read by hand); the rest are older.
+- **Checks:** `test -p minecraft_survival` (297 and the vanilla world test), `test -p minecraft_terrain` (658 passed, 3 ignored as before), `test -p render_anim` (67), `test -p hud` (133), `test -p frame` (16), `test -p minecraftoss-entities -p minecraftoss-world -p minecraftoss-player --tests` with the stand-in files (82, 62 and 184) and `check -p launcher` are green.
+- **Test steps:** none for this commit; nothing changes in game.
+- **Kit:** none.
+
+### Owner test for the whole track
+
+One new world, survival, `/difficulty normal`, started by day: `IW4L_MINECRAFT_WORLD=n7` and no `IW4L_MINECRAFT_DIMENSION` line. Number the screenshots 1 onward in this order. The entries' own steps say what each one shows.
+
+1. **Portals and travel (N2):** entry 10 steps 1 to 4 with entry 11 steps 1 to 4 while you wait (the 4 second wait, the purple swirl and sounds, the loading screen, about 100, y, -200 in the Nether from 800, -1600, the return). Screenshots 1 to 4. Then entry 12 steps 1 to 3 and entry 10 steps 5 to 8 (the same portal again, a second portal 40 blocks away in the Nether, creative travels at once, the game rule). Screenshot 5 for step 6.
+2. **The Nether itself (N1), in the Nether:** pour the lava bucket on flat netherrack: it spreads 7 blocks within about 4 seconds (entry 2, screenshot 6). Look at a netherrack overhang (entry 4, screenshot 7). In creative, `/locate structure minecraft:fortress` and `/tp` there (entry 3, screenshot 8), then back to survival.
+3. **Nether mobs (N3), at the fortress:** entry 19 step 4 (its wither skeletons, zombified piglins and magma cubes, screenshot 9); then with the eggs entry 16 steps 1 to 4 (zombified piglins, screenshot 10), entry 17 steps 1 to 3 (magma cubes, screenshot 11) and entry 19 steps 1 to 3 (wither skeletons and black hearts, screenshot 12).
+4. **Ghasts and blazes (N4), in the Nether:** entry 22 steps 1 to 6 (screenshots 13 and 14: a fireball swung back, one shot back with the MW2 rifle) and entry 23 steps 1 to 7, leaving out the water of step 5, which only hisses away in the Nether (screenshots 15 and 16).
+5. **Nether rules (N5):** in the Nether, the water bucket hisses on netherrack and mined ice leaves nothing (entry 24 steps 1 and 2, screenshot 17); hold the compass and the clock: both spin (entry 29 step 3, screenshot 18). With the totem in the offhand and the chestplate on, use a red bed: it explodes with fire (entry 25 step 1, screenshot 19). Place an anchor, charge it 4 times and use it (entry 27 steps 1 and 2, screenshot 20), then entry 28 steps 2 and 3 (respawning beside it until it is empty, then the overworld spawn; screenshots 21 and 22).
+6. **Back in the overworld:** entry 26 steps 1 to 4 with a second bed (screenshot 23), entry 29 steps 1 and 2 (screenshot 24), then go to the Nether and `/kill` there: you respawn beside your overworld bed (entry 28 step 4, screenshot 25). Hold the recovery compass in the overworld (it spins) and where you died (it points there).
+7. **Overworld anchor:** charge an anchor once and use it with an empty hand: it explodes, breaks blocks and sets fires (entry 27 step 4, screenshot 26). The totem is used up by then, so this blast may kill you; you then respawn at your bed.
+
+- **Kit (27 stacks; three beds, one each for the overworld spawn, the Nether blast and a spare):**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:obsidian*64,minecraft:flint_and_steel,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:diamond_chestplate,minecraft:totem_of_undying,minecraft:golden_apple*8,minecraft:cooked_beef*64,minecraft:cobblestone*64,minecraft:netherrack*64,minecraft:lava_bucket,minecraft:water_bucket,minecraft:ice*4,minecraft:zombified_piglin_spawn_egg*4,minecraft:magma_cube_spawn_egg*4,minecraft:wither_skeleton_spawn_egg*4,minecraft:ghast_spawn_egg*4,minecraft:blaze_spawn_egg*4,minecraft:red_bed,minecraft:red_bed,minecraft:red_bed,minecraft:respawn_anchor*4,minecraft:glowstone*32,minecraft:compass,minecraft:clock,minecraft:recovery_compass
+```

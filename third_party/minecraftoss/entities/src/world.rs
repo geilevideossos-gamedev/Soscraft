@@ -3588,14 +3588,13 @@ impl EntityWorld {
                 e.ai.state.hurt_by = Some((by, e.tick_count));
             }
             (hit, false)
-        } else if let Some(e) = self.blazes.iter_mut().find(|e| e.id == victim) {
+        } else {
+            let e = self.blazes.iter_mut().find(|e| e.id == victim)?;
             let hit = e.hurt(damage);
             if hit.applied {
                 e.ai.state.hurt_by = Some((by, e.tick_count));
             }
             (hit, false)
-        } else {
-            return None;
         };
         self.credit(victim, result, attacker_kind, true);
         if result.applied && result.full && !resists {
@@ -3735,7 +3734,7 @@ impl EntityWorld {
             }
             if e.zombie.kind == ZombieKind::ZombifiedPiglin {
                 if mob_drops && death.context.killed_by_player && e.zombie.main_hand.is_some() && e.random.next_float() < 0.085 {
-                    let item = e.zombie.main_hand.take().unwrap_or_default();
+                    let item = e.zombie.main_hand.take().unwrap_or_else(String::new);
                     let mut stack = ItemStack::new(&item, 1);
                     stack.max = 1;
                     if item == "minecraft:golden_sword" {
@@ -3774,7 +3773,7 @@ impl EntityWorld {
                 e.skeleton.holds_bow = false;
             }
             if mob_drops && death.context.killed_by_player && e.skeleton.main_hand.is_some() && e.random.next_float() < 0.085 {
-                let item = e.skeleton.main_hand.take().unwrap_or_default();
+                let item = e.skeleton.main_hand.take().unwrap_or_else(String::new);
                 let mut stack = ItemStack::new(&item, 1);
                 stack.max = 1;
                 if item == "minecraft:stone_sword" {

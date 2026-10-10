@@ -317,14 +317,13 @@ impl EntityWorld {
                 e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
             }
             hit
-        } else if let Some(e) = self.blazes.iter_mut().find(|e| e.id == id) {
+        } else {
+            let e = self.blazes.iter_mut().find(|e| e.id == id)?;
             let hit = e.hurt(amount);
             if hit.applied {
                 e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
             }
             hit
-        } else {
-            return None;
         };
         // `resolvePlayerResponsibleForDamage`: the player is remembered.
         self.credit(id, hit, "minecraft:player", true);

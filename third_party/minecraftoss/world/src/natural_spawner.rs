@@ -348,6 +348,8 @@ pub fn type_width(kind: &str) -> Option<f32> {
     type_info(kind).map(|info| info.width)
 }
 
+type StructureSpawns = [Option<(bool, Creatures)>; spawning::MobCategory::COUNT];
+
 /// Per-biome creature spawning and the data finalizing it reads.
 pub struct CreatureSpawns {
     registries: Arc<Registries>,
@@ -356,7 +358,7 @@ pub struct CreatureSpawns {
     by_category: Vec<[Creatures; spawning::MobCategory::COUNT]>,
     /// Each biome's `spawn_costs`: energy budget and charge by type.
     costs: Vec<std::collections::HashMap<String, (f64, f64)>>,
-    structure_spawns: Vec<(String, [Option<(bool, Creatures)>; spawning::MobCategory::COUNT])>,
+    structure_spawns: Vec<(String, StructureSpawns)>,
     fortress_enemies: Creatures,
     reduced_water_ambient: Option<TagId>,
     /// `DimensionType.monsterSpawnBlockLightLimit` and the upper bound of
@@ -462,7 +464,7 @@ impl CreatureSpawns {
         let mut structure_spawns = Vec::new();
         for id in pack.list("worldgen/structure")? {
             let json = pack.read_json("worldgen/structure", &id)?;
-            let mut lists: [Option<(bool, Creatures)>; spawning::MobCategory::COUNT] = Default::default();
+            let mut lists: StructureSpawns = Default::default();
             for (name, spawn_override) in json["spawn_overrides"].as_object().into_iter().flatten() {
                 let Some(category) = spawning::MobCategory::parse(name) else { continue };
                 let mut list = Creatures::default();
