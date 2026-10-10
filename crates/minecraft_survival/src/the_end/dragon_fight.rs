@@ -169,6 +169,7 @@ pub struct DragonFight {
     pub creating: Option<mpsc::Receiver<[i32; 4]>>,
     pub linked: Option<FightLink>,
     pub progress: f32,
+    pub opening: Option<mpsc::Receiver<(i32, i32, i32)>>,
 }
 
 impl Default for DragonFight {
@@ -185,6 +186,7 @@ pub struct FightEvents {
     pub saved: Option<Result<(), String>>,
     pub spawned: Option<[i32; 4]>,
     pub killed: Option<[i32; 4]>,
+    pub opened: Option<(i32, i32, i32)>,
 }
 
 pub fn arena_ticket() -> (ChunkPos, i32) {
@@ -229,6 +231,18 @@ pub fn link_job(link: FightLink) -> Job {
     })
 }
 
+pub fn kill_job(
+    exit_portal_location: Option<(i32, i32, i32)>,
+    gateway: Option<i32>,
+    egg: bool,
+    send: mpsc::Sender<(i32, i32, i32)>,
+) -> Job {
+    Box::new(move |sim: &mut ServerSim| -> Box<dyn Any + Send> {
+        let _ = send.send(sim.dragon_killed(FIGHT_ORIGIN, exit_portal_location, gateway, egg));
+        Box::new(())
+    })
+}
+
 pub fn scan_job(
     exit_portal_location: Option<(i32, i32, i32)>,
     send: mpsc::Sender<DragonFightScan>,
@@ -252,6 +266,7 @@ impl DragonFight {
             creating: None,
             linked: None,
             progress: 1.0,
+            opening: None,
         }
     }
 
@@ -268,6 +283,34 @@ impl DragonFight {
         self.data.dragon_killed = true;
         self.dirty = true;
         true
+    }
+
+    pub fn next_gateway(&mut self) -> Option<i32> {
+        let gateway = self.data.gateways.pop();
+        self.dirty |= gateway.is_some();
+        gateway
+    }
+
+    pub fn open_exit_portal(&mut self, entities: &mut Entities, egg: bool) {
+        let (send, answer) = mpsc::channel();
+        let gateway = self.next_gateway();
+        entities.run_job(kill_job(self.data.exit_portal_location, gateway, egg, send));
+        self.opening = Some(answer);
+    }
+
+    pub fn receive_exit_portal(&mut self) -> Option<(i32, i32, i32)> {
+        let at = match self.opening.as_ref()?.try_recv() {
+            Ok(at) => at,
+            Err(mpsc::TryRecvError::Empty) => return None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.opening = None;
+                return None;
+            }
+        };
+        self.opening = None;
+        self.data.exit_portal_location = Some(at);
+        self.dirty = true;
+        Some(at)
     }
 
     pub fn update_dragon(&mut self, health: f32) {
@@ -436,13 +479,18 @@ pub fn tick_level<'a>(
     });
     events.scanned = fight.receive_scan();
     events.spawned = fight.receive_dragon();
+    events.opened = fight.receive_exit_portal();
     for uuid in entities
         .as_mut()
         .map(Entities::take_dragons_killed)
         .unwrap_or_else(Vec::new)
     {
+        let egg = !fight.data.previously_killed;
         if fight.set_dragon_killed(uuid) {
             events.killed = Some(uuid);
+            if let Some(entities) = entities.as_mut() {
+                fight.open_exit_portal(entities, egg);
+            }
         }
     }
     let loaded =
@@ -617,6 +665,39 @@ mod tests {
         assert!(
             !fight.dragon_due(false, true),
             "a killed dragon is not replaced"
+        );
+    }
+
+    #[test]
+    fn each_kill_takes_the_last_of_the_shuffled_gateways_until_none_is_left() {
+        let mut fight = DragonFight::default();
+        fight.data.init(0);
+        assert_eq!(fight.next_gateway(), Some(0));
+        assert_eq!(fight.next_gateway(), Some(5));
+        assert!(fight.dirty, "the shorter list is saved");
+        assert_eq!(fight.data.gateways.len(), 18);
+        assert_eq!(
+            FightData::read(&fight.data.write()).gateways,
+            fight.data.gateways
+        );
+        fight.data.gateways.clear();
+        fight.dirty = false;
+        assert_eq!(fight.next_gateway(), None, "twenty kills place them all");
+        assert!(!fight.dirty);
+    }
+
+    #[test]
+    fn the_server_learns_the_fight_s_dragon_and_whether_one_was_killed_before() {
+        let mut fight = DragonFight::default();
+        assert_eq!(fight.link_state(), FightLink::default());
+        fight.data.dragon_uuid = Some([1, 2, 3, 4]);
+        fight.data.previously_killed = true;
+        assert_eq!(
+            fight.link_state(),
+            FightLink {
+                dragon: Some([1, 2, 3, 4]),
+                previously_killed: true,
+            }
         );
     }
 

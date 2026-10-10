@@ -850,3 +850,22 @@ Previous commit: 89f9fd97
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
 ```
+
+### 29. Minecraft exit portal opens and the dragon egg and a gateway appear (E3-19)
+
+Previous commit: 4484b1eb
+
+- **Changed:**
+  - `minecraft_terrain/src/server.rs` (End region): `ServerSim::dragon_killed` is the block half of `EnderDragonFight.setDragonKilled`: `spawnExitPortal(true)` (the active podium, whose bowl fills with end portal, at the fight's exit portal location), then `spawnNewGateway` for the gateway the fight hands over (level event 3000: `block.end_gateway.spawn` at volume 10 and pitch `(1 + (r − r)·0.2)·0.7` at the gateway, then the `end_gateway_delayed` feature), then on the first kill a dragon egg on top of the podium's `MOTION_BLOCKING` height (on the pillar). `end_gateway_position(i)` is vanilla's `floor(96·cos(2(−π + 0.15707963267948966·i)))`, 75, `floor(96·sin(…))`.
+  - `minecraft_survival/src/the_end/dragon_fight.rs`: when the server reports the fight's dragon dead, `tick_level` notes whether one was killed before (the egg), marks the kill, and `open_exit_portal` sends the job with the next gateway: `next_gateway` takes the last of the 20 shuffled numbers (`gateways.remove(size − 1)`), so the list shrinks and is saved. The answer records the exit portal location and saves the fight (`FightEvents.opened`).
+  - `render_anim/src/minecraft_end.rs`: logs `Minecraft exit portal opened at ...`.
+- **Checked with javap (26.3):** `EnderDragonFight.setDragonKilled` (progress 0, bar hidden, `spawnExitPortal(true)`, `spawnNewGateway()`, the egg at `getHeightmapPos(MOTION_BLOCKING, getPodiumLocation(origin))` with `setBlockAndUpdate` only without `hasPreviouslyKilledDragon`), `spawnNewGateway()` and `spawnNewGateway(BlockPos)` (event 3000, `END_GATEWAY_DELAYED` with a fresh random), `spawnExitPortal`, `LevelEventHandler` event 3000 (explosion emitter, `END_GATEWAY_SPAWN`, blocks, 10, `(1 + (r − r)·0.2)·0.7`). The gateway positions were checked with `jshell`.
+- **Tests:** `server`: `the_twenty_end_gateways_ring_the_island_96_blocks_out_like_vanilla` (all 20 against `jshell`), `a_kill_opens_the_exit_portal_lays_the_egg_on_the_pillar_and_spawns_a_gateway` (an End level of seed 0: the inactive podium's bowl fills with end portal, the egg on the pillar, the gateway and its sound; a second kill places its gateway, keeps the first egg and lays none). `dragon_fight`: `each_kill_takes_the_last_of_the_shuffled_gateways_until_none_is_left`, `the_server_learns_the_fight_s_dragon_and_whether_one_was_killed_before`.
+- **Decisions:**
+  - The exit portal opens a tick or two after the dragon is gone, when the server's report reaches the fight; vanilla does it in the dragon's last tick.
+  - Not drawn yet: the gateway's purple beam while it spawns (X6) and the explosion emitter of event 3000 (no explosion particle). The gateway doesn't throw players yet (X6, E3-23).
+- **Test steps** (continue in `x4dragon` after entry 28's kill, or kill the dragon again there):
+  1. When the dragon is gone, the log says `Minecraft exit portal opened at (0, ..., 0)` and a loud whoosh plays. Go to the podium: the bowl is filled with the end portal starfield, and a black dragon egg sits on top of the bedrock pillar. **Screenshot 3.**
+  2. Look out over the island's edge about 96 blocks from the centre at height 75: a floating end gateway (a starfield cube in a small bedrock frame) has appeared. **Screenshot 4.**
+  3. Quit and start again: the portal, the egg and the gateway are still there, and no dragon or boss bar comes back.
+- **Kit:** the kit of entry 28.

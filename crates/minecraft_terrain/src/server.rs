@@ -1511,6 +1511,26 @@ impl ServerSim {
         self.fight = link;
     }
 
+    pub fn dragon_killed(&mut self, origin: BlockPos, exit_portal_location: Option<BlockPos>, gateway: Option<i32>, egg: bool) -> BlockPos {
+        use minecraftoss_generator::feature::World as _;
+        let at = |(x, y, z): BlockPos| minecraftoss_core::BlockPos::new(x, y, z);
+        let portal = self.level.spawn_exit_portal(at(origin), exit_portal_location.map(at), true);
+        if let Some(pos) = gateway.map(end_gateway_position) {
+            let pitch = (1.0 + (self.end_random.next_float() - self.end_random.next_float()) * 0.2) * 0.7;
+            let center = glam::DVec3::new(f64::from(pos.0) + 0.5, f64::from(pos.1) + 0.5, f64::from(pos.2) + 0.5);
+            self.end_sounds.push(minecraftoss_entities::world::MobSound { event: END_GATEWAY_SPAWN_SOUND.to_owned(), position: center, volume: 10.0, pitch, category: "blocks" });
+            self.level.place_configured_feature(END_GATEWAY_DELAYED, at(pos));
+        }
+        if egg {
+            let top = self.level.height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlocking, origin.0, origin.2);
+            let blocks = &self.level.registries().blocks;
+            if let Some(state) = blocks.block_by_name(DRAGON_EGG).map(|block| blocks.block(block).default_state()) {
+                self.level.set_block_and_update(minecraftoss_core::BlockPos::new(origin.0, top, origin.2), state);
+            }
+        }
+        (portal.x, portal.y, portal.z)
+    }
+
     pub fn dragon_views(&self) -> Vec<crate::ender_dragon::DragonView> {
         self.dragons.views()
     }
@@ -1902,6 +1922,17 @@ pub enum Command {
 pub type Job = Box<dyn FnOnce(&mut ServerSim) -> Box<dyn std::any::Any + Send> + Send>;
 
 pub const ENDER_DRAGON: &str = "minecraft:ender_dragon";
+
+pub const DRAGON_EGG: &str = "minecraft:dragon_egg";
+pub const END_GATEWAY_DELAYED: &str = "minecraft:end_gateway_delayed";
+pub const END_GATEWAY_SPAWN_SOUND: &str = "minecraft:block.end_gateway.spawn";
+pub const GATEWAY_RING: f64 = 96.0;
+pub const GATEWAY_Y: i32 = 75;
+
+pub fn end_gateway_position(index: i32) -> BlockPos {
+    let angle = 2.0 * (-std::f64::consts::PI + 0.157_079_632_679_489_66 * f64::from(index));
+    ((GATEWAY_RING * angle.cos()).floor() as i32, GATEWAY_Y, (GATEWAY_RING * angle.sin()).floor() as i32)
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FightLink {
@@ -6813,6 +6844,48 @@ mod tests {
         }
         assert!(server.dragons.list.is_empty(), "it rose and went");
         assert_eq!(server.take_dragons_killed(), vec![uuid]);
+    }
+
+    #[test]
+    fn the_twenty_end_gateways_ring_the_island_96_blocks_out_like_vanilla() {
+        let expected = [
+            (96, 0), (91, 29), (77, 56), (56, 77), (29, 91), (-1, 96), (-30, 91), (-57, 77), (-78, 56), (-92, 29),
+            (-96, -1), (-92, -30), (-78, -57), (-57, -78), (-30, -92), (0, -96), (29, -92), (56, -78), (77, -57), (91, -30),
+        ];
+        for (index, (x, z)) in expected.into_iter().enumerate() {
+            assert_eq!(end_gateway_position(index as i32), (x, 75, z), "gateway {index}");
+        }
+    }
+
+    #[test]
+    fn a_kill_opens_the_exit_portal_lays_the_egg_on_the_pillar_and_spawns_a_gateway() {
+        let Some(mut server) = end_world((-7..=6).flat_map(|x| (-7..=6).map(move |z| (x, z)))) else { return };
+        let block = |server: &ServerSim, pos: BlockPos| {
+            let state = server.level.block(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2));
+            let blocks = &server.level.registries().blocks;
+            blocks.block(blocks.block_of(state)).name.as_str().to_owned()
+        };
+        let at = server.scan_dragon_fight((0, 0, 0), None).exit_portal_location.expect("the inactive podium");
+        assert_eq!(block(&server, (1, at.1, 0)), "minecraft:air");
+        server.take_end_sounds();
+        let opened = server.dragon_killed((0, 0, 0), Some(at), Some(6), true);
+        assert_eq!(opened, at);
+        for (x, z) in [(1, 0), (-2, 1), (1, 1), (0, 2)] {
+            assert_eq!(block(&server, (x, at.1, z)), "minecraft:end_portal", "portal {x} {z}");
+        }
+        assert_eq!(block(&server, (0, at.1 + 4, 0)), DRAGON_EGG, "the egg sits on the pillar");
+        let gateway = end_gateway_position(6);
+        assert_eq!(gateway, (-30, 75, 91));
+        assert_eq!(block(&server, gateway), "minecraft:end_gateway");
+        let sounds = server.take_end_sounds();
+        assert_eq!(sounds.len(), 1);
+        assert_eq!((sounds[0].event.as_str(), sounds[0].volume), (END_GATEWAY_SPAWN_SOUND, 10.0));
+        assert!(server.level.has_active_exit_portal());
+        server.dragon_killed((0, 0, 0), Some(at), Some(0), false);
+        assert_eq!(block(&server, (0, at.1 + 4, 0)), DRAGON_EGG, "the first egg stays");
+        assert_eq!(block(&server, (0, at.1 + 5, 0)), "minecraft:air", "and a later kill lays none");
+        assert_eq!(block(&server, end_gateway_position(0)), "minecraft:end_gateway");
+        assert!(!server.level.unsupported.iter().any(|note| note.starts_with("feature ")), "{:?}", server.level.unsupported);
     }
 
     fn orb_experience(server: &ServerSim) -> i32 {

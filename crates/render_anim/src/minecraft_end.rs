@@ -92,6 +92,9 @@ pub(crate) fn tick_fight(
             "Minecraft ender dragon of the fight killed: {uuid:?}"
         );
     }
+    if let Some(at) = events.opened {
+        diag::info!(World, "Minecraft exit portal opened at {at:?}");
+    }
     if let Some(uuid) = events.spawned {
         diag::info!(World, "Minecraft ender dragon of the fight: {uuid:?}");
     }
