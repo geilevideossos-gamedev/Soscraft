@@ -1323,11 +1323,16 @@ impl ServerSim {
     pub fn bone_meal(&mut self, pos: BlockPos, face: &str) -> bool {
         let at = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
         if self.level.grow_crop(at) {
+            self.level.level_events.push((crate::level_events::BONE_MEAL_USE, at, crate::level_events::BONE_MEAL_PARTICLES));
             return true;
         }
         let Some(face) = minecraftoss_core::pos::Direction::from_name(face) else { return false };
         let state = self.level.block(at);
-        self.level.registries().blocks.is_face_sturdy(state, face, minecraftoss_core::SupportType::Full) && self.level.grow_water_plant(at.relative(face, 1))
+        let grown = self.level.registries().blocks.is_face_sturdy(state, face, minecraftoss_core::SupportType::Full) && self.level.grow_water_plant(at.relative(face, 1));
+        if grown {
+            self.level.level_events.push((crate::level_events::BONE_MEAL_USE, at.relative(face, 1), crate::level_events::BONE_MEAL_PARTICLES));
+        }
+        grown
     }
 
     pub fn attack_block(&mut self, pos: BlockPos) -> bool {
@@ -3827,6 +3832,7 @@ mod tests {
         server.player_edit(&scene, (8, 201, 8), PlayerEdit::Place);
         server.take_changes();
         assert!(server.bone_meal((8, 201, 8), "up"), "wheat takes bone meal");
+        assert_eq!(server.level.level_events.drain(..).collect::<Vec<_>>(), vec![(1505, minecraftoss_core::BlockPos::new(8, 201, 8), 15)]);
         let changes = server.take_changes();
         let grown = changes.iter().find(|(pos, _)| *pos == (8, 201, 8)).and_then(|(_, b)| b.clone()).expect("the wheat changed");
         let age: i32 = grown.properties.get("age").and_then(|a| a.parse().ok()).unwrap_or(0);

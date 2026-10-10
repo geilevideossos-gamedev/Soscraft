@@ -109,10 +109,32 @@ IW4L_MINECRAFT_KIT=minecraft:tnt*16,minecraft:flint_and_steel,minecraft:creeper_
 - **Test steps:**
   1. Pour the water bucket next to a lava pool: where the water meets lava, the lava turns to obsidian or cobblestone with a hiss and a puff of dark smoke. **Screenshot 8.**
   2. Pour lava from a ledge onto water below: stone forms with the same hiss and smoke.
-  3. Pour lava next to a torch on the ground so it flows over it: the torch drops with a hiss.
+  3. Pour lava next to a torch on the ground so it flows over it: the torch burns away with a hiss (lava destroys it without a drop, as `LavaFluid.beforeDestroyingBlock` does; corrected in entry 6).
   4. In the Nether (`/execute in minecraft:the_nether run tp @s ~ 100 ~` or a portal), pour the water bucket on the ground: a hiss and a puff of steam-smoke, and no water. **Screenshot 9.**
 - **Kit:**
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:water_bucket*2,minecraft:lava_bucket*2,minecraft:bucket*2,minecraft:torch*4,minecraft:cobblestone*32
+```
+
+### 6. Minecraft bone meal sparkles where it grows something
+
+- **Changed:**
+  - `server.rs` (`ServerSim::bone_meal`): a successful bone meal records level event 1505 with data 15 at the clicked block, or at the water block in front of the clicked face for `growWaterPlant`, as `BoneMealItem.useOn` does on the server.
+  - `level_events.rs`: 1505 is `LevelEventHandler`'s `BoneMealItem.addGrowthParticles` plus `item.bone_meal.use` (volume 1, pitch 1) at the block centre. On a `BonemealableBlock` (the 35 classes that implement it in 26.3, matched through the block class chains of the block state catalog, so subclasses such as beetroots, carrots, kelp and cave vines count) the particle spot is the block, or the block below for `MangroveLeavesBlock` and `RootedDirtBlock` (`getParticlePos`). `NEIGHBOR_SPREADER`s (grass, nylium, moss and pale moss, netherrack) and water get `ParticleUtils.spawnParticles(count x 3, 3.0, 1.0, false)`: 45 tries over a 6 x 1 x 6 area, kept only above a non-air block. `GROWER`s get `spawnParticleInBlock`: 15 inside the block up to its outline shape's height. Each particle has a gaussian 0.02 motion.
+  - `shape_height` holds the outline heights checked with javap: crops 2 + 2 x age sixteenths (carrots and potatoes 2 + age, torchflower crops 6 + 4 x age), stems 2 + 2 x age, saplings, bamboo saplings and seagrass 12, short grass, ferns and small dripleaf 13, short dry grass 10, fungi and kelp 9, mushrooms 6, twisting vines 15, sweet berry bushes 8 at age 0 and 16 after, air 16 (`spawnParticleInBlock` uses 1.0 for air).
+  - `ambient_particles.rs`: `HappyVillager` (`SuspendedTownParticle` with the happy villager provider's white colour): sprite `glint`, size x (0.5 + 0.6 r), motion x 0.02, lifetime 20 / (0.2 + 0.8 r), counted down instead of aged, moving freely with friction 0.99. `particle/glint` joins the atlas list.
+  - Level events now wait in `Entities` until `present_level_events(scene)`, which `minecraft_world.rs` calls right after `entities.tick` (one line), before the tick's block changes reach the client scene. So, as in vanilla, where the event packet arrives before the block update, the particles follow the block as it was before it grew: a sapling sparkles like a sapling even when it became a tree.
+  - `berries.rs`: the bone meal use no longer plays `item.bone_meal.use` itself; the level event plays it, as in vanilla, so it sounds once and only when something grew.
+- **Tests:** `level_events`: `bone_meal_on_a_crop_sparkles_fifteen_times_within_its_height`, `bone_meal_on_grass_spreads_forty_five_tries_over_the_ground_around`, `rooted_dirt_sparkles_below_itself_and_unbonemealable_blocks_only_sound`, `plant_heights_follow_the_vanilla_shapes`. `ambient_particles`: `happy_villager_sparkles_hang_in_the_air_and_count_down`. `server`: `bone_meal_grows_a_crop` checks the recorded event. `berries`: `bone_meal_asks_the_server_about_the_clicked_face_and_is_spent` now expects no sound from the use.
+- **Decisions:** blocks whose outline is not in the table (cocoa, flower beds, sea pickles, pitcher crops, the dripleaf stem, glow lichen, mossy carpets) use the full block height; the sparkles then reach a little higher than vanilla's on those.
+- **Test steps:**
+  1. Plant wheat seeds on farmland (hoe the dirt next to water) and use bone meal on them: green stars sparkle low over the young wheat, and the bone meal sound plays once. **Screenshot 10.**
+  2. Use bone meal on an oak sapling until it grows: each use sparkles inside the sapling, also the one that makes the tree.
+  3. Use bone meal on a grass block in a meadow: stars rise from the ground in a wide square around it while grass and flowers appear. **Screenshot 11.**
+  4. Use bone meal on stone: nothing happens, no sound.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:bone_meal*64,minecraft:wheat_seeds*16,minecraft:oak_sapling*4,minecraft:iron_hoe,minecraft:water_bucket,minecraft:dirt*16,minecraft:grass_block*8
 ```

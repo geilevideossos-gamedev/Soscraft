@@ -67,6 +67,7 @@ pub struct Entities {
     eyes: minecraft_terrain::eye_of_ender::EyeTrails,
     spell: minecraft_terrain::spell_particles::SpellParticles,
     ambient: minecraft_terrain::ambient_particles::AmbientParticles,
+    level_events: Vec<(i32, (i32, i32, i32), i32)>,
     items: ItemVisuals,
     clock: f64,
     ticks: u64,
@@ -209,6 +210,7 @@ impl Entities {
             eyes: minecraft_terrain::eye_of_ender::EyeTrails::default(),
             spell: minecraft_terrain::spell_particles::SpellParticles::new((seed ^ 0x5be1) as u64),
             ambient: minecraft_terrain::ambient_particles::AmbientParticles::new((seed ^ 0xa3b1) as u64),
+            level_events: Vec::new(),
             items: ItemVisuals::default(),
             clock: 0.0,
             ticks: 0,
@@ -647,6 +649,14 @@ impl Entities {
         }
     }
 
+    pub fn present_level_events(&mut self, scene: &HandcraftedScene) {
+        let is_a = minecraft_terrain::level_events::class_test(scene);
+        for (id, pos, data) in std::mem::take(&mut self.level_events) {
+            let effects = minecraft_terrain::level_events::level_event(id, pos, data, scene, &is_a, &mut self.random);
+            self.present(effects);
+        }
+    }
+
     pub fn evaporation_smoke(&mut self, pos: (i32, i32, i32)) {
         let effects = minecraft_terrain::level_events::evaporation(pos, &mut self.random);
         self.present(effects);
@@ -893,10 +903,7 @@ impl Entities {
                 let pitch = (1.0 + (self.random.next_float() - self.random.next_float()) * 0.2) * 0.7;
                 self.sounds.push(("minecraft:entity.generic.explode".to_owned(), blast.position, 4.0, pitch));
             }
-            for &(id, pos, data) in &output.level_events {
-                let effects = minecraft_terrain::level_events::level_event(id, pos, data, &mut self.random);
-                self.present(effects);
-            }
+            self.level_events.extend(output.level_events);
             for effect in &output.explosion_effects {
                 self.ambient.explosion(DVec3::from_array(effect.center), effect.radius, effect.blocks, effect.interacts);
             }

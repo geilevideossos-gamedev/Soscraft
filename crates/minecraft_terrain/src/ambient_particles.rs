@@ -32,6 +32,7 @@ pub enum Kind {
     Poof,
     Explosion,
     ExplosionEmitter,
+    HappyVillager,
 }
 
 #[derive(Clone, Debug)]
@@ -164,6 +165,27 @@ impl Particle {
         particle
     }
 
+    fn happy_villager(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::HappyVillager, at, motion, random);
+        particle.size = f64::from(0.02_f32);
+        particle.quad_size *= random.next_float() * 0.6 + 0.5;
+        particle.velocity *= f64::from(0.02_f32);
+        particle.lifetime = (20.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32;
+        particle
+    }
+
+    fn linger(&mut self) -> bool {
+        self.previous = self.position;
+        let left = self.lifetime;
+        self.lifetime -= 1;
+        if left <= 0 {
+            return false;
+        }
+        self.position += self.velocity;
+        self.velocity *= 0.99;
+        true
+    }
+
     fn hold(&mut self) -> bool {
         self.previous = self.position;
         let prior = self.age;
@@ -191,6 +213,7 @@ impl Particle {
                 format!("explosion_{}", step.clamp(0, EXPLOSION_SPRITES - 1))
             }
             Kind::ExplosionEmitter => return None,
+            Kind::HappyVillager => "glint".to_owned(),
         };
         ResourceId::parse(&format!("minecraft:particle/{name}")).ok()
     }
@@ -204,7 +227,8 @@ impl Particle {
             | Kind::SignalSmoke
             | Kind::Poof
             | Kind::Explosion
-            | Kind::ExplosionEmitter => self.quad_size,
+            | Kind::ExplosionEmitter
+            | Kind::HappyVillager => self.quad_size,
         }
     }
 
@@ -382,7 +406,9 @@ fn clip(boxes: &Boxes, low: &[f64; 3], high: &[f64; 3], axis: usize, mut wanted:
 pub fn textures() -> Vec<ResourceId> {
     let big_smoke = (0..BIG_SMOKE_SPRITES).map(|index| format!("big_smoke_{index}"));
     let explosion = (0..EXPLOSION_SPRITES).map(|index| format!("explosion_{index}"));
-    std::iter::once("lava".to_owned())
+    ["lava", "glint"]
+        .into_iter()
+        .map(str::to_owned)
         .chain(big_smoke)
         .chain(explosion)
         .filter_map(|name| ResourceId::parse(&format!("minecraft:particle/{name}")).ok())
@@ -561,6 +587,7 @@ impl AmbientParticles {
             Kind::Poof => Particle::poof(at, motion, random),
             Kind::Explosion => Particle::huge_explosion(at, motion.x, random),
             Kind::ExplosionEmitter => Particle::emitter(at, random),
+            Kind::HappyVillager => Particle::happy_villager(at, motion, random),
         };
         self.particles.push(particle);
         if self.particles.len() > CAP {
@@ -585,6 +612,7 @@ impl AmbientParticles {
                 particle.age != particle.lifetime
             }
             Kind::Explosion => particle.hold(),
+            Kind::HappyVillager => particle.linger(),
             Kind::CosySmoke | Kind::SignalSmoke => particle.drift(scene, &mut cache, random),
             _ => {
                 let alive = particle.tick(scene, &mut cache);
@@ -1043,6 +1071,29 @@ mod tests {
                 "{at}"
             );
         }
+    }
+
+    #[test]
+    fn happy_villager_sparkles_hang_in_the_air_and_count_down() {
+        let mut particles = AmbientParticles::new(17);
+        let at = DVec3::new(0.5, 64.5, 0.5);
+        particles.add(Kind::HappyVillager, at, DVec3::new(0.0, 0.01, 0.0));
+        let sparkle = particles.particles[0].clone();
+        assert_eq!(sparkle.color, [1.0; 3]);
+        assert!((20..=100).contains(&sparkle.lifetime));
+        assert!(sparkle.velocity.length() < 0.01);
+        assert_eq!(
+            sparkle.sprite().map(|id| id.key()).as_deref(),
+            Some("minecraft:particle/glint")
+        );
+        let scene = Blocks(HashMap::from([((0, 64, 0), Block::new("minecraft:stone"))]));
+        for _ in 0..sparkle.lifetime {
+            particles.tick(&scene);
+        }
+        assert_eq!(particles.len(), 1);
+        assert!((particles.particles[0].position - at).length() < 0.5);
+        particles.tick(&scene);
+        assert!(particles.is_empty());
     }
 
     #[test]

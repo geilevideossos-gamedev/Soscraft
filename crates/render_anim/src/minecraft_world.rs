@@ -1671,6 +1671,7 @@ fn update(
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
         let ticks_before = entities.client_ticks();
         let (changes, hits) = entities.tick(inventory, *selected, dt, globals.clock_ticks(), bright_outside, &player);
+        entities.present_level_events(&terrain.scene);
         globals.weather = entities.weather_data.or(globals.weather);
         let summoned = std::mem::take(&mut entities.command_summons);
         if !summoned.is_empty() {

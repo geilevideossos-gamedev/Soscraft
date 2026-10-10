@@ -1,4 +1,4 @@
-use crate::bucket::{Change, ItemUse, Sound};
+use crate::bucket::{Change, ItemUse};
 use crate::pack::ResourceId;
 use crate::server::ItemOnBlock;
 use crate::terrain::BlockStates;
@@ -88,7 +88,7 @@ pub fn bone_meal_use(player: &Player, world: &impl World, held: &ItemStack) -> O
         result: None,
         wear: 0,
         consumed: true,
-        sounds: vec![Sound::at_block(BONE_MEAL_SOUND, hit.pos)],
+        sounds: Vec::new(),
     })
 }
 
@@ -225,10 +225,7 @@ mod tests {
             Change::Server((0, 1, 0), ItemOnBlock::BoneMeal { face: "up" })
         );
         assert!(used.consumed && used.result.is_none() && used.wear == 0);
-        assert_eq!(
-            used.sounds,
-            vec![Sound::at_block(BONE_MEAL_SOUND, (0, 1, 0))]
-        );
+        assert!(used.sounds.is_empty(), "the sound comes with level event 1505");
         assert_eq!(bone_meal_use(&player, &blocks, &stack(SWEET_BERRIES)), None);
         let sky = looking([0.5, 2.0, 0.5], -90.0);
         assert_eq!(bone_meal_use(&sky, &blocks, &stack(BONE_MEAL)), None);
