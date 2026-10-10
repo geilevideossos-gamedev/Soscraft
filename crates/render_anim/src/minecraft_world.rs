@@ -710,7 +710,7 @@ fn update(
     let presence = vec![(local_uuid.clone(), minecraft_survival::commands::Presence { pose: host_pose, alive: host_alive })];
     let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, levels, players, local_uuid, &mut ui.chat.sent, presence);
     ui.chat.command_level = players.get(local_uuid).map_or(0, |player| globals.chat.level(player.id));
-    crate::minecraft_end::tick_fight(levels, players, globals, time.delta_secs_f64());
+    crate::minecraft_end::tick_fight(levels, players, globals, time.delta_secs_f64(), local_uuid, &mut ui);
     let Some(player) = players.get_mut(local_uuid) else {
         ui.active = false;
         ui.inventory_open = false;
@@ -2237,6 +2237,7 @@ fn update(
             sky.ambient.y,
             sky.ambient.z,
             match sky.skybox {
+                _ if ui.boss_bars.iter().any(|bar| bar.world_fog) => 2.0,
                 Skybox::Overworld => 0.0,
                 Skybox::End => 1.0,
                 _ => 2.0,

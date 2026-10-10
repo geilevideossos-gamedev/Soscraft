@@ -701,3 +701,27 @@ Previous commit: 039c31d8
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:golden_apple*8,minecraft:diamond_chestplate
 ```
+
+### 24. Minecraft ender dragon has a boss bar (E3-12)
+
+Previous commit: 5a6fd423
+
+- **Changed:**
+  - `minecraft_survival/src/the_end/dragon_fight.rs`: the fight's boss event (`EnderDragonFight.dragonEvent`): `DragonFight.progress` is the dragon's health over 200 whenever the fight's dragon is in the snapshot (`updateDragon`'s `setProgress`), 1 until then; `boss_bar(player)` shows it to the players the fight counts (alive and within 192 blocks of (0, 128, 0), rescanned every 20 ticks, `updatePlayers`) while the dragon is not killed (`setVisible(!dragonKilled)`). Per player, by UUID.
+  - `frame/src/minecraft_ui.rs` (appended): `MinecraftUi.boss_bars: Vec<McBossBar>`; `McBossBar` is `LerpingBossEvent`: a new progress slides over 100 ms from where the bar stood (`setProgress`, `getProgress`), and `world_fog` (`setCreateWorldFog`).
+  - New `hud/src/minecraft_boss.rs` (with its `mod` line in `hud/src/lib.rs` and one call line at the top of `minecraft_hotbar::draw_hud`, before the game mode check, as the boss overlay shows in every mode): `BossHealthOverlay`: from y 12 down, 19 GUI pixels a bar, stopping past a third of the screen; the 182 by 5 `boss_bar/pink_background` sprite, the `pink_progress` sprite cut to `Mth.lerpDiscrete(progress, 0, 182)`, and the name centred 9 pixels above in white with a shadow.
+  - `render_anim/src/minecraft_gui.rs`: the two pink sprites join the loose GUI sprites read from the pack.
+  - `render_anim/src/minecraft_end.rs`: `tick_fight` sets the local player's bar ("Ender Dragon" from the language file, `entity.minecraft.ender_dragon`) while they are in the End and not switching, and clears it otherwise (the client's `BossHealthOverlay.reset` on a level change). `minecraft_world.rs`: the call line passes the local player and the UI, and while a shown bar wants world fog the sky shader gets the `none` skybox, so the fog colour stands in for the End sky (`GameRenderer` passes `!shouldCreateWorldFog` as `LevelRenderer.render`'s sky pass flag).
+- **Checked with javap (26.3):** `EnderDragonFight` (the boss event: `PINK`, `PROGRESS`, `setPlayBossMusic(true)`, `setCreateWorldFog(true)`; `tick`'s `setVisible`, `updatePlayers`, `updateDragon`), `ServerBossEvent`, `BossEvent`, `LerpingBossEvent`, `BossHealthOverlay` (`extractRenderState`, `extractBar`, the sprite tables), `Mth.lerpDiscrete`, `GameRenderer.renderLevel` and `tick` (`shouldCreateWorldFog`, `shouldDarkenScreen`), `LevelRenderer.render`, `LightmapRenderStateExtractor`.
+- **Tests:** `dragon_fight`: `the_boss_bar_shows_the_dragon_s_health_to_the_players_near_until_it_is_killed`. `minecraft_ui` (frame): `a_boss_bar_slides_to_its_new_progress_over_a_tenth_of_a_second`. `minecraft_boss` (hud): `the_bar_fills_182_pixels_in_steps_like_lerp_discrete`, `boss_bars_stack_down_from_the_top_until_a_third_of_the_screen`.
+- **Decisions:**
+  - **"Darkening fog":** the dragon's boss event sets `createWorldFog`, not `darkenScreen` (javap), so the screen is not darkened; the sky pass is dropped and the End's dark fog colour shows instead of its sky. The End flash (not drawn yet, E3-29) is the only other thing it changes.
+  - **No boss music:** the game plays no Minecraft music at all yet, so `setPlayBossMusic` has nothing to switch.
+  - The bar's progress moves when the dragon is hurt (E3-13) or healed (E3-14); until those commits it stays full.
+- **Test steps:**
+  1. Keep `IW4L_MINECRAFT_WORLD=x3dragon` (entry 23) or a new world, with `IW4L_MINECRAFT_DIMENSION=the_end`. Start on the platform.
+  2. At the top of the screen a pink bar named "Ender Dragon" shows, full. The sky behind the island is now the plain dark fog colour instead of the speckled End sky. **Screenshot 3.**
+  3. Type `/gamemode creative` and `/tp 100 60 220` (more than 192 blocks from the island's centre): within a second the bar goes and the speckled sky is back. `/tp 100 50 0`: it comes back.
+  4. Type `/gamemode spectator`: the bar stays. `/gamemode survival` afterwards.
+  5. Quit, remove the `IW4L_MINECRAFT_DIMENSION` line and start again in the overworld: no bar.
+- **Kit:** none needed.

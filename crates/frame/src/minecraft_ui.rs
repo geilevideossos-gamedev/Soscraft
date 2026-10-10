@@ -197,6 +197,47 @@ pub struct MinecraftUi {
     pub portal_frames: Option<(Handle<Image>, u32)>,
     pub portal_overlay: Option<McPortalOverlay>,
     pub overlay_message: Option<McOverlayMessage>,
+    pub boss_bars: Vec<McBossBar>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct McBossBar {
+    pub name: String,
+    pub from: f32,
+    pub target: f32,
+    pub elapsed: f32,
+    pub world_fog: bool,
+}
+
+impl McBossBar {
+    pub const LERP_SECONDS: f32 = 0.1;
+
+    pub fn new(name: String, progress: f32, world_fog: bool) -> Self {
+        Self {
+            name,
+            from: progress,
+            target: progress,
+            elapsed: Self::LERP_SECONDS,
+            world_fog,
+        }
+    }
+
+    pub fn progress(&self) -> f32 {
+        let t = (self.elapsed / Self::LERP_SECONDS).clamp(0.0, 1.0);
+        self.from + t * (self.target - self.from)
+    }
+
+    pub fn set_progress(&mut self, progress: f32) {
+        if progress != self.target {
+            self.from = self.progress();
+            self.target = progress;
+            self.elapsed = 0.0;
+        }
+    }
+
+    pub fn advance(&mut self, seconds: f32) {
+        self.elapsed += seconds;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -509,6 +550,23 @@ mod tests {
             [-4000.0 / 110_000.0, 4000.0 / 30_000.0]
         ));
         assert!(near(glint_shift(27_500), [0.0, 20_000.0 / 30_000.0]));
+    }
+
+    #[test]
+    fn a_boss_bar_slides_to_its_new_progress_over_a_tenth_of_a_second() {
+        let mut bar = McBossBar::new("Ender Dragon".to_owned(), 1.0, true);
+        assert_eq!(bar.progress(), 1.0);
+        bar.set_progress(0.5);
+        assert_eq!(bar.progress(), 1.0);
+        bar.advance(0.05);
+        assert!((bar.progress() - 0.75).abs() < 1e-6);
+        bar.set_progress(0.5);
+        assert!((bar.progress() - 0.75).abs() < 1e-6, "the same value does not restart it");
+        bar.advance(0.2);
+        assert_eq!(bar.progress(), 0.5);
+        bar.set_progress(0.25);
+        bar.advance(0.05);
+        assert!((bar.progress() - 0.375).abs() < 1e-6);
     }
 
     #[test]

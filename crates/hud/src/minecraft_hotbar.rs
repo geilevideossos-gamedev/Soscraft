@@ -81,6 +81,7 @@ pub(crate) fn draw_hud(
     weapons: Option<&PreparedWeapons>,
     name: Option<(&str, u32)>,
 ) {
+    crate::minecraft_boss::draw_boss_bars(p, ui);
     if !ui.game_mode.shows_hotbar() {
         return;
     }

@@ -1,11 +1,15 @@
 use std::collections::BTreeMap;
 
+use frame::MinecraftUi;
+use frame::minecraft_ui::McBossBar;
 use minecraft_net::PlayerUuid;
 use minecraft_survival::level::Level;
 use minecraft_survival::player::Player;
 use minecraft_survival::server::Globals;
 use minecraft_survival::the_end::Trip;
 use minecraft_terrain::terrain::Dimension;
+
+const DRAGON_NAME: &str = "entity.minecraft.ender_dragon";
 
 pub(crate) fn step(player: &mut Player, levels: &mut BTreeMap<Dimension, Level>) {
     let Some(level) = levels.get_mut(&player.dimension) else {
@@ -50,8 +54,11 @@ pub(crate) fn tick_fight(
     players: &BTreeMap<PlayerUuid, Player>,
     globals: &Globals,
     seconds: f64,
+    local: &PlayerUuid,
+    ui: &mut MinecraftUi,
 ) {
     let Some(level) = levels.get_mut(&Dimension::End) else {
+        ui.boss_bars.clear();
         return;
     };
     let events = minecraft_survival::the_end::dragon_fight::tick_level(
@@ -84,5 +91,30 @@ pub(crate) fn tick_fight(
     }
     if let Some(Err(error)) = events.saved {
         diag::warn!(World, "Minecraft End dragon fight not saved: {error}");
+    }
+    let shown = players
+        .get(local)
+        .filter(|player| player.dimension == Dimension::End && player.switching.is_none())
+        .and_then(|_| level.dragon_fight.as_ref()?.boss_bar(local));
+    show_boss_bar(ui, shown, seconds);
+}
+
+fn show_boss_bar(ui: &mut MinecraftUi, progress: Option<f32>, seconds: f64) {
+    let Some(progress) = progress else {
+        ui.boss_bars.clear();
+        return;
+    };
+    if ui.boss_bars.is_empty() {
+        let name = ui
+            .chat
+            .language
+            .get(DRAGON_NAME)
+            .cloned()
+            .unwrap_or_else(|| DRAGON_NAME.to_owned());
+        ui.boss_bars.push(McBossBar::new(name, progress, true));
+    }
+    for bar in &mut ui.boss_bars {
+        bar.set_progress(progress);
+        bar.advance(seconds as f32);
     }
 }

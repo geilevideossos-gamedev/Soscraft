@@ -22,6 +22,7 @@ pub const ARENA_TICKET_LEVEL: i32 = 9;
 pub const GATEWAY_COUNT: i32 = 20;
 pub const TIME_BETWEEN_PLAYER_SCANS: u32 = 20;
 pub const MAX_TICKS_BEFORE_DRAGON_RESPAWN: u32 = 1200;
+pub const MAX_HEALTH: f32 = 200.0;
 pub const TICK_SECONDS: f64 = 0.05;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -167,6 +168,7 @@ pub struct DragonFight {
     pub ticks_since_dragon_seen: u32,
     pub creating: Option<mpsc::Receiver<[i32; 4]>>,
     pub linked: Option<Option<[i32; 4]>>,
+    pub progress: f32,
 }
 
 impl Default for DragonFight {
@@ -248,7 +250,16 @@ impl DragonFight {
             ticks_since_dragon_seen: 0,
             creating: None,
             linked: None,
+            progress: 1.0,
         }
+    }
+
+    pub fn boss_bar(&self, player: &PlayerUuid) -> Option<f32> {
+        (!self.data.dragon_killed && self.players.contains(player)).then_some(self.progress)
+    }
+
+    pub fn update_dragon(&mut self, health: f32) {
+        self.progress = health / MAX_HEALTH;
     }
 
     pub fn load(save: Option<&WorldSave>, seed: i64) -> (Self, Option<Result<bool, String>>) {
@@ -408,12 +419,18 @@ pub fn tick_level<'a>(
     events.spawned = fight.receive_dragon();
     let loaded =
         entities.is_some() && arena_loaded(|chunk| terrain.scene.generated_chunk(chunk).is_some());
-    let seen = entities.as_ref().is_some_and(|entities| {
-        fight
-            .data
-            .dragon_uuid
-            .is_some_and(|uuid| entities.dragon_alive(uuid))
+    let dragon = entities.as_ref().and_then(|entities| {
+        let uuid = fight.data.dragon_uuid?;
+        entities
+            .dragons()
+            .iter()
+            .find(|dragon| dragon.uuid == uuid)
+            .map(|dragon| dragon.health)
     });
+    if let Some(health) = dragon {
+        fight.update_dragon(health);
+    }
+    let seen = dragon.is_some();
     let before = fight.players.len();
     let mut tickets = None;
     for _ in 0..fight.ticks(seconds) {
@@ -538,6 +555,28 @@ mod tests {
         fight.data.dragon_killed = false;
         fight.players.clear();
         assert!(!fight.dragon_due(false, true), "not with nobody near");
+    }
+
+    #[test]
+    fn the_boss_bar_shows_the_dragon_s_health_to_the_players_near_until_it_is_killed() {
+        let mut fight = DragonFight::default();
+        let steve = uuid("steve");
+        assert_eq!(fight.boss_bar(&steve), None, "nobody scanned yet");
+        fight.players = vec![steve.clone()];
+        assert_eq!(
+            fight.boss_bar(&steve),
+            Some(1.0),
+            "full before the dragon is seen"
+        );
+        fight.update_dragon(150.0);
+        assert_eq!(fight.boss_bar(&steve), Some(0.75));
+        assert_eq!(
+            fight.boss_bar(&uuid("alex")),
+            None,
+            "only for the players within 192 blocks"
+        );
+        fight.data.dragon_killed = true;
+        assert_eq!(fight.boss_bar(&steve), None);
     }
 
     #[test]
