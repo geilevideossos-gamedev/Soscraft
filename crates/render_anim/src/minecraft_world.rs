@@ -1309,6 +1309,7 @@ fn update(
                         .or_else(|| minecraft_terrain::flint::fire_charge_use(&player, &outlined, &catalog, stack, || entities.random_float()))
                         .or_else(|| minecraft_terrain::berries::bone_meal_use(&player, &outlined, stack))
                         .or_else(|| minecraft_terrain::ender_eye::eye_use(&player, &outlined, stack))
+                        .or_else(|| minecraft_terrain::end_crystal::crystal_use(&player, &outlined, stack))
                         .or_else(|| minecraft_terrain::firework::rocket_use(stack, ps.pm_flags & playerstate_iw4::pm_flags::MC_GLIDING != 0, || entities.random_float()))
                 }
             {

@@ -26,6 +26,7 @@ use minecraft_terrain::poof_particles::PoofParticles;
 use minecraft_terrain::portal_particles::PortalParticles;
 use minecraftoss_entities::tempt::PlayerCandidate;
 use minecraftoss_entities::world::{EntityWorld, MobHit, PlayerHitKind};
+use minecraft_terrain::end_crystal::{EndDamage, EndTarget};
 
 const TICK_SECONDS: f64 = 1.0 / 20.0;
 /// Minecraft health per MW2 health.
@@ -90,6 +91,7 @@ pub struct Entities {
     thrown: Vec<minecraft_terrain::thrown::ThrownView>,
     clouds: Vec<minecraft_terrain::effect_cloud::CloudView>,
     tridents: Vec<minecraft_terrain::trident::TridentView>,
+    crystals: Vec<minecraft_terrain::end_crystal::CrystalView>,
     orbs: Vec<ServerOrb>,
     falling: minecraft_terrain::falling_render::FallingBlocks,
     pub lids: minecraft_terrain::lids::Lids,
@@ -225,6 +227,7 @@ impl Entities {
             thrown: Vec::new(),
             clouds: Vec::new(),
             tridents: Vec::new(),
+            crystals: Vec::new(),
             orbs: Vec::new(),
             falling: Default::default(),
             lids: Default::default(),
@@ -493,6 +496,13 @@ impl Entities {
     #[allow(clippy::too_many_arguments)]
     pub fn punch(&mut self, inventory: &Inventory, selected: usize, eye: DVec3, look: DVec3, yaw: f32, attack_damage: f64, strength: f32, blow: Blow) -> bool {
         let mob = self.world.mob_on_ray(eye, look, blow.reach);
+        if let Some((crystal, distance)) = minecraft_terrain::end_crystal::on_ray(&self.crystals, eye, look, blow.reach)
+            && mob.is_none_or(|(_, nearest)| distance < nearest)
+        {
+            let damage = attack_damage as f32 * (0.2 + strength * strength * 0.8);
+            self.server.end_hit(EndTarget::Crystal(crystal), EndDamage::attack(damage, PLAYER));
+            return true;
+        }
         if let Some((fireball, distance)) = self.world.fireball_on_ray(eye, look, blow.reach)
             && mob.is_none_or(|(_, nearest)| distance < nearest)
         {
@@ -521,10 +531,8 @@ impl Entities {
     pub fn mob_distance(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
         let mob = self.world.mob_on_ray(eye, look, reach).map(|(_, distance)| distance);
         let fireball = self.world.fireball_on_ray(eye, look, reach).map(|(_, distance)| distance);
-        match (mob, fireball) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        let crystal = minecraft_terrain::end_crystal::on_ray(&self.crystals, eye, look, reach).map(|(_, distance)| distance);
+        [mob, fireball, crystal].into_iter().flatten().min_by(f64::total_cmp)
     }
 
     /// A block the player placed, for the level the mobs walk in.
@@ -664,6 +672,10 @@ impl Entities {
     /// A bullet on a mob: an attack with the bullet's damage from where it
     /// was fired.
     pub fn shoot(&mut self, key: u64, damage: f32, from: [f64; 3], yaw: f32) {
+        if let Some(id) = crystal_of(key) {
+            self.server.end_hit(EndTarget::Crystal(id), EndDamage::attack(damage * HEALTH_SCALE, PLAYER));
+            return;
+        }
         if let Some(id) = fireball_of(key) {
             if let Some(entity) = self.world.fireballs().iter().find(|e| e.id == id) {
                 let center = entity.fireball.position + DVec3::Y * (entity.fireball.kind.size() / 2.0);
@@ -690,6 +702,10 @@ impl Entities {
     }
 
     pub fn blast(&mut self, key: u64, damage: f32, center: [f64; 3], impact: f32, by_player: bool, slow_ticks: i32) {
+        if let Some(id) = crystal_of(key) {
+            self.server.end_hit(EndTarget::Crystal(id), EndDamage::explosion(damage * BLAST_HEALTH_SCALE, by_player.then_some(PLAYER)));
+            return;
+        }
         if let Some(id) = fireball_of(key) {
             if let Some(entity) = self.world.fireballs().iter().find(|e| e.id == id) {
                 let eye = entity.fireball.position + DVec3::Y * (entity.fireball.kind.size() * 0.85);
@@ -808,6 +824,7 @@ impl Entities {
                 self.eyes.receive(std::mem::take(&mut snapshot.eyes), &mut self.portal, &mut self.item_crumbs);
                 self.clouds = std::mem::take(&mut snapshot.clouds);
                 self.tridents = std::mem::take(&mut snapshot.tridents);
+                self.crystals = std::mem::take(&mut snapshot.crystals);
                 self.orbs = snapshot.orbs.clone();
                 self.falling.receive(std::mem::take(&mut snapshot.falling), std::mem::take(&mut snapshot.tnt), &output.changes, self.ticks);
                 self.server_snapshot = Some(snapshot);
@@ -980,6 +997,10 @@ impl Entities {
         for e in w.blazes().iter().filter(|e| e.blaze.health > 0.0) {
             add(MobHit::Blaze(e.id), &e.blaze.body);
         }
+        for crystal in &self.crystals {
+            let (low, high) = minecraft_terrain::end_crystal::pick_box(crystal.position);
+            out.push((CRYSTAL_KEY | (crystal.id & ((1 << 56) - 1)), [low.x, low.y, low.z, high.x, high.y, high.z]));
+        }
         out
     }
 
@@ -1054,6 +1075,7 @@ impl Entities {
         );
         let witch_items = witch_render::append_witches(&mut out.models, w.witches().iter(), poses, atlas, light, partial);
         ghast_render::append_ghasts(&mut out.models, w.ghasts().iter(), poses, atlas, light, partial);
+        end_crystal_render::append_crystals(&mut out.models, &self.crystals, atlas, light, partial);
         blaze_render::append_blazes(&mut out.models, w.blazes().iter(), poses, atlas, light, partial);
         let poppies = golem_render::append_iron_golems(&mut out.models, w.iron_golems().iter(), poses, atlas, light, partial);
         wolf_render::append_wolves(&mut out.models, w.wolves().iter(), poses, atlas, light, partial, w.game_time());
@@ -1216,6 +1238,11 @@ fn decode(key: u64) -> Option<MobHit> {
 }
 
 const FIREBALL_KEY: u64 = 17 << 56;
+const CRYSTAL_KEY: u64 = 19 << 56;
+
+fn crystal_of(key: u64) -> Option<u64> {
+    (key >> 56 == CRYSTAL_KEY >> 56).then_some(key & ((1 << 56) - 1))
+}
 
 fn fireball_of(key: u64) -> Option<u64> {
     (key >> 56 == FIREBALL_KEY >> 56).then_some(key & ((1 << 56) - 1))
@@ -1272,6 +1299,16 @@ mod tests {
         assert!(creative.alive && !creative.attackable && !creative.spectator);
         let spectator = player_candidate(&view(false, true));
         assert!(spectator.alive && !spectator.attackable && spectator.spectator);
+    }
+
+    #[test]
+    fn end_crystals_have_their_own_bullet_key() {
+        let key = CRYSTAL_KEY | 42;
+        assert_eq!(crystal_of(key), Some(42));
+        assert_eq!(fireball_of(key), None);
+        assert_eq!(decode(key), None);
+        assert_eq!(crystal_of(FIREBALL_KEY | 42), None);
+        assert_eq!(crystal_of(encode(MobHit::Blaze(42))), None);
     }
 
     #[test]

@@ -35,6 +35,7 @@ pub enum ItemOnBlock {
     PrimeTnt,
     BoneMeal { face: &'static str },
     EnderEye,
+    EndCrystal,
 }
 
 pub struct ServerSim {
@@ -79,6 +80,8 @@ pub struct ServerSim {
     eyes: crate::eye_of_ender::Eyes,
     blasts: Vec<(Blast, BlastSource)>,
     block_explosion_drop_decay: bool,
+    crystals: crate::end_crystal::Crystals,
+    dragon_fight_level: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -92,6 +95,7 @@ pub struct Blast {
 enum BlastSource {
     Nobody,
     RespawnPoint { shield: Option<BlockPos> },
+    Player(u64),
 }
 
 /// What a player's hit or use on a mob did, for the client to present.
@@ -197,6 +201,7 @@ pub struct EntitySnapshot {
     pub clouds: Vec<crate::effect_cloud::CloudView>,
     pub tridents: Vec<crate::trident::TridentView>,
     pub eyes: crate::eye_of_ender::EyeSnapshot,
+    pub crystals: Vec<crate::end_crystal::CrystalView>,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -232,6 +237,7 @@ impl ServerSim {
         }
         level.sea_level = worldgen.library.generation.sea_level;
         level.fast_lava = level.sky.as_ref().is_some_and(|sky| crate::environment::dimension_value(&sky.environment, "gameplay/fast_lava").as_bool());
+        let dragon_fight_level = minecraftoss_core::ident::Identifier::parse(dimension_type).ok().and_then(|id| level.registries().datapack.read_json("dimension_type", &id).ok()).is_some_and(|json| json.get("has_ender_dragon_fight").and_then(|flag| flag.as_bool()).unwrap_or(false));
         let mob_tables = crate::server_mobs::MobTables::new(&level, &states);
         // Natural spawning, when the entity catalog can create mobs.
         if level.registries().entities.is_some() {
@@ -281,6 +287,8 @@ impl ServerSim {
             eyes: crate::eye_of_ender::Eyes::default(),
             blasts: Vec::new(),
             block_explosion_drop_decay: true,
+            crystals: crate::end_crystal::Crystals::default(),
+            dragon_fight_level,
         }
     }
 
@@ -495,6 +503,9 @@ impl ServerSim {
         if crate::server_mobs::load_level_entity(&mut self.level, &tag) {
             return;
         }
+        if self.crystals.add(&tag).is_some() {
+            return;
+        }
         match crate::server_mobs::spawn_saved(&mut self.mobs, &tag) {
             Some(id) => {
                 self.mob_tags.insert(id, tag);
@@ -512,8 +523,10 @@ impl ServerSim {
         tags.extend(self.dormant.iter().filter(|(group, _)| inside(glam::DVec3::from_array(group[0].pos))).map(|(_, tag)| tag.clone()));
         tags.extend(crate::server_mobs::level_entity_tags(&self.level, inside));
         tags.extend(self.tridents.iter().filter(|t| t.alive && inside(t.position)).map(|t| t.to_tag(t.owner_uuid)));
+        tags.extend(self.crystals.tags_where(inside));
         if unload {
             self.tridents.retain(|t| !inside(t.position));
+            self.crystals.remove_where(inside);
             self.mobs.remove_where(inside);
             self.dormant.retain(|(group, _)| !inside(glam::DVec3::from_array(group[0].pos)));
             self.level.entities.retain(|e| !(inside(glam::DVec3::from_array(e.pos)) && (e.item_data().is_some() || e.orb_data().is_some())));
@@ -762,10 +775,10 @@ impl ServerSim {
             {
                 let Self { level, states, mobs, mob_tables, .. } = &mut *self;
                 let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
-                if source == BlastSource::Nobody {
-                    mobs.blast(&world, explosion, players);
-                } else {
-                    mobs.bad_respawn_point_blast(&world, explosion, players);
+                match source {
+                    BlastSource::Nobody => mobs.blast(&world, explosion, players),
+                    BlastSource::Player(player) => mobs.blast_by_player(&world, explosion, players, player),
+                    BlastSource::RespawnPoint { .. } => mobs.bad_respawn_point_blast(&world, explosion, players),
                 }
             }
             self.drop_death_loot();
@@ -1337,7 +1350,66 @@ impl ServerSim {
             ItemOnBlock::PrimeTnt => self.level.ignite_tnt(at),
             ItemOnBlock::BoneMeal { face } => self.bone_meal(pos, face),
             ItemOnBlock::EnderEye => self.level.place_ender_eye(at).is_some(),
+            ItemOnBlock::EndCrystal => self.place_end_crystal(pos),
         }
+    }
+
+    pub fn place_end_crystal(&mut self, base: BlockPos) -> bool {
+        let at = |(x, y, z): BlockPos| minecraftoss_core::BlockPos::new(x, y, z);
+        let blocks = &self.level.registries().blocks;
+        let base_block = blocks.block_of(self.level.block(at(base)));
+        let takes = [crate::end_crystal::OBSIDIAN, crate::end_crystal::BEDROCK].iter().any(|name| blocks.block_by_name(name) == Some(base_block));
+        if !takes || !blocks.is_air(self.level.block(at((base.0, base.1 + 1, base.2)))) {
+            return false;
+        }
+        let (low, high) = crate::end_crystal::placement_box(base);
+        let overlaps = |position: glam::DVec3, half: f64, height: f64| {
+            position.x - half < high.x && position.x + half > low.x && position.y < high.y && position.y + height > low.y && position.z - half < high.z && position.z + half > low.z
+        };
+        let occupied = self.crystals.touches((low, high))
+            || self.mobs.census().iter().any(|mob| overlaps(mob.position, f64::from(mob.width / 2.0), f64::from(mob.height)))
+            || self.level.players.iter().any(|feet| overlaps(glam::DVec3::from_array(*feet), 0.3, 1.8))
+            || self.level.entities.iter().any(|entity| overlaps(glam::DVec3::from_array(entity.pos), 0.125, 0.25));
+        if occupied {
+            return false;
+        }
+        let tag = self.crystals.fresh_tag(crate::end_crystal::placed_at(base), false);
+        self.crystals.add(&tag).is_some()
+    }
+
+    pub fn tick_end(&mut self) {
+        let blasts: Vec<(glam::DVec3, f32)> = self.explosions.iter().map(|blast| (blast.position, blast.radius)).collect();
+        for (center, radius) in blasts {
+            self.crystals.blast(center, radius, None);
+        }
+        for pos in self.crystals.tick() {
+            if self.dragon_fight_level {
+                self.level.light_fire(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2));
+            }
+        }
+    }
+
+    pub fn end_hit(&mut self, target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage) {
+        match target {
+            crate::end_crystal::EndTarget::Crystal(id) => {
+                if let Some(destroyed) = self.crystals.hurt(id, &damage) {
+                    self.crystal_destroyed(destroyed);
+                }
+            }
+        }
+    }
+
+    fn crystal_destroyed(&mut self, destroyed: crate::end_crystal::Destroyed) {
+        if !destroyed.explodes {
+            return;
+        }
+        let blast = Blast { center: destroyed.position.to_array(), power: crate::end_crystal::EXPLOSION_POWER, fire: false };
+        let source = destroyed.player.map_or(BlastSource::Nobody, BlastSource::Player);
+        self.blasts.push((blast, source));
+    }
+
+    pub fn crystal_views(&self) -> Vec<crate::end_crystal::CrystalView> {
+        self.crystals.views()
     }
 
     pub fn create_end_platform(&mut self, origin: BlockPos) {
@@ -1679,6 +1751,7 @@ pub enum Command {
     GameRules(Box<crate::game_rules::GameRules>),
     PlayerUuid { player: u64, uuid: u128 },
     Job(Job),
+    EndHit { target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage },
 }
 
 pub type Job = Box<dyn FnOnce(&mut ServerSim) -> Box<dyn std::any::Any + Send> + Send>;
@@ -2025,6 +2098,10 @@ impl ServerHandle {
         self.send(Command::ThrowEye { owner, throw: Box::new(throw) });
     }
 
+    pub fn end_hit(&mut self, target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage) {
+        self.send(Command::EndHit { target, damage });
+    }
+
     pub fn save(&mut self) {
         self.send(Command::Save);
     }
@@ -2138,6 +2215,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::WeatherData(data) => sim.set_weather_data(&data),
                 Command::GameRules(rules) => sim.apply_game_rules(&rules),
                 Command::Job(job) => out.jobs.push(job(&mut sim)),
+                Command::EndHit { target, damage } => sim.end_hit(target, damage),
                 Command::Save => {
                     sim.ticks_since_save = 0;
                     sim.save_all_entities();
@@ -2182,6 +2260,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.tick_thrown(&bodies);
                     sim.tick_tridents(&bodies);
                     sim.tick_eyes();
+                    sim.tick_end();
                     out.pearl_teleports.extend(sim.take_pearl_teleports());
                     out.thrown_hits.extend(sim.take_thrown_hits());
                     sim.spawn_trade_experience();
@@ -2223,7 +2302,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     }
                     // After the items, one experience orb.
                     out.orbs_taken.extend(sim.take_experience(pickup_feet));
-                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot() });
+                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views() });
                     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
                     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), started.elapsed().as_secs_f64() * 1000.0));
                 }
@@ -6406,5 +6485,93 @@ mod tests {
         }
         assert_eq!(loaded.blazes().len(), 1);
         assert_eq!(loaded.fireballs()[0].fireball.kind, FireballKind::Small);
+    }
+
+    fn end_player(position: [f64; 3]) -> minecraftoss_entities::tempt::PlayerCandidate {
+        minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: glam::DVec3::from_array(position),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        }
+    }
+
+    fn block_name(server: &ServerSim, pos: BlockPos) -> String {
+        let state = server.level.block(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2));
+        let blocks = &server.level.registries().blocks;
+        blocks.block(blocks.block_of(state)).name.as_str().to_owned()
+    }
+
+    #[test]
+    fn end_crystals_burn_on_the_spikes_and_explode_unless_a_blast_destroyed_them() {
+        use crate::end_crystal::{EndDamage, EndTarget};
+        let Some(mut server) = end_world((-3..=2).flat_map(|x| (-3..=2).map(move |z| (x, z)))) else { return };
+        assert_eq!(server.crystals.list.len(), 10, "one crystal on each spike");
+        assert_eq!(server.dormant_count(), 0, "the crystals are live, not dormant");
+        assert!(server.dragon_fight_level);
+        let first = server.crystals.list[0].clone();
+        let below = first.block_position();
+        assert_eq!(block_name(&server, below), "minecraft:fire");
+        assert_eq!(block_name(&server, (below.0, below.1 - 1, below.2)), "minecraft:bedrock");
+        server.player_edit_block(below, None, PlayerEdit::Break);
+        assert_eq!(block_name(&server, below), "minecraft:air");
+        server.tick_end();
+        assert_eq!(block_name(&server, below), "minecraft:fire", "a crystal in the End keeps its fire burning");
+        assert_eq!(server.crystals.list[0].time, first.time + 1);
+        let near = [first.position.x + 4.0, first.position.y, first.position.z];
+        let base = (near[0].floor() as i32, near[1] as i32 - 1, near[2].floor() as i32);
+        server.player_edit_block(base, Some(&Block::new("minecraft:obsidian")), PlayerEdit::Place);
+        assert!(server.place_end_crystal(base), "a crystal goes on obsidian");
+        assert!(!server.place_end_crystal(base), "not twice in one place");
+        let placed = server.crystals.list.last().unwrap().clone();
+        assert!(!placed.show_bottom);
+        assert_eq!(placed.position, crate::end_crystal::placed_at(base));
+        let spike_top = (below.0, below.1 - 1, below.2);
+        assert!(!server.place_end_crystal(spike_top), "a crystal is in the way");
+        server.player_edit_block((base.0, base.1, base.2 + 6), Some(&Block::new("minecraft:end_stone")), PlayerEdit::Place);
+        assert!(!server.place_end_crystal((base.0, base.1, base.2 + 6)), "end stone takes no crystal");
+        server.end_hit(EndTarget::Crystal(first.id), EndDamage::attack(1.0, 0));
+        assert!(server.crystals.list.iter().all(|crystal| crystal.id != first.id));
+        assert_eq!(server.blasts.len(), 1);
+        assert_eq!(server.blasts[0].0, Blast { center: first.position.to_array(), power: 6.0, fire: false });
+        assert_eq!(server.blasts[0].1, BlastSource::Player(0));
+        let player = end_player([first.position.x + 3.0, first.position.y, first.position.z + 3.0]);
+        server.set_players(&[player.position.to_array()], 2);
+        server.tick_mobs(&[player], false);
+        let hits = server.mobs.take_player_hits();
+        assert_eq!(hits.len(), 1, "the blast reaches the player");
+        assert!(matches!(hits[0].kind, minecraftoss_entities::world::PlayerHitKind::Explosion { .. }));
+        assert!(hits[0].damage > 20.0, "{}", hits[0].damage);
+        server.tick_end();
+        assert!(server.crystals.list.iter().all(|crystal| crystal.id != placed.id), "the blast destroyed the crystal beside it");
+        assert!(server.blasts.is_empty(), "a crystal destroyed by a blast does not explode");
+        assert_eq!(server.crystals.list.len(), 9);
+        let second = server.crystals.list[0].clone();
+        server.end_hit(EndTarget::Crystal(second.id), EndDamage::explosion(5.0, Some(0)));
+        assert_eq!(server.crystals.list.len(), 8);
+        assert!(server.blasts.is_empty(), "an MW2 grenade destroys it without a blast");
+        let third = server.crystals.list[0].clone();
+        let chunk = ChunkPos::new((third.position.x.floor() as i32) >> 4, (third.position.z.floor() as i32) >> 4);
+        let tags = server.crystals.tags_where(|p| crate::server_mobs::in_chunk(p, chunk));
+        assert!(!tags.is_empty());
+        let mut again = crate::end_crystal::Crystals::default();
+        for tag in &tags {
+            again.add(tag).expect("crystals load back");
+        }
+        assert!(again.list.iter().any(|crystal| crystal.position == third.position));
     }
 }

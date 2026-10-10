@@ -2781,13 +2781,21 @@ impl EntityWorld {
         }
     }
 
+    pub fn blast_by_player(&mut self, world: &impl World, blast: CreeperExplosion, players: &[PlayerCandidate], player: u64) {
+        self.apply_explosion_by(world, None, Blaster::Player(player), blast, players);
+    }
+
+    fn apply_explosion(&mut self, world: &impl World, source: Option<u64>, blast: CreeperExplosion, players: &[PlayerCandidate]) {
+        self.apply_explosion_by(world, source, source.map_or(Blaster::Nobody, Blaster::Mob), blast, players);
+    }
+
     /// `ServerExplosion.hurtEntities` for a creeper's blast: every mob and
     /// player in reach takes damage and a push away from the centre, both
     /// scaled by how much of it the blast sees through the terrain
     /// (`getSeenPercent`). Players get theirs as hits to apply (the
     /// harness's probe players are not in the entity lookup, so only when
     /// players are pickable).
-    fn apply_explosion(&mut self, world: &impl World, source: Option<u64>, blast: CreeperExplosion, players: &[PlayerCandidate]) {
+    fn apply_explosion_by(&mut self, world: &impl World, source: Option<u64>, blaster: Blaster, blast: CreeperExplosion, players: &[PlayerCandidate]) {
         let reach = blast.radius * 2.0_f32;
         if reach < 1.0e-5_f32 {
             return;
@@ -2809,8 +2817,14 @@ impl EntityWorld {
             }
             let Some((body, eye_height)) = self.blast_target(key) else { continue };
             if let Some((damage, push)) = impact(&body, eye_height) {
-                let blaster = source.map_or(Blaster::Nobody, Blaster::Mob);
-                if let (Some(result), Some(source_id)) = (self.hurt_by_blast(key, damage, push, blaster), source) {
+                let hurt = self.hurt_by_blast(key, damage, push, blaster);
+                if let (Some(result), Blaster::Player(player)) = (hurt, blaster) {
+                    if result.applied {
+                        self.blasted_by_player(key, player);
+                    }
+                    self.credit(key.id(), result, "minecraft:player", true);
+                }
+                if let (Some(result), Some(source_id)) = (hurt, source) {
                     // `explosion(creeper, creeper)`: the creeper is the
                     // source's entity and its direct one.
                     self.credit(key.id(), result, "minecraft:creeper", true);
@@ -7060,6 +7074,33 @@ mod tests {
         assert!(deaths[0].context.killed_by_player && deaths[0].context.baby);
         assert_eq!(deaths[0].context.attacker, Some("minecraft:player"));
         assert_eq!(deaths[0].experience, 12);
+    }
+
+    #[test]
+    fn a_blast_a_player_set_off_credits_the_player_with_its_kills() {
+        let blow_up = |player: Option<u64>| {
+            let mut world = EntityWorld::default();
+            world.set_players_pickable(true);
+            let mut zombie = Zombie::new(DVec3::new(0.5, 1.0, 2.5));
+            zombie.health = 1.0;
+            let zombie = world.spawn_zombie(zombie, true);
+            let blast = crate::creeper::CreeperExplosion { position: DVec3::new(0.5, 1.0, 0.5), radius: 6.0, powered: false };
+            let near = candidate(7, DVec3::new(0.5, 1.0, -1.5));
+            match player {
+                Some(player) => world.blast_by_player(&EmptyWorld, blast, &[near], player),
+                None => world.blast(&EmptyWorld, blast, &[near]),
+            }
+            let deaths = world.take_deaths();
+            assert_eq!(deaths.len(), 1);
+            assert_eq!(deaths[0].id, zombie);
+            let hits = world.take_player_hits();
+            assert_eq!(hits.len(), 1);
+            assert!(matches!(hits[0].kind, PlayerHitKind::Explosion { .. }));
+            assert_eq!(hits[0].source, None);
+            (deaths[0].context.killed_by_player, deaths[0].context.attacker)
+        };
+        assert_eq!(blow_up(Some(7)), (true, Some("minecraft:player")));
+        assert_eq!(blow_up(None), (false, None));
     }
 
     #[test]
