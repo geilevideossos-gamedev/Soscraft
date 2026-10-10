@@ -1275,8 +1275,14 @@ Previous commit: 65a0d56e
   2. Entry 42 steps 2 to 5: the cobblestone wall gets a hole, the end stone wall holds, nothing breaks with `mob_griefing` off; screenshot 2 (entry 42's 1).
   3. Entry 44 steps 2 to 5: bottle the breath of a fireball's cloud or the perched flame; screenshot 3 (entry 44's 1).
   4. Kill the dragon (shoot the crystals first) and walk up to the egg on the exit portal's pillar. Entry 43 steps 2 to 5 with that egg: right-click, hand hit, gunshot, creative break; screenshot 4 (entry 43's 1).
-- **Kit** (12 stacks):
+- **Kit** (16 stacks):
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:cobblestone*256,minecraft:oak_planks*64,minecraft:end_stone*128,minecraft:obsidian*32,minecraft:glass_bottle*16,minecraft:water_bucket,minecraft:dragon_egg
 ```
+
+### 46. The track END log counts the stacks of the X5-body-egg kit right
+
+Previous commit: 600c03d2
+
+- **Changed:** entry 45's kit holds 16 stacks (cobblestone 256 fills 4 and end stone 128 fills 2), not 12. No code or test changes.
