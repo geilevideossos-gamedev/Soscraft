@@ -1031,3 +1031,21 @@ Previous commit: f62433d7
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
 ```
+
+## Final check of the third run
+
+### 37. The track END log sums up its third final check
+
+Previous commit: 8dddc195
+
+- **Commits of the third run** (since af3cc119): 63ff26c8 (the End entry's travel sound), 039c31d8 (E3-9), 5a6fd423 (E3-11), 2b3167b1 (E3-12), 8bf65034 (E3-13), af14e52b (E3-14), 89f9fd97 (clippy, X3), 4484b1eb (E3-18), 033a52e1 (E3-19), 4c7667cf (E3-21), ffd73868 (E3-22), 2ab82999 (clippy, X4), 3e3bc785 (state doc), b2e8a03d, f62433d7 and 8dddc195 (review fixes), and this entry.
+- **Touched crates** (`git diff --stat af3cc119..8dddc195`): `frame`, `hud`, `minecraft_survival`, `minecraft_terrain`, `render_anim`, `sim`, `minecraftoss-entities`, `minecraftoss-generator`, `minecraftoss-world`.
+- **Clippy:** `clippy -p frame -p hud -p minecraft_survival -p minecraft_terrain -p render_anim -p sim -p minecraftoss-entities -p minecraftoss-generator -p minecraftoss-world --locked --all-targets -- -A clippy::approx_constant` has no finding on a line the third run added: each of the 33 locations reported in its files blames to af3cc119 or earlier (`git blame af3cc119..8dddc195`). No fix needed.
+- **Tests** (`test -p <crate> --locked`; the minecraftoss crates with the stand-in scenario files of `full-suite.ps1`): `minecraft_terrain` 742 (4 ignored), `minecraft_survival` 334, `render_anim` 73, `hud` 138, `frame` 23, `sim` 73, `minecraftoss-entities` 83, `minecraftoss-generator` 28 and `minecraftoss-world` 63 pass, none failed. The full suite runs at merge time.
+- **X5 was not started** this run: E3-16 (perching and breath) and E3-20 (the egg teleport) stay out of scope, as do the rest of X5 and X6 (see entry 33).
+- **Test steps:** none new. The owner's test of the third run is, in order: the X3 owner test in the new world `x3`; the X4 owner test in the new world `x4`; entry 34 in `x4` after a kill (place the four crystals, quit during `summoning_pillars`, restart); entry 35 in the new world `x4uuid` (with `IW4L_MINECRAFT_DIMENSION=the_end`, removed afterwards); entry 36 during any kill. The first and second runs' tests are listed in entries 13 and 20. A kit goes to a player only in a world where they have no inventory yet, so the one line below serves every world of the third run (its items cover each entry's kit from 21 to 36).
+- **Kit for the third run** (22 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:end_crystal*16,minecraft:obsidian*16,minecraft:end_stone*4,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket,minecraft:cooked_beef*32,minecraft:shield,minecraft:totem_of_undying,minecraft:ender_pearl*16,minecraft:torch*64,minecraft:oak_planks*64
+```
