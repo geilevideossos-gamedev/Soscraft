@@ -12,28 +12,10 @@ Started 2026-10-09 on `minecraft-survival` at 3c2c62b. The owner's brief for thi
 - Each track agent keeps `docs/round7/track-<name>-log.md` with its commits, decisions and the owner's in-game test steps.
 - The workflow scripts used by the orchestrator: a track runner (commit groups in order, then an adversarial review, then clippy). If a session dies, re-create the worktree state from `git worktree list` and continue the track from its log.
 
-## Where everything stands (stopped 2026-10-09 for a PC shutdown)
+## Where everything stands (round 7 finished 2026-10-10)
 
-All agents and builds were stopped on the owner's request. Every branch is committed and pushed to `origin`. Nothing is running. Resume from this section.
+Every track is merged into `minecraft-survival` (a31eac87) and pushed; no worktrees or track target dirs are left. The final release build is installed. CLAUDE.md now marks the Minecraft side done and multiplayer (roadmap 1.4) as the next step; docs/MINECRAFT-SURVIVAL.md is the current state doc. Next round: multiplayer (host-authoritative over the iw4l-master relay), then finish survival (N6, X6, the open limitations). The owner tests release 2 with `docs/round7/release-2-tests.md` (and quick re-checks from `release-1-tests.md`).
 
-- `minecraft-survival` (main, `C:\Dev\mashup-crafting`): Phase 1 done, track A and the crate split merged. Last code merge 6315039.
-- **Track B** (`track-b`, worktree `C:\Dev\mc-wt\track-b`, target `D:\iw4l-wt\track-b`), head c1c9c4b:
-  - Early half done and reviewed (throwables, lids and body gear behind APIs, up to ba18264 plus review fixes). Main merged in as 984bd51.
-  - Second half, group `throw-glue`, was in progress: done 4749db4, 243bc13, cc5a400, 643656a, e1228a3, c1c9c4b (throw sources, pearls per thrower, crumbs and specks, swirl and glass, potion colours in flight, cloud specks).
-  - Next: finish `throw-glue` (potion effects on the player from splashes, clouds and witch potions; trident hold-and-release, the 3D trident in hand and in flight). Then group `lids-glue` (log items 15-17: terrain.rs hook, per-frame open-lid draw, opener block events), then `body-glue` (publish held items and armour per player to the MW2 body, death cam, other players, inventory character box). Then review and clippy, then merge.
-  - Restart with the track runner (see "How to continue") with `base` 984bd51 and only the unfinished groups; the agent reads `docs/round7/track-b-log.md` ("After the split" list) to see what is done.
-- **Track C** (`track-c`, worktree `C:\Dev\mc-wt\track-c`, target `D:\iw4l-wt\track-c`), head 2a3d60e:
-  - Early half done and reviewed (suggestion engine, /clear /xp /enchant /setblock /fill /spawnpoint /locate /execute /kit, creative tab reader). Main merged in as 44759b7.
-  - Second half, group `glue`, is finished: eefc73b..2a3d60e (commands act on the named player, /clear, /xp, /enchant, /setblock and /fill and /locate on the level server thread, /kit re-reads .env, /execute in looks up loaded levels, command hints kept up to date, and track A's leftover: hands stay still while an MW2 grenade is up). /spawnpoint glue waits for track D (`Player.respawn`).
-  - Next: group `chat-ui` (suggestion list, grey inline text, Tab cycling, usage lines and input colours in `hud/src/minecraft_chat.rs`), then `creative` (creative inventory screen with the tabs, search, saved hotbars), then review and clippy, then merge after track B or D, whichever is first.
-- **Track D** (`track-d`, worktree `C:\Dev\mc-wt\track-d`, target `D:\iw4l-wt\track-d`), head b681b6d:
-  - Groups `world-basics` (33a04dd, a8ed2a4, 2c5e8d3) and `player-file` (382dcc5, ce55298, 1397259, f484535, 4bffa75, f025a7a) are done.
-  - Group `block-entities` was in progress: done 50f39ce (block entities saved with their chunk) and f6822d8 (chests, barrels, shulker boxes). b681b6d is a WIP commit of the furnace and campfire step (brief commit 12): it touches `minecraft_terrain/src/campfire.rs` and the vendored `minecraftoss/player/src/crafting.rs`, is unfinished and was not built or tested. Check it, finish it or reset it before going on.
-  - Next: finish brief commit 12 (furnaces, smokers, blast furnaces, brewing stands, campfires keep their progress), commit 13 (hoppers, dispensers, droppers), then group `compat` (brief commit 14: end-to-end save test, Saving section of the docs, owner test), then review and clippy, then merge. The phase 3 plan also asks track D to add the `PortalCooldown` and `seenCredits` player keys.
-- **Merge order:** D first (phase 3 waits for it), then B and C. Expect conflicts in `render_anim/src/minecraft_world.rs` and `minecraft_survival/src/{entities,player,commands}.rs` between B, C and D. Merge each in its own worktree as described in "How to continue", full suite there, then fast-forward main and push.
-- **After A-D are merged:** release build 1 with `--profile play` (back up the current `iw4l-survival.exe` as `iw4l-survival-3c2c62b.exe`), then phase 3 per `docs/round7/e0-phase3-plan.md`, starting with the dimension switch groups S1-S4.
-- **Disk:** after the restart D: had 7.8 GB free; deleting the stale `D:\iw4l-target\debug` cache (25.4 GB, rebuilt on demand) and the old incremental caches in the track dirs left 32.6 GB free. The merged branches `track-a` and `crate-split` were deleted locally. The target dirs are `D:\iw4l-target` (main; protected from deletion, only subfolders may be removed), `D:\iw4l-wt\track-b`, `track-c` and `track-d`. Delete a track's dir after it is merged.
-- **Workflow script:** the track runner is saved as `.claude/workflows/track-runner.js` (run it as the workflow `track-runner` or by that path). Args: `{track, worktree, branch, target, base, briefs, groups:[{key,prompt}], avoid, notes, skipReview}`. Per track it runs one agent per commit group in order (each continues from what is already committed), then an adversarial review agent that fixes real defects in new commits, then a verify agent (clippy and tests of the touched crates, combined kit line in the track log). The full suite runs at merge time, not in the runner.
 ## Phase 1
 | Item | State | Notes |
 |---|---|---|
@@ -59,7 +41,7 @@ Briefs: `docs/round7/e0-phase3-plan.md` (order, groups, ownership, estimate), `e
 |---|---|
 | Dimension switch | merged (9dbec02a + /execute in f0c30259, /time per dimension 2d9fe216, /kit @-entries 89f07c23, test race fix 3aef2ebe; full suite 1755 passed). Log `docs/round7/track-switch-log.md` |
 | Nether | merged (d7d0d780 + af3cc119, full suite 1936 passed): N1-N5 (level rules, Nether lighting and lava, portal travel with timer, overlay, sounds, 8:1, search and build; zombified piglins, magma cubes, wither skeletons, ghasts with deflectable fireballs, blazes, spawners, fortress spawns; water evaporates, beds explode, respawn anchors, bed respawn, compasses and clocks). N6 left for finish survival. Log `docs/round7/track-nether-log.md` |
-| End | parts 1-2 and the dragon fight X3-X4 merged (88cb6d83, full suite 2010 passed; the known flaky poof_particles test failed once and passed alone). Running on branch `end-x5` (worktree `C:\Dev\mc-wt\end-x5`, target `D:\iw4l-wt\end-x5`): X5, strafing with fireballs and breath, perching with breath, wing knockback, block breaking, egg teleport. X6 (gateway travel, item frames, shulkers, levitation) left for finish survival. Log `docs/round7/track-end-log.md` |
+| End | merged: parts 1-2 (d49f75d2, d9eabf74), the dragon fight X3-X4 (88cb6d83) and X5 (0696dc43: strafing, perching, breath, wing knockback, block breaking, egg teleport, bottled breath). X6 (gateway travel, item frames, shulkers, levitation) is left for finish survival. Log `docs/round7/track-end-log.md` |
 
 ## Phase 4 (known limitations)
 Merged (eafb58dd, full suite 2086 passed): ambient fire, lava and campfire sounds and particles, campfire and TNT smoke, explosion flashes, lava fizz and Nether steam, bone meal sparkles, tool break pieces, death sounds, rain splashes and sound, lava fog, hanging pointed dripstone, farmland and paths under solid blocks, campfire dousing, hoes, shovels and axes transforming blocks, all armour protection enchantments, Frost Walker, and the rendering group. Still open from the list: powder snow, books on lecterns, trapped chest signal, totem animation, ladder ground jump, falling rain streaks (see the Limitations section of docs/MINECRAFT-SURVIVAL.md). Log `docs/round7/track-limits-log.md`.
@@ -68,7 +50,7 @@ Merged (eafb58dd, full suite 2086 passed): ambient fire, lava and campfire sound
 | # | When | Commit | State |
 |---|---|---|---|
 | 1 | tracks A-D merged (`--profile play`) | 4ac8b27 | installed as `iw4l-survival.exe` (old one is `iw4l-survival-3c2c62b.exe`), smoke-run on a temp world clean; owner steps in `docs/round7/release-1-tests.md` |
-| 2 | end of round (`--release`) | | |
+| 2 | end of round (`--release`) | a31eac87 | installed as `iw4l-survival.exe` (build 1 kept as `iw4l-survival-4ac8b27.exe`); full suite 2119 passed; smoke-run on a temp world clean; the build took 49 min, not the 17 min measured earlier for a clean build; owner steps in `docs/round7/release-2-tests.md` |
 
 ## Build times
 Measured on the owner's PC (i7-13700H, 32 GB), one build at a time, `-j 8`, each clean build in a fresh target dir, "touch" = changing the mtime of `render_anim/src/minecraft_world.rs`. Before: 29f722d with the old environment (`CARGO_INCREMENTAL=0`, `CARGO_PROFILE_DEV_DEBUG=0`). After: 3a1c255.
@@ -102,6 +84,7 @@ The 41 minutes of the last round were not reproduced: a clean release build alon
 - Elytra: a new 20 Hz glide mode in MW2 movement, guns still usable.
 - Throwables kit syntax: `id@potion` for potion contents (`#` starts a comment in `.env`).
 ## Log
+- 2026-10-10: X5 merged (0696dc43), flaky poof test seeded, CLAUDE.md and the state doc updated (a31eac87), release build 2 installed. Round 7 done.
 - 2026-10-10: phase 4 merged (eafb58dd) and pushed.
 - 2026-10-10: End dragon fight X3-X4 merged (88cb6d83) and pushed; X5 started.
 - 2026-10-10: Nether merged (af3cc119) and pushed; End X3-X4 and phase 4 started.
