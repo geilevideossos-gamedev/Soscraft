@@ -283,3 +283,15 @@ IW4L_MINECRAFT_KIT=minecraft:farmland*16,minecraft:dirt_path*16,minecraft:stone*
 ```
 IW4L_MINECRAFT_KIT=minecraft:campfire*4,minecraft:iron_shovel,minecraft:wooden_shovel,minecraft:flint_and_steel,minecraft:hay_block*2,minecraft:water_bucket
 ```
+
+### 4. The Minecraft state doc no longer lists shield knockback, use speed or trident charging as gaps
+
+- **Changed:** `docs/MINECRAFT-SURVIVAL.md` only. Three listed gaps turned out to be vanilla 26.3 behaviour already, checked with javap:
+  - Shield knockback to the attacker: 26.3 has none. `LivingEntity.blockUsingItem` calls `attacker.blockedByItem(defender, source, amount, fullyBlocked)`, which knocks the *defender* back by 0.5 only when the block was partial; the shield's `blocks_attacks` (`Items` lambda: one damage reduction, 90 degrees, base 0, factor 1) always blocks fully, and `Mob.doHurtTarget` skips its extra knockback when `hurtServer` fails. The fork already gives a blocked hit no knockback.
+  - Use speed: `UseEffects.DEFAULT` is (can sprint false, vibrations true, speed 0.2) and only `Item.Properties.spear` sets another (sprint, speed 1). The fork slows every item use to 0.2 and stops sprinting (`net` client runtime, `MINECRAFT_ITEM_USE_SPEED`), and spears have no use yet.
+  - Trident charging: `ui.using_item` includes `hand.charging`, so charging already slows like any use.
+  - Axes disabling shields stays listed, reworded: `Player.blockUsingItem` disables the shield for the attacker's `getSecondsToDisableBlocking`, which comes from an axe's `weapon` component, and no simulated mob holds an axe, so it waits for players fighting each other.
+- **Tests:** none, nothing changes in game.
+- **Decisions:** the shield and use-speed items of the group are closed by verification instead of code.
+- **Test steps:** none.
+- **Kit:** none.
