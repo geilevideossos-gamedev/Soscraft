@@ -196,3 +196,20 @@ IW4L_MINECRAFT_KIT=minecraft:lava_bucket,minecraft:netherrack*4,minecraft:flint_
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:magma_block*4,minecraft:lava_bucket,minecraft:campfire
 ```
+
+### 10. Minecraft lava fog
+
+- **Changed:**
+  - New `minecraft_terrain/src/lava_fog.rs`: `in_lava(sky, spectator, fire_resistant, render_distance)` is `LavaFogEnvironment` (javap): fog colour `0x991A00` (`ARGB.vector3fFromRGB24(-6743808)`), environmental start and end 0.25 and 1.0, or 0 and 5 with Fire Resistance, or -8 and half the render distance for a spectator; the sky and cloud fog ends take the same end. The skybox becomes `None` (vanilla's `LevelRenderer` skips the sky pass in lava, so only the fog colour shows) and the clouds' alpha 0 (their fog end of 1 block hides them).
+  - `minecraft_world.rs`: when the living player's eyes are in lava (`sim::voxel::eye_in_lava`, the same test the survival rules use), the sky state goes through `in_lava` before it is uploaded (one `let`). The shaders already fog terrain, mobs, particles and the sky with these values, so `render_gpu` needed no change.
+- **Tests:** `lava_fog`: `lava_hides_everything_past_a_block_in_orange`, `fire_resistance_sees_five_blocks_and_spectators_half_the_view`.
+- **Decisions:** the fog follows the eyes, as the rain fog and the rest of the fog already do; in third person vanilla asks the camera.
+- **Test steps:**
+  1. In survival, jump into the lava pool and look around: everything turns deep orange right in front of your face. **Screenshot 15** inside the lava.
+  2. Drink a potion of fire resistance (or `/effect give @s minecraft:fire_resistance 60`) and dive again: you see about 5 blocks through the orange.
+  3. `/gamemode spectator` and fly into lava: the fog starts far away and reaches half the view distance.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:lava_bucket*4,minecraft:cobblestone*32,minecraft:potion@fire_resistance*2
+```

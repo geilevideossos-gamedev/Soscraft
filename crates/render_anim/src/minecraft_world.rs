@@ -2216,6 +2216,12 @@ fn update(
         thunder_level: weather.thunder_level,
     });
     let render_distance = VIEW_DISTANCE as f32 * 16.0;
+    let sky = if alive && sim::voxel::eye_in_lava(ps.origin, ps.view_height_current) {
+        let fire_resistant = survival.status.effect(minecraftoss_player::survival::EffectKind::FireResistance).is_some();
+        minecraft_terrain::lava_fog::in_lava(sky, player_mode.mode == minecraftoss_player::GameMode::Spectator, fire_resistant, render_distance)
+    } else {
+        sky
+    };
     let right = forward.cross(glam::Vec3::Y).normalize_or(glam::Vec3::X);
     let up = right.cross(forward).normalize_or(glam::Vec3::Y);
     let put = |v: glam::Vec3| [v.x, v.y, v.z, 0.0];
