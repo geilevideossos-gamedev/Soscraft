@@ -1471,8 +1471,10 @@ impl ServerSim {
             .collect();
         self.end_players = bodies.clone();
         let mut experience = Vec::new();
+        let mob_boxes: Vec<(u64, (glam::DVec3, glam::DVec3))> = crate::thrown::targets(&self.mobs).iter().map(|target| (target.id, (target.min, target.max))).collect();
+        let mut mob_hits = Vec::new();
         {
-            let Self { level, states, mob_tables, dragons, fight_dragon, alive_crystals, end_sounds, end_hits, dragons_killed, crystals: self_crystals, fight, dragon_drops, dragon_fireballs, clouds, .. } = self;
+            let Self { level, states, mob_tables, dragons, fight_dragon, alive_crystals, end_sounds, end_hits, dragons_killed, crystals: self_crystals, fight, dragon_drops, dragon_fireballs, clouds, players_pushed, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
             let height = |x: i32, z: i32| world.level.borrow().height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlockingNoLeaves, x, z);
             let sees = |from: glam::DVec3, to: glam::DVec3| minecraftoss_entities::sight::line_of_sight(&world, from, to);
@@ -1486,8 +1488,10 @@ impl ServerSim {
                 let top = || world.level.borrow().height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlocking, origin.0, origin.2);
                 let ours = *fight_dragon == Some(dragon.uuid);
                 let death_experience = crate::ender_dragon::death_experience(ours, fight.previously_killed, *dragon_drops);
-                let env = crate::ender_dragon::DragonEnv { height: &height, podium_top: &top, alive_crystals: ours.then_some(*alive_crystals), players: &bodies, crystals: &crystals, death_experience, sees: &sees, empty: &empty };
+                let env = crate::ender_dragon::DragonEnv { height: &height, podium_top: &top, alive_crystals: ours.then_some(*alive_crystals), players: &bodies, crystals: &crystals, death_experience, sees: &sees, empty: &empty, mobs: &mob_boxes };
                 let events = dragon.tick(&env);
+                players_pushed.extend(events.player_pushes);
+                mob_hits.extend(events.mob_hits.into_iter().map(|(id, push, damage)| (id, push, damage, dragon.position)));
                 end_sounds.extend(events.sounds.into_iter().map(|(event, position, volume, pitch)| minecraftoss_entities::world::MobSound { event: event.to_owned(), position, volume, pitch, category: "hostile" }));
                 end_hits.extend(events.player_hits.into_iter().map(|(player_id, damage, attacker)| minecraftoss_entities::world::PlayerHit { player_id, damage, kind: minecraftoss_entities::world::PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0 }, source: Some(dragon.id) }));
                 experience.extend(events.experience);
@@ -1506,6 +1510,17 @@ impl ServerSim {
         }
         for (position, amount) in experience {
             self.level.award_experience(position.to_array(), amount);
+        }
+        for (id, push, damage, attacker) in mob_hits {
+            if let Some(body) = self.mobs.body_mut(id).filter(|_| push != glam::DVec3::ZERO) {
+                body.velocity += push;
+                body.needs_sync = true;
+            }
+            let full = damage > 0.0 && self.mobs.player_blast(None, id, damage, attacker, 0.0).is_some_and(|result| result.full);
+            if let Some(body) = self.mobs.body_mut(id).filter(|_| full) {
+                body.velocity = crate::ender_dragon::knockback(body.velocity, body.on_ground, attacker.x - body.position.x, attacker.z - body.position.z);
+                body.needs_sync = true;
+            }
         }
     }
 
@@ -7395,6 +7410,36 @@ mod tests {
         server.dragons.list.clear();
         server.tick_end(&[player]);
         assert!(server.dragon_fireballs.views().is_empty(), "a fireball goes with its dragon");
+    }
+
+    #[test]
+    fn the_dragon_s_wings_throw_a_player_and_an_enderman_and_hurt_them() {
+        let Some(mut server) = end_world((-5..=4).flat_map(|x| (-5..=4).map(move |z| (x, z)))) else { return };
+        server.find_or_create_dragon((0, 0, 0));
+        {
+            let dragon = &mut server.dragons.list[0];
+            dragon.position = glam::DVec3::new(0.5, 110.0, 0.5);
+            dragon.y_rot = 0.0;
+        }
+        server.tick_end(&[end_player([60.5, 110.0, 60.5])]);
+        let dragon = &server.dragons.list[0];
+        let right = dragon.parts[6] + glam::DVec3::new(1.0, -2.0, 0.0);
+        let left = dragon.parts[7] + glam::DVec3::new(-1.0, -2.0, 0.0);
+        let nbt = minecraftoss_core::snbt::parse_compound("{NoAI:1b}").unwrap();
+        server.summon("minecraft:enderman", left.to_array(), Some(&nbt), 0.0).unwrap();
+        let player = end_player(right.to_array());
+        server.take_players_pushed();
+        server.take_end_hits();
+        server.tick_end(&[player]);
+        let pushed = server.take_players_pushed();
+        assert_eq!(pushed.len(), 1);
+        assert_eq!(pushed[0].0, player.id);
+        assert!(pushed[0].1.x > 0.5 && pushed[0].1.y == f64::from(0.2_f32), "{pushed:?}");
+        let hits = server.take_end_hits();
+        assert!(hits.iter().any(|hit| hit.player_id == player.id && hit.damage == crate::ender_dragon::WING_DAMAGE));
+        let enderman = &server.mobs.endermen()[0];
+        assert_eq!(enderman.enderman.health, 35.0, "the wing hurts it for 5");
+        assert!(enderman.enderman.body.velocity.x < -0.5, "thrown away from the dragon");
     }
 
     #[test]

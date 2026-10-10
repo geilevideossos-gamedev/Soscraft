@@ -1148,3 +1148,33 @@ Previous commit: 011bc34c
 - **Owner test for the group** (survival, `/difficulty normal`, in one new End world `x5` with `IW4L_MINECRAFT_DIMENSION=the_end`, removed afterwards; the kit of entry 39):
   1. Entry 38 steps 2 to 6: strafes, fireballs and their clouds; screenshots 1 and 2.
   2. Entry 39 steps 2 to 7: shoot the crystals, the perch, the roar, the flame, the takeoff on damage, the charge; screenshots 3 to 5 (entry 39's 1 to 3).
+
+## Fourth run, group X5-body-egg: the dragon's body, the egg and its breath
+
+E3-17 and E3-20 of the brief, with bottling dragon's breath. Base: 38da4a26 (group X5-phases).
+
+### 41. Minecraft ender dragon's wings throw players and mobs (E3-17)
+
+Previous commit: 38da4a26
+
+- **Changed:**
+  - `minecraft_terrain/src/ender_dragon.rs`: `EnderDragon.aiStep`'s contact pass while the dragon was not hurt recently. After the body and wings take their new places, each wing's box grown by 4, 2, 4 and moved 2 down (`knockBack`) pushes every attackable player and every mob in it by `wing_push`: `(dx / d · 4, 0.2, dz / d · 4)` away from the body's centre, with `d` the squared horizontal distance but at least 0.1 (`Entity.push`), and hurts it for 5 (`mobAttack`) unless the dragon sits. The head and neck (their boxes grown by 1, from where they were before this tick, as before) now also bite mobs for 10. `PlayerBody.bounds`, `DragonEnv.mobs` (each mob's box), `DragonEvents.player_pushes` and `mob_hits` (push, then damage, in vanilla's order), `knockback` (`LivingEntity.knockback(0.4, ...)`: half the old motion less 0.4 toward the attacker, and up by 0.4 off the ground).
+  - `minecraft_terrain/src/server.rs` (End region): the dragons see the mobs' boxes (`thrown::targets`). A player's push goes out with the other pushes (`players_pushed`, which MW2 movement takes through `push_velocity` as for a wind charge); a mob's push adds to its motion, then its damage lands as a hurt without an attacker's blame, and a full hit knocks it back from the dragon.
+- **Checked with javap (26.3):** `EnderDragon` (`aiStep`: the wing boxes `inflate(4, 2, 4).move(0, -2, 0)` after `tickPart` of the body and wings, the head and neck boxes `inflate(1)` before theirs, `wasHurtRecently`, `EntitySelector.NO_CREATIVE_OR_SPECTATOR`; `knockBack`: the body box's centre, `max(dx² + dz², 0.1)`, `push(dx / d · 4, 0.2, dz / d · 4)`, 5 damage unless sitting and unless the target was hurt by a mob in the last 2 ticks; `hurt`: 10 damage), `LivingEntity.knockback`.
+- **Tests:** `ender_dragon`: `the_wing_push_and_the_knockback_match_vanilla` (hand-worked pushes at 2 blocks, at 0.1 blocks and at (3, 4); the knockback on the ground and in the air), `the_wings_throw_players_and_mobs_and_hurt_them_only_in_flight` (a player beside the right wing is pushed out and hurt for 5, a creative one is left alone, a mob beside the left wing is pushed the other way and hurt for 5, a mob at the head is bitten for 10, nothing while the dragon was hurt recently, a sitting dragon pushes without harm). `server`: `the_dragon_s_wings_throw_a_player_and_an_enderman_and_hurt_them` (an End level of seed 0: the player's push and the 5 damage, an enderman down to 35 health and thrown away from the dragon).
+- **Decisions:**
+  - **The wing's 5 damage** lands on a player whenever the client's hurt cooldown lets it; vanilla also skips it within 2 ticks of the player's last hurt by a mob (`getLastHurtByMobTimestamp`), which the hurt cooldown covers in all but rare cases (the dragon's own hits are forgotten by the server's fight memory at once, as the dragon is not one of its mobs).
+  - **A player's push is not halved** by the hit's knockback (vanilla's knockback halves the motion when the 5 damage lands): no mob hit knocks the MW2 player back here, so the push alone throws them, at its full vanilla strength.
+  - **Mobs:** the dragon's damage reaches a mob as a hurt without blame (the shared blast hurt with no push), so armour counts as for `mobAttack` and an enderman does not teleport, as for a hit with a living attacker.
+- **Test steps** (survival; `/difficulty normal`; MW2 weapons):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x5wings` (a new world), `IW4L_MINECRAFT_DIMENSION=the_end` and the kit below. Start on the obsidian platform, walk onto the main island and build a cobblestone tower about 15 blocks high under the dragon's circle (about 30 to 60 blocks from the centre).
+  2. Stand on top and wait for the dragon to fly past close: when a wing sweeps over or beside you, you are flung far away from its body and lose 2.5 hearts (less with the armour on). **Screenshot 1** (in the air, thrown).
+  3. Let it come at you head first (a strafe or a charge): its head bites for 5 hearts.
+  4. Watch an enderman near its flight path: it is flung away the same way.
+  5. Shoot all crystals, wait for it to perch on the podium, and walk up beside a wing: you are pushed off, but take no damage from the wing while it sits.
+  6. Remove the `IW4L_MINECRAFT_DIMENSION` line afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:cobblestone*128,minecraft:water_bucket,minecraft:diamond_sword+sharpness=5
+```

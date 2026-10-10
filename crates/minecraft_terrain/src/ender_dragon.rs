@@ -52,6 +52,9 @@ pub const SCAN_IDLE_TICKS: i32 = 100;
 pub const SCAN_ATTACK_RANGE: f64 = 20.0;
 pub const SCAN_CHARGE_RANGE: f64 = 150.0;
 pub const CHARGE_RECOVERY_TICKS: i32 = 10;
+pub const WING_DAMAGE: f32 = 5.0;
+pub const WING_PUSH: f64 = 4.0;
+pub const KNOCKBACK: f64 = 0.4;
 const DEG: f32 = 0.017_453_292;
 const NODE_COUNT: usize = 24;
 const NODE_ADJACENCY: [u32; NODE_COUNT] = [
@@ -533,6 +536,14 @@ impl PlayerBody {
     pub fn visibility(&self) -> f64 {
         if self.crouching { 0.8 } else { 1.0 }
     }
+
+    pub fn bounds(&self) -> (DVec3, DVec3) {
+        let half = 0.3;
+        (
+            self.feet - DVec3::new(half, 0.0, half),
+            self.feet + DVec3::new(half, self.height, half),
+        )
+    }
 }
 
 pub struct DragonEnv<'a> {
@@ -544,6 +555,31 @@ pub struct DragonEnv<'a> {
     pub death_experience: Option<i32>,
     pub sees: &'a dyn Fn(DVec3, DVec3) -> bool,
     pub empty: &'a dyn Fn(i32, i32, i32) -> bool,
+    pub mobs: &'a [(u64, (DVec3, DVec3))],
+}
+
+pub fn wing_push(center: DVec3, feet: DVec3) -> DVec3 {
+    let (dx, dz) = (feet.x - center.x, feet.z - center.z);
+    let distance = (dx * dx + dz * dz).max(0.1);
+    DVec3::new(
+        dx / distance * WING_PUSH,
+        f64::from(0.2_f32),
+        dz / distance * WING_PUSH,
+    )
+}
+
+pub fn knockback(velocity: DVec3, on_ground: bool, xd: f64, zd: f64) -> DVec3 {
+    if xd * xd + zd * zd < f64::from(1.0e-5_f32) {
+        return velocity;
+    }
+    let length = (xd * xd + zd * zd).sqrt();
+    let (dx, dz) = (xd / length * KNOCKBACK, zd / length * KNOCKBACK);
+    let y = if on_ground {
+        (velocity.y / 2.0 + KNOCKBACK).min(KNOCKBACK)
+    } else {
+        velocity.y
+    };
+    DVec3::new(velocity.x / 2.0 - dx, y, velocity.z / 2.0 - dz)
 }
 
 pub fn view_vector(x_rot: f32, y_rot: f32) -> DVec3 {
@@ -670,6 +706,8 @@ pub fn crystal_in_reach(dragon: DVec3, crystal: DVec3) -> bool {
 pub struct DragonEvents {
     pub sounds: Vec<(&'static str, DVec3, f32, f32)>,
     pub player_hits: Vec<(u64, f32, DVec3)>,
+    pub player_pushes: Vec<(u64, DVec3)>,
+    pub mob_hits: Vec<(u64, DVec3, f32)>,
     pub experience: Vec<(DVec3, i32)>,
     pub fireballs: Vec<(DVec3, DVec3)>,
     pub clouds: Vec<EffectCloud>,
@@ -1693,6 +1731,42 @@ impl EnderDragon {
         self.velocity *= DVec3::new(drag, f64::from(0.91_f32), drag);
     }
 
+    fn knock_back(
+        &self,
+        reach: (DVec3, DVec3),
+        center: DVec3,
+        env: &DragonEnv,
+        events: &mut DragonEvents,
+    ) {
+        let damage = if self.phase.is_sitting() {
+            0.0
+        } else {
+            WING_DAMAGE
+        };
+        for player in env.players.iter().filter(|player| player.attackable) {
+            if boxes_meet(reach, player.bounds()) {
+                events
+                    .player_pushes
+                    .push((player.id, wing_push(center, player.feet)));
+                if damage > 0.0 {
+                    events.player_hits.push((player.id, damage, self.position));
+                }
+            }
+        }
+        for &(id, bounds) in env.mobs {
+            if boxes_meet(reach, bounds) {
+                let feet = DVec3::new(
+                    (bounds.0.x + bounds.1.x) / 2.0,
+                    bounds.0.y,
+                    (bounds.0.z + bounds.1.z) / 2.0,
+                );
+                events
+                    .mob_hits
+                    .push((id, wing_push(center, feet), damage));
+            }
+        }
+    }
+
     fn place_parts(&mut self, events: &mut DragonEvents, env: &DragonEnv) {
         let at = |offset: DVec3| self.position + offset;
         let tilt = (self.history.get(5).y - self.history.get(10).y) as f32 * 10.0 * DEG;
@@ -1716,19 +1790,28 @@ impl EnderDragon {
             f64::from(yaw_sin * -4.5),
         ));
         if self.hurt_time <= 0 {
+            let center = parts[BODY];
+            for wing in [6, 7] {
+                let (low, high) = part_box(parts[wing], wing);
+                let reach = (
+                    low - DVec3::new(4.0, 4.0, 4.0),
+                    high + DVec3::new(4.0, 0.0, 4.0),
+                );
+                self.knock_back(reach, center, env, events);
+            }
             for part in [HEAD, NECK] {
                 let (low, high) = part_box(self.parts[part], part);
                 let reach = (low - DVec3::ONE, high + DVec3::ONE);
                 for player in env.players.iter().filter(|player| player.attackable) {
-                    let half = 0.3;
-                    let body = (
-                        player.feet - DVec3::new(half, 0.0, half),
-                        player.feet + DVec3::new(half, player.height, half),
-                    );
-                    if boxes_meet(reach, body) {
+                    if boxes_meet(reach, player.bounds()) {
                         events
                             .player_hits
                             .push((player.id, CONTACT_DAMAGE, self.position));
+                    }
+                }
+                for &(id, bounds) in env.mobs {
+                    if boxes_meet(reach, bounds) {
+                        events.mob_hits.push((id, DVec3::ZERO, CONTACT_DAMAGE));
                     }
                 }
             }
@@ -1852,6 +1935,7 @@ mod tests {
             death_experience: None,
             sees: &|_, _| true,
             empty: &|_, _, _| true,
+            mobs: &[],
         }
     }
 
@@ -2277,6 +2361,7 @@ mod tests {
             death_experience: None,
             sees: &|_, _| true,
             empty: &|_, _, _| true,
+            mobs: &[],
         };
         for _ in 0..200 {
             dragon.tick(&env);
@@ -2313,6 +2398,7 @@ mod tests {
             death_experience: None,
             sees: &|_, _| true,
             empty: &|_, _, _| true,
+            mobs: &[],
         };
         dragon.tick(&gone);
         assert_eq!(
@@ -2374,6 +2460,7 @@ mod tests {
             death_experience: None,
             sees: &|_, _| true,
             empty: &|_, _, _| true,
+            mobs: &[],
         };
         let events = dragon.tick(&env);
         assert!(
@@ -2390,6 +2477,78 @@ mod tests {
         assert!(
             dragon.tick(&env).player_hits.is_empty(),
             "not while it was hurt recently"
+        );
+    }
+
+    #[test]
+    fn the_wing_push_and_the_knockback_match_vanilla() {
+        let push = wing_push(DVec3::new(0.0, 70.0, 0.0), DVec3::new(2.0, 64.0, 0.0));
+        assert_eq!(push, DVec3::new(2.0, f64::from(0.2_f32), 0.0));
+        let close = wing_push(DVec3::ZERO, DVec3::new(0.1, 0.0, 0.0));
+        assert!((close.x - 4.0).abs() < 1e-12, "{close:?}");
+        let far = wing_push(DVec3::ZERO, DVec3::new(3.0, 0.0, 4.0));
+        assert!((far - DVec3::new(0.48, f64::from(0.2_f32), 0.64)).length() < 1e-12);
+        let thrown = knockback(DVec3::new(0.2, -0.1, 0.0), true, -1.0, 0.0);
+        assert!((thrown - DVec3::new(0.5, 0.35, 0.0)).length() < 1e-12, "{thrown:?}");
+        let airborne = knockback(DVec3::new(0.0, 0.3, 0.6), false, 0.0, 2.0);
+        assert!((airborne - DVec3::new(0.0, 0.3, -0.1)).length() < 1e-12, "{airborne:?}");
+    }
+
+    #[test]
+    fn the_wings_throw_players_and_mobs_and_hurt_them_only_in_flight() {
+        let height = flat;
+        let top = || 64;
+        let mut dragon = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
+        dragon.tick(&env(&height, &top, None));
+        let right = dragon.parts[6] + DVec3::new(1.0, -2.0, 0.0);
+        let left = dragon.parts[7] + DVec3::new(-1.0, -2.0, 0.0);
+        let head = dragon.parts[HEAD];
+        let players = [player(3, right, true), player(4, right, false)];
+        let reach = |feet: DVec3| {
+            (
+                feet - DVec3::new(0.3, 0.0, 0.3),
+                feet + DVec3::new(0.3, 2.9, 0.3),
+            )
+        };
+        let mobs = [(9, reach(left)), (10, reach(head))];
+        let flying = DragonEnv {
+            players: &players,
+            mobs: &mobs,
+            ..env(&height, &top, None)
+        };
+        let events = dragon.tick(&flying);
+        let center = dragon.parts[BODY];
+        assert_eq!(
+            events.player_pushes,
+            vec![(3, wing_push(center, right))],
+            "creative players stay put"
+        );
+        assert!(events.player_pushes[0].1.x > 0.5);
+        assert!(
+            events
+                .player_hits
+                .contains(&(3, WING_DAMAGE, dragon.position))
+        );
+        let thrown = events.mob_hits.iter().find(|hit| hit.0 == 9).unwrap();
+        assert_eq!(*thrown, (9, wing_push(center, left), WING_DAMAGE));
+        assert!(thrown.1.x < -0.5, "thrown away from the body");
+        assert!(events.mob_hits.contains(&(10, DVec3::ZERO, CONTACT_DAMAGE)));
+        dragon.hurt_time = 3;
+        let events = dragon.tick(&flying);
+        assert!(events.player_pushes.is_empty() && events.mob_hits.is_empty());
+        let mut sitting = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
+        sitting.set_phase(Phase::SittingScanning);
+        sitting.tick(&env(&height, &top, None));
+        let right = sitting.parts[6] + DVec3::new(1.0, -2.0, 0.0);
+        let players = [player(3, right, true)];
+        let events = sitting.tick(&DragonEnv {
+            players: &players,
+            ..env(&height, &top, None)
+        });
+        assert_eq!(events.player_pushes.len(), 1, "a sitting dragon still pushes");
+        assert!(
+            events.player_hits.iter().all(|hit| hit.1 != WING_DAMAGE),
+            "but its wings do no harm"
         );
     }
 
@@ -2647,6 +2806,7 @@ mod tests {
             death_experience: None,
             sees,
             empty: &ground,
+            mobs: &[],
         }
     }
 
