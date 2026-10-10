@@ -14,6 +14,11 @@ const BIG_SMOKE_SPRITES: u32 = 12;
 const CAMPFIRE_FADE_TICKS: i32 = 60;
 const CAMPFIRE_SLOT_OFFSET: f32 = 0.3125;
 const SIDE_STEPS: [(i32, i32); 4] = [(0, 1), (-1, 0), (0, -1), (1, 0)];
+const EXPLOSION_SPRITES: i32 = 16;
+const EMITTER_TICKS: i32 = 8;
+const EMITTER_FLASHES: usize = 6;
+const MAX_BLAST_PARTICLES: usize = 512;
+const SMALL_BLAST_RADIUS: f32 = 2.0;
 
 type Boxes = Vec<([f64; 3], [f64; 3])>;
 
@@ -24,6 +29,9 @@ pub enum Kind {
     Lava,
     CosySmoke,
     SignalSmoke,
+    Poof,
+    Explosion,
+    ExplosionEmitter,
 }
 
 #[derive(Clone, Debug)]
@@ -122,13 +130,54 @@ impl Particle {
         particle
     }
 
+    fn poof(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::Poof, at, motion, random);
+        let mut jitter = || f64::from((random.next_float() * 2.0 - 1.0) * 0.05);
+        particle.velocity = DVec3::new(
+            motion.x + jitter(),
+            motion.y + jitter(),
+            motion.z + jitter(),
+        );
+        let shade = random.next_float() * 0.3 + 0.7;
+        particle.color = [shade; 3];
+        particle.quad_size = 0.1 * (random.next_float() * random.next_float() * 6.0 + 1.0);
+        particle.lifetime = (16.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32 + 2;
+        particle.gravity = -0.1;
+        particle.friction = 0.9;
+        particle
+    }
+
+    fn huge_explosion(at: DVec3, size: f64, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::Explosion, at, DVec3::ZERO, random);
+        particle.velocity = DVec3::ZERO;
+        particle.lifetime = 6 + random.next_int(4) as i32;
+        let shade = random.next_float() * 0.6 + 0.4;
+        particle.color = [shade; 3];
+        particle.quad_size = 2.0 * (1.0 - size as f32 * 0.5);
+        particle
+    }
+
+    fn emitter(at: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::ExplosionEmitter, at, DVec3::ZERO, random);
+        particle.velocity = DVec3::ZERO;
+        particle.lifetime = EMITTER_TICKS;
+        particle
+    }
+
+    fn hold(&mut self) -> bool {
+        self.previous = self.position;
+        let prior = self.age;
+        self.age += 1;
+        prior < self.lifetime
+    }
+
     fn translucent(&self) -> bool {
         matches!(self.kind, Kind::CosySmoke | Kind::SignalSmoke)
     }
 
     fn sprite(&self) -> Option<ResourceId> {
         let name = match self.kind {
-            Kind::Smoke | Kind::LargeSmoke => {
+            Kind::Smoke | Kind::LargeSmoke | Kind::Poof => {
                 let step = self.age * (GENERIC_SPRITES - 1) / self.lifetime.max(1);
                 format!(
                     "generic_{}",
@@ -137,6 +186,11 @@ impl Particle {
             }
             Kind::Lava => "lava".to_owned(),
             Kind::CosySmoke | Kind::SignalSmoke => format!("big_smoke_{}", self.sprite),
+            Kind::Explosion => {
+                let step = self.age * (EXPLOSION_SPRITES - 1) / self.lifetime.max(1);
+                format!("explosion_{}", step.clamp(0, EXPLOSION_SPRITES - 1))
+            }
+            Kind::ExplosionEmitter => return None,
         };
         ResourceId::parse(&format!("minecraft:particle/{name}")).ok()
     }
@@ -146,7 +200,11 @@ impl Particle {
         match self.kind {
             Kind::Smoke | Kind::LargeSmoke => self.quad_size * (grown * 32.0).clamp(0.0, 1.0),
             Kind::Lava => self.quad_size * (1.0 - grown * grown),
-            Kind::CosySmoke | Kind::SignalSmoke => self.quad_size,
+            Kind::CosySmoke
+            | Kind::SignalSmoke
+            | Kind::Poof
+            | Kind::Explosion
+            | Kind::ExplosionEmitter => self.quad_size,
         }
     }
 
@@ -290,6 +348,22 @@ fn boxes_around<S: Scene + ?Sized>(
     out
 }
 
+fn is_air(block: Option<&crate::scene::Block>) -> bool {
+    block.is_none_or(|block| {
+        block.id.namespace == "minecraft"
+            && matches!(block.id.path.as_str(), "air" | "cave_air" | "void_air")
+    })
+}
+
+fn normalize(v: DVec3) -> DVec3 {
+    let length = v.length();
+    if length < f64::from(1.0e-5_f32) {
+        DVec3::ZERO
+    } else {
+        v / length
+    }
+}
+
 fn clip(boxes: &Boxes, low: &[f64; 3], high: &[f64; 3], axis: usize, mut wanted: f64) -> f64 {
     let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
     for (near, far) in boxes {
@@ -307,8 +381,10 @@ fn clip(boxes: &Boxes, low: &[f64; 3], high: &[f64; 3], axis: usize, mut wanted:
 
 pub fn textures() -> Vec<ResourceId> {
     let big_smoke = (0..BIG_SMOKE_SPRITES).map(|index| format!("big_smoke_{index}"));
+    let explosion = (0..EXPLOSION_SPRITES).map(|index| format!("explosion_{index}"));
     std::iter::once("lava".to_owned())
         .chain(big_smoke)
+        .chain(explosion)
         .filter_map(|name| ResourceId::parse(&format!("minecraft:particle/{name}")).ok())
         .collect()
 }
@@ -326,6 +402,7 @@ pub struct AmbientParticles {
     particles: Vec<Particle>,
     random: LegacyRandom,
     campfires: (Option<u64>, Vec<BlockPos>),
+    blasts: Vec<(DVec3, f32, usize)>,
 }
 
 impl AmbientParticles {
@@ -334,7 +411,62 @@ impl AmbientParticles {
             particles: Vec::new(),
             random: LegacyRandom::new(seed),
             campfires: (None, Vec::new()),
+            blasts: Vec::new(),
         }
+    }
+
+    pub fn explosion(&mut self, center: DVec3, radius: f32, blocks: usize, interacts: bool) {
+        if radius < SMALL_BLAST_RADIUS || !interacts {
+            self.add(Kind::Explosion, center, DVec3::new(1.0, 0.0, 0.0));
+        } else {
+            self.add(Kind::ExplosionEmitter, center, DVec3::ZERO);
+        }
+        if blocks > 0 {
+            self.blasts.push((center, radius, blocks));
+        }
+    }
+
+    fn track_blasts<S: Scene + ?Sized>(&mut self, scene: &S) {
+        let blasts = std::mem::take(&mut self.blasts);
+        let total: usize = blasts.iter().map(|blast| blast.2).sum();
+        for _ in 0..total.min(MAX_BLAST_PARTICLES) {
+            let mut pick = self.random.next_int(total as u32) as usize;
+            let Some(&(center, radius, _)) = blasts.iter().find(|blast| {
+                if pick < blast.2 {
+                    return true;
+                }
+                pick -= blast.2;
+                false
+            }) else {
+                continue;
+            };
+            self.blast_particle(scene, center, radius);
+        }
+    }
+
+    fn blast_particle<S: Scene + ?Sized>(&mut self, scene: &S, center: DVec3, radius: f32) {
+        let random = &mut self.random;
+        let mut unit = || f64::from(random.next_float() * 2.0 - 1.0);
+        let direction = normalize(DVec3::new(unit(), unit(), unit()));
+        let distance = f64::from(random.next_float()).cbrt() as f32 * radius;
+        let offset = direction * f64::from(distance);
+        let reached = (center + offset).floor();
+        let cell = (reached.x as i32, reached.y as i32, reached.z as i32);
+        if !is_air(scene.block(cell)) {
+            return;
+        }
+        let speed =
+            0.5 / (distance / radius + 0.1) * random.next_float() * random.next_float() + 0.3;
+        let (kind, scaling) = if random.next_int(2) == 0 {
+            (Kind::Poof, 0.5)
+        } else {
+            (Kind::Smoke, 1.0)
+        };
+        self.add(
+            kind,
+            center + offset * scaling,
+            direction * f64::from(speed),
+        );
     }
 
     pub fn campfire_tick(
@@ -426,6 +558,9 @@ impl AmbientParticles {
             Kind::CosySmoke | Kind::SignalSmoke => {
                 Particle::campfire_smoke(kind, at, motion, random)
             }
+            Kind::Poof => Particle::poof(at, motion, random),
+            Kind::Explosion => Particle::huge_explosion(at, motion.x, random),
+            Kind::ExplosionEmitter => Particle::emitter(at, random),
         };
         self.particles.push(particle);
         if self.particles.len() > CAP {
@@ -434,25 +569,36 @@ impl AmbientParticles {
     }
 
     pub fn tick<S: Scene + ?Sized>(&mut self, scene: &S) {
+        self.track_blasts(scene);
         let mut cache = HashMap::new();
-        let mut trails = Vec::new();
+        let mut spawned = Vec::new();
         let random = &mut self.random;
-        self.particles.retain_mut(|particle| {
-            let alive = if particle.translucent() {
-                particle.drift(scene, &mut cache, random)
-            } else {
-                particle.tick(scene, &mut cache)
-            };
-            if alive && particle.kind == Kind::Lava {
-                let aged = particle.age as f32 / particle.lifetime as f32;
-                if random.next_float() > aged {
-                    trails.push((particle.position, particle.velocity));
+        self.particles.retain_mut(|particle| match particle.kind {
+            Kind::ExplosionEmitter => {
+                let size = f64::from(particle.age as f32 / particle.lifetime as f32);
+                for _ in 0..EMITTER_FLASHES {
+                    let mut spread = || (random.next_double() - random.next_double()) * 4.0;
+                    let at = particle.position + DVec3::new(spread(), spread(), spread());
+                    spawned.push((Kind::Explosion, at, DVec3::new(size, 0.0, 0.0)));
                 }
+                particle.age += 1;
+                particle.age != particle.lifetime
             }
-            alive
+            Kind::Explosion => particle.hold(),
+            Kind::CosySmoke | Kind::SignalSmoke => particle.drift(scene, &mut cache, random),
+            _ => {
+                let alive = particle.tick(scene, &mut cache);
+                if alive && particle.kind == Kind::Lava {
+                    let aged = particle.age as f32 / particle.lifetime as f32;
+                    if random.next_float() > aged {
+                        spawned.push((Kind::Smoke, particle.position, particle.velocity));
+                    }
+                }
+                alive
+            }
         });
-        for (at, motion) in trails {
-            self.add(Kind::Smoke, at, motion);
+        for (kind, at, motion) in spawned {
+            self.add(kind, at, motion);
         }
     }
 
@@ -484,11 +630,10 @@ impl AmbientParticles {
                 center.y.floor() as i32,
                 center.z.floor() as i32,
             );
-            let sky = f32::from(light.get(cell));
-            let block = if particle.kind == Kind::Lava {
-                FULL_BRIGHT
-            } else {
-                f32::from(light.get_block(cell))
+            let (sky, block) = match particle.kind {
+                Kind::Explosion => (FULL_BRIGHT, FULL_BRIGHT),
+                Kind::Lava => (f32::from(light.get(cell)), FULL_BRIGHT),
+                _ => (f32::from(light.get(cell)), f32::from(light.get_block(cell))),
             };
             let size = particle.size_at(partial);
             let center = center.as_vec3();
@@ -784,6 +929,120 @@ mod tests {
             particles.campfire_tick(&scene, |_| [false; 4]);
         }
         assert!(particles.is_empty());
+    }
+
+    fn count(particles: &AmbientParticles, kind: Kind) -> usize {
+        particles
+            .particles
+            .iter()
+            .filter(|p| p.kind == kind)
+            .count()
+    }
+
+    #[test]
+    fn a_big_blast_seeds_six_flashes_a_tick_for_eight_ticks() {
+        let mut particles = AmbientParticles::new(12);
+        let center = DVec3::new(0.5, 64.0, 0.5);
+        particles.explosion(center, 4.0, 0, true);
+        assert_eq!(count(&particles, Kind::ExplosionEmitter), 1);
+        let mut flashes = 0;
+        for tick in 0..EMITTER_TICKS {
+            let before = count(&particles, Kind::Explosion);
+            particles.tick(&open());
+            let born: Vec<_> = particles
+                .particles
+                .iter()
+                .filter(|p| p.kind == Kind::Explosion && p.age == 0)
+                .collect();
+            assert_eq!(born.len(), 6, "tick {tick} after {before}");
+            let size = 2.0 * (1.0 - tick as f32 / 8.0 * 0.5);
+            for flash in born {
+                assert!((flash.quad_size - size).abs() < 1e-6);
+                assert!((flash.position - center).abs().max_element() < 4.0);
+                assert!((6..10).contains(&flash.lifetime));
+            }
+            flashes += 6;
+        }
+        assert_eq!(flashes, 48);
+        assert_eq!(count(&particles, Kind::ExplosionEmitter), 0);
+        for _ in 0..10 {
+            particles.tick(&open());
+        }
+        assert_eq!(count(&particles, Kind::Explosion), 0);
+    }
+
+    #[test]
+    fn a_small_or_harmless_blast_is_one_flash() {
+        let mut particles = AmbientParticles::new(13);
+        particles.explosion(DVec3::ZERO, 1.0, 0, true);
+        particles.explosion(DVec3::ZERO, 3.0, 0, false);
+        assert_eq!(count(&particles, Kind::Explosion), 2);
+        assert!(particles.particles.iter().all(|p| p.quad_size == 1.0));
+        let flash = &particles.particles[0];
+        assert_eq!(
+            flash.sprite().map(|id| id.key()).as_deref(),
+            Some("minecraft:particle/explosion_0")
+        );
+    }
+
+    #[test]
+    fn a_blast_scatters_poofs_and_smoke_through_the_air_it_reached() {
+        let mut particles = AmbientParticles::new(14);
+        let center = DVec3::new(0.5, 64.0, 0.5);
+        particles.explosion(center, 3.0, 2000, false);
+        particles.track_blasts(&open());
+        let scattered = count(&particles, Kind::Poof) + count(&particles, Kind::Smoke);
+        assert_eq!(scattered, 512);
+        assert!(count(&particles, Kind::Poof) > 200 && count(&particles, Kind::Smoke) > 200);
+        assert!(
+            particles
+                .particles
+                .iter()
+                .filter(|p| p.kind != Kind::Explosion)
+                .all(|p| (p.position - center).length() <= 3.0 + 1e-6)
+        );
+        assert!(particles.blasts.is_empty());
+        let mut few = AmbientParticles::new(15);
+        few.explosion(center, 3.0, 40, true);
+        few.track_blasts(&open());
+        assert_eq!(count(&few, Kind::Poof) + count(&few, Kind::Smoke), 40);
+    }
+
+    #[test]
+    fn blast_particles_only_start_in_air() {
+        let mut stone = HashMap::new();
+        for x in -4_i32..=4 {
+            for y in 60_i32..=68 {
+                for z in -4_i32..=4 {
+                    if x.abs() > 1 || (y - 64).abs() > 1 || z.abs() > 1 {
+                        stone.insert((x, y, z), Block::new("minecraft:stone"));
+                    }
+                }
+            }
+        }
+        let scene = Blocks(stone);
+        let mut particles = AmbientParticles::new(16);
+        particles.explosion(DVec3::new(0.5, 64.5, 0.5), 4.0, 500, true);
+        particles.track_blasts(&scene);
+        let scattered: Vec<_> = particles
+            .particles
+            .iter()
+            .filter(|p| matches!(p.kind, Kind::Poof | Kind::Smoke))
+            .collect();
+        assert!(
+            scattered.len() > 10 && scattered.len() < 150,
+            "{}",
+            scattered.len()
+        );
+        for particle in scattered {
+            let at = particle.position;
+            assert!(
+                (-1.0..2.0).contains(&at.x)
+                    && (63.0..66.0).contains(&at.y)
+                    && (-1.0..2.0).contains(&at.z),
+                "{at}"
+            );
+        }
     }
 
     #[test]

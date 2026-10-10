@@ -73,3 +73,25 @@ IW4L_MINECRAFT_KIT=minecraft:lava_bucket,minecraft:water_bucket,minecraft:nether
 ```
 IW4L_MINECRAFT_KIT=minecraft:campfire*4,minecraft:soul_campfire,minecraft:hay_block*4,minecraft:beef*4,minecraft:porkchop*4,minecraft:water_bucket,minecraft:flint_and_steel
 ```
+
+### 4. Minecraft TNT smokes on its fuse and explosions flash and scatter smoke
+
+- **Changed:**
+  - `ambient_particles.rs`: three more kinds. `Explosion` (`HugeExplosionParticle`): grey 0.4 to 1, size 2 x (1 - s / 2) for the size `s` it is given, lifetime 6 to 9, `explosion_0` to `explosion_15` by age, full bright, does not move. `ExplosionEmitter` (`HugeExplosionSeedParticle`): not drawn; for 8 ticks it adds 6 `Explosion`s a tick within +-4 blocks, sized by its age / 8. `Poof` (`ExplodeParticle`, as `poof_particles.rs` already had it for dead mobs): light grey, rises (gravity -0.1, friction 0.9), lifetime 16 / (0.2 + 0.8 r) + 2.
+  - `AmbientParticles::explosion` is `ClientPacketListener.handleExplosion` plus `ClientExplosionTracker`: `explosion_emitter` for a blast of radius 2 or more that interacts with blocks (`ServerExplosion.isSmall` is false), else one `explosion` of size 1; on the next tick, min(total block count, 512) times: a blast picked by its block count, a random direction, a distance cbrt(r) x radius; if that block is air, `Level.DEFAULT_EXPLOSION_BLOCK_PARTICLES` (`poof` at half the offset or `smoke` at the full offset, one each by chance) with speed (0.5 / (d / radius + 0.1) x r x r + 0.3) along the direction.
+  - The vendored level records each explosion's centre, radius, picked block count (`to_blow.len()`, which counts air as vanilla's list does) and whether it interacts with blocks (`Level.explosion_effects`, `explosion.rs` and one field in `level/mod.rs`). `server.rs` sends them as `Output.explosion_effects`; `weapon_blast` drops the MW2 blast's own record, so MW2 grenades and rockets get no Minecraft flash.
+  - `entities.rs`: primed TNT adds a `smoke` at its position + 0.5 up every client tick while its fuse is above 0 (`PrimedTnt.tick` on the client), and every explosion effect goes to `AmbientParticles::explosion`. `mesh.rs` reserves `explosion_0` to `explosion_15` through `ambient_particles::textures`.
+- **Tests:** `ambient_particles`: `a_big_blast_seeds_six_flashes_a_tick_for_eight_ticks`, `a_small_or_harmless_blast_is_one_flash`, `a_blast_scatters_poofs_and_smoke_through_the_air_it_reached`, `blast_particles_only_start_in_air`. `server`: `flint_primes_tnt_which_blows_up_with_a_bang` now also checks the TNT's explosion effect (radius 4, interacting, 745 picked positions in the test world, centre at the TNT's y + 0.06) and that an MW2 weapon blast sends none.
+- **Decisions:**
+  - The explosion's sound stays where it was (from `Output.explosions`, at the TNT's feet); only the particles use the recorded centre.
+  - Particle status is vanilla's default `ALL`, so the tracker always runs.
+- **Test steps:**
+  1. Place TNT and light it with flint and steel: grey smoke puffs rise from its top while it flashes. **Screenshot 6** during the fuse.
+  2. Stand back: the blast throws a burst of large grey flashes for under half a second, then light grey poofs and dark smoke drift out of the crater and rise. **Screenshot 7** right after the bang.
+  3. Hit a creeper and let it blow up (with `/gamerule mob_griefing false` it breaks nothing and makes only one flash).
+  4. Throw a frag grenade: only the MW2 explosion effect shows, no Minecraft flash.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:tnt*16,minecraft:flint_and_steel,minecraft:creeper_spawn_egg*2
+```

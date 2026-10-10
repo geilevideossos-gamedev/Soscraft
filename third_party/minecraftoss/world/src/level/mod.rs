@@ -196,6 +196,7 @@ pub struct Level<'a> {
     /// Game rules `tnt_explodes` and `tnt_explosion_drop_decay`.
     pub tnt_explodes: bool,
     pub tnt_explosion_drop_decay: bool,
+    pub explosion_effects: Vec<explosion::ExplosionEffect>,
     /// Entity-ticking chunks in vanilla's iteration order, when known.
     pub ticking_chunks: Option<Vec<ChunkPos>>,
     /// Chunk light solved for readers without `&mut` (`World::light`).
@@ -285,6 +286,7 @@ impl<'a> Level<'a> {
             fire_tag: lib.registries.block_tags.require("minecraft:fire").expect("tag exists"),
             tnt_explodes: true,
             tnt_explosion_drop_decay: false,
+            explosion_effects: Vec::new(),
             ticking_chunks: None,
             random_counts: Default::default(),
             lazy_light: std::cell::RefCell::new(Default::default()),

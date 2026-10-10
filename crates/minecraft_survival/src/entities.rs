@@ -743,6 +743,10 @@ impl Entities {
             self.clock = (self.clock - TICK_SECONDS).min(TICK_SECONDS);
             self.ticks += 1;
             self.falling.tick_sent();
+            for tnt in self.falling.primed.iter().filter(|tnt| tnt.fuse > 0) {
+                let smoke = DVec3::from_array(tnt.position) + DVec3::Y * 0.5;
+                self.ambient.add(minecraft_terrain::ambient_particles::Kind::Smoke, smoke, DVec3::ZERO);
+            }
             self.lids.tick();
             // Packets first, then the client level's entity ticks.
             self.client.tick();
@@ -874,6 +878,9 @@ impl Entities {
             for blast in &output.explosions {
                 let pitch = (1.0 + (self.random.next_float() - self.random.next_float()) * 0.2) * 0.7;
                 self.sounds.push(("minecraft:entity.generic.explode".to_owned(), blast.position, 4.0, pitch));
+            }
+            for effect in &output.explosion_effects {
+                self.ambient.explosion(DVec3::from_array(effect.center), effect.radius, effect.blocks, effect.interacts);
             }
             if let Some(mobs) = output.mobs {
                 self.world = *mobs;

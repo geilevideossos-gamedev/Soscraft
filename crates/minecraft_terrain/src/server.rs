@@ -781,7 +781,13 @@ impl ServerSim {
 
     pub fn weapon_blast(&mut self, center: [f64; 3], power: f32) {
         use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
+        let effects = self.level.explosion_effects.len();
         self.level.explode(Explosion { center, radius: power, fire: false, interaction: BlockInteraction::DestroyWithDecay, source: None });
+        self.level.explosion_effects.truncate(effects);
+    }
+
+    pub fn take_explosion_effects(&mut self) -> Vec<minecraftoss_world::level::explosion::ExplosionEffect> {
+        std::mem::take(&mut self.level.explosion_effects)
     }
 
     /// The blasts since the last call, for the client's sound and particles.
@@ -1795,6 +1801,7 @@ pub struct Output {
     pub players_pushed: Vec<(u64, glam::DVec3)>,
     /// Creeper blasts this tick (`ClientboundExplodePacket`).
     pub explosions: Vec<minecraftoss_entities::creeper::CreeperExplosion>,
+    pub explosion_effects: Vec<minecraftoss_world::level::explosion::ExplosionEffect>,
     /// Sounds mobs made this tick.
     pub mob_sounds: Vec<minecraftoss_entities::world::MobSound>,
     /// Items the player picked up: (entity ID, position, item, count, components).
@@ -2195,6 +2202,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.players_pushed.extend(sim.take_players_pushed());
                     out.potion_breaks.extend(sim.take_potion_breaks());
                     out.explosions.extend(sim.take_explosions());
+                    out.explosion_effects.extend(sim.take_explosion_effects());
                     out.mob_sounds.extend(sim.mobs.take_sounds());
                     out.mob_sounds.extend(sim.level.sounds.drain(..).map(|s| minecraftoss_entities::world::MobSound { event: s.event.to_owned(), position: glam::DVec3::from_array(s.pos), volume: s.volume, pitch: s.pitch, category: "ambient" }));
                     sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
@@ -4911,6 +4919,15 @@ mod tests {
         server.tick();
         assert!(server.primed_tnt().is_empty());
         assert_eq!(server.take_explosions().len(), 1);
+        let effects = server.take_explosion_effects();
+        assert_eq!(effects.len(), 1);
+        let effect = effects[0];
+        assert_eq!((effect.radius, effect.interacts), (4.0, true));
+        assert!(effect.blocks > 100, "{} blocks, air included as in vanilla", effect.blocks);
+        assert!((effect.center[1] - 200.0).abs() < 0.1);
+        assert!(server.take_explosion_effects().is_empty());
+        server.weapon_blast([8.5, 200.2, 8.5], 3.0);
+        assert!(server.take_explosion_effects().is_empty(), "MW2 blasts draw their own effects");
     }
 
     #[test]
