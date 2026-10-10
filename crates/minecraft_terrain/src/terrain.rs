@@ -43,6 +43,7 @@ pub struct BlockStates {
     light_table: minecraftoss_core::light::LightTable,
     /// `DimensionType.hasSkyLight`.
     sky_light: bool,
+    nether_shade: bool,
     /// `BlockState.isSolidRender`, which closes a cell in `VisGraph`.
     solid_render: Vec<bool>,
     face_culling: crate::face_culling::FaceCulling,
@@ -107,6 +108,7 @@ impl BlockStates {
             blocks,
             light_table,
             sky_light: true,
+            nether_shade: false,
             solid_render,
             face_culling,
             ao_occluder,
@@ -653,6 +655,12 @@ pub mod compile_profile {
     }
 }
 
+fn nether_cardinal_light(registries: &Registries, dimension_type: &str) -> bool {
+    minecraftoss_core::Identifier::parse(dimension_type)
+        .and_then(|id| registries.datapack.read_json("dimension_type", &id))
+        .is_ok_and(|json| json.get("cardinal_light").and_then(|light| light.as_str()) == Some("nether"))
+}
+
 /// `SectionCompiler.compile`: one section's faces and visibility set.
 #[allow(clippy::too_many_arguments)]
 fn compile_section(
@@ -667,6 +675,7 @@ fn compile_section(
     apart: &[BlockPos],
 ) -> Result<(ChunkMesh, VisibilitySet)> {
     let origin = (sx * 16, sy * 16, sz * 16);
+    mesh::set_section_nether_shade(states.nether_shade);
     let started = Instant::now();
     let view = View::new(states, hood, (origin.0 - 1, origin.1 - 1, origin.2 - 1), (18, 18, 18));
     compile_profile::add(compile_profile::VIEW, started);
@@ -981,36 +990,7 @@ pub struct TerrainStream {
 
 pub use minecraft_net::Dimension;
 
-/// A standing spot in the Nether near the origin: two air blocks over a
-/// solid block, below the bedrock roof, searched outward from chunk 0,0.
-fn nether_spawn(server: &mut ChunkMap) -> (f64, f64, f64) {
-    let registries = server.generator().registries.clone();
-    let blocks = &registries.blocks;
-    for ring in 0..4i32 {
-        for cz in -ring..=ring {
-            for cx in -ring..=ring {
-                if cx.abs().max(cz.abs()) != ring {
-                    continue;
-                }
-                let chunk = server.load_now(minecraftoss_core::ChunkPos::new(cx, cz));
-                for z in 0..16usize {
-                    for x in 0..16usize {
-                        for y in (32..110).rev() {
-                            let floor = chunk.block(x, y - 1, z);
-                            let solid = blocks.is(floor, minecraftoss_core::block::flags::SOLID_RENDER);
-                            if solid && blocks.is_air(chunk.block(x, y, z)) && blocks.is_air(chunk.block(x, y + 1, z)) {
-                                let bx = f64::from(cx * 16 + x as i32) + 0.5;
-                                let bz = f64::from(cz * 16 + z as i32) + 0.5;
-                                return (bx, f64::from(y), bz);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    (0.5, 64.0, 0.5)
-}
+const NETHER_FALLBACK_SPAWN: (i32, i32, i32) = (0, 64, 0);
 
 fn block_centre((x, y, z): (i32, i32, i32)) -> (f64, f64, f64) {
     (f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5)
@@ -1037,6 +1017,7 @@ impl TerrainStream {
         .map_err(|e| anyhow!(e))?;
         let mut states = BlockStates::new(registries, seed, generator.chunk_min_y, generator.chunk_height)?;
         states.sky_light = dimension != Dimension::Nether;
+        states.nether_shade = nether_cardinal_light(states.registries(), dimension.dimension_type());
         let states = Arc::new(states);
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
         // Generation and section building run at background priority, so
@@ -1068,13 +1049,10 @@ impl TerrainStream {
                 let world_spawn = known_spawn.unwrap_or_else(|| spawn::world_spawn(&mut server));
                 (world_spawn, spawn::player_spawn(&mut server, world_spawn, spawn::DEFAULT_RESPAWN_RADIUS, unseeded()))
             }
-            Dimension::Nether => match known_spawn {
-                Some(known) => (known, block_centre(known)),
-                None => {
-                    let (x, y, z) = nether_spawn(&mut server);
-                    ((x as i32, y as i32, z as i32), (x, y, z))
-                }
-            },
+            Dimension::Nether => {
+                let known = known_spawn.unwrap_or(NETHER_FALLBACK_SPAWN);
+                (known, block_centre(known))
+            }
             // ServerLevel.END_SPAWN_POINT: the obsidian platform at 100, 49, 0.
             Dimension::End => {
                 let known = known_spawn.unwrap_or((100, 49, 0));
@@ -1171,9 +1149,10 @@ impl TerrainStream {
         self.sections = Sections::new(self.sections.view_distance(), min_section, max_section);
         let mut chunks = Vec::new();
         for pos in scene.generated_chunks().collect::<Vec<_>>() {
-            let chunk = scene.generated_chunk(pos).expect("listed").clone();
+            let mut chunk = scene.generated_chunk(pos).expect("listed").clone();
             let empty = self.empty_sections(scene, &chunk);
             self.sections.chunk_loaded(pos, empty);
+            self.apply_scene_edits(scene, &mut chunk);
             chunks.push(chunk);
         }
         self.serials.clear();
@@ -1182,6 +1161,20 @@ impl TerrainStream {
         self.work.0.lock().expect("terrain work queue").compile.retain(|_, _| false);
         self.light_changes = self.lights.iter().map(|(&pos, light)| (pos, Some(light.clone()))).collect();
         chunks
+    }
+
+    fn apply_scene_edits(&self, scene: &HandcraftedScene, chunk: &mut Arc<Chunk>) {
+        let (placed, cleared) = scene.chunk_edits((chunk.pos.x, chunk.pos.z));
+        if placed.is_none() && cleared.is_none() {
+            return;
+        }
+        let registries = self.states.registries().clone();
+        let chunk = Arc::make_mut(chunk);
+        let placed = placed.into_iter().flat_map(|placed| placed.iter()).map(|(&pos, block)| (pos, self.states.state_of(block).unwrap_or(BlockStateId::AIR)));
+        let cleared = cleared.into_iter().flat_map(|cleared| cleared.iter()).map(|&pos| (pos, BlockStateId::AIR));
+        for ((x, y, z), state) in placed.chain(cleared) {
+            chunk.set_block_raw((x & 15) as usize, y, (z & 15) as usize, state, &registries);
+        }
     }
 
     fn now(&self) -> u64 {
@@ -1239,6 +1232,14 @@ impl TerrainStream {
     /// The storage chunks are saved to, which the level's entities share.
     pub fn storage(&self) -> Option<Arc<minecraftoss_world::storage::ChunkStorage>> {
         self.server.storage()
+    }
+
+    pub fn loaded_chunk(&mut self, pos: minecraftoss_core::ChunkPos) -> Option<Arc<Chunk>> {
+        self.server.chunk(pos).cloned()
+    }
+
+    pub fn load_chunk_now(&mut self, pos: minecraftoss_core::ChunkPos) -> Arc<Chunk> {
+        self.server.load_now(pos)
     }
 
     /// One server tick: runs the chunk map for the player and applies what it
@@ -2294,9 +2295,10 @@ mod tests {
         let level = crate::level_storage::LevelStorage::open(dir.path()).unwrap();
         let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::Nether, Some(level.root()), None).unwrap();
         assert!(!stream.states.sky_light);
+        assert!(stream.states.nether_shade, "the Nether's cardinal lighting");
         assert_eq!(stream.states.section_range(), (0, 15), "the Nether is 256 blocks high from 0");
-        let (x, y, z) = stream.player_spawn;
-        assert!((32.0..123.0).contains(&y), "the stand-in floor is under the roof: {:?}", stream.player_spawn);
+        assert_eq!(stream.player_spawn, (0.5, 64.0, 0.5));
+        assert_eq!(stream.server.stats().generated, 0, "no stand-in spawn is searched");
         let blocks = &registries.blocks;
         let bedrock = blocks.block_by_name("minecraft:bedrock").unwrap();
         let mut counts = HashMap::new();
@@ -2315,10 +2317,6 @@ mod tests {
                 scene.insert_chunk(chunk);
             }
         }
-        let (bx, by, bz) = (x.floor() as i32, y as i32, z.floor() as i32);
-        let chunk = stream.server.load_now(minecraftoss_core::ChunkPos::new(bx >> 4, bz >> 4));
-        let (fx, fz) = ((bx & 15) as usize, (bz & 15) as usize);
-        assert!(blocks.is_air(chunk.block(fx, by, fz)) && blocks.is_air(chunk.block(fx, by + 1, fz)), "the player stands in two blocks of air");
         for name in ["minecraft:netherrack", "minecraft:lava"] {
             assert!(count(&counts, name) > 0, "no {name} in {counts:?}");
         }
@@ -2360,6 +2358,7 @@ mod tests {
         assert_eq!(stream.player_spawn, (100.5, 49.0, 0.5));
         assert_eq!(stream.server.stats().generated, 0, "the End needs no search");
         assert!(stream.states.sky_light);
+        assert!(!stream.states.nether_shade);
         assert_eq!(stream.states.section_range(), (0, 15), "the End is 256 blocks high from 0");
         let blocks = &registries.blocks;
         let end_stone = blocks.block_by_name("minecraft:end_stone").unwrap();
@@ -2400,6 +2399,84 @@ mod tests {
     }
 
     #[test]
+    fn nether_fortresses_bastions_and_every_nether_feature_generate() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let dir = crate::test_dir::tempdir().unwrap();
+        let level = crate::level_storage::LevelStorage::open(dir.path()).unwrap();
+        let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::Nether, Some(level.root()), Some((0, 64, 0))).unwrap();
+        let gen = stream.world_gen();
+        for name in ["minecraft:fortress", "minecraft:bastion_remnant", "minecraft:nether_fossil", "minecraft:ruined_portal_nether"] {
+            let structure = gen.structures.defs.iter().find(|def| def.name == name).unwrap_or_else(|| panic!("{name} is registered"));
+            assert!(!format!("{:?}", structure.kind).starts_with("Unsupported"), "{name} generates: {:?}", structure.kind);
+        }
+        let mut unsupported = Vec::new();
+        for biome in ["nether_wastes", "crimson_forest", "warped_forest", "soul_sand_valley", "basalt_deltas"] {
+            let id = minecraftoss_core::Identifier::parse(&format!("minecraft:{biome}")).unwrap();
+            let json = registries.datapack.read_json("worldgen/biome", &id).unwrap();
+            let names: Vec<String> = json["features"].as_array().into_iter().flatten().flat_map(|step| step.as_array().into_iter().flatten()).filter_map(|name| name.as_str().map(str::to_owned)).collect();
+            assert!(!names.is_empty(), "{biome} has features");
+            for name in names {
+                let placed = gen.library.placed_by_name(&name).or_else(|| gen.library.placed_by_name(name.trim_start_matches("minecraft:"))).unwrap_or_else(|| panic!("{biome} feature {name} is loaded"));
+                if let minecraftoss_generator::feature::kinds::Feature::Unsupported(kind) = gen.library.feature(gen.library.placed(placed).feature) {
+                    unsupported.push(format!("{biome} {name}: {kind}"));
+                }
+            }
+        }
+        assert!(unsupported.is_empty(), "unsupported Nether features: {unsupported:?}");
+        let deadline = Instant::now() + std::time::Duration::from_secs(120);
+        let blocks = &registries.blocks;
+        let mut sim = crate::server::ServerSim::new(gen.clone(), stream.states.clone(), "minecraft:the_nether");
+        let mut found = Vec::new();
+        for (structure, own, block_entity) in [
+            ("minecraft:fortress", ["minecraft:nether_bricks", "minecraft:nether_brick_fence", "minecraft:spawner"], "minecraft:blaze"),
+            ("minecraft:bastion_remnant", ["minecraft:polished_blackstone_bricks", "minecraft:blackstone", "minecraft:gilded_blackstone"], "minecraft:chests/bastion"),
+        ] {
+            let at = match crate::locate::nearest_structure(&gen, &[structure.to_owned()], [0, 64, 0], crate::locate::STRUCTURE_RADIUS, deadline) {
+                crate::locate::Search::Found(at, _) => at,
+                other => panic!("no {structure} near the origin of seed 77: {other:?}"),
+            };
+            let (cx, cz) = (at[0] >> 4, at[2] >> 4);
+            let mut counts = HashMap::new();
+            let mut tags = Vec::new();
+            let mut mobs = Vec::new();
+            for x in cx - 2..=cx + 2 {
+                for z in cz - 2..=cz + 2 {
+                    let chunk = stream.server.load_now(minecraftoss_core::ChunkPos::new(x, z));
+                    for xx in 0..16usize {
+                        for zz in 0..16usize {
+                            assert!(blocks.is_air(chunk.block(xx, 200, zz)), "nothing above the roof at chunk {x},{z}");
+                        }
+                    }
+                    count_blocks(&registries, &chunk, &mut counts);
+                    tags.extend(chunk.block_entities.pending.values().chain(chunk.block_entities.entities.values()).map(|tag| format!("{tag:?}")));
+                    mobs.extend(chunk.generation.entities.iter().flat_map(minecraftoss_world::natural_spawner::tick::census_of));
+                    sim.load_chunk(&chunk);
+                }
+            }
+            for name in own {
+                assert!(count(&counts, name) > 0, "no {name} around the {structure} at {at:?}: {counts:?}");
+            }
+            assert!(tags.iter().any(|tag| tag.contains(block_entity)), "no block entity with {block_entity} around the {structure}: {tags:?}");
+            for name in ["minecraft:stone", "minecraft:grass_block", "minecraft:water", "minecraft:end_stone"] {
+                assert_eq!(count(&counts, name), 0, "{name} around the {structure}");
+            }
+            let kinds: Vec<(&str, bool)> = mobs.iter().map(|mob| (mob.kind.as_str(), mob.persistent)).collect();
+            if structure == "minecraft:bastion_remnant" {
+                assert!(kinds.contains(&("minecraft:piglin", true)) && kinds.contains(&("minecraft:piglin_brute", true)), "a bastion holds piglins and brutes: {kinds:?}");
+            }
+            assert!(kinds.iter().all(|(_, persistent)| *persistent), "the {structure}'s mobs never despawn: {kinds:?}");
+            found.push((structure, at));
+        }
+        sim.set_clocks(crate::server::ClockTicks { overworld: 6000, the_end: 0 });
+        for _ in 0..40 {
+            sim.tick();
+        }
+        assert_eq!(found.len(), 2, "{found:?}");
+    }
+
+    #[test]
     fn a_level_shown_again_sends_its_chunks_and_light_again() {
         let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
         let Ok(registries) = Registries::load(&paths) else { return };
@@ -2418,9 +2495,24 @@ mod tests {
         let light = Arc::new(SkyLight::streamed());
         stream.lights.insert((6, 0), light.clone());
         stream.light_changes.clear();
+        let registries = stream.states.registries().clone();
+        let blocks = &registries.blocks;
+        let solid = generated
+            .iter()
+            .flat_map(|&(cx, cz)| (0..256).flat_map(move |y| (0..16).map(move |x| (cx * 16 + x, y, cz * 16))))
+            .find(|&(x, y, z)| !blocks.is_air(scene.generated_chunk((x >> 4, z >> 4)).unwrap().block((x & 15) as usize, y, 0)))
+            .expect("some end stone near the platform");
+        scene.set(solid, None);
+        scene.set((100, 200, 0), Some(Block::new("minecraft:obsidian")));
         let again = stream.reshow(&scene);
         let shown: HashSet<ChunkPos> = again.iter().map(|chunk| (chunk.pos.x, chunk.pos.z)).collect();
         assert_eq!(shown, generated, "every chunk the scene holds is sent again for collision");
+        let sent_again = |pos: (i32, i32)| again.iter().find(|chunk| (chunk.pos.x, chunk.pos.z) == pos).unwrap();
+        let broken = sent_again((solid.0 >> 4, solid.2 >> 4)).block((solid.0 & 15) as usize, solid.1, 0);
+        assert!(blocks.is_air(broken), "a block broken before the trip stays broken for collision");
+        let placed = sent_again((6, 0)).block(4, 200, 0);
+        assert_eq!(blocks.block(blocks.block_of(placed)).name.as_str(), "minecraft:obsidian", "a block placed before the trip stays solid");
+        assert!(!blocks.is_air(scene.generated_chunk((solid.0 >> 4, solid.2 >> 4)).unwrap().block((solid.0 & 15) as usize, solid.1, 0)), "the scene's own chunk is left alone");
         assert_eq!(stream.light_changes.len(), 1);
         assert!(stream.light_changes[0].0 == (6, 0) && stream.light_changes[0].1.as_ref().is_some_and(|l| Arc::ptr_eq(l, &light)));
         assert!(stream.server_tick((100, 49, 0), &mut scene).0.is_empty(), "the server does not send them twice");

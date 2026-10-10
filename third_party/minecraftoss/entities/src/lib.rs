@@ -3,6 +3,7 @@
 pub mod age;
 pub mod animal;
 pub mod bat;
+pub mod blaze;
 pub mod breed;
 pub mod chicken;
 pub mod chicken_ai;
@@ -19,7 +20,9 @@ pub mod effects;
 pub mod enchant;
 pub mod enderman;
 pub mod fluid;
+pub mod fireball;
 pub mod follow_parent;
+pub mod ghast;
 pub mod goals;
 pub mod gossip;
 pub mod health;

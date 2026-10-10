@@ -22,6 +22,7 @@ pub struct Slime {
     pub target_squish: f32,
     pub squish: f32,
     pub previous_squish: f32,
+    pub magma: bool,
 }
 
 impl Slime {
@@ -40,7 +41,26 @@ impl Slime {
             target_squish: 0.0,
             squish: 0.0,
             previous_squish: 0.0,
+            magma: false,
         }
+    }
+
+    pub fn magma(position: DVec3, size: i32) -> Self {
+        let mut cube = Self::new(position, size);
+        cube.magma = true;
+        cube
+    }
+
+    pub fn type_id(&self) -> &'static str {
+        if self.magma { "minecraft:magma_cube" } else { "minecraft:slime" }
+    }
+
+    pub fn can_deal_damage(&self) -> bool {
+        self.magma || !self.tiny()
+    }
+
+    pub fn armor(&self) -> f32 {
+        if self.magma { (self.size * 3) as f32 } else { 0.0 }
     }
 
     /// `setCubeMobHealth`: the size squared.
@@ -55,7 +75,7 @@ impl Slime {
 
     /// `Slime.setSize`: `ATTACK_DAMAGE` is the size.
     pub fn attack_damage(&self) -> f32 {
-        self.size as f32
+        self.size as f32 + if self.magma { 2.0 } else { 0.0 }
     }
 
     pub fn eye_height(&self) -> f32 {

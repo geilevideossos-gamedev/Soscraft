@@ -16,8 +16,6 @@ use crate::switch::loading_reason;
 
 pub const END_PORTAL: &str = "minecraft:end_portal";
 pub const END_SPAWN_POINT: (i32, i32, i32) = (100, 50, 0);
-pub const DIMENSION_CHANGING_DELAY: i32 = 10;
-pub const TICK_SECONDS: f64 = 0.05;
 pub const WEST_YAW: f32 = 90.0;
 const PLAYER_WIDTH: f64 = 0.6;
 const PLAYER_HEIGHT: f64 = 1.8;
@@ -26,17 +24,7 @@ const PORTAL_SHAPE: (f64, f64) = (6.0 / 16.0, 12.0 / 16.0);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EndTravel {
-    pub clock: f64,
     pub platform: bool,
-}
-
-impl EndTravel {
-    pub fn ticks(&mut self, seconds: f64) -> u32 {
-        self.clock += seconds.max(0.0);
-        let ticks = (self.clock / TICK_SECONDS).floor();
-        self.clock -= ticks * TICK_SECONDS;
-        ticks.min(f64::from(u32::MAX)) as u32
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,32 +61,6 @@ pub fn touched_end_portal(
 
 pub fn is_end_portal(terrain: &Terrain, pos: (i32, i32, i32)) -> bool {
     Scene::block(&terrain.scene, pos).is_some_and(|block| block.id.key() == END_PORTAL)
-}
-
-pub fn portal_tick(cooldown: &mut i32, touched: bool) -> bool {
-    if *cooldown > 0 {
-        *cooldown -= 1;
-    }
-    if !touched {
-        return false;
-    }
-    let due = *cooldown == 0;
-    *cooldown = DIMENSION_CHANGING_DELAY;
-    due
-}
-
-pub fn step(player: &mut Player, terrain: &Terrain, feet: Option<[f64; 3]>, seconds: f64) -> bool {
-    let ticks = player.end.ticks(seconds);
-    let can_use = feet.is_some() && !player.dead && !player.remote;
-    for _ in 0..ticks {
-        let touched = feet
-            .filter(|_| can_use)
-            .and_then(|feet| touched_end_portal(feet, |pos| is_end_portal(terrain, pos)));
-        if portal_tick(&mut player.portal_cooldown, touched.is_some()) {
-            return true;
-        }
-    }
-    false
 }
 
 pub fn end_arrival(from: Option<&Place>) -> Place {
@@ -176,6 +138,7 @@ pub fn leave_the_end(player: &mut Player, to: Dimension) {
     player.switch_to(to, None, loading_reason(false, Dimension::End, to));
     if let Some(switch) = player.switching.as_mut() {
         switch.respawn = true;
+        switch.keep_charge = true;
     }
 }
 
@@ -244,35 +207,40 @@ pub(crate) mod tests {
 
     #[test]
     fn the_portal_takes_a_player_at_once_then_waits_ten_ticks_after_they_leave_it() {
+        use crate::portal::{DIMENSION_CHANGING_DELAY, Portal, PortalKind};
+        let rules = minecraft_terrain::game_rules::GameRules::default();
+        let mut portal = Portal::default();
         let mut cooldown = 0;
-        assert!(portal_tick(&mut cooldown, true));
+        let tick = |portal: &mut Portal, cooldown: &mut i32, touched: bool| {
+            if touched {
+                portal.set_inside(cooldown, PortalKind::End, (4, 30, -2));
+            }
+            portal
+                .tick(cooldown, true, |kind| kind.transition_time(false, &rules))
+                .is_some_and(|due| due.kind == PortalKind::End)
+        };
+        assert!(tick(&mut portal, &mut cooldown, true));
         assert_eq!(cooldown, DIMENSION_CHANGING_DELAY);
         for _ in 0..30 {
             assert!(
-                !portal_tick(&mut cooldown, true),
+                !tick(&mut portal, &mut cooldown, true),
                 "standing in it keeps the cooldown up"
             );
         }
-        assert_eq!(cooldown, DIMENSION_CHANGING_DELAY);
+        assert_eq!(cooldown, DIMENSION_CHANGING_DELAY - 1);
         for _ in 0..8 {
-            assert!(!portal_tick(&mut cooldown, false));
+            assert!(!tick(&mut portal, &mut cooldown, false));
         }
-        assert!(!portal_tick(&mut cooldown, true), "one tick short");
-        assert_eq!(cooldown, DIMENSION_CHANGING_DELAY);
+        assert!(!tick(&mut portal, &mut cooldown, true), "one tick short");
+        assert_eq!(cooldown, DIMENSION_CHANGING_DELAY - 1);
         for _ in 0..9 {
-            assert!(!portal_tick(&mut cooldown, false));
+            assert!(!tick(&mut portal, &mut cooldown, false));
         }
-        assert_eq!(cooldown, 1);
-        assert!(portal_tick(&mut cooldown, true), "the tenth tick out of it");
-    }
-
-    #[test]
-    fn the_travel_clock_counts_whole_ticks() {
-        let mut travel = EndTravel::default();
-        assert_eq!(travel.ticks(0.03), 0);
-        assert_eq!(travel.ticks(0.03), 1);
-        assert_eq!(travel.ticks(0.26), 5);
-        assert_eq!(travel.ticks(-1.0), 0);
+        assert_eq!(cooldown, 0);
+        assert!(
+            tick(&mut portal, &mut cooldown, true),
+            "the tenth tick out of it"
+        );
     }
 
     #[test]

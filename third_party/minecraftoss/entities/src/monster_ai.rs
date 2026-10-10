@@ -48,6 +48,10 @@ pub enum MonsterKind {
     IronGolem,
     /// `Wolf`: a tamable animal that hunts (`wolf_ai`).
     Wolf,
+    ZombifiedPiglin,
+    WitherSkeleton,
+    Ghast,
+    Blaze,
 }
 
 impl MonsterKind {
@@ -63,6 +67,10 @@ impl MonsterKind {
             Self::Witch => &WITCH_GOAL_NAMES,
             Self::IronGolem => &crate::golem_ai::GOAL_NAMES,
             Self::Wolf => &crate::wolf_ai::GOAL_NAMES,
+            Self::ZombifiedPiglin => &ZOMBIFIED_PIGLIN_GOAL_NAMES,
+            Self::WitherSkeleton => &WITHER_SKELETON_GOAL_NAMES,
+            Self::Ghast => &GHAST_GOAL_NAMES,
+            Self::Blaze => &BLAZE_GOAL_NAMES,
         }
     }
 
@@ -77,6 +85,10 @@ impl MonsterKind {
             Self::Witch => &WITCH_TARGET_NAMES,
             Self::IronGolem => &crate::golem_ai::TARGET_NAMES,
             Self::Wolf => &crate::wolf_ai::TARGET_NAMES,
+            Self::ZombifiedPiglin => &ZOMBIFIED_PIGLIN_TARGET_NAMES,
+            Self::WitherSkeleton => &WITHER_SKELETON_TARGET_NAMES,
+            Self::Ghast => &GHAST_TARGET_NAMES,
+            Self::Blaze => &BLAZE_TARGET_NAMES,
         }
     }
 }
@@ -108,6 +120,9 @@ pub const ZOMBIE_TARGET_NAMES: [&str; 5] = [
     "NearestAttackableTargetGoal",
     "NearestAttackableTargetGoal",
 ];
+pub const ZOMBIFIED_PIGLIN_GOAL_NAMES: [&str; 6] =
+    ["ZombieAttackTurtleEggGoal", "LookAtPlayerGoal", "RandomLookAroundGoal", "SpearUseGoal", "ZombieAttackGoal", "WaterAvoidingRandomStrollGoal"];
+pub const ZOMBIFIED_PIGLIN_TARGET_NAMES: [&str; 3] = ["HurtByTargetGoal", "NearestAttackableTargetGoal", "ResetUniversalAngerTargetGoal"];
 
 pub const SKELETON_GOAL_NAMES: [&str; 7] = [
     "RestrictSunGoal",
@@ -124,6 +139,14 @@ pub const SKELETON_TARGET_NAMES: [&str; 4] = [
     "NearestAttackableTargetGoal",
     "NearestAttackableTargetGoal",
 ];
+pub const WITHER_SKELETON_GOAL_NAMES: [&str; 7] =
+    ["RestrictSunGoal", "FleeSunGoal", "AvoidEntityGoal", "WaterAvoidingRandomStrollGoal", "LookAtPlayerGoal", "RandomLookAroundGoal", "MeleeAttackGoal"];
+pub const GHAST_GOAL_NAMES: [&str; 3] = ["RandomFloatAroundGoal", "GhastLookGoal", "GhastShootFireballGoal"];
+pub const GHAST_TARGET_NAMES: [&str; 1] = ["NearestAttackableTargetGoal"];
+pub const BLAZE_GOAL_NAMES: [&str; 5] = ["BlazeAttackGoal", "MoveTowardsRestrictionGoal", "WaterAvoidingRandomStrollGoal", "LookAtPlayerGoal", "RandomLookAroundGoal"];
+pub const BLAZE_TARGET_NAMES: [&str; 2] = ["HurtByTargetGoal", "NearestAttackableTargetGoal"];
+pub const WITHER_SKELETON_TARGET_NAMES: [&str; 5] =
+    ["NearestAttackableTargetGoal", "HurtByTargetGoal", "NearestAttackableTargetGoal", "NearestAttackableTargetGoal", "NearestAttackableTargetGoal"];
 
 pub const SPIDER_GOAL_NAMES: [&str; 7] = [
     "FloatGoal",
@@ -223,6 +246,8 @@ pub struct EndermanState {
     /// A block the goals took or put down this tick, for the world to
     /// change (none for air).
     pub block_change: Option<((i32, i32, i32), Option<minecraftoss_player::Block>)>,
+    pub first_anger_sound_in: i32,
+    pub alert_in: i32,
 }
 
 impl Default for EndermanState {
@@ -236,6 +261,8 @@ impl Default for EndermanState {
             anger_target: None,
             teleports: Vec::new(),
             block_change: None,
+            first_anger_sound_in: 0,
+            alert_in: 0,
         }
     }
 }
@@ -312,6 +339,11 @@ pub fn is_enemy(kind: &str) -> bool {
             | "minecraft:slime"
             | "minecraft:enderman"
             | "minecraft:witch"
+            | "minecraft:zombified_piglin"
+            | "minecraft:magma_cube"
+            | "minecraft:wither_skeleton"
+            | "minecraft:ghast"
+            | "minecraft:blaze"
     )
 }
 
@@ -473,6 +505,8 @@ pub struct MonsterGoalContext {
     /// `Zombie.canBreakDoors`: the doors `MoveThroughVillageGoal` may path
     /// through.
     pub can_break_doors: bool,
+    pub ghast: GhastState,
+    pub blaze: BlazeState,
 }
 
 impl MonsterGoalContext {
@@ -576,7 +610,12 @@ impl MonsterGoalContext {
 
     /// `Mob.setTarget` through `asValidTarget`.
     pub(crate) fn set_target(&mut self, target: Option<Target>) {
-        self.target = target.filter(|&t| self.info(t).is_some_and(|info| self.can_attack(info)));
+        let target = target.filter(|&t| self.info(t).is_some_and(|info| self.can_attack(info)));
+        if self.kind == MonsterKind::ZombifiedPiglin && self.target.is_none() && target.is_some() {
+            self.enderman.first_anger_sound_in = self.random.next_int(21) as i32;
+            self.enderman.alert_in = 80 + self.random.next_int(41) as i32;
+        }
+        self.target = target;
         self.target_set(target.is_some());
     }
 
@@ -668,7 +707,7 @@ impl MonsterGoalContext {
         let allowed = match (self.kind, self.target().is_some()) {
             (_, false) => 0.0,
             (MonsterKind::Creeper, true) => self.health - 1.0,
-            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf, true) => {
+            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze, true) => {
                 let sacrifice = (self.health - self.max_health * 0.33) as i32 - (3 - self.difficulty) * 4;
                 sacrifice.max(0) as f32
             }
@@ -735,10 +774,12 @@ impl MonsterAi {
         // `FloatGoal` lets the navigation float.
         walk.can_float = matches!(kind, MonsterKind::Creeper | MonsterKind::Spider | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::Wolf);
         let follow_range = match kind {
-            MonsterKind::Creeper | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Witch | MonsterKind::IronGolem => FOLLOW_RANGE,
-            MonsterKind::Zombie => ZOMBIE_FOLLOW_RANGE,
+            MonsterKind::Creeper | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::WitherSkeleton => FOLLOW_RANGE,
+            MonsterKind::Zombie | MonsterKind::ZombifiedPiglin => ZOMBIE_FOLLOW_RANGE,
             MonsterKind::Enderman => crate::enderman::FOLLOW_RANGE,
             MonsterKind::Wolf => crate::wolf::FOLLOW_RANGE,
+            MonsterKind::Ghast => crate::ghast::FOLLOW_RANGE,
+            MonsterKind::Blaze => crate::blaze::FOLLOW_RANGE,
         };
         walk.follow_range = follow_range as f32;
         // An `Animal` keeps its own walk values (grass is best).
@@ -757,6 +798,13 @@ impl MonsterAi {
             walk.max_up_step = 1.0;
             walk.walk_target = WalkTarget::Zero;
         }
+        if matches!(kind, MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton) {
+            walk.set_malus(PathType::Lava, 8.0);
+        }
+        if kind == MonsterKind::Blaze {
+            walk.set_malus(PathType::Water, -1.0);
+            walk.set_malus(PathType::Lava, 8.0);
+        }
         if kind == MonsterKind::IronGolem {
             // A `PathfinderMob` with a one-block step (`STEP_HEIGHT`) whose
             // spots are all alike (`getWalkTargetValue` 0).
@@ -766,6 +814,10 @@ impl MonsterAi {
         let (goals, targets, eye_height) = match kind {
             MonsterKind::Creeper => (creeper_goals(), creeper_targets(), body.height * 0.85),
             MonsterKind::Zombie => (zombie_goals(), zombie_targets(), 1.74),
+            MonsterKind::ZombifiedPiglin => (zombified_piglin_goals(), zombified_piglin_targets(), 1.79),
+            MonsterKind::WitherSkeleton => (wither_skeleton_goals(), wither_skeleton_targets(), 2.1),
+            MonsterKind::Ghast => (ghast_goals(), ghast_targets(), crate::ghast::EYE_HEIGHT),
+            MonsterKind::Blaze => (blaze_goals(), blaze_targets(), crate::blaze::EYE_HEIGHT),
             MonsterKind::Skeleton => (skeleton_goals(), skeleton_targets(), 1.74),
             MonsterKind::Spider => (spider_goals(), spider_targets(), 0.65),
             MonsterKind::Slime => (slime_goals(), slime_targets(), 0.325),
@@ -831,6 +883,8 @@ impl MonsterAi {
                 pois: None,
                 level_random: None,
                 can_break_doors: false,
+                ghast: GhastState::default(),
+                blaze: BlazeState::default(),
             },
             move_control: MoveControl::default(),
             body_rotation: BodyRotation::new(yaw),
@@ -893,7 +947,7 @@ pub fn creeper_goals() -> GoalSelector<MonsterGoalContext> {
     selector.add(2, SwellGoal { target: None });
     selector.add(3, NeverGoal { controls: &[Control::Move] });
     selector.add(3, NeverGoal { controls: &[Control::Move] });
-    selector.add(4, MeleeAttackGoal { hits: false, raises_arms: false, follow_unseen: false, gives_up_in_light: false });
+    selector.add(4, MeleeAttackGoal { hits: false, raises_arms: false, follow_unseen: false, gives_up_in_light: false, speed: 1.0 });
     selector.add(5, StrollGoal { speed: 0.8, probability: 0.001 });
     selector.add(6, LookAtPlayerGoal { range: 8.0 });
     selector.add(6, RandomLookGoal);
@@ -913,7 +967,7 @@ pub fn spider_goals() -> GoalSelector<MonsterGoalContext> {
     // `AvoidEntityGoal` for armadillos: none live here.
     selector.add(2, NeverGoal { controls: &[Control::Move] });
     selector.add(3, LeapGoal { yd: 0.4, target: None });
-    selector.add(4, MeleeAttackGoal { hits: true, raises_arms: false, follow_unseen: true, gives_up_in_light: true });
+    selector.add(4, MeleeAttackGoal { hits: true, raises_arms: false, follow_unseen: true, gives_up_in_light: true, speed: 1.0 });
     selector.add(5, StrollGoal { speed: 0.8, probability: 0.001 });
     selector.add(6, LookAtPlayerGoal { range: 8.0 });
     selector.add(6, RandomLookGoal);
@@ -1113,6 +1167,238 @@ pub fn skeleton_targets() -> GoalSelector<MonsterGoalContext> {
     selector.add(3, NearestTargetGoal { interval: 5, prey: Prey::Golem, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
     selector.add(3, NearestTargetGoal { interval: 5, prey: Prey::Absent, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
     selector
+}
+
+pub fn wither_skeleton_goals() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = GoalSelector::default();
+    selector.add(2, RestrictSunGoal);
+    selector.add(3, FleeSunGoal { wanted: None });
+    selector.add(3, AvoidEntityGoal::new("minecraft:wolf", 6.0, 1.0, 1.2));
+    selector.add(5, StrollGoal { speed: 1.0, probability: 0.001 });
+    selector.add(6, LookAtPlayerGoal { range: 8.0 });
+    selector.add(6, RandomLookGoal);
+    selector.add(4, MeleeAttackGoal { hits: true, raises_arms: false, follow_unseen: false, gives_up_in_light: false, speed: 1.2 });
+    selector
+}
+
+pub fn wither_skeleton_targets() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = GoalSelector::default();
+    selector.add(3, NearestTargetGoal { interval: 5, prey: Prey::Absent, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
+    selector.add(1, HurtByTargetGoal { timestamp: 0, unseen_ticks: 0, target_mob: None, alert_others: false });
+    selector.add(2, NearestTargetGoal { interval: 5, prey: Prey::Player, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
+    selector.add(3, NearestTargetGoal { interval: 5, prey: Prey::Golem, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
+    selector.add(3, NearestTargetGoal { interval: 5, prey: Prey::Absent, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
+    selector
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct GhastState {
+    pub wanted: Option<DVec3>,
+    pub float_duration: i32,
+    pub charge_time: i32,
+    pub charging: bool,
+    pub warn: bool,
+    pub shot: Option<(DVec3, DVec3)>,
+}
+
+pub fn ghast_goals() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = GoalSelector::default();
+    selector.add(5, GhastFloatGoal);
+    selector.add(7, GhastLookGoal);
+    selector.add(7, GhastShootGoal);
+    selector
+}
+
+pub fn ghast_targets() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = GoalSelector::default();
+    selector.add(1, NearestTargetGoal { interval: 5, prey: Prey::Player, must_see: true, max_dy: Some(4.0), dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
+    selector
+}
+
+#[derive(Clone)]
+struct GhastFloatGoal;
+impl Goal<MonsterGoalContext> for GhastFloatGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Move])
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        match ctx.ghast.wanted {
+            None => true,
+            Some(wanted) => {
+                let distance = wanted.distance_squared(ctx.body.position);
+                distance < 1.0 || distance > 3600.0
+            }
+        }
+    }
+    fn can_continue(&mut self, _ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        false
+    }
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        let offsets = [ctx.random.next_float(), ctx.random.next_float(), ctx.random.next_float()];
+        ctx.ghast.wanted = Some(crate::ghast::suitable_fly_to(ctx.body.position, offsets));
+    }
+}
+
+#[derive(Clone)]
+struct GhastLookGoal;
+impl Goal<MonsterGoalContext> for GhastLookGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Look])
+    }
+    fn can_start(&mut self, _ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        true
+    }
+    fn every_tick(&self) -> bool {
+        true
+    }
+    fn tick(&mut self, ctx: &mut MonsterGoalContext) {
+        let position = ctx.body.position;
+        match ctx.target() {
+            None => {
+                let v = ctx.body.velocity;
+                ctx.yaw = crate::ghast::face_toward(v.x, v.z);
+            }
+            Some(target) if target.position.distance_squared(position) < 4096.0 => {
+                ctx.yaw = crate::ghast::face_toward(target.position.x - position.x, target.position.z - position.z);
+            }
+            Some(_) => {}
+        }
+    }
+}
+
+#[derive(Clone)]
+struct GhastShootGoal;
+impl Goal<MonsterGoalContext> for GhastShootGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[])
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        ctx.target().is_some()
+    }
+    fn every_tick(&self) -> bool {
+        true
+    }
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        ctx.ghast.charge_time = 0;
+    }
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        ctx.ghast.charging = false;
+    }
+    fn tick_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        let Some(target) = ctx.target() else { return };
+        let position = ctx.body.position;
+        if target.position.distance_squared(position) < 4096.0 && ctx.sees(world, target) {
+            ctx.ghast.charge_time += 1;
+            if ctx.ghast.charge_time == 10 {
+                ctx.ghast.warn = true;
+            }
+            if ctx.ghast.charge_time == 20 {
+                let view = crate::ghast::view_vector(ctx.yaw);
+                let middle = position.y + f64::from(ctx.body.height) * 0.5;
+                let start = DVec3::new(position.x + view.x * 4.0, middle + 0.5, position.z + view.z * 4.0);
+                let aim = DVec3::new(target.position.x - start.x, target.position.y + f64::from(target.height) * 0.5 - (0.5 + middle), target.position.z - start.z);
+                ctx.ghast.shot = Some((aim, start));
+                ctx.ghast.charge_time = -40;
+            }
+        } else if ctx.ghast.charge_time > 0 {
+            ctx.ghast.charge_time -= 1;
+        }
+        ctx.ghast.charging = ctx.ghast.charge_time > 10;
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct BlazeState {
+    pub attack_step: i32,
+    pub attack_time: i32,
+    pub last_seen: i32,
+    pub charged: bool,
+    pub wanted: Option<DVec3>,
+    pub shots: Vec<DVec3>,
+}
+
+pub fn blaze_goals() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = GoalSelector::default();
+    selector.add(4, BlazeAttackGoal);
+    selector.add(5, NeverGoal { controls: &[Control::Move] });
+    selector.add(7, StrollGoal { speed: 1.0, probability: 0.0 });
+    selector.add(8, LookAtPlayerGoal { range: 8.0 });
+    selector.add(8, RandomLookGoal);
+    selector
+}
+
+pub fn blaze_targets() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = GoalSelector::default();
+    selector.add(1, HurtByTargetGoal { timestamp: 0, unseen_ticks: 0, target_mob: None, alert_others: true });
+    selector.add(2, NearestTargetGoal { interval: 5, prey: Prey::Player, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
+    selector
+}
+
+#[derive(Clone)]
+struct BlazeAttackGoal;
+impl Goal<MonsterGoalContext> for BlazeAttackGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Move, Control::Look])
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        ctx.target().is_some()
+    }
+    fn every_tick(&self) -> bool {
+        true
+    }
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        ctx.blaze.attack_step = 0;
+    }
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        ctx.blaze.charged = false;
+        ctx.blaze.last_seen = 0;
+    }
+    fn tick_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        ctx.blaze.attack_time -= 1;
+        let Some(target) = ctx.target() else { return };
+        let seen = ctx.sees(world, target);
+        if seen {
+            ctx.blaze.last_seen = 0;
+        } else {
+            ctx.blaze.last_seen += 1;
+        }
+        let position = ctx.body.position;
+        let distance = position.distance_squared(target.position);
+        if distance < 4.0 {
+            if !seen {
+                return;
+            }
+            if ctx.blaze.attack_time <= 0 {
+                ctx.blaze.attack_time = 20;
+                ctx.attack = Some(target.target);
+            }
+            ctx.blaze.wanted = Some(target.position);
+        } else if distance < ctx.follow_range * ctx.follow_range && seen {
+            let middle = position.y + f64::from(ctx.body.height) * 0.5;
+            let delta = DVec3::new(target.position.x - position.x, target.position.y + f64::from(target.height) * 0.5 - middle, target.position.z - position.z);
+            if ctx.blaze.attack_time <= 0 {
+                ctx.blaze.attack_step += 1;
+                if ctx.blaze.attack_step == 1 {
+                    ctx.blaze.attack_time = 60;
+                    ctx.blaze.charged = true;
+                } else if ctx.blaze.attack_step <= 4 {
+                    ctx.blaze.attack_time = 6;
+                } else {
+                    ctx.blaze.attack_time = 100;
+                    ctx.blaze.attack_step = 0;
+                    ctx.blaze.charged = false;
+                }
+                if ctx.blaze.attack_step > 1 {
+                    let aim = crate::blaze::small_fireball_aim(delta, distance, &mut ctx.random);
+                    ctx.blaze.shots.push(aim);
+                }
+            }
+            let eye = target.position + DVec3::new(0.0, f64::from(target.eye_height), 0.0);
+            ctx.look_control.set_look_at_with_limits(eye, 10.0, 10.0);
+        } else if ctx.blaze.last_seen < 5 {
+            ctx.blaze.wanted = Some(target.position);
+        }
+    }
 }
 
 /// `RestrictSunGoal`: in daylight, bareheaded, the mob's paths keep out of
@@ -1383,7 +1669,7 @@ pub fn zombie_goals() -> GoalSelector<MonsterGoalContext> {
     selector.add(8, RandomLookGoal);
     // `SpearUseGoal` needs a kinetic weapon in hand.
     selector.add(2, NeverGoal { controls: &[Control::Move, Control::Look] });
-    selector.add(3, MeleeAttackGoal { hits: true, raises_arms: true, follow_unseen: false, gives_up_in_light: false });
+    selector.add(3, MeleeAttackGoal { hits: true, raises_arms: true, follow_unseen: false, gives_up_in_light: false, speed: 1.0 });
     selector.add(6, VillageGoal::default());
     selector.add(7, StrollGoal { speed: 1.0, probability: 0.001 });
     selector
@@ -1397,6 +1683,51 @@ pub fn zombie_targets() -> GoalSelector<MonsterGoalContext> {
     selector.add(3, NearestTargetGoal { interval: 5, prey: Prey::Golem, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
     selector.add(5, NearestTargetGoal { interval: 5, prey: Prey::Absent, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
     selector
+}
+
+pub fn zombified_piglin_goals() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = GoalSelector::default();
+    selector.add(4, TurtleEggGoal);
+    selector.add(8, LookAtPlayerGoal { range: 8.0 });
+    selector.add(8, RandomLookGoal);
+    selector.add(1, NeverGoal { controls: &[Control::Move, Control::Look] });
+    selector.add(2, MeleeAttackGoal { hits: true, raises_arms: true, follow_unseen: false, gives_up_in_light: false, speed: 1.0 });
+    selector.add(7, StrollGoal { speed: 1.0, probability: 0.001 });
+    selector
+}
+
+pub fn zombified_piglin_targets() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = GoalSelector::default();
+    selector.add(1, HurtByTargetGoal { timestamp: 0, unseen_ticks: 0, target_mob: None, alert_others: true });
+    selector.add(2, NearestTargetGoal { interval: 5, prey: Prey::AngryPlayer, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
+    selector.add(3, NeverGoal { controls: &[] });
+    selector
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PiglinStep {
+    pub alert: Option<Target>,
+    pub anger_sound: bool,
+}
+
+pub fn zombified_piglin_step(ctx: &mut MonsterGoalContext, world: &dyn World) -> PiglinStep {
+    let mut step = PiglinStep::default();
+    if ctx.angry() && ctx.enderman.first_anger_sound_in > 0 {
+        ctx.enderman.first_anger_sound_in -= 1;
+        step.anger_sound = ctx.enderman.first_anger_sound_in == 0;
+    }
+    update_enderman_anger(ctx);
+    if let Some(target) = ctx.target() {
+        if ctx.enderman.alert_in > 0 {
+            ctx.enderman.alert_in -= 1;
+        } else {
+            if ctx.sees(world, target) {
+                step.alert = Some(target.target);
+            }
+            ctx.enderman.alert_in = 80 + ctx.random.next_int(41) as i32;
+        }
+    }
+    step
 }
 
 #[derive(Clone)]
@@ -1629,6 +1960,7 @@ pub(crate) struct MeleeAttackGoal {
     pub(crate) raises_arms: bool,
     pub(crate) follow_unseen: bool,
     pub(crate) gives_up_in_light: bool,
+    pub(crate) speed: f64,
 }
 impl Goal<MonsterGoalContext> for MeleeAttackGoal {
     fn controls(&self) -> Controls {
@@ -1657,7 +1989,7 @@ impl Goal<MonsterGoalContext> for MeleeAttackGoal {
     }
     fn start(&mut self, ctx: &mut MonsterGoalContext) {
         let path = ctx.melee.path.take();
-        ctx.navigation.move_to(path, 1.0, ctx.body.position);
+        ctx.navigation.move_to(path, self.speed, ctx.body.position);
         ctx.melee.aggressive = true;
         ctx.melee.ticks_until_recalculation = 0;
         ctx.melee.ticks_until_attack = 0;
@@ -1687,7 +2019,7 @@ impl Goal<MonsterGoalContext> for MeleeAttackGoal {
                         ctx.melee.ticks_until_recalculation += 5;
                     }
                     let profile = ctx.profile();
-                    if !navigate_walk_to_entity(&ctx.body, &mut ctx.navigation, world, &profile, ctx.fluid, target.position, 1.0, 0) {
+                    if !navigate_walk_to_entity(&ctx.body, &mut ctx.navigation, world, &profile, ctx.fluid, target.position, self.speed, 0) {
                         ctx.melee.ticks_until_recalculation += 15;
                     }
                 }
@@ -1967,7 +2299,7 @@ pub fn enderman_goals() -> GoalSelector<MonsterGoalContext> {
     let mut selector = GoalSelector::default();
     selector.add(0, FloatGoal);
     selector.add(1, FreezeGoal { target: None });
-    selector.add(2, MeleeAttackGoal { hits: true, raises_arms: false, follow_unseen: false, gives_up_in_light: false });
+    selector.add(2, MeleeAttackGoal { hits: true, raises_arms: false, follow_unseen: false, gives_up_in_light: false, speed: 1.0 });
     selector.add(7, StrollGoal { speed: 1.0, probability: 0.0 });
     selector.add(8, LookAtPlayerGoal { range: 8.0 });
     selector.add(8, RandomLookGoal);

@@ -233,6 +233,10 @@ impl SpriteClock {
         self.animated.get()
     }
 
+    pub(crate) fn mark_animated(&self) {
+        self.animated.set(true);
+    }
+
     pub(crate) fn sprite(
         &self,
         packs: &PackStack,

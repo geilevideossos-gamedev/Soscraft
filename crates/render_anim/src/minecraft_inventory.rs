@@ -54,6 +54,7 @@ pub(crate) struct InventoryUi {
     pub(crate) animation_tick: u64,
     animated: AnimatedIcons,
     pub(crate) creative: crate::minecraft_creative::CreativeUi,
+    pub(crate) dials: minecraft_terrain::dials::Dials,
 }
 
 #[derive(Default)]
@@ -736,7 +737,7 @@ impl InventoryUi {
                     continue;
                 }
                 let clock = minecraft_terrain::item_icon::SpriteClock::at(animation_tick);
-                let Ok(Some(rendered)) = minecraft_terrain::item_icons::item_icon_at(packs, id, icon as usize, &clock) else { continue };
+                let Ok(Some(rendered)) = minecraft_terrain::item_icons::item_icon_at(packs, self.dials.key(id), icon as usize, &clock) else { continue };
                 let rendered = image::imageops::resize(&rendered, icon, icon, image::imageops::FilterType::Nearest);
                 self.animated.draw(cell, &rendered, icon);
             }
@@ -758,7 +759,7 @@ impl InventoryUi {
                 continue;
             }
             let clock = minecraft_terrain::item_icon::SpriteClock::at(animation_tick);
-            match minecraft_terrain::item_icons::item_icon_at(packs, &id, icon as usize, &clock) {
+            match minecraft_terrain::item_icons::item_icon_at(packs, self.dials.key(&id), icon as usize, &clock) {
                 Ok(Some(rendered)) => {
                     if clock.animated() && self.animated.add(id.clone(), &image::imageops::resize(&rendered, icon, icon, image::imageops::FilterType::Nearest), icon) {
                         continue;

@@ -193,6 +193,10 @@ pub(crate) fn draw_hud(
         let y = if ui.game_mode.shows_vitals() { h - 59 } else { h - 45 };
         p.styled_text(false, name, x, y, color, true, italic);
     }
+    if let Some(message) = ui.overlay_message.as_ref().filter(|m| m.alpha() > 8) {
+        let x = (p.space.width - p.width(&message.text)) / 2;
+        p.text(&message.text, x, h - 72, (message.alpha() << 24) | 0x00ff_ffff, true);
+    }
 }
 
 #[cfg(test)]
@@ -239,6 +243,22 @@ mod tests {
         assert_eq!(highlight.shown(), None);
         highlight.tick(stack("minecraft:stone", "Stone"));
         assert_eq!(highlight.shown(), Some(("Stone", 255)));
+    }
+
+    #[test]
+    fn the_overlay_message_holds_for_two_seconds_then_fades_over_one() {
+        let at = |ticks| {
+            frame::minecraft_ui::McOverlayMessage {
+                text: "Hello".into(),
+                ticks,
+            }
+            .alpha()
+        };
+        assert_eq!(at(frame::minecraft_ui::McOverlayMessage::TICKS), 255);
+        assert_eq!(at(20.0), 255);
+        assert_eq!(at(10.0), 127);
+        assert_eq!(at(0.5), 6);
+        assert_eq!(at(-1.0), 0);
     }
 
     #[test]

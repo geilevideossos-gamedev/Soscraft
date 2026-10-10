@@ -549,6 +549,7 @@ fn update(
                     level.terrain.stream.player_spawn
                 );
                 runtime.fire_frames = fire_frames(&world.packs).map(|(image, frames)| (images.add(image), frames));
+                ui.portal_frames = crate::minecraft_portal::frames(&world.packs, &mut images);
                 runtime.loading_backgrounds = Some(crate::minecraft_loading::LoadingBackgrounds::load(&world.packs, &mut images));
                 runtime.server = Some(server);
                 runtime.local = Some(uuid);
@@ -644,10 +645,11 @@ fn update(
     };
     if player.switching.is_some() {
         if player.switching.is_some_and(|switch| switch.respawn) {
+            let consume = player.switching.is_some_and(|switch| !switch.keep_charge);
             if let Some(switch) = player.switching.as_mut() {
                 switch.respawn = false;
             }
-            if minecraft_survival::respawn::respawn_in(globals, level, player, |_| None) {
+            if minecraft_survival::respawn_block::return_to_block(globals, level, player, consume) {
                 show_chat(&mut ui.chat, inventory_ui, &world.packs, &[minecraft_survival::player::missing_respawn_message()]);
             }
             if player.switching.is_some_and(|switch| !switch.left) {
@@ -660,6 +662,7 @@ fn update(
         if player.arrival.is_none() && player.place.is_none_or(|place| place.dimension != player.dimension) {
             player.arrival = Some(minecraft_survival::respawn::level_spawn(&globals.spawn, level));
         }
+        crate::minecraft_portal::arriving(player, sounds.as_mut(), &world.packs);
         let ps = presented.player(local.0).filter(|ps| ps.pm_type == 0);
         if let Some(ps) = ps.filter(|_| player.arrival.is_some()) {
             place_player(player, &mut authority.0, local.0, ps, origin, spawn_gate, now_ms);
@@ -695,7 +698,7 @@ fn update(
             place_player(player, &mut authority.0, local.0, ps, origin, spawn_gate, now_ms);
         }
     }
-    crate::minecraft_end::step(player, levels, globals, presented.player(local.0).filter(|ps| ps.pm_type == 0).map(|ps| sim::voxel::to_block(origin, ps.origin)), time.delta_secs_f64());
+    crate::minecraft_end::step(player, levels);
     crate::minecraft_elytra::step(player, &mut authority.0, local.0, origin, time.delta_secs_f64(), sounds.as_mut(), &world.packs);
     let arriving_at = player.arrival.map(|place| place.feet);
     let host_alive = presented.player(local.0).is_some_and(|ps| ps.pm_type == 0);
@@ -714,6 +717,7 @@ fn update(
         puppet.active = false;
         return;
     };
+    crate::minecraft_portal::step(player, levels, globals, presented.player(local.0).filter(|ps| ps.pm_type == 0).map(|ps| sim::voxel::to_block(origin, ps.origin)), time.delta_secs_f64(), sounds.as_mut(), &world.packs, &mut ui);
     if player.switching.is_some_and(|switch| !switch.left) {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
         ui.active = false;
@@ -727,12 +731,14 @@ fn update(
         puppet.active = false;
         return;
     };
-    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, arrived, ender, .. } = player;
+    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, arrived, ender, respawn, .. } = player;
     let minecraft_survival::level::Level { entities, containers, terrain, openers, dimension, .. } = level;
+    minecraft_terrain::cow_render::set_nether_entity_lighting(terrain.rules.nether_cardinal_light);
     if !delivered.is_empty() {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
     }
     *animation_clock += time.delta_secs_f64();
+    crate::minecraft_respawn::fade_overlay(&mut ui, time.delta_secs_f64());
     if *animation_clock >= TICK_SECONDS {
         *animation_clock %= TICK_SECONDS;
         let patches = atlas_animation.tick(&world.atlas);
@@ -797,6 +803,7 @@ fn update(
 
     // Minecraft's yaw: 0 facing +Z (map -Y), turning towards -X.
     let mc_yaw = minecraft_yaw(ps.viewangles[1]);
+    inventory_ui.dials.step(time.delta_secs_f64(), &world.packs, &minecraft_terrain::dials::DialContext { dimension: *dimension, feet, yaw: mc_yaw, spawn: Some((minecraft_survival::save::spawn_dimension(&globals.spawn), globals.spawn.pos)), last_death: player.last_death.map(|death| (death.dimension, death.pos)), sun_angle: terrain.environment.sun_angle_degrees(1.0) });
     let aim = {
         let mut aim = minecraftoss_player::Player::new(glam::DVec3::from_array(feet));
         aim.yaw = f64::from(mc_yaw);
@@ -1244,6 +1251,11 @@ fn update(
                     }
                     hand.swing = Some(0.0);
                 }
+                HandUse::Consumed
+            } else if let Some(respawn_use) = (!(player.crouching && has_item)).then(|| crate::minecraft_respawn::use_block(&player, terrain, &globals.registries, *dimension, crate::minecraft_respawn::Hand { main, held: held.as_ref().map(|stack| stack.id.as_str()), offhand: inventory.slots[minecraft_survival::offhand::OFFHAND].as_ref().map(|stack| stack.id.as_str()) })).flatten() {
+                write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, respawn_use.writes.clone());
+                crate::minecraft_respawn::finish(respawn_use, entities, respawn, inventory, slot, game_mode.consumes_items(), sounds.as_mut(), &world.packs, origin, &mut ui, inventory_ui);
+                hand.swing = Some(0.0);
                 HandUse::Consumed
             } else if let Some(pos) = used {
                 hand.swing = Some(0.0);
@@ -2081,7 +2093,7 @@ fn update(
                     .map(|eating| crate::minecraft_hand::eat_transform(eating.remaining_ticks() as f32, (hand.clock / TICK_SECONDS) as f32, eating.info.consume_ticks, arm));
                 let swung = if using || eat.is_some() || hand.swing_offhand != (slot == minecraft_survival::offhand::OFFHAND) { 0.0 } else { swing };
                 let glint = minecraft_terrain::glint::has_glint(&stack);
-                posed.push((eat.unwrap_or(glam::Mat4::IDENTITY) * crate::minecraft_hand::item_pose(display, swung, 0.0, arm), stack.id, glint));
+                posed.push((eat.unwrap_or(glam::Mat4::IDENTITY) * crate::minecraft_hand::item_pose(display, swung, 0.0, arm), inventory_ui.dials.key(&stack.id).to_owned(), glint));
             }
             let mesh = entities.held_item_mesh(&posed, eye_light_at, &world.packs, &world.atlas, light);
             let vertices = minecraft_terrain::mesh::section_vertices(&mesh);
@@ -2098,7 +2110,7 @@ fn update(
             .to_cols_array();
         }
 
-        sim::voxel::set_mob_boxes(entities.boxes());
+        sim::voxel::set_mob_boxes(entities.shot_boxes());
         entities.tick_scene(&terrain.scene, mob_ticks);
         let sky_darken = (15.0 - terrain.environment.sky_light_level()).clamp(0.0, 15.0) as u8;
         let campfire_items: Vec<_> = containers
@@ -2602,6 +2614,7 @@ fn mc_vitals(vitals: minecraft_survival::survival::Vitals) -> frame::McVitals {
         experience_progress: vitals.experience_progress,
         on_fire: vitals.on_fire,
         eye_in_lava: vitals.eye_in_lava,
+        withered: vitals.withered,
     }
 }
 
@@ -2716,6 +2729,7 @@ fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u
     server.prepare_respawns();
     server.open_levels(VIEW_DISTANCE);
     let failed: Vec<(Dimension, String)> = server.finish_opening().into_iter().filter_map(|(dimension, opened)| opened.err().map(|error| (dimension, error))).collect();
+    minecraft_survival::portal_forcer::arrive_through_portals(server);
     let Some(player) = server.players.get(local) else {
         return failed;
     };

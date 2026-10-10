@@ -69,6 +69,10 @@ pub fn append_zombies<'a>(
             append_zombie_villager(mesh, entity, &pose, atlas, light);
             continue;
         }
+        if zombie.kind == ZombieKind::ZombifiedPiglin {
+            held.extend(crate::piglin_render::append_zombified_piglin(mesh, &mut marks, entity, &pose, atlas, light));
+            continue;
+        }
         let id = ResourceId::parse(match (zombie.kind, zombie.baby) {
             (ZombieKind::Zombie, false) => "minecraft:entity/zombie/zombie",
             (ZombieKind::Zombie, true) => "minecraft:entity/zombie/zombie_baby",
@@ -77,6 +81,7 @@ pub fn append_zombies<'a>(
             (ZombieKind::Husk, false) => "minecraft:entity/zombie/husk",
             (ZombieKind::Husk, true) => "minecraft:entity/zombie/husk_baby",
             (ZombieKind::ZombieVillager, _) => unreachable!("drawn by append_zombie_villager"),
+            (ZombieKind::ZombifiedPiglin, _) => unreachable!("drawn by append_zombified_piglin"),
         })
         .unwrap();
         let region = atlas.entity_region(&id);

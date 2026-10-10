@@ -63,6 +63,8 @@ pub enum MobAttack {
     Melee,
     Arrow,
     Explosion,
+    Fireball,
+    SmallFireball,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,8 +77,10 @@ pub enum DamageCause {
     Drown,
     Starve,
     Magic,
+    Wither,
     Kill,
     OutOfWorld,
+    BadRespawnPoint,
     Mob {
         id: u64,
         type_id: &'static str,
@@ -93,7 +97,7 @@ impl DamageCause {
         let type_id = type_id.or(match attack {
             MobAttack::Explosion => Some("minecraft:creeper"),
             MobAttack::Arrow => Some(OWNERLESS_ARROW),
-            MobAttack::Melee => None,
+            MobAttack::Melee | MobAttack::Fireball | MobAttack::SmallFireball => None,
         });
         match (source, type_id) {
             (Some(id), Some(type_id)) => Self::Mob {
@@ -133,8 +137,10 @@ impl DamageCause {
             Self::Drown => "drown",
             Self::Starve => "starve",
             Self::Magic => "magic",
+            Self::Wither => "wither",
             Self::Kill => "genericKill",
             Self::OutOfWorld => "outOfWorld",
+            Self::BadRespawnPoint => "badRespawnPoint",
             Self::Mob {
                 attack: MobAttack::Melee,
                 ..
@@ -147,6 +153,48 @@ impl DamageCause {
                 attack: MobAttack::Explosion,
                 ..
             } => "explosion.player",
+            Self::Mob {
+                attack: MobAttack::Fireball | MobAttack::SmallFireball,
+                ..
+            } => "fireball",
+        }
+    }
+
+    pub fn burns(self) -> bool {
+        matches!(
+            self,
+            Self::Mob {
+                attack: MobAttack::Fireball | MobAttack::SmallFireball,
+                ..
+            }
+        )
+    }
+
+    pub fn ignites(self) -> Option<i32> {
+        match self {
+            Self::Mob {
+                attack: MobAttack::SmallFireball,
+                ..
+            } => Some(minecraftoss_entities::fireball::SMALL_IGNITE_TICKS),
+            _ => None,
+        }
+    }
+
+    pub fn melee_effect(self) -> Option<(minecraftoss_player::survival::EffectKind, u32)> {
+        match self {
+            Self::Mob {
+                type_id: "minecraft:wither_skeleton",
+                attack: MobAttack::Melee,
+                ..
+            } => Some((minecraftoss_player::survival::EffectKind::Wither, 200)),
+            _ => None,
+        }
+    }
+
+    fn link_key(self) -> Option<&'static str> {
+        match self {
+            Self::BadRespawnPoint => Some("death.attack.badRespawnPoint.link"),
+            _ => None,
         }
     }
 
@@ -322,6 +370,13 @@ impl CombatTracker {
             };
         }
         let key = format!("death.attack.{}", last.cause.message_id());
+        if last.cause.link_key().is_some() {
+            return DeathKey {
+                key: format!("{key}.message"),
+                attacker: None,
+                cause: Some(last.cause),
+            };
+        }
         if let Some(attacker) = last.cause.entity() {
             return DeathKey {
                 key,
@@ -353,7 +408,16 @@ impl CombatTracker {
             .get(&death.key)
             .cloned()
             .unwrap_or_else(|| death.key.clone());
-        let attacker = death.attacker.map(|type_id| entity_name(language, type_id));
+        let attacker = death
+            .attacker
+            .map(|type_id| entity_name(language, type_id))
+            .or_else(|| {
+                let key = death.cause?.link_key()?;
+                Some(format!(
+                    "[{}]",
+                    language.get(key).map_or(key, String::as_str)
+                ))
+            });
         let message = attacker
             .as_deref()
             .map_or_else(|| template.clone(), |name| template.replace(ATTACKER, name));
@@ -543,6 +607,7 @@ mod tests {
                 "%1$s walked into the danger zone due to %2$s",
             ),
             ("death.attack.magic", "%1$s was killed by magic"),
+            ("death.attack.wither", "%1$s withered away"),
             ("death.attack.outOfWorld", "%1$s fell out of the world"),
             ("death.attack.flyIntoWall", "%1$s experienced kinetic energy"),
             (
@@ -560,9 +625,20 @@ mod tests {
             ("entity.minecraft.skeleton", "Skeleton"),
             ("entity.minecraft.zombie", "Zombie"),
             ("entity.minecraft.creeper", "Creeper"),
+            ("entity.minecraft.ghast", "Ghast"),
+            ("entity.minecraft.blaze", "Blaze"),
+            ("death.attack.fireball", "%1$s was fireballed by %2$s"),
             ("entity.minecraft.arrow", "Arrow"),
             ("block.minecraft.magma_block", "Magma Block"),
             ("block.minecraft.lava", "Lava"),
+            (
+                "death.attack.badRespawnPoint.message",
+                "%1$s was killed by %2$s",
+            ),
+            (
+                "death.attack.badRespawnPoint.link",
+                "Intentional Game Design",
+            ),
         ]
         .into_iter()
         .map(|(key, text)| (key.to_owned(), text.to_owned()))
@@ -589,8 +665,37 @@ mod tests {
     }
 
     #[test]
+    fn a_bed_blast_is_intentional_game_design_even_after_a_mob_hit() {
+        let mut tracker = CombatTracker::default();
+        tracker.hurt_by(1, zombie_bite());
+        tracker.record(1, zombie_bite(), 3.0, None, 0.0);
+        tracker.record(2, DamageCause::BadRespawnPoint, 20.0, None, 0.0);
+        assert_eq!(
+            line(&tracker),
+            says(
+                "%1$s was killed by [Intentional Game Design]",
+                "[Intentional Game Design]"
+            )
+        );
+    }
+
+    #[test]
     fn no_damage_dies_generically() {
         assert_eq!(line(&CombatTracker::default()), says("%1$s died", "died"));
+    }
+
+    #[test]
+    fn wither_withers_away_and_only_a_wither_skeleton_s_blow_brings_it() {
+        let mut tracker = CombatTracker::default();
+        tracker.record(1, DamageCause::Wither, 1.0, None, 0.0);
+        assert_eq!(line(&tracker), says("%1$s withered away", "withered away"));
+        let blow = DamageCause::mob(MobAttack::Melee, Some(4), Some("minecraft:wither_skeleton"));
+        assert_eq!(
+            blow.melee_effect(),
+            Some((minecraftoss_player::survival::EffectKind::Wither, 200))
+        );
+        assert_eq!(zombie_bite().melee_effect(), None);
+        assert_eq!(skeleton_arrow().melee_effect(), None);
     }
 
     #[test]
@@ -656,6 +761,25 @@ mod tests {
         assert_eq!(line(&tracker), says("%1$s was shot by Arrow", "Arrow"));
         tracker.record(2, DamageCause::Hazard(Hazard::Lava), 4.0, None, 0.0);
         assert_eq!(line(&tracker), says("%1$s tried to swim in lava", "Lava"));
+    }
+
+    #[test]
+    fn a_ghast_fireball_fireballs_the_player_and_its_blast_blows_them_up() {
+        let mut tracker = CombatTracker::default();
+        let direct = DamageCause::mob(MobAttack::Fireball, Some(5), Some("minecraft:ghast"));
+        assert!(direct.burns());
+        tracker.record(1, direct, 6.0, None, 0.0);
+        assert_eq!(line(&tracker), says("%1$s was fireballed by Ghast", "Ghast"));
+        let blast = DamageCause::mob(MobAttack::Explosion, Some(5), Some("minecraft:ghast"));
+        assert!(!blast.burns());
+        tracker.record(1, blast, 9.0, None, 0.0);
+        assert_eq!(line(&tracker), says("%1$s was blown up by Ghast", "Ghast"));
+        assert_eq!(DamageCause::mob(MobAttack::Fireball, None, None), DamageCause::Generic);
+        let mut tracker = CombatTracker::default();
+        let small = DamageCause::mob(MobAttack::SmallFireball, Some(6), Some("minecraft:blaze"));
+        assert_eq!((small.burns(), small.ignites()), (true, Some(100)));
+        tracker.record(1, small, 5.0, None, 0.0);
+        assert_eq!(line(&tracker), says("%1$s was fireballed by Blaze", "Blaze"));
     }
 
     #[test]

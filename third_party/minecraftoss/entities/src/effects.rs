@@ -24,10 +24,11 @@ pub enum MobEffect {
     WaterBreathing,
     Weakness,
     Poison,
+    Wither,
 }
 
 impl MobEffect {
-    pub const ALL: [MobEffect; 9] = [
+    pub const ALL: [MobEffect; 10] = [
         Self::Speed,
         Self::Slowness,
         Self::InstantHealth,
@@ -37,6 +38,7 @@ impl MobEffect {
         Self::WaterBreathing,
         Self::Weakness,
         Self::Poison,
+        Self::Wither,
     ];
 
     /// Its registry ID.
@@ -51,6 +53,7 @@ impl MobEffect {
             Self::WaterBreathing => "minecraft:water_breathing",
             Self::Weakness => "minecraft:weakness",
             Self::Poison => "minecraft:poison",
+            Self::Wither => "minecraft:wither",
         }
     }
 
@@ -76,6 +79,7 @@ impl MobEffect {
             Self::InstantHealth | Self::InstantDamage => ticks >= 1,
             Self::Poison => every(25),
             Self::Regeneration => every(50),
+            Self::Wither => every(40),
             _ => false,
         }
     }
@@ -329,6 +333,7 @@ fn effect_work(effect: MobEffect, amplifier: i32, inverted: bool) -> Option<Effe
         MobEffect::InstantDamage => Some(if inverted { heal() } else { harm() }),
         MobEffect::Poison => Some(EffectWork::Poison),
         MobEffect::Regeneration => Some(EffectWork::Regenerate),
+        MobEffect::Wither => Some(EffectWork::HurtMagic(1.0)),
         _ => None,
     }
 }

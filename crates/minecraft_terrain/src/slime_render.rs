@@ -50,6 +50,9 @@ pub fn append_slimes<'a>(
     let mut marks = Vec::new();
     for entity in slimes {
         let slime = &entity.slime;
+        if slime.magma {
+            continue;
+        }
         let Some(mob) = poses.pose(entity.id, partial) else { continue };
         marks.push((mesh.vertices.len(), mob.overlay(0.0)));
         let feet = mob.feet;

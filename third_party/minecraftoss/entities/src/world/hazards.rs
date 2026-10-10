@@ -19,15 +19,49 @@ pub(crate) trait Exposed {
     fn hurt_hazard(&mut self, hazard: Hazard, amount: f32, world: &dyn World, game_time: i64) -> bool;
     fn random(&mut self) -> &mut LegacyRandom;
     fn voices(&mut self) -> &mut Vec<(Voice, DVec3)>;
+    fn fire_immune(&self) -> bool {
+        false
+    }
+}
+
+pub fn fire_immune(kind: &str) -> bool {
+    matches!(
+        kind,
+        "minecraft:area_effect_cloud"
+            | "minecraft:blaze"
+            | "minecraft:ender_dragon"
+            | "minecraft:end_crystal"
+            | "minecraft:ghast"
+            | "minecraft:magma_cube"
+            | "minecraft:shulker"
+            | "minecraft:strider"
+            | "minecraft:tnt"
+            | "minecraft:vex"
+            | "minecraft:warden"
+            | "minecraft:wither"
+            | "minecraft:wither_skeleton"
+            | "minecraft:zoglin"
+            | "minecraft:zombified_piglin"
+    )
+}
+
+fn hurt<W: World>(mob: &mut impl Exposed, hazard: Hazard, amount: f32, world: &W, game_time: i64) -> bool {
+    if hazard.is_fire() && mob.fire_immune() {
+        return false;
+    }
+    mob.hurt_hazard(hazard, amount, world, game_time)
 }
 
 /// `Entity.baseTick`'s burning: a second's damage (`on_fire`) out of lava
 /// on each twentieth tick, then a tick less; and in lava the fall distance
 /// halves.
 pub(crate) fn burn<W: World>(mob: &mut impl Exposed, world: &W, game_time: i64) {
+    let immune = mob.fire_immune();
     let body = mob.body();
     let in_lava = FluidFrame::sample(world, body.position, body.width, body.height).in_lava();
-    if body.fire_ticks > 0 {
+    if body.fire_ticks > 0 && immune {
+        body.fire_ticks = 0;
+    } else if body.fire_ticks > 0 {
         if body.fire_ticks % 20 == 0 && !in_lava {
             mob.hurt_hazard(Hazard::OnFire, 1.0, world, game_time);
         }
@@ -55,6 +89,7 @@ pub(crate) fn blocks_act<W: World>(mob: &mut impl Exposed, world: &W, old_positi
     let moves = std::mem::take(&mut body.moves);
     let effects = block_effects(world, body, old_position, &moves);
     let before = body.fire_ticks;
+    let immune = mob.fire_immune();
     let was_on_fire = before > 0;
     for effect in effects {
         if !mob.alive() {
@@ -62,7 +97,7 @@ pub(crate) fn blocks_act<W: World>(mob: &mut impl Exposed, world: &W, old_positi
         }
         match effect {
             BlockEffect::Hurt(hazard, amount) => {
-                mob.hurt_hazard(hazard, amount, world, game_time);
+                hurt(mob, hazard, amount, world, game_time);
             }
             BlockEffect::Stuck(multiplier) => {
                 let body = mob.body();
@@ -70,6 +105,7 @@ pub(crate) fn blocks_act<W: World>(mob: &mut impl Exposed, world: &W, old_positi
                 body.fall_distance = 0.0;
             }
             BlockEffect::ClearFreeze => {}
+            BlockEffect::FireIgnite | BlockEffect::LavaIgnite | BlockEffect::LavaHurt if immune => {}
             BlockEffect::FireIgnite => {
                 // `BaseFireBlock.fireIgnite`.
                 let body = mob.body();
@@ -89,7 +125,7 @@ pub(crate) fn blocks_act<W: World>(mob: &mut impl Exposed, world: &W, old_positi
                 body.fire_ticks = body.fire_ticks.min(0);
             }
             BlockEffect::FireHurt(amount) => {
-                mob.hurt_hazard(Hazard::InFire, amount, world, game_time);
+                hurt(mob, Hazard::InFire, amount, world, game_time);
             }
             BlockEffect::LavaHurt => {
                 if mob.hurt_hazard(Hazard::Lava, 4.0, world, game_time) {
@@ -137,6 +173,9 @@ fn animal_source(hazard: Hazard) -> DamageSourceKind {
 
 macro_rules! exposed {
     ($ty:ty, $mob:ident, |$e:ident, $h:ident, $a:ident, $w:ident, $t:ident| $hurt:expr) => {
+        exposed!($ty, $mob, |$e, $h, $a, $w, $t| $hurt, |_s| false);
+    };
+    ($ty:ty, $mob:ident, |$e:ident, $h:ident, $a:ident, $w:ident, $t:ident| $hurt:expr, |$s:ident| $immune:expr) => {
         impl Exposed for $ty {
             fn body(&mut self) -> &mut Body {
                 &mut self.$mob.body
@@ -158,15 +197,24 @@ macro_rules! exposed {
             fn voices(&mut self) -> &mut Vec<(Voice, DVec3)> {
                 &mut self.voices
             }
+            fn fire_immune(&self) -> bool {
+                let $s = self;
+                $immune
+            }
         }
     };
 }
 
-exposed!(ZombieEntity, zombie, |e, h, a, w, t| {
-    let amount = if h.bypasses_armor() { a } else { damage_after_armor(a, 2.0, 0.0) };
-    e.hurt(amount).applied
-});
-exposed!(SkeletonEntity, skeleton, |e, h, a, w, t| e.hurt(a).applied);
+exposed!(
+    ZombieEntity,
+    zombie,
+    |e, h, a, w, t| {
+        let amount = if h.bypasses_armor() { a } else { damage_after_armor(a, 2.0, 0.0) };
+        e.hurt(amount).applied
+    },
+    |s| fire_immune(s.zombie.kind.type_id())
+);
+exposed!(SkeletonEntity, skeleton, |e, h, a, w, t| e.hurt(a).applied, |s| fire_immune(s.skeleton.kind.type_id()));
 exposed!(CreeperEntity, creeper, |e, h, a, w, t| e.hurt(a).applied);
 exposed!(SpiderEntity, spider, |e, h, a, w, t| e.hurt(a).applied);
 exposed!(VillagerEntity, villager, |e, h, a, w, t| e.hurt_from(a, h.damage_type(), None, t).applied);
@@ -174,10 +222,12 @@ exposed!(BatEntity, bat, |e, h, a, w, t| e.hurt(a).applied);
 exposed!(CowEntity, cow, |e, h, a, w, t| e.hurt(a, animal_source(h)).applied);
 exposed!(PigEntity, pig, |e, h, a, w, t| e.hurt(a, animal_source(h)).applied);
 exposed!(ChickenEntity, chicken, |e, h, a, w, t| e.hurt_with_source(a, animal_source(h)).applied);
-exposed!(super::slimes::SlimeEntity, slime, |e, h, a, w, t| e.hurt(a).applied);
+exposed!(super::slimes::SlimeEntity, slime, |e, h, a, w, t| e.hurt(a).applied, |s| s.slime.magma);
 exposed!(super::endermen::EndermanEntity, enderman, |e, h, a, w, t| e.hurt_by_environment(a, w).applied);
 exposed!(super::golems::IronGolemEntity, golem, |e, h, a, w, t| e.hurt(a).applied);
 exposed!(super::wolves::WolfEntity, wolf, |e, h, a, w, t| e.hurt_from(a, h.damage_type(), None, t).applied);
+exposed!(super::ghasts::GhastEntity, ghast, |e, h, a, w, t| e.hurt(a).applied, |_s| true);
+exposed!(super::blazes::BlazeEntity, blaze, |e, h, a, w, t| e.hurt(a).applied, |_s| true);
 
 impl Exposed for SheepEntity {
     fn body(&mut self) -> &mut Body {
@@ -223,5 +273,80 @@ impl Exposed for super::witches::WitchEntity {
     }
     fn voices(&mut self) -> &mut Vec<(Voice, DVec3)> {
         &mut self.voices
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Air;
+    impl World for Air {
+        fn block(&self, _: minecraftoss_player::Pos) -> Option<Block> {
+            None
+        }
+        fn set_block(&mut self, _: minecraftoss_player::Pos, _: Option<Block>) {}
+    }
+
+    struct Mob {
+        body: Body,
+        immune: bool,
+        random: LegacyRandom,
+        voices: Vec<(Voice, DVec3)>,
+        hits: Vec<Hazard>,
+    }
+
+    impl Exposed for Mob {
+        fn body(&mut self) -> &mut Body {
+            &mut self.body
+        }
+        fn alive(&self) -> bool {
+            true
+        }
+        fn hurt_hazard(&mut self, hazard: Hazard, _amount: f32, _world: &dyn World, _game_time: i64) -> bool {
+            self.hits.push(hazard);
+            true
+        }
+        fn random(&mut self) -> &mut LegacyRandom {
+            &mut self.random
+        }
+        fn voices(&mut self) -> &mut Vec<(Voice, DVec3)> {
+            &mut self.voices
+        }
+        fn fire_immune(&self) -> bool {
+            self.immune
+        }
+    }
+
+    fn mob(immune: bool) -> Mob {
+        Mob { body: Body::new(DVec3::new(0.5, 64.0, 0.5), 0.6, 1.95), immune, random: LegacyRandom::new(0), voices: Vec::new(), hits: Vec::new() }
+    }
+
+    #[test]
+    fn the_nether_mobs_and_the_bosses_are_immune_to_fire() {
+        for kind in ["blaze", "ghast", "magma_cube", "strider", "wither_skeleton", "zoglin", "zombified_piglin", "ender_dragon", "wither", "shulker", "warden", "vex"] {
+            assert!(fire_immune(&format!("minecraft:{kind}")), "{kind}");
+        }
+        for kind in ["zombie", "skeleton", "piglin", "piglin_brute", "hoglin", "enderman", "slime", "husk"] {
+            assert!(!fire_immune(&format!("minecraft:{kind}")), "{kind}");
+        }
+    }
+
+    #[test]
+    fn a_fire_immune_mob_puts_its_fire_out_and_shrugs_off_fire_but_not_cactus() {
+        let mut burning = mob(false);
+        burning.body.fire_ticks = 40;
+        burn(&mut burning, &Air, 0);
+        assert_eq!((burning.body.fire_ticks, burning.hits.clone()), (39, vec![Hazard::OnFire]));
+        let mut immune = mob(true);
+        immune.body.fire_ticks = 40;
+        burn(&mut immune, &Air, 0);
+        assert_eq!((immune.body.fire_ticks, immune.hits.len()), (0, 0));
+        for hazard in [Hazard::InFire, Hazard::Lava, Hazard::HotFloor, Hazard::Campfire, Hazard::OnFire] {
+            assert!(!hurt(&mut immune, hazard, 4.0, &Air, 0), "{hazard:?}");
+            assert!(hurt(&mut burning, hazard, 4.0, &Air, 0), "{hazard:?}");
+        }
+        assert!(hurt(&mut immune, Hazard::Cactus, 1.0, &Air, 0));
+        assert_eq!(immune.hits, vec![Hazard::Cactus]);
     }
 }

@@ -7,30 +7,29 @@ use minecraft_survival::server::Globals;
 use minecraft_survival::the_end::Trip;
 use minecraft_terrain::terrain::Dimension;
 
-pub(crate) fn step(
-    player: &mut Player,
-    levels: &mut BTreeMap<Dimension, Level>,
-    globals: &Globals,
-    feet: Option<[f64; 3]>,
-    seconds: f64,
-) {
+pub(crate) fn step(player: &mut Player, levels: &mut BTreeMap<Dimension, Level>) {
     let Some(level) = levels.get_mut(&player.dimension) else {
         return;
     };
     arriving(player, level);
-    if !minecraft_survival::the_end::step(player, &level.terrain, feet, seconds) {
-        return;
-    }
+}
+
+pub(crate) fn travel(
+    player: &mut Player,
+    level: &Level,
+    globals: &Globals,
+    entry: (i32, i32, i32),
+) {
     match minecraft_survival::the_end::travel(globals, level, player) {
         Trip::IntoTheEnd => diag::info!(
             World,
             "Minecraft end portal at {:?} leads to minecraft:the_end",
-            feet
+            entry
         ),
         Trip::OutOfTheEnd(to) => diag::info!(
             World,
             "Minecraft exit portal at {:?} leads to the respawn point in {}",
-            feet,
+            entry,
             to.dimension_type()
         ),
     }

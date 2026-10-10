@@ -232,13 +232,13 @@ Natural spawns in 26.3 (biome attribute `gameplay/natural_mob_spawns`, 26.3 jar)
 How natural spawning treats them here:
 - Natural spawning only places types its `type_info` knows. Strider, enderman and skeleton are listed (`third_party/minecraftoss/world/src/natural_spawner.rs:274`, `:278`, `:283`).
 - Any other type is logged as unsupported and skipped (`third_party/minecraftoss/world/src/natural_spawner/spawning.rs:427-430`).
-- So a Nether level today would spawn endermen, skeletons and striders, and the striders would go dormant.
+- So a Nether level would spawn endermen and skeletons. **Correction (round 7):** striders never spawn, because natural spawning gives them `Rules::Other`, which logs their spawn rules as unsupported and refuses (`third_party/minecraftoss/world/src/natural_spawner/spawning.rs`, `Rules::Other`).
 
 | Mob | Server AI | Renderer | Status |
 | --- | --- | --- | --- |
 | Enderman | `third_party/minecraftoss/entities/src/enderman.rs`, anger at `third_party/minecraftoss/entities/src/monster_ai.rs:2198`, simulated (`crates/minecraft_terrain/src/server_mobs.rs:395`) | `crates/minecraft_terrain/src/enderman_render.rs` | present. It covers every End natural spawn. |
 | Skeleton (soul sand valley) | simulated (`crates/minecraft_terrain/src/server_mobs.rs:403`) | `crates/minecraft_terrain/src/skeleton_render.rs` | present |
-| Strider | none. `InLava` placement exists (`third_party/minecraftoss/world/src/natural_spawner.rs:274`), and so does `can_stand_on_fluid` (`third_party/minecraftoss/entities/src/walk_path.rs:28`) | none | missing. Spawns, then goes dormant. |
+| Strider | none. `InLava` placement exists (`third_party/minecraftoss/world/src/natural_spawner.rs:274`), and so does `can_stand_on_fluid` (`third_party/minecraftoss/entities/src/walk_path.rs:28`) | none | missing. Never spawns (see the correction above). |
 | Zombified piglin | none. `ZombieKind` has no variant (`third_party/minecraftoss/entities/src/zombie.rs:8-16`). Reuse `zombie_goals` (`third_party/minecraftoss/entities/src/monster_ai.rs:1379`) and the enderman anger | none | missing |
 | Magma cube | none. Reuse the slime (`third_party/minecraftoss/entities/src/slime.rs`, `slime_goals` at `third_party/minecraftoss/entities/src/monster_ai.rs:977`) | none. `crates/minecraft_terrain/src/slime_render.rs` can be adapted (vanilla `MagmaCubeModel` has 8 segments on a 64x64 sheet) | missing, close to slime |
 | Ghast + fireball | none. There is only ground navigation (`third_party/minecraftoss/entities/src/navigation.rs:255`), and arrows are the only projectile (`third_party/minecraftoss/entities/src/projectile.rs:13`) | none | missing |

@@ -35,6 +35,7 @@ pub struct Switch {
     pub arrival: Option<Place>,
     pub reason: LoadingReason,
     pub respawn: bool,
+    pub keep_charge: bool,
     pub left: bool,
 }
 
@@ -51,6 +52,7 @@ impl Switch {
             arrival: arrival.filter(|place| place.dimension == to),
             reason,
             respawn: false,
+            keep_charge: false,
             left: false,
         }
     }

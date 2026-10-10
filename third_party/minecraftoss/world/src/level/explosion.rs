@@ -17,7 +17,11 @@ use super::{update, Level};
 use minecraftoss_core::loot::LootParams;
 use minecraftoss_core::random::RandomSource;
 use minecraftoss_core::{BlockPos, BlockStateId};
+use minecraftoss_generator::feature::update::base_fire_state;
+use minecraftoss_generator::feature::Ctx;
 use std::collections::HashSet;
+
+const WATER_RESISTANCE: f32 = 100.0;
 
 /// `Explosion.BlockInteraction`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,15 +110,46 @@ impl Level<'_> {
 
     /// `ServerExplosion.explode`; returns the number of blocks it picked.
     pub fn explode(&mut self, ex: Explosion) -> usize {
-        let to_blow = self.exploded_positions(&ex);
+        self.explode_from(ex, None)
+    }
+
+    pub fn explode_shielded(&mut self, ex: Explosion, shield: BlockPos) -> usize {
+        self.explode_from(ex, Some(shield))
+    }
+
+    fn explode_from(&mut self, ex: Explosion, shield: Option<BlockPos>) -> usize {
+        let mut to_blow = self.exploded_positions(&ex, shield);
         self.hurt_entities(&ex);
         if ex.interaction != BlockInteraction::Keep {
-            self.interact_with_blocks(&ex, to_blow.clone());
+            self.interact_with_blocks(&ex, &mut to_blow);
         }
         if ex.fire {
-            self.unsupported.push("fire from explosions".to_owned());
+            self.create_fire(&to_blow);
         }
         to_blow.len()
+    }
+
+    pub fn light_fire(&mut self, pos: BlockPos) -> bool {
+        let lib = self.lib;
+        if !lib.registries.blocks.is_air(self.block(pos)) {
+            return false;
+        }
+        let ctx: Ctx = Ctx { lib, region: self };
+        let fire = base_fire_state(&ctx, pos);
+        self.set_block(pos, fire, update::ALL, update::LIMIT);
+        true
+    }
+
+    fn create_fire(&mut self, positions: &[BlockPos]) {
+        let lib = self.lib;
+        let blocks = &lib.registries.blocks;
+        for &pos in positions {
+            if self.random.next_i32_bound(3) == 0 && blocks.is_air(self.block(pos)) && blocks.is(self.block(pos.below()), minecraftoss_core::block::flags::SOLID_RENDER) {
+                let ctx: Ctx = Ctx { lib, region: self };
+                let fire = base_fire_state(&ctx, pos);
+                self.set_block(pos, fire, update::ALL, update::LIMIT);
+            }
+        }
     }
 
     /// `ExplosionDamageCalculator.getBlockExplosionResistance`.
@@ -131,7 +166,7 @@ impl Level<'_> {
 
     /// `ServerExplosion.calculateExplodedPositions`, in the iteration order
     /// of vanilla's `HashSet`.
-    fn exploded_positions(&mut self, ex: &Explosion) -> Vec<BlockPos> {
+    fn exploded_positions(&mut self, ex: &Explosion, shield: Option<BlockPos>) -> Vec<BlockPos> {
         let mut seen = HashSet::new();
         let mut inserted = Vec::new();
         for xx in 0..16 {
@@ -155,7 +190,8 @@ impl Level<'_> {
                         if self.outside(pos.y) || pos.x.abs() >= 30_000_000 || pos.z.abs() >= 30_000_000 {
                             break;
                         }
-                        if let Some(resistance) = self.explosion_resistance(state) {
+                        let resistance = if shield == Some(pos) { Some(WATER_RESISTANCE) } else { self.explosion_resistance(state) };
+                        if let Some(resistance) = resistance {
                             remaining -= (resistance + 0.3f32) * 0.3f32;
                         }
                         if remaining > 0.0 && seen.insert(pos) {
@@ -290,7 +326,7 @@ impl Level<'_> {
     }
 
     /// `ServerExplosion.interactWithBlocks`.
-    fn interact_with_blocks(&mut self, ex: &Explosion, mut targets: Vec<BlockPos>) {
+    fn interact_with_blocks(&mut self, ex: &Explosion, targets: &mut [BlockPos]) {
         // `Util.shuffle`.
         let mut i = targets.len();
         while i > 1 {
@@ -299,7 +335,7 @@ impl Level<'_> {
             i -= 1;
         }
         let mut stacks: Vec<(BlockPos, Stack)> = Vec::new();
-        for pos in targets {
+        for &pos in targets.iter() {
             let state = self.block(pos);
             self.on_explosion_hit(state, pos, ex, &mut stacks);
         }

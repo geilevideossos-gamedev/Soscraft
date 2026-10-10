@@ -12,7 +12,7 @@
 //! outposts, fortresses), spawn costs and enchanted spawn equipment are not
 //! ported and are noted when reached.
 
-use super::{place, set, set_attribute_base, spawn_aabb, type_info, CreatureSpawns, Creatures, Group, RandomRef, Rules, SpawnLevel, SpawnerData, TypeInfo, Walk};
+use super::{place, set, set_attribute_base, spawn_aabb, type_info, CreatureSpawns, Creatures, Group, RandomRef, Rules, SpawnLevel, SpawnerData, StructureHere, TypeInfo, Walk};
 use minecraftoss_core::block::flags;
 use minecraftoss_core::entity_data::finalize_mob;
 use minecraftoss_core::nbt::Tag;
@@ -98,7 +98,7 @@ impl MobCategory {
         Some(match kind.trim_start_matches("minecraft:") {
             "zombie" | "zombie_villager" | "zombie_horse" | "skeleton" | "creeper" | "spider" | "enderman" | "witch" | "slime" | "husk" | "stray" | "drowned"
             | "bogged" | "parched" | "camel_husk" | "cave_spider" | "silverfish" | "phantom" | "blaze" | "ghast" | "magma_cube" | "piglin" | "hoglin"
-            | "zombified_piglin" | "pillager" | "shulker" => Self::Monster,
+            | "zombified_piglin" | "pillager" | "shulker" | "wither_skeleton" | "piglin_brute" | "zoglin" => Self::Monster,
             "cow" | "pig" | "sheep" | "chicken" | "horse" | "donkey" | "mule" | "mooshroom" | "rabbit" | "wolf" | "fox" | "goat" | "llama" | "panda"
             | "polar_bear" | "cat" | "ocelot" | "parrot" | "frog" | "camel" | "armadillo" | "turtle" | "strider" => Self::Creature,
             "bat" => Self::Ambient,
@@ -188,6 +188,7 @@ pub struct SpawnContext<'a> {
     pub obstacles: Vec<[f64; 6]>,
     /// Boxes of chickens nobody rides (a baby zombie's jockey search).
     pub chickens: Vec<[f64; 6]>,
+    pub structures: &'a dyn Fn(BlockPos) -> Vec<StructureHere>,
 }
 
 /// `SpawnState`'s tests around one spawn: the spawn potential (`canSpawn`)
@@ -272,8 +273,10 @@ fn add_modifier(tag: &mut Tag, id: &str, default_base: f64, modifier_id: &str, a
 /// The follow range base a type's attribute supplier gives.
 fn follow_range_base(kind: &str) -> f64 {
     match kind {
-        "minecraft:zombie" | "minecraft:zombie_villager" | "minecraft:husk" | "minecraft:drowned" => 35.0,
+        "minecraft:zombie" | "minecraft:zombie_villager" | "minecraft:husk" | "minecraft:drowned" | "minecraft:zombified_piglin" => 35.0,
         "minecraft:enderman" => 64.0,
+        "minecraft:ghast" => 100.0,
+        "minecraft:blaze" => 48.0,
         _ => 16.0,
     }
 }
@@ -366,10 +369,28 @@ impl CreatureSpawns {
         self.costs[usize::from(level.biome(pos).0)].get(kind).copied()
     }
 
-    /// A biome's spawn list for a category (`mobsAt` without structures).
-    fn mobs_at(&self, level: &dyn SpawnLevel, category: MobCategory, pos: BlockPos) -> &Creatures {
+    pub fn kinds_at(&self, level: &dyn SpawnLevel, structures: &dyn Fn(BlockPos) -> Vec<StructureHere>, category: MobCategory, pos: BlockPos) -> Vec<String> {
+        self.mobs_at(level, structures, category, pos).entries.iter().map(|entry| entry.kind.clone()).collect()
+    }
+
+    fn mobs_at(&self, level: &dyn SpawnLevel, structures: &dyn Fn(BlockPos) -> Vec<StructureHere>, category: MobCategory, pos: BlockPos) -> std::borrow::Cow<'_, Creatures> {
+        let here = structures(pos);
+        if category == MobCategory::Monster && here.iter().any(|s| s.name == "minecraft:fortress" && s.in_box) {
+            let below = self.registries.blocks.block(self.registries.blocks.block_of(level.block(pos.below()))).name.as_str() == "minecraft:nether_bricks";
+            if below {
+                return std::borrow::Cow::Borrowed(&self.fortress_enemies);
+            }
+        }
+        for structure in &here {
+            let spawns = self.structure_spawns.iter().find(|(name, _)| *name == structure.name).and_then(|(_, lists)| lists[category as usize].as_ref());
+            if let Some((piece, list)) = spawns
+                && ((*piece && structure.in_piece) || (!*piece && structure.in_box))
+            {
+                return std::borrow::Cow::Borrowed(list);
+            }
+        }
         let biome = level.biome(pos);
-        &self.by_category[usize::from(biome.0)][category as usize]
+        std::borrow::Cow::Borrowed(&self.by_category[usize::from(biome.0)][category as usize])
     }
 
     /// `NaturalSpawner.spawnCategoryForPosition`: up to three groups
@@ -418,7 +439,7 @@ impl CreatureSpawns {
                     continue;
                 }
                 if current.is_none() {
-                    let Some(data) = self.random_spawn_mob_at(level, category, pos) else { break };
+                    let Some(data) = self.random_spawn_mob_at(level, context, category, pos) else { break };
                     // `count.sample`: a constant draws nothing.
                     max = if data.constant { data.min } else { level.random().next_i32_bound(data.max - data.min + 1) + data.min };
                     current = Some(data);
@@ -506,7 +527,7 @@ impl CreatureSpawns {
     }
 
     /// `getRandomSpawnMobAt`.
-    fn random_spawn_mob_at(&self, level: &mut dyn SpawnLevel, category: MobCategory, pos: BlockPos) -> Option<SpawnerData> {
+    fn random_spawn_mob_at(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, category: MobCategory, pos: BlockPos) -> Option<SpawnerData> {
         let biome = level.biome(pos);
         if category == MobCategory::WaterAmbient
             && self.reduced_water_ambient.is_some_and(|t| self.registries.biome_in_tag(biome, t))
@@ -514,7 +535,7 @@ impl CreatureSpawns {
         {
             return None;
         }
-        let list = self.mobs_at(level, category, pos).clone();
+        let list = self.mobs_at(level, context.structures, category, pos).into_owned();
         list.pick(level.random()).cloned()
     }
 
@@ -534,7 +555,7 @@ impl CreatureSpawns {
             return false;
         }
         // `canSpawnMobAt`: the list here holds the same `SpawnerData`.
-        let here = self.mobs_at(level, type_category, pos);
+        let here = self.mobs_at(level, context.structures, type_category, pos);
         if !here.entries.iter().any(|e| e.kind == data.kind && e.min == data.min && e.max == data.max && e.constant == data.constant) {
             return false;
         }
@@ -545,6 +566,34 @@ impl CreatureSpawns {
             return false;
         }
         self.no_collision(level, spawn_aabb(info, f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5))
+    }
+
+    pub fn spawner_may_spawn(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, kind: &str, at: [f64; 3]) -> bool {
+        let Some(info) = type_info(kind) else { return true };
+        let pos = BlockPos::new(at[0].floor() as i32, at[1].floor() as i32, at[2].floor() as i32);
+        let bb = spawn_aabb(&info, at[0], at[1], at[2]);
+        if !self.no_collision(level, bb) {
+            return false;
+        }
+        if context.difficulty == 0 && MobCategory::of_type(kind) == Some(MobCategory::Monster) {
+            return false;
+        }
+        let rules = match info.rules {
+            Rules::Monster => self.dark_enough(level, context, pos),
+            Rules::SurfaceMonster => self.dark_enough(level, context, pos) && level.sky_brightness(pos) >= 15,
+            Rules::Ghast => level.random().next_i32_bound(20) == 0,
+            Rules::AnyLightMonster => true,
+            _ => self.natural_spawn_rules(level, context, kind, &info, pos),
+        };
+        if !rules {
+            return false;
+        }
+        let walk = match info.walk {
+            Walk::Animal => self.mob_check_spawn_rules(level, &info, pos),
+            Walk::Monster => -self.pathfinding_cost_from_light(level, pos) >= 0.0,
+            Walk::Neutral => true,
+        };
+        walk && self.check_spawn_obstruction(level, &info, at[0], at[1], at[2]) && !context.obstacles.iter().any(|o| overlaps(&bb, o))
     }
 
     /// `SpawnPlacements.checkSpawnRules` with reason `NATURAL`.
@@ -563,7 +612,14 @@ impl CreatureSpawns {
                 self.dark_enough(level, context, pos) && self.mob_spawn_rules(level, kind, info, pos) && level.sky_brightness(sky.below()) >= 15
             }
             Rules::Slime => self.slime_spawn_rules(level, context, kind, info, pos),
+            Rules::MagmaCube => context.difficulty != 0,
+            Rules::ZombifiedPiglin => {
+                let below = self.registries.blocks.block(self.registries.blocks.block_of(level.block(pos.below()))).name.as_str() == "minecraft:nether_wart_block";
+                context.difficulty != 0 && !below
+            }
             Rules::Bat => self.bat_spawn_rules(level, kind, info, pos),
+            Rules::Ghast => context.difficulty != 0 && level.random().next_i32_bound(20) == 0 && self.mob_spawn_rules(level, kind, info, pos),
+            Rules::AnyLightMonster => context.difficulty != 0 && self.mob_spawn_rules(level, kind, info, pos),
             // `pos.y <= seaLevel - 33`, unlit, in water: no random draws.
             Rules::GlowSquid => {
                 let state = level.block(pos);
@@ -798,7 +854,7 @@ impl CreatureSpawns {
                 let root = self.finalize_zombie(level, context, tag, pos, difficulty, group, &mut own);
                 return self.finalize_husk(level, context, root, pos, difficulty, natural);
             }
-            "minecraft:zombie" | "minecraft:zombie_villager" => {
+            "minecraft:zombie" | "minecraft:zombie_villager" | "minecraft:zombified_piglin" => {
                 if kind == "minecraft:zombie_villager" {
                     // The constructor's profession, then `finalizeVillagerType`.
                     let profession = PROFESSIONS[own.next_i32_bound(PROFESSIONS.len() as i32) as usize];
@@ -815,7 +871,7 @@ impl CreatureSpawns {
             }
             // `AbstractSkeleton.finalizeSpawn`, which strays, bogged and
             // parched do not override.
-            "minecraft:skeleton" | "minecraft:stray" | "minecraft:bogged" | "minecraft:parched" => {
+            "minecraft:skeleton" | "minecraft:stray" | "minecraft:bogged" | "minecraft:parched" | "minecraft:wither_skeleton" => {
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
                 self.finalize_skeleton(level, context, &mut tag, difficulty);
             }
@@ -846,7 +902,7 @@ impl CreatureSpawns {
                 level.random().next_f32();
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
             }
-            "minecraft:slime" => {
+            "minecraft:slime" | "minecraft:magma_cube" => {
                 // `AgeableMob.finalizeSpawn` without babies, `Mob`'s part,
                 // then `AbstractCubeMob.setSpawnSize`.
                 if matches!(group, MonsterGroup::None) {
@@ -859,6 +915,9 @@ impl CreatureSpawns {
                     scale += 1;
                 }
                 Self::set_cube_size(&mut tag, 1 << scale);
+                if kind == "minecraft:magma_cube" {
+                    set_attribute_base(&mut tag, "minecraft:armor", f64::from((1 << scale) * 3));
+                }
                 // A size other than the default 1 changes the synced size:
                 // `onSyncedDataUpdated` turns the cube to its head yaw, the
                 // constructor's roll from its own unseeded random.
@@ -897,7 +956,7 @@ impl CreatureSpawns {
                 Self::ageable_monster(level, &mut tag, group);
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
             }
-            "minecraft:creeper" | "minecraft:enderman" | "minecraft:bat" => finalize_mob(&mut tag, &mut RandomRef(level.random())),
+            "minecraft:creeper" | "minecraft:enderman" | "minecraft:bat" | "minecraft:ghast" | "minecraft:blaze" => finalize_mob(&mut tag, &mut RandomRef(level.random())),
             _ => {
                 level.note_unsupported(&format!("finalizeSpawn of {kind}"));
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
@@ -928,12 +987,18 @@ impl CreatureSpawns {
 
     /// `AbstractSkeleton.finalizeSpawn` after `Mob`'s part.
     fn finalize_skeleton(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, tag: &mut Tag, difficulty: DifficultyInstance) {
+        let wither = tag.get("id").and_then(Tag::as_str) == Some("minecraft:wither_skeleton");
         Self::populate_armor(level, tag, difficulty);
-        equip(tag, "mainhand", "minecraft:bow");
-        Self::roll_enchantments(level, tag, difficulty);
+        equip(tag, "mainhand", if wither { "minecraft:stone_sword" } else { "minecraft:bow" });
+        if !wither {
+            Self::roll_enchantments(level, tag, difficulty);
+        }
         let loot = level.random().next_f32() < 0.55 * difficulty.special_multiplier();
         set(tag, "CanPickUpLoot", byte(loot));
         Self::halloween_head(level, context, tag);
+        if wither {
+            set_attribute_base(tag, "minecraft:attack_damage", 4.0);
+        }
     }
 
     /// `Zombie.finalizeSpawn` after `Mob`'s part: the entity to add is the
@@ -950,6 +1015,7 @@ impl CreatureSpawns {
         own: &mut LegacyRandom,
     ) -> Tag {
         let special = difficulty.special_multiplier();
+        let piglin = tag.get("id").and_then(Tag::as_str) == Some("minecraft:zombified_piglin");
         let loot = level.random().next_f32() < 0.55 * special;
         set(&mut tag, "CanPickUpLoot", byte(loot));
         if matches!(group, MonsterGroup::None) {
@@ -978,10 +1044,15 @@ impl CreatureSpawns {
             }
             let doors = level.random().next_f32() < special * 0.1;
             set(&mut tag, "CanBreakDoors", byte(doors));
-            Self::populate_armor(level, &mut tag, difficulty);
+            if piglin {
+                let item = if level.random().next_i32_bound(20) == 0 { "minecraft:golden_spear" } else { "minecraft:golden_sword" };
+                equip(&mut tag, "mainhand", item);
+            } else {
+                Self::populate_armor(level, &mut tag, difficulty);
+            }
             // `Zombie.populateDefaultEquipmentSlots`: a rare iron weapon.
             let weapon_chance = if difficulty.base == 3 { 0.05 } else { 0.01 };
-            if level.random().next_f32() < weapon_chance {
+            if !piglin && level.random().next_f32() < weapon_chance {
                 let item = match level.random().next_i32_bound(6) {
                     0 => "minecraft:iron_sword",
                     1 => "minecraft:iron_spear",
@@ -993,7 +1064,8 @@ impl CreatureSpawns {
         }
         Self::halloween_head(level, context, &mut tag);
         // `handleAttributes`, from the zombie's own random.
-        set_attribute_base(&mut tag, "minecraft:spawn_reinforcements", own.next_f64() * f64::from(0.1f32));
+        let reinforcements = if piglin { 0.0 } else { own.next_f64() * f64::from(0.1f32) };
+        set_attribute_base(&mut tag, "minecraft:spawn_reinforcements", reinforcements);
         add_modifier(&mut tag, "minecraft:knockback_resistance", 0.0, "minecraft:random_spawn_bonus", own.next_f64() * f64::from(0.05f32), "add_value");
         let follow = own.next_f64() * 1.5 * f64::from(special);
         if follow > 1.0 {
@@ -1114,5 +1186,36 @@ impl CreatureSpawns {
 
     fn biome_name(&self, biome: BiomeId) -> String {
         self.registries.biomes.get(biome).name.as_str().to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MobCategory;
+
+    #[test]
+    fn every_nether_monster_has_the_monster_category() {
+        for kind in ["blaze", "ghast", "magma_cube", "piglin", "piglin_brute", "hoglin", "zoglin", "wither_skeleton", "zombified_piglin", "skeleton", "enderman"] {
+            assert_eq!(MobCategory::of_type(&format!("minecraft:{kind}")), Some(MobCategory::Monster), "{kind}");
+        }
+        assert_eq!(MobCategory::of_type("minecraft:strider"), Some(MobCategory::Creature));
+    }
+
+    #[test]
+    fn a_ghast_spawns_alone_in_its_four_block_box_on_any_floor_and_goes_when_far() {
+        let info = super::type_info("minecraft:ghast").unwrap();
+        assert_eq!((info.width, info.height, info.cluster, info.fire_immune, info.remove_far), (4.0, 4.0, 1, true, true));
+        assert_eq!(info.rules, super::Rules::Ghast);
+        assert!(matches!(info.walk, super::Walk::Neutral));
+        assert_eq!(super::follow_range_base("minecraft:ghast"), 100.0);
+    }
+
+    #[test]
+    fn a_blaze_spawns_as_a_monster_in_any_light() {
+        let info = super::type_info("minecraft:blaze").unwrap();
+        assert_eq!((info.width, info.height, info.cluster, info.fire_immune, info.remove_far), (0.6, 1.8, 4, true, true));
+        assert_eq!(info.rules, super::Rules::AnyLightMonster);
+        assert!(matches!(info.walk, super::Walk::Monster));
+        assert_eq!(super::follow_range_base("minecraft:blaze"), 48.0);
     }
 }

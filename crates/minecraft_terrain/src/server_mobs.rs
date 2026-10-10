@@ -388,15 +388,18 @@ fn seed(tag: &Tag) -> u64 {
 
 pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:bat",
+    "minecraft:blaze",
     "minecraft:bogged",
     "minecraft:chicken",
     "minecraft:cow",
     "minecraft:creeper",
     "minecraft:donkey",
     "minecraft:enderman",
+    "minecraft:ghast",
     "minecraft:horse",
     "minecraft:husk",
     "minecraft:iron_golem",
+    "minecraft:magma_cube",
     "minecraft:mooshroom",
     "minecraft:parched",
     "minecraft:pig",
@@ -407,9 +410,11 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:stray",
     "minecraft:villager",
     "minecraft:witch",
+    "minecraft:wither_skeleton",
     "minecraft:wolf",
     "minecraft:zombie",
     "minecraft:zombie_villager",
+    "minecraft:zombified_piglin",
 ];
 
 /// Adds a saved entity the entity world simulates; its ID, or none for a
@@ -549,11 +554,12 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
         }
         // Monsters and bats natural spawning makes. Riders (jockeys) wait
         // dormant with their vehicle.
-        "minecraft:zombie" | "minecraft:husk" | "minecraft:zombie_villager" if tag.get("Passengers").is_none() => {
+        "minecraft:zombie" | "minecraft:husk" | "minecraft:zombie_villager" | "minecraft:zombified_piglin" if tag.get("Passengers").is_none() => {
             let mut zombie = minecraftoss_entities::zombie::Zombie::new(pos);
             zombie.kind = match kind {
                 "minecraft:husk" => ZombieKind::Husk,
                 "minecraft:zombie_villager" => ZombieKind::ZombieVillager,
+                "minecraft:zombified_piglin" => ZombieKind::ZombifiedPiglin,
                 _ => ZombieKind::Zombie,
             };
             if zombie.kind == ZombieKind::ZombieVillager {
@@ -580,14 +586,18 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             if let (Some(range), Some(ai)) = (attribute_value(tag, "minecraft:follow_range"), entity.ai.as_deref_mut()) {
                 ai.state.follow_range = range;
             }
+            if let (Some(end), Some(ai)) = (tag.get("anger_end_time").and_then(Tag::as_i64), entity.ai.as_deref_mut()) {
+                ai.state.enderman.anger_end_time = end;
+            }
             id
         }
-        "minecraft:skeleton" | "minecraft:stray" | "minecraft:bogged" | "minecraft:parched" if tag.get("Passengers").is_none() => {
+        "minecraft:skeleton" | "minecraft:stray" | "minecraft:bogged" | "minecraft:parched" | "minecraft:wither_skeleton" if tag.get("Passengers").is_none() => {
             use minecraftoss_entities::skeleton::SkeletonKind;
             let kind = match kind {
                 "minecraft:stray" => SkeletonKind::Stray,
                 "minecraft:bogged" => SkeletonKind::Bogged,
                 "minecraft:parched" => SkeletonKind::Parched,
+                "minecraft:wither_skeleton" => SkeletonKind::WitherSkeleton,
                 _ => SkeletonKind::Skeleton,
             };
             let mut skeleton = minecraftoss_entities::skeleton::Skeleton::of_kind(kind, pos);
@@ -597,6 +607,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             // Its bow is the main hand's (a summoned skeleton has none; a
             // natural spawn's `finalizeSpawn` gave it one).
             skeleton.holds_bow = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| i.get("id")).and_then(Tag::as_str) == Some("minecraft:bow");
+            skeleton.main_hand = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| i.get("id")).and_then(Tag::as_str).filter(|item| *item != "minecraft:bow").map(str::to_owned);
             skeleton.armor = armor_slots(tag);
             skeleton.persistence_required = persistent;
             if let Some(health) = health {
@@ -647,10 +658,11 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             }
             id
         }
-        "minecraft:slime" => {
+        "minecraft:slime" | "minecraft:magma_cube" => {
             // `AbstractCubeMob.readAdditionalSaveData`: `Size` is one short
             // of the size, and the landing state carries over.
-            let mut slime = minecraftoss_entities::slime::Slime::new(pos, int(tag, "Size").unwrap_or(0) + 1);
+            let size = int(tag, "Size").unwrap_or(0) + 1;
+            let mut slime = if kind == "minecraft:magma_cube" { minecraftoss_entities::slime::Slime::magma(pos, size) } else { minecraftoss_entities::slime::Slime::new(pos, size) };
             slime.yaw = yaw;
             slime.persistence_required = persistent;
             slime.was_on_ground = int(tag, "wasOnGround").unwrap_or(0) != 0;
@@ -766,6 +778,47 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 entity.ai.state.follow_range = range;
             }
             id
+        }
+        "minecraft:ghast" => {
+            let mut ghast = minecraftoss_entities::ghast::Ghast::new(pos);
+            ghast.yaw = yaw;
+            ghast.persistence_required = persistent;
+            ghast.explosion_power = int(tag, "ExplosionPower").unwrap_or(1);
+            if let Some(health) = health {
+                ghast.health = health;
+            }
+            let id = world.spawn_ghast(ghast, no_ai);
+            let entity = world.ghast_mut(id)?;
+            entity.random = random;
+            if let Some(range) = attribute_value(tag, "minecraft:follow_range") {
+                entity.ai.state.follow_range = range;
+            }
+            id
+        }
+        "minecraft:blaze" => {
+            let mut blaze = minecraftoss_entities::blaze::Blaze::new(pos);
+            blaze.yaw = yaw;
+            blaze.persistence_required = persistent;
+            if let Some(health) = health {
+                blaze.health = health;
+            }
+            let id = world.spawn_blaze(blaze, no_ai);
+            let entity = world.blaze_mut(id)?;
+            entity.random = random;
+            if let Some(range) = attribute_value(tag, "minecraft:follow_range") {
+                entity.ai.state.follow_range = range;
+            }
+            id
+        }
+        "minecraft:fireball" | "minecraft:small_fireball" => {
+            let motion = tag.get("Motion").and_then(Tag::as_list).map(|m| DVec3::new(m.first().and_then(Tag::as_f64).unwrap_or(0.0), m.get(1).and_then(Tag::as_f64).unwrap_or(0.0), m.get(2).and_then(Tag::as_f64).unwrap_or(0.0))).unwrap_or(DVec3::ZERO);
+            let kind = if kind == "minecraft:small_fireball" { minecraftoss_entities::fireball::FireballKind::Small } else { minecraftoss_entities::fireball::FireballKind::Large { explosion_power: int(tag, "ExplosionPower").unwrap_or(1) } };
+            let mut fireball = minecraftoss_entities::fireball::Fireball::shoot(kind, minecraftoss_entities::fireball::Shooter::Mob(0), pos, motion);
+            fireball.owner = None;
+            fireball.velocity = motion;
+            fireball.acceleration_power = tag.get("acceleration_power").and_then(Tag::as_f64).unwrap_or(minecraftoss_entities::fireball::ACCELERATION_POWER);
+            fireball.left_owner = int(tag, "LeftOwner").unwrap_or(1) != 0;
+            return Some(world.spawn_fireball(fireball));
         }
         "minecraft:splash_potion" => {
             // A potion in flight (`ThrowableItemProjectile.Item`), its thrower
@@ -1025,7 +1078,10 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
     }
     for e in world.zombies() {
         let kind = e.zombie.kind.type_id();
-        let fields = vec![("IsBaby", Tag::Byte(i8::from(e.zombie.baby))), ("CanBreakDoors", Tag::Byte(i8::from(e.zombie.can_break_doors)))];
+        let mut fields = vec![("IsBaby", Tag::Byte(i8::from(e.zombie.baby))), ("CanBreakDoors", Tag::Byte(i8::from(e.zombie.can_break_doors)))];
+        if let (ZombieKind::ZombifiedPiglin, Some(ai)) = (e.zombie.kind, e.ai.as_deref()) {
+            fields.push(("anger_end_time", Tag::Long(ai.state.enderman.anger_end_time)));
+        }
         add(e.id, kind, &e.zombie.body, e.yaw, e.zombie.health, e.zombie.persistence_required, fields);
     }
     for e in world.skeletons() {
@@ -1050,6 +1106,14 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
     for e in world.witches() {
         let w = &e.witch;
         add(e.id, "minecraft:witch", &w.body, w.yaw, w.health, w.persistence_required, Vec::new());
+    }
+    for e in world.ghasts() {
+        let g = &e.ghast;
+        add(e.id, "minecraft:ghast", &g.body, g.yaw, g.health, g.persistence_required, vec![("ExplosionPower", Tag::Byte(g.explosion_power.clamp(-128, 127) as i8))]);
+    }
+    for e in world.blazes() {
+        let b = &e.blaze;
+        add(e.id, "minecraft:blaze", &b.body, b.yaw, b.health, b.persistence_required, Vec::new());
     }
     for e in world.iron_golems() {
         let g = &e.golem;
@@ -1076,7 +1140,7 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
     for e in world.slimes() {
         let slime = &e.slime;
         let fields = vec![("Size", Tag::Int(slime.size - 1)), ("wasOnGround", Tag::Byte(i8::from(slime.was_on_ground)))];
-        add(e.id, "minecraft:slime", &slime.body, slime.yaw, slime.health, slime.persistence_required, fields);
+        add(e.id, slime.type_id(), &slime.body, slime.yaw, slime.health, slime.persistence_required, fields);
     }
     for e in world.creepers() {
         let c = &e.creeper;
@@ -1221,6 +1285,24 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
                 map.insert("active_effects".to_owned(), Tag::List(effects.iter().map(|e| effect_tag(e, true)).collect()));
             }
         }
+    }
+    for f in world.fireballs() {
+        let fireball = &f.fireball;
+        if !keep(fireball.position) || !fireball.alive {
+            continue;
+        }
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("id".to_owned(), Tag::String(fireball.kind.type_id().to_owned()));
+        map.insert("Pos".to_owned(), doubles(fireball.position.to_array()));
+        map.insert("Motion".to_owned(), doubles(fireball.velocity.to_array()));
+        map.insert("Rotation".to_owned(), Tag::List(vec![Tag::Float(0.0), Tag::Float(0.0)]));
+        map.insert("acceleration_power".to_owned(), Tag::Double(fireball.acceleration_power));
+        map.insert("LeftOwner".to_owned(), Tag::Byte(i8::from(fireball.left_owner)));
+        if let minecraftoss_entities::fireball::FireballKind::Large { explosion_power } = fireball.kind {
+            map.insert("ExplosionPower".to_owned(), Tag::Byte(explosion_power.clamp(-128, 127) as i8));
+        }
+        map.insert("UUID".to_owned(), fresh_uuid(f.id, fireball.position));
+        out.push((f.id, Tag::Compound(map)));
     }
     // Splash potions in flight (`ThrowableItemProjectile`).
     for p in world.potions() {

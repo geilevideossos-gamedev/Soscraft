@@ -50,6 +50,8 @@ mod minecraft_inventory;
 mod minecraft_loading;
 mod minecraft_mining;
 mod minecraft_minimap;
+mod minecraft_portal;
+mod minecraft_respawn;
 mod minecraft_sounds;
 mod minecraft_spawn_gate;
 pub mod minecraft_world;

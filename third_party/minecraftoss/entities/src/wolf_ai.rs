@@ -188,7 +188,7 @@ pub fn wolf_goals() -> GoalSelector<MonsterGoalContext> {
     // `WolfAvoidEntityGoal`: no llamas live here.
     selector.add(3, NeverGoal { controls: &[Control::Move] });
     selector.add(4, LeapGoal::new(0.4));
-    selector.add(5, MeleeAttackGoal { hits: true, raises_arms: false, follow_unseen: true, gives_up_in_light: false });
+    selector.add(5, MeleeAttackGoal { hits: true, raises_arms: false, follow_unseen: true, gives_up_in_light: false, speed: 1.0 });
     selector.add(6, FollowOwnerGoal { speed: 1.0, start: 10.0, stop: 2.0 });
     selector.add(7, BreedGoal { speed: 1.0 });
     selector.add(8, StrollGoal::new(1.0, 0.001));

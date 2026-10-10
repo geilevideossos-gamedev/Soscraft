@@ -77,6 +77,21 @@ pub struct ServerSim {
     thrown_hits: Vec<crate::thrown::ThrownHit>,
     worldgen: &'static WorldGen,
     eyes: crate::eye_of_ender::Eyes,
+    blasts: Vec<(Blast, BlastSource)>,
+    block_explosion_drop_decay: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Blast {
+    pub center: [f64; 3],
+    pub power: f32,
+    pub fire: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum BlastSource {
+    Nobody,
+    RespawnPoint { shield: Option<BlockPos> },
 }
 
 /// What a player's hit or use on a mob did, for the client to present.
@@ -215,11 +230,17 @@ impl ServerSim {
         if let Err(e) = level.set_dimension(dimension_type) {
             eprintln!("world simulation without environment: {e}");
         }
+        level.sea_level = worldgen.library.generation.sea_level;
+        level.fast_lava = level.sky.as_ref().is_some_and(|sky| crate::environment::dimension_value(&sky.environment, "gameplay/fast_lava").as_bool());
         let mob_tables = crate::server_mobs::MobTables::new(&level, &states);
         // Natural spawning, when the entity catalog can create mobs.
         if level.registries().entities.is_some() {
             match minecraftoss_world::natural_spawner::CreatureSpawns::load(worldgen.terrain.registries.clone(), dimension_type, false) {
-                Ok(spawns) => level.natural_spawning = Some(minecraftoss_world::level::spawning::NaturalSpawning::new(Arc::new(spawns))),
+                Ok(spawns) => {
+                    let mut natural = minecraftoss_world::level::spawning::NaturalSpawning::new(Arc::new(spawns));
+                    natural.structures = Some(minecraftoss_world::level::spawning::structures_of(worldgen));
+                    level.natural_spawning = Some(natural);
+                }
                 Err(e) => eprintln!("natural spawning unavailable: {e}"),
             }
         }
@@ -258,6 +279,8 @@ impl ServerSim {
             thrown_hits: Vec::new(),
             worldgen,
             eyes: crate::eye_of_ender::Eyes::default(),
+            blasts: Vec::new(),
+            block_explosion_drop_decay: true,
         }
     }
 
@@ -619,6 +642,8 @@ impl ServerSim {
         // (`ServerExplosion.explode`: `hurtEntities`, then the blocks).
         self.drop_death_loot();
         self.explode_creepers();
+        self.explode_fireballs();
+        self.explode_blasts(players);
         self.sound_potion_breaks();
     }
 
@@ -699,6 +724,58 @@ impl ServerSim {
             let interaction = if self.mobs.mob_griefing() { BlockInteraction::DestroyWithDecay } else { BlockInteraction::Keep };
             self.level.explode(Explosion { center: blast.position.to_array(), radius: blast.radius, fire: false, interaction, source: None });
             self.explosions.push(blast);
+        }
+    }
+
+    pub fn blast(&mut self, blast: Blast) {
+        self.blasts.push((blast, BlastSource::Nobody));
+    }
+
+    pub fn respawn_point_blast(&mut self, blast: Blast, shield: Option<BlockPos>) {
+        self.blasts.push((blast, BlastSource::RespawnPoint { shield }));
+    }
+
+    fn explode_fireballs(&mut self) {
+        use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
+        for blast in self.mobs.take_fireball_blasts() {
+            let interaction = if self.mobs.mob_griefing() { BlockInteraction::DestroyWithDecay } else { BlockInteraction::Keep };
+            self.level.explode(Explosion { center: blast.position.to_array(), radius: blast.power, fire: blast.fire, interaction, source: None });
+            self.explosions.push(minecraftoss_entities::creeper::CreeperExplosion { position: blast.position, radius: blast.power, powered: false });
+        }
+        for (x, y, z) in self.mobs.take_fireball_fires() {
+            self.level.light_fire(minecraftoss_core::BlockPos::new(x, y, z));
+        }
+    }
+
+    pub fn deflect_fireball(&mut self, id: u64, look: [f64; 3], player: u64, by_attack: bool) -> bool {
+        self.mobs.deflect_fireball(id, glam::DVec3::from_array(look), player, by_attack)
+    }
+
+    pub fn push_fireball(&mut self, id: u64, push: [f64; 3]) -> bool {
+        self.mobs.push_fireball(id, glam::DVec3::from_array(push))
+    }
+
+    fn explode_blasts(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
+        use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
+        for (blast, source) in std::mem::take(&mut self.blasts) {
+            let explosion = minecraftoss_entities::creeper::CreeperExplosion { position: glam::DVec3::from_array(blast.center), radius: blast.power, powered: false };
+            {
+                let Self { level, states, mobs, mob_tables, .. } = &mut *self;
+                let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
+                if source == BlastSource::Nobody {
+                    mobs.blast(&world, explosion, players);
+                } else {
+                    mobs.bad_respawn_point_blast(&world, explosion, players);
+                }
+            }
+            self.drop_death_loot();
+            let interaction = if self.block_explosion_drop_decay { BlockInteraction::DestroyWithDecay } else { BlockInteraction::Destroy };
+            let exploded = Explosion { center: blast.center, radius: blast.power, fire: blast.fire, interaction, source: None };
+            match source {
+                BlastSource::RespawnPoint { shield: Some((x, y, z)) } => self.level.explode_shielded(exploded, minecraftoss_core::BlockPos::new(x, y, z)),
+                _ => self.level.explode(exploded),
+            };
+            self.explosions.push(explosion);
         }
     }
 
@@ -1392,9 +1469,13 @@ impl ServerSim {
         level.lava_source_conversion = rules.bool("lava_source_conversion");
         level.tnt_explodes = rules.bool("tnt_explodes");
         level.tnt_explosion_drop_decay = rules.bool("tnt_explosion_drop_decay");
+        self.block_explosion_drop_decay = rules.bool("block_explosion_drop_decay");
         level.set_advance_weather(rules.bool("advance_weather"));
         self.mobs.set_mob_griefing(rules.bool("mob_griefing"));
         self.mobs.set_mob_drops(rules.bool("mob_drops"));
+        if let Some(natural) = &mut self.level.natural_spawning {
+            natural.spawner_blocks_work = rules.bool("spawner_blocks_work");
+        }
     }
 
     pub fn weather(&mut self, feet: Option<[f64; 3]>) -> WeatherView {
@@ -1409,6 +1490,7 @@ impl ServerSim {
     pub fn tick(&mut self) {
         let bursting: Vec<(i32, [f64; 3])> = self.level.entities.iter().filter(|e| e.tnt_data().is_some_and(|d| d.fuse <= 1)).map(|e| (e.id, e.pos)).collect();
         self.level.tick();
+        self.level.tick_spawners();
         self.level.unsupported.clear();
         for (id, position) in bursting {
             if self.level.tnt_explodes && !self.level.entities.iter().any(|e| e.id == id) {
@@ -1580,6 +1662,10 @@ pub enum Command {
     MobAction { hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, infinite: bool },
     MobBlast { hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64>, slow_ticks: i32 },
     WeaponBlast { center: [f64; 3], power: f32 },
+    Blast(Blast),
+    RespawnPointBlast { blast: Blast, shield: Option<BlockPos> },
+    DeflectFireball { id: u64, look: [f64; 3], player: u64, by_attack: bool },
+    PushFireball { id: u64, push: [f64; 3] },
     /// An operation on the player's trading screen.
     Merchant { op: MerchantOp, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, feet: [f64; 3] },
     /// One server tick, with the player's state for it.
@@ -1911,6 +1997,22 @@ impl ServerHandle {
         self.send(Command::WeaponBlast { center, power });
     }
 
+    pub fn blast(&mut self, blast: Blast) {
+        self.send(Command::Blast(blast));
+    }
+
+    pub fn respawn_point_blast(&mut self, blast: Blast, shield: Option<BlockPos>) {
+        self.send(Command::RespawnPointBlast { blast, shield });
+    }
+
+    pub fn deflect_fireball(&mut self, id: u64, look: [f64; 3], player: u64, by_attack: bool) {
+        self.send(Command::DeflectFireball { id, look, player, by_attack });
+    }
+
+    pub fn push_fireball(&mut self, id: u64, push: [f64; 3]) {
+        self.send(Command::PushFireball { id, push });
+    }
+
     pub fn throw(&mut self, thrown: crate::thrown::Thrown) {
         self.send(Command::Throw(Box::new(thrown)));
     }
@@ -2015,6 +2117,14 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::MobBlast { hit, damage, center, impact, player, slow_ticks } => sim.mob_blast(hit, damage, center, impact, player, slow_ticks),
                 Command::WeaponBlast { center, power } => sim.weapon_blast(center, power),
+                Command::Blast(blast) => sim.blast(blast),
+                Command::RespawnPointBlast { blast, shield } => sim.respawn_point_blast(blast, shield),
+                Command::DeflectFireball { id, look, player, by_attack } => {
+                    sim.deflect_fireball(id, look, player, by_attack);
+                }
+                Command::PushFireball { id, push } => {
+                    sim.push_fireball(id, push);
+                }
                 Command::Merchant { op, inventory, selected, feet } => {
                     out.merchant.push(sim.merchant(op, *inventory, selected, feet));
                 }
@@ -5693,5 +5803,608 @@ mod tests {
         assert_eq!(answers.len(), 1);
         assert_eq!(blocks.property(answers[0], "east"), Some("true"));
         assert_eq!(blocks.property(answers[0], "west"), Some("false"));
+    }
+
+    #[test]
+    fn fortress_monsters_spawn_on_its_nether_bricks_and_structures_override_their_biome() {
+        use minecraftoss_world::natural_spawner::spawning::MobCategory;
+        type BlockPos = minecraftoss_core::BlockPos;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(TerrainGenerator::nether(registries.clone(), 77).unwrap()), "minecraft:the_nether").unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, 0, 256).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen.clone(), states, "minecraft:the_nether");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let at = match crate::locate::nearest_structure(&worldgen, &["minecraft:fortress".to_owned()], [0, 64, 0], crate::locate::STRUCTURE_RADIUS, deadline) {
+            crate::locate::Search::Found(at, _) => at,
+            other => panic!("no fortress near the origin of seed 77: {other:?}"),
+        };
+        let fortress = worldgen.structures.id("minecraft:fortress").unwrap();
+        let start = worldgen.structures.starts_in(&worldgen.library, &worldgen.terrain, ChunkPos::new(at[0] >> 4, at[2] >> 4)).iter().find(|start| start.structure == fortress).cloned().expect("the fortress starts in its chunk");
+        let pieces: Vec<minecraftoss_generator::feature::template::BoundingBox> = start.pieces.lock().unwrap().iter().map(|piece| piece.base().bbox).collect();
+        let bbox = start.bounding_box();
+        let in_a_piece = |pos: BlockPos| pieces.iter().any(|piece| piece.is_inside(pos));
+        let inside = pieces[0].center();
+        let between = (bbox.min_x..=bbox.max_x)
+            .flat_map(|x| (bbox.min_z..=bbox.max_z).map(move |z| BlockPos::new(x, bbox.min_y + 2, z)))
+            .find(|&pos| !in_a_piece(pos) && !in_a_piece(pos.below()))
+            .expect("a spot inside the fortress's bounds but outside its pieces");
+        let far = BlockPos::new(at[0] + 2000, 64, at[2] + 2000);
+        for pos in [inside, between, far] {
+            server.load_chunk(&map.load_now(ChunkPos::new(pos.x >> 4, pos.z >> 4)));
+        }
+        let natural = server.level.natural_spawning.as_ref().unwrap();
+        let (spawns, finder) = (natural.spawns.clone(), natural.structures.clone().unwrap());
+        let here = finder(inside);
+        assert!(here.iter().any(|s| s.name == "minecraft:fortress" && s.in_box && s.in_piece), "{:?}", here.iter().map(|s| (&s.name, s.in_box, s.in_piece)).collect::<Vec<_>>());
+        assert!(finder(between).iter().any(|s| s.name == "minecraft:fortress" && s.in_box && !s.in_piece));
+        assert!(finder(far).is_empty());
+        let enemies: Vec<String> = ["blaze", "zombified_piglin", "wither_skeleton", "skeleton", "magma_cube"].iter().map(|kind| format!("minecraft:{kind}")).collect();
+        let bricks = Block::new("minecraft:nether_bricks");
+        let netherrack = Block::new("minecraft:netherrack");
+        let kinds = |server: &mut ServerSim, pos: BlockPos, below: &Block, category: MobCategory| {
+            server.player_edit_block((pos.x, pos.y - 1, pos.z), Some(below), PlayerEdit::Place);
+            spawns.kinds_at(&server.level, &*finder, category, pos)
+        };
+        assert_eq!(kinds(&mut server, inside, &netherrack, MobCategory::Monster), enemies, "a fortress piece spawns its monsters on any block");
+        assert_eq!(kinds(&mut server, between, &bricks, MobCategory::Monster), enemies, "nether bricks inside the fortress's bounds spawn them too");
+        let biome = kinds(&mut server, between, &netherrack, MobCategory::Monster);
+        assert_ne!(biome, enemies, "elsewhere in the bounds the biome decides");
+        assert!(kinds(&mut server, inside, &netherrack, MobCategory::Creature).iter().all(|kind| kind == "minecraft:strider"), "only monsters are overridden");
+    }
+
+    #[test]
+    fn zombified_piglins_hold_gold_keep_their_anger_and_come_out_of_overworld_portals() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let level_of = |terrain: TerrainGenerator, dimension_type: &str, min_y: i32, height: i32| {
+            let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(terrain), dimension_type).unwrap());
+            let states = Arc::new(BlockStates::new(registries.clone(), 0, min_y, height).unwrap());
+            let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+            let mut server = ServerSim::new(worldgen, states, dimension_type);
+            for x in -1..=1 {
+                for z in -1..=1 {
+                    server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+                }
+            }
+            server
+        };
+        let mut nether = level_of(TerrainGenerator::nether(registries.clone(), 0).unwrap(), "minecraft:the_nether", 0, 256);
+        nether.set_players(&[[0.5, 100.0, 0.5]], 2);
+        nether.summon("minecraft:zombified_piglin", [0.5, 100.0, 0.5], None, 0.0).unwrap();
+        let piglin = &nether.mobs.zombies()[0];
+        assert_eq!(piglin.zombie.kind, minecraftoss_entities::zombie::ZombieKind::ZombifiedPiglin);
+        assert!(matches!(piglin.zombie.main_hand.as_deref(), Some("minecraft:golden_sword" | "minecraft:golden_spear")), "{:?}", piglin.zombie.main_hand);
+        assert!(piglin.zombie.armor.iter().all(Option::is_none), "no armour");
+        let id = piglin.id;
+        nether.mobs.zombie_mut(id).unwrap().ai.as_deref_mut().unwrap().state.enderman.anger_end_time = 1234;
+        let tags = crate::server_mobs::mob_tags(&nether.mobs, |_| true, &nether.mob_tags);
+        let (_, tag) = tags.iter().find(|(tag_id, _)| *tag_id == id).expect("the piglin is saved");
+        assert_eq!(tag.get("anger_end_time").and_then(minecraftoss_core::nbt::Tag::as_i64), Some(1234));
+        let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+        let back = crate::server_mobs::spawn_saved(&mut loaded, tag).expect("zombified piglins load");
+        let back = loaded.zombie_mut(back).unwrap();
+        assert_eq!(back.zombie.kind, minecraftoss_entities::zombie::ZombieKind::ZombifiedPiglin);
+        assert_eq!(back.zombie.main_hand, nether.mobs.zombies()[0].zombie.main_hand);
+        assert_eq!(back.ai.as_ref().unwrap().state.enderman.anger_end_time, 1234);
+        let mut overworld = level_of(TerrainGenerator::overworld(registries.clone(), 0).unwrap(), "minecraft:overworld", -64, 384);
+        let obsidian = Block::new("minecraft:obsidian");
+        for (x, y) in [(-1, 200), (0, 200), (1, 200), (2, 200), (-1, 201), (-1, 202), (-1, 203), (2, 201), (2, 202), (2, 203), (-1, 204), (0, 204), (1, 204), (2, 204)] {
+            overworld.player_edit_block((x, y, 0), Some(&obsidian), PlayerEdit::Place);
+        }
+        let portal = Block::new("minecraft:nether_portal").with("axis", "x");
+        for x in 0..=1 {
+            for y in 201..=203 {
+                overworld.player_edit_block((x, y, 0), Some(&portal), PlayerEdit::Place);
+            }
+        }
+        let spawned = |server: &mut ServerSim, difficulty: i32, player: [f64; 3]| {
+            server.set_players(&[player], difficulty);
+            let candidate = minecraftoss_entities::tempt::PlayerCandidate {
+                id: 0,
+                position: glam::DVec3::from_array(player),
+                eye_height: 1.62,
+                main_hand_cow_food: false,
+                offhand_cow_food: false,
+                main_hand_pig_food: false,
+                offhand_pig_food: false,
+                main_hand_chicken_food: false,
+                offhand_chicken_food: false,
+                main_hand_carrot_on_a_stick: false,
+                offhand_carrot_on_a_stick: false,
+                main_hand_wolf_interest: false,
+                offhand_wolf_interest: false,
+                main_hand_horse_tempt: false,
+                offhand_horse_tempt: false,
+                alive: true,
+                spectator: false,
+                attackable: true,
+            };
+            server.prepare_spawning(&[candidate]);
+            server.level.spawned.clear();
+            for _ in 0..20000 {
+                server.level.nether_portal_random_tick(minecraftoss_core::BlockPos::new(1, 203, 0));
+            }
+            std::mem::take(&mut server.level.spawned)
+        };
+        let near = [8.5, 200.0, 8.5];
+        let piglins = spawned(&mut overworld, 3, near);
+        assert!((10..=60).contains(&piglins.len()), "about 30 in 20000 random ticks on hard: {}", piglins.len());
+        for tag in &piglins {
+            assert_eq!(tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str), Some("minecraft:zombified_piglin"));
+            assert_eq!(tag.get("PortalCooldown").and_then(minecraftoss_core::nbt::Tag::as_i64), Some(300));
+            let pos = tag.get("Pos").and_then(minecraftoss_core::nbt::Tag::as_list).unwrap().iter().filter_map(minecraftoss_core::nbt::Tag::as_f64).collect::<Vec<_>>();
+            assert_eq!(pos, vec![1.5, 201.0, 0.5], "on the portal's floor");
+        }
+        assert!(spawned(&mut overworld, 0, near).is_empty(), "none in peaceful");
+        assert!(spawned(&mut overworld, 3, [500.0, 200.0, 500.0]).is_empty(), "none with nobody near");
+    }
+
+    #[test]
+    fn magma_cubes_spawn_in_three_sizes_and_come_back_as_magma_cubes() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(TerrainGenerator::nether(registries.clone(), 0).unwrap()), "minecraft:the_nether").unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, 0, 256).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:the_nether");
+        server.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        server.set_players(&[[0.5, 100.0, 0.5]], 2);
+        let mut sizes = std::collections::BTreeSet::new();
+        for _ in 0..40 {
+            server.summon("minecraft:magma_cube", [0.5, 100.0, 0.5], None, 0.0).unwrap();
+        }
+        for e in server.mobs.slimes() {
+            assert!(e.slime.magma);
+            sizes.insert(e.slime.size);
+        }
+        assert!(sizes.iter().all(|size| [1, 2, 4].contains(size)) && sizes.len() > 1, "{sizes:?}");
+        let tags = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        for (id, tag) in &tags {
+            let cube = &server.mobs.slimes().iter().find(|e| e.id == *id).unwrap().slime;
+            assert_eq!(tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str), Some("minecraft:magma_cube"));
+            let armor = tag.get("attributes").and_then(minecraftoss_core::nbt::Tag::as_list).and_then(|list| list.iter().find(|a| a.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) == Some("minecraft:armor"))).and_then(|a| a.get("base")).and_then(minecraftoss_core::nbt::Tag::as_f64);
+            assert_eq!(armor, Some(f64::from(cube.size * 3)));
+            let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+            let back = crate::server_mobs::spawn_saved(&mut loaded, tag).expect("magma cubes load");
+            let back = &loaded.slime_mut(back).unwrap().slime;
+            assert!(back.magma && back.size == cube.size);
+        }
+    }
+
+    #[test]
+    fn wither_skeletons_carry_stone_swords_and_come_back_with_them() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(TerrainGenerator::nether(registries.clone(), 0).unwrap()), "minecraft:the_nether").unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, 0, 256).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:the_nether");
+        server.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        server.set_players(&[[0.5, 100.0, 0.5]], 2);
+        server.summon("minecraft:wither_skeleton", [0.5, 100.0, 0.5], None, 0.0).unwrap();
+        let skeleton = &server.mobs.skeletons()[0];
+        assert_eq!(skeleton.skeleton.kind, minecraftoss_entities::skeleton::SkeletonKind::WitherSkeleton);
+        assert_eq!((skeleton.skeleton.main_hand.as_deref(), skeleton.skeleton.holds_bow), (Some("minecraft:stone_sword"), false));
+        let id = skeleton.id;
+        let tags = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        let (_, tag) = tags.iter().find(|(tag_id, _)| *tag_id == id).unwrap();
+        let attack = tag.get("attributes").and_then(minecraftoss_core::nbt::Tag::as_list).and_then(|list| list.iter().find(|a| a.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) == Some("minecraft:attack_damage"))).and_then(|a| a.get("base")).and_then(minecraftoss_core::nbt::Tag::as_f64);
+        assert_eq!(attack, Some(4.0));
+        let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+        let back = crate::server_mobs::spawn_saved(&mut loaded, tag).expect("wither skeletons load");
+        let back = &loaded.skeleton_mut(back).unwrap().skeleton;
+        assert_eq!((back.kind, back.main_hand.as_deref(), back.body.height), (minecraftoss_entities::skeleton::SkeletonKind::WitherSkeleton, Some("minecraft:stone_sword"), 2.4));
+    }
+
+    #[test]
+    fn a_fortress_spawner_spawns_blazes_near_a_player_and_waits_between_rounds() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(TerrainGenerator::nether(registries.clone(), 77).unwrap()), "minecraft:the_nether").unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 77, 0, 256).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let at = match crate::locate::nearest_structure(&worldgen, &["minecraft:fortress".to_owned()], [0, 64, 0], crate::locate::STRUCTURE_RADIUS, deadline) {
+            crate::locate::Search::Found(at, _) => at,
+            other => panic!("no fortress near the origin of seed 77: {other:?}"),
+        };
+        let mut run = |player_offset: f64, rule: bool, ticks: usize| {
+            let mut server = ServerSim::new(worldgen.clone(), states.clone(), "minecraft:the_nether");
+            let (cx, cz) = (at[0] >> 4, at[2] >> 4);
+            for x in cx - 3..=cx + 3 {
+                for z in cz - 3..=cz + 3 {
+                    server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+                }
+            }
+            let spawner = server.level.chunks().flat_map(|chunk| chunk.block_entities.entities.iter()).find(|(_, tag)| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) == Some("minecraft:mob_spawner")).map(|(key, _)| *key).expect("the fortress has a spawner");
+            let mut rules = crate::game_rules::GameRules::default();
+            if !rule {
+                rules.set("spawner_blocks_work", "false").unwrap();
+            }
+            server.apply_game_rules(&rules);
+            server.level.natural_spawning.as_mut().unwrap().spawn_mobs = false;
+            let feet = glam::DVec3::new(f64::from(spawner.0) + 0.5 + player_offset, f64::from(spawner.1), f64::from(spawner.2) + 0.5);
+            let player = minecraftoss_entities::tempt::PlayerCandidate {
+                id: 0,
+                position: feet,
+                eye_height: 1.62,
+                main_hand_cow_food: false,
+                offhand_cow_food: false,
+                main_hand_pig_food: false,
+                offhand_pig_food: false,
+                main_hand_chicken_food: false,
+                offhand_chicken_food: false,
+                main_hand_carrot_on_a_stick: false,
+                offhand_carrot_on_a_stick: false,
+                main_hand_wolf_interest: false,
+                offhand_wolf_interest: false,
+                main_hand_horse_tempt: false,
+                offhand_horse_tempt: false,
+                alive: true,
+                spectator: false,
+                attackable: true,
+            };
+            let mut spawned = Vec::new();
+            for _ in 0..ticks {
+                server.set_players(&[feet.to_array()], 2);
+                server.set_simulation_area((spawner.0 >> 4, spawner.2 >> 4), 4);
+                server.prepare_spawning(&[player]);
+                server.tick();
+                spawned.extend(server.level.spawned.iter().filter(|tag| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) == Some("minecraft:blaze")).cloned());
+                server.take_spawned();
+            }
+            let delay = server.level.chunk(ChunkPos::new(spawner.0 >> 4, spawner.2 >> 4)).and_then(|chunk| chunk.block_entities.entities.get(&spawner)).and_then(|tag| tag.get("Delay")).and_then(minecraftoss_core::nbt::Tag::as_i64);
+            (spawner, spawned, delay)
+        };
+        let (spawner, blazes, delay) = run(3.0, true, 120);
+        assert!(!blazes.is_empty(), "the spawner made blazes");
+        assert!(blazes.len() <= 6, "no more than the spawner's limit in one wait: {}", blazes.len());
+        for tag in &blazes {
+            let pos: Vec<f64> = tag.get("Pos").and_then(minecraftoss_core::nbt::Tag::as_list).unwrap().iter().filter_map(minecraftoss_core::nbt::Tag::as_f64).collect();
+            assert!((pos[0] - f64::from(spawner.0) - 0.5).abs() <= 4.0 && (pos[2] - f64::from(spawner.2) - 0.5).abs() <= 4.0 && (pos[1] - f64::from(spawner.1)).abs() <= 1.0, "within its spawn range: {pos:?}");
+        }
+        assert!(delay.is_some_and(|d| (80..800).contains(&d)), "it waits 200 to 799 ticks after a round: {delay:?}");
+        let (_, none, kept) = run(40.0, true, 60);
+        assert!(none.is_empty(), "nobody within 16 blocks: nothing");
+        assert_eq!(kept, Some(20), "and its first wait does not run down");
+        let (_, off, _) = run(3.0, false, 60);
+        assert!(off.is_empty(), "spawner_blocks_work off: nothing");
+    }
+
+    #[test]
+    fn nether_lava_spreads_farther_and_faster_and_the_nether_sea_is_at_32() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let level_of = |terrain: TerrainGenerator, dimension_type: &str| {
+            let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(terrain), dimension_type).unwrap());
+            let states = Arc::new(BlockStates::new(registries.clone(), 0, 0, 256).unwrap());
+            ServerSim::new(worldgen, states, dimension_type)
+        };
+        let nether = level_of(TerrainGenerator::nether(registries.clone(), 0).unwrap(), "minecraft:the_nether");
+        assert_eq!((nether.level.sea_level, nether.level.fast_lava), (32, true));
+        let end = level_of(TerrainGenerator::end(registries.clone(), 0).unwrap(), "minecraft:the_end");
+        assert_eq!((end.level.sea_level, end.level.fast_lava), (0, false));
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let lava = registries.blocks.block_by_name("minecraft:lava").unwrap();
+        let reach = |dimension_type: &str, ticks: usize| {
+            let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+            let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+            let mut server = ServerSim::new(worldgen.clone(), states, dimension_type);
+            assert_eq!(server.level.sea_level, 63);
+            for x in -1..=1 {
+                for z in -1..=1 {
+                    server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+                }
+            }
+            for x in -9..=9 {
+                for z in -9..=9 {
+                    server.player_edit_block((x, 200, z), Some(&Block::new("minecraft:stone")), PlayerEdit::Place);
+                }
+            }
+            server.player_edit_block((0, 201, 0), Some(&Block::new("minecraft:lava").with("level", "0")), PlayerEdit::Place);
+            for _ in 0..ticks {
+                server.set_players(&[[0.5, 202.0, 0.5]], 2);
+                server.set_simulation_area((0, 0), 4);
+                server.tick();
+            }
+            let mut farthest = 0;
+            for x in -9..=9 {
+                for z in -9..=9 {
+                    if registries.blocks.block_of(server.level.block(minecraftoss_core::BlockPos::new(x, 201, z))) == lava {
+                        farthest = farthest.max(x.abs() + z.abs());
+                    }
+                }
+            }
+            farthest
+        };
+        assert_eq!(reach("minecraft:overworld", 300), 3, "overworld lava drops two levels a block");
+        assert_eq!(reach("minecraft:the_nether", 300), 7, "Nether lava drops one level a block");
+        assert!(reach("minecraft:overworld", 75) <= 2, "overworld lava waits 30 ticks a step");
+        assert!(reach("minecraft:the_nether", 75) >= 6, "Nether lava waits 10 ticks a step");
+    }
+
+    #[test]
+    fn in_the_nether_mined_ice_leaves_no_water_and_a_wet_sponge_dries() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        for (dimension_type, melted, sponge) in [("minecraft:overworld", Some("minecraft:water"), "minecraft:wet_sponge"), ("minecraft:the_nether", None, "minecraft:sponge")] {
+            let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+            let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+            let mut server = ServerSim::new(worldgen.clone(), states, dimension_type);
+            for x in -1..=1 {
+                for z in -1..=1 {
+                    server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+                }
+            }
+            for x in 8..=10 {
+                server.player_edit_block((x, 199, 8), Some(&Block::new("minecraft:stone")), PlayerEdit::Place);
+            }
+            server.player_edit_block((8, 200, 8), Some(&Block::new("minecraft:ice")), PlayerEdit::Place);
+            let changes = mined_to(&mut server, &[((8, 200, 8), HowBroken::Mined)]);
+            assert_eq!(changes.get(&(8, 200, 8)), Some(&melted.map(str::to_owned)), "{dimension_type}: mined ice on stone");
+            server.player_edit_block((10, 200, 8), Some(&Block::new("minecraft:wet_sponge")), PlayerEdit::Place);
+            let placed = server.level.block(minecraftoss_core::BlockPos::new(10, 200, 8));
+            assert_eq!(registries.blocks.block(registries.blocks.block_of(placed)).name.as_str(), sponge, "{dimension_type}: a placed wet sponge");
+        }
+    }
+
+    #[test]
+    fn a_blast_hurts_mobs_and_players_breaks_blocks_and_may_start_fires() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let fire = registries.blocks.block_by_name("minecraft:fire").unwrap();
+        let planks = registries.blocks.block_by_name("minecraft:oak_planks").unwrap();
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: glam::DVec3::new(-2.5, 201.0, 0.5),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        };
+        let blow_up = |fire_on: bool, respawn_point: bool, shield: Option<BlockPos>| {
+            let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+            let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+            let mut server = ServerSim::new(worldgen.clone(), states, "minecraft:overworld");
+            for x in -1..=1 {
+                for z in -1..=1 {
+                    server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+                }
+            }
+            for x in -8..=8 {
+                for z in -8..=8 {
+                    server.player_edit_block((x, 200, z), Some(&Block::new("minecraft:obsidian")), PlayerEdit::Place);
+                }
+            }
+            for z in -2..=2 {
+                server.player_edit_block((1, 201, z), Some(&Block::new("minecraft:oak_planks")), PlayerEdit::Place);
+            }
+            let zombie = server.mobs.spawn_zombie(minecraftoss_entities::zombie::Zombie::new(glam::DVec3::new(0.5, 201.0, 3.5)), true);
+            server.take_changes();
+            if respawn_point {
+                server.respawn_point_blast(Blast { center: [0.5, 201.5, 0.5], power: 5.0, fire: fire_on }, shield);
+            } else {
+                server.blast(Blast { center: [0.5, 201.5, 0.5], power: 5.0, fire: fire_on });
+            }
+            server.set_players(&[player.position.to_array()], 2);
+            server.set_simulation_area((0, 0), 4);
+            server.tick();
+            server.tick_mobs(&[player], false);
+            let hits = server.mobs.take_player_hits();
+            let blasts = server.take_explosions();
+            let health = server.mobs.zombies().iter().find(|z| z.id == zombie).map_or(0.0, |z| z.zombie.health);
+            let mut fires = 0;
+            let mut planks_left = 0;
+            for x in -8..=8 {
+                for z in -8..=8 {
+                    let block = registries.blocks.block_of(server.level.block(minecraftoss_core::BlockPos::new(x, 201, z)));
+                    fires += usize::from(block == fire);
+                    planks_left += usize::from(block == planks);
+                }
+            }
+            (hits, blasts, health, fires, planks_left)
+        };
+        let (hits, blasts, health, fires, planks_left) = blow_up(true, false, None);
+        assert_eq!(blasts.len(), 1, "the client hears the blast");
+        assert_eq!(blasts[0].radius, 5.0);
+        let hit = hits.iter().find(|h| matches!(h.kind, minecraftoss_entities::world::PlayerHitKind::Explosion { .. })).expect("the blast hits the player");
+        assert_eq!(hit.source, None, "a block's blast has no attacker");
+        assert!(hit.damage > 10.0, "a close power 5 blast hurts: {}", hit.damage);
+        assert!(health < 20.0, "the zombie is hurt: {health}");
+        assert!(planks_left < 5, "the blast breaks the planks: {planks_left} left");
+        assert!(fires > 0, "fire lands on the obsidian");
+        let (_, _, _, fires, _) = blow_up(false, false, None);
+        assert_eq!(fires, 0, "a blast without fire starts none");
+        let (hits, blasts, health, fires, planks_left) = blow_up(true, true, None);
+        assert_eq!(blasts.len(), 1, "the client hears a bed's blast");
+        assert!(!hits.iter().any(|h| matches!(h.kind, minecraftoss_entities::world::PlayerHitKind::Explosion { .. })));
+        let hit = hits.iter().find(|h| matches!(h.kind, minecraftoss_entities::world::PlayerHitKind::BadRespawnPoint { .. })).expect("a bed's blast is a bad respawn point");
+        assert_eq!(hit.source, None);
+        assert!(hit.damage > 10.0, "a bed's blast hurts as much: {}", hit.damage);
+        assert!(health < 20.0 && planks_left < 5 && fires > 0, "and does the same to mobs and blocks");
+        let (hits, blasts, health, fires, planks_left) = blow_up(true, true, Some((0, 201, 0)));
+        assert_eq!(blasts.len(), 1, "the client hears an anchor's blast beside water");
+        assert!(hits.iter().any(|h| matches!(h.kind, minecraftoss_entities::world::PlayerHitKind::BadRespawnPoint { .. }) && h.damage > 10.0));
+        assert!(health < 20.0, "it hurts mobs as much");
+        assert_eq!((planks_left, fires), (5, 0), "water at its centre keeps every block and starts no fire");
+    }
+
+    #[test]
+    fn ghast_fireballs_blow_up_walls_unless_mobs_may_not_grief_and_ghasts_keep_their_power() {
+        use minecraftoss_entities::fireball::{Fireball, FireballKind, Shooter};
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let planks = registries.blocks.block_by_name("minecraft:oak_planks").unwrap();
+        let shoot = |griefing: bool| {
+            let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+            let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+            let mut server = ServerSim::new(worldgen.clone(), states, "minecraft:overworld");
+            for x in -1..=1 {
+                for z in -1..=1 {
+                    server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+                }
+            }
+            for x in -2..=2 {
+                for y in 200..=204 {
+                    server.player_edit_block((x, y, 8), Some(&Block::new("minecraft:oak_planks")), PlayerEdit::Place);
+                }
+            }
+            server.take_changes();
+            server.mobs.set_mob_griefing(griefing);
+            server.summon("minecraft:ghast", [0.5, 200.0, -6.5], None, 0.0).unwrap();
+            let ghast = server.mobs.ghasts()[0].id;
+            server.mobs.ghast_mut(ghast).unwrap().no_ai = true;
+            server.mobs.spawn_fireball(Fireball::shoot(FireballKind::Large { explosion_power: 1 }, Shooter::Mob(ghast), glam::DVec3::new(0.5, 201.5, -2.0), glam::DVec3::Z));
+            server.set_players(&[[0.5, 200.0, -30.5]], 2);
+            server.set_simulation_area((0, 0), 4);
+            let mut blasts = Vec::new();
+            for _ in 0..40 {
+                server.tick();
+                server.tick_mobs(&[], false);
+                blasts.extend(server.take_explosions());
+            }
+            let mut left = 0;
+            for x in -2..=2 {
+                for y in 200..=204 {
+                    left += usize::from(registries.blocks.block_of(server.level.block(minecraftoss_core::BlockPos::new(x, y, 8))) == planks);
+                }
+            }
+            (blasts, left, server.mobs.fireballs().len())
+        };
+        let (blasts, left, flying) = shoot(true);
+        assert_eq!((blasts.len(), flying), (1, 0), "the fireball bursts on the wall and the client hears it");
+        assert_eq!(blasts[0].radius, 1.0);
+        assert!((7.0..=8.0).contains(&blasts[0].position.z), "{:?}", blasts[0].position);
+        assert!(left < 25, "a power 1 blast breaks planks: {left} left");
+        let (blasts, left, _) = shoot(false);
+        assert_eq!((blasts.len(), left), (1, 25), "without mob griefing it breaks nothing");
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen.clone(), states, "minecraft:overworld");
+        server.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        server.set_players(&[[0.5, 200.0, 0.5]], 2);
+        let powerful = minecraftoss_core::snbt::parse_compound("{ExplosionPower:3b}").unwrap();
+        server.summon("minecraft:ghast", [0.5, 200.0, 0.5], Some(&powerful), 0.0).unwrap();
+        assert_eq!(server.dormant_count(), 0, "ghasts are simulated");
+        let ghast = server.mobs.ghasts()[0].id;
+        assert_eq!(server.mobs.ghasts()[0].ghast.explosion_power, 3);
+        server.mobs.spawn_fireball(Fireball::shoot(FireballKind::Large { explosion_power: 3 }, Shooter::Mob(ghast), glam::DVec3::new(0.5, 202.5, 4.5), glam::DVec3::Z));
+        let tags = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+        for (_, tag) in &tags {
+            crate::server_mobs::spawn_saved(&mut loaded, tag).expect("ghasts and fireballs load");
+        }
+        assert_eq!(loaded.ghasts()[0].ghast.explosion_power, 3);
+        let fireball = &loaded.fireballs()[0].fireball;
+        assert_eq!(fireball.kind, FireballKind::Large { explosion_power: 3 });
+        assert!((fireball.velocity - glam::DVec3::new(0.0, 0.0, 0.1)).length() < 1e-9);
+        let id = server.mobs.fireballs()[0].id;
+        assert!(server.deflect_fireball(id, [0.0, 0.0, -1.0], 0, true));
+        assert_eq!(server.mobs.fireballs()[0].fireball.owner, Some(Shooter::Player(0)));
+    }
+
+    #[test]
+    fn blazes_live_and_their_small_fireballs_set_fire_beside_what_they_strike() {
+        use minecraftoss_entities::fireball::{Fireball, FireballKind, Shooter};
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let fire = registries.blocks.block_by_name("minecraft:fire").unwrap();
+        let shoot = |griefing: bool| {
+            let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+            let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+            let mut server = ServerSim::new(worldgen.clone(), states, "minecraft:overworld");
+            for x in -1..=1 {
+                for z in -1..=1 {
+                    server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+                }
+            }
+            for x in -2..=2 {
+                for y in 200..=204 {
+                    server.player_edit_block((x, y, 6), Some(&Block::new("minecraft:obsidian")), PlayerEdit::Place);
+                }
+                for z in 0..=5 {
+                    server.player_edit_block((x, 200, z), Some(&Block::new("minecraft:obsidian")), PlayerEdit::Place);
+                }
+            }
+            server.take_changes();
+            server.mobs.set_mob_griefing(griefing);
+            server.summon("minecraft:blaze", [0.5, 200.0, -8.5], None, 0.0).unwrap();
+            let blaze = server.mobs.blazes()[0].id;
+            server.mobs.blaze_mut(blaze).unwrap().no_ai = true;
+            server.mobs.spawn_fireball(Fireball::shoot(FireballKind::Small, Shooter::Mob(blaze), glam::DVec3::new(0.5, 201.5, 0.5), glam::DVec3::Z));
+            server.set_players(&[[0.5, 200.0, -30.5]], 2);
+            server.set_simulation_area((0, 0), 4);
+            for _ in 0..20 {
+                server.tick();
+                server.tick_mobs(&[], false);
+            }
+            let lit = registries.blocks.block_of(server.level.block(minecraftoss_core::BlockPos::new(0, 201, 5))) == fire;
+            (lit, server.mobs.fireballs().len(), server.take_explosions().len())
+        };
+        assert_eq!(shoot(true), (true, 0, 0), "it bursts on the wall with no blast and sets fire in front of it");
+        assert_eq!(shoot(false), (false, 0, 0), "a blaze's fireball lights nothing where mobs may not grief");
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen.clone(), states, "minecraft:overworld");
+        server.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        server.set_players(&[[0.5, 200.0, 0.5]], 2);
+        server.summon("minecraft:blaze", [0.5, 200.0, 0.5], None, 0.0).unwrap();
+        assert_eq!(server.dormant_count(), 0, "blazes are simulated");
+        let blaze = server.mobs.blazes()[0].id;
+        server.mobs.spawn_fireball(Fireball::shoot(FireballKind::Small, Shooter::Mob(blaze), glam::DVec3::new(0.5, 201.5, 4.5), glam::DVec3::X));
+        let tags = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        assert!(tags.iter().any(|(_, tag)| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) == Some("minecraft:small_fireball") && tag.get("ExplosionPower").is_none()));
+        let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+        for (_, tag) in &tags {
+            crate::server_mobs::spawn_saved(&mut loaded, tag).expect("blazes and small fireballs load");
+        }
+        assert_eq!(loaded.blazes().len(), 1);
+        assert_eq!(loaded.fireballs()[0].fireball.kind, FireballKind::Small);
     }
 }

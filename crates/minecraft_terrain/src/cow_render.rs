@@ -336,6 +336,10 @@ pub fn set_nether_entity_lighting(nether: bool) {
     NETHER_LIGHTING.store(nether, std::sync::atomic::Ordering::Relaxed);
 }
 
+pub fn nether_entity_lighting() -> bool {
+    NETHER_LIGHTING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The entity shader's `minecraft_mix_light` for a world-space normal:
 /// two fixed lights, 0.6 of their sum plus 0.4 ambient, at most 1.
 pub fn entity_shade(normal: Vec3) -> f32 {

@@ -320,6 +320,8 @@ impl Level<'_> {
                 let next = self.with(state, "lit", "false");
                 self.set_block_and_update(pos, next);
             }
+        } else if class("NetherPortalBlock") {
+            self.nether_portal_random_tick(pos);
         } else if info.classes().iter().any(|c| c.starts_with("Weathering")) {
             if class("WeatheringCopperDoorBlock") && blocks.property(state, "half") != Some("lower") {
                 return;
