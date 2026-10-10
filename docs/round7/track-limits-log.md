@@ -438,3 +438,15 @@ IW4L_MINECRAFT_KIT=minecraft:red_stained_glass*16,minecraft:blue_stained_glass*1
 - **Tests:** `translucency`, unchanged in what they check.
 - **Test steps:** none, nothing changes in game.
 - **Kit:** none.
+
+## Review
+
+Adversarial review of the whole track, base 4c4900e6 to 48cd53cf. Each fix below is its own commit.
+
+### 1. Minecraft ambient particles pass rustfmt
+
+- **Defect:** the new file `minecraft_terrain/src/ambient_particles.rs` failed `rustfmt --check --edition 2021` on its committed content: one line of the test `a_doused_campfire_bursts_into_twenty_puffs_and_twenty_low_smokes` was too long. New files must pass rustfmt.
+- **Changed:** that one statement, as rustfmt lays it out. The file now passes `rustfmt --check`.
+- **Tests:** `ambient_particles`, unchanged in what they check.
+- **Test steps:** none, nothing changes in game.
+- **Kit:** none.

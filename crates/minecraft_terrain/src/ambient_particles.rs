@@ -998,7 +998,11 @@ mod tests {
             let mut particles = AmbientParticles::new(10);
             particles.douse((4, 70, -3), signal);
             assert_eq!(particles.len(), 40);
-            let puffs: Vec<_> = particles.particles.iter().filter(|p| p.kind == kind).collect();
+            let puffs: Vec<_> = particles
+                .particles
+                .iter()
+                .filter(|p| p.kind == kind)
+                .collect();
             let smokes: Vec<_> = particles
                 .particles
                 .iter()
