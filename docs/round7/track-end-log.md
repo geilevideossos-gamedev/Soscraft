@@ -1286,3 +1286,32 @@ IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:
 Previous commit: 600c03d2
 
 - **Changed:** entry 45's kit holds 16 stacks (cobblestone 256 fills 4 and end stone 128 fills 2), not 12. No code or test changes.
+
+## Fourth run, review of group X5
+
+The adversarial review of X5 (base 88cb6d83). Each defect it found is fixed in its own commit below.
+
+### 47. Minecraft ender dragon leaves players alone in peaceful
+
+Previous commit: a76fe438
+
+- **Defect:** the dragon picked any survival or adventure player of the End level whatever the difficulty. In peaceful it strafed players and spat fireballs at them, roared at a player beside the podium and flamed them, charged, and turned on whoever broke a crystal. In vanilla all of these go through `LivingEntity.canAttack`, which refuses every player in peaceful: `NEW_TARGET_TARGETING`, `NEAR_EGG_TARGETING`, the scan's targeting, `CHARGE_TARGETING` (all `forCombat`) and `DragonHoldingPatternPhase.onCrystalDestroyed`. A peaceful dragon still circles, lands from (40, podium, 0), sits for 100 ticks and takes off.
+- **Changed:**
+  - `minecraft_terrain/src/ender_dragon.rs`: `DragonEnv.peaceful` and `DragonEnv::targets` (no players in peaceful). The strafe roll, the landing approach's bearing, the scan, the charge and the crystal strafe now pick from `targets()`.
+  - `minecraft_terrain/src/server.rs`: the dragons get the level's difficulty.
+- **Checked with javap (26.3):** `TargetingConditions.test` (a combat test with a source asks `source.canAttack(target)`), `DragonHoldingPatternPhase.onCrystalDestroyed` (`canAttack`).
+- **Tests:** `ender_dragon`: `in_peaceful_the_dragon_strafes_watches_and_charges_nobody`. Five dragons circle 2000 ticks each beside a survival player and never strafe. A broken crystal turns the dragon on nobody. A perched dragon that roars at a player 7.5 blocks away at tick 26 in normal only takes off at tick 100 in peaceful. The other test `DragonEnv`s are not peaceful.
+- **Decisions:**
+  - **The wings still push players in peaceful**, as vanilla's `NO_CREATIVE_OR_SPECTATOR` has no difficulty test. The damage of the wings and the head is already nothing in peaceful (`difficulty_scaled`).
+  - **A strafe already under way keeps its player** when the difficulty turns peaceful, as vanilla keeps `attackTarget`.
+- **Test steps** (survival; MW2 weapons):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x5calm` (a new world), `IW4L_MINECRAFT_DIMENSION=the_end` and the kit below. Type `/difficulty peaceful`, walk onto the main island and stand on the podium's rim about 5 blocks from the bedrock pillar.
+  2. Watch the dragon for a few minutes: it circles and now and then lands on the pillar, but it never swoops at you or spits a fireball. When it perches it does not turn to you, roar or breathe; it takes off again after 5 seconds. **Screenshot 1** (the dragon perched, no purple cloud).
+  3. Shoot a pillar crystal: the dragon does not turn on you.
+  4. Type `/difficulty normal`: within a few circles it swoops at you and spits fireballs again (entry 38).
+  5. Remove the `IW4L_MINECRAFT_DIMENSION` line afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:cobblestone*64,minecraft:water_bucket,minecraft:diamond_sword+sharpness=5
+```

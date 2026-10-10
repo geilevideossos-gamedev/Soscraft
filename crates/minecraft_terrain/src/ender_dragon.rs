@@ -558,6 +558,13 @@ pub struct DragonEnv<'a> {
     pub mobs: &'a [(u64, (DVec3, DVec3))],
     pub wall: &'a dyn Fn(i32, i32, i32) -> Wall,
     pub griefing: bool,
+    pub peaceful: bool,
+}
+
+impl DragonEnv<'_> {
+    pub fn targets(&self) -> &[PlayerBody] {
+        if self.peaceful { &[] } else { self.players }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1244,7 +1251,7 @@ impl EnderDragon {
         }
         self.history.record(self.position.y, self.y_rot);
         if let Some(id) = self.pending_strafe.take() {
-            let player = env.players.iter().find(|player| player.id == id);
+            let player = env.targets().iter().find(|player| player.id == id);
             if let Some(player) = player.filter(|player| player.attackable) {
                 if self.phase == Phase::HoldingPattern {
                     self.strafe_player(player, env);
@@ -1358,7 +1365,7 @@ impl EnderDragon {
                 f64::from(podium.1),
                 f64::from(podium.2),
             );
-            if let Some(player) = nearest_player(env.players, at, |_| true) {
+            if let Some(player) = nearest_player(env.targets(), at, |_| true) {
                 let odds = distance_to_center_sqr(podium, player.feet) / 512.0;
                 if self.random.next_int((odds + 2.0) as i32 as u32) == 0
                     || self.random.next_int((alive + 2).max(1) as u32) == 0
@@ -1493,7 +1500,7 @@ impl EnderDragon {
                 f64::from(podium.1),
                 f64::from(podium.2),
             );
-            let toward = match nearest_player(env.players, at, |_| true) {
+            let toward = match nearest_player(env.targets(), at, |_| true) {
                 Some(player) => {
                     let away = normalize(DVec3::new(player.feet.x, 0.0, player.feet.z));
                     DVec3::new(-away.x * 40.0, 105.0, -away.z * 40.0)
@@ -1628,7 +1635,7 @@ impl EnderDragon {
             let reach = (range * player.visibility()).max(2.0);
             player.feet.distance_squared(here) <= reach * reach && (env.sees)(eye, player.eye())
         };
-        let near = nearest_player(env.players, here, |player| {
+        let near = nearest_player(env.targets(), here, |player| {
             (player.feet.y - here.y).abs() <= 10.0 && in_view(player, SCAN_ATTACK_RANGE)
         });
         if let Some(player) = near {
@@ -1651,7 +1658,7 @@ impl EnderDragon {
                 self.y_rot += self.y_rot_a;
             }
         } else if self.scanning_time >= SCAN_IDLE_TICKS {
-            let charged = nearest_player(env.players, here, |player| {
+            let charged = nearest_player(env.targets(), here, |player| {
                 in_view(player, SCAN_CHARGE_RANGE)
             });
             self.set_phase(Phase::Takeoff);
@@ -1992,6 +1999,7 @@ mod tests {
             mobs: &[],
             wall: &|_, _, _| Wall::Pass,
             griefing: true,
+            peaceful: false,
         }
     }
 
@@ -2420,6 +2428,7 @@ mod tests {
             mobs: &[],
             wall: &|_, _, _| Wall::Pass,
             griefing: true,
+            peaceful: false,
         };
         for _ in 0..200 {
             dragon.tick(&env);
@@ -2459,6 +2468,7 @@ mod tests {
             mobs: &[],
             wall: &|_, _, _| Wall::Pass,
             griefing: true,
+            peaceful: false,
         };
         dragon.tick(&gone);
         assert_eq!(
@@ -2523,6 +2533,7 @@ mod tests {
             mobs: &[],
             wall: &|_, _, _| Wall::Pass,
             griefing: true,
+            peaceful: false,
         };
         let events = dragon.tick(&env);
         assert!(
@@ -2977,6 +2988,7 @@ mod tests {
             mobs: &[],
             wall: &|_, _, _| Wall::Pass,
             griefing: true,
+            peaceful: false,
         }
     }
 
@@ -3231,6 +3243,51 @@ mod tests {
             dragon.head_look_vector(&env),
             view_vector(-45.0, dragon.y_rot),
             "a sitting head looks down"
+        );
+    }
+
+    #[test]
+    fn in_peaceful_the_dragon_strafes_watches_and_charges_nobody() {
+        let height = flat;
+        let top = || 64;
+        let sees = |_: DVec3, _: DVec3| true;
+        let players = [player(4, DVec3::new(40.0, 63.0, 0.0), true)];
+        let calm = DragonEnv {
+            peaceful: true,
+            ..with_players(env(&height, &top, Some(10)), &players, &sees)
+        };
+        assert!(calm.targets().is_empty());
+        for seed in 0..5 {
+            let mut dragon = dragon_at(DVec3::new(0.5, 100.0, 0.5), seed as f32 * 18.0);
+            dragon.random = LegacyRandom::new(seed);
+            for _ in 0..2000 {
+                dragon.tick(&calm);
+                assert_ne!(dragon.phase, Phase::StrafePlayer, "nobody to strafe");
+            }
+        }
+        let mut dragon = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
+        let mut events = DragonEvents::default();
+        dragon.crystal_destroyed(9, Some(4), &mut events);
+        dragon.tick(&calm);
+        assert_eq!(
+            dragon.phase,
+            Phase::HoldingPattern,
+            "a lost crystal turns it on nobody"
+        );
+        let near = [player(4, DVec3::new(8.0, 63.0, 0.5), true)];
+        let mut watching = perched();
+        let seen = phases_of(&mut watching, &podium_env(&near, &sees, Some(0)), 30);
+        assert_eq!(seen[1], (26, Phase::SittingAttacking));
+        let podium = DragonEnv {
+            peaceful: true,
+            ..podium_env(&near, &sees, Some(0))
+        };
+        let mut calm_perch = perched();
+        let seen = phases_of(&mut calm_perch, &podium, 100);
+        assert_eq!(
+            seen,
+            [(0, Phase::SittingScanning), (100, Phase::Takeoff)],
+            "no roar at the player beside it and no charge"
         );
     }
 }

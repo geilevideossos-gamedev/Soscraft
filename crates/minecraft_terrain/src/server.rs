@@ -1513,6 +1513,7 @@ impl ServerSim {
         let mob_boxes: Vec<(u64, (glam::DVec3, glam::DVec3))> = crate::thrown::targets(&self.mobs).iter().map(|target| (target.id, (target.min, target.max))).collect();
         let mut mob_hits = Vec::new();
         let griefing = self.mobs.mob_griefing();
+        let peaceful = self.level.difficulty == 0;
         {
             let Self { level, states, mob_tables, dragons, fight_dragon, alive_crystals, end_sounds, end_hits, dragons_killed, crystals: self_crystals, fight, dragon_drops, dragon_fireballs, clouds, players_pushed, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
@@ -1547,7 +1548,7 @@ impl ServerSim {
                 let top = || world.level.borrow().height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlocking, origin.0, origin.2);
                 let ours = *fight_dragon == Some(dragon.uuid);
                 let death_experience = crate::ender_dragon::death_experience(ours, fight.previously_killed, *dragon_drops);
-                let env = crate::ender_dragon::DragonEnv { height: &height, podium_top: &top, alive_crystals: ours.then_some(*alive_crystals), players: &bodies, crystals: &crystals, death_experience, sees: &sees, empty: &empty, mobs: &mob_boxes, wall: &wall, griefing };
+                let env = crate::ender_dragon::DragonEnv { height: &height, podium_top: &top, alive_crystals: ours.then_some(*alive_crystals), players: &bodies, crystals: &crystals, death_experience, sees: &sees, empty: &empty, mobs: &mob_boxes, wall: &wall, griefing, peaceful };
                 let events = dragon.tick(&env);
                 for &(x, y, z) in &events.broken {
                     world.level.borrow_mut().remove_block(minecraftoss_core::BlockPos::new(x, y, z), false);
