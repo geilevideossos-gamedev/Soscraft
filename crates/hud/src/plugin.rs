@@ -125,6 +125,7 @@ impl Plugin for HudPlugin {
                             crate::minecraft_portal::update,
                             crate::minecraft_inventory::update_minecraft_hud,
                             crate::minecraft_loading::update,
+                            crate::minecraft_credits::update,
                             hud_stage_close::<7>,
                         )
                             .chain(),
@@ -156,6 +157,7 @@ impl Plugin for HudPlugin {
                     flush_blood_tess,
                     flush_script_menus_tess,
                     crate::minecraft_loading::flush,
+                    crate::minecraft_credits::flush,
                 )
                     .chain()
                     .after(hud_stage_close::<7>)
@@ -353,6 +355,7 @@ fn ensure_hud_root(mut commands: Commands, existing: Query<Entity, With<HudRoot>
             crate::menus::spawn_script_menus(root);
             crate::font_overlay::spawn_overlay(root, crate::minecraft_inventory::MinecraftRaster);
             crate::font_overlay::spawn_overlay(root, crate::minecraft_loading::MinecraftLoadingRaster);
+            crate::font_overlay::spawn_overlay(root, crate::minecraft_credits::MinecraftCreditsRaster);
         });
 }
 

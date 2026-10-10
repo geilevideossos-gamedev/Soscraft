@@ -21,6 +21,7 @@ mod minecraft_boss;
 mod minecraft_chat;
 mod minecraft_clicks;
 mod minecraft_creative;
+mod minecraft_credits;
 mod minecraft_edit;
 mod minecraft_fire;
 mod minecraft_gui;

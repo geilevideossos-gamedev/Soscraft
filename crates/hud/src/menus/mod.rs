@@ -316,7 +316,7 @@ pub(crate) fn update_script_menus(
         let inventory_open = input
             .minecraft
             .as_ref()
-            .is_some_and(|ui| ui.active && (ui.inventory_open || ui.chat.open));
+            .is_some_and(|ui| (ui.active && (ui.inventory_open || ui.chat.open)) || ui.credits.is_some());
         pressed.escape |= keys.just_pressed(KeyCode::Escape) && !inventory_open;
         pressed.enter |=
             keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter);

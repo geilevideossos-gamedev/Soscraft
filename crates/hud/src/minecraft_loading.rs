@@ -124,9 +124,11 @@ pub(crate) fn update(
         painter.fill(0, 0, space.width, space.height, BLACK);
     }
     let mut quads = background(&space, loading, &mut hud_images);
-    let text = gui.text(DOWNLOADING_TERRAIN);
-    let [x, y] = text_origin([space.width, space.height], painter.width(&text));
-    painter.text(&text, x, y, WHITE, true);
+    if ui.credits.is_none() {
+        let text = gui.text(DOWNLOADING_TERRAIN);
+        let [x, y] = text_origin([space.width, space.height], painter.width(&text));
+        painter.text(&text, x, y, WHITE, true);
+    }
     let mut drawn = std::mem::take(&mut painter.quads);
     if loading.background.is_none() {
         quads.splice(0..0, drawn.drain(..1));

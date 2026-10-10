@@ -426,11 +426,13 @@ fn update(
     for _ in torn_down.read() {
         stop(&mut runtime, &mut view);
         ui.chat.clear_messages();
+        ui.credits = None;
     }
     let now_ms = real_time.elapsed().as_millis() as u64;
     for match_ in installed.read() {
         stop(&mut runtime, &mut view);
         ui.chat.clear_messages();
+        ui.credits = None;
         if assets::minecraft_map::is_minecraft(&match_.zone) {
             let closing = std::mem::take(&mut runtime.closing);
             let (send, receive) = mpsc::channel();
@@ -614,6 +616,7 @@ fn update(
     if player.dead {
         player.held = None;
     }
+    crate::minecraft_end::credits(player, &mut ui, &world.packs, &mut images);
     player.set_remote(in_remote_killstreak(&presented, local.0));
     if player.switching.is_some() {
         for (dimension, error) in &failed {
@@ -673,7 +676,7 @@ fn update(
         let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
         stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, at, aspect, now_ms);
         globals.advance_clocks(time.delta_secs_f64());
-        if ps.is_some() && player.arrival.is_none() && !spawn_gate.waiting() {
+        if ps.is_some() && player.arrival.is_none() && !spawn_gate.waiting() && !minecraft_survival::the_end::holding_for_credits(player) {
             player.switching = None;
             diag::info!(World, "Minecraft player arrived in {} at {:?}", player.dimension.dimension_type(), at);
         }

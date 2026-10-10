@@ -198,6 +198,7 @@ pub struct MinecraftUi {
     pub portal_overlay: Option<McPortalOverlay>,
     pub overlay_message: Option<McOverlayMessage>,
     pub boss_bars: Vec<McBossBar>,
+    pub credits: Option<crate::minecraft_credits::McCredits>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
