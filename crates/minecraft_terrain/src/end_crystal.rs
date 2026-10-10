@@ -49,6 +49,7 @@ impl EndDamage {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EndTarget {
     Crystal(u64),
+    DragonPart { id: u64, part: usize },
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -6,6 +6,8 @@ use minecraftoss_core::nbt::Tag;
 use minecraftoss_player::mth::{atan2, cos, sin};
 use minecraftoss_player::rng::LegacyRandom;
 
+use crate::end_crystal::{DamageKind, EndDamage};
+
 pub const ENDER_DRAGON: &str = "minecraft:ender_dragon";
 pub const MAX_HEALTH: f32 = 200.0;
 pub const TRACKING_RANGE: f64 = 160.0;
@@ -433,6 +435,38 @@ pub struct DragonEvents {
     pub player_hits: Vec<(u64, f32, DVec3)>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Hurt {
+    pub applied: bool,
+    pub full: bool,
+    pub died: bool,
+}
+
+pub fn part_damage(part: usize, amount: f32) -> f32 {
+    if part == HEAD || part == NECK {
+        amount
+    } else {
+        amount / 4.0 + amount.min(1.0)
+    }
+}
+
+pub fn hurts_the_dragon(damage: &EndDamage) -> bool {
+    damage.player.is_some() || damage.kind == DamageKind::Explosion
+}
+
+pub fn blast_damage(feet: DVec3, center: DVec3, radius: f32) -> Option<f32> {
+    let reach = f64::from(radius * 2.0);
+    if reach < f64::from(1.0e-5_f32) {
+        return None;
+    }
+    let distance = feet.distance(center) / reach;
+    if distance > 1.0 {
+        return None;
+    }
+    let impact = 1.0 - distance;
+    Some(((impact * impact + impact) / 2.0 * 7.0 * reach + 1.0) as f32)
+}
+
 #[derive(Clone, Debug)]
 pub struct EnderDragon {
     pub id: u64,
@@ -625,6 +659,89 @@ impl EnderDragon {
 
     pub fn dead_or_dying(&self) -> bool {
         self.health <= 0.0
+    }
+
+    pub fn hurt_part(
+        &mut self,
+        part: usize,
+        damage: &EndDamage,
+        events: &mut DragonEvents,
+    ) -> Hurt {
+        if self.phase == Phase::Dying {
+            return Hurt::default();
+        }
+        let amount = part_damage(part, damage.amount);
+        if amount < 0.01 || !hurts_the_dragon(damage) {
+            return Hurt::default();
+        }
+        let before = self.health;
+        let hurt = self.really_hurt(amount, events);
+        if self.phase.is_sitting() {
+            self.sitting_damage_received += before - self.health;
+            if self.sitting_damage_received > 0.25 * MAX_HEALTH {
+                self.sitting_damage_received = 0.0;
+                self.set_phase(Phase::HoldingPattern);
+            }
+        }
+        hurt
+    }
+
+    fn really_hurt(&mut self, amount: f32, events: &mut DragonEvents) -> Hurt {
+        if self.dead_or_dying() {
+            return Hurt::default();
+        }
+        let full = if self.damage_cooldown > 10 {
+            if amount <= self.last_hurt {
+                return Hurt::default();
+            }
+            self.health -= amount - self.last_hurt;
+            self.last_hurt = amount;
+            false
+        } else {
+            self.last_hurt = amount;
+            self.damage_cooldown = 20;
+            self.health -= amount;
+            self.hurt_time = 10;
+            true
+        };
+        let died = self.dead_or_dying();
+        if full {
+            let pitch = self.voice_pitch();
+            let sound = if died { DEATH_SOUND } else { HURT_SOUND };
+            events
+                .sounds
+                .push((sound, self.position, SOUND_VOLUME, pitch));
+        }
+        if died && !self.phase.is_sitting() {
+            self.health = 1.0;
+            self.set_phase(Phase::Dying);
+        }
+        Hurt {
+            applied: true,
+            full,
+            died,
+        }
+    }
+
+    pub fn blast(
+        &mut self,
+        center: DVec3,
+        radius: f32,
+        player: Option<u64>,
+        events: &mut DragonEvents,
+    ) {
+        let mut hits = Vec::new();
+        if let Some(amount) = blast_damage(self.position, center, radius) {
+            hits.push((BODY, amount));
+        }
+        for (part, &feet) in self.parts.iter().enumerate() {
+            if let Some(amount) = blast_damage(feet, center, radius) {
+                hits.push((part, amount));
+            }
+        }
+        for (part, amount) in hits {
+            self.hurt_part(part, &EndDamage::explosion(amount, player), events);
+        }
     }
 
     pub fn voice_pitch(&mut self) -> f32 {
@@ -1200,6 +1317,145 @@ mod tests {
             Phase::HoldingPattern,
             "phases not ported yet fall back"
         );
+    }
+
+    #[test]
+    fn only_the_head_and_neck_take_full_damage_and_only_from_players_and_explosions() {
+        assert_eq!(part_damage(HEAD, 20.0), 20.0);
+        assert_eq!(part_damage(NECK, 20.0), 20.0);
+        assert_eq!(part_damage(BODY, 20.0), 6.0);
+        assert_eq!(part_damage(6, 0.5), 0.625);
+        let mut dragon = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
+        let mut events = DragonEvents::default();
+        let shot = dragon.hurt_part(HEAD, &EndDamage::attack(20.0, 0), &mut events);
+        assert_eq!(
+            shot,
+            Hurt {
+                applied: true,
+                full: true,
+                died: false
+            }
+        );
+        assert_eq!(dragon.health, 180.0);
+        assert_eq!(dragon.hurt_time, 10);
+        assert_eq!(events.sounds.len(), 1);
+        assert_eq!(events.sounds[0].0, HURT_SOUND);
+        let unowned = EndDamage {
+            amount: 20.0,
+            player: None,
+            kind: DamageKind::Attack,
+        };
+        dragon.damage_cooldown = 0;
+        assert!(
+            !dragon.hurt_part(HEAD, &unowned, &mut events).applied,
+            "no player, no damage"
+        );
+        assert!(
+            dragon
+                .hurt_part(BODY, &EndDamage::explosion(20.0, None), &mut events)
+                .applied,
+            "explosions always hurt it"
+        );
+        assert_eq!(dragon.health, 174.0);
+    }
+
+    #[test]
+    fn hits_within_the_damage_cooldown_only_count_their_extra_damage() {
+        let mut dragon = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
+        let mut events = DragonEvents::default();
+        dragon.hurt_part(HEAD, &EndDamage::attack(8.0, 0), &mut events);
+        assert!(
+            !dragon
+                .hurt_part(HEAD, &EndDamage::attack(5.0, 0), &mut events)
+                .applied
+        );
+        let more = dragon.hurt_part(HEAD, &EndDamage::attack(12.0, 0), &mut events);
+        assert!(more.applied && !more.full);
+        assert_eq!(dragon.health, 188.0);
+        assert_eq!(events.sounds.len(), 1, "a partial hit makes no sound");
+        dragon.damage_cooldown = 10;
+        assert!(
+            dragon
+                .hurt_part(HEAD, &EndDamage::attack(3.0, 0), &mut events)
+                .full
+        );
+        assert_eq!(dragon.health, 185.0);
+    }
+
+    #[test]
+    fn a_killing_blow_sends_a_flying_dragon_to_die_and_a_hovering_one_down_at_once() {
+        let mut dragon = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
+        dragon.health = 5.0;
+        let mut events = DragonEvents::default();
+        let blow = dragon.hurt_part(HEAD, &EndDamage::attack(10.0, 0), &mut events);
+        assert!(blow.died);
+        assert_eq!((dragon.health, dragon.phase), (1.0, Phase::Dying));
+        assert_eq!(events.sounds[0].0, DEATH_SOUND);
+        assert!(
+            !dragon
+                .hurt_part(HEAD, &EndDamage::attack(50.0, 0), &mut events)
+                .applied,
+            "a dying dragon takes no more"
+        );
+        let height = flat;
+        let top = || 64;
+        for _ in 0..400 {
+            dragon.tick(&env(&height, &top, None));
+        }
+        assert!(
+            dragon.removed,
+            "it rises and goes 200 ticks after its health runs out"
+        );
+        let mut random = LegacyRandom::new(3);
+        let tag = Dragons::fresh_tag(DVec3::new(0.0, 100.0, 0.0), 0.0, &mut random);
+        let mut hovering = EnderDragon::from_tag(&tag, FIRST_ID).unwrap();
+        hovering.health = 5.0;
+        hovering.hurt_part(HEAD, &EndDamage::attack(10.0, 0), &mut events);
+        assert!(
+            hovering.health <= 0.0 && hovering.phase == Phase::Hovering,
+            "a sitting dragon dies where it is"
+        );
+    }
+
+    #[test]
+    fn a_sitting_dragon_takes_off_after_a_quarter_of_its_health() {
+        let mut random = LegacyRandom::new(4);
+        let tag = Dragons::fresh_tag(DVec3::new(0.0, 100.0, 0.0), 0.0, &mut random);
+        let mut dragon = EnderDragon::from_tag(&tag, FIRST_ID).unwrap();
+        assert!(dragon.phase.is_sitting());
+        let mut events = DragonEvents::default();
+        dragon.hurt_part(HEAD, &EndDamage::attack(30.0, 0), &mut events);
+        assert_eq!(dragon.phase, Phase::Hovering);
+        dragon.damage_cooldown = 0;
+        dragon.hurt_part(HEAD, &EndDamage::attack(30.0, 0), &mut events);
+        assert_eq!(
+            dragon.phase,
+            Phase::HoldingPattern,
+            "past 50 damage it takes off"
+        );
+        assert_eq!(dragon.sitting_damage_received, 0.0);
+    }
+
+    #[test]
+    fn a_blast_hurts_the_dragon_once_through_its_nearest_part() {
+        assert_eq!(blast_damage(DVec3::ZERO, DVec3::ZERO, 6.0), Some(85.0));
+        assert_eq!(
+            blast_damage(DVec3::new(12.5, 0.0, 0.0), DVec3::ZERO, 6.0),
+            None
+        );
+        let mut dragon = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
+        let height = flat;
+        let top = || 64;
+        dragon.tick(&env(&height, &top, None));
+        let mut events = DragonEvents::default();
+        let head = dragon.parts[HEAD];
+        dragon.blast(head, 6.0, None, &mut events);
+        assert!(
+            (dragon.health - (200.0 - 85.0)).abs() < 1e-3,
+            "{}",
+            dragon.health
+        );
+        assert_eq!(events.sounds.len(), 1);
     }
 
     #[test]

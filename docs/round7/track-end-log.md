@@ -725,3 +725,38 @@ Previous commit: 5a6fd423
   4. Type `/gamemode spectator`: the bar stays. `/gamemode survival` afterwards.
   5. Quit, remove the `IW4L_MINECRAFT_DIMENSION` line and start again in the overworld: no bar.
 - **Kit:** none needed.
+
+### 25. MW2 bullets, grenades and Minecraft hits hurt the ender dragon through its body parts (E3-13)
+
+Previous commit: 2b3167b1
+
+- **Changed:**
+  - `minecraft_terrain/src/ender_dragon.rs`: `hurt_part` is `EnderDragon.hurt(part, source, damage)`: nothing while dying; a part other than the head and the neck takes `d / 4 + min(d, 1)`; below 0.01 nothing; only damage with a player behind it or an explosion counts (`#always_hurts_ender_dragons` holds `#is_explosion`); then `LivingEntity.hurtServer`'s damage cooldown (a full hit sets 20 ticks and `hurtTime` 10, a hit within the first 10 ticks only adds what it exceeds the last one by), the hurt sound (`entity.ender_dragon.hurt`, volume 5, only for a full hit) or the death sound, and `handleKillingBlow` (a flying dragon is held at 1 health and turns to its dying phase; a sitting one dies where it is). A sitting dragon that took more than 50 since it sat takes off. `blast` is `ServerExplosion.hurtEntities` on the dragon and each part: feet within twice the power, damage `(i² + i) / 2 · 7 · 2p + 1` for `i = 1 - distance / 2p`, each through `hurt_part`, so the cooldown keeps the best one.
+  - `minecraft_terrain/src/end_crystal.rs`: `EndTarget::DragonPart { id, part }`.
+  - `minecraft_terrain/src/server.rs` (End region): `end_hit` hurts a dragon part; every explosion of the tick (`tick_end`) blasts the dragons too.
+  - `minecraft_survival/src/entities.rs`: each living dragon's 8 parts are bullet boxes in `shot_boxes` (not in `boxes`: parts don't block building) with key kind 20, the dragon id and the part, and the flat hit bit. An MW2 bullet is an attack by the player (`damage · 0.2`), an MW2 grenade an explosion (`damage · 0.8`, plan decision 6), and a left-click swing (`punch`, also `mob_distance`) on the nearest part an attack with the swing's damage (`EnderDragonPart.isPickable`).
+  - `sim/src/voxel.rs`: `FLAT_HIT_KEY`: a box whose key carries it is struck in the upper torso wherever the bullet lands (`hit_height`), so MW2's head and neck multipliers never stack on the dragon's own head rule (plan decision 6).
+  - `minecraft_terrain/src/server.rs`: a dragon that finished dying is reported in `Output.dragons_killed`; `minecraft_survival/src/entities.rs` keeps them for `take_dragons_killed`, and `the_end/dragon_fight.rs`'s `set_dragon_killed` marks the fight's dragon killed (`FightEvents.killed`).
+  - `render_anim/src/minecraft_end.rs`: logs the kill, and a test that the survival crate's bit is the one the bullets read.
+- **Checked with javap (26.3):** `EnderDragon.hurt(part)`, `hurtServer`, `reallyHurt`, `handleKillingBlow`, `knockback`; `EnderDragonPart` (`hurtServer`, `isPickable`); `LivingEntity.hurtServer` (cooldown, sounds, `die`); `ServerExplosion.hurtEntities`; the tags `#always_hurts_ender_dragons` and `#is_explosion`.
+- **Tests:** `ender_dragon`: `only_the_head_and_neck_take_full_damage_and_only_from_players_and_explosions` (head 20 takes 20, body 20 takes 6, no player takes nothing, an explosion always hurts), `hits_within_the_damage_cooldown_only_count_their_extra_damage`, `a_killing_blow_sends_a_flying_dragon_to_die_and_a_hovering_one_down_at_once` (it flies down, rises and goes), `a_sitting_dragon_takes_off_after_a_quarter_of_its_health`, `a_blast_hurts_the_dragon_once_through_its_nearest_part`. `entities`: `dragon_parts_are_flat_hit_boxes_keyed_by_dragon_and_part`. `sim` `voxel`: `a_flat_hit_box_takes_every_bullet_in_the_upper_torso`. `render_anim` `minecraft_end`: `dragon_parts_carry_the_flat_hit_bit_the_bullets_read`. `server`: `mw2_shots_and_blasts_hurt_the_dragon_through_its_parts_until_it_dies_and_is_reported` (an End level of seed 0: a body shot of 20 takes 6 with the hurt sound, a head shot 20, a blast at the head more than 40; a killing blow sends it to die, it rises, goes and is reported once). `dragon_fight`: the boss bar test also kills the fight's dragon (not another one), which hides the bar, saves the flags and keeps a new dragon from being made.
+- **Decisions:**
+  - **The neck takes full damage too:** the brief says only the head does, but 26.3's `hurt(part)` tests `part != head && part != neck` (javap) before cutting the damage. Vanilla wins.
+  - **The flat hit location** is the upper torso (MW2 `torso_upper`), whose multiplier is 1 for the weapons; it is a bit in the key (bit 55) that `sim` reads, so `sim` learns nothing else about Minecraft.
+  - **No knockback on the dragon:** vanilla's `dealDefaultKnockback` halves a flying dragon's speed on a full hit by a player; the hit here carries no attacker position yet. Left for X5 with the wing knockback.
+  - **Takeoff:** a sitting dragon past 50 damage takes off; with no takeoff phase yet (X5) it goes straight back to circling.
+  - **Explosion exposure:** the dragon flies in the open, so a blast sees all of it (exposure 1, no ray test against blocks).
+  - **Death:** a dragon whose health runs out flies to the podium, its health drops to 0 there, it rises for 10 seconds and is gone. The server reports it (`Output.dragons_killed`, `Entities::take_dragons_killed`) and the fight takes the flags part of `setDragonKilled` (`dragon_killed`, `previously_killed`, the bar's progress 0, saved), so the bar goes and no new dragon is made after 1200 ticks. Experience, the exit portal, the egg and the gateway are X4's (E3-18, E3-19).
+- **Test steps** (survival; the MW2 class with an assault rifle, a sniper rifle and frag grenades; `/difficulty easy` keeps the head's contact hits survivable):
+  1. Keep `IW4L_MINECRAFT_WORLD=x3dragon` with `IW4L_MINECRAFT_DIMENSION=the_end`, or a new world. On the platform, `/gamemode creative`, fly to the island centre and pillar a cobblestone tower about 30 blocks high near the middle; `/gamemode survival` on top.
+  2. Shoot the dragon as it passes: it flashes red and roars on a full hit, and the boss bar drops; hits on the head and neck take more off than hits on the body, wings or tail. **Screenshot 4** of the bar after a few hits.
+  3. Fire a long burst at its head: the bar falls about as fast as with single shots spaced half a second apart (the damage cooldown), and a sniper headshot takes no more than a sniper body shot on the head part.
+  4. Throw a frag grenade so it bursts beside it: the bar drops (explosions always hurt it).
+  5. When it passes close, hit it with the sword (left-click on any part): the bar drops a little.
+  6. Bring the bar to zero: it stops circling, flies down toward the podium in the island's middle, then rises slowly and vanishes about 10 seconds later; the log says `Minecraft ender dragon of the fight killed`, and the bar goes. No experience or portal yet (X4). **Screenshot 5** while it rises.
+  7. Stay a minute and quit and start again: no new dragon comes, and no bar shows.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
+```

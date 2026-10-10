@@ -184,6 +184,7 @@ pub struct FightEvents {
     pub scanned: Option<DragonFightScan>,
     pub saved: Option<Result<(), String>>,
     pub spawned: Option<[i32; 4]>,
+    pub killed: Option<[i32; 4]>,
 }
 
 pub fn arena_ticket() -> (ChunkPos, i32) {
@@ -256,6 +257,17 @@ impl DragonFight {
 
     pub fn boss_bar(&self, player: &PlayerUuid) -> Option<f32> {
         (!self.data.dragon_killed && self.players.contains(player)).then_some(self.progress)
+    }
+
+    pub fn set_dragon_killed(&mut self, uuid: [i32; 4]) -> bool {
+        if self.data.dragon_uuid != Some(uuid) {
+            return false;
+        }
+        self.progress = 0.0;
+        self.data.previously_killed = true;
+        self.data.dragon_killed = true;
+        self.dirty = true;
+        true
     }
 
     pub fn update_dragon(&mut self, health: f32) {
@@ -417,6 +429,15 @@ pub fn tick_level<'a>(
     });
     events.scanned = fight.receive_scan();
     events.spawned = fight.receive_dragon();
+    for uuid in entities
+        .as_mut()
+        .map(Entities::take_dragons_killed)
+        .unwrap_or_else(Vec::new)
+    {
+        if fight.set_dragon_killed(uuid) {
+            events.killed = Some(uuid);
+        }
+    }
     let loaded =
         entities.is_some() && arena_loaded(|chunk| terrain.scene.generated_chunk(chunk).is_some());
     let dragon = entities.as_ref().and_then(|entities| {
@@ -575,8 +596,19 @@ mod tests {
             None,
             "only for the players within 192 blocks"
         );
-        fight.data.dragon_killed = true;
+        assert!(
+            !fight.set_dragon_killed([9, 9, 9, 9]),
+            "not the fight's dragon"
+        );
+        fight.data.dragon_uuid = Some([1, 2, 3, 4]);
+        assert!(fight.set_dragon_killed([1, 2, 3, 4]));
+        assert!(fight.data.dragon_killed && fight.data.previously_killed && fight.dirty);
         assert_eq!(fight.boss_bar(&steve), None);
+        fight.data.needs_state_scanning = false;
+        assert!(
+            !fight.dragon_due(false, true),
+            "a killed dragon is not replaced"
+        );
     }
 
     #[test]

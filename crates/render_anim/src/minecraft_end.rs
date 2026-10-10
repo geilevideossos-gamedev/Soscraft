@@ -86,6 +86,12 @@ pub(crate) fn tick_fight(
             scan.previously_killed
         );
     }
+    if let Some(uuid) = events.killed {
+        diag::info!(
+            World,
+            "Minecraft ender dragon of the fight killed: {uuid:?}"
+        );
+    }
     if let Some(uuid) = events.spawned {
         diag::info!(World, "Minecraft ender dragon of the fight: {uuid:?}");
     }
@@ -116,5 +122,16 @@ fn show_boss_bar(ui: &mut MinecraftUi, progress: Option<f32>, seconds: f64) {
     for bar in &mut ui.boss_bars {
         bar.set_progress(progress);
         bar.advance(seconds as f32);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn dragon_parts_carry_the_flat_hit_bit_the_bullets_read() {
+        assert_eq!(
+            minecraft_survival::entities::FLAT_HIT,
+            sim::voxel::FLAT_HIT_KEY
+        );
     }
 }

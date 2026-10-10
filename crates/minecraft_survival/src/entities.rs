@@ -94,6 +94,7 @@ pub struct Entities {
     crystals: Vec<minecraft_terrain::end_crystal::CrystalView>,
     dragons: Vec<minecraft_terrain::ender_dragon::DragonView>,
     growls: HashMap<u64, i32>,
+    dragons_killed: Vec<[i32; 4]>,
     orbs: Vec<ServerOrb>,
     falling: minecraft_terrain::falling_render::FallingBlocks,
     pub lids: minecraft_terrain::lids::Lids,
@@ -232,6 +233,7 @@ impl Entities {
             crystals: Vec::new(),
             dragons: Vec::new(),
             growls: HashMap::new(),
+            dragons_killed: Vec::new(),
             orbs: Vec::new(),
             falling: Default::default(),
             lids: Default::default(),
@@ -500,11 +502,11 @@ impl Entities {
     #[allow(clippy::too_many_arguments)]
     pub fn punch(&mut self, inventory: &Inventory, selected: usize, eye: DVec3, look: DVec3, yaw: f32, attack_damage: f64, strength: f32, blow: Blow) -> bool {
         let mob = self.world.mob_on_ray(eye, look, blow.reach);
-        if let Some((crystal, distance)) = minecraft_terrain::end_crystal::on_ray(&self.crystals, eye, look, blow.reach)
+        if let Some((target, distance)) = self.end_on_ray(eye, look, blow.reach)
             && mob.is_none_or(|(_, nearest)| distance < nearest)
         {
             let damage = attack_damage as f32 * (0.2 + strength * strength * 0.8);
-            self.server.end_hit(EndTarget::Crystal(crystal), EndDamage::attack(damage, PLAYER));
+            self.server.end_hit(target, EndDamage::attack(damage, PLAYER));
             return true;
         }
         if let Some((fireball, distance)) = self.world.fireball_on_ray(eye, look, blow.reach)
@@ -535,8 +537,19 @@ impl Entities {
     pub fn mob_distance(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
         let mob = self.world.mob_on_ray(eye, look, reach).map(|(_, distance)| distance);
         let fireball = self.world.fireball_on_ray(eye, look, reach).map(|(_, distance)| distance);
-        let crystal = minecraft_terrain::end_crystal::on_ray(&self.crystals, eye, look, reach).map(|(_, distance)| distance);
-        [mob, fireball, crystal].into_iter().flatten().min_by(f64::total_cmp)
+        let end = self.end_on_ray(eye, look, reach).map(|(_, distance)| distance);
+        [mob, fireball, end].into_iter().flatten().min_by(f64::total_cmp)
+    }
+
+    fn end_on_ray(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<(EndTarget, f64)> {
+        let crystal = minecraft_terrain::end_crystal::on_ray(&self.crystals, eye, look, reach).map(|(id, distance)| (EndTarget::Crystal(id), distance));
+        let parts = self.dragons.iter().filter(|dragon| dragon.health > 0.0).flat_map(|dragon| {
+            dragon.parts.iter().enumerate().filter_map(move |(part, &feet)| {
+                let found = minecraft_terrain::end_crystal::ray_box(eye, look, reach, minecraft_terrain::ender_dragon::part_box(feet, part))?;
+                Some((EndTarget::DragonPart { id: dragon.id, part }, found))
+            })
+        });
+        crystal.into_iter().chain(parts).min_by(|a, b| a.1.total_cmp(&b.1))
     }
 
     /// A block the player placed, for the level the mobs walk in.
@@ -676,8 +689,8 @@ impl Entities {
     /// A bullet on a mob: an attack with the bullet's damage from where it
     /// was fired.
     pub fn shoot(&mut self, key: u64, damage: f32, from: [f64; 3], yaw: f32) {
-        if let Some(id) = crystal_of(key) {
-            self.server.end_hit(EndTarget::Crystal(id), EndDamage::attack(damage * HEALTH_SCALE, PLAYER));
+        if let Some(target) = end_target_of(key) {
+            self.server.end_hit(target, EndDamage::attack(damage * HEALTH_SCALE, PLAYER));
             return;
         }
         if let Some(id) = fireball_of(key) {
@@ -706,8 +719,8 @@ impl Entities {
     }
 
     pub fn blast(&mut self, key: u64, damage: f32, center: [f64; 3], impact: f32, by_player: bool, slow_ticks: i32) {
-        if let Some(id) = crystal_of(key) {
-            self.server.end_hit(EndTarget::Crystal(id), EndDamage::explosion(damage * BLAST_HEALTH_SCALE, by_player.then_some(PLAYER)));
+        if let Some(target) = end_target_of(key) {
+            self.server.end_hit(target, EndDamage::explosion(damage * BLAST_HEALTH_SCALE, by_player.then_some(PLAYER)));
             return;
         }
         if let Some(id) = fireball_of(key) {
@@ -873,6 +886,7 @@ impl Entities {
                 }
             }
             self.command_summons.extend(output.command_summons);
+            self.dragons_killed.extend(output.dragons_killed);
             self.command_jobs.extend(output.jobs);
             changes.extend(output.changes);
             self.block_entity_changes.extend(output.block_entities);
@@ -947,6 +961,10 @@ impl Entities {
 
     pub fn dragons(&self) -> &[minecraft_terrain::ender_dragon::DragonView] {
         &self.dragons
+    }
+
+    pub fn take_dragons_killed(&mut self) -> Vec<[i32; 4]> {
+        std::mem::take(&mut self.dragons_killed)
     }
 
     pub fn dragon_alive(&self, uuid: [i32; 4]) -> bool {
@@ -1050,6 +1068,12 @@ impl Entities {
         for e in self.world.fireballs().iter().filter(|e| e.fireball.alive && e.fireball.kind.redirectable()) {
             let (min, max) = minecraftoss_entities::fireball::pick_box(e.fireball.kind, e.fireball.position);
             out.push((FIREBALL_KEY | (e.id & ((1 << 56) - 1)), [min.x, min.y, min.z, max.x, max.y, max.z]));
+        }
+        for dragon in self.dragons.iter().filter(|dragon| dragon.health > 0.0) {
+            for (part, &feet) in dragon.parts.iter().enumerate() {
+                let (low, high) = minecraft_terrain::ender_dragon::part_box(feet, part);
+                out.push((dragon_part_key(dragon.id, part), [low.x, low.y, low.z, high.x, high.y, high.z]));
+            }
         }
         out
     }
@@ -1281,6 +1305,22 @@ fn decode(key: u64) -> Option<MobHit> {
 
 const FIREBALL_KEY: u64 = 17 << 56;
 const CRYSTAL_KEY: u64 = 19 << 56;
+const DRAGON_KEY: u64 = 20 << 56;
+pub const FLAT_HIT: u64 = 1 << 55;
+
+fn dragon_part_key(id: u64, part: usize) -> u64 {
+    DRAGON_KEY | FLAT_HIT | ((id << 3) & (FLAT_HIT - 1)) | part as u64
+}
+
+fn end_target_of(key: u64) -> Option<EndTarget> {
+    if let Some(id) = crystal_of(key) {
+        return Some(EndTarget::Crystal(id));
+    }
+    (key >> 56 == DRAGON_KEY >> 56).then(|| EndTarget::DragonPart {
+        id: (key & (FLAT_HIT - 1)) >> 3,
+        part: (key & 7) as usize,
+    })
+}
 
 fn dragon_flapping(o_flap_time: f32, flap_time: f32) -> bool {
     let before = minecraftoss_player::mth::cos(f64::from(o_flap_time * std::f32::consts::TAU));
@@ -1356,6 +1396,20 @@ mod tests {
         assert!(!dragon_flapping(0.55, 0.6));
         let flaps = (0..400).filter(|&i| dragon_flapping(i as f32 * 0.01, (i + 1) as f32 * 0.01)).count();
         assert_eq!(flaps, 4, "once a beat");
+    }
+
+    #[test]
+    fn dragon_parts_are_flat_hit_boxes_keyed_by_dragon_and_part() {
+        let id = minecraft_terrain::ender_dragon::FIRST_ID + 7;
+        for part in 0..8 {
+            let key = dragon_part_key(id, part);
+            assert_ne!(key & FLAT_HIT, 0, "MW2 headshot scaling never stacks on the dragon");
+            assert_eq!(end_target_of(key), Some(EndTarget::DragonPart { id, part }));
+            assert_eq!(decode(key), None);
+            assert_eq!(fireball_of(key), None);
+        }
+        assert_eq!(end_target_of(CRYSTAL_KEY | 9), Some(EndTarget::Crystal(9)));
+        assert_eq!(end_target_of(encode(MobHit::Zombie(9))), None);
     }
 
     #[test]

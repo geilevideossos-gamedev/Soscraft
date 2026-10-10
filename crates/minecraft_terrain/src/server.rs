@@ -89,6 +89,7 @@ pub struct ServerSim {
     end_random: minecraftoss_player::rng::LegacyRandom,
     end_sounds: Vec<minecraftoss_entities::world::MobSound>,
     end_hits: Vec<minecraftoss_entities::world::PlayerHit>,
+    dragons_killed: Vec<[i32; 4]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -304,6 +305,7 @@ impl ServerSim {
             end_random: minecraftoss_player::rng::LegacyRandom::new(0x00D2_A60E_5EED),
             end_sounds: Vec::new(),
             end_hits: Vec::new(),
+            dragons_killed: Vec::new(),
         }
     }
 
@@ -1398,6 +1400,11 @@ impl ServerSim {
         let blasts: Vec<(glam::DVec3, f32)> = self.explosions.iter().map(|blast| (blast.position, blast.radius)).collect();
         for (center, radius) in blasts {
             self.crystals.blast(center, radius, None);
+            let mut events = crate::ender_dragon::DragonEvents::default();
+            for dragon in &mut self.dragons.list {
+                dragon.blast(center, radius, None, &mut events);
+            }
+            self.end_events(events);
         }
         for pos in self.crystals.tick() {
             if self.dragon_fight_level {
@@ -1434,7 +1441,7 @@ impl ServerSim {
                 attackable: player.alive && !player.spectator && player.attackable,
             })
             .collect();
-        let Self { level, dragons, fight_dragon, alive_crystals, end_sounds, end_hits, .. } = self;
+        let Self { level, dragons, fight_dragon, alive_crystals, end_sounds, end_hits, dragons_killed, .. } = self;
         let level = &*level;
         let height = |x: i32, z: i32| level.height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlockingNoLeaves, x, z);
         for dragon in &mut dragons.list {
@@ -1445,11 +1452,20 @@ impl ServerSim {
             end_sounds.extend(events.sounds.into_iter().map(|(event, position, volume, pitch)| minecraftoss_entities::world::MobSound { event: event.to_owned(), position, volume, pitch, category: "hostile" }));
             end_hits.extend(events.player_hits.into_iter().map(|(player_id, damage, attacker)| minecraftoss_entities::world::PlayerHit { player_id, damage, kind: minecraftoss_entities::world::PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0 }, source: Some(dragon.id) }));
         }
+        dragons_killed.extend(dragons.list.iter().filter(|dragon| dragon.removed).map(|dragon| dragon.uuid));
         dragons.list.retain(|dragon| !dragon.removed);
+    }
+
+    fn end_events(&mut self, events: crate::ender_dragon::DragonEvents) {
+        self.end_sounds.extend(events.sounds.into_iter().map(|(event, position, volume, pitch)| minecraftoss_entities::world::MobSound { event: event.to_owned(), position, volume, pitch, category: "hostile" }));
     }
 
     pub fn take_end_sounds(&mut self) -> Vec<minecraftoss_entities::world::MobSound> {
         std::mem::take(&mut self.end_sounds)
+    }
+
+    pub fn take_dragons_killed(&mut self) -> Vec<[i32; 4]> {
+        std::mem::take(&mut self.dragons_killed)
     }
 
     pub fn take_end_hits(&mut self) -> Vec<minecraftoss_entities::world::PlayerHit> {
@@ -1490,6 +1506,13 @@ impl ServerSim {
                 if let Some(destroyed) = self.crystals.hurt(id, &damage) {
                     self.crystal_destroyed(destroyed);
                 }
+            }
+            crate::end_crystal::EndTarget::DragonPart { id, part } => {
+                let mut events = crate::ender_dragon::DragonEvents::default();
+                if let Some(dragon) = self.dragons.list.iter_mut().find(|dragon| dragon.id == id && part < 8) {
+                    dragon.hurt_part(part, &damage, &mut events);
+                }
+                self.end_events(events);
             }
         }
     }
@@ -1985,6 +2008,7 @@ pub struct Output {
     /// The last tick's phases, light solves and total milliseconds.
     pub tick_phases: Option<([f64; 6], (u32, f64), f64)>,
     pub jobs: Vec<Box<dyn std::any::Any + Send>>,
+    pub dragons_killed: Vec<[i32; 4]>,
 }
 
 /// The integrated server on its own thread, as vanilla runs it: the client
@@ -2361,6 +2385,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.tick_end(&input.mob_players);
                     out.player_hits.extend(sim.take_end_hits());
                     out.mob_sounds.extend(sim.take_end_sounds());
+                    out.dragons_killed.extend(sim.take_dragons_killed());
                     out.pearl_teleports.extend(sim.take_pearl_teleports());
                     out.thrown_hits.extend(sim.take_thrown_hits());
                     sim.spawn_trade_experience();
@@ -6719,5 +6744,44 @@ mod tests {
         loaded.add(&tags[0]).expect("the dragon loads back");
         assert_eq!(loaded.list[0].uuid, uuid);
         assert_eq!(loaded.list[0].phase, crate::ender_dragon::Phase::HoldingPattern);
+    }
+
+    #[test]
+    fn mw2_shots_and_blasts_hurt_the_dragon_through_its_parts_until_it_dies_and_is_reported() {
+        use crate::end_crystal::{EndDamage, EndTarget};
+        let Some(mut server) = end_world((-5..=4).flat_map(|x| (-5..=4).map(move |z| (x, z)))) else { return };
+        let uuid = server.find_or_create_dragon((0, 0, 0));
+        server.tick_end(&[]);
+        let id = server.dragons.list[0].id;
+        server.end_hit(EndTarget::DragonPart { id, part: crate::ender_dragon::BODY }, EndDamage::attack(20.0, 0));
+        assert_eq!(server.dragons.list[0].health, 194.0, "the body takes a quarter and one");
+        let sounds = server.take_end_sounds();
+        assert!(sounds.iter().any(|sound| sound.event == crate::ender_dragon::HURT_SOUND));
+        for _ in 0..20 {
+            server.tick_end(&[]);
+        }
+        server.end_hit(EndTarget::DragonPart { id, part: crate::ender_dragon::HEAD }, EndDamage::attack(20.0, 0));
+        assert_eq!(server.dragons.list[0].health, 174.0, "the head takes it all");
+        for _ in 0..20 {
+            server.tick_end(&[]);
+        }
+        let head = server.dragons.list[0].parts[crate::ender_dragon::HEAD];
+        server.explosions.push(minecraftoss_entities::creeper::CreeperExplosion { position: head, radius: 3.0, powered: false });
+        server.tick_end(&[]);
+        server.explosions.clear();
+        assert!(server.dragons.list[0].health < 174.0 - 40.0, "a blast at its head: {}", server.dragons.list[0].health);
+        for _ in 0..20 {
+            server.tick_end(&[]);
+        }
+        server.end_hit(EndTarget::DragonPart { id, part: crate::ender_dragon::HEAD }, EndDamage::attack(500.0, 0));
+        assert_eq!(server.dragons.list[0].phase, crate::ender_dragon::Phase::Dying);
+        for _ in 0..600 {
+            server.tick_end(&[]);
+            if server.dragons.list.is_empty() {
+                break;
+            }
+        }
+        assert!(server.dragons.list.is_empty(), "it rose and went");
+        assert_eq!(server.take_dragons_killed(), vec![uuid]);
     }
 }
