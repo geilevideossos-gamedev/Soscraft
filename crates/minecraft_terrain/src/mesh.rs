@@ -1889,7 +1889,6 @@ fn mesh_chunk<S: Scene>(
         .iter()
         .map(|(key, variants)| (key.clone(), all_full_cubes(variants)))
         .collect();
-    let turned = |b: &Block| models.get(&model_key(b)).is_some_and(|variants| turned_about_x(variants));
     for x in chunk.0 * 16..chunk.0 * 16 + 16 {
         for z in chunk.1 * 16..chunk.1 * 16 + 16 {
             for y in scene.vertical_range() {
@@ -1907,7 +1906,7 @@ fn mesh_chunk<S: Scene>(
                             .ok_or_else(|| anyhow!("uncached model"))
                     },
                     |neighbor, side| {
-                        scene.face_hidden((x, y, z), neighbor, side).filter(|_| !turned(block) && !scene.block(neighbor).is_some_and(turned)).unwrap_or_else(|| {
+                        scene.face_hidden((x, y, z), neighbor, side).unwrap_or_else(|| {
                             scene.block(neighbor).is_some_and(|b| {
                                 hides_shared_face(block, b)
                                     || (b.is_opaque()
@@ -1938,9 +1937,6 @@ pub(crate) fn all_full_cubes(variants: &[(ResolvedModel, u32)]) -> bool {
             .iter()
             .any(|element| element.from == [0.0; 3] && element.to == [1.0; 3])
     })
-}
-pub(crate) fn turned_about_x(variants: &[(ResolvedModel, u32)]) -> bool {
-    variants.iter().any(|(model, _)| model.elements.iter().any(|element| element.rotation_x % 360 != 0))
 }
 /// Moves the translucent faces after the opaque ones.
 /// One model face baked for a block state's variant (vanilla `BakedQuad`):
@@ -2704,7 +2700,6 @@ pub fn block_preview<S: Scene>(
             let delta = direction(dir)?;
             let neighbor_pos = (pos.0 + delta.0, pos.1 + delta.1, pos.2 + delta.2);
             let catalog_hidden = if face.cull { scene.face_hidden(pos, neighbor_pos, cull_side(delta)) } else { None };
-            let catalog_hidden = catalog_hidden.filter(|_| !turned_about_x(&variants) && !scene.block(neighbor_pos).is_some_and(|neighbor| resolve_block_variants(packs, neighbor).is_ok_and(|v| turned_about_x(&v))));
             if catalog_hidden == Some(true) {
                 continue;
             }

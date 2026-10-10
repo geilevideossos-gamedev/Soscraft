@@ -393,3 +393,19 @@ Rendering correctness from the Rendering limitations. Base: 628fffc5.
 ```
 IW4L_MINECRAFT_KIT=minecraft:oak_planks*16,minecraft:oak_stairs*16,minecraft:oak_log*16,minecraft:piston*4,minecraft:lever*2,minecraft:anvil,minecraft:oak_fence*16,minecraft:cobblestone_wall*16
 ```
+
+### 2. Minecraft blocks turned about X cull their neighbours with vanilla shapes
+
+- **Changed:**
+  - `minecraft_terrain`: the exception that sent every block whose blockstate turns it about X (sideways logs and pillars, upside-down stairs, ceiling vines, observers and dispensers facing up or down) and its neighbours back to the old rule (hidden only by an opaque full cube) is gone from all three mesh paths: the section cache (`terrain.rs` `ModelCache::face_hidden`, which no longer keeps `turned` and `occludes` per state), `mesh_chunk` and the scene mesher in `mesh.rs` (`turned_about_x` removed). Those faces now go through the same `Block.shouldRenderFace` check as everything else (javap: the neighbour's `getFaceOcclusionShape` on the opposite side against our own, plus `skipRendering`), with the cull side turned with the blockstate as before.
+  - The exception dated from when X turns were not drawn yet (7d81736e), so the drawn model and the occlusion shape disagreed. Now the drawn model is turned and matches the state's vanilla shape.
+- **Tests:** `terrain`: `blocks_turned_about_x_cull_with_their_vanilla_occlusion_shapes` (was `..._keep_the_faces_their_drawn_model_leaves_open`, with `MINECRAFTOSS_ROOT`, both section paths): a top stair under planks and the planks hide each other's faces, the stone under the stair's half-open bottom keeps its top, and logs lying side by side still hide their shared faces. Checked that the test really runs on the vanilla data by making it fail once.
+- **Correction to entry 1, step 3:** the horizontal log's face rotation only turns its end rings by 180 degrees, which looks the same; step 3 there is a check that nothing changed, not a visible fix.
+- **Test steps:**
+  1. Build a small wall mixing upside-down oak stairs, sideways oak logs (both axes), oak slabs (top and bottom), glass and planks, with stairs and logs touching every other kind. Walk around it and look from above and below: no holes, no missing faces and no see-through gaps anywhere. **Screenshot 4.**
+  2. Put a top slab next to and under an upside-down stair, and a hanging (ceiling) vine under a planks ceiling: all visible faces are drawn.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:oak_stairs*16,minecraft:oak_log*16,minecraft:oak_slab*16,minecraft:glass*16,minecraft:oak_planks*32,minecraft:vine*8,minecraft:observer*2
+```

@@ -9,7 +9,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 ### World and rendering
 - [upstream] Minecraft 26.3 world generation from MinecraftOSS, with day and night, sky, clouds, lighting, block, mob and footstep sounds, and a minimap.
 - Back-face culling like vanilla, so cross plants no longer flicker.
-- Faces are culled by vanilla occlusion shapes (`face_culling.rs`). Cactus, spawners, ice and beacons no longer leave holes in their neighbours.
+- Faces are culled by vanilla occlusion shapes (`face_culling.rs`), blocks turned about X (horizontal logs, upside-down stairs, ceiling vines) included. Cactus, spawners, ice and beacons no longer leave holes in their neighbours.
 - Vanilla `BlockColors` tinting. Faces are tinted only where vanilla has a tint source: grass, foliage per leaf type, stems, lily pad, leaf litter, water cauldron. The stonecutter saw stays grey.
 - A translucent pass for stained glass and panes, ice, honey, slime, tinted glass and the nether portal. Fluids are only hidden by faces that actually cover them, and clouds are ordered against blended terrain.
 - Animated textures from `.mcmeta` (fire, lava, water, portal, sea lantern, prismarine, sculk, stonecutter and more), in the world and in icons.
@@ -224,7 +224,6 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 
 ### Rendering
 - Translucent faces are not sorted by camera distance within a 16-block section. Inside one block, smaller faces are drawn first.
-- Blockstates rotated about X (horizontal logs, upside-down stairs, ceiling vines) are drawn rotated, but still cull with the old full-cube rule, so they may draw a few hidden faces.
 - Chest, ender chest, copper chest and shulker box lids open and close like vanilla, but an opening shulker box does not grow its collision or push anyone. Other block entities never animate: no bell swing, banner wave or enchanting table book. There are no banner or shield patterns and no sign text. Heads use the default skin, and the conduit always shows its inactive shell.
 - Not drawn: the copper golem statue. Each half of a double chest is lit separately.
 - With the eyes in lava, vanilla's lava fog (`LavaFogEnvironment`) closes in: colour #991A00, from 0.25 to 1 block (0 to 5 with Fire Resistance, -8 to half the render distance for spectators), no sky, sun or clouds. Like the other fog it follows the eyes, not a third-person camera. The falling rain and snow streaks are not drawn: rain darkens the sky, splashes on the ground and sounds (below), but nothing falls through the air.
