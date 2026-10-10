@@ -266,6 +266,16 @@ impl SurvivalStatus {
     /// hit away; otherwise whether it landed in full (knockback and the
     /// hurt animation follow a full hit).
     pub fn hurt(&mut self, damage: f32, armor: Armor, exhaustion: f32) -> Option<bool> {
+        self.hurt_protected(damage, armor, 0.0, exhaustion)
+    }
+
+    pub fn hurt_protected(
+        &mut self,
+        damage: f32,
+        armor: Armor,
+        protection: f32,
+        exhaustion: f32,
+    ) -> Option<bool> {
         if self.health <= 0.0 {
             return None;
         }
@@ -274,13 +284,13 @@ impl SurvivalStatus {
             if damage <= self.last_hurt {
                 return None;
             }
-            self.actually_hurt(damage - self.last_hurt, armor, exhaustion);
+            self.actually_hurt(damage - self.last_hurt, armor, protection, exhaustion);
             self.last_hurt = damage;
             Some(false)
         } else {
             self.last_hurt = damage;
             self.damage_cooldown = 20;
-            self.actually_hurt(damage, armor, exhaustion);
+            self.actually_hurt(damage, armor, protection, exhaustion);
             Some(true)
         }
     }
@@ -288,7 +298,7 @@ impl SurvivalStatus {
     /// `Player.actuallyHurt`: armor (`CombatRules.getDamageAfterAbsorb`),
     /// resistance, absorption, then health and the damage type's food
     /// exhaustion.
-    fn actually_hurt(&mut self, mut damage: f32, armor: Armor, exhaustion: f32) {
+    fn actually_hurt(&mut self, mut damage: f32, armor: Armor, protection: f32, exhaustion: f32) {
         if let Some(armor) = armor.value {
             let toughness = 2.0 + armor.1 / 4.0;
             let real = (armor.0 - damage / toughness).clamp(armor.0 * 0.2, 20.0);
@@ -300,6 +310,9 @@ impl SurvivalStatus {
         }
         if damage <= 0.0 {
             damage = 0.0;
+        }
+        if damage > 0.0 && protection > 0.0 {
+            damage *= 1.0 - protection.clamp(0.0, 20.0) / 25.0;
         }
         let original = damage;
         damage = (damage - self.absorption).max(0.0);

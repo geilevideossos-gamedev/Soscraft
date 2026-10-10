@@ -145,6 +145,7 @@ pub struct Survival {
     no_physics: bool,
     impulse: Option<f64>,
     impulse_grace: u32,
+    protection: minecraft_terrain::protection::Protection,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -217,6 +218,10 @@ impl Survival {
 
     pub fn fire_ticks(&self) -> i32 {
         self.fire_ticks
+    }
+
+    pub fn wear(&mut self, protection: minecraft_terrain::protection::Protection) {
+        self.protection = protection;
     }
 
     pub fn set_game_mode(&mut self, mode: &minecraft_terrain::game_mode::PlayerMode) {
@@ -379,10 +384,11 @@ impl Survival {
             0
         };
         let before = self.status.health;
+        let protection = self.protection.against(DamageCause::Fall.damage_type());
         if damage > 0
             && self
                 .status
-                .hurt(damage as f32, Armor::default(), 0.0)
+                .hurt_protected(damage as f32, Armor::default(), protection, 0.0)
                 .is_some()
         {
             self.record(before, DamageCause::Fall, distance as f32);
@@ -506,10 +512,10 @@ impl Survival {
                         2
                     };
                     if self.fire_ticks >= 0 {
-                        self.fire_ticks = self.fire_ticks.max(FIRE_IGNITE_TICKS);
+                        self.fire_ticks = self.fire_ticks.max(self.protection.burning_ticks(FIRE_IGNITE_TICKS));
                     }
                 }
-                BlockEffect::LavaIgnite => self.fire_ticks = self.fire_ticks.max(LAVA_IGNITE_TICKS),
+                BlockEffect::LavaIgnite => self.fire_ticks = self.fire_ticks.max(self.protection.burning_ticks(LAVA_IGNITE_TICKS)),
                 BlockEffect::Extinguish => self.fire_ticks = self.fire_ticks.min(0),
                 BlockEffect::Stuck(_) => self.stuck = true,
                 BlockEffect::ClearFreeze => {}
@@ -560,7 +566,8 @@ impl Survival {
             HURT_EXHAUSTION
         };
         let before = self.status.health;
-        let landed = self.status.hurt(damage, armor, exhaustion);
+        let protection = self.protection.against(DamageCause::Hazard(hazard).damage_type());
+        let landed = self.status.hurt_protected(damage, armor, protection, exhaustion);
         self.record(before, DamageCause::Hazard(hazard), 0.0);
         if landed == Some(true) && self.status.health > 0.0 {
             heard.push(PlayerSound {
@@ -616,7 +623,8 @@ impl Survival {
         } else {
             HURT_EXHAUSTION
         };
-        let landed = self.status.hurt(damage, armor, exhaustion).is_some();
+        let protection = self.protection.against(cause.damage_type());
+        let landed = self.status.hurt_protected(damage, armor, protection, exhaustion).is_some();
         if landed {
             self.combat.hurt_by(self.tick, cause);
             self.record(before, cause, 0.0);
@@ -624,7 +632,7 @@ impl Survival {
                 self.status.add_effect(kind, ticks, 0);
             }
             if let Some(ticks) = cause.ignites() {
-                self.fire_ticks = self.fire_ticks.max(ticks);
+                self.fire_ticks = self.fire_ticks.max(self.protection.burning_ticks(ticks));
             }
         }
         if landed && from.is_some() {
@@ -668,7 +676,8 @@ impl Survival {
             return;
         }
         let before = self.status.health;
-        let landed = self.status.hurt(damage, Armor::default(), 0.0).is_some();
+        let protection = self.protection.against(DamageCause::Magic.damage_type());
+        let landed = self.status.hurt_protected(damage, Armor::default(), protection, 0.0).is_some();
         self.record(before, DamageCause::Magic, 0.0);
         if landed && from.is_some() {
             self.source = from;
@@ -2061,6 +2070,76 @@ mod tests {
             "{}",
             armored.status.health
         );
+    }
+
+    fn wearing(enchantment: &str, level: i64) -> minecraft_terrain::protection::Protection {
+        let linear = |base: f64| serde_json::json!({"type": "minecraft:linear", "base": base, "per_level_above_first": base});
+        let reduces = |base: f64, tag: &str| {
+            serde_json::json!([{
+                "effect": {"type": "minecraft:add", "value": linear(base)},
+                "requirements": {
+                    "type": "minecraft:damage_source_properties",
+                    "predicate": {"tags": [{"expected": true, "id": tag}]}
+                }
+            }])
+        };
+        let enchantments = vec![
+            (
+                "minecraft:fire_protection".to_owned(),
+                serde_json::json!({"effects": {
+                    "minecraft:damage_protection": reduces(2.0, "#minecraft:is_fire"),
+                    "minecraft:attributes": [{
+                        "amount": linear(-0.15),
+                        "attribute": "minecraft:burning_time",
+                        "id": "minecraft:enchantment.fire_protection",
+                        "operation": "add_multiplied_base"
+                    }]
+                }}),
+            ),
+            (
+                "minecraft:feather_falling".to_owned(),
+                serde_json::json!({"effects": {"minecraft:damage_protection": reduces(3.0, "#minecraft:is_fall")}}),
+            ),
+        ];
+        let tags = std::collections::HashMap::from([
+            ("minecraft:is_fire".to_owned(), serde_json::json!({"values": ["minecraft:lava", "minecraft:on_fire"]})),
+            ("minecraft:is_fall".to_owned(), serde_json::json!({"values": ["minecraft:fall"]})),
+        ]);
+        let book = minecraft_terrain::protection::ProtectionBook::from_json(enchantments, &tags);
+        let mut inventory = Inventory::default();
+        let mut boots = ItemStack::new("minecraft:diamond_boots", 1);
+        boots.components = Some(serde_json::json!({"minecraft:enchantments": {enchantment: level}}));
+        inventory.slots[36] = Some(boots);
+        minecraft_terrain::protection::Protection::worn(Some(std::sync::Arc::new(book)), &inventory)
+    }
+
+    #[test]
+    fn fire_protection_softens_lava_and_shortens_the_burn_and_feather_falling_softens_falls() {
+        let in_lava = Motion {
+            in_lava: true,
+            ..standing_in([0.5, 1.0, 0.5])
+        };
+        let mut protected = unfed();
+        protected.wear(wearing("minecraft:fire_protection", 4));
+        live(&mut protected, &lava_pool(), &in_lava, Armor::default(), 10);
+        assert!(
+            (protected.status.health - (20.0 - 4.0 * (1.0 - 8.0 / 25.0))).abs() < 1e-5,
+            "{}",
+            protected.status.health
+        );
+        assert_eq!(protected.fire_ticks, 120);
+        let mut cushioned = fresh();
+        cushioned.wear(wearing("minecraft:feather_falling", 4));
+        cushioned.fall(10.0, Some("minecraft:stone"), false);
+        assert!(
+            (cushioned.status.health - (20.0 - 7.0 * (1.0 - 12.0 / 25.0))).abs() < 1e-5,
+            "{}",
+            cushioned.status.health
+        );
+        let mut burnt = fresh();
+        burnt.wear(wearing("minecraft:feather_falling", 4));
+        burnt.hurt(4.0, Armor::default(), None, DamageCause::Hazard(Hazard::Lava));
+        assert!((burnt.status.health - 16.0).abs() < 1e-5, "feather falling leaves lava alone");
     }
 
     #[test]

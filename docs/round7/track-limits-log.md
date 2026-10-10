@@ -295,3 +295,24 @@ IW4L_MINECRAFT_KIT=minecraft:campfire*4,minecraft:iron_shovel,minecraft:wooden_s
 - **Decisions:** the shield and use-speed items of the group are closed by verification instead of code.
 - **Test steps:** none.
 - **Kit:** none.
+
+### 5. Minecraft armour protection enchantments reduce damage like vanilla
+
+- **Changed:**
+  - The listed gap was Fire Protection, but no armour enchantment protected at all, so this does all five the 26.3 way. New `minecraft_terrain/src/protection.rs`: `ProtectionBook::from_jar` reads every `data/minecraft/enchantment/*.json` and keeps its `minecraft:damage_protection` effects (`add` of a level-based value, with `damage_source_properties` tag requirements) and its `minecraft:attributes` `burning_time` modifiers (`add_multiplied_base`), and resolves the `damage_type` tags (nested tags included). `protection` is `EnchantmentHelper.getDamageProtection`: the summed values of every enchantment on the worn armour (the four armour slots, as the enchantments' `armor` slot group) whose tags match the damage type; damage in `#bypasses_effects` or `#bypasses_enchantments` gets none, as `LivingEntity.getDamageAfterMagicAbsorb` returns before it. `burning_time` is 1 plus the summed modifiers, clamped to the attribute's 0 to 1024, and `Protection::burning_ticks` is `LivingEntity.igniteForTicks`'s `ceil(ticks x burning_time)`.
+  - `minecraftoss-player` `survival.rs`: `hurt_protected` applies the protection inside `actuallyHurt` after armour and Resistance and before absorption: `damage x (1 - clamp(points, 0, 20) / 25)` (`CombatRules.getDamageAfterMagicAbsorb`). `hurt` is `hurt_protected` with none.
+  - `minecraft_survival`: `DamageCause::damage_type` gives each cause its vanilla damage type (`in_fire`, `campfire`, `lava`, `on_fire`, `fall`, `ender_pearl`, `mob_attack`, `arrow`, `explosion`, `fireball`, ...). `Survival::wear` takes the worn protection, and the hazard, fall, mob, generic and harming hurts use it; fire, lava and small-fireball ignitions are scaled by the burning time. `GameData` loads the book from the jar, and `minecraft_world.rs` hands the worn protection to the survival state each frame (one line).
+- **Tests:** `protection`: `protections_add_their_levels_for_the_damage_types_they_match`, `fire_protection_shortens_burning_by_fifteen_percent_a_level`, `only_armour_slots_count`, `the_vanilla_protections_read_from_the_jar` (with `MINECRAFTOSS_ROOT`). `survival`: `fire_protection_softens_lava_and_shortens_the_burn_and_feather_falling_softens_falls`. `data`: no book without a jar.
+- **Decisions:**
+  - Drowning and the poison and wither effects stay unprotected: they hurt inside the vendored `SurvivalStatus` tick, which knows nothing of the armour. Recorded in the state doc.
+  - Blast Protection's `explosion_knockback_resistance` is not applied: creeper and MW2 blasts push the player through the MW2 movement, not vanilla's explosion knockback.
+- **Test steps:**
+  1. Put on the diamond boots with Feather Falling IV and jump from 10 blocks onto stone: a little under 2 hearts lost. **Screenshot 5** of the hearts.
+  2. Swap to the plain diamond boots and repeat: 3.5 hearts, as armour itself doesn't soften falls.
+  3. Wear the Fire Protection IV chestplate and walk into lava for a moment, then out: the hits are smaller and the burning stops after about 6 seconds instead of 15. **Screenshot 6** while burning.
+  4. Wear the Protection IV helmet and let a zombie hit you: a little less damage than without it.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_boots+feather_falling=4,minecraft:diamond_boots,minecraft:diamond_chestplate+fire_protection=4,minecraft:diamond_helmet+protection=4,minecraft:lava_bucket,minecraft:cobblestone*64,minecraft:zombie_spawn_egg
+```

@@ -944,6 +944,7 @@ fn update(
             height: hull_maxs[2] / sim::voxel::BLOCK,
         };
         let armor = entities.as_ref().map_or_else(minecraftoss_player::survival::Armor::default, |_| minecraft_survival::survival::armor(inventory));
+        survival.wear(minecraft_terrain::protection::Protection::worn(globals.data.protection.clone(), inventory));
         for _ in 0..hand_ticks {
             let from = survival.last_feet().unwrap_or(feet);
             let breath = survival.tick(&motion);
