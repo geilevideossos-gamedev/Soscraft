@@ -1062,6 +1062,10 @@ impl ServerSim {
         true
     }
 
+    pub fn bottle_breath(&mut self, feet: glam::DVec3, height: f64) -> bool {
+        crate::effect_cloud::bottle_breath(&mut self.clouds, crate::effect_cloud::bottle_reach(feet, height))
+    }
+
     pub fn tick_eyes(&mut self) {
         self.eyes.tick(&mut self.level);
     }
@@ -2211,6 +2215,7 @@ pub enum Command {
     Throw(Box<crate::thrown::Thrown>),
     ThrowTrident(Box<crate::trident::ThrownTrident>),
     ThrowEye { owner: u64, throw: Box<crate::ender_eye::EyeThrow> },
+    BottleBreath { feet: glam::DVec3, height: f64 },
     Save,
     SetWeather { weather: &'static str, duration: i32 },
     WeatherData(crate::level_storage::WeatherData),
@@ -2599,6 +2604,10 @@ impl ServerHandle {
         self.send(Command::ThrowEye { owner, throw: Box::new(throw) });
     }
 
+    pub fn bottle_breath(&mut self, feet: glam::DVec3, height: f64) {
+        self.send(Command::BottleBreath { feet, height });
+    }
+
     pub fn end_hit(&mut self, target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage) {
         self.send(Command::EndHit { target, damage });
     }
@@ -2711,6 +2720,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::Throw(thrown) => sim.throw(*thrown),
                 Command::ThrowTrident(trident) => sim.throw_trident(*trident),
                 Command::ThrowEye { owner, throw } => out.item_uses.push(sim.throw_eye(owner, &throw)),
+                Command::BottleBreath { feet, height } => out.item_uses.push(sim.bottle_breath(feet, height)),
                 Command::SetWeather { weather, duration } => {
                     sim.set_weather_for(weather, duration);
                 }
@@ -7531,6 +7541,19 @@ mod tests {
         }
         assert!(!server.attack_block((6, ground + 30, 6)), "air is not an egg");
         assert!(server.take_egg_teleports().is_empty());
+    }
+
+    #[test]
+    fn a_glass_bottle_near_the_dragon_s_breath_fills_and_shrinks_the_cloud() {
+        let Some(mut server) = end_world([(0, 0)].into_iter()) else { return };
+        let at = glam::DVec3::new(4.5, 70.0, 4.5);
+        server.clouds.push(crate::dragon_fireball::breath_cloud(at));
+        assert!(server.cloud_views()[0].breath);
+        assert!(server.bottle_breath(at + glam::DVec3::new(4.0, 0.0, 0.0), 1.8));
+        assert_eq!(server.clouds[0].radius, 2.5);
+        assert!(!server.bottle_breath(at + glam::DVec3::new(9.0, 0.0, 0.0), 1.8), "out of reach");
+        assert!(!server.bottle_breath(at + glam::DVec3::new(0.0, 4.5, 0.0), 1.8), "too high above");
+        assert_eq!(server.clouds[0].radius, 2.5);
     }
 
     #[test]

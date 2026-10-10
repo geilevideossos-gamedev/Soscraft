@@ -6,6 +6,8 @@ use serde_json::{Value, json};
 pub const GLASS_BOTTLE: &str = "minecraft:glass_bottle";
 pub const POTION: &str = "minecraft:potion";
 pub const MILK_BUCKET: &str = "minecraft:milk_bucket";
+pub const DRAGON_BREATH: &str = "minecraft:dragon_breath";
+pub const BREATH_SOUND: &str = "minecraft:item.bottle.fill_dragonbreath";
 pub const FILL_SOUND: &str = "minecraft:item.bottle.fill";
 pub const EMPTY_SOUND: &str = "minecraft:item.bottle.empty";
 pub const SPLASH_SOUND: &str = "minecraft:entity.generic.splash";
@@ -137,10 +139,26 @@ pub enum BottleUse {
     Fill {
         result: ItemStack,
     },
+    Breath(crate::bucket::ItemUse),
     Drink,
 }
 
-pub fn bottle_use(player: &Player, world: &impl World, held: &ItemStack) -> Option<BottleUse> {
+pub fn breath_use() -> crate::bucket::ItemUse {
+    crate::bucket::ItemUse {
+        change: crate::bucket::Change::Breath,
+        result: Some(ItemStack::new(DRAGON_BREATH, 1)),
+        wear: 0,
+        consumed: false,
+        sounds: vec![crate::bucket::Sound::on_player(BREATH_SOUND)],
+    }
+}
+
+pub fn bottle_use(
+    player: &Player,
+    world: &impl World,
+    held: &ItemStack,
+    breath_near: bool,
+) -> Option<BottleUse> {
     let glass = held.id == GLASS_BOTTLE;
     let potion = held.id == POTION;
     if !glass && !potion {
@@ -170,6 +188,9 @@ pub fn bottle_use(player: &Player, world: &impl World, held: &ItemStack) -> Opti
     }
     if potion {
         return Some(BottleUse::Drink);
+    }
+    if breath_near {
+        return Some(BottleUse::Breath(breath_use()));
     }
     let hit = player.target_source_fluid(world, REACH)?;
     world
@@ -312,18 +333,47 @@ mod tests {
         let (player, world) = looking_down_at(Some(((0, 1, 0), water)), "minecraft:stone");
         let held = ItemStack::new(GLASS_BOTTLE, 4);
         assert!(matches!(
-            bottle_use(&player, &world, &held),
+            bottle_use(&player, &world, &held, false),
             Some(BottleUse::Fill { .. })
         ));
         let flowing = Block::new("minecraft:water").with("level", "2");
         let (player, world) = looking_down_at(Some(((0, 1, 0), flowing)), "minecraft:stone");
-        assert_eq!(bottle_use(&player, &world, &held), None);
+        assert_eq!(bottle_use(&player, &world, &held, false), None);
+    }
+
+    #[test]
+    fn a_glass_bottle_in_reach_of_dragon_s_breath_fills_with_it_before_water() {
+        let water = Block::new("minecraft:water").with("level", "0");
+        let (player, world) = looking_down_at(Some(((0, 1, 0), water)), "minecraft:stone");
+        let held = ItemStack::new(GLASS_BOTTLE, 4);
+        let used = match bottle_use(&player, &world, &held, true) {
+            Some(BottleUse::Breath(used)) => used,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(used.change, crate::bucket::Change::Breath);
+        assert_eq!(used.result, Some(ItemStack::new(DRAGON_BREATH, 1)));
+        assert!(!used.consumed, "the filled result takes the bottle");
+        assert_eq!(
+            used.sounds,
+            vec![crate::bucket::Sound::on_player(BREATH_SOUND)]
+        );
+        assert_eq!(
+            bottle_use(&player, &world, &water_bottle(), true),
+            Some(BottleUse::Drink),
+            "a full bottle drinks"
+        );
+        let cauldron = Block::new("minecraft:water_cauldron").with("level", "1");
+        let (player, world) = looking_down_at(Some(((0, 1, 0), cauldron)), "minecraft:stone");
+        assert!(matches!(
+            bottle_use(&player, &world, &held, true),
+            Some(BottleUse::Block { .. })
+        ));
     }
 
     #[test]
     fn a_water_bottle_on_dirt_is_mud_and_elsewhere_a_drink() {
         let (player, world) = looking_down_at(None, "minecraft:dirt");
-        match bottle_use(&player, &world, &water_bottle()) {
+        match bottle_use(&player, &world, &water_bottle(), false) {
             Some(BottleUse::Block { pos, block, .. }) => {
                 assert_eq!(pos, (0, 0, 0));
                 assert_eq!(block.map(|b| b.id).as_deref(), Some("minecraft:mud"));
@@ -332,7 +382,7 @@ mod tests {
         }
         let (player, world) = looking_down_at(None, "minecraft:stone");
         assert_eq!(
-            bottle_use(&player, &world, &water_bottle()),
+            bottle_use(&player, &world, &water_bottle(), false),
             Some(BottleUse::Drink)
         );
     }
@@ -347,12 +397,12 @@ mod tests {
             "minecraft:stone",
         );
         assert!(matches!(
-            bottle_use(&player, &world, &water_bottle()),
+            bottle_use(&player, &world, &water_bottle(), false),
             Some(BottleUse::Block { .. })
         ));
         player.crouching = true;
         assert_eq!(
-            bottle_use(&player, &world, &water_bottle()),
+            bottle_use(&player, &world, &water_bottle(), false),
             Some(BottleUse::Drink)
         );
     }

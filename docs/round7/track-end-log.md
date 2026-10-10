@@ -1230,3 +1230,31 @@ Previous commit: 81dec3e3
 ```
 IW4L_MINECRAFT_KIT=minecraft:dragon_egg,minecraft:cobblestone*64,minecraft:torch*16
 ```
+
+### 44. Minecraft glass bottles catch the dragon's breath
+
+Previous commit: 0733e118
+
+- **Changed:**
+  - `minecraft_terrain/src/effect_cloud.rs`: `bottle_breath` is `BottleItem.use`'s first half: the first live dragon's cloud (one with `Breath`, as vanilla's owner is an `EnderDragon`: the fireball's and the perched flame's) whose box meets the player's box grown by 2 (`bottle_reach`) loses half a block of radius (`setRadius`, clamped at 0). `CloudView.breath` and `breath_near` let the client see a breath cloud in reach.
+  - `minecraft_terrain/src/bottle.rs`: `bottle_use` takes whether a breath cloud is in reach: a glass bottle not used on a cauldron or mud (a block's `useItemOn` comes first) fills with dragon's breath before any water (`BottleUse::Breath`); `breath_use` is the item use: one `minecraft:dragon_breath` in place of the bottle and `item.bottle.fill_dragonbreath` at the player (volume 1, pitch 1). `minecraft_terrain/src/bucket.rs`: `Change::Breath`.
+  - `minecraft_terrain/src/server.rs`: `Command::BottleBreath` with the player's feet and height; the server shrinks its own cloud and answers the item use (so a cloud gone in the meantime fills nothing).
+  - `minecraft_survival/src/entities.rs`: `dragon_breath_near`, `bottle_breath` (the waiting item use, answered like an eye throw). `render_anim/src/minecraft_world.rs` (three lines): the bottle check passes the breath test, and a breath use goes to the server and fills the bottle when it answers.
+- **Checked with javap (26.3):** `BottleItem.use` (the `AreaEffectCloud` search in the player's box `inflate(2.0)`, `isAlive() && getOwner() instanceof EnderDragon`, the first found, `setRadius(getRadius() − 0.5)`, `BOTTLE_FILL_DRAGONBREATH` at the player, volume 1, pitch 1, `turnBottleIntoItem` with `Items.DRAGON_BREATH`, then the water ray only when no cloud was found), `AreaEffectCloud.setRadius` (clamped to 0 to 32).
+- **Tests:** `effect_cloud`: `a_glass_bottle_takes_half_a_block_from_a_dragon_s_breath_within_two_blocks` (the reach box, a potion's cloud is passed over, the shrink, a cloud shrunk out of reach, the radius stops at 0, a dead cloud fills nothing). `bottle`: `a_glass_bottle_in_reach_of_dragon_s_breath_fills_with_it_before_water` (breath before a water source, the result and sound, a water bottle drinks, a cauldron still comes first); the other bottle tests pass `false`. `server`: `a_glass_bottle_near_the_dragon_s_breath_fills_and_shrinks_the_cloud` (a fireball's cloud: 3 to 2.5, none out of reach or 4.5 blocks above).
+- **Decisions:**
+  - **The client asks first:** the client offers a breath use only when its last snapshot shows a breath cloud in reach and no other item use is waiting; the server decides with its own clouds.
+  - **A cloud shrunk to nothing** stays until its time is up, as in vanilla (a cloud without a radius change per tick, like the perched flame, is only removed by its duration).
+  - **Creative:** the bottle becomes the breath as a water bottle does here (vanilla's creative keeps the empty bottle).
+- **Test steps** (survival; `/difficulty normal`; MW2 weapons):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x5breath` (a new world), `IW4L_MINECRAFT_DIMENSION=the_end` and the kit below. Walk onto the main island.
+  2. Wait for a purple fireball to burst near you (entry 38), or for the perched dragon's flame on the podium (entry 39).
+  3. Stand next to the cloud's edge (within 2 blocks), select the glass bottles and right-click: you get a bottle of dragon's breath with a bubbly fill sound, and the cloud gets smaller. **Screenshot 1** (the bottles in the hotbar, the smaller cloud).
+  4. Right-click a few more times: each bottle shrinks it by half a block; once it is too far, nothing happens.
+  5. Away from any cloud, pour the water bucket and right-click the water with a glass bottle: a water bottle, as before.
+  6. Remove the `IW4L_MINECRAFT_DIMENSION` line afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:glass_bottle*16,minecraft:water_bucket,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:cobblestone*64
+```

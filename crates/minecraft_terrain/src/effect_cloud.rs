@@ -13,6 +13,8 @@ pub const INSTANT_SCALE: f64 = 0.5;
 const CHECK_EVERY: i32 = 5;
 pub const BREATH_WAIT_TIME: i32 = 20;
 pub const BREATH_COLOR: u32 = 0xCB00E5;
+pub const BOTTLE_REACH: f64 = 2.0;
+pub const BOTTLE_SHRINK: f32 = 0.5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Breath {
@@ -35,6 +37,7 @@ pub struct CloudView {
     pub radius: f32,
     pub color: u32,
     pub waiting: bool,
+    pub breath: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -131,6 +134,7 @@ impl EffectCloud {
             radius: self.radius,
             color: self.color,
             waiting: self.waiting(),
+            breath: self.breath.is_some(),
         }
     }
 
@@ -208,6 +212,46 @@ impl EffectCloud {
         }
         touched
     }
+}
+
+pub fn bottle_reach(feet: DVec3, height: f64) -> (DVec3, DVec3) {
+    let low = feet - DVec3::new(0.3, 0.0, 0.3);
+    let high = feet + DVec3::new(0.3, height, 0.3);
+    (
+        low - DVec3::splat(BOTTLE_REACH),
+        high + DVec3::splat(BOTTLE_REACH),
+    )
+}
+
+fn meets(a: (DVec3, DVec3), b: (DVec3, DVec3)) -> bool {
+    a.0.x < b.1.x
+        && a.1.x > b.0.x
+        && a.0.y < b.1.y
+        && a.1.y > b.0.y
+        && a.0.z < b.1.z
+        && a.1.z > b.0.z
+}
+
+pub fn breath_near(clouds: &[CloudView], reach: (DVec3, DVec3)) -> bool {
+    clouds.iter().any(|cloud| {
+        let r = f64::from(cloud.radius);
+        let bounds = (
+            cloud.position - DVec3::new(r, 0.0, r),
+            cloud.position + DVec3::new(r, HEIGHT, r),
+        );
+        cloud.breath && meets(reach, bounds)
+    })
+}
+
+pub fn bottle_breath(clouds: &mut [EffectCloud], reach: (DVec3, DVec3)) -> bool {
+    let Some(cloud) = clouds
+        .iter_mut()
+        .find(|cloud| cloud.alive && cloud.breath.is_some() && meets(reach, cloud.bounds()))
+    else {
+        return false;
+    };
+    cloud.set_radius(cloud.radius - BOTTLE_SHRINK);
+    true
 }
 
 #[cfg(test)]
@@ -289,6 +333,53 @@ mod tests {
             touched.extend(cloud.tick(&[far, immune, above, near]));
         }
         assert_eq!(touched, vec![4]);
+    }
+
+    #[test]
+    fn a_glass_bottle_takes_half_a_block_from_a_dragon_s_breath_within_two_blocks() {
+        let breath = |x: f64| {
+            EffectCloud::dragon_breath(
+                DVec3::new(x, 64.0, 0.5),
+                3.0,
+                600,
+                0.0,
+                PotionEffect::new("instant_damage", 1, 1),
+                Breath::Fireball,
+            )
+        };
+        let mut clouds = vec![poison_cloud(), breath(0.5)];
+        let feet = DVec3::new(5.0, 64.0, 0.5);
+        let reach = bottle_reach(feet, 1.8);
+        assert!((reach.0 - DVec3::new(2.7, 62.0, -1.8)).length() < 1e-9);
+        assert!((reach.1 - DVec3::new(7.3, 67.8, 2.8)).length() < 1e-9);
+        assert!(breath_near(
+            &clouds.iter().map(EffectCloud::view).collect::<Vec<_>>(),
+            reach
+        ));
+        assert!(bottle_breath(&mut clouds, reach));
+        assert_eq!(clouds[1].radius, 2.5);
+        assert_eq!(clouds[0].radius, 3.0, "a potion's cloud is no breath");
+        assert!(!clouds[0].view().breath && clouds[1].view().breath);
+        let away = bottle_reach(DVec3::new(10.0, 64.0, 0.5), 1.8);
+        assert!(!bottle_breath(&mut clouds, away), "out of reach");
+        assert!(!breath_near(
+            &clouds.iter().map(EffectCloud::view).collect::<Vec<_>>(),
+            away
+        ));
+        let mut potion_only = vec![poison_cloud()];
+        assert!(!bottle_breath(&mut potion_only, reach));
+        assert!(bottle_breath(&mut clouds, reach));
+        assert!(
+            !bottle_breath(&mut clouds, reach),
+            "a smaller cloud is out of reach"
+        );
+        let inside = bottle_reach(DVec3::new(0.5, 64.0, 0.5), 1.8);
+        for _ in 0..10 {
+            assert!(bottle_breath(&mut clouds, inside));
+        }
+        assert_eq!(clouds[1].radius, 0.0, "the radius stops at nothing");
+        clouds[1].alive = false;
+        assert!(!bottle_breath(&mut clouds, inside));
     }
 
     #[test]

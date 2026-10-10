@@ -583,6 +583,15 @@ impl Entities {
         self.item_use_waiting = Some(sent);
     }
 
+    pub fn bottle_breath(&mut self, feet: DVec3, height: f64, sent: SentItemUse) {
+        self.server.bottle_breath(feet, height);
+        self.item_use_waiting = Some(sent);
+    }
+
+    pub fn dragon_breath_near(&self, feet: DVec3, height: f64) -> bool {
+        minecraft_terrain::effect_cloud::breath_near(&self.clouds, minecraft_terrain::effect_cloud::bottle_reach(feet, height))
+    }
+
     pub fn awaits_item_use(&self) -> bool {
         self.item_use_waiting.is_some()
     }
