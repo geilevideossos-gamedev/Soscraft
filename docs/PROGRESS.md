@@ -59,7 +59,7 @@ Briefs: `docs/round7/e0-phase3-plan.md` (order, groups, ownership, estimate), `e
 |---|---|
 | Dimension switch | merged (9dbec02a + /execute in f0c30259, /time per dimension 2d9fe216, /kit @-entries 89f07c23, test race fix 3aef2ebe; full suite 1755 passed). Log `docs/round7/track-switch-log.md` |
 | Nether | merged (d7d0d780 + af3cc119, full suite 1936 passed): N1-N5 (level rules, Nether lighting and lava, portal travel with timer, overlay, sounds, 8:1, search and build; zombified piglins, magma cubes, wither skeletons, ghasts with deflectable fireballs, blazes, spawners, fortress spawns; water evaporates, beds explode, respawn anchors, bed respawn, compasses and clocks). N6 left for finish survival. Log `docs/round7/track-nether-log.md` |
-| End | parts 1-2 merged (d49f75d2, d9eabf74). Running on branch `end` (base af3cc119): X3 (crystals, the flying dragon, boss bar, multipart hits, healing beams) and X4 (death, exit portal, egg, gateway, credits, respawning the dragon). Log `docs/round7/track-end-log.md` |
+| End | parts 1-2 and the dragon fight X3-X4 merged (88cb6d83, full suite 2010 passed; the known flaky poof_particles test failed once and passed alone). Running on branch `end-x5` (worktree `C:\Dev\mc-wt\end-x5`, target `D:\iw4l-wt\end-x5`): X5, strafing with fireballs and breath, perching with breath, wing knockback, block breaking, egg teleport. X6 (gateway travel, item frames, shulkers, levitation) left for finish survival. Log `docs/round7/track-end-log.md` |
 
 ## Phase 4 (known limitations)
 Running beside the End dragon work on branch `limits` (worktree `C:\Dev\mc-wt\limits`, target `D:\iw4l-wt\limits`), on limitations from `docs/MINECRAFT-SURVIVAL.md` in files the End track does not touch. Log `docs/round7/track-limits-log.md`.
@@ -102,6 +102,7 @@ The 41 minutes of the last round were not reproduced: a clean release build alon
 - Elytra: a new 20 Hz glide mode in MW2 movement, guns still usable.
 - Throwables kit syntax: `id@potion` for potion contents (`#` starts a comment in `.env`).
 ## Log
+- 2026-10-10: End dragon fight X3-X4 merged (88cb6d83) and pushed; X5 started.
 - 2026-10-10: Nether merged (af3cc119) and pushed; End X3-X4 and phase 4 started.
 - 2026-10-10: End part 2 (eye throw, elytra, rockets) merged (d9eabf74) and pushed.
 - 2026-10-09: End part 1 merged (d49f75d2) and pushed; End part 2 (eye throw, elytra) started.
