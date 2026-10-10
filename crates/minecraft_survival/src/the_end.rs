@@ -132,6 +132,7 @@ pub fn enter_the_end(player: &mut Player) {
         loading_reason(false, from, Dimension::End),
     );
     player.end.platform = true;
+    player.portal.travel_sound = true;
 }
 
 pub fn leave_the_end(player: &mut Player, to: Dimension) {
@@ -279,6 +280,10 @@ pub(crate) mod tests {
             );
             assert_eq!(steve.dimension, Dimension::End);
             assert!(steve.end.platform, "the platform is due on arrival");
+            assert!(
+                steve.portal.travel_sound,
+                "the arrival plays the portal travel sound"
+            );
         }
     }
 
@@ -316,6 +321,10 @@ pub(crate) mod tests {
         );
         assert_eq!(switch.arrival, None);
         assert!(!steve.dead);
+        assert!(
+            !steve.portal.travel_sound,
+            "leaving the End plays no portal sound"
+        );
     }
 
     fn end_level() -> Option<Level> {

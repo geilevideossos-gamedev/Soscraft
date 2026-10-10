@@ -597,3 +597,25 @@ Previous commit: c36cf09f
 ```
 IW4L_MINECRAFT_KIT=minecraft:ender_eye*32,minecraft:end_portal_frame*24,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_shovel+efficiency=5,minecraft:cobblestone*64,minecraft:oak_sapling*4,minecraft:bone_meal*32,minecraft:dirt*8,minecraft:elytra,minecraft:elytra+damage=420,minecraft:elytra+unbreaking=3,minecraft:elytra+damage=430,minecraft:diamond_sword+sharpness=5+damage=12,minecraft:diamond_chestplate,minecraft:water_bucket,minecraft:ladder*16,minecraft:golden_apple*8,minecraft:firework_rocket*128,minecraft:cobweb*16
 ```
+
+## Third run, group X3: crystals and the flying dragon
+
+E3-9 and E3-11 to E3-14 of the brief, with plan decisions 5, 6 and 9, and the End entry's travel sound. Base: af3cc119 (the Nether merged into `minecraft-survival`).
+
+### 21. Minecraft end portals play the portal travel sound on the way into the End
+
+Previous commit: af3cc119
+
+- **Defect:** walking into an end portal took the player to the End in silence. Vanilla's `EndPortalBlock.getPortalDestination` gives the trip into the End the post-teleport step `PLAY_PORTAL_SOUND` (then `PLACE_PORTAL_TICKET`), which is level event 1032: `block.portal.travel` as local ambience at volume 0.25 and pitch 0.8 to 1.2, the sound a nether portal trip already plays here. The way out of the End uses `DO_NOTHING`, so it stays silent.
+- **Changed:** `minecraft_survival/src/the_end.rs`: `enter_the_end` sets `Player.portal.travel_sound`, the flag the Nether's `minecraft_portal::arriving` already plays once the arrival is known.
+- **Checked with javap (26.3):** `EndPortalBlock.getPortalDestination` (`TeleportTransition(..., PLAY_PORTAL_SOUND.then(PLACE_PORTAL_TICKET))` into the End, `findRespawnPositionAndUseSpawnBlock(false, DO_NOTHING)` out of it), `TeleportTransition.playPortalSound` (level event 1032).
+- **Tests:** `the_end`: `an_end_portal_in_the_overworld_or_the_nether_switches_to_the_end_platform` also checks the sound flag, and `the_exit_portal_goes_to_the_respawn_point_s_dimension_or_the_world_spawn_s` that leaving sets none.
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x3travel` (a new world) and the kit below. Build the ring of entry 2 (12 frames facing inward around a cleared 3x3), fill it with eyes and step in.
+  2. When the loading screen goes and you stand on the obsidian platform, you hear the portal travel whoosh, as after a nether portal trip.
+  3. Type `/setblock ~2 ~ ~ minecraft:end_portal` and walk into it: you arrive at the overworld spawn without the whoosh.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:diamond_pickaxe+efficiency=5,minecraft:cobblestone*64
+```
