@@ -1627,7 +1627,7 @@ impl ServerSim {
             }
         }
         if respawn.stage != before {
-            self.fight_reports.push(FightReport::Respawning { stage: respawn.stage.name(), crystals: respawn.crystals.clone(), exit_portal: self.fight.exit_portal.unwrap_or_default() });
+            self.fight_reports.push(FightReport::Respawning { stage: respawn.stage.name(), crystals: respawn.crystals.clone(), exit_portal: self.fight.exit_portal.unwrap_or((0, 0, 0)) });
         }
         self.respawn = Some(respawn);
     }

@@ -137,8 +137,7 @@ pub(crate) fn credit_sections(json: &serde_json::Value) -> Vec<McCreditsSection>
         value
             .get(key)
             .and_then(serde_json::Value::as_array)
-            .cloned()
-            .unwrap_or_default()
+            .map_or_else(Vec::new, Clone::clone)
     };
     json.as_array()
         .into_iter()
@@ -185,9 +184,9 @@ fn credits_text(packs: &PackStack, images: &mut Assets<Image>) -> McCreditsText 
         .and_then(|json| serde_json::from_str(&json).ok())
         .map_or_else(Vec::new, |json| credit_sections(&json));
     McCreditsText {
-        poem: read(END_POEM).unwrap_or_default(),
+        poem: read(END_POEM).unwrap_or_else(String::new),
         sections,
-        postcredits: read(POSTCREDITS).unwrap_or_default(),
+        postcredits: read(POSTCREDITS).unwrap_or_else(String::new),
         logo: image(LOGO, images),
         edition: image(EDITION, images),
     }

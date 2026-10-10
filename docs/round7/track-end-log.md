@@ -929,3 +929,13 @@ Previous commit: 4c7667cf
 ```
 IW4L_MINECRAFT_KIT=minecraft:end_crystal*16,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
 ```
+
+### 32. The Minecraft dragon's death and the way home pass clippy
+
+Previous commit: ffd73868
+
+- **Changed:** the four clippy findings on this group's lines, all `unwrap_or_default` (disallowed by `clippy.toml`): the respawn report's exit portal in `minecraft_terrain/src/server.rs` falls back to `(0, 0, 0)` explicitly, and `render_anim/src/minecraft_end.rs` reads the credits lists and texts with `map_or_else(Vec::new, ..)` and `unwrap_or_else(String::new)`.
+- **Clippy:** `clippy -p minecraft_terrain -p minecraft_survival -p render_anim -p hud -p frame -p minecraftoss-generator -p minecraftoss-world --all-targets --no-deps --locked -- -A clippy::approx_constant` has no other finding on a line this group added or changed (every reported location checked against `git diff -U0 89f9fd97`); the rest are older.
+- **Tests:** none new; the touched crates pass as before.
+- **Test steps:** none; nothing changes in game.
+- **Kit:** none.
