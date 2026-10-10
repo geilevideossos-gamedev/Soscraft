@@ -58,7 +58,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 - [upstream] Shooting and knifing breaks blocks by hardness, broken blocks drop items, and grenades blow craters.
 - The hand ray follows the MW2 crosshair in every stance. Items that are not blocks are never placed.
 - Torches (also soul, copper and redstone) hang on walls when a side face is clicked, and pop off when their support goes.
-- Vanilla placement states: beds, banners, signs, heads, bells, lecterns, pots, shulker boxes, ladders, vines (one face per use, added to a vine already there), levers, buttons, lanterns, tripwire hooks, shelf mushrooms and glow lichen (the first looking direction with a support), lily pads and frogspawn (on the water source the crosshair meets). Chests join into double chests.
+- Vanilla placement states: beds, banners, signs, heads, bells, lecterns, pots, shulker boxes, ladders, vines (one face per use, added to a vine already there), levers, buttons, lanterns, tripwire hooks, shelf mushrooms and glow lichen (the first looking direction with a support), lily pads and frogspawn (on the water source the crosshair meets), pointed dripstone (hanging when looking up, standing when looking down, the other way round where only that side has a support; it merges with an opposite tip unless sneaking, and a column thickens from tip to frustum, middle and base as tips are added). Chests join into double chests.
 - Blocks are only placed where vanilla `canSurvive` allows, on the client and again on the server: sugar cane needs water, a waterlogged block or frosted ice beside its ground, cactus a free side, flowers and saplings soil, torches a floor that holds their centre, carpets and cakes something below, rails a rigid top. A refused block stays in the hotbar; one the server refuses comes back as its item.
 - Doors, trapdoors, fence gates, levers, buttons and note blocks.
 - Scaffolding. Blocks that lose support break and drop. Sand and gravel fall. Sugar cane and cactus columns break one block a tick, corals, cakes and shelf mushrooms go with their support, stalagmites break and stalactites fall.
@@ -265,7 +265,7 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 - Books can't be placed on a lectern.
 - A shulker box or bundle that burns as an item loses its contents instead of spilling them. Experience orbs don't burn. A burning item keeps burning in a water cauldron.
 - Trapped chests give no redstone signal.
-- Pointed dripstone always points up, so it is refused under a ceiling where vanilla hangs it. Farmland and dirt paths go under solid blocks where vanilla places dirt instead. The client judges mushroom and crop light from its own light; where the server disagrees it refuses the block and drops it as an item. Falling stalactites hurt nobody.
+- Farmland and dirt paths go under solid blocks where vanilla places dirt instead. The client judges mushroom and crop light from its own light; where the server disagrees it refuses the block and drops it as an item. Falling stalactites hurt nobody.
 - Redstone covers only levers, buttons and the powered sounds of doors, trapdoors and gates.
 - Spawn eggs for unsimulated mobs (fox, rabbit, goat and others) spawn nothing, and the egg is kept. Clicking a spawner with an egg doesn't change its mob.
 - The fire charge uses flint and steel's block-update flags.

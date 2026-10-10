@@ -98,6 +98,7 @@ pub(crate) fn block_entity_placement(
                 .with("powered", "false"),
         )),
         "bell" => placed(bell(world, pos, block, view)),
+        "pointed_dripstone" | "sulfur_spike" => placed(speleothem(world, pos, block, view, water)),
         "ladder" => placed(ladder(world, pos, block, view, water)),
         "vine" => placed(vine(world, pos, block, view)),
         "tripwire_hook" => placed(
@@ -488,6 +489,68 @@ fn ladder(world: &impl World, pos: Pos, block: &Block, view: &View, water: &str)
                 .with("facing", name(opposite(direction)))
                 .with("waterlogged", water)
         })
+}
+
+fn speleothem(
+    world: &impl World,
+    pos: Pos,
+    block: &Block,
+    view: &View,
+    water: &str,
+) -> Option<Block> {
+    let looking = if view.pitch < 0.0 { Face::Up } else { Face::Down };
+    let tip = [opposite(looking), looking].into_iter().find(|tip| {
+        let base = step(pos, opposite(*tip));
+        world.sturdy_face(base, *tip) || speleothem_pointing(world, base, *tip, Some(&block.id))
+    })?;
+    let thickness = speleothem_thickness(world, pos, block, tip, !view.crouching);
+    Some(
+        block
+            .clone()
+            .with("vertical_direction", name(tip))
+            .with("thickness", thickness)
+            .with("waterlogged", water),
+    )
+}
+
+fn speleothem_pointing(world: &impl World, pos: Pos, tip: Face, same: Option<&str>) -> bool {
+    world.block(pos).is_some_and(|other| {
+        matches!(
+            other.id.as_str(),
+            "minecraft:pointed_dripstone" | "minecraft:sulfur_spike"
+        ) && same.is_none_or(|id| other.id == id)
+            && other.property("vertical_direction") == Some(name(tip))
+    })
+}
+
+fn speleothem_thickness(
+    world: &impl World,
+    pos: Pos,
+    block: &Block,
+    tip: Face,
+    merge: bool,
+) -> &'static str {
+    let front = step(pos, tip);
+    if speleothem_pointing(world, front, opposite(tip), Some(&block.id)) {
+        let merged = world
+            .block(front)
+            .is_some_and(|other| other.property("thickness") == Some("tip_merge"));
+        return if merge || merged { "tip_merge" } else { "tip" };
+    }
+    if !speleothem_pointing(world, front, tip, None) {
+        return "tip";
+    }
+    let front_thickness = world
+        .block(front)
+        .and_then(|other| other.property("thickness").map(str::to_owned));
+    if matches!(front_thickness.as_deref(), Some("tip" | "tip_merge")) {
+        return "frustum";
+    }
+    if speleothem_pointing(world, step(pos, opposite(tip)), tip, None) {
+        "middle"
+    } else {
+        "base"
+    }
 }
 
 fn face_attached(world: &impl World, pos: Pos, block: &Block, view: &View) -> Option<Block> {
@@ -1105,6 +1168,131 @@ mod tests {
         };
         let (ladder, _) = state(&world, (0, 1, 1), "minecraft:ladder", &flooded).unwrap();
         assert_eq!(ladder.property("waterlogged"), Some("true"));
+    }
+
+    #[test]
+    fn pointed_dripstone_hangs_from_a_ceiling_and_stands_on_a_floor() {
+        let mut world = Blocks::default();
+        world.set_block((0, 5, 0), Some(Block::new("minecraft:stone")));
+        world.set_block((0, 0, 0), Some(Block::new("minecraft:stone")));
+        let dripstone = |world: &Blocks, pos: Pos, pitch: f64| {
+            state(world, pos, "minecraft:pointed_dripstone", &view(0.0, pitch, Face::Up))
+                .map(|(block, _)| {
+                    (
+                        block.property("vertical_direction").unwrap().to_owned(),
+                        block.property("thickness").unwrap().to_owned(),
+                    )
+                })
+        };
+        let hanging = dripstone(&world, (0, 4, 0), -40.0).unwrap();
+        assert_eq!(hanging, ("down".to_owned(), "tip".to_owned()));
+        let standing = dripstone(&world, (0, 1, 0), 40.0).unwrap();
+        assert_eq!(standing, ("up".to_owned(), "tip".to_owned()));
+        let under_ceiling_looking_down = dripstone(&world, (0, 4, 0), 40.0).unwrap();
+        assert_eq!(under_ceiling_looking_down.0, "down");
+        let on_floor_looking_up = dripstone(&world, (0, 1, 0), -40.0).unwrap();
+        assert_eq!(on_floor_looking_up.0, "up");
+        assert!(dripstone(&world, (3, 3, 3), 40.0).is_none());
+        let water = Block::new("minecraft:water").with("level", "0");
+        world.set_block((0, 4, 0), Some(water));
+        let (wet, _) = state(
+            &world,
+            (0, 4, 0),
+            "minecraft:pointed_dripstone",
+            &view(0.0, -40.0, Face::Down),
+        )
+        .unwrap();
+        assert_eq!(wet.property("waterlogged"), Some("true"));
+    }
+
+    #[test]
+    fn pointed_dripstone_grows_thicker_and_merges_with_an_opposite_tip() {
+        let stalactite = |thickness: &str| {
+            Block::new("minecraft:pointed_dripstone")
+                .with("vertical_direction", "down")
+                .with("thickness", thickness)
+        };
+        let stalagmite = |thickness: &str| {
+            Block::new("minecraft:pointed_dripstone")
+                .with("vertical_direction", "up")
+                .with("thickness", thickness)
+        };
+        let mut world = Blocks::default();
+        world.set_block((0, 10, 0), Some(Block::new("minecraft:stone")));
+        world.set_block((0, 9, 0), Some(stalactite("tip")));
+        let under = |world: &Blocks, pos: Pos, crouching: bool| {
+            let looking_up = View {
+                crouching,
+                ..view(0.0, -40.0, Face::Down)
+            };
+            let (block, _) = state(world, pos, "minecraft:pointed_dripstone", &looking_up).unwrap();
+            (
+                block.property("vertical_direction").unwrap().to_owned(),
+                block.property("thickness").unwrap().to_owned(),
+            )
+        };
+        assert_eq!(under(&world, (0, 8, 0), false), ("down".to_owned(), "tip".to_owned()));
+        world.set_block((0, 1, 0), Some(Block::new("minecraft:stone")));
+        world.set_block((0, 2, 0), Some(stalagmite("tip")));
+        world.set_block((0, 4, 0), Some(stalactite("tip")));
+        world.set_block((0, 5, 0), Some(stalactite("frustum")));
+        world.set_block((0, 6, 0), Some(stalactite("base")));
+        world.set_block((0, 7, 0), Some(Block::new("minecraft:stone")));
+        assert_eq!(under(&world, (0, 3, 0), false), ("down".to_owned(), "tip_merge".to_owned()));
+        assert_eq!(under(&world, (0, 3, 0), true), ("down".to_owned(), "tip".to_owned()));
+        world.set_block((0, 2, 0), Some(stalagmite("tip_merge")));
+        assert_eq!(under(&world, (0, 3, 0), true), ("down".to_owned(), "tip_merge".to_owned()));
+        let mut column = Blocks::default();
+        column.set_block((0, 10, 0), Some(Block::new("minecraft:stone")));
+        column.set_block((0, 9, 0), Some(stalactite("base")));
+        column.set_block((0, 7, 0), Some(stalactite("tip")));
+        assert_eq!(under(&column, (0, 8, 0), false).1, "frustum");
+        column.set_block((0, 7, 0), Some(stalactite("frustum")));
+        assert_eq!(under(&column, (0, 8, 0), false).1, "middle");
+        column.set_block((0, 9, 0), Some(Block::new("minecraft:stone")));
+        assert_eq!(under(&column, (0, 8, 0), false).1, "base");
+        struct Thin(Blocks);
+        impl World for Thin {
+            fn block(&self, pos: Pos) -> Option<Block> {
+                self.0.block(pos)
+            }
+
+            fn set_block(&mut self, pos: Pos, block: Option<Block>) {
+                self.0.set_block(pos, block);
+            }
+
+            fn collision_boxes(&self, pos: Pos) -> Vec<[f64; 6]> {
+                match self.block(pos) {
+                    Some(block) if block.property("vertical_direction").is_some() => {
+                        vec![[0.3125, 0.0, 0.3125, 0.6875, 1.0, 0.6875]]
+                    }
+                    Some(_) => vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]],
+                    None => Vec::new(),
+                }
+            }
+        }
+        let mut thin = Thin(Blocks::default());
+        thin.set_block((0, 10, 0), Some(Block::new("minecraft:stone")));
+        thin.set_block((0, 9, 0), Some(stalactite("tip")));
+        let looking_up = view(0.0, -40.0, Face::Down);
+        let placed = block_entity_placement(
+            &thin,
+            (0, 8, 0),
+            &Block::new("minecraft:pointed_dripstone"),
+            &looking_up,
+        );
+        assert!(matches!(placed, Placement::Placed(..)));
+        let spike = Block::new("minecraft:sulfur_spike")
+            .with("vertical_direction", "down")
+            .with("thickness", "tip");
+        thin.set_block((0, 9, 0), Some(spike));
+        let placed = block_entity_placement(
+            &thin,
+            (0, 8, 0),
+            &Block::new("minecraft:pointed_dripstone"),
+            &looking_up,
+        );
+        assert!(matches!(placed, Placement::Refused));
     }
 
     #[test]

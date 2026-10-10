@@ -4167,6 +4167,25 @@ mod tests {
     }
 
     #[test]
+    fn a_stalactite_thickens_as_tips_are_added_below_and_merges_with_a_stalagmite() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let dripstone = |tip: &str, thickness: &str| Block::new("minecraft:pointed_dripstone").with("vertical_direction", tip).with("thickness", thickness).with("waterlogged", "false");
+        place(&mut server, &mut scene, (8, 215, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (8, 214, 8), dripstone("down", "tip"));
+        place(&mut server, &mut scene, (8, 210, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (8, 211, 8), dripstone("up", "tip"));
+        server.take_changes();
+        place(&mut server, &mut scene, (8, 213, 8), dripstone("down", "tip"));
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(changes.get(&(8, 214, 8)), Some(&Some(dripstone("down", "frustum"))));
+        place(&mut server, &mut scene, (8, 212, 8), dripstone("down", "tip_merge"));
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(changes.get(&(8, 213, 8)), Some(&Some(dripstone("down", "frustum"))));
+        assert_eq!(changes.get(&(8, 214, 8)), Some(&Some(dripstone("down", "base"))));
+        assert_eq!(changes.get(&(8, 211, 8)), Some(&Some(dripstone("up", "tip_merge"))), "the stalagmite merges with it");
+    }
+
+    #[test]
     fn scaffolding_reaches_six_out_and_falls_or_breaks_beyond() {
         let Some((mut server, mut scene)) = door_world() else { return };
         let mut latest = std::collections::HashMap::new();

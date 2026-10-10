@@ -220,3 +220,26 @@ IW4L_MINECRAFT_KIT=minecraft:lava_bucket*4,minecraft:cobblestone*32,minecraft:po
 - **Tests:** the two tests, unchanged in what they check.
 - **Test steps:** none, nothing changes in game.
 - **Kit:** none.
+
+## Group blocks-items
+
+Block and item limitations from the Blocks and items, Survival and combat and Movement lists. Every behaviour below was checked with javap on the 26.3 client jar.
+
+### 1. Minecraft pointed dripstone hangs from ceilings
+
+- **Changed:**
+  - `minecraftoss-player` `placement.rs`: pointed dripstone and sulfur spikes take 26.3's `SpeleothemBlock.getStateForPlacement` (javap; pointed dripstone now extends `SpeleothemBlock`). The default tip points away from the looking direction (`getNearestLookingVerticalDirection`: pitch below 0 is up), so looking up hangs a stalactite and looking down stands a stalagmite; where that side has no support (`isValidSpeleothemPlacement`: a sturdy face on the base, or the same block pointing the same way) the other direction is tried, and with neither the placement is refused. The thickness is `calculateSpeleothemThickness`: `tip_merge` against an opposite tip of the same block (only `tip` while sneaking, unless that tip is already merged), `tip` with nothing in front, `frustum` behind a tip, `middle` or `base` further up the column. Water source at the spot waterlogs it.
+  - `minecraftoss-generator` `update.rs`: the `Speleothem` neighbour rule now ends like vanilla's `updateShape`, recalculating the thickness on an up or down update (keeping a merge only when it was already `tip_merge`), so a stalactite grows from tip to frustum, middle and base as tips are added below, and two opposite tips merge.
+- **Tests:** `placement`: `pointed_dripstone_hangs_from_a_ceiling_and_stands_on_a_floor`, `pointed_dripstone_grows_thicker_and_merges_with_an_opposite_tip`. `server`: `a_stalactite_thickens_as_tips_are_added_below_and_merges_with_a_stalagmite`.
+- **Decisions:** the speleothem tag check is the `Speleothem` update rule (pointed dripstone and sulfur spike, the tag's two blocks), so no new tag is loaded.
+- **Test steps:**
+  1. Stand under a stone ceiling, look up and place pointed dripstone on it: it hangs down as a stalactite tip. **Screenshot 1.**
+  2. Place three more under it: the column turns into base, middle, frustum and tip from the top down.
+  3. Under another hanging tip, build a floor so that two air blocks are left between floor and tip. Look down and place dripstone on the floor: it stands up. Then look up and place one in the one-block gap between the two tips: it hangs and merges with the standing tip into a joined pair. **Screenshot 2.**
+  4. Sneak and repeat step 3 at another spot: the new tip stays separate from the standing one.
+  5. Aim at the side of a lone wall block, with air above and below the spot: nothing is placed.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:pointed_dripstone*32,minecraft:stone*64
+```
