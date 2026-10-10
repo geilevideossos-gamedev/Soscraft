@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn a_puff_rises_and_fades_within_its_lifetime() {
-        let mut poofs = PoofParticles::default();
+        let mut poofs = PoofParticles { particles: Vec::new(), random: LegacyRandom::new(42) };
         poofs.spawn(DVec3::new(0.5, 64.0, 0.5), 0.9, 1.4);
         assert_eq!(poofs.len(), 20);
         let start: f64 = poofs.particles.iter().map(|p| p.position.y).sum();
