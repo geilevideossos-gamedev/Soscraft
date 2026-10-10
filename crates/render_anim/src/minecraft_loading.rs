@@ -195,7 +195,7 @@ impl LoadingBackgrounds {
     }
 }
 
-fn gpu_image(image: RgbaImage, smooth: bool) -> Image {
+pub(crate) fn gpu_image(image: RgbaImage, smooth: bool) -> Image {
     let filter = if smooth {
         ImageFilterMode::Linear
     } else {

@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use std::sync::mpsc;
 
 use minecraft_net::{Dimension, PlayerUuid};
-use minecraft_terrain::server::{DragonFightScan, Job, ServerSim};
+use minecraft_terrain::dragon_respawn::{Respawn, Stage};
+use minecraft_terrain::server::{DragonFightScan, FightLink, FightReport, Job, ServerSim};
 use minecraftoss_core::ChunkPos;
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_core::random::LegacyRandom;
@@ -21,6 +22,8 @@ pub const ARENA_SIZE_CHUNKS: i32 = 8;
 pub const ARENA_TICKET_LEVEL: i32 = 9;
 pub const GATEWAY_COUNT: i32 = 20;
 pub const TIME_BETWEEN_PLAYER_SCANS: u32 = 20;
+pub const MAX_TICKS_BEFORE_DRAGON_RESPAWN: u32 = 1200;
+pub const MAX_HEALTH: f32 = 200.0;
 pub const TICK_SECONDS: f64 = 0.05;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -163,6 +166,13 @@ pub struct DragonFight {
     pub players: Vec<PlayerUuid>,
     pub scanning: Option<mpsc::Receiver<DragonFightScan>>,
     pub dirty: bool,
+    pub ticks_since_dragon_seen: u32,
+    pub creating: Option<mpsc::Receiver<[i32; 4]>>,
+    pub linked: Option<FightLink>,
+    pub progress: f32,
+    pub opening: Option<mpsc::Receiver<(i32, i32, i32)>>,
+    pub resumed: bool,
+    pub arena_loaded: bool,
 }
 
 impl Default for DragonFight {
@@ -177,6 +187,11 @@ pub struct FightEvents {
     pub arena: Option<usize>,
     pub scanned: Option<DragonFightScan>,
     pub saved: Option<Result<(), String>>,
+    pub spawned: Option<[i32; 4]>,
+    pub killed: Option<[i32; 4]>,
+    pub opened: Option<(i32, i32, i32)>,
+    pub respawn: Option<String>,
+    pub respawned: Option<[i32; 4]>,
 }
 
 pub fn arena_ticket() -> (ChunkPos, i32) {
@@ -207,6 +222,39 @@ pub fn arena_loaded(loaded: impl Fn((i32, i32)) -> bool) -> bool {
     row && around
 }
 
+pub fn dragon_job(send: mpsc::Sender<[i32; 4]>) -> Job {
+    Box::new(move |sim: &mut ServerSim| -> Box<dyn Any + Send> {
+        let _ = send.send(sim.find_or_create_dragon(FIGHT_ORIGIN));
+        Box::new(())
+    })
+}
+
+pub fn link_job(link: FightLink) -> Job {
+    Box::new(move |sim: &mut ServerSim| -> Box<dyn Any + Send> {
+        sim.link_fight(link);
+        Box::new(())
+    })
+}
+
+pub fn kill_job(
+    exit_portal_location: Option<(i32, i32, i32)>,
+    gateway: Option<i32>,
+    egg: bool,
+    send: mpsc::Sender<(i32, i32, i32)>,
+) -> Job {
+    Box::new(move |sim: &mut ServerSim| -> Box<dyn Any + Send> {
+        let _ = send.send(sim.dragon_killed(FIGHT_ORIGIN, exit_portal_location, gateway, egg));
+        Box::new(())
+    })
+}
+
+pub fn resume_job(respawn: Respawn) -> Job {
+    Box::new(move |sim: &mut ServerSim| -> Box<dyn Any + Send> {
+        sim.resume_respawn(respawn);
+        Box::new(())
+    })
+}
+
 pub fn scan_job(
     exit_portal_location: Option<(i32, i32, i32)>,
     send: mpsc::Sender<DragonFightScan>,
@@ -226,7 +274,61 @@ impl DragonFight {
             players: Vec::new(),
             scanning: None,
             dirty: false,
+            ticks_since_dragon_seen: 0,
+            creating: None,
+            linked: None,
+            progress: 1.0,
+            opening: None,
+            resumed: false,
+            arena_loaded: false,
         }
+    }
+
+    pub fn boss_bar(&self, player: &PlayerUuid) -> Option<f32> {
+        (!self.data.dragon_killed && self.players.contains(player)).then_some(self.progress)
+    }
+
+    pub fn set_dragon_killed(&mut self, uuid: [i32; 4]) -> bool {
+        if self.data.dragon_uuid != Some(uuid) {
+            return false;
+        }
+        self.progress = 0.0;
+        self.data.previously_killed = true;
+        self.data.dragon_killed = true;
+        self.dirty = true;
+        true
+    }
+
+    pub fn next_gateway(&mut self) -> Option<i32> {
+        let gateway = self.data.gateways.pop();
+        self.dirty |= gateway.is_some();
+        gateway
+    }
+
+    pub fn open_exit_portal(&mut self, entities: &mut Entities, egg: bool) {
+        let (send, answer) = mpsc::channel();
+        let gateway = self.next_gateway();
+        entities.run_job(kill_job(self.data.exit_portal_location, gateway, egg, send));
+        self.opening = Some(answer);
+    }
+
+    pub fn receive_exit_portal(&mut self) -> Option<(i32, i32, i32)> {
+        let at = match self.opening.as_ref()?.try_recv() {
+            Ok(at) => at,
+            Err(mpsc::TryRecvError::Empty) => return None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.opening = None;
+                return None;
+            }
+        };
+        self.opening = None;
+        self.data.exit_portal_location = Some(at);
+        self.dirty = true;
+        Some(at)
+    }
+
+    pub fn update_dragon(&mut self, health: f32) {
+        self.progress = health / MAX_HEALTH;
     }
 
     pub fn load(save: Option<&WorldSave>, seed: i64) -> (Self, Option<Result<bool, String>>) {
@@ -262,6 +364,122 @@ impl DragonFight {
         }
         let scan = arena_loaded && self.data.needs_state_scanning && self.scanning.is_none();
         (vec![arena_ticket()], scan)
+    }
+
+    pub fn dragon_due(&mut self, seen: bool, arena_loaded: bool) -> bool {
+        if self.players.is_empty()
+            || !arena_loaded
+            || self.data.needs_state_scanning
+            || self.data.dragon_killed
+            || self.creating.is_some()
+        {
+            return false;
+        }
+        if seen {
+            self.ticks_since_dragon_seen = 0;
+        }
+        let due = self.data.dragon_uuid.is_none() || {
+            self.ticks_since_dragon_seen += 1;
+            self.ticks_since_dragon_seen >= MAX_TICKS_BEFORE_DRAGON_RESPAWN
+        };
+        if due {
+            self.ticks_since_dragon_seen = 0;
+        }
+        due
+    }
+
+    pub fn start_dragon(&mut self, entities: &mut Entities) {
+        let (send, answer) = mpsc::channel();
+        entities.run_job(dragon_job(send));
+        self.creating = Some(answer);
+    }
+
+    pub fn receive_dragon(&mut self) -> Option<[i32; 4]> {
+        let uuid = match self.creating.as_ref()?.try_recv() {
+            Ok(uuid) => uuid,
+            Err(mpsc::TryRecvError::Empty) => return None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.creating = None;
+                return None;
+            }
+        };
+        self.creating = None;
+        self.data.dragon_uuid = Some(uuid);
+        self.dirty = true;
+        Some(uuid)
+    }
+
+    pub fn link_state(&self) -> FightLink {
+        FightLink {
+            dragon: self.data.dragon_uuid,
+            previously_killed: self.data.previously_killed,
+            dragon_killed: self.data.dragon_killed,
+            exit_portal: self.data.exit_portal_location,
+            ticking: !self.players.is_empty() && self.arena_loaded,
+        }
+    }
+
+    pub fn saved_respawn(&self) -> Option<Respawn> {
+        let stage = Stage::by_name(self.data.respawn_stage.as_deref()?)?;
+        let crystals = self
+            .data
+            .respawn_crystals
+            .iter()
+            .filter_map(|tag| ints(Some(tag))?.try_into().ok())
+            .collect();
+        Some(Respawn {
+            stage,
+            time: self.data.respawn_time,
+            crystals,
+        })
+    }
+
+    pub fn receive_report(&mut self, report: FightReport) {
+        match report {
+            FightReport::Respawning {
+                stage,
+                crystals,
+                exit_portal,
+            } => {
+                self.data.respawn_stage = Some(stage.to_owned());
+                self.data.respawn_time = 0;
+                self.data.respawn_crystals = crystals
+                    .iter()
+                    .map(|uuid| Tag::IntArray(uuid.to_vec()))
+                    .collect();
+                self.data.exit_portal_location = Some(exit_portal);
+            }
+            FightReport::Aborted => {
+                self.data.respawn_stage = None;
+                self.data.respawn_time = 0;
+                self.data.respawn_crystals.clear();
+            }
+            FightReport::Respawned(uuid) => {
+                self.data.respawn_stage = None;
+                self.data.respawn_time = 0;
+                self.data.respawn_crystals.clear();
+                self.data.dragon_killed = false;
+                self.data.dragon_uuid = Some(uuid);
+                self.ticks_since_dragon_seen = 0;
+                self.progress = 1.0;
+            }
+        }
+        self.dirty = true;
+    }
+
+    pub fn link(&mut self, entities: &mut Entities) {
+        let link = self.link_state();
+        if self.data.needs_state_scanning || self.linked == Some(link) {
+            return;
+        }
+        entities.run_job(link_job(link));
+        self.linked = Some(link);
+        if !self.resumed {
+            self.resumed = true;
+            if let Some(respawn) = self.saved_respawn() {
+                entities.run_job(resume_job(respawn));
+            }
+        }
     }
 
     pub fn start_scan(&mut self, entities: &mut Entities) {
@@ -331,8 +549,48 @@ pub fn tick_level<'a>(
         fight
     });
     events.scanned = fight.receive_scan();
+    events.spawned = fight.receive_dragon();
+    events.opened = fight.receive_exit_portal();
+    for report in entities
+        .as_mut()
+        .map(Entities::take_fight_reports)
+        .unwrap_or_else(Vec::new)
+    {
+        match &report {
+            FightReport::Respawning { stage, .. } => events.respawn = Some((*stage).to_owned()),
+            FightReport::Aborted => events.respawn = Some("aborted".to_owned()),
+            FightReport::Respawned(uuid) => events.respawned = Some(*uuid),
+        }
+        fight.receive_report(report);
+    }
+    for uuid in entities
+        .as_mut()
+        .map(Entities::take_dragons_killed)
+        .unwrap_or_else(Vec::new)
+    {
+        let egg = !fight.data.previously_killed;
+        if fight.set_dragon_killed(uuid) {
+            events.killed = Some(uuid);
+            if let Some(entities) = entities.as_mut() {
+                fight.open_exit_portal(entities, egg);
+            }
+        }
+    }
     let loaded =
         entities.is_some() && arena_loaded(|chunk| terrain.scene.generated_chunk(chunk).is_some());
+    fight.arena_loaded = loaded;
+    let dragon = entities.as_ref().and_then(|entities| {
+        let uuid = fight.data.dragon_uuid?;
+        entities
+            .dragons()
+            .iter()
+            .find(|dragon| dragon.uuid == uuid)
+            .map(|dragon| dragon.health)
+    });
+    if let Some(health) = dragon {
+        fight.update_dragon(health);
+    }
+    let seen = dragon.is_some();
     let before = fight.players.len();
     let mut tickets = None;
     for _ in 0..fight.ticks(seconds) {
@@ -341,6 +599,13 @@ pub fn tick_level<'a>(
         if let Some(entities) = entities.as_mut().filter(|_| scan) {
             fight.start_scan(entities);
         }
+        let due = fight.dragon_due(seen, loaded);
+        if let Some(entities) = entities.as_mut().filter(|_| due) {
+            fight.start_dragon(entities);
+        }
+    }
+    if let Some(entities) = entities.as_mut() {
+        fight.link(entities);
     }
     let after = fight.players.len();
     if let Some(tickets) = tickets {
@@ -419,6 +684,161 @@ mod tests {
         fight.scanning = None;
         fight.data.needs_state_scanning = false;
         assert!(!fight.tick(|| steve.clone(), true).1);
+    }
+
+    #[test]
+    fn a_dragon_is_due_once_the_scan_is_done_without_one_or_after_1200_ticks_unseen() {
+        let mut fight = DragonFight {
+            players: vec![uuid("steve")],
+            ..DragonFight::default()
+        };
+        assert!(!fight.dragon_due(false, true), "not before the state scan");
+        fight.data.needs_state_scanning = false;
+        assert!(!fight.dragon_due(false, false), "not while the arena loads");
+        assert!(fight.dragon_due(false, true), "no dragon yet");
+        let (_send, answer) = mpsc::channel();
+        fight.creating = Some(answer);
+        assert!(!fight.dragon_due(false, true), "one at a time");
+        fight.creating = None;
+        fight.data.dragon_uuid = Some([1, 2, 3, 4]);
+        for _ in 0..MAX_TICKS_BEFORE_DRAGON_RESPAWN - 1 {
+            assert!(!fight.dragon_due(false, true));
+        }
+        assert!(fight.dragon_due(false, true), "unseen for 1200 ticks");
+        for _ in 0..5000 {
+            assert!(
+                !fight.dragon_due(true, true),
+                "a dragon in sight is never replaced"
+            );
+        }
+        fight.data.dragon_killed = true;
+        fight.data.dragon_uuid = None;
+        assert!(!fight.dragon_due(false, true), "not once it is killed");
+        fight.data.dragon_killed = false;
+        fight.players.clear();
+        assert!(!fight.dragon_due(false, true), "not with nobody near");
+    }
+
+    #[test]
+    fn the_boss_bar_shows_the_dragon_s_health_to_the_players_near_until_it_is_killed() {
+        let mut fight = DragonFight::default();
+        let steve = uuid("steve");
+        assert_eq!(fight.boss_bar(&steve), None, "nobody scanned yet");
+        fight.players = vec![steve.clone()];
+        assert_eq!(
+            fight.boss_bar(&steve),
+            Some(1.0),
+            "full before the dragon is seen"
+        );
+        fight.update_dragon(150.0);
+        assert_eq!(fight.boss_bar(&steve), Some(0.75));
+        assert_eq!(
+            fight.boss_bar(&uuid("alex")),
+            None,
+            "only for the players within 192 blocks"
+        );
+        assert!(
+            !fight.set_dragon_killed([9, 9, 9, 9]),
+            "not the fight's dragon"
+        );
+        fight.data.dragon_uuid = Some([1, 2, 3, 4]);
+        assert!(fight.set_dragon_killed([1, 2, 3, 4]));
+        assert!(fight.data.dragon_killed && fight.data.previously_killed && fight.dirty);
+        assert_eq!(fight.boss_bar(&steve), None);
+        fight.data.needs_state_scanning = false;
+        assert!(
+            !fight.dragon_due(false, true),
+            "a killed dragon is not replaced"
+        );
+    }
+
+    #[test]
+    fn each_kill_takes_the_last_of_the_shuffled_gateways_until_none_is_left() {
+        let mut fight = DragonFight::default();
+        fight.data.init(0);
+        assert_eq!(fight.next_gateway(), Some(0));
+        assert_eq!(fight.next_gateway(), Some(5));
+        assert!(fight.dirty, "the shorter list is saved");
+        assert_eq!(fight.data.gateways.len(), 18);
+        assert_eq!(
+            FightData::read(&fight.data.write()).gateways,
+            fight.data.gateways
+        );
+        fight.data.gateways.clear();
+        fight.dirty = false;
+        assert_eq!(fight.next_gateway(), None, "twenty kills place them all");
+        assert!(!fight.dirty);
+    }
+
+    #[test]
+    fn the_server_learns_the_fight_s_dragon_and_whether_one_was_killed_before() {
+        let mut fight = DragonFight::default();
+        assert_eq!(fight.link_state(), FightLink::default());
+        fight.data.dragon_uuid = Some([1, 2, 3, 4]);
+        fight.data.previously_killed = true;
+        assert_eq!(
+            fight.link_state(),
+            FightLink {
+                dragon: Some([1, 2, 3, 4]),
+                previously_killed: true,
+                ..FightLink::default()
+            }
+        );
+    }
+
+    #[test]
+    fn the_fight_ticks_on_the_server_only_with_players_near_and_the_arena_loaded() {
+        let mut fight = DragonFight {
+            arena_loaded: true,
+            ..DragonFight::default()
+        };
+        assert!(!fight.link_state().ticking, "nobody near");
+        fight.players = vec![uuid("steve")];
+        assert!(fight.link_state().ticking);
+        fight.arena_loaded = false;
+        assert!(!fight.link_state().ticking, "the arena still loads");
+    }
+
+    #[test]
+    fn a_respawn_is_saved_by_stage_and_a_new_dragon_ends_it() {
+        let mut fight = DragonFight::default();
+        fight.data.dragon_killed = true;
+        fight.data.previously_killed = true;
+        fight.receive_report(FightReport::Respawning {
+            stage: "summoning_pillars",
+            crystals: vec![[1, 2, 3, 4], [5, 6, 7, 8]],
+            exit_portal: (0, 62, 0),
+        });
+        assert!(fight.dirty);
+        let saved = FightData::read(&fight.data.write());
+        assert_eq!(saved.respawn_stage.as_deref(), Some("summoning_pillars"));
+        assert_eq!(saved.exit_portal_location, Some((0, 62, 0)));
+        let reloaded = DragonFight::new(saved);
+        assert_eq!(
+            reloaded.saved_respawn(),
+            Some(Respawn {
+                stage: Stage::SummoningPillars,
+                time: 0,
+                crystals: vec![[1, 2, 3, 4], [5, 6, 7, 8]],
+            })
+        );
+        assert!(
+            fight.link_state().dragon_killed,
+            "crystals may respawn it only once it is dead"
+        );
+        fight.receive_report(FightReport::Respawned([9, 9, 9, 9]));
+        assert!(!fight.data.dragon_killed && fight.data.previously_killed);
+        assert_eq!(fight.data.dragon_uuid, Some([9, 9, 9, 9]));
+        assert_eq!(fight.saved_respawn(), None);
+        assert!(fight.data.respawn_crystals.is_empty());
+        fight.players = vec![uuid("steve")];
+        assert_eq!(
+            fight.boss_bar(&uuid("steve")),
+            Some(1.0),
+            "the bar is back, full"
+        );
+        fight.receive_report(FightReport::Aborted);
+        assert_eq!(fight.data.respawn_stage, None);
     }
 
     #[test]
@@ -681,9 +1101,53 @@ mod tests {
                 .as_ref()
                 .is_some_and(|fight| fight.scanning.is_none())
         );
+        let started = std::time::Instant::now();
+        let spawned = loop {
+            assert!(started.elapsed().as_secs() < 600, "no dragon");
+            let events = tick_level(&mut level, [&steve].into_iter(), Some(&save), 0, 0.05);
+            if let Some(uuid) = events.spawned {
+                assert_eq!(events.saved, Some(Ok(())), "the dragon's UUID is saved");
+                break uuid;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        let started = std::time::Instant::now();
+        loop {
+            assert!(started.elapsed().as_secs() < 600, "the dragon never showed");
+            if let Some(entities) = level.entities.as_mut() {
+                let _ = entities.tick(
+                    &mut minecraftoss_player::inventory::Inventory::default(),
+                    0,
+                    0.05,
+                    minecraft_terrain::server::ClockTicks::default(),
+                    false,
+                    &crate::entities::PlayerView {
+                        feet: [100.5, 49.0, 0.5],
+                        alive: true,
+                        attackable: true,
+                        spectator: false,
+                        picks_up: false,
+                        health: 20.0,
+                        yaw: 0.0,
+                        pitch: 0.0,
+                    },
+                );
+            }
+            if level
+                .entities
+                .as_ref()
+                .is_some_and(|entities| entities.dragon_alive(spawned))
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let dragon = level.entities.as_ref().unwrap().dragons()[0].clone();
+        assert!(dragon.position.y > 100.0, "{:?}", dragon.position);
         for _ in 0..40 {
             let events = tick_level(&mut level, [&steve].into_iter(), Some(&save), 0, 0.05);
             assert_eq!(events.scanned, None);
+            assert_eq!(events.spawned, None, "one dragon only");
             assert_eq!(events.saved, None);
             assert!(
                 level
@@ -695,7 +1159,13 @@ mod tests {
         }
         let (reloaded, loaded) = DragonFight::load(Some(&save), 0);
         assert_eq!(loaded, Some(Ok(true)));
-        assert_eq!(reloaded.data, saved);
+        assert_eq!(
+            reloaded.data,
+            FightData {
+                dragon_uuid: Some(spawned),
+                ..saved
+            }
+        );
         assert!(!reloaded.dirty);
         drop(level);
         drop(save);

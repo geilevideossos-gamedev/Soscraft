@@ -206,7 +206,14 @@ pub(crate) fn mob_on_segment(start: [f32; 3], end: [f32; 3]) -> Option<(u64, f32
     let length = f64::from(
         ((end[0] - start[0]).powi(2) + (end[1] - start[1]).powi(2) + (end[2] - start[2]).powi(2)).sqrt(),
     );
-    best.map(|(key, t, up)| (key, (t * length) as f32, up as f32))
+    best.map(|(key, t, up)| (key, (t * length) as f32, hit_height(key, up as f32)))
+}
+
+pub const FLAT_HIT_KEY: u64 = 1 << 55;
+const FLAT_HIT_UP: f32 = 0.7;
+
+pub(crate) fn hit_height(key: u64, up: f32) -> f32 {
+    if key & FLAT_HIT_KEY != 0 { FLAT_HIT_UP } else { up }
 }
 
 /// A bullet's path from map point `start` to `end`.
@@ -1324,6 +1331,14 @@ fn touches_wall_in(world: &VoxelWorld, origin: [f32; 3], mins: [f32; 3], maxs: [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_flat_hit_box_takes_every_bullet_in_the_upper_torso() {
+        for up in [0.0, 0.5, 0.95, 1.0] {
+            assert_eq!(mob_hitloc(hit_height(FLAT_HIT_KEY | 42, up)), 4);
+        }
+        assert_eq!(mob_hitloc(hit_height(42, 0.95)), 2, "other mobs keep their headshots");
+    }
 
     const FULL: [f32; 6] = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
     const FENCE: [f32; 6] = [0.375, 0.0, 0.375, 0.625, 1.5, 0.625];

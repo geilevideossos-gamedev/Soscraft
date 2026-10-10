@@ -35,6 +35,7 @@ pub enum ItemOnBlock {
     PrimeTnt,
     BoneMeal { face: &'static str },
     EnderEye,
+    EndCrystal,
 }
 
 pub struct ServerSim {
@@ -79,6 +80,20 @@ pub struct ServerSim {
     eyes: crate::eye_of_ender::Eyes,
     blasts: Vec<(Blast, BlastSource)>,
     block_explosion_drop_decay: bool,
+    crystals: crate::end_crystal::Crystals,
+    dragon_fight_level: bool,
+    dragons: crate::ender_dragon::Dragons,
+    fight_dragon: Option<[i32; 4]>,
+    alive_crystals: i32,
+    crystal_scan_ticks: u32,
+    end_random: minecraftoss_player::rng::LegacyRandom,
+    end_sounds: Vec<minecraftoss_entities::world::MobSound>,
+    end_hits: Vec<minecraftoss_entities::world::PlayerHit>,
+    dragons_killed: Vec<[i32; 4]>,
+    fight: FightLink,
+    dragon_drops: bool,
+    respawn: Option<crate::dragon_respawn::Respawn>,
+    fight_reports: Vec<FightReport>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -91,7 +106,9 @@ pub struct Blast {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum BlastSource {
     Nobody,
+    KeepBlocks,
     RespawnPoint { shield: Option<BlockPos> },
+    Player(u64),
 }
 
 /// What a player's hit or use on a mob did, for the client to present.
@@ -197,6 +214,8 @@ pub struct EntitySnapshot {
     pub clouds: Vec<crate::effect_cloud::CloudView>,
     pub tridents: Vec<crate::trident::TridentView>,
     pub eyes: crate::eye_of_ender::EyeSnapshot,
+    pub crystals: Vec<crate::end_crystal::CrystalView>,
+    pub dragons: Vec<crate::ender_dragon::DragonView>,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -232,6 +251,7 @@ impl ServerSim {
         }
         level.sea_level = worldgen.library.generation.sea_level;
         level.fast_lava = level.sky.as_ref().is_some_and(|sky| crate::environment::dimension_value(&sky.environment, "gameplay/fast_lava").as_bool());
+        let dragon_fight_level = minecraftoss_core::ident::Identifier::parse(dimension_type).ok().and_then(|id| level.registries().datapack.read_json("dimension_type", &id).ok()).is_some_and(|json| json.get("has_ender_dragon_fight").and_then(|flag| flag.as_bool()).unwrap_or(false));
         let mob_tables = crate::server_mobs::MobTables::new(&level, &states);
         // Natural spawning, when the entity catalog can create mobs.
         if level.registries().entities.is_some() {
@@ -281,6 +301,20 @@ impl ServerSim {
             eyes: crate::eye_of_ender::Eyes::default(),
             blasts: Vec::new(),
             block_explosion_drop_decay: true,
+            crystals: crate::end_crystal::Crystals::default(),
+            dragon_fight_level,
+            dragons: crate::ender_dragon::Dragons::default(),
+            fight_dragon: None,
+            alive_crystals: 0,
+            crystal_scan_ticks: 0,
+            end_random: minecraftoss_player::rng::LegacyRandom::new(0x00D2_A60E_5EED),
+            end_sounds: Vec::new(),
+            end_hits: Vec::new(),
+            dragons_killed: Vec::new(),
+            fight: FightLink::default(),
+            dragon_drops: true,
+            respawn: None,
+            fight_reports: Vec::new(),
         }
     }
 
@@ -495,6 +529,9 @@ impl ServerSim {
         if crate::server_mobs::load_level_entity(&mut self.level, &tag) {
             return;
         }
+        if self.crystals.add(&tag).is_some() || self.dragons.add(&tag).is_some() {
+            return;
+        }
         match crate::server_mobs::spawn_saved(&mut self.mobs, &tag) {
             Some(id) => {
                 self.mob_tags.insert(id, tag);
@@ -512,8 +549,12 @@ impl ServerSim {
         tags.extend(self.dormant.iter().filter(|(group, _)| inside(glam::DVec3::from_array(group[0].pos))).map(|(_, tag)| tag.clone()));
         tags.extend(crate::server_mobs::level_entity_tags(&self.level, inside));
         tags.extend(self.tridents.iter().filter(|t| t.alive && inside(t.position)).map(|t| t.to_tag(t.owner_uuid)));
+        tags.extend(self.crystals.tags_where(inside));
+        tags.extend(self.dragons.tags_where(inside));
         if unload {
             self.tridents.retain(|t| !inside(t.position));
+            self.crystals.remove_where(inside);
+            self.dragons.remove_where(inside);
             self.mobs.remove_where(inside);
             self.dormant.retain(|(group, _)| !inside(glam::DVec3::from_array(group[0].pos)));
             self.level.entities.retain(|e| !(inside(glam::DVec3::from_array(e.pos)) && (e.item_data().is_some() || e.orb_data().is_some())));
@@ -762,14 +803,15 @@ impl ServerSim {
             {
                 let Self { level, states, mobs, mob_tables, .. } = &mut *self;
                 let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
-                if source == BlastSource::Nobody {
-                    mobs.blast(&world, explosion, players);
-                } else {
-                    mobs.bad_respawn_point_blast(&world, explosion, players);
+                match source {
+                    BlastSource::Nobody | BlastSource::KeepBlocks => mobs.blast(&world, explosion, players),
+                    BlastSource::Player(player) => mobs.blast_by_player(&world, explosion, players, player),
+                    BlastSource::RespawnPoint { .. } => mobs.bad_respawn_point_blast(&world, explosion, players),
                 }
             }
             self.drop_death_loot();
             let interaction = if self.block_explosion_drop_decay { BlockInteraction::DestroyWithDecay } else { BlockInteraction::Destroy };
+            let interaction = if source == BlastSource::KeepBlocks { BlockInteraction::Keep } else { interaction };
             let exploded = Explosion { center: blast.center, radius: blast.power, fire: blast.fire, interaction, source: None };
             match source {
                 BlastSource::RespawnPoint { shield: Some((x, y, z)) } => self.level.explode_shielded(exploded, minecraftoss_core::BlockPos::new(x, y, z)),
@@ -1337,7 +1379,363 @@ impl ServerSim {
             ItemOnBlock::PrimeTnt => self.level.ignite_tnt(at),
             ItemOnBlock::BoneMeal { face } => self.bone_meal(pos, face),
             ItemOnBlock::EnderEye => self.level.place_ender_eye(at).is_some(),
+            ItemOnBlock::EndCrystal => {
+                let placed = self.place_end_crystal(pos);
+                if placed && self.dragon_fight_level {
+                    self.try_respawn();
+                }
+                placed
+            }
         }
+    }
+
+    pub fn place_end_crystal(&mut self, base: BlockPos) -> bool {
+        let at = |(x, y, z): BlockPos| minecraftoss_core::BlockPos::new(x, y, z);
+        let blocks = &self.level.registries().blocks;
+        let base_block = blocks.block_of(self.level.block(at(base)));
+        let takes = [crate::end_crystal::OBSIDIAN, crate::end_crystal::BEDROCK].iter().any(|name| blocks.block_by_name(name) == Some(base_block));
+        if !takes || !blocks.is_air(self.level.block(at((base.0, base.1 + 1, base.2)))) {
+            return false;
+        }
+        let (low, high) = crate::end_crystal::placement_box(base);
+        let overlaps = |position: glam::DVec3, half: f64, height: f64| {
+            position.x - half < high.x && position.x + half > low.x && position.y < high.y && position.y + height > low.y && position.z - half < high.z && position.z + half > low.z
+        };
+        let occupied = self.crystals.touches((low, high))
+            || self.mobs.census().iter().any(|mob| overlaps(mob.position, f64::from(mob.width / 2.0), f64::from(mob.height)))
+            || self.level.players.iter().any(|feet| overlaps(glam::DVec3::from_array(*feet), 0.3, 1.8))
+            || self.level.entities.iter().any(|entity| overlaps(glam::DVec3::from_array(entity.pos), 0.125, 0.25));
+        if occupied {
+            return false;
+        }
+        let tag = self.crystals.fresh_tag(crate::end_crystal::placed_at(base), false);
+        self.crystals.add(&tag).is_some()
+    }
+
+    pub fn tick_end(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
+        let blasts: Vec<(glam::DVec3, f32)> = self.explosions.iter().map(|blast| (blast.position, blast.radius)).collect();
+        for (center, radius) in blasts {
+            for destroyed in self.crystals.blast(center, radius, None) {
+                self.crystal_destroyed(destroyed);
+            }
+            let mut events = crate::ender_dragon::DragonEvents::default();
+            for dragon in &mut self.dragons.list {
+                dragon.blast(center, radius, None, &mut events);
+            }
+            self.end_events(events);
+        }
+        for pos in self.crystals.tick() {
+            if self.dragon_fight_level {
+                self.level.light_fire(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2));
+            }
+        }
+        if self.dragon_fight_level {
+            self.crystal_scan_ticks += 1;
+            if self.crystal_scan_ticks >= 100 {
+                self.update_crystal_count();
+            }
+        }
+        self.tick_dragons(players);
+        self.tick_respawn(players);
+    }
+
+    fn update_crystal_count(&mut self) {
+        self.crystal_scan_ticks = 0;
+        let spikes = minecraftoss_generator::feature::kinds::the_end::spikes_for_seed(self.worldgen.terrain.seed);
+        self.alive_crystals = spikes.iter().map(|spike| self.crystals.on_spike(spike.center_x, spike.center_z, spike.radius) as i32).sum();
+    }
+
+    fn tick_dragons(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
+        use minecraftoss_generator::feature::World as _;
+        let bodies: Vec<crate::ender_dragon::PlayerBody> = players
+            .iter()
+            .map(|player| crate::ender_dragon::PlayerBody {
+                id: player.id,
+                feet: player.position,
+                height: match player.eye_height {
+                    e if e >= 1.5 => 1.8,
+                    e if e >= 1.0 => 1.5,
+                    _ => 0.6,
+                },
+                attackable: player.alive && !player.spectator && player.attackable,
+            })
+            .collect();
+        let Self { level, dragons, fight_dragon, alive_crystals, end_sounds, end_hits, dragons_killed, crystals: self_crystals, fight, dragon_drops, .. } = self;
+        let level = &*level;
+        let height = |x: i32, z: i32| level.height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlockingNoLeaves, x, z);
+        let crystals: Vec<(u64, glam::DVec3)> = self_crystals.list.iter().map(|crystal| (crystal.id, crystal.position)).collect();
+        let mut experience = Vec::new();
+        for dragon in &mut dragons.list {
+            let origin = dragon.fight_origin;
+            let top = || level.height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlocking, origin.0, origin.2);
+            let ours = *fight_dragon == Some(dragon.uuid);
+            let death_experience = crate::ender_dragon::death_experience(ours, fight.previously_killed, *dragon_drops);
+            let env = crate::ender_dragon::DragonEnv { height: &height, podium_top: &top, alive_crystals: ours.then_some(*alive_crystals), players: &bodies, crystals: &crystals, death_experience };
+            let events = dragon.tick(&env);
+            end_sounds.extend(events.sounds.into_iter().map(|(event, position, volume, pitch)| minecraftoss_entities::world::MobSound { event: event.to_owned(), position, volume, pitch, category: "hostile" }));
+            end_hits.extend(events.player_hits.into_iter().map(|(player_id, damage, attacker)| minecraftoss_entities::world::PlayerHit { player_id, damage, kind: minecraftoss_entities::world::PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0 }, source: Some(dragon.id) }));
+            experience.extend(events.experience);
+        }
+        dragons_killed.extend(dragons.list.iter().filter(|dragon| dragon.removed).map(|dragon| dragon.uuid));
+        dragons.list.retain(|dragon| !dragon.removed);
+        for (position, amount) in experience {
+            self.level.award_experience(position.to_array(), amount);
+        }
+    }
+
+    fn end_events(&mut self, events: crate::ender_dragon::DragonEvents) {
+        self.end_sounds.extend(events.sounds.into_iter().map(|(event, position, volume, pitch)| minecraftoss_entities::world::MobSound { event: event.to_owned(), position, volume, pitch, category: "hostile" }));
+    }
+
+    pub fn take_end_sounds(&mut self) -> Vec<minecraftoss_entities::world::MobSound> {
+        std::mem::take(&mut self.end_sounds)
+    }
+
+    pub fn take_dragons_killed(&mut self) -> Vec<[i32; 4]> {
+        std::mem::take(&mut self.dragons_killed)
+    }
+
+    pub fn take_end_hits(&mut self) -> Vec<minecraftoss_entities::world::PlayerHit> {
+        std::mem::take(&mut self.end_hits)
+    }
+
+    pub fn find_or_create_dragon(&mut self, origin: BlockPos) -> [i32; 4] {
+        if let Some(dragon) = self.dragons.list.first() {
+            let uuid = dragon.uuid;
+            self.fight_dragon = Some(uuid);
+            return uuid;
+        }
+        self.create_new_dragon(origin)
+    }
+
+    fn create_new_dragon(&mut self, origin: BlockPos) -> [i32; 4] {
+        let position = glam::DVec3::new(f64::from(origin.0), f64::from(128 + origin.1), f64::from(origin.2));
+        let yaw = self.end_random.next_float() * 360.0;
+        let tag = crate::ender_dragon::Dragons::fresh_tag(position, yaw, &mut self.end_random);
+        let id = self.dragons.add(&tag);
+        let dragon = self.dragons.list.iter_mut().find(|dragon| Some(dragon.id) == id);
+        let uuid = dragon.map_or([0; 4], |dragon| {
+            dragon.fight_origin = origin;
+            dragon.set_phase(crate::ender_dragon::Phase::HoldingPattern);
+            dragon.uuid
+        });
+        self.fight_dragon = Some(uuid);
+        uuid
+    }
+
+    pub fn link_fight(&mut self, link: FightLink) {
+        self.fight_dragon = link.dragon;
+        self.fight = link;
+    }
+
+    pub fn take_fight_reports(&mut self) -> Vec<FightReport> {
+        std::mem::take(&mut self.fight_reports)
+    }
+
+    pub fn resume_respawn(&mut self, respawn: crate::dragon_respawn::Respawn) {
+        self.respawn = Some(respawn);
+    }
+
+    fn try_respawn(&mut self) {
+        if !self.fight.dragon_killed || self.respawn.is_some() {
+            return;
+        }
+        let origin = minecraftoss_core::BlockPos::new(0, 0, 0);
+        let location = match self.fight.exit_portal {
+            Some((x, y, z)) => minecraftoss_core::BlockPos::new(x, y, z),
+            None => match self.level.find_exit_portal(origin) {
+                Some(found) => found,
+                None => self.level.spawn_exit_portal(origin, None, true),
+            },
+        };
+        let mut crystals = Vec::new();
+        for cell in crate::dragon_respawn::crystal_cells((location.x, location.y, location.z)) {
+            let found = self.crystals.in_cell(cell);
+            if found.is_empty() {
+                return;
+            }
+            crystals.extend(found);
+        }
+        self.level.dismantle_exit_portal(origin);
+        let location = self.level.spawn_exit_portal(origin, Some(location), false);
+        let exit_portal = (location.x, location.y, location.z);
+        self.fight.exit_portal = Some(exit_portal);
+        let respawn = crate::dragon_respawn::Respawn::new(crystals);
+        self.fight_reports.push(FightReport::Respawning { stage: respawn.stage.name(), crystals: respawn.crystals.clone(), exit_portal });
+        self.respawn = Some(respawn);
+    }
+
+    fn abort_respawn(&mut self) {
+        self.respawn = None;
+        self.reset_spike_crystals();
+        let origin = minecraftoss_core::BlockPos::new(0, 0, 0);
+        let at = |(x, y, z): BlockPos| minecraftoss_core::BlockPos::new(x, y, z);
+        self.level.spawn_exit_portal(origin, self.fight.exit_portal.map(at), true);
+        self.fight_reports.push(FightReport::Aborted);
+    }
+
+    fn reset_spike_crystals(&mut self) {
+        for spike in minecraftoss_generator::feature::kinds::the_end::spikes_for_seed(self.worldgen.terrain.seed) {
+            self.crystals.reset_on_spike(spike.center_x, spike.center_z, spike.radius);
+        }
+    }
+
+    fn tick_respawn(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
+        use crate::dragon_respawn::Action;
+        if !self.fight.ticking {
+            return;
+        }
+        let Some(mut respawn) = self.respawn.take() else {
+            return;
+        };
+        if self.crystals.by_uuid(&respawn.crystals).is_empty() {
+            self.respawn = Some(respawn);
+            self.abort_respawn();
+            return;
+        }
+        let spikes = minecraftoss_generator::feature::kinds::the_end::spikes_for_seed(self.worldgen.terrain.seed);
+        let before = respawn.stage;
+        let actions = respawn.tick(spikes.len());
+        for action in actions {
+            match action {
+                Action::Beam(target) => {
+                    for crystal in self.crystals.by_uuid(&respawn.crystals) {
+                        crystal.beam_target = target;
+                    }
+                }
+                Action::Growl => {
+                    let pitch = 0.8 + self.end_random.next_float() * 0.3;
+                    let (x, y, z) = crate::dragon_respawn::SUMMON_TARGET;
+                    let at = glam::DVec3::new(f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5);
+                    self.end_sounds.push(minecraftoss_entities::world::MobSound { event: crate::ender_dragon::GROWL_SOUND.to_owned(), position: at, volume: crate::dragon_respawn::GROWL_VOLUME, pitch, category: "hostile" });
+                }
+                Action::SpikeBeam(index) => {
+                    let spike = spikes[index];
+                    for crystal in self.crystals.by_uuid(&respawn.crystals) {
+                        crystal.beam_target = Some((spike.center_x, spike.height + 1, spike.center_z));
+                    }
+                }
+                Action::RebuildSpike(index) => self.rebuild_spike(spikes[index], players),
+                Action::Summon => {
+                    self.fight.dragon_killed = false;
+                    let uuid = self.create_new_dragon((0, 0, 0));
+                    self.reset_spike_crystals();
+                    for position in self.crystals.discard(&respawn.crystals) {
+                        let blast = Blast { center: position.to_array(), power: crate::dragon_respawn::CRYSTAL_BLAST, fire: false };
+                        self.blasts.push((blast, BlastSource::KeepBlocks));
+                    }
+                    self.fight_reports.push(FightReport::Respawned(uuid));
+                    return;
+                }
+            }
+        }
+        if respawn.stage != before {
+            self.fight_reports.push(FightReport::Respawning { stage: respawn.stage.name(), crystals: respawn.crystals.clone(), exit_portal: self.fight.exit_portal.unwrap_or((0, 0, 0)) });
+        }
+        self.respawn = Some(respawn);
+    }
+
+    fn rebuild_spike(&mut self, spike: minecraftoss_generator::feature::kinds::the_end::Spike, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
+        let reach = crate::dragon_respawn::SPIKE_CLEARANCE;
+        let blocks = &self.level.registries().blocks;
+        let Some(air) = blocks.block_by_name("minecraft:air").map(|block| blocks.block(block).default_state()) else {
+            return;
+        };
+        for x in spike.center_x - reach..=spike.center_x + reach {
+            for y in spike.height - reach..=spike.height + reach {
+                for z in spike.center_z - reach..=spike.center_z + reach {
+                    let pos = minecraftoss_core::BlockPos::new(x, y, z);
+                    if !self.level.registries().blocks.is_air(self.level.block(pos)) {
+                        self.level.set_block_and_update(pos, air);
+                    }
+                }
+            }
+        }
+        let center = [f64::from(spike.center_x) + 0.5, f64::from(spike.height), f64::from(spike.center_z) + 0.5];
+        self.blasts.push((Blast { center, power: crate::dragon_respawn::PILLAR_BLAST, fire: false }, BlastSource::Nobody));
+        self.explode_blasts(players);
+        for destroyed in self.crystals.blast(glam::DVec3::from_array(center), crate::dragon_respawn::PILLAR_BLAST, None) {
+            self.crystal_destroyed(destroyed);
+        }
+        let spawned = std::mem::take(&mut self.level.spawned);
+        self.level.place_configured_feature(END_SPIKE, minecraftoss_core::BlockPos::new(spike.center_x, crate::dragon_respawn::SPIKE_ORIGIN_Y, spike.center_z));
+        let placed = std::mem::replace(&mut self.level.spawned, spawned);
+        let (tx, ty, tz) = crate::dragon_respawn::SUMMON_TARGET;
+        for mut tag in placed {
+            if let minecraftoss_core::nbt::Tag::Compound(map) = &mut tag {
+                if map.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) == Some(crate::end_crystal::END_CRYSTAL) {
+                    map.insert("Invulnerable".to_owned(), minecraftoss_core::nbt::Tag::Byte(1));
+                    map.insert("beam_target".to_owned(), minecraftoss_core::nbt::Tag::IntArray(vec![tx, ty, tz]));
+                }
+            }
+            self.add_saved_entity(tag);
+        }
+    }
+
+    pub fn dragon_killed(&mut self, origin: BlockPos, exit_portal_location: Option<BlockPos>, gateway: Option<i32>, egg: bool) -> BlockPos {
+        use minecraftoss_generator::feature::World as _;
+        let at = |(x, y, z): BlockPos| minecraftoss_core::BlockPos::new(x, y, z);
+        let portal = self.level.spawn_exit_portal(at(origin), exit_portal_location.map(at), true);
+        if let Some(pos) = gateway.map(end_gateway_position) {
+            let pitch = (1.0 + (self.end_random.next_float() - self.end_random.next_float()) * 0.2) * 0.7;
+            let center = glam::DVec3::new(f64::from(pos.0) + 0.5, f64::from(pos.1) + 0.5, f64::from(pos.2) + 0.5);
+            self.end_sounds.push(minecraftoss_entities::world::MobSound { event: END_GATEWAY_SPAWN_SOUND.to_owned(), position: center, volume: 10.0, pitch, category: "blocks" });
+            self.level.place_configured_feature(END_GATEWAY_DELAYED, at(pos));
+        }
+        if egg {
+            let top = self.level.height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlocking, origin.0, origin.2);
+            let blocks = &self.level.registries().blocks;
+            if let Some(state) = blocks.block_by_name(DRAGON_EGG).map(|block| blocks.block(block).default_state()) {
+                self.level.set_block_and_update(minecraftoss_core::BlockPos::new(origin.0, top, origin.2), state);
+            }
+        }
+        (portal.x, portal.y, portal.z)
+    }
+
+    pub fn dragon_views(&self) -> Vec<crate::ender_dragon::DragonView> {
+        self.dragons.views()
+    }
+
+    pub fn end_hit(&mut self, target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage) {
+        match target {
+            crate::end_crystal::EndTarget::Crystal(id) => {
+                if let Some(destroyed) = self.crystals.hurt(id, &damage) {
+                    self.crystal_destroyed(destroyed);
+                }
+            }
+            crate::end_crystal::EndTarget::DragonPart { id, part } => {
+                let mut events = crate::ender_dragon::DragonEvents::default();
+                if let Some(dragon) = self.dragons.list.iter_mut().find(|dragon| dragon.id == id && part < 8) {
+                    dragon.hurt_part(part, &damage, &mut events);
+                }
+                self.end_events(events);
+            }
+        }
+    }
+
+    fn crystal_destroyed(&mut self, destroyed: crate::end_crystal::Destroyed) {
+        if destroyed.explodes {
+            let blast = Blast { center: destroyed.position.to_array(), power: crate::end_crystal::EXPLOSION_POWER, fire: false };
+            let source = destroyed.player.map_or(BlastSource::Nobody, BlastSource::Player);
+            self.blasts.push((blast, source));
+        }
+        if !self.dragon_fight_level {
+            return;
+        }
+        if self.respawn.as_ref().is_some_and(|respawn| destroyed.uuid.is_some_and(|uuid| respawn.crystals.contains(&uuid))) {
+            self.abort_respawn();
+            return;
+        }
+        self.update_crystal_count();
+        let mut events = crate::ender_dragon::DragonEvents::default();
+        if let Some(dragon) = self.dragons.list.iter_mut().find(|dragon| Some(dragon.uuid) == self.fight_dragon) {
+            dragon.crystal_destroyed(destroyed.id, destroyed.player, &mut events);
+        }
+        self.end_events(events);
+    }
+
+    pub fn crystal_views(&self) -> Vec<crate::end_crystal::CrystalView> {
+        self.crystals.views()
     }
 
     pub fn create_end_platform(&mut self, origin: BlockPos) {
@@ -1372,12 +1770,15 @@ impl ServerSim {
                 None => location = Some(self.level.spawn_exit_portal(origin, location, false)),
             }
         }
-        let mut dragon_uuid = self.dormant_uuids(ENDER_DRAGON).first().copied();
+        let mut dragon_uuid = self.dragons.list.first().map(|dragon| dragon.uuid);
         let dragon_seen = dragon_uuid.is_some();
         let mut dragon_killed = !dragon_seen;
         if let Some(uuid) = dragon_uuid.filter(|_| !previously_killed) {
-            self.discard_dormant(uuid);
+            self.dragons.list.retain(|dragon| dragon.uuid != uuid);
             dragon_uuid = None;
+        }
+        if dragon_uuid.is_some() {
+            self.fight_dragon = dragon_uuid;
         }
         if !previously_killed {
             dragon_killed = false;
@@ -1473,6 +1874,7 @@ impl ServerSim {
         level.set_advance_weather(rules.bool("advance_weather"));
         self.mobs.set_mob_griefing(rules.bool("mob_griefing"));
         self.mobs.set_mob_drops(rules.bool("mob_drops"));
+        self.dragon_drops = rules.bool("mob_drops");
         if let Some(natural) = &mut self.level.natural_spawning {
             natural.spawner_blocks_work = rules.bool("spawner_blocks_work");
         }
@@ -1679,11 +2081,41 @@ pub enum Command {
     GameRules(Box<crate::game_rules::GameRules>),
     PlayerUuid { player: u64, uuid: u128 },
     Job(Job),
+    EndHit { target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage },
 }
 
 pub type Job = Box<dyn FnOnce(&mut ServerSim) -> Box<dyn std::any::Any + Send> + Send>;
 
 pub const ENDER_DRAGON: &str = "minecraft:ender_dragon";
+
+pub const DRAGON_EGG: &str = "minecraft:dragon_egg";
+pub const END_GATEWAY_DELAYED: &str = "minecraft:end_gateway_delayed";
+pub const END_GATEWAY_SPAWN_SOUND: &str = "minecraft:block.end_gateway.spawn";
+pub const GATEWAY_RING: f64 = 96.0;
+pub const GATEWAY_Y: i32 = 75;
+
+pub fn end_gateway_position(index: i32) -> BlockPos {
+    let angle = 2.0 * (-std::f64::consts::PI + 0.157_079_632_679_489_66 * f64::from(index));
+    ((GATEWAY_RING * angle.cos()).floor() as i32, GATEWAY_Y, (GATEWAY_RING * angle.sin()).floor() as i32)
+}
+
+pub const END_SPIKE: &str = "minecraft:end_spike";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FightLink {
+    pub dragon: Option<[i32; 4]>,
+    pub previously_killed: bool,
+    pub dragon_killed: bool,
+    pub exit_portal: Option<BlockPos>,
+    pub ticking: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FightReport {
+    Respawning { stage: &'static str, crystals: Vec<[i32; 4]>, exit_portal: BlockPos },
+    Aborted,
+    Respawned([i32; 4]),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DragonFightScan {
@@ -1814,6 +2246,8 @@ pub struct Output {
     /// The last tick's phases, light solves and total milliseconds.
     pub tick_phases: Option<([f64; 6], (u32, f64), f64)>,
     pub jobs: Vec<Box<dyn std::any::Any + Send>>,
+    pub dragons_killed: Vec<[i32; 4]>,
+    pub fight_reports: Vec<FightReport>,
 }
 
 /// The integrated server on its own thread, as vanilla runs it: the client
@@ -2025,6 +2459,10 @@ impl ServerHandle {
         self.send(Command::ThrowEye { owner, throw: Box::new(throw) });
     }
 
+    pub fn end_hit(&mut self, target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage) {
+        self.send(Command::EndHit { target, damage });
+    }
+
     pub fn save(&mut self) {
         self.send(Command::Save);
     }
@@ -2138,6 +2576,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::WeatherData(data) => sim.set_weather_data(&data),
                 Command::GameRules(rules) => sim.apply_game_rules(&rules),
                 Command::Job(job) => out.jobs.push(job(&mut sim)),
+                Command::EndHit { target, damage } => sim.end_hit(target, damage),
                 Command::Save => {
                     sim.ticks_since_save = 0;
                     sim.save_all_entities();
@@ -2182,6 +2621,11 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.tick_thrown(&bodies);
                     sim.tick_tridents(&bodies);
                     sim.tick_eyes();
+                    sim.tick_end(&input.mob_players);
+                    out.player_hits.extend(sim.take_end_hits());
+                    out.mob_sounds.extend(sim.take_end_sounds());
+                    out.dragons_killed.extend(sim.take_dragons_killed());
+                    out.fight_reports.extend(sim.take_fight_reports());
                     out.pearl_teleports.extend(sim.take_pearl_teleports());
                     out.thrown_hits.extend(sim.take_thrown_hits());
                     sim.spawn_trade_experience();
@@ -2223,7 +2667,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     }
                     // After the items, one experience orb.
                     out.orbs_taken.extend(sim.take_experience(pickup_feet));
-                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot() });
+                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views() });
                     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
                     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), started.elapsed().as_secs_f64() * 1000.0));
                 }
@@ -5150,21 +5594,23 @@ mod tests {
         let again = server.scan_dragon_fight((0, 0, 0), None);
         assert_eq!(again.exit_portal_location, Some(at), "the podium is found, not built twice");
         assert!(server.take_changes().is_empty());
-        server.summon(ENDER_DRAGON, [0.5, 128.0, 0.5], None, 0.0).expect("a dragon waits dormant");
-        assert_eq!(server.dormant_uuids(ENDER_DRAGON).len(), 1);
+        server.summon(ENDER_DRAGON, [0.5, 128.0, 0.5], None, 0.0).expect("a dragon is summoned");
+        assert_eq!(server.dragons.list.len(), 1);
+        assert_eq!(server.dormant_count(), 0, "the dragon is live, not dormant");
         let discarded = server.scan_dragon_fight((0, 0, 0), Some(at));
         assert_eq!((discarded.dragon_killed, discarded.dragon_seen, discarded.dragon_uuid), (false, true, None));
-        assert!(server.dormant_uuids(ENDER_DRAGON).is_empty(), "a dragon without an exit portal goes");
+        assert!(server.dragons.list.is_empty(), "a dragon without an exit portal goes");
         assert!(server.level.place_configured_feature("minecraft:end_podium_active", minecraftoss_core::BlockPos::new(0, at.1, 0)));
         assert_eq!(block(&server, (1, at.1, 0)), "minecraft:end_portal");
         assert!(server.level.has_active_exit_portal());
         let killed = server.scan_dragon_fight((0, 0, 0), Some(at));
         assert_eq!(killed, DragonFightScan { previously_killed: true, dragon_killed: true, dragon_seen: false, dragon_uuid: None, exit_portal_location: Some(at) });
-        server.summon(ENDER_DRAGON, [0.5, 128.0, 0.5], None, 0.0).expect("a dragon waits dormant");
+        server.summon(ENDER_DRAGON, [0.5, 128.0, 0.5], None, 0.0).expect("a dragon is summoned");
         let alive = server.scan_dragon_fight((0, 0, 0), Some(at));
         assert_eq!((alive.previously_killed, alive.dragon_killed), (true, false));
-        assert_eq!(alive.dragon_uuid, server.dormant_uuids(ENDER_DRAGON).first().copied());
+        assert_eq!(alive.dragon_uuid, server.dragons.list.first().map(|dragon| dragon.uuid));
         assert!(alive.dragon_uuid.is_some());
+        assert_eq!(server.fight_dragon, alive.dragon_uuid, "the kept dragon is the fight's");
     }
 
     #[test]
@@ -6406,5 +6852,434 @@ mod tests {
         }
         assert_eq!(loaded.blazes().len(), 1);
         assert_eq!(loaded.fireballs()[0].fireball.kind, FireballKind::Small);
+    }
+
+    fn end_player(position: [f64; 3]) -> minecraftoss_entities::tempt::PlayerCandidate {
+        minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: glam::DVec3::from_array(position),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        }
+    }
+
+    fn block_name(server: &ServerSim, pos: BlockPos) -> String {
+        let state = server.level.block(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2));
+        let blocks = &server.level.registries().blocks;
+        blocks.block(blocks.block_of(state)).name.as_str().to_owned()
+    }
+
+    #[test]
+    fn end_crystals_burn_on_the_spikes_and_explode_unless_a_blast_destroyed_them() {
+        use crate::end_crystal::{EndDamage, EndTarget};
+        let Some(mut server) = end_world((-3..=2).flat_map(|x| (-3..=2).map(move |z| (x, z)))) else { return };
+        assert_eq!(server.crystals.list.len(), 10, "one crystal on each spike");
+        assert_eq!(server.dormant_count(), 0, "the crystals are live, not dormant");
+        assert!(server.dragon_fight_level);
+        let first = server.crystals.list[0].clone();
+        let below = first.block_position();
+        assert_eq!(block_name(&server, below), "minecraft:fire");
+        assert_eq!(block_name(&server, (below.0, below.1 - 1, below.2)), "minecraft:bedrock");
+        server.player_edit_block(below, None, PlayerEdit::Break);
+        assert_eq!(block_name(&server, below), "minecraft:air");
+        server.tick_end(&[]);
+        assert_eq!(block_name(&server, below), "minecraft:fire", "a crystal in the End keeps its fire burning");
+        assert_eq!(server.crystals.list[0].time, first.time + 1);
+        let near = [first.position.x + 4.0, first.position.y, first.position.z];
+        let base = (near[0].floor() as i32, near[1] as i32 - 1, near[2].floor() as i32);
+        server.player_edit_block(base, Some(&Block::new("minecraft:obsidian")), PlayerEdit::Place);
+        assert!(server.place_end_crystal(base), "a crystal goes on obsidian");
+        assert!(!server.place_end_crystal(base), "not twice in one place");
+        let placed = server.crystals.list.last().unwrap().clone();
+        assert!(!placed.show_bottom);
+        assert_eq!(placed.position, crate::end_crystal::placed_at(base));
+        let spike_top = (below.0, below.1 - 1, below.2);
+        assert!(!server.place_end_crystal(spike_top), "a crystal is in the way");
+        server.player_edit_block((base.0, base.1, base.2 + 6), Some(&Block::new("minecraft:end_stone")), PlayerEdit::Place);
+        assert!(!server.place_end_crystal((base.0, base.1, base.2 + 6)), "end stone takes no crystal");
+        server.end_hit(EndTarget::Crystal(first.id), EndDamage::attack(1.0, 0));
+        assert!(server.crystals.list.iter().all(|crystal| crystal.id != first.id));
+        assert_eq!(server.blasts.len(), 1);
+        assert_eq!(server.blasts[0].0, Blast { center: first.position.to_array(), power: 6.0, fire: false });
+        assert_eq!(server.blasts[0].1, BlastSource::Player(0));
+        let player = end_player([first.position.x + 3.0, first.position.y, first.position.z + 3.0]);
+        server.set_players(&[player.position.to_array()], 2);
+        server.tick_mobs(&[player], false);
+        let hits = server.mobs.take_player_hits();
+        assert_eq!(hits.len(), 1, "the blast reaches the player");
+        assert!(matches!(hits[0].kind, minecraftoss_entities::world::PlayerHitKind::Explosion { .. }));
+        assert!(hits[0].damage > 20.0, "{}", hits[0].damage);
+        server.tick_end(&[]);
+        assert!(server.crystals.list.iter().all(|crystal| crystal.id != placed.id), "the blast destroyed the crystal beside it");
+        assert!(server.blasts.is_empty(), "a crystal destroyed by a blast does not explode");
+        assert_eq!(server.crystals.list.len(), 9);
+        let second = server.crystals.list[0].clone();
+        server.end_hit(EndTarget::Crystal(second.id), EndDamage::explosion(5.0, Some(0)));
+        assert_eq!(server.crystals.list.len(), 8);
+        assert!(server.blasts.is_empty(), "an MW2 grenade destroys it without a blast");
+        let third = server.crystals.list[0].clone();
+        let chunk = ChunkPos::new((third.position.x.floor() as i32) >> 4, (third.position.z.floor() as i32) >> 4);
+        let tags = server.crystals.tags_where(|p| crate::server_mobs::in_chunk(p, chunk));
+        assert!(!tags.is_empty());
+        let mut again = crate::end_crystal::Crystals::default();
+        for tag in &tags {
+            again.add(tag).expect("crystals load back");
+        }
+        assert!(again.list.iter().any(|crystal| crystal.position == third.position));
+    }
+
+    #[test]
+    fn the_fight_dragon_spawns_over_the_island_and_circles_it_while_the_arena_is_loaded() {
+        let Some(mut server) = end_world((-5..=4).flat_map(|x| (-5..=4).map(move |z| (x, z)))) else { return };
+        let player = end_player([100.5, 49.0, 0.5]);
+        server.set_players(&[player.position.to_array()], 2);
+        let uuid = server.find_or_create_dragon((0, 0, 0));
+        assert_eq!(server.find_or_create_dragon((0, 0, 0)), uuid, "the dragon there is reused");
+        assert_eq!(server.dragons.list.len(), 1);
+        let dragon = &server.dragons.list[0];
+        assert_eq!(dragon.position, glam::DVec3::new(0.0, 128.0, 0.0));
+        assert_eq!(dragon.phase, crate::ender_dragon::Phase::HoldingPattern);
+        assert_eq!(server.fight_dragon, Some(uuid));
+        let mut lowest = f64::MAX;
+        let mut targets = std::collections::HashSet::new();
+        for _ in 0..1200 {
+            server.tick_end(&[player]);
+            let dragon = &server.dragons.list[0];
+            lowest = lowest.min(dragon.position.y);
+            if let Some(target) = dragon.holding.target {
+                targets.insert((target.x as i32, target.z as i32));
+            }
+        }
+        assert!(targets.len() >= 3, "{targets:?}");
+        assert!(lowest > 60.0, "{lowest}");
+        assert_eq!(server.alive_crystals, 10, "the crystals on the spikes were counted");
+        let sounds = server.take_end_sounds();
+        assert!(sounds.iter().all(|sound| sound.event == crate::ender_dragon::AMBIENT_SOUND && sound.volume == 5.0));
+        let views = server.dragon_views();
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].uuid, uuid);
+        assert_eq!(views[0].history.len(), crate::ender_dragon::HISTORY_SENT);
+        let dragon_chunk = |server: &ServerSim| {
+            let p = server.dragons.list[0].position;
+            ChunkPos::new((p.x.floor() as i32) >> 4, (p.z.floor() as i32) >> 4)
+        };
+        let chunk = dragon_chunk(&server);
+        let tags = server.dragons.tags_where(|p| crate::server_mobs::in_chunk(p, chunk));
+        assert_eq!(tags.len(), 1);
+        let mut loaded = crate::ender_dragon::Dragons::default();
+        loaded.add(&tags[0]).expect("the dragon loads back");
+        assert_eq!(loaded.list[0].uuid, uuid);
+        assert_eq!(loaded.list[0].phase, crate::ender_dragon::Phase::HoldingPattern);
+    }
+
+    #[test]
+    fn mw2_shots_and_blasts_hurt_the_dragon_through_its_parts_until_it_dies_and_is_reported() {
+        use crate::end_crystal::{EndDamage, EndTarget};
+        let Some(mut server) = end_world((-5..=4).flat_map(|x| (-5..=4).map(move |z| (x, z)))) else { return };
+        let uuid = server.find_or_create_dragon((0, 0, 0));
+        server.tick_end(&[]);
+        let id = server.dragons.list[0].id;
+        server.end_hit(EndTarget::DragonPart { id, part: crate::ender_dragon::BODY }, EndDamage::attack(20.0, 0));
+        assert_eq!(server.dragons.list[0].health, 194.0, "the body takes a quarter and one");
+        let sounds = server.take_end_sounds();
+        assert!(sounds.iter().any(|sound| sound.event == crate::ender_dragon::HURT_SOUND));
+        for _ in 0..20 {
+            server.tick_end(&[]);
+        }
+        server.end_hit(EndTarget::DragonPart { id, part: crate::ender_dragon::HEAD }, EndDamage::attack(20.0, 0));
+        assert_eq!(server.dragons.list[0].health, 174.0, "the head takes it all");
+        for _ in 0..20 {
+            server.tick_end(&[]);
+        }
+        let head = server.dragons.list[0].parts[crate::ender_dragon::HEAD];
+        server.explosions.push(minecraftoss_entities::creeper::CreeperExplosion { position: head, radius: 3.0, powered: false });
+        server.tick_end(&[]);
+        server.explosions.clear();
+        assert!(server.dragons.list[0].health < 174.0 - 40.0, "a blast at its head: {}", server.dragons.list[0].health);
+        for _ in 0..20 {
+            server.tick_end(&[]);
+        }
+        server.end_hit(EndTarget::DragonPart { id, part: crate::ender_dragon::HEAD }, EndDamage::attack(500.0, 0));
+        assert_eq!(server.dragons.list[0].phase, crate::ender_dragon::Phase::Dying);
+        for _ in 0..600 {
+            server.tick_end(&[]);
+            if server.dragons.list.is_empty() {
+                break;
+            }
+        }
+        assert!(server.dragons.list.is_empty(), "it rose and went");
+        assert_eq!(server.take_dragons_killed(), vec![uuid]);
+    }
+
+    #[test]
+    fn the_twenty_end_gateways_ring_the_island_96_blocks_out_like_vanilla() {
+        let expected = [
+            (96, 0), (91, 29), (77, 56), (56, 77), (29, 91), (-1, 96), (-30, 91), (-57, 77), (-78, 56), (-92, 29),
+            (-96, -1), (-92, -30), (-78, -57), (-57, -78), (-30, -92), (0, -96), (29, -92), (56, -78), (77, -57), (91, -30),
+        ];
+        for (index, (x, z)) in expected.into_iter().enumerate() {
+            assert_eq!(end_gateway_position(index as i32), (x, 75, z), "gateway {index}");
+        }
+    }
+
+    #[test]
+    fn a_kill_opens_the_exit_portal_lays_the_egg_on_the_pillar_and_spawns_a_gateway() {
+        let Some(mut server) = end_world((-7..=6).flat_map(|x| (-7..=6).map(move |z| (x, z)))) else { return };
+        let block = |server: &ServerSim, pos: BlockPos| {
+            let state = server.level.block(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2));
+            let blocks = &server.level.registries().blocks;
+            blocks.block(blocks.block_of(state)).name.as_str().to_owned()
+        };
+        let at = server.scan_dragon_fight((0, 0, 0), None).exit_portal_location.expect("the inactive podium");
+        assert_eq!(block(&server, (1, at.1, 0)), "minecraft:air");
+        server.take_end_sounds();
+        let opened = server.dragon_killed((0, 0, 0), Some(at), Some(6), true);
+        assert_eq!(opened, at);
+        for (x, z) in [(1, 0), (-2, 1), (1, 1), (0, 2)] {
+            assert_eq!(block(&server, (x, at.1, z)), "minecraft:end_portal", "portal {x} {z}");
+        }
+        assert_eq!(block(&server, (0, at.1 + 4, 0)), DRAGON_EGG, "the egg sits on the pillar");
+        let gateway = end_gateway_position(6);
+        assert_eq!(gateway, (-30, 75, 91));
+        assert_eq!(block(&server, gateway), "minecraft:end_gateway");
+        let sounds = server.take_end_sounds();
+        assert_eq!(sounds.len(), 1);
+        assert_eq!((sounds[0].event.as_str(), sounds[0].volume), (END_GATEWAY_SPAWN_SOUND, 10.0));
+        assert!(server.level.has_active_exit_portal());
+        server.dragon_killed((0, 0, 0), Some(at), Some(0), false);
+        assert_eq!(block(&server, (0, at.1 + 4, 0)), DRAGON_EGG, "the first egg stays");
+        assert_eq!(block(&server, (0, at.1 + 5, 0)), "minecraft:air", "and a later kill lays none");
+        assert_eq!(block(&server, end_gateway_position(0)), "minecraft:end_gateway");
+        assert!(!server.level.unsupported.iter().any(|note| note.starts_with("feature ")), "{:?}", server.level.unsupported);
+    }
+
+    fn respawn_world() -> Option<(ServerSim, BlockPos)> {
+        let mut server = end_world((-4..=3).flat_map(|x| (-4..=3).map(move |z| (x, z))))?;
+        let at = server.scan_dragon_fight((0, 0, 0), None).exit_portal_location?;
+        server.dragon_killed((0, 0, 0), Some(at), None, true);
+        server.link_fight(FightLink { dragon: None, previously_killed: true, dragon_killed: true, exit_portal: Some(at), ticking: true });
+        Some((server, at))
+    }
+
+    fn block_named(server: &ServerSim, pos: BlockPos) -> String {
+        let state = server.level.block(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2));
+        let blocks = &server.level.registries().blocks;
+        blocks.block(blocks.block_of(state)).name.as_str().to_owned()
+    }
+
+    fn place_respawn_crystals(server: &mut ServerSim, at: BlockPos, cells: std::ops::Range<usize>) {
+        for (x, y, z) in crate::dragon_respawn::crystal_cells(at)[cells].iter().copied() {
+            assert_eq!(block_named(server, (x, y - 1, z)), "minecraft:bedrock", "the rim under {x} {z}");
+            assert!(server.item_on_block((x, y - 1, z), ItemOnBlock::EndCrystal), "a crystal on the rim at {x} {z}");
+        }
+    }
+
+    #[test]
+    fn four_crystals_on_the_exit_portal_rebuild_the_pillars_and_summon_a_new_dragon() {
+        use crate::end_crystal::{EndDamage, EndTarget};
+        let Some((mut server, at)) = respawn_world() else { return };
+        assert_eq!(block_named(&server, (1, at.1, 0)), "minecraft:end_portal");
+        let spikes = minecraftoss_generator::feature::kinds::the_end::spikes_for_seed(0);
+        let shot: Vec<u64> = server.crystals.list.iter().take(2).map(|crystal| crystal.id).collect();
+        for id in shot {
+            server.end_hit(EndTarget::Crystal(id), EndDamage::attack(1.0, 0));
+        }
+        server.blasts.clear();
+        assert_eq!(server.crystals.list.len(), 8);
+        place_respawn_crystals(&mut server, at, 0..3);
+        assert!(server.respawn.is_none(), "three crystals are not enough");
+        assert!(server.take_fight_reports().is_empty());
+        place_respawn_crystals(&mut server, at, 3..4);
+        let reports = server.take_fight_reports();
+        assert_eq!(reports.len(), 1);
+        let FightReport::Respawning { stage, crystals, exit_portal } = &reports[0] else { panic!("{reports:?}") };
+        assert_eq!((*stage, crystals.len(), *exit_portal), ("start", 4, at));
+        assert_eq!(block_named(&server, (1, at.1, 0)), "minecraft:air", "the portal goes out");
+        assert_eq!(block_named(&server, (0, at.1, 0)), "minecraft:bedrock", "the inactive podium stands again");
+        server.take_end_sounds();
+        let mut stages = Vec::new();
+        let mut respawned = None;
+        for _ in 0..800 {
+            server.tick_end(&[]);
+            server.take_explosions();
+            for report in server.take_fight_reports() {
+                match report {
+                    FightReport::Respawning { stage, .. } => stages.push(stage),
+                    FightReport::Respawned(uuid) => respawned = Some(uuid),
+                    FightReport::Aborted => panic!("aborted"),
+                }
+            }
+            if respawned.is_some() {
+                break;
+            }
+            if server.respawn.as_ref().is_some_and(|respawn| respawn.stage == crate::dragon_respawn::Stage::SummoningPillars) {
+                let beams: Vec<_> = server.crystals.list.iter().filter(|crystal| crystal.beam_target.is_some()).map(|crystal| crystal.beam_target).collect();
+                assert!(beams.len() >= 4, "the four crystals beam at a pillar or the sky");
+            }
+        }
+        assert_eq!(stages, ["preparing_to_summon_pillars", "summoning_pillars", "summoning_dragon"]);
+        let uuid = respawned.expect("a new dragon");
+        assert_eq!(server.dragons.list.len(), 1);
+        assert_eq!(server.dragons.list[0].uuid, uuid);
+        assert_eq!(server.fight_dragon, Some(uuid));
+        assert!(!server.fight.dragon_killed);
+        assert!(server.respawn.is_none());
+        assert_eq!(server.crystals.list.len(), 10, "the four were used up and every pillar has its crystal again");
+        for spike in &spikes {
+            assert_eq!(server.crystals.on_spike(spike.center_x, spike.center_z, spike.radius), 1, "{spike:?}");
+            assert_eq!(block_named(&server, (spike.center_x, spike.height, spike.center_z)), "minecraft:bedrock");
+        }
+        assert!(server.crystals.list.iter().all(|crystal| !crystal.invulnerable && crystal.beam_target.is_none()), "reset at the end");
+        assert_eq!(server.blasts.iter().filter(|(_, source)| *source == BlastSource::KeepBlocks).count(), 4);
+        let growls = server.take_end_sounds().iter().filter(|sound| sound.event == crate::ender_dragon::GROWL_SOUND && sound.volume == 64.0).count();
+        assert_eq!(growls, 9 + 4 + 20);
+    }
+
+    #[test]
+    fn breaking_a_respawn_crystal_stops_the_respawn_and_lights_the_portal_again() {
+        use crate::end_crystal::{EndDamage, EndTarget};
+        let Some((mut server, at)) = respawn_world() else { return };
+        place_respawn_crystals(&mut server, at, 0..4);
+        server.take_fight_reports();
+        for _ in 0..150 {
+            server.tick_end(&[]);
+            server.take_explosions();
+        }
+        server.take_fight_reports();
+        let invulnerable = server.crystals.list.iter().filter(|crystal| crystal.invulnerable).count();
+        assert!(invulnerable >= 1, "a rebuilt pillar's crystal is invulnerable while it summons");
+        let (x, y, z) = crate::dragon_respawn::crystal_cells(at)[0];
+        let respawn_crystal = server.crystals.list.iter().find(|crystal| crystal.block_position() == (x, y, z)).map(|crystal| crystal.id).expect("the respawn crystal");
+        server.end_hit(EndTarget::Crystal(respawn_crystal), EndDamage::attack(1.0, 0));
+        assert_eq!(server.take_fight_reports(), [FightReport::Aborted]);
+        assert!(server.respawn.is_none());
+        assert_eq!(block_named(&server, (1, at.1, 0)), "minecraft:end_portal", "the exit portal is lit again");
+        assert!(server.crystals.list.iter().all(|crystal| !crystal.invulnerable));
+        assert!(server.fight.dragon_killed);
+    }
+
+    #[test]
+    fn a_respawn_waits_while_the_fight_does_not_tick_and_a_reloaded_one_waits_for_its_crystals() {
+        let Some((mut server, at)) = respawn_world() else { return };
+        server.link_fight(FightLink { ticking: false, ..server.fight });
+        place_respawn_crystals(&mut server, at, 0..4);
+        assert_eq!(server.take_fight_reports().len(), 1, "the respawn starts at once");
+        for _ in 0..300 {
+            server.tick_end(&[]);
+        }
+        assert!(server.take_fight_reports().is_empty(), "nothing moves with nobody near the arena");
+        assert_eq!(server.respawn.as_ref().map(|respawn| respawn.stage), Some(crate::dragon_respawn::Stage::Start));
+        let saved = server.respawn.take().expect("the respawn");
+        let tags = server.crystals.tags_where(|_| true);
+        server.crystals.remove_where(|_| true);
+        server.resume_respawn(saved);
+        for _ in 0..20 {
+            server.tick_end(&[]);
+        }
+        assert!(server.respawn.is_some(), "a respawn loaded before its crystals is kept");
+        assert!(server.take_fight_reports().is_empty());
+        for tag in &tags {
+            server.crystals.add(tag);
+        }
+        server.link_fight(FightLink { ticking: true, ..server.fight });
+        server.tick_end(&[]);
+        let reports = server.take_fight_reports();
+        assert!(matches!(reports.as_slice(), [FightReport::Respawning { stage: "preparing_to_summon_pillars", .. }]), "{reports:?}");
+    }
+
+    fn orb_experience(server: &ServerSim) -> i32 {
+        server.level.entities.iter().filter(|entity| !entity.removed).filter_map(|entity| entity.orb_data()).map(|orb| orb.value * orb.count).sum()
+    }
+
+    fn kill_dragon(server: &mut ServerSim, link: FightLink) -> [i32; 4] {
+        use crate::end_crystal::{EndDamage, EndTarget};
+        let uuid = server.find_or_create_dragon((0, 0, 0));
+        server.link_fight(FightLink { dragon: Some(uuid), ..link });
+        server.tick_end(&[]);
+        let id = server.dragons.list[0].id;
+        server.end_hit(EndTarget::DragonPart { id, part: crate::ender_dragon::HEAD }, EndDamage::attack(500.0, 0));
+        for _ in 0..600 {
+            server.tick_end(&[]);
+            if server.dragons.list.is_empty() {
+                break;
+            }
+        }
+        assert!(server.dragons.list.is_empty(), "it rose and went");
+        uuid
+    }
+
+    #[test]
+    fn the_first_dragon_drops_12000_experience_and_a_later_one_500() {
+        let Some(mut server) = end_world((-5..=4).flat_map(|x| (-5..=4).map(move |z| (x, z)))) else { return };
+        let first = kill_dragon(&mut server, FightLink::default());
+        assert_eq!(server.take_dragons_killed(), vec![first]);
+        assert_eq!(orb_experience(&server), 12000);
+        let sounds = server.take_end_sounds();
+        assert_eq!(sounds.iter().filter(|sound| sound.event == crate::ender_dragon::DRAGON_DEATH_SOUND).count(), 1);
+        let second = kill_dragon(&mut server, FightLink { previously_killed: true, ..FightLink::default() });
+        assert_ne!(first, second);
+        assert_eq!(orb_experience(&server), 12500);
+        let mut rules = crate::game_rules::GameRules::default();
+        rules.set("mob_drops", "false").unwrap();
+        server.apply_game_rules(&rules);
+        kill_dragon(&mut server, FightLink { previously_killed: true, ..FightLink::default() });
+        assert_eq!(orb_experience(&server), 12500, "no experience without mob_drops");
+    }
+
+    #[test]
+    fn spike_crystals_heal_the_fight_dragon_and_breaking_its_crystal_hurts_it() {
+        use crate::end_crystal::{EndDamage, EndTarget};
+        let Some(mut server) = end_world((-5..=4).flat_map(|x| (-5..=4).map(move |z| (x, z)))) else { return };
+        server.find_or_create_dragon((0, 0, 0));
+        server.update_crystal_count();
+        assert_eq!(server.alive_crystals, 10);
+        server.dragons.list[0].health = 100.0;
+        let mut beam = None;
+        for _ in 0..2000 {
+            server.tick_end(&[]);
+            if let Some(crystal) = server.dragons.list[0].nearest_crystal {
+                beam = Some(crystal);
+                break;
+            }
+        }
+        let crystal = beam.expect("the circling dragon finds a spike crystal within 32 blocks");
+        let healed = server.dragons.list[0].health;
+        for _ in 0..40 {
+            server.tick_end(&[]);
+        }
+        let view = server.dragon_views().remove(0);
+        if view.nearest_crystal == Some(crystal) {
+            assert!(server.dragons.list[0].health > healed, "it heals from its crystal");
+        }
+        server.dragons.list[0].nearest_crystal = Some(crystal);
+        server.dragons.list[0].damage_cooldown = 0;
+        let before = server.dragons.list[0].health;
+        server.end_hit(EndTarget::Crystal(crystal), EndDamage::attack(1.0, 0));
+        assert_eq!(server.dragons.list[0].health, before - 10.0, "the crystal's loss hurts its head for 10");
+        assert_eq!(server.alive_crystals, 9, "the crystals are counted again");
+        assert_eq!(server.blasts.len(), 1, "and the crystal explodes");
+        let other = server.crystals.list[0].id;
+        server.dragons.list[0].nearest_crystal = Some(other);
+        server.dragons.list[0].damage_cooldown = 0;
+        let before = server.dragons.list[0].health;
+        let position = server.crystals.list[0].position;
+        server.explosions.push(minecraftoss_entities::creeper::CreeperExplosion { position, radius: 1.0, powered: false });
+        server.tick_end(&[]);
+        assert!(server.dragons.list[0].health < before - 8.0, "a blast-destroyed crystal hurts it too");
+        assert_eq!(server.alive_crystals, 8);
     }
 }

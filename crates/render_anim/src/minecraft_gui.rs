@@ -50,9 +50,11 @@ const SPRITE_FOLDERS: [&str; 13] = [
     "tooltip/",
 ];
 
-const LOOSE_SPRITES: [&str; 2] = [
+const LOOSE_SPRITES: [&str; 4] = [
     "container/slot_highlight_back",
     "container/slot_highlight_front",
+    "boss_bar/pink_background",
+    "boss_bar/pink_progress",
 ];
 
 const TEXT_PREFIXES: [&str; 7] = [

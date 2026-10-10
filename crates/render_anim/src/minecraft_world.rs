@@ -426,11 +426,13 @@ fn update(
     for _ in torn_down.read() {
         stop(&mut runtime, &mut view);
         ui.chat.clear_messages();
+        ui.credits = None;
     }
     let now_ms = real_time.elapsed().as_millis() as u64;
     for match_ in installed.read() {
         stop(&mut runtime, &mut view);
         ui.chat.clear_messages();
+        ui.credits = None;
         if assets::minecraft_map::is_minecraft(&match_.zone) {
             let closing = std::mem::take(&mut runtime.closing);
             let (send, receive) = mpsc::channel();
@@ -614,6 +616,7 @@ fn update(
     if player.dead {
         player.held = None;
     }
+    crate::minecraft_end::credits(player, &mut ui, &world.packs, &mut images);
     player.set_remote(in_remote_killstreak(&presented, local.0));
     if player.switching.is_some() {
         for (dimension, error) in &failed {
@@ -673,7 +676,7 @@ fn update(
         let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
         stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, at, aspect, now_ms);
         globals.advance_clocks(time.delta_secs_f64());
-        if ps.is_some() && player.arrival.is_none() && !spawn_gate.waiting() {
+        if ps.is_some() && player.arrival.is_none() && !spawn_gate.waiting() && !minecraft_survival::the_end::holding_for_credits(player) {
             player.switching = None;
             diag::info!(World, "Minecraft player arrived in {} at {:?}", player.dimension.dimension_type(), at);
         }
@@ -710,7 +713,7 @@ fn update(
     let presence = vec![(local_uuid.clone(), minecraft_survival::commands::Presence { pose: host_pose, alive: host_alive })];
     let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, levels, players, local_uuid, &mut ui.chat.sent, presence);
     ui.chat.command_level = players.get(local_uuid).map_or(0, |player| globals.chat.level(player.id));
-    crate::minecraft_end::tick_fight(levels, players, globals, time.delta_secs_f64());
+    crate::minecraft_end::tick_fight(levels, players, globals, time.delta_secs_f64(), local_uuid, &mut ui);
     let Some(player) = players.get_mut(local_uuid) else {
         ui.active = false;
         ui.inventory_open = false;
@@ -1309,6 +1312,7 @@ fn update(
                         .or_else(|| minecraft_terrain::flint::fire_charge_use(&player, &outlined, &catalog, stack, || entities.random_float()))
                         .or_else(|| minecraft_terrain::berries::bone_meal_use(&player, &outlined, stack))
                         .or_else(|| minecraft_terrain::ender_eye::eye_use(&player, &outlined, stack))
+                        .or_else(|| minecraft_terrain::end_crystal::crystal_use(&player, &outlined, stack))
                         .or_else(|| minecraft_terrain::firework::rocket_use(stack, ps.pm_flags & playerstate_iw4::pm_flags::MC_GLIDING != 0, || entities.random_float()))
                 }
             {
@@ -2236,6 +2240,7 @@ fn update(
             sky.ambient.y,
             sky.ambient.z,
             match sky.skybox {
+                _ if ui.boss_bars.iter().any(|bar| bar.world_fog) => 2.0,
                 Skybox::Overworld => 0.0,
                 Skybox::End => 1.0,
                 _ => 2.0,

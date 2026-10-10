@@ -394,6 +394,8 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:cow",
     "minecraft:creeper",
     "minecraft:donkey",
+    "minecraft:end_crystal",
+    "minecraft:ender_dragon",
     "minecraft:enderman",
     "minecraft:ghast",
     "minecraft:horse",

@@ -25,12 +25,13 @@ const PORTAL_SHAPE: (f64, f64) = (6.0 / 16.0, 12.0 / 16.0);
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EndTravel {
     pub platform: bool,
+    pub credits: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Trip {
     IntoTheEnd,
-    OutOfTheEnd(Dimension),
+    OutOfTheEnd { to: Dimension, credits: bool },
 }
 
 pub fn touched_end_portal(
@@ -132,6 +133,7 @@ pub fn enter_the_end(player: &mut Player) {
         loading_reason(false, from, Dimension::End),
     );
     player.end.platform = true;
+    player.portal.travel_sound = true;
 }
 
 pub fn leave_the_end(player: &mut Player, to: Dimension) {
@@ -142,18 +144,36 @@ pub fn leave_the_end(player: &mut Player, to: Dimension) {
     }
 }
 
+pub fn show_credits(player: &mut Player) -> bool {
+    if player.seen_credits {
+        return false;
+    }
+    player.seen_credits = true;
+    player.end.credits = true;
+    true
+}
+
+pub fn credits_done(player: &mut Player) {
+    player.end.credits = false;
+}
+
+pub fn holding_for_credits(player: &Player) -> bool {
+    player.end.credits
+}
+
 pub fn travel(globals: &Globals, level: &Level, player: &mut Player) -> Trip {
     if level.dimension != Dimension::End {
         enter_the_end(player);
         return Trip::IntoTheEnd;
     }
+    let credits = show_credits(player);
     let to = exit_dimension(&globals.spawn, respawn_point(player).as_ref());
     if to == Dimension::End {
         respawn_in(globals, level, player, |_| None);
     } else {
         leave_the_end(player, to);
     }
-    Trip::OutOfTheEnd(to)
+    Trip::OutOfTheEnd { to, credits }
 }
 
 #[cfg(test)]
@@ -279,7 +299,27 @@ pub(crate) mod tests {
             );
             assert_eq!(steve.dimension, Dimension::End);
             assert!(steve.end.platform, "the platform is due on arrival");
+            assert!(
+                steve.portal.travel_sound,
+                "the arrival plays the portal travel sound"
+            );
         }
+    }
+
+    #[test]
+    fn the_first_exit_rolls_the_credits_once_and_holds_the_trip_until_they_close() {
+        let mut steve = player(Dimension::End);
+        assert!(!steve.seen_credits);
+        assert!(show_credits(&mut steve));
+        assert!(steve.seen_credits, "saved as seenCredits at once");
+        assert!(holding_for_credits(&steve));
+        credits_done(&mut steve);
+        assert!(!holding_for_credits(&steve));
+        assert!(!show_credits(&mut steve), "never twice");
+        assert!(!holding_for_credits(&steve));
+        let mut alex = player(Dimension::End);
+        alex.seen_credits = true;
+        assert!(!show_credits(&mut alex), "a player who saw them in vanilla");
     }
 
     #[test]
@@ -316,6 +356,10 @@ pub(crate) mod tests {
         );
         assert_eq!(switch.arrival, None);
         assert!(!steve.dead);
+        assert!(
+            !steve.portal.travel_sound,
+            "leaving the End plays no portal sound"
+        );
     }
 
     fn end_level() -> Option<Level> {

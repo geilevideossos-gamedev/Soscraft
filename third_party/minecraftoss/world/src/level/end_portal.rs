@@ -18,6 +18,8 @@ pub const END_GATEWAY: &str = "minecraft:end_gateway";
 pub const ARENA_SIZE_CHUNKS: i32 = 8;
 pub const PODIUM_ACTIVE: &str = "minecraft:end_podium_active";
 pub const PODIUM_INACTIVE: &str = "minecraft:end_podium_inactive";
+pub const END_STONE: &str = "minecraft:end_stone";
+pub const DISMANTLE_LIMIT: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EyePlaced {
@@ -142,22 +144,46 @@ impl Level<'_> {
     }
 
     pub fn find_exit_portal(&self, origin: BlockPos) -> Option<BlockPos> {
+        self.find_exit_portal_match(origin).map(ExitPortal::centre)
+    }
+
+    pub fn find_exit_portal_match(&self, origin: BlockPos) -> Option<ExitPortal> {
         let is_bedrock = |pos: BlockPos| self.is_bedrock(pos);
         let centre = origin.chunk();
         for x in centre.x - ARENA_SIZE_CHUNKS..=centre.x + ARENA_SIZE_CHUNKS {
             for z in centre.z - ARENA_SIZE_CHUNKS..=centre.z + ARENA_SIZE_CHUNKS {
                 for portal in self.end_portals_in(ChunkPos::new(x, z)) {
                     if let Some(found) = ExitPortal::find(&is_bedrock, portal) {
-                        return Some(found.centre());
+                        return Some(found);
                     }
                 }
             }
         }
         let top = World::height_at(self, HeightmapKind::MotionBlocking, origin.x, origin.z);
-        (self.min_y()..=top).rev().find_map(|y| {
-            ExitPortal::find(&is_bedrock, BlockPos::new(origin.x, y, origin.z))
-                .map(ExitPortal::centre)
-        })
+        (self.min_y()..=top)
+            .rev()
+            .find_map(|y| ExitPortal::find(&is_bedrock, BlockPos::new(origin.x, y, origin.z)))
+    }
+
+    pub fn dismantle_exit_portal(&mut self, origin: BlockPos) {
+        let blocks = &self.registries().blocks;
+        let Some(end_stone) = blocks
+            .block_by_name(END_STONE)
+            .map(|block| blocks.block(block).default_state())
+        else {
+            return;
+        };
+        for _ in 0..DISMANTLE_LIMIT {
+            let Some(found) = self.find_exit_portal_match(origin) else {
+                return;
+            };
+            for pos in found.cells() {
+                let name = self.name(self.block(pos));
+                if name == BEDROCK || name == END_PORTAL {
+                    self.set_block_and_update(pos, end_stone);
+                }
+            }
+        }
     }
 
     pub fn exit_portal_location(&self, origin: BlockPos) -> BlockPos {

@@ -173,6 +173,25 @@ impl ExitPortal {
     pub fn centre(self) -> BlockPos {
         translate(self.front_top_left, self.forward, self.up, 3, 3, 3)
     }
+
+    pub fn cells(self) -> Vec<BlockPos> {
+        let mut cells = Vec::with_capacity(7 * 7 * 5);
+        for x in 0..7 {
+            for y in 0..7 {
+                for z in 0..5 {
+                    cells.push(translate(
+                        self.front_top_left,
+                        self.forward,
+                        self.up,
+                        x,
+                        y,
+                        z,
+                    ));
+                }
+            }
+        }
+        cells
+    }
 }
 
 #[cfg(test)]
@@ -341,6 +360,12 @@ mod tests {
             let below = ExitPortal::find(&is, centre.offset(0, y, 0)).expect("found lower");
             assert_eq!(below.centre(), centre, "from {y}");
         }
+        let cells = found.cells();
+        assert_eq!(cells.len(), 7 * 7 * 5);
+        assert!(
+            bedrock.iter().all(|pos| cells.contains(pos)),
+            "the match covers every bedrock of the podium"
+        );
     }
 
     #[test]

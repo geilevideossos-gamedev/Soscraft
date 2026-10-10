@@ -597,3 +597,455 @@ Previous commit: c36cf09f
 ```
 IW4L_MINECRAFT_KIT=minecraft:ender_eye*32,minecraft:end_portal_frame*24,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_shovel+efficiency=5,minecraft:cobblestone*64,minecraft:oak_sapling*4,minecraft:bone_meal*32,minecraft:dirt*8,minecraft:elytra,minecraft:elytra+damage=420,minecraft:elytra+unbreaking=3,minecraft:elytra+damage=430,minecraft:diamond_sword+sharpness=5+damage=12,minecraft:diamond_chestplate,minecraft:water_bucket,minecraft:ladder*16,minecraft:golden_apple*8,minecraft:firework_rocket*128,minecraft:cobweb*16
 ```
+
+## Third run, group X3: crystals and the flying dragon
+
+E3-9 and E3-11 to E3-14 of the brief, with plan decisions 5, 6 and 9, and the End entry's travel sound. Base: af3cc119 (the Nether merged into `minecraft-survival`).
+
+### 21. Minecraft end portals play the portal travel sound on the way into the End
+
+Previous commit: af3cc119
+
+- **Defect:** walking into an end portal took the player to the End in silence. Vanilla's `EndPortalBlock.getPortalDestination` gives the trip into the End the post-teleport step `PLAY_PORTAL_SOUND` (then `PLACE_PORTAL_TICKET`), which is level event 1032: `block.portal.travel` as local ambience at volume 0.25 and pitch 0.8 to 1.2, the sound a nether portal trip already plays here. The way out of the End uses `DO_NOTHING`, so it stays silent.
+- **Changed:** `minecraft_survival/src/the_end.rs`: `enter_the_end` sets `Player.portal.travel_sound`, the flag the Nether's `minecraft_portal::arriving` already plays once the arrival is known.
+- **Checked with javap (26.3):** `EndPortalBlock.getPortalDestination` (`TeleportTransition(..., PLAY_PORTAL_SOUND.then(PLACE_PORTAL_TICKET))` into the End, `findRespawnPositionAndUseSpawnBlock(false, DO_NOTHING)` out of it), `TeleportTransition.playPortalSound` (level event 1032).
+- **Tests:** `the_end`: `an_end_portal_in_the_overworld_or_the_nether_switches_to_the_end_platform` also checks the sound flag, and `the_exit_portal_goes_to_the_respawn_point_s_dimension_or_the_world_spawn_s` that leaving sets none.
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x3travel` (a new world) and the kit below. Build the ring of entry 2 (12 frames facing inward around a cleared 3x3), fill it with eyes and step in.
+  2. When the loading screen goes and you stand on the obsidian platform, you hear the portal travel whoosh, as after a nether portal trip.
+  3. Type `/setblock ~2 ~ ~ minecraft:end_portal` and walk into it: you arrive at the overworld spawn without the whoosh.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:diamond_pickaxe+efficiency=5,minecraft:cobblestone*64
+```
+
+### 22. Minecraft end crystals sit on the pillars, burn and explode (E3-9)
+
+Previous commit: 63ff26c8
+
+- **Defect:** the End's pillars generate an end crystal each, but nothing simulated it: the crystals waited dormant on the server thread, invisible and indestructible.
+- **Changed:**
+  - New `minecraft_terrain/src/end_crystal.rs`: `EndCrystal` (`EndCrystal` of 26.3: position, `time`, `beam_target`, `ShowBottom`, `Invulnerable`, the tag it came from), read from and written to its saved tag (`beam_target` as an int array, `ShowBottom` a byte, the rest kept). `Crystals` holds a level's crystals: `tick` (`time` goes up by one), `hurt` and `blast`, saving per chunk. `destroyed_by` is `EndCrystal.hurtServer`: any damage destroys it, except fire (it is fire immune), a hit by the dragon and an invulnerable crystal; it explodes with power 6 unless the damage was an explosion. `in_blast` is `ServerExplosion.hurtEntities`' reach: feet within twice the power (a blast always does at least 1 damage, so every crystal in reach goes). `crystal_use` is the client half of `EndCrystalItem.useOn` (only on obsidian or bedrock), `on_ray` the crystal a look meets (its 2 by 2 box), `fresh_tag` a new crystal's tag with a random version-4 UUID.
+  - `minecraft_terrain/src/server.rs`: `ServerSim.crystals`. A saved or generated crystal joins them instead of waiting dormant (`add_saved_entity`), and is saved with its chunk. `tick_end` (one call line in the server loop, after the eyes): every explosion of the tick (creepers, ghast fireballs, TNT, beds, anchors and crystals) destroys the crystals in its reach without a blast, then each crystal ticks and, in a level whose dimension type has `has_ender_dragon_fight`, sets fire at its block when that is air (`EndCrystal.tick`). `end_hit` (`Command::EndHit`, `ServerHandle::end_hit`) applies a player's hit; a crystal that explodes queues a power 6 blast without fire (`level.explode(crystal, explosion(crystal, attacker), .., 6.0, false, BLOCK)`) with the new `BlastSource::Player`, so the blocks break with `block_explosion_drop_decay` and the mobs and players take vanilla explosion damage (plan decision 5) credited to the player who set it off. `place_end_crystal` is the server half of `EndCrystalItem.useOn`: obsidian or bedrock, air above, nothing in the 1 by 2 by 1 box above (crystals, mobs, players, items), then a crystal at the block's top centre without its base (`setShowBottom(false)`). `ItemOnBlock::EndCrystal` answers the client as the ender eye does.
+  - Vendored `third_party/minecraftoss/entities/src/world.rs` (MinecraftOSS patch): `EntityWorld::blast_by_player`, the public blast with a player as its attacker (`Blaster::Player`): mobs take `player_explosion` damage, turn on the player and credit their death to them (experience and player-only loot), as `player_blast` does for MW2 blasts.
+  - New `minecraft_terrain/src/posed_cube.rs`: a model cuboid under any pose matrix, with `ModelPart.Cube`'s faces, UVs and mirror as `cow_render::cube_scaled` has them, for models that are not flipped like living entities or nest deeper (the crystal now, the dragon next).
+  - New `minecraft_terrain/src/end_crystal_render.rs`: `EndCrystalModel` and `EndCrystalRenderer`: scaled by 2 and lowered half a block, the base (shown with `ShowBottom`), the outer glass bobbing (`getY`) and turning 3 degrees a tick about Y then tilted 60 degrees about the (1, 0, 1) axis, the inner glass (0.875) and the core (0.765625) each turned again inside it, from `entity/end_crystal/end_crystal` (64 by 32). `append_beam` is `EnderDragonRenderer.submitCrystalBeams`: an eight-sided beam two blocks above its start, 0.15 wide and black there, 0.75 wide and white at the far end, its `end_crystal_beam` texture scrolling with time; a long beam is cut where the texture repeats, as the atlas cannot wrap. A crystal with a beam target draws its beam to it.
+  - `minecraft_terrain`: `mesh.rs` loads the two textures; `server_mobs.rs`: `minecraft:end_crystal` is in `SIMULATED_KINDS` (so `/summon` lists it; the list stays sorted).
+  - `minecraft_survival/src/entities.rs`: the client keeps the snapshot's crystals, draws them, and gives each a bullet box of key kind 19 (kind 17 is the ghast fireball's) in `boxes`, as crystals block building (`blocksBuilding`). An MW2 bullet on one is an attack, an MW2 grenade an explosion, and a left-click swing (`punch`) an attack with the swing's damage, all through `end_hit`.
+  - `render_anim/src/minecraft_world.rs`: one call line, `end_crystal::crystal_use` in the item-on-block chain after the ender eye.
+- **Checked with javap (26.3):** `EndCrystal` (`time` from `nextInt(100000)`, `tick`, `hurtServer`, `kill`, `onDestroyedBy`, `beam_target` and `ShowBottom`), `EntityTypes` (2 by 2, fire immune, tracking range 16 chunks), `EndCrystalItem.useOn`, `EndCrystalModel.createBodyLayer` and `setupAnim`, `EndCrystalRenderer` (`submit`, `getY`), `EnderDragonRenderer.submitCrystalBeams` and its geometry lambda, `ServerExplosion.hurtEntities`, the tags `#is_explosion` and `#always_hurts_ender_dragons`.
+- **Tests:** `end_crystal`: `any_hit_but_fire_or_the_dragon_destroys_a_crystal_and_only_a_non_explosion_blows_it_up`, `a_blast_reaches_crystals_whose_feet_lie_within_twice_its_power`, `crystals_keep_their_beam_target_and_base_through_a_save`, `a_crystal_goes_on_obsidian_or_bedrock_one_block_up_in_its_middle`, `an_end_crystal_used_on_obsidian_or_bedrock_asks_the_server_and_is_spent`, `a_look_at_a_crystal_finds_its_two_block_box`. `end_crystal_render`: `the_crystal_bobs_between_vanilla_heights`, `the_crystal_is_a_base_and_three_turning_cubes_about_a_block_above_its_feet`, `a_beam_runs_from_two_above_its_start_to_two_above_the_far_end`, `a_long_beam_is_cut_where_its_texture_repeats`. `posed_cube`: `a_posed_cube_matches_the_living_entity_cuboid_under_its_flip` (both mirrors), `a_part_pose_turns_z_then_y_then_x_about_its_offset`. `server`: `end_crystals_burn_on_the_spikes_and_explode_unless_a_blast_destroyed_them` (an End level of seed 0: ten live crystals, none dormant; a crystal relights its fire; one placed on obsidian beside it, not twice, not on end stone and not where a crystal stands; a shot crystal queues a power 6 blast credited to the player, which hurts a player 4 blocks off for more than 20 and destroys the placed crystal without a second blast; a grenade's blast destroys one without a blast; the crystals save and load back). Vendored `entities`: `a_blast_a_player_set_off_credits_the_player_with_its_kills`. `entities` (survival): `end_crystals_have_their_own_bullet_key`.
+- **Decisions:**
+  - **No fire from a crystal's explosion:** the brief and the plan say "power 6 with fire", but 26.3's `EndCrystal.hurtServer` passes `fire = false` to `explode` (javap). Vanilla wins; the only fire is the one each crystal keeps lit on its pillar.
+  - **Key kind 19:** the brief's key kind 17 is taken by the ghast fireball (Nether track), so crystals use 19. The dragon will use 20.
+  - **One tick late:** a crystal's blast reaches the mobs, players and blocks at the next server tick's mob step (it queues like a bed's blast), and the crystals in its reach go after that tick's blasts. Vanilla does all of it in the hit's tick. A blast-destroyed crystal never explodes, so nothing chains.
+  - **The player hurt by a crystal blast** gets an explosion hit with no source, so the death line is "blown up", not "blown up by <player>" (vanilla names the player who set it off; in single player that is yourself).
+  - **Placement box:** vanilla refuses a crystal when any entity's box meets the 1 by 2 by 1 box above the block. Here crystals, mobs and players are tested with their boxes, and item, orb and TNT entities as 0.25-block boxes at their feet.
+  - **Creative and invulnerable crystals:** an invulnerable crystal (only the respawn sequence makes them, X4) ignores every hit, also a creative player's (vanilla lets creative players break it).
+  - **`tryRespawn`:** a crystal placed in the End does not try the dragon respawn yet (X4, E3-22).
+- **Test steps** (survival; MW2 weapons as usual):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x3crystal` (a new world), `IW4L_MINECRAFT_DIMENSION=the_end` and the kit below. Start on the obsidian platform, type `/gamemode creative`, then `/tp 0 110 60` and look north toward the pillars.
+  2. On top of each pillar a crystal turns and bobs inside its glass cubes over a fire on bedrock; the caged ones sit behind iron bars. **Screenshot 1.**
+  3. Fly up beside one pillar top, type `/gamemode survival` while standing on it (or on cobblestone you place), step a few blocks back and shoot the crystal with an MW2 rifle: it explodes, breaks blocks around the pillar top and hurts you when close. **Screenshot 2** just after.
+  4. Back on the platform (`/tp 100 50 0`), place obsidian and right-click it with an end crystal: the crystal stands on it without its grey base, and one crystal leaves the stack. Right-click the same block again: nothing (the crystal is in the way). Right-click end stone with one: nothing.
+  5. Place a second crystal 4 blocks from the first and shoot the first: both go, but only the first explodes (one bang).
+  6. Place a crystal and throw an MW2 grenade at it: it vanishes without exploding.
+  7. Place a crystal, step back to sword reach and hit it with the sword (left-click): it explodes.
+  8. Quit while a crystal you placed stands, and start again: it is still there.
+  9. Remove the `IW4L_MINECRAFT_DIMENSION` line afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_crystal*16,minecraft:obsidian*16,minecraft:end_stone*4,minecraft:cobblestone*64,minecraft:diamond_sword,minecraft:golden_apple*8,minecraft:diamond_chestplate
+```
+
+### 23. Minecraft ender dragon flies its holding pattern over the End (E3-11)
+
+Previous commit: 039c31d8
+
+- **Changed:**
+  - New `minecraft_terrain/src/ender_dragon.rs`, the server's `EnderDragon`:
+    - `FlightHistory` is `DragonFlightHistory`: 64 samples of height and yaw, newest first, the first one filling all; `sample_at` its `get(i, partial)` lerp (`Mth.lerp`, `Mth.rotLerp`).
+    - The 24 path nodes of `findClosestNode`: rings of 12 at 60 blocks, 8 at 40 and 4 at 20 (float angles, `Mth.cos`/`Mth.sin`), each at least y 73 and 5, 15 or 5 above the `MOTION_BLOCKING_NO_LEAVES` height there; vanilla's adjacency bit masks; `closest_node` (only the inner 12 once no crystal is alive or outside a fight) and `find_path`, vanilla's A* with its `BinaryHeap` (up and down heap, `changeCost`) and the fall back to the closest node reached.
+    - `Phase`: `HoldingPattern` (`DragonHoldingPatternPhase`: a new target when the old one is nearer than 10 or farther than 150 blocks; a new path from the closest node, one in 8 times turning the circling round and jumping 6 nodes, then one node on; the outer ring with a fight, the inner without; each node's target 0 to 20 blocks above it), `Hovering` (`DragonHoverPhase`, vanilla's default phase, so `/summon` makes a hovering dragon; it counts as sitting), and `Dying` (`DragonDeathPhase`: it flies to the podium at fly speed 3 and its health drops to 0 there).
+    - `tick` is `Entity.tick`/`LivingEntity.baseTick`/`Mob.baseTick`/`EnderDragon.aiStep` for these: the hurt and damage cooldown timers, the ambient sound (`entity.ender_dragon.ambient`, volume 5, one in 1000 against a timer from -80), the flap time (0.2 over the horizontal speed, doubled per block of climb), the flight (`aiStep`'s climb toward the target, the turn of at most 50 degrees a tick by `getTurnSpeed`, the push along the yaw by `moveRelative`, the move without collision as `noPhysics`, the drag of 0.8 to 0.95 sideways and 0.91 upward), then the eight parts placed by `tickPart` (body, two wings 4.5 out and 2 up, head and neck 6.5 and 5.5 ahead raised by the history, three tail parts trailing by the history's yaw and height). The head and neck strike non-creative players their boxes (grown by 1) touch for 10 (`mobAttack`), unless the dragon was hurt within 10 ticks. `tick_death` rises 0.1 a tick and removes it after 200 ticks (the rest of the death is X4's).
+    - Saved and loaded as vanilla's tag (`DragonPhase`, `DragonDeathTime`, `sitting_damage_received`, `Health`, `Pos`, `Motion`, `Rotation`, the rest kept). Ids start at 2^40, so they never meet the entity world's.
+  - New `minecraft_terrain/src/dragon_render.rs`: `EnderDragonModel` and `EnderDragonRenderer` built in code from `createBodyLayer` and `setupAnim`: the root lifted and tilted with the breath of the flap, five neck segments and the head with its jaw following the flight history, the body with its spikes, the wings and wing tips beating (`flapTime`), the four legs posed by `poseLimbs`, twelve tail segments trailing the history. The entity pose is the renderer's: turned by the history's yaw 7 ticks back, tilted by 10 times the climb between 5 and 10 ticks back, one block forward, flipped as a living entity. `entity/enderdragon/dragon` (256 by 256) then `dragon_eyes` at full brightness over it; red while hurt.
+  - `minecraft_terrain/src/server.rs` (End region): `ServerSim.dragons`. A saved, generated or summoned dragon is live (no longer dormant) and saved with its chunk. `tick_end` now ticks the dragons with the players of the tick (plan decision 9: the players in the End level, never `PLAYER = 0`), the `MOTION_BLOCKING_NO_LEAVES` heights for the nodes and the podium's `MOTION_BLOCKING` height. Their sounds and hits reach the client with the mob sounds and player hits. Every 100 ticks in a dragon fight level it counts the crystals standing on a spike (`updateCrystalCount` over `EndSpikeFeature.getSpikesForLevel`'s top boxes); the fight's dragon (`fight_dragon`) uses that count. `find_or_create_dragon` is `findOrCreateDragon`: a dragon in the level, or a new one at (0, 128, 0) facing a random yaw in the holding pattern. `scan_dragon_fight` now finds the live dragons. `EntitySnapshot.dragons` carries `DragonView`s (position, flap times, 26 history samples, health, hurt time, parts).
+  - `minecraft_terrain/src/end_crystal.rs`: `Crystals::on_spike`.
+  - `minecraft_survival/src/the_end/dragon_fight.rs`: `EnderDragonFight.tick`'s dragon part: once the state scan is done and the dragon is not killed, with players near and the arena loaded, a fight without a dragon, or one whose dragon was not seen for 1200 ticks, runs `find_or_create_dragon` as a job and saves the answer as `dragon_uuid`. A dragon in the snapshot counts as seen (`updateDragon`). `link` tells the server which dragon is the fight's after a reload. `FightEvents.spawned`.
+  - `minecraft_survival/src/entities.rs`: the client keeps the snapshot's dragons and draws them; the wing flap (`entity.ender_dragon.flap` at volume 5 when `cos(2π·flapTime)` rises through -0.3, `isFlapping`/`onFlap`) and the growl (`entity.ender_dragon.growl` at 2.5, every 200 to 399 ticks after a first 100, not while sitting) are the client's own, as in vanilla. A dragon's hit names it ("was slain by Ender Dragon"). `dragons`, `dragon_alive`.
+  - `minecraft_terrain`: `mesh.rs` loads the two dragon textures; `minecraft:ender_dragon` is in `SIMULATED_KINDS` (sorted). `render_anim/src/minecraft_end.rs` logs the fight's dragon.
+- **Checked with javap (26.3):** `EnderDragon` (constructor parts and sizes, `aiStep`, `tickPart`, `getHeadYOffset`, `hurt(List)`, `findClosestNode` both forms, `findPath`, `reconstructPath`, `tickDeath`, `checkDespawn`, save keys, sounds and volume), `DragonFlightHistory` and `Sample`, `AbstractDragonPhaseInstance`, `DragonHoldingPatternPhase`, `DragonHoverPhase`, `DragonDeathPhase`, `EnderDragonPhase` (ids), `EnderDragonPhaseManager.setPhase`, `BinaryHeap`, `EnderDragonFight` (`tick`, `findOrCreateDragon`, `createNewDragon`, `updateDragon`, `updateCrystalCount`, `scanState`), `EntityTypes` (16 by 8, tracking range 10 chunks), `EnderDragonModel` (`createBodyLayer`, `setupAnim`, `poseLimbs`), `EnderDragonRenderer` (`submit`, `extractRenderState`), `EnderDragonRenderState` (`getHistoricalPos`, `getHeadPartYOffset`), `LivingEntity.wasHurtRecently`.
+- **Tests:** `ender_dragon`: `the_flight_history_keeps_sixty_four_samples_newest_first`, `the_twenty_four_nodes_ring_the_island_at_sixty_forty_and_twenty_blocks`, `a_path_follows_the_node_graph_to_its_goal`, `a_holding_dragon_circles_the_island_between_its_nodes` (3000 ticks: at least 4 targets, above y 60, within 100 blocks of the centre, parts where vanilla puts them), `a_dragon_without_ai_stays_put_and_a_summoned_one_hovers`, `a_dragon_keeps_its_phase_health_and_uuid_through_a_save`, `the_head_and_neck_strike_an_attackable_player_they_touch` (not a creative one, not while hurt). `dragon_render`: `a_level_dragon_lays_its_neck_and_tail_out_in_a_straight_line` (36 parts, the cube count, 10 pixels between segments), `the_wings_beat_with_the_flap_time_and_mirror_each_other`, `the_dragon_faces_its_flight_history_heading`. `server`: `the_fight_dragon_spawns_over_the_island_and_circles_it_while_the_arena_is_loaded` (seed 0: one dragon at (0, 128, 0), reused; 1200 ticks circling above y 60; the 10 spike crystals counted; only ambient sounds; its view and tag), and `a_first_fight_scan_builds_the_inactive_podium_and_later_scans_find_it` now with live dragons. `dragon_fight`: `a_dragon_is_due_once_the_scan_is_done_without_one_or_after_1200_ticks_unseen`, and `the_first_visit_scans_once_builds_the_podium_and_saves_the_fight` now waits for the dragon to spawn, saves its UUID and sees it in the snapshot above y 100, with no second one. `entities`: `a_dragon_flaps_when_its_wings_pass_the_top_of_their_beat`.
+- **Decisions:**
+  - **Holding pattern only (X5 is out of scope):** vanilla's holding pattern turns to the landing approach (one in `crystals + 3` at a path's end) or to strafing a player. Those phases come with X5, so this dragon keeps circling; it neither lands, strafes nor breathes, and `checkWalls` (block breaking) and the wing knockback are not done either, so it flies through blocks without slowing (`inWall` stays false). The head and neck contact damage is done (it is no X5 commit's).
+  - **Vanilla's quirks kept:** `DragonHoldingPatternPhase` picks the inner ring only when the fight's crystal count is below 0, so a fight dragon always picks outer ring goals (javap `ifge`), while `findClosestNode` and `findPath` leave the outer ring out when no crystal is alive. Head and neck both take full damage later (E3-13), as `hurt(part)` tests both.
+  - **Where the parts sit:** the server keeps them; the client draws the model from the flight history like vanilla, so the boxes and the model agree as in vanilla.
+  - **Death:** a dragon brought to 0 health (E3-13) flies to the podium, rises for 10 seconds and goes; its rays, sounds, experience and the exit portal come with X4 (E3-18, E3-19).
+  - **Random draws:** the dragon has its own random seeded from its UUID; the spawn yaw comes from the End level's own random (`ServerSim.end_random`), not the level's.
+  - **Seen:** a dragon counts as seen while it is in the snapshot (the server sends every dragon of the level), where vanilla counts its ticks.
+  - Dragons saved dormant by the X2 builds load live now.
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x3dragon` (a new world), `IW4L_MINECRAFT_DIMENSION=the_end` and the kit below. Start on the obsidian platform in survival.
+  2. Within a few seconds the log says `Minecraft ender dragon of the fight: [...]`. Look west: the black dragon with purple glowing eyes circles the main island high up, beating its wings, its neck and tail swinging as it turns. You hear its wing beats and now and then a growl. **Screenshot 1.**
+  3. Watch it for a minute: it flies from pillar to pillar around the island, sometimes turning to circle the other way, never landing.
+  4. Type `/gamemode creative`, fly up to it and look at it from close by. **Screenshot 2** (head, wings and legs in view).
+  5. Type `/gamemode survival` while you fly into its head's path (stand on a pillar it passes): when its head touches you, you take damage. If it kills you, the chat says "... was slain by Ender Dragon".
+  6. Quit and start again: the same dragon circles on (the log names the same UUID only once, at the first spawn), not a second one.
+  7. Type `/summon minecraft:ender_dragon ~ ~10 ~`: a second dragon appears and hovers where it was summoned, wings slowly beating.
+  8. Remove the `IW4L_MINECRAFT_DIMENSION` line afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:golden_apple*8,minecraft:diamond_chestplate
+```
+
+### 24. Minecraft ender dragon has a boss bar (E3-12)
+
+Previous commit: 5a6fd423
+
+- **Changed:**
+  - `minecraft_survival/src/the_end/dragon_fight.rs`: the fight's boss event (`EnderDragonFight.dragonEvent`): `DragonFight.progress` is the dragon's health over 200 whenever the fight's dragon is in the snapshot (`updateDragon`'s `setProgress`), 1 until then; `boss_bar(player)` shows it to the players the fight counts (alive and within 192 blocks of (0, 128, 0), rescanned every 20 ticks, `updatePlayers`) while the dragon is not killed (`setVisible(!dragonKilled)`). Per player, by UUID.
+  - `frame/src/minecraft_ui.rs` (appended): `MinecraftUi.boss_bars: Vec<McBossBar>`; `McBossBar` is `LerpingBossEvent`: a new progress slides over 100 ms from where the bar stood (`setProgress`, `getProgress`), and `world_fog` (`setCreateWorldFog`).
+  - New `hud/src/minecraft_boss.rs` (with its `mod` line in `hud/src/lib.rs` and one call line at the top of `minecraft_hotbar::draw_hud`, before the game mode check, as the boss overlay shows in every mode): `BossHealthOverlay`: from y 12 down, 19 GUI pixels a bar, stopping past a third of the screen; the 182 by 5 `boss_bar/pink_background` sprite, the `pink_progress` sprite cut to `Mth.lerpDiscrete(progress, 0, 182)`, and the name centred 9 pixels above in white with a shadow.
+  - `render_anim/src/minecraft_gui.rs`: the two pink sprites join the loose GUI sprites read from the pack.
+  - `render_anim/src/minecraft_end.rs`: `tick_fight` sets the local player's bar ("Ender Dragon" from the language file, `entity.minecraft.ender_dragon`) while they are in the End and not switching, and clears it otherwise (the client's `BossHealthOverlay.reset` on a level change). `minecraft_world.rs`: the call line passes the local player and the UI, and while a shown bar wants world fog the sky shader gets the `none` skybox, so the fog colour stands in for the End sky (`GameRenderer` passes `!shouldCreateWorldFog` as `LevelRenderer.render`'s sky pass flag).
+- **Checked with javap (26.3):** `EnderDragonFight` (the boss event: `PINK`, `PROGRESS`, `setPlayBossMusic(true)`, `setCreateWorldFog(true)`; `tick`'s `setVisible`, `updatePlayers`, `updateDragon`), `ServerBossEvent`, `BossEvent`, `LerpingBossEvent`, `BossHealthOverlay` (`extractRenderState`, `extractBar`, the sprite tables), `Mth.lerpDiscrete`, `GameRenderer.renderLevel` and `tick` (`shouldCreateWorldFog`, `shouldDarkenScreen`), `LevelRenderer.render`, `LightmapRenderStateExtractor`.
+- **Tests:** `dragon_fight`: `the_boss_bar_shows_the_dragon_s_health_to_the_players_near_until_it_is_killed`. `minecraft_ui` (frame): `a_boss_bar_slides_to_its_new_progress_over_a_tenth_of_a_second`. `minecraft_boss` (hud): `the_bar_fills_182_pixels_in_steps_like_lerp_discrete`, `boss_bars_stack_down_from_the_top_until_a_third_of_the_screen`.
+- **Decisions:**
+  - **"Darkening fog":** the dragon's boss event sets `createWorldFog`, not `darkenScreen` (javap), so the screen is not darkened; the sky pass is dropped and the End's dark fog colour shows instead of its sky. The End flash (not drawn yet, E3-29) is the only other thing it changes.
+  - **No boss music:** the game plays no Minecraft music at all yet, so `setPlayBossMusic` has nothing to switch.
+  - The bar's progress moves when the dragon is hurt (E3-13) or healed (E3-14); until those commits it stays full.
+- **Test steps:**
+  1. Keep `IW4L_MINECRAFT_WORLD=x3dragon` (entry 23) or a new world, with `IW4L_MINECRAFT_DIMENSION=the_end`. Start on the platform.
+  2. At the top of the screen a pink bar named "Ender Dragon" shows, full. The sky behind the island is now the plain dark fog colour instead of the speckled End sky. **Screenshot 3.**
+  3. Type `/gamemode creative` and `/tp 100 60 220` (more than 192 blocks from the island's centre): within a second the bar goes and the speckled sky is back. `/tp 100 50 0`: it comes back.
+  4. Type `/gamemode spectator`: the bar stays. `/gamemode survival` afterwards.
+  5. Quit, remove the `IW4L_MINECRAFT_DIMENSION` line and start again in the overworld: no bar.
+- **Kit:** none needed.
+
+### 25. MW2 bullets, grenades and Minecraft hits hurt the ender dragon through its body parts (E3-13)
+
+Previous commit: 2b3167b1
+
+- **Changed:**
+  - `minecraft_terrain/src/ender_dragon.rs`: `hurt_part` is `EnderDragon.hurt(part, source, damage)`: nothing while dying; a part other than the head and the neck takes `d / 4 + min(d, 1)`; below 0.01 nothing; only damage with a player behind it or an explosion counts (`#always_hurts_ender_dragons` holds `#is_explosion`); then `LivingEntity.hurtServer`'s damage cooldown (a full hit sets 20 ticks and `hurtTime` 10, a hit within the first 10 ticks only adds what it exceeds the last one by), the hurt sound (`entity.ender_dragon.hurt`, volume 5, only for a full hit) or the death sound, and `handleKillingBlow` (a flying dragon is held at 1 health and turns to its dying phase; a sitting one dies where it is). A sitting dragon that took more than 50 since it sat takes off. `blast` is `ServerExplosion.hurtEntities` on the dragon and each part: feet within twice the power, damage `(i² + i) / 2 · 7 · 2p + 1` for `i = 1 - distance / 2p`, each through `hurt_part`, so the cooldown keeps the best one.
+  - `minecraft_terrain/src/end_crystal.rs`: `EndTarget::DragonPart { id, part }`.
+  - `minecraft_terrain/src/server.rs` (End region): `end_hit` hurts a dragon part; every explosion of the tick (`tick_end`) blasts the dragons too.
+  - `minecraft_survival/src/entities.rs`: each living dragon's 8 parts are bullet boxes in `shot_boxes` (not in `boxes`: parts don't block building) with key kind 20, the dragon id and the part, and the flat hit bit. An MW2 bullet is an attack by the player (`damage · 0.2`), an MW2 grenade an explosion (`damage · 0.8`, plan decision 6), and a left-click swing (`punch`, also `mob_distance`) on the nearest part an attack with the swing's damage (`EnderDragonPart.isPickable`).
+  - `sim/src/voxel.rs`: `FLAT_HIT_KEY`: a box whose key carries it is struck in the upper torso wherever the bullet lands (`hit_height`), so MW2's head and neck multipliers never stack on the dragon's own head rule (plan decision 6).
+  - `minecraft_terrain/src/server.rs`: a dragon that finished dying is reported in `Output.dragons_killed`; `minecraft_survival/src/entities.rs` keeps them for `take_dragons_killed`, and `the_end/dragon_fight.rs`'s `set_dragon_killed` marks the fight's dragon killed (`FightEvents.killed`).
+  - `render_anim/src/minecraft_end.rs`: logs the kill, and a test that the survival crate's bit is the one the bullets read.
+- **Checked with javap (26.3):** `EnderDragon.hurt(part)`, `hurtServer`, `reallyHurt`, `handleKillingBlow`, `knockback`; `EnderDragonPart` (`hurtServer`, `isPickable`); `LivingEntity.hurtServer` (cooldown, sounds, `die`); `ServerExplosion.hurtEntities`; the tags `#always_hurts_ender_dragons` and `#is_explosion`.
+- **Tests:** `ender_dragon`: `only_the_head_and_neck_take_full_damage_and_only_from_players_and_explosions` (head 20 takes 20, body 20 takes 6, no player takes nothing, an explosion always hurts), `hits_within_the_damage_cooldown_only_count_their_extra_damage`, `a_killing_blow_sends_a_flying_dragon_to_die_and_a_hovering_one_down_at_once` (it flies down, rises and goes), `a_sitting_dragon_takes_off_after_a_quarter_of_its_health`, `a_blast_hurts_the_dragon_once_through_its_nearest_part`. `entities`: `dragon_parts_are_flat_hit_boxes_keyed_by_dragon_and_part`. `sim` `voxel`: `a_flat_hit_box_takes_every_bullet_in_the_upper_torso`. `render_anim` `minecraft_end`: `dragon_parts_carry_the_flat_hit_bit_the_bullets_read`. `server`: `mw2_shots_and_blasts_hurt_the_dragon_through_its_parts_until_it_dies_and_is_reported` (an End level of seed 0: a body shot of 20 takes 6 with the hurt sound, a head shot 20, a blast at the head more than 40; a killing blow sends it to die, it rises, goes and is reported once). `dragon_fight`: the boss bar test also kills the fight's dragon (not another one), which hides the bar, saves the flags and keeps a new dragon from being made.
+- **Decisions:**
+  - **The neck takes full damage too:** the brief says only the head does, but 26.3's `hurt(part)` tests `part != head && part != neck` (javap) before cutting the damage. Vanilla wins.
+  - **The flat hit location** is the upper torso (MW2 `torso_upper`), whose multiplier is 1 for the weapons; it is a bit in the key (bit 55) that `sim` reads, so `sim` learns nothing else about Minecraft.
+  - **No knockback on the dragon:** vanilla's `dealDefaultKnockback` halves a flying dragon's speed on a full hit by a player; the hit here carries no attacker position yet. Left for X5 with the wing knockback.
+  - **Takeoff:** a sitting dragon past 50 damage takes off; with no takeoff phase yet (X5) it goes straight back to circling.
+  - **Explosion exposure:** the dragon flies in the open, so a blast sees all of it (exposure 1, no ray test against blocks).
+  - **Death:** a dragon whose health runs out flies to the podium, its health drops to 0 there, it rises for 10 seconds and is gone. The server reports it (`Output.dragons_killed`, `Entities::take_dragons_killed`) and the fight takes the flags part of `setDragonKilled` (`dragon_killed`, `previously_killed`, the bar's progress 0, saved), so the bar goes and no new dragon is made after 1200 ticks. Experience, the exit portal, the egg and the gateway are X4's (E3-18, E3-19).
+- **Test steps** (survival; the MW2 class with an assault rifle, a sniper rifle and frag grenades; `/difficulty easy` keeps the head's contact hits survivable):
+  1. Keep `IW4L_MINECRAFT_WORLD=x3dragon` with `IW4L_MINECRAFT_DIMENSION=the_end`, or a new world. On the platform, `/gamemode creative`, fly to the island centre and pillar a cobblestone tower about 30 blocks high near the middle; `/gamemode survival` on top.
+  2. Shoot the dragon as it passes: it flashes red and roars on a full hit, and the boss bar drops; hits on the head and neck take more off than hits on the body, wings or tail. **Screenshot 4** of the bar after a few hits.
+  3. Fire a long burst at its head: the bar falls about as fast as with single shots spaced half a second apart (the damage cooldown), and a sniper headshot takes no more than a sniper body shot on the head part.
+  4. Throw a frag grenade so it bursts beside it: the bar drops (explosions always hurt it).
+  5. When it passes close, hit it with the sword (left-click on any part): the bar drops a little.
+  6. Bring the bar to zero: it stops circling, flies down toward the podium in the island's middle, then rises slowly and vanishes about 10 seconds later; the log says `Minecraft ender dragon of the fight killed`, and the bar goes. No experience or portal yet (X4). **Screenshot 5** while it rises.
+  7. Stay a minute and quit and start again: no new dragon comes, and no bar shows.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
+```
+
+### 26. Minecraft end crystals heal the ender dragon with a beam (E3-14)
+
+Previous commit: 8bf65034
+
+- **Changed:**
+  - `minecraft_terrain/src/ender_dragon.rs`: `check_crystals` is `EnderDragon.checkCrystals`, run in `aiStep` before the flight: a nearest crystal that is gone is dropped, otherwise every tenth tick it heals 1 (up to 200); and one tick in ten (`nextInt(10)`) the dragon picks the nearest crystal (by feet) whose box meets its own 16 by 8 box grown by 32 (`crystal_in_reach`), or none. `crystal_destroyed` is `EnderDragon.onCrystalDestroyed`: when the lost crystal was its nearest, the head takes 10 as an explosion (`explosion(crystal, player)`, which always hurts it). `DragonEnv.crystals`; `DragonView.nearest_crystal` and `tick_count`.
+  - `minecraft_terrain/src/server.rs` (End region): the dragons tick with the level's crystals. A crystal destroyed by a hit or by a blast (`crystal_destroyed`, now for blast-destroyed crystals too) runs `EnderDragonFight.onCrystalDestroyed` in a dragon fight level: the spike crystals are counted again (`updateCrystalCount`), and the fight's dragon (only that one, `getEntity(dragonUUID)`) is told.
+  - `minecraft_terrain/src/dragon_render.rs`: `append_beams`, `EnderDragonRenderer`'s heal beam: from two blocks above the dragon's feet to its crystal's bobbing glass (`beamOffset` with `EndCrystalRenderer.getY`), through `end_crystal_render::append_beam` (black and thin at the dragon, white and wide at the crystal, scrolling with the dragon's age). `minecraft_survival/src/entities.rs`: one line draws them.
+- **Checked with javap (26.3):** `EnderDragon` (`checkCrystals`, `onCrystalDestroyed`, `CRYSTAL_DESTROY_TARGETING`), `EnderDragonFight.onCrystalDestroyed` and `updateCrystalCount`, `EndCrystal.onDestroyedBy`, `EnderDragonRenderer` (`extractRenderState`'s `beamOffset`, `submit`, `submitCrystalBeams`).
+- **Tests:** `ender_dragon`: `a_crystal_within_32_blocks_heals_the_dragon_a_point_every_ten_ticks` (the nearer of two crystals in reach, 10 health in 100 ticks, never above 200, dropped when gone, the reach box's edges), `destroying_the_crystal_that_heals_it_blasts_the_dragon_s_head_for_10`. `dragon_render`: `the_heal_beam_reaches_from_two_above_the_dragon_to_the_bobbing_glass`. `server`: `spike_crystals_heal_the_fight_dragon_and_breaking_its_crystal_hurts_it` (an End level of seed 0: the circling fight dragon finds a spike crystal and heals; shooting its crystal costs it 10 on the head, recounts 9 crystals and queues the crystal's blast; a crystal destroyed by a blast while it heals the dragon hurts it too and leaves 8).
+- **Decisions:**
+  - **The player behind a crystal's loss** is the one who broke it or nobody; vanilla also falls back to the nearest player within 64 blocks for the holding pattern's strafe, which comes with X5. The dragon is hurt either way.
+  - The beam is drawn from the dragon's own feet as vanilla's is (the beam does not start at the head).
+- **Test steps** (survival; MW2 weapons):
+  1. Keep `IW4L_MINECRAFT_WORLD=x3dragon` with `IW4L_MINECRAFT_DIMENSION=the_end`, or a new world. Climb a tower near the island centre as in entry 25.
+  2. Shoot the dragon until the bar is at about half. Watch it fly past the pillars: when it passes within about 32 blocks of a crystal, a beam reaches from just above its back to the crystal, black near the dragon and white at the crystal, its pattern sliding along it. The bar slowly fills again (a point every half second). **Screenshot 6** (the beam).
+  3. While the beam stands, shoot that crystal: it explodes, the beam goes, the dragon flashes red and the bar drops a little (10 points).
+  4. Shoot the other crystals (the caged ones need the bars shot or broken first): with none left, no beam forms any more and the bar no longer refills.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
+```
+
+### 27. The Minecraft dragon fight passes clippy
+
+Previous commit: af14e52b
+
+- **Changed:** the two clippy findings on this group's lines, in `minecraft_survival`: `entities.rs`'s `end_target_of` builds the dragon part with `then_some` (`unnecessary_lazy_evaluations`), and a `dragon_fight` test makes its fight with the players in the struct (`field_reassign_with_default`).
+- **Clippy:** `clippy -p minecraft_terrain -p minecraft_survival -p render_anim -p hud -p frame -p sim --all-targets --no-deps --locked -- -A clippy::approx_constant` has no other finding on a line this group added or changed (every reported location checked against `git diff -U0 af3cc119`); the rest are older. The vendored `minecraftoss-entities`, linted as its own workspace (`clippy --manifest-path third_party\minecraftoss\entities\Cargo.toml --offline --all-targets`, the `Cargo.lock` it made deleted afterwards), has none on this group's lines either.
+- **Tests:** none new; the touched crates pass as before.
+- **Test steps:** none; nothing changes in game.
+- **Kit:** none.
+
+### Group X3 summary
+
+Written with entry 27, in its commit.
+
+- **Commits:** 63ff26c8 (the End entry's travel sound), 039c31d8 (E3-9, end crystals), 5a6fd423 (E3-11, the dragon's holding pattern), 2b3167b1 (E3-12, the boss bar), 8bf65034 (E3-13, damage through the parts, and the kill reported to the fight), af14e52b (E3-14, crystal healing), and this entry (clippy).
+- **Tests** (`test -p <crate> --locked`, `MINECRAFTOSS_ROOT` set by `cargo-slot.ps1`): `minecraft_terrain` 728 (4 ignored), `minecraft_survival` 328 and the vanilla world test, `render_anim` 71, `hud` 135, `frame` 17, `sim` 73 and `minecraftoss-entities` 83 pass; `check -p launcher` is green.
+- **New files** (`rustfmt --check` on the staged content is empty): `minecraft_terrain/src/end_crystal.rs`, `end_crystal_render.rs`, `posed_cube.rs`, `ender_dragon.rs`, `dragon_render.rs` (edition 2021), `hud/src/minecraft_boss.rs` (2024). The track's earlier files edited here (`the_end/dragon_fight.rs`, `render_anim/src/minecraft_end.rs`) still pass.
+- **MinecraftOSS patches in this group:** `entities/src/world.rs` (`EntityWorld::blast_by_player`, the public blast with a player attacker, through `apply_explosion_by`).
+- **Plan decisions kept:** 5 (crystal blasts are vanilla explosions through the public blast, credited to the player), 6 (one flat MW2 hit location on every part, the vanilla part rule, MW2 grenades count as explosions, no headshot stacking), 9 (the dragon, the crystals and the boss bar take the players of the End level from the tick, never `PLAYER = 0`; the fight, its dragon UUID, its kill and its crystal count are saved or kept per End level, and each player's bar comes from the fight's own player list by UUID).
+- **Not done in this group, and why:**
+  - **X5 (out of scope this round):** the landing approach, perching, sitting phases, breath and fireballs, strafing, the charge, the takeoff phase, the wing knockback, `checkWalls` block breaking, and the egg teleport. The dragon only circles and strikes with its head and neck.
+  - **X4 (the next group):** the death's rays, sound and experience (E3-18; the dragon already rises and goes), the exit portal, egg and gateway on the kill (E3-19; the fight already marks the kill), the exit portal home with the credits (E3-21), and the respawn with four crystals (E3-22; placing crystals in the End does not try it yet).
+  - **Small gaps:** no knockback on the dragon from players' hits; no boss music (the game has no Minecraft music); a crystal's blast reaches mobs, players and other crystals one tick late; a player killed by a crystal blast is "blown up" without the name of who set it off.
+- **Owner test for the group** (one new world, survival; screenshots numbered across the entries):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x3` and the kit below; no `IW4L_MINECRAFT_DIMENSION` line. Build the ring of 12 frames around a cleared 3x3, fill it with eyes and step in: the portal whoosh plays as you land on the platform (entry 21).
+  2. Entry 23 steps 2 to 5 (the dragon circling, its sounds, its head's strike), screenshots 1 and 2; entry 24 steps 2 to 4 (the boss bar and the plain fog sky), screenshot 3.
+  3. Entry 22 steps 2 to 8 on the platform and one pillar (crystals, their fire, blasts, placing, grenades, the sword), using the end crystals of the kit; then entry 26 steps 2 to 4 (the heal beam), screenshot 6, before you shoot all the pillar crystals.
+  4. Entry 25 steps 1 to 7 (hits on the parts, grenades, the sword, the death and its report), screenshots 4 and 5.
+  5. Entry 23 step 7 (a summoned dragon hovers) after the fight. Then `/kill`: you respawn in the overworld (the exit portal home comes with X4), and no bar shows there (entry 24 step 5).
+- **Kit for the group** (22 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:end_crystal*16,minecraft:obsidian*16,minecraft:end_stone*4,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket,minecraft:cooked_beef*32,minecraft:shield,minecraft:totem_of_undying,minecraft:ender_pearl*16,minecraft:torch*64,minecraft:oak_planks*64
+```
+
+## Third run, group X4: the dragon dies, going home
+
+E3-18, E3-19, E3-21 and E3-22 of the brief, with plan decisions 3 and 9, and the End docs. Base: 89f9fd97 (group X3).
+
+### 28. Minecraft ender dragon dies like vanilla (E3-18)
+
+Previous commit: 89f9fd97
+
+- **Changed:**
+  - `minecraft_terrain/src/ender_dragon.rs`: `tick_death` is `EnderDragon.tickDeath`. Its first tick plays `entity.ender_dragon.death` (level event 1028, `DRAGON_DEATH_SOUND`); every fifth tick after tick 150 it awards `floor(xp · 0.08)` and on tick 200 `floor(xp · 0.2)` as experience orbs at the dragon, where `xp` is 12000 for the fight's dragon before any was killed (`!hasPreviouslyKilledDragon`) and 500 otherwise, and nothing with `mob_drops` off (`death_experience`, `DragonEnv.death_experience`, `DragonEvents.experience`). It still rises 0.1 a tick and goes after 200 ticks. `heard_at` places the death roar as vanilla's global event does: 2 blocks from the listener toward the dragon's block, at volume 5, so it is heard in the whole level.
+  - `minecraft_terrain/src/server.rs` (End region): `FightLink` (the fight's dragon and whether one was killed before) replaces `set_fight_dragon` with `link_fight`; the dragons tick with their death experience and the orbs go to the level (`ExperienceOrb.award`). `apply_game_rules` keeps `mob_drops` for the dragon (one line).
+  - `minecraft_survival/src/the_end/dragon_fight.rs`: `link_state` sends the dragon and `previously_killed` to the server whenever either changes.
+  - `minecraft_terrain/src/dragon_render.rs`: `append_rays` is `EnderDragonRenderer.submitRays`: `floor((t + t²)/2 · 60)` rays (t the death time over 200) from (0, -1, -2) in the dragon's pose, each a three-sided fan turned by the last one's turn and two more random Euler turns from a random seeded 432 (the same rays every frame), 5 to 25 blocks long and 1 to 3 wide, growing by up to 10 and 2 and fading out over the last fifth; white at the body, transparent magenta at the tips. `mesh.rs`: a generated white tile (`WHITE_TEXTURE`) joins the entity atlas so untextured geometry can be drawn there.
+  - `minecraft_survival/src/entities.rs`: the rays go into the translucent mesh (one line), and mob sounds pass through `heard_at` (one line).
+- **Checked with javap (26.3):** `EnderDragon.tickDeath` (the 180-200 explosion emitter, the 12000/500 rule, `MOB_DROPS`, `ExperienceOrb.award`, event 1028 at tick 1 unless silent, `move(0, 0.1, 0)`, `setDragonKilled` and removal at 200), `EnderDragon.aiStep` (the explosion particles while dying), `LevelEventHandler.globalLevelEvent` (1028: `ENDER_DRAGON_DEATH`, hostile, volume 5, pitch 1, 2 blocks from the camera), `EnderDragonRenderer.submit` and `lambda$submitRays$0`.
+- **Tests:** `ender_dragon`: `the_death_adds_up_to_12000_experience_on_the_first_kill_and_500_after` (shares of 960 and 2400, or 40 and 100, on ticks 155 to 200; nothing with `mob_drops` off), `the_dying_dragon_roars_once_and_rises_twenty_blocks`, `the_death_roar_is_heard_two_blocks_from_the_camera_toward_the_dragon`. `dragon_render`: `the_death_rays_grow_in_number_and_fade_in_the_last_fifth`. `server`: `the_first_dragon_drops_12000_experience_and_a_later_one_500` (an End level of seed 0: the orbs of the first kill hold 12000, a later fight dragon adds 500, none with `mob_drops` off; one death roar).
+- **Decisions:**
+  - **No dissolve and no explosion particles:** vanilla draws the dying dragon with the `dragon_explosion_alpha` cut-out that eats it away, and puffs explosion particles around it every tick (emitters from tick 180). The entity shader has no dissolve pass and the game has no Minecraft explosion particle yet, so the dragon stays whole under its rays.
+  - **The rays blend over the scene** in the translucent entity pass (vanilla adds them, `LIGHTNING` blending). On the dark End sky they look the same.
+  - **The roar reaches the End level only:** vanilla's global event goes to every player on the server; here sounds go to the players of the level.
+- **Test steps** (survival; MW2 weapons):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x4dragon` (a new world), `IW4L_MINECRAFT_DIMENSION=the_end` and the kit below. Start on the platform. Note your experience level (0).
+  2. `/gamemode creative`, fly to the island centre and pillar up near the middle, `/gamemode survival` on top. Shoot the crystals, then the dragon until the bar is empty.
+  3. It flies to the podium and stops: a loud roar plays wherever you stand, and white rays burst from its body, more and longer each second, while it rises. **Screenshot 1.**
+  4. In the last seconds a flood of experience orbs falls from it. Go down and collect them: from level 0 you reach level 68. **Screenshot 2** of the level number.
+- **Kit** (the end crystals are for entry 31 in the same world):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_crystal*16,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
+```
+
+### 29. Minecraft exit portal opens and the dragon egg and a gateway appear (E3-19)
+
+Previous commit: 4484b1eb
+
+- **Changed:**
+  - `minecraft_terrain/src/server.rs` (End region): `ServerSim::dragon_killed` is the block half of `EnderDragonFight.setDragonKilled`: `spawnExitPortal(true)` (the active podium, whose bowl fills with end portal, at the fight's exit portal location), then `spawnNewGateway` for the gateway the fight hands over (level event 3000: `block.end_gateway.spawn` at volume 10 and pitch `(1 + (r − r)·0.2)·0.7` at the gateway, then the `end_gateway_delayed` feature), then on the first kill a dragon egg on top of the podium's `MOTION_BLOCKING` height (on the pillar). `end_gateway_position(i)` is vanilla's `floor(96·cos(2(−π + 0.15707963267948966·i)))`, 75, `floor(96·sin(…))`.
+  - `minecraft_survival/src/the_end/dragon_fight.rs`: when the server reports the fight's dragon dead, `tick_level` notes whether one was killed before (the egg), marks the kill, and `open_exit_portal` sends the job with the next gateway: `next_gateway` takes the last of the 20 shuffled numbers (`gateways.remove(size − 1)`), so the list shrinks and is saved. The answer records the exit portal location and saves the fight (`FightEvents.opened`).
+  - `render_anim/src/minecraft_end.rs`: logs `Minecraft exit portal opened at ...`.
+- **Checked with javap (26.3):** `EnderDragonFight.setDragonKilled` (progress 0, bar hidden, `spawnExitPortal(true)`, `spawnNewGateway()`, the egg at `getHeightmapPos(MOTION_BLOCKING, getPodiumLocation(origin))` with `setBlockAndUpdate` only without `hasPreviouslyKilledDragon`), `spawnNewGateway()` and `spawnNewGateway(BlockPos)` (event 3000, `END_GATEWAY_DELAYED` with a fresh random), `spawnExitPortal`, `LevelEventHandler` event 3000 (explosion emitter, `END_GATEWAY_SPAWN`, blocks, 10, `(1 + (r − r)·0.2)·0.7`). The gateway positions were checked with `jshell`.
+- **Tests:** `server`: `the_twenty_end_gateways_ring_the_island_96_blocks_out_like_vanilla` (all 20 against `jshell`), `a_kill_opens_the_exit_portal_lays_the_egg_on_the_pillar_and_spawns_a_gateway` (an End level of seed 0: the inactive podium's bowl fills with end portal, the egg on the pillar, the gateway and its sound; a second kill places its gateway, keeps the first egg and lays none). `dragon_fight`: `each_kill_takes_the_last_of_the_shuffled_gateways_until_none_is_left`, `the_server_learns_the_fight_s_dragon_and_whether_one_was_killed_before`.
+- **Decisions:**
+  - The exit portal opens a tick or two after the dragon is gone, when the server's report reaches the fight; vanilla does it in the dragon's last tick.
+  - Not drawn yet: the gateway's purple beam while it spawns (X6) and the explosion emitter of event 3000 (no explosion particle). The gateway doesn't throw players yet (X6, E3-23).
+- **Test steps** (continue in `x4dragon` after entry 28's kill, or kill the dragon again there):
+  1. When the dragon is gone, the log says `Minecraft exit portal opened at (0, ..., 0)` and a loud whoosh plays. Go to the podium: the bowl is filled with the end portal starfield, and a black dragon egg sits on top of the bedrock pillar. **Screenshot 3.**
+  2. Look out over the island's edge about 96 blocks from the centre at height 75: a floating end gateway (a starfield cube in a small bedrock frame) has appeared. **Screenshot 4.**
+  3. Quit and start again: the portal, the egg and the gateway are still there, and no dragon or boss bar comes back.
+- **Kit:** the kit of entry 28.
+
+### 30. Minecraft exit portal takes players to their respawn point and shows the credits once (E3-21)
+
+Previous commit: 033a52e1
+
+- **Changed:**
+  - `minecraft_survival/src/the_end.rs`: leaving the End through an end portal now goes through `show_credits` first, `EndPortalBlock.entityInside`'s check: a player without `seenCredits` gets `showEndCredits()`, which sets `seen_credits` at once (saved as `seenCredits` with the player) and `EndTravel.credits`, the per-player hold. The trip to the respawn point (or the world spawn) starts as before (entry 7). `holding_for_credits` and `credits_done`; `Trip::OutOfTheEnd` says whether the credits roll.
+  - `render_anim/src/minecraft_world.rs` (E1's file, four lines): the switch is not finished while the player is held for the credits, so the trip home loads behind them and the player arrives only when they close (vanilla removes the player from the End and respawns them on `PERFORM_RESPAWN`); one call line runs `minecraft_end::credits` each frame; a stopped world clears them.
+  - `render_anim/src/minecraft_end.rs`: `credits` starts the roll when the local player is held (the texts are read once from the resource packs at runtime: `texts/end.txt`, `texts/credits.json`, `texts/postcredits.txt`, and the `gui/title/minecraft` and `edition` logos; nothing of Mojang's is committed), and ends the hold when the screen says it is finished. `credit_sections` reads `credits.json`. `minecraft_loading.rs`: `gpu_image` is `pub(crate)`.
+  - New `frame/src/minecraft_credits.rs`: `McCredits`, the model of `WinScreen`. `poem_lines` is `addPoemFile`: `PLAYERNAME` becomes the player's name, each obfuscation token (white, obfuscated, green, aqua) becomes white obfuscated `XXXXXXXX` cut to `nextInt(4) + 3` letters from a random seeded 8124371, each line wraps at 256 pixels (`Font.split`, colour codes taking no width and carrying over), an empty line follows each, and eight close the file. `credits_lines` is `addCreditsFile`: per section a row of `=`, the section in yellow and another row of `=`, centred, then two empty lines; per discipline its name in yellow centred and two empty lines; per title the title in grey, each name in white behind 11 spaces, two empty lines. `styled` applies the legacy codes as vanilla's `applyLegacyFormat` does (a colour ends obfuscation). The scroll moves 0.5 pixels a tick (the poem's speed), times `5 + 15 x ctrl keys` while Space is held and backward while Up is held, never below 0; the screen is finished once it passes `12 x lines + 2 x height + 24`. The logo sits at `height + 50` and the text 100 below, 12 pixels a line, and the last line stops in the middle of the screen. `MinecraftUi.credits` (appended).
+  - New `hud/src/minecraft_credits.rs`: draws the logo (256 by 44 of the 256 by 64 texture) with the edition (128 by 14) overlapping its foot by 7, then each line on screen (centred lines around the middle, the rest from `width/2 - 128`) with shadows, obfuscated letters swapped each frame for random ones of the same width; Escape skips, Space, Ctrl and Up steer as in vanilla. It draws over the End portal loading screen of the held trip, which stands in for the End portal background of `WinScreen`. `plugin.rs`, `gpu_list.rs`, `lib.rs`: its update, flush, raster and job (appended). `minecraft_loading.rs`: no "Loading terrain" text under the credits. `menus/mod.rs`: Escape doesn't open the MW2 menu while the credits roll.
+- **Checked with javap (26.3):** `EndPortalBlock.entityInside` (`showEndCredits` for a player in the End without `seenCredits`, else `setAsInsidePortal`), `ServerPlayer.showEndCredits` (`wonGame`, `WIN_GAME`, `seenCredits = true`), `WinScreen` (`<init>` speed 0.5 for the poem, `calculateScrollSpeed`, the end in `tick`, `keyPressed`/`keyReleased` with Space, both Ctrl keys and Up, `onClose` to `respawn`, `init`, `addPoemFile`, `addCreditsFile`, `addCreditsLine`, the layout of `extractRenderState`, the 8124371 seed, `OBFUSCATE_TOKEN`, `NAME_PREFIX`, `SECTION_HEADING`), `LogoRenderer` (256 by 44 of 64, the edition 128 by 14 of 16 at `y + 44 - 7`).
+- **Tests:** `minecraft_credits` (frame): `colour_codes_set_the_colour_and_end_obfuscation_like_vanilla`, `the_poem_names_the_player_and_hides_the_unspeakable_words`, `long_poem_lines_wrap_at_256_pixels_on_a_space`, `the_credits_list_sections_disciplines_titles_and_names_like_vanilla`, `the_credits_scroll_half_a_pixel_a_tick_and_end_two_screens_past_the_last_line`, `the_last_line_stops_in_the_middle_of_the_screen`. `minecraft_credits` (hud): `the_logo_sits_centred_with_the_edition_overlapping_its_foot`, `a_line_keeps_its_span_colours_and_hides_obfuscated_words`, `the_credits_listen_to_escape_space_control_and_up`. `minecraft_end` (render_anim): `the_credits_json_becomes_sections_disciplines_titles_and_names`, `the_vanilla_credits_and_poem_are_read_from_the_jar` (with `MINECRAFTOSS_ROOT`: the real texts give over 1000 lines, "Steve?" and hidden words). `the_end`: `the_first_exit_rolls_the_credits_once_and_holds_the_trip_until_they_close`.
+- **Decisions:**
+  - **Plan decision 3 (vanilla credits):** once per player, by UUID (`seenCredits` on the player), set when they start, so quitting during them doesn't show them again (vanilla sets it in `showEndCredits` too); Escape skips; the trip home loads behind them.
+  - **While they roll** the player is in the held switch: frozen, invulnerable and not ticking, as the vanilla player is out of every level until the screen closes.
+  - **Not drawn:** the `credits_vignette` darkening (it needs the `VIGNETTE` multiply blend, which the HUD has no pass for) and the credits music (the game plays no Minecraft music yet).
+  - A respawn point in the End itself (only `/spawnpoint` can set one there) shows the credits over the End without a switch, so the player isn't held.
+- **Test steps:**
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x4credits` (a new world) and the kit below. In the overworld walk about 50 blocks from the spawn and type `/spawnpoint`.
+  2. Build the ring (12 frames facing inward around a cleared 3x3), fill it and jump in. On the platform type `/setblock ~2 ~ ~ minecraft:end_portal` and walk into it (or use the exit portal after killing the dragon).
+  3. The credits roll over the moving End starfield: the Minecraft logo scrolls up, then the End Poem in aqua and green with your name, a few words shown as flickering white letters, then the credits sections in yellow with grey titles and white names. **Screenshot 5** of the poem, **screenshot 6** of the credits.
+  4. Hold Space: they scroll five times faster; Space with Ctrl faster still; hold the Up arrow: they scroll back.
+  5. Press Escape: the credits close and you stand at your `/spawnpoint` with everything you carried. **Screenshot 7.**
+  6. Go into the End again and walk into the exit block: no credits, you arrive at your spawn point at once.
+  7. Quit, start again, go to the End and out: still no credits (`seenCredits` was saved).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:diamond_pickaxe+efficiency=5,minecraft:cobblestone*64
+```
+
+### 31. Minecraft end crystals on the exit portal respawn the dragon (E3-22)
+
+Previous commit: 4c7667cf
+
+- **Changed:**
+  - New `minecraft_terrain/src/dragon_respawn.rs`: `Respawn` is the respawn part of `EnderDragonFight` with `DragonRespawnStage`'s five stages (saved by their vanilla names), ticked with the stage time handed over before it counts up, as `respawnStage.tick(.., respawnTime++)` is. START turns the crystals' beams to (0, 128, 0) and moves on; PREPARING_TO_SUMMON_PILLARS growls (level event 3001) on ticks 0, 50 to 52 and 95 to 99, and moves on at 100; SUMMONING_PILLARS takes 40 ticks a pillar: on the first it beams at the pillar's top, on the last it rebuilds the pillar, and after the last pillar it moves on; SUMMONING_DRAGON beams at the sky on tick 0, growls on ticks 1 to 4 and 80 to 99, and on tick 100 summons the dragon. `crystal_cells` are the four cells one above the exit portal and 3 out to the north, east, south and west (`Direction.Plane.HORIZONTAL`).
+  - `minecraft_terrain/src/server.rs` (End region): `try_respawn` is `EnderDragonFight.tryRespawn` and `respawnDragon`, run when an end crystal is placed in a dragon fight level (`EndCrystalItem.useOn`): only once the dragon is killed and no respawn runs, with the exit portal from the fight (or found, or built active), a crystal in each of the four cells, then the exit portal pattern is turned to end stone (`dismantle_exit_portal`), the inactive podium is built, and the respawn starts with those crystals. `tick_respawn` runs it each tick: a growl is `entity.ender_dragon.growl` at (0.5, 128.5, 0.5), volume 64, pitch 0.8 + r·0.3; a rebuilt pillar clears the blocks within 10 of its top, explodes there with power 5 (which destroys the old crystal), and places `end_spike` for it, whose new crystal is invulnerable with its beam on (0, 128, 0); the summoning makes a new dragon at (0, 128, 0) in its holding pattern, resets the pillar crystals (vulnerable, no beam) and blows up the four crystals with power 6 without breaking blocks (`ExplosionInteraction.NONE`, `BlastSource::KeepBlocks`). Losing a respawn crystal (`onCrystalDestroyed`), or all of them going, aborts: the pillar crystals are reset and the portal lights again. `FightReport` (`Respawning` at each stage, `Aborted`, `Respawned`) goes to the fight through `Output.fight_reports`; `FightLink` now also carries `dragon_killed` and the exit portal.
+  - Vendored `world/src/level/end_portal.rs` (MinecraftOSS patch): `find_exit_portal_match` and `dismantle_exit_portal` (the bedrock and end portal blocks of each match become end stone until no match is left, at most 16 rounds). Vendored `generator/src/feature/end_portal.rs`: `ExitPortal::cells`, the 7 by 7 by 5 cells of a match.
+  - `minecraft_terrain/src/end_crystal.rs`: crystals save `Invulnerable`; `uuid`, `in_cell`, `by_uuid`, `discard`, `reset_on_spike`; `Destroyed.uuid`.
+  - `minecraft_survival/src/the_end/dragon_fight.rs`: `receive_report` saves the stage, the four crystals' UUIDs (`respawn_crystals`) and the exit portal (the stage time is saved as 0), clears them on an abort, and on a new dragon clears `dragon_killed`, takes its UUID and fills the bar. A saved respawn is handed back to the server once after the first link (`saved_respawn`, `resume_job`). `entities.rs`: the reports are kept for the fight (`take_fight_reports`). `render_anim/src/minecraft_end.rs` logs the stages and the new dragon.
+- **Checked with javap (26.3):** `EnderDragonFight` (`tryRespawn`, `respawnDragon`, `tick`'s respawn part, `setRespawnStage`, `abortRespawnSequence`, `resetSpikeCrystals`, `onCrystalDestroyed`, `createNewDragon`, the codec's `respawn_stage`, `respawn_time` and `respawn_crystals`), `DragonRespawnStage` and its five subclasses' `tick`, `LevelEventHandler` event 3001 (`ENDER_DRAGON_GROWL`, hostile, 64, `0.8 + r·0.3`), `EndCrystalItem.useOn` (`tryRespawn` in a level with a dragon fight).
+- **Tests:** `dragon_respawn`: `the_stages_keep_vanilla_names`, `the_respawn_beams_growls_rebuilds_each_pillar_and_summons_like_vanilla` (every action on its vanilla tick, 20 pillar actions, the summon 100 ticks into the last stage), `the_four_crystals_stand_three_blocks_out_one_above_the_portal`. `server`: `four_crystals_on_the_exit_portal_rebuild_the_pillars_and_summon_a_new_dragon` (an End level of seed 0 after a kill with two pillar crystals shot: three crystals do nothing, the fourth starts it, the portal goes out and the inactive podium stands, the stages are reported in order, the new dragon is the fight's, every pillar has one vulnerable crystal again and a bedrock top, the four crystals blow up without breaking blocks, 33 growls), `breaking_a_respawn_crystal_stops_the_respawn_and_lights_the_portal_again`. `dragon_fight`: `a_respawn_is_saved_by_stage_and_a_new_dragon_ends_it`. Generator `end_portal`: `the_exit_portal_is_found_from_its_pillar_top_and_names_its_centre` also checks the cells.
+- **Decisions:**
+  - **The new dragon:** it is the fight's dragon with `previously_killed` still set, so it gives 500 experience and lays no egg (E3-18, E3-19), and its kill places the next gateway.
+  - **Saved mid-respawn:** the stage is saved when it changes, with its time as 0, so a world quit during the respawn restarts the current stage when loaded (vanilla saves the tick within it). The crystals are saved with their chunks and found by UUID.
+  - **Where it ticks:** the respawn runs on the server thread while the End level runs (a player is in it); vanilla also waits for the arena to be loaded.
+  - **Explosion order:** a rebuilt pillar's blast hurts the mobs, players and blocks around it and destroys the old crystal at once, before the new pillar is placed, as vanilla does; the four crystals' final blasts go off on the next server tick.
+- **Test steps** (continue in `x4dragon` after the kill of entries 28 and 29, survival):
+  1. Stand by the exit portal with 4 end crystals. On each side of the bowl, place one crystal on the bedrock rim block in the middle of the side (north, east, south and west, 3 blocks from the pillar). After the fourth, the portal's starfield goes out and the four crystals beam into the sky above the island; deep growls sound. **Screenshot 8.**
+  2. Watch the pillars: one after another the beams swing to a pillar top, which explodes and is rebuilt with a new crystal (the caged ones get their cages back). The log says `Minecraft ender dragon respawn: summoning_pillars`. **Screenshot 9.**
+  3. About 30 seconds after the fourth crystal, the four crystals explode (the rim stays whole), a new dragon circles the island, and the boss bar is back. The log says `Minecraft ender dragon respawned: [...]`.
+  4. Kill it: it gives only 500 experience (a fraction of a level now), no second egg appears (the first stays on the pillar), and a second gateway appears elsewhere on the ring. **Screenshot 10.**
+  5. Optional: place the four crystals again and break one of them during the pillar rebuilds: the beams stop, the portal lights again, and no dragon comes.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_crystal*16,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
+```
+
+### 32. The Minecraft dragon's death and the way home pass clippy
+
+Previous commit: ffd73868
+
+- **Changed:** the four clippy findings on this group's lines, all `unwrap_or_default` (disallowed by `clippy.toml`): the respawn report's exit portal in `minecraft_terrain/src/server.rs` falls back to `(0, 0, 0)` explicitly, and `render_anim/src/minecraft_end.rs` reads the credits lists and texts with `map_or_else(Vec::new, ..)` and `unwrap_or_else(String::new)`.
+- **Clippy:** `clippy -p minecraft_terrain -p minecraft_survival -p render_anim -p hud -p frame -p minecraftoss-generator -p minecraftoss-world --all-targets --no-deps --locked -- -A clippy::approx_constant` has no other finding on a line this group added or changed (every reported location checked against `git diff -U0 89f9fd97`); the rest are older.
+- **Tests:** none new; the touched crates pass as before.
+- **Test steps:** none; nothing changes in game.
+- **Kit:** none.
+
+### 33. The Minecraft state doc covers the End
+
+Previous commit: 2ab82999
+
+- **Changed:** `docs/MINECRAFT-SURVIVAL.md`: a new section "The End (round 7, track END)" under Implemented (getting there, the dragon fight, going home with the credits, elytra and rockets), the simulated mobs line names the ender dragon and end crystals, and the roadmap's End part now says what is done and what is left: X5 (strafing and fireballs with breath clouds, the landing, perching with flame breath and the sitting phases, takeoff, wing knockback, block breaking, knockback from players' hits, the egg teleport), X6 (gateway teleports with the return gateway and the beam, item frames, shulkers and their bullets, levitation, the End flashes) and the smaller gaps.
+- **Tests:** none; docs only.
+- **Test steps:** none.
+- **Kit:** none.
+
+### Group X4 summary
+
+Written with entry 33, in its commit.
+
+- **Commits:** 4484b1eb (E3-18, the death), 033a52e1 (E3-19, exit portal, egg and gateway), 4c7667cf (E3-21, the exit portal home and the credits), ffd73868 (E3-22, the respawn with four crystals), 2ab82999 (clippy), and this entry (docs).
+- **Tests** (`test -p <crate> --locked`, `MINECRAFTOSS_ROOT` set by `cargo-slot.ps1`): `minecraft_terrain` 740 (4 ignored), `minecraft_survival` 332 and the vanilla world test, `render_anim` 73, `hud` 138, `frame` 23, `minecraftoss-generator` 28 and `minecraftoss-world` 63 pass; `check -p launcher` is green.
+- **Clippy:** see entry 32.
+- **New files** (`rustfmt --check` on the staged content is empty): `minecraft_terrain/src/dragon_respawn.rs` (edition 2021), `frame/src/minecraft_credits.rs` and `hud/src/minecraft_credits.rs` (2024). The track's earlier files edited here (`ender_dragon.rs`, `dragon_render.rs`, `end_crystal.rs`, the vendored `end_portal.rs` pair, `the_end.rs`, `the_end/dragon_fight.rs`, `render_anim/src/minecraft_end.rs`) still pass.
+- **MinecraftOSS patches in this group:** `world/src/level/end_portal.rs` (`find_exit_portal_match`, `dismantle_exit_portal`), `generator/src/feature/end_portal.rs` (`ExitPortal::cells`).
+- **Plan decisions kept:** 3 (credits like vanilla: once per player through `seenCredits`, Escape skips, the trip home loads behind them, the texts read from the jar at runtime), 9 (the dragon's experience, the kill, the exit portal, the egg, the gateways and the respawn all go through the fight of the End level and its saved data; the credits and the hold are per player by UUID; nothing uses `PLAYER = 0`).
+- **Not done in this group, and why:**
+  - **X5 and X6** are out of scope this round (see entry 33 and the state doc). No X5 commit (E3-16 perching, E3-20 egg teleport) was started in group X4; whether X5 runs as an extra group is the orchestrator's call.
+  - **Small gaps:** the dragon's dissolve and explosion particles while dying (no dissolve pass, no explosion particle), the gateway beam and event 3000's emitter, the credits vignette and music, the respawn's stage time is saved as the start of its stage.
+- **Owner test for the group** (one new world, survival; screenshots numbered as in the entries):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x4` (a new world) and the kit below; no `IW4L_MINECRAFT_DIMENSION` line. In the overworld walk about 50 blocks from the spawn and type `/spawnpoint`.
+  2. Build the ring of 12 frames facing inward around a cleared 3x3, fill it with eyes and step in.
+  3. Entry 28 steps 2 to 4: shoot the crystals and kill the dragon; the roar, the rays and the experience flood to level 68. Screenshots 1 and 2.
+  4. Entry 29 steps 1 and 2: the lit exit portal, the egg on the pillar and the gateway. Screenshots 3 and 4.
+  5. Entry 31 steps 1 to 4: four crystals on the rim respawn the dragon; kill it again for 500 experience and no second egg. Screenshots 8 to 10.
+  6. Quit while in the End and start again: you are still in the End, the portal and the egg are there, and no dragon or bar comes back (brief step 13).
+  7. Entry 30 steps 3 to 7: walk into the exit portal; the credits roll, Escape takes you to your `/spawnpoint` with everything; later exits have no credits, also after a restart. Screenshots 5 to 7.
+- **Kit for the group** (14 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:end_crystal*16,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket,minecraft:cooked_beef*32
+```
+
+## Review of the third run (X3 and X4)
+
+An adversarial review of af3cc119..3e3bc785: rules (no comments, rustfmt on the new files, no Mojang data), vanilla checks with javap (`EnderDragon.hurt(part)`, `handleKillingBlow`, `tickDeath`, `checkCrystals`, `DragonDeathPhase`, `DragonHoverPhase.isSitting`, `EndCrystal.hurtServer`, `EnderDragonFight.tick`, `tryRespawn`, `respawnDragon`, `DragonRespawnStage$3`, `Player.canCriticalAttack`, `GameRenderer`'s sky pass flag), MW2 regressions (the flat hit bit only rides on dragon part keys; MW2 maps build no mob boxes) and per-player state. Each defect found is fixed in its own commit below.
+
+### 34. Minecraft dragon respawn waits for players near a loaded arena like vanilla
+
+Previous commit: 3e3bc785
+
+- **Defect:** the respawn with four crystals ran on the server whenever the End level ticked. `EnderDragonFight.tick` runs it only while the fight has players (within 192 blocks) and `isArenaLoaded()`; it returns before the respawn otherwise. Worst case: a world quit during a respawn, after the first visit's state scan, sent the saved respawn back to the server on the first frame, before the chunks holding the four crystals were loaded; the next tick found none of them and aborted, so the saved respawn was lost and the portal lit again (entry 31's "a world quit during the respawn restarts the current stage" did not hold). Walking more than 192 blocks away also kept it running while the arena could unload.
+- **Changed:** `minecraft_terrain/src/server.rs`: `FightLink.ticking`; `tick_respawn` returns at once while the fight does not tick. `minecraft_survival/src/the_end/dragon_fight.rs`: `DragonFight.arena_loaded` (set each frame from the same arena check the scan and the dragon use), and `link_state` sends `ticking` = players near and the arena loaded, so the link is resent when either changes. Chunks go to the server before a job sent after them, so a ticking fight has the crystals loaded.
+- **Checked with javap (26.3):** `EnderDragonFight.tick` (`isArenaLoaded()` returns before the respawn stage tick, all inside the non-empty player branch).
+- **Tests:** `server`: `a_respawn_waits_while_the_fight_does_not_tick_and_a_reloaded_one_waits_for_its_crystals` (an End level of seed 0: four crystals start a respawn that stays at its start for 300 ticks without a ticking fight; a respawn resumed before its crystals load is kept, not aborted; once the crystals are back and the fight ticks, it moves to `preparing_to_summon_pillars`). `dragon_fight`: `the_fight_ticks_on_the_server_only_with_players_near_and_the_arena_loaded`. `respawn_world` links a ticking fight.
+- **Track log:** the X4 summary no longer says X3 and X4 took the whole run.
+- **Test steps** (survival; continue in `x4dragon` after a kill, or kill the dragon there first):
+  1. Place the four crystals on the rim (entry 31 step 1). When the log says `Minecraft ender dragon respawn: summoning_pillars`, quit the game at once.
+  2. Start again: you are in the End. Within a few seconds the beams come back from the four crystals, the pillars are rebuilt from the first one again, and about 30 seconds later the new dragon comes (the log says `Minecraft ender dragon respawned: [...]`, not `respawn: aborted`). **Screenshot 11.**
+  3. Optional: place four crystals again after killing it, then `/gamemode creative` and fly more than 192 blocks from the island centre (`/tp 0 100 250`) right away: the beams stay where they are and no pillar is rebuilt while you are away; fly back and they go on.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_crystal*16,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
+```
+
+### 35. Minecraft end crystals placed by players get a new UUID every session
+
+Previous commit: b2e8a03d
+
+- **Defect:** a placed end crystal took its UUID from the level's crystal random, which started from the same constant seed every session and also drew each loaded crystal's `time`. With the same number of crystals loaded before a placement, a crystal placed after a restart got the UUID of one placed in an earlier session, and both stood in the world. The respawn finds its four crystals by UUID, so a twin elsewhere took the beams, was blown up and discarded with them at the summon, or aborted the respawn when it broke; a vanilla load of the save would also drop one of the twins.
+- **Changed:** `minecraft_terrain/src/end_crystal.rs`: `Crystals` draws new UUIDs from their own random seeded once per session (`session_seed`: the wall clock in nanoseconds mixed with a per-process counter), as vanilla's `Mth.createInsecureUUID` draws from an entity random seeded uniquely per session. The crystals' `time` keeps the old seeded random.
+- **Tests:** `end_crystal`: `crystals_placed_in_two_sessions_never_share_a_uuid` (the same load and placement history in two sessions gives two different version-4 UUIDs).
+- **Decision:** the dragon's UUID (`Dragons::fresh_tag` from `ServerSim.end_random`) keeps its seeded draws, because the dragon's flight random is seeded from its UUID and the server tests rely on a reproducible flight. Two dragons with one UUID would need the fight to make a new dragon while an earlier one of the same draw index still lives, which the held arena ticket rules out.
+- **Test steps** (survival): a twin needs the same number of random draws before two placements, which no in-game step can arrange on purpose, so the unit test covers the fix. As a regression check:
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x4uuid` (a new world), `IW4L_MINECRAFT_DIMENSION=the_end` and the kit below. On the platform place an obsidian block and put an end crystal on it; it stands there without its base. Quit and start again: it is still there.
+  2. Shoot it: it explodes as before.
+  3. Remove the `IW4L_MINECRAFT_DIMENSION` line afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_crystal*8,minecraft:obsidian*8,minecraft:golden_apple*8,minecraft:diamond_chestplate
+```
+
+### 36. Minecraft ender dragon growls on while it dies
+
+Previous commit: f62433d7
+
+- **Defect:** the client stopped the dragon's growl once its health reached 0, so the dying dragon fell silent as it rose. 26.3's `EnderDragon.aiStep` counts `growlTime` down on the client before its dead-or-dying branch, held back only while the phase sits (`isSitting`), and `DragonDeathPhase` does not sit, so vanilla's dragon keeps growling through its death.
+- **Changed:** `minecraft_survival/src/entities.rs` (`dragon_voices`, one line): only a sitting dragon skips the growl.
+- **Checked with javap (26.3):** `EnderDragon.aiStep` (the client growl: `isSilent`, `isSitting`, `--growlTime < 0`, volume 2.5, `200 + nextInt(200)`, before `isDeadOrDying`).
+- **Tests:** none new: the growl timer lives in `Entities::dragon_voices`, which runs only on a server snapshot; the `minecraft_survival` tests pass as before.
+- **Test steps** (survival; in `x4dragon` or any End world with a dragon to kill): kill the dragon and listen while it rises under its rays for 10 seconds: besides the death roar, a growl may sound now and then, as before its death.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
+```
+
+## Final check of the third run
+
+### 37. The track END log sums up its third final check
+
+Previous commit: 8dddc195
+
+- **Commits of the third run** (since af3cc119): 63ff26c8 (the End entry's travel sound), 039c31d8 (E3-9), 5a6fd423 (E3-11), 2b3167b1 (E3-12), 8bf65034 (E3-13), af14e52b (E3-14), 89f9fd97 (clippy, X3), 4484b1eb (E3-18), 033a52e1 (E3-19), 4c7667cf (E3-21), ffd73868 (E3-22), 2ab82999 (clippy, X4), 3e3bc785 (state doc), b2e8a03d, f62433d7 and 8dddc195 (review fixes), and this entry.
+- **Touched crates** (`git diff --stat af3cc119..8dddc195`): `frame`, `hud`, `minecraft_survival`, `minecraft_terrain`, `render_anim`, `sim`, `minecraftoss-entities`, `minecraftoss-generator`, `minecraftoss-world`.
+- **Clippy:** `clippy -p frame -p hud -p minecraft_survival -p minecraft_terrain -p render_anim -p sim -p minecraftoss-entities -p minecraftoss-generator -p minecraftoss-world --locked --all-targets -- -A clippy::approx_constant` has no finding on a line the third run added: each of the 33 locations reported in its files blames to af3cc119 or earlier (`git blame af3cc119..8dddc195`). No fix needed.
+- **Tests** (`test -p <crate> --locked`; the minecraftoss crates with the stand-in scenario files of `full-suite.ps1`): `minecraft_terrain` 742 (4 ignored), `minecraft_survival` 334, `render_anim` 73, `hud` 138, `frame` 23, `sim` 73, `minecraftoss-entities` 83, `minecraftoss-generator` 28 and `minecraftoss-world` 63 pass, none failed. The full suite runs at merge time.
+- **X5 was not started** this run: E3-16 (perching and breath) and E3-20 (the egg teleport) stay out of scope, as do the rest of X5 and X6 (see entry 33).
+- **Test steps:** none new. The owner's test of the third run is, in order: the X3 owner test in the new world `x3`; the X4 owner test in the new world `x4`; entry 34 in `x4` after a kill (place the four crystals, quit during `summoning_pillars`, restart); entry 35 in the new world `x4uuid` (with `IW4L_MINECRAFT_DIMENSION=the_end`, removed afterwards); entry 36 during any kill. The first and second runs' tests are listed in entries 13 and 20. A kit goes to a player only in a world where they have no inventory yet, so the one line below serves every world of the third run (its items cover each entry's kit from 21 to 36).
+- **Kit for the third run** (22 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:end_crystal*16,minecraft:obsidian*16,minecraft:end_stone*4,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket,minecraft:cooked_beef*32,minecraft:shield,minecraft:totem_of_undying,minecraft:ender_pearl*16,minecraft:torch*64,minecraft:oak_planks*64
+```
