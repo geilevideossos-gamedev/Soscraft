@@ -638,6 +638,10 @@ impl Entities {
         tick.sounds
     }
 
+    pub fn campfire_tick(&mut self, scene: &HandcraftedScene, food: impl Fn((i32, i32, i32)) -> [bool; 4]) {
+        self.ambient.campfire_tick(scene, food);
+    }
+
     /// Client ticks run so far.
     pub fn client_ticks(&self) -> u64 {
         self.ticks
@@ -1106,7 +1110,7 @@ impl Entities {
         minecraft_terrain::eye_of_ender::append_eyes(&mut out.items, self.eyes.views(), partial, camera, atlas, forward);
         minecraft_terrain::trident::append_tridents(&mut out.items, &self.tridents, partial, atlas, light);
         self.poof.append_mesh(&mut out.items, atlas, forward, partial, light);
-        self.ambient.append_mesh(&mut out.items, atlas, forward, partial, light);
+        self.ambient.append_mesh(&mut out.items, &mut out.translucent, atlas, forward, partial, light);
         self.portal.append_mesh(&mut out.items, atlas, forward, partial, light);
         self.spell.append_mesh(&mut out.translucent, atlas, forward, partial, light);
         let held: Vec<_> =

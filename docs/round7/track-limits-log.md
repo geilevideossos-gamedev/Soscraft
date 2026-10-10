@@ -50,3 +50,26 @@ IW4L_MINECRAFT_KIT=minecraft:lava_bucket,minecraft:water_bucket,minecraft:nether
 ```
 IW4L_MINECRAFT_KIT=minecraft:lava_bucket,minecraft:water_bucket,minecraft:netherrack*4,minecraft:oak_log*8,minecraft:flint_and_steel,minecraft:campfire*2,minecraft:soul_campfire
 ```
+
+### 3. Minecraft campfires smoke, and signal fires over hay
+
+- **Changed:**
+  - `ambient_particles.rs`: `CosySmoke` and `SignalSmoke` (`CampfireSmokeParticle`): a random one of `big_smoke_0` to `big_smoke_11`, size 3x, box 0.25, alpha 0.9 (cosy) or 0.95 (signal), lifetime 80 + 50 r or 280 + 50 r ticks, rising at the given 0.07 plus up to 0.002, gravity 3e-6, no friction, swaying by up to 1/5000 a tick on x and z, and losing 0.015 alpha a tick over the last 60. They go into the translucent entity mesh (vanilla's `TRANSLUCENT` sheet); `append_mesh` takes both meshes now.
+  - `AmbientParticles::campfire` is `CampfireBlockEntity.particleTick`: with chance 0.11 a tick, 2 or 3 `makeParticles(signal, false)` (each at the centre +- r/3 on x and z and y + r + r), and for each food slot with chance 0.2, four `smoke` with motion (0, 0.0005, 0) at the slot's corner (`Direction.from2DDataValue((slot + facing) mod 4)`, 0.3125 in and 0.3125 clockwise). `campfire_tick` runs it for every lit campfire of the scene.
+  - `scene.rs`: `HandcraftedScene::campfires` lists the campfires among the edited blocks and the generated chunks' block entities; `AmbientParticles` keeps the list until the scene's revision changes. `containers.rs`: `Containers::campfire_food` gives the occupied slots. `entities.rs` forwards `campfire_tick`; `minecraft_world.rs` calls it once per client tick beside the display tick (one line).
+  - `third_party/minecraftoss/player/src/placement.rs`: campfires and soul campfires get `CampfireBlock.getStateForPlacement`'s state: `facing` the player's horizontal direction, `lit` unless placed in water, `signal_fire` over a hay bale, `waterlogged` in source water. Before, a placed campfire kept the default state (facing north, never a signal fire, lit even in water). The block update rule already turned `signal_fire` on and off when hay below changes.
+- **Tests:** `ambient_particles`: `campfire_smoke_rises_for_its_life_and_fades_out_over_the_last_three_seconds`, `a_campfire_puffs_two_or_three_smokes_one_tick_in_nine`, `campfire_smoke_starts_over_the_fire_and_a_signal_fire_sends_signal_smoke`, `food_on_a_campfire_smokes_four_puffs_from_its_corner`, `only_lit_campfires_in_the_scene_smoke`. `minecraftoss-player` `placement`: `campfires_face_the_player_light_dry_and_signal_over_hay`.
+- **Decisions:**
+  - Vanilla draws campfire smoke with `addAlwaysVisibleParticle`, so it ignores the 32-block particle distance; the list covers every loaded campfire.
+  - A campfire with no `facing` (none is placed so now) counts as north, the block's default state.
+- **Test steps:**
+  1. Place the campfire on the grass: grey smoke puffs rise about 6 to 8 blocks and fade. **Screenshot 4.**
+  2. Place a hay bale and a campfire on top of it (looking east): the smoke climbs about three times as high. **Screenshot 5.** Its logs run the way you looked.
+  3. Break the hay bale under that campfire and place it back (or place a campfire beside hay and move the hay under it with another bale): the column switches between short and tall smoke.
+  4. Put raw beef and raw porkchop on a campfire: thin smoke rises from each piece's corner until it is cooked.
+  5. Douse a campfire with the water bucket: the smoke stops. Relight it with flint and steel: it starts again.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:campfire*4,minecraft:soul_campfire,minecraft:hay_block*4,minecraft:beef*4,minecraft:porkchop*4,minecraft:water_bucket,minecraft:flint_and_steel
+```

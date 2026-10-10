@@ -70,6 +70,19 @@ pub(crate) fn block_entity_placement(
                 .with("facing", name(opposite(facing)))
                 .with("waterlogged", water),
         )),
+        "campfire" | "soul_campfire" => {
+            let below = world.block(step(pos, Face::Down));
+            let hay = below.is_some_and(|b| b.id == "minecraft:hay_block");
+            let lit = if water == "true" { "false" } else { "true" };
+            placed(Some(
+                block
+                    .clone()
+                    .with("facing", name(facing))
+                    .with("lit", lit)
+                    .with("signal_fire", if hay { "true" } else { "false" })
+                    .with("waterlogged", water),
+            ))
+        }
         "decorated_pot" => placed(Some(
             block
                 .clone()
@@ -1272,6 +1285,24 @@ mod tests {
         let (wall, _) = state(&world, (0, 1, 0), "minecraft:oak_hanging_sign", &side).unwrap();
         assert_eq!(wall.id, "minecraft:oak_wall_hanging_sign");
         assert_eq!(wall.property("facing"), Some("north"));
+    }
+
+    #[test]
+    fn campfires_face_the_player_light_dry_and_signal_over_hay() {
+        let mut world = Blocks::default();
+        world.set_block((0, 0, 0), Some(Block::new("minecraft:stone")));
+        world.set_block((5, 0, 0), Some(Block::new("minecraft:hay_block")));
+        let east = view(270.0, 30.0, Face::Up);
+        for id in ["minecraft:campfire", "minecraft:soul_campfire"] {
+            let (campfire, _) = state(&world, (0, 1, 0), id, &east).unwrap();
+            let properties = ["facing", "lit", "signal_fire", "waterlogged"].map(|key| campfire.property(key));
+            assert_eq!(properties, [Some("east"), Some("true"), Some("false"), Some("false")], "{id}");
+            let (signal, _) = state(&world, (5, 1, 0), id, &east).unwrap();
+            assert_eq!(signal.property("signal_fire"), Some("true"), "{id}");
+        }
+        world.set_block((0, 1, 0), Some(Block::new("minecraft:water").with("level", "0")));
+        let (wet, _) = state(&world, (0, 1, 0), "minecraft:campfire", &east).unwrap();
+        assert_eq!((wet.property("lit"), wet.property("waterlogged")), (Some("false"), Some("true")));
     }
 
     #[test]

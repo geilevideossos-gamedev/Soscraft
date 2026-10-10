@@ -78,7 +78,8 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 - Eating, drinking and potions, with the vanilla first-person eat and drink animation, crumbs, sounds and burp. Food only counts when finished; letting go cancels. Glass bottles, buckets (water, lava, powder snow), cauldrons and waterlogging.
 - Flint and steel and fire charges light fire, campfires and candles, and prime TNT.
 - Snowballs, eggs, ender pearls, bottles o' enchanting, splash and lingering potions and wind charges are thrown with right-click and drawn in flight; potions splash their effects on mobs and players, and a wind charge burst launches the player without the fall damage of the jump. Tridents charge while right-click is held, are thrown on release, drawn in 3D in flight and in the hands, and come back with Loyalty; a Riptide one launches the player in water or rain. Sweet and glow berries.
-- Campfire cooking: 4 slots, 30 s per item, nothing cooks while unlit.
+- Campfire cooking: 4 slots, 30 s per item, nothing cooks while unlit. A placed campfire faces the way the player looks, is lit unless placed in water and is a signal fire over a hay bale, as vanilla places it.
+- Lit campfires send up their smoke (`campfire_cosy_smoke`, or the taller `campfire_signal_smoke` over hay: big translucent puffs that drift up for 4 to 6 or 14 to 16 seconds and fade out over the last 3), and food on them smokes from its corner. Every lit campfire in the loaded chunks smokes, as vanilla ticks all their block entities.
 - Spawn eggs for every simulated mob.
 - Dropped items burn up in fire, soul fire and lava, and lava sizzles. Netherite gear and ancient debris never burn and float on lava. Lit campfires leave items alone, as in vanilla.
 
@@ -225,7 +226,7 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 - Chest, ender chest, copper chest and shulker box lids open and close like vanilla, but an opening shulker box does not grow its collision or push anyone. Other block entities never animate: no bell swing, banner wave or enchanting table book. There are no banner or shield patterns and no sign text. Heads use the default skin, and the conduit always shows its inactive shell.
 - Not drawn: the copper golem statue. Each half of a double chest is lit separately.
 - No lava fog and no rain particles.
-- Missing particles: bone meal, fizz, item break, TNT and campfire smoke.
+- Missing particles: bone meal, fizz, item break, TNT smoke and explosions.
 - The display tick animates nether portals and plays the ambient sounds of fire, soul fire, lava under air (`block.lava.pop` and `block.lava.ambient`) and lit campfires (`block.campfire.crackle`) at vanilla's chances, volumes and pitches. Fire smokes (`large_smoke`, three puffs a tick on the ground, two against each burning side), lava under air spits an ember with each pop and lit campfires one time in five (`lava` particles, which leap, fall, glow at full block light and trail `smoke`). Other blocks' display ticks (drips, leaves, torches, candles, biome particles) do nothing yet.
 - The animation clock keeps running while paused.
 - Third person: while a Minecraft block or item (or an empty hand) is selected the MW2 body puts its gun away and holds the selected item in its right hand and the offhand item in its left, as vanilla's `thirdperson_righthand` and `thirdperson_lefthand` displays place them, and worn armour is drawn on it, bending at the elbows and knees. The arms keep MW2's gun grip: vanilla's arm swing and use poses, armour trims, heads and carved pumpkins on the head, the elytra and burning flames are not drawn on it, and a corpse wears no gear. While the inventory is open the body leaves the world for the inventory's character box. The camera stops on block collision shapes, so glass, fences and snow layers stop it where vanilla's visual shapes would let it through or closer. Underwater fog follows the eyes, not the camera, and MW2 scope overlays are not checked in third person yet.
@@ -267,7 +268,7 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 - Redstone covers only levers, buttons and the powered sounds of doors, trapdoors and gates.
 - Spawn eggs for unsimulated mobs (fox, rabbit, goat and others) spawn nothing, and the egg is kept. Clicking a spawner with an egg doesn't change its mob.
 - The fire charge uses flint and steel's block-update flags.
-- No campfire smoke, and no dousing with a shovel.
+- No campfire dousing with a shovel.
 - The enchanting slot takes tools, armour and books only. The anvil name field only edits at the end.
 - Ice whose support breaks in the same frame leaves no water, and melted ice shows air for about a server tick before the water appears.
 - To check in game: whether breaking one bed half removes the other, and whether a ladder drops when its wall is removed. The update rules for both exist now.

@@ -914,6 +914,10 @@ impl Containers {
         self.campfires.iter().map(|(pos, campfire)| (*pos, campfire))
     }
 
+    pub fn campfire_food(&self, pos: BlockPos) -> [bool; crate::campfire::SLOTS] {
+        self.campfires.get(&pos).map_or([false; crate::campfire::SLOTS], |campfire| campfire.items.each_ref().map(Option::is_some))
+    }
+
     pub fn place_food(&mut self, pos: BlockPos, stack: &ItemStack, recipes: &RecipeBook) -> Option<bool> {
         let (_, ticks) = self.book.campfire_cooking(&stack.id, recipes)?;
         let placed = self.campfires.entry(pos).or_default().place(stack, ticks);

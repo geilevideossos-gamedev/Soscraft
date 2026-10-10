@@ -379,6 +379,22 @@ impl HandcraftedScene {
     pub fn block_count(&self) -> usize {
         self.blocks.values().map(|chunk| chunk.len()).sum()
     }
+    pub fn campfires(&self) -> Vec<BlockPos> {
+        let edited = self
+            .blocks
+            .values()
+            .flat_map(|chunk| chunk.iter())
+            .filter(|(_, block)| crate::campfire::is_campfire(block))
+            .map(|(&pos, _)| pos);
+        let generated = self.generated.values().flat_map(|chunk| {
+            let entities = &chunk.block_entities;
+            entities.pending.keys().chain(entities.entities.keys()).copied()
+        });
+        let found: BTreeSet<BlockPos> = edited
+            .chain(generated.filter(|&pos| Scene::block(self, pos).is_some_and(crate::campfire::is_campfire)))
+            .collect();
+        found.into_iter().collect()
+    }
     pub fn positions_with_block(&self, id: &str) -> Vec<BlockPos> {
         self.blocks
             .values()

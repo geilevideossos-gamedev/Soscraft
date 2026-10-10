@@ -1687,6 +1687,7 @@ fn update(
                     sounds.play(&world.packs, sound.event, Some(at(sound.at)), sound.volume, sound.pitch);
                 }
             }
+            entities.campfire_tick(&terrain.scene, |pos| containers.campfire_food(pos));
         }
         if !changes.is_empty() {
             let registries = &globals.registries;
