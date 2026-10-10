@@ -1204,3 +1204,29 @@ Previous commit: 4cb7fa52
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*256,minecraft:oak_planks*128,minecraft:end_stone*128,minecraft:obsidian*64,minecraft:golden_apple*16,minecraft:diamond_chestplate,minecraft:diamond_boots+feather_falling=4,minecraft:diamond_pickaxe+efficiency=5
 ```
+
+### 43. Minecraft dragon eggs teleport when clicked or hit (E3-20)
+
+Previous commit: 81dec3e3
+
+- **Changed:**
+  - New `minecraft_terrain/src/dragon_egg.rs`: `DragonEggBlock.teleport`. Up to 1000 tries (`TRIES`) at an offset of `nextInt(16) − nextInt(16)`, `nextInt(8) − nextInt(8)`, `nextInt(16) − nextInt(16)` from the egg (`offset`, the draws in vanilla's order), the first into air above a block that is not air, inside the build height and the world border (`teleport_target`, `within_border`). `teleport_particles` is level event 2015 on the client (`singleBlockTeleportationParticles`): 128 portal particles along the line between the two spots, each with a motion of up to 0.1 a tick. `is_egg`.
+  - `minecraft_terrain/src/server.rs`: `ServerSim::teleport_egg` runs for an attack (`attack`) and a use (`useWithoutItem`) on a dragon egg, with the level's random: the egg is set at its new spot (flags 2, `update::CLIENTS`) and removed from the old one (`removeBlock`); an egg that finds no spot stays, and the click is still used. The server's use and attack tables take the egg's states, so a client sends its clicks on an egg. `Output.egg_teleports` carries each jump (old and new spot) to the clients.
+  - `minecraft_survival/src/entities.rs`: `Entities::attack_block`; each jump in an output emits the portal particles.
+  - `render_anim/src/minecraft_world.rs` (one filter): a shot or hand-mining hit on a dragon egg is an attack on it instead of mining progress, so the egg jumps away rather than cracking (vanilla's `startDestroyBlock` calls `attack` first, and the egg is gone from the spot being mined). Right-clicking an egg already went through `use_block`.
+- **Checked with javap (26.3):** `DragonEggBlock` (`useWithoutItem`, `attack`, `teleport`: 1000 tries, the six draws, `isAir` at the spot and not below, `WorldBorder.isWithinBounds`, `isInsideBuildHeight`, level event 2015 with `packDifferenceInPosition(.., 16, 8, 16)`, `setBlock(.., 2)`, `removeBlock(.., false)`), `LevelEventHandler` (2015: `unpackDifferenceInPosition`, `singleBlockTeleportationParticles`: 128 `PORTAL` particles, `lerp(t, new, old)`, motion `(nextFloat − 0.5) · 0.2`).
+- **Tests:** `dragon_egg`: `only_the_dragon_egg_teleports`, `an_offset_draws_two_horizontal_two_vertical_and_two_horizontal_ints` (the bounds in order, offsets within 15, 7 and 15), `the_egg_lands_on_the_first_free_spot_drawn_or_stays_after_a_thousand_tries` (an egg in a full box stays put after 6000 draws; the border), `the_portal_particles_stream_between_the_two_spots` (128, within the box between the spots, the first particle hand-worked from the same random). `server`: `a_dragon_egg_jumps_to_a_free_spot_nearby_when_clicked_or_hit` (an End level of seed 0: an attack and then a use each move the egg within 15, 7 and 15 onto a solid block, leave air behind, send both changes and one jump; air is no egg).
+- **Decisions:**
+  - **What counts as a hit:** a MW2 bullet or a hand-mining tick on the egg is an attack (vanilla's left click); every such hit makes it jump again, as holding the button on a new spot starts a new attack in vanilla. A creative player's instant break of the egg with a Minecraft item still breaks it, as vanilla's creative left click does.
+  - **No sound:** vanilla's teleport plays none, only the particles.
+- **Test steps** (survival):
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x5egg` (a new world) and the kit below. On flat ground, place the dragon egg.
+  2. Right-click it: it vanishes and reappears up to 15 blocks away on the ground, with a stream of purple portal particles between the two spots. **Screenshot 1** (the particles).
+  3. With the egg selected or any Minecraft item in hand, hold left-click on it: it jumps away again instead of cracking.
+  4. Switch to an MW2 weapon and shoot it: it jumps away at each hit, without cracks.
+  5. In creative (`/gamemode creative`), left-click it with a Minecraft item: it breaks instead. `/gamemode survival` afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:dragon_egg,minecraft:cobblestone*64,minecraft:torch*16
+```

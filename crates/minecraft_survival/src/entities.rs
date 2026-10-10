@@ -569,6 +569,10 @@ impl Entities {
         self.server.use_block(scene, pos, facing)
     }
 
+    pub fn attack_block(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32)) -> bool {
+        self.server.attack_block(scene, pos)
+    }
+
     pub fn item_on_block(&mut self, pos: (i32, i32, i32), action: minecraft_terrain::server::ItemOnBlock, sent: SentItemUse) {
         self.server.item_on_block(pos, action);
         self.item_use_waiting = Some(sent);
@@ -864,6 +868,11 @@ impl Entities {
             for broken in &output.potion_breaks {
                 self.spell.burst(broken.position, broken.color, broken.instant);
                 self.potion_crumbs.push(minecraft_terrain::spell_particles::break_center(broken.position));
+            }
+            for (from, to) in output.egg_teleports {
+                for (start, motion) in minecraft_terrain::dragon_egg::teleport_particles(from, to, &mut self.random) {
+                    self.portal.emit(start, motion);
+                }
             }
             for hit in output.thrown_hits {
                 if hit.kind == minecraft_terrain::thrown::Throwable::EnderPearl {

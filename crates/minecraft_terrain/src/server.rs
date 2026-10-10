@@ -90,6 +90,7 @@ pub struct ServerSim {
     end_sounds: Vec<minecraftoss_entities::world::MobSound>,
     end_hits: Vec<minecraftoss_entities::world::PlayerHit>,
     dragons_killed: Vec<[i32; 4]>,
+    egg_teleports: Vec<(BlockPos, BlockPos)>,
     fight: FightLink,
     dragon_drops: bool,
     respawn: Option<crate::dragon_respawn::Respawn>,
@@ -315,6 +316,7 @@ impl ServerSim {
             end_sounds: Vec::new(),
             end_hits: Vec::new(),
             dragons_killed: Vec::new(),
+            egg_teleports: Vec::new(),
             fight: FightLink::default(),
             dragon_drops: true,
             respawn: None,
@@ -1356,6 +1358,9 @@ impl ServerSim {
 
     /// `useWithoutItem` on a simulated block; false when not simulated.
     pub fn use_block(&mut self, pos: BlockPos, player_facing: &str) -> bool {
+        if self.teleport_egg(pos) {
+            return true;
+        }
         let facing = minecraftoss_core::pos::Direction::from_name(player_facing);
         self.level.use_block_facing(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), facing)
     }
@@ -1373,7 +1378,37 @@ impl ServerSim {
     }
 
     pub fn attack_block(&mut self, pos: BlockPos) -> bool {
+        if self.teleport_egg(pos) {
+            return true;
+        }
         self.level.attack_block(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2))
+    }
+
+    pub fn teleport_egg(&mut self, pos: BlockPos) -> bool {
+        use minecraftoss_core::random::RandomSource;
+        let at = |(x, y, z): BlockPos| minecraftoss_core::BlockPos::new(x, y, z);
+        let state = self.level.block(at(pos));
+        let blocks = &self.level.registries().blocks;
+        if blocks.block_by_name(crate::dragon_egg::DRAGON_EGG) != Some(blocks.block_of(state)) {
+            return false;
+        }
+        let mut random = self.level.random.clone();
+        let level = &self.level;
+        let (low, high) = (level.min_y(), level.max_y());
+        let air = |pos: BlockPos| level.registries().blocks.is_air(level.block(at(pos)));
+        let fits = |to: BlockPos| air(to) && !air((to.0, to.1 - 1, to.2)) && crate::dragon_egg::within_border(to) && (low..=high).contains(&to.1);
+        let target = crate::dragon_egg::teleport_target(pos, &mut |bound| random.next_i32_bound(bound), fits);
+        self.level.random = random;
+        if let Some(to) = target {
+            self.egg_teleports.push((pos, to));
+            self.level.set_block(at(to), state, update::CLIENTS, update::LIMIT);
+            self.level.remove_block(at(pos), false);
+        }
+        true
+    }
+
+    pub fn take_egg_teleports(&mut self) -> Vec<(BlockPos, BlockPos)> {
+        std::mem::take(&mut self.egg_teleports)
     }
 
     pub fn item_on_block(&mut self, pos: BlockPos, action: ItemOnBlock) -> bool {
@@ -2305,6 +2340,7 @@ pub struct WeatherView {
 pub struct Output {
     /// Blocks that changed, with the block now there.
     pub changes: Vec<(BlockPos, Option<Block>)>,
+    pub egg_teleports: Vec<(BlockPos, BlockPos)>,
     pub block_entities: Vec<(BlockPos, Option<minecraftoss_core::nbt::Tag>)>,
     pub destroyed: Vec<(BlockPos, Block)>,
     /// Entity snapshots, after a tick.
@@ -2371,7 +2407,10 @@ impl ServerHandle {
         let states = sim.states.clone();
         let count = sim.level.registries().blocks.state_count();
         let uses: Vec<bool> = (0..count).map(|i| sim.level.handles_use(BlockStateId(i as u16))).collect();
-        let attacks: Vec<bool> = (0..count).map(|i| sim.level.handles_attack(BlockStateId(i as u16))).collect();
+        let egg = sim.level.registries().blocks.block_by_name(crate::dragon_egg::DRAGON_EGG);
+        let is_egg = |i: usize| egg == Some(sim.level.registries().blocks.block_of(BlockStateId(i as u16)));
+        let uses: Vec<bool> = uses.into_iter().enumerate().map(|(i, used)| used || is_egg(i)).collect();
+        let attacks: Vec<bool> = (0..count).map(|i| sim.level.handles_attack(BlockStateId(i as u16)) || is_egg(i)).collect();
         let (commands, receiver) = std::sync::mpsc::channel::<Command>();
         let (sender, outputs) = std::sync::mpsc::channel::<Output>();
         let thread = std::thread::Builder::new()
@@ -2625,6 +2664,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::PlayerMines(broken) => sim.player_mines(&broken),
                 Command::UseBlock { pos, facing } => {
                     sim.use_block(pos, facing);
+                    out.egg_teleports.extend(sim.take_egg_teleports());
                 }
                 Command::BoneMeal { pos, face } => {
                     if sim.bone_meal(pos, face) {
@@ -2633,6 +2673,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::Attack(pos) => {
                     sim.attack_block(pos);
+                    out.egg_teleports.extend(sim.take_egg_teleports());
                 }
                 Command::ItemOnBlock { pos, action } => {
                     out.item_uses.push(sim.item_on_block(pos, action));
@@ -7463,6 +7504,33 @@ mod tests {
         let enderman = &server.mobs.endermen()[0];
         assert_eq!(enderman.enderman.health, 35.0, "the wing hurts it for 5");
         assert!(enderman.enderman.body.velocity.x < -0.5, "thrown away from the dragon");
+    }
+
+    #[test]
+    fn a_dragon_egg_jumps_to_a_free_spot_nearby_when_clicked_or_hit() {
+        use minecraftoss_generator::feature::World as _;
+        let Some(mut server) = end_world((-2..=1).flat_map(|x| (-2..=1).map(move |z| (x, z)))) else { return };
+        let ground = server.level.height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlocking, 6, 6);
+        let mut at = (6, ground, 6);
+        server.player_edit_block(at, Some(&Block::new(crate::dragon_egg::DRAGON_EGG)), PlayerEdit::Place);
+        assert_eq!(block_name(&server, at), crate::dragon_egg::DRAGON_EGG);
+        server.take_changes();
+        for attack in [true, false] {
+            assert!(if attack { server.attack_block(at) } else { server.use_block(at, "north") });
+            let jumps = server.take_egg_teleports();
+            assert_eq!(jumps.len(), 1);
+            let (from, to) = jumps[0];
+            assert_eq!(from, at);
+            assert!((to.0 - from.0).abs() <= 15 && (to.1 - from.1).abs() <= 7 && (to.2 - from.2).abs() <= 15, "{to:?}");
+            assert_eq!(block_name(&server, from), "minecraft:air");
+            assert_eq!(block_name(&server, to), crate::dragon_egg::DRAGON_EGG);
+            assert_ne!(block_name(&server, (to.0, to.1 - 1, to.2)), "minecraft:air", "it lands on something");
+            let changes = server.take_changes();
+            assert!(changes.contains(&(from, None)) && changes.iter().any(|(pos, block)| *pos == to && block.is_some()));
+            at = to;
+        }
+        assert!(!server.attack_block((6, ground + 30, 6)), "air is not an egg");
+        assert!(server.take_egg_teleports().is_empty());
     }
 
     #[test]

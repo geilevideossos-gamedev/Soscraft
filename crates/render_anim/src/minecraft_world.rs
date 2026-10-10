@@ -1516,6 +1516,17 @@ fn update(
     let events: Vec<_> = events
         .into_iter()
         .filter(|event| player_mode.may_build() || !matches!(event, sim::voxel::VoxelEvent::Shot { .. } | sim::voxel::VoxelEvent::Ray { .. }))
+        .filter(|event| match *event {
+            sim::voxel::VoxelEvent::Shot { block, .. } => {
+                let pos = (block[0], block[1], block[2]);
+                let egg = minecraft_terrain::scene::Scene::block(&terrain.scene, pos).is_some_and(minecraft_terrain::dragon_egg::is_egg);
+                if let Some(entities) = entities.as_mut().filter(|_| egg) {
+                    entities.attack_block(&terrain.scene, pos);
+                }
+                !egg
+            }
+            _ => true,
+        })
         .collect();
     if let Some(entities) = entities.as_mut() {
         for shot in mob_shots {
