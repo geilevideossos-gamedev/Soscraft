@@ -1142,6 +1142,7 @@ impl Entities {
         ghast_render::append_ghasts(&mut out.models, w.ghasts().iter(), poses, atlas, light, partial);
         end_crystal_render::append_crystals(&mut out.models, &self.crystals, atlas, light, partial);
         dragon_render::append_dragons(&mut out.models, &self.dragons, atlas, light, partial);
+        dragon_render::append_beams(&mut out.models, &self.dragons, &self.crystals, atlas, light, partial);
         blaze_render::append_blazes(&mut out.models, w.blazes().iter(), poses, atlas, light, partial);
         let poppies = golem_render::append_iron_golems(&mut out.models, w.iron_golems().iter(), poses, atlas, light, partial);
         wolf_render::append_wolves(&mut out.models, w.wolves().iter(), poses, atlas, light, partial, w.game_time());

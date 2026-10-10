@@ -427,6 +427,21 @@ pub struct DragonEnv<'a> {
     pub podium_top: &'a dyn Fn() -> i32,
     pub alive_crystals: Option<i32>,
     pub players: &'a [PlayerBody],
+    pub crystals: &'a [(u64, DVec3)],
+}
+
+pub const CRYSTAL_RANGE: f64 = 32.0;
+pub const WIDTH: f64 = 16.0;
+pub const HEIGHT: f64 = 8.0;
+pub const CRYSTAL_DESTROYED_DAMAGE: f32 = 10.0;
+
+pub fn crystal_in_reach(dragon: DVec3, crystal: DVec3) -> bool {
+    let half = WIDTH / 2.0 + CRYSTAL_RANGE;
+    let reach = (
+        dragon - DVec3::new(half, CRYSTAL_RANGE, half),
+        dragon + DVec3::new(half, HEIGHT + CRYSTAL_RANGE, half),
+    );
+    boxes_meet(reach, crate::end_crystal::pick_box(crystal))
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -498,6 +513,7 @@ pub struct EnderDragon {
     pub removed: bool,
     pub fight_origin: (i32, i32, i32),
     nodes: Option<[Node; NODE_COUNT]>,
+    pub nearest_crystal: Option<u64>,
     pub random: LegacyRandom,
     tag: Tag,
 }
@@ -517,6 +533,8 @@ pub struct DragonView {
     pub death_time: i32,
     pub sitting: bool,
     pub parts: [DVec3; 8],
+    pub tick_count: i32,
+    pub nearest_crystal: Option<u64>,
 }
 
 fn doubles(tag: &Tag, key: &str) -> Option<DVec3> {
@@ -604,6 +622,7 @@ impl EnderDragon {
             removed: false,
             fight_origin: (0, 0, 0),
             nodes: None,
+            nearest_crystal: None,
             random: LegacyRandom::new(seed),
             tag: tag.clone(),
         };
@@ -770,7 +789,50 @@ impl EnderDragon {
             death_time: self.death_time,
             sitting: self.phase.is_sitting(),
             parts: self.parts,
+            tick_count: self.tick_count,
+            nearest_crystal: self.nearest_crystal,
         }
+    }
+
+    fn check_crystals(&mut self, crystals: &[(u64, DVec3)]) {
+        if let Some(nearest) = self.nearest_crystal {
+            if crystals.iter().all(|(id, _)| *id != nearest) {
+                self.nearest_crystal = None;
+            } else if self.tick_count % 10 == 0 && self.health < MAX_HEALTH {
+                self.health = (self.health + 1.0).clamp(0.0, MAX_HEALTH);
+            }
+        }
+        if self.random.next_int(10) == 0 {
+            let mut best = f64::MAX;
+            let mut nearest = None;
+            for &(id, position) in crystals {
+                if !crystal_in_reach(self.position, position) {
+                    continue;
+                }
+                let distance = position.distance_squared(self.position);
+                if distance < best {
+                    best = distance;
+                    nearest = Some(id);
+                }
+            }
+            self.nearest_crystal = nearest;
+        }
+    }
+
+    pub fn crystal_destroyed(
+        &mut self,
+        crystal: u64,
+        player: Option<u64>,
+        events: &mut DragonEvents,
+    ) -> Hurt {
+        if self.nearest_crystal != Some(crystal) {
+            return Hurt::default();
+        }
+        self.hurt_part(
+            HEAD,
+            &EndDamage::explosion(CRYSTAL_DESTROYED_DAMAGE, player),
+            events,
+        )
     }
 
     pub fn tick(&mut self, env: &DragonEnv) -> DragonEvents {
@@ -819,6 +881,7 @@ impl EnderDragon {
         if self.dead_or_dying() {
             return;
         }
+        self.check_crystals(env.crystals);
         let velocity = self.velocity;
         let mut flap = 0.2 / (velocity.x.hypot(velocity.z) as f32 * 10.0 + 1.0);
         flap *= 2.0_f64.powf(velocity.y) as f32;
@@ -1137,6 +1200,7 @@ mod tests {
             podium_top: top,
             alive_crystals: alive,
             players: &[],
+            crystals: &[],
         }
     }
 
@@ -1459,6 +1523,83 @@ mod tests {
     }
 
     #[test]
+    fn a_crystal_within_32_blocks_heals_the_dragon_a_point_every_ten_ticks() {
+        let mut dragon = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
+        dragon.no_ai = true;
+        dragon.health = 150.0;
+        let height = flat;
+        let top = || 64;
+        let near = [
+            (7, DVec3::new(30.0, 90.0, 0.0)),
+            (8, DVec3::new(20.0, 95.0, 0.0)),
+        ];
+        let env = DragonEnv {
+            height: &height,
+            podium_top: &top,
+            alive_crystals: None,
+            players: &[],
+            crystals: &near,
+        };
+        for _ in 0..200 {
+            dragon.tick(&env);
+            if dragon.nearest_crystal.is_some() {
+                break;
+            }
+        }
+        assert_eq!(
+            dragon.nearest_crystal,
+            Some(8),
+            "the nearest crystal in reach"
+        );
+        let before = dragon.health;
+        for _ in 0..100 {
+            dragon.tick(&env);
+        }
+        assert!(
+            (dragon.health - before - 10.0).abs() <= 1.0,
+            "{before} -> {}",
+            dragon.health
+        );
+        assert_eq!(dragon.view().nearest_crystal, Some(8));
+        dragon.health = MAX_HEALTH;
+        for _ in 0..20 {
+            dragon.tick(&env);
+        }
+        assert_eq!(dragon.health, MAX_HEALTH, "never above its maximum");
+        let gone = DragonEnv {
+            height: &height,
+            podium_top: &top,
+            alive_crystals: None,
+            players: &[],
+            crystals: &[],
+        };
+        dragon.tick(&gone);
+        assert_eq!(
+            dragon.nearest_crystal, None,
+            "a destroyed crystal drops the beam"
+        );
+        assert!(crystal_in_reach(DVec3::ZERO, DVec3::new(40.5, 0.0, 0.0)));
+        assert!(!crystal_in_reach(DVec3::ZERO, DVec3::new(41.5, 0.0, 0.0)));
+        assert!(!crystal_in_reach(DVec3::ZERO, DVec3::new(0.0, -35.0, 0.0)));
+    }
+
+    #[test]
+    fn destroying_the_crystal_that_heals_it_blasts_the_dragon_s_head_for_10() {
+        let mut dragon = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
+        let mut events = DragonEvents::default();
+        assert!(
+            !dragon.crystal_destroyed(3, Some(0), &mut events).applied,
+            "not its crystal"
+        );
+        dragon.nearest_crystal = Some(3);
+        assert!(
+            dragon.crystal_destroyed(3, None, &mut events).applied,
+            "an explosion hurts it with or without a player"
+        );
+        assert_eq!(dragon.health, 190.0);
+    }
+
+    #[test]
     fn the_head_and_neck_strike_an_attackable_player_they_touch() {
         let mut dragon = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
         let height = flat;
@@ -1484,6 +1625,7 @@ mod tests {
             podium_top: &top,
             alive_crystals: None,
             players: &players,
+            crystals: &[],
         };
         let events = dragon.tick(&env);
         assert!(

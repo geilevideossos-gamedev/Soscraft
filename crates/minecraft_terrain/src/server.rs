@@ -1399,7 +1399,9 @@ impl ServerSim {
     pub fn tick_end(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
         let blasts: Vec<(glam::DVec3, f32)> = self.explosions.iter().map(|blast| (blast.position, blast.radius)).collect();
         for (center, radius) in blasts {
-            self.crystals.blast(center, radius, None);
+            for destroyed in self.crystals.blast(center, radius, None) {
+                self.crystal_destroyed(destroyed);
+            }
             let mut events = crate::ender_dragon::DragonEvents::default();
             for dragon in &mut self.dragons.list {
                 dragon.blast(center, radius, None, &mut events);
@@ -1441,13 +1443,14 @@ impl ServerSim {
                 attackable: player.alive && !player.spectator && player.attackable,
             })
             .collect();
-        let Self { level, dragons, fight_dragon, alive_crystals, end_sounds, end_hits, dragons_killed, .. } = self;
+        let Self { level, dragons, fight_dragon, alive_crystals, end_sounds, end_hits, dragons_killed, crystals: self_crystals, .. } = self;
         let level = &*level;
         let height = |x: i32, z: i32| level.height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlockingNoLeaves, x, z);
+        let crystals: Vec<(u64, glam::DVec3)> = self_crystals.list.iter().map(|crystal| (crystal.id, crystal.position)).collect();
         for dragon in &mut dragons.list {
             let origin = dragon.fight_origin;
             let top = || level.height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlocking, origin.0, origin.2);
-            let env = crate::ender_dragon::DragonEnv { height: &height, podium_top: &top, alive_crystals: (*fight_dragon == Some(dragon.uuid)).then_some(*alive_crystals), players: &bodies };
+            let env = crate::ender_dragon::DragonEnv { height: &height, podium_top: &top, alive_crystals: (*fight_dragon == Some(dragon.uuid)).then_some(*alive_crystals), players: &bodies, crystals: &crystals };
             let events = dragon.tick(&env);
             end_sounds.extend(events.sounds.into_iter().map(|(event, position, volume, pitch)| minecraftoss_entities::world::MobSound { event: event.to_owned(), position, volume, pitch, category: "hostile" }));
             end_hits.extend(events.player_hits.into_iter().map(|(player_id, damage, attacker)| minecraftoss_entities::world::PlayerHit { player_id, damage, kind: minecraftoss_entities::world::PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0 }, source: Some(dragon.id) }));
@@ -1518,12 +1521,20 @@ impl ServerSim {
     }
 
     fn crystal_destroyed(&mut self, destroyed: crate::end_crystal::Destroyed) {
-        if !destroyed.explodes {
+        if destroyed.explodes {
+            let blast = Blast { center: destroyed.position.to_array(), power: crate::end_crystal::EXPLOSION_POWER, fire: false };
+            let source = destroyed.player.map_or(BlastSource::Nobody, BlastSource::Player);
+            self.blasts.push((blast, source));
+        }
+        if !self.dragon_fight_level {
             return;
         }
-        let blast = Blast { center: destroyed.position.to_array(), power: crate::end_crystal::EXPLOSION_POWER, fire: false };
-        let source = destroyed.player.map_or(BlastSource::Nobody, BlastSource::Player);
-        self.blasts.push((blast, source));
+        self.update_crystal_count();
+        let mut events = crate::ender_dragon::DragonEvents::default();
+        if let Some(dragon) = self.dragons.list.iter_mut().find(|dragon| Some(dragon.uuid) == self.fight_dragon) {
+            dragon.crystal_destroyed(destroyed.id, destroyed.player, &mut events);
+        }
+        self.end_events(events);
     }
 
     pub fn crystal_views(&self) -> Vec<crate::end_crystal::CrystalView> {
@@ -6783,5 +6794,48 @@ mod tests {
         }
         assert!(server.dragons.list.is_empty(), "it rose and went");
         assert_eq!(server.take_dragons_killed(), vec![uuid]);
+    }
+
+    #[test]
+    fn spike_crystals_heal_the_fight_dragon_and_breaking_its_crystal_hurts_it() {
+        use crate::end_crystal::{EndDamage, EndTarget};
+        let Some(mut server) = end_world((-5..=4).flat_map(|x| (-5..=4).map(move |z| (x, z)))) else { return };
+        server.find_or_create_dragon((0, 0, 0));
+        server.update_crystal_count();
+        assert_eq!(server.alive_crystals, 10);
+        server.dragons.list[0].health = 100.0;
+        let mut beam = None;
+        for _ in 0..2000 {
+            server.tick_end(&[]);
+            if let Some(crystal) = server.dragons.list[0].nearest_crystal {
+                beam = Some(crystal);
+                break;
+            }
+        }
+        let crystal = beam.expect("the circling dragon finds a spike crystal within 32 blocks");
+        let healed = server.dragons.list[0].health;
+        for _ in 0..40 {
+            server.tick_end(&[]);
+        }
+        let view = server.dragon_views().remove(0);
+        if view.nearest_crystal == Some(crystal) {
+            assert!(server.dragons.list[0].health > healed, "it heals from its crystal");
+        }
+        server.dragons.list[0].nearest_crystal = Some(crystal);
+        server.dragons.list[0].damage_cooldown = 0;
+        let before = server.dragons.list[0].health;
+        server.end_hit(EndTarget::Crystal(crystal), EndDamage::attack(1.0, 0));
+        assert_eq!(server.dragons.list[0].health, before - 10.0, "the crystal's loss hurts its head for 10");
+        assert_eq!(server.alive_crystals, 9, "the crystals are counted again");
+        assert_eq!(server.blasts.len(), 1, "and the crystal explodes");
+        let other = server.crystals.list[0].id;
+        server.dragons.list[0].nearest_crystal = Some(other);
+        server.dragons.list[0].damage_cooldown = 0;
+        let before = server.dragons.list[0].health;
+        let position = server.crystals.list[0].position;
+        server.explosions.push(minecraftoss_entities::creeper::CreeperExplosion { position, radius: 1.0, powered: false });
+        server.tick_end(&[]);
+        assert!(server.dragons.list[0].health < before - 8.0, "a blast-destroyed crystal hurts it too");
+        assert_eq!(server.alive_crystals, 8);
     }
 }

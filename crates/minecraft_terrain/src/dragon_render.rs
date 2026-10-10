@@ -1,3 +1,4 @@
+use crate::end_crystal::CrystalView;
 use crate::ender_dragon::{DragonView, Sample, sample_at};
 use crate::lighting::SkyLight;
 use crate::mesh::{Atlas, ChunkMesh};
@@ -198,6 +199,56 @@ pub fn model_parts(pose: &Pose) -> Vec<(Mat4, Vec<Cube>)> {
     out
 }
 
+pub fn beam_offset(dragon: &DragonView, crystal: &CrystalView, partial: f32) -> glam::Vec3 {
+    let feet = dragon
+        .previous_position
+        .lerp(dragon.position, f64::from(partial));
+    let bob = crate::end_crystal_render::bob(crystal.time as f32 + partial);
+    (crystal.position + glam::DVec3::new(0.0, f64::from(bob), 0.0) - feet).as_vec3()
+}
+
+pub fn append_beams<'a>(
+    mesh: &mut ChunkMesh,
+    dragons: impl IntoIterator<Item = &'a DragonView>,
+    crystals: &[CrystalView],
+    atlas: &Atlas,
+    light: &SkyLight,
+    partial: f32,
+) {
+    let Some(region) = ResourceId::parse(crate::end_crystal_render::BEAM_TEXTURE)
+        .ok()
+        .filter(|beam| atlas.contains(beam))
+        .map(|beam| atlas.entity_region(&beam))
+    else {
+        return;
+    };
+    for dragon in dragons {
+        let Some(crystal) = dragon
+            .nearest_crystal
+            .and_then(|id| crystals.iter().find(|crystal| crystal.id == id))
+        else {
+            continue;
+        };
+        let feet = dragon
+            .previous_position
+            .lerp(dragon.position, f64::from(partial));
+        let probe = feet + glam::DVec3::new(0.0, 6.8, 0.0);
+        let at = (
+            probe.x.floor() as i32,
+            probe.y.floor() as i32,
+            probe.z.floor() as i32,
+        );
+        crate::end_crystal_render::append_beam(
+            mesh,
+            feet.as_vec3(),
+            beam_offset(dragon, crystal, partial),
+            dragon.tick_count as f32 + partial,
+            region,
+            (light.get(at) as f32, light.get_block(at) as f32),
+        );
+    }
+}
+
 pub fn append_dragons<'a>(
     mesh: &mut ChunkMesh,
     dragons: impl IntoIterator<Item = &'a DragonView>,
@@ -292,6 +343,8 @@ mod tests {
             death_time: 0,
             sitting: false,
             parts: [glam::DVec3::ZERO; 8],
+            tick_count: 0,
+            nearest_crystal: None,
         }
     }
 
@@ -349,6 +402,24 @@ mod tests {
             (left_up.x + right_up.x).abs() < 1e-3,
             "mirrored across the body"
         );
+    }
+
+    #[test]
+    fn the_heal_beam_reaches_from_two_above_the_dragon_to_the_bobbing_glass() {
+        let dragon = level_view(100.0, 0.0);
+        let crystal = CrystalView {
+            id: 4,
+            position: glam::DVec3::new(30.0, 80.0, 5.0),
+            time: 0,
+            beam_target: None,
+            show_bottom: true,
+        };
+        let offset = beam_offset(&dragon, &crystal, 0.0);
+        let glass = glam::Vec3::new(30.0, 80.0 + crate::end_crystal_render::bob(0.0), 5.0);
+        assert!((glam::Vec3::new(0.0, 100.0, 0.0) + offset - glass).length() < 1e-4);
+        let pose = crate::end_crystal_render::beam_pose(glam::Vec3::new(0.0, 100.0, 0.0), offset);
+        let far = pose.transform_point3(glam::Vec3::new(0.0, 0.0, offset.length()));
+        assert!((far - (glass + glam::Vec3::new(0.0, 2.0, 0.0))).length() < 1e-3);
     }
 
     #[test]

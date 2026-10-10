@@ -760,3 +760,27 @@ Previous commit: 2b3167b1
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
 ```
+
+### 26. Minecraft end crystals heal the ender dragon with a beam (E3-14)
+
+Previous commit: 8bf65034
+
+- **Changed:**
+  - `minecraft_terrain/src/ender_dragon.rs`: `check_crystals` is `EnderDragon.checkCrystals`, run in `aiStep` before the flight: a nearest crystal that is gone is dropped, otherwise every tenth tick it heals 1 (up to 200); and one tick in ten (`nextInt(10)`) the dragon picks the nearest crystal (by feet) whose box meets its own 16 by 8 box grown by 32 (`crystal_in_reach`), or none. `crystal_destroyed` is `EnderDragon.onCrystalDestroyed`: when the lost crystal was its nearest, the head takes 10 as an explosion (`explosion(crystal, player)`, which always hurts it). `DragonEnv.crystals`; `DragonView.nearest_crystal` and `tick_count`.
+  - `minecraft_terrain/src/server.rs` (End region): the dragons tick with the level's crystals. A crystal destroyed by a hit or by a blast (`crystal_destroyed`, now for blast-destroyed crystals too) runs `EnderDragonFight.onCrystalDestroyed` in a dragon fight level: the spike crystals are counted again (`updateCrystalCount`), and the fight's dragon (only that one, `getEntity(dragonUUID)`) is told.
+  - `minecraft_terrain/src/dragon_render.rs`: `append_beams`, `EnderDragonRenderer`'s heal beam: from two blocks above the dragon's feet to its crystal's bobbing glass (`beamOffset` with `EndCrystalRenderer.getY`), through `end_crystal_render::append_beam` (black and thin at the dragon, white and wide at the crystal, scrolling with the dragon's age). `minecraft_survival/src/entities.rs`: one line draws them.
+- **Checked with javap (26.3):** `EnderDragon` (`checkCrystals`, `onCrystalDestroyed`, `CRYSTAL_DESTROY_TARGETING`), `EnderDragonFight.onCrystalDestroyed` and `updateCrystalCount`, `EndCrystal.onDestroyedBy`, `EnderDragonRenderer` (`extractRenderState`'s `beamOffset`, `submit`, `submitCrystalBeams`).
+- **Tests:** `ender_dragon`: `a_crystal_within_32_blocks_heals_the_dragon_a_point_every_ten_ticks` (the nearer of two crystals in reach, 10 health in 100 ticks, never above 200, dropped when gone, the reach box's edges), `destroying_the_crystal_that_heals_it_blasts_the_dragon_s_head_for_10`. `dragon_render`: `the_heal_beam_reaches_from_two_above_the_dragon_to_the_bobbing_glass`. `server`: `spike_crystals_heal_the_fight_dragon_and_breaking_its_crystal_hurts_it` (an End level of seed 0: the circling fight dragon finds a spike crystal and heals; shooting its crystal costs it 10 on the head, recounts 9 crystals and queues the crystal's blast; a crystal destroyed by a blast while it heals the dragon hurts it too and leaves 8).
+- **Decisions:**
+  - **The player behind a crystal's loss** is the one who broke it or nobody; vanilla also falls back to the nearest player within 64 blocks for the holding pattern's strafe, which comes with X5. The dragon is hurt either way.
+  - The beam is drawn from the dragon's own feet as vanilla's is (the beam does not start at the head).
+- **Test steps** (survival; MW2 weapons):
+  1. Keep `IW4L_MINECRAFT_WORLD=x3dragon` with `IW4L_MINECRAFT_DIMENSION=the_end`, or a new world. Climb a tower near the island centre as in entry 25.
+  2. Shoot the dragon until the bar is at about half. Watch it fly past the pillars: when it passes within about 32 blocks of a crystal, a beam reaches from just above its back to the crystal, black near the dragon and white at the crystal, its pattern sliding along it. The bar slowly fills again (a point every half second). **Screenshot 6** (the beam).
+  3. While the beam stands, shoot that crystal: it explodes, the beam goes, the dragon flashes red and the bar drops a little (10 points).
+  4. Shoot the other crystals (the caged ones need the bars shot or broken first): with none left, no beam forms any more and the bar no longer refills.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
+```
