@@ -1134,3 +1134,17 @@ Previous commit: f3608d26
 ```
 IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:cobblestone*64,minecraft:water_bucket,minecraft:diamond_sword+sharpness=5
 ```
+
+### 40. The track END log sums up group X5-phases
+
+Previous commit: 011bc34c
+
+- **Commits:** f3608d26 (E3-15, strafing and fireballs with their breath clouds), 011bc34c (E3-16, the landing, the sitting phases with the flame on the podium, takeoff and the charge), and this entry.
+- **Tests** (`test -p <crate> --locked`, `MINECRAFTOSS_ROOT` set by `cargo-slot.ps1`): `minecraft_terrain` 761 (4 ignored) and `minecraft_survival` 333 with the vanilla world test pass; `check -p launcher` is green.
+- **Clippy:** `clippy -p minecraft_terrain -p minecraft_survival --all-targets --no-deps --locked -- -A clippy::approx_constant` reports nothing in `ender_dragon.rs`, `dragon_fireball.rs` or `effect_cloud.rs`; each location it reports in `server.rs`, `entities.rs` and `mesh.rs` blames to 88cb6d83 or earlier. No fix needed.
+- **New files** (`rustfmt --check` on the staged content is empty): `minecraft_terrain/src/dragon_fireball.rs` (edition 2021). `ender_dragon.rs` still passes.
+- **Plan decision 9 kept:** the strafe, the landing approach, the scan and the charge pick from the players of the End level each tick, by id; the breath clouds are level state; nothing uses `PLAYER = 0`.
+- **Not done in this group** (the other X5 groups): the wing knockback and `checkWalls` block breaking (E3-17), the knockback on the dragon from players' hits, the egg teleport (E3-20) and bottling dragon's breath (the clouds carry `Breath` for it). Also not drawn: the dragon breath particles of the mouth and the fireball's trail.
+- **Owner test for the group** (survival, `/difficulty normal`, in one new End world `x5` with `IW4L_MINECRAFT_DIMENSION=the_end`, removed afterwards; the kit of entry 39):
+  1. Entry 38 steps 2 to 6: strafes, fireballs and their clouds; screenshots 1 and 2.
+  2. Entry 39 steps 2 to 7: shoot the crystals, the perch, the roar, the flame, the takeoff on damage, the charge; screenshots 3 to 5 (entry 39's 1 to 3).
