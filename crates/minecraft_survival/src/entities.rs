@@ -95,6 +95,7 @@ pub struct Entities {
     dragons: Vec<minecraft_terrain::ender_dragon::DragonView>,
     growls: HashMap<u64, i32>,
     dragons_killed: Vec<[i32; 4]>,
+    fight_reports: Vec<minecraft_terrain::server::FightReport>,
     orbs: Vec<ServerOrb>,
     falling: minecraft_terrain::falling_render::FallingBlocks,
     pub lids: minecraft_terrain::lids::Lids,
@@ -234,6 +235,7 @@ impl Entities {
             dragons: Vec::new(),
             growls: HashMap::new(),
             dragons_killed: Vec::new(),
+            fight_reports: Vec::new(),
             orbs: Vec::new(),
             falling: Default::default(),
             lids: Default::default(),
@@ -887,6 +889,7 @@ impl Entities {
             }
             self.command_summons.extend(output.command_summons);
             self.dragons_killed.extend(output.dragons_killed);
+            self.fight_reports.extend(output.fight_reports);
             self.command_jobs.extend(output.jobs);
             changes.extend(output.changes);
             self.block_entity_changes.extend(output.block_entities);
@@ -967,6 +970,10 @@ impl Entities {
 
     pub fn take_dragons_killed(&mut self) -> Vec<[i32; 4]> {
         std::mem::take(&mut self.dragons_killed)
+    }
+
+    pub fn take_fight_reports(&mut self) -> Vec<minecraft_terrain::server::FightReport> {
+        std::mem::take(&mut self.fight_reports)
     }
 
     pub fn dragon_alive(&self, uuid: [i32; 4]) -> bool {

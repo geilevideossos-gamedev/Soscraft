@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use std::sync::mpsc;
 
 use minecraft_net::{Dimension, PlayerUuid};
-use minecraft_terrain::server::{DragonFightScan, FightLink, Job, ServerSim};
+use minecraft_terrain::dragon_respawn::{Respawn, Stage};
+use minecraft_terrain::server::{DragonFightScan, FightLink, FightReport, Job, ServerSim};
 use minecraftoss_core::ChunkPos;
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_core::random::LegacyRandom;
@@ -170,6 +171,7 @@ pub struct DragonFight {
     pub linked: Option<FightLink>,
     pub progress: f32,
     pub opening: Option<mpsc::Receiver<(i32, i32, i32)>>,
+    pub resumed: bool,
 }
 
 impl Default for DragonFight {
@@ -187,6 +189,8 @@ pub struct FightEvents {
     pub spawned: Option<[i32; 4]>,
     pub killed: Option<[i32; 4]>,
     pub opened: Option<(i32, i32, i32)>,
+    pub respawn: Option<String>,
+    pub respawned: Option<[i32; 4]>,
 }
 
 pub fn arena_ticket() -> (ChunkPos, i32) {
@@ -243,6 +247,13 @@ pub fn kill_job(
     })
 }
 
+pub fn resume_job(respawn: Respawn) -> Job {
+    Box::new(move |sim: &mut ServerSim| -> Box<dyn Any + Send> {
+        sim.resume_respawn(respawn);
+        Box::new(())
+    })
+}
+
 pub fn scan_job(
     exit_portal_location: Option<(i32, i32, i32)>,
     send: mpsc::Sender<DragonFightScan>,
@@ -267,6 +278,7 @@ impl DragonFight {
             linked: None,
             progress: 1.0,
             opening: None,
+            resumed: false,
         }
     }
 
@@ -399,7 +411,57 @@ impl DragonFight {
         FightLink {
             dragon: self.data.dragon_uuid,
             previously_killed: self.data.previously_killed,
+            dragon_killed: self.data.dragon_killed,
+            exit_portal: self.data.exit_portal_location,
         }
+    }
+
+    pub fn saved_respawn(&self) -> Option<Respawn> {
+        let stage = Stage::by_name(self.data.respawn_stage.as_deref()?)?;
+        let crystals = self
+            .data
+            .respawn_crystals
+            .iter()
+            .filter_map(|tag| ints(Some(tag))?.try_into().ok())
+            .collect();
+        Some(Respawn {
+            stage,
+            time: self.data.respawn_time,
+            crystals,
+        })
+    }
+
+    pub fn receive_report(&mut self, report: FightReport) {
+        match report {
+            FightReport::Respawning {
+                stage,
+                crystals,
+                exit_portal,
+            } => {
+                self.data.respawn_stage = Some(stage.to_owned());
+                self.data.respawn_time = 0;
+                self.data.respawn_crystals = crystals
+                    .iter()
+                    .map(|uuid| Tag::IntArray(uuid.to_vec()))
+                    .collect();
+                self.data.exit_portal_location = Some(exit_portal);
+            }
+            FightReport::Aborted => {
+                self.data.respawn_stage = None;
+                self.data.respawn_time = 0;
+                self.data.respawn_crystals.clear();
+            }
+            FightReport::Respawned(uuid) => {
+                self.data.respawn_stage = None;
+                self.data.respawn_time = 0;
+                self.data.respawn_crystals.clear();
+                self.data.dragon_killed = false;
+                self.data.dragon_uuid = Some(uuid);
+                self.ticks_since_dragon_seen = 0;
+                self.progress = 1.0;
+            }
+        }
+        self.dirty = true;
     }
 
     pub fn link(&mut self, entities: &mut Entities) {
@@ -409,6 +471,12 @@ impl DragonFight {
         }
         entities.run_job(link_job(link));
         self.linked = Some(link);
+        if !self.resumed {
+            self.resumed = true;
+            if let Some(respawn) = self.saved_respawn() {
+                entities.run_job(resume_job(respawn));
+            }
+        }
     }
 
     pub fn start_scan(&mut self, entities: &mut Entities) {
@@ -480,6 +548,18 @@ pub fn tick_level<'a>(
     events.scanned = fight.receive_scan();
     events.spawned = fight.receive_dragon();
     events.opened = fight.receive_exit_portal();
+    for report in entities
+        .as_mut()
+        .map(Entities::take_fight_reports)
+        .unwrap_or_else(Vec::new)
+    {
+        match &report {
+            FightReport::Respawning { stage, .. } => events.respawn = Some((*stage).to_owned()),
+            FightReport::Aborted => events.respawn = Some("aborted".to_owned()),
+            FightReport::Respawned(uuid) => events.respawned = Some(*uuid),
+        }
+        fight.receive_report(report);
+    }
     for uuid in entities
         .as_mut()
         .map(Entities::take_dragons_killed)
@@ -697,8 +777,51 @@ mod tests {
             FightLink {
                 dragon: Some([1, 2, 3, 4]),
                 previously_killed: true,
+                ..FightLink::default()
             }
         );
+    }
+
+    #[test]
+    fn a_respawn_is_saved_by_stage_and_a_new_dragon_ends_it() {
+        let mut fight = DragonFight::default();
+        fight.data.dragon_killed = true;
+        fight.data.previously_killed = true;
+        fight.receive_report(FightReport::Respawning {
+            stage: "summoning_pillars",
+            crystals: vec![[1, 2, 3, 4], [5, 6, 7, 8]],
+            exit_portal: (0, 62, 0),
+        });
+        assert!(fight.dirty);
+        let saved = FightData::read(&fight.data.write());
+        assert_eq!(saved.respawn_stage.as_deref(), Some("summoning_pillars"));
+        assert_eq!(saved.exit_portal_location, Some((0, 62, 0)));
+        let reloaded = DragonFight::new(saved);
+        assert_eq!(
+            reloaded.saved_respawn(),
+            Some(Respawn {
+                stage: Stage::SummoningPillars,
+                time: 0,
+                crystals: vec![[1, 2, 3, 4], [5, 6, 7, 8]],
+            })
+        );
+        assert!(
+            fight.link_state().dragon_killed,
+            "crystals may respawn it only once it is dead"
+        );
+        fight.receive_report(FightReport::Respawned([9, 9, 9, 9]));
+        assert!(!fight.data.dragon_killed && fight.data.previously_killed);
+        assert_eq!(fight.data.dragon_uuid, Some([9, 9, 9, 9]));
+        assert_eq!(fight.saved_respawn(), None);
+        assert!(fight.data.respawn_crystals.is_empty());
+        fight.players = vec![uuid("steve")];
+        assert_eq!(
+            fight.boss_bar(&uuid("steve")),
+            Some(1.0),
+            "the bar is back, full"
+        );
+        fight.receive_report(FightReport::Aborted);
+        assert_eq!(fight.data.respawn_stage, None);
     }
 
     #[test]

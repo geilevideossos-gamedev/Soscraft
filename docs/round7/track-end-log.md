@@ -845,10 +845,10 @@ Previous commit: 89f9fd97
   2. `/gamemode creative`, fly to the island centre and pillar up near the middle, `/gamemode survival` on top. Shoot the crystals, then the dragon until the bar is empty.
   3. It flies to the podium and stops: a loud roar plays wherever you stand, and white rays burst from its body, more and longer each second, while it rises. **Screenshot 1.**
   4. In the last seconds a flood of experience orbs falls from it. Go down and collect them: from level 0 you reach level 68. **Screenshot 2** of the level number.
-- **Kit:**
+- **Kit** (the end crystals are for entry 31 in the same world):
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
+IW4L_MINECRAFT_KIT=minecraft:end_crystal*16,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
 ```
 
 ### 29. Minecraft exit portal opens and the dragon egg and a gateway appear (E3-19)
@@ -899,4 +899,33 @@ Previous commit: 033a52e1
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:diamond_pickaxe+efficiency=5,minecraft:cobblestone*64
+```
+
+### 31. Minecraft end crystals on the exit portal respawn the dragon (E3-22)
+
+Previous commit: 4c7667cf
+
+- **Changed:**
+  - New `minecraft_terrain/src/dragon_respawn.rs`: `Respawn` is the respawn part of `EnderDragonFight` with `DragonRespawnStage`'s five stages (saved by their vanilla names), ticked with the stage time handed over before it counts up, as `respawnStage.tick(.., respawnTime++)` is. START turns the crystals' beams to (0, 128, 0) and moves on; PREPARING_TO_SUMMON_PILLARS growls (level event 3001) on ticks 0, 50 to 52 and 95 to 99, and moves on at 100; SUMMONING_PILLARS takes 40 ticks a pillar: on the first it beams at the pillar's top, on the last it rebuilds the pillar, and after the last pillar it moves on; SUMMONING_DRAGON beams at the sky on tick 0, growls on ticks 1 to 4 and 80 to 99, and on tick 100 summons the dragon. `crystal_cells` are the four cells one above the exit portal and 3 out to the north, east, south and west (`Direction.Plane.HORIZONTAL`).
+  - `minecraft_terrain/src/server.rs` (End region): `try_respawn` is `EnderDragonFight.tryRespawn` and `respawnDragon`, run when an end crystal is placed in a dragon fight level (`EndCrystalItem.useOn`): only once the dragon is killed and no respawn runs, with the exit portal from the fight (or found, or built active), a crystal in each of the four cells, then the exit portal pattern is turned to end stone (`dismantle_exit_portal`), the inactive podium is built, and the respawn starts with those crystals. `tick_respawn` runs it each tick: a growl is `entity.ender_dragon.growl` at (0.5, 128.5, 0.5), volume 64, pitch 0.8 + r·0.3; a rebuilt pillar clears the blocks within 10 of its top, explodes there with power 5 (which destroys the old crystal), and places `end_spike` for it, whose new crystal is invulnerable with its beam on (0, 128, 0); the summoning makes a new dragon at (0, 128, 0) in its holding pattern, resets the pillar crystals (vulnerable, no beam) and blows up the four crystals with power 6 without breaking blocks (`ExplosionInteraction.NONE`, `BlastSource::KeepBlocks`). Losing a respawn crystal (`onCrystalDestroyed`), or all of them going, aborts: the pillar crystals are reset and the portal lights again. `FightReport` (`Respawning` at each stage, `Aborted`, `Respawned`) goes to the fight through `Output.fight_reports`; `FightLink` now also carries `dragon_killed` and the exit portal.
+  - Vendored `world/src/level/end_portal.rs` (MinecraftOSS patch): `find_exit_portal_match` and `dismantle_exit_portal` (the bedrock and end portal blocks of each match become end stone until no match is left, at most 16 rounds). Vendored `generator/src/feature/end_portal.rs`: `ExitPortal::cells`, the 7 by 7 by 5 cells of a match.
+  - `minecraft_terrain/src/end_crystal.rs`: crystals save `Invulnerable`; `uuid`, `in_cell`, `by_uuid`, `discard`, `reset_on_spike`; `Destroyed.uuid`.
+  - `minecraft_survival/src/the_end/dragon_fight.rs`: `receive_report` saves the stage, the four crystals' UUIDs (`respawn_crystals`) and the exit portal (the stage time is saved as 0), clears them on an abort, and on a new dragon clears `dragon_killed`, takes its UUID and fills the bar. A saved respawn is handed back to the server once after the first link (`saved_respawn`, `resume_job`). `entities.rs`: the reports are kept for the fight (`take_fight_reports`). `render_anim/src/minecraft_end.rs` logs the stages and the new dragon.
+- **Checked with javap (26.3):** `EnderDragonFight` (`tryRespawn`, `respawnDragon`, `tick`'s respawn part, `setRespawnStage`, `abortRespawnSequence`, `resetSpikeCrystals`, `onCrystalDestroyed`, `createNewDragon`, the codec's `respawn_stage`, `respawn_time` and `respawn_crystals`), `DragonRespawnStage` and its five subclasses' `tick`, `LevelEventHandler` event 3001 (`ENDER_DRAGON_GROWL`, hostile, 64, `0.8 + r·0.3`), `EndCrystalItem.useOn` (`tryRespawn` in a level with a dragon fight).
+- **Tests:** `dragon_respawn`: `the_stages_keep_vanilla_names`, `the_respawn_beams_growls_rebuilds_each_pillar_and_summons_like_vanilla` (every action on its vanilla tick, 20 pillar actions, the summon 100 ticks into the last stage), `the_four_crystals_stand_three_blocks_out_one_above_the_portal`. `server`: `four_crystals_on_the_exit_portal_rebuild_the_pillars_and_summon_a_new_dragon` (an End level of seed 0 after a kill with two pillar crystals shot: three crystals do nothing, the fourth starts it, the portal goes out and the inactive podium stands, the stages are reported in order, the new dragon is the fight's, every pillar has one vulnerable crystal again and a bedrock top, the four crystals blow up without breaking blocks, 33 growls), `breaking_a_respawn_crystal_stops_the_respawn_and_lights_the_portal_again`. `dragon_fight`: `a_respawn_is_saved_by_stage_and_a_new_dragon_ends_it`. Generator `end_portal`: `the_exit_portal_is_found_from_its_pillar_top_and_names_its_centre` also checks the cells.
+- **Decisions:**
+  - **The new dragon:** it is the fight's dragon with `previously_killed` still set, so it gives 500 experience and lays no egg (E3-18, E3-19), and its kill places the next gateway.
+  - **Saved mid-respawn:** the stage is saved when it changes, with its time as 0, so a world quit during the respawn restarts the current stage when loaded (vanilla saves the tick within it). The crystals are saved with their chunks and found by UUID.
+  - **Where it ticks:** the respawn runs on the server thread while the End level runs (a player is in it); vanilla also waits for the arena to be loaded.
+  - **Explosion order:** a rebuilt pillar's blast hurts the mobs, players and blocks around it and destroys the old crystal at once, before the new pillar is placed, as vanilla does; the four crystals' final blasts go off on the next server tick.
+- **Test steps** (continue in `x4dragon` after the kill of entries 28 and 29, survival):
+  1. Stand by the exit portal with 4 end crystals. On each side of the bowl, place one crystal on the bedrock rim block in the middle of the side (north, east, south and west, 3 blocks from the pillar). After the fourth, the portal's starfield goes out and the four crystals beam into the sky above the island; deep growls sound. **Screenshot 8.**
+  2. Watch the pillars: one after another the beams swing to a pillar top, which explodes and is rebuilt with a new crystal (the caged ones get their cages back). The log says `Minecraft ender dragon respawn: summoning_pillars`. **Screenshot 9.**
+  3. About 30 seconds after the fourth crystal, the four crystals explode (the rim stays whole), a new dragon circles the island, and the boss bar is back. The log says `Minecraft ender dragon respawned: [...]`.
+  4. Kill it: it gives only 500 experience (a fraction of a level now), no second egg appears (the first stays on the pillar), and a second gateway appears elsewhere on the ring. **Screenshot 10.**
+  5. Optional: place the four crystals again and break one of them during the pillar rebuilds: the beams stop, the portal lights again, and no dragon comes.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_crystal*16,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
 ```

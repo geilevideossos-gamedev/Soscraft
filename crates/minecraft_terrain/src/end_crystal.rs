@@ -78,6 +78,7 @@ pub struct Destroyed {
     pub position: DVec3,
     pub explodes: bool,
     pub player: Option<u64>,
+    pub uuid: Option<[i32; 4]>,
 }
 
 pub fn destroyed_by(damage: &EndDamage, invulnerable: bool) -> Option<bool> {
@@ -85,6 +86,12 @@ pub fn destroyed_by(damage: &EndDamage, invulnerable: bool) -> Option<bool> {
         return None;
     }
     Some(damage.kind != DamageKind::Explosion)
+}
+
+pub fn over_spike(position: DVec3, center_x: i32, center_z: i32, radius: i32) -> bool {
+    let (x, z, r) = (f64::from(center_x), f64::from(center_z), f64::from(radius));
+    let (low, high) = pick_box(position);
+    low.x < x + r && high.x > x - r && low.z < z + r && high.z > z - r
 }
 
 pub fn in_blast(position: DVec3, center: DVec3, radius: f32) -> bool {
@@ -231,8 +238,19 @@ impl EndCrystal {
                 "ShowBottom".to_owned(),
                 Tag::Byte(i8::from(self.show_bottom)),
             );
+            map.insert(
+                "Invulnerable".to_owned(),
+                Tag::Byte(i8::from(self.invulnerable)),
+            );
         }
         tag
+    }
+
+    pub fn uuid(&self) -> Option<[i32; 4]> {
+        match self.tag.get("UUID") {
+            Some(Tag::IntArray(uuid)) => uuid.as_slice().try_into().ok(),
+            _ => None,
+        }
     }
 
     pub fn block_position(&self) -> (i32, i32, i32) {
@@ -321,6 +339,7 @@ impl Crystals {
             position: crystal.position,
             explodes,
             player: damage.player,
+            uuid: crystal.uuid(),
         })
     }
 
@@ -353,14 +372,49 @@ impl Crystals {
     }
 
     pub fn on_spike(&self, center_x: i32, center_z: i32, radius: i32) -> usize {
-        let (x, z, r) = (f64::from(center_x), f64::from(center_z), f64::from(radius));
+        self.list
+            .iter()
+            .filter(|crystal| over_spike(crystal.position, center_x, center_z, radius))
+            .count()
+    }
+
+    pub fn reset_on_spike(&mut self, center_x: i32, center_z: i32, radius: i32) {
+        for crystal in &mut self.list {
+            if over_spike(crystal.position, center_x, center_z, radius) {
+                crystal.invulnerable = false;
+                crystal.beam_target = None;
+            }
+        }
+    }
+
+    pub fn by_uuid(&mut self, uuids: &[[i32; 4]]) -> Vec<&mut EndCrystal> {
+        self.list
+            .iter_mut()
+            .filter(|crystal| crystal.uuid().is_some_and(|uuid| uuids.contains(&uuid)))
+            .collect()
+    }
+
+    pub fn in_cell(&self, (x, y, z): (i32, i32, i32)) -> Vec<[i32; 4]> {
+        let low = DVec3::new(f64::from(x), f64::from(y), f64::from(z));
         self.list
             .iter()
             .filter(|crystal| {
-                let (low, high) = pick_box(crystal.position);
-                low.x < x + r && high.x > x - r && low.z < z + r && high.z > z - r
+                crate::ender_dragon::boxes_meet(pick_box(crystal.position), (low, low + DVec3::ONE))
             })
-            .count()
+            .filter_map(EndCrystal::uuid)
+            .collect()
+    }
+
+    pub fn discard(&mut self, uuids: &[[i32; 4]]) -> Vec<DVec3> {
+        let mut gone = Vec::new();
+        self.list.retain(|crystal| {
+            let keep = !crystal.uuid().is_some_and(|uuid| uuids.contains(&uuid));
+            if !keep {
+                gone.push(crystal.position);
+            }
+            keep
+        });
+        gone
     }
 
     pub fn touches(&self, (low, high): (DVec3, DVec3)) -> bool {

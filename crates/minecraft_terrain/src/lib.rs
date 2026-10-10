@@ -16,6 +16,7 @@ pub mod day_cycle;
 pub mod dials;
 pub mod dormant;
 pub mod dragon_render;
+pub mod dragon_respawn;
 pub mod end_crystal;
 pub mod end_crystal_render;
 pub mod end_portal_look;
