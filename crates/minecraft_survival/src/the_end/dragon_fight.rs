@@ -172,6 +172,7 @@ pub struct DragonFight {
     pub progress: f32,
     pub opening: Option<mpsc::Receiver<(i32, i32, i32)>>,
     pub resumed: bool,
+    pub arena_loaded: bool,
 }
 
 impl Default for DragonFight {
@@ -279,6 +280,7 @@ impl DragonFight {
             progress: 1.0,
             opening: None,
             resumed: false,
+            arena_loaded: false,
         }
     }
 
@@ -413,6 +415,7 @@ impl DragonFight {
             previously_killed: self.data.previously_killed,
             dragon_killed: self.data.dragon_killed,
             exit_portal: self.data.exit_portal_location,
+            ticking: !self.players.is_empty() && self.arena_loaded,
         }
     }
 
@@ -575,6 +578,7 @@ pub fn tick_level<'a>(
     }
     let loaded =
         entities.is_some() && arena_loaded(|chunk| terrain.scene.generated_chunk(chunk).is_some());
+    fight.arena_loaded = loaded;
     let dragon = entities.as_ref().and_then(|entities| {
         let uuid = fight.data.dragon_uuid?;
         entities
@@ -780,6 +784,19 @@ mod tests {
                 ..FightLink::default()
             }
         );
+    }
+
+    #[test]
+    fn the_fight_ticks_on_the_server_only_with_players_near_and_the_arena_loaded() {
+        let mut fight = DragonFight {
+            arena_loaded: true,
+            ..DragonFight::default()
+        };
+        assert!(!fight.link_state().ticking, "nobody near");
+        fight.players = vec![uuid("steve")];
+        assert!(fight.link_state().ticking);
+        fight.arena_loaded = false;
+        assert!(!fight.link_state().ticking, "the arena still loads");
     }
 
     #[test]

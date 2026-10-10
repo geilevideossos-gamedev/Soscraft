@@ -960,7 +960,7 @@ Written with entry 33, in its commit.
 - **MinecraftOSS patches in this group:** `world/src/level/end_portal.rs` (`find_exit_portal_match`, `dismantle_exit_portal`), `generator/src/feature/end_portal.rs` (`ExitPortal::cells`).
 - **Plan decisions kept:** 3 (credits like vanilla: once per player through `seenCredits`, Escape skips, the trip home loads behind them, the texts read from the jar at runtime), 9 (the dragon's experience, the kill, the exit portal, the egg, the gateways and the respawn all go through the fight of the End level and its saved data; the credits and the hold are per player by UUID; nothing uses `PLAYER = 0`).
 - **Not done in this group, and why:**
-  - **X5 and X6** are out of scope this round (see entry 33 and the state doc). X3 and X4 took the whole run, so no X5 commit (E3-16 perching, E3-20 egg teleport) was started.
+  - **X5 and X6** are out of scope this round (see entry 33 and the state doc). No X5 commit (E3-16 perching, E3-20 egg teleport) was started in group X4; whether X5 runs as an extra group is the orchestrator's call.
   - **Small gaps:** the dragon's dissolve and explosion particles while dying (no dissolve pass, no explosion particle), the gateway beam and event 3000's emitter, the credits vignette and music, the respawn's stage time is saved as the start of its stage.
 - **Owner test for the group** (one new world, survival; screenshots numbered as in the entries):
   1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x4` (a new world) and the kit below; no `IW4L_MINECRAFT_DIMENSION` line. In the overworld walk about 50 blocks from the spawn and type `/spawnpoint`.
@@ -974,4 +974,27 @@ Written with entry 33, in its commit.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:end_portal_frame*12,minecraft:ender_eye*12,minecraft:end_crystal*16,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket,minecraft:cooked_beef*32
+```
+
+## Review of the third run (X3 and X4)
+
+An adversarial review of af3cc119..3e3bc785: rules (no comments, rustfmt on the new files, no Mojang data), vanilla checks with javap (`EnderDragon.hurt(part)`, `handleKillingBlow`, `tickDeath`, `checkCrystals`, `DragonDeathPhase`, `DragonHoverPhase.isSitting`, `EndCrystal.hurtServer`, `EnderDragonFight.tick`, `tryRespawn`, `respawnDragon`, `DragonRespawnStage$3`, `Player.canCriticalAttack`, `GameRenderer`'s sky pass flag), MW2 regressions (the flat hit bit only rides on dragon part keys; MW2 maps build no mob boxes) and per-player state. Each defect found is fixed in its own commit below.
+
+### 34. Minecraft dragon respawn waits for players near a loaded arena like vanilla
+
+Previous commit: 3e3bc785
+
+- **Defect:** the respawn with four crystals ran on the server whenever the End level ticked. `EnderDragonFight.tick` runs it only while the fight has players (within 192 blocks) and `isArenaLoaded()`; it returns before the respawn otherwise. Worst case: a world quit during a respawn, after the first visit's state scan, sent the saved respawn back to the server on the first frame, before the chunks holding the four crystals were loaded; the next tick found none of them and aborted, so the saved respawn was lost and the portal lit again (entry 31's "a world quit during the respawn restarts the current stage" did not hold). Walking more than 192 blocks away also kept it running while the arena could unload.
+- **Changed:** `minecraft_terrain/src/server.rs`: `FightLink.ticking`; `tick_respawn` returns at once while the fight does not tick. `minecraft_survival/src/the_end/dragon_fight.rs`: `DragonFight.arena_loaded` (set each frame from the same arena check the scan and the dragon use), and `link_state` sends `ticking` = players near and the arena loaded, so the link is resent when either changes. Chunks go to the server before a job sent after them, so a ticking fight has the crystals loaded.
+- **Checked with javap (26.3):** `EnderDragonFight.tick` (`isArenaLoaded()` returns before the respawn stage tick, all inside the non-empty player branch).
+- **Tests:** `server`: `a_respawn_waits_while_the_fight_does_not_tick_and_a_reloaded_one_waits_for_its_crystals` (an End level of seed 0: four crystals start a respawn that stays at its start for 300 ticks without a ticking fight; a respawn resumed before its crystals load is kept, not aborted; once the crystals are back and the fight ticks, it moves to `preparing_to_summon_pillars`). `dragon_fight`: `the_fight_ticks_on_the_server_only_with_players_near_and_the_arena_loaded`. `respawn_world` links a ticking fight.
+- **Track log:** the X4 summary no longer says X3 and X4 took the whole run.
+- **Test steps** (survival; continue in `x4dragon` after a kill, or kill the dragon there first):
+  1. Place the four crystals on the rim (entry 31 step 1). When the log says `Minecraft ender dragon respawn: summoning_pillars`, quit the game at once.
+  2. Start again: you are in the End. Within a few seconds the beams come back from the four crystals, the pillars are rebuilt from the first one again, and about 30 seconds later the new dragon comes (the log says `Minecraft ender dragon respawned: [...]`, not `respawn: aborted`). **Screenshot 11.**
+  3. Optional: place four crystals again after killing it, then `/gamemode creative` and fly more than 192 blocks from the island centre (`/tp 0 100 250`) right away: the beams stay where they are and no pillar is rebuilt while you are away; fly back and they go on.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_crystal*16,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
 ```

@@ -1582,6 +1582,9 @@ impl ServerSim {
 
     fn tick_respawn(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
         use crate::dragon_respawn::Action;
+        if !self.fight.ticking {
+            return;
+        }
         let Some(mut respawn) = self.respawn.take() else {
             return;
         };
@@ -2104,6 +2107,7 @@ pub struct FightLink {
     pub previously_killed: bool,
     pub dragon_killed: bool,
     pub exit_portal: Option<BlockPos>,
+    pub ticking: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -7067,7 +7071,7 @@ mod tests {
         let mut server = end_world((-4..=3).flat_map(|x| (-4..=3).map(move |z| (x, z))))?;
         let at = server.scan_dragon_fight((0, 0, 0), None).exit_portal_location?;
         server.dragon_killed((0, 0, 0), Some(at), None, true);
-        server.link_fight(FightLink { dragon: None, previously_killed: true, dragon_killed: true, exit_portal: Some(at) });
+        server.link_fight(FightLink { dragon: None, previously_killed: true, dragon_killed: true, exit_portal: Some(at), ticking: true });
         Some((server, at))
     }
 
@@ -7166,6 +7170,35 @@ mod tests {
         assert_eq!(block_named(&server, (1, at.1, 0)), "minecraft:end_portal", "the exit portal is lit again");
         assert!(server.crystals.list.iter().all(|crystal| !crystal.invulnerable));
         assert!(server.fight.dragon_killed);
+    }
+
+    #[test]
+    fn a_respawn_waits_while_the_fight_does_not_tick_and_a_reloaded_one_waits_for_its_crystals() {
+        let Some((mut server, at)) = respawn_world() else { return };
+        server.link_fight(FightLink { ticking: false, ..server.fight });
+        place_respawn_crystals(&mut server, at, 0..4);
+        assert_eq!(server.take_fight_reports().len(), 1, "the respawn starts at once");
+        for _ in 0..300 {
+            server.tick_end(&[]);
+        }
+        assert!(server.take_fight_reports().is_empty(), "nothing moves with nobody near the arena");
+        assert_eq!(server.respawn.as_ref().map(|respawn| respawn.stage), Some(crate::dragon_respawn::Stage::Start));
+        let saved = server.respawn.take().expect("the respawn");
+        let tags = server.crystals.tags_where(|_| true);
+        server.crystals.remove_where(|_| true);
+        server.resume_respawn(saved);
+        for _ in 0..20 {
+            server.tick_end(&[]);
+        }
+        assert!(server.respawn.is_some(), "a respawn loaded before its crystals is kept");
+        assert!(server.take_fight_reports().is_empty());
+        for tag in &tags {
+            server.crystals.add(tag);
+        }
+        server.link_fight(FightLink { ticking: true, ..server.fight });
+        server.tick_end(&[]);
+        let reports = server.take_fight_reports();
+        assert!(matches!(reports.as_slice(), [FightReport::Respawning { stage: "preparing_to_summon_pillars", .. }]), "{reports:?}");
     }
 
     fn orb_experience(server: &ServerSim) -> i32 {
