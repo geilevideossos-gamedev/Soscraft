@@ -75,6 +75,7 @@ pub mod item_icons;
 pub mod crafting;
 pub mod placing;
 pub mod protection;
+pub mod transform;
 pub mod scaffolding;
 pub mod doors;
 pub mod thrown;

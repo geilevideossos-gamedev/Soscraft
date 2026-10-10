@@ -316,3 +316,27 @@ IW4L_MINECRAFT_KIT=minecraft:campfire*4,minecraft:iron_shovel,minecraft:wooden_s
 ```
 IW4L_MINECRAFT_KIT=minecraft:diamond_boots+feather_falling=4,minecraft:diamond_boots,minecraft:diamond_chestplate+fire_protection=4,minecraft:diamond_helmet+protection=4,minecraft:lava_bucket,minecraft:cobblestone*64,minecraft:zombie_spawn_egg
 ```
+
+### 6. Minecraft hoes till, shovels flatten paths and axes strip logs
+
+- **Changed:**
+  - Not on the group's list, but found while doing the campfire douse: no tool changed blocks at all, so there was no way to make farmland for crops. In 26.3 `HoeItem`, `ShovelItem` and `AxeItem` are gone; `Item.Properties.hoe`, `shovel` and `axe` give the tools a `block_transformer` component pointing at the data-driven `data/minecraft/block_transformer/{hoe,shovel,axe}.json` (javap of `Item$Properties` and `BlockTransformer.transformBlock`).
+  - New `minecraft_terrain/src/transform.rs`: `TransformBook::from_jar` reads those files. Each entry has a block state provider (`rule_based` with `if_true` block predicates and `then` providers, plain states and `copy_properties`, which is `withPropertiesOf` the clicked block), `disallowed_faces`, `item_damage_per_use` and a sound. `transform_use` is `transformBlock`: a tool in `#hoes`, `#shovels` or `#axes` aims at a block (reach 4.5), and the first entry whose face is allowed and whose provider gives a state sets it, wears the tool and plays the sound at the block centre (volume and pitch 1). `playerHasBlockingItemUseIntent` is kept: with a shield in the offhand the main hand transforms nothing unless sneaking. `BlockFacts` answers block tags (`matching_block_tag`, an empty cell counting as `minecraft:air`) and properties from the block catalog.
+  - `GameData` loads the book; `render_anim/src/minecraft_world.rs` puts it into the item-use chain after the campfire douse (one line), so the change goes through the same `Change::Set` path, wear and sounds as buckets and flint and steel.
+- **Tests:** `transform`: `a_hoe_tills_grass_and_dirt_under_air_and_coarse_dirt_into_dirt`, `a_shovel_flattens_a_path_but_not_from_below_and_not_with_a_shield_up`, `an_axe_strips_a_log_keeping_its_axis_and_leaves_doors_alone`, `the_block_catalog_answers_tags_and_properties` and `the_vanilla_transformers_read_from_the_jar` (both with `MINECRAFTOSS_ROOT`). `data`: no book without a jar.
+- **Decisions:**
+  - Entries the fork can't do faithfully yet are skipped as a whole: a `loot` drop (hoe on rooted dirt, which pops hanging roots), `transform_type` `copper_chest` and `update_from_neighbors: false` (copper chests and doors, whose other half must change with them). Recorded in the state doc.
+  - The tool is matched by the `#hoes`, `#shovels` and `#axes` item tags, which hold exactly the items built with `Properties.hoe`, `shovel` and `axe`.
+  - The scrape and wax-off particles (level events 3005 and 3004) are not drawn, and `updateFromNeighbourShapes` is skipped: for logs, copper blocks, farmland and paths it changes nothing.
+- **Test steps:**
+  1. Right-click grass with a hoe: farmland. Plant wheat seeds on it. **Screenshot 7.**
+  2. Right-click grass with a shovel: a dirt path. Try it on grass with a flower on top: nothing.
+  3. Right-click an oak log with an axe: it becomes a stripped oak log lying the same way (try a sideways log too). **Screenshot 8.**
+  4. Place exposed copper and right-click it with an axe: plain copper. Place waxed copper and right-click it with the axe: the wax comes off (plain copper block).
+  5. Hold a shield in the offhand and right-click grass with the hoe: nothing; sneak and try again: farmland.
+  6. Use a hoe many times and watch its durability bar go down; in creative it stays full.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:iron_hoe,minecraft:iron_shovel,minecraft:iron_axe,minecraft:shield,minecraft:wheat_seeds*16,minecraft:oak_log*8,minecraft:exposed_copper*4,minecraft:waxed_copper_block*4,minecraft:grass_block*16,minecraft:poppy*2
+```
