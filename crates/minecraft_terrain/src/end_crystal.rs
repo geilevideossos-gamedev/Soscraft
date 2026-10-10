@@ -276,6 +276,17 @@ pub struct Crystals {
     pub list: Vec<EndCrystal>,
     next_id: u64,
     random: LegacyRandom,
+    uuids: LegacyRandom,
+}
+
+static SESSIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn session_seed() -> u64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos() as u64);
+    let session = SESSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    nanos ^ session.wrapping_add(1).wrapping_mul(0x9E37_79B9_7F4A_7C15)
 }
 
 impl Default for Crystals {
@@ -284,6 +295,7 @@ impl Default for Crystals {
             list: Vec::new(),
             next_id: 0,
             random: LegacyRandom::new(0x00E1_DC12_57A1),
+            uuids: LegacyRandom::new(session_seed()),
         }
     }
 }
@@ -297,8 +309,8 @@ impl Crystals {
     }
 
     pub fn fresh_tag(&mut self, position: DVec3, show_bottom: bool) -> Tag {
-        let most = (self.random.next_long() & !0xF000) | 0x4000;
-        let least = (self.random.next_long() & 0x3FFF_FFFF_FFFF_FFFF) | 0x8000_0000_0000_0000;
+        let most = (self.uuids.next_long() & !0xF000) | 0x4000;
+        let least = (self.uuids.next_long() & 0x3FFF_FFFF_FFFF_FFFF) | 0x8000_0000_0000_0000;
         let uuid = [
             (most >> 32) as i32,
             most as i32,
@@ -596,5 +608,20 @@ mod tests {
         assert!((distance - 4.0).abs() < 1e-9);
         assert_eq!(on_ray(&views, eye, DVec3::Z, 3.0), None);
         assert_eq!(on_ray(&views, eye, -DVec3::Z, 6.0), None);
+    }
+
+    #[test]
+    fn crystals_placed_in_two_sessions_never_share_a_uuid() {
+        let place = || {
+            let mut crystals = Crystals::default();
+            crystals.add(&crystal_tag([0.5, 1.0, 0.5])).unwrap();
+            let tag = crystals.fresh_tag(DVec3::new(4.5, 1.0, 0.5), false);
+            crystals.add(&tag).unwrap();
+            crystals.list[1].uuid().expect("a fresh crystal has a UUID")
+        };
+        let first = place();
+        let second = place();
+        assert_ne!(first, second, "the same history gives a new UUID");
+        assert_eq!(first[1] as u32 & 0xF000, 0x4000, "version 4");
     }
 }

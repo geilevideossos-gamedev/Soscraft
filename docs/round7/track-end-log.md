@@ -998,3 +998,21 @@ Previous commit: 3e3bc785
 ```
 IW4L_MINECRAFT_KIT=minecraft:end_crystal*16,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:water_bucket
 ```
+
+### 35. Minecraft end crystals placed by players get a new UUID every session
+
+Previous commit: b2e8a03d
+
+- **Defect:** a placed end crystal took its UUID from the level's crystal random, which started from the same constant seed every session and also drew each loaded crystal's `time`. With the same number of crystals loaded before a placement, a crystal placed after a restart got the UUID of one placed in an earlier session, and both stood in the world. The respawn finds its four crystals by UUID, so a twin elsewhere took the beams, was blown up and discarded with them at the summon, or aborted the respawn when it broke; a vanilla load of the save would also drop one of the twins.
+- **Changed:** `minecraft_terrain/src/end_crystal.rs`: `Crystals` draws new UUIDs from their own random seeded once per session (`session_seed`: the wall clock in nanoseconds mixed with a per-process counter), as vanilla's `Mth.createInsecureUUID` draws from an entity random seeded uniquely per session. The crystals' `time` keeps the old seeded random.
+- **Tests:** `end_crystal`: `crystals_placed_in_two_sessions_never_share_a_uuid` (the same load and placement history in two sessions gives two different version-4 UUIDs).
+- **Decision:** the dragon's UUID (`Dragons::fresh_tag` from `ServerSim.end_random`) keeps its seeded draws, because the dragon's flight random is seeded from its UUID and the server tests rely on a reproducible flight. Two dragons with one UUID would need the fight to make a new dragon while an earlier one of the same draw index still lives, which the held arena ticket rules out.
+- **Test steps** (survival): a twin needs the same number of random draws before two placements, which no in-game step can arrange on purpose, so the unit test covers the fix. As a regression check:
+  1. In the `.env`, set `IW4L_MINECRAFT_WORLD=x4uuid` (a new world), `IW4L_MINECRAFT_DIMENSION=the_end` and the kit below. On the platform place an obsidian block and put an end crystal on it; it stands there without its base. Quit and start again: it is still there.
+  2. Shoot it: it explodes as before.
+  3. Remove the `IW4L_MINECRAFT_DIMENSION` line afterwards.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_crystal*8,minecraft:obsidian*8,minecraft:golden_apple*8,minecraft:diamond_chestplate
+```
