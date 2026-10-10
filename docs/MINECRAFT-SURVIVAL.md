@@ -226,8 +226,7 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 - Not drawn: the copper golem statue. Each half of a double chest is lit separately.
 - No lava fog and no rain particles.
 - Missing particles: bone meal, smoke, fizz, item break, TNT and campfire smoke.
-- Missing sounds: ambient fire, lava and campfire.
-- The display tick only animates nether portals.
+- The display tick animates nether portals and plays the ambient sounds of fire, soul fire, lava under air (`block.lava.pop` and `block.lava.ambient`) and lit campfires (`block.campfire.crackle`) at vanilla's chances, volumes and pitches. Other blocks' display ticks (drips, leaves, torches, candles, biome particles) do nothing yet.
 - The animation clock keeps running while paused.
 - Third person: while a Minecraft block or item (or an empty hand) is selected the MW2 body puts its gun away and holds the selected item in its right hand and the offhand item in its left, as vanilla's `thirdperson_righthand` and `thirdperson_lefthand` displays place them, and worn armour is drawn on it, bending at the elbows and knees. The arms keep MW2's gun grip: vanilla's arm swing and use poses, armour trims, heads and carved pumpkins on the head, the elytra and burning flames are not drawn on it, and a corpse wears no gear. While the inventory is open the body leaves the world for the inventory's character box. The camera stops on block collision shapes, so glass, fences and snow layers stop it where vanilla's visual shapes would let it through or closer. Underwater fog follows the eyes, not the camera, and MW2 scope overlays are not checked in third person yet.
 - An ignored render error loses that frame, so an error that repeats every frame would flicker the screen. bevy also prints `Caught rendering error` to the console, not to the game log.
