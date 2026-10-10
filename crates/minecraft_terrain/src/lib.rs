@@ -4,6 +4,10 @@
 pub use minecraftoss_core::fast_hash;
 pub use minecraftoss_world::game_rules;
 pub use minecraftoss_world::level_storage;
+pub mod ambient_particles;
+pub mod level_events;
+pub mod rain;
+pub mod lava_fog;
 pub mod block_particles;
 #[cfg(test)]
 mod test_dir;
@@ -39,6 +43,7 @@ pub mod scene;
 pub mod sections;
 pub(crate) mod special_models;
 pub mod terrain;
+pub mod translucency;
 pub mod texture_mips;
 pub mod audio;
 pub mod server;
@@ -76,6 +81,8 @@ pub mod item_icon;
 pub mod item_icons;
 pub mod crafting;
 pub mod placing;
+pub mod protection;
+pub mod transform;
 pub mod scaffolding;
 pub mod doors;
 pub mod thrown;

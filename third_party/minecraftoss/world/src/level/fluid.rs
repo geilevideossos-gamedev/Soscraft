@@ -9,6 +9,8 @@ use minecraftoss_core::random::RandomSource;
 use minecraftoss_core::{BlockPos, BlockStateId};
 use std::collections::HashMap;
 
+pub const LAVA_FIZZ: i32 = 1501;
+
 /// The fluid type a fluid state belongs to (`FluidState.getType`).
 pub fn fluid_type(fluid: &FluidInfo) -> FluidType {
     match (fluid.kind, fluid.source) {
@@ -102,11 +104,13 @@ impl Level<'_> {
                 let block = if source { "minecraft:obsidian" } else { "minecraft:cobblestone" };
                 let block = self.registries().blocks.parse_state(block).expect("exists");
                 self.set_block_and_update(pos, block);
+                self.level_events.push((LAVA_FIZZ, pos, 0));
                 return false;
             }
             if over_soul_soil && self.name(self.block(neighbour)) == "minecraft:blue_ice" {
                 let basalt = self.registries().blocks.parse_state("minecraft:basalt").expect("exists");
                 self.set_block_and_update(pos, basalt);
+                self.level_events.push((LAVA_FIZZ, pos, 0));
                 return false;
             }
         }
@@ -383,6 +387,7 @@ impl Level<'_> {
                 let stone = self.registries().blocks.parse_state("minecraft:stone").expect("exists");
                 self.set_block_and_update(pos, stone);
             }
+            self.level_events.push((LAVA_FIZZ, pos, 0));
             return;
         }
         if is_liquid_container(self, state) {
@@ -397,6 +402,9 @@ impl Level<'_> {
         // `beforeDestroyingBlock`: water drops the block's loot, lava fizzes.
         if !self.registries().blocks.is_air(state) && target.is_some_and(|f| f.kind == FluidKind::Water) {
             self.drop_resources(state, pos);
+        }
+        if !self.registries().blocks.is_air(state) && target.is_some_and(|f| f.kind == FluidKind::Lava) {
+            self.level_events.push((LAVA_FIZZ, pos, 0));
         }
         let block = self.fluid_legacy_block(target);
         self.set_block(pos, block, update::ALL, update::LIMIT);

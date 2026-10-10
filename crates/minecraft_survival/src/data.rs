@@ -13,6 +13,8 @@ pub struct GameData {
     pub loot: Option<Arc<LootBook>>,
     pub stations: Arc<StationBook>,
     pub enchantments: Option<Arc<Enchantments>>,
+    pub protection: Option<Arc<minecraft_terrain::protection::ProtectionBook>>,
+    pub transforms: Option<Arc<minecraft_terrain::transform::TransformBook>>,
 }
 
 impl GameData {
@@ -50,6 +52,14 @@ impl GameData {
             Ok(book) => data.stations = Arc::new(book),
             Err(error) => diag::warn!(World, "Minecraft station recipes unavailable: {error:#}"),
         }
+        match minecraft_terrain::protection::ProtectionBook::from_jar(&jar) {
+            Ok(book) => data.protection = Some(Arc::new(book)),
+            Err(error) => diag::warn!(World, "Minecraft armour protection unavailable: {error:#}"),
+        }
+        match minecraft_terrain::transform::TransformBook::from_jar(&jar) {
+            Ok(book) => data.transforms = Some(Arc::new(book)),
+            Err(error) => diag::warn!(World, "Minecraft tool block transformers unavailable: {error:#}"),
+        }
         if let Some(catalog) = catalog.as_deref() {
             match minecraftoss_entities::trading::TradeBook::from_jar(&jar, catalog) {
                 Ok(book) => data.enchantments = Some(Arc::new(book.enchantments)),
@@ -72,6 +82,8 @@ mod tests {
         assert_eq!(data.recipes.count(), 0);
         assert!(data.loot.is_none());
         assert!(data.enchantments.is_none());
+        assert!(data.protection.is_none());
+        assert!(data.transforms.is_none());
     }
 
     #[test]

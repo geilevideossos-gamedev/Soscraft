@@ -196,6 +196,8 @@ pub struct Level<'a> {
     /// Game rules `tnt_explodes` and `tnt_explosion_drop_decay`.
     pub tnt_explodes: bool,
     pub tnt_explosion_drop_decay: bool,
+    pub explosion_effects: Vec<explosion::ExplosionEffect>,
+    pub level_events: Vec<(i32, BlockPos, i32)>,
     /// Entity-ticking chunks in vanilla's iteration order, when known.
     pub ticking_chunks: Option<Vec<ChunkPos>>,
     /// Chunk light solved for readers without `&mut` (`World::light`).
@@ -285,6 +287,8 @@ impl<'a> Level<'a> {
             fire_tag: lib.registries.block_tags.require("minecraft:fire").expect("tag exists"),
             tnt_explodes: true,
             tnt_explosion_drop_decay: false,
+            explosion_effects: Vec::new(),
+            level_events: Vec::new(),
             ticking_chunks: None,
             random_counts: Default::default(),
             lazy_light: std::cell::RefCell::new(Default::default()),
@@ -684,6 +688,8 @@ impl<'a> Level<'a> {
         } else if self.is_a(state, "ScaffoldingBlock") {
             let block = self.block_id(state);
             self.schedule_block_tick_priority(pos, block, 1, redstone::priority::NORMAL);
+        } else if self.is_a(state, "FrostedIceBlock") {
+            self.frosted_ice_on_place(state, pos);
         }
     }
 
@@ -704,6 +710,8 @@ impl<'a> Level<'a> {
             self.tnt_block_changed(pos);
         } else if self.name(state) == "minecraft:sponge" {
             self.sponge_try_absorb(pos);
+        } else if self.is_a(state, "FrostedIceBlock") {
+            self.frosted_ice_neighbor_changed(state, pos, source);
         }
     }
 
@@ -823,6 +831,8 @@ impl<'a> Level<'a> {
             self.scaffolding_tick(state, pos);
         } else if self.is_a(state, "SpeleothemBlock") {
             self.speleothem_tick(state, pos);
+        } else if self.is_a(state, "FrostedIceBlock") {
+            self.frosted_ice_tick(state, pos);
         } else if SUPPORTED_BY_TICK.iter().any(|class| self.is_a(state, class)) {
             if !self.can_survive_state(state, pos) {
                 self.destroy_block_drops(pos, true, update::LIMIT);

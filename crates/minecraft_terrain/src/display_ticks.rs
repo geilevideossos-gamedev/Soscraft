@@ -1,8 +1,13 @@
+use crate::ambient_particles::Kind;
 use crate::scene::{BlockPos, Scene};
 use glam::DVec3;
 use minecraftoss_player::rng::LegacyRandom;
 
 pub const PORTAL_AMBIENT: &str = "minecraft:block.portal.ambient";
+pub const FIRE_AMBIENT: &str = "minecraft:block.fire.ambient";
+pub const LAVA_POP: &str = "minecraft:block.lava.pop";
+pub const LAVA_AMBIENT: &str = "minecraft:block.lava.ambient";
+pub const CAMPFIRE_CRACKLE: &str = "minecraft:block.campfire.crackle";
 const SAMPLES: usize = 667;
 const RADII: [u32; 2] = [16, 32];
 const PORTAL_PARTICLES: usize = 4;
@@ -10,6 +15,7 @@ const AMBIENT_CHANCE: u32 = 100;
 const AMBIENT_VOLUME: f32 = 0.5;
 const AMBIENT_PITCH: f32 = 0.8;
 const AMBIENT_PITCH_SPREAD: f32 = 0.4;
+const FIRE_SIDES: [&str; 5] = ["west", "east", "north", "south", "up"];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AmbientSound {
@@ -22,6 +28,7 @@ pub struct AmbientSound {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DisplayTick {
     pub portal_particles: Vec<(DVec3, DVec3)>,
+    pub particles: Vec<(Kind, DVec3, DVec3)>,
     pub sounds: Vec<AmbientSound>,
 }
 
@@ -59,8 +66,152 @@ pub fn animate_block<S: Scene + ?Sized>(
     random: &mut LegacyRandom,
     out: &mut DisplayTick,
 ) {
-    if is_portal(scene, pos) {
-        nether_portal(scene, pos, random, out);
+    let Some(block) = scene.block(pos) else {
+        return;
+    };
+    if block.id.namespace != "minecraft" {
+        return;
+    }
+    match block.id.path.as_str() {
+        "nether_portal" => nether_portal(scene, pos, random, out),
+        "fire" | "soul_fire" => fire(block, pos, random, out),
+        "lava" => lava(scene, pos, random, out),
+        "campfire" | "soul_campfire" if crate::campfire::is_lit(block) => {
+            campfire(pos, block.id.path == "campfire", random, out)
+        }
+        _ => {}
+    }
+}
+
+fn center((x, y, z): BlockPos) -> [f64; 3] {
+    [
+        f64::from(x) + 0.5,
+        f64::from(y) + 0.5,
+        f64::from(z) + 0.5,
+    ]
+}
+
+fn is_air(block: Option<&crate::scene::Block>) -> bool {
+    block.is_none_or(|block| {
+        block.id.namespace == "minecraft"
+            && matches!(block.id.path.as_str(), "air" | "cave_air" | "void_air")
+    })
+}
+
+fn fire(
+    block: &crate::scene::Block,
+    pos: BlockPos,
+    random: &mut LegacyRandom,
+    out: &mut DisplayTick,
+) {
+    if random.next_int(24) == 0 {
+        out.sounds.push(AmbientSound {
+            event: FIRE_AMBIENT,
+            at: center(pos),
+            volume: 1.0 + random.next_float(),
+            pitch: random.next_float() * 0.7 + 0.3,
+        });
+    }
+    let (bx, by, bz) = (f64::from(pos.0), f64::from(pos.1), f64::from(pos.2));
+    let clings = |side: &str| block.properties.get(side).is_some_and(|v| v == "true");
+    let mut smoke = |at: DVec3| out.particles.push((Kind::LargeSmoke, at, DVec3::ZERO));
+    if !FIRE_SIDES.iter().any(|side| clings(side)) {
+        for _ in 0..3 {
+            let x = bx + random.next_double();
+            let y = by + random.next_double() * 0.5 + 0.5;
+            let z = bz + random.next_double();
+            smoke(DVec3::new(x, y, z));
+        }
+        return;
+    }
+    let edge = |random: &mut LegacyRandom| random.next_double() * f64::from(0.1_f32);
+    for side in FIRE_SIDES {
+        if !clings(side) {
+            continue;
+        }
+        for _ in 0..2 {
+            let at = match side {
+                "west" => {
+                    let x = bx + edge(random);
+                    DVec3::new(x, by + random.next_double(), bz + random.next_double())
+                }
+                "east" => {
+                    let x = bx + 1.0 - edge(random);
+                    DVec3::new(x, by + random.next_double(), bz + random.next_double())
+                }
+                "north" => {
+                    let x = bx + random.next_double();
+                    let y = by + random.next_double();
+                    DVec3::new(x, y, bz + edge(random))
+                }
+                "south" => {
+                    let x = bx + random.next_double();
+                    let y = by + random.next_double();
+                    DVec3::new(x, y, bz + 1.0 - edge(random))
+                }
+                _ => {
+                    let x = bx + random.next_double();
+                    let y = by + 1.0 - edge(random);
+                    DVec3::new(x, y, bz + random.next_double())
+                }
+            };
+            smoke(at);
+        }
+    }
+}
+
+fn lava<S: Scene + ?Sized>(
+    scene: &S,
+    pos: BlockPos,
+    random: &mut LegacyRandom,
+    out: &mut DisplayTick,
+) {
+    if !is_air(scene.block((pos.0, pos.1 + 1, pos.2))) {
+        return;
+    }
+    let (bx, by, bz) = (f64::from(pos.0), f64::from(pos.1), f64::from(pos.2));
+    if random.next_int(100) == 0 {
+        let at = [bx + random.next_double(), by + 1.0, bz + random.next_double()];
+        out.particles
+            .push((Kind::Lava, DVec3::from_array(at), DVec3::ZERO));
+        out.sounds.push(AmbientSound {
+            event: LAVA_POP,
+            at,
+            volume: 0.2 + random.next_float() * 0.2,
+            pitch: 0.9 + random.next_float() * 0.15,
+        });
+    }
+    if random.next_int(200) == 0 {
+        out.sounds.push(AmbientSound {
+            event: LAVA_AMBIENT,
+            at: [bx, by, bz],
+            volume: 0.2 + random.next_float() * 0.2,
+            pitch: 0.9 + random.next_float() * 0.15,
+        });
+    }
+}
+
+fn campfire(pos: BlockPos, embers: bool, random: &mut LegacyRandom, out: &mut DisplayTick) {
+    if random.next_int(10) == 0 {
+        out.sounds.push(AmbientSound {
+            event: CAMPFIRE_CRACKLE,
+            at: center(pos),
+            volume: 0.5 + random.next_float(),
+            pitch: random.next_float() * 0.7 + 0.6,
+        });
+    }
+    if embers && random.next_int(5) == 0 {
+        let mut count = 0;
+        while count < random.next_int(1) + 1 {
+            let motion = DVec3::new(
+                f64::from(random.next_float() / 2.0),
+                5.0e-5,
+                f64::from(random.next_float() / 2.0),
+            );
+            out.particles
+                .push((Kind::Lava, DVec3::from_array(center(pos)), motion));
+            count += 1;
+        }
     }
 }
 
@@ -208,6 +359,146 @@ mod tests {
             );
         }
         assert!(near > 0);
+    }
+
+    fn heard<S: Scene>(scene: &S, pos: BlockPos, seed: u64, ticks: usize) -> Vec<AmbientSound> {
+        let mut out = DisplayTick::default();
+        let mut random = LegacyRandom::new(seed);
+        for _ in 0..ticks {
+            animate_block(scene, pos, &mut random, &mut out);
+        }
+        out.sounds
+    }
+
+    #[test]
+    fn fire_roars_once_in_twenty_four_ticks() {
+        for id in ["minecraft:fire", "minecraft:soul_fire"] {
+            let scene = Blocks(HashMap::from([((3, 70, -2), Block::new(id))]));
+            let sounds = heard(&scene, (3, 70, -2), 9, 24_000);
+            assert!((800..1200).contains(&sounds.len()), "{id}: {}", sounds.len());
+            for sound in &sounds {
+                assert_eq!(sound.event, FIRE_AMBIENT);
+                assert_eq!(sound.at, [3.5, 70.5, -1.5]);
+                assert!((1.0..2.0).contains(&sound.volume));
+                assert!((0.3..1.0).contains(&sound.pitch));
+            }
+        }
+    }
+
+    #[test]
+    fn lava_under_air_pops_on_its_surface_and_hums_from_its_corner() {
+        let scene = Blocks(HashMap::from([((0, 10, 0), Block::new("minecraft:lava"))]));
+        let sounds = heard(&scene, (0, 10, 0), 4, 40_000);
+        let pops: Vec<_> = sounds.iter().filter(|s| s.event == LAVA_POP).collect();
+        let hums: Vec<_> = sounds.iter().filter(|s| s.event == LAVA_AMBIENT).collect();
+        assert_eq!(pops.len() + hums.len(), sounds.len());
+        assert!((300..500).contains(&pops.len()), "{}", pops.len());
+        assert!((140..260).contains(&hums.len()), "{}", hums.len());
+        for pop in pops {
+            assert_eq!(pop.at[1], 11.0);
+            assert!((0.0..1.0).contains(&pop.at[0]) && (0.0..1.0).contains(&pop.at[2]));
+            assert!((0.2..0.4).contains(&pop.volume) && (0.9..1.05).contains(&pop.pitch));
+        }
+        assert!(hums.iter().all(|hum| hum.at == [0.0, 10.0, 0.0]));
+    }
+
+    #[test]
+    fn covered_lava_is_silent() {
+        let scene = Blocks(HashMap::from([
+            ((0, 10, 0), Block::new("minecraft:lava")),
+            ((0, 11, 0), Block::new("minecraft:lava")),
+        ]));
+        assert!(heard(&scene, (0, 10, 0), 4, 10_000).is_empty());
+        let glass = Blocks(HashMap::from([
+            ((0, 10, 0), Block::new("minecraft:lava")),
+            ((0, 11, 0), Block::new("minecraft:glass")),
+        ]));
+        assert!(heard(&glass, (0, 10, 0), 4, 10_000).is_empty());
+    }
+
+    #[test]
+    fn lit_campfires_crackle_once_in_ten_ticks() {
+        for id in ["minecraft:campfire", "minecraft:soul_campfire"] {
+            let lit = Blocks(HashMap::from([((1, 64, 1), Block::new(id).with("lit", "true"))]));
+            let sounds = heard(&lit, (1, 64, 1), 2, 10_000);
+            assert!((850..1150).contains(&sounds.len()), "{id}: {}", sounds.len());
+            for sound in &sounds {
+                assert_eq!(sound.event, CAMPFIRE_CRACKLE);
+                assert_eq!(sound.at, [1.5, 64.5, 1.5]);
+                assert!((0.5..1.5).contains(&sound.volume) && (0.6..1.3).contains(&sound.pitch));
+            }
+            let out = Blocks(HashMap::from([((1, 64, 1), Block::new(id).with("lit", "false"))]));
+            assert!(heard(&out, (1, 64, 1), 2, 10_000).is_empty());
+        }
+    }
+
+    fn shed<S: Scene>(scene: &S, pos: BlockPos, seed: u64, ticks: usize) -> Vec<(Kind, DVec3, DVec3)> {
+        let mut out = DisplayTick::default();
+        let mut random = LegacyRandom::new(seed);
+        for _ in 0..ticks {
+            animate_block(scene, pos, &mut random, &mut out);
+        }
+        out.particles
+    }
+
+    #[test]
+    fn fire_on_the_ground_smokes_three_puffs_a_tick_from_its_upper_half() {
+        for id in ["minecraft:fire", "minecraft:soul_fire"] {
+            let scene = Blocks(HashMap::from([((2, 64, 2), Block::new(id).with("up", "false"))]));
+            let smoke = shed(&scene, (2, 64, 2), 1, 50);
+            assert_eq!(smoke.len(), 150, "{id}");
+            for (kind, at, motion) in smoke {
+                assert_eq!((kind, motion), (Kind::LargeSmoke, DVec3::ZERO));
+                assert!((2.0..3.0).contains(&at.x) && (2.0..3.0).contains(&at.z));
+                assert!((64.5..65.0).contains(&at.y));
+            }
+        }
+    }
+
+    #[test]
+    fn fire_on_a_wall_smokes_two_puffs_against_each_burning_side() {
+        let fire = Block::new("minecraft:fire").with("west", "true").with("up", "true");
+        let scene = Blocks(HashMap::from([((0, 64, 0), fire)]));
+        let smoke = shed(&scene, (0, 64, 0), 2, 50);
+        assert_eq!(smoke.len(), 200);
+        let west = smoke.iter().filter(|(_, at, _)| at.x < 0.1).count();
+        let up = smoke.iter().filter(|(_, at, _)| at.y > 64.9).count();
+        assert!(west >= 100 && up >= 100, "{west} {up}");
+        assert!(smoke.iter().all(|(_, at, _)| at.x < 0.1 || at.y > 64.9));
+        assert!(smoke.iter().all(|(_, at, _)| (64.0..65.0).contains(&at.y)));
+    }
+
+    #[test]
+    fn lava_spits_an_ember_with_each_pop() {
+        let scene = Blocks(HashMap::from([((0, 10, 0), Block::new("minecraft:lava"))]));
+        let mut out = DisplayTick::default();
+        let mut random = LegacyRandom::new(4);
+        for _ in 0..20_000 {
+            animate_block(&scene, (0, 10, 0), &mut random, &mut out);
+        }
+        let pops: Vec<_> = out.sounds.iter().filter(|s| s.event == LAVA_POP).map(|s| s.at).collect();
+        let embers: Vec<_> = out.particles.iter().map(|(kind, at, _)| (*kind, at.to_array())).collect();
+        assert!(!pops.is_empty());
+        assert_eq!(embers, pops.iter().map(|at| (Kind::Lava, *at)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn lit_campfires_spit_an_ember_one_time_in_five_and_soul_campfires_none() {
+        let lit = Blocks(HashMap::from([(
+            (1, 64, 1),
+            Block::new("minecraft:campfire").with("lit", "true"),
+        )]));
+        let embers = shed(&lit, (1, 64, 1), 3, 10_000);
+        assert!((1800..2200).contains(&embers.len()), "{}", embers.len());
+        for (kind, at, motion) in embers {
+            assert_eq!((kind, at), (Kind::Lava, DVec3::new(1.5, 64.5, 1.5)));
+            assert!((0.0..0.5).contains(&motion.x) && (0.0..0.5).contains(&motion.z));
+        }
+        let soul = Blocks(HashMap::from([(
+            (1, 64, 1),
+            Block::new("minecraft:soul_campfire").with("lit", "true"),
+        )]));
+        assert!(shed(&soul, (1, 64, 1), 3, 10_000).is_empty());
     }
 
     #[test]

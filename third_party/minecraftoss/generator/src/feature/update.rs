@@ -665,8 +665,8 @@ pub fn update_shape<W: World + ?Sized>(ctx: &mut Ctx<W>, state: BlockStateId, po
                 ctx.region.schedule_block(pos, block, if tip == Direction::Down { 2 } else { 1 });
                 return state;
             }
-            // Thickness recalculation is left to the feature that placed it.
-            state
+            let merge = ctx.property(state, "thickness") == Some("tip_merge");
+            ctx.with(state, "thickness", speleothem_thickness(ctx, state, pos, tip, merge))
         }
         Rule::Stairs => {
             tick_if_waterlogged(ctx, state, pos);
@@ -973,6 +973,24 @@ fn tick_if_waterlogged<W: World + ?Sized>(ctx: &mut Ctx<W>, state: BlockStateId,
 fn is_a<W: World + ?Sized>(ctx: &Ctx<W>, state: BlockStateId, class: &str) -> bool {
     let blocks = &ctx.registries().blocks;
     blocks.block(blocks.block_of(state)).is_a(class)
+}
+
+fn speleothem_thickness<W: World + ?Sized>(ctx: &Ctx<W>, state: BlockStateId, pos: BlockPos, tip: Direction, merge: bool) -> &'static str {
+    let blocks = &ctx.registries().blocks;
+    let pointing = |s: BlockStateId, toward: Direction| {
+        matches!(ctx.lib.update_rules.rules.get(&blocks.block_of(s)), Some(Rule::Speleothem)) && ctx.property(s, "vertical_direction") == Some(toward.name())
+    };
+    let front = ctx.block(pos.relative(tip, 1));
+    if pointing(front, tip.opposite()) && blocks.block_of(front) == blocks.block_of(state) {
+        return if merge || ctx.property(front, "thickness") == Some("tip_merge") { "tip_merge" } else { "tip" };
+    }
+    if !pointing(front, tip) {
+        return "tip";
+    }
+    if matches!(ctx.property(front, "thickness"), Some("tip" | "tip_merge")) {
+        return "frustum";
+    }
+    if pointing(ctx.block(pos.relative(tip.opposite(), 1)), tip) { "middle" } else { "base" }
 }
 
 fn state_facing<W: World + ?Sized>(ctx: &Ctx<W>, state: BlockStateId) -> Direction {

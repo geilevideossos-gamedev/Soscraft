@@ -1,9 +1,25 @@
 use super::{Level, Update};
-use minecraftoss_core::block::flags;
+use minecraftoss_core::block::{flags, BlockId};
+use minecraftoss_core::pos::Direction;
+use minecraftoss_core::random::RandomSource;
 use minecraftoss_core::{BlockPos, BlockStateId};
 
 const ICE_MELTS_WHEN_DESTROYED_ABOVE: &str = "minecraft:ice_melts_when_destroyed_above";
 const WATER_EVAPORATES: &str = "gameplay/water_evaporates";
+const FROSTED_ICE_MAX_AGE: i32 = 3;
+const FROSTED_ICE_LIGHT: i32 = 11;
+const FROSTED_ICE_PLACED_TICKS: (i32, i32) = (60, 120);
+const FROSTED_ICE_RETRY_TICKS: (i32, i32) = (20, 40);
+const FROSTED_ICE_CROWD: usize = 4;
+const FROSTED_ICE_ALONE: usize = 2;
+const DIRECTION_VALUES: [Direction; 6] = [
+    Direction::Down,
+    Direction::Up,
+    Direction::North,
+    Direction::South,
+    Direction::West,
+    Direction::East,
+];
 
 pub fn melts_when_player_destroyed(
     is_ice_block: bool,
@@ -45,6 +61,87 @@ impl Level<'_> {
         if melts {
             let water = self.ice_melts_into();
             self.set_block_and_update(pos, water);
+        }
+    }
+
+    fn next_int_between(&mut self, (min, max): (i32, i32)) -> i32 {
+        if min >= max {
+            min
+        } else {
+            self.random.next_i32_bound(max - min + 1) + min
+        }
+    }
+
+    pub(super) fn frosted_ice_on_place(&mut self, state: BlockStateId, pos: BlockPos) {
+        let delay = self.next_int_between(FROSTED_ICE_PLACED_TICKS);
+        self.schedule_block_tick(pos, state, delay);
+    }
+
+    fn fewer_frosted_neighbours_than(&self, state: BlockStateId, pos: BlockPos, limit: usize) -> bool {
+        let block = self.block_id(state);
+        DIRECTION_VALUES
+            .iter()
+            .filter(|direction| self.block_id(self.block(pos.relative(**direction, 1))) == block)
+            .count()
+            < limit
+    }
+
+    fn frosted_ice_slightly_melt(&mut self, state: BlockStateId, pos: BlockPos) -> bool {
+        let age: i32 = self
+            .registries()
+            .blocks
+            .property(state, "age")
+            .and_then(|age| age.parse().ok())
+            .unwrap_or(0);
+        if age < FROSTED_ICE_MAX_AGE {
+            let older = self.with(state, "age", &(age + 1).to_string());
+            self.set_block(pos, older, super::update::CLIENTS, super::update::LIMIT);
+            false
+        } else {
+            self.melt_ice(pos);
+            true
+        }
+    }
+
+    pub(super) fn frosted_ice_tick(&mut self, state: BlockStateId, pos: BlockPos) {
+        let crowded = self.random.next_i32_bound(3) != 0
+            && !self.fewer_frosted_neighbours_than(state, pos, FROSTED_ICE_CROWD);
+        let light = if self.dimension.as_deref() == Some("minecraft:the_end") {
+            self.block_light(pos)
+        } else {
+            self.max_local_raw_brightness(pos)
+        };
+        let age: i32 = self
+            .registries()
+            .blocks
+            .property(state, "age")
+            .and_then(|age| age.parse().ok())
+            .unwrap_or(0);
+        let dampening = i32::from(self.registries().blocks.state(state).light_dampening);
+        if !crowded
+            && light > FROSTED_ICE_LIGHT - age - dampening
+            && self.frosted_ice_slightly_melt(state, pos)
+        {
+            let block = self.block_id(state);
+            for direction in DIRECTION_VALUES {
+                let neighbour = pos.relative(direction, 1);
+                let other = self.block(neighbour);
+                if self.block_id(other) == block && !self.frosted_ice_slightly_melt(other, neighbour) {
+                    let delay = self.next_int_between(FROSTED_ICE_RETRY_TICKS);
+                    self.schedule_block_tick(neighbour, other, delay);
+                }
+            }
+        } else {
+            let delay = self.next_int_between(FROSTED_ICE_RETRY_TICKS);
+            self.schedule_block_tick(pos, state, delay);
+        }
+    }
+
+    pub(super) fn frosted_ice_neighbor_changed(&mut self, state: BlockStateId, pos: BlockPos, source: BlockId) {
+        if self.block_id(state) == source
+            && self.fewer_frosted_neighbours_than(state, pos, FROSTED_ICE_ALONE)
+        {
+            self.melt_ice(pos);
         }
     }
 

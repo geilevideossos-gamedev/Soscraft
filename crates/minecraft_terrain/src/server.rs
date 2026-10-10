@@ -823,7 +823,13 @@ impl ServerSim {
 
     pub fn weapon_blast(&mut self, center: [f64; 3], power: f32) {
         use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
+        let effects = self.level.explosion_effects.len();
         self.level.explode(Explosion { center, radius: power, fire: false, interaction: BlockInteraction::DestroyWithDecay, source: None });
+        self.level.explosion_effects.truncate(effects);
+    }
+
+    pub fn take_explosion_effects(&mut self) -> Vec<minecraftoss_world::level::explosion::ExplosionEffect> {
+        std::mem::take(&mut self.level.explosion_effects)
     }
 
     /// The blasts since the last call, for the client's sound and particles.
@@ -1359,11 +1365,16 @@ impl ServerSim {
     pub fn bone_meal(&mut self, pos: BlockPos, face: &str) -> bool {
         let at = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
         if self.level.grow_crop(at) {
+            self.level.level_events.push((crate::level_events::BONE_MEAL_USE, at, crate::level_events::BONE_MEAL_PARTICLES));
             return true;
         }
         let Some(face) = minecraftoss_core::pos::Direction::from_name(face) else { return false };
         let state = self.level.block(at);
-        self.level.registries().blocks.is_face_sturdy(state, face, minecraftoss_core::SupportType::Full) && self.level.grow_water_plant(at.relative(face, 1))
+        let grown = self.level.registries().blocks.is_face_sturdy(state, face, minecraftoss_core::SupportType::Full) && self.level.grow_water_plant(at.relative(face, 1));
+        if grown {
+            self.level.level_events.push((crate::level_events::BONE_MEAL_USE, at.relative(face, 1), crate::level_events::BONE_MEAL_PARTICLES));
+        }
+        grown
     }
 
     pub fn attack_block(&mut self, pos: BlockPos) -> bool {
@@ -2227,6 +2238,8 @@ pub struct Output {
     pub players_pushed: Vec<(u64, glam::DVec3)>,
     /// Creeper blasts this tick (`ClientboundExplodePacket`).
     pub explosions: Vec<minecraftoss_entities::creeper::CreeperExplosion>,
+    pub explosion_effects: Vec<minecraftoss_world::level::explosion::ExplosionEffect>,
+    pub level_events: Vec<(i32, (i32, i32, i32), i32)>,
     /// Sounds mobs made this tick.
     pub mob_sounds: Vec<minecraftoss_entities::world::MobSound>,
     /// Items the player picked up: (entity ID, position, item, count, components).
@@ -2639,6 +2652,8 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.players_pushed.extend(sim.take_players_pushed());
                     out.potion_breaks.extend(sim.take_potion_breaks());
                     out.explosions.extend(sim.take_explosions());
+                    out.explosion_effects.extend(sim.take_explosion_effects());
+                    out.level_events.extend(sim.level.level_events.drain(..).map(|(id, pos, data)| (id, (pos.x, pos.y, pos.z), data)));
                     out.mob_sounds.extend(sim.mobs.take_sounds());
                     out.mob_sounds.extend(sim.level.sounds.drain(..).map(|s| minecraftoss_entities::world::MobSound { event: s.event.to_owned(), position: glam::DVec3::from_array(s.pos), volume: s.volume, pitch: s.pitch, category: "ambient" }));
                     sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
@@ -4261,6 +4276,7 @@ mod tests {
         server.player_edit(&scene, (8, 201, 8), PlayerEdit::Place);
         server.take_changes();
         assert!(server.bone_meal((8, 201, 8), "up"), "wheat takes bone meal");
+        assert_eq!(std::mem::take(&mut server.level.level_events), vec![(1505, minecraftoss_core::BlockPos::new(8, 201, 8), 15)]);
         let changes = server.take_changes();
         let grown = changes.iter().find(|(pos, _)| *pos == (8, 201, 8)).and_then(|(_, b)| b.clone()).expect("the wheat changed");
         let age: i32 = grown.properties.get("age").and_then(|a| a.parse().ok()).unwrap_or(0);
@@ -4399,6 +4415,44 @@ mod tests {
         place(&mut server, &mut scene, (4, 200, 8), Block::new("minecraft:grass_block"));
         place(&mut server, &mut scene, (4, 200, 9), Block::new("minecraft:water").with("level", "0"));
         assert!(survives_on_both_sides(&server, &scene, (4, 201, 8), &cane), "grass holds cane");
+    }
+
+    #[test]
+    fn frosted_ice_ages_in_the_light_and_melts_back_into_water() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:glowstone"));
+        place(&mut server, &mut scene, (9, 200, 8), Block::new("minecraft:frosted_ice").with("age", "0"));
+        server.take_changes();
+        let mut ages = Vec::new();
+        let mut melted = None;
+        for tick in 0..600 {
+            server.tick();
+            for (pos, block) in server.take_changes() {
+                match block {
+                    Some(block) if pos == (9, 200, 8) && block.id.path == "frosted_ice" => ages.push(block.properties["age"].clone()),
+                    Some(block) if pos == (9, 200, 8) && block.id.path == "water" => {
+                        melted.get_or_insert(tick);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(ages, ["1", "2", "3"]);
+        assert!(melted.is_some_and(|tick| tick >= 4 * 60), "every age change places the block again, which schedules 60 to 120 ticks: {melted:?}");
+    }
+
+    #[test]
+    fn frosted_ice_left_with_one_frosted_neighbour_melts_when_that_neighbour_changes() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        for x in 8..=10 {
+            place(&mut server, &mut scene, (x, 200, 8), Block::new("minecraft:frosted_ice").with("age", "0"));
+        }
+        server.take_changes();
+        take(&mut server, &mut scene, (10, 200, 8));
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        let water = |pos| changes.get(&pos).cloned().flatten().is_some_and(|block: Block| block.id.path == "water");
+        assert!(water((9, 200, 8)), "one frosted neighbour left: it melts");
+        assert!(water((8, 200, 8)), "and so does the last one");
     }
 
     #[test]
@@ -4592,6 +4646,25 @@ mod tests {
         assert_eq!(picked(&server, "minecraft:pointed_dripstone"), 1);
         let falling = server.level.entities.iter().filter(|e| matches!(e.kind, minecraftoss_world::level::entity::EntityKind::FallingBlock(_))).count();
         assert_eq!(falling, 2);
+    }
+
+    #[test]
+    fn a_stalactite_thickens_as_tips_are_added_below_and_merges_with_a_stalagmite() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let dripstone = |tip: &str, thickness: &str| Block::new("minecraft:pointed_dripstone").with("vertical_direction", tip).with("thickness", thickness).with("waterlogged", "false");
+        place(&mut server, &mut scene, (8, 215, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (8, 214, 8), dripstone("down", "tip"));
+        place(&mut server, &mut scene, (8, 210, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (8, 211, 8), dripstone("up", "tip"));
+        server.take_changes();
+        place(&mut server, &mut scene, (8, 213, 8), dripstone("down", "tip"));
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(changes.get(&(8, 214, 8)), Some(&Some(dripstone("down", "frustum"))));
+        place(&mut server, &mut scene, (8, 212, 8), dripstone("down", "tip_merge"));
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(changes.get(&(8, 213, 8)), Some(&Some(dripstone("down", "frustum"))));
+        assert_eq!(changes.get(&(8, 214, 8)), Some(&Some(dripstone("down", "base"))));
+        assert_eq!(changes.get(&(8, 211, 8)), Some(&Some(dripstone("up", "tip_merge"))), "the stalagmite merges with it");
     }
 
     #[test]
@@ -5228,6 +5301,7 @@ mod tests {
         assert!(server.item_on_block((8, 200, 8), ItemOnBlock::EmptyBucket { water: false }));
         let hardened = server.take_changes().into_iter().find(|(pos, _)| *pos == (8, 200, 8)).and_then(|(_, b)| b);
         assert_eq!(hardened.map(|b| b.id.key()), Some("minecraft:obsidian".to_owned()), "lava poured beside the flowing water hardens");
+        assert_eq!(std::mem::take(&mut server.level.level_events), vec![(1501, minecraftoss_core::BlockPos::new(8, 200, 8), 0)], "and fizzes");
     }
 
     #[test]
@@ -5355,6 +5429,15 @@ mod tests {
         server.tick();
         assert!(server.primed_tnt().is_empty());
         assert_eq!(server.take_explosions().len(), 1);
+        let effects = server.take_explosion_effects();
+        assert_eq!(effects.len(), 1);
+        let effect = effects[0];
+        assert_eq!((effect.radius, effect.interacts), (4.0, true));
+        assert!(effect.blocks > 100, "{} blocks, air included as in vanilla", effect.blocks);
+        assert!((effect.center[1] - 200.0).abs() < 0.1);
+        assert!(server.take_explosion_effects().is_empty());
+        server.weapon_blast([8.5, 200.2, 8.5], 3.0);
+        assert!(server.take_explosion_effects().is_empty(), "MW2 blasts draw their own effects");
     }
 
     #[test]

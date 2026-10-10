@@ -574,8 +574,6 @@ enum Slot {
     Missing,
     Model {
         variants: Vec<(ResolvedModel, u32)>,
-        turned: bool,
-        occludes: bool,
         /// Each variant's faces baked; `None` if a face could not be.
         baked: Option<Vec<Vec<mesh::BakedQuad>>>,
     },
@@ -603,8 +601,6 @@ impl ModelCache {
             };
             *slot = match resolve_block_variants(packs, block) {
                 Ok(variants) => Slot::Model {
-                    turned: mesh::turned_about_x(&variants),
-                    occludes: block.is_opaque() && mesh::all_full_cubes(&variants),
                     baked: variants.iter().map(|(model, _)| mesh::bake_quads(block, model, atlas)).collect::<Result<Vec<_>>>().ok(),
                     variants,
                 },
@@ -617,16 +613,7 @@ impl ModelCache {
     }
 
     fn face_hidden(&self, states: &BlockStates, own: BlockStateId, neighbor: BlockStateId, side: Direction) -> bool {
-        let model = |state: BlockStateId| match self.slots[usize::from(state.0)] {
-            Slot::Model { turned, occludes, .. } => (turned, occludes),
-            _ => (false, false),
-        };
-        let ((own_turned, _), (neighbor_turned, neighbor_occludes)) = (model(own), model(neighbor));
-        if own_turned || neighbor_turned {
-            neighbor_occludes
-        } else {
-            states.face_hidden(own, neighbor, side)
-        }
+        states.face_hidden(own, neighbor, side)
     }
 }
 
@@ -824,7 +811,7 @@ enum Done {
         serial: u64,
         pack_generation: u64,
         micros: u64,
-        outcome: Result<(mesh::SectionMesh, VisibilitySet)>,
+        outcome: Result<(mesh::SectionMesh, VisibilitySet, Option<crate::translucency::TranslucentQuads>)>,
     },
 }
 
@@ -857,7 +844,7 @@ fn worker(work: &Work, done: &mpsc::Sender<Done>) {
     let mut packs: Option<(Vec<PathBuf>, u64, PackStack, BiomeTint)> = None;
     let mut models = ModelCache::default();
     loop {
-        let job = {
+        let (job, eye) = {
             let (lock, ready) = &**work;
             let mut queue = lock.lock().expect("terrain work queue");
             loop {
@@ -866,7 +853,7 @@ fn worker(work: &Work, done: &mpsc::Sender<Done>) {
                 }
                 if let Some(job) = next_job(&mut queue) {
                     queue.active += 1;
-                    break job;
+                    break (job, queue.eye);
                 }
                 queue = ready.wait(queue).expect("terrain work queue");
             }
@@ -908,9 +895,13 @@ fn worker(work: &Work, done: &mpsc::Sender<Done>) {
                 // The GPU format is made here, off the render thread.
                 .map(|(mesh, visibility)| {
                     let started = Instant::now();
-                    let mesh = mesh::SectionMesh::from(mesh);
+                    let mut mesh = mesh::SectionMesh::from(mesh);
+                    let mut quads = crate::translucency::TranslucentQuads::of(&mesh);
+                    if let Some(quads) = quads.as_mut() {
+                        quads.sort_mesh(&mut mesh, eye, section);
+                    }
                     compile_profile::add(compile_profile::CONVERT, started);
-                    (mesh, visibility)
+                    (mesh, visibility, quads)
                 });
                 Done::Compile {
                     section,
@@ -986,6 +977,7 @@ pub struct TerrainStream {
     clock: Instant,
     stats: Stats,
     apart: crate::lids::ApartCells,
+    translucent: crate::translucency::TranslucentSorting,
 }
 
 pub use minecraft_net::Dimension;
@@ -1107,6 +1099,7 @@ impl TerrainStream {
             clock: Instant::now(),
             stats: Stats::default(),
             apart: Default::default(),
+            translucent: Default::default(),
         })
     }
 
@@ -1491,9 +1484,10 @@ impl TerrainStream {
                     self.stats.compiled += 1;
                     self.stats.compile_micros += micros;
                     match outcome {
-                        Ok((mesh, visibility)) => {
+                        Ok((mesh, visibility, quads)) => {
                             if self.sections.section(section).is_some() {
                                 self.sections.compiled(section, visibility, now);
+                                self.translucent.compiled(section, quads);
                                 update.uploads.push((section, mesh));
                             }
                         }
@@ -1507,6 +1501,9 @@ impl TerrainStream {
         {
             let _span = span("sections.reposition");
             update.removed.extend(self.sections.reposition(camera));
+        }
+        for &section in &update.removed {
+            self.translucent.removed(section);
         }
         let lights = &self.lights;
         let update_span = span("sections.update");
@@ -1572,6 +1569,8 @@ impl TerrainStream {
                     .then(|| (pos, section.visibility(now, fade_millis)))
             })
             .collect();
+        let _resort_span = span("terrain.frame resort translucency");
+        update.uploads.extend(self.translucent.resorts(camera.position, &update.visible));
         update
     }
 
@@ -2040,7 +2039,7 @@ mod tests {
     }
 
     #[test]
-    fn blocks_turned_about_x_keep_the_faces_their_drawn_model_leaves_open() {
+    fn blocks_turned_about_x_cull_with_their_vanilla_occlusion_shapes() {
         let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
         let Some(pack) = paths.datapack.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).map(|root| root.join("resourcepacks/local/minecraft-26.3")).filter(|p| p.is_dir()) else { return };
         let Ok(registries) = Registries::load(&paths) else { return };
@@ -2057,10 +2056,11 @@ mod tests {
         let log_along_x = Block::new("minecraft:oak_log").with("axis", "x");
         scene.set((5, 65, 5), Some(top_stair.clone()));
         scene.set((5, 66, 5), Some(Block::new("minecraft:oak_planks")));
+        scene.set((5, 64, 5), Some(Block::new("minecraft:stone")));
         scene.set((9, 65, 5), Some(log_along_x.clone()));
         scene.set((10, 65, 5), Some(log_along_x.clone()));
         let mut textures = std::collections::BTreeSet::new();
-        for block in [top_stair, log_along_x, Block::new("minecraft:oak_planks")] {
+        for block in [top_stair, log_along_x, Block::new("minecraft:oak_planks"), Block::new("minecraft:stone")] {
             for (model, _) in &resolve_block_variants(&packs, &block).unwrap() {
                 textures.extend(model.elements.iter().flat_map(|e| e.faces.iter().map(|f| f.texture.clone())));
             }
@@ -2075,7 +2075,13 @@ mod tests {
         for baked in [true, false] {
             let (mesh, _, _) = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, baked, &[]).unwrap();
             let planks_bottom = mesh.vertices.chunks(4).filter(|quad| quad.iter().all(|v| v.position[1] == 66.0 && (5.0..=6.0).contains(&v.position[0]) && (5.0..=6.0).contains(&v.position[2]))).count();
-            assert_eq!(planks_bottom, 1, "the planks over a top stair keep their bottom face");
+            assert_eq!(planks_bottom, 0, "a top stair's full top and the planks over it hide each other");
+            let full_square = |quad: &[mesh::Vertex], plane: f32| quad.iter().all(|v| v.position[1] == plane) && [0, 2].iter().all(|&axis| {
+                let (low, high) = quad.iter().fold((f32::MAX, f32::MIN), |(low, high), v| (low.min(v.position[axis]), high.max(v.position[axis])));
+                low == 5.0 && high == 6.0
+            });
+            let stone_top = mesh.vertices.chunks(4).filter(|quad| full_square(quad, 65.0)).count();
+            assert_eq!(stone_top, 1, "the stone under a top stair's half-open bottom keeps its top");
             let between_logs = mesh.vertices.chunks(4).filter(|quad| quad.iter().all(|v| v.position[0] == 10.0 && (65.0..=66.0).contains(&v.position[1]))).count();
             assert_eq!(between_logs, 0, "logs lying side by side still hide their shared faces");
         }

@@ -22,6 +22,7 @@ const DAMAGE_PER_HARDNESS: f32 = sim::voxel::DAMAGE_PER_HARDNESS;
 /// Progress on a block no longer being shot is forgotten after this long.
 const PROGRESS_SECONDS: f64 = 6.0;
 const TICK_SECONDS: f64 = 1.0 / 20.0;
+const BREAK_PARTICLES: u32 = 5;
 
 pub(crate) struct Mining {
     /// Progress in 0..1 of each block being shot, and when it was last hit.
@@ -156,6 +157,16 @@ impl Mining {
         }
         if let Some(particles) = self.particles.as_mut() {
             particles.spawn_eating(eye, yaw, pitch, count, texture);
+        }
+    }
+
+    pub(crate) fn break_burst(&mut self, packs: &PackStack, atlas: &Atlas, eye: glam::Vec3, yaw: f32, pitch: f32, item: &str) {
+        let texture = ResourceId::parse(item)
+            .ok()
+            .and_then(|id| minecraft_terrain::model::item_particle_texture(packs, &id).ok().flatten())
+            .filter(|texture| atlas.contains(texture));
+        if let Some(texture) = texture {
+            self.eat_burst(packs, eye, yaw, pitch, BREAK_PARTICLES, &texture);
         }
     }
 

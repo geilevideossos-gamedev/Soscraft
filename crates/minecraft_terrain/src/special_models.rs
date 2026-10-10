@@ -803,6 +803,7 @@ fn push_cube(elements: &mut Vec<Element>, sheet: &Sheet, cube: Cube, pose: Mat4,
             tint: sheet.tinted,
             tint_index: sheet.tinted.then_some(0),
             force_translucent: false,
+            uv_rotation: 0,
         });
     }
     if faces.is_empty() {

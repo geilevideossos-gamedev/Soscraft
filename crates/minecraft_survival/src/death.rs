@@ -121,6 +121,37 @@ impl DamageCause {
         }
     }
 
+    pub fn damage_type(self) -> &'static str {
+        match self {
+            Self::Generic => "minecraft:generic",
+            Self::Hazard(Hazard::InFire) => "minecraft:in_fire",
+            Self::Hazard(Hazard::Campfire) => "minecraft:campfire",
+            Self::Hazard(Hazard::Lava) => "minecraft:lava",
+            Self::Hazard(Hazard::Cactus) => "minecraft:cactus",
+            Self::Hazard(Hazard::HotFloor) => "minecraft:hot_floor",
+            Self::Hazard(Hazard::SweetBerryBush) => "minecraft:sweet_berry_bush",
+            Self::Hazard(Hazard::OnFire) => "minecraft:on_fire",
+            Self::Hazard(Hazard::InWall) => "minecraft:in_wall",
+            Self::Hazard(Hazard::Cramming) => "minecraft:cramming",
+            Self::Fall => "minecraft:fall",
+            Self::EnderPearl => "minecraft:ender_pearl",
+            Self::FlyIntoWall => "minecraft:fly_into_wall",
+            Self::Drown => "minecraft:drown",
+            Self::Starve => "minecraft:starve",
+            Self::Magic => "minecraft:magic",
+            Self::Wither => "minecraft:wither",
+            Self::Kill => "minecraft:generic_kill",
+            Self::OutOfWorld => "minecraft:out_of_world",
+            Self::BadRespawnPoint => "minecraft:bad_respawn_point",
+            Self::Mob { attack, .. } => match attack {
+                MobAttack::Melee => "minecraft:mob_attack",
+                MobAttack::Arrow => "minecraft:arrow",
+                MobAttack::Explosion => "minecraft:explosion",
+                MobAttack::Fireball | MobAttack::SmallFireball => "minecraft:fireball",
+            },
+        }
+    }
+
     fn message_id(self) -> &'static str {
         match self {
             Self::Generic => "generic",

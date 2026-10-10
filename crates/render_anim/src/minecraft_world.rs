@@ -886,7 +886,9 @@ fn update(
                 {
                     sounds.play(&world.packs, minecraft_survival::survival::fall_sound(damage), None, 1.0, 1.0);
                     let voice = (sounds.random() - sounds.random()) * 0.2 + 1.0;
-                    sounds.play(&world.packs, "minecraft:entity.player.hurt", None, 1.0, voice);
+                    if survival.status.health > 0.0 {
+                        sounds.play(&world.packs, "minecraft:entity.player.hurt", None, 1.0, voice);
+                    }
                     if let Some((pos, block)) = under.as_ref()
                         && let Some(kind) = terrain.scene.sound_type(block)
                     {
@@ -945,11 +947,12 @@ fn update(
             height: hull_maxs[2] / sim::voxel::BLOCK,
         };
         let armor = entities.as_ref().map_or_else(minecraftoss_player::survival::Armor::default, |_| minecraft_survival::survival::armor(inventory));
+        survival.wear(minecraft_terrain::protection::Protection::worn(globals.data.protection.clone(), inventory));
         for _ in 0..hand_ticks {
             let from = survival.last_feet().unwrap_or(feet);
             let breath = survival.tick(&motion);
             if let Some(sounds) = sounds.as_mut() {
-                if breath.drowned {
+                if breath.drowned && survival.status.health > 0.0 {
                     sounds.play(&world.packs, "minecraft:entity.player.hurt_drown", None, 1.0, 1.0);
                 }
                 if let Some(popped) = breath.popped {
@@ -961,6 +964,11 @@ fn update(
                 steps.air_peak = steps.air_peak.map(|peak| feet[1] + (peak - feet[1]) * 0.5);
             }
             let heard = survival.hazards(&terrain.scene, &motion, from, armor, || entities.as_mut().map_or(0.5, |e| e.random_float()));
+            let bodies = entities.as_ref().map_or_else(Vec::new, |e| obstacles(ps, &authority.0, local.0, e));
+            let frozen = survival.location_changed(motion.feet, motion.on_ground, &minecraft_terrain::doors::Outlined(&terrain.scene), &*terrain.stream.states, &|pos| !minecraft_terrain::placing::obstructed(pos, &[[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]], &bodies));
+            if let Some(entities) = entities.as_mut().filter(|_| !frozen.is_empty()) {
+                write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, frozen.into_iter().map(|(pos, block)| (pos, scene_block(&block))).collect());
+            }
             if entities.is_some() {
                 hold_off_death(survival, inventory, *selected, sounds.as_mut(), &world.packs, false);
             }
@@ -1311,6 +1319,8 @@ fn update(
                         .or_else(|| minecraft_terrain::flint::flint_use(&player, &outlined, &catalog, stack, || entities.random_float()))
                         .or_else(|| minecraft_terrain::flint::fire_charge_use(&player, &outlined, &catalog, stack, || entities.random_float()))
                         .or_else(|| minecraft_terrain::berries::bone_meal_use(&player, &outlined, stack))
+                        .or_else(|| minecraft_terrain::campfire::douse_use(&player, &outlined, entities.recipes.item_in_tag(minecraft_terrain::campfire::DOUSES_CAMPFIRES, &stack.id), || entities.random_float()))
+                        .or_else(|| globals.data.transforms.as_ref()?.transform_use(|tag| entities.recipes.item_in_tag(tag, &stack.id), &player, &outlined, &*terrain.stream.states, main && !player.crouching && inventory.slots[minecraft_survival::offhand::OFFHAND].as_ref().is_some_and(|shield| shield.id == minecraft_survival::offhand::SHIELD)))
                         .or_else(|| minecraft_terrain::ender_eye::eye_use(&player, &outlined, stack))
                         .or_else(|| minecraft_terrain::end_crystal::crystal_use(&player, &outlined, stack))
                         .or_else(|| minecraft_terrain::firework::rocket_use(stack, ps.pm_flags & playerstate_iw4::pm_flags::MC_GLIDING != 0, || entities.random_float()))
@@ -1318,6 +1328,9 @@ fn update(
             {
                 if !outcome.consumed || matches!(outcome.change, minecraft_terrain::bucket::Change::Set(..)) {
                     hand.swing = Some(0.0);
+                }
+                if let Some((pos, signal)) = minecraft_terrain::campfire::doused(&terrain.scene, &outcome) {
+                    entities.campfire_douse(pos, signal);
                 }
                 let change = outcome.change.clone();
                 let sent = minecraft_survival::entities::SentItemUse { slot, held: stack.id.clone(), eye: eye_block, yaw: mc_yaw, pitch: ps.viewangles[0], outcome };
@@ -1447,7 +1460,7 @@ fn update(
                 let writes: Vec<_> = staged
                     .into_writes()
                     .into_iter()
-                    .map(|(pos, block)| (pos, block.and_then(|b| scene_block(&b))))
+                    .map(|(pos, block)| (pos, block.and_then(|b| scene_block(&b)).map(|b| minecraft_terrain::placing::base_if_covered(&terrain.scene, pos, b))))
                     .collect();
                 if std::env::var_os("MINECRAFTOSS_DEBUG_SERVER").is_some() && writes.iter().any(|(_, b)| b.as_ref().is_some_and(|b| b.id.path.ends_with("chest"))) {
                     eprintln!("chest placement: crouching {} pm_flags {:#x} view height {} yaw {} placed {:?} writes {:?}", player.crouching, ps.pm_flags, ps.view_height_current, player.yaw, placed, writes);
@@ -1675,6 +1688,7 @@ fn update(
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
         let ticks_before = entities.client_ticks();
         let (changes, hits) = entities.tick(inventory, *selected, dt, globals.clock_ticks(), bright_outside, &player);
+        entities.present_level_events(&terrain.scene);
         globals.weather = entities.weather_data.or(globals.weather);
         let summoned = std::mem::take(&mut entities.command_summons);
         if !summoned.is_empty() {
@@ -1686,11 +1700,13 @@ fn update(
         globals.level_ticks += mob_ticks;
         globals.advance_weather(&[*dimension], mob_ticks);
         for _ in 0..mob_ticks {
-            for sound in entities.animate_tick(&terrain.scene, feet) {
+            let rain = entities.rain_tick(&terrain.scene, eye);
+            for sound in entities.animate_tick(&terrain.scene, feet).into_iter().chain(rain) {
                 if let Some(sounds) = sounds.as_mut() {
                     sounds.play(&world.packs, sound.event, Some(at(sound.at)), sound.volume, sound.pitch);
                 }
             }
+            entities.campfire_tick(&terrain.scene, |pos| containers.campfire_food(pos));
         }
         if !changes.is_empty() {
             let registries = &globals.registries;
@@ -1772,6 +1788,7 @@ fn update(
             if let Some(blocking) = hand.blocking.filter(|_| blocked > 0.0) {
                 if inventory.wear_tool(blocking.slot, minecraft_survival::offhand::shield_wear(blocked)) {
                     hand.blocking = None;
+                    entities.broken_items.push(minecraft_survival::offhand::SHIELD.to_owned());
                     let pitch = 0.8 + entities.random_float() * 0.4;
                     if let Some(sounds) = sounds.as_mut() {
                         sounds.play(&world.packs, minecraft_survival::offhand::BREAK_SOUND, None, 0.8, pitch);
@@ -1794,6 +1811,9 @@ fn update(
                 hand.swing_offhand = used.slot == minecraft_survival::offhand::OFFHAND;
             }
             finish_item_use(entities, inventory, sounds.as_mut(), &world.packs, origin, used, player_mode.consumes_items());
+        }
+        for item in std::mem::take(&mut entities.broken_items) {
+            mining.break_burst(&world.packs, &world.atlas, glam::DVec3::from_array(eye).as_vec3(), mc_yaw, ps.viewangles[0], &item);
         }
         for to in teleports.iter().filter(|(uuid, _)| alive && uuid == local_uuid).map(|(_, to)| to) {
             authority.0.teleport(local.0, sim::voxel::to_map(origin, *to));
@@ -1840,6 +1860,12 @@ fn update(
                     };
                     sim::voxel::MinecraftDeath { message: line.message, killer: line.killer }
                 });
+                if death.is_some()
+                    && let Some(sounds) = sounds.as_mut()
+                {
+                    let sound = minecraft_survival::survival::death_sound(|| entities.random_float());
+                    sounds.play(&world.packs, sound.event, None, sound.volume, sound.pitch);
+                }
                 if let Some(death) = &death
                     && globals.game_rules.bool("show_death_messages")
                 {
@@ -2205,6 +2231,12 @@ fn update(
         thunder_level: weather.thunder_level,
     });
     let render_distance = VIEW_DISTANCE as f32 * 16.0;
+    let sky = if alive && sim::voxel::eye_in_lava(ps.origin, ps.view_height_current) {
+        let fire_resistant = survival.status.effect(minecraftoss_player::survival::EffectKind::FireResistance).is_some();
+        minecraft_terrain::lava_fog::in_lava(sky, player_mode.mode == minecraftoss_player::GameMode::Spectator, fire_resistant, render_distance)
+    } else {
+        sky
+    };
     let right = forward.cross(glam::Vec3::Y).normalize_or(glam::Vec3::X);
     let up = right.cross(forward).normalize_or(glam::Vec3::Y);
     let put = |v: glam::Vec3| [v.x, v.y, v.z, 0.0];

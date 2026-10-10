@@ -429,13 +429,7 @@ pub fn build_item_model(packs: &PackStack, item: &ResourceId) -> Result<Option<B
         for face in &element.faces {
             let corners = element_corners(element, &face.direction)?;
             let [u0, v0, u1, v1] = atlas.region(&face.texture);
-            let [a, b, c, d] = face.uv;
-            let uv = [
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
-            ];
+            let uv = face.corner_uvs().map(|[s, t]| [u0 + (u1 - u0) * s, v0 + (v1 - v0) * t]);
             let tint = face
                 .tint_index
                 .and_then(|index| tints.get(index))
@@ -682,6 +676,9 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
         textures.insert(ResourceId::parse("minecraft:particle/note")?, ());
         textures.insert(ResourceId::parse("minecraft:particle/glow")?, ());
         for id in crate::spell_particles::textures() {
+            textures.insert(id, ());
+        }
+        for id in crate::ambient_particles::textures() {
             textures.insert(id, ());
         }
         textures.insert(ResourceId::parse("minecraft:misc/shadow")?, ());
@@ -1014,13 +1011,7 @@ impl ItemVisuals {
                         let corners = element_corners(element, &face.direction)?;
                         let entity = entity_face(face);
                         let [u0, v0, u1, v1] = if entity { atlas.entity_region(&face.texture) } else { atlas.region(&face.texture) };
-                        let [a, b, c, d] = face.uv;
-                        let uv = [
-                            [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
-                            [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
-                            [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
-                            [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
-                        ];
+                        let uv = face.corner_uvs().map(|[s, t]| [u0 + (u1 - u0) * s, v0 + (v1 - v0) * t]);
                         let tint = face
                             .tint_index
                             .and_then(|index| visual.tints.get(index))
@@ -1236,13 +1227,7 @@ impl ItemVisuals {
                     let corners = element_corners(element, &face.direction)?;
                     let entity = entity_face(face);
                     let [u0, v0, u1, v1] = if entity { atlas.entity_region(&face.texture) } else { atlas.region(&face.texture) };
-                    let [a, b, c, d] = face.uv;
-                    let uv = [
-                        [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
-                        [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
-                        [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
-                        [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
-                    ];
+                    let uv = face.corner_uvs().map(|[s, t]| [u0 + (u1 - u0) * s, v0 + (v1 - v0) * t]);
                     let local_normal = if entity { quad_normal(&corners).unwrap_or(Vec3::Y) } else { face_normal(&face.direction)? };
                     let normal = pose.transform_vector3(local_normal).normalize();
                     let shade = level_item_shade(normal) * if white { 4.0 } else { 1.0 };
@@ -1913,7 +1898,6 @@ fn mesh_chunk<S: Scene>(
         .iter()
         .map(|(key, variants)| (key.clone(), all_full_cubes(variants)))
         .collect();
-    let turned = |b: &Block| models.get(&model_key(b)).is_some_and(|variants| turned_about_x(variants));
     for x in chunk.0 * 16..chunk.0 * 16 + 16 {
         for z in chunk.1 * 16..chunk.1 * 16 + 16 {
             for y in scene.vertical_range() {
@@ -1931,7 +1915,7 @@ fn mesh_chunk<S: Scene>(
                             .ok_or_else(|| anyhow!("uncached model"))
                     },
                     |neighbor, side| {
-                        scene.face_hidden((x, y, z), neighbor, side).filter(|_| !turned(block) && !scene.block(neighbor).is_some_and(turned)).unwrap_or_else(|| {
+                        scene.face_hidden((x, y, z), neighbor, side).unwrap_or_else(|| {
                             scene.block(neighbor).is_some_and(|b| {
                                 hides_shared_face(block, b)
                                     || (b.is_opaque()
@@ -1962,9 +1946,6 @@ pub(crate) fn all_full_cubes(variants: &[(ResolvedModel, u32)]) -> bool {
             .iter()
             .any(|element| element.from == [0.0; 3] && element.to == [1.0; 3])
     })
-}
-pub(crate) fn turned_about_x(variants: &[(ResolvedModel, u32)]) -> bool {
-    variants.iter().any(|(model, _)| model.elements.iter().any(|element| element.rotation_x % 360 != 0))
 }
 /// Moves the translucent faces after the opaque ones.
 /// One model face baked for a block state's variant (vanilla `BakedQuad`):
@@ -2098,13 +2079,7 @@ pub(crate) fn bake_quads(block: &Block, model: &ResolvedModel, atlas: &Atlas) ->
             let delta = direction(dir)?;
             let entity = entity_face(face);
             let [u0, v0, u1, v1] = if entity { atlas.entity_region(&face.texture) } else { atlas.region(&face.texture) };
-            let [a, b, c, d] = face.uv;
-            let uv = [
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
-            ];
+            let uv = face.corner_uvs().map(|[s, t]| [u0 + (u1 - u0) * s, v0 + (v1 - v0) * t]);
             let shade = if entity {
                 crate::cow_render::entity_shade(quad_normal(&corners).unwrap_or(Vec3::Y))
             } else {
@@ -2305,13 +2280,7 @@ pub(crate) fn append_block<'m, S: Scene>(
             let delta = direction(dir)?;
             let entity = entity_face(face);
             let [u0, v0, u1, v1] = if entity { atlas.entity_region(&face.texture) } else { atlas.region(&face.texture) };
-            let [a, b, c, d] = face.uv;
-            let uv = [
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
-            ];
+            let uv = face.corner_uvs().map(|[s, t]| [u0 + (u1 - u0) * s, v0 + (v1 - v0) * t]);
             let shade = if entity {
                 crate::cow_render::entity_shade(quad_normal(&corners).unwrap_or(Vec3::Y))
             } else {
@@ -2740,7 +2709,6 @@ pub fn block_preview<S: Scene>(
             let delta = direction(dir)?;
             let neighbor_pos = (pos.0 + delta.0, pos.1 + delta.1, pos.2 + delta.2);
             let catalog_hidden = if face.cull { scene.face_hidden(pos, neighbor_pos, cull_side(delta)) } else { None };
-            let catalog_hidden = catalog_hidden.filter(|_| !turned_about_x(&variants) && !scene.block(neighbor_pos).is_some_and(|neighbor| resolve_block_variants(packs, neighbor).is_ok_and(|v| turned_about_x(&v))));
             if catalog_hidden == Some(true) {
                 continue;
             }
@@ -2781,13 +2749,7 @@ pub fn block_preview<S: Scene>(
             } else {
                 atlas.region(&face.texture)
             };
-            let [a, b, c, d] = face.uv;
-            let uv = [
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
-            ];
+            let uv = face.corner_uvs().map(|[s, t]| [u0 + (u1 - u0) * s, v0 + (v1 - v0) * t]);
             let shade = if entity {
                 crate::cow_render::entity_shade(quad_normal(&corners).unwrap_or(Vec3::Y))
             } else {
@@ -3228,6 +3190,7 @@ mod tests {
             tint: tint_index.is_some(),
             tint_index,
             force_translucent: false,
+            uv_rotation: 0,
         };
         let visual = || ItemVisual {
             hand: None,
@@ -3587,6 +3550,7 @@ mod tests {
             tint: tint_index.is_some(),
             tint_index,
             force_translucent: false,
+            uv_rotation: 0,
         };
         let mut visuals = ItemVisuals::default();
         visuals.models.insert(
@@ -3693,6 +3657,7 @@ mod tests {
                         tint: false,
                         tint_index: None,
                         force_translucent: false,
+                        uv_rotation: 0,
                     }],
                     rotation_y: 0,
                     rotation_x: 0,
@@ -3830,6 +3795,7 @@ mod tests {
                         tint: false,
                         tint_index: None,
                         force_translucent: false,
+                        uv_rotation: 0,
                     })
                     .to_vec(),
             }],
@@ -4475,6 +4441,7 @@ mod tests {
                         tint: false,
                         tint_index: None,
                         force_translucent: false,
+                        uv_rotation: 0,
                     })
                     .to_vec(),
             }],
@@ -4675,6 +4642,7 @@ mod tests {
                     tint: false,
                     tint_index: None,
                     force_translucent: false,
+                    uv_rotation: 0,
                 })
                 .collect(),
         }

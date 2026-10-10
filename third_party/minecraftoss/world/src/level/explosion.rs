@@ -32,6 +32,14 @@ pub enum BlockInteraction {
     TriggerBlock,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExplosionEffect {
+    pub center: [f64; 3],
+    pub radius: f32,
+    pub blocks: usize,
+    pub interacts: bool,
+}
+
 /// One `ServerExplosion`.
 #[derive(Clone, Copy, Debug)]
 pub struct Explosion {
@@ -126,6 +134,12 @@ impl Level<'_> {
         if ex.fire {
             self.create_fire(&to_blow);
         }
+        self.explosion_effects.push(ExplosionEffect {
+            center: ex.center,
+            radius: ex.radius,
+            blocks: to_blow.len(),
+            interacts: ex.interaction != BlockInteraction::Keep,
+        });
         to_blow.len()
     }
 

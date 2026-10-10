@@ -67,6 +67,9 @@ pub struct Entities {
     portal: PortalParticles,
     eyes: minecraft_terrain::eye_of_ender::EyeTrails,
     spell: minecraft_terrain::spell_particles::SpellParticles,
+    ambient: minecraft_terrain::ambient_particles::AmbientParticles,
+    level_events: Vec<(i32, (i32, i32, i32), i32)>,
+    pub broken_items: Vec<String>,
     items: ItemVisuals,
     clock: f64,
     ticks: u64,
@@ -213,6 +216,9 @@ impl Entities {
             portal: PortalParticles::default(),
             eyes: minecraft_terrain::eye_of_ender::EyeTrails::default(),
             spell: minecraft_terrain::spell_particles::SpellParticles::new((seed ^ 0x5be1) as u64),
+            ambient: minecraft_terrain::ambient_particles::AmbientParticles::new((seed ^ 0xa3b1) as u64),
+            level_events: Vec::new(),
+            broken_items: Vec::new(),
             items: ItemVisuals::default(),
             clock: 0.0,
             ticks: 0,
@@ -657,7 +663,44 @@ impl Entities {
         for (start, motion) in tick.portal_particles {
             self.portal.emit(start, motion);
         }
+        for (kind, start, motion) in tick.particles {
+            self.ambient.add(kind, start, motion);
+        }
         tick.sounds
+    }
+
+    fn present(&mut self, effects: minecraft_terrain::display_ticks::DisplayTick) {
+        for sound in effects.sounds {
+            self.sounds.push((sound.event.to_owned(), DVec3::from_array(sound.at), sound.volume, sound.pitch));
+        }
+        for (kind, at, motion) in effects.particles {
+            self.ambient.add(kind, at, motion);
+        }
+    }
+
+    pub fn present_level_events(&mut self, scene: &HandcraftedScene) {
+        let is_a = minecraft_terrain::level_events::class_test(scene);
+        for (id, pos, data) in std::mem::take(&mut self.level_events) {
+            let effects = minecraft_terrain::level_events::level_event(id, pos, data, scene, &is_a, &mut self.random);
+            self.present(effects);
+        }
+    }
+
+    pub fn evaporation_smoke(&mut self, pos: (i32, i32, i32)) {
+        let effects = minecraft_terrain::level_events::evaporation(pos, &mut self.random);
+        self.present(effects);
+    }
+
+    pub fn campfire_douse(&mut self, pos: (i32, i32, i32), signal: bool) {
+        self.ambient.douse(pos, signal);
+    }
+
+    pub fn rain_tick(&mut self, scene: &HandcraftedScene, camera: [f64; 3]) -> Vec<minecraft_terrain::display_ticks::AmbientSound> {
+        self.ambient.rain_tick(scene, DVec3::from_array(camera), self.weather.rain_level)
+    }
+
+    pub fn campfire_tick(&mut self, scene: &HandcraftedScene, food: impl Fn((i32, i32, i32)) -> [bool; 4]) {
+        self.ambient.campfire_tick(scene, food);
     }
 
     /// Client ticks run so far.
@@ -769,6 +812,10 @@ impl Entities {
             self.clock = (self.clock - TICK_SECONDS).min(TICK_SECONDS);
             self.ticks += 1;
             self.falling.tick_sent();
+            for tnt in self.falling.primed.iter().filter(|tnt| tnt.fuse > 0) {
+                let smoke = DVec3::from_array(tnt.position) + DVec3::Y * 0.5;
+                self.ambient.add(minecraft_terrain::ambient_particles::Kind::Smoke, smoke, DVec3::ZERO);
+            }
             self.lids.tick();
             // Packets first, then the client level's entity ticks.
             self.client.tick();
@@ -907,6 +954,10 @@ impl Entities {
             for blast in &output.explosions {
                 let pitch = (1.0 + (self.random.next_float() - self.random.next_float()) * 0.2) * 0.7;
                 self.sounds.push(("minecraft:entity.generic.explode".to_owned(), blast.position, 4.0, pitch));
+            }
+            self.level_events.extend(output.level_events);
+            for effect in &output.explosion_effects {
+                self.ambient.explosion(DVec3::from_array(effect.center), effect.radius, effect.blocks, effect.interacts);
             }
             if let Some(mobs) = output.mobs {
                 self.world = *mobs;
@@ -1091,6 +1142,7 @@ impl Entities {
     pub fn tick_scene(&mut self, scene: &HandcraftedScene, ticks: u32) {
         for _ in 0..ticks {
             self.poof.tick(scene);
+            self.ambient.tick(scene);
         }
     }
 
@@ -1199,6 +1251,7 @@ impl Entities {
         minecraft_terrain::eye_of_ender::append_eyes(&mut out.items, self.eyes.views(), partial, camera, atlas, forward);
         minecraft_terrain::trident::append_tridents(&mut out.items, &self.tridents, partial, atlas, light);
         self.poof.append_mesh(&mut out.items, atlas, forward, partial, light);
+        self.ambient.append_mesh(&mut out.items, &mut out.translucent, atlas, forward, partial, light);
         self.portal.append_mesh(&mut out.items, atlas, forward, partial, light);
         self.spell.append_mesh(&mut out.translucent, atlas, forward, partial, light);
         let held: Vec<_> =

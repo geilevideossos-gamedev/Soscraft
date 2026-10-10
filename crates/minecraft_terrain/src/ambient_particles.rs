@@ -1,0 +1,1267 @@
+use crate::lighting::SkyLight;
+use crate::mesh::{Atlas, ChunkMesh, Vertex};
+use crate::pack::ResourceId;
+use crate::scene::{BlockPos, HandcraftedScene, Scene};
+use glam::{DVec3, Vec2, Vec3};
+use minecraftoss_player::{Block as PlayerBlock, collision_shape_boxes, rng::LegacyRandom};
+use std::collections::HashMap;
+
+const CAP: usize = 16384;
+const GENERIC_SPRITES: i32 = 8;
+const MAXIMUM_COLLISION_VELOCITY_SQUARED: f64 = 10000.0;
+const FULL_BRIGHT: f32 = 15.0;
+const BIG_SMOKE_SPRITES: u32 = 12;
+const CAMPFIRE_FADE_TICKS: i32 = 60;
+const CAMPFIRE_SLOT_OFFSET: f32 = 0.3125;
+const DOUSE_PUFFS: usize = 20;
+const SIDE_STEPS: [(i32, i32); 4] = [(0, 1), (-1, 0), (0, -1), (1, 0)];
+const EXPLOSION_SPRITES: i32 = 16;
+const EMITTER_TICKS: i32 = 8;
+const EMITTER_FLASHES: usize = 6;
+const MAX_BLAST_PARTICLES: usize = 512;
+const SMALL_BLAST_RADIUS: f32 = 2.0;
+const SPLASH_SPRITES: u32 = 4;
+
+type Boxes = Vec<([f64; 3], [f64; 3])>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Smoke,
+    LargeSmoke,
+    Lava,
+    CosySmoke,
+    SignalSmoke,
+    Poof,
+    Explosion,
+    ExplosionEmitter,
+    HappyVillager,
+    Rain,
+}
+
+#[derive(Clone, Debug)]
+struct Particle {
+    kind: Kind,
+    position: DVec3,
+    previous: DVec3,
+    velocity: DVec3,
+    color: [f32; 3],
+    alpha: f32,
+    quad_size: f32,
+    sprite: u32,
+    age: i32,
+    lifetime: i32,
+    gravity: f32,
+    friction: f32,
+    size: f64,
+    speed_up: bool,
+    on_ground: bool,
+    stopped: bool,
+}
+
+impl Particle {
+    fn base(kind: Kind, at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let lifetime = (4.0 / (random.next_float() * 0.9 + 0.1)) as i32;
+        let mut jitter = || (random.next_double() * 2.0 - 1.0) * f64::from(0.4_f32);
+        let mut velocity = DVec3::new(
+            motion.x + jitter(),
+            motion.y + jitter(),
+            motion.z + jitter(),
+        );
+        let speed = (random.next_double() + random.next_double() + 1.0) * f64::from(0.15_f32);
+        let length = velocity.length();
+        if length > 0.0 {
+            velocity = velocity / length * speed * f64::from(0.4_f32);
+        }
+        velocity.y += f64::from(0.1_f32);
+        let quad_size = 0.1 * (random.next_float() * 0.5 + 0.5) * 2.0;
+        Self {
+            kind,
+            position: at,
+            previous: at,
+            velocity,
+            color: [1.0; 3],
+            alpha: 1.0,
+            quad_size,
+            sprite: 0,
+            age: 0,
+            lifetime,
+            gravity: 0.0,
+            friction: 0.98,
+            size: f64::from(0.2_f32),
+            speed_up: false,
+            on_ground: false,
+            stopped: false,
+        }
+    }
+
+    fn smoke(kind: Kind, at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let scale = if kind == Kind::LargeSmoke { 2.5 } else { 1.0 };
+        let mut particle = Self::base(kind, at, DVec3::ZERO, random);
+        particle.friction = 0.96;
+        particle.gravity = -0.1;
+        particle.speed_up = true;
+        particle.velocity = particle.velocity * f64::from(0.1_f32) + motion;
+        let shade = random.next_float() * 0.3;
+        particle.color = [shade; 3];
+        particle.quad_size *= 0.75 * scale;
+        let lifetime = 8.0 / (f64::from(random.next_float()) * 0.8 + 0.2) * f64::from(scale);
+        particle.lifetime = (lifetime as i32).max(1);
+        particle
+    }
+
+    fn lava(at: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::Lava, at, DVec3::ZERO, random);
+        particle.gravity = 0.75;
+        particle.friction = 0.999;
+        particle.velocity *= f64::from(0.8_f32);
+        particle.velocity.y = f64::from(random.next_float() * 0.4 + 0.05);
+        particle.quad_size *= random.next_float() * 2.0 + 0.2;
+        particle.lifetime = (16.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32;
+        particle
+    }
+
+    fn campfire_smoke(kind: Kind, at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let signal = kind == Kind::SignalSmoke;
+        let mut particle = Self::base(kind, at, DVec3::ZERO, random);
+        particle.sprite = random.next_int(BIG_SMOKE_SPRITES);
+        particle.quad_size *= 3.0;
+        particle.size = 0.25;
+        particle.lifetime = random.next_int(50) as i32 + if signal { 280 } else { 80 };
+        particle.gravity = 3.0e-6;
+        let rise = f64::from(random.next_float() / 500.0);
+        particle.velocity = DVec3::new(motion.x, motion.y + rise, motion.z);
+        particle.alpha = if signal { 0.95 } else { 0.9 };
+        particle
+    }
+
+    fn poof(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::Poof, at, motion, random);
+        let mut jitter = || f64::from((random.next_float() * 2.0 - 1.0) * 0.05);
+        particle.velocity = DVec3::new(
+            motion.x + jitter(),
+            motion.y + jitter(),
+            motion.z + jitter(),
+        );
+        let shade = random.next_float() * 0.3 + 0.7;
+        particle.color = [shade; 3];
+        particle.quad_size = 0.1 * (random.next_float() * random.next_float() * 6.0 + 1.0);
+        particle.lifetime = (16.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32 + 2;
+        particle.gravity = -0.1;
+        particle.friction = 0.9;
+        particle
+    }
+
+    fn huge_explosion(at: DVec3, size: f64, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::Explosion, at, DVec3::ZERO, random);
+        particle.velocity = DVec3::ZERO;
+        particle.lifetime = 6 + random.next_int(4) as i32;
+        let shade = random.next_float() * 0.6 + 0.4;
+        particle.color = [shade; 3];
+        particle.quad_size = 2.0 * (1.0 - size as f32 * 0.5);
+        particle
+    }
+
+    fn emitter(at: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::ExplosionEmitter, at, DVec3::ZERO, random);
+        particle.velocity = DVec3::ZERO;
+        particle.lifetime = EMITTER_TICKS;
+        particle
+    }
+
+    fn happy_villager(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::HappyVillager, at, motion, random);
+        particle.size = f64::from(0.02_f32);
+        particle.quad_size *= random.next_float() * 0.6 + 0.5;
+        particle.velocity *= f64::from(0.02_f32);
+        particle.lifetime = (20.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32;
+        particle
+    }
+
+    fn rain(at: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::Rain, at, DVec3::ZERO, random);
+        particle.sprite = random.next_int(SPLASH_SPRITES);
+        particle.velocity.x *= f64::from(0.3_f32);
+        particle.velocity.y = f64::from(random.next_float() * 0.2 + 0.1);
+        particle.velocity.z *= f64::from(0.3_f32);
+        particle.size = f64::from(0.01_f32);
+        particle.gravity = 0.06;
+        particle.lifetime = (8.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32;
+        particle
+    }
+
+    fn drip<S: Scene + ?Sized>(
+        &mut self,
+        scene: &S,
+        cache: &mut HashMap<BlockPos, Boxes>,
+        random: &mut LegacyRandom,
+    ) -> bool {
+        self.previous = self.position;
+        let left = self.lifetime;
+        self.lifetime -= 1;
+        if left <= 0 {
+            return false;
+        }
+        self.velocity.y -= f64::from(self.gravity);
+        self.travel(self.velocity, scene, cache);
+        self.velocity *= f64::from(0.98_f32);
+        if self.on_ground {
+            if random.next_float() < 0.5 {
+                return false;
+            }
+            self.velocity.x *= f64::from(0.7_f32);
+            self.velocity.z *= f64::from(0.7_f32);
+        }
+        let cell = self.position.floor();
+        let pos = (cell.x as i32, cell.y as i32, cell.z as i32);
+        let inside = self.position - cell;
+        let top = crate::rain::surface(scene, pos, inside.x, inside.z);
+        !(top > 0.0 && self.position.y < cell.y + top)
+    }
+
+    fn linger(&mut self) -> bool {
+        self.previous = self.position;
+        let left = self.lifetime;
+        self.lifetime -= 1;
+        if left <= 0 {
+            return false;
+        }
+        self.position += self.velocity;
+        self.velocity *= 0.99;
+        true
+    }
+
+    fn hold(&mut self) -> bool {
+        self.previous = self.position;
+        let prior = self.age;
+        self.age += 1;
+        prior < self.lifetime
+    }
+
+    fn translucent(&self) -> bool {
+        matches!(self.kind, Kind::CosySmoke | Kind::SignalSmoke)
+    }
+
+    fn sprite(&self) -> Option<ResourceId> {
+        let name = match self.kind {
+            Kind::Smoke | Kind::LargeSmoke | Kind::Poof => {
+                let step = self.age * (GENERIC_SPRITES - 1) / self.lifetime.max(1);
+                format!(
+                    "generic_{}",
+                    GENERIC_SPRITES - 1 - step.clamp(0, GENERIC_SPRITES - 1)
+                )
+            }
+            Kind::Lava => "lava".to_owned(),
+            Kind::CosySmoke | Kind::SignalSmoke => format!("big_smoke_{}", self.sprite),
+            Kind::Explosion => {
+                let step = self.age * (EXPLOSION_SPRITES - 1) / self.lifetime.max(1);
+                format!("explosion_{}", step.clamp(0, EXPLOSION_SPRITES - 1))
+            }
+            Kind::ExplosionEmitter => return None,
+            Kind::HappyVillager => "glint".to_owned(),
+            Kind::Rain => format!("splash_{}", self.sprite),
+        };
+        ResourceId::parse(&format!("minecraft:particle/{name}")).ok()
+    }
+
+    fn size_at(&self, partial: f32) -> f32 {
+        let grown = (self.age as f32 + partial) / self.lifetime as f32;
+        match self.kind {
+            Kind::Smoke | Kind::LargeSmoke => self.quad_size * (grown * 32.0).clamp(0.0, 1.0),
+            Kind::Lava => self.quad_size * (1.0 - grown * grown),
+            Kind::CosySmoke
+            | Kind::SignalSmoke
+            | Kind::Poof
+            | Kind::Explosion
+            | Kind::ExplosionEmitter
+            | Kind::HappyVillager
+            | Kind::Rain => self.quad_size,
+        }
+    }
+
+    fn drift<S: Scene + ?Sized>(
+        &mut self,
+        scene: &S,
+        cache: &mut HashMap<BlockPos, Boxes>,
+        random: &mut LegacyRandom,
+    ) -> bool {
+        self.previous = self.position;
+        let prior = self.age;
+        self.age += 1;
+        if prior >= self.lifetime || self.alpha <= 0.0 {
+            return false;
+        }
+        let mut sway = || {
+            let sign = if random.next_boolean() { 1.0 } else { -1.0 };
+            f64::from(random.next_float() / 5000.0 * sign)
+        };
+        self.velocity.x += sway();
+        self.velocity.z += sway();
+        self.velocity.y -= f64::from(self.gravity);
+        self.travel(self.velocity, scene, cache);
+        if self.age >= self.lifetime - CAMPFIRE_FADE_TICKS && self.alpha > 0.01 {
+            self.alpha -= 0.015;
+        }
+        true
+    }
+
+    fn tick<S: Scene + ?Sized>(&mut self, scene: &S, cache: &mut HashMap<BlockPos, Boxes>) -> bool {
+        self.previous = self.position;
+        let prior = self.age;
+        self.age += 1;
+        if prior >= self.lifetime {
+            return false;
+        }
+        self.velocity.y -= 0.04 * f64::from(self.gravity);
+        self.travel(self.velocity, scene, cache);
+        if self.speed_up && self.position.y == self.previous.y {
+            self.velocity.x *= 1.1;
+            self.velocity.z *= 1.1;
+        }
+        self.velocity *= f64::from(self.friction);
+        if self.on_ground {
+            self.velocity.x *= f64::from(0.7_f32);
+            self.velocity.z *= f64::from(0.7_f32);
+        }
+        true
+    }
+
+    fn travel<S: Scene + ?Sized>(
+        &mut self,
+        wanted: DVec3,
+        scene: &S,
+        cache: &mut HashMap<BlockPos, Boxes>,
+    ) {
+        if self.stopped {
+            return;
+        }
+        let half = self.size / 2.0;
+        let p = self.position;
+        let mut low = [p.x - half, p.y, p.z - half];
+        let mut high = [p.x + half, p.y + self.size, p.z + half];
+        let requested = wanted.to_array();
+        let mut moved = requested;
+        if wanted != DVec3::ZERO && wanted.length_squared() < MAXIMUM_COLLISION_VELOCITY_SQUARED {
+            let boxes = boxes_around(scene, cache, low, high, requested);
+            let order = if wanted.x.abs() < wanted.z.abs() {
+                [1, 2, 0]
+            } else {
+                [1, 0, 2]
+            };
+            for axis in order {
+                moved[axis] = clip(&boxes, &low, &high, axis, moved[axis]);
+                low[axis] += moved[axis];
+                high[axis] += moved[axis];
+            }
+        } else {
+            for axis in 0..3 {
+                low[axis] += moved[axis];
+                high[axis] += moved[axis];
+            }
+        }
+        if moved != [0.0; 3] {
+            self.position = DVec3::new((low[0] + high[0]) / 2.0, low[1], (low[2] + high[2]) / 2.0);
+        }
+        let tiny = f64::from(1.0e-5_f32);
+        if requested[1].abs() >= tiny && moved[1].abs() < tiny {
+            self.stopped = true;
+        }
+        self.on_ground = requested[1] != moved[1] && requested[1] < 0.0;
+        if requested[0] != moved[0] {
+            self.velocity.x = 0.0;
+        }
+        if requested[2] != moved[2] {
+            self.velocity.z = 0.0;
+        }
+    }
+}
+
+fn boxes_around<S: Scene + ?Sized>(
+    scene: &S,
+    cache: &mut HashMap<BlockPos, Boxes>,
+    low: [f64; 3],
+    high: [f64; 3],
+    motion: [f64; 3],
+) -> Boxes {
+    let mut from = [0; 3];
+    let mut to = [0; 3];
+    for axis in 0..3 {
+        from[axis] = (low[axis] + motion[axis].min(0.0)).floor() as i32 - 1;
+        to[axis] = (high[axis] + motion[axis].max(0.0)).floor() as i32 + 1;
+    }
+    let mut out = Vec::new();
+    for x in from[0]..=to[0] {
+        for y in from[1]..=to[1] {
+            for z in from[2]..=to[2] {
+                let boxes = cache.entry((x, y, z)).or_insert_with(|| {
+                    let Some(block) = scene.block((x, y, z)) else {
+                        return Vec::new();
+                    };
+                    let shape = PlayerBlock {
+                        id: block.id.key(),
+                        properties: block.properties.clone(),
+                    };
+                    collision_shape_boxes(&shape)
+                        .into_iter()
+                        .map(|(mut min, mut max)| {
+                            for (axis, offset) in [x, y, z].into_iter().enumerate() {
+                                min[axis] += f64::from(offset);
+                                max[axis] += f64::from(offset);
+                            }
+                            (min, max)
+                        })
+                        .collect()
+                });
+                out.extend_from_slice(boxes);
+            }
+        }
+    }
+    out
+}
+
+fn is_air(block: Option<&crate::scene::Block>) -> bool {
+    block.is_none_or(|block| {
+        block.id.namespace == "minecraft"
+            && matches!(block.id.path.as_str(), "air" | "cave_air" | "void_air")
+    })
+}
+
+fn normalize(v: DVec3) -> DVec3 {
+    let length = v.length();
+    if length < f64::from(1.0e-5_f32) {
+        DVec3::ZERO
+    } else {
+        v / length
+    }
+}
+
+fn clip(boxes: &Boxes, low: &[f64; 3], high: &[f64; 3], axis: usize, mut wanted: f64) -> f64 {
+    let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
+    for (near, far) in boxes {
+        if low[a] >= far[a] || high[a] <= near[a] || low[b] >= far[b] || high[b] <= near[b] {
+            continue;
+        }
+        if wanted > 0.0 && high[axis] <= near[axis] {
+            wanted = wanted.min(near[axis] - high[axis]);
+        } else if wanted < 0.0 && low[axis] >= far[axis] {
+            wanted = wanted.max(far[axis] - low[axis]);
+        }
+    }
+    wanted
+}
+
+pub fn textures() -> Vec<ResourceId> {
+    let big_smoke = (0..BIG_SMOKE_SPRITES).map(|index| format!("big_smoke_{index}"));
+    let explosion = (0..EXPLOSION_SPRITES).map(|index| format!("explosion_{index}"));
+    ["lava", "glint"]
+        .into_iter()
+        .map(str::to_owned)
+        .chain(big_smoke)
+        .chain(explosion)
+        .filter_map(|name| ResourceId::parse(&format!("minecraft:particle/{name}")).ok())
+        .collect()
+}
+
+fn facing_value(facing: &str) -> usize {
+    match facing {
+        "south" => 0,
+        "west" => 1,
+        "east" => 3,
+        _ => 2,
+    }
+}
+
+pub struct AmbientParticles {
+    particles: Vec<Particle>,
+    random: LegacyRandom,
+    campfires: (Option<u64>, Vec<BlockPos>),
+    blasts: Vec<(DVec3, f32, usize)>,
+    temperature: minecraftoss_generator::temperature::BiomeTemperature,
+    rain_sound_time: i32,
+}
+
+impl AmbientParticles {
+    pub fn new(seed: u64) -> Self {
+        Self {
+            particles: Vec::new(),
+            random: LegacyRandom::new(seed),
+            campfires: (None, Vec::new()),
+            blasts: Vec::new(),
+            temperature: minecraftoss_generator::temperature::BiomeTemperature::new(),
+            rain_sound_time: 0,
+        }
+    }
+
+    pub fn rain_tick(
+        &mut self,
+        scene: &HandcraftedScene,
+        camera: DVec3,
+        rain_level: f32,
+    ) -> Vec<crate::display_ticks::AmbientSound> {
+        if rain_level <= 0.0 {
+            return Vec::new();
+        }
+        let height = |x, z| crate::rain::motion_blocking_height(scene, x, z);
+        let temperature = &self.temperature;
+        let rains = |pos| crate::rain::rains_at(scene, temperature, pos);
+        let world = crate::rain::RainWorld {
+            height: &height,
+            min_y: scene.vertical_range().start,
+            rains_at: &rains,
+        };
+        let tick = crate::rain::rain_tick(
+            scene,
+            &world,
+            camera,
+            rain_level,
+            &mut self.random,
+            &mut self.rain_sound_time,
+        );
+        for (kind, at, motion) in tick.particles {
+            self.add(kind, at, motion);
+        }
+        tick.sounds
+    }
+
+    pub fn explosion(&mut self, center: DVec3, radius: f32, blocks: usize, interacts: bool) {
+        if radius < SMALL_BLAST_RADIUS || !interacts {
+            self.add(Kind::Explosion, center, DVec3::new(1.0, 0.0, 0.0));
+        } else {
+            self.add(Kind::ExplosionEmitter, center, DVec3::ZERO);
+        }
+        if blocks > 0 {
+            self.blasts.push((center, radius, blocks));
+        }
+    }
+
+    fn track_blasts<S: Scene + ?Sized>(&mut self, scene: &S) {
+        let blasts = std::mem::take(&mut self.blasts);
+        let total: usize = blasts.iter().map(|blast| blast.2).sum();
+        for _ in 0..total.min(MAX_BLAST_PARTICLES) {
+            let mut pick = self.random.next_int(total as u32) as usize;
+            let Some(&(center, radius, _)) = blasts.iter().find(|blast| {
+                if pick < blast.2 {
+                    return true;
+                }
+                pick -= blast.2;
+                false
+            }) else {
+                continue;
+            };
+            self.blast_particle(scene, center, radius);
+        }
+    }
+
+    fn blast_particle<S: Scene + ?Sized>(&mut self, scene: &S, center: DVec3, radius: f32) {
+        let random = &mut self.random;
+        let mut unit = || f64::from(random.next_float() * 2.0 - 1.0);
+        let direction = normalize(DVec3::new(unit(), unit(), unit()));
+        let distance = f64::from(random.next_float()).cbrt() as f32 * radius;
+        let offset = direction * f64::from(distance);
+        let reached = (center + offset).floor();
+        let cell = (reached.x as i32, reached.y as i32, reached.z as i32);
+        if !is_air(scene.block(cell)) {
+            return;
+        }
+        let speed =
+            0.5 / (distance / radius + 0.1) * random.next_float() * random.next_float() + 0.3;
+        let (kind, scaling) = if random.next_int(2) == 0 {
+            (Kind::Poof, 0.5)
+        } else {
+            (Kind::Smoke, 1.0)
+        };
+        self.add(
+            kind,
+            center + offset * scaling,
+            direction * f64::from(speed),
+        );
+    }
+
+    pub fn campfire_tick(
+        &mut self,
+        scene: &HandcraftedScene,
+        food: impl Fn(BlockPos) -> [bool; 4],
+    ) {
+        if self.campfires.0 != Some(scene.revision()) {
+            self.campfires = (Some(scene.revision()), scene.campfires());
+        }
+        let campfires = std::mem::take(&mut self.campfires.1);
+        for &pos in &campfires {
+            let Some(block) =
+                Scene::block(scene, pos).filter(|block| crate::campfire::is_lit(block))
+            else {
+                continue;
+            };
+            let signal = block
+                .properties
+                .get("signal_fire")
+                .is_some_and(|v| v == "true");
+            let facing = block
+                .properties
+                .get("facing")
+                .map_or("north", String::as_str);
+            self.campfire(pos, signal, facing, food(pos));
+        }
+        self.campfires.1 = campfires;
+    }
+
+    pub fn campfire(&mut self, pos: BlockPos, signal: bool, facing: &str, food: [bool; 4]) {
+        if self.random.next_float() < 0.11 {
+            let mut puffs = 0;
+            while puffs < self.random.next_int(2) + 2 {
+                self.campfire_puff(pos, signal);
+                puffs += 1;
+            }
+        }
+        let facing = facing_value(facing);
+        for (slot, cooking) in food.into_iter().enumerate() {
+            if !cooking || self.random.next_float() >= 0.2 {
+                continue;
+            }
+            let direction = (slot + facing) % 4;
+            let (sx, sz) = SIDE_STEPS[direction];
+            let (cx, cz) = SIDE_STEPS[(direction + 1) % 4];
+            let offset = |step: i32| f64::from(step as f32 * CAMPFIRE_SLOT_OFFSET);
+            let x = f64::from(pos.0) + 0.5 - offset(sx) + offset(cx);
+            let y = f64::from(pos.1) + 0.5;
+            let z = f64::from(pos.2) + 0.5 - offset(sz) + offset(cz);
+            for _ in 0..4 {
+                let rise = DVec3::new(0.0, 5.0e-4, 0.0);
+                self.add(Kind::Smoke, DVec3::new(x, y, z), rise);
+            }
+        }
+    }
+
+    pub fn douse(&mut self, pos: BlockPos, signal: bool) {
+        for _ in 0..DOUSE_PUFFS {
+            self.campfire_puff(pos, signal);
+            let random = &mut self.random;
+            let sign = |random: &mut LegacyRandom| if random.next_boolean() { 1.0 } else { -1.0 };
+            let x = f64::from(pos.0) + 0.5 + random.next_double() / 4.0 * sign(random);
+            let y = f64::from(pos.1) + 0.4;
+            let z = f64::from(pos.2) + 0.5 + random.next_double() / 4.0 * sign(random);
+            self.add(
+                Kind::Smoke,
+                DVec3::new(x, y, z),
+                DVec3::new(0.0, 0.005, 0.0),
+            );
+        }
+    }
+
+    fn campfire_puff(&mut self, pos: BlockPos, signal: bool) {
+        let random = &mut self.random;
+        let sign = |random: &mut LegacyRandom| if random.next_boolean() { 1.0 } else { -1.0 };
+        let x = f64::from(pos.0) + 0.5 + random.next_double() / 3.0 * sign(random);
+        let y = f64::from(pos.1) + random.next_double() + random.next_double();
+        let z = f64::from(pos.2) + 0.5 + random.next_double() / 3.0 * sign(random);
+        let kind = if signal {
+            Kind::SignalSmoke
+        } else {
+            Kind::CosySmoke
+        };
+        self.add(kind, DVec3::new(x, y, z), DVec3::new(0.0, 0.07, 0.0));
+    }
+
+    pub fn len(&self) -> usize {
+        self.particles.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.particles.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.particles.clear();
+    }
+
+    pub fn add(&mut self, kind: Kind, at: DVec3, motion: DVec3) {
+        let random = &mut self.random;
+        let particle = match kind {
+            Kind::Smoke | Kind::LargeSmoke => Particle::smoke(kind, at, motion, random),
+            Kind::Lava => Particle::lava(at, random),
+            Kind::CosySmoke | Kind::SignalSmoke => {
+                Particle::campfire_smoke(kind, at, motion, random)
+            }
+            Kind::Poof => Particle::poof(at, motion, random),
+            Kind::Explosion => Particle::huge_explosion(at, motion.x, random),
+            Kind::ExplosionEmitter => Particle::emitter(at, random),
+            Kind::HappyVillager => Particle::happy_villager(at, motion, random),
+            Kind::Rain => Particle::rain(at, random),
+        };
+        self.particles.push(particle);
+        if self.particles.len() > CAP {
+            self.particles.remove(0);
+        }
+    }
+
+    pub fn tick<S: Scene + ?Sized>(&mut self, scene: &S) {
+        self.track_blasts(scene);
+        let mut cache = HashMap::new();
+        let mut spawned = Vec::new();
+        let random = &mut self.random;
+        self.particles.retain_mut(|particle| match particle.kind {
+            Kind::ExplosionEmitter => {
+                let size = f64::from(particle.age as f32 / particle.lifetime as f32);
+                for _ in 0..EMITTER_FLASHES {
+                    let mut spread = || (random.next_double() - random.next_double()) * 4.0;
+                    let at = particle.position + DVec3::new(spread(), spread(), spread());
+                    spawned.push((Kind::Explosion, at, DVec3::new(size, 0.0, 0.0)));
+                }
+                particle.age += 1;
+                particle.age != particle.lifetime
+            }
+            Kind::Explosion => particle.hold(),
+            Kind::HappyVillager => particle.linger(),
+            Kind::Rain => particle.drip(scene, &mut cache, random),
+            Kind::CosySmoke | Kind::SignalSmoke => particle.drift(scene, &mut cache, random),
+            _ => {
+                let alive = particle.tick(scene, &mut cache);
+                if alive && particle.kind == Kind::Lava {
+                    let aged = particle.age as f32 / particle.lifetime as f32;
+                    if random.next_float() > aged {
+                        spawned.push((Kind::Smoke, particle.position, particle.velocity));
+                    }
+                }
+                alive
+            }
+        });
+        for (kind, at, motion) in spawned {
+            self.add(kind, at, motion);
+        }
+    }
+
+    pub fn append_mesh(
+        &self,
+        opaque: &mut ChunkMesh,
+        translucent: &mut ChunkMesh,
+        atlas: &Atlas,
+        forward: Vec3,
+        partial: f32,
+        light: &SkyLight,
+    ) {
+        let partial = partial.clamp(0.0, 1.0);
+        let right = forward.cross(Vec3::Y).normalize_or_zero();
+        let up = right.cross(forward).normalize_or_zero();
+        for particle in &self.particles {
+            let Some(sprite) = particle.sprite() else {
+                continue;
+            };
+            if !atlas.contains(&sprite) {
+                continue;
+            }
+            let [u0, v0, u1, v1] = atlas.region(&sprite);
+            let center = particle
+                .previous
+                .lerp(particle.position, f64::from(partial));
+            let cell = (
+                center.x.floor() as i32,
+                center.y.floor() as i32,
+                center.z.floor() as i32,
+            );
+            let (sky, block) = match particle.kind {
+                Kind::Explosion => (FULL_BRIGHT, FULL_BRIGHT),
+                Kind::Lava => (f32::from(light.get(cell)), FULL_BRIGHT),
+                _ => (f32::from(light.get(cell)), f32::from(light.get_block(cell))),
+            };
+            let size = particle.size_at(partial);
+            let center = center.as_vec3();
+            let [r, g, b] = particle.color;
+            let color = [r, g, b, particle.alpha];
+            let mesh = if particle.translucent() {
+                &mut *translucent
+            } else {
+                &mut *opaque
+            };
+            let start = mesh.vertices.len() as u32;
+            for (corner, uv) in [
+                (Vec2::new(-1.0, -1.0), [u0, v1]),
+                (Vec2::new(-1.0, 1.0), [u0, v0]),
+                (Vec2::new(1.0, 1.0), [u1, v0]),
+                (Vec2::new(1.0, -1.0), [u1, v1]),
+            ] {
+                let point = center + (right * corner.x + up * corner.y) * size;
+                mesh.vertices.push(Vertex {
+                    position: point.to_array(),
+                    uv,
+                    color,
+                    sky_light: sky,
+                    block_light: block,
+                });
+            }
+            mesh.indices.extend_from_slice(&[
+                start,
+                start + 2,
+                start + 1,
+                start,
+                start + 3,
+                start + 2,
+            ]);
+            mesh.faces += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scene::{Block, ChunkPos};
+
+    struct Blocks(HashMap<BlockPos, Block>);
+
+    impl Scene for Blocks {
+        fn block(&self, pos: BlockPos) -> Option<&Block> {
+            self.0.get(&pos)
+        }
+
+        fn chunks(&self) -> Vec<ChunkPos> {
+            Vec::new()
+        }
+
+        fn vertical_range(&self) -> std::ops::Range<i32> {
+            -64..320
+        }
+
+        fn revision(&self) -> u64 {
+            0
+        }
+    }
+
+    fn open() -> Blocks {
+        Blocks(HashMap::new())
+    }
+
+    #[test]
+    fn smoke_is_dark_and_rises_until_it_fades() {
+        let mut particles = AmbientParticles::new(1);
+        for _ in 0..200 {
+            particles.add(Kind::Smoke, DVec3::new(0.5, 64.0, 0.5), DVec3::ZERO);
+        }
+        for particle in &particles.particles {
+            assert!(particle.color.iter().all(|&c| (0.0..0.3).contains(&c)));
+            assert!(
+                (8..=40).contains(&particle.lifetime),
+                "{}",
+                particle.lifetime
+            );
+            assert!(particle.quad_size <= 0.15 + 1e-6);
+        }
+        let start: f64 = particles.particles.iter().map(|p| p.position.y).sum();
+        for _ in 0..6 {
+            particles.tick(&open());
+        }
+        let later: f64 = particles.particles.iter().map(|p| p.position.y).sum();
+        assert!(later > start);
+        for _ in 0..40 {
+            particles.tick(&open());
+        }
+        assert!(particles.is_empty());
+    }
+
+    #[test]
+    fn large_smoke_is_two_and_a_half_times_bigger_and_longer() {
+        let mut particles = AmbientParticles::new(2);
+        for _ in 0..200 {
+            particles.add(Kind::LargeSmoke, DVec3::ZERO, DVec3::ZERO);
+        }
+        assert!(
+            particles
+                .particles
+                .iter()
+                .all(|p| (20..=100).contains(&p.lifetime))
+        );
+        assert!(
+            particles
+                .particles
+                .iter()
+                .any(|p| p.quad_size > 0.15 && p.quad_size <= 0.375 + 1e-6)
+        );
+    }
+
+    #[test]
+    fn smoke_grows_in_over_its_first_thirty_second_of_life() {
+        let mut particles = AmbientParticles::new(3);
+        particles.add(Kind::Smoke, DVec3::ZERO, DVec3::ZERO);
+        let particle = &particles.particles[0];
+        assert_eq!(particle.size_at(0.0), 0.0);
+        assert_eq!(particle.size_at(1.0), particle.quad_size);
+        assert_eq!(
+            particle.sprite().map(|id| id.key()).as_deref(),
+            Some("minecraft:particle/generic_7")
+        );
+    }
+
+    #[test]
+    fn smoke_stops_under_a_ceiling() {
+        let scene = Blocks(HashMap::from([((0, 65, 0), Block::new("minecraft:stone"))]));
+        let mut particles = AmbientParticles::new(4);
+        particles.add(Kind::LargeSmoke, DVec3::new(0.5, 64.5, 0.5), DVec3::ZERO);
+        for _ in 0..20 {
+            particles.tick(&scene);
+        }
+        let particle = &particles.particles[0];
+        assert!(particle.position.y + particle.size <= 65.0 + 1e-9);
+        assert!(particle.stopped);
+    }
+
+    #[test]
+    fn lava_leaps_falls_glows_and_trails_smoke() {
+        let mut particles = AmbientParticles::new(5);
+        particles.add(Kind::Lava, DVec3::new(0.5, 11.0, 0.5), DVec3::ZERO);
+        let first = particles.particles[0].clone();
+        assert!(first.velocity.y >= 0.05 && first.velocity.y < 0.45);
+        assert!((16..=80).contains(&first.lifetime));
+        assert_eq!(
+            first.sprite().map(|id| id.key()).as_deref(),
+            Some("minecraft:particle/lava")
+        );
+        let mut highest = first.position.y;
+        for _ in 0..first.lifetime {
+            particles.tick(&open());
+            if let Some(lava) = particles.particles.iter().find(|p| p.kind == Kind::Lava) {
+                highest = highest.max(lava.position.y);
+            }
+        }
+        assert!(highest > first.position.y);
+        assert!(particles.particles.iter().any(|p| p.kind == Kind::Smoke));
+        let lava = particles
+            .particles
+            .iter()
+            .find(|p| p.kind == Kind::Lava)
+            .unwrap();
+        assert!(lava.position.y < highest);
+        assert!(lava.size_at(0.0) < first.quad_size);
+    }
+
+    #[test]
+    fn campfire_smoke_rises_for_its_life_and_fades_out_over_the_last_three_seconds() {
+        let mut particles = AmbientParticles::new(7);
+        particles.add(
+            Kind::CosySmoke,
+            DVec3::new(0.5, 65.0, 0.5),
+            DVec3::new(0.0, 0.07, 0.0),
+        );
+        particles.add(
+            Kind::SignalSmoke,
+            DVec3::new(0.5, 65.0, 0.5),
+            DVec3::new(0.0, 0.07, 0.0),
+        );
+        let cosy = particles.particles[0].clone();
+        let signal = particles.particles[1].clone();
+        assert!((80..130).contains(&cosy.lifetime) && (280..330).contains(&signal.lifetime));
+        assert_eq!((cosy.alpha, signal.alpha), (0.9, 0.95));
+        assert!(cosy.quad_size >= 0.3 - 1e-6 && cosy.quad_size <= 0.6 + 1e-6);
+        assert!(cosy.translucent() && cosy.sprite < 12);
+        assert_eq!(cosy.velocity.x, 0.0);
+        assert!(cosy.velocity.y >= 0.07 && cosy.velocity.y <= 0.07 + 0.002);
+        for _ in 0..cosy.lifetime - CAMPFIRE_FADE_TICKS - 1 {
+            particles.tick(&open());
+        }
+        let early = particles.particles[0].clone();
+        assert_eq!(early.alpha, 0.9);
+        assert!(early.position.y > 65.0 + 0.07 * 15.0);
+        particles.tick(&open());
+        assert!(particles.particles[0].alpha < 0.9);
+        for _ in 0..CAMPFIRE_FADE_TICKS + 1 {
+            particles.tick(&open());
+        }
+        assert_eq!(particles.len(), 1);
+        assert_eq!(particles.particles[0].kind, Kind::SignalSmoke);
+    }
+
+    #[test]
+    fn a_campfire_puffs_two_or_three_smokes_one_tick_in_nine() {
+        let mut particles = AmbientParticles::new(8);
+        let mut puffs = 0;
+        let mut ticks_with_smoke = 0;
+        for _ in 0..10_000 {
+            let before = particles.len();
+            particles.campfire((4, 70, -3), false, "north", [false; 4]);
+            let added = particles.len() - before;
+            if added > 0 {
+                assert!((2..=3).contains(&added), "{added}");
+                ticks_with_smoke += 1;
+                puffs += added;
+            }
+            if particles.len() > 1000 {
+                particles.clear();
+            }
+        }
+        assert!(
+            (950..1250).contains(&ticks_with_smoke),
+            "{ticks_with_smoke}"
+        );
+        assert!(puffs > 2 * ticks_with_smoke && puffs < 3 * ticks_with_smoke);
+    }
+
+    #[test]
+    fn a_doused_campfire_bursts_into_twenty_puffs_and_twenty_low_smokes() {
+        for (signal, kind) in [(false, Kind::CosySmoke), (true, Kind::SignalSmoke)] {
+            let mut particles = AmbientParticles::new(10);
+            particles.douse((4, 70, -3), signal);
+            assert_eq!(particles.len(), 40);
+            let puffs: Vec<_> = particles
+                .particles
+                .iter()
+                .filter(|p| p.kind == kind)
+                .collect();
+            let smokes: Vec<_> = particles
+                .particles
+                .iter()
+                .filter(|p| p.kind == Kind::Smoke)
+                .collect();
+            assert_eq!((puffs.len(), smokes.len()), (20, 20));
+            for puff in puffs {
+                assert!((4.5 - 1.0 / 3.0..=4.5 + 1.0 / 3.0).contains(&puff.position.x));
+                assert!((70.0..72.0).contains(&puff.position.y));
+            }
+            for smoke in smokes {
+                assert!((4.25..=4.75).contains(&smoke.position.x));
+                assert!((-2.75..=-2.25).contains(&smoke.position.z));
+                assert_eq!(smoke.position.y, 70.4);
+            }
+        }
+    }
+
+    #[test]
+    fn campfire_smoke_starts_over_the_fire_and_a_signal_fire_sends_signal_smoke() {
+        let mut particles = AmbientParticles::new(9);
+        for _ in 0..2000 {
+            particles.campfire((4, 70, -3), true, "north", [false; 4]);
+        }
+        assert!(!particles.is_empty());
+        for particle in &particles.particles {
+            assert_eq!(particle.kind, Kind::SignalSmoke);
+            let start = particle.previous;
+            assert!(start.x > 4.5 - 1.0 / 3.0 && start.x < 4.5 + 1.0 / 3.0);
+            assert!(start.z > -2.5 - 1.0 / 3.0 && start.z < -2.5 + 1.0 / 3.0);
+            assert!((70.0..72.0).contains(&start.y));
+        }
+    }
+
+    #[test]
+    fn food_on_a_campfire_smokes_four_puffs_from_its_corner() {
+        let mut particles = AmbientParticles::new(10);
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..400 {
+            particles.campfire((0, 64, 0), false, "east", [true, false, false, true]);
+            for particle in particles.particles.iter().filter(|p| p.kind == Kind::Smoke) {
+                let at = particle.previous;
+                assert_eq!(at.y, 64.5);
+                seen.insert(((at.x * 16.0).round() as i32, (at.z * 16.0).round() as i32));
+            }
+            particles.clear();
+        }
+        assert_eq!(seen, std::collections::BTreeSet::from([(3, 13), (13, 13)]));
+    }
+
+    #[test]
+    fn only_lit_campfires_in_the_scene_smoke() {
+        let mut scene = HandcraftedScene::default();
+        scene.set(
+            (2, 64, 2),
+            Some(Block::new("minecraft:campfire").with("lit", "true")),
+        );
+        scene.set(
+            (9, 64, 2),
+            Some(Block::new("minecraft:campfire").with("lit", "false")),
+        );
+        scene.set((5, 64, 5), Some(Block::new("minecraft:stone")));
+        let mut particles = AmbientParticles::new(11);
+        for _ in 0..200 {
+            particles.campfire_tick(&scene, |_| [false; 4]);
+        }
+        assert!(!particles.is_empty());
+        assert!(
+            particles
+                .particles
+                .iter()
+                .all(|p| (p.previous.x - 2.5).abs() < 0.34)
+        );
+        scene.set(
+            (2, 64, 2),
+            Some(Block::new("minecraft:campfire").with("lit", "false")),
+        );
+        particles.clear();
+        for _ in 0..200 {
+            particles.campfire_tick(&scene, |_| [false; 4]);
+        }
+        assert!(particles.is_empty());
+    }
+
+    fn count(particles: &AmbientParticles, kind: Kind) -> usize {
+        particles
+            .particles
+            .iter()
+            .filter(|p| p.kind == kind)
+            .count()
+    }
+
+    #[test]
+    fn a_big_blast_seeds_six_flashes_a_tick_for_eight_ticks() {
+        let mut particles = AmbientParticles::new(12);
+        let center = DVec3::new(0.5, 64.0, 0.5);
+        particles.explosion(center, 4.0, 0, true);
+        assert_eq!(count(&particles, Kind::ExplosionEmitter), 1);
+        let mut flashes = 0;
+        for tick in 0..EMITTER_TICKS {
+            let before = count(&particles, Kind::Explosion);
+            particles.tick(&open());
+            let born: Vec<_> = particles
+                .particles
+                .iter()
+                .filter(|p| p.kind == Kind::Explosion && p.age == 0)
+                .collect();
+            assert_eq!(born.len(), 6, "tick {tick} after {before}");
+            let size = 2.0 * (1.0 - tick as f32 / 8.0 * 0.5);
+            for flash in born {
+                assert!((flash.quad_size - size).abs() < 1e-6);
+                assert!((flash.position - center).abs().max_element() < 4.0);
+                assert!((6..10).contains(&flash.lifetime));
+            }
+            flashes += 6;
+        }
+        assert_eq!(flashes, 48);
+        assert_eq!(count(&particles, Kind::ExplosionEmitter), 0);
+        for _ in 0..10 {
+            particles.tick(&open());
+        }
+        assert_eq!(count(&particles, Kind::Explosion), 0);
+    }
+
+    #[test]
+    fn a_small_or_harmless_blast_is_one_flash() {
+        let mut particles = AmbientParticles::new(13);
+        particles.explosion(DVec3::ZERO, 1.0, 0, true);
+        particles.explosion(DVec3::ZERO, 3.0, 0, false);
+        assert_eq!(count(&particles, Kind::Explosion), 2);
+        assert!(particles.particles.iter().all(|p| p.quad_size == 1.0));
+        let flash = &particles.particles[0];
+        assert_eq!(
+            flash.sprite().map(|id| id.key()).as_deref(),
+            Some("minecraft:particle/explosion_0")
+        );
+    }
+
+    #[test]
+    fn a_blast_scatters_poofs_and_smoke_through_the_air_it_reached() {
+        let mut particles = AmbientParticles::new(14);
+        let center = DVec3::new(0.5, 64.0, 0.5);
+        particles.explosion(center, 3.0, 2000, false);
+        particles.track_blasts(&open());
+        let scattered = count(&particles, Kind::Poof) + count(&particles, Kind::Smoke);
+        assert_eq!(scattered, 512);
+        assert!(count(&particles, Kind::Poof) > 200 && count(&particles, Kind::Smoke) > 200);
+        assert!(
+            particles
+                .particles
+                .iter()
+                .filter(|p| p.kind != Kind::Explosion)
+                .all(|p| (p.position - center).length() <= 3.0 + 1e-6)
+        );
+        assert!(particles.blasts.is_empty());
+        let mut few = AmbientParticles::new(15);
+        few.explosion(center, 3.0, 40, true);
+        few.track_blasts(&open());
+        assert_eq!(count(&few, Kind::Poof) + count(&few, Kind::Smoke), 40);
+    }
+
+    #[test]
+    fn blast_particles_only_start_in_air() {
+        let mut stone = HashMap::new();
+        for x in -4_i32..=4 {
+            for y in 60_i32..=68 {
+                for z in -4_i32..=4 {
+                    if x.abs() > 1 || (y - 64).abs() > 1 || z.abs() > 1 {
+                        stone.insert((x, y, z), Block::new("minecraft:stone"));
+                    }
+                }
+            }
+        }
+        let scene = Blocks(stone);
+        let mut particles = AmbientParticles::new(16);
+        particles.explosion(DVec3::new(0.5, 64.5, 0.5), 4.0, 500, true);
+        particles.track_blasts(&scene);
+        let scattered: Vec<_> = particles
+            .particles
+            .iter()
+            .filter(|p| matches!(p.kind, Kind::Poof | Kind::Smoke))
+            .collect();
+        assert!(
+            scattered.len() > 10 && scattered.len() < 150,
+            "{}",
+            scattered.len()
+        );
+        for particle in scattered {
+            let at = particle.position;
+            assert!(
+                (-1.0..2.0).contains(&at.x)
+                    && (63.0..66.0).contains(&at.y)
+                    && (-1.0..2.0).contains(&at.z),
+                "{at}"
+            );
+        }
+    }
+
+    #[test]
+    fn happy_villager_sparkles_hang_in_the_air_and_count_down() {
+        let mut particles = AmbientParticles::new(17);
+        let at = DVec3::new(0.5, 64.5, 0.5);
+        particles.add(Kind::HappyVillager, at, DVec3::new(0.0, 0.01, 0.0));
+        let sparkle = particles.particles[0].clone();
+        assert_eq!(sparkle.color, [1.0; 3]);
+        assert!((20..=100).contains(&sparkle.lifetime));
+        assert!(sparkle.velocity.length() < 0.01);
+        assert_eq!(
+            sparkle.sprite().map(|id| id.key()).as_deref(),
+            Some("minecraft:particle/glint")
+        );
+        let scene = Blocks(HashMap::from([((0, 64, 0), Block::new("minecraft:stone"))]));
+        for _ in 0..sparkle.lifetime {
+            particles.tick(&scene);
+        }
+        assert_eq!(particles.len(), 1);
+        assert!((particles.particles[0].position - at).length() < 0.5);
+        particles.tick(&scene);
+        assert!(particles.is_empty());
+    }
+
+    #[test]
+    fn rain_splashes_hop_up_and_die_on_the_ground_or_in_water() {
+        let mut particles = AmbientParticles::new(18);
+        particles.add(Kind::Rain, DVec3::new(0.5, 65.0, 0.5), DVec3::ZERO);
+        let splash = particles.particles[0].clone();
+        assert!(splash.velocity.y >= 0.1 && splash.velocity.y < 0.3 + 1e-6);
+        assert!(splash.velocity.x.abs() < 0.1 && splash.sprite < 4);
+        assert!((8..=40).contains(&splash.lifetime));
+        let scene = Blocks(HashMap::from([((0, 64, 0), Block::new("minecraft:stone"))]));
+        for _ in 0..60 {
+            particles.tick(&scene);
+        }
+        assert!(particles.is_empty());
+        let water = Blocks(HashMap::from([(
+            (0, 64, 0),
+            Block::new("minecraft:water").with("level", "0"),
+        )]));
+        particles.add(Kind::Rain, DVec3::new(0.5, 64.5, 0.5), DVec3::ZERO);
+        particles.tick(&water);
+        assert!(
+            particles.is_empty(),
+            "a splash inside water is gone at once"
+        );
+    }
+
+    #[test]
+    fn lava_lands_on_the_floor() {
+        let scene = Blocks(HashMap::from([((0, 10, 0), Block::new("minecraft:stone"))]));
+        let mut particles = AmbientParticles::new(6);
+        particles.add(Kind::Lava, DVec3::new(0.5, 11.0, 0.5), DVec3::ZERO);
+        for _ in 0..15 {
+            particles.tick(&scene);
+        }
+        let lava = particles
+            .particles
+            .iter()
+            .find(|p| p.kind == Kind::Lava)
+            .unwrap();
+        assert!(lava.position.y >= 11.0 - 1e-9);
+    }
+}

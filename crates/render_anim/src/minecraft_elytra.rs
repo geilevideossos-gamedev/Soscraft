@@ -45,7 +45,9 @@ pub(crate) fn step(
         let fall = minecraft_survival::survival::fall_sound(damage as i32);
         sounds.play(packs, fall, None, 1.0, 1.0);
         let voice = (sounds.random() - sounds.random()) * 0.2 + 1.0;
-        sounds.play(packs, "minecraft:entity.player.hurt", None, 1.0, voice);
+        if player.survival.status.health > 0.0 {
+            sounds.play(packs, "minecraft:entity.player.hurt", None, 1.0, voice);
+        }
     }
 }
 
