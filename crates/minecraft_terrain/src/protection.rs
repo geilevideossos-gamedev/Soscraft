@@ -284,7 +284,7 @@ impl ProtectionBook {
             let protections: Vec<_> = effects[DAMAGE_PROTECTION]
                 .as_array()
                 .map(|entries| entries.iter().filter_map(DamageProtection::parse).collect())
-                .unwrap_or_default();
+                .unwrap_or_else(Vec::new);
             if !protections.is_empty() {
                 book.protections.insert(id.clone(), protections);
             }
@@ -300,7 +300,7 @@ impl ProtectionBook {
                         .filter_map(|entry| Linear::parse(&entry["amount"]))
                         .collect()
                 })
-                .unwrap_or_default();
+                .unwrap_or_else(Vec::new);
             if !burning.is_empty() {
                 book.burning.insert(id.clone(), burning);
             }
@@ -313,14 +313,14 @@ impl ProtectionBook {
                         .filter_map(|entry| damage_tags(&entry["requirements"]))
                         .collect()
                 })
-                .unwrap_or_default();
+                .unwrap_or_else(Vec::new);
             if !immunities.is_empty() {
                 book.immunities.insert(id.clone(), immunities);
             }
             let disks: Vec<_> = effects[LOCATION_CHANGED]
                 .as_array()
                 .map(|entries| entries.iter().filter_map(Disk::parse).collect())
-                .unwrap_or_default();
+                .unwrap_or_else(Vec::new);
             if !disks.is_empty() {
                 book.disks.insert(id.clone(), disks);
             }
@@ -437,7 +437,7 @@ fn resolve(tags: &HashMap<String, Value>, tag: &str, out: &mut HashSet<String>, 
         let id = value
             .as_str()
             .or_else(|| value["id"].as_str())
-            .unwrap_or_default();
+            .unwrap_or("");
         match id.strip_prefix('#') {
             Some(nested) => resolve(tags, nested, out, depth + 1),
             None if !id.is_empty() => {

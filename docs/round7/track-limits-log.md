@@ -362,3 +362,10 @@ IW4L_MINECRAFT_KIT=minecraft:iron_hoe,minecraft:iron_shovel,minecraft:iron_axe,m
 ```
 IW4L_MINECRAFT_KIT=minecraft:diamond_boots+frost_walker=2,minecraft:magma_block*8,minecraft:water_bucket,minecraft:cobblestone*32
 ```
+
+### 8. Minecraft armour enchantments and tool transformers pass clippy
+
+- **Changed:** the workspace denies `unwrap_or_default`; the new `protection.rs` and `transform.rs` and the Frost Walker line in `minecraft_world.rs` used it. They now use `unwrap_or_else(Vec::new)`, `unwrap_or("")` and `map_or_else`. Clippy on `minecraft_terrain`, `minecraft_survival`, `render_anim`, `minecraftoss-world`, `minecraftoss-player` and `minecraftoss-generator` shows no finding on the lines this group touched; the crates' existing findings are untouched.
+- **Tests:** `protection` and `transform`, unchanged in what they check.
+- **Test steps:** none, nothing changes in game.
+- **Kit:** none.

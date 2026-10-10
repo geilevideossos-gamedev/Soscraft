@@ -961,7 +961,7 @@ fn update(
                 steps.air_peak = steps.air_peak.map(|peak| feet[1] + (peak - feet[1]) * 0.5);
             }
             let heard = survival.hazards(&terrain.scene, &motion, from, armor, || entities.as_mut().map_or(0.5, |e| e.random_float()));
-            let bodies = entities.as_ref().map(|e| obstacles(ps, &authority.0, local.0, e)).unwrap_or_default();
+            let bodies = entities.as_ref().map_or_else(Vec::new, |e| obstacles(ps, &authority.0, local.0, e));
             let frozen = survival.location_changed(motion.feet, motion.on_ground, &minecraft_terrain::doors::Outlined(&terrain.scene), &*terrain.stream.states, &|pos| !minecraft_terrain::placing::obstructed(pos, &[[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]], &bodies));
             if let Some(entities) = entities.as_mut().filter(|_| !frozen.is_empty()) {
                 write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, frozen.into_iter().map(|(pos, block)| (pos, scene_block(&block))).collect());

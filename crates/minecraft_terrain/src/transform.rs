@@ -40,9 +40,9 @@ impl BlockFacts for BlockStates {
         let Ok(id) = ResourceId::parse(id) else {
             return false;
         };
-        let properties = block
-            .map(|block| block.properties.clone())
-            .unwrap_or_default();
+        let properties = block.map_or_else(std::collections::BTreeMap::new, |block| {
+            block.properties.clone()
+        });
         self.state_of(&crate::scene::Block { id, properties })
             .is_some_and(|state| registries.block_in_tag(state, tag))
     }
@@ -320,7 +320,7 @@ impl TransformBook {
                 let transforms = json
                     .as_array()
                     .map(|entries| entries.iter().filter_map(Transform::parse).collect())
-                    .unwrap_or_default();
+                    .unwrap_or_else(Vec::new);
                 (id, transforms)
             })
             .collect();
