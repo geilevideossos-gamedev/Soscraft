@@ -351,6 +351,17 @@ impl Crystals {
         self.list.iter().map(EndCrystal::view).collect()
     }
 
+    pub fn on_spike(&self, center_x: i32, center_z: i32, radius: i32) -> usize {
+        let (x, z, r) = (f64::from(center_x), f64::from(center_z), f64::from(radius));
+        self.list
+            .iter()
+            .filter(|crystal| {
+                let (low, high) = pick_box(crystal.position);
+                low.x < x + r && high.x > x - r && low.z < z + r && high.z > z - r
+            })
+            .count()
+    }
+
     pub fn touches(&self, (low, high): (DVec3, DVec3)) -> bool {
         self.list.iter().any(|crystal| {
             let (a, b) = pick_box(crystal.position);

@@ -92,6 +92,8 @@ pub struct Entities {
     clouds: Vec<minecraft_terrain::effect_cloud::CloudView>,
     tridents: Vec<minecraft_terrain::trident::TridentView>,
     crystals: Vec<minecraft_terrain::end_crystal::CrystalView>,
+    dragons: Vec<minecraft_terrain::ender_dragon::DragonView>,
+    growls: HashMap<u64, i32>,
     orbs: Vec<ServerOrb>,
     falling: minecraft_terrain::falling_render::FallingBlocks,
     pub lids: minecraft_terrain::lids::Lids,
@@ -228,6 +230,8 @@ impl Entities {
             clouds: Vec::new(),
             tridents: Vec::new(),
             crystals: Vec::new(),
+            dragons: Vec::new(),
+            growls: HashMap::new(),
             orbs: Vec::new(),
             falling: Default::default(),
             lids: Default::default(),
@@ -825,6 +829,8 @@ impl Entities {
                 self.clouds = std::mem::take(&mut snapshot.clouds);
                 self.tridents = std::mem::take(&mut snapshot.tridents);
                 self.crystals = std::mem::take(&mut snapshot.crystals);
+                self.dragons = std::mem::take(&mut snapshot.dragons);
+                self.dragon_voices();
                 self.orbs = snapshot.orbs.clone();
                 self.falling.receive(std::mem::take(&mut snapshot.falling), std::mem::take(&mut snapshot.tnt), &output.changes, self.ticks);
                 self.server_snapshot = Some(snapshot);
@@ -909,7 +915,7 @@ impl Entities {
                 };
                 let cause = match hit.kind {
                     PlayerHitKind::BadRespawnPoint { .. } => crate::death::DamageCause::BadRespawnPoint,
-                    _ => crate::death::DamageCause::mob(attack, hit.source, hit.source.and_then(|id| self.world.entity_type(id))),
+                    _ => crate::death::DamageCause::mob(attack, hit.source, hit.source.and_then(|id| self.entity_type(id))),
                 };
                 let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. }) || hit.source.is_some();
                 let damage = difficulty_scaled(hit.damage, self.difficulty, scales);
@@ -930,7 +936,42 @@ impl Entities {
     }
 
     pub fn mob_present(&self, id: u64) -> bool {
-        self.world.entity_type(id).is_some()
+        self.entity_type(id).is_some()
+    }
+
+    fn entity_type(&self, id: u64) -> Option<&'static str> {
+        self.world
+            .entity_type(id)
+            .or_else(|| self.dragons.iter().any(|dragon| dragon.id == id).then_some(minecraft_terrain::ender_dragon::ENDER_DRAGON))
+    }
+
+    pub fn dragons(&self) -> &[minecraft_terrain::ender_dragon::DragonView] {
+        &self.dragons
+    }
+
+    pub fn dragon_alive(&self, uuid: [i32; 4]) -> bool {
+        self.dragons.iter().any(|dragon| dragon.uuid == uuid)
+    }
+
+    fn dragon_voices(&mut self) {
+        use minecraft_terrain::ender_dragon::{FLAP_SOUND, GROWL_SOUND, SOUND_VOLUME};
+        self.growls.retain(|id, _| self.dragons.iter().any(|dragon| dragon.id == *id));
+        for dragon in &self.dragons {
+            if dragon_flapping(dragon.o_flap_time, dragon.flap_time) {
+                let pitch = 0.8 + self.random.next_float() * 0.3;
+                self.sounds.push((FLAP_SOUND.to_owned(), dragon.position, SOUND_VOLUME, pitch));
+            }
+            if dragon.sitting || dragon.health <= 0.0 {
+                continue;
+            }
+            let growl = self.growls.entry(dragon.id).or_insert(100);
+            *growl -= 1;
+            if *growl < 0 {
+                let pitch = 0.8 + self.random.next_float() * 0.3;
+                self.sounds.push((GROWL_SOUND.to_owned(), dragon.position, 2.5, pitch));
+                *growl = 200 + self.random.next_int(200) as i32;
+            }
+        }
     }
 
     /// Every living mob's key and box in blocks, for bullets.
@@ -1076,6 +1117,7 @@ impl Entities {
         let witch_items = witch_render::append_witches(&mut out.models, w.witches().iter(), poses, atlas, light, partial);
         ghast_render::append_ghasts(&mut out.models, w.ghasts().iter(), poses, atlas, light, partial);
         end_crystal_render::append_crystals(&mut out.models, &self.crystals, atlas, light, partial);
+        dragon_render::append_dragons(&mut out.models, &self.dragons, atlas, light, partial);
         blaze_render::append_blazes(&mut out.models, w.blazes().iter(), poses, atlas, light, partial);
         let poppies = golem_render::append_iron_golems(&mut out.models, w.iron_golems().iter(), poses, atlas, light, partial);
         wolf_render::append_wolves(&mut out.models, w.wolves().iter(), poses, atlas, light, partial, w.game_time());
@@ -1240,6 +1282,12 @@ fn decode(key: u64) -> Option<MobHit> {
 const FIREBALL_KEY: u64 = 17 << 56;
 const CRYSTAL_KEY: u64 = 19 << 56;
 
+fn dragon_flapping(o_flap_time: f32, flap_time: f32) -> bool {
+    let before = minecraftoss_player::mth::cos(f64::from(o_flap_time * std::f32::consts::TAU));
+    let now = minecraftoss_player::mth::cos(f64::from(flap_time * std::f32::consts::TAU));
+    before <= -0.3 && now >= -0.3
+}
+
 fn crystal_of(key: u64) -> Option<u64> {
     (key >> 56 == CRYSTAL_KEY >> 56).then_some(key & ((1 << 56) - 1))
 }
@@ -1299,6 +1347,15 @@ mod tests {
         assert!(creative.alive && !creative.attackable && !creative.spectator);
         let spectator = player_candidate(&view(false, true));
         assert!(spectator.alive && !spectator.attackable && spectator.spectator);
+    }
+
+    #[test]
+    fn a_dragon_flaps_when_its_wings_pass_the_top_of_their_beat() {
+        assert!(dragon_flapping(0.69, 0.71), "cos rises through -0.3 late in the beat");
+        assert!(!dragon_flapping(0.1, 0.2));
+        assert!(!dragon_flapping(0.55, 0.6));
+        let flaps = (0..400).filter(|&i| dragon_flapping(i as f32 * 0.01, (i + 1) as f32 * 0.01)).count();
+        assert_eq!(flaps, 4, "once a beat");
     }
 
     #[test]

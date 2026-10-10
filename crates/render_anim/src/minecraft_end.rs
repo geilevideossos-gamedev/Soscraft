@@ -79,6 +79,9 @@ pub(crate) fn tick_fight(
             scan.previously_killed
         );
     }
+    if let Some(uuid) = events.spawned {
+        diag::info!(World, "Minecraft ender dragon of the fight: {uuid:?}");
+    }
     if let Some(Err(error)) = events.saved {
         diag::warn!(World, "Minecraft End dragon fight not saved: {error}");
     }
