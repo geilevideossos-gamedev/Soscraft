@@ -37,7 +37,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 - Burning from lava, fire, soul fire, magma and campfires, and putting it out.
 - XP levels, the XP bar and vanilla XP from blocks.
 - Vanilla attack cooldown, crits, sweeps and knockback. Shield blocking and the totem of undying.
-- Vanilla death messages and a Killed By card. A Minecraft death is not counted as an MW2 suicide.
+- Vanilla death messages and a Killed By card. A Minecraft death is not counted as an MW2 suicide. Every Minecraft death plays `entity.player.death` (volume 1, voice pitch 0.9 to 1.1) in place of the hurt sound of the blow that killed, so lava, fire, fall and drowning deaths are heard as vanilla does.
 - Dying drops the 36 inventory slots, then the offhand, armour, body and saddle slots, at the death spot like vanilla: from 0.3 below the eye, with vanilla's random spread and a 2 s pickup delay. Crafting grid, bench inputs and the cursor stack go with them. Items with Curse of Vanishing are destroyed (a cursed enchanted book still drops). MW2 guns stay in their hotbar slots. Experience orbs worth 7 points per level, at most 100, drop at the feet, and the XP level starts again at 0. Only a death drops. A match end, MW2 spectating and the suicide MW2 does when a live player picks another team or Spectator in the menu drop nothing, and that team-change suicide keeps the XP level. A player in spectator mode drops nothing and no XP when killed, and keeps the items and XP level, as in vanilla (`ServerPlayer.die` and `restoreFrom`).
 - The `keep_inventory` game rule (off by default, saved in `game_rules.dat`) keeps the items, the XP level and its progress through a death, as vanilla does. Hunger and health still reset.
 - The world difficulty (Normal for a new world, changed with `/difficulty` and saved in `level.dat`) works like vanilla: the server thread gets it for mob spawning, despawning and behaviour (Peaceful removes hostile mobs), hunger and starvation follow it (Peaceful regenerates and never starves, Easy starves down to 10 health, Normal to 1, Hard to death), and mob hits on the player scale with it: none on Peaceful, half plus one (at most the full hit) on Easy, the full hit on Normal and x1.5 on Hard.
@@ -248,7 +248,6 @@ The order is the one in [../CLAUDE.md](../CLAUDE.md): persistent world, crate sp
 ### Survival and combat
 - Hand mining counts as a diamond pickaxe with the held item's enchantments, so a bare hand or a wrong tool still drops items.
 - Not modelled: Fire Protection, Frost Walker and the burn-time attribute.
-- Lava and fire deaths have no death sound.
 - Death drops are spawned on the host for the one local player, by the per-frame update in `render_anim` with `minecraft_survival::death::death_drops`, not by the server thread. Anvil, enchanting and other bench inputs go back to the inventory when the screen closes and then drop with it. Items that fall into lava or fire burn like any dropped item. A match end still resets the XP level to 0.
 - Shield: no knockback to the attacker, axes don't disable it, and MW2 bullets ignore it.
 - The totem plays no animation. Every item has the same use speed.

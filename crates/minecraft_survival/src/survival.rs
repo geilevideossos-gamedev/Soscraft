@@ -918,6 +918,17 @@ fn standing_on(world: &impl World, feet: DVec3) -> Option<(i32, i32, i32)> {
     )
 }
 
+pub const DEATH_SOUND: &str = "minecraft:entity.player.death";
+
+pub fn death_sound(mut random: impl FnMut() -> f32) -> PlayerSound {
+    let (a, b) = (random(), random());
+    PlayerSound {
+        event: DEATH_SOUND,
+        volume: 1.0,
+        pitch: (a - b) * 0.2 + 1.0,
+    }
+}
+
 fn hurt_sound(hazard: Hazard) -> &'static str {
     if hazard.is_fire() {
         "minecraft:entity.player.hurt_on_fire"
@@ -2259,6 +2270,35 @@ mod tests {
             );
             assert!(!survival.vitals().on_fire);
         }
+    }
+
+    #[test]
+    fn the_burn_that_kills_is_heard_as_the_death_not_as_a_hurt() {
+        let in_lava = Motion {
+            in_lava: true,
+            ..standing_in([0.5, 1.0, 0.5])
+        };
+        let mut survival = unfed();
+        let mut wounded = 0;
+        let mut lethal_heard = None;
+        for _ in 0..60 {
+            let before = survival.status.health;
+            let heard = live(&mut survival, &lava_pool(), &in_lava, Armor::default(), 1);
+            let after = survival.status.health;
+            if after < before && after > 0.0 {
+                wounded += 1;
+                assert_eq!(count(&heard, "minecraft:entity.player.hurt_on_fire"), 1);
+            }
+            if after <= 0.0 && before > 0.0 {
+                lethal_heard = Some(count(&heard, "minecraft:entity.player.hurt_on_fire"));
+            }
+        }
+        assert!(wounded >= 3, "{wounded}");
+        assert_eq!(lethal_heard, Some(0), "the burn that kills makes no hurt sound");
+        let death = death_sound(|| 0.25);
+        assert_eq!((death.event, death.volume, death.pitch), (DEATH_SOUND, 1.0, 1.0));
+        let mut rolls = [1.0, 0.0].into_iter();
+        assert!((death_sound(|| rolls.next().unwrap()).pitch - 1.2).abs() < 1e-6);
     }
 
     #[test]

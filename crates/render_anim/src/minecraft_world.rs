@@ -883,7 +883,9 @@ fn update(
                 {
                     sounds.play(&world.packs, minecraft_survival::survival::fall_sound(damage), None, 1.0, 1.0);
                     let voice = (sounds.random() - sounds.random()) * 0.2 + 1.0;
-                    sounds.play(&world.packs, "minecraft:entity.player.hurt", None, 1.0, voice);
+                    if survival.status.health > 0.0 {
+                        sounds.play(&world.packs, "minecraft:entity.player.hurt", None, 1.0, voice);
+                    }
                     if let Some((pos, block)) = under.as_ref()
                         && let Some(kind) = terrain.scene.sound_type(block)
                     {
@@ -946,7 +948,7 @@ fn update(
             let from = survival.last_feet().unwrap_or(feet);
             let breath = survival.tick(&motion);
             if let Some(sounds) = sounds.as_mut() {
-                if breath.drowned {
+                if breath.drowned && survival.status.health > 0.0 {
                     sounds.play(&world.packs, "minecraft:entity.player.hurt_drown", None, 1.0, 1.0);
                 }
                 if let Some(popped) = breath.popped {
@@ -1842,6 +1844,12 @@ fn update(
                     };
                     sim::voxel::MinecraftDeath { message: line.message, killer: line.killer }
                 });
+                if death.is_some()
+                    && let Some(sounds) = sounds.as_mut()
+                {
+                    let sound = minecraft_survival::survival::death_sound(|| entities.random_float());
+                    sounds.play(&world.packs, sound.event, None, sound.volume, sound.pitch);
+                }
                 if let Some(death) = &death
                     && globals.game_rules.bool("show_death_messages")
                 {

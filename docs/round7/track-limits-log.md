@@ -154,3 +154,21 @@ IW4L_MINECRAFT_KIT=minecraft:bone_meal*64,minecraft:wheat_seeds*16,minecraft:oak
 ```
 IW4L_MINECRAFT_KIT=minecraft:flint_and_steel,minecraft:netherrack*8,minecraft:shield,minecraft:skeleton_spawn_egg
 ```
+
+### 8. Minecraft deaths play the player death sound
+
+- **Changed:**
+  - `survival.rs`: `DEATH_SOUND` (`entity.player.death`, `Player.getDeathSound`) and `death_sound(random)`: volume 1 and the adult voice pitch (r - r) x 0.2 + 1 (`LivingEntity.makeSound` with `getSoundVolume` and `getVoicePitch`).
+  - `minecraft_world.rs`: where a Minecraft death is handed to MW2 (the settle step that already builds the death message), the death sound plays once. A lethal fall no longer plays `entity.player.hurt` and a lethal drowning tick no longer plays `entity.player.hurt_drown` (two conditions), because `LivingEntity.hurtServer` plays the death sound instead of the hurt sound when the blow kills. Hazard burns already skipped the hurt sound when they killed, which is why lava and fire deaths were silent.
+- **Tests:** `survival`: `the_burn_that_kills_is_heard_as_the_death_not_as_a_hurt` (every lava burn that leaves the player alive sounds `hurt_on_fire`, the one that kills does not; the death sound's volume and pitch range).
+- **Decisions:** a totem that saves the player still plays only the totem sound, as `checkTotemDeathProtection` skips both sounds; `hold_off_death` runs before the settle step, so no death reaches it.
+- **Test steps:**
+  1. In survival, walk into a lava pool and stay: the hurt sounds play, then the player death sound when you die. **Screenshot 13** of the death screen.
+  2. Stand in fire on netherrack until you die: same.
+  3. Jump from 30 blocks: the big fall sound and the death sound, no hurt sound.
+  4. With a totem of undying in the offhand, walk into lava: the totem pops with its own sound and no death sound.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:lava_bucket,minecraft:netherrack*4,minecraft:flint_and_steel,minecraft:totem_of_undying,minecraft:cobblestone*64
+```
