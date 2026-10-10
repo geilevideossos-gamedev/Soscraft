@@ -557,6 +557,15 @@ fn prepare_terrain(
         gpu.sections.remove(&pos);
     }
     for upload in std::mem::take(&mut frame.uploads) {
+        if upload.vertices.is_empty() && !upload.indices.is_empty() {
+            if let (Some(section), Some(start)) = (gpu.sections.get(&upload.pos), upload.transparent_start)
+                && start == section.transparent_start
+                && start as usize + upload.indices.len() == section.count as usize
+            {
+                queue.write_buffer(&section.indices, u64::from(start) * 4, bytemuck::cast_slice(&upload.indices));
+            }
+            continue;
+        }
         if upload.indices.is_empty() || upload.vertices.is_empty() {
             gpu.sections.remove(&upload.pos);
             continue;
@@ -569,7 +578,7 @@ fn prepare_terrain(
         let indices = device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("iw4l_minecraft_section_indices"),
             contents: bytemuck::cast_slice(&upload.indices),
-            usage: BufferUsages::INDEX,
+            usage: BufferUsages::INDEX | BufferUsages::COPY_DST,
         });
         let count = upload.indices.len() as u32;
         gpu.sections.insert(

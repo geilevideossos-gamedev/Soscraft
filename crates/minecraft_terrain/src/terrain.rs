@@ -811,7 +811,7 @@ enum Done {
         serial: u64,
         pack_generation: u64,
         micros: u64,
-        outcome: Result<(mesh::SectionMesh, VisibilitySet)>,
+        outcome: Result<(mesh::SectionMesh, VisibilitySet, Option<crate::translucency::TranslucentQuads>)>,
     },
 }
 
@@ -844,7 +844,7 @@ fn worker(work: &Work, done: &mpsc::Sender<Done>) {
     let mut packs: Option<(Vec<PathBuf>, u64, PackStack, BiomeTint)> = None;
     let mut models = ModelCache::default();
     loop {
-        let job = {
+        let (job, eye) = {
             let (lock, ready) = &**work;
             let mut queue = lock.lock().expect("terrain work queue");
             loop {
@@ -853,7 +853,7 @@ fn worker(work: &Work, done: &mpsc::Sender<Done>) {
                 }
                 if let Some(job) = next_job(&mut queue) {
                     queue.active += 1;
-                    break job;
+                    break (job, queue.eye);
                 }
                 queue = ready.wait(queue).expect("terrain work queue");
             }
@@ -895,9 +895,13 @@ fn worker(work: &Work, done: &mpsc::Sender<Done>) {
                 // The GPU format is made here, off the render thread.
                 .map(|(mesh, visibility)| {
                     let started = Instant::now();
-                    let mesh = mesh::SectionMesh::from(mesh);
+                    let mut mesh = mesh::SectionMesh::from(mesh);
+                    let mut quads = crate::translucency::TranslucentQuads::of(&mesh);
+                    if let Some(quads) = quads.as_mut() {
+                        quads.sort_mesh(&mut mesh, eye, section);
+                    }
                     compile_profile::add(compile_profile::CONVERT, started);
-                    (mesh, visibility)
+                    (mesh, visibility, quads)
                 });
                 Done::Compile {
                     section,
@@ -973,6 +977,7 @@ pub struct TerrainStream {
     clock: Instant,
     stats: Stats,
     apart: crate::lids::ApartCells,
+    translucent: crate::translucency::TranslucentSorting,
 }
 
 pub use minecraft_net::Dimension;
@@ -1094,6 +1099,7 @@ impl TerrainStream {
             clock: Instant::now(),
             stats: Stats::default(),
             apart: Default::default(),
+            translucent: Default::default(),
         })
     }
 
@@ -1478,9 +1484,10 @@ impl TerrainStream {
                     self.stats.compiled += 1;
                     self.stats.compile_micros += micros;
                     match outcome {
-                        Ok((mesh, visibility)) => {
+                        Ok((mesh, visibility, quads)) => {
                             if self.sections.section(section).is_some() {
                                 self.sections.compiled(section, visibility, now);
+                                self.translucent.compiled(section, quads);
                                 update.uploads.push((section, mesh));
                             }
                         }
@@ -1494,6 +1501,9 @@ impl TerrainStream {
         {
             let _span = span("sections.reposition");
             update.removed.extend(self.sections.reposition(camera));
+        }
+        for &section in &update.removed {
+            self.translucent.removed(section);
         }
         let lights = &self.lights;
         let update_span = span("sections.update");
@@ -1559,6 +1569,8 @@ impl TerrainStream {
                     .then(|| (pos, section.visibility(now, fade_millis)))
             })
             .collect();
+        let _resort_span = span("terrain.frame resort translucency");
+        update.uploads.extend(self.translucent.resorts(camera.position, &update.visible));
         update
     }
 

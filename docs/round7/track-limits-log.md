@@ -409,3 +409,25 @@ IW4L_MINECRAFT_KIT=minecraft:oak_planks*16,minecraft:oak_stairs*16,minecraft:oak
 ```
 IW4L_MINECRAFT_KIT=minecraft:oak_stairs*16,minecraft:oak_log*16,minecraft:oak_slab*16,minecraft:glass*16,minecraft:oak_planks*32,minecraft:vine*8,minecraft:observer*2
 ```
+
+### 3. Minecraft translucent faces are sorted by distance like vanilla
+
+- **Changed:**
+  - New `minecraft_terrain/src/translucency.rs`, vanilla's translucent quad sorting (javap of 26.3):
+    - `TranslucentQuads` keeps a section's translucent quads in their built order with their centres (`MeshData.decodeQuadCentroids`: halfway between a quad's first and third vertex). `sorted` is `VertexSorting.byDistance`: squared distance to the camera, farthest first, ties kept in built order (`IntArrays.mergeSort` is stable).
+    - `point_of_view` is `TranslucencyPointOfView.set`: per axis, the camera's section minus the section's, clamped to -1..1; `axis_aligned` is any axis 0; `nearby` is within 2 sections on every axis (`Octree.isClose` with distance 32 around the camera section's centre).
+    - `TranslucentSorting::resorts` is `LevelRenderer.scheduleTranslucentSectionResort` and `scheduleResort`: when the camera enters another block, every nearby visible section resorts; then `max(visible / 8, 15)` visible sections in turn (round robin) resort if their point of view changed, or the block changed and they are seen along an axis. A section resorts at most once a frame (`transparencyResortingScheduled`). The "improved transparency" option of 26.3 skips resorting; the fork has no such option, so it always sorts, like the default.
+  - `terrain.rs`: the section compiler sorts each new mesh's translucent quads from where the camera is when the worker takes the job (vanilla's compile task does the same), and returns the quads; the stream keeps them per section, drops them when the section goes, and adds the frame's resorts to the uploads after the new meshes (span `terrain.frame resort translucency`).
+  - A resort travels as an upload with no vertices, only the sorted translucent indices and their start, in order with the full uploads. `render_gpu` (`prepare_terrain`, upload loop only) writes them into the section's index buffer (now `COPY_DST`) when the start and length match what the GPU holds, and ignores them otherwise.
+- **Frame time:** sorting is done on the main thread like the scheduling. A standalone `rustc -O` copy of `sorted` over 50 sections of 512 quads (a full water surface with its backward faces, the worst case of a 5 x 5 x 2 block of nearby ocean sections) takes 0.41 ms each time the camera enters a new block; frames where the camera stays in its block only check the points of view. Worker compile time grows by one sort per translucent section. Memory: 36 bytes per translucent quad kept.
+- **Tests:** `translucency`: `translucent_quads_are_drawn_farthest_first`, `equally_far_quads_keep_their_built_order`, `the_centroid_is_halfway_between_the_first_and_third_corners`, `a_mesh_without_translucent_faces_has_nothing_to_sort`, `the_point_of_view_is_the_side_of_the_section_the_camera_is_on`, `resorts_follow_the_camera_like_vanilla`, `nearby_sections_resort_when_the_camera_crosses_a_block`.
+- **Decisions:** distances are taken in double precision from the float vertex positions, where vanilla uses floats relative to the section; only exact ties could order differently. The size order inside a block (smaller faces first) stays as the built order, so it only breaks ties now.
+- **Test steps:**
+  1. Inside one 16-block section (for example x and z from 0 to 15 in the same chunk, at one height), place a red stained glass block and, 3 blocks behind it, a blue stained glass block in line. Look through both from the red side: you see blue through red, tinted red in front. **Screenshot 5.** Walk round to the blue side and look back: now red through blue, tinted blue in front. Before, one of the two sides showed the far glass painted over the near one.
+  2. Stand in shallow water next to a white stained glass wall in the same section and look through the glass at the water surface, then from the water at the glass: both blend in the right order from either side.
+  3. Fly or walk along a long row of mixed stained glass panes in an ocean: no flicker or colour jumps when crossing from one block to the next, and frame time feels the same as before (F3 or the frame counter if you use one).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:red_stained_glass*16,minecraft:blue_stained_glass*16,minecraft:white_stained_glass*32,minecraft:lime_stained_glass_pane*32,minecraft:water_bucket,minecraft:ice*8
+```
