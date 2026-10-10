@@ -3832,7 +3832,7 @@ mod tests {
         server.player_edit(&scene, (8, 201, 8), PlayerEdit::Place);
         server.take_changes();
         assert!(server.bone_meal((8, 201, 8), "up"), "wheat takes bone meal");
-        assert_eq!(server.level.level_events.drain(..).collect::<Vec<_>>(), vec![(1505, minecraftoss_core::BlockPos::new(8, 201, 8), 15)]);
+        assert_eq!(std::mem::take(&mut server.level.level_events), vec![(1505, minecraftoss_core::BlockPos::new(8, 201, 8), 15)]);
         let changes = server.take_changes();
         let grown = changes.iter().find(|(pos, _)| *pos == (8, 201, 8)).and_then(|(_, b)| b.clone()).expect("the wheat changed");
         let age: i32 = grown.properties.get("age").and_then(|a| a.parse().ok()).unwrap_or(0);
@@ -4800,7 +4800,7 @@ mod tests {
         assert!(server.item_on_block((8, 200, 8), ItemOnBlock::EmptyBucket { water: false }));
         let hardened = server.take_changes().into_iter().find(|(pos, _)| *pos == (8, 200, 8)).and_then(|(_, b)| b);
         assert_eq!(hardened.map(|b| b.id.key()), Some("minecraft:obsidian".to_owned()), "lava poured beside the flowing water hardens");
-        assert_eq!(server.level.level_events.drain(..).collect::<Vec<_>>(), vec![(1501, minecraftoss_core::BlockPos::new(8, 200, 8), 0)], "and fizzes");
+        assert_eq!(std::mem::take(&mut server.level.level_events), vec![(1501, minecraftoss_core::BlockPos::new(8, 200, 8), 0)], "and fizzes");
     }
 
     #[test]

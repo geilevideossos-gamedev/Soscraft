@@ -213,3 +213,10 @@ IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:magma_block*4,minecraft:la
 ```
 IW4L_MINECRAFT_KIT=minecraft:lava_bucket*4,minecraft:cobblestone*32,minecraft:potion@fire_resistance*2
 ```
+
+### 11. Minecraft level event tests pass clippy
+
+- **Changed:** the two server tests that read the recorded level events (`bone_meal_grows_a_crop`, `a_poured_bucket_flows_and_an_empty_one_takes_the_source_back`) take the list with `std::mem::take` instead of `drain(..).collect()` (`clippy::drain_collect`). The group's other files show no clippy findings; the crate's existing ones (`spider_render.rs` and others) are untouched.
+- **Tests:** the two tests, unchanged in what they check.
+- **Test steps:** none, nothing changes in game.
+- **Kit:** none.
