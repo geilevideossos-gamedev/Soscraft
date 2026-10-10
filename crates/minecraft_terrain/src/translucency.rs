@@ -36,17 +36,11 @@ pub struct TranslucentQuads {
 impl TranslucentQuads {
     pub fn of(mesh: &SectionMesh) -> Option<Self> {
         let start = mesh.transparent_start?;
-        let translucent = mesh.indices.get(start as usize..)?;
-        if translucent.len() % 6 != 0 {
+        let (quads, rest) = mesh.indices.get(start as usize..)?.as_chunks::<6>();
+        if quads.is_empty() || !rest.is_empty() {
             return None;
         }
-        let quads: Vec<[u32; 6]> = translucent
-            .chunks_exact(6)
-            .filter_map(|quad| quad.try_into().ok())
-            .collect();
-        if quads.is_empty() {
-            return None;
-        }
+        let quads = quads.to_vec();
         let position = |index: u32| {
             mesh.vertices
                 .get(index as usize)

@@ -431,3 +431,10 @@ IW4L_MINECRAFT_KIT=minecraft:oak_stairs*16,minecraft:oak_log*16,minecraft:oak_sl
 ```
 IW4L_MINECRAFT_KIT=minecraft:red_stained_glass*16,minecraft:blue_stained_glass*16,minecraft:white_stained_glass*32,minecraft:lime_stained_glass_pane*32,minecraft:water_bucket,minecraft:ice*8
 ```
+
+### 4. Minecraft translucent sorting passes clippy
+
+- **Changed:** `translucency.rs` takes the translucent quads with `as_chunks::<6>()` instead of `chunks_exact(6)` (`clippy::chunks_exact_to_as_chunks`), which also replaces the whole-quads check. Clippy on `minecraft_terrain` (all targets) and `render_gpu` shows no finding on the lines this group touched; the crates' existing findings (and `minecraft_terrain`'s existing `approx_constant` errors in the mob renderers) are untouched.
+- **Tests:** `translucency`, unchanged in what they check.
+- **Test steps:** none, nothing changes in game.
+- **Kit:** none.
