@@ -1175,6 +1175,11 @@ fn update(
             let main = slot != minecraft_survival::offhand::OFFHAND;
             player.selected = slot;
             let held = inventory.slots[slot].clone();
+            let block_distance = player.target(&minecraft_terrain::doors::Outlined(&terrain.scene), game_mode.block_reach()).map(|hit| hit.distance);
+            if entities.use_on_mob(eye_block, look, game_mode.entity_reach(), block_distance, inventory, slot, !game_mode.consumes_items()) {
+                hand.swing = Some(0.0);
+                return HandUse::Consumed;
+            }
             let table = player
                 .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
                 .map(|hit| hit.pos)

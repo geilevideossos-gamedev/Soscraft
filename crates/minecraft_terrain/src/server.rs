@@ -123,6 +123,7 @@ pub struct MobResult {
     pub slots: Vec<(usize, Option<minecraftoss_player::inventory::ItemStack>)>,
     /// A trading screen the action opened (`openTradingScreen`).
     pub merchant: Option<MerchantView>,
+    pub broken: Vec<String>,
 }
 
 /// A player's trading screen as the client shows it: the villager's
@@ -354,7 +355,7 @@ impl ServerSim {
     /// A player's hit (`attack`, with what the player brings to it) or item
     /// use on a mob, with a copy of the player's inventory. Drops enter the
     /// level as item entities.
-    pub fn mob_action(&mut self, hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, mut inventory: minecraftoss_player::inventory::Inventory, selected: usize, infinite: bool) -> MobResult {
+    pub fn mob_action(&mut self, hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, mut inventory: minecraftoss_player::inventory::Inventory, selected: usize, infinite: bool, player: u64) -> MobResult {
         let before = inventory.slots.clone();
         let mut actor = crate::mob_actions::Actor {
             inventory: &mut inventory,
@@ -362,6 +363,7 @@ impl ServerSim {
             infinite,
             entity_loot: self.entity_loot.as_mut(),
             shearing_loot: self.shearing_loot.as_mut(),
+            player,
         };
         let outcome = if let Some(attack) = &attack {
             crate::mob_actions::attack(&mut self.mobs, hit, &mut actor, attack)
@@ -385,7 +387,7 @@ impl ServerSim {
             .map(|(slot, (now, _))| (slot, now.clone()))
             .collect();
         self.spawn_trade_experience();
-        MobResult { sounds: outcome.sounds, slots, merchant: self.merchant_view(0) }
+        MobResult { sounds: outcome.sounds, slots, merchant: self.merchant_view(player), broken: outcome.broken }
     }
 
     pub fn mob_blast(&mut self, hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64>, slow_ticks: i32) {
@@ -2212,7 +2214,7 @@ pub enum Command {
     HatchEgg { kind: String, position: [f64; 3], y_rot: f32 },
     /// A player's hit (`attack`) or item use on a mob, with a copy of its
     /// inventory.
-    MobAction { hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, infinite: bool },
+    MobAction { hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, infinite: bool, player: u64 },
     MobBlast { hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64>, slow_ticks: i32 },
     WeaponBlast { center: [f64; 3], power: f32 },
     Blast(Blast),
@@ -2577,8 +2579,8 @@ impl ServerHandle {
 
     /// Hands a player's hit or use on a mob to the server; its result
     /// arrives in an output.
-    pub fn mob_action(&mut self, hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, inventory: &minecraftoss_player::inventory::Inventory, selected: usize, infinite: bool) {
-        self.send(Command::MobAction { hit, attack, inventory: Box::new(inventory.clone()), selected, infinite });
+    pub fn mob_action(&mut self, hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, inventory: &minecraftoss_player::inventory::Inventory, selected: usize, infinite: bool, player: u64) {
+        self.send(Command::MobAction { hit, attack, inventory: Box::new(inventory.clone()), selected, infinite, player });
     }
 
     pub fn mob_blast(&mut self, hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64>, slow_ticks: i32) {
@@ -2714,8 +2716,8 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::HatchEgg { kind, position, y_rot } => {
                     out.summoned.push(sim.hatch_egg(&kind, position, y_rot).map(|()| kind));
                 }
-                Command::MobAction { hit, attack, inventory, selected, infinite } => {
-                    out.mob_results.push(sim.mob_action(hit, attack, *inventory, selected, infinite));
+                Command::MobAction { hit, attack, inventory, selected, infinite, player } => {
+                    out.mob_results.push(sim.mob_action(hit, attack, *inventory, selected, infinite, player));
                 }
                 Command::MobBlast { hit, damage, center, impact, player, slow_ticks } => sim.mob_blast(hit, damage, center, impact, player, slow_ticks),
                 Command::WeaponBlast { center, power } => sim.weapon_blast(center, power),
@@ -3602,7 +3604,7 @@ mod tests {
         let mut wheat = ItemStack::new("minecraft:wheat", 50);
         wheat.max = 64;
         inventory.slots[9] = Some(wheat);
-        let result = server.mob_action(minecraftoss_entities::world::MobHit::Villager(id), None, inventory.clone(), 0, false);
+        let result = server.mob_action(minecraftoss_entities::world::MobHit::Villager(id), None, inventory.clone(), 0, false, 0);
         let view = result.merchant.expect("the trading screen opens");
         assert_eq!((view.profession, view.level, view.offers.len()), ("minecraft:farmer", 1, 1));
         let apply = |inventory: &mut Inventory, update: &MerchantUpdate| {
@@ -4101,7 +4103,7 @@ mod tests {
         let mut inventory = minecraftoss_player::inventory::Inventory::default();
         inventory.recipes = recipes;
         inventory.slots[0] = Some(minecraftoss_player::inventory::ItemStack::new("minecraft:wheat", 3));
-        let fed = server.mob_action(hit, None, inventory.clone(), 0, false);
+        let fed = server.mob_action(hit, None, inventory.clone(), 0, false, 0);
         assert_eq!(fed.slots.len(), 1, "one wheat is used: {:?}", fed.slots);
         assert_eq!(fed.slots[0].1.as_ref().map(|s| s.count), Some(2));
         assert!(server.mobs.cow_mut(cow).unwrap().cow.in_love > 0, "the cow falls in love");
@@ -4122,7 +4124,7 @@ mod tests {
                 can_critical: false,
                 can_sweep: false,
             };
-            let result = server.mob_action(hit, Some(attack), inventory.clone(), 0, false);
+            let result = server.mob_action(hit, Some(attack), inventory.clone(), 0, false, 0);
             sounds.extend(result.sounds.into_iter().map(|s| s.event).filter(|s| s.starts_with("entity.cow")));
             for _ in 0..11 {
                 server.tick_mobs(&[], true);

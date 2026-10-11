@@ -35,6 +35,7 @@ pub struct MobOutcome {
     pub experience: Vec<(DVec3, i32)>,
     /// The acting player's inventory changed.
     pub inventory_changed: bool,
+    pub broken: Vec<String>,
 }
 
 impl MobOutcome {
@@ -51,6 +52,7 @@ pub struct Actor<'a> {
     pub infinite: bool,
     pub entity_loot: Option<&'a mut EntityLootBook>,
     pub shearing_loot: Option<&'a mut ShearingLootBook>,
+    pub player: u64,
 }
 
 
@@ -156,8 +158,8 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
                         outcome.drops.push((ItemStack { count: 1, ..stack.clone() }, position + DVec3::Y));
                     }
                 }
-                if !infinite {
-                    actor.inventory.wear_tool(selected, tool_damage);
+                if !infinite && actor.inventory.wear_tool(selected, tool_damage) {
+                    outcome.broken.push("minecraft:shears".to_owned());
                 }
             }
         }
@@ -206,8 +208,8 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             for _ in 0..shearing.drop_count {
                 outcome.drops.push((ItemStack::new(shearing.drop_item, 1), position + DVec3::Y));
             }
-            if !infinite {
-                actor.inventory.wear_tool(selected, shearing.tool_damage);
+            if !infinite && actor.inventory.wear_tool(selected, shearing.tool_damage) {
+                outcome.broken.push("minecraft:shears".to_owned());
             }
         }
         MobHit::Mooshroom(id) => {
@@ -231,7 +233,7 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
         }
         MobHit::Villager(id) => {
             // `Villager.mobInteract`: trading opens, or it shakes its head.
-            if world.villager_interact(id, 0, true, held.as_deref()) == minecraftoss_entities::world::VillagerUse::Pass {
+            if world.villager_interact(id, actor.player, true, held.as_deref()) == minecraftoss_entities::world::VillagerUse::Pass {
                 return outcome;
             }
             outcome.handled = true;
@@ -240,7 +242,7 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
         MobHit::Wolf(id) => {
             // `Wolf.mobInteract`: taming with bones, feeding, collar dyes,
             // love, and its owner's orders to sit or stand.
-            if world.wolf_interact(id, 0, actor.inventory, selected, infinite) == InteractionResult::Pass {
+            if world.wolf_interact(id, actor.player, actor.inventory, selected, infinite) == InteractionResult::Pass {
                 return outcome;
             }
         }
@@ -258,4 +260,139 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
     outcome.handled = true;
     outcome.inventory_changed = true;
     outcome
+}
+
+pub fn would_interact(world: &EntityWorld, hit: MobHit, inventory: &Inventory, selected: usize, infinite: bool, player: u64) -> bool {
+    let held = inventory.slots.get(selected).and_then(Option::as_ref).map(|stack| stack.id.as_str());
+    match hit {
+        MobHit::Villager(_) => false,
+        MobHit::Sheep(id) if held == Some("minecraft:shears") => world.sheep().iter().any(|e| e.id == id),
+        _ => {
+            let mut world = world.clone();
+            let mut inventory = inventory.clone();
+            let mut actor = Actor { inventory: &mut inventory, selected, infinite, entity_loot: None, shearing_loot: None, player };
+            interact(&mut world, hit, &mut actor).handled
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minecraftoss_entities::age::Age;
+    use minecraftoss_entities::cow::Cow;
+    use minecraftoss_entities::iron_golem::IronGolem;
+    use minecraftoss_entities::mooshroom::{MushroomCow, MushroomVariant};
+    use minecraftoss_entities::pig::Pig;
+    use minecraftoss_entities::sheep::Sheep;
+    use minecraftoss_entities::villager::Villager;
+    use minecraftoss_entities::wolf::Wolf;
+    use minecraftoss_player::crafting::RecipeBook;
+    use std::io::Write;
+
+    pub(crate) fn tagged_book(tags: &[(&str, &[&str])]) -> RecipeBook {
+        let dir = crate::test_dir::tempdir().unwrap();
+        let jar = dir.path().join("client.jar");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&jar).unwrap());
+        for (tag, values) in tags {
+            zip.start_file(format!("data/minecraft/tags/item/{tag}.json"), zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(serde_json::json!({ "values": values }).to_string().as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        RecipeBook::from_jar(&jar).unwrap()
+    }
+
+    fn holding(item: Option<&str>) -> Inventory {
+        let book = tagged_book(&[("cow_food", &["minecraft:wheat"]), ("sheep_food", &["minecraft:wheat"]), ("pig_food", &["minecraft:carrot"]), ("chicken_food", &["minecraft:wheat_seeds"])]);
+        let mut inventory = Inventory::default().with_recipes(book);
+        inventory.slots[0] = item.map(|id| ItemStack::new(id, 4));
+        inventory
+    }
+
+    fn baby(mut age: Age) -> Age {
+        age.ticks = Age::BABY_START;
+        age
+    }
+
+    #[test]
+    fn would_interact_agrees_with_interact() {
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let mut world = EntityWorld::default();
+        let cow = world.spawn_cow(Cow::new(at), true);
+        let mut young = Cow::new(at);
+        young.age = baby(young.age);
+        let calf = world.spawn_cow(young, true);
+        let pig = world.spawn_pig_no_ai(Pig::new(at));
+        let mut saddled = Pig::new(at);
+        saddled.saddled = true;
+        let saddled = world.spawn_pig_no_ai(saddled);
+        let mut piglet = Pig::new(at);
+        piglet.age = baby(piglet.age);
+        let piglet = world.spawn_pig_no_ai(piglet);
+        let sheep = world.spawn_sheep_no_ai(Sheep::default(), at);
+        let mooshroom = world.spawn_mooshroom(MushroomCow::new(at, MushroomVariant::Red), true);
+        let full_golem = world.spawn_iron_golem(IronGolem::new(at), true);
+        let mut hurt = IronGolem::new(at);
+        hurt.health = 50.0;
+        let hurt_golem = world.spawn_iron_golem(hurt, true);
+        let villager = world.spawn_villager(Villager::new(at), true);
+        let wolf = world.spawn_wolf(Wolf::new(at), true);
+        let chicken = world.spawn_chicken(minecraftoss_entities::chicken::Chicken::new(at), true);
+        let cases: &[(MobHit, Option<&str>, bool)] = &[
+            (MobHit::Cow(cow), Some("minecraft:wheat"), true),
+            (MobHit::Cow(cow), Some("minecraft:bucket"), true),
+            (MobHit::Cow(cow), Some("minecraft:carrot"), false),
+            (MobHit::Cow(cow), None, false),
+            (MobHit::Cow(calf), Some("minecraft:bucket"), false),
+            (MobHit::Cow(calf), Some("minecraft:wheat"), true),
+            (MobHit::Pig(pig), Some("minecraft:saddle"), true),
+            (MobHit::Pig(pig), Some("minecraft:carrot"), true),
+            (MobHit::Pig(pig), Some("minecraft:wheat"), false),
+            (MobHit::Pig(saddled), Some("minecraft:saddle"), false),
+            (MobHit::Pig(piglet), Some("minecraft:saddle"), false),
+            (MobHit::Sheep(sheep), Some("minecraft:wheat"), true),
+            (MobHit::Sheep(sheep), Some("minecraft:carrot"), false),
+            (MobHit::Mooshroom(mooshroom), Some("minecraft:bowl"), true),
+            (MobHit::Mooshroom(mooshroom), Some("minecraft:shears"), true),
+            (MobHit::Mooshroom(mooshroom), Some("minecraft:stick"), false),
+            (MobHit::IronGolem(hurt_golem), Some("minecraft:iron_ingot"), true),
+            (MobHit::IronGolem(full_golem), Some("minecraft:iron_ingot"), false),
+            (MobHit::IronGolem(hurt_golem), Some("minecraft:gold_ingot"), false),
+            (MobHit::Chicken(chicken), Some("minecraft:wheat_seeds"), true),
+            (MobHit::Chicken(chicken), Some("minecraft:wheat"), false),
+            (MobHit::Wolf(wolf), Some("minecraft:bone"), true),
+            (MobHit::Wolf(wolf), Some("minecraft:stick"), false),
+            (MobHit::Villager(villager), Some("minecraft:emerald"), false),
+            (MobHit::Villager(villager), None, false),
+        ];
+        for &(hit, held, expected) in cases {
+            for infinite in [false, true] {
+                let inventory = holding(held);
+                let would = would_interact(&world, hit, &inventory, 0, infinite, 0);
+                let mut copy = world.clone();
+                let mut used = inventory.clone();
+                let mut actor = Actor { inventory: &mut used, selected: 0, infinite, entity_loot: None, shearing_loot: None, player: 0 };
+                let handled = interact(&mut copy, hit, &mut actor).handled;
+                assert_eq!(would, handled, "{hit:?} with {held:?}");
+                assert_eq!(would, expected, "{hit:?} with {held:?}");
+            }
+        }
+        assert!(would_interact(&world, MobHit::Sheep(sheep), &holding(Some("minecraft:shears")), 0, false, 0), "shears always take on a sheep");
+        assert!(!would_interact(&world, MobHit::Sheep(sheep + 1000), &holding(Some("minecraft:shears")), 0, false, 0));
+        assert!(world.pig_mut(pig).is_some_and(|e| !e.pig.saddled), "the predicate leaves the world alone");
+    }
+
+    #[test]
+    fn a_saddle_on_a_pig_is_used_up_with_its_sound() {
+        let mut world = EntityWorld::default();
+        let pig = world.spawn_pig_no_ai(Pig::new(DVec3::new(0.5, 64.0, 0.5)));
+        let mut inventory = holding(Some("minecraft:saddle"));
+        inventory.slots[0].as_mut().unwrap().count = 1;
+        let mut actor = Actor { inventory: &mut inventory, selected: 0, infinite: false, entity_loot: None, shearing_loot: None, player: 0 };
+        let outcome = interact(&mut world, MobHit::Pig(pig), &mut actor);
+        assert!(outcome.handled && outcome.inventory_changed);
+        assert!(inventory.slots[0].is_none());
+        assert!(world.pig_mut(pig).unwrap().pig.saddled);
+        assert_eq!(outcome.sounds.iter().map(|s| s.event.as_str()).collect::<Vec<_>>(), ["entity.pig.saddle"]);
+    }
 }

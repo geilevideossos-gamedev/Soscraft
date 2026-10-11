@@ -540,7 +540,7 @@ impl Entities {
             can_critical: blow.can_critical,
             can_sweep: blow.can_sweep,
         };
-        self.server.mob_action(hit, Some(attack), inventory, selected, false);
+        self.server.mob_action(hit, Some(attack), inventory, selected, false, PLAYER);
         true
     }
 
@@ -549,6 +549,21 @@ impl Entities {
         let fireball = self.world.fireball_on_ray(eye, look, reach).map(|(_, distance)| distance);
         let end = self.end_on_ray(eye, look, reach).map(|(_, distance)| distance);
         [mob, fireball, end].into_iter().flatten().min_by(f64::total_cmp)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn use_on_mob(&mut self, eye: DVec3, look: DVec3, reach: f64, block: Option<f64>, inventory: &Inventory, slot: usize, infinite: bool) -> bool {
+        let fireball = self.world.fireball_on_ray(eye, look, reach).map(|(_, distance)| distance);
+        let end = self.end_on_ray(eye, look, reach).map(|(_, distance)| distance);
+        let others = fireball.into_iter().chain(end).min_by(f64::total_cmp);
+        let Some(hit) = mob_to_use(&self.world, eye, look, reach, block, others) else {
+            return false;
+        };
+        if !minecraft_terrain::mob_actions::would_interact(&self.world, hit, inventory, slot, infinite, PLAYER) {
+            return false;
+        }
+        self.server.mob_action(hit, None, inventory, slot, infinite, PLAYER);
+        true
     }
 
     fn end_on_ray(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<(EndTarget, f64)> {
@@ -775,7 +790,7 @@ impl Entities {
             can_sweep: false,
         };
         self.server
-            .mob_action(hit, Some(attack), &minecraftoss_player::inventory::Inventory::default(), 0, false);
+            .mob_action(hit, Some(attack), &minecraftoss_player::inventory::Inventory::default(), 0, false, PLAYER);
     }
 
     pub fn blast(&mut self, key: u64, damage: f32, center: [f64; 3], impact: f32, by_player: bool, slow_ticks: i32) {
@@ -973,6 +988,10 @@ impl Entities {
             }
             for sound in output.mob_results.iter().flat_map(|result| result.sounds.iter()) {
                 self.sounds.push((sound.event.clone(), sound.position, sound.volume, sound.pitch));
+            }
+            for result in &output.mob_results {
+                apply_mob_result(inventory, result);
+                self.broken_items.extend(result.broken.iter().cloned());
             }
             // `ServerExplosion`'s sound: loud, pitched down.
             for blast in &output.explosions {
@@ -1300,7 +1319,20 @@ impl Entities {
     }
 }
 
-fn struck_hit(feet: [f64; 3], struck: &minecraft_terrain::thrown::PlayerStruck) -> (f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause) {
+fn mob_to_use(world: &EntityWorld, eye: DVec3, look: DVec3, reach: f64, block: Option<f64>, others: Option<f64>) -> Option<MobHit> {
+    let (hit, distance) = world.mob_on_ray(eye, look, reach)?;
+    (block.is_none_or(|block| distance < block) && others.is_none_or(|other| distance <= other)).then_some(hit)
+}
+
+fn apply_mob_result(inventory: &mut Inventory, result: &minecraft_terrain::server::MobResult) {
+    for (slot, stack) in &result.slots {
+        if let Some(held) = inventory.slots.get_mut(*slot) {
+            *held = stack.clone();
+        }
+    }
+}
+
+fn struck_hit(feet: [f64; 3],struck: &minecraft_terrain::thrown::PlayerStruck) -> (f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause) {
     let from = DVec3::from_array(feet) - struck.velocity.normalize_or_zero();
     (struck.damage, Some(from.to_array()), Some([-struck.velocity.x, -struck.velocity.z]), crate::death::DamageCause::Generic)
 }
@@ -1480,6 +1512,79 @@ mod tests {
         assert!(creative.alive && !creative.attackable && !creative.spectator);
         let spectator = player_candidate(&view(false, true));
         assert!(spectator.alive && !spectator.attackable && spectator.spectator);
+    }
+
+    fn pig_ahead(distance: f64) -> (EntityWorld, u64) {
+        let mut world = EntityWorld::default();
+        let pig = world.spawn_pig_no_ai(minecraftoss_entities::pig::Pig::new(DVec3::new(0.5, 64.0, 0.5 + distance)));
+        (world, pig)
+    }
+
+    const EYE: DVec3 = DVec3::new(0.5, 64.5, 0.5);
+
+    #[test]
+    fn a_mob_behind_a_block_is_not_used() {
+        let (world, pig) = pig_ahead(2.0);
+        assert_eq!(mob_to_use(&world, EYE, DVec3::Z, 3.0, Some(1.0), None), None);
+        assert_eq!(mob_to_use(&world, EYE, DVec3::Z, 3.0, Some(2.5), None), Some(MobHit::Pig(pig)));
+        assert_eq!(mob_to_use(&world, EYE, DVec3::Z, 3.0, None, None), Some(MobHit::Pig(pig)));
+        assert_eq!(mob_to_use(&world, EYE, DVec3::Z, 3.0, None, Some(1.0)), None, "a fireball or crystal in front takes the click");
+        assert_eq!(mob_to_use(&world, EYE, -DVec3::Z, 3.0, None, None), None);
+    }
+
+    #[test]
+    fn creative_reaches_mobs_at_five_blocks_and_survival_at_three() {
+        let survival = minecraft_terrain::game_mode::PlayerMode::new(minecraft_terrain::game_mode::GameMode::Survival).entity_reach();
+        let creative = minecraft_terrain::game_mode::PlayerMode::new(minecraft_terrain::game_mode::GameMode::Creative).entity_reach();
+        assert_eq!((survival, creative), (3.0, 5.0));
+        let (world, pig) = pig_ahead(3.8);
+        assert_eq!(mob_to_use(&world, EYE, DVec3::Z, survival, None, None), None);
+        assert_eq!(mob_to_use(&world, EYE, DVec3::Z, creative, None, None), Some(MobHit::Pig(pig)));
+        let (world, pig) = pig_ahead(2.9);
+        assert_eq!(mob_to_use(&world, EYE, DVec3::Z, survival, None, None), Some(MobHit::Pig(pig)));
+    }
+
+    #[test]
+    fn a_saddle_used_on_a_pig_leaves_the_inventory_and_saddles_it() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else {
+            return;
+        };
+        let Ok(registries) = minecraftoss_core::Registries::load(&paths) else {
+            return;
+        };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = std::sync::Arc::new(registries);
+        let Ok(terrain) = crate::level::Terrain::open(registries, 0, 2, minecraft_net::Dimension::Overworld, None, None) else {
+            return;
+        };
+        let data = crate::data::GameData::default();
+        let mut entities = Entities::new(&terrain.stream, minecraft_net::Dimension::Overworld, 0, &data, None, None);
+        let nbt = minecraftoss_core::snbt::parse_compound("{NoAI:1b}").unwrap();
+        entities.summon("minecraft:pig".to_owned(), [0.5, 200.0, 2.5], Some(nbt));
+        let mut inventory = Inventory::default();
+        inventory.slots[3] = Some(ItemStack::new("minecraft:saddle", 1));
+        let view = PlayerView { feet: [0.5, 200.0, 0.5], alive: true, attackable: true, spectator: false, picks_up: false, health: 20.0, yaw: 0.0, pitch: 0.0 };
+        let started = std::time::Instant::now();
+        let mut tick = |entities: &mut Entities, inventory: &mut Inventory| {
+            assert!(started.elapsed().as_secs() < 60, "the server answers");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            entities.tick(inventory, 3, TICK_SECONDS, Default::default(), true, &view);
+        };
+        while entities.world.pigs().is_empty() {
+            tick(&mut entities, &mut inventory);
+        }
+        let eye = entities.world.pigs()[0].pig.body.position + DVec3::new(0.0, 0.5, -2.0);
+        assert!(!entities.use_on_mob(eye, DVec3::Z, 3.0, None, &inventory, 0, false), "an empty hand does nothing to a pig");
+        assert!(entities.use_on_mob(eye, DVec3::Z, 3.0, None, &inventory, 3, false));
+        while inventory.slots[3].is_some() {
+            tick(&mut entities, &mut inventory);
+        }
+        while !entities.world.pigs()[0].pig.saddled {
+            tick(&mut entities, &mut inventory);
+        }
+        assert!(!entities.use_on_mob(eye, DVec3::Z, 3.0, None, &inventory, 3, false), "a saddled pig takes no second saddle");
     }
 
     #[test]
