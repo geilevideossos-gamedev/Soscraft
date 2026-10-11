@@ -656,3 +656,23 @@ Previous commit: d6ed4600
   1. Stand on the obsidian platform for a minute and a half. About 1.5 seconds after each purple glow starts, a deep rumble comes from one side, usually from above.
   2. Turn on the spot while a rumble plays: it stays on the side it came from.
 - **Kit:** none.
+
+### 26. Minecraft dragon's breath is drawn with vanilla's purple breath particles
+
+Previous commit: d964b0ef
+
+- **Changed:**
+  - `minecraft_terrain` `ambient_particles.rs`: `Kind::DragonBreath` (`DragonBreathParticle`), appended at the end of `Kind`. Its draws in vanilla order: the base particle's lifetime (thrown away), the quad size, red 0.718-0.875, no green, blue 0.824-0.976, then quad size ×0.75 and a lifetime of 20 to 100 ticks; `add_breath(at, motion, power)` applies `setPower`. It has no physics (it moves straight through blocks and never lands), its sideways speed grows by 1.1 on a tick it did not rise or fall, sideways friction 0.96, sprites `generic_5` to `generic_7` by age, the size ramp over the first 1/32 of its life, opaque and lit by the level.
+  - `breath_cloud(feet, radius, waiting)` (`AreaEffectCloud.clientTick`: while waiting, half the ticks puff 2 still particles within 0.2; once active, `ceil(π·r²)` particles over the disc with a slow drift and 0.01 rise), `breath_burst(at)` (level event 2006: 200 particles from the burst's block, 0.3 up, sprayed out with power up to 4) and `breath_trail(at)` (one still particle half a block above the fireball).
+  - `minecraft_survival` `entities.rs`: dragon's breath clouds use `breath_cloud` (potion clouds keep the spell particles), fireball bursts use `breath_burst` instead of a potion splash, and each fireball in a snapshot leaves one trail particle (one snapshot per server tick).
+- **Tests:** `ambient_particles`: `a_breath_particle_draws_its_lifetime_size_and_colour_in_vanilla_order` (against a mirror random for three seeds, sprites by age), `power_scales_the_motion_like_set_power`, `a_breath_particle_drifts_through_blocks_and_spreads_when_it_stops_rising`, `a_waiting_breath_cloud_puffs_two_or_none_and_an_active_one_fills_pi_r_squared`, `the_fireball_burst_sprays_two_hundred_breath_particles_from_its_block` (and the trail).
+- **Decisions:** all breath particles share the ambient system's random instead of one random per particle (vanilla gives each particle its own `RandomSource.create()`); the draws per particle stay in vanilla's order.
+- **Test steps:** (the End, a new world, `/difficulty normal`, diamond armour on)
+  1. Walk onto the island and let the dragon fly over you: when it spits a fireball, the fireball leaves a trail of purple puffs behind it (**1**).
+  2. Where the fireball bursts, purple puffs spray out low around the spot, and the cloud left on the ground is made of slowly drifting purple puffs, with no round sparkles (**2**).
+  3. Drink or throw a lingering potion of any kind: its cloud still uses the old round sparkles in the potion's colour.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:lingering_potion@regeneration*2
+```

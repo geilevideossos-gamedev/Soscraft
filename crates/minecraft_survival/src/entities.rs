@@ -915,7 +915,11 @@ impl Entities {
             }
             self.portal.tick();
             for cloud in &self.clouds {
-                self.spell.cloud(cloud.position, cloud.radius, cloud.color, cloud.waiting);
+                if cloud.breath {
+                    self.ambient.breath_cloud(cloud.position, cloud.radius, cloud.waiting);
+                } else {
+                    self.spell.cloud(cloud.position, cloud.radius, cloud.color, cloud.waiting);
+                }
             }
             self.spell.tick();
             minecraft_terrain::orb_render::tick_pickups(&mut self.orb_pickups, orb_pickup_target);
@@ -974,9 +978,12 @@ impl Entities {
                 self.crystals = std::mem::take(&mut snapshot.crystals);
                 self.dragons = std::mem::take(&mut snapshot.dragons);
                 self.dragon_fireballs = std::mem::take(&mut snapshot.dragon_fireballs);
+                for fireball in &self.dragon_fireballs {
+                    self.ambient.breath_trail(fireball.position);
+                }
                 self.frames = std::mem::take(&mut snapshot.frames);
                 for at in std::mem::take(&mut snapshot.breath_bursts) {
-                    self.spell.burst(at, minecraft_terrain::effect_cloud::BREATH_COLOR, false);
+                    self.ambient.breath_burst(at);
                 }
                 self.dragon_voices();
                 self.orbs = snapshot.orbs.clone();

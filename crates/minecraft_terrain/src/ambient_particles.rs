@@ -4,6 +4,7 @@ use crate::pack::ResourceId;
 use crate::scene::{BlockPos, HandcraftedScene, Scene};
 use glam::{DVec3, Vec2, Vec3};
 use minecraftoss_player::{Block as PlayerBlock, collision_shape_boxes, rng::LegacyRandom};
+use minecraftoss_player::mth;
 use std::collections::HashMap;
 
 const CAP: usize = 16384;
@@ -23,6 +24,13 @@ const SMALL_BLAST_RADIUS: f32 = 2.0;
 const SPLASH_SPRITES: u32 = 4;
 const GLITTER_SPRITES: i32 = 8;
 const END_ROD_FADE: [f32; 3] = [242.0 / 255.0, 222.0 / 255.0, 201.0 / 255.0];
+const BREATH_RED: (f32, f32) = (0.7176471, 0.8745098);
+const BREATH_BLUE: (f32, f32) = (0.8235294, 0.9764706);
+const BREATH_SPRITES: i32 = 3;
+const BREATH_FIRST_SPRITE: i32 = 5;
+const WAITING_CLOUD_PUFFS: usize = 2;
+const WAITING_CLOUD_RADIUS: f32 = 0.2;
+const BURST_PARTICLES: usize = 200;
 
 type Boxes = Vec<([f64; 3], [f64; 3])>;
 
@@ -41,6 +49,7 @@ pub enum Kind {
     Snowflake,
     EndRod,
     Crit,
+    DragonBreath,
 }
 
 #[derive(Clone, Debug)]
@@ -232,6 +241,52 @@ impl Particle {
         particle
     }
 
+    fn dragon_breath(at: DVec3, motion: DVec3, power: f32, random: &mut LegacyRandom) -> Self {
+        random.next_float();
+        let quad_size = 0.1 * (random.next_float() * 0.5 + 0.5) * 2.0;
+        let between = |random: &mut LegacyRandom, (low, high): (f32, f32)| random.next_float() * (high - low) + low;
+        let red = between(random, BREATH_RED);
+        let blue = between(random, BREATH_BLUE);
+        let lifetime = (20.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32;
+        let power = f64::from(power);
+        let tenth = f64::from(0.1_f32);
+        Self {
+            kind: Kind::DragonBreath,
+            position: at,
+            previous: at,
+            velocity: DVec3::new(motion.x * power, (motion.y - tenth) * power + tenth, motion.z * power),
+            color: [red, 0.0, blue],
+            alpha: 1.0,
+            quad_size: quad_size * 0.75,
+            sprite: 0,
+            age: 0,
+            lifetime,
+            gravity: 0.0,
+            friction: 0.96,
+            size: f64::from(0.2_f32),
+            speed_up: false,
+            on_ground: false,
+            stopped: false,
+        }
+    }
+
+    fn breathe(&mut self) -> bool {
+        self.previous = self.position;
+        let prior = self.age;
+        self.age += 1;
+        if prior >= self.lifetime {
+            return false;
+        }
+        self.position += self.velocity;
+        if self.position.y == self.previous.y {
+            self.velocity.x *= 1.1;
+            self.velocity.z *= 1.1;
+        }
+        self.velocity.x *= f64::from(self.friction);
+        self.velocity.z *= f64::from(self.friction);
+        true
+    }
+
     fn coast(&mut self) -> bool {
         self.previous = self.position;
         let prior = self.age;
@@ -342,6 +397,10 @@ impl Particle {
                 )
             }
             Kind::Crit => "critical_hit".to_owned(),
+            Kind::DragonBreath => {
+                let step = self.age * (BREATH_SPRITES - 1) / self.lifetime.max(1);
+                format!("generic_{}", BREATH_FIRST_SPRITE + step.clamp(0, BREATH_SPRITES - 1))
+            }
         };
         ResourceId::parse(&format!("minecraft:particle/{name}")).ok()
     }
@@ -349,7 +408,7 @@ impl Particle {
     fn size_at(&self, partial: f32) -> f32 {
         let grown = (self.age as f32 + partial) / self.lifetime as f32;
         match self.kind {
-            Kind::Smoke | Kind::LargeSmoke | Kind::Crit => {
+            Kind::Smoke | Kind::LargeSmoke | Kind::Crit | Kind::DragonBreath => {
                 self.quad_size * (grown * 32.0).clamp(0.0, 1.0)
             }
             Kind::Lava => self.quad_size * (1.0 - grown * grown),
@@ -765,6 +824,59 @@ impl AmbientParticles {
         }
     }
 
+    pub fn add_breath(&mut self, at: DVec3, motion: DVec3, power: f32) {
+        let particle = Particle::dragon_breath(at, motion, power, &mut self.random);
+        self.particles.push(particle);
+        if self.particles.len() > CAP {
+            self.particles.remove(0);
+        }
+    }
+
+    pub fn breath_cloud(&mut self, feet: DVec3, radius: f32, waiting: bool) {
+        if waiting && self.random.next_boolean() {
+            return;
+        }
+        let (count, radius) = if waiting {
+            (WAITING_CLOUD_PUFFS, WAITING_CLOUD_RADIUS)
+        } else {
+            ((std::f32::consts::PI * radius * radius).ceil() as usize, radius)
+        };
+        for _ in 0..count {
+            let angle = self.random.next_float() * std::f32::consts::TAU;
+            let distance = self.random.next_float().sqrt() * radius;
+            let at = DVec3::new(
+                feet.x + f64::from(mth::cos(f64::from(angle)) * distance),
+                feet.y,
+                feet.z + f64::from(mth::sin(f64::from(angle)) * distance),
+            );
+            let motion = if waiting {
+                DVec3::ZERO
+            } else {
+                let x = (0.5 - self.random.next_double()) * 0.15;
+                let z = (0.5 - self.random.next_double()) * 0.15;
+                DVec3::new(x, f64::from(0.01_f32), z)
+            };
+            self.add_breath(at, motion, 1.0);
+        }
+    }
+
+    pub fn breath_burst(&mut self, at: DVec3) {
+        let block = at.floor();
+        for _ in 0..BURST_PARTICLES {
+            let power = self.random.next_float() * 4.0;
+            let angle = self.random.next_float() * std::f32::consts::TAU;
+            let x = f64::from(mth::cos(f64::from(angle)) * power);
+            let y = 0.01 + self.random.next_double() * 0.5;
+            let z = f64::from(mth::sin(f64::from(angle)) * power);
+            let start = DVec3::new(block.x + x * 0.1, block.y + 0.3, block.z + z * 0.1);
+            self.add_breath(start, DVec3::new(x, y, z), power);
+        }
+    }
+
+    pub fn breath_trail(&mut self, at: DVec3) {
+        self.add_breath(at + DVec3::new(0.0, 0.5, 0.0), DVec3::ZERO, 1.0);
+    }
+
     pub fn len(&self) -> usize {
         self.particles.len()
     }
@@ -793,6 +905,7 @@ impl AmbientParticles {
             Kind::Snowflake => Particle::snowflake(at, motion, random),
             Kind::EndRod => Particle::end_rod(at, motion, random),
             Kind::Crit => Particle::crit(at, motion, random),
+            Kind::DragonBreath => Particle::dragon_breath(at, motion, 1.0, random),
         };
         self.particles.push(particle);
         if self.particles.len() > CAP {
@@ -827,6 +940,7 @@ impl AmbientParticles {
             }
             Kind::CosySmoke | Kind::SignalSmoke => particle.drift(scene, &mut cache, random),
             Kind::EndRod | Kind::Crit => particle.coast(),
+            Kind::DragonBreath => particle.breathe(),
             _ => {
                 let alive = particle.tick(scene, &mut cache);
                 if alive && particle.kind == Kind::Lava {
@@ -1471,6 +1585,137 @@ mod tests {
         assert!(names.contains(&"minecraft:particle/critical_hit".to_owned()));
         assert!(names.contains(&"minecraft:particle/glitter_0".to_owned()));
         assert!(names.contains(&"minecraft:particle/glitter_7".to_owned()));
+    }
+
+    #[test]
+    fn a_breath_particle_draws_its_lifetime_size_and_colour_in_vanilla_order() {
+        for seed in [3, 40, 777] {
+            let mut particles = AmbientParticles::new(seed);
+            particles.add_breath(DVec3::new(0.5, 70.0, 0.5), DVec3::ZERO, 1.0);
+            let breath = particles.particles[0].clone();
+            let mut random = LegacyRandom::new(seed);
+            random.next_float();
+            let quad_size = 0.1 * (random.next_float() * 0.5 + 0.5) * 2.0 * 0.75;
+            let red = random.next_float() * (0.8745098 - 0.7176471) + 0.7176471;
+            let blue = random.next_float() * (0.9764706 - 0.8235294) + 0.8235294;
+            let lifetime = (20.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32;
+            assert_eq!(breath.quad_size, quad_size);
+            assert_eq!(breath.color, [red, 0.0, blue]);
+            assert_eq!(breath.lifetime, lifetime);
+            assert!((20..=100).contains(&breath.lifetime));
+            assert_eq!(breath.velocity, DVec3::ZERO);
+            assert!(!breath.translucent());
+            assert_eq!(breath.size_at(0.0), 0.0);
+            assert_eq!(breath.size_at(1.0), breath.quad_size * (1.0 / breath.lifetime as f32 * 32.0).clamp(0.0, 1.0));
+            assert_eq!(breath.sprite().map(|id| id.key()).as_deref(), Some("minecraft:particle/generic_5"));
+            let mut aged = breath.clone();
+            aged.age = aged.lifetime - 1;
+            assert_eq!(aged.sprite().map(|id| id.key()).as_deref(), Some("minecraft:particle/generic_6"));
+            aged.age = aged.lifetime;
+            assert_eq!(aged.sprite().map(|id| id.key()).as_deref(), Some("minecraft:particle/generic_7"));
+        }
+        let mut particles = AmbientParticles::new(9);
+        particles.add(Kind::DragonBreath, DVec3::ZERO, DVec3::ZERO);
+        assert_eq!(particles.particles[0].kind, Kind::DragonBreath);
+    }
+
+    #[test]
+    fn power_scales_the_motion_like_set_power() {
+        let mut particles = AmbientParticles::new(5);
+        particles.add_breath(DVec3::ZERO, DVec3::new(1.0, 0.5, -2.0), 2.0);
+        let tenth = f64::from(0.1_f32);
+        assert_eq!(particles.particles[0].velocity, DVec3::new(2.0, (0.5 - tenth) * 2.0 + tenth, -4.0));
+        particles.add_breath(DVec3::ZERO, DVec3::new(1.0, 0.0, 1.0), 1.0);
+        assert_eq!(particles.particles[1].velocity, DVec3::new(1.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn a_breath_particle_drifts_through_blocks_and_spreads_when_it_stops_rising() {
+        let scene = Blocks(HashMap::from([
+            ((0, 63, 0), Block::new("minecraft:stone")),
+            ((1, 64, 0), Block::new("minecraft:stone")),
+        ]));
+        let mut particles = AmbientParticles::new(6);
+        particles.add_breath(DVec3::new(0.5, 64.2, 0.5), DVec3::new(0.0, -0.5, 0.0), 1.0);
+        particles.tick(&scene);
+        particles.tick(&scene);
+        let sinking = &particles.particles[0];
+        assert!(sinking.position.y < 63.5, "{}", sinking.position.y);
+        assert!((sinking.velocity.y + 0.5).abs() < 1e-12);
+        let mut particles = AmbientParticles::new(7);
+        particles.add_breath(DVec3::new(0.5, 64.5, 0.5), DVec3::new(0.2, 0.0, 0.0), 1.0);
+        particles.tick(&scene);
+        let spreading = &particles.particles[0];
+        assert!((spreading.position - DVec3::new(0.7, 64.5, 0.5)).length() < 1e-12);
+        assert_eq!(spreading.velocity.x, 0.2 * 1.1 * f64::from(0.96_f32));
+        for _ in 0..5 {
+            particles.tick(&scene);
+        }
+        assert!(particles.particles[0].position.x > 1.5, "it passes through the stone at x 1");
+        let mut particles = AmbientParticles::new(8);
+        particles.add_breath(DVec3::new(0.5, 64.5, 0.5), DVec3::new(0.2, 0.05, 0.0), 1.0);
+        particles.tick(&scene);
+        assert_eq!(particles.particles[0].velocity.x, 0.2 * f64::from(0.96_f32));
+        let lifetime = particles.particles[0].lifetime;
+        for _ in 1..lifetime {
+            particles.tick(&scene);
+        }
+        assert_eq!(particles.len(), 1);
+        particles.tick(&scene);
+        assert!(particles.is_empty());
+    }
+
+    #[test]
+    fn a_waiting_breath_cloud_puffs_two_or_none_and_an_active_one_fills_pi_r_squared() {
+        let feet = DVec3::new(10.0, 64.0, -5.0);
+        let mut particles = AmbientParticles::new(11);
+        let mut counts = Vec::new();
+        for _ in 0..40 {
+            let before = particles.len();
+            particles.breath_cloud(feet, 3.0, true);
+            counts.push(particles.len() - before);
+        }
+        assert!(counts.iter().all(|&count| count == 0 || count == 2), "{counts:?}");
+        assert!(counts.contains(&0) && counts.contains(&2));
+        for breath in &particles.particles {
+            let offset = breath.position - feet;
+            assert!(offset.x.hypot(offset.z) <= 0.2 + 1e-6 && offset.y == 0.0);
+            assert_eq!(breath.velocity, DVec3::ZERO);
+        }
+        let mut particles = AmbientParticles::new(12);
+        particles.breath_cloud(feet, 3.0, false);
+        assert_eq!(particles.len(), 29);
+        let tenth = f64::from(0.1_f32);
+        for breath in &particles.particles {
+            let offset = breath.position - feet;
+            assert!(offset.x.hypot(offset.z) <= 3.0 + 1e-4 && offset.y == 0.0);
+            assert!(breath.velocity.x.abs() <= 0.075 && breath.velocity.z.abs() <= 0.075);
+            assert_eq!(breath.velocity.y, (f64::from(0.01_f32) - tenth) + tenth);
+        }
+        assert!(particles.particles.iter().any(|breath| (breath.position - feet).length() > 1.5));
+    }
+
+    #[test]
+    fn the_fireball_burst_sprays_two_hundred_breath_particles_from_its_block() {
+        let mut particles = AmbientParticles::new(13);
+        particles.breath_burst(DVec3::new(10.7, 64.2, -3.4));
+        assert_eq!(particles.len(), 200);
+        let tenth = f64::from(0.1_f32);
+        for breath in &particles.particles {
+            assert!((breath.position.x - 10.0).abs() <= 0.4 + 1e-9, "{}", breath.position);
+            assert!((breath.position.z + 4.0).abs() <= 0.4 + 1e-9, "{}", breath.position);
+            assert!((breath.position.y - 64.3).abs() < 1e-12);
+            let power = ((breath.position.x - 10.0).hypot(breath.position.z + 4.0) * 10.0) as f32;
+            let reach = f64::from(power).max(1e-3);
+            assert!(breath.velocity.x.hypot(breath.velocity.z) <= reach * reach + 1e-3, "{breath:?}");
+            assert!(breath.velocity.y >= (0.01 - tenth) * reach + tenth - 1e-3);
+            assert!(breath.velocity.y <= (0.51 - tenth) * reach + tenth + 1e-3);
+        }
+        assert!(particles.particles.iter().any(|breath| breath.velocity.x.hypot(breath.velocity.z) > 4.0));
+        let mut trail = AmbientParticles::new(14);
+        trail.breath_trail(DVec3::new(1.0, 80.0, 2.0));
+        assert_eq!(trail.particles[0].position, DVec3::new(1.0, 80.5, 2.0));
+        assert_eq!(trail.particles[0].velocity, DVec3::ZERO);
     }
 
     fn particles_translucent(kind: Kind) -> bool {
