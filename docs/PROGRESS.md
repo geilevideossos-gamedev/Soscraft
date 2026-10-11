@@ -28,7 +28,7 @@ Briefs: `docs/round8/<item>.md`, the multiplayer design `docs/MULTIPLAYER.md`.
 | B. Nether and overworld leftovers (piglins, brutes, bartering, hoglins, striders, sleeping) | track-b | running from 0bcbfb17 (order b3, b2, b1, b4) |
 | C. End and visual leftovers (shulkers, end cities, item frames, End sky, dragon effects, elytra body, limitations) | track-c | running from 0bcbfb17 (order c1 G1-3, c5 G1-4, c1 G4-8, c2, c3, c5 G5-11, c4) |
 | D. Skating in Minecraft worlds | track-d | waits for disk space (starts when a track merges) |
-| E. Multiplayer, first playable | track-e | milestone M1 (E1-E8) running from 0bcbfb17; M2-M6 follow, one track-runner run each |
+| E. Multiplayer, first playable | track-e | M1 (E1-E8) done 42262ec2..79ba1549 (review fixed 2 defects, clippy clean; owner steps `docs/round8/e-m1-tests.md`); M2 part 1 (E9, E10a, E10b) running from 79ba1549; E11-E15 run after track A merges and minecraft-survival is merged into track-e (E11 needs A's tick loop) |
 
 ## Release builds
 | # | When | Commit | State |
@@ -44,5 +44,6 @@ Briefs: `docs/round8/<item>.md`, the multiplayer design `docs/MULTIPLAYER.md`.
 - The multiplayer design names the branch `track-e8`; it is `track-e`.
 
 ## Log
+- 2026-10-11: track E milestone M1 finished; M2 part 1 started.
 - 2026-10-11: briefs and the multiplayer design committed (fe3e2ba9); tracks A, B, C and E (M1) started.
 - 2026-10-10: round 8 started; screenshots read; release build measurement and the brief workflow started.
