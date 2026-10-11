@@ -6693,6 +6693,24 @@ mod tests {
     }
 
     #[test]
+    fn levitation_and_slow_falling_on_a_mob_round_trip_through_its_save() {
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:zombie\",Pos:[0.5d,64.0d,0.5d],active_effects:[{id:\"minecraft:levitation\",amplifier:1b,duration:200},{id:\"minecraft:slow_falling\",amplifier:0b,duration:4800}]}").unwrap();
+        let mut world = minecraftoss_entities::world::EntityWorld::default();
+        let id = crate::server_mobs::spawn_saved(&mut world, &tag).expect("zombies load");
+        let effects = world.mob_effects(id).unwrap();
+        let levitation = effects.get(minecraftoss_entities::effects::MobEffect::Levitation).unwrap();
+        assert_eq!((levitation.amplifier, levitation.duration), (1, 200));
+        assert_eq!(effects.get(minecraftoss_entities::effects::MobEffect::SlowFalling).map(|e| e.duration), Some(4800));
+        let tags = crate::server_mobs::mob_tags(&world, |_| true, &std::collections::HashMap::new());
+        let (_, saved) = tags.iter().find(|(tag_id, _)| *tag_id == id).unwrap();
+        let ids: Vec<&str> = saved.get("active_effects").and_then(minecraftoss_core::nbt::Tag::as_list).unwrap().iter().filter_map(|e| e.get("id").and_then(minecraftoss_core::nbt::Tag::as_str)).collect();
+        assert_eq!(ids, vec!["minecraft:levitation", "minecraft:slow_falling"]);
+        let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+        let back = crate::server_mobs::spawn_saved(&mut loaded, saved).unwrap();
+        assert_eq!(loaded.mob_effects(back), world.mob_effects(id));
+    }
+
+    #[test]
     fn a_fortress_spawner_spawns_blazes_near_a_player_and_waits_between_rounds() {
         let Ok(paths) = DataPaths::discover() else { return };
         let Ok(registries) = Registries::load(&paths) else { return };

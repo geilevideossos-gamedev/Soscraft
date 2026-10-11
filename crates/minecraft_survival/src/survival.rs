@@ -902,6 +902,8 @@ impl Survival {
             EffectKind::Slowness,
             EffectKind::Weakness,
             EffectKind::Wither,
+            EffectKind::Levitation,
+            EffectKind::SlowFalling,
         ] {
             self.status.remove_effect(kind);
         }
@@ -1867,6 +1869,47 @@ mod tests {
         assert!(survival.protect(&mut inventory, 3));
         assert!(inventory.slots[40].is_none());
         assert!(!survival.protect(&mut inventory, 3));
+    }
+
+    #[test]
+    fn slow_falling_potions_last_like_vanilla_and_a_totem_clears_levitation() {
+        let mut survival = fresh();
+        drink(&mut survival, "minecraft:long_slow_falling");
+        assert_eq!(
+            survival
+                .status
+                .effect(EffectKind::SlowFalling)
+                .map(|e| (e.duration, e.amplifier)),
+            Some((4800, 0))
+        );
+        drink(&mut survival, "minecraft:slow_falling");
+        assert_eq!(
+            survival
+                .status
+                .effect(EffectKind::SlowFalling)
+                .map(|e| e.duration),
+            Some(4800)
+        );
+        survival.status.add_effect(EffectKind::Levitation, 200, 0);
+        let mut inventory = Inventory::default();
+        inventory.slots[40] = Some(ItemStack::new("minecraft:totem_of_undying", 1));
+        survival.status.health = 0.0;
+        assert!(survival.protect(&mut inventory, 0));
+        assert!(survival.status.effect(EffectKind::Levitation).is_none());
+        assert!(survival.status.effect(EffectKind::SlowFalling).is_none());
+        survival.status.add_effect(EffectKind::Levitation, 3, 0);
+        for _ in 0..2 {
+            survival.status.tick_effects();
+        }
+        assert_eq!(
+            survival
+                .status
+                .effect(EffectKind::Levitation)
+                .map(|e| e.duration),
+            Some(1)
+        );
+        survival.status.tick_effects();
+        assert!(survival.status.effect(EffectKind::Levitation).is_none());
     }
 
     #[test]

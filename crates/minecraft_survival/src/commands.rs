@@ -159,6 +159,8 @@ pub fn effect_kind(effect: &str) -> Option<EffectKind> {
         "slowness" => EffectKind::Slowness,
         "weakness" => EffectKind::Weakness,
         "wither" => EffectKind::Wither,
+        "levitation" => EffectKind::Levitation,
+        "slow_falling" => EffectKind::SlowFalling,
         _ => return None,
     })
 }
@@ -477,6 +479,8 @@ impl CommandWorld for Host<'_> {
                     EffectKind::Slowness,
                     EffectKind::Weakness,
                     EffectKind::Wither,
+                    EffectKind::Levitation,
+                    EffectKind::SlowFalling,
                 ];
                 let any = kinds.iter().any(|kind| status.effect(*kind).is_some());
                 survival.clear_effects();
@@ -2250,5 +2254,40 @@ pub(crate) mod tests {
         assert!(host.effect_clear(HOST, Some("minecraft:regeneration")));
         assert!(!host.effect_clear(HOST, None));
         assert!(!host.effect_give(PlayerId(1), "minecraft:regeneration", Some(20), 0));
+    }
+
+    #[test]
+    fn levitation_and_slow_falling_are_given_and_cleared_by_command() {
+        let mut parts = Parts::new();
+        parts.server.registries_mut().effects = ["minecraft:levitation", "minecraft:slow_falling"]
+            .map(String::from)
+            .to_vec();
+        let (delivered, _) = parts.send(
+            HOST,
+            &[
+                "/effect give @s minecraft:levitation 10 1",
+                "/effect give @s minecraft:slow_falling 30",
+            ],
+        );
+        assert_eq!(delivered.len(), 2);
+        let status = &parts.player(HOST).survival.status;
+        assert_eq!(
+            status
+                .effect(EffectKind::Levitation)
+                .map(|e| (e.duration, e.amplifier)),
+            Some((200, 1))
+        );
+        assert_eq!(
+            status
+                .effect(EffectKind::SlowFalling)
+                .map(|e| (e.duration, e.amplifier)),
+            Some((600, 0))
+        );
+        parts.send(HOST, &["/effect clear @s"]);
+        let status = &parts.player(HOST).survival.status;
+        assert!(status.effect(EffectKind::Levitation).is_none());
+        assert!(status.effect(EffectKind::SlowFalling).is_none());
+        assert_eq!(effect_kind("minecraft:levitation"), Some(EffectKind::Levitation));
+        assert_eq!(effect_kind("minecraft:slow_falling"), Some(EffectKind::SlowFalling));
     }
 }

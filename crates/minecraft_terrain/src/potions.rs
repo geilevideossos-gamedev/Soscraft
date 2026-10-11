@@ -238,6 +238,8 @@ impl PotionEffect {
             "nausea" => EffectKind::Nausea,
             "slowness" => EffectKind::Slowness,
             "weakness" => EffectKind::Weakness,
+            "levitation" => EffectKind::Levitation,
+            "slow_falling" => EffectKind::SlowFalling,
             _ => return None,
         })
     }

@@ -15,7 +15,7 @@ pub const STORAGE: usize = 36;
 pub const SLOTS: usize = 43;
 pub const ENDER_SLOTS: usize = 27;
 const INFINITE: i32 = -1;
-pub const EFFECTS: [(EffectKind, &str); 10] = [
+pub const EFFECTS: [(EffectKind, &str); 12] = [
     (EffectKind::Hunger, "minecraft:hunger"),
     (EffectKind::Poison, "minecraft:poison"),
     (EffectKind::Regeneration, "minecraft:regeneration"),
@@ -26,6 +26,8 @@ pub const EFFECTS: [(EffectKind, &str); 10] = [
     (EffectKind::Slowness, "minecraft:slowness"),
     (EffectKind::Weakness, "minecraft:weakness"),
     (EffectKind::Wither, "minecraft:wither"),
+    (EffectKind::Levitation, "minecraft:levitation"),
+    (EffectKind::SlowFalling, "minecraft:slow_falling"),
 ];
 
 struct EffectModifier {
@@ -887,6 +889,34 @@ mod tests {
             Some(&Tag::String("minecraft:weakness".to_owned()))
         );
         assert_eq!(effects[1].get("duration"), Some(&Tag::Int(600)));
+    }
+
+    #[test]
+    fn levitation_and_slow_falling_are_saved_and_read_back() {
+        let mut stats = hurt_and_fed();
+        stats.status.add_effect(EffectKind::Levitation, 200, 1);
+        stats.status.add_effect(EffectKind::SlowFalling, 4800, 0);
+        let data = with_stats(stats);
+        let entries = data.entries();
+        let ids: Vec<&str> = entries["active_effects"]
+            .as_list()
+            .unwrap()
+            .iter()
+            .filter_map(|e| e.get("id").and_then(Tag::as_str))
+            .collect();
+        assert_eq!(ids, vec!["minecraft:levitation", "minecraft:slow_falling"]);
+        let read = PlayerData::read(&data.merged(None), &RecipeBook::default());
+        let status = read.stats.unwrap().status;
+        assert_eq!(
+            status
+                .effect(EffectKind::Levitation)
+                .map(|e| (e.duration, e.amplifier)),
+            Some((200, 1))
+        );
+        assert_eq!(
+            status.effect(EffectKind::SlowFalling).map(|e| e.duration),
+            Some(4800)
+        );
     }
 
     #[test]

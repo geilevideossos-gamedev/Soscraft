@@ -46,6 +46,8 @@ pub enum EffectKind {
     /// `MobEffects.WEAKNESS`: attack damage -4 a level.
     Weakness,
     Wither,
+    Levitation,
+    SlowFalling,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -165,7 +167,7 @@ pub struct SurvivalStatus {
     pub fire_ticks: u32,
     damage_cooldown: u8,
     last_hurt: f32,
-    effects: [Option<EffectInstance>; 10],
+    effects: [Option<EffectInstance>; 12],
 }
 
 impl Default for SurvivalStatus {
@@ -184,7 +186,7 @@ impl Default for SurvivalStatus {
             fire_ticks: 0,
             damage_cooldown: 0,
             last_hurt: 0.0,
-            effects: [None; 10],
+            effects: [None; 12],
         }
     }
 }
@@ -367,6 +369,8 @@ impl SurvivalStatus {
             EffectKind::Slowness,
             EffectKind::Weakness,
             EffectKind::Wither,
+            EffectKind::Levitation,
+            EffectKind::SlowFalling,
         ] {
             let Some(mut effect) = self.effect(kind) else {
                 continue;
