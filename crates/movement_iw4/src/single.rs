@@ -263,6 +263,7 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
 
     drop_timers(ps, &pml);
     let mut swam = false;
+    let levitating = crate::float::levitation(ps).is_some();
 
     {
         let mut ladder_backend = CollisionLadderBackend { collision, bounds };
@@ -315,9 +316,16 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
             crate::lava_move(ps, &mut pml, cmd, lava, bounds, collision);
             swam = true;
         } else if crate::climb::climbing(ps, climb) {
+            if levitating {
+                crate::float::leave_ground(ps, &mut pml);
+            }
             crate::climb_move(ps, &mut pml, cmd, context.walk, climb, bounds, collision);
             swam = true;
-        } else if pml.walking == 0 {
+        } else if pml.walking == 0 || levitating {
+            if levitating {
+                crate::float::leave_ground(ps, &mut pml);
+            }
+            swam = crate::float::owns_vertical(ps);
             air_move(ps, &pml, cmd, context.air, bounds, collision);
         } else {
             walk_move(ps, &mut pml, cmd, context.walk, bounds, collision);

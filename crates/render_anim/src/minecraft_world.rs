@@ -897,7 +897,7 @@ fn update(
                 }
             }
             survival.set_climbable(None);
-        } else if caught || ps.pm_flags & playerstate_iw4::pm_flags::MC_FLYING != 0 || (climbing && sim::voxel::lava(ps.origin, hull_mins, hull_maxs) <= 0.0) {
+        } else if caught || ps.pm_flags & playerstate_iw4::pm_flags::MC_FLYING != 0 || minecraft_survival::elytra::floating(&survival.status) || (climbing && sim::voxel::lava(ps.origin, hull_mins, hull_maxs) <= 0.0) {
             steps.air_peak = Some(feet[1]);
         } else {
             steps.air_peak = Some(steps.air_peak.map_or(feet[1], |p| p.max(feet[1])));

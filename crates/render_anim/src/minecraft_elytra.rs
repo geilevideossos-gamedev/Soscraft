@@ -1,8 +1,8 @@
 use minecraft_survival::death::DamageCause;
-use minecraft_survival::elytra::{Flight, can_glide, fall_peak};
+use minecraft_survival::elytra::{Flight, can_glide, fall_peak, float_peak, floating};
 use minecraft_survival::player::Player;
 use minecraft_terrain::pack::PackStack;
-use minecraftoss_player::survival::Armor;
+use minecraftoss_player::survival::{Armor, EffectKind};
 use playerstate_iw4::PlayerState;
 use playerstate_iw4::pm_flags::MC_GLIDING;
 
@@ -21,12 +21,20 @@ pub(crate) fn step(
         .player(id)
         .copied()
         .filter(|ps| ps.pm_type == 0 && !player.dead);
-    let may = ps.is_some() && player.mode.interacts() && can_glide(&player.inventory);
+    let status = &player.survival.status;
+    let levitation = ps.and(status.effect(EffectKind::Levitation)).map(|e| e.amplifier);
+    let slow_falling = ps.is_some() && status.effect(EffectKind::SlowFalling).is_some();
+    authority.set_float(id, levitation, slow_falling);
+    let may = ps.is_some()
+        && player.mode.interacts()
+        && can_glide(&player.inventory)
+        && levitation.is_none();
     authority.set_may_glide(id, may);
     let flight = ps.map_or_else(Flight::default, |ps| flight(&ps, may));
     if let Some(ps) = ps {
         let feet = sim::voxel::to_block(origin, ps.origin);
-        player.steps.air_peak = fall_peak(player.steps.air_peak, feet[1], flight);
+        let peak = fall_peak(player.steps.air_peak, feet[1], flight);
+        player.steps.air_peak = float_peak(peak, feet[1], floating(&player.survival.status));
     }
     let wears = player.mode.consumes_items();
     let glided = player

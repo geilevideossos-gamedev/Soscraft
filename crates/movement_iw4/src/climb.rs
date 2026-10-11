@@ -123,7 +123,8 @@ pub fn climb_move<C: CollisionBackend>(
         None,
     );
     let rising = rise_after_move(ps, pml, cmd, start, wanted, collision);
-    ps.velocity[2] = after_move(ps.velocity[2], rising, ticks);
+    ps.velocity[2] = crate::float::climb_rise(ps, ps.velocity[2], rising, ticks)
+        .unwrap_or_else(|| after_move(ps.velocity[2], rising, ticks));
 }
 
 pub(crate) fn rise_after_move<C: CollisionBackend>(

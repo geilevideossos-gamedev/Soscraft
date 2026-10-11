@@ -523,3 +523,23 @@ pub(super) fn decode_missile_target(
         },
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_float_field_reaches_the_client() {
+        let mut ps = PlayerState::ZERO;
+        ps.mc_float = 0x1_0005;
+        let mut snapshot = Snapshot::unpublished(Tick(1));
+        snapshot.players.push((ClientId(1), ps));
+        let delta = SnapshotEncoder::new().encode(&snapshot);
+        let decoded = SnapshotDecoder::new().decode(&delta).unwrap();
+        assert_eq!(decoded.players[0].1.mc_float, 0x1_0005);
+        assert_eq!(
+            crate::transport::netfields::player_state_diff(&PlayerState::ZERO, &ps),
+            vec!["mc_float"]
+        );
+    }
+}

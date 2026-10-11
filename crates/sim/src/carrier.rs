@@ -299,6 +299,10 @@ impl SimWorld {
         self.frame().launch_rocket(id, boost_ticks)
     }
 
+    pub fn set_float(&mut self, id: ClientId, levitation: Option<u8>, slow_falling: bool) -> bool {
+        self.frame().set_float(id, levitation, slow_falling)
+    }
+
     pub fn set_sprint_blocked(&mut self, id: ClientId, blocked: bool) -> bool {
         self.frame().set_sprint_blocked(id, blocked)
     }

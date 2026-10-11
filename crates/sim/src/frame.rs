@@ -441,6 +441,14 @@ impl FrameWorld<'_> {
         self.player_mut(id).is_some_and(|ps| movement_iw4::launch_rocket(ps, boost_ticks))
     }
 
+    pub fn set_float(&mut self, id: ClientId, levitation: Option<u8>, slow_falling: bool) -> bool {
+        let Some(ps) = self.player_mut(id) else {
+            return false;
+        };
+        ps.mc_float = movement_iw4::encode_float(levitation, slow_falling);
+        true
+    }
+
     pub fn set_legs_anim(&mut self, id: ClientId, legs_anim: i32) -> bool {
         let Some(ps) = self.player_mut(id) else {
             return false;
@@ -1248,5 +1256,19 @@ mod tests {
         let taken = MC_INVULNERABLE | MC_MAY_FLY | MC_NOCLIP | MC_FLYING | MC_NO_SKY | SPRINT_BLOCKED | LAST_STAND;
         assert_eq!((MC_MAY_GLIDE | MC_GLIDING) & taken, 0, "bits of their own");
         assert_ne!(MC_MAY_GLIDE, MC_GLIDING);
+    }
+
+    #[test]
+    fn levitation_and_slow_falling_reach_the_player_state() {
+        let mut sim = crate::SimWorld::default();
+        let id = ClientId(4);
+        assert!(!sim.set_float(id, Some(0), false));
+        sim.frame().ensure_player(id);
+        assert!(sim.set_float(id, Some(2), true));
+        let ps = *sim.frame().player(id).unwrap();
+        assert_eq!(movement_iw4::levitation(&ps), Some(3.0));
+        assert!(movement_iw4::slow_falling(&ps));
+        assert!(sim.set_float(id, None, false));
+        assert_eq!(sim.frame().player(id).map(|ps| ps.mc_float), Some(0));
     }
 }

@@ -32,3 +32,42 @@ Previous commit: 0bcbfb17
 ```
 IW4L_MINECRAFT_KIT=minecraft:potion@slow_falling,minecraft:potion@long_slow_falling,minecraft:splash_potion@slow_falling,minecraft:zombie_spawn_egg*2
 ```
+
+### 2. Minecraft levitation lifts players and slow falling slows their fall
+
+Previous commit: 53ecf14a
+
+- **Changed:**
+  - `playerstate_iw4`: a new `mc_float` field (bits 0-15 the levitation level, amplifier + 1, 0 for none; bit 16 slow falling), replicated and exact in the PS netfields after `mc_rocket_time`. No `pm_flags` bit is used.
+  - `sim`: `set_float(id, levitation, slow_falling)` on the frame and the carrier, like `set_may_glide`.
+  - `movement_iw4/src/float.rs` (new): the closed forms of vanilla's per-tick vertical steps, `v' = 0.98F * (0.8 v + 0.01 L)` for levitation and `v' = 0.98F * (v - 0.01)` for slow falling, over fractional ticks. The distance moved in a frame is the exact sum of vanilla's tick moves (each tick moves with the old speed, then the speed changes), which adds up across frames, so the path doesn't depend on the frame rate.
+  - `single.rs`: with levitation the walk branch is replaced by the air branch, after leaving the ground (ground entity, walking and ground plane cleared); the climbable branch leaves the ground too. Water, lava, creative flight, cobwebs and noclip ignore both effects.
+  - `air.rs`: the air move hands its slide to `float::air_slide`, which with levitation (or slow falling while not rising) sets the vertical speed from the closed form and slides with no MW2 gravity; otherwise the old MW2 gravity slide runs unchanged. Horizontal stays MW2 air control.
+  - `climb.rs`: on a climbable, levitation runs the closed form after the move, and a climb up (jump or pushing into the climbable) gives one tick of levitation from 0.2, as vanilla's `handleOnClimbable` and `travelInAir` do.
+  - `glide.rs`: levitation stops and forbids gliding (`canGlide`), and slow falling lowers the glide's gravity to 0.01 while not rising.
+  - `render_anim/src/minecraft_elytra.rs` feeds `set_float` each frame from the player's own `survival.status` (per player), and `may glide` is false while levitating. The fall peak restarts at the feet while either effect is on (`minecraft_survival::elytra::float_peak`, `floating`), also in the fall block of `minecraft_world.rs`, like vanilla's `resetFallDistance`.
+- **Tests:**
+  - `movement_iw4` `float`: `the_closed_form_matches_vanilla_tick_by_tick` (8.864 and 44.32 blocks in 200 ticks, 32.67 units a second per level, 1.656 blocks of slow fall in 20 ticks, terminal 352.8 units a second), `short_frames_add_up_to_whole_ticks`, `the_float_field_keeps_the_level_and_slow_falling_apart`.
+  - `movement_iw4` `glide`: `levitation_stops_the_glide_and_slow_falling_sinks_it_with_gravity_0_01`.
+  - `sim` `voxel` (full pmove): `levitation_lifts_a_player_off_the_floor_like_vanilla_at_any_frame_rate` (50 ms frames within 0.01 block, 16 ms frames within 0.1, steady 32.67 units a second), `a_levitating_player_leaves_the_floor_at_once_and_a_ceiling_stops_the_rise`, `slow_falling_sinks_at_most_ten_blocks_a_second_and_leaves_a_jump_alone`, `levitation_wins_over_slow_falling_and_does_nothing_in_water_or_flight`.
+  - `sim` `frame`: `levitation_and_slow_falling_reach_the_player_state`. `net` `delta`: `the_float_field_reaches_the_client`.
+  - `minecraft_survival` `elytra`: `floating_restarts_the_fall_and_a_fall_after_it_hurts_from_where_it_ended`.
+- **Decisions:**
+  - Vanilla's order is kept: a tick moves with the old speed and then changes it. From rest the first tick doesn't move, so a levitating player leaves the floor on the second tick (0.35 units up, past Q3's 0.25 ground trace). At frame rates above 20 the first frames can come out a hair below zero; the move is clamped so a rising player never moves down.
+  - The float moves skip MW2's end-of-frame velocity rounding (like swimming, climbing and gliding already do). Rounding to whole units a second would eat the small early speeds at high frame rates and stall the rise.
+  - A move blocked by a ceiling or the floor keeps the slide's clipped speed (about 0), like vanilla's collision; the next frame starts the formula from there.
+  - Levitating on the ground uses the air move, so a jump does nothing while levitating (vanilla could still jump). Slow falling on a climbable keeps the climb's own fall (capped at 0.15 a tick), so it doesn't slow a ladder slide further. Both differences are small and recorded here.
+  - `PlayerState` grew a field: host and friends must run the same build.
+- **Test steps:** (survival, `/difficulty normal`, open ground, armour off)
+  1. `/effect give @s minecraft:levitation 10 0`: you float straight up for 10 seconds and can strafe while floating; you end about 9 blocks up (**1**). Then you fall and lose about 3 hearts (**2**).
+  2. `/effect give @s minecraft:levitation 10 0` again, then drink the milk while floating: you fall at once.
+  3. `/effect give @s minecraft:levitation 5 4`: you rise fast, about 4.5 blocks a second (**3**). `/effect clear @s`.
+  4. Build a 20-block purpur tower, drink the slow falling potion and jump off: you sink gently (about 10 blocks a second at most) and take no damage (**4**). Jumping on the ground still goes as high as before. While slow falling, `/effect give @s minecraft:levitation 3 0`: you rise (levitation wins).
+  5. Equip the elytra, jump off the tower and glide. `/effect give @s minecraft:levitation 3 0`: the glide stops and you rise (**5**). Drink the long slow falling potion and glide again: the glide sinks more slowly.
+  6. Pour the water buckets into a 2-deep hole, stand in it and `/effect give @s minecraft:levitation 5 0`: you don't rise. Place a ladder column on the tower and stand at it: you float up the ladder.
+  7. `/gamemode creative`, fly, `/effect give @s minecraft:levitation 5 0`: flight is unchanged. `/gamemode survival`.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:milk_bucket,minecraft:milk_bucket,minecraft:potion@slow_falling,minecraft:potion@long_slow_falling,minecraft:elytra,minecraft:firework_rocket*16,minecraft:purpur_block*64,minecraft:ladder*16,minecraft:water_bucket,minecraft:water_bucket,minecraft:cooked_beef*16
+```

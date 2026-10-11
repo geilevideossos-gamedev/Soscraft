@@ -2193,4 +2193,96 @@ mod tests {
             assert_eq!(path[path.len() - 1][1] > 1.4, flies, "{:?}", path.last());
         }
     }
+
+    fn floater(feet: [f64; 3], levitation: Option<u8>, slow_falling: bool) -> playerstate_iw4::PlayerState {
+        let mut ps = swimmer(feet);
+        ps.mc_float = movement_iw4::encode_float(levitation, slow_falling);
+        ps
+    }
+
+    fn roofed(roof: i32) -> Pond {
+        let mut blocks = Vec::new();
+        for x in 0..16 {
+            for z in 0..16 {
+                blocks.push(([x, 0, z], 1));
+                blocks.push(([x, roof, z], 1));
+            }
+        }
+        Pond(world(&blocks))
+    }
+
+    #[test]
+    fn levitation_lifts_a_player_off_the_floor_like_vanilla_at_any_frame_rate() {
+        for (amplifier, rise, slack) in [(0, 8.864, 0.01), (4, 44.32, 0.05)] {
+            for (msec, tolerance) in [(50, slack), (16, 0.1)] {
+                let mut ps = floater([8.5, 1.0, 8.5], Some(amplifier), false);
+                let path = drive(&floor(), &mut ps, 0, 0, msec, 10_000 / msec);
+                let risen = path[path.len() - 1][1] - 1.0;
+                assert!((risen - rise).abs() < tolerance, "amplifier {amplifier} msec {msec}: {risen}");
+            }
+        }
+        let mut ps = floater([8.5, 1.0, 8.5], Some(0), false);
+        drive(&floor(), &mut ps, 0, 0, 50, 400);
+        let steady = ps.velocity[2];
+        assert!((steady - 32.67).abs() < 0.01, "{steady}");
+    }
+
+    #[test]
+    fn a_levitating_player_leaves_the_floor_at_once_and_a_ceiling_stops_the_rise() {
+        let mut ps = floater([8.5, 1.0, 8.5], Some(0), false);
+        drive(&floor(), &mut ps, 0, 0, 50, 1);
+        assert!((ps.velocity[2] - 0.0098 * 720.0).abs() < 0.01, "{:?}", ps.velocity);
+        let path = drive(&floor(), &mut ps, 0, 0, 50, 1);
+        assert!((path[0][1] - 1.0098).abs() < 1e-3, "{:?}", path);
+        assert_eq!(ps.ground_entity_num, playerstate_iw4::ENTITYNUM_NONE);
+        for msec in [50, 16] {
+            let mut ps = floater([8.5, 1.0, 8.5], Some(1), false);
+            let path = drive(&roofed(4), &mut ps, 0, 0, msec, 5000 / msec);
+            let top = 4.0 - 64.8 / 36.0;
+            assert!(path.iter().all(|p| p[1] <= top + 1e-3), "msec {msec}: {:?}", path.last());
+            assert!((path[path.len() - 1][1] - top).abs() < 0.05, "msec {msec}: {:?}", path.last());
+        }
+    }
+
+    #[test]
+    fn slow_falling_sinks_at_most_ten_blocks_a_second_and_leaves_a_jump_alone() {
+        let mut ps = floater([8.5, 400.0, 8.5], None, true);
+        let path = drive(&floor(), &mut ps, 0, 0, 50, 20);
+        let fallen = 400.0 - path[19][1];
+        assert!((fallen - 1.656).abs() < 0.01, "{fallen}");
+        drive(&floor(), &mut ps, 0, 0, 50, 400);
+        assert!((ps.velocity[2] + 352.8).abs() < 1.0, "{:?}", ps.velocity);
+        let mut ps = floater([8.5, 400.0, 8.5], None, true);
+        let path = drive(&floor(), &mut ps, 0, 0, 16, 1250);
+        let fallen = 400.0 - path[path.len() - 1][1];
+        let mut vanilla = floater([8.5, 400.0, 8.5], None, true);
+        let ticks = drive(&floor(), &mut vanilla, 0, 0, 50, 400);
+        assert!((fallen - (400.0 - ticks[399][1])).abs() < 0.1, "{fallen}");
+        let peak = |slow: bool| {
+            let mut ps = floater([8.5, 1.0, 8.5], None, slow);
+            drive(&floor(), &mut ps, 0, 0, 16, 40);
+            let path = drive(&floor(), &mut ps, playerstate_iw4::buttons::JUMP, 0, 16, 60);
+            path.iter().map(|p| p[1]).fold(f64::MIN, f64::max)
+        };
+        let (plain, slow) = (peak(false), peak(true));
+        assert!(plain > 1.5, "{plain}");
+        assert!((plain - slow).abs() < 1e-4, "{plain} {slow}");
+    }
+
+    #[test]
+    fn levitation_wins_over_slow_falling_and_does_nothing_in_water_or_flight() {
+        let mut both = floater([8.5, 1.0, 8.5], Some(0), true);
+        let mut alone = floater([8.5, 1.0, 8.5], Some(0), false);
+        let a = drive(&floor(), &mut both, 0, 0, 50, 100);
+        let b = drive(&floor(), &mut alone, 0, 0, 50, 100);
+        assert_eq!(a, b);
+        let mut wet = floater([6.5, 1.0, 8.5], Some(0), false);
+        let mut dry = floater([6.5, 1.0, 8.5], None, false);
+        let pond = pond(SOURCE, 2, 1);
+        assert_eq!(swim(&pond, &mut wet, 0, 0, 50, 3), swim(&pond, &mut dry, 0, 0, 50, 3));
+        let mut ps = flier([8.5, 1.5, 8.5], FLYING);
+        ps.mc_float = movement_iw4::encode_float(Some(4), false);
+        let path = drive(&floor(), &mut ps, 0, 0, 16, 120);
+        assert!(path.iter().all(|p| (p[1] - 1.5).abs() < 1e-3), "{:?}", path.last());
+    }
 }
