@@ -78,6 +78,7 @@ pub struct ServerSim {
     thrown_hits: Vec<crate::thrown::ThrownHit>,
     worldgen: &'static WorldGen,
     eyes: crate::eye_of_ender::Eyes,
+    gateways: crate::end_gateway::Gateways,
     blasts: Vec<(Blast, BlastSource)>,
     block_explosion_drop_decay: bool,
     crystals: crate::end_crystal::Crystals,
@@ -221,6 +222,7 @@ pub struct EntitySnapshot {
     pub dragons: Vec<crate::ender_dragon::DragonView>,
     pub dragon_fireballs: Vec<crate::dragon_fireball::FireballView>,
     pub breath_bursts: Vec<glam::DVec3>,
+    pub gateways: Vec<crate::end_gateway::GatewayView>,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -304,6 +306,7 @@ impl ServerSim {
             thrown_hits: Vec::new(),
             worldgen,
             eyes: crate::eye_of_ender::Eyes::default(),
+            gateways: crate::end_gateway::Gateways::default(),
             blasts: Vec::new(),
             block_explosion_drop_decay: true,
             crystals: crate::end_crystal::Crystals::default(),
@@ -482,6 +485,7 @@ impl ServerSim {
         let mut copy = chunk.clone();
         crate::containers::leave_to_client(&mut copy.block_entities);
         self.level.insert_chunk(copy);
+        self.gateways.load_chunk(chunk);
         if !fresh {
             return;
         }
@@ -522,6 +526,7 @@ impl ServerSim {
             let new = self.mob_tables.pois.get(state.0 as usize).copied().flatten();
             let old = self.mobs.pois.kind((x, y, z));
             self.mobs.pois.block_changed((x, y, z), old, new);
+            self.gateways.sync((x, y, z), crate::end_gateway::tag_at(&self.level, (x, y, z)));
         }
     }
 
@@ -1229,6 +1234,7 @@ impl ServerSim {
         self.collect_block_entity_changes();
         self.save_chunk_entities(pos, true);
         self.level.remove_chunk(pos);
+        self.gateways.unload_chunk(pos);
         self.mobs.pois.unload_chunk(pos.x, pos.z);
     }
 
@@ -1908,6 +1914,30 @@ impl ServerSim {
         self.crystals.views()
     }
 
+    pub fn tick_gateways(&mut self) {
+        self.sync_pois();
+        for (pos, age) in self.gateways.tick() {
+            crate::end_gateway::write_age(&mut self.level, pos, age);
+        }
+    }
+
+    pub fn trigger_gateway(&mut self, pos: BlockPos) -> bool {
+        let Some(age) = self.gateways.trigger_cooldown(pos) else { return false };
+        crate::end_gateway::write_age(&mut self.level, pos, age);
+        true
+    }
+
+    pub fn set_gateway_exit(&mut self, pos: BlockPos, exit: BlockPos, exact: bool) {
+        if let Some(age) = self.gateways.set_exit(pos, exit, exact) {
+            crate::end_gateway::write_age(&mut self.level, pos, age);
+        }
+        minecraftoss_generator::feature::World::set_gateway_exit(&mut self.level, pos.0, pos.1, pos.2, exit, exact);
+    }
+
+    pub fn gateway_views(&self) -> Vec<crate::end_gateway::GatewayView> {
+        self.gateways.views()
+    }
+
     pub fn create_end_platform(&mut self, origin: BlockPos) {
         self.level.create_end_platform(minecraftoss_core::BlockPos::new(origin.0, origin.1, origin.2), true);
     }
@@ -2171,11 +2201,13 @@ impl ServerSim {
         for (x, y, z) in self.level.take_changed_block_entities() {
             let chunk = self.level.chunk(minecraftoss_core::BlockPos::new(x, y, z).chunk());
             let Some(tag) = chunk.and_then(|chunk| chunk.block_entities.entities.get(&(x, y, z))) else {
+                self.gateways.sync((x, y, z), None);
                 if chunk.is_some() {
                     self.block_entity_changes.push(((x, y, z), None));
                 }
                 continue;
             };
+            self.gateways.sync((x, y, z), Some(tag));
             if tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str).is_some_and(|kind| !crate::containers::owns_block_entity(kind)) {
                 self.block_entity_changes.push(((x, y, z), Some(tag.clone())));
             }
@@ -2872,6 +2904,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
         sim.tick_tridents(&bodies);
         sim.tick_eyes();
         sim.tick_end(&input.mob_players);
+        sim.tick_gateways();
     }
     out.player_hits.extend(sim.take_end_hits());
     out.mob_sounds.extend(sim.take_end_sounds());
@@ -2926,7 +2959,7 @@ fn finish_batch(sim: &mut ServerSim, input: &TickInput, out: &mut Output) {
     out.mobs = Some(Box::new(sim.tracked_mobs(input.tracking.0, input.tracking.1)));
     out.weather = Some(sim.weather(input.players.first().copied()));
     out.weather_data = sim.weather_data();
-    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts() });
+    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views() });
     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
     let total = out.tick_nanos.last().map_or(0.0, |&nanos| nanos as f64 / 1_000_000.0);
     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), total));
@@ -5931,6 +5964,98 @@ mod tests {
         Some(server)
     }
 
+    fn changed_tag(changes: &[(BlockPos, Option<minecraftoss_core::nbt::Tag>)], pos: BlockPos) -> Option<minecraftoss_core::nbt::Tag> {
+        changes.iter().find(|(at, _)| *at == pos).and_then(|(_, tag)| tag.clone())
+    }
+
+    #[test]
+    fn age_is_saved_and_a_flip_reports_the_block_entity() {
+        use minecraftoss_core::nbt::Tag;
+        let Some(mut server) = end_world([(5, 0)].into_iter()) else { return };
+        let (pos, at) = ((85, 100, 5), ChunkPos::new(5, 0));
+        let registries = server.level.registries();
+        let mut chunk = server.level.chunk(at).unwrap().clone();
+        chunk.set_block_raw(5, 100, 5, registries.blocks.parse_state(crate::end_gateway::END_GATEWAY).unwrap(), registries);
+        let saved = [("id", Tag::String(crate::end_gateway::END_GATEWAY.to_owned())), ("x", Tag::Int(85)), ("y", Tag::Int(100)), ("z", Tag::Int(5)), ("Age", Tag::Long(150))];
+        chunk.block_entities.entities.insert(pos, Tag::Compound(saved.into_iter().map(|(key, value)| (key.to_owned(), value)).collect()));
+        server.unload_chunk(at);
+        server.take_block_entity_changes();
+        server.load_chunk(&chunk);
+        assert_eq!(server.gateway_views(), [crate::end_gateway::GatewayView { pos, age: 150, cooldown: 0, exit: None, exact: false }]);
+        assert!(server.gateway_views()[0].is_spawning());
+        for _ in 0..49 {
+            server.tick_gateways();
+        }
+        assert_eq!(changed_tag(&server.take_block_entity_changes(), pos), None, "still spawning at age 199");
+        server.tick_gateways();
+        let tag = changed_tag(&server.take_block_entity_changes(), pos).expect("the flip reports the block entity");
+        assert_eq!(tag.get("Age"), Some(&Tag::Long(200)));
+        assert!(!server.gateway_views()[0].is_spawning());
+        server.tick_gateways();
+        assert_eq!(changed_tag(&server.take_block_entity_changes(), pos), None);
+        assert_eq!(server.gateway_views()[0].age, 201);
+    }
+
+    #[test]
+    fn gateways_join_and_leave_with_their_chunks_and_setblock() {
+        let Some(mut server) = end_world([(5, 0), (6, 0)].into_iter()) else { return };
+        let gateway = Block::new(crate::end_gateway::END_GATEWAY);
+        let at = |server: &ServerSim| server.gateway_views().iter().map(|view| (view.pos, view.age)).collect::<Vec<_>>();
+        let pos = (85, 100, 5);
+        server.player_edit_block(pos, Some(&gateway), PlayerEdit::Place);
+        server.tick_gateways();
+        assert_eq!(at(&server), [(pos, 1)], "a placed gateway starts at age 0 and ticks");
+        server.player_edit_block(pos, None, PlayerEdit::Break);
+        server.tick_gateways();
+        assert_eq!(at(&server), []);
+        let far = (100, 100, 5);
+        server.player_edit_block(far, Some(&gateway), PlayerEdit::Place);
+        server.tick_gateways();
+        let chunk = server.level.chunk(ChunkPos::new(6, 0)).unwrap().clone();
+        server.unload_chunk(ChunkPos::new(6, 0));
+        assert_eq!(at(&server), [], "the gateway leaves with its chunk");
+        server.load_chunk(&chunk);
+        assert_eq!(at(&server), [(far, 0)], "and comes back with it, at its saved age");
+        server.load_chunk(&chunk);
+        assert_eq!(at(&server), [(far, 0)], "a chunk sent again keeps its gateways");
+        let ring = (88, 120, 8);
+        assert!(server.level.place_configured_feature(END_GATEWAY_DELAYED, minecraftoss_core::BlockPos::new(ring.0, ring.1, ring.2)));
+        server.tick_gateways();
+        assert_eq!(at(&server), [(ring, 1), (far, 1)], "a gateway placed by a feature ticks the same tick");
+        assert_eq!(server.gateway_views()[0].exit, None);
+    }
+
+    #[test]
+    fn setting_an_exit_writes_vanilla_keys() {
+        use minecraftoss_core::nbt::Tag;
+        let Some(mut server) = end_world([(5, 0)].into_iter()) else { return };
+        let pos = (85, 100, 5);
+        server.player_edit_block(pos, Some(&Block::new(crate::end_gateway::END_GATEWAY)), PlayerEdit::Place);
+        for _ in 0..3 {
+            server.tick_gateways();
+        }
+        server.take_block_entity_changes();
+        server.set_gateway_exit(pos, (1000, 70, 3), false);
+        let tag = changed_tag(&server.take_block_entity_changes(), pos).expect("the exit is reported");
+        assert_eq!(tag.get("exit_portal"), Some(&Tag::IntArray(vec![1000, 70, 3])));
+        assert_eq!(tag.get("ExactTeleport"), None);
+        assert_eq!(tag.get("Age"), Some(&Tag::Long(3)));
+        server.set_gateway_exit(pos, (100, 50, 0), true);
+        let tag = changed_tag(&server.take_block_entity_changes(), pos).expect("the exit is reported");
+        assert_eq!(tag.get("exit_portal"), Some(&Tag::IntArray(vec![100, 50, 0])));
+        assert_eq!(tag.get("ExactTeleport"), Some(&Tag::Byte(1)));
+        let view = server.gateway_views()[0];
+        assert_eq!((view.exit, view.exact), (Some((100, 50, 0)), true));
+        server.tick_gateways();
+        assert!(server.trigger_gateway(pos));
+        assert!(!server.trigger_gateway(pos), "a cooling gateway ignores a second trigger");
+        assert!(!server.trigger_gateway((0, 0, 0)));
+        let tag = changed_tag(&server.take_block_entity_changes(), pos).expect("a trigger reports the block entity");
+        assert_eq!(tag.get("Age"), Some(&Tag::Long(4)));
+        assert!(!tag.as_compound().unwrap().contains_key("cooldown"), "the cooldown is not saved");
+        assert_eq!(server.gateway_views()[0].cooldown, crate::end_gateway::COOLDOWN_TIME);
+    }
+
     #[test]
     fn the_end_platform_is_rebuilt_and_drops_what_it_breaks() {
         let Some(mut server) = end_world((5..=7).flat_map(|x| (-1..=1).map(move |z| (x, z)))) else { return };
@@ -8058,6 +8183,24 @@ mod tests {
         let out = run_ticks(&mut sim, &mut input, false, 1);
         assert_eq!(out.picked.iter().map(|picked| (picked.0, picked.3)).collect::<Vec<_>>(), [(item, 3)]);
         assert!(sim.items().iter().all(|i| i.id != item));
+    }
+
+    #[test]
+    fn a_frozen_gateway_neither_ages_nor_cools_and_the_snapshot_shows_it() {
+        let Some((mut sim, _)) = frozen_sim() else { return };
+        let pos = (8, 205, 8);
+        sim.player_edit_block(pos, Some(&Block::new(crate::end_gateway::END_GATEWAY)), PlayerEdit::Place);
+        let mut input = idle_input();
+        run_ticks(&mut sim, &mut input, true, 3);
+        assert!(sim.trigger_gateway(pos));
+        run_ticks(&mut sim, &mut input, false, 10);
+        let view = |sim: &ServerSim| sim.gateway_views().first().map(|view| (view.age, view.cooldown));
+        assert_eq!(view(&sim), Some((3, crate::end_gateway::COOLDOWN_TIME)));
+        let mut out = run_ticks(&mut sim, &mut input, true, 1);
+        assert_eq!(view(&sim), Some((4, crate::end_gateway::COOLDOWN_TIME - 1)));
+        finish_batch(&mut sim, &input, &mut out);
+        let shown = out.entities.expect("a snapshot").gateways;
+        assert_eq!(shown.iter().map(|view| (view.pos, view.age, view.cooldown)).collect::<Vec<_>>(), [(pos, 4, crate::end_gateway::COOLDOWN_TIME - 1)]);
     }
 
     #[test]

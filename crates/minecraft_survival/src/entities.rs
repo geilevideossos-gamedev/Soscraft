@@ -96,6 +96,7 @@ pub struct Entities {
     clouds: Vec<minecraft_terrain::effect_cloud::CloudView>,
     tridents: Vec<minecraft_terrain::trident::TridentView>,
     crystals: Vec<minecraft_terrain::end_crystal::CrystalView>,
+    gateways: minecraft_terrain::end_gateway::ClientGateways,
     dragons: Vec<minecraft_terrain::ender_dragon::DragonView>,
     dragon_fireballs: Vec<minecraft_terrain::dragon_fireball::FireballView>,
     growls: HashMap<u64, i32>,
@@ -243,6 +244,7 @@ impl Entities {
             clouds: Vec::new(),
             tridents: Vec::new(),
             crystals: Vec::new(),
+            gateways: Default::default(),
             dragons: Vec::new(),
             dragon_fireballs: Vec::new(),
             growls: HashMap::new(),
@@ -941,6 +943,7 @@ impl Entities {
                 self.clouds = std::mem::take(&mut snapshot.clouds);
                 self.tridents = std::mem::take(&mut snapshot.tridents);
                 self.crystals = std::mem::take(&mut snapshot.crystals);
+                self.gateways.receive(std::mem::take(&mut snapshot.gateways), self.ticks);
                 self.dragons = std::mem::take(&mut snapshot.dragons);
                 self.dragon_fireballs = std::mem::take(&mut snapshot.dragon_fireballs);
                 for at in std::mem::take(&mut snapshot.breath_bursts) {
@@ -1084,6 +1087,22 @@ impl Entities {
 
     pub fn dragons(&self) -> &[minecraft_terrain::ender_dragon::DragonView] {
         &self.dragons
+    }
+
+    pub fn gateway(&self, pos: (i32, i32, i32)) -> Option<&minecraft_terrain::end_gateway::GatewayView> {
+        self.gateways.get(pos)
+    }
+
+    pub fn gateway_views(&self) -> &[minecraft_terrain::end_gateway::GatewayView] {
+        self.gateways.views()
+    }
+
+    pub fn mark_cooling(&mut self, pos: (i32, i32, i32)) {
+        self.gateways.mark_cooling(pos, self.ticks);
+    }
+
+    pub fn gateway_cooling(&self, pos: (i32, i32, i32)) -> bool {
+        self.gateways.is_cooling(pos, self.ticks)
     }
 
     pub fn eye_views(&self) -> &[minecraft_terrain::eye_of_ender::EyeView] {

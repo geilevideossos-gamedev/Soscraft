@@ -516,7 +516,7 @@ Commit: ae01d7a4
 
 ### 2. Minecraft end gateways find their exit on the outer islands like vanilla
 
-Commit: (see the next entry, or `git log` under this subject)
+Commit: 91e26f03
 
 - **Changed:**
   - New `minecraft_survival/src/the_end/gateway.rs` (`pub mod gateway;` in `the_end.rs`), pure and over a trait, so group 4 only has to call it:
@@ -537,4 +537,29 @@ Commit: (see the next entry, or `git log` under this subject)
   - The brief's example origin (-320, 75, 972) is not where a walked search builds the island for gateway 6: the walk lands on x -320.609 and `containing(x + 0.5)` is -321, so the search test uses (-321, 75, 973) and the island test covers both.
   - `full_block` is a collision shape of exactly one unit box; a shape made of several boxes that fill the cell would count in vanilla and not here (no such vanilla End block).
 - **Test steps:** none in game yet; the trips come with entry 4.
+- **Kit:** none needed.
+
+### 3. Minecraft end gateways keep their age and cool down like vanilla
+
+Commit: (see the next entry, or `git log` under this subject)
+
+- **Changed:**
+  - New `minecraft_terrain/src/end_gateway.rs` (`pub mod end_gateway;` in `lib.rs`):
+    - `Gateway { age, cooldown, exit, exact }` read from a block entity tag (`Age` long, default 0; `exit_portal` int array kept only inside `Level.isInSpawnableBounds`: y within +-20,000,000 and x, z within +-30,000,000; `ExactTeleport` byte). Its tick is `portalTick`: remember spawning (`age < 200`) and cooling (`cooldown > 0`), `age++`, then count the cooldown down or, when not cooling, flash every `age % 2400 == 0` (`triggerCooldown`: 40 ticks); it reports a change on a flash and whenever spawning or cooling flipped (vanilla's `setChanged`).
+    - `Gateways`, the server level's table by position: `sync(pos, tag)` adds a gateway it does not know, takes a known one's exit and exactness and keeps its age and cooldown, and drops a position whose tag is gone or not a gateway; `load_chunk` (pending tags, then block entities) and `unload_chunk`; `tick` returns the positions to mark with their age; `trigger_cooldown` (none while cooling); `set_exit`; `views()`.
+    - `GatewayView { pos, age, cooldown, exit, exact }`, plain data for the client (and for track E's network messages).
+    - `ClientGateways`, the main thread's view list with `mark_cooling`: a mark counts as cooling until a snapshot shows that gateway cooling, until a snapshot no longer has it, or for 40 client ticks, so a second player cannot go in while the trigger job is on its way.
+    - `tag_at` and `write_age` (`Age` written into the level's block entity, which marks it changed only when the value differs).
+  - `minecraft_terrain/src/server.rs`: a `gateways` field on `ServerSim`; hooks in `load_chunk`, `unload_chunk`, `sync_pois` (every block set since the last call is synced, which covers `/setblock`, breaking and the ring gateways a dragon kill places) and `collect_block_entity_changes` (every changed block entity is synced); `tick_gateways` (sync, then tick, writing `Age` for each change) runs in `run_tick` after `tick_end`, only on normal ticks; `trigger_gateway(pos) -> bool` and `set_gateway_exit(pos, exit, exact)` (the vendored `World::set_gateway_exit`, which writes vanilla's keys and marks the block entity) for jobs; `gateway_views()`; `EntitySnapshot.gateways`.
+  - `minecraft_survival/src/entities.rs`: `Entities` keeps the level's `ClientGateways` from each snapshot, with `gateway(pos)`, `gateway_views()`, `mark_cooling(pos)` and `gateway_cooling(pos)`.
+  - Vendored: `third_party/minecraftoss/world/src/level/container.rs`: `Level::set_block_entity_value` is `pub` (was `pub(super)`). The file was already patched by the fork (c5efeed0), so no new patched file.
+- **Tests:**
+  - `minecraft_terrain` `end_gateway`: `a_gateway_spawns_for_200_ticks_and_flashes_every_2400` (from age 0 the changes come at ages 200, 2400, 2440, 4800 and 4840; a gateway at 2399 flashes on its next tick and counts down after), `a_triggered_gateway_cools_for_40_ticks_and_ignores_a_second_trigger`, `exits_are_read_with_vanilla_keys_and_bounds`, `a_synced_gateway_keeps_its_age_and_cooldown_and_takes_the_new_exit`, `a_marked_gateway_counts_as_cooling_until_the_server_shows_it`.
+  - `minecraft_terrain` `server` (skip without the game data): `age_is_saved_and_a_flip_reports_the_block_entity` (a chunk saved with `Age` 150 reports nothing for 49 ticks and the block entity with `Age` 200 on the 50th), `gateways_join_and_leave_with_their_chunks_and_setblock` (placed, broken, unloaded, loaded again at its saved age, sent again unchanged, and an `end_gateway_delayed` feature's gateway ticks the tick it was placed), `setting_an_exit_writes_vanilla_keys` (`exit_portal` int array, `ExactTeleport` only when exact, the current `Age`; a trigger reports the block entity, a second one and an unknown position are refused, the cooldown is not saved), `a_frozen_gateway_neither_ages_nor_cools_and_the_snapshot_shows_it` (through `run_tick` and `finish_batch`).
+- **Decisions:**
+  - `Age` is written into the level's block entity whenever the gateway is marked (a flip, a flash, a trigger, a new exit), not on every tick: nothing reads the level's copy between marks, and only marked block entities reach the chunk map and the save, so the saved `Age` is the one at the last mark. Vanilla saves the age a chunk has when it is next saved after a `setChanged`, so a reloaded gateway can be up to one flash (2400 ticks) younger here than there; its beam timing only depends on the 2400-tick rhythm and the first 200 ticks, which this keeps.
+  - The trigger's block event (1, 0) is not sent: the client reads the cooldown from the views each snapshot (brief decision 7).
+  - A frozen game neither ages nor cools a gateway (brief section 6, a5 merged first).
+  - The full `minecraft_terrain` run had three load-sensitive eye of ender tests (`SEARCH_CAP` timing, from item a2) fail while another track was building; all 14 eye of ender tests pass when run on their own.
+- **Test steps:** none in game yet (the gateway's state is not shown until entry 6's beam, and nothing teleports until entry 4).
 - **Kit:** none needed.
