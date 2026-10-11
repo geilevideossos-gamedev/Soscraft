@@ -17,7 +17,7 @@ Broken (screenshot): 1 end gateway does not teleport, 2 eye of ender is not thro
 ## Phase 1: release build time
 | Item | State | Notes |
 |---|---|---|
-| 1. Why the last release build took 49 min | measuring the fix | Machine: i7-13700H laptop (6 P-cores + 8 E-cores, 20 threads), 32 GB, both drives NVMe, Balanced power plan. Measured after touching `minecraft_net` (12 crates rebuild): **53 min**, of which the 12 crates took 4.5 min and the single-threaded fat-LTO link of `launcher` (one rustc at ~8 GB) took the rest. Paging was low, disks were not full. Cause 1: Windows power throttling (EcoQoS) puts background processes on the E-cores while another app (a game) is in front; `cargo-slot.ps1` now keeps cargo, rustc and the linker off power throttling (0bcbfb17): **30 min**, link 26 min, on a machine busy with agents. Cause 2: fat LTO is one thread, so it is slow whenever anything else runs. Measuring `lto = "thin"`, `codegen-units = 16` next. |
+| 1. Why the last release build took 49 min | done | Machine: i7-13700H laptop (6 P-cores + 8 E-cores, 20 threads), 32 GB, both drives NVMe, Balanced plan. Release after touching `minecraft_net` (12 crates rebuild), measured with `--timings` and a memory/paging sampler: **53 min** with the old fat LTO; the 12 crates took 4.5 min, the single-threaded fat-LTO link of `launcher` (one rustc at ~8 GB) the rest. Paging was low, free disk did not change, so neither swapping nor disk space was the cause; Defender could not be inspected without admin. Cause 1: Windows power throttling (EcoQoS) moves background processes onto the E-cores while another window (a game) is in front; `cargo-slot.ps1` now keeps cargo, rustc and the linker off it (0bcbfb17): **30 min**, link still 26 min. Cause 2: fat LTO is one thread, so anything else running slows it. Fix: `[profile.release]` is `lto = "thin"`, `codegen-units = 16`: **21 min clean, 13.5 min after touching `minecraft_net`** (link 11 min). The exe grows from 122 to 150 MB; upstream measured fat LTO at 5.7 % better p50 frame time than no cross-crate LTO, ThinLTO sits between. The old profile stays as `--profile fat`. |
 
 ## Phase 2: tracks
 Briefs: `docs/round8/<item>.md`, the multiplayer design `docs/MULTIPLAYER.md`.
@@ -37,6 +37,7 @@ Briefs: `docs/round8/<item>.md`, the multiplayer design `docs/MULTIPLAYER.md`.
 | 2 | end of round | - | - |
 
 ## Decisions
+- Release builds use ThinLTO (faster, robust while the PC is in use); `--profile fat` keeps the old fat-LTO build for an A/B if the owner sees lower frame rates.
 - Hit keys: 20 is the dragon; track B uses 21-25, track C 26-28.
 - Track D starts after the first merge: four debug target dirs fit on D:, five do not.
 - The multiplayer design names the branch `track-e8`; it is `track-e`.
