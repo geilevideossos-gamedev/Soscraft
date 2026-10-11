@@ -45,6 +45,7 @@ impl MobOutcome {
 
 /// The player acting on a mob.
 pub struct Actor<'a> {
+    pub player: u64,
     pub inventory: &'a mut Inventory,
     pub selected: usize,
     /// Creative mode: held items are not used up or worn.
@@ -231,7 +232,7 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
         }
         MobHit::Villager(id) => {
             // `Villager.mobInteract`: trading opens, or it shakes its head.
-            if world.villager_interact(id, 0, true, held.as_deref()) == minecraftoss_entities::world::VillagerUse::Pass {
+            if world.villager_interact(id, actor.player, true, held.as_deref()) == minecraftoss_entities::world::VillagerUse::Pass {
                 return outcome;
             }
             outcome.handled = true;
@@ -240,7 +241,7 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
         MobHit::Wolf(id) => {
             // `Wolf.mobInteract`: taming with bones, feeding, collar dyes,
             // love, and its owner's orders to sit or stand.
-            if world.wolf_interact(id, 0, actor.inventory, selected, infinite) == InteractionResult::Pass {
+            if world.wolf_interact(id, actor.player, actor.inventory, selected, infinite) == InteractionResult::Pass {
                 return outcome;
             }
         }

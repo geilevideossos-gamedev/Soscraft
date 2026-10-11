@@ -3444,6 +3444,11 @@ impl EntityWorld {
         }
     }
 
+    pub fn forget_player(&mut self, player: u64) {
+        self.player_fights.remove(&player);
+        self.player_main_hands.remove(&player);
+    }
+
     /// Entity events (`broadcastEntityEvent`) since last taken.
     pub fn take_entity_events(&mut self) -> Vec<(u64, u8)> {
         std::mem::take(&mut self.entity_events)

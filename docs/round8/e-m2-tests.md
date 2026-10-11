@@ -92,3 +92,21 @@ Put the kit below in the `.env` next to the exe before the first start: both pla
 ```
 IW4L_MINECRAFT_KIT=minecraft:stone_pickaxe,minecraft:ender_eye*4,minecraft:cobblestone*32
 ```
+
+## E11. The level thread serves every player, not player 0
+
+The level thread now keeps pickups, XP orbs and the XP pickup delay, mob fights (who hurt whom, for wolves), the held item villagers see and trading for each player by number, and random ticks run around every player. The host's game still hands only the host to it; the friends follow with E12. So this checks that the host's pickups, orbs, tame wolf and crops work exactly as before, and that a friend leaving does not disturb the host.
+
+Put the kit below in the `.env` next to the exe before the first start.
+
+1. Start both windows: `& scripts\mp-local.ps1 -World mp-m2-e11 -Fresh`. Spawn in both. Host window: `/time set day`, then `/op Friend`.
+2. Host window: place a cobblestone and break it with the stone pickaxe. The cobblestone drops and flies into the hotbar with the pickup pop.
+3. Host window: look at the ground two blocks ahead and throw the 8 bottles o' enchanting one after the other. The green orbs fly to the host and are taken one at a time, and the XP bar fills. Screenshot while the orbs fly. **S9**
+4. Host window: use the wolf spawn egg on the ground, then right click the wolf with bones until hearts show (it is tamed and sits). Right click it with an empty hand: it stands up. Type `/time set night`, then `/summon minecraft:zombie ~6 ~ ~`. Let the zombie hit the host once: the wolf runs at the zombie and bites it. Screenshot while it bites. **S10**
+5. Host window: `/time set day`. Place the 4 dirt in a row, till them with the hoe and plant the wheat seeds. Type `/gamerule random_tick_speed 300`: within about 10 seconds the wheat grows to full height. Then `/gamerule random_tick_speed 3`.
+6. Friend window: close the window (Escape, then quit). Host window: "Friend left the game" shows in yellow. Break another cobblestone: it is picked up as in step 2, and the wolf still follows the host.
+7. Close the host window (type `quit` in the script's console).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:stone_pickaxe,minecraft:cobblestone*32,minecraft:experience_bottle*8,minecraft:wolf_spawn_egg,minecraft:bone*8,minecraft:dirt*4,minecraft:wooden_hoe,minecraft:wheat_seeds*4
+```

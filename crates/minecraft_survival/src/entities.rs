@@ -11,7 +11,7 @@ use minecraft_terrain::level_storage::WeatherData;
 use minecraft_terrain::lighting::SkyLight;
 use minecraft_terrain::mesh::{Atlas, ChunkMesh};
 use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
-use minecraft_terrain::server::{HowBroken, PlayerEdit, ServerHandle, ServerSim, TickInput};
+use minecraft_terrain::server::{HowBroken, PlayerEdit, ServerHandle, ServerSim, TickInput, TickPlayer};
 use minecraft_terrain::terrain::TerrainStream;
 use minecraft_terrain::client_mobs::{ClientMobs, server_mobs};
 use minecraft_terrain::mesh::ItemVisuals;
@@ -125,7 +125,6 @@ pub struct Entities {
     pub item_uses_done: Vec<SentItemUse>,
     eggs_waiting: minecraft_terrain::spawn_egg::EggsWaiting,
     pub command_summons: Vec<(minecraft_commands::PlayerId, Result<String, String>)>,
-    summoners: std::collections::VecDeque<minecraft_commands::PlayerId>,
     pub command_jobs: Vec<Box<dyn std::any::Any + Send>>,
     jobs_running: usize,
     unread: Vec<minecraft_terrain::server::Output>,
@@ -275,7 +274,6 @@ impl Entities {
             item_uses_done: Vec::new(),
             eggs_waiting: Default::default(),
             command_summons: Vec::new(),
-            summoners: Default::default(),
             command_jobs: Vec::new(),
             jobs_running: 0,
             unread: Vec::new(),
@@ -553,7 +551,7 @@ impl Entities {
             can_critical: blow.can_critical,
             can_sweep: blow.can_sweep,
         };
-        self.server.mob_action(hit, Some(attack), inventory, selected, false);
+        self.server.mob_action(PLAYER, hit, Some(attack), inventory, selected, false);
         true
     }
 
@@ -593,7 +591,7 @@ impl Entities {
     }
 
     pub fn item_on_block(&mut self, pos: (i32, i32, i32), action: minecraft_terrain::server::ItemOnBlock, sent: SentItemUse) {
-        self.server.item_on_block(pos, action);
+        self.server.item_on_block(PLAYER, pos, action);
         self.item_use_waiting = Some(sent);
     }
 
@@ -603,7 +601,7 @@ impl Entities {
     }
 
     pub fn bottle_breath(&mut self, feet: DVec3, height: f64, sent: SentItemUse) {
-        self.server.bottle_breath(feet, height);
+        self.server.bottle_breath(PLAYER, feet, height);
         self.item_use_waiting = Some(sent);
     }
 
@@ -630,6 +628,7 @@ impl Entities {
     }
 
     pub fn settle_player(&mut self, id: u64, inventory: &mut Inventory, selected: usize, feet: Option<[f64; 3]>) {
+        self.server.player_left(id);
         if id != PLAYER {
             return;
         }
@@ -643,13 +642,13 @@ impl Entities {
     pub fn hatch_egg(&mut self, inventory: &Inventory, slot: usize, kind: String, position: [f64; 3], spends: bool) {
         if self.eggs_waiting.send_from(inventory, slot, spends) {
             let y_rot = minecraftoss_core::entity_data::wrap_degrees(self.random.next_float() * 360.0);
-            self.server.hatch_egg(kind, position, y_rot);
+            self.server.hatch_egg(PLAYER, kind, position, y_rot);
         }
     }
 
     pub fn egg_on_spawner(&mut self, inventory: &Inventory, slot: usize, kind: String, pos: (i32, i32, i32), spends: bool) {
         if self.eggs_waiting.send_from(inventory, slot, spends) {
-            self.server.spawner_egg(pos, kind);
+            self.server.spawner_egg(PLAYER, pos, kind);
         }
     }
 
@@ -672,8 +671,7 @@ impl Entities {
     }
 
     pub fn summon(&mut self, source: minecraft_commands::PlayerId, kind: String, position: [f64; 3], nbt: Option<minecraftoss_core::nbt::Tag>) {
-        self.summoners.push_back(source);
-        self.server.summon(kind, position, nbt);
+        self.server.summon(u64::from(source.0), kind, position, nbt);
     }
 
     pub fn run_job(&mut self, job: minecraft_terrain::server::Job) {
@@ -820,7 +818,7 @@ impl Entities {
             can_sweep: false,
         };
         self.server
-            .mob_action(hit, Some(attack), &minecraftoss_player::inventory::Inventory::default(), 0, false);
+            .mob_action(PLAYER, hit, Some(attack), &minecraftoss_player::inventory::Inventory::default(), 0, false);
     }
 
     pub fn blast(&mut self, key: u64, damage: f32, center: [f64; 3], impact: f32, by_player: bool, slow_ticks: i32) {
@@ -915,13 +913,16 @@ impl Entities {
             let candidate = player_candidate(player);
             self.server.tick(TickInput {
                 clocks,
-                players: if player.alive { vec![player.feet] } else { Vec::new() },
+                players: vec![TickPlayer {
+                    id: PLAYER,
+                    feet: player.feet,
+                    alive: player.alive,
+                    main_hand: inventory.slots.get(selected).and_then(Option::as_ref).filter(|_| player.picks_up).map(|s| s.id.clone()),
+                    pickup: player.picks_up.then(|| (Box::new(inventory.clone()), selected)),
+                }],
                 difficulty: self.difficulty,
-                simulation_center: center,
+                simulation_centres: vec![center],
                 simulation_distance: 8,
-                pickup: player
-                    .picks_up
-                    .then(|| (player.feet, Box::new(inventory.clone()), selected)),
                 mob_players: vec![candidate],
                 mob_views: vec![(
                     PLAYER,
@@ -949,7 +950,7 @@ impl Entities {
         for output in self.take_outputs() {
             self.jobs_running = self.jobs_running.saturating_sub(output.jobs.len());
             self.server_handled = output.handled;
-            for &(id, position, value) in &output.orbs_taken {
+            for &(_, id, position, value) in output.orbs_taken.iter().filter(|orb| orb.0 == PLAYER) {
                 let tick_count = self.orbs.iter().find(|orb| orb.id == id).map_or(0, |orb| orb.tick_count);
                 let orb = ServerOrb { id, position, previous_position: position, value, tick_count };
                 self.orb_pickups.push(minecraft_terrain::orb_render::OrbPickup::new(orb, orb_pickup_target));
@@ -1002,7 +1003,7 @@ impl Entities {
             if let Some(weather) = output.weather_data {
                 self.weather_data = Some(weather);
             }
-            self.server_picked.extend(output.picked);
+            self.server_picked.extend(output.picked.into_iter().filter(|(id, _)| *id == PLAYER).map(|(_, picked)| picked));
             for answer in output.eye_answers.iter().filter(|answer| answer.owner == PLAYER) {
                 if answer.flew() {
                     diag::info!(World, "{}", answer.line());
@@ -1010,20 +1011,19 @@ impl Entities {
                     diag::warn!(World, "{}", answer.line());
                 }
             }
-            for used in output.item_uses {
+            for (_, used) in output.item_uses.into_iter().filter(|(id, _)| *id == PLAYER) {
                 if let Some(sent) = self.item_use_waiting.take().filter(|_| used) {
                     self.item_uses_done.push(sent);
                 }
             }
-            for summoned in output.summoned {
+            for (_, summoned) in output.summoned.into_iter().filter(|(id, _)| *id == PLAYER) {
                 let egg = self.eggs_waiting.answer(inventory, summoned.is_ok());
                 if let (Some(egg), Err(error)) = (egg, summoned) {
                     diag::warn!(World, "Minecraft {egg} hatched nothing: {error}");
                 }
             }
-            for summoned in output.command_summons {
-                let source = self.summoners.pop_front().unwrap_or(crate::commands::HOST);
-                self.command_summons.push((source, summoned));
+            for (source, summoned) in output.command_summons {
+                self.command_summons.push((minecraft_commands::PlayerId(source as u32), summoned));
             }
             self.dragons_killed.extend(output.dragons_killed);
             self.fight_reports.extend(output.fight_reports);
@@ -1032,13 +1032,13 @@ impl Entities {
             self.spawners.block_entities(&output.block_entities);
             self.block_entity_changes.extend(output.block_entities);
             self.destroyed.extend(output.destroyed);
-            self.experience_found += output.orbs_taken.iter().map(|orb| orb.2 as f32).sum::<f32>();
+            self.experience_found += output.orbs_taken.iter().filter(|orb| orb.0 == PLAYER).map(|orb| orb.3 as f32).sum::<f32>();
             let camera = DVec3::from_array(player.feet) + DVec3::Y * f64::from(EYE_HEIGHT);
             for sound in &output.mob_sounds {
                 let heard = minecraft_terrain::ender_dragon::heard_at(&sound.event, sound.position, camera);
                 self.sounds.push((sound.event.clone(), heard, sound.volume, sound.pitch));
             }
-            for sound in output.mob_results.iter().flat_map(|result| result.sounds.iter()) {
+            for sound in output.mob_results.iter().flat_map(|(_, result)| result.sounds.iter()) {
                 self.sounds.push((sound.event.clone(), sound.position, sound.volume, sound.pitch));
             }
             // `ServerExplosion`'s sound: loud, pitched down.
@@ -1515,7 +1515,9 @@ fn fireball_of(key: u64) -> Option<u64> {
 fn take_late(outputs: &mut [minecraft_terrain::server::Output], player: u64) -> Vec<Picked> {
     let mut picked = Vec::new();
     for output in outputs {
-        picked.append(&mut output.picked);
+        let (mine, others): (Vec<_>, Vec<_>) = std::mem::take(&mut output.picked).into_iter().partition(|(id, _)| *id == player);
+        output.picked = others;
+        picked.extend(mine.into_iter().map(|(_, stack)| stack));
         output.pearl_teleports.retain(|(id, _)| *id != player);
         output.player_potions.retain(|hit| hit.player != player);
         output.players_pushed.retain(|(id, _)| *id != player);
@@ -1549,13 +1551,15 @@ mod tests {
     #[test]
     fn a_leaving_player_gets_the_late_picks_and_loses_their_pearls_and_pushes() {
         let mut outputs = vec![minecraft_terrain::server::Output::default(), minecraft_terrain::server::Output::default()];
-        outputs[0].picked.push((7, [1.0, 64.0, 2.0], "minecraft:dirt".to_owned(), 3, None));
+        outputs[0].picked.push((PLAYER, (7, [1.0, 64.0, 2.0], "minecraft:dirt".to_owned(), 3, None)));
+        outputs[0].picked.push((5, (9, [1.0, 64.0, 2.0], "minecraft:sand".to_owned(), 2, None)));
         outputs[0].pearl_teleports = vec![(PLAYER, [0.0; 3]), (5, [1.0; 3])];
-        outputs[1].picked.push((8, [1.0, 64.0, 2.0], "minecraft:cobblestone".to_owned(), 1, None));
+        outputs[1].picked.push((PLAYER, (8, [1.0, 64.0, 2.0], "minecraft:cobblestone".to_owned(), 1, None)));
         outputs[1].players_pushed = vec![(PLAYER, DVec3::X), (5, DVec3::Y)];
         let late = take_late(&mut outputs, PLAYER);
         assert_eq!(late.iter().map(|picked| picked.0).collect::<Vec<_>>(), vec![7, 8]);
-        assert!(outputs.iter().all(|output| output.picked.is_empty()));
+        assert_eq!(outputs[0].picked.iter().map(|(player, picked)| (*player, picked.0)).collect::<Vec<_>>(), vec![(5, 9)], "another player's pick stays");
+        assert!(outputs[1].picked.is_empty());
         assert_eq!(outputs[0].pearl_teleports, vec![(5, [1.0; 3])]);
         assert_eq!(outputs[1].players_pushed, vec![(5, DVec3::Y)]);
         let mut inventory = Inventory::default();

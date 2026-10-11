@@ -663,11 +663,16 @@ mod tests {
     fn tick_input(feet: DVec3) -> crate::server::TickInput {
         crate::server::TickInput {
             clocks: crate::server::ClockTicks::default(),
-            players: vec![feet.to_array()],
+            players: vec![crate::server::TickPlayer {
+                id: 0,
+                feet: feet.to_array(),
+                alive: true,
+                main_hand: None,
+                pickup: None,
+            }],
             difficulty: 2,
-            simulation_center: ((feet.x.floor() as i32) >> 4, (feet.z.floor() as i32) >> 4),
+            simulation_centres: vec![((feet.x.floor() as i32) >> 4, (feet.z.floor() as i32) >> 4)],
             simulation_distance: 2,
-            pickup: None,
             mob_players: Vec::new(),
             mob_views: Vec::new(),
             mob_vitals: Vec::new(),
@@ -818,11 +823,11 @@ mod tests {
         server.throw_eye(7, throw.clone());
         server.wait_idle();
         let outputs = server.poll();
-        let uses: Vec<bool> = outputs
+        let uses: Vec<(u64, bool)> = outputs
             .iter()
             .flat_map(|out| out.item_uses.clone())
             .collect();
-        assert_eq!(uses, vec![false]);
+        assert_eq!(uses, vec![(7, false)]);
         let answers: Vec<EyeAnswer> = outputs
             .into_iter()
             .flat_map(|out| out.eye_answers)
@@ -914,11 +919,11 @@ mod tests {
         server.throw_eye(7, throw.clone());
         server.wait_idle();
         let outputs = server.poll();
-        let uses: Vec<bool> = outputs
+        let uses: Vec<(u64, bool)> = outputs
             .iter()
             .flat_map(|out| out.item_uses.clone())
             .collect();
-        assert_eq!(uses, vec![true]);
+        assert_eq!(uses, vec![(7, true)]);
         let answers: Vec<EyeAnswer> = outputs
             .into_iter()
             .flat_map(|out| out.eye_answers)

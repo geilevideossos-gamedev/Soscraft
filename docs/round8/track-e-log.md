@@ -589,10 +589,50 @@ Commit: the merge commit "Merge minecraft-survival (track A) into track E". Its 
 - **Test steps:** `docs/round8/e-m2-tests.md`, section "Merge of track A".
 - **Kit:** `minecraft:stone_pickaxe` x1, `minecraft:ender_eye` x4, `minecraft:cobblestone` x32.
 
+### E11. The level thread serves every player, not player 0
+
+Commit: see `git log` ("The level thread serves every player, not player 0"). The previous commit is `8230328a` (the merge of track A).
+
+- **Changed:**
+  - `crates/minecraft_terrain/src/server.rs`, built on track A's batches (`run_tick` per tick, `finish_batch` once per batch):
+    - `TickInput.players` is a list of `TickPlayer { id, feet, alive, main_hand, pickup }`, which replaces the old feet list, the single `pickup` and the held item read from it. `simulation_centres` replaces `simulation_center`, and `player_hurts` carries the hurt player: `(player, source, damage type)`.
+    - `run_tick` runs `tick_player`, `player_hurt` and `set_player_main_hand` for each player. Each player with a `pickup` takes the items, then the tridents (with their own body, not the first one), then one orb, in list order (vanilla's `Player.aiStep` touch, player after player).
+    - `take_xp_delay` is a map by player, and so are the trading menu's `merchant_closing` and `check_merchant` (every player with an open trading screen is checked). `mob_action` and `merchant` take the player, and `merchant_view(0)` is gone. `mob_actions::Actor` carries the player, so feeding, taming and trading act for that player (`villager_interact`, `wolf_interact`).
+    - `set_simulation_areas(centres, distance)`: random ticks and the ticking chunks are the union of every player's square, each chunk once, in X then Z order. With one player this is the same list as before. `set_simulation_area` calls it with one centre, so the existing callers are unchanged.
+    - **Commands carry the player:** `ItemOnBlock`, `Summon`, `HatchEgg`, `SpawnerEgg`, `MobAction`, `Merchant` and `BottleBreath` gain `player`, and `ThrowEye` already had its `owner`.
+    - **`Output` carries the player:** `picked`, `orbs_taken`, `item_uses`, `summoned`, `command_summons`, `merchant` and `mob_results`.
+    - `Command::PlayerLeft(id)` and `ServerHandle::player_left`. The player is taken out of a batch that is still running (`TickInput::remove_player`: players, mob candidates, views, vitals and hurts), so the ticks left in it pick nothing more for them. What they picked before is already in the output being built, and goes out with it. The player's XP delay, trading state, last feet, fights and held item (`EntityWorld::forget_player`, new in the vendored `minecraftoss/entities/src/world.rs`) are dropped. An open trading screen is closed, and its payments drop at their last feet.
+    - `weather` follows the first player (the host) while alive, as before.
+  - `crates/minecraft_survival/src/entities.rs`:
+    - The host's tick hands the level thread one `TickPlayer` (id `PLAYER`, the held item only while it picks up, as before).
+    - The host takes only its own picks, orbs, item uses and egg answers.
+    - `/summon` passes its source as the player id. The `summoners` queue is gone, because the answer names the source.
+    - `settle_player` sends `PlayerLeft` for every leaving player.
+    - `take_late` takes only the leaving player's late picks.
+- **Tests:**
+  - `minecraft_terrain` `server::tests`, all on real 26.3 data:
+    - `two_players_pick_up_their_own_items_and_orbs`: each gets their own stack and orb, in their own inventory copy.
+    - `each_player_waits_out_their_own_xp_delay`: both take an orb on ticks 0 and 2. With one shared delay, the second player would wait.
+    - `a_zombie_targets_the_nearer_player`: 3 blocks against 7, with the farther player listed first.
+    - `a_hurt_on_player_one_sends_only_player_ones_wolf_after_the_mob`: two owners and two tame wolves. Only player 1's wolf targets the zombie that hurt player 1.
+    - `random_ticks_run_around_every_player`: two squares 10 chunks apart, and overlapping squares tick each chunk once.
+    - `a_player_who_leaves_keeps_the_picks_made_and_picks_nothing_more`: the picks and the orb before the leave are kept, the running batch drops the player, and their state is cleared. It also runs a batch, `player_left` and a further tick through the thread.
+  - Existing tests follow the new shapes. `command_summons_do_not_reach_the_egg_results` and `the_server_answers_each_item_use_so_one_source_fills_one_bucket` now also check that each answer names its player, and the eye of ender answers name their owner.
+  - `minecraft_survival`: `a_leaving_player_gets_the_late_picks_and_loses_their_pearls_and_pushes` also checks that another player's late pick stays.
+  - Results: `test -p minecraft_terrain` 928 passed (3 ignored), `test -p minecraft_survival` 444 + 1, `test -p minecraftoss-entities --lib` 83, `check -p launcher` green.
+- **Decisions:**
+  - **`UseBlock` carries no player.** The level's block use reads no player, and its only output (the dragon egg's teleport) is level-wide, so a player field would never be read. `BoneMeal` is unchanged too: friends' item uses come with E13c.
+  - **The tracker inputs stay as they are:** `TickInput.tracking` and `tracked_mobs` are still the host's mob mirror. Tracking for each friend is section 9.2 (M3).
+  - **`mob_players`, `mob_views` and `mob_vitals` stay separate lists.** They were already keyed by player and the entity world already reads them for every player, so `TickPlayer` holds only what was player 0's alone.
+  - **A disconnected player's trading payments drop at their feet.** This is vanilla's `AbstractContainerMenu.clearContainer` for a player who `hasDisconnected()`. The level thread has no inventory of theirs to return them to.
+  - **The host still hands only itself to the level thread.** Friends become `TickPlayer`s, with their own picks, orbs, mob hits and kill credit, in E12 (`Entities::tick` with every player in the level, `PlayerOutputs` per player). Until then, outputs for other ids are left alone, and none arrive.
+- **Test steps:** `docs/round8/e-m2-tests.md`, section E11 (the host's pickups, orbs, tame wolf and crops as before, and a friend leaving).
+- **Kit:** `minecraft:stone_pickaxe` x1, `minecraft:cobblestone` x32, `minecraft:experience_bottle` x8, `minecraft:wolf_spawn_egg` x1, `minecraft:bone` x8, `minecraft:dirt` x4, `minecraft:wooden_hoe` x1, `minecraft:wheat_seeds` x4.
+
 ## Combined kit for every test in this track
 
-`minecraft:obsidian` x10, `minecraft:flint_and_steel` x1, `minecraft:chest` x1, `minecraft:cobblestone` x32, `minecraft:lava_bucket` x1, `minecraft:torch` x16, `minecraft:cooked_beef` x8, `minecraft:crafting_table` x1, `minecraft:shield` x1, `minecraft:skeleton_spawn_egg` x1, `minecraft:ender_pearl` x4, `minecraft:totem_of_undying` x1, `minecraft:white_bed` x1, `minecraft:elytra` x1, `minecraft:firework_rocket` x8, `minecraft:stone_pickaxe` x1, `minecraft:ender_eye` x4 (17 stacks).
+`minecraft:obsidian` x10, `minecraft:flint_and_steel` x1, `minecraft:chest` x1, `minecraft:cobblestone` x32, `minecraft:lava_bucket` x1, `minecraft:torch` x16, `minecraft:cooked_beef` x8, `minecraft:crafting_table` x1, `minecraft:shield` x1, `minecraft:skeleton_spawn_egg` x1, `minecraft:ender_pearl` x4, `minecraft:totem_of_undying` x1, `minecraft:white_bed` x1, `minecraft:elytra` x1, `minecraft:firework_rocket` x8, `minecraft:stone_pickaxe` x1, `minecraft:ender_eye` x4, `minecraft:experience_bottle` x8, `minecraft:wolf_spawn_egg` x1, `minecraft:bone` x8, `minecraft:dirt` x4, `minecraft:wooden_hoe` x1, `minecraft:wheat_seeds` x4 (23 stacks).
 
 ```
-IW4L_MINECRAFT_KIT=obsidian*10,flint_and_steel,chest,cobblestone*32,lava_bucket,torch*16,cooked_beef*8,crafting_table,shield,skeleton_spawn_egg,ender_pearl*4,totem_of_undying,white_bed,elytra,firework_rocket*8,stone_pickaxe,ender_eye*4
+IW4L_MINECRAFT_KIT=obsidian*10,flint_and_steel,chest,cobblestone*32,lava_bucket,torch*16,cooked_beef*8,crafting_table,shield,skeleton_spawn_egg,ender_pearl*4,totem_of_undying,white_bed,elytra,firework_rocket*8,stone_pickaxe,ender_eye*4,experience_bottle*8,wolf_spawn_egg,bone*8,dirt*4,wooden_hoe,wheat_seeds*4
 ```
