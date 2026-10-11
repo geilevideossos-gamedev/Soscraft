@@ -362,3 +362,25 @@ Previous commit: 9f8b51e3
 ```
 IW4L_MINECRAFT_KIT=minecraft:shulker_spawn_egg*8,minecraft:zombie_spawn_egg*4,minecraft:shield,minecraft:end_stone*64,minecraft:purpur_block*64,minecraft:cooked_beef*32
 ```
+
+### 13. Minecraft shulker bullets glow and leave an end rod trail
+
+Previous commit: a9e98d20
+
+- **Changed:**
+  - `minecraftoss-entities` `shulker_bullet.rs`: the bullet turns halfway toward its motion each tick (`ProjectileUtil.rotateTowardsMovement(this, 0.5)`), keeping last tick's yaw and pitch for drawing, and gives its trail point (`position - motion + 0.15` up).
+  - `minecraft_terrain` `shulker_render.rs`: `ShulkerBulletModel` (64 × 32: 8 × 8 × 2 at 0,0, 2 × 8 × 8 at 0,10, 8 × 2 × 8 at 20,0) posed as `ShulkerBulletRenderer`: lifted 0.15, spun by `sin(age × 0.1) × 180°` about Y, `cos(age × 0.1) × 180°` about X and `sin(age × 0.15) × 360°` about Z, scaled (-0.5, -0.5, 0.5), the model turned by the bullet's yaw and pitch; drawn full bright with `entity/shulker/spark` (cut out), then 1.5 times larger in the translucent pass with colour `0x26FFFFFF` (alpha 0.149). Interpolated with the partial tick. `mesh.rs` puts the spark sheet in the atlas.
+  - `ambient_particles.rs`: `Kind::EndRod` (`EndRodParticle`: still, gravity 0.0125, friction 0.91, size × 0.75, 60 to 71 ticks, `glitter_7` down to `glitter_0` by age, fading out and toward `#F2DEC9` over its second half, full bright, translucent, no collision) and `Kind::Crit` (`CritParticle`: a tenth of the spread speed plus 0.4 of the motion, grey 0.6 to 0.9 turning red, gravity 0.5, friction 0.7, 4 to 10 ticks, growing in over its first thirty-second, ticked once when made, no collision); `puffs` spreads a count of particles by a Gaussian as `ClientPacketListener.handleParticleEvent` does for `sendParticles`.
+  - `server.rs`: the tick output carries the bullets' puffs. `minecraft_survival` `entities.rs`: two explosion puffs (spread 0.2) where a bullet hits a block, fifteen crits where one is shot or punched, one end rod sparkle per bullet each client tick, and the bullets drawn with the mobs.
+- **Tests:** `entities` `shulker_bullet::it_turns_halfway_toward_its_motion_each_tick_and_trails_behind`; `minecraft_terrain` `shulker_render::a_bullet_is_three_crossed_slabs_in_a_faint_bigger_glow` (2 × 3 cuboids, alpha 1 and 0.149, full bright, the glow 1.5 times the reach), `shulker_render::a_bullet_spins_with_its_age` (ages 0 and 10), `ambient_particles::end_rod_sparkles_drift_down_glitter_and_fade_out` (lifetime 60 to 71, the fall, the fade and the sprites), `ambient_particles::crits_fly_out_slowly_and_redden` (and two size-2 explosion puffs); `minecraft_survival` `entities::a_struck_bullet_sparks_and_one_that_lands_puffs`.
+- **Decisions:** the end rod and crit particles live in `ambient_particles.rs` beside the other client particles rather than in a module of their own, since they share its mesh, atlas and tick; vanilla adds a new particle after the engine's tick, so the trail is added after the particles tick.
+- **Test steps:** (survival, `/difficulty normal`, daytime, an end stone floor about 15 × 15)
+  1. Use a shulker egg on the floor and stand 10 blocks away in its sight. Its bullets glow, spin and move in straight steps that turn at right angles, leaving a white sparkle trail that drifts down and fades (**1**).
+  2. Let a bullet hit the floor: a small explosion puff and a pop.
+  3. Shoot a bullet with the MW2 gun or punch it: it pops with red-white sparks (**2**).
+  4. Walk behind a wall: a bullet that hits the wall puffs there.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:shulker_spawn_egg*4,minecraft:end_stone*64,minecraft:purpur_block*64,minecraft:cooked_beef*16
+```

@@ -68,6 +68,10 @@ pub struct ShulkerBullet {
     pub target_uuid: Option<u128>,
     pub tick_count: i32,
     pub alive: bool,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub yaw_o: f32,
+    pub pitch_o: f32,
 }
 
 impl ShulkerBullet {
@@ -84,7 +88,47 @@ impl ShulkerBullet {
             target_uuid: None,
             tick_count: 0,
             alive: true,
+            yaw: 0.0,
+            pitch: 0.0,
+            yaw_o: 0.0,
+            pitch_o: 0.0,
         }
+    }
+
+    pub fn trail(&self) -> DVec3 {
+        self.position - self.velocity + DVec3::new(0.0, 0.15, 0.0)
+    }
+
+    pub fn turn(&self, partial: f32) -> (f32, f32) {
+        (
+            self.yaw_o + (self.yaw - self.yaw_o) * partial,
+            self.pitch_o + (self.pitch - self.pitch_o) * partial,
+        )
+    }
+
+    pub fn rotate_towards_movement(&mut self) {
+        let v = self.velocity;
+        if v.length_squared() == 0.0 {
+            return;
+        }
+        let across = (v.x * v.x + v.z * v.z).sqrt();
+        let degrees = 57.2957763671875;
+        self.yaw = (minecraftoss_player::mth::atan2(v.z, v.x) * degrees) as f32 + 90.0;
+        self.pitch = (minecraftoss_player::mth::atan2(across, v.y) * degrees) as f32 - 90.0;
+        while self.pitch - self.pitch_o < -180.0 {
+            self.pitch_o -= 360.0;
+        }
+        while self.pitch - self.pitch_o >= 180.0 {
+            self.pitch_o += 360.0;
+        }
+        while self.yaw - self.yaw_o < -180.0 {
+            self.yaw_o -= 360.0;
+        }
+        while self.yaw - self.yaw_o >= 180.0 {
+            self.yaw_o += 360.0;
+        }
+        self.pitch = self.pitch_o + (self.pitch - self.pitch_o) * 0.5;
+        self.yaw = self.yaw_o + (self.yaw - self.yaw_o) * 0.5;
     }
 
     pub fn shoot(
@@ -196,6 +240,8 @@ impl ShulkerBullet {
         random: &mut LegacyRandom,
     ) -> Option<BulletHit> {
         self.tick_count += 1;
+        self.yaw_o = self.yaw;
+        self.pitch_o = self.pitch;
         if self.position.y < f64::from(world.min_y() - 64) {
             self.alive = false;
             return None;
@@ -212,6 +258,7 @@ impl ShulkerBullet {
         }
         let hit = self.hit_on_move(world, targets);
         self.position += self.velocity;
+        self.rotate_towards_movement();
         if let Some(aim) = target {
             self.steer(world, aim, random);
         }
@@ -528,6 +575,28 @@ mod tests {
         }
         let hit = hit.expect("it lands");
         assert_eq!((hit.entity, hit.block), (None, Some((0, 9, 0))));
+    }
+
+    #[test]
+    fn it_turns_halfway_toward_its_motion_each_tick_and_trails_behind() {
+        let mut bullet = ShulkerBullet::new(DVec3::new(0.5, 10.0, 0.5));
+        bullet.velocity = DVec3::new(0.0, 0.0, 0.2);
+        bullet.rotate_towards_movement();
+        assert!((bullet.yaw - 270.0).abs() < 1e-3, "{}", bullet.yaw);
+        let mut bullet = ShulkerBullet::new(DVec3::new(0.5, 10.0, 0.5));
+        bullet.velocity = DVec3::new(0.2, 0.0, 0.0);
+        bullet.rotate_towards_movement();
+        assert!((bullet.yaw - 45.0).abs() < 1e-3, "{}", bullet.yaw);
+        assert!(bullet.pitch.abs() < 1e-3, "{}", bullet.pitch);
+        bullet.yaw_o = bullet.yaw;
+        bullet.rotate_towards_movement();
+        assert!((bullet.yaw - 67.5).abs() < 1e-3, "{}", bullet.yaw);
+        assert!((bullet.turn(0.5).0 - 56.25).abs() < 1e-3);
+        bullet.velocity = DVec3::new(0.0, -0.3, 0.0);
+        bullet.pitch_o = 0.0;
+        bullet.rotate_towards_movement();
+        assert!((bullet.pitch - 45.0).abs() < 1e-3, "{}", bullet.pitch);
+        assert!((bullet.trail() - DVec3::new(0.5, 10.45, 0.5)).length() < 1e-9);
     }
 
     #[test]

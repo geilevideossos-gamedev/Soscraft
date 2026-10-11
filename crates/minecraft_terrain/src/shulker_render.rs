@@ -6,7 +6,7 @@ use crate::{
     pack::ResourceId,
 };
 use glam::{DVec3, Quat, Vec3};
-use minecraftoss_entities::world::ShulkerEntity;
+use minecraftoss_entities::world::{ShulkerBulletEntity, ShulkerEntity};
 use minecraftoss_player::Face;
 use std::f32::consts::{FRAC_PI_2, PI};
 
@@ -17,9 +17,25 @@ pub const BASE: Part = ([-8.0, -8.0, -8.0], [8.0, 0.0, 8.0], [0.0, 28.0]);
 pub const HEAD: Part = ([-3.0, 0.0, -3.0], [3.0, 6.0, 3.0], [0.0, 52.0]);
 const TEXTURE_SIZE: [f32; 2] = [64.0, 64.0];
 const PIVOT: Vec3 = Vec3::new(0.0, 0.5, 0.0);
+pub const SPARK: &str = "minecraft:entity/shulker/spark";
+pub const BULLET_PARTS: [Part; 3] = [
+    ([-4.0, -4.0, -1.0], [4.0, 4.0, 1.0], [0.0, 0.0]),
+    ([-1.0, -4.0, -4.0], [1.0, 4.0, 4.0], [0.0, 10.0]),
+    ([-4.0, -1.0, -4.0], [4.0, 1.0, 4.0], [20.0, 0.0]),
+];
+const BULLET_TEXTURE_SIZE: [f32; 2] = [64.0, 32.0];
+const BULLET_LIFT: f64 = 0.15;
+const BULLET_SCALE: f32 = 0.5;
+const GLOW_SCALE: f32 = 1.5;
+pub const GLOW_ALPHA: f32 = 38.0 / 255.0;
+const MODEL_ORIGIN: [f32; 3] = [0.0, 24.016, 0.0];
 
 fn sin(x: f32) -> f32 {
     minecraftoss_player::mth::sin(f64::from(x))
+}
+
+fn cos(x: f32) -> f32 {
+    minecraftoss_player::mth::cos(f64::from(x))
 }
 
 pub fn texture(color: Option<u8>) -> ResourceId {
@@ -161,6 +177,90 @@ pub fn append_shulkers<'a>(
     crate::cow_render::apply_overlays(mesh, &marks);
 }
 
+pub fn bullet_spin(age_in_ticks: f32) -> Quat {
+    let yaw = sin(age_in_ticks * 0.1) * 180.0;
+    let pitch = cos(age_in_ticks * 0.1) * 180.0;
+    let roll = sin(age_in_ticks * 0.15) * 360.0;
+    Quat::from_rotation_y(yaw.to_radians())
+        * Quat::from_rotation_x(pitch.to_radians())
+        * Quat::from_rotation_z(roll.to_radians())
+}
+
+pub struct BulletPose {
+    pub feet: DVec3,
+    pub age_in_ticks: f32,
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+pub fn append_bullet(
+    core: &mut ChunkMesh,
+    glow: &mut ChunkMesh,
+    pose: &BulletPose,
+    region: [f32; 4],
+) {
+    let feet = pose.feet + DVec3::Y * BULLET_LIFT;
+    let spin = bullet_spin(pose.age_in_ticks);
+    let turn = Quat::from_rotation_y(pose.yaw * 0.017453292)
+        * Quat::from_rotation_x(pose.pitch * 0.017453292);
+    for (mesh, scale, alpha) in [
+        (core, BULLET_SCALE, 1.0),
+        (glow, BULLET_SCALE * GLOW_SCALE, GLOW_ALPHA),
+    ] {
+        let start = mesh.vertices.len();
+        for (from, to, uv) in BULLET_PARTS {
+            cube_scaled(
+                mesh,
+                feet,
+                spin,
+                Vec3::splat(scale),
+                region,
+                15.0,
+                15.0,
+                from,
+                to,
+                uv,
+                MODEL_ORIGIN,
+                turn,
+                [1.0; 3],
+                BULLET_TEXTURE_SIZE,
+                None,
+                false,
+            );
+        }
+        for vertex in &mut mesh.vertices[start..] {
+            vertex.color[3] = alpha;
+        }
+    }
+}
+
+pub fn append_bullets<'a>(
+    core: &mut ChunkMesh,
+    glow: &mut ChunkMesh,
+    bullets: impl IntoIterator<Item = &'a ShulkerBulletEntity>,
+    atlas: &Atlas,
+    partial: f32,
+) {
+    let partial = partial.clamp(0.0, 1.0);
+    let Ok(spark) = ResourceId::parse(SPARK) else {
+        return;
+    };
+    let region = atlas.entity_region(&spark);
+    for entity in bullets.into_iter().filter(|e| e.bullet.alive) {
+        let bullet = &entity.bullet;
+        let (yaw, pitch) = bullet.turn(partial);
+        let pose = BulletPose {
+            feet: entity
+                .previous_position
+                .lerp(bullet.position, f64::from(partial)),
+            age_in_ticks: bullet.tick_count as f32 + partial,
+            yaw,
+            pitch,
+        };
+        append_bullet(core, glow, &pose, region);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,6 +351,69 @@ mod tests {
         assert!(
             (low - 0.0).abs() < 0.01,
             "a wall shulker sits on its west face: {low}"
+        );
+    }
+
+    fn bullet_meshes(age_in_ticks: f32) -> (ChunkMesh, ChunkMesh) {
+        let (mut core, mut glow) = (ChunkMesh::default(), ChunkMesh::default());
+        let pose = BulletPose {
+            feet: DVec3::new(0.5, 64.0, 0.5),
+            age_in_ticks,
+            yaw: 0.0,
+            pitch: 0.0,
+        };
+        append_bullet(&mut core, &mut glow, &pose, [0.0, 0.0, 1.0, 1.0]);
+        (core, glow)
+    }
+
+    fn reach(mesh: &ChunkMesh) -> f32 {
+        let centre = Vec3::new(0.5, 64.15, 0.5);
+        mesh.vertices
+            .iter()
+            .map(|v| (Vec3::from_array(v.position) - centre).length())
+            .fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn a_bullet_is_three_crossed_slabs_in_a_faint_bigger_glow() {
+        let (core, glow) = bullet_meshes(0.0);
+        assert_eq!((core.vertices.len(), glow.vertices.len()), (3 * 24, 3 * 24));
+        assert!(core.vertices.iter().all(|v| v.color[3] == 1.0));
+        assert!(
+            glow.vertices
+                .iter()
+                .all(|v| (v.color[3] - 0.149).abs() < 1e-3)
+        );
+        assert!(
+            core.vertices
+                .iter()
+                .all(|v| v.sky_light == 15.0 && v.block_light == 15.0)
+        );
+        let corner = (4.0_f32 * 4.0 + 4.0 * 4.0 + 1.0).sqrt() / 16.0 * 0.5;
+        assert!((reach(&core) - corner).abs() < 1e-3, "{}", reach(&core));
+        assert!(
+            (reach(&glow) - corner * 1.5).abs() < 1e-3,
+            "{}",
+            reach(&glow)
+        );
+    }
+
+    #[test]
+    fn a_bullet_spins_with_its_age() {
+        let still = bullet_spin(0.0);
+        let want = Quat::from_rotation_x(PI);
+        assert!(still.dot(want).abs() > 0.9999, "{still:?}");
+        let ten = bullet_spin(10.0);
+        let yaw = sin(1.0) * 180.0;
+        let pitch = cos(1.0) * 180.0;
+        let roll = sin(1.5) * 360.0;
+        let want = Quat::from_rotation_y(yaw.to_radians())
+            * Quat::from_rotation_x(pitch.to_radians())
+            * Quat::from_rotation_z(roll.to_radians());
+        assert!(ten.dot(want).abs() > 0.9999);
+        assert_ne!(
+            bullet_meshes(0.0).0.vertices[0].position,
+            bullet_meshes(10.0).0.vertices[0].position
         );
     }
 

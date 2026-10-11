@@ -2389,6 +2389,7 @@ pub struct Output {
     pub level_events: Vec<(i32, (i32, i32, i32), i32)>,
     /// Sounds mobs made this tick.
     pub mob_sounds: Vec<minecraftoss_entities::world::MobSound>,
+    pub bullet_puffs: Vec<minecraftoss_entities::world::BulletPuff>,
     /// Items the player picked up: (entity ID, position, item, count, components).
     pub picked: Vec<(i32, [f64; 3], String, i32, Option<String>)>,
     /// What each `/summon` did: the type it made, or why it failed.
@@ -2820,6 +2821,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.level_events.extend(sim.level.level_events.drain(..).map(|(id, pos, data)| (id, (pos.x, pos.y, pos.z), data)));
                     out.mob_sounds.extend(sim.mobs.take_sounds());
                     out.egg_teleports.extend(sim.mobs.take_shulker_teleports());
+                    out.bullet_puffs.extend(sim.mobs.take_bullet_puffs());
                     out.mob_sounds.extend(sim.level.sounds.drain(..).map(|s| minecraftoss_entities::world::MobSound { event: s.event.to_owned(), position: glam::DVec3::from_array(s.pos), volume: s.volume, pitch: s.pitch, category: "ambient" }));
                     sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
                     out.mobs = Some(Box::new(sim.tracked_mobs(input.tracking.0, input.tracking.1)));

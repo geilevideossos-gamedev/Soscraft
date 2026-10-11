@@ -1006,6 +1006,9 @@ impl Entities {
             for effect in &output.explosion_effects {
                 self.ambient.explosion(DVec3::from_array(effect.center), effect.radius, effect.blocks, effect.interacts);
             }
+            for puff in &output.bullet_puffs {
+                self.ambient.puffs(bullet_puff_particle(puff.kind), puff.position, puff.kind.count(), 0.2);
+            }
             if let Some(mobs) = output.mobs {
                 self.world = *mobs;
                 for (feet, width, height) in self.client.receive(server_mobs(&self.world)) {
@@ -1179,6 +1182,9 @@ impl Entities {
         for _ in 0..ticks {
             self.poof.tick(scene);
             self.ambient.tick(scene);
+            for entity in self.world.shulker_bullets().iter().filter(|e| e.bullet.alive) {
+                self.ambient.add(minecraft_terrain::ambient_particles::Kind::EndRod, entity.bullet.trail(), DVec3::ZERO);
+            }
         }
     }
 
@@ -1243,6 +1249,7 @@ impl Entities {
         dragon_render::append_rays(&mut out.translucent, &self.dragons, atlas, partial);
         blaze_render::append_blazes(&mut out.models, w.blazes().iter(), poses, atlas, light, partial);
         shulker_render::append_shulkers(&mut out.models, w.shulkers().iter(), poses, atlas, light, partial);
+        shulker_render::append_bullets(&mut out.models, &mut out.translucent, w.shulker_bullets(), atlas, partial);
         let poppies = golem_render::append_iron_golems(&mut out.models, w.iron_golems().iter(), poses, atlas, light, partial);
         wolf_render::append_wolves(&mut out.models, w.wolves().iter(), poses, atlas, light, partial, w.game_time());
         flame_render::append_flames(
@@ -1349,6 +1356,13 @@ fn mob_hit(
         _ => None,
     };
     (damage > 0.0).then_some((damage, from, Some(toward), cause, effect))
+}
+
+fn bullet_puff_particle(kind: minecraftoss_entities::world::BulletPuffKind) -> minecraft_terrain::ambient_particles::Kind {
+    match kind {
+        minecraftoss_entities::world::BulletPuffKind::Hit => minecraft_terrain::ambient_particles::Kind::Explosion,
+        minecraftoss_entities::world::BulletPuffKind::Hurt => minecraft_terrain::ambient_particles::Kind::Crit,
+    }
 }
 
 fn difficulty_scaled(damage: f32, difficulty: i32, scales: bool) -> f32 {
@@ -1582,6 +1596,14 @@ mod tests {
         assert_eq!((key >> 56, shulker_bullet_of(key)), (27, Some(42)));
         assert_eq!((decode(key), crystal_of(key), fireball_of(key), end_target_of(key)), (None, None, None, None));
         assert_eq!(shulker_bullet_of(encode(MobHit::Shulker(42))), None);
+    }
+
+    #[test]
+    fn a_struck_bullet_sparks_and_one_that_lands_puffs() {
+        use minecraft_terrain::ambient_particles::Kind;
+        use minecraftoss_entities::world::BulletPuffKind;
+        assert_eq!((bullet_puff_particle(BulletPuffKind::Hit), BulletPuffKind::Hit.count()), (Kind::Explosion, 2));
+        assert_eq!((bullet_puff_particle(BulletPuffKind::Hurt), BulletPuffKind::Hurt.count()), (Kind::Crit, 15));
     }
 
     #[test]

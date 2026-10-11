@@ -21,6 +21,8 @@ const EMITTER_FLASHES: usize = 6;
 const MAX_BLAST_PARTICLES: usize = 512;
 const SMALL_BLAST_RADIUS: f32 = 2.0;
 const SPLASH_SPRITES: u32 = 4;
+const GLITTER_SPRITES: i32 = 8;
+const END_ROD_FADE: [f32; 3] = [242.0 / 255.0, 222.0 / 255.0, 201.0 / 255.0];
 
 type Boxes = Vec<([f64; 3], [f64; 3])>;
 
@@ -37,6 +39,8 @@ pub enum Kind {
     HappyVillager,
     Rain,
     Snowflake,
+    EndRod,
+    Crit,
 }
 
 #[derive(Clone, Debug)]
@@ -205,6 +209,58 @@ impl Particle {
         particle
     }
 
+    fn end_rod(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::EndRod, at, DVec3::ZERO, random);
+        particle.velocity = motion;
+        particle.gravity = 0.0125;
+        particle.friction = 0.91;
+        particle.quad_size *= 0.75;
+        particle.lifetime = 60 + random.next_int(12) as i32;
+        particle
+    }
+
+    fn crit(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::Crit, at, motion, random);
+        particle.friction = 0.7;
+        particle.gravity = 0.5;
+        particle.velocity = particle.velocity * f64::from(0.1_f32) + motion * 0.4;
+        let shade = random.next_float() * 0.3 + 0.6;
+        particle.color = [shade; 3];
+        particle.quad_size *= 0.75;
+        particle.lifetime = ((6.0 / (f64::from(random.next_float()) * 0.8 + 0.6)) as i32).max(1);
+        particle.coast();
+        particle
+    }
+
+    fn coast(&mut self) -> bool {
+        self.previous = self.position;
+        let prior = self.age;
+        self.age += 1;
+        if prior >= self.lifetime {
+            return false;
+        }
+        self.velocity.y -= 0.04 * f64::from(self.gravity);
+        self.position += self.velocity;
+        self.velocity *= f64::from(self.friction);
+        match self.kind {
+            Kind::EndRod => {
+                let half = self.lifetime / 2;
+                if self.age > half {
+                    self.alpha = 1.0 - (self.age - half) as f32 / self.lifetime as f32;
+                    for (color, fade) in self.color.iter_mut().zip(END_ROD_FADE) {
+                        *color += (fade - *color) * 0.2;
+                    }
+                }
+            }
+            Kind::Crit => {
+                self.color[1] *= 0.96;
+                self.color[2] *= 0.9;
+            }
+            _ => {}
+        }
+        true
+    }
+
     fn drip<S: Scene + ?Sized>(
         &mut self,
         scene: &S,
@@ -254,7 +310,10 @@ impl Particle {
     }
 
     fn translucent(&self) -> bool {
-        matches!(self.kind, Kind::CosySmoke | Kind::SignalSmoke)
+        matches!(
+            self.kind,
+            Kind::CosySmoke | Kind::SignalSmoke | Kind::EndRod
+        )
     }
 
     fn sprite(&self) -> Option<ResourceId> {
@@ -275,6 +334,14 @@ impl Particle {
             Kind::ExplosionEmitter => return None,
             Kind::HappyVillager => "glint".to_owned(),
             Kind::Rain => format!("splash_{}", self.sprite),
+            Kind::EndRod => {
+                let step = self.age * (GLITTER_SPRITES - 1) / self.lifetime.max(1);
+                format!(
+                    "glitter_{}",
+                    GLITTER_SPRITES - 1 - step.clamp(0, GLITTER_SPRITES - 1)
+                )
+            }
+            Kind::Crit => "critical_hit".to_owned(),
         };
         ResourceId::parse(&format!("minecraft:particle/{name}")).ok()
     }
@@ -282,7 +349,9 @@ impl Particle {
     fn size_at(&self, partial: f32) -> f32 {
         let grown = (self.age as f32 + partial) / self.lifetime as f32;
         match self.kind {
-            Kind::Smoke | Kind::LargeSmoke => self.quad_size * (grown * 32.0).clamp(0.0, 1.0),
+            Kind::Smoke | Kind::LargeSmoke | Kind::Crit => {
+                self.quad_size * (grown * 32.0).clamp(0.0, 1.0)
+            }
             Kind::Lava => self.quad_size * (1.0 - grown * grown),
             Kind::CosySmoke
             | Kind::SignalSmoke
@@ -291,7 +360,8 @@ impl Particle {
             | Kind::ExplosionEmitter
             | Kind::HappyVillager
             | Kind::Rain
-            | Kind::Snowflake => self.quad_size,
+            | Kind::Snowflake
+            | Kind::EndRod => self.quad_size,
         }
     }
 
@@ -469,11 +539,13 @@ fn clip(boxes: &Boxes, low: &[f64; 3], high: &[f64; 3], axis: usize, mut wanted:
 pub fn textures() -> Vec<ResourceId> {
     let big_smoke = (0..BIG_SMOKE_SPRITES).map(|index| format!("big_smoke_{index}"));
     let explosion = (0..EXPLOSION_SPRITES).map(|index| format!("explosion_{index}"));
-    ["lava", "glint"]
+    let glitter = (0..GLITTER_SPRITES).map(|index| format!("glitter_{index}"));
+    ["lava", "glint", "critical_hit"]
         .into_iter()
         .map(str::to_owned)
         .chain(big_smoke)
         .chain(explosion)
+        .chain(glitter)
         .filter_map(|name| ResourceId::parse(&format!("minecraft:particle/{name}")).ok())
         .collect()
 }
@@ -678,6 +750,21 @@ impl AmbientParticles {
         self.add(kind, DVec3::new(x, y, z), DVec3::new(0.0, 0.07, 0.0));
     }
 
+    pub fn puffs(&mut self, kind: Kind, at: DVec3, count: usize, spread: f64) {
+        for _ in 0..count {
+            let random = &mut self.random;
+            let offset = DVec3::new(
+                random.next_gaussian() * spread,
+                random.next_gaussian() * spread,
+                random.next_gaussian() * spread,
+            );
+            for _ in 0..3 {
+                random.next_gaussian();
+            }
+            self.add(kind, at + offset, DVec3::ZERO);
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.particles.len()
     }
@@ -704,6 +791,8 @@ impl AmbientParticles {
             Kind::HappyVillager => Particle::happy_villager(at, motion, random),
             Kind::Rain => Particle::rain(at, random),
             Kind::Snowflake => Particle::snowflake(at, motion, random),
+            Kind::EndRod => Particle::end_rod(at, motion, random),
+            Kind::Crit => Particle::crit(at, motion, random),
         };
         self.particles.push(particle);
         if self.particles.len() > CAP {
@@ -737,6 +826,7 @@ impl AmbientParticles {
                 alive
             }
             Kind::CosySmoke | Kind::SignalSmoke => particle.drift(scene, &mut cache, random),
+            Kind::EndRod | Kind::Crit => particle.coast(),
             _ => {
                 let alive = particle.tick(scene, &mut cache);
                 if alive && particle.kind == Kind::Lava {
@@ -782,7 +872,7 @@ impl AmbientParticles {
                 center.z.floor() as i32,
             );
             let (sky, block) = match particle.kind {
-                Kind::Explosion => (FULL_BRIGHT, FULL_BRIGHT),
+                Kind::Explosion | Kind::EndRod => (FULL_BRIGHT, FULL_BRIGHT),
                 Kind::Lava => (f32::from(light.get(cell)), FULL_BRIGHT),
                 _ => (f32::from(light.get(cell)), f32::from(light.get_block(cell))),
             };
@@ -1319,6 +1409,68 @@ mod tests {
         }
         assert!(particles.is_empty());
         assert!(!particles_translucent(Kind::Snowflake));
+    }
+
+    #[test]
+    fn end_rod_sparkles_drift_down_glitter_and_fade_out() {
+        let mut particles = AmbientParticles::new(23);
+        let at = DVec3::new(0.5, 70.0, 0.5);
+        particles.add(Kind::EndRod, at, DVec3::ZERO);
+        let rod = particles.particles[0].clone();
+        assert!((60..=71).contains(&rod.lifetime), "{}", rod.lifetime);
+        assert!(rod.quad_size >= 0.075 && rod.quad_size <= 0.15);
+        assert_eq!(rod.velocity, DVec3::ZERO);
+        assert_eq!(
+            rod.sprite().map(|id| id.key()).as_deref(),
+            Some("minecraft:particle/glitter_7")
+        );
+        assert!(particles_translucent(Kind::EndRod));
+        let scene = open();
+        particles.tick(&scene);
+        let fall = f64::from(0.04_f32 * 0.0125);
+        let ticked = &particles.particles[0];
+        assert!((ticked.position.y - (70.0 - fall)).abs() < 1e-9);
+        assert!((ticked.velocity.y + fall * f64::from(0.91_f32)).abs() < 1e-9);
+        assert_eq!((ticked.alpha, ticked.color), (1.0, [1.0; 3]));
+        for _ in 0..rod.lifetime / 2 + 4 {
+            particles.tick(&scene);
+        }
+        let late = &particles.particles[0];
+        assert!(late.alpha < 1.0 && late.alpha > 0.5, "{}", late.alpha);
+        assert!(late.color[2] < 1.0 && late.color[2] > END_ROD_FADE[2] - 1e-6);
+        assert!(late.sprite().unwrap().key() != "minecraft:particle/glitter_7");
+        for _ in 0..rod.lifetime {
+            particles.tick(&scene);
+        }
+        assert!(particles.is_empty());
+    }
+
+    #[test]
+    fn crits_fly_out_slowly_and_redden() {
+        let mut particles = AmbientParticles::new(29);
+        particles.puffs(Kind::Crit, DVec3::new(0.5, 70.0, 0.5), 15, 0.2);
+        assert_eq!(particles.len(), 15);
+        for crit in &particles.particles {
+            assert!((1..=10).contains(&crit.lifetime), "{}", crit.lifetime);
+            assert_eq!(crit.age, 1, "it ticks once as it is made");
+            assert!(crit.color[0] >= 0.6 && crit.color[0] <= 0.9);
+            assert!(crit.color[2] < crit.color[1] && crit.color[1] < crit.color[0]);
+            assert!((crit.position - DVec3::new(0.5, 70.0, 0.5)).length() < 2.0);
+            assert_eq!(
+                crit.sprite().unwrap().key(),
+                "minecraft:particle/critical_hit"
+            );
+            assert!(!crit.translucent());
+            assert!(crit.size_at(0.0) <= crit.quad_size);
+        }
+        let mut puffs = AmbientParticles::new(31);
+        puffs.puffs(Kind::Explosion, DVec3::new(0.5, 70.0, 0.5), 2, 0.2);
+        assert_eq!(puffs.len(), 2);
+        assert!(puffs.particles.iter().all(|p| p.quad_size == 2.0));
+        let names: Vec<String> = textures().iter().map(|id| id.key()).collect();
+        assert!(names.contains(&"minecraft:particle/critical_hit".to_owned()));
+        assert!(names.contains(&"minecraft:particle/glitter_0".to_owned()));
+        assert!(names.contains(&"minecraft:particle/glitter_7".to_owned()));
     }
 
     fn particles_translucent(kind: Kind) -> bool {
