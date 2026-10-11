@@ -254,7 +254,7 @@ IW4L_MINECRAFT_KIT=minecraft:ender_eye*48,minecraft:end_portal_frame*2,minecraft
 
 ### 1. Minecraft haste, mining fatigue and conduit power are real effects
 
-Commit: (see the next entry, or `git log` under this subject)
+Commit: dd3f92d4
 
 - **Changed:**
   - `third_party/minecraftoss/player/src/survival.rs` (a MinecraftOSS patch; the file was already on the patched list): `EffectKind` gains `Haste`, `MiningFatigue` and `ConduitPower` at the end, and `EffectKind::ALL` lists every kind in order. The effect array is sized from it and `tick_effects` walks it, so a later kind (track C's levitation and slow falling) is added in the enum and `ALL` only. New `SurvivalStatus::attack_speed_multiplier()`: `(1 + 0.1 (haste + 1)) x (1 - 0.1 (fatigue + 1))` with vanilla's `0.1F` widened to a double, 1 for a missing effect.
@@ -274,3 +274,20 @@ Commit: (see the next entry, or `git log` under this subject)
 ```
 IW4L_MINECRAFT_KIT=minecraft:milk_bucket
 ```
+
+### 2. Minecraft reads which blocks need the right tool from the game jar
+
+Commit: (see the next entry, or `git log` under this subject)
+
+- **Changed:**
+  - New `minecraft_terrain/src/mining_speed.rs` (registered in `lib.rs`): `MiningBook::from_jar` reads `requiresCorrectToolForDrops` out of the jar's `Blocks` bytecode with `class_file`, as no data file holds it.
+    - Ids: `id_fields` reads `BlockItemIds.<clinit>` and `BlockIds.<clinit>`: `create(name)` and `create(block, item)` give the block id, `createSimpleColored` the 16 dyed ids in `DyeColor` order, `createSimpleCopper` the four weather states and their `waxed_` twins, and the copper block's `same(ByState)` its special names (`copper_block`, `exposed_copper`, ...). Any other shape is reported as a warning.
+    - Segments: `Blocks.<clinit>` is cut at every `putstatic` of a `Block`, `ColorCollection` or `WeatheringCopperCollection` field; the segment's id is its first `getstatic` of `BlockItemIds` or `BlockIds`.
+    - Flag: a segment needs the right tool when it, a lambda it reaches through `invokedynamic` (`REF_invokeStatic Blocks.*`), or a `Blocks` helper returning `Properties` calls `Properties.requiresCorrectToolForDrops`, followed recursively, each method once.
+    - Copies: `ofFullCopy`, `ofLegacyCopy`, `registerStair`, `registerLegacyStair`, `registerSlab` and `registerWall` take the flag from the nearest `getstatic Blocks.<block or collection>` before them in the same method body; inheritance is resolved after the scan, so chains and collection copies (concrete stairs from concrete, cut copper stairs from cut copper) work.
+    - The result is 470 ids. A failed scan leaves the set empty with a warning, so blocks then drop by hand as before.
+  - `minecraft_survival/src/data.rs`: `GameData.mining`, loaded beside `protection`; each warning is logged, then `Minecraft mining: 470 blocks need the right tool to drop` at INFO.
+- **Tests:** `minecraft_terrain` (`mining_speed.rs`): `dyed_ids_follow_the_dye_colour_order`, `copper_ids_have_every_weather_state_and_its_waxed_twin`, `the_copper_block_uses_its_special_names`, `a_book_made_from_a_list_answers_for_it`; with the game data: `the_jar_names_the_blocks_that_need_the_right_tool` (no warnings, more than 400 ids, the brief's 27 blocks that need a tool and 20 that don't) and `every_block_that_needs_the_right_tool_is_a_real_block` (all 470 ids are in the block registry). `minecraft_survival` (`data.rs`): no mining book without a jar or with an unreadable one.
+- **Decision:** the brief only names `BlockItemIds`, but the 114 blocks without an item (wall torches, wall signs, fluids, coral wall fans and so on) take their id from `BlockIds`, which has the same `create` and `createSimpleColored` shapes; both are read, so a wall variant that copies a tool block would be found too.
+- **Test steps:** none in game on their own; nothing uses the book yet (group 4 does). After loading a world, `iw4l-artifacts\logs\latest.log` has the line `Minecraft mining: 470 blocks need the right tool to drop` and no `Minecraft mining:` warning.
+- **Kit:** none needed.
