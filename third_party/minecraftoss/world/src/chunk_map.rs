@@ -279,11 +279,11 @@ pub struct ChunkMap {
     /// Final chunks: ready to send.
     chunks: HashMap<ChunkPos, Arc<Chunk>>,
     view_distance: i32,
-    view: Option<TrackingView>,
+    views: Vec<TrackingView>,
     /// `PlayerChunkSender.pendingChunks`.
     pending_send: HashSet<ChunkPos>,
     /// The tracking view the generation queue was last built for.
-    queued_for: Option<TrackingView>,
+    queued_for: Vec<TrackingView>,
     tickets: Vec<(ChunkPos, i32)>,
     tracked_tickets: Vec<(ChunkPos, i32)>,
     queued_tickets: Vec<(ChunkPos, i32)>,
@@ -312,6 +312,120 @@ pub fn ticketed(tickets: &[(ChunkPos, i32)], pos: ChunkPos, margin: i32) -> bool
 
 fn neighbours(pos: ChunkPos) -> impl Iterator<Item = ChunkPos> {
     (0..9).map(move |i| ChunkPos::new(pos.x + i % 3 - 1, pos.z + i / 3 - 1))
+}
+
+fn squared(centre: ChunkPos, pos: ChunkPos) -> i64 {
+    let (dx, dz) = (i64::from(pos.x - centre.x), i64::from(pos.z - centre.z));
+    dx * dx + dz * dz
+}
+
+fn nearest_priority(centres: &[ChunkPos], pos: ChunkPos) -> (i32, i64) {
+    centres.iter().map(|&centre| (centre.chebyshev(pos), squared(centre, pos))).min().unwrap_or((i32::MAX, i64::MAX))
+}
+
+fn nearest_squared(centres: &[ChunkPos], pos: ChunkPos) -> i64 {
+    centres.iter().map(|&centre| squared(centre, pos)).min().unwrap_or(i64::MAX)
+}
+
+fn within(centres: &[ChunkPos], pos: ChunkPos, distance: i32) -> bool {
+    centres.iter().any(|centre| centre.chebyshev(pos) <= distance)
+}
+
+fn square(at: ChunkPos, radius: i32) -> Vec<ChunkPos> {
+    (at.x - radius..=at.x + radius).flat_map(|x| (at.z - radius..=at.z + radius).map(move |z| ChunkPos::new(x, z))).collect()
+}
+
+fn tracked_by(views: &[TrackingView], tickets: &[(ChunkPos, i32)], pos: ChunkPos) -> bool {
+    views.iter().any(|view| view.contains(pos)) || ticketed(tickets, pos, 0)
+}
+
+type Tracked<'a> = (&'a [TrackingView], &'a [(ChunkPos, i32)]);
+
+fn tracking_changes(old: Tracked<'_>, new: Tracked<'_>) -> Vec<(ChunkPos, bool)> {
+    let (mut entered, mut left) = (Vec::new(), Vec::new());
+    for i in 0..old.0.len().max(new.0.len()) {
+        TrackingView::difference(old.0.get(i).copied(), new.0.get(i).copied(), |pos| entered.push(pos), |pos| left.push(pos));
+    }
+    let squares = old.1.iter().chain(new.1).flat_map(|&(centre, radius)| square(centre, radius));
+    let mut seen = HashSet::new();
+    entered
+        .into_iter()
+        .chain(left)
+        .chain(squares)
+        .filter(|&pos| seen.insert(pos))
+        .filter_map(|pos| {
+            let is = tracked_by(new.0, new.1, pos);
+            (tracked_by(old.0, old.1, pos) != is).then_some((pos, is))
+        })
+        .collect()
+}
+
+fn wanted_around(area: &[ChunkPos]) -> Vec<(ChunkPos, Need)> {
+    let Some(first) = area.first() else { return Vec::new() };
+    let (mut min, mut max) = ((first.x, first.z), (first.x, first.z));
+    for pos in area {
+        min = (min.0.min(pos.x), min.1.min(pos.z));
+        max = (max.0.max(pos.x), max.1.max(pos.z));
+    }
+    let origin = (min.0 - 3, min.1 - 3);
+    let (size_x, size) = ((max.0 - min.0 + 7) as usize, (max.1 - min.1 + 7) as usize);
+    let mut tracked = vec![false; size_x * size];
+    for pos in area {
+        tracked[(pos.x - origin.0) as usize * size + (pos.z - origin.1) as usize] = true;
+    }
+    let dilate = |mask: &[bool], radius: i32| -> Vec<bool> {
+        let mut along_z = vec![false; size_x * size];
+        for x in 0..size_x {
+            for z in 0..size {
+                let lo = (z as i32 - radius).max(0) as usize;
+                let hi = (z as i32 + radius).min(size as i32 - 1) as usize;
+                along_z[x * size + z] = (lo..=hi).any(|k| mask[x * size + k]);
+            }
+        }
+        let mut out = vec![false; size_x * size];
+        for x in 0..size_x {
+            let lo = (x as i32 - radius).max(0) as usize;
+            let hi = (x as i32 + radius).min(size_x as i32 - 1) as usize;
+            for z in 0..size {
+                out[x * size + z] = (lo..=hi).any(|k| along_z[k * size + z]);
+            }
+        }
+        out
+    };
+    let features = dilate(&tracked, 2);
+    let terrain = dilate(&tracked, 3);
+    let mut wanted = Vec::new();
+    for x in 0..size_x {
+        for z in 0..size {
+            let i = x * size + z;
+            if terrain[i] {
+                let need = if features[i] { Need::Features } else { Need::Terrain };
+                wanted.push((ChunkPos::new(origin.0 + x as i32, origin.1 + z as i32), need));
+            }
+        }
+    }
+    wanted
+}
+
+fn wanted_for(views: &[TrackingView], tickets: &[(ChunkPos, i32)]) -> Vec<(ChunkPos, Need)> {
+    let mut areas: Vec<Vec<ChunkPos>> = views
+        .iter()
+        .map(|view| {
+            let mut area = Vec::new();
+            view.for_each(|pos| area.push(pos));
+            area
+        })
+        .collect();
+    areas.extend(tickets.iter().map(|&(at, radius)| square(at, radius)));
+    let mut needs: HashMap<ChunkPos, Need> = HashMap::new();
+    for (pos, need) in areas.iter().flat_map(|area| wanted_around(area)) {
+        let entry = needs.entry(pos).or_insert(need);
+        *entry = (*entry).max(need);
+    }
+    let centres: Vec<ChunkPos> = views.iter().map(|view| view.center).collect();
+    let mut wanted: Vec<(ChunkPos, Need)> = needs.into_iter().collect();
+    wanted.sort_unstable_by_key(|&(pos, _)| (nearest_priority(&centres, pos), pos.x, pos.z));
+    wanted
 }
 
 impl World {
@@ -563,9 +677,9 @@ impl ChunkMap {
             queued_entity_edits: HashSet::new(),
             last_tick_ms: [0.0; 7],
             view_distance: view_distance.clamp(MIN_VIEW_DISTANCE, EXTENDED_VIEW_DISTANCE),
-            view: None,
+            views: Vec::new(),
             pending_send: HashSet::new(),
-            queued_for: None,
+            queued_for: Vec::new(),
             tickets: Vec::new(),
             tracked_tickets: Vec::new(),
             queued_tickets: Vec::new(),
@@ -633,23 +747,21 @@ impl ChunkMap {
     }
 
     fn tracks(&self, pos: ChunkPos) -> bool {
-        self.view.is_some_and(|view| view.contains(pos)) || ticketed(&self.tracked_tickets, pos, 0)
+        tracked_by(&self.views, &self.tracked_tickets, pos)
     }
 
-    /// Runs one server tick for the single tracked player and returns what to
-    /// send to the client, in order.
-    pub fn tick(&mut self, player_chunk: ChunkPos) -> Vec<ChunkEvent> {
+    pub fn tick(&mut self, player_chunks: &[ChunkPos]) -> Vec<ChunkEvent> {
         let mut events = Vec::new();
         let started = Instant::now();
         let lap = || started.elapsed().as_secs_f64() * 1000.0;
         self.last_tick_ms = [0.0; 7];
-        self.update_tracking(player_chunk, &mut events);
+        self.update_tracking(player_chunks, &mut events);
         let tracked = lap();
         self.collect_finished();
         let collected = lap();
         self.schedule();
         let scheduled = lap();
-        self.send(player_chunk, &mut events);
+        self.send(player_chunks, &mut events);
         let sent = lap();
         let [_, _, lock_wait, _, _, locked, evicting] = self.last_tick_ms;
         self.last_tick_ms = [tracked, collected - tracked, lock_wait, scheduled - collected - lock_wait, sent - scheduled, locked, evicting];
@@ -657,29 +769,16 @@ impl ChunkMap {
     }
 
     /// `ChunkMap.updateChunkTracking` / `applyChunkTrackingView`.
-    fn update_tracking(&mut self, player_chunk: ChunkPos, events: &mut Vec<ChunkEvent>) {
-        let next = TrackingView::new(player_chunk, self.view_distance);
-        if self.view == Some(next) && self.tracked_tickets == self.tickets {
+    fn update_tracking(&mut self, player_chunks: &[ChunkPos], events: &mut Vec<ChunkEvent>) {
+        let next: Vec<TrackingView> = player_chunks.iter().map(|&chunk| TrackingView::new(chunk, self.view_distance)).collect();
+        if self.views == next && self.tracked_tickets == self.tickets {
             return;
         }
-        if self.view.is_none_or(|last| last.center != next.center) {
-            events.push(ChunkEvent::Center(next.center));
+        if let Some(first) = next.first().filter(|first| self.views.first().is_none_or(|last| last.center != first.center)) {
+            events.push(ChunkEvent::Center(first.center));
         }
-        let (mut entered, mut left) = (Vec::new(), Vec::new());
-        TrackingView::difference(self.view, Some(next), |pos| entered.push(pos), |pos| left.push(pos));
-        let (old, new) = (std::mem::take(&mut self.tracked_tickets), self.tickets.clone());
-        let mut squares = Vec::new();
-        for &(centre, radius) in old.iter().chain(&new) {
-            for x in centre.x - radius..=centre.x + radius {
-                for z in centre.z - radius..=centre.z + radius {
-                    squares.push(ChunkPos::new(x, z));
-                }
-            }
-        }
-        let was = |pos: ChunkPos| self.view.is_some_and(|view| view.contains(pos)) || ticketed(&old, pos, 0);
-        let is = |pos: ChunkPos| next.contains(pos) || ticketed(&new, pos, 0);
-        let mut seen = HashSet::new();
-        let changed: Vec<(ChunkPos, bool)> = entered.into_iter().chain(left).chain(squares).filter(|&pos| seen.insert(pos)).filter(|&pos| was(pos) != is(pos)).map(|pos| (pos, is(pos))).collect();
+        let new = self.tickets.clone();
+        let changed = tracking_changes((&self.views, &self.tracked_tickets), (&next, &new));
         for (pos, tracked) in changed {
             if tracked {
                 if self.chunks.contains_key(&pos) {
@@ -689,7 +788,7 @@ impl ChunkMap {
                 events.push(ChunkEvent::Forget(pos));
             }
         }
-        self.view = Some(next);
+        self.views = next;
         self.tracked_tickets = new;
     }
 
@@ -706,73 +805,25 @@ impl ChunkMap {
     /// Rebuilds the job list when the tracked area moves, and unloads what
     /// fell out of range.
     fn schedule(&mut self) {
-        let Some(view) = self.view else { return };
-        if self.queued_for == Some(view) && self.queued_tickets == self.tickets {
+        if self.views.is_empty() {
             return;
         }
-        self.queued_for = Some(view);
+        if self.queued_for == self.views && self.queued_tickets == self.tickets {
+            return;
+        }
+        self.queued_for = self.views.clone();
         self.queued_tickets = self.tickets.clone();
         let tickets = self.tickets.clone();
-        let center = view.center;
+        let centres: Vec<ChunkPos> = self.views.iter().map(|view| view.center).collect();
         // Loaded chunks are kept a few rings beyond the generated area so
         // small back-and-forth movement does not regenerate them.
         let keep = self.view_distance + 5;
-        self.chunks.retain(|&pos, _| center.chebyshev(pos) <= keep || ticketed(&tickets, pos, 5));
-        self.shared.biomes.lock().expect("biome cache").retain(|&pos, _| center.chebyshev(pos) <= keep + 1 || ticketed(&tickets, pos, 6));
+        self.chunks.retain(|&pos, _| within(&centres, pos, keep) || ticketed(&tickets, pos, 5));
+        self.shared.biomes.lock().expect("biome cache").retain(|&pos, _| within(&centres, pos, keep + 1) || ticketed(&tickets, pos, 6));
 
         // Tracked chunks must be block ticking, their 3x3 FULL: FEATURES two
         // rings out, TERRAIN three.
-        // The tracked set dilated by two chunks (FEATURES) and three
-        // (TERRAIN), as separable Chebyshev max filters on a dense grid.
-        let half = self.view_distance + 1 + 3;
-        let (mut min, mut max) = ((center.x - half, center.z - half), (center.x + half, center.z + half));
-        for &(at, radius) in &tickets {
-            min = (min.0.min(at.x - radius - 3), min.1.min(at.z - radius - 3));
-            max = (max.0.max(at.x + radius + 3), max.1.max(at.z + radius + 3));
-        }
-        let (size_x, size) = ((max.0 - min.0 + 1) as usize, (max.1 - min.1 + 1) as usize);
-        let origin = min;
-        let mut tracked = vec![false; size_x * size];
-        view.for_each(|pos| tracked[(pos.x - origin.0) as usize * size + (pos.z - origin.1) as usize] = true);
-        for &(at, radius) in &tickets {
-            for x in at.x - radius..=at.x + radius {
-                for z in at.z - radius..=at.z + radius {
-                    tracked[(x - origin.0) as usize * size + (z - origin.1) as usize] = true;
-                }
-            }
-        }
-        let dilate = |mask: &[bool], radius: i32| -> Vec<bool> {
-            let mut along_z = vec![false; size_x * size];
-            for x in 0..size_x {
-                for z in 0..size {
-                    let lo = (z as i32 - radius).max(0) as usize;
-                    let hi = (z as i32 + radius).min(size as i32 - 1) as usize;
-                    along_z[x * size + z] = (lo..=hi).any(|k| mask[x * size + k]);
-                }
-            }
-            let mut out = vec![false; size_x * size];
-            for x in 0..size_x {
-                let lo = (x as i32 - radius).max(0) as usize;
-                let hi = (x as i32 + radius).min(size_x as i32 - 1) as usize;
-                for z in 0..size {
-                    out[x * size + z] = (lo..=hi).any(|k| along_z[k * size + z]);
-                }
-            }
-            out
-        };
-        let features = dilate(&tracked, 2);
-        let terrain = dilate(&tracked, 3);
-        let mut wanted: Vec<(ChunkPos, Need)> = Vec::new();
-        for x in 0..size_x {
-            for z in 0..size {
-                let i = x * size + z;
-                if terrain[i] {
-                    let need = if features[i] { Need::Features } else { Need::Terrain };
-                    wanted.push((ChunkPos::new(origin.0 + x as i32, origin.1 + z as i32), need));
-                }
-            }
-        }
-        wanted.sort_unstable_by_key(|&(pos, _)| priority(center, pos));
+        let wanted = wanted_for(&self.views, &tickets);
         let waited = Instant::now();
         let mut world = self.shared.world.lock().expect("chunk world");
         self.last_tick_ms[2] = waited.elapsed().as_secs_f64() * 1000.0;
@@ -780,7 +831,7 @@ impl ChunkMap {
         let dropped: Vec<ChunkPos> = world
             .slots
             .iter()
-            .filter(|&(&pos, slot)| !matches!(slot, Slot::Out { .. }) && center.chebyshev(pos) > keep && !ticketed(&tickets, pos, 5))
+            .filter(|&(&pos, slot)| !matches!(slot, Slot::Out { .. }) && !within(&centres, pos, keep) && !ticketed(&tickets, pos, 5))
             .map(|(&pos, _)| pos)
             .collect();
         let dropped: Vec<(ChunkPos, Slot)> = dropped.into_iter().filter_map(|pos| world.slots.remove(&pos).map(|slot| (pos, slot))).collect();
@@ -887,7 +938,7 @@ impl ChunkMap {
     }
 
     /// `PlayerChunkSender.sendNextChunks` on a memory connection.
-    fn send(&mut self, player_chunk: ChunkPos, events: &mut Vec<ChunkEvent>) {
+    fn send(&mut self, player_chunks: &[ChunkPos], events: &mut Vec<ChunkEvent>) {
         if self.pending_send.is_empty() {
             return;
         }
@@ -897,7 +948,7 @@ impl ChunkMap {
             self.write_edits(pos);
         }
         let mut ready: Vec<&Arc<Chunk>> = self.pending_send.iter().filter_map(|pos| self.chunks.get(pos)).collect();
-        ready.sort_by_key(|chunk| player_chunk.distance_squared(chunk.pos));
+        ready.sort_by_key(|chunk| nearest_squared(player_chunks, chunk.pos));
         events.extend(ready.into_iter().map(|chunk| ChunkEvent::Load(chunk.clone())));
         self.pending_send.clear();
     }
@@ -929,7 +980,7 @@ impl ChunkMap {
     /// Diagnostics: jobs in flight and wanted positions.
     pub fn debug_queue(&self) -> String {
         let world = self.shared.world.lock().expect("chunk world");
-        format!("jobs in flight {} wanted {} terrain in flight {} slots {} ticking {} sendable {} pending-send {} view {:?}", world.jobs_in_flight, world.wanted.len() - world.wanted_head, world.terrain_in_flight.len(), world.slots.len(), world.ticking.len(), self.chunks.len(), self.pending_send.len(), self.view)
+        format!("jobs in flight {} wanted {} terrain in flight {} slots {} ticking {} sendable {} pending-send {} view {:?}", world.jobs_in_flight, world.wanted.len() - world.wanted_head, world.terrain_in_flight.len(), world.slots.len(), world.ticking.len(), self.chunks.len(), self.pending_send.len(), self.views)
     }
 
     /// Diagnostics: the first wanted positions, each with its slot and its
@@ -973,9 +1024,13 @@ impl ChunkMap {
 
     /// True once every tracked chunk has been generated and sent.
     pub fn is_idle(&self) -> bool {
-        let Some(view) = self.view else { return true };
+        if self.views.is_empty() {
+            return true;
+        }
         let mut all = true;
-        view.for_each(|pos| all &= self.chunks.contains_key(&pos));
+        for view in &self.views {
+            view.for_each(|pos| all &= self.chunks.contains_key(&pos));
+        }
         for &(at, radius) in &self.tracked_tickets {
             for x in at.x - radius..=at.x + radius {
                 for z in at.z - radius..=at.z + radius {
@@ -1617,5 +1672,63 @@ mod tests {
         }
         thread.join().unwrap();
         assert_eq!(column_height(&saved.expect("the saver woke for the snapshot")), 6);
+    }
+
+    fn area(view: TrackingView) -> HashSet<ChunkPos> {
+        let mut area = HashSet::new();
+        view.for_each(|pos| {
+            area.insert(pos);
+        });
+        area
+    }
+
+    #[test]
+    fn two_players_a_hundred_chunks_apart_track_and_queue_both_squares() {
+        let (a, b) = (TrackingView::new(ChunkPos::new(0, 0), 2), TrackingView::new(ChunkPos::new(100, 0), 2));
+        let changes = tracking_changes((&[], &[]), (&[a, b], &[]));
+        assert!(changes.iter().all(|&(_, tracked)| tracked));
+        let entered: HashSet<ChunkPos> = changes.into_iter().map(|(pos, _)| pos).collect();
+        assert_eq!(entered, area(a).union(&area(b)).copied().collect());
+        let wanted = wanted_for(&[a, b], &[]);
+        let features: HashSet<ChunkPos> = wanted.iter().filter(|&&(_, need)| need == Need::Features).map(|&(pos, _)| pos).collect();
+        assert!(area(a).union(&area(b)).all(|pos| features.contains(pos)));
+        for &(pos, need) in &wanted {
+            let away = pos.chebyshev(a.center).min(pos.chebyshev(b.center));
+            assert!(away <= 2 + 1 + 3, "{pos:?} is queued for neither player");
+            assert_eq!(need == Need::Features, away <= 2 + 1 + 2, "{pos:?}");
+        }
+        assert_eq!(wanted.len(), 2 * 13 * 13);
+    }
+
+    #[test]
+    fn a_player_leaving_forgets_only_their_own_square() {
+        let (a, b) = (TrackingView::new(ChunkPos::new(0, 0), 2), TrackingView::new(ChunkPos::new(100, 0), 2));
+        for (kept, gone) in [(a, b), (b, a)] {
+            let changes = tracking_changes((&[a, b], &[]), (&[kept], &[]));
+            assert!(changes.iter().all(|&(_, tracked)| !tracked));
+            let left: HashSet<ChunkPos> = changes.into_iter().map(|(pos, _)| pos).collect();
+            assert_eq!(left, area(gone));
+        }
+        let near = TrackingView::new(ChunkPos::new(3, 0), 2);
+        let changes = tracking_changes((&[a, near], &[]), (&[a], &[]));
+        let left: HashSet<ChunkPos> = changes.into_iter().map(|(pos, _)| pos).collect();
+        assert_eq!(left, area(near).difference(&area(a)).copied().collect(), "what the other player still sees stays");
+        let ticket = [(ChunkPos::new(100, 0), 1)];
+        let changes = tracking_changes((&[a, b], &ticket), (&[a], &ticket));
+        let left: HashSet<ChunkPos> = changes.into_iter().map(|(pos, _)| pos).collect();
+        assert_eq!(left, area(b).into_iter().filter(|pos| pos.chebyshev(ChunkPos::new(100, 0)) > 1).collect(), "a ticket keeps its square");
+    }
+
+    #[test]
+    fn chunks_go_nearest_to_any_player_first() {
+        let centres = [ChunkPos::new(0, 0), ChunkPos::new(100, 0)];
+        let mut positions = vec![ChunkPos::new(50, 0), ChunkPos::new(97, 0), ChunkPos::new(5, 0), ChunkPos::new(99, 1), ChunkPos::new(2, 0)];
+        positions.sort_by_key(|&pos| nearest_squared(&centres, pos));
+        assert_eq!(positions, vec![ChunkPos::new(99, 1), ChunkPos::new(2, 0), ChunkPos::new(97, 0), ChunkPos::new(5, 0), ChunkPos::new(50, 0)]);
+        let wanted = wanted_for(&[TrackingView::new(centres[0], 2), TrackingView::new(centres[1], 2)], &[]);
+        let order: Vec<(i32, i64)> = wanted.iter().map(|&(pos, _)| nearest_priority(&centres, pos)).collect();
+        assert!(order.windows(2).all(|pair| pair[0] <= pair[1]), "generation starts nearest a player");
+        assert_eq!(wanted[..2].iter().map(|&(pos, _)| pos).collect::<HashSet<_>>(), centres.into_iter().collect());
+        assert_eq!(nearest_squared(&[ChunkPos::new(0, 0)], ChunkPos::new(1_000_000, 0)), 1_000_000_000_000, "players far apart do not overflow");
     }
 }

@@ -971,7 +971,7 @@ mod tests {
                 containers,
                 ..
             } = level;
-            crate::level::stream_tick(terrain, entities, containers, at);
+            crate::level::stream_tick(terrain, entities, containers, &[at], Some(at));
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
@@ -1075,7 +1075,13 @@ mod tests {
                     containers,
                     ..
                 } = &mut level;
-                crate::level::stream_tick(terrain, entities, containers, (100, 49, 0));
+                crate::level::stream_tick(
+                    terrain,
+                    entities,
+                    containers,
+                    &[(100, 49, 0)],
+                    Some((100, 49, 0)),
+                );
             }
             let events = tick_level(&mut level, [&steve].into_iter(), Some(&save), 0, 0.05);
             if let Some(scan) = events.scanned {

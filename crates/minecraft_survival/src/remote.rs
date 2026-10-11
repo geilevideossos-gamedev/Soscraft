@@ -924,7 +924,8 @@ mod tests {
                 &mut level.terrain,
                 &mut level.entities,
                 &mut level.containers,
-                block,
+                &[block],
+                Some(block),
             );
             sessions.fan_out(&mut server.levels);
             let mut blobs = Vec::new();

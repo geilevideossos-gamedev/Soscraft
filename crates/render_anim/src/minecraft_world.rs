@@ -637,6 +637,7 @@ fn update(
         globals.autosave_ticks = 0;
         minecraft_survival::server::autosave(globals, levels, players);
     }
+    let others = minecraft_survival::level::player_blocks(players.iter().filter(|(uuid, _)| *uuid != local_uuid).map(|(_, player)| player));
     let Some(player) = players.get_mut(local_uuid) else {
         ui.active = false;
         ui.inventory_open = false;
@@ -703,8 +704,8 @@ fn update(
         authority.0.set_minecraft_abilities(local.0, ability_bits(&player.mode) | sky_bits(&level.terrain.environment) | playerstate_iw4::pm_flags::MC_INVULNERABLE);
         crate::minecraft_end::arriving(player, level);
         let at = player.place.filter(|place| place.dimension == player.dimension).map_or(origin, |place| place.feet);
-        let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
-        stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, at, aspect, now_ms);
+        let minecraft_survival::level::Level { entities, containers, terrain, dimension, .. } = level;
+        stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, at, &minecraft_survival::level::blocks_in(&others, *dimension), aspect, now_ms);
         globals.advance_clocks(time.delta_secs_f64());
         if ps.is_some() && player.arrival.is_none() && !spawn_gate.waiting() && !minecraft_survival::the_end::holding_for_credits(player) {
             player.switching = None;
@@ -785,7 +786,7 @@ fn update(
     let Some(ps) = presented.player(local.0) else {
         ui.active = false;
         puppet.active = false;
-        stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, arriving_at.unwrap_or(origin), aspect, now_ms);
+        stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, arriving_at.unwrap_or(origin), &minecraft_survival::level::blocks_in(&others, *dimension), aspect, now_ms);
         return;
     };
 
@@ -831,7 +832,8 @@ fn update(
         feet[1].floor() as i32,
         feet[2].floor() as i32,
     );
-    let streamed = minecraft_survival::level::stream_tick(terrain, entities, containers, block);
+    let here: Vec<(i32, i32, i32)> = std::iter::once(block).chain(minecraft_survival::level::blocks_in(&others, *dimension)).collect();
+    let streamed = minecraft_survival::level::stream_tick(terrain, entities, containers, &here, Some(block));
     apply_streamed(&globals.registries, shapes, shape_ids, streamed);
 
     // Minecraft's yaw: 0 facing +Z (map -Y), turning towards -X.
@@ -2520,12 +2522,14 @@ fn stream_around_spawn(
     gate: &mut crate::minecraft_spawn_gate::SpawnGate,
     view: &mut MinecraftWorldView,
     at: [f64; 3],
+    others: &[(i32, i32, i32)],
     aspect: f32,
     now_ms: u64,
 ) {
     let [x, y, z] = at;
     let spawn_block = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
-    let streamed = minecraft_survival::level::stream_tick(terrain, entities, containers, spawn_block);
+    let here: Vec<(i32, i32, i32)> = std::iter::once(spawn_block).chain(others.iter().copied()).collect();
+    let streamed = minecraft_survival::level::stream_tick(terrain, entities, containers, &here, Some(spawn_block));
     apply_streamed(registries, shapes, shape_ids, streamed);
     let camera = CullCamera {
         position: glam::DVec3::new(x, y + crate::minecraft_spawn_gate::SPAWN_EYE_HEIGHT, z),

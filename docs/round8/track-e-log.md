@@ -473,6 +473,35 @@ Commit: see `git log` ("Multiplayer M1 code passes clippy"). The previous commit
 - **Test steps:** none new; the M1 owner test in `docs/round8/e-m1-tests.md` covers these lines.
 - **Kit:** none needed.
 
+## Milestone M2: the friend plays survival
+
+This run builds E9, E10a and E10b. E11 to E15 follow after track A (which reshapes the level-thread tick loop) has merged into `minecraft-survival` and into this branch, so this run leaves `server_loop` and its tick scheduling in `crates/minecraft_terrain/src/server.rs` alone. The owner's two-window steps for M2 are collected in `docs/round8/e-m2-tests.md`.
+
+### E9. The chunk map loads chunks around every player
+
+Commit: see `git log` ("The chunk map loads chunks around every player"). The previous commit is `79ba1549`.
+
+- **Changed:**
+  - `third_party/minecraftoss/world/src/chunk_map.rs` (vendored, patched): `ChunkMap::tick(&[ChunkPos])` keeps one `TrackingView` per player in `views` (and `queued_for` is the list the queue was built for). `tracks`, `is_idle` and the tracking diff use the union of every view and the tickets: `tracking_changes` collects the changed positions of each old and new view pair and of the ticket squares, then keeps those whose membership in the union changed, so a chunk another player still sees is never forgotten. `ChunkEvent::Center` follows the first player (the host). The generation queue (`wanted_for`) dilates each player's square and each ticket square on its own small grid (`wanted_around`, the old separable max filter) and merges them, keeping FEATURES over TERRAIN, so two players far apart never build one grid spanning both. The queue is sorted by the nearest player's chessboard then squared distance (ties by position), chunks and biome cells are kept within `view distance + 5` of any player, and pending chunks are sent nearest to any player first. Distances are computed in `i64`, so players far apart cannot overflow.
+  - `crates/minecraft_terrain/src/terrain.rs`: `TerrainStream::server_tick(players, local, scene)` passes every player's chunk to the chunk map and every chunk it loads to the scene. Only chunks inside the host's own `TrackingView` (`shown`, the server view distance around `local`) are registered with `Sections` and lit; when that view moves, `show` registers the scene chunks that entered it and drops the sections, light and queued work of the ones that left. Forgetting, `mark_edited`'s emptiness updates, `reshow` and `set_view_distance` follow the same filter, so a section's emptiness is never recorded for a chunk the host does not draw. A remote (friend) stream shows every chunk, as before. `Sections::has_chunk` is new (for the test).
+  - `crates/minecraft_survival/src/level.rs`: `stream_tick(terrain, entities, containers, players, local)`. New `player_blocks(players)`, each player's block with their dimension (the arrival if one is pending, else their place, only when it is in the player's current dimension, exactly what the chunk sender follows), and `blocks_in(blocks, dimension)`.
+  - `crates/render_anim/src/minecraft_world.rs`: the host's frame collects the other players' blocks once, before it borrows the host's player, and both `stream_tick` calls (the normal one and `stream_around_spawn` at the spawn gate) pass the host first, then every other player in that level, with the host as `local`.
+  - Callers in tests and `examples/smoke.rs` pass one player.
+  - `docs/MULTIPLAYER.md` 7.1: the "until this lands" note now says what E9 built.
+- **Tests:**
+  - `minecraftoss-world` (no game data needed): `chunk_map::two_players_a_hundred_chunks_apart_track_and_queue_both_squares` (the union of both squares enters; both are queued with FEATURES around each view and TERRAIN one ring further, 2 x 169 positions), `a_player_leaving_forgets_only_their_own_square` (either player leaving, an overlapping player whose shared chunks stay, a ticket that keeps its square), `chunks_go_nearest_to_any_player_first` (send order by the nearest player, generation order non-decreasing from both centres, no overflow 1,000,000 chunks apart).
+  - `minecraft_terrain` (real 26.3 data, checked to run on it): `terrain::chunks_load_around_every_player_and_only_the_hosts_are_drawn` (End, view distance 2, host at chunk 6,0 and friend at chunk 106,0: both squares reach the scene, only the host's are in `Sections` or lit; when the host moves to the friend, exactly the host's old square is forgotten and the friend's chunks are registered and lit).
+  - `minecraft_survival`: `level::the_chunk_map_follows_every_player_standing_in_the_level` (a pending arrival wins over the old place, a player whose place is still in the old dimension is skipped, players are grouped by dimension).
+  - `test -p minecraftoss-world --lib` 66, `test -p minecraft_terrain` 850 (4 ignored), `test -p minecraft_survival` 370 + 1, `test -p render_anim --lib` 74, `check -p launcher` green.
+- **Decisions:**
+  - **Every player's view uses the server view distance.** Vanilla clamps each player's view to the server's; friends do not send their own yet.
+  - **Ticketed chunks outside the host's view are loaded but not drawn on the host.** Before E9 the host drew every chunk the chunk map loaded, tickets included. A vanilla client is only sent the chunks in its own view, so this is the vanilla behaviour, and it keeps the host from meshing and lighting the area around a far friend.
+  - **A friend is followed at their pending arrival, else their place,** the same position the chunk sender already follows (`Sessions::select_batches`), so the chunks loaded for a friend are the ones sent to them.
+  - **A level with no player in it schedules nothing,** as before with no view; closing an empty level is unchanged.
+  - **The host's own early returns are untouched** (switching level, credits): while the host is mid-switch no `stream_tick` runs, as before. E10a turns them into "skip this player's step". Travel is still locked while a friend is online.
+- **Test steps:** `docs/round8/e-m2-tests.md`, section E9.
+- **Kit:** none needed.
+
 ## Combined kit for every test in this track
 
 `minecraft:obsidian` x10, `minecraft:flint_and_steel` x1, `minecraft:chest` x1, `minecraft:cobblestone` x32, `minecraft:lava_bucket` x1, `minecraft:torch` x16 (6 stacks).

@@ -204,11 +204,39 @@ pub fn save_server_block_entities(entities: &mut Entities, terrain: &mut Terrain
     terrain.stream.record_block_entities(&changes);
 }
 
+pub fn player_blocks<'a>(
+    players: impl IntoIterator<Item = &'a crate::player::Player>,
+) -> Vec<(Dimension, (i32, i32, i32))> {
+    players
+        .into_iter()
+        .filter_map(|player| {
+            let place = player
+                .arrival
+                .or(player.place)
+                .filter(|place| place.dimension == player.dimension)?;
+            let [x, y, z] = place.feet.map(|v| v.floor() as i32);
+            Some((player.dimension, (x, y, z)))
+        })
+        .collect()
+}
+
+pub fn blocks_in(
+    players: &[(Dimension, (i32, i32, i32))],
+    dimension: Dimension,
+) -> Vec<(i32, i32, i32)> {
+    players
+        .iter()
+        .filter(|(at, _)| *at == dimension)
+        .map(|&(_, block)| block)
+        .collect()
+}
+
 pub fn stream_tick(
     terrain: &mut Terrain,
     entities: &mut Option<Entities>,
     containers: &mut Containers,
-    block: (i32, i32, i32),
+    players: &[(i32, i32, i32)],
+    local: Option<(i32, i32, i32)>,
 ) -> (Vec<Arc<Chunk>>, Vec<ChunkPos>) {
     let changed = terrain.scene.take_changed();
     terrain.stream.record_edits(&terrain.scene, &changed);
@@ -219,7 +247,9 @@ pub fn stream_tick(
     if let Some(entities) = entities.as_mut() {
         save_server_block_entities(entities, terrain, false);
     }
-    let (loaded, forgotten) = terrain.stream.server_tick(block, &mut terrain.scene);
+    let (loaded, forgotten) = terrain
+        .stream
+        .server_tick(players, local, &mut terrain.scene);
     for pos in &forgotten {
         containers.forget_chunk((pos.x, pos.z));
     }
@@ -359,6 +389,55 @@ fn prop_writes(scene: &HandcraftedScene, props: Vec<((i32, i32, i32), &str, bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_chunk_map_follows_every_player_standing_in_the_level() {
+        use crate::player_nbt::Place;
+        let mut chat = minecraft_commands::CommandServer::new(crate::commands::HOST);
+        let player = |chat: &mut minecraft_commands::CommandServer, id: u32, name: &str| {
+            let id = minecraft_commands::PlayerId(id);
+            chat.join(id, name);
+            crate::player::Player::new(
+                chat.profile(id).unwrap(),
+                minecraft_terrain::game_mode::PlayerMode::new(
+                    minecraft_terrain::game_mode::GameMode::Survival,
+                ),
+                crate::survival::Survival::default(),
+                Inventory::default(),
+            )
+        };
+        let at = |dimension, feet| Some(Place::standing(dimension, feet, 0.0, 0.0));
+        let mut host = player(&mut chat, 0, "Steve");
+        host.dimension = Dimension::End;
+        host.place = at(Dimension::End, [100.5, 49.0, -0.5]);
+        let mut arriving = player(&mut chat, 1, "Alex");
+        arriving.dimension = Dimension::End;
+        arriving.place = at(Dimension::Overworld, [8.0, 70.0, 8.0]);
+        arriving.arrival = at(Dimension::End, [1700.2, 50.9, 3.7]);
+        let mut left_behind = player(&mut chat, 2, "Noor");
+        left_behind.dimension = Dimension::End;
+        left_behind.place = at(Dimension::Overworld, [8.0, 70.0, 8.0]);
+        let mut elsewhere = player(&mut chat, 3, "Kai");
+        elsewhere.place = at(Dimension::Overworld, [-30.0, 64.0, 2.0]);
+        let everyone = player_blocks([&host, &arriving, &left_behind, &elsewhere]);
+        assert_eq!(
+            everyone,
+            vec![
+                (Dimension::End, (100, 49, -1)),
+                (Dimension::End, (1700, 50, 3)),
+                (Dimension::Overworld, (-30, 64, 2)),
+            ]
+        );
+        assert_eq!(
+            blocks_in(&everyone, Dimension::End),
+            vec![(100, 49, -1), (1700, 50, 3)]
+        );
+        assert_eq!(
+            blocks_in(&everyone, Dimension::Overworld),
+            vec![(-30, 64, 2)]
+        );
+        assert!(blocks_in(&everyone, Dimension::Nether).is_empty());
+    }
 
     #[test]
     fn a_furnace_lights_and_goes_out_through_its_lit_property() {
@@ -550,7 +629,13 @@ mod tests {
                 started.elapsed().as_secs() < 600,
                 "no chunks near the platform"
             );
-            stream_tick(&mut terrain, &mut entities, &mut containers, (100, 49, 0));
+            stream_tick(
+                &mut terrain,
+                &mut entities,
+                &mut containers,
+                &[(100, 49, 0)],
+                Some((100, 49, 0)),
+            );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(terrain.scene.take_changed().is_empty());
@@ -625,7 +710,13 @@ mod tests {
             planks,
             "nothing told the chunk map yet"
         );
-        stream_tick(&mut terrain, &mut entities, &mut containers, (100, 49, 0));
+        stream_tick(
+            &mut terrain,
+            &mut entities,
+            &mut containers,
+            &[(100, 49, 0)],
+            Some((100, 49, 0)),
+        );
         assert!(
             terrain.scene.take_changed().is_empty(),
             "the tick drained the log"

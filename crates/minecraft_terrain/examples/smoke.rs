@@ -51,7 +51,7 @@ fn main() -> anyhow::Result<()> {
     let (mut sections, mut vertices) = (0usize, 0usize);
     let started = Instant::now();
     while started.elapsed().as_secs_f64() < 5.0 {
-        stream.server_tick(block, &mut scene);
+        stream.server_tick(&[block], Some(block), &mut scene);
         let update = stream.frame(&scene, &camera, 0, &build.atlas, &packs);
         for (_, mesh) in &update.uploads {
             sections += 1;
@@ -76,7 +76,7 @@ fn stream_first(
 ) -> Option<(minecraft_terrain::sections::SectionPos, mesh::SectionMesh)> {
     stream.remesh_all(scene);
     for _ in 0..200 {
-        stream.server_tick(block, scene);
+        stream.server_tick(&[block], Some(block), scene);
         let update = stream.frame(scene, camera, 0, &build.atlas, packs);
         if let Some(first) = update.uploads.into_iter().find(|(_, m)| !m.vertices.is_empty()) {
             return Some(first);

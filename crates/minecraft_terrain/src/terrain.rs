@@ -28,7 +28,7 @@ use minecraftoss_generator::terrain::TerrainGenerator;
 use minecraftoss_generator::zoom;
 use minecraftoss_world::chunk_map::WorldGen;
 use minecraftoss_world::storage::ChunkStorage;
-use minecraftoss_world::view::{EXTENDED_VIEW_DISTANCE, MIN_VIEW_DISTANCE};
+use minecraftoss_world::view::{TrackingView, EXTENDED_VIEW_DISTANCE, MIN_VIEW_DISTANCE};
 use minecraftoss_world::{spawn, ChunkEvent, ChunkMap};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -998,6 +998,7 @@ pub struct TerrainStream {
     stats: Stats,
     apart: crate::lids::ApartCells,
     translucent: crate::translucency::TranslucentSorting,
+    shown: Option<TrackingView>,
 }
 
 pub use minecraft_net::Dimension;
@@ -1135,6 +1136,7 @@ impl TerrainStream {
             stats: Stats::default(),
             apart: Default::default(),
             translucent: Default::default(),
+            shown: None,
         })
     }
 
@@ -1159,7 +1161,7 @@ impl TerrainStream {
         }
         let (min_section, max_section) = self.states.section_range();
         self.sections = Sections::new(view_distance, min_section, max_section);
-        for pos in scene.generated_chunks().collect::<Vec<_>>() {
+        for pos in scene.generated_chunks().filter(|&pos| self.shows(pos)).collect::<Vec<_>>() {
             let chunk = scene.generated_chunk(pos).expect("listed").clone();
             let empty = self.empty_sections(scene, &chunk);
             self.sections.chunk_loaded(pos, empty);
@@ -1183,8 +1185,10 @@ impl TerrainStream {
         let mut chunks = Vec::new();
         for pos in scene.generated_chunks().collect::<Vec<_>>() {
             let mut chunk = scene.generated_chunk(pos).expect("listed").clone();
-            let empty = self.empty_sections(scene, &chunk);
-            self.sections.chunk_loaded(pos, empty);
+            if self.shows(pos) {
+                let empty = self.empty_sections(scene, &chunk);
+                self.sections.chunk_loaded(pos, empty);
+            }
             self.apply_scene_edits(scene, &mut chunk);
             chunks.push(chunk);
         }
@@ -1278,15 +1282,17 @@ impl TerrainStream {
     /// One server tick: runs the chunk map for the player and applies what it
     /// sends to the scene. Returns the chunks it loaded and the positions it
     /// forgot, for the world simulation.
-    pub fn server_tick(&mut self, player: BlockPos, scene: &mut HandcraftedScene) -> (Vec<Arc<Chunk>>, Vec<minecraftoss_core::ChunkPos>) {
+    pub fn server_tick(&mut self, players: &[BlockPos], local: Option<BlockPos>, scene: &mut HandcraftedScene) -> (Vec<Arc<Chunk>>, Vec<minecraftoss_core::ChunkPos>) {
         let Some(server) = self.server.as_mut() else {
             return (Vec::new(), Vec::new());
         };
-        let player_chunk = minecraftoss_core::ChunkPos::new(player.0 >> 4, player.2 >> 4);
+        let chunk_of = |(x, _, z): BlockPos| minecraftoss_core::ChunkPos::new(x >> 4, z >> 4);
+        let player_chunks: Vec<minecraftoss_core::ChunkPos> = players.iter().map(|&player| chunk_of(player)).collect();
         let events = {
             let _span = span("chunk_map.tick");
-            server.tick(player_chunk)
+            server.tick(&player_chunks)
         };
+        let shown = local.map(|local| TrackingView::new(chunk_of(local), server.view_distance()));
         let [tracking, collecting, lock_wait, scheduling, sending, locked, evicting] = server.last_tick_ms;
         crate::frame_spans::record("  chunk_map: schedule under lock", locked);
         crate::frame_spans::record("  chunk_map: evict", evicting);
@@ -1295,7 +1301,65 @@ impl TerrainStream {
         crate::frame_spans::record("  chunk_map: world lock wait", lock_wait);
         crate::frame_spans::record("  chunk_map: schedule", scheduling);
         crate::frame_spans::record("  chunk_map: send", sending);
+        self.show(shown, scene);
         self.apply(events, scene)
+    }
+
+    fn shows(&self, (x, z): ChunkPos) -> bool {
+        self.server.is_none() || self.shown.is_some_and(|view| view.contains(minecraftoss_core::ChunkPos::new(x, z)))
+    }
+
+    fn show(&mut self, next: Option<TrackingView>, scene: &HandcraftedScene) {
+        if self.shown == next {
+            return;
+        }
+        let (mut entered, mut left) = (Vec::new(), Vec::new());
+        TrackingView::difference(self.shown, next, |pos| entered.push((pos.x, pos.z)), |pos| left.push((pos.x, pos.z)));
+        self.shown = next;
+        let hidden: crate::fast_hash::FxHashSet<ChunkPos> = left.into_iter().filter(|&pos| scene.generated_chunk(pos).is_some()).collect();
+        for &pos in &hidden {
+            self.hide(pos);
+        }
+        self.cancel_work(&hidden);
+        for pos in entered {
+            if let Some(chunk) = scene.generated_chunk(pos).cloned() {
+                let empty = self.empty_sections(scene, &chunk);
+                self.register(scene, pos, empty);
+            }
+        }
+    }
+
+    fn register(&mut self, scene: &HandcraftedScene, pos: ChunkPos, empty: Vec<i32>) {
+        self.sections.chunk_loaded(pos, empty);
+        for x in pos.0 - 1..=pos.0 + 1 {
+            for z in pos.1 - 1..=pos.1 + 1 {
+                if self.shows((x, z)) && !self.lights.contains_key(&(x, z)) && !self.lights_pending.contains(&(x, z)) {
+                    self.request_light(scene, (x, z));
+                }
+            }
+        }
+    }
+
+    fn hide(&mut self, pos: ChunkPos) {
+        self.removed.extend(self.sections.chunk_unloaded(pos));
+        *self.light_epochs.entry(pos).or_default() += 1;
+        self.lights_pending.remove(&pos);
+        self.player_relights.remove(&pos);
+        self.player_sections.retain(|s| (s.0, s.2) != pos);
+        if self.lights.remove(&pos).is_some() {
+            self.light_changes.push((pos, None));
+        }
+    }
+
+    fn cancel_work(&self, cancelled: &crate::fast_hash::FxHashSet<ChunkPos>) {
+        if cancelled.is_empty() {
+            return;
+        }
+        let _span = span("  cancel queued work");
+        let (lock, _) = &*self.work;
+        let mut queue = lock.lock().expect("terrain work queue");
+        queue.light.retain(|(job, _)| !cancelled.contains(&job.chunk));
+        queue.compile.retain(|section, _| !cancelled.contains(&(section.0, section.2)));
     }
 
     pub fn apply(&mut self, events: impl IntoIterator<Item = ChunkEvent>, scene: &mut HandcraftedScene) -> (Vec<Arc<Chunk>>, Vec<minecraftoss_core::ChunkPos>) {
@@ -1308,21 +1372,16 @@ impl TerrainStream {
                     let _span = span("chunk load (client)");
                     loaded.push(chunk.clone());
                     let pos = (chunk.pos.x, chunk.pos.z);
-                    let empty = {
+                    let empty = self.shows(pos).then(|| {
                         let _span = span("  empty_sections");
                         self.empty_sections(scene, &chunk)
-                    };
+                    });
                     {
                         let _span = span("  scene.insert_chunk");
                         scene.insert_chunk(chunk);
                     }
-                    self.sections.chunk_loaded(pos, empty);
-                    for x in pos.0 - 1..=pos.0 + 1 {
-                        for z in pos.1 - 1..=pos.1 + 1 {
-                            if !self.lights.contains_key(&(x, z)) && !self.lights_pending.contains(&(x, z)) {
-                                self.request_light(scene, (x, z));
-                            }
-                        }
+                    if let Some(empty) = empty {
+                        self.register(scene, pos, empty);
                     }
                 }
                 ChunkEvent::Forget(pos) => {
@@ -1333,25 +1392,14 @@ impl TerrainStream {
                         continue;
                     }
                     scene.remove_chunk(pos);
-                    self.removed.extend(self.sections.chunk_unloaded(pos));
-                    *self.light_epochs.entry(pos).or_default() += 1;
-                    self.lights_pending.remove(&pos);
-                    self.player_relights.remove(&pos);
-                    self.player_sections.retain(|s| (s.0, s.2) != pos);
-                    if self.lights.remove(&pos).is_some() {
-                        self.light_changes.push((pos, None));
+                    if self.shows(pos) {
+                        self.hide(pos);
+                        cancelled.insert(pos);
                     }
-                    cancelled.insert(pos);
                 }
             }
         }
-        if !cancelled.is_empty() {
-            let _span = span("  cancel queued work");
-            let (lock, _) = &*self.work;
-            let mut queue = lock.lock().expect("terrain work queue");
-            queue.light.retain(|(job, _)| !cancelled.contains(&job.chunk));
-            queue.compile.retain(|section, _| !cancelled.contains(&(section.0, section.2)));
-        }
+        self.cancel_work(&cancelled);
         (loaded, forgotten)
     }
 
@@ -1413,6 +1461,9 @@ impl TerrainStream {
         // Whether each touched section now holds only air, checked once.
         let empty_span = span("  edits: emptiness");
         for (section, placed) in touched {
+            if !self.shows((section.0, section.2)) {
+                continue;
+            }
             let empty = !placed && scene.section_is_empty(section);
             self.sections.set_empty(section, empty);
         }
@@ -1870,7 +1921,7 @@ mod tests {
         let mut server = ChunkMap::new(generator, 2, 4);
         let origin = minecraftoss_core::ChunkPos::new(0, 0);
         while {
-            server.tick(origin);
+            server.tick(&[origin]);
             !server.is_idle()
         } {
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -2545,7 +2596,7 @@ mod tests {
         let mut sent = 0;
         while scene.generated_chunk((6, 0)).is_none() || !stream.server.as_ref().unwrap().is_idle() {
             assert!(started.elapsed().as_secs() < 600, "no chunks around the End platform");
-            sent += stream.server_tick((100, 49, 0), &mut scene).0.len();
+            sent += stream.server_tick(&[(100, 49, 0)], Some((100, 49, 0)), &mut scene).0.len();
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let generated: HashSet<ChunkPos> = scene.generated_chunks().collect();
@@ -2573,7 +2624,43 @@ mod tests {
         assert!(!blocks.is_air(scene.generated_chunk((solid.0 >> 4, solid.2 >> 4)).unwrap().block((solid.0 & 15) as usize, solid.1, 0)), "the scene's own chunk is left alone");
         assert_eq!(stream.light_changes.len(), 1);
         assert!(stream.light_changes[0].0 == (6, 0) && stream.light_changes[0].1.as_ref().is_some_and(|l| Arc::ptr_eq(l, &light)));
-        assert!(stream.server_tick((100, 49, 0), &mut scene).0.is_empty(), "the server does not send them twice");
+        assert!(stream.server_tick(&[(100, 49, 0)], Some((100, 49, 0)), &mut scene).0.is_empty(), "the server does not send them twice");
+    }
+
+    #[test]
+    fn chunks_load_around_every_player_and_only_the_hosts_are_drawn() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let mut stream = TerrainStream::for_dimension_at(Arc::new(registries), 77, 2, Dimension::End, None, None).unwrap();
+        let mut scene = HandcraftedScene::streamed(stream.states.clone());
+        let (host, friend) = ((100, 49, 0), (1700, 49, 0));
+        let view = |(x, _, z): BlockPos| {
+            let mut area = HashSet::new();
+            TrackingView::new(minecraftoss_core::ChunkPos::new(x >> 4, z >> 4), 2).for_each(|pos| {
+                area.insert((pos.x, pos.z));
+            });
+            area
+        };
+        let both: HashSet<ChunkPos> = view(host).union(&view(friend)).copied().collect();
+        let started = Instant::now();
+        let mut forgotten = Vec::new();
+        while both.iter().any(|&pos| scene.generated_chunk(pos).is_none()) || !stream.server.as_ref().unwrap().is_idle() {
+            assert!(started.elapsed().as_secs() < 600, "the chunks around both players never came");
+            forgotten.extend(stream.server_tick(&[host, friend], Some(host), &mut scene).1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(forgotten.is_empty(), "{forgotten:?}");
+        assert!(view(host).iter().all(|&pos| stream.sections.has_chunk(pos)), "the host draws its own chunks");
+        for pos in view(friend) {
+            assert!(!stream.sections.has_chunk(pos), "{pos:?} near the friend is in the scene but not drawn on the host");
+            assert!(!stream.lights.contains_key(&pos) && !stream.lights_pending.contains(&pos), "{pos:?} near the friend is not lit on the host");
+        }
+        let (_, forgotten) = stream.server_tick(&[friend, friend], Some(friend), &mut scene);
+        let forgotten: HashSet<ChunkPos> = forgotten.into_iter().map(|pos| (pos.x, pos.z)).collect();
+        assert_eq!(forgotten, view(host), "only the square nobody stands in any more is forgotten");
+        assert!(view(host).iter().all(|&pos| scene.generated_chunk(pos).is_none() && !stream.sections.has_chunk(pos)));
+        assert!(view(friend).iter().all(|&pos| scene.generated_chunk(pos).is_some() && stream.sections.has_chunk(pos)), "the host draws the friend's chunks once it stands there");
+        assert!(stream.lights.contains_key(&(106, 0)) || stream.lights_pending.contains(&(106, 0)), "and lights them");
     }
 
     #[test]
@@ -2590,7 +2677,7 @@ mod tests {
             assert!(stream.set_view_distance(&HandcraftedScene::default(), 99));
             assert_eq!(stream.view_distance(), EXTENDED_VIEW_DISTANCE);
             let mut scene = HandcraftedScene::streamed(stream.states.clone());
-            let (loaded, forgotten) = stream.server_tick((0, 64, 0), &mut scene);
+            let (loaded, forgotten) = stream.server_tick(&[(0, 64, 0)], Some((0, 64, 0)), &mut scene);
             assert!(loaded.is_empty() && forgotten.is_empty(), "nothing is generated on a friend's game");
             assert!(stream.loaded_chunk(minecraftoss_core::ChunkPos::new(0, 0)).is_none());
             assert!(stream.storage().is_none());

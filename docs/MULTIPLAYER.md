@@ -432,7 +432,7 @@ The events stay `Center`, `Load` and `Forget`, but now for the **server's loaded
 
 That way the host never meshes or draws the area around a far-away friend. `level::stream_tick` (`level.rs:185`) takes the players' block positions and returns `(loaded, forgotten)` for the level thread and containers, as now.
 
-Until this lands (E9, early in M2), the chunk map loads only around the host, and a friend gets chunks only where the host's view has them. The M1 owner test keeps the friend near the host.
+E9 built this. Before it, the chunk map loaded only around the host, and a friend got chunks only where the host's view had them, so the M1 owner test keeps the friend near the host. The generation queue is built per player square and merged, so two players far apart never make one dense grid spanning both, and the nearest-first order uses the nearest player. Ticketed chunks outside the host's own view are loaded but no longer drawn on the host, as a vanilla client is only sent its own view.
 
 ### 7.2 Sending: one sender per friend
 

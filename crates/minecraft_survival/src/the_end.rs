@@ -432,7 +432,13 @@ pub(crate) mod tests {
                 containers,
                 ..
             } = &mut level;
-            crate::level::stream_tick(terrain, entities, containers, platform_origin());
+            crate::level::stream_tick(
+                terrain,
+                entities,
+                containers,
+                &[platform_origin()],
+                Some(platform_origin()),
+            );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         server_answer(&mut level, |sim| {

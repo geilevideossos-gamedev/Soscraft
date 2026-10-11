@@ -2037,7 +2037,7 @@ pub(crate) mod tests {
                 containers,
                 ..
             } = level;
-            crate::level::stream_tick(terrain, entities, containers, block);
+            crate::level::stream_tick(terrain, entities, containers, &[block], Some(block));
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
