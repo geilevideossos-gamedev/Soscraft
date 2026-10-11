@@ -2564,6 +2564,7 @@ fn place_player(
         authority.set_minecraft_abilities(id, ability_bits(&player.mode) | playerstate_iw4::pm_flags::MC_FLYING);
     }
     player.steps.last = None;
+    player.portal.last_feet = None;
     player.steps.air_peak = (place.fall_distance > 0.0).then_some(place.feet[1] + place.fall_distance);
     let chunk = |block: f64| (block.floor() as i32) >> 4;
     if !gate.waiting() && !sim::voxel::chunks_ready_around(chunk(place.feet[0]), chunk(place.feet[2]), crate::minecraft_spawn_gate::SPAWN_CHUNK_RADIUS) {

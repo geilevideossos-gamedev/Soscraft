@@ -24,6 +24,8 @@ const DEFAULT_DELAY: &str = "players_nether_portal_default_delay";
 const ENTERING_THE_NETHER: &str = "allow_entering_nether_using_portals";
 const EFFECT_RISE: f32 = 0.0125;
 const EFFECT_FALL: f32 = 0.05;
+pub const SWEEP_STEP: f64 = 0.25;
+pub const SWEEP_LIMIT: f64 = 8.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PortalKind {
@@ -103,6 +105,51 @@ pub fn touched_portal(
     None
 }
 
+pub fn touched_gateways(
+    from: [f64; 3],
+    to: [f64; 3],
+    is_gateway: impl Fn((i32, i32, i32)) -> bool,
+) -> Vec<(i32, i32, i32)> {
+    let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    let length = (delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]).sqrt();
+    let steps = (length / SWEEP_STEP).ceil().max(1.0) as u32;
+    let half = PLAYER_WIDTH / 2.0 - INSIDE_DEFLATE;
+    let mut found = Vec::new();
+    for step in 0..=steps {
+        let t = f64::from(step) / f64::from(steps);
+        let feet = [
+            from[0] + delta[0] * t,
+            from[1] + delta[1] * t,
+            from[2] + delta[2] * t,
+        ];
+        let low = [feet[0] - half, feet[1] + INSIDE_DEFLATE, feet[2] - half];
+        let high = [
+            feet[0] + half,
+            feet[1] + PLAYER_HEIGHT - INSIDE_DEFLATE,
+            feet[2] + half,
+        ];
+        let range = |axis: usize| low[axis].floor() as i32..=high[axis].floor() as i32;
+        for z in range(2) {
+            for y in range(1) {
+                for x in range(0) {
+                    if !found.contains(&(x, y, z)) && is_gateway((x, y, z)) {
+                        found.push((x, y, z));
+                    }
+                }
+            }
+        }
+    }
+    found
+}
+
+pub fn sweep_start(last: Option<[f64; 3]>, feet: [f64; 3]) -> [f64; 3] {
+    last.filter(|last| {
+        let d = [feet[0] - last[0], feet[1] - last[1], feet[2] - last[2]];
+        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() <= SWEEP_LIMIT
+    })
+    .unwrap_or(feet)
+}
+
 pub fn portal_axis_in(terrain: &Terrain, pos: (i32, i32, i32)) -> Option<PortalAxis> {
     let block = Scene::block(&terrain.scene, pos)?;
     if block.id.key() != NETHER_PORTAL {
@@ -164,6 +211,7 @@ pub struct Portal {
     pub travel_sound: bool,
     pub effect: PortalEffect,
     pub age: u64,
+    pub last_feet: Option<[f64; 3]>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -242,12 +290,31 @@ pub fn step(
     rules: &GameRules,
     feet: Option<[f64; 3]>,
     seconds: f64,
+    mut enter_gateway: impl FnMut((i32, i32, i32)) -> bool,
 ) -> Stepped {
     let ticks = player.portal.ticks(seconds);
     let can_use = feet.is_some() && !player.dead && !player.remote;
     let invulnerable = player.mode.invulnerable();
+    let blocks_touch = player.mode.mode != GameMode::Spectator;
+    let mut sweep_from = feet.map(|feet| sweep_start(player.portal.last_feet, feet));
     let mut stepped = Stepped::default();
     for _ in 0..ticks {
+        let gateways = feet
+            .zip(sweep_from)
+            .filter(|_| can_use && blocks_touch)
+            .map_or_else(Vec::new, |(feet, from)| {
+                touched_gateways(from, feet, |pos| {
+                    crate::the_end::gateway::is_end_gateway(terrain, pos)
+                })
+            });
+        sweep_from = feet;
+        for pos in gateways {
+            if enter_gateway(pos) {
+                player
+                    .portal
+                    .set_inside(&mut player.portal_cooldown, PortalKind::Gateway, pos);
+            }
+        }
         let entry = feet
             .filter(|_| can_use)
             .and_then(|feet| touched_portal(feet, |pos| portal_axis_in(terrain, pos)));
@@ -278,6 +345,9 @@ pub fn step(
         if stepped.due.is_some() {
             break;
         }
+    }
+    if ticks > 0 || feet.is_none() {
+        player.portal.last_feet = feet;
     }
     stepped
 }
@@ -916,6 +986,152 @@ mod tests {
         assert!((overlay_alpha(0.5) - 0.25).abs() < 1e-6);
         assert!((overlay_alpha(0.0125) - 0.2).abs() < 1e-6);
         assert_eq!(overlay_alpha(1.0), 1.0);
+    }
+
+    #[test]
+    fn a_box_moving_through_a_gateway_between_ticks_touches_it() {
+        let gateway = |pos: (i32, i32, i32)| pos == (0, 64, 0);
+        assert_eq!(
+            touched_gateways([0.5, 64.0, -3.5], [0.5, 64.0, 3.5], gateway),
+            vec![(0, 64, 0)]
+        );
+        assert!(touched_gateways([0.5, 64.0, -3.5], [0.5, 64.0, -3.5], gateway).is_empty());
+        assert!(touched_gateways([0.5, 64.0, 3.5], [0.5, 64.0, 3.5], gateway).is_empty());
+        assert_eq!(
+            touched_gateways([-3.0, 61.0, -3.0], [4.0, 67.0, 4.0], gateway),
+            vec![(0, 64, 0)],
+            "a fast diagonal flight cannot skip the block"
+        );
+        assert_eq!(
+            touched_gateways([0.5, 62.3, 0.5], [0.5, 62.3, 0.5], gateway),
+            vec![(0, 64, 0)],
+            "the head reaches into it"
+        );
+        assert!(touched_gateways([0.5, 62.1, 0.5], [0.5, 62.1, 0.5], gateway).is_empty());
+        assert_eq!(
+            touched_gateways([0.5, 64.0, 1.31], [0.5, 64.0, 1.31], gateway),
+            Vec::<(i32, i32, i32)>::new(),
+            "the box is 0.6 wide"
+        );
+        assert_eq!(
+            touched_gateways([0.5, 64.0, 1.29], [0.5, 64.0, 1.29], gateway),
+            vec![(0, 64, 0)]
+        );
+        let two = |pos: (i32, i32, i32)| pos == (0, 64, 0) || pos == (0, 64, 3);
+        assert_eq!(
+            touched_gateways([0.5, 64.0, 5.5], [0.5, 64.0, -1.5], two),
+            vec![(0, 64, 3), (0, 64, 0)],
+            "gateways come in the order they are passed"
+        );
+    }
+
+    #[test]
+    fn a_teleport_is_not_swept() {
+        assert_eq!(
+            sweep_start(Some([0.0, 64.0, 0.0]), [5.0, 64.0, 5.0]),
+            [0.0, 64.0, 0.0]
+        );
+        assert_eq!(
+            sweep_start(Some([0.0, 64.0, 0.0]), [6.0, 64.0, 6.0]),
+            [6.0, 64.0, 6.0]
+        );
+        assert_eq!(sweep_start(None, [1.0, 2.0, 3.0]), [1.0, 2.0, 3.0]);
+    }
+
+    fn gateway_terrain() -> Option<Terrain> {
+        let paths = minecraftoss_core::registries::DataPaths::discover().ok()?;
+        let registries = std::sync::Arc::new(Registries::load(&paths).ok()?);
+        let mut terrain = Terrain::open(registries, 0, 2, Dimension::End, None, None).ok()?;
+        terrain.scene.set(
+            (0, 64, 0),
+            Some(minecraft_terrain::scene::Block::new(
+                crate::the_end::gateway::END_GATEWAY,
+            )),
+        );
+        Some(terrain)
+    }
+
+    #[test]
+    fn spectators_and_cooling_gateways_are_not_entered() {
+        let Some(terrain) = gateway_terrain() else {
+            return;
+        };
+        let rules = GameRules::default();
+        let inside = Some([0.5, 64.0, 0.5]);
+        let mut steve = crate::the_end::tests::player(Dimension::End);
+        let mut asked = Vec::new();
+        let stepped = step(&mut steve, &terrain, &rules, inside, TICK_SECONDS, |pos| {
+            asked.push(pos);
+            false
+        });
+        assert_eq!(asked, vec![(0, 64, 0)]);
+        assert_eq!((stepped.due, steve.portal.process), (None, None));
+        let stepped = step(&mut steve, &terrain, &rules, inside, TICK_SECONDS, |_| true);
+        assert_eq!(
+            stepped.due.map(|due| (due.kind, due.entry)),
+            Some((PortalKind::Gateway, (0, 64, 0)))
+        );
+        assert_eq!(steve.portal_cooldown, DIMENSION_CHANGING_DELAY);
+        let mut entered = 0;
+        let stepped = step(&mut steve, &terrain, &rules, inside, TICK_SECONDS, |_| {
+            entered += 1;
+            true
+        });
+        assert_eq!((entered, stepped.due), (1, None), "the gateway cools down even when the player cannot go");
+        assert_eq!(steve.portal_cooldown, DIMENSION_CHANGING_DELAY - 1);
+        let mut ghost = crate::the_end::tests::player(Dimension::End);
+        ghost.mode = minecraft_terrain::game_mode::PlayerMode::new(GameMode::Spectator);
+        let mut asked = Vec::new();
+        let stepped = step(&mut ghost, &terrain, &rules, inside, 1.0, |pos| {
+            asked.push(pos);
+            true
+        });
+        assert_eq!((asked, stepped.due), (Vec::new(), None));
+        let mut dead = crate::the_end::tests::player(Dimension::End);
+        dead.dead = true;
+        let stepped = step(&mut dead, &terrain, &rules, inside, 1.0, |_| true);
+        assert_eq!(stepped.due, None);
+    }
+
+    #[test]
+    fn a_flight_through_a_gateway_between_ticks_enters_it_and_a_teleport_does_not() {
+        let Some(terrain) = gateway_terrain() else {
+            return;
+        };
+        let rules = GameRules::default();
+        let mut steve = crate::the_end::tests::player(Dimension::End);
+        let before = step(&mut steve, &terrain, &rules, Some([0.5, 64.0, -3.5]), TICK_SECONDS, |_| true);
+        assert_eq!(before.due, None);
+        assert_eq!(steve.portal.last_feet, Some([0.5, 64.0, -3.5]));
+        let early = step(&mut steve, &terrain, &rules, Some([0.5, 64.0, 3.5]), 0.01, |_| true);
+        assert_eq!(early.due, None, "no tick yet");
+        assert_eq!(steve.portal.last_feet, Some([0.5, 64.0, -3.5]), "the sweep waits for the tick");
+        let through = step(&mut steve, &terrain, &rules, Some([0.5, 64.0, 3.5]), TICK_SECONDS, |_| true);
+        assert_eq!(
+            through.due.map(|due| (due.kind, due.entry)),
+            Some((PortalKind::Gateway, (0, 64, 0)))
+        );
+        let mut jumper = crate::the_end::tests::player(Dimension::End);
+        step(&mut jumper, &terrain, &rules, Some([0.5, 64.0, -6.0]), TICK_SECONDS, |_| true);
+        let far = step(&mut jumper, &terrain, &rules, Some([0.5, 64.0, 6.0]), TICK_SECONDS, |_| true);
+        assert_eq!(far.due, None, "twelve blocks in a tick is a teleport");
+        step(&mut jumper, &terrain, &rules, None, TICK_SECONDS, |_| true);
+        assert_eq!(jumper.portal.last_feet, None);
+    }
+
+    #[test]
+    fn the_nether_overlay_ignores_gateways() {
+        let Some(terrain) = gateway_terrain() else {
+            return;
+        };
+        let rules = GameRules::default();
+        let mut steve = crate::the_end::tests::player(Dimension::End);
+        steve.portal_cooldown = DIMENSION_CHANGING_DELAY;
+        for _ in 0..5 {
+            let stepped = step(&mut steve, &terrain, &rules, Some([0.5, 64.0, 0.5]), TICK_SECONDS, |_| true);
+            assert!(!stepped.inside && !stepped.triggered);
+        }
+        assert_eq!(steve.portal.effect, PortalEffect::default());
     }
 
     #[test]

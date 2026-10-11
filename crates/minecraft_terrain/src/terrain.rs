@@ -1334,6 +1334,31 @@ impl TerrainStream {
         self.server.set_block_entities(&changes);
     }
 
+    pub fn write_states(&mut self, scene: &mut HandcraftedScene, states: &[(BlockPos, BlockStateId)], block_entities: &[(BlockPos, Option<minecraftoss_core::nbt::Tag>)]) {
+        let mut chunks: Vec<(i32, i32)> = states.iter().map(|(pos, _)| pos).chain(block_entities.iter().map(|(pos, _)| pos)).map(|&(x, _, z)| (x >> 4, z >> 4)).collect();
+        chunks.sort_unstable();
+        chunks.dedup();
+        for &(x, z) in &chunks {
+            self.server.load_now(minecraftoss_core::ChunkPos::new(x, z));
+        }
+        let edits: Vec<_> = states.iter().map(|&((x, y, z), state)| (minecraftoss_core::BlockPos::new(x, y, z), state)).collect();
+        self.server.set_blocks(&edits);
+        self.record_block_entities(block_entities);
+        for &(x, z) in &chunks {
+            self.server.load_now(minecraftoss_core::ChunkPos::new(x, z));
+        }
+        let mut shown = Vec::new();
+        for &((x, y, z), state) in states {
+            if scene.generated_chunk((x >> 4, z >> 4)).is_some() {
+                scene.set((x, y, z), self.states.block(state).cloned());
+                shown.push((x, y, z));
+            }
+        }
+        if !shown.is_empty() {
+            self.mark_edited(scene, &shown);
+        }
+    }
+
     /// An edit at these positions: nearby sections rebuild for the player
     /// (`LevelRenderer.setBlockDirty`), and nearby chunks relight; sections
     /// whose light changed rebuild when that finishes.

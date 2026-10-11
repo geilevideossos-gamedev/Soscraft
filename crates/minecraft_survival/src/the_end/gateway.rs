@@ -1,8 +1,18 @@
+use std::any::Any;
 use std::collections::HashSet;
 
-use minecraftoss_core::BlockPos;
+use minecraft_net::Dimension;
+use minecraft_terrain::end_gateway::Gateway;
+use minecraft_terrain::scene::Scene;
+use minecraft_terrain::server::ServerSim;
+use minecraftoss_core::nbt::Tag;
 use minecraftoss_core::random::LegacyRandom;
+use minecraftoss_core::{BlockPos, BlockStateId};
 
+use crate::entities::Entities;
+use crate::level::{Level, Terrain};
+use crate::player::Player;
+use crate::player_nbt::Place;
 use crate::portal_forcer::ChunkWorld;
 
 pub type Pos = (i32, i32, i32);
@@ -297,6 +307,151 @@ pub fn destination(world: &mut impl GatewayWorld, exit: GatewayExit) -> [f64; 3]
         find_exit_position(world, exit.exit)
     };
     [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5]
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GatewayTrip {
+    pub exit: Pos,
+    pub feet: [f64; 3],
+    pub built: bool,
+}
+
+pub fn is_end_gateway(terrain: &Terrain, pos: Pos) -> bool {
+    Scene::block(&terrain.scene, pos).is_some_and(|block| block.id.key() == END_GATEWAY)
+}
+
+pub fn enter(entities: Option<&mut Entities>, pos: Pos) -> bool {
+    let Some(entities) = entities else {
+        return true;
+    };
+    if entities.gateway_cooling(pos) {
+        return false;
+    }
+    entities.run_job(Box::new(
+        move |sim: &mut ServerSim| -> Box<dyn Any + Send> { Box::new(sim.trigger_gateway(pos)) },
+    ));
+    entities.mark_cooling(pos);
+    true
+}
+
+pub fn known_exit(level: &mut Level, gateway: Pos) -> (Option<Pos>, bool) {
+    if let Some(view) = level
+        .entities
+        .as_ref()
+        .and_then(|entities| entities.gateway(gateway))
+    {
+        return (view.exit, view.exact);
+    }
+    let chunk = ChunkWorld::new(&mut level.terrain.stream).chunk((gateway.0 >> 4, gateway.2 >> 4));
+    chunk
+        .and_then(|chunk| {
+            let store = &chunk.block_entities;
+            store
+                .entities
+                .get(&gateway)
+                .or_else(|| store.pending.get(&gateway))
+                .and_then(Gateway::from_tag)
+        })
+        .map_or((None, false), |known| (known.exit, known.exact))
+}
+
+pub fn gateway_tag(pos: Pos, exit: Pos) -> Tag {
+    Tag::Compound(
+        [
+            ("id", Tag::String(END_GATEWAY.to_owned())),
+            ("x", Tag::Int(pos.0)),
+            ("y", Tag::Int(pos.1)),
+            ("z", Tag::Int(pos.2)),
+            ("Age", Tag::Long(0)),
+            ("exit_portal", Tag::IntArray(vec![exit.0, exit.1, exit.2])),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect(),
+    )
+}
+
+pub fn exit_states(level: &mut Level, gateway: Pos) -> Option<(Pos, Vec<(Pos, BlockStateId)>)> {
+    let (exit, island) = {
+        let mut world = ChunkWorld::new(&mut level.terrain.stream);
+        world.generates = true;
+        new_exit(&mut world, gateway)
+    };
+    let registries = level.terrain.stream.states.registries().clone();
+    let state = |name: &str| registries.blocks.parse_state(name).ok();
+    let (end_stone, bedrock, portal) = (state(END_STONE)?, state(BEDROCK)?, state(END_GATEWAY)?);
+    let mut states: Vec<(Pos, BlockStateId)> = island
+        .map(end_island_blocks)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|pos| (pos, end_stone))
+        .collect();
+    states.extend(gateway_frame(exit).into_iter().map(|(pos, frame)| {
+        let state = match frame {
+            Frame::Gateway => portal,
+            Frame::Bedrock => bedrock,
+            Frame::Air => BlockStateId::AIR,
+        };
+        (pos, state)
+    }));
+    Some((exit, states))
+}
+
+pub fn create_exit(level: &mut Level, gateway: Pos, exact: bool) -> Option<Pos> {
+    let (exit, states) = exit_states(level, gateway)?;
+    let terrain = &mut level.terrain;
+    terrain.stream.write_states(
+        &mut terrain.scene,
+        &states,
+        &[(exit, Some(gateway_tag(exit, gateway)))],
+    );
+    if let Some(entities) = level.entities.as_mut() {
+        entities.run_job(Box::new(
+            move |sim: &mut ServerSim| -> Box<dyn Any + Send> {
+                for &(pos, state) in &states {
+                    sim.command_place(pos, state, &[], true);
+                }
+                sim.set_gateway_exit(exit, gateway, false);
+                sim.set_gateway_exit(gateway, exit, exact);
+                Box::new(())
+            },
+        ));
+    }
+    Some(exit)
+}
+
+pub fn arrival(from: Option<Place>, dimension: Dimension, feet: [f64; 3]) -> Place {
+    match from {
+        Some(from) => Place {
+            dimension,
+            feet,
+            on_ground: false,
+            ..from
+        },
+        None => Place {
+            on_ground: false,
+            ..Place::standing(dimension, feet, 0.0, 0.0)
+        },
+    }
+}
+
+pub fn travel(level: &mut Level, player: &mut Player, gateway: Pos) -> Option<GatewayTrip> {
+    let (known, exact) = known_exit(level, gateway);
+    let (exit, built) = match known {
+        Some(exit) => (exit, false),
+        None if level.dimension == Dimension::End => (create_exit(level, gateway, exact)?, true),
+        None => return None,
+    };
+    let feet = {
+        let mut world = ChunkWorld::new(&mut level.terrain.stream);
+        world.generates = true;
+        destination(&mut world, GatewayExit { exit, exact })
+    };
+    let from = player
+        .place
+        .filter(|place| place.dimension == player.dimension);
+    player.arrive(arrival(from, level.dimension, feet));
+    Some(GatewayTrip { exit, feet, built })
 }
 
 #[cfg(test)]
@@ -598,5 +753,253 @@ mod tests {
         let exit = (x, y + EXIT_ABOVE, z);
         let loose = destination(&mut world, GatewayExit { exit, exact: false });
         assert!(loose[1] <= f64::from(exit.1 + 3), "{loose:?}");
+    }
+
+    struct TestDir(std::path::PathBuf);
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn end_level(save: Option<&crate::save::WorldSave>) -> Option<Level> {
+        let paths = minecraftoss_core::registries::DataPaths::discover().ok()?;
+        let registries = Arc::new(Registries::load(&paths).ok()?);
+        let terrain = Terrain::open(registries, 77, 2, Dimension::End, save, None).ok()?;
+        Some(Level::new(Dimension::End, terrain))
+    }
+
+    fn state(level: &Level, name: &str) -> BlockStateId {
+        level
+            .terrain
+            .stream
+            .states
+            .registries()
+            .blocks
+            .parse_state(name)
+            .expect(name)
+    }
+
+    fn write(level: &mut Level, states: &[(Pos, BlockStateId)], tags: &[(Pos, Option<Tag>)]) {
+        let terrain = &mut level.terrain;
+        terrain
+            .stream
+            .write_states(&mut terrain.scene, states, tags);
+    }
+
+    fn traveller(feet: [f64; 3]) -> Player {
+        let mut steve = crate::the_end::tests::player(Dimension::End);
+        steve.place = Some(Place {
+            motion: [0.4, 0.1, -0.2],
+            on_ground: false,
+            fall_distance: 3.0,
+            ..Place::standing(Dimension::End, feet, 30.0, -12.0)
+        });
+        steve
+    }
+
+    fn below(feet: [f64; 3]) -> Pos {
+        (
+            feet[0].floor() as i32,
+            feet[1].floor() as i32 - 1,
+            feet[2].floor() as i32,
+        )
+    }
+
+    #[test]
+    fn a_first_trip_builds_one_return_gateway_pointing_back() {
+        let Some(mut level) = end_level(None) else {
+            return;
+        };
+        let data = crate::data::GameData::default();
+        level.entities = Some(crate::entities::Entities::new(
+            &level.terrain.stream,
+            Dimension::End,
+            77,
+            &data,
+            None,
+            None,
+        ));
+        let source = minecraft_terrain::server::end_gateway_position(0);
+        let portal = state(&level, END_GATEWAY);
+        write(&mut level, &[(source, portal)], &[]);
+        assert_eq!(known_exit(&mut level, source), (None, false));
+        let mut steve = traveller([96.5, 75.0, 0.5]);
+        let started = std::time::Instant::now();
+        let trip = travel(&mut level, &mut steve, source).expect("a trip");
+        eprintln!("first trip {trip:?} in {:?}", started.elapsed());
+        assert!(trip.built);
+        assert!(
+            level
+                .entities
+                .as_ref()
+                .is_some_and(|entities| entities.runs_jobs()),
+            "the source's exit and the new blocks go to the server"
+        );
+        let exit = trip.exit;
+        assert!(
+            f64::from(exit.0).hypot(f64::from(exit.2)) >= 768.0,
+            "{exit:?}"
+        );
+        let arrival = steve.arrival.expect("an arrival");
+        assert_eq!(arrival.feet, trip.feet);
+        assert_eq!(
+            (
+                arrival.dimension,
+                arrival.yaw,
+                arrival.pitch,
+                arrival.motion
+            ),
+            (Dimension::End, 30.0, -12.0, [0.4, 0.1, -0.2])
+        );
+        assert!(!arrival.on_ground);
+        let mut world = ChunkWorld::new(&mut level.terrain.stream);
+        assert!(world.is_block(exit, END_GATEWAY));
+        assert!(world.is_bedrock((exit.0, exit.1 + 2, exit.2)));
+        assert!(world.is_bedrock((exit.0, exit.1 - 2, exit.2)));
+        assert!(world.is_bedrock((exit.0 + 1, exit.1 + 1, exit.2)));
+        assert!(
+            !world.full_block((exit.0 + 1, exit.1, exit.2)),
+            "the side ring is open"
+        );
+        let landing = below(trip.feet);
+        assert!(
+            world.full_block(landing) && !world.is_bedrock(landing),
+            "{landing:?}"
+        );
+        assert!((landing.0 - exit.0).abs() <= 5 && (landing.2 - exit.2).abs() <= 5);
+        let chunk = world
+            .chunk((exit.0 >> 4, exit.2 >> 4))
+            .expect("the exit chunk");
+        let tag = chunk
+            .block_entities
+            .entities
+            .get(&exit)
+            .expect("the return gateway's block entity");
+        assert_eq!(
+            tag.get("exit_portal").and_then(Tag::as_ints),
+            Some(vec![source.0, source.1, source.2])
+        );
+        assert_eq!(tag.get("ExactTeleport"), None);
+        assert_eq!(tag.get("Age").and_then(Tag::as_i64), Some(0));
+        drop(world);
+        write(
+            &mut level,
+            &[],
+            &[(source, Some(gateway_tag(source, exit)))],
+        );
+        let mut again = traveller([96.5, 75.0, 0.5]);
+        let second = travel(&mut level, &mut again, source).expect("a second trip");
+        assert_eq!(
+            (second.exit, second.feet, second.built),
+            (exit, trip.feet, false)
+        );
+        let back = travel(&mut level, &mut again, exit).expect("the way back");
+        assert_eq!((back.exit, back.built), (source, false));
+        let home = below(back.feet);
+        assert!(
+            (home.0 - source.0).abs() <= 5 && (home.2 - source.2).abs() <= 5,
+            "{back:?}"
+        );
+    }
+
+    #[test]
+    fn an_exact_exit_lands_on_it_and_a_loose_one_on_the_tallest_block() {
+        let Some(mut level) = end_level(None) else {
+            return;
+        };
+        let gateway = (40, 70, 40);
+        let portal = state(&level, END_GATEWAY);
+        let mut exact = gateway_tag(gateway, (100, 50, 0));
+        if let Tag::Compound(map) = &mut exact {
+            map.insert("ExactTeleport".to_owned(), Tag::Byte(1));
+        }
+        write(&mut level, &[(gateway, portal)], &[(gateway, Some(exact))]);
+        let mut steve = traveller([40.5, 70.0, 40.5]);
+        let trip = travel(&mut level, &mut steve, gateway).expect("an exact trip");
+        assert_eq!(
+            (trip.exit, trip.feet, trip.built),
+            ((100, 50, 0), [100.5, 50.0, 0.5], false)
+        );
+        write(
+            &mut level,
+            &[],
+            &[(gateway, Some(gateway_tag(gateway, (20, 50, 0))))],
+        );
+        let loose = travel(&mut level, &mut steve, gateway).expect("a loose trip");
+        let landing = below(loose.feet);
+        let mut world = ChunkWorld::new(&mut level.terrain.stream);
+        world.generates = true;
+        assert!(
+            world.full_block(landing) && !world.is_bedrock(landing),
+            "{loose:?}"
+        );
+        assert!((landing.0 - 20).abs() <= 5 && landing.2.abs() <= 5);
+        assert_ne!(
+            (landing.0, landing.2),
+            (20, 0),
+            "never the column under the gateway"
+        );
+        assert!(landing.1 > 52, "the tallest block, not one under the exit");
+        drop(world);
+        let mut no_exit = gateway_tag(gateway, (0, 0, 0));
+        if let Tag::Compound(map) = &mut no_exit {
+            map.remove("exit_portal");
+        }
+        write(&mut level, &[], &[(gateway, Some(no_exit))]);
+        level.dimension = Dimension::Overworld;
+        let mut alex = traveller([40.5, 70.0, 40.5]);
+        assert_eq!(travel(&mut level, &mut alex, gateway), None);
+        assert_eq!(
+            alex.arrival, None,
+            "outside the End a gateway with no exit goes nowhere"
+        );
+    }
+
+    #[test]
+    fn far_edits_survive_the_chunk_leaving_memory() {
+        let dir = std::env::temp_dir().join(format!(
+            "minecraft_survival-gateway-far-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _cleanup = TestDir(dir.clone());
+        let Some(save) = crate::save::open_world(&dir, None, Some("77"), 2).save else {
+            return;
+        };
+        let Some(mut level) = end_level(Some(&save)) else {
+            return;
+        };
+        let far = (1000, 70, 8);
+        let (portal, glass) = (state(&level, END_GATEWAY), state(&level, "minecraft:glass"));
+        write(
+            &mut level,
+            &[(far, portal), ((1000, 71, 8), glass)],
+            &[(far, Some(gateway_tag(far, (1, 2, 3))))],
+        );
+        let pos = minecraftoss_core::ChunkPos::new(62, 0);
+        let started = std::time::Instant::now();
+        while level.terrain.stream.loaded_chunk(pos).is_some() {
+            assert!(
+                started.elapsed().as_secs() < 120,
+                "the far chunk never left"
+            );
+            let terrain = &mut level.terrain;
+            terrain.stream.server_tick((0, 64, 0), &mut terrain.scene);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let chunk = level.terrain.stream.load_chunk_now(pos);
+        assert_eq!(chunk.block(8, 70, 8), portal);
+        assert_eq!(chunk.block(8, 71, 8), glass);
+        assert_eq!(
+            chunk
+                .block_entities
+                .entities
+                .get(&far)
+                .and_then(|tag| tag.get("exit_portal"))
+                .and_then(Tag::as_ints),
+            Some(vec![1, 2, 3])
+        );
     }
 }

@@ -50,6 +50,20 @@ pub(crate) fn travel(
     }
 }
 
+pub(crate) fn gateway(player: &mut Player, level: &mut Level, entry: (i32, i32, i32)) {
+    match minecraft_survival::the_end::gateway::travel(level, player, entry) {
+        Some(trip) => diag::info!(
+            World,
+            "Minecraft end gateway at {:?} leads to {:?} (exit {:?}{})",
+            entry,
+            trip.feet,
+            trip.exit,
+            if trip.built { ", built" } else { "" }
+        ),
+        None => diag::info!(World, "Minecraft end gateway at {:?} leads nowhere", entry),
+    }
+}
+
 pub(crate) fn arriving(player: &mut Player, level: &mut Level) {
     if minecraft_survival::the_end::build_platform(level, player) {
         diag::info!(
