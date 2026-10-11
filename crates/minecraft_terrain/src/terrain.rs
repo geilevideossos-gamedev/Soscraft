@@ -2472,7 +2472,7 @@ mod tests {
             if structure == "minecraft:bastion_remnant" {
                 assert!(kinds.contains(&("minecraft:piglin", true)) && kinds.contains(&("minecraft:piglin_brute", true)), "a bastion holds piglins and brutes: {kinds:?}");
             }
-            assert!(kinds.iter().all(|(_, persistent)| *persistent), "the {structure}'s mobs never despawn: {kinds:?}");
+            assert!(kinds.iter().filter(|(kind, _)| *kind != "minecraft:strider").all(|(_, persistent)| *persistent), "the {structure}'s mobs never despawn: {kinds:?}");
             found.push((structure, at));
         }
         sim.set_clocks(crate::server::ClockTicks { overworld: 6000, the_end: 0 });

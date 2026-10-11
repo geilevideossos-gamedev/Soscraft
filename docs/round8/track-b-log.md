@@ -183,3 +183,11 @@ After 225276bd.
 ```
 IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*64,minecraft:diamond_sword,minecraft:netherrack*64
 ```
+
+### 6a. The Nether structure test leaves the lava sea's striders out
+
+After f3c92b83.
+
+- **Changed:** `terrain::nether_fortresses_bastions_and_every_nether_feature_generate` checks that a fortress's and a bastion's mobs never despawn. Since entry 6, chunk generation also places striders on the lava around them (biome creatures, not structure mobs, and saved without `PersistenceRequired`, as vanilla saves them), so the check leaves `minecraft:strider` out.
+- **Tests:** the same test, now green.
+- **Test steps:** none (test only).
