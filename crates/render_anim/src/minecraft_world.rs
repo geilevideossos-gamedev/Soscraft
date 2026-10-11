@@ -2552,13 +2552,14 @@ fn place_player(
             feet,
             yaw: minecraft_yaw(ps.viewangles[1]),
             pitch: ps.viewangles[0],
-            motion: sim::voxel::to_block([0.0; 3], ps.velocity).map(|v| v * TICK_SECONDS),
+            motion: player_motion(ps.velocity),
             on_ground: ps.ground_entity_num != playerstate_iw4::ENTITYNUM_NONE,
             fall_distance: player.steps.air_peak.map_or(0.0, |peak| (peak - feet[1]).max(0.0)),
         });
         return;
     };
     authority.teleport_facing(id, sim::voxel::to_map(origin, place.feet), [place.pitch, minecraft_yaw(place.yaw), 0.0]);
+    authority.push_velocity(id, arrival_velocity(place.motion));
     if player.mode.abilities.flying {
         authority.set_minecraft_abilities(id, ability_bits(&player.mode) | playerstate_iw4::pm_flags::MC_FLYING);
     }
@@ -2569,6 +2570,14 @@ fn place_player(
         gate.start(now_ms);
     }
     player.place = Some(place);
+}
+
+fn player_motion(velocity: [f32; 3]) -> [f64; 3] {
+    sim::voxel::to_block([0.0; 3], velocity).map(|v| v * TICK_SECONDS)
+}
+
+fn arrival_velocity(motion: [f64; 3]) -> [f32; 3] {
+    sim::voxel::to_map([0.0; 3], motion.map(|v| v / TICK_SECONDS))
 }
 
 fn observe_spawn(terrain: &minecraft_survival::level::Terrain, gate: &mut crate::minecraft_spawn_gate::SpawnGate, origin: [f64; 3], eye: glam::DVec3, now_ms: u64) {
@@ -3016,5 +3025,29 @@ mod yaw_tests {
         for mw2 in [-170.0, -33.5, 12.25, 135.0] {
             assert!(same_angle(minecraft_yaw(minecraft_yaw(mw2)), mw2), "{mw2}");
         }
+    }
+}
+
+#[cfg(test)]
+mod arrival_tests {
+    use super::{arrival_velocity, player_motion};
+
+    #[test]
+    fn an_arrival_gives_back_the_motion_a_departure_saved() {
+        for velocity in [[180.0, -36.0, 72.0], [-500.0, 12.5, -300.0], [0.0, 0.0, 900.0]] {
+            let motion = player_motion(velocity);
+            let back = arrival_velocity(motion);
+            for axis in 0..3 {
+                assert!((back[axis] - velocity[axis]).abs() < 1e-3, "{velocity:?} -> {motion:?} -> {back:?}");
+            }
+        }
+        let east_up_south = arrival_velocity([0.5, 0.25, 0.1]);
+        assert!((east_up_south[0] - 360.0).abs() < 1e-3 && (east_up_south[1] + 72.0).abs() < 1e-3 && (east_up_south[2] - 180.0).abs() < 1e-3, "{east_up_south:?}");
+    }
+
+    #[test]
+    fn no_motion_leaves_the_player_still() {
+        assert_eq!(arrival_velocity([0.0; 3]), [0.0; 3]);
+        assert_eq!(player_motion([0.0; 3]), [0.0; 3]);
     }
 }

@@ -563,3 +563,15 @@ Commit: (see the next entry, or `git log` under this subject)
   - The full `minecraft_terrain` run had three load-sensitive eye of ender tests (`SEARCH_CAP` timing, from item a2) fail while another track was building; all 14 eye of ender tests pass when run on their own.
 - **Test steps:** none in game yet (the gateway's state is not shown until entry 6's beam, and nothing teleports until entry 4).
 - **Kit:** none needed.
+
+### 4a. Minecraft players keep their speed when they arrive somewhere
+
+Commit: the one after 4e512a51 (entry 3).
+
+- **Changed:** `render_anim/src/minecraft_world.rs` only. `place_player` used to stop the player on every arrival, because `teleport_facing` clears the MW2 velocity. It now pushes the arrival's `motion` back as MW2 velocity right after the teleport. Two small helpers do the conversion: `player_motion` (MW2 velocity to blocks a tick, the conversion the saved `Place` always used) and `arrival_velocity` (its inverse: `[mx, -mz, my]` times 36 units a block times 20 ticks a second).
+- **Tests** (`render_anim`, `minecraft_world::arrival_tests`): `an_arrival_gives_back_the_motion_a_departure_saved` (three velocities round-trip, and 0.5 east, 0.25 up, 0.1 south a tick is 360, -72, 180 units a second), `no_motion_leaves_the_player_still`.
+- **Note for tracks B (Nether) and C (End):** this changes every arrival, not only gateways. A nether portal trip, an end portal trip into the End (whose arrival already kept the motion) and a join with a saved `Motion` now keep the player's speed, as vanilla does (`TeleportTransition` keeps the delta for portals, and `Motion` is read on load). A player standing still arrives standing still.
+- **Test steps:**
+  1. Walk into a nether portal while sprinting. You arrive moving and slide on a little instead of stopping dead.
+  2. Glide with the elytra and a rocket, quit to the menu in the air and start again. You go on gliding at about the same speed.
+- **Kit:** `minecraft:elytra`, `minecraft:firework_rocket*64`, `minecraft:obsidian*14`, `minecraft:flint_and_steel`.
