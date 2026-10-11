@@ -2222,7 +2222,7 @@ pub enum Command {
     /// An operation on the player's trading screen.
     Merchant { op: MerchantOp, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, feet: [f64; 3] },
     /// One server tick, with the player's state for it.
-    Tick(Box<TickInput>),
+    Tick(Box<TickInput>, Vec<bool>),
     Throw(Box<crate::thrown::Thrown>),
     ThrowTrident(Box<crate::trident::ThrownTrident>),
     ThrowEye { owner: u64, throw: Box<crate::ender_eye::EyeThrow> },
@@ -2519,9 +2519,12 @@ impl ServerHandle {
         self.send(Command::KeepDroppedContents { pos, item: item.to_owned(), components: components.to_owned() });
     }
 
-    pub fn tick(&mut self, input: TickInput) {
-        self.ticks_sent += 1;
-        self.send(Command::Tick(Box::new(input)));
+    pub fn tick(&mut self, input: TickInput, normal: Vec<bool>) {
+        if normal.is_empty() {
+            return;
+        }
+        self.ticks_sent += normal.len() as u64;
+        self.send(Command::Tick(Box::new(input), normal));
     }
 
     pub fn ticks_in_flight(&self) -> u64 {
@@ -2685,7 +2688,20 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
         let mut out = Output::default();
         // Everything already queued is handled before answering.
         let mut next = Some(first);
-        while let Some(command) = next.take().or_else(|| if out.tick_nanos.is_empty() { commands.try_recv().ok() } else { None }) {
+        let mut batch: Option<(TickInput, std::collections::VecDeque<bool>)> = None;
+        loop {
+            let Some(command) = next.take().or_else(|| if out.tick_nanos.is_empty() || batch.is_some() { commands.try_recv().ok() } else { None }) else {
+                let Some((input, flags)) = batch.as_mut() else {
+                    break;
+                };
+                flags.pop_front();
+                run_tick(&mut sim, input, &mut out);
+                if flags.is_empty() {
+                    finish_batch(&mut sim, input, &mut out);
+                    batch = None;
+                }
+                continue;
+            };
             handled += 1;
             match command {
                 Command::LoadChunk(chunk) => sim.load_chunk(&chunk),
@@ -2755,99 +2771,23 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.ticks_since_save = 0;
                     sim.save_all_entities();
                 }
-                Command::Tick(input) => {
-                    let started = std::time::Instant::now();
-                    let input = *input;
-                    // `MinecraftServer.autoSave`: every five minutes.
-                    sim.ticks_since_save += 1;
-                    if sim.ticks_since_save >= 6000 {
-                        sim.ticks_since_save = 0;
-                        sim.save_all_entities();
+                Command::Tick(_, normal) if normal.is_empty() => {}
+                Command::Tick(input, normal) => match batch.as_mut() {
+                    Some((running, flags)) => {
+                        *running = *input;
+                        flags.extend(normal);
                     }
-                    sim.set_clocks(input.clocks);
-                    sim.set_players(&input.players, input.difficulty);
-                    // Living, non-spectating players draw experience orbs.
-                    sim.level.living_players = input.mob_players.iter().filter(|p| p.alive && !p.spectator).map(|p| (p.position.to_array(), f64::from(p.eye_height))).collect();
-                    sim.set_simulation_area(input.simulation_center, input.simulation_distance);
-                    if let Some(natural) = &mut sim.level.natural_spawning {
-                        natural.spawn_mobs = input.spawn_mobs;
-                    }
-                    sim.prepare_spawning(&input.mob_players);
-                    sim.tick();
-                    let mobs_started = std::time::Instant::now();
-                    sim.take_spawned();
-                    sim.despawn_mobs(&input.mob_players, input.difficulty);
-                    // The player's fight memory: its `tickCount` moves on and
-                    // the hurts the client took land in it.
-                    sim.mobs.tick_player(0);
-                    for &(source, kind) in &input.player_hurts {
-                        sim.mobs.player_hurt(0, source, kind);
-                    }
-                    sim.mobs.set_player_views(input.mob_views.clone());
-                    sim.mobs.set_player_vitals(input.mob_vitals.clone());
-                    // What the player holds, as villagers see it
-                    // (`ShowTradesToPlayer`).
-                    let held = input.pickup.as_ref().and_then(|(_, inventory, selected)| inventory.slots.get(*selected).and_then(Option::as_ref).map(|s| s.id.clone()));
-                    sim.mobs.set_player_main_hand(0, held.as_deref());
-                    sim.tick_mobs(&input.mob_players, input.bright_outside);
-                    let bodies: Vec<_> = input.mob_players.iter().map(crate::thrown::PlayerBody::of).collect();
-                    sim.tick_clouds(&bodies);
-                    sim.tick_thrown(&bodies);
-                    sim.tick_tridents(&bodies);
-                    sim.tick_eyes();
-                    sim.tick_end(&input.mob_players);
-                    out.player_hits.extend(sim.take_end_hits());
-                    out.mob_sounds.extend(sim.take_end_sounds());
-                    out.dragons_killed.extend(sim.take_dragons_killed());
-                    out.fight_reports.extend(sim.take_fight_reports());
-                    out.pearl_teleports.extend(sim.take_pearl_teleports());
-                    out.thrown_hits.extend(sim.take_thrown_hits());
-                    sim.spawn_trade_experience();
-                    out.merchant.extend(sim.check_merchant(&input.mob_players));
-                    out.player_hits.extend(sim.mobs.take_player_hits());
-                    let witch_splashes = sim.mobs.take_player_splashes();
-                    out.player_potions.extend(witch_splashes.iter().map(|(player, splash)| crate::splash::of_witch(*player, splash)));
-                    out.player_potions.extend(sim.take_player_potions());
-                    out.player_splashes.extend(witch_splashes);
-                    out.players_struck.extend(sim.take_players_struck());
-                    out.players_pushed.extend(sim.take_players_pushed());
-                    out.potion_breaks.extend(sim.take_potion_breaks());
-                    out.explosions.extend(sim.take_explosions());
-                    out.explosion_effects.extend(sim.take_explosion_effects());
-                    out.level_events.extend(sim.level.level_events.drain(..).map(|(id, pos, data)| (id, (pos.x, pos.y, pos.z), data)));
-                    out.mob_sounds.extend(sim.mobs.take_sounds());
-                    out.mob_sounds.extend(sim.level.sounds.drain(..).map(|s| minecraftoss_entities::world::MobSound { event: s.event.to_owned(), position: glam::DVec3::from_array(s.pos), volume: s.volume, pitch: s.pitch, category: "ambient" }));
-                    sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
-                    out.mobs = Some(Box::new(sim.tracked_mobs(input.tracking.0, input.tracking.1)));
-                    out.weather = Some(sim.weather(input.players.first().copied()));
-                    out.weather_data = sim.weather_data();
-                    let pickup_feet = input.pickup.as_ref().map(|(feet, _, _)| *feet);
-                    if let Some((feet, mut inventory, selected)) = input.pickup {
-                        let recipes = inventory.recipes.clone();
-                        let picked = sim.pickup(feet, |item, count, components| {
-                            let stack = make_stack(&recipes, item, count, components);
-                            match inventory.add_item(stack, selected) {
-                                None => count,
-                                Some(rest) => count - i32::from(rest.count),
-                            }
-                        });
-                        out.picked.extend(picked);
-                        if let Some(body) = bodies.first() {
-                            let tridents = sim.pickup_tridents(body, &bodies, |stack| {
-                                let mut stack = stack.clone();
-                                stack.max = stack.max.min(recipes.max_stack(&stack.id));
-                                inventory.add_item(stack, selected).is_none()
-                            });
-                            out.picked.extend(tridents);
+                    None => {
+                        let mut input = *input;
+                        run_tick(&mut sim, &mut input, &mut out);
+                        let flags: std::collections::VecDeque<bool> = normal.into_iter().skip(1).collect();
+                        if flags.is_empty() {
+                            finish_batch(&mut sim, &input, &mut out);
+                        } else {
+                            batch = Some((input, flags));
                         }
                     }
-                    // After the items, one experience orb.
-                    out.orbs_taken.extend(sim.take_experience(pickup_feet));
-                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts() });
-                    let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
-                    out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), started.elapsed().as_secs_f64() * 1000.0));
-                    out.tick_nanos.push(started.elapsed().as_nanos() as u64);
-                }
+                },
             }
         }
         out.changes = sim.take_changes();
@@ -2860,6 +2800,97 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
     }
     // The client closed the world: its entities are saved.
     sim.save_all_entities();
+}
+
+fn run_tick(sim: &mut ServerSim, input: &mut TickInput, out: &mut Output) {
+    let started = std::time::Instant::now();
+    sim.ticks_since_save += 1;
+    if sim.ticks_since_save >= 6000 {
+        sim.ticks_since_save = 0;
+        sim.save_all_entities();
+    }
+    sim.set_clocks(input.clocks);
+    sim.set_players(&input.players, input.difficulty);
+    sim.level.living_players = input.mob_players.iter().filter(|p| p.alive && !p.spectator).map(|p| (p.position.to_array(), f64::from(p.eye_height))).collect();
+    sim.set_simulation_area(input.simulation_center, input.simulation_distance);
+    if let Some(natural) = &mut sim.level.natural_spawning {
+        natural.spawn_mobs = input.spawn_mobs;
+    }
+    sim.prepare_spawning(&input.mob_players);
+    sim.tick();
+    let mobs_started = std::time::Instant::now();
+    sim.take_spawned();
+    sim.despawn_mobs(&input.mob_players, input.difficulty);
+    sim.mobs.tick_player(0);
+    for (source, kind) in std::mem::take(&mut input.player_hurts) {
+        sim.mobs.player_hurt(0, source, kind);
+    }
+    sim.mobs.set_player_views(input.mob_views.clone());
+    sim.mobs.set_player_vitals(input.mob_vitals.clone());
+    let held = input.pickup.as_ref().and_then(|(_, inventory, selected)| inventory.slots.get(*selected).and_then(Option::as_ref).map(|s| s.id.clone()));
+    sim.mobs.set_player_main_hand(0, held.as_deref());
+    sim.tick_mobs(&input.mob_players, input.bright_outside);
+    let bodies: Vec<_> = input.mob_players.iter().map(crate::thrown::PlayerBody::of).collect();
+    sim.tick_clouds(&bodies);
+    sim.tick_thrown(&bodies);
+    sim.tick_tridents(&bodies);
+    sim.tick_eyes();
+    sim.tick_end(&input.mob_players);
+    out.player_hits.extend(sim.take_end_hits());
+    out.mob_sounds.extend(sim.take_end_sounds());
+    out.dragons_killed.extend(sim.take_dragons_killed());
+    out.fight_reports.extend(sim.take_fight_reports());
+    out.pearl_teleports.extend(sim.take_pearl_teleports());
+    out.thrown_hits.extend(sim.take_thrown_hits());
+    sim.spawn_trade_experience();
+    out.merchant.extend(sim.check_merchant(&input.mob_players));
+    out.player_hits.extend(sim.mobs.take_player_hits());
+    let witch_splashes = sim.mobs.take_player_splashes();
+    out.player_potions.extend(witch_splashes.iter().map(|(player, splash)| crate::splash::of_witch(*player, splash)));
+    out.player_potions.extend(sim.take_player_potions());
+    out.player_splashes.extend(witch_splashes);
+    out.players_struck.extend(sim.take_players_struck());
+    out.players_pushed.extend(sim.take_players_pushed());
+    out.potion_breaks.extend(sim.take_potion_breaks());
+    out.explosions.extend(sim.take_explosions());
+    out.explosion_effects.extend(sim.take_explosion_effects());
+    out.level_events.extend(sim.level.level_events.drain(..).map(|(id, pos, data)| (id, (pos.x, pos.y, pos.z), data)));
+    out.mob_sounds.extend(sim.mobs.take_sounds());
+    out.mob_sounds.extend(sim.level.sounds.drain(..).map(|s| minecraftoss_entities::world::MobSound { event: s.event.to_owned(), position: glam::DVec3::from_array(s.pos), volume: s.volume, pitch: s.pitch, category: "ambient" }));
+    sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
+    let pickup_feet = input.pickup.as_ref().map(|(feet, _, _)| *feet);
+    if let Some((feet, inventory, selected)) = input.pickup.as_mut() {
+        let (feet, selected) = (*feet, *selected);
+        let recipes = inventory.recipes.clone();
+        let picked = sim.pickup(feet, |item, count, components| {
+            let stack = make_stack(&recipes, item, count, components);
+            match inventory.add_item(stack, selected) {
+                None => count,
+                Some(rest) => count - i32::from(rest.count),
+            }
+        });
+        out.picked.extend(picked);
+        if let Some(body) = bodies.first() {
+            let tridents = sim.pickup_tridents(body, &bodies, |stack| {
+                let mut stack = stack.clone();
+                stack.max = stack.max.min(recipes.max_stack(&stack.id));
+                inventory.add_item(stack, selected).is_none()
+            });
+            out.picked.extend(tridents);
+        }
+    }
+    out.orbs_taken.extend(sim.take_experience(pickup_feet));
+    out.tick_nanos.push(started.elapsed().as_nanos() as u64);
+}
+
+fn finish_batch(sim: &mut ServerSim, input: &TickInput, out: &mut Output) {
+    out.mobs = Some(Box::new(sim.tracked_mobs(input.tracking.0, input.tracking.1)));
+    out.weather = Some(sim.weather(input.players.first().copied()));
+    out.weather_data = sim.weather_data();
+    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts() });
+    let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
+    let total = out.tick_nanos.last().map_or(0.0, |&nanos| nanos as f64 / 1_000_000.0);
+    out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), total));
 }
 
 #[cfg(test)]
@@ -7777,7 +7808,7 @@ mod tests {
     fn each_tick_gets_its_own_output() {
         let Some(mut handle) = idle_handle() else { return };
         for _ in 0..3 {
-            handle.tick(idle_input());
+            handle.tick(idle_input(), vec![true]);
         }
         assert_eq!(handle.ticks_in_flight(), 3);
         handle.wait_idle();
@@ -7790,7 +7821,7 @@ mod tests {
     #[test]
     fn commands_after_a_tick_do_not_hold_its_output() {
         let Some(mut handle) = idle_handle() else { return };
-        handle.tick(idle_input());
+        handle.tick(idle_input(), vec![true]);
         for i in 0..200 {
             handle.summon_orb([8.5 + f64::from(i % 10), 120.0, 8.5], 1);
         }
@@ -7800,6 +7831,44 @@ mod tests {
         assert_eq!(outputs[0].handled, 1);
         assert!(outputs[1..].iter().all(|out| out.tick_nanos.is_empty()));
         assert_eq!(outputs.last().map(|out| out.handled), Some(201));
+        assert_eq!(handle.ticks_in_flight(), 0);
+    }
+
+    fn game_time(handle: &mut ServerHandle) -> i64 {
+        handle.run_job(Box::new(|sim: &mut ServerSim| Box::new(sim.level.game_time) as Box<dyn std::any::Any + Send>));
+        handle.wait_idle();
+        let mut jobs: Vec<_> = handle.poll().into_iter().flat_map(|out| out.jobs).collect();
+        *jobs.pop().expect("the job answered").downcast::<i64>().expect("a game time")
+    }
+
+    #[test]
+    fn a_batch_runs_each_tick() {
+        let Some(mut handle) = idle_handle() else { return };
+        let before = game_time(&mut handle);
+        handle.tick(idle_input(), vec![true; 3]);
+        handle.wait_idle();
+        let outputs = handle.poll();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].tick_nanos.len(), 3);
+        assert!(outputs[0].entities.is_some() && outputs[0].mobs.is_some());
+        assert_eq!(handle.ticks_in_flight(), 0);
+        assert_eq!(game_time(&mut handle), before + 3);
+    }
+
+    #[test]
+    fn a_rule_sent_after_a_batch_applies_to_the_next_batch() {
+        let Some(mut handle) = idle_handle() else { return };
+        handle.tick(idle_input(), vec![true; 5]);
+        let mut rules = crate::game_rules::GameRules::default();
+        rules.set("random_tick_speed", "0").unwrap();
+        handle.set_game_rules(rules);
+        handle.run_job(Box::new(|sim: &mut ServerSim| Box::new(sim.level.random_tick_speed) as Box<dyn std::any::Any + Send>));
+        handle.tick(idle_input(), vec![true]);
+        handle.wait_idle();
+        let outputs = handle.poll();
+        assert_eq!(outputs.iter().map(|out| out.tick_nanos.len()).sum::<usize>(), 6);
+        let speeds: Vec<i32> = outputs.into_iter().flat_map(|out| out.jobs).map(|job| *job.downcast::<i32>().unwrap()).collect();
+        assert_eq!(speeds, [0]);
         assert_eq!(handle.ticks_in_flight(), 0);
     }
 }

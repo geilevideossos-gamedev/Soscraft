@@ -124,6 +124,7 @@ pub struct Entities {
     pub command_jobs: Vec<Box<dyn std::any::Any + Send>>,
     jobs_running: usize,
     unread: Vec<minecraft_terrain::server::Output>,
+    finished_ticks: Vec<u64>,
     pub difficulty: i32,
     spawn_mobs: bool,
     block_drops: bool,
@@ -268,6 +269,7 @@ impl Entities {
             command_jobs: Vec::new(),
             jobs_running: 0,
             unread: Vec::new(),
+            finished_ticks: Vec::new(),
             difficulty: 2,
             spawn_mobs: true,
             block_drops: true,
@@ -632,7 +634,7 @@ impl Entities {
         for output in &mut self.unread {
             self.block_entity_changes.append(&mut output.block_entities);
         }
-        for mut output in self.server.poll() {
+        for mut output in self.poll_server() {
             self.jobs_running = self.jobs_running.saturating_sub(output.jobs.len());
             self.command_jobs.append(&mut output.jobs);
             self.block_entity_changes.extend(output.block_entities);
@@ -653,8 +655,25 @@ impl Entities {
         self.jobs_running > 0
     }
 
+    fn poll_server(&mut self) -> Vec<minecraft_terrain::server::Output> {
+        let outputs = self.server.poll();
+        for output in &outputs {
+            self.finished_ticks.extend_from_slice(&output.tick_nanos);
+        }
+        outputs
+    }
+
+    pub fn ready_for_ticks(&mut self) -> bool {
+        self.poll_jobs();
+        self.server.ticks_in_flight() == 0
+    }
+
+    pub fn take_finished_ticks(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.finished_ticks)
+    }
+
     pub fn poll_jobs(&mut self) {
-        for mut output in self.server.poll() {
+        for mut output in self.poll_server() {
             self.jobs_running = self.jobs_running.saturating_sub(output.jobs.len());
             self.command_jobs.append(&mut output.jobs);
             self.unread.push(output);
@@ -663,7 +682,7 @@ impl Entities {
 
     fn take_outputs(&mut self) -> Vec<minecraft_terrain::server::Output> {
         let mut outputs = std::mem::take(&mut self.unread);
-        outputs.extend(self.server.poll());
+        outputs.extend(self.poll_server());
         outputs
     }
 
@@ -816,6 +835,7 @@ impl Entities {
         inventory: &mut Inventory,
         selected: usize,
         dt: f64,
+        batch: &crate::tick_rate::TickBatch,
         clocks: minecraft_terrain::server::ClockTicks,
         bright_outside: bool,
         player: &PlayerView,
@@ -856,6 +876,8 @@ impl Entities {
             if self.ticks % 600 == 0 {
                 diag::info!(World, "Minecraft mobs: {} tracked", self.boxes().len());
             }
+        }
+        if !batch.is_empty() {
             let feet = DVec3::from_array(player.feet);
             let center = ((feet.x.floor() as i32) >> 4, (feet.z.floor() as i32) >> 4);
             let candidate = player_candidate(player);
@@ -888,7 +910,7 @@ impl Entities {
                 tracking: (player.feet, 160.0),
                 player_hurts: Vec::new(),
                 spawn_mobs: self.spawn_mobs,
-            });
+            }, batch.normal.clone());
         }
         let mut changes = Vec::new();
         let mut hits = Vec::new();

@@ -1115,10 +1115,19 @@ mod tests {
         loop {
             assert!(started.elapsed().as_secs() < 600, "the dragon never showed");
             if let Some(entities) = level.entities.as_mut() {
+                let batch = crate::tick_rate::TickBatch {
+                    normal: if entities.ready_for_ticks() {
+                        vec![true]
+                    } else {
+                        Vec::new()
+                    },
+                    overload: None,
+                };
                 let _ = entities.tick(
                     &mut minecraftoss_player::inventory::Inventory::default(),
                     0,
                     0.05,
+                    &batch,
                     minecraft_terrain::server::ClockTicks::default(),
                     false,
                     &crate::entities::PlayerView {

@@ -23,12 +23,14 @@ use crate::player::{Player, joining_inventory};
 use crate::player_nbt::{Place, PlayerData};
 use crate::save::{WorldClocks, WorldSave};
 use crate::survival::Survival;
+use crate::tick_rate::{TickBatch, TickRate};
 
 pub struct Server {
     pub globals: Globals,
     pub levels: BTreeMap<Dimension, Level>,
     pub opening: BTreeMap<Dimension, LevelLoader>,
     pub players: BTreeMap<PlayerUuid, Player>,
+    pub pending_batch: Option<TickBatch>,
 }
 
 pub struct Globals {
@@ -50,6 +52,7 @@ pub struct Globals {
     pub level_ticks: u32,
     pub closing: Vec<(Dimension, JoinHandle<()>)>,
     pub waiting_locates: Vec<(Dimension, PlayerId, LocateRequest)>,
+    pub tick_rate: TickRate,
 }
 
 impl Globals {
@@ -312,6 +315,45 @@ fn spawn_place(spawn: &RespawnData) -> Place {
 }
 
 impl Server {
+    pub fn plan_ticks(&mut self, now: Instant, ticking: &[Dimension]) -> TickBatch {
+        let mut holders = 0;
+        let mut ready = true;
+        let mut finished: Vec<u64> = Vec::new();
+        for dimension in ticking {
+            let Some(entities) = self
+                .levels
+                .get_mut(dimension)
+                .and_then(|level| level.entities.as_mut())
+            else {
+                continue;
+            };
+            holders += 1;
+            ready &= entities.ready_for_ticks();
+            for (index, nanos) in entities.take_finished_ticks().into_iter().enumerate() {
+                match finished.get_mut(index) {
+                    Some(slowest) => *slowest = (*slowest).max(nanos),
+                    None => finished.push(nanos),
+                }
+            }
+        }
+        if holders == 0 {
+            self.pending_batch = None;
+        }
+        self.globals.tick_rate.record(&finished);
+        let batch = self
+            .globals
+            .tick_rate
+            .plan(now, ready && self.pending_batch.is_none());
+        if holders > 0 && !batch.is_empty() {
+            self.pending_batch = Some(batch.clone());
+        }
+        batch
+    }
+
+    pub fn take_batch(&mut self) -> TickBatch {
+        self.pending_batch.take().unwrap_or_default()
+    }
+
     pub fn known_spawn(&self, dimension: Dimension, arrival: Option<Place>) -> Option<(i32, i32, i32)> {
         match dimension {
             Dimension::Overworld => (crate::save::spawn_dimension(&self.globals.spawn)
@@ -1161,6 +1203,7 @@ mod tests {
             level_ticks: 0,
             closing: Vec::new(),
             waiting_locates: Vec::new(),
+            tick_rate: TickRate::default(),
         }
     }
 
@@ -1292,6 +1335,7 @@ mod tests {
             levels: BTreeMap::new(),
             opening: BTreeMap::new(),
             players: BTreeMap::from([(uuid.clone(), player)]),
+            pending_batch: None,
         };
         server.save_and_close(Instant::now());
         let opened = crate::save::open_world(&dir.0, None, None, 2);
@@ -1355,6 +1399,7 @@ mod tests {
                 .into_iter()
                 .map(|player| (player.uuid.clone(), player))
                 .collect(),
+            pending_batch: None,
         }
     }
 
@@ -2233,5 +2278,40 @@ mod tests {
         let start = crate::portal_forcer::travel_into(&mut players, Dimension::Nether, &server.globals.registries).expect("a debug start comes through a portal");
         assert_eq!((start.target, start.entry_axis, start.relative), ((-5, 64, 10), PortalAxis::X, [0.5, 0.0, 0.0]));
         assert!(crate::portal_forcer::travel_into(&mut players, Dimension::End, &server.globals.registries).is_none());
+    }
+
+    #[test]
+    fn a_batch_left_by_an_early_return_is_sent_on_the_next_frame() {
+        let Some(mut level) =
+            crate::commands::tests::test_stream().and_then(crate::commands::tests::test_level)
+        else {
+            return;
+        };
+        let registries = level.terrain.stream.states.registries().clone();
+        level.entities = Some(Entities::new(
+            &level.terrain.stream,
+            Dimension::Overworld,
+            0,
+            &GameData::default(),
+            None,
+            None,
+        ));
+        let mut server = Server {
+            globals: test_globals(registries, None),
+            levels: BTreeMap::from([(Dimension::Overworld, level)]),
+            opening: BTreeMap::new(),
+            players: BTreeMap::new(),
+            pending_batch: None,
+        };
+        let base = Instant::now();
+        let after = |millis| base + std::time::Duration::from_millis(millis);
+        assert_eq!(server.plan_ticks(base, &[]).len(), 1);
+        assert!(server.pending_batch.is_none(), "no ticking level holds it");
+        let planned = server.plan_ticks(after(150), &[Dimension::Overworld]);
+        assert_eq!(planned.len(), 3);
+        assert!(server.plan_ticks(after(300), &[Dimension::Overworld]).is_empty());
+        assert_eq!(server.take_batch(), planned);
+        assert!(server.take_batch().is_empty());
+        assert_eq!(server.plan_ticks(after(300), &[Dimension::Overworld]).len(), 3);
     }
 }

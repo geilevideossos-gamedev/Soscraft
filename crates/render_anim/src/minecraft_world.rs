@@ -304,9 +304,10 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         level_ticks: 0,
         closing: Vec::new(),
         waiting_locates: Vec::new(),
+        tick_rate: Default::default(),
     };
     let level = minecraft_survival::level::Level::new(Dimension::Overworld, terrain);
-    Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), opening: Default::default(), players: std::collections::BTreeMap::new() }))
+    Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), opening: Default::default(), players: std::collections::BTreeMap::new(), pending_batch: None }))
 }
 
 pub(crate) fn data_jar() -> Option<std::path::PathBuf> {
@@ -602,7 +603,9 @@ fn update(
         puppet.active = false;
         return;
     };
-    let minecraft_survival::server::Server { globals, levels, players, .. } = server;
+    let ticking: Vec<Dimension> = server.players.get(local_uuid).filter(|player| player.switching.is_none()).map(|player| player.dimension).into_iter().collect();
+    server.plan_ticks(std::time::Instant::now(), &ticking);
+    let minecraft_survival::server::Server { globals, levels, players, pending_batch, .. } = server;
     if globals.autosave_ticks >= minecraft_survival::save::AUTOSAVE_TICKS {
         globals.autosave_ticks = 0;
         minecraft_survival::server::autosave(globals, levels, players);
@@ -1704,7 +1707,8 @@ fn update(
         let bright_outside = terrain.environment.sky_light_level() > 11.0;
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
         let ticks_before = entities.client_ticks();
-        let (changes, hits) = entities.tick(inventory, *selected, dt, globals.clock_ticks(), bright_outside, &player);
+        let batch = pending_batch.take().unwrap_or_default();
+        let (changes, hits) = entities.tick(inventory, *selected, dt, &batch, globals.clock_ticks(), bright_outside, &player);
         entities.present_level_events(&terrain.scene);
         globals.weather = entities.weather_data.or(globals.weather);
         let summoned = std::mem::take(&mut entities.command_summons);
