@@ -121,7 +121,7 @@ Commit: 7af8c86f
 
 ### 5b. Minecraft /tick query, rate, freeze, unfreeze, step and sprint like vanilla
 
-Commit: (see the next entry, or `git log` under this subject)
+Commit: 79467ca2
 
 - **Changed:**
   - New `minecraft_commands/src/tick.rs`: the `/tick` node (permission level 3) with `query`, `rate <rate>` (a float from 1 to 10000, suggesting `20`), `step`, `step stop`, `step <time>` (at least 1 tick, suggesting `1t` and `1s`), `sprint stop`, `sprint <time>` (suggesting `60s`, `1d` and `3d`), `freeze` and `unfreeze`. Each one follows `TickCommand` (javap): message keys and order, which lines go to other ops, and the return values (`query` and `rate` the rate as an int, `freeze` 1, `unfreeze` 0, the rest 1). Registered in `commands.rs`'s tree.
@@ -156,3 +156,17 @@ Commit: (see the next entry, or `git log` under this subject)
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:oak_sapling*16,minecraft:cow_spawn_egg*4,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:sand*16,minecraft:water_bucket,minecraft:furnace,minecraft:coal*16,minecraft:raw_iron*16,minecraft:dirt*32
 ```
+
+### 6. The Minecraft state doc describes overload, /tick and the server's ticks
+
+Commit: (see the next entry, or `git log` under this subject)
+
+- **Changed:** `docs/MINECRAFT-SURVIVAL.md` only.
+  - World simulation: a paragraph on the server tick (vanilla's schedule in `TickRate`, one batch per frame to each ticking level, back-pressure, the 50 ms batch budget, the `Can't keep up!` warning and skip with its thresholds, the tick time, what moves by server ticks, the autosave interval, the tick state not being saved), frozen ticks, and the client's vanilla tick timing.
+  - Commands: `/tick` after `/weather`.
+  - Saving: the autosave interval follows the tick rate.
+  - The two "only the host's level ticks" places (multiplayer today and the multiplayer limitation) say that `Server::plan_ticks` already takes the list of ticking levels.
+  - Limitations (commands): the player's own timers stay at 20 a second at any rate and while frozen (brief decision 7), MW2, the sky and the animation clock never freeze, remote friends have no tick state yet, one huge tick can't be cut short, and main-thread stalls count as falling behind.
+- **Tests:** none (documentation).
+- **Test steps:** none on their own; the a5 owner steps are in entries 2b, 3 and 5b.
+- **Kit:** none needed.
