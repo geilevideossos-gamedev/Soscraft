@@ -100,6 +100,7 @@ impl Potion {
             MobEffect::Weakness => 4738376,
             MobEffect::Poison => 8889187,
             MobEffect::Wither => 7561558,
+            MobEffect::Nausea => 5578058,
         }
     }
 }

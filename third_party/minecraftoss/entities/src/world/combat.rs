@@ -185,11 +185,15 @@ impl EntityWorld {
         if let Some(e) = self.striders.iter().find(|e| e.id == id) {
             return Some((e.strider.body.clone(), e.strider.health));
         }
+        if let Some(e) = self.hoglins.iter().find(|e| e.id == id) {
+            return Some((e.hoglin.body.clone(), e.hoglin.health));
+        }
         None
     }
 
     /// `LivingEntity.knockback` on a mob, by ID.
     pub(super) fn knock_back(&mut self, id: u64, power: f64, xd: f64, zd: f64) {
+        let power = if self.hoglins.iter().any(|e| e.id == id) { power * (1.0 - crate::hoglin::KNOCKBACK_RESISTANCE) } else { power };
         let (body, random) = if let Some(e) = self.witches.iter_mut().find(|e| e.id == id) {
             (&mut e.witch.body, &mut e.random)
         } else if let Some(e) = self.bats.iter_mut().find(|e| e.id == id) {
@@ -227,6 +231,8 @@ impl EntityWorld {
             (&mut e.blaze.body, &mut e.random)
         } else if let Some(e) = self.striders.iter_mut().find(|e| e.id == id) {
             (&mut e.strider.body, &mut e.random)
+        } else if let Some(e) = self.hoglins.iter_mut().find(|e| e.id == id) {
+            (&mut e.hoglin.body, &mut e.random)
         } else {
             return;
         };
@@ -324,6 +330,8 @@ impl EntityWorld {
             hit
         } else if let Some(e) = self.striders.iter_mut().find(|e| e.id == id) {
             e.hurt(amount, source)
+        } else if let Some(e) = self.hoglins.iter_mut().find(|e| e.id == id) {
+            e.hurt(amount)
         } else {
             let e = self.blazes.iter_mut().find(|e| e.id == id)?;
             let hit = e.hurt(amount);

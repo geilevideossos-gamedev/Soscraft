@@ -310,6 +310,7 @@ pub struct MobCandidate {
     pub alive: bool,
     /// Its entity type (`minecraft:villager` for the villager list).
     pub kind: &'static str,
+    pub baby: bool,
 }
 
 /// A monster's target.

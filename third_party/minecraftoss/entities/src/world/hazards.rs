@@ -229,6 +229,7 @@ exposed!(super::wolves::WolfEntity, wolf, |e, h, a, w, t| e.hurt_from(a, h.damag
 exposed!(super::ghasts::GhastEntity, ghast, |e, h, a, w, t| e.hurt(a).applied, |_s| true);
 exposed!(super::blazes::BlazeEntity, blaze, |e, h, a, w, t| e.hurt(a).applied, |_s| true);
 exposed!(super::striders::StriderEntity, strider, |e, h, a, w, t| e.hurt(a, animal_source(h)).applied, |_s| true);
+exposed!(super::hoglins::HoglinEntity, hoglin, |e, h, a, w, t| e.hurt(a).applied, |s| s.hoglin.fire_immune());
 
 impl Exposed for SheepEntity {
     fn body(&mut self) -> &mut Body {

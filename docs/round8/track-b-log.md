@@ -321,3 +321,27 @@ After 2f83e57d.
 - **Changed:** `docs/MINECRAFT-SURVIVAL.md`: right-click on mobs in the item list; a "Striders and riding" part under the Nether (spawning, lava, warmth, jockeys, a player's ride, steering, the boost, getting off, saving); `RootVehicle` in the player file; `riding.rs` and `minecraft_riding.rs` in the crate layout; striders leave N6 and the dormant list; the riding limitations from the brief's section 6 (only striders carry passengers, pigs can't be ridden, the standing MW2 body, the one-tick-behind server seat, non-steering riders, no portal travel for mounts, no saddle shearing, tempting only for striders). `docs/NETHER-END.md`: the strider row is present.
 - **Decision:** the vendored MinecraftOSS count (CLAUDE.md, "patched 53 of its files and added 14 (as of round 7)") is not edited in this track, because tracks A, C and E change it too and would conflict at the merges. As of this commit track B alone makes it 57 patched and 19 added (`git diff --name-status 114c18e1 HEAD -- third_party/minecraftoss`); the round's hand-over recounts it after the last merge.
 - **Test steps:** none (docs only).
+
+## Group b2-hoglins-1
+
+Brief `b2-hoglins.md`, groups H1 (commits 1 and 2) and H2 (commit 3). Numbered b2.1 and on, after the brief's commits.
+
+### b2.1. Minecraft hoglins and zoglins live in the entity world
+
+After f58c8593.
+
+- **Changed:**
+  - New vendored `entities/src/hoglin.rs`: `HoglinKind { Hoglin, Zoglin }` and `Hoglin` (body, health 40, `Age` for the hoglin and a `baby` flag for the zoglin, `in_love`, `attack_animation`, `time_in_overworld`, `immune_to_zombification`, `cannot_be_hunted`, `persistence_required`, `converting`). The 26.3 numbers: 1.3964844 x 1.4 with eye 1.19, a baby 0.75 x 0.85 with eye 0.625, speed 0.3, knockback resistance 0.6, attack knockback 1, damage 6 (0.5 for a baby), experience 5 (3 for a baby hoglin, 5 for any zoglin), `CONVERSION_TIME` 300. `damage_roll` (`hurtAndThrowTarget`: 3 to 8 for an adult, a flat 0.5 for a baby) and `throw_push` (`throwTarget`: `nextInt(21)` first, then the two `nextFloat`s; the `Vec3.yRot` turn in radians with `Mth`'s table, as vanilla).
+  - New vendored `entities/src/world/hoglins.rs`: `HoglinEntity`, `spawn_hoglin`, `hoglins`, `hoglin_mut`, `tick_hoglin`. The tick: fluids, fire (the zoglin is immune), suffocation, drowning (the zoglin is undead and breathes under water), effects (inverted for the zoglin), the ambient sound every 80 ticks on average, hurt and death sounds (`entity.hoglin.*` or `entity.zoglin.*`, hostile volume), the step at 0.15, travel with no input yet (the brain comes with H3), fall damage (hostile fall sounds for the zoglin), the attack animation countdown, and the hoglin's age and love.
+  - `world.rs` and its parts: `EntityKey::Hoglin` and `MobHit::Hoglin` (one storage for both kinds), and every per-kind list: entity type, census, despawn (removable far away, gone in peaceful), positions, bodies, damage states, voices, burning, blasts, the host copy, the bullet boxes, the death sweep, pushing, potions and effects, player hits, mob hits and arrows.
+  - Knockback resistance: `knock_back` scales a hoglin's knockback by 1 - 0.6 (`LivingEntity.knockback`), so player hits, sprint hits, mob hits and arrows all push it less; an iron golem's lift on it is scaled the same way (`IronGolem.doHurtTarget`). Blasts push it fully (its explosion knockback resistance is 0).
+  - Deaths: a hoglin drops `entities/hoglin` only as an adult, a zoglin `entities/zoglin` at any age; the experience (5, 3 for a baby hoglin) only for a player's kill, as for the other monsters. A burning hoglin's death is marked on fire, so its porkchops are cooked.
+  - `MobCandidate.baby`, filled for every kind (the zombies' villager list included), for the brain of H3 and b1.
+  - `effects.rs`: `MobEffect::Nausea` (`minecraft:nausea`, colour 5578058, no work on mobs), at the end of the enum.
+  - `minecraft_survival/src/entities.rs`: MW2 hit key 22 for hoglins and zoglins (`HOGLIN_KEY`); the boxes come with b2.3.
+- **Tests:** `hoglin`: `an_adult_rolls_three_to_eight_and_a_baby_half_a_heart`, `the_throw_lifts_at_most_half_a_block_and_spares_full_resistance`, `a_hoglin_baby_is_aged_and_a_zoglin_baby_is_flagged`. `world::hoglins`: `a_hoglin_and_a_zoglin_have_forty_health_and_vanilla_sizes`, `a_baby_hoglin_drops_experience_but_no_loot_and_a_baby_zoglin_drops_both`, `a_burning_hoglin_drops_cooked_porkchops` (the 26.3 tables from `MINECRAFTOSS_ROOT\client.jar`: 2 to 4 porkchops, at most one leather, cooked when it burns), `hoglins_and_zoglins_leave_on_peaceful`, `a_zoglin_shrugs_off_lava_and_a_hoglin_burns`, `a_hoglin_takes_four_tenths_of_the_knockback`.
+- **Decisions:**
+  - The throw draws from the hoglin's own random, not a level random (the entity world has none for this); the order of the draws is vanilla's.
+  - A hoglin is an `Animal`: its idle clock runs one a tick and its swim, splash and fall sounds are the generic ones. A zoglin is a `Monster`: two more a tick in bright light, and the hostile sounds.
+  - A mob with `NoAI` stands still and only keeps its idle clock, as the other mobs here do.
+- **Test steps:** none in game yet: hoglins and zoglins are simulated from b2.2 on.
