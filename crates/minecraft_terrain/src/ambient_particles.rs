@@ -36,6 +36,7 @@ pub enum Kind {
     ExplosionEmitter,
     HappyVillager,
     Rain,
+    Flame,
 }
 
 #[derive(Clone, Debug)]
@@ -107,6 +108,28 @@ impl Particle {
         let lifetime = 8.0 / (f64::from(random.next_float()) * 0.8 + 0.2) * f64::from(scale);
         particle.lifetime = (lifetime as i32).max(1);
         particle
+    }
+
+    fn flame(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::Flame, at, DVec3::ZERO, random);
+        particle.friction = 0.96;
+        particle.velocity = particle.velocity * f64::from(0.01_f32) + motion;
+        let mut jitter = || f64::from((random.next_float() - random.next_float()) * 0.05);
+        particle.position += DVec3::new(jitter(), jitter(), jitter());
+        particle.lifetime = (8.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32 + 4;
+        particle
+    }
+
+    fn rise(&mut self) -> bool {
+        self.previous = self.position;
+        let prior = self.age;
+        self.age += 1;
+        if prior >= self.lifetime {
+            return false;
+        }
+        self.position += self.velocity;
+        self.velocity *= f64::from(self.friction);
+        true
     }
 
     fn lava(at: DVec3, random: &mut LegacyRandom) -> Self {
@@ -237,6 +260,11 @@ impl Particle {
         prior < self.lifetime
     }
 
+    fn glow(&self, block: f32, partial: f32) -> f32 {
+        let aged = ((self.age as f32 + partial) / self.lifetime as f32).clamp(0.0, 1.0);
+        (block * 16.0 + (aged * 240.0) as i32 as f32).min(240.0) / 16.0
+    }
+
     fn translucent(&self) -> bool {
         matches!(self.kind, Kind::CosySmoke | Kind::SignalSmoke)
     }
@@ -259,6 +287,7 @@ impl Particle {
             Kind::ExplosionEmitter => return None,
             Kind::HappyVillager => "glint".to_owned(),
             Kind::Rain => format!("splash_{}", self.sprite),
+            Kind::Flame => "flame".to_owned(),
         };
         ResourceId::parse(&format!("minecraft:particle/{name}")).ok()
     }
@@ -268,6 +297,7 @@ impl Particle {
         match self.kind {
             Kind::Smoke | Kind::LargeSmoke => self.quad_size * (grown * 32.0).clamp(0.0, 1.0),
             Kind::Lava => self.quad_size * (1.0 - grown * grown),
+            Kind::Flame => self.quad_size * (1.0 - grown * grown * 0.5),
             Kind::CosySmoke
             | Kind::SignalSmoke
             | Kind::Poof
@@ -452,7 +482,7 @@ fn clip(boxes: &Boxes, low: &[f64; 3], high: &[f64; 3], axis: usize, mut wanted:
 pub fn textures() -> Vec<ResourceId> {
     let big_smoke = (0..BIG_SMOKE_SPRITES).map(|index| format!("big_smoke_{index}"));
     let explosion = (0..EXPLOSION_SPRITES).map(|index| format!("explosion_{index}"));
-    ["lava", "glint"]
+    ["lava", "glint", "flame"]
         .into_iter()
         .map(str::to_owned)
         .chain(big_smoke)
@@ -673,6 +703,10 @@ impl AmbientParticles {
         self.particles.clear();
     }
 
+    pub fn kinds_at(&self) -> impl Iterator<Item = (Kind, DVec3)> + '_ {
+        self.particles.iter().map(|particle| (particle.kind, particle.position))
+    }
+
     pub fn add(&mut self, kind: Kind, at: DVec3, motion: DVec3) {
         let random = &mut self.random;
         let particle = match kind {
@@ -686,6 +720,7 @@ impl AmbientParticles {
             Kind::ExplosionEmitter => Particle::emitter(at, random),
             Kind::HappyVillager => Particle::happy_villager(at, motion, random),
             Kind::Rain => Particle::rain(at, random),
+            Kind::Flame => Particle::flame(at, motion, random),
         };
         self.particles.push(particle);
         if self.particles.len() > CAP {
@@ -712,6 +747,7 @@ impl AmbientParticles {
             Kind::Explosion => particle.hold(),
             Kind::HappyVillager => particle.linger(),
             Kind::Rain => particle.drip(scene, &mut cache, random),
+            Kind::Flame => particle.rise(),
             Kind::CosySmoke | Kind::SignalSmoke => particle.drift(scene, &mut cache, random),
             _ => {
                 let alive = particle.tick(scene, &mut cache);
@@ -760,6 +796,7 @@ impl AmbientParticles {
             let (sky, block) = match particle.kind {
                 Kind::Explosion => (FULL_BRIGHT, FULL_BRIGHT),
                 Kind::Lava => (f32::from(light.get(cell)), FULL_BRIGHT),
+                Kind::Flame => (f32::from(light.get(cell)), particle.glow(f32::from(light.get_block(cell)), partial)),
                 _ => (f32::from(light.get(cell)), f32::from(light.get_block(cell))),
             };
             let size = particle.size_at(partial);
@@ -827,6 +864,51 @@ mod tests {
 
     fn open() -> Blocks {
         Blocks(HashMap::new())
+    }
+
+    #[test]
+    fn a_flame_hardly_moves_shrinks_and_glows_as_it_ages() {
+        let stone = Blocks(HashMap::from([((0, 64, 0), Block::new("minecraft:stone"))]));
+        let light = SkyLight::from_levels((0, 64, 0), (1, 1, 1), vec![12], vec![3]);
+        let mut crossed = false;
+        for seed in 0..200 {
+            let mut particles = AmbientParticles::new(seed);
+            let start = DVec3::new(0.5, 63.99, 0.5);
+            particles.add(Kind::Flame, start, DVec3::ZERO);
+            let flame = particles.particles[0].clone();
+            assert!((12..=44).contains(&flame.lifetime), "{}", flame.lifetime);
+            assert!((flame.position - start).abs().max_element() <= 0.05);
+            assert_eq!(flame.previous, start);
+            assert_eq!(flame.size_at(0.0), flame.quad_size);
+            assert_eq!(flame.glow(3.0, 0.0), 3.0);
+            let mut end = flame.clone();
+            end.age = end.lifetime;
+            assert_eq!(end.size_at(0.0), flame.quad_size * 0.5);
+            assert_eq!(end.glow(3.0, 0.0), 15.0);
+            let mut rise = 0.0_f64;
+            let mut lived = 0;
+            while particles.len() == 1 {
+                rise = rise.max((particles.particles[0].position - flame.position).length());
+                crossed |= flame.position.y < 64.0 && particles.particles[0].position.y > 64.0;
+                particles.tick(&stone);
+                lived += 1;
+            }
+            assert!(rise < 0.1, "{rise}");
+            assert_eq!(lived, flame.lifetime + 1);
+        }
+        assert!(crossed);
+        let mut particles = AmbientParticles::new(1);
+        particles.add(Kind::Flame, DVec3::new(0.5, 64.5, 0.5), DVec3::ZERO);
+        let mut opaque = ChunkMesh::default();
+        let mut translucent = ChunkMesh::default();
+        let atlas = crate::mesh::make_atlas(&crate::pack::PackStack::open(Vec::new()).unwrap(), textures()).unwrap();
+        particles.append_mesh(&mut opaque, &mut translucent, &atlas, Vec3::Z, 0.0, &light);
+        assert_eq!(opaque.vertices.len(), 4);
+        assert!(translucent.vertices.is_empty());
+        assert!(opaque.vertices.iter().all(|v| v.sky_light == 12.0 && v.block_light == 3.0));
+        let mut flame = particles.particles[0].clone();
+        flame.age = flame.lifetime / 2;
+        assert!(flame.glow(3.0, 0.0) > 3.0 && flame.glow(3.0, 0.0) < 15.0);
     }
 
     #[test]

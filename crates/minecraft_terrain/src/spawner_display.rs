@@ -1,3 +1,4 @@
+use crate::ambient_particles::{AmbientParticles, Kind};
 use crate::client_mobs::{ClientMobs, server_mobs};
 use crate::lighting::SkyLight;
 use crate::mesh::{Atlas, ChunkMesh};
@@ -5,6 +6,7 @@ use crate::scene::{BlockPos, Scene};
 use glam::{DVec3, Quat, Vec3};
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_entities::world::EntityWorld;
+use minecraftoss_player::rng::LegacyRandom;
 use std::collections::BTreeMap;
 
 pub const VIEW_DISTANCE: f64 = 64.0;
@@ -331,12 +333,19 @@ impl SpawnerDisplay {
     }
 }
 
-#[derive(Default)]
 pub struct SpawnerDisplays {
     displays: BTreeMap<BlockPos, SpawnerDisplay>,
+    random: LegacyRandom,
 }
 
 impl SpawnerDisplays {
+    pub fn new(seed: u64) -> Self {
+        Self {
+            displays: BTreeMap::new(),
+            random: LegacyRandom::new(seed),
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.displays.len()
     }
@@ -387,7 +396,7 @@ impl SpawnerDisplays {
         }
     }
 
-    pub fn tick(&mut self, players: &[DVec3]) {
+    pub fn tick(&mut self, players: &[DVec3], particles: &mut AmbientParticles) {
         for (&pos, display) in &mut self.displays {
             if !display.near(pos, players) {
                 display.o_spin = display.spin;
@@ -396,6 +405,14 @@ impl SpawnerDisplays {
             if !display.has_mob() {
                 continue;
             }
+            let random = &mut self.random;
+            let at = DVec3::new(
+                f64::from(pos.0) + random.next_double(),
+                f64::from(pos.1) + random.next_double(),
+                f64::from(pos.2) + random.next_double(),
+            );
+            particles.add(Kind::Smoke, at, DVec3::ZERO);
+            particles.add(Kind::Flame, at, DVec3::ZERO);
             if display.delay > 0 {
                 display.delay -= 1;
             }
@@ -532,7 +549,7 @@ mod tests {
     }
 
     fn one(pos: BlockPos, mob: Option<&str>, delay: i16) -> SpawnerDisplays {
-        let mut displays = SpawnerDisplays::default();
+        let mut displays = SpawnerDisplays::new(1);
         displays.block_entities(&[(pos, Some(spawner_tag(mob, delay)))]);
         displays
     }
@@ -593,21 +610,58 @@ mod tests {
     fn a_far_spawner_freezes_its_spin_and_delay() {
         let pos = (0, 64, 0);
         let mut displays = one(pos, Some("minecraft:zombie"), 100);
-        displays.tick(&[DVec3::new(17.5, 64.5, 0.5)]);
+        displays.tick(
+            &[DVec3::new(17.5, 64.5, 0.5)],
+            &mut AmbientParticles::new(0),
+        );
         let display = &displays.displays[&pos];
         assert_eq!(
             (display.delay, display.spin, display.o_spin),
             (100, 0.0, 0.0)
         );
-        displays.tick(&[DVec3::new(15.5, 64.5, 0.5)]);
+        displays.tick(
+            &[DVec3::new(15.5, 64.5, 0.5)],
+            &mut AmbientParticles::new(0),
+        );
         let display = &displays.displays[&pos];
         assert_eq!(display.delay, 99);
         assert_eq!(display.o_spin, 0.0);
         assert_eq!(display.spin, spin_step(0.0, 99));
-        displays.tick(&[]);
+        displays.tick(&[], &mut AmbientParticles::new(0));
         let display = &displays.displays[&pos];
         assert_eq!(display.delay, 99);
         assert_eq!(display.o_spin, display.spin);
+    }
+
+    #[test]
+    fn a_near_spawner_puts_one_smoke_and_one_flame_at_one_point_each_tick() {
+        let pos = (-4, 20, 9);
+        let mut displays = one(pos, Some("minecraft:silverfish"), 20);
+        let mut particles = AmbientParticles::new(3);
+        let near = [DVec3::new(-2.0, 20.0, 9.0)];
+        for tick in 1..=30 {
+            let before = particles.len();
+            displays.tick(&near, &mut particles);
+            assert_eq!(particles.len(), before + 2);
+            let added: Vec<_> = particles.kinds_at().skip(before).collect();
+            assert_eq!(added[0].0, Kind::Smoke);
+            assert_eq!(added[1].0, Kind::Flame);
+            assert!((added[1].1 - added[0].1).abs().max_element() <= 0.05);
+            for (_, at) in &added {
+                let inside = *at - DVec3::new(-4.0, 20.0, 9.0);
+                assert!(
+                    inside.min_element() >= -0.05 && inside.max_element() <= 1.05,
+                    "tick {tick}: {inside}"
+                );
+            }
+        }
+        assert!(displays.displays[&pos].spin > 0.0);
+        let before = particles.len();
+        displays.tick(&[DVec3::new(30.0, 20.0, 9.0)], &mut particles);
+        assert_eq!(particles.len(), before);
+        let mut empty = one(pos, None, 20);
+        empty.tick(&near, &mut particles);
+        assert_eq!(particles.len(), before);
     }
 
     #[test]
@@ -615,7 +669,7 @@ mod tests {
         let pos = (0, 64, 0);
         let mut displays = one(pos, None, 20);
         for _ in 0..5 {
-            displays.tick(&[DVec3::new(1.5, 64.0, 0.5)]);
+            displays.tick(&[DVec3::new(1.5, 64.0, 0.5)], &mut AmbientParticles::new(0));
         }
         let display = &displays.displays[&pos];
         assert_eq!((display.delay, display.spin), (20, 0.0));
@@ -691,7 +745,7 @@ mod tests {
             .block_entities
             .entities
             .insert((19, 30, 4), Tag::Compound(chest));
-        let mut displays = SpawnerDisplays::default();
+        let mut displays = SpawnerDisplays::new(1);
         displays.load_chunk(&chunk);
         assert_eq!(displays.len(), 2);
         assert_eq!(displays.displays[&(17, 30, 4)].delay, 44);

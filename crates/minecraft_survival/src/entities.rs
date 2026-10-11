@@ -251,7 +251,7 @@ impl Entities {
             orbs: Vec::new(),
             falling: Default::default(),
             lids: Default::default(),
-            spawners: Default::default(),
+            spawners: minecraft_terrain::spawner_display::SpawnerDisplays::new((seed ^ 0x5b3d) as u64),
             orb_pickups: Vec::new(),
             pearl_landings: Vec::new(),
             player_potions: Vec::new(),
@@ -858,7 +858,7 @@ impl Entities {
             }
             self.lids.tick();
             let near: Vec<DVec3> = (player.alive && !player.spectator).then(|| DVec3::from_array(player.feet)).into_iter().collect();
-            self.spawners.tick(&near);
+            self.spawners.tick(&near, &mut self.ambient);
             // Packets first, then the client level's entity ticks.
             self.client.tick();
             for enderman in self.world.endermen() {

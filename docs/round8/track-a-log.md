@@ -390,7 +390,7 @@ Commit: 7258b0f2
 
 ### 1. Minecraft spawners show their mob spinning inside like vanilla
 
-Commit: (see the next entry, or `git log` under this subject)
+Commit: 723ef47a
 
 - **Changed:**
   - `minecraft_terrain/src/client_mobs.rs`: `MobPose.turn`, an outer turn that `body_rotation` puts before the body's own turn and death flip (the outer `PoseStack` of `SpawnerRenderer`); `ClientMob::pose` sets it to identity. `ClientMobs::show_in_spawner(id, turn, light_probe)` stores a display's turn and light probe, and `ClientMobs::pose` applies them. `piglin_render.rs`'s test literal gets `turn: Quat::IDENTITY` (Track B: every new `MobPose` literal needs it).
@@ -413,6 +413,27 @@ Commit: (see the next entry, or `git log` under this subject)
   4. Break the spawner with the pickaxe: the blaze disappears with the cage.
   5. Quit and load the world again: the spawner still shows its blaze.
   6. A stronghold or mineshaft spawner shows an empty cage for now (silverfish and cave spider have no model yet).
+- **Kit** (6 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:spyglass,minecraft:cooked_beef*32,minecraft:cobblestone*64
+```
+
+### 2. Minecraft spawners give off flames and smoke like vanilla
+
+Commit: (see the next entry, or `git log` under this subject)
+
+- **Changed:**
+  - `minecraft_terrain/src/ambient_particles.rs`: `Kind::Flame` (vanilla `FlameParticle`, a `RisingParticle`, checked with javap): the usual `Particle` start with zero motion, its velocity times `0.01f` plus the given motion, the position (not the previous one) jittered by `(nextFloat - nextFloat) * 0.05f` on each axis, friction 0.96, no gravity, lifetime `(int)(8 / (nextFloat * 0.8 + 0.2)) + 4` (12 to 44). It moves its box with no collision, so it passes into blocks. Size `quadSize * (1 - t^2 * 0.5)`; block light `LightCoordsUtil.addSmoothBlockEmission`: the cell's block light in sixteenths plus `(int)(t * 240)`, capped at full, so it glows to 15 as it ages. Opaque, sprite `particle/flame` (added to `textures()`). `kinds_at()` lists the particles' kinds and positions.
+  - `minecraft_terrain/src/spawner_display.rs`: `SpawnerDisplays::new(seed)` has its own random; `tick` takes the level's `AmbientParticles` and, for a near spawner with a mob, adds `SMOKE` then `FLAME` at one point `pos + (nextDouble, nextDouble, nextDouble)` with zero motion, before the countdown and the spin (`BaseSpawner.clientTick`).
+  - `minecraft_survival/src/entities.rs`: the displays get a seed from the world seed, as the ambient particles do, and tick into `self.ambient`.
+  - `docs/MINECRAFT-SURVIVAL.md`: the flames and smoke next to the spawner mob; "spawner" leaves the Nether details limitation.
+- **Tests:** `minecraft_terrain`: `ambient_particles.rs` `a_flame_hardly_moves_shrinks_and_glows_as_it_ages` (200 seeds: lifetime 12 to 44, the jitter within 0.05 with the previous position unjittered, less than 0.1 of drift over its life, lives `lifetime + 1` ticks, half the size and block light 15 at the end, and some flame started below a stone block rises into it; the quad is opaque and lit by its cell at age 0); `spawner_display.rs` `a_near_spawner_puts_one_smoke_and_one_flame_at_one_point_each_tick` (a silverfish spawner, which has no model, still smokes: two particles a tick, smoke then flame, at one point inside the block; none far away; none for an empty spawner).
+- **Decision:** the brief said a flame rises "less than 0.05" over its life; the vanilla start velocity (up to about 0.28 up, times 0.01, with friction 0.96) allows up to about 0.07, so the test bounds it at 0.1.
+- **Test steps:**
+  1. At the fortress blaze spawner (entry 1, step 1): flames and dark smoke rise inside the cage around the turning blaze (**screenshot 1**). The flames are bright even in a dark corridor and shrink as they fade.
+  2. Walk more than 16 blocks away: the flames stop with the turn. Walk back: they start again.
+  3. Find a stronghold spawner (`/locate structure minecraft:stronghold`, the portal room): no mob shows (silverfish has no model yet) but flames and smoke rise in its cage (**screenshot 2**).
 - **Kit** (6 stacks):
 
 ```
