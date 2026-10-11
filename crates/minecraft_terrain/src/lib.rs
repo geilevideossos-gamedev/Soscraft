@@ -29,6 +29,7 @@ pub mod end_portal_look;
 pub mod ender_dragon;
 pub mod ender_eye;
 pub mod eye_of_ender;
+pub mod item_frame;
 pub mod environment;
 pub(crate) mod face_culling;
 pub mod fluid;

@@ -449,3 +449,28 @@ Previous commit: e7babe74
 ### Group c2-cities, combined kit
 
 None: the steps use creative flight and the generated chests.
+
+## Group c2-frames: item frames, the elytra in the ship's frame, leftovers (c2 groups B and C)
+
+### 17. Minecraft item frames load, save and survive like vanilla
+
+Previous commit: 612cbb19
+
+- **Changed:**
+  - `minecraft_terrain` `item_frame.rs` (new, pure): `ItemFrame` (`ItemFrame`, `GlowItemFrame`, `HangingEntity` and `BlockAttachedEntity` in javap) with the vanilla keys and defaults: `block_pos` (ignored when 16 or more blocks from the block holding `Pos`), `Facing` (`Direction.LEGACY_ID_CODEC`, default down), `Item` (one of the stack), `ItemRotation` (Java's signed remainder by 8), `ItemDropChance` (1.0), `Invisible`, `Fixed`, `Invulnerable`; unknown keys are kept as they came. The box (0.75 square, 0.0625 deep, its centre 0.46875 from the cell's centre against the facing), yaw and pitch (`setDirection`), the support behind it, `survives` (a fixed frame always; otherwise no block collision in the box, inside the world border, a `LEGACY_SOLID` support or a diode behind a wall frame, and no other frame with the same facing whose box meets this one, `canCoexist(true)`), the post-incremented check every 101 ticks (`ticksSinceLastCheck++ >= 100`) and `checkBelowWorld`, and `dropItem`'s drops (nothing from a fixed frame, nothing with `entity_drops` off or for a creative player, the frame item with its custom name, then the item when the frame's random float is below the drop chance), dropped 0.15 out from the wall (`HangingEntity.spawnAtLocation`, float steps).
+  - `server.rs`: frames are a list in `ServerSim` beside the end crystals: saved chunk entities `item_frame` and `glow_item_frame` load into it (no longer dormant), are saved and unloaded with their chunk, and tick after the level. A frame that no longer survives plays its break sound (`MobSound`, category `neutral`, volume and pitch 1) and drops its frame and item as level items with the vanilla random motion and 10-tick pickup delay (`spawn_at_location`). `EntitySnapshot` gets `frames` (`FrameView`: id, glow, block, facing, position, item, glint, rotation, invisible), appended at the end. `/summon minecraft:item_frame` and `minecraft:glow_item_frame` go through the same load as a saved frame.
+  - `server_mobs.rs`: `item_frame` and `glow_item_frame` join `SIMULATED_KINDS`, so `/summon` offers and accepts them (the existing `command_summons_do_not_reach_the_egg_results` now also summons both and checks they are not dormant).
+- **Tests:**
+  - `item_frame`: `a_frame_round_trips_its_vanilla_tag`, `the_box_sits_against_the_support_for_every_facing`, `defaults_fill_missing_keys`, `a_far_block_pos_is_ignored`, `frames_check_every_101_ticks`, `support_needs_a_solid_block_or_a_diode_on_a_wall`, `a_block_inside_the_frame_pops_it` (and past the world border), `a_fixed_frame_never_pops`, `two_frames_on_one_face_overlap_but_a_floor_frame_shares_the_cell`, `drops_follow_the_rules_and_the_drop_chance`.
+  - `server`: `the_end_city_elytra_frame_is_live_not_dormant` (the catalog's default `item_frame` tag with the end city's keys), `a_frame_whose_wall_is_removed_drops_itself_and_its_item_within_101_ticks` (and nothing with `entity_drops` off, with the glow break sound), `frames_are_saved_with_their_chunk_and_come_back`.
+- **Decisions:**
+  - Frames are their own list in `ServerSim`, as the brief says, not mobs in the vendored entity world (vanilla frames are plain `Entity`s). All state is per level; nothing reads player 0.
+  - `survives` checks block collisions only; vanilla's `noBlockCollision` also sees collidable entities (boats, shulkers), which frames ignore here.
+  - The world border is vanilla's default (±29,999,984); the fork has no `/worldborder`.
+  - The frames are not drawn yet (next commit).
+- **Test steps:** (a new world, survival; frames are not drawn until the next commit, so watch the drops)
+  1. Type `/setblock ~2 ~ ~ minecraft:stone`, then `/summon minecraft:item_frame ~2 ~1 ~ {Facing:1b,Item:{id:"minecraft:diamond",count:1}}`: a frame lies on top of that stone (not drawn yet); the chat confirms the summon.
+  2. Mine that stone and wait up to 5 seconds: you hear the frame break, and an item frame and a diamond drop (**1**).
+  3. Type `/gamerule entity_drops false` and repeat steps 1 and 2: the break sound, nothing drops. `/gamerule entity_drops true`.
+  4. Fly to an End city ship (see commit 15): quit and start again near it. The elytra frame stays (it no longer goes dormant), and the ship's chests are still there.
+- **Kit:** none needed (creative and commands).

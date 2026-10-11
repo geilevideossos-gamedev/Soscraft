@@ -97,6 +97,8 @@ pub struct ServerSim {
     fight_reports: Vec<FightReport>,
     dragon_fireballs: crate::dragon_fireball::DragonFireballs,
     end_players: Vec<crate::ender_dragon::PlayerBody>,
+    frames: crate::item_frame::Frames,
+    frame_sounds: Vec<minecraftoss_entities::world::MobSound>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -221,6 +223,7 @@ pub struct EntitySnapshot {
     pub dragons: Vec<crate::ender_dragon::DragonView>,
     pub dragon_fireballs: Vec<crate::dragon_fireball::FireballView>,
     pub breath_bursts: Vec<glam::DVec3>,
+    pub frames: Vec<crate::item_frame::FrameView>,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -323,6 +326,8 @@ impl ServerSim {
             fight_reports: Vec::new(),
             dragon_fireballs: crate::dragon_fireball::DragonFireballs::default(),
             end_players: Vec::new(),
+            frames: crate::item_frame::Frames::default(),
+            frame_sounds: Vec::new(),
         }
     }
 
@@ -537,7 +542,7 @@ impl ServerSim {
         if crate::server_mobs::load_level_entity(&mut self.level, &tag) {
             return;
         }
-        if self.crystals.add(&tag).is_some() || self.dragons.add(&tag).is_some() {
+        if self.crystals.add(&tag).is_some() || self.dragons.add(&tag).is_some() || self.frames.add(&tag).is_some() {
             return;
         }
         match crate::server_mobs::spawn_saved(&mut self.mobs, &tag) {
@@ -559,10 +564,12 @@ impl ServerSim {
         tags.extend(self.tridents.iter().filter(|t| t.alive && inside(t.position)).map(|t| t.to_tag(t.owner_uuid)));
         tags.extend(self.crystals.tags_where(inside));
         tags.extend(self.dragons.tags_where(inside));
+        tags.extend(self.frames.tags_where(inside));
         if unload {
             self.tridents.retain(|t| !inside(t.position));
             self.crystals.remove_where(inside);
             self.dragons.remove_where(inside);
+            self.frames.remove_where(inside);
             self.mobs.remove_where(inside);
             self.dormant.retain(|(group, _)| !inside(glam::DVec3::from_array(group[0].pos)));
             self.level.entities.retain(|e| !(inside(glam::DVec3::from_array(e.pos)) && (e.item_data().is_some() || e.orb_data().is_some())));
@@ -2054,6 +2061,39 @@ impl ServerSim {
                 self.explosions.push(minecraftoss_entities::creeper::CreeperExplosion { position: glam::DVec3::from_array(position), radius: TNT_BLAST_RADIUS, powered: false });
             }
         }
+        self.tick_frames();
+    }
+
+    fn tick_frames(&mut self) {
+        let popped = self.frames.tick(&FrameLevel(&self.level), self.level.min_y());
+        for frame in popped {
+            self.frame_broken(&frame, false);
+        }
+    }
+
+    fn frame_sound(&mut self, frame: &crate::item_frame::ItemFrame, sound: crate::item_frame::FrameSound) {
+        self.frame_sounds.push(minecraftoss_entities::world::MobSound { event: sound.event(frame.glow).to_owned(), position: frame.position(), volume: 1.0, pitch: 1.0, category: "neutral" });
+    }
+
+    fn frame_broken(&mut self, frame: &crate::item_frame::ItemFrame, infinite: bool) {
+        self.frame_sound(frame, crate::item_frame::FrameSound::Break);
+        let drops = self.frames.drops(frame, true, self.level.entity_drops, infinite);
+        self.drop_from_frame(frame, drops);
+    }
+
+    fn drop_from_frame(&mut self, frame: &crate::item_frame::ItemFrame, drops: Vec<minecraftoss_player::inventory::ItemStack>) {
+        for stack in drops {
+            let components = stack.components.as_ref().map(|c| c.to_string());
+            self.level.spawn_at_location(frame.drop_point().to_array(), stack_of(&stack.id, i32::from(stack.count), components.as_deref()));
+        }
+    }
+
+    pub fn frame_views(&self) -> Vec<crate::item_frame::FrameView> {
+        self.frames.views()
+    }
+
+    pub fn take_frame_sounds(&mut self) -> Vec<minecraftoss_entities::world::MobSound> {
+        std::mem::take(&mut self.frame_sounds)
     }
 
     /// Hands an item entity the client created (a drop, a spill) to the
@@ -2186,6 +2226,23 @@ impl ServerSim {
                 ((x, y, z), block)
             })
             .collect()
+    }
+}
+
+struct FrameLevel<'a, 'l>(&'a Level<'l>);
+
+impl crate::item_frame::FrameWorld for FrameLevel<'_, '_> {
+    fn legacy_solid(&self, (x, y, z): BlockPos) -> bool {
+        self.0.registries().blocks.is(self.0.block(minecraftoss_core::BlockPos::new(x, y, z)), minecraftoss_core::block::flags::LEGACY_SOLID)
+    }
+
+    fn is_diode(&self, (x, y, z): BlockPos) -> bool {
+        let blocks = &self.0.registries().blocks;
+        blocks.block(blocks.block_of(self.0.block(minecraftoss_core::BlockPos::new(x, y, z)))).is_a("DiodeBlock")
+    }
+
+    fn collides(&self, low: glam::DVec3, high: glam::DVec3) -> bool {
+        !self.0.no_block_collision(&minecraftoss_world::level::physics::Aabb::new(low.x, low.y, low.z, high.x, high.y, high.z))
     }
 }
 
@@ -2802,6 +2859,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.tick_end(&input.mob_players);
                     out.player_hits.extend(sim.take_end_hits());
                     out.mob_sounds.extend(sim.take_end_sounds());
+                    out.mob_sounds.extend(sim.take_frame_sounds());
                     out.dragons_killed.extend(sim.take_dragons_killed());
                     out.fight_reports.extend(sim.take_fight_reports());
                     out.pearl_teleports.extend(sim.take_pearl_teleports());
@@ -2849,7 +2907,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     }
                     // After the items, one experience orb.
                     out.orbs_taken.extend(sim.take_experience(pickup_feet));
-                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts() });
+                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), frames: sim.frame_views() });
                     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
                     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), started.elapsed().as_secs_f64() * 1000.0));
                 }
@@ -7836,5 +7894,94 @@ mod tests {
         assert_eq!(server.dragons.list[0].phase, Phase::Takeoff, "past 50 damage it takes off");
         server.tick_end(&[player]);
         assert!(server.clouds.iter().all(|cloud| cloud.breath != Some(flame)), "and its flame goes out");
+    }
+
+    fn framed(server: &mut ServerSim, glow: bool, pos: BlockPos, facing: minecraftoss_core::pos::Direction, item: Option<&str>) -> u64 {
+        use minecraftoss_core::nbt::Tag;
+        let mut tag = server.frames.fresh_tag(glow, pos, facing);
+        if let (Tag::Compound(map), Some(item)) = (&mut tag, item) {
+            map.insert("Item".to_owned(), Tag::Compound(std::collections::BTreeMap::from([("id".to_owned(), Tag::String(item.to_owned())), ("count".to_owned(), Tag::Int(1))])));
+        }
+        server.add_saved_entity(tag);
+        server.frames.list.last().unwrap().id
+    }
+
+    fn item_ids(server: &ServerSim) -> Vec<String> {
+        let mut ids: Vec<String> = server.items().into_iter().map(|item| item.item).collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn the_end_city_elytra_frame_is_live_not_dormant() {
+        use minecraftoss_core::nbt::Tag;
+        let Some((mut server, _)) = door_world() else { return };
+        let Some(entities) = server.level.registries().entities.as_ref() else { return };
+        let mut tag = entities.default_tag("minecraft:item_frame").expect("the item frame's default tag");
+        if let Tag::Compound(map) = &mut tag {
+            map.insert("Pos".to_owned(), Tag::List(vec![Tag::Double(8.5), Tag::Double(199.5), Tag::Double(9.03125)]));
+            map.insert("Facing".to_owned(), Tag::Byte(3));
+            map.insert("block_pos".to_owned(), Tag::IntArray(vec![8, 199, 9]));
+            map.insert("Item".to_owned(), Tag::Compound(std::collections::BTreeMap::from([("id".to_owned(), Tag::String("minecraft:elytra".to_owned())), ("count".to_owned(), Tag::Int(1))])));
+        }
+        server.add_saved_entity(tag);
+        assert_eq!(server.dormant_count(), 0, "the frame is live");
+        let views = server.frame_views();
+        assert_eq!(views.len(), 1);
+        assert_eq!((views[0].pos, views[0].facing, views[0].item.as_deref()), ((8, 199, 9), minecraftoss_core::pos::Direction::South, Some("minecraft:elytra")));
+        assert!(!views[0].glow && !views[0].glint);
+    }
+
+    #[test]
+    fn a_frame_whose_wall_is_removed_drops_itself_and_its_item_within_101_ticks() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        framed(&mut server, false, (8, 199, 9), Direction::South, Some("minecraft:carrot"));
+        for _ in 0..150 {
+            server.tick();
+        }
+        assert_eq!(server.frames.list.len(), 1, "the stone holds it");
+        take(&mut server, &mut scene, (8, 199, 8));
+        let mut ticks = 0;
+        while !server.frames.list.is_empty() {
+            server.tick();
+            ticks += 1;
+            assert!(ticks <= 101, "it falls off at its next check");
+        }
+        assert_eq!(item_ids(&server), ["minecraft:carrot", "minecraft:item_frame"]);
+        let sounds = server.take_frame_sounds();
+        assert_eq!(sounds.len(), 1);
+        assert_eq!((sounds[0].event.as_str(), sounds[0].category), ("minecraft:entity.item_frame.break", "neutral"));
+        assert_eq!(sounds[0].position, glam::DVec3::new(8.5, 199.5, 9.03125));
+        let Some((mut quiet, mut scene)) = door_world() else { return };
+        quiet.level.entity_drops = false;
+        framed(&mut quiet, true, (8, 199, 9), Direction::South, Some("minecraft:carrot"));
+        take(&mut quiet, &mut scene, (8, 199, 8));
+        for _ in 0..101 {
+            quiet.tick();
+        }
+        assert!(quiet.frames.list.is_empty());
+        assert!(item_ids(&quiet).is_empty(), "entity_drops off drops nothing");
+        assert_eq!(quiet.take_frame_sounds()[0].event, "minecraft:entity.glow_item_frame.break");
+    }
+
+    #[test]
+    fn frames_are_saved_with_their_chunk_and_come_back() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, _)) = door_world() else { return };
+        let dir = std::env::temp_dir().join(format!("minecraftoss-frame-save-{}", std::process::id()));
+        let registries = Arc::new(Registries::load(&DataPaths::discover().unwrap()).unwrap());
+        server.set_entity_storage(Some(Arc::new(minecraftoss_world::storage::ChunkStorage::new(&dir, "minecraft:overworld", registries, -64, 384))));
+        framed(&mut server, true, (8, 199, 9), Direction::South, Some("minecraft:compass"));
+        server.frames.list[0].rotation = 3;
+        framed(&mut server, false, (8, 200, 8), Direction::Up, None);
+        let before: Vec<_> = server.frame_views().into_iter().map(|view| (view.glow, view.pos, view.facing, view.item, view.rotation)).collect();
+        let chunk = server.level.chunk(ChunkPos::new(0, 0)).unwrap().clone();
+        server.unload_chunk(ChunkPos::new(0, 0));
+        assert!(server.frames.list.is_empty(), "unloading takes the frames out");
+        server.load_chunk(&chunk);
+        let after: Vec<_> = server.frame_views().into_iter().map(|view| (view.glow, view.pos, view.facing, view.item, view.rotation)).collect();
+        assert_eq!(after, before);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
