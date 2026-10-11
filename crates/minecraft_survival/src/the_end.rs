@@ -1,4 +1,5 @@
 pub mod dragon_fight;
+pub mod gateway;
 
 use std::any::Any;
 

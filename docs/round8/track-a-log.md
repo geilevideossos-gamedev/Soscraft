@@ -494,7 +494,7 @@ IW4L_MINECRAFT_KIT=minecraft:spawner*4,minecraft:cave_spider_spawn_egg*4,minecra
 
 ### 1. The Minecraft outer End islands generate a thousand blocks out like vanilla
 
-Commit: (see the next entry, or `git log` under this subject)
+Commit: ae01d7a4
 
 - **Changed:** tests only, in `minecraft_terrain/src/terrain.rs`. They found no defect, so no vendored generator code was patched.
 - **Tests** (`minecraft_terrain`, real data, skipped without the game data like their neighbours):
@@ -512,4 +512,29 @@ Commit: (see the next entry, or `git log` under this subject)
 - **Generation time:** 82 outer chunks (with the neighbours their decoration needs) took 3.26 s in the debug test build, about 40 ms a chunk, while another test ran beside it. A first gateway trip loads at most about 33 chunks along the search line, so about 1.3 s in a debug build and less in release. **Decision:** the exit search stays synchronous on the main thread, with no loading screen held before it (brief section 6: only above about 2 s).
 - **Decision:** the brief's 16 x 16 chunk patch from (64, -8) was meant to make the test hold on any seed; with the fixed seed 77 the strip along +x already holds the outer islands, both biomes and chorus, so the test keeps the strip (82 chunks, not 256).
 - **Test steps:** none in game; the gateway trips come with entry 4.
+- **Kit:** none needed.
+
+### 2. Minecraft end gateways find their exit on the outer islands like vanilla
+
+Commit: (see the next entry, or `git log` under this subject)
+
+- **Changed:**
+  - New `minecraft_survival/src/the_end/gateway.rs` (`pub mod gateway;` in `the_end.rs`), pure and over a trait, so group 4 only has to call it:
+    - `GatewayWorld`: `highest_filled_section(chunk)` (the bottom Y of the highest non-empty section, `None` for an empty chunk), `is_end_stone`, `full_block`, `is_bedrock`, `min_y`, `max_y`, with `chunk_is_empty` (`getHighestFilledSectionIndex() == -1`) and `highest_section_position` (`getHighestSectionPosition`) on top. `ChunkWorld` implements it: a missing chunk (not loaded, not saved, not generating) counts as empty, `full_block` is a collision shape of exactly one unit box (`isCollisionShapeFullBlock`).
+    - `exit_xz_tentative` (`findExitPortalXZPosTentative`: the direction normalised with vanilla's 1e-5f cut-off, 1024 out, back 16 at most while the chunk is not empty, then forward 16 at most while it is, each `i-- > 0` after the emptiness test), `valid_spawn_in_chunk` (`findValidSpawnInChunk`: z, y, x order from y 30 to the highest section's top, end stone with no full block at +1 and +2, the strictly nearest block centre to 0, 0, 0), `tallest_block` (`findTallestBlock`), `find_exit_position`, `find_or_create_teleport_pos` (returns the spot and the island origin when one has to be built; the tallest-block step then sees the island through an overlay, as vanilla places it before that step), `new_exit` (the spot plus 10), `end_island_blocks` (`EndIslandFeature` with `LegacyRandom::new(BlockPos.asLong)`), `gateway_frame` (`EndGatewayFeature`'s 45 cells in its order), `GatewayExit` and `destination` (`exact ? exit : findExitPosition(exit)` at the bottom centre).
+  - `minecraft_survival/src/portal_forcer.rs`: `ChunkWorld::vertical_range`.
+- **Tests** (`minecraft_survival`, `the_end::gateway`):
+  - `the_exit_search_starts_1024_out_along_the_gateway_s_direction`: ring gateway 6 at (-30, 75, 91) starts at (-320.6093751268596, 0, 972.5151045514741), chunk (-21, 60), and with only that chunk filled the walk checks (-21, 60), (-20, 59) twice and (-21, 60) again and ends on the same point; a gateway at 0, 0 stays at 0, 0.
+  - `a_full_chunk_steps_back_and_an_empty_one_steps_forward_sixteen_times_at_most`: due east, all full ends at x 768, all empty at x 1280 (18 chunk checks each), filled chunks 60 to 66 at x 960, a lone filled chunk 70 at x 1120.
+  - `the_spawn_spot_is_the_end_stone_nearest_the_origin_with_two_free_blocks_above`: a full block two above rules a spot out and a slab does not, y counts in the distance, y 29 is never looked at, a tie keeps the first in z, y, x order, a chunk whose highest section is 0 is walked from 15 to 30, a spot at y 200 is found, and stone alone gives none.
+  - `no_spot_places_a_seeded_end_island_at_75`: islands at (-320, 75, 972), (1000, 75, 0), (5, 75, -1030) and (-321, 75, 973) have vanilla's block counts, layers, first and last blocks; a chunk with only stone in it builds the island at (-321, 75, 973) and lands on its first top block (-327, 75, 970), with the new gateway 10 above.
+  - `the_tallest_block_skips_bedrock_and_the_middle_only_when_asked`, `a_loose_exit_lands_on_the_tallest_block_within_five_or_three_above_the_gateway` (a bare frame gives the exit + 3; end stone within 5 wins, one 6 away and one under the gateway do not; exact exits land on the exit), `the_gateway_frame_is_a_bedrock_plus_with_an_open_side_ring` (vanilla's order of the 12 bedrock cells).
+  - Real data, `a_ring_gateway_finds_an_outer_island`: seed 77, ring gateway 0 at (96, 75, 0): the tentative point is x 992 (chunk 62 is the first non-empty one, as group 1 found), the spot is end stone at (999, 56, -8), no island is built, and it took 360 ms in the debug test build with generation on.
+- **How the vanilla values were made:** `jshell` as in entry 1, calling the 26.3 classes themselves: `new Vec3(-30, 0, 91).normalize().scale(1024.0)` and the walked point `p0.add(dir.scale(-16)).add(dir.scale(16))` with `BlockPos.containing(p.x + 0.5, 75, p.z + 0.5)`; `new EndIslandFeature().place(level, null, RandomSource.create(pos.asLong()), pos)` and `EndGatewayFeature.knownExit(new BlockPos(1, 2, 3), false).place(level, null, RandomSource.create(), BlockPos.ZERO)`, where `level` is a `java.lang.reflect.Proxy` for `WorldGenLevel` that records every `setBlock*` call in order.
+- **Checked with javap (26.3):** `TheEndGatewayBlockEntity.getPortalPosition`, `findExitPosition`, `findOrCreateValidTeleportPos` (the island is placed at `BlockPos.containing(p.x + 0.5, 75, p.z + 0.5)` with `RandomSource.create(pos.asLong())`, a `LegacyRandomSource`), `findExitPortalXZPosTentative`, `isChunkEmpty`, `findTallestBlock`, `getChunk`, `findValidSpawnInChunk`, `spawnGatewayPortal`; `Vec3.normalize`; `EndIslandFeature.place`; `RandomSource.create(long)`; `BlockPos.asLong`.
+- **Decisions:**
+  - The brief's `end_island_blocks` test compares against the vendored `EndIsland` feature; placing that needs a whole generation context, so the test compares against vanilla's own `EndIslandFeature` through `jshell` instead, which is the stronger check (the vendored feature was read and does the same loops).
+  - The brief's example origin (-320, 75, 972) is not where a walked search builds the island for gateway 6: the walk lands on x -320.609 and `containing(x + 0.5)` is -321, so the search test uses (-321, 75, 973) and the island test covers both.
+  - `full_block` is a collision shape of exactly one unit box; a shape made of several boxes that fill the cell would count in vanilla and not here (no such vanilla End block).
+- **Test steps:** none in game yet; the trips come with entry 4.
 - **Kit:** none needed.
