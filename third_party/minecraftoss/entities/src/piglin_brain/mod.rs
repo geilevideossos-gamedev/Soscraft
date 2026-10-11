@@ -8,7 +8,8 @@ pub use admire::{ADMIRE_TICKS, ATE_RECENTLY_TICKS, ITEM_EYE_HEIGHT, WantedItem};
 pub use behaviors::Doors;
 pub use fight::{
     ADMIRING_DISABLED_TICKS, ANGER_TICKS, BABY_FLEE_TICKS, CROSSBOW_CHARGE, CrossbowAttack,
-    CrossbowState, ItemUse, attackable_ignoring_sight,
+    CrossbowState, ItemUse, RETREAT_MAX_TICKS, RETREAT_MIN_TICKS, TIME_BETWEEN_HUNTS_MAX,
+    TIME_BETWEEN_HUNTS_MIN, attackable_ignoring_sight, wants_to_dance,
 };
 pub use memory::{GlobalPos, Memories};
 pub use sensors::{NEMESES, ZOMBIFIED, adult_piglin};
@@ -55,6 +56,8 @@ pub struct PiglinCtx<'a> {
     pub uuids: &'a [(Target, u128)],
     pub gilded: &'a [Target],
     pub loved_holders: &'a [Target],
+    pub unhuntable: &'a [Target],
+    pub can_hunt: bool,
     pub universal_anger: bool,
     pub forgive_dead_players: bool,
     pub holds_crossbow: bool,
@@ -72,6 +75,7 @@ pub struct PiglinCtx<'a> {
     pub item_use: Option<ItemUse>,
     pub charging: Option<bool>,
     pub stop_holding: Option<bool>,
+    pub hunt: Option<Target>,
 }
 
 impl PiglinCtx<'_> {
@@ -171,6 +175,7 @@ impl PiglinBrain {
                 }
                 self.start_attacking(ctx);
                 if ctx.kind == PiglinKind::Piglin {
+                    self.start_hunting_hoglin(ctx);
                     self.avoid_repellent(ctx);
                 }
                 self.idle_look(ctx);

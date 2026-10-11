@@ -93,11 +93,18 @@ impl PiglinBrain {
         let mut holding = None;
         let mut adults = Vec::new();
         let mut hoglins = 0;
+        let mut huntable = None;
+        let mut baby_hoglin = None;
         for other in visible {
             match other.kind {
                 "minecraft:hoglin" => {
-                    if !other.baby {
+                    if other.baby {
+                        baby_hoglin = baby_hoglin.or(Some(other.target));
+                    } else {
                         hoglins += 1;
+                        if huntable.is_none() && !ctx.unhuntable.contains(&other.target) {
+                            huntable = Some(other.target);
+                        }
                     }
                 }
                 "minecraft:piglin" | "minecraft:piglin_brute" => {
@@ -136,6 +143,12 @@ impl PiglinBrain {
             .set_or_erase(holding);
         memories.visible_adult_piglin_count.set(adults.len());
         memories.visible_adult_hoglin_count.set(hoglins);
+        memories
+            .nearest_visible_huntable_hoglin
+            .set_or_erase(huntable);
+        memories
+            .nearest_visible_baby_hoglin
+            .set_or_erase(baby_hoglin);
         set_list(&mut memories.nearest_visible_adult_piglins, adults);
         set_list(&mut memories.nearby_adult_piglins, nearby);
         let repellent = nearest_block(ctx.world, block_of(ctx.position()), repellent);

@@ -140,7 +140,9 @@ pub struct PosedCube {
 
 pub struct Posed {
     pub cubes: Vec<PosedCube>,
+    pub head_pivot: [f32; 3],
     pub head: Quat,
+    pub body_pivot: [f32; 3],
     pub body: Quat,
     pub arms: [([f32; 3], Quat); 2],
     pub legs: [([f32; 3], Quat); 2],
@@ -187,7 +189,7 @@ pub fn pose(baby: bool, aggressive: bool, pose: &MobPose) -> Posed {
         rest_of(baby),
     )
     .seated(pose.riding);
-    assemble(baby, head_of(pose), limbs, pose)
+    assemble(baby, head_of(pose), limbs, pose, None)
 }
 
 fn assemble(
@@ -195,23 +197,33 @@ fn assemble(
     head: Quat,
     limbs: crate::zombie_render::ZombieLimbs,
     pose: &MobPose,
+    dance: Option<Dance>,
 ) -> Posed {
     let model = if baby { &BABY } else { &ADULT };
     let body = Quat::from_rotation_y(limbs.body_yaw);
+    let lift = dance.unwrap_or_default();
     let arms = [0, 1].map(|arm| {
         let (x, z) = limbs.arm_pivots[arm];
-        ([x, model.arm_pivots[arm][1], z], limbs.limbs[arm])
+        let y = model.arm_pivots[arm][1] + lift.arms_y[arm];
+        ([x, y, z], limbs.limbs[arm])
     });
+    let [head_x, head_y, head_z] = model.head_pivot;
+    let head_pivot = [head_x + lift.head[0], head_y + lift.head[1], head_z];
+    let [body_x, body_y, body_z] = model.body_pivot;
+    let body_pivot = [body_x, body_y + lift.body_y, body_z];
     let legs = [0, 1].map(|leg| (model.leg_pivots[leg], limbs.limbs[2 + leg]));
     let mut cubes = Vec::new();
     for &part in model.head {
         cubes.push(PosedCube {
             part,
-            pivot: model.head_pivot,
+            pivot: head_pivot,
             rotation: head,
         });
     }
-    let rolls = ear_rolls(baby, pose.age_in_ticks, pose.walk_position, pose.walk_speed);
+    let rolls = match dance {
+        Some(dance) => dance.ears,
+        None => ear_rolls(baby, pose.age_in_ticks, pose.walk_position, pose.walk_speed),
+    };
     for (side, &(part, offset, child)) in model.ears.iter().enumerate() {
         let ear = head * Quat::from_rotation_z(rolls[side]);
         let (inner, rotation) = match child {
@@ -221,7 +233,7 @@ fn assemble(
             ),
             None => (Vec3::ZERO, ear),
         };
-        let pivot = Vec3::from_array(model.head_pivot) + head * Vec3::from_array(offset) + inner;
+        let pivot = Vec3::from_array(head_pivot) + head * Vec3::from_array(offset) + inner;
         cubes.push(PosedCube {
             part,
             pivot: pivot.to_array(),
@@ -231,7 +243,7 @@ fn assemble(
     for &part in model.body {
         cubes.push(PosedCube {
             part,
-            pivot: model.body_pivot,
+            pivot: body_pivot,
             rotation: body,
         });
     }
@@ -255,7 +267,9 @@ fn assemble(
     }
     Posed {
         cubes,
+        head_pivot,
         head,
+        body_pivot,
         body,
         arms,
         legs,
@@ -464,6 +478,11 @@ pub fn humanoid_limbs(
             other.y = (0.4 + (0.85 - 0.4) * charged) * sign;
             other.x = holding.x + (-std::f32::consts::FRAC_PI_2 - holding.x) * charged;
         }
+        ArmPose::Dancing => {
+            let arms = dance(pose.age_in_ticks).arms_z;
+            right_arm.z = arms;
+            left_arm.z = -arms;
+        }
         _ => {}
     }
     if arm_pose == ArmPose::AdmiringItem {
@@ -496,7 +515,34 @@ pub fn living_pose(baby: bool, hands: &Hands, arm_pose: ArmPose, pose: &MobPose)
         head_of(pose)
     };
     let limbs = humanoid_limbs(pose, hands, arm_pose, baby);
-    assemble(baby, head, limbs, pose)
+    let dancing = (arm_pose == ArmPose::Dancing).then(|| dance(pose.age_in_ticks));
+    assemble(baby, head, limbs, pose, dancing)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Dance {
+    pub ears: [f32; 2],
+    pub head: [f32; 2],
+    pub arms_y: [f32; 2],
+    pub arms_z: f32,
+    pub body_y: f32,
+}
+
+pub fn dance(age_in_ticks: f32) -> Dance {
+    let f = age_in_ticks / 60.0;
+    let sin = |x: f32| minecraftoss_player::mth::sin(f64::from(x));
+    let cos = |x: f32| minecraftoss_player::mth::cos(f64::from(x));
+    let degree = 0.017_453_292;
+    Dance {
+        ears: [
+            0.523_598_8 + degree * sin(f * 30.0) * 10.0,
+            -0.523_598_8 - degree * cos(f * 30.0) * 10.0,
+        ],
+        head: [sin(f * 10.0), sin(f * 40.0) + 0.4],
+        arms_y: [sin(f * 40.0) * 0.5 - 0.5, sin(f * 40.0) * 0.5 + 0.5],
+        arms_z: degree * (70.0 + cos(f * 40.0) * 10.0),
+        body_y: sin(f * 40.0) * 0.35,
+    }
 }
 
 pub fn shake_degrees(age_in_ticks: f32, converting: bool) -> f32 {
@@ -566,8 +612,8 @@ pub fn append_piglins<'a>(
         if !baby && piglin.armor.iter().any(Option::is_some) {
             marks.push((mesh.vertices.len(), 1.0));
             let armor_parts = crate::armor_render::HumanoidParts {
-                head: (Vec3::ZERO, posed.head),
-                body: (Vec3::ZERO, posed.body),
+                head: (Vec3::from_array(posed.head_pivot), posed.head),
+                body: (Vec3::from_array(posed.body_pivot), posed.body),
                 arms: posed
                     .arms
                     .map(|(pivot, rotation)| (Vec3::from_array(pivot), rotation)),
@@ -849,5 +895,31 @@ mod tests {
         let expected = ((7.0_f64 * 3.25).cos() * std::f64::consts::PI * f64::from(0.4_f32)) as f32;
         assert!((shake_degrees(7.0, true) - expected).abs() < 1.0e-5);
         assert!(shake_degrees(0.0, true) > 1.25);
+    }
+
+    #[test]
+    fn a_dancing_piglin_bobs_its_head_and_body_and_spreads_its_arms() {
+        let hands = Hands {
+            main: false,
+            off: false,
+            left_handed: false,
+            charge_ticks: 0.0,
+        };
+        let mut pose = standing();
+        pose.age_in_ticks = 20.0;
+        let still = living_pose(false, &hands, ArmPose::Default, &pose);
+        let dancing = living_pose(false, &hands, ArmPose::Dancing, &pose);
+        let moves = dance(20.0);
+        let f = 20.0_f32 / 60.0;
+        assert!((moves.head[1] - ((f * 40.0).sin() + 0.4)).abs() < 1.0e-4);
+        assert!((moves.arms_z - (70.0 + (f * 40.0).cos() * 10.0).to_radians()).abs() < 1.0e-4);
+        assert_eq!(still.head_pivot, [0.0, 0.0, 0.0]);
+        assert_eq!(dancing.head_pivot, [moves.head[0], moves.head[1], 0.0]);
+        assert!((dancing.body_pivot[1] - moves.body_y).abs() < 1.0e-6);
+        assert!((dancing.arms[0].0[1] - (2.0 + moves.arms_y[0])).abs() < 1.0e-6);
+        let (z, _, _) = dancing.arms[0].1.to_euler(EulerRot::ZYX);
+        assert!((z - moves.arms_z).abs() < 1.0e-4, "{z}");
+        let (z, _, _) = dancing.arms[1].1.to_euler(EulerRot::ZYX);
+        assert!((z + moves.arms_z).abs() < 1.0e-4, "{z}");
     }
 }

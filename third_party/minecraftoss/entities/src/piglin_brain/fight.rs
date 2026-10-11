@@ -28,6 +28,10 @@ pub const REPELLENT_SPEED: f32 = 1.0;
 pub const REPELLENT_DISTANCE: f64 = 8.0;
 pub const BABY_FLEE_TICKS: i64 = 100;
 pub const ADMIRING_DISABLED_TICKS: i64 = 400;
+pub const TIME_BETWEEN_HUNTS_MIN: i64 = 600;
+pub const TIME_BETWEEN_HUNTS_MAX: i64 = 2400;
+pub const RETREAT_MIN_TICKS: i64 = 100;
+pub const RETREAT_MAX_TICKS: i64 = 400;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ItemUse {
@@ -493,6 +497,19 @@ impl PiglinBrain {
         );
     }
 
+    pub(super) fn start_hunting_hoglin(&mut self, ctx: &mut PiglinCtx) {
+        if !ctx.can_hunt || ctx.baby {
+            return;
+        }
+        let Some(&hoglin) = self.memories.nearest_visible_huntable_hoglin.get() else {
+            return;
+        };
+        if self.memories.angry_at.present() || self.memories.hunted_recently.present() {
+            return;
+        }
+        ctx.hunt = Some(hoglin);
+    }
+
     pub fn set_anger(&mut self, uuid: u128, player: bool, universal_anger: bool) {
         self.memories.cant_reach_walk_target_since.erase();
         self.memories.angry_at.set_for(uuid, ANGER_TICKS);
@@ -597,6 +614,8 @@ mod tests {
                 uuids: &uuids,
                 gilded: &[],
                 loved_holders: &[],
+                unhuntable: &[],
+                can_hunt: true,
                 universal_anger: false,
                 forgive_dead_players: true,
                 holds_crossbow: false,
@@ -614,6 +633,7 @@ mod tests {
                 item_use: None,
                 charging: None,
                 stop_holding: None,
+                hunt: None,
             };
             order.push(brain.nearest_valid_attack_target(&ctx));
             let memories = &mut brain.memories;

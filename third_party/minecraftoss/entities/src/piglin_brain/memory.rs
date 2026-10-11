@@ -39,6 +39,8 @@ pub struct Memories {
     pub visible_adult_hoglin_count: Slot<usize>,
     pub nearby_adult_piglins: Slot<Vec<Target>>,
     pub nearest_visible_zombified: Slot<Target>,
+    pub nearest_visible_huntable_hoglin: Slot<Target>,
+    pub nearest_visible_baby_hoglin: Slot<Target>,
     pub attack_cooling_down: Slot<()>,
     pub nearest_visible_wanted_item: Slot<WantedItem>,
     pub time_trying_to_reach_admire_item: Slot<i32>,
@@ -76,6 +78,8 @@ impl Memories {
         self.visible_adult_hoglin_count.tick();
         self.nearby_adult_piglins.tick();
         self.nearest_visible_zombified.tick();
+        self.nearest_visible_huntable_hoglin.tick();
+        self.nearest_visible_baby_hoglin.tick();
         self.attack_cooling_down.tick();
         self.nearest_visible_wanted_item.tick();
         self.time_trying_to_reach_admire_item.tick();

@@ -742,7 +742,7 @@ After 25c70ca2.
 - **Test steps (`/difficulty normal`, survival):**
   1. In the Nether, build and light a portal (obsidian, flint and steel) and go to the Overworld. Use a piglin egg and a brute egg: both shake from side to side and the piglin grunts the retreat sound (**13**). After 15 seconds each turns into a zombified piglin with a groan, still holding its golden sword or axe and wearing its golden armour, and it wobbles a moment from nausea (**14**).
   2. `/summon minecraft:piglin ~ ~ ~ {IsImmuneToZombification:1b}`: it never shakes or converts.
-  3. Give a piglin a gold ingot (right-click) and 20 gold nuggets (drop them) in the Overworld before it converts: when it converts the ingot and the nuggets drop on the ground.
+  3. In the Overworld, drop 20 gold nuggets next to a new piglin, then about 10 seconds after it hatched give it a gold ingot (right-click): when it converts (before it is done admiring) the ingot and the nuggets drop on the ground. (Step corrected in b1.8's commit.)
   4. Use a piglin egg in the Overworld, wait about 10 seconds, save and quit, rejoin: it is still shaking and converts about 5 seconds later.
   5. Go to the End (`/execute in minecraft:the_end run tp @s 0 70 0`) and use a piglin egg: it converts there too. In the Nether no piglin ever shakes.
   6. `/difficulty peaceful` in the Overworld with a piglin egg: it converts without the groan (and the zombified piglin then leaves, as monsters do in peaceful).
@@ -750,4 +750,30 @@ After 25c70ca2.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:piglin_spawn_egg*8,minecraft:piglin_brute_spawn_egg*2,minecraft:gold_ingot*16,minecraft:gold_nugget*32,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:golden_boots,minecraft:diamond_sword,minecraft:netherrack*64,minecraft:cooked_beef*32
+```
+
+### b1.8. Minecraft piglins hunt hoglins
+
+After 2ce84f2e.
+
+- **Changed:**
+  - Vendored `piglin_brain`: the hoglin memories of `PiglinSpecificSensor` (`NEAREST_VISIBLE_HUNTABLE_HOGLIN`: the first visible adult hoglin that can be hunted; `NEAREST_VISIBLE_BABY_HOGLIN`), and IDLE `StartHuntingHoglin` for a piglin that can hunt (`CannotHunt` off, never a brute): an adult with a huntable hoglin in sight, no `angry_at` and no `hunted_recently`.
+  - Vendored `world/piglins.rs`: the hunt goes ahead unless one of its visible adult piglins has hunted recently: anger at the hoglin, `dontKillAnyMoreHoglinsForAWhile` (`hunted_recently` for 600 to 2400 ticks from the level random), the anger broadcast, and every visible adult piglin rests too. `setAngerTarget` on a hoglin rests a piglin that can hunt; the anger broadcast skips piglins that can't hunt (brutes, `CannotHunt`) and hoglins that can't be hunted. `RememberIfHoglinWasKilled`: a melee hit that kills the hoglin it fights rests the piglin. `wasHurtBy`: an adult hurt by a hoglin while the hoglins outnumber its piglins (more than the piglins it sees plus one) retreats (`angry_at`, the attack and walk targets erased, the hoglin avoided for 5 to 20 seconds, resting from hunts) and `broadcastRetreat` makes each visible adult piglin retreat from the nearest of its avoided mob, its target and that hoglin. Hoglins that can't be hunted reach the sensor as a list built by the entity world (`cannot_be_hunted`).
+  - `piglin_render.rs`: the dancing pose (`PiglinModel.setupAnim` DANCING: the ears flap, the head sways and bobs, both arms swing out and bob, the body bobs), also for the worn armour; dances come only after a hoglin kill (one time in ten, b1.3).
+  - The hoglin side was already in place: b2's hoglin sensor counts adult piglins (not brutes) for its own retreat.
+- **Tests:** `world::piglins`: `adult_piglins_hunt_a_visible_hoglin_and_rest_30_to_120_seconds_after` (three piglins go for a hoglin, all rest 600 to 2400 ticks from the start of the hunt, kill it and leave a second hoglin alone), `outnumbered_piglins_retreat_from_hoglins` (two piglins, three hoglins: the hurt one and its neighbour flee for 5 to 20 seconds), `a_piglin_with_cannot_hunt_leaves_hoglins_alone` (also a hoglin with `CannotBeHunted`), `about_one_kill_in_ten_ends_in_a_dance` (about 10% of kill times; a kill at a dancing time sets the dancing memory and arm pose, at another time only the celebration). `piglin_render`: `a_dancing_piglin_bobs_its_head_and_body_and_spreads_its_arms`.
+- **Decisions:**
+  - The hunt is decided in the brain and carried out by the entity world right after the piglin's brain tick, because it touches other piglins' memories; the anger lands in the same tick as in vanilla and the attack starts on the next one, as vanilla's `StartAttacking` (which runs before `StartHuntingHoglin`) does.
+  - `RememberIfHoglinWasKilled` only ever fires in vanilla when the piglin's own melee hit kills its target in that tick (`StopAttackingIfTargetInvalid` drops a dead target first), so it lives in the piglin's hit. A crossbow kill doesn't rest the piglin, as in vanilla.
+  - Riding stays out (brief decision): `babySometimesRideBabyHoglin` and the RIDE activity are not ported, so the baby hoglin memory is sensed but not used yet.
+- **Test steps (Nether, survival, `/difficulty normal`, golden boots on, on a netherrack floor):**
+  1. Use 3 piglin eggs close together, then a hoglin egg about 8 blocks away. The piglins (adults with swords) run at the hoglin and kill it (**15**). Now and then (about one kill in ten) they dance afterwards: ears flapping, arms out, bobbing (**16**).
+  2. Right after a kill, use another hoglin egg near them: they leave it alone for 30 seconds to 2 minutes.
+  3. Use 4 hoglin eggs together, then 2 piglin eggs next to them. The piglins go for a hoglin, the hoglins strike back, and after the first hoglin hit both piglins run away from the hoglins for 5 to 20 seconds (**17**).
+  4. `/summon minecraft:piglin ~ ~ ~ {CannotHunt:1b}` next to a hoglin: it never attacks it. `/summon minecraft:hoglin ~ ~ ~ {CannotBeHunted:1b}` next to piglins: they leave it alone.
+  5. A brute next to a hoglin ignores it.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:piglin_spawn_egg*16,minecraft:piglin_brute_spawn_egg*2,minecraft:hoglin_spawn_egg*16,minecraft:golden_boots,minecraft:diamond_sword,minecraft:netherrack*64,minecraft:cooked_beef*32
 ```

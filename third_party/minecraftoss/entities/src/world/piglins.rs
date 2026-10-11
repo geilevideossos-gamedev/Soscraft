@@ -14,6 +14,7 @@ pub const PREFERRED_WEAPONS_TAG: &str = "minecraft:piglin_preferred_weapons";
 pub const THROW_SPEED: f64 = 0.3;
 pub const PICKUP_DELAY: i32 = 10;
 pub const ANGER_RANGE: f64 = 16.0;
+const HOGLIN: &str = "minecraft:hoglin";
 const ANGER_PLAYER_WIDTH: f64 = 0.6;
 const ANGER_PLAYER_HEIGHT: f64 = 1.8;
 
@@ -51,6 +52,7 @@ pub(super) struct PiglinSees<'a> {
     uuids: &'a [(Target, u128)],
     gilded: &'a [Target],
     loved_holders: &'a [Target],
+    unhuntable: &'a [Target],
     rules: PiglinRules,
     wanted_items: Option<&'a [WantedItem]>,
     offhand_loved: bool,
@@ -63,6 +65,7 @@ pub(super) struct PiglinThought {
     attack: Option<Target>,
     shot: Option<Target>,
     stop_holding: Option<bool>,
+    hunt: Option<Target>,
     convert: bool,
 }
 
@@ -250,6 +253,8 @@ impl PiglinEntity {
             uuids: sees.uuids,
             gilded: sees.gilded,
             loved_holders: sees.loved_holders,
+            unhuntable: sees.unhuntable,
+            can_hunt: self.piglin.kind == PiglinKind::Piglin && !self.piglin.cannot_hunt,
             universal_anger: sees.rules.universal_anger,
             forgive_dead_players: sees.rules.forgive_dead_players,
             holds_crossbow: self.piglin.holds_crossbow(),
@@ -271,6 +276,7 @@ impl PiglinEntity {
             item_use: None,
             charging: None,
             stop_holding: None,
+            hunt: None,
         };
         self.brain.tick(&mut ctx);
         self.brain.update_activity(&mut ctx);
@@ -279,6 +285,7 @@ impl PiglinEntity {
             attack: ctx.attack,
             shot: ctx.shot,
             stop_holding: ctx.stop_holding,
+            hunt: ctx.hunt,
             convert: false,
         };
         let (look_at, sounds, strafe) = (ctx.look_at, ctx.sounds, ctx.strafe);
@@ -1209,6 +1216,108 @@ impl EntityWorld {
             return;
         }
         entity.brain.set_anger(uuid, other.is_player(), universal);
+        let hunts = entity.piglin.kind == PiglinKind::Piglin && !entity.piglin.cannot_hunt;
+        if hunts && other.kind == HOGLIN {
+            self.piglin_rests_from_hunting(id);
+        }
+    }
+
+    fn piglin_can_hunt(&self, id: u64) -> bool {
+        self.piglins
+            .iter()
+            .any(|e| e.id == id && e.piglin.kind == PiglinKind::Piglin && !e.piglin.cannot_hunt)
+    }
+
+    fn hoglin_huntable(&self, target: Target) -> bool {
+        let Target::Mob(id) = target else {
+            return false;
+        };
+        self.hoglins.iter().any(|e| {
+            e.id == id
+                && e.hoglin.kind == crate::hoglin::HoglinKind::Hoglin
+                && !e.hoglin.cannot_be_hunted
+        })
+    }
+
+    fn piglin_rests_from_hunting(&mut self, id: u64) {
+        use crate::piglin_brain::{TIME_BETWEEN_HUNTS_MAX, TIME_BETWEEN_HUNTS_MIN};
+        let spread = (TIME_BETWEEN_HUNTS_MAX - TIME_BETWEEN_HUNTS_MIN + 1) as u32;
+        let ticks = TIME_BETWEEN_HUNTS_MIN + i64::from(self.level_random.next_int(spread));
+        if let Some(entity) = self.piglins.iter_mut().find(|e| e.id == id) {
+            entity.brain.memories.hunted_recently.set_for((), ticks);
+        }
+    }
+
+    fn visible_adult_piglins(&self, id: u64) -> Vec<u64> {
+        let Some(entity) = self.piglins.iter().find(|e| e.id == id) else {
+            return Vec::new();
+        };
+        let adults = entity.brain.memories.nearest_visible_adult_piglins.get();
+        adults
+            .into_iter()
+            .flatten()
+            .filter_map(|&adult| match adult {
+                Target::Mob(adult) => Some(adult),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn piglin_hunts(
+        &mut self,
+        id: u64,
+        hoglin: Target,
+        others: &[Living],
+        uuids: &[(Target, u128)],
+    ) {
+        let adults = self.visible_adult_piglins(id);
+        let rested = adults.iter().any(|&adult| {
+            self.piglins
+                .iter()
+                .any(|e| e.id == adult && e.brain.memories.hunted_recently.present())
+        });
+        if rested {
+            return;
+        }
+        self.set_piglin_anger(id, hoglin, others);
+        self.piglin_rests_from_hunting(id);
+        self.broadcast_piglin_anger(id, hoglin, others, uuids);
+        for adult in adults {
+            self.piglin_rests_from_hunting(adult);
+        }
+    }
+
+    fn piglin_retreats(&mut self, id: u64, target: Target) {
+        use crate::piglin_brain::{RETREAT_MAX_TICKS, RETREAT_MIN_TICKS};
+        let spread = (RETREAT_MAX_TICKS - RETREAT_MIN_TICKS + 1) as u32;
+        let ticks = RETREAT_MIN_TICKS + i64::from(self.level_random.next_int(spread));
+        if let Some(entity) = self.piglins.iter_mut().find(|e| e.id == id) {
+            let memories = &mut entity.brain.memories;
+            memories.angry_at.erase();
+            memories.attack_target.erase();
+            memories.walk_target.erase();
+            memories.avoid_target.set_for(target, ticks);
+        }
+        self.piglin_rests_from_hunting(id);
+    }
+
+    fn broadcast_piglin_retreat(&mut self, id: u64, target: Target, others: &[Living]) {
+        for adult in self.visible_adult_piglins(id) {
+            let Some(entity) = self
+                .piglins
+                .iter()
+                .find(|e| e.id == adult && e.piglin.kind == PiglinKind::Piglin)
+            else {
+                continue;
+            };
+            let position = entity.position();
+            let memories = &entity.brain.memories;
+            let avoided = memories.avoid_target.get().copied();
+            let nearest = crate::brain_behaviors::nearer(position, others, avoided, target);
+            let attacked = memories.attack_target.get().copied();
+            let nearest = crate::brain_behaviors::nearer(position, others, attacked, nearest);
+            self.piglin_retreats(adult, nearest);
+        }
     }
 
     fn set_piglin_anger_if_closer(
@@ -1243,8 +1352,13 @@ impl EntityWorld {
         let Some(entity) = self.piglins.iter().find(|e| e.id == id) else {
             return;
         };
+        let hoglin = find(others, target).is_some_and(|other| other.kind == HOGLIN);
+        let huntable = self.hoglin_huntable(target);
         for adult in entity.brain.memories.nearby_adult_piglins() {
             if let Target::Mob(adult) = adult {
+                if hoglin && !(self.piglin_can_hunt(adult) && huntable) {
+                    continue;
+                }
                 self.set_piglin_anger_if_closer(adult, target, others, uuids);
             }
         }
@@ -1350,6 +1464,7 @@ impl EntityWorld {
         }
         let baby = entity.piglin.is_baby();
         let (position, range) = (entity.position(), entity.piglin.follow_range());
+        let outnumbered = entity.brain.hoglins_outnumber_piglins();
         let memories = &mut entity.brain.memories;
         memories.celebrate_location.erase();
         memories.dancing.erase();
@@ -1373,6 +1488,11 @@ impl EntityWorld {
             if crate::piglin_brain::attackable_ignoring_sight(position, range, &other) {
                 self.broadcast_piglin_anger(id, attacker, others, uuids);
             }
+            return;
+        }
+        if other.kind == HOGLIN && outnumbered {
+            self.piglin_retreats(id, attacker);
+            self.broadcast_piglin_retreat(id, attacker, others);
             return;
         }
         self.piglin_maybe_retaliate(id, attacker, others, uuids);
@@ -1537,6 +1657,14 @@ impl EntityWorld {
             }),
             Target::Mob(victim) | Target::Villager(victim) => {
                 self.mob_hits_mob(id, victim, damage, position, 0.0);
+                let killed = self.hoglins.iter().any(|e| {
+                    e.id == victim
+                        && e.hoglin.kind == crate::hoglin::HoglinKind::Hoglin
+                        && e.hoglin.health <= 0.0
+                });
+                if killed {
+                    self.piglin_rests_from_hunting(id);
+                }
             }
         }
     }
@@ -1611,11 +1739,18 @@ impl EntityWorld {
         };
         let gilded = players_of(&|player| self.player_wears_gold(player));
         let loved_holders = players_of(&|player| self.player_holds_loved(player));
+        let unhuntable: Vec<Target> = self
+            .hoglins
+            .iter()
+            .filter(|e| e.hoglin.cannot_be_hunted)
+            .map(|e| Target::Mob(e.id))
+            .collect();
         let sees = PiglinSees {
             others: &others,
             uuids: &uuids,
             gilded: &gilded,
             loved_holders: &loved_holders,
+            unhuntable: &unhuntable,
             rules: self.piglin_rules,
             wanted_items: wanted_items.as_deref(),
             offhand_loved,
@@ -1655,6 +1790,9 @@ impl EntityWorld {
         self.level_random = level_random;
         if !stepped {
             return;
+        }
+        if let Some(hoglin) = thought.hunt {
+            self.piglin_hunts(id, hoglin, &others, &uuids);
         }
         if let Some(target) = thought.attack {
             self.piglin_hits(id, target);
@@ -3187,5 +3325,189 @@ mod tests {
         world.tick_with_players(&mut blocks, &[]);
         assert_eq!(zombified(&world).len(), 1);
         assert!(!heard(&mut world, "entity.piglin.converted_to_zombified"));
+    }
+
+    fn hoglin_at(world: &mut EntityWorld, x: f64, z: f64) -> u64 {
+        let kind = crate::hoglin::HoglinKind::Hoglin;
+        let hoglin = crate::hoglin::Hoglin::new(kind, DVec3::new(x, 64.0, z));
+        let id = world.spawn_hoglin(hoglin, false);
+        world.hoglin_mut(id).unwrap().random = LegacyRandom::new(id * 17);
+        id
+    }
+
+    fn hoglin_dead(world: &EntityWorld, id: u64) -> bool {
+        world
+            .hoglins()
+            .iter()
+            .find(|e| e.id == id)
+            .is_none_or(|e| e.hoglin.health <= 0.0)
+    }
+
+    #[test]
+    fn adult_piglins_hunt_a_visible_hoglin_and_rest_30_to_120_seconds_after() {
+        let mut blocks = floor(20);
+        let mut world = EntityWorld::default();
+        let piglins = [-2.5, 0.5, 3.5].map(|x| {
+            armed(
+                &mut world,
+                PiglinKind::Piglin,
+                DVec3::new(x, 64.0, 0.5),
+                "minecraft:golden_sword",
+            )
+        });
+        let hoglin = hoglin_at(&mut world, 0.5, 6.5);
+        world.hoglin_mut(hoglin).unwrap().hoglin.health = 12.0;
+        let uuid = world.uuid_of(hoglin);
+        let mut hunted = false;
+        for _ in 0..1200 {
+            world.tick_with_players(&mut blocks, &[]);
+            let angry = piglins.iter().any(|&id| {
+                world.piglin_mut(id).unwrap().brain.memories.angry_at.get() == Some(&uuid)
+            });
+            if angry && !hunted {
+                hunted = true;
+                for id in piglins {
+                    let memories = &world.piglin_mut(id).unwrap().brain.memories;
+                    let ttl = memories.hunted_recently.ttl().expect("resting");
+                    assert!((598..=2400).contains(&ttl), "{ttl}");
+                }
+            }
+            if hoglin_dead(&world, hoglin) {
+                break;
+            }
+        }
+        assert!(hunted, "they went for the hoglin");
+        assert!(hoglin_dead(&world, hoglin), "and killed it");
+        let second = hoglin_at(&mut world, 0.5, -5.5);
+        let second_uuid = world.uuid_of(second);
+        for _ in 0..200 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        for id in piglins {
+            let memories = &world.piglin_mut(id).unwrap().brain.memories;
+            assert!(memories.hunted_recently.present(), "{id}");
+            assert_ne!(memories.angry_at.get(), Some(&second_uuid), "{id}");
+            assert_ne!(memories.attack_target.get(), Some(&Target::Mob(second)));
+        }
+    }
+
+    #[test]
+    fn outnumbered_piglins_retreat_from_hoglins() {
+        let mut blocks = floor(20);
+        let mut world = EntityWorld::default();
+        let piglins = [0.5, 2.5].map(|x| spawn(&mut world, PiglinKind::Piglin, x, 0.5));
+        for id in piglins {
+            let memories = &mut world.piglin_mut(id).unwrap().brain.memories;
+            memories.hunted_recently.set_for((), 5000);
+        }
+        let hoglins = [-1.5, 1.5, 4.5].map(|x| hoglin_at(&mut world, x, 6.5));
+        for id in hoglins {
+            slowed_hoglin(&mut world, id);
+        }
+        for _ in 0..45 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        let brain = &world.piglin_mut(piglins[0]).unwrap().brain;
+        assert_eq!(brain.memories.visible_adult_hoglin_count.get(), Some(&3));
+        assert!(brain.hoglins_outnumber_piglins());
+        world.note_piglin_hurt(piglins[0], Target::Mob(hoglins[0]));
+        world.tick_with_players(&mut blocks, &[]);
+        for id in piglins {
+            let brain = &world.piglin_mut(id).unwrap().brain;
+            let memories = &brain.memories;
+            assert_eq!(
+                memories.avoid_target.get(),
+                Some(&Target::Mob(hoglins[0])),
+                "{id}"
+            );
+            let ttl = memories.avoid_target.ttl().unwrap();
+            assert!((98..=400).contains(&ttl), "{id} {ttl}");
+            let rest = memories.hunted_recently.ttl().unwrap();
+            assert!(rest <= 2400, "{id} {rest}");
+            assert!(!memories.angry_at.present() && !memories.attack_target.present());
+            assert_eq!(brain.activity, Activity::Avoid, "{id}");
+        }
+    }
+
+    fn slowed_hoglin(world: &mut EntityWorld, id: u64) {
+        let slowness = crate::effects::EffectInstance::new(MobEffect::Slowness, 10_000, 9);
+        world.hoglin_mut(id).unwrap().effects.add(slowness);
+    }
+
+    #[test]
+    fn a_piglin_with_cannot_hunt_leaves_hoglins_alone() {
+        let mut blocks = floor(20);
+        let mut world = EntityWorld::default();
+        let lazy = armed(
+            &mut world,
+            PiglinKind::Piglin,
+            DVec3::new(0.5, 64.0, 0.5),
+            "minecraft:golden_sword",
+        );
+        world.piglin_mut(lazy).unwrap().piglin.cannot_hunt = true;
+        let hoglin = hoglin_at(&mut world, 0.5, 5.5);
+        slowed_hoglin(&mut world, hoglin);
+        let mut other = EntityWorld::default();
+        let hunter = armed(
+            &mut other,
+            PiglinKind::Piglin,
+            DVec3::new(0.5, 64.0, 0.5),
+            "minecraft:golden_sword",
+        );
+        let spared = hoglin_at(&mut other, 0.5, 5.5);
+        slowed_hoglin(&mut other, spared);
+        other.hoglin_mut(spared).unwrap().hoglin.cannot_be_hunted = true;
+        let mut other_blocks = floor(20);
+        for _ in 0..200 {
+            world.tick_with_players(&mut blocks, &[]);
+            other.tick_with_players(&mut other_blocks, &[]);
+        }
+        for (world, id) in [(&mut world, lazy), (&mut other, hunter)] {
+            let memories = &world.piglin_mut(id).unwrap().brain.memories;
+            assert!(!memories.angry_at.present(), "{id}");
+            assert!(!memories.attack_target.present(), "{id}");
+            assert!(!memories.hunted_recently.present(), "{id}");
+        }
+        let memories = &other.piglin_mut(hunter).unwrap().brain.memories;
+        assert!(!memories.nearest_visible_huntable_hoglin.present());
+        assert_eq!(memories.visible_adult_hoglin_count.get(), Some(&1));
+    }
+
+    #[test]
+    fn about_one_kill_in_ten_ends_in_a_dance() {
+        let living = crate::brain_behaviors::Living {
+            target: Target::Mob(1),
+            kind: HOGLIN,
+            position: DVec3::ZERO,
+            eye_height: 0.8,
+            width: 1.4,
+            height: 1.4,
+            alive: false,
+            baby: false,
+            attackable: true,
+            spectator: false,
+        };
+        let wants = |time: i64| crate::piglin_brain::wants_to_dance(time, &living);
+        let kills = (0..3000).map(|kill| kill * 1009 + 1);
+        let dances = kills.clone().filter(|&time| wants(time)).count();
+        assert!((200..=400).contains(&dances), "{dances}");
+        let dance_time = kills.clone().find(|&time| wants(time)).unwrap();
+        let calm_time = kills.clone().find(|&time| !wants(time)).unwrap();
+        for (time, dances) in [(dance_time, true), (calm_time, false)] {
+            let mut blocks = floor(12);
+            let mut world = EntityWorld::default();
+            let piglin = spawn(&mut world, PiglinKind::Piglin, 0.5, 0.5);
+            let hoglin = hoglin_at(&mut world, 0.5, 2.5);
+            world.hoglin_mut(hoglin).unwrap().hurt(100.0);
+            let memories = &mut world.piglin_mut(piglin).unwrap().brain.memories;
+            memories.attack_target.set(Target::Mob(hoglin));
+            world.set_game_time(time - 1);
+            world.tick_with_players(&mut blocks, &[]);
+            let entity = world.piglin_mut(piglin).unwrap();
+            assert!(entity.brain.memories.celebrate_location.present(), "{time}");
+            assert_eq!(entity.brain.memories.dancing.present(), dances, "{time}");
+            assert_eq!(entity.piglin.dancing, dances, "{time}");
+            assert_eq!(entity.arm_pose == ArmPose::Dancing, dances, "{time}");
+        }
     }
 }
