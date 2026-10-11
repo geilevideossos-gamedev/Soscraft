@@ -1103,6 +1103,9 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
     for e in world.blazes() {
         push(e.id, e.blaze.yaw, &e.ai.state.look_control, &e.blaze.body, false, minecraftoss_entities::blaze::EYE_HEIGHT);
     }
+    for e in world.striders() {
+        push(e.id, e.strider.yaw, &e.look_control, &e.strider.body, e.strider.age.baby(), e.strider.eye_height());
+    }
     for mob in &mut out {
         mob.resting = resting_bats.contains(&mob.id);
         if let Some(damage) = world.damage_state(mob.id) {
@@ -1139,6 +1142,7 @@ pub fn shadow_casters(world: &minecraftoss_entities::world::EntityWorld, mobs: &
     kinds.extend(world.wolves().iter().map(|e| (e.id, 0.5 * age(e.wolf.baby()))));
     kinds.extend(world.ghasts().iter().map(|e| (e.id, 1.5)));
     kinds.extend(world.blazes().iter().map(|e| (e.id, 0.5)));
+    kinds.extend(world.striders().iter().map(|e| (e.id, crate::strider_render::shadow_radius(e.strider.age.baby()))));
     kinds
         .into_iter()
         .filter_map(|(id, radius)| {

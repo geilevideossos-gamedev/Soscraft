@@ -78,6 +78,7 @@ pub mod horse_render;
 pub mod poof_particles;
 pub mod portal_particles;
 pub mod spell_particles;
+pub mod strider_render;
 pub mod display_ticks;
 pub mod item_icon;
 pub mod item_icons;

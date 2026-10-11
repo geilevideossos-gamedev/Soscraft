@@ -105,3 +105,24 @@ After e9e31c3e.
 ```
 IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*8,minecraft:warped_fungus*64,minecraft:warped_fungus_on_a_stick,minecraft:carrot_on_a_stick,minecraft:saddle,minecraft:saddle,minecraft:netherrack*64
 ```
+
+### 4. Minecraft striders look like vanilla
+
+After 0eead303.
+
+- **Changed:**
+  - New `minecraft_terrain/src/strider_render.rs`: `AdultStriderModel` (64 x 128: two 4 x 16 x 4 legs at (-4, 8, 0) and (4, 8, 0), the 16 x 14 x 16 body, six 12 x 0 x 16 bristle planes with rest rolls 0.8727, 1.1345 and 1.2217, the right ones mirrored) and `BabyStriderModel` (32 x 32: 2 x 4 x 2 legs at (-1.5, 20, 0) and (1.5, 20, 0), the 7 x 7 x 8 body at 17.25, three 7 x 3 x 0 bristles), cuboids by javap on `createBodyLayer`. `StriderModel.setupAnim` and both `customAnimations`: the legs swing and roll with the walk (speed capped at 0.25), the body rocks and bobs, the bristles sway with the walk and the age, and an unridden body takes the head's pitch and yaw. The texture is `strider`, `strider_cold`, `strider_baby` or `strider_cold_baby` by age and `suffocating`; while suffocating the body shakes by `cos(ageInTicks * 3.25) * pi * 0.4` degrees (`isShaking`). A saddled adult draws the model again with `entity/equipment/strider_saddle/saddle` (the saddle layer bakes the same adult layer).
+  - `mesh.rs` loads the five textures; `client_mobs.rs` tracks striders and casts their shadows (0.5, a baby 0.25); `minecraft_survival/src/entities.rs` draws them and gives MW2 bullets their hit boxes (key 23).
+- **Tests:** `strider_render`: `the_adult_has_three_cubes_and_six_bristle_planes`, `the_cold_texture_shows_while_suffocating`, `the_shake_is_cos_3_25_times_0_4_pi_degrees`, `a_saddled_adult_adds_the_saddle_layer`, `walking_swings_the_legs_against_each_other`. `entities`: `a_strider_hit_box_encodes_and_decodes`.
+- **Decisions:** the spawner's displayed mob (track A) is not in this worktree, so the strider is not registered there; whoever merges second adds the one line.
+- **Test steps (Nether, survival):**
+  1. Use strider eggs on the lava sea: red striders with six swaying bristles stand on the lava; walking, their legs swing (**1**).
+  2. Use an egg on netherrack away from the lava: it is pale purple and shivers until it reaches lava, where it turns red (**2**).
+  3. Breed two (warped fungus): the baby is a small strider with three bristles, red on lava, purple on land.
+  4. Saddle an adult: the saddle shows on its back (**4**).
+  5. Shoot a strider with an MW2 gun: it takes damage and dies; kill one with the sword: string drops, and a saddled one also drops its saddle (**11**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*8,minecraft:warped_fungus*64,minecraft:saddle,minecraft:saddle,minecraft:diamond_sword,minecraft:netherrack*64
+```
