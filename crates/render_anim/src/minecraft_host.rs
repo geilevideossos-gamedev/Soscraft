@@ -4,7 +4,8 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 
 use bevy::prelude::*;
-use minecraft_net::{Lane, ToServer};
+use minecraft_commands::Serverbound;
+use minecraft_net::{Lane, PlayerUuid, ToServer};
 use minecraft_survival::session::{BatchJob, EncodedBatch, Hello, JoinContext, Sessions};
 use minecraftoss_core::Registries;
 
@@ -74,11 +75,15 @@ pub(crate) struct HostSessions {
     registry: Option<u64>,
     inline: Vec<Encoded>,
     time_at: Option<Instant>,
+    chat: BTreeMap<u32, Vec<Serverbound>>,
 }
 
 impl HostSessions {
     fn idle(&self) -> bool {
-        self.sessions.is_empty() && self.waiting.is_empty() && self.worker.is_none()
+        self.sessions.is_empty()
+            && self.waiting.is_empty()
+            && self.worker.is_none()
+            && self.chat.is_empty()
     }
 }
 
@@ -103,6 +108,13 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
                 host.sessions.batch_received(client, seq);
                 wire.batch_received(client, seq);
             }
+            Ok(ToServer::Chat(message)) => {
+                if host.sessions.sessions.contains_key(&client)
+                    && let Some(message) = minecraft_survival::commands::from_friend(message)
+                {
+                    host.chat.entry(client).or_default().push(message);
+                }
+            }
             Ok(_) => {}
             Err(error) => {
                 diag::warn!(
@@ -115,13 +127,84 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
     }
 }
 
+fn teleport(
+    player: &mut minecraft_survival::player::Player,
+    authority: &mut sim::SimWorld,
+    client: sim::ClientId,
+    origin: [f64; 3],
+    to: [f64; 3],
+) {
+    authority.teleport(client, sim::voxel::to_map(origin, to));
+    player.steps.air_peak = None;
+}
+
+fn run_friend_commands(
+    host: &mut HostSessions,
+    server: &mut minecraft_survival::server::Server,
+    authority: &mut sim::SimWorld,
+    origins: &std::collections::HashMap<minecraft_net::Dimension, [f64; 3]>,
+    local: &PlayerUuid,
+    local_client: sim::ClientId,
+    relayed: minecraft_survival::commands::Handled,
+) {
+    let chat = std::mem::take(&mut host.chat);
+    let mut teleports = relayed.teleports;
+    host.sessions
+        .deliver(&server.globals.chat, &relayed.delivered, false);
+    let friends: Vec<(u32, PlayerUuid)> = host
+        .sessions
+        .sessions
+        .values()
+        .map(|session| (session.client, session.uuid.clone()))
+        .collect();
+    for (client, uuid) in friends {
+        let lines = chat.get(&client).cloned().unwrap_or_default();
+        let mut presence =
+            crate::minecraft_world::friends_presence(&server.players, authority, origins, local);
+        if let Some(player) = server.players.get(local)
+            && let Some(&origin) = origins.get(&player.dimension)
+        {
+            let ps = authority.player(local_client);
+            let own = crate::minecraft_world::presence_of(player, ps, origin);
+            presence.push((local.clone(), own));
+        }
+        let minecraft_survival::server::Server {
+            globals,
+            levels,
+            players,
+            ..
+        } = server;
+        let handled =
+            minecraft_survival::commands::run(globals, levels, players, &uuid, lines, presence);
+        host.sessions
+            .deliver(&globals.chat, &handled.delivered, true);
+        teleports.extend(handled.teleports);
+    }
+    for (uuid, to) in teleports {
+        let Some(player) = server.players.get_mut(&uuid) else {
+            continue;
+        };
+        let Some(&origin) = origins.get(&player.dimension) else {
+            continue;
+        };
+        let client = if uuid == *local {
+            local_client
+        } else {
+            sim::ClientId(player.id.0)
+        };
+        teleport(player, authority, client, origin, to);
+    }
+}
+
 pub(crate) fn host(
     wire: Option<ResMut<net::MinecraftWire>>,
     mut authority: Option<ResMut<net::AuthorityWorld>>,
+    local: Res<net::LocalPresentClient>,
     mut runtime: NonSendMut<Runtime>,
     mut host: NonSendMut<HostSessions>,
     mut ui: ResMut<frame::MinecraftUi>,
 ) {
+    let relayed = std::mem::take(&mut runtime.relayed);
     let Some(mut wire) = wire.filter(|wire| wire.role() == Some(net::WireRole::Host)) else {
         if !host.idle() {
             *host = HostSessions::default();
@@ -133,6 +216,7 @@ pub(crate) fn host(
     wire.joined.clear();
     for client in &left {
         host.waiting.remove(client);
+        host.chat.remove(client);
     }
     read_inbox(&mut host, &mut wire, now);
     let host = &mut *host;
@@ -209,6 +293,18 @@ pub(crate) fn host(
                 crate::minecraft_world::place_friend(player, &mut authority.0, id, &ps, origin);
             }
         }
+        run_friend_commands(
+            host,
+            server,
+            &mut authority.0,
+            view.origins,
+            view.local,
+            local.0,
+            relayed,
+        );
+        host.sessions.send_levels(&server.globals.chat);
+    } else {
+        host.chat.clear();
     }
     if host.worker.is_none() && !host.sessions.is_empty() {
         host.worker = ChunkWorker::start();

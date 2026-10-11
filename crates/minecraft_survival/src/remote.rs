@@ -106,6 +106,7 @@ pub struct RemoteWorld {
     pub failed: Option<String>,
     pub players: BTreeMap<u32, (String, PlayerUuid)>,
     pub chat: Vec<Clientbound>,
+    pub command_level: u8,
     pub player: Option<PlayerView>,
     pub rules: Rules,
     pub game_time: i64,
@@ -131,6 +132,7 @@ impl RemoteWorld {
             failed: None,
             players: BTreeMap::new(),
             chat: Vec::new(),
+            command_level: 0,
             player: None,
             rules: Rules::default(),
             game_time: 0,
@@ -338,6 +340,7 @@ impl RemoteWorld {
                 }
             }
             ToClient::Player(view) => self.player = Some(*view),
+            ToClient::Chat(Clientbound::Commands { level }) => self.command_level = level,
             ToClient::Chat(line) => self.chat.push(line),
             ToClient::PlayerList { added, removed } => {
                 for client in removed {
@@ -818,6 +821,27 @@ mod tests {
         assert_eq!((friend.game_time, friend.weather), (500, [1.0, 0.5]));
         friend.apply(ToClient::Credits);
         assert_eq!(friend.take_effects(), vec![ToClient::Credits]);
+    }
+
+    #[test]
+    fn chat_lines_show_and_the_command_level_is_kept() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let mut friend = RemoteWorld::new(registries);
+        friend.apply(ToClient::Login(login(Dimension::Overworld)));
+        let line = Clientbound::Player {
+            sender: minecraft_commands::PlayerId(0),
+            name: "Steve".into(),
+            message: "hi".into(),
+        };
+        friend.apply(ToClient::Chat(line.clone()));
+        friend.apply(ToClient::Chat(Clientbound::Commands { level: 4 }));
+        assert_eq!(friend.take_chat(), vec![line]);
+        assert_eq!(friend.command_level, 4);
+        friend.apply(ToClient::Chat(Clientbound::Commands { level: 0 }));
+        assert_eq!(friend.command_level, 0);
+        assert!(friend.take_chat().is_empty());
     }
 
     #[test]

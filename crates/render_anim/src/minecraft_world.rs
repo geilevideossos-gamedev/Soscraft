@@ -117,6 +117,7 @@ pub(crate) struct Runtime {
     switch_screen: Option<minecraft_survival::switch::LoadingReason>,
     loading_backgrounds: Option<crate::minecraft_loading::LoadingBackgrounds>,
     refused_air: Option<u32>,
+    pub(crate) relayed: minecraft_survival::commands::Handled,
 }
 
 impl Drop for Runtime {
@@ -621,6 +622,8 @@ fn update(
         shown,
         switch_screen,
         refused_air,
+        origins,
+        relayed,
         ..
     } = &mut *runtime;
     let (Some(world), Some(server), Some(local_uuid)) = (world.as_mut(), server.as_mut(), local_uuid.as_ref()) else {
@@ -737,8 +740,14 @@ fn update(
         .filter(|_| host_alive)
         .map(|ps| minecraft_commands::Pose { feet: sim::voxel::to_block(origin, ps.origin), yaw: minecraft_yaw(ps.viewangles[1]), pitch: ps.viewangles[0] })
         .or_else(|| player.survival.last_feet().map(|feet| minecraft_commands::Pose { feet, yaw: 0.0, pitch: 0.0 }));
-    let presence = vec![(local_uuid.clone(), minecraft_survival::commands::Presence { pose: host_pose, alive: host_alive })];
-    let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, levels, players, local_uuid, &mut ui.chat.sent, presence);
+    let mut presence = vec![(local_uuid.clone(), minecraft_survival::commands::Presence { pose: host_pose, alive: host_alive })];
+    presence.extend(friends_presence(players, &authority.0, origins, local_uuid));
+    let lines = minecraft_survival::commands::take_lines(&mut ui.chat.sent);
+    let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, levels, players, local_uuid, lines, presence);
+    let delivered_here = minecraft_survival::commands::reaching(&globals.chat, &delivered, minecraft_survival::commands::HOST);
+    relayed.delivered.extend(delivered);
+    relayed.teleports.extend(teleports.iter().filter(|(uuid, _)| uuid != local_uuid).cloned());
+    let delivered = delivered_here;
     ui.chat.command_level = players.get(local_uuid).map_or(0, |player| globals.chat.level(player.id));
     crate::minecraft_end::tick_fight(levels, players, globals, time.delta_secs_f64(), local_uuid, &mut ui);
     let Some(player) = players.get_mut(local_uuid) else {
@@ -1707,7 +1716,8 @@ fn update(
         let summoned = std::mem::take(&mut entities.command_summons);
         if !summoned.is_empty() {
             let answers = minecraft_survival::commands::summon_answers(&globals.chat, &globals.game_rules, summoned);
-            show_chat(&mut ui.chat, inventory_ui, &world.packs, &answers);
+            show_chat(&mut ui.chat, inventory_ui, &world.packs, &minecraft_survival::commands::reaching(&globals.chat, &answers, minecraft_survival::commands::HOST));
+            relayed.delivered.extend(answers);
         }
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
         globals.autosave_ticks += mob_ticks;
@@ -2553,6 +2563,26 @@ pub(crate) fn show_lines(runtime: &Runtime, chat: &mut frame::McChat, lines: &[m
     }
 }
 
+pub(crate) fn presence_of(player: &minecraft_survival::player::Player, ps: Option<&playerstate_iw4::PlayerState>, origin: [f64; 3]) -> minecraft_survival::commands::Presence {
+    let alive = ps.is_some_and(|ps| ps.pm_type == 0) && player.arrival.is_none();
+    let pose = ps
+        .filter(|_| alive)
+        .map(|ps| minecraft_commands::Pose { feet: sim::voxel::to_block(origin, ps.origin), yaw: minecraft_yaw(ps.viewangles[1]), pitch: ps.viewangles[0] })
+        .or_else(|| player.place.filter(|place| place.dimension == player.dimension).map(|place| minecraft_commands::Pose { feet: place.feet, yaw: place.yaw, pitch: place.pitch }));
+    minecraft_survival::commands::Presence { pose, alive }
+}
+
+pub(crate) fn friends_presence(players: &std::collections::BTreeMap<minecraft_net::PlayerUuid, minecraft_survival::player::Player>, authority: &sim::SimWorld, origins: &HashMap<Dimension, [f64; 3]>, host: &minecraft_net::PlayerUuid) -> Vec<(minecraft_net::PlayerUuid, minecraft_survival::commands::Presence)> {
+    players
+        .iter()
+        .filter(|(uuid, _)| *uuid != host)
+        .filter_map(|(uuid, player)| {
+            let origin = *origins.get(&player.dimension)?;
+            Some((uuid.clone(), presence_of(player, authority.player(sim::ClientId(player.id.0)), origin)))
+        })
+        .collect()
+}
+
 pub(crate) fn place_friend(player: &mut minecraft_survival::player::Player, authority: &mut sim::SimWorld, id: sim::ClientId, ps: &playerstate_iw4::PlayerState, origin: [f64; 3]) {
     let chunk = |block: f64| (block.floor() as i32) >> 4;
     if let Some(place) = player.arrival
@@ -2821,6 +2851,7 @@ fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
     runtime.switch_screen = None;
     runtime.loading_backgrounds = None;
     runtime.refused_air = None;
+    runtime.relayed = Default::default();
     if let (Some(server), Some(local)) = (server.as_mut(), local.as_ref())
         && server.globals.save.is_none()
         && let Some(player) = server.players.get_mut(local)

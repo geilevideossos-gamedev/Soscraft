@@ -120,7 +120,8 @@ pub struct Entities {
     item_use_waiting: Option<SentItemUse>,
     pub item_uses_done: Vec<SentItemUse>,
     eggs_waiting: minecraft_terrain::spawn_egg::EggsWaiting,
-    pub command_summons: Vec<Result<String, String>>,
+    pub command_summons: Vec<(minecraft_commands::PlayerId, Result<String, String>)>,
+    summoners: std::collections::VecDeque<minecraft_commands::PlayerId>,
     pub command_jobs: Vec<Box<dyn std::any::Any + Send>>,
     jobs_running: usize,
     unread: Vec<minecraft_terrain::server::Output>,
@@ -265,6 +266,7 @@ impl Entities {
             item_uses_done: Vec::new(),
             eggs_waiting: Default::default(),
             command_summons: Vec::new(),
+            summoners: Default::default(),
             command_jobs: Vec::new(),
             jobs_running: 0,
             unread: Vec::new(),
@@ -651,7 +653,8 @@ impl Entities {
         self.take_block_entity_changes()
     }
 
-    pub fn summon(&mut self, kind: String, position: [f64; 3], nbt: Option<minecraftoss_core::nbt::Tag>) {
+    pub fn summon(&mut self, source: minecraft_commands::PlayerId, kind: String, position: [f64; 3], nbt: Option<minecraftoss_core::nbt::Tag>) {
+        self.summoners.push_back(source);
         self.server.summon(kind, position, nbt);
     }
 
@@ -969,7 +972,10 @@ impl Entities {
                     diag::warn!(World, "Minecraft {egg} hatched nothing: {error}");
                 }
             }
-            self.command_summons.extend(output.command_summons);
+            for summoned in output.command_summons {
+                let source = self.summoners.pop_front().unwrap_or(crate::commands::HOST);
+                self.command_summons.push((source, summoned));
+            }
             self.dragons_killed.extend(output.dragons_killed);
             self.fight_reports.extend(output.fight_reports);
             self.command_jobs.extend(output.jobs);

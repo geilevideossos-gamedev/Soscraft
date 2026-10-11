@@ -377,7 +377,7 @@ fn update(
     // kind it is, converted to the Xbox layout the skate input expects.
     let pad = active.and_then(|active| active.0).and_then(|entity| gamepads.get(entity).ok());
     host.pad_packet = host.pad_packet.wrapping_add(1);
-    let screen_open = minecraft.as_deref().is_some_and(|ui| ui.active && (ui.inventory_open || ui.chat.open));
+    let screen_open = minecraft.as_deref().is_some_and(|ui| (ui.active && ui.inventory_open) || ui.typing());
     let input = pad.map_or_else(InputFrame::neutral, |pad| {
         if screen_open { InputFrame::from_pad(0, [0; 2], [0; 2], [0; 2], host.pad_packet) } else { pad_frame(pad, host.pad_packet) }
     });

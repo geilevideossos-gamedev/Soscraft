@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use minecraft_commands::{
     Answer, BlockEdit, Clientbound, Clock, CommandData, CommandHints, CommandRegistries,
     CommandServer, CommandWorld, Enchanted, EnchantmentInfo, Experience, ItemArg, ItemFilter,
-    Loaded, LocateKind, LocateRequest, Located, PlayerId, Pose, Serverbound, Text, Weather,
+    Loaded, LocateKind, LocateRequest, Located, Outgoing, PlayerId, Pose, Serverbound, Text,
+    Weather,
 };
 use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_terrain::day_cycle::DayCycle;
@@ -208,14 +209,13 @@ fn nbt_error(error: &str) -> Text {
 pub fn summon_answers(
     server: &CommandServer,
     rules: &GameRules,
-    answers: Vec<Result<String, String>>,
-) -> Vec<Clientbound> {
-    let level = server.level(HOST);
+    answers: Vec<(PlayerId, Result<String, String>)>,
+) -> Vec<Outgoing> {
     answers
         .into_iter()
-        .flat_map(|answer| match answer {
+        .flat_map(|(source, answer)| match answer {
             Ok(kind) => server.feedback(
-                HOST,
+                source,
                 Text::translate("commands.summon.success", vec![Text::entity(kind)]),
                 true,
                 rules,
@@ -229,13 +229,11 @@ pub fn summon_answers(
                     "commands.summon.failed"
                 };
                 vec![minecraft_commands::error_line(
-                    HOST,
+                    source,
                     Text::translate(key, Vec::new()),
                 )]
             }
         })
-        .filter(|out| out.to.reaches(HOST, level))
-        .map(|out| out.message)
         .collect()
 }
 
@@ -499,7 +497,7 @@ impl CommandWorld for Host<'_> {
         let Some(entities) = self.entities_of(source) else {
             return Err(Text::translate("commands.summon.failed", Vec::new()));
         };
-        entities.summon(kind.to_owned(), position, tag);
+        entities.summon(source, kind.to_owned(), position, tag);
         Ok(())
     }
 
@@ -891,27 +889,51 @@ pub fn command_data(stream: &TerrainStream) -> CommandData {
     }
 }
 
+pub fn take_lines(sent: &mut Vec<String>) -> Vec<Serverbound> {
+    std::mem::take(sent)
+        .iter()
+        .filter_map(|line| Serverbound::from_input(line))
+        .collect()
+}
+
+pub fn from_friend(message: Serverbound) -> Option<Serverbound> {
+    match message {
+        Serverbound::Chat(line) => {
+            let line = minecraft_commands::normalize_chat(&line);
+            (!line.is_empty()).then_some(Serverbound::Chat(line))
+        }
+        Serverbound::Command(command) => Serverbound::from_input(&format!("/{command}")),
+    }
+}
+
+pub fn reaching(server: &CommandServer, out: &[Outgoing], to: PlayerId) -> Vec<Clientbound> {
+    let level = server.level(to);
+    out.iter()
+        .filter(|out| out.to.reaches(to, level))
+        .map(|out| out.message.clone())
+        .collect()
+}
+
+pub fn handle_all(
+    from: PlayerId,
+    lines: Vec<Serverbound>,
+    server: &mut CommandServer,
+    world: &mut dyn CommandWorld,
+) -> Vec<Outgoing> {
+    lines
+        .into_iter()
+        .flat_map(|message| server.handle(from, message, world))
+        .collect()
+}
+
 pub fn pump(
     from: PlayerId,
     sent: &mut Vec<String>,
     server: &mut CommandServer,
     world: &mut dyn CommandWorld,
 ) -> Vec<Clientbound> {
-    let mut delivered = Vec::new();
-    for line in std::mem::take(sent) {
-        let Some(message) = Serverbound::from_input(&line) else {
-            continue;
-        };
-        let level = server.level(from);
-        delivered.extend(
-            server
-                .handle(from, message, world)
-                .into_iter()
-                .filter(|out| out.to.reaches(from, level))
-                .map(|out| out.message),
-        );
-    }
-    delivered
+    let out = handle_all(from, take_lines(sent), server, world);
+    reaching(server, &out, from)
 }
 
 pub fn take_jobs_of(
@@ -935,7 +957,14 @@ pub fn answer_jobs(
     to: PlayerId,
     finished: Vec<Box<dyn Any + Send>>,
 ) -> Vec<Clientbound> {
-    let level = chat.level(to);
+    reaching(chat, &job_answers(chat, rules, finished), to)
+}
+
+pub fn job_answers(
+    chat: &CommandServer,
+    rules: &GameRules,
+    finished: Vec<Box<dyn Any + Send>>,
+) -> Vec<Outgoing> {
     let mut delivered = Vec::new();
     for job in finished {
         let Ok(job) = job.downcast::<CommandJob>() else {
@@ -962,18 +991,14 @@ pub fn answer_jobs(
                 chat.reply(source, answer.map(|(text, _)| text), false, rules)
             }
         };
-        delivered.extend(
-            out.into_iter()
-                .filter(|out| out.to.reaches(to, level))
-                .map(|out| out.message),
-        );
+        delivered.extend(out);
     }
     delivered
 }
 
 #[derive(Default)]
 pub struct Handled {
-    pub delivered: Vec<Clientbound>,
+    pub delivered: Vec<Outgoing>,
     pub teleports: Vec<(PlayerUuid, [f64; 3])>,
 }
 
@@ -982,7 +1007,7 @@ pub fn run(
     levels: &mut BTreeMap<Dimension, Level>,
     players: &mut BTreeMap<PlayerUuid, Player>,
     from: &PlayerUuid,
-    sent: &mut Vec<String>,
+    lines: Vec<Serverbound>,
     presence: Vec<(PlayerUuid, Presence)>,
 ) -> Handled {
     let Some(id) = players.get(from).map(|player| player.id) else {
@@ -1001,13 +1026,13 @@ pub fn run(
         waiting_locates: &mut globals.waiting_locates,
         players: &mut *players,
         presence,
-        env_file: if sent.is_empty() { None } else { env_file() },
+        env_file: if lines.is_empty() { None } else { env_file() },
         rules_changed: false,
         mode_changed: Vec::new(),
         respawn_changed: Vec::new(),
         teleports: Vec::new(),
     };
-    let mut delivered = pump(id, sent, &mut globals.chat, &mut host);
+    let mut delivered = handle_all(id, lines, &mut globals.chat, &mut host);
     let rules_changed = host.rules_changed;
     let mode_changed = std::mem::take(&mut host.mode_changed);
     let respawn_changed = std::mem::take(&mut host.respawn_changed);
@@ -1018,7 +1043,7 @@ pub fn run(
         entities.poll_jobs();
         finished.extend(take_jobs_of(&mut entities.command_jobs, id));
     }
-    delivered.extend(answer_jobs(&globals.chat, &globals.game_rules, id, finished));
+    delivered.extend(job_answers(&globals.chat, &globals.game_rules, finished));
     if rules_changed {
         for entities in levels.values_mut().filter_map(|level| level.entities.as_mut()) {
             entities.set_game_rules(&globals.game_rules);

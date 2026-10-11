@@ -551,6 +551,7 @@ impl KeyBinds {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct MinecraftKeyState {
     pub(crate) active: bool,
+    pub(crate) chat_only: bool,
     pub(crate) use_hint: bool,
     pub(crate) screen_open: bool,
 }
@@ -563,13 +564,17 @@ pub(crate) fn minecraft_presses(
 ) -> (HashSet<BindButton>, frame::McActionInput) {
     let mut suppressed = HashSet::new();
     let mut presses = frame::McActionInput::default();
-    if !state.active {
+    if !state.active && !state.chat_only {
         return (suppressed, presses);
     }
     for (button, id) in binds.iter_minecraft() {
         let Some(action) = command_name(id).and_then(frame::McAction::from_command) else {
             continue;
         };
+        let chat = matches!(action, frame::McAction::Chat | frame::McAction::Command);
+        if !state.active && !chat {
+            continue;
+        }
         presses.bind(action);
         let use_wins = !state.screen_open
             && state.use_hint
@@ -588,7 +593,7 @@ pub(crate) fn minecraft_presses(
         }
     }
     let dpad_down = BindButton::Pad(PadButton::DpadDown);
-    if !state.screen_open && (held(dpad_down) || just_pressed(dpad_down)) {
+    if state.active && !state.screen_open && (held(dpad_down) || just_pressed(dpad_down)) {
         presses.hold(frame::McAction::SwapHands);
     }
     (suppressed, presses)
@@ -704,6 +709,7 @@ mod minecraft_bind_tests {
     fn state(use_hint: bool, screen_open: bool) -> MinecraftKeyState {
         MinecraftKeyState {
             active: true,
+            chat_only: false,
             use_hint,
             screen_open,
         }
@@ -868,6 +874,31 @@ mod minecraft_bind_tests {
         let (suppressed, presses) = press(&binds, off, E);
         assert!(suppressed.is_empty());
         assert_eq!(presses, McActionInput::default());
+    }
+
+    #[test]
+    fn only_the_chat_keys_work_while_only_the_chat_does() {
+        let binds = defaults();
+        let chat_only = MinecraftKeyState {
+            chat_only: true,
+            ..MinecraftKeyState::default()
+        };
+        let t = BindButton::Key(KeyCode::KeyT);
+        let (suppressed, presses) = press(&binds, chat_only, t);
+        assert!(suppressed.contains(&t));
+        assert!(presses.just_pressed(McAction::Chat));
+        let slash = BindButton::Key(KeyCode::Slash);
+        let (_, presses) = press(&binds, chat_only, slash);
+        assert!(presses.just_pressed(McAction::Command));
+        assert!(presses.is_bound(McAction::Command));
+        for key in [E, BindButton::Key(KeyCode::KeyQ), F] {
+            let (suppressed, presses) = press(&binds, chat_only, key);
+            assert!(!suppressed.contains(&key));
+            assert!(!presses.is_bound(McAction::Inventory));
+        }
+        let dpad = BindButton::Pad(PadButton::DpadDown);
+        let (_, presses) = press(&binds, chat_only, dpad);
+        assert!(!presses.is_held(McAction::SwapHands));
     }
 
     #[test]

@@ -799,7 +799,7 @@ mod tests {
     #[test]
     fn root_literals_are_filtered_by_level() {
         let friend = at_end("/", ALL);
-        assert_eq!(texts(&friend), vec!["help", "seed"]);
+        assert_eq!(texts(&friend), vec!["help", "msg", "seed", "tell", "w"]);
         assert_eq!((friend.start, friend.command), (1, true));
         assert_eq!(friend.list[0].range, 1..1);
         assert_eq!(
@@ -820,14 +820,17 @@ mod tests {
                 "kill",
                 "kit",
                 "locate",
+                "msg",
                 "op",
                 "seed",
                 "setblock",
                 "spawnpoint",
                 "summon",
                 "teleport",
+                "tell",
                 "time",
                 "tp",
+                "w",
                 "weather",
                 "xp",
             ]
@@ -1072,7 +1075,10 @@ mod tests {
             vec![(0..4, GRAY), (4..6, AQUA), (6..7, GRAY), (7..12, YELLOW)]
         );
         assert_eq!(texts(&at_end("/tp", OWNERS)), Vec::<&str>::new());
-        assert_eq!(texts(&at_end("/t", OWNERS)), vec!["teleport", "time", "tp"]);
+        assert_eq!(
+            texts(&at_end("/t", OWNERS)),
+            vec!["teleport", "tell", "time", "tp"]
+        );
         assert_eq!(texts(&at_end("/xp ", OWNERS)), vec!["add", "query", "set"]);
         assert_eq!(
             texts(&at_end("/xp add @s 5 ", OWNERS)),

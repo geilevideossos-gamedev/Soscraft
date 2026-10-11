@@ -546,7 +546,7 @@ pub(crate) fn update_chat(
     receive(&mut ui.chat, ui.gui.as_deref().map(|gui| &gui.font), now);
     let blocked =
         menus.captures_input() || hud_input.as_ref().is_some_and(|input| input.console_open);
-    if !ui.active || blocked {
+    if !ui.chat_usable() || blocked {
         if ui.chat.open {
             ui.chat.close();
         }

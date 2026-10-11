@@ -4,7 +4,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
-use minecraft_commands::{Clientbound, Text};
+use minecraft_commands::{Clientbound, Serverbound, Text};
 use minecraft_net::messages::GameMode;
 use minecraft_net::{Lane, StateFrame, ToClient, ToServer};
 use minecraft_survival::remote::{DecodeJob, RemoteWorld};
@@ -116,6 +116,7 @@ pub(crate) struct Friend {
     atlas_animation: AtlasAnimation,
     animation_clock: f64,
     spawn_gate: SpawnGate,
+    gui: Option<crate::minecraft_gui::GuiAssets>,
 }
 
 impl Friend {
@@ -138,6 +139,7 @@ fn stop(friend: &mut Friend, view: &mut MinecraftWorldView, ui: &mut frame::Mine
     }
     *friend = Friend::default();
     ui.loading_world = false;
+    ui.chat_only = false;
 }
 
 fn send(wire: &mut net::MinecraftWire, message: &ToServer) {
@@ -265,8 +267,12 @@ pub(crate) fn friend(
     mut ui: ResMut<frame::MinecraftUi>,
     mut view: ResMut<MinecraftWorldView>,
     mut friend: NonSendMut<Friend>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     if *role != frame::RuntimeRole::Client {
+        if ui.chat_only {
+            ui.chat_only = false;
+        }
         return;
     }
     let friend = &mut *friend;
@@ -304,6 +310,12 @@ pub(crate) fn friend(
                 friend.remote = Some(RemoteWorld::new(prepared.registries.clone()));
                 friend.worker = ReadWorker::start();
                 friend.ready_at = Some(now_ms);
+                friend.gui = crate::minecraft_gui::GuiAssets::load(
+                    &prepared.look.packs,
+                    &prepared.language,
+                    crate::minecraft_world::data_jar().as_deref(),
+                    &mut images,
+                );
                 friend.prepared = Some(prepared);
                 diag::info!(World, "Minecraft look loaded: waiting for the host's world");
             }
@@ -316,11 +328,32 @@ pub(crate) fn friend(
     }
     ui.active = false;
     ui.inventory_open = false;
+    let sent = std::mem::take(&mut ui.chat.sent);
     if let Some(mut wire) = wire.filter(|wire| wire.role() == Some(net::WireRole::Friend)) {
         let lines = exchange(friend, &mut wire, now, now_ms);
         if let Some(prepared) = friend.prepared.as_ref().filter(|_| !lines.is_empty()) {
             crate::minecraft_chat::show(&mut ui.chat, &lines, &prepared.language);
         }
+        if friend
+            .remote
+            .as_ref()
+            .is_some_and(|remote| remote.login.is_some())
+        {
+            for message in sent.iter().filter_map(|line| Serverbound::from_input(line)) {
+                send(&mut wire, &ToServer::Chat(message));
+            }
+        }
+    }
+    ui.chat_only = friend
+        .remote
+        .as_ref()
+        .is_some_and(|remote| remote.login.is_some() && remote.rejected.is_none());
+    ui.chat.command_level = friend
+        .remote
+        .as_ref()
+        .map_or(0, |remote| remote.command_level);
+    if let Some(gui) = friend.gui.as_ref().filter(|_| ui.gui.is_none()) {
+        ui.gui = Some(gui.gui.clone());
     }
     let aspect = windows
         .single()

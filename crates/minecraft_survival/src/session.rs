@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use minecraft_commands::text::YELLOW;
-use minecraft_commands::{Clientbound, PlayerId, Text};
+use minecraft_commands::{Clientbound, CommandServer, Outgoing, PlayerId, Text};
 use minecraft_net::codec::{BATCH_CUT, BULK_LIMIT};
 use minecraft_net::messages::{ChunkBlob, HelloRefusal, Login, Nbt, Rules, check_hello};
 use minecraft_net::{ChunkBatchBlob, Dimension, PROTOCOL, PlayerUuid, ToClient};
@@ -151,6 +151,7 @@ pub struct Session {
     pub outbox: Vec<ToClient>,
     alive: bool,
     lived: bool,
+    command_level: Option<u8>,
 }
 
 impl Session {
@@ -163,6 +164,7 @@ impl Session {
             outbox: Vec::new(),
             alive: false,
             lived: false,
+            command_level: None,
         }
     }
 
@@ -534,6 +536,31 @@ impl Sessions {
             session.outbox.push(ToClient::Chat(line.clone()));
         }
         self.host_lines.push(line);
+    }
+
+    pub fn deliver(&mut self, chat: &CommandServer, out: &[Outgoing], to_host: bool) {
+        if out.is_empty() {
+            return;
+        }
+        for session in self.sessions.values_mut() {
+            let lines = crate::commands::reaching(chat, out, PlayerId(session.client));
+            session.outbox.extend(lines.into_iter().map(ToClient::Chat));
+        }
+        if to_host {
+            let lines = crate::commands::reaching(chat, out, crate::commands::HOST);
+            self.host_lines.extend(lines);
+        }
+    }
+
+    pub fn send_levels(&mut self, chat: &CommandServer) {
+        for session in self.sessions.values_mut() {
+            let level = chat.level(PlayerId(session.client));
+            if session.command_level != Some(level) {
+                session.command_level = Some(level);
+                let commands = Clientbound::Commands { level };
+                session.outbox.push(ToClient::Chat(commands));
+            }
+        }
     }
 
     pub fn take_retiring(&mut self, now: Instant) -> Vec<(u32, String)> {
@@ -1044,6 +1071,218 @@ mod tests {
                 (2, ToClient::Chat(left_line("Alex"))),
             ]
         );
+        server.globals.writer.finish();
+    }
+
+    fn said(line: &Clientbound) -> String {
+        let lang = |key: &str| {
+            let text = match key {
+                "chat.type.text" => "<%s> %s",
+                "chat.type.admin" => "[%s: %s]",
+                "command.unknown.command" => "Unknown or incomplete command. See below for error",
+                "command.context.here" => "<--[HERE]",
+                "commands.message.display.incoming" => "%s whispers to you: %s",
+                "commands.message.display.outgoing" => "You whisper to %s: %s",
+                "commands.time.set.absolute" => "Set %s to %s tick(s)",
+                "commands.op.success" => "Made %s a server operator",
+                "argument.entity.notfound.player" => "No player was found",
+                "multiplayer.player.joined" => "%s joined the game",
+                "multiplayer.player.left" => "%s left the game",
+                _ => return None,
+            };
+            Some(text.to_owned())
+        };
+        line.chat_text()
+            .map_or_else(String::new, |text| text.resolve(&lang).text)
+    }
+
+    fn chat_of(out: &[(u32, ToClient)], client: u32) -> Vec<String> {
+        out.iter()
+            .filter(|(to, _)| *to == client)
+            .filter_map(|(_, message)| match message {
+                ToClient::Chat(line) => Some(said(line)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn say(
+        server: &mut Server,
+        sessions: &mut Sessions,
+        who: &PlayerUuid,
+        line: &str,
+    ) -> Vec<String> {
+        let lines = minecraft_commands::Serverbound::from_input(line)
+            .into_iter()
+            .collect();
+        let Server {
+            globals,
+            levels,
+            players,
+            ..
+        } = server;
+        let host = players.get(who).is_some_and(|player| player.id == HOST);
+        let handled = crate::commands::run(globals, levels, players, who, lines, Vec::new());
+        sessions.deliver(&globals.chat, &handled.delivered, !host);
+        let mut seen = std::mem::take(&mut sessions.host_lines);
+        if host {
+            seen = crate::commands::reaching(&globals.chat, &handled.delivered, HOST);
+        }
+        seen.iter().map(said).collect()
+    }
+
+    fn uuid_of(server: &Server, id: u32) -> PlayerUuid {
+        server
+            .players
+            .values()
+            .find(|player| player.id == PlayerId(id))
+            .map(|player| player.uuid.clone())
+            .unwrap()
+    }
+
+    #[test]
+    fn chat_reaches_everyone_and_tell_reaches_one() {
+        let Some((_dir, mut server)) = host_server("session-chat") else {
+            return;
+        };
+        let origins = [];
+        let mut sessions = Sessions::default();
+        let now = Instant::now();
+        sessions.hello(&mut server, 1, "Alex", HELLO, &context(&origins), now);
+        sessions.hello(&mut server, 2, "Bob", HELLO, &context(&origins), now);
+        sessions.take_outgoing();
+        sessions.host_lines.clear();
+        let (steve, alex) = (uuid_of(&server, 0), uuid_of(&server, 1));
+        let seen = say(&mut server, &mut sessions, &alex, "  hello   all ");
+        assert_eq!(seen, vec!["<Alex> hello all"]);
+        let out = sessions.take_outgoing();
+        assert_eq!(chat_of(&out, 1), vec!["<Alex> hello all"]);
+        assert_eq!(chat_of(&out, 2), vec!["<Alex> hello all"]);
+        let seen = say(&mut server, &mut sessions, &steve, "hi from the host");
+        assert_eq!(seen, vec!["<Steve> hi from the host"]);
+        let out = sessions.take_outgoing();
+        assert_eq!(chat_of(&out, 1), vec!["<Steve> hi from the host"]);
+        assert_eq!(chat_of(&out, 2), vec!["<Steve> hi from the host"]);
+        let seen = say(&mut server, &mut sessions, &steve, "/tell bob psst");
+        assert_eq!(seen, vec!["You whisper to Bob: psst"]);
+        let out = sessions.take_outgoing();
+        assert!(chat_of(&out, 1).is_empty());
+        assert_eq!(chat_of(&out, 2), vec!["Steve whispers to you: psst"]);
+        let seen = say(&mut server, &mut sessions, &alex, "/msg Steve back");
+        assert_eq!(seen, vec!["Alex whispers to you: back"]);
+        let out = sessions.take_outgoing();
+        assert_eq!(chat_of(&out, 1), vec!["You whisper to Steve: back"]);
+        assert!(chat_of(&out, 2).is_empty());
+        server.globals.writer.finish();
+    }
+
+    #[test]
+    fn an_op_only_command_is_refused_for_a_new_friend_and_allowed_for_the_host() {
+        let Some((_dir, mut server)) = host_server("session-op") else {
+            return;
+        };
+        let origins = [];
+        let mut sessions = Sessions::default();
+        sessions.hello(
+            &mut server,
+            1,
+            "Alex",
+            HELLO,
+            &context(&origins),
+            Instant::now(),
+        );
+        sessions.take_outgoing();
+        sessions.host_lines.clear();
+        let (steve, alex) = (uuid_of(&server, 0), uuid_of(&server, 1));
+        assert_eq!(server.globals.chat.level(PlayerId(1)), 0);
+        let level = |level| vec![(1, ToClient::Chat(Clientbound::Commands { level }))];
+        sessions.send_levels(&server.globals.chat);
+        assert_eq!(sessions.take_outgoing(), level(0));
+        sessions.send_levels(&server.globals.chat);
+        assert!(sessions.take_outgoing().is_empty());
+        let seen = say(&mut server, &mut sessions, &alex, "/time set 2000");
+        assert!(seen.is_empty());
+        let out = sessions.take_outgoing();
+        assert_eq!(
+            chat_of(&out, 1).first().map(String::as_str),
+            Some("Unknown or incomplete command. See below for error")
+        );
+        assert_ne!(server.globals.day.ticks, 2000.0);
+        let seen = say(&mut server, &mut sessions, &steve, "/time set 2000");
+        assert_eq!(seen, vec!["Set minecraft:overworld to 2000 tick(s)"]);
+        assert_eq!(server.globals.day.ticks, 2000.0);
+        assert!(chat_of(&sessions.take_outgoing(), 1).is_empty());
+        let seen = say(&mut server, &mut sessions, &steve, "/op alex");
+        assert_eq!(seen, vec!["Made Alex a server operator"]);
+        assert_eq!(
+            chat_of(&sessions.take_outgoing(), 1),
+            vec!["[Steve: Made Alex a server operator]"]
+        );
+        sessions.send_levels(&server.globals.chat);
+        assert_eq!(sessions.take_outgoing(), level(4));
+        let seen = say(&mut server, &mut sessions, &alex, "/time set 3000");
+        assert_eq!(
+            seen,
+            vec!["[Alex: Set minecraft:overworld to 3000 tick(s)]"]
+        );
+        assert_eq!(
+            chat_of(&sessions.take_outgoing(), 1),
+            vec!["Set minecraft:overworld to 3000 tick(s)"]
+        );
+        assert_eq!(server.globals.day.ticks, 3000.0);
+        server.globals.writer.finish();
+    }
+
+    #[test]
+    fn a_friend_is_named_in_chat_while_in_the_world_and_never_after() {
+        let Some((_dir, mut server)) = host_server("session-names") else {
+            return;
+        };
+        let origins = [];
+        let mut sessions = Sessions::default();
+        let now = Instant::now();
+        sessions.hello(&mut server, 1, "Alex", HELLO, &context(&origins), now);
+        sessions.hello(&mut server, 2, "Bob", HELLO, &context(&origins), now);
+        let out = sessions.take_outgoing();
+        assert_eq!(
+            chat_of(&out, 1),
+            vec!["Alex joined the game", "Bob joined the game"]
+        );
+        let joined: Vec<String> = sessions
+            .host_lines
+            .drain(..)
+            .map(|line| said(&line))
+            .collect();
+        assert_eq!(joined, vec!["Alex joined the game", "Bob joined the game"]);
+        let steve = uuid_of(&server, 0);
+        let seen = say(
+            &mut server,
+            &mut sessions,
+            &steve,
+            "/tell Alex still there?",
+        );
+        assert_eq!(seen, vec!["You whisper to Alex: still there?"]);
+        sessions.take_outgoing();
+        sessions.leave(&mut server, 1);
+        let left: Vec<String> = sessions
+            .host_lines
+            .drain(..)
+            .map(|line| said(&line))
+            .collect();
+        assert_eq!(left, vec!["Alex left the game"]);
+        assert_eq!(
+            chat_of(&sessions.take_outgoing(), 2),
+            vec!["Alex left the game"]
+        );
+        assert_eq!(server.globals.chat.name(PlayerId(1)), None);
+        let seen = say(
+            &mut server,
+            &mut sessions,
+            &steve,
+            "/tell Alex still there?",
+        );
+        assert_eq!(seen, vec!["No player was found"]);
+        assert!(sessions.take_outgoing().is_empty());
         server.globals.writer.finish();
     }
 

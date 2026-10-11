@@ -317,7 +317,7 @@ Commit: bd3fd000
 
 ### E7c. A friend's game shows the host's world
 
-Commit: see `git log` ("A friend's game shows the host's world")
+Commit: a2a714cb
 
 - **Changed:**
   - `crates/render_anim/src/minecraft_remote.rs` (new), the `friend` system, in the same set as `minecraft_world::update` and only in `RuntimeRole::Client`:
@@ -348,4 +348,72 @@ Commit: see `git log` ("A friend's game shows the host's world")
   6. Host window: `/time set night`. Within a second the friend's sky is night too. `/weather rain`: the friend's sky darkens and fogs over within a few seconds.
   7. Quit the friend window. Host chat: "Friend left the game". Start it again with `scripts\mp-local.ps1 -FriendOnly`: it loads into the same world again.
   8. Stay within about 8 chunks of the host (chunks only load around the host until M2).
+- **Kit:** none needed.
+
+### E8. Chat and commands work for every player
+
+Commit: see `git log` ("Chat and commands work for every player")
+
+- **Changed:**
+  - `crates/minecraft_commands`:
+    - New `/msg <targets> <message>`, with `/tell` and `/w` redirecting to it. It works like vanilla's `MsgCommand`: level 0, and for each target the sender gets "You whisper to %s: %s" and the target "%s whispers to you: %s", both gray and italic (`commands.message.display.outgoing` / `.incoming`).
+    - The help and suggestion tests list the three new commands.
+  - `crates/minecraft_survival/src/commands.rs`:
+    - `run` takes the lines as `Serverbound` and returns every `Outgoing`, not only what reaches the sender. The same goes for the answers to finished jobs (`job_answers`, used for `/fill`, `/setblock` and `/locate`) and for `summon_answers`, which now carries the source of each summon.
+    - New `take_lines` (the host's typed lines), `from_friend` (a friend's line, normalized and cut at 256 characters like the host's own), `reaching` (the lines one player sees) and `handle_all`.
+    - `pump` and `answer_jobs` keep their sender-only form for the existing tests.
+  - `entities.rs`: `Entities::summon` takes the source and keeps a queue of them, so each `/summon` answer from the level thread goes back to the player who ran it.
+  - `session.rs`:
+    - `Sessions::deliver(chat, out, to_host)` puts each line into the outbox of every session it reaches, and into `host_lines` when the host should see it.
+    - `Sessions::send_levels` sends each friend their command level (`Clientbound::Commands`) on joining and whenever it changes, as vanilla sends the permission level.
+  - `remote.rs`: `RemoteWorld.command_level` keeps that level, and it never shows as a chat line.
+  - `render_anim/src/minecraft_world.rs`:
+    - The host's command run lists every online player's position and life (`friends_presence`, `presence_of`), so `/tp Friend`, `/give Friend` and `@a` see the friend where their soldier stands.
+    - The host shows only the lines that reach it. Everything its commands and summons produced, and its teleports of other players, go into `Runtime.relayed` for the host system.
+  - `render_anim/src/minecraft_host.rs`:
+    - `ToServer::Chat` from a friend with a session is queued.
+    - Each frame, after the bodies are placed, every friend's lines run through `commands::run` as that player. Their output is routed to the host and to every friend it reaches. The host's own output goes to the friends.
+    - Teleports from any command move that player's MW2 body. Command levels are sent.
+  - `render_anim/src/minecraft_remote.rs`:
+    - The friend's game loads the Minecraft GUI atlas, which holds the chat font.
+    - It sets `MinecraftUi.chat_only` once logged in, sends each typed line to the host as `ToServer::Chat` and keeps the command level for its chat's suggestions.
+  - `frame`: `MinecraftUi.chat_only`, `chat_usable()` and `typing()`.
+  - `hud`: the chat opens and types while `chat_usable()`. The menus' Escape gate uses `typing()`.
+  - `console`: with `chat_only`, only the chat and command keys (T and /) are taken from MW2, and MW2 input stops while the chat is open. `skate.rs` uses `typing()` too.
+  - `docs/MULTIPLAYER.md` section 13.1 says what was built.
+- **Tests:**
+  - `minecraft_commands`:
+    - `tell_whispers_to_the_named_player_only` covers `/msg`, `/tell` and `/w`, an unknown name and `@a`.
+    - `a_level_zero_source_sees_help_and_seed_only`, `help_lists_smart_usages_of_visible_commands`, `root_literals_are_filtered_by_level` and `redirects_suggest_and_colour_the_target_command` now list the new commands.
+  - `minecraft_survival`, `session`. Each runs on a real `Server` with the game data and real `Hello` joins:
+    - `chat_reaches_everyone_and_tell_reaches_one`: `Recipient::All` from a friend and from the host reaches the host and both friends. `/tell` from the host reaches only that friend, and a friend's `/msg` to the host reaches only the host.
+    - `an_op_only_command_is_refused_for_a_new_friend_and_allowed_for_the_host`:
+      - a level-0 friend's `/time set` is refused and changes nothing;
+      - the host runs it without `ops.json`;
+      - after `/op alex` the friend runs it, and the host sees the `[Alex: ...]` admin line;
+      - the command level is sent once, then again after the change.
+    - `a_friend_is_named_in_chat_while_in_the_world_and_never_after`: the join and leave lines reach the host and the friends. A left player's name no longer resolves ("No player was found").
+  - `minecraft_survival`, `remote`: `chat_lines_show_and_the_command_level_is_kept`.
+  - `console`, `binds`: `only_the_chat_keys_work_while_only_the_chat_does`.
+  - `render_anim`, `minecraft_chat`: `summon_answers_follow_the_feedback_rule` gives a friend's summon answer to that friend.
+  - Results:
+    - `test -p minecraft_commands`: 117 passed.
+    - `test -p console`: 36 passed.
+    - `test -p frame`: 23 passed.
+    - `test -p hud --lib`: 138 passed.
+    - `test -p minecraft_survival --lib`: 369 passed.
+    - `test -p render_anim --lib`: 73 passed.
+    - `check -p launcher`: green.
+    - The session tests were checked to run on the real data: one was made to fail without it, it passed, then the skip was put back.
+- **Decisions:**
+  - **Friends' commands run in the host system, not in `minecraft_world::update`.** Their lines arrive there, and track A is reshaping the update loop. The host's own commands stay where they were. What they send to others is handed over in `Runtime.relayed` and routed in the same frame.
+  - **`/msg`, `/tell` and `/w` were added.** The plan's test needs `/tell`, and the command tree had no private message. `/me`, `/say` and `/teammsg` are not built.
+  - **The command level is sent like vanilla's permission-level entity event.** It goes on join and on every change, so a friend's chat suggests the commands they may run. Names, positions and other hints are still not sent (design 13.1).
+  - **A friend's lines are cut at 256 characters on the host,** as the host's own are, whatever the friend's game sent.
+  - **The friend's chat works while the rest of its Minecraft HUD is off.** It is drawn and typed into once `Login` has arrived. On the friend, T and / open it and are taken from MW2. The other Minecraft keys stay with MW2 until the friend has a hotbar (M2).
+  - **Summon answers find their source through a queue in `Entities`,** in the order the level thread answers. Nothing in the level thread changed.
+  - **Not covered yet:**
+    - `/kill`, `/gamemode`, `/effect` and `/give` on a friend change the friend's server-side player, but nothing shows on the friend until the per-player step and `PlayerView` (M2).
+    - Death lines are still host-only (13.2).
+- **Test steps:** the owner's M1 test is `docs/round8/e-m1-tests.md`.
 - **Kit:** none needed.

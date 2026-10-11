@@ -217,7 +217,8 @@ mod tests {
         let mut server = CommandServer::new(HOST);
         server.join(HOST, "Steve");
         let mut rules = GameRules::default();
-        let answers = summon_answers(&server, &rules, vec![Ok("minecraft:cow".into()), Err("You can not summon a monster in peaceful mode".into()), Err("Unable to summon minecraft:fox".into())]);
+        let answers = summon_answers(&server, &rules, vec![(HOST, Ok("minecraft:cow".into())), (HOST, Err("You can not summon a monster in peaceful mode".into())), (HOST, Err("Unable to summon minecraft:fox".into()))]);
+        let answers: Vec<_> = answers.into_iter().map(|out| out.message).collect();
         let language: HashMap<String, String> = [("commands.summon.success", "Summoned new %s"), ("entity.minecraft.cow", "Cow"), ("commands.summon.failed.peaceful", "Monsters cannot be summoned in Peaceful difficulty"), ("commands.summon.failed", "Unable to summon entity")]
             .into_iter()
             .map(|(k, v)| (k.to_owned(), v.to_owned()))
@@ -234,6 +235,8 @@ mod tests {
             ]
         );
         rules.set("send_command_feedback", "false").unwrap();
-        assert_eq!(summon_answers(&server, &rules, vec![Ok("minecraft:cow".into()), Err("x".into())]).len(), 1);
+        assert_eq!(summon_answers(&server, &rules, vec![(HOST, Ok("minecraft:cow".into())), (HOST, Err("x".into()))]).len(), 1);
+        let friend = summon_answers(&server, &rules, vec![(PlayerId(1), Err("x".into()))]);
+        assert_eq!(friend[0].to, minecraft_commands::Recipient::Player(PlayerId(1)));
     }
 }

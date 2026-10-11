@@ -726,6 +726,12 @@ This comes early (E8), because every later owner test uses `/op`, `/give`, `/tp`
 - **Routing.** `pump` (`commands.rs:891-911`) stops keeping only what reaches the sender. It returns every `Outgoing`. The host shows those that reach player 0 and sends the rest to the session whose `PlayerId` they reach (`Recipient::reaches`, `protocol.rs:62-77`). `chat.type.text` is broadcast.
 - **Permissions.** The host is the owner through `CommandServer.host` (section 6.5). Everyone else's level comes from `ops.json` by UUID, as today. A friend has level 0 until `/op <name>`.
 - **Suggestions.** `CommandHints` are not sent to friends in this round. A friend's chat has no tab suggestions (deferred).
+- **As built in E8:**
+  - Friends' commands run in the host system (`render_anim/src/minecraft_host.rs`), after the host's own in `minecraft_world::update`. The host's output and its teleports of other players reach the host system through `Runtime.relayed`. `Sessions::deliver` sends every line to each session it reaches.
+  - `/msg <targets> <message>`, with `/tell` and `/w` redirecting to it, works as vanilla's `MsgCommand` at level 0. The sender sees "You whisper to %s: %s" and each target "%s whispers to you: %s", both gray and italic.
+  - Each friend gets their command level (`Clientbound::Commands`) on joining and whenever it changes, as vanilla sends the permission level. Their chat's suggestions then offer the commands they may run, without names or positions.
+  - A command's teleport of any player moves that player's MW2 body. `/summon` answers go to the player who summoned.
+  - A friend's game draws and types the Minecraft chat while the rest of its Minecraft HUD is off (`MinecraftUi.chat_only`). Only the chat and command keys are taken from MW2 there.
 
 ### 13.2 Death messages and the kill card
 
