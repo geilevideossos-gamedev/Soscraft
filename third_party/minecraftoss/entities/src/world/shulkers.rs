@@ -19,6 +19,7 @@ pub struct ShulkerEntity {
     pub no_action_time: i32,
     pub random: LegacyRandom,
     pub previous_position: DVec3,
+    pub teleport_pending: bool,
     pub ai: Box<MonsterAi>,
 }
 
@@ -39,6 +40,7 @@ impl ShulkerEntity {
         if self.shulker.health > 0.0 && !self.shulker.damage.dead {
             self.no_action_time = 0;
         }
+        let closed = self.shulker.closed();
         let result =
             self.shulker
                 .damage
@@ -47,7 +49,38 @@ impl ShulkerEntity {
         self.shulker
             .damage
             .place_death(result, position, self.shulker.body.fire_ticks > 0);
+        if result.applied && result.full {
+            if !result.died {
+                self.ambient_sound_time = -shulker::AMBIENT_SOUND_INTERVAL;
+            }
+            let voice = match hurt_voice(&mut self.random, result.died, false) {
+                Voice::Hurt(pitch) if closed => {
+                    Voice::Event("entity.shulker.hurt_closed", 1.0, pitch)
+                }
+                voice => voice,
+            };
+            self.voices.push((voice, position));
+        }
+        if result.applied
+            && self.shulker.health < shulker::MAX_HEALTH * 0.5
+            && self.random.next_int(4) == 0
+        {
+            self.teleport_pending = true;
+        }
         result
+    }
+
+    pub fn hurt_armored(&mut self, amount: f32) -> DamageResult {
+        let armor = if self.shulker.covered {
+            shulker::COVERED_ARMOR
+        } else {
+            0.0
+        };
+        self.hurt(damage_after_armor(amount, armor, 0.0))
+    }
+
+    pub fn refuses_arrows(&self) -> bool {
+        self.shulker.closed()
     }
 
     fn set_raw_peek(&mut self, amount: i32) {
@@ -122,6 +155,7 @@ impl EntityWorld {
             effects: Default::default(),
             id,
             previous_position: shulker.body.position,
+            teleport_pending: false,
             shulker,
             no_ai,
             tick_count: 0,
@@ -212,9 +246,13 @@ impl EntityWorld {
             return;
         };
         entity.ai.state.mobs = mobs;
-        entity.previous_position = entity.shulker.body.position;
         entity.tick_count += 1;
         entity.shulker.tick_teleport_lerp();
+        let mut teleported = None;
+        if std::mem::take(&mut entity.teleport_pending) {
+            teleported = entity.teleport(world, &others);
+        }
+        entity.previous_position = entity.shulker.body.position;
         entity.shulker.body.velocity = DVec3::ZERO;
         base_tick_fluid(
             &mut entity.shulker.body,
@@ -255,7 +293,23 @@ impl EntityWorld {
                 _ => {}
             }
         }
+        if entity.shulker.health > 0.0 {
+            if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
+                entity.ambient_sound_time = -shulker::AMBIENT_SOUND_INTERVAL;
+                if !entity.shulker.closed() {
+                    let pitch = voice_pitch(&mut entity.random, false);
+                    let position = entity.position();
+                    entity.voices.push((Voice::Ambient(pitch), position));
+                }
+            } else {
+                entity.ambient_sound_time += 1;
+            }
+        }
         if removed {
+            if let Some(moved) = teleported {
+                self.shulker_teleports.push(moved);
+                self.file_in_section(EntityKey::Shulker(id));
+            }
             return;
         }
         let own = entity.shulker.block();
@@ -271,15 +325,13 @@ impl EntityWorld {
             return;
         };
         entity.shulker.body.velocity = DVec3::ZERO;
-        entity.shulker.body.position = old;
-        let mut teleported = None;
         if !can_stay {
             match shulker::find_attachable_surface(world, own, own, &others) {
                 Some(face) => {
                     entity.shulker.attach_face = face;
                     entity.shulker.refresh_dimensions();
                 }
-                None => teleported = entity.teleport(world, &others),
+                None => teleported = teleported.or_else(|| entity.teleport(world, &others)),
             }
         }
         let mut shove = None;
@@ -482,7 +534,12 @@ mod tests {
         );
         entity.shulker.raw_peek = 30;
         blocks.clear((0, 19, 0));
-        world.tick_with_players(&mut blocks, &[near]);
+        for _ in 0..40 {
+            world.tick_with_players(&mut blocks, &[near]);
+            if !world.take_shulker_teleports().is_empty() {
+                break;
+            }
+        }
         let entity = &world.shulkers()[0];
         assert_ne!(entity.shulker.block(), (0, 20, 0));
         assert_eq!(entity.shulker.raw_peek, 0);
@@ -563,6 +620,200 @@ mod tests {
         };
         assert!(rise(100) > 0.005, "{}", rise(100));
         assert_eq!(rise(0), 0.0);
+    }
+
+    fn attack(player_id: u64, damage: f64) -> crate::world::PlayerAttack {
+        crate::world::PlayerAttack {
+            player_id,
+            position: DVec3::new(0.5, 20.0, 3.5),
+            yaw: 180.0,
+            attack_damage: damage,
+            strength: 1.0,
+            sprinting: false,
+            can_critical: false,
+            can_sweep: false,
+        }
+    }
+
+    #[test]
+    fn the_shell_armour_comes_only_with_the_first_close() {
+        let (mut world, id) = shulker_world(DVec3::new(0.5, 20.0, 0.5), 1);
+        world.player_attack(&attack(7, 10.0), id);
+        assert_eq!(
+            world.shulkers()[0].shulker.health,
+            20.0,
+            "a fresh shulker has no shell armour"
+        );
+        let (mut world, id) = shulker_world(DVec3::new(0.5, 20.0, 0.5), 1);
+        let entity = world.shulker_mut(id).unwrap();
+        entity.set_raw_peek(30);
+        entity.set_raw_peek(0);
+        world.player_attack(&attack(7, 10.0), id);
+        assert!(
+            (world.shulkers()[0].shulker.health - 26.0).abs() < 1e-4,
+            "armour 20 takes 10 down to 4"
+        );
+        let (mut open, id) = shulker_world(DVec3::new(0.5, 20.0, 0.5), 1);
+        let entity = open.shulker_mut(id).unwrap();
+        entity.set_raw_peek(30);
+        entity.set_raw_peek(0);
+        entity.set_raw_peek(100);
+        open.player_attack(&attack(7, 10.0), id);
+        assert_eq!(
+            open.shulkers()[0].shulker.health,
+            20.0,
+            "open, it takes the full hit"
+        );
+    }
+
+    #[test]
+    fn a_closed_shulker_turns_arrows_away_and_an_open_one_takes_them() {
+        let (mut world, id) = shulker_world(DVec3::new(0.5, 20.0, 0.5), 1);
+        let arrow = crate::projectile::ArrowImpact {
+            target_id: id,
+            damage: 6.0,
+            velocity: DVec3::new(0.0, 0.0, -2.0),
+        };
+        let refused = world.apply_arrow_hit(arrow, 99).unwrap();
+        assert!(!refused.applied);
+        assert_eq!(world.shulkers()[0].shulker.health, shulker::MAX_HEALTH);
+        world.shulker_mut(id).unwrap().shulker.raw_peek = 30;
+        let taken = world.apply_arrow_hit(arrow, 99).unwrap();
+        assert!(taken.applied);
+        assert_eq!(world.shulkers()[0].shulker.health, 24.0);
+        assert_eq!(
+            world.shulkers()[0].shulker.body.velocity,
+            DVec3::ZERO,
+            "no knockback"
+        );
+    }
+
+    #[test]
+    fn below_half_health_one_hit_in_four_teleports_it() {
+        let mut blocks = Blocks::floor(19);
+        let (mut rolls, mut teleports) = (0, 0);
+        for seed in 0..80 {
+            let (mut world, id) = shulker_world(DVec3::new(0.5, 20.0, 0.5), seed);
+            world.shulker_mut(id).unwrap().shulker.health = 16.0;
+            world.player_attack(&attack(7, 2.0), id);
+            let pending = world.shulkers()[0].teleport_pending;
+            rolls += usize::from(pending);
+            world.tick_with_players(&mut blocks, &[]);
+            let moved = world.take_shulker_teleports();
+            assert!(
+                moved.len() <= usize::from(pending),
+                "only a rolled hit teleports it"
+            );
+            if let Some(&(from, to)) = moved.first() {
+                assert_eq!(
+                    (from, world.shulkers()[0].shulker.block()),
+                    ((0, 20, 0), to)
+                );
+                teleports += 1;
+            }
+        }
+        assert!((10..=32).contains(&rolls), "{rolls} of 80");
+        assert!(teleports > 0);
+        let (mut world, id) = shulker_world(DVec3::new(0.5, 20.0, 0.5), 3);
+        for _ in 0..10 {
+            world.player_attack(&attack(7, 1.0), id);
+            for _ in 0..11 {
+                world.tick_with_players(&mut blocks, &[]);
+            }
+        }
+        assert_eq!(
+            world.shulkers()[0].shulker.block(),
+            (0, 20, 0),
+            "above half health it stays"
+        );
+    }
+
+    #[test]
+    fn hits_and_blasts_never_move_it() {
+        let mut blocks = Blocks::floor(19);
+        let (mut world, id) = shulker_world(DVec3::new(0.5, 20.0, 0.5), 1);
+        world.player_attack(&attack(7, 2.0), id);
+        world.player_blast(Some(7), id, 2.0, DVec3::new(2.5, 20.0, 0.5), 1.0);
+        world.tick_with_players(&mut blocks, &[]);
+        let body = &world.shulkers()[0].shulker.body;
+        assert_eq!(
+            (body.position, body.velocity),
+            (DVec3::new(0.5, 20.0, 0.5), DVec3::ZERO)
+        );
+    }
+
+    #[test]
+    fn its_voices_follow_its_shell() {
+        let (mut world, id) = shulker_world(DVec3::new(0.5, 20.0, 0.5), 1);
+        world.player_attack(&attack(7, 2.0), id);
+        let events: Vec<String> = world.take_sounds().into_iter().map(|s| s.event).collect();
+        assert!(
+            events.contains(&"entity.shulker.hurt_closed".to_owned()),
+            "{events:?}"
+        );
+        let (mut world, id) = shulker_world(DVec3::new(0.5, 20.0, 0.5), 1);
+        world.shulker_mut(id).unwrap().shulker.raw_peek = 30;
+        world.player_attack(&attack(7, 2.0), id);
+        let events: Vec<String> = world.take_sounds().into_iter().map(|s| s.event).collect();
+        assert!(
+            events.contains(&"entity.shulker.hurt".to_owned()),
+            "{events:?}"
+        );
+        let mut blocks = Blocks::floor(19);
+        let (mut quiet, qid) = shulker_world(DVec3::new(0.5, 20.0, 0.5), 1);
+        quiet.shulker_mut(qid).unwrap().no_ai = true;
+        let mut ambient = 0;
+        for _ in 0..4000 {
+            quiet.tick_with_players(&mut blocks, &[]);
+            ambient += quiet
+                .take_sounds()
+                .iter()
+                .filter(|s| s.event == "entity.shulker.ambient")
+                .count();
+        }
+        assert_eq!(ambient, 0, "closed, it makes no ambient sound");
+        let (mut open, oid) = shulker_world(DVec3::new(0.5, 20.0, 0.5), 1);
+        open.shulker_mut(oid).unwrap().no_ai = true;
+        open.shulker_mut(oid).unwrap().shulker.raw_peek = 30;
+        for _ in 0..4000 {
+            open.tick_with_players(&mut blocks, &[]);
+            ambient += open
+                .take_sounds()
+                .iter()
+                .filter(|s| s.event == "entity.shulker.ambient")
+                .count();
+        }
+        assert!(ambient > 5, "{ambient}");
+    }
+
+    #[test]
+    fn a_dead_shulker_leaves_five_experience_and_its_shell_about_half_the_time() {
+        let (mut world, id) = shulker_world(DVec3::new(0.5, 20.0, 0.5), 1);
+        world.player_attack(&attack(7, 100.0), id);
+        let deaths = world.take_deaths();
+        assert_eq!(deaths.len(), 1);
+        assert_eq!(
+            (deaths[0].table, deaths[0].experience),
+            (Some("minecraft:shulker"), 5)
+        );
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        let Ok(mut book) = crate::loot::EntityLootBook::from_jar(&jar, 1234) else {
+            return;
+        };
+        let mut shells = 0;
+        for _ in 0..400 {
+            let drops = book.death_drops(vec![deaths[0].clone()]);
+            assert!(
+                drops
+                    .iter()
+                    .all(|(s, _)| s.id == "minecraft:shulker_shell" && s.count == 1)
+            );
+            shells += drops.len();
+        }
+        assert!((160..=240).contains(&shells), "{shells} of 400");
     }
 
     #[test]

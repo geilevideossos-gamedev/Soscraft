@@ -2690,7 +2690,7 @@ impl EntityWorld {
             EntityKey::Chicken(id) => self.chickens.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_with_source(damage, source), &mut e.chicken.body)),
             EntityKey::Ghast(id) => self.ghasts.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.ghast.body)),
             EntityKey::Blaze(id) => self.blazes.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.blaze.body)),
-            EntityKey::Shulker(id) => self.shulkers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.shulker.body)),
+            EntityKey::Shulker(id) => self.shulkers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_armored(damage), &mut e.shulker.body)),
             EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) => None,
         }?;
         if !matches!(key, EntityKey::Shulker(_)) {
@@ -3185,7 +3185,11 @@ impl EntityWorld {
                 projectile_knockback(&mut entity.blaze.body, &mut entity.random, hit.velocity);
             }
         } else if let Some(entity) = self.shulkers.iter_mut().find(|entity| entity.id == id) {
-            let result = entity.hurt(hit.damage);
+            let result = if entity.refuses_arrows() {
+                DamageResult { applied: false, dealt: 0.0, died: false, full: false }
+            } else {
+                entity.hurt_armored(hit.damage)
+            };
             outcome = Some(result);
             if result.applied {
                 entity.ai.state.hurt_by = Some((crate::monster_ai::Target::Mob(owner), entity.tick_count));
@@ -3641,7 +3645,7 @@ impl EntityWorld {
             }
             (hit, false)
         } else if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == victim) {
-            let hit = e.hurt(damage);
+            let hit = e.hurt_armored(damage);
             if hit.applied {
                 e.ai.state.hurt_by = Some((by, e.tick_count));
             }
@@ -3962,6 +3966,13 @@ impl EntityWorld {
             let Some((order, mut death)) = death_of(e.id, &mut e.blaze.damage, "minecraft:blaze", Some("minecraft:blaze"), plain) else { continue };
             if earns(&death, true) {
                 death.experience = crate::blaze::EXPERIENCE;
+            }
+            deaths.push((order, death));
+        }
+        for e in &mut self.shulkers {
+            let Some((order, mut death)) = death_of(e.id, &mut e.shulker.damage, "minecraft:shulker", Some("minecraft:shulker"), plain) else { continue };
+            if earns(&death, true) {
+                death.experience = crate::shulker::EXPERIENCE;
             }
             deaths.push((order, death));
         }

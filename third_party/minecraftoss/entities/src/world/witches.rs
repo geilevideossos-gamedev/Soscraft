@@ -593,6 +593,8 @@ impl EntityWorld {
             (&mut e.pig.health, 10.0)
         } else if let Some(e) = self.chickens.iter_mut().find(|e| e.id == id) {
             (&mut e.chicken.health, 4.0)
+        } else if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == id) {
+            (&mut e.shulker.health, crate::shulker::MAX_HEALTH)
         } else {
             return;
         };
@@ -639,6 +641,8 @@ impl EntityWorld {
             e.hurt(amount, source)
         } else if let Some(e) = self.chickens.iter_mut().find(|e| e.id == id) {
             e.hurt_with_source(amount, source)
+        } else if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == id) {
+            e.hurt(amount)
         } else {
             return None;
         };

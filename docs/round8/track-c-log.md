@@ -247,3 +247,29 @@ Previous commit: 39e15602
 ```
 IW4L_MINECRAFT_KIT=minecraft:shulker_spawn_egg*8,minecraft:end_stone*64,minecraft:diamond_pickaxe,minecraft:water_bucket
 ```
+
+### 9. Minecraft shulkers hide in their shell: armour, arrow bounces, hurt teleports, loot and sounds
+
+Previous commit: 116887f1
+
+- **Changed:**
+  - `world/shulkers.rs`: `hurt` plays `entity.shulker.hurt_closed` while closed, else `entity.shulker.hurt` (and `death` on the killing blow), resets the ambient clock to -120 (`AbstractGolem`), and when a hit lands below half health draws 1 in 4 to teleport. `hurt_armored` applies the `minecraft:covered` armour of 20 while covered. The ambient roll runs each tick as for every mob (interval 120); `entity.shulker.ambient` only plays while open.
+  - The armour applies to player hits and MW2 bullets (`hurt_by_player`), mob hits, blasts, arrows, tridents and the block hazards that do not bypass armour; drowning, suffocation, fire and magic bypass it.
+  - A closed shulker refuses arrows (the arrow's existing "not accepted" path turns it back at a tenth of its speed) and thrown tridents (`thrown::hurt_by`, an `AbstractArrow` in vanilla). Snowballs, eggs and tridents now find shulkers at their progress box (`thrown::targets`).
+  - Deaths: table `minecraft:shulker` (one `shulker_shell` at 0.5 unenchanted), 5 experience when a player killed it. Healing and harming potions reach shulkers.
+- **Tests:** `entities` `world::shulkers`: `the_shell_armour_comes_only_with_the_first_close` (a fresh one takes 10, a closed one after its first close 4, an open one 10), `a_closed_shulker_turns_arrows_away_and_an_open_one_takes_them`, `below_half_health_one_hit_in_four_teleports_it` (seeded rolls between 10 and 32 of 80; never above half health), `hits_and_blasts_never_move_it`, `its_voices_follow_its_shell`, `a_dead_shulker_leaves_five_experience_and_its_shell_about_half_the_time` (400 rolls of the real loot table from `MINECRAFTOSS_ROOT`'s `client.jar`, 160 to 240 shells). `minecraft_terrain` `thrown`: `a_closed_shulker_turns_tridents_away_and_is_struck_where_its_shell_is`.
+- **Decisions:**
+  - Vanilla teleports inside `hurtServer`; the entity world's hurt paths have no world to search, so the roll happens in the hurt and the teleport at the start of the shulker's next tick (at most one tick later). A failed search is not retried, as in vanilla.
+  - Looting isn't supported anywhere in the fork yet (the killer's weapon doesn't reach the loot context, and the evaluator refuses `random_chance_with_enchanted_bonus` with looting). Shulkers drop shells at the unenchanted 50 % for any weapon, so the brief's Looting III step is dropped.
+  - Players can't shoot bows in the fork, so only skeleton arrows and tridents meet the arrow rule in game.
+  - A teleport resets the peek without the close sound and without putting the armour back, as vanilla's teleport writes `DATA_PEEK` directly.
+- **Test steps:** (survival, `/difficulty normal`, the same end stone floor; shulkers are drawn from commit 10)
+  1. Use a shulker egg on the floor. Shoot it with the MW2 gun while it is closed, after it has opened and closed at least once: it takes little damage and you hear a hollow, closed hurt sound. Wait until it peeks and shoot again: full damage and the plain hurt sound (**1**).
+  2. Keep shooting it below half health: now and then it teleports away with portal particles and a sound (**2**).
+  3. Kill 8 shulkers with the iron sword: about half drop a shulker shell, and each leaves experience orbs (**3**).
+  4. Throw the trident at a closed shulker: it bounces off. Throw it at an open one: it hits.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:shulker_spawn_egg*16,minecraft:iron_sword,minecraft:trident,minecraft:end_stone*64
+```

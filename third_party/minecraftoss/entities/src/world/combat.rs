@@ -321,7 +321,7 @@ impl EntityWorld {
             }
             hit
         } else if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == id) {
-            let hit = e.hurt(amount);
+            let hit = e.hurt_armored(amount);
             if hit.applied {
                 e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
             }

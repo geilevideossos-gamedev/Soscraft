@@ -228,7 +228,15 @@ exposed!(super::golems::IronGolemEntity, golem, |e, h, a, w, t| e.hurt(a).applie
 exposed!(super::wolves::WolfEntity, wolf, |e, h, a, w, t| e.hurt_from(a, h.damage_type(), None, t).applied);
 exposed!(super::ghasts::GhastEntity, ghast, |e, h, a, w, t| e.hurt(a).applied, |_s| true);
 exposed!(super::blazes::BlazeEntity, blaze, |e, h, a, w, t| e.hurt(a).applied, |_s| true);
-exposed!(super::shulkers::ShulkerEntity, shulker, |e, h, a, w, t| e.hurt(a).applied, |_s| true);
+exposed!(
+    super::shulkers::ShulkerEntity,
+    shulker,
+    |e, h, a, w, t| {
+        let hit = if h.bypasses_armor() { e.hurt(a) } else { e.hurt_armored(a) };
+        hit.applied
+    },
+    |_s| true
+);
 
 impl Exposed for SheepEntity {
     fn body(&mut self) -> &mut Body {

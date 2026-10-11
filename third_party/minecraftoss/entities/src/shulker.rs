@@ -12,6 +12,7 @@ pub const COVERED_ARMOR: f32 = 20.0;
 pub const TELEPORT_STEPS: i32 = 6;
 pub const NO_COLOR: u8 = 16;
 pub const PEEK_PER_TICK: f32 = 0.05;
+pub const AMBIENT_SOUND_INTERVAL: i32 = 120;
 pub const DOES_NOT_TELEPORT_TO: &str = "minecraft:shulker_does_not_teleport_to";
 pub const FACES: [Face; 6] = [
     Face::Down,
