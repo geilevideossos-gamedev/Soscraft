@@ -1032,6 +1032,9 @@ fn anim_script_damagetype(
 }
 
 #[cfg(test)]
+mod height_bands;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

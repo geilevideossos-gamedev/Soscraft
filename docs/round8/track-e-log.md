@@ -48,7 +48,7 @@ Commit: 8fbff5af
 
 ### E3. The MW2 relay carries Minecraft messages between the host and friends
 
-Commit: see `git log` ("The MW2 relay carries Minecraft messages between the host and friends")
+Commit: e06114b0
 
 - **Changed:**
   - `net::PROTOCOL_VERSION` 94 to 95. New packets in `transport/protocol.rs`: `ClientPacket::Minecraft` (tag 4), `ClientPacket::MinecraftState` (5), `ServerPacket::Minecraft` (15) and `ServerPacket::MinecraftState` (16), each a length-prefixed opaque payload that `net` never decodes.
@@ -99,4 +99,29 @@ Commit: see `git log` ("The MW2 relay carries Minecraft messages between the hos
 - **Test steps:** nothing new shows in game until E6 sends chunks. With the M1 build:
   1. Rebuild the relay once, for the master patch: close any running relay, run `& scripts\cargo-slot.ps1 build --release --locked -p iw4l-master`, then copy `D:\iw4l-target\release\iw4l-master.exe` to `C:\Games\Mashup\2010-Rust-Rewrite-Mashup\`.
   2. Run `& scripts\mp-local.ps1 -Map iw4:mp_rust`. Both soldiers still see and shoot each other, as in E1, now on protocol 95.
+- **Kit:** none.
+
+### E4. MW2 works at the heights of the other dimensions
+
+Commit: see `git log` ("MW2 works at the heights of the other dimensions")
+
+- **Changed:** a test-only module, `crates/sim/src/damage/height_bands.rs` (declared in `damage.rs` under `#[cfg(test)]`, so it can reach the blast code's private `radius_player_attempts`). No game code changed. The result is written into `docs/MULTIPLAYER.md` sections 8.2 and 21.
+- **How the spike works:** each test builds a real `SimWorld` with a stand-in map (one dummy brush, so the block world is active only for this content, and a world model of a normal MW2 map's size, -3,000..3,000 by -500..1,500), activates the block world with its floor at map z 0 (the control), +45,000 and -45,000, and drives it through `sim::step`, `bullet_trace`, the blast code and the spawn and death natives.
+- **Result: nothing failed. The bands stay as designed.**
+  - Walking into a wall for 3 s, jumping and landing gives the same path in all three bands to within 0.05 units: the walk stops at the wall's face, the jump peaks between 35 and 40 units, the landing is on the floor with the world as ground.
+  - A bullet hits a player standing on the floor and a stone wall (the hit point is on the wall's face, normal -x), and a shot at the sky misses.
+  - A frag between a player in the open and a player behind a 3-block wall hurts only the one in the open, by the same amount in every band.
+  - A lethal hit kills, and the obituary event names the victim and the attacker.
+  - A player standing still for 2 minutes of sim time (2,400 steps) is never moved, hurt or killed; the snapshot carries its exact origin, the area-entity world stays valid, and a blast query at its feet finds it.
+- **Findings for later groups:**
+  - **The sim spawns every player at map origin.** `voxel::spawn_origin` and `spawn_clear_of` ignore the band, so a respawn lands at map z 0 (the overworld band) or on a free block near the overworld origin. The host already teleports after a spawn; with bands (E13a, E19) the teleport must use the origin of the player's own level. The test pins the current behaviour.
+  - **The stand-in map's bounds do not matter.** The area-entity world splits by x and y only, so players far above or below the map are linked and found as usual.
+  - A landing after a jump leaves the player 0.125 units above the floor (the trace's pull-back from surfaces), the same in every band; walking keeps the feet on the floor exactly.
+- **Tests (`sim`, `damage::height_bands`):** `mw2_walks_jumps_and_lands_at_the_height_of_every_band`, `a_bullet_hits_a_block_and_a_player_at_the_height_of_every_band`, `a_grenade_blast_hurts_a_player_and_a_wall_shields_one_at_the_height_of_every_band`, `a_killed_player_gets_an_obituary_and_respawns_into_its_band`, `a_player_stays_where_it_stands_for_two_minutes_at_the_height_of_every_band`. The whole `sim` suite passes (78 tests).
+- **Decisions:**
+  - **Steps run as `StepReason::PredictNew`.** An authority step refuses to run without a started GSC program, and the MW2 game scripts are not in the repo. Every system that moves players, traces, links areas and builds the snapshot runs the same for both reasons; only the script hooks differ. Deaths, obituaries and respawns go through the natives the scripts call (`finish_damage`, `kill`, `obituary`, `spawn`).
+  - **Snapshot publishing is suppressed during the steps**, and the snapshot is built by hand with `SimWorld::snapshot`. A publishing step drains the process-wide Minecraft damage queue, which another `sim` test fills and reads, and could make that test fail at random.
+  - **The tests share one lock and leave the block world active.** The block world is a process-wide static. Each test activates it with its own content's brushes, so `voxel::active_for` stays false for every other test's map; `voxel::deactivate` is not called because it empties queues other tests use.
+  - The bands are tested at ±45,000 as the plan says. Every map z between 32,768 and 65,536 has the same f32 step (1/256 unit), so the edges of the bands at ±60,000 behave the same.
+- **Test steps:** none in game; this group changes no game code.
 - **Kit:** none.
