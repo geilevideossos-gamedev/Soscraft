@@ -362,3 +362,32 @@ After 8f545881.
   - The brief's bastion test became its own test: the bastion nearest seed 77's origin (the one `nether_fortresses_bastions_and_every_nether_feature_generate` uses) has no stables, so the new test walks out to the first bastion that has.
   - The group baby roll is a small function (`hoglin_spawns_as_baby`) so it can be tested without a level.
 - **Test steps:** together with b2.3's (hoglins are drawn from b2.3 on).
+
+### b2.3. Minecraft hoglins and zoglins are drawn like vanilla
+
+After 61ad7269.
+
+- **Changed:**
+  - New `minecraft_terrain/src/hoglin_render.rs`: the adult model (`HoglinModel`, 128 x 64: body with its mane plane, head with two ears and two horns, two front and two hind legs; 11 cubes) and the baby model (`BabyHoglinModel`, 64 x 64: a three-cube head with its ears, a two-cube body, four legs; 11 cubes), cuboids, texture offsets and poses by javap on `createBodyLayer`. `hoglin_pose` is `setupAnim`: the ears hang at 40 degrees and flap with the walk, the head turns with the head yaw, the headbutt (`1 - |10 - 2 * attackTicks| / 10`) lifts the head from 50 degrees down to 20 degrees up and back over the 10 attack ticks (a piglet's head also drops 2.5 pixels at the peak), and the legs swing (`cos(walkPos) * 1.2 * walkSpeed`, the hind legs copying the opposite front legs). The four textures (`hoglin`, `hoglin_baby`, `zoglin`, `zoglin_baby`). A converting hoglin shakes (`HoglinRenderer.isShaking`: `cos(ageInTicks * 3.25) * pi * 0.4` degrees on the body yaw, driven by `Hoglin.converting`, which b2.7 sets); a zoglin never does. The dying tip-over is `LivingEntityRenderer`'s 90 degrees. Shadow 0.7, 0.35 for a baby.
+  - `mesh.rs` loads the four textures; `client_mobs.rs` tracks hoglins and zoglins (eye 1.19 or 0.625) and casts their shadows; `minecraft_survival/src/entities.rs` draws them and gives MW2 bullets their hit boxes (key 22, `HOGLIN_KEY`, from b2.1).
+- **Tests:** `hoglin_render`: `an_adult_and_a_baby_hoglin_have_eleven_cubes_each` (264 vertices each, feet 24 pixels down), `the_head_butts_up_and_back_over_ten_ticks`, `the_ears_hang_at_forty_degrees_and_flap_with_the_walk`, `a_converting_hoglin_shakes_and_a_zoglin_does_not`. `entities` (survival): `a_hoglin_hit_box_encodes_and_decodes`.
+- **Decisions:**
+  - The model's two cube deformations (0.001 pixel on the mane, 0.02 pixel on the piglet's body) are left out: they only grow the boxes by a fraction of a texel.
+  - Until the brain (b2.4 on), hoglins and zoglins stand where they are: they fall, swim, burn, take hits and knockback, but don't walk, look around or attack.
+- **Test steps (b2.1 to b2.3; start in the Nether, `IW4L_MINECRAFT_DIMENSION=the_nether`, survival, `/difficulty normal`, on a netherrack floor):**
+  1. Use a hoglin spawn egg: a big pink tusked boar with a mane and two horns stands there and grunts now and then (**1**). It doesn't move yet.
+  2. Use 10 more hoglin eggs: about two of them are piglets (small, with a round head and tiny tusks) (**2**).
+  3. Use a zoglin egg: a grey, rotting zoglin with the same shape (**3**).
+  4. Hit an adult hoglin with the sword: it is pushed back much less than a pig would be. Kill it: 2 to 4 raw porkchops, sometimes a leather, and experience orbs. Kill a piglet: only experience.
+  5. Set the netherrack under a hoglin alight with flint and steel and kill it while it burns: the porkchops come out cooked (**4**).
+  6. Kill a zoglin: 1 to 3 rotten flesh and experience. Pour lava under another zoglin: it stands in the lava without burning; a hoglin in lava burns.
+  7. Use an iron golem egg next to a hoglin: the golem walks over and hits it (**5**).
+  8. Shoot a hoglin with an MW2 gun: it takes damage and dies.
+  9. Save and exit, restart: the hoglins, piglets and zoglins are back where they were, piglets still small.
+  10. `/locate biome minecraft:crimson_forest` and go there: hoglins stand in groups of up to four on the red nylium (**6**). `/locate structure minecraft:bastion_remnant`: a hoglin stable has its hoglins (**7**). Hoglins already saved in the world wake up as these.
+  11. `/difficulty peaceful`: every hoglin and zoglin vanishes.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:hoglin_spawn_egg*16,minecraft:zoglin_spawn_egg*4,minecraft:iron_golem_spawn_egg,minecraft:diamond_sword,minecraft:flint_and_steel,minecraft:lava_bucket,minecraft:netherrack*64
+```

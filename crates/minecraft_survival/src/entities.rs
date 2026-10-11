@@ -1276,6 +1276,9 @@ impl Entities {
         for e in w.striders().iter().filter(|e| e.strider.health > 0.0) {
             add(MobHit::Strider(e.id), &e.strider.body);
         }
+        for e in w.hoglins().iter().filter(|e| e.hoglin.health > 0.0) {
+            add(MobHit::Hoglin(e.id), &e.hoglin.body);
+        }
         for crystal in &self.crystals {
             let (low, high) = minecraft_terrain::end_crystal::pick_box(crystal.position);
             out.push((CRYSTAL_KEY | (crystal.id & ((1 << 56) - 1)), [low.x, low.y, low.z, high.x, high.y, high.z]));
@@ -1368,6 +1371,7 @@ impl Entities {
         dragon_render::append_rays(&mut out.translucent, &self.dragons, atlas, partial);
         blaze_render::append_blazes(&mut out.models, w.blazes().iter(), poses, atlas, light, partial);
         strider_render::append_striders(&mut out.models, w.striders().iter(), poses, atlas, light, partial);
+        hoglin_render::append_hoglins(&mut out.models, w.hoglins().iter(), poses, atlas, light, partial);
         let poppies = golem_render::append_iron_golems(&mut out.models, w.iron_golems().iter(), poses, atlas, light, partial);
         wolf_render::append_wolves(&mut out.models, w.wolves().iter(), poses, atlas, light, partial, w.game_time());
         flame_render::append_flames(
@@ -1732,6 +1736,16 @@ mod tests {
         }
         assert_eq!(end_target_of(CRYSTAL_KEY | 9), Some(EndTarget::Crystal(9)));
         assert_eq!(end_target_of(encode(MobHit::Zombie(9))), None);
+    }
+
+    #[test]
+    fn a_hoglin_hit_box_encodes_and_decodes() {
+        let key = encode(MobHit::Hoglin(77));
+        assert_eq!(key >> 56, 22);
+        assert_eq!(decode(key), Some(MobHit::Hoglin(77)));
+        assert_eq!(fireball_of(key), None);
+        assert_eq!(crystal_of(key), None);
+        assert_eq!(end_target_of(key), None);
     }
 
     #[test]
