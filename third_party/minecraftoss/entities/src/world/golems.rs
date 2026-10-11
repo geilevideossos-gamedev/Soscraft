@@ -328,6 +328,7 @@ impl EntityWorld {
                 _ => {}
             }
         }
+        entity.golem.body.float_from(&entity.effects);
         if entity.golem.health > 0.0 {
             // `AbstractGolem.getAmbientSound` is none: the roll only resets.
             if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {

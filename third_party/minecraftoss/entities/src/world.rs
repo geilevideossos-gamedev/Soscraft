@@ -4840,6 +4840,7 @@ impl EntityWorld {
                             _ => {}
                         }
                     }
+                    entity.bat.body.float_from(&entity.effects);
                     if entity.bat.health > 0.0 {
                         if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
                             entity.ambient_sound_time = -80;
@@ -4917,6 +4918,7 @@ impl EntityWorld {
                                 _ => {}
                             }
                         }
+                        entity.zombie.body.float_from(&entity.effects);
                         if entity.zombie.health > 0.0 {
                             if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
                                 entity.ambient_sound_time = -80;
@@ -5126,6 +5128,7 @@ impl EntityWorld {
                                 _ => {}
                             }
                         }
+                        entity.skeleton.body.float_from(&entity.effects);
                         if entity.skeleton.health > 0.0 {
                             if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
                                 entity.ambient_sound_time = -80;
@@ -5242,6 +5245,7 @@ impl EntityWorld {
                                     _ => {}
                                 }
                             }
+                            entity.creeper.body.float_from(&entity.effects);
                             if entity.creeper.health > 0.0 {
                                 // `Creeper` has no ambient sound, so `makeSound`
                                 // draws no pitch.
@@ -5310,6 +5314,7 @@ impl EntityWorld {
                                 _ => {}
                             }
                         }
+                        entity.spider.body.float_from(&entity.effects);
                         if entity.spider.health > 0.0 {
                             if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
                                 entity.ambient_sound_time = -80;
@@ -5484,6 +5489,7 @@ impl EntityWorld {
                             _ => {}
                         }
                     }
+                    entity.chicken.body.float_from(&entity.effects);
                     if entity.chicken.health > 0.0 {
                         if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
                             entity.ambient_sound_time = -120;
@@ -5760,6 +5766,7 @@ impl EntityWorld {
                             _ => {}
                         }
                     }
+                    entity.pig.body.float_from(&entity.effects);
                     if entity.pig.health > 0.0 {
                         if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
                             entity.ambient_sound_time = -120;
@@ -6027,6 +6034,7 @@ impl EntityWorld {
                             _ => {}
                         }
                     }
+                    entity.body.float_from(&entity.effects);
                     if entity.health > 0.0 {
                         if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
                             entity.ambient_sound_time = -120;
@@ -6368,6 +6376,7 @@ impl EntityWorld {
                     _ => {}
                 }
             }
+            entity.cow.body.float_from(&entity.effects);
             // Mob.baseTick consumes its ambient-sound trial while alive.
             if entity.cow.health > 0.0 {
                 if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
@@ -7539,5 +7548,36 @@ mod tests {
         assert!(!deaths[0].context.killed_by_player);
         assert_eq!(deaths[0].experience, 0);
         assert!(world.player_blast(Some(7), 999, 40.0, DVec3::ZERO, 1.0).is_none());
+    }
+
+    #[test]
+    fn levitation_lifts_a_zombie_and_slow_falling_lets_it_down_unhurt() {
+        let mut world = EntityWorld::default();
+        let floater = world.spawn_zombie_active(Zombie::new(DVec3::new(0.5, 1.0, 0.5)), 0.0);
+        assert!(world.add_mob_effect(floater, crate::effects::EffectInstance::new(MobEffect::Levitation, 300, 0)));
+        let sinker = world.spawn_zombie_active(Zombie::new(DVec3::new(20.5, 300.0, 0.5)), 0.0);
+        assert!(world.add_mob_effect(sinker, crate::effects::EffectInstance::new(MobEffect::SlowFalling, 9000, 0)));
+        let faller = world.spawn_zombie_active(Zombie::new(DVec3::new(40.5, 30.0, 0.5)), 0.0);
+        let zombie = |world: &EntityWorld, id: u64| world.zombies().iter().find(|e| e.id == id).map(|e| (e.zombie.body.position.y, e.zombie.body.velocity.y, e.zombie.health));
+        for _ in 0..200 {
+            world.tick(&mut Floor);
+        }
+        let risen = zombie(&world, floater).unwrap().0 - 1.0;
+        assert!((risen - 8.864).abs() < 0.01, "{risen}");
+        for _ in 0..400 {
+            world.tick(&mut Floor);
+            let (_, velocity, _) = zombie(&world, sinker).unwrap();
+            assert!(velocity >= -0.4901, "{velocity}");
+        }
+        let (y, _, health) = zombie(&world, sinker).unwrap();
+        assert!(y < 300.0 - 150.0, "{y}");
+        assert_eq!(health, 20.0);
+        for _ in 0..400 {
+            world.tick(&mut Floor);
+        }
+        let (y, _, health) = zombie(&world, sinker).unwrap();
+        assert!((y - 1.0).abs() < 1e-6, "{y}");
+        assert_eq!(health, 20.0);
+        assert!(zombie(&world, faller).is_none_or(|(_, _, health)| health < 20.0), "a plain fall from 29 blocks hurts");
     }
 }

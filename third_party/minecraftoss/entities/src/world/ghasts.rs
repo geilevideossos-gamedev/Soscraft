@@ -219,6 +219,7 @@ impl EntityWorld {
                 _ => {}
             }
         }
+        entity.ghast.body.float_from(&entity.effects);
         if entity.ghast.health > 0.0 {
             if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
                 entity.ambient_sound_time = -80;

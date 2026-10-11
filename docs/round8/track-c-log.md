@@ -71,3 +71,29 @@ Previous commit: 53ecf14a
 ```
 IW4L_MINECRAFT_KIT=minecraft:milk_bucket,minecraft:milk_bucket,minecraft:potion@slow_falling,minecraft:potion@long_slow_falling,minecraft:elytra,minecraft:firework_rocket*16,minecraft:purpur_block*64,minecraft:ladder*16,minecraft:water_bucket,minecraft:water_bucket,minecraft:cooked_beef*16
 ```
+
+### 3. Minecraft mobs float with levitation and fall slowly with slow falling
+
+Previous commit: 1aeb79a9
+
+- **Changed:**
+  - `minecraftoss-entities` `movement.rs`: `Body.levitation` (the amplifier) and `Body.slow_falling`, set by `Body::float_from(&MobEffects)`. `travel_air_jumping` (which `travel_air` also runs) resets the fall distance while either is set (`LivingEntity.aiStep` resets it just before `travel`, checked with javap), and its vertical step is vanilla's `travelInAir`: with levitation `vy += (0.05 (a + 1) - vy) * 0.2`, else with slow falling and `vy <= 0` the gravity is at most 0.01, then `vy *= 0.98F`.
+  - `world.rs` and `world/*.rs`: every mob kind with effects (bats, zombies, skeletons, creepers, spiders, chickens, pigs, sheep, cows and their kin, blazes, endermen, ghasts, iron golems, slimes, villagers, witches, wolves) calls `float_from` right after its effects tick, so the flags follow the effects each tick.
+- **Tests:** `world`: `levitation_lifts_a_zombie_and_slow_falling_lets_it_down_unhurt` (8.864 blocks in 200 ticks, slow fall never faster than 0.49 a tick, lands from 300 blocks with full health, while a plain fall from 29 blocks hurts).
+- **Decisions:**
+  - Mobs that move with `travel_flying` keep that travel, which ignores both effects, as vanilla's `FlyingMob.travel` does; every mob that moves with `travel_air` or `travel_air_jumping` floats.
+  - Nothing gives mobs levitation in survival yet except `/effect` (not wired to mobs) and shulker bullets (group 6 of c1); splash and lingering slow falling potions do reach mobs now.
+- **Test steps:**
+  1. Stand on a 6-block tower edge with zombies below and around it. Throw the splash slow falling potion at zombies on the tower, then push or lure one off: it sinks gently and lands unhurt (**6**).
+  2. Spawn a zombie at the top of the tower and let it walk off without the potion: it lands hurt (red flash).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:splash_potion@slow_falling,minecraft:splash_potion@slow_falling,minecraft:zombie_spawn_egg*4,minecraft:cobblestone*64,minecraft:diamond_sword
+```
+
+### Group c1-levitation, combined kit
+
+```
+IW4L_MINECRAFT_KIT=minecraft:milk_bucket,minecraft:milk_bucket,minecraft:potion@slow_falling,minecraft:potion@long_slow_falling,minecraft:splash_potion@slow_falling,minecraft:splash_potion@slow_falling,minecraft:elytra,minecraft:firework_rocket*16,minecraft:purpur_block*64,minecraft:ladder*16,minecraft:water_bucket,minecraft:water_bucket,minecraft:cooked_beef*16,minecraft:zombie_spawn_egg*4,minecraft:cobblestone*64,minecraft:diamond_sword
+```

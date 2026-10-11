@@ -495,6 +495,7 @@ impl EntityWorld {
                 _ => {}
             }
         }
+        entity.wolf.body.float_from(&entity.effects);
         if entity.wolf.health > 0.0 {
             entity.ambient(game_time);
         }
