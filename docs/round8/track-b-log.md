@@ -313,3 +313,11 @@ After d0871eb2.
 ```
 IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*2,minecraft:saddle,minecraft:warped_fungus_on_a_stick,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:netherrack*64
 ```
+
+### 10. Docs: Minecraft striders and riding
+
+After 2f83e57d.
+
+- **Changed:** `docs/MINECRAFT-SURVIVAL.md`: right-click on mobs in the item list; a "Striders and riding" part under the Nether (spawning, lava, warmth, jockeys, a player's ride, steering, the boost, getting off, saving); `RootVehicle` in the player file; `riding.rs` and `minecraft_riding.rs` in the crate layout; striders leave N6 and the dormant list; the riding limitations from the brief's section 6 (only striders carry passengers, pigs can't be ridden, the standing MW2 body, the one-tick-behind server seat, non-steering riders, no portal travel for mounts, no saddle shearing, tempting only for striders). `docs/NETHER-END.md`: the strider row is present.
+- **Decision:** the vendored MinecraftOSS count (CLAUDE.md, "patched 53 of its files and added 14 (as of round 7)") is not edited in this track, because tracks A, C and E change it too and would conflict at the merges. As of this commit track B alone makes it 57 patched and 19 added (`git diff --name-status 114c18e1 HEAD -- third_party/minecraftoss`); the round's hand-over recounts it after the last merge.
+- **Test steps:** none (docs only).
