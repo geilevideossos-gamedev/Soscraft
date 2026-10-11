@@ -16,6 +16,7 @@ pub mod player;
 pub mod player_nbt;
 pub mod portal;
 pub mod portal_forcer;
+pub mod remote;
 pub mod respawn;
 pub mod respawn_block;
 pub mod save;

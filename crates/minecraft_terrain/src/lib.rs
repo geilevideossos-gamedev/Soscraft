@@ -5,6 +5,7 @@ pub use minecraftoss_core::fast_hash;
 pub use minecraftoss_world::game_rules;
 pub use minecraftoss_world::level_storage;
 pub use minecraftoss_world::view;
+pub use minecraftoss_world::ChunkEvent;
 pub mod ambient_particles;
 pub mod level_events;
 pub mod rain;

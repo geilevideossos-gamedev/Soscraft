@@ -254,7 +254,7 @@ IW4L_MINECRAFT_KIT=obsidian*10,flint_and_steel,chest,cobblestone*32
 
 ### E7a. The world's presentation is built by functions both games can call (pure move)
 
-Commit: see `git log` ("The world's presentation is built by functions both games can call")
+Commit: 0eb26b35
 
 - **Changed:** `crates/render_anim/src/minecraft_world.rs` only. No behaviour changes; the host calls the same code through these functions:
   - `load_look(packs)`: the atlas, sun and moons, clouds, crack strip, glints and End look, taken out of `load()`. `Loaded` and its `packs` and `atlas` fields are `pub(crate)`.
@@ -279,3 +279,38 @@ Commit: see `git log` ("The world's presentation is built by functions both game
 ```
 IW4L_MINECRAFT_KIT=obsidian*10,flint_and_steel,lava_bucket,torch*16
 ```
+
+### E7b. RemoteWorld applies what the host sends
+
+Commit: see `git log` ("RemoteWorld applies what the host sends")
+
+- **Changed:**
+  - `crates/minecraft_survival/src/remote.rs` (new), with no Bevy:
+    - `RemoteLevel { dimension, epoch, origin, feet, terrain, block_entities, mobs }`. `terrain` is a `level::Terrain` with a remote `TerrainStream` (E5), its scene, the dimension's environment and rules, so the friend's game presents it with the host's own functions (E7a).
+    - `RemoteWorld` holds the login, the level, the player list, chat, the player view, rules, the clocks (`Clocks`: Overworld and End, advanced locally between `Time` messages), weather, the last `StateFrame`, a `rejected` reason and a `failed` reason. `apply(ToClient)` and `apply_state(StateFrame)` update it.
+    - **Ordering (design 11.2):** reliable messages apply strictly in arrival order. At a `ChunkBatch { seq }` marker whose batch is not decoded yet, the stream stops and what follows is held, so block updates, forgets, mob adds and a `Dimension` never pass a missing batch. Nothing but `Login` (or `Rejected`) applies before `Login`.
+    - **Batches:** `receive_batch(blob)` keeps the raw blob by its `seq` (`ChunkBatchBlob::peek_seq`). `take_decode_jobs()` hands out the blobs to read once a level exists, tagged with the level's epoch and its `BlockStates`. `decoded(seq, epoch, chunks)` stores the result, and a batch read for another epoch is read again for the current level. `decode_now()` reads inline (tests, and the fallback when no worker runs). A batch is applied to the stream (`TerrainStream::apply` with `ChunkEvent::Load`) and acknowledged (`take_acks`) when its marker is reached. A blob whose `seq` was already applied (the host's resend) is not read again, only acknowledged again.
+    - Block updates set the scene only in loaded chunks, check the state id against the registry, and remesh through `mark_edited`. `ChunkForget` removes the chunk and its block entities.
+    - `take_shown()` reports what the game must apply to the MW2 collision: a new level, chunks loaded and forgotten, and changed blocks with their state.
+    - Messages the friend does not use yet (sounds, level events, menus, boss bars, credits and the rest) go to `effects` for the presenter.
+    - The held blobs and messages are counted; past 64 MiB the stream fails with "Lost the world stream".
+  - `crates/minecraft_survival/src/level.rs`: `Terrain::remote(registries, seed, view_distance, dimension)`.
+  - `crates/minecraft_terrain/src/lib.rs`: re-exports `ChunkEvent`.
+- **Tests (`minecraft_survival`, `remote`):**
+  - `a_block_update_behind_a_missing_batch_waits_and_applies_after_it` (a chat line behind it waits too; the batch is acknowledged when applied)
+  - `a_dimension_behind_a_missing_batch_keeps_later_mob_adds_from_the_old_level`
+  - `a_batch_decoded_for_the_old_level_is_read_again_for_the_new_one`
+  - `a_batch_before_login_waits`
+  - `a_resent_batch_is_ignored`
+  - `a_state_frame_older_than_the_last_or_of_another_epoch_is_ignored`
+  - `time_weather_players_and_rejections_reach_the_friend`
+  - `a_stream_held_past_its_limit_is_lost`
+  - **Loopback:** `a_friend_sees_the_hosts_blocks_in_order_and_their_leave_is_saved`. A real `Server` on a temp world with an End level, a `Sessions` with a friend joined by `Hello`, the host's batches encoded with `encode_batch`, every message encoded and decoded with `minecraft_net`, feeding a `RemoteWorld`, and acknowledgements fed back. Every block of the 3x3 chunks around the platform equals the host's; a placed and then broken block, and a second broken block, reach the friend in the host's order; leaving saves the player file.
+- **Decisions:**
+  - **A batch is acknowledged when it is applied**, as vanilla's client sends `ServerboundChunkBatchReceivedPacket` after the batch is handled. The host's pacing then follows what the friend has really shown.
+  - **A blob is decoded against the level it was read for.** Decoding ahead keeps the stream moving, and the epoch check makes a batch that crossed a dimension change be read again with the new dimension's heights, instead of going into the wrong level.
+  - **A batch that cannot be read is applied as empty with a warning**, so the stream does not stop for good; the friend sees a hole until the chunk is sent again.
+  - **Mobs are kept as their `MobAdd` tag only** until the mob mirror lands (E16, M2); that is enough to keep the order rule tested.
+  - `ToServerFrame` / `ToClientFrame` stay unused (E3's decision); the wire frames the messages.
+- **Test steps:** none in game yet; E7c uses `RemoteWorld`.
+- **Kit:** none.

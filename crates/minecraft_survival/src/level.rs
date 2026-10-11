@@ -80,6 +80,26 @@ impl Terrain {
             friend_changes: None,
         })
     }
+
+    pub fn remote(
+        registries: Arc<Registries>,
+        seed: i64,
+        view_distance: i32,
+        dimension: Dimension,
+    ) -> Result<Self, String> {
+        let stream = TerrainStream::remote(registries.clone(), seed, dimension, view_distance)
+            .map_err(|error| error.to_string())?;
+        let scene = HandcraftedScene::streamed(stream.states.clone());
+        let environment = DimensionEnvironment::load(&registries, dimension.dimension_type())?;
+        let rules = DimensionRules::load(&registries, dimension)?;
+        Ok(Self {
+            stream,
+            scene,
+            environment,
+            rules,
+            friend_changes: None,
+        })
+    }
 }
 
 pub fn open_for_respawn(
