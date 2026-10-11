@@ -273,3 +273,26 @@ Previous commit: 116887f1
 ```
 IW4L_MINECRAFT_KIT=minecraft:shulker_spawn_egg*16,minecraft:iron_sword,minecraft:trident,minecraft:end_stone*64
 ```
+
+### 10. Minecraft shulkers are drawn with their shell, lid and head
+
+Previous commit: 17e4a5d3
+
+- **Changed:**
+  - `minecraft_terrain` `shulker_render.rs` (new): `ShulkerModel` (64 × 64: the lid 16 × 12 × 16 at UV 0,0 and the base 16 × 8 × 16 at 0,28, both at 24; the head 6 × 6 × 6 at 0,52 at 12) with `setupAnim`: the lid at `16 + sin((0.5 + peek) π) × 8` plus the open wobble `sin(age × 0.1) × 0.7` past half open, turned by `h⁴ π / 8` above a peek of 0.3, the head turned by `yHeadRot - 180`. `ShulkerRenderer`'s pose: no body turn (its body yaw stays 0), the death tip, then the opening side's `Direction.getRotation` about (0, 0.5, 0); the peek interpolated with the partial tick; the 6-tick teleport offset from the old block; the sheet per `Color` (`shulker_<dye>`, else the plain `shulker`). No shadow (`MobRenderer` radius 0). The red hurt overlay as for every mob.
+  - `special_models.rs`: the dye list is shared with the renderer.
+  - `minecraft_survival` `entities.rs`: `meshes()` draws the shulkers.
+- **Tests:** `minecraft_terrain` `shulker_render`: `a_shulker_is_a_lid_a_base_and_a_head` (3 cuboids, the base on the block's lower half, a closed lid topping the block), `the_lid_rises_and_turns_as_it_peeks` (24, 20.70 and 8 at 0, 0.3 and 1; no turn at 0.3, `h⁴π/8` above; the wobble only past half open), `the_head_follows_the_head_yaw`, `a_ceiling_shulker_is_the_floor_one_turned_over_about_the_block_centre` (and a wall one lies on its side), `its_colour_picks_its_sheet` (14 red, 0 white, none, 16 and 200 the plain sheet). The 6-tick teleport offset is tested in commit 8.
+- **Decisions:** the shulker is drawn at its own block position (vanilla gives it no position interpolation) with the client mob only lending the eased head yaw and the hurt and death state.
+- **Test steps:** (survival, `/difficulty normal`, daytime, an end stone floor about 15 × 15)
+  1. Use a shulker egg on the floor 10 blocks away and walk 20 blocks off: a purple shulker sits closed on the block. Every few seconds it lifts its lid a little and closes it again, with the open and close sounds (**1**).
+  2. `/summon minecraft:shulker ~3 ~ ~ {Color:14b}` and `/summon minecraft:shulker ~5 ~ ~ {Color:0b}`: a red and a white shulker (**2**).
+  3. Build a wall and a ceiling of purpur and use eggs on the wall face and on the ceiling's underside: they cling to the wall and hang from the ceiling, lid away from the block (**3**).
+  4. Stand 6 blocks from a floor shulker in its sight: its head turns toward you (inside the shell, under the lid).
+  5. Shoot one below half health until it teleports: it slides from its old block to the new one in a quarter of a second, with portal particles (**4**).
+  6. Quit with shulkers of three colours on a floor, a wall and a ceiling. Restart: all three keep their colour and face (**5**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:shulker_spawn_egg*16,minecraft:end_stone*64,minecraft:purpur_block*64,minecraft:diamond_pickaxe
+```
