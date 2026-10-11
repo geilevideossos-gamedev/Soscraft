@@ -804,6 +804,10 @@ impl ServerSim {
         self.mobs.push_fireball(id, glam::DVec3::from_array(push))
     }
 
+    pub fn hurt_shulker_bullet(&mut self, id: u64) -> bool {
+        self.mobs.hurt_shulker_bullet(id)
+    }
+
     fn explode_blasts(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
         use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
         for (blast, source) in std::mem::take(&mut self.blasts) {
@@ -2219,6 +2223,7 @@ pub enum Command {
     RespawnPointBlast { blast: Blast, shield: Option<BlockPos> },
     DeflectFireball { id: u64, look: [f64; 3], player: u64, by_attack: bool },
     PushFireball { id: u64, push: [f64; 3] },
+    HurtShulkerBullet { id: u64 },
     /// An operation on the player's trading screen.
     Merchant { op: MerchantOp, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, feet: [f64; 3] },
     /// One server tick, with the player's state for it.
@@ -2605,6 +2610,10 @@ impl ServerHandle {
         self.send(Command::PushFireball { id, push });
     }
 
+    pub fn hurt_shulker_bullet(&mut self, id: u64) {
+        self.send(Command::HurtShulkerBullet { id });
+    }
+
     pub fn throw(&mut self, thrown: crate::thrown::Thrown) {
         self.send(Command::Throw(Box::new(thrown)));
     }
@@ -2726,6 +2735,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::PushFireball { id, push } => {
                     sim.push_fireball(id, push);
+                }
+                Command::HurtShulkerBullet { id } => {
+                    sim.hurt_shulker_bullet(id);
                 }
                 Command::Merchant { op, inventory, selected, feet } => {
                     out.merchant.push(sim.merchant(op, *inventory, selected, feet));
@@ -6741,6 +6753,32 @@ mod tests {
         assert_eq!(armor.get("modifiers"), None, "an open shell saves no covered modifier");
         let back = crate::server_mobs::spawn_saved(&mut loaded, saved).unwrap();
         assert_eq!(fields(&loaded, back).3, false);
+    }
+
+    #[test]
+    fn a_shulker_bullet_keeps_its_course_owner_and_target_through_a_save() {
+        use minecraftoss_core::nbt::Tag;
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:shulker_bullet\",Pos:[3.5d,70.0d,-1.5d],Motion:[0.0d,0.0d,0.12d],Steps:30,TXD:0.0d,TYD:0.0d,TZD:0.15d,Dir:3b,Owner:[I;1,2,3,4],Target:[I;5,6,7,8],UUID:[I;9,10,11,12]}").unwrap();
+        let mut world = minecraftoss_entities::world::EntityWorld::default();
+        let id = crate::server_mobs::spawn_saved(&mut world, &tag).expect("shulker bullets load");
+        let fields = |world: &minecraftoss_entities::world::EntityWorld, id: u64| {
+            let b = &world.shulker_bullets().iter().find(|e| e.id == id).unwrap().bullet;
+            (b.position, b.velocity, b.steps, b.target_delta, b.direction, b.owner_uuid, b.target_uuid)
+        };
+        let owner = minecraftoss_entities::gossip::uuid_from_ints([1, 2, 3, 4]);
+        let target = minecraftoss_entities::gossip::uuid_from_ints([5, 6, 7, 8]);
+        assert_eq!(fields(&world, id), (glam::DVec3::new(3.5, 70.0, -1.5), glam::DVec3::new(0.0, 0.0, 0.12), 30, glam::DVec3::new(0.0, 0.0, 0.15), Some(minecraftoss_player::Face::South), Some(owner), Some(target)));
+        assert_eq!(world.uuid_of(id), minecraftoss_entities::gossip::uuid_from_ints([9, 10, 11, 12]));
+        let tags = crate::server_mobs::mob_tags(&world, |_| true, &std::collections::HashMap::new());
+        let (_, saved) = tags.iter().find(|(tag_id, _)| *tag_id == id).unwrap();
+        assert_eq!((saved.get("Dir"), saved.get("Steps"), saved.get("TZD")), (Some(&Tag::Byte(3)), Some(&Tag::Int(30)), Some(&Tag::Double(0.15))));
+        assert_eq!((saved.get("Owner"), saved.get("Target"), saved.get("UUID")), (tag.get("Owner"), tag.get("Target"), tag.get("UUID")));
+        let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+        let back = crate::server_mobs::spawn_saved(&mut loaded, saved).unwrap();
+        assert_eq!(fields(&loaded, back), fields(&world, id));
+        let lost = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:shulker_bullet\",Pos:[3.5d,70.0d,-1.5d]}").unwrap();
+        let back = crate::server_mobs::spawn_saved(&mut loaded, &lost).unwrap();
+        assert_eq!(fields(&loaded, back).4, None, "no Dir loads as none");
     }
 
     #[test]

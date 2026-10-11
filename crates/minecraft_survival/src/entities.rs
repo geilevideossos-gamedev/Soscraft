@@ -520,6 +520,12 @@ impl Entities {
             self.server.end_hit(target, EndDamage::attack(damage, PLAYER));
             return true;
         }
+        if let Some((bullet, distance)) = self.world.shulker_bullet_on_ray(eye, look, blow.reach)
+            && mob.is_none_or(|(_, nearest)| distance < nearest)
+        {
+            self.server.hurt_shulker_bullet(bullet);
+            return true;
+        }
         if let Some((fireball, distance)) = self.world.fireball_on_ray(eye, look, blow.reach)
             && mob.is_none_or(|(_, nearest)| distance < nearest)
         {
@@ -548,8 +554,9 @@ impl Entities {
     pub fn mob_distance(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
         let mob = self.world.mob_on_ray(eye, look, reach).map(|(_, distance)| distance);
         let fireball = self.world.fireball_on_ray(eye, look, reach).map(|(_, distance)| distance);
+        let bullet = self.world.shulker_bullet_on_ray(eye, look, reach).map(|(_, distance)| distance);
         let end = self.end_on_ray(eye, look, reach).map(|(_, distance)| distance);
-        [mob, fireball, end].into_iter().flatten().min_by(f64::total_cmp)
+        [mob, fireball, bullet, end].into_iter().flatten().min_by(f64::total_cmp)
     }
 
     fn end_on_ray(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<(EndTarget, f64)> {
@@ -761,6 +768,10 @@ impl Entities {
             self.server.end_hit(target, EndDamage::attack(damage * HEALTH_SCALE, PLAYER));
             return;
         }
+        if let Some(id) = shulker_bullet_of(key) {
+            self.server.hurt_shulker_bullet(id);
+            return;
+        }
         if let Some(id) = fireball_of(key) {
             if let Some(entity) = self.world.fireballs().iter().find(|e| e.id == id) {
                 let center = entity.fireball.position + DVec3::Y * (entity.fireball.kind.size() / 2.0);
@@ -789,6 +800,10 @@ impl Entities {
     pub fn blast(&mut self, key: u64, damage: f32, center: [f64; 3], impact: f32, by_player: bool, slow_ticks: i32) {
         if let Some(target) = end_target_of(key) {
             self.server.end_hit(target, EndDamage::explosion(damage * BLAST_HEALTH_SCALE, by_player.then_some(PLAYER)));
+            return;
+        }
+        if let Some(id) = shulker_bullet_of(key) {
+            self.server.hurt_shulker_bullet(id);
             return;
         }
         if let Some(id) = fireball_of(key) {
@@ -999,35 +1014,8 @@ impl Entities {
             }
             hits.extend(output.players_struck.iter().filter(|struck| struck.player == PLAYER).map(|struck| struck_hit(player.feet, struck)));
             for hit in output.player_hits.into_iter().filter(|h| h.player_id == PLAYER) {
-                let from = match hit.kind {
-                    PlayerHitKind::Melee { attacker, .. } => Some(attacker.to_array()),
-                    _ => None,
-                };
-                let toward = match hit.kind {
-                    PlayerHitKind::Melee { attacker, .. } => [attacker.x - player.feet[0], attacker.z - player.feet[2]],
-                    PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } => [-velocity.x, -velocity.z],
-                    PlayerHitKind::Explosion { knockback } | PlayerHitKind::BadRespawnPoint { knockback } => [-knockback.x, -knockback.z],
-                };
-                let attack = match hit.kind {
-                    PlayerHitKind::Melee { .. } => crate::death::MobAttack::Melee,
-                    PlayerHitKind::Arrow { .. } => crate::death::MobAttack::Arrow,
-                    PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. } => crate::death::MobAttack::Explosion,
-                    PlayerHitKind::Fireball { ignite_ticks, .. } if ignite_ticks > 0 => crate::death::MobAttack::SmallFireball,
-                    PlayerHitKind::Fireball { .. } => crate::death::MobAttack::Fireball,
-                };
-                let cause = match hit.kind {
-                    PlayerHitKind::BadRespawnPoint { .. } => crate::death::DamageCause::BadRespawnPoint,
-                    _ => crate::death::DamageCause::mob(attack, hit.source, hit.source.and_then(|id| self.entity_type(id))),
-                };
-                let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. }) || hit.source.is_some();
-                let damage = difficulty_scaled(hit.damage, self.difficulty, scales);
-                let effect = match hit.kind {
-                    PlayerHitKind::Arrow { effect, .. } => effect,
-                    _ => None,
-                };
-                if damage > 0.0 {
-                    hits.push((damage, from, Some(toward), cause, effect));
-                }
+                let type_id = hit.source.and_then(|id| self.entity_type(id));
+                hits.extend(mob_hit(&hit, player.feet, self.difficulty, type_id));
             }
         }
         if ticked {
@@ -1172,6 +1160,10 @@ impl Entities {
         for e in self.world.fireballs().iter().filter(|e| e.fireball.alive && e.fireball.kind.redirectable()) {
             let (min, max) = minecraftoss_entities::fireball::pick_box(e.fireball.kind, e.fireball.position);
             out.push((FIREBALL_KEY | (e.id & ((1 << 56) - 1)), [min.x, min.y, min.z, max.x, max.y, max.z]));
+        }
+        for e in self.world.shulker_bullets().iter().filter(|e| e.bullet.alive) {
+            let (min, max) = e.bullet.bounds();
+            out.push((SHULKER_BULLET_KEY | (e.id & ((1 << 56) - 1)), [min.x, min.y, min.z, max.x, max.y, max.z]));
         }
         for dragon in self.dragons.iter().filter(|dragon| dragon.health > 0.0) {
             for (part, &feet) in dragon.parts.iter().enumerate() {
@@ -1322,6 +1314,43 @@ fn struck_hit(feet: [f64; 3], struck: &minecraft_terrain::thrown::PlayerStruck) 
     (struck.damage, Some(from.to_array()), Some([-struck.velocity.x, -struck.velocity.z]), crate::death::DamageCause::Generic, None)
 }
 
+fn mob_hit(
+    hit: &minecraftoss_entities::world::PlayerHit,
+    feet: [f64; 3],
+    difficulty: i32,
+    type_id: Option<&'static str>,
+) -> Option<(f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause, Option<(EffectKind, u32)>)> {
+    let from = match hit.kind {
+        PlayerHitKind::Melee { attacker, .. } => Some(attacker.to_array()),
+        _ => None,
+    };
+    let toward = match hit.kind {
+        PlayerHitKind::Melee { attacker, .. } => [attacker.x - feet[0], attacker.z - feet[2]],
+        PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } | PlayerHitKind::ShulkerBullet { velocity } => [-velocity.x, -velocity.z],
+        PlayerHitKind::Explosion { knockback } | PlayerHitKind::BadRespawnPoint { knockback } => [-knockback.x, -knockback.z],
+    };
+    let attack = match hit.kind {
+        PlayerHitKind::Melee { .. } => crate::death::MobAttack::Melee,
+        PlayerHitKind::Arrow { .. } => crate::death::MobAttack::Arrow,
+        PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. } => crate::death::MobAttack::Explosion,
+        PlayerHitKind::Fireball { ignite_ticks, .. } if ignite_ticks > 0 => crate::death::MobAttack::SmallFireball,
+        PlayerHitKind::Fireball { .. } => crate::death::MobAttack::Fireball,
+        PlayerHitKind::ShulkerBullet { .. } => crate::death::MobAttack::MobProjectile,
+    };
+    let cause = match hit.kind {
+        PlayerHitKind::BadRespawnPoint { .. } => crate::death::DamageCause::BadRespawnPoint,
+        _ => crate::death::DamageCause::mob(attack, hit.source, type_id),
+    };
+    let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. }) || hit.source.is_some();
+    let damage = difficulty_scaled(hit.damage, difficulty, scales);
+    let effect = match hit.kind {
+        PlayerHitKind::Arrow { effect, .. } => effect,
+        PlayerHitKind::ShulkerBullet { .. } => Some((EffectKind::Levitation, minecraftoss_entities::shulker_bullet::LEVITATION_TICKS)),
+        _ => None,
+    };
+    (damage > 0.0).then_some((damage, from, Some(toward), cause, effect))
+}
+
 fn difficulty_scaled(damage: f32, difficulty: i32, scales: bool) -> f32 {
     if !scales {
         return damage;
@@ -1416,6 +1445,7 @@ fn decode(key: u64) -> Option<MobHit> {
 }
 
 const FIREBALL_KEY: u64 = 17 << 56;
+const SHULKER_BULLET_KEY: u64 = 27 << 56;
 const CRYSTAL_KEY: u64 = 19 << 56;
 const DRAGON_KEY: u64 = 20 << 56;
 pub const FLAT_HIT: u64 = 1 << 55;
@@ -1446,6 +1476,10 @@ fn crystal_of(key: u64) -> Option<u64> {
 
 fn fireball_of(key: u64) -> Option<u64> {
     (key >> 56 == FIREBALL_KEY >> 56).then_some(key & ((1 << 56) - 1))
+}
+
+fn shulker_bullet_of(key: u64) -> Option<u64> {
+    (key >> 56 == SHULKER_BULLET_KEY >> 56).then_some(key & ((1 << 56) - 1))
 }
 
 fn take_picked(inventory: &mut Inventory, selected: usize, picked: Vec<Picked>) -> Vec<ItemStack> {
@@ -1540,6 +1574,33 @@ mod tests {
         assert_eq!(key >> 56, 26);
         assert_eq!(decode(key), Some(MobHit::Shulker(42)));
         assert_eq!((crystal_of(key), fireball_of(key), end_target_of(key)), (None, None, None));
+    }
+
+    #[test]
+    fn shulker_bullets_take_bullet_key_27() {
+        let key = SHULKER_BULLET_KEY | 42;
+        assert_eq!((key >> 56, shulker_bullet_of(key)), (27, Some(42)));
+        assert_eq!((decode(key), crystal_of(key), fireball_of(key), end_target_of(key)), (None, None, None, None));
+        assert_eq!(shulker_bullet_of(encode(MobHit::Shulker(42))), None);
+    }
+
+    #[test]
+    fn a_shulker_bullet_hurts_by_difficulty_and_lifts_for_ten_seconds() {
+        let hit = minecraftoss_entities::world::PlayerHit {
+            player_id: PLAYER,
+            damage: 4.0,
+            kind: PlayerHitKind::ShulkerBullet { velocity: DVec3::new(0.15, 0.0, 0.0) },
+            source: Some(9),
+        };
+        let damage = |difficulty| mob_hit(&hit, [0.0; 3], difficulty, Some("minecraft:shulker")).map(|h| h.0);
+        assert_eq!((damage(0), damage(1), damage(2), damage(3)), (None, Some(3.0), Some(4.0), Some(6.0)));
+        let (_, from, toward, cause, effect) = mob_hit(&hit, [0.0; 3], 2, Some("minecraft:shulker")).unwrap();
+        assert_eq!((from, toward), (None, Some([-0.15, -0.0])));
+        assert_eq!(cause, crate::death::DamageCause::Mob { id: 9, type_id: "minecraft:shulker", attack: crate::death::MobAttack::MobProjectile });
+        assert_eq!(effect, Some((EffectKind::Levitation, 200)));
+        let ownerless = minecraftoss_entities::world::PlayerHit { source: None, ..hit };
+        let (damage, _, _, cause, effect) = mob_hit(&ownerless, [0.0; 3], 3, None).unwrap();
+        assert_eq!((damage, cause, effect), (4.0, crate::death::DamageCause::Generic, Some((EffectKind::Levitation, 200))));
     }
 
     #[test]

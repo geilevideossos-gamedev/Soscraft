@@ -176,7 +176,7 @@ impl EntityWorld {
             EntityKey::Ghast(id) => self.ghasts.iter_mut().find(|e| e.id == id).map(|e| (&mut e.ghast.body, e.ghast.health > 0.0)),
             EntityKey::Blaze(id) => self.blazes.iter_mut().find(|e| e.id == id).map(|e| (&mut e.blaze.body, e.blaze.health > 0.0)),
             EntityKey::Shulker(id) => self.shulkers.iter_mut().find(|e| e.id == id).map(|e| (&mut e.shulker.body, e.shulker.health > 0.0)),
-            EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) => None,
+            EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => None,
         }
     }
 
@@ -200,7 +200,7 @@ impl EntityWorld {
             EntityKey::Ghast(id) => self.ghasts.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Blaze(id) => self.blazes.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Shulker(id) => self.shulkers.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
-            EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) => None,
+            EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => None,
         }
     }
 
@@ -331,7 +331,7 @@ impl EntityWorld {
                 EntityKey::Chicken(id) => self.chickens.iter().find(|e| e.id == id).map(|e| &e.chicken.body),
                 EntityKey::Ghast(id) => self.ghasts.iter().find(|e| e.id == id).map(|e| &e.ghast.body),
                 EntityKey::Blaze(id) => self.blazes.iter().find(|e| e.id == id).map(|e| &e.blaze.body),
-                EntityKey::Shulker(_) | EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) => None,
+                EntityKey::Shulker(_) | EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => None,
             };
             let Some(body) = body else { continue };
             let p = body.position;

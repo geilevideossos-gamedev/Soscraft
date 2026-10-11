@@ -843,6 +843,22 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             fireball.left_owner = int(tag, "LeftOwner").unwrap_or(1) != 0;
             return Some(world.spawn_fireball(fireball));
         }
+        "minecraft:shulker_bullet" => {
+            let double = |key: &str| tag.get(key).and_then(Tag::as_f64).unwrap_or(0.0);
+            let uuid = |key: &str| tag.get(key).and_then(Tag::as_ints).and_then(|ints| <[i32; 4]>::try_from(ints).ok()).map(minecraftoss_entities::gossip::uuid_from_ints);
+            let mut bullet = minecraftoss_entities::shulker_bullet::ShulkerBullet::new(pos);
+            bullet.velocity = tag.get("Motion").and_then(Tag::as_list).map(|m| DVec3::new(m.first().and_then(Tag::as_f64).unwrap_or(0.0), m.get(1).and_then(Tag::as_f64).unwrap_or(0.0), m.get(2).and_then(Tag::as_f64).unwrap_or(0.0))).unwrap_or(DVec3::ZERO);
+            bullet.steps = int(tag, "Steps").unwrap_or(0);
+            bullet.target_delta = DVec3::new(double("TXD"), double("TYD"), double("TZD"));
+            bullet.direction = tag.get("Dir").and_then(Tag::as_i64).map(minecraftoss_entities::shulker::face_of_id);
+            bullet.owner_uuid = uuid("Owner");
+            bullet.target_uuid = uuid("Target");
+            let id = world.spawn_shulker_bullet(bullet);
+            if let Some(own) = uuid("UUID") {
+                world.set_uuid(id, own);
+            }
+            return Some(id);
+        }
         "minecraft:splash_potion" => {
             // A potion in flight (`ThrowableItemProjectile.Item`), its thrower
             // forgotten.
@@ -1336,6 +1352,33 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         }
         map.insert("UUID".to_owned(), fresh_uuid(f.id, fireball.position));
         out.push((f.id, Tag::Compound(map)));
+    }
+    for b in world.shulker_bullets() {
+        let bullet = &b.bullet;
+        if !keep(bullet.position) || !bullet.alive {
+            continue;
+        }
+        let uuid = |uuid: u128| Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(uuid).to_vec());
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("id".to_owned(), Tag::String("minecraft:shulker_bullet".to_owned()));
+        map.insert("Pos".to_owned(), doubles(bullet.position.to_array()));
+        map.insert("Motion".to_owned(), doubles(bullet.velocity.to_array()));
+        map.insert("Rotation".to_owned(), Tag::List(vec![Tag::Float(0.0), Tag::Float(0.0)]));
+        map.insert("UUID".to_owned(), uuid(world.uuid_of(b.id)));
+        map.insert("Steps".to_owned(), Tag::Int(bullet.steps));
+        map.insert("TXD".to_owned(), Tag::Double(bullet.target_delta.x));
+        map.insert("TYD".to_owned(), Tag::Double(bullet.target_delta.y));
+        map.insert("TZD".to_owned(), Tag::Double(bullet.target_delta.z));
+        if let Some(direction) = bullet.direction {
+            map.insert("Dir".to_owned(), Tag::Byte(minecraftoss_entities::shulker::face_id(direction)));
+        }
+        if let Some(owner) = bullet.owner.map(|o| world.uuid_of(o)).or(bullet.owner_uuid) {
+            map.insert("Owner".to_owned(), uuid(owner));
+        }
+        if let Some(target) = bullet.target.map(|t| world.uuid_of(t)).or(bullet.target_uuid) {
+            map.insert("Target".to_owned(), uuid(target));
+        }
+        out.push((b.id, Tag::Compound(map)));
     }
     // Splash potions in flight (`ThrowableItemProjectile`).
     for p in world.potions() {

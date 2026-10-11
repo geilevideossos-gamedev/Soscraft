@@ -65,6 +65,7 @@ pub enum MobAttack {
     Explosion,
     Fireball,
     SmallFireball,
+    MobProjectile,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,7 +98,7 @@ impl DamageCause {
         let type_id = type_id.or(match attack {
             MobAttack::Explosion => Some("minecraft:creeper"),
             MobAttack::Arrow => Some(OWNERLESS_ARROW),
-            MobAttack::Melee | MobAttack::Fireball | MobAttack::SmallFireball => None,
+            MobAttack::Melee | MobAttack::Fireball | MobAttack::SmallFireball | MobAttack::MobProjectile => None,
         });
         match (source, type_id) {
             (Some(id), Some(type_id)) => Self::Mob {
@@ -149,6 +150,7 @@ impl DamageCause {
                 MobAttack::Arrow => "minecraft:arrow",
                 MobAttack::Explosion => "minecraft:explosion",
                 MobAttack::Fireball | MobAttack::SmallFireball => "minecraft:fireball",
+                MobAttack::MobProjectile => "minecraft:mob_projectile",
             },
         }
     }
@@ -175,7 +177,7 @@ impl DamageCause {
             Self::OutOfWorld => "outOfWorld",
             Self::BadRespawnPoint => "badRespawnPoint",
             Self::Mob {
-                attack: MobAttack::Melee,
+                attack: MobAttack::Melee | MobAttack::MobProjectile,
                 ..
             } => "mob",
             Self::Mob {
@@ -662,6 +664,7 @@ mod tests {
             ("entity.minecraft.creeper", "Creeper"),
             ("entity.minecraft.ghast", "Ghast"),
             ("entity.minecraft.blaze", "Blaze"),
+            ("entity.minecraft.shulker", "Shulker"),
             ("death.attack.fireball", "%1$s was fireballed by %2$s"),
             ("entity.minecraft.arrow", "Arrow"),
             ("block.minecraft.magma_block", "Magma Block"),
@@ -829,6 +832,17 @@ mod tests {
         assert_eq!((small.burns(), small.ignites()), (true, Some(100)));
         tracker.record(1, small, 5.0, None, 0.0);
         assert_eq!(line(&tracker), says("%1$s was fireballed by Blaze", "Blaze"));
+    }
+
+    #[test]
+    fn a_shulker_bullet_slays_the_player_by_the_shulker() {
+        let mut tracker = CombatTracker::default();
+        let bullet = DamageCause::mob(MobAttack::MobProjectile, Some(4), Some("minecraft:shulker"));
+        assert_eq!(bullet.damage_type(), "minecraft:mob_projectile");
+        assert!(!bullet.burns());
+        tracker.record(1, bullet, 4.0, None, 0.0);
+        assert_eq!(line(&tracker), says("%1$s was slain by Shulker", "Shulker"));
+        assert_eq!(DamageCause::mob(MobAttack::MobProjectile, None, None), DamageCause::Generic);
     }
 
     #[test]

@@ -1415,12 +1415,13 @@ impl Goal<MonsterGoalContext> for BlazeAttackGoal {
 pub struct ShulkerState {
     pub can_stay: bool,
     pub peeks: Vec<i32>,
+    pub shots: Vec<(Target, f32)>,
 }
 
 pub fn shulker_goals() -> GoalSelector<MonsterGoalContext> {
     let mut selector = GoalSelector::default();
     selector.add(1, ShulkerLookAtPlayerGoal { inner: LookAtPlayerGoal { range: 8.0 } });
-    selector.add(4, NeverGoal { controls: &[Control::Move, Control::Look] });
+    selector.add(4, ShulkerAttackGoal { attack_time: 0 });
     selector.add(7, ShulkerPeekGoal { peek_time: 0 });
     selector.add(8, RandomLookGoal);
     selector
@@ -1457,6 +1458,47 @@ impl Goal<MonsterGoalContext> for ShulkerLookAtPlayerGoal {
         if let Some(target) = ctx.look_at_player.tick(&ctx.players) {
             let level = DVec3::new(target.x, ctx.eye().y, target.z);
             ctx.look_control.set_look_at_with_limits(level, 10.0, 180.0);
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ShulkerAttackGoal {
+    attack_time: i32,
+}
+impl Goal<MonsterGoalContext> for ShulkerAttackGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Move, Control::Look])
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        ctx.target().is_some_and(|target| target.alive) && ctx.difficulty != 0
+    }
+    fn every_tick(&self) -> bool {
+        true
+    }
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        self.attack_time = 20;
+        ctx.shulker.peeks.push(100);
+    }
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        ctx.shulker.peeks.push(0);
+    }
+    fn tick(&mut self, ctx: &mut MonsterGoalContext) {
+        if ctx.difficulty == 0 {
+            return;
+        }
+        self.attack_time -= 1;
+        let Some(target) = ctx.target() else { return };
+        let eye = target.position + DVec3::new(0.0, f64::from(target.eye_height), 0.0);
+        ctx.look_control.set_look_at_with_limits(eye, 180.0, 180.0);
+        if ctx.body.position.distance_squared(target.position) < 400.0 {
+            if self.attack_time <= 0 {
+                self.attack_time = 20 + ctx.random.next_int(10) as i32 * 20 / 2;
+                let pitch = (ctx.random.next_float() - ctx.random.next_float()) * 0.2 + 1.0;
+                ctx.shulker.shots.push((target.target, pitch));
+            }
+        } else {
+            ctx.clear_target();
         }
     }
 }

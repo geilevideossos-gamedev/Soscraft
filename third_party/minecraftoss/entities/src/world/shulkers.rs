@@ -112,7 +112,7 @@ impl ShulkerEntity {
         game_time: i64,
         difficulty: i32,
         can_stay: bool,
-    ) {
+    ) -> Vec<crate::monster_ai::Target> {
         let position = self.shulker.body.position;
         let eye_height = self.shulker.eye_height();
         self.no_action_time += 1;
@@ -133,6 +133,7 @@ impl ShulkerEntity {
         ai.tick_goals(world, full);
         self.random = std::mem::take(&mut ai.state.random);
         let peeks = std::mem::take(&mut ai.state.shulker.peeks);
+        let shots = std::mem::take(&mut ai.state.shulker.shots);
         shulker::look_tick(
             &mut ai.state.look_control,
             self.shulker.opening(),
@@ -142,6 +143,17 @@ impl ShulkerEntity {
         for amount in peeks {
             self.set_raw_peek(amount);
         }
+        let position = self.position();
+        shots
+            .into_iter()
+            .map(|(target, pitch)| {
+                self.voices.push((
+                    Voice::Event("entity.shulker.shoot", 2.0, pitch),
+                    position,
+                ));
+                target
+            })
+            .collect()
     }
 }
 
@@ -232,6 +244,39 @@ impl EntityWorld {
         }
     }
 
+    pub(super) fn shulker_hit_by_bullet(&mut self, world: &impl World, id: u64) {
+        let others = self.other_shulker_boxes(id);
+        let Some(entity) = self.shulkers.iter_mut().find(|e| e.id == id) else {
+            return;
+        };
+        if entity.shulker.closed() {
+            return;
+        }
+        let (position, (low, high)) = (entity.position(), entity.shulker.bounding_box());
+        let color = entity.shulker.color;
+        let Some(moved) = entity.teleport(world, &others) else {
+            return;
+        };
+        self.shulker_teleports.push(moved);
+        self.file_in_section(EntityKey::Shulker(id));
+        let area = (low - DVec3::splat(8.0), high + DVec3::splat(8.0));
+        let nearby = self
+            .shulkers
+            .iter()
+            .filter(|e| e.shulker.health > 0.0 && shulker::overlaps(e.shulker.bounding_box(), area))
+            .count();
+        if self.level_random.next_float() < (nearby as f32 - 1.0) / 5.0 {
+            return;
+        }
+        let mut copy = Shulker::new(position);
+        copy.color = color;
+        let copy = self.spawn_shulker(copy, false);
+        let seed = self.fresh_seed();
+        if let Some(entity) = self.shulker_mut(copy) {
+            entity.set_random_seed(seed);
+        }
+    }
+
     pub(super) fn tick_shulker(
         &mut self,
         id: u64,
@@ -314,12 +359,18 @@ impl EntityWorld {
         }
         let own = entity.shulker.block();
         let can_stay = shulker::can_stay_at(world, own, entity.shulker.attach_face, own, &others);
+        let mut shots = Vec::new();
         if entity.shulker.health > 0.0 && !entity.no_ai {
-            entity.tick_ai(world, players, game_time, difficulty, can_stay);
+            shots = entity.tick_ai(world, players, game_time, difficulty, can_stay);
         }
+        let (low, high) = entity.shulker.bounding_box();
+        let axis = crate::shulker_bullet::axis_of(entity.shulker.attach_face);
         entity.shulker.body.velocity = DVec3::ZERO;
         let old = entity.previous_position;
         super::hazards::blocks_act(entity, world, old, game_time);
+        for target in shots {
+            self.shoot_shulker_bullet(world, id, (low + high) * 0.5, target, axis, players);
+        }
         self.push_entities(EntityKey::Shulker(id), world, game_time, ticks);
         let Some(entity) = self.shulkers.iter_mut().find(|e| e.id == id) else {
             return;

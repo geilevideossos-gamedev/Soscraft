@@ -1265,6 +1265,23 @@ mod tests {
     }
 
     #[test]
+    fn a_shulker_bullet_lifts_the_player_only_when_it_hurts() {
+        let bullet = DamageCause::mob(crate::death::MobAttack::MobProjectile, Some(3), Some("minecraft:shulker"));
+        let levitation = Some((EffectKind::Levitation, 200));
+        let mut survival = fresh();
+        assert!(survival.struck(4.0, 0.0, Armor::default(), None, bullet, levitation));
+        assert_eq!(survival.status.effect(EffectKind::Levitation).map(|e| (e.duration, e.amplifier)), Some((200, 0)));
+        assert_eq!(survival.status.health, 16.0);
+        let mut shielded = fresh();
+        assert!(!shielded.struck(4.0, 4.0, Armor::default(), None, bullet, levitation));
+        assert_eq!(shielded.status.effect(EffectKind::Levitation), None, "a fully blocked bullet does not lift");
+        let mut creative = fresh();
+        creative.set_game_mode(&minecraft_terrain::game_mode::PlayerMode::new(GameMode::Creative));
+        assert!(!creative.struck(4.0, 0.0, Armor::default(), None, bullet, levitation));
+        assert_eq!(creative.status.effect(EffectKind::Levitation), None);
+    }
+
+    #[test]
     fn a_blaze_fireball_sets_the_player_alight_only_when_it_hurts() {
         let small = DamageCause::mob(crate::death::MobAttack::SmallFireball, Some(3), Some("minecraft:blaze"));
         let mut survival = fresh();

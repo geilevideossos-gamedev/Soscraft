@@ -323,3 +323,42 @@ IW4L_MINECRAFT_KIT=minecraft:bogged_spawn_egg*2,minecraft:stray_spawn_egg*2,mine
 ```
 IW4L_MINECRAFT_KIT=minecraft:shulker_spawn_egg*16,minecraft:end_stone*64,minecraft:purpur_block*64,minecraft:diamond_pickaxe,minecraft:water_bucket,minecraft:iron_sword,minecraft:trident,minecraft:bogged_spawn_egg*2,minecraft:stray_spawn_egg*2,minecraft:shield,minecraft:milk_bucket,minecraft:milk_bucket,minecraft:cooked_beef*16
 ```
+
+## Group c1-shulkers-2: shulker bullets, their drawing, the docs (c1 groups 6, 7 and 8)
+
+### 12. Minecraft shulkers shoot homing bullets that make players levitate
+
+Previous commit: 9f8b51e3
+
+- **Changed:**
+  - `minecraftoss-entities` `shulker_bullet.rs` (new): `ShulkerBullet`'s state (position, motion, move direction, flight steps, target delta, owner and target by ID, and by UUID until a saved one is found again) and vanilla's rules: `selectNextMoveDirection` (the block holding the target's middle, aimed at straight within 2 blocks; otherwise one step along an axis other than the given one toward it into an empty block, east before west, up before down, south before north, else a random free direction, 10 to 50 flight steps, speed 0.15), and `tick`: homing (`targetDelta × 1.025` clamped to ±1, motion eased by a fifth) or gravity 0.04 with no live target, the ray (blocks, then bodies grown by the projectile margin, a ray starting inside a box missing it), the full move, then the steering (flight steps run out, a block it can stand on ahead, or lined up with the target on its axis).
+  - `world/shulker_bullets.rs` (new): spawning, ticking and hits. A player hit is a `PlayerHit` of 4 with the new `PlayerHitKind::ShulkerBullet`, credited to the shulker. A mob hit hurts by 4 through the arrow path (armour, knockback from the motion, endermen dodge) and gives levitation for 200 ticks when it lands; a shulker hit takes its shell armour, and when it lands on an open shulker without its half-health roll, `hitByShulkerBullet` teleports it and, with `n` live shulkers within 8 of where it sat, makes a copy of its colour there unless the level random's float is below `(n - 1) / 5`. Block hits play `entity.shulker_bullet.hit` and report two explosion puffs; any hurt (`hurt_shulker_bullet`) plays `entity.shulker_bullet.hurt`, reports fifteen crit puffs and pops it. Peaceful removes them (`checkDespawn`).
+  - `monster_ai.rs`: `ShulkerAttackGoal` in place of the placeholder: with a live target outside peaceful it opens fully (raw peek 100), looks at it, fires 20 ticks after it starts and then every `20 + nextInt(10) × 10` ticks within 20 blocks, drops a target beyond, and closes when it stops. The shot plays `entity.shulker.shoot` at volume 2 with the shulker's two-float pitch.
+  - `world/shulkers.rs`: the shots become bullets from the centre of the shulker's box, kept off its attach axis.
+  - `world.rs`, `pushing.rs`: the bullet in every per-kind list (`EntityKey::ShulkerBullet`, positions, copies, removal, despawn, tick dispatch, type `minecraft:shulker_bullet`).
+  - `minecraft_terrain` `server_mobs.rs`: `minecraft:shulker_bullet` loads and saves with `Steps`, `Dir` (`Direction.LEGACY_ID_CODEC`, absent when it has none), `TXD`/`TYD`/`TZD`, `Owner`, `Target` and `UUID`; `server.rs`: the `HurtShulkerBullet` command.
+  - `minecraft_survival`: the hit conversion moved into `mob_hit` (unchanged for the other kinds); a bullet hit is `MobAttack::MobProjectile` (`minecraft:mob_projectile`, message `mob`: "was slain by Shulker"), scaled by difficulty, and carries levitation for 200 ticks into `Survival::struck`, so it lands only with the damage. MW2 bullets and blasts pop shulker bullets under key 27 (their 0.3125 box), and a punch pops one in reach.
+- **Tests:**
+  - `entities` `shulker_bullet`: `it_steps_along_one_axis_toward_the_target_but_never_along_its_shulker_s` (east or south, never up, flight steps 10 to 50 in tens), `near_the_target_it_aims_straight_at_it`, `walled_in_it_picks_a_random_way_out`, `it_homes_in_on_a_still_target_and_strikes_it`, `it_turns_when_the_block_ahead_is_solid_or_it_lines_up`, `without_a_target_it_falls_and_pops_on_the_ground`, `a_fresh_bullet_flies_out_of_its_own_shulker`.
+  - `entities` `world::shulker_bullets`: `a_shulker_opens_and_fires_every_one_to_five_and_a_half_seconds`, `a_bullet_hurts_the_player_and_none_fly_in_peaceful`, `a_creative_player_is_struck_but_unhurt`, `a_struck_zombie_floats_up_for_ten_seconds`, `a_struck_open_shulker_jumps_away_and_a_lone_one_leaves_a_copy` (and a closed one stays), `any_hurt_pops_a_bullet_and_the_ground_stops_one`, `a_saved_target_is_found_again_by_its_uuid`.
+  - `minecraft_terrain` `server`: `a_shulker_bullet_keeps_its_course_owner_and_target_through_a_save`.
+  - `minecraft_survival`: `entities::shulker_bullets_take_bullet_key_27`, `entities::a_shulker_bullet_hurts_by_difficulty_and_lifts_for_ten_seconds` (3, 4 and 6 on easy, normal and hard, none in peaceful), `survival::a_shulker_bullet_lifts_the_player_only_when_it_hurts` (shield and creative give none), `death::a_shulker_bullet_slays_the_player_by_the_shulker`.
+- **Decisions:**
+  - Players already have UUIDs in the entity world (`set_player_uuid`), so a saved bullet's `Target` and `Owner` are kept as UUIDs and found again on its first tick (`EntityReference`): a target that is not there then is dropped and the bullet falls, as in vanilla.
+  - A bullet that runs out of steps while lined up with its target on the two other axes picks a random free direction, which can turn it back; vanilla does the same, and such a bullet can strike its own shulker (and split it).
+  - Skeleton arrows and blasts do not pop bullets yet (vanilla: arrows can hit them, explosions hurt them); MW2 guns, MW2 blasts and punches do.
+  - The bullets are not drawn until the next commit, which also shows the puffs.
+- **Test steps:** (survival, `/difficulty normal`, daytime, an end stone floor about 15 × 15; armour off; the bullets are invisible in this commit, so watch the effect)
+  1. Use a shulker egg on the floor and stand 10 blocks away in its sight. It opens fully and you hear it fire every 1 to 5.5 seconds (**1**).
+  2. Let a bullet hit you: 2 hearts, and you float up for 10 seconds, about 9 blocks, while you can strafe (**2**). Then you fall and lose about 3 hearts.
+  3. Raise the shield toward the shulker: the hits thud on it and you don't float.
+  4. `/difficulty easy`: a hit takes 1.5 hearts; `/difficulty hard`: 3 hearts. `/difficulty normal`.
+  5. Use a zombie egg between you and the shulker: a bullet that strikes it lifts it up.
+  6. Place two shulkers 3 blocks apart and stand so the far one's bullets pass the near one while it is open: a struck one teleports, and sometimes a copy of its colour appears where it sat (**3**).
+  7. `/difficulty peaceful`: the shulkers close and stop firing. `/difficulty normal`.
+  8. Let a bullet kill you at half a heart: the chat says "… was slain by Shulker".
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:shulker_spawn_egg*8,minecraft:zombie_spawn_egg*4,minecraft:shield,minecraft:end_stone*64,minecraft:purpur_block*64,minecraft:cooked_beef*32
+```

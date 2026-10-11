@@ -35,7 +35,9 @@ mod ghasts;
 mod fireballs;
 mod blazes;
 mod shulkers;
+mod shulker_bullets;
 pub use ghasts::GhastEntity;
+pub use shulker_bullets::{BulletPuff, BulletPuffKind, ShulkerBulletEntity};
 pub use blazes::BlazeEntity;
 pub use shulkers::ShulkerEntity;
 pub use fireballs::{FireballBlast, FireballEntity};
@@ -583,6 +585,7 @@ pub enum PlayerHitKind {
     Explosion { knockback: DVec3 },
     Fireball { velocity: DVec3, ignite_ticks: i32 },
     BadRespawnPoint { knockback: DVec3 },
+    ShulkerBullet { velocity: DVec3 },
 }
 
 /// A mob's death as its drops see it (`LivingEntity.die`,
@@ -1899,6 +1902,7 @@ enum EntityKey {
     Fireball(u64),
     Blaze(u64),
     Shulker(u64),
+    ShulkerBullet(u64),
 }
 
 impl EntityKey {
@@ -1924,7 +1928,8 @@ impl EntityKey {
             | Self::Ghast(id)
             | Self::Fireball(id)
             | Self::Blaze(id)
-            | Self::Shulker(id) => id,
+            | Self::Shulker(id)
+            | Self::ShulkerBullet(id) => id,
         }
     }
 }
@@ -2286,6 +2291,8 @@ pub struct EntityWorld {
     blazes: Vec<BlazeEntity>,
     shulkers: Vec<ShulkerEntity>,
     shulker_teleports: Vec<(minecraftoss_player::Pos, minecraftoss_player::Pos)>,
+    shulker_bullets: Vec<ShulkerBulletEntity>,
+    bullet_puffs: Vec<BulletPuff>,
     fireball_fires: Vec<(i32, i32, i32)>,
     /// Where the players look, for endermen.
     player_views: Vec<(u64, crate::enderman::PlayerView)>,
@@ -2394,6 +2401,8 @@ impl Default for EntityWorld {
             blazes: Vec::new(),
             shulkers: Vec::new(),
             shulker_teleports: Vec::new(),
+            shulker_bullets: Vec::new(),
+            bullet_puffs: Vec::new(),
             fireball_fires: Vec::new(),
             player_views: Vec::new(),
             player_vitals: Vec::new(),
@@ -2662,7 +2671,7 @@ impl EntityWorld {
                 let e = self.shulkers.iter().find(|e| e.id == id)?;
                 (e.shulker.body.clone(), e.shulker.eye_height())
             }
-            EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) => return None,
+            EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => return None,
         })
     }
 
@@ -2691,7 +2700,7 @@ impl EntityWorld {
             EntityKey::Ghast(id) => self.ghasts.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.ghast.body)),
             EntityKey::Blaze(id) => self.blazes.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.blaze.body)),
             EntityKey::Shulker(id) => self.shulkers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_armored(damage), &mut e.shulker.body)),
-            EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) => None,
+            EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => None,
         }?;
         if !matches!(key, EntityKey::Shulker(_)) {
             body.velocity += push;
@@ -2994,7 +3003,7 @@ impl EntityWorld {
                         let (min, max) = entity.shulker.bounding_box();
                         return Some(ArrowTarget { id, min, max });
                     }
-                    EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) => return None,
+                    EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => return None,
                 };
                 if id == owner_id || health <= 0.0 {
                     return None;
@@ -4048,6 +4057,9 @@ impl EntityWorld {
         if let Some(e) = self.fireballs.iter().find(|e| e.id == id) {
             return Some(e.fireball.kind.type_id());
         }
+        if self.shulker_bullets.iter().any(|e| e.id == id) {
+            return Some("minecraft:shulker_bullet");
+        }
         None
     }
 
@@ -4278,7 +4290,7 @@ impl EntityWorld {
 
     /// Every living entity's ID, in world order (arrows excluded).
     pub fn mob_ids(&self) -> impl Iterator<Item = u64> + '_ {
-        self.order.iter().filter(|key| !matches!(key, EntityKey::Arrow(_) | EntityKey::Fireball(_))).map(|key| key.id())
+        self.order.iter().filter(|key| !matches!(key, EntityKey::Arrow(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_))).map(|key| key.id())
     }
     pub fn set_recipe_book(&mut self, recipes: Arc<RecipeBook>) {
         self.recipes = Some(recipes);
@@ -4576,6 +4588,7 @@ impl EntityWorld {
             .chain(self.fireballs.iter().map(|e| (e.id, e.fireball.position)))
             .chain(self.blazes.iter().map(|e| (e.id, e.blaze.body.position)))
             .chain(self.shulkers.iter().map(|e| (e.id, e.shulker.body.position)))
+            .chain(self.shulker_bullets.iter().map(|e| (e.id, e.bullet.position)))
     }
 
     /// The burning mobs (`displayFireAnimation`), for their flames: where
@@ -4640,6 +4653,7 @@ impl EntityWorld {
         let fireballs: Vec<FireballEntity> = self.fireballs.iter().filter(|e| keep(e.fireball.position)).cloned().collect();
         let blazes: Vec<BlazeEntity> = self.blazes.iter().filter(|e| keep(e.blaze.body.position)).cloned().collect();
         let shulkers: Vec<ShulkerEntity> = self.shulkers.iter().filter(|e| keep(e.shulker.body.position)).cloned().collect();
+        let shulker_bullets: Vec<ShulkerBulletEntity> = self.shulker_bullets.iter().filter(|e| keep(e.bullet.position)).cloned().collect();
         let mut copy = Self {
             bats,
             zombies,
@@ -4657,6 +4671,8 @@ impl EntityWorld {
             blazes,
             shulkers,
             shulker_teleports: Vec::new(),
+            shulker_bullets,
+            bullet_puffs: Vec::new(),
             fireball_fires: Vec::new(),
             player_views: self.player_views.clone(),
             player_vitals: self.player_vitals.clone(),
@@ -4820,6 +4836,7 @@ impl EntityWorld {
         self.ghasts.retain_mut(|e| !check(e.ghast.body.position, e.ghast.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
         self.blazes.retain_mut(|e| !check(e.blaze.body.position, e.blaze.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
         self.shulkers.retain_mut(|e| !check(e.shulker.body.position, e.shulker.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
+        self.shulker_bullets.retain(|e| !(peaceful && listed(e.bullet.position)));
         let alive: HashSet<u64> = self.positions().map(|(id, _)| id).collect();
         self.order.retain(|key| alive.contains(&key.id()));
         before - self.order.len()
@@ -4850,6 +4867,7 @@ impl EntityWorld {
         self.fireballs.retain(|e| !remove(e.fireball.position));
         self.blazes.retain(|e| !remove(e.blaze.body.position));
         self.shulkers.retain(|e| !remove(e.shulker.body.position));
+        self.shulker_bullets.retain(|e| !remove(e.bullet.position));
         let alive: HashSet<u64> = self.positions().map(|(id, _)| id).collect();
         self.order.retain(|key| alive.contains(&key.id()));
         before - self.order.len()
@@ -5471,6 +5489,10 @@ impl EntityWorld {
                 }
                 EntityKey::Shulker(id) => {
                     self.tick_shulker(id, world, players, ticks);
+                    continue;
+                }
+                EntityKey::ShulkerBullet(id) => {
+                    self.tick_shulker_bullet(id, world, players);
                     continue;
                 }
                 EntityKey::Arrow(id) => {
@@ -6831,6 +6853,7 @@ impl EntityWorld {
         self.fireballs.retain(|entity| entity.fireball.alive);
         self.blazes.retain(|entity| entity.blaze.damage.death_ticks < 20);
         self.shulkers.retain(|entity| entity.shulker.damage.death_ticks < 20);
+        self.shulker_bullets.retain(|entity| entity.bullet.alive);
         let alive_ids: HashSet<_> = self
             .bats
             .iter()
@@ -6855,6 +6878,7 @@ impl EntityWorld {
             .chain(self.fireballs.iter().map(|entity| entity.id))
             .chain(self.blazes.iter().map(|entity| entity.id))
             .chain(self.shulkers.iter().map(|entity| entity.id))
+            .chain(self.shulker_bullets.iter().map(|entity| entity.id))
             .collect();
         self.sections.retain_mobs(|id| alive_ids.contains(&id));
         self.order.retain(|key| match key {
@@ -6878,7 +6902,8 @@ impl EntityWorld {
             | EntityKey::Ghast(id)
             | EntityKey::Fireball(id)
             | EntityKey::Blaze(id)
-            | EntityKey::Shulker(id) => alive_ids.contains(id),
+            | EntityKey::Shulker(id)
+            | EntityKey::ShulkerBullet(id) => alive_ids.contains(id),
         });
     }
 
@@ -6998,7 +7023,7 @@ impl EntityWorld {
                     }
                     (MobHit::Wolf(id), &entity.wolf.body)
                 }
-                EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) => continue,
+                EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => continue,
                 EntityKey::Ghast(id) => {
                     let Some(entity) = self.ghasts.iter().find(|entity| entity.id == id) else {
                         continue;
