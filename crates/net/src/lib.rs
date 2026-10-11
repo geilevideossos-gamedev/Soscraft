@@ -1,6 +1,7 @@
 pub mod authority;
 pub mod client;
 pub mod gaps;
+pub mod minecraft_wire;
 mod observe;
 pub mod plugin;
 pub mod policy;
@@ -86,6 +87,7 @@ pub use client::runtime::{
     send_pending_commands,
 };
 pub use gaps::{NetGap, NetGapCause, NetIdentityGaps, ScriptNotify};
+pub use minecraft_wire::{MinecraftLane, MinecraftWire, WireRole};
 pub use plugin::NetPlugin;
 pub use policy::seat::{
     ActiveKillcams, KillcamSession, SeatSample, apply_seat_to_snapshot, killcam_seconds_to_ms,
@@ -169,4 +171,4 @@ pub use transport::wire::{WireError, WireReader, WireWriter};
 
 pub use svc_script_audio::SvcScriptAudio;
 
-pub const PROTOCOL_VERSION: u32 = 94;
+pub const PROTOCOL_VERSION: u32 = 95;

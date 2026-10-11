@@ -9,6 +9,7 @@ use sim::{ClientAction, ClientId, Snapshot, Tick, TickInput};
 
 use crate::authority::runtime::ClientShotSamples;
 use crate::client::predict::CmdSeq;
+use crate::minecraft_wire::{MinecraftBulk, MinecraftLane};
 use crate::transport::acked_baseline::AckedBaselineTable;
 use crate::transport::bootstrap::{
     BootstrapAck, BootstrapLane, BootstrapMessage, BootstrapTransaction, decode_bootstrap,
@@ -20,7 +21,7 @@ use crate::transport::loopback_live::ReceivedTick;
 use crate::transport::meta_wire::WorldObjectSyncDecoder;
 use crate::transport::protocol::{
     ClientPacket, ConnectionId, ConnectionTable, HandshakeHello, HandshakeReject, PacketHeader,
-    ProtocolLimits, ServerPacket, decode_client_packet, decode_server_packet,
+    ProtocolLimits, ServerPacket, TAG_SERVER_MINECRAFT, decode_client_packet, decode_server_packet,
 };
 use crate::transport::udp_socket::UdpSendError;
 use crate::transport::wire::WireReader;
@@ -35,6 +36,7 @@ pub struct RelayMailbox {
     control_inbound: Arc<Mutex<Vec<(MemberId, Vec<u8>)>>>,
     control_inbound_drained: Arc<tokio::sync::Notify>,
     control_outbound: Arc<Mutex<Vec<(MemberId, Vec<u8>)>>>,
+    minecraft: Arc<MinecraftBulk>,
     cap: usize,
 }
 
@@ -46,6 +48,7 @@ impl RelayMailbox {
             control_inbound: Arc::new(Mutex::new(Vec::new())),
             control_inbound_drained: Arc::new(tokio::sync::Notify::new()),
             control_outbound: Arc::new(Mutex::new(Vec::new())),
+            minecraft: Arc::new(MinecraftBulk::default()),
             cap,
         }
     }
@@ -89,6 +92,23 @@ impl RelayMailbox {
     }
     pub fn take_control_outbound(&self) -> Vec<(MemberId, Vec<u8>)> {
         take_mail(&self.control_outbound)
+    }
+
+    pub fn take_control_outbound_up_to(&self, limit: usize) -> Vec<(MemberId, Vec<u8>)> {
+        let mut queue = self.control_outbound.lock().expect("relay mailbox poisoned");
+        let count = limit.min(queue.len());
+        queue.drain(..count).collect()
+    }
+
+    pub fn control_outbound_len(&self) -> usize {
+        self.control_outbound
+            .lock()
+            .expect("relay mailbox poisoned")
+            .len()
+    }
+
+    pub fn minecraft_bulk(&self) -> Arc<MinecraftBulk> {
+        Arc::clone(&self.minecraft)
     }
 
     pub fn with_default_cap() -> Self {
@@ -159,6 +179,8 @@ pub struct UdpAuthorityHub {
     committed_admissions: Vec<CommittedAdmission>,
 
     denied: HashSet<master_protocol::MemberId>,
+    minecraft_in: Vec<(ClientId, MinecraftLane, Vec<u8>)>,
+    retired: Vec<ClientId>,
 }
 
 #[derive(Debug)]
@@ -300,11 +322,48 @@ impl UdpAuthorityHub {
             member_by_conn: HashMap::new(),
             committed_admissions: Vec::new(),
             denied: HashSet::new(),
+            minecraft_in: Vec::new(),
+            retired: Vec::new(),
         }
     }
 
     pub fn mailbox(&self) -> RelayMailbox {
         self.relay.clone()
+    }
+
+    pub fn take_minecraft(&mut self) -> Vec<(ClientId, MinecraftLane, Vec<u8>)> {
+        std::mem::take(&mut self.minecraft_in)
+    }
+
+    pub fn take_retired(&mut self) -> Vec<ClientId> {
+        std::mem::take(&mut self.retired)
+    }
+
+    pub fn member_of_client(&self, client: ClientId) -> Option<MemberId> {
+        self.peers
+            .iter()
+            .find_map(|(conn, member)| {
+                (self.connections.client_of(*conn) == Some(client.0)).then_some(*member)
+            })
+    }
+
+    pub fn send_minecraft(
+        &mut self,
+        client: ClientId,
+        lane: MinecraftLane,
+        payload: Vec<u8>,
+    ) -> Result<(), &'static str> {
+        let member = self
+            .member_of_client(client)
+            .ok_or("minecraft packet for an unknown client")?;
+        match lane {
+            MinecraftLane::Reliable => self
+                .relay
+                .push_control_outbound(member, ServerPacket::Minecraft(payload).to_bytes()),
+            MinecraftLane::State => self
+                .relay
+                .push_outbound(member, ServerPacket::MinecraftState(payload).to_bytes()),
+        }
     }
 
     pub fn attach_bootstrap(&mut self, lane: Arc<BootstrapLane>) {
@@ -395,6 +454,7 @@ impl UdpAuthorityHub {
 
     pub fn retire_connection(&mut self, conn: ConnectionId) -> Option<ClientId> {
         let client = self.connections.retire(conn).map(ClientId);
+        self.retired.extend(client);
         self.peers.remove(&conn);
         self.member_by_conn.remove(&conn);
         self.replication.remove(&conn);
@@ -449,6 +509,17 @@ impl UdpAuthorityHub {
             };
             match packet {
                 ClientPacket::Connect(_) => {}
+                ClientPacket::Minecraft(payload) => {
+                    if control && let Some(client) = self.client_of_member(from) {
+                        self.minecraft_in
+                            .push((client, MinecraftLane::Reliable, payload));
+                    }
+                }
+                ClientPacket::MinecraftState(payload) => {
+                    if !control && let Some(client) = self.client_of_member(from) {
+                        self.minecraft_in.push((client, MinecraftLane::State, payload));
+                    }
+                }
                 ClientPacket::Commands {
                     header,
                     claimed_client,
@@ -875,6 +946,7 @@ pub struct UdpClientLink {
     bootstrap: Option<Arc<BootstrapLane>>,
     controls: Vec<crate::ReliablePayload>,
     sent_actions: HashSet<sim::ActionRequestId>,
+    minecraft_in: Vec<(MinecraftLane, Vec<u8>)>,
 }
 
 impl UdpClientLink {
@@ -899,6 +971,7 @@ impl UdpClientLink {
             held_bootstrap: Vec::new(),
             failed: None,
             bootstrap: None,
+            minecraft_in: Vec::new(),
         }
     }
 
@@ -1016,6 +1089,7 @@ impl UdpClientLink {
         self.held_bootstrap.clear();
         self.controls.clear();
         self.sent_actions.clear();
+        self.minecraft_in.clear();
         self.failed = None;
         if let Some(lane) = &self.bootstrap {
             lane.set_epoch(0);
@@ -1026,6 +1100,27 @@ impl UdpClientLink {
         std::mem::take(&mut self.controls)
     }
 
+    pub fn take_minecraft(&mut self) -> Vec<(MinecraftLane, Vec<u8>)> {
+        std::mem::take(&mut self.minecraft_in)
+    }
+
+    pub fn send_minecraft(
+        &mut self,
+        lane: MinecraftLane,
+        payload: Vec<u8>,
+    ) -> Result<(), &'static str> {
+        match lane {
+            MinecraftLane::Reliable => self.relay.push_control_outbound(
+                MemberId([0; 16]),
+                ClientPacket::Minecraft(payload).to_bytes(),
+            ),
+            MinecraftLane::State => self.relay.push_outbound(
+                MemberId([0; 16]),
+                ClientPacket::MinecraftState(payload).to_bytes(),
+            ),
+        }
+    }
+
     pub fn recv_ticks(&mut self) -> Result<Vec<ReceivedTick>, String> {
         let mut ticks = Vec::new();
         let mut snap_acks = Vec::new();
@@ -1034,14 +1129,21 @@ impl UdpClientLink {
                 Ok(p) => p,
                 Err(_) => continue,
             };
-            if !matches!(packet, ServerPacket::Control { .. }) {
+            if !matches!(packet, ServerPacket::Control { .. } | ServerPacket::Minecraft(_)) {
                 self.apply_server_packet(packet, &mut ticks, &mut snap_acks)?;
             }
         }
         self.drain_bootstrap_offers(&mut ticks, &mut snap_acks)?;
         for (_, bytes) in self.relay.take_control_inbound() {
-            let packet = decode_server_packet(&bytes, &self.limits).map_err(|e| e.to_string())?;
-            if matches!(packet, ServerPacket::Control { .. }) {
+            let packet = match decode_server_packet(&bytes, &self.limits) {
+                Ok(packet) => packet,
+                Err(error) if bytes.first() == Some(&TAG_SERVER_MINECRAFT) => {
+                    diag::warn!(Net, "client dropped a broken minecraft packet: {error}");
+                    continue;
+                }
+                Err(error) => return Err(error.to_string()),
+            };
+            if matches!(packet, ServerPacket::Control { .. } | ServerPacket::Minecraft(_)) {
                 self.apply_server_packet(packet, &mut ticks, &mut snap_acks)?;
             }
         }
@@ -1245,6 +1347,18 @@ impl UdpClientLink {
                 snap_acks.push(snapshot_seq);
                 ticks.push(ReceivedTick { snapshot, frame });
                 Ok(true)
+            }
+            ServerPacket::Minecraft(payload) => {
+                if self.failed.is_none() {
+                    self.minecraft_in.push((MinecraftLane::Reliable, payload));
+                }
+                Ok(false)
+            }
+            ServerPacket::MinecraftState(payload) => {
+                if self.failed.is_none() {
+                    self.minecraft_in.push((MinecraftLane::State, payload));
+                }
+                Ok(false)
             }
         }
     }

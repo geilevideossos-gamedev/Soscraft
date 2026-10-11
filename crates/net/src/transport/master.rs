@@ -24,6 +24,9 @@ use rustls_platform_verifier::ConfigVerifierExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::authority::runtime::AuthorityWorld;
+use crate::minecraft_wire::{
+    MinecraftBulk, UniStream, is_minecraft_stream, read_minecraft_stream, read_uni_prefix,
+};
 use crate::session_core::{
     HostMatchApply, HostMatchCore, HostMatchEffect, HostMatchEvent, HostWorldReady, SessionCore,
     SessionEvent,
@@ -1681,9 +1684,17 @@ async fn session_main(
     children.spawn(uni_ingress(
         connection.clone(),
         Arc::clone(&bootstrap),
+        mailbox.minecraft_bulk(),
         cancel.clone(),
         role,
     ));
+    if is_host {
+        children.spawn(crate::minecraft_wire::minecraft_egress(
+            connection.clone(),
+            mailbox.minecraft_bulk(),
+            cancel.clone(),
+        ));
+    }
     children.spawn(gameplay_egress(
         connection.clone(),
         mailbox.clone(),
@@ -1769,7 +1780,7 @@ async fn session_main(
             break Err(error);
         }
         let mut control_error = None;
-        for (member_id, payload) in mailbox.take_control_outbound() {
+        for (member_id, payload) in mailbox.take_control_outbound_up_to(control_tx.capacity()) {
             let envelope = if is_host {
                 RelayDatagram::HostToMember {
                     member_id,
@@ -2944,14 +2955,17 @@ async fn datagram_ingress(
 async fn uni_ingress(
     connection: quinn::Connection,
     bootstrap: Arc<BootstrapLane>,
+    minecraft: Arc<MinecraftBulk>,
     cancel: CancellationToken,
     role: &'static str,
 ) -> std::result::Result<(), TransportFault> {
+    let mut readers = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
             _ = cancel.cancelled() => return Ok(()),
+            Some(_) = readers.join_next(), if !readers.is_empty() => {}
             stream = connection.accept_uni() => {
-                let mut recv = match stream {
+                let recv = match stream {
                     Ok(recv) => recv,
                     Err(error) => {
                         return Err(TransportFault::with_connection(
@@ -2962,56 +2976,79 @@ async fn uni_ingress(
                         ));
                     }
                 };
-                let bytes = match tokio::time::timeout(
-                    IO_DEADLINE,
-                    recv.read_to_end(MAX_BOOTSTRAP_STREAM_BYTES),
-                )
-                .await
-                {
-                    Ok(Ok(bytes)) => bytes,
-                    Ok(Err(error)) => {
-                        return Err(TransportFault::with_connection(
-                            "bootstrap_uni_read",
-                            role,
-                            error,
-                            &connection,
-                        ));
-                    }
-                    Err(_) => {
-                        return Err(TransportFault::with_connection(
-                            "bootstrap_uni_read",
-                            role,
-                            "deadline",
-                            &connection,
-                        ));
-                    }
-                };
-                match decode_relay_stream(&bytes) {
-                    Ok(RelayDatagram::ServiceToMember(payload) | RelayDatagram::HostToMember { payload, .. }) => {
-                        if let Err(error) = bootstrap.push_from_worker(None, payload.to_vec()) {
-                            return Err(match error {
-                                "bootstrap from-worker queue is full" => TransportFault::new(
-                                    "bootstrap_from_worker",
-                                    role,
-                                    QueueLoss::Full {
-                                        operation: "bootstrap_from_worker",
-                                    }
-                                    .to_string(),
-                                ),
-                                other => TransportFault::new("bootstrap_from_worker", role, other),
-                            });
-                        }
-                    }
-                    Ok(other) => {
-                        diag::warn!(Net, "master {role} ignored unexpected uni {other:?}");
-                    }
-                    Err(error) => {
-                        diag::warn!(Net, "master {role} ignored unfinished bootstrap stream: {error}");
-                    }
-                }
+                route_uni_stream(recv, &bootstrap, &minecraft, &mut readers, role)
+                    .await
+                    .map_err(|mut fault| {
+                        fault.close_reason =
+                            connection.close_reason().map(|error| error.to_string());
+                        fault
+                    })?;
             }
         }
     }
+}
+
+pub(crate) async fn route_uni_stream<R: UniStream>(
+    mut recv: R,
+    bootstrap: &BootstrapLane,
+    minecraft: &Arc<MinecraftBulk>,
+    readers: &mut tokio::task::JoinSet<()>,
+    role: &'static str,
+) -> std::result::Result<(), TransportFault> {
+    let mut bytes = match tokio::time::timeout(IO_DEADLINE, read_uni_prefix(&mut recv)).await {
+        Ok(Ok(prefix)) => prefix,
+        Ok(Err(error)) => return Err(TransportFault::new("bootstrap_uni_read", role, error)),
+        Err(_) => return Err(TransportFault::new("bootstrap_uni_read", role, "deadline")),
+    };
+    if is_minecraft_stream(&bytes) {
+        readers.spawn(read_minecraft_stream(
+            recv,
+            bytes,
+            Arc::clone(minecraft),
+            role,
+        ));
+        return Ok(());
+    }
+    let rest = match tokio::time::timeout(
+        IO_DEADLINE,
+        recv.read_to_end(MAX_BOOTSTRAP_STREAM_BYTES - bytes.len()),
+    )
+    .await
+    {
+        Ok(Ok(rest)) => rest,
+        Ok(Err(error)) => return Err(TransportFault::new("bootstrap_uni_read", role, error)),
+        Err(_) => return Err(TransportFault::new("bootstrap_uni_read", role, "deadline")),
+    };
+    bytes.extend_from_slice(&rest);
+    match decode_relay_stream(&bytes) {
+        Ok(
+            RelayDatagram::ServiceToMember(payload) | RelayDatagram::HostToMember { payload, .. },
+        ) => {
+            if let Err(error) = bootstrap.push_from_worker(None, payload.to_vec()) {
+                return Err(match error {
+                    "bootstrap from-worker queue is full" => TransportFault::new(
+                        "bootstrap_from_worker",
+                        role,
+                        QueueLoss::Full {
+                            operation: "bootstrap_from_worker",
+                        }
+                        .to_string(),
+                    ),
+                    other => TransportFault::new("bootstrap_from_worker", role, other),
+                });
+            }
+        }
+        Ok(other) => {
+            diag::warn!(Net, "master {role} ignored unexpected uni {other:?}");
+        }
+        Err(error) => {
+            diag::warn!(
+                Net,
+                "master {role} ignored unfinished bootstrap stream: {error}"
+            );
+        }
+    }
+    Ok(())
 }
 
 async fn gameplay_egress(

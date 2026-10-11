@@ -101,6 +101,7 @@ impl Plugin for NetPlugin {
             );
         }
         crate::observe::register(app);
+        crate::minecraft_wire::register(app);
         app.insert_resource(crate::DeferHostWorldReady::from_env())
             .insert_resource(crate::DeferBootstrapApplied::from_env());
     }

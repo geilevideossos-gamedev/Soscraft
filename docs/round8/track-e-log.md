@@ -33,7 +33,7 @@ Commit: 42262ec2
 
 ### E2. minecraft_net carries the multiplayer messages
 
-Commit: see `git log` ("minecraft_net carries the multiplayer messages")
+Commit: 8fbff5af
 
 - **Changed:** `crates/minecraft_net` gains `postcard` 1.1.3 (`use-std`, from crates.io, so the `serde_json` fallback was not needed) and `minecraft_commands` for the chat types. New `messages.rs`: `PROTOCOL = 1`, `ToServerFrame` / `ToClientFrame` (frame number and cumulative ack), `ToServer`, `ToClient`, `HandState`, `HandEvent`, `Target`, `Click` / `ClickMode`, `Login`, `Rules`, `StateFrame`, `PlayerView`, `MenuView` / `MenuKind` / `MenuExtras`, `GearView` / `GearItem`, `BossBarUpdate`, and the opaque `Nbt`, `Blob` and `ChunkBlob` byte holders, as in section 4 of the design. `check_hello(protocol, registry, host_registry)` and `HelloRefusal::reason()` give the `Rejected` text. New `codec.rs`: `encode(lane, &T)` / `decode(lane, bytes)` over postcard with the lane limits (reliable 4 MiB, bulk 256 KiB, state 256 KiB), refusing oversize input on both sides and trailing bytes; `ChunkBatchBlob` writes and reads the `"MC"` bulk blob (`"MC"`, version 1, seq, count, then x, z, length and bytes per chunk) and `peek_seq` reads a batch's seq without decoding it. Nothing uses them yet; E3 carries them.
 - **Tests (`minecraft_net`):** `every_message_to_the_server_round_trips` and `every_message_to_the_client_round_trips` (each variant, checked by an exhaustive match so a new variant fails the test until it is added, then all of them in one frame), `state_lane_messages_round_trip` (`HandState`, `StateFrame`), `oversize_input_is_refused` (encode and decode, per lane), `trailing_and_truncated_bytes_are_refused`, `a_long_count_with_no_data_behind_it_is_refused`, `hello_carries_the_protocol`, `hello_is_checked_for_protocol_then_registry`, `refusals_explain_themselves`, `a_new_player_view_has_every_slot`, `the_chunk_batch_header_round_trips` (exact header bytes), `broken_chunk_batches_are_refused` (magic, version, truncation, trailing bytes, a count that lies), `a_chunk_batch_over_the_bulk_limit_is_refused`.
@@ -44,4 +44,59 @@ Commit: see `git log` ("minecraft_net carries the multiplayer messages")
   - The `"MC"` blob's integers are big-endian, like vanilla's own network and NBT data.
   - `encode` also refuses a message over its lane's limit, so the host can never send what the friend would refuse.
 - **Test steps:** none in game; nothing uses the messages until E3 and E6.
+- **Kit:** none.
+
+### E3. The MW2 relay carries Minecraft messages between the host and friends
+
+Commit: see `git log` ("The MW2 relay carries Minecraft messages between the host and friends")
+
+- **Changed:**
+  - `net::PROTOCOL_VERSION` 94 to 95. New packets in `transport/protocol.rs`: `ClientPacket::Minecraft` (tag 4), `ClientPacket::MinecraftState` (5), `ServerPacket::Minecraft` (15) and `ServerPacket::MinecraftState` (16), each a length-prefixed opaque payload that `net` never decodes.
+  - `transport/udp_session.rs`:
+    - `UdpAuthorityHub::ingress` hands `Minecraft` packets from the control lane and `MinecraftState` packets from the datagram lane to `take_minecraft()` for any **enrolled** member (the sender's `MemberId` must map to a connection in `peers`), with no `Committed` wait. A reliable packet on the datagram lane or a state packet on the control lane is dropped.
+    - `retire_connection` records the client for `take_retired()`. New `send_minecraft(client, lane, bytes)` and `member_of_client`.
+    - `UdpClientLink::recv_ticks` hands both kinds to `take_minecraft()`. A `Minecraft` packet that fails to decode is dropped with a warning instead of returning the error, which used to lose the rest of that batch of control packets. New `send_minecraft(lane, bytes)`.
+    - `RelayMailbox` gains `control_outbound_len()`, `take_control_outbound_up_to(n)` and the shared `MinecraftBulk` queues.
+  - `transport/master.rs`:
+    - The bridge moves control packets from the mailbox into its 32-frame channel only up to the channel's free capacity. It used to move all 64 at once and end the bridge when the channel was full. The rest now wait in the mailbox.
+    - `uni_ingress` reads each stream's relay header and magic first. An `"MC"` stream goes to its own reader task with its own 8 s deadline and a bounded queue of 16 batches; a broken, slow or overflowing one is dropped with a warning, never a `TransportFault`. A `"BS"` stream is read and faulted exactly as before.
+    - The host runs a new `minecraft_egress` task with one task per `"MC"` stream. A failed open, write or finish, a stop by the relay, or its 10 s deadline is reported back as `BulkReport { seq, Err }` and never ends the bridge. `"MC"` streams use stream priority -48, below bootstrap (-32).
+  - `src/minecraft_wire.rs` (new), the `MinecraftWire` resource for both roles:
+    - Fields and calls: `connected`, `joined`, `left`, `failed`, `bulk_failures`; `send`, `send_state`, `send_batch`, `batch_received`, `take_inbox`, `take_state`, `take_batches`, `bad_message`, `drop_peer`.
+    - Reliable frames are `frame u32, ack u32`, then a body that is zstd-compressed when that helps. The body is a slice of a stream of length-prefixed messages, so a message of any size up to 4 MiB crosses in order, split over frames of at most 15 KiB.
+    - Host: a window of `min(8, 24 / friends)` unacknowledged frames per friend; 64 KiB/s per friend (`IW4L_MC_RELIABLE_KIB`); Minecraft frames only while the control mailbox holds fewer than 48 entries; "connection too slow" after 20 s without an acknowledgement or over 4 MiB unsent; at most 2 `"MC"` streams in flight across all friends; the same batch sent again 3 s after the egress reported the last copy written or failed, and "Lost the world stream" 30 s after its first send; "Too many broken messages" at 20 broken frames in a minute.
+    - Friend: at most one data frame per tick and 4 unacknowledged, and nothing at all is sent until the bridge is `Joined`.
+    - Ack-only frames (frame 0) carry acknowledgements when no data goes, outside the window. State frames are newest-wins per tick.
+    - Systems: receive in `PreUpdate`, send in `PostUpdate` (frames paced to 20 Hz, state and bulk every frame). A friend the wire drops is retired through `retire_client_with_reason`, so the friend sees the reason, and removed from the `AuthorityWorld`.
+  - `crates/iw4l-master/src/main.rs`: when a relay frame finds its target's control queue full, the master closes the friend's connection (the target when the host sent it, the sender when a friend sent it) and keeps the host's loop running. A host frame for a member that is no longer in the room is dropped with a log line instead of closing the host, since a friend who just left could otherwise close the room.
+- **Tests:**
+  - `net` (`minecraft_wire.rs`):
+    - `minecraft_packets_round_trip_with_their_own_tags`
+    - `a_broken_minecraft_packet_does_not_end_the_link`
+    - `minecraft_from_an_enrolled_but_uncommitted_peer_is_delivered`
+    - `a_friend_that_never_acknowledges_gets_only_the_window`: 8 frames for one friend, 6 each for four.
+    - `minecraft_frames_leave_room_in_the_mailbox_for_mw2`: with 30 MW2 entries queued and three friends, the mailbox stops at 48, then each friend stops at its window of 8.
+    - `the_byte_budget_spreads_a_backlog_over_seconds`: 1 MiB of incompressible messages; at most 64 KiB in the first second; drained after 15-20 s, intact and in order.
+    - `messages_of_any_size_cross_both_ways_in_order`: 100 KiB and 300 KiB messages, state frames, the friend's one frame per tick and window of 4.
+    - `nothing_is_sent_before_the_link_is_up`
+    - `an_unacknowledged_batch_is_sent_again_with_the_same_seq`: 2 streams in flight, no second copy before the egress reports, a resend 3 s after the report with the same seq and blob, a drop at 30 s.
+    - `a_failed_minecraft_write_is_reported_and_the_link_stays_up`
+    - `a_broken_minecraft_stream_is_dropped_and_bootstrap_still_arrives`
+    - `a_silent_or_flooded_friend_is_dropped_as_too_slow`
+    - `broken_frames_count_and_a_gap_loses_the_stream`
+  - `iw4l-master`: `a_full_queue_closes_the_friend_and_keeps_the_host`.
+- **Decisions:**
+  - **Minecraft packets carry no `PacketHeader`.** A relay friend learns its `ConnectionId` only from the bootstrap offer, which comes after the map loads, long after `Hello` must go. The host identifies the sender by the relay's `MemberId`, which the master stamps and the friend cannot choose, and accepts it only if that member is enrolled in `peers`. That is the design's `peers[conn]==from` check, seen from the other side. There is no epoch either: a Minecraft session ends with the MW2 client, and `left` reports it.
+  - **The frame number and acknowledgement live in the wire, not in `minecraft_net`.** `net` stays free of `minecraft_net`, which pulls in `minecraft_commands` and MinecraftOSS, and treats every message as opaque bytes. So `ToServerFrame`, `ToClientFrame` and `ToServer::Ack` from E2 are not used on the wire: the session hands each encoded `ToClient` or `ToServer` to `MinecraftWire::send`, and the wire frames, numbers and acknowledges it. They stay in `minecraft_net` for now; E6 or E7b may remove them.
+  - **A batch is sent again only once the egress has reported its last copy, and 3 s after that report.** The design times the 3 s from the send. On a slow link a 128 KiB stream can still be in the host's write or the master's forward after 3 s, and a second copy would take another of the master's 4 stream slots that MW2 bootstrap offers need. Counting from the report (the master has all the data then) keeps one copy per batch in flight.
+  - **Ack-only frames are outside the windows**, so a full window on one side can never stop the other side from acknowledging.
+  - **The byte budget always lets the first frame of each second go.** Frames are at most 15 KiB and the budget is 64 KiB, so this only matters if `IW4L_MC_RELIABLE_KIB` is set very low, and the stream still moves then.
+  - **A gap in frame numbers drops the friend with "Lost the world stream"** instead of skipping it. The control lane is ordered, so a gap means a message was cut in half.
+  - **The friend counts broken frames but never drops the host for them.** Only a gap or an oversize message length sets `failed`.
+  - **The master test is a unit test of the decision** (`full_queue_victim`). A real QUIC pair in a test needs a certificate generator, which the workspace does not have.
+  - **Finding: in a relay match nothing compares `net::PROTOCOL_VERSION`.** The master only logs the `game_protocol` of its hello, and relay admission compares the map, weapon and class digests, so a protocol 94 build still joins a 95 host for MW2. That is harmless for Minecraft: the host only ever answers a friend that spoke first, and a 94 host ignores the new tags. A 95 friend on a 94 host would wait on the loading screen resending `Hello`, so E7c should show "The host runs a different build" after some seconds without `Login`. The master was not given a new refusal, because that needs a new `ServiceError` and a `master_protocol` change.
+  - **The 64 MiB bound on the friend's queues** (section 11.2) belongs to `RemoteWorld` (E7b). The wire's own bound is the 16-batch `"MC"` queue.
+- **Test steps:** nothing new shows in game until E6 sends chunks. With the M1 build:
+  1. Rebuild the relay once, for the master patch: close any running relay, run `& scripts\cargo-slot.ps1 build --release --locked -p iw4l-master`, then copy `D:\iw4l-target\release\iw4l-master.exe` to `C:\Games\Mashup\2010-Rust-Rewrite-Mashup\`.
+  2. Run `& scripts\mp-local.ps1 -Map iw4:mp_rust`. Both soldiers still see and shoot each other, as in E1, now on protocol 95.
 - **Kit:** none.
