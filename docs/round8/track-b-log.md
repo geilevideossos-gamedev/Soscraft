@@ -513,3 +513,18 @@ After 2742b33d.
 ```
 IW4L_MINECRAFT_KIT=minecraft:hoglin_spawn_egg*16,minecraft:zoglin_spawn_egg*4,minecraft:crimson_fungus*64,minecraft:warped_fungus*16,minecraft:crimson_nylium*16,minecraft:respawn_anchor*2,minecraft:diamond_sword,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:netherite_chestplate,minecraft:cow_spawn_egg*4,minecraft:creeper_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:lava_bucket,minecraft:bow,minecraft:arrow*32,minecraft:cooked_beef*32,minecraft:netherrack*64,minecraft:cobblestone*64
 ```
+
+## Group b1-piglins-1
+
+Brief `b1-piglins.md`, groups 1, 2 and 2b. Numbered b1.1 and on.
+
+### b1.1. Minecraft piglin bartering rolls from the vanilla loot table
+
+After 708a2da3.
+
+- **Changed:** vendored `entities/src/loot.rs`: `EntityLootBook` also loads `loot_table/gameplay/` (as `minecraft:gameplay/<id>`), the enchantment definitions and the enchantment tags from the jar. `roll_barter()` rolls `minecraft:gameplay/piglin_bartering` on its own random sequence, and only a `minecraft:barter` table; `roll` still takes only `minecraft:entity` tables. The evaluator knows `minecraft:enchant_randomly` (`EnchantRandomlyFunction`): `options` as one id, a list or a `#tag`; with `only_compatible` (default true) an item other than a book keeps only enchantments whose `supported_items` hold it; one `nextInt(size)` draw picks the enchantment, then `Mth.nextInt(1, max_level)` its level (no draw when the maximum is 1); a book becomes `minecraft:enchanted_book` with `minecraft:stored_enchantments`, other items get `minecraft:enchantments`.
+- **Tests:** `loot` (with the jar): `the_barter_table_weighs_469_and_every_entry_can_come_out` (20 000 rolls: all 19 entries come out, every count in range, obsidian near 40/469 and ender pearls near 10/469), `a_soul_speed_book_from_bartering_is_an_enchanted_book_of_level_one_to_three`, `bartered_iron_boots_carry_soul_speed`, `fire_resistance_potions_and_splash_potions_keep_their_contents`, `an_entity_roll_never_reads_the_barter_table`.
+- **Decisions:**
+  - `enchant_randomly` without `options` (the whole registry, in registry order) stays unsupported and gives no drop, because the registry order can't be reproduced from the data files.
+  - `include_additional_cost_component` is ignored: it only matters with the trade parameter, which a barter never has.
+- **Test steps:** none yet; bartering comes with b1 group 5.

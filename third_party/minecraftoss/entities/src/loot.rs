@@ -41,6 +41,8 @@ pub struct EntityLootBook {
     /// Item and entity type tags the tables name (without the `#`).
     item_tags: HashMap<String, Vec<String>>,
     entity_tags: HashMap<String, Vec<String>>,
+    enchantments: HashMap<String, Value>,
+    enchantment_tags: HashMap<String, Vec<String>>,
 }
 
 /// Source: LivingEntity.dropFromShearingLootTable and the pinned common JAR's
@@ -149,11 +151,16 @@ impl EntityLootBook {
         let mut smelting = HashMap::new();
         let mut item_tags = HashMap::new();
         let mut entity_tags = HashMap::new();
+        let mut enchantments = HashMap::new();
+        let mut enchantment_tags = HashMap::new();
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index)?;
             let name = entry.name().to_owned();
             let wanted = name.starts_with("data/minecraft/loot_table/entities/")
                 || name.starts_with("data/minecraft/loot_table/charged_creeper/")
+                || name.starts_with("data/minecraft/loot_table/gameplay/")
+                || name.starts_with("data/minecraft/enchantment/")
+                || name.starts_with("data/minecraft/tags/enchantment/")
                 || name.starts_with("data/minecraft/tags/item/")
                 || name.starts_with("data/minecraft/tags/entity_type/")
                 || name.starts_with("data/minecraft/recipe/");
@@ -174,6 +181,10 @@ impl EntityLootBook {
                 item_tags.insert(format!("minecraft:{id}"), tag_values(&json));
             } else if let Some(id) = stem.strip_prefix("data/minecraft/tags/entity_type/") {
                 entity_tags.insert(format!("minecraft:{id}"), tag_values(&json));
+            } else if let Some(id) = stem.strip_prefix("data/minecraft/tags/enchantment/") {
+                enchantment_tags.insert(format!("minecraft:{id}"), tag_values(&json));
+            } else if let Some(id) = stem.strip_prefix("data/minecraft/enchantment/") {
+                enchantments.insert(format!("minecraft:{id}"), json);
             } else if json["type"] == "minecraft:smelting" {
                 if let (Some(input), Some(result)) = (json["ingredient"].as_str(), json["result"]["id"].as_str()) {
                     smelting.insert(input.to_owned(), result.to_owned());
@@ -187,6 +198,8 @@ impl EntityLootBook {
             smelting,
             item_tags,
             entity_tags,
+            enchantments,
+            enchantment_tags,
         })
     }
 
@@ -226,8 +239,17 @@ impl EntityLootBook {
     /// Returns None if the table has a context, condition or modifier this
     /// evaluator cannot yet reproduce. Named RNG persists across kills.
     pub fn roll(&mut self, entity_id: &str, context: EntityLootContext) -> Option<Vec<ItemStack>> {
+        self.roll_of_type(entity_id, "minecraft:entity", context)
+    }
+
+    pub fn roll_barter(&mut self) -> Option<Vec<ItemStack>> {
+        let context = EntityLootContext { this_type: Some("minecraft:piglin"), ..Default::default() };
+        self.roll_of_type("minecraft:gameplay/piglin_bartering", "minecraft:barter", context)
+    }
+
+    fn roll_of_type(&mut self, entity_id: &str, kind: &str, context: EntityLootContext) -> Option<Vec<ItemStack>> {
         let table = self.tables.get(entity_id)?;
-        if table["type"].as_str()? != "minecraft:entity" {
+        if table["type"].as_str()? != kind {
             return None;
         }
         let id = table["random_sequence"].as_str()?;
@@ -238,7 +260,14 @@ impl EntityLootBook {
         // A table outside the implemented evaluator must not partially advance
         // the persistent named stream before its missing rule is implemented.
         let mut candidate = random.clone();
-        let data = LootData { tables: &self.tables, smelting: &self.smelting, item_tags: &self.item_tags, entity_tags: &self.entity_tags };
+        let data = LootData {
+            tables: &self.tables,
+            smelting: &self.smelting,
+            item_tags: &self.item_tags,
+            entity_tags: &self.entity_tags,
+            enchantments: &self.enchantments,
+            enchantment_tags: &self.enchantment_tags,
+        };
         let drops = roll_table(&data, table, context, &mut candidate)?;
         *random = candidate;
         Some(drops)
@@ -256,6 +285,8 @@ struct LootData<'a> {
     smelting: &'a HashMap<String, String>,
     item_tags: &'a HashMap<String, Vec<String>>,
     entity_tags: &'a HashMap<String, Vec<String>>,
+    enchantments: &'a HashMap<String, Value>,
+    enchantment_tags: &'a HashMap<String, Vec<String>>,
 }
 
 impl LootData<'_> {
@@ -267,6 +298,51 @@ impl LootData<'_> {
                 None => out.push(value.clone()),
             }
         }
+    }
+
+    fn item_set_contains(&self, set: &Value, item: &str) -> Option<bool> {
+        match set {
+            Value::String(id) => Some(match id.strip_prefix('#') {
+                Some(tag) => {
+                    let mut items = Vec::new();
+                    Self::members(self.item_tags, tag, &mut items);
+                    items.iter().any(|i| i == item)
+                }
+                None => id == item,
+            }),
+            Value::Array(list) => Some(list.iter().any(|v| v.as_str() == Some(item))),
+            _ => None,
+        }
+    }
+
+    fn enchant_randomly(&self, function: &Value, item: &str, random: &mut impl LootRandom) -> Option<Option<(String, i32)>> {
+        let mut options = Vec::new();
+        match function.get("options")? {
+            Value::String(one) => match one.strip_prefix('#') {
+                Some(tag) => Self::members(self.enchantment_tags, tag, &mut options),
+                None => options.push(one.clone()),
+            },
+            Value::Array(list) => {
+                for id in list {
+                    options.push(id.as_str()?.to_owned());
+                }
+            }
+            _ => return None,
+        }
+        let compatible_only = function.get("only_compatible").and_then(Value::as_bool).unwrap_or(true) && item != "minecraft:book";
+        let mut candidates = Vec::new();
+        for id in options {
+            let enchantment = self.enchantments.get(&id)?;
+            if !compatible_only || self.item_set_contains(&enchantment["supported_items"], item)? {
+                candidates.push((id, enchantment["max_level"].as_i64()? as i32));
+            }
+        }
+        if candidates.is_empty() {
+            return Some(None);
+        }
+        let (id, max_level) = candidates.swap_remove(random.next_int(candidates.len() as u32) as usize);
+        let level = if max_level <= 1 { 1 } else { random.next_int(max_level as u32) as i32 + 1 };
+        Some(Some((id, level)))
     }
 
     /// An entity type predicate (an ID or `#tag`) against an entity's type.
@@ -396,6 +472,7 @@ fn create(data: &LootData, leaf: &Value, context: EntityLootContext, random: &mu
             let mut item = leaf["name"].as_str()?.to_owned();
             let mut count: i64 = 1;
             let mut potion = None;
+            let mut enchantments = Vec::new();
             let functions: Vec<&Value> = match leaf.get("modifier").or_else(|| leaf.get("functions")) {
                 Some(Value::Array(list)) => list.iter().collect(),
                 Some(single) => vec![single],
@@ -415,6 +492,14 @@ fn create(data: &LootData, leaf: &Value, context: EntityLootContext, random: &mu
                     "minecraft:furnace_smelt" => item = data.smelting.get(&item)?.clone(),
                     // `SetPotionFunction`: the potion contents component.
                     "minecraft:set_potion" => potion = Some(function["id"].as_str()?.to_owned()),
+                    "minecraft:enchant_randomly" => {
+                        if let Some(enchantment) = data.enchant_randomly(function, &item, random)? {
+                            if item == "minecraft:book" {
+                                item = "minecraft:enchanted_book".to_owned();
+                            }
+                            enchantments.push(enchantment);
+                        }
+                    }
                     _ => return None,
                 }
             }
@@ -423,6 +508,16 @@ fn create(data: &LootData, leaf: &Value, context: EntityLootContext, random: &mu
                 let mut stack = ItemStack::new(item, u8::try_from(count).ok()?);
                 if let Some(potion) = potion {
                     stack.components = Some(serde_json::json!({ "minecraft:potion_contents": { "potion": potion } }));
+                }
+                if !enchantments.is_empty() {
+                    let mut components = match stack.components.take() {
+                        Some(Value::Object(existing)) => existing,
+                        _ => serde_json::Map::new(),
+                    };
+                    for (id, level) in enchantments {
+                        crate::enchant::add_enchantment(&stack.id, &mut components, &id, level);
+                    }
+                    stack.components = Some(Value::Object(components));
                 }
                 out.push(stack);
             }
@@ -588,6 +683,8 @@ mod tests {
             smelting: HashMap::new(),
             item_tags: HashMap::new(),
             entity_tags: HashMap::new(),
+            enchantments: HashMap::new(),
+            enchantment_tags: HashMap::new(),
         };
         let mut book = make();
         assert!(book
@@ -607,5 +704,153 @@ mod tests {
             .unwrap();
         assert_eq!(first.len(), fresh.len());
         assert_eq!(first[0].count, fresh[0].count);
+    }
+
+    fn jar_book() -> Option<EntityLootBook> {
+        let root = std::env::var_os("MINECRAFTOSS_ROOT")?;
+        let jar = Path::new(&root).join("client.jar");
+        if !jar.is_file() {
+            return None;
+        }
+        Some(EntityLootBook::from_jar(&jar, 7).expect("the loot tables"))
+    }
+
+    fn barters(book: &mut EntityLootBook, rolls: usize) -> Vec<ItemStack> {
+        (0..rolls)
+            .map(|_| {
+                let mut drops = book.roll_barter().expect("a barter roll");
+                assert_eq!(drops.len(), 1);
+                drops.remove(0)
+            })
+            .collect()
+    }
+
+    fn potion(stack: &ItemStack) -> Option<&str> {
+        stack.components.as_ref()?["minecraft:potion_contents"]["potion"].as_str()
+    }
+
+    fn soul_speed(stack: &ItemStack, key: &str) -> Option<i64> {
+        stack.components.as_ref()?[key]["minecraft:soul_speed"].as_i64()
+    }
+
+    #[test]
+    fn the_barter_table_weighs_469_and_every_entry_can_come_out() {
+        let Some(mut book) = jar_book() else {
+            return;
+        };
+        let table = &book.tables["minecraft:gameplay/piglin_bartering"];
+        let total: u64 = table["pools"][0]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["weight"].as_u64().unwrap())
+            .sum();
+        assert_eq!(total, 469);
+        let rolls = 20_000;
+        let drops = barters(&mut book, rolls);
+        let ranges: [(&str, u8, u8); 14] = [
+            ("minecraft:iron_nugget", 10, 36),
+            ("minecraft:ender_pearl", 2, 4),
+            ("minecraft:dried_ghast", 1, 1),
+            ("minecraft:string", 3, 9),
+            ("minecraft:quartz", 5, 12),
+            ("minecraft:obsidian", 1, 1),
+            ("minecraft:crying_obsidian", 1, 3),
+            ("minecraft:fire_charge", 1, 1),
+            ("minecraft:leather", 2, 4),
+            ("minecraft:soul_sand", 2, 8),
+            ("minecraft:nether_brick", 2, 8),
+            ("minecraft:spectral_arrow", 6, 12),
+            ("minecraft:gravel", 8, 16),
+            ("minecraft:blackstone", 8, 16),
+        ];
+        let mut seen = HashMap::new();
+        for stack in &drops {
+            let key = match (stack.id.as_str(), potion(stack)) {
+                ("minecraft:potion", Some(potion)) => format!("potion {potion}"),
+                (id, _) => id.to_owned(),
+            };
+            *seen.entry(key).or_insert(0usize) += 1;
+            if let Some((_, min, max)) = ranges.iter().find(|(id, _, _)| *id == stack.id) {
+                assert!((*min..=*max).contains(&stack.count), "{stack:?}");
+            }
+        }
+        for (id, _, _) in ranges {
+            assert!(seen.contains_key(id), "{id} never came out");
+        }
+        for key in [
+            "minecraft:enchanted_book",
+            "minecraft:iron_boots",
+            "minecraft:splash_potion",
+            "potion minecraft:fire_resistance",
+            "potion minecraft:water",
+        ] {
+            assert!(seen.contains_key(key), "{key} never came out");
+        }
+        assert_eq!(seen.len(), 19);
+        let share = |key: &str| seen[key] as f64 / rolls as f64;
+        assert!((share("minecraft:obsidian") - 40.0 / 469.0).abs() < 0.008);
+        assert!((share("minecraft:ender_pearl") - 10.0 / 469.0).abs() < 0.004);
+    }
+
+    #[test]
+    fn a_soul_speed_book_from_bartering_is_an_enchanted_book_of_level_one_to_three() {
+        let Some(mut book) = jar_book() else {
+            return;
+        };
+        let drops = barters(&mut book, 4000);
+        assert!(drops.iter().all(|stack| stack.id != "minecraft:book"));
+        let mut levels = [0usize; 3];
+        for stack in drops.iter().filter(|s| s.id == "minecraft:enchanted_book") {
+            assert_eq!(stack.count, 1);
+            let level = soul_speed(stack, "minecraft:stored_enchantments").expect("stored soul speed");
+            assert!((1..=3).contains(&level));
+            assert!(stack.components.as_ref().unwrap().get("minecraft:enchantments").is_none());
+            levels[level as usize - 1] += 1;
+        }
+        assert!(levels.iter().all(|&n| n > 0), "{levels:?}");
+    }
+
+    #[test]
+    fn bartered_iron_boots_carry_soul_speed() {
+        let Some(mut book) = jar_book() else {
+            return;
+        };
+        let drops = barters(&mut book, 4000);
+        let boots: Vec<_> = drops.iter().filter(|s| s.id == "minecraft:iron_boots").collect();
+        assert!(!boots.is_empty());
+        for stack in boots {
+            let level = soul_speed(stack, "minecraft:enchantments").expect("soul speed");
+            assert!((1..=3).contains(&level));
+        }
+    }
+
+    #[test]
+    fn fire_resistance_potions_and_splash_potions_keep_their_contents() {
+        let Some(mut book) = jar_book() else {
+            return;
+        };
+        let drops = barters(&mut book, 4000);
+        let splash: Vec<_> = drops.iter().filter(|s| s.id == "minecraft:splash_potion").collect();
+        assert!(!splash.is_empty());
+        assert!(splash.iter().all(|s| potion(s) == Some("minecraft:fire_resistance")));
+        let potions: Vec<_> = drops.iter().filter(|s| s.id == "minecraft:potion").collect();
+        assert!(potions.iter().all(|s| matches!(potion(s), Some("minecraft:fire_resistance" | "minecraft:water"))));
+        assert!(potions.iter().any(|s| potion(s) == Some("minecraft:water")));
+        assert!(potions.iter().any(|s| potion(s) == Some("minecraft:fire_resistance")));
+    }
+
+    #[test]
+    fn an_entity_roll_never_reads_the_barter_table() {
+        let Some(mut book) = jar_book() else {
+            return;
+        };
+        assert!(book.roll("minecraft:gameplay/piglin_bartering", EntityLootContext::default()).is_none());
+        assert!(book.roll("minecraft:piglin", EntityLootContext::default()).is_some());
+        let first = book.roll_barter().unwrap();
+        let mut fresh = jar_book().unwrap();
+        assert_eq!(fresh.roll_barter().unwrap()[0].id, first[0].id);
+        book.tables.get_mut("minecraft:gameplay/piglin_bartering").unwrap()["type"] = Value::from("minecraft:entity");
+        assert!(book.roll_barter().is_none());
     }
 }
