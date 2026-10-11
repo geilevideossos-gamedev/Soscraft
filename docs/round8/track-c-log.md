@@ -808,3 +808,20 @@ Previous commit: a72a4ff7
 ```
 IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:diamond_sword+sharpness=5,minecraft:end_crystal*4
 ```
+
+### 33. The Minecraft state doc covers the End flashes, the dragon's effects and the End music
+
+Previous commit: 573af186
+
+- **Changed:** `docs/MINECRAFT-SURVIVAL.md`: the End section describes the sky flashes, the breath particles (fireball trail and burst, clouds, the mouth while landing and flaming), the explosion particles where the dragon breaks blocks and while it dies, the knockback of players' hits and the music. The limitations lose "the End sky has no flashes" (track A edits the same line for the gateways: merge by hand), the dragon's missing knockback, mouth breath, fireball trail, wall explosion and death particles, "There is no boss music" and the credits' missing music; the dissolve and the overworld and Nether music stay listed.
+- **The jshell lines** for the End flash test values are in entry 24.
+- **Not done: c3 group 9** (the dragon's dissolve while it dies). It was optional and needs a second texture sample in the entity shader, a dissolve range in the chunk mesh and an atlas offset in `render_gpu`, in files tracks A and C2 also edit; it moves to a later round and stays in the limitations.
+- **Tests:** none (docs only).
+- **Test steps:** none beyond entries 28 to 32.
+- **Kit:** none.
+
+### Group c3-sky-dragon-2, combined kit
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:diamond_sword+sharpness=5,minecraft:cobblestone*128,minecraft:oak_planks*64,minecraft:end_crystal*4
+```
