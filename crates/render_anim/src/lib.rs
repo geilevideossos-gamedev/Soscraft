@@ -51,6 +51,7 @@ mod minecraft_inventory;
 mod minecraft_loading;
 mod minecraft_mining;
 mod minecraft_minimap;
+mod minecraft_players;
 mod minecraft_portal;
 mod minecraft_remote;
 mod minecraft_respawn;

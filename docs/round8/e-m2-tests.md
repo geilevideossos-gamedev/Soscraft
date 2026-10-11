@@ -27,3 +27,22 @@ Before E9, chunks loaded only around the host, and a friend more than about 8 ch
 10. Close both windows (type `quit` in the script's console).
 
 **Kit:** none needed.
+
+## E10a. The per-player step runs for the host by client number
+
+Nothing new to see: the host's own survival code moved into its own file so the same code can run for every player next. This checks that the host still plays exactly as before. Use the host window alone: start `iw4l-mp-m2.exe` on its own (no friend), with a new world (`IW4L_MINECRAFT_WORLD=mp-m2-solo` in its `.env`) and the kit below, by day. Type `/difficulty normal` first.
+
+1. Walk on grass, then on stone: the footsteps change. Sprint for a while: the hunger bar drops. Eat the cooked beef (hold right click): the crumbs fly and the bar fills.
+2. Jump down 6 blocks: the fall hurts, with the land sound. Swim under water until the bubbles run out: you drown slowly. Screenshot the bubbles. **S1**
+3. Place cobblestone, then break it with the empty hand (select an empty hotbar slot, hold left click): the cracks grow and the block drops.
+4. Place the crafting table and the chest and open each with right click. Put something in the chest, close it and open it again.
+5. Hold the shield in the offhand (F swaps hands). Use the skeleton spawn egg on the ground a few blocks away, then hold right click towards it: its arrows clang off the shield.
+6. Throw an ender pearl: you land where it lands and lose a little health.
+7. Hold the totem in the offhand, then type `/kill`: the totem pops and you live. Screenshot. **S2**
+8. Place the bed and sleep in it once (right click) at night (`/time set night`), then type `/kill`. You respawn at the bed, and your items drop where you died.
+9. Build a nether portal with the obsidian and light it with the flint and steel. Walk in: the Nether loads. Walk back through: the Overworld loads where you left.
+10. Wear the elytra, `/tp ~ ~40 ~`, jump while falling to glide, and use a rocket: it boosts you.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cooked_beef*8,minecraft:cobblestone*32,minecraft:crafting_table,minecraft:chest,minecraft:shield,minecraft:skeleton_spawn_egg,minecraft:ender_pearl*4,minecraft:totem_of_undying,minecraft:white_bed,minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:elytra,minecraft:firework_rocket*8
+```

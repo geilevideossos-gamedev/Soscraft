@@ -502,10 +502,36 @@ Commit: see `git log` ("The chunk map loads chunks around every player"). The pr
 - **Test steps:** `docs/round8/e-m2-tests.md`, section E9.
 - **Kit:** none needed.
 
+### E10a. The per-player step runs for the host by client number (pure move)
+
+Commit: see `git log` ("The per-player step runs for the host by client number"). The previous commit is `da5b8685`.
+
+- **Changed:**
+  - `crates/render_anim/src/minecraft_players.rs` (new): the host's per-player rules, moved out of `minecraft_world::update` and keyed by an MW2 `ClientId` and the level's origin instead of `local`:
+    - `begin`: the remote-killstreak flag, leaving a level, the arrival at a new level (respawn block, arrival place, portal travel sound, placement, abilities, the End platform), the MW2 life watch with the respawn, placement, the End step and the elytra. It returns `Begun::{Live, Left, Arriving, Hidden}`; the host does its own presentation for each (the switch screen, `leave_level` with its open screen, the voxel switch, the spawn-gate stream, the clocks), exactly as before.
+    - `life`: alive and dead, team switches, keep-inventory, rules and game mode, abilities, creative flight, the death watch, the survival respawn or the MW2 health observation, the totem pop and the deaths that name a killer.
+    - `movement`: footsteps, falls, the hand clock and cooldowns, breathing, hazards, Frost Walker and the totem check. It returns what the HUD needs (`holding_item`, `empty_hand`, cooldowns) instead of writing it.
+    - `act`: the whole hand action block (punch, eat, mine by hand, creative breaking, stations, doors, buckets, throws, placement and the rest), with the host's Bevy input and screens passed in as `HostHand`. It returns the stations to open and the mined positions.
+    - `struck` (mob hits with the shield, finished item uses, command teleports, pearl landings, pushes, potions) and `settle` (the totem hold-off and the MW2 health settle, which returns the death message instead of showing it).
+    - `VoxelQueues`: the process-global queues `take_minecraft_deaths`, `take_totem_pops` and `take_team_switches` are drained once per frame into maps by client. Each player's step takes only its own entries, and an entry waits until that player's step takes it. Entries of a client with no Minecraft player are dropped.
+    - The helpers only the moved code used (`finish_item_use`, `hold_off_death`, `scene_block`, `obstacles`, `pad_trigger`) moved with it. The moved code's comments were dropped (fork rule: no comments in new files). The file passes `rustfmt --check`.
+  - `crates/render_anim/src/minecraft_world.rs`: `update` calls those functions in the same order as before, between its own presentation steps; the constants and helpers both files use are `pub(crate)`. The mining block, the container tick, the entity tick, the inventory UI and the presentation stay in `update`.
+  - `crates/sim/src/voxel.rs`: `player_damage_pending(client)` is per client, so one player's queued damage no longer holds back another player's observe and settle (section 6.1 step 3).
+- **Tests:**
+  - `render_anim`: `minecraft_players::tests::a_death_queued_for_one_client_waits_for_that_clients_own_step` (client 0 steps first and takes only its own death; client 1's death, totem pop and team switch survive another drain and are taken once), `queued_entries_of_a_client_without_a_minecraft_player_are_dropped`.
+  - `sim`: `voxel::tests::damage_pending_for_one_player_leaves_the_others_free_to_settle`.
+  - `test -p render_anim --lib` 76, `test -p sim` 79, `check -p launcher` green.
+- **Decisions:**
+  - **The host's step still reads its own MW2 state from the presented snapshot** (`PresentedSnapshot::player(local)`), as before; only the code moved. The step takes the `PlayerState` as an argument, so a friend's step (E10b) passes the one from `AuthorityWorld`. Switching the host to the authority state would aim placement one tick behind the crosshair the host sees, which is a behaviour change, not a move.
+  - **The early returns now return a `Begun`** and the host's frame still stops on them, as before. In E10b a friend's step that is skipped never stops the host's frame or another player's step.
+  - **The commands, the dragon fight tick and the portal step stay in `update`** between `begin` and `life`: the commands are the host's chat lines, the dragon fight ticks the level once per frame, and the portal step writes the host's overlay. Keeping them where they were keeps the order unchanged.
+- **Test steps:** `docs/round8/e-m2-tests.md`, section E10a (single-player regression, one window).
+- **Kit:** `minecraft:cooked_beef` x8, `minecraft:cobblestone` x32, `minecraft:crafting_table` x1, `minecraft:chest` x1, `minecraft:shield` x1, `minecraft:skeleton_spawn_egg` x1, `minecraft:ender_pearl` x4, `minecraft:totem_of_undying` x1, `minecraft:white_bed` x1, `minecraft:obsidian` x10, `minecraft:flint_and_steel` x1, `minecraft:elytra` x1, `minecraft:firework_rocket` x8.
+
 ## Combined kit for every test in this track
 
-`minecraft:obsidian` x10, `minecraft:flint_and_steel` x1, `minecraft:chest` x1, `minecraft:cobblestone` x32, `minecraft:lava_bucket` x1, `minecraft:torch` x16 (6 stacks).
+`minecraft:obsidian` x10, `minecraft:flint_and_steel` x1, `minecraft:chest` x1, `minecraft:cobblestone` x32, `minecraft:lava_bucket` x1, `minecraft:torch` x16, `minecraft:cooked_beef` x8, `minecraft:crafting_table` x1, `minecraft:shield` x1, `minecraft:skeleton_spawn_egg` x1, `minecraft:ender_pearl` x4, `minecraft:totem_of_undying` x1, `minecraft:white_bed` x1, `minecraft:elytra` x1, `minecraft:firework_rocket` x8 (15 stacks).
 
 ```
-IW4L_MINECRAFT_KIT=obsidian*10,flint_and_steel,chest,cobblestone*32,lava_bucket,torch*16
+IW4L_MINECRAFT_KIT=obsidian*10,flint_and_steel,chest,cobblestone*32,lava_bucket,torch*16,cooked_beef*8,crafting_table,shield,skeleton_spawn_egg,ender_pearl*4,totem_of_undying,white_bed,elytra,firework_rocket*8
 ```

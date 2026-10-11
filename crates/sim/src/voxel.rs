@@ -324,8 +324,12 @@ pub fn push_player_damage(client: u32, amount: i32, from: Option<[f32; 3]>, deat
     }
 }
 
-pub fn player_damage_pending() -> bool {
-    PLAYER_DAMAGE.lock().is_ok_and(|damage| !damage.is_empty())
+pub fn player_damage_pending(client: u32) -> bool {
+    PLAYER_DAMAGE.lock().is_ok_and(|damage| damage_pending_for(&damage, client))
+}
+
+fn damage_pending_for(damage: &[PlayerDamage], client: u32) -> bool {
+    damage.iter().any(|queued| queued.client == client)
 }
 
 pub(crate) fn take_player_damage() -> Vec<PlayerDamage> {
@@ -2039,6 +2043,15 @@ mod tests {
         let deaths: Vec<(u32, String)> = take_minecraft_deaths().into_iter().filter(|(c, _)| *c == client).collect();
         assert_eq!(deaths, vec![(client, "Skeleton".to_owned())]);
         assert!(take_minecraft_deaths().iter().all(|(c, _)| *c != client));
+    }
+
+    #[test]
+    fn damage_pending_for_one_player_leaves_the_others_free_to_settle() {
+        let queued = vec![PlayerDamage { client: 3, amount: 4, from: None, death: None }];
+        assert!(damage_pending_for(&queued, 3));
+        assert!(!damage_pending_for(&queued, 0), "the host settles while a friend's damage waits");
+        assert!(!damage_pending_for(&[], 3));
+        assert!(!player_damage_pending(7_000_005));
     }
 
     #[test]
