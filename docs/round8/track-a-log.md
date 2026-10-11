@@ -345,7 +345,7 @@ IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_pick
 
 ### 5. Minecraft blocks mined with the wrong tool drop nothing, and mining wears the tool, like vanilla
 
-Commit: (see the next entry, or `git log` under this subject)
+Commit: c14b293f
 
 - **Changed:**
   - `minecraft_survival/src/digging.rs`: `wrong_tool(book, facts, broken, held)` lists the hand-broken blocks the held stack isn't correct for (`Player.hasCorrectToolForDrops`: the block needs the right tool and the tool's rules don't say yes). `wear_after_break(inventory, selected, hardness, random)` is `Item.mineBlock`: when the block's hardness isn't 0 and the held stack has a tool (`mining_speed::tool_of`, so a `minecraft:tool` component wins), it costs the tool's `damage_per_block`, each point spared with chance `unbreaking / (unbreaking + 1)` as the elytra does; it gives the item id back when the tool broke.
@@ -371,3 +371,17 @@ Commit: (see the next entry, or `git log` under this subject)
 ```
 IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_pickaxe,minecraft:wooden_pickaxe,minecraft:wooden_pickaxe+damage=58,minecraft:stone_pickaxe,minecraft:netherrack*64,minecraft:stone*64,minecraft:obsidian*16,minecraft:iron_ore*8,minecraft:shears,minecraft:cobweb*8,minecraft:diamond_sword,minecraft:oak_leaves*16
 ```
+
+### 6. Docs: Minecraft mining speed
+
+Commit: (see the next entry, or `git log` under this subject)
+
+- **Changed:** `docs/MINECRAFT-SURVIVAL.md` only.
+  - Mining and placing: a paragraph on survival hand mining: the progress per tick (/ 30 or / 100), the tool speeds and rules, Efficiency, Haste, Conduit Power, Mining Fatigue, the water and air penalties and Aqua Affinity, the right-tool list read from the jar (with 26.3's hand-droppable blocks), the dig loop (instant breaks and tunnelling, the crack, the hit sound every 4 ticks, the chips, the 5-tick delay, what starts it over), wrong-tool breaks without drops, experience or exhaustion, hand loot with the real held item, tool wear with Unbreaking, and bullets and creative keeping their own rules.
+  - Commands: `/effect` applies haste, mining fatigue and conduit power; the limitation counts twelve simulated effects.
+  - Crate layout: the player's hand holds the dig in progress.
+  - Limitations: the old "hand mining counts as a diamond pickaxe" line is gone. New: `block_break_speed` from item attribute modifiers is not read, other players won't see a crack, chips or hit sounds until multiplayer, the client decides the break with no server tolerance check, Conduit Power only speeds mining, Haste and Mining Fatigue only come from `/effect` and custom potions, and the water and ground tests come from MW2 movement.
+- **Vendored code (item a3):** `third_party/minecraftoss/player/src/survival.rs` (entry 1: the three effect kinds, `EffectKind::ALL`, `attack_speed_multiplier`) and `third_party/minecraftoss/player/src/lib.rs` (entry 4: `outline_bounds`) were patched. Both were already on the fork's patched list, so item a3 adds no new patched or added MinecraftOSS file.
+- **Tests:** none (documentation).
+- **Test steps:** none on their own; the a3 owner steps are in entries 4 and 5 (brief section 5).
+- **Kit:** none needed.
