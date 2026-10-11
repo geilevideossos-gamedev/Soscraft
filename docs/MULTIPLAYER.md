@@ -806,8 +806,8 @@ The trust model is **friends only.** The room should have a password (`IW4L_MAST
 **One working folder per role.** On Windows the launcher changes into the exe's own folder at start (`launcher/src/main.rs:34-49`), so a working folder is set by where the exe is, not by the process's current directory. The script therefore makes `iw4l-artifacts\mp-local\host\` and `...\friend\`, each with:
 - a **hard link** to the game exe (`New-Item -ItemType HardLink`, same drive, no admin), so no copy of the exe is made;
 - **directory junctions** (`mklink /J`, no admin) for `iw4l-artifacts\cache` and `iw4l-artifacts\minecraft-26.3` to the game folder's own;
-- its own `settings.cfg`, logs, `latest.log`, `command_history.txt` (`hud/src/minecraft_chat.rs:29`), creative hotbars, `profile\` and screenshots, which today two games in one folder would share;
-- no `.env`: the game finds the game folder's `.env` by walking up from its folder (`asset_transport/src/discover.rs:21-45`), so `IW4L_GAMES` and the kit still apply. The script passes everything else per process.
+- its own `settings.cfg`, logs, `latest.log`, `command_history.txt` (`hud/src/minecraft_chat.rs:29`), creative hotbars, `profile\` (copied once from the game folder's) and screenshots, which today two games in one folder would share;
+- its own `.env`, rewritten on every run from the game folder's `.env` without `IW4L_MASTER_HOST_NAME`, `IW4L_MASTER_JOIN` and `IW4L_MINECRAFT_WORLD`, with relative paths made absolute and `IW4L_SKATE=off` added when skating was never set up. A role folder needs one: the launcher's first-run check reads only the `.env` beside the exe (`launcher/src/first_run.rs:17-29`), and without it would ask for the MW2 folder and offer the Skate 3 conversion in each role folder. `IW4L_GAMES`, the password and the kit therefore still apply. The script passes everything else per process.
 
 The host's saves are in its role folder, so the owner's main world is never touched.
 
@@ -828,7 +828,7 @@ The steps:
    IW4L_MINECRAFT_WORLD=<world>
    IW4L_CONSOLE_STDIN=1
    ```
-   `settings.cfg` is a copy of `iw4l-artifacts\settings.cfg` with `fullscreen=false`, `resolution=1280x720` and, unless `-HostSound` is given, `master_volume=0` (`console/src/user_settings.rs:210`), so the owner hears only the friend window.
+   `settings.cfg` is a copy of `iw4l-artifacts\settings.cfg`, made again on every run, with `fullscreen=false`, `resolution=1280x720` (960x540 when the main screen is narrower than 2560, or `-Resolution`) and, unless `-HostSound` is given, `master_volume=0` (`console/src/user_settings.rs:210`), so the owner hears only the friend window.
 5. **Wait** for `state=hosting` and a `room=` line in the host's `master.status`. This takes up to 90 s.
 6. **The friend window:** `mp-local\friend\<exe> map <map>` with the same first three variables and `IW4L_CONSOLE_STDIN=1`, plus:
    ```
@@ -838,8 +838,8 @@ The steps:
    ```
    Its `settings.cfg` is the same copy with `player_name=Friend` and full volume. A different name means a different UUID and player file.
 7. **Wait** until the host's status shows `members>=2`.
-8. **Console control.** The script keeps both games' stdin open (`IW4L_CONSOLE_STDIN`, as `xtask duo` does) and reads lines from its own console: `h <command>` goes to the host's MW2 console, `f <command>` to the friend's. That lets the owner run MW2 console commands in the window that does not have focus. Minecraft chat commands are typed in the window itself.
-9. **Shutting down.** The script waits until both games have exited, then stops the relay and releases the cargo slots.
+8. **Console control.** The script keeps both games' stdin open (`IW4L_CONSOLE_STDIN`, as `xtask duo` does; each game runs under a hidden `cmd /c` that writes its stdout and stderr to `game.out.log` and `game.err.log` in the role folder) and reads lines from its own console: `h <command>` goes to the host's MW2 console, `f <command>` to the friend's, and `quit` sends `quit !` to both. That lets the owner run MW2 console commands in the window that does not have focus. Minecraft chat commands are typed in the window itself.
+9. **Shutting down.** The script waits until both games have exited, then stops the relay and releases the cargo slots. It prints the peak working set of each window and the relay and appends it to `mp-local\memory.log`. A relay that was already running when the script started is used and left running.
 
 **Parameters:**
 - `-Exe` defaults to the newest `iw4l-mp-*.exe` in the game folder (section 19), never `iw4l-survival.exe` unless named;
@@ -849,8 +849,9 @@ The steps:
 - `-HostSound` keeps the host's sound on;
 - `-FriendOnly` starts only the friend window against the room in the host's `master.status`, for a rejoin while the host keeps running (it does not take the cargo slots, which the first run still holds);
 - `-CertsOnly` makes the certificates and stops;
-- `-FriendKit` builds the friend's zip (section 18.2) and stops;
-- `-Bats` writes `Host Minecraft World.bat` and `Join Minecraft World.bat` into the game folder (section 18) and stops.
+- `-FriendKit` builds the friend's zip (section 18.2) as `mp-local\friend-kit-<exe name>.zip` and stops; `-PublicAddress <ip>` fills the host's address into its `.env`;
+- `-Bats` writes `Host Minecraft World.bat` and `Join Minecraft World.bat` into the game folder (section 18) and stops. These and the kit's join `.bat` start the map given with `-Map`, so `-Map iw4:mp_rust` makes them for the plain MW2 check;
+- `-GameDir` (default `C:\Games\Mashup\2010-Rust-Rewrite-Mashup`), `-Relay` (default `iw4l-master.exe` in the game folder), `-Port` (default 4433) and `-Resolution` (for example `960x540`).
 
 ### 17.2 Rules for the two-window setup
 
@@ -869,7 +870,7 @@ The steps:
 
 1. Make the certificates with the five OpenSSL commands in the script.
 2. Start `iw4l-master.exe serve ...`.
-3. Make the two role folders with the exe hard link and the two junctions (section 17.1).
+3. Make the two role folders with the exe hard link, the two junctions and a copy of the game folder's `.env` (section 17.1).
 4. Start the host from its folder with the variables above in a PowerShell window (`$env:NAME = "value"`, then `& .\iw4l-mp-m1.exe map minecraft:overworld`).
 5. Read the room from the host's `master.status`, or from the host's chat line.
 6. Start the friend from its folder in a second PowerShell window with its variables.
@@ -886,7 +887,7 @@ The internet path is checked in M1 with plain MW2 (`-Map iw4:mp_rust`), because 
    - Allow it through the Windows firewall for UDP on private and public networks.
    - Forward **UDP 4433** on the router to the PC.
    - Alternatively run the master on a VPS (`docs/MASTER.md`), with the patched build.
-4. **Host:** the `.env` gets `IW4L_MASTER_ADDR=127.0.0.1:4433`, `IW4L_MASTER_SERVER_NAME=iw4l-prod`, `IW4L_MASTER_CA_CERT=iw4l-artifacts\mp-local\certs\iw4l-ca.pem` and `IW4L_MASTER_PASSWORD=<room password>`. Start a world with `IW4L_MASTER_HOST_NAME` set, from `Host Minecraft World.bat` (`-Bats`), or host from the menu.
+4. **Host:** the `.env` gets `IW4L_MASTER_PASSWORD=<room password>`. Start the world from `Host Minecraft World.bat` (`-Bats`). It sets `IW4L_MASTER_HOST_NAME`, `IW4L_MASTER_MAX_PLAYERS=4`, `IW4L_MASTER_ADDR=127.0.0.1:4433`, `IW4L_MASTER_SERVER_NAME=iw4l-prod`, `IW4L_MASTER_CA_CERT` and `IW4L_MASTER_STATUS_FILE=iw4l-artifacts\master.status` (its `room=` line is the join code) itself, and starts `iw4l-master.exe serve --bind 0.0.0.0:4433` minimised when no relay is running, so step 3 is done by the `.bat`. To host from the menu instead, put the three `IW4L_MASTER_ADDR`, `_SERVER_NAME` and `_CA_CERT` lines in `.env`.
 5. **Tell the friend** the public IP address, the room password and the join code from the chat.
 
 ### 18.2 The friend once
@@ -897,18 +898,21 @@ The internet path is checked in M1 with plain MW2 (`-Map iw4:mp_rust`), because 
    - `iw4l-ca.pem`;
    - `Join Minecraft World.bat`;
    - a `.env` template with the lines below;
+   - `How to join.txt` with these steps;
    - an empty `iw4l-artifacts\` folder.
 
    It never holds Mojang's files (`iw4l-artifacts\minecraft-26.3`), MW2 content (`iw4l-artifacts\cache`), the owner's saves, settings, logs, `profile\`, `command_history.txt`, `skate\`, `.env` or certificate keys. The friend's game makes its own copies from the friend's MW2 and from Mojang.
-2. **Have their own copy of MW2**, and set `IW4L_GAMES` in `.env` to it, as for any install of this game.
-3. **Fill in `.env`:**
+2. **Have their own copy of MW2.** `IW4L_GAMES` is empty in the template, so the first start finds or asks for the MW2 folder and writes it, as for any install of this game.
+3. **Check `.env`.** The script fills in the address from `-PublicAddress` and the password from the host's `.env`; otherwise the friend fills them in:
    ```
-   IW4L_GAMES=<their MW2 folder>
+   IW4L_GAMES=
+   IW4L_SKATE=off
    IW4L_MASTER_ADDR=<host's public IP>:4433
    IW4L_MASTER_SERVER_NAME=iw4l-prod
    IW4L_MASTER_CA_CERT=iw4l-ca.pem
    IW4L_MASTER_PASSWORD=<room password>
    ```
+   `IW4L_SKATE=off` is needed because the kit has no Skate 3 converter, and the first-run check fails without it when skating was never set up.
 4. **Set their own player name** in the game's settings. It decides their UUID and player file in the host's world.
 5. **Start the game once to the menu** and leave it there until `iw4l-artifacts\minecraft-26.3\.complete` exists (the log says "Minecraft files ready", `minecraft_setup.rs:98`). The first start converts their MW2 files and, from startup (`assets/src/plugin.rs:13`), downloads the Minecraft 26.3 files from Mojang (`crates/assets/src/minecraft_setup.rs`). It needs internet access and a few minutes. A first start straight into `minecraft:overworld` waits only 90 s for Mojang's files and then fails the load (`assets/src/minecraft_map.rs:96-103`).
 

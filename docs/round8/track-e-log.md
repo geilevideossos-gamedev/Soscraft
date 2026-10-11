@@ -1,0 +1,32 @@
+# Track E log: multiplayer, first playable
+
+Branch `track-e`, worktree `C:\Dev\mc-wt\track-e`, target `D:\iw4l-wt\track-e`. The design and plan are `docs/MULTIPLAYER.md` (section 19). The design names the branch `track-e8`; this run uses `track-e`.
+
+A commit can't name its own hash, so each entry is written with its commit and its hash is filled in by the next commit; the last entry's hash is in `git log` under its subject.
+
+## Milestone M1: a friend joins, sees the world and chats
+
+### E1. Two game windows can play together through a local relay
+
+Commit: see `git log` ("Two game windows can play together through a local relay")
+
+- **Changed:** new `scripts/mp-local.ps1` (section 17 of the design). It makes the relay's certificates once with Git for Windows' OpenSSL (same keys and names as `cargo xtask certs`), takes both cargo slots while the windows run, starts `iw4l-master.exe serve --bind 127.0.0.1:4433` (or uses one that is already running), prepares `iw4l-artifacts\mp-local\host` and `...\friend` (a hard link to the exe, junctions to `cache` and `minecraft-26.3`, a copy of `profile\`, their own `.env` and `settings.cfg`), starts the host with `IW4L_MASTER_HOST_NAME`, waits for its room in `master.status`, starts the friend with `IW4L_MASTER_JOIN`, waits for `members>=2`, then routes `h <command>` / `f <command>` / `quit` to the games' consoles until both have closed. It stops the relay it started, releases the slots and logs the peak working sets to `mp-local\memory.log`. Switches: `-Exe`, `-Map`, `-Friend`, `-World`, `-Fresh`, `-HostSound`, `-FriendOnly`, `-CertsOnly`, `-FriendKit` (`-PublicAddress`), `-Bats` (both use `-Map`), `-GameDir`, `-Relay`, `-Port`, `-Resolution`. The script never builds anything. Design sections 17.1, 17.3, 18.1 and 18.2 updated to match.
+- **Tests (no cargo tests, as planned):** run against a scratch copy of the game folder (`-GameDir`), so the owner's folder was not touched:
+  - `-CertsOnly` made `ca-key.pem`, `iw4l-ca.pem`, `server-key.pem`, `server-cert.pem`; `openssl verify -CAfile iw4l-ca.pem server-cert.pem` printed OK; the certificate's subject is `CN=iw4l-prod` with `subjectAltName=DNS:iw4l-prod, DNS:iw4l-dev`. A second run keeps them.
+  - `-FriendKit -PublicAddress 203.0.113.5` wrote a zip holding exactly `iw4l-mp-m1.exe`, `LICENSE`, `NOTICE`, `COPYING-FreeFont.txt`, `OFL-Oxanium.txt`, `README.txt`, `iw4l-ca.pem`, `.env`, `Join Minecraft World.bat`, `How to join.txt` and an empty `iw4l-artifacts/`, all under one top folder: the list in section 18.2 and nothing else (no keys, no Mojang or MW2 files, no saves, settings or logs).
+  - `-Bats` wrote both `.bat` files; `-FriendOnly` against a faked host status built the friend folder (hard link, two junctions, `.env` without the world and join lines plus `IW4L_SKATE=off`, `settings.cfg` with `player_name=Friend`, windowed, the chosen resolution).
+  - The relay and two real windows were not started by the agent; that is the owner's step below.
+- **Decisions:**
+  - **Each role folder gets its own `.env`.** The design said none was needed, but the launcher's first-run check reads only the `.env` beside the exe (`launcher/src/first_run.rs:17-29`) and would ask for the MW2 folder and offer the Skate 3 conversion in each role folder, and `load_dotenv` stops at the exe's own `.env`. The copy drops `IW4L_MASTER_HOST_NAME`, `IW4L_MASTER_JOIN` and `IW4L_MINECRAFT_WORLD`, makes relative paths absolute and adds `IW4L_SKATE=off` if skating was never set up. It is rewritten on every run, as is `settings.cfg`, so changes to the main ones carry over.
+  - **Games run under a hidden `cmd /c`** that sends their stdout and stderr to `game.out.log` / `game.err.log`, because PowerShell cannot redirect a child's stdout to a file while keeping its stdin as a pipe. The game inherits cmd's stdin pipe, which the console routing writes to.
+  - **The host `.bat` starts the relay** (`serve --bind 0.0.0.0:4433`, minimised) when none is running, and sets the master address, server name and CA itself, so the host's `.env` only needs the password. To host from the menu the three lines still go in `.env`.
+  - **The friend kit's `.env` has `IW4L_GAMES=` empty and `IW4L_SKATE=off`.** The first start then finds or asks for the friend's MW2 folder; without `IW4L_SKATE=off` the first-run check fails because the kit has no Skate 3 converter. The password is copied from the host's `.env` if set; it is the room password the owner hands out anyway. A `How to join.txt` with section 18's steps is added.
+  - **Window size** is 1280x720 on a screen at least 2560 wide, else 960x540 (section 17.2), or `-Resolution`.
+- **Test steps** (before any Minecraft code; plain MW2):
+  1. Build the relay once: `& scripts\cargo-slot.ps1 build --release --locked -p iw4l-master`, then copy `D:\iw4l-target\release\iw4l-master.exe` to `C:\Games\Mashup\2010-Rust-Rewrite-Mashup\`.
+  2. In PowerShell in the repo: `& scripts\mp-local.ps1 -Exe iw4l-survival.exe -Map iw4:mp_rust`. It says it waits for both cargo slots, makes the certificates, starts the relay, then the host window and, after the room line, the friend window.
+  3. In the host window pick a class and spawn; Alt-Tab to the friend window, pick a class and spawn. Each sees the other's soldier move (alternate windows). Screenshot both.
+  4. In the script's console type `h say hello` and `f say hi`: each line shows in its window's MW2 chat or console.
+  5. Close both windows (or type `quit`). The script prints `peak working sets: ... host=... friend=... relay=...`; send that line.
+  6. Internet: `& scripts\mp-local.ps1 -FriendKit -Exe iw4l-survival.exe -PublicAddress <your public IP>` and `& scripts\mp-local.ps1 -Bats -Exe iw4l-survival.exe -Map iw4:mp_rust` (the `.bat` files and the kit's join `.bat` start the map given with `-Map`; run `-Bats` and `-FriendKit` again without `-Map` for the Minecraft milestones). Allow `iw4l-master.exe` through the Windows firewall (UDP, private and public), forward UDP 4433 on the router, set `IW4L_MASTER_PASSWORD=<password>` in `.env`, then run `Host Minecraft World.bat`. The join code is the `room=` value in `iw4l-artifacts\master.status` (the host `.bat` writes it there), or the friend picks the room in the server browser. A friend unpacks the zip (made after the password was set, or they type it into its `.env`), follows `How to join.txt` and joins; both soldiers see each other. Screenshot both PCs.
+- **Kit:** none (MW2 map only).
