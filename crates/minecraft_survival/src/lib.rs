@@ -26,3 +26,4 @@ pub mod survival;
 pub mod switch;
 pub mod the_end;
 pub mod trident;
+pub mod views;

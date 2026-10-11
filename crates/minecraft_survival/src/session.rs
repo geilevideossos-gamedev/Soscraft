@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 use minecraft_commands::text::YELLOW;
 use minecraft_commands::{Clientbound, CommandServer, Outgoing, PlayerId, Text};
 use minecraft_net::codec::{BATCH_CUT, BULK_LIMIT};
-use minecraft_net::messages::{ChunkBlob, HelloRefusal, Login, Nbt, Rules, check_hello};
+use minecraft_net::messages::{
+    ChunkBlob, HelloRefusal, Login, Nbt, PlayerView, Rules, check_hello,
+};
 use minecraft_net::{ChunkBatchBlob, Dimension, PROTOCOL, PlayerUuid, ToClient};
 use minecraft_terrain::game_rules::GameRules;
 use minecraft_terrain::server::{OVERWORLD_CLOCK, THE_END_CLOCK};
@@ -149,9 +151,8 @@ pub struct Session {
     pub name: String,
     pub chunks: ChunkSender,
     pub outbox: Vec<ToClient>,
-    alive: bool,
-    lived: bool,
     command_level: Option<u8>,
+    view: Option<PlayerView>,
 }
 
 impl Session {
@@ -162,17 +163,19 @@ impl Session {
             name: name.to_owned(),
             chunks: ChunkSender::new(view_distance),
             outbox: Vec::new(),
-            alive: false,
-            lived: false,
             command_level: None,
+            view: None,
         }
     }
 
-    pub fn observe_life(&mut self, alive: bool) -> bool {
-        let respawned = alive && !self.alive && self.lived;
-        self.lived |= alive;
-        self.alive = alive;
-        respawned
+    pub fn send_view(&mut self, player: &Player) {
+        let view = crate::views::player_view(player);
+        let key = crate::views::sent_key(&view);
+        if self.view.as_ref() == Some(&key) {
+            return;
+        }
+        self.view = Some(key);
+        self.outbox.push(ToClient::Player(Box::new(view)));
     }
 
     pub fn send_updates(&mut self, updates: &Updates) {
@@ -695,6 +698,14 @@ impl Sessions {
         jobs
     }
 
+    pub fn send_views(&mut self, players: &BTreeMap<PlayerUuid, Player>) {
+        for session in self.sessions.values_mut() {
+            if let Some(player) = players.get(&session.uuid) {
+                session.send_view(player);
+            }
+        }
+    }
+
     pub fn take_outgoing(&mut self) -> Vec<(u32, ToClient)> {
         let mut out = std::mem::take(&mut self.refused);
         for session in self.sessions.values_mut() {
@@ -904,14 +915,64 @@ mod tests {
         assert_eq!(ChunkBatchBlob::decode(&empty.blob).unwrap().seq, 8);
     }
 
+    fn alex() -> Player {
+        let mut chat = CommandServer::new(HOST);
+        chat.join(PlayerId(1), "Alex");
+        Player::new(
+            chat.profile(PlayerId(1)).unwrap(),
+            minecraft_terrain::game_mode::PlayerMode::default(),
+            crate::survival::Survival::default(),
+            minecraftoss_player::inventory::Inventory::default(),
+        )
+    }
+
     #[test]
     fn a_friend_respawns_only_after_a_life_has_been_seen() {
-        let mut session = Session::new(1, PlayerUuid("a".into()), "Alex", 2);
-        assert!(!session.observe_life(false));
-        assert!(!session.observe_life(true), "the first spawn is the join");
-        assert!(!session.observe_life(true));
-        assert!(!session.observe_life(false));
-        assert!(session.observe_life(true));
+        let mut player = alex();
+        let spectating = playerstate_iw4::PM_TYPE_SPECTATOR;
+        assert!(!player.observe_life(spectating));
+        assert!(!player.observe_life(0), "the first spawn is the join");
+        assert!(!player.observe_life(0));
+        assert!(!player.observe_life(playerstate_iw4::PM_TYPE_DEAD));
+        assert!(player.observe_life(0));
+    }
+
+    #[test]
+    fn a_player_view_is_sent_once_for_each_change() {
+        let mut player = alex();
+        let mut session = Session::new(1, player.uuid.clone(), "Alex", 2);
+        let views = |session: &mut Session| {
+            std::mem::take(&mut session.outbox)
+                .into_iter()
+                .filter_map(|message| match message {
+                    ToClient::Player(view) => Some(*view),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        session.send_view(&player);
+        session.send_view(&player);
+        assert_eq!(views(&mut session).len(), 1);
+        player.survival.status.food.level = 12;
+        player.selected = 4;
+        session.send_view(&player);
+        session.send_view(&player);
+        let sent = views(&mut session);
+        assert_eq!(sent.len(), 1);
+        assert_eq!((sent[0].food, sent[0].selected), (12, 4));
+        player.survival.status.add_effect(
+            minecraftoss_player::survival::EffectKind::Regeneration,
+            100,
+            0,
+        );
+        session.send_view(&player);
+        assert_eq!(views(&mut session).len(), 1);
+        player.survival.status.tick_effects();
+        session.send_view(&player);
+        assert!(
+            views(&mut session).is_empty(),
+            "a running effect is not sent again"
+        );
     }
 
     fn host_server(name: &str) -> Option<(TestDir, Server)> {

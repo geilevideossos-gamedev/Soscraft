@@ -46,3 +46,30 @@ Nothing new to see: the host's own survival code moved into its own file so the 
 ```
 IW4L_MINECRAFT_KIT=minecraft:cooked_beef*8,minecraft:cobblestone*32,minecraft:crafting_table,minecraft:chest,minecraft:shield,minecraft:skeleton_spawn_egg,minecraft:ender_pearl*4,minecraft:totem_of_undying,minecraft:white_bed,minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:elytra,minecraft:firework_rocket*8
 ```
+
+## E10b. Every player has their own hearts, hunger, XP and respawn
+
+The host now runs the friend's survival too: the friend has Minecraft hearts, hunger, air, XP and fall damage of their own, MW2 damage takes Minecraft hearts, a death drops the friend's items where they died, and the friend respawns at their own respawn point. The friend's window shows its own HUD and hotbar, and the hotbar picks the friend's gun. The friend still cannot break, place or use blocks and items, open their inventory or swap hands: that comes with E13 and E14. A friend's own sounds (hurt, drowning, landing) are not played in the friend's window yet.
+
+Put the kit below in the `.env` next to the exe before the first start: both players get it on their first join.
+
+1. Start both windows: `& scripts\mp-local.ps1 -World mp-m2 -Fresh`. Spawn in both. Host window: `/time set day`, then `/op Friend`.
+2. Friend window: the hotbar, hearts, hunger bar and XP bar show at the bottom, as in the host's window. The hotbar holds the kit and the friend's MW2 guns. Screenshot. **S3**
+3. Friend window: scroll the mouse wheel and press the number keys: the selection moves. On a slot with a gun, that gun is raised. On a slot with a block, the gun goes away and the friend cannot shoot. On an empty slot, MW2's bare hands show.
+4. Friend window: sprint around for about a minute without stopping. The friend's hunger bar goes down. Alt-Tab to the host window (the host stood still): the host's hunger bar is still full. Screenshot both. **S4**
+5. Friend window: `/tp Friend ~ ~8 ~` and fall. The friend loses about 2.5 hearts. Host window: the host's hearts are full.
+6. Friend window: swim under water until the bubbles run out. The bubbles show and go one by one, then the friend starts to lose hearts.
+7. Host window: `/xp add Friend 10 levels`. Friend window: the XP bar shows level 10. Host window: the host's XP bar is unchanged.
+8. Host window: shoot the friend once with the assault rifle. Friend window: the hearts drop.
+9. Respawn points:
+   1. Friend window: walk about 30 blocks away from the host, then type `/spawnpoint`. A chat line says the spawn point was set.
+   2. Host window: place the bed and right click it by day: the chat says the respawn point was set.
+   3. Friend window: `/kill`. The friend's items (the kit, not the guns) drop where the friend stood, and the death message shows in both windows' chat. Screenshot the host window. **S5**
+   4. Friend window: press fire to respawn. The friend stands at their own spawn point, 30 blocks from the host, with full hearts and hunger. Their XP is gone.
+   5. Host window: `/kill`, then respawn. The host stands beside its bed.
+10. Host window: walk to the spot of step 9.3: the friend's items lie there. (The friend does not see items or mobs and cannot pick them up until E11 and E12.)
+11. Close both windows (type `quit` in the script's console). Start again with `& scripts\mp-local.ps1 -World mp-m2` (no `-Fresh`): the friend's hearts, hunger and XP are as they were when the windows closed.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cooked_beef*8,minecraft:cobblestone*32,minecraft:white_bed,minecraft:torch*16
+```

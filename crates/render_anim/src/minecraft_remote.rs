@@ -7,12 +7,17 @@ use bevy::prelude::*;
 use minecraft_commands::{Clientbound, Serverbound, Text};
 use minecraft_net::messages::GameMode;
 use minecraft_net::{Lane, StateFrame, ToClient, ToServer};
+use minecraft_survival::guns::{Follow, weapon_of};
 use minecraft_survival::remote::{DecodeJob, RemoteWorld};
+use minecraft_survival::views::{HudClock, Selection, view_stack};
+use minecraft_terrain::containers::Containers;
 use minecraft_terrain::lighting::SkyLight;
 use minecraft_terrain::mesh::AtlasAnimation;
 use minecraft_terrain::pack::PackStack;
 use minecraftoss_core::registries::{DataPaths, Registries};
 use minecraftoss_core::{BlockStateId, Chunk};
+use minecraftoss_player::crafting::RecipeBook;
+use minecraftoss_player::inventory::Inventory;
 use net::minecraft_wire::HOST;
 
 use crate::minecraft_spawn_gate::{CLIENT_WAIT_TIMEOUT_MS, SPAWN_EYE_HEIGHT, SpawnGate};
@@ -28,6 +33,21 @@ struct Prepared {
     registries: Arc<Registries>,
     registry: u64,
     language: HashMap<String, String>,
+    recipes: Arc<RecipeBook>,
+}
+
+fn recipes(root: &std::path::Path) -> RecipeBook {
+    let Some(jar) = crate::minecraft_world::data_jar() else {
+        return RecipeBook::default();
+    };
+    let catalog = minecraft_terrain::crafting::find_item_catalog(Some(root), &jar);
+    match minecraft_terrain::crafting::load_recipes(&jar, catalog.as_deref()) {
+        Ok((recipes, _)) => recipes,
+        Err(error) => {
+            diag::warn!(World, "Minecraft recipes unavailable: {error:#}");
+            RecipeBook::default()
+        }
+    }
 }
 
 fn prepare() -> Result<Prepared, String> {
@@ -45,6 +65,7 @@ fn prepare() -> Result<Prepared, String> {
         registries,
         registry,
         language,
+        recipes: Arc::new(recipes(&root)),
     })
 }
 
@@ -119,6 +140,11 @@ pub(crate) struct Friend {
     animation_clock: f64,
     spawn_gate: SpawnGate,
     gui: Option<crate::minecraft_gui::GuiAssets>,
+    inventory_ui: crate::minecraft_inventory::InventoryUi,
+    hud: HudClock,
+    selection: Selection,
+    follow: Follow,
+    fire_frames: Option<(Handle<Image>, u32)>,
 }
 
 fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
@@ -321,6 +347,8 @@ pub(crate) fn friend(
                     crate::minecraft_world::data_jar().as_deref(),
                     &mut images,
                 );
+                friend.fire_frames = crate::minecraft_world::fire_frames(&prepared.look.packs)
+                    .map(|(image, frames)| (images.add(image), frames));
                 friend.prepared = Some(prepared);
                 diag::info!(World, "Minecraft look loaded: waiting for the host's world");
             }
@@ -334,8 +362,9 @@ pub(crate) fn friend(
     ui.active = false;
     ui.inventory_open = false;
     let sent = std::mem::take(&mut ui.chat.sent);
-    if let Some(mut wire) = wire.filter(|wire| wire.role() == Some(net::WireRole::Friend)) {
-        let lines = exchange(friend, &mut wire, now, now_ms);
+    let mut wire = wire.filter(|wire| wire.role() == Some(net::WireRole::Friend));
+    if let Some(wire) = wire.as_mut() {
+        let lines = exchange(friend, wire, now, now_ms);
         if let Some(prepared) = friend.prepared.as_ref().filter(|_| !lines.is_empty()) {
             crate::minecraft_chat::show(&mut ui.chat, &lines, &prepared.language);
         }
@@ -345,7 +374,7 @@ pub(crate) fn friend(
             .is_some_and(|remote| remote.login.is_some())
         {
             for message in sent.iter().filter_map(|line| Serverbound::from_input(line)) {
-                send(&mut wire, &ToServer::Chat(message));
+                send(wire, &ToServer::Chat(message));
             }
         }
     }
@@ -381,7 +410,102 @@ pub(crate) fn friend(
         dt,
         now_ms,
     );
+    let seconds = real_time.elapsed_secs_f64();
+    let shown = (dt, seconds, now_ms);
+    let picked = show_player(friend, &mut ui, player.as_ref(), &mut images, shown);
+    if let (Some(wire), Some(slot)) = (wire.as_mut(), picked) {
+        send(wire, &ToServer::SelectSlot(slot));
+    }
     ui.loading_world = friend.holding(now_ms);
+}
+
+fn mc_game_mode(mode: GameMode) -> frame::McGameMode {
+    match mode {
+        GameMode::Survival => frame::McGameMode::Survival,
+        GameMode::Creative => frame::McGameMode::Creative,
+        GameMode::Adventure => frame::McGameMode::Adventure,
+        GameMode::Spectator => frame::McGameMode::Spectator,
+    }
+}
+
+fn show_player(
+    friend: &mut Friend,
+    ui: &mut frame::MinecraftUi,
+    ps: Option<&playerstate_iw4::PlayerState>,
+    images: &mut Assets<Image>,
+    (dt, seconds, now_ms): (f64, f64, u64),
+) -> Option<u8> {
+    let Friend {
+        prepared: Some(prepared),
+        remote: Some(remote),
+        spawn_gate,
+        inventory_ui,
+        hud,
+        selection,
+        follow,
+        fire_frames,
+        atlas_animation,
+        ..
+    } = friend
+    else {
+        return None;
+    };
+    let view = remote
+        .player
+        .as_ref()
+        .filter(|_| remote.level.is_some() && remote.rejected.is_none())?;
+    selection.follow(view.selected, seconds);
+    let picked = ui
+        .select
+        .take()
+        .and_then(|slot| selection.pick(slot, seconds));
+    ui.drop_selected = None;
+    ui.swap_hands = false;
+    ui.clicks.clear();
+    let interacts = view.game_mode != GameMode::Spectator;
+    ui.game_mode = mc_game_mode(view.game_mode);
+    let alive = ps.filter(|ps| ps.pm_type == 0 && !spawn_gate.holding(now_ms));
+    ui.active = alive.is_some();
+    let Some(ps) = alive else {
+        ui.vitals = None;
+        ui.weapon_request = None;
+        ui.holding_item = false;
+        ui.empty_hand = false;
+        return picked;
+    };
+    let mut inventory = Inventory::default();
+    inventory.recipes = prepared.recipes.clone();
+    for (slot, stack) in inventory.slots.iter_mut().zip(&view.slots) {
+        *slot = stack
+            .as_ref()
+            .and_then(|nbt| view_stack(nbt, &prepared.recipes));
+    }
+    let (mins, maxs) = sim::voxel::player_hull(ps);
+    let eye_in_water = sim::voxel::water(ps.origin, mins, maxs, ps.view_height_current).eye;
+    let eye_in_lava = sim::voxel::eye_in_lava(ps.origin, ps.view_height_current);
+    let vitals = hud.vitals(view, dt, eye_in_water, eye_in_lava);
+    ui.vitals = Some(crate::minecraft_world::mc_vitals(vitals));
+    ui.fire_frames = fire_frames.clone();
+    let held = inventory.slots[selection.slot].as_ref();
+    ui.holding_item = interacts && held.is_none_or(|stack| weapon_of(stack).is_none());
+    ui.empty_hand = ui.holding_item && held.is_none();
+    let mut selected = selection.slot;
+    ui.weapon_request = follow
+        .request(&inventory, &mut selected, ps.weapon)
+        .filter(|_| interacts);
+    selection.slot = selected;
+    inventory_ui.animation_tick = atlas_animation.ticks();
+    let packs = &prepared.look.packs;
+    let mut containers = Containers::default();
+    inventory_ui.publish(
+        ui,
+        &inventory,
+        selection.slot,
+        packs,
+        images,
+        &mut containers,
+    );
+    picked
 }
 
 #[allow(clippy::too_many_arguments)]

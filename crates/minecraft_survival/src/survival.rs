@@ -30,8 +30,8 @@ const SWIM_EXHAUSTION: f32 = 0.01;
 const SPRINT_FOOD: u8 = 6;
 const SAFE_FALL: f64 = 3.0;
 const MAX_STRIDE: f64 = 2.0;
-const DAMAGE_BLINK: u64 = 20;
-const SETTLE_DISPLAY: u64 = 20;
+pub(crate) const DAMAGE_BLINK: u64 = 20;
+pub(crate) const SETTLE_DISPLAY: u64 = 20;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Motion {

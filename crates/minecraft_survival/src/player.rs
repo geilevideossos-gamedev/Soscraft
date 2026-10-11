@@ -44,6 +44,7 @@ pub struct Player {
     pub portal: crate::portal::Portal,
     pub travel_locked: bool,
     pub travel_refused: bool,
+    pub follow: crate::guns::Follow,
 }
 
 #[derive(Default)]
@@ -109,6 +110,7 @@ impl Player {
             portal: crate::portal::Portal::default(),
             travel_locked: false,
             travel_refused: false,
+            follow: crate::guns::Follow::default(),
         }
     }
 

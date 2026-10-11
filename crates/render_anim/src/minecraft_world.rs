@@ -385,7 +385,7 @@ fn celestial_image(packs: &PackStack) -> anyhow::Result<image::RgbaImage> {
     Ok(celestial)
 }
 
-fn fire_frames(packs: &PackStack) -> Option<(Image, u32)> {
+pub(crate) fn fire_frames(packs: &PackStack) -> Option<(Image, u32)> {
     let id = minecraft_terrain::pack::ResourceId::parse("minecraft:block/fire_1").ok()?;
     let bytes = packs.texture(&id).ok()??;
     let strip = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).ok()?.to_rgba8();
@@ -633,7 +633,8 @@ fn update(
         minecraft_survival::server::autosave(globals, levels, players);
     }
     let others = minecraft_survival::level::player_blocks(players.iter().filter(|(uuid, _)| *uuid != local_uuid).map(|(_, player)| player));
-    queues.drain(|client| client == local.0.0);
+    let clients: Vec<u32> = players.values().filter(|player| &player.uuid != local_uuid).map(|player| player.id.0).chain([local.0.0]).collect();
+    queues.drain(|client| clients.contains(&client));
     let Some(player) = players.get_mut(local_uuid) else {
         ui.active = false;
         ui.inventory_open = false;
@@ -650,7 +651,7 @@ fn update(
         }
     }
     let mut begun_lines = Vec::new();
-    let begun = crate::minecraft_players::begin(player, levels, globals, &mut authority.0, local.0, origin, presented.player(local.0), in_remote_killstreak(&presented, local.0), spawn_gate, now_ms, time.delta_secs_f64(), sounds, &world.packs, &mut begun_lines);
+    let begun = crate::minecraft_players::begin(player, levels, globals, &mut authority.0, local.0, origin, presented.player(local.0), in_remote_killstreak(&presented, local.0), Some(spawn_gate), now_ms, time.delta_secs_f64(), sounds, &world.packs, &mut begun_lines);
     if !begun_lines.is_empty() {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &begun_lines);
     }
@@ -1053,20 +1054,15 @@ fn update(
             mining.break_burst(&world.packs, &world.atlas, glam::DVec3::from_array(eye).as_vec3(), mc_yaw, ps.viewangles[0], &item);
         }
         if let Some(told) = crate::minecraft_players::settle(player, entities, globals, &mut authority.0, local.0, origin, alive, totem_popped, inventory_ui.language(), sounds, &world.packs) {
-            crate::minecraft_chat::show(&mut ui.chat, &[told], &HashMap::new());
+            crate::minecraft_chat::show(&mut ui.chat, std::slice::from_ref(&told), &HashMap::new());
+            relayed.delivered.push(minecraft_commands::Outgoing { to: minecraft_commands::Recipient::All, message: told });
         }
         let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, ender, .. } = &mut *player;
         ui.vitals = alive.then(|| mc_vitals(survival.vitals()));
         ui.fire_frames = fire_frames.clone();
         // The inventory: MW2 guns as items, the HUD's clicks, the hotbar's
         // gun, and what the HUD shows.
-        let owned: Vec<u32> = ps
-            .weapons
-            .iter()
-            .filter(|&&w| w > 0)
-            .map(|&w| w as u32)
-            .filter(|&w| authority.0.weapon_combat_row(w).is_some_and(|facts| facts.inventory_type == 0))
-            .collect();
+        let owned = crate::minecraft_players::owned_weapons(ps, &authority.0);
         ui.active = alive;
         if !alive {
             ui.inventory_open = false;
@@ -1224,15 +1220,7 @@ fn update(
             yaw: mc_yaw,
             pitch: ps.viewangles[0],
         };
-        if let Some(death) = death_watch.take()
-            && !death.keep_inventory
-        {
-            for stack in minecraft_survival::death::death_drops(inventory, |stack| minecraft_survival::guns::weapon_of(stack).is_some()) {
-                entities.world_items.drop_on_death(stack, glam::DVec3::from_array(death.spot.eye));
-            }
-            entities.award_experience(death.spot.feet, death.experience);
-            hand.blocking = None;
-        }
+        crate::minecraft_players::drop_on_death(death_watch, inventory, hand, entities);
         crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
         ui.weapon_request = inventory_ui.weapon_request(inventory, selected, ps.weapon).filter(|_| player_mode.interacts());
         let refused = ui.weapon_request.filter(|&weapon| sky_bits(&terrain.environment) != 0 && sim::voxel::needs_sky(authority.0.weapon_script_name(weapon)));
@@ -1709,11 +1697,16 @@ pub(crate) struct HostView<'a> {
     pub(crate) local: &'a minecraft_net::PlayerUuid,
     pub(crate) origins: &'a HashMap<Dimension, [f64; 3]>,
     pub(crate) shown: Option<Dimension>,
+    pub(crate) queues: &'a mut crate::minecraft_players::VoxelQueues,
+    pub(crate) shapes: &'a mut HashMap<BlockStateId, u16>,
+    pub(crate) shape_ids: &'a mut HashMap<(Vec<[u32; 6]>, u16), u16>,
+    pub(crate) packs: &'a PackStack,
+    pub(crate) language: Option<&'a HashMap<String, String>>,
 }
 
 pub(crate) fn host_view(runtime: &mut Runtime) -> Option<HostView<'_>> {
-    let Runtime { server, local, origins, shown, .. } = runtime;
-    Some(HostView { server: server.as_mut()?, local: local.as_ref()?, origins, shown: *shown })
+    let Runtime { server, local, origins, shown, queues, shapes, shape_ids, world, inventory_ui, .. } = runtime;
+    Some(HostView { server: server.as_mut()?, local: local.as_ref()?, origins, shown: *shown, queues, shapes, shape_ids, packs: &world.as_ref()?.packs, language: inventory_ui.language() })
 }
 
 pub(crate) fn show_lines(runtime: &Runtime, chat: &mut frame::McChat, lines: &[minecraft_commands::Clientbound]) {
@@ -1872,7 +1865,7 @@ fn in_remote_killstreak(presented: &net::PresentedSnapshot, local: sim::ClientId
     missile || presented.player(local).is_some_and(|ps| remote_view(ps.pm_type, ps.other_flags))
 }
 
-fn remote_view(pm_type: i32, other_flags: u32) -> bool {
+pub(crate) fn remote_view(pm_type: i32, other_flags: u32) -> bool {
     pm_type == playerstate_iw4::PM_TYPE_NORMAL_LINKED || other_flags & playerstate_iw4::other_flags::AC130 != 0
 }
 
@@ -1885,7 +1878,7 @@ fn ui_game_mode(mode: minecraftoss_player::GameMode) -> frame::McGameMode {
     }
 }
 
-fn mc_vitals(vitals: minecraft_survival::survival::Vitals) -> frame::McVitals {
+pub(crate) fn mc_vitals(vitals: minecraft_survival::survival::Vitals) -> frame::McVitals {
     frame::McVitals {
         air: vitals.air,
         max_air: vitals.max_air,

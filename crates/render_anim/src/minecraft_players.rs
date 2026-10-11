@@ -19,7 +19,7 @@ use crate::minecraft_sounds::Sounds;
 use crate::minecraft_spawn_gate::SpawnGate;
 use crate::minecraft_world::{
     CRAWLING_BELOW_VIEW_HEIGHT, RECENT_PLACE_SECONDS, TICK_SECONDS, ability_bits, minecraft_yaw,
-    place_player, sky_bits, write_blocks,
+    place_friend, place_player, sky_bits, write_blocks,
 };
 
 type Shapes = HashMap<BlockStateId, u16>;
@@ -95,7 +95,7 @@ pub(crate) fn begin(
     origin: [f64; 3],
     ps: Option<&PlayerState>,
     remote: bool,
-    gate: &mut SpawnGate,
+    mut gate: Option<&mut SpawnGate>,
     now_ms: u64,
     dt: f64,
     sounds: &mut Option<Sounds>,
@@ -146,7 +146,15 @@ pub(crate) fn begin(
         crate::minecraft_portal::arriving(player, sounds.as_mut(), packs);
         let ps = ps.filter(|ps| ps.pm_type == 0);
         if let Some(ps) = ps.filter(|_| player.arrival.is_some()) {
-            place_player(player, authority, client, ps, origin, gate, now_ms);
+            place(
+                player,
+                authority,
+                client,
+                ps,
+                origin,
+                gate.as_deref_mut(),
+                now_ms,
+            );
         }
         let bits = ability_bits(&player.mode)
             | sky_bits(&level.terrain.environment)
@@ -172,7 +180,15 @@ pub(crate) fn begin(
             }
         }
         if ps.pm_type == 0 {
-            place_player(player, authority, client, ps, origin, gate, now_ms);
+            place(
+                player,
+                authority,
+                client,
+                ps,
+                origin,
+                gate.as_deref_mut(),
+                now_ms,
+            );
         }
     }
     crate::minecraft_end::step(player, levels);
@@ -1966,6 +1982,191 @@ pub(crate) fn settle(
         }
     }
     told
+}
+
+fn place(
+    player: &mut Player,
+    authority: &mut sim::SimWorld,
+    client: sim::ClientId,
+    ps: &PlayerState,
+    origin: [f64; 3],
+    gate: Option<&mut SpawnGate>,
+    now_ms: u64,
+) {
+    match gate {
+        Some(gate) => place_player(player, authority, client, ps, origin, gate, now_ms),
+        None => place_friend(player, authority, client, ps, origin),
+    }
+}
+
+pub(crate) fn drop_on_death(
+    death_watch: &mut minecraft_survival::death::DeathWatch,
+    inventory: &mut minecraftoss_player::inventory::Inventory,
+    hand: &mut minecraft_survival::player::Hand,
+    entities: &mut Entities,
+) {
+    let Some(death) = death_watch.take().filter(|death| !death.keep_inventory) else {
+        return;
+    };
+    let guns = |stack: &minecraftoss_player::inventory::ItemStack| {
+        minecraft_survival::guns::weapon_of(stack).is_some()
+    };
+    let eye = glam::DVec3::from_array(death.spot.eye);
+    for stack in minecraft_survival::death::death_drops(inventory, guns) {
+        entities.world_items.drop_on_death(stack, eye);
+    }
+    entities.award_experience(death.spot.feet, death.experience);
+    hand.blocking = None;
+}
+
+pub(crate) fn owned_weapons(ps: &PlayerState, authority: &sim::SimWorld) -> Vec<u32> {
+    ps.weapons
+        .iter()
+        .filter(|&&w| w > 0)
+        .map(|&w| w as u32)
+        .filter(|&w| {
+            authority
+                .weapon_combat_row(w)
+                .is_some_and(|facts| facts.inventory_type == 0)
+        })
+        .collect()
+}
+
+#[derive(Default)]
+pub(crate) struct Stepped {
+    pub(crate) lines: Vec<Clientbound>,
+    pub(crate) told: Option<Clientbound>,
+}
+
+pub(crate) struct FriendWorld<'a> {
+    pub(crate) levels: &'a mut BTreeMap<Dimension, Level>,
+    pub(crate) globals: &'a Globals,
+    pub(crate) authority: &'a mut sim::SimWorld,
+    pub(crate) queues: &'a mut VoxelQueues,
+    pub(crate) shapes: &'a mut Shapes,
+    pub(crate) shape_ids: &'a mut ShapeIds,
+    pub(crate) language: Option<&'a HashMap<String, String>>,
+    pub(crate) packs: &'a PackStack,
+    pub(crate) dt: f64,
+}
+
+pub(crate) fn step_friend(
+    player: &mut Player,
+    world: &mut FriendWorld<'_>,
+    client: sim::ClientId,
+    origin: [f64; 3],
+    selected: Option<u8>,
+) -> Stepped {
+    let mut stepped = Stepped::default();
+    let Some(ps) = world.authority.player(client).copied() else {
+        return stepped;
+    };
+    if let Some(slot) = selected {
+        player.selected = usize::from(slot).min(minecraft_survival::guns::HOTBAR - 1);
+    }
+    if player.dead {
+        player.held = None;
+    }
+    let mut sounds = None;
+    let remote = crate::minecraft_world::remote_view(ps.pm_type, ps.other_flags);
+    let begun = begin(
+        player,
+        world.levels,
+        world.globals,
+        world.authority,
+        client,
+        origin,
+        Some(&ps),
+        remote,
+        None,
+        0,
+        world.dt,
+        &mut sounds,
+        world.packs,
+        &mut stepped.lines,
+    );
+    if !matches!(begun, Begun::Live) {
+        return stepped;
+    }
+    let Some(level) = world.levels.get_mut(&player.dimension) else {
+        return stepped;
+    };
+    let Level {
+        entities, terrain, ..
+    } = level;
+    let life = life(
+        player,
+        world.globals,
+        terrain,
+        world.authority,
+        client,
+        &ps,
+        world.queues,
+    );
+    movement(
+        player,
+        world.globals,
+        terrain,
+        entities,
+        (&mut *world.shapes, &mut *world.shape_ids),
+        world.authority,
+        client,
+        origin,
+        &ps,
+        life.alive,
+        world.dt,
+        &mut sounds,
+        world.packs,
+    );
+    let feet = sim::voxel::to_block(origin, ps.origin);
+    let eye = sim::voxel::to_block(
+        origin,
+        [
+            ps.origin[0],
+            ps.origin[1],
+            ps.origin[2] + ps.view_height_current,
+        ],
+    );
+    player
+        .death_watch
+        .stood(minecraft_survival::death::DeathSpot { feet, eye });
+    if let Some(entities) = entities.as_mut() {
+        stepped.told = settle(
+            player,
+            entities,
+            world.globals,
+            world.authority,
+            client,
+            origin,
+            life.alive,
+            life.totem_popped,
+            world.language,
+            &mut sounds,
+            world.packs,
+        );
+        let Player {
+            death_watch,
+            inventory,
+            hand,
+            ..
+        } = player;
+        drop_on_death(death_watch, inventory, hand, entities);
+    }
+    let owned = owned_weapons(&ps, world.authority);
+    let Player {
+        survival,
+        inventory,
+        selected,
+        follow,
+        ..
+    } = player;
+    minecraft_survival::guns::sync_weapons(inventory, &owned);
+    follow.request(inventory, selected, ps.weapon);
+    let protected = life.alive
+        && !survival.killed()
+        && minecraft_survival::offhand::totem_slot(inventory, *selected).is_some();
+    sim::voxel::set_death_protected(client.0, protected);
+    stepped
 }
 
 fn finish_item_use(

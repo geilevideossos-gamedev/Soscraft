@@ -11,7 +11,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use frame::{McChoice, McClick, McOven, McScreen, McSlot, McStack, MinecraftUi};
 use glam::DVec3;
-use minecraft_survival::guns::{WEAPON_PREFIX, weapon_item, weapon_of};
+use minecraft_survival::guns::{WEAPON_PREFIX, weapon_of};
 use minecraft_terrain::containers::{Containers, Opened, Station};
 use minecraft_terrain::stations::{Bench, Context, StationBook, Taken, Workshop};
 use minecraft_terrain::crafting::{self, Grid, Spot};
@@ -32,9 +32,7 @@ pub(crate) struct InventoryUi {
     failed: HashSet<String>,
     language: Option<HashMap<String, String>>,
     dirty: bool,
-    /// The gun last asked for, until the player state holds it.
-    pending_weapon: Option<u32>,
-    last_selected: Option<usize>,
+    follow: minecraft_survival::guns::Follow,
     table: Option<BlockPos>,
     block: Option<Opened>,
     experience: u32,
@@ -152,36 +150,7 @@ impl InventoryUi {
     /// is one item, placed on the first free hotbar slot when it arrives, and
     /// a gun the player no longer has leaves.
     pub(crate) fn sync_weapons(&mut self, inventory: &mut Inventory, owned: &[u32]) {
-        let keep = |stack: &Option<ItemStack>| {
-            stack.as_ref().is_none_or(|s| weapon_of(s).is_none_or(|w| owned.contains(&w)))
-        };
-        for slot in inventory.slots.iter_mut().chain(inventory.crafting.iter_mut()).chain(inventory.workbench.iter_mut()) {
-            if !keep(slot) {
-                *slot = None;
-            }
-        }
-        if !keep(&inventory.cursor) {
-            inventory.cursor = None;
-        }
-        let held: HashSet<u32> = inventory
-            .slots
-            .iter()
-            .chain(inventory.crafting.iter())
-            .chain(inventory.workbench.iter())
-            .chain(std::iter::once(&inventory.cursor))
-            .filter_map(|s| s.as_ref().and_then(weapon_of))
-            .collect();
-        for &weapon in owned {
-            if held.contains(&weapon) {
-                continue;
-            }
-            let free = (0..frame::minecraft_ui::MC_HOTBAR)
-                .chain(frame::minecraft_ui::MC_HOTBAR..36)
-                .find(|&i| inventory.slots[i].is_none());
-            if let Some(i) = free {
-                inventory.slots[i] = Some(weapon_item(weapon));
-            }
-        }
+        minecraft_survival::guns::sync_weapons(inventory, owned);
     }
 
     pub(crate) fn table(&self) -> Option<BlockPos> {
@@ -536,26 +505,7 @@ impl InventoryUi {
         selected: &mut usize,
         held: u32,
     ) -> Option<u32> {
-        let selected_gun = inventory.slots[*selected].as_ref().and_then(weapon_of);
-        let changed = self.last_selected != Some(*selected);
-        self.last_selected = Some(*selected);
-        if self.pending_weapon == Some(held) {
-            self.pending_weapon = None;
-        }
-        if changed {
-            if let Some(gun) = selected_gun.filter(|&gun| gun != held) {
-                self.pending_weapon = Some(gun);
-            }
-        } else if self.pending_weapon.is_none()
-            && selected_gun.is_some_and(|gun| gun != held)
-            && let Some(slot) = (0..frame::minecraft_ui::MC_HOTBAR)
-                .find(|&i| inventory.slots[i].as_ref().and_then(weapon_of) == Some(held))
-        {
-            // MW2 changed weapons (out of ammo, a pickup): the hotbar follows.
-            *selected = slot;
-            self.last_selected = Some(slot);
-        }
-        self.pending_weapon
+        self.follow.request(inventory, selected, held)
     }
 
     /// Publishes the inventory for the HUD, with icons for every item in it.

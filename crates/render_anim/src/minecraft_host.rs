@@ -4,8 +4,8 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 
 use bevy::prelude::*;
-use minecraft_commands::Serverbound;
-use minecraft_net::{Lane, PlayerUuid, ToServer};
+use minecraft_commands::{Outgoing, Recipient, Serverbound};
+use minecraft_net::{Lane, PlayerUuid, ToClient, ToServer};
 use minecraft_survival::session::{BatchJob, EncodedBatch, Hello, JoinContext, Sessions};
 use minecraftoss_core::Registries;
 
@@ -76,6 +76,7 @@ pub(crate) struct HostSessions {
     inline: Vec<Encoded>,
     time_at: Option<Instant>,
     chat: BTreeMap<u32, Vec<Serverbound>>,
+    selects: BTreeMap<u32, u8>,
 }
 
 impl HostSessions {
@@ -84,6 +85,7 @@ impl HostSessions {
             && self.waiting.is_empty()
             && self.worker.is_none()
             && self.chat.is_empty()
+            && self.selects.is_empty()
     }
 }
 
@@ -113,6 +115,11 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
                     && let Some(message) = minecraft_survival::commands::from_friend(message)
                 {
                     host.chat.entry(client).or_default().push(message);
+                }
+            }
+            Ok(ToServer::SelectSlot(slot)) => {
+                if host.sessions.sessions.contains_key(&client) {
+                    host.selects.insert(client, slot);
                 }
             }
             Ok(_) => {}
@@ -196,7 +203,9 @@ fn run_friend_commands(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn host(
+    time: Res<Time>,
     wire: Option<ResMut<net::MinecraftWire>>,
     mut authority: Option<ResMut<net::AuthorityWorld>>,
     local: Res<net::LocalPresentClient>,
@@ -217,6 +226,8 @@ pub(crate) fn host(
     for client in &left {
         host.waiting.remove(client);
         host.chat.remove(client);
+        host.selects.remove(client);
+        sim::voxel::set_death_protected(*client, false);
     }
     read_inbox(&mut host, &mut wire, now);
     let host = &mut *host;
@@ -268,31 +279,47 @@ pub(crate) fn host(
     }
     host.sessions.lock_travel(&mut server.players);
     if let Some(authority) = authority.as_mut() {
+        let minecraft_survival::server::Server {
+            globals,
+            levels,
+            players,
+            ..
+        } = &mut *server;
+        let mut world = crate::minecraft_players::FriendWorld {
+            levels,
+            globals,
+            authority: &mut authority.0,
+            queues: view.queues,
+            shapes: view.shapes,
+            shape_ids: view.shape_ids,
+            language: view.language,
+            packs: view.packs,
+            dt: time.delta_secs_f64(),
+        };
+        let mut told = Vec::new();
         for session in host.sessions.sessions.values_mut() {
-            let Some(player) = server.players.get_mut(&session.uuid) else {
+            let Some(player) = players.get_mut(&session.uuid) else {
                 continue;
             };
             let Some(&origin) = view.origins.get(&player.dimension) else {
                 continue;
             };
-            let id = sim::ClientId(session.client);
-            let Some(ps) = authority.0.player(id).copied() else {
-                continue;
-            };
             if view.shown != Some(player.dimension) {
                 continue;
             }
-            let alive = ps.pm_type == 0;
-            if session.observe_life(alive)
-                && let Some(level) = server.levels.get(&player.dimension)
-            {
-                let spawn = minecraft_survival::respawn::level_spawn(&server.globals.spawn, level);
-                player.arrival = Some(spawn);
-            }
-            if alive {
-                crate::minecraft_world::place_friend(player, &mut authority.0, id, &ps, origin);
-            }
+            let selected = host.selects.remove(&session.client);
+            let id = sim::ClientId(session.client);
+            let stepped =
+                crate::minecraft_players::step_friend(player, &mut world, id, origin, selected);
+            session
+                .outbox
+                .extend(stepped.lines.into_iter().map(ToClient::Chat));
+            told.extend(stepped.told.map(|message| Outgoing {
+                to: Recipient::All,
+                message,
+            }));
         }
+        host.sessions.deliver(&server.globals.chat, &told, true);
         run_friend_commands(
             host,
             server,
@@ -306,6 +333,7 @@ pub(crate) fn host(
     } else {
         host.chat.clear();
     }
+    host.sessions.send_views(&server.players);
     if host.worker.is_none() && !host.sessions.is_empty() {
         host.worker = ChunkWorker::start();
     }
