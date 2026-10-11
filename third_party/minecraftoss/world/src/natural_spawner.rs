@@ -238,6 +238,7 @@ enum Rules {
     Bat,
     /// `GlowSquid.checkGlowSquidSpawnRules` (deep, dark water).
     GlowSquid,
+    Strider,
     /// Rules not ported yet: the type is not spawned.
     Other,
 }
@@ -323,6 +324,7 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "blaze" => Rules::AnyLightMonster,
         "bat" => Rules::Bat,
         "glow_squid" => Rules::GlowSquid,
+        "strider" => Rules::Strider,
         _ if monster => Rules::Monster,
         _ => Rules::Other,
     };
@@ -330,7 +332,7 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         _ if monster => Walk::Monster,
         // Cube mobs and squid keep `PathfinderMob`'s 0; bats are no
         // pathfinders (`Mob.checkSpawnRules`).
-        "slime" | "magma_cube" | "bat" | "glow_squid" | "ghast" => Walk::Neutral,
+        "slime" | "magma_cube" | "bat" | "glow_squid" | "ghast" | "strider" => Walk::Neutral,
         _ => Walk::Animal,
     };
     // Animals stay (`Animal.removeWhenFarAway`) except the overrides.
@@ -561,7 +563,7 @@ impl CreatureSpawns {
                 level.note_unsupported(&format!("spawning {}", data.kind));
                 return;
             };
-            if !info.rules.creature() {
+            if !info.rules.creature() && info.rules != Rules::Strider {
                 level.note_unsupported(&format!("spawn rules of {}", data.kind));
             }
             let mut group = Group::None;
@@ -710,6 +712,9 @@ impl CreatureSpawns {
 
     /// `SpawnPlacements.checkSpawnRules` for `CHUNK_GENERATION`.
     fn check_spawn_rules(&self, level: &mut dyn SpawnLevel, info: &TypeInfo, pos: BlockPos) -> bool {
+        if info.rules == Rules::Strider {
+            return self.strider_spawn_rules(level, pos);
+        }
         // `Animal.checkAnimalSpawnRules` and the rules with their own block
         // tag (other creatures approximated by the animals' rules).
         let spawnable_on = match info.rules {
@@ -722,6 +727,14 @@ impl CreatureSpawns {
         let bright = level.raw_brightness(pos, 0) > 8;
         let below = level.block(pos.below());
         self.registries.block_in_tag(below, spawnable_on) && bright
+    }
+
+    fn strider_spawn_rules(&self, level: &mut dyn SpawnLevel, pos: BlockPos) -> bool {
+        let mut above = pos.above();
+        while self.registries.blocks.state(level.block(above)).fluid.is_some_and(|f| f.kind == minecraftoss_core::block::FluidKind::Lava) {
+            above = above.above();
+        }
+        self.registries.blocks.is_air(level.block(above))
     }
 
     /// `Mob.checkSpawnRules`: `PathfinderMob`'s walk target value.
@@ -753,6 +766,9 @@ impl CreatureSpawns {
     /// box (entities never obstruct in a generation region; the server's
     /// spawner tests them itself).
     fn check_spawn_obstruction(&self, level: &mut dyn SpawnLevel, info: &TypeInfo, x: f64, y: f64, z: f64) -> bool {
+        if info.rules == Rules::Strider {
+            return true;
+        }
         let half = f64::from(info.width) / 2.0;
         let (min, max) = ([x - half, y, z - half], [x + half, y + f64::from(info.height), z + half]);
         let registries = &*self.registries;
@@ -936,6 +952,7 @@ impl CreatureSpawns {
             }
             // `Armadillo`: no override (its scute timer is its own random's).
             "minecraft:armadillo" => ageable(level, tag, group, 0.05),
+            "minecraft:strider" => ageable(level, tag, group, 0.05),
             "minecraft:sheep" => {
                 let color = self.sheep_color(registries, biome, level.random());
                 set(tag, "Color", Tag::Byte(color));

@@ -189,6 +189,7 @@ pub struct SpawnContext<'a> {
     /// Boxes of chickens nobody rides (a baby zombie's jockey search).
     pub chickens: Vec<[f64; 6]>,
     pub structures: &'a dyn Fn(BlockPos) -> Vec<StructureHere>,
+    pub spawning_monsters: bool,
 }
 
 /// `SpawnState`'s tests around one spawn: the spawn potential (`canSpawn`)
@@ -472,7 +473,9 @@ impl CreatureSpawns {
                     continue;
                 }
                 let difficulty = Self::difficulty_at(level, context, pos);
-                let root = if info.rules.creature() {
+                let root = if info.rules == Rules::Strider {
+                    self.finalize_strider(level, context, tag, pos, difficulty)
+                } else if info.rules.creature() {
                     self.finalize_spawn(level, &data.kind, &mut tag, pos, &mut animal_group);
                     tag
                 } else {
@@ -626,6 +629,7 @@ impl CreatureSpawns {
                 let water = self.registries.blocks.block(self.registries.blocks.block_of(state)).name.as_str() == "minecraft:water";
                 pos.y <= level.sea_level() - 33 && level.raw_brightness(pos, 0) == 0 && water
             }
+            Rules::Strider => self.strider_spawn_rules(level, pos),
             Rules::Other => {
                 level.note_unsupported(&format!("spawn rules of {kind}"));
                 false
@@ -759,6 +763,10 @@ impl CreatureSpawns {
         }
         let pos = BlockPos::new(at[0].floor() as i32, at[1].floor() as i32, at[2].floor() as i32);
         match type_info(kind) {
+            Some(info) if info.rules == Rules::Strider => {
+                let difficulty = Self::difficulty_at(level, context, pos);
+                Ok(self.finalize_strider(level, context, tag, pos, difficulty))
+            }
             Some(info) if info.rules.creature() => {
                 self.finalize_spawn(level, kind, &mut tag, pos, &mut Group::None);
                 Ok(tag)
@@ -1143,6 +1151,40 @@ impl CreatureSpawns {
         self.finalize_skeleton(level, context, &mut parched, difficulty);
         set(&mut camel, "Passengers", Tag::List(vec![root, parched]));
         camel
+    }
+
+    fn finalize_strider(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, mut tag: Tag, pos: BlockPos, difficulty: DifficultyInstance) -> Tag {
+        let baby = tag.get("Age").and_then(Tag::as_i64).is_some_and(|age| age < 0);
+        let mut rider = None;
+        if !baby {
+            let catalog = self.registries.entities.as_ref();
+            if level.random().next_i32_bound(30) == 0 && context.spawning_monsters {
+                if let Some(mut piglin) = catalog.and_then(|c| c.default_tag("minecraft:zombified_piglin")) {
+                    let uuid = level.next_uuid();
+                    let mut group = MonsterGroup::Zombie { baby: level.random().next_f32() < 0.05, can_spawn_jockey: false };
+                    place(&mut piglin, Self::position(&tag), Self::y_rot(&tag), 0.0, uuid);
+                    let mut piglin = self.finalize_monster(level, context, "minecraft:zombified_piglin", piglin, pos, difficulty, &mut group, false);
+                    equip(&mut piglin, "mainhand", "minecraft:warped_fungus_on_a_stick");
+                    equip(&mut tag, "saddle", "minecraft:saddle");
+                    let chances = [("saddle".to_owned(), Tag::Float(2.0))].into_iter().collect();
+                    set(&mut tag, "drop_chances", Tag::Compound(chances));
+                    rider = Some(piglin);
+                }
+            } else if level.random().next_i32_bound(10) == 0 {
+                if let Some(mut child) = catalog.and_then(|c| c.default_tag("minecraft:strider")) {
+                    let uuid = level.next_uuid();
+                    set(&mut child, "Age", Tag::Int(-24000));
+                    place(&mut child, Self::position(&tag), Self::y_rot(&tag), 0.0, uuid);
+                    self.finalize_spawn(level, "minecraft:strider", &mut child, pos, &mut Group::None);
+                    rider = Some(child);
+                }
+            }
+        }
+        self.finalize_spawn(level, "minecraft:strider", &mut tag, pos, &mut Group::None);
+        if let Some(rider) = rider {
+            set(&mut tag, "Passengers", Tag::List(vec![rider]));
+        }
+        tag
     }
 
     /// A chicken jockey's new chicken at the zombie, finalized as a spawn

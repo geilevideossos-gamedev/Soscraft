@@ -6669,6 +6669,199 @@ mod tests {
         }
     }
 
+    fn nether_server(seed: i64) -> Option<(ServerSim, ChunkMap)> {
+        let paths = DataPaths::discover().ok()?;
+        let registries = Registries::load(&paths).ok()?;
+        registries.entities.as_ref()?;
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(TerrainGenerator::nether(registries.clone(), seed).unwrap()), "minecraft:the_nether").unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, 0, 256).unwrap());
+        let map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        Some((ServerSim::new(worldgen, states, "minecraft:the_nether"), map))
+    }
+
+    fn nether_block(server: &ServerSim, x: i32, y: i32, z: i32) -> String {
+        let blocks = &server.level.registries().blocks;
+        blocks.block(blocks.block_of(server.level.block(minecraftoss_core::BlockPos::new(x, y, z)))).name.as_str().to_owned()
+    }
+
+    fn spawn_context<'a>(players: &'a [[f64; 3]], spawning_monsters: bool) -> minecraftoss_world::natural_spawner::spawning::SpawnContext<'a> {
+        minecraftoss_world::natural_spawner::spawning::SpawnContext {
+            players,
+            respawn: None,
+            difficulty: 2,
+            overworld_time: 0,
+            moon_brightness: 0.0,
+            raining: false,
+            thundering: false,
+            seed: 0,
+            surface_slime_chance: &|_| 0.0,
+            halloween: false,
+            can_spawn_in_chunk: &|_| true,
+            obstacles: Vec::new(),
+            chickens: Vec::new(),
+            structures: &|_| Vec::new(),
+            spawning_monsters,
+        }
+    }
+
+    #[test]
+    fn striders_spawn_in_lava_with_air_above_and_not_under_a_lava_roof() {
+        let Some((mut server, mut map)) = nether_server(0) else { return };
+        server.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        let lava = Block::new("minecraft:lava").with("level", "0");
+        let air = Block::new("minecraft:air");
+        let netherrack = Block::new("minecraft:netherrack");
+        for x in 0..16 {
+            for z in 0..16 {
+                for y in 99..=106 {
+                    let block = if y == 99 { &netherrack } else { &air };
+                    server.player_edit_block((x, y, z), Some(block), PlayerEdit::Place);
+                }
+            }
+        }
+        for y in 100..=101 {
+            server.player_edit_block((2, y, 2), Some(&lava), PlayerEdit::Place);
+            server.player_edit_block((6, y, 6), Some(&lava), PlayerEdit::Place);
+        }
+        server.player_edit_block((6, 102, 6), Some(&netherrack), PlayerEdit::Place);
+        let spawns = server.level.natural_spawning.as_ref().unwrap().spawns.clone();
+        let players = [[40.5, 100.0, 40.5]];
+        let context = spawn_context(&players, true);
+        assert!(spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:strider", [2.5, 100.0, 2.5]), "deep lava climbs to the air above it");
+        assert!(spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:strider", [2.5, 101.0, 2.5]));
+        assert!(!spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:strider", [6.5, 100.0, 6.5]), "lava under a roof");
+    }
+
+    #[test]
+    fn a_strider_in_lava_is_not_obstructed_by_the_lava() {
+        let Some((mut server, mut map)) = nether_server(0) else { return };
+        server.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        let lava = Block::new("minecraft:lava").with("level", "0");
+        let air = Block::new("minecraft:air");
+        for x in 0..16 {
+            for z in 0..16 {
+                for y in 100..=106 {
+                    let block = if y <= 101 { &lava } else { &air };
+                    server.player_edit_block((x, y, z), Some(block), PlayerEdit::Place);
+                }
+            }
+        }
+        let spawns = server.level.natural_spawning.as_ref().unwrap().spawns.clone();
+        let players = [[40.5, 100.0, 40.5]];
+        let mut context = spawn_context(&players, true);
+        assert!(spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:strider", [4.5, 101.0, 4.5]), "its whole box in lava");
+        assert!(!spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:magma_cube", [4.5, 101.0, 4.5]), "other mobs keep the liquid test");
+        context.obstacles.push([4.0, 101.0, 4.0, 5.0, 103.0, 5.0]);
+        assert!(!spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:strider", [4.5, 101.0, 4.5]), "a mob in the way still blocks it");
+    }
+
+    fn summoned_striders(server: &mut ServerSim, count: usize) -> Vec<minecraftoss_core::nbt::Tag> {
+        (0..count).map(|i| server.level.summon_mob("minecraft:strider", [0.5 + i as f64 * 0.01, 100.0, 0.5], None, 0.0).unwrap()).collect()
+    }
+
+    fn rider_of(tag: &minecraftoss_core::nbt::Tag) -> Option<&minecraftoss_core::nbt::Tag> {
+        tag.get("Passengers").and_then(minecraftoss_core::nbt::Tag::as_list).and_then(|riders| riders.first())
+    }
+
+    fn text_of<'a>(tag: &'a minecraftoss_core::nbt::Tag, path: &[&str]) -> Option<&'a str> {
+        path.iter().try_fold(tag, |tag, key| tag.get(key)).and_then(minecraftoss_core::nbt::Tag::as_str)
+    }
+
+    #[test]
+    fn one_in_thirty_get_a_zombified_piglin_with_a_stick_and_a_saddle() {
+        let Some((mut server, mut map)) = nether_server(0) else { return };
+        server.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        let striders = summoned_striders(&mut server, 3000);
+        let (mut piglins, mut babies) = (0, 0);
+        for strider in &striders {
+            assert!(strider.get("Age").and_then(minecraftoss_core::nbt::Tag::as_i64).unwrap_or(0) >= 0, "a natural adult never brings a baby");
+            let Some(rider) = rider_of(strider) else {
+                assert!(strider.get("equipment").and_then(|e| e.get("saddle")).is_none());
+                continue;
+            };
+            match text_of(rider, &["id"]) {
+                Some("minecraft:zombified_piglin") => {
+                    piglins += 1;
+                    assert_eq!(text_of(rider, &["equipment", "mainhand", "id"]), Some("minecraft:warped_fungus_on_a_stick"));
+                    assert_eq!(text_of(strider, &["equipment", "saddle", "id"]), Some("minecraft:saddle"));
+                    assert_eq!(strider.get("drop_chances").and_then(|d| d.get("saddle")), Some(&minecraftoss_core::nbt::Tag::Float(2.0)));
+                }
+                Some("minecraft:strider") => {
+                    babies += 1;
+                    assert_eq!(rider.get("Age").and_then(minecraftoss_core::nbt::Tag::as_i64), Some(-24000));
+                    assert!(rider_of(rider).is_none());
+                }
+                other => panic!("unexpected rider {other:?}"),
+            }
+        }
+        assert!((60..=145).contains(&piglins), "about 100 of 3000: {piglins}");
+        assert!((220..=360).contains(&babies), "about 290 of 3000: {babies}");
+        let jockey = striders.iter().find(|s| text_of(rider_of(s).unwrap_or(s), &["id"]) == Some("minecraft:zombified_piglin")).unwrap();
+        server.summon("minecraft:strider", [0.5, 100.0, 0.5], Some(jockey), 0.0).unwrap();
+        let strider = server.mobs.striders().last().unwrap().id;
+        assert_eq!(server.mobs.passengers_of(strider).len(), 1, "a summoned jockey arrives with its rider");
+    }
+
+    #[test]
+    fn no_piglin_rider_when_spawn_monsters_is_off() {
+        let Some((mut server, mut map)) = nether_server(0) else { return };
+        server.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        server.level.natural_spawning.as_mut().unwrap().spawn_monsters = false;
+        let striders = summoned_striders(&mut server, 3000);
+        assert!(striders.iter().filter_map(rider_of).all(|rider| text_of(rider, &["id"]) == Some("minecraft:strider")));
+        let babies = striders.iter().filter_map(rider_of).count();
+        assert!((240..=360).contains(&babies), "the thirtieth goes to the baby roll: {babies}");
+    }
+
+    #[test]
+    fn a_nether_level_spawns_striders_on_its_lava_sea() {
+        let Some((mut server, mut map)) = nether_server(0) else { return };
+        for x in -5..=5 {
+            for z in -5..=5 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        let lava = |server: &ServerSim, x: i32, y: i32, z: i32| nether_block(server, x, y, z) == "minecraft:lava";
+        let sea = (-64..64).flat_map(|x| (-64..64).map(move |z| (x, z))).find(|&(x, z)| (24..32).all(|y| lava(&server, x, y, z)) && nether_block(&server, x, 32, z) == "minecraft:air");
+        let Some((x, z)) = sea else { panic!("seed 0 has a lava sea near the origin") };
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: glam::DVec3::new(f64::from(x) + 0.5, 40.0, f64::from(z) + 0.5),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        };
+        for round in 1..=6 {
+            server.set_players(&[player.position.to_array()], 2);
+            server.set_simulation_area((x >> 4, z >> 4), 5);
+            server.prepare_spawning(&[player]);
+            server.level.game_time = 400 * round - 1;
+            server.tick();
+            server.take_spawned();
+        }
+        let striders = server.mobs.striders();
+        assert!(!striders.is_empty(), "striders come to the lava sea");
+        for e in striders {
+            let p = e.strider.body.position;
+            let feet = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+            assert!(lava(&server, feet.0, feet.1, feet.2) || lava(&server, feet.0, feet.1 - 1, feet.2), "{p}");
+        }
+    }
+
     #[test]
     fn wither_skeletons_carry_stone_swords_and_come_back_with_them() {
         let Ok(paths) = DataPaths::discover() else { return };

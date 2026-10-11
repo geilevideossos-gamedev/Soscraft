@@ -160,3 +160,26 @@ After c32a75e5.
 ```
 IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*8,minecraft:diamond_sword,minecraft:netherrack*64
 ```
+
+### 6. Minecraft striders spawn on Nether lava, some with a rider
+
+After 225276bd.
+
+- **Changed:**
+  - Vendored `world/src/natural_spawner.rs`: `Rules::Strider` (`checkStriderSpawnRules`: up from the block above the spawn through lava; the first block that isn't lava must be air), used by natural spawning, spawners and chunk generation. The strider's walk target check passes as `PathfinderMob`'s 0 does (`Walk::Neutral`; its value is 10 in lava and 0 elsewhere when it spawns), and its obstruction test is entities only (`Strider.checkSpawnObstruction` has no liquid test). A `finalizeSpawn` arm for `minecraft:strider` (the ageable part).
+  - `natural_spawner/spawning.rs`: `finalize_strider` (`Strider.finalizeSpawn`): one in 30, when monsters may spawn, a zombified piglin jockey (its baby roll at 5 %, its own zombified piglin finalize without a chicken jockey, then `warped_fungus_on_a_stick` in its main hand), and the strider gets a saddle with a guaranteed drop (`drop_chances:{saddle:2.0f}`); otherwise one in 10 a baby strider rider (`Age` -24000). A fresh group every time, so a natural adult never brings a baby. Natural spawning, `/summon` without NBT, spawn eggs and spawners all go through it. `SpawnContext.spawning_monsters` carries the game rules `spawn_mobs` and `spawn_monsters` (`ServerLevel.isSpawningMonsters`).
+  - `level/spawning.rs` hands the rule to the context in the three places that make one.
+- **Tests (`minecraft_terrain` `server`, with the game data):** `striders_spawn_in_lava_with_air_above_and_not_under_a_lava_roof`, `a_strider_in_lava_is_not_obstructed_by_the_lava`, `one_in_thirty_get_a_zombified_piglin_with_a_stick_and_a_saddle` (3000 summons; it also checks that a natural adult never brings a baby, and that a summoned jockey tag arrives with its rider), `no_piglin_rider_when_spawn_monsters_is_off`, `a_nether_level_spawns_striders_on_its_lava_sea` (seed 0, 121 chunks, six creature rounds).
+- **Decisions:**
+  - The brief's `natural_spawner` and `finalize` tests need the real registries, so they live with the Nether `ServerSim` tests in `server.rs`; `a_natural_adult_never_brings_a_baby` is an assertion inside the 3000-summon test.
+  - Striders placed by chunk generation come without riders: generation has no spawn context (difficulty, game rules) to finalize a zombified piglin with.
+- **Test steps (Nether, survival):**
+  1. Fly along the lava sea for a few minutes: wild striders appear in groups of 1 or 2, standing on the lava; a few carry a baby, or a zombified piglin with a warped fungus on a stick on a saddle (**13**).
+  2. Use about 30 strider eggs on the lava: roughly one in ten hatches with a baby on top, and now and then one with a zombified piglin.
+  3. `/gamerule spawn_monsters false`, then use 30 more eggs: babies still come, zombified piglins never.
+  4. Kill a jockey's strider: its saddle always drops.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*64,minecraft:diamond_sword,minecraft:netherrack*64
+```
