@@ -27,6 +27,9 @@ const RECENT_PLACE_SECONDS: f64 = 1.0;
 pub const LIGHT_VOLUME: i32 = 64;
 /// Chunk sections fade in over this long, as the viewer's default option.
 const FADE_MILLIS: u64 = 750;
+const PLAYER_WIDTH: f64 = 0.6;
+const TOTEM: &str = "minecraft:totem_of_undying";
+const FULL_BRIGHT: f32 = 15.0;
 
 /// What the renderer takes from the world each frame.
 #[derive(Resource, Default)]
@@ -118,6 +121,7 @@ struct Runtime {
     loading_backgrounds: Option<crate::minecraft_loading::LoadingBackgrounds>,
     refused_air: Option<u32>,
     music: crate::minecraft_music::MusicManager,
+    item_activation: crate::minecraft_hand::ItemActivation,
 }
 
 impl Drop for Runtime {
@@ -423,7 +427,7 @@ fn update(
         Query<&bevy::input::gamepad::Gamepad>,
         Option<Res<frame::ActivePad>>,
     ),
-    (hud_input, settings): (Option<Res<frame::HudInputView>>, Option<Res<frame::GameSettings>>),
+    (hud_input, settings, ui_draw): (Option<Res<frame::HudInputView>>, Option<Res<frame::GameSettings>>, Option<Res<frame::UiDraw>>),
     real_time: Res<Time<Real>>,
     mc_camera: Option<Res<frame::McCamera>>,
     mut body_gear: ResMut<crate::anim::minecraft_gear::McBodyGear>,
@@ -605,6 +609,7 @@ fn update(
         switch_screen,
         refused_air,
         music,
+        item_activation,
         ..
     } = &mut *runtime;
     let (Some(world), Some(server), Some(local_uuid)) = (world.as_mut(), server.as_mut(), local_uuid.as_ref()) else {
@@ -944,6 +949,7 @@ fn update(
     let hand_ticks = (hand.clock / TICK_SECONDS) as u32;
     hand.clock -= f64::from(hand_ticks) * TICK_SECONDS;
     hand.cooldowns.tick(hand_ticks);
+    item_activation.tick(hand_ticks);
     ui.cooldowns = hand.cooldowns.shown((hand.clock / TICK_SECONDS) as f32);
     hand.miss_time = hand.miss_time.saturating_sub(hand_ticks);
     hand.attack_ticks = hand.attack_ticks.saturating_add(hand_ticks);
@@ -1008,8 +1014,10 @@ fn update(
                 write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, gone.iter().map(|(pos, _)| (*pos, None)).collect());
                 entities.destroyed.extend(gone);
             }
-            if entities.is_some() {
-                hold_off_death(survival, inventory, *selected, sounds.as_mut(), &world.packs, false);
+            if let Some(entities) = entities.as_mut()
+                && hold_off_death(survival, inventory, *selected, sounds.as_mut(), &world.packs, false)
+            {
+                pop_totem(entities, item_activation, local_uuid, feet, f64::from(motion.height));
             }
             if survival.stuck() {
                 steps.air_peak = steps.air_peak.map(|_| feet[1]);
@@ -1912,7 +1920,9 @@ fn update(
                 sounds.play(&world.packs, sound.event, None, sound.volume, sound.pitch);
             }
         }
-        hold_off_death(survival, inventory, *selected, sounds.as_mut(), &world.packs, totem_popped);
+        if hold_off_death(survival, inventory, *selected, sounds.as_mut(), &world.packs, totem_popped) {
+            pop_totem(entities, item_activation, local_uuid, feet, f64::from(hull_maxs[2] / sim::voxel::BLOCK));
+        }
         if alive
             && !sim::voxel::player_damage_pending()
             && let Some(player) = authority.0.player(local.0).copied()
@@ -2169,7 +2179,10 @@ fn update(
         ui.hand_swing = if hand.swing_offhand { 0.0 } else { swing };
         let main_stack = inventory.slots[*selected].clone().filter(|_| ui.holding_item);
         let offhand_stack = offhand_stack.filter(|_| ui.holding_item || ui.offhand_busy);
-        if !puppet.active && !mc_detached && (main_stack.is_some() || offhand_stack.is_some()) {
+        let activation = item_activation.pose((hand.clock / TICK_SECONDS) as f32, aspect).filter(|_| ui_draw.as_ref().is_none_or(|draw| draw.0));
+        let main_stack = main_stack.filter(|_| !mc_detached);
+        let offhand_stack = offhand_stack.filter(|_| !mc_detached);
+        if !puppet.active && (activation.is_some() || main_stack.is_some() || offhand_stack.is_some()) {
             let eye_light_at = glam::Vec3::new(eye[0] as f32, eye[1] as f32, eye[2] as f32);
             let mut posed = Vec::new();
             for (slot, stack, arm) in [(*selected, main_stack, 1.0), (minecraft_survival::offhand::OFFHAND, offhand_stack, -1.0)] {
@@ -2194,7 +2207,18 @@ fn update(
                 let glint = minecraft_terrain::glint::has_glint(&stack);
                 posed.push((eat.unwrap_or(glam::Mat4::IDENTITY) * crate::minecraft_hand::item_pose(display, swung, 0.0, arm), inventory_ui.dials.key(&stack.id).to_owned(), glint));
             }
-            let mesh = entities.held_item_mesh(&posed, eye_light_at, &world.packs, &world.atlas, light);
+            let mut mesh = entities.held_item_mesh(&posed, eye_light_at, &world.packs, &world.atlas, light);
+            if let Some(pose) = activation {
+                let display = minecraft_terrain::pack::ResourceId::parse(TOTEM)
+                    .ok()
+                    .and_then(|id| minecraft_terrain::model::item_display_transform(&world.packs, &id, "fixed").ok())
+                    .unwrap_or(glam::Mat4::IDENTITY);
+                let start = mesh.vertices.len() as u32;
+                let totem = entities.held_item_mesh(&[(pose * display, TOTEM.to_owned(), false)], eye_light_at, &world.packs, &world.atlas, light);
+                mesh.vertices.extend(totem.vertices.into_iter().map(|vertex| minecraft_terrain::mesh::Vertex { sky_light: FULL_BRIGHT, block_light: FULL_BRIGHT, ..vertex }));
+                mesh.indices.extend(totem.indices.into_iter().map(|index| index + start));
+                mesh.faces += totem.faces;
+            }
             let vertices = minecraft_terrain::mesh::section_vertices(&mesh);
             view.hand = (bytemuck::cast_slice(&vertices).to_vec(), mesh.indices);
             // Reverse-Z with no far plane, as the scene's; 70 degrees up.
@@ -2210,6 +2234,7 @@ fn update(
         }
 
         sim::voxel::set_mob_boxes(entities.shot_boxes());
+        entities.track_body(minecraft_survival::level::opener_key(local_uuid), feet, PLAYER_WIDTH, f64::from(hull_maxs[2] / sim::voxel::BLOCK));
         entities.tick_scene(&terrain.scene, mob_ticks);
         let sky_darken = (15.0 - terrain.environment.sky_light_level()).clamp(0.0, 15.0) as u8;
         let campfire_items: Vec<_> = containers
@@ -2648,12 +2673,17 @@ fn hold_off_death(
     sounds: Option<&mut crate::minecraft_sounds::Sounds>,
     packs: &PackStack,
     struck: bool,
-) {
-    if minecraft_survival::player::hold_off_death(survival, inventory, selected, struck)
-        && let Some(sounds) = sounds
-    {
+) -> bool {
+    let popped = minecraft_survival::player::hold_off_death(survival, inventory, selected, struck);
+    if popped && let Some(sounds) = sounds {
         sounds.play(packs, minecraft_survival::offhand::TOTEM_SOUND, None, 1.0, 1.0);
     }
+    popped
+}
+
+fn pop_totem(entities: &mut minecraft_survival::entities::Entities, activation: &mut crate::minecraft_hand::ItemActivation, player: &minecraft_net::PlayerUuid, feet: [f64; 3], height: f64) {
+    activation.activate(|| entities.random_float());
+    entities.totem_pop(minecraft_survival::level::opener_key(player), feet, PLAYER_WIDTH, height);
 }
 
 fn scene_block(block: &minecraftoss_player::Block) -> Option<minecraft_terrain::scene::Block> {
@@ -2948,6 +2978,7 @@ fn leave_level(
 
 fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
     runtime.music = Default::default();
+    runtime.item_activation = Default::default();
     if close_world(runtime, false) || view.active {
         sim::voxel::deactivate();
         runtime.spawn_gate = Default::default();

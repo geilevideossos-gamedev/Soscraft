@@ -825,3 +825,32 @@ Previous commit: 573af186
 ```
 IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:diamond_sword+sharpness=5,minecraft:cobblestone*128,minecraft:oak_planks*64,minecraft:end_crystal*4
 ```
+
+## Group c5-rest-1: totem animation, trapped chest signal, book contents, lecterns (c5 groups 5-8)
+
+### 34. Minecraft totems pop with vanilla's floating totem and glitter
+
+Previous commit: fba23ac4
+
+- **Changed:**
+  - `render_anim` `minecraft_hand.rs`: `ItemActivation { ticks, off }` (vanilla `GameRenderer.displayItemActivation`: 40 ticks, offsets `nextFloat()·2 − 1`) and `activation_pose(ticks, partial, off, aspect)`, `ScreenEffectRenderer.renderItemActivationAnimation` step by step: t = (40 − ticks + partial)/40, the quintic curve times π, the translation by the offsets times 0.3·|sin 2a| (x also times the aspect) and z −10 + 9 sin a, scale 0.8, Y by 900·|sin a|, X and Z by 6 cos 8t degrees.
+  - `minecraft_world.rs`: the activation lives in `Runtime` (client-local, as vanilla's), ticks with the hand's ticks and resets when the world closes. The `hold_off_death` wrapper now says whether a totem popped; both callers (the hazard tick and the MW2 damage pop) then call `pop_totem`, which starts the activation and the glitter. The hand view is built while the activation runs even with an empty hand, an MW2 gun or in third person (where only the totem is drawn), unless the HUD is hidden (`UiDraw`): the totem in its `fixed` display, full bright, after the held items in the same hand mesh.
+  - `minecraft_terrain` `ambient_particles.rs`: `Kind::Totem` (vanilla `TotemParticle`: gravity 1.25, friction 0.6, size ×0.75, lifetime 60 + `nextInt(12)`, one in four yellow else green, `glitter_7` to `glitter_0` by age, translucent and full bright, alpha 1 − (age − lifetime/2)/lifetime after half its life, with block collision). `Body { feet, width, height }`, `totem_emitter(key, body)` and `tick_emitters(body_of)`: vanilla `TrackingEmitter`, 16 tries in the unit cube a tick, those inside the unit sphere start at (x + w·x/4, y + h·(0.5 + y/4), z + w·z/4) with motion (x, y + 0.2, z); once on creation and then each tick, 30 emissions in all, following the body as it moves. An emitter whose body is gone stops.
+  - `minecraft_survival` `entities.rs`: `track_body(key, feet, width, height)` (the local player's, every frame, under its UUID key) and `totem_pop(key, ...)`; `tick_scene` ticks the emitters before the particles.
+- **Tests:**
+  - `minecraft_hand`: `the_activation_rises_spins_and_returns_like_vanilla` (at t = 0 and t = 1 the totem sits 10 in front with no offset; at t = 0.25, 0.5, 0.75 and a partial tick the position and the spin match the formula; at t = 0.5 it is about 1 block from the eye; 40 ticks then gone).
+  - `ambient_particles`: `a_totem_emitter_runs_thirty_ticks_inside_the_body` (30 emissions of 1 to 16, none after; every start point inside the body box at the sphere offset and its motion; a lost body stops the emitter), `totem_glitter_is_mostly_green_and_fades_after_half_life` (about a quarter yellow in 2000, the colour ranges, lifetime 60 to 71, size, the first tick's motion, alpha 1 to half life then the vanilla fade).
+- **Decisions:**
+  - The totem drawn is always `totem_of_undying` (vanilla's `findTotem` falls back to it; it is the only item with `death_protection` the kit gives).
+  - It is drawn in the hand pass with the hand's 70 degree projection, so an MW2 gun's view model can cover part of it when it swings close; vanilla draws it over its own hand.
+  - The emitter keys bodies by the player's UUID key (`level::opener_key`); remote players' pops wait for track E **[E]**.
+- **Test steps:** (survival, open ground)
+  1. Put a totem in the offhand and `/tp ~ ~40 ~`. On landing the totem pops: a big totem flies from the middle of the screen towards you, spins and drops back over 2 seconds, and green and yellow glitter bursts around your body for about 1.5 seconds and follows you if you walk (**1**, totem mid-spin).
+  2. Select an MW2 gun, put the second totem in the offhand and repeat: the floating totem shows the same way.
+  3. Third totem: press F5 (third person) with the HUD shown and repeat: the floating totem shows and the glitter surrounds the body (**2**).
+  4. Fourth totem: press F1 to hide the HUD and repeat: only the glitter shows, no floating totem.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:totem_of_undying,minecraft:totem_of_undying,minecraft:totem_of_undying,minecraft:totem_of_undying
+```

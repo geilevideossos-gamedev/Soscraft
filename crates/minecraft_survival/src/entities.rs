@@ -72,6 +72,7 @@ pub struct Entities {
     eyes: minecraft_terrain::eye_of_ender::EyeTrails,
     spell: minecraft_terrain::spell_particles::SpellParticles,
     ambient: minecraft_terrain::ambient_particles::AmbientParticles,
+    bodies: HashMap<u128, minecraft_terrain::ambient_particles::Body>,
     level_events: Vec<(i32, (i32, i32, i32), i32)>,
     pub broken_items: Vec<String>,
     items: ItemVisuals,
@@ -223,6 +224,7 @@ impl Entities {
             eyes: minecraft_terrain::eye_of_ender::EyeTrails::default(),
             spell: minecraft_terrain::spell_particles::SpellParticles::new((seed ^ 0x5be1) as u64),
             ambient: minecraft_terrain::ambient_particles::AmbientParticles::new((seed ^ 0xa3b1) as u64),
+            bodies: HashMap::new(),
             level_events: Vec::new(),
             broken_items: Vec::new(),
             items: ItemVisuals::default(),
@@ -756,6 +758,16 @@ impl Entities {
         self.ambient.add(minecraft_terrain::ambient_particles::Kind::Snowflake, at, motion);
     }
 
+    pub fn track_body(&mut self, key: u128, feet: [f64; 3], width: f64, height: f64) {
+        self.bodies.insert(key, minecraft_terrain::ambient_particles::Body { feet: DVec3::from_array(feet), width, height });
+    }
+
+    pub fn totem_pop(&mut self, key: u128, feet: [f64; 3], width: f64, height: f64) {
+        self.track_body(key, feet, width, height);
+        let body = self.bodies[&key];
+        self.ambient.totem_emitter(key, body);
+    }
+
     pub fn campfire_douse(&mut self, pos: (i32, i32, i32), signal: bool) {
         self.ambient.douse(pos, signal);
     }
@@ -1243,6 +1255,8 @@ impl Entities {
     pub fn tick_scene(&mut self, scene: &HandcraftedScene, ticks: u32) {
         for _ in 0..ticks {
             self.poof.tick(scene);
+            let bodies = &self.bodies;
+            self.ambient.tick_emitters(|key| bodies.get(&key).copied());
             self.ambient.tick(scene);
             for entity in self.world.shulker_bullets().iter().filter(|e| e.bullet.alive) {
                 self.ambient.add(minecraft_terrain::ambient_particles::Kind::EndRod, entity.bullet.trail(), DVec3::ZERO);
