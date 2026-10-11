@@ -406,6 +406,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:parched",
     "minecraft:pig",
     "minecraft:sheep",
+    "minecraft:shulker",
     "minecraft:skeleton",
     "minecraft:slime",
     "minecraft:spider",
@@ -812,6 +813,26 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             }
             id
         }
+        "minecraft:shulker" => {
+            use minecraftoss_entities::shulker;
+            let mut entity = shulker::Shulker::new(pos);
+            entity.yaw = yaw;
+            entity.persistence_required = persistent;
+            entity.attach_face = shulker::face_of_id(tag.get("AttachFace").and_then(Tag::as_i64).unwrap_or(0));
+            entity.raw_peek = tag.get("Peek").and_then(Tag::as_i64).map_or(0, |peek| i32::from(peek as i8));
+            entity.color = tag.get("Color").and_then(Tag::as_i64).map(|color| color as i8).filter(|color| (0..16).contains(color)).map(|color| color as u8);
+            entity.covered = has_modifier(tag, "minecraft:armor", COVERED_MODIFIER);
+            if let Some(health) = health {
+                entity.health = health;
+            }
+            let id = world.spawn_shulker(entity, no_ai);
+            let entity = world.shulker_mut(id)?;
+            entity.random = random;
+            if let Some(range) = attribute_value(tag, "minecraft:follow_range") {
+                entity.ai.state.follow_range = range;
+            }
+            id
+        }
         "minecraft:fireball" | "minecraft:small_fireball" => {
             let motion = tag.get("Motion").and_then(Tag::as_list).map(|m| DVec3::new(m.first().and_then(Tag::as_f64).unwrap_or(0.0), m.get(1).and_then(Tag::as_f64).unwrap_or(0.0), m.get(2).and_then(Tag::as_f64).unwrap_or(0.0))).unwrap_or(DVec3::ZERO);
             let kind = if kind == "minecraft:small_fireball" { minecraftoss_entities::fireball::FireballKind::Small } else { minecraftoss_entities::fireball::FireballKind::Large { explosion_power: int(tag, "ExplosionPower").unwrap_or(1) } };
@@ -1116,6 +1137,16 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
     for e in world.blazes() {
         let b = &e.blaze;
         add(e.id, "minecraft:blaze", &b.body, b.yaw, b.health, b.persistence_required, Vec::new());
+    }
+    for e in world.shulkers() {
+        let s = &e.shulker;
+        let fields = vec![
+            ("AttachFace", Tag::Byte(minecraftoss_entities::shulker::face_id(s.attach_face))),
+            ("Peek", Tag::Byte(s.raw_peek as i8)),
+            ("Color", Tag::Byte(s.color.unwrap_or(minecraftoss_entities::shulker::NO_COLOR) as i8)),
+            ("attributes", with_modifier(originals.get(&e.id), "minecraft:armor", COVERED_MODIFIER, s.covered.then_some(f64::from(minecraftoss_entities::shulker::COVERED_ARMOR)))),
+        ];
+        add(e.id, "minecraft:shulker", &s.body, s.yaw, s.health, s.persistence_required, fields);
     }
     for e in world.iron_golems() {
         let g = &e.golem;
@@ -1425,6 +1456,48 @@ fn with_attribute_base(original: Option<&Tag>, id: &str, base: f64) -> Tag {
         _ => {
             let entry: std::collections::BTreeMap<String, Tag> = [("id".to_owned(), Tag::String(id.to_owned())), ("base".to_owned(), Tag::Double(base))].into_iter().collect();
             list.push(Tag::Compound(entry));
+        }
+    }
+    Tag::List(list)
+}
+
+const COVERED_MODIFIER: &str = "minecraft:covered";
+
+fn has_modifier(tag: &Tag, attribute: &str, modifier: &str) -> bool {
+    let Some(entry) = tag.get("attributes").and_then(Tag::as_list).and_then(|list| list.iter().find(|a| a.get("id").and_then(Tag::as_str) == Some(attribute))) else {
+        return false;
+    };
+    entry.get("modifiers").and_then(Tag::as_list).is_some_and(|list| list.iter().any(|m| m.get("id").and_then(Tag::as_str) == Some(modifier)))
+}
+
+fn with_modifier(original: Option<&Tag>, attribute: &str, modifier: &str, amount: Option<f64>) -> Tag {
+    let mut list = original.and_then(|t| t.get("attributes")).and_then(Tag::as_list).map(<[Tag]>::to_vec).unwrap_or_default();
+    let index = match list.iter().position(|a| a.get("id").and_then(Tag::as_str) == Some(attribute)) {
+        Some(index) => index,
+        None if amount.is_none() => return Tag::List(list),
+        None => {
+            let entry: std::collections::BTreeMap<String, Tag> = [("id".to_owned(), Tag::String(attribute.to_owned())), ("base".to_owned(), Tag::Double(0.0))].into_iter().collect();
+            list.push(Tag::Compound(entry));
+            list.len() - 1
+        }
+    };
+    if let Some(Tag::Compound(entry)) = list.get_mut(index) {
+        let mut modifiers = entry.get("modifiers").and_then(Tag::as_list).map(<[Tag]>::to_vec).unwrap_or_default();
+        modifiers.retain(|m| m.get("id").and_then(Tag::as_str) != Some(modifier));
+        if let Some(amount) = amount {
+            let added: std::collections::BTreeMap<String, Tag> = [
+                ("id".to_owned(), Tag::String(modifier.to_owned())),
+                ("amount".to_owned(), Tag::Double(amount)),
+                ("operation".to_owned(), Tag::String("add_value".to_owned())),
+            ]
+            .into_iter()
+            .collect();
+            modifiers.push(Tag::Compound(added));
+        }
+        if modifiers.is_empty() {
+            entry.remove("modifiers");
+        } else {
+            entry.insert("modifiers".to_owned(), Tag::List(modifiers));
         }
     }
     Tag::List(list)

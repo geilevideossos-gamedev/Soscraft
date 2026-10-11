@@ -110,10 +110,14 @@ impl EntityWorld {
                 }
                 let half = f64::from(body.width / 2.0);
                 let p = body.position;
+                let (min, max) = self.shulker_box(id).unwrap_or((
+                    DVec3::new(p.x - half, p.y, p.z - half),
+                    DVec3::new(p.x + half, p.y + f64::from(body.height), p.z + half),
+                ));
                 Some(FireballTarget {
                     id,
-                    min: DVec3::new(p.x - half, p.y, p.z - half),
-                    max: DVec3::new(p.x + half, p.y + f64::from(body.height), p.z + half),
+                    min,
+                    max,
                     owner: owner == Some(Shooter::Mob(id)),
                 })
             })

@@ -48,6 +48,7 @@ pub mod pig_ai;
 pub mod potion;
 pub mod projectile;
 pub mod sheep;
+pub mod shulker;
 pub mod skeleton;
 pub mod sight;
 pub mod skeleton_bow;

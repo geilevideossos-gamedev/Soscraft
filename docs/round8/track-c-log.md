@@ -212,3 +212,38 @@ IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket,minecraft:powder_snow_bucket,min
 ```
 IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket,minecraft:powder_snow_bucket,minecraft:powder_snow_bucket,minecraft:bucket,minecraft:leather_boots,minecraft:leather_helmet,minecraft:flint_and_steel,minecraft:netherrack*16,minecraft:ladder*32,minecraft:oak_planks*64,minecraft:cobblestone*64
 ```
+
+## Group c1-shulkers-1: live shulkers, their model, tipped arrow effects (c1 groups 4, 5 and 6a)
+
+### 8. Minecraft shulkers are live mobs that cling to blocks, peek and teleport
+
+Previous commit: 39e15602
+
+- **Changed:**
+  - `minecraftoss-entities` `shulker.rs` (new): the shulker's state (`attach_face`, raw `Peek` 0-100, the eased peek and last tick's, colour, `covered`, the 6-tick teleport lerp) and vanilla's pure rules: `physical_peek`, `progress_box`/`progress_delta_box` (the unit box stretched toward the opening side, `Shulker.getProgressDeltaAabb`), `can_stay_at` (own cell air, the neighbour's face sturdy toward it, room for the fully open lid, no other shulker in the way), `find_attachable_surface` (down, up, north, south, west, east), `teleport_somewhere` (5 tries within ±8, above the bottom, on air, beside a sturdy face, never onto `#shulker_does_not_teleport_to`), and `ShulkerLookControl` (pitch 0, the head yaw measured in the plane of the attach face, back toward body yaw 0 when nothing is looked at).
+  - `world/shulkers.rs` (new): `ShulkerEntity`, `spawn_shulker`, `tick_shulker`: fluids, fire, suffocation, drowning, effects, then the goals, then (as `Shulker.tick` after `super.tick`) the attachment check (a new face, else a teleport with `entity.shulker.teleport`, the peek reset, the target dropped and a teleport report), then the peek step (0.05 a tick toward raw / 100) and, while it grows, the push of every other mob body in the newly covered slab along the opening side. It never moves otherwise: no motion, no knockback, no blast push.
+  - `monster_ai.rs`: `MonsterKind::Shulker` with its goals (look at players within 8 horizontally, an attack goal placeholder for group 6, `ShulkerPeekGoal`: 1 in 20 on full ticks when it can stay and has no target, raw peek 30 for 20, 40 or 60 ticks; random look) and targets (`HurtByTargetGoal`, nearest player in sight within 16, not in peaceful). Shulkers are `Enemy`s, so iron golems go for them.
+  - `world.rs`, `combat.rs`, `pushing.rs`, `hazards.rs`, `fireballs.rs`, `witches.rs`: the shulker in every per-kind list (keys, bodies, damage states, voices, census, despawn with the golem rule `(128, false, true)`, removal, tick dispatch). Arrows, fireballs and the ray pick use its progress box, so wall and ceiling shulkers are hit where they are. In this commit it takes plain damage.
+  - `minecraft_terrain`: `minecraft:shulker` is simulated; `spawn_saved` reads `AttachFace` (`Direction.LEGACY_ID_CODEC` byte), `Peek`, `Color` and the `minecraft:covered` armour modifier, `mob_tags` writes them back (the modifier only while covered). The client mob list gets the shulker with its head yaw and a 180° head range; teleports reach the client as level event 2016's portal particles (`egg_teleports`).
+  - `minecraft_survival` `entities.rs`: MW2 bullets hit the shulker's progress box under key 26.
+- **Tests:**
+  - `entities` `shulker`: `the_physical_peek_eases_in_and_out`, `the_box_stretches_toward_the_opening_side` (every face at peek 0 and 1, and the newly covered slab), `a_shulker_clings_to_a_sturdy_face_with_room_to_open`, `teleports_land_within_eight_blocks_on_air_beside_a_sturdy_face` (never onto bedrock), `the_peek_moves_a_twentieth_a_tick_and_a_floor_shulker_grows` (raw 30 in 6 ticks), `a_teleport_draws_from_the_old_block_over_six_ticks`, `the_head_turns_in_the_plane_of_its_face`.
+  - `entities` `world::shulkers`: `a_lone_shulker_peeks_now_and_then_with_its_sounds`, `a_shulker_whose_floor_goes_clings_to_a_wall_or_teleports`, `water_or_a_block_over_the_lid_sends_it_away`, `a_teleport_resets_the_peek_and_drops_the_target`, `a_shulker_turns_its_head_to_a_nearby_player_and_never_moves`, `a_far_climber_is_acquired_like_any_player_in_sight`, `an_opening_shulker_pushes_a_mob_in_its_way`, `shulkers_stay_far_away_and_in_peaceful`.
+  - `minecraft_terrain` `server`: `a_shulker_keeps_its_face_peek_colour_and_shell_through_a_save`, `an_end_city_sentry_becomes_a_live_shulker_on_the_floor`; `live_shulkers_stay_far_from_players_while_dormant_monsters_go` and the gateway test now expect a live shulker instead of a dormant one.
+  - `minecraft_survival` `entities`: `shulkers_take_bullet_key_26`.
+- **Decisions:**
+  - **Targeting differs from the brief, toward vanilla:** javap shows `NearestAttackableTargetGoal.findTarget` asks `getNearestPlayer` for players and uses `getTargetSearchArea` only for other mob types, so `ShulkerNearestAttackGoal`'s axis-shaped box never limits players. A shulker takes any player within 16 blocks in sight, at any height. The brief's "only within 4 blocks of its height" was wrong.
+  - The body stays vanilla's position (the block's bottom centre) with a 1-wide box, 1 + peek high on a floor; places that need the real box (MW2 bullets, arrows, fireballs, the ray pick) use `progress_box`. Explosions, sweeps and pushing keep the body box, which matches for floor shulkers.
+  - Shulkers are not solid to other mobs (vanilla's `canBeCollidedWith`); an opening lid pushes mobs out of its way, and players are not pushed or blocked (brief decision).
+  - Sturdy faces come from the block's collision boxes (the World's authored rule), and `#shulker_does_not_teleport_to` is bedrock in the authored tag list.
+  - The open and close sounds come with the peek in this commit; the hurt, death and ambient voices come in the next.
+- **Test steps:** (survival, `/difficulty normal`, daytime, an end stone floor about 15 × 15; the shulker is not drawn until commit 10, so this commit is tested by ear and by hit markers)
+  1. Use a shulker egg on the floor 10 blocks away and walk 20 blocks off. Every few seconds you hear the shulker open and close its shell.
+  2. Shoot where it sits with an MW2 gun: hit markers on the block it sits in.
+  3. Mine the end stone under it while standing 20 blocks away: you hear the teleport sound and purple portal particles spring from where it was toward where it went.
+  4. Pour water on it: it teleports the same way.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:shulker_spawn_egg*8,minecraft:end_stone*64,minecraft:diamond_pickaxe,minecraft:water_bucket
+```

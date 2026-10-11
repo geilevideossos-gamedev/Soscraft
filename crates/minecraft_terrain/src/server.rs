@@ -2807,6 +2807,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.explosion_effects.extend(sim.take_explosion_effects());
                     out.level_events.extend(sim.level.level_events.drain(..).map(|(id, pos, data)| (id, (pos.x, pos.y, pos.z), data)));
                     out.mob_sounds.extend(sim.mobs.take_sounds());
+                    out.egg_teleports.extend(sim.mobs.take_shulker_teleports());
                     out.mob_sounds.extend(sim.level.sounds.drain(..).map(|s| minecraftoss_entities::world::MobSound { event: s.event.to_owned(), position: glam::DVec3::from_array(s.pos), volume: s.volume, pitch: s.pitch, category: "ambient" }));
                     sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
                     out.mobs = Some(Box::new(sim.tracked_mobs(input.tracking.0, input.tracking.1)));
@@ -5647,13 +5648,14 @@ mod tests {
     }
 
     #[test]
-    fn dormant_shulkers_stay_far_from_players_while_dormant_monsters_go() {
+    fn live_shulkers_stay_far_from_players_while_dormant_monsters_go() {
         let Some((mut server, _)) = door_world() else { return };
         let fresh = minecraftoss_core::snbt::parse_compound("{}").unwrap();
         server.summon("minecraft:shulker", [8.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
         server.summon("minecraft:pillager", [9.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
         let kinds = |server: &ServerSim| server.dormant.iter().map(|(group, _)| group[0].kind.clone()).collect::<Vec<_>>();
-        assert_eq!(kinds(&server), ["minecraft:shulker", "minecraft:pillager"]);
+        assert_eq!(kinds(&server), ["minecraft:pillager"]);
+        assert_eq!(server.mobs.shulkers().len(), 1, "shulkers are simulated");
         let player = minecraftoss_entities::tempt::PlayerCandidate {
             id: 0,
             position: glam::DVec3::new(3008.5, 200.0, 8.5),
@@ -5675,9 +5677,10 @@ mod tests {
             attackable: true,
         };
         server.despawn_mobs(&[player], 2);
-        assert_eq!(kinds(&server), ["minecraft:shulker"]);
+        assert!(kinds(&server).is_empty());
+        assert_eq!(server.mobs.shulkers().len(), 1);
         server.despawn_mobs(&[player], 0);
-        assert_eq!(kinds(&server), ["minecraft:shulker"], "shulkers are allowed in peaceful");
+        assert_eq!(server.mobs.shulkers().len(), 1, "shulkers are allowed in peaceful");
     }
 
     #[test]
@@ -5885,7 +5888,7 @@ mod tests {
         let shulker = minecraftoss_core::snbt::parse_compound(&format!("{{id:\"minecraft:shulker\",Pos:[8.5d,206.0d,8.5d],UUID:[I;{},{},{},{}]}}", uuid[0], uuid[1], uuid[2], uuid[3])).unwrap();
         World::add_entity(&mut server.level, shulker);
         server.take_spawned();
-        assert!(server.dormant.iter().any(|(group, _)| group[0].kind == "minecraft:shulker"), "the entity joins the server");
+        assert_eq!(server.mobs.shulkers().len(), 1, "the entity joins the server");
         assert_eq!(server.level.unsupported, Vec::<String>::new());
     }
 
@@ -6708,6 +6711,53 @@ mod tests {
         let mut loaded = minecraftoss_entities::world::EntityWorld::default();
         let back = crate::server_mobs::spawn_saved(&mut loaded, saved).unwrap();
         assert_eq!(loaded.mob_effects(back), world.mob_effects(id));
+    }
+
+    #[test]
+    fn a_shulker_keeps_its_face_peek_colour_and_shell_through_a_save() {
+        use minecraftoss_core::nbt::Tag;
+        use minecraftoss_player::Face;
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:shulker\",Pos:[3.5d,70.0d,-1.5d],AttachFace:5b,Peek:30b,Color:14b,attributes:[{id:\"minecraft:armor\",base:0.0d,modifiers:[{id:\"minecraft:covered\",amount:20.0d,operation:\"add_value\"}]}]}").unwrap();
+        let mut world = minecraftoss_entities::world::EntityWorld::default();
+        let id = crate::server_mobs::spawn_saved(&mut world, &tag).expect("shulkers load");
+        let fields = |world: &minecraftoss_entities::world::EntityWorld, id: u64| {
+            let s = &world.shulkers().iter().find(|e| e.id == id).unwrap().shulker;
+            (s.attach_face, s.raw_peek, s.color, s.covered, s.body.position)
+        };
+        assert_eq!(fields(&world, id), (Face::East, 30, Some(14), true, glam::DVec3::new(3.5, 70.0, -1.5)));
+        let originals: std::collections::HashMap<u64, Tag> = [(id, tag.clone())].into_iter().collect();
+        let tags = crate::server_mobs::mob_tags(&world, |_| true, &originals);
+        let (_, saved) = tags.iter().find(|(tag_id, _)| *tag_id == id).unwrap();
+        assert_eq!((saved.get("AttachFace"), saved.get("Peek"), saved.get("Color")), (Some(&Tag::Byte(5)), Some(&Tag::Byte(30)), Some(&Tag::Byte(14))));
+        let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+        let back = crate::server_mobs::spawn_saved(&mut loaded, saved).unwrap();
+        assert_eq!(fields(&loaded, back), fields(&world, id));
+        let entity = world.shulker_mut(id).unwrap();
+        (entity.shulker.covered, entity.shulker.color) = (false, None);
+        let tags = crate::server_mobs::mob_tags(&world, |_| true, &originals);
+        let (_, saved) = tags.iter().find(|(tag_id, _)| *tag_id == id).unwrap();
+        assert_eq!(saved.get("Color"), Some(&Tag::Byte(16)), "no colour saves 16");
+        let armor = saved.get("attributes").and_then(Tag::as_list).unwrap().iter().find(|a| a.get("id").and_then(Tag::as_str) == Some("minecraft:armor")).unwrap();
+        assert_eq!(armor.get("modifiers"), None, "an open shell saves no covered modifier");
+        let back = crate::server_mobs::spawn_saved(&mut loaded, saved).unwrap();
+        assert_eq!(fields(&loaded, back).3, false);
+    }
+
+    #[test]
+    fn an_end_city_sentry_becomes_a_live_shulker_on_the_floor() {
+        use minecraftoss_core::nbt::Tag;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let Some(entities) = registries.entities.as_ref() else { return };
+        let mut tag = entities.default_tag("minecraft:shulker").expect("the shulker's default tag");
+        if let Tag::Compound(map) = &mut tag {
+            map.insert("Pos".to_owned(), Tag::List(vec![Tag::Double(10.5), Tag::Double(80.0), Tag::Double(-4.5)]));
+        }
+        let mut world = minecraftoss_entities::world::EntityWorld::default();
+        let id = crate::server_mobs::spawn_saved(&mut world, &tag).expect("a sentry is simulated");
+        let s = &world.shulkers().iter().find(|e| e.id == id).unwrap().shulker;
+        assert_eq!((s.attach_face, s.raw_peek, s.color, s.covered), (minecraftoss_player::Face::Down, 0, None, false));
+        assert_eq!((s.health, s.body.position), (30.0, glam::DVec3::new(10.5, 80.0, -4.5)));
     }
 
     #[test]

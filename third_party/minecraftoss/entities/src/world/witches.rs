@@ -497,6 +497,9 @@ impl EntityWorld {
         if let Some(e) = self.chickens.iter_mut().find(|e| e.id == id) {
             return Some((&mut e.effects, false, false));
         }
+        if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == id) {
+            return Some((&mut e.effects, false, false));
+        }
         None
     }
 
@@ -519,6 +522,7 @@ impl EntityWorld {
             .or_else(|| self.sheep.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.pigs.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.chickens.iter().find(|e| e.id == id).map(|e| &e.effects))
+            .or_else(|| self.shulkers.iter().find(|e| e.id == id).map(|e| &e.effects))
     }
 
     /// `HealOrHarmMobEffect.applyInstantaneousEffect` on a mob: the heal,

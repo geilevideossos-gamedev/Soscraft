@@ -1151,6 +1151,10 @@ impl Entities {
         for e in w.blazes().iter().filter(|e| e.blaze.health > 0.0) {
             add(MobHit::Blaze(e.id), &e.blaze.body);
         }
+        for e in w.shulkers().iter().filter(|e| e.shulker.health > 0.0) {
+            let (low, high) = e.shulker.bounding_box();
+            out.push((encode(MobHit::Shulker(e.id)), [low.x, low.y, low.z, high.x, high.y, high.z]));
+        }
         for crystal in &self.crystals {
             let (low, high) = minecraft_terrain::end_crystal::pick_box(crystal.position);
             out.push((CRYSTAL_KEY | (crystal.id & ((1 << 56) - 1)), [low.x, low.y, low.z, high.x, high.y, high.z]));
@@ -1374,6 +1378,7 @@ fn encode(hit: MobHit) -> u64 {
         MobHit::Chicken(_) => 15,
         MobHit::Ghast(_) => 16,
         MobHit::Blaze(_) => 18,
+        MobHit::Shulker(_) => 26,
     };
     (kind << 56) | (hit.id() & ((1 << 56) - 1))
 }
@@ -1399,6 +1404,7 @@ fn decode(key: u64) -> Option<MobHit> {
         15 => MobHit::Chicken(id),
         16 => MobHit::Ghast(id),
         18 => MobHit::Blaze(id),
+        26 => MobHit::Shulker(id),
         _ => return None,
     })
 }
@@ -1520,6 +1526,14 @@ mod tests {
         assert_eq!(decode(key), None);
         assert_eq!(crystal_of(FIREBALL_KEY | 42), None);
         assert_eq!(crystal_of(encode(MobHit::Blaze(42))), None);
+    }
+
+    #[test]
+    fn shulkers_take_bullet_key_26() {
+        let key = encode(MobHit::Shulker(42));
+        assert_eq!(key >> 56, 26);
+        assert_eq!(decode(key), Some(MobHit::Shulker(42)));
+        assert_eq!((crystal_of(key), fireball_of(key), end_target_of(key)), (None, None, None));
     }
 
     #[test]
