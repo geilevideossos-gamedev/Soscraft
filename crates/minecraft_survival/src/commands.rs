@@ -1664,6 +1664,7 @@ pub(crate) mod tests {
             openers: Default::default(),
             empty_ticks: 0,
             dragon_fight: None,
+            container_ticks: 0,
         })
     }
 

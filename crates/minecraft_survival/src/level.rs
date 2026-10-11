@@ -24,6 +24,7 @@ pub struct Level {
     pub openers: Openers,
     pub empty_ticks: u32,
     pub dragon_fight: Option<crate::the_end::dragon_fight::DragonFight>,
+    pub container_ticks: u32,
 }
 
 pub struct Terrain {
@@ -43,6 +44,7 @@ impl Level {
             openers: Openers::default(),
             empty_ticks: 0,
             dragon_fight: None,
+            container_ticks: 0,
         }
     }
 }

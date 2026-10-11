@@ -300,7 +300,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         chat,
         data: Default::default(),
         level_writer: None,
-        autosave_ticks: 0,
+        autosave_due: false,
         level_ticks: 0,
         closing: Vec::new(),
         waiting_locates: Vec::new(),
@@ -604,10 +604,9 @@ fn update(
         return;
     };
     let ticking: Vec<Dimension> = server.players.get(local_uuid).filter(|player| player.switching.is_none()).map(|player| player.dimension).into_iter().collect();
-    server.plan_ticks(std::time::Instant::now(), &ticking);
+    let planned = server.plan_ticks(std::time::Instant::now(), &ticking);
     let minecraft_survival::server::Server { globals, levels, players, pending_batch, .. } = server;
-    if globals.autosave_ticks >= minecraft_survival::save::AUTOSAVE_TICKS {
-        globals.autosave_ticks = 0;
+    if std::mem::take(&mut globals.autosave_due) {
         minecraft_survival::server::autosave(globals, levels, players);
     }
     let Some(player) = players.get_mut(local_uuid) else {
@@ -678,7 +677,6 @@ fn update(
         let at = player.place.filter(|place| place.dimension == player.dimension).map_or(origin, |place| place.feet);
         let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
         stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, at, aspect, now_ms);
-        globals.advance_clocks(time.delta_secs_f64());
         if ps.is_some() && player.arrival.is_none() && !spawn_gate.waiting() && !minecraft_survival::the_end::holding_for_credits(player) {
             player.switching = None;
             diag::info!(World, "Minecraft player arrived in {} at {:?}", player.dimension.dimension_type(), at);
@@ -716,7 +714,7 @@ fn update(
     let presence = vec![(local_uuid.clone(), minecraft_survival::commands::Presence { pose: host_pose, alive: host_alive })];
     let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, levels, players, local_uuid, &mut ui.chat.sent, presence);
     ui.chat.command_level = players.get(local_uuid).map_or(0, |player| globals.chat.level(player.id));
-    crate::minecraft_end::tick_fight(levels, players, globals, time.delta_secs_f64(), local_uuid, &mut ui);
+    crate::minecraft_end::tick_fight(levels, players, globals, f64::from(planned.normal_count()) * minecraft_survival::the_end::dragon_fight::TICK_SECONDS, local_uuid, &mut ui);
     let Some(player) = players.get_mut(local_uuid) else {
         ui.active = false;
         ui.inventory_open = false;
@@ -738,7 +736,7 @@ fn update(
         return;
     };
     let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, arrived, ender, respawn, .. } = player;
-    let minecraft_survival::level::Level { entities, containers, terrain, openers, dimension, .. } = level;
+    let minecraft_survival::level::Level { entities, containers, terrain, openers, dimension, container_ticks, .. } = level;
     minecraft_terrain::cow_render::set_nether_entity_lighting(terrain.rules.nether_cardinal_light);
     if !delivered.is_empty() {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
@@ -986,7 +984,7 @@ fn update(
         }
     }
     if let Some(entities) = entities.as_mut() {
-        let (writes, brewed) = minecraft_survival::level::tick_containers(containers, entities, terrain, hand_ticks);
+        let (writes, brewed) = minecraft_survival::level::tick_containers(containers, entities, terrain, std::mem::take(container_ticks));
         if let Some(sounds) = sounds.as_mut() {
             for pos in brewed {
                 let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
@@ -1717,9 +1715,6 @@ fn update(
             show_chat(&mut ui.chat, inventory_ui, &world.packs, &answers);
         }
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
-        globals.autosave_ticks += mob_ticks;
-        globals.level_ticks += mob_ticks;
-        globals.advance_weather(&[*dimension], mob_ticks);
         for _ in 0..mob_ticks {
             let rain = entities.rain_tick(&terrain.scene, eye);
             for sound in entities.animate_tick(&terrain.scene, feet).into_iter().chain(rain) {
@@ -2214,7 +2209,6 @@ fn update(
         body_gear.remove(local.0.0);
     }
     view.cracks = mining.crack_mesh(&terrain.scene, &terrain.stream.states, &world.packs);
-    globals.advance_clocks(dt);
     let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
     view.eye_light = [
         f32::from(light.get(eye_block)),

@@ -8,6 +8,10 @@ const OVERLOADED_THRESHOLD_NANOS: u64 = 20 * NANOS_PER_SECOND / 20;
 const OVERLOADED_WARNING_INTERVAL_NANOS: u64 = 10 * NANOS_PER_SECOND;
 const BATCH_BUDGET_NANOS: u64 = 50_000_000;
 const MAX_BATCH: u64 = 100;
+pub const MIN_RATE: f32 = 1.0;
+pub const AUTOSAVE_INTERVAL: i32 = 6000;
+const MIN_AUTOSAVE_TICKS: i32 = 100;
+const AUTOSAVE_SECONDS: f32 = 300.0;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TickBatch {
@@ -46,6 +50,7 @@ pub struct TickRate {
     samples: [u64; SAMPLES],
     aggregated: u64,
     last_batch_nanos: u64,
+    ticks_until_autosave: i32,
 }
 
 impl Default for TickRate {
@@ -67,6 +72,7 @@ impl Default for TickRate {
             samples: [0; SAMPLES],
             aggregated: 0,
             last_batch_nanos: 1,
+            ticks_until_autosave: AUTOSAVE_INTERVAL,
         }
     }
 }
@@ -90,6 +96,49 @@ impl TickRate {
 
     pub fn is_sprinting(&self) -> bool {
         self.scheduled_sprint_ticks > 0
+    }
+
+    pub fn set_rate(&mut self, rate: f32) {
+        self.rate = rate.max(MIN_RATE);
+        self.nanos_per_tick = (NANOS_PER_SECOND as f64 / f64::from(self.rate)) as u64;
+        self.on_rate_changed();
+    }
+
+    pub fn set_frozen(&mut self, frozen: bool) {
+        self.frozen = frozen;
+    }
+
+    pub fn is_frozen(&self) -> bool {
+        self.frozen
+    }
+
+    pub fn autosave_interval(&self) -> i32 {
+        let rate = if self.is_sprinting() {
+            NANOS_PER_SECOND as f32 / (self.average_nanos() + 1) as f32
+        } else {
+            self.rate
+        };
+        MIN_AUTOSAVE_TICKS.max((rate * AUTOSAVE_SECONDS) as i32)
+    }
+
+    pub fn ticks_until_autosave(&self) -> i32 {
+        self.ticks_until_autosave
+    }
+
+    pub fn count_autosave(&mut self, ticks: usize) -> bool {
+        if ticks == 0 {
+            return false;
+        }
+        self.ticks_until_autosave -= ticks as i32;
+        if self.ticks_until_autosave > 0 {
+            return false;
+        }
+        self.ticks_until_autosave = self.autosave_interval();
+        true
+    }
+
+    fn on_rate_changed(&mut self) {
+        self.ticks_until_autosave = self.ticks_until_autosave.min(self.autosave_interval());
     }
 
     pub fn plan(&mut self, now: Instant, ready: bool) -> TickBatch {
@@ -175,6 +224,7 @@ impl TickRate {
         self.sprint_time_spent_nanos = 0;
         self.remaining_sprint_ticks = 0;
         self.frozen = self.previous_frozen;
+        self.on_rate_changed();
     }
 
     pub fn record(&mut self, nanos: &[u64]) {
@@ -305,6 +355,53 @@ mod tests {
         assert_eq!(rate.average_nanos(), 3 * MS);
         rate.record(&[4 * MS; 50]);
         assert_eq!(rate.average_nanos(), 4 * MS);
+    }
+
+    #[test]
+    fn the_autosave_interval_is_five_minutes_at_the_tick_rate() {
+        let mut rate = TickRate::default();
+        assert_eq!(rate.autosave_interval(), 6000);
+        rate.set_rate(1.0);
+        assert_eq!(rate.autosave_interval(), 300);
+        rate.set_rate(0.2);
+        assert_eq!(rate.rate(), 1.0);
+        rate.set_rate(10.0);
+        assert_eq!(rate.autosave_interval(), 3000);
+        rate.set_rate(0.3);
+        assert_eq!(rate.autosave_interval(), 300);
+    }
+
+    #[test]
+    fn the_autosave_interval_never_drops_below_100_ticks() {
+        let mut rate = TickRate::default();
+        rate.scheduled_sprint_ticks = 10;
+        rate.record(&[10_000 * MS; 100]);
+        assert_eq!(rate.autosave_interval(), 100);
+        rate.scheduled_sprint_ticks = 0;
+        rate.set_rate(MIN_RATE);
+        assert_eq!(rate.autosave_interval(), 300);
+    }
+
+    #[test]
+    fn lowering_the_rate_shortens_the_autosave_countdown_and_raising_it_does_not() {
+        let mut rate = TickRate::default();
+        assert_eq!(rate.ticks_until_autosave(), 6000);
+        rate.set_rate(10.0);
+        assert_eq!(rate.ticks_until_autosave(), 3000);
+        rate.set_rate(40.0);
+        assert_eq!(rate.ticks_until_autosave(), 3000);
+        assert!(!rate.count_autosave(2999));
+        assert!(rate.count_autosave(1));
+        assert_eq!(rate.ticks_until_autosave(), 12000);
+    }
+
+    #[test]
+    fn the_autosave_counts_down_by_whole_batches() {
+        let mut rate = TickRate::default();
+        assert!(!rate.count_autosave(0));
+        assert!(!rate.count_autosave(5999));
+        assert!(rate.count_autosave(100));
+        assert_eq!(rate.ticks_until_autosave(), 6000);
     }
 
     #[test]

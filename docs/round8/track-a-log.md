@@ -34,7 +34,7 @@ Commit: c87e6fbf
 
 ### 2b. The Minecraft server ticks on a vanilla schedule and skips ticks when it falls behind
 
-Commit: (see the next entry, or `git log` under this subject)
+Commit: 38e78baf
 
 - **Changed:**
   - `minecraft_survival/src/server.rs`: `Globals.tick_rate` (built in `test_globals` and in `render_anim`). `Server::plan_ticks(now, ticking)` reads every ticking level (`Entities::ready_for_ticks`, `take_finished_ticks`), records the slowest level's time per tick, and plans with `TickRate::plan`, ready only when every ticking level has answered its last batch and no planned batch is still waiting. The planned batch waits in `Server.pending_batch` until `Entities::tick` takes it, so a frame that returns early before the mobs (arriving, no player state, no light) keeps it for the next frame. `take_batch` hands it out.
@@ -58,4 +58,34 @@ Commit: (see the next entry, or `git log` under this subject)
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:oak_sapling*16,minecraft:cow_spawn_egg*4
+```
+
+### 3. Minecraft clocks, weather, autosaves, containers and the dragon fight follow the server's ticks
+
+Commit: (see the next entry, or `git log` under this subject)
+
+- **Changed:**
+  - `minecraft_survival/src/server.rs`: `Server::plan_ticks` applies each planned batch to the server-wide state itself: the Overworld and End clocks move by the batch's normal ticks (`Globals::advance_clocks` takes ticks now, and the paused-day branch shifts the game time by the same ticks), the weather of a server with no weather level ticking moves by the normal ticks, `level_ticks` (the empty-level timer) by every tick, and the autosave countdown by every tick. Each ticking level that holds the batch gets its normal ticks added to its new `Level.container_ticks`. `Globals.autosave_ticks` is replaced by `autosave_due`.
+  - `minecraft_survival/src/tick_rate.rs`: vanilla's autosave countdown (`ticksUntilAutosave`, starting at 6000) with `autosave_interval` (`max(100, (int)(rate * 300))`, with `1e9 / (average + 1)` as the rate while sprinting), `count_autosave(ticks)` (counts a batch down and restarts at the interval when it reaches 0), `set_rate` (vanilla `setTickRate`: at least 1, nanoseconds per tick as a double division, then `onTickRateChanged`, which only ever shortens the countdown), `set_frozen` and `is_frozen`. A finished sprint calls `onTickRateChanged` too, as vanilla's `finishTickSprint` does.
+  - `minecraft_terrain/src/day_cycle.rs`: `DayCycle::advance_ticks`.
+  - `minecraft_survival/src/save.rs`: `AUTOSAVE_TICKS` is gone; the interval comes from the tick rate.
+  - `render_anim/src/minecraft_world.rs`: the autosave runs when `autosave_due` is set; the two frame-time clock advances and the `autosave_ticks`, `level_ticks` and weather lines after the mobs' tick are gone; the containers tick by the level's `container_ticks` instead of the hand's 20 Hz clock; the dragon fight gets the frame's planned normal ticks as seconds (`count * dragon_fight::TICK_SECONDS`).
+- **Tests:** `tick_rate.rs`: `the_autosave_interval_is_five_minutes_at_the_tick_rate` (6000 at 20, 300 at 1, 3000 at 10, rates below 1 clamp to 1), `the_autosave_interval_never_drops_below_100_ticks` (a sprint averaging 10 s a tick), `lowering_the_rate_shortens_the_autosave_countdown_and_raising_it_does_not`, `the_autosave_counts_down_by_whole_batches`. `server.rs`: `frozen_ticks_move_no_clock_and_no_weather_but_count_for_the_autosave_and_empty_levels` (a frozen batch of 10 leaves the clocks and the rain timer alone, adds 10 to `level_ticks` and the autosave countdown, and 6000 frozen ticks set `autosave_due`); `a_batch_left_by_an_early_return_is_sent_on_the_next_frame` also checks that the holding level's `container_ticks` grows by the batch once. `day_cycle.rs`: `day_advances_by_server_ticks_until_paused`. The clock test `the_end_clock_runs_beside_the_day_and_each_level_reads_its_default_clock` now advances by 20 ticks instead of 1 s.
+- **Decisions:**
+  - The autosave countdown lives in `TickRate`, not in `Globals` as the brief has it, so that `set_rate` (here, and used by `/tick rate` in group 5b) and a finished sprint can shorten it the way `onTickRateChanged` does without reaching into `Globals`. `Globals` only keeps the `autosave_due` flag for `render_anim`. `set_rate` and `set_frozen` are added now because the countdown and the frozen-tick test need them; `/tick` (group 5b) only calls them.
+  - The countdown restarts at the interval when it reaches 0, as vanilla's `autoSave` does; a batch that overshoots 0 does not carry the rest over.
+  - Containers keep their ticks in `Level.container_ticks` until the frame reaches them, so a frame that returns early (arriving, menus) neither loses nor repeats them. They only count while the level ticks, as the level's block entities do.
+  - The dragon fight takes the frame's planned normal ticks whether or not the End is the ticking level, as it took the frame time before: vanilla ticks the fight with the End level, and every vanilla level ticks. Frames that return before the fight lose those ticks, as they lost their frame time before.
+  - Clocks, weather and the timers move during a dimension switch too (no level holds the batch then), as the server keeps ticking while a vanilla player is in the loading screen. Before, the clocks moved by frame time while arriving and the weather and timers stood still.
+- **Test steps:**
+  1. Start in survival in daylight. Type `/time query daytime`, wait 10 s on a watch and type it again: it has grown by about 200.
+  2. Place the furnace, put coal in the fuel slot and 16 raw iron on top. Each iron takes 10 s, as before.
+  3. Type `/gamerule random_tick_speed 20000`. The furnace arrow, the sun and `/time query daytime` slow down together with the mobs; MW2 movement stays smooth. **Screenshot 1** of the furnace with the arrow part-way.
+  4. Type `/gamerule random_tick_speed 3`. Within a few seconds the furnace and the clock run at normal speed again.
+  5. Go through a Nether portal and back. The sky in the Overworld is at the time the clock would have reached; `/time query daytime` keeps growing while you are in the Nether.
+  6. Stay in the world for more than 5 minutes, then quit. `iw4l-artifacts\logs\latest.log` has a line `Minecraft autosave: ... chunks queued for ...` about every 5 minutes. Send the lines.
+- **Kit** (4 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:furnace,minecraft:coal*16,minecraft:raw_iron*16,minecraft:obsidian*14
 ```

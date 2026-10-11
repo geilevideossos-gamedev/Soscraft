@@ -48,7 +48,7 @@ pub struct Globals {
     pub chat: CommandServer,
     pub data: GameData,
     pub level_writer: Option<JoinHandle<()>>,
-    pub autosave_ticks: u32,
+    pub autosave_due: bool,
     pub level_ticks: u32,
     pub closing: Vec<(Dimension, JoinHandle<()>)>,
     pub waiting_locates: Vec<(Dimension, PlayerId, LocateRequest)>,
@@ -110,15 +110,18 @@ impl Globals {
         }
     }
 
-    pub fn advance_clocks(&mut self, seconds: f64) {
+    pub fn advance_clocks(&mut self, ticks: u32) {
+        if ticks == 0 {
+            return;
+        }
         let advancing = self.game_rules.bool("advance_time");
         if advancing && !self.day.paused {
-            self.day.advance(seconds);
+            self.day.advance_ticks(ticks);
         } else if let Some(save) = self.save.as_mut() {
-            save.shift_day(-seconds * 20.0);
+            save.shift_day(-f64::from(ticks));
         }
         if advancing {
-            self.end_clock.advance(seconds);
+            self.end_clock.advance_ticks(ticks);
         }
     }
 }
@@ -316,7 +319,7 @@ fn spawn_place(spawn: &RespawnData) -> Place {
 
 impl Server {
     pub fn plan_ticks(&mut self, now: Instant, ticking: &[Dimension]) -> TickBatch {
-        let mut holders = 0;
+        let mut holders = Vec::new();
         let mut ready = true;
         let mut finished: Vec<u64> = Vec::new();
         for dimension in ticking {
@@ -327,7 +330,7 @@ impl Server {
             else {
                 continue;
             };
-            holders += 1;
+            holders.push(*dimension);
             ready &= entities.ready_for_ticks();
             for (index, nanos) in entities.take_finished_ticks().into_iter().enumerate() {
                 match finished.get_mut(index) {
@@ -336,7 +339,7 @@ impl Server {
                 }
             }
         }
-        if holders == 0 {
+        if holders.is_empty() {
             self.pending_batch = None;
         }
         self.globals.tick_rate.record(&finished);
@@ -344,7 +347,19 @@ impl Server {
             .globals
             .tick_rate
             .plan(now, ready && self.pending_batch.is_none());
-        if holders > 0 && !batch.is_empty() {
+        let normal = batch.normal_count();
+        self.globals.advance_clocks(normal);
+        self.globals.advance_weather(ticking, normal);
+        self.globals.level_ticks = self.globals.level_ticks.saturating_add(batch.len() as u32);
+        if self.globals.tick_rate.count_autosave(batch.len()) {
+            self.globals.autosave_due = true;
+        }
+        if !holders.is_empty() && !batch.is_empty() {
+            for dimension in &holders {
+                if let Some(level) = self.levels.get_mut(dimension) {
+                    level.container_ticks = level.container_ticks.saturating_add(normal);
+                }
+            }
             self.pending_batch = Some(batch.clone());
         }
         batch
@@ -1199,7 +1214,7 @@ mod tests {
             chat: CommandServer::new(crate::commands::HOST),
             data: GameData::default(),
             level_writer: None,
-            autosave_ticks: 0,
+            autosave_due: false,
             level_ticks: 0,
             closing: Vec::new(),
             waiting_locates: Vec::new(),
@@ -1260,7 +1275,7 @@ mod tests {
                 the_end: 0
             }
         );
-        globals.advance_clocks(1.0);
+        globals.advance_clocks(20);
         assert_eq!(
             globals.clock_ticks(),
             ClockTicks {
@@ -1273,7 +1288,7 @@ mod tests {
         globals.end_clock.ticks = 5.0;
         assert_eq!(globals.default_clock_ticks(Dimension::End), 5);
         globals.end_clock.paused = true;
-        globals.advance_clocks(1.0);
+        globals.advance_clocks(20);
         assert_eq!(
             globals.clock_ticks(),
             ClockTicks {
@@ -1283,7 +1298,7 @@ mod tests {
         );
         globals.end_clock.paused = false;
         globals.game_rules.set("advance_time", "false").unwrap();
-        globals.advance_clocks(1.0);
+        globals.advance_clocks(20);
         assert_eq!(
             globals.clock_ticks(),
             ClockTicks {
@@ -2309,9 +2324,58 @@ mod tests {
         assert!(server.pending_batch.is_none(), "no ticking level holds it");
         let planned = server.plan_ticks(after(150), &[Dimension::Overworld]);
         assert_eq!(planned.len(), 3);
+        assert_eq!(server.levels[&Dimension::Overworld].container_ticks, 3);
         assert!(server.plan_ticks(after(300), &[Dimension::Overworld]).is_empty());
+        assert_eq!(server.levels[&Dimension::Overworld].container_ticks, 3);
         assert_eq!(server.take_batch(), planned);
         assert!(server.take_batch().is_empty());
         assert_eq!(server.plan_ticks(after(300), &[Dimension::Overworld]).len(), 3);
+    }
+
+    #[test]
+    fn frozen_ticks_move_no_clock_and_no_weather_but_count_for_the_autosave_and_empty_levels() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let rain = WeatherData {
+            rain_time: 100,
+            raining: true,
+            ..WeatherData::default()
+        };
+        let mut server = Server {
+            globals: Globals {
+                weather: Some(rain),
+                ..test_globals(registries, None)
+            },
+            levels: BTreeMap::new(),
+            opening: BTreeMap::new(),
+            players: BTreeMap::new(),
+            pending_batch: None,
+        };
+        let base = Instant::now();
+        let after = |millis| base + std::time::Duration::from_millis(millis);
+        let rain_time = |server: &Server| server.globals.weather.map(|weather| weather.rain_time);
+        assert_eq!(server.plan_ticks(base, &[Dimension::Nether]).normal_count(), 1);
+        assert_eq!(server.globals.clock_ticks(), ClockTicks { overworld: 1001, the_end: 1 });
+        assert_eq!(rain_time(&server), Some(99));
+        assert_eq!(server.globals.level_ticks, 1);
+        server.globals.tick_rate.set_frozen(true);
+        let frozen = server.plan_ticks(after(500), &[Dimension::Nether]);
+        assert_eq!((frozen.len(), frozen.normal_count()), (10, 0));
+        assert_eq!(server.globals.clock_ticks(), ClockTicks { overworld: 1001, the_end: 1 });
+        assert_eq!(rain_time(&server), Some(99));
+        assert_eq!(server.globals.level_ticks, 11);
+        assert_eq!(server.globals.tick_rate.ticks_until_autosave(), 5989);
+        assert!(!server.globals.autosave_due);
+        for step in 1..=5989 {
+            server.plan_ticks(after(500 + 50 * step), &[Dimension::Nether]);
+        }
+        assert!(server.globals.autosave_due, "frozen ticks count down to the autosave");
+        assert_eq!(server.globals.tick_rate.ticks_until_autosave(), 6000);
+        assert_eq!(server.globals.clock_ticks(), ClockTicks { overworld: 1001, the_end: 1 });
+        server.globals.tick_rate.set_frozen(false);
+        assert_eq!(server.plan_ticks(after(500 + 50 * 5990), &[Dimension::Nether]).normal_count(), 1);
+        assert_eq!(server.globals.clock_ticks(), ClockTicks { overworld: 1002, the_end: 2 });
+        assert_eq!(rain_time(&server), Some(98));
     }
 }
