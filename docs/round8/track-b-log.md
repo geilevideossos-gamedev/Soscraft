@@ -345,3 +345,20 @@ After f58c8593.
   - A hoglin is an `Animal`: its idle clock runs one a tick and its swim, splash and fall sounds are the generic ones. A zoglin is a `Monster`: two more a tick in bright light, and the hostile sounds.
   - A mob with `NoAI` stands still and only keeps its idle clock, as the other mobs here do.
 - **Test steps:** none in game yet: hoglins and zoglins are simulated from b2.2 on.
+
+### b2.2. Minecraft hoglins and zoglins are saved and spawn in crimson forests and bastions
+
+After 8f545881.
+
+- **Changed:**
+  - `minecraft_terrain/src/server_mobs.rs`: `minecraft:hoglin` and `minecraft:zoglin` are simulated. `spawn_saved` reads `Age`, `ForcedAge`, `InLove`, `IsImmuneToZombification`, `TimeInOverworld` and `CannotBeHunted` for the hoglin and `IsBaby` for the zoglin; `mob_tags` writes them back (always, as `Hoglin.addAdditionalSaveData` does) and keeps the other keys as loaded. Hoglins that waited dormant in a saved world (bastion stables, crimson forests) come alive when their chunk loads.
+  - Vendored `world/src/natural_spawner.rs`: the hoglin's spawn data (1.3964844 x 1.4, on the ground, motion blocking without leaves, not fire immune, removed far away, groups of up to 4) with a new `Rules::Hoglin` (`checkHoglinSpawnRules`: anything but a nether wart block below; no light test). The zoglin's (fire immune, `checkAnyLightMonsterSpawnRules`, the monster walk value) for spawners and `/summon`; it never spawns naturally (no biome lists it).
+  - `natural_spawner/spawning.rs`: the hoglin's `finalizeSpawn`: one in five a baby, then `AgeableMob`'s group roll (one in twenty for every member after the first; a natural group of 3 or 4 shares it), then `Mob`'s part. The zoglin's: one in five a baby (`IsBaby`), then `Mob`'s part. Natural spawning, spawn eggs, spawners and `/summon` without NBT go through it.
+  - Vendored `generator/src/feature/entities.rs`: a hoglin or zoglin placed by a structure (the bastion stables) is a baby one time in five, from the level random, before `Mob`'s part.
+  - Vendored `entities/src/monster_ai.rs`: `is_enemy` lists the hoglin and the zoglin (both `Enemy`), so iron golems hunt them.
+- **Tests:** `server_mobs`: `hoglins_and_zoglins_keep_their_age_conversion_clock_and_flags_through_a_save`. `server` (with the game data): `a_crimson_forest_spawns_hoglins_in_groups_but_not_on_nether_wart_blocks` (seed 0, the nearest crimson forest, 120 ticks of monster spawning around a player). `spawning`: `a_hoglin_group_rolls_one_in_five_babies_and_a_further_twentieth_after_the_first` (20 000 groups of 4: the first member 20 %, the others 24 %). `terrain` (with the game data): `bastion_hoglins_come_alive_and_stay_persistent` (the first hoglin stables among seed 77's bastions: every stable hoglin loads as a simulated, persistent hoglin). `world::hoglins`: `an_iron_golem_goes_for_a_hoglin`.
+- **Decisions:**
+  - The hoglin's walk target value at spawn is 10 on crimson nylium and 0 elsewhere (`-1` needs a remembered repellent, which a mob being created has none of), so it never fails the spawn check: the spawner uses the neutral walk check instead of a new `Walk::Hoglin` (the brief's), with the same outcome. The value for strolling comes with the brain (b2.5).
+  - The brief's bastion test became its own test: the bastion nearest seed 77's origin (the one `nether_fortresses_bastions_and_every_nether_feature_generate` uses) has no stables, so the new test walks out to the first bastion that has.
+  - The group baby roll is a small function (`hoglin_spawns_as_baby`) so it can be tested without a level.
+- **Test steps:** together with b2.3's (hoglins are drawn from b2.3 on).

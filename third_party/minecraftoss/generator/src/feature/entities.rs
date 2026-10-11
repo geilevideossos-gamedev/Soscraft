@@ -134,6 +134,15 @@ pub fn finalize_spawn(ctx: &mut Ctx, tag: &mut Tag, black_cat_structure: bool) {
     if kind == "minecraft:piglin" {
         finalize_piglin(ctx, tag);
     }
+    if matches!(kind.as_str(), "minecraft:hoglin" | "minecraft:zoglin") && ctx.region.level_random().next_f32() < 0.2 {
+        if let Tag::Compound(map) = tag {
+            if kind == "minecraft:hoglin" {
+                map.insert("Age".to_owned(), Tag::Int(-24000));
+            } else {
+                map.insert("IsBaby".to_owned(), Tag::Byte(1));
+            }
+        }
+    }
     // `AgeableMob.finalizeSpawn` draws nothing for the first of a group.
     finalize_mob(tag, ctx.region.level_random());
     if kind == "minecraft:cat" {

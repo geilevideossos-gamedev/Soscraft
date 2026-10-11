@@ -398,6 +398,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:ender_dragon",
     "minecraft:enderman",
     "minecraft:ghast",
+    "minecraft:hoglin",
     "minecraft:horse",
     "minecraft:husk",
     "minecraft:iron_golem",
@@ -415,6 +416,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:witch",
     "minecraft:wither_skeleton",
     "minecraft:wolf",
+    "minecraft:zoglin",
     "minecraft:zombie",
     "minecraft:zombie_villager",
     "minecraft:zombified_piglin",
@@ -588,6 +590,33 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             strider.saddled = tag.get("equipment").and_then(|e| e.get("saddle")).and_then(|s| s.get("id")).and_then(Tag::as_str) == Some("minecraft:saddle");
             let id = world.spawn_strider(strider, no_ai);
             let entity = world.strider_mut(id)?;
+            entity.random = random;
+            entity.look_control.head_yaw = yaw;
+            entity.body_rotation.body_yaw = yaw;
+            id
+        }
+        "minecraft:hoglin" | "minecraft:zoglin" => {
+            use minecraftoss_entities::hoglin::{Hoglin, HoglinKind};
+            let kind = HoglinKind::from_type(kind)?;
+            let mut hoglin = Hoglin::new(kind, pos);
+            hoglin.yaw = yaw;
+            hoglin.persistence_required = persistent;
+            if let Some(health) = health {
+                hoglin.health = health;
+            }
+            match kind {
+                HoglinKind::Hoglin => {
+                    hoglin.age.set(age);
+                    hoglin.age.forced = int(tag, "ForcedAge").unwrap_or(0);
+                    hoglin.in_love = int(tag, "InLove").unwrap_or(0);
+                    hoglin.immune_to_zombification = int(tag, "IsImmuneToZombification").unwrap_or(0) != 0;
+                    hoglin.time_in_overworld = int(tag, "TimeInOverworld").unwrap_or(0);
+                    hoglin.cannot_be_hunted = int(tag, "CannotBeHunted").unwrap_or(0) != 0;
+                }
+                HoglinKind::Zoglin => hoglin.baby = int(tag, "IsBaby").unwrap_or(0) != 0,
+            }
+            let id = world.spawn_hoglin(hoglin, no_ai);
+            let entity = world.hoglin_mut(id)?;
             entity.random = random;
             entity.look_control.head_yaw = yaw;
             entity.body_rotation.body_yaw = yaw;
@@ -1328,6 +1357,22 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         }
         add(e.id, "minecraft:strider", &strider.body, strider.yaw, strider.health, strider.persistence_required, fields);
     }
+    for e in world.hoglins() {
+        use minecraftoss_entities::hoglin::HoglinKind;
+        let hoglin = &e.hoglin;
+        let fields = match hoglin.kind {
+            HoglinKind::Hoglin => {
+                let mut fields = age(&hoglin.age);
+                fields.push(("InLove", Tag::Int(hoglin.in_love)));
+                fields.push(("IsImmuneToZombification", Tag::Byte(i8::from(hoglin.immune_to_zombification))));
+                fields.push(("TimeInOverworld", Tag::Int(hoglin.time_in_overworld)));
+                fields.push(("CannotBeHunted", Tag::Byte(i8::from(hoglin.cannot_be_hunted))));
+                fields
+            }
+            HoglinKind::Zoglin => vec![("IsBaby", Tag::Byte(i8::from(hoglin.baby)))],
+        };
+        add(e.id, hoglin.kind.type_id(), &hoglin.body, hoglin.yaw, hoglin.health, hoglin.persistence_required, fields);
+    }
     for e in world.chickens() {
         let chicken = &e.chicken;
         let mut fields = age(&chicken.age);
@@ -1655,5 +1700,36 @@ mod tests {
         assert!(spawn_saved_all(&mut EntityWorld::default(), &spider).is_empty());
         let strider = strider_tag("Passengers:[{id:\"minecraft:camel\"}]");
         assert!(spawn_saved_all(&mut EntityWorld::default(), &strider).is_empty(), "a rider it does not simulate keeps the whole group dormant");
+    }
+
+    #[test]
+    fn hoglins_and_zoglins_keep_their_age_conversion_clock_and_flags_through_a_save() {
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:hoglin\",Pos:[1.5d,64.0d,2.5d],Rotation:[45.0f,0.0f],Age:-1200,ForcedAge:7,InLove:0,IsImmuneToZombification:1b,TimeInOverworld:200,CannotBeHunted:1b,PersistenceRequired:1b,Health:31.0f,attributes:[{id:\"minecraft:attack_damage\",base:0.5d}]}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("hoglins load");
+        let hoglin = &world.hoglin_mut(id).unwrap().hoglin;
+        assert!(hoglin.is_baby() && hoglin.immune_to_zombification && hoglin.cannot_be_hunted && hoglin.persistence_required);
+        assert_eq!((hoglin.age.ticks, hoglin.age.forced, hoglin.time_in_overworld, hoglin.health, hoglin.yaw), (-1200, 7, 200, 31.0, 45.0));
+        assert_eq!((hoglin.body.width, hoglin.body.height), (0.75, 0.85));
+        let originals: std::collections::HashMap<u64, Tag> = [(id, tag.clone())].into_iter().collect();
+        let saved = mob_tags(&world, |_| true, &originals);
+        let (_, back) = saved.iter().find(|(saved_id, _)| *saved_id == id).expect("the hoglin is saved");
+        assert_eq!(text(back, "id"), Some("minecraft:hoglin"));
+        assert_eq!((int(back, "Age"), int(back, "TimeInOverworld"), int(back, "IsImmuneToZombification"), int(back, "CannotBeHunted")), (Some(-1200), Some(200), Some(1), Some(1)));
+        assert!(back.get("attributes").is_some(), "unknown keys stay as loaded");
+        let mut again = EntityWorld::default();
+        let id_again = spawn_saved(&mut again, back).expect("it loads again");
+        let hoglin = &again.hoglin_mut(id_again).unwrap().hoglin;
+        assert_eq!((hoglin.age.ticks, hoglin.time_in_overworld, hoglin.health), (-1200, 200, 31.0));
+        assert!(hoglin.immune_to_zombification && hoglin.cannot_be_hunted);
+        let zoglin = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:zoglin\",Pos:[1.5d,64.0d,2.5d],IsBaby:1b}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &zoglin).expect("zoglins load");
+        assert!(world.hoglin_mut(id).unwrap().hoglin.is_baby());
+        let saved = mob_tags(&world, |_| true, &std::collections::HashMap::new());
+        assert_eq!(text(&saved[0].1, "id"), Some("minecraft:zoglin"));
+        assert_eq!(int(&saved[0].1, "IsBaby"), Some(1));
+        assert!(saved[0].1.get("Age").is_none() && saved[0].1.get("TimeInOverworld").is_none());
+        assert!(SIMULATED_KINDS.contains(&"minecraft:hoglin") && SIMULATED_KINDS.contains(&"minecraft:zoglin"));
     }
 }

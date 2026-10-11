@@ -345,6 +345,8 @@ pub fn is_enemy(kind: &str) -> bool {
             | "minecraft:wither_skeleton"
             | "minecraft:ghast"
             | "minecraft:blaze"
+            | "minecraft:hoglin"
+            | "minecraft:zoglin"
     )
 }
 

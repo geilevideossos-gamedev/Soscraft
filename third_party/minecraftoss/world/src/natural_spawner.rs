@@ -239,6 +239,7 @@ enum Rules {
     /// `GlowSquid.checkGlowSquidSpawnRules` (deep, dark water).
     GlowSquid,
     Strider,
+    Hoglin,
     /// Rules not ported yet: the type is not spawned.
     Other,
 }
@@ -300,13 +301,15 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "magma_cube" => (0.52, 0.52, Placement::OnGround, MotionBlockingNoLeaves, true, false),
         "ghast" => (4.0, 4.0, Placement::OnGround, MotionBlockingNoLeaves, true, false),
         "blaze" => (0.6, 1.8, Placement::OnGround, MotionBlockingNoLeaves, true, false),
+        "hoglin" => (1.396_484_4, 1.4, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        "zoglin" => (1.396_484_4, 1.4, Placement::OnGround, MotionBlockingNoLeaves, true, false),
         "zombie_horse" => (1.396_484_4, 1.6, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "bat" => (0.5, 0.9, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "glow_squid" => (0.8, 0.8, Placement::InWater, MotionBlockingNoLeaves, false, false),
         _ => return None,
     };
     let short = kind.trim_start_matches("minecraft:");
-    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin" | "wither_skeleton" | "blaze");
+    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin" | "wither_skeleton" | "blaze" | "zoglin");
     let rules = match short {
         _ if animal_rules => Rules::Animal,
         "wolf" => Rules::SpawnableOn("minecraft:wolves_spawnable_on"),
@@ -321,7 +324,8 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "slime" => Rules::Slime,
         "magma_cube" => Rules::MagmaCube,
         "ghast" => Rules::Ghast,
-        "blaze" => Rules::AnyLightMonster,
+        "blaze" | "zoglin" => Rules::AnyLightMonster,
+        "hoglin" => Rules::Hoglin,
         "bat" => Rules::Bat,
         "glow_squid" => Rules::GlowSquid,
         "strider" => Rules::Strider,
@@ -332,11 +336,11 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         _ if monster => Walk::Monster,
         // Cube mobs and squid keep `PathfinderMob`'s 0; bats are no
         // pathfinders (`Mob.checkSpawnRules`).
-        "slime" | "magma_cube" | "bat" | "glow_squid" | "ghast" | "strider" => Walk::Neutral,
+        "slime" | "magma_cube" | "bat" | "glow_squid" | "ghast" | "strider" | "hoglin" => Walk::Neutral,
         _ => Walk::Animal,
     };
     // Animals stay (`Animal.removeWhenFarAway`) except the overrides.
-    let remove_far = monster || matches!(short, "slime" | "magma_cube" | "zombie_horse" | "axolotl" | "bat" | "glow_squid" | "ghast");
+    let remove_far = monster || matches!(short, "slime" | "magma_cube" | "zombie_horse" | "axolotl" | "bat" | "glow_squid" | "ghast" | "hoglin");
     let cluster = match short {
         "horse" | "donkey" | "mule" | "llama" | "camel" | "zombie_horse" => 6,
         "wolf" => 8,

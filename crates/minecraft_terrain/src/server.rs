@@ -7084,6 +7084,66 @@ mod tests {
     }
 
     #[test]
+    fn a_crimson_forest_spawns_hoglins_in_groups_but_not_on_nether_wart_blocks() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(TerrainGenerator::nether(registries.clone(), 0).unwrap()), "minecraft:the_nether").unwrap());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let crate::locate::Search::Found(at, _) = crate::locate::nearest_biome(&worldgen, &["minecraft:crimson_forest".to_owned()], [0, 64, 0], 3200, deadline) else {
+            panic!("seed 0 has a crimson forest");
+        };
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, 0, 256).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:the_nether");
+        let (cx, cz) = (at[0] >> 4, at[2] >> 4);
+        for x in cx - 5..=cx + 5 {
+            for z in cz - 5..=cz + 5 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: glam::DVec3::new(f64::from(at[0]) + 0.5, f64::from(at[1]), f64::from(at[2]) + 0.5),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        };
+        for tick in 1..=120 {
+            server.set_players(&[player.position.to_array()], 2);
+            server.set_simulation_area((cx, cz), 5);
+            server.prepare_spawning(&[player]);
+            server.level.game_time = tick;
+            server.tick();
+            server.take_spawned();
+        }
+        let hoglins = server.mobs.hoglins();
+        assert!(hoglins.len() >= 3, "hoglins roam the crimson forest: {}", hoglins.len());
+        for e in hoglins {
+            let p = e.hoglin.body.position;
+            let below = nether_block(&server, p.x.floor() as i32, (p.y - 0.5).floor() as i32, p.z.floor() as i32);
+            assert_ne!(below, "minecraft:nether_wart_block", "{p}");
+            assert!(!e.hoglin.persistence_required);
+        }
+    }
+
+    #[test]
     fn wither_skeletons_carry_stone_swords_and_come_back_with_them() {
         let Ok(paths) = DataPaths::discover() else { return };
         let Ok(registries) = Registries::load(&paths) else { return };

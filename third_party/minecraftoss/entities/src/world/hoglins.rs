@@ -314,8 +314,8 @@ mod tests {
 
     fn floor() -> Blocks {
         let mut world = Blocks::default();
-        for x in -4..=4 {
-            for z in -4..=4 {
+        for x in -8..=8 {
+            for z in -8..=8 {
                 world
                     .blocks
                     .insert((x, 63, z), Block::new("minecraft:netherrack"));
@@ -487,5 +487,27 @@ mod tests {
         let expected = f64::from(0.4_f32) * (1.0 - crate::hoglin::KNOCKBACK_RESISTANCE);
         assert!((v.z + expected).abs() < 1.0e-9, "{v}");
         assert!((v.y - expected).abs() < 1.0e-9, "{v}");
+    }
+
+    #[test]
+    fn an_iron_golem_goes_for_a_hoglin() {
+        let mut world = floor();
+        let mut entities = EntityWorld::default();
+        let hoglin = spawn(&mut entities, HoglinKind::Hoglin, false, 0.5);
+        let zoglin = spawn(&mut entities, HoglinKind::Zoglin, false, -5.5);
+        let golem = crate::iron_golem::IronGolem::new(DVec3::new(5.5, 64.0, 0.5));
+        let golem = entities.spawn_iron_golem(golem, false);
+        entities.iron_golem_mut(golem).unwrap().random = LegacyRandom::new(5);
+        for _ in 0..400 {
+            entities.tick_with_players(&mut world, &[]);
+        }
+        let hurt = |entities: &mut EntityWorld, id| {
+            entities
+                .hoglin_mut(id)
+                .is_none_or(|e| e.hoglin.health < crate::hoglin::MAX_HEALTH)
+        };
+        assert!(hurt(&mut entities, hoglin) || hurt(&mut entities, zoglin));
+        assert!(crate::monster_ai::is_enemy("minecraft:hoglin"));
+        assert!(crate::monster_ai::is_enemy("minecraft:zoglin"));
     }
 }
