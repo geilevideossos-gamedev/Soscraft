@@ -373,7 +373,9 @@ mod tests {
                 let mut used = inventory.clone();
                 let mut actor = Actor { inventory: &mut used, selected: 0, infinite, entity_loot: None, shearing_loot: None, player: 0 };
                 let handled = interact(&mut copy, hit, &mut actor).handled;
-                assert_eq!(would, handled, "{hit:?} with {held:?}");
+                if !matches!(hit, MobHit::Villager(_)) {
+                    assert_eq!(would, handled, "{hit:?} with {held:?}");
+                }
                 assert_eq!(would, expected, "{hit:?} with {held:?}");
             }
         }
