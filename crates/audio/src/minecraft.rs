@@ -27,7 +27,7 @@ pub struct McSoundRequest {
 }
 
 /// Minecraft's sounds against MW2's much hotter mix.
-const MIX_GAIN: f32 = 2.5;
+pub(crate) const MIX_GAIN: f32 = 2.5;
 
 #[derive(Resource, Default)]
 pub struct McSoundQueue(pub Vec<McSoundRequest>);
@@ -39,6 +39,7 @@ pub(crate) fn register(app: &mut App) {
     app.init_resource::<McSoundQueue>()
         .init_resource::<McSoundCache>()
         .add_systems(Update, play_minecraft_sounds);
+    crate::minecraft_music::register(app);
 }
 
 fn play_minecraft_sounds(

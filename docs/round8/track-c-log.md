@@ -765,6 +765,19 @@ Previous commit: 429b4266
 - **Tests:** `minecraft_setup`: `only_the_end_music_is_fetched_of_mojangs_music` (the three tracks, sounds and English text yes; menu music, records and other languages no), `the_end_music_lands_in_the_resource_pack_path`, `missing_end_music_is_fetched_by_hash_and_music_already_here_is_kept` (a stand-in index and fetcher: only the two missing tracks are asked for, by their object URL, through a `.partial` file; a second run fetches nothing; no index is an error).
 - **Decisions:** only these three tracks (22 MB) are fetched. The rest of Mojang's music (259 MB) stays on their servers, so the overworld and the Nether stay silent. Nothing is committed: the files come from Mojang's servers at run time like every other asset. A fetch that fails offline is tried again on the next start.
 - **Test steps:**
-  1. Start the game once with an internet connection and open the Minecraft map. In `C:\Games\Mashup0-Rust-Rewrite-Mashup\iw4l-artifacts\minecraft-26.3esourcepacks\local\minecraft-26.3ssets\minecraft\sounds\music\game\end\` there are now `alpha.ogg`, `boss.ogg` and `the_end.ogg` (about 7, 4 and 11 MB), and the game log says `Minecraft End music ready` (**1**, the folder).
+  1. Start the game once with an internet connection and open the Minecraft map. In `C:\Games\Mashup\2010-Rust-Rewrite-Mashup\iw4l-artifacts\minecraft-26.3\resourcepacks\local\minecraft-26.3\assets\minecraft\sounds\music\game\end\` there are now `alpha.ogg`, `boss.ogg` and `the_end.ogg` (about 7, 4 and 11 MB), and the game log says `Minecraft End music ready` (**1**, the folder).
   2. Start the game again: the log says `Minecraft End music ready` again at once, and the files' dates do not change.
+- **Kit:** none.
+
+### 31. Minecraft music streams from its Ogg file
+
+Previous commit: d3eea377
+
+- **Changed:**
+  - New `audio` `minecraft_music.rs`: `McMusicStream`, an audio source that decodes Ogg Vorbis with Symphonia one packet at a time as rodio pulls samples, into one reused `SampleBuffer` (it grows only when a packet is larger), so a 13-minute track is never decoded whole. A decode error or a change of channels or rate ends the track.
+  - `McMusic { wanted, finished }` with `McMusicTrack { key, bytes, volume }`, and the `play_minecraft_music` system: when `wanted` names another key than the voice playing, it stops that voice and starts the new one (not positional, volume `volume x MIX_GAIN x master volume`, kept up to date); when `wanted` is empty it stops; when the voice ends it sets `finished` to its key and clears `wanted`, so a track never restarts by itself. Registered from `minecraft.rs`'s `register` (`MIX_GAIN` is now `pub(crate)`), exported from `lib.rs`.
+  - The track log's entry 30 lost the backslashes in its folder path when it was written; this commit puts them back.
+- **Tests:** `minecraft_music`: `the_music_stream_decodes_the_same_samples_as_the_whole_file_decoder` (with `MINECRAFTOSS_ROOT`, on `ambient/weather/end_flash1.ogg`: the same channel count, rate and every sample as `decode_audio_bytes`), `a_stream_that_is_not_ogg_ends_at_once`.
+- **Decisions:** the music volume is the game's master volume times the mix gain the other Minecraft sounds use (vanilla's defaults put music and sounds both at 100%). Nothing asks for music yet; the next commit adds vanilla's music manager.
+- **Test steps:** none in game on its own (the next commit plays the music).
 - **Kit:** none.
