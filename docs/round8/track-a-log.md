@@ -374,7 +374,7 @@ IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_pick
 
 ### 6. Docs: Minecraft mining speed
 
-Commit: (see the next entry, or `git log` under this subject)
+Commit: 7258b0f2
 
 - **Changed:** `docs/MINECRAFT-SURVIVAL.md` only.
   - Mining and placing: a paragraph on survival hand mining: the progress per tick (/ 30 or / 100), the tool speeds and rules, Efficiency, Haste, Conduit Power, Mining Fatigue, the water and air penalties and Aqua Affinity, the right-tool list read from the jar (with 26.3's hand-droppable blocks), the dig loop (instant breaks and tunnelling, the crack, the hit sound every 4 ticks, the chips, the 5-tick delay, what starts it over), wrong-tool breaks without drops, experience or exhaustion, hand loot with the real held item, tool wear with Unbreaking, and bullets and creative keeping their own rules.
@@ -385,3 +385,36 @@ Commit: (see the next entry, or `git log` under this subject)
 - **Tests:** none (documentation).
 - **Test steps:** none on their own; the a3 owner steps are in entries 4 and 5 (brief section 5).
 - **Kit:** none needed.
+
+## Item a4: the mob inside a spawner
+
+### 1. Minecraft spawners show their mob spinning inside like vanilla
+
+Commit: (see the next entry, or `git log` under this subject)
+
+- **Changed:**
+  - `minecraft_terrain/src/client_mobs.rs`: `MobPose.turn`, an outer turn that `body_rotation` puts before the body's own turn and death flip (the outer `PoseStack` of `SpawnerRenderer`); `ClientMob::pose` sets it to identity. `ClientMobs::show_in_spawner(id, turn, light_probe)` stores a display's turn and light probe, and `ClientMobs::pose` applies them. `piglin_render.rs`'s test literal gets `turn: Quat::IDENTITY` (Track B: every new `MobPose` literal needs it).
+  - New `minecraft_terrain/src/spawner_display.rs`: `SpawnerDisplays`, the client's spawner block entities of one level (`BaseSpawner` on the client). Per spawner: the `SpawnData.entity` compound, the client's delay, `MinSpawnDelay`, `RequiredPlayerRange`, `spin`/`oSpin`, and the display mob, built once per spawn data from a copy of the compound placed at the cage's feet (`server_mobs::spawn_saved` into a one-mob `EntityWorld`, our `loadEntityRecursive`) and never ticked, so its age is the partial tick as in vanilla.
+    - `load_chunk` reads the chunk's `mob_spawner` tags (then pending tags), `unload_chunk` drops them, `block_entities` follows the server's block entity changes: removed or no longer a spawner drops it, a new one is read, a changed `SpawnData` entity rebuilds the mob and takes `Delay` (`load()`), any other update of a known spawner is a spawn round and sets the delay to `MinSpawnDelay` (the update packet then block event 1).
+    - `tick(players)` is `BaseSpawner.clientTick`: nobody within range of the block centre keeps the spin; with a mob, the delay counts down and the spin steps by `1000 / (delay + 200)` degrees, wrapped at 360 before the x10.
+    - `append` draws each spawner within 64 blocks of the camera whose block is still `minecraft:spawner`: the mob through its own renderer, turned by `rotY(spin x 10) rotX(-30)` about its feet at block + (0.5, 0.2, 0.5), lit from the spawner cell, and scaled about the feet by 0.53125 (divided by the longest side of its box above 1).
+  - `minecraft_survival/src/entities.rs`: `Entities` owns the level's `SpawnerDisplays` (client state per level, like the lids): loaded and unloaded with the stream's chunks, told of every server block entity change, ticked in the client tick (not while the game is frozen) with the player's feet when alive and not a spectator, and drawn into the mob meshes beside the blazes.
+  - `docs/MINECRAFT-SURVIVAL.md`: the spawner mob under World and rendering; spawners leave the "not simulated" list; a Rendering limitation for kinds without a model, jockeys and the blaze's full brightness.
+- **Tests:** `minecraft_terrain` (`spawner_display.rs`): `a_display_scale_fits_the_longest_side_into_the_cage` (zombie 0.53125/1.95, spider /1.4, chicken and a 1x1 box 0.53125), `spin_steps_a_thousand_over_delay_plus_two_hundred` (+2.5 at 200, +5 at 0, 1000/199 at -1, the wrap), `a_far_spawner_freezes_its_spin_and_delay` (17 blocks away: frozen; 15: delay -1 and spin grows; no player: `oSpin = spin`), `an_empty_spawner_neither_spins_nor_draws`, `a_spawn_round_restarts_the_spin_at_the_minimum_delay` (same mob with `Delay` 600 ends at 200 and keeps the spin; a new mob takes `Delay` and rebuilds; `None`, a chest tag and `unload_chunk` remove), `a_chunk_brings_its_spawners_and_their_delay` (entities before pending, chests ignored), `a_zombie_and_a_blaze_sit_inside_their_cage` (every vertex inside the cell with a 0.05 margin at 0, 90 and 200 degrees, and the turn moves them), `a_display_is_lit_by_its_spawner_cell`, `spawners_further_than_64_blocks_are_not_drawn` (also not once the block is gone). `client_mobs.rs`: `a_spawner_turn_comes_before_the_body_turn`.
+- **Decisions:**
+  - The display is drawn with the existing mob renderers on a one-mob entity world per spawner (brief decision 1); the uniform scale is applied to the new vertices about the feet after the renderer, which equals vanilla's `scale(s)` after the two turns.
+  - Spin and countdown run whenever `SpawnData.entity` has an `id`, even for a kind we can't draw; vanilla's display entity exists for any valid id (brief decision 6).
+  - The display state is client state per level in `Entities`; the near-player test takes a slice of player feet (only the local player today). Track E: that slice must become every player the client knows in this level.
+  - A display never ticks, so it has no flames yet (group 2) and blaze rods twitch rather than turn, as in vanilla.
+- **Test steps** (spawn eggs on spawners come with group 3; until then use generated spawners):
+  1. `IW4L_MINECRAFT_DIMENSION=the_nether`, then `/locate structure minecraft:fortress` and `/tp` there. Find the blaze spawner (on a small platform of nether bricks with stairs, often at a corridor's end). A small blaze sits in the middle of the cage, leaning forward, and turns quickly (**screenshot 1**, compare with screenshot 4 of e231362).
+  2. Stand right by it: the blaze turns fast; when blazes come out (`/difficulty normal`), the turn slows right after the spawn, then speeds up again.
+  3. Walk more than 16 blocks away and look with the spyglass: the blaze stops turning. Walk back: it turns again.
+  4. Break the spawner with the pickaxe: the blaze disappears with the cage.
+  5. Quit and load the world again: the spawner still shows its blaze.
+  6. A stronghold or mineshaft spawner shows an empty cage for now (silverfish and cave spider have no model yet).
+- **Kit** (6 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:spyglass,minecraft:cooked_beef*32,minecraft:cobblestone*64
+```

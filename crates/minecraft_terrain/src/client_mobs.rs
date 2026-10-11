@@ -752,6 +752,7 @@ impl ClientMob {
             swing: self.swing.swinging().then(|| self.swing.animation(partial)),
             red_overlay: self.hurt_time > 0 || self.death_time > 0,
             death_time: if self.death_time > 0 { self.death_time as f32 + partial } else { 0.0 },
+            turn: glam::Quat::IDENTITY,
         }
     }
 }
@@ -784,6 +785,7 @@ pub struct MobPose {
     /// tick.
     pub red_overlay: bool,
     pub death_time: f32,
+    pub turn: glam::Quat,
 }
 
 /// `LivingEntity.SwingState`: an arm swing's ticks and animation.
@@ -853,7 +855,7 @@ impl MobPose {
     /// then, dying, tipped over about Z by up to `flip_degrees`
     /// (`getFlipDegrees`).
     pub fn body_rotation(&self, flip_degrees: f32) -> glam::Quat {
-        let turn = glam::Quat::from_rotation_y((180.0 - self.body_rot).to_radians());
+        let turn = self.turn * glam::Quat::from_rotation_y((180.0 - self.body_rot).to_radians());
         if self.death_time > 0.0 {
             let fall = ((self.death_time - 1.0) / 20.0 * 1.6).sqrt().min(1.0);
             turn * glam::Quat::from_rotation_z((fall * flip_degrees).to_radians())
@@ -886,6 +888,7 @@ impl MobPose {
 #[derive(Default)]
 pub struct ClientMobs {
     mobs: HashMap<u64, ClientMob>,
+    displays: HashMap<u64, (glam::Quat, DVec3)>,
 }
 
 impl ClientMobs {
@@ -938,6 +941,7 @@ impl ClientMobs {
     /// Forget every mob (a new world).
     pub fn clear(&mut self) {
         self.mobs.clear();
+        self.displays.clear();
     }
 
     /// One client tick of every mob.
@@ -958,7 +962,18 @@ impl ClientMobs {
     }
 
     pub fn pose(&self, id: u64, partial: f32) -> Option<MobPose> {
-        self.mobs.get(&id).map(|mob| mob.pose(partial.clamp(0.0, 1.0)))
+        self.mobs.get(&id).map(|mob| {
+            let mut pose = mob.pose(partial.clamp(0.0, 1.0));
+            if let Some(&(turn, light_probe)) = self.displays.get(&id) {
+                pose.turn = turn;
+                pose.light_probe = light_probe;
+            }
+            pose
+        })
+    }
+
+    pub fn show_in_spawner(&mut self, id: u64, turn: glam::Quat, light_probe: DVec3) {
+        self.displays.insert(id, (turn, light_probe));
     }
 }
 
@@ -1017,6 +1032,20 @@ mod tests {
         }
         assert!(heads.windows(2).all(|w| w[1] >= w[0]), "{heads:?}");
         assert!((heads[7] - 59.0625).abs() < 1.0, "{heads:?}");
+    }
+
+    #[test]
+    fn a_spawner_turn_comes_before_the_body_turn() {
+        let mut mobs = ClientMobs::default();
+        mobs.spawn_missing(&[mob(1, 0.0, 0.0), mob(2, 3.0, 0.0)]);
+        let turn = glam::Quat::from_rotation_y(0.7) * glam::Quat::from_rotation_x(-0.5);
+        mobs.show_in_spawner(1, turn, DVec3::new(3.5, 70.5, -2.5));
+        let pose = mobs.pose(1, 0.5).unwrap();
+        assert!(pose.body_rotation(90.0).abs_diff_eq(turn * glam::Quat::from_rotation_y(std::f32::consts::PI), 1e-6));
+        assert_eq!(pose.light_block(), (3, 70, -3));
+        let other = mobs.pose(2, 0.5).unwrap();
+        assert_eq!(other.turn, glam::Quat::IDENTITY);
+        assert!(other.body_rotation(90.0).abs_diff_eq(glam::Quat::from_rotation_y(std::f32::consts::PI), 1e-6));
     }
 }
 

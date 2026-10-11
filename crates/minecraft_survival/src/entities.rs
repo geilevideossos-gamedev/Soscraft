@@ -104,6 +104,7 @@ pub struct Entities {
     orbs: Vec<ServerOrb>,
     falling: minecraft_terrain::falling_render::FallingBlocks,
     pub lids: minecraft_terrain::lids::Lids,
+    spawners: minecraft_terrain::spawner_display::SpawnerDisplays,
     orb_pickups: Vec<minecraft_terrain::orb_render::OrbPickup>,
     pub pearl_landings: Vec<DVec3>,
     pub player_potions: Vec<minecraft_terrain::potions::PlayerPotionHit>,
@@ -250,6 +251,7 @@ impl Entities {
             orbs: Vec::new(),
             falling: Default::default(),
             lids: Default::default(),
+            spawners: Default::default(),
             orb_pickups: Vec::new(),
             pearl_landings: Vec::new(),
             player_potions: Vec::new(),
@@ -328,10 +330,12 @@ impl Entities {
     }
 
     pub fn load_chunk(&mut self, chunk: &std::sync::Arc<minecraftoss_core::Chunk>) {
+        self.spawners.load_chunk(chunk);
         self.server.load_chunk(chunk);
     }
 
     pub fn unload_chunk(&mut self, pos: minecraftoss_core::ChunkPos) {
+        self.spawners.unload_chunk(pos);
         self.server.unload_chunk(pos);
     }
 
@@ -853,6 +857,8 @@ impl Entities {
                 self.ambient.add(minecraft_terrain::ambient_particles::Kind::Smoke, smoke, DVec3::ZERO);
             }
             self.lids.tick();
+            let near: Vec<DVec3> = (player.alive && !player.spectator).then(|| DVec3::from_array(player.feet)).into_iter().collect();
+            self.spawners.tick(&near);
             // Packets first, then the client level's entity ticks.
             self.client.tick();
             for enderman in self.world.endermen() {
@@ -993,6 +999,7 @@ impl Entities {
             self.fight_reports.extend(output.fight_reports);
             self.command_jobs.extend(output.jobs);
             changes.extend(output.changes);
+            self.spawners.block_entities(&output.block_entities);
             self.block_entity_changes.extend(output.block_entities);
             self.destroyed.extend(output.destroyed);
             self.experience_found += output.orbs_taken.iter().map(|orb| orb.2 as f32).sum::<f32>();
@@ -1268,6 +1275,7 @@ impl Entities {
         dragon_render::append_beams(&mut out.models, &self.dragons, &self.crystals, atlas, light, partial);
         dragon_render::append_rays(&mut out.translucent, &self.dragons, atlas, partial);
         blaze_render::append_blazes(&mut out.models, w.blazes().iter(), poses, atlas, light, partial);
+        self.spawners.append(&mut out.models, &mut out.culled, &mut out.translucent, scene, atlas, light, camera, partial);
         let poppies = golem_render::append_iron_golems(&mut out.models, w.iron_golems().iter(), poses, atlas, light, partial);
         wolf_render::append_wolves(&mut out.models, w.wolves().iter(), poses, atlas, light, partial, w.game_time());
         flame_render::append_flames(
