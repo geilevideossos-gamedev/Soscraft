@@ -237,6 +237,30 @@ impl Piglin {
         })
     }
 
+    pub fn set_crossbow_charged(&mut self, charged: bool) {
+        let Some(stack) = self
+            .main_hand
+            .as_mut()
+            .filter(|stack| stack.id == "minecraft:crossbow")
+        else {
+            return;
+        };
+        let mut components = match stack.components.take() {
+            Some(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        if charged {
+            components.insert(
+                "minecraft:charged_projectiles".to_owned(),
+                serde_json::json!([{"id": "minecraft:arrow", "count": 1}]),
+            );
+        } else {
+            components.remove("minecraft:charged_projectiles");
+        }
+        stack.components =
+            (!components.is_empty()).then_some(serde_json::Value::Object(components));
+    }
+
     pub fn arm_pose(&self, offhand_loved: bool) -> ArmPose {
         if self.dancing {
             ArmPose::Dancing
@@ -272,6 +296,18 @@ pub fn melee_weapon(id: &str) -> bool {
         .iter()
         .any(|suffix| name.ends_with(suffix))
         || matches!(name, "mace" | "trident" | "shears")
+}
+
+pub fn weapon_bonus(id: &str) -> f32 {
+    match id.trim_start_matches("minecraft:") {
+        "golden_sword" => 3.0,
+        "golden_axe" => 6.0,
+        _ => 0.0,
+    }
+}
+
+pub fn disables_shield_for(id: &str) -> f32 {
+    if id.ends_with("_axe") { 5.0 } else { 0.0 }
 }
 
 pub fn armor_value(id: &str) -> (f32, f32) {

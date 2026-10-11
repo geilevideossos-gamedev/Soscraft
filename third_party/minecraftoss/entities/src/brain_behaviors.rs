@@ -382,6 +382,50 @@ pub fn closer_than(a: Pos, b: Pos, distance: f64) -> bool {
     dx * dx + dy * dy + dz * dz < distance * distance
 }
 
+pub fn walk_away(
+    walk_target: &mut Slot<WalkGoal>,
+    ctx: &mut Walker,
+    from: DVec3,
+    speed: f32,
+    distance: f64,
+    rerun: bool,
+) {
+    if !rerun && walk_target.present() {
+        return;
+    }
+    let position = ctx.position();
+    if position.distance_squared(from) >= distance * distance {
+        return;
+    }
+    if let Some(goal) = walk_target.get() {
+        if goal.speed == speed {
+            if let Some(to) = goal.target.position(ctx.others) {
+                if (to - position).dot(from - position) < 0.0 {
+                    return;
+                }
+            }
+        }
+    }
+    for _ in 0..10 {
+        if let Some(spot) = crate::stroll::land_random_position_away(
+            ctx.world,
+            ctx.profile,
+            position,
+            16,
+            7,
+            from,
+            ctx.random,
+        ) {
+            walk_target.set(WalkGoal {
+                target: Track::Block(block_of(spot)),
+                speed,
+                close_enough: 0,
+            });
+            return;
+        }
+    }
+}
+
 pub fn set_list<T>(slot: &mut Slot<Vec<T>>, list: Vec<T>) {
     if list.is_empty() {
         slot.erase();

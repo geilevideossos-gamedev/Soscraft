@@ -1434,7 +1434,7 @@ fn update(
             } else if let Some(stack) = held.as_ref().filter(|s| s.id == minecraft_terrain::bottle::MILK_BUCKET) {
                 survival.start_using(minecraft_terrain::bottle::drink_milk(slot, stack));
                 HandUse::Consumed
-            } else if held.as_ref().is_some_and(|stack| stack.id == minecraft_survival::offhand::SHIELD) {
+            } else if held.as_ref().is_some_and(|stack| stack.id == minecraft_survival::offhand::SHIELD) && !hand.cooldowns.active(minecraft_survival::offhand::SHIELD) {
                 hand.blocking = Some(minecraft_survival::offhand::Blocking::start(slot));
                 HandUse::Consumed
             } else if placeable {
@@ -1830,6 +1830,14 @@ fn update(
                 let pitch = 0.8 + entities.random_float() * 0.4;
                 if let Some(sounds) = sounds.as_mut() {
                     sounds.play(&world.packs, minecraft_survival::offhand::BLOCK_SOUND, None, 1.0, pitch);
+                }
+                if push.disable_shield_ticks > 0 {
+                    hand.cooldowns.start(minecraft_survival::offhand::SHIELD, push.disable_shield_ticks);
+                    hand.blocking = None;
+                    let pitch = 0.8 + entities.random_float() * 0.4;
+                    if let Some(sounds) = sounds.as_mut() {
+                        sounds.play(&world.packs, minecraft_survival::offhand::BREAK_SOUND, None, 0.8, pitch);
+                    }
                 }
             }
             let hurt = if amount > blocked {

@@ -143,6 +143,10 @@ impl PiglinBrain {
         self.doors.to_close = Some(kept);
     }
 
+    pub(super) fn look_for_kind(&mut self, ctx: &PiglinCtx, kind: &'static str) -> bool {
+        self.look_for(ctx, LookFor::Kind(kind))
+    }
+
     fn look_for(&mut self, ctx: &PiglinCtx, look: LookFor) -> bool {
         if self.memories.look_target.present() || !self.memories.visible_living.present() {
             return false;
@@ -174,7 +178,7 @@ impl PiglinBrain {
         true
     }
 
-    fn do_nothing(ctx: &mut PiglinCtx) -> i64 {
+    pub(super) fn do_nothing(ctx: &mut PiglinCtx) -> i64 {
         ctx.time + 30 + i64::from(ctx.level_random.next_int(31))
     }
 
@@ -207,7 +211,7 @@ impl PiglinBrain {
         }
     }
 
-    fn stroll(&mut self, ctx: &mut PiglinCtx, horizontal: u32, vertical: u32) -> bool {
+    pub(super) fn stroll(&mut self, ctx: &mut PiglinCtx, horizontal: u32, vertical: u32) -> bool {
         if self.memories.walk_target.present() {
             return false;
         }
@@ -413,7 +417,11 @@ impl PiglinBrain {
     }
 
     pub(super) fn end_waits(&mut self, time: i64) {
-        for wait in [&mut self.look_wait, &mut self.move_wait] {
+        for wait in [
+            &mut self.look_wait,
+            &mut self.move_wait,
+            &mut self.celebrate_wait,
+        ] {
             if wait.is_some_and(|end| time > end) {
                 *wait = None;
             }

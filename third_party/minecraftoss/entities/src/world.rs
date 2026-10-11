@@ -344,6 +344,7 @@ pub struct ArrowEntity {
     pub arrow: Arrow,
     /// The effect it carries (`Arrow.addEffect`), with its duration.
     pub effect: Option<(EffectKind, u32)>,
+    pub hit_sound: &'static str,
 }
 
 /// A spider on the monster goal framework (`Spider.registerGoals`,
@@ -580,7 +581,7 @@ pub enum PlayerHitKind {
     /// bite, if it lands, starves for this many ticks (`Husk.doHurtTarget`),
     /// and an iron golem's throws the player up by `lift` less what
     /// knockback resistance takes (`IronGolem.doHurtTarget`).
-    Melee { attacker: DVec3, hunger_ticks: i32, lift: f32, throw: DVec3 },
+    Melee { attacker: DVec3, hunger_ticks: i32, lift: f32, throw: DVec3, disable_shield_seconds: f32 },
     /// An arrow (`arrow`) along its velocity.
     /// An arrow in flight at `velocity`; a tipped one's effect lands with
     /// the hit (`Arrow.doPostHurtEffects`).
@@ -2341,6 +2342,7 @@ pub struct EntityWorld {
     /// The `gameplay/monsters_burn` attribute (daytime in the Overworld).
     monsters_burn: bool,
     piglins_zombify: bool,
+    piglin_rules: piglins::PiglinRules,
     /// `Difficulty.getId`: 0 peaceful to 3 hard.
     difficulty: i32,
     /// Sounds not tied to a living mob (a creeper's blast, gone with it).
@@ -2445,6 +2447,7 @@ impl Default for EntityWorld {
             players_pickable: false,
             monsters_burn: false,
             piglins_zombify: false,
+            piglin_rules: Default::default(),
             difficulty: 2,
             sounds: Vec::new(),
             mob_drops: true,
@@ -2927,6 +2930,7 @@ impl EntityWorld {
             owner_id,
             arrow,
             effect: None,
+            hit_sound: "entity.arrow.hit",
         });
         self.order.push(EntityKey::Arrow(id));
         id
@@ -4813,6 +4817,7 @@ impl EntityWorld {
             players_pickable: false,
             monsters_burn: false,
             piglins_zombify: false,
+            piglin_rules: self.piglin_rules,
             difficulty: 2,
             sounds: Vec::new(),
             mob_drops: self.mob_drops,
@@ -5278,7 +5283,7 @@ impl EntityWorld {
                                 140 * regional_difficulty(difficulty, clock, inhabited, moon) as i32
                             });
                         let damage = self.zombies.iter().find(|e| e.id == id).map_or(3.0, |e| zombie_attack_damage(&e.zombie));
-                        self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Melee { attacker, hunger_ticks, lift: 0.0, throw: glam::DVec3::ZERO }, source: Some(id) });
+                        self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Melee { attacker, hunger_ticks, lift: 0.0, throw: glam::DVec3::ZERO, disable_shield_seconds: 0.0 }, source: Some(id) });
                     }
                     let damage = self.zombies.iter().find(|e| e.id == id).map_or(3.0, |e| zombie_attack_damage(&e.zombie));
                     if let Some((victim_id, attacker_position)) = pending_attack {
@@ -5411,7 +5416,7 @@ impl EntityWorld {
                         let wither = self.skeletons[index].skeleton.kind == crate::skeleton::SkeletonKind::WitherSkeleton;
                         match target {
                             crate::monster_ai::Target::Player(player_id) => {
-                                self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0, throw: glam::DVec3::ZERO }, source: Some(id) });
+                                self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0, throw: glam::DVec3::ZERO, disable_shield_seconds: 0.0 }, source: Some(id) });
                             }
                             crate::monster_ai::Target::Mob(victim) | crate::monster_ai::Target::Villager(victim) => {
                                 if self.mob_hits_mob(id, victim, damage, attacker, 0.0).is_some_and(|hit| hit.applied) && wither {
@@ -5573,7 +5578,7 @@ impl EntityWorld {
                     let entity = self.spider_mut(id).unwrap();
                     entity.spider.body.climbing = entity.spider.body.horizontal_collision;
                     if let Some((crate::monster_ai::Target::Player(player_id), attacker)) = hit {
-                        self.player_hits.push(PlayerHit { player_id, damage: crate::spider::ATTACK_DAMAGE, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0, throw: glam::DVec3::ZERO }, source: Some(id) });
+                        self.player_hits.push(PlayerHit { player_id, damage: crate::spider::ATTACK_DAMAGE, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0, throw: glam::DVec3::ZERO, disable_shield_seconds: 0.0 }, source: Some(id) });
                     }
                     // A bite on a mob (an iron golem, or whatever hurt it).
                     if let Some((crate::monster_ai::Target::Mob(victim), attacker)) = hit {
@@ -5676,8 +5681,8 @@ impl EntityWorld {
                             .resolve_entity_hit(accepted);
                     }
                     // `entity.arrow.hit`, from the arrow (`SoundSource.NEUTRAL`).
-                    if let Some((position, pitch)) = self.arrows.iter_mut().find(|entity| entity.id == id).and_then(|entity| entity.arrow.take_hit_sound()) {
-                        self.sounds.push(MobSound { event: "entity.arrow.hit".to_owned(), position, volume: 1.0, pitch, category: "friendly_volume" });
+                    if let Some((event, (position, pitch))) = self.arrows.iter_mut().find(|entity| entity.id == id).and_then(|entity| Some((entity.hit_sound, entity.arrow.take_hit_sound()?))) {
+                        self.sounds.push(MobSound { event: event.to_owned(), position, volume: 1.0, pitch, category: "friendly_volume" });
                     }
                     continue;
                 }

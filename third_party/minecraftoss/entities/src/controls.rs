@@ -6,12 +6,17 @@ pub struct PlayerControls {
     pub main_hand: Option<String>,
     pub offhand: Option<String>,
     pub sneaking: bool,
+    pub armor: [Option<String>; 4],
 }
 
 impl PlayerControls {
     pub fn holds(&self, accepts: impl Fn(&str) -> bool) -> bool {
         self.main_hand.as_deref().is_some_and(&accepts)
             || self.offhand.as_deref().is_some_and(&accepts)
+    }
+
+    pub fn wears(&self, accepts: impl Fn(&str) -> bool) -> bool {
+        self.armor.iter().flatten().any(|item| accepts(item))
     }
 }
 

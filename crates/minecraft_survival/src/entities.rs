@@ -166,7 +166,7 @@ pub struct PlayerView {
     pub sneaking: bool,
 }
 
-fn player_controls(player: &PlayerView) -> minecraftoss_entities::controls::PlayerControls {
+fn player_controls(player: &PlayerView, inventory: &Inventory) -> minecraftoss_entities::controls::PlayerControls {
     minecraftoss_entities::controls::PlayerControls {
         id: PLAYER,
         yaw: player.yaw,
@@ -174,6 +174,7 @@ fn player_controls(player: &PlayerView) -> minecraftoss_entities::controls::Play
         main_hand: player.main_hand.clone(),
         offhand: player.offhand.clone(),
         sneaking: player.sneaking,
+        armor: [36, 37, 38, 39].map(|slot| inventory.slots[slot].as_ref().map(|stack| stack.id.clone())),
     }
 }
 
@@ -1002,7 +1003,7 @@ impl Entities {
                 tracking: (player.feet, 160.0),
                 player_hurts: Vec::new(),
                 spawn_mobs: self.spawn_mobs,
-                controls: if player.alive { vec![player_controls(player)] } else { Vec::new() },
+                controls: if player.alive { vec![player_controls(player, inventory)] } else { Vec::new() },
             });
         }
         let mut changes = Vec::new();
@@ -1462,7 +1463,7 @@ fn struck_hit(feet: [f64; 3],struck: &minecraft_terrain::thrown::PlayerStruck) -
 
 fn melee_push(kind: &PlayerHitKind) -> crate::impulse::MeleePush {
     match *kind {
-        PlayerHitKind::Melee { throw, lift, .. } => crate::impulse::MeleePush { throw, lift: f64::from(lift) },
+        PlayerHitKind::Melee { throw, lift, disable_shield_seconds, .. } => crate::impulse::MeleePush { throw, lift: f64::from(lift), disable_shield_ticks: crate::offhand::disable_ticks(disable_shield_seconds) },
         _ => Default::default(),
     }
 }
@@ -1775,12 +1776,29 @@ mod tests {
     #[test]
     fn a_hoglin_throw_reaches_the_player_hit_list() {
         let throw = DVec3::new(0.1, 0.4, -0.2);
-        let melee = PlayerHitKind::Melee { attacker: DVec3::ZERO, hunger_ticks: 0, lift: 0.0, throw };
-        assert_eq!(melee_push(&melee), crate::impulse::MeleePush { throw, lift: 0.0 });
-        let golem = PlayerHitKind::Melee { attacker: DVec3::ZERO, hunger_ticks: 0, lift: 0.4, throw: DVec3::ZERO };
+        let melee = PlayerHitKind::Melee { attacker: DVec3::ZERO, hunger_ticks: 0, lift: 0.0, throw, disable_shield_seconds: 0.0 };
+        assert_eq!(melee_push(&melee), crate::impulse::MeleePush { throw, lift: 0.0, disable_shield_ticks: 0 });
+        let golem = PlayerHitKind::Melee { attacker: DVec3::ZERO, hunger_ticks: 0, lift: 0.4, throw: DVec3::ZERO, disable_shield_seconds: 0.0 };
         assert_eq!(melee_push(&golem).lift, f64::from(0.4_f32));
         let arrow = PlayerHitKind::Arrow { velocity: DVec3::X, effect: None };
         assert_eq!(melee_push(&arrow), crate::impulse::MeleePush::default());
+    }
+
+    #[test]
+    fn a_brute_s_axe_hit_carries_a_hundred_ticks_of_shield_cooldown() {
+        let axe = PlayerHitKind::Melee { attacker: DVec3::ZERO, hunger_ticks: 0, lift: 0.0, throw: DVec3::ZERO, disable_shield_seconds: 5.0 };
+        assert_eq!(melee_push(&axe).disable_shield_ticks, 100);
+        assert_eq!(melee_push(&axe).landing(false, true, 0.0), None);
+    }
+
+    #[test]
+    fn the_worn_armour_reaches_the_mobs_feet_first() {
+        let mut inventory = Inventory::default();
+        inventory.slots[36] = Some(ItemStack::new("minecraft:golden_boots", 1));
+        inventory.slots[39] = Some(ItemStack::new("minecraft:chainmail_helmet", 1));
+        let view = PlayerView { feet: [0.0; 3], alive: true, attackable: true, spectator: false, picks_up: true, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false };
+        let controls = player_controls(&view, &inventory);
+        assert_eq!(controls.armor, [Some("minecraft:golden_boots".to_owned()), None, None, Some("minecraft:chainmail_helmet".to_owned())]);
     }
 
     #[test]

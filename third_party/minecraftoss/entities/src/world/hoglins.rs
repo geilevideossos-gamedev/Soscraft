@@ -448,6 +448,8 @@ impl EntityWorld {
     pub fn note_hoglin_hurt(&mut self, id: u64, attacker: Target) {
         if let Some(entity) = self.hoglins.iter_mut().find(|e| e.id == id) {
             entity.hurt_by.push(attacker);
+        } else {
+            self.note_piglin_hurt(id, attacker);
         }
     }
 
@@ -689,6 +691,7 @@ impl EntityWorld {
                         hunger_ticks: 0,
                         lift: 0.0,
                         throw,
+                        disable_shield_seconds: 0.0,
                     },
                     source: Some(id),
                 });

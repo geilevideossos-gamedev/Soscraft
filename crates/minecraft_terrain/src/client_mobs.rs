@@ -1154,6 +1154,7 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
         .filter_map(|e| Some((e.id, e.ai.as_deref()?.state.melee.swings)))
         .chain(world.skeletons().iter().filter_map(|e| Some((e.id, e.ai.as_deref()?.state.melee.swings))))
         .chain(world.endermen().iter().map(|e| (e.id, e.ai.state.melee.swings)))
+        .chain(world.piglins().iter().map(|e| (e.id, e.swings)))
         .collect();
     for e in world.zombies() {
         push(e.id, e.yaw, &e.look_control, &e.zombie.body, e.zombie.baby, e.zombie.eye_height());

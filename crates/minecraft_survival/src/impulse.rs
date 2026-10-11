@@ -38,6 +38,7 @@ pub fn launch_velocity(push: DVec3, gravity: f64) -> DVec3 {
 pub struct MeleePush {
     pub throw: DVec3,
     pub lift: f64,
+    pub disable_shield_ticks: u32,
 }
 
 impl MeleePush {
@@ -71,7 +72,7 @@ mod tests {
 
     #[test]
     fn a_shield_still_gets_thrown_by_an_adult() {
-        let push = MeleePush { throw: DVec3::new(0.3, 0.4, 0.0), lift: 0.0 };
+        let push = MeleePush { throw: DVec3::new(0.3, 0.4, 0.0), lift: 0.0, disable_shield_ticks: 0 };
         assert_eq!(push.landing(false, true, 0.0), Some(DVec3::new(0.3, 0.4, 0.0)));
         assert_eq!(push.landing(false, false, 0.0), None);
         let thrown = push.landing(true, false, 0.2).unwrap();
@@ -81,7 +82,7 @@ mod tests {
 
     #[test]
     fn an_iron_golem_lifts_only_a_hit_that_lands() {
-        let lift = MeleePush { throw: DVec3::ZERO, lift: f64::from(0.4_f32) };
+        let lift = MeleePush { throw: DVec3::ZERO, lift: f64::from(0.4_f32), disable_shield_ticks: 0 };
         assert_eq!(lift.landing(false, true, 0.0), None);
         let up = lift.landing(true, false, 0.4).unwrap();
         assert!((up.y - f64::from(0.4_f32) * 0.6).abs() < 1.0e-12 && up.x == 0.0);

@@ -1,12 +1,24 @@
 use super::{PiglinBrain, PiglinCtx};
-use crate::brain_behaviors::{Living, set_list, targetable_within};
+use crate::brain_behaviors::{Living, find, set_list, targetable_within};
 use crate::monster_ai::Target;
+use crate::piglin::PiglinKind;
 use glam::DVec3;
 
 pub const SCAN_RATE: i32 = 20;
 pub const SENSORS: usize = 5;
 pub const NEAREST_LIVING: usize = 0;
 pub const NEAREST_PLAYERS: usize = 1;
+pub const SPECIFIC: usize = 4;
+pub const NEMESES: [&str; 2] = ["minecraft:wither_skeleton", "minecraft:wither"];
+pub const ZOMBIFIED: [&str; 2] = ["minecraft:zombified_piglin", "minecraft:zoglin"];
+
+pub fn adult_piglin(other: &Living) -> bool {
+    match other.kind {
+        "minecraft:piglin" => !other.baby,
+        "minecraft:piglin_brute" => true,
+        _ => false,
+    }
+}
 
 impl PiglinBrain {
     pub(super) fn sense(&mut self, ctx: &mut PiglinCtx) {
@@ -30,6 +42,84 @@ impl PiglinBrain {
         if fired[NEAREST_PLAYERS] {
             self.sense_players(ctx);
         }
+        if fired[SPECIFIC] {
+            self.sense_specific(ctx);
+        }
+    }
+
+    fn sense_specific(&mut self, ctx: &PiglinCtx) {
+        let visible: Vec<&Living> = self
+            .memories
+            .visible_living
+            .get()
+            .into_iter()
+            .flatten()
+            .filter_map(|&target| find(ctx.others, target))
+            .collect();
+        let nearby: Vec<Target> = self
+            .memories
+            .nearest_living
+            .get()
+            .into_iter()
+            .flatten()
+            .filter_map(|&target| find(ctx.others, target))
+            .filter(|other| adult_piglin(other))
+            .map(|other| other.target)
+            .collect();
+        if ctx.kind == PiglinKind::Brute {
+            let nemesis = visible
+                .iter()
+                .find(|other| NEMESES.contains(&other.kind))
+                .map(|other| other.target);
+            self.memories.nearest_visible_nemesis.set_or_erase(nemesis);
+            set_list(&mut self.memories.nearby_adult_piglins, nearby);
+            return;
+        }
+        let mut nemesis = None;
+        let mut zombified = None;
+        let mut ungilded = None;
+        let mut holding = None;
+        let mut adults = Vec::new();
+        for other in visible {
+            match other.kind {
+                "minecraft:hoglin" => {}
+                "minecraft:piglin" | "minecraft:piglin_brute" => {
+                    if adult_piglin(other) {
+                        adults.push(other.target);
+                    }
+                }
+                _ if other.is_player() => {
+                    let attackable = other.alive && other.attackable && !other.spectator;
+                    if ungilded.is_none() && attackable && !ctx.gilded.contains(&other.target) {
+                        ungilded = Some(other.target);
+                    }
+                    if holding.is_none()
+                        && !other.spectator
+                        && ctx.loved_holders.contains(&other.target)
+                    {
+                        holding = Some(other.target);
+                    }
+                }
+                kind if nemesis.is_some() || !NEMESES.contains(&kind) => {
+                    if zombified.is_none() && ZOMBIFIED.contains(&kind) {
+                        zombified = Some(other.target);
+                    }
+                }
+                _ => nemesis = Some(other.target),
+            }
+        }
+        let memories = &mut self.memories;
+        memories.nearest_visible_nemesis.set_or_erase(nemesis);
+        memories.nearest_visible_zombified.set_or_erase(zombified);
+        memories
+            .nearest_targetable_player_not_wearing_gold
+            .set_or_erase(ungilded);
+        memories
+            .nearest_player_holding_wanted_item
+            .set_or_erase(holding);
+        memories.visible_adult_piglin_count.set(adults.len());
+        set_list(&mut memories.nearest_visible_adult_piglins, adults);
+        set_list(&mut memories.nearby_adult_piglins, nearby);
     }
 
     fn sense_living(&mut self, ctx: &PiglinCtx) {

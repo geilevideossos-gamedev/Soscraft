@@ -1645,7 +1645,7 @@ impl ServerSim {
                 players_pushed.extend(events.player_pushes);
                 mob_hits.extend(events.mob_hits.into_iter().map(|(id, push, damage)| (id, push, damage, dragon.position)));
                 end_sounds.extend(events.sounds.into_iter().map(|(event, position, volume, pitch)| minecraftoss_entities::world::MobSound { event: event.to_owned(), position, volume, pitch, category: "hostile" }));
-                end_hits.extend(events.player_hits.into_iter().map(|(player_id, damage, attacker)| minecraftoss_entities::world::PlayerHit { player_id, damage, kind: minecraftoss_entities::world::PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0, throw: glam::DVec3::ZERO }, source: Some(dragon.id) }));
+                end_hits.extend(events.player_hits.into_iter().map(|(player_id, damage, attacker)| minecraftoss_entities::world::PlayerHit { player_id, damage, kind: minecraftoss_entities::world::PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0, throw: glam::DVec3::ZERO, disable_shield_seconds: 0.0 }, source: Some(dragon.id) }));
                 experience.extend(events.experience);
                 for (from, direction) in events.fireballs {
                     dragon_fireballs.shoot(dragon.id, from, direction);
@@ -2102,6 +2102,8 @@ impl ServerSim {
         self.block_explosion_drop_decay = rules.bool("block_explosion_drop_decay");
         level.set_advance_weather(rules.bool("advance_weather"));
         self.mobs.set_mob_griefing(rules.bool("mob_griefing"));
+        self.mobs.set_universal_anger(rules.bool("universal_anger"));
+        self.mobs.set_forgive_dead_players(rules.bool("forgive_dead_players"));
         self.mobs.set_mob_drops(rules.bool("mob_drops"));
         self.dragon_drops = rules.bool("mob_drops");
         if let Some(natural) = &mut self.level.natural_spawning {

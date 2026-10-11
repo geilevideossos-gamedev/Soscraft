@@ -31,6 +31,13 @@ pub struct Memories {
     pub angry_at: Slot<u128>,
     pub universal_anger: Slot<()>,
     pub home: Slot<GlobalPos>,
+    pub nearest_visible_nemesis: Slot<Target>,
+    pub nearest_targetable_player_not_wearing_gold: Slot<Target>,
+    pub nearest_visible_adult_piglins: Slot<Vec<Target>>,
+    pub visible_adult_piglin_count: Slot<usize>,
+    pub nearby_adult_piglins: Slot<Vec<Target>>,
+    pub nearest_visible_zombified: Slot<Target>,
+    pub attack_cooling_down: Slot<()>,
 }
 
 impl Memories {
@@ -56,6 +63,17 @@ impl Memories {
         self.angry_at.tick();
         self.universal_anger.tick();
         self.home.tick();
+        self.nearest_visible_nemesis.tick();
+        self.nearest_targetable_player_not_wearing_gold.tick();
+        self.nearest_visible_adult_piglins.tick();
+        self.visible_adult_piglin_count.tick();
+        self.nearby_adult_piglins.tick();
+        self.nearest_visible_zombified.tick();
+        self.attack_cooling_down.tick();
+    }
+
+    pub fn nearby_adult_piglins(&self) -> Vec<Target> {
+        self.nearby_adult_piglins.get().cloned().unwrap_or_default()
     }
 
     pub fn sees(&self, target: Target) -> bool {

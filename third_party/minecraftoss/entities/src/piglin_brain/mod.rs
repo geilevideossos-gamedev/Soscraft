@@ -1,12 +1,19 @@
 mod behaviors;
+mod fight;
 mod memory;
 mod sensors;
 
 pub use behaviors::Doors;
+pub use fight::{
+    ADMIRING_DISABLED_TICKS, ANGER_TICKS, BABY_FLEE_TICKS, CROSSBOW_CHARGE, CrossbowAttack,
+    CrossbowState, ItemUse, attackable_ignoring_sight,
+};
 pub use memory::{GlobalPos, Memories};
+pub use sensors::{NEMESES, ZOMBIFIED, adult_piglin};
 
 use crate::brain_behaviors::{Living, MoveSink, Pos, Walker, find};
 use crate::fluid::FluidFrame;
+use crate::monster_ai::Target;
 use crate::movement::Body;
 use crate::navigation::GroundNavigation;
 use crate::piglin::PiglinKind;
@@ -43,9 +50,21 @@ pub struct PiglinCtx<'a> {
     pub profile: &'a WalkProfile,
     pub fluid: FluidFrame,
     pub converting: bool,
+    pub uuids: &'a [(Target, u128)],
+    pub gilded: &'a [Target],
+    pub loved_holders: &'a [Target],
+    pub universal_anger: bool,
+    pub forgive_dead_players: bool,
+    pub holds_crossbow: bool,
+    pub using_item: Option<i32>,
     pub look_at: Option<DVec3>,
     pub sounds: Vec<&'static str>,
     pub doors: Vec<(Pos, bool)>,
+    pub attack: Option<Target>,
+    pub shot: Option<Target>,
+    pub strafe: Option<f32>,
+    pub item_use: Option<ItemUse>,
+    pub charging: Option<bool>,
 }
 
 impl PiglinCtx<'_> {
@@ -55,6 +74,36 @@ impl PiglinCtx<'_> {
 
     pub fn eye(&self) -> DVec3 {
         self.body.position + DVec3::Y * f64::from(self.eye_height)
+    }
+
+    pub fn living(&self, target: Target) -> Option<&Living> {
+        find(self.others, target)
+    }
+
+    pub fn target_of(&self, uuid: u128) -> Option<Target> {
+        self.uuids
+            .iter()
+            .find(|(_, other)| *other == uuid)
+            .map(|(target, _)| *target)
+    }
+
+    pub fn attackable_ignoring_sight(&self, target: Target) -> bool {
+        self.living(target).is_some_and(|other| {
+            attackable_ignoring_sight(self.position(), self.follow_range, other)
+        })
+    }
+
+    pub fn attackable(&self, target: Target) -> bool {
+        self.living(target).is_some_and(|other| {
+            crate::brain_behaviors::targetable_within(
+                self.world,
+                self.eye(),
+                self.position(),
+                other,
+                true,
+                self.follow_range,
+            )
+        })
     }
 
     pub fn walker(&mut self) -> Walker<'_> {
@@ -81,9 +130,11 @@ pub struct PiglinBrain {
     pub walk: MoveSink,
     look_wait: Option<i64>,
     move_wait: Option<i64>,
+    celebrate_wait: Option<i64>,
     doors: Doors,
     home_stroll_next: i64,
     home_around_next: i64,
+    pub crossbow: CrossbowAttack,
 }
 
 impl PiglinBrain {
@@ -97,18 +148,31 @@ impl PiglinBrain {
             &mut ctx.walker(),
         );
         self.interact_with_doors(ctx);
+        if ctx.kind == PiglinKind::Piglin {
+            self.start_celebrating_if_target_dead(ctx);
+        }
+        self.stop_being_angry_if_target_dead(ctx);
         match self.activity {
             Activity::Idle => {
+                self.start_attacking(ctx);
                 self.idle_look(ctx);
                 self.idle_movement(ctx);
                 self.set_look_and_interact(ctx);
             }
+            Activity::Fight => self.fight(ctx),
+            Activity::Celebrate => {
+                self.start_attacking(ctx);
+                self.go_to_celebrate_location(ctx);
+                self.celebrate_movement(ctx);
+            }
             Activity::Avoid if ctx.kind == PiglinKind::Piglin => {
+                self.walk_away_from_avoid_target(ctx);
                 self.idle_look(ctx);
                 self.idle_movement(ctx);
             }
             _ => {}
         }
+        self.tick_crossbow(ctx);
         self.tick_look(ctx);
         self.walk.tick(
             &mut self.memories.walk_target,
@@ -133,12 +197,20 @@ impl PiglinBrain {
         let before = self.activity;
         let after = self.first_valid(ctx.kind);
         if before != after {
-            match before {
-                Activity::AdmireItem => self.memories.admiring_item.erase(),
-                Activity::Fight => self.memories.attack_target.erase(),
-                Activity::Avoid => self.memories.avoid_target.erase(),
-                Activity::Celebrate => self.memories.celebrate_location.erase(),
-                Activity::Idle | Activity::Ride => {}
+            let memories = &mut self.memories;
+            if after != Activity::Fight {
+                memories.attack_target.erase();
+            }
+            if ctx.kind == PiglinKind::Piglin {
+                if after != Activity::AdmireItem {
+                    memories.admiring_item.erase();
+                }
+                if after != Activity::Avoid {
+                    memories.avoid_target.erase();
+                }
+                if after != Activity::Celebrate {
+                    memories.celebrate_location.erase();
+                }
             }
             self.activity = after;
             match ctx.kind {

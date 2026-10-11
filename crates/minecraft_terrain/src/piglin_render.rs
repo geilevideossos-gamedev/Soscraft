@@ -362,6 +362,36 @@ pub struct Hands {
     pub main: bool,
     pub off: bool,
     pub left_handed: bool,
+    pub charge_ticks: f32,
+}
+
+fn swing_weapon_down(arms: [&mut Vec3; 2], left_handed: bool, attack: f32, age: f32) {
+    use crate::client_mobs::mth_cos;
+    let pi = std::f32::consts::PI;
+    let sin = |x: f32| minecraftoss_player::mth::sin(f64::from(x));
+    let reach = sin(attack * pi);
+    let pull = sin((1.0 - (1.0 - attack) * (1.0 - attack)) * pi);
+    let [right, left] = arms;
+    right.z = 0.0;
+    left.z = 0.0;
+    right.y = 0.157_079_64;
+    left.y = -0.157_079_64;
+    let (weapon, other) = if left_handed {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    weapon.x = -1.884_955_8 + mth_cos(age * 0.09) * 0.15 + reach * 2.2 - pull * 0.4;
+    other.x = mth_cos(age * 0.19) * 0.5 + reach * 1.2 - pull * 0.4;
+}
+
+fn crossbow_arms(arms: [&mut Vec3; 2], left_handed: bool) -> (&mut Vec3, &mut Vec3) {
+    let [right, left] = arms;
+    if left_handed {
+        (left, right)
+    } else {
+        (right, left)
+    }
 }
 
 pub fn humanoid_limbs(
@@ -393,12 +423,49 @@ pub fn humanoid_limbs(
             arm.y = 0.0;
         }
     }
+    let swing = pose.swing.filter(|&swing| swing > 0.0);
+    let melee = arm_pose == ArmPose::AttackingWithMeleeWeapon;
+    if let Some(attack) = swing.filter(|_| melee) {
+        swing_weapon_down(
+            [&mut right_arm, &mut left_arm],
+            hands.left_handed,
+            attack,
+            pose.age_in_ticks,
+        );
+    }
     let bob_z = mth_cos(pose.age_in_ticks * 0.09) * 0.05 + 0.05;
     let bob_x = minecraftoss_player::mth::sin(f64::from(pose.age_in_ticks * 0.067)) * 0.05;
-    right_arm.z += bob_z;
-    right_arm.x += bob_x;
-    left_arm.z -= bob_z;
-    left_arm.x -= bob_x;
+    let bobs = if swing.is_some() && melee { 2.0 } else { 1.0 };
+    right_arm.z += bob_z * bobs;
+    right_arm.x += bob_x * bobs;
+    left_arm.z -= bob_z * bobs;
+    left_arm.x -= bob_x * bobs;
+    let sign = if hands.left_handed { -1.0 } else { 1.0 };
+    let (head_yaw, head_pitch) = (pose.head_yaw.to_radians(), pose.head_pitch.to_radians());
+    match arm_pose {
+        ArmPose::AttackingWithMeleeWeapon if swing.is_none() => {
+            let (weapon, _) = crossbow_arms([&mut right_arm, &mut left_arm], hands.left_handed);
+            weapon.x = -1.8;
+        }
+        ArmPose::CrossbowHold => {
+            let (holding, other) =
+                crossbow_arms([&mut right_arm, &mut left_arm], hands.left_handed);
+            holding.y = -0.3 * sign + head_yaw;
+            other.y = 0.6 * sign + head_yaw;
+            holding.x = -std::f32::consts::FRAC_PI_2 + head_pitch + 0.1;
+            other.x = -1.5 + head_pitch;
+        }
+        ArmPose::CrossbowCharge => {
+            let (holding, other) =
+                crossbow_arms([&mut right_arm, &mut left_arm], hands.left_handed);
+            holding.y = -0.8 * sign;
+            holding.x = -0.970_796_35;
+            let charged = hands.charge_ticks.clamp(0.0, 25.0) / 25.0;
+            other.y = (0.4 + (0.85 - 0.4) * charged) * sign;
+            other.x = holding.x + (-std::f32::consts::FRAC_PI_2 - holding.x) * charged;
+        }
+        _ => {}
+    }
     if arm_pose == ArmPose::AdmiringItem {
         if hands.left_handed {
             right_arm.y = -0.5;
@@ -460,6 +527,7 @@ pub fn append_piglins<'a>(
             main: piglin.main_hand.is_some(),
             off: piglin.offhand.is_some(),
             left_handed: piglin.left_handed,
+            charge_ticks: entity.using_item.unwrap_or(0) as f32,
         };
         let posed = living_pose(baby, &hands, entity.arm_pose, &mob);
         for cube in &posed.cubes {
@@ -652,6 +720,7 @@ mod tests {
             main: true,
             off: false,
             left_handed: false,
+            charge_ticks: 0.0,
         };
         let adult = living_pose(false, &hands, ArmPose::Default, &standing());
         assert_eq!(adult.cubes.len(), 4 + 2 + 2 + 4 + 4);
@@ -685,6 +754,7 @@ mod tests {
             main: false,
             off: false,
             left_handed: false,
+            charge_ticks: 0.0,
         };
         let bare = living_pose(false, &empty, ArmPose::Default, &standing());
         let (_, _, bare_x) = bare.arms[0].1.to_euler(EulerRot::ZYX);
@@ -695,11 +765,46 @@ mod tests {
     }
 
     #[test]
+    fn a_fighting_piglin_raises_its_sword_and_a_crossbow_piglin_pulls_the_string() {
+        let mut hands = Hands {
+            main: true,
+            off: false,
+            left_handed: false,
+            charge_ticks: 0.0,
+        };
+        let arm = |hands: &Hands, arm_pose, arm: usize| {
+            let posed = living_pose(false, hands, arm_pose, &standing());
+            let (_, y, x) = posed.arms[arm].1.to_euler(EulerRot::ZYX);
+            (x, y)
+        };
+        let (x, _) = arm(&hands, ArmPose::AttackingWithMeleeWeapon, 0);
+        assert!((x + 1.8).abs() < 1.0e-5, "{x}");
+        let (x, y) = arm(&hands, ArmPose::CrossbowHold, 0);
+        assert!((x + std::f32::consts::FRAC_PI_2 - 0.1).abs() < 1.0e-5, "{x}");
+        assert!((y + 0.3).abs() < 1.0e-5, "{y}");
+        let (x, y) = arm(&hands, ArmPose::CrossbowCharge, 1);
+        assert!((x + 0.970_796_35).abs() < 1.0e-5 && (y - 0.4).abs() < 1.0e-5);
+        hands.charge_ticks = 30.0;
+        let (x, y) = arm(&hands, ArmPose::CrossbowCharge, 1);
+        assert!((x + std::f32::consts::FRAC_PI_2).abs() < 1.0e-5, "{x}");
+        assert!((y - 0.85).abs() < 1.0e-5, "{y}");
+        hands.left_handed = true;
+        let (x, _) = arm(&hands, ArmPose::AttackingWithMeleeWeapon, 1);
+        assert!((x + 1.8).abs() < 1.0e-5, "{x}");
+        let mut swinging = standing();
+        swinging.swing = Some(0.5);
+        let posed = living_pose(false, &hands, ArmPose::AttackingWithMeleeWeapon, &swinging);
+        let (_, y, _) = posed.arms[1].1.to_euler(EulerRot::ZYX);
+        assert!((y + 0.157_079_64).abs() < 1.0e-4, "{y}");
+    }
+
+    #[test]
     fn an_admiring_piglin_holds_its_item_in_the_left_hand() {
         let hands = Hands {
             main: false,
             off: true,
             left_handed: false,
+            charge_ticks: 0.0,
         };
         let admiring = living_pose(false, &hands, ArmPose::AdmiringItem, &standing());
         let (_, y, x) = admiring.arms[1].1.to_euler(EulerRot::ZYX);
