@@ -780,6 +780,18 @@ impl Survival {
         }
     }
 
+    pub fn struck(&mut self, damage: f32, blocked: f32, armor: Armor, from: Option<[f64; 3]>, cause: DamageCause, effect: Option<(EffectKind, u32)>) -> bool {
+        if damage <= blocked {
+            self.hurt_blocked(cause);
+            return false;
+        }
+        let landed = self.hurt(damage - blocked, armor, from, cause);
+        if let (true, Some((kind, ticks))) = (landed, effect) {
+            self.status.add_effect(kind, ticks, 0);
+        }
+        landed
+    }
+
     pub fn exhaust(&mut self, amount: f32) {
         self.status.food.add_exhaustion(amount);
     }
@@ -1231,6 +1243,25 @@ mod tests {
         assert!(!ruled.hurt(6.0, Armor::default(), None, fireball));
         let blast = DamageCause::mob(crate::death::MobAttack::Explosion, Some(4), Some("minecraft:ghast"));
         assert!(resistant.hurt(4.0, Armor::default(), None, blast), "its blast is no fire");
+    }
+
+    #[test]
+    fn a_tipped_arrow_gives_its_effect_only_when_it_hurts() {
+        let arrow = DamageCause::mob(crate::death::MobAttack::Arrow, Some(3), Some("minecraft:bogged"));
+        let poison = Some((EffectKind::Poison, 100));
+        let mut survival = fresh();
+        assert!(survival.struck(3.0, 0.0, Armor::default(), None, arrow, poison));
+        assert_eq!(survival.status.effect(EffectKind::Poison).map(|e| (e.duration, e.amplifier)), Some((100, 0)));
+        let mut shielded = fresh();
+        assert!(!shielded.struck(3.0, 3.0, Armor::default(), None, arrow, poison));
+        assert_eq!(shielded.status.effect(EffectKind::Poison), None, "a fully blocked arrow gives nothing");
+        let mut creative = fresh();
+        creative.set_game_mode(&minecraft_terrain::game_mode::PlayerMode::new(GameMode::Creative));
+        assert!(!creative.struck(3.0, 0.0, Armor::default(), None, arrow, poison));
+        assert_eq!(creative.status.effect(EffectKind::Poison), None);
+        let mut plain = fresh();
+        assert!(plain.struck(3.0, 1.0, Armor::default(), None, arrow, None));
+        assert_eq!(plain.status.health, 18.0, "a partly blocked arrow hurts by what gets through");
     }
 
     #[test]

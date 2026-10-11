@@ -296,3 +296,30 @@ Previous commit: 17e4a5d3
 ```
 IW4L_MINECRAFT_KIT=minecraft:shulker_spawn_egg*16,minecraft:end_stone*64,minecraft:purpur_block*64,minecraft:diamond_pickaxe
 ```
+
+### 11. Minecraft tipped arrows give players their effect
+
+Previous commit: c9fa0c37
+
+- **Changed:**
+  - `minecraft_survival` `entities.rs`: the hits `Entities::tick` hands back carry the arrow's effect (`PlayerHitKind::Arrow`'s `effect`), which the conversion used to drop.
+  - `survival.rs`: `Survival::struck` takes a hit with the shield's share: fully blocked, it is `hurt_blocked`; otherwise the rest hurts, and only when that lands (not invulnerable, not in the damage cooldown) the arrow's effect is added (`Arrow.doPostHurtEffects` runs only after `hurtServer` returned true).
+  - `render_anim` `minecraft_world.rs`: the hit loop calls `struck` with the effect.
+- **Tests:** `minecraft_survival` `survival`: `a_tipped_arrow_gives_its_effect_only_when_it_hurts` (a poison arrow poisons for its 100 ticks, a fully shield-blocked one and a creative player get nothing, a partly blocked one hurts by what gets through).
+- **Decisions:** the effect lands at amplifier 0, as every mob arrow in the port carries (strays' slowness, boggeds' poison); the shulker bullet's levitation in group 6 goes through the same path.
+- **Test steps:** (survival, `/difficulty normal`, at night or underground; armour off)
+  1. Use a bogged egg 12 blocks away and let it shoot you: when an arrow hurts you, your hearts turn green (poison) for a few seconds (**1**).
+  2. Drink the milk, raise the shield toward the bogged and let it shoot: the arrows thud on the shield and you are not poisoned.
+  3. Use a stray egg and let it shoot you: you walk slower for a few seconds after a hit.
+  4. `/gamemode creative` and let them shoot: nothing happens. `/gamemode survival`.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:bogged_spawn_egg*2,minecraft:stray_spawn_egg*2,minecraft:shield,minecraft:milk_bucket,minecraft:milk_bucket,minecraft:cooked_beef*16
+```
+
+### Group c1-shulkers-1, combined kit
+
+```
+IW4L_MINECRAFT_KIT=minecraft:shulker_spawn_egg*16,minecraft:end_stone*64,minecraft:purpur_block*64,minecraft:diamond_pickaxe,minecraft:water_bucket,minecraft:iron_sword,minecraft:trident,minecraft:bogged_spawn_egg*2,minecraft:stray_spawn_egg*2,minecraft:shield,minecraft:milk_bucket,minecraft:milk_bucket,minecraft:cooked_beef*16
+```

@@ -20,6 +20,7 @@ use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::items::{ItemEntity, WorldItems};
 use minecraftoss_player::loot::LootBook;
 use minecraftoss_player::rng::XoroshiroRandom;
+use minecraftoss_player::survival::EffectKind;
 use std::collections::HashMap;
 use minecraft_terrain::pack::PackStack;
 use minecraft_terrain::poof_particles::PoofParticles;
@@ -37,7 +38,7 @@ const PLAYER: u64 = 0;
 /// `Player.getEyeHeight` standing.
 const EYE_HEIGHT: f32 = 1.62;
 const SERVER_ITEM: u32 = 1 << 31;
-type Hits = Vec<(f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause)>;
+type Hits = Vec<(f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause, Option<(EffectKind, u32)>)>;
 type Changes = Vec<((i32, i32, i32), Option<Block>)>;
 type Picked = (i32, [f64; 3], String, i32, Option<String>);
 
@@ -1020,8 +1021,12 @@ impl Entities {
                 };
                 let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. }) || hit.source.is_some();
                 let damage = difficulty_scaled(hit.damage, self.difficulty, scales);
+                let effect = match hit.kind {
+                    PlayerHitKind::Arrow { effect, .. } => effect,
+                    _ => None,
+                };
                 if damage > 0.0 {
-                    hits.push((damage, from, Some(toward), cause));
+                    hits.push((damage, from, Some(toward), cause, effect));
                 }
             }
         }
@@ -1312,9 +1317,9 @@ impl Entities {
     }
 }
 
-fn struck_hit(feet: [f64; 3], struck: &minecraft_terrain::thrown::PlayerStruck) -> (f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause) {
+fn struck_hit(feet: [f64; 3], struck: &minecraft_terrain::thrown::PlayerStruck) -> (f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause, Option<(EffectKind, u32)>) {
     let from = DVec3::from_array(feet) - struck.velocity.normalize_or_zero();
-    (struck.damage, Some(from.to_array()), Some([-struck.velocity.x, -struck.velocity.z]), crate::death::DamageCause::Generic)
+    (struck.damage, Some(from.to_array()), Some([-struck.velocity.x, -struck.velocity.z]), crate::death::DamageCause::Generic, None)
 }
 
 fn difficulty_scaled(damage: f32, difficulty: i32, scales: bool) -> f32 {
@@ -1553,7 +1558,7 @@ mod tests {
             kind: minecraft_terrain::trident::DAMAGE_TYPE,
             velocity: DVec3::new(2.0, 0.0, 0.0),
         };
-        let (damage, from, toward, cause) = struck_hit([10.0, 64.0, 5.0], &struck);
+        let (damage, from, toward, cause, _) = struck_hit([10.0, 64.0, 5.0], &struck);
         assert_eq!(damage, 8.0);
         assert_eq!(from, Some([9.0, 64.0, 5.0]));
         assert_eq!(toward, Some([-2.0, -0.0]));
