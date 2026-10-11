@@ -667,6 +667,28 @@ impl Entities {
         self.client.set_own_vehicle(None);
     }
 
+    pub fn reattach(&mut self, root: minecraftoss_core::nbt::Tag) {
+        self.server.reattach(PLAYER, root);
+    }
+
+    pub fn root_vehicle(&mut self, remove: bool) -> Option<minecraftoss_core::nbt::Tag> {
+        self.server.root_vehicle(PLAYER, remove);
+        self.server.wait_idle();
+        let mut found = None;
+        for mut output in self.server.poll() {
+            for (player, root) in output.root_vehicles.drain(..) {
+                if player == PLAYER {
+                    found = root;
+                }
+            }
+            self.unread.push(output);
+        }
+        if remove {
+            self.client.set_own_vehicle(None);
+        }
+        found
+    }
+
     pub fn leave_seat(&mut self) {
         self.client.set_own_vehicle(None);
     }
@@ -1075,6 +1097,7 @@ impl Entities {
             for (_, vehicle, spot) in output.dismounts.iter().filter(|(player, _, _)| *player == PLAYER) {
                 self.dismounts.push((*vehicle, spot.map(DVec3::from_array)));
             }
+            self.mounts.extend(output.mounts.iter().filter(|(player, _)| *player == PLAYER).map(|(_, vehicle)| *vehicle));
             for &(_, boosted) in output.boosts.iter().filter(|(player, _)| *player == PLAYER) {
                 if let Some(sent) = self.boost_waiting.take().filter(|_| boosted) {
                     self.boosts_done.push(sent);

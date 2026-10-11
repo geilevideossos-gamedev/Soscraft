@@ -1,9 +1,12 @@
 use minecraft_survival::entities::Entities;
 use minecraft_survival::player::Steps;
 use minecraft_survival::riding::Riding;
+use minecraftoss_core::nbt::Tag;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn step(
     riding: &mut Option<Riding>,
+    reattach: &mut Option<Tag>,
     steps: &mut Steps,
     entities: &mut Entities,
     authority: &mut sim::SimWorld,
@@ -29,6 +32,8 @@ pub(crate) fn step(
     }
     if !present {
         dismount(riding, Some(entities), authority, id);
+    } else if let Some(root) = reattach.take() {
+        entities.reattach(root);
     }
     if let Some(ride) = *riding
         && let Some(seat) = entities.ride_seat(ride.vehicle)

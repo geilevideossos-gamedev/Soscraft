@@ -520,7 +520,12 @@ impl Server {
         closing
     }
 
+    pub fn take_vehicles(&mut self) {
+        refresh_vehicles(&mut self.levels, &mut self.players, true);
+    }
+
     pub fn save_and_close(mut self, started: Instant) {
+        self.take_vehicles();
         let save = self.globals.save.take();
         if let Some(writer) = self.globals.level_writer.take() {
             let _ = writer.join();
@@ -624,6 +629,7 @@ pub fn join(
     player.last_death = saved.last_death;
     player.portal_cooldown = saved.portal_cooldown.unwrap_or(0);
     player.seen_credits = saved.seen_credits.unwrap_or(false);
+    player.reattach = saved.root_vehicle.filter(|_| !dead);
     player.dead = dead;
     player.place = Some(Place::standing(Dimension::Overworld, spawn, 0.0, 0.0));
     match saved.place {
@@ -725,14 +731,30 @@ pub fn save_player(globals: &mut Globals, player: &Player) {
         .ok();
 }
 
+pub fn refresh_vehicles(
+    levels: &mut BTreeMap<Dimension, Level>,
+    players: &mut BTreeMap<PlayerUuid, Player>,
+    remove: bool,
+) {
+    for player in players.values_mut().filter(|player| player.riding.is_some()) {
+        if let Some(entities) = levels
+            .get_mut(&player.dimension)
+            .and_then(|level| level.entities.as_mut())
+        {
+            player.saved_vehicle = entities.root_vehicle(remove);
+        }
+    }
+}
+
 pub fn autosave(
     globals: &mut Globals,
     levels: &mut BTreeMap<Dimension, Level>,
-    players: &BTreeMap<PlayerUuid, Player>,
+    players: &mut BTreeMap<PlayerUuid, Player>,
 ) {
     let Some(save) = globals.save.clone() else {
         return;
     };
+    refresh_vehicles(levels, players, false);
     let started = Instant::now();
     let chunks: usize = levels
         .values_mut()

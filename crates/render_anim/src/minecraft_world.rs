@@ -735,7 +735,7 @@ fn update(
         puppet.active = false;
         return;
     };
-    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, arrived, ender, respawn, riding, .. } = player;
+    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, arrived, ender, respawn, riding, reattach, .. } = player;
     let minecraft_survival::level::Level { entities, containers, terrain, openers, dimension, .. } = level;
     minecraft_terrain::cow_render::set_nether_entity_lighting(terrain.rules.nether_cardinal_light);
     if !delivered.is_empty() {
@@ -1858,7 +1858,7 @@ fn update(
             mining.break_burst(&world.packs, &world.atlas, glam::DVec3::from_array(eye).as_vec3(), mc_yaw, ps.viewangles[0], &item);
         }
         let present = alive && player_mode.mode != minecraftoss_player::GameMode::Spectator;
-        crate::minecraft_riding::step(riding, steps, entities, &mut authority.0, local.0, origin, present);
+        crate::minecraft_riding::step(riding, reattach, steps, entities, &mut authority.0, local.0, origin, present);
         for to in teleports.iter().filter(|(uuid, _)| alive && uuid == local_uuid).map(|(_, to)| to) {
             crate::minecraft_riding::dismount(riding, Some(&mut *entities), &mut authority.0, local.0);
             authority.0.teleport(local.0, sim::voxel::to_map(origin, *to));
@@ -2776,6 +2776,9 @@ fn save_and_close(
     loader: Option<std::thread::JoinHandle<()>>,
 ) {
     let started = std::time::Instant::now();
+    if let Some(server) = server.as_mut() {
+        server.take_vehicles();
+    }
     for level in server.iter_mut().flat_map(|server| server.levels.values_mut()) {
         if let Some(entities) = level.entities.as_mut() {
             minecraft_survival::level::save_server_block_entities(entities, &mut level.terrain, true);

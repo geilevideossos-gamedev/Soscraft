@@ -419,6 +419,44 @@ impl ServerSim {
         self.mobs.drop_player(player);
     }
 
+    pub fn root_vehicle(&mut self, player: u64, remove: bool) -> Option<minecraftoss_core::nbt::Tag> {
+        use minecraftoss_core::nbt::Tag;
+        let vehicle = self.mobs.vehicle_of(minecraftoss_entities::world::Rider::Player(player))?;
+        let root = self.mobs.root_vehicle(vehicle);
+        let at = self.mobs.body_mut(root)?.position;
+        let near = |p: glam::DVec3| p.distance_squared(at) < 64.0;
+        let (_, entity) = crate::server_mobs::mob_tags(&self.mobs, near, &self.mob_tags).into_iter().find(|(id, _)| *id == root)?;
+        let attach = minecraftoss_entities::gossip::uuid_to_ints(self.mobs.uuid_of(vehicle));
+        if remove {
+            let ids = self.mobs.with_mob_riders(root);
+            self.mobs.drop_player(player);
+            self.mobs.remove_mobs(&ids);
+            self.mob_tags.retain(|id, _| !ids.contains(id));
+        }
+        Some(Tag::Compound([("Attach".to_owned(), Tag::IntArray(attach.to_vec())), ("Entity".to_owned(), entity)].into_iter().collect()))
+    }
+
+    pub fn reattach(&mut self, player: u64, root: &minecraftoss_core::nbt::Tag) -> Option<u64> {
+        let entity = root.get("Entity")?;
+        if tag_uuid(entity).is_some_and(|uuid| self.mobs.mob_with_uuid(uuid).is_some()) {
+            return None;
+        }
+        let attach = tag_uuid_at(root, "Attach");
+        let spawned = crate::server_mobs::spawn_saved_all(&mut self.mobs, entity);
+        let ids: Vec<u64> = spawned.iter().map(|(id, _)| *id).collect();
+        self.mob_tags.extend(spawned);
+        let target = ids.iter().copied().find(|&id| Some(self.mobs.uuid_of(id)) == attach);
+        if let Some(target) = target {
+            if self.mobs.force_riding(minecraftoss_entities::world::Rider::Player(player), target) {
+                return Some(target);
+            }
+        }
+        eprintln!("Couldn't reattach entity to player");
+        self.mobs.remove_mobs(&ids);
+        self.mob_tags.retain(|id, _| !ids.contains(id));
+        None
+    }
+
     pub fn mob_blast(&mut self, hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64>, slow_ticks: i32) {
         let result = self.mobs.player_blast(player, hit.id(), damage, glam::DVec3::from_array(center), f64::from(impact));
         if slow_ticks > 0 && result.is_some_and(|r| r.applied && !r.died) {
@@ -569,6 +607,10 @@ impl ServerSim {
             return;
         }
         if self.crystals.add(&tag).is_some() || self.dragons.add(&tag).is_some() {
+            return;
+        }
+        if tag_uuid(&tag).is_some_and(|uuid| self.mobs.mob_with_uuid(uuid).is_some()) {
+            eprintln!("an entity with a UUID already in the level was not added");
             return;
         }
         let spawned = crate::server_mobs::spawn_saved_all(&mut self.mobs, &tag);
@@ -2218,6 +2260,16 @@ impl ServerSim {
     }
 }
 
+fn tag_uuid(tag: &minecraftoss_core::nbt::Tag) -> Option<u128> {
+    tag_uuid_at(tag, "UUID")
+}
+
+fn tag_uuid_at(tag: &minecraftoss_core::nbt::Tag, key: &str) -> Option<u128> {
+    let ints = tag.get(key)?.as_ints()?;
+    let [a, b, c, d] = ints[..] else { return None };
+    Some(minecraftoss_entities::gossip::uuid_from_ints([a, b, c, d]))
+}
+
 /// What the client asks of the integrated server thread, in order.
 pub enum Command {
     LoadChunk(Arc<Chunk>),
@@ -2267,6 +2319,8 @@ pub enum Command {
     PlayerUuid { player: u64, uuid: u128 },
     Dismount { player: u64 },
     Boost { player: u64 },
+    RootVehicle { player: u64, remove: bool },
+    Reattach { player: u64, root: Box<minecraftoss_core::nbt::Tag> },
     Job(Job),
     EndHit { target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage },
 }
@@ -2430,6 +2484,8 @@ pub struct Output {
     pub item_uses: Vec<bool>,
     pub dismounts: Vec<(u64, u64, Option<[f64; 3]>)>,
     pub boosts: Vec<(u64, bool)>,
+    pub mounts: Vec<(u64, u64)>,
+    pub root_vehicles: Vec<(u64, Option<minecraftoss_core::nbt::Tag>)>,
     pub pearl_teleports: Vec<(u64, [f64; 3])>,
     pub thrown_hits: Vec<crate::thrown::ThrownHit>,
     pub weather: Option<WeatherView>,
@@ -2613,6 +2669,14 @@ impl ServerHandle {
         self.send(Command::Boost { player });
     }
 
+    pub fn root_vehicle(&mut self, player: u64, remove: bool) {
+        self.send(Command::RootVehicle { player, remove });
+    }
+
+    pub fn reattach(&mut self, player: u64, root: minecraftoss_core::nbt::Tag) {
+        self.send(Command::Reattach { player, root: Box::new(root) });
+    }
+
     pub fn set_weather_data(&mut self, data: crate::level_storage::WeatherData) {
         self.send(Command::WeatherData(data));
     }
@@ -2786,6 +2850,8 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::PlayerUuid { player, uuid } => sim.set_player_uuid(player, uuid),
                 Command::Dismount { player } => sim.dismount(player),
                 Command::Boost { player } => out.boosts.push((player, sim.mobs.boost_ride(player))),
+                Command::RootVehicle { player, remove } => out.root_vehicles.push((player, sim.root_vehicle(player, remove))),
+                Command::Reattach { player, root } => out.mounts.extend(sim.reattach(player, &root).map(|vehicle| (player, vehicle))),
                 Command::WeatherData(data) => sim.set_weather_data(&data),
                 Command::GameRules(rules) => sim.apply_game_rules(&rules),
                 Command::Job(job) => out.jobs.push(job(&mut sim)),
@@ -6851,6 +6917,53 @@ mod tests {
         assert_eq!(server.take_vehicle_losses(), vec![(0, id, None)]);
         assert!(server.take_vehicle_losses().is_empty());
         assert_eq!(server.mobs.vehicle_of(minecraftoss_entities::world::Rider::Player(0)), None);
+    }
+
+    #[test]
+    fn closing_while_riding_keeps_one_strider_in_the_player_file_and_none_in_the_chunk() {
+        let Some((mut server, id)) = ridden_strider("minecraft:netherrack", 101.0) else { return };
+        let rider = minecraftoss_entities::world::Rider::Player(0);
+        let uuid = server.mobs.uuid_of(id);
+        let saved = server.root_vehicle(0, false).expect("the ridden strider");
+        assert_eq!(tag_uuid_at(&saved, "Attach"), Some(uuid));
+        let entity = saved.get("Entity").expect("the strider's tag");
+        assert_eq!(text_of(entity, &["id"]), Some("minecraft:strider"));
+        assert_eq!(text_of(entity, &["equipment", "saddle", "id"]), Some("minecraft:saddle"));
+        assert_eq!(tag_uuid(entity), Some(uuid));
+        assert!(entity.get("Passengers").is_none(), "the player is never a saved passenger");
+        assert_eq!((server.mobs.striders().len(), server.mobs.vehicle_of(rider)), (1, Some(id)), "an autosave keeps it in the level");
+        let closing = server.root_vehicle(0, true).expect("the ridden strider");
+        assert_eq!(tag_uuid(closing.get("Entity").unwrap()), Some(uuid));
+        assert!(server.mobs.striders().is_empty());
+        assert!(crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags).is_empty(), "the chunk keeps no copy");
+        assert_eq!(server.mobs.vehicle_of(rider), None);
+        assert!(server.take_vehicle_losses().is_empty(), "closing is no dismount");
+        let back = server.reattach(0, &closing).expect("the player rides it again");
+        assert_eq!(server.mobs.vehicle_of(rider), Some(back));
+        assert_eq!(server.mobs.uuid_of(back), uuid);
+        assert!(server.mobs.striders()[0].strider.saddled);
+    }
+
+    #[test]
+    fn a_chunk_copy_with_the_ridden_uuid_is_dropped() {
+        let Some((mut server, _)) = ridden_strider("minecraft:netherrack", 101.0) else { return };
+        let saved = server.root_vehicle(0, true).unwrap();
+        let back = server.reattach(0, &saved).unwrap();
+        server.add_saved_entity(saved.get("Entity").unwrap().clone());
+        assert_eq!(server.mobs.striders().len(), 1, "the chunk's copy is refused");
+        assert_eq!(server.reattach(0, &saved), None, "so is a second reattach");
+        assert_eq!(server.mobs.vehicle_of(minecraftoss_entities::world::Rider::Player(0)), Some(back));
+    }
+
+    #[test]
+    fn a_root_vehicle_without_its_attached_entity_is_discarded() {
+        let Some((mut server, _)) = ridden_strider("minecraft:netherrack", 101.0) else { return };
+        let mut saved = server.root_vehicle(0, true).unwrap();
+        if let minecraftoss_core::nbt::Tag::Compound(map) = &mut saved {
+            map.insert("Attach".to_owned(), minecraftoss_core::nbt::Tag::IntArray(vec![9, 9, 9, 9]));
+        }
+        assert_eq!(server.reattach(0, &saved), None);
+        assert!(server.mobs.striders().is_empty(), "the vehicle goes with the failed reattach");
     }
 
     fn summoned_striders(server: &mut ServerSim, count: usize) -> Vec<minecraftoss_core::nbt::Tag> {

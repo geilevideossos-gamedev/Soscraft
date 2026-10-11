@@ -266,3 +266,27 @@ After 65532cc9.
 ```
 IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*8,minecraft:saddle,minecraft:saddle,minecraft:warped_fungus_on_a_stick,minecraft:warped_fungus_on_a_stick+unbreaking=3,minecraft:warped_fungus_on_a_stick+damage=99,minecraft:netherrack*64
 ```
+
+### 9. Minecraft players riding a strider are saved with it
+
+After 0338a62f.
+
+- **Changed:**
+  - `minecraft_survival/src/player_nbt.rs`: `RootVehicle` joins the keys the player file owns. `PlayerData.root_vehicle` reads it (only with an `Entity`) and writes it back whole: `{Attach: <the player's own vehicle's UUID>, Entity: <the root vehicle with its mob passengers>}` (`ServerPlayer.saveParentVehicle`). A player who got off writes none, so a stale one is dropped from the file.
+  - `minecraft_terrain/src/server.rs`: `root_vehicle(player, remove)` builds that compound from the entity world (the strider's saved tag, its riders nested in `Passengers`, never the player). With `remove` it also takes the strider and its mob riders out of the level, so the chunk saves no copy. `reattach(player, root)`: unless an entity with the root's UUID is already in the level (`addWithUUID`), it spawns the saved vehicle with its riders and seats the player on the one whose UUID is `Attach`; otherwise it logs "Couldn't reattach entity to player" and discards the vehicle. Chunk entity loading now refuses an entity whose UUID is already in the level. `Command::RootVehicle` and `Command::Reattach` answer `Output.root_vehicles` and `Output.mounts`.
+  - Vendored `entities`: `root_vehicle`, `with_mob_riders`, `mob_with_uuid`, `remove_mobs`.
+  - `minecraft_survival`: `Player.saved_vehicle` (the last `RootVehicle` taken from the server) and `Player.reattach` (the one read at join, not sent yet). Every autosave refreshes the riding players' vehicles and keeps them in the level too, as vanilla's autosave does; save-and-close (`Server::take_vehicles`, before any level saves its entities) takes them out of the level into the player file. At join a living player's `RootVehicle` waits in `reattach`, and the riding step sends it once the player is in the level; the seat comes back through the usual mount answer.
+- **Tests:** `player_nbt`: `a_rider_saves_root_vehicle_with_attach_and_entity`, `a_vanilla_root_vehicle_reads_back`. `server` (with the game data): `closing_while_riding_keeps_one_strider_in_the_player_file_and_none_in_the_chunk` (the autosave copy keeps the strider in the level, closing takes it out, reattaching brings it back with its UUID and saddle), `a_chunk_copy_with_the_ridden_uuid_is_dropped`, `a_root_vehicle_without_its_attached_entity_is_discarded`.
+- **Decisions:**
+  - The server builds the `RootVehicle` when it is needed (autosave, closing) with a short wait for the server thread, rather than streaming a copy every tick.
+  - A player file whose player died keeps no vehicle to reattach (a dead player rode nothing).
+  - Track E: a friend's leave should call the same `root_vehicle(player, true)` before the friend's file is written.
+- **Test steps (Nether, survival):**
+  1. Saddle a strider on the lava sea, ride it with the stick, then save and exit to the menu. Restart the world: you sit on the same strider, it still has its saddle, and there is no second strider under you (**12**).
+  2. Ride for more than five minutes (an autosave passes), then close the game from the task manager. Restart: you ride the strider, and still only one is there (the chunk's copy is refused).
+  3. Get off, save and exit, restart: you stand where you got off and the strider is on the lava where it was.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*4,minecraft:saddle,minecraft:saddle,minecraft:warped_fungus_on_a_stick,minecraft:netherrack*64
+```

@@ -1,4 +1,5 @@
 use glam::DVec3;
+use minecraftoss_core::nbt::Tag;
 
 pub const PLAYER_VEHICLE_ATTACHMENT: f64 = 0.6;
 
@@ -12,6 +13,14 @@ pub fn bob(walk_position: f32, walk_speed: f32) -> f64 {
     let speed = walk_speed.min(0.25);
     let swing = minecraftoss_player::mth::cos(f64::from(walk_position * 1.5));
     f64::from(0.12 * swing * 2.0 * speed)
+}
+
+pub fn root_vehicle(riding: bool, saved: Option<&Tag>, pending: Option<&Tag>) -> Option<Tag> {
+    if riding {
+        saved.cloned()
+    } else {
+        pending.cloned()
+    }
 }
 
 pub fn seat(previous: DVec3, now: DVec3, partial: f64, attachment: f64, bob: f64) -> DVec3 {

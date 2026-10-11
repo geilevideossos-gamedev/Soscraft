@@ -43,6 +43,8 @@ pub struct Player {
     pub held: Option<Switch>,
     pub portal: crate::portal::Portal,
     pub riding: Option<crate::riding::Riding>,
+    pub saved_vehicle: Option<minecraftoss_core::nbt::Tag>,
+    pub reattach: Option<minecraftoss_core::nbt::Tag>,
 }
 
 #[derive(Default)]
@@ -107,6 +109,8 @@ impl Player {
             held: None,
             portal: crate::portal::Portal::default(),
             riding: None,
+            saved_vehicle: None,
+            reattach: None,
         }
     }
 
@@ -231,6 +235,11 @@ impl Player {
             last_death: self.last_death,
             portal_cooldown: Some(self.portal_cooldown),
             seen_credits: Some(self.seen_credits),
+            root_vehicle: crate::riding::root_vehicle(
+                self.riding.is_some(),
+                self.saved_vehicle.as_ref(),
+                self.reattach.as_ref(),
+            ),
         }
     }
 }

@@ -501,6 +501,60 @@ impl EntityWorld {
     pub fn drop_player(&mut self, player: u64) -> Option<u64> {
         self.unlink(Rider::Player(player))
     }
+
+    pub fn root_vehicle(&self, vehicle: u64) -> u64 {
+        let mut root = vehicle;
+        while let Some(up) = self.vehicle_of(Rider::Mob(root)) {
+            root = up;
+        }
+        root
+    }
+
+    pub fn with_mob_riders(&self, vehicle: u64) -> Vec<u64> {
+        let mut out = vec![vehicle];
+        let mut next = 0;
+        while next < out.len() {
+            for rider in self.passengers_of(out[next]) {
+                if let Rider::Mob(id) = rider {
+                    out.push(*id);
+                }
+            }
+            next += 1;
+        }
+        out
+    }
+
+    pub fn mob_with_uuid(&self, uuid: u128) -> Option<u64> {
+        self.mob_ids().find(|&id| self.uuid_of(id) == uuid)
+    }
+
+    pub fn remove_mobs(&mut self, ids: &[u64]) {
+        let gone = |id: u64| ids.contains(&id);
+        self.bats.retain(|e| !gone(e.id));
+        self.zombies.retain(|e| !gone(e.id));
+        self.skeletons.retain(|e| !gone(e.id));
+        self.creepers.retain(|e| !gone(e.id));
+        self.spiders.retain(|e| !gone(e.id));
+        self.slimes.retain(|e| !gone(e.id));
+        self.endermen.retain(|e| !gone(e.id));
+        self.witches.retain(|e| !gone(e.id));
+        self.iron_golems.retain(|e| !gone(e.id));
+        self.wolves.retain(|e| !gone(e.id));
+        self.villagers.retain(|e| !gone(e.id));
+        self.cows.retain(|e| !gone(e.id));
+        self.sheep.retain(|e| !gone(e.id));
+        self.pigs.retain(|e| !gone(e.id));
+        self.chickens.retain(|e| !gone(e.id));
+        self.ghasts.retain(|e| !gone(e.id));
+        self.blazes.retain(|e| !gone(e.id));
+        self.striders.retain(|e| !gone(e.id));
+        self.order.retain(|key| !gone(key.id()));
+        self.sections.retain_mobs(|id| !gone(id));
+        self.passengers.retain(|vehicle, riders| {
+            riders.retain(|rider| !matches!(rider, Rider::Mob(id) if gone(*id)));
+            !gone(*vehicle) && !riders.is_empty()
+        });
+    }
 }
 
 #[cfg(test)]
