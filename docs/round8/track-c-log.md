@@ -731,3 +731,26 @@ Previous commit: ef543055
 ```
 IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:diamond_sword+sharpness=5,minecraft:cobblestone*128,minecraft:oak_planks*64
 ```
+
+### 29. Minecraft players' hits knock the flying ender dragon back
+
+Previous commit: 8b6c9f09
+
+- **Changed:**
+  - `minecraft_terrain` `end_crystal.rs`: `EndDamage.from: Option<DVec3>`, where the hit came from; `EndDamage::attack(amount, player)` keeps its two arguments and `from_position(at)` sets it, explosions keep `None`.
+  - `ender_dragon.rs` `hurt_part`: a full hit of kind `Attack` with a `from` pushes the dragon with `knockback(velocity, false, from.x − x, from.z − z)` (`LivingEntity.dealDefaultKnockback` with strength 0.4 from the dragon's own position, not the part's), unless it sits (`EnderDragon.knockback` returns while the phase is sitting). A killing hit still pushes it as it turns to dying, as vanilla's knockback runs inside `hurtServer` before the dragon sets its dying phase.
+  - `minecraft_survival` `entities.rs`: `punch` passes the eye and `shoot` the shooter's position. The blame stays `PLAYER`, as before.
+- **Tests:** `ender_dragon`: `a_hit_knocks_a_flying_dragon_away_from_the_attacker` (halved motion less 0.4 along the unit direction, y kept; no push without a source; a killing hit pushes), `a_sitting_or_dying_dragon_is_not_knocked_back`, `an_explosion_does_not_knock_the_dragon_back`, `only_a_full_hit_knocks_back_not_a_partial_one_in_the_cooldown`.
+- **Decisions:**
+  - Only a full hit knocks back. The brief said a partial hit in the invulnerability window does too, but javap of 26.3 `LivingEntity.hurtServer` shows the whole block with `broadcastDamageEvent`, `markHurt` and `dealDefaultKnockback` behind the "full hit" flag, which the partial branch clears.
+  - `from_position` instead of a third argument to `attack`, so the 26 callers (most of them tests, some in files other tracks edit) stay as they are.
+  - MW2 bullets knock the dragon back like a player's melee hit, from the shooter's position, since a bullet on a mob is already an attack from where it was fired. Grenades and other blasts are explosions, which `#no_knockback` exempts.
+- **Test steps:** (the End, a new world, `/difficulty normal`, diamond armour on)
+  1. Shoot the flying dragon from the side with a rapid-fire weapon as it passes: it lurches away from you with each burst that lands after its half-second cooldown.
+  2. Hit its head with the sword when it swoops low: it jolts away from you.
+  3. Shoot all ten crystals and wait for it to land on the portal; shoot it while it sits: it does not move.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:diamond_sword+sharpness=5
+```

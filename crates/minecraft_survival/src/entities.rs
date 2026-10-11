@@ -526,7 +526,7 @@ impl Entities {
             && mob.is_none_or(|(_, nearest)| distance < nearest)
         {
             let damage = attack_damage as f32 * (0.2 + strength * strength * 0.8);
-            self.server.end_hit(target, EndDamage::attack(damage, PLAYER));
+            self.server.end_hit(target, EndDamage::attack(damage, PLAYER).from_position(eye));
             return true;
         }
         if let Some((bullet, distance)) = self.world.shulker_bullet_on_ray(eye, look, blow.reach)
@@ -804,7 +804,7 @@ impl Entities {
             return;
         }
         if let Some(target) = end_target_of(key) {
-            self.server.end_hit(target, EndDamage::attack(damage * HEALTH_SCALE, PLAYER));
+            self.server.end_hit(target, EndDamage::attack(damage * HEALTH_SCALE, PLAYER).from_position(DVec3::from_array(from)));
             return;
         }
         if let Some(id) = shulker_bullet_of(key) {

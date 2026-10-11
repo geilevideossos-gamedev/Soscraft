@@ -1040,6 +1040,17 @@ impl EnderDragon {
         }
         let before = self.health;
         let hurt = self.really_hurt(amount, events);
+        if let Some(from) = damage
+            .from
+            .filter(|_| hurt.full && damage.kind == DamageKind::Attack && !self.phase.is_sitting())
+        {
+            self.velocity = knockback(
+                self.velocity,
+                false,
+                from.x - self.position.x,
+                from.z - self.position.z,
+            );
+        }
         if self.phase.is_sitting() {
             self.sitting_damage_received += before - self.health;
             if self.sitting_damage_received > 0.25 * MAX_HEALTH {
@@ -2258,6 +2269,7 @@ mod tests {
             amount: 20.0,
             player: None,
             kind: DamageKind::Attack,
+            from: None,
         };
         dragon.damage_cooldown = 0;
         assert!(
@@ -2477,6 +2489,84 @@ mod tests {
             assert_eq!(events.explosions, expected, "{}", dragon.death_time);
         }
         assert_eq!(dragon.random.next_int(1 << 30), mirror.next_int(1 << 30));
+    }
+
+    fn assert_close(actual: DVec3, expected: DVec3) {
+        assert!((actual - expected).length() < 1e-9, "{actual:?} {expected:?}");
+    }
+
+    #[test]
+    fn a_hit_knocks_a_flying_dragon_away_from_the_attacker() {
+        let mut dragon = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
+        dragon.velocity = DVec3::new(0.6, -0.2, 0.4);
+        let mut events = DragonEvents::default();
+        let from = DVec3::new(-3.0, 90.0, 4.0);
+        let hit = EndDamage::attack(10.0, 0).from_position(from);
+        assert!(dragon.hurt_part(6, &hit, &mut events).full);
+        let (dx, dz) = (-3.0 / 5.0 * KNOCKBACK, 4.0 / 5.0 * KNOCKBACK);
+        assert_close(dragon.velocity, DVec3::new(0.3 - dx, -0.2, 0.2 - dz));
+        let before = dragon.velocity;
+        dragon.damage_cooldown = 0;
+        assert!(
+            dragon
+                .hurt_part(HEAD, &EndDamage::attack(10.0, 0), &mut events)
+                .full
+        );
+        assert_eq!(dragon.velocity, before, "a hit from nowhere does not push");
+        dragon.damage_cooldown = 0;
+        dragon.health = 5.0;
+        dragon.velocity = DVec3::ZERO;
+        let killing = EndDamage::attack(10.0, 0).from_position(DVec3::new(0.0, 0.0, -2.0));
+        assert!(dragon.hurt_part(HEAD, &killing, &mut events).died);
+        assert_eq!(dragon.phase, Phase::Dying);
+        assert_close(dragon.velocity, DVec3::new(0.0, 0.0, KNOCKBACK));
+    }
+
+    #[test]
+    fn a_sitting_or_dying_dragon_is_not_knocked_back() {
+        let mut events = DragonEvents::default();
+        let hit = EndDamage::attack(10.0, 0).from_position(DVec3::new(8.0, 64.0, 0.0));
+        let mut sitting = dragon_at(DVec3::new(0.0, 64.0, 0.0), 0.0);
+        sitting.set_phase(Phase::SittingScanning);
+        sitting.velocity = DVec3::new(0.1, 0.0, 0.1);
+        assert!(sitting.hurt_part(HEAD, &hit, &mut events).full);
+        assert_eq!(sitting.velocity, DVec3::new(0.1, 0.0, 0.1));
+        let mut dying = dragon_at(DVec3::new(0.0, 64.0, 0.0), 0.0);
+        dying.set_phase(Phase::Dying);
+        dying.velocity = DVec3::new(0.1, 0.0, 0.1);
+        assert!(!dying.hurt_part(HEAD, &hit, &mut events).applied);
+        assert_eq!(dying.velocity, DVec3::new(0.1, 0.0, 0.1));
+    }
+
+    #[test]
+    fn an_explosion_does_not_knock_the_dragon_back() {
+        let mut dragon = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
+        dragon.velocity = DVec3::new(0.2, 0.0, 0.0);
+        let mut events = DragonEvents::default();
+        let blast = EndDamage::explosion(10.0, Some(0)).from_position(DVec3::new(5.0, 100.0, 0.0));
+        assert!(dragon.hurt_part(HEAD, &blast, &mut events).full);
+        assert_eq!(dragon.velocity, DVec3::new(0.2, 0.0, 0.0));
+    }
+
+    #[test]
+    fn only_a_full_hit_knocks_back_not_a_partial_one_in_the_cooldown() {
+        let mut dragon = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
+        let mut events = DragonEvents::default();
+        let from = DVec3::new(10.0, 100.0, 0.0);
+        dragon.velocity = DVec3::ZERO;
+        assert!(
+            dragon
+                .hurt_part(HEAD, &EndDamage::attack(10.0, 0).from_position(from), &mut events)
+                .full
+        );
+        assert_close(dragon.velocity, DVec3::new(-KNOCKBACK, 0.0, 0.0));
+        dragon.velocity = DVec3::ZERO;
+        let partial = dragon.hurt_part(HEAD, &EndDamage::attack(15.0, 0).from_position(from), &mut events);
+        assert!(partial.applied && !partial.full);
+        assert_eq!(dragon.velocity, DVec3::ZERO, "a partial hit in the cooldown");
+        let wasted = dragon.hurt_part(HEAD, &EndDamage::attack(5.0, 0).from_position(from), &mut events);
+        assert!(!wasted.applied);
+        assert_eq!(dragon.velocity, DVec3::ZERO);
     }
 
     #[test]
