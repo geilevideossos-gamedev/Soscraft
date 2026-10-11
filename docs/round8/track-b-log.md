@@ -415,3 +415,17 @@ After 2c1b64c3.
   - A hoglin's navigation does not float (no `FloatGoal`), as vanilla's brain hoglin.
   - Blaze and ghast fireballs that hurt a hoglin don't make it retaliate (they don't reach the hurt note); every other attacker does.
 - **Test steps:** together with b2.5 and b2.6.
+
+### b2.5. Minecraft hoglins shy away from warped fungus, nether portals and respawn anchors
+
+After c638f7df.
+
+- **Changed:**
+  - `minecraft_terrain/src/server_mobs.rs`: `MobWorld` answers `World::block_in_tag` from the 26.3 block tags (`Registries::block_in_tag`); each tag's id is looked up once and kept in `MobTables.block_tags`. A tag the data lacks (the authored `blocks_motion`) falls back to `authored_block_in_tag`. Endermen's `#enderman_holdable` now comes from the data too.
+  - Vendored `player`: `#hoglin_repellents` (warped fungus, potted warped fungus, nether portal, respawn anchor) among the authored tags, for worlds without the registries.
+  - `hoglin_brain.rs`: the hoglin sensor finds the nearest `#hoglin_repellents` block in vanilla's order (`BlockPos.withinManhattan` over 8 across and 4 up or down, by Manhattan distance; the offsets are worked out once). IDLE and FIGHT start with `BecomePassiveIfMemoryPresent` (pacified for 200 ticks, the attack target erased); IDLE walks away from the repellent at 1.0 until 8 blocks off (`SetWalkTargetAwayFrom.pos`, rerun while walking), and an adult walks away from the nearest visible adult piglin at 0.4 (8 blocks, not while walking). Strolls weigh spots within 8 of the repellent at -1 (b2.4's walk target value), and near one the ambient and activity sounds are `entity.hoglin.retreat`.
+- **Tests:** `world::hoglins`: `a_respawn_anchor_or_warped_fungus_within_eight_blocks_calms_a_hoglin_for_ten_seconds`, `a_calm_hoglin_walks_away_from_the_repellent_and_strolls_back_to_crimson_nylium`, `outnumbered_hoglins_retreat_from_a_piglin_they_hit` (a synthetic piglin). `hoglin_brain`: `the_repellent_scan_runs_by_manhattan_distance_within_eight_by_four`. `server` (with the game data): `a_portal_block_counts_as_a_repellent`, `enderman_holdable_still_matches_through_the_registry_tags`.
+- **Decisions:**
+  - The tag cache is a mutex-guarded map in `MobTables` rather than a fixed list of tags, so any tag a later mob asks for (b1's `#piglin_repellents`) comes from the data without new code.
+  - The calm lasts 200 ticks from when it was set, renewed only once it ran out while a repellent is still remembered: after the repellent goes, a hoglin stays calm for what is left of those ten seconds, as in vanilla.
+- **Test steps:** together with b2.6.

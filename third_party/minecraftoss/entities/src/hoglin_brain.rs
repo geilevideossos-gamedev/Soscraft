@@ -25,6 +25,13 @@ pub const CHASE_SPEED: f32 = 1.0;
 pub const FLEE_SPEED: f32 = 1.3;
 pub const FLEE_DISTANCE: f64 = 15.0;
 pub const MUCH_FURTHER: f64 = 4.0;
+pub const REPELLENTS: &str = "minecraft:hoglin_repellents";
+pub const REPELLENT_HORIZONTAL: i32 = 8;
+pub const REPELLENT_VERTICAL: i32 = 4;
+pub const REPELLENT_SPEED: f32 = 1.0;
+pub const REPELLENT_DISTANCE: f64 = 8.0;
+pub const PIGLIN_SPEED: f32 = 0.4;
+pub const PIGLIN_DISTANCE: f64 = 8.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Living {
@@ -546,6 +553,8 @@ impl HoglinBrain {
                 .set_or_erase(adult.map(|other| other.target));
         }
         if fired[3] {
+            let repellent = nearest_block_in_tag(ctx.world, block_of(position), REPELLENTS);
+            self.memories.nearest_repellent.set_or_erase(repellent);
             let mut piglin = None;
             let mut piglins = 0;
             let mut hoglins = Vec::new();
@@ -772,13 +781,38 @@ impl HoglinBrain {
         }
     }
 
+    fn become_passive(&mut self) {
+        if self.memories.pacified.present() || !self.memories.nearest_repellent.present() {
+            return;
+        }
+        self.memories.pacified.set_for((), PACIFIED_TICKS);
+        self.memories.attack_target.erase();
+    }
+
     fn start_idle(&mut self, ctx: &mut Ctx) {
+        self.become_passive();
+        if let Some(&(x, y, z)) = self.memories.nearest_repellent.get() {
+            let from = DVec3::new(f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5);
+            self.walk_away(ctx, from, REPELLENT_SPEED, REPELLENT_DISTANCE, true);
+        }
         self.start_attacking(ctx);
+        if !ctx.baby {
+            if let Some(from) = self
+                .memories
+                .nearest_visible_adult_piglin
+                .get()
+                .and_then(|&target| find(ctx.others, target))
+                .map(|other| other.position)
+            {
+                self.walk_away(ctx, from, PIGLIN_SPEED, PIGLIN_DISTANCE, false);
+            }
+        }
         self.look_sometimes(ctx, false);
         self.idle_movement(ctx, false);
     }
 
     fn start_fight(&mut self, ctx: &mut Ctx) {
+        self.become_passive();
         let Some(target) = self.memories.attack_target.get().copied() else {
             return;
         };
@@ -954,6 +988,35 @@ impl HoglinBrain {
     }
 }
 
+pub fn within_manhattan(horizontal: i32, vertical: i32) -> Vec<Pos> {
+    let mut out = Vec::new();
+    for depth in 0..=horizontal * 2 + vertical {
+        let max_x = horizontal.min(depth);
+        for x in -max_x..=max_x {
+            let max_y = vertical.min(depth - x.abs());
+            for y in -max_y..=max_y {
+                let z = depth - x.abs() - y.abs();
+                if z <= horizontal {
+                    out.push((x, y, z));
+                    if z != 0 {
+                        out.push((x, y, -z));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+pub fn nearest_block_in_tag(world: &dyn World, at: Pos, tag: &str) -> Option<Pos> {
+    static OFFSETS: std::sync::OnceLock<Vec<Pos>> = std::sync::OnceLock::new();
+    OFFSETS
+        .get_or_init(|| within_manhattan(REPELLENT_HORIZONTAL, REPELLENT_VERTICAL))
+        .iter()
+        .map(|&(x, y, z)| (at.0 + x, at.1 + y, at.2 + z))
+        .find(|&pos| world.block_in_tag(pos, tag))
+}
+
 pub fn closer_than(a: Pos, b: Pos, distance: f64) -> bool {
     let (dx, dy, dz) = (
         f64::from(a.0 - b.0),
@@ -985,6 +1048,35 @@ mod tests {
             ticks += 1;
         }
         assert!((30..=60).contains(&ticks), "{ticks}");
+    }
+
+    #[test]
+    fn the_repellent_scan_runs_by_manhattan_distance_within_eight_by_four() {
+        let offsets = within_manhattan(8, 4);
+        assert_eq!(offsets.len(), 17 * 9 * 17);
+        assert_eq!(
+            &offsets[..7],
+            &[
+                (0, 0, 0),
+                (-1, 0, 0),
+                (0, -1, 0),
+                (0, 0, 1),
+                (0, 0, -1),
+                (0, 1, 0),
+                (1, 0, 0)
+            ]
+        );
+        let depth = |&(x, y, z): &Pos| x.abs() + y.abs() + z.abs();
+        assert!(offsets.windows(2).all(|w| depth(&w[0]) <= depth(&w[1])));
+        assert!(
+            offsets
+                .iter()
+                .all(|&(x, y, z)| x.abs() <= 8 && y.abs() <= 4 && z.abs() <= 8)
+        );
+        let mut unique = offsets.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), offsets.len());
     }
 
     #[test]

@@ -34,6 +34,7 @@ pub struct MobTables {
     pub path_types: Vec<PathType>,
     /// `PoiTypes.forState`.
     pub pois: Vec<Option<minecraftoss_entities::poi::PoiType>>,
+    pub block_tags: std::sync::Mutex<std::collections::HashMap<String, Option<TagId>>>,
 }
 
 impl MobTables {
@@ -47,6 +48,7 @@ impl MobTables {
             names,
             path_types: (0..count).map(|i| path_type_of_state(registries, &tags, BlockStateId(i as u16))).collect(),
             pois,
+            block_tags: Default::default(),
         }
     }
 }
@@ -251,6 +253,24 @@ impl PlayerWorld for MobWorld<'_> {
             }
         };
         self.level.borrow_mut().set_block(minecraftoss_core::BlockPos::new(x, y, z), state, update::ALL, update::LIMIT);
+    }
+
+    fn block_in_tag(&self, pos: (i32, i32, i32), tag: &str) -> bool {
+        let state = self.state(pos);
+        let level = self.level.borrow();
+        let registries = level.registries();
+        let cached = self.tables.block_tags.lock().ok().and_then(|tags| tags.get(tag).copied());
+        let id = cached.unwrap_or_else(|| {
+            let id = registries.block_tags.id(tag);
+            if let Ok(mut tags) = self.tables.block_tags.lock() {
+                tags.insert(tag.to_owned(), id);
+            }
+            id
+        });
+        match id {
+            Some(id) => registries.block_in_tag(state, id),
+            None => self.block(pos).is_some_and(|block| minecraftoss_player::authored_block_in_tag(&block, tag, &self.collision_boxes(pos))),
+        }
     }
 
     fn collision_boxes(&self, pos: (i32, i32, i32)) -> Vec<[f64; 6]> {

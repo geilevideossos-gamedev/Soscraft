@@ -1016,6 +1016,10 @@ pub fn authored_block_in_tag(block: &Block, tag: &str, collision: &[[f64; 6]]) -
     match tag {
         "minecraft:blocks_motion" | "minecraft:entities_can_teleport_to" => !collision.is_empty(),
         "minecraft:strider_warm_blocks" => id == "minecraft:lava",
+        "minecraft:hoglin_repellents" => matches!(
+            id,
+            "minecraft:warped_fungus" | "minecraft:potted_warped_fungus" | "minecraft:nether_portal" | "minecraft:respawn_anchor"
+        ),
         "minecraft:enderman_holdable" => matches!(
             id,
             // `#small_flowers`

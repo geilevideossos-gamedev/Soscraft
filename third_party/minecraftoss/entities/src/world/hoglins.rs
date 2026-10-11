@@ -1087,4 +1087,134 @@ mod tests {
         assert!(!brain.memories.attack_target.present());
         assert_eq!(brain.activity, crate::hoglin_brain::Activity::Idle);
     }
+
+    fn calmed_by(repellent: Block) {
+        let mut blocks = wide_floor(16);
+        let mut world = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let hoglin = seeded(&mut world, HoglinKind::Hoglin, false, at, 2);
+        let players = [player(1, DVec3::new(6.5, 64.0, 0.5))];
+        for _ in 0..30 {
+            world.tick_with_players(&mut blocks, &players);
+        }
+        let memories = &world.hoglin_mut(hoglin).unwrap().brain.memories;
+        assert!(memories.attack_target.present());
+        let near = world.hoglin_mut(hoglin).unwrap().position() + DVec3::new(-3.0, 0.0, 0.0);
+        let spot = (near.x.floor() as i32, 64, near.z.floor() as i32);
+        blocks.blocks.insert(spot, repellent);
+        for _ in 0..25 {
+            world.tick_with_players(&mut blocks, &players);
+        }
+        world.take_player_hits();
+        for _ in 0..75 {
+            world.tick_with_players(&mut blocks, &players);
+        }
+        let memories = &world.hoglin_mut(hoglin).unwrap().brain.memories;
+        assert!(memories.pacified.present());
+        assert!(!memories.attack_target.present());
+        assert!(world.take_player_hits().is_empty());
+        blocks.blocks.remove(&spot);
+        for _ in 0..40 {
+            world.tick_with_players(&mut blocks, &players);
+        }
+        let memories = &world.hoglin_mut(hoglin).unwrap().brain.memories;
+        assert!(!memories.nearest_repellent.present());
+        assert!(memories.pacified.present() && !memories.attack_target.present());
+        for _ in 0..200 {
+            world.tick_with_players(&mut blocks, &players);
+        }
+        let memories = &world.hoglin_mut(hoglin).unwrap().brain.memories;
+        assert!(!memories.pacified.present());
+        assert_eq!(memories.attack_target.get(), Some(&Target::Player(1)));
+    }
+
+    #[test]
+    fn a_respawn_anchor_or_warped_fungus_within_eight_blocks_calms_a_hoglin_for_ten_seconds() {
+        calmed_by(Block::new("minecraft:respawn_anchor").with("charges", "0"));
+        calmed_by(Block::new("minecraft:warped_fungus"));
+    }
+
+    #[test]
+    fn a_calm_hoglin_walks_away_from_the_repellent_and_strolls_back_to_crimson_nylium() {
+        let mut blocks = wide_floor(16);
+        let mut world = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let hoglin = seeded(&mut world, HoglinKind::Hoglin, false, at, 6);
+        let anchor = (2, 64, 0);
+        blocks.blocks.insert(anchor, Block::new("minecraft:respawn_anchor"));
+        for _ in 0..120 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        let away = world.hoglin_mut(hoglin).unwrap().position();
+        assert!(away.distance(DVec3::new(2.5, 64.0, 0.5)) > 6.0, "{away}");
+        let mut nylium = wide_floor(16);
+        for x in -16..=16 {
+            for z in 0..=16 {
+                nylium.blocks.insert((x, 63, z), Block::new("minecraft:crimson_nylium"));
+            }
+        }
+        let entity = world.hoglin_mut(hoglin).unwrap();
+        let mut profile = entity.walk_profile();
+        let mut random = LegacyRandom::new(1);
+        let mut on_nylium = 0;
+        for _ in 0..200 {
+            profile.walk_target = crate::walk_path::WalkTarget::Hoglin { repellent: None };
+            let from = DVec3::new(0.5, 64.0, 0.5);
+            let spot = crate::stroll::land_random_position(&nylium, &profile, from, 10, 0, &mut random).unwrap();
+            if spot.z > 0.0 {
+                on_nylium += 1;
+            }
+        }
+        assert!(on_nylium > 190, "{on_nylium}");
+        let mut near_anchor = 0;
+        for _ in 0..200 {
+            profile.walk_target = crate::walk_path::WalkTarget::Hoglin { repellent: Some((0, 64, 6)) };
+            let from = DVec3::new(0.5, 64.0, 0.5);
+            let spot = crate::stroll::land_random_position(&nylium, &profile, from, 10, 0, &mut random).unwrap();
+            if spot.distance(DVec3::new(0.5, 64.0, 6.5)) < 7.5 {
+                near_anchor += 1;
+            }
+        }
+        assert!(near_anchor < 20, "{near_anchor}");
+    }
+
+    #[test]
+    fn outnumbered_hoglins_retreat_from_a_piglin_they_hit() {
+        let mut world = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let hoglin = seeded(&mut world, HoglinKind::Hoglin, false, at, 1);
+        let friend = seeded(&mut world, HoglinKind::Hoglin, false, DVec3::new(3.5, 64.0, 0.5), 2);
+        let piglin = Target::Mob(9_999);
+        let mut others = world.hoglin_living(hoglin, &[]);
+        others.push(Living {
+            target: piglin,
+            kind: "minecraft:piglin",
+            position: DVec3::new(0.5, 64.0, 2.0),
+            eye_height: 1.79,
+            width: 0.6,
+            height: 1.95,
+            alive: true,
+            baby: false,
+            attackable: true,
+            spectator: false,
+        });
+        for (piglins, retreats) in [(2, false), (3, true)] {
+            for id in [hoglin, friend] {
+                let memories = &mut world.hoglin_mut(id).unwrap().brain.memories;
+                memories.visible_adult_piglin_count.set(piglins);
+                memories.visible_adult_hoglin_count.set(1);
+                memories.avoid_target.erase();
+                memories.attack_target.erase();
+            }
+            let memories = &mut world.hoglin_mut(hoglin).unwrap().brain.memories;
+            memories.nearest_visible_adult_hoglins.set(vec![Target::Mob(friend)]);
+            world.hoglin_hits(hoglin, piglin, &others);
+            for id in [hoglin, friend] {
+                let memories = &world.hoglin_mut(id).unwrap().brain.memories;
+                assert_eq!(memories.avoid_target.present(), retreats, "{piglins} {id}");
+            }
+            let friend = &world.hoglin_mut(friend).unwrap().brain.memories;
+            assert_eq!(friend.attack_target.present(), !retreats);
+        }
+    }
 }

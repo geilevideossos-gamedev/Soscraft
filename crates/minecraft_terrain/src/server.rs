@@ -6845,6 +6845,39 @@ mod tests {
         assert!(!spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:strider", [6.5, 100.0, 6.5]), "lava under a roof");
     }
 
+    fn mob_tag_answers(blocks: &[(&str, &str)], tag: &str) -> Option<Vec<bool>> {
+        use minecraftoss_player::World as _;
+        let (mut server, mut map) = nether_server(0)?;
+        server.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        for (i, (id, property)) in blocks.iter().enumerate() {
+            let mut block = Block::new(id);
+            if let Some((key, value)) = property.split_once('=') {
+                block = block.with(key, value);
+            }
+            server.player_edit_block((2 * i as i32, 99, 3), Some(&Block::new("minecraft:warped_nylium")), PlayerEdit::Place);
+            server.player_edit_block((2 * i as i32, 100, 3), Some(&block), PlayerEdit::Place);
+        }
+        let ServerSim { level, states, mob_tables, .. } = &mut server;
+        let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
+        Some((0..blocks.len()).map(|i| world.block_in_tag((2 * i as i32, 100, 3), tag)).collect())
+    }
+
+    #[test]
+    fn a_portal_block_counts_as_a_repellent() {
+        let blocks = [("minecraft:nether_portal", "axis=x"), ("minecraft:respawn_anchor", ""), ("minecraft:warped_fungus", ""), ("minecraft:crimson_fungus", ""), ("minecraft:netherrack", "")];
+        let Some(answers) = mob_tag_answers(&blocks, "minecraft:hoglin_repellents") else { return };
+        assert_eq!(answers, vec![true, true, true, false, false]);
+    }
+
+    #[test]
+    fn enderman_holdable_still_matches_through_the_registry_tags() {
+        let blocks = [("minecraft:grass_block", ""), ("minecraft:crimson_nylium", ""), ("minecraft:stone", ""), ("minecraft:obsidian", "")];
+        let Some(answers) = mob_tag_answers(&blocks, "minecraft:enderman_holdable") else { return };
+        assert_eq!(answers, vec![true, true, false, false]);
+        let Some(answers) = mob_tag_answers(&blocks, "minecraft:blocks_motion") else { return };
+        assert_eq!(answers, vec![true, true, true, true], "a tag the data lacks falls back to the authored one");
+    }
+
     #[test]
     fn a_strider_in_lava_is_not_obstructed_by_the_lava() {
         let Some((mut server, mut map)) = nether_server(0) else { return };
