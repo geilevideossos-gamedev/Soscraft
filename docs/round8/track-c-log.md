@@ -423,3 +423,29 @@ Previous commit: 51ec3c0c
   3. If no ship floats beside the city (a long purple boat with a black dragon head on its bow), fly about 300 blocks further out and `/locate` again. **2:** the ship with the dragon head.
   4. Inside the ship's lower deck there are two chests side by side with an empty spot on the wall between them (the elytra's frame is there but isn't drawn until item frames come).
 - **Kit:** none needed (creative).
+
+### 16. Minecraft structure chests roll enchanted gear and books
+
+Previous commit: e7babe74
+
+- **Changed:**
+  - Vendored `core/src/loot.rs` (MinecraftOSS patch): a trait `Enchanting` (`enchant_with_levels` and `enchant_randomly`, both drawing from the loot random) and `LootParams.enchanting: Option<Arc<dyn Enchanting>>`, `None` by default so every other caller is unchanged. The functions `enchant_with_levels` (levels from its int provider, then `selectEnchantment` over its options) and `enchant_randomly` (one enchantment of the options, only ones that fit the item unless it is a book or `only_compatible` is false, at a level from 1 to its maximum) now work: a book becomes one `minecraft:enchanted_book` with `minecraft:stored_enchantments`, other items get `minecraft:enchantments`, each level raised to at least the new one and capped at 255 (`ItemStack.enchant`). `enchant_randomly` with nothing to pick leaves the stack alone, as vanilla does. Without an engine both pass the stack through instead of failing, so a missing engine never empties a whole chest. Other unported functions still fail as before.
+  - Vendored `core/src/loot.rs`: new `LootTables::roll_seeded`. A chest with a `LootTableSeed` now rolls from `RandomSource.create(seed)` even when its table names a random sequence, as vanilla's `LootTable.fill` with `withOptionalRandomSeed` does (javap). Before, every chest table names its own sequence, so the seed was ignored and a fresh sequence from the world seed was used: every end city chest of a world (and every dungeon chest, and so on) held the same items.
+  - Vendored `entities/src/enchant.rs`: `Enchantments::enchant_with_levels` and `enchant_randomly`, moved out of `trading.rs`, which now calls them (trades unchanged).
+  - `minecraft_terrain` `containers.rs`: `structure_loot` takes the world's `Enchantments` and wraps them as the loot engine (`LootEnchanting`, with the core random adapted to `LootRandom`); it rolls with `roll_seeded`. `render_anim` passes `globals.data.enchantments`.
+- **Tests:**
+  - core `loot`: `the_enchanting_functions_write_vanilla_components` (a stub engine: a sword gets `minecraft:enchantments`, a stack of four books becomes one enchanted book with `minecraft:stored_enchantments`, `enchant_randomly` turns a book into an enchanted book and leaves a stick alone when nothing fits), `unknown_functions_still_fail` (`set_damage` still errors; `enchant_with_levels` without an engine passes the sword through).
+  - `minecraft_terrain` `containers`: `an_end_city_chest_always_rolls_items` (seeds 1 to 200 all give items, more than 190 different chests, more than 20 enchanted diamond or iron pieces, each with only `#on_random_loot` enchantments that fit it at levels 1 to their maximum), `a_dungeon_book_becomes_an_enchanted_book` (the first seed whose dungeon chest rolls the book: one stored enchantment, no plain book left), `the_enchanting_functions_pass_through_without_an_engine` (end city chests still fill, their gear unenchanted, and the dungeon book stays a plain book). The existing `a_dungeon_chest_rolls_its_jar_loot_table` passes the new argument.
+- **Decisions:**
+  - The trait lives in core and the engine in `minecraft_terrain` (a newtype over `Arc<Enchantments>`), because the vendored `entities` crate does not depend on `minecraftoss-core`; adding that dependency would change `Cargo.lock`. The shared selection code still lives in `entities/src/enchant.rs`.
+  - A chest without a seed keeps the fork's position-based fallback seed (vanilla would use the level's named sequence).
+  - Still unported loot functions empty the chest that rolls them: `set_damage`, `exploration_map`, `filtered`, `set_potion`, `set_name`, `set_stew_effect`, `set_ominous_bottle_amplifier`, `set_instrument`, `set_enchantments` (desert pyramids, shipwrecks, ocean ruins and others). For track A (and B's bartering, which needs `enchant_randomly` and `set_potion` from this file: whoever lands second builds on the `Enchanting` hook).
+- **Test steps:** (the city from commit 15, survival)
+  1. Fly to an end city and open its chests (in the fat towers, the tall house towers and the ship). Every chest holds loot: diamonds, iron or gold ingots, emeralds, beetroot seeds, a saddle or horse armour, and often an enchanted diamond or iron sword, spear, tool or armour piece. Hover over it: its tooltip lists one or more enchantments (**1**). Sometimes a spire armour trim is there.
+  2. Open a second chest: its items differ from the first (before, every end city chest of a world held the same items).
+  3. Find a dungeon in the Overworld (`/locate` doesn't find dungeons; mob spawner rooms underground) and open its chests: any book in them is an enchanted book with one enchantment.
+- **Kit:** none needed.
+
+### Group c2-cities, combined kit
+
+None: the steps use creative flight and the generated chests.

@@ -10,11 +10,16 @@
 use crate::datapack::DataPack;
 use crate::ident::Identifier;
 use crate::item::ItemStack;
-use crate::random::{RandomSource, XoroshiroRandom};
+use crate::random::{LegacyRandom, RandomSource, XoroshiroRandom};
 use crate::{BlockStateId, Registries};
 use serde_json::Value as Json;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+
+pub trait Enchanting: Send + Sync + std::fmt::Debug {
+    fn enchant_with_levels(&self, random: &mut dyn RandomSource, item: &str, cost: i32, options: Option<&Json>) -> Vec<(String, i32)>;
+    fn enchant_randomly(&self, random: &mut dyn RandomSource, item: &str, options: Option<&Json>, only_compatible: bool) -> Option<(String, i32)>;
+}
 
 /// What a loot evaluation knows (`LootParams`).
 #[derive(Clone, Debug, Default)]
@@ -29,6 +34,7 @@ pub struct LootParams {
     /// `EXPLOSION_RADIUS`.
     pub explosion_radius: Option<f32>,
     pub luck: f32,
+    pub enchanting: Option<Arc<dyn Enchanting>>,
 }
 
 /// Parsed loot tables and predicates, loaded on first use.
@@ -130,18 +136,33 @@ impl LootTables {
         random: &mut dyn RandomSource,
     ) -> Result<Vec<ItemStack>> {
         let Some(table) = self.table(registries, id) else { return Ok(Vec::new()) };
-        let mut out = Vec::new();
-        match table.get("random_sequence").and_then(Json::as_str) {
-            Some(sequence) => {
-                let random = sequences.get(sequence);
-                let mut context = Context { registries, tables: self, params, random, visiting: Vec::new() };
-                context.table_items(id, &table, &[], &mut out)?;
-            }
-            None => {
-                let mut context = Context { registries, tables: self, params, random, visiting: Vec::new() };
-                context.table_items(id, &table, &[], &mut out)?;
-            }
+        let random = match table.get("random_sequence").and_then(Json::as_str) {
+            Some(sequence) => sequences.get(sequence) as &mut dyn RandomSource,
+            None => random,
+        };
+        self.roll_with(registries, id, &table, params, random)
+    }
+
+    pub fn roll_seeded(
+        &self,
+        registries: &Registries,
+        id: &str,
+        params: &LootParams,
+        seed: i64,
+        sequences: &mut RandomSequences,
+        random: &mut dyn RandomSource,
+    ) -> Result<Vec<ItemStack>> {
+        if seed == 0 {
+            return self.roll(registries, id, params, sequences, random);
         }
+        let Some(table) = self.table(registries, id) else { return Ok(Vec::new()) };
+        self.roll_with(registries, id, &table, params, &mut LegacyRandom::new(seed))
+    }
+
+    fn roll_with(&self, registries: &Registries, id: &str, table: &Json, params: &LootParams, random: &mut dyn RandomSource) -> Result<Vec<ItemStack>> {
+        let mut out = Vec::new();
+        let mut context = Context { registries, tables: self, params, random, visiting: Vec::new() };
+        context.table_items(id, table, &[], &mut out)?;
         // `createStackSplitter`.
         let mut split = Vec::new();
         for stack in out {
@@ -656,10 +677,44 @@ impl Context<'_> {
                     return Err(format!("{kind} without a block"));
                 }
             }
+            "enchant_with_levels" => {
+                let params = self.params;
+                if let Some(enchanting) = &params.enchanting {
+                    let cost = self.int(function.get("levels").ok_or("enchant_with_levels without levels")?)?;
+                    let chosen = enchanting.enchant_with_levels(&mut *self.random, &stack.id, cost, function.get("options"));
+                    stack = enchanted(stack, &chosen);
+                }
+            }
+            "enchant_randomly" => {
+                let params = self.params;
+                if let Some(enchanting) = &params.enchanting {
+                    let only_compatible = function.get("only_compatible").and_then(Json::as_bool).unwrap_or(true);
+                    if let Some(chosen) = enchanting.enchant_randomly(&mut *self.random, &stack.id, function.get("options"), only_compatible) {
+                        stack = enchanted(stack, &[chosen]);
+                    }
+                }
+            }
             other => return Err(format!("loot function {other} is not supported")),
         }
         Ok(stack)
     }
+}
+
+fn enchanted(mut stack: ItemStack, chosen: &[(String, i32)]) -> ItemStack {
+    use crate::nbt::Tag;
+    if stack.id == "minecraft:book" {
+        stack = ItemStack::new("minecraft:enchanted_book", 1);
+    }
+    let key = if stack.id == "minecraft:enchanted_book" { "minecraft:stored_enchantments" } else { "minecraft:enchantments" };
+    for (id, level) in chosen.iter().filter(|(_, level)| *level > 0) {
+        let components = stack.components.get_or_insert_with(|| Tag::Compound(Default::default()));
+        let Tag::Compound(components) = components else { continue };
+        let map = components.entry(key.to_owned()).or_insert_with(|| Tag::Compound(Default::default()));
+        let Tag::Compound(map) = map else { continue };
+        let current = map.get(id).and_then(Tag::as_i64).unwrap_or(0) as i32;
+        map.insert(id.clone(), Tag::Int(current.max((*level).min(255))));
+    }
+    stack
 }
 
 #[cfg(test)]
@@ -680,5 +735,63 @@ mod tests {
             let drops = registries.loot.block_drops(&registries, state, &params, &mut sequences, &mut random);
             assert!(drops.is_ok(), "{name}: {drops:?}");
         }
+    }
+
+    #[derive(Debug)]
+    struct Fixed;
+
+    impl Enchanting for Fixed {
+        fn enchant_with_levels(&self, random: &mut dyn RandomSource, _item: &str, cost: i32, options: Option<&Json>) -> Vec<(String, i32)> {
+            assert_eq!(options.and_then(Json::as_str), Some("#minecraft:on_random_loot"));
+            random.next_i32_bound(2);
+            vec![("minecraft:sharpness".to_owned(), cost / 10), ("minecraft:unbreaking".to_owned(), 3)]
+        }
+
+        fn enchant_randomly(&self, _random: &mut dyn RandomSource, item: &str, _options: Option<&Json>, only_compatible: bool) -> Option<(String, i32)> {
+            (item == "minecraft:book" && only_compatible).then(|| ("minecraft:mending".to_owned(), 1))
+        }
+    }
+
+    fn apply(registries: &Registries, params: &LootParams, function: Json, stack: ItemStack) -> Result<ItemStack> {
+        let tables = LootTables::default();
+        let mut random = LegacyRandom::new(9);
+        let mut context = Context { registries, tables: &tables, params, random: &mut random, visiting: Vec::new() };
+        context.apply_function(&function, stack)
+    }
+
+    #[test]
+    fn the_enchanting_functions_write_vanilla_components() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let params = LootParams { enchanting: Some(Arc::new(Fixed)), ..LootParams::default() };
+        let levels = serde_json::json!({"type": "minecraft:enchant_with_levels", "levels": 30, "options": "#minecraft:on_random_loot"});
+        let sword = apply(&registries, &params, levels.clone(), ItemStack::new("minecraft:diamond_sword", 1)).unwrap();
+        assert_eq!(sword.id, "minecraft:diamond_sword");
+        let enchantments = sword.components.as_ref().and_then(|c| c.get("minecraft:enchantments")).unwrap();
+        assert_eq!(enchantments.get("minecraft:sharpness").and_then(crate::nbt::Tag::as_i64), Some(3));
+        assert_eq!(enchantments.get("minecraft:unbreaking").and_then(crate::nbt::Tag::as_i64), Some(3));
+        let book = apply(&registries, &params, levels, ItemStack::new("minecraft:book", 4)).unwrap();
+        assert_eq!((book.id.as_str(), book.count), ("minecraft:enchanted_book", 1));
+        let stored = book.components.as_ref().and_then(|c| c.get("minecraft:stored_enchantments")).unwrap();
+        assert_eq!(stored.get("minecraft:sharpness").and_then(crate::nbt::Tag::as_i64), Some(3));
+        assert!(book.components.as_ref().and_then(|c| c.get("minecraft:enchantments")).is_none());
+        let randomly = serde_json::json!({"type": "minecraft:enchant_randomly", "options": "#minecraft:on_random_loot"});
+        let book = apply(&registries, &params, randomly.clone(), ItemStack::new("minecraft:book", 1)).unwrap();
+        assert_eq!(book.id, "minecraft:enchanted_book");
+        assert_eq!(book.components.as_ref().and_then(|c| c.get("minecraft:stored_enchantments")).and_then(|e| e.get("minecraft:mending")).and_then(crate::nbt::Tag::as_i64), Some(1));
+        let stick = apply(&registries, &params, randomly, ItemStack::new("minecraft:stick", 2)).unwrap();
+        assert_eq!((stick.id.as_str(), stick.count, stick.components.is_none()), ("minecraft:stick", 2, true), "nothing to choose leaves the stack alone");
+    }
+
+    #[test]
+    fn unknown_functions_still_fail() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let params = LootParams::default();
+        let damage = serde_json::json!({"type": "minecraft:set_damage", "damage": 0.5});
+        assert!(apply(&registries, &params, damage, ItemStack::new("minecraft:iron_sword", 1)).is_err());
+        let levels = serde_json::json!({"type": "minecraft:enchant_with_levels", "levels": 30});
+        let sword = apply(&registries, &params, levels, ItemStack::new("minecraft:iron_sword", 1)).unwrap();
+        assert!(sword.components.is_none(), "without an engine the stack passes through");
     }
 }
