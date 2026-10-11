@@ -120,7 +120,7 @@ Overworld structures that lead to the End:
 - **Locate (partial).** `ring_chunks` and `locate_pos` exist (`third_party/minecraftoss/generator/src/structure/placement.rs:200-211`), but nothing calls them. The repo has no `/locate` and no nearest-structure search.
 
 End (all not wired):
-- **End city.**
+- **End city: done in round 8 (track C).** It generates on the outer islands, checked against vanilla's rules in `crates/minecraft_terrain/src/terrain.rs` tests; its chests roll enchanted loot and the elytra frame is a live item frame.
   - It is rejected when the lowest corner is below Y 60 (`third_party/minecraftoss/generator/src/structure/kinds/end_city.rs:35-38`).
   - One ship per city (`:233-237`).
   - Chests use `end_city_treasure` loot (`:297`).
@@ -131,7 +131,7 @@ End (all not wired):
 Entities made by worldgen:
 - They are kept per chunk and loaded by `ServerSim::load_chunk` (`crates/minecraft_terrain/src/server.rs:404`).
 - Only the 23 simulated kinds become live (`crates/minecraft_terrain/src/server_mobs.rs:388-412`). Items and orbs load as level entities (`crates/minecraft_terrain/src/server_mobs.rs:1328-1357`).
-- Everything else goes dormant (`crates/minecraft_terrain/src/server.rs:449`): saved unchanged, never ticked, never drawn, never hit. That covers piglins, hoglins, shulkers, end crystals and the elytra item frame.
+- Everything else goes dormant (`crates/minecraft_terrain/src/server.rs:449`): saved unchanged, never ticked, never drawn, never hit. That covered piglins, hoglins, shulkers, end crystals and the elytra item frame; shulkers, end crystals and item frames are live now (rounds 7 and 8).
 - **Bug: generated shulkers get deleted.**
   - The dormant despawn removes non-persistent Monster mobs more than 128 blocks from every player (`crates/minecraft_terrain/src/server.rs:534-544`).
   - `shulker` is in the Monster list (`third_party/minecraftoss/world/src/natural_spawner/spawning.rs:101`), and end city shulkers are created without `PersistenceRequired` (`third_party/minecraftoss/generator/src/structure/kinds/end_city.rs:304`).
@@ -259,7 +259,7 @@ Gaps that affect several mobs:
 - **Mob categories: partial.** `MobCategory::of_type` lacks wither_skeleton, piglin_brute, zoglin, endermite, ender_dragon and wither (`third_party/minecraftoss/world/src/natural_spawner/spawning.rs:97-111`).
 - **Spawners: missing.** Fortress blaze spawners and the stronghold silverfish spawner never spawn.
 - **Boss bar: missing.** No crate has one.
-- **Item frames: missing.** The end city elytra frame goes dormant, so the elytra cannot be reached.
+- **Item frames: done in round 8 (track C).** Item frames and glow item frames hang, hold, turn and drop items, are drawn and saved, and the end city elytra frame is live (`crates/minecraft_terrain/src/item_frame.rs`).
 - **/summon and spawn eggs.** Both only accept the simulated kinds (`crates/render_anim/src/minecraft_chat.rs:50`, `crates/minecraft_terrain/src/server_mobs.rs:388`). `/summon minecraft:ghast` fails until the ghast is simulated.
 
 Wiring in a new mob kind:
@@ -456,7 +456,7 @@ The roadmap puts multiplayer (1.4) between Nether travel and the End. Everything
 1. **call:** the same three calls as in step 2, for `Dimension::End`. The arrival point is already right (`crates/minecraft_terrain/src/terrain.rs:1089`).
 2. **write:** `add_entity`, `set_spawner_entity` and `set_gateway_exit` for the live `Level` (`third_party/minecraftoss/world/src/level/mod.rs:856-930`).
 3. **port:** the shulker, its bullet and levitation; the end crystal (entity, beam and explosion); and the endermite, including endermites from pearl landings (`crates/minecraft_terrain/src/server.rs:727`).
-4. **port:** item frames, so the end city elytra can be taken.
+4. **port:** item frames, so the end city elytra can be taken. Done in round 8 (track C).
 
 ### 7. The dragon fight
 

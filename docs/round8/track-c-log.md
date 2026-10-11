@@ -593,3 +593,19 @@ Previous commit: 3219fc47
 ```
 IW4L_MINECRAFT_KIT=minecraft:item_frame*8,minecraft:carrot*8,minecraft:snowball*16,minecraft:trident,minecraft:splash_potion@water*2,minecraft:oak_planks*16
 ```
+
+### 23. Docs: Minecraft End cities and item frames
+
+Previous commit: 1680fa64
+
+- **Changed:**
+  - `docs/MINECRAFT-SURVIVAL.md`: structure loot rolls enchanted gear and books from each chest's own seed; item frames and glow item frames join the simulated kinds; End cities and Item frames parts under The End; X6 no longer lists item frames; a limitation for End cities and item frames (banner patterns, end rod particles, maps, name tags, middle-click, pistons, named stacks, creative throws, TNT in water, attack exhaustion); a limitation listing the loot functions still missing, whose chests roll nothing. The levitation line's `×` and `−` were double-encoded by commit 14 and are fixed.
+  - `docs/NETHER-END.md`: the end city and item frames are done; the dormant list notes that shulkers, end crystals and item frames are live.
+- **Tests:** none (docs only).
+- **Test steps:** none.
+
+### Group c2-frames, combined kit
+
+```
+IW4L_MINECRAFT_KIT=minecraft:item_frame*16,minecraft:glow_item_frame*16,minecraft:compass,minecraft:carrot*16,minecraft:torch*8,minecraft:oak_planks*64,minecraft:repeater*2,minecraft:comparator*2,minecraft:redstone*16,minecraft:arrow*4,minecraft:tnt*4,minecraft:flint_and_steel,minecraft:creeper_spawn_egg*2,minecraft:snowball*16,minecraft:trident,minecraft:splash_potion@water,minecraft:diamond_sword+sharpness=5,minecraft:diamond_pickaxe
+```
