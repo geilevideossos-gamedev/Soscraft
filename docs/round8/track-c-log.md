@@ -184,3 +184,31 @@ Previous commit: 6b565157
 ```
 IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket,minecraft:powder_snow_bucket,minecraft:powder_snow_bucket,minecraft:bucket,minecraft:leather_helmet,minecraft:flint_and_steel,minecraft:netherrack*16,minecraft:cobblestone*64
 ```
+
+### 7. Frozen Minecraft players see the powder snow outline, frozen hearts and powder snow fog
+
+Previous commit: 2795707e
+
+- **Changed:**
+  - `frame`: `McVitals` gains `frozen` (percent frozen) and `fully_frozen`, filled from the player's own `Vitals`; `MinecraftUi.freeze_outline` holds `textures/misc/powder_snow_outline.png`, loaded once when the world is ready (`minecraft_portal::strip`, the portal strip loader made general).
+  - `hud` `minecraft_freeze.rs` (new): the outline drawn over the whole screen in white with alpha = percent frozen while it is above 0, in every camera mode, hidden with the rest of the Minecraft HUD like the portal overlay. It sits above the fire overlay and below the portal overlay, as vanilla's `Hud.extractCameraOverlays` draws it before the portal.
+  - `hud` `minecraft_vitals.rs`: hearts use `frozen_full`, `frozen_half` and their blinking sprites when fully frozen, unless poisoned or withered (vanilla's `HeartType.forPlayer` order); absorbing hearts and the containers stay as they are.
+  - `minecraft_terrain` `lava_fog.rs`: `in_powder_snow` (colour `#9FBECC`, fog from 0 to 2 blocks, sky and cloud fog ends the same, no clouds or skybox; spectators -8 to half the render distance), used by `render_anim` when the block at the eye is powder snow and the eye is not in lava.
+- **Tests:** `hud` `minecraft_vitals`: `fully_frozen_players_get_frozen_hearts_but_poison_wins`; `hud` `minecraft_freeze`: `the_outline_fades_with_the_frost`; `minecraft_terrain` `lava_fog`: `powder_snow_fog_is_two_blocks_of_pale_blue`.
+- **Decisions:** the outline's alpha follows whole ticks of frost (vanilla's percent is per tick too); the fog follows the eye's block, not the third-person camera's.
+- **Test steps:** (survival, the 3-deep powder snow pit from commit 5)
+  1. Walk into the pit: with your head in the snow the screen turns pale blue fog about 2 blocks deep (**2**, inside looking out).
+  2. Stay inside: over 7 seconds a frosty border fades in over the whole screen; when it is full the hearts turn frozen (blue-white) (**3**, full frost with the hearts visible). Press F5: the border stays.
+  3. Get out: the border fades over about 3.5 seconds and the hearts turn red again as soon as it starts fading.
+  4. Drink a poison potion inside the snow (or `/effect give @s minecraft:poison 10`): the hearts are green, not frozen.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket,minecraft:powder_snow_bucket,minecraft:powder_snow_bucket,minecraft:bucket,minecraft:cobblestone*64
+```
+
+### Group c5-snow-ladder, combined kit
+
+```
+IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket,minecraft:powder_snow_bucket,minecraft:powder_snow_bucket,minecraft:bucket,minecraft:leather_boots,minecraft:leather_helmet,minecraft:flint_and_steel,minecraft:netherrack*16,minecraft:ladder*32,minecraft:oak_planks*64,minecraft:cobblestone*64
+```

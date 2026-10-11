@@ -122,6 +122,7 @@ impl Plugin for HudPlugin {
                             crate::menus::update_script_menus,
                             crate::minecraft_chat::update_chat,
                             crate::minecraft_fire::update,
+                            crate::minecraft_freeze::update,
                             crate::minecraft_portal::update,
                             crate::minecraft_inventory::update_minecraft_hud,
                             crate::minecraft_loading::update,
@@ -141,6 +142,7 @@ impl Plugin for HudPlugin {
                 (
                     begin_hud_tess_frame,
                     crate::minecraft_fire::flush,
+                    crate::minecraft_freeze::flush,
                     crate::minecraft_portal::flush,
                     flush_flash_tess,
                     flush_overhead_names_tess,
@@ -335,6 +337,7 @@ fn ensure_hud_root(mut commands: Commands, existing: Query<Entity, With<HudRoot>
         .with_children(|root| {
             crate::font_overlay::spawn_overlay(root, crate::overhead_names::OverheadNamesRaster);
             crate::font_overlay::spawn_overlay(root, crate::minecraft_fire::MinecraftFireRaster);
+            crate::font_overlay::spawn_overlay(root, crate::minecraft_freeze::MinecraftFreezeRaster);
             crate::font_overlay::spawn_overlay(root, crate::minecraft_portal::MinecraftPortalRaster);
             spawn_reticle(root);
             spawn_iris(root);

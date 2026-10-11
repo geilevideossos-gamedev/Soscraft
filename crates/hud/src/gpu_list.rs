@@ -200,6 +200,7 @@ pub struct HudTessPass {
     pub minecraft_fire: TessJob,
     pub minecraft_loading: TessJob,
     pub minecraft_portal: TessJob,
+    pub minecraft_freeze: TessJob,
     pub minecraft_credits: TessJob,
 }
 

@@ -196,6 +196,7 @@ pub struct MinecraftUi {
     pub level_loading: Option<McLevelLoading>,
     pub portal_frames: Option<(Handle<Image>, u32)>,
     pub portal_overlay: Option<McPortalOverlay>,
+    pub freeze_outline: Option<Handle<Image>>,
     pub overlay_message: Option<McOverlayMessage>,
     pub boss_bars: Vec<McBossBar>,
     pub credits: Option<crate::minecraft_credits::McCredits>,
@@ -317,6 +318,8 @@ pub struct McVitals {
     pub on_fire: bool,
     pub eye_in_lava: bool,
     pub withered: bool,
+    pub frozen: f32,
+    pub fully_frozen: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

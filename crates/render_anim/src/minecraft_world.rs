@@ -552,6 +552,7 @@ fn update(
                 );
                 runtime.fire_frames = fire_frames(&world.packs).map(|(image, frames)| (images.add(image), frames));
                 ui.portal_frames = crate::minecraft_portal::frames(&world.packs, &mut images);
+                ui.freeze_outline = crate::minecraft_portal::strip(&world.packs, &mut images, crate::minecraft_portal::FREEZE_OUTLINE).map(|(image, _)| image);
                 runtime.loading_backgrounds = Some(crate::minecraft_loading::LoadingBackgrounds::load(&world.packs, &mut images));
                 runtime.server = Some(server);
                 runtime.local = Some(uuid);
@@ -2280,9 +2281,13 @@ fn update(
         thunder_level: weather.thunder_level,
     });
     let render_distance = VIEW_DISTANCE as f32 * 16.0;
+    let spectating = player_mode.mode == minecraftoss_player::GameMode::Spectator;
+    let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
     let sky = if alive && sim::voxel::eye_in_lava(ps.origin, ps.view_height_current) {
         let fire_resistant = survival.status.effect(minecraftoss_player::survival::EffectKind::FireResistance).is_some();
-        minecraft_terrain::lava_fog::in_lava(sky, player_mode.mode == minecraftoss_player::GameMode::Spectator, fire_resistant, render_distance)
+        minecraft_terrain::lava_fog::in_lava(sky, spectating, fire_resistant, render_distance)
+    } else if alive && minecraft_terrain::scene::Scene::block(&terrain.scene, eye_block).is_some_and(|b| b.id.key() == "minecraft:powder_snow") {
+        minecraft_terrain::lava_fog::in_powder_snow(sky, spectating, render_distance)
     } else {
         sky
     };
@@ -2702,6 +2707,8 @@ fn mc_vitals(vitals: minecraft_survival::survival::Vitals) -> frame::McVitals {
         on_fire: vitals.on_fire,
         eye_in_lava: vitals.eye_in_lava,
         withered: vitals.withered,
+        frozen: vitals.frozen,
+        fully_frozen: vitals.fully_frozen,
     }
 }
 

@@ -60,13 +60,22 @@ fn noise(tick: u64, index: usize) -> u64 {
     x ^ (x >> 33)
 }
 
-fn heart_sprite(poisoned: bool, withered: bool, absorbing: bool, blinking: bool, half: bool) -> &'static str {
+fn heart_sprite(v: &frame::McVitals, absorbing: bool, blinking: bool, half: bool) -> &'static str {
+    let (poisoned, withered) = (v.poisoned, v.withered);
     if withered && !poisoned {
         return match (blinking, half) {
             (false, false) => "gui:hud/heart/withered_full",
             (false, true) => "gui:hud/heart/withered_half",
             (true, false) => "gui:hud/heart/withered_full_blinking",
             (true, true) => "gui:hud/heart/withered_half_blinking",
+        };
+    }
+    if v.fully_frozen && !poisoned && !absorbing {
+        return match (blinking, half) {
+            (false, false) => "gui:hud/heart/frozen_full",
+            (false, true) => "gui:hud/heart/frozen_half",
+            (true, false) => "gui:hud/heart/frozen_full_blinking",
+            (true, true) => "gui:hud/heart/frozen_half_blinking",
         };
     }
     match (absorbing, poisoned, blinking, half) {
@@ -118,20 +127,14 @@ pub(crate) fn hearts(v: &frame::McVitals) -> Vec<Heart> {
         if l >= containers {
             let r = q - containers * 2;
             if r < absorption {
-                layers.push(heart_sprite(v.poisoned, v.withered, true, false, r + 1 == absorption));
+                layers.push(heart_sprite(v, true, false, r + 1 == absorption));
             }
         }
         if v.blink && q < v.display_health {
-            layers.push(heart_sprite(
-                v.poisoned,
-                v.withered,
-                false,
-                true,
-                q + 1 == v.display_health,
-            ));
+            layers.push(heart_sprite(v, false, true, q + 1 == v.display_health));
         }
         if q < health {
-            layers.push(heart_sprite(v.poisoned, v.withered, false, false, q + 1 == health));
+            layers.push(heart_sprite(v, false, false, q + 1 == health));
         }
         out.push(Heart {
             column: (l % 10) as usize,
@@ -215,6 +218,29 @@ mod tests {
         assert!(black.iter().any(|h| fill(h) == Some("gui:hud/heart/withered_half")));
         v.poisoned = true;
         assert!(hearts(&v).iter().all(|h| fill(h).is_none_or(|f| f.starts_with("gui:hud/heart/poisoned"))));
+    }
+
+    #[test]
+    fn fully_frozen_players_get_frozen_hearts_but_poison_wins() {
+        let mut v = vitals(7.0, 20);
+        v.absorption = 2.0;
+        v.frozen = 0.99;
+        assert!(hearts(&v).iter().all(|h| h.layers.iter().all(|l| !l.contains("frozen"))));
+        v.frozen = 1.0;
+        v.fully_frozen = true;
+        let frozen = hearts(&v);
+        assert!(frozen.iter().any(|h| fill(h) == Some("gui:hud/heart/frozen_full")));
+        assert!(frozen.iter().any(|h| fill(h) == Some("gui:hud/heart/frozen_half")));
+        assert!(frozen.iter().any(|h| fill(h) == Some("gui:hud/heart/absorbing_full")));
+        assert!(frozen.iter().all(|h| h.layers[0] == "gui:hud/heart/container"));
+        v.blink = true;
+        v.display_health = 9;
+        assert!(hearts(&v).iter().any(|h| h.layers.contains(&"gui:hud/heart/frozen_full_blinking")));
+        v.blink = false;
+        v.withered = true;
+        assert!(hearts(&v).iter().all(|h| fill(h).is_none_or(|f| !f.contains("frozen"))));
+        v.poisoned = true;
+        assert!(hearts(&v).iter().all(|h| fill(h).is_none_or(|f| f.starts_with("gui:hud/heart/poisoned") || f.starts_with("gui:hud/heart/absorbing"))));
     }
 
     #[test]
