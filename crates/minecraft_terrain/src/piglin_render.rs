@@ -349,6 +349,7 @@ mod tests {
             swing: None,
             red_overlay: false,
             death_time: 0.0,
+            turn: glam::Quat::IDENTITY,
         }
     }
 

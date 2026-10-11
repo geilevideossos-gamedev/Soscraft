@@ -186,6 +186,7 @@ fn build() -> Vec<Node> {
         crate::locate::node(),
         crate::execute::node(),
         crate::kit::node(),
+        crate::tick::node(),
     ])
 }
 
@@ -925,6 +926,7 @@ mod tests {
                 "/spawnpoint [<targets>]",
                 "/summon <entity> [<pos>]",
                 "/teleport (<destination>|<location>|<targets>)",
+                "/tick (freeze|query|rate|sprint|step|unfreeze)",
                 "/time (add|pause|query|resume|set)",
                 "/tp -> teleport",
                 "/weather (clear|rain|thunder)",

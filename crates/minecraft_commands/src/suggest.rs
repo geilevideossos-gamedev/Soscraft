@@ -177,6 +177,16 @@ pub fn last_word_index(text: &str) -> usize {
 }
 
 pub fn complete(input: &str, cursor: usize, level: u8, hints: &CommandHints) -> Completion {
+    complete_in(crate::commands::tree(), input, cursor, level, hints)
+}
+
+fn complete_in(
+    roots: &[Node],
+    input: &str,
+    cursor: usize,
+    level: u8,
+    hints: &CommandHints,
+) -> Completion {
     let mut cursor = cursor.min(input.len());
     while !input.is_char_boundary(cursor) {
         cursor -= 1;
@@ -184,7 +194,6 @@ pub fn complete(input: &str, cursor: usize, level: u8, hints: &CommandHints) -> 
     if !input.starts_with('/') {
         return chat(input, cursor, hints);
     }
-    let roots = crate::commands::tree();
     let parsed = parse_from(roots, input, 1, level);
     let spans = colors(&parsed, input);
     if cursor < 1 {
@@ -200,9 +209,10 @@ pub fn complete(input: &str, cursor: usize, level: u8, hints: &CommandHints) -> 
     for child in children.iter().filter(|child| child.visible(level)) {
         match child.kind {
             NodeKind::Literal(name) => found.literal(start, name),
-            NodeKind::Argument(_, kind) => {
-                suggest_argument(kind, start, &parsed, level, hints, &mut found)
-            }
+            NodeKind::Argument(_, kind) => match child.suggestions {
+                Some(list) => found.matching(start, list.iter().copied()),
+                None => suggest_argument(kind, start, &parsed, level, hints, &mut found),
+            },
         }
     }
     let list = found.finish();
@@ -444,7 +454,11 @@ fn suggest_argument(
                 block_state(start, hints, found);
             }
         }
-        ArgKind::Greedy | ArgKind::Int { .. } | ArgKind::Nbt | ArgKind::Rotation => {}
+        ArgKind::Greedy
+        | ArgKind::Int { .. }
+        | ArgKind::Nbt
+        | ArgKind::Rotation
+        | ArgKind::Float { .. } => {}
     }
 }
 
@@ -826,6 +840,7 @@ mod tests {
                 "spawnpoint",
                 "summon",
                 "teleport",
+                "tick",
                 "time",
                 "tp",
                 "weather",
@@ -1072,7 +1087,7 @@ mod tests {
             vec![(0..4, GRAY), (4..6, AQUA), (6..7, GRAY), (7..12, YELLOW)]
         );
         assert_eq!(texts(&at_end("/tp", OWNERS)), Vec::<&str>::new());
-        assert_eq!(texts(&at_end("/t", OWNERS)), vec!["teleport", "time", "tp"]);
+        assert_eq!(texts(&at_end("/t", OWNERS)), vec!["teleport", "tick", "time", "tp"]);
         assert_eq!(texts(&at_end("/xp ", OWNERS)), vec!["add", "query", "set"]);
         assert_eq!(
             texts(&at_end("/xp add @s 5 ", OWNERS)),
@@ -1362,5 +1377,30 @@ mod tests {
         assert_eq!(hints.blocks_with_properties, owned(&["minecraft:oak_log"]));
         let json = serde_json::to_string(&hints).unwrap();
         assert_eq!(serde_json::from_str::<CommandHints>(&json).unwrap(), hints);
+    }
+
+    #[test]
+    fn fixed_suggestions_replace_the_argument_kinds_own() {
+        use crate::tree::sorted;
+        let rate = ArgKind::Float {
+            min: 1.0,
+            max: 10000.0,
+        };
+        let roots = sorted(vec![
+            Node::literal("pace")
+                .then(Node::argument("rate", rate).suggests(&["20"]))
+                .then(Node::literal("plain").then(Node::argument("rate", rate)))
+                .then(Node::literal("step").then(Node::literal("stop")).then(
+                    Node::argument("time", ArgKind::Time { min: 1 }).suggests(&["1t", "1s"]),
+                )),
+        ]);
+        let at_end = |input: &str| complete_in(&roots, input, input.len(), OWNERS, &hints());
+        assert_eq!(texts(&at_end("/pace ")), vec!["20", "plain", "step"]);
+        assert_eq!(texts(&at_end("/pace 2")), vec!["20"]);
+        assert!(at_end("/pace plain ").list.is_empty());
+        assert_eq!(texts(&at_end("/pace step ")), vec!["1s", "1t", "stop"]);
+        let typed = at_end("/pace step 1");
+        assert_eq!(texts(&typed), vec!["1s", "1t"]);
+        assert_eq!(typed.list[0].range, 11..12);
     }
 }

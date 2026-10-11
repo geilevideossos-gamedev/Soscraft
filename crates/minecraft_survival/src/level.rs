@@ -24,6 +24,7 @@ pub struct Level {
     pub openers: Openers,
     pub empty_ticks: u32,
     pub dragon_fight: Option<crate::the_end::dragon_fight::DragonFight>,
+    pub container_ticks: u32,
 }
 
 pub struct Terrain {
@@ -43,6 +44,7 @@ impl Level {
             openers: Openers::default(),
             empty_ticks: 0,
             dragon_fight: None,
+            container_ticks: 0,
         }
     }
 }
@@ -501,5 +503,124 @@ mod tests {
             vec![((5, 64, 5), "lit", true), ((6, 64, 5), "lit", true)],
         );
         assert!(writes.is_empty());
+    }
+
+    fn tick_until(
+        entities: &mut Entities,
+        inventory: &mut Inventory,
+        feet: glam::DVec3,
+        mut done: impl FnMut(&Entities) -> bool,
+    ) {
+        let started = std::time::Instant::now();
+        while !done(entities) {
+            assert!(started.elapsed().as_secs() < 300, "no answer from the level");
+            let batch = crate::tick_rate::TickBatch {
+                normal: if entities.ready_for_ticks() {
+                    vec![true]
+                } else {
+                    Vec::new()
+                },
+                overload: None,
+            };
+            let _ = entities.tick(
+                inventory,
+                0,
+                0.05,
+                &batch,
+                crate::tick_rate::ClientTiming::default(),
+                minecraft_terrain::server::ClockTicks::default(),
+                true,
+                &crate::entities::PlayerView {
+                    feet: feet.to_array(),
+                    alive: true,
+                    attackable: true,
+                    spectator: false,
+                    picks_up: false,
+                    health: 20.0,
+                    yaw: 0.0,
+                    pitch: -90.0,
+                },
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn an_eye_thrown_from_the_hand_leaves_the_stack_and_flies() {
+        use minecraft_terrain::bucket::Change;
+        use minecraft_terrain::ender_eye::{ENDER_EYE, throw_use};
+        use minecraftoss_player::inventory::ItemStack;
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else {
+            return;
+        };
+        let Ok(registries) = Registries::load(&paths) else {
+            return;
+        };
+        let Ok(stream) = TerrainStream::for_dimension(
+            Arc::new(registries),
+            4986579828511054607,
+            2,
+            Dimension::Overworld,
+            None,
+        ) else {
+            return;
+        };
+        minecraft_terrain::locate::resolve_rings(&stream.world_gen());
+        let mut entities = Entities::new(
+            &stream,
+            Dimension::Overworld,
+            4986579828511054607,
+            &crate::data::GameData::default(),
+            None,
+            None,
+        );
+        let scene = HandcraftedScene::streamed(stream.states.clone());
+        let feet = glam::DVec3::new(-300.5, 80.0, -1700.5);
+        let mut player = minecraftoss_player::Player::new(feet);
+        player.pitch = -90.0;
+        let mut inventory = Inventory::default();
+        inventory.slots[0] = Some(ItemStack::new(ENDER_EYE, 16));
+        let held = inventory.slots[0].clone().unwrap();
+        let used = throw_use(&player, &minecraft_terrain::doors::Outlined(&scene), &held)
+            .expect("an eye in the hand has a use");
+        let Change::ThrowEye(throw) = used.change.clone() else {
+            panic!("aiming at the sky throws: {:?}", used.change);
+        };
+        assert!(used.consumed);
+        let sent = SentItemUse {
+            slot: 0,
+            held: held.id.clone(),
+            eye: feet + glam::DVec3::Y * 1.62,
+            yaw: 0.0,
+            pitch: -90.0,
+            outcome: used,
+        };
+        entities.throw_eye(throw, sent);
+        assert!(entities.awaits_item_use());
+        tick_until(&mut entities, &mut inventory, feet, |entities| {
+            !entities.item_uses_done.is_empty()
+        });
+        assert!(!entities.awaits_item_use());
+        let done = std::mem::take(&mut entities.item_uses_done);
+        assert_eq!(done.len(), 1);
+        for used in done {
+            let heard = finish_item_use(&mut entities, &mut inventory, used, true);
+            assert!(heard.is_empty());
+        }
+        assert_eq!(
+            inventory.slots[0].as_ref().map(|stack| stack.count),
+            Some(15)
+        );
+        tick_until(&mut entities, &mut inventory, feet, |entities| {
+            entities.eye_views().iter().any(|view| view.age >= 5)
+        });
+        let views = entities.eye_views();
+        assert_eq!(views.len(), 1);
+        assert!(views[0].position.y > feet.y + 0.9, "{:?}", views[0]);
+        assert!(
+            views[0].position.x < feet.x && views[0].position.z < feet.z,
+            "{:?}",
+            views[0]
+        );
     }
 }

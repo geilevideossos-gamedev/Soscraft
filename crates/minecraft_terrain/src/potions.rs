@@ -238,6 +238,9 @@ impl PotionEffect {
             "nausea" => EffectKind::Nausea,
             "slowness" => EffectKind::Slowness,
             "weakness" => EffectKind::Weakness,
+            "haste" => EffectKind::Haste,
+            "mining_fatigue" => EffectKind::MiningFatigue,
+            "conduit_power" => EffectKind::ConduitPower,
             _ => return None,
         })
     }
@@ -517,6 +520,18 @@ mod tests {
         assert_eq!(poison.player_effect(), Some(EffectKind::Poison));
         assert_eq!(PotionEffect::new("strength", 100, 0).mob_effect(), None);
         assert_eq!(PotionEffect::new("speed", 100, 0).player_effect(), None);
+        assert_eq!(
+            PotionEffect::new("minecraft:haste", 100, 0).player_effect(),
+            Some(EffectKind::Haste)
+        );
+        assert_eq!(
+            PotionEffect::new("minecraft:mining_fatigue", 100, 0).player_effect(),
+            Some(EffectKind::MiningFatigue)
+        );
+        assert_eq!(
+            PotionEffect::new("minecraft:conduit_power", 100, 0).player_effect(),
+            Some(EffectKind::ConduitPower)
+        );
     }
 
     #[test]

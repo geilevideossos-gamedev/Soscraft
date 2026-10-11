@@ -327,6 +327,10 @@ impl<'a> ChunkWorld<'a> {
         &self.registries
     }
 
+    pub fn vertical_range(&self) -> std::ops::Range<i32> {
+        self.stream.states.vertical_range()
+    }
+
     pub fn chunk(&mut self, (cx, cz): (i32, i32)) -> Option<Arc<Chunk>> {
         if let Some(Some(chunk)) = self.chunks.get(&(cx, cz)) {
             return Some(chunk.clone());

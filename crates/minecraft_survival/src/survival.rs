@@ -891,18 +891,7 @@ impl Survival {
     }
 
     pub fn clear_effects(&mut self) {
-        for kind in [
-            EffectKind::Hunger,
-            EffectKind::Poison,
-            EffectKind::Regeneration,
-            EffectKind::Absorption,
-            EffectKind::Resistance,
-            EffectKind::FireResistance,
-            EffectKind::Nausea,
-            EffectKind::Slowness,
-            EffectKind::Weakness,
-            EffectKind::Wither,
-        ] {
+        for kind in EffectKind::ALL {
             self.status.remove_effect(kind);
         }
     }
@@ -1788,6 +1777,9 @@ mod tests {
         let mut survival = fresh();
         survival.status.add_effect(EffectKind::Poison, 400, 1);
         survival.status.add_effect(EffectKind::Absorption, 2400, 0);
+        survival.status.add_effect(EffectKind::Haste, 1200, 1);
+        survival.status.add_effect(EffectKind::MiningFatigue, 1200, 2);
+        survival.status.add_effect(EffectKind::ConduitPower, 1200, 0);
         let mut inventory = Inventory::default();
         inventory.slots[40] = Some(ItemStack::new(minecraft_terrain::bottle::MILK_BUCKET, 1));
         let milk = inventory.slots[40].clone().expect("milk");
@@ -1802,6 +1794,9 @@ mod tests {
         let done = survival.chew(&mut inventory, 4, || 0.5);
         assert_eq!(done, Bite::Done { sound: "minecraft:entity.generic.drink".to_owned(), overflow: None, fed: false });
         assert_eq!(survival.status.effect(EffectKind::Poison), None);
+        assert_eq!(survival.status.effect(EffectKind::Haste), None);
+        assert_eq!(survival.status.effect(EffectKind::MiningFatigue), None);
+        assert_eq!(survival.status.effect(EffectKind::ConduitPower), None);
         assert_eq!(survival.status.absorption, 0.0);
         assert_eq!(inventory.slots[40].as_ref().map(|s| s.id.as_str()), Some("minecraft:bucket"));
     }

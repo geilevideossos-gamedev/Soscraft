@@ -1334,6 +1334,31 @@ impl TerrainStream {
         self.server.set_block_entities(&changes);
     }
 
+    pub fn write_states(&mut self, scene: &mut HandcraftedScene, states: &[(BlockPos, BlockStateId)], block_entities: &[(BlockPos, Option<minecraftoss_core::nbt::Tag>)]) {
+        let mut chunks: Vec<(i32, i32)> = states.iter().map(|(pos, _)| pos).chain(block_entities.iter().map(|(pos, _)| pos)).map(|&(x, _, z)| (x >> 4, z >> 4)).collect();
+        chunks.sort_unstable();
+        chunks.dedup();
+        for &(x, z) in &chunks {
+            self.server.load_now(minecraftoss_core::ChunkPos::new(x, z));
+        }
+        let edits: Vec<_> = states.iter().map(|&((x, y, z), state)| (minecraftoss_core::BlockPos::new(x, y, z), state)).collect();
+        self.server.set_blocks(&edits);
+        self.record_block_entities(block_entities);
+        for &(x, z) in &chunks {
+            self.server.load_now(minecraftoss_core::ChunkPos::new(x, z));
+        }
+        let mut shown = Vec::new();
+        for &((x, y, z), state) in states {
+            if scene.generated_chunk((x >> 4, z >> 4)).is_some() {
+                scene.set((x, y, z), self.states.block(state).cloned());
+                shown.push((x, y, z));
+            }
+        }
+        if !shown.is_empty() {
+            self.mark_edited(scene, &shown);
+        }
+    }
+
     /// An edit at these positions: nearby sections rebuild for the player
     /// (`LevelRenderer.setBlockDirty`), and nearby chunks relight; sections
     /// whose light changed rebuild when that finishes.
@@ -2402,6 +2427,113 @@ mod tests {
         let far = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::End, Some(level.root()), Some((1200, 60, 0))).unwrap();
         assert_eq!(far.world_spawn, (1200, 60, 0), "a known End spawn is kept");
         assert_eq!(far.player_spawn, (1200.5, 60.0, 0.5));
+    }
+
+    #[test]
+    fn the_outer_end_islands_generate_past_the_void() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let dir = crate::test_dir::tempdir().unwrap();
+        let level = crate::level_storage::LevelStorage::open(dir.path()).unwrap();
+        let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::End, Some(level.root()), None).unwrap();
+        let blocks = &registries.blocks;
+        let end_stone = blocks.block_by_name("minecraft:end_stone").unwrap();
+        let chorus = blocks.block_by_name("minecraft:chorus_plant").unwrap();
+        let highlands = registries.biomes.id("minecraft:end_highlands").unwrap();
+        let small = registries.biomes.id("minecraft:small_end_islands").unwrap();
+        let started = Instant::now();
+        let mut void_ring = 0;
+        let mut far_end_stone = 0;
+        let mut chorus_on_highlands = 0;
+        let mut biomes = HashSet::new();
+        let mut generated = 0;
+        for cx in 40..=80 {
+            for cz in 0..2 {
+                let chunk = stream.server.load_now(minecraftoss_core::ChunkPos::new(cx, cz));
+                generated += 1;
+                for z in 0..16usize {
+                    for x in 0..16usize {
+                        let wx = cx * 16 + x as i32;
+                        let biome = chunk.biome(x / 4, 16, z / 4);
+                        biomes.insert(biome);
+                        for y in 0..256 {
+                            let block = blocks.block_of(chunk.block(x, y, z));
+                            if (700..=900).contains(&wx) && !blocks.is_air(chunk.block(x, y, z)) {
+                                void_ring += 1;
+                            }
+                            if wx > 1000 && block == end_stone {
+                                far_end_stone += 1;
+                            }
+                            if block == chorus && chunk.biome(x / 4, y >> 2, z / 4) == highlands {
+                                chorus_on_highlands += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("{generated} outer End chunks in {:?}, {:?} each", started.elapsed(), started.elapsed() / generated);
+        assert_eq!(void_ring, 0, "nothing stands between x 700 and 900");
+        assert!(far_end_stone > 10_000, "outer islands past x 1000: {far_end_stone}");
+        assert!(biomes.contains(&highlands) && biomes.contains(&small), "outer biomes {biomes:?}");
+        assert!(chorus_on_highlands > 0, "chorus grows on the highlands");
+    }
+
+    #[test]
+    fn outer_end_gateways_keep_their_exact_exit() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let dir = crate::test_dir::tempdir().unwrap();
+        let level = crate::level_storage::LevelStorage::open(dir.path()).unwrap();
+        let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::End, Some(level.root()), None).unwrap();
+        let highlands = registries.biomes.id("minecraft:end_highlands").unwrap();
+        assert_eq!(stream.server.generator().biome_at_quart(2 * 4 + 2, 16, -73 * 4 + 2), highlands);
+        let chunk = stream.server.load_now(minecraftoss_core::ChunkPos::new(2, -73));
+        let gateways: Vec<_> = chunk
+            .block_entities
+            .entities
+            .iter()
+            .chain(chunk.block_entities.pending.iter())
+            .filter(|(_, tag)| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) == Some("minecraft:end_gateway"))
+            .collect();
+        assert_eq!(gateways.len(), 1, "one end_gateway_return in chunk 2,-73 of seed 77");
+        let (&(x, y, z), tag) = gateways[0];
+        assert_eq!((x, y, z), (45, 67, -1160));
+        assert_eq!(tag.get("exit_portal").and_then(minecraftoss_core::nbt::Tag::as_ints), Some(vec![100, 50, 0]));
+        assert_eq!(tag.get("ExactTeleport").and_then(minecraftoss_core::nbt::Tag::as_i64), Some(1));
+        let blocks = &registries.blocks;
+        let name = |dx: i32, dy: i32, dz: i32| blocks.block(blocks.block_of(chunk.block(((x + dx) & 15) as usize, y + dy, ((z + dz) & 15) as usize))).name.to_string();
+        assert_eq!(name(0, 0, 0), "minecraft:end_gateway");
+        for (dx, dy, dz) in [(0, 2, 0), (0, -2, 0), (1, 1, 0), (0, -1, -1)] {
+            assert_eq!(name(dx, dy, dz), "minecraft:bedrock", "frame at {dx},{dy},{dz}");
+        }
+        for (dx, dy, dz) in [(1, 0, 0), (1, 0, 1), (1, 1, 1), (1, 2, 0)] {
+            assert_eq!(name(dx, dy, dz), "minecraft:air", "open at {dx},{dy},{dz}");
+        }
+    }
+
+    #[test]
+    fn end_island_height_matches_vanilla() {
+        use minecraftoss_core::random::RandomSource;
+        let mut random = minecraftoss_core::random::LegacyRandom::new(0);
+        random.consume_count(17292);
+        let noise = minecraftoss_generator::temperature::Simplex::new(&mut random, true);
+        for (x, z, want) in [
+            (0, 0, -100.0f32),
+            (10, -7, -100.0),
+            (128, 0, -98.25235),
+            (130, 4, -100.0),
+            (140, 3, -100.0),
+            (135, -20, -70.847885),
+            (-150, 90, -77.369675),
+            (200, -200, -90.0),
+            (256, 17, 55.0),
+            (-301, -5, -69.49925),
+        ] {
+            assert_eq!(minecraftoss_generator::density::sampler::end_island_height(&noise, x, z), want, "section {x},{z}");
+        }
     }
 
     #[test]

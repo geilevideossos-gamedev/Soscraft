@@ -159,9 +159,27 @@ pub fn totem_slot(inventory: &Inventory, selected: usize) -> Option<usize> {
     })
 }
 
+pub fn eye_held(hand: &crate::player::Hand, use_down: bool, selected: usize) -> bool {
+    hand.using_eye
+        .is_some_and(|slot| use_down && (slot == OFFHAND || slot == selected))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn holding_the_use_button_throws_one_eye() {
+        let mut hand = crate::player::Hand::default();
+        assert!(!eye_held(&hand, true, 2), "nothing thrown yet");
+        hand.using_eye = Some(2);
+        assert!(eye_held(&hand, true, 2));
+        assert!(!eye_held(&hand, false, 2), "released");
+        assert!(!eye_held(&hand, true, 3), "another slot selected");
+        hand.using_eye = Some(OFFHAND);
+        assert!(eye_held(&hand, true, 3), "the offhand stays in the offhand");
+        assert!(!eye_held(&hand, false, 3));
+    }
 
     fn inventory(stacks: &[(usize, &str)]) -> Inventory {
         let mut inventory = Inventory::default();

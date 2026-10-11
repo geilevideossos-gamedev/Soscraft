@@ -23,6 +23,8 @@ use crate::tree::{Parsed, parse, runnable};
 pub const SEND_COMMAND_FEEDBACK: &str = "send_command_feedback";
 pub const OVERWORLD: &str = "minecraft:overworld";
 pub const LOG_ADMIN_COMMANDS: &str = "log_admin_commands";
+pub const SERVER_NAME: &str = "Server";
+pub const TICK_SAMPLES: usize = 100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Weather {
@@ -72,6 +74,22 @@ pub struct CommandData {
     pub biome_tags: BTreeMap<String, Vec<String>>,
     pub poi_types: Vec<String>,
     pub poi_tags: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TickQuery {
+    pub rate: f32,
+    pub frozen: bool,
+    pub sprinting: bool,
+    pub nanos_per_tick: u64,
+    pub average_nanos: u64,
+    pub samples: [u64; TICK_SAMPLES],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SprintReport {
+    pub ticks_per_second: i32,
+    pub ms_per_tick: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,6 +184,23 @@ pub trait CommandWorld {
     }
     fn kit_entries(&self, line: &str) -> Vec<(ItemArg, u32)> {
         crate::kit::kit_entries(line)
+    }
+    fn tick_query(&self) -> Option<TickQuery> {
+        None
+    }
+    fn set_tick_rate(&mut self, _rate: f32) {}
+    fn set_tick_frozen(&mut self, _frozen: bool) {}
+    fn step_ticks(&mut self, _ticks: i32) -> bool {
+        false
+    }
+    fn stop_stepping(&mut self) -> bool {
+        false
+    }
+    fn sprint_ticks(&mut self, _ticks: i32) -> bool {
+        false
+    }
+    fn stop_sprinting(&mut self) -> Option<SprintReport> {
+        None
     }
 }
 
@@ -449,6 +484,21 @@ impl CommandServer {
         out
     }
 
+    pub fn server_feedback(&self, text: Text, rules: &GameRules) -> Vec<Outgoing> {
+        if !rules.bool(SEND_COMMAND_FEEDBACK) {
+            return Vec::new();
+        }
+        let admin = Text::translate("chat.type.admin", vec![Text::literal(SERVER_NAME), text])
+            .color(GRAY)
+            .italic();
+        self.players
+            .iter()
+            .map(|player| player.id)
+            .filter(|&id| self.is_op(id))
+            .map(|id| system(id, admin.clone()))
+            .collect()
+    }
+
     pub fn reply(
         &self,
         source: PlayerId,
@@ -629,6 +679,33 @@ pub(crate) mod tests {
         pub(crate) player_dimensions: Vec<(PlayerId, String)>,
         pub(crate) dimension_teleports: Vec<(PlayerId, String, [f64; 3])>,
         pub(crate) kit: Option<String>,
+        pub(crate) tick: Option<FakeTick>,
+    }
+
+    #[derive(Debug)]
+    pub(crate) struct FakeTick {
+        pub(crate) query: TickQuery,
+        pub(crate) stepping: i32,
+        pub(crate) sprinting: i32,
+        pub(crate) frozen_before_sprint: bool,
+    }
+
+    impl Default for FakeTick {
+        fn default() -> Self {
+            Self {
+                query: TickQuery {
+                    rate: 20.0,
+                    frozen: false,
+                    sprinting: false,
+                    nanos_per_tick: 50_000_000,
+                    average_nanos: 0,
+                    samples: [0; TICK_SAMPLES],
+                },
+                stepping: 0,
+                sprinting: 0,
+                frozen_before_sprint: false,
+            }
+        }
     }
 
     impl CommandWorld for FakeWorld {
@@ -876,6 +953,62 @@ pub(crate) mod tests {
         fn kit_line(&self) -> Option<String> {
             self.kit.clone()
         }
+
+        fn tick_query(&self) -> Option<TickQuery> {
+            self.tick.as_ref().map(|tick| tick.query)
+        }
+
+        fn set_tick_rate(&mut self, rate: f32) {
+            if let Some(tick) = self.tick.as_mut() {
+                tick.query.rate = rate.max(1.0);
+                tick.query.nanos_per_tick = (1e9 / f64::from(tick.query.rate)) as u64;
+            }
+        }
+
+        fn set_tick_frozen(&mut self, frozen: bool) {
+            if let Some(tick) = self.tick.as_mut() {
+                tick.query.frozen = frozen;
+            }
+        }
+
+        fn step_ticks(&mut self, ticks: i32) -> bool {
+            let Some(tick) = self.tick.as_mut().filter(|tick| tick.query.frozen) else {
+                return false;
+            };
+            tick.stepping = ticks;
+            true
+        }
+
+        fn stop_stepping(&mut self) -> bool {
+            let Some(tick) = self.tick.as_mut().filter(|tick| tick.stepping > 0) else {
+                return false;
+            };
+            tick.stepping = 0;
+            true
+        }
+
+        fn sprint_ticks(&mut self, ticks: i32) -> bool {
+            let Some(tick) = self.tick.as_mut() else {
+                return false;
+            };
+            let was = tick.sprinting > 0;
+            tick.sprinting = ticks;
+            tick.query.sprinting = true;
+            tick.frozen_before_sprint = tick.query.frozen;
+            tick.query.frozen = false;
+            was
+        }
+
+        fn stop_sprinting(&mut self) -> Option<SprintReport> {
+            let tick = self.tick.as_mut().filter(|tick| tick.sprinting > 0)?;
+            tick.sprinting = 0;
+            tick.query.sprinting = false;
+            tick.query.frozen = tick.frozen_before_sprint;
+            Some(SprintReport {
+                ticks_per_second: 2000,
+                ms_per_tick: 0.5,
+            })
+        }
     }
 
     pub(crate) fn lang(key: &str) -> Option<String> {
@@ -1053,6 +1186,36 @@ pub(crate) mod tests {
                 "Too many blocks in the specified area (maximum %s, but specified %s)"
             }
             "parsing.int.invalid" => "Invalid integer '%s'",
+            "argument.float.big" => "Float must not be more than %s: found %s",
+            "argument.float.low" => "Float must not be less than %s: found %s",
+            "argument.time.tick_count_too_low" => {
+                "The tick count must not be less than %s: found %s"
+            }
+            "commands.tick.query.percentiles" => {
+                "Percentiles: P50: %sms P95: %sms P99: %sms. Sample: %s"
+            }
+            "commands.tick.query.rate.running" => {
+                "Target tick rate: %s per second.\nAverage time per tick: %sms (Target: %sms)"
+            }
+            "commands.tick.query.rate.sprinting" => {
+                "Target tick rate: %s per second (ignored, reference only).\nAverage time per tick: %sms"
+            }
+            "commands.tick.rate.success" => "Set the target tick rate to %s per second",
+            "commands.tick.sprint.report" => {
+                "Sprint completed with %s ticks per second, or %s ms per tick"
+            }
+            "commands.tick.sprint.stop.fail" => "No tick sprint in progress",
+            "commands.tick.sprint.stop.success" => "Interrupted the current tick sprint",
+            "commands.tick.status.frozen" => "The game is frozen",
+            "commands.tick.status.lagging" => {
+                "The game is running, but can't keep up with the target tick rate"
+            }
+            "commands.tick.status.running" => "The game is running normally",
+            "commands.tick.status.sprinting" => "The game is sprinting",
+            "commands.tick.step.fail" => "Unable to step the game - the game must be frozen first",
+            "commands.tick.step.stop.fail" => "No tick step in progress",
+            "commands.tick.step.stop.success" => "Interrupted the current tick step",
+            "commands.tick.step.success" => "Stepping %s tick(s)",
             _ => return None,
         };
         Some(text.to_owned())
@@ -1078,6 +1241,10 @@ pub(crate) mod tests {
                 (out.to, resolved.text, resolved.color)
             })
             .collect()
+    }
+
+    pub(crate) fn op_at(server: &mut CommandServer, name: &str, level: u8) {
+        server.ops.add(&offline_uuid(name), name, level);
     }
 
     pub(crate) fn texts(lines: &[(Recipient, String, u32)]) -> Vec<&str> {

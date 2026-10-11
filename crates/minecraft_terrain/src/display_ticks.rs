@@ -74,6 +74,7 @@ pub fn animate_block<S: Scene + ?Sized>(
     }
     match block.id.path.as_str() {
         "nether_portal" => nether_portal(scene, pos, random, out),
+        "end_gateway" => end_gateway(scene, pos, random, out),
         "fire" | "soul_fire" => fire(block, pos, random, out),
         "lava" => lava(scene, pos, random, out),
         "campfire" | "soul_campfire" if crate::campfire::is_lit(block) => {
@@ -215,6 +216,49 @@ fn campfire(pos: BlockPos, embers: bool, random: &mut LegacyRandom, out: &mut Di
     }
 }
 
+const FACES: [BlockPos; 6] = [
+    (0, -1, 0),
+    (0, 1, 0),
+    (0, 0, -1),
+    (0, 0, 1),
+    (-1, 0, 0),
+    (1, 0, 0),
+];
+
+fn end_gateway<S: Scene + ?Sized>(
+    scene: &S,
+    pos: BlockPos,
+    random: &mut LegacyRandom,
+    out: &mut DisplayTick,
+) {
+    let shown = FACES
+        .iter()
+        .filter(|(dx, dy, dz)| !scene.solid_render_at((pos.0 + dx, pos.1 + dy, pos.2 + dz)))
+        .count();
+    let (bx, by, bz) = (f64::from(pos.0), f64::from(pos.1), f64::from(pos.2));
+    for _ in 0..shown {
+        let mut start = DVec3::new(
+            bx + random.next_double(),
+            by + random.next_double(),
+            bz + random.next_double(),
+        );
+        let mut motion = DVec3::new(
+            (random.next_double() - 0.5) * 0.5,
+            (random.next_double() - 0.5) * 0.5,
+            (random.next_double() - 0.5) * 0.5,
+        );
+        let side = random.next_int(2) as i32 * 2 - 1;
+        if random.next_boolean() {
+            start.z = bz + 0.5 + 0.25 * f64::from(side);
+            motion.z = f64::from(random.next_float() * 2.0 * side as f32);
+        } else {
+            start.x = bx + 0.5 + 0.25 * f64::from(side);
+            motion.x = f64::from(random.next_float() * 2.0 * side as f32);
+        }
+        out.portal_particles.push((start, motion));
+    }
+}
+
 fn nether_portal<S: Scene + ?Sized>(
     scene: &S,
     pos: BlockPos,
@@ -286,6 +330,42 @@ mod tests {
         let mut block = Block::new("minecraft:nether_portal");
         block.properties.insert("axis".to_owned(), axis.to_owned());
         block
+    }
+
+    #[test]
+    fn a_gateway_in_its_frame_gives_four_particles_and_a_lone_one_six() {
+        let gateway = Block::new("minecraft:end_gateway");
+        let bedrock = Block::new("minecraft:bedrock");
+        let framed = Blocks(HashMap::from([
+            ((0, 64, 0), gateway.clone()),
+            ((0, 65, 0), bedrock.clone()),
+            ((0, 63, 0), bedrock),
+        ]));
+        let mut out = DisplayTick::default();
+        let mut random = LegacyRandom::new(11);
+        animate_block(&framed, (0, 64, 0), &mut random, &mut out);
+        assert_eq!(out.portal_particles.len(), 4);
+        for (start, motion) in &out.portal_particles {
+            let on_x = (start.x - 0.25).abs() < 1e-9 || (start.x - 0.75).abs() < 1e-9;
+            let on_z = (start.z - 0.25).abs() < 1e-9 || (start.z - 0.75).abs() < 1e-9;
+            assert!(on_x || on_z, "{start:?}");
+            assert!((64.0..65.0).contains(&start.y));
+            assert!(motion.y.abs() <= 0.25);
+            let outward = if on_z { motion.z } else { motion.x };
+            assert!(outward.abs() <= 2.0);
+        }
+        let lone = Blocks(HashMap::from([((5, 70, 5), gateway)]));
+        let mut out = DisplayTick::default();
+        let mut random = LegacyRandom::new(11);
+        animate_block(&lone, (5, 70, 5), &mut random, &mut out);
+        assert_eq!(out.portal_particles.len(), 6);
+        let mut again = LegacyRandom::new(11);
+        let first = (
+            5.0 + again.next_double(),
+            70.0 + again.next_double(),
+            5.0 + again.next_double(),
+        );
+        assert!((out.portal_particles[0].0.y - first.1).abs() < 1e-12, "the draws follow vanilla's order");
     }
 
     #[test]

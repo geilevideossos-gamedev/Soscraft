@@ -15,6 +15,7 @@ pub mod server;
 pub mod spawnpoint;
 pub mod suggest;
 pub mod text;
+pub mod tick;
 pub mod tracker;
 pub mod tree;
 
@@ -33,7 +34,7 @@ pub use reader::CommandError;
 pub use spawnpoint::Respawn;
 pub use server::{
     Answer, Clock, CommandData, CommandRegistries, CommandServer, CommandWorld, OVERWORLD, Pose,
-    Weather, error_line,
+    SprintReport, TickQuery, Weather, error_line,
 };
 pub use suggest::{CommandHints, Completion, Suggestion, complete};
 pub use text::{Content, Resolved, Text};

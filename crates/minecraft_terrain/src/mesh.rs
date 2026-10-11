@@ -494,6 +494,7 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     textures.insert(ResourceId::parse("minecraft:entity/experience/experience_orb")?, ());
     textures.insert(ResourceId::parse(crate::trident::TEXTURE)?, ());
     textures.insert(ResourceId::parse("minecraft:entity/spider/spider")?, ());
+    textures.insert(ResourceId::parse(crate::spawner_display::CAVE_SPIDER_SKIN)?, ());
     textures.insert(ResourceId::parse("minecraft:entity/slime/slime")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/slime/magmacube")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/ghast/ghast")?, ());
@@ -502,6 +503,7 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     textures.insert(ResourceId::parse("minecraft:entity/blaze/blaze")?, ());
     textures.insert(ResourceId::parse(crate::end_crystal_render::TEXTURE)?, ());
     textures.insert(ResourceId::parse(crate::end_crystal_render::BEAM_TEXTURE)?, ());
+    textures.insert(ResourceId::parse(crate::end_gateway_render::BEAM_TEXTURE)?, ());
     textures.insert(ResourceId::parse(crate::dragon_render::TEXTURE)?, ());
     textures.insert(ResourceId::parse(crate::dragon_render::EYES)?, ());
     textures.insert(ResourceId::parse(crate::dragon_fireball::TEXTURE)?, ());
