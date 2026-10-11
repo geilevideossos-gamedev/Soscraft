@@ -221,6 +221,7 @@ impl Player {
                 status,
                 fire: self.survival.fire_ticks(),
                 score: self.survival.score,
+                frozen: self.survival.ticks_frozen(),
             }),
             place: self.place,
             uuid: Some(self.uuid.0.clone()),

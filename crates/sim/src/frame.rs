@@ -437,6 +437,14 @@ impl FrameWorld<'_> {
         true
     }
 
+    pub fn set_minecraft_move_scale(&mut self, id: ClientId, scale: f32) -> bool {
+        if self.player_mut(id).is_none() {
+            return false;
+        }
+        self.client_meta_mut(id).minecraft_slowdown = 1.0 - scale;
+        true
+    }
+
     pub fn set_powder_snow_walker(&mut self, id: ClientId, walker: bool) -> bool {
         use playerstate_iw4::pm_flags::MC_POWDER_WALKER;
         let Some(ps) = self.player_mut(id) else {
@@ -1246,6 +1254,21 @@ mod tests {
             sim.frame().player(id).map(|ps| ps.velocity),
             Some([15.0, -20.0, 300.0])
         );
+    }
+
+    #[test]
+    fn frost_sets_a_minecraft_move_scale_per_client() {
+        let mut sim = crate::SimWorld::default();
+        let (id, other) = (ClientId(5), ClientId(6));
+        assert!(!sim.set_minecraft_move_scale(id, 0.5));
+        sim.frame().ensure_player(id);
+        sim.frame().ensure_player(other);
+        assert!(sim.set_minecraft_move_scale(id, 0.75));
+        let slowdown = |sim: &mut crate::SimWorld, id| sim.frame().client_meta(id).map_or(0.0, |meta| meta.minecraft_slowdown);
+        assert_eq!(slowdown(&mut sim, id), 0.25);
+        assert_eq!(slowdown(&mut sim, other), 0.0);
+        assert!(sim.set_minecraft_move_scale(id, 1.0));
+        assert_eq!(slowdown(&mut sim, id), 0.0);
     }
 
     #[test]

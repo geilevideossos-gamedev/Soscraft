@@ -71,6 +71,7 @@ pub struct Stats {
     pub status: SurvivalStatus,
     pub fire: i32,
     pub score: i32,
+    pub frozen: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -121,7 +122,7 @@ pub const EQUIPMENT: [(usize, &str); 7] = [
     (41, "body"),
     (42, "saddle"),
 ];
-const OWNED: [&str; 21] = [
+const OWNED: [&str; 22] = [
     "playerGameType",
     "previousPlayerGameType",
     "abilities",
@@ -141,6 +142,7 @@ const OWNED: [&str; 21] = [
     "Score",
     "Air",
     "Fire",
+    "TicksFrozen",
     "respawn",
     "LastDeathLocation",
 ];
@@ -333,6 +335,9 @@ fn stats_entries(stats: &Stats, entries: &mut BTreeMap<String, Tag>) {
     for (key, value) in values {
         entries.insert(key.to_owned(), value);
     }
+    if stats.frozen > 0 {
+        entries.insert("TicksFrozen".to_owned(), Tag::Int(stats.frozen));
+    }
 }
 
 fn global_pos_tag(at: &GlobalPos, extra: Vec<(&str, Tag)>) -> Tag {
@@ -476,6 +481,7 @@ fn read_stats(tag: &Tag) -> Option<Stats> {
         status,
         fire: int("Fire", 0) as i32,
         score: int("Score", 0) as i32,
+        frozen: int("TicksFrozen", 0).clamp(0, i64::from(i32::MAX)) as i32,
     })
 }
 
@@ -803,7 +809,26 @@ mod tests {
             status,
             fire: 35,
             score: 120,
+            frozen: 0,
         }
+    }
+
+    #[test]
+    fn ticks_frozen_round_trips_and_is_left_out_at_zero() {
+        let thawed = with_stats(hurt_and_fed()).entries();
+        assert!(!thawed.contains_key("TicksFrozen"));
+        let frozen = Stats {
+            frozen: 97,
+            ..hurt_and_fed()
+        };
+        let entries = with_stats(frozen).entries();
+        assert_eq!(entries.get("TicksFrozen"), Some(&Tag::Int(97)));
+        let tag = Tag::Compound(entries);
+        assert_eq!(read_stats(&tag).map(|stats| stats.frozen), Some(97));
+        let old = with_stats(frozen).merged(None);
+        let merged = with_stats(hurt_and_fed()).merged(Some(old));
+        assert!(merged.get("TicksFrozen").is_none(), "a thawed player drops the saved frost");
+        assert_eq!(read_stats(&merged).map(|stats| stats.frozen), Some(0));
     }
 
     fn with_stats(stats: Stats) -> PlayerData {

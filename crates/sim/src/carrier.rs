@@ -295,6 +295,10 @@ impl SimWorld {
         self.frame().set_may_glide(id, may)
     }
 
+    pub fn set_minecraft_move_scale(&mut self, id: ClientId, scale: f32) -> bool {
+        self.frame().set_minecraft_move_scale(id, scale)
+    }
+
     pub fn set_powder_snow_walker(&mut self, id: ClientId, walker: bool) -> bool {
         self.frame().set_powder_snow_walker(id, walker)
     }

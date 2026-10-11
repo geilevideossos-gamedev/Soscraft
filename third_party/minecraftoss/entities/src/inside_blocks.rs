@@ -40,6 +40,7 @@ pub enum Hazard {
     InWall,
     /// Too many mobs in one place (`cramming`).
     Cramming,
+    Freeze,
 }
 
 impl Hazard {
@@ -55,7 +56,7 @@ impl Hazard {
 
     /// `#bypasses_armor`.
     pub fn bypasses_armor(self) -> bool {
-        matches!(self, Self::OnFire | Self::InWall | Self::Cramming)
+        matches!(self, Self::OnFire | Self::InWall | Self::Cramming | Self::Freeze)
     }
 
     /// The damage type's ID.
@@ -70,6 +71,7 @@ impl Hazard {
             Self::OnFire => "minecraft:on_fire",
             Self::InWall => "minecraft:in_wall",
             Self::Cramming => "minecraft:cramming",
+            Self::Freeze => "minecraft:freeze",
         }
     }
 }
@@ -93,25 +95,29 @@ pub enum BlockEffect {
     FireHurt(f32),
     /// `Entity.lavaHurt`: 4 damage and a burn sound.
     LavaHurt,
+    Freeze,
+    MeltIfBurning(Pos),
 }
 
 /// `InsideBlockEffectType` in its declared (apply) order; freezing is
 /// not modelled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
+    Freeze,
     ClearFreeze,
     FireIgnite,
     LavaIgnite,
     Extinguish,
 }
 
-const APPLY_ORDER: [Kind; 4] = [Kind::ClearFreeze, Kind::FireIgnite, Kind::LavaIgnite, Kind::Extinguish];
+const APPLY_ORDER: [Kind; 5] = [Kind::Freeze, Kind::ClearFreeze, Kind::FireIgnite, Kind::LavaIgnite, Kind::Extinguish];
 
 /// `StepBasedCollector`: the effect types of the current step and what
 /// runs after them, flushed in apply order when the step changes.
 #[derive(Default)]
 struct Collector {
     in_step: Vec<Kind>,
+    before: Vec<(Kind, BlockEffect)>,
     after: Vec<(Kind, BlockEffect)>,
     last_step: Option<i32>,
     out: Vec<BlockEffect>,
@@ -127,9 +133,19 @@ impl Collector {
 
     fn flush(&mut self) {
         for kind in APPLY_ORDER {
+            let mut i = 0;
+            while i < self.before.len() {
+                if self.before[i].0 == kind {
+                    let (_, effect) = self.before.remove(i);
+                    self.out.push(effect);
+                } else {
+                    i += 1;
+                }
+            }
             if let Some(i) = self.in_step.iter().position(|&k| k == kind) {
                 self.in_step.remove(i);
                 self.out.push(match kind {
+                    Kind::Freeze => BlockEffect::Freeze,
                     Kind::ClearFreeze => BlockEffect::ClearFreeze,
                     Kind::FireIgnite => BlockEffect::FireIgnite,
                     Kind::LavaIgnite => BlockEffect::LavaIgnite,
@@ -411,7 +427,7 @@ pub fn block_effects(world: &impl World, body: &Body, old_position: DVec3, moves
                     return true;
                 }
                 collector.advance(step);
-                inside_block(&block, pos == feet, collector, now, moved_horizontally);
+                inside_block(&block, pos, pos == feet, collector, now, moved_horizontally);
                 if let Some((lava, _, _)) = fluid {
                     collector.advance(step);
                     if lava {
@@ -453,7 +469,7 @@ pub fn block_effects(world: &impl World, body: &Body, old_position: DVec3, moves
 }
 
 /// A block's `entityInside` for a living mob.
-fn inside_block(block: &minecraftoss_player::Block, at_feet: bool, collector: &mut Collector, now: &mut Vec<BlockEffect>, moved: Option<DVec3>) {
+fn inside_block(block: &minecraftoss_player::Block, pos: Pos, at_feet: bool, collector: &mut Collector, now: &mut Vec<BlockEffect>, moved: Option<DVec3>) {
     match block.id.as_str() {
         "minecraft:fire" | "minecraft:soul_fire" => {
             let damage = if block.id == "minecraft:soul_fire" { 2.0 } else { 1.0 };
@@ -479,6 +495,8 @@ fn inside_block(block: &minecraftoss_player::Block, at_feet: bool, collector: &m
             if at_feet {
                 now.push(BlockEffect::Stuck(DVec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32))));
             }
+            collector.before.push((Kind::Extinguish, BlockEffect::MeltIfBurning(pos)));
+            collector.apply(Kind::Freeze);
             collector.apply(Kind::Extinguish);
         }
         _ => {}
@@ -534,15 +552,40 @@ mod tests {
         let snow = minecraftoss_player::Block::new("minecraft:powder_snow");
         let mut collector = Collector::default();
         let mut now = Vec::new();
-        inside_block(&snow, true, &mut collector, &mut now, None);
+        inside_block(&snow, (3, 4, 5), true, &mut collector, &mut now, None);
         assert_eq!(now, vec![BlockEffect::Stuck(DVec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32)))]);
         collector.flush();
-        assert_eq!(collector.out, vec![BlockEffect::Extinguish]);
+        assert_eq!(collector.out, vec![BlockEffect::Freeze, BlockEffect::MeltIfBurning((3, 4, 5)), BlockEffect::Extinguish]);
         let mut collector = Collector::default();
         let mut now = Vec::new();
-        inside_block(&snow, false, &mut collector, &mut now, None);
+        inside_block(&snow, (3, 5, 5), false, &mut collector, &mut now, None);
         assert!(now.is_empty());
         collector.flush();
-        assert_eq!(collector.out, vec![BlockEffect::Extinguish]);
+        assert_eq!(collector.out, vec![BlockEffect::Freeze, BlockEffect::MeltIfBurning((3, 5, 5)), BlockEffect::Extinguish]);
+    }
+
+    #[test]
+    fn powder_snow_freezes_before_it_extinguishes() {
+        let snow = minecraftoss_player::Block::new("minecraft:powder_snow");
+        let fire = minecraftoss_player::Block::new("minecraft:fire");
+        let mut collector = Collector::default();
+        let mut now = Vec::new();
+        collector.advance(0);
+        inside_block(&snow, (0, 1, 0), true, &mut collector, &mut now, None);
+        inside_block(&fire, (1, 1, 0), false, &mut collector, &mut now, None);
+        collector.flush();
+        assert_eq!(
+            collector.out,
+            vec![
+                BlockEffect::Freeze,
+                BlockEffect::ClearFreeze,
+                BlockEffect::FireIgnite,
+                BlockEffect::FireHurt(1.0),
+                BlockEffect::MeltIfBurning((0, 1, 0)),
+                BlockEffect::Extinguish,
+            ]
+        );
+        assert_eq!(Hazard::Freeze.damage_type(), "minecraft:freeze");
+        assert!(Hazard::Freeze.bypasses_armor() && !Hazard::Freeze.is_fire() && !Hazard::Freeze.panics());
     }
 }

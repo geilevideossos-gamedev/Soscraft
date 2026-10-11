@@ -141,6 +141,8 @@ pub struct ClientMatchState {
     pub(crate) controls: ScriptControls,
 
     pub(crate) max_health: i32,
+
+    pub(crate) minecraft_slowdown: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

@@ -104,7 +104,7 @@ pub(crate) fn blocks_act<W: World>(mob: &mut impl Exposed, world: &W, old_positi
                 body.stuck = Some(multiplier);
                 body.fall_distance = 0.0;
             }
-            BlockEffect::ClearFreeze => {}
+            BlockEffect::ClearFreeze | BlockEffect::Freeze | BlockEffect::MeltIfBurning(_) => {}
             BlockEffect::FireIgnite | BlockEffect::LavaIgnite | BlockEffect::LavaHurt if immune => {}
             BlockEffect::FireIgnite => {
                 // `BaseFireBlock.fireIgnite`.

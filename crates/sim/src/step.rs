@@ -356,6 +356,7 @@ fn run_players_system(ecs: &mut World) {
             if crate::voxel::active() {
                 context.bounds = crate::voxel::move_bounds(context.bounds);
             }
+            context.walk.weapon_move_scale = world.client_meta(*id).map_or(1.0, |meta| 1.0 - meta.minecraft_slowdown);
             let untouchable = crate::script_player::untouchable_buttons(&world, *id);
             crate::script::player_commands(world.ecs(), id.0, cmd.buttons & !untouchable, old_buttons & !untouchable);
             let mut cmd = *cmd;

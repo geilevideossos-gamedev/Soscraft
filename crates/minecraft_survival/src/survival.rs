@@ -21,6 +21,10 @@ const OUT_OF_WORLD_DAMAGE: f32 = 4.0;
 const OUT_OF_WORLD_DEPTH: i32 = 64;
 const BURN_DAMAGE: f32 = 1.0;
 const BURN_INTERVAL: i32 = 20;
+pub const TICKS_TO_FREEZE: i32 = 140;
+const FREEZE_INTERVAL: u64 = 40;
+const FREEZE_DAMAGE: f32 = 1.0;
+const THAW_PER_TICK: i32 = 2;
 pub const ATTACK_EXHAUSTION: f32 = 0.1;
 pub const MINE_EXHAUSTION: f32 = 0.005;
 const JUMP_EXHAUSTION: f32 = 0.05;
@@ -69,6 +73,8 @@ pub struct Vitals {
     pub experience_progress: f32,
     pub on_fire: bool,
     pub eye_in_lava: bool,
+    pub frozen: f32,
+    pub fully_frozen: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -78,6 +84,7 @@ pub struct SurvivalRules {
     pub fire_damage: bool,
     pub drowning_damage: bool,
     pub difficulty: Difficulty,
+    pub freeze_damage: bool,
 }
 
 impl Default for SurvivalRules {
@@ -88,6 +95,7 @@ impl Default for SurvivalRules {
             fire_damage: true,
             drowning_damage: true,
             difficulty: Difficulty::Normal,
+            freeze_damage: true,
         }
     }
 }
@@ -100,6 +108,7 @@ impl SurvivalRules {
             fire_damage: rules.bool("fire_damage"),
             drowning_damage: rules.bool("drowning_damage"),
             difficulty,
+            freeze_damage: rules.bool("freeze_damage"),
         }
     }
 
@@ -108,6 +117,7 @@ impl SurvivalRules {
             DamageCause::Fall | DamageCause::EnderPearl => self.fall_damage,
             DamageCause::Hazard(hazard) if hazard.is_fire() => self.fire_damage,
             DamageCause::Drown => self.drowning_damage,
+            DamageCause::Hazard(Hazard::Freeze) => self.freeze_damage,
             _ => true,
         }
     }
@@ -147,6 +157,10 @@ pub struct Survival {
     impulse_grace: u32,
     protection: minecraft_terrain::protection::Protection,
     last_block: Option<(i32, i32, i32)>,
+    ticks_frozen: i32,
+    in_powder_snow: bool,
+    freeze_immune: bool,
+    melted: Vec<(i32, i32, i32)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -208,9 +222,10 @@ impl Survival {
         self.score = score;
     }
 
-    pub fn restore(&mut self, status: SurvivalStatus, fire_ticks: i32, score: i32) {
+    pub fn restore(&mut self, status: SurvivalStatus, fire_ticks: i32, frozen: i32, score: i32) {
         self.status = status;
         self.fire_ticks = fire_ticks;
+        self.ticks_frozen = frozen.max(0);
         self.score = score;
         self.synced = Some(0);
         self.last_health = status.health.ceil() as i32;
@@ -219,6 +234,26 @@ impl Survival {
 
     pub fn fire_ticks(&self) -> i32 {
         self.fire_ticks
+    }
+
+    pub fn ticks_frozen(&self) -> i32 {
+        self.ticks_frozen
+    }
+
+    pub fn percent_frozen(&self) -> f32 {
+        self.ticks_frozen.min(TICKS_TO_FREEZE) as f32 / TICKS_TO_FREEZE as f32
+    }
+
+    pub fn set_freeze_immune(&mut self, immune: bool) {
+        self.freeze_immune = immune;
+    }
+
+    pub fn take_melted(&mut self) -> Vec<(i32, i32, i32)> {
+        std::mem::take(&mut self.melted)
+    }
+
+    fn can_freeze(&self) -> bool {
+        !self.freeze_immune && !self.no_physics
     }
 
     pub fn wear(&mut self, protection: minecraft_terrain::protection::Protection) {
@@ -503,7 +538,9 @@ impl Survival {
         }
         let effects = if self.no_physics { Vec::new() } else { block_effects(world, &body, DVec3::from_array(from), &[]) };
         let before = self.fire_ticks;
+        let was_freezing = self.ticks_frozen > 0;
         self.stuck = false;
+        self.in_powder_snow = false;
         for effect in effects {
             if self.status.health <= 0.0 {
                 break;
@@ -539,7 +576,18 @@ impl Survival {
                 BlockEffect::LavaIgnite => self.fire_ticks = self.fire_ticks.max(self.protection.burning_ticks(LAVA_IGNITE_TICKS)),
                 BlockEffect::Extinguish => self.fire_ticks = self.fire_ticks.min(0),
                 BlockEffect::Stuck(_) => self.stuck = true,
-                BlockEffect::ClearFreeze => {}
+                BlockEffect::Freeze => {
+                    self.in_powder_snow = true;
+                    if self.can_freeze() {
+                        self.ticks_frozen = (self.ticks_frozen + 1).min(TICKS_TO_FREEZE);
+                    }
+                }
+                BlockEffect::ClearFreeze => self.ticks_frozen = 0,
+                BlockEffect::MeltIfBurning(pos) => {
+                    if self.fire_ticks > 0 && !self.melted.contains(&pos) {
+                        self.melted.push(pos);
+                    }
+                }
             }
         }
         if self.invulnerable {
@@ -548,7 +596,7 @@ impl Survival {
         if motion.in_rain {
             self.fire_ticks = self.fire_ticks.min(0);
         }
-        if before > 0 && self.fire_ticks <= 0 {
+        if (before > 0 && self.fire_ticks <= 0) || (was_freezing && self.ticks_frozen <= 0) {
             let (a, b) = (random(), random());
             heard.push(PlayerSound {
                 event: "minecraft:entity.generic.extinguish_fire",
@@ -558,6 +606,12 @@ impl Survival {
         }
         if self.fire_ticks <= 0 && self.fire_ticks <= before {
             self.fire_ticks = -FIRE_IMMUNE_TICKS;
+        }
+        if !(self.in_powder_snow && self.can_freeze()) {
+            self.ticks_frozen = (self.ticks_frozen - THAW_PER_TICK).max(0);
+        }
+        if self.tick % FREEZE_INTERVAL == 0 && self.ticks_frozen >= TICKS_TO_FREEZE && self.can_freeze() && self.status.health > 0.0 {
+            self.hurt_aloud(Hazard::Freeze, FREEZE_DAMAGE, armor, &mut random, &mut heard);
         }
         heard
     }
@@ -576,12 +630,15 @@ impl Survival {
         if hazard.is_fire() && (self.status.effect(EffectKind::FireResistance).is_some() || !self.rules.fire_damage) {
             return false;
         }
+        if !self.rules.allows(DamageCause::Hazard(hazard)) {
+            return false;
+        }
         let armor = if hazard.bypasses_armor() {
             Armor::default()
         } else {
             armor
         };
-        let exhaustion = if hazard == Hazard::OnFire {
+        let exhaustion = if matches!(hazard, Hazard::OnFire | Hazard::Freeze) {
             0.0
         } else {
             HURT_EXHAUSTION
@@ -936,6 +993,8 @@ impl Survival {
             experience_progress: self.status.experience_progress,
             on_fire: self.fire_ticks > 0,
             eye_in_lava: self.eye_in_lava,
+            frozen: self.percent_frozen(),
+            fully_frozen: self.ticks_frozen >= TICKS_TO_FREEZE,
         }
     }
 }
@@ -966,6 +1025,8 @@ fn hurt_sound(hazard: Hazard) -> &'static str {
         "minecraft:entity.player.hurt_on_fire"
     } else if hazard == Hazard::SweetBerryBush {
         "minecraft:entity.player.hurt_sweet_berry_bush"
+    } else if hazard == Hazard::Freeze {
+        "minecraft:entity.player.hurt_freeze"
     } else {
         "minecraft:entity.player.hurt"
     }
@@ -1000,6 +1061,25 @@ pub fn breaks_fall(block: &str) -> bool {
             | "minecraft:water"
             | "minecraft:bubble_column"
     )
+}
+
+pub fn frost_move_scale(percent_frozen: f32) -> f32 {
+    1.0 - 0.5 * percent_frozen.clamp(0.0, 1.0)
+}
+
+pub fn freeze_immune(inventory: &Inventory) -> bool {
+    [36, 37, 38, 39, 41].into_iter().any(|slot| {
+        inventory.slots.get(slot).and_then(Option::as_ref).is_some_and(|stack| {
+            matches!(
+                stack.id.as_str(),
+                "minecraft:leather_boots"
+                    | "minecraft:leather_leggings"
+                    | "minecraft:leather_chestplate"
+                    | "minecraft:leather_helmet"
+                    | "minecraft:leather_horse_armor"
+            )
+        })
+    })
 }
 
 pub fn walks_on_powder_snow(inventory: &Inventory) -> bool {
@@ -2177,6 +2257,124 @@ mod tests {
             "{}",
             armored.status.health
         );
+    }
+
+    fn snow_pit() -> Blocks {
+        ground(&[
+            ((0, 1, 0), block("minecraft:powder_snow")),
+            ((0, 2, 0), block("minecraft:powder_snow")),
+            ((4, 1, 0), block("minecraft:fire")),
+        ])
+    }
+
+    fn in_snow() -> Motion {
+        Motion {
+            on_ground: false,
+            ..standing_in([0.5, 1.0, 0.5])
+        }
+    }
+
+    #[test]
+    fn seven_seconds_in_powder_snow_freeze_a_player() {
+        let mut survival = unfed();
+        live(&mut survival, &snow_pit(), &in_snow(), Armor::default(), 139);
+        assert_eq!(survival.ticks_frozen(), 139);
+        assert!(!survival.vitals().fully_frozen);
+        assert!((survival.vitals().frozen - 139.0 / 140.0).abs() < 1e-6);
+        live(&mut survival, &snow_pit(), &in_snow(), Armor::default(), 10);
+        assert_eq!(survival.ticks_frozen(), TICKS_TO_FREEZE);
+        assert!(survival.vitals().fully_frozen);
+        assert_eq!(survival.vitals().frozen, 1.0);
+        assert!((frost_move_scale(1.0) - 0.5).abs() < 1e-6 && frost_move_scale(0.0) == 1.0);
+    }
+
+    #[test]
+    fn frozen_players_take_one_every_two_seconds() {
+        let mut survival = unfed();
+        let heard = live(&mut survival, &snow_pit(), &in_snow(), Armor::default(), 159);
+        assert_eq!(survival.status.health, 20.0);
+        assert_eq!(count(&heard, "minecraft:entity.player.hurt_freeze"), 0);
+        let heard = live(&mut survival, &snow_pit(), &in_snow(), Armor::default(), 121);
+        assert_eq!(survival.status.health, 16.0);
+        assert_eq!(count(&heard, "minecraft:entity.player.hurt_freeze"), 4);
+        let iron = Armor {
+            value: Some((15.0, 0.0)),
+        };
+        live(&mut survival, &snow_pit(), &in_snow(), iron, 40);
+        assert_eq!(survival.status.health, 15.0, "frost goes through armour");
+    }
+
+    #[test]
+    fn thawing_takes_two_ticks_per_tick() {
+        let mut survival = unfed();
+        live(&mut survival, &snow_pit(), &in_snow(), Armor::default(), 140);
+        let outside = standing_in([3.5, 1.0, 0.5]);
+        live(&mut survival, &snow_pit(), &outside, Armor::default(), 1);
+        assert_eq!(survival.ticks_frozen(), 138);
+        live(&mut survival, &snow_pit(), &outside, Armor::default(), 68);
+        assert_eq!(survival.ticks_frozen(), 2);
+        let heard = live(&mut survival, &snow_pit(), &outside, Armor::default(), 1);
+        assert_eq!(survival.ticks_frozen(), 0);
+        assert_eq!(count(&heard, "minecraft:entity.generic.extinguish_fire"), 0, "thawing is quiet");
+        assert_eq!(survival.status.health, 20.0);
+    }
+
+    #[test]
+    fn leather_armour_keeps_a_player_from_freezing() {
+        let mut inventory = Inventory::default();
+        assert!(!freeze_immune(&inventory));
+        inventory.slots[38] = Some(ItemStack::new("minecraft:iron_chestplate", 1));
+        assert!(!freeze_immune(&inventory));
+        inventory.slots[39] = Some(ItemStack::new("minecraft:leather_helmet", 1));
+        assert!(freeze_immune(&inventory));
+        inventory.slots[39] = None;
+        inventory.slots[0] = Some(ItemStack::new("minecraft:leather_boots", 1));
+        assert!(!freeze_immune(&inventory), "it must be worn");
+        let mut survival = unfed();
+        live(&mut survival, &snow_pit(), &in_snow(), Armor::default(), 100);
+        survival.set_freeze_immune(true);
+        live(&mut survival, &snow_pit(), &in_snow(), Armor::default(), 1);
+        assert_eq!(survival.ticks_frozen(), 98, "a worn piece thaws the frost");
+        live(&mut survival, &snow_pit(), &in_snow(), Armor::default(), 300);
+        assert_eq!(survival.ticks_frozen(), 0);
+        assert_eq!(survival.status.health, 20.0);
+        assert!(survival.stuck(), "it still sinks");
+    }
+
+    #[test]
+    fn the_freeze_damage_rule_stops_the_damage() {
+        let mut survival = unfed();
+        survival.rules.freeze_damage = false;
+        let heard = live(&mut survival, &snow_pit(), &in_snow(), Armor::default(), 300);
+        assert!(survival.vitals().fully_frozen);
+        assert_eq!(survival.status.health, 20.0);
+        assert_eq!(count(&heard, "minecraft:entity.player.hurt_freeze"), 0);
+        let mut rules = minecraft_terrain::game_rules::GameRules::default();
+        assert!(SurvivalRules::of(&rules, Difficulty::Normal).freeze_damage);
+        rules.set("freeze_damage", "false").unwrap();
+        assert!(!SurvivalRules::of(&rules, Difficulty::Normal).freeze_damage);
+    }
+
+    #[test]
+    fn fire_clears_the_frost_with_the_extinguish_sound() {
+        let mut survival = unfed();
+        live(&mut survival, &snow_pit(), &in_snow(), Armor::default(), 100);
+        let heard = live(&mut survival, &snow_pit(), &standing_in([4.5, 1.0, 0.5]), Armor::default(), 1);
+        assert_eq!(survival.ticks_frozen(), 0);
+        assert_eq!(count(&heard, "minecraft:entity.generic.extinguish_fire"), 1);
+    }
+
+    #[test]
+    fn a_burning_player_melts_the_powder_snow_it_enters() {
+        let mut survival = unfed();
+        live(&mut survival, &snow_pit(), &in_snow(), Armor::default(), 1);
+        assert!(survival.take_melted().is_empty());
+        survival.fire_ticks = 100;
+        let heard = live(&mut survival, &snow_pit(), &in_snow(), Armor::default(), 1);
+        assert_eq!(survival.take_melted(), vec![(0, 1, 0), (0, 2, 0)]);
+        assert!(survival.take_melted().is_empty());
+        assert!(survival.fire_ticks() <= 0);
+        assert_eq!(count(&heard, "minecraft:entity.generic.extinguish_fire"), 1);
     }
 
     fn wearing(enchantment: &str, level: i64) -> minecraft_terrain::protection::Protection {

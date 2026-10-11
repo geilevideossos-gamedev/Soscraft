@@ -152,3 +152,35 @@ Previous commit: 5de91941
 ```
 IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket,minecraft:powder_snow_bucket,minecraft:powder_snow_bucket,minecraft:bucket,minecraft:leather_boots,minecraft:cobblestone*64
 ```
+
+### 6. Minecraft powder snow freezes players like vanilla: frost, damage and melting
+
+Previous commit: 6b565157
+
+- **Changed:**
+  - Vendored `inside_blocks.rs`: `Hazard::Freeze` (`minecraft:freeze`, through armour, not fire, no panic), `BlockEffect::Freeze` and `BlockEffect::MeltIfBurning(pos)`. `Kind::Freeze` is first in the apply order, as `InsideBlockEffectType` declares it. The collector gained a `before` list, flushed ahead of its kind (vanilla's `runBefore`). Every powder snow block the body is in adds the melt before the extinguish, then freeze and extinguish. Mobs ignore both new effects (`world/hazards.rs`).
+  - `minecraft_survival` `survival.rs`: `Survival` keeps `ticks_frozen` and `in_powder_snow` per player. Freeze adds 1 (up to 140) unless the player can't freeze; ClearFreeze (fire, lava) sets 0; after the effects the frost melts by 2 unless the player is in powder snow and can freeze. Every 40th tick while at 140 it deals 1 `minecraft:freeze` damage through armour with `entity.player.hurt_freeze` and no exhaustion, unless the new `freeze_damage` rule (`SurvivalRules.freeze_damage`, read from the game rules) is off. The extinguish hiss also plays when the frost was cleared during the effects. A player can't freeze while wearing any leather armour piece (`freeze_immune`: boots, leggings, chestplate, helmet or horse armour in slots 36-39 and 41, vanilla's `#freeze_immune_wearables`) or in spectator. A burning player melts every powder snow block it is in (`take_melted`); `render_anim` writes air there through the same block-write path as Frost Walker and shows the block's break particles and sound (`Entities.destroyed`). `Vitals` gains `frozen` (percent) and `fully_frozen`.
+  - `death.rs`: `minecraft:freeze` with the message id `freeze` ("%1$s froze to death", ".player": "%1$s was frozen to death by %2$s").
+  - `player_nbt.rs`: `TicksFrozen` (int) is owned, written only above 0, read with default 0; `Survival::restore` takes it and respawning clears it.
+  - Frost slowdown: `sim` keeps a per-client Minecraft move scale (`set_minecraft_move_scale`, on the client's match state, default 1) and feeds it to `WalkMoveContext.weapon_move_scale`, which was always 1 before. MW2 walking and climbing already scale by it, and `stuck_move` now scales its ground walk and sprint speeds by it (air speed stays, as vanilla's flying speed isn't an attribute). `render_anim` sets 1 - 0.5 × percent frozen while frozen with a block 0.2 below the feet (`frost_move_scale`), else 1.
+- **Tests:**
+  - `minecraft_survival` `survival`: `seven_seconds_in_powder_snow_freeze_a_player`, `frozen_players_take_one_every_two_seconds` (none before tick 160, 4 in 280 ticks, through iron armour), `thawing_takes_two_ticks_per_tick` (quietly), `leather_armour_keeps_a_player_from_freezing`, `the_freeze_damage_rule_stops_the_damage`, `fire_clears_the_frost_with_the_extinguish_sound`, `a_burning_player_melts_the_powder_snow_it_enters`.
+  - `death`: `freezing_to_death_has_the_vanilla_message`. `player_nbt`: `ticks_frozen_round_trips_and_is_left_out_at_zero`.
+  - `sim` `frame`: `frost_sets_a_minecraft_move_scale_per_client`.
+  - `movement_iw4` `stuck`: `frost_slows_the_walk_but_not_the_drift` (half speed on the ground at a move scale of 0.5, the air drift unchanged).
+  - Vendored `inside_blocks`: `powder_snow_freezes_before_it_extinguishes` (freeze, clear, ignite, fire hurt, melt, extinguish); `powder_snow_sticks_only_by_the_feet` now also expects the freeze and the melt.
+- **Decisions:**
+  - The move scale is not replicated, so a joined friend's client would mispredict a frozen player's speed until track E sends it **[E]**. It lives next to the client's other per-client state in `sim`, not in `PlayerState`, and leaves `ps.move_speed_scale_multiplier` alone because MW2's `_weapons.gsc` writes that one.
+  - Freezing and frost are ticked from `render_anim` for the local player, like the other hazards **[E]**.
+  - A burning mob doesn't melt powder snow (vanilla does with `mob_griefing`), and mobs don't freeze.
+- **Test steps:** (survival, `/difficulty normal`; the same pit as in commit 5)
+  1. Stand inside the 3-deep powder snow pit, head in the snow, armour off: after about 8 seconds you start taking half a heart every 2 seconds with a crackling hurt sound (the frost overlay and frozen hearts come in the next commit).
+  2. Stay until the frost kills you: the chat says "<name> froze to death". Respawn, `/gamerule freeze_damage false` and go back in: no damage. `/gamerule freeze_damage true`.
+  3. Get out (scoop the blocks up and pillar out): for about 3.5 seconds walking is slower, half speed right after full frost.
+  4. Put on the leather helmet only and stand in the snow again: no damage, no slowdown afterwards.
+  5. Set yourself on fire (place netherrack, light it with flint and steel, step in) and jump into the powder snow: the fire goes out with a hiss and the snow block you are in melts away with its break sound.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket,minecraft:powder_snow_bucket,minecraft:powder_snow_bucket,minecraft:bucket,minecraft:leather_helmet,minecraft:flint_and_steel,minecraft:netherrack*16,minecraft:cobblestone*64
+```

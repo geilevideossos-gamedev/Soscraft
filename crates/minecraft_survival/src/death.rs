@@ -133,6 +133,7 @@ impl DamageCause {
             Self::Hazard(Hazard::OnFire) => "minecraft:on_fire",
             Self::Hazard(Hazard::InWall) => "minecraft:in_wall",
             Self::Hazard(Hazard::Cramming) => "minecraft:cramming",
+            Self::Hazard(Hazard::Freeze) => "minecraft:freeze",
             Self::Fall => "minecraft:fall",
             Self::EnderPearl => "minecraft:ender_pearl",
             Self::FlyIntoWall => "minecraft:fly_into_wall",
@@ -163,6 +164,7 @@ impl DamageCause {
             Self::Hazard(Hazard::OnFire) => "onFire",
             Self::Hazard(Hazard::InWall) => "inWall",
             Self::Hazard(Hazard::Cramming) => "cramming",
+            Self::Hazard(Hazard::Freeze) => "freeze",
             Self::Fall | Self::EnderPearl => "fall",
             Self::FlyIntoWall => "flyIntoWall",
             Self::Drown => "drown",
@@ -639,6 +641,8 @@ mod tests {
             ),
             ("death.attack.magic", "%1$s was killed by magic"),
             ("death.attack.wither", "%1$s withered away"),
+            ("death.attack.freeze", "%1$s froze to death"),
+            ("death.attack.freeze.player", "%1$s was frozen to death by %2$s"),
             ("death.attack.outOfWorld", "%1$s fell out of the world"),
             ("death.attack.flyIntoWall", "%1$s experienced kinetic energy"),
             (
@@ -727,6 +731,20 @@ mod tests {
         );
         assert_eq!(zombie_bite().melee_effect(), None);
         assert_eq!(skeleton_arrow().melee_effect(), None);
+    }
+
+    #[test]
+    fn freezing_to_death_has_the_vanilla_message() {
+        let mut tracker = CombatTracker::default();
+        tracker.record(1, DamageCause::Hazard(Hazard::Freeze), 1.0, None, 0.0);
+        assert_eq!(line(&tracker), says("%1$s froze to death", "froze to death"));
+        assert_eq!(DamageCause::Hazard(Hazard::Freeze).damage_type(), "minecraft:freeze");
+        tracker.hurt_by(2, zombie_bite());
+        tracker.record(2, DamageCause::Hazard(Hazard::Freeze), 1.0, None, 0.0);
+        assert_eq!(
+            line(&tracker),
+            says("%1$s was frozen to death by Zombie", "Zombie")
+        );
     }
 
     #[test]

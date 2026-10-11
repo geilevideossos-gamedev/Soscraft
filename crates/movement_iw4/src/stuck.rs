@@ -64,8 +64,8 @@ pub fn stuck_move<C: CollisionBackend>(
     let sprinting = ps.pm_flags & pm_flags::SPRINTING != 0;
     let speed = match (stuck.fluid_sink, grounded, sprinting) {
         (Some(_), _, _) => FLUID_SPEED,
-        (None, true, false) => WALK_SPEED,
-        (None, true, true) => SPRINT_SPEED,
+        (None, true, false) => WALK_SPEED * context.weapon_move_scale,
+        (None, true, true) => SPRINT_SPEED * context.weapon_move_scale,
         (None, false, false) => AIR_SPEED,
         (None, false, true) => SPRINT_AIR_SPEED,
     };
@@ -528,6 +528,30 @@ mod tests {
         let mut ps = standing();
         let walked = moved(&mut ps, ahead(0), POWDER, &[50], true);
         assert!((walked[0] - 0.098 * 0.9).abs() < 1e-5, "{walked:?}");
+    }
+
+    #[test]
+    fn frost_slows_the_walk_but_not_the_drift() {
+        let step = |walking: bool| {
+            let mut ps = if walking { standing() } else { airborne() };
+            let mut cmd = UserCmd {
+                server_time: 1050,
+                ..ahead(0)
+            };
+            let frosty = WalkMoveContext {
+                weapon_move_scale: 0.5,
+                ..context()
+            };
+            let snow = Stuck {
+                multiplier: POWDER,
+                fluid_sink: None,
+                climb: None,
+            };
+            stuck_move(&mut ps, &mut frame(50, walking), &mut cmd, snow, frosty, BOUNDS, &Open);
+            ps.origin[0] / WATER_BLOCK
+        };
+        assert!((step(true) - 0.098 * 0.9 * 0.5).abs() < 1e-5, "{}", step(true));
+        assert!((step(false) - 0.02 * 0.98 * 0.9).abs() < 1e-6, "{}", step(false));
     }
 
     #[test]

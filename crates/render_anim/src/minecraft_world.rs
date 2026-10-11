@@ -957,6 +957,7 @@ fn update(
         };
         let armor = entities.as_ref().map_or_else(minecraftoss_player::survival::Armor::default, |_| minecraft_survival::survival::armor(inventory));
         survival.wear(minecraft_terrain::protection::Protection::worn(globals.data.protection.clone(), inventory));
+        survival.set_freeze_immune(minecraft_survival::survival::freeze_immune(inventory));
         for _ in 0..hand_ticks {
             let from = survival.last_feet().unwrap_or(feet);
             let breath = survival.tick(&motion);
@@ -987,6 +988,15 @@ fn update(
             if let Some(entities) = entities.as_mut().filter(|_| !frozen.is_empty()) {
                 write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, frozen.into_iter().map(|(pos, block)| (pos, scene_block(&block))).collect());
             }
+            let melted = survival.take_melted();
+            if let Some(entities) = entities.as_mut().filter(|_| !melted.is_empty()) {
+                let gone: Vec<_> = melted
+                    .into_iter()
+                    .filter_map(|pos| minecraft_terrain::scene::Scene::block(&terrain.scene, pos).filter(|b| b.id.key() == "minecraft:powder_snow").cloned().map(|b| (pos, b)))
+                    .collect();
+                write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, gone.iter().map(|(pos, _)| (*pos, None)).collect());
+                entities.destroyed.extend(gone);
+            }
             if entities.is_some() {
                 hold_off_death(survival, inventory, *selected, sounds.as_mut(), &world.packs, false);
             }
@@ -1000,6 +1010,10 @@ fn update(
             }
         }
     }
+    let on_block = minecraft_terrain::scene::Scene::block(&terrain.scene, (feet[0].floor() as i32, (feet[1] - 0.2).floor() as i32, feet[2].floor() as i32))
+        .is_some_and(|b| !(b.id.namespace == "minecraft" && matches!(b.id.path.as_str(), "air" | "cave_air" | "void_air")));
+    let frost = if alive && survival.ticks_frozen() > 0 && on_block { minecraft_survival::survival::frost_move_scale(survival.percent_frozen()) } else { 1.0 };
+    authority.0.set_minecraft_move_scale(local.0, frost);
     if let Some(entities) = entities.as_mut() {
         let (writes, brewed) = minecraft_survival::level::tick_containers(containers, entities, terrain, hand_ticks);
         if let Some(sounds) = sounds.as_mut() {
