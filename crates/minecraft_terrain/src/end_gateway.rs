@@ -10,6 +10,7 @@ pub const END_GATEWAY: &str = "minecraft:end_gateway";
 pub const SPAWN_TIME: i64 = 200;
 pub const COOLDOWN_TIME: i32 = 40;
 pub const ATTENTION_INTERVAL: i64 = 2400;
+pub const PEARL_SIZE: f64 = 0.25;
 const SPAWNABLE_HEIGHT: i32 = 20_000_000;
 const WORLD_BORDER: i32 = 30_000_000;
 
@@ -230,6 +231,43 @@ impl ClientGateways {
     }
 }
 
+pub fn pearl_gateway(
+    from: [f64; 3],
+    to: [f64; 3],
+    mut enter: impl FnMut(Pos) -> bool,
+) -> Option<Pos> {
+    let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    let length = (delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]).sqrt();
+    let steps = (length / (PEARL_SIZE / 2.0)).ceil().max(1.0) as u32;
+    let half = PEARL_SIZE / 2.0 - 1.0e-5;
+    let mut seen = Vec::new();
+    for step in 0..=steps {
+        let t = f64::from(step) / f64::from(steps);
+        let at = [
+            from[0] + delta[0] * t,
+            from[1] + delta[1] * t,
+            from[2] + delta[2] * t,
+        ];
+        let low = [at[0] - half, at[1] + 1.0e-5, at[2] - half];
+        let high = [at[0] + half, at[1] + PEARL_SIZE - 1.0e-5, at[2] + half];
+        let range = |axis: usize| low[axis].floor() as i32..=high[axis].floor() as i32;
+        for z in range(2) {
+            for y in range(1) {
+                for x in range(0) {
+                    if seen.contains(&(x, y, z)) {
+                        continue;
+                    }
+                    seen.push((x, y, z));
+                    if enter((x, y, z)) {
+                        return Some((x, y, z));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 pub fn tag_at<'l>(level: &'l Level<'_>, pos: Pos) -> Option<&'l Tag> {
     level
         .chunk(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2).chunk())?
@@ -249,6 +287,36 @@ pub fn write_age(level: &mut Level<'_>, pos: Pos, age: i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pearl_sweeps_its_small_box_along_its_flight() {
+        let gateway = |pos: Pos| pos == (0, 64, 0);
+        assert_eq!(
+            pearl_gateway([0.5, 66.0, -3.0], [0.5, 64.2, 3.0], gateway),
+            Some((0, 64, 0))
+        );
+        assert_eq!(
+            pearl_gateway([0.5, 65.0, 0.5], [0.5, 65.0, 0.5], gateway),
+            None
+        );
+        assert_eq!(
+            pearl_gateway([0.5, 64.76, 0.5], [0.5, 64.76, 0.5], gateway),
+            Some((0, 64, 0)),
+            "the box is a quarter high"
+        );
+        assert_eq!(
+            pearl_gateway([1.13, 64.5, 0.5], [1.13, 64.5, 0.5], gateway),
+            None,
+            "and a quarter wide"
+        );
+        let mut asked = Vec::new();
+        let first = pearl_gateway([0.5, 64.5, 5.5], [0.5, 64.5, -2.5], |pos| {
+            asked.push(pos);
+            pos == (0, 64, 3) || pos == (0, 64, 0)
+        });
+        assert_eq!(first, Some((0, 64, 3)), "the first gateway on the way");
+        assert_eq!(asked, vec![(0, 64, 5), (0, 64, 4), (0, 64, 3)]);
+    }
 
     fn tag(entries: &[(&str, Tag)]) -> Tag {
         Tag::Compound(

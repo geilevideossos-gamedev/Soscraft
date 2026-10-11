@@ -29,6 +29,9 @@ const ISLAND_Y: f64 = 75.0;
 const TALLEST_RADIUS: i32 = 16;
 const EXIT_RADIUS: i32 = 5;
 const NORMALIZE_EPSILON: f64 = 1.0e-5_f32 as f64;
+const PEARL_GRAVITY: f64 = 0.03;
+const PEARL_INERTIA: f64 = 0.99;
+const VOID_DEPTH: i32 = 64;
 
 pub trait GatewayWorld {
     fn highest_filled_section(&mut self, chunk: (i32, i32)) -> Option<i32>;
@@ -435,23 +438,101 @@ pub fn arrival(from: Option<Place>, dimension: Dimension, feet: [f64; 3]) -> Pla
     }
 }
 
-pub fn travel(level: &mut Level, player: &mut Player, gateway: Pos) -> Option<GatewayTrip> {
+pub fn resolve_exit(level: &mut Level, gateway: Pos) -> Option<(GatewayExit, bool)> {
     let (known, exact) = known_exit(level, gateway);
     let (exit, built) = match known {
         Some(exit) => (exit, false),
         None if level.dimension == Dimension::End => (create_exit(level, gateway, exact)?, true),
         None => return None,
     };
+    Some((GatewayExit { exit, exact }, built))
+}
+
+pub fn travel(level: &mut Level, player: &mut Player, gateway: Pos) -> Option<GatewayTrip> {
+    let (found, built) = resolve_exit(level, gateway)?;
+    let exit = found.exit;
     let feet = {
         let mut world = ChunkWorld::new(&mut level.terrain.stream);
         world.generates = true;
-        destination(&mut world, GatewayExit { exit, exact })
+        destination(&mut world, found)
     };
     let from = player
         .place
         .filter(|place| place.dimension == player.dimension);
     player.arrive(arrival(from, level.dimension, feet));
     Some(GatewayTrip { exit, feet, built })
+}
+
+pub fn collision_spans(world: &mut ChunkWorld<'_>, pos: Pos, fx: f64, fz: f64) -> Vec<(f64, f64)> {
+    let state = world.state(pos);
+    world
+        .registries()
+        .blocks
+        .collision_boxes(state)
+        .into_iter()
+        .filter(|b| (b[0]..=b[3]).contains(&fx) && (b[2]..=b[5]).contains(&fz))
+        .map(|b| (f64::from(pos.1) + b[1], f64::from(pos.1) + b[4]))
+        .collect()
+}
+
+pub fn pearl_drop(
+    start: [f64; 3],
+    min_y: i32,
+    mut spans_at: impl FnMut(Pos, f64, f64) -> Vec<(f64, f64)>,
+) -> Option<[f64; 3]> {
+    let (cell_x, cell_z) = (start[0].floor() as i32, start[2].floor() as i32);
+    let (fx, fz) = (start[0] - f64::from(cell_x), start[2] - f64::from(cell_z));
+    let lowest = f64::from(min_y - VOID_DEPTH);
+    let mut y = start[1];
+    let mut velocity = 0.0;
+    loop {
+        velocity = (velocity - PEARL_GRAVITY) * PEARL_INERTIA;
+        let next = y + velocity;
+        let hit = (next.floor() as i32 - 1..=y.floor() as i32)
+            .rev()
+            .any(|cell_y| {
+                spans_at((cell_x, cell_y, cell_z), fx, fz)
+                    .into_iter()
+                    .any(|(bottom, top)| top >= next && bottom <= y)
+            });
+        if hit {
+            return Some([start[0], y, start[2]]);
+        }
+        if next < lowest {
+            return None;
+        }
+        y = next;
+    }
+}
+
+pub fn pearl_landing(level: &mut Level, gateway: Pos) -> Option<[f64; 3]> {
+    let (exit, _) = resolve_exit(level, gateway)?;
+    let mut world = ChunkWorld::new(&mut level.terrain.stream);
+    world.generates = true;
+    let start = destination(&mut world, exit);
+    let min_y = world.min_y();
+    pearl_drop(start, min_y, |pos, fx, fz| {
+        collision_spans(&mut world, pos, fx, fz)
+    })
+}
+
+pub fn pearls_through(level: &mut Level) -> Vec<(Pos, Option<[f64; 3]>)> {
+    let gateways = level
+        .entities
+        .as_mut()
+        .map(|entities| std::mem::take(&mut entities.pearl_gateways))
+        .unwrap_or_default();
+    let mut trips = Vec::new();
+    for gateway in gateways {
+        let landing = pearl_landing(level, gateway);
+        if let (Some(landing), Some(entities)) = (landing, level.entities.as_mut()) {
+            entities
+                .pearl_landings
+                .push(glam::DVec3::from_array(landing));
+        }
+        trips.push((gateway, landing));
+    }
+    trips
 }
 
 #[cfg(test)]
@@ -954,6 +1035,114 @@ mod tests {
         assert_eq!(
             alex.arrival, None,
             "outside the End a gateway with no exit goes nowhere"
+        );
+    }
+
+    #[test]
+    fn a_pearl_lands_on_the_first_block_below_the_exit_or_is_lost_in_the_void() {
+        let floor = |pos: Pos, _: f64, _: f64| {
+            if pos.1 == 60 {
+                vec![(60.0, 61.0)]
+            } else {
+                Vec::new()
+            }
+        };
+        assert_eq!(
+            pearl_drop([0.5, 61.0, 0.5], 0, floor),
+            Some([0.5, 61.0, 0.5]),
+            "an exit on the ground lands where it is"
+        );
+        let from_high = pearl_drop([3.25, 75.0, -7.75], 0, floor).expect("lands");
+        assert_eq!((from_high[0], from_high[2]), (3.25, -7.75));
+        assert!(
+            from_high[1] > 61.0 && from_high[1] < 62.0,
+            "the start of the tick that reaches the floor: {from_high:?}"
+        );
+        let mut y = 75.0;
+        let mut velocity = 0.0;
+        loop {
+            velocity = (velocity - 0.03) * 0.99;
+            if y + velocity <= 61.0 {
+                break;
+            }
+            y += velocity;
+        }
+        assert_eq!(from_high[1], y);
+        let slab = |pos: Pos, _: f64, _: f64| {
+            if pos.1 == 60 {
+                vec![(60.0, 60.5)]
+            } else {
+                Vec::new()
+            }
+        };
+        let on_slab = pearl_drop([0.5, 61.0, 0.5], 0, slab).expect("lands");
+        assert!(on_slab[1] > 60.5 && on_slab[1] <= 61.0, "{on_slab:?}");
+        assert_eq!(
+            pearl_drop([0.5, 60.5, 0.5], 0, floor),
+            Some([0.5, 60.5, 0.5]),
+            "inside a block it lands at once"
+        );
+        let mut lowest = f64::MAX;
+        let lost = pearl_drop([0.5, 61.0, 0.5], 0, |pos, _, _| {
+            lowest = lowest.min(f64::from(pos.1));
+            Vec::new()
+        });
+        assert_eq!(lost, None);
+        assert!(lowest < -60.0 && lowest > -70.0, "{lowest}");
+        let edge = |pos: Pos, fx: f64, _: f64| {
+            if pos.1 == 60 && fx <= 0.5 {
+                vec![(60.0, 61.0)]
+            } else {
+                Vec::new()
+            }
+        };
+        assert_eq!(pearl_drop([0.75, 61.0, 0.5], -64, edge), None);
+    }
+
+    #[test]
+    fn a_pearl_through_a_gateway_lands_its_thrower_below_the_exit() {
+        let Some(mut level) = end_level(None) else {
+            return;
+        };
+        let data = crate::data::GameData::default();
+        level.entities = Some(crate::entities::Entities::new(
+            &level.terrain.stream,
+            Dimension::End,
+            77,
+            &data,
+            None,
+            None,
+        ));
+        let gateway = (40, 70, 40);
+        let portal = state(&level, END_GATEWAY);
+        let mut exact = gateway_tag(gateway, (20, 120, 0));
+        if let Tag::Compound(map) = &mut exact {
+            map.insert("ExactTeleport".to_owned(), Tag::Byte(1));
+        }
+        write(&mut level, &[(gateway, portal)], &[(gateway, Some(exact))]);
+        if let Some(entities) = level.entities.as_mut() {
+            entities.pearl_gateways.push(gateway);
+        }
+        let trips = pearls_through(&mut level);
+        let landing = trips
+            .first()
+            .and_then(|&(at, landing)| (at == gateway).then_some(landing).flatten())
+            .expect("the pearl lands");
+        assert_eq!((landing[0], landing[2]), (20.5, 0.5));
+        let entities = level.entities.as_ref().expect("entities");
+        assert_eq!(
+            entities.pearl_landings,
+            vec![glam::DVec3::from_array(landing)]
+        );
+        assert!(entities.pearl_gateways.is_empty());
+        let mut world = ChunkWorld::new(&mut level.terrain.stream);
+        let mut ground = landing[1].floor() as i32;
+        while !world.full_block((20, ground, 0)) {
+            ground -= 1;
+        }
+        assert!(
+            landing[1] >= f64::from(ground + 1) && landing[1] < f64::from(ground + 3),
+            "{landing:?} over the ground at {ground}"
         );
     }
 

@@ -722,6 +722,7 @@ fn update(
         return;
     };
     crate::minecraft_portal::step(player, levels, globals, presented.player(local.0).filter(|ps| ps.pm_type == 0).map(|ps| sim::voxel::to_block(origin, ps.origin)), time.delta_secs_f64(), sounds.as_mut(), &world.packs, &mut ui);
+    crate::minecraft_end::pearls_through(player, levels);
     if player.switching.is_some_and(|switch| !switch.left) {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
         ui.active = false;

@@ -600,3 +600,28 @@ Commit: the one after 41db58c7 (entry 4a).
   4. Quit to the menu and start again. Use the first gateway again: you arrive at the same island under the same return gateway, no second one is built, and the log line has no `built`.
   5. On the main island, about 20 blocks east of 0, 0, type `/setblock ~2 ~ ~ minecraft:end_gateway` and walk into it (it has no frame): you go to the outer islands east of the centre, and a return gateway is built there.
 - **Kit:** see the combined line at the end of item a1.
+
+### 5. Minecraft ender pearls fly through end gateways
+
+Commit: the one after a8171da7 (entry 4).
+
+- **Changed:**
+  - `minecraft_terrain/src/end_gateway.rs`: `pearl_gateway(from, to, enter)` sweeps the pearl's 0.25 box from where it was at the start of the tick to where it is now (or to its hit point) in steps of 0.125, and returns the first cell the `enter` callback takes.
+  - `minecraft_terrain/src/server.rs`: in `tick_thrown`, after each pearl moves, the sweep asks the level's gateway table: a gateway that is not cooling triggers its 40-tick cooldown (its `Age` is written and the block entity marked after the loop) and takes the pearl, which is removed and reported as `(owner, gateway)` in the new `pearl_gateways` (`take_pearl_gateways`, `Output.pearl_gateways`). A cooling gateway lets the pearl fly on. A pearl that hits something before the gateway lands as before, as the sweep stops at the hit point. `minecraft_terrain/src/thrown.rs`: `Thrown::discard`.
+  - `minecraft_survival/src/entities.rs`: `Entities.pearl_gateways`, collected for player 0's pearls like `pearl_landings` (and cleared with it when the player leaves).
+  - `minecraft_survival/src/the_end/gateway.rs`: `resolve_exit` (shared with `travel`: the known exit, else a new one in the End), `collision_spans`, `pearl_drop` and `pearl_landing`, and `pearls_through(level)`, which turns each reported gateway into a landing in `pearl_landings`, so the existing landing code teleports the player, deals the 5 damage and plays the teleport sound. `render_anim`: `minecraft_end::pearls_through` runs it after the portal step and logs `Minecraft ender pearl through the end gateway at ... lands at ...` or `... is lost`.
+- **How the landing is worked out:** the pearl arrives at the gateway's destination with no speed (vanilla `ThrownEnderpearl` gets zero velocity), then falls tick by tick like a thrown pearl (gravity 0.03, then times 0.99), and the first tick whose drop line meets a collision box in its column lands the thrower at where the pearl was at the start of that tick, as the server's own pearls do. A pearl that falls below the world's bottom minus 64 is lost, with no teleport (vanilla `onBelowWorld`).
+- **Tests:**
+  - `minecraft_terrain` `end_gateway`: `a_pearl_sweeps_its_small_box_along_its_flight` (a falling diagonal path, the quarter-high and quarter-wide box, the first gateway on the way and the cells asked in order).
+  - `minecraft_terrain` `server` (skipped without the game data): `a_pearl_through_a_gateway_is_reported_and_triggers_its_cooldown`, `a_cooling_gateway_lets_a_pearl_through`, `a_pearl_that_hits_a_wall_first_lands_normally` (a gateway under the floor is never reached).
+  - `minecraft_survival` `the_end::gateway`: `a_pearl_lands_on_the_first_block_below_the_exit_or_is_lost_in_the_void` (a full block, a slab, inside a block, the column edge and the void, with the landing height checked against the same fall worked out in the test); with the game data, `a_pearl_through_a_gateway_lands_its_thrower_below_the_exit` (an exact exit at (20, 120, 0) lands the thrower at x 20.5, z 0.5 within one fall step above the main island, through `pearl_landings`).
+- **Decisions:**
+  - Vanilla moves the pearl to the exit and lets it fall over later ticks; here the fall is worked out at once on the main thread (brief decision 5). The place is the same, and the server never has to tick a pearl in far chunks that are not loaded.
+  - In vanilla the portal is handled in the same tick before the pearl's hit (`ThrowableProjectile.tick` moves, applies block effects, runs `Entity.tick` with `handlePortal`, then `hitTargetOrDeflectSelf`; checked with javap), so a gateway on the way to the hit point wins, as here.
+  - Landings still go to player 0 only, like the other pearl landings (`(owner, gateway)` is reported so track E can map owners to players).
+  - The landing teleports the player straight there like any pearl; the voxel world holds a player whose chunk is still missing until it streams in, so a far landing waits for the ground instead of falling.
+- **Test steps:**
+  1. From a few blocks away, throw an ender pearl into the side gap of the gateway of the dragon kill. The gateway flashes a short purple beam (with entry 6), and you land on an outer island well over 900 blocks out, under a new gateway (built if this is the first trip), taking the pearl's damage. The log has `Minecraft ender pearl through the end gateway at ... lands at ...`. **Screenshot 1.**
+  2. Right after a trip, while the gateway you came out of still cools down (2 seconds), throw a pearl through it. The pearl flies straight through and lands behind it like a normal pearl.
+- **Test runs:** `minecraft_survival` 400 passed; `minecraft_terrain` 908 passed and 3 ignored on the full run, with the same three load-sensitive eye of ender timing tests as in entry 3 failing while another build ran; all 22 eye tests pass on their own.
+- **Kit:** see the combined line at the end of item a1.

@@ -66,6 +66,7 @@ pub struct ServerSim {
     merchant_closing: bool,
     thrown: Vec<crate::thrown::Thrown>,
     pearl_landings: Vec<(u64, [f64; 3])>,
+    pearl_gateways: Vec<(u64, BlockPos)>,
     block_entity_changes: Vec<(BlockPos, Option<minecraftoss_core::nbt::Tag>)>,
     potion_breaks: Vec<minecraftoss_entities::world::PotionBreak>,
     sound_random: minecraftoss_player::rng::LegacyRandom,
@@ -294,6 +295,7 @@ impl ServerSim {
             merchant_closing: false,
             thrown: Vec::new(),
             pearl_landings: Vec::new(),
+            pearl_gateways: Vec::new(),
             block_entity_changes: Vec::new(),
             potion_breaks: Vec::new(),
             sound_random: minecraftoss_player::rng::LegacyRandom::new(0x5EED_B0771E),
@@ -1067,6 +1069,10 @@ impl ServerSim {
         std::mem::take(&mut self.pearl_landings)
     }
 
+    pub fn take_pearl_gateways(&mut self) -> Vec<(u64, BlockPos)> {
+        std::mem::take(&mut self.pearl_gateways)
+    }
+
     pub fn take_potion_breaks(&mut self) -> Vec<minecraftoss_entities::world::PotionBreak> {
         self.sound_potion_breaks();
         std::mem::take(&mut self.potion_breaks)
@@ -1121,13 +1127,30 @@ impl ServerSim {
         let mut splashes = Vec::new();
         let mut lingering = Vec::new();
         let mut bursts = Vec::new();
+        let mut aged = Vec::new();
         {
-            let Self { level, states, mob_tables, thrown, pearl_landings, potion_breaks, thrown_hits, .. } = self;
+            let Self { level, states, mob_tables, thrown, pearl_landings, potion_breaks, thrown_hits, gateways, pearl_gateways, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
             for t in thrown.iter_mut() {
                 let mut targets = mob_targets.clone();
                 targets.extend(crate::thrown::player_targets(players, t.owner));
-                let Some(landed) = t.tick(&world, &targets, crate::thrown::owner_box(players, t.owner)) else { continue };
+                let landed = t.tick(&world, &targets, crate::thrown::owner_box(players, t.owner));
+                if t.kind == Throwable::EnderPearl {
+                    let to = landed.as_ref().map_or_else(|| t.position(), |landed| landed.at);
+                    let through = crate::end_gateway::pearl_gateway(t.previous.to_array(), to.to_array(), |pos| match gateways.trigger_cooldown(pos) {
+                        Some(age) => {
+                            aged.push((pos, age));
+                            true
+                        }
+                        None => false,
+                    });
+                    if let Some(gateway) = through {
+                        t.discard();
+                        pearl_gateways.push((t.owner, gateway));
+                        continue;
+                    }
+                }
+                let Some(landed) = landed else { continue };
                 let hurts = matches!(t.kind, Throwable::Snowball | Throwable::Egg | Throwable::EnderPearl);
                 if let Some(mob) = landed.mob.filter(|&id| hurts && crate::thrown::struck_player(id).is_none()) {
                     struck.push((mob, landed.velocity, t.owner, t.random().next_long()));
@@ -1181,6 +1204,9 @@ impl ServerSim {
                 }
             }
             thrown.retain(crate::thrown::Thrown::alive);
+        }
+        for (pos, age) in aged {
+            crate::end_gateway::write_age(&mut self.level, pos, age);
         }
         for (cell, pitch, hit, direction, amount) in awards {
             self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::thrown::BREAK_SOUND, pos: cell, volume: 1.0, pitch });
@@ -2445,6 +2471,7 @@ pub struct Output {
     pub bone_meal_used: Vec<BlockPos>,
     pub item_uses: Vec<bool>,
     pub pearl_teleports: Vec<(u64, [f64; 3])>,
+    pub pearl_gateways: Vec<(u64, BlockPos)>,
     pub thrown_hits: Vec<crate::thrown::ThrownHit>,
     pub weather: Option<WeatherView>,
     pub weather_data: Option<crate::level_storage::WeatherData>,
@@ -2911,6 +2938,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     out.dragons_killed.extend(sim.take_dragons_killed());
     out.fight_reports.extend(sim.take_fight_reports());
     out.pearl_teleports.extend(sim.take_pearl_teleports());
+    out.pearl_gateways.extend(sim.take_pearl_gateways());
     out.thrown_hits.extend(sim.take_thrown_hits());
     if normal {
         sim.spawn_trade_experience();
@@ -5150,6 +5178,55 @@ mod tests {
             teleports.extend(server.take_pearl_teleports());
         }
         assert_eq!(teleports.iter().map(|t| t.0).collect::<Vec<_>>(), vec![1]);
+    }
+
+    fn pearl_through_gateway(server: &mut ServerSim) -> (Vec<(u64, BlockPos)>, Vec<(u64, [f64; 3])>) {
+        server.throw(thrown_down_by(4, "minecraft:ender_pearl", 3));
+        let (mut gateways, mut teleports) = (Vec::new(), Vec::new());
+        for _ in 0..20 {
+            server.tick_thrown(&[player_at(4, [40.0, 250.0, 40.0], true)]);
+            gateways.extend(server.take_pearl_gateways());
+            teleports.extend(server.take_pearl_teleports());
+        }
+        (gateways, teleports)
+    }
+
+    #[test]
+    fn a_pearl_through_a_gateway_is_reported_and_triggers_its_cooldown() {
+        let Some((mut server, _)) = door_world() else { return };
+        let gateway = (8, 201, 8);
+        server.player_edit_block(gateway, Some(&Block::new(crate::end_gateway::END_GATEWAY)), PlayerEdit::Place);
+        server.tick_gateways();
+        server.take_block_entity_changes();
+        let (gateways, teleports) = pearl_through_gateway(&mut server);
+        assert_eq!((gateways, teleports), (vec![(4, gateway)], Vec::new()));
+        assert!(server.thrown_views().is_empty(), "the pearl is gone");
+        assert_eq!(server.gateway_views()[0].cooldown, crate::end_gateway::COOLDOWN_TIME);
+        assert!(changed_tag(&server.take_block_entity_changes(), gateway).is_some(), "the trigger marks the block entity");
+    }
+
+    #[test]
+    fn a_cooling_gateway_lets_a_pearl_through() {
+        let Some((mut server, _)) = door_world() else { return };
+        let gateway = (8, 201, 8);
+        server.player_edit_block(gateway, Some(&Block::new(crate::end_gateway::END_GATEWAY)), PlayerEdit::Place);
+        server.tick_gateways();
+        assert!(server.trigger_gateway(gateway));
+        let (gateways, teleports) = pearl_through_gateway(&mut server);
+        assert_eq!(gateways, Vec::new());
+        assert_eq!(teleports.len(), 1);
+        assert!(teleports[0].1[1] >= 200.0 && teleports[0].1[1] < 202.0, "{teleports:?}");
+    }
+
+    #[test]
+    fn a_pearl_that_hits_a_wall_first_lands_normally() {
+        let Some((mut server, _)) = door_world() else { return };
+        let gateway = (8, 198, 8);
+        server.player_edit_block(gateway, Some(&Block::new(crate::end_gateway::END_GATEWAY)), PlayerEdit::Place);
+        server.tick_gateways();
+        let (gateways, teleports) = pearl_through_gateway(&mut server);
+        assert_eq!((gateways, teleports.len()), (Vec::new(), 1));
+        assert_eq!(server.gateway_views()[0].cooldown, 0, "the gateway under the floor is never reached");
     }
 
     #[test]

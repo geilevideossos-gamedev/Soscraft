@@ -108,6 +108,7 @@ pub struct Entities {
     spawners: minecraft_terrain::spawner_display::SpawnerDisplays,
     orb_pickups: Vec<minecraft_terrain::orb_render::OrbPickup>,
     pub pearl_landings: Vec<DVec3>,
+    pub pearl_gateways: Vec<(i32, i32, i32)>,
     pub player_potions: Vec<minecraft_terrain::potions::PlayerPotionHit>,
     pub player_pushes: Vec<DVec3>,
     pub item_crumbs: Vec<(String, DVec3, Vec<Vec3>)>,
@@ -256,6 +257,7 @@ impl Entities {
             spawners: minecraft_terrain::spawner_display::SpawnerDisplays::new((seed ^ 0x5b3d) as u64),
             orb_pickups: Vec::new(),
             pearl_landings: Vec::new(),
+            pearl_gateways: Vec::new(),
             player_potions: Vec::new(),
             player_pushes: Vec::new(),
             item_crumbs: Vec::new(),
@@ -620,6 +622,7 @@ impl Entities {
         }
         self.item_use_waiting = None;
         self.pearl_landings.clear();
+        self.pearl_gateways.clear();
         self.player_potions.clear();
         self.player_pushes.clear();
     }
@@ -957,6 +960,7 @@ impl Entities {
             for (_, landing) in output.pearl_teleports.into_iter().filter(|&(player, _)| player == PLAYER) {
                 self.pearl_landings.push(DVec3::from_array(landing));
             }
+            self.pearl_gateways.extend(output.pearl_gateways.into_iter().filter(|&(player, _)| player == PLAYER).map(|(_, gateway)| gateway));
             self.player_potions.extend(output.player_potions.into_iter().filter(|hit| hit.player == PLAYER));
             self.player_pushes.extend(output.players_pushed.iter().filter(|(player, _)| *player == PLAYER).map(|(_, push)| *push));
             for broken in &output.potion_breaks {
