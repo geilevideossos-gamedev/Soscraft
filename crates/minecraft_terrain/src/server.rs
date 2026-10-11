@@ -765,10 +765,22 @@ impl ServerSim {
         // A blast's victims drop their loot before its blocks break
         // (`ServerExplosion.explode`: `hurtEntities`, then the blocks).
         self.drop_death_loot();
+        self.throw_barters();
         self.explode_creepers();
         self.explode_fireballs();
         self.explode_blasts(players);
         self.sound_potion_breaks();
+    }
+
+    fn throw_barters(&mut self) {
+        for throw in self.mobs.take_barter_throws() {
+            let Some(stacks) = self.entity_loot.as_mut().and_then(|loot| loot.roll_barter()) else { continue };
+            for stack in stacks {
+                let components = stack.components.as_ref().map(|c| c.to_string());
+                let stack = stack_of(&stack.id, i32::from(stack.count), components.as_deref());
+                self.level.spawn_item_with(throw.from.to_array(), stack, throw.velocity.to_array(), minecraftoss_entities::world::BARTER_PICKUP_DELAY, 0);
+            }
+        }
     }
 
     /// The loot and experience of the mobs that died, into the level as
@@ -6698,6 +6710,59 @@ mod tests {
         assert_eq!(brute.piglin.main_hand.as_ref().map(|s| s.id.as_str()), Some("minecraft:golden_axe"));
         let home = brute.brain.memories.home.get().expect("its home");
         assert_eq!((home.dimension.as_str(), home.pos), ("minecraft:the_nether", (4, 100, 0)));
+    }
+
+    #[test]
+    fn a_barter_throws_one_roll_of_the_table_at_the_player() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else { return };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.exists() {
+            return;
+        }
+        let Some((mut server, mut map)) = nether_server(0) else { return };
+        for x in -1..=1 {
+            for z in -1..=1 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        server.load_loot(&jar, 0);
+        server.set_players(&[[6.5, 100.0, 0.5]], 2);
+        server.set_simulation_area((0, 0), 1);
+        for x in -3..=8 {
+            for z in -3..=3 {
+                server.player_edit_block((x, 99, z), Some(&Block::new("minecraft:netherrack")), PlayerEdit::Place);
+                for y in 100..=103 {
+                    server.player_edit_block((x, y, z), Some(&Block::new("minecraft:air")), PlayerEdit::Place);
+                }
+            }
+        }
+        let mut piglin = minecraftoss_entities::piglin::Piglin::new(minecraftoss_entities::piglin::PiglinKind::Piglin, glam::DVec3::new(0.5, 100.0, 0.5));
+        piglin.main_hand = Some(minecraftoss_player::inventory::ItemStack::new("minecraft:golden_sword", 1));
+        let id = server.mobs.spawn_piglin(piglin, false);
+        let mut player = end_player([6.5, 100.0, 0.5]);
+        player.attackable = false;
+        for _ in 0..30 {
+            server.tick_mobs(&[player], false);
+        }
+        let entity = server.mobs.piglin_mut(id).unwrap();
+        entity.piglin.offhand = Some(minecraftoss_player::inventory::ItemStack::new("minecraft:gold_ingot", 1));
+        entity.brain.admire_for(2);
+        let from = entity.position();
+        let before = server.level.items_touching([-20.0, 90.0, -20.0], [20.0, 110.0, 20.0]).len();
+        for _ in 0..5 {
+            server.tick_mobs(&[player], false);
+        }
+        assert!(server.mobs.piglin_mut(id).unwrap().piglin.offhand.is_none());
+        for _ in 0..3 {
+            server.tick();
+        }
+        let items = server.level.items_touching([-20.0, 90.0, -20.0], [20.0, 110.0, 20.0]);
+        assert!(items.len() > before, "the barter lands as item entities");
+        let table = ["minecraft:enchanted_book", "minecraft:iron_boots", "minecraft:potion", "minecraft:splash_potion", "minecraft:iron_nugget", "minecraft:ender_pearl", "minecraft:dried_ghast", "minecraft:string", "minecraft:quartz", "minecraft:obsidian", "minecraft:crying_obsidian", "minecraft:fire_charge", "minecraft:leather", "minecraft:soul_sand", "minecraft:nether_brick", "minecraft:spectral_arrow", "minecraft:gravel", "minecraft:blackstone"];
+        let thrown: std::collections::HashSet<&str> = items.iter().map(|(_, _, stack, _)| stack.id.as_str()).collect();
+        assert_eq!(thrown.len(), 1, "one roll: {thrown:?}");
+        assert!(thrown.iter().all(|id| table.contains(id)), "{thrown:?}");
+        assert!(items.iter().all(|(_, pos, _, _)| pos[0] > from.x + 0.2), "thrown toward the player at x 6.5 from {from}: {items:?}");
     }
 
     #[test]

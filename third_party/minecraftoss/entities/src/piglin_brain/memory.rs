@@ -1,3 +1,4 @@
+use super::admire::WantedItem;
 use crate::brain_behaviors::{Pos, Track, WalkGoal};
 use crate::monster_ai::Target;
 use crate::villager_brain::Slot;
@@ -39,6 +40,10 @@ pub struct Memories {
     pub nearby_adult_piglins: Slot<Vec<Target>>,
     pub nearest_visible_zombified: Slot<Target>,
     pub attack_cooling_down: Slot<()>,
+    pub nearest_visible_wanted_item: Slot<WantedItem>,
+    pub time_trying_to_reach_admire_item: Slot<i32>,
+    pub disable_walk_to_admire_item: Slot<()>,
+    pub ate_recently: Slot<()>,
 }
 
 impl Memories {
@@ -72,6 +77,10 @@ impl Memories {
         self.nearby_adult_piglins.tick();
         self.nearest_visible_zombified.tick();
         self.attack_cooling_down.tick();
+        self.nearest_visible_wanted_item.tick();
+        self.time_trying_to_reach_admire_item.tick();
+        self.disable_walk_to_admire_item.tick();
+        self.ate_recently.tick();
     }
 
     pub fn nearby_adult_piglins(&self) -> Vec<Target> {

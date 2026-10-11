@@ -3,10 +3,23 @@ use super::*;
 use crate::brain_behaviors::{Living, Pos, find};
 use crate::monster_ai::Target;
 use crate::piglin::{self, ArmPose, Piglin, PiglinKind};
-use crate::piglin_brain::{Activity, ItemUse, PiglinBrain, PiglinCtx};
+use crate::piglin_brain::{Activity, ItemUse, PiglinBrain, PiglinCtx, WantedItem};
 
 pub const LOVED_TAG: &str = "minecraft:piglin_loved";
 pub const SAFE_ARMOR_TAG: &str = "minecraft:piglin_safe_armor";
+pub const FOOD_TAG: &str = "minecraft:piglin_food";
+pub const REPELLENT_ITEMS_TAG: &str = "minecraft:piglin_repellents";
+pub const IGNORED_BY_BABIES_TAG: &str = "minecraft:ignored_by_piglin_babies";
+pub const PREFERRED_WEAPONS_TAG: &str = "minecraft:piglin_preferred_weapons";
+pub const THROW_SPEED: f64 = 0.3;
+pub const PICKUP_DELAY: i32 = 10;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BarterThrow {
+    pub piglin: u64,
+    pub from: DVec3,
+    pub velocity: DVec3,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct PiglinRules {
@@ -29,6 +42,8 @@ pub(super) struct PiglinSees<'a> {
     gilded: &'a [Target],
     loved_holders: &'a [Target],
     rules: PiglinRules,
+    wanted_items: Option<&'a [WantedItem]>,
+    offhand_loved: bool,
 }
 
 #[derive(Default)]
@@ -36,6 +51,7 @@ pub(super) struct PiglinThought {
     doors: Vec<(Pos, bool)>,
     attack: Option<Target>,
     shot: Option<Target>,
+    stop_holding: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -217,6 +233,14 @@ impl PiglinEntity {
             forgive_dead_players: sees.rules.forgive_dead_players,
             holds_crossbow: self.piglin.holds_crossbow(),
             using_item: self.using_item,
+            wanted_items: sees.wanted_items,
+            offhand: self.piglin.offhand.is_some(),
+            offhand_shield: self
+                .piglin
+                .offhand
+                .as_ref()
+                .is_some_and(|stack| stack.id == "minecraft:shield"),
+            offhand_loved: sees.offhand_loved,
             look_at: None,
             sounds: Vec::new(),
             doors: Vec::new(),
@@ -225,6 +249,7 @@ impl PiglinEntity {
             strafe: None,
             item_use: None,
             charging: None,
+            stop_holding: None,
         };
         self.brain.tick(&mut ctx);
         self.brain.update_activity(&mut ctx);
@@ -232,6 +257,7 @@ impl PiglinEntity {
             doors: std::mem::take(&mut ctx.doors),
             attack: ctx.attack,
             shot: ctx.shot,
+            stop_holding: ctx.stop_holding,
         };
         let (look_at, sounds, strafe) = (ctx.look_at, ctx.sounds, ctx.strafe);
         let (item_use, charging) = (ctx.item_use, ctx.charging);
@@ -556,6 +582,531 @@ impl EntityWorld {
             .is_some_and(|recipes| recipes.item_in_tag(LOVED_TAG, id))
     }
 
+    pub fn take_barter_throws(&mut self) -> Vec<BarterThrow> {
+        std::mem::take(&mut self.barter_throws)
+    }
+
+    fn item_tagged(&self, tag: &str, id: &str) -> bool {
+        self.recipes
+            .as_ref()
+            .is_some_and(|recipes| recipes.item_in_tag(tag, id))
+    }
+
+    fn piglin_max_stack(&self, id: &str) -> u8 {
+        self.recipes
+            .as_ref()
+            .map_or(64, |recipes| recipes.max_stack(id))
+            .clamp(1, 99)
+    }
+
+    fn piglin_offhand_loved(&self, id: u64) -> bool {
+        self.piglins
+            .iter()
+            .find(|e| e.id == id)
+            .and_then(|e| e.piglin.offhand.as_ref())
+            .is_some_and(|stack| self.item_loved(&stack.id))
+    }
+
+    fn slot_for(&self, stack: &ItemStack) -> usize {
+        let named = self
+            .recipes
+            .as_ref()
+            .and_then(|recipes| recipes.equipment_slot(stack).map(str::to_owned));
+        match named.as_deref() {
+            Some("head") => piglin::HEAD,
+            Some("chest") => piglin::CHEST,
+            Some("legs") => piglin::LEGS,
+            Some("feet") => piglin::FEET,
+            Some(_) => piglin::MAINHAND,
+            None => piglin::armor_slot(&stack.id).unwrap_or(piglin::MAINHAND),
+        }
+    }
+
+    fn preferred_weapon(&self, piglin: &Piglin, stack: &ItemStack) -> bool {
+        !piglin.is_baby() && self.item_tagged(PREFERRED_WEAPONS_TAG, &stack.id)
+    }
+
+    fn can_replace(
+        &self,
+        piglin: &Piglin,
+        new: &ItemStack,
+        current: Option<&ItemStack>,
+        slot: usize,
+    ) -> bool {
+        if current.is_some_and(piglin::has_binding_curse) {
+            return false;
+        }
+        let liked =
+            |stack: &ItemStack| self.item_loved(&stack.id) || self.preferred_weapon(piglin, stack);
+        let new_liked = liked(new);
+        let current_liked = current.is_some_and(liked);
+        if new_liked && !current_liked {
+            return true;
+        }
+        if !new_liked && current_liked {
+            return false;
+        }
+        let Some(current) = current else {
+            return true;
+        };
+        if slot >= piglin::FEET {
+            let (new_armor, new_toughness) = piglin::armor_value(&new.id);
+            let (armor, toughness) = piglin::armor_value(&current.id);
+            if new_armor != armor {
+                return new_armor > armor;
+            }
+            if new_toughness != toughness {
+                return new_toughness > toughness;
+            }
+            return piglin::can_replace_equal_item(new, current);
+        }
+        if slot != piglin::MAINHAND {
+            return false;
+        }
+        let (new_preferred, preferred) = (
+            self.preferred_weapon(piglin, new),
+            self.preferred_weapon(piglin, current),
+        );
+        if preferred && !new_preferred {
+            return false;
+        }
+        if !preferred && new_preferred {
+            return true;
+        }
+        let (new_damage, damage) = (self.weapon_damage(new), self.weapon_damage(current));
+        if new_damage != damage {
+            return new_damage > damage;
+        }
+        piglin::can_replace_equal_item(new, current)
+    }
+
+    pub fn piglin_wants(&self, id: u64, stack: &ItemStack) -> bool {
+        let Some(entity) = self.piglins.iter().find(|e| e.id == id) else {
+            return false;
+        };
+        let piglin = &entity.piglin;
+        if !self.mob_griefing || !piglin.can_pick_up_loot {
+            return false;
+        }
+        if piglin.is_brute() {
+            return stack.id == "minecraft:golden_axe";
+        }
+        let memories = &entity.brain.memories;
+        if piglin.is_baby() && self.item_tagged(IGNORED_BY_BABIES_TAG, &stack.id) {
+            return false;
+        }
+        if self.item_tagged(REPELLENT_ITEMS_TAG, &stack.id) {
+            return false;
+        }
+        if memories.admiring_disabled.present() && memories.attack_target.present() {
+            return false;
+        }
+        let offhand_free = !piglin
+            .offhand
+            .as_ref()
+            .is_some_and(|held| self.item_loved(&held.id));
+        if stack.id == piglin::BARTERING_ITEM {
+            return offhand_free;
+        }
+        let room = piglin.can_add_to_inventory(stack, self.piglin_max_stack(&stack.id));
+        if stack.id == piglin::GOLD_NUGGET {
+            return room;
+        }
+        if self.item_tagged(FOOD_TAG, &stack.id) {
+            return !memories.ate_recently.present() && room;
+        }
+        if !self.item_loved(&stack.id) {
+            let slot = self.slot_for(stack);
+            return self.can_replace(piglin, stack, piglin.equipment(slot), slot);
+        }
+        offhand_free && room
+    }
+
+    fn wanted_items_of(&self, id: u64, world: &dyn World) -> Vec<WantedItem> {
+        let Some(entity) = self.piglins.iter().find(|e| e.id == id) else {
+            return Vec::new();
+        };
+        let body = &entity.piglin.body;
+        let half = f64::from(body.width) / 2.0;
+        let min = body.position - DVec3::new(half + 32.0, 16.0, half + 32.0);
+        let max =
+            body.position + DVec3::new(half + 32.0, f64::from(body.height) + 16.0, half + 32.0);
+        let eye = body.position + DVec3::Y * f64::from(entity.piglin.eye_height());
+        let mut items = world.items_in(min, max);
+        items.sort_by(|a, b| {
+            let (a, b) = (
+                a.position.distance_squared(body.position),
+                b.position.distance_squared(body.position),
+            );
+            a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        items
+            .into_iter()
+            .filter(|item| item.count > 0)
+            .filter(|item| {
+                let stack = ItemStack {
+                    id: item.item.clone(),
+                    count: item.count.clamp(1, 255) as u8,
+                    max: 64,
+                    components: item.components.clone(),
+                };
+                self.piglin_wants(id, &stack)
+            })
+            .filter(|item| item.position.distance_squared(body.position) < 32.0 * 32.0)
+            .filter(|item| {
+                let target = item.position + DVec3::Y * crate::piglin_brain::ITEM_EYE_HEIGHT;
+                crate::sight::line_of_sight(world, eye, target)
+            })
+            .map(|item| WantedItem {
+                id: item.id,
+                position: item.position,
+                loved: self.item_loved(&item.item),
+            })
+            .collect()
+    }
+
+    fn spawn_at_location<W: World>(&mut self, world: &mut W, at: DVec3, stack: &ItemStack) {
+        let x = self.level_random.next_double() * 0.2 - 0.1;
+        let z = self.level_random.next_double() * 0.2 - 0.1;
+        world.spawn_item(at, stack, DVec3::new(x, 0.2, z), PICKUP_DELAY);
+    }
+
+    fn throw_from(&self, id: u64) -> Option<(DVec3, DVec3)> {
+        let entity = self.piglins.iter().find(|e| e.id == id)?;
+        let position = entity.position();
+        let from = position + DVec3::Y * (f64::from(entity.piglin.eye_height()) - 0.3);
+        Some((position, from))
+    }
+
+    fn throw_target<W: World>(
+        &mut self,
+        id: u64,
+        others: &[Living],
+        world: &W,
+        toward_player: bool,
+    ) -> DVec3 {
+        let Some(entity) = self.piglins.iter_mut().find(|e| e.id == id) else {
+            return DVec3::ZERO;
+        };
+        let player = entity
+            .brain
+            .memories
+            .nearest_visible_player
+            .get()
+            .and_then(|&player| find(others, player))
+            .map(|player| player.position);
+        let target = match player.filter(|_| toward_player) {
+            Some(position) => position,
+            None => {
+                let profile = entity.walk_profile();
+                let position = entity.position();
+                crate::stroll::land_random_position(
+                    world,
+                    &profile,
+                    position,
+                    4,
+                    2,
+                    &mut entity.random,
+                )
+                .unwrap_or(position)
+            }
+        };
+        target + DVec3::Y
+    }
+
+    fn throw_velocity(position: DVec3, target: DVec3) -> DVec3 {
+        (target - position).normalize_or_zero() * THROW_SPEED
+    }
+
+    fn piglin_throw<W: World>(
+        &mut self,
+        id: u64,
+        stacks: Vec<ItemStack>,
+        others: &[Living],
+        world: &mut W,
+        toward_player: bool,
+    ) {
+        let stacks: Vec<ItemStack> = stacks.into_iter().filter(|s| s.count > 0).collect();
+        if stacks.is_empty() {
+            return;
+        }
+        let Some((position, from)) = self.throw_from(id) else {
+            return;
+        };
+        let target = self.throw_target(id, others, &*world, toward_player);
+        let velocity = Self::throw_velocity(position, target);
+        for stack in stacks {
+            world.spawn_item(from, &stack, velocity, PICKUP_DELAY);
+        }
+    }
+
+    fn piglin_put_in_inventory<W: World>(
+        &mut self,
+        id: u64,
+        stack: ItemStack,
+        others: &[Living],
+        world: &mut W,
+    ) {
+        let max = self.piglin_max_stack(&stack.id);
+        let Some(entity) = self.piglins.iter_mut().find(|e| e.id == id) else {
+            return;
+        };
+        if let Some(left) = entity.piglin.add_to_inventory(stack, max) {
+            self.piglin_throw(id, vec![left], others, world, false);
+        }
+    }
+
+    fn piglin_equip<W: World>(
+        &mut self,
+        id: u64,
+        stack: ItemStack,
+        world: &mut W,
+    ) -> Option<ItemStack> {
+        let Some(entity) = self.piglins.iter().find(|e| e.id == id) else {
+            return Some(stack);
+        };
+        let piglin = &entity.piglin;
+        let mut slot = self.slot_for(&stack);
+        let mut replace = self.can_replace(piglin, &stack, piglin.equipment(slot), slot);
+        if slot != piglin::MAINHAND && !replace {
+            slot = piglin::MAINHAND;
+            replace = piglin.main_hand.is_none();
+        }
+        if !replace {
+            return Some(stack);
+        }
+        let position = entity.position();
+        let Some(entity) = self.piglins.iter_mut().find(|e| e.id == id) else {
+            return Some(stack);
+        };
+        let chance = entity.piglin.drop_chances[slot];
+        let roll = (entity.random.next_float() - 0.1).max(0.0);
+        let current = entity.piglin.equipment_mut(slot).and_then(Option::take);
+        let mut stack = stack;
+        if slot != piglin::MAINHAND {
+            stack.count = 1;
+        }
+        if let Some(cell) = entity.piglin.equipment_mut(slot) {
+            *cell = Some(stack);
+        }
+        entity.piglin.drop_chances[slot] = piglin::GUARANTEED_DROP;
+        entity.piglin.persistence_required = true;
+        if let Some(current) = current.filter(|_| roll < chance) {
+            self.spawn_at_location(world, position, &current);
+        }
+        None
+    }
+
+    fn hold_in_offhand<W: World>(&mut self, id: u64, stack: ItemStack, world: &mut W) {
+        let Some(entity) = self.piglins.iter_mut().find(|e| e.id == id) else {
+            return;
+        };
+        let position = entity.position();
+        let previous = entity.piglin.offhand.take();
+        if stack.id != piglin::BARTERING_ITEM {
+            entity.piglin.persistence_required = true;
+        }
+        entity.piglin.offhand = Some(stack);
+        entity.piglin.drop_chances[piglin::OFFHAND] = piglin::GUARANTEED_DROP;
+        if let Some(previous) = previous {
+            self.spawn_at_location(world, position, &previous);
+        }
+    }
+
+    fn stop_holding_offhand<W: World>(
+        &mut self,
+        id: u64,
+        barter: bool,
+        others: &[Living],
+        world: &mut W,
+    ) {
+        let Some(entity) = self.piglins.iter_mut().find(|e| e.id == id) else {
+            return;
+        };
+        let Some(stack) = entity.piglin.offhand.take() else {
+            return;
+        };
+        let currency = stack.id == piglin::BARTERING_ITEM;
+        if !entity.piglin.is_baby() {
+            if barter && currency {
+                let Some((position, from)) = self.throw_from(id) else {
+                    return;
+                };
+                let target = self.throw_target(id, others, &*world, true);
+                let velocity = Self::throw_velocity(position, target);
+                self.barter_throws.push(BarterThrow {
+                    piglin: id,
+                    from,
+                    velocity,
+                });
+            } else if !currency {
+                if let Some(stack) = self.piglin_equip(id, stack, world) {
+                    self.piglin_put_in_inventory(id, stack, others, world);
+                }
+            }
+            return;
+        }
+        let Some(stack) = self.piglin_equip(id, stack, world) else {
+            return;
+        };
+        let Some(entity) = self.piglins.iter_mut().find(|e| e.id == id) else {
+            return;
+        };
+        let held = entity.piglin.main_hand.take();
+        entity.piglin.main_hand = Some(stack);
+        entity.piglin.drop_chances[piglin::MAINHAND] = piglin::GUARANTEED_DROP;
+        entity.piglin.persistence_required = true;
+        if let Some(held) = held {
+            if self.item_loved(&held.id) {
+                self.piglin_put_in_inventory(id, held, others, world);
+            } else {
+                self.piglin_throw(id, vec![held], others, world, true);
+            }
+        }
+    }
+
+    fn stop_walking(entity: &mut PiglinEntity) {
+        entity.brain.memories.walk_target.erase();
+        entity.brain.walk.stop(&mut entity.navigation);
+        entity.navigation.stop();
+    }
+
+    fn piglin_pick_up<W: World>(&mut self, id: u64, others: &[Living], world: &mut W) {
+        if !self.mob_griefing {
+            return;
+        }
+        let Some(entity) = self.piglins.iter().find(|e| e.id == id) else {
+            return;
+        };
+        if !entity.piglin.can_pick_up_loot || entity.piglin.health <= 0.0 {
+            return;
+        }
+        let body = &entity.piglin.body;
+        let half = f64::from(body.width) / 2.0;
+        let min = body.position - DVec3::new(half + 1.0, 0.0, half + 1.0);
+        let max = body.position + DVec3::new(half + 1.0, f64::from(body.height), half + 1.0);
+        for item in world.items_in(min, max) {
+            let Some(item) = world.item(item.id) else {
+                continue;
+            };
+            if item.count <= 0 || item.pickup_delay > 0 {
+                continue;
+            }
+            let stack = ItemStack {
+                id: item.item.clone(),
+                count: item.count.clamp(1, 255) as u8,
+                max: self.piglin_max_stack(&item.item),
+                components: item.components.clone(),
+            };
+            if !self.piglin_wants(id, &stack) {
+                continue;
+            }
+            if self
+                .piglins
+                .iter()
+                .any(|e| e.id == id && e.piglin.is_brute())
+            {
+                let one = ItemStack { count: 1, ..stack };
+                if self.piglin_equip(id, one, world).is_none() {
+                    world.take_item(item.id, 1);
+                }
+                continue;
+            }
+            self.piglin_picks(id, item.id, stack, others, world);
+        }
+    }
+
+    fn piglin_picks<W: World>(
+        &mut self,
+        id: u64,
+        item: i32,
+        mut stack: ItemStack,
+        others: &[Living],
+        world: &mut W,
+    ) {
+        let Some(entity) = self.piglins.iter_mut().find(|e| e.id == id) else {
+            return;
+        };
+        Self::stop_walking(entity);
+        if stack.id == piglin::GOLD_NUGGET {
+            world.take_item(item, i32::from(stack.count));
+        } else {
+            world.take_item(item, 1);
+            stack.count = 1;
+        }
+        if self.item_loved(&stack.id) {
+            if let Some(entity) = self.piglins.iter_mut().find(|e| e.id == id) {
+                entity
+                    .brain
+                    .memories
+                    .time_trying_to_reach_admire_item
+                    .erase();
+            }
+            self.hold_in_offhand(id, stack, world);
+            if let Some(entity) = self.piglins.iter_mut().find(|e| e.id == id) {
+                entity.brain.admire_for(crate::piglin_brain::ADMIRE_TICKS);
+            }
+            return;
+        }
+        let ate = self
+            .piglins
+            .iter()
+            .find(|e| e.id == id)
+            .is_some_and(|e| e.brain.memories.ate_recently.present());
+        if self.item_tagged(FOOD_TAG, &stack.id) && !ate {
+            if let Some(entity) = self.piglins.iter_mut().find(|e| e.id == id) {
+                entity
+                    .brain
+                    .memories
+                    .ate_recently
+                    .set_for((), crate::piglin_brain::ATE_RECENTLY_TICKS);
+            }
+            return;
+        }
+        if let Some(stack) = self.piglin_equip(id, stack, world) {
+            self.piglin_put_in_inventory(id, stack, others, world);
+        }
+    }
+
+    pub fn piglin_admire_held(
+        &mut self,
+        id: u64,
+        inventory: &mut minecraftoss_player::inventory::Inventory,
+        selected: usize,
+        infinite: bool,
+    ) -> Option<Vec<(ItemStack, DVec3)>> {
+        let held = inventory.slots.get(selected)?.as_ref()?;
+        if held.id != piglin::BARTERING_ITEM {
+            return None;
+        }
+        let entity = self.piglins.iter_mut().find(|e| e.id == id)?;
+        let memories = &entity.brain.memories;
+        if entity.piglin.kind != PiglinKind::Piglin
+            || entity.piglin.is_baby()
+            || entity.piglin.health <= 0.0
+            || memories.admiring_disabled.present()
+            || memories.admiring_item.present()
+        {
+            return None;
+        }
+        let mut taken = held.clone();
+        taken.count = 1;
+        if !infinite {
+            crate::animal::consume_one(inventory, selected);
+        }
+        let position = entity.position();
+        let previous = entity.piglin.offhand.replace(taken);
+        entity.piglin.drop_chances[piglin::OFFHAND] = piglin::GUARANTEED_DROP;
+        entity.brain.admire_for(crate::piglin_brain::ADMIRE_TICKS);
+        Self::stop_walking(entity);
+        Some(
+            previous
+                .map(|stack| (stack, position))
+                .into_iter()
+                .collect(),
+        )
+    }
+
     pub fn set_universal_anger(&mut self, on: bool) {
         self.piglin_rules.universal_anger = on;
     }
@@ -733,16 +1284,25 @@ impl EntityWorld {
         }
     }
 
-    fn piglin_was_hurt_by(
+    fn piglin_was_hurt_by<W: World>(
         &mut self,
         id: u64,
         attacker: Target,
         others: &[Living],
         uuids: &[(Target, u128)],
+        world: &mut W,
     ) {
         let Some(other) = find(others, attacker).copied() else {
             return;
         };
+        let holding = self
+            .piglins
+            .iter()
+            .find(|e| e.id == id)
+            .is_some_and(|e| e.piglin.kind == PiglinKind::Piglin && e.piglin.offhand.is_some());
+        if holding && other.kind != "minecraft:piglin" {
+            self.stop_holding_offhand(id, false, others, world);
+        }
         let Some(entity) = self.piglins.iter_mut().find(|e| e.id == id) else {
             return;
         };
@@ -877,8 +1437,15 @@ impl EntityWorld {
             None => return,
         };
         for attacker in hurts {
-            self.piglin_was_hurt_by(id, attacker, &others, &uuids);
+            self.piglin_was_hurt_by(id, attacker, &others, &uuids, world);
         }
+        let wanted_items = self
+            .piglins
+            .iter()
+            .find(|e| e.id == id)
+            .filter(|e| e.brain.sees_items_this_tick())
+            .map(|_| self.wanted_items_of(id, &*world));
+        let offhand_loved = self.piglin_offhand_loved(id);
         let players_of = |test: &dyn Fn(u64) -> bool| -> Vec<Target> {
             others
                 .iter()
@@ -896,6 +1463,8 @@ impl EntityWorld {
             gilded: &gilded,
             loved_holders: &loved_holders,
             rules: self.piglin_rules,
+            wanted_items: wanted_items.as_deref(),
+            offhand_loved,
         };
         let dimension = self.dimension.clone();
         let mut level_random = std::mem::take(&mut self.level_random);
@@ -938,6 +1507,10 @@ impl EntityWorld {
         if let Some(target) = thought.shot {
             self.piglin_shoots(id, target, &others);
         }
+        if let Some(barter) = thought.stop_holding {
+            self.stop_holding_offhand(id, barter, &others, world);
+        }
+        self.piglin_pick_up(id, &others, world);
         let offhand = self
             .piglins
             .iter()
@@ -1151,7 +1724,27 @@ mod tests {
             ),
             (
                 "piglin_loved",
-                serde_json::json!({ "values": ["minecraft:gold_ingot", "minecraft:golden_carrot"] }),
+                serde_json::json!({ "values": [
+                    "minecraft:gold_ingot",
+                    "minecraft:golden_carrot",
+                    "minecraft:golden_sword"
+                ] }),
+            ),
+            (
+                "piglin_food",
+                serde_json::json!({ "values": ["minecraft:porkchop", "minecraft:cooked_porkchop"] }),
+            ),
+            (
+                "ignored_by_piglin_babies",
+                serde_json::json!({ "values": ["minecraft:leather"] }),
+            ),
+            (
+                "piglin_repellents",
+                serde_json::json!({ "values": ["minecraft:soul_torch"] }),
+            ),
+            (
+                "piglin_preferred_weapons",
+                serde_json::json!({ "values": ["minecraft:crossbow", "minecraft:golden_spear"] }),
             ),
         ];
         for (tag, value) in tags {
@@ -1736,6 +2329,346 @@ mod tests {
             Some(&Target::Mob(skeleton))
         );
         assert!(!brain.memories.avoid_target.present());
+    }
+
+    #[derive(Default)]
+    struct Ground {
+        blocks: Blocks,
+        items: Vec<minecraftoss_player::WorldItem>,
+        next: i32,
+    }
+
+    impl Ground {
+        fn new(radius: i32) -> Self {
+            Self {
+                blocks: floor(radius),
+                ..Default::default()
+            }
+        }
+
+        fn drop(&mut self, item: &str, count: i32, at: DVec3) -> i32 {
+            self.next += 1;
+            self.items.push(minecraftoss_player::WorldItem {
+                id: self.next,
+                position: at,
+                item: item.to_owned(),
+                count,
+                components: None,
+                pickup_delay: 0,
+            });
+            self.next
+        }
+
+        fn has(&self, id: i32) -> bool {
+            self.items.iter().any(|item| item.id == id)
+        }
+    }
+
+    impl World for Ground {
+        fn block(&self, pos: Pos) -> Option<Block> {
+            self.blocks.block(pos)
+        }
+        fn set_block(&mut self, pos: Pos, block: Option<Block>) {
+            self.blocks.set_block(pos, block);
+        }
+        fn items_in(&self, min: DVec3, max: DVec3) -> Vec<minecraftoss_player::WorldItem> {
+            self.items
+                .iter()
+                .filter(|item| {
+                    let p = item.position;
+                    p.x + 0.125 > min.x
+                        && p.x - 0.125 < max.x
+                        && p.y + 0.25 > min.y
+                        && p.y < max.y
+                        && p.z + 0.125 > min.z
+                        && p.z - 0.125 < max.z
+                })
+                .cloned()
+                .collect()
+        }
+        fn item(&self, id: i32) -> Option<minecraftoss_player::WorldItem> {
+            self.items.iter().find(|item| item.id == id).cloned()
+        }
+        fn take_item(&mut self, id: i32, count: i32) {
+            if let Some(item) = self.items.iter_mut().find(|item| item.id == id) {
+                item.count -= count;
+            }
+            self.items.retain(|item| item.count > 0);
+        }
+        fn spawn_item(&mut self, position: DVec3, stack: &ItemStack, _velocity: DVec3, delay: i32) {
+            self.next += 1;
+            self.items.push(minecraftoss_player::WorldItem {
+                id: self.next,
+                position,
+                item: stack.id.clone(),
+                count: i32::from(stack.count),
+                components: stack.components.clone(),
+                pickup_delay: delay,
+            });
+        }
+    }
+
+    fn calm_player(world: &mut EntityWorld, at: DVec3) -> [PlayerCandidate; 1] {
+        world.set_player_controls(&[wearing(
+            7,
+            [Some("minecraft:golden_boots"), None, None, None],
+        )]);
+        [player(7, at)]
+    }
+
+    fn offhand(world: &EntityWorld, id: u64) -> Option<String> {
+        let entity = world.piglins().iter().find(|e| e.id == id)?;
+        entity.piglin.offhand.as_ref().map(|stack| stack.id.clone())
+    }
+
+    #[test]
+    fn a_dropped_gold_ingot_is_admired_for_119_ticks_then_bartered_toward_the_player() {
+        let mut ground = Ground::new(12);
+        let mut world = EntityWorld::default();
+        world.set_recipe_book(piglin_book());
+        let id = armed(
+            &mut world,
+            PiglinKind::Piglin,
+            DVec3::new(0.5, 64.0, 0.5),
+            "minecraft:golden_sword",
+        );
+        let players = calm_player(&mut world, DVec3::new(0.5, 64.0, 5.5));
+        let ingot = ground.drop("minecraft:gold_ingot", 1, DVec3::new(3.5, 64.0, 0.5));
+        let mut picked = None;
+        let mut thrown = None;
+        for tick in 0..400 {
+            world.tick_with_players(&mut ground, &players);
+            if picked.is_none() && offhand(&world, id).as_deref() == Some("minecraft:gold_ingot") {
+                picked = Some(tick);
+                assert!(!ground.has(ingot));
+                let entity = world.piglins().iter().find(|e| e.id == id).unwrap();
+                assert_eq!(entity.brain.memories.admiring_item.ttl(), Some(119));
+                assert_eq!(entity.arm_pose, ArmPose::AdmiringItem);
+            }
+            let throws = world.take_barter_throws();
+            if !throws.is_empty() {
+                thrown = Some((tick, throws));
+                break;
+            }
+        }
+        let picked = picked.expect("it picks the ingot up");
+        let (tick, throws) = thrown.expect("it barters");
+        assert!((119..=121).contains(&(tick - picked)), "{}", tick - picked);
+        assert_eq!(throws.len(), 1);
+        let throw = throws[0];
+        let entity = world.piglins().iter().find(|e| e.id == id).unwrap();
+        assert!(entity.piglin.offhand.is_none());
+        let eye = entity.position().y + 1.79 - 0.3;
+        assert!((throw.from.y - eye).abs() < 1.0e-6, "{throw:?}");
+        assert!((throw.velocity.length() - 0.3).abs() < 1.0e-6);
+        let toward = players[0].position + DVec3::Y - entity.position();
+        assert!(throw.velocity.dot(toward) > 0.0, "{throw:?}");
+    }
+
+    #[test]
+    fn a_baby_keeps_the_gold_it_admires_and_never_barters() {
+        let mut ground = Ground::new(12);
+        let mut world = EntityWorld::default();
+        world.set_recipe_book(piglin_book());
+        let baby = spawn(&mut world, PiglinKind::Piglin, 0.5, 0.5);
+        world.piglin_mut(baby).unwrap().piglin.set_baby(true);
+        let players = calm_player(&mut world, DVec3::new(0.5, 64.0, 5.5));
+        ground.drop("minecraft:gold_ingot", 1, DVec3::new(2.5, 64.0, 0.5));
+        let mut barters = 0;
+        for _ in 0..300 {
+            world.tick_with_players(&mut ground, &players);
+            barters += world.take_barter_throws().len();
+        }
+        assert_eq!(barters, 0);
+        let entity = world.piglins().iter().find(|e| e.id == baby).unwrap();
+        assert!(entity.piglin.offhand.is_none());
+        let held = entity.piglin.main_hand.as_ref().map(|s| s.id.as_str());
+        assert_eq!(held, Some("minecraft:gold_ingot"));
+        assert!(entity.piglin.persistence_required);
+    }
+
+    #[test]
+    fn a_piglin_eats_a_porkchop_and_takes_the_next_after_200_ticks() {
+        let mut ground = Ground::new(12);
+        let mut world = EntityWorld::default();
+        world.set_recipe_book(piglin_book());
+        let id = armed(
+            &mut world,
+            PiglinKind::Piglin,
+            DVec3::new(0.5, 64.0, 0.5),
+            "minecraft:golden_sword",
+        );
+        slowed(&mut world, id);
+        let players = calm_player(&mut world, DVec3::new(0.5, 64.0, 6.5));
+        let at = world.piglin_mut(id).unwrap().position();
+        let first = ground.drop("minecraft:porkchop", 1, at);
+        world.tick_with_players(&mut ground, &players);
+        assert!(!ground.has(first), "eaten at once");
+        let memories = &world.piglin_mut(id).unwrap().brain.memories;
+        assert!(memories.ate_recently.present());
+        let at = world.piglin_mut(id).unwrap().position();
+        let second = ground.drop("minecraft:porkchop", 1, at);
+        let mut eaten = None;
+        for tick in 1..260 {
+            world.tick_with_players(&mut ground, &players);
+            if !ground.has(second) {
+                eaten = Some(tick);
+                break;
+            }
+        }
+        let eaten = eaten.expect("the second one goes too");
+        assert!((195..=205).contains(&eaten), "{eaten}");
+        let entity = world.piglins().iter().find(|e| e.id == id).unwrap();
+        assert!(entity.piglin.inventory.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn gold_nuggets_go_whole_into_the_inventory_and_drop_on_death() {
+        let mut ground = Ground::new(12);
+        let mut world = EntityWorld::default();
+        world.set_recipe_book(piglin_book());
+        let id = armed(
+            &mut world,
+            PiglinKind::Piglin,
+            DVec3::new(0.5, 64.0, 0.5),
+            "minecraft:golden_sword",
+        );
+        slowed(&mut world, id);
+        let players = calm_player(&mut world, DVec3::new(0.5, 64.0, 6.5));
+        let at = world.piglin_mut(id).unwrap().position();
+        let nuggets = ground.drop("minecraft:gold_nugget", 20, at);
+        world.tick_with_players(&mut ground, &players);
+        assert!(!ground.has(nuggets));
+        let entity = world.piglin_mut(id).unwrap();
+        let held = entity.piglin.inventory[0].as_ref().unwrap();
+        assert_eq!(
+            (held.id.as_str(), held.count),
+            ("minecraft:gold_nugget", 20)
+        );
+        assert!(world.player_attack(&attack(100.0), id).died);
+        let deaths = world.take_deaths();
+        assert!(
+            deaths[0]
+                .equipment
+                .iter()
+                .any(|s| s.id == "minecraft:gold_nugget" && s.count == 20)
+        );
+    }
+
+    #[test]
+    fn a_hit_while_admiring_ends_it_without_a_barter_and_disables_admiring_for_400_ticks() {
+        let mut ground = Ground::new(12);
+        let mut world = EntityWorld::default();
+        world.set_recipe_book(piglin_book());
+        let id = armed(
+            &mut world,
+            PiglinKind::Piglin,
+            DVec3::new(0.5, 64.0, 0.5),
+            "minecraft:golden_sword",
+        );
+        let players = calm_player(&mut world, DVec3::new(0.5, 64.0, 3.5));
+        let entity = world.piglin_mut(id).unwrap();
+        entity.piglin.offhand = Some(ItemStack::new("minecraft:gold_ingot", 1));
+        entity.brain.admire_for(119);
+        for _ in 0..10 {
+            world.tick_with_players(&mut ground, &players);
+        }
+        assert!(world.player_attack(&attack(1.0), id).hurt);
+        world.tick_with_players(&mut ground, &players);
+        assert!(world.take_barter_throws().is_empty());
+        let entity = world.piglins().iter().find(|e| e.id == id).unwrap();
+        assert!(entity.piglin.offhand.is_none());
+        assert!(entity.piglin.inventory.iter().all(Option::is_none));
+        let memories = &entity.brain.memories;
+        assert!(!memories.admiring_item.present());
+        let disabled = memories.admiring_disabled.ttl().unwrap();
+        assert!((398..=400).contains(&disabled), "{disabled}");
+        assert!(ground.items.is_empty(), "vanilla loses the ingot");
+    }
+
+    #[test]
+    fn babies_ignore_leather() {
+        let mut ground = Ground::new(12);
+        let mut world = EntityWorld::default();
+        world.set_recipe_book(piglin_book());
+        let baby = spawn(&mut world, PiglinKind::Piglin, 0.5, 0.5);
+        world.piglin_mut(baby).unwrap().piglin.set_baby(true);
+        assert!(!world.piglin_wants(baby, &ItemStack::new("minecraft:leather", 1)));
+        let adult = spawn(&mut world, PiglinKind::Piglin, 4.5, 0.5);
+        assert!(world.piglin_wants(adult, &ItemStack::new("minecraft:leather", 1)));
+        assert!(!world.piglin_wants(adult, &ItemStack::new("minecraft:soul_torch", 1)));
+        let armed = armed(
+            &mut world,
+            PiglinKind::Piglin,
+            DVec3::new(-4.5, 64.0, 0.5),
+            "minecraft:golden_sword",
+        );
+        assert!(!world.piglin_wants(armed, &ItemStack::new("minecraft:leather", 1)));
+        assert!(world.piglin_wants(armed, &ItemStack::new("minecraft:crossbow", 1)));
+        assert!(world.piglin_wants(armed, &ItemStack::new("minecraft:golden_carrot", 1)));
+        let at = world.piglin_mut(baby).unwrap().position();
+        let leather = ground.drop("minecraft:leather", 1, at);
+        for _ in 0..5 {
+            world.tick_with_players(&mut ground, &[]);
+        }
+        assert!(ground.has(leather));
+    }
+
+    #[test]
+    fn a_piglin_gives_up_on_an_unreachable_ingot_after_200_ticks() {
+        let mut ground = Ground::new(12);
+        let mut world = EntityWorld::default();
+        world.set_recipe_book(piglin_book());
+        let id = armed(
+            &mut world,
+            PiglinKind::Piglin,
+            DVec3::new(0.5, 64.0, 0.5),
+            "minecraft:golden_sword",
+        );
+        slowed(&mut world, id);
+        let players = calm_player(&mut world, DVec3::new(0.5, 64.0, -6.5));
+        let ingot = ground.drop("minecraft:gold_ingot", 1, DVec3::new(6.5, 64.0, 0.5));
+        let mut gave_up = None;
+        for tick in 0..500 {
+            world.tick_with_players(&mut ground, &players);
+            let memories = &world.piglin_mut(id).unwrap().brain.memories;
+            if memories.disable_walk_to_admire_item.present() {
+                gave_up = Some(tick);
+                assert!(!memories.admiring_item.present());
+                break;
+            }
+        }
+        let gave_up = gave_up.expect("it gives up");
+        assert!((200..=260).contains(&gave_up), "{gave_up}");
+        assert!(ground.has(ingot));
+        for _ in 0..150 {
+            world.tick_with_players(&mut ground, &players);
+            let memories = &world.piglin_mut(id).unwrap().brain.memories;
+            assert!(!memories.admiring_item.present());
+        }
+    }
+
+    #[test]
+    fn no_mob_griefing_no_pickup() {
+        let mut ground = Ground::new(12);
+        let mut world = EntityWorld::default();
+        world.set_recipe_book(piglin_book());
+        world.set_mob_griefing(false);
+        let id = armed(
+            &mut world,
+            PiglinKind::Piglin,
+            DVec3::new(0.5, 64.0, 0.5),
+            "minecraft:golden_sword",
+        );
+        let players = calm_player(&mut world, DVec3::new(0.5, 64.0, 6.5));
+        let ingot = ground.drop("minecraft:gold_ingot", 1, DVec3::new(1.0, 64.0, 0.5));
+        for _ in 0..100 {
+            world.tick_with_players(&mut ground, &players);
+            let memories = &world.piglin_mut(id).unwrap().brain.memories;
+            assert!(!memories.admiring_item.present());
+        }
+        assert!(ground.has(ingot));
+        assert!(offhand(&world, id).is_none());
     }
 
     #[test]

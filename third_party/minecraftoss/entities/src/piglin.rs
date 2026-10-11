@@ -24,6 +24,9 @@ pub const AMBIENT_INTERVAL: i32 = 80;
 pub const STEP_VOLUME: f32 = 0.15;
 pub const DEFAULT_DROP_CHANCE: f32 = 0.085;
 pub const INVENTORY_SIZE: usize = 8;
+pub const BARTERING_ITEM: &str = "minecraft:gold_ingot";
+pub const GOLD_NUGGET: &str = "minecraft:gold_nugget";
+pub const GUARANTEED_DROP: f32 = 2.0;
 
 pub const MAINHAND: usize = 0;
 pub const OFFHAND: usize = 1;
@@ -237,6 +240,34 @@ impl Piglin {
         })
     }
 
+    pub fn can_add_to_inventory(&self, stack: &ItemStack, max_stack: u8) -> bool {
+        self.inventory.iter().any(|slot| match slot {
+            None => true,
+            Some(held) => {
+                held.id == stack.id && held.components == stack.components && held.count < max_stack
+            }
+        })
+    }
+
+    pub fn add_to_inventory(&mut self, mut stack: ItemStack, max_stack: u8) -> Option<ItemStack> {
+        for held in self.inventory.iter_mut().flatten() {
+            if held.id == stack.id && held.components == stack.components && held.count < max_stack
+            {
+                let moved = (max_stack - held.count).min(stack.count);
+                held.count += moved;
+                stack.count -= moved;
+                if stack.count == 0 {
+                    return None;
+                }
+            }
+        }
+        if let Some(slot) = self.inventory.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(stack);
+            return None;
+        }
+        Some(stack)
+    }
+
     pub fn set_crossbow_charged(&mut self, charged: bool) {
         let Some(stack) = self
             .main_hand
@@ -296,6 +327,66 @@ pub fn melee_weapon(id: &str) -> bool {
         .iter()
         .any(|suffix| name.ends_with(suffix))
         || matches!(name, "mace" | "trident" | "shears")
+}
+
+pub fn armor_slot(id: &str) -> Option<usize> {
+    let name = id.trim_start_matches("minecraft:");
+    if name.ends_with("_helmet") || name == "carved_pumpkin" || name.ends_with("_head") {
+        Some(HEAD)
+    } else if name.ends_with("_chestplate") || name == "elytra" {
+        Some(CHEST)
+    } else if name.ends_with("_leggings") {
+        Some(LEGS)
+    } else if name.ends_with("_boots") {
+        Some(FEET)
+    } else {
+        None
+    }
+}
+
+pub fn enchantment_count(stack: &ItemStack) -> usize {
+    stack
+        .components
+        .as_ref()
+        .and_then(|c| c.get("minecraft:enchantments"))
+        .and_then(|e| e.get("levels").or(Some(e)))
+        .and_then(|e| e.as_object())
+        .map_or(0, |levels| levels.len())
+}
+
+pub fn damage_value(stack: &ItemStack) -> u64 {
+    stack
+        .components
+        .as_ref()
+        .and_then(|c| c.get("minecraft:damage"))
+        .and_then(|d| d.as_u64())
+        .unwrap_or(0)
+}
+
+pub fn has_binding_curse(stack: &ItemStack) -> bool {
+    stack
+        .components
+        .as_ref()
+        .and_then(|c| c.get("minecraft:enchantments"))
+        .is_some_and(|e| e.to_string().contains("minecraft:binding_curse"))
+}
+
+pub fn can_replace_equal_item(new: &ItemStack, current: &ItemStack) -> bool {
+    let (new_enchants, current_enchants) = (enchantment_count(new), enchantment_count(current));
+    if new_enchants != current_enchants {
+        return new_enchants > current_enchants;
+    }
+    let (new_damage, current_damage) = (damage_value(new), damage_value(current));
+    if new_damage != current_damage {
+        return new_damage < current_damage;
+    }
+    let named = |stack: &ItemStack| {
+        stack
+            .components
+            .as_ref()
+            .is_some_and(|c| c.get("minecraft:custom_name").is_some())
+    };
+    named(new) && !named(current)
 }
 
 pub fn weapon_bonus(id: &str) -> f32 {

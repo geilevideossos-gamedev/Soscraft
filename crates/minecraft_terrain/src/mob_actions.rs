@@ -279,6 +279,10 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
                 return outcome;
             }
         }
+        MobHit::Piglin(id) => {
+            let Some(drops) = world.piglin_admire_held(id, actor.inventory, selected, infinite) else { return outcome };
+            outcome.drops.extend(drops);
+        }
         MobHit::IronGolem(id) if held.as_deref() == Some("minecraft:iron_ingot") => {
             let Some(entity) = world.iron_golem_mut(id) else { return outcome };
             if !entity.repair_with_ingot() {
@@ -318,6 +322,7 @@ mod tests {
     use minecraftoss_entities::iron_golem::IronGolem;
     use minecraftoss_entities::mooshroom::{MushroomCow, MushroomVariant};
     use minecraftoss_entities::pig::Pig;
+    use minecraftoss_entities::piglin::{Piglin, PiglinKind};
     use minecraftoss_entities::sheep::Sheep;
     use minecraftoss_entities::villager::Villager;
     use minecraftoss_entities::wolf::Wolf;
@@ -379,6 +384,15 @@ mod tests {
         let calm = world.spawn_hoglin(Hoglin::new(HoglinKind::Hoglin, at), true);
         world.hoglin_mut(calm).unwrap().brain.memories.pacified.set_for((), 200);
         let zoglin = world.spawn_hoglin(Hoglin::new(HoglinKind::Zoglin, at), true);
+        let piglin = world.spawn_piglin(Piglin::new(PiglinKind::Piglin, at), true);
+        let mut young = Piglin::new(PiglinKind::Piglin, at);
+        young.set_baby(true);
+        let piglin_baby = world.spawn_piglin(young, true);
+        let brute = world.spawn_piglin(Piglin::new(PiglinKind::Brute, at), true);
+        let admiring = world.spawn_piglin(Piglin::new(PiglinKind::Piglin, at), true);
+        world.piglin_mut(admiring).unwrap().brain.admire_for(50);
+        let sulking = world.spawn_piglin(Piglin::new(PiglinKind::Piglin, at), true);
+        world.piglin_mut(sulking).unwrap().brain.memories.admiring_disabled.set_for((), 400);
         let cases: &[(MobHit, Option<&str>, bool)] = &[
             (MobHit::Cow(cow), Some("minecraft:wheat"), true),
             (MobHit::Cow(cow), Some("minecraft:bucket"), true),
@@ -410,6 +424,13 @@ mod tests {
             (MobHit::Hoglin(hoglet), Some("minecraft:crimson_fungus"), true),
             (MobHit::Hoglin(calm), Some("minecraft:crimson_fungus"), false),
             (MobHit::Hoglin(zoglin), Some("minecraft:crimson_fungus"), false),
+            (MobHit::Piglin(piglin), Some("minecraft:gold_ingot"), true),
+            (MobHit::Piglin(piglin), Some("minecraft:gold_nugget"), false),
+            (MobHit::Piglin(piglin), Some("minecraft:golden_carrot"), false),
+            (MobHit::Piglin(piglin_baby), Some("minecraft:gold_ingot"), false),
+            (MobHit::Piglin(brute), Some("minecraft:gold_ingot"), false),
+            (MobHit::Piglin(admiring), Some("minecraft:gold_ingot"), false),
+            (MobHit::Piglin(sulking), Some("minecraft:gold_ingot"), false),
         ];
         for &(hit, held, expected) in cases {
             for infinite in [false, true] {
@@ -428,6 +449,42 @@ mod tests {
         assert!(would_interact(&world, MobHit::Sheep(sheep), &holding(Some("minecraft:shears")), 0, false, 0), "shears always take on a sheep");
         assert!(!would_interact(&world, MobHit::Sheep(sheep + 1000), &holding(Some("minecraft:shears")), 0, false, 0));
         assert!(world.pig_mut(pig).is_some_and(|e| !e.pig.saddled), "the predicate leaves the world alone");
+    }
+
+    #[test]
+    fn a_right_clicked_ingot_is_used_and_admired() {
+        for infinite in [false, true] {
+            let at = DVec3::new(0.5, 64.0, 0.5);
+            let mut world = EntityWorld::default();
+            let mut piglin = Piglin::new(PiglinKind::Piglin, at);
+            piglin.offhand = Some(ItemStack::new("minecraft:golden_carrot", 1));
+            let id = world.spawn_piglin(piglin, true);
+            let mut inventory = holding(Some("minecraft:gold_ingot"));
+            inventory.slots[0].as_mut().unwrap().count = 3;
+            let mut actor = Actor { inventory: &mut inventory, selected: 0, infinite, entity_loot: None, shearing_loot: None, player: 0 };
+            let outcome = interact(&mut world, MobHit::Piglin(id), &mut actor);
+            assert!(outcome.handled && outcome.inventory_changed);
+            let left = inventory.slots[0].as_ref().unwrap().count;
+            assert_eq!(left, if infinite { 3 } else { 2 });
+            let entity = world.piglin_mut(id).unwrap();
+            assert_eq!(entity.piglin.offhand.as_ref().map(|s| s.id.as_str()), Some("minecraft:gold_ingot"));
+            assert_eq!(entity.brain.memories.admiring_item.ttl(), Some(119));
+            assert_eq!(outcome.drops.len(), 1, "the carrot it held falls");
+            assert_eq!(outcome.drops[0].0.id, "minecraft:golden_carrot");
+            let mut actor = Actor { inventory: &mut inventory, selected: 0, infinite, entity_loot: None, shearing_loot: None, player: 0 };
+            assert!(!interact(&mut world, MobHit::Piglin(id), &mut actor).handled, "one at a time");
+        }
+    }
+
+    #[test]
+    fn a_brute_ignores_a_gold_ingot() {
+        let mut world = EntityWorld::default();
+        let brute = world.spawn_piglin(Piglin::new(PiglinKind::Brute, DVec3::new(0.5, 64.0, 0.5)), true);
+        let mut inventory = holding(Some("minecraft:gold_ingot"));
+        let mut actor = Actor { inventory: &mut inventory, selected: 0, infinite: false, entity_loot: None, shearing_loot: None, player: 0 };
+        assert!(!interact(&mut world, MobHit::Piglin(brute), &mut actor).handled);
+        assert_eq!(inventory.slots[0].as_ref().unwrap().count, 4);
+        assert!(world.piglin_mut(brute).unwrap().piglin.offhand.is_none());
     }
 
     struct Floor;

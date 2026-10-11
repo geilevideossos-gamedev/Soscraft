@@ -601,6 +601,10 @@ mod tests {
                 forgive_dead_players: true,
                 holds_crossbow: false,
                 using_item: None,
+                wanted_items: None,
+                offhand: false,
+                offhand_shield: false,
+                offhand_loved: false,
                 look_at: None,
                 sounds: Vec::new(),
                 doors: Vec::new(),
@@ -609,6 +613,7 @@ mod tests {
                 strafe: None,
                 item_use: None,
                 charging: None,
+                stop_holding: None,
             };
             order.push(brain.nearest_valid_attack_target(&ctx));
             let memories = &mut brain.memories;

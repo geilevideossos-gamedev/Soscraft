@@ -39,7 +39,7 @@ pub use striders::StriderEntity;
 mod hoglins;
 pub use hoglins::HoglinEntity;
 mod piglins;
-pub use piglins::PiglinEntity;
+pub use piglins::{BarterThrow, PICKUP_DELAY as BARTER_PICKUP_DELAY, PiglinEntity};
 mod riding;
 pub use riding::Rider;
 pub use ghasts::GhastEntity;
@@ -2343,6 +2343,7 @@ pub struct EntityWorld {
     monsters_burn: bool,
     piglins_zombify: bool,
     piglin_rules: piglins::PiglinRules,
+    barter_throws: Vec<piglins::BarterThrow>,
     /// `Difficulty.getId`: 0 peaceful to 3 hard.
     difficulty: i32,
     /// Sounds not tied to a living mob (a creeper's blast, gone with it).
@@ -2448,6 +2449,7 @@ impl Default for EntityWorld {
             monsters_burn: false,
             piglins_zombify: false,
             piglin_rules: Default::default(),
+            barter_throws: Vec::new(),
             difficulty: 2,
             sounds: Vec::new(),
             mob_drops: true,
@@ -4818,6 +4820,7 @@ impl EntityWorld {
             monsters_burn: false,
             piglins_zombify: false,
             piglin_rules: self.piglin_rules,
+            barter_throws: Vec::new(),
             difficulty: 2,
             sounds: Vec::new(),
             mob_drops: self.mob_drops,

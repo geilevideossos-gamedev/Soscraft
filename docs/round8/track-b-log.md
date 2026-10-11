@@ -658,3 +658,39 @@ After 0967e73a.
 ```
 IW4L_MINECRAFT_KIT=minecraft:piglin_spawn_egg*16,minecraft:zombified_piglin_spawn_egg*4,minecraft:wither_skeleton_spawn_egg*2,minecraft:soul_torch*16,minecraft:torch*16,minecraft:soul_campfire*2,minecraft:iron_shovel,minecraft:golden_boots,minecraft:diamond_sword,minecraft:cooked_beef*32,minecraft:netherrack*64
 ```
+
+### b1.5. Minecraft piglins admire gold and barter
+
+After f9e8e09d.
+
+- **Changed:**
+  - New vendored `piglin_brain/admire.rs`: `NearestItemSensor` on its own 20-tick clock (the item list is gathered by the entity world only on the tick the clock fires: items within 32 x 16 x 32 by distance, ones the piglin wants, closer than 32 and in sight), CORE `StopHoldingItemIfNoLongerAdmiring` and `StartAdmiringItemIfSeen(119)` (a `#piglin_loved` item), the ADMIRE_ITEM activity (`GoToWantedItem` at 1.0 within 9 unless the offhand holds a loved item, `StopAdmiringIfItemTooFarAway(9)`, `StopAdmiringIfTiredOfTryingToReachItem(200, 200)`), and the jealous look (`SetEntityLookTarget` at a player holding a loved item within 14) in IDLE and CELEBRATE. New memories: the wanted item, the time spent reaching it, `disable_walk_to_admire_item`, `ate_recently`.
+  - Vendored `world/piglins.rs`: `wantsToPickup` (babies ignore `#ignored_by_piglin_babies`, nothing from `#piglin_repellents`, nothing while admiring is disabled during a fight, a gold ingot unless the offhand holds a loved item, nuggets and food only with room in the inventory and food only when not `ate_recently`, other loved items with room, anything else only if it replaces the current gear), with `mob_griefing` and `CanPickUpLoot`; brutes want only a golden axe. `Mob.aiStep`'s pick-up (box grown by 1, 0, 1, no pickup delay): nuggets are taken whole, anything else one at a time; a loved item goes to the offhand (dropping what was there) and is admired for 119 ticks; food is eaten (`ate_recently` 200); the rest is equipped (`equipItemIfPossible`: armour by defence then toughness, weapons by the preferred weapon tag then attack damage, then enchantments, wear and a custom name; the old piece drops by its drop chance) or stored in the 8-slot inventory, any overflow thrown away. `stopHoldingOffHandItem`: an adult's gold ingot after admiring is bartered, any other loved item is equipped or stored; a baby equips it, or keeps it in the main hand and stores or throws what it held there. Items held in a hand drop for sure and make the piglin persistent (but a plain gold ingot in the offhand).
+  - Barter: the entity world queues `BarterThrow` (from the eyes minus 0.3, velocity 0.3 toward the nearest visible player plus one block up, else a `LandRandomPos(4, 2)` spot, else straight up); `ServerSim::tick_mobs` rolls `gameplay/piglin_bartering` once per throw (b1.1's `roll_barter`) and spawns each stack with that velocity and a pickup delay of 10.
+  - `minecraft_terrain::mob_actions`: right-clicking a piglin with a gold ingot (`canAdmire`: an adult piglin not admiring and not barred from it) uses one ingot (none in creative), puts it in the offhand (what it held drops), starts the 119 ticks of admiring and stops it walking; babies, brutes, an admiring piglin and other items pass. `would_interact` follows.
+- **Tests:** `world::piglins`: `a_dropped_gold_ingot_is_admired_for_119_ticks_then_bartered_toward_the_player`, `a_baby_keeps_the_gold_it_admires_and_never_barters`, `a_piglin_eats_a_porkchop_and_takes_the_next_after_200_ticks`, `gold_nuggets_go_whole_into_the_inventory_and_drop_on_death`, `a_hit_while_admiring_ends_it_without_a_barter_and_disables_admiring_for_400_ticks`, `babies_ignore_leather` (also the gear and loved-item rules), `a_piglin_gives_up_on_an_unreachable_ingot_after_200_ticks`, `no_mob_griefing_no_pickup`. `mob_actions`: `a_right_clicked_ingot_is_used_and_admired`, `a_brute_ignores_a_gold_ingot`, and seven piglin rows in `would_interact_agrees_with_interact`. `server` (with the game data): `a_barter_throws_one_roll_of_the_table_at_the_player`.
+- **Decisions:**
+  - A piglin hit while admiring a gold ingot loses it, as vanilla's `stopHoldingOffHandItem(false)` does (an adult's ingot that is not bartered is neither equipped nor stored). The brief's "keeps the ingot unbartered" test is named after what vanilla does.
+  - The item sensor's list is gathered by the entity world on the tick the piglin's sensor clock fires, because only the world knows the item tags, the inventory and the game rules.
+  - The barter is rolled after the mob tick on the server, where the loot book lives; the throw keeps the moment's direction.
+  - Brutes use the piglin's replacement rules when picking up a golden axe (vanilla brutes use `Mob`'s); only golden axes are ever picked up, so the result is the same unless two golden axes differ in wear or enchantments.
+- **Test steps (Nether, survival, `/difficulty normal`, golden boots on, about 10 piglin eggs used on a netherrack floor):**
+  1. Hold a gold ingot near them: they turn to look at you and grunt jealously.
+  2. Drop one gold ingot (Q) near a piglin: it walks over, picks it up, holds it up in its left hand looking at it (admiring sound) for about 6 seconds, then throws an item at you (**9**).
+  3. Right-click a piglin with a gold ingot: one ingot is used and the same happens. Barter about 20 times (**10**, the inventory): obsidian, crying obsidian, quartz, string, gravel, blackstone, soul sand, nether bricks, spectral arrows, leather, fire charges, iron nuggets, ender pearls, dried ghasts, water or fire resistance potions, rarely a soul speed book or soul speed iron boots. In creative the ingot isn't used up.
+  4. Right-click a baby piglin or a brute with an ingot: nothing happens. Right-click a piglin that is already admiring: nothing.
+  5. Drop a porkchop next to a piglin: it eats it (gone, nothing back); a second porkchop is left for about 10 seconds. Drop a golden carrot: one picks it up, admires it and keeps it. Drop 20 gold nuggets: one piglin takes the whole stack; kill it: the 20 nuggets drop. Drop leather next to a baby: it ignores it.
+  6. Hit a piglin while it admires an ingot: it stops at once, throws nothing, and won't take gold for 20 seconds.
+  7. `/gamerule mob_griefing false`: dropped gold is ignored; `/gamerule mob_griefing true`.
+  8. Put an ingot on top of a 3-block pillar next to a piglin: it tries to reach it for about 10 seconds, then gives up for 10 seconds.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:piglin_spawn_egg*16,minecraft:piglin_brute_spawn_egg*2,minecraft:gold_ingot*64,minecraft:gold_ingot*64,minecraft:gold_nugget*32,minecraft:golden_carrot*4,minecraft:porkchop*8,minecraft:leather*8,minecraft:golden_boots,minecraft:diamond_sword,minecraft:netherrack*64,minecraft:cooked_beef*32
+```
+
+- **Combined kit for b1.3 to b1.5** (21 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:piglin_spawn_egg*16,minecraft:piglin_brute_spawn_egg*4,minecraft:zombified_piglin_spawn_egg*2,minecraft:wither_skeleton_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:gold_ingot*64,minecraft:gold_ingot*64,minecraft:gold_nugget*32,minecraft:golden_carrot*4,minecraft:porkchop*8,minecraft:leather*8,minecraft:golden_boots,minecraft:diamond_sword,minecraft:shield,minecraft:soul_torch*16,minecraft:torch*16,minecraft:soul_campfire*2,minecraft:iron_shovel,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:netherrack*64
+```

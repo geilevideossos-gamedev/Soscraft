@@ -1,8 +1,10 @@
+mod admire;
 mod behaviors;
 mod fight;
 mod memory;
 mod sensors;
 
+pub use admire::{ADMIRE_TICKS, ATE_RECENTLY_TICKS, ITEM_EYE_HEIGHT, WantedItem};
 pub use behaviors::Doors;
 pub use fight::{
     ADMIRING_DISABLED_TICKS, ANGER_TICKS, BABY_FLEE_TICKS, CROSSBOW_CHARGE, CrossbowAttack,
@@ -57,6 +59,10 @@ pub struct PiglinCtx<'a> {
     pub forgive_dead_players: bool,
     pub holds_crossbow: bool,
     pub using_item: Option<i32>,
+    pub wanted_items: Option<&'a [WantedItem]>,
+    pub offhand: bool,
+    pub offhand_shield: bool,
+    pub offhand_loved: bool,
     pub look_at: Option<DVec3>,
     pub sounds: Vec<&'static str>,
     pub doors: Vec<(Pos, bool)>,
@@ -65,6 +71,7 @@ pub struct PiglinCtx<'a> {
     pub strafe: Option<f32>,
     pub item_use: Option<ItemUse>,
     pub charging: Option<bool>,
+    pub stop_holding: Option<bool>,
 }
 
 impl PiglinCtx<'_> {
@@ -141,6 +148,7 @@ impl PiglinBrain {
     pub fn tick(&mut self, ctx: &mut PiglinCtx) {
         self.memories.tick();
         self.sense(ctx);
+        self.follow_wanted_item(ctx);
         self.start_look(ctx);
         self.walk.try_start(
             &mut self.memories.walk_target,
@@ -151,11 +159,16 @@ impl PiglinBrain {
         if ctx.kind == PiglinKind::Piglin {
             self.baby_avoid_nemesis(ctx);
             self.avoid_zombified(ctx);
+            self.stop_holding_if_no_longer_admiring(ctx);
+            self.start_admiring_item_if_seen(ctx);
             self.start_celebrating_if_target_dead(ctx);
         }
         self.stop_being_angry_if_target_dead(ctx);
         match self.activity {
             Activity::Idle => {
+                if ctx.kind == PiglinKind::Piglin {
+                    self.look_at_loved_holder(ctx);
+                }
                 self.start_attacking(ctx);
                 if ctx.kind == PiglinKind::Piglin {
                     self.avoid_repellent(ctx);
@@ -165,8 +178,10 @@ impl PiglinBrain {
                 self.set_look_and_interact(ctx);
             }
             Activity::Fight => self.fight(ctx),
+            Activity::AdmireItem => self.admire(ctx),
             Activity::Celebrate => {
                 self.avoid_repellent(ctx);
+                self.look_at_loved_holder(ctx);
                 self.start_attacking(ctx);
                 self.go_to_celebrate_location(ctx);
                 self.celebrate_movement(ctx);

@@ -8,6 +8,7 @@ pub const SCAN_RATE: i32 = 20;
 pub const SENSORS: usize = 5;
 pub const NEAREST_LIVING: usize = 0;
 pub const NEAREST_PLAYERS: usize = 1;
+pub const NEAREST_ITEMS: usize = 2;
 pub const SPECIFIC: usize = 4;
 pub const NEMESES: [&str; 2] = ["minecraft:wither_skeleton", "minecraft:wither"];
 pub const ZOMBIFIED: [&str; 2] = ["minecraft:zombified_piglin", "minecraft:zoglin"];
@@ -49,6 +50,9 @@ impl PiglinBrain {
         }
         if fired[NEAREST_PLAYERS] {
             self.sense_players(ctx);
+        }
+        if fired[NEAREST_ITEMS] {
+            self.sense_items(ctx);
         }
         if fired[SPECIFIC] {
             self.sense_specific(ctx);
