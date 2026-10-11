@@ -151,6 +151,18 @@ impl Mining {
         }
     }
 
+    pub(crate) fn hit_particle(&mut self, packs: &PackStack, scene: &HandcraftedScene, atlas: &Atlas, hit: (BlockPos, minecraftoss_player::Face), block: &minecraft_terrain::scene::Block) {
+        if self.particles.is_none() {
+            self.particles = BlockParticles::new(packs).ok();
+        }
+        let Some(bounds) = minecraftoss_player::World::block(scene, hit.0).as_ref().and_then(minecraftoss_player::outline_bounds) else {
+            return;
+        };
+        if let Some(particles) = self.particles.as_mut() {
+            let _ = particles.spawn_hit(packs, scene, hit, block, bounds.map(|value| value as f32), atlas);
+        }
+    }
+
     pub(crate) fn eat_burst(&mut self, packs: &PackStack, eye: glam::Vec3, yaw: f32, pitch: f32, count: u32, texture: &ResourceId) {
         if self.particles.is_none() {
             self.particles = BlockParticles::new(packs).ok();
@@ -217,9 +229,10 @@ impl Mining {
         (bytemuck::cast_slice(&vertices).to_vec(), mesh.indices)
     }
 
-    pub(crate) fn crack_mesh(&mut self, scene: &HandcraftedScene, states: &BlockStates, packs: &PackStack) -> (Vec<[f32; 6]>, Vec<u32>) {
+    pub(crate) fn crack_mesh(&mut self, scene: &HandcraftedScene, states: &BlockStates, packs: &PackStack, dig: Option<(BlockPos, u8)>) -> (Vec<[f32; 6]>, Vec<u32>) {
         let (mut vertices, mut indices) = (Vec::new(), Vec::new());
-        for (&pos, &(progress, _)) in &self.progress {
+        let cracks: Vec<(BlockPos, f32)> = self.progress.iter().map(|(&pos, &(progress, _))| (pos, ((progress * 10.0) as i32).clamp(0, 9) as f32)).chain(dig.map(|(pos, stage)| (pos, f32::from(stage)))).collect();
+        for (pos, stage) in cracks {
             let Some(block) = Scene::block(scene, pos) else {
                 continue;
             };
@@ -236,7 +249,6 @@ impl Mining {
             let Some(quads) = variants.as_deref().and_then(|variants| minecraft_terrain::mesh::crumbling_quads(variants, pos).ok()) else {
                 continue;
             };
-            let stage = ((progress * 10.0) as i32).clamp(0, 9) as f32;
             for quad in quads {
                 let first = vertices.len() as u32;
                 vertices.extend(quad.map(|[x, y, z, u, v]| [x, y, z, u, v, stage]));
@@ -399,7 +411,7 @@ mod tests {
             scene.set(pos, block);
             mining.progress.insert(pos, (0.05 + stage as f32 * 0.1, 0.0));
         }
-        let (vertices, indices) = mining.crack_mesh(&scene, &states, &packs);
+        let (vertices, indices) = mining.crack_mesh(&scene, &states, &packs, None);
         assert_eq!(indices.len() * 4, vertices.len() * 6);
         let local = |stage: usize| -> Vec<[f32; 3]> {
             vertices.iter().filter(|vertex| vertex[5] == stage as f32).map(|vertex| [vertex[0] - stage as f32 * 2.0, vertex[1] - 100.0, vertex[2]]).collect()

@@ -819,9 +819,11 @@ fn update(
     if ui.chat.language.is_empty() && let Some(language) = inventory_ui.language() {
         ui.chat.language = std::sync::Arc::new(language.clone());
     }
-    let mut all_events = sim::voxel::take_events();
+    let all_events = sim::voxel::take_events();
     let mut hand_mined = Vec::new();
     let mut creative_broken = Vec::new();
+    let mut hand_broken = Vec::new();
+    let mut digging = false;
 
     // The hand, when no gun is selected: vanilla's left click mines by hand
     // (with the hand's break speed) or punches, its right click places the
@@ -1054,7 +1056,7 @@ fn update(
         }
         let mw2_offhand = (weapon_iw4::WeaponState::OffhandInit as i32..=weapon_iw4::WeaponState::OffhandEnd as i32).contains(&ps.weaponstate_primary);
         let busy = survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some() || hand.miss_time > 0 || mw2_offhand;
-        let mut creative_press = false;
+        let mut block_press = false;
         let mut punched = false;
         if ui.holding_item && (buttons.just_pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, true)) && !busy {
             hand.swing = Some(0.0);
@@ -1080,7 +1082,8 @@ fn update(
                 hand.attack_ticks = 0;
                 hand.miss_time = if game_mode.instant_break() { 0 } else { 10 };
             } else {
-                creative_press = true;
+                block_press = true;
+                hand.dig.press();
             }
         }
         for _ in 0..hand_ticks {
@@ -1123,7 +1126,7 @@ fn update(
                 && !punched
                 && entities.mob_distance(eye_block, look, game_mode.entity_reach()).is_none_or(|distance| distance > hit.distance)
                 && minecraft_terrain::game_mode::can_destroy_in_creative(held)
-                && minecraft_terrain::game_mode::creative_breaks(&mut hand.creative_delay, creative_press, attack_held, hand_ticks) > 0
+                && minecraft_terrain::game_mode::creative_breaks(&mut hand.creative_delay, block_press, attack_held, hand_ticks) > 0
             {
                 creative_broken.push(hit.pos);
                 hand_mined.push(hit.pos);
@@ -1132,20 +1135,61 @@ fn update(
                     hand.swing_offhand = false;
                 }
             }
-        } else if ui.holding_item && attack_held && !busy && game_mode.may_build() {
+        } else if ui.holding_item && (attack_held || hand.dig.pressed) && !busy && game_mode.may_build() {
+            digging = true;
+            let outlined = minecraft_terrain::doors::Outlined(&terrain.scene);
+            let mut staged = minecraft_terrain::placing::Staged::new(&outlined);
+            let mob = entities.mob_distance(eye_block, look, game_mode.entity_reach());
+            let digger = minecraft_survival::digging::digger(inventory, *selected, &survival.status, water.eye, on_ground);
+            let progress = |block: &minecraftoss_player::Block| {
+                let hardness = scene_block(block).and_then(|block| terrain.stream.states.state_of(&block)).map_or(-1.0, |state| globals.registries.blocks.state(state).destroy_speed);
+                minecraft_terrain::mining_speed::destroy_progress(globals.data.mining.as_deref(), &*terrain.stream.states, block, hardness, &digger)
+            };
             for _ in 0..hand_ticks {
-                if let Some(hit) = player.target(&minecraft_terrain::doors::Outlined(&terrain.scene), 4.5) {
-                    // A hand mines as vanilla's `getDestroyProgress`: a
-                    // block's hardness times thirty ticks.
-                    all_events.push(sim::voxel::VoxelEvent::Shot {
-                        block: [hit.pos.0, hit.pos.1, hit.pos.2],
-                        damage: 160.0 / 30.0,
-                    });
-                    hand_mined.push(hit.pos);
-                    if hand.swing.is_none_or(|t| t >= crate::minecraft_hand::SWING_TICKS * 0.5) {
-                        hand.swing = Some(0.0);
-                        hand.swing_offhand = false;
+                let hit = player.target(&staged, game_mode.block_reach()).filter(|hit| mob.is_none_or(|distance| distance > hit.distance));
+                let block = hit.as_ref().and_then(|hit| minecraftoss_player::World::block(&staged, hit.pos));
+                let clicked = hand.dig.take_press();
+                let dug = hand.dig.tick(minecraft_survival::digging::DigInput {
+                    target: hit.as_ref().zip(block.as_ref()).map(|(hit, block)| (hit.pos, hit.face, block)),
+                    held: inventory.slots[*selected].as_ref(),
+                    clicked,
+                    held_down: attack_held,
+                    progress: &progress,
+                });
+                if dug.stopped {
+                    hand.attack_ticks = 0;
+                }
+                for event in dug.events {
+                    use minecraft_survival::digging::DigEvent;
+                    let (pos, face, sound) = match event {
+                        DigEvent::Attacked(pos) => {
+                            entities.attack_block(&terrain.scene, pos);
+                            continue;
+                        }
+                        DigEvent::Broke { pos, .. } => {
+                            minecraftoss_player::World::set_block(&mut staged, pos, None);
+                            hand_broken.push(pos);
+                            hand_mined.push(pos);
+                            continue;
+                        }
+                        DigEvent::Aborted(_) => continue,
+                        DigEvent::Started { pos, face } => (pos, face, true),
+                        DigEvent::Hit { pos, face, sound } => (pos, face, sound),
+                    };
+                    let Some(block) = minecraft_terrain::scene::Scene::block(&terrain.scene, pos) else {
+                        continue;
+                    };
+                    if sound
+                        && let (Some(sounds), Some(kind)) = (sounds.as_mut(), terrain.scene.sound_type(block))
+                    {
+                        let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
+                        sounds.play(&world.packs, &kind.hit, Some(Vec3::from_array(sim::voxel::to_map(origin, centre))), (kind.volume + 1.0) / 8.0, kind.pitch * 0.5);
                     }
+                    mining.hit_particle(&world.packs, &terrain.scene, &world.atlas, (pos, face), block);
+                }
+                if dug.swing && hand.swing.is_none_or(|t| t >= crate::minecraft_hand::SWING_TICKS * 0.5) {
+                    hand.swing = Some(0.0);
+                    hand.swing_offhand = false;
                 }
             }
         }
@@ -1541,6 +1585,12 @@ fn update(
         }
     }
     hand.offhand_key_was = offhand_key;
+    if !digging {
+        hand.dig.pressed = false;
+        if hand.dig.stop() {
+            hand.attack_ticks = 0;
+        }
+    }
 
     // Shots and explosions from the authoritative game: bullets that met a
     // mob hurt it, the rest mine.
@@ -1611,6 +1661,7 @@ fn update(
     };
     let mut broken = mining.apply(events, &mut refs, time.elapsed_secs_f64());
     broken.extend(mining.break_now(&creative_broken, &mut refs));
+    broken.extend(mining.break_now(&hand_broken, &mut refs));
     if let Some(sounds) = sounds.as_mut() {
         for (pos, block, blast) in &broken {
             if blast.is_some() {
@@ -2222,7 +2273,7 @@ fn update(
     } else {
         body_gear.remove(local.0.0);
     }
-    view.cracks = mining.crack_mesh(&terrain.scene, &terrain.stream.states, &world.packs);
+    view.cracks = mining.crack_mesh(&terrain.scene, &terrain.stream.states, &world.packs, hand.dig.crack());
     let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
     view.eye_light = [
         f32::from(light.get(eye_block)),
