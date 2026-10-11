@@ -97,3 +97,24 @@ IW4L_MINECRAFT_KIT=minecraft:splash_potion@slow_falling,minecraft:splash_potion@
 ```
 IW4L_MINECRAFT_KIT=minecraft:milk_bucket,minecraft:milk_bucket,minecraft:potion@slow_falling,minecraft:potion@long_slow_falling,minecraft:splash_potion@slow_falling,minecraft:splash_potion@slow_falling,minecraft:elytra,minecraft:firework_rocket*16,minecraft:purpur_block*64,minecraft:ladder*16,minecraft:water_bucket,minecraft:water_bucket,minecraft:cooked_beef*16,minecraft:zombie_spawn_egg*4,minecraft:cobblestone*64,minecraft:diamond_sword
 ```
+
+## Group c5-snow-ladder: ladder ground jump, powder snow, freezing, overlays (c5 groups 1-4)
+
+### 4. Minecraft ladders take a ground jump like vanilla
+
+Previous commit: e1ab7780
+
+- **Changed:** `movement_iw4` `climb.rs`: on the ground at a climbable, `climb_move` runs the MW2 jump gate the way `stuck_move` does (a stale JUMPING flag is cleared, `jump::check` with the 500 ms gate and a fresh press, `ps.jump_time` stamped at the frame start). For the 50 ms after the launch the vertical speed is vanilla's jump power, 0.42 blocks a tick, and a sprinting player gets the 0.2 push along the facing (which the climb's ±0.15 clamp then caps, as vanilla's `handleOnClimbable` does). After the launch tick the speed is the climb rise, 0.1176 a tick, as vanilla sets 0.2 when the jump key was held at the end of that tick. The override only runs while the JUMPING flag is set, so an old `jump_time` alone never lifts anyone.
+- **Tests:** `movement_iw4` `climb`: `a_ground_jump_at_a_ladder_rises_the_vanilla_first_tick` (0.42 in the first 50 ms, then 0.1176 a tick while held, at 20, 125 and 333 frames a second, within 1 %), `a_tap_at_a_ladder_lifts_about_half_a_block` (peak 0.574 at 50 ms frames, between 0.5 and 0.6 at 16, 8 and 3 ms; the player slides back down), `the_jump_waits_for_the_gate` (a jump 200 ms after the last one, or a jump key held from before, only climbs: 0 the first tick, 0.1176 the next; a sprint jump rises 0.42 and moves at most the climb speed sideways).
+- **Decisions:**
+  - The coast after a tap uses the climb's existing per-frame gravity, which matches vanilla tick for tick at 20 frames a second and follows a smooth curve at higher rates, so the hop peaks a little lower there (about 0.51 to 0.56 blocks instead of 0.57). The ladder slide's speed is unchanged.
+  - The MW2 jump gate stays: a second ground jump needs a fresh press and 500 ms, like every other MW2 jump in the port (vanilla's 10-tick delay applies only while the key is held on the ground, and a ladder lifts the player off the ground at once).
+- **Test steps:** (survival, flat ground)
+  1. Put a ladder on a wall 6 blocks high. Stand at its foot and tap jump once: you hop up about half a block and slide back down. Before this round a tap only lifted you a hand's width (**1**, mid-hop).
+  2. Hold jump at the foot: the first step up is a quick hop, then the steady climb, the same speed as before.
+  3. Sprint into the ladder and jump: the same hop, no faster sideways.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ladder*32,minecraft:oak_planks*64
+```
