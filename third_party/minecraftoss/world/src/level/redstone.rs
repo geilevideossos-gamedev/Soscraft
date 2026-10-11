@@ -75,6 +75,7 @@ pub struct Kinds {
     pub wire: BlockId,
     pub comparator: BlockId,
     pub redstone_block: BlockId,
+    pub trapped_chest: BlockId,
 }
 
 impl Kinds {
@@ -126,7 +127,7 @@ impl Kinds {
             by_block.insert(id, kind);
         }
         let id = |name: &str| registries.blocks.block_by_name(name).expect("vanilla block");
-        Self { by_block, wire: id("minecraft:redstone_wire"), comparator: id("minecraft:comparator"), redstone_block: id("minecraft:redstone_block") }
+        Self { by_block, wire: id("minecraft:redstone_wire"), comparator: id("minecraft:comparator"), redstone_block: id("minecraft:redstone_block"), trapped_chest: id("minecraft:trapped_chest") }
     }
 
     pub fn get(&self, block: BlockId) -> Option<Kind> {
@@ -284,7 +285,29 @@ impl Level<'_> {
             Some(Kind::RedstoneBlock) => 15,
             Some(Kind::DaylightDetector) => self.int_prop(state, "power"),
             Some(Kind::PressurePlate) => self.plate_signal(state),
+            Some(Kind::Container) => self.trapped_chest_signal(state, pos),
             _ => 0,
+        }
+    }
+
+    fn trapped_chest_signal(&self, state: BlockStateId, pos: BlockPos) -> i32 {
+        if self.block_id(state) == self.kinds.trapped_chest {
+            self.chest_openers.get(&pos).copied().unwrap_or(0).clamp(0, 15)
+        } else {
+            0
+        }
+    }
+
+    pub fn set_chest_openers(&mut self, pos: BlockPos, count: i32) {
+        let count = count.max(0);
+        let old = if count > 0 { self.chest_openers.insert(pos, count) } else { self.chest_openers.remove(&pos) };
+        if old.unwrap_or(0) == count {
+            return;
+        }
+        let block = self.block_id(self.block(pos));
+        if block == self.kinds.trapped_chest {
+            self.update_neighbors_at(pos, block);
+            self.update_neighbors_at(pos.below(), block);
         }
     }
 
@@ -359,6 +382,7 @@ impl Level<'_> {
                     0
                 }
             }
+            Some(Kind::Container) if direction == Direction::Up => self.trapped_chest_signal(state, pos),
             Some(Kind::Lever | Kind::Button(_)) => {
                 let towards = connected_direction(self.prop(state, "face"), self.facing(state));
                 if self.flag(state, "powered") && towards == direction {

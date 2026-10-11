@@ -854,3 +854,26 @@ Previous commit: fba23ac4
 ```
 IW4L_MINECRAFT_KIT=minecraft:totem_of_undying,minecraft:totem_of_undying,minecraft:totem_of_undying,minecraft:totem_of_undying
 ```
+
+### 35. Minecraft trapped chests power redstone by their number of viewers
+
+Previous commit: 022c7b4e
+
+- **Changed:**
+  - Vendored `world` `level/mod.rs` (MinecraftOSS patch): `Level.chest_openers` (viewers per chest position, not saved, as in vanilla), dropped when the block entity at that position goes.
+  - Vendored `level/redstone.rs` (MinecraftOSS patch): `Kinds.trapped_chest`; `own_signal` of a trapped chest is its viewers clamped to 0..15 (`TrappedChestBlock.getSignal`), `state_direct_signal` the same only for `Up` (it strongly powers the block below), and `set_chest_openers(pos, count)` stores the count and, when it changed on a trapped chest, updates the neighbours at the chest and below it (`TrappedChestBlockEntity.signalOpenCount`). The trapped chest is a signal source by its block state data; the comparator still reads its fill.
+  - `minecraft_terrain` `server.rs`: `Command::ChestOpeners { pos, count }`, `ServerHandle::chest_openers`, `ServerSim::set_chest_openers`.
+  - `minecraft_survival` `level.rs`: `OpenerOutcome.trapped` names a trapped chest's position and its viewer count for every opener event (open, close, the 5-tick recheck and a player leaving the level); `Entities::chest_openers` sends it. `render_anim` sends it from both opener loops. The count is per `Level` and per player key already, so friends' viewers add up **[E]**.
+- **Tests:**
+  - `server`: `a_trapped_chest_powers_by_viewers_and_strongly_below` (counts 1, 3, 20, 0 give 1, 3, 15, 0 on every side; the block below is strongly powered and the block beside is not; a plain chest gives nothing; a chest placed again starts at 0), `opening_a_trapped_chest_lights_a_lamp_beside_it` (a lamp beside and a lamp under the block below light on 1 viewer and go out 4 ticks after 0; the command reaches the server thread).
+  - `level`: `a_double_trapped_chest_counts_on_both_halves` (both halves get the count on open, a second viewer, a viewer leaving and the close; a plain chest none).
+- **Decisions:** the brief's vendored test lives in `minecraft_terrain`'s server tests, because the vendored `world` crate has no level fixture with the block data; it calls the vendored code directly.
+- **Test steps:** (survival, flat ground)
+  1. Place a trapped chest, a redstone lamp right beside it and a line of 15 redstone dust from its other side. Open the chest: the lamp lights and exactly one dust next to the chest is lit. Close it: both go off (**1**, open).
+  2. Place a second trapped chest on a block of cobblestone with a redstone lamp under the cobblestone: opening the chest lights that lamp (strong power down).
+  3. A comparator facing out of a trapped chest reads its fill like a normal chest: put one stack in, and the dust after the comparator lights 1 block.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:trapped_chest*4,minecraft:redstone_lamp*8,minecraft:redstone*64,minecraft:comparator*4,minecraft:cobblestone*64
+```

@@ -768,6 +768,10 @@ impl Entities {
         self.ambient.totem_emitter(key, body);
     }
 
+    pub fn chest_openers(&mut self, pos: (i32, i32, i32), count: u32) {
+        self.server.chest_openers(pos, count);
+    }
+
     pub fn campfire_douse(&mut self, pos: (i32, i32, i32), signal: bool) {
         self.ambient.douse(pos, signal);
     }

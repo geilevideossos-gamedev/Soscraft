@@ -2097,6 +2097,9 @@ fn update(
             let outcome = minecraft_survival::level::opener_outcome(&terrain.scene, &event);
             let (cell, id, count) = outcome.block_event;
             entities.lids.block_event(&terrain.scene, cell, id, count);
+            if let Some((pos, viewers)) = outcome.trapped {
+                entities.chest_openers(pos, viewers);
+            }
             if let Some(sound) = outcome.sound {
                 let pitch = minecraft_terrain::openers::pitch(entities.random_float());
                 if let Some(sounds) = sounds.as_mut() {
@@ -2961,6 +2964,9 @@ fn leave_level(
             let outcome = minecraft_survival::level::opener_outcome(&level.terrain.scene, &event);
             let (cell, id, count) = outcome.block_event;
             entities.lids.block_event(&level.terrain.scene, cell, id, count);
+            if let Some((pos, viewers)) = outcome.trapped {
+                entities.chest_openers(pos, viewers);
+            }
             writes.extend(outcome.state.map(|(cell, state)| (cell, Some(state))));
         }
         if !writes.is_empty() {

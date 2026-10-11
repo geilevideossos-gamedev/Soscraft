@@ -827,6 +827,11 @@ impl ServerSim {
         self.mobs.hurt_shulker_bullet(id)
     }
 
+    pub fn set_chest_openers(&mut self, pos: BlockPos, count: u32) {
+        let (x, y, z) = pos;
+        self.level.set_chest_openers(minecraftoss_core::BlockPos::new(x, y, z), count.min(i32::MAX as u32) as i32);
+    }
+
     fn explode_blasts(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
         use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
         for (blast, source) in std::mem::take(&mut self.blasts) {
@@ -2383,6 +2388,7 @@ pub enum Command {
     Job(Job),
     EndHit { target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage },
     FrameAction { id: u64, action: crate::item_frame::FrameAction },
+    ChestOpeners { pos: BlockPos, count: u32 },
 }
 
 pub type Job = Box<dyn FnOnce(&mut ServerSim) -> Box<dyn std::any::Any + Send> + Send>;
@@ -2783,6 +2789,10 @@ impl ServerHandle {
         self.send(Command::FrameAction { id, action });
     }
 
+    pub fn chest_openers(&mut self, pos: BlockPos, count: u32) {
+        self.send(Command::ChestOpeners { pos, count });
+    }
+
     pub fn save(&mut self) {
         self.send(Command::Save);
     }
@@ -2910,6 +2920,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                         out.item_uses.push(outcome.consumed);
                     }
                 }
+                Command::ChestOpeners { pos, count } => sim.set_chest_openers(pos, count),
                 Command::Save => {
                     sim.ticks_since_save = 0;
                     sim.save_all_entities();
@@ -8246,6 +8257,61 @@ mod tests {
         server.frame_action(side, FrameAction::Attack { infinite: true });
         server.frame_action(id, FrameAction::Attack { infinite: false });
         assert_eq!(output(&mut server), 0, "and nothing once it is empty");
+    }
+
+    fn trapped_chest() -> Block {
+        Block::new("minecraft:trapped_chest").with("facing", "north").with("type", "single").with("waterlogged", "false")
+    }
+
+    #[test]
+    fn a_trapped_chest_powers_by_viewers_and_strongly_below() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), trapped_chest());
+        place(&mut server, &mut scene, (9, 200, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (8, 200, 12), Block::new("minecraft:chest").with("facing", "north").with("type", "single").with("waterlogged", "false"));
+        let at = |(x, y, z): BlockPos| minecraftoss_core::BlockPos::new(x, y, z);
+        let state = server.level.block(at((8, 200, 8)));
+        assert!(server.level.is_signal_source(state));
+        for (count, power) in [(1, 1), (3, 3), (20, 15), (0, 0)] {
+            server.set_chest_openers((8, 200, 8), count);
+            for direction in Direction::ALL {
+                assert_eq!(server.level.signal(at((8, 200, 8)), direction), power, "{count} viewers, {direction:?}");
+            }
+            assert_eq!(server.level.signal(at((8, 199, 8)), Direction::Down), power, "the block below is strongly powered");
+            assert_eq!(server.level.signal(at((9, 200, 8)), Direction::East), 0, "the block beside is not");
+        }
+        server.set_chest_openers((8, 200, 12), 4);
+        assert_eq!(server.level.signal(at((8, 200, 12)), Direction::North), 0, "a plain chest gives no signal");
+        server.set_chest_openers((8, 200, 8), 2);
+        take(&mut server, &mut scene, (8, 200, 8));
+        place(&mut server, &mut scene, (8, 200, 8), trapped_chest());
+        assert_eq!(server.level.signal(at((8, 200, 8)), Direction::North), 0, "a new chest starts with no viewers");
+    }
+
+    #[test]
+    fn opening_a_trapped_chest_lights_a_lamp_beside_it() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), trapped_chest());
+        place(&mut server, &mut scene, (8, 200, 9), Block::new("minecraft:redstone_lamp").with("lit", "false"));
+        place(&mut server, &mut scene, (8, 198, 8), Block::new("minecraft:redstone_lamp").with("lit", "false"));
+        server.take_changes();
+        let lit = |changes: &std::collections::HashMap<BlockPos, Option<Block>>, pos: BlockPos| {
+            changes.get(&pos).and_then(Option::as_ref).map(|block| block.properties.get("lit").map(String::as_str) == Some("true"))
+        };
+        server.set_chest_openers((8, 200, 8), 1);
+        let opened: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(lit(&opened, (8, 200, 9)), Some(true), "the lamp beside lights at once");
+        assert_eq!(lit(&opened, (8, 198, 8)), Some(true), "the lamp under the block below lights too");
+        server.set_chest_openers((8, 200, 8), 0);
+        let closed = ticked(&mut server, 5);
+        assert_eq!(lit(&closed, (8, 200, 9)), Some(false));
+        assert_eq!(lit(&closed, (8, 198, 8)), Some(false));
+        let mut handle = ServerHandle::spawn(server);
+        handle.chest_openers((8, 200, 8), 1);
+        handle.wait_idle();
+        let sent: std::collections::HashMap<_, _> = handle.poll().into_iter().flat_map(|out| out.changes).collect();
+        assert_eq!(lit(&sent, (8, 200, 9)), Some(true), "the command reaches the server thread");
     }
 
     #[test]
