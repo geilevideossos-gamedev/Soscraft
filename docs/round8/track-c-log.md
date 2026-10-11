@@ -781,3 +781,30 @@ Previous commit: d3eea377
 - **Decisions:** the music volume is the game's master volume times the mix gain the other Minecraft sounds use (vanilla's defaults put music and sounds both at 100%). Nothing asks for music yet; the next commit adds vanilla's music manager.
 - **Test steps:** none in game on its own (the next commit plays the music).
 - **Kit:** none.
+
+### 32. Minecraft plays the End music, the dragon's boss music and the credits music like vanilla
+
+Previous commit: a72a4ff7
+
+- **Changed:**
+  - New `render_anim` `minecraft_music.rs`: vanilla's `Musics` (`CREDITS` `music.credits`, `END_BOSS` `music.dragon`, both 0/0 and replacing; `END` `music.end`, 6000 to 24000 and replacing), `situational` (`Minecraft.getSituationalMusic`: the credits first, then the boss music in the End while a shown boss bar plays music, then the End's music; nothing elsewhere) and `MusicManager`, vanilla's `MusicManager.tick` step by step: a delay of 100 at the start; no situational music keeps the delay at least 100 and lets the current track play on; a replacing track that differs stops the current one and draws `Mth.nextInt(0, minDelay / 2)`; a track that is no longer playing is forgotten and the delay drops to `nextInt(min(minDelay, 24000), min(maxDelay, 24000))`; the delay is capped at `maxDelay`; it counts down only with nothing playing and no level loading, and a start sets it to `i32::MAX`. `stopPlaying` (a dimension change, or the credits closing while their music plays) stops and sets the delay to the next song delay plus 100. Its random is a `LegacyRandom` seeded from the clock when the manager is made (`RandomSource.create()`).
+  - `minecraft_sounds.rs`: `Sounds::music_file(packs, event)` resolves a music event's `sounds.json` entry to its file and volume, and logs once when the file is not in the pack.
+  - `frame` `McBossBar.music` and a fourth `McBossBar::new` argument; the dragon's bar has it (`EnderDragonFight`'s `setPlayBossMusic(true)`).
+  - `minecraft_world.rs`: `Runtime.music`; the `update` system takes `audio::McMusic`; the 20 Hz environment tick feeds the manager the local player's dimension, the credits, the boss bars' music flag, whether the current track has finished and the loading screen, and a start puts the track in `McMusic.wanted` (a missing file counts as finished at once); a stop clears it. `stop` resets the manager, and outside the Minecraft world nothing is wanted.
+- **Tests:** `minecraft_music`: `the_situation_is_the_credits_then_the_boss_then_the_end`, `the_boss_music_starts_on_the_tick_its_bar_shows_and_loops`, `the_end_music_replaces_the_boss_music_within_3000_ticks_of_the_kill` (40 seeds), `arriving_in_the_end_without_a_fight_waits_6100_to_24000_ticks` (40 seeds), `the_credits_music_replaces_anything_and_stops_with_the_credits`, `a_dimension_change_stops_the_music`, `nothing_counts_down_while_a_level_loads`, `outside_the_end_nothing_new_starts_but_the_current_track_plays_on`. `minecraft_sounds`: `the_end_music_events_resolve_to_their_files_when_fetched` (with `MINECRAFTOSS_ROOT`). `frame`: the boss bar test passes and checks the new flag.
+- **Decisions:**
+  - Arriving in the End without a fight waits 6100 to 24000 ticks, not the brief's 24100: vanilla caps the delay at the track's `maxDelay` (24000) on the next tick.
+  - A stop takes effect at once (vanilla's sound engine reports a stopped track as active until its next tick, which re-rolls the short delay for a tick or two).
+  - No "now playing" toast, no music volume slider (vanilla's `fadePlaying`): the music follows the master volume. The manager is client state, driven by the local player only, as in vanilla.
+- **Test steps:** (after entry 30's fetch; a new world in the End: `IW4L_MINECRAFT_WORLD=c3music`, `IW4L_MINECRAFT_DIMENSION=the_end`, `/difficulty normal`)
+  1. As soon as the pink "Ender Dragon" bar shows, the boss music starts. When it ends (about 4 minutes), it starts again at once.
+  2. Kill the dragon. When its bar goes, the boss music stops, and within two and a half minutes the calmer End music starts (**1**, the moment it starts, if you can).
+  3. Place the 4 end crystals on the exit portal's rim (one on each side). When the new dragon's bar shows, the boss music cuts in at once.
+  4. Kill that dragon too, then walk into the exit portal. The credits play their own music from the start. Press Escape: the music stops, and in the overworld no music plays.
+  5. Go back to the End through a stronghold portal (or set `IW4L_MINECRAFT_DIMENSION=the_end` again with the dragon dead): no music for the first 5 minutes, then the End music within 20 minutes.
+  6. Start without an internet connection on an install that never fetched the music: the game plays as before, without music, and the log says `Minecraft music … is not in the pack` once per track.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:diamond_sword+sharpness=5,minecraft:end_crystal*4
+```

@@ -49,6 +49,7 @@ mod minecraft_hand;
 mod minecraft_inventory;
 mod minecraft_loading;
 mod minecraft_mining;
+mod minecraft_music;
 mod minecraft_minimap;
 mod minecraft_portal;
 mod minecraft_respawn;

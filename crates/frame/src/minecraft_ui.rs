@@ -209,18 +209,20 @@ pub struct McBossBar {
     pub target: f32,
     pub elapsed: f32,
     pub world_fog: bool,
+    pub music: bool,
 }
 
 impl McBossBar {
     pub const LERP_SECONDS: f32 = 0.1;
 
-    pub fn new(name: String, progress: f32, world_fog: bool) -> Self {
+    pub fn new(name: String, progress: f32, world_fog: bool, music: bool) -> Self {
         Self {
             name,
             from: progress,
             target: progress,
             elapsed: Self::LERP_SECONDS,
             world_fog,
+            music,
         }
     }
 
@@ -558,7 +560,8 @@ mod tests {
 
     #[test]
     fn a_boss_bar_slides_to_its_new_progress_over_a_tenth_of_a_second() {
-        let mut bar = McBossBar::new("Ender Dragon".to_owned(), 1.0, true);
+        let mut bar = McBossBar::new("Ender Dragon".to_owned(), 1.0, true, true);
+        assert!(bar.world_fog && bar.music);
         assert_eq!(bar.progress(), 1.0);
         bar.set_progress(0.5);
         assert_eq!(bar.progress(), 1.0);

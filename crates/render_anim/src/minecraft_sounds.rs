@@ -97,6 +97,21 @@ impl Sounds {
         }
     }
 
+    pub(crate) fn music_file(&mut self, packs: &PackStack, event: &str) -> Option<(String, Arc<[u8]>, f32)> {
+        let key = event.strip_prefix("minecraft:").unwrap_or(event);
+        let entry = self.events.get(key)?.iter().find(|entry| !entry.event)?;
+        let (name, volume) = (entry.name.clone(), entry.volume);
+        let (namespace, path) = name.split_once(':').unwrap_or(("minecraft", &name));
+        let bytes = ResourceId::parse(&format!("{namespace}:{path}")).ok().and_then(|id| packs.get(&id, &format!("sounds/{path}.ogg")).ok().flatten());
+        let Some(bytes) = bytes else {
+            if self.unresolved.insert(name.clone()) {
+                diag::info!(World, "Minecraft music `{name}` is not in the pack");
+            }
+            return None;
+        };
+        Some((name, Arc::from(bytes), volume))
+    }
+
     fn play_depth(&mut self, packs: &PackStack, event: &str, position: Option<Vec3>, volume: f32, pitch: f32, depth: u8) {
         let key = event.strip_prefix("minecraft:").unwrap_or(event);
         let total: u32 = self.events.get(key).map_or(0, |e| e.iter().map(|x| x.weight).sum());
@@ -192,5 +207,30 @@ mod tests {
         assert_eq!(flash.attenuation, f32::INFINITY);
         let reach = flash.attenuation * flash.volume.max(1.0) * flash.block;
         assert_eq!((1.0 - 5000.0 / reach).clamp(0.0, 1.0), 1.0);
+    }
+
+    #[test]
+    fn the_end_music_events_resolve_to_their_files_when_fetched() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = PackStack::open(vec![pack.clone()]).unwrap();
+        let mut sounds = Sounds::load(&packs);
+        for (event, name) in [("minecraft:music.dragon", "music/game/end/boss"), ("minecraft:music.end", "music/game/end/the_end"), ("minecraft:music.credits", "music/game/end/alpha")] {
+            let file = pack.join(format!("assets/minecraft/sounds/{name}.ogg"));
+            match std::fs::read(&file) {
+                Ok(bytes) => {
+                    let (found, music, volume) = sounds.music_file(&packs, event).unwrap();
+                    assert_eq!((found.as_str(), volume), (name, 1.0));
+                    assert_eq!(music.len(), bytes.len());
+                }
+                Err(_) => assert!(sounds.music_file(&packs, event).is_none(), "{event}"),
+            }
+        }
+        assert!(sounds.music_file(&packs, "minecraft:music.nothing").is_none());
     }
 }

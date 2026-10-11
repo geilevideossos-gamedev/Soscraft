@@ -117,6 +117,7 @@ struct Runtime {
     switch_screen: Option<minecraft_survival::switch::LoadingReason>,
     loading_backgrounds: Option<crate::minecraft_loading::LoadingBackgrounds>,
     refused_air: Option<u32>,
+    music: crate::minecraft_music::MusicManager,
 }
 
 impl Drop for Runtime {
@@ -406,12 +407,13 @@ fn update(
     presented: Res<net::PresentedSnapshot>,
     authority: Option<ResMut<net::AuthorityWorld>>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
-    (mut ui, mut puppet, mut images, mut sound_queue, buttons): (
+    (mut ui, mut puppet, mut images, mut sound_queue, buttons, mut mc_music): (
         ResMut<frame::MinecraftUi>,
         ResMut<frame::InventoryPuppet>,
         ResMut<Assets<Image>>,
         ResMut<audio::McSoundQueue>,
         Res<ButtonInput<MouseButton>>,
+        ResMut<audio::McMusic>,
     ),
     mut view: ResMut<MinecraftWorldView>,
     mut runtime: NonSendMut<Runtime>,
@@ -452,6 +454,9 @@ fn update(
             runtime.loading = Some(receive);
             view.active = true;
         }
+    }
+    if !view.active {
+        mc_music.wanted = None;
     }
     ui.loading_world = runtime.loading.is_some() || (runtime.world.is_some() && (runtime.spawn_gate.holding(now_ms) || awaiting_level(&runtime)));
     if runtime.server.is_none() {
@@ -599,6 +604,7 @@ fn update(
         shown,
         switch_screen,
         refused_air,
+        music,
         ..
     } = &mut *runtime;
     let (Some(world), Some(server), Some(local_uuid)) = (world.as_mut(), server.as_mut(), local_uuid.as_ref()) else {
@@ -2288,6 +2294,10 @@ fn update(
             let source = [eye[0] + toward.x, eye[1] + toward.y, eye[2] + toward.z];
             sounds.play_without_falloff(&world.packs, "minecraft:weather.end_flash", Some(at(source)), 1.0, 1.0);
         }
+        let music_input = crate::minecraft_music::MusicInput { dimension: *dimension, credits_open: ui.credits.is_some(), boss_music: ui.boss_bars.iter().any(|bar| bar.music), finished: mc_music.finished.as_deref(), loading: ui.loading_world };
+        if let Some(action) = music.update(music_input) {
+            crate::minecraft_music::apply(action, sounds.as_mut(), &world.packs, &mut mc_music);
+        }
         *environment_primed = true;
     }
     let partial_tick = (*environment_accumulator / TICK_SECONDS).clamp(0.0, 1.0) as f32;
@@ -2937,6 +2947,7 @@ fn leave_level(
 }
 
 fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
+    runtime.music = Default::default();
     if close_world(runtime, false) || view.active {
         sim::voxel::deactivate();
         runtime.spawn_gate = Default::default();
