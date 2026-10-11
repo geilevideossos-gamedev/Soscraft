@@ -766,6 +766,9 @@ impl ServerSim {
         // (`ServerExplosion.explode`: `hurtEntities`, then the blocks).
         self.drop_death_loot();
         self.throw_barters();
+        for conversion in self.mobs.take_piglin_conversions() {
+            self.mob_tags.insert(conversion.zombified, crate::piglin_save::converted_tag(&conversion));
+        }
         self.explode_creepers();
         self.explode_fireballs();
         self.explode_blasts(players);
@@ -8388,5 +8391,62 @@ mod tests {
         assert_eq!(server.dragons.list[0].phase, Phase::Takeoff, "past 50 damage it takes off");
         server.tick_end(&[player]);
         assert!(server.clouds.iter().all(|cloud| cloud.breath != Some(flame)), "and its flame goes out");
+    }
+
+    #[test]
+    fn the_end_zombifies_and_the_nether_does_not() {
+        use minecraftoss_core::nbt::Tag;
+        use minecraftoss_entities::piglin::{Piglin, PiglinKind};
+        use minecraftoss_player::inventory::ItemStack;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let run = |terrain: TerrainGenerator, dimension_type: &str| {
+            let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(terrain), dimension_type).unwrap());
+            let states = Arc::new(BlockStates::new(registries.clone(), 0, 0, 256).unwrap());
+            let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+            let mut server = ServerSim::new(worldgen, states, dimension_type);
+            for x in -1..=1 {
+                for z in -1..=1 {
+                    server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+                }
+            }
+            server.set_players(&[[0.5, 100.0, 0.5]], 2);
+            server.set_simulation_area((0, 0), 1);
+            for x in -3..=3 {
+                for z in -3..=3 {
+                    server.player_edit_block((x, 99, z), Some(&Block::new("minecraft:obsidian")), PlayerEdit::Place);
+                    for y in 100..=103 {
+                        server.player_edit_block((x, y, z), Some(&Block::new("minecraft:air")), PlayerEdit::Place);
+                    }
+                }
+            }
+            let mut piglin = Piglin::new(PiglinKind::Piglin, glam::DVec3::new(0.5, 100.0, 0.5));
+            piglin.main_hand = Some(ItemStack::new("minecraft:golden_sword", 1));
+            piglin.offhand = Some(ItemStack::new("minecraft:shield", 1));
+            piglin.can_pick_up_loot = false;
+            piglin.time_in_overworld = 295;
+            let id = server.mobs.spawn_piglin(piglin, false);
+            for _ in 0..10 {
+                server.tick_mobs(&[], false);
+            }
+            (server, id)
+        };
+        let (nether, id) = run(TerrainGenerator::nether(registries.clone(), 0).unwrap(), "minecraft:the_nether");
+        let clock = nether.mobs.piglins().iter().find(|e| e.id == id).map(|e| e.piglin.time_in_overworld);
+        assert_eq!(clock, Some(0), "the Nether resets the clock");
+        let (end, _) = run(TerrainGenerator::end(registries.clone(), 0).unwrap(), "minecraft:the_end");
+        assert!(end.mobs.piglins().is_empty(), "the End converts it");
+        let zombified = end.mobs.zombies().iter().find(|e| e.zombie.kind == minecraftoss_entities::zombie::ZombieKind::ZombifiedPiglin).expect("a zombified piglin");
+        let tags = crate::server_mobs::mob_tags(&end.mobs, |_| true, &end.mob_tags);
+        let (_, tag) = tags.iter().find(|(tag_id, _)| *tag_id == zombified.id).expect("it is saved");
+        assert_eq!(tag.get("id").and_then(Tag::as_str), Some("minecraft:zombified_piglin"));
+        let held = |slot: &str| tag.get("equipment").and_then(|e| e.get(slot)).and_then(|s| s.get("id")).and_then(Tag::as_str);
+        assert_eq!(held("mainhand"), Some("minecraft:golden_sword"));
+        assert_eq!(held("offhand"), Some("minecraft:shield"), "the offhand is kept in the save");
+        assert_eq!(tag.get("CanPickUpLoot").and_then(Tag::as_i64), Some(0));
     }
 }

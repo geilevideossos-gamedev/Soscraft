@@ -724,3 +724,30 @@ After 6c7ceb71.
 ```
 IW4L_MINECRAFT_KIT=minecraft:piglin_spawn_egg*16,minecraft:piglin_brute_spawn_egg*2,minecraft:gold_block*8,minecraft:raw_gold_block*4,minecraft:gilded_blackstone*4,minecraft:nether_gold_ore*4,minecraft:iron_block*4,minecraft:chest*4,minecraft:barrel*2,minecraft:gold_ingot*16,minecraft:golden_boots,minecraft:diamond_pickaxe,minecraft:diamond_sword,minecraft:netherrack*64,minecraft:cooked_beef*32
 ```
+
+### b1.7. Minecraft piglins turn into zombified piglins outside the Nether
+
+After 25c70ca2.
+
+- **Changed:**
+  - Vendored `world/piglins.rs`: `AbstractPiglin.customServerAiStep` after the brain. A piglin or brute that is not immune, has AI and stands where piglins zombify (b2.7's per-level `gameplay/piglins_zombify`, true in the Overworld and the End) is converting: the renderer shakes it and a piglin's activity sound is `entity.piglin.retreat`. `TimeInOverworld` counts up, anywhere else it goes back to 0, and past 300 (the 301st tick, 15 seconds) it plays `entity.piglin.converted_to_zombified` or `entity.piglin_brute.converted_to_zombified` (not in peaceful) and converts. A piglin first drops the item it is admiring (`cancelAdmiring`) and its whole inventory. `convert_piglin_to_zombified` (`ConversionParams.single(keepEquipment, preserveCanPickUpLoot)`): a new zombified piglin with its own id and UUID and the full zombified piglin AI, keeping the position, yaw, motion, ground, fall, fire, hurt cooldown, baby, persistence, effects, armour and main hand, with nausea for 200 ticks (amplifier 0). The piglin is gone.
+  - The entity world lists each conversion (`PiglinConversion`: the whole equipment with components, drop chances, `CanPickUpLoot`, `LeftHanded`). `ServerSim::tick_mobs` turns it into the new mob's saved tag (`piglin_save::converted_tag`), so the zombified piglin saves its gear whole: enchantments, wear and the offhand item, which a zombified piglin here doesn't hold yet.
+  - `piglin_render.rs`: `shake_degrees` (`cos(ageInTicks x 3.25) x pi x 0.4` degrees on the body yaw) while converting; `converting` travels in the tracked mob.
+  - Formatting only: four assertions of b1.6's tests and the new code in the track's own new files, so they pass `rustfmt --check`.
+- **Tests:** `world::piglins`: `a_piglin_converts_on_the_301st_overworld_tick_with_nausea_and_its_gear`, `an_immune_or_no_ai_piglin_never_converts`, `the_nether_resets_the_count`, `a_brute_converts_too`, `the_inventory_and_admired_item_drop_on_conversion` (an admired ingot drops, a held shield stays in the saved equipment), `no_converted_sound_in_peaceful`. `piglin_render`: `a_converting_piglin_shakes_its_body`. `server` (with the game data): `the_end_zombifies_and_the_nether_does_not` (also checks the saved tag of the zombified piglin: main hand, offhand and `CanPickUpLoot`).
+- **Decisions:**
+  - The flag is the level's, as for hoglins (b2.7): no 26.3 biome overrides `gameplay/piglins_zombify`.
+  - Zombified piglins here hold only a main-hand item and armour as ids, and drop by their own chances; the piglin's offhand item, drop chances and `CanPickUpLoot` live on in the saved tag only (they come back whole when the chunk is saved and reloaded). A custom name and a lead are not carried over: mobs don't have them yet.
+  - As in vanilla, a piglin holding a shield or a non-admired item in its offhand keeps it (in the save); a loved item it is no longer admiring was already put away by `StopHoldingItemIfNoLongerAdmiring`.
+- **Test steps (`/difficulty normal`, survival):**
+  1. In the Nether, build and light a portal (obsidian, flint and steel) and go to the Overworld. Use a piglin egg and a brute egg: both shake from side to side and the piglin grunts the retreat sound (**13**). After 15 seconds each turns into a zombified piglin with a groan, still holding its golden sword or axe and wearing its golden armour, and it wobbles a moment from nausea (**14**).
+  2. `/summon minecraft:piglin ~ ~ ~ {IsImmuneToZombification:1b}`: it never shakes or converts.
+  3. Give a piglin a gold ingot (right-click) and 20 gold nuggets (drop them) in the Overworld before it converts: when it converts the ingot and the nuggets drop on the ground.
+  4. Use a piglin egg in the Overworld, wait about 10 seconds, save and quit, rejoin: it is still shaking and converts about 5 seconds later.
+  5. Go to the End (`/execute in minecraft:the_end run tp @s 0 70 0`) and use a piglin egg: it converts there too. In the Nether no piglin ever shakes.
+  6. `/difficulty peaceful` in the Overworld with a piglin egg: it converts without the groan (and the zombified piglin then leaves, as monsters do in peaceful).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:piglin_spawn_egg*8,minecraft:piglin_brute_spawn_egg*2,minecraft:gold_ingot*16,minecraft:gold_nugget*32,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:golden_boots,minecraft:diamond_sword,minecraft:netherrack*64,minecraft:cooked_beef*32
+```

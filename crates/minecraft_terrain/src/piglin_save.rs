@@ -5,7 +5,7 @@ use minecraftoss_entities::gossip::{uuid_from_ints, uuid_to_ints};
 use minecraftoss_entities::piglin::{self, Piglin, PiglinKind, SLOT_NAMES};
 use minecraftoss_entities::piglin_brain::{GlobalPos, Memories};
 use minecraftoss_entities::villager_brain::Slot;
-use minecraftoss_entities::world::{EntityWorld, PiglinEntity};
+use minecraftoss_entities::world::{EntityWorld, PiglinConversion, PiglinEntity};
 use minecraftoss_player::inventory::ItemStack;
 use minecraftoss_player::rng::LegacyRandom;
 use std::collections::BTreeMap;
@@ -234,4 +234,27 @@ pub fn fields(entity: &PiglinEntity) -> Vec<(&'static str, Tag)> {
     fields.push(("drop_chances", Tag::Compound(chances)));
     fields.push(("Brain", brain_tag(&entity.brain.memories)));
     fields
+}
+
+pub fn converted_tag(conversion: &PiglinConversion) -> Tag {
+    let mut equipment = BTreeMap::new();
+    let mut chances = BTreeMap::new();
+    for (slot, name) in SLOT_NAMES.iter().enumerate() {
+        if let Some(stack) = conversion.equipment[slot].as_ref().and_then(stack_tag) {
+            equipment.insert((*name).to_owned(), stack);
+        }
+        let chance = conversion.drop_chances[slot];
+        if chance != piglin::DEFAULT_DROP_CHANCE {
+            chances.insert((*name).to_owned(), Tag::Float(chance));
+        }
+    }
+    let mut map = BTreeMap::new();
+    map.insert("equipment".to_owned(), Tag::Compound(equipment));
+    map.insert("drop_chances".to_owned(), Tag::Compound(chances));
+    map.insert(
+        "CanPickUpLoot".to_owned(),
+        byte(conversion.can_pick_up_loot),
+    );
+    map.insert("LeftHanded".to_owned(), byte(conversion.left_handed));
+    Tag::Compound(map)
 }

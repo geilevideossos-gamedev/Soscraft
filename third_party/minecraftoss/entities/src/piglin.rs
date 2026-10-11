@@ -20,6 +20,7 @@ pub const BABY_EYE_HEIGHT: f32 = 0.78;
 pub const EXPERIENCE: i32 = 5;
 pub const BRUTE_EXPERIENCE: i32 = 20;
 pub const CONVERSION_TIME: i32 = 300;
+pub const NAUSEA_TICKS: i32 = 200;
 pub const AMBIENT_INTERVAL: i32 = 80;
 pub const STEP_VOLUME: f32 = 0.15;
 pub const DEFAULT_DROP_CHANCE: f32 = 0.085;

@@ -499,6 +499,14 @@ pub fn living_pose(baby: bool, hands: &Hands, arm_pose: ArmPose, pose: &MobPose)
     assemble(baby, head, limbs, pose)
 }
 
+pub fn shake_degrees(age_in_ticks: f32, converting: bool) -> f32 {
+    if converting {
+        ((f64::from(age_in_ticks * 3.25)).cos() * std::f64::consts::PI * f64::from(0.4_f32)) as f32
+    } else {
+        0.0
+    }
+}
+
 pub fn append_piglins<'a>(
     mesh: &mut ChunkMesh,
     piglins: impl IntoIterator<Item = &'a PiglinEntity>,
@@ -513,6 +521,10 @@ pub fn append_piglins<'a>(
         let piglin = &entity.piglin;
         let Some(mob) = poses.pose(entity.id, partial) else {
             continue;
+        };
+        let mob = MobPose {
+            body_rot: mob.body_rot + shake_degrees(mob.age_in_ticks, piglin.converting),
+            ..mob
         };
         marks.push((mesh.vertices.len(), mob.overlay(0.0)));
         let baby = piglin.is_baby();
@@ -829,5 +841,13 @@ mod tests {
         let l = left.transform_point3(Vec3::ZERO);
         assert!((r.x + l.x).abs() < 1.0e-5, "{r} {l}");
         assert!((r.y - l.y).abs() < 1.0e-5 && (r.z - l.z).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn a_converting_piglin_shakes_its_body() {
+        assert_eq!(shake_degrees(7.0, false), 0.0);
+        let expected = ((7.0_f64 * 3.25).cos() * std::f64::consts::PI * f64::from(0.4_f32)) as f32;
+        assert!((shake_degrees(7.0, true) - expected).abs() < 1.0e-5);
+        assert!(shake_degrees(0.0, true) > 1.25);
     }
 }

@@ -39,7 +39,7 @@ pub use striders::StriderEntity;
 mod hoglins;
 pub use hoglins::HoglinEntity;
 mod piglins;
-pub use piglins::{BarterThrow, PICKUP_DELAY as BARTER_PICKUP_DELAY, PiglinEntity};
+pub use piglins::{BarterThrow, PICKUP_DELAY as BARTER_PICKUP_DELAY, PiglinConversion, PiglinEntity};
 mod riding;
 pub use riding::Rider;
 pub use ghasts::GhastEntity;
@@ -2345,6 +2345,7 @@ pub struct EntityWorld {
     piglin_rules: piglins::PiglinRules,
     barter_throws: Vec<piglins::BarterThrow>,
     piglin_angers: Vec<piglins::PiglinAnger>,
+    piglin_conversions: Vec<piglins::PiglinConversion>,
     /// `Difficulty.getId`: 0 peaceful to 3 hard.
     difficulty: i32,
     /// Sounds not tied to a living mob (a creeper's blast, gone with it).
@@ -2452,6 +2453,7 @@ impl Default for EntityWorld {
             piglin_rules: Default::default(),
             barter_throws: Vec::new(),
             piglin_angers: Vec::new(),
+            piglin_conversions: Vec::new(),
             difficulty: 2,
             sounds: Vec::new(),
             mob_drops: true,
@@ -4824,6 +4826,7 @@ impl EntityWorld {
             piglin_rules: self.piglin_rules,
             barter_throws: Vec::new(),
             piglin_angers: Vec::new(),
+            piglin_conversions: Vec::new(),
             difficulty: 2,
             sounds: Vec::new(),
             mob_drops: self.mob_drops,

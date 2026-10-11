@@ -54,6 +54,7 @@ pub(super) struct PiglinSees<'a> {
     rules: PiglinRules,
     wanted_items: Option<&'a [WantedItem]>,
     offhand_loved: bool,
+    zombify: bool,
 }
 
 #[derive(Default)]
@@ -62,6 +63,16 @@ pub(super) struct PiglinThought {
     attack: Option<Target>,
     shot: Option<Target>,
     stop_holding: Option<bool>,
+    convert: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PiglinConversion {
+    pub zombified: u64,
+    pub equipment: [Option<ItemStack>; 6],
+    pub drop_chances: [f32; 6],
+    pub can_pick_up_loot: bool,
+    pub left_handed: bool,
 }
 
 #[derive(Clone)]
@@ -268,6 +279,7 @@ impl PiglinEntity {
             attack: ctx.attack,
             shot: ctx.shot,
             stop_holding: ctx.stop_holding,
+            convert: false,
         };
         let (look_at, sounds, strafe) = (ctx.look_at, ctx.sounds, ctx.strafe);
         let (item_use, charging) = (ctx.item_use, ctx.charging);
@@ -362,6 +374,8 @@ impl PiglinEntity {
     ) -> (bool, PiglinThought) {
         let others = sees.others;
         self.previous_position = self.piglin.body.position;
+        self.piglin.converting =
+            !self.no_ai && !self.piglin.immune_to_zombification && sees.zombify;
         self.tick_count += 1;
         let sounds = piglin_sounds(self.piglin.kind);
         self.fluid = base_tick_fluid(
@@ -430,6 +444,12 @@ impl PiglinEntity {
             self.no_action_time += 1;
             self.tick_using_item();
             thought = self.think(world, sees, game_time, dimension, level_random);
+            if self.piglin.converting {
+                self.piglin.time_in_overworld += 1;
+            } else {
+                self.piglin.time_in_overworld = 0;
+            }
+            thought.convert = self.piglin.time_in_overworld > piglin::CONVERSION_TIME;
             self.steer(world);
             if self.no_jump_delay > 0 {
                 self.no_jump_delay -= 1;
@@ -1358,6 +1378,76 @@ impl EntityWorld {
         self.piglin_maybe_retaliate(id, attacker, others, uuids);
     }
 
+    pub fn take_piglin_conversions(&mut self) -> Vec<PiglinConversion> {
+        std::mem::take(&mut self.piglin_conversions)
+    }
+
+    pub fn convert_piglin_to_zombified<W: World>(
+        &mut self,
+        old_id: u64,
+        world: &mut W,
+    ) -> Option<u64> {
+        let peaceful = self.difficulty == 0;
+        let entity = self.piglins.iter_mut().find(|e| e.id == old_id)?;
+        if !peaceful {
+            entity.make_sound(match entity.piglin.kind {
+                PiglinKind::Piglin => "entity.piglin.converted_to_zombified",
+                PiglinKind::Brute => "entity.piglin_brute.converted_to_zombified",
+            });
+        }
+        let position = entity.position();
+        let mut dropped = Vec::new();
+        if entity.piglin.kind == PiglinKind::Piglin {
+            if entity.brain.memories.admiring_item.present() {
+                dropped.extend(entity.piglin.offhand.take());
+            }
+            dropped.extend(entity.piglin.inventory.iter_mut().filter_map(Option::take));
+        }
+        for stack in &dropped {
+            self.spawn_at_location(world, position, stack);
+        }
+        let index = self.piglins.iter().position(|e| e.id == old_id)?;
+        let old = self.piglins.remove(index);
+        self.order
+            .retain(|key| !matches!(key, EntityKey::Piglin(id) if *id == old_id));
+        let piglin = &old.piglin;
+        let mut zombie = crate::zombie::Zombie::new(position);
+        zombie.kind = ZombieKind::ZombifiedPiglin;
+        zombie.set_baby(piglin.is_baby());
+        zombie.body.velocity = piglin.body.velocity;
+        zombie.body.on_ground = piglin.body.on_ground;
+        zombie.body.fall_distance = piglin.body.fall_distance;
+        zombie.body.fire_ticks = piglin.body.fire_ticks;
+        zombie.damage.cooldown_ticks = piglin.damage.cooldown_ticks;
+        zombie.persistence_required = piglin.persistence_required;
+        zombie.main_hand = piglin.main_hand.as_ref().map(|stack| stack.id.clone());
+        zombie.armor = piglin.armor_ids();
+        zombie.head_item = piglin.armor[0]
+            .as_ref()
+            .map(|stack| piglin::max_damage(&stack.id).is_some());
+        let id = self.spawn_zombie_active(zombie, piglin.yaw);
+        let equipment = std::array::from_fn(|slot| piglin.equipment(slot).cloned());
+        self.piglin_conversions.push(PiglinConversion {
+            zombified: id,
+            equipment,
+            drop_chances: piglin.drop_chances,
+            can_pick_up_loot: piglin.can_pick_up_loot,
+            left_handed: piglin.left_handed,
+        });
+        let entity = self.zombie_mut(id)?;
+        entity.effects = old.effects;
+        entity.effects.add(crate::effects::EffectInstance::new(
+            MobEffect::Nausea,
+            piglin::NAUSEA_TICKS,
+            0,
+        ));
+        entity.voices = old.voices;
+        entity.random = old.random;
+        entity.look_control.head_yaw = old.look_control.head_yaw;
+        entity.body_rotation.body_yaw = old.body_rotation.body_yaw;
+        Some(id)
+    }
+
     pub fn anger_nearby_piglins(&mut self, player: u64, feet: DVec3, require_sight: bool) {
         self.piglin_angers.push(PiglinAnger {
             player,
@@ -1529,6 +1619,7 @@ impl EntityWorld {
             rules: self.piglin_rules,
             wanted_items: wanted_items.as_deref(),
             offhand_loved,
+            zombify: self.piglins_zombify,
         };
         let dimension = self.dimension.clone();
         let mut level_random = std::mem::take(&mut self.level_random);
@@ -1573,6 +1664,10 @@ impl EntityWorld {
         }
         if let Some(barter) = thought.stop_holding {
             self.stop_holding_offhand(id, barter, &others, world);
+        }
+        if thought.convert {
+            self.convert_piglin_to_zombified(id, world);
+            return;
         }
         self.piglin_pick_up(id, &others, world);
         let offhand = self
@@ -2801,7 +2896,10 @@ mod tests {
             assert!(!entity.brain.memories.angry_at.present(), "{id}");
         }
         let memories = &world.piglin_mut(unseen).unwrap().brain.memories;
-        assert!(!memories.sees(Target::Player(7)), "the wall hides the player");
+        assert!(
+            !memories.sees(Target::Player(7)),
+            "the wall hides the player"
+        );
         world.anger_nearby_piglins(7, players[0].position, false);
         world.tick_with_players(&mut blocks, &players);
         let uuid = world.uuid_of(PLAYER_TARGET + 7);
@@ -2810,7 +2908,10 @@ mod tests {
             assert_eq!(angry, uuid);
             assert!((598..=600).contains(&ttl), "{ttl}");
         }
-        assert!(angry_at(&mut world, far).is_none(), "20 blocks away stays calm");
+        assert!(
+            angry_at(&mut world, far).is_none(),
+            "20 blocks away stays calm"
+        );
         for _ in 0..20 {
             world.tick_with_players(&mut blocks, &players);
         }
@@ -2856,9 +2957,7 @@ mod tests {
         }
         let entity = world.piglin_mut(busy).unwrap();
         entity.piglin.offhand = Some(ItemStack::new(piglin::BARTERING_ITEM, 1));
-        entity
-            .brain
-            .admire_for(crate::piglin_brain::ADMIRE_TICKS);
+        entity.brain.admire_for(crate::piglin_brain::ADMIRE_TICKS);
         world.tick_with_players(&mut blocks, &players);
         let brain = &world.piglin_mut(busy).unwrap().brain;
         assert_eq!(brain.activity, Activity::AdmireItem);
@@ -2870,7 +2969,10 @@ mod tests {
         world.tick_with_players(&mut blocks, &players);
         assert!(angry_at(&mut world, idle).is_some());
         assert!(angry_at(&mut world, busy).is_none(), "admiring");
-        assert!(angry_at(&mut world, brute).is_none(), "brutes are not piglins");
+        assert!(
+            angry_at(&mut world, brute).is_none(),
+            "brutes are not piglins"
+        );
     }
 
     #[test]
@@ -2893,5 +2995,197 @@ mod tests {
         assert_eq!(angry_at(&mut world, seen).map(|(at, _)| at), Some(uuid));
         let memories = &world.piglin_mut(seen).unwrap().brain.memories;
         assert!(memories.universal_anger.present());
+    }
+
+    fn heard(world: &mut EntityWorld, event: &str) -> bool {
+        world.take_sounds().iter().any(|sound| sound.event == event)
+    }
+
+    fn zombified(world: &EntityWorld) -> Vec<&crate::world::ZombieEntity> {
+        world
+            .zombies()
+            .iter()
+            .filter(|e| e.zombie.kind == ZombieKind::ZombifiedPiglin)
+            .collect()
+    }
+
+    #[test]
+    fn a_piglin_converts_on_the_301st_overworld_tick_with_nausea_and_its_gear() {
+        let mut blocks = floor(12);
+        let mut world = EntityWorld::default();
+        world.set_piglins_zombify(true);
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let id = armed(&mut world, PiglinKind::Piglin, at, "minecraft:golden_sword");
+        let entity = world.piglin_mut(id).unwrap();
+        entity.piglin.armor[0] = Some(ItemStack::new("minecraft:golden_helmet", 1));
+        entity.piglin.drop_chances[piglin::MAINHAND] = piglin::GUARANTEED_DROP;
+        entity.piglin.persistence_required = true;
+        entity.piglin.can_pick_up_loot = false;
+        for _ in 0..300 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        let piglin = &world.piglin_mut(id).unwrap().piglin;
+        assert!(piglin.converting);
+        assert_eq!(piglin.time_in_overworld, 300);
+        assert!(zombified(&world).is_empty());
+        let before = world.piglin_mut(id).unwrap().position();
+        world.take_sounds();
+        world.tick_with_players(&mut blocks, &[]);
+        assert!(world.piglins().is_empty());
+        let zombies = zombified(&world);
+        assert_eq!(zombies.len(), 1);
+        let zombie = zombies[0];
+        let new_id = zombie.id;
+        assert_ne!(new_id, id);
+        assert!(zombie.ai.is_some(), "it thinks like a zombified piglin");
+        assert_eq!(
+            zombie.zombie.main_hand.as_deref(),
+            Some("minecraft:golden_sword")
+        );
+        assert_eq!(
+            zombie.zombie.armor[0].as_deref(),
+            Some("minecraft:golden_helmet")
+        );
+        assert!(!zombie.zombie.baby && zombie.zombie.persistence_required);
+        assert!(zombie.zombie.body.position.distance(before) < 0.5);
+        let nausea = zombie.effects.get(MobEffect::Nausea).unwrap();
+        assert_eq!((nausea.duration, nausea.amplifier), (200, 0));
+        assert!(heard(&mut world, "entity.piglin.converted_to_zombified"));
+        let conversions = world.take_piglin_conversions();
+        assert_eq!(conversions.len(), 1);
+        let conversion = &conversions[0];
+        assert_eq!(conversion.zombified, new_id);
+        assert_eq!(
+            conversion.equipment[piglin::MAINHAND]
+                .as_ref()
+                .map(|s| s.id.as_str()),
+            Some("minecraft:golden_sword")
+        );
+        assert_eq!(
+            conversion.drop_chances[piglin::MAINHAND],
+            piglin::GUARANTEED_DROP
+        );
+        assert!(!conversion.can_pick_up_loot);
+    }
+
+    #[test]
+    fn an_immune_or_no_ai_piglin_never_converts() {
+        let mut blocks = floor(12);
+        let mut world = EntityWorld::default();
+        world.set_piglins_zombify(true);
+        let mut immune = Piglin::new(PiglinKind::Piglin, DVec3::new(0.5, 64.0, 0.5));
+        immune.immune_to_zombification = true;
+        let immune = world.spawn_piglin(immune, false);
+        let still = Piglin::new(PiglinKind::Piglin, DVec3::new(4.5, 64.0, 0.5));
+        let still = world.spawn_piglin(still, true);
+        for _ in 0..400 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        for id in [immune, still] {
+            let piglin = &world.piglin_mut(id).unwrap().piglin;
+            assert!(!piglin.converting && piglin.time_in_overworld == 0, "{id}");
+        }
+        assert!(zombified(&world).is_empty());
+    }
+
+    #[test]
+    fn the_nether_resets_the_count() {
+        let mut blocks = floor(12);
+        let mut world = EntityWorld::default();
+        let id = spawn(&mut world, PiglinKind::Piglin, 0.5, 0.5);
+        world.set_piglins_zombify(true);
+        for _ in 0..250 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        assert_eq!(world.piglin_mut(id).unwrap().piglin.time_in_overworld, 250);
+        world.set_piglins_zombify(false);
+        world.tick_with_players(&mut blocks, &[]);
+        let piglin = &world.piglin_mut(id).unwrap().piglin;
+        assert!(!piglin.converting && piglin.time_in_overworld == 0);
+        world.set_piglins_zombify(true);
+        for _ in 0..300 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        assert_eq!(world.piglins().len(), 1, "the clock started over");
+    }
+
+    #[test]
+    fn a_brute_converts_too() {
+        let mut blocks = floor(12);
+        let mut world = EntityWorld::default();
+        world.set_piglins_zombify(true);
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        armed(&mut world, PiglinKind::Brute, at, "minecraft:golden_axe");
+        let mut sounded = false;
+        for _ in 0..301 {
+            world.tick_with_players(&mut blocks, &[]);
+            sounded |= heard(&mut world, "entity.piglin_brute.converted_to_zombified");
+        }
+        assert!(sounded);
+        assert!(world.piglins().is_empty());
+        let zombies = zombified(&world);
+        assert_eq!(zombies.len(), 1);
+        assert_eq!(
+            zombies[0].zombie.main_hand.as_deref(),
+            Some("minecraft:golden_axe")
+        );
+    }
+
+    #[test]
+    fn the_inventory_and_admired_item_drop_on_conversion() {
+        let mut ground = Ground::new(12);
+        let mut world = EntityWorld::default();
+        world.set_piglins_zombify(true);
+        let admiring = spawn(&mut world, PiglinKind::Piglin, 0.5, 0.5);
+        let holding = spawn(&mut world, PiglinKind::Piglin, 6.5, 0.5);
+        for (id, offhand) in [
+            (admiring, piglin::BARTERING_ITEM),
+            (holding, "minecraft:shield"),
+        ] {
+            let entity = world.piglin_mut(id).unwrap();
+            entity.piglin.offhand = Some(ItemStack::new(offhand, 1));
+            entity.piglin.inventory[0] = Some(ItemStack::new(piglin::GOLD_NUGGET, 9));
+            entity.piglin.inventory[3] = Some(ItemStack::new("minecraft:leather", 2));
+            entity.piglin.time_in_overworld = 300;
+        }
+        world
+            .piglin_mut(admiring)
+            .unwrap()
+            .brain
+            .admire_for(crate::piglin_brain::ADMIRE_TICKS);
+        world.tick_with_players(&mut ground, &[]);
+        assert!(world.piglins().is_empty());
+        let count = |item: &str| {
+            ground
+                .items
+                .iter()
+                .filter(|i| i.item == item)
+                .map(|i| i.count)
+                .sum::<i32>()
+        };
+        assert_eq!(count(piglin::GOLD_NUGGET), 18);
+        assert_eq!(count("minecraft:leather"), 4);
+        assert_eq!(count(piglin::BARTERING_ITEM), 1, "the admired ingot drops");
+        assert_eq!(count("minecraft:shield"), 0, "a held shield is kept");
+        let conversions = world.take_piglin_conversions();
+        let kept: Vec<Option<&str>> = conversions
+            .iter()
+            .map(|c| c.equipment[piglin::OFFHAND].as_ref().map(|s| s.id.as_str()))
+            .collect();
+        assert!(kept.contains(&Some("minecraft:shield")), "{kept:?}");
+        assert!(kept.contains(&None), "{kept:?}");
+    }
+
+    #[test]
+    fn no_converted_sound_in_peaceful() {
+        let mut blocks = floor(12);
+        let mut world = EntityWorld::default();
+        world.set_difficulty(0);
+        world.set_piglins_zombify(true);
+        let id = spawn(&mut world, PiglinKind::Piglin, 0.5, 0.5);
+        world.piglin_mut(id).unwrap().piglin.time_in_overworld = 300;
+        world.tick_with_players(&mut blocks, &[]);
+        assert_eq!(zombified(&world).len(), 1);
+        assert!(!heard(&mut world, "entity.piglin.converted_to_zombified"));
     }
 }
