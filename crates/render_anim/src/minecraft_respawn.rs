@@ -9,7 +9,7 @@ use minecraft_survival::level::Terrain;
 use minecraft_survival::player_nbt::Respawn;
 use minecraft_survival::respawn_block::{
     self, ANCHOR_CHARGE_SOUND, ANCHOR_SET_SPAWN_SOUND, AnchorUse, BAD_RESPAWN_POINT_POWER, BedUse,
-    BlockView, Fuel, GLOWSTONE, OCCUPIED, Pos, SPAWN_SET, Sleeper,
+    BlockView, Fuel, GLOWSTONE, OCCUPIED, Outcome, Pos, SPAWN_SET, Sleeper,
 };
 use minecraft_terrain::pack::PackStack;
 use minecraft_terrain::scene::{Block, Scene};
@@ -22,7 +22,6 @@ use crate::minecraft_inventory::InventoryUi;
 use crate::minecraft_sounds::Sounds;
 
 const BLOCK_REACH: f64 = 5.0;
-const DARK_SKY_LIGHT: f32 = 11.0;
 const TICKS_PER_SECOND: f64 = 20.0;
 
 struct SceneView<'a>(&'a Terrain);
@@ -40,6 +39,12 @@ pub(crate) struct Hand<'a> {
     pub(crate) main: bool,
     pub(crate) held: Option<&'a str>,
     pub(crate) offhand: Option<&'a str>,
+}
+
+pub(crate) struct Night<'a> {
+    pub(crate) dark: bool,
+    pub(crate) creative: bool,
+    pub(crate) monsters: &'a dyn Fn([f64; 6]) -> bool,
 }
 
 #[derive(Default)]
@@ -66,6 +71,7 @@ pub(crate) fn use_block(
     registries: &Registries,
     dimension: Dimension,
     hand: Hand,
+    night: Night,
 ) -> Option<RespawnBlockUse> {
     let pos = aim
         .target(
@@ -101,22 +107,27 @@ pub(crate) fn use_block(
             used.sounds.extend(sound.map(|event| (event, head)));
             used.overlay = message;
         }
-        BedUse::Occupied => used.overlay = Some(OCCUPIED.to_owned()),
+        BedUse::Occupied(_) => used.overlay = Some(OCCUPIED.to_owned()),
         BedUse::Sleep(bed) => {
             let sleeper = Sleeper {
                 feet: aim.pos.to_array(),
                 yaw: aim.yaw as f32,
                 pitch: aim.pitch as f32,
                 dimension,
-                dark: terrain.environment.sky_light_level() <= DARK_SKY_LIGHT,
+                dark: night.dark,
+                creative: night.creative,
             };
-            match respawn_block::rest_in_bed(&mut view, registries, &terrain.rules, &bed, &sleeper)
-            {
-                Ok(rest) => {
-                    used.respawn = rest.respawn.map(|point| (point, None));
-                    used.overlay = rest.problem;
-                }
-                Err(problem) => used.overlay = Some(problem.to_owned()),
+            let rest = respawn_block::rest_in_bed(
+                &mut view,
+                registries,
+                &terrain.rules,
+                &bed,
+                &sleeper,
+                night.monsters,
+            );
+            used.respawn = rest.respawn.map(|point| (point, None));
+            if let Outcome::Problem(problem) = rest.outcome {
+                used.overlay = problem;
             }
         }
         BedUse::Incomplete => {}

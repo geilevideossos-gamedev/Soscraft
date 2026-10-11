@@ -21,6 +21,7 @@ pub mod respawn_block;
 pub mod riding;
 pub mod save;
 pub mod server;
+pub mod sleep;
 pub mod survival;
 pub mod switch;
 pub mod the_end;

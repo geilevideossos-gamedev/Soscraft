@@ -1301,6 +1301,10 @@ impl Entities {
         out
     }
 
+    pub fn monster_near(&self, area: [f64; 6], sleeper: u64) -> bool {
+        crate::sleep::monster_in(area, resting_monsters(&self.world, sleeper))
+    }
+
     pub fn shot_boxes(&self, riding: Option<u64>) -> Vec<(u64, [f64; 6])> {
         let mut out = self.boxes();
         out.retain(|(key, _)| riding.is_none() || decode(*key).map(|hit| hit.id()) != riding);
@@ -1452,6 +1456,47 @@ impl Entities {
         }
         out
     }
+}
+
+fn resting_monsters(w: &EntityWorld, sleeper: u64) -> Vec<(&'static str, bool, [f64; 6])> {
+    let bounds = |body: &minecraftoss_entities::movement::Body| {
+        let p = body.position;
+        let half = f64::from(body.width) * 0.5;
+        [p.x - half, p.y, p.z - half, p.x + half, p.y + f64::from(body.height), p.z + half]
+    };
+    let mut out = Vec::new();
+    for e in w.zombies().iter().filter(|e| e.zombie.health > 0.0) {
+        let angry = e.ai.as_ref().is_some_and(|ai| ai.state.enderman.anger_target == Some(minecraftoss_entities::monster_ai::Target::Player(sleeper)));
+        out.push((e.zombie.kind.type_id(), angry, bounds(&e.zombie.body)));
+    }
+    for e in w.skeletons().iter().filter(|e| e.skeleton.health > 0.0) {
+        out.push((e.skeleton.kind.type_id(), false, bounds(&e.skeleton.body)));
+    }
+    for e in w.creepers().iter().filter(|e| e.creeper.health > 0.0 && !e.creeper.exploded) {
+        out.push(("minecraft:creeper", false, bounds(&e.creeper.body)));
+    }
+    for e in w.spiders().iter().filter(|e| e.spider.health > 0.0) {
+        out.push(("minecraft:spider", false, bounds(&e.spider.body)));
+    }
+    for e in w.endermen().iter().filter(|e| e.enderman.health > 0.0) {
+        out.push(("minecraft:enderman", false, bounds(&e.enderman.body)));
+    }
+    for e in w.witches().iter().filter(|e| e.witch.health > 0.0) {
+        out.push(("minecraft:witch", false, bounds(&e.witch.body)));
+    }
+    for e in w.blazes().iter().filter(|e| e.blaze.health > 0.0) {
+        out.push(("minecraft:blaze", false, bounds(&e.blaze.body)));
+    }
+    for e in w.slimes().iter().filter(|e| e.slime.health > 0.0) {
+        out.push((e.slime.type_id(), false, bounds(&e.slime.body)));
+    }
+    for e in w.hoglins().iter().filter(|e| e.hoglin.health > 0.0) {
+        out.push((e.hoglin.kind.type_id(), false, bounds(&e.hoglin.body)));
+    }
+    for e in w.piglins().iter().filter(|e| e.piglin.health > 0.0) {
+        out.push((e.piglin.kind.type_id(), false, bounds(&e.piglin.body)));
+    }
+    out
 }
 
 fn mob_to_use(world: &EntityWorld, eye: DVec3, look: DVec3, reach: f64, block: Option<f64>, others: Option<f64>) -> Option<MobHit> {
@@ -1687,6 +1732,39 @@ mod tests {
     }
 
     const EYE: DVec3 = DVec3::new(0.5, 64.5, 0.5);
+
+    #[test]
+    fn the_bed_check_sees_zombies_zoglins_and_piglins_and_only_angry_zombified_piglins() {
+        use minecraftoss_entities::zombie::{Zombie, ZombieKind};
+        let area = crate::sleep::monster_box((0, 64, 0));
+        let mut world = EntityWorld::default();
+        world.spawn_slime(minecraftoss_entities::slime::Slime::new(DVec3::new(2.5, 64.0, 0.5), 2), true);
+        world.spawn_hoglin(minecraftoss_entities::hoglin::Hoglin::new(minecraftoss_entities::hoglin::HoglinKind::Hoglin, DVec3::new(-2.5, 64.0, 0.5)), true);
+        world.spawn_strider(minecraftoss_entities::strider::Strider::new(DVec3::new(0.5, 64.0, 3.5)), true);
+        let mut piglin = Zombie::new(DVec3::new(0.5, 64.0, -3.5));
+        piglin.kind = ZombieKind::ZombifiedPiglin;
+        let calm = world.spawn_zombie_active(piglin, 0.0);
+        assert!(!monsters_in(&world, area, 7));
+        world.zombie_mut(calm).unwrap().ai.as_mut().unwrap().state.enderman.anger_target = Some(minecraftoss_entities::monster_ai::Target::Player(3));
+        assert!(!monsters_in(&world, area, 7), "angry at someone else");
+        assert!(monsters_in(&world, area, 3));
+        let mut world = EntityWorld::default();
+        world.spawn_zombie(Zombie::new(DVec3::new(8.7, 64.0, 0.5)), true);
+        assert!(monsters_in(&world, area, 7));
+        let mut world = EntityWorld::default();
+        world.spawn_zombie(Zombie::new(DVec3::new(8.9, 64.0, 0.5)), true);
+        assert!(!monsters_in(&world, area, 7));
+        let mut world = EntityWorld::default();
+        world.spawn_hoglin(minecraftoss_entities::hoglin::Hoglin::new(minecraftoss_entities::hoglin::HoglinKind::Zoglin, DVec3::new(-2.5, 64.0, 0.5)), true);
+        assert!(monsters_in(&world, area, 7));
+        let mut world = EntityWorld::default();
+        world.spawn_piglin(minecraftoss_entities::piglin::Piglin::new(minecraftoss_entities::piglin::PiglinKind::Brute, DVec3::new(-2.5, 60.0, 0.5)), true);
+        assert!(monsters_in(&world, area, 7));
+    }
+
+    fn monsters_in(world: &EntityWorld, area: [f64; 6], sleeper: u64) -> bool {
+        crate::sleep::monster_in(area, resting_monsters(world, sleeper))
+    }
 
     #[test]
     fn a_mob_behind_a_block_is_not_used() {

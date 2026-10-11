@@ -145,6 +145,12 @@ impl DimensionEnvironment {
         self.current[Used::SkyLightLevel as usize].as_f32()
     }
 
+    pub fn level_sky_light(&self, clock_ticks: i64, rain_level: f32, thunder_level: f32) -> f32 {
+        let clock = move |_: &str| clock_ticks;
+        let sample = Sample { clock_ticks: &clock, rain_level, thunder_level, biome_weights: Some(&[]), biome: u16::MAX };
+        self.system.value(self.indices[Used::SkyLightLevel as usize], &sample).as_f32()
+    }
+
     pub fn water_evaporates(&self) -> bool {
         self.current[Used::WaterEvaporates as usize].as_bool()
     }

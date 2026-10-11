@@ -45,6 +45,15 @@ impl Level {
             dragon_fight: None,
         }
     }
+
+    pub fn dark_outside(&self, globals: &crate::server::Globals) -> bool {
+        let (rain, thunder) = self.entities.as_ref().map_or((0.0, 0.0), |entities| {
+            (entities.weather.rain_level, entities.weather.thunder_level)
+        });
+        let ticks = globals.default_clock_ticks(self.dimension);
+        let light = self.terrain.environment.level_sky_light(ticks, rain, thunder);
+        crate::sleep::dark_outside(light, self.terrain.rules.has_fixed_time)
+    }
 }
 
 impl Terrain {

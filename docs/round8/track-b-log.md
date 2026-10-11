@@ -790,3 +790,43 @@ After 5ebaca7c.
 ```
 IW4L_MINECRAFT_KIT=minecraft:piglin_spawn_egg*16,minecraft:piglin_brute_spawn_egg*2,minecraft:hoglin_spawn_egg*16,minecraft:gold_block*8,minecraft:raw_gold_block*4,minecraft:gilded_blackstone*4,minecraft:nether_gold_ore*4,minecraft:iron_block*4,minecraft:chest*4,minecraft:barrel*2,minecraft:gold_ingot*16,minecraft:gold_nugget*32,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:golden_boots,minecraft:diamond_pickaxe,minecraft:diamond_sword,minecraft:netherrack*64,minecraft:cooked_beef*32,minecraft:golden_apple*8
 ```
+
+## Group b4-sleep-1
+
+Brief `b4-sleeping.md`, groups 1 to 3.
+
+### b4.1. Minecraft beds check the vanilla sleep rules: the night by sky light, monsters nearby and the sleep percentage
+
+After 11dde7f8.
+
+- **Changed:**
+  - New `minecraft_survival/src/sleep.rs`: `dark_outside(sky_light, fixed_time)` (`Level.isDarkOutside`: no fixed time and `(int)(15 - sky_light_level) >= 4`), `monster_box(head)` (the head's bottom centre ± 8, 5, 8), `prevents_rest(kind, angry)` (every class that extends `Monster` in 26.3, checked with javap, also those the fork doesn't have yet; a zombified piglin only when angry at the sleeper), `monster_in` (strict box overlap, as `AABB.intersects`), and `SleepStatus` (`update`, `sleepers_needed`, `enough_sleeping`, `enough_deep_sleeping`, as `SleepStatus` in vanilla).
+  - `minecraft_terrain/src/environment.rs`: `DimensionEnvironment::level_sky_light(clock, rain, thunder)` samples `gameplay/sky_light_level` for the whole level (no position), with the weather blend.
+  - `minecraft_survival/src/dimension.rs`: `DimensionRules.has_fixed_time` from the dimension type.
+  - `minecraft_survival/src/level.rs`: `Level::dark_outside(globals)` from the level's default clock, its own rain and thunder and `has_fixed_time`. It replaces the camera sample for bed use, and the respawn's bed check (`return_to_block`) uses it too (a one-line change).
+  - `minecraft_survival/src/entities.rs`: `Entities::monster_near(area, sleeper)` over the mob mirror (zombies of every kind, skeletons of every kind, creepers, spiders, endermen, witches, blazes, slimes, hoglins and zoglins, piglins and brutes).
+  - `respawn_block.rs`: `rest_in_bed` takes the monster check and `Sleeper.creative`, and returns `Rest { respawn, outcome }` with `Outcome::Sleep` or `Outcome::Problem`. Vanilla's order: too far, obstructed, the spawn is set, the bed rule's night test, then the monsters (not in creative). `NOT_SAFE` ("You may not rest now; there are monsters nearby"). `BedUse::Occupied` carries the bed head for group 2's villager kick-out.
+  - `render_anim`: `minecraft_respawn::use_block` takes a `Night` (the level's darkness, creative, the monster check) and shows the new problem.
+- **Tests:**
+  - `sleep`: `the_sky_is_dark_at_light_eleven_or_less`, `the_overworld_night_runs_from_tick_12523_to_23477_in_clear_weather` (real data; also the Nether's 4), `a_thunderstorm_darkens_noon_but_rain_alone_does_not` (rain 11.5625), `sleepers_needed_rounds_up_and_needs_at_least_one`, `the_sleep_count_changes_only_when_someone_sleeps`, `monsters_count_in_an_eight_by_five_box_around_the_head`.
+  - `respawn_block`: `the_rest_checks_run_in_vanilla_order`; `a_bed_in_reach_sets_the_spawn_by_day_and_says_you_can_sleep_only_at_night` moved to the new result.
+  - `entities`: `the_bed_check_sees_zombies_zoglins_and_piglins_and_only_angry_zombified_piglins`.
+  - `dimension`: both tests check `has_fixed_time`.
+- **Decisions:**
+  - The fixed time is the dimension type's `has_fixed_time`, not "no default clock" as the brief had it: the End has a clock but a fixed time (`has_fixed_time: true` in 26.3), so beds there are never "dark" (they explode anyway).
+  - A zombified piglin is angry at the sleeper when its persistent anger target (`NeutralMob.isAngryAt`, universal anger off) is that player, not when it merely targets them.
+  - The mob-burning `bright_outside` in the adapter still reads the camera sample: it is not a one-line change and it is a different rule (`isBrightOutside`).
+  - Nobody lies down yet (group 2): a bed that passes every check just sets the spawn and shows nothing.
+- **Test steps (Overworld, survival, `/difficulty normal`):**
+  1. By day, place the red bed on open ground and right-click it: "You can sleep only at night or during thunderstorms" above the hotbar, and "Respawn point set" in the chat the first time.
+  2. `/time set 12400` and right-click at once: the same message. Wait about 7 seconds (tick 12523) and right-click: no message.
+  3. Still at night, use a zombie egg about 6 blocks from the bed behind a cobblestone wall and right-click the bed: "You may not rest now; there are monsters nearby" (**1**). Kill it, use 2 slime eggs next to the bed and right-click: no message.
+  4. Use a zombified piglin egg next to the bed and right-click: no message. Hit it once and right-click the bed while it is angry: "there are monsters nearby".
+  5. `/gamemode creative`, use a zombie egg beside the bed and right-click: no message. `/gamemode survival`.
+  6. Stand 4 blocks from the bed and right-click: "You may not rest now; the bed is too far away". Put cobblestone on top of the pillow block: "This bed is obstructed".
+  7. `/time set noon`, `/weather rain`, right-click: "You can sleep only at night or during thunderstorms". `/weather thunder`, wait about 5 seconds and right-click: no message.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:red_bed,minecraft:zombie_spawn_egg*4,minecraft:slime_spawn_egg*2,minecraft:zombified_piglin_spawn_egg*2,minecraft:cobblestone*64,minecraft:diamond_sword
+```
