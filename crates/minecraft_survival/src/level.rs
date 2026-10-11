@@ -548,7 +548,7 @@ mod tests {
     #[test]
     fn an_eye_thrown_from_the_hand_leaves_the_stack_and_flies() {
         use minecraft_terrain::bucket::Change;
-        use minecraft_terrain::ender_eye::{ENDER_EYE, eye_use};
+        use minecraft_terrain::ender_eye::{ENDER_EYE, throw_use};
         use minecraftoss_player::inventory::ItemStack;
         let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else {
             return;
@@ -580,7 +580,7 @@ mod tests {
         let mut inventory = Inventory::default();
         inventory.slots[0] = Some(ItemStack::new(ENDER_EYE, 16));
         let held = inventory.slots[0].clone().unwrap();
-        let used = eye_use(&player, &minecraft_terrain::doors::Outlined(&scene), &held)
+        let used = throw_use(&player, &minecraft_terrain::doors::Outlined(&scene), &held)
             .expect("an eye in the hand has a use");
         let Change::ThrowEye(throw) = used.change.clone() else {
             panic!("aiming at the sky throws: {:?}", used.change);

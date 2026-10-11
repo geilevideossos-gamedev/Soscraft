@@ -60,6 +60,7 @@ pub struct Hand {
     pub use_by_key: bool,
     pub offhand_key_was: bool,
     pub creative_delay: u32,
+    pub using_eye: Option<usize>,
 }
 
 #[derive(Default)]

@@ -3,7 +3,7 @@ use crate::server::ItemOnBlock;
 use glam::DVec3;
 use minecraftoss_generator::feature::end_portal::FRAME;
 use minecraftoss_player::inventory::ItemStack;
-use minecraftoss_player::{Block, Player, World};
+use minecraftoss_player::{Block, Player, Pos, World};
 
 pub const ENDER_EYE: &str = "minecraft:ender_eye";
 const USE_REACH: f64 = 4.5;
@@ -37,25 +37,38 @@ pub fn takes_eye(block: &Block) -> bool {
     block.id == FRAME && block.property("eye") == Some("false")
 }
 
-pub fn eye_use(player: &Player, world: &impl World, held: &ItemStack) -> Option<ItemUse> {
-    if held.id != ENDER_EYE {
-        return None;
-    }
-    let aimed = player
+fn aimed(player: &Player, world: &impl World) -> Option<(Pos, Block)> {
+    player
         .target(world, USE_REACH)
-        .and_then(|hit| Some((hit.pos, world.block(hit.pos)?)));
-    let change = match aimed {
-        Some((pos, block)) if takes_eye(&block) => Change::Server(pos, ItemOnBlock::EnderEye),
-        Some((_, block)) if block.id == FRAME => return None,
-        _ => Change::ThrowEye(eye_throw(player, held)),
-    };
-    Some(ItemUse {
+        .and_then(|hit| Some((hit.pos, world.block(hit.pos)?)))
+}
+
+fn spent(change: Change) -> ItemUse {
+    ItemUse {
         change,
         result: None,
         wear: 0,
         consumed: true,
         sounds: Vec::new(),
-    })
+    }
+}
+
+pub fn frame_use(player: &Player, world: &impl World, held: &ItemStack) -> Option<ItemUse> {
+    if held.id != ENDER_EYE {
+        return None;
+    }
+    let (pos, block) = aimed(player, world)?;
+    takes_eye(&block).then(|| spent(Change::Server(pos, ItemOnBlock::EnderEye)))
+}
+
+pub fn throw_use(player: &Player, world: &impl World, held: &ItemStack) -> Option<ItemUse> {
+    if held.id != ENDER_EYE {
+        return None;
+    }
+    if aimed(player, world).is_some_and(|(_, block)| block.id == FRAME) {
+        return None;
+    }
+    Some(spent(Change::ThrowEye(eye_throw(player, held))))
 }
 
 #[cfg(test)]
@@ -101,7 +114,7 @@ mod tests {
     fn an_eye_on_an_empty_frame_asks_the_server_and_is_spent() {
         let eye = ItemStack::new(ENDER_EYE, 3);
         let used =
-            eye_use(&looking_down(), &below(frame("false")), &eye).expect("aimed at the frame");
+            frame_use(&looking_down(), &below(frame("false")), &eye).expect("aimed at the frame");
         assert_eq!(
             used.change,
             Change::Server((0, 0, 0), ItemOnBlock::EnderEye)
@@ -113,11 +126,36 @@ mod tests {
     #[test]
     fn a_filled_frame_passes_the_eye_on() {
         let eye = ItemStack::new(ENDER_EYE, 3);
-        assert_eq!(eye_use(&looking_down(), &below(frame("true")), &eye), None);
+        assert_eq!(frame_use(&looking_down(), &below(frame("true")), &eye), None);
+        assert_eq!(throw_use(&looking_down(), &below(frame("true")), &eye), None);
         let pearl = ItemStack::new("minecraft:ender_pearl", 3);
         assert_eq!(
-            eye_use(&looking_down(), &below(frame("false")), &pearl),
+            frame_use(&looking_down(), &below(frame("false")), &pearl),
             None
+        );
+        assert_eq!(throw_use(&looking_down(), &Blocks::default(), &pearl), None);
+    }
+
+    #[test]
+    fn adventure_mode_throws_but_frames_need_building() {
+        let eye = ItemStack::new(ENDER_EYE, 3);
+        let standing = looking_down();
+        for world in [below(Block::new("minecraft:stone")), Blocks::default()] {
+            let used = throw_use(&standing, &world, &eye).expect("the eye is thrown");
+            assert!(matches!(used.change, Change::ThrowEye(_)));
+            assert_eq!(frame_use(&standing, &world, &eye), None);
+        }
+        for filled in ["false", "true"] {
+            assert_eq!(
+                throw_use(&standing, &below(frame(filled)), &eye),
+                None,
+                "a frame passes the throw"
+            );
+        }
+        let used = frame_use(&standing, &below(frame("false")), &eye).expect("the frame fills");
+        assert_eq!(
+            used.change,
+            Change::Server((0, 0, 0), ItemOnBlock::EnderEye)
         );
     }
 
@@ -125,7 +163,7 @@ mod tests {
     fn anywhere_else_the_eye_is_thrown_from_the_middle_of_the_body() {
         let mut eye = ItemStack::new(ENDER_EYE, 3);
         let thrown = |player: &Player, world: &Blocks, eye: &ItemStack| {
-            let used = eye_use(player, world, eye).expect("the eye is used");
+            let used = throw_use(player, world, eye).expect("the eye is used");
             assert!(used.consumed && used.result.is_none() && used.wear == 0);
             assert!(used.sounds.is_empty(), "the server plays the launch sound");
             match used.change {

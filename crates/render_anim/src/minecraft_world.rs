@@ -1162,7 +1162,10 @@ fn update(
             (offhand_key && !hand.offhand_key_was, offhand_key)
         };
         let use_pressed = idle && use_pressed;
-        let place = use_pressed || (idle && use_down && hand.place_delay == 0);
+        if !minecraft_survival::offhand::eye_held(&hand, use_down, *selected) {
+            hand.using_eye = None;
+        }
+        let place = use_pressed || (idle && use_down && hand.place_delay == 0 && hand.using_eye.is_none());
         let hands = if place {
             hand.place_delay = 4;
             hand.use_by_key = !ui.holding_item;
@@ -1327,7 +1330,7 @@ fn update(
                         .or_else(|| minecraft_terrain::berries::bone_meal_use(&player, &outlined, stack))
                         .or_else(|| minecraft_terrain::campfire::douse_use(&player, &outlined, entities.recipes.item_in_tag(minecraft_terrain::campfire::DOUSES_CAMPFIRES, &stack.id), || entities.random_float()))
                         .or_else(|| globals.data.transforms.as_ref()?.transform_use(|tag| entities.recipes.item_in_tag(tag, &stack.id), &player, &outlined, &*terrain.stream.states, main && !player.crouching && inventory.slots[minecraft_survival::offhand::OFFHAND].as_ref().is_some_and(|shield| shield.id == minecraft_survival::offhand::SHIELD)))
-                        .or_else(|| minecraft_terrain::ender_eye::eye_use(&player, &outlined, stack))
+                        .or_else(|| minecraft_terrain::ender_eye::frame_use(&player, &outlined, stack))
                         .or_else(|| minecraft_terrain::end_crystal::crystal_use(&player, &outlined, stack))
                         .or_else(|| minecraft_terrain::firework::rocket_use(stack, ps.pm_flags & playerstate_iw4::pm_flags::MC_GLIDING != 0, || entities.random_float()))
                 }
@@ -1350,6 +1353,16 @@ fn update(
                     minecraft_terrain::bucket::Change::Rocket(boost_ticks) => crate::minecraft_elytra::launch_rocket(&mut authority.0, local.0, boost_ticks, &mut hand.swing, || finish_item_use(entities, inventory, sounds.as_mut(), &world.packs, origin, sent, game_mode.consumes_items())),
                     minecraft_terrain::bucket::Change::Breath => entities.bottle_breath(player.pos, if player.crouching { 1.5 } else { 1.8 }, sent),
                 }
+                HandUse::Consumed
+            } else if let Some(stack) = held.as_ref()
+                && !entities.awaits_item_use()
+                && game_mode.interacts()
+                && let Some(outcome) = minecraft_terrain::ender_eye::throw_use(&player, &minecraft_terrain::doors::Outlined(&terrain.scene), stack)
+                && let minecraft_terrain::bucket::Change::ThrowEye(throw) = outcome.change.clone()
+            {
+                hand.using_eye = Some(slot);
+                let sent = minecraft_survival::entities::SentItemUse { slot, held: stack.id.clone(), eye: eye_block, yaw: mc_yaw, pitch: ps.viewangles[0], outcome };
+                entities.throw_eye(throw, sent);
                 HandUse::Consumed
             } else if let Some(stack) = held.as_ref()
                 && game_mode.may_build()

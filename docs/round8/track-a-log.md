@@ -201,7 +201,7 @@ Commit: e7db22ac
 
 ### 2. Minecraft stronghold rings are worked out once per world, away from the server tick
 
-Commit: (see the next entry, or `git log` under this subject)
+Commit: 7375ca79
 
 - **Changed:**
   - `third_party/minecraftoss/generator/src/structure/placement.rs` (a MinecraftOSS patch, new to the patched list): `ring_chunks` takes each slot through its `resolved` cache, the one `ring_contains` already used. `/locate`, the eye and chunk generation now share one resolution per `WorldGen`.
@@ -215,3 +215,37 @@ Commit: (see the next entry, or `git log` under this subject)
 - **Decision:** one background thread for all rings, not one task per ring as vanilla's `supplyAsync` per position; the result is the same and a single named thread is easy to find in a profile.
 - **Test steps:** none on their own; brief section 6 steps 1-5 (entry 3) cover it. In `latest.log`, a `Minecraft stronghold rings: 128 worked out in ... ms` line follows each overworld load.
 - **Kit:** none needed.
+
+### 3. Minecraft eyes of ender are thrown once per click, and in adventure mode, like vanilla
+
+Commit: (see the next entry, or `git log` under this subject)
+
+- **Changed:**
+  - `minecraft_terrain/src/ender_eye.rs`: `eye_use` is split like vanilla's `useOn` and `use`. `frame_use` fills an empty frame and stays in the build chain. `throw_use` passes (`None`) when aiming at any end portal frame, filled or not, and otherwise gives `Change::ThrowEye`.
+  - `render_anim/src/minecraft_world.rs`: the build chain calls `frame_use`; a new branch right after it calls `throw_use` and needs only `game_mode.interacts()` (no spectators) and no item use waiting, so adventure players throw. It sends the same `SentItemUse` through `entities.throw_eye` and marks the hand as using the eye. While that mark holds, a held button (or tactical key) does not repeat any use; releasing it or selecting another slot clears it, and a fresh press always fires.
+  - `minecraft_survival/src/player.rs`: `Hand.using_eye: Option<usize>`, the slot of the eye being "used" (vanilla's `startUsingItem` with a use duration of 0), per player.
+  - `minecraft_survival/src/offhand.rs`: `eye_held(hand, use_down, selected)`: the mark holds while the button is down and the eye's slot is the selected slot or the offhand.
+  - `docs/MINECRAFT-SURVIVAL.md`: the eye paragraph says one eye per click, adventure and spectator, the no-stronghold case, the background rings and the log line.
+- **Tests:** `minecraft_terrain` (`ender_eye.rs`): `adventure_mode_throws_but_frames_need_building` (`throw_use` throws on stone and air and passes on both frames, `frame_use` fills only an empty frame); `a_filled_frame_passes_the_eye_on` and `anywhere_else_the_eye_is_thrown_from_the_middle_of_the_body` use the split functions. `minecraft_survival` (`offhand.rs`): `holding_the_use_button_throws_one_eye`; `level.rs`'s throw test calls `throw_use`.
+- **Decisions:**
+  - The mark is set when the throw is sent, whatever the answer, as vanilla starts using the item before its stronghold search; so holding the button over a world without strongholds sends one search, not one every 4 ticks.
+  - While the mark holds, no use repeats in either hand, as vanilla's `startUseItem` doesn't run while the player is using an item.
+  - In adventure mode, right-clicking a frame with an eye does nothing (the frame refuses, then the throw passes on the frame), as vanilla.
+- **Test steps** (brief section 6; a new world on the owner's seed). In the `.env` set `IW4L_MINECRAFT_WORLD=r8eye` and `IW4L_MINECRAFT_SEED=4986579828511054607`, and remove any `IW4L_MINECRAFT_DIMENSION` line. After the test, send the screenshots and `iw4l-artifacts\logs\latest.log`.
+  1. Start by day. Type `/gamemode creative`, then `/tp @s -300 120 -1700`, wait for the ground to load, land, and type `/gamemode survival`.
+  2. Type `/locate structure minecraft:stronghold`. It answers about [-496, ~, -1936].
+  3. Face north-west (toward the stronghold), look level, and right-click once with an eye. Within a moment you hear the launch sound and your hand swings, the stack loses one eye, and the eye rises from your chest and floats about 12 blocks toward the stronghold, climbing about 8, glowing, with a purple trail. **Screenshot 1** while it flies, with the `/locate` answer still in the chat.
+  4. After about 4 s you hear a short sound. The eye either falls as an item you can pick up, or breaks into crumbs and a purple ring.
+  5. Turn your back to the stronghold and throw again: the eye flies behind you, toward the stronghold (turn round to see it).
+  6. Hold right-click for 3 s: only one eye flies. Release and click again: another flies.
+  7. Throw 10 eyes, one click each: about 8 drop and 2 break.
+  8. Type `/gamemode creative` and `/tp @s -496 120 -1936`, then throw. The eye sinks straight down into the ground under you; vanilla does this when you stand over the stronghold. **Screenshot 2.**
+  9. Type `/gamemode adventure` and throw: the eye flies. Place an end portal frame first (in creative), then in adventure right-click it with an eye: nothing happens. Type `/gamemode survival` and right-click the frame: the eye goes in. Right-click the filled frame: nothing happens.
+  10. Type `/execute in minecraft:the_nether run tp ~ 128 ~` (on top of the Nether's bedrock roof) and right-click with an eye: no sound, no swing, the stack stays. Hold the button: still nothing. **Screenshot 3.** Then `/execute in minecraft:overworld run tp ~ 120 ~`.
+  11. Compare the held eye with another flat item, such as `/give @s minecraft:snowball 1`: they're held the same way, as large and as far to the lower right as vanilla draws them.
+  12. In `latest.log`: one `Minecraft stronghold rings: 128 worked out in ... ms` line after the world loads, and for every throw a line starting `Minecraft eye of ender:`, "flew" in the overworld with its time in ms, "no structure" in the Nether (one line for the held button, not one every 4 ticks).
+- **Kit** (3 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ender_eye*48,minecraft:end_portal_frame*2,minecraft:cobblestone*64
+```
