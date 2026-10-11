@@ -282,7 +282,7 @@ IW4L_MINECRAFT_KIT=obsidian*10,flint_and_steel,lava_bucket,torch*16
 
 ### E7b. RemoteWorld applies what the host sends
 
-Commit: see `git log` ("RemoteWorld applies what the host sends")
+Commit: bd3fd000
 
 - **Changed:**
   - `crates/minecraft_survival/src/remote.rs` (new), with no Bevy:
@@ -314,3 +314,38 @@ Commit: see `git log` ("RemoteWorld applies what the host sends")
   - `ToServerFrame` / `ToClientFrame` stay unused (E3's decision); the wire frames the messages.
 - **Test steps:** none in game yet; E7c uses `RemoteWorld`.
 - **Kit:** none.
+
+### E7c. A friend's game shows the host's world
+
+Commit: see `git log` ("A friend's game shows the host's world")
+
+- **Changed:**
+  - `crates/render_anim/src/minecraft_remote.rs` (new), the `friend` system, in the same set as `minecraft_world::update` and only in `RuntimeRole::Client`:
+    - **Loads** the registries, the resource pack, the look (E7a's `load_look`), the language and the registry fingerprint on the `minecraft-world-load` thread when the Minecraft map is installed. No world folder is opened.
+    - **Hello:** once `MinecraftWire` is up as a friend, it sends `Hello` with protocol, view distance 8 and the fingerprint, again every 2 s until `Login`, `Rejected` or a failure.
+    - **Receives:** reliable messages into `RemoteWorld::apply`, state frames into `apply_state`, `"MC"` blobs into `receive_batch`; blobs are read on a `minecraft-chunk-read` worker (inline if it could not start). Each applied batch is acknowledged with `ChunkBatchReceived`. A message that does not decode is dropped and counted (`bad_message`).
+    - **Collision:** when a level arrives, `sim::voxel::activate` with the MW2 prediction world's brushes and the level's origin from `Login.origins` (the host's origin for that dimension, so both games put a block at the same map point). Loaded and forgotten chunks go through `apply_streamed`, changed blocks through `shape_id` and `set_block_shape`.
+    - **Loading screen:** `ui.loading_world` holds MW2 admission while the look loads, until `Login`, and then until the spawn gate sees collision around `Login.feet` and a visible section there (the host's own gate, with its 30 s limit).
+    - **Presents** with E7a's functions: the atlas animation, the terrain frame from the player's eye (or the spawn, while the gate holds), the light columns, the sky and environment from the host's clocks and weather, clouds and the light volume.
+    - Chat lines from the host, a refusal, a failed stream and "The host's Minecraft world does not answer: the host may run a different build" (no `Login` 30 s after the look loaded, E3's finding) go into the Minecraft chat.
+    - A torn-down match clears the view, the collision and the friend's state.
+  - `minecraft_world.rs`: `update` returns at once in the Client role, so the friend's game never calls `load()` or opens a world folder; the `friend` system is registered.
+  - **Host:** `session::time_of(globals)` and `Sessions::send_time`: every friend gets `Time` (game time, the Overworld and End clocks with their pause, from the `advance_time` rule and `/time`) and the weather of their level once a second (`minecraft_host.rs`).
+- **Tests:**
+  - `minecraft_survival`, `session`: `every_friend_gets_the_time_of_both_clocks_with_their_pause`.
+  - No other new tests (the friend system is Bevy glue over E7b's tested `RemoteWorld`). `test -p minecraft_survival --lib`, `test -p render_anim --lib` and `check -p launcher` are green.
+- **Decisions:**
+  - **Time and weather go once a second**, as vanilla's `ServerLevel` sends `ClientboundSetTimePacket` every 20 ticks. Between them the friend advances its clocks itself, like a vanilla client; a `/time set` shows within a second. The friend eases rain and thunder toward the host's values at vanilla's 0.01 per tick, so the fog does not jump once a second.
+  - **After 30 s without `Login` the loading screen lets the friend in**, with the "does not answer" line, instead of holding them forever; the MW2 match itself still works.
+  - **The friend's Minecraft HUD stays off in M1** (`ui.active` false): its hearts, hotbar and hand come from `PlayerView` in M2. The MW2 HUD shows meanwhile. The friend's chat lines are kept; the chat is drawn and typed into from E8.
+  - **Sounds, level events and the other effects** are taken from `RemoteWorld` and dropped until the groups that play them (M2, M3).
+- **Test steps** (with the M1 play build; `scripts\mp-local.ps1` picks the newest `iw4l-mp-*.exe`):
+  1. Build once: `& scripts\cargo-slot.ps1 build --profile play --locked -p launcher`, then copy `D:\iw4l-target\play\iw4l.exe` to `C:\Games\Mashup\2010-Rust-Rewrite-Mashup\iw4l-mp-m1.exe`. The relay from E3 must be the patched one.
+  2. `& scripts\mp-local.ps1 -World mp-m1 -Fresh`. The host window loads the world as usual. The friend window stays on the loading screen until the host's chunks have arrived (a few seconds), then shows class select. Screenshot the friend's loading screen and then class select.
+  3. Friend window: spawn. The friend stands next to the host's spawn on the same terrain the host sees (same trees, same blocks), with the same sky and sun position. Screenshot both windows from about the same spot.
+  4. Friend window: walk, jump, fall off a block. The friend never falls through the ground or walks through blocks.
+  5. Host window: shoot a block until it breaks. Friend window: it is gone too. Friend window: shoot a block until it breaks; both windows show it gone (the host breaks it for the friend's bullets).
+  6. Host window: `/time set night`. Within a second the friend's sky is night too. `/weather rain`: the friend's sky darkens and fogs over within a few seconds.
+  7. Quit the friend window. Host chat: "Friend left the game". Start it again with `scripts\mp-local.ps1 -FriendOnly`: it loads into the same world again.
+  8. Stay within about 8 chunks of the host (chunks only load around the host until M2).
+- **Kit:** none needed.

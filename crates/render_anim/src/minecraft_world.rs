@@ -201,6 +201,7 @@ pub(crate) fn register(app: &mut App) {
         .init_resource::<frame::InventoryPuppet>()
         .insert_non_send(Runtime::default())
         .insert_non_send(crate::minecraft_host::HostSessions::default())
+        .insert_non_send(crate::minecraft_remote::Friend::default())
         .add_systems(
             Update,
             update
@@ -210,6 +211,12 @@ pub(crate) fn register(app: &mut App) {
         .add_systems(
             Update,
             crate::minecraft_host::host
+                .after(update)
+                .in_set(frame::ClientSet::Present),
+        )
+        .add_systems(
+            Update,
+            crate::minecraft_remote::friend
                 .after(update)
                 .in_set(frame::ClientSet::Present),
         )
@@ -438,11 +445,16 @@ fn update(
         Query<&bevy::input::gamepad::Gamepad>,
         Option<Res<frame::ActivePad>>,
     ),
-    (hud_input, settings): (Option<Res<frame::HudInputView>>, Option<Res<frame::GameSettings>>),
+    (hud_input, settings, role): (Option<Res<frame::HudInputView>>, Option<Res<frame::GameSettings>>, Res<frame::RuntimeRole>),
     real_time: Res<Time<Real>>,
     mc_camera: Option<Res<frame::McCamera>>,
     mut body_gear: ResMut<crate::anim::minecraft_gear::McBodyGear>,
 ) {
+    if *role == frame::RuntimeRole::Client {
+        for _ in installed.read() {}
+        for _ in torn_down.read() {}
+        return;
+    }
     let pad = active_pad.and_then(|active| active.0).and_then(|entity| gamepads.get(entity).ok());
     for _ in torn_down.read() {
         stop(&mut runtime, &mut view);

@@ -73,6 +73,7 @@ pub(crate) struct HostSessions {
     worker: Option<ChunkWorker>,
     registry: Option<u64>,
     inline: Vec<Encoded>,
+    time_at: Option<Instant>,
 }
 
 impl HostSessions {
@@ -224,6 +225,15 @@ pub(crate) fn host(
         wire.send_batch(client, seq, Arc::new(batch.blob));
     }
     host.sessions.fan_out(&mut server.levels);
+    if host.sessions.is_empty() {
+        host.time_at = None;
+    } else if host
+        .time_at
+        .is_none_or(|at| now.duration_since(at) >= minecraft_survival::session::TIME_EVERY)
+    {
+        host.time_at = Some(now);
+        host.sessions.send_time(&server.globals, &server.levels);
+    }
     let registries = server.globals.registries.clone();
     for job in host.sessions.select_batches(server) {
         let sender = host.worker.as_ref().and_then(|worker| worker.jobs.as_ref());

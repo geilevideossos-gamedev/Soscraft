@@ -8,12 +8,13 @@ use minecraft_net::codec::{BATCH_CUT, BULK_LIMIT};
 use minecraft_net::messages::{ChunkBlob, HelloRefusal, Login, Nbt, Rules, check_hello};
 use minecraft_net::{ChunkBatchBlob, Dimension, PROTOCOL, PlayerUuid, ToClient};
 use minecraft_terrain::game_rules::GameRules;
+use minecraft_terrain::server::{OVERWORLD_CLOCK, THE_END_CLOCK};
 use minecraft_terrain::view::{MIN_VIEW_DISTANCE, TrackingView};
 use minecraftoss_core::{BlockStateId, Chunk, ChunkPos, Registries};
 
 use crate::level::{Level, Terrain};
 use crate::player::Player;
-use crate::server::{Left, Server};
+use crate::server::{Globals, Left, Server};
 
 pub type ChunkXz = (i32, i32);
 type BlockPos = (i32, i32, i32);
@@ -22,6 +23,7 @@ pub const BATCH_CHUNKS: usize = 9;
 pub const RETIRE_AFTER: Duration = Duration::from_secs(1);
 pub const NAME_TAKEN: &str = "A player with that name is already in the world";
 pub const TRAVEL_OFF: &str = "Dimension travel is off while friends are online (not built yet)";
+pub const TIME_EVERY: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Default)]
 pub struct ChunkSender {
@@ -381,6 +383,25 @@ pub fn rules_of(rules: &GameRules) -> Rules {
     }
 }
 
+pub fn time_of(globals: &Globals) -> ToClient {
+    let advancing = globals.game_rules.bool("advance_time");
+    ToClient::Time {
+        game_time: globals.day.ticks.floor() as i64,
+        clocks: vec![
+            (
+                OVERWORLD_CLOCK.to_owned(),
+                globals.day.ticks,
+                !advancing || globals.day.paused,
+            ),
+            (
+                THE_END_CLOCK.to_owned(),
+                globals.end_clock.ticks,
+                !advancing || globals.end_clock.paused,
+            ),
+        ],
+    }
+}
+
 fn system_line(text: Text) -> Clientbound {
     Clientbound::System {
         text,
@@ -547,6 +568,25 @@ impl Sessions {
             match self.sessions.get_mut(&player.id.0) {
                 Some(session) => session.outbox.push(ToClient::Chat(travel_off_line())),
                 None => self.host_lines.push(travel_off_line()),
+            }
+        }
+    }
+
+    pub fn send_time(&mut self, globals: &Globals, levels: &BTreeMap<Dimension, Level>) {
+        let time = time_of(globals);
+        for session in self.sessions.values_mut() {
+            session.outbox.push(time.clone());
+            let weather = session
+                .chunks
+                .level
+                .and_then(|dimension| levels.get(&dimension))
+                .and_then(|level| level.entities.as_ref())
+                .map(|entities| entities.weather);
+            if let Some(weather) = weather {
+                session.outbox.push(ToClient::Weather {
+                    rain: weather.rain_level,
+                    thunder: weather.thunder_level,
+                });
             }
         }
     }
@@ -1061,6 +1101,45 @@ mod tests {
         sessions.lock_travel(&mut server.players);
         let steve = server.players.values_mut().next().unwrap();
         assert!(!steve.refuse_travel());
+        server.globals.writer.finish();
+    }
+
+    #[test]
+    fn every_friend_gets_the_time_of_both_clocks_with_their_pause() {
+        let Some((_dir, mut server)) = host_server("session-time") else {
+            return;
+        };
+        server.globals.day.set(6000.0);
+        server.globals.end_clock.ticks = 1234.0;
+        let origins = [];
+        let mut sessions = Sessions::default();
+        let now = Instant::now();
+        sessions.hello(&mut server, 1, "Alex", HELLO, &context(&origins), now);
+        sessions.hello(&mut server, 2, "Bob", HELLO, &context(&origins), now);
+        sessions.take_outgoing();
+        sessions.send_time(&server.globals, &server.levels);
+        let time = ToClient::Time {
+            game_time: 6000,
+            clocks: vec![
+                (OVERWORLD_CLOCK.to_owned(), 6000.0, false),
+                (THE_END_CLOCK.to_owned(), 1234.0, false),
+            ],
+        };
+        assert_eq!(sessions.take_outgoing(), vec![(1, time.clone()), (2, time)]);
+        server.globals.day.paused = true;
+        let ToClient::Time { clocks, .. } = time_of(&server.globals) else {
+            panic!("a time message");
+        };
+        assert_eq!((clocks[0].2, clocks[1].2), (true, false));
+        server
+            .globals
+            .game_rules
+            .set("advance_time", "false")
+            .unwrap();
+        let ToClient::Time { clocks, .. } = time_of(&server.globals) else {
+            panic!("a time message");
+        };
+        assert_eq!((clocks[0].2, clocks[1].2), (true, true));
         server.globals.writer.finish();
     }
 
