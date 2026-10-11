@@ -111,7 +111,8 @@ impl DimensionEnvironment {
 
     /// `EnvironmentAttributeProbe.tick`: samples every used attribute at the
     /// camera. The first tick after loading fills both ends.
-    pub fn tick(&mut self, clock_ticks: i64, rain_level: f32, thunder_level: f32, camera: [f64; 3], noise_biome: impl Fn(i32, i32, i32) -> u16, first: bool) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn tick(&mut self, clock_ticks: i64, rain_level: f32, thunder_level: f32, camera: [f64; 3], noise_biome: impl Fn(i32, i32, i32) -> u16, first: bool, credits_open: bool) -> Option<(f32, f32)> {
         let weights = biome_weights([camera[0] * 0.25, camera[1] * 0.25, camera[2] * 0.25], &noise_biome);
         let own = noise_biome((camera[0].floor() as i32) >> 2, (camera[1].floor() as i32) >> 2, (camera[2].floor() as i32) >> 2);
         let clock = move |_: &str| clock_ticks;
@@ -122,9 +123,7 @@ impl DimensionEnvironment {
         if first && self.end_flash.is_some() {
             self.end_flash = Some(EndFlash::default());
         }
-        if let Some(flash) = self.end_flash.as_mut() {
-            flash.tick(clock_ticks);
-        }
+        self.end_flash.as_mut().and_then(|flash| flash.tick(clock_ticks, credits_open))
     }
 
     /// `AtmosphericFogEnvironment.updateRainFogState`, once per frame:
@@ -297,7 +296,7 @@ mod tests {
         let plains = registries.biomes.id("minecraft:plains").unwrap().0;
         let mut env = DimensionEnvironment::load(&registries, "minecraft:overworld").unwrap();
         for ticks in (0..24_000).step_by(250) {
-            env.tick(ticks, 0.0, 0.0, [0.5, 80.0, 0.5], |_, _, _| plains, true);
+            env.tick(ticks, 0.0, 0.0, [0.5, 80.0, 0.5], |_, _, _| plains, true, false);
             let view = View { partial_tick: 1.0, forward: Vec3::Z, camera_y: 80.0, render_distance: 16, rain_level: 0.0, thunder_level: 0.0 };
             let ours = env.sky_state(&view);
             let old = DayCycle { ticks: ticks as f64, paused: true }.sample_for_biome_at(crate::terrain::plains_sample(&registries), 16);
@@ -320,7 +319,7 @@ mod tests {
     fn sky_in(registries: &Registries, dimension: &str, biome: &str, clock_ticks: i64) -> SkyState {
         let biome = registries.biomes.id(biome).unwrap().0;
         let mut env = DimensionEnvironment::load(registries, dimension).unwrap();
-        env.tick(clock_ticks, 0.0, 0.0, [0.5, 64.0, 0.5], |_, _, _| biome, true);
+        env.tick(clock_ticks, 0.0, 0.0, [0.5, 64.0, 0.5], |_, _, _| biome, true, false);
         env.sky_state(&View { partial_tick: 1.0, forward: Vec3::Z, camera_y: 64.0, render_distance: 8, rain_level: 0.0, thunder_level: 0.0 })
     }
 
@@ -378,7 +377,7 @@ mod tests {
             let mut env = DimensionEnvironment::load(&registries, dimension).unwrap();
             let mut brightest = 0.0f32;
             for tick in 0..1200 {
-                env.tick(tick, 0.0, 0.0, [0.5, 70.0, 0.5], |_, _, _| plains, tick == 0);
+                env.tick(tick, 0.0, 0.0, [0.5, 70.0, 0.5], |_, _, _| plains, tick == 0, false);
                 let sky = env.sky_state(&view);
                 brightest = brightest.max(sky.end_flash[0]);
                 if tick < 600 {
@@ -388,9 +387,9 @@ mod tests {
             assert_eq!(brightest > 0.9, flashes, "{dimension}");
         }
         let mut end = DimensionEnvironment::load(&registries, "minecraft:the_end").unwrap();
-        end.tick(900, 0.0, 0.0, [0.5, 70.0, 0.5], |_, _, _| plains, true);
+        end.tick(900, 0.0, 0.0, [0.5, 70.0, 0.5], |_, _, _| plains, true, false);
         let mut fresh = EndFlash::default();
-        fresh.tick(900);
+        fresh.tick(900, false);
         let (x_angle, y_angle) = fresh.angles();
         assert_eq!(end.sky_state(&view).end_flash, [fresh.intensity(1.0), x_angle, y_angle]);
     }
@@ -402,7 +401,7 @@ mod tests {
         let plains = registries.biomes.id("minecraft:plains").unwrap().0;
         for (dimension, biome, evaporates) in [("minecraft:overworld", plains, false), ("minecraft:the_nether", wastes, true), ("minecraft:the_end", plains, false)] {
             let mut env = DimensionEnvironment::load(&registries, dimension).unwrap();
-            env.tick(0, 0.0, 0.0, [0.5, 70.0, 0.5], |_, _, _| biome, true);
+            env.tick(0, 0.0, 0.0, [0.5, 70.0, 0.5], |_, _, _| biome, true, false);
             assert_eq!(env.water_evaporates(), evaporates, "{dimension}");
         }
     }

@@ -2274,14 +2274,20 @@ fn update(
     if !*environment_primed || *environment_accumulator >= TICK_SECONDS {
         *environment_accumulator = (*environment_accumulator % TICK_SECONDS).min(TICK_SECONDS);
         let scene = &terrain.scene;
-        terrain.environment.tick(
+        let flash_sound = terrain.environment.tick(
             globals.default_clock_ticks(*dimension),
             weather.rain_level,
             weather.thunder_level,
             eye,
             |x, y, z| scene.noise_biome((x, y, z)).map_or(0, |id| id.0),
             !*environment_primed,
+            ui.credits.is_some(),
         );
+        if let (Some((x_angle, y_angle)), Some(sounds)) = (flash_sound, sounds.as_mut()) {
+            let toward = minecraft_terrain::end_flash::direction_from_rotation(x_angle, y_angle) * 10.0;
+            let source = [eye[0] + toward.x, eye[1] + toward.y, eye[2] + toward.z];
+            sounds.play_without_falloff(&world.packs, "minecraft:weather.end_flash", Some(at(source)), 1.0, 1.0);
+        }
         *environment_primed = true;
     }
     let partial_tick = (*environment_accumulator / TICK_SECONDS).clamp(0.0, 1.0) as f32;

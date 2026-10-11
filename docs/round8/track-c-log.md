@@ -641,3 +641,18 @@ for (long w : new long[]{1, 2, 7}) { java.util.Random r = new java.util.Random(w
   1. In the `.env`: `IW4L_MINECRAFT_WORLD=c3fx`, `IW4L_MINECRAFT_DIMENSION=the_end`. Start on the obsidian platform and stand still for a minute and a half: about every 30 seconds the end stone turns faintly purple for 5 to 19 seconds, rising and fading. The sky stays the dark fog colour while the dragon's bar shows.
   2. `/gamemode creative`, `/tp @s 0 90 250` and fly there (more than 192 blocks from the island, so the bar goes and the End sky shows). Look around the sky for a minute: about every 30 seconds a soft purple glow appears somewhere between straight up and just below the horizon, swells and fades; the island and your blocks glow purple with it, three times as strongly as on the island during the fight (**1**, with the glow in view).
 - **Kit:** none.
+
+### 25. Minecraft End flashes rumble a second and a half after they start
+
+Previous commit: d6ed4600
+
+- **Changed:**
+  - `end_flash.rs`: `EndFlash::tick(clock, credits_open)` returns the flash's angles 30 ticks (`SOUND_DELAY`) after a flash starts, unless the credits were open when it started (`ClientLevel.tick` skips the sound under `WinScreen`). `DimensionEnvironment::tick` takes `credits_open` and passes the due sound on.
+  - `render_anim` `minecraft_sounds.rs`: `Sounds::play_without_falloff` queues an event with infinite attenuation, so its gain stays at its volume at any distance and only the pan places it (`SoundInstance.Attenuation.NONE`).
+  - `render_anim` `minecraft_world.rs`: the 20 Hz environment tick passes `ui.credits.is_some()`; a due sound plays `minecraft:weather.end_flash` (volume 1, pitch 1) at the eye plus `direction_from_rotation(x, y)·10` blocks.
+- **Tests:** `end_flash`: `the_sound_comes_thirty_ticks_after_the_flash_starts_and_never_during_the_credits` (four flashes in 3000 ticks, each sound 30 ticks after its start with its angles; none with the credits open; a flash that started under the credits stays silent after they close). `minecraft_sounds`: `a_sound_without_falloff_keeps_its_volume_far_away` (with `MINECRAFTOSS_ROOT`: one of the 8 `ambient/weather/end_flash` files, infinite attenuation, full gain 5000 units away).
+- **Decisions:** the sound is placed once, when it starts (vanilla's `DirectionalSoundInstance` moves with the camera every tick). It lasts a few seconds, so only a fast turn shows the difference. A sound pending when the player leaves the End is dropped with the level's flash state.
+- **Test steps:** (as entry 24, a new world in the End)
+  1. Stand on the obsidian platform for a minute and a half. About 1.5 seconds after each purple glow starts, a deep rumble comes from one side, usually from above.
+  2. Turn on the spot while a rumble plays: it stays on the side it came from.
+- **Kit:** none.
