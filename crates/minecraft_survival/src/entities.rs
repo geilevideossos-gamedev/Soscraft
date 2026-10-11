@@ -127,6 +127,8 @@ pub struct Entities {
     pub difficulty: i32,
     spawn_mobs: bool,
     block_drops: bool,
+    mounts: Vec<u64>,
+    dismounts: Vec<(u64, Option<DVec3>)>,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -285,6 +287,8 @@ impl Entities {
             difficulty: 2,
             spawn_mobs: true,
             block_drops: true,
+            mounts: Vec::new(),
+            dismounts: Vec::new(),
         }
     }
 
@@ -631,6 +635,38 @@ impl Entities {
         self.item_use_waiting.is_some()
     }
 
+    pub fn take_mounts(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.mounts)
+    }
+
+    pub fn take_dismounts(&mut self) -> Vec<(u64, Option<DVec3>)> {
+        std::mem::take(&mut self.dismounts)
+    }
+
+    pub fn vehicle_uuid(&self, vehicle: u64) -> u128 {
+        self.world.uuid_of(vehicle)
+    }
+
+    pub fn ride_seat(&mut self, vehicle: u64) -> Option<DVec3> {
+        self.client.set_own_vehicle(Some(vehicle));
+        let mob = self.client.get(vehicle)?;
+        let partial = (self.clock / TICK_SECONDS).clamp(0.0, 1.0);
+        let pose = mob.pose(partial as f32);
+        let baby = self.world.striders().iter().any(|e| e.id == vehicle && e.strider.age.baby());
+        let attachment = minecraftoss_entities::strider::Strider::riding_attachment(baby);
+        let bob = crate::riding::bob(pose.walk_position, pose.walk_speed);
+        Some(crate::riding::seat(mob.old_position, mob.position, partial, attachment, bob))
+    }
+
+    pub fn dismount(&mut self) {
+        self.server.dismount(PLAYER);
+        self.client.set_own_vehicle(None);
+    }
+
+    pub fn leave_seat(&mut self) {
+        self.client.set_own_vehicle(None);
+    }
+
     pub fn leave(&mut self, inventory: &mut Inventory, selected: usize, feet: Option<[f64; 3]>) {
         let picked = std::mem::take(&mut self.server_picked);
         for rest in take_picked(inventory, selected, picked) {
@@ -642,6 +678,8 @@ impl Entities {
         self.pearl_landings.clear();
         self.player_potions.clear();
         self.player_pushes.clear();
+        self.mounts.clear();
+        self.dismounts.clear();
     }
 
     pub fn hatch_egg(&mut self, inventory: &Inventory, slot: usize, kind: String, position: [f64; 3], spends: bool) {
@@ -1007,6 +1045,10 @@ impl Entities {
             for result in &output.mob_results {
                 apply_mob_result(inventory, result);
                 self.broken_items.extend(result.broken.iter().cloned());
+                self.mounts.extend(result.mounted);
+            }
+            for (_, vehicle, spot) in output.dismounts.iter().filter(|(player, _, _)| *player == PLAYER) {
+                self.dismounts.push((*vehicle, spot.map(DVec3::from_array)));
             }
             // `ServerExplosion`'s sound: loud, pitched down.
             for blast in &output.explosions {
@@ -1188,8 +1230,9 @@ impl Entities {
         out
     }
 
-    pub fn shot_boxes(&self) -> Vec<(u64, [f64; 6])> {
+    pub fn shot_boxes(&self, riding: Option<u64>) -> Vec<(u64, [f64; 6])> {
         let mut out = self.boxes();
+        out.retain(|(key, _)| riding.is_none() || decode(*key).map(|hit| hit.id()) != riding);
         for e in self.world.fireballs().iter().filter(|e| e.fireball.alive && e.fireball.kind.redirectable()) {
             let (min, max) = minecraftoss_entities::fireball::pick_box(e.fireball.kind, e.fireball.position);
             out.push((FIREBALL_KEY | (e.id & ((1 << 56) - 1)), [min.x, min.y, min.z, max.x, max.y, max.z]));

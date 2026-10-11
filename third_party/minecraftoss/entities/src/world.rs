@@ -2377,6 +2377,7 @@ pub struct EntityWorld {
     /// 13 anger, 14 happiness).
     entity_events: Vec<(u64, u8)>,
     passengers: std::collections::BTreeMap<u64, Vec<Rider>>,
+    player_dismounts: Vec<(u64, u64)>,
 }
 
 impl Default for EntityWorld {
@@ -2450,6 +2451,7 @@ impl Default for EntityWorld {
             player_main_hands: HashMap::new(),
             entity_events: Vec::new(),
             passengers: std::collections::BTreeMap::new(),
+            player_dismounts: Vec::new(),
         }
     }
 }
@@ -4702,6 +4704,7 @@ impl EntityWorld {
             player_main_hands: self.player_main_hands.clone(),
             entity_events: Vec::new(),
             passengers: self.passengers.clone(),
+            player_dismounts: Vec::new(),
         };
         let kept: HashSet<u64> = copy.positions().map(|(id, _)| id).collect();
         copy.order = self.order.iter().copied().filter(|key| kept.contains(&key.id())).collect();

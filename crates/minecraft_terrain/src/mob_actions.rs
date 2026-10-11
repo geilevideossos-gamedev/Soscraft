@@ -36,6 +36,7 @@ pub struct MobOutcome {
     /// The acting player's inventory changed.
     pub inventory_changed: bool,
     pub broken: Vec<String>,
+    pub mount: Option<u64>,
 }
 
 impl MobOutcome {
@@ -192,7 +193,15 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             age_lock_sound(&mut outcome, animal_lock(&events), position);
         }
         MobHit::Strider(id) => {
+            let food = held.as_deref().is_some_and(|item| recipes.item_in_tag(minecraftoss_entities::strider::FOOD_TAG, item));
+            let sneaking = world.player_controls(actor.player).is_some_and(|controls| controls.sneaking);
+            let empty = world.passengers_of(id).is_empty();
             let Some(entity) = world.strider_mut(id) else { return outcome };
+            if !food && entity.strider.saddled && entity.strider.health > 0.0 && empty && !sneaking {
+                outcome.handled = true;
+                outcome.mount = Some(id);
+                return outcome;
+            }
             let position = entity.position();
             let (result, events) = entity.strider.interact_food(actor.inventory, selected, infinite, |item| recipes.item_in_tag(minecraftoss_entities::strider::FOOD_TAG, item));
             if result != InteractionResult::Pass {
@@ -427,6 +436,30 @@ mod tests {
     }
 
     #[test]
+    fn right_click_mounts_a_saddled_strider_unless_crouching_or_holding_fungus() {
+        let mut world = EntityWorld::default();
+        let saddled = strider(&mut world, 0.5, false, true);
+        let bare = strider(&mut world, 4.5, false, false);
+        let (outcome, inventory) = use_on(&mut world, MobHit::Strider(saddled), "minecraft:warped_fungus_on_a_stick");
+        assert!(outcome.handled && outcome.sounds.is_empty());
+        assert_eq!(outcome.mount, Some(saddled));
+        assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(4), "mounting uses nothing up");
+        assert!(would_interact(&world, MobHit::Strider(saddled), &holding(None), 0, false, 0), "an empty hand mounts too");
+        let (outcome, _) = use_on(&mut world, MobHit::Strider(saddled), "minecraft:warped_fungus");
+        assert_eq!(outcome.mount, None, "fungus feeds instead");
+        assert!(outcome.handled);
+        let (outcome, _) = use_on(&mut world, MobHit::Strider(bare), "minecraft:warped_fungus_on_a_stick");
+        assert!(!outcome.handled && outcome.mount.is_none(), "no saddle, no ride");
+        world.set_player_controls(&[minecraftoss_entities::controls::PlayerControls { id: 0, sneaking: true, ..Default::default() }]);
+        let (outcome, _) = use_on(&mut world, MobHit::Strider(saddled), "minecraft:warped_fungus_on_a_stick");
+        assert!(!outcome.handled && outcome.mount.is_none(), "crouching never mounts");
+        world.set_player_controls(&[minecraftoss_entities::controls::PlayerControls { id: 0, ..Default::default() }]);
+        assert!(world.force_riding(minecraftoss_entities::world::Rider::Player(7), saddled));
+        let (outcome, _) = use_on(&mut world, MobHit::Strider(saddled), "minecraft:warped_fungus_on_a_stick");
+        assert!(outcome.mount.is_none(), "one rider at a time");
+    }
+
+    #[test]
     fn two_fed_striders_make_a_baby() {
         let mut world = EntityWorld::default();
         let first = strider(&mut world, 0.5, false, false);
@@ -455,14 +488,16 @@ mod tests {
         assert!(outcome.handled && world.strider_mut(adult).unwrap().strider.saddled);
         assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(3));
         assert_eq!(outcome.sounds.iter().map(|s| s.event.as_str()).collect::<Vec<_>>(), ["entity.strider.saddle"]);
-        let (outcome, _) = use_on(&mut world, MobHit::Strider(adult), "minecraft:saddle");
-        assert!(!outcome.handled, "one saddle is enough");
+        let (outcome, inventory) = use_on(&mut world, MobHit::Strider(adult), "minecraft:saddle");
+        assert_eq!(outcome.mount, Some(adult), "a second saddle rides it instead");
+        assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(4));
         let (outcome, inventory) = use_on(&mut world, MobHit::Strider(young), "minecraft:saddle");
         assert!(!outcome.handled && !world.strider_mut(young).unwrap().strider.saddled);
         assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(4));
         assert!(would_interact(&world, MobHit::Strider(adult), &holding(Some("minecraft:warped_fungus")), 0, false, 0));
         assert!(!would_interact(&world, MobHit::Strider(young), &holding(Some("minecraft:saddle")), 0, false, 0));
-        assert!(!would_interact(&world, MobHit::Strider(adult), &holding(Some("minecraft:carrot")), 0, false, 0));
+        assert!(would_interact(&world, MobHit::Strider(adult), &holding(Some("minecraft:carrot")), 0, false, 0), "a saddled adult is ridden with any other item");
+        assert!(!would_interact(&world, MobHit::Strider(young), &holding(Some("minecraft:carrot")), 0, false, 0));
     }
 
     #[test]

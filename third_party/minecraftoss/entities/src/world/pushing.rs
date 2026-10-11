@@ -291,7 +291,7 @@ impl EntityWorld {
             let (min, max) = (player.position - DVec3::new(half, 0.0, half), player.position + DVec3::new(half, f64::from(player.height), half));
             for (other, other_position) in self.pushable_around(SectionEntry::Player(player.id), min, max, ticks) {
                 let SectionEntry::Mob(key) = other else { continue };
-                if self.sleeping(key) {
+                if self.sleeping(key) || self.vehicle_of(Rider::Player(player.id)) == Some(key.id()) {
                     continue;
                 }
                 if let Some((xa, za)) = push_step(player.position, other_position) {

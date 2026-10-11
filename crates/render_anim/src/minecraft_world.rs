@@ -629,6 +629,7 @@ fn update(
         }
         *switch_screen = Some(switch.reason);
         if let Some(level) = levels.get_mut(&switch.from) {
+            crate::minecraft_riding::dismount(&mut player.riding, level.entities.as_mut(), &mut authority.0, local.0);
             leave_level(level, player, &mut ui, inventory_ui);
         }
         sim::voxel::switch_level(origin);
@@ -734,7 +735,7 @@ fn update(
         puppet.active = false;
         return;
     };
-    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, arrived, ender, respawn, .. } = player;
+    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, arrived, ender, respawn, riding, .. } = player;
     let minecraft_survival::level::Level { entities, containers, terrain, openers, dimension, .. } = level;
     minecraft_terrain::cow_render::set_nether_entity_lighting(terrain.rules.nether_cardinal_light);
     if !delivered.is_empty() {
@@ -836,7 +837,7 @@ fn update(
     if water.wet() {
         steps.air_peak = None;
     }
-    if let Some(last) = steps.last.filter(|_| alive && !player_mode.noclip()) {
+    if let Some(last) = steps.last.filter(|_| crate::minecraft_riding::counts_steps(alive, player_mode.noclip(), riding.is_some())) {
         let climbing = sim::voxel::climb(ps.origin).on;
         let horizontal = ((feet[0] - last[0]).hypot(feet[2] - last[2]).hypot(if climbing { feet[1] - last[1] } else { 0.0 }) * 0.6) as f32;
         let block_at = |dy: f64| {
@@ -1840,7 +1841,10 @@ fn update(
         for item in std::mem::take(&mut entities.broken_items) {
             mining.break_burst(&world.packs, &world.atlas, glam::DVec3::from_array(eye).as_vec3(), mc_yaw, ps.viewangles[0], &item);
         }
+        let present = alive && player_mode.mode != minecraftoss_player::GameMode::Spectator;
+        crate::minecraft_riding::step(riding, steps, entities, &mut authority.0, local.0, origin, present);
         for to in teleports.iter().filter(|(uuid, _)| alive && uuid == local_uuid).map(|(_, to)| to) {
+            crate::minecraft_riding::dismount(riding, Some(&mut *entities), &mut authority.0, local.0);
             authority.0.teleport(local.0, sim::voxel::to_map(origin, *to));
             steps.air_peak = None;
         }
@@ -1848,6 +1852,7 @@ fn update(
             if !alive {
                 continue;
             }
+            crate::minecraft_riding::dismount(riding, Some(&mut *entities), &mut authority.0, local.0);
             authority.0.teleport(local.0, sim::voxel::to_map(origin, landing.to_array()));
             survival.hurt(minecraft_terrain::thrown::PEARL_DAMAGE, minecraftoss_player::survival::Armor::default(), None, minecraft_survival::death::DamageCause::EnderPearl);
             steps.air_peak = None;
@@ -2165,7 +2170,7 @@ fn update(
             .to_cols_array();
         }
 
-        sim::voxel::set_mob_boxes(entities.shot_boxes());
+        sim::voxel::set_mob_boxes(entities.shot_boxes(riding.map(|ride| ride.vehicle)));
         entities.tick_scene(&terrain.scene, mob_ticks);
         let sky_darken = (15.0 - terrain.environment.sky_light_level()).clamp(0.0, 15.0) as u8;
         let campfire_items: Vec<_> = containers

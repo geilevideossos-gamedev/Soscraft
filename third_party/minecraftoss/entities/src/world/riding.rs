@@ -439,13 +439,40 @@ impl EntityWorld {
             return;
         }
         let alive: HashSet<u64> = self.positions().map(|(id, _)| id).collect();
+        let dismounts = &mut self.player_dismounts;
         self.passengers.retain(|vehicle, riders| {
             riders.retain(|rider| match rider {
                 Rider::Mob(id) => alive.contains(id),
                 Rider::Player(_) => true,
             });
+            if !alive.contains(vehicle) {
+                for rider in riders.iter() {
+                    if let Rider::Player(player) = rider {
+                        dismounts.push((*player, *vehicle));
+                    }
+                }
+            }
             alive.contains(vehicle) && !riders.is_empty()
         });
+    }
+
+    pub fn take_player_dismounts(&mut self) -> Vec<(u64, u64)> {
+        std::mem::take(&mut self.player_dismounts)
+    }
+
+    pub fn dismount_player(
+        &mut self,
+        player: u64,
+        yaw: f32,
+        world: &impl World,
+    ) -> Option<(u64, DVec3)> {
+        let vehicle = self.vehicle_of(Rider::Player(player))?;
+        let spot = self.stop_riding(Rider::Player(player), yaw, world)?;
+        Some((vehicle, spot))
+    }
+
+    pub fn drop_player(&mut self, player: u64) -> Option<u64> {
+        self.unlink(Rider::Player(player))
     }
 }
 

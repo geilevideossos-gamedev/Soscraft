@@ -414,6 +414,7 @@ pub struct ClientMob {
     max_head_y_rot: f32,
     seen: bool,
     vehicle: Option<(u64, f64)>,
+    direct: Option<DVec3>,
 }
 
 impl ClientMob {
@@ -469,6 +470,7 @@ impl ClientMob {
             max_head_y_rot: mob.max_head_y_rot,
             seen: true,
             vehicle: mob.vehicle,
+            direct: None,
         }
     }
 
@@ -648,6 +650,9 @@ impl ClientMob {
         self.y_rot_o = self.y_rot;
         self.x_rot_o = self.x_rot;
         self.interpolate();
+        if let Some(at) = self.direct {
+            self.position = at;
+        }
         self.tick_count += 1;
         // LivingEntity.baseTick: the swing runs on, the hurt flash wears
         // off, and a dead mob ticks its death (`tickDeath`).
@@ -891,6 +896,7 @@ impl MobPose {
 #[derive(Default)]
 pub struct ClientMobs {
     mobs: HashMap<u64, ClientMob>,
+    own_vehicle: Option<u64>,
 }
 
 impl ClientMobs {
@@ -913,6 +919,7 @@ impl ClientMobs {
             mob.resting = server.resting;
             mob.dead = server.dead;
             mob.vehicle = server.vehicle;
+            mob.direct = (self.own_vehicle == Some(server.id)).then_some(server.position);
             if server.hurts != mob.hurts_seen {
                 mob.hurts_seen = server.hurts;
                 mob.damage_event();
@@ -939,6 +946,16 @@ impl ClientMobs {
         for server in batch {
             self.mobs.entry(server.id).or_insert_with(|| ClientMob::spawn(server));
         }
+    }
+
+    pub fn set_own_vehicle(&mut self, vehicle: Option<u64>) {
+        if self.own_vehicle == vehicle {
+            return;
+        }
+        if let Some(mob) = self.own_vehicle.and_then(|old| self.mobs.get_mut(&old)) {
+            mob.direct = None;
+        }
+        self.own_vehicle = vehicle;
     }
 
     /// Forget every mob (a new world).
@@ -1071,6 +1088,28 @@ mod tests {
         assert_eq!((pose.walk_position, pose.walk_speed), (0.0, 0.0));
         assert!(pose.head_yaw.abs() <= 85.0, "{}", pose.head_yaw);
         assert!(!mobs.pose(1, 0.5).unwrap().riding);
+    }
+
+    #[test]
+    fn the_players_own_vehicle_moves_with_each_server_tick() {
+        let mut mobs = ClientMobs::default();
+        mobs.set_own_vehicle(Some(1));
+        let mut x = 0.0;
+        mobs.receive(vec![mob(1, x, -90.0), mob(2, x, -90.0)]);
+        mobs.tick();
+        for _ in 0..10 {
+            x += 0.2;
+            mobs.receive(vec![mob(1, x, -90.0), mob(2, x, -90.0)]);
+            mobs.tick();
+            let own = mobs.get(1).unwrap();
+            assert_eq!(own.position.x, x);
+            assert!((own.position.x - own.old_position.x - 0.2).abs() < 1e-9);
+        }
+        assert!(mobs.get(2).unwrap().position.x < x - 0.1, "other mobs keep their interpolation");
+        mobs.set_own_vehicle(None);
+        assert!(mobs.get(1).unwrap().direct.is_none());
+        mobs.receive(vec![mob(1, x + 0.2, -90.0)]);
+        assert!(mobs.get(1).unwrap().direct.is_none());
     }
 }
 

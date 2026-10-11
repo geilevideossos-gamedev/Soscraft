@@ -18,6 +18,7 @@ pub mod portal;
 pub mod portal_forcer;
 pub mod respawn;
 pub mod respawn_block;
+pub mod riding;
 pub mod save;
 pub mod server;
 pub mod survival;

@@ -42,6 +42,7 @@ pub struct Player {
     pub remote: bool,
     pub held: Option<Switch>,
     pub portal: crate::portal::Portal,
+    pub riding: Option<crate::riding::Riding>,
 }
 
 #[derive(Default)]
@@ -105,6 +106,7 @@ impl Player {
             remote: false,
             held: None,
             portal: crate::portal::Portal::default(),
+            riding: None,
         }
     }
 

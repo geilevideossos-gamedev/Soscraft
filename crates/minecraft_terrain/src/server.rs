@@ -124,6 +124,7 @@ pub struct MobResult {
     /// A trading screen the action opened (`openTradingScreen`).
     pub merchant: Option<MerchantView>,
     pub broken: Vec<String>,
+    pub mounted: Option<u64>,
 }
 
 /// A player's trading screen as the client shows it: the villager's
@@ -387,7 +388,35 @@ impl ServerSim {
             .map(|(slot, (now, _))| (slot, now.clone()))
             .collect();
         self.spawn_trade_experience();
-        MobResult { sounds: outcome.sounds, slots, merchant: self.merchant_view(player), broken: outcome.broken }
+        let mounted = outcome.mount.filter(|&vehicle| self.mount(player, vehicle));
+        MobResult { sounds: outcome.sounds, slots, merchant: self.merchant_view(player), broken: outcome.broken, mounted }
+    }
+
+    fn mount(&mut self, player: u64, vehicle: u64) -> bool {
+        let Self { level, states, mobs, mob_tables, .. } = self;
+        let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
+        mobs.start_riding(minecraftoss_entities::world::Rider::Player(player), vehicle, &world)
+    }
+
+    pub fn ride_tick(&mut self, controls: &[minecraftoss_entities::controls::PlayerControls]) -> Vec<(u64, u64, Option<[f64; 3]>)> {
+        let Self { level, states, mobs, mob_tables, .. } = self;
+        let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
+        controls
+            .iter()
+            .filter(|controls| controls.sneaking)
+            .filter_map(|controls| {
+                let (vehicle, spot) = mobs.dismount_player(controls.id, controls.yaw, &world)?;
+                Some((controls.id, vehicle, Some(spot.to_array())))
+            })
+            .collect()
+    }
+
+    pub fn take_vehicle_losses(&mut self) -> Vec<(u64, u64, Option<[f64; 3]>)> {
+        self.mobs.take_player_dismounts().into_iter().map(|(player, vehicle)| (player, vehicle, None)).collect()
+    }
+
+    pub fn dismount(&mut self, player: u64) {
+        self.mobs.drop_player(player);
     }
 
     pub fn mob_blast(&mut self, hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64>, slow_ticks: i32) {
@@ -2236,6 +2265,7 @@ pub enum Command {
     WeatherData(crate::level_storage::WeatherData),
     GameRules(Box<crate::game_rules::GameRules>),
     PlayerUuid { player: u64, uuid: u128 },
+    Dismount { player: u64 },
     Job(Job),
     EndHit { target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage },
 }
@@ -2397,6 +2427,7 @@ pub struct Output {
     /// Positions where bone meal was used.
     pub bone_meal_used: Vec<BlockPos>,
     pub item_uses: Vec<bool>,
+    pub dismounts: Vec<(u64, u64, Option<[f64; 3]>)>,
     pub pearl_teleports: Vec<(u64, [f64; 3])>,
     pub thrown_hits: Vec<crate::thrown::ThrownHit>,
     pub weather: Option<WeatherView>,
@@ -2572,6 +2603,10 @@ impl ServerHandle {
         self.send(Command::PlayerUuid { player, uuid });
     }
 
+    pub fn dismount(&mut self, player: u64) {
+        self.send(Command::Dismount { player });
+    }
+
     pub fn set_weather_data(&mut self, data: crate::level_storage::WeatherData) {
         self.send(Command::WeatherData(data));
     }
@@ -2743,6 +2778,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.set_weather_for(weather, duration);
                 }
                 Command::PlayerUuid { player, uuid } => sim.set_player_uuid(player, uuid),
+                Command::Dismount { player } => sim.dismount(player),
                 Command::WeatherData(data) => sim.set_weather_data(&data),
                 Command::GameRules(rules) => sim.apply_game_rules(&rules),
                 Command::Job(job) => out.jobs.push(job(&mut sim)),
@@ -2786,7 +2822,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     let held = input.pickup.as_ref().and_then(|(_, inventory, selected)| inventory.slots.get(*selected).and_then(Option::as_ref).map(|s| s.id.clone()));
                     sim.mobs.set_player_main_hand(0, held.as_deref());
                     sim.mobs.set_player_controls(&input.controls);
+                    out.dismounts.extend(sim.ride_tick(&input.controls));
                     sim.tick_mobs(&input.mob_players, input.bright_outside);
+                    out.dismounts.extend(sim.take_vehicle_losses());
                     let bodies: Vec<_> = input.mob_players.iter().map(crate::thrown::PlayerBody::of).collect();
                     sim.tick_clouds(&bodies);
                     sim.tick_thrown(&bodies);
@@ -6754,6 +6792,58 @@ mod tests {
         assert!(!spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:magma_cube", [4.5, 101.0, 4.5]), "other mobs keep the liquid test");
         context.obstacles.push([4.0, 101.0, 4.0, 5.0, 103.0, 5.0]);
         assert!(!spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:strider", [4.5, 101.0, 4.5]), "a mob in the way still blocks it");
+    }
+
+    fn ridden_strider(fill: &str, feet: f64) -> Option<(ServerSim, u64)> {
+        let (mut server, mut map) = nether_server(0)?;
+        server.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        let floor = if fill == "minecraft:lava" { Block::new(fill).with("level", "0") } else { Block::new(fill) };
+        let air = Block::new("minecraft:air");
+        for x in 0..16 {
+            for z in 0..16 {
+                for y in 98..=106 {
+                    let block = if y <= 100 { &floor } else { &air };
+                    server.player_edit_block((x, y, z), Some(block), PlayerEdit::Place);
+                }
+            }
+        }
+        let mut strider = minecraftoss_entities::strider::Strider::new(glam::DVec3::new(8.5, feet, 8.5));
+        strider.saddled = true;
+        let id = server.mobs.spawn_strider(strider, true);
+        assert!(server.mount(0, id));
+        Some((server, id))
+    }
+
+    fn crouch(yaw: f32) -> Vec<minecraftoss_entities::controls::PlayerControls> {
+        vec![minecraftoss_entities::controls::PlayerControls { id: 0, yaw, sneaking: true, ..Default::default() }]
+    }
+
+    #[test]
+    fn crouching_dismounts_forward_onto_land() {
+        let Some((mut server, id)) = ridden_strider("minecraft:netherrack", 101.0) else { return };
+        let rider = minecraftoss_entities::world::Rider::Player(0);
+        assert_eq!(server.mobs.vehicle_of(rider), Some(id));
+        assert!(server.ride_tick(&[minecraftoss_entities::controls::PlayerControls { id: 0, ..Default::default() }]).is_empty(), "standing up keeps the seat");
+        assert_eq!(server.ride_tick(&crouch(0.0)), vec![(0, id, Some([8.5, 101.0, 9.5]))], "one block towards +Z, where the player looks");
+        assert_eq!(server.mobs.vehicle_of(rider), None);
+        assert!(server.ride_tick(&crouch(0.0)).is_empty());
+        assert!(server.mount(0, id));
+        assert_eq!(server.ride_tick(&crouch(90.0)), vec![(0, id, Some([7.5, 101.0, 8.5]))], "yaw 90 looks towards -X");
+    }
+
+    #[test]
+    fn dismounting_over_open_lava_lands_on_top_of_the_strider() {
+        let Some((mut server, id)) = ridden_strider("minecraft:lava", 100.5) else { return };
+        assert_eq!(server.ride_tick(&crouch(0.0)), vec![(0, id, Some([8.5, 100.5 + f64::from(1.7_f32), 8.5]))]);
+    }
+
+    #[test]
+    fn a_removed_strider_lets_its_player_go_where_it_sits() {
+        let Some((mut server, id)) = ridden_strider("minecraft:netherrack", 101.0) else { return };
+        server.mobs.remove_where(|_| true);
+        assert_eq!(server.take_vehicle_losses(), vec![(0, id, None)]);
+        assert!(server.take_vehicle_losses().is_empty());
+        assert_eq!(server.mobs.vehicle_of(minecraftoss_entities::world::Rider::Player(0)), None);
     }
 
     fn summoned_striders(server: &mut ServerSim, count: usize) -> Vec<minecraftoss_core::nbt::Tag> {

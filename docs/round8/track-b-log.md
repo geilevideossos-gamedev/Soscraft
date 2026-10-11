@@ -204,3 +204,37 @@ After 642029f2.
 - **Tests:** `movement_iw4` `ride`: `crouch_while_riding_sets_the_crouch_flag_only`. `sim` `voxel` (the full pmove with its real context): `a_riding_player_turns_but_never_moves_jumps_or_sprints`, `the_next_pmove_after_riding_is_normal`. `sim` `frame`: `ride_moves_without_the_teleport_bit_and_clears_with_none`, and the bit test in `an_elytra_lets_a_player_glide_and_a_rocket_lights_only_while_gliding` now covers `MC_RIDING`.
 - **Decisions:** the two full-pmove tests sit in `sim`, which builds the real pmove context (`step::pmove_context`) and a voxel world; `movement_iw4` keeps the unit test of the seat itself.
 - **Test steps:** none in game (the pin has no caller yet); entry 7b's steps cover it.
+
+## Group b3-striders-3
+
+### 7b. Minecraft players ride saddled striders
+
+After a0bc99d1.
+
+- **Changed:**
+  - `minecraft_terrain/src/mob_actions.rs`: the strider arm mounts first (`Strider.mobInteract`): held item not `#strider_food`, saddled, alive, nobody on it and the player not crouching (its `PlayerControls.sneaking`). `MobOutcome.mount` names the strider; the click is consumed and nothing is used up.
+  - `minecraft_terrain/src/server.rs`: `ServerSim::mob_action` seats the player with `start_riding(Rider::Player(id), …)` (eyes not in lava, one passenger) and answers `MobResult.mounted`. Each tick, after the controls arrive, a riding player who crouches is let off (`Player.rideTick`) at the strider's dismount spot (`ride_tick`); a strider that is removed (dead for 20 ticks, despawned, unloaded) lets its player go where it sat (`take_vehicle_losses`). Both arrive as `Output.dismounts` (player, vehicle, spot or none). `Command::Dismount { player }` unseats a player without an answer (forced dismounts).
+  - Vendored `entities`: `prune_riding` keeps the players whose vehicle went (`take_player_dismounts`), `dismount_player` and `drop_player`; a player never pushes its own vehicle (`push_from_players`; the rider's box overlaps the strider's).
+  - `minecraft_terrain/src/client_mobs.rs`: `ClientMobs::set_own_vehicle`: the player's own vehicle takes each server tick's position directly instead of the three-step interpolation, so the drawn strider and the seat move together, one tick behind the server like vanilla's own-vehicle view.
+  - New `minecraft_survival/src/riding.rs`: `Riding { vehicle, uuid }` (`Player.riding`), `seat` (the vehicle's feet lerped between its last two ticks, plus 1.7 - 0.6) and `bob` (`Strider.getPassengerAttachmentPoint`'s client bob, `0.12 * cos(walkPos * 1.5) * 2 * min(0.25, walkSpeed)`). `Entities::ride_seat`, `take_mounts`, `take_dismounts`, `dismount`; `shot_boxes` leaves out the rider's own vehicle (`Projectile.canHitEntity`).
+  - New `render_anim/src/minecraft_riding.rs`: each frame it takes mounts and dismounts (a dismount teleports the MW2 player to the spot and clears `MC_RIDING`), unseats a dead or spectating player, and pins the MW2 player to the seat with 7a's `SimWorld::ride`. `/tp`, ender pearls and leaving the level unseat first. A rider counts no steps and no fall.
+- **Tests:** `mob_actions`: `right_click_mounts_a_saddled_strider_unless_crouching_or_holding_fungus`. `server` (with the game data): `crouching_dismounts_forward_onto_land`, `dismounting_over_open_lava_lands_on_top_of_the_strider`, `a_removed_strider_lets_its_player_go_where_it_sits`. `client_mobs`: `the_players_own_vehicle_moves_with_each_server_tick`. `riding` (survival): `the_seat_is_1_1_above_the_strider_and_bobs_with_its_stride`, `the_seat_lerps_between_the_last_two_server_ticks`. `minecraft_riding` (render_anim): `a_rider_counts_no_steps_and_no_fall`. Entry 3's `a_saddle_goes_on_an_adult_but_not_on_a_baby` now expects a second saddle, or any other item but warped fungus, to ride the saddled adult, as vanilla does.
+- **Decisions:**
+  - The seat follows the client's copy of the strider, not a separate track of server positions: the own vehicle is taken off interpolation in `ClientMobs` instead, so the strider drawn under the player and the player's seat can't drift apart.
+  - A strider whose vehicle was removed gives no dismount spot: the player stays where it sat and falls from there, as `dismountVehicle` leaves a rider of a removed vehicle in place.
+  - Forced dismounts (death, spectator mode, `/tp`, pearls, a level switch) unseat on the host at once and tell the server without an answer, so a late answer can't move the player after a teleport. A dismount answer for a vehicle the player no longer rides is ignored.
+  - MW2 bullets and blasts skip the rider's own strider. The MW2 knife uses the same boxes, so it skips it too; the Minecraft hand still reaches it.
+  - The player is the server's player 0 (`PLAYER`) as everywhere in `Entities`; every new message carries the player id for track E.
+- **Test steps (Nether, survival; `IW4L_MINECRAFT_DIMENSION=the_nether`):** stand on netherrack by the lava sea.
+  1. Use a strider egg on the lava and a saddle on the strider. Right-click it with an empty hand (or the stick): you sit on it, your eyes about 2.7 blocks above its feet, and the view bobs gently as it walks (**5**).
+  2. Without the stick it wanders on its own and carries you; you can look all around and still shoot and use items.
+  3. Right-click a saddled strider with warped fungus: it eats instead. Crouch and right-click: nothing.
+  4. Crouch while riding next to land: you step off forward onto the block you look at (**8**). Ride out over open lava and crouch: you land on top of the strider, never in the lava.
+  5. Ride and shoot straight down with an MW2 gun: your strider takes no hit; another strider does.
+  6. Ride, then `/tp ~ ~5 ~`: you leave the strider and stand where the command sent you. Ride again and throw an ender pearl: you land at the pearl, off the strider.
+  7. Ride a strider and kill it with the sword from its back: you stay seated during its death, then drop down where you sat, without fall damage from the ride.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*8,minecraft:saddle,minecraft:saddle,minecraft:saddle,minecraft:warped_fungus*16,minecraft:warped_fungus_on_a_stick,minecraft:diamond_sword,minecraft:ender_pearl*4,minecraft:netherrack*64
+```
