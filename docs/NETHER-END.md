@@ -246,8 +246,8 @@ How natural spawning treats them here:
 | Wither skeleton | none. `SkeletonKind` has no variant (`third_party/minecraftoss/entities/src/skeleton.rs:9-17`), and `skeleton_goals` always adds the bow (`third_party/minecraftoss/entities/src/monster_ai.rs:1096-1106`) | `crates/minecraft_terrain/src/skeleton_render.rs` can draw it at scale 1.2 | missing |
 | Piglin | none. The only brain framework is `third_party/minecraftoss/entities/src/villager_brain/` | none. Only the head block model exists (`crates/minecraft_terrain/src/special_models.rs:827`) | partial. Generated in bastions (`third_party/minecraftoss/generator/src/feature/entities.rs:223-257`), then dormant. |
 | Piglin brute | none | none | missing. Not in `MobCategory::of_type` (`third_party/minecraftoss/world/src/natural_spawner/spawning.rs:97-111`). |
-| Hoglin | none | none | missing |
-| Zoglin | none | none | missing. Not in `MobCategory::of_type`. |
+| Hoglin | `third_party/minecraftoss/entities/src/hoglin.rs`, `hoglin_brain.rs` and `world/hoglins.rs`, simulated (`crates/minecraft_terrain/src/server_mobs.rs`), spawning by `Rules::Hoglin` (`third_party/minecraftoss/world/src/natural_spawner.rs`) | `crates/minecraft_terrain/src/hoglin_render.rs` | present (round 8, track B): brain, throw, repellents, breeding, zombification. |
+| Zoglin | the hoglin's files, the zoglin activities in `hoglin_brain.rs` | `crates/minecraft_terrain/src/hoglin_render.rs` | present (round 8, track B). |
 | Shulker + bullet | none. No levitation effect (`third_party/minecraftoss/entities/src/effects.rs:17-27`, `third_party/minecraftoss/player/src/survival.rs:36-48`) | none. The shulker box lid and base exist (`crates/minecraft_terrain/src/special_models.rs:784`) | partial. Generated in end cities, dormant, and deleted by the despawn bug above. |
 | Endermite | none. The enderman's endermite target only rolls (`third_party/minecraftoss/entities/src/monster_ai.rs:1980-1990`) | none | missing |
 | End crystal | none | none | partial. One is generated on each spike with no beam target (`third_party/minecraftoss/generator/src/feature/kinds/the_end.rs:120-128`), then dormant. |

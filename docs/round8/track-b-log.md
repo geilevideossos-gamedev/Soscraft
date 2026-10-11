@@ -500,3 +500,16 @@ After d5c603a5.
 ```
 IW4L_MINECRAFT_KIT=minecraft:hoglin_spawn_egg*16,minecraft:zoglin_spawn_egg*4,minecraft:cow_spawn_egg*4,minecraft:creeper_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:lava_bucket,minecraft:diamond_sword,minecraft:bow,minecraft:arrow*32,minecraft:shield,minecraft:diamond_chestplate,minecraft:cooked_beef*32,minecraft:netherrack*64,minecraft:cobblestone*64
 ```
+
+### b2.9. Docs: Minecraft hoglins and zoglins
+
+After 2742b33d.
+
+- **Changed:** `docs/MINECRAFT-SURVIVAL.md`: hoglin breeding in the right-click list; a "Hoglins and zoglins" part under the Nether (the brain, the charge and throw, retaliation, repellents, breeding, zombification, the zoglin, drops and spawning, the golem's throw on players); hoglins and zoglins leave N6 and the dormant list; their limitations (leads, eggs on adults, portals, Fire Aspect, fireballs, piglins). `docs/NETHER-END.md`: the hoglin and zoglin rows are present.
+- **Decision:** as in entry 10, the vendored MinecraftOSS count in CLAUDE.md is left for the round's hand-over.
+- **Test steps:** none (docs only).
+- **Combined kit for b2.4 to b2.8** (24 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:hoglin_spawn_egg*16,minecraft:zoglin_spawn_egg*4,minecraft:crimson_fungus*64,minecraft:warped_fungus*16,minecraft:crimson_nylium*16,minecraft:respawn_anchor*2,minecraft:diamond_sword,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:netherite_chestplate,minecraft:cow_spawn_egg*4,minecraft:creeper_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:lava_bucket,minecraft:bow,minecraft:arrow*32,minecraft:cooked_beef*32,minecraft:netherrack*64,minecraft:cobblestone*64
+```
