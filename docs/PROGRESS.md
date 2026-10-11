@@ -27,8 +27,8 @@ Briefs: `docs/round8/<item>.md`, the multiplayer design `docs/MULTIPLAYER.md`.
 | A. Fixes from the test (gateway, eye of ender, mining speed, spawner mob, overload and /tick) | track-a (`C:\Dev\mc-wt\track-a`, `D:\iw4l-wt\track-a`) | running from 0bcbfb17 (order a5, a2, a3, a4, a1) |
 | B. Nether and overworld leftovers (piglins, brutes, bartering, hoglins, striders, sleeping) | track-b | running from 0bcbfb17 (order b3, b2, b1, b4) |
 | C. End and visual leftovers (shulkers, end cities, item frames, End sky, dragon effects, elytra body, limitations) | track-c | running from 0bcbfb17 (order c1 G1-3, c5 G1-4, c1 G4-8, c2, c3, c5 G5-11, c4) |
-| D. Skating in Minecraft worlds | track-d | waits for disk space (starts when a track merges) |
-| E. Multiplayer, first playable | track-e | M1 (E1-E8) done 42262ec2..79ba1549 (review fixed 2 defects, clippy clean; owner steps `docs/round8/e-m1-tests.md`); M2 part 1 (E9 da5b8685, E10a cb4251e9, E10b 4a6c0dc7) done, verified (owner steps `docs/round8/e-m2-tests.md`); the review of all of M2 runs with part 2; E11-E15 run after track A merges and minecraft-survival is merged into track-e (E11 needs A's tick loop) |
+| D. Skating in Minecraft worlds | track-d (`C:\Dev\mc-wt	rack-d`, `D:\iw4l-wt	rack-d`) | running from 080b5c1e (groups 1-2, 3a-3b, 4, 5a-5b, 6-7); guns while skating: put away, as the brief decides |
+| E. Multiplayer, first playable | track-e | M1 (E1-E8) done 42262ec2..79ba1549 (review fixed 2 defects, clippy clean; owner steps `docs/round8/e-m1-tests.md`); M2 part 1 (E9 da5b8685, E10a cb4251e9, E10b 4a6c0dc7) done, verified (owner steps `docs/round8/e-m2-tests.md`); M2 part 2 running: the merge of minecraft-survival (track A) into track-e had 17 conflict hunks in 6 files, resolved by the run's first group; then E11-E15 and the review of all of M2 from 79ba1549 |
 
 ## Release builds
 | # | When | Commit | State |
@@ -44,6 +44,7 @@ Briefs: `docs/round8/<item>.md`, the multiplayer design `docs/MULTIPLAYER.md`.
 - The multiplayer design names the branch `track-e8`; it is `track-e`.
 
 ## Log
+- 2026-10-12: track A merged (080b5c1e); track D and M2 part 2 started.
 - 2026-10-11: M2 part 1 done. D: fell to 14 GB free; `D:\iw4l-target\release` deleted (the first release build of the round starts clean, about 21 min).
 - 2026-10-11: track E milestone M1 finished; M2 part 1 started.
 - 2026-10-11: briefs and the multiplayer design committed (fe3e2ba9); tracks A, B, C and E (M1) started.
