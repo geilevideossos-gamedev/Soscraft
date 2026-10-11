@@ -352,7 +352,7 @@ Commit: a2a714cb
 
 ### E8. Chat and commands work for every player
 
-Commit: see `git log` ("Chat and commands work for every player")
+Commit: ceaf6959
 
 - **Changed:**
   - `crates/minecraft_commands`:
@@ -416,4 +416,18 @@ Commit: see `git log` ("Chat and commands work for every player")
     - `/kill`, `/gamemode`, `/effect` and `/give` on a friend change the friend's server-side player, but nothing shows on the friend until the per-player step and `PlayerView` (M2).
     - Death lines are still host-only (13.2).
 - **Test steps:** the owner's M1 test is `docs/round8/e-m1-tests.md`.
+- **Kit:** none needed.
+
+### M1 owner test
+
+Commit: see `git log` ("The owner's two-window test for multiplayer M1")
+
+- **Changed:** new `docs/round8/e-m1-tests.md`. It holds:
+  - the owner's numbered M1 test with two windows on one PC: the builds, the `mp-local.ps1` call, which window does what, and the screenshots to send;
+  - the steps for a friend on their own PC (section 18 of the design): what the host sets up, what is in the friend's zip, the friend's first start, and the ways to join.
+- **Decisions:**
+  - The test follows the plan's M1 steps (design section 19, E8) and adds checks for each E8 behaviour: permissions before and after `/op`, whispers both ways, `/tp` of the friend by either player, a friend's `/summon` answer, and the op being kept after a rejoin.
+  - The commands whose effect on the friend only shows from M2 (`/give`, `/gamemode`, `/kill`, `/effect`) are listed as not testable yet.
+- **Tests:** none (a document).
+- **Test steps:** `docs/round8/e-m1-tests.md`.
 - **Kit:** none needed.
