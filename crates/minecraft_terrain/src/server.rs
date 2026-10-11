@@ -2266,6 +2266,7 @@ pub enum Command {
     GameRules(Box<crate::game_rules::GameRules>),
     PlayerUuid { player: u64, uuid: u128 },
     Dismount { player: u64 },
+    Boost { player: u64 },
     Job(Job),
     EndHit { target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage },
 }
@@ -2428,6 +2429,7 @@ pub struct Output {
     pub bone_meal_used: Vec<BlockPos>,
     pub item_uses: Vec<bool>,
     pub dismounts: Vec<(u64, u64, Option<[f64; 3]>)>,
+    pub boosts: Vec<(u64, bool)>,
     pub pearl_teleports: Vec<(u64, [f64; 3])>,
     pub thrown_hits: Vec<crate::thrown::ThrownHit>,
     pub weather: Option<WeatherView>,
@@ -2607,6 +2609,10 @@ impl ServerHandle {
         self.send(Command::Dismount { player });
     }
 
+    pub fn boost(&mut self, player: u64) {
+        self.send(Command::Boost { player });
+    }
+
     pub fn set_weather_data(&mut self, data: crate::level_storage::WeatherData) {
         self.send(Command::WeatherData(data));
     }
@@ -2779,6 +2785,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::PlayerUuid { player, uuid } => sim.set_player_uuid(player, uuid),
                 Command::Dismount { player } => sim.dismount(player),
+                Command::Boost { player } => out.boosts.push((player, sim.mobs.boost_ride(player))),
                 Command::WeatherData(data) => sim.set_weather_data(&data),
                 Command::GameRules(rules) => sim.apply_game_rules(&rules),
                 Command::Job(job) => out.jobs.push(job(&mut sim)),

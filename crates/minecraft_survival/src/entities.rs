@@ -129,6 +129,8 @@ pub struct Entities {
     block_drops: bool,
     mounts: Vec<u64>,
     dismounts: Vec<(u64, Option<DVec3>)>,
+    boost_waiting: Option<(usize, String)>,
+    pub boosts_done: Vec<(usize, String)>,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -289,6 +291,8 @@ impl Entities {
             block_drops: true,
             mounts: Vec::new(),
             dismounts: Vec::new(),
+            boost_waiting: None,
+            boosts_done: Vec::new(),
         }
     }
 
@@ -667,6 +671,26 @@ impl Entities {
         self.client.set_own_vehicle(None);
     }
 
+    pub fn can_boost(&self, vehicle: u64) -> bool {
+        self.boost_waiting.is_none()
+            && self.world.controlling_player(vehicle) == Some(PLAYER)
+            && self.world.striders().iter().any(|e| e.id == vehicle && !e.strider.steering.boosting)
+    }
+
+    pub fn boost(&mut self, slot: usize, held: String) {
+        self.server.boost(PLAYER);
+        self.boost_waiting = Some((slot, held));
+    }
+
+    pub fn spend_boost(&mut self, inventory: &mut Inventory, slot: usize, infinite: bool) -> Option<minecraft_terrain::bucket::Sound> {
+        let random = &mut self.random;
+        if !minecraft_terrain::durability::spend_boost(inventory, slot, infinite, || random.next_float()) {
+            return None;
+        }
+        self.broken_items.push(minecraft_terrain::durability::STEERING_ITEM.to_owned());
+        Some(minecraft_terrain::flint::break_sound(self.random.next_float()))
+    }
+
     pub fn leave(&mut self, inventory: &mut Inventory, selected: usize, feet: Option<[f64; 3]>) {
         let picked = std::mem::take(&mut self.server_picked);
         for rest in take_picked(inventory, selected, picked) {
@@ -680,6 +704,7 @@ impl Entities {
         self.player_pushes.clear();
         self.mounts.clear();
         self.dismounts.clear();
+        self.boost_waiting = None;
     }
 
     pub fn hatch_egg(&mut self, inventory: &Inventory, slot: usize, kind: String, position: [f64; 3], spends: bool) {
@@ -1049,6 +1074,11 @@ impl Entities {
             }
             for (_, vehicle, spot) in output.dismounts.iter().filter(|(player, _, _)| *player == PLAYER) {
                 self.dismounts.push((*vehicle, spot.map(DVec3::from_array)));
+            }
+            for &(_, boosted) in output.boosts.iter().filter(|(player, _)| *player == PLAYER) {
+                if let Some(sent) = self.boost_waiting.take().filter(|_| boosted) {
+                    self.boosts_done.push(sent);
+                }
             }
             // `ServerExplosion`'s sound: loud, pitched down.
             for blast in &output.explosions {

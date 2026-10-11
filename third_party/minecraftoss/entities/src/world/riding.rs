@@ -10,6 +10,7 @@ pub const NON_CONTROLLING_RIDERS: &[&str] = &[
 pub const PLAYER_VEHICLE_ATTACHMENT: f64 = 0.6;
 pub const PLAYER_WIDTH: f32 = 0.6;
 pub const PLAYER_DISMOUNT_HEIGHTS: [f32; 3] = [1.8, 1.5, 0.6];
+pub const STEERING_ITEM: &str = "minecraft:warped_fungus_on_a_stick";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Rider {
@@ -182,6 +183,32 @@ impl EntityWorld {
             }
             _ => None,
         }
+    }
+
+    pub fn controlling_player(&self, vehicle: u64) -> Option<u64> {
+        let entity = self.vehicle_strider(vehicle)?;
+        if !entity.strider.saddled {
+            return None;
+        }
+        let Rider::Player(player) = *self.passengers_of(vehicle).first()? else {
+            return None;
+        };
+        self.player_controls(player)?
+            .holds(|item| item == STEERING_ITEM)
+            .then_some(player)
+    }
+
+    pub fn boost_ride(&mut self, player: u64) -> bool {
+        let Some(vehicle) = self.vehicle_of(Rider::Player(player)) else {
+            return false;
+        };
+        if self.controlling_player(vehicle) != Some(player) {
+            return false;
+        }
+        let Some(entity) = self.striders.iter_mut().find(|e| e.id == vehicle) else {
+            return false;
+        };
+        entity.strider.steering.boost(&mut entity.random)
     }
 
     fn mob_vehicle_attachment(&self, id: u64) -> f64 {
@@ -781,6 +808,132 @@ mod tests {
         assert!(
             landed.distance(DVec3::new(0.5, 64.0, 0.5)) < 2.0,
             "{landed}"
+        );
+    }
+
+    fn ridden_strider(world: &Blocks, feet: f64, stick: bool, yaw: f32) -> (EntityWorld, u64) {
+        let mut entities = EntityWorld::default();
+        let mut strider = Strider::new(DVec3::new(0.5, feet, 0.5));
+        strider.saddled = true;
+        let id = entities.spawn_strider(strider, false);
+        assert!(entities.start_riding(Rider::Player(0), id, world));
+        entities.set_player_controls(&[crate::controls::PlayerControls {
+            id: 0,
+            yaw,
+            main_hand: stick.then(|| STEERING_ITEM.to_owned()),
+            ..Default::default()
+        }]);
+        (entities, id)
+    }
+
+    fn lava_sea(radius: i32) -> Blocks {
+        let mut world = floor("minecraft:netherrack", radius);
+        for x in -radius..=radius {
+            for z in -radius..=radius {
+                world.blocks.insert((x, 64, z), lava());
+            }
+        }
+        world
+    }
+
+    fn steady_step(entities: &mut EntityWorld, world: &mut Blocks, id: u64) -> f64 {
+        for _ in 0..90 {
+            entities.tick_with_players(world, &[]);
+        }
+        let from = feet(entities, id);
+        for _ in 0..10 {
+            entities.tick_with_players(world, &[]);
+        }
+        feet(entities, id).distance(from) / 10.0
+    }
+
+    #[test]
+    fn a_warm_ridden_strider_reaches_4_24_blocks_a_second_and_a_cold_one_1_78() {
+        let mut sea = lava_sea(40);
+        let (mut entities, id) = ridden_strider(&sea, 64.5, true, 0.0);
+        let warm = steady_step(&mut entities, &mut sea, id);
+        assert!(!entities.strider_mut(id).unwrap().strider.suffocating);
+        let expected = 0.175 * 0.55 / (1.0 - 0.6 * 0.91);
+        assert!((warm / expected - 1.0).abs() < 0.01, "{warm} {expected}");
+        assert!((warm * 20.0 - 4.24).abs() < 0.05, "{}", warm * 20.0);
+        assert!(
+            feet(&mut entities, id).z > 15.0,
+            "it walks where the rider looks"
+        );
+        let mut land = floor("minecraft:netherrack", 40);
+        let (mut entities, id) = ridden_strider(&land, 64.0, true, 0.0);
+        let cold = steady_step(&mut entities, &mut land, id);
+        assert!(entities.strider_mut(id).unwrap().strider.suffocating);
+        let expected = 0.175 * (1.0 - 0.34) * 0.35 / (1.0 - 0.6 * 0.91);
+        assert!((cold / expected - 1.0).abs() < 0.01, "{cold} {expected}");
+        assert!((cold * 20.0 - 1.78).abs() < 0.05, "{}", cold * 20.0);
+    }
+
+    #[test]
+    fn it_turns_to_the_riders_yaw_at_once() {
+        let mut sea = lava_sea(8);
+        let (mut entities, id) = ridden_strider(&sea, 64.5, true, 90.0);
+        assert_eq!(entities.controlling_player(id), Some(0));
+        entities.tick_with_players(&mut sea, &[]);
+        let entity = entities.strider_mut(id).unwrap();
+        assert_eq!(entity.strider.yaw, 90.0);
+        assert_eq!(entity.body_rotation.body_yaw, 90.0);
+        assert_eq!(entity.look_control.head_yaw, 90.0);
+        let moved = entity.strider.body.position;
+        assert!(moved.x < 0.5 && (moved.z - 0.5).abs() < 1.0e-6, "{moved}");
+    }
+
+    #[test]
+    fn without_the_stick_the_rider_does_not_steer() {
+        let mut sea = lava_sea(8);
+        let (mut entities, id) = ridden_strider(&sea, 64.5, false, 90.0);
+        assert_eq!(entities.controlling_player(id), None);
+        assert!(!entities.boost_ride(0));
+        entities.tick_with_players(&mut sea, &[]);
+        assert_ne!(entities.strider_mut(id).unwrap().strider.yaw, 90.0);
+        entities.set_player_controls(&[crate::controls::PlayerControls {
+            id: 0,
+            offhand: Some(STEERING_ITEM.to_owned()),
+            ..Default::default()
+        }]);
+        assert_eq!(
+            entities.controlling_player(id),
+            Some(0),
+            "the off hand steers too"
+        );
+        entities.strider_mut(id).unwrap().strider.saddled = false;
+        assert_eq!(entities.controlling_player(id), None);
+    }
+
+    #[test]
+    fn boost_lasts_140_to_980_ticks_and_a_second_boost_fails_meanwhile() {
+        let mut sea = lava_sea(4);
+        let (mut entities, id) = ridden_strider(&sea, 64.5, true, 0.0);
+        assert!(entities.boost_ride(0));
+        assert!(!entities.boost_ride(0), "one boost at a time");
+        assert!(!entities.boost_ride(1), "only the rider boosts");
+        let total = entities
+            .strider_mut(id)
+            .unwrap()
+            .strider
+            .steering
+            .boost_time_total;
+        assert!((140..=980).contains(&total), "{total}");
+        let mut ticks = 0;
+        let mut fastest = 0.0_f32;
+        while entities.strider_mut(id).unwrap().strider.steering.boosting {
+            let entity = entities.strider_mut(id).unwrap();
+            entity.strider.body.position = DVec3::new(0.5, 64.5, 0.5);
+            fastest = fastest.max(entity.ridden_speed());
+            entities.tick_with_players(&mut sea, &[]);
+            ticks += 1;
+        }
+        assert_eq!(ticks, total + 2);
+        let base = (0.175_f64 * f64::from(0.55_f32)) as f32;
+        assert!((fastest / base - 2.15).abs() < 0.01, "{fastest} {base}");
+        assert!(
+            entities.boost_ride(0),
+            "a new boost after the last one ends"
         );
     }
 }

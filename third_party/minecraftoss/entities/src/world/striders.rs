@@ -238,6 +238,16 @@ impl StriderEntity {
         result
     }
 
+    pub fn ridden_speed(&self) -> f32 {
+        let attribute = self.effects.movement_speed(self.strider.movement_speed());
+        let factor = if self.strider.suffocating {
+            0.35_f32
+        } else {
+            0.55_f32
+        };
+        (attribute * f64::from(factor) * f64::from(self.strider.steering.boost_factor())) as f32
+    }
+
     fn hurt_by_water(&mut self, world: &impl World) {
         let p = self.strider.body.position;
         let feet = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
@@ -274,6 +284,7 @@ impl StriderEntity {
         game_time: i64,
         carried_warm: bool,
         surroundings: StriderSurroundings,
+        ridden: Option<(f32, f32)>,
     ) -> (bool, Option<u64>) {
         self.previous_position = self.strider.body.position;
         self.previous_yaw = self.strider.yaw;
@@ -393,12 +404,25 @@ impl StriderEntity {
                 self.body_rotation.body_yaw,
                 !self.strider.navigation.is_done(),
             );
-            let input = DVec3::new(
-                f64::from(self.strider.sideways),
-                0.0,
-                f64::from(self.strider.forward),
-            );
-            let speed = self.strider.speed;
+            let (input, speed) = match ridden {
+                Some((yaw, pitch)) => {
+                    self.strider.yaw = yaw;
+                    self.look_control.head_yaw = yaw;
+                    self.look_control.pitch = pitch * 0.5;
+                    self.body_rotation.body_yaw = yaw;
+                    self.previous_yaw = yaw;
+                    self.strider.steering.tick_boost();
+                    (DVec3::new(0.0, 0.0, 1.0), self.ridden_speed())
+                }
+                None => (
+                    DVec3::new(
+                        f64::from(self.strider.sideways),
+                        0.0,
+                        f64::from(self.strider.forward),
+                    ),
+                    self.strider.speed,
+                ),
+            };
             let landed = self.travel(world, input, speed);
             let in_lava = FluidFrame::sample(
                 world,
@@ -428,6 +452,10 @@ impl StriderEntity {
                 self.previous_position,
                 self.strider.body.position,
             );
+            if let Some((yaw, _)) = ridden {
+                self.body_rotation.body_yaw = yaw;
+                self.look_control.head_yaw = yaw;
+            }
             if let Some(damage) = fall {
                 self.hurt(damage, DamageSourceKind::Generic);
             }
@@ -547,6 +575,10 @@ impl EntityWorld {
             .filter(|e| self.controlling_mob(e.id) == Some(id))
             .map(|e| (e.id, e.strider.navigation.is_done()));
         let controlled = self.controlling_mob(id).is_some();
+        let ridden = self
+            .controlling_player(id)
+            .and_then(|player| self.player_controls(player))
+            .map(|controls| (controls.yaw, controls.pitch));
         let Some(entity) = self.striders.iter_mut().find(|e| e.id == id) else {
             return;
         };
@@ -554,8 +586,14 @@ impl EntityWorld {
             entity.goals.set_enabled(control, !controlled);
         }
         entity.steering_vehicle = steering.map(|(_, done)| done);
-        let (stepped, partner) =
-            entity.tick_body(world, players, game_time, carried_warm, surroundings);
+        let (stepped, partner) = entity.tick_body(
+            world,
+            players,
+            game_time,
+            carried_warm,
+            surroundings,
+            ridden,
+        );
         entity.steering_vehicle = None;
         let orders = std::mem::take(&mut entity.vehicle_orders);
         if let Some((vehicle, _)) = steering {

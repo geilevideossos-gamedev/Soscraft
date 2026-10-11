@@ -82,15 +82,7 @@ pub enum Release {
 }
 
 fn wear(inventory: &mut Inventory, slot: usize, random: &mut LegacyRandom) {
-    let Some(stack) = inventory.slots.get(slot).cloned().flatten() else {
-        return;
-    };
-    let unbreaking = enchantment(&stack, "minecraft:unbreaking");
-    let spared =
-        unbreaking > 0 && random.next_float() < unbreaking as f32 / (unbreaking + 1) as f32;
-    if !spared {
-        inventory.wear_tool(slot, 1);
-    }
+    crate::durability::wear(inventory, slot, 1, || random.next_float());
 }
 
 pub fn release(

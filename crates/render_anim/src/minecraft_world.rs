@@ -1286,6 +1286,12 @@ fn update(
                     sounds.play(&world.packs, &sound.event, Some(Vec3::from_array(sim::voxel::to_map(origin, centre))), sound.volume, pitch);
                 }
                 HandUse::Consumed
+            } else if let Some(stack) = held.as_ref().filter(|stack| stack.id == minecraft_terrain::durability::STEERING_ITEM)
+                && let Some(vehicle) = riding.as_ref().map(|ride| ride.vehicle)
+                && entities.can_boost(vehicle)
+            {
+                entities.boost(slot, stack.id.clone());
+                HandUse::Consumed
             } else if let Some(stack) = held.as_ref()
                 && let Some(outcome) = minecraft_terrain::bottle::bottle_use(&player, &terrain.scene, stack, !entities.awaits_item_use() && entities.dragon_breath_near(player.pos, if player.crouching { 1.5 } else { 1.8 }))
             {
@@ -1829,6 +1835,16 @@ fn update(
                 survival.hurt(amount - blocked, armor, from, cause);
             } else {
                 survival.hurt_blocked(cause);
+            }
+        }
+        for (slot, held) in std::mem::take(&mut entities.boosts_done) {
+            hand.swing = Some(0.0);
+            hand.swing_offhand = slot == minecraft_survival::offhand::OFFHAND;
+            if inventory.slots[slot].as_ref().is_some_and(|stack| stack.id == held)
+                && let Some(sound) = entities.spend_boost(inventory, slot, !player_mode.consumes_items())
+                && let Some(sounds) = sounds.as_mut()
+            {
+                sounds.play(&world.packs, sound.event, None, sound.volume, sound.pitch);
             }
         }
         for used in std::mem::take(&mut entities.item_uses_done) {

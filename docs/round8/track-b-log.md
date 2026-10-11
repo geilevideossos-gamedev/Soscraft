@@ -238,3 +238,31 @@ After a0bc99d1.
 ```
 IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*8,minecraft:saddle,minecraft:saddle,minecraft:saddle,minecraft:warped_fungus*16,minecraft:warped_fungus_on_a_stick,minecraft:diamond_sword,minecraft:ender_pearl*4,minecraft:netherrack*64
 ```
+
+### 8. Minecraft warped fungus on a stick steers and boosts striders
+
+After 65532cc9.
+
+- **Changed:**
+  - Vendored `entities`: `controlling_player` (`Strider.getControllingPassenger`): a saddled strider whose first passenger is a player holding `warped_fungus_on_a_stick` in either hand. That strider runs `tickRidden` each tick (its yaw, body and head take the rider's yaw, its pitch half the rider's, `tickBoost`) and travels with input (0, 0, 1) at `getRiddenSpeed`: `movement_speed` (with effects) times 0.55, or 0.35 while suffocating, times the boost factor. Its goals keep running as vanilla's do (a player controller is no `Mob`), but their moves don't reach the travel. Without the stick the strider walks on its own with the player on it. `boost_ride(player)`: only the controlling rider, and only while no boost runs (`ItemBasedSteering.boost`, 140 to 980 ticks from the strider's random).
+  - `minecraft_terrain/src/server.rs`: `Command::Boost { player }` answers `Output.boosts` (player, boosted).
+  - New `minecraft_terrain/src/durability.rs`: `wear` (`hurtAndBreak` with Unbreaking's `remove_binomial` for non-armour, `level / (level + 1)` per point), `wear_and_convert` (`hurtAndConvertOnBreak`: a broken stack becomes the given item with its components and no damage) and `spend_boost` (1 point, a `fishing_rod` when it breaks, nothing in creative). The trident's wear now goes through `wear`.
+  - Host: the use chain, after the block uses and before the item uses, sends the boost when the player rides a strider it controls that is not boosting yet (`Entities::can_boost`, on the host's copy); otherwise the stick passes on. A `true` answer swings that hand and spends 1 durability (unless the game mode has infinite materials); a broken stick turns into a fishing rod with the break sound and burst.
+- **Tests:** `riding` (vendored): `a_warm_ridden_strider_reaches_4_24_blocks_a_second_and_a_cold_one_1_78` (on the lava sea and on netherrack, steady speed within 1 % over the last 10 of 100 ticks), `it_turns_to_the_riders_yaw_at_once`, `without_the_stick_the_rider_does_not_steer` (the off hand steers too, an unsaddled strider never), `boost_lasts_140_to_980_ticks_and_a_second_boost_fails_meanwhile` (the peak is 2.15 times the speed). `durability`: `a_boost_costs_one_of_a_hundred`, `unbreaking_three_spares_three_in_four`, `the_hundredth_boost_leaves_an_enchanted_fishing_rod`, `creative_boosts_cost_nothing`.
+- **Decisions:**
+  - Boost answers have their own channel (`Output.boosts`, keyed by player) rather than `item_uses`, so a boost and a bucket or eye use waiting at the same time can't take each other's answer.
+  - Whether a boost can start is checked on the host's copy of the strider before sending (controlled, not boosting), so a use that vanilla would `PASS` goes on down the use chain instead of being swallowed while the answer is on its way.
+  - The boost sits after the block uses, as vanilla tries `useItemOn` on the targeted block before `FoodOnAStickItem.use`: right-clicking a chest while riding still opens it.
+- **Test steps (Nether, survival):** saddle a strider on the lava sea.
+  1. Hold the warped fungus on a stick and right-click the strider: you sit on it, and it walks wherever you look at about 4 blocks a second, without any key (**6**).
+  2. Right-click with the stick: it speeds up to about twice that and slows again over 7 to 49 seconds; the stick's durability bar drops by one. Right-click again during the boost: nothing happens and the bar stays.
+  3. Switch to a slot without the stick: the strider stops following your look and wanders on its own. Put the stick in the off hand instead: it steers again.
+  4. Steer onto netherrack: it slows to under 2 blocks a second, turns pale and shivers; back on lava it warms up and speeds up (**7**).
+  5. With the Unbreaking III stick, boost about 20 times: the bar drops only about 5 times.
+  6. `/gamemode creative` and boost: the bar never drops.
+  7. Take the nearly broken stick (the kit's third, damage 99) and boost once: it breaks with the break sound and leaves a fishing rod in the hand.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*8,minecraft:saddle,minecraft:saddle,minecraft:warped_fungus_on_a_stick,minecraft:warped_fungus_on_a_stick+unbreaking=3,minecraft:warped_fungus_on_a_stick+damage=99,minecraft:netherrack*64
+```

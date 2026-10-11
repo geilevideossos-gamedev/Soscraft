@@ -19,6 +19,7 @@ pub mod creative_variants;
 pub mod day_cycle;
 pub mod dials;
 pub mod dormant;
+pub mod durability;
 pub mod dragon_egg;
 pub mod dragon_fireball;
 pub mod dragon_render;
