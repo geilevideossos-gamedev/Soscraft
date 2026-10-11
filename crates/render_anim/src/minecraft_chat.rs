@@ -68,6 +68,7 @@ mod tests {
         waiting_locates: Vec<(Dimension, PlayerId, minecraft_commands::LocateRequest)>,
         players: BTreeMap<PlayerUuid, Player>,
         presence: Vec<(PlayerUuid, Presence)>,
+        tick_rate: minecraft_survival::tick_rate::TickRate,
     }
 
     impl Parts {
@@ -87,6 +88,7 @@ mod tests {
                 waiting_locates: Vec::new(),
                 presence: vec![(uuid.clone(), Presence { pose: Some(pose), alive: true })],
                 players: BTreeMap::from([(uuid, player)]),
+                tick_rate: minecraft_survival::tick_rate::TickRate::default(),
             }
         }
 
@@ -109,6 +111,7 @@ mod tests {
                 mode_changed: Vec::new(),
                 respawn_changed: Vec::new(),
                 teleports: Vec::new(),
+                tick_rate: &mut self.tick_rate,
             }
         }
 

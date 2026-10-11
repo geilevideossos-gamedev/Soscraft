@@ -385,6 +385,30 @@ pub fn nearest_biome(
     Search::NotFound
 }
 
+fn ring_sets(gen: &WorldGen) -> Vec<&Placement> {
+    if !gen.structures.enabled {
+        return Vec::new();
+    }
+    possible_sets(gen)
+        .into_iter()
+        .enumerate()
+        .filter(|&(_, possible)| possible)
+        .map(|(index, _)| gen.structures.placement(index))
+        .filter(|placement| matches!(placement.kind, Kind::ConcentricRings { .. }))
+        .collect()
+}
+
+pub fn has_rings(gen: &WorldGen) -> bool {
+    !ring_sets(gen).is_empty()
+}
+
+pub fn resolve_rings(gen: &WorldGen) -> usize {
+    ring_sets(gen)
+        .into_iter()
+        .map(|placement| placement.ring_chunks(&gen.terrain, usize::MAX).len())
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -500,5 +524,94 @@ mod tests {
             matches!(past, Search::TimedOut | Search::Found(..)),
             "{past:?}"
         );
+    }
+
+    fn owner_overworld() -> Option<WorldGen> {
+        let paths = DataPaths::discover().ok()?;
+        let registries = Arc::new(Registries::load(&paths).ok()?);
+        let terrain = Arc::new(TerrainGenerator::overworld(registries, 4986579828511054607).ok()?);
+        WorldGen::for_dimension(terrain, "minecraft:overworld").ok()
+    }
+
+    #[test]
+    fn rings_are_worked_out_once_and_agree_with_the_placement_check() {
+        let Some(gen) = owner_overworld() else { return };
+        assert!(has_rings(&gen));
+        let started = Instant::now();
+        assert_eq!(resolve_rings(&gen), 128);
+        let first = started.elapsed();
+        let again = Instant::now();
+        assert_eq!(resolve_rings(&gen), 128);
+        let second = again.elapsed();
+        assert!(second * 4 < first, "{first:?} then {second:?}");
+        let set = (0..gen.structures.sets().len())
+            .find(|&index| {
+                matches!(
+                    gen.structures.placement(index).kind,
+                    Kind::ConcentricRings { .. }
+                )
+            })
+            .expect("the stronghold rings");
+        let rings = gen
+            .structures
+            .placement(set)
+            .ring_chunks(&gen.terrain, usize::MAX);
+        for chunk in &rings {
+            assert!(gen.structures.is_structure_chunk(&gen.terrain, set, *chunk));
+            for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let next = ChunkPos::new(chunk.x + dx, chunk.z + dz);
+                assert_eq!(
+                    gen.structures.is_structure_chunk(&gen.terrain, set, next),
+                    rings.contains(&next),
+                    "{next:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_second_stronghold_search_reuses_the_rings() {
+        let Some(gen) = owner_overworld() else { return };
+        let stronghold = ["minecraft:stronghold".to_owned()];
+        let search = || {
+            let started = Instant::now();
+            let found = nearest_structure(
+                &gen,
+                &stronghold,
+                [-301, 80, -1701],
+                STRUCTURE_RADIUS,
+                started + Duration::from_secs(60),
+            );
+            (found, started.elapsed())
+        };
+        let (first, first_took) = search();
+        assert_eq!(
+            first,
+            Search::Found([-496, 0, -1936], "minecraft:stronghold".to_owned())
+        );
+        let (second, second_took) = search();
+        assert_eq!(second, first);
+        assert!(
+            second_took * 4 < first_took,
+            "{first_took:?} then {second_took:?}"
+        );
+    }
+
+    #[test]
+    fn only_the_overworld_has_rings() {
+        let Some(paths) = DataPaths::discover().ok() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        for (terrain, dimension) in [
+            (TerrainGenerator::nether(registries.clone(), 0), "minecraft:the_nether"),
+            (TerrainGenerator::end(registries.clone(), 0), "minecraft:the_end"),
+        ] {
+            let Ok(terrain) = terrain else { return };
+            let Ok(gen) = WorldGen::for_dimension(Arc::new(terrain), dimension) else {
+                return;
+            };
+            assert!(!has_rings(&gen), "{dimension}");
+            assert_eq!(resolve_rings(&gen), 0, "{dimension}");
+        }
     }
 }

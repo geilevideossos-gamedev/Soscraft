@@ -24,7 +24,7 @@ fn portal_pitch(sounds: &mut Sounds) -> f32 {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn step(
     player: &mut Player,
-    levels: &BTreeMap<Dimension, Level>,
+    levels: &mut BTreeMap<Dimension, Level>,
     globals: &Globals,
     feet: Option<[f64; 3]>,
     seconds: f64,
@@ -32,11 +32,18 @@ pub(crate) fn step(
     packs: &PackStack,
     ui: &mut MinecraftUi,
 ) {
-    let Some(level) = levels.get(&player.dimension) else {
+    let Some(level) = levels.get_mut(&player.dimension) else {
         ui.portal_overlay = None;
         return;
     };
-    let stepped = portal::step(player, &level.terrain, &globals.game_rules, feet, seconds);
+    let stepped = portal::step(
+        player,
+        &level.terrain,
+        &globals.game_rules,
+        feet,
+        seconds,
+        |pos| minecraft_survival::the_end::gateway::enter(level.entities.as_mut(), pos),
+    );
     if stepped.inside {
         ui.inventory_open = false;
     }
@@ -62,6 +69,10 @@ pub(crate) fn step(
     if due.kind == portal::PortalKind::End {
         crate::minecraft_end::travel(player, level, globals, due.entry);
         ui.portal_overlay = None;
+        return;
+    }
+    if due.kind == portal::PortalKind::Gateway {
+        crate::minecraft_end::gateway(player, level, due.entry);
         return;
     }
     let Some(travel) = portal::depart(player, &level.terrain, &globals.registries, due) else {

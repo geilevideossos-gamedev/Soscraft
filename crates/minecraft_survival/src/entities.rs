@@ -72,6 +72,7 @@ pub struct Entities {
     pub broken_items: Vec<String>,
     items: ItemVisuals,
     clock: f64,
+    tick_seconds: f64,
     ticks: u64,
     /// Item entities as the client shows them: the server's, and drops the
     /// client spawned that the server has not taken yet.
@@ -95,6 +96,7 @@ pub struct Entities {
     clouds: Vec<minecraft_terrain::effect_cloud::CloudView>,
     tridents: Vec<minecraft_terrain::trident::TridentView>,
     crystals: Vec<minecraft_terrain::end_crystal::CrystalView>,
+    gateways: minecraft_terrain::end_gateway::ClientGateways,
     dragons: Vec<minecraft_terrain::ender_dragon::DragonView>,
     dragon_fireballs: Vec<minecraft_terrain::dragon_fireball::FireballView>,
     growls: HashMap<u64, i32>,
@@ -103,8 +105,10 @@ pub struct Entities {
     orbs: Vec<ServerOrb>,
     falling: minecraft_terrain::falling_render::FallingBlocks,
     pub lids: minecraft_terrain::lids::Lids,
+    spawners: minecraft_terrain::spawner_display::SpawnerDisplays,
     orb_pickups: Vec<minecraft_terrain::orb_render::OrbPickup>,
     pub pearl_landings: Vec<DVec3>,
+    pub pearl_gateways: Vec<(i32, i32, i32)>,
     pub player_potions: Vec<minecraft_terrain::potions::PlayerPotionHit>,
     pub player_pushes: Vec<DVec3>,
     pub item_crumbs: Vec<(String, DVec3, Vec<Vec3>)>,
@@ -125,6 +129,7 @@ pub struct Entities {
     pub command_jobs: Vec<Box<dyn std::any::Any + Send>>,
     jobs_running: usize,
     unread: Vec<minecraft_terrain::server::Output>,
+    finished_ticks: Vec<u64>,
     pub difficulty: i32,
     spawn_mobs: bool,
     block_drops: bool,
@@ -223,6 +228,7 @@ impl Entities {
             broken_items: Vec::new(),
             items: ItemVisuals::default(),
             clock: 0.0,
+            tick_seconds: TICK_SECONDS,
             ticks: 0,
             world_items: WorldItems::default(),
             server_handed: HashMap::new(),
@@ -240,6 +246,7 @@ impl Entities {
             clouds: Vec::new(),
             tridents: Vec::new(),
             crystals: Vec::new(),
+            gateways: Default::default(),
             dragons: Vec::new(),
             dragon_fireballs: Vec::new(),
             growls: HashMap::new(),
@@ -248,8 +255,10 @@ impl Entities {
             orbs: Vec::new(),
             falling: Default::default(),
             lids: Default::default(),
+            spawners: minecraft_terrain::spawner_display::SpawnerDisplays::new((seed ^ 0x5b3d) as u64),
             orb_pickups: Vec::new(),
             pearl_landings: Vec::new(),
+            pearl_gateways: Vec::new(),
             player_potions: Vec::new(),
             player_pushes: Vec::new(),
             item_crumbs: Vec::new(),
@@ -270,6 +279,7 @@ impl Entities {
             command_jobs: Vec::new(),
             jobs_running: 0,
             unread: Vec::new(),
+            finished_ticks: Vec::new(),
             difficulty: 2,
             spawn_mobs: true,
             block_drops: true,
@@ -326,10 +336,12 @@ impl Entities {
     }
 
     pub fn load_chunk(&mut self, chunk: &std::sync::Arc<minecraftoss_core::Chunk>) {
+        self.spawners.load_chunk(chunk);
         self.server.load_chunk(chunk);
     }
 
     pub fn unload_chunk(&mut self, pos: minecraftoss_core::ChunkPos) {
+        self.spawners.unload_chunk(pos);
         self.server.unload_chunk(pos);
     }
 
@@ -361,14 +373,13 @@ impl Entities {
             return;
         }
         let tool = ItemStack::new(LOOT_TOOL, 1);
-        let hand_tool = Self::hand_tool(held);
         for (pos, block, blast) in broken {
             let block = minecraftoss_player::Block { id: block.id.key(), properties: block.properties.clone() };
-            let tool = if blast.is_none() && by_hand.contains(pos) { &hand_tool } else { &tool };
+            let tool = if blast.is_none() && by_hand.contains(pos) { held } else { Some(&tool) };
             let drops = self
                 .loot
                 .as_ref()
-                .and_then(|loot| loot.roll_drops_named(&block, Some(tool), self.seed as u64, &mut self.loot_sequences));
+                .and_then(|loot| loot.roll_drops_named(&block, tool, self.seed as u64, &mut self.loot_sequences));
             let survives_blast = minecraft_terrain::containers::is_shulker_box(&block.id);
             for mut drop in drops.into_iter().flatten() {
                 if let Some(power) = *blast
@@ -613,6 +624,7 @@ impl Entities {
         }
         self.item_use_waiting = None;
         self.pearl_landings.clear();
+        self.pearl_gateways.clear();
         self.player_potions.clear();
         self.player_pushes.clear();
     }
@@ -635,6 +647,12 @@ impl Entities {
         }
     }
 
+    pub fn egg_on_spawner(&mut self, inventory: &Inventory, slot: usize, kind: String, pos: (i32, i32, i32), spends: bool) {
+        if self.eggs_waiting.send_from(inventory, slot, spends) {
+            self.server.spawner_egg(pos, kind);
+        }
+    }
+
     pub fn take_block_entity_changes(&mut self) -> Vec<((i32, i32, i32), Option<minecraftoss_core::nbt::Tag>)> {
         std::mem::take(&mut self.block_entity_changes)
     }
@@ -645,7 +663,7 @@ impl Entities {
         for output in &mut self.unread {
             self.block_entity_changes.append(&mut output.block_entities);
         }
-        for mut output in self.server.poll() {
+        for mut output in self.poll_server() {
             self.jobs_running = self.jobs_running.saturating_sub(output.jobs.len());
             self.command_jobs.append(&mut output.jobs);
             self.block_entity_changes.extend(output.block_entities);
@@ -667,8 +685,25 @@ impl Entities {
         self.jobs_running > 0
     }
 
+    fn poll_server(&mut self) -> Vec<minecraft_terrain::server::Output> {
+        let outputs = self.server.poll();
+        for output in &outputs {
+            self.finished_ticks.extend_from_slice(&output.tick_nanos);
+        }
+        outputs
+    }
+
+    pub fn ready_for_ticks(&mut self) -> bool {
+        self.poll_jobs();
+        self.server.ticks_in_flight() == 0
+    }
+
+    pub fn take_finished_ticks(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.finished_ticks)
+    }
+
     pub fn poll_jobs(&mut self) {
-        for mut output in self.server.poll() {
+        for mut output in self.poll_server() {
             self.jobs_running = self.jobs_running.saturating_sub(output.jobs.len());
             self.command_jobs.append(&mut output.jobs);
             self.unread.push(output);
@@ -677,7 +712,7 @@ impl Entities {
 
     fn take_outputs(&mut self) -> Vec<minecraft_terrain::server::Output> {
         let mut outputs = std::mem::take(&mut self.unread);
-        outputs.extend(self.server.poll());
+        outputs.extend(self.poll_server());
         outputs
     }
 
@@ -756,10 +791,6 @@ impl Entities {
         has_silk_touch(Self::hand_enchantments(held).as_ref())
     }
 
-    fn hand_tool(held: Option<&ItemStack>) -> ItemStack {
-        loot_tool_with(Self::hand_enchantments(held))
-    }
-
     /// A bullet on a mob: an attack with the bullet's damage from where it
     /// was fired.
     pub fn shoot(&mut self, key: u64, damage: f32, from: [f64; 3], yaw: f32) {
@@ -830,15 +861,20 @@ impl Entities {
         inventory: &mut Inventory,
         selected: usize,
         dt: f64,
+        batch: &crate::tick_rate::TickBatch,
+        client: crate::tick_rate::ClientTiming,
         clocks: minecraft_terrain::server::ClockTicks,
         bright_outside: bool,
         player: &PlayerView,
     ) -> (Changes, Hits) {
-        self.clock += dt;
+        self.tick_seconds = client.tick_seconds;
+        if client.runs_normally {
+            self.clock += dt;
+        }
         let orb_pickup_target = DVec3::from_array(player.feet) + DVec3::Y * f64::from(EYE_HEIGHT / 2.0);
-        let ticked = self.clock >= TICK_SECONDS;
+        let ticked = client.runs_normally && self.clock >= self.tick_seconds;
         if ticked {
-            self.clock = (self.clock - TICK_SECONDS).min(TICK_SECONDS);
+            self.clock = (self.clock - self.tick_seconds).min(self.tick_seconds);
             self.ticks += 1;
             self.falling.tick_sent();
             for tnt in self.falling.primed.iter().filter(|tnt| tnt.fuse > 0) {
@@ -846,6 +882,8 @@ impl Entities {
                 self.ambient.add(minecraft_terrain::ambient_particles::Kind::Smoke, smoke, DVec3::ZERO);
             }
             self.lids.tick();
+            let near: Vec<DVec3> = (player.alive && !player.spectator).then(|| DVec3::from_array(player.feet)).into_iter().collect();
+            self.spawners.tick(&near, &mut self.ambient);
             // Packets first, then the client level's entity ticks.
             self.client.tick();
             for enderman in self.world.endermen() {
@@ -870,6 +908,8 @@ impl Entities {
             if self.ticks % 600 == 0 {
                 diag::info!(World, "Minecraft mobs: {} tracked", self.boxes().len());
             }
+        }
+        if !batch.is_empty() {
             let feet = DVec3::from_array(player.feet);
             let center = ((feet.x.floor() as i32) >> 4, (feet.z.floor() as i32) >> 4);
             let candidate = player_candidate(player);
@@ -902,7 +942,7 @@ impl Entities {
                 tracking: (player.feet, 160.0),
                 player_hurts: Vec::new(),
                 spawn_mobs: self.spawn_mobs,
-            });
+            }, batch.normal.clone());
         }
         let mut changes = Vec::new();
         let mut hits = Vec::new();
@@ -920,6 +960,7 @@ impl Entities {
                 self.clouds = std::mem::take(&mut snapshot.clouds);
                 self.tridents = std::mem::take(&mut snapshot.tridents);
                 self.crystals = std::mem::take(&mut snapshot.crystals);
+                self.gateways.receive(std::mem::take(&mut snapshot.gateways), self.ticks);
                 self.dragons = std::mem::take(&mut snapshot.dragons);
                 self.dragon_fireballs = std::mem::take(&mut snapshot.dragon_fireballs);
                 for at in std::mem::take(&mut snapshot.breath_bursts) {
@@ -933,6 +974,7 @@ impl Entities {
             for (_, landing) in output.pearl_teleports.into_iter().filter(|&(player, _)| player == PLAYER) {
                 self.pearl_landings.push(DVec3::from_array(landing));
             }
+            self.pearl_gateways.extend(output.pearl_gateways.into_iter().filter(|&(player, _)| player == PLAYER).map(|(_, gateway)| gateway));
             self.player_potions.extend(output.player_potions.into_iter().filter(|hit| hit.player == PLAYER));
             self.player_pushes.extend(output.players_pushed.iter().filter(|(player, _)| *player == PLAYER).map(|(_, push)| *push));
             for broken in &output.potion_breaks {
@@ -961,6 +1003,13 @@ impl Entities {
                 self.weather_data = Some(weather);
             }
             self.server_picked.extend(output.picked);
+            for answer in output.eye_answers.iter().filter(|answer| answer.owner == PLAYER) {
+                if answer.flew() {
+                    diag::info!(World, "{}", answer.line());
+                } else {
+                    diag::warn!(World, "{}", answer.line());
+                }
+            }
             for used in output.item_uses {
                 if let Some(sent) = self.item_use_waiting.take().filter(|_| used) {
                     self.item_uses_done.push(sent);
@@ -980,6 +1029,7 @@ impl Entities {
             self.fight_reports.extend(output.fight_reports);
             self.command_jobs.extend(output.jobs);
             changes.extend(output.changes);
+            self.spawners.block_entities(&output.block_entities);
             self.block_entity_changes.extend(output.block_entities);
             self.destroyed.extend(output.destroyed);
             self.experience_found += output.orbs_taken.iter().map(|orb| orb.2 as f32).sum::<f32>();
@@ -1058,6 +1108,26 @@ impl Entities {
 
     pub fn dragons(&self) -> &[minecraft_terrain::ender_dragon::DragonView] {
         &self.dragons
+    }
+
+    pub fn gateway(&self, pos: (i32, i32, i32)) -> Option<&minecraft_terrain::end_gateway::GatewayView> {
+        self.gateways.get(pos)
+    }
+
+    pub fn gateway_views(&self) -> &[minecraft_terrain::end_gateway::GatewayView] {
+        self.gateways.views()
+    }
+
+    pub fn mark_cooling(&mut self, pos: (i32, i32, i32)) {
+        self.gateways.mark_cooling(pos, self.ticks);
+    }
+
+    pub fn gateway_cooling(&self, pos: (i32, i32, i32)) -> bool {
+        self.gateways.is_cooling(pos, self.ticks)
+    }
+
+    pub fn eye_views(&self) -> &[minecraft_terrain::eye_of_ender::EyeView] {
+        self.eyes.views()
     }
 
     pub fn take_dragons_killed(&mut self) -> Vec<[i32; 4]> {
@@ -1210,7 +1280,7 @@ impl Entities {
         self.client.spawn_missing(&server_mobs(&self.world));
         let w = &self.world;
         let poses = &self.client;
-        let partial = (self.clock / TICK_SECONDS).clamp(0.0, 1.0) as f32;
+        let partial = (self.clock / self.tick_seconds).clamp(0.0, 1.0) as f32;
         let mut out = MobMeshes::default();
         cow_render::append_cows(&mut out.models, w.cows().iter(), poses, atlas, light, partial);
         sheep_render::append_sheep(&mut out.models, w.sheep().iter(), poses, atlas, light, partial);
@@ -1250,7 +1320,9 @@ impl Entities {
         dragon_render::append_dragons(&mut out.models, &self.dragons, atlas, light, partial);
         dragon_render::append_beams(&mut out.models, &self.dragons, &self.crystals, atlas, light, partial);
         dragon_render::append_rays(&mut out.translucent, &self.dragons, atlas, partial);
+        end_gateway_render::append_beams(&mut out.models, &mut out.translucent, self.gateways.views(), atlas, camera, scene.vertical_range().end - 1, w.game_time(), partial);
         blaze_render::append_blazes(&mut out.models, w.blazes().iter(), poses, atlas, light, partial);
+        self.spawners.append(&mut out.models, &mut out.culled, &mut out.translucent, scene, atlas, light, camera, partial);
         let poppies = golem_render::append_iron_golems(&mut out.models, w.iron_golems().iter(), poses, atlas, light, partial);
         wolf_render::append_wolves(&mut out.models, w.wolves().iter(), poses, atlas, light, partial, w.game_time());
         flame_render::append_flames(
@@ -1349,12 +1421,6 @@ fn how_broken(pos: (i32, i32, i32), blast: Option<f32>, by_hand: &[(i32, i32, i3
 
 fn has_silk_touch(enchantments: Option<&serde_json::Value>) -> bool {
     enchantments.and_then(|enchantments| enchantments.get(SILK_TOUCH)).and_then(serde_json::Value::as_i64).is_some_and(|level| level > 0)
-}
-
-fn loot_tool_with(enchantments: Option<serde_json::Value>) -> ItemStack {
-    let mut tool = ItemStack::new(LOOT_TOOL, 1);
-    tool.components = enchantments.map(|enchantments| serde_json::json!({ "minecraft:enchantments": enchantments }));
-    tool
 }
 
 /// The viewer's `server_bob_offset`: a server item's bob phase from its id.
@@ -1613,15 +1679,15 @@ mod tests {
     }
 
     #[test]
-    fn the_hand_loot_tool_carries_the_held_enchantments() {
+    fn silk_touch_is_read_from_the_held_enchantments() {
         let silk = serde_json::json!({ "minecraft:silk_touch": 1 });
         assert!(has_silk_touch(Some(&silk)));
         assert!(!has_silk_touch(Some(&serde_json::json!({ "minecraft:efficiency": 5 }))));
         assert!(!has_silk_touch(None));
-        let tool = loot_tool_with(Some(silk));
-        assert_eq!(tool.id, LOOT_TOOL);
-        assert_eq!(tool.components, Some(serde_json::json!({ "minecraft:enchantments": { "minecraft:silk_touch": 1 } })));
-        assert_eq!(loot_tool_with(None).components, None);
+        let mut pick = ItemStack::new("minecraft:diamond_pickaxe", 1);
+        pick.components = Some(serde_json::json!({ "minecraft:enchantments": silk }));
+        assert!(Entities::hand_has_silk_touch(Some(&pick)));
+        assert!(!Entities::hand_has_silk_touch(None));
     }
 
     #[test]

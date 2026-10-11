@@ -11,7 +11,7 @@ pub enum Redirect {
     Command(&'static str),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NodeKind {
     Literal(&'static str),
     Argument(&'static str, ArgKind),
@@ -25,6 +25,7 @@ pub struct Node {
     pub exec: Option<Exec>,
     pub redirect: Option<Redirect>,
     pub modifier: Option<Modifier>,
+    pub suggestions: Option<&'static [&'static str]>,
 }
 
 impl Node {
@@ -36,6 +37,7 @@ impl Node {
             exec: None,
             redirect: None,
             modifier: None,
+            suggestions: None,
         }
     }
 
@@ -59,6 +61,11 @@ impl Node {
 
     pub fn then(mut self, child: Node) -> Self {
         self.children.push(child);
+        self
+    }
+
+    pub fn suggests(mut self, suggestions: &'static [&'static str]) -> Self {
+        self.suggestions = Some(suggestions);
         self
     }
 

@@ -15,7 +15,7 @@ pub const STORAGE: usize = 36;
 pub const SLOTS: usize = 43;
 pub const ENDER_SLOTS: usize = 27;
 const INFINITE: i32 = -1;
-pub const EFFECTS: [(EffectKind, &str); 10] = [
+pub const EFFECTS: [(EffectKind, &str); EffectKind::ALL.len()] = [
     (EffectKind::Hunger, "minecraft:hunger"),
     (EffectKind::Poison, "minecraft:poison"),
     (EffectKind::Regeneration, "minecraft:regeneration"),
@@ -26,6 +26,9 @@ pub const EFFECTS: [(EffectKind, &str); 10] = [
     (EffectKind::Slowness, "minecraft:slowness"),
     (EffectKind::Weakness, "minecraft:weakness"),
     (EffectKind::Wither, "minecraft:wither"),
+    (EffectKind::Haste, "minecraft:haste"),
+    (EffectKind::MiningFatigue, "minecraft:mining_fatigue"),
+    (EffectKind::ConduitPower, "minecraft:conduit_power"),
 ];
 
 struct EffectModifier {
@@ -37,7 +40,7 @@ struct EffectModifier {
     operation: &'static str,
 }
 
-const MODIFIERS: [EffectModifier; 3] = [
+const MODIFIERS: [EffectModifier; 5] = [
     EffectModifier {
         effect: EffectKind::Slowness,
         attribute: "minecraft:movement_speed",
@@ -61,6 +64,22 @@ const MODIFIERS: [EffectModifier; 3] = [
         id: "minecraft:effect.absorption",
         amount: 4.0,
         operation: "add_value",
+    },
+    EffectModifier {
+        effect: EffectKind::Haste,
+        attribute: "minecraft:attack_speed",
+        base: 4.0,
+        id: "minecraft:effect.haste",
+        amount: 0.10000000149011612,
+        operation: "add_multiplied_total",
+    },
+    EffectModifier {
+        effect: EffectKind::MiningFatigue,
+        attribute: "minecraft:attack_speed",
+        base: 4.0,
+        id: "minecraft:effect.mining_fatigue",
+        amount: -0.10000000149011612,
+        operation: "add_multiplied_total",
     },
 ];
 
@@ -990,6 +1009,67 @@ mod tests {
             Some(&Tag::Double(-0.15000000596046448 * 3.0))
         );
         assert_eq!(speed.get("base"), Some(&Tag::Double(0.10000000149011612)));
+    }
+
+    #[test]
+    fn haste_mining_fatigue_and_conduit_power_are_saved_with_their_attack_speed_modifiers() {
+        let mut stats = hurt_and_fed();
+        stats.status.add_effect(EffectKind::Haste, 1200, 1);
+        stats.status.add_effect(EffectKind::MiningFatigue, 600, 0);
+        stats.status.add_effect(EffectKind::ConduitPower, 300, 0);
+        let tag = with_stats(stats).merged(None);
+        let read = PlayerData::read(&tag, &RecipeBook::default())
+            .stats
+            .unwrap();
+        assert_eq!(read, stats);
+        let ids: Vec<&str> = tag
+            .get("active_effects")
+            .and_then(Tag::as_list)
+            .unwrap()
+            .iter()
+            .filter_map(|effect| effect.get("id").and_then(Tag::as_str))
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "minecraft:haste",
+                "minecraft:mining_fatigue",
+                "minecraft:conduit_power"
+            ]
+        );
+        let attributes = tag.get("attributes").and_then(Tag::as_list).unwrap();
+        assert_eq!(attributes.len(), 1);
+        let speed = &attributes[0];
+        assert_eq!(
+            speed.get("id"),
+            Some(&Tag::String("minecraft:attack_speed".to_owned()))
+        );
+        assert_eq!(speed.get("base"), Some(&Tag::Double(4.0)));
+        let modifiers = speed.get("modifiers").and_then(Tag::as_list).unwrap();
+        assert_eq!(modifiers.len(), 2);
+        assert_eq!(
+            modifiers[0].get("id"),
+            Some(&Tag::String("minecraft:effect.haste".to_owned()))
+        );
+        let Some(Tag::Double(amount)) = modifiers[0].get("amount") else {
+            panic!("haste amount");
+        };
+        assert!((amount - 0.2).abs() < 1e-6);
+        assert_eq!(
+            modifiers[0].get("operation"),
+            Some(&Tag::String("add_multiplied_total".to_owned()))
+        );
+        assert_eq!(
+            modifiers[1].get("amount"),
+            Some(&Tag::Double(-0.10000000149011612))
+        );
+        let mut cleared = stats;
+        cleared.status.remove_effect(EffectKind::Haste);
+        cleared.status.remove_effect(EffectKind::MiningFatigue);
+        let merged = with_stats(cleared).merged(Some(tag));
+        let attributes = merged.get("attributes").and_then(Tag::as_list).unwrap();
+        assert_eq!(attributes[0].get("modifiers"), None);
+        assert_eq!(attributes[0].get("base"), Some(&Tag::Double(4.0)));
     }
 
     #[test]

@@ -147,6 +147,49 @@ impl EyeView {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EyeSearch {
+    Found(DVec3),
+    NotFound,
+    TimedOut,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EyeAnswer {
+    pub owner: u64,
+    pub feet: DVec3,
+    pub found: Option<DVec3>,
+    pub target: Option<DVec3>,
+    pub outcome: &'static str,
+    pub millis: u32,
+}
+
+impl EyeAnswer {
+    pub fn flew(&self) -> bool {
+        self.target.is_some()
+    }
+
+    pub fn line(&self) -> String {
+        let at = |v: DVec3| format!("{:.1} {:.1} {:.1}", v.x, v.y, v.z);
+        match (self.found, self.target) {
+            (Some(found), Some(target)) => format!(
+                "Minecraft eye of ender: flew from {} toward {} {}, target {} ({} ms)",
+                at(self.feet),
+                found.x,
+                found.z,
+                at(target),
+                self.millis
+            ),
+            _ => format!(
+                "Minecraft eye of ender: {} from {} ({} ms), the eye stays in the hand",
+                self.outcome,
+                at(self.feet),
+                self.millis
+            ),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EyeSnapshot {
     pub views: Vec<EyeView>,
@@ -173,6 +216,7 @@ pub struct Eyes {
     flying: Vec<EyeOfEnder>,
     shattered: Vec<[i32; 3]>,
     targets: Option<Vec<String>>,
+    answers: Vec<EyeAnswer>,
     random: LegacyRandom,
 }
 
@@ -191,6 +235,7 @@ impl Eyes {
             flying: Vec::new(),
             shattered: Vec::new(),
             targets: None,
+            answers: Vec::new(),
             random: LegacyRandom::new(seed),
         }
     }
@@ -199,21 +244,54 @@ impl Eyes {
         &self.flying
     }
 
-    pub fn locate(&mut self, gen: &WorldGen, feet: DVec3) -> Option<DVec3> {
+    pub fn locate(&mut self, gen: &WorldGen, feet: DVec3) -> (EyeSearch, Duration) {
+        let started = Instant::now();
         let targets = self.targets.get_or_insert_with(|| located_structures(gen));
-        let deadline = Instant::now() + SEARCH_CAP;
-        match crate::locate::nearest_structure(
+        if targets.is_empty() {
+            return (EyeSearch::NotFound, started.elapsed());
+        }
+        let search = match crate::locate::nearest_structure(
             gen,
             targets,
             block_of(feet),
             SEARCH_RADIUS,
-            deadline,
+            started + SEARCH_CAP,
         ) {
             Search::Found([x, y, z], _) => {
-                Some(DVec3::new(f64::from(x), f64::from(y), f64::from(z)))
+                EyeSearch::Found(DVec3::new(f64::from(x), f64::from(y), f64::from(z)))
             }
-            Search::NotFound | Search::TimedOut => None,
+            Search::NotFound => EyeSearch::NotFound,
+            Search::TimedOut => EyeSearch::TimedOut,
+        };
+        (search, started.elapsed())
+    }
+
+    pub fn throw(&mut self, gen: &WorldGen, level: &mut Level, owner: u64, throw: &EyeThrow) -> bool {
+        let (search, took) = self.locate(gen, throw.feet);
+        let found = match search {
+            EyeSearch::Found(found) => Some(found),
+            EyeSearch::NotFound | EyeSearch::TimedOut => None,
+        };
+        if let Some(found) = found {
+            self.launch(level, owner, throw, found);
         }
+        self.answers.push(EyeAnswer {
+            owner,
+            feet: throw.feet,
+            found,
+            target: found.and_then(|_| self.flying.last().map(|eye| eye.target)),
+            outcome: match search {
+                EyeSearch::Found(_) => "flew",
+                EyeSearch::NotFound => "no structure",
+                EyeSearch::TimedOut => "timed out",
+            },
+            millis: u32::try_from(took.as_millis()).unwrap_or(u32::MAX),
+        });
+        found.is_some()
+    }
+
+    pub fn take_answers(&mut self) -> Vec<EyeAnswer> {
+        std::mem::take(&mut self.answers)
     }
 
     pub fn launch(&mut self, level: &mut Level, owner: u64, throw: &EyeThrow, found: DVec3) {
@@ -560,13 +638,44 @@ mod tests {
         Some(Arc::new(Registries::load(&paths).ok()?))
     }
 
+    const OWNER_SEED: i64 = 4986579828511054607;
+    const OWNER_STRONGHOLD: DVec3 = DVec3::new(-496.0, 0.0, -1936.0);
+
     fn worldgen(registries: &Arc<Registries>, dimension: &str) -> Option<WorldGen> {
+        seeded_worldgen(registries, dimension, 0)
+    }
+
+    fn seeded_worldgen(registries: &Arc<Registries>, dimension: &str, seed: i64) -> Option<WorldGen> {
         let terrain = if dimension == "minecraft:the_nether" {
-            TerrainGenerator::nether(registries.clone(), 0).ok()?
+            TerrainGenerator::nether(registries.clone(), seed).ok()?
         } else {
-            TerrainGenerator::overworld(registries.clone(), 0).ok()?
+            TerrainGenerator::overworld(registries.clone(), seed).ok()?
         };
         WorldGen::for_dimension(Arc::new(terrain), dimension).ok()
+    }
+
+    fn states(registries: &Arc<Registries>) -> Option<Arc<crate::terrain::BlockStates>> {
+        crate::terrain::BlockStates::new(registries.clone(), 0, -64, 384)
+            .ok()
+            .map(Arc::new)
+    }
+
+    fn tick_input(feet: DVec3) -> crate::server::TickInput {
+        crate::server::TickInput {
+            clocks: crate::server::ClockTicks::default(),
+            players: vec![feet.to_array()],
+            difficulty: 2,
+            simulation_center: ((feet.x.floor() as i32) >> 4, (feet.z.floor() as i32) >> 4),
+            simulation_distance: 2,
+            pickup: None,
+            mob_players: Vec::new(),
+            mob_views: Vec::new(),
+            mob_vitals: Vec::new(),
+            bright_outside: true,
+            tracking: (feet.to_array(), 64.0),
+            player_hurts: Vec::new(),
+            spawn_mobs: false,
+        }
     }
 
     #[test]
@@ -639,7 +748,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "resolves all 128 stronghold rings"]
     fn an_overworld_eye_finds_a_stronghold_ring_chunk_corner() {
         let Some(registries) = registries() else {
             return;
@@ -647,9 +755,12 @@ mod tests {
         let Some(overworld) = worldgen(&registries, "minecraft:overworld") else {
             return;
         };
+        crate::locate::resolve_rings(&overworld);
         let started = Instant::now();
-        let found = Eyes::seeded(0).locate(&overworld, DVec3::new(0.5, 64.0, 0.5));
-        let found = found.expect("seed 0 has strongholds");
+        let (found, _) = Eyes::seeded(0).locate(&overworld, DVec3::new(0.5, 64.0, 0.5));
+        let EyeSearch::Found(found) = found else {
+            panic!("seed 0 has strongholds: {found:?}");
+        };
         assert_eq!(found.y, 0.0);
         assert_eq!((found.x as i32 % 16, found.z as i32 % 16), (0, 0));
         assert!(started.elapsed() < SEARCH_CAP, "{:?}", started.elapsed());
@@ -671,7 +782,10 @@ mod tests {
             return;
         };
         let mut eyes = Eyes::seeded(0);
-        assert_eq!(eyes.locate(&nether, DVec3::new(0.5, 64.0, 0.5)), None);
+        assert_eq!(
+            eyes.locate(&nether, DVec3::new(0.5, 64.0, 0.5)).0,
+            EyeSearch::NotFound
+        );
         let Ok(states) = crate::terrain::BlockStates::new(registries.clone(), 0, 0, 256) else {
             return;
         };
@@ -682,5 +796,173 @@ mod tests {
         );
         assert!(!server.throw_eye(0, &throw_at(DVec3::new(0.5, 64.9, 0.5))));
         assert!(server.eye_snapshot().views.is_empty());
+    }
+
+    #[test]
+    fn a_throw_with_no_stronghold_answers_no_with_a_reason() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let (Some(nether), Some(states)) = (
+            seeded_worldgen(&registries, "minecraft:the_nether", OWNER_SEED),
+            states(&registries),
+        ) else {
+            return;
+        };
+        let mut server = crate::server::ServerHandle::spawn(crate::server::ServerSim::new(
+            Arc::new(nether),
+            states,
+            "minecraft:the_nether",
+        ));
+        let throw = throw_at(DVec3::new(10.5, 100.9, -3.5));
+        server.throw_eye(7, throw.clone());
+        server.wait_idle();
+        let outputs = server.poll();
+        let uses: Vec<bool> = outputs
+            .iter()
+            .flat_map(|out| out.item_uses.clone())
+            .collect();
+        assert_eq!(uses, vec![false]);
+        let answers: Vec<EyeAnswer> = outputs
+            .into_iter()
+            .flat_map(|out| out.eye_answers)
+            .collect();
+        assert_eq!(answers.len(), 1);
+        let answer = &answers[0];
+        assert_eq!((answer.owner, answer.outcome), (7, "no structure"));
+        assert_eq!((answer.found, answer.target), (None, None));
+        assert_eq!(answer.feet, throw.feet);
+        assert!(!answer.flew());
+        assert_eq!(
+            answer.line(),
+            format!(
+                "Minecraft eye of ender: no structure from 10.5 100.0 -3.5 ({} ms), the eye stays in the hand",
+                answer.millis
+            )
+        );
+        for _ in 0..3 {
+            server.tick(tick_input(throw.feet), vec![true]);
+        }
+        server.wait_idle();
+        let snapshot = server
+            .poll()
+            .into_iter()
+            .filter_map(|out| out.entities)
+            .next_back()
+            .expect("a tick sends the entities");
+        assert!(snapshot.eyes.views.is_empty());
+    }
+
+    #[test]
+    fn the_eye_search_and_locate_agree() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let Some(overworld) = seeded_worldgen(&registries, "minecraft:overworld", OWNER_SEED)
+        else {
+            return;
+        };
+        crate::locate::resolve_rings(&overworld);
+        let mut eyes = Eyes::seeded(0);
+        let stronghold = vec!["minecraft:stronghold".to_owned()];
+        for feet in [
+            DVec3::new(-300.5, 80.0, -1700.5),
+            DVec3::new(0.5, 70.0, 0.5),
+            DVec3::new(1200.5, 64.0, 900.5),
+        ] {
+            let (search, took) = eyes.locate(&overworld, feet);
+            assert!(took < SEARCH_CAP, "{took:?}");
+            let located = crate::locate::nearest_structure(
+                &overworld,
+                &stronghold,
+                block_of(feet),
+                crate::locate::STRUCTURE_RADIUS,
+                Instant::now() + SEARCH_CAP,
+            );
+            let Search::Found([x, y, z], name) = located else {
+                panic!("/locate finds no stronghold from {feet}: {located:?}");
+            };
+            assert_eq!(name, "minecraft:stronghold");
+            let corner = DVec3::new(f64::from(x), f64::from(y), f64::from(z));
+            assert_eq!(search, EyeSearch::Found(corner), "from {feet}");
+        }
+    }
+
+    #[test]
+    fn a_thrown_eye_goes_through_the_server_thread_and_flies_toward_the_stronghold() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let (Some(overworld), Some(states)) = (
+            seeded_worldgen(&registries, "minecraft:overworld", OWNER_SEED),
+            states(&registries),
+        ) else {
+            return;
+        };
+        crate::locate::resolve_rings(&overworld);
+        let mut server = crate::server::ServerHandle::spawn(crate::server::ServerSim::new(
+            Arc::new(overworld),
+            states,
+            "minecraft:overworld",
+        ));
+        let feet = DVec3::new(-300.5, 80.0, -1700.5);
+        let throw = EyeThrow {
+            feet,
+            middle: feet + DVec3::Y * 0.9,
+            components: None,
+        };
+        server.throw_eye(7, throw.clone());
+        server.wait_idle();
+        let outputs = server.poll();
+        let uses: Vec<bool> = outputs
+            .iter()
+            .flat_map(|out| out.item_uses.clone())
+            .collect();
+        assert_eq!(uses, vec![true]);
+        let answers: Vec<EyeAnswer> = outputs
+            .into_iter()
+            .flat_map(|out| out.eye_answers)
+            .collect();
+        assert_eq!(answers.len(), 1);
+        let answer = &answers[0];
+        assert_eq!((answer.owner, answer.outcome), (7, "flew"));
+        assert_eq!(answer.found, Some(OWNER_STRONGHOLD));
+        assert!(answer.millis < 20_000, "{} ms", answer.millis);
+        let target = signal_target(throw.middle, OWNER_STRONGHOLD);
+        assert_eq!(answer.target, Some(target));
+        assert!(answer.flew());
+        assert!(
+            answer
+                .line()
+                .starts_with("Minecraft eye of ender: flew from -300.5 80.0 -1700.5 toward -496 -1936, target "),
+            "{}",
+            answer.line()
+        );
+        let out = target - throw.middle;
+        assert!((out.x.hypot(out.z) - TOO_FAR).abs() < 1.0e-9);
+        assert_eq!(out.y, TOO_FAR_HEIGHT);
+        assert!(out.x < 0.0 && out.z < 0.0, "north-west, toward the stronghold");
+        for _ in 0..20 {
+            server.tick(tick_input(feet), vec![true]);
+        }
+        server.wait_idle();
+        let outputs = server.poll();
+        let launched = outputs
+            .iter()
+            .flat_map(|out| &out.mob_sounds)
+            .filter(|sound| sound.event == LAUNCH_SOUND)
+            .count();
+        assert_eq!(launched, 1, "the launch is heard once");
+        let snapshot = outputs
+            .into_iter()
+            .filter_map(|out| out.entities)
+            .next_back()
+            .expect("a tick sends the entities");
+        assert_eq!(snapshot.eyes.views.len(), 1);
+        let view = snapshot.eyes.views[0];
+        assert_eq!((view.owner, view.age), (7, 20));
+        let moved = view.position - throw.middle;
+        assert!(moved.x < 0.0 && moved.z < 0.0 && moved.y > 0.0, "{moved:?}");
+        assert!(moved.normalize().dot(out.normalize()) > 0.8, "{moved:?}");
     }
 }

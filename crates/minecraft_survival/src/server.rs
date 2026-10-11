@@ -23,12 +23,14 @@ use crate::player::{Player, joining_inventory};
 use crate::player_nbt::{Place, PlayerData};
 use crate::save::{WorldClocks, WorldSave};
 use crate::survival::Survival;
+use crate::tick_rate::{TickBatch, TickRate};
 
 pub struct Server {
     pub globals: Globals,
     pub levels: BTreeMap<Dimension, Level>,
     pub opening: BTreeMap<Dimension, LevelLoader>,
     pub players: BTreeMap<PlayerUuid, Player>,
+    pub pending_batch: Option<TickBatch>,
 }
 
 pub struct Globals {
@@ -46,10 +48,11 @@ pub struct Globals {
     pub chat: CommandServer,
     pub data: GameData,
     pub writer: SaveWriter,
-    pub autosave_ticks: u32,
+    pub autosave_due: bool,
     pub level_ticks: u32,
     pub closing: Vec<(Dimension, JoinHandle<()>)>,
     pub waiting_locates: Vec<(Dimension, PlayerId, LocateRequest)>,
+    pub tick_rate: TickRate,
 }
 
 impl Globals {
@@ -107,15 +110,18 @@ impl Globals {
         }
     }
 
-    pub fn advance_clocks(&mut self, seconds: f64) {
+    pub fn advance_clocks(&mut self, ticks: u32) {
+        if ticks == 0 {
+            return;
+        }
         let advancing = self.game_rules.bool("advance_time");
         if advancing && !self.day.paused {
-            self.day.advance(seconds);
+            self.day.advance_ticks(ticks);
         } else if let Some(save) = self.save.as_mut() {
-            save.shift_day(-seconds * 20.0);
+            save.shift_day(-f64::from(ticks));
         }
         if advancing {
-            self.end_clock.advance(seconds);
+            self.end_clock.advance_ticks(ticks);
         }
     }
 }
@@ -266,7 +272,30 @@ impl Drop for LevelLoader {
     }
 }
 
+pub fn resolve_rings_in_background(
+    stream: &minecraft_terrain::terrain::TerrainStream,
+) -> Option<JoinHandle<usize>> {
+    let world = stream.world_gen();
+    std::thread::Builder::new()
+        .name("Stronghold rings".to_owned())
+        .spawn(move || {
+            if !minecraft_terrain::locate::has_rings(&world) {
+                return 0;
+            }
+            let started = Instant::now();
+            let rings = minecraft_terrain::locate::resolve_rings(&world);
+            diag::info!(
+                World,
+                "Minecraft stronghold rings: {rings} worked out in {} ms",
+                started.elapsed().as_millis()
+            );
+            rings
+        })
+        .ok()
+}
+
 pub fn start_level(globals: &mut Globals, level: &mut Level) {
+    let _ = resolve_rings_in_background(&level.terrain.stream);
     let forced_weather = if has_weather(level.dimension) {
         globals.forced_weather.take()
     } else {
@@ -312,6 +341,60 @@ fn spawn_place(spawn: &RespawnData) -> Place {
 }
 
 impl Server {
+    pub fn plan_ticks(&mut self, now: Instant, ticking: &[Dimension]) -> TickBatch {
+        let mut holders = Vec::new();
+        let mut ready = true;
+        let mut finished: Vec<u64> = Vec::new();
+        for dimension in ticking {
+            let Some(entities) = self
+                .levels
+                .get_mut(dimension)
+                .and_then(|level| level.entities.as_mut())
+            else {
+                continue;
+            };
+            holders.push(*dimension);
+            ready &= entities.ready_for_ticks();
+            for (index, nanos) in entities.take_finished_ticks().into_iter().enumerate() {
+                match finished.get_mut(index) {
+                    Some(slowest) => *slowest = (*slowest).max(nanos),
+                    None => finished.push(nanos),
+                }
+            }
+        }
+        if holders.is_empty() {
+            self.pending_batch = None;
+        }
+        self.globals.tick_rate.record(&finished);
+        let batch = self
+            .globals
+            .tick_rate
+            .plan(now, ready && self.pending_batch.is_none());
+        let normal = batch.normal_count();
+        self.globals.advance_clocks(normal);
+        self.globals.advance_weather(ticking, normal);
+        self.globals.level_ticks = self.globals.level_ticks.saturating_add(batch.len() as u32);
+        if self.globals.tick_rate.count_autosave(batch.len()) {
+            self.globals.autosave_due = true;
+        }
+        if !holders.is_empty() && !batch.is_empty() {
+            for dimension in &holders {
+                if let Some(level) = self.levels.get_mut(dimension) {
+                    level.container_ticks = level.container_ticks.saturating_add(normal);
+                }
+            }
+            self.pending_batch = Some(batch.clone());
+        }
+        batch
+    }
+
+    pub fn take_batch(&mut self) -> TickBatch {
+        self.pending_batch.take().unwrap_or(TickBatch {
+            normal: Vec::new(),
+            overload: None,
+        })
+    }
+
     pub fn known_spawn(&self, dimension: Dimension, arrival: Option<Place>) -> Option<(i32, i32, i32)> {
         match dimension {
             Dimension::Overworld => (crate::save::spawn_dimension(&self.globals.spawn)
@@ -1363,10 +1446,11 @@ pub(crate) mod tests {
             chat: CommandServer::new(crate::commands::HOST),
             data: GameData::default(),
             writer: SaveWriter::default(),
-            autosave_ticks: 0,
+            autosave_due: false,
             level_ticks: 0,
             closing: Vec::new(),
             waiting_locates: Vec::new(),
+            tick_rate: TickRate::default(),
         }
     }
 
@@ -1378,6 +1462,7 @@ pub(crate) mod tests {
             levels: BTreeMap::new(),
             opening: BTreeMap::new(),
             players: BTreeMap::new(),
+            pending_batch: None,
         };
         let (open, gate) = mpsc::channel::<()>();
         server.globals.writer.queue(move || {
@@ -1546,7 +1631,7 @@ pub(crate) mod tests {
                 the_end: 0
             }
         );
-        globals.advance_clocks(1.0);
+        globals.advance_clocks(20);
         assert_eq!(
             globals.clock_ticks(),
             ClockTicks {
@@ -1559,7 +1644,7 @@ pub(crate) mod tests {
         globals.end_clock.ticks = 5.0;
         assert_eq!(globals.default_clock_ticks(Dimension::End), 5);
         globals.end_clock.paused = true;
-        globals.advance_clocks(1.0);
+        globals.advance_clocks(20);
         assert_eq!(
             globals.clock_ticks(),
             ClockTicks {
@@ -1569,7 +1654,7 @@ pub(crate) mod tests {
         );
         globals.end_clock.paused = false;
         globals.game_rules.set("advance_time", "false").unwrap();
-        globals.advance_clocks(1.0);
+        globals.advance_clocks(20);
         assert_eq!(
             globals.clock_ticks(),
             ClockTicks {
@@ -1621,6 +1706,7 @@ pub(crate) mod tests {
             levels: BTreeMap::new(),
             opening: BTreeMap::new(),
             players: BTreeMap::from([(uuid.clone(), player)]),
+            pending_batch: None,
         };
         server.save_and_close(Instant::now());
         let opened = crate::save::open_world(&dir.0, None, None, 2);
@@ -1684,6 +1770,7 @@ pub(crate) mod tests {
                 .into_iter()
                 .map(|player| (player.uuid.clone(), player))
                 .collect(),
+            pending_batch: None,
         }
     }
 
@@ -2562,5 +2649,109 @@ pub(crate) mod tests {
         let start = crate::portal_forcer::travel_into(&mut players, Dimension::Nether, &server.globals.registries).expect("a debug start comes through a portal");
         assert_eq!((start.target, start.entry_axis, start.relative), ((-5, 64, 10), PortalAxis::X, [0.5, 0.0, 0.0]));
         assert!(crate::portal_forcer::travel_into(&mut players, Dimension::End, &server.globals.registries).is_none());
+    }
+
+    #[test]
+    fn the_stronghold_rings_are_worked_out_on_their_own_thread() {
+        let Some(stream) = crate::commands::tests::test_stream() else {
+            return;
+        };
+        let handle = resolve_rings_in_background(&stream).expect("a thread");
+        assert_eq!(handle.thread().name(), Some("Stronghold rings"));
+        assert_eq!(handle.join().ok(), Some(128));
+        let started = Instant::now();
+        assert_eq!(
+            minecraft_terrain::locate::resolve_rings(&stream.world_gen()),
+            128
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(200),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_batch_left_by_an_early_return_is_sent_on_the_next_frame() {
+        let Some(mut level) =
+            crate::commands::tests::test_stream().and_then(crate::commands::tests::test_level)
+        else {
+            return;
+        };
+        let registries = level.terrain.stream.states.registries().clone();
+        level.entities = Some(Entities::new(
+            &level.terrain.stream,
+            Dimension::Overworld,
+            0,
+            &GameData::default(),
+            None,
+            None,
+        ));
+        let mut server = Server {
+            globals: test_globals(registries, None),
+            levels: BTreeMap::from([(Dimension::Overworld, level)]),
+            opening: BTreeMap::new(),
+            players: BTreeMap::new(),
+            pending_batch: None,
+        };
+        let base = Instant::now();
+        let after = |millis| base + std::time::Duration::from_millis(millis);
+        assert_eq!(server.plan_ticks(base, &[]).len(), 1);
+        assert!(server.pending_batch.is_none(), "no ticking level holds it");
+        let planned = server.plan_ticks(after(150), &[Dimension::Overworld]);
+        assert_eq!(planned.len(), 3);
+        assert_eq!(server.levels[&Dimension::Overworld].container_ticks, 3);
+        assert!(server.plan_ticks(after(300), &[Dimension::Overworld]).is_empty());
+        assert_eq!(server.levels[&Dimension::Overworld].container_ticks, 3);
+        assert_eq!(server.take_batch(), planned);
+        assert!(server.take_batch().is_empty());
+        assert_eq!(server.plan_ticks(after(300), &[Dimension::Overworld]).len(), 3);
+    }
+
+    #[test]
+    fn frozen_ticks_move_no_clock_and_no_weather_but_count_for_the_autosave_and_empty_levels() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let rain = WeatherData {
+            rain_time: 100,
+            raining: true,
+            ..WeatherData::default()
+        };
+        let mut server = Server {
+            globals: Globals {
+                weather: Some(rain),
+                ..test_globals(registries, None)
+            },
+            levels: BTreeMap::new(),
+            opening: BTreeMap::new(),
+            players: BTreeMap::new(),
+            pending_batch: None,
+        };
+        let base = Instant::now();
+        let after = |millis| base + std::time::Duration::from_millis(millis);
+        let rain_time = |server: &Server| server.globals.weather.map(|weather| weather.rain_time);
+        assert_eq!(server.plan_ticks(base, &[Dimension::Nether]).normal_count(), 1);
+        assert_eq!(server.globals.clock_ticks(), ClockTicks { overworld: 1001, the_end: 1 });
+        assert_eq!(rain_time(&server), Some(99));
+        assert_eq!(server.globals.level_ticks, 1);
+        server.globals.tick_rate.set_frozen(true);
+        let frozen = server.plan_ticks(after(500), &[Dimension::Nether]);
+        assert_eq!((frozen.len(), frozen.normal_count()), (10, 0));
+        assert_eq!(server.globals.clock_ticks(), ClockTicks { overworld: 1001, the_end: 1 });
+        assert_eq!(rain_time(&server), Some(99));
+        assert_eq!(server.globals.level_ticks, 11);
+        assert_eq!(server.globals.tick_rate.ticks_until_autosave(), 5989);
+        assert!(!server.globals.autosave_due);
+        for step in 1..=5989 {
+            server.plan_ticks(after(500 + 50 * step), &[Dimension::Nether]);
+        }
+        assert!(server.globals.autosave_due, "frozen ticks count down to the autosave");
+        assert_eq!(server.globals.tick_rate.ticks_until_autosave(), 6000);
+        assert_eq!(server.globals.clock_ticks(), ClockTicks { overworld: 1001, the_end: 1 });
+        server.globals.tick_rate.set_frozen(false);
+        assert_eq!(server.plan_ticks(after(500 + 50 * 5990), &[Dimension::Nether]).normal_count(), 1);
+        assert_eq!(server.globals.clock_ticks(), ClockTicks { overworld: 1002, the_end: 2 });
+        assert_eq!(rain_time(&server), Some(98));
     }
 }

@@ -199,7 +199,7 @@ impl Placement {
     /// other placements).
     pub fn ring_chunks(&self, terrain: &TerrainGenerator, count: usize) -> Vec<ChunkPos> {
         match &self.kind {
-            Kind::ConcentricRings { preferred, slots } => slots.iter().take(count).map(|slot| resolve_ring(terrain, preferred, slot)).collect(),
+            Kind::ConcentricRings { preferred, slots } => slots.iter().take(count).map(|slot| *slot.resolved.get_or_init(|| resolve_ring(terrain, preferred, slot))).collect(),
             _ => Vec::new(),
         }
     }

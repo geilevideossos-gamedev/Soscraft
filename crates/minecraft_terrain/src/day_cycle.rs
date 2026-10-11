@@ -86,6 +86,12 @@ impl DayCycle {
         }
     }
 
+    pub fn advance_ticks(&mut self, ticks: u32) {
+        if !self.paused {
+            self.ticks += f64::from(ticks);
+        }
+    }
+
     pub fn set(&mut self, ticks: f64) {
         // Keep total clock ticks. The sky/moon sample wraps separately, while
         // DebugEntryDayCount reads the unwrapped period count.
@@ -384,5 +390,16 @@ mod tests {
         clock.paused = true;
         clock.advance(1.0);
         assert_eq!(clock.ticks, start + 20.0);
+    }
+
+    #[test]
+    fn day_advances_by_server_ticks_until_paused() {
+        let mut clock = DayCycle::default();
+        let start = clock.ticks;
+        clock.advance_ticks(3);
+        assert_eq!(clock.ticks, start + 3.0);
+        clock.paused = true;
+        clock.advance_ticks(3);
+        assert_eq!(clock.ticks, start + 3.0);
     }
 }

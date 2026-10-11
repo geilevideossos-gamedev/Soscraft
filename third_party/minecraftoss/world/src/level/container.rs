@@ -102,7 +102,7 @@ impl Level<'_> {
         self.chunks.get_mut(&pos.chunk())?.block_entities.entities.get_mut(&(pos.x, pos.y, pos.z))
     }
 
-    pub(super) fn set_block_entity_value(&mut self, pos: BlockPos, key: &str, value: Tag) {
+    pub fn set_block_entity_value(&mut self, pos: BlockPos, key: &str, value: Tag) {
         let Some(Tag::Compound(map)) = self.block_entity_mut(pos) else { return };
         if map.get(key) != Some(&value) {
             map.insert(key.to_owned(), value);

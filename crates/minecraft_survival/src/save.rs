@@ -17,7 +17,6 @@ use crate::player_nbt::PlayerData;
 
 pub const DEFAULT_WORLD: &str = "world";
 pub const TEMPORARY_WORLD: &str = "temp";
-pub const AUTOSAVE_TICKS: u32 = 6000;
 const OVERWORLD: &str = "minecraft:overworld";
 const THE_END: &str = "minecraft:the_end";
 

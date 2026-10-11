@@ -202,9 +202,14 @@ assertions_on_constants = "deny"
 # Fat LTO + one codegen unit stay on this profile only. `make deploy` does not
 # select it; that is `PROFILE=release`.
 [profile.release]
+lto = "thin"
+codegen-units = 16
+strip = "symbols"
+
+[profile.fat]
+inherits = "release"
 lto = true
 codegen-units = 1
-strip = "symbols"
 
 # The dev loop, including `make bench` and the default Windows/master
 # deploy path. Same opt-level as release (Bevy is unusable without it), minus

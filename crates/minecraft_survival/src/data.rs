@@ -15,6 +15,7 @@ pub struct GameData {
     pub enchantments: Option<Arc<Enchantments>>,
     pub protection: Option<Arc<minecraft_terrain::protection::ProtectionBook>>,
     pub transforms: Option<Arc<minecraft_terrain::transform::TransformBook>>,
+    pub mining: Option<Arc<minecraft_terrain::mining_speed::MiningBook>>,
 }
 
 impl GameData {
@@ -60,6 +61,20 @@ impl GameData {
             Ok(book) => data.transforms = Some(Arc::new(book)),
             Err(error) => diag::warn!(World, "Minecraft tool block transformers unavailable: {error:#}"),
         }
+        match minecraft_terrain::mining_speed::MiningBook::from_jar(&jar) {
+            Ok(book) => {
+                for warning in book.warnings() {
+                    diag::warn!(World, "Minecraft mining: {warning}");
+                }
+                diag::info!(
+                    World,
+                    "Minecraft mining: {} blocks need the right tool to drop",
+                    book.tool_block_count()
+                );
+                data.mining = Some(Arc::new(book));
+            }
+            Err(error) => diag::warn!(World, "Minecraft mining speeds unavailable: {error:#}"),
+        }
         if let Some(catalog) = catalog.as_deref() {
             match minecraftoss_entities::trading::TradeBook::from_jar(&jar, catalog) {
                 Ok(book) => data.enchantments = Some(Arc::new(book.enchantments)),
@@ -84,6 +99,7 @@ mod tests {
         assert!(data.enchantments.is_none());
         assert!(data.protection.is_none());
         assert!(data.transforms.is_none());
+        assert!(data.mining.is_none());
     }
 
     #[test]
@@ -94,5 +110,6 @@ mod tests {
         assert_eq!(data.recipes.count(), 0);
         assert!(data.loot.is_none());
         assert!(data.enchantments.is_none());
+        assert!(data.mining.is_none());
     }
 }

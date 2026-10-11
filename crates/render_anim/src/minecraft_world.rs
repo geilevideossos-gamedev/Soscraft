@@ -298,13 +298,14 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         chat,
         data: Default::default(),
         writer: Default::default(),
-        autosave_ticks: 0,
+        autosave_due: false,
         level_ticks: 0,
         closing: Vec::new(),
         waiting_locates: Vec::new(),
+        tick_rate: Default::default(),
     };
     let level = minecraft_survival::level::Level::new(Dimension::Overworld, terrain);
-    Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), opening: Default::default(), players: std::collections::BTreeMap::new() }))
+    Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), opening: Default::default(), players: std::collections::BTreeMap::new(), pending_batch: None }))
 }
 
 pub(crate) fn load_look(packs: PackStack) -> Result<Loaded, String> {
@@ -627,9 +628,10 @@ fn update(
         puppet.active = false;
         return;
     };
-    let minecraft_survival::server::Server { globals, levels, players, .. } = server;
-    if globals.autosave_ticks >= minecraft_survival::save::AUTOSAVE_TICKS {
-        globals.autosave_ticks = 0;
+    let ticking: Vec<Dimension> = server.players.get(local_uuid).filter(|player| player.switching.is_none()).map(|player| player.dimension).into_iter().collect();
+    let planned = server.plan_ticks(std::time::Instant::now(), &ticking);
+    let minecraft_survival::server::Server { globals, levels, players, pending_batch, .. } = server;
+    if std::mem::take(&mut globals.autosave_due) {
         minecraft_survival::server::autosave(globals, levels, players);
     }
     let others = minecraft_survival::level::player_blocks(players.iter().filter(|(uuid, _)| *uuid != local_uuid).map(|(_, player)| player));
@@ -674,7 +676,6 @@ fn update(
                 let minecraft_survival::level::Level { entities, containers, terrain, dimension, .. } = level;
                 stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, at, &minecraft_survival::level::blocks_in(&others, *dimension), aspect, now_ms);
             }
-            globals.advance_clocks(time.delta_secs_f64());
             if standing && player.arrival.is_none() && !spawn_gate.waiting() && !minecraft_survival::the_end::holding_for_credits(player) {
                 player.switching = None;
                 diag::info!(World, "Minecraft player arrived in {} at {:?}", player.dimension.dimension_type(), at);
@@ -707,7 +708,7 @@ fn update(
     relayed.teleports.extend(teleports.iter().filter(|(uuid, _)| uuid != local_uuid).cloned());
     let delivered = delivered_here;
     ui.chat.command_level = players.get(local_uuid).map_or(0, |player| globals.chat.level(player.id));
-    crate::minecraft_end::tick_fight(levels, players, globals, time.delta_secs_f64(), local_uuid, &mut ui);
+    crate::minecraft_end::tick_fight(levels, players, globals, f64::from(planned.normal_count()) * minecraft_survival::the_end::dragon_fight::TICK_SECONDS, local_uuid, &mut ui);
     let Some(player) = players.get_mut(local_uuid) else {
         ui.active = false;
         ui.inventory_open = false;
@@ -715,6 +716,7 @@ fn update(
         return;
     };
     crate::minecraft_portal::step(player, levels, globals, presented.player(local.0).filter(|ps| ps.pm_type == 0).map(|ps| sim::voxel::to_block(origin, ps.origin)), time.delta_secs_f64(), sounds.as_mut(), &world.packs, &mut ui);
+    crate::minecraft_end::pearls_through(player, levels);
     if player.switching.is_some_and(|switch| !switch.left) {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
         ui.active = false;
@@ -728,7 +730,7 @@ fn update(
         puppet.active = false;
         return;
     };
-    let minecraft_survival::level::Level { entities, containers, terrain, dimension, .. } = &mut *level;
+    let minecraft_survival::level::Level { entities, containers, terrain, dimension, container_ticks, .. } = &mut *level;
     minecraft_terrain::cow_render::set_nether_entity_lighting(terrain.rules.nether_cardinal_light);
     if !delivered.is_empty() {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
@@ -777,14 +779,13 @@ fn update(
     if ui.chat.language.is_empty() && let Some(language) = inventory_ui.language() {
         ui.chat.language = std::sync::Arc::new(language.clone());
     }
-    let mut all_events = sim::voxel::take_events();
+    let all_events = sim::voxel::take_events();
     let mut moved = crate::minecraft_players::movement(player, globals, terrain, entities, (shapes, shape_ids), &authority.0, local.0, origin, ps, alive, time.delta_secs_f64(), sounds, &world.packs);
     ui.holding_item = moved.holding_item;
     ui.empty_hand = moved.empty_hand;
     ui.cooldowns = std::mem::take(&mut moved.cooldowns);
-    let hand_ticks = moved.hand_ticks;
     if let Some(entities) = entities.as_mut() {
-        let (writes, brewed) = minecraft_survival::level::tick_containers(containers, entities, terrain, hand_ticks);
+        let (writes, brewed) = minecraft_survival::level::tick_containers(containers, entities, terrain, std::mem::take(container_ticks));
         if let Some(sounds) = sounds.as_mut() {
             for pos in brewed {
                 let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
@@ -796,7 +797,7 @@ fn update(
         }
     }
     let host_hand = crate::minecraft_players::HostHand { ui: &mut ui, inventory_ui, hud_input: hud_input.as_deref(), buttons: &buttons, pad, mining, atlas: &world.atlas, light: light.as_ref(), now: time.elapsed_secs_f64() };
-    let crate::minecraft_players::Acted { open_table, mut open_block, mut open_bench, hand_mined, creative_broken } = crate::minecraft_players::act(host_hand, player, globals, level, (shapes, shape_ids), &mut authority.0, local.0, origin, ps, alive, &moved, &mut all_events, sounds, &world.packs);
+    let crate::minecraft_players::Acted { open_table, mut open_block, mut open_bench, hand_mined, creative_broken, hand_broken } = crate::minecraft_players::act(host_hand, player, globals, level, (shapes, shape_ids), &mut authority.0, local.0, origin, ps, alive, &moved, sounds, &world.packs);
     let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, .. } = &mut *player;
     let minecraft_survival::level::Level { entities, containers, terrain, openers, dimension, .. } = &mut *level;
 
@@ -869,6 +870,11 @@ fn update(
     };
     let mut broken = mining.apply(events, &mut refs, time.elapsed_secs_f64());
     broken.extend(mining.break_now(&creative_broken, &mut refs));
+    let dug = mining.break_now(&hand_broken, &mut refs);
+    let dug_blocks: Vec<_> = dug.iter().map(|(pos, block, _)| (*pos, minecraftoss_player::Block { id: block.id.key(), properties: block.properties.clone() })).collect();
+    let wrong_tool = minecraft_survival::digging::wrong_tool(globals.data.mining.as_deref(), &*terrain.stream.states, &dug_blocks, inventory.slots[*selected].as_ref());
+    let worn: Vec<f32> = dug.iter().map(|(_, block, _)| terrain.stream.states.state_of(block).map_or(-1.0, |state| globals.registries.blocks.state(state).destroy_speed)).collect();
+    broken.extend(dug);
     if let Some(sounds) = sounds.as_mut() {
         for (pos, block, blast) in &broken {
             if blast.is_some() {
@@ -880,7 +886,7 @@ fn update(
             }
         }
     }
-    survival.exhaust(minecraft_survival::survival::MINE_EXHAUSTION * broken.iter().filter(|(.., blast)| blast.is_none()).count() as f32);
+    survival.exhaust(minecraft_survival::survival::MINE_EXHAUSTION * broken.iter().filter(|(pos, _, blast)| blast.is_none() && !wrong_tool.contains(pos)).count() as f32);
     if let Some(entities) = entities.as_mut() {
         let positions: Vec<_> = broken.iter().map(|(pos, ..)| *pos).collect();
         entities.mined(inventory.slots[*selected].as_ref(), &broken, &hand_mined, !player_mode.drops_from_breaking());
@@ -892,6 +898,7 @@ fn update(
         let dropping: Vec<_> = broken
             .iter()
             .filter(|(pos, _, blast)| player_mode.drops_from_breaking() || blast.is_some() || kept.get(pos).is_some_and(|components| components.get(minecraft_terrain::containers::CONTAINER).is_some()))
+            .filter(|(pos, ..)| !wrong_tool.contains(pos))
             .cloned()
             .collect();
         entities.award_block_experience(inventory.slots[*selected].as_ref(), &dropping, &hand_mined);
@@ -899,6 +906,15 @@ fn update(
         for &pos in &positions {
             openers.removed(pos);
             minecraft_survival::level::spill(containers, entities, pos);
+        }
+        for hardness in worn {
+            if let Some(item) = minecraft_survival::digging::wear_after_break(inventory, *selected, hardness, || entities.random_float()) {
+                entities.broken_items.push(item);
+                let sound = minecraft_terrain::flint::break_sound(entities.random_float());
+                if let Some(sounds) = sounds.as_mut() {
+                    sounds.play(&world.packs, sound.event, None, sound.volume, sound.pitch);
+                }
+            }
         }
     }
 
@@ -953,7 +969,8 @@ fn update(
         let bright_outside = terrain.environment.sky_light_level() > 11.0;
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
         let ticks_before = entities.client_ticks();
-        let (changes, hits) = entities.tick(inventory, *selected, dt, globals.clock_ticks(), bright_outside, &viewer);
+        let batch = pending_batch.take().unwrap_or(minecraft_survival::tick_rate::TickBatch { normal: Vec::new(), overload: None });
+        let (changes, hits) = entities.tick(inventory, *selected, dt, &batch, globals.tick_rate.client_timing(), globals.clock_ticks(), bright_outside, &viewer);
         entities.present_level_events(&terrain.scene);
         globals.weather = entities.weather_data.or(globals.weather);
         let summoned = std::mem::take(&mut entities.command_summons);
@@ -963,9 +980,6 @@ fn update(
             relayed.delivered.extend(answers);
         }
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
-        globals.autosave_ticks += mob_ticks;
-        globals.level_ticks += mob_ticks;
-        globals.advance_weather(&[*dimension], mob_ticks);
         for _ in 0..mob_ticks {
             let rain = entities.rain_tick(&terrain.scene, eye);
             for sound in entities.animate_tick(&terrain.scene, feet).into_iter().chain(rain) {
@@ -1348,7 +1362,7 @@ fn update(
         bytes.extend_from_slice(bytemuck::cast_slice(&vertices));
         indices.extend(mesh.indices.iter().map(|i| i + base));
     }
-    let minecraft_survival::player::Player { survival, mode: player_mode, inventory, selected, .. } = &mut *player;
+    let minecraft_survival::player::Player { survival, mode: player_mode, inventory, selected, hand, .. } = &mut *player;
     if alive {
         match minecraft_survival::gear::body_gear(inventory, *selected, player_mode) {
             Some(gear) => body_gear.set(local.0.0, gear),
@@ -1359,8 +1373,7 @@ fn update(
     } else {
         body_gear.remove(local.0.0);
     }
-    view.cracks = mining.crack_mesh(&terrain.scene, &terrain.stream.states, &world.packs);
-    globals.advance_clocks(dt);
+    view.cracks = mining.crack_mesh(&terrain.scene, &terrain.stream.states, &world.packs, hand.dig.crack());
     let lava = (alive && sim::voxel::eye_in_lava(ps.origin, ps.view_height_current)).then(|| {
         let fire_resistant = survival.status.effect(minecraftoss_player::survival::EffectKind::FireResistance).is_some();
         (player_mode.mode == minecraftoss_player::GameMode::Spectator, fire_resistant)
@@ -1761,23 +1774,33 @@ pub(crate) fn place_player(
             feet,
             yaw: minecraft_yaw(ps.viewangles[1]),
             pitch: ps.viewangles[0],
-            motion: sim::voxel::to_block([0.0; 3], ps.velocity).map(|v| v * TICK_SECONDS),
+            motion: player_motion(ps.velocity),
             on_ground: ps.ground_entity_num != playerstate_iw4::ENTITYNUM_NONE,
             fall_distance: player.steps.air_peak.map_or(0.0, |peak| (peak - feet[1]).max(0.0)),
         });
         return;
     };
     authority.teleport_facing(id, sim::voxel::to_map(origin, place.feet), [place.pitch, minecraft_yaw(place.yaw), 0.0]);
+    authority.push_velocity(id, arrival_velocity(place.motion));
     if player.mode.abilities.flying {
         authority.set_minecraft_abilities(id, ability_bits(&player.mode) | playerstate_iw4::pm_flags::MC_FLYING);
     }
     player.steps.last = None;
+    player.portal.last_feet = None;
     player.steps.air_peak = (place.fall_distance > 0.0).then_some(place.feet[1] + place.fall_distance);
     let chunk = |block: f64| (block.floor() as i32) >> 4;
     if !gate.waiting() && !sim::voxel::chunks_ready_around(chunk(place.feet[0]), chunk(place.feet[2]), crate::minecraft_spawn_gate::SPAWN_CHUNK_RADIUS) {
         gate.start(now_ms);
     }
     player.place = Some(place);
+}
+
+fn player_motion(velocity: [f32; 3]) -> [f64; 3] {
+    sim::voxel::to_block([0.0; 3], velocity).map(|v| v * TICK_SECONDS)
+}
+
+fn arrival_velocity(motion: [f64; 3]) -> [f32; 3] {
+    sim::voxel::to_map([0.0; 3], motion.map(|v| v / TICK_SECONDS))
 }
 
 pub(crate) fn observe_spawn(terrain: &minecraft_survival::level::Terrain, gate: &mut crate::minecraft_spawn_gate::SpawnGate, origin: [f64; 3], eye: glam::DVec3, now_ms: u64) {
@@ -2168,5 +2191,29 @@ mod yaw_tests {
         for mw2 in [-170.0, -33.5, 12.25, 135.0] {
             assert!(same_angle(minecraft_yaw(minecraft_yaw(mw2)), mw2), "{mw2}");
         }
+    }
+}
+
+#[cfg(test)]
+mod arrival_tests {
+    use super::{arrival_velocity, player_motion};
+
+    #[test]
+    fn an_arrival_gives_back_the_motion_a_departure_saved() {
+        for velocity in [[180.0, -36.0, 72.0], [-500.0, 12.5, -300.0], [0.0, 0.0, 900.0]] {
+            let motion = player_motion(velocity);
+            let back = arrival_velocity(motion);
+            for axis in 0..3 {
+                assert!((back[axis] - velocity[axis]).abs() < 1e-3, "{velocity:?} -> {motion:?} -> {back:?}");
+            }
+        }
+        let east_up_south = arrival_velocity([0.5, 0.25, 0.1]);
+        assert!((east_up_south[0] - 360.0).abs() < 1e-3 && (east_up_south[1] + 72.0).abs() < 1e-3 && (east_up_south[2] - 180.0).abs() < 1e-3, "{east_up_south:?}");
+    }
+
+    #[test]
+    fn no_motion_leaves_the_player_still() {
+        assert_eq!(arrival_velocity([0.0; 3]), [0.0; 3]);
+        assert_eq!(player_motion([0.0; 3]), [0.0; 3]);
     }
 }

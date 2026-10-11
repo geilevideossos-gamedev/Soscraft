@@ -46,6 +46,27 @@ pub enum EffectKind {
     /// `MobEffects.WEAKNESS`: attack damage -4 a level.
     Weakness,
     Wither,
+    Haste,
+    MiningFatigue,
+    ConduitPower,
+}
+
+impl EffectKind {
+    pub const ALL: [EffectKind; 13] = [
+        EffectKind::Hunger,
+        EffectKind::Poison,
+        EffectKind::Regeneration,
+        EffectKind::Absorption,
+        EffectKind::Resistance,
+        EffectKind::FireResistance,
+        EffectKind::Nausea,
+        EffectKind::Slowness,
+        EffectKind::Weakness,
+        EffectKind::Wither,
+        EffectKind::Haste,
+        EffectKind::MiningFatigue,
+        EffectKind::ConduitPower,
+    ];
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -165,7 +186,7 @@ pub struct SurvivalStatus {
     pub fire_ticks: u32,
     damage_cooldown: u8,
     last_hurt: f32,
-    effects: [Option<EffectInstance>; 10],
+    effects: [Option<EffectInstance>; EffectKind::ALL.len()],
 }
 
 impl Default for SurvivalStatus {
@@ -184,7 +205,7 @@ impl Default for SurvivalStatus {
             fire_ticks: 0,
             damage_cooldown: 0,
             last_hurt: 0.0,
-            effects: [None; 10],
+            effects: [None; EffectKind::ALL.len()],
         }
     }
 }
@@ -225,6 +246,11 @@ impl SurvivalStatus {
     /// weakness's -4 a level (`MobEffects.WEAKNESS`).
     pub fn attack_damage_modifier(&self) -> f64 {
         self.effect(EffectKind::Weakness).map_or(0.0, |e| -4.0 * (f64::from(e.amplifier) + 1.0))
+    }
+
+    pub fn attack_speed_multiplier(&self) -> f64 {
+        let level = |kind| self.effect(kind).map(|e: EffectInstance| 0.10000000149011612 * (f64::from(e.amplifier) + 1.0));
+        (1.0 + level(EffectKind::Haste).unwrap_or(0.0)) * (1.0 - level(EffectKind::MiningFatigue).unwrap_or(0.0))
     }
 
     /// `LivingEntity.heal`: only the living heal, up to their maximum.
@@ -356,18 +382,7 @@ impl SurvivalStatus {
     /// MobEffectInstance checks the remaining duration before decrementing.
     pub fn tick_effects(&mut self) {
         self.damage_cooldown = self.damage_cooldown.saturating_sub(1);
-        for kind in [
-            EffectKind::Hunger,
-            EffectKind::Poison,
-            EffectKind::Regeneration,
-            EffectKind::Absorption,
-            EffectKind::Resistance,
-            EffectKind::FireResistance,
-            EffectKind::Nausea,
-            EffectKind::Slowness,
-            EffectKind::Weakness,
-            EffectKind::Wither,
-        ] {
+        for kind in EffectKind::ALL {
             let Some(mut effect) = self.effect(kind) else {
                 continue;
             };
@@ -876,5 +891,46 @@ mod tests {
         status.add_effect(EffectKind::Absorption, 100, 0);
         status.damage(5.0);
         assert_eq!((status.absorption, status.health), (0.0, 1.0));
+    }
+
+    #[test]
+    fn every_effect_kind_is_listed_once_at_its_own_index() {
+        for (index, kind) in EffectKind::ALL.iter().enumerate() {
+            assert_eq!(*kind as usize, index);
+        }
+        let mut status = SurvivalStatus::default();
+        for kind in EffectKind::ALL {
+            status.add_effect(kind, 3, 1);
+        }
+        for kind in EffectKind::ALL {
+            assert_eq!(status.effect(kind).map(|e| e.amplifier), Some(1), "{kind:?}");
+        }
+        for _ in 0..3 {
+            status.tick_effects();
+        }
+        for kind in EffectKind::ALL {
+            assert_eq!(status.effect(kind), None, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn haste_and_mining_fatigue_scale_the_attack_speed() {
+        let multiplier = |effects: &[(EffectKind, u8)]| {
+            let mut status = SurvivalStatus::default();
+            for &(kind, amplifier) in effects {
+                status.add_effect(kind, 100, amplifier);
+            }
+            status.attack_speed_multiplier()
+        };
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        assert_eq!(multiplier(&[]), 1.0);
+        assert!(close(multiplier(&[(EffectKind::Haste, 0)]), 1.1));
+        assert!(close(multiplier(&[(EffectKind::Haste, 1)]), 1.2));
+        assert!(close(multiplier(&[(EffectKind::MiningFatigue, 1)]), 0.8));
+        assert!(close(
+            multiplier(&[(EffectKind::Haste, 0), (EffectKind::MiningFatigue, 0)]),
+            1.1 * 0.9
+        ));
+        assert_eq!(multiplier(&[(EffectKind::ConduitPower, 2)]), 1.0);
     }
 }

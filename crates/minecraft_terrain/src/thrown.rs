@@ -368,6 +368,10 @@ impl Thrown {
         self.flight.velocity
     }
 
+    pub fn discard(&mut self) {
+        self.flight.alive = false;
+    }
+
     pub fn alive(&self) -> bool {
         self.flight.alive
     }

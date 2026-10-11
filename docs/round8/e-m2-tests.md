@@ -73,3 +73,22 @@ Put the kit below in the `.env` next to the exe before the first start: both pla
 ```
 IW4L_MINECRAFT_KIT=minecraft:cooked_beef*8,minecraft:cobblestone*32,minecraft:white_bed,minecraft:torch*16
 ```
+
+## Merge of track A
+
+Track A's round 8 fixes (vanilla mining speed, the eye of ender, the server tick schedule and `/tick`) are now in the multiplayer build. The host's hand code had moved for E10a, so A's mining and eye of ender were carried into the moved code. This checks that they still work for the host, and that `/tick` works for the friend.
+
+Put the kit below in the `.env` next to the exe before the first start: both players get it on their first join.
+
+1. Start both windows: `& scripts\mp-local.ps1 -World mp-m2-a -Fresh`. Spawn in both. Host window: `/time set day`, then `/op Friend`.
+2. Host window: place a cobblestone and select an empty hotbar slot. Hold left click on the cobblestone: the cracks grow slowly for about 10 seconds, the block breaks and nothing drops (a bare hand is the wrong tool for stone).
+3. Host window: place another cobblestone, select the stone pickaxe and hold left click on it: it breaks in under a second, with the hit sounds and chips while it cracks, and the cobblestone drops. Screenshot while it cracks. **S6**
+4. Host window: select the eyes of ender, look up and right click once: an eye flies off towards the stronghold, and the stack drops from 4 to 3. Keep right click held: no second eye is thrown until you let go and click again.
+5. Friend window: `/tick freeze`. A chat line says the game is frozen. Host window: the mobs and dropped items stop and the sun stops moving, and the chat shows the same line in grey as Friend's command. Screenshot the host window. **S7**
+6. Friend window: `/tick unfreeze`. Everything moves again.
+7. Friend window: `/tick sprint 200`. After a moment a chat line reports the finished sprint (ticks per second and milliseconds per tick) in both windows. Screenshot the friend window. **S8**
+8. Close both windows (type `quit` in the script's console).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:stone_pickaxe,minecraft:ender_eye*4,minecraft:cobblestone*32
+```

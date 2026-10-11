@@ -66,6 +66,7 @@ pub struct ServerSim {
     merchant_closing: bool,
     thrown: Vec<crate::thrown::Thrown>,
     pearl_landings: Vec<(u64, [f64; 3])>,
+    pearl_gateways: Vec<(u64, BlockPos)>,
     block_entity_changes: Vec<(BlockPos, Option<minecraftoss_core::nbt::Tag>)>,
     potion_breaks: Vec<minecraftoss_entities::world::PotionBreak>,
     sound_random: minecraftoss_player::rng::LegacyRandom,
@@ -78,6 +79,7 @@ pub struct ServerSim {
     thrown_hits: Vec<crate::thrown::ThrownHit>,
     worldgen: &'static WorldGen,
     eyes: crate::eye_of_ender::Eyes,
+    gateways: crate::end_gateway::Gateways,
     blasts: Vec<(Blast, BlastSource)>,
     block_explosion_drop_decay: bool,
     crystals: crate::end_crystal::Crystals,
@@ -221,6 +223,7 @@ pub struct EntitySnapshot {
     pub dragons: Vec<crate::ender_dragon::DragonView>,
     pub dragon_fireballs: Vec<crate::dragon_fireball::FireballView>,
     pub breath_bursts: Vec<glam::DVec3>,
+    pub gateways: Vec<crate::end_gateway::GatewayView>,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -292,6 +295,7 @@ impl ServerSim {
             merchant_closing: false,
             thrown: Vec::new(),
             pearl_landings: Vec::new(),
+            pearl_gateways: Vec::new(),
             block_entity_changes: Vec::new(),
             potion_breaks: Vec::new(),
             sound_random: minecraftoss_player::rng::LegacyRandom::new(0x5EED_B0771E),
@@ -304,6 +308,7 @@ impl ServerSim {
             thrown_hits: Vec::new(),
             worldgen,
             eyes: crate::eye_of_ender::Eyes::default(),
+            gateways: crate::end_gateway::Gateways::default(),
             blasts: Vec::new(),
             block_explosion_drop_decay: true,
             crystals: crate::end_crystal::Crystals::default(),
@@ -482,6 +487,7 @@ impl ServerSim {
         let mut copy = chunk.clone();
         crate::containers::leave_to_client(&mut copy.block_entities);
         self.level.insert_chunk(copy);
+        self.gateways.load_chunk(chunk);
         if !fresh {
             return;
         }
@@ -522,6 +528,7 @@ impl ServerSim {
             let new = self.mob_tables.pois.get(state.0 as usize).copied().flatten();
             let old = self.mobs.pois.kind((x, y, z));
             self.mobs.pois.block_changed((x, y, z), old, new);
+            self.gateways.sync((x, y, z), crate::end_gateway::tag_at(&self.level, (x, y, z)));
         }
     }
 
@@ -759,6 +766,23 @@ impl ServerSim {
         self.mobs.set_day_time(self.level.overworld_clock());
         let id = crate::server_mobs::spawn_saved(&mut self.mobs, &tag).ok_or_else(|| format!("{kind} is not simulated"))?;
         self.mob_tags.insert(id, tag);
+        Ok(())
+    }
+
+    pub fn spawner_egg(&mut self, pos: BlockPos, kind: &str) -> Result<(), String> {
+        use minecraftoss_world::natural_spawner::spawning::MobCategory;
+        if self.level.difficulty == 0 && MobCategory::of_type(kind) == Some(MobCategory::Monster) {
+            return Err(format!("{kind} may not spawn in peaceful"));
+        }
+        if !self.level.natural_spawning.as_ref().is_none_or(|natural| natural.spawner_blocks_work) {
+            return Err("advMode.notEnabled.spawner".to_owned());
+        }
+        let chunk = self.level.chunk(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2).chunk());
+        let tag = chunk.and_then(|chunk| chunk.block_entities.entities.get(&pos));
+        if tag.and_then(|tag| tag.get("id")).and_then(minecraftoss_core::nbt::Tag::as_str) != Some("minecraft:mob_spawner") {
+            return Err(format!("no monster spawner at {pos:?}"));
+        }
+        minecraftoss_generator::feature::World::set_spawner_entity(&mut self.level, pos.0, pos.1, pos.2, kind);
         Ok(())
     }
 
@@ -1045,6 +1069,10 @@ impl ServerSim {
         std::mem::take(&mut self.pearl_landings)
     }
 
+    pub fn take_pearl_gateways(&mut self) -> Vec<(u64, BlockPos)> {
+        std::mem::take(&mut self.pearl_gateways)
+    }
+
     pub fn take_potion_breaks(&mut self) -> Vec<minecraftoss_entities::world::PotionBreak> {
         self.sound_potion_breaks();
         std::mem::take(&mut self.potion_breaks)
@@ -1063,9 +1091,11 @@ impl ServerSim {
     }
 
     pub fn throw_eye(&mut self, owner: u64, throw: &crate::ender_eye::EyeThrow) -> bool {
-        let Some(found) = self.eyes.locate(self.worldgen, throw.feet) else { return false };
-        self.eyes.launch(&mut self.level, owner, throw, found);
-        true
+        self.eyes.throw(self.worldgen, &mut self.level, owner, throw)
+    }
+
+    pub fn take_eye_answers(&mut self) -> Vec<crate::eye_of_ender::EyeAnswer> {
+        self.eyes.take_answers()
     }
 
     pub fn bottle_breath(&mut self, feet: glam::DVec3, height: f64) -> bool {
@@ -1097,13 +1127,30 @@ impl ServerSim {
         let mut splashes = Vec::new();
         let mut lingering = Vec::new();
         let mut bursts = Vec::new();
+        let mut aged = Vec::new();
         {
-            let Self { level, states, mob_tables, thrown, pearl_landings, potion_breaks, thrown_hits, .. } = self;
+            let Self { level, states, mob_tables, thrown, pearl_landings, potion_breaks, thrown_hits, gateways, pearl_gateways, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
             for t in thrown.iter_mut() {
                 let mut targets = mob_targets.clone();
                 targets.extend(crate::thrown::player_targets(players, t.owner));
-                let Some(landed) = t.tick(&world, &targets, crate::thrown::owner_box(players, t.owner)) else { continue };
+                let landed = t.tick(&world, &targets, crate::thrown::owner_box(players, t.owner));
+                if t.kind == Throwable::EnderPearl {
+                    let to = landed.as_ref().map_or_else(|| t.position(), |landed| landed.at);
+                    let through = crate::end_gateway::pearl_gateway(t.previous.to_array(), to.to_array(), |pos| match gateways.trigger_cooldown(pos) {
+                        Some(age) => {
+                            aged.push((pos, age));
+                            true
+                        }
+                        None => false,
+                    });
+                    if let Some(gateway) = through {
+                        t.discard();
+                        pearl_gateways.push((t.owner, gateway));
+                        continue;
+                    }
+                }
+                let Some(landed) = landed else { continue };
                 let hurts = matches!(t.kind, Throwable::Snowball | Throwable::Egg | Throwable::EnderPearl);
                 if let Some(mob) = landed.mob.filter(|&id| hurts && crate::thrown::struck_player(id).is_none()) {
                     struck.push((mob, landed.velocity, t.owner, t.random().next_long()));
@@ -1158,6 +1205,9 @@ impl ServerSim {
             }
             thrown.retain(crate::thrown::Thrown::alive);
         }
+        for (pos, age) in aged {
+            crate::end_gateway::write_age(&mut self.level, pos, age);
+        }
         for (cell, pitch, hit, direction, amount) in awards {
             self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::thrown::BREAK_SOUND, pos: cell, volume: 1.0, pitch });
             self.level.award_experience_toward(hit.to_array(), direction.to_array(), amount);
@@ -1210,6 +1260,7 @@ impl ServerSim {
         self.collect_block_entity_changes();
         self.save_chunk_entities(pos, true);
         self.level.remove_chunk(pos);
+        self.gateways.unload_chunk(pos);
         self.mobs.pois.unload_chunk(pos.x, pos.z);
     }
 
@@ -1889,6 +1940,30 @@ impl ServerSim {
         self.crystals.views()
     }
 
+    pub fn tick_gateways(&mut self) {
+        self.sync_pois();
+        for (pos, age) in self.gateways.tick() {
+            crate::end_gateway::write_age(&mut self.level, pos, age);
+        }
+    }
+
+    pub fn trigger_gateway(&mut self, pos: BlockPos) -> bool {
+        let Some(age) = self.gateways.trigger_cooldown(pos) else { return false };
+        crate::end_gateway::write_age(&mut self.level, pos, age);
+        true
+    }
+
+    pub fn set_gateway_exit(&mut self, pos: BlockPos, exit: BlockPos, exact: bool) {
+        if let Some(age) = self.gateways.set_exit(pos, exit, exact) {
+            crate::end_gateway::write_age(&mut self.level, pos, age);
+        }
+        minecraftoss_generator::feature::World::set_gateway_exit(&mut self.level, pos.0, pos.1, pos.2, exit, exact);
+    }
+
+    pub fn gateway_views(&self) -> Vec<crate::end_gateway::GatewayView> {
+        self.gateways.views()
+    }
+
     pub fn create_end_platform(&mut self, origin: BlockPos) {
         self.level.create_end_platform(minecraftoss_core::BlockPos::new(origin.0, origin.1, origin.2), true);
     }
@@ -2152,11 +2227,13 @@ impl ServerSim {
         for (x, y, z) in self.level.take_changed_block_entities() {
             let chunk = self.level.chunk(minecraftoss_core::BlockPos::new(x, y, z).chunk());
             let Some(tag) = chunk.and_then(|chunk| chunk.block_entities.entities.get(&(x, y, z))) else {
+                self.gateways.sync((x, y, z), None);
                 if chunk.is_some() {
                     self.block_entity_changes.push(((x, y, z), None));
                 }
                 continue;
             };
+            self.gateways.sync((x, y, z), Some(tag));
             if tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str).is_some_and(|kind| !crate::containers::owns_block_entity(kind)) {
                 self.block_entity_changes.push(((x, y, z), Some(tag.clone())));
             }
@@ -2210,6 +2287,7 @@ pub enum Command {
     /// random yaw.
     Summon { kind: String, position: [f64; 3], nbt: Option<minecraftoss_core::nbt::Tag>, y_rot: f32 },
     HatchEgg { kind: String, position: [f64; 3], y_rot: f32 },
+    SpawnerEgg { pos: BlockPos, kind: String },
     /// A player's hit (`attack`) or item use on a mob, with a copy of its
     /// inventory.
     MobAction { hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, infinite: bool },
@@ -2222,7 +2300,7 @@ pub enum Command {
     /// An operation on the player's trading screen.
     Merchant { op: MerchantOp, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, feet: [f64; 3] },
     /// One server tick, with the player's state for it.
-    Tick(Box<TickInput>),
+    Tick(Box<TickInput>, Vec<bool>),
     Throw(Box<crate::thrown::Thrown>),
     ThrowTrident(Box<crate::trident::ThrownTrident>),
     ThrowEye { owner: u64, throw: Box<crate::ender_eye::EyeThrow> },
@@ -2393,6 +2471,7 @@ pub struct Output {
     pub bone_meal_used: Vec<BlockPos>,
     pub item_uses: Vec<bool>,
     pub pearl_teleports: Vec<(u64, [f64; 3])>,
+    pub pearl_gateways: Vec<(u64, BlockPos)>,
     pub thrown_hits: Vec<crate::thrown::ThrownHit>,
     pub weather: Option<WeatherView>,
     pub weather_data: Option<crate::level_storage::WeatherData>,
@@ -2403,6 +2482,8 @@ pub struct Output {
     pub jobs: Vec<Box<dyn std::any::Any + Send>>,
     pub dragons_killed: Vec<[i32; 4]>,
     pub fight_reports: Vec<FightReport>,
+    pub tick_nanos: Vec<u64>,
+    pub eye_answers: Vec<crate::eye_of_ender::EyeAnswer>,
 }
 
 /// The integrated server on its own thread, as vanilla runs it: the client
@@ -2418,6 +2499,8 @@ pub struct ServerHandle {
     /// Outputs [`Self::wait_idle`] received ahead of the next poll.
     waited: Vec<Output>,
     thread: Option<std::thread::JoinHandle<()>>,
+    ticks_sent: u64,
+    ticks_answered: u64,
 }
 
 impl ServerHandle {
@@ -2435,7 +2518,7 @@ impl ServerHandle {
             .name("Server thread".into())
             .spawn(move || server_loop(sim, receiver, sender))
             .expect("server thread starts");
-        Self { commands: Some(commands), outputs, states, uses: Arc::new(uses), attacks: Arc::new(attacks), sent: 0, waited: Vec::new(), thread: Some(thread) }
+        Self { commands: Some(commands), outputs, states, uses: Arc::new(uses), attacks: Arc::new(attacks), sent: 0, waited: Vec::new(), thread: Some(thread), ticks_sent: 0, ticks_answered: 0 }
     }
 
     fn send(&mut self, command: Command) {
@@ -2516,8 +2599,16 @@ impl ServerHandle {
         self.send(Command::KeepDroppedContents { pos, item: item.to_owned(), components: components.to_owned() });
     }
 
-    pub fn tick(&mut self, input: TickInput) {
-        self.send(Command::Tick(Box::new(input)));
+    pub fn tick(&mut self, input: TickInput, normal: Vec<bool>) {
+        if normal.is_empty() {
+            return;
+        }
+        self.ticks_sent += normal.len() as u64;
+        self.send(Command::Tick(Box::new(input), normal));
+    }
+
+    pub fn ticks_in_flight(&self) -> u64 {
+        self.ticks_sent - self.ticks_answered
     }
 
     pub fn set_recipe_book(&mut self, recipes: Arc<minecraftoss_player::crafting::RecipeBook>) {
@@ -2573,6 +2664,10 @@ impl ServerHandle {
 
     pub fn hatch_egg(&mut self, kind: String, position: [f64; 3], y_rot: f32) {
         self.send(Command::HatchEgg { kind, position, y_rot });
+    }
+
+    pub fn spawner_egg(&mut self, pos: BlockPos, kind: String) {
+        self.send(Command::SpawnerEgg { pos, kind });
     }
 
     /// Hands a player's hit or use on a mob to the server; its result
@@ -2637,6 +2732,7 @@ impl ServerHandle {
     pub fn poll(&mut self) -> Vec<Output> {
         let mut outputs = std::mem::take(&mut self.waited);
         outputs.extend(self.outputs.try_iter());
+        self.ticks_answered += outputs.iter().map(|out| out.tick_nanos.len() as u64).sum::<u64>();
         outputs
     }
 
@@ -2676,7 +2772,20 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
         let mut out = Output::default();
         // Everything already queued is handled before answering.
         let mut next = Some(first);
-        while let Some(command) = next.take().or_else(|| commands.try_recv().ok()) {
+        let mut batch: Option<(TickInput, std::collections::VecDeque<bool>)> = None;
+        loop {
+            let Some(command) = next.take().or_else(|| if out.tick_nanos.is_empty() || batch.is_some() { commands.try_recv().ok() } else { None }) else {
+                let Some((input, flags)) = batch.as_mut() else {
+                    break;
+                };
+                let normal = flags.pop_front().unwrap_or(true);
+                run_tick(&mut sim, input, normal, &mut out);
+                if flags.is_empty() {
+                    finish_batch(&mut sim, input, &mut out);
+                    batch = None;
+                }
+                continue;
+            };
             handled += 1;
             match command {
                 Command::LoadChunk(chunk) => sim.load_chunk(&chunk),
@@ -2714,6 +2823,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::HatchEgg { kind, position, y_rot } => {
                     out.summoned.push(sim.hatch_egg(&kind, position, y_rot).map(|()| kind));
                 }
+                Command::SpawnerEgg { pos, kind } => {
+                    out.summoned.push(sim.spawner_egg(pos, &kind).map(|()| kind));
+                }
                 Command::MobAction { hit, attack, inventory, selected, infinite } => {
                     out.mob_results.push(sim.mob_action(hit, attack, *inventory, selected, infinite));
                 }
@@ -2732,7 +2844,10 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::Throw(thrown) => sim.throw(*thrown),
                 Command::ThrowTrident(trident) => sim.throw_trident(*trident),
-                Command::ThrowEye { owner, throw } => out.item_uses.push(sim.throw_eye(owner, &throw)),
+                Command::ThrowEye { owner, throw } => {
+                    out.item_uses.push(sim.throw_eye(owner, &throw));
+                    out.eye_answers.extend(sim.take_eye_answers());
+                }
                 Command::BottleBreath { feet, height } => out.item_uses.push(sim.bottle_breath(feet, height)),
                 Command::SetWeather { weather, duration } => {
                     sim.set_weather_for(weather, duration);
@@ -2746,98 +2861,23 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.ticks_since_save = 0;
                     sim.save_all_entities();
                 }
-                Command::Tick(input) => {
-                    let started = std::time::Instant::now();
-                    let input = *input;
-                    // `MinecraftServer.autoSave`: every five minutes.
-                    sim.ticks_since_save += 1;
-                    if sim.ticks_since_save >= 6000 {
-                        sim.ticks_since_save = 0;
-                        sim.save_all_entities();
+                Command::Tick(_, normal) if normal.is_empty() => {}
+                Command::Tick(input, normal) => match batch.as_mut() {
+                    Some((running, flags)) => {
+                        *running = *input;
+                        flags.extend(normal);
                     }
-                    sim.set_clocks(input.clocks);
-                    sim.set_players(&input.players, input.difficulty);
-                    // Living, non-spectating players draw experience orbs.
-                    sim.level.living_players = input.mob_players.iter().filter(|p| p.alive && !p.spectator).map(|p| (p.position.to_array(), f64::from(p.eye_height))).collect();
-                    sim.set_simulation_area(input.simulation_center, input.simulation_distance);
-                    if let Some(natural) = &mut sim.level.natural_spawning {
-                        natural.spawn_mobs = input.spawn_mobs;
-                    }
-                    sim.prepare_spawning(&input.mob_players);
-                    sim.tick();
-                    let mobs_started = std::time::Instant::now();
-                    sim.take_spawned();
-                    sim.despawn_mobs(&input.mob_players, input.difficulty);
-                    // The player's fight memory: its `tickCount` moves on and
-                    // the hurts the client took land in it.
-                    sim.mobs.tick_player(0);
-                    for &(source, kind) in &input.player_hurts {
-                        sim.mobs.player_hurt(0, source, kind);
-                    }
-                    sim.mobs.set_player_views(input.mob_views.clone());
-                    sim.mobs.set_player_vitals(input.mob_vitals.clone());
-                    // What the player holds, as villagers see it
-                    // (`ShowTradesToPlayer`).
-                    let held = input.pickup.as_ref().and_then(|(_, inventory, selected)| inventory.slots.get(*selected).and_then(Option::as_ref).map(|s| s.id.clone()));
-                    sim.mobs.set_player_main_hand(0, held.as_deref());
-                    sim.tick_mobs(&input.mob_players, input.bright_outside);
-                    let bodies: Vec<_> = input.mob_players.iter().map(crate::thrown::PlayerBody::of).collect();
-                    sim.tick_clouds(&bodies);
-                    sim.tick_thrown(&bodies);
-                    sim.tick_tridents(&bodies);
-                    sim.tick_eyes();
-                    sim.tick_end(&input.mob_players);
-                    out.player_hits.extend(sim.take_end_hits());
-                    out.mob_sounds.extend(sim.take_end_sounds());
-                    out.dragons_killed.extend(sim.take_dragons_killed());
-                    out.fight_reports.extend(sim.take_fight_reports());
-                    out.pearl_teleports.extend(sim.take_pearl_teleports());
-                    out.thrown_hits.extend(sim.take_thrown_hits());
-                    sim.spawn_trade_experience();
-                    out.merchant.extend(sim.check_merchant(&input.mob_players));
-                    out.player_hits.extend(sim.mobs.take_player_hits());
-                    let witch_splashes = sim.mobs.take_player_splashes();
-                    out.player_potions.extend(witch_splashes.iter().map(|(player, splash)| crate::splash::of_witch(*player, splash)));
-                    out.player_potions.extend(sim.take_player_potions());
-                    out.player_splashes.extend(witch_splashes);
-                    out.players_struck.extend(sim.take_players_struck());
-                    out.players_pushed.extend(sim.take_players_pushed());
-                    out.potion_breaks.extend(sim.take_potion_breaks());
-                    out.explosions.extend(sim.take_explosions());
-                    out.explosion_effects.extend(sim.take_explosion_effects());
-                    out.level_events.extend(sim.level.level_events.drain(..).map(|(id, pos, data)| (id, (pos.x, pos.y, pos.z), data)));
-                    out.mob_sounds.extend(sim.mobs.take_sounds());
-                    out.mob_sounds.extend(sim.level.sounds.drain(..).map(|s| minecraftoss_entities::world::MobSound { event: s.event.to_owned(), position: glam::DVec3::from_array(s.pos), volume: s.volume, pitch: s.pitch, category: "ambient" }));
-                    sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
-                    out.mobs = Some(Box::new(sim.tracked_mobs(input.tracking.0, input.tracking.1)));
-                    out.weather = Some(sim.weather(input.players.first().copied()));
-                    out.weather_data = sim.weather_data();
-                    let pickup_feet = input.pickup.as_ref().map(|(feet, _, _)| *feet);
-                    if let Some((feet, mut inventory, selected)) = input.pickup {
-                        let recipes = inventory.recipes.clone();
-                        let picked = sim.pickup(feet, |item, count, components| {
-                            let stack = make_stack(&recipes, item, count, components);
-                            match inventory.add_item(stack, selected) {
-                                None => count,
-                                Some(rest) => count - i32::from(rest.count),
-                            }
-                        });
-                        out.picked.extend(picked);
-                        if let Some(body) = bodies.first() {
-                            let tridents = sim.pickup_tridents(body, &bodies, |stack| {
-                                let mut stack = stack.clone();
-                                stack.max = stack.max.min(recipes.max_stack(&stack.id));
-                                inventory.add_item(stack, selected).is_none()
-                            });
-                            out.picked.extend(tridents);
+                    None => {
+                        let mut input = *input;
+                        run_tick(&mut sim, &mut input, normal[0], &mut out);
+                        let flags: std::collections::VecDeque<bool> = normal.into_iter().skip(1).collect();
+                        if flags.is_empty() {
+                            finish_batch(&mut sim, &input, &mut out);
+                        } else {
+                            batch = Some((input, flags));
                         }
                     }
-                    // After the items, one experience orb.
-                    out.orbs_taken.extend(sim.take_experience(pickup_feet));
-                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts() });
-                    let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
-                    out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), started.elapsed().as_secs_f64() * 1000.0));
-                }
+                },
             }
         }
         out.changes = sim.take_changes();
@@ -2850,6 +2890,107 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
     }
     // The client closed the world: its entities are saved.
     sim.save_all_entities();
+}
+
+fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut Output) {
+    let started = std::time::Instant::now();
+    sim.ticks_since_save += 1;
+    if sim.ticks_since_save >= 6000 {
+        sim.ticks_since_save = 0;
+        sim.save_all_entities();
+    }
+    sim.set_clocks(input.clocks);
+    sim.set_players(&input.players, input.difficulty);
+    sim.level.living_players = input.mob_players.iter().filter(|p| p.alive && !p.spectator).map(|p| (p.position.to_array(), f64::from(p.eye_height))).collect();
+    sim.set_simulation_area(input.simulation_center, input.simulation_distance);
+    if let Some(natural) = &mut sim.level.natural_spawning {
+        natural.spawn_mobs = input.spawn_mobs;
+    }
+    if normal {
+        sim.prepare_spawning(&input.mob_players);
+        sim.tick();
+    }
+    let mobs_started = std::time::Instant::now();
+    if normal {
+        sim.take_spawned();
+        sim.despawn_mobs(&input.mob_players, input.difficulty);
+    }
+    sim.mobs.tick_player(0);
+    for (source, kind) in std::mem::take(&mut input.player_hurts) {
+        sim.mobs.player_hurt(0, source, kind);
+    }
+    sim.mobs.set_player_views(input.mob_views.clone());
+    sim.mobs.set_player_vitals(input.mob_vitals.clone());
+    let held = input.pickup.as_ref().and_then(|(_, inventory, selected)| inventory.slots.get(*selected).and_then(Option::as_ref).map(|s| s.id.clone()));
+    sim.mobs.set_player_main_hand(0, held.as_deref());
+    let bodies: Vec<_> = input.mob_players.iter().map(crate::thrown::PlayerBody::of).collect();
+    if normal {
+        sim.tick_mobs(&input.mob_players, input.bright_outside);
+        sim.tick_clouds(&bodies);
+        sim.tick_thrown(&bodies);
+        sim.tick_tridents(&bodies);
+        sim.tick_eyes();
+        sim.tick_end(&input.mob_players);
+        sim.tick_gateways();
+    }
+    out.player_hits.extend(sim.take_end_hits());
+    out.mob_sounds.extend(sim.take_end_sounds());
+    out.dragons_killed.extend(sim.take_dragons_killed());
+    out.fight_reports.extend(sim.take_fight_reports());
+    out.pearl_teleports.extend(sim.take_pearl_teleports());
+    out.pearl_gateways.extend(sim.take_pearl_gateways());
+    out.thrown_hits.extend(sim.take_thrown_hits());
+    if normal {
+        sim.spawn_trade_experience();
+    }
+    out.merchant.extend(sim.check_merchant(&input.mob_players));
+    out.player_hits.extend(sim.mobs.take_player_hits());
+    let witch_splashes = sim.mobs.take_player_splashes();
+    out.player_potions.extend(witch_splashes.iter().map(|(player, splash)| crate::splash::of_witch(*player, splash)));
+    out.player_potions.extend(sim.take_player_potions());
+    out.player_splashes.extend(witch_splashes);
+    out.players_struck.extend(sim.take_players_struck());
+    out.players_pushed.extend(sim.take_players_pushed());
+    out.potion_breaks.extend(sim.take_potion_breaks());
+    out.explosions.extend(sim.take_explosions());
+    out.explosion_effects.extend(sim.take_explosion_effects());
+    out.level_events.extend(sim.level.level_events.drain(..).map(|(id, pos, data)| (id, (pos.x, pos.y, pos.z), data)));
+    out.mob_sounds.extend(sim.mobs.take_sounds());
+    out.mob_sounds.extend(sim.level.sounds.drain(..).map(|s| minecraftoss_entities::world::MobSound { event: s.event.to_owned(), position: glam::DVec3::from_array(s.pos), volume: s.volume, pitch: s.pitch, category: "ambient" }));
+    sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
+    let pickup_feet = input.pickup.as_ref().map(|(feet, _, _)| *feet);
+    if let Some((feet, inventory, selected)) = input.pickup.as_mut() {
+        let (feet, selected) = (*feet, *selected);
+        let recipes = inventory.recipes.clone();
+        let picked = sim.pickup(feet, |item, count, components| {
+            let stack = make_stack(&recipes, item, count, components);
+            match inventory.add_item(stack, selected) {
+                None => count,
+                Some(rest) => count - i32::from(rest.count),
+            }
+        });
+        out.picked.extend(picked);
+        if let Some(body) = bodies.first() {
+            let tridents = sim.pickup_tridents(body, &bodies, |stack| {
+                let mut stack = stack.clone();
+                stack.max = stack.max.min(recipes.max_stack(&stack.id));
+                inventory.add_item(stack, selected).is_none()
+            });
+            out.picked.extend(tridents);
+        }
+    }
+    out.orbs_taken.extend(sim.take_experience(pickup_feet));
+    out.tick_nanos.push(started.elapsed().as_nanos() as u64);
+}
+
+fn finish_batch(sim: &mut ServerSim, input: &TickInput, out: &mut Output) {
+    out.mobs = Some(Box::new(sim.tracked_mobs(input.tracking.0, input.tracking.1)));
+    out.weather = Some(sim.weather(input.players.first().copied()));
+    out.weather_data = sim.weather_data();
+    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views() });
+    let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
+    let total = out.tick_nanos.last().map_or(0.0, |&nanos| nanos as f64 / 1_000_000.0);
+    out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), total));
 }
 
 #[cfg(test)]
@@ -5039,6 +5180,57 @@ mod tests {
         assert_eq!(teleports.iter().map(|t| t.0).collect::<Vec<_>>(), vec![1]);
     }
 
+    type PearlTrips = (Vec<(u64, BlockPos)>, Vec<(u64, [f64; 3])>);
+
+    fn pearl_through_gateway(server: &mut ServerSim) -> PearlTrips {
+        server.throw(thrown_down_by(4, "minecraft:ender_pearl", 3));
+        let (mut gateways, mut teleports) = (Vec::new(), Vec::new());
+        for _ in 0..20 {
+            server.tick_thrown(&[player_at(4, [40.0, 250.0, 40.0], true)]);
+            gateways.extend(server.take_pearl_gateways());
+            teleports.extend(server.take_pearl_teleports());
+        }
+        (gateways, teleports)
+    }
+
+    #[test]
+    fn a_pearl_through_a_gateway_is_reported_and_triggers_its_cooldown() {
+        let Some((mut server, _)) = door_world() else { return };
+        let gateway = (8, 201, 8);
+        server.player_edit_block(gateway, Some(&Block::new(crate::end_gateway::END_GATEWAY)), PlayerEdit::Place);
+        server.tick_gateways();
+        server.take_block_entity_changes();
+        let (gateways, teleports) = pearl_through_gateway(&mut server);
+        assert_eq!((gateways, teleports), (vec![(4, gateway)], Vec::new()));
+        assert!(server.thrown_views().is_empty(), "the pearl is gone");
+        assert_eq!(server.gateway_views()[0].cooldown, crate::end_gateway::COOLDOWN_TIME);
+        assert!(changed_tag(&server.take_block_entity_changes(), gateway).is_some(), "the trigger marks the block entity");
+    }
+
+    #[test]
+    fn a_cooling_gateway_lets_a_pearl_through() {
+        let Some((mut server, _)) = door_world() else { return };
+        let gateway = (8, 201, 8);
+        server.player_edit_block(gateway, Some(&Block::new(crate::end_gateway::END_GATEWAY)), PlayerEdit::Place);
+        server.tick_gateways();
+        assert!(server.trigger_gateway(gateway));
+        let (gateways, teleports) = pearl_through_gateway(&mut server);
+        assert_eq!(gateways, Vec::new());
+        assert_eq!(teleports.len(), 1);
+        assert!(teleports[0].1[1] >= 200.0 && teleports[0].1[1] < 202.0, "{teleports:?}");
+    }
+
+    #[test]
+    fn a_pearl_that_hits_a_wall_first_lands_normally() {
+        let Some((mut server, _)) = door_world() else { return };
+        let gateway = (8, 198, 8);
+        server.player_edit_block(gateway, Some(&Block::new(crate::end_gateway::END_GATEWAY)), PlayerEdit::Place);
+        server.tick_gateways();
+        let (gateways, teleports) = pearl_through_gateway(&mut server);
+        assert_eq!((gateways, teleports.len()), (Vec::new(), 1));
+        assert_eq!(server.gateway_views()[0].cooldown, 0, "the gateway under the floor is never reached");
+    }
+
     #[test]
     fn a_bottle_on_stone_bursts_into_3_to_11_experience_above_it() {
         let Some((mut server, _)) = door_world() else { return };
@@ -5620,6 +5812,98 @@ mod tests {
         assert!(answers[2].is_err());
     }
 
+    fn spawner_with_egg(difficulty: i32, rule: bool) -> Option<ServerSim> {
+        let (mut server, _) = door_world()?;
+        server.set_players(&[[4.5, 205.0, 7.5]], difficulty);
+        let mut rules = crate::game_rules::GameRules::default();
+        rules.set("spawner_blocks_work", if rule { "true" } else { "false" }).unwrap();
+        server.apply_game_rules(&rules);
+        server.player_edit_block((4, 205, 4), Some(&Block::new("minecraft:spawner")), PlayerEdit::Place);
+        server.take_block_entity_changes();
+        Some(server)
+    }
+
+    fn spawner_mob(server: &ServerSim) -> Option<String> {
+        let tag = server.level.chunk(ChunkPos::new(0, 0))?.block_entities.entities.get(&(4, 205, 4))?;
+        Some(tag.get("SpawnData")?.get("entity")?.get("id")?.as_str()?.to_owned())
+    }
+
+    #[test]
+    fn an_egg_on_a_placed_spawner_sets_its_mob_and_keeps_it() {
+        let Some(mut server) = spawner_with_egg(2, true) else { return };
+        assert_eq!(spawner_mob(&server), None);
+        server.spawner_egg((4, 205, 4), "minecraft:zombie").unwrap();
+        assert_eq!(spawner_mob(&server).as_deref(), Some("minecraft:zombie"));
+        let changes = server.take_block_entity_changes();
+        assert!(changes.iter().any(|(pos, tag)| *pos == (4, 205, 4) && tag.is_some()), "{changes:?}");
+        server.spawner_egg((4, 205, 4), "minecraft:ghast").unwrap();
+        assert_eq!(spawner_mob(&server).as_deref(), Some("minecraft:ghast"));
+        assert!(server.spawner_egg((4, 206, 4), "minecraft:ghast").is_err(), "no spawner there");
+        server.level.natural_spawning.as_mut().unwrap().spawn_mobs = false;
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: glam::DVec3::new(4.5, 205.0, 7.5),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        };
+        let mut ghasts = 0;
+        for _ in 0..80 {
+            server.set_players(&[[4.5, 205.0, 7.5]], 2);
+            server.set_simulation_area((0, 0), 1);
+            server.prepare_spawning(&[player]);
+            server.tick();
+            ghasts += server.level.spawned.iter().filter(|tag| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) == Some("minecraft:ghast")).count();
+            server.take_spawned();
+        }
+        assert!(ghasts > 0, "the spawner made ghasts");
+        assert_eq!(spawner_mob(&server).as_deref(), Some("minecraft:ghast"), "a placed spawner has no potentials to pick another mob from");
+        let delay = server.level.chunk(ChunkPos::new(0, 0)).and_then(|c| c.block_entities.entities.get(&(4, 205, 4))).and_then(|t| t.get("Delay")).and_then(minecraftoss_core::nbt::Tag::as_i64);
+        assert!(delay.is_some_and(|d| (100..800).contains(&d)), "{delay:?}");
+    }
+
+    #[test]
+    fn an_egg_does_nothing_when_spawner_blocks_do_not_work() {
+        let Some(mut server) = spawner_with_egg(2, false) else { return };
+        assert_eq!(server.spawner_egg((4, 205, 4), "minecraft:pig"), Err("advMode.notEnabled.spawner".to_owned()));
+        assert_eq!(spawner_mob(&server), None);
+        assert!(server.take_block_entity_changes().is_empty());
+    }
+
+    #[test]
+    fn a_monster_egg_does_nothing_to_a_spawner_in_peaceful() {
+        let Some(mut server) = spawner_with_egg(0, true) else { return };
+        assert!(server.spawner_egg((4, 205, 4), "minecraft:zombie").is_err());
+        assert_eq!(spawner_mob(&server), None);
+        assert!(server.take_block_entity_changes().is_empty());
+        server.spawner_egg((4, 205, 4), "minecraft:pig").unwrap();
+        assert_eq!(spawner_mob(&server).as_deref(), Some("minecraft:pig"));
+        let mut handle = ServerHandle::spawn(server);
+        handle.spawner_egg((4, 205, 4), "minecraft:creeper".to_owned());
+        handle.spawner_egg((4, 205, 4), "minecraft:cow".to_owned());
+        handle.wait_idle();
+        let outputs = handle.poll();
+        let answers: Vec<_> = outputs.iter().flat_map(|out| out.summoned.clone()).collect();
+        assert_eq!(answers.len(), 2);
+        assert!(answers[0].is_err());
+        assert_eq!(answers[1].as_deref(), Ok("minecraft:cow"));
+        let changed: Vec<_> = outputs.iter().flat_map(|out| out.block_entities.clone()).collect();
+        assert!(changed.iter().any(|(pos, tag)| *pos == (4, 205, 4) && tag.as_ref().and_then(|t| t.get("SpawnData")?.get("entity")?.get("id")?.as_str().map(str::to_owned)).as_deref() == Some("minecraft:cow")), "{changed:?}");
+    }
+
     #[test]
     fn command_summons_do_not_reach_the_egg_results() {
         let Some((mut server, mut scene)) = door_world() else { return };
@@ -5757,6 +6041,98 @@ mod tests {
             server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
         }
         Some(server)
+    }
+
+    fn changed_tag(changes: &[(BlockPos, Option<minecraftoss_core::nbt::Tag>)], pos: BlockPos) -> Option<minecraftoss_core::nbt::Tag> {
+        changes.iter().find(|(at, _)| *at == pos).and_then(|(_, tag)| tag.clone())
+    }
+
+    #[test]
+    fn age_is_saved_and_a_flip_reports_the_block_entity() {
+        use minecraftoss_core::nbt::Tag;
+        let Some(mut server) = end_world([(5, 0)].into_iter()) else { return };
+        let (pos, at) = ((85, 100, 5), ChunkPos::new(5, 0));
+        let registries = server.level.registries();
+        let mut chunk = server.level.chunk(at).unwrap().clone();
+        chunk.set_block_raw(5, 100, 5, registries.blocks.parse_state(crate::end_gateway::END_GATEWAY).unwrap(), registries);
+        let saved = [("id", Tag::String(crate::end_gateway::END_GATEWAY.to_owned())), ("x", Tag::Int(85)), ("y", Tag::Int(100)), ("z", Tag::Int(5)), ("Age", Tag::Long(150))];
+        chunk.block_entities.entities.insert(pos, Tag::Compound(saved.into_iter().map(|(key, value)| (key.to_owned(), value)).collect()));
+        server.unload_chunk(at);
+        server.take_block_entity_changes();
+        server.load_chunk(&chunk);
+        assert_eq!(server.gateway_views(), [crate::end_gateway::GatewayView { pos, age: 150, cooldown: 0, exit: None, exact: false }]);
+        assert!(server.gateway_views()[0].is_spawning());
+        for _ in 0..49 {
+            server.tick_gateways();
+        }
+        assert_eq!(changed_tag(&server.take_block_entity_changes(), pos), None, "still spawning at age 199");
+        server.tick_gateways();
+        let tag = changed_tag(&server.take_block_entity_changes(), pos).expect("the flip reports the block entity");
+        assert_eq!(tag.get("Age"), Some(&Tag::Long(200)));
+        assert!(!server.gateway_views()[0].is_spawning());
+        server.tick_gateways();
+        assert_eq!(changed_tag(&server.take_block_entity_changes(), pos), None);
+        assert_eq!(server.gateway_views()[0].age, 201);
+    }
+
+    #[test]
+    fn gateways_join_and_leave_with_their_chunks_and_setblock() {
+        let Some(mut server) = end_world([(5, 0), (6, 0)].into_iter()) else { return };
+        let gateway = Block::new(crate::end_gateway::END_GATEWAY);
+        let at = |server: &ServerSim| server.gateway_views().iter().map(|view| (view.pos, view.age)).collect::<Vec<_>>();
+        let pos = (85, 100, 5);
+        server.player_edit_block(pos, Some(&gateway), PlayerEdit::Place);
+        server.tick_gateways();
+        assert_eq!(at(&server), [(pos, 1)], "a placed gateway starts at age 0 and ticks");
+        server.player_edit_block(pos, None, PlayerEdit::Break);
+        server.tick_gateways();
+        assert_eq!(at(&server), []);
+        let far = (100, 100, 5);
+        server.player_edit_block(far, Some(&gateway), PlayerEdit::Place);
+        server.tick_gateways();
+        let chunk = server.level.chunk(ChunkPos::new(6, 0)).unwrap().clone();
+        server.unload_chunk(ChunkPos::new(6, 0));
+        assert_eq!(at(&server), [], "the gateway leaves with its chunk");
+        server.load_chunk(&chunk);
+        assert_eq!(at(&server), [(far, 0)], "and comes back with it, at its saved age");
+        server.load_chunk(&chunk);
+        assert_eq!(at(&server), [(far, 0)], "a chunk sent again keeps its gateways");
+        let ring = (88, 120, 8);
+        assert!(server.level.place_configured_feature(END_GATEWAY_DELAYED, minecraftoss_core::BlockPos::new(ring.0, ring.1, ring.2)));
+        server.tick_gateways();
+        assert_eq!(at(&server), [(ring, 1), (far, 1)], "a gateway placed by a feature ticks the same tick");
+        assert_eq!(server.gateway_views()[0].exit, None);
+    }
+
+    #[test]
+    fn setting_an_exit_writes_vanilla_keys() {
+        use minecraftoss_core::nbt::Tag;
+        let Some(mut server) = end_world([(5, 0)].into_iter()) else { return };
+        let pos = (85, 100, 5);
+        server.player_edit_block(pos, Some(&Block::new(crate::end_gateway::END_GATEWAY)), PlayerEdit::Place);
+        for _ in 0..3 {
+            server.tick_gateways();
+        }
+        server.take_block_entity_changes();
+        server.set_gateway_exit(pos, (1000, 70, 3), false);
+        let tag = changed_tag(&server.take_block_entity_changes(), pos).expect("the exit is reported");
+        assert_eq!(tag.get("exit_portal"), Some(&Tag::IntArray(vec![1000, 70, 3])));
+        assert_eq!(tag.get("ExactTeleport"), None);
+        assert_eq!(tag.get("Age"), Some(&Tag::Long(3)));
+        server.set_gateway_exit(pos, (100, 50, 0), true);
+        let tag = changed_tag(&server.take_block_entity_changes(), pos).expect("the exit is reported");
+        assert_eq!(tag.get("exit_portal"), Some(&Tag::IntArray(vec![100, 50, 0])));
+        assert_eq!(tag.get("ExactTeleport"), Some(&Tag::Byte(1)));
+        let view = server.gateway_views()[0];
+        assert_eq!((view.exit, view.exact), (Some((100, 50, 0)), true));
+        server.tick_gateways();
+        assert!(server.trigger_gateway(pos));
+        assert!(!server.trigger_gateway(pos), "a cooling gateway ignores a second trigger");
+        assert!(!server.trigger_gateway((0, 0, 0)));
+        let tag = changed_tag(&server.take_block_entity_changes(), pos).expect("a trigger reports the block entity");
+        assert_eq!(tag.get("Age"), Some(&Tag::Long(4)));
+        assert!(!tag.as_compound().unwrap().contains_key("cooldown"), "the cooldown is not saved");
+        assert_eq!(server.gateway_views()[0].cooldown, crate::end_gateway::COOLDOWN_TIME);
     }
 
     #[test]
@@ -7728,5 +8104,211 @@ mod tests {
         assert_eq!(server.dragons.list[0].phase, Phase::Takeoff, "past 50 damage it takes off");
         server.tick_end(&[player]);
         assert!(server.clouds.iter().all(|cloud| cloud.breath != Some(flame)), "and its flame goes out");
+    }
+
+    fn idle_handle() -> Option<ServerHandle> {
+        let paths = DataPaths::discover().ok()?;
+        let registries = Arc::new(Registries::load(&paths).ok()?);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries, 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut sim = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for x in -1..=1 {
+            for z in -1..=1 {
+                sim.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        Some(ServerHandle::spawn(sim))
+    }
+
+    fn idle_input() -> TickInput {
+        TickInput {
+            clocks: ClockTicks::default(),
+            players: vec![[8.5, 120.0, 8.5]],
+            difficulty: 2,
+            simulation_center: (0, 0),
+            simulation_distance: 2,
+            pickup: None,
+            mob_players: Vec::new(),
+            mob_views: Vec::new(),
+            mob_vitals: Vec::new(),
+            bright_outside: true,
+            tracking: ([8.5, 120.0, 8.5], 64.0),
+            player_hurts: Vec::new(),
+            spawn_mobs: false,
+        }
+    }
+
+    #[test]
+    fn each_tick_gets_its_own_output() {
+        let Some(mut handle) = idle_handle() else { return };
+        for _ in 0..3 {
+            handle.tick(idle_input(), vec![true]);
+        }
+        assert_eq!(handle.ticks_in_flight(), 3);
+        handle.wait_idle();
+        let outputs = handle.poll();
+        assert_eq!(outputs.len(), 3);
+        assert!(outputs.iter().all(|out| out.tick_nanos.len() == 1), "{:?}", outputs.iter().map(|out| out.tick_nanos.len()).collect::<Vec<_>>());
+        assert_eq!(handle.ticks_in_flight(), 0);
+    }
+
+    #[test]
+    fn commands_after_a_tick_do_not_hold_its_output() {
+        let Some(mut handle) = idle_handle() else { return };
+        handle.tick(idle_input(), vec![true]);
+        for i in 0..200 {
+            handle.summon_orb([8.5 + f64::from(i % 10), 120.0, 8.5], 1);
+        }
+        handle.wait_idle();
+        let outputs = handle.poll();
+        assert_eq!(outputs[0].tick_nanos.len(), 1);
+        assert_eq!(outputs[0].handled, 1);
+        assert!(outputs[1..].iter().all(|out| out.tick_nanos.is_empty()));
+        assert_eq!(outputs.last().map(|out| out.handled), Some(201));
+        assert_eq!(handle.ticks_in_flight(), 0);
+    }
+
+    fn game_time(handle: &mut ServerHandle) -> i64 {
+        handle.run_job(Box::new(|sim: &mut ServerSim| Box::new(sim.level.game_time) as Box<dyn std::any::Any + Send>));
+        handle.wait_idle();
+        let mut jobs: Vec<_> = handle.poll().into_iter().flat_map(|out| out.jobs).collect();
+        *jobs.pop().expect("the job answered").downcast::<i64>().expect("a game time")
+    }
+
+    #[test]
+    fn a_batch_runs_each_tick() {
+        let Some(mut handle) = idle_handle() else { return };
+        let before = game_time(&mut handle);
+        handle.tick(idle_input(), vec![true; 3]);
+        handle.wait_idle();
+        let outputs = handle.poll();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].tick_nanos.len(), 3);
+        assert!(outputs[0].entities.is_some() && outputs[0].mobs.is_some());
+        assert_eq!(handle.ticks_in_flight(), 0);
+        assert_eq!(game_time(&mut handle), before + 3);
+    }
+
+    #[test]
+    fn a_rule_sent_after_a_batch_applies_to_the_next_batch() {
+        let Some(mut handle) = idle_handle() else { return };
+        handle.tick(idle_input(), vec![true; 5]);
+        let mut rules = crate::game_rules::GameRules::default();
+        rules.set("random_tick_speed", "0").unwrap();
+        handle.set_game_rules(rules);
+        handle.run_job(Box::new(|sim: &mut ServerSim| Box::new(sim.level.random_tick_speed) as Box<dyn std::any::Any + Send>));
+        handle.tick(idle_input(), vec![true]);
+        handle.wait_idle();
+        let outputs = handle.poll();
+        assert_eq!(outputs.iter().map(|out| out.tick_nanos.len()).sum::<usize>(), 6);
+        let speeds: Vec<i32> = outputs.into_iter().flat_map(|out| out.jobs).map(|job| *job.downcast::<i32>().unwrap()).collect();
+        assert_eq!(speeds, [0]);
+        assert_eq!(handle.ticks_in_flight(), 0);
+    }
+
+    fn frozen_sim() -> Option<(ServerSim, HandcraftedScene)> {
+        let paths = DataPaths::discover().ok()?;
+        let registries = Arc::new(Registries::load(&paths).ok()?);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries, 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut sim = ServerSim::new(worldgen, states.clone(), "minecraft:overworld");
+        let mut scene = HandcraftedScene::streamed(states);
+        for x in -1..=1 {
+            for z in -1..=1 {
+                let chunk = map.load_now(ChunkPos::new(x, z));
+                sim.load_chunk(&chunk);
+                scene.insert_chunk(chunk);
+            }
+        }
+        Some((sim, scene))
+    }
+
+    fn run_ticks(sim: &mut ServerSim, input: &mut TickInput, normal: bool, count: usize) -> Output {
+        let mut out = Output::default();
+        for _ in 0..count {
+            run_tick(sim, input, normal, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn a_frozen_tick_holds_items_and_falling_blocks() {
+        let Some((mut sim, mut scene)) = frozen_sim() else { return };
+        let item = sim.spawn_item("minecraft:cobblestone", 1, None, [11.5, 210.0, 11.5], [0.0; 3], 40, 0);
+        scene.set((8, 200, 8), Some(Block::new("minecraft:stone")));
+        sim.player_edit(&scene, (8, 200, 8), PlayerEdit::Place);
+        scene.set((8, 205, 8), Some(Block::new("minecraft:sand")));
+        sim.player_edit(&scene, (8, 205, 8), PlayerEdit::Place);
+        let mut input = idle_input();
+        run_ticks(&mut sim, &mut input, true, 3);
+        let item_at = |sim: &ServerSim| sim.items().into_iter().find(|i| i.id == item).map(|i| i.position);
+        let sand_at = |sim: &ServerSim| sim.falling_blocks().first().map(|f| f.position);
+        let (held_item, held_sand) = (item_at(&sim).expect("the item"), sand_at(&sim).expect("the sand falls"));
+        run_ticks(&mut sim, &mut input, false, 20);
+        assert_eq!((item_at(&sim), sand_at(&sim)), (Some(held_item), Some(held_sand)));
+        run_ticks(&mut sim, &mut input, true, 20);
+        assert!(item_at(&sim).expect("the item")[1] < held_item[1] - 1.0);
+        assert!(sand_at(&sim).is_none_or(|at| at[1] < held_sand[1] - 1.0));
+    }
+
+    #[test]
+    fn a_frozen_tick_still_picks_up() {
+        let Some((mut sim, _)) = frozen_sim() else { return };
+        let feet = [11.5, 210.0, 11.5];
+        let item = sim.spawn_item("minecraft:cobblestone", 3, None, feet, [0.0; 3], 0, 0);
+        let mut input = TickInput { pickup: Some((feet, Box::default(), 0)), ..idle_input() };
+        let out = run_ticks(&mut sim, &mut input, false, 1);
+        assert_eq!(out.picked.iter().map(|picked| (picked.0, picked.3)).collect::<Vec<_>>(), [(item, 3)]);
+        assert!(sim.items().iter().all(|i| i.id != item));
+    }
+
+    #[test]
+    fn a_frozen_gateway_neither_ages_nor_cools_and_the_snapshot_shows_it() {
+        let Some((mut sim, _)) = frozen_sim() else { return };
+        let pos = (8, 205, 8);
+        sim.player_edit_block(pos, Some(&Block::new(crate::end_gateway::END_GATEWAY)), PlayerEdit::Place);
+        let mut input = idle_input();
+        run_ticks(&mut sim, &mut input, true, 3);
+        assert!(sim.trigger_gateway(pos));
+        run_ticks(&mut sim, &mut input, false, 10);
+        let view = |sim: &ServerSim| sim.gateway_views().first().map(|view| (view.age, view.cooldown));
+        assert_eq!(view(&sim), Some((3, crate::end_gateway::COOLDOWN_TIME)));
+        let mut out = run_ticks(&mut sim, &mut input, true, 1);
+        assert_eq!(view(&sim), Some((4, crate::end_gateway::COOLDOWN_TIME - 1)));
+        finish_batch(&mut sim, &input, &mut out);
+        let shown = out.entities.expect("a snapshot").gateways;
+        assert_eq!(shown.iter().map(|view| (view.pos, view.age, view.cooldown)).collect::<Vec<_>>(), [(pos, 4, crate::end_gateway::COOLDOWN_TIME - 1)]);
+    }
+
+    #[test]
+    fn primed_tnt_waits_while_frozen() {
+        let Some((mut sim, mut scene)) = frozen_sim() else { return };
+        scene.set((8, 200, 8), Some(Block::new("minecraft:stone")));
+        sim.player_edit(&scene, (8, 200, 8), PlayerEdit::Place);
+        scene.set((8, 201, 8), Some(Block::new("minecraft:tnt")));
+        sim.player_edit(&scene, (8, 201, 8), PlayerEdit::Place);
+        scene.set((9, 201, 8), Some(Block::new("minecraft:redstone_block")));
+        sim.player_edit(&scene, (9, 201, 8), PlayerEdit::Place);
+        let fuse = |sim: &ServerSim| sim.primed_tnt().first().map(|tnt| tnt.fuse);
+        let primed = fuse(&sim).expect("the TNT primes");
+        let mut input = idle_input();
+        run_ticks(&mut sim, &mut input, false, 10);
+        assert_eq!(fuse(&sim), Some(primed));
+        run_ticks(&mut sim, &mut input, true, 10);
+        assert_eq!(fuse(&sim), Some(primed - 10));
+    }
+
+    #[test]
+    fn random_ticks_skip_frozen_ticks() {
+        let Some((mut sim, _)) = frozen_sim() else { return };
+        let mut input = idle_input();
+        let before = sim.level.game_time;
+        let out = run_ticks(&mut sim, &mut input, false, 5);
+        assert_eq!(out.tick_nanos.len(), 5);
+        assert_eq!(sim.level.game_time, before);
+        run_ticks(&mut sim, &mut input, true, 5);
+        assert_eq!(sim.level.game_time, before + 5);
     }
 }

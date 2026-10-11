@@ -983,6 +983,7 @@ mod tests {
             levels: BTreeMap::new(),
             opening: BTreeMap::new(),
             players: BTreeMap::new(),
+            pending_batch: None,
         };
         let uuid = server
             .join_friend(HOST, "Steve", None, Dimension::Overworld)

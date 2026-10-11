@@ -278,6 +278,7 @@ pub(crate) fn life(
 pub(crate) struct Moved {
     pub(crate) on_ground: bool,
     pub(crate) wet: bool,
+    pub(crate) eye_in_water: bool,
     pub(crate) hand_ticks: u32,
     pub(crate) holding: bool,
     pub(crate) holding_item: bool,
@@ -559,6 +560,7 @@ pub(crate) fn movement(
     Moved {
         on_ground,
         wet: water.wet(),
+        eye_in_water: water.eye,
         hand_ticks,
         holding,
         holding_item,
@@ -585,6 +587,7 @@ pub(crate) struct Acted {
     pub(crate) open_bench: Option<(BlockPos, minecraft_terrain::stations::Workshop)>,
     pub(crate) hand_mined: Vec<BlockPos>,
     pub(crate) creative_broken: Vec<BlockPos>,
+    pub(crate) hand_broken: Vec<BlockPos>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -600,7 +603,6 @@ pub(crate) fn act(
     ps: &PlayerState,
     alive: bool,
     moved: &Moved,
-    all_events: &mut Vec<sim::voxel::VoxelEvent>,
     sounds: &mut Option<Sounds>,
     packs: &PackStack,
 ) -> Acted {
@@ -638,6 +640,8 @@ pub(crate) fn act(
         (moved.on_ground, moved.wet, moved.hand_ticks, moved.holding);
     let mut hand_mined = Vec::new();
     let mut creative_broken = Vec::new();
+    let mut hand_broken = Vec::new();
+    let mut digging = false;
     let game_mode = *player_mode;
     let menu_captured =
         ui.chat.open || hud_input.is_some_and(|input| input.console_open || input.script_menu_open);
@@ -758,7 +762,7 @@ pub(crate) fn act(
             || hand.charging.is_some()
             || hand.miss_time > 0
             || mw2_offhand;
-        let mut creative_press = false;
+        let mut block_press = false;
         let mut punched = false;
         if ui.holding_item
             && (buttons.just_pressed(MouseButton::Left)
@@ -769,6 +773,7 @@ pub(crate) fn act(
             hand.swing_offhand = false;
             let held = inventory.slots[*selected].clone();
             let (damage, speed) = entities.recipes.attack_attributes(held.as_ref());
+            let speed = (speed * survival.status.attack_speed_multiplier()).clamp(0.0, 1024.0);
             let damage = (damage + survival.status.attack_damage_modifier()).max(0.0);
             let strength = minecraft_survival::survival::attack_strength(hand.attack_ticks, speed);
             let sprinting = ps.pm_flags & playerstate_iw4::pm_flags::SPRINTING != 0;
@@ -797,7 +802,8 @@ pub(crate) fn act(
                 hand.attack_ticks = 0;
                 hand.miss_time = if game_mode.instant_break() { 0 } else { 10 };
             } else {
-                creative_press = true;
+                block_press = true;
+                hand.dig.press();
             }
         }
         for _ in 0..hand_ticks {
@@ -886,7 +892,7 @@ pub(crate) fn act(
                 && minecraft_terrain::game_mode::can_destroy_in_creative(held)
                 && minecraft_terrain::game_mode::creative_breaks(
                     &mut hand.creative_delay,
-                    creative_press,
+                    block_press,
                     attack_held,
                     hand_ticks,
                 ) > 0
@@ -901,23 +907,100 @@ pub(crate) fn act(
                     hand.swing_offhand = false;
                 }
             }
-        } else if ui.holding_item && attack_held && !busy && game_mode.may_build() {
-            for _ in 0..hand_ticks {
-                if let Some(hit) =
-                    player.target(&minecraft_terrain::doors::Outlined(&terrain.scene), 4.5)
-                {
-                    all_events.push(sim::voxel::VoxelEvent::Shot {
-                        block: [hit.pos.0, hit.pos.1, hit.pos.2],
-                        damage: 160.0 / 30.0,
+        } else if ui.holding_item
+            && (attack_held || hand.dig.pressed)
+            && !busy
+            && game_mode.may_build()
+        {
+            digging = true;
+            let outlined = minecraft_terrain::doors::Outlined(&terrain.scene);
+            let mut staged = minecraft_terrain::placing::Staged::new(&outlined);
+            let mob = entities.mob_distance(eye_block, look, game_mode.entity_reach());
+            let digger = minecraft_survival::digging::digger(
+                inventory,
+                *selected,
+                &survival.status,
+                moved.eye_in_water,
+                on_ground,
+            );
+            let progress = |block: &minecraftoss_player::Block| {
+                let hardness = scene_block(block)
+                    .and_then(|block| terrain.stream.states.state_of(&block))
+                    .map_or(-1.0, |state| {
+                        globals.registries.blocks.state(state).destroy_speed
                     });
-                    hand_mined.push(hit.pos);
-                    if hand
+                minecraft_terrain::mining_speed::destroy_progress(
+                    globals.data.mining.as_deref(),
+                    &*terrain.stream.states,
+                    block,
+                    hardness,
+                    &digger,
+                )
+            };
+            for _ in 0..hand_ticks {
+                let hit = player
+                    .target(&staged, game_mode.block_reach())
+                    .filter(|hit| mob.is_none_or(|distance| distance > hit.distance));
+                let block = hit
+                    .as_ref()
+                    .and_then(|hit| minecraftoss_player::World::block(&staged, hit.pos));
+                let clicked = hand.dig.take_press();
+                let dug = hand.dig.tick(minecraft_survival::digging::DigInput {
+                    target: hit
+                        .as_ref()
+                        .zip(block.as_ref())
+                        .map(|(hit, block)| (hit.pos, hit.face, block)),
+                    held: inventory.slots[*selected].as_ref(),
+                    clicked,
+                    held_down: attack_held,
+                    progress: &progress,
+                });
+                if dug.stopped {
+                    hand.attack_ticks = 0;
+                }
+                for event in dug.events {
+                    use minecraft_survival::digging::DigEvent;
+                    let (pos, face, sound) = match event {
+                        DigEvent::Attacked(pos) => {
+                            entities.attack_block(&terrain.scene, pos);
+                            continue;
+                        }
+                        DigEvent::Broke { pos, .. } => {
+                            minecraftoss_player::World::set_block(&mut staged, pos, None);
+                            hand_broken.push(pos);
+                            hand_mined.push(pos);
+                            continue;
+                        }
+                        DigEvent::Aborted(_) => continue,
+                        DigEvent::Started { pos, face } => (pos, face, true),
+                        DigEvent::Hit { pos, face, sound } => (pos, face, sound),
+                    };
+                    let Some(block) = minecraft_terrain::scene::Scene::block(&terrain.scene, pos)
+                    else {
+                        continue;
+                    };
+                    if sound
+                        && let (Some(sounds), Some(kind)) =
+                            (sounds.as_mut(), terrain.scene.sound_type(block))
+                    {
+                        let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
+                        sounds.play(
+                            packs,
+                            &kind.hit,
+                            Some(Vec3::from_array(sim::voxel::to_map(origin, centre))),
+                            (kind.volume + 1.0) / 8.0,
+                            kind.pitch * 0.5,
+                        );
+                    }
+                    mining.hit_particle(packs, &terrain.scene, atlas, (pos, face), block);
+                }
+                if dug.swing
+                    && hand
                         .swing
                         .is_none_or(|t| t >= crate::minecraft_hand::SWING_TICKS * 0.5)
-                    {
-                        hand.swing = Some(0.0);
-                        hand.swing_offhand = false;
-                    }
+                {
+                    hand.swing = Some(0.0);
+                    hand.swing_offhand = false;
                 }
             }
         }
@@ -942,7 +1025,11 @@ pub(crate) fn act(
             (offhand_key && !hand.offhand_key_was, offhand_key)
         };
         let use_pressed = idle && use_pressed;
-        let place = use_pressed || (idle && use_down && hand.place_delay == 0);
+        if !minecraft_survival::offhand::eye_held(hand, use_down, *selected) {
+            hand.using_eye = None;
+        }
+        let place =
+            use_pressed || (idle && use_down && hand.place_delay == 0 && hand.using_eye.is_none());
         let hands = if place {
             hand.place_delay = 4;
             hand.use_by_key = !ui.holding_item;
@@ -1318,7 +1405,7 @@ pub(crate) fn act(
                                     }),
                         )
                     })
-                    .or_else(|| minecraft_terrain::ender_eye::eye_use(&player, &outlined, stack))
+                    .or_else(|| minecraft_terrain::ender_eye::frame_use(&player, &outlined, stack))
                     .or_else(|| {
                         minecraft_terrain::end_crystal::crystal_use(&player, &outlined, stack)
                     })
@@ -1403,6 +1490,27 @@ pub(crate) fn act(
                 }
                 HandUse::Consumed
             } else if let Some(stack) = held.as_ref()
+                && !entities.awaits_item_use()
+                && game_mode.interacts()
+                && let Some(outcome) = minecraft_terrain::ender_eye::throw_use(
+                    &player,
+                    &minecraft_terrain::doors::Outlined(&terrain.scene),
+                    stack,
+                )
+                && let minecraft_terrain::bucket::Change::ThrowEye(throw) = outcome.change.clone()
+            {
+                hand.using_eye = Some(slot);
+                let sent = minecraft_survival::entities::SentItemUse {
+                    slot,
+                    held: stack.id.clone(),
+                    eye: eye_block,
+                    yaw: mc_yaw,
+                    pitch: ps.viewangles[0],
+                    outcome,
+                };
+                entities.throw_eye(throw, sent);
+                HandUse::Consumed
+            } else if let Some(stack) = held.as_ref()
                 && game_mode.may_build()
                 && let Some(egg) = minecraft_terrain::spawn_egg::egg_use(
                     &player,
@@ -1410,8 +1518,27 @@ pub(crate) fn act(
                     &stack.id,
                 )
             {
-                if let minecraft_terrain::spawn_egg::EggUse::Spawn { kind, position } = egg {
-                    entities.hatch_egg(inventory, slot, kind, position, game_mode.consumes_items());
+                match egg {
+                    minecraft_terrain::spawn_egg::EggUse::Spawn { kind, position } => {
+                        entities.hatch_egg(
+                            inventory,
+                            slot,
+                            kind,
+                            position,
+                            game_mode.consumes_items(),
+                        );
+                    }
+                    minecraft_terrain::spawn_egg::EggUse::Spawner(pos) => {
+                        if let Some(kind) = minecraft_terrain::spawn_egg::spawned_kind(&stack.id) {
+                            entities.egg_on_spawner(
+                                inventory,
+                                slot,
+                                kind,
+                                pos,
+                                game_mode.consumes_items(),
+                            );
+                        }
+                    }
                 }
                 hand.swing = Some(0.0);
                 HandUse::Consumed
@@ -1740,12 +1867,19 @@ pub(crate) fn act(
         }
     }
     hand.offhand_key_was = offhand_key;
+    if !digging {
+        hand.dig.pressed = false;
+        if hand.dig.stop() {
+            hand.attack_ticks = 0;
+        }
+    }
     Acted {
         open_table,
         open_block,
         open_bench,
         hand_mined,
         creative_broken,
+        hand_broken,
     }
 }
 

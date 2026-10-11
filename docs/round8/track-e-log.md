@@ -569,10 +569,30 @@ Commit: see `git log` ("Multiplayer M2 per-player step passes clippy"). The prev
 - **Test steps:** none new; sections E10a and E10b of `docs/round8/e-m2-tests.md` cover these lines (E10a step 8 and E10b step 9: a death message in both windows and each player's respawn at their own point).
 - **Kit:** none needed.
 
+### Merge of minecraft-survival (track A) into track E
+
+Commit: the merge commit "Merge minecraft-survival (track A) into track E". Its first parent is `b264b59d`, its second `080b5c1e` (track A merged into `minecraft-survival`).
+
+- **Conflicts and how they were resolved** (both sides' behaviour kept):
+  - `crates/minecraft_commands/src/commands.rs`, `suggest.rs`: the command lists hold both E's `/tell` alias and A's `/tick`; the `/t` suggestion test expects `teleport`, `tell`, `tick`, `time`, `tp`.
+  - `crates/minecraft_survival/src/server.rs`: `Globals` keeps E's `writer: SaveWriter` (the save thread with the quick-rejoin copy) and A's `autosave_due` (the autosave countdown lives in A's `TickRate`). A's `level_writer` is gone with E's writer; A's `autosave` and `plan_ticks` queue on the writer. E's test servers (`friend_server`, `remote.rs`, `session.rs`) build `pending_batch: None`.
+  - `crates/minecraft_survival/src/commands.rs`: `run` keeps E's recipient-tagged `Outgoing` lines (so every player gets their own) and adds A's `/tick sprint` reports as `server_feedback` lines, which E's routing hands to every operator, like vanilla's `sendSuccess(..., true)` from the server source. A's `report_sprints` stays for its own test.
+  - `crates/minecraft_survival/src/level.rs`: both new tests are kept (E's `a_chunk_sent_after_edits_from_every_source_matches_the_scene`, A's `tick_until` and `an_eye_thrown_from_the_hand_leaves_the_stack_and_flies`).
+  - `crates/render_anim/src/minecraft_world.rs`: the frame keeps E's calls into `minecraft_players` (`begin`, `life`, `movement`, `act`) and A's tick schedule around them: `plan_ticks` before the autosave, `autosave_due`, the dragon fight by the planned ticks, `pearls_through`, the containers by `Level.container_ticks`, and `entities.tick` with the pending batch and `client_timing`. E's arrival branch lost its `advance_clocks(dt)` (the clocks now move in `plan_ticks`, as A made them), and so did the end of the frame. The cracks come from `hand.dig.crack()`. A's `player_motion` and `arrival_velocity` (the arrival keeps the departure's speed) sit beside `place_player`, which `place_friend` calls too, so a friend's arrival also gets them.
+  - **What the merge broke without a conflict:** E made `TerrainStream.server` an `Option<ChunkMap>` (a friend's stream has none) and gave `server_tick` every player's block. A's new `TerrainStream::write_states` (the gateway's blocks) now loads through `load_chunk_now` and sets the blocks through the host's chunk map (`expect(HOST_ONLY)`, as the other host-only writes), and A's tests in `terrain.rs` and `the_end/gateway.rs` use the optional map and pass one player to `server_tick`. The frame's unused `hand_ticks` binding is gone (the containers count `container_ticks` now).
+  - **A's hand changes carried into `minecraft_players::act`** (E10a moved the hand block there): vanilla digging (`hand.dig` with `DigInput`, the mining speed of `mining_speed::destroy_progress`, hit sounds and particles, `hand.dig.press()` on a click at a block, the `!digging` stop at the end), the attack speed multiplier, `block_press` for creative breaking, the eye of ender thrown from the hand (`throw_use`, `hand.using_eye`, `offhand::eye_held`) and `frame_use` for frames, and spawn eggs on spawners (`EggUse::Spawner`, `egg_on_spawner`). `Acted` returns `hand_broken` for the frame's `break_now`, the wrong-tool drops and the tool wear, which stayed in `minecraft_world` and merged cleanly. `Moved` carries `eye_in_water` for the digger. `act` no longer takes the voxel events, because the hand no longer mines by `Shot` events.
+- **Tests:** none new (both sides' tests are kept). `test -p minecraft_commands` 130, `minecraft_net` 15, `minecraft_survival` 444 + 1, `minecraft_terrain` 922 (3 ignored), `render_anim` 78, all green on the real 26.3 data; `check -p launcher` green. `minecraft_players.rs` and `the_end/gateway.rs` still pass `rustfmt --check`.
+- **Decisions:**
+  - **Only the host's level is in `ticking`,** as A wrote it: the level tick still runs in the host's frame until E11, which builds the server tick for every occupied level on A's `plan_ticks` and `take_batch`.
+  - **A friend's own clock prediction still runs at 20 ticks a second** between the host's clock updates; under `/tick freeze` or `/tick rate` the friend's sky is corrected by the next update. Sending the tick rate and the frozen state (vanilla's `ClientboundTickingStatePacket`) belongs with E11's server tick.
+  - **A friend does not dig yet:** `act` runs for the host only, as before the merge; a friend's hand (with A's digging) comes with E13.
+- **Test steps:** `docs/round8/e-m2-tests.md`, section "Merge of track A".
+- **Kit:** `minecraft:stone_pickaxe` x1, `minecraft:ender_eye` x4, `minecraft:cobblestone` x32.
+
 ## Combined kit for every test in this track
 
-`minecraft:obsidian` x10, `minecraft:flint_and_steel` x1, `minecraft:chest` x1, `minecraft:cobblestone` x32, `minecraft:lava_bucket` x1, `minecraft:torch` x16, `minecraft:cooked_beef` x8, `minecraft:crafting_table` x1, `minecraft:shield` x1, `minecraft:skeleton_spawn_egg` x1, `minecraft:ender_pearl` x4, `minecraft:totem_of_undying` x1, `minecraft:white_bed` x1, `minecraft:elytra` x1, `minecraft:firework_rocket` x8 (15 stacks).
+`minecraft:obsidian` x10, `minecraft:flint_and_steel` x1, `minecraft:chest` x1, `minecraft:cobblestone` x32, `minecraft:lava_bucket` x1, `minecraft:torch` x16, `minecraft:cooked_beef` x8, `minecraft:crafting_table` x1, `minecraft:shield` x1, `minecraft:skeleton_spawn_egg` x1, `minecraft:ender_pearl` x4, `minecraft:totem_of_undying` x1, `minecraft:white_bed` x1, `minecraft:elytra` x1, `minecraft:firework_rocket` x8, `minecraft:stone_pickaxe` x1, `minecraft:ender_eye` x4 (17 stacks).
 
 ```
-IW4L_MINECRAFT_KIT=obsidian*10,flint_and_steel,chest,cobblestone*32,lava_bucket,torch*16,cooked_beef*8,crafting_table,shield,skeleton_spawn_egg,ender_pearl*4,totem_of_undying,white_bed,elytra,firework_rocket*8
+IW4L_MINECRAFT_KIT=obsidian*10,flint_and_steel,chest,cobblestone*32,lava_bucket,torch*16,cooked_beef*8,crafting_table,shield,skeleton_spawn_egg,ender_pearl*4,totem_of_undying,white_bed,elytra,firework_rocket*8,stone_pickaxe,ender_eye*4
 ```

@@ -86,6 +86,33 @@ impl BlockParticles {
         Ok(())
     }
 
+    pub fn spawn_hit<S: Scene>(
+        &mut self,
+        packs: &PackStack,
+        scene: &S,
+        (pos, face): (BlockPos, minecraftoss_player::Face),
+        block: &Block,
+        bounds: [f32; 6],
+        atlas: &Atlas,
+    ) -> Result<bool> {
+        let Some((texture, tint)) = self.material(packs, scene, pos, block, atlas)? else {
+            return Ok(false);
+        };
+        let random = [self.random(), self.random(), self.random()];
+        let at = hit_point(pos, face, bounds, random);
+        self.spawn_fragment(at, Vec3::ZERO, texture, tint);
+        if let Some(fragment) = self.fragments.last_mut() {
+            let velocity = fragment.velocity;
+            fragment.velocity = Vec3::new(
+                velocity.x * 0.2,
+                (velocity.y - 0.1) * 0.2 + 0.1,
+                velocity.z * 0.2,
+            );
+            fragment.size *= 0.6;
+        }
+        Ok(true)
+    }
+
     fn material<S: Scene>(
         &self,
         packs: &PackStack,
@@ -375,6 +402,28 @@ impl BlockParticles {
     }
 }
 
+fn hit_point(
+    pos: BlockPos,
+    face: minecraftoss_player::Face,
+    bounds: [f32; 6],
+    random: [f32; 3],
+) -> Vec3 {
+    use minecraftoss_player::Face;
+    let low = Vec3::new(bounds[0], bounds[1], bounds[2]);
+    let high = Vec3::new(bounds[3], bounds[4], bounds[5]);
+    let mut at =
+        Vec3::from_array(random) * (high - low - Vec3::splat(0.2)) + Vec3::splat(0.1) + low;
+    match face {
+        Face::Down => at.y = low.y - 0.1,
+        Face::Up => at.y = high.y + 0.1,
+        Face::North => at.z = low.z - 0.1,
+        Face::South => at.z = high.z + 0.1,
+        Face::West => at.x = low.x - 0.1,
+        Face::East => at.x = high.x + 0.1,
+    }
+    Vec3::new(pos.0 as f32, pos.1 as f32, pos.2 as f32) + at
+}
+
 fn break_bounds(element: &model::Element) -> Result<([f32; 3], [f32; 3])> {
     if !element.faces.iter().any(crate::mesh::entity_face) {
         let [a, b] = [element.from, element.to]
@@ -401,6 +450,21 @@ mod tests {
     use crate::{mesh, scene::HandcraftedScene};
     use image::{Rgba, RgbaImage};
     use std::fs;
+
+    #[test]
+    fn a_hit_chip_starts_just_off_the_face_that_was_hit() {
+        use minecraftoss_player::Face;
+        let full = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let up = hit_point((2, 64, -3), Face::Up, full, [0.0, 0.5, 1.0]);
+        assert!((up - Vec3::new(2.1, 65.1, -2.1)).length() < 1e-4, "{up}");
+        let west = hit_point((2, 64, -3), Face::West, full, [0.5, 0.0, 0.0]);
+        assert!((west - Vec3::new(1.9, 64.1, -2.9)).length() < 1e-4, "{west}");
+        let slab = [0.0, 0.0, 0.0, 1.0, 0.5, 1.0];
+        let south = hit_point((0, 0, 0), Face::South, slab, [1.0, 1.0, 0.0]);
+        assert!((south - Vec3::new(0.9, 0.4, 1.1)).length() < 1e-4, "{south}");
+        let down = hit_point((0, 0, 0), Face::Down, slab, [0.5, 1.0, 0.5]);
+        assert!((down.y + 0.1).abs() < 1e-5, "{down}");
+    }
 
     #[test]
     fn item_crumbs_start_where_the_item_broke_with_their_own_push() {

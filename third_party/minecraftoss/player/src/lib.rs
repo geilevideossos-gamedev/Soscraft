@@ -696,6 +696,12 @@ fn outline_shapes(block: &Block) -> Vec<Box3> {
     };
     vec![column]
 }
+pub fn outline_bounds(block: &Block) -> Option<[f64; 6]> {
+    outline_shapes(block)
+        .into_iter()
+        .map(|b| [b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z])
+        .reduce(|a, b| std::array::from_fn(|i| if i < 3 { a[i].min(b[i]) } else { a[i].max(b[i]) }))
+}
 fn wall_outline(block: &Block, width: f64, bottom: f64, top: f64, depth: f64) -> Box3 {
     let side = (16.0 - width) / 32.0;
     let depth = depth / 16.0;
@@ -3332,6 +3338,13 @@ mod tests {
         player.yaw = (-at.x).atan2(at.z).to_degrees();
         player.pitch = (-at.y).atan2(at.x.hypot(at.z)).to_degrees();
         assert_eq!(player.target(&world, 5.0).map(|hit| hit.pos), Some((0, 2, 0)), "the torch itself is hit");
+    }
+    #[test]
+    fn outline_bounds_cover_every_box_of_the_outline() {
+        let sixteenths = |block: Block| outline_bounds(&block).map(|b| b.map(|v| v * 16.0));
+        assert_eq!(sixteenths(Block::new("minecraft:torch")), Some([6.0, 0.0, 6.0, 10.0, 10.0, 10.0]));
+        assert_eq!(sixteenths(Block::new("minecraft:oak_wall_hanging_sign").with("facing", "north")), Some([0.0, 0.0, 6.0, 16.0, 16.0, 10.0]));
+        assert_eq!(sixteenths(Block::new("minecraft:air")), None);
     }
     #[test]
     fn wall_mounted_outlines_follow_their_facing() {
