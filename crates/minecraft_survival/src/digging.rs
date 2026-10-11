@@ -95,7 +95,7 @@ impl Dig {
             out.events.push(DigEvent::Hit {
                 pos,
                 face,
-                sound: self.ticks % HIT_SOUND_TICKS == 0,
+                sound: self.ticks.is_multiple_of(HIT_SOUND_TICKS),
             });
         }
         out
@@ -767,10 +767,8 @@ mod tests {
             if !wrong_tool(Some(&book), &states, &broken, held.as_ref()).is_empty() {
                 return None;
             }
-            let rolled = loot
-                .roll_drops_named(&broken[0].1, held.as_ref(), 1, &mut sequences)
-                .unwrap_or_default();
-            Some(rolled.into_iter().map(|stack| stack.id).collect())
+            let rolled = loot.roll_drops_named(&broken[0].1, held.as_ref(), 1, &mut sequences);
+            Some(rolled.into_iter().flatten().map(|stack| stack.id).collect())
         };
         assert_eq!(drops("minecraft:stone", None), None);
         assert_eq!(

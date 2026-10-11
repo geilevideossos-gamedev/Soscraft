@@ -139,9 +139,9 @@ impl LevelValue {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Operation {
-    AddValue,
-    AddMultipliedBase,
-    AddMultipliedTotal,
+    Value,
+    MultipliedBase,
+    MultipliedTotal,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -158,9 +158,9 @@ impl AttributeEffect {
             return None;
         }
         let operation = match value["operation"].as_str()? {
-            "add_value" => Operation::AddValue,
-            "add_multiplied_base" => Operation::AddMultipliedBase,
-            "add_multiplied_total" => Operation::AddMultipliedTotal,
+            "add_value" => Operation::Value,
+            "add_multiplied_base" => Operation::MultipliedBase,
+            "add_multiplied_total" => Operation::MultipliedTotal,
             _ => return None,
         };
         Some(Self {
@@ -237,7 +237,7 @@ impl MiningBook {
             let effects: Vec<AttributeEffect> = json["effects"][ATTRIBUTES]
                 .as_array()
                 .map(|entries| entries.iter().filter_map(AttributeEffect::parse).collect())
-                .unwrap_or_default();
+                .unwrap_or_else(Vec::new);
             if effects.is_empty() {
                 continue;
             }
@@ -275,7 +275,7 @@ impl MiningBook {
         let mut multiplied_base = 0.0;
         let mut multiplied_total = 1.0;
         for &(slot, stack) in equipment {
-            for (enchantment, level) in stack.map(enchantment_levels).unwrap_or_default() {
+            for (enchantment, level) in stack.map(enchantment_levels).unwrap_or_else(Vec::new) {
                 if level <= 0 || !self.fits_slot(&enchantment, slot) {
                     continue;
                 }
@@ -285,9 +285,9 @@ impl MiningBook {
                     }
                     let amount = f64::from(effect.amount.at(level));
                     match effect.operation {
-                        Operation::AddValue => added += amount,
-                        Operation::AddMultipliedBase => multiplied_base += amount,
-                        Operation::AddMultipliedTotal => multiplied_total *= 1.0 + amount,
+                        Operation::Value => added += amount,
+                        Operation::MultipliedBase => multiplied_base += amount,
+                        Operation::MultipliedTotal => multiplied_total *= 1.0 + amount,
                     }
                 }
             }
@@ -337,7 +337,9 @@ fn static_init(class: &ClassFile) -> Result<Vec<Instruction>> {
     class_file::instructions(code)
 }
 
-pub fn id_fields(class: &ClassFile) -> Result<(HashMap<String, Vec<String>>, Vec<String>)> {
+pub type IdFields = (HashMap<String, Vec<String>>, Vec<String>);
+
+pub fn id_fields(class: &ClassFile) -> Result<IdFields> {
     let mut fields = HashMap::new();
     let mut skipped = Vec::new();
     let mut by_state: HashMap<String, Vec<String>> = HashMap::new();
@@ -627,7 +629,7 @@ impl RuleBlocks {
     fn holds(&self, facts: &impl BlockFacts, block: &Block) -> bool {
         match self {
             Self::Tag(tag) => facts.in_tag(Some(block), tag),
-            Self::Blocks(ids) => ids.iter().any(|id| *id == block.id),
+            Self::Blocks(ids) => ids.contains(&block.id),
         }
     }
 }
@@ -677,19 +679,16 @@ impl Tool {
     fn parse(value: &Value) -> Self {
         let rules = value["rules"]
             .as_array()
-            .map(|rules| {
-                rules
-                    .iter()
-                    .filter_map(|rule| {
-                        Some(ToolRule {
-                            blocks: RuleBlocks::parse(&rule["blocks"])?,
-                            speed: rule["speed"].as_f64().map(|speed| speed as f32),
-                            correct: rule["correct_for_drops"].as_bool(),
-                        })
-                    })
-                    .collect()
+            .into_iter()
+            .flatten()
+            .filter_map(|rule| {
+                Some(ToolRule {
+                    blocks: RuleBlocks::parse(&rule["blocks"])?,
+                    speed: rule["speed"].as_f64().map(|speed| speed as f32),
+                    correct: rule["correct_for_drops"].as_bool(),
+                })
             })
-            .unwrap_or_default();
+            .collect();
         Self {
             rules,
             default_speed: value["default_mining_speed"].as_f64().unwrap_or(1.0) as f32,

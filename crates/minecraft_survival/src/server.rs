@@ -389,7 +389,10 @@ impl Server {
     }
 
     pub fn take_batch(&mut self) -> TickBatch {
-        self.pending_batch.take().unwrap_or_default()
+        self.pending_batch.take().unwrap_or(TickBatch {
+            normal: Vec::new(),
+            overload: None,
+        })
     }
 
     pub fn known_spawn(&self, dimension: Dimension, arrival: Option<Place>) -> Option<(i32, i32, i32)> {

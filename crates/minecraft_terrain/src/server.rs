@@ -5180,7 +5180,9 @@ mod tests {
         assert_eq!(teleports.iter().map(|t| t.0).collect::<Vec<_>>(), vec![1]);
     }
 
-    fn pearl_through_gateway(server: &mut ServerSim) -> (Vec<(u64, BlockPos)>, Vec<(u64, [f64; 3])>) {
+    type PearlTrips = (Vec<(u64, BlockPos)>, Vec<(u64, [f64; 3])>);
+
+    fn pearl_through_gateway(server: &mut ServerSim) -> PearlTrips {
         server.throw(thrown_down_by(4, "minecraft:ender_pearl", 3));
         let (mut gateways, mut teleports) = (Vec::new(), Vec::new());
         for _ in 0..20 {

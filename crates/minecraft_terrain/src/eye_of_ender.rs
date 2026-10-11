@@ -848,7 +848,7 @@ mod tests {
             .poll()
             .into_iter()
             .filter_map(|out| out.entities)
-            .last()
+            .next_back()
             .expect("a tick sends the entities");
         assert!(snapshot.eyes.views.is_empty());
     }
@@ -956,7 +956,7 @@ mod tests {
         let snapshot = outputs
             .into_iter()
             .filter_map(|out| out.entities)
-            .last()
+            .next_back()
             .expect("a tick sends the entities");
         assert_eq!(snapshot.eyes.views.len(), 1);
         let view = snapshot.eyes.views[0];

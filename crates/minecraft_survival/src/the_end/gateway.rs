@@ -385,7 +385,7 @@ pub fn exit_states(level: &mut Level, gateway: Pos) -> Option<(Pos, Vec<(Pos, Bl
     let (end_stone, bedrock, portal) = (state(END_STONE)?, state(BEDROCK)?, state(END_GATEWAY)?);
     let mut states: Vec<(Pos, BlockStateId)> = island
         .map(end_island_blocks)
-        .unwrap_or_default()
+        .unwrap_or_else(Vec::new)
         .into_iter()
         .map(|pos| (pos, end_stone))
         .collect();
@@ -517,11 +517,10 @@ pub fn pearl_landing(level: &mut Level, gateway: Pos) -> Option<[f64; 3]> {
 }
 
 pub fn pearls_through(level: &mut Level) -> Vec<(Pos, Option<[f64; 3]>)> {
-    let gateways = level
-        .entities
-        .as_mut()
-        .map(|entities| std::mem::take(&mut entities.pearl_gateways))
-        .unwrap_or_default();
+    let gateways = match level.entities.as_mut() {
+        Some(entities) => std::mem::take(&mut entities.pearl_gateways),
+        None => Vec::new(),
+    };
     let mut trips = Vec::new();
     for gateway in gateways {
         let landing = pearl_landing(level, gateway);

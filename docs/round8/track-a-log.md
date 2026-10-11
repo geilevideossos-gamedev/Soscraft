@@ -682,3 +682,25 @@ Commit: the one after 1f6cbfe2 (entry a1-7).
 - **Tests:** the 14 eye of ender tests in `minecraft_terrain` pass in 2.95 s, and `an_eye_thrown_from_the_hand_leaves_the_stack_and_flies` passes in 2.98 s.
 - **Test steps:** none in game (tests only).
 - **Kit:** none.
+
+## Final verification of the track
+
+### V1. Track A code passes clippy without new warnings
+
+Commit: the one after 1f6cbfe2 (entry R1).
+
+- **Changed:** only lines this track added, to clear every clippy warning on them (`clippy -p minecraft_commands -p minecraft_survival -p minecraft_terrain -p render_anim --all-targets`, and the three touched MinecraftOSS crates, which had none). No behaviour changes.
+  - `unwrap_or_default` is disallowed by `clippy.toml`, and `unwrap_or_else(Vec::new)` trips clippy's own `unwrap_or_default` where the type is plain, so each fallback is now written out: `minecraft_survival` `Server::take_batch` and `render_anim`'s mob tick take an explicit empty `TickBatch { normal: Vec::new(), overload: None }`; `the_end::gateway::pearls_through` matches on the entities; `mining_speed::Tool` flattens the optional rule list; `with_enchantments` and `enchantment_levels` use `unwrap_or_else(Vec::new)`; the wrong-tool test in `digging.rs` flattens the optional drops.
+  - `digging.rs`: `is_multiple_of` for the hit-sound tick. `mining_speed.rs`: the private `Operation` variants lose their shared `Add` prefix (`Value`, `MultipliedBase`, `MultipliedTotal`; the JSON names are unchanged), `IdFields` names `id_fields`' result, and `RuleBlocks::holds` uses `contains`. `eye_of_ender.rs` tests take the last snapshot with `next_back`. `server.rs` (`minecraft_terrain`) tests name the pearl trips `PearlTrips`. `tick_rate.rs`'s autosave test builds its `TickRate` with the field set. `render_anim` passes the hand to `eye_held` without a second borrow.
+- **Tests:** none added. `minecraft_commands` 129 passed; `minecraft_survival` 400 + 1 passed; `minecraft_terrain` 916 passed, 3 ignored; `render_anim` 75 passed; `minecraftoss-player` 190, `minecraftoss-world` 63, `minecraftoss-generator` 28 passed (with the full suite's stand-in scenario files). `check -p launcher` is clean.
+- **Note:** `9aa21978` (cargo-slot's gentle mode) is the same change as `39407502` on `minecraft-survival`, so it has no entry here.
+- **Test steps:** none in game (no behaviour change).
+- **Kit:** none.
+
+### The whole track's owner test, one kit
+
+The owner's steps are in the entries above: a5 in 2b, 3 and 5b; a2 in 3; a3 in 1, 4 and 5; a4 in 1-4; a1 in 4a and 7. This kit (27 stacks) holds what those steps use most; the per-entry kits list the rest (the other pickaxes, shears, cobwebs, the other spawn eggs, the spyglass, golden apples, feather falling boots), which `/give` adds when a step needs them.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_pickaxe,minecraft:wooden_pickaxe,minecraft:netherrack*64,minecraft:stone*64,minecraft:obsidian*16,minecraft:iron_ore*8,minecraft:milk_bucket,minecraft:water_bucket,minecraft:ender_eye*48,minecraft:end_portal_frame*2,minecraft:cobblestone*64,minecraft:oak_sapling*16,minecraft:cow_spawn_egg*4,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:sand*16,minecraft:furnace,minecraft:coal*16,minecraft:raw_iron*16,minecraft:spawner*16,minecraft:zombie_spawn_egg*4,minecraft:cave_spider_spawn_egg*4,minecraft:ender_pearl*16,minecraft:elytra,minecraft:firework_rocket*64,minecraft:end_stone*64
+```

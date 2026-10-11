@@ -1208,7 +1208,7 @@ fn update(
             (offhand_key && !hand.offhand_key_was, offhand_key)
         };
         let use_pressed = idle && use_pressed;
-        if !minecraft_survival::offhand::eye_held(&hand, use_down, *selected) {
+        if !minecraft_survival::offhand::eye_held(hand, use_down, *selected) {
             hand.using_eye = None;
         }
         let place = use_pressed || (idle && use_down && hand.place_delay == 0 && hand.using_eye.is_none());
@@ -1792,7 +1792,7 @@ fn update(
         let bright_outside = terrain.environment.sky_light_level() > 11.0;
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
         let ticks_before = entities.client_ticks();
-        let batch = pending_batch.take().unwrap_or_default();
+        let batch = pending_batch.take().unwrap_or(minecraft_survival::tick_rate::TickBatch { normal: Vec::new(), overload: None });
         let (changes, hits) = entities.tick(inventory, *selected, dt, &batch, globals.tick_rate.client_timing(), globals.clock_ticks(), bright_outside, &player);
         entities.present_level_events(&terrain.scene);
         globals.weather = entities.weather_data.or(globals.weather);

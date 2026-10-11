@@ -482,8 +482,10 @@ mod tests {
 
     #[test]
     fn the_autosave_interval_never_drops_below_100_ticks() {
-        let mut rate = TickRate::default();
-        rate.scheduled_sprint_ticks = 10;
+        let mut rate = TickRate {
+            scheduled_sprint_ticks: 10,
+            ..TickRate::default()
+        };
         rate.record(&[10_000 * MS; 100]);
         assert_eq!(rate.autosave_interval(), 100);
         rate.scheduled_sprint_ticks = 0;
