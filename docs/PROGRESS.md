@@ -44,7 +44,7 @@ Briefs: `docs/round8/<item>.md`, the multiplayer design `docs/MULTIPLAYER.md`.
 - The multiplayer design names the branch `track-e8`; it is `track-e`.
 
 ## Log
-- 2026-10-11: M2 part 1 done. D: fell to 14 GB free; `D:\iw4l-targetelease` deleted (the first release build of the round starts clean, about 21 min).
+- 2026-10-11: M2 part 1 done. D: fell to 14 GB free; `D:\iw4l-target\release` deleted (the first release build of the round starts clean, about 21 min).
 - 2026-10-11: track E milestone M1 finished; M2 part 1 started.
 - 2026-10-11: briefs and the multiplayer design committed (fe3e2ba9); tracks A, B, C and E (M1) started.
 - 2026-10-10: round 8 started; screenshots read; release build measurement and the brief workflow started.
