@@ -8,6 +8,7 @@
 //! which work starts and the order in which finished chunks reach the client
 //! are observable, and both are kept.
 
+pub mod book;
 pub mod chunk_map;
 pub mod distance;
 pub mod game_rules;

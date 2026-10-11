@@ -400,17 +400,14 @@ pub fn within_table_reach(eye: [f64; 3], pos: BlockPos) -> bool {
 }
 
 pub fn kit(spec: &str) -> Vec<(String, u32)> {
-    spec.split(',')
+    minecraftoss_world::book::split_entries(spec)
+        .into_iter()
         .filter_map(|entry| {
-            let entry = entry.trim();
-            let (id, count) = match entry.split_once('*') {
-                Some((id, count)) => (id.trim(), count.trim().parse::<u32>().ok()?),
-                None => (entry, 1),
-            };
+            let (id, count) = minecraftoss_world::book::entry_count(entry.trim())?;
             if id.is_empty() || count == 0 {
                 return None;
             }
-            let id = if id.split(['+', '@']).next().unwrap_or(id).contains(':') {
+            let id = if id.split(['+', '@', '[']).next().unwrap_or(id).contains(':') {
                 id.to_owned()
             } else {
                 format!("minecraft:{id}")
@@ -423,7 +420,8 @@ pub fn kit(spec: &str) -> Vec<(String, u32)> {
 pub fn give_kit(inventory: &mut Inventory, spec: &str) -> usize {
     let mut given = 0;
     for (entry, mut count) in kit(spec) {
-        let (id, enchantments) = kit_enchantments(&entry);
+        let (entry, components) = kit_components(&entry);
+        let (id, enchantments) = kit_enchantments(entry);
         let (id, potion) = kit_potion(id);
         let max = u32::from(inventory.recipes.max_stack(id).max(1));
         while count > 0 {
@@ -432,7 +430,8 @@ pub fn give_kit(inventory: &mut Inventory, spec: &str) -> usize {
             };
             let size = count.min(max);
             count -= size;
-            inventory.slots[slot] = Some(kit_potion_stack(&inventory.recipes, id, size as u8, &enchantments, potion.as_deref()));
+            let stack = kit_potion_stack(&inventory.recipes, id, size as u8, &enchantments, potion.as_deref());
+            inventory.slots[slot] = Some(with_components(stack, components.as_ref()));
             given += 1;
         }
     }
@@ -471,6 +470,41 @@ pub fn kit_potion_stack(recipes: &RecipeBook, id: &str, size: u8, enchantments: 
         };
         stack.components = Some(serde_json::Value::Object(components));
     }
+    stack
+}
+
+pub fn kit_components(entry: &str) -> (&str, Option<serde_json::Value>) {
+    let Some(open) = minecraftoss_world::book::component_list_start(entry) else {
+        return (entry, None);
+    };
+    let list = entry[open + 1..].trim_end();
+    let list = list.strip_suffix(']').unwrap_or(list);
+    let mut components = serde_json::Map::new();
+    for part in minecraftoss_world::book::split_entries(list) {
+        let Some((name, value)) = part.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        let name = if name.contains(':') { name.to_owned() } else { format!("minecraft:{name}") };
+        if minecraftoss_world::book::CONTENT_COMPONENTS.contains(&name.as_str()) {
+            if let Ok(content) = minecraftoss_world::book::content(&name, value.trim()) {
+                components.insert(name, content);
+            }
+        }
+    }
+    (entry[..open].trim(), (!components.is_empty()).then_some(serde_json::Value::Object(components)))
+}
+
+pub fn with_components(mut stack: ItemStack, extra: Option<&serde_json::Value>) -> ItemStack {
+    let Some(serde_json::Value::Object(extra)) = extra else {
+        return stack;
+    };
+    let mut components = match stack.components.take() {
+        Some(serde_json::Value::Object(components)) => components,
+        _ => serde_json::Map::new(),
+    };
+    components.extend(extra.iter().map(|(name, value)| (name.clone(), value.clone())));
+    stack.components = Some(serde_json::Value::Object(components));
     stack
 }
 
@@ -655,6 +689,26 @@ mod tests {
         assert_eq!(components(1), Some(json!({"minecraft:enchantments": {"minecraft:unbreaking": 1}, "minecraft:dyed_color": 0x3C44AA})));
         assert_eq!(components(2), Some(json!({"minecraft:potion_contents": {"potion": "minecraft:red"}})));
         assert_eq!(components(3), None);
+    }
+
+    #[test]
+    fn give_kit_puts_book_pages_on_the_stack() {
+        let spec = r#"written_book[written_book_content={title:"Kit",author:"Owner",pages:["One, two + three @ four","*5"]}]*2,writable_book[writable_book_content={pages:["draft"]}],ice*3"#;
+        assert_eq!(kit(spec).iter().map(|(_, count)| *count).collect::<Vec<_>>(), [2, 1, 3]);
+        let mut inventory = Inventory::default();
+        assert_eq!(give_kit(&mut inventory, spec), 3);
+        let book = inventory.slots[HOTBAR].as_ref().unwrap();
+        assert_eq!((book.id.as_str(), book.count), ("minecraft:written_book", 2));
+        assert_eq!(
+            book.components,
+            Some(json!({"minecraft:written_book_content": {"title": {"raw": "Kit"}, "author": "Owner", "pages": [{"raw": "One, two + three @ four"}, {"raw": "*5"}]}}))
+        );
+        let draft = inventory.slots[HOTBAR + 1].as_ref().unwrap();
+        assert_eq!(draft.components, Some(json!({"minecraft:writable_book_content": {"pages": [{"raw": "draft"}]}})));
+        assert_eq!(inventory.slots[HOTBAR + 2].as_ref().map(|s| (s.id.as_str(), s.count)), Some(("minecraft:ice", 3)));
+        assert_eq!(kit_components("minecraft:written_book[written_book_content={author:\"A\"}]"), ("minecraft:written_book", None));
+        let merged = with_components(kit_stack(&inventory.recipes, "minecraft:written_book", 1, &[("minecraft:unbreaking".to_owned(), 1)]), book.components.as_ref());
+        assert_eq!(merged.components.as_ref().map(|c| c.as_object().unwrap().len()), Some(2));
     }
 
     #[test]

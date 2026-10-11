@@ -877,3 +877,30 @@ Previous commit: 022c7b4e
 ```
 IW4L_MINECRAFT_KIT=minecraft:trapped_chest*4,minecraft:redstone_lamp*8,minecraft:redstone*64,minecraft:comparator*4,minecraft:cobblestone*64
 ```
+
+### 36. /give and the kit take writable and written book contents
+
+Previous commit: 6570c43c
+
+- **Changed:**
+  - New vendored `world` `book.rs` (a MinecraftOSS addition): `content(component, snbt)` reads `writable_book_content` and `written_book_content` with the core SNBT parser and checks them like vanilla's codecs (`WritableBookContent`: up to 100 pages of at most 1024 characters, each a string or `{raw, filtered}`; `WrittenBookContent`: `title` (at most 32, string or `{raw, filtered}`) and `author` required, `generation` 0 to 3, `pages` text components (string, compound or list, strings up to 32767) or `{raw, filtered}`, `resolved`). It returns the component in the shape vanilla saves (`{raw: ...}` pages and title, `generation` and `resolved` left out at their defaults). Also `page_count`, `has_content`, `raw_page` for the lectern, and `split_entries`/`entry_count`: kit lines split on commas outside `[]`, `{}` and quotes, and the `*count` is read only after the component list.
+  - `minecraft_commands` `args.rs`: `ItemArg.components` (the parsed book components as JSON). The item component list takes both book components next to the enchantment ones; a bad one is `arguments.item.component.malformed` with the reason, at the value's start. Other components stay `arguments.item.component.unknown`. `kit.rs`: `kit_entries` uses the new splitter.
+  - `minecraft_terrain` `crafting.rs`: `kit` uses the splitter, `kit_components(entry)` takes the `[...]` list off an entry (enchantments `+` and potions `@` are only read before it, so page text with `,`, `*`, `+` or `@` survives), and `with_components(stack, extra)` merges them into the stack. `give_kit` (the starting kit) uses both.
+  - `minecraft_survival` `commands.rs`: `/give` and `/kit` put the components on the stack.
+- **Tests:**
+  - `world` `book`: `a_written_book_keeps_title_author_and_pages_in_the_saved_shape`, `writable_pages_are_plain_or_raw_strings`, `bad_book_content_is_refused`, `page_counts_and_content_follow_the_components`, `kit_entries_split_outside_components_and_quotes`.
+  - `args`: `a_written_book_takes_title_author_and_pages`, `writable_pages_take_plain_and_raw_strings`, `bad_book_content_is_malformed`.
+  - `kit`: `kit_entries_keep_commas_inside_components`; `crafting`: `give_kit_puts_book_pages_on_the_stack` (pages with `,`, `+`, `@` and `*`); `commands` (survival): `give_puts_book_pages_on_the_stack`.
+- **Decisions:**
+  - The parser lives in the vendored `world` crate because both `minecraft_commands` and `minecraft_terrain` already depend on it and it has the SNBT parser; that keeps `Cargo.lock` unchanged.
+  - Unknown keys inside a book component are ignored, as vanilla's record codecs ignore them (the brief said to refuse them).
+  - A kit entry with a bad book component gives the book without it (the kit has no error channel); `/give` reports it.
+- **Test steps:** (survival)
+  1. Type `/give @s minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}]`: a written book appears in the inventory (**1**, the chat line).
+  2. Type `/give @s written_book[written_book_content={author:"Owner"}]`: the chat shows a red line that starts with "Malformed 'minecraft:written_book_content' component" and ends with "No key title", and nothing is given.
+  3. With the kit below, the starting inventory holds a written book and a book and quill (the pages show on the lectern in the next entries).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Kit",author:"Owner",pages:["One, two + three","Page two"]}],minecraft:writable_book
+```

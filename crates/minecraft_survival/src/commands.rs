@@ -361,12 +361,15 @@ impl CommandWorld for Host<'_> {
 
     fn give(&mut self, player: PlayerId, item: &ItemArg, count: u32) -> bool {
         let feet = self.presence(player).pose.map(|pose| pose.feet);
-        let stack = minecraft_terrain::crafting::kit_potion_stack(
-            &self.data.recipes,
-            &item.id,
-            1,
-            &item.enchantments,
-            item.potion.as_deref(),
+        let stack = minecraft_terrain::crafting::with_components(
+            minecraft_terrain::crafting::kit_potion_stack(
+                &self.data.recipes,
+                &item.id,
+                1,
+                &item.enchantments,
+                item.potion.as_deref(),
+            ),
+            item.components.as_ref(),
         );
         let Some((player, entities)) = self.player_in_level(player) else {
             return false;
@@ -695,13 +698,15 @@ impl CommandWorld for Host<'_> {
         minecraft_terrain::crafting::kit(line)
             .into_iter()
             .map(|(entry, count)| {
-                let (id, enchantments) = minecraft_terrain::crafting::kit_enchantments(&entry);
+                let (entry, components) = minecraft_terrain::crafting::kit_components(&entry);
+                let (id, enchantments) = minecraft_terrain::crafting::kit_enchantments(entry);
                 let (id, potion) = minecraft_terrain::crafting::kit_potion(id);
                 let item = ItemArg {
                     id: id.to_owned(),
                     enchantments,
                     potion,
                     at: 0,
+                    components,
                 };
                 (item, count)
             })
@@ -2254,6 +2259,49 @@ pub(crate) mod tests {
         assert!(host.effect_clear(HOST, Some("minecraft:regeneration")));
         assert!(!host.effect_clear(HOST, None));
         assert!(!host.effect_give(PlayerId(1), "minecraft:regeneration", Some(20), 0));
+    }
+
+    #[test]
+    fn give_puts_book_pages_on_the_stack() {
+        let mut parts = Parts::new();
+        parts.server.registries_mut().items = ["minecraft:written_book", "minecraft:writable_book"]
+            .map(String::from)
+            .to_vec();
+        parts.send(
+            HOST,
+            &[
+                r#"/give @s minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one, text.","Page two text."]}]"#,
+                r#"/give @s writable_book[writable_book_content={pages:["draft"]}]"#,
+                r#"/give @s written_book[written_book_content={author:"Owner"}]"#,
+            ],
+        );
+        let books: Vec<_> = parts
+            .player(HOST)
+            .inventory
+            .slots
+            .iter()
+            .flatten()
+            .map(|stack| (stack.id.clone(), stack.count, stack.components.clone()))
+            .collect();
+        assert_eq!(
+            books,
+            vec![
+                (
+                    "minecraft:written_book".to_owned(),
+                    1,
+                    Some(serde_json::json!({"minecraft:written_book_content": {
+                        "title": {"raw": "Test"},
+                        "author": "Owner",
+                        "pages": [{"raw": "Page one, text."}, {"raw": "Page two text."}]
+                    }}))
+                ),
+                (
+                    "minecraft:writable_book".to_owned(),
+                    1,
+                    Some(serde_json::json!({"minecraft:writable_book_content": {"pages": [{"raw": "draft"}]}}))
+                ),
+            ]
+        );
     }
 
     #[test]

@@ -34,13 +34,10 @@ pub fn read_env_file(path: &Path, key: &str) -> Option<String> {
 }
 
 pub fn kit_entries(spec: &str) -> Vec<(ItemArg, u32)> {
-    spec.split(',')
+    minecraftoss_world::book::split_entries(spec)
+        .into_iter()
         .filter_map(|entry| {
-            let entry = entry.trim();
-            let (item, count) = match entry.split_once('*') {
-                Some((item, count)) => (item.trim(), count.trim().parse::<u32>().ok()?),
-                None => (entry, 1),
-            };
+            let (item, count) = minecraftoss_world::book::entry_count(entry.trim())?;
             if item.is_empty() || count == 0 {
                 return None;
             }
@@ -168,6 +165,25 @@ mod tests {
             entries[0].0.enchantments,
             vec![("minecraft:efficiency".to_owned(), 5)]
         );
+    }
+
+    #[test]
+    fn kit_entries_keep_commas_inside_components() {
+        let entries = kit_entries(
+            r#"written_book[written_book_content={title:"a,b",author:"c",pages:["x, y*2","z"]}]*3,stone"#,
+        );
+        assert_eq!(entries.len(), 2);
+        let (book, count) = &entries[0];
+        assert_eq!((book.id.as_str(), *count), ("minecraft:written_book", 3));
+        assert_eq!(
+            book.components,
+            Some(serde_json::json!({"minecraft:written_book_content": {
+                "title": {"raw": "a,b"},
+                "author": "c",
+                "pages": [{"raw": "x, y*2"}, {"raw": "z"}]
+            }}))
+        );
+        assert_eq!(entries[1].0.id, "minecraft:stone");
     }
 
     #[test]
