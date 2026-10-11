@@ -233,6 +233,41 @@ fn hoglin_spawns_as_baby(random: &mut dyn RandomSource, group: &mut MonsterGroup
     baby || grouped
 }
 
+pub(super) struct PiglinSpawn {
+    pub(super) baby: bool,
+    pub(super) weapon: Option<&'static str>,
+    pub(super) hunted: i32,
+    pub(super) armor: [Option<(&'static str, &'static str)>; 4],
+}
+
+pub(super) fn piglin_spawn(level: &mut dyn RandomSource, own: &mut impl RandomSource) -> PiglinSpawn {
+    let baby = level.next_f32() < 0.2;
+    let weapon = if baby {
+        None
+    } else if f64::from(own.next_f32()) < 0.5 {
+        Some("minecraft:crossbow")
+    } else if own.next_i32_bound(10) == 0 {
+        Some("minecraft:golden_spear")
+    } else {
+        Some("minecraft:golden_sword")
+    };
+    let hunted = level.next_i32_bound(2400 - 600 + 1) + 600;
+    let mut armor = [None; 4];
+    if !baby {
+        let pieces = [("head", "minecraft:golden_helmet"), ("chest", "minecraft:golden_chestplate"), ("legs", "minecraft:golden_leggings"), ("feet", "minecraft:golden_boots")];
+        for (cell, piece) in armor.iter_mut().zip(pieces) {
+            if level.next_f32() < 0.1 {
+                *cell = Some(piece);
+            }
+        }
+    }
+    PiglinSpawn { baby, weapon, hunted, armor }
+}
+
+pub(super) fn piglin_may_stand_on(below: &str) -> bool {
+    below != "minecraft:nether_wart_block"
+}
+
 /// An equipment slot holding one item (`setItemSlot(slot, new ItemStack(item))`).
 pub(super) fn equip(tag: &mut Tag, slot: &str, item: &str) {
     let Tag::Compound(map) = tag else { return };
@@ -289,6 +324,7 @@ fn follow_range_base(kind: &str) -> f64 {
         "minecraft:enderman" => 64.0,
         "minecraft:ghast" => 100.0,
         "minecraft:blaze" => 48.0,
+        "minecraft:piglin_brute" => 12.0,
         _ => 16.0,
     }
 }
@@ -642,6 +678,7 @@ impl CreatureSpawns {
             }
             Rules::Strider => self.strider_spawn_rules(level, pos),
             Rules::Hoglin => self.registries.blocks.block(self.registries.blocks.block_of(level.block(pos.below()))).name.as_str() != "minecraft:nether_wart_block",
+            Rules::Piglin => piglin_may_stand_on(self.registries.blocks.block(self.registries.blocks.block_of(level.block(pos.below()))).name.as_str()),
             Rules::Other => {
                 level.note_unsupported(&format!("spawn rules of {kind}"));
                 false
@@ -760,7 +797,8 @@ impl CreatureSpawns {
         // constructor set it).
         if let Tag::Compound(map) = &mut tag {
             if map.contains_key("CanPickUpLoot") {
-                map.insert("CanPickUpLoot".to_owned(), Tag::Byte(0));
+                let piglin = matches!(kind, "minecraft:piglin" | "minecraft:piglin_brute");
+                map.insert("CanPickUpLoot".to_owned(), Tag::Byte(i8::from(piglin)));
             }
         }
         if let Some(Tag::Compound(nbt)) = nbt {
@@ -986,6 +1024,25 @@ impl CreatureSpawns {
                 if level.random().next_f32() < 0.2 {
                     set(&mut tag, "IsBaby", byte(true));
                 }
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
+            "minecraft:piglin" => {
+                let spawn = piglin_spawn(level.random(), &mut own);
+                if spawn.baby {
+                    set(&mut tag, "IsBaby", byte(true));
+                }
+                if let Some(weapon) = spawn.weapon {
+                    equip(&mut tag, "mainhand", weapon);
+                }
+                minecraftoss_core::entity_data::set_brain_memory(&mut tag, "minecraft:hunted_recently", Tag::Byte(1), Some(i64::from(spawn.hunted)));
+                for (slot, item) in spawn.armor.into_iter().flatten() {
+                    equip(&mut tag, slot, item);
+                }
+                Self::roll_enchantments(level, &tag, difficulty);
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
+            "minecraft:piglin_brute" => {
+                minecraftoss_core::entity_data::finalize_piglin_brute(&mut tag, &self.dimension, [pos.x, pos.y, pos.z]);
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
             }
             "minecraft:creeper" | "minecraft:enderman" | "minecraft:bat" | "minecraft:ghast" | "minecraft:blaze" => finalize_mob(&mut tag, &mut RandomRef(level.random())),
@@ -1285,6 +1342,58 @@ mod tests {
         assert_eq!(info.rules, super::Rules::Hoglin);
         let zoglin = super::type_info("minecraft:zoglin").unwrap();
         assert_eq!((zoglin.fire_immune, zoglin.remove_far, zoglin.rules), (true, true, super::Rules::AnyLightMonster));
+    }
+
+    #[test]
+    fn a_piglin_spawn_rolls_a_baby_one_in_five_and_a_crossbow_for_half_the_adults() {
+        let mut level = minecraftoss_core::random::LegacyRandom::new(11);
+        let mut own = minecraftoss_core::random::LegacyRandom::new(12);
+        let rolls = 10_000;
+        let (mut babies, mut crossbows, mut spears, mut swords) = (0, 0, 0, 0);
+        let mut pieces = [0; 4];
+        for _ in 0..rolls {
+            let spawn = super::piglin_spawn(&mut level, &mut own);
+            assert!((600..=2400).contains(&spawn.hunted));
+            if spawn.baby {
+                babies += 1;
+                assert!(spawn.weapon.is_none() && spawn.armor.iter().all(Option::is_none));
+                continue;
+            }
+            match spawn.weapon {
+                Some("minecraft:crossbow") => crossbows += 1,
+                Some("minecraft:golden_spear") => spears += 1,
+                Some("minecraft:golden_sword") => swords += 1,
+                other => panic!("{other:?}"),
+            }
+            for (count, piece) in pieces.iter_mut().zip(spawn.armor) {
+                if piece.is_some() {
+                    *count += 1;
+                }
+            }
+        }
+        let adults = f64::from(rolls - babies);
+        let share = |n: i32, of: f64| f64::from(n) / of;
+        assert!((share(babies, f64::from(rolls)) - 0.2).abs() < 0.015, "{babies}");
+        assert!((share(crossbows, adults) - 0.5).abs() < 0.02, "{crossbows}");
+        assert!((share(spears, adults) - 0.05).abs() < 0.01, "{spears}");
+        assert!((share(swords, adults) - 0.45).abs() < 0.02, "{swords}");
+        for count in pieces {
+            assert!((share(count, adults) - 0.1).abs() < 0.015, "{pieces:?}");
+        }
+        let info = super::type_info("minecraft:piglin").unwrap();
+        assert_eq!((info.width, info.height, info.fire_immune, info.remove_far, info.rules), (0.6, 1.95, false, true, super::Rules::Piglin));
+        assert_eq!(super::follow_range_base("minecraft:piglin_brute"), 12.0);
+        assert_eq!(super::follow_range_base("minecraft:piglin"), 16.0);
+    }
+
+    #[test]
+    fn piglins_do_not_spawn_on_nether_wart_blocks() {
+        assert!(!super::piglin_may_stand_on("minecraft:nether_wart_block"));
+        for floor in ["minecraft:netherrack", "minecraft:crimson_nylium", "minecraft:warped_wart_block", "minecraft:soul_sand"] {
+            assert!(super::piglin_may_stand_on(floor), "{floor}");
+        }
+        let brute = super::type_info("minecraft:piglin_brute").unwrap();
+        assert_eq!((brute.rules, brute.remove_far), (super::Rules::Other, true));
     }
 
     #[test]

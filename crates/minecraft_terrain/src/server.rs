@@ -6657,6 +6657,48 @@ mod tests {
     }
 
     #[test]
+    fn piglin_eggs_hatch_armed_and_brute_eggs_with_an_axe_and_a_home() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(TerrainGenerator::nether(registries.clone(), 0).unwrap()), "minecraft:the_nether").unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, 0, 256).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut nether = ServerSim::new(worldgen, states, "minecraft:the_nether");
+        for x in -1..=1 {
+            for z in -1..=1 {
+                nether.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        nether.set_players(&[[0.5, 100.0, 0.5]], 2);
+        for _ in 0..40 {
+            nether.hatch_egg("minecraft:piglin", [0.5, 100.0, 0.5], 0.0).unwrap();
+        }
+        let (mut armed, mut babies) = (0, 0);
+        for e in nether.mobs.piglins() {
+            assert!(e.piglin.can_pick_up_loot, "a piglin picks up loot");
+            assert!(e.brain.memories.hunted_recently.ttl().is_some_and(|ttl| (600..=2400).contains(&ttl)));
+            if e.piglin.is_baby() {
+                babies += 1;
+                assert!(e.piglin.main_hand.is_none() && e.piglin.armor.iter().all(Option::is_none));
+            } else {
+                armed += 1;
+                assert!(matches!(e.piglin.main_hand.as_ref().map(|s| s.id.as_str()), Some("minecraft:crossbow" | "minecraft:golden_sword" | "minecraft:golden_spear")));
+            }
+        }
+        assert_eq!(armed + babies, 40);
+        assert!((1..20).contains(&babies), "about one in five: {babies}");
+        nether.hatch_egg("minecraft:piglin_brute", [4.5, 100.0, 0.5], 0.0).unwrap();
+        let brute = nether.mobs.piglins().iter().find(|e| e.piglin.is_brute()).expect("a brute hatches");
+        assert_eq!(brute.piglin.main_hand.as_ref().map(|s| s.id.as_str()), Some("minecraft:golden_axe"));
+        let home = brute.brain.memories.home.get().expect("its home");
+        assert_eq!((home.dimension.as_str(), home.pos), ("minecraft:the_nether", (4, 100, 0)));
+    }
+
+    #[test]
     fn zombified_piglins_hold_gold_keep_their_anger_and_come_out_of_overworld_portals() {
         let Ok(paths) = DataPaths::discover() else { return };
         let Ok(registries) = Registries::load(&paths) else { return };

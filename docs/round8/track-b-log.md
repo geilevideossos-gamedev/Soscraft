@@ -564,3 +564,33 @@ After 1ebb81a1.
 ```
 IW4L_MINECRAFT_KIT=minecraft:piglin_spawn_egg*8,minecraft:piglin_brute_spawn_egg*4,minecraft:diamond_sword,minecraft:oak_door*2,minecraft:netherrack*64,minecraft:cooked_beef*16
 ```
+
+### b1.2b. Minecraft piglins spawn in nether wastes, crimson forests and bastions
+
+After 52536843.
+
+- **Changed:**
+  - Vendored `world/src/natural_spawner.rs`: `type_info` knows `piglin` (0.6 x 1.95, on the ground, `MOTION_BLOCKING_NO_LEAVES`, a monster) with the new `Rules::Piglin`, so the nether wastes (weight 15, groups of 4) and crimson forest (weight 5, 3 to 4) entries spawn. `piglin_brute` is known too (no spawn rules: brutes never spawn naturally), so its egg and `/summon` finalize it. `CreatureSpawns` keeps its dimension's name.
+  - Vendored `world/src/natural_spawner/spawning.rs`: `Rules::Piglin` (`checkPiglinSpawnRules`: anything but a nether wart block below). The piglin's `finalizeSpawn` (`piglin_spawn`): a baby one time in five (level random); an adult's weapon from its own random (`createSpawnWeapon`: a crossbow half the time, else a golden spear one time in ten, else a golden sword); `hunted_recently` for 600 to 2400 ticks; each golden armour piece at 10% for an adult; the enchantment rolls of the filled slots; then `Mob.finalizeSpawn`. The brute's: `home` at its block in this dimension and a golden axe, then `Mob.finalizeSpawn`; its follow range base is 12. `/summon` keeps `CanPickUpLoot` on for piglins and brutes (`AbstractPiglin.readAdditionalSaveData` reads it as true by default), where other mobs get it off.
+  - Vendored `core/src/entity_data.rs`: `set_brain_memory` (a saved brain memory with an optional `ttl`, other memories kept) and `finalize_piglin_brute`, shared by natural spawning, eggs and structures.
+  - Vendored `generator`: bastion template brutes get their golden axe and `home` (`Library.dimension`, set with the dimension type); `finalize_piglin` writes its hunt memory through `set_brain_memory`.
+- **Tests:** `spawning` (vendored world): `a_piglin_spawn_rolls_a_baby_one_in_five_and_a_crossbow_for_half_the_adults` (10 000 rolls: babies about 20%; of the adults crossbows about 50%, spears about 5%, swords about 45%, each golden piece about 10%), `piglins_do_not_spawn_on_nether_wart_blocks`. `entity_data` (vendored core): `a_bastion_brute_gets_a_golden_axe_and_its_home`. `server` (with the game data): `piglin_eggs_hatch_armed_and_brute_eggs_with_an_axe_and_a_home`. `terrain`: `a_bastion_s_piglins_wake_up` also checks that every bastion brute holds a golden axe and has its home where it stands.
+- **Decisions:**
+  - The brute's finalize lives in the vendored core, next to `finalize_mob`, because both the generator (bastions) and natural spawning (eggs, `/summon`) need it and the generator cannot use the world crate.
+  - Brutes generated in bastions before this commit keep what they were saved with: no axe, no home (as the brief says, vanilla never had such brutes; a bastion not yet visited shows the new ones).
+  - The brute's spawn rules are `Rules::Other` (not spawned): no 26.3 biome lists brutes.
+- **Test steps (Nether, survival, `/difficulty normal`):**
+  1. Use 10 piglin eggs. Roughly two are babies (small, no weapon); the adults hold crossbows or golden swords (rarely a golden spear), and now and then one wears a golden helmet, chestplate, leggings or boots (**4**).
+  2. Use a brute egg: it holds a golden axe. Walk 20 blocks away and wait: it keeps strolling back to where it hatched.
+  3. Fly over a nether wastes or crimson forest area far from where you were: groups of piglins appear, never standing on nether wart blocks.
+  4. `/locate structure minecraft:bastion_remnant` and `/tp` to one you have not visited: its brutes hold golden axes and stay near where they stood (**5**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:piglin_spawn_egg*16,minecraft:piglin_brute_spawn_egg*4,minecraft:diamond_sword,minecraft:netherrack*64,minecraft:cooked_beef*16
+```
+- **Combined kit for b1.2 and b1.2b:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:piglin_spawn_egg*16,minecraft:piglin_brute_spawn_egg*4,minecraft:diamond_sword,minecraft:oak_door*2,minecraft:netherrack*64,minecraft:cooked_beef*16
+```

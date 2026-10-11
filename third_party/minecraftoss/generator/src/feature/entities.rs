@@ -134,6 +134,9 @@ pub fn finalize_spawn(ctx: &mut Ctx, tag: &mut Tag, black_cat_structure: bool) {
     if kind == "minecraft:piglin" {
         finalize_piglin(ctx, tag);
     }
+    if let (true, Some(pos)) = (kind == "minecraft:piglin_brute", pos) {
+        minecraftoss_core::entity_data::finalize_piglin_brute(tag, &ctx.lib.dimension, [pos.x, pos.y, pos.z]);
+    }
     if matches!(kind.as_str(), "minecraft:hoglin" | "minecraft:zoglin") && ctx.region.level_random().next_f32() < 0.2 {
         if let Tag::Compound(map) = tag {
             if kind == "minecraft:hoglin" {
@@ -238,9 +241,8 @@ fn finalize_piglin(ctx: &mut Ctx, tag: &mut Tag) {
     let random = ctx.region.level_random();
     // `TIME_BETWEEN_HUNTS = rangeOfSeconds(30, 120)`: 600..=2400 ticks.
     let delay = random.next_i32_bound(2400 - 600 + 1) + 600;
+    minecraftoss_core::entity_data::set_brain_memory(tag, "minecraft:hunted_recently", Tag::Byte(1), Some(i64::from(delay)));
     let Tag::Compound(map) = tag else { return };
-    let memory = compound([("value", Tag::Byte(1)), ("ttl", Tag::Long(i64::from(delay)))]);
-    map.insert("Brain".to_owned(), compound([("memories", compound([("minecraft:hunted_recently", memory)]))]));
     let adult = map.get("IsBaby").and_then(Tag::as_i64).is_none_or(|b| b == 0);
     let mut equipment = match map.remove("equipment") {
         Some(Tag::Compound(e)) => e,

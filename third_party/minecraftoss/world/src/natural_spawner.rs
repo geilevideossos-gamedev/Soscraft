@@ -240,6 +240,7 @@ enum Rules {
     GlowSquid,
     Strider,
     Hoglin,
+    Piglin,
     /// Rules not ported yet: the type is not spawned.
     Other,
 }
@@ -291,6 +292,7 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "zombie" | "zombie_villager" | "witch" | "husk" => (0.6, 1.95, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "skeleton" | "stray" | "bogged" | "parched" => (0.6, 1.99, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "zombified_piglin" => (0.6, 1.95, Placement::OnGround, MotionBlockingNoLeaves, true, false),
+        "piglin" | "piglin_brute" => (0.6, 1.95, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "wither_skeleton" => (0.7, 2.4, Placement::OnGround, MotionBlockingNoLeaves, true, false),
         // A husk's mount (its room is tried; it never spawns on its own).
         "camel_husk" => (1.7, 2.375, Placement::OnGround, MotionBlockingNoLeaves, false, false),
@@ -309,7 +311,7 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         _ => return None,
     };
     let short = kind.trim_start_matches("minecraft:");
-    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin" | "wither_skeleton" | "blaze" | "zoglin");
+    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin" | "wither_skeleton" | "blaze" | "zoglin" | "piglin" | "piglin_brute");
     let rules = match short {
         _ if animal_rules => Rules::Animal,
         "wolf" => Rules::SpawnableOn("minecraft:wolves_spawnable_on"),
@@ -326,6 +328,8 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "ghast" => Rules::Ghast,
         "blaze" | "zoglin" => Rules::AnyLightMonster,
         "hoglin" => Rules::Hoglin,
+        "piglin" => Rules::Piglin,
+        "piglin_brute" => Rules::Other,
         "bat" => Rules::Bat,
         "glow_squid" => Rules::GlowSquid,
         "strider" => Rules::Strider,
@@ -400,6 +404,7 @@ pub struct CreatureSpawns {
     has_ceiling: bool,
     /// `NoiseGeneratorSettings.disableMobGeneration`.
     disabled: bool,
+    dimension: String,
 }
 
 /// An attribute value as a biome sets it: a plain value, or a modifier
@@ -532,6 +537,7 @@ impl CreatureSpawns {
             ambient_light: dimension["ambient_light"].as_f64().unwrap_or(0.0) as f32,
             has_ceiling: dimension["has_ceiling"].as_bool().unwrap_or(false),
             disabled,
+            dimension: dimension_type.to_owned(),
         })
     }
 

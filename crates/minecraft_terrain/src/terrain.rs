@@ -2511,6 +2511,13 @@ mod tests {
         assert_eq!(alive.piglins().len(), piglins.len(), "every bastion piglin and brute comes alive");
         assert!(alive.piglins().iter().all(|e| e.piglin.persistence_required));
         assert!(alive.piglins().iter().any(|e| e.piglin.kind == minecraftoss_entities::piglin::PiglinKind::Brute));
+        for brute in alive.piglins().iter().filter(|e| e.piglin.is_brute()) {
+            assert_eq!(brute.piglin.main_hand.as_ref().map(|s| s.id.as_str()), Some("minecraft:golden_axe"));
+            let home = brute.brain.memories.home.get().expect("a bastion brute has a home");
+            assert_eq!(home.dimension, "minecraft:the_nether");
+            let (x, y, z) = home.pos;
+            assert!(brute.position().distance(glam::DVec3::new(f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5)) < 2.0);
+        }
         for _ in 0..20 {
             sim.tick();
         }
