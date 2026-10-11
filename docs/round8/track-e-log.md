@@ -154,7 +154,7 @@ Commit: 3a98934f
 
 ### E6. The host streams its world to each friend
 
-Commit: see `git log` ("The host streams its world to each friend")
+Commit: 40b5a4fa
 
 - **Changed:**
   - `crates/minecraft_survival/src/session.rs` (new):
@@ -250,4 +250,32 @@ Commit: see `git log` ("The host streams its world to each friend")
 
 ```
 IW4L_MINECRAFT_KIT=obsidian*10,flint_and_steel,chest,cobblestone*32
+```
+
+### E7a. The world's presentation is built by functions both games can call (pure move)
+
+Commit: see `git log` ("The world's presentation is built by functions both games can call")
+
+- **Changed:** `crates/render_anim/src/minecraft_world.rs` only. No behaviour changes; the host calls the same code through these functions:
+  - `load_look(packs)`: the atlas, sun and moons, clouds, crack strip, glints and End look, taken out of `load()`. `Loaded` and its `packs` and `atlas` fields are `pub(crate)`.
+  - `show_look(view, world)`: hands that look to `MinecraftWorldView` when a world is ready.
+  - `animate_atlas(view, animation, clock, dt, atlas)`: the animated textures' tick.
+  - `view_forward(viewangles)`, `cull_camera(drawn_from, origin, eye, forward, aspect)` and `terrain_frame(terrain, world, view, camera)`: the terrain frame (camera, section uploads, visible list), returning the light columns for the caller's `SkyLight`.
+  - `SkyInputs` and `present_sky(view, terrain, registries, light, (accumulator, primed), inputs)`: eye light, rain fog, the environment tick and the sky uniform. The host fills `SkyInputs` from its globals, weather, lava check and boss bars.
+  - `present_clouds(view, world, center, eye, game_time)` and `present_light_volume(view, light, block, at, age)`.
+  - `clear_view(view)`: the view reset of `stop`.
+  - `observe_spawn` and `shape_id` are `pub(crate)` for the friend's game.
+- **Tests:** none new (pure move). `test -p render_anim --lib` and `check -p launcher` are green.
+- **Decisions:**
+  - **Only what the friend draws in M1 moved.** The design lists entity meshes, the hand and held item, and the HUD too. In M1 the friend has no mobs, no `PlayerView` and no menus, so those stay inline until the groups that first draw them on the friend (M2), and no function exists with a single caller.
+  - The existing comments inside the moved code moved with it unchanged; no comments were added.
+- **Test steps:** the single-player world must look and behave exactly as before. With the M1 build:
+  1. Start the Minecraft world. Look around: terrain, sky, sun, clouds and fog as before; walk into a dark cave with a torch: the MW2 body and gun are lit by the torch.
+  2. Wait for rain or run `/weather rain`: rain fog and darker sky as before. Run `/time set night`: stars and moon.
+  3. Stand in lava in creative (`/gamemode creative`, then a lava bucket): the orange lava fog.
+  4. Build a Nether portal and go through: the loading screen, then the Nether's red fog and no sky.
+- **Kit:** `minecraft:obsidian` x10, `minecraft:flint_and_steel` x1, `minecraft:lava_bucket` x1, `minecraft:torch` x16.
+
+```
+IW4L_MINECRAFT_KIT=obsidian*10,flint_and_steel,lava_bucket,torch*16
 ```

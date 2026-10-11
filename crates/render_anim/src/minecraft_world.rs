@@ -73,9 +73,9 @@ pub struct MinecraftWorldView {
     pub end_look: crate::minecraft_end_look::EndFrame,
 }
 
-struct Loaded {
-    packs: PackStack,
-    atlas: Arc<Atlas>,
+pub(crate) struct Loaded {
+    pub(crate) packs: PackStack,
+    pub(crate) atlas: Arc<Atlas>,
     celestial: Arc<image::RgbaImage>,
     cloud_mask: Option<CloudMask>,
     crack_texture: Arc<image::RgbaImage>,
@@ -269,24 +269,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
     {
         diag::warn!(World, "Minecraft ops.json unreadable, no operators loaded: {error}");
     }
-    let build = minecraft_terrain::mesh::build(&HandcraftedScene::default(), &packs)
-        .map_err(|e| e.to_string())?;
-    let celestial = Arc::new(celestial_image(&packs).map_err(|e| e.to_string())?);
-    let cloud_mask = CloudMask::from_pack(&packs).ok();
-    let crack_texture = Arc::new(crate::minecraft_mining::crack_strip(&packs).map_err(|e| e.to_string())?);
-    let glint_texture = minecraft_terrain::glint::glint_texture(&packs).ok().flatten().map(Arc::new);
-    let armor_glint_texture = minecraft_terrain::glint::armor_glint_texture(&packs).ok().flatten().map(Arc::new);
-    let end_look = Arc::new(crate::minecraft_end_look::EndLook::load(&packs));
-    let loaded = Loaded {
-        packs,
-        atlas: build.atlas,
-        celestial,
-        cloud_mask,
-        crack_texture,
-        glint_texture,
-        armor_glint_texture,
-        end_look,
-    };
+    let loaded = load_look(packs)?;
     let mut day = DayCycle::default();
     if let Some(ticks) = opened.day_ticks {
         day.set(ticks);
@@ -316,6 +299,27 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
     Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), opening: Default::default(), players: std::collections::BTreeMap::new() }))
 }
 
+pub(crate) fn load_look(packs: PackStack) -> Result<Loaded, String> {
+    let build = minecraft_terrain::mesh::build(&HandcraftedScene::default(), &packs)
+        .map_err(|e| e.to_string())?;
+    let celestial = Arc::new(celestial_image(&packs).map_err(|e| e.to_string())?);
+    let cloud_mask = CloudMask::from_pack(&packs).ok();
+    let crack_texture = Arc::new(crate::minecraft_mining::crack_strip(&packs).map_err(|e| e.to_string())?);
+    let glint_texture = minecraft_terrain::glint::glint_texture(&packs).ok().flatten().map(Arc::new);
+    let armor_glint_texture = minecraft_terrain::glint::armor_glint_texture(&packs).ok().flatten().map(Arc::new);
+    let end_look = Arc::new(crate::minecraft_end_look::EndLook::load(&packs));
+    Ok(Loaded {
+        packs,
+        atlas: build.atlas,
+        celestial,
+        cloud_mask,
+        crack_texture,
+        glint_texture,
+        armor_glint_texture,
+        end_look,
+    })
+}
+
 pub(crate) fn data_jar() -> Option<std::path::PathBuf> {
     let root = assets::minecraft_map::root()?;
     let fetched = root.join(assets::minecraft_setup::CLIENT_JAR);
@@ -337,6 +341,16 @@ pub(crate) fn data_jar() -> Option<std::path::PathBuf> {
 }
 
 /// The sky's sun and moon phases, laid out as MinecraftOSS lays them out.
+pub(crate) fn show_look(view: &mut MinecraftWorldView, world: &Loaded) {
+    view.atlas = Some(world.atlas.clone());
+    view.atlas_patches.clear();
+    view.celestial = Some(world.celestial.clone());
+    view.crack_texture = Some(world.crack_texture.clone());
+    view.glint_texture = world.glint_texture.clone();
+    view.armor_glint_texture = world.armor_glint_texture.clone();
+    view.end_look.look = Some(world.end_look.clone());
+}
+
 fn celestial_image(packs: &PackStack) -> anyhow::Result<image::RgbaImage> {
     let mut celestial = image::RgbaImage::new(32 * 9, 32);
     let names = [
@@ -493,15 +507,9 @@ fn update(
                 };
                 let (x, y, z) = level.terrain.stream.player_spawn;
                 view.origin = [x, y, z];
-                view.atlas = Some(world.atlas.clone());
-                view.atlas_patches.clear();
+                show_look(&mut view, &world);
                 runtime.atlas_animation = AtlasAnimation::new(&world.atlas);
                 runtime.animation_clock = 0.0;
-                view.celestial = Some(world.celestial.clone());
-                view.crack_texture = Some(world.crack_texture.clone());
-                view.glint_texture = world.glint_texture.clone();
-                view.armor_glint_texture = world.armor_glint_texture.clone();
-                view.end_look.look = Some(world.end_look.clone());
                 runtime.mining = Default::default();
                 runtime.minimap = Default::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
@@ -747,14 +755,8 @@ fn update(
     if !delivered.is_empty() {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
     }
-    *animation_clock += time.delta_secs_f64();
     crate::minecraft_respawn::fade_overlay(&mut ui, time.delta_secs_f64());
-    if *animation_clock >= TICK_SECONDS {
-        *animation_clock %= TICK_SECONDS;
-        let patches = atlas_animation.tick(&world.atlas);
-        view.atlas_patches.retain(|queued| patches.iter().all(|patch| patch.origin != queued.origin));
-        view.atlas_patches.extend(patches);
-    }
+    animate_atlas(&mut view, atlas_animation, animation_clock, time.delta_secs_f64(), &world.atlas);
     let aspect = windows
         .single()
         .map(|w| w.width() / w.height().max(1.0))
@@ -1638,40 +1640,16 @@ fn update(
 
     let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
     death_watch.stood(minecraft_survival::death::DeathSpot { feet, eye });
-    let (pitch, yaw) = (ps.viewangles[0].to_radians(), ps.viewangles[1].to_radians());
-    let map_forward = [pitch.cos() * yaw.cos(), pitch.cos() * yaw.sin(), -pitch.sin()];
-    let forward = glam::Vec3::new(map_forward[0], map_forward[2], -map_forward[1]);
-    // Culled from the camera that draws: the player's eye, or while
-    // skating the Skate camera (a frame behind, so with room to spare).
+    let forward = view_forward(ps.viewangles);
     let mc_detached = mc_camera.as_ref().is_some_and(|c| c.detached);
-    let skate_camera = cameras.iter().next().filter(|_| skate.active || mc_detached).map(|t| {
-        let at = sim::voxel::to_block(origin, t.translation.to_array());
-        let ahead = t.rotation * Vec3::NEG_Z;
-        (
-            glam::DVec3::new(at[0], at[1], at[2]),
-            glam::Vec3::new(ahead.x, ahead.z, -ahead.y).normalize_or(forward),
-        )
-    });
-    let (cull_at, cull_forward) = skate_camera.unwrap_or((glam::DVec3::new(eye[0], eye[1], eye[2]), forward));
-    let camera = CullCamera {
-        position: cull_at,
-        forward: cull_forward,
-        fov_degrees: if skate_camera.is_some() { 120.0 } else { 90.0 },
-        aspect,
-        yaw_degrees: (-cull_forward.x).atan2(cull_forward.z).to_degrees(),
-        pitch_degrees: (-cull_forward.y).asin().to_degrees(),
-    };
-    let update = terrain
-        .stream
-        .frame(&terrain.scene, &camera, FADE_MILLIS, &world.atlas, &world.packs);
-    view.uploads.extend(update.uploads);
-    view.removed.extend(update.removed);
-    view.visible = update.visible;
-    observe_spawn(terrain, spawn_gate, feet, cull_at, now_ms);
+    let drawn_from = cameras.iter().next().filter(|_| skate.active || mc_detached);
+    let camera = cull_camera(drawn_from, origin, eye, forward, aspect);
+    let lights = terrain_frame(terrain, world, &mut view, &camera);
+    observe_spawn(terrain, spawn_gate, feet, camera.position, now_ms);
     let Some(light) = light.as_mut() else {
         return;
     };
-    for (chunk, column) in update.lights {
+    for (chunk, column) in lights {
         light.set_chunk_column(chunk, column);
     }
 
@@ -2218,53 +2196,87 @@ fn update(
     }
     view.cracks = mining.crack_mesh(&terrain.scene, &terrain.stream.states, &world.packs);
     globals.advance_clocks(dt);
+    let lava = (alive && sim::voxel::eye_in_lava(ps.origin, ps.view_height_current)).then(|| {
+        let fire_resistant = survival.status.effect(minecraftoss_player::survival::EffectKind::FireResistance).is_some();
+        (player_mode.mode == minecraftoss_player::GameMode::Spectator, fire_resistant)
+    });
+    let weather = entities.as_ref().map_or_else(minecraft_terrain::server::WeatherView::default, |e| e.weather);
+    let inputs = SkyInputs {
+        eye,
+        forward,
+        aspect,
+        dt,
+        clock_ticks: globals.default_clock_ticks(*dimension),
+        game_time: globals.day.ticks,
+        rain_level: weather.rain_level,
+        thunder_level: weather.thunder_level,
+        lava,
+        world_fog: ui.boss_bars.iter().any(|bar| bar.world_fog),
+    };
+    present_sky(&mut view, terrain, &globals.registries, light, (environment_accumulator, environment_primed), &inputs);
+    present_clouds(&mut view, world, cloud_center, eye, globals.day.ticks);
+    present_light_volume(&mut view, light, block, light_volume_at, light_volume_age);
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SkyInputs {
+    pub(crate) eye: [f64; 3],
+    pub(crate) forward: glam::Vec3,
+    pub(crate) aspect: f32,
+    pub(crate) dt: f64,
+    pub(crate) clock_ticks: i64,
+    pub(crate) game_time: f64,
+    pub(crate) rain_level: f32,
+    pub(crate) thunder_level: f32,
+    pub(crate) lava: Option<(bool, bool)>,
+    pub(crate) world_fog: bool,
+}
+
+pub(crate) fn present_sky(view: &mut MinecraftWorldView, terrain: &mut minecraft_survival::level::Terrain, registries: &Registries, light: &SkyLight, (accumulator, primed): (&mut f64, &mut bool), inputs: &SkyInputs) {
+    let SkyInputs { eye, forward, aspect, dt, clock_ticks, game_time, rain_level, thunder_level, lava, world_fog } = *inputs;
     let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
     view.eye_light = [
         f32::from(light.get(eye_block)),
         f32::from(light.get_block(eye_block)),
     ];
-    let weather = entities.as_ref().map_or_else(minecraft_terrain::server::WeatherView::default, |e| e.weather);
     let rains_here = terrain
         .scene
         .noise_biome((eye_block.0 >> 2, eye_block.1 >> 2, eye_block.2 >> 2))
-        .is_some_and(|biome| globals.registries.biomes.get(biome).has_precipitation);
+        .is_some_and(|biome| registries.biomes.get(biome).has_precipitation);
     terrain
         .environment
-        .update_rain_fog(weather.rain_level, light.get(eye_block), rains_here, (dt * 20.0) as f32);
-    *environment_accumulator += dt;
-    if !*environment_primed || *environment_accumulator >= TICK_SECONDS {
-        *environment_accumulator = (*environment_accumulator % TICK_SECONDS).min(TICK_SECONDS);
+        .update_rain_fog(rain_level, light.get(eye_block), rains_here, (dt * 20.0) as f32);
+    *accumulator += dt;
+    if !*primed || *accumulator >= TICK_SECONDS {
+        *accumulator = (*accumulator % TICK_SECONDS).min(TICK_SECONDS);
         let scene = &terrain.scene;
         terrain.environment.tick(
-            globals.default_clock_ticks(*dimension),
-            weather.rain_level,
-            weather.thunder_level,
+            clock_ticks,
+            rain_level,
+            thunder_level,
             eye,
             |x, y, z| scene.noise_biome((x, y, z)).map_or(0, |id| id.0),
-            !*environment_primed,
+            !*primed,
         );
-        *environment_primed = true;
+        *primed = true;
     }
-    let partial_tick = (*environment_accumulator / TICK_SECONDS).clamp(0.0, 1.0) as f32;
+    let partial_tick = (*accumulator / TICK_SECONDS).clamp(0.0, 1.0) as f32;
     let sky = terrain.environment.sky_state(&View {
         partial_tick,
         forward,
         camera_y: eye[1] as f32,
         render_distance: VIEW_DISTANCE as u32,
-        rain_level: weather.rain_level,
-        thunder_level: weather.thunder_level,
+        rain_level,
+        thunder_level,
     });
     let render_distance = VIEW_DISTANCE as f32 * 16.0;
-    let sky = if alive && sim::voxel::eye_in_lava(ps.origin, ps.view_height_current) {
-        let fire_resistant = survival.status.effect(minecraftoss_player::survival::EffectKind::FireResistance).is_some();
-        minecraft_terrain::lava_fog::in_lava(sky, player_mode.mode == minecraftoss_player::GameMode::Spectator, fire_resistant, render_distance)
-    } else {
-        sky
+    let sky = match lava {
+        Some((spectator, fire_resistant)) => minecraft_terrain::lava_fog::in_lava(sky, spectator, fire_resistant, render_distance),
+        None => sky,
     };
     let right = forward.cross(glam::Vec3::Y).normalize_or(glam::Vec3::X);
     let up = right.cross(forward).normalize_or(glam::Vec3::Y);
     let put = |v: glam::Vec3| [v.x, v.y, v.z, 0.0];
-    let game_time = globals.day.ticks;
     view.environment = [
         put(forward),
         put(right),
@@ -2296,7 +2308,7 @@ fn update(
             sky.ambient.y,
             sky.ambient.z,
             match sky.skybox {
-                _ if ui.boss_bars.iter().any(|bar| bar.world_fog) => 2.0,
+                _ if world_fog => 2.0,
                 Skybox::Overworld => 0.0,
                 Skybox::End => 1.0,
                 _ => 2.0,
@@ -2310,7 +2322,9 @@ fn update(
         ],
     ];
     view.end_look.portal_time = crate::minecraft_end_look::portal_time(game_time);
+}
 
+pub(crate) fn present_clouds(view: &mut MinecraftWorldView, world: &Loaded, cloud_center: &mut Option<(i32, i32)>, eye: [f64; 3], game_time: f64) {
     // Clouds, rebuilt when the camera crosses a cloud cell.
     if let Some(mask) = &world.cloud_mask {
         let center = mask.center(eye[0] as f32, eye[2] as f32, game_time);
@@ -2320,7 +2334,9 @@ fn update(
             view.clouds = Some(Arc::new((mesh.vertices, mesh.indices)));
         }
     }
+}
 
+pub(crate) fn present_light_volume(view: &mut MinecraftWorldView, light: &SkyLight, block: (i32, i32, i32), light_volume_at: &mut Option<[i32; 3]>, light_volume_age: &mut u32) {
     // The light MW2 models stand in, around the player.
     *light_volume_age += 1;
     let half = LIGHT_VOLUME / 2;
@@ -2378,7 +2394,55 @@ fn update(
     }
 }
 
-fn apply_streamed(
+pub(crate) fn view_forward(viewangles: [f32; 3]) -> glam::Vec3 {
+    let (pitch, yaw) = (viewangles[0].to_radians(), viewangles[1].to_radians());
+    let map_forward = [pitch.cos() * yaw.cos(), pitch.cos() * yaw.sin(), -pitch.sin()];
+    glam::Vec3::new(map_forward[0], map_forward[2], -map_forward[1])
+}
+
+pub(crate) fn cull_camera(drawn_from: Option<&Transform>, origin: [f64; 3], eye: [f64; 3], forward: glam::Vec3, aspect: f32) -> CullCamera {
+    // Culled from the camera that draws: the player's eye, or while
+    // skating the Skate camera (a frame behind, so with room to spare).
+    let skate_camera = drawn_from.map(|t| {
+        let at = sim::voxel::to_block(origin, t.translation.to_array());
+        let ahead = t.rotation * Vec3::NEG_Z;
+        (
+            glam::DVec3::new(at[0], at[1], at[2]),
+            glam::Vec3::new(ahead.x, ahead.z, -ahead.y).normalize_or(forward),
+        )
+    });
+    let (cull_at, cull_forward) = skate_camera.unwrap_or((glam::DVec3::new(eye[0], eye[1], eye[2]), forward));
+    CullCamera {
+        position: cull_at,
+        forward: cull_forward,
+        fov_degrees: if skate_camera.is_some() { 120.0 } else { 90.0 },
+        aspect,
+        yaw_degrees: (-cull_forward.x).atan2(cull_forward.z).to_degrees(),
+        pitch_degrees: (-cull_forward.y).asin().to_degrees(),
+    }
+}
+
+pub(crate) fn terrain_frame(terrain: &mut minecraft_survival::level::Terrain, world: &Loaded, view: &mut MinecraftWorldView, camera: &CullCamera) -> Vec<((i32, i32), Option<Arc<SkyLight>>)> {
+    let update = terrain
+        .stream
+        .frame(&terrain.scene, camera, FADE_MILLIS, &world.atlas, &world.packs);
+    view.uploads.extend(update.uploads);
+    view.removed.extend(update.removed);
+    view.visible = update.visible;
+    update.lights
+}
+
+pub(crate) fn animate_atlas(view: &mut MinecraftWorldView, animation: &mut AtlasAnimation, clock: &mut f64, dt: f64, atlas: &Atlas) {
+    *clock += dt;
+    if *clock >= TICK_SECONDS {
+        *clock %= TICK_SECONDS;
+        let patches = animation.tick(atlas);
+        view.atlas_patches.retain(|queued| patches.iter().all(|patch| patch.origin != queued.origin));
+        view.atlas_patches.extend(patches);
+    }
+}
+
+pub(crate) fn apply_streamed(
     registries: &Registries,
     shapes: &mut HashMap<BlockStateId, u16>,
     shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
@@ -2522,7 +2586,7 @@ fn place_player(
     player.place = Some(place);
 }
 
-fn observe_spawn(terrain: &minecraft_survival::level::Terrain, gate: &mut crate::minecraft_spawn_gate::SpawnGate, origin: [f64; 3], eye: glam::DVec3, now_ms: u64) {
+pub(crate) fn observe_spawn(terrain: &minecraft_survival::level::Terrain, gate: &mut crate::minecraft_spawn_gate::SpawnGate, origin: [f64; 3], eye: glam::DVec3, now_ms: u64) {
     if !gate.waiting() {
         return;
     }
@@ -2533,7 +2597,7 @@ fn observe_spawn(terrain: &minecraft_survival::level::Terrain, gate: &mut crate:
     gate.observe(now_ms, chunks_ready, section_visible);
 }
 
-fn shape_id(
+pub(crate) fn shape_id(
     shapes: &mut HashMap<BlockStateId, u16>,
     shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
     registries: &Registries,
@@ -2914,26 +2978,30 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
     if close_world(runtime, false) || view.active {
         sim::voxel::deactivate();
         runtime.spawn_gate = Default::default();
-        view.active = false;
-        view.atlas = None;
-        view.atlas_patches.clear();
-        view.uploads.clear();
-        view.removed.clear();
-        view.visible.clear();
-        view.celestial = None;
-        view.crack_texture = None;
-        view.glint_texture = None;
-        view.armor_glint_texture = None;
-        view.end_look = Default::default();
-        view.particles = Default::default();
-        view.puppet_gear = Default::default();
-        view.entity_meshes = Default::default();
-        view.hand = Default::default();
-        view.cracks = Default::default();
-        view.clouds = None;
-        view.light_volume = None;
-        view.generation += 1;
+        clear_view(view);
     }
+}
+
+pub(crate) fn clear_view(view: &mut MinecraftWorldView) {
+    view.active = false;
+    view.atlas = None;
+    view.atlas_patches.clear();
+    view.uploads.clear();
+    view.removed.clear();
+    view.visible.clear();
+    view.celestial = None;
+    view.crack_texture = None;
+    view.glint_texture = None;
+    view.armor_glint_texture = None;
+    view.end_look = Default::default();
+    view.particles = Default::default();
+    view.puppet_gear = Default::default();
+    view.entity_meshes = Default::default();
+    view.hand = Default::default();
+    view.cracks = Default::default();
+    view.clouds = None;
+    view.light_volume = None;
+    view.generation += 1;
 }
 
 #[cfg(test)]
