@@ -494,6 +494,7 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     textures.insert(ResourceId::parse("minecraft:entity/experience/experience_orb")?, ());
     textures.insert(ResourceId::parse(crate::trident::TEXTURE)?, ());
     textures.insert(ResourceId::parse("minecraft:entity/spider/spider")?, ());
+    textures.insert(ResourceId::parse(crate::spawner_display::CAVE_SPIDER_SKIN)?, ());
     textures.insert(ResourceId::parse("minecraft:entity/slime/slime")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/slime/magmacube")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/ghast/ghast")?, ());

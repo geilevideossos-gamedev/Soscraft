@@ -442,7 +442,7 @@ IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_swor
 
 ### 3. Minecraft spawn eggs change a spawner's mob like vanilla
 
-Commit: (see the next entry, or `git log` under this subject)
+Commit: 837c88cf
 
 - **Changed:**
   - `minecraft_terrain/src/server.rs`: `Command::SpawnerEgg { pos, kind }` and `ServerHandle::spawner_egg`; the answer goes into `Output::summoned` like a hatched egg's, so `EggsWaiting` spends the egg only on `Ok`. `ServerSim::spawner_egg` is `SpawnEggItem.useOn` on a spawner: a monster in peaceful fails first with no change (the same rule `/summon` and hatched eggs use, our `EntityType.canSpawn`), then `spawner_blocks_work` off fails with `advMode.notEnabled.spawner`, then anything but a `minecraft:mob_spawner` block entity fails (trial spawners are left out), else `World::set_spawner_entity` sets `SpawnData.entity.id`, keeps the compound's other keys and marks the tag changed, so the client's display (entry 1) rebuilds with the tag's `Delay`.
@@ -467,4 +467,25 @@ Commit: (see the next entry, or `git log` under this subject)
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:spawner*16,minecraft:zombie_spawn_egg*4,minecraft:skeleton_spawn_egg*4,minecraft:spider_spawn_egg*4,minecraft:blaze_spawn_egg*4,minecraft:creeper_spawn_egg*4,minecraft:slime_spawn_egg*4,minecraft:enderman_spawn_egg*4,minecraft:ghast_spawn_egg*4,minecraft:wither_skeleton_spawn_egg*4,minecraft:pig_spawn_egg*4,minecraft:husk_spawn_egg*4,minecraft:cave_spider_spawn_egg*4,minecraft:silverfish_spawn_egg*4,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:torch*64,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:spyglass
+```
+
+### 4. Minecraft cave spiders show inside mineshaft spawners
+
+Commit: (see the next entry, or `git log` under this subject)
+
+- **Changed:**
+  - `minecraft_terrain/src/spawner_display.rs`: a `minecraft:cave_spider` spawner builds its display from a copy of the compound with `id` set to `minecraft:spider`, the cave spider's box (0.7 x 0.5, so the display scale is 0.53125) and the model scale 0.7 multiplied in (`LayerDefinitions`' `CAVE_SPIDER` layer is the spider body at `MeshTransformer.scaling(0.7)`, which keeps the feet on the ground, so it equals a uniform 0.7 about the feet). After `append_spiders`, the new vertices whose UV lies in the `entity/spider/spider` region are moved to the same place in `entity/spider/cave_spider` (both skins are 64 x 32); the eyes layer keeps its UVs. The live cave spider stays unsimulated (`SIMULATED_KINDS` unchanged).
+  - `minecraft_terrain/src/mesh.rs`: `minecraft:entity/spider/cave_spider` is in the atlas.
+  - `docs/MINECRAFT-SURVIVAL.md`: the cave spider under the spawner mob; it leaves the "no model" limitation.
+- **Tests:** `minecraft_terrain` (`spawner_display.rs`): `a_cave_spider_display_is_a_smaller_spider_with_its_own_skin` (an atlas with distinct spider, cave spider and eyes skins: the same vertex count as a spider display, each vertex at 0.98 of the spider display's distance from the feet, as 0.53125 x 0.7 against 0.53125 / 1.4, skin UVs moved into the cave spider region at the same relative place, eyes UVs unchanged).
+- **Decision:** the brief's "the extent is 0.7 times the spider display's" compares unequal display scales: the spider is divided by its 1.4 width and the cave spider is not, so the cave spider display is 0.98 of the spider's, as in vanilla. The test checks that ratio.
+- **Group 5 (trial spawners) is not done:** it needs a trial spawner config book read from the jar with a JSON-to-NBT conversion, a server pass in the vendored `spawning.rs`, two more particle kinds, the ambient sound and the per-state client spin. That is not small, so it is left for "Finish survival" with the rest of the trial spawner simulation (brief section 4, group 5).
+- **Test steps** (brief section 5, steps 4 and 11):
+  1. Use the cave spider egg on a placed spawner (kit of entry 3): a smaller, blue-grey spider turns in the cage (**screenshot 1**).
+  2. In the Overworld, `/locate structure minecraft:mineshaft`, `/tp` there and find a cobweb room. Its spawner shows a cave spider (**screenshot 2**).
+  3. The silverfish egg still gives only flames and smoke (no model).
+- **Kit** (5 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:spawner*4,minecraft:cave_spider_spawn_egg*4,minecraft:silverfish_spawn_egg*4,minecraft:diamond_pickaxe+efficiency=5,minecraft:torch*64
 ```

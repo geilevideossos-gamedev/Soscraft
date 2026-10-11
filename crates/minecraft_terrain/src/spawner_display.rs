@@ -11,6 +11,11 @@ use std::collections::BTreeMap;
 
 pub const VIEW_DISTANCE: f64 = 64.0;
 const SPAWNER: &str = "minecraft:mob_spawner";
+const CAVE_SPIDER: &str = "minecraft:cave_spider";
+const SPIDER: &str = "minecraft:spider";
+const SPIDER_SKIN: &str = "minecraft:entity/spider/spider";
+pub const CAVE_SPIDER_SKIN: &str = "minecraft:entity/spider/cave_spider";
+const CAVE_SPIDER_SCALE: f32 = 0.7;
 const DRAWN_KINDS: &[&str] = &[
     "minecraft:bat",
     "minecraft:blaze",
@@ -94,11 +99,14 @@ struct Shown {
     id: u64,
     kind: String,
     size: (f32, f32),
+    cave: bool,
 }
 
 impl Shown {
     fn build(pos: BlockPos, entity: &Tag) -> Option<Self> {
-        let kind = entity.get("id").and_then(Tag::as_str)?.to_owned();
+        let kind = entity.get("id").and_then(Tag::as_str)?;
+        let cave = kind == CAVE_SPIDER;
+        let kind = if cave { SPIDER } else { kind }.to_owned();
         if !DRAWN_KINDS.contains(&kind.as_str()) {
             return None;
         }
@@ -106,6 +114,7 @@ impl Shown {
         let Tag::Compound(map) = &mut tag else {
             return None;
         };
+        map.insert("id".to_owned(), Tag::String(kind.clone()));
         let feet = display_feet(pos);
         map.insert(
             "Pos".to_owned(),
@@ -118,7 +127,11 @@ impl Shown {
         let mut world = EntityWorld::default();
         let id = crate::server_mobs::spawn_saved(&mut world, &tag)?;
         let tracked = server_mobs(&world);
-        let size = tracked.iter().find(|mob| mob.id == id)?.size;
+        let size = if cave {
+            (0.7, 0.5)
+        } else {
+            tracked.iter().find(|mob| mob.id == id)?.size
+        };
         let mut mobs = ClientMobs::default();
         mobs.spawn_missing(&tracked);
         Some(Self {
@@ -127,7 +140,35 @@ impl Shown {
             id,
             kind,
             size,
+            cave,
         })
+    }
+
+    fn scale(&self) -> f32 {
+        let model = if self.cave { CAVE_SPIDER_SCALE } else { 1.0 };
+        display_scale(self.size.0, self.size.1) * model
+    }
+
+    fn reskin(&self, mesh: &mut ChunkMesh, start: usize, atlas: &Atlas) {
+        if !self.cave {
+            return;
+        }
+        let parse = |id: &str| crate::pack::ResourceId::parse(id).ok();
+        let (Some(spider), Some(cave)) = (parse(SPIDER_SKIN), parse(CAVE_SPIDER_SKIN)) else {
+            return;
+        };
+        let from = atlas.entity_region(&spider);
+        let to = atlas.entity_region(&cave);
+        for vertex in &mut mesh.vertices[start..] {
+            let [u, v] = vertex.uv;
+            if u < from[0] || u > from[2] || v < from[1] || v > from[3] {
+                continue;
+            }
+            vertex.uv = [
+                to[0] + (u - from[0]) / (from[2] - from[0]) * (to[2] - to[0]),
+                to[1] + (v - from[1]) / (from[3] - from[1]) * (to[3] - to[1]),
+            ];
+        }
     }
 
     fn draw(
@@ -471,7 +512,8 @@ impl SpawnerDisplays {
                 translucent.vertices.len(),
             ];
             shown.draw(models, culled, translucent, atlas, light, partial);
-            let scale = display_scale(shown.size.0, shown.size.1);
+            shown.reskin(models, starts[0], atlas);
+            let scale = shown.scale();
             for (mesh, start) in [&mut *models, &mut *culled, &mut *translucent]
                 .into_iter()
                 .zip(starts)
@@ -810,6 +852,95 @@ mod tests {
                 .iter()
                 .all(|v| v.sky_light == 4.0 && v.block_light == 9.0)
         );
+    }
+
+    fn spider_atlas() -> Atlas {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(
+            root.join("pack.mcmeta"),
+            r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#,
+        )
+        .unwrap();
+        let skins = root.join("assets/minecraft/textures/entity/spider");
+        std::fs::create_dir_all(&skins).unwrap();
+        for (name, shade) in [("spider", 60), ("cave_spider", 120), ("spider_eyes", 250)] {
+            image::RgbaImage::from_pixel(64, 32, image::Rgba([shade, shade, shade, 255]))
+                .save(skins.join(format!("{name}.png")))
+                .unwrap();
+        }
+        let packs = crate::pack::PackStack::open(vec![root.into()]).unwrap();
+        let ids = [
+            SPIDER_SKIN,
+            CAVE_SPIDER_SKIN,
+            "minecraft:entity/spider/spider_eyes",
+        ]
+        .map(|id| crate::pack::ResourceId::parse(id).unwrap());
+        crate::mesh::make_atlas(&packs, ids.to_vec()).unwrap()
+    }
+
+    #[test]
+    fn a_cave_spider_display_is_a_smaller_spider_with_its_own_skin() {
+        let atlas = spider_atlas();
+        let pos = (2, 30, 2);
+        let scene = spawners(&[pos]);
+        let light = light_at(pos, 15, 0);
+        let mut drawn = Vec::new();
+        for mob in [SPIDER, CAVE_SPIDER] {
+            let mut displays = one(pos, Some(mob), 20);
+            set_spin(&mut displays, 40.0);
+            let mut models = ChunkMesh::default();
+            let mut culled = ChunkMesh::default();
+            let mut translucent = ChunkMesh::default();
+            displays.append(
+                &mut models,
+                &mut culled,
+                &mut translucent,
+                &scene,
+                &atlas,
+                &light,
+                center(pos),
+                0.0,
+            );
+            assert!(culled.vertices.is_empty() && translucent.vertices.is_empty());
+            drawn.push(models.vertices);
+        }
+        let (spider, cave) = (&drawn[0], &drawn[1]);
+        assert!(!spider.is_empty());
+        assert_eq!(spider.len(), cave.len());
+        let feet = display_feet(pos).as_vec3();
+        let ratio = 0.53125 * 0.7 / (0.53125 / 1.4);
+        for (a, b) in spider.iter().zip(cave) {
+            let expected = feet + (Vec3::from_array(a.position) - feet) * ratio;
+            assert!(Vec3::from_array(b.position).abs_diff_eq(expected, 1e-4));
+        }
+        let region = |id: &str| atlas.entity_region(&crate::pack::ResourceId::parse(id).unwrap());
+        let (skin, cave_skin) = (region(SPIDER_SKIN), region(CAVE_SPIDER_SKIN));
+        let inside = |uv: [f32; 2], r: [f32; 4]| {
+            uv[0] >= r[0] && uv[0] <= r[2] && uv[1] >= r[1] && uv[1] <= r[3]
+        };
+        let mut skinned = 0;
+        let mut eyes = 0;
+        for (a, b) in spider.iter().zip(cave) {
+            if inside(a.uv, skin) {
+                skinned += 1;
+                assert!(inside(b.uv, cave_skin), "{:?}", b.uv);
+                let back = [
+                    skin[0]
+                        + (b.uv[0] - cave_skin[0]) / (cave_skin[2] - cave_skin[0])
+                            * (skin[2] - skin[0]),
+                    skin[1]
+                        + (b.uv[1] - cave_skin[1]) / (cave_skin[3] - cave_skin[1])
+                            * (skin[3] - skin[1]),
+                ];
+                assert!((back[0] - a.uv[0]).abs() < 1e-5 && (back[1] - a.uv[1]).abs() < 1e-5);
+            } else {
+                eyes += 1;
+                assert_eq!(a.uv, b.uv);
+            }
+        }
+        assert!(skinned > 0 && eyes > 0, "{skinned} {eyes}");
+        assert_ne!(skin, cave_skin);
     }
 
     #[test]
