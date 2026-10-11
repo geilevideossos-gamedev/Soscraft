@@ -327,16 +327,18 @@ pub enum McAction {
     Chat,
     Command,
     Perspective,
+    Skate,
 }
 
 impl McAction {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Inventory,
         Self::Drop,
         Self::SwapHands,
         Self::Chat,
         Self::Command,
         Self::Perspective,
+        Self::Skate,
     ];
 
     pub const fn command(self) -> &'static str {
@@ -347,6 +349,7 @@ impl McAction {
             Self::Chat => "mc_chat",
             Self::Command => "mc_command",
             Self::Perspective => "mc_perspective",
+            Self::Skate => "mc_skate",
         }
     }
 
@@ -459,6 +462,7 @@ mod tests {
         for action in McAction::ALL {
             assert_eq!(McAction::from_command(action.command()), Some(action));
         }
+        assert_eq!(McAction::from_command("mc_skate"), Some(McAction::Skate));
         assert_eq!(McAction::from_command("+frag"), None);
         assert_eq!(McAction::from_command(""), None);
     }

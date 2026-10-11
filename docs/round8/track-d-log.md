@@ -40,3 +40,46 @@ Commit: the one after `080b5c1e`.
   3. Start again. Although `.env` says `IW4L_SKATE=off`, the game asks "Do you have Skate 3?", with the extra line about the Skating switch. Answer Yes, pick `default.xex`, and wait for the converter. `.env` now has `IW4L_SKATE_ASSETS=".../skate-data/assets"` and no `IW4L_SKATE=off` line. (Without Skate 3: answer No; the game starts, J shows "Skate 3 data is not set up: restart to select your default.xex" for about 3 seconds, and the question comes again on the next launch until Skating is set to Disabled.)
   4. With the data converted, press J on flat ground: the board goes down. Then set Skating to Disabled while riding (Esc menu): the board is picked up and J only shows the "Skating is off" line again. `latest.log` has "Skating turned off: map session dropped" and no new "Skate map session preloaded" line until you enable it again.
 - **Kit:** none needed.
+
+## Group 2. The skateboard key is a rebindable Minecraft control, J by default
+
+Commit: the one after `ac3479e4` (group 1).
+
+- **Changed:**
+  - `input_iw4/src/names.rs`: `"mc_skate"` appended after `mc_perspective` as command 84, so it sits in the Minecraft binding layer; `INPUT_COMMAND_NAMES` is now `[&str; 85]`. No other round 8 brief adds input commands; track E rebases onto id 84 if it adds any.
+  - `frame/src/minecraft_ui.rs`: `McAction::Skate` (`"mc_skate"`), `ALL` has 7 entries (still fits the `u8` bit sets). No exhaustive `match` on `McAction` exists outside `command()`.
+  - `console/assets/default_controls.cfg`: `bind J mc_skate`.
+  - `console/src/binds.rs`:
+    - `apply_minecraft_defaults` skips `mc_skate`; the new idempotent `KeyBinds::add_skate_key` binds J to it only when `mc_skate` has no key and J is free in both layers.
+    - `KeyBinds::minecraft_buttons_for(id)` and `KeyBinds::skate_key_label()` (the bound keys in capitals, "J OR K" for two, "L3+R3" when only the stick click is left).
+    - The pure `skate_toggle_pressed(binds, mc_keys, minecraft_map, just_pressed)`: on the Minecraft map (`MinecraftUi.active`) it is `mc_keys.just_pressed(McAction::Skate)`; on MW2 maps, and on the Minecraft map while dead (the Minecraft layer is off then), any button bound to `mc_skate` in the Minecraft layer that was just pressed.
+  - `console/src/user_settings.rs`: header **v5**. A v1-v4 file gets `add_skate_key` once; `apply_minecraft_defaults` stays for v1/v2 only, so keys a player unbound in v3/v4 stay unbound. In v5 an unbound skate key stays unbound.
+  - `console/src/plugin/mod.rs`: the hard-coded J is gone. The toggle moved below `minecraft_presses` and fires on `skate_toggle_pressed` or L3+R3, with the same blocks as before (console, script menus, inventory, chat).
+  - `console/src/debug_move.rs`: the skating overlay names the bound key (`skate_key_label`) instead of "J", and says "pick up" on the Minecraft map and "return to MW2" elsewhere. The console `skate` usage line no longer says "J".
+  - `ui/menus/settings.json`: "Skateboard Down/Up" key row (item type 14, dvar `mc_skate`) at y 168, under the Skating switch. `sync_binding_view` already publishes `ui_bind_mc_skate`.
+  - `docs/MINECRAFT-SURVIVAL.md`: the key list, the controls page (seven keys) and the Skating bullet (key, v5 rule).
+- **Tests:**
+  - `input_iw4`: `mc_skate_is_command_84`; `minecraft_commands_follow_the_mw2_ones` and `minecraft_commands_do_nothing_to_mw2_input` now cover 78-84.
+  - `frame`: `every_minecraft_action_has_its_own_command` checks `mc_skate`.
+  - `console` (`binds.rs`): `the_defaults_bind_the_vanilla_minecraft_keys_beside_the_mw2_ones` expects J too (7 keys), `only_just_pressed_keys_fire_their_action` sees 7 suppressed keys, `the_skate_key_works_on_mw2_maps_through_its_minecraft_binding`, `the_overlay_names_the_bound_skate_key`, `the_skate_key_is_added_only_on_a_free_j`.
+  - `console` (`user_settings.rs`): `older_settings_get_the_vanilla_minecraft_keys` (7 keys), `current_settings_keep_their_minecraft_keys_unbound` (v3/v4 get J only, v5 nothing), the saved-header expectations are v5, `the_controls_menu_shows_the_minecraft_keys` shows `ui_bind_mc_skate` = "j", and new `older_settings_get_the_skate_key_on_a_free_j`, `a_j_bound_in_the_mw2_layer_keeps_the_skate_key_unbound`, `an_unbound_skate_key_stays_unbound_in_v5`, `a_rebound_skate_key_survives_a_restart`.
+  - `ui`: `the_minecraft_page_lists_the_seven_minecraft_keys` (lines 28-128 and 168).
+- **Decisions:**
+  - The skate key on an MW2 map fires both its Minecraft action and any MW2 binding the same key has; `add_skate_key` never puts it on a key the MW2 layer uses, so this only happens when the player binds it that way.
+  - On the Minecraft map, a key bound to `mc_skate` takes the key from its MW2 binding like every Minecraft key (`minecraft_presses` suppresses it).
+  - With no key bound, the overlay names "L3+R3", which still toggles on a controller.
+  - The `skate_toggle_pressed` helper lives in `binds.rs` beside `minecraft_presses`, so its test sits with the other key-layer tests.
+- **Owner's test steps** (brief section 5, steps 1, 2, 4 and 19):
+  1. Start the new build once. Options > Controls > Minecraft shows "Skating: Disabled" and, under it, "Skateboard Down/Up: J" (screenshot).
+  2. Set Skating to Enabled and quit. `iw4l-artifacts\settings.cfg` starts with `// IW4L user settings v5` and holds `skating=true` and `bind j mc_skate`.
+  3. With the Skate 3 data converted (group 1 step 3), press J on flat ground in the Overworld: the board goes down and the overlay ends in "J: pick up". J again picks it up. On an MW2 map the overlay ends in "J: return to MW2".
+  4. Options > Controls > Minecraft: rebind "Skateboard Down/Up" to K and restart. K puts the board down and J does nothing; the overlay names K. Set it back to J.
+- **Kit:** none needed.
+
+## The whole track's owner test, one kit
+
+Groups 1 and 2 need no items. Their steps: group 1 steps 1-4, group 2 steps 1-4.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64
+```

@@ -194,13 +194,14 @@ fn add_minecraft_controls_link(menu: &mut asset_game::MenuDef) {
 mod settings_menu_tests {
     use asset_game::{MenuCatalog, MenuDef, MenuEvent, MenuItem};
 
-    const MINECRAFT_KEYS: [(&str, &str); 6] = [
+    const MINECRAFT_KEYS: [(&str, &str); 7] = [
         ("mc_inventory", "Open/Close Inventory"),
         ("mc_drop", "Drop Selected Item"),
         ("mc_swaphands", "Swap Item With Off Hand"),
         ("mc_chat", "Open Chat"),
         ("mc_command", "Open Command"),
         ("mc_perspective", "Toggle Perspective"),
+        ("mc_skate", "Skateboard Down/Up"),
     ];
 
     fn item(name: &str, text_key: &str, dvar: &str, item_type: i32) -> MenuItem {
@@ -341,7 +342,7 @@ mod settings_menu_tests {
     }
 
     #[test]
-    fn the_minecraft_page_lists_the_six_minecraft_keys() {
+    fn the_minecraft_page_lists_the_seven_minecraft_keys() {
         let catalog = settings_catalog();
         let page = catalog.get("pc_options_minecraft").expect("minecraft page");
         let rows: Vec<&MenuItem> = page
@@ -368,7 +369,7 @@ mod settings_menu_tests {
         }
         let mut lines: Vec<f32> = rows.iter().map(|row| row.rect.y).collect();
         lines.dedup();
-        assert_eq!(lines, vec![28.0, 48.0, 68.0, 88.0, 108.0, 128.0]);
+        assert_eq!(lines, vec![28.0, 48.0, 68.0, 88.0, 108.0, 128.0, 168.0]);
         assert_eq!(named(page, "video_title").text_key, "Minecraft");
     }
 

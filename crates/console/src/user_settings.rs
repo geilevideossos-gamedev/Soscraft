@@ -344,7 +344,7 @@ fn parse_into<T: std::str::FromStr>(value: &str, slot: &mut T) {
 fn serialize_settings(settings: &frame::GameSettings, binds: &KeyBinds) -> String {
     let safe_name = settings.player_name.replace(['\n', '\r', '='], " ");
     let mut lines = vec![
-        "// IW4L user settings v4".to_owned(),
+        "// IW4L user settings v5".to_owned(),
         format!(
             "resolution={}x{}",
             settings.resolution.width, settings.resolution.height
@@ -499,6 +499,17 @@ fn parse_settings(source: &str, settings: &mut frame::GameSettings, binds: &mut 
         Some("// IW4L user settings v1" | "// IW4L user settings v2")
     ) {
         binds.apply_minecraft_defaults();
+    }
+    if matches!(
+        source.lines().next().map(str::trim),
+        Some(
+            "// IW4L user settings v1"
+                | "// IW4L user settings v2"
+                | "// IW4L user settings v3"
+                | "// IW4L user settings v4"
+        )
+    ) {
+        binds.add_skate_key();
     }
     let moved = matches!(
         source.lines().next().map(str::trim),
@@ -733,6 +744,8 @@ mod minecraft_bind_tests {
     const B: BindButton = BindButton::Key(KeyCode::KeyB);
     const F5: BindButton = BindButton::Key(KeyCode::F5);
     const F6: BindButton = BindButton::Key(KeyCode::F6);
+    const J: BindButton = BindButton::Key(KeyCode::KeyJ);
+    const K: BindButton = BindButton::Key(KeyCode::KeyK);
 
     fn load(source: &str) -> KeyBinds {
         let mut binds = KeyBinds::default();
@@ -750,7 +763,8 @@ mod minecraft_bind_tests {
             assert_eq!(binds.minecraft_binding(E), Some("mc_inventory"), "{header}");
             assert_eq!(binds.minecraft_binding(F5), Some("mc_perspective"), "{header}");
             assert_eq!(binds.minecraft_binding(F), Some("mc_swaphands"), "{header}");
-            assert_eq!(binds.iter_minecraft().count(), 6, "{header}");
+            assert_eq!(binds.minecraft_binding(J), Some("mc_skate"), "{header}");
+            assert_eq!(binds.iter_minecraft().count(), 7, "{header}");
             assert_eq!(binds.binding_name(E), Some("+activate"), "{header}");
             assert_eq!(binds.binding_name(F), None, "{header}");
             assert_eq!(binds.binding_name(G), Some("+frag"), "{header}");
@@ -762,9 +776,13 @@ mod minecraft_bind_tests {
     fn current_settings_keep_their_minecraft_keys_unbound() {
         for header in ["// IW4L user settings v3", "// IW4L user settings v4"] {
             let binds = load(&format!("{header}\nunbindall\nbind e +activate\n"));
-            assert_eq!(binds.iter_minecraft().count(), 0, "{header}");
+            assert_eq!(binds.iter_minecraft().count(), 1, "{header}");
+            assert_eq!(binds.minecraft_binding(J), Some("mc_skate"), "{header}");
             assert_eq!(binds.binding_name(E), Some("+activate"), "{header}");
         }
+        let binds = load("// IW4L user settings v5\nunbindall\nbind e +activate\n");
+        assert_eq!(binds.iter_minecraft().count(), 0);
+        assert_eq!(binds.binding_name(E), Some("+activate"));
     }
 
     #[test]
@@ -787,14 +805,14 @@ mod minecraft_bind_tests {
                 "{header}"
             );
             let saved = serialize_settings(&frame::GameSettings::default(), &binds);
-            assert_eq!(saved.lines().next(), Some("// IW4L user settings v4"));
+            assert_eq!(saved.lines().next(), Some("// IW4L user settings v5"));
             assert!(saved.lines().any(|line| line == "bind g +frag"));
             assert!(saved.lines().any(|line| line == "bind b +smoke"));
             assert!(saved.lines().any(|line| line == "bind f mc_swaphands"));
             assert!(!saved.lines().any(|line| line == "bind f +frag"));
             let again = load(&saved);
             assert_eq!(again.list_lines(), binds.list_lines(), "{header}");
-            let rerun = load(&saved.replacen("settings v4", "settings v3", 1));
+            let rerun = load(&saved.replacen("settings v5", "settings v3", 1));
             assert_eq!(rerun.list_lines(), binds.list_lines(), "{header}");
         }
     }
@@ -859,7 +877,7 @@ mod minecraft_bind_tests {
         binds.clear_command_on(perspective, false);
         binds.set(F6, perspective);
         let saved = serialize_settings(&frame::GameSettings::default(), &binds);
-        assert_eq!(saved.lines().next(), Some("// IW4L user settings v4"));
+        assert_eq!(saved.lines().next(), Some("// IW4L user settings v5"));
         assert!(saved.lines().any(|line| line == "bind F6 mc_perspective"));
         assert!(!saved.lines().any(|line| line == "bind F5 mc_perspective"));
         let loaded = load(&saved);
@@ -887,6 +905,70 @@ mod minecraft_bind_tests {
         assert_eq!(dvars.get("ui_bind_+frag"), Some("g | R-BUMPER"));
         assert_eq!(dvars.get("ui_bind_+smoke"), Some("b | L-BUMPER"));
         assert_eq!(dvars.get("ui_bind_mc_swaphands"), Some("f"));
+        assert_eq!(dvars.get("ui_bind_mc_skate"), Some("j"));
+    }
+
+    #[test]
+    fn older_settings_get_the_skate_key_on_a_free_j() {
+        for header in [
+            "// IW4L user settings v1",
+            "// IW4L user settings v2",
+            "// IW4L user settings v3",
+            "// IW4L user settings v4",
+        ] {
+            let source = format!("{header}\nunbindall\nbind e +activate\nbind e mc_inventory\n");
+            let binds = load(&source);
+            assert_eq!(binds.minecraft_binding(J), Some("mc_skate"), "{header}");
+            assert_eq!(binds.binding_name(J), None, "{header}");
+            let saved = serialize_settings(&frame::GameSettings::default(), &binds);
+            assert_eq!(saved.lines().next(), Some("// IW4L user settings v5"));
+            assert!(saved.lines().any(|line| line == "bind j mc_skate"), "{header}");
+            assert_eq!(load(&saved).list_lines(), binds.list_lines(), "{header}");
+        }
+    }
+
+    #[test]
+    fn a_j_bound_in_the_mw2_layer_keeps_the_skate_key_unbound() {
+        let skate = input_iw4::command_id_lookup("mc_skate").expect("command");
+        for header in ["// IW4L user settings v2", "// IW4L user settings v4"] {
+            let binds = load(&format!("{header}\nunbindall\nbind j +frag\n"));
+            assert_eq!(binds.binding_name(J), Some("+frag"), "{header}");
+            assert_eq!(binds.minecraft_binding(J), None, "{header}");
+            assert!(binds.iter_minecraft().all(|(_, id)| id != skate), "{header}");
+        }
+        let binds = load("// IW4L user settings v4\nunbindall\nbind j mc_drop\n");
+        assert_eq!(binds.minecraft_binding(J), Some("mc_drop"));
+        assert_eq!(binds.iter_minecraft().count(), 1);
+    }
+
+    #[test]
+    fn an_unbound_skate_key_stays_unbound_in_v5() {
+        let mut binds = KeyBinds::default();
+        binds.apply_defaults();
+        binds.clear_command(input_iw4::command_id_lookup("mc_skate").expect("command"));
+        let saved = serialize_settings(&frame::GameSettings::default(), &binds);
+        assert!(!saved.lines().any(|line| line.ends_with(" mc_skate")));
+        let loaded = load(&saved);
+        assert_eq!(loaded.minecraft_binding(J), None);
+        assert_eq!(loaded.list_lines(), binds.list_lines());
+    }
+
+    #[test]
+    fn a_rebound_skate_key_survives_a_restart() {
+        let mut binds = KeyBinds::default();
+        binds.apply_defaults();
+        let skate = input_iw4::command_id_lookup("mc_skate").expect("command");
+        binds.clear_command_on(skate, false);
+        binds.set(K, skate);
+        let saved = serialize_settings(&frame::GameSettings::default(), &binds);
+        assert!(saved.lines().any(|line| line == "bind k mc_skate"));
+        assert!(!saved.lines().any(|line| line == "bind j mc_skate"));
+        let loaded = load(&saved);
+        assert_eq!(loaded.minecraft_binding(K), Some("mc_skate"));
+        assert_eq!(loaded.minecraft_binding(J), None);
+        assert_eq!(loaded.list_lines(), binds.list_lines());
+        let older = load(&saved.replacen("settings v5", "settings v4", 1));
+        assert_eq!(older.minecraft_binding(J), None);
     }
 }
 
