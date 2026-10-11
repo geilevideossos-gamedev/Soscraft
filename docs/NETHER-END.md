@@ -248,7 +248,7 @@ How natural spawning treats them here:
 | Piglin brute | none | none | missing. Not in `MobCategory::of_type` (`third_party/minecraftoss/world/src/natural_spawner/spawning.rs:97-111`). |
 | Hoglin | none | none | missing |
 | Zoglin | none | none | missing. Not in `MobCategory::of_type`. |
-| Shulker + bullet | none. No levitation effect (`third_party/minecraftoss/entities/src/effects.rs:17-27`, `third_party/minecraftoss/player/src/survival.rs:36-48`) | none. The shulker box lid and base exist (`crates/minecraft_terrain/src/special_models.rs:784`) | partial. Generated in end cities, dormant, and deleted by the despawn bug above. |
+| Shulker + bullet | done in round 8 (track C): live shulkers, homing bullets, and levitation and slow falling on players and mobs (`third_party/minecraftoss/entities/src/shulker.rs`, `shulker_bullet.rs`) | done: shell, lid, head and the glowing bullet (`crates/minecraft_terrain/src/shulker_render.rs`) | partial. Generated in end cities as live shulkers that keep through a save. |
 | Endermite | none. The enderman's endermite target only rolls (`third_party/minecraftoss/entities/src/monster_ai.rs:1980-1990`) | none | missing |
 | End crystal | none | none | partial. One is generated on each spike with no beam target (`third_party/minecraftoss/generator/src/feature/kinds/the_end.rs:120-128`), then dormant. |
 | Ender dragon | none | none. Only the head block model exists (`crates/minecraft_terrain/src/special_models.rs:808`) | missing (see The dragon fight) |

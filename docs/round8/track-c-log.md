@@ -384,3 +384,17 @@ Previous commit: a9e98d20
 ```
 IW4L_MINECRAFT_KIT=minecraft:shulker_spawn_egg*4,minecraft:end_stone*64,minecraft:purpur_block*64,minecraft:cooked_beef*16
 ```
+
+### 14. Docs: Minecraft shulkers and levitation
+
+Previous commit: 69bf8539
+
+- **Changed:** `docs/MINECRAFT-SURVIVAL.md`: shulkers and shulker bullets join the simulated mobs; a Shulkers part under The End (clinging, peeking, teleports, the shell, loot, bullets, levitation and slow falling); X6 no longer lists shulkers or levitation; a Shulkers limitation (not solid to the MW2 player, no push of players by an opening lid, no Looting, skeleton arrows and blasts don't pop bullets, no effect icons); `/effect` knows eleven simulated effects; shulkers leave the dormant list. `docs/NETHER-END.md`: the shulker row is done.
+- **Tests:** none (docs only).
+- **Test steps:** none.
+
+### Group c1-shulkers-2, combined kit
+
+```
+IW4L_MINECRAFT_KIT=minecraft:shulker_spawn_egg*16,minecraft:zombie_spawn_egg*4,minecraft:shield,minecraft:end_stone*64,minecraft:purpur_block*64,minecraft:cooked_beef*32,minecraft:milk_bucket,minecraft:potion@slow_falling,minecraft:elytra,minecraft:firework_rocket*64,minecraft:ladder*16,minecraft:water_bucket
+```
