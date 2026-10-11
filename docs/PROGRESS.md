@@ -24,7 +24,7 @@ Briefs: `docs/round8/<item>.md`, the multiplayer design `docs/MULTIPLAYER.md`.
 
 | Track | Branch | State |
 |---|---|---|
-| A. Fixes from the test (gateway, eye of ender, mining speed, spawner mob, overload and /tick) | track-a (`C:\Dev\mc-wt	rack-a`, `D:\iw4l-wt	rack-a`) | running from 0bcbfb17 (order a5, a2, a3, a4, a1) |
+| A. Fixes from the test (gateway, eye of ender, mining speed, spawner mob, overload and /tick) | track-a (`C:\Dev\mc-wt\track-a`, `D:\iw4l-wt\track-a`) | running from 0bcbfb17 (order a5, a2, a3, a4, a1) |
 | B. Nether and overworld leftovers (piglins, brutes, bartering, hoglins, striders, sleeping) | track-b | running from 0bcbfb17 (order b3, b2, b1, b4) |
 | C. End and visual leftovers (shulkers, end cities, item frames, End sky, dragon effects, elytra body, limitations) | track-c | running from 0bcbfb17 (order c1 G1-3, c5 G1-4, c1 G4-8, c2, c3, c5 G5-11, c4) |
 | D. Skating in Minecraft worlds | track-d | waits for disk space (starts when a track merges) |
