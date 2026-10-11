@@ -103,7 +103,7 @@ Commit: e06114b0
 
 ### E4. MW2 works at the heights of the other dimensions
 
-Commit: see `git log` ("MW2 works at the heights of the other dimensions")
+Commit: ec064dc1
 
 - **Changed:** a test-only module, `crates/sim/src/damage/height_bands.rs` (declared in `damage.rs` under `#[cfg(test)]`, so it can reach the blast code's private `radius_player_attempts`). No game code changed. The result is written into `docs/MULTIPLAYER.md` sections 8.2 and 21.
 - **How the spike works:** each test builds a real `SimWorld` with a stand-in map (one dummy brush, so the block world is active only for this content, and a world model of a normal MW2 map's size, -3,000..3,000 by -500..1,500), activates the block world with its floor at map z 0 (the control), +45,000 and -45,000, and drives it through `sim::step`, `bullet_trace`, the blast code and the spawn and death natives.
@@ -124,4 +124,30 @@ Commit: see `git log` ("MW2 works at the heights of the other dimensions")
   - **The tests share one lock and leave the block world active.** The block world is a process-wide static. Each test activates it with its own content's brushes, so `voxel::active_for` stays false for every other test's map; `voxel::deactivate` is not called because it empties queues other tests use.
   - The bands are tested at ±45,000 as the plan says. Every map z between 32,768 and 65,536 has the same f32 step (1/256 unit), so the edges of the bands at ±60,000 behave the same.
 - **Test steps:** none in game; this group changes no game code.
+- **Kit:** none.
+
+### E5. A client terrain stream builds the world from chunks the host sends
+
+Commit: see `git log` ("A client terrain stream builds the world from chunks the host sends")
+
+- **Changed:**
+  - `crates/minecraft_terrain/src/terrain.rs`:
+    - `TerrainStream` holds `server: Option<ChunkMap>`. `TerrainStream::remote(registries, seed, dimension, view_distance)` builds a stream with no chunk map: no generator, no world folder, no spawn search. Its block states take the build height from the dimension type (`dimension_bounds`: overworld -64..320, Nether and End 0..256), and the section workers, lighting and meshing are the host's own.
+    - `apply(events, scene)` runs the `Load`/`Forget` body that `server_tick` used to run inline; `server_tick` now ticks the chunk map and hands its events to `apply`. A friend's game calls `apply` with the chunks it decodes.
+    - The constructors share `assemble`; `BlockStates::for_dimension` sets the sky light and Nether shading for both. `is_remote()` tells them apart.
+    - On a remote stream, the host-side calls do nothing (`server_tick`, `record_edits`, `record_block_entities`, `set_tickets`), answer "none" (`loaded_chunk`, `storage`, `queue_save`, `is_settled`, the F3 and F9 lines), or panic with "only the host's terrain stream has a chunk map" (`world_gen`, `load_chunk_now`, `respawn_position`), which only the host's level code calls.
+  - `crates/minecraft_terrain/src/chunk_wire.rs` (new): `encode_chunk`/`decode_chunk` write a chunk as vanilla's chunk NBT (`write_chunk`, so blocks, biomes, light, heightmaps and block entities) compressed as a region file stores it, and read it back with `read_chunk`; a chunk sent under another position is refused. `encode_batch`/`decode_batch` put chunks in the `"MC"` bulk blob of E2 (`ChunkBatchBlob`).
+  - `third_party/minecraftoss/core/src/anvil.rs` (patched): `StoredChunk::from_zlib` and `zlib()`, so the compressed body crosses the wire as it is.
+  - `crates/minecraft_terrain/src/scene.rs`: `HandcraftedScene` keeps a change log, vanilla's `ChunkHolder.blockChanged`: every `set` adds its position once (a set, so a position set twice in a tick is reported once), and `take_changed()` drains it. The authored scene of `HandcraftedScene::new` starts with an empty log; chunks being inserted or removed are not changes.
+  - `crates/minecraft_survival/src/level.rs`: `stream_tick` drains the log of its level each tick and passes the positions to `record_edits`, so every `scene.set`, from whatever path, reaches the chunk map that chunks are sent from. The explicit `record_edits` calls stay; repeating one is harmless.
+- **Tests:**
+  - `minecraft_terrain`: `chunk_wire::a_chunk_crosses_the_wire_with_its_blocks_biomes_and_block_entities` (every block, every biome cell, a chest's block entity, a wrong position and a cut blob refused), `chunk_wire::a_batch_crosses_the_wire_in_order`, `scene::the_change_log_reports_every_set_once_until_it_is_taken`, `terrain::a_remote_stream_takes_its_bounds_from_the_dimension_and_has_no_chunk_map` (all three dimensions), `terrain::a_remote_stream_meshes_the_chunks_the_host_sends` (25 chunks through the wire, lit and built into sections, then one forgotten).
+  - `minecraft_survival`: `level::a_chunk_sent_after_edits_from_every_source_matches_the_scene`. In a real End level it places and breaks through the player's world interface, writes a server change, blows a crater, lays water and flowing water and fills a box across four chunks, none of them calling `record_edits`. Before the tick the chunk map does not have the placement; after one `stream_tick`, every block of the four chunks, sent through the wire, equals the scene.
+  - Whole lib suites: `minecraft_terrain` 849 passed (4 ignored as before), `minecraft_survival` 337, `minecraftoss-core` 23. `check -p launcher` is green.
+- **Decisions:**
+  - **The remote stream is `server: Option<ChunkMap>`, not a second type,** as the design allows, so lighting, sections and meshing stay one code path.
+  - **The wire carries the region file's zlib body of vanilla's chunk NBT, light included.** Vanilla sends a chunk with its light (`ClientboundLevelChunkWithLightPacket`), and the zlib body keeps a chunk well under the 128 KiB batch cut (the test chunk is under 64 KiB). No new dependency was needed; the vendored `StoredChunk` gained two small accessors.
+  - **The log is drained in `stream_tick`,** the one place each level's terrain ticks. E6 takes the same drained positions for the block-update fan-out (design 7.3); until then the positions only go to `record_edits`. Levels whose terrain does not tick keep their (deduplicated) log until they do, and `ChunkMap::set_blocks` ignores positions in chunks it no longer holds.
+  - The remote stream's spawn fields start at 0, 0, 0, as a vanilla client's level does before the spawn packet; E7b sets them from `Login`.
+- **Test steps:** none in game yet; the game still runs the host path only. `check -p launcher` is green. The single-player world must load, stream and save exactly as before; the owner's M1 test covers it once E7c shows chunks on a friend's game.
 - **Kit:** none.

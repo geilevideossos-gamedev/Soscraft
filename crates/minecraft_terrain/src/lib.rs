@@ -45,6 +45,7 @@ pub mod scene;
 pub mod sections;
 pub(crate) mod special_models;
 pub mod terrain;
+pub mod chunk_wire;
 pub mod translucency;
 pub mod texture_mips;
 pub mod audio;

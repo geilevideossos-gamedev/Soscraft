@@ -143,6 +143,7 @@ pub struct HandcraftedScene {
     cleared: BTreeMap<ChunkPos, Arc<BTreeSet<BlockPos>>>,
     states: Option<Arc<BlockStates>>,
     revision: u64,
+    changed: BTreeSet<BlockPos>,
 }
 impl HandcraftedScene {
     pub fn new() -> Self {
@@ -248,6 +249,7 @@ impl HandcraftedScene {
                 s.set((x, y, 4), Some(Block::new(id)));
             }
         }
+        s.changed.clear();
         s
     }
     /// An empty world whose terrain arrives chunk by chunk.
@@ -344,6 +346,10 @@ impl HandcraftedScene {
             }
         }
         self.revision = self.revision.wrapping_add(1);
+        self.changed.insert(pos);
+    }
+    pub fn take_changed(&mut self) -> Vec<BlockPos> {
+        std::mem::take(&mut self.changed).into_iter().collect()
     }
     /// A block's sound type from the catalog (none for an authored scene or
     /// an older catalog).
@@ -818,5 +824,24 @@ mod tests {
             assert!(!Block::new(id).is_opaque(), "{id}");
         }
         assert!(Block::new("minecraft:stone").is_opaque());
+    }
+
+    #[test]
+    fn the_change_log_reports_every_set_once_until_it_is_taken() {
+        let mut authored = HandcraftedScene::new();
+        assert!(authored.take_changed().is_empty(), "the authored blocks are not changes");
+        let mut scene = HandcraftedScene::default();
+        let stone = Some(Block::new("minecraft:stone"));
+        scene.set((4, 70, -3), stone.clone());
+        scene.set((4, 70, -3), Some(Block::new("minecraft:glass")));
+        scene.set((-20, 5, 9), stone.clone());
+        scene.set((4, 70, -3), None);
+        scene.set((100, -60, 100), None);
+        assert_eq!(scene.take_changed(), vec![(-20, 5, 9), (4, 70, -3), (100, -60, 100)]);
+        assert!(scene.take_changed().is_empty(), "taken once");
+        scene.set((-20, 5, 9), stone);
+        scene.insert_chunk(Arc::new(Chunk::new(minecraftoss_core::ChunkPos::new(7, 7), -64, 384, minecraftoss_core::BiomeId(0))));
+        scene.remove_chunk((7, 7));
+        assert_eq!(scene.take_changed(), vec![(-20, 5, 9)], "the next tick starts a new log, and chunks coming and going are not changes");
     }
 }

@@ -188,6 +188,8 @@ pub fn stream_tick(
     containers: &mut Containers,
     block: (i32, i32, i32),
 ) -> (Vec<Arc<Chunk>>, Vec<ChunkPos>) {
+    let changed = terrain.scene.take_changed();
+    terrain.stream.record_edits(&terrain.scene, &changed);
     save_block_entities(containers, terrain);
     if let Some(entities) = entities.as_mut() {
         save_server_block_entities(entities, terrain, false);
@@ -501,5 +503,122 @@ mod tests {
             vec![((5, 64, 5), "lit", true), ((6, 64, 5), "lit", true)],
         );
         assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn a_chunk_sent_after_edits_from_every_source_matches_the_scene() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else {
+            return;
+        };
+        let Ok(registries) = Registries::load(&paths) else {
+            return;
+        };
+        let mut terrain =
+            Terrain::open(Arc::new(registries), 0, 2, Dimension::End, None, None).unwrap();
+        let (mut entities, mut containers) = (None, Containers::default());
+        let started = std::time::Instant::now();
+        while [(6, 0), (6, 1), (7, 0), (7, 1)]
+            .iter()
+            .any(|&chunk| terrain.scene.generated_chunk(chunk).is_none())
+        {
+            assert!(
+                started.elapsed().as_secs() < 600,
+                "no chunks near the platform"
+            );
+            stream_tick(&mut terrain, &mut entities, &mut containers, (100, 49, 0));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(terrain.scene.take_changed().is_empty());
+        let solid = (96..112)
+            .flat_map(|x| (0..256).rev().map(move |y| (x, y, 0)))
+            .find(|&pos| {
+                terrain
+                    .scene
+                    .state_at(pos)
+                    .is_some_and(|state| state != minecraftoss_core::BlockStateId::AIR)
+            })
+            .expect("End stone near the platform");
+        let placed = (101, 50, 1);
+        minecraftoss_player::World::set_block(
+            &mut terrain.scene,
+            placed,
+            Some(minecraftoss_player::Block::new("minecraft:oak_planks")),
+        );
+        minecraftoss_player::World::set_block(&mut terrain.scene, solid, None);
+        terrain.scene.set(
+            (102, 51, 2),
+            Some(
+                Block::new("minecraft:chest")
+                    .with("facing", "north")
+                    .with("type", "single")
+                    .with("waterlogged", "false"),
+            ),
+        );
+        let crater = (solid.0, solid.1 - 3, solid.2 + 4);
+        for dx in -2..=2 {
+            for dy in -2..=2 {
+                for dz in -2..=2 {
+                    if dx * dx + dy * dy + dz * dz <= 4 {
+                        terrain
+                            .scene
+                            .set((crater.0 + dx, crater.1 + dy, crater.2 + dz), None);
+                    }
+                }
+            }
+        }
+        for (x, level) in [(104, "0"), (105, "1"), (106, "2")] {
+            terrain.scene.set(
+                (x, 52, 4),
+                Some(Block::new("minecraft:water").with("level", level)),
+            );
+        }
+        for x in 110..114 {
+            for y in 55..58 {
+                for z in 14..18 {
+                    terrain
+                        .scene
+                        .set((x, y, z), Some(Block::new("minecraft:stone")));
+                }
+            }
+        }
+        let sent = |terrain: &mut Terrain, (x, z): (i32, i32)| {
+            let chunk = terrain
+                .stream
+                .loaded_chunk(ChunkPos::new(x, z))
+                .expect("a chunk the friend was sent");
+            let blob = minecraft_terrain::chunk_wire::encode_chunk(
+                &chunk,
+                terrain.stream.states.registries(),
+            );
+            minecraft_terrain::chunk_wire::decode_chunk([x, z], &blob, &terrain.stream.states)
+                .unwrap()
+        };
+        let planks = terrain.scene.state_at(placed);
+        let before = sent(&mut terrain, (6, 0));
+        assert_ne!(
+            Some(before.block(5, 50, 1)),
+            planks,
+            "nothing told the chunk map yet"
+        );
+        stream_tick(&mut terrain, &mut entities, &mut containers, (100, 49, 0));
+        assert!(
+            terrain.scene.take_changed().is_empty(),
+            "the tick drained the log"
+        );
+        for (cx, cz) in [(6, 0), (6, 1), (7, 0), (7, 1)] {
+            let chunk = sent(&mut terrain, (cx, cz));
+            for y in 0..256 {
+                for z in 0..16 {
+                    for x in 0..16 {
+                        let pos = (cx * 16 + x, y, cz * 16 + z);
+                        assert_eq!(
+                            Some(chunk.block(x as usize, y, z as usize)),
+                            terrain.scene.state_at(pos),
+                            "{pos:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

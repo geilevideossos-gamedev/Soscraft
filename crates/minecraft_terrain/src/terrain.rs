@@ -28,6 +28,7 @@ use minecraftoss_generator::terrain::TerrainGenerator;
 use minecraftoss_generator::zoom;
 use minecraftoss_world::chunk_map::WorldGen;
 use minecraftoss_world::storage::ChunkStorage;
+use minecraftoss_world::view::{EXTENDED_VIEW_DISTANCE, MIN_VIEW_DISTANCE};
 use minecraftoss_world::{spawn, ChunkEvent, ChunkMap};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -124,6 +125,13 @@ impl BlockStates {
             min_y,
             height,
         })
+    }
+
+    pub fn for_dimension(registries: Arc<Registries>, seed: i64, min_y: i32, height: i32, dimension: Dimension) -> Result<Self> {
+        let mut states = Self::new(registries, seed, min_y, height)?;
+        states.sky_light = dimension != Dimension::Nether;
+        states.nether_shade = nether_cardinal_light(states.registries(), dimension.dimension_type());
+        Ok(states)
     }
 
     pub fn registries(&self) -> &Arc<Registries> {
@@ -648,6 +656,18 @@ fn nether_cardinal_light(registries: &Registries, dimension_type: &str) -> bool 
         .is_ok_and(|json| json.get("cardinal_light").and_then(|light| light.as_str()) == Some("nether"))
 }
 
+pub fn dimension_bounds(registries: &Registries, dimension: Dimension) -> Result<(i32, i32)> {
+    let json = minecraftoss_core::Identifier::parse(dimension.dimension_type())
+        .and_then(|id| registries.datapack.read_json("dimension_type", &id))
+        .map_err(|e| anyhow!(e))?;
+    let field = |key: &str| json.get(key).and_then(serde_json::Value::as_i64).map(|v| v as i32).ok_or_else(|| anyhow!("{} lacks {key}", dimension.dimension_type()));
+    Ok((field("min_y")?, field("height")?))
+}
+
+fn section_threads(threads: usize) -> usize {
+    std::env::var("MINECRAFTOSS_SECTION_THREADS").ok().and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0).unwrap_or((threads / 2).saturating_sub(1).max(1))
+}
+
 /// `SectionCompiler.compile`: one section's faces and visibility set.
 #[allow(clippy::too_many_arguments)]
 fn compile_section(
@@ -954,7 +974,7 @@ pub struct TerrainStream {
     pub world_spawn: (i32, i32, i32),
     /// Where the player first appears, within the respawn radius of it.
     pub player_spawn: (f64, f64, f64),
-    server: ChunkMap,
+    server: Option<ChunkMap>,
     /// Dropped after `server`, whose drop saves into it.
     _session: Option<SessionDir>,
     sections: Sections,
@@ -983,6 +1003,7 @@ pub struct TerrainStream {
 pub use minecraft_net::Dimension;
 
 const NETHER_FALLBACK_SPAWN: (i32, i32, i32) = (0, 64, 0);
+const HOST_ONLY: &str = "only the host's terrain stream has a chunk map";
 
 fn block_centre((x, y, z): (i32, i32, i32)) -> (f64, f64, f64) {
     (f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5)
@@ -1007,10 +1028,7 @@ impl TerrainStream {
             Dimension::End => TerrainGenerator::end(registries.clone(), seed),
         }
         .map_err(|e| anyhow!(e))?;
-        let mut states = BlockStates::new(registries, seed, generator.chunk_min_y, generator.chunk_height)?;
-        states.sky_light = dimension != Dimension::Nether;
-        states.nether_shade = nether_cardinal_light(states.registries(), dimension.dimension_type());
-        let states = Arc::new(states);
+        let states = Arc::new(BlockStates::for_dimension(registries, seed, generator.chunk_min_y, generator.chunk_height, dimension)?);
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
         // Generation and section building run at background priority, so
         // they may ask for more threads than there are cores: the render
@@ -1020,7 +1038,7 @@ impl TerrainStream {
         // MINECRAFTOSS_GEN_THREADS and MINECRAFTOSS_SECTION_THREADS override.
         let env = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0);
         let generation_threads = env("MINECRAFTOSS_GEN_THREADS").unwrap_or((threads * 3 / 4).max(1));
-        let section_threads = env("MINECRAFTOSS_SECTION_THREADS").unwrap_or((threads / 2).saturating_sub(1).max(1));
+        let section_threads = section_threads(threads);
         // Chunks leaving the loaded area are always stored, as vanilla saves
         // them: without a world directory, in a session directory removed
         // when the stream closes. A chunk that comes back is loaded as it
@@ -1052,6 +1070,23 @@ impl TerrainStream {
             }
         };
         eprintln!("spawn found in {:.2}s ({} chunks generated)", searching.elapsed().as_secs_f64(), server.stats().generated);
+        let view_distance = server.view_distance();
+        Self::assemble(states, (world_spawn, player_spawn), view_distance, Some(server), session, section_threads)
+    }
+
+    pub fn remote(registries: Arc<Registries>, seed: i64, dimension: Dimension, view_distance: i32) -> Result<Self> {
+        let (min_y, height) = dimension_bounds(&registries, dimension)?;
+        let states = Arc::new(BlockStates::for_dimension(registries, seed, min_y, height, dimension)?);
+        let view_distance = view_distance.clamp(MIN_VIEW_DISTANCE, EXTENDED_VIEW_DISTANCE);
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+        Self::assemble(states, ((0, 0, 0), block_centre((0, 0, 0))), view_distance, None, None, section_threads(threads))
+    }
+
+    pub fn is_remote(&self) -> bool {
+        self.server.is_none()
+    }
+
+    fn assemble(states: Arc<BlockStates>, (world_spawn, player_spawn): ((i32, i32, i32), (f64, f64, f64)), view_distance: i32, server: Option<ChunkMap>, session: Option<SessionDir>, section_threads: usize) -> Result<Self> {
         let (min_section, max_section) = states.section_range();
         let work: Work = Arc::new((
             Mutex::new(WorkQueue {
@@ -1080,7 +1115,7 @@ impl TerrainStream {
             states,
             world_spawn,
             player_spawn,
-            sections: Sections::new(server.view_distance(), min_section, max_section),
+            sections: Sections::new(view_distance, min_section, max_section),
             server,
             _session: session,
             work,
@@ -1104,7 +1139,7 @@ impl TerrainStream {
     }
 
     pub fn view_distance(&self) -> i32 {
-        self.server.view_distance()
+        self.server.as_ref().map_or(self.sections.view_distance(), ChunkMap::view_distance)
     }
 
     /// A new render distance from the options screen: the server tracks
@@ -1112,8 +1147,13 @@ impl TerrainStream {
     /// `LevelRenderer.allChanged`. Whether it changed (the renderer then
     /// drops its sections).
     pub fn set_view_distance(&mut self, scene: &HandcraftedScene, view_distance: i32) -> bool {
-        self.server.set_view_distance(view_distance);
-        let view_distance = self.server.view_distance();
+        let view_distance = match self.server.as_mut() {
+            Some(server) => {
+                server.set_view_distance(view_distance);
+                server.view_distance()
+            }
+            None => view_distance.clamp(MIN_VIEW_DISTANCE, EXTENDED_VIEW_DISTANCE),
+        };
         if view_distance == self.sections.view_distance() {
             return false;
         }
@@ -1134,7 +1174,7 @@ impl TerrainStream {
 
     /// `PlayerSpawnFinder.findSpawn` again, for a respawn.
     pub fn respawn_position(&mut self) -> (f64, f64, f64) {
-        spawn::player_spawn(&mut self.server, self.world_spawn, spawn::DEFAULT_RESPAWN_RADIUS, unseeded())
+        spawn::player_spawn(self.server.as_mut().expect(HOST_ONLY), self.world_spawn, spawn::DEFAULT_RESPAWN_RADIUS, unseeded())
     }
 
     pub fn reshow(&mut self, scene: &HandcraftedScene) -> Vec<Arc<Chunk>> {
@@ -1215,39 +1255,39 @@ impl TerrainStream {
 
     /// The world generation data the chunk map runs.
     pub fn world_gen(&self) -> Arc<minecraftoss_world::chunk_map::WorldGen> {
-        self.server.world_gen().clone()
+        self.server.as_ref().expect(HOST_ONLY).world_gen().clone()
     }
 
     pub fn queue_save(&mut self) -> usize {
-        self.server.queue_unsaved()
+        self.server.as_mut().map_or(0, ChunkMap::queue_unsaved)
     }
 
     /// The storage chunks are saved to, which the level's entities share.
     pub fn storage(&self) -> Option<Arc<minecraftoss_world::storage::ChunkStorage>> {
-        self.server.storage()
+        self.server.as_ref().and_then(ChunkMap::storage)
     }
 
     pub fn loaded_chunk(&mut self, pos: minecraftoss_core::ChunkPos) -> Option<Arc<Chunk>> {
-        self.server.chunk(pos).cloned()
+        self.server.as_mut()?.chunk(pos).cloned()
     }
 
     pub fn load_chunk_now(&mut self, pos: minecraftoss_core::ChunkPos) -> Arc<Chunk> {
-        self.server.load_now(pos)
+        self.server.as_mut().expect(HOST_ONLY).load_now(pos)
     }
 
     /// One server tick: runs the chunk map for the player and applies what it
     /// sends to the scene. Returns the chunks it loaded and the positions it
     /// forgot, for the world simulation.
     pub fn server_tick(&mut self, player: BlockPos, scene: &mut HandcraftedScene) -> (Vec<Arc<Chunk>>, Vec<minecraftoss_core::ChunkPos>) {
+        let Some(server) = self.server.as_mut() else {
+            return (Vec::new(), Vec::new());
+        };
         let player_chunk = minecraftoss_core::ChunkPos::new(player.0 >> 4, player.2 >> 4);
-        let (mut loaded, mut forgotten) = (Vec::new(), Vec::new());
-        // Columns whose queued work is cancelled, in one pass at the end.
-        let mut cancelled: crate::fast_hash::FxHashSet<ChunkPos> = Default::default();
         let events = {
             let _span = span("chunk_map.tick");
-            self.server.tick(player_chunk)
+            server.tick(player_chunk)
         };
-        let [tracking, collecting, lock_wait, scheduling, sending, locked, evicting] = self.server.last_tick_ms;
+        let [tracking, collecting, lock_wait, scheduling, sending, locked, evicting] = server.last_tick_ms;
         crate::frame_spans::record("  chunk_map: schedule under lock", locked);
         crate::frame_spans::record("  chunk_map: evict", evicting);
         crate::frame_spans::record("  chunk_map: tracking", tracking);
@@ -1255,6 +1295,12 @@ impl TerrainStream {
         crate::frame_spans::record("  chunk_map: world lock wait", lock_wait);
         crate::frame_spans::record("  chunk_map: schedule", scheduling);
         crate::frame_spans::record("  chunk_map: send", sending);
+        self.apply(events, scene)
+    }
+
+    pub fn apply(&mut self, events: impl IntoIterator<Item = ChunkEvent>, scene: &mut HandcraftedScene) -> (Vec<Arc<Chunk>>, Vec<minecraftoss_core::ChunkPos>) {
+        let (mut loaded, mut forgotten) = (Vec::new(), Vec::new());
+        let mut cancelled: crate::fast_hash::FxHashSet<ChunkPos> = Default::default();
         for event in events {
             match event {
                 ChunkEvent::Center(_) => {}
@@ -1320,7 +1366,9 @@ impl TerrainStream {
             })
             .collect();
         let _span = span("  edits: chunk map");
-        self.server.set_blocks(&edits);
+        if let Some(server) = self.server.as_mut() {
+            server.set_blocks(&edits);
+        }
     }
 
     pub fn record_block_entities(&mut self, changes: &[(BlockPos, Option<minecraftoss_core::nbt::Tag>)]) {
@@ -1331,7 +1379,9 @@ impl TerrainStream {
             .iter()
             .map(|((x, y, z), tag)| (minecraftoss_core::BlockPos::new(*x, *y, *z), tag.clone()))
             .collect();
-        self.server.set_block_entities(&changes);
+        if let Some(server) = self.server.as_mut() {
+            server.set_block_entities(&changes);
+        }
     }
 
     /// An edit at these positions: nearby sections rebuild for the player
@@ -1409,13 +1459,15 @@ impl TerrainStream {
     }
 
     pub fn set_tickets(&mut self, tickets: &[(minecraftoss_core::ChunkPos, i32)]) {
-        self.server.set_tickets(tickets);
+        if let Some(server) = self.server.as_mut() {
+            server.set_tickets(tickets);
+        }
     }
 
     /// Everything in view is generated, sent, lit and built.
     pub fn is_settled(&self) -> bool {
         let queue = self.work.0.lock().expect("terrain work queue");
-        self.server.is_idle()
+        self.server.as_ref().is_none_or(ChunkMap::is_idle)
             && queue.light.is_empty()
             && queue.compile.is_empty()
             && queue.active == 0
@@ -1579,7 +1631,7 @@ impl TerrainStream {
     pub fn hole_report(&self, scene: &HandcraftedScene, gpu_has: &dyn Fn(SectionPos) -> bool) -> String {
         use std::collections::BTreeMap;
         let (cx, _, cz) = self.sections.camera_section();
-        let vd = self.server.view_distance();
+        let vd = self.view_distance();
         let mut columns: BTreeMap<&'static str, Vec<(i32, ChunkPos, String)>> = BTreeMap::new();
         let mut sections: BTreeMap<&'static str, Vec<(i32, SectionPos)>> = BTreeMap::new();
         let (min_section, max_section) = self.states.section_range();
@@ -1594,7 +1646,7 @@ impl TerrainStream {
                 } else {
                     "in scene and lit"
                 };
-                let server = if category.starts_with("not in scene") { self.server.debug_slot(minecraftoss_core::ChunkPos::new(x, z)) } else { String::new() };
+                let server = if category.starts_with("not in scene") { self.server.as_ref().map_or_else(String::new, |server| server.debug_slot(minecraftoss_core::ChunkPos::new(x, z))) } else { String::new() };
                 columns.entry(category).or_default().push((d, pos, server));
                 if category != "in scene and lit" {
                     continue;
@@ -1620,7 +1672,7 @@ impl TerrainStream {
                 }
             }
         }
-        let mut out = format!("hole report at camera section {:?}, view distance {vd}\n{}\n", self.sections.camera_section(), self.server.debug_queue());
+        let mut out = format!("hole report at camera section {:?}, view distance {vd}\n{}\n", self.sections.camera_section(), self.server.as_ref().map_or_else(String::new, ChunkMap::debug_queue));
         for (category, mut list) in columns {
             list.sort();
             out += &format!("  columns {category}: {}\n", list.len());
@@ -1643,7 +1695,7 @@ impl TerrainStream {
     /// Loading progress around `center` for the load profile: how many
     /// rings are complete at each stage, and the pipeline's counters.
     pub fn load_metrics(&self, scene: &HandcraftedScene, center: ChunkPos) -> LoadMetrics {
-        let vd = self.server.view_distance();
+        let vd = self.view_distance();
         // The tracked area is a circle (`ChunkTrackingView`); a column can
         // be lit once its whole 3x3 is tracked.
         let view = minecraftoss_world::TrackingView::new(minecraftoss_core::ChunkPos::new(center.0, center.1), vd);
@@ -1674,7 +1726,7 @@ impl TerrainStream {
             .iter()
             .filter(|&&pos| self.sections.section(pos).is_some_and(|s| matches!(s.mesh, crate::sections::MeshState::Compiled(_))))
             .count();
-        let stats = self.server.stats();
+        let stats = self.server.as_ref().map(ChunkMap::stats).unwrap_or_default();
         let queue = self.work.0.lock().expect("terrain work queue");
         LoadMetrics {
             columns,
@@ -1713,7 +1765,7 @@ impl TerrainStream {
 
     /// The F3 chunk lines: server and client progress.
     pub fn debug_line(&self) -> String {
-        let stats = self.server.stats();
+        let stats = self.server.as_ref().map(ChunkMap::stats).unwrap_or_default();
         let queue = self.work.0.lock().expect("terrain work queue");
         format!(
             "Chunks: {} loaded, {} queued, {} generating ({} us/chunk); light {} queued ({} us); sections {} visible, {} queued, {} building ({} us/section)",
@@ -2252,10 +2304,10 @@ mod tests {
         let (px, _, pz) = stream.player_spawn;
         assert!((px - 40.5).abs() <= 11.0 && (pz + 23.5).abs() <= 11.0, "the player spawns around it: {:?}", stream.player_spawn);
         let column = minecraftoss_core::ChunkPos::new(2, -2);
-        stream.server.load_now(column);
+        stream.server.as_mut().unwrap().load_now(column);
         let gold = registries.blocks.parse_state("minecraft:gold_block").unwrap();
         let at = minecraftoss_core::BlockPos::new(40, 300, -24);
-        stream.server.set_block(at, gold);
+        stream.server.as_mut().unwrap().set_block(at, gold);
         assert!(stream.queue_save() >= 1, "the edited chunk is queued");
         assert_eq!(stream.queue_save(), 0, "and only once");
         let until = Instant::now() + std::time::Duration::from_secs(60);
@@ -2304,14 +2356,14 @@ mod tests {
         assert!(stream.states.nether_shade, "the Nether's cardinal lighting");
         assert_eq!(stream.states.section_range(), (0, 15), "the Nether is 256 blocks high from 0");
         assert_eq!(stream.player_spawn, (0.5, 64.0, 0.5));
-        assert_eq!(stream.server.stats().generated, 0, "no stand-in spawn is searched");
+        assert_eq!(stream.server.as_ref().unwrap().stats().generated, 0, "no stand-in spawn is searched");
         let blocks = &registries.blocks;
         let bedrock = blocks.block_by_name("minecraft:bedrock").unwrap();
         let mut counts = HashMap::new();
         let mut scene = HandcraftedScene::streamed(stream.states.clone());
         for cx in -2..=2 {
             for cz in -2..=2 {
-                let chunk = stream.server.load_now(minecraftoss_core::ChunkPos::new(cx, cz));
+                let chunk = stream.server.as_mut().unwrap().load_now(minecraftoss_core::ChunkPos::new(cx, cz));
                 for zz in 0..16usize {
                     for xx in 0..16usize {
                         assert_eq!(blocks.block_of(chunk.block(xx, 0, zz)), bedrock, "bedrock floor at chunk {cx},{cz}");
@@ -2335,7 +2387,7 @@ mod tests {
         let mut sim = crate::server::ServerSim::new(stream.world_gen(), stream.states.clone(), "minecraft:the_nether");
         for cx in -2..=2 {
             for cz in -2..=2 {
-                sim.load_chunk(&stream.server.load_now(minecraftoss_core::ChunkPos::new(cx, cz)));
+                sim.load_chunk(&stream.server.as_mut().unwrap().load_now(minecraftoss_core::ChunkPos::new(cx, cz)));
             }
         }
         sim.set_clocks(crate::server::ClockTicks { overworld: 6000, the_end: 0 });
@@ -2349,7 +2401,7 @@ mod tests {
         let known = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::Nether, Some(level.root()), Some((5, 70, -3))).unwrap();
         assert_eq!(known.world_spawn, (5, 70, -3), "a known Nether spawn is kept");
         assert_eq!(known.player_spawn, (5.5, 70.0, -2.5));
-        assert_eq!(known.server.stats().generated, 0, "and nothing is searched");
+        assert_eq!(known.server.as_ref().unwrap().stats().generated, 0, "and nothing is searched");
     }
 
     #[test]
@@ -2362,7 +2414,7 @@ mod tests {
         let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::End, Some(level.root()), None).unwrap();
         assert_eq!(stream.world_spawn, (100, 49, 0), "ServerLevel.END_SPAWN_POINT");
         assert_eq!(stream.player_spawn, (100.5, 49.0, 0.5));
-        assert_eq!(stream.server.stats().generated, 0, "the End needs no search");
+        assert_eq!(stream.server.as_ref().unwrap().stats().generated, 0, "the End needs no search");
         assert!(stream.states.sky_light);
         assert!(!stream.states.nether_shade);
         assert_eq!(stream.states.section_range(), (0, 15), "the End is 256 blocks high from 0");
@@ -2372,12 +2424,12 @@ mod tests {
         let mut scene = HandcraftedScene::streamed(stream.states.clone());
         for cx in -2..=2 {
             for cz in -2..=2 {
-                let chunk = stream.server.load_now(minecraftoss_core::ChunkPos::new(cx, cz));
+                let chunk = stream.server.as_mut().unwrap().load_now(minecraftoss_core::ChunkPos::new(cx, cz));
                 count_blocks(&registries, &chunk, &mut counts);
                 scene.insert_chunk(chunk);
             }
         }
-        let centre = stream.server.load_now(minecraftoss_core::ChunkPos::new(0, 0));
+        let centre = stream.server.as_mut().unwrap().load_now(minecraftoss_core::ChunkPos::new(0, 0));
         assert!((0..256).any(|y| blocks.block_of(centre.block(8, y, 8)) == end_stone), "the main island covers 0,0");
         assert!(count(&counts, "minecraft:end_stone") > 10_000, "{counts:?}");
         assert!(count(&counts, "minecraft:obsidian") > 0, "the end spikes stand on the island: {counts:?}");
@@ -2389,7 +2441,7 @@ mod tests {
         let mut sim = crate::server::ServerSim::new(stream.world_gen(), stream.states.clone(), "minecraft:the_end");
         for cx in -2..=2 {
             for cz in -2..=2 {
-                sim.load_chunk(&stream.server.load_now(minecraftoss_core::ChunkPos::new(cx, cz)));
+                sim.load_chunk(&stream.server.as_mut().unwrap().load_now(minecraftoss_core::ChunkPos::new(cx, cz)));
             }
         }
         for _ in 0..40 {
@@ -2449,7 +2501,7 @@ mod tests {
             let mut mobs = Vec::new();
             for x in cx - 2..=cx + 2 {
                 for z in cz - 2..=cz + 2 {
-                    let chunk = stream.server.load_now(minecraftoss_core::ChunkPos::new(x, z));
+                    let chunk = stream.server.as_mut().unwrap().load_now(minecraftoss_core::ChunkPos::new(x, z));
                     for xx in 0..16usize {
                         for zz in 0..16usize {
                             assert!(blocks.is_air(chunk.block(xx, 200, zz)), "nothing above the roof at chunk {x},{z}");
@@ -2491,7 +2543,7 @@ mod tests {
         let mut scene = HandcraftedScene::streamed(stream.states.clone());
         let started = Instant::now();
         let mut sent = 0;
-        while scene.generated_chunk((6, 0)).is_none() || !stream.server.is_idle() {
+        while scene.generated_chunk((6, 0)).is_none() || !stream.server.as_ref().unwrap().is_idle() {
             assert!(started.elapsed().as_secs() < 600, "no chunks around the End platform");
             sent += stream.server_tick((100, 49, 0), &mut scene).0.len();
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -2522,5 +2574,88 @@ mod tests {
         assert_eq!(stream.light_changes.len(), 1);
         assert!(stream.light_changes[0].0 == (6, 0) && stream.light_changes[0].1.as_ref().is_some_and(|l| Arc::ptr_eq(l, &light)));
         assert!(stream.server_tick((100, 49, 0), &mut scene).0.is_empty(), "the server does not send them twice");
+    }
+
+    #[test]
+    fn a_remote_stream_takes_its_bounds_from_the_dimension_and_has_no_chunk_map() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        for (dimension, range, sky) in [(Dimension::Overworld, -64..320, true), (Dimension::Nether, 0..256, false), (Dimension::End, 0..256, true)] {
+            let mut stream = TerrainStream::remote(registries.clone(), 5, dimension, 40).unwrap();
+            assert!(stream.is_remote());
+            assert_eq!(stream.states.vertical_range(), range, "{dimension:?}");
+            assert_eq!(stream.states.sky_light, sky, "{dimension:?}");
+            assert_eq!(stream.view_distance(), 40);
+            assert!(stream.set_view_distance(&HandcraftedScene::default(), 99));
+            assert_eq!(stream.view_distance(), EXTENDED_VIEW_DISTANCE);
+            let mut scene = HandcraftedScene::streamed(stream.states.clone());
+            let (loaded, forgotten) = stream.server_tick((0, 64, 0), &mut scene);
+            assert!(loaded.is_empty() && forgotten.is_empty(), "nothing is generated on a friend's game");
+            assert!(stream.loaded_chunk(minecraftoss_core::ChunkPos::new(0, 0)).is_none());
+            assert!(stream.storage().is_none());
+            assert_eq!(stream.queue_save(), 0);
+            stream.record_edits(&scene, &[(0, 64, 0)]);
+            assert!(stream.is_settled());
+        }
+    }
+
+    #[test]
+    fn a_remote_stream_meshes_the_chunks_the_host_sends() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Some(pack) = paths.datapack.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).map(|root| root.join("resourcepacks/local/minecraft-26.3")).filter(|p| p.is_dir()) else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let mut stream = TerrainStream::remote(registries.clone(), 7, Dimension::Overworld, 2).unwrap();
+        let mut scene = HandcraftedScene::streamed(stream.states.clone());
+        let plains = registries.biomes.id("minecraft:plains").unwrap_or(BiomeId(0));
+        let stone = registries.blocks.parse_state("minecraft:stone").unwrap();
+        let host: Vec<Arc<Chunk>> = (-2..=2)
+            .flat_map(|x| (-2..=2).map(move |z| minecraftoss_core::ChunkPos::new(x, z)))
+            .map(|pos| {
+                let mut chunk = Chunk::new(pos, -64, 384, plains);
+                chunk.status = minecraftoss_core::chunk::ChunkStatus::Full;
+                for x in 0..16 {
+                    for z in 0..16 {
+                        for y in -64..64 {
+                            chunk.set_block_raw(x, y, z, stone, &registries);
+                        }
+                    }
+                }
+                Arc::new(chunk)
+            })
+            .collect();
+        let bytes = crate::chunk_wire::encode_batch(1, &host, &registries).unwrap();
+        let (_, sent) = crate::chunk_wire::decode_batch(&bytes, &stream.states).unwrap();
+        let (loaded, forgotten) = stream.apply(sent.into_iter().map(ChunkEvent::Load), &mut scene);
+        assert_eq!((loaded.len(), forgotten.len()), (25, 0));
+        assert_eq!(scene.generated_chunks().count(), 25);
+        assert_eq!(scene.state_at((5, 63, -7)), Some(stone));
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let mut textures = std::collections::BTreeSet::new();
+        for (model, _) in resolve_block_variants(&packs, &Block::new("minecraft:stone")).unwrap() {
+            textures.extend(model.elements.iter().flat_map(|e| e.faces.iter().map(|f| f.texture.clone())));
+        }
+        let atlas = Arc::new(mesh::make_atlas(&packs, textures.into_iter().collect()).unwrap());
+        let camera = CullCamera {
+            position: DVec3::new(8.0, 70.0, 8.0),
+            forward: glam::Vec3::new(0.0, -0.6, -0.8),
+            fov_degrees: 70.0,
+            aspect: 16.0 / 9.0,
+            yaw_degrees: 180.0,
+            pitch_degrees: 37.0,
+        };
+        let started = Instant::now();
+        let mut meshed = Vec::new();
+        while meshed.is_empty() {
+            assert!(started.elapsed().as_secs() < 300, "no section was built from the sent chunks");
+            let update = stream.frame(&scene, &camera, 0, &atlas, &packs);
+            meshed.extend(update.uploads.into_iter().filter(|(_, mesh)| !mesh.vertices.is_empty()).map(|(pos, _)| pos));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(meshed.iter().all(|&(x, y, z)| (-1..=1).contains(&x) && (-1..=1).contains(&z) && y <= 3), "{meshed:?}");
+        let (_, forgotten) = stream.apply([ChunkEvent::Forget(minecraftoss_core::ChunkPos::new(2, 2))], &mut scene);
+        assert_eq!(forgotten, vec![minecraftoss_core::ChunkPos::new(2, 2)]);
+        assert!(scene.generated_chunk((2, 2)).is_none());
     }
 }
