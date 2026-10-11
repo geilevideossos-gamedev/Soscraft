@@ -1705,6 +1705,9 @@ fn update(
             health: survival.status.health,
             yaw: mc_yaw,
             pitch: ps.viewangles[0],
+            main_hand: inventory.slots[*selected].as_ref().filter(|_| ui.holding_item).map(|stack| stack.id.clone()),
+            offhand: inventory.slots[minecraft_survival::offhand::OFFHAND].as_ref().map(|stack| stack.id.clone()),
+            sneaking: ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0,
         };
         let bright_outside = terrain.environment.sky_light_level() > 11.0;
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);

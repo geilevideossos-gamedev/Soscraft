@@ -157,6 +157,20 @@ pub struct PlayerView {
     pub health: f32,
     pub yaw: f32,
     pub pitch: f32,
+    pub main_hand: Option<String>,
+    pub offhand: Option<String>,
+    pub sneaking: bool,
+}
+
+fn player_controls(player: &PlayerView) -> minecraftoss_entities::controls::PlayerControls {
+    minecraftoss_entities::controls::PlayerControls {
+        id: PLAYER,
+        yaw: player.yaw,
+        pitch: player.pitch,
+        main_hand: player.main_hand.clone(),
+        offhand: player.offhand.clone(),
+        sneaking: player.sneaking,
+    }
 }
 
 fn player_candidate(player: &PlayerView) -> PlayerCandidate {
@@ -903,6 +917,7 @@ impl Entities {
                 tracking: (player.feet, 160.0),
                 player_hurts: Vec::new(),
                 spawn_mobs: self.spawn_mobs,
+                controls: if player.alive { vec![player_controls(player)] } else { Vec::new() },
             });
         }
         let mut changes = Vec::new();
@@ -1507,6 +1522,9 @@ mod tests {
             health: 20.0,
             yaw: 0.0,
             pitch: 0.0,
+            main_hand: None,
+            offhand: None,
+            sneaking: false,
         };
         let survival = player_candidate(&view(true, false));
         assert!(survival.alive && survival.attackable && !survival.spectator);
@@ -1568,9 +1586,9 @@ mod tests {
         entities.summon("minecraft:pig".to_owned(), [0.5, 200.0, 2.5], Some(nbt));
         let mut inventory = Inventory::default();
         inventory.slots[3] = Some(ItemStack::new("minecraft:saddle", 1));
-        let view = PlayerView { feet: [0.5, 200.0, 0.5], alive: true, attackable: true, spectator: false, picks_up: false, health: 20.0, yaw: 0.0, pitch: 0.0 };
+        let view = PlayerView { feet: [0.5, 200.0, 0.5], alive: true, attackable: true, spectator: false, picks_up: false, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false };
         let started = std::time::Instant::now();
-        let mut tick = |entities: &mut Entities, inventory: &mut Inventory| {
+        let tick = |entities: &mut Entities, inventory: &mut Inventory| {
             assert!(started.elapsed().as_secs() < 60, "the server answers");
             std::thread::sleep(std::time::Duration::from_millis(5));
             entities.tick(inventory, 3, TICK_SECONDS, Default::default(), true, &view);

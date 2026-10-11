@@ -1,8 +1,12 @@
 use crate::age::Age;
+use crate::control::MoveControl;
+use crate::cow::InteractionResult;
 use crate::fluid::FluidFrame;
 use crate::health::{DamageResult, DamageState};
 use crate::movement::Body;
+use crate::navigation::GroundNavigation;
 use crate::steering::SteeringState;
+use crate::walk_path::WalkProfile;
 use glam::DVec3;
 use minecraftoss_player::World;
 
@@ -33,6 +37,11 @@ pub struct Strider {
     pub saddled: bool,
     pub suffocating: bool,
     pub steering: SteeringState,
+    pub move_control: MoveControl,
+    pub navigation: GroundNavigation,
+    pub speed: f32,
+    pub forward: f32,
+    pub sideways: f32,
 }
 
 impl Strider {
@@ -50,7 +59,99 @@ impl Strider {
             saddled: false,
             suffocating: false,
             steering: SteeringState::default(),
+            move_control: MoveControl::default(),
+            navigation: GroundNavigation::default(),
+            speed: 0.0,
+            forward: 0.0,
+            sideways: 0.0,
         }
+    }
+
+    pub fn walk_profile(&self, in_lava: bool) -> WalkProfile {
+        WalkProfile::strider(self.body.width, self.body.height, in_lava)
+    }
+
+    pub fn navigate_to(
+        &mut self,
+        world: &impl World,
+        fluid: FluidFrame,
+        target: DVec3,
+        speed: f64,
+    ) -> Option<bool> {
+        let profile = self.walk_profile(fluid.in_lava());
+        crate::navigation::navigate_walk_to(
+            &self.body,
+            &mut self.navigation,
+            world,
+            &profile,
+            fluid,
+            target,
+            speed,
+            1,
+        )
+    }
+
+    pub fn navigate_to_entity(
+        &mut self,
+        world: &impl World,
+        fluid: FluidFrame,
+        target: DVec3,
+        speed: f64,
+    ) -> bool {
+        let profile = self.walk_profile(fluid.in_lava());
+        crate::navigation::navigate_walk_to_entity(
+            &self.body,
+            &mut self.navigation,
+            world,
+            &profile,
+            fluid,
+            target,
+            speed,
+            1,
+        )
+    }
+
+    pub fn interact_food(
+        &mut self,
+        inventory: &mut minecraftoss_player::inventory::Inventory,
+        hand: usize,
+        infinite_materials: bool,
+        is_food: impl Fn(&str) -> bool,
+    ) -> (InteractionResult, Vec<crate::animal::AnimalEvent>) {
+        let result = crate::animal::interact(
+            &mut self.age,
+            &mut self.in_love,
+            &mut self.persistence_required,
+            inventory,
+            hand,
+            infinite_materials,
+            is_food,
+            false,
+        );
+        self.sync_dimensions();
+        result
+    }
+
+    pub fn interact_saddle(
+        &mut self,
+        inventory: &mut minecraftoss_player::inventory::Inventory,
+        hand: usize,
+        infinite_materials: bool,
+    ) -> InteractionResult {
+        let held = inventory
+            .slots
+            .get(hand)
+            .and_then(Option::as_ref)
+            .map(|stack| stack.id.as_str());
+        if self.health <= 0.0 || self.age.baby() || self.saddled || held != Some("minecraft:saddle")
+        {
+            return InteractionResult::Pass;
+        }
+        if !infinite_materials {
+            crate::animal::consume_one(inventory, hand);
+        }
+        self.saddled = true;
+        InteractionResult::SuccessPredicted
     }
 
     pub fn dimensions(baby: bool) -> (f32, f32) {

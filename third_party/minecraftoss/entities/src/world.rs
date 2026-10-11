@@ -2285,6 +2285,7 @@ pub struct EntityWorld {
     fireball_blasts: Vec<FireballBlast>,
     blazes: Vec<BlazeEntity>,
     striders: Vec<StriderEntity>,
+    player_controls: Vec<crate::controls::PlayerControls>,
     fireball_fires: Vec<(i32, i32, i32)>,
     /// Where the players look, for endermen.
     player_views: Vec<(u64, crate::enderman::PlayerView)>,
@@ -2392,6 +2393,7 @@ impl Default for EntityWorld {
             fireball_blasts: Vec::new(),
             blazes: Vec::new(),
             striders: Vec::new(),
+            player_controls: Vec::new(),
             fireball_fires: Vec::new(),
             player_views: Vec::new(),
             player_vitals: Vec::new(),
@@ -4264,6 +4266,12 @@ impl EntityWorld {
     pub fn set_recipe_book(&mut self, recipes: Arc<RecipeBook>) {
         self.recipes = Some(recipes);
     }
+    pub fn set_player_controls(&mut self, controls: &[crate::controls::PlayerControls]) {
+        self.player_controls = controls.to_vec();
+    }
+    pub fn player_controls(&self, player: u64) -> Option<&crate::controls::PlayerControls> {
+        self.player_controls.iter().find(|controls| controls.id == player)
+    }
     pub fn spawn_cow(&mut self, cow: Cow, no_ai: bool) -> u64 {
         self.spawn_cow_with_kind(cow, None, no_ai)
     }
@@ -4636,6 +4644,7 @@ impl EntityWorld {
             fireball_blasts: Vec::new(),
             blazes,
             striders,
+            player_controls: self.player_controls.clone(),
             fireball_fires: Vec::new(),
             player_views: self.player_views.clone(),
             player_vitals: self.player_vitals.clone(),

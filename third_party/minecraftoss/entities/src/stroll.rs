@@ -50,8 +50,9 @@ fn toward(position: DVec3, (dx, dy, dz): BlockPos) -> BlockPos {
 
 /// `GoalUtils.isOutsideLimits`, `isNotStable` (`PathNavigation.isStableDestination`:
 /// a solid-render block below).
-fn unstable_or_outside(world: &dyn World, (x, y, z): BlockPos) -> bool {
-    y < world.min_y() || y > world.max_y() || !world.solid_render((x, y - 1, z))
+fn unstable_or_outside(world: &dyn World, profile: &WalkProfile, (x, y, z): BlockPos) -> bool {
+    let stable = world.solid_render((x, y - 1, z)) || profile.can_stand_on_fluid && world.fluid_is_lava((x, y, z));
+    y < world.min_y() || y > world.max_y() || !stable
 }
 
 /// `GoalUtils.hasMalus`.
@@ -86,7 +87,7 @@ fn best_by(mut weight: impl FnMut(BlockPos) -> f64, mut candidate: impl FnMut() 
 fn land_candidate(world: &dyn World, profile: &WalkProfile, position: DVec3, horizontal: u32, vertical: u32, random: &mut LegacyRandom) -> Option<BlockPos> {
     let direction = random_direction(random, horizontal, vertical);
     let pos = toward(position, direction);
-    if unstable_or_outside(world, pos) {
+    if unstable_or_outside(world, profile, pos) {
         return None;
     }
     // `RandomPos.moveUpOutOfSolid`.
@@ -119,7 +120,7 @@ pub fn default_random_position(world: &dyn World, profile: &WalkProfile, positio
     best_of(world, profile, || {
         let direction = random_direction(random, horizontal, vertical);
         let pos = toward(position, direction);
-        (!unstable_or_outside(world, pos) && !has_malus(world, profile, pos)).then_some(pos)
+        (!unstable_or_outside(world, profile, pos) && !has_malus(world, profile, pos)).then_some(pos)
     })
 }
 
@@ -179,7 +180,7 @@ pub fn default_random_position_towards(world: &dyn World, profile: &WalkProfile,
     best_of(world, profile, || {
         let direction = random_direction_within(random, 0.0, f64::from(horizontal), vertical, dir.x, dir.z, f64::from(max_radians))?;
         let pos = toward(position, direction);
-        (!unstable_or_outside(world, pos) && !has_malus(world, profile, pos)).then_some(pos)
+        (!unstable_or_outside(world, profile, pos) && !has_malus(world, profile, pos)).then_some(pos)
     })
 }
 
@@ -190,7 +191,7 @@ pub fn default_random_position_away(world: &dyn World, profile: &WalkProfile, po
     best_of(world, profile, || {
         let direction = random_direction_within(random, 0.0, f64::from(horizontal), vertical, dir.x, dir.z, f64::from(std::f32::consts::FRAC_PI_2))?;
         let pos = toward(position, direction);
-        (!unstable_or_outside(world, pos) && !has_malus(world, profile, pos)).then_some(pos)
+        (!unstable_or_outside(world, profile, pos) && !has_malus(world, profile, pos)).then_some(pos)
     })
 }
 
@@ -215,7 +216,7 @@ fn land_random_position_in_direction(world: &dyn World, profile: &WalkProfile, p
     best_of(world, profile, || {
         let direction = random_direction_within(random, 0.0, f64::from(horizontal), vertical, dir.x, dir.z, f64::from(std::f32::consts::FRAC_PI_2))?;
         let pos = toward(position, direction);
-        if unstable_or_outside(world, pos) {
+        if unstable_or_outside(world, profile, pos) {
             return None;
         }
         let (x, mut y, z) = pos;

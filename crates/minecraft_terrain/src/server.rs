@@ -2338,6 +2338,7 @@ pub struct TickInput {
     pub player_hurts: Vec<(Option<u64>, &'static str)>,
     /// The `spawn_mobs` game rule.
     pub spawn_mobs: bool,
+    pub controls: Vec<minecraftoss_entities::controls::PlayerControls>,
 }
 
 const PLAYER_HEIGHT: f64 = 1.8;
@@ -2782,6 +2783,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     // (`ShowTradesToPlayer`).
                     let held = input.pickup.as_ref().and_then(|(_, inventory, selected)| inventory.slots.get(*selected).and_then(Option::as_ref).map(|s| s.id.clone()));
                     sim.mobs.set_player_main_hand(0, held.as_deref());
+                    sim.mobs.set_player_controls(&input.controls);
                     sim.tick_mobs(&input.mob_players, input.bright_outside);
                     let bodies: Vec<_> = input.mob_players.iter().map(crate::thrown::PlayerBody::of).collect();
                     sim.tick_clouds(&bodies);

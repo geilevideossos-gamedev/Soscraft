@@ -191,6 +191,20 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             }
             age_lock_sound(&mut outcome, animal_lock(&events), position);
         }
+        MobHit::Strider(id) => {
+            let Some(entity) = world.strider_mut(id) else { return outcome };
+            let position = entity.position();
+            let (result, events) = entity.strider.interact_food(actor.inventory, selected, infinite, |item| recipes.item_in_tag(minecraftoss_entities::strider::FOOD_TAG, item));
+            if result != InteractionResult::Pass {
+                let (a, b) = (entity.random.next_float(), entity.random.next_float());
+                outcome.sounds.push(MobSound { event: "entity.strider.eat".to_owned(), position, volume: 1.0, pitch: 1.0 + (a - b) * 0.2, category: "neutral_volume" });
+                age_lock_sound(&mut outcome, animal_lock(&events), position);
+            } else if entity.strider.interact_saddle(actor.inventory, selected, infinite) != InteractionResult::Pass {
+                outcome.sound("entity.strider.saddle", position, 1.0, "neutral_volume");
+            } else {
+                return outcome;
+            }
+        }
         MobHit::Chicken(id) => {
             let Some(entity) = world.chicken_mut(id) else { return outcome };
             let (result, events) = entity.chicken.interact_food(actor.inventory, selected, infinite, |item| recipes.item_in_tag("minecraft:chicken_food", item), false);
@@ -303,7 +317,7 @@ mod tests {
     }
 
     fn holding(item: Option<&str>) -> Inventory {
-        let book = tagged_book(&[("cow_food", &["minecraft:wheat"]), ("sheep_food", &["minecraft:wheat"]), ("pig_food", &["minecraft:carrot"]), ("chicken_food", &["minecraft:wheat_seeds"])]);
+        let book = tagged_book(&[("cow_food", &["minecraft:wheat"]), ("sheep_food", &["minecraft:wheat"]), ("pig_food", &["minecraft:carrot"]), ("chicken_food", &["minecraft:wheat_seeds"]), ("strider_food", &["minecraft:warped_fungus"])]);
         let mut inventory = Inventory::default().with_recipes(book);
         inventory.slots[0] = item.map(|id| ItemStack::new(id, 4));
         inventory
@@ -382,6 +396,88 @@ mod tests {
         assert!(would_interact(&world, MobHit::Sheep(sheep), &holding(Some("minecraft:shears")), 0, false, 0), "shears always take on a sheep");
         assert!(!would_interact(&world, MobHit::Sheep(sheep + 1000), &holding(Some("minecraft:shears")), 0, false, 0));
         assert!(world.pig_mut(pig).is_some_and(|e| !e.pig.saddled), "the predicate leaves the world alone");
+    }
+
+    struct Floor;
+    impl minecraftoss_player::World for Floor {
+        fn block(&self, pos: minecraftoss_player::Pos) -> Option<minecraftoss_player::Block> {
+            (pos.1 < 64).then(|| minecraftoss_player::Block::new("minecraft:netherrack"))
+        }
+        fn set_block(&mut self, _pos: minecraftoss_player::Pos, _block: Option<minecraftoss_player::Block>) {}
+    }
+
+    fn strider(world: &mut EntityWorld, x: f64, baby: bool, saddled: bool) -> u64 {
+        let mut strider = minecraftoss_entities::strider::Strider::new(DVec3::new(x, 64.0, 0.5));
+        if baby {
+            strider.age = baby_age(strider.age);
+        }
+        strider.saddled = saddled;
+        world.spawn_strider(strider, false)
+    }
+
+    fn baby_age(age: Age) -> Age {
+        baby(age)
+    }
+
+    fn use_on(world: &mut EntityWorld, hit: MobHit, item: &str) -> (MobOutcome, Inventory) {
+        let mut inventory = holding(Some(item));
+        let mut actor = Actor { inventory: &mut inventory, selected: 0, infinite: false, entity_loot: None, shearing_loot: None, player: 0 };
+        let outcome = interact(world, hit, &mut actor);
+        (outcome, inventory)
+    }
+
+    #[test]
+    fn two_fed_striders_make_a_baby() {
+        let mut world = EntityWorld::default();
+        let first = strider(&mut world, 0.5, false, false);
+        let second = strider(&mut world, 2.5, false, false);
+        for id in [first, second] {
+            let (outcome, inventory) = use_on(&mut world, MobHit::Strider(id), "minecraft:warped_fungus");
+            assert!(outcome.handled);
+            assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(3));
+            assert_eq!(outcome.sounds.iter().map(|s| s.event.as_str()).collect::<Vec<_>>(), ["entity.strider.eat"]);
+            assert!(world.strider_mut(id).unwrap().strider.in_love > 0);
+        }
+        for _ in 0..200 {
+            world.tick_with_players(&mut Floor, &[]);
+        }
+        let babies = world.striders().iter().filter(|e| e.strider.age.baby()).count();
+        assert_eq!((world.striders().len(), babies), (3, 1));
+        assert!(world.striders().iter().filter(|e| !e.strider.age.baby()).all(|e| e.strider.age.ticks > 0 && e.strider.in_love == 0));
+    }
+
+    #[test]
+    fn a_saddle_goes_on_an_adult_but_not_on_a_baby() {
+        let mut world = EntityWorld::default();
+        let adult = strider(&mut world, 0.5, false, false);
+        let young = strider(&mut world, 4.5, true, false);
+        let (outcome, inventory) = use_on(&mut world, MobHit::Strider(adult), "minecraft:saddle");
+        assert!(outcome.handled && world.strider_mut(adult).unwrap().strider.saddled);
+        assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(3));
+        assert_eq!(outcome.sounds.iter().map(|s| s.event.as_str()).collect::<Vec<_>>(), ["entity.strider.saddle"]);
+        let (outcome, _) = use_on(&mut world, MobHit::Strider(adult), "minecraft:saddle");
+        assert!(!outcome.handled, "one saddle is enough");
+        let (outcome, inventory) = use_on(&mut world, MobHit::Strider(young), "minecraft:saddle");
+        assert!(!outcome.handled && !world.strider_mut(young).unwrap().strider.saddled);
+        assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(4));
+        assert!(would_interact(&world, MobHit::Strider(adult), &holding(Some("minecraft:warped_fungus")), 0, false, 0));
+        assert!(!would_interact(&world, MobHit::Strider(young), &holding(Some("minecraft:saddle")), 0, false, 0));
+        assert!(!would_interact(&world, MobHit::Strider(adult), &holding(Some("minecraft:carrot")), 0, false, 0));
+    }
+
+    #[test]
+    fn warped_fungus_feeds_even_a_saddled_strider() {
+        let mut world = EntityWorld::default();
+        let saddled = strider(&mut world, 0.5, false, true);
+        let (outcome, inventory) = use_on(&mut world, MobHit::Strider(saddled), "minecraft:warped_fungus");
+        assert!(outcome.handled);
+        assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(3));
+        assert!(world.strider_mut(saddled).unwrap().strider.in_love > 0);
+        let young = strider(&mut world, 4.5, true, false);
+        let before = world.strider_mut(young).unwrap().strider.age.ticks;
+        let (outcome, _) = use_on(&mut world, MobHit::Strider(young), "minecraft:warped_fungus");
+        assert!(outcome.handled);
+        assert!(world.strider_mut(young).unwrap().strider.age.ticks > before, "a baby grows");
     }
 
     #[test]

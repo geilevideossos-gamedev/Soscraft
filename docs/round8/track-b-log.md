@@ -75,3 +75,33 @@ After 28e87e7c.
 ```
 IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*8,minecraft:water_bucket,minecraft:diamond_sword,minecraft:netherrack*64
 ```
+
+### 3. Minecraft striders seek lava, follow warped fungus and breed with it
+
+After e9e31c3e.
+
+- **Changed:**
+  - Vendored `entities`: new `strider_ai.rs`, the goal table of `Strider.registerGoals`: panic (1.65), breed (1.0), tempt (1.4, `#strider_tempt_items`), `StriderGoToLavaGoal` (`MoveToBlockGoal(1.0, 8, 2)`: only out of lava, a start delay of 100 to 200 goal ticks, the ring search over 8 blocks and 3 layers for lava with a pathfindable block above, a fresh path every 20 tries, and it keeps on until the strider is in lava or the lava is gone), follow parent (1.0), random stroll (1.0, interval 60, `DefaultRandomPos`, not water-avoiding), look at players (8), random look, look at striders (8). `world/striders.rs` runs them with navigation, move and look controls, plays `entity.strider.happy` (1 in 140 while tempted) and `entity.strider.retreat` (1 in 60 while panicking), keeps the ambient sound quiet in both, and breeds two striders into a baby.
+  - New vendored `controls.rs`: `PlayerControls { id, yaw, pitch, main_hand, offhand, sneaking }`, the per-player held-item channel of track B (b1 adds the armour). `EntityWorld::set_player_controls` and `player_controls`. Striders are tempted through the world's item tags, so only `#strider_tempt_items` counts.
+  - `stroll.rs`: a mob that stands on fluid takes a lava block as a stable destination (`StriderPathNavigation.isStableDestination`).
+  - `strider.rs`: navigation, move control, `walk_profile`, `interact_food` (`Animal.mobInteract` with `#strider_food`) and `interact_saddle` (an adult, alive, unsaddled strider and a saddle in the hand).
+  - `minecraft_terrain`: `mob_actions::interact` has a strider arm: warped fungus feeds (love, a baby's growth, the golden dandelion's age lock) with `entity.strider.eat` (volume 1, pitch `1 + (r1 - r2) * 0.2` from the strider's random), otherwise a saddle goes on with `entity.strider.saddle`. `TickInput.controls`, handed to the entity world before the mobs tick.
+  - `minecraft_survival`: `PlayerView` carries `main_hand`, `offhand` and `sneaking`; `Entities::tick` sends one `PlayerControls` per living player. `render_anim` fills them (the main hand only while a Minecraft item is held, sneaking from crouch or prone).
+  - Also drops a needless `mut` in entry 1's `a_saddle_used_on_a_pig_leaves_the_inventory_and_saddles_it` (a compiler warning).
+- **Tests:** `strider_ai`: `a_strider_on_netherrack_walks_to_lava_within_eight_blocks`, `a_strider_in_lava_never_strolls_onto_land`, `warped_fungus_and_the_stick_tempt_it_at_1_4`. `mob_actions`: `two_fed_striders_make_a_baby`, `a_saddle_goes_on_an_adult_but_not_on_a_baby`, `warped_fungus_feeds_even_a_saddled_strider`. `controls`: `either_hand_counts`.
+- **Decisions:**
+  - `StriderGoToLavaGoal.canContinueToUse` doesn't call `MoveToBlockGoal`'s, so the strider never gives up after 1200 tries; checked with javap and kept that way (the brief said 1200).
+  - Breeding gives no experience orbs, as pig breeding in this repo doesn't either.
+  - The other species' tempt flags in `PlayerCandidate` stay false, as before (a known limitation).
+- **Test steps (Nether, survival):**
+  1. Use a strider egg on netherrack 5 blocks from the lava sea: within about 20 seconds it walks into the lava (**2**).
+  2. Hold warped fungus near a few striders: they come to you (on land slowly), sometimes making a happy sound. Hold the warped fungus on a stick: the same. A carrot on a stick: nothing (**3**).
+  3. Feed two adult striders warped fungus: each eats with its sound and shows hearts, and a baby strider appears between them (**3**).
+  4. Feed the baby: it grows a little (green particles are not drawn yet).
+  5. Use a saddle on an adult: the saddle is used up with the strider saddle sound (the saddle is drawn from entry 4). Try a saddle on the baby: nothing happens and you keep the saddle (**4**).
+  6. Feed a saddled strider: it still eats.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*8,minecraft:warped_fungus*64,minecraft:warped_fungus_on_a_stick,minecraft:carrot_on_a_stick,minecraft:saddle,minecraft:saddle,minecraft:netherrack*64
+```

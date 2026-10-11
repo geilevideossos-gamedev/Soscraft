@@ -1,6 +1,10 @@
 use super::emissions::{MovementSounds, base_tick_fluid, play_movement};
 use super::*;
 use crate::strider::{self, Strider};
+use crate::strider_ai::{
+    GoToLavaState, LookAtState, LookTarget, StriderGoalContext, StriderGoalEffect,
+    registered_strider_goals,
+};
 
 #[derive(Clone)]
 pub struct StriderEntity {
@@ -22,6 +26,23 @@ pub struct StriderEntity {
     pub random: LegacyRandom,
     pub look_control: LookControl,
     pub body_rotation: BodyRotation,
+    pub follow_parent: FollowParentState,
+    pub breed: BreedState,
+    pub panic: PanicState,
+    pub stroll: StrollState,
+    pub tempt: TemptState,
+    pub go_to_lava: GoToLavaState,
+    pub random_look: RandomLookState,
+    pub look_at_player: LookAtState,
+    pub look_at_strider: LookAtState,
+    goals: GoalSelector<StriderGoalContext>,
+}
+
+pub(super) struct StriderSurroundings {
+    pub candidates: Vec<CowCandidate>,
+    pub tempting: Vec<u64>,
+    pub look_players: Vec<LookTarget>,
+    pub look_striders: Vec<LookTarget>,
 }
 
 pub(super) fn strider_sounds(in_lava: bool) -> MovementSounds {
@@ -40,6 +61,142 @@ impl StriderEntity {
 
     pub fn set_random_seed(&mut self, seed: u64) {
         self.random = LegacyRandom::new(seed);
+    }
+
+    pub fn running_goals(&self) -> Vec<&'static str> {
+        self.goals
+            .running_ids()
+            .map(|id| crate::strider_ai::GOAL_NAMES[id])
+            .collect()
+    }
+
+    pub fn tempted(&self) -> bool {
+        self.tempt.running
+    }
+
+    fn candidate(&self) -> CowCandidate {
+        CowCandidate {
+            id: self.id,
+            position: self.strider.body.position,
+            width: self.strider.body.width,
+            height: self.strider.body.height,
+            age: self.strider.age.ticks,
+            alive: self.strider.health > 0.0,
+            in_love: self.strider.in_love,
+            panicking: self.panic.running,
+        }
+    }
+
+    fn tick_goals(
+        &mut self,
+        world: &impl World,
+        players: &[PlayerCandidate],
+        surroundings: StriderSurroundings,
+    ) -> Option<u64> {
+        let full_goal_tick = self.tick_count <= 1 || (self.tick_count + self.id as i32) % 2 == 0;
+        let last_damage_panic = DamageSourceKind::panics(self.last_damage_source)
+            && self.tick_count - self.last_damage_tick <= 40;
+        let in_lava = self.fluid.in_lava();
+        let mut context = StriderGoalContext {
+            child: self.candidate(),
+            candidates: surroundings.candidates,
+            follow_parent: std::mem::take(&mut self.follow_parent),
+            breed: std::mem::take(&mut self.breed),
+            panic: std::mem::take(&mut self.panic),
+            stroll: std::mem::take(&mut self.stroll),
+            tempt: std::mem::take(&mut self.tempt),
+            go_to_lava: std::mem::take(&mut self.go_to_lava),
+            random_look: std::mem::take(&mut self.random_look),
+            look_at_player: std::mem::take(&mut self.look_at_player),
+            look_at_strider: std::mem::take(&mut self.look_at_strider),
+            last_damage_panic,
+            no_action_time: self.no_action_time,
+            navigation_done: self.strider.navigation.is_done(),
+            in_lava,
+            eye_height: self.strider.eye_height(),
+            players: players.to_vec(),
+            tempting: surroundings.tempting,
+            look_players: surroundings.look_players,
+            look_striders: surroundings.look_striders,
+            random: std::mem::take(&mut self.random),
+            fluid: self.fluid,
+            walk: self.strider.walk_profile(in_lava),
+            effects: Vec::new(),
+        };
+        if full_goal_tick {
+            self.goals.tick(&mut context, world);
+        } else {
+            self.goals.tick_running(&mut context, false);
+        }
+        self.follow_parent = context.follow_parent;
+        self.breed = context.breed;
+        self.panic = context.panic;
+        self.stroll = context.stroll;
+        self.tempt = context.tempt;
+        self.go_to_lava = context.go_to_lava;
+        self.random_look = context.random_look;
+        self.look_at_player = context.look_at_player;
+        self.look_at_strider = context.look_at_strider;
+        self.random = context.random;
+        let mut partner = None;
+        for effect in context.effects {
+            let fluid = self.fluid;
+            match effect {
+                StriderGoalEffect::Navigate { target, speed } => {
+                    let _ = self.strider.navigate_to(world, fluid, target, speed);
+                }
+                StriderGoalEffect::NavigateToEntity { target, speed } => {
+                    let _ = self.strider.navigate_to_entity(world, fluid, target, speed);
+                }
+                StriderGoalEffect::LookAt {
+                    target,
+                    y_max,
+                    x_max,
+                } => self
+                    .look_control
+                    .set_look_at_with_limits(target, y_max, x_max),
+                StriderGoalEffect::StopNavigation => self.strider.navigation.stop(),
+                StriderGoalEffect::Breed { partner_id } => partner = Some(partner_id),
+            }
+        }
+        partner
+    }
+
+    fn steer(&mut self, world: &impl World) {
+        let strider = &mut self.strider;
+        let position = strider.body.position;
+        let (can_update, surface) =
+            crate::navigation::ground_view(world, &strider.body, self.fluid, false);
+        if let Some((target, speed)) = strider.navigation.tick_in(
+            world,
+            position,
+            can_update,
+            surface,
+            strider.body.width,
+            strider.speed,
+        ) {
+            strider.move_control.set_wanted_position(target, speed);
+        }
+        let obstacle_top = crate::control::obstacle_top(world, position);
+        let movement_speed = self.effects.movement_speed(strider.movement_speed());
+        let control = strider.move_control.tick(
+            position,
+            strider.body.on_ground,
+            strider.yaw,
+            strider.speed,
+            strider.forward,
+            strider.sideways,
+            movement_speed,
+            strider.body.width,
+            strider.body.step_height,
+            obstacle_top,
+            |_, _| true,
+        );
+        strider.yaw = control.yaw;
+        strider.speed = control.speed;
+        strider.forward = control.forward;
+        strider.sideways = control.sideways;
+        self.jumping = control.jump;
     }
 
     pub fn hurt(&mut self, amount: f32, source: DamageSourceKind) -> DamageResult {
@@ -99,10 +256,21 @@ impl StriderEntity {
         players: &[PlayerCandidate],
         game_time: i64,
         carried_warm: bool,
-    ) -> bool {
+        surroundings: StriderSurroundings,
+    ) -> (bool, Option<u64>) {
         self.previous_position = self.strider.body.position;
         self.previous_yaw = self.strider.yaw;
         self.tick_count += 1;
+        let at = self.position();
+        if self.tempt.running && self.random.next_int(140) == 0 {
+            let pitch = voice_pitch(&mut self.random, self.strider.age.baby());
+            self.voices
+                .push((Voice::Event("entity.strider.happy", 1.0, pitch), at));
+        } else if self.panic.running && self.random.next_int(60) == 0 {
+            let pitch = voice_pitch(&mut self.random, self.strider.age.baby());
+            self.voices
+                .push((Voice::Event("entity.strider.retreat", 1.0, pitch), at));
+        }
         if !self.no_ai {
             let fluid = FluidFrame::sample(
                 world,
@@ -144,14 +312,17 @@ impl StriderEntity {
         if self.strider.health > 0.0 {
             if (self.random.next_int(1000) as i32) < self.ambient_sound_time {
                 self.ambient_sound_time = -120;
-                let voice = Voice::Ambient(voice_pitch(&mut self.random, self.strider.age.baby()));
-                self.voices.push((voice, self.position()));
+                if !self.panic.running && !self.tempt.running {
+                    let voice =
+                        Voice::Ambient(voice_pitch(&mut self.random, self.strider.age.baby()));
+                    self.voices.push((voice, self.position()));
+                }
             } else {
                 self.ambient_sound_time += 1;
             }
         }
         if removed {
-            return false;
+            return (false, None);
         }
         if self.strider.health <= 0.0 {
             if !self.no_ai {
@@ -169,8 +340,9 @@ impl StriderEntity {
             }
             let old = self.previous_position;
             hazards::blocks_act(self, world, old, game_time);
-            return true;
+            return (true, None);
         }
+        let mut partner = None;
         if self.no_ai {
             self.strider.body.trim_small_velocity();
         } else {
@@ -183,6 +355,8 @@ impl StriderEntity {
                 self.no_action_time = 0;
             }
             self.no_action_time += 1;
+            partner = self.tick_goals(world, players, surroundings);
+            self.steer(world);
             if self.no_jump_delay > 0 {
                 self.no_jump_delay -= 1;
             }
@@ -195,8 +369,20 @@ impl StriderEntity {
                 &mut self.no_jump_delay,
                 jump_threshold,
             );
-            let speed = self.effects.movement_speed(self.strider.movement_speed()) as f32;
-            let landed = self.travel(world, DVec3::ZERO, speed);
+            let eye_height = self.strider.eye_height();
+            self.look_control.tick(
+                self.strider.body.position,
+                eye_height,
+                self.body_rotation.body_yaw,
+                !self.strider.navigation.is_done(),
+            );
+            let input = DVec3::new(
+                f64::from(self.strider.sideways),
+                0.0,
+                f64::from(self.strider.forward),
+            );
+            let speed = self.strider.speed;
+            let landed = self.travel(world, input, speed);
             let in_lava = FluidFrame::sample(
                 world,
                 self.strider.body.position,
@@ -219,6 +405,12 @@ impl StriderEntity {
                     fall_damage(&self.strider.body, world, fallen, false, &mut self.voices)
                 })
             };
+            self.body_rotation.tick(
+                self.strider.yaw,
+                &mut self.look_control,
+                self.previous_position,
+                self.strider.body.position,
+            );
             if let Some(damage) = fall {
                 self.hurt(damage, DamageSourceKind::Generic);
             }
@@ -232,7 +424,7 @@ impl StriderEntity {
         }
         let old = self.previous_position;
         hazards::blocks_act(self, world, old, game_time);
-        true
+        (true, partner)
     }
 
     pub(super) fn tick_age(&mut self) {
@@ -295,6 +487,16 @@ impl EntityWorld {
             random: LegacyRandom::new(0),
             look_control: LookControl::new(previous_yaw),
             body_rotation: BodyRotation::new(previous_yaw),
+            follow_parent: FollowParentState::default(),
+            breed: BreedState::default(),
+            panic: PanicState::default(),
+            stroll: StrollState::default(),
+            tempt: TemptState::default(),
+            go_to_lava: GoToLavaState::default(),
+            random_look: RandomLookState::default(),
+            look_at_player: LookAtState::default(),
+            look_at_strider: LookAtState::default(),
+            goals: registered_strider_goals(),
         });
         self.order.push(EntityKey::Strider(id));
         self.file_in_section(EntityKey::Strider(id));
@@ -317,13 +519,18 @@ impl EntityWorld {
         ticks: &dyn Fn(DVec3) -> bool,
     ) {
         let game_time = self.game_time;
+        let surroundings = self.strider_surroundings(players);
         let Some(entity) = self.striders.iter_mut().find(|e| e.id == id) else {
             return;
         };
-        if !entity.tick_body(world, players, game_time, false) {
+        let (stepped, partner) = entity.tick_body(world, players, game_time, false, surroundings);
+        if !stepped {
             return;
         }
         self.push_entities(EntityKey::Strider(id), world, game_time, ticks);
+        if let Some(partner) = partner {
+            self.breed_striders(id, partner);
+        }
         let Some(entity) = self.striders.iter_mut().find(|e| e.id == id) else {
             return;
         };
@@ -331,5 +538,59 @@ impl EntityWorld {
             entity.tick_age();
         }
         entity.float(world);
+    }
+
+    fn strider_surroundings(&self, players: &[PlayerCandidate]) -> StriderSurroundings {
+        let tempting = match &self.recipes {
+            Some(recipes) => self
+                .player_controls
+                .iter()
+                .filter(|controls| {
+                    controls.holds(|item| recipes.item_in_tag(strider::TEMPT_TAG, item))
+                })
+                .map(|controls| controls.id)
+                .collect(),
+            None => Vec::new(),
+        };
+        let look_players = players
+            .iter()
+            .filter(|p| p.alive && !p.spectator)
+            .map(|p| LookTarget {
+                id: PLAYER_TARGET + p.id,
+                eye: p.position + DVec3::new(0.0, f64::from(p.eye_height), 0.0),
+            })
+            .collect();
+        let look_striders = self
+            .striders
+            .iter()
+            .filter(|e| e.strider.health > 0.0)
+            .map(|e| LookTarget {
+                id: e.id,
+                eye: e.position() + DVec3::new(0.0, f64::from(e.strider.eye_height()), 0.0),
+            })
+            .collect();
+        StriderSurroundings {
+            candidates: self.striders.iter().map(StriderEntity::candidate).collect(),
+            tempting,
+            look_players,
+            look_striders,
+        }
+    }
+
+    fn breed_striders(&mut self, id: u64, partner: u64) {
+        let Some(index) = self.striders.iter().position(|e| e.id == id) else {
+            return;
+        };
+        let Some(partner_index) = self.striders.iter().position(|e| e.id == partner) else {
+            return;
+        };
+        let position = self.striders[index].position();
+        for i in [index, partner_index] {
+            self.striders[i].strider.age.set(6000);
+            self.striders[i].strider.in_love = 0;
+        }
+        let mut offspring = Strider::new(position);
+        offspring.age.set(Age::BABY_START);
+        self.spawn_strider(offspring, false);
     }
 }
