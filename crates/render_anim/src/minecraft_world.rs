@@ -1815,7 +1815,8 @@ fn update(
             }
         }
         let armor = minecraft_survival::survival::armor(inventory);
-        for (amount, from, toward, cause) in hits.into_iter().filter(|_| !player_mode.invulnerable()) {
+        let knockback_resistance = inventory.armor_toughness().1;
+        for (amount, from, toward, cause, push) in hits.into_iter().filter(|_| !player_mode.invulnerable()) {
             let blocked = hand.blocking.filter(|blocking| blocking.raised()).map_or(0.0, |_| minecraft_survival::offhand::blocked_damage(mc_yaw, toward, amount));
             if let Some(blocking) = hand.blocking.filter(|_| blocked > 0.0) {
                 if inventory.wear_tool(blocking.slot, minecraft_survival::offhand::shield_wear(blocked)) {
@@ -1831,10 +1832,14 @@ fn update(
                     sounds.play(&world.packs, minecraft_survival::offhand::BLOCK_SOUND, None, 1.0, pitch);
                 }
             }
-            if amount > blocked {
-                survival.hurt(amount - blocked, armor, from, cause);
+            let hurt = if amount > blocked {
+                survival.hurt(amount - blocked, armor, from, cause)
             } else {
                 survival.hurt_blocked(cause);
+                false
+            };
+            if let Some(push) = push.landing(hurt, blocked > 0.0, knockback_resistance) {
+                entities.player_pushes.push(push);
             }
         }
         for (slot, held) in std::mem::take(&mut entities.boosts_done) {

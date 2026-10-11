@@ -344,6 +344,7 @@ impl EntityWorld {
         self.credit(id, hit, "minecraft:player", true);
         if hit.applied {
             self.villager_hurt_by(id, PLAYER_TARGET + player);
+            self.note_hoglin_hurt(id, crate::monster_ai::Target::Player(player));
         }
         if hit.applied && hit.full {
             if let Some((body, _)) = self.mob_body(id) {

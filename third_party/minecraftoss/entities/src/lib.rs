@@ -28,6 +28,7 @@ pub mod goals;
 pub mod gossip;
 pub mod health;
 pub mod hoglin;
+pub mod hoglin_brain;
 pub mod horse;
 pub mod inside_blocks;
 pub mod villager_brain;

@@ -37,7 +37,7 @@ const PLAYER: u64 = 0;
 /// `Player.getEyeHeight` standing.
 const EYE_HEIGHT: f32 = 1.62;
 const SERVER_ITEM: u32 = 1 << 31;
-type Hits = Vec<(f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause)>;
+type Hits = Vec<(f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause, crate::impulse::MeleePush)>;
 type Changes = Vec<((i32, i32, i32), Option<Block>)>;
 type Picked = (i32, [f64; 3], String, i32, Option<String>);
 
@@ -1143,7 +1143,7 @@ impl Entities {
                 let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. }) || hit.source.is_some();
                 let damage = difficulty_scaled(hit.damage, self.difficulty, scales);
                 if damage > 0.0 {
-                    hits.push((damage, from, Some(toward), cause));
+                    hits.push((damage, from, Some(toward), cause, melee_push(&hit.kind)));
                 }
             }
         }
@@ -1451,9 +1451,16 @@ fn apply_mob_result(inventory: &mut Inventory, result: &minecraft_terrain::serve
     }
 }
 
-fn struck_hit(feet: [f64; 3],struck: &minecraft_terrain::thrown::PlayerStruck) -> (f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause) {
+fn struck_hit(feet: [f64; 3],struck: &minecraft_terrain::thrown::PlayerStruck) -> (f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause, crate::impulse::MeleePush) {
     let from = DVec3::from_array(feet) - struck.velocity.normalize_or_zero();
-    (struck.damage, Some(from.to_array()), Some([-struck.velocity.x, -struck.velocity.z]), crate::death::DamageCause::Generic)
+    (struck.damage, Some(from.to_array()), Some([-struck.velocity.x, -struck.velocity.z]), crate::death::DamageCause::Generic, Default::default())
+}
+
+fn melee_push(kind: &PlayerHitKind) -> crate::impulse::MeleePush {
+    match *kind {
+        PlayerHitKind::Melee { throw, lift, .. } => crate::impulse::MeleePush { throw, lift: f64::from(lift) },
+        _ => Default::default(),
+    }
 }
 
 fn difficulty_scaled(damage: f32, difficulty: i32, scales: bool) -> f32 {
@@ -1749,6 +1756,17 @@ mod tests {
     }
 
     #[test]
+    fn a_hoglin_throw_reaches_the_player_hit_list() {
+        let throw = DVec3::new(0.1, 0.4, -0.2);
+        let melee = PlayerHitKind::Melee { attacker: DVec3::ZERO, hunger_ticks: 0, lift: 0.0, throw };
+        assert_eq!(melee_push(&melee), crate::impulse::MeleePush { throw, lift: 0.0 });
+        let golem = PlayerHitKind::Melee { attacker: DVec3::ZERO, hunger_ticks: 0, lift: 0.4, throw: DVec3::ZERO };
+        assert_eq!(melee_push(&golem).lift, f64::from(0.4_f32));
+        let arrow = PlayerHitKind::Arrow { velocity: DVec3::X, effect: None };
+        assert_eq!(melee_push(&arrow), crate::impulse::MeleePush::default());
+    }
+
+    #[test]
     fn a_strider_hit_box_encodes_and_decodes() {
         let key = encode(MobHit::Strider(77));
         assert_eq!(key >> 56, 23);
@@ -1784,7 +1802,7 @@ mod tests {
             kind: minecraft_terrain::trident::DAMAGE_TYPE,
             velocity: DVec3::new(2.0, 0.0, 0.0),
         };
-        let (damage, from, toward, cause) = struck_hit([10.0, 64.0, 5.0], &struck);
+        let (damage, from, toward, cause, _) = struck_hit([10.0, 64.0, 5.0], &struck);
         assert_eq!(damage, 8.0);
         assert_eq!(from, Some([9.0, 64.0, 5.0]));
         assert_eq!(toward, Some([-2.0, -0.0]));

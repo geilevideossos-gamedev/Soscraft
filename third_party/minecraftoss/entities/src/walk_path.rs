@@ -54,6 +54,9 @@ pub enum WalkTarget {
     Strider {
         in_lava: bool,
     },
+    Hoglin {
+        repellent: Option<(i32, i32, i32)>,
+    },
 }
 
 impl WalkProfile {

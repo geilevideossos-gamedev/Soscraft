@@ -28,6 +28,18 @@ fn walk_target_value(world: &dyn World, profile: &WalkProfile, (x, y, z): BlockP
                 0.0
             }
         }
+        WalkTarget::Hoglin { repellent } => {
+            if repellent.is_some_and(|(rx, ry, rz)| {
+                let (dx, dy, dz) = (f64::from(x - rx), f64::from(y - ry), f64::from(z - rz));
+                dx * dx + dy * dy + dz * dz < 64.0
+            }) {
+                -1.0
+            } else if world.block((x, y - 1, z)).is_some_and(|b| b.id == "minecraft:crimson_nylium") {
+                10.0
+            } else {
+                0.0
+            }
+        }
     }
 }
 

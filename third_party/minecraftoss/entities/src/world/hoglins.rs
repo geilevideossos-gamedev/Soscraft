@@ -1,6 +1,8 @@
 use super::emissions::{MovementSounds, base_tick_fluid, play_movement};
 use super::*;
 use crate::hoglin::{self, Hoglin, HoglinKind};
+use crate::hoglin_brain::{self, Ctx, HoglinBrain, Living};
+use crate::monster_ai::Target;
 
 #[derive(Clone)]
 pub struct HoglinEntity {
@@ -19,6 +21,13 @@ pub struct HoglinEntity {
     pub no_jump_delay: i32,
     pub look_control: LookControl,
     pub body_rotation: BodyRotation,
+    pub brain: HoglinBrain,
+    pub navigation: GroundNavigation,
+    pub move_control: MoveControl,
+    pub speed: f32,
+    pub forward: f32,
+    pub sideways: f32,
+    pub hurt_by: Vec<Target>,
 }
 
 pub(super) fn hoglin_sounds(kind: HoglinKind) -> MovementSounds {
@@ -27,6 +36,14 @@ pub(super) fn hoglin_sounds(kind: HoglinKind) -> MovementSounds {
         HoglinKind::Zoglin => MovementSounds::monster(Some("entity.zoglin.step")),
     }
     .with_step_volume(hoglin::STEP_VOLUME)
+}
+
+fn attacker_of(owner: u64) -> Target {
+    if owner >= PLAYER_TARGET {
+        Target::Player(owner - PLAYER_TARGET)
+    } else {
+        Target::Mob(owner)
+    }
 }
 
 impl HoglinEntity {
@@ -60,18 +77,123 @@ impl HoglinEntity {
         self.hoglin.kind == HoglinKind::Zoglin
     }
 
+    fn thinks(&self) -> bool {
+        self.hoglin.kind == HoglinKind::Hoglin
+    }
+
+    pub fn walk_profile(&self) -> WalkProfile {
+        let mut profile = WalkProfile::animal(self.hoglin.body.width, self.hoglin.body.height);
+        profile.can_float = false;
+        profile
+    }
+
+    fn make_sound(&mut self, event: &'static str) {
+        let pitch = voice_pitch(&mut self.random, self.hoglin.is_baby());
+        self.voices.push((Voice::Event(event, 1.0, pitch), self.position()));
+    }
+
+    fn ambient_voice(&mut self) -> Voice {
+        let pitch = voice_pitch(&mut self.random, self.hoglin.is_baby());
+        if self.thinks() {
+            let event = self
+                .brain
+                .activity_sound(self.position(), self.hoglin.converting);
+            Voice::Event(event, 1.0, pitch)
+        } else {
+            Voice::Ambient(pitch)
+        }
+    }
+
+    fn think(&mut self, world: &impl World, others: &[Living], game_time: i64) -> Option<Target> {
+        let profile = self.walk_profile();
+        let mut ctx = Ctx {
+            id: self.id,
+            kind: self.hoglin.kind.type_id(),
+            body: &self.hoglin.body,
+            eye_height: self.hoglin.eye_height(),
+            baby: self.hoglin.is_baby(),
+            others,
+            world,
+            time: game_time,
+            random: &mut self.random,
+            navigation: &mut self.navigation,
+            profile: &profile,
+            fluid: self.fluid,
+            look_at: None,
+            attack: None,
+            sounds: Vec::new(),
+        };
+        self.brain.tick(&mut ctx);
+        let converting = self.hoglin.converting;
+        self.brain.update_activity(&mut ctx, converting);
+        let (look_at, attack, sounds) = (ctx.look_at, ctx.attack, ctx.sounds);
+        if let Some(at) = look_at {
+            self.look_control.set_look_at(at);
+        }
+        for sound in sounds {
+            self.make_sound(sound);
+        }
+        if attack.is_some() {
+            self.hoglin.attack_animation = hoglin::ATTACK_ANIMATION_DURATION;
+            let event = match self.hoglin.kind {
+                HoglinKind::Hoglin => "entity.hoglin.attack",
+                HoglinKind::Zoglin => "entity.zoglin.attack",
+            };
+            self.make_sound(event);
+        }
+        attack
+    }
+
+    fn steer(&mut self, world: &impl World) {
+        let position = self.hoglin.body.position;
+        let (can_update, surface) =
+            crate::navigation::ground_view(world, &self.hoglin.body, self.fluid, false);
+        if let Some((target, speed)) = self.navigation.tick_in(
+            world,
+            position,
+            can_update,
+            surface,
+            self.hoglin.body.width,
+            self.speed,
+        ) {
+            self.move_control.set_wanted_position(target, speed);
+        }
+        let obstacle_top = crate::control::obstacle_top(world, position);
+        let movement_speed = self.effects.movement_speed(hoglin::MOVEMENT_SPEED);
+        let control = self.move_control.tick(
+            position,
+            self.hoglin.body.on_ground,
+            self.hoglin.yaw,
+            self.speed,
+            self.forward,
+            self.sideways,
+            movement_speed,
+            self.hoglin.body.width,
+            self.hoglin.body.step_height,
+            obstacle_top,
+            |_, _| true,
+        );
+        self.hoglin.yaw = control.yaw;
+        self.speed = control.speed;
+        self.forward = control.forward;
+        self.sideways = control.sideways;
+        self.jumping = control.jump;
+    }
+
     fn travel(&mut self, world: &impl World) -> Option<f64> {
+        let input = DVec3::new(f64::from(self.sideways), 0.0, f64::from(self.forward));
+        let speed = self.speed;
         let body = &mut self.hoglin.body;
         let yaw = self.hoglin.yaw;
         let fluid = self.fluid;
         if fluid.in_water() {
-            body.travel_water(world, DVec3::ZERO, yaw);
+            body.travel_water(world, input, yaw);
             None
         } else if fluid.in_lava() {
-            body.travel_lava(world, DVec3::ZERO, yaw, fluid.lava_height);
+            body.travel_lava(world, input, yaw, fluid.lava_height);
             None
         } else {
-            body.travel_air_jumping(world, DVec3::ZERO, 0.0, yaw, self.jumping)
+            body.travel_air_jumping(world, input, speed, yaw, self.jumping)
         }
     }
 
@@ -79,8 +201,9 @@ impl HoglinEntity {
         &mut self,
         world: &impl World,
         players: &[PlayerCandidate],
+        others: &[Living],
         game_time: i64,
-    ) -> bool {
+    ) -> (bool, Option<Target>) {
         self.previous_position = self.hoglin.body.position;
         self.tick_count += 1;
         let sounds = hoglin_sounds(self.hoglin.kind);
@@ -115,14 +238,14 @@ impl HoglinEntity {
         if self.hoglin.health > 0.0 {
             if (self.random.next_int(1000) as i32) < self.ambient_sound_time {
                 self.ambient_sound_time = -hoglin::AMBIENT_INTERVAL;
-                let voice = Voice::Ambient(voice_pitch(&mut self.random, self.hoglin.is_baby()));
+                let voice = self.ambient_voice();
                 self.voices.push((voice, self.position()));
             } else {
                 self.ambient_sound_time += 1;
             }
         }
         if removed {
-            return false;
+            return (false, None);
         }
         let old = self.previous_position;
         if self.hoglin.health <= 0.0 {
@@ -141,10 +264,11 @@ impl HoglinEntity {
                 );
             }
             hazards::blocks_act(self, world, old, game_time);
-            return true;
+            return (true, None);
         }
         self.hoglin.tick_attack_animation();
         let position = self.hoglin.body.position;
+        let mut attack = None;
         if self.no_ai {
             self.hoglin.body.trim_small_velocity();
             if self.hostile() {
@@ -164,6 +288,10 @@ impl HoglinEntity {
                 self.no_action_time = 0;
             }
             self.no_action_time += 1;
+            if self.thinks() {
+                attack = self.think(world, others, game_time);
+                self.steer(world);
+            }
             if self.no_jump_delay > 0 {
                 self.no_jump_delay -= 1;
             }
@@ -175,7 +303,7 @@ impl HoglinEntity {
                 self.hoglin.body.position,
                 eye,
                 self.body_rotation.body_yaw,
-                false,
+                !self.navigation.is_done(),
             );
             let landed = self.travel(world);
             play_movement(
@@ -199,7 +327,7 @@ impl HoglinEntity {
             }
         }
         hazards::blocks_act(self, world, old, game_time);
-        true
+        (true, attack)
     }
 
     pub(super) fn tick_age(&mut self) {
@@ -250,6 +378,13 @@ impl EntityWorld {
             no_jump_delay: 0,
             look_control: LookControl::new(yaw),
             body_rotation: BodyRotation::new(yaw),
+            brain: HoglinBrain::default(),
+            navigation: GroundNavigation::default(),
+            move_control: MoveControl::default(),
+            speed: 0.0,
+            forward: 0.0,
+            sideways: 0.0,
+            hurt_by: Vec::new(),
         });
         self.order.push(EntityKey::Hoglin(id));
         self.file_in_section(EntityKey::Hoglin(id));
@@ -264,6 +399,213 @@ impl EntityWorld {
         self.hoglins.iter_mut().find(|entity| entity.id == id)
     }
 
+    pub fn note_hoglin_hurt(&mut self, id: u64, attacker: Target) {
+        if let Some(entity) = self.hoglins.iter_mut().find(|e| e.id == id) {
+            entity.hurt_by.push(attacker);
+        }
+    }
+
+    pub(super) fn note_hoglin_hurt_by_owner(&mut self, id: u64, owner: u64) {
+        self.note_hoglin_hurt(id, attacker_of(owner));
+    }
+
+    fn hoglin_living(&self, id: u64, players: &[PlayerCandidate]) -> Vec<Living> {
+        let mut out: Vec<Living> = players
+            .iter()
+            .map(|p| Living {
+                target: Target::Player(p.id),
+                kind: "minecraft:player",
+                position: p.position,
+                eye_height: p.eye_height,
+                width: 0.6,
+                height: 1.8,
+                alive: p.alive,
+                baby: false,
+                attackable: p.attackable,
+                spectator: p.spectator,
+            })
+            .collect();
+        out.extend(
+            self.mob_candidates()
+                .into_iter()
+                .filter(|m| m.id != id)
+                .map(|m| Living {
+                    target: Target::Mob(m.id),
+                    kind: m.kind,
+                    position: m.position,
+                    eye_height: m.eye_height,
+                    width: m.width,
+                    height: m.height,
+                    alive: m.alive,
+                    baby: m.baby,
+                    attackable: true,
+                    spectator: false,
+                }),
+        );
+        out.extend(self.villagers.iter().map(|e| Living {
+            target: Target::Mob(e.id),
+            kind: "minecraft:villager",
+            position: e.villager.body.position,
+            eye_height: e.villager.eye_height(),
+            width: e.villager.body.width,
+            height: e.villager.body.height,
+            alive: e.villager.health > 0.0,
+            baby: e.villager.age.baby(),
+            attackable: true,
+            spectator: false,
+        }));
+        out
+    }
+
+    fn hoglin_was_hurt_by(
+        &mut self,
+        id: u64,
+        attacker: Target,
+        others: &[Living],
+        world: &dyn World,
+    ) {
+        let Some(entity) = self.hoglins.iter_mut().find(|e| e.id == id) else {
+            return;
+        };
+        if entity.hoglin.kind != HoglinKind::Hoglin || entity.hoglin.health <= 0.0 {
+            return;
+        }
+        let position = entity.position();
+        entity.brain.memories.pacified.erase();
+        entity.brain.memories.breed_target.erase();
+        if entity.hoglin.is_baby() {
+            entity
+                .brain
+                .retreat_from_nearest(position, others, attacker, &mut entity.random);
+            return;
+        }
+        let Some(living) = hoglin_brain::find(others, attacker).copied() else {
+            return;
+        };
+        if entity.brain.activity == hoglin_brain::Activity::Avoid && living.kind == "minecraft:piglin"
+        {
+            return;
+        }
+        let eye = position + DVec3::Y * f64::from(entity.hoglin.eye_height());
+        let current = entity.brain.memories.attack_target.get() == Some(&attacker);
+        let attackable = if current {
+            living.alive
+                && living.attackable
+                && !living.spectator
+                && position.distance_squared(living.position)
+                    <= hoglin_brain::FOLLOW_RANGE * hoglin_brain::FOLLOW_RANGE
+        } else {
+            hoglin_brain::targetable(world, eye, position, &living, true)
+        };
+        if !attackable || living.kind == "minecraft:hoglin" {
+            return;
+        }
+        if entity.brain.much_further(position, others, attacker) {
+            return;
+        }
+        entity.brain.set_attack_target(attacker);
+        self.broadcast_hoglin_attack(id, attacker, others);
+    }
+
+    fn broadcast_hoglin_attack(&mut self, id: u64, target: Target, others: &[Living]) {
+        let Some(entity) = self.hoglins.iter().find(|e| e.id == id) else {
+            return;
+        };
+        for other in entity.brain.memories.visible_adult_hoglins() {
+            let Target::Mob(other) = other else { continue };
+            if let Some(e) = self.hoglins.iter_mut().find(|e| e.id == other) {
+                let position = e.position();
+                e.brain.set_attack_target_if_closer(position, others, target);
+            }
+        }
+    }
+
+    fn broadcast_hoglin_retreat(&mut self, id: u64, target: Target, others: &[Living]) {
+        let Some(entity) = self.hoglins.iter().find(|e| e.id == id) else {
+            return;
+        };
+        for other in entity.brain.memories.visible_adult_hoglins() {
+            let Target::Mob(other) = other else { continue };
+            if let Some(e) = self.hoglins.iter_mut().find(|e| e.id == other) {
+                let position = e.position();
+                e.brain
+                    .retreat_from_nearest(position, others, target, &mut e.random);
+            }
+        }
+    }
+
+    fn knockback_resistance(&self, id: u64) -> f64 {
+        if self.iron_golems.iter().any(|e| e.id == id) {
+            1.0
+        } else if self.hoglins.iter().any(|e| e.id == id) {
+            hoglin::KNOCKBACK_RESISTANCE
+        } else {
+            0.0
+        }
+    }
+
+    fn hoglin_hits(&mut self, id: u64, target: Target, others: &[Living]) {
+        let Some(entity) = self.hoglins.iter_mut().find(|e| e.id == id) else {
+            return;
+        };
+        let (position, baby) = (entity.position(), entity.hoglin.is_baby());
+        if entity.thinks() && !baby {
+            let piglin =
+                hoglin_brain::find(others, target).is_some_and(|l| l.kind == "minecraft:piglin");
+            if piglin && entity.brain.memories.piglins_outnumber_hoglins(false) {
+                entity.brain.set_avoid_target(target, &mut entity.random);
+                self.broadcast_hoglin_retreat(id, target, others);
+            } else {
+                self.broadcast_hoglin_attack(id, target, others);
+            }
+        }
+        let Some(entity) = self.hoglins.iter_mut().find(|e| e.id == id) else {
+            return;
+        };
+        let damage = hoglin::damage_roll(entity.hoglin.attack_damage(), baby, &mut entity.random);
+        match target {
+            Target::Player(player_id) => {
+                let Some(at) = hoglin_brain::find(others, target).map(|l| l.position) else {
+                    return;
+                };
+                let throw = if baby {
+                    DVec3::ZERO
+                } else {
+                    hoglin::throw_push(position, at, 0.0, &mut entity.random)
+                };
+                self.player_hits.push(PlayerHit {
+                    player_id,
+                    damage,
+                    kind: PlayerHitKind::Melee {
+                        attacker: position,
+                        hunger_ticks: 0,
+                        lift: 0.0,
+                        throw,
+                    },
+                    source: Some(id),
+                });
+            }
+            Target::Mob(victim) | Target::Villager(victim) => {
+                let hit = self.mob_hits_mob(id, victim, damage, position, 0.0);
+                if baby || !hit.is_some_and(|hit| hit.applied) {
+                    return;
+                }
+                let resistance = self.knockback_resistance(victim);
+                let Some(at) = self.body_mut(victim).map(|body| body.position) else {
+                    return;
+                };
+                let Some(entity) = self.hoglins.iter_mut().find(|e| e.id == id) else {
+                    return;
+                };
+                let push = hoglin::throw_push(position, at, resistance, &mut entity.random);
+                if let Some(body) = self.body_mut(victim) {
+                    body.velocity += push;
+                    body.needs_sync = true;
+                }
+            }
+        }
+    }
+
     pub(super) fn tick_hoglin(
         &mut self,
         id: u64,
@@ -272,11 +614,23 @@ impl EntityWorld {
         ticks: &dyn Fn(DVec3) -> bool,
     ) {
         let game_time = self.game_time;
+        let others = self.hoglin_living(id, players);
+        let hurts = match self.hoglins.iter_mut().find(|e| e.id == id) {
+            Some(entity) => std::mem::take(&mut entity.hurt_by),
+            None => return,
+        };
+        for attacker in hurts {
+            self.hoglin_was_hurt_by(id, attacker, &others, world);
+        }
         let Some(entity) = self.hoglins.iter_mut().find(|e| e.id == id) else {
             return;
         };
-        if !entity.tick_body(world, players, game_time) {
+        let (stepped, attack) = entity.tick_body(world, players, &others, game_time);
+        if !stepped {
             return;
+        }
+        if let Some(target) = attack {
+            self.hoglin_hits(id, target, &others);
         }
         self.push_entities(EntityKey::Hoglin(id), world, game_time, ticks);
         let Some(entity) = self.hoglins.iter_mut().find(|e| e.id == id) else {
@@ -313,9 +667,13 @@ mod tests {
     }
 
     fn floor() -> Blocks {
+        wide_floor(8)
+    }
+
+    fn wide_floor(radius: i32) -> Blocks {
         let mut world = Blocks::default();
-        for x in -8..=8 {
-            for z in -8..=8 {
+        for x in -radius..=radius {
+            for z in -radius..=radius {
                 world
                     .blocks
                     .insert((x, 63, z), Block::new("minecraft:netherrack"));
@@ -509,5 +867,224 @@ mod tests {
         assert!(hurt(&mut entities, hoglin) || hurt(&mut entities, zoglin));
         assert!(crate::monster_ai::is_enemy("minecraft:hoglin"));
         assert!(crate::monster_ai::is_enemy("minecraft:zoglin"));
+    }
+
+    fn player(id: u64, position: DVec3) -> PlayerCandidate {
+        PlayerCandidate {
+            id,
+            position,
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        }
+    }
+
+    fn seeded(world: &mut EntityWorld, kind: HoglinKind, baby: bool, at: DVec3, seed: u64) -> u64 {
+        let mut hoglin = Hoglin::new(kind, at);
+        hoglin.set_baby(baby);
+        let id = world.spawn_hoglin(hoglin, false);
+        world.hoglin_mut(id).unwrap().set_random_seed(seed);
+        id
+    }
+
+    fn slowed(world: &mut EntityWorld, id: u64) {
+        let slowness = crate::effects::EffectInstance::new(MobEffect::Slowness, 10_000, 9);
+        world.hoglin_mut(id).unwrap().effects.add(slowness);
+    }
+
+    fn hit_ticks(baby: bool) -> Vec<(i32, PlayerHit)> {
+        let mut blocks = wide_floor(12);
+        let mut world = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let hoglin = seeded(&mut world, HoglinKind::Hoglin, baby, at, 3);
+        let players = [player(1, DVec3::new(0.5, 64.0, 2.3))];
+        let mut hits = Vec::new();
+        for tick in 0..400 {
+            world.tick_with_players(&mut blocks, &players);
+            for hit in world.take_player_hits() {
+                assert_eq!(hit.source, Some(hoglin));
+                hits.push((tick, hit));
+            }
+        }
+        hits
+    }
+
+    fn gaps(hits: &[(i32, PlayerHit)]) -> Vec<i32> {
+        hits.windows(2).map(|w| w[1].0 - w[0].0).collect()
+    }
+
+    #[test]
+    fn an_adult_hoglin_hits_for_three_to_eight_every_two_seconds_and_a_baby_for_half_a_heart_every_fifteen_ticks(
+    ) {
+        let adult = hit_ticks(false);
+        assert!(adult.len() >= 5, "{}", adult.len());
+        for (_, hit) in &adult {
+            assert!((3.0..=8.0).contains(&hit.damage), "{}", hit.damage);
+            let PlayerHitKind::Melee { throw, .. } = hit.kind else {
+                panic!("a headbutt")
+            };
+            assert!((0.0..=0.5).contains(&throw.y), "{throw}");
+        }
+        assert!(gaps(&adult).iter().all(|&gap| gap == 41), "{:?}", gaps(&adult));
+        let baby = hit_ticks(true);
+        assert!(baby.len() >= 10, "{}", baby.len());
+        for (_, hit) in &baby {
+            assert_eq!(hit.damage, 0.5);
+            let PlayerHitKind::Melee { throw, .. } = hit.kind else {
+                panic!("a nibble")
+            };
+            assert_eq!(throw, DVec3::ZERO);
+        }
+        assert!(gaps(&baby).iter().all(|&gap| gap == 16), "{:?}", gaps(&baby));
+    }
+
+    #[test]
+    fn a_hoglin_throw_lifts_up_to_half_a_block_per_tick_and_never_lifts_an_iron_golem() {
+        let mut world = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let hoglin = seeded(&mut world, HoglinKind::Hoglin, false, at, 7);
+        let golem = crate::iron_golem::IronGolem::new(DVec3::new(0.5, 64.0, 2.0));
+        let golem = world.spawn_iron_golem(golem, true);
+        let others = world.hoglin_living(hoglin, &[]);
+        world.hoglin_hits(hoglin, Target::Mob(golem), &others);
+        let golem = world.iron_golem_mut(golem).unwrap();
+        assert!(golem.golem.health < 100.0);
+        assert_eq!(golem.golem.body.velocity, DVec3::ZERO);
+        let mut lifts = Vec::new();
+        for _ in 0..40 {
+            let cow = crate::cow::Cow::new(DVec3::new(2.5, 64.0, 0.5));
+            let cow = world.spawn_cow(cow, true);
+            world.cow_mut(cow).unwrap().cow.body.on_ground = false;
+            let others = world.hoglin_living(hoglin, &[]);
+            world.hoglin_hits(hoglin, Target::Mob(cow), &others);
+            let v = world.cow_mut(cow).unwrap().cow.body.velocity;
+            assert!((0.0..=0.5).contains(&v.y), "{v}");
+            lifts.push(v.y);
+            world.remove_mobs(&[cow]);
+        }
+        assert!(lifts.iter().any(|&y| y > 0.25), "{lifts:?}");
+    }
+
+    #[test]
+    fn a_hoglin_ignores_a_creative_player_and_one_seventeen_blocks_away() {
+        let mut blocks = wide_floor(20);
+        let mut world = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let hoglin = seeded(&mut world, HoglinKind::Hoglin, false, at, 5);
+        slowed(&mut world, hoglin);
+        let mut creative = player(1, DVec3::new(0.5, 64.0, 3.5));
+        creative.attackable = false;
+        let far = player(2, DVec3::new(17.5, 64.0, 0.5));
+        for _ in 0..60 {
+            world.tick_with_players(&mut blocks, &[creative, far]);
+        }
+        assert!(world.take_player_hits().is_empty());
+        let memories = &world.hoglin_mut(hoglin).unwrap().brain.memories;
+        assert!(!memories.attack_target.present());
+        let near = player(3, DVec3::new(10.5, 64.0, 0.5));
+        for _ in 0..30 {
+            world.tick_with_players(&mut blocks, &[creative, far, near]);
+        }
+        let brain = &world.hoglin_mut(hoglin).unwrap().brain;
+        assert_eq!(brain.memories.attack_target.get(), Some(&Target::Player(3)));
+        assert_eq!(brain.activity, crate::hoglin_brain::Activity::Fight);
+    }
+
+    #[test]
+    fn hitting_one_hoglin_sets_every_visible_adult_on_the_attacker() {
+        let mut blocks = wide_floor(12);
+        let mut world = EntityWorld::default();
+        let spots = [
+            (0.5, 0.5, false),
+            (3.5, 0.5, false),
+            (0.5, 3.5, false),
+            (-3.5, 0.5, true),
+        ];
+        let mut ids = Vec::new();
+        for (i, &(x, z, baby)) in spots.iter().enumerate() {
+            let at = DVec3::new(x, 64.0, z);
+            let id = seeded(&mut world, HoglinKind::Hoglin, baby, at, i as u64);
+            slowed(&mut world, id);
+            ids.push(id);
+        }
+        let cow = crate::cow::Cow::new(DVec3::new(0.5, 64.0, -5.5));
+        let cow = world.spawn_cow(cow, true);
+        for _ in 0..25 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        world.note_hoglin_hurt(ids[0], Target::Mob(cow));
+        world.tick_with_players(&mut blocks, &[]);
+        for &id in &ids[..3] {
+            let memories = &world.hoglin_mut(id).unwrap().brain.memories;
+            assert_eq!(memories.attack_target.get(), Some(&Target::Mob(cow)), "{id}");
+        }
+        let piglet = &world.hoglin_mut(ids[3]).unwrap().brain.memories;
+        assert!(!piglet.attack_target.present());
+    }
+
+    #[test]
+    fn a_hurt_piglet_runs_away_for_five_to_twenty_seconds() {
+        let mut blocks = wide_floor(20);
+        let mut ticks = Vec::new();
+        for seed in 0..12 {
+            let mut world = EntityWorld::default();
+            let at = DVec3::new(0.5, 64.0, 0.5);
+            let piglet = seeded(&mut world, HoglinKind::Hoglin, true, at, seed);
+            let players = [player(7, DVec3::new(0.5, 64.0, 3.5))];
+            for _ in 0..25 {
+                world.tick_with_players(&mut blocks, &players);
+            }
+            assert!(world.player_attack(&attack(0.5), piglet).hurt);
+            world.tick_with_players(&mut blocks, &players);
+            let brain = &world.hoglin_mut(piglet).unwrap().brain;
+            assert_eq!(brain.memories.avoid_target.get(), Some(&Target::Player(7)));
+            assert!(!brain.memories.attack_target.present());
+            assert_eq!(brain.activity, crate::hoglin_brain::Activity::Avoid);
+            ticks.push(brain.memories.avoid_target.ttl().unwrap());
+            let from = players[0].position;
+            let start = world.hoglin_mut(piglet).unwrap().position().distance(from);
+            for _ in 0..60 {
+                world.tick_with_players(&mut blocks, &players);
+            }
+            let after = world.hoglin_mut(piglet).unwrap().position().distance(from);
+            assert!(after > start + 2.0, "{start} {after}");
+        }
+        assert!(ticks.iter().all(|t| (98..=400).contains(t)), "{ticks:?}");
+        assert!(ticks.iter().any(|&t| t < 250), "{ticks:?}");
+        assert!(ticks.iter().any(|&t| t > 250), "{ticks:?}");
+    }
+
+    #[test]
+    fn a_retaliation_target_is_forgotten_after_two_hundred_ticks() {
+        let mut blocks = wide_floor(12);
+        let mut world = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let hoglin = seeded(&mut world, HoglinKind::Hoglin, false, at, 9);
+        slowed(&mut world, hoglin);
+        let cow = crate::cow::Cow::new(DVec3::new(0.5, 64.0, 8.5));
+        let cow = world.spawn_cow(cow, true);
+        world.note_hoglin_hurt(hoglin, Target::Mob(cow));
+        for tick in 0..200 {
+            world.tick_with_players(&mut blocks, &[]);
+            let memories = &world.hoglin_mut(hoglin).unwrap().brain.memories;
+            assert!(memories.attack_target.present(), "{tick}");
+        }
+        world.tick_with_players(&mut blocks, &[]);
+        let brain = &world.hoglin_mut(hoglin).unwrap().brain;
+        assert!(!brain.memories.attack_target.present());
+        assert_eq!(brain.activity, crate::hoglin_brain::Activity::Idle);
     }
 }

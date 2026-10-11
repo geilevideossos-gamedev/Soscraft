@@ -398,6 +398,7 @@ impl EntityWorld {
                     attacker,
                     hunger_ticks: 0,
                     lift: 0.0,
+                    throw: DVec3::ZERO,
                 },
                 source: Some(id),
             });

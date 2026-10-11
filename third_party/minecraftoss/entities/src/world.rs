@@ -578,7 +578,7 @@ pub enum PlayerHitKind {
     /// bite, if it lands, starves for this many ticks (`Husk.doHurtTarget`),
     /// and an iron golem's throws the player up by `lift` less what
     /// knockback resistance takes (`IronGolem.doHurtTarget`).
-    Melee { attacker: DVec3, hunger_ticks: i32, lift: f32 },
+    Melee { attacker: DVec3, hunger_ticks: i32, lift: f32, throw: DVec3 },
     /// An arrow (`arrow`) along its velocity.
     /// An arrow in flight at `velocity`; a tipped one's effect lands with
     /// the hit (`Arrow.doPostHurtEffects`).
@@ -2729,6 +2729,7 @@ impl EntityWorld {
         if let Some(player) = player {
             if result.applied {
                 self.blasted_by_player(key, player);
+                self.note_hoglin_hurt(id, crate::monster_ai::Target::Player(player));
             }
             self.credit(id, result, "minecraft:player", true);
         }
@@ -3214,6 +3215,7 @@ impl EntityWorld {
         }
         if outcome.is_some_and(|r| r.applied) {
             self.villager_hurt_by(id, owner);
+            self.note_hoglin_hurt_by_owner(id, owner);
         }
         outcome
     }
@@ -3677,6 +3679,9 @@ impl EntityWorld {
             (hit, false)
         };
         self.credit(victim, result, attacker_kind, true);
+        if result.applied {
+            self.note_hoglin_hurt(victim, Target::Mob(attacker));
+        }
         if result.applied && result.full && !resists {
             if let Some((body, _)) = self.mob_body(victim) {
                 let (xd, zd) = (from.x - body.position.x, from.z - body.position.z);
@@ -5198,7 +5203,7 @@ impl EntityWorld {
                                 140 * regional_difficulty(difficulty, clock, inhabited, moon) as i32
                             });
                         let damage = self.zombies.iter().find(|e| e.id == id).map_or(3.0, |e| zombie_attack_damage(&e.zombie));
-                        self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Melee { attacker, hunger_ticks, lift: 0.0 }, source: Some(id) });
+                        self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Melee { attacker, hunger_ticks, lift: 0.0, throw: glam::DVec3::ZERO }, source: Some(id) });
                     }
                     let damage = self.zombies.iter().find(|e| e.id == id).map_or(3.0, |e| zombie_attack_damage(&e.zombie));
                     if let Some((victim_id, attacker_position)) = pending_attack {
@@ -5331,7 +5336,7 @@ impl EntityWorld {
                         let wither = self.skeletons[index].skeleton.kind == crate::skeleton::SkeletonKind::WitherSkeleton;
                         match target {
                             crate::monster_ai::Target::Player(player_id) => {
-                                self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0 }, source: Some(id) });
+                                self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0, throw: glam::DVec3::ZERO }, source: Some(id) });
                             }
                             crate::monster_ai::Target::Mob(victim) | crate::monster_ai::Target::Villager(victim) => {
                                 if self.mob_hits_mob(id, victim, damage, attacker, 0.0).is_some_and(|hit| hit.applied) && wither {
@@ -5493,7 +5498,7 @@ impl EntityWorld {
                     let entity = self.spider_mut(id).unwrap();
                     entity.spider.body.climbing = entity.spider.body.horizontal_collision;
                     if let Some((crate::monster_ai::Target::Player(player_id), attacker)) = hit {
-                        self.player_hits.push(PlayerHit { player_id, damage: crate::spider::ATTACK_DAMAGE, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0 }, source: Some(id) });
+                        self.player_hits.push(PlayerHit { player_id, damage: crate::spider::ATTACK_DAMAGE, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0, throw: glam::DVec3::ZERO }, source: Some(id) });
                     }
                     // A bite on a mob (an iron golem, or whatever hurt it).
                     if let Some((crate::monster_ai::Target::Mob(victim), attacker)) = hit {
