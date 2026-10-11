@@ -438,10 +438,11 @@ impl ServerSim {
 
     pub fn reattach(&mut self, player: u64, root: &minecraftoss_core::nbt::Tag) -> Option<u64> {
         let entity = root.get("Entity")?;
-        if tag_uuid(entity).is_some_and(|uuid| self.mobs.mob_with_uuid(uuid).is_some()) {
-            return None;
-        }
         let attach = tag_uuid_at(root, "Attach");
+        if tag_uuid(entity).is_some_and(|uuid| self.mobs.mob_with_uuid(uuid).is_some()) {
+            let target = attach.and_then(|uuid| self.mobs.mob_with_uuid(uuid))?;
+            return self.mobs.force_riding(minecraftoss_entities::world::Rider::Player(player), target).then_some(target);
+        }
         let spawned = crate::server_mobs::spawn_saved_all(&mut self.mobs, entity);
         let ids: Vec<u64> = spawned.iter().map(|(id, _)| *id).collect();
         self.mob_tags.extend(spawned);
@@ -6951,8 +6952,18 @@ mod tests {
         let back = server.reattach(0, &saved).unwrap();
         server.add_saved_entity(saved.get("Entity").unwrap().clone());
         assert_eq!(server.mobs.striders().len(), 1, "the chunk's copy is refused");
-        assert_eq!(server.reattach(0, &saved), None, "so is a second reattach");
         assert_eq!(server.mobs.vehicle_of(minecraftoss_entities::world::Rider::Player(0)), Some(back));
+    }
+
+    #[test]
+    fn a_rider_whose_strider_loaded_with_its_chunk_first_sits_on_that_one() {
+        let Some((mut server, _)) = ridden_strider("minecraft:netherrack", 101.0) else { return };
+        let saved = server.root_vehicle(0, true).unwrap();
+        server.add_saved_entity(saved.get("Entity").unwrap().clone());
+        let copy = server.mobs.striders()[0].id;
+        assert_eq!(server.reattach(0, &saved), Some(copy));
+        assert_eq!(server.mobs.striders().len(), 1, "no second strider");
+        assert_eq!(server.mobs.vehicle_of(minecraftoss_entities::world::Rider::Player(0)), Some(copy));
     }
 
     #[test]

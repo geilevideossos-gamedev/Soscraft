@@ -290,3 +290,12 @@ After 0338a62f.
 ```
 IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*4,minecraft:saddle,minecraft:saddle,minecraft:warped_fungus_on_a_stick,minecraft:netherrack*64
 ```
+
+### 9a. A rejoining rider sits on the chunk's copy of its strider when that loaded first
+
+After 75e8b766.
+
+- **Changed:** `ServerSim::reattach`: when an entity with the saved vehicle's UUID is already in the level, the player now rides the loaded entity whose UUID is `Attach` instead of riding nothing. After a crash that skipped the close (the strider is both in its chunk, from the autosave, and in the player file), the chunk can load before the player's vehicle is sent; vanilla attaches the player before chunk entities load, so the player still rides.
+- **Tests:** `server`: `a_rider_whose_strider_loaded_with_its_chunk_first_sits_on_that_one`; `a_chunk_copy_with_the_ridden_uuid_is_dropped` no longer expects a second reattach to fail.
+- **Decision:** loading the vehicle twice still makes one strider; only which copy the player sits on depends on the order, and both are the same saved strider.
+- **Test steps:** entry 9's step 2 covers it: after the forced close the player rides the one strider whichever loads first.
