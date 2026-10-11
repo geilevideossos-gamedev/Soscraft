@@ -191,3 +191,16 @@ After f3c92b83.
 - **Changed:** `terrain::nether_fortresses_bastions_and_every_nether_feature_generate` checks that a fortress's and a bastion's mobs never despawn. Since entry 6, chunk generation also places striders on the lava around them (biome creatures, not structure mobs, and saved without `PersistenceRequired`, as vanilla saves them), so the check leaves `minecraft:strider` out.
 - **Tests:** the same test, now green.
 - **Test steps:** none (test only).
+
+### 7a. MW2 players can be pinned to a seat
+
+After 642029f2.
+
+- **Changed:**
+  - `playerstate_iw4`: `pm_flags::MC_RIDING = 0x0100_0000`. `pm_flags` is replicated whole (`net/src/transport/netfields.rs`), so the bit needs no network change.
+  - `movement_iw4`: new `ride.rs`. While `MC_RIDING` is set, `pmove` turns the view, then drops sprinting, jumping, mantling, ladders, gliding and the stance, sets `CROUCH` while the crouch or prone button is held (the sneak the adapter will read), zeroes the velocity and returns before any move.
+  - `sim`: `SimWorld::ride(id, Some(seat))` sets the bit and moves the player there like `gate_nudge_origin` (velocity zeroed, no `TELEPORT` bit, the player area follows); `ride(id, None)` clears the bit. The carrier forwards it.
+  - No game behaviour yet: nothing calls `ride` until entry 7b (and b4's beds).
+- **Tests:** `movement_iw4` `ride`: `crouch_while_riding_sets_the_crouch_flag_only`. `sim` `voxel` (the full pmove with its real context): `a_riding_player_turns_but_never_moves_jumps_or_sprints`, `the_next_pmove_after_riding_is_normal`. `sim` `frame`: `ride_moves_without_the_teleport_bit_and_clears_with_none`, and the bit test in `an_elytra_lets_a_player_glide_and_a_rocket_lights_only_while_gliding` now covers `MC_RIDING`.
+- **Decisions:** the two full-pmove tests sit in `sim`, which builds the real pmove context (`step::pmove_context`) and a voxel world; `movement_iw4` keeps the unit test of the seat itself.
+- **Test steps:** none in game (the pin has no caller yet); entry 7b's steps cover it.

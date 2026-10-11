@@ -179,6 +179,8 @@ pub mod pm_flags {
 
     pub const LAST_STAND: u32 = 0x0040_0000;
 
+    pub const MC_RIDING: u32 = 0x0100_0000;
+
     pub const MC_GLIDING: u32 = 0x0200_0000;
 
     pub const MC_MAY_GLIDE: u32 = 0x0400_0000;

@@ -441,6 +441,26 @@ impl FrameWorld<'_> {
         self.player_mut(id).is_some_and(|ps| movement_iw4::launch_rocket(ps, boost_ticks))
     }
 
+    pub fn ride(&mut self, id: ClientId, seat: Option<[f32; 3]>) -> bool {
+        use playerstate_iw4::pm_flags::MC_RIDING;
+        let delta = {
+            let Some(ps) = self.player_mut(id) else {
+                return false;
+            };
+            let Some(seat) = seat else {
+                ps.pm_flags &= !MC_RIDING;
+                return true;
+            };
+            ps.pm_flags |= MC_RIDING;
+            let delta = [seat[0] - ps.origin[0], seat[1] - ps.origin[1], seat[2] - ps.origin[2]];
+            ps.origin = seat;
+            ps.velocity = [0.0, 0.0, 0.0];
+            delta
+        };
+        self.translate_player_area(id, delta);
+        true
+    }
+
     pub fn set_legs_anim(&mut self, id: ClientId, legs_anim: i32) -> bool {
         let Some(ps) = self.player_mut(id) else {
             return false;
@@ -1248,5 +1268,31 @@ mod tests {
         let taken = MC_INVULNERABLE | MC_MAY_FLY | MC_NOCLIP | MC_FLYING | MC_NO_SKY | SPRINT_BLOCKED | LAST_STAND;
         assert_eq!((MC_MAY_GLIDE | MC_GLIDING) & taken, 0, "bits of their own");
         assert_ne!(MC_MAY_GLIDE, MC_GLIDING);
+        let riding = playerstate_iw4::pm_flags::MC_RIDING;
+        assert_eq!(riding & (taken | MC_MAY_GLIDE | MC_GLIDING), 0, "riding has a bit of its own");
+    }
+
+    #[test]
+    fn ride_moves_without_the_teleport_bit_and_clears_with_none() {
+        use playerstate_iw4::pm_flags::MC_RIDING;
+        let mut sim = crate::SimWorld::default();
+        let id = ClientId(4);
+        assert!(!sim.ride(id, Some([1.0, 2.0, 3.0])));
+        {
+            let mut frame = sim.frame();
+            let ps = frame.ensure_player(id);
+            ps.origin = [10.0, 20.0, 30.0];
+            ps.velocity = [5.0, 0.0, -3.0];
+            ps.pm_flags = SPRINT_BLOCKED;
+        }
+        let e_flags = sim.frame().player(id).unwrap().e_flags;
+        assert!(sim.ride(id, Some([12.0, 20.0, 70.0])));
+        let ps = *sim.frame().player(id).unwrap();
+        assert_eq!((ps.origin, ps.velocity), ([12.0, 20.0, 70.0], [0.0; 3]));
+        assert_eq!(ps.pm_flags, SPRINT_BLOCKED | MC_RIDING);
+        assert_eq!(ps.e_flags, e_flags, "a seat is no teleport");
+        assert!(sim.ride(id, None));
+        let ps = *sim.frame().player(id).unwrap();
+        assert_eq!((ps.origin, ps.pm_flags), ([12.0, 20.0, 70.0], SPRINT_BLOCKED));
     }
 }
