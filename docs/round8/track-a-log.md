@@ -471,7 +471,7 @@ IW4L_MINECRAFT_KIT=minecraft:spawner*16,minecraft:zombie_spawn_egg*4,minecraft:s
 
 ### 4. Minecraft cave spiders show inside mineshaft spawners
 
-Commit: (see the next entry, or `git log` under this subject)
+Commit: a4453997
 
 - **Changed:**
   - `minecraft_terrain/src/spawner_display.rs`: a `minecraft:cave_spider` spawner builds its display from a copy of the compound with `id` set to `minecraft:spider`, the cave spider's box (0.7 x 0.5, so the display scale is 0.53125) and the model scale 0.7 multiplied in (`LayerDefinitions`' `CAVE_SPIDER` layer is the spider body at `MeshTransformer.scaling(0.7)`, which keeps the feet on the ground, so it equals a uniform 0.7 about the feet). After `append_spiders`, the new vertices whose UV lies in the `entity/spider/spider` region are moved to the same place in `entity/spider/cave_spider` (both skins are 64 x 32); the eyes layer keeps its UVs. The live cave spider stays unsimulated (`SIMULATED_KINDS` unchanged).
@@ -489,3 +489,27 @@ Commit: (see the next entry, or `git log` under this subject)
 ```
 IW4L_MINECRAFT_KIT=minecraft:spawner*4,minecraft:cave_spider_spawn_egg*4,minecraft:silverfish_spawn_egg*4,minecraft:diamond_pickaxe+efficiency=5,minecraft:torch*64
 ```
+
+## Item a1: end gateways
+
+### 1. The Minecraft outer End islands generate a thousand blocks out like vanilla
+
+Commit: (see the next entry, or `git log` under this subject)
+
+- **Changed:** tests only, in `minecraft_terrain/src/terrain.rs`. They found no defect, so no vendored generator code was patched.
+- **Tests** (`minecraft_terrain`, real data, skipped without the game data like their neighbours):
+  - `the_outer_end_islands_generate_past_the_void`: an End stream of seed 77, chunks 40 to 80 along +x at z 0 and 1. Nothing stands between x 700 and 900 (for this seed the first block is at chunk 62, x 992), more than 10,000 end stone blocks lie past x 1000, the column biomes include `end_highlands` and `small_end_islands`, and chorus plants stand in highland cells.
+  - `outer_end_gateways_keep_their_exact_exit`: chunk (2, -73) of seed 77 is highlands and holds one `end_gateway_return` gateway at (45, 67, -1160) with `exit_portal` [100, 50, 0] and `ExactTeleport` 1, in its bedrock frame (bedrock above and below at 2 and a plus at 1, the side ring and the corners open). The chunk was found once by decorating highland chunks nearest the origin in order (714 chunks, 69 s); the test loads only that chunk.
+  - `end_island_height_matches_vanilla`: `sampler::end_island_height` for seed 0 at ten section coordinates (inside the 64-chunk ring, on its edge and outside) against 26.3's `EndIslandFunction.getHeightValue`.
+- **How the vanilla values were made:** `jshell` from a JDK 25 (`~/.jdks/openjdk-25.0.2`, the 26.3 classes are version 69), with the 26.3 `client.jar` and the libraries of its `version.json` (downloaded from `libraries.minecraft.net` into the scratchpad, SHA-1 checked, not committed) on the class path:
+  ```
+  net.minecraft.SharedConstants.tryDetectVersion(); net.minecraft.server.Bootstrap.bootStrap();
+  var r = new LegacyRandomSource(0L); r.consumeCount(17292); var n = new SimplexNoise(r, true);
+  var m = Class.forName("net.minecraft.world.level.levelgen.densityfunction.generator.EndIslandFunction").getDeclaredMethod("getHeightValue", SimplexNoise.class, int.class, int.class); m.setAccessible(true);
+  m.invoke(null, n, 256, 17)
+  ```
+  This printed -100.0, -100.0, -98.25235, -100.0, -100.0, -70.847885, -77.369675, -90.0, 55.0 and -69.49925 for the ten points in the test's order.
+- **Generation time:** 82 outer chunks (with the neighbours their decoration needs) took 3.26 s in the debug test build, about 40 ms a chunk, while another test ran beside it. A first gateway trip loads at most about 33 chunks along the search line, so about 1.3 s in a debug build and less in release. **Decision:** the exit search stays synchronous on the main thread, with no loading screen held before it (brief section 6: only above about 2 s).
+- **Decision:** the brief's 16 x 16 chunk patch from (64, -8) was meant to make the test hold on any seed; with the fixed seed 77 the strip along +x already holds the outer islands, both biomes and chorus, so the test keeps the strip (82 chunks, not 256).
+- **Test steps:** none in game; the gateway trips come with entry 4.
+- **Kit:** none needed.
