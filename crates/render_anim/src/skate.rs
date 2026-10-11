@@ -50,6 +50,10 @@ fn refused_toggle(skating: bool, assets: bool) -> Option<&'static str> {
     }
 }
 
+fn airborne(state: &str) -> bool {
+    matches!(state, "PhysicsAir" | "KnownAir" | "PhysicsAirSecondary" | "BipedAir")
+}
+
 fn teleported(last: Option<u32>, now: u32) -> bool {
     last.is_some_and(|last| last != now)
 }
@@ -312,6 +316,7 @@ fn stop(host: &mut Host, mode: &mut SkateMode, authority: &mut net::AuthorityWor
         let _ = send.send(Job::Suspend);
     }
     mode.active = false;
+    mode.airborne = false;
     mode.entering = false;
     mode.camera = None;
     mode.bones.clear();
@@ -327,6 +332,7 @@ fn present(mode: &mut SkateMode, p: Pose, authority: &mut net::AuthorityWorld) {
     mode.bones = p.bones;
     mode.names = p.names;
     mode.tick = p.tick;
+    mode.airborne = airborne(&p.state);
     mode.status = p.state;
     mode.camera = p.camera.map(|(position, basis, fov)| {
         (
@@ -619,6 +625,27 @@ mod tests {
         assert_eq!(refused_toggle(false, false), Some(SKATING_OFF));
         assert_eq!(refused_toggle(true, false), Some(NO_SKATE_DATA));
         assert_eq!(refused_toggle(true, true), None);
+    }
+
+    #[test]
+    fn airborne_states_are_the_air_states() {
+        for state in ["PhysicsAir", "KnownAir", "PhysicsAirSecondary", "BipedAir"] {
+            assert!(airborne(state), "{state}");
+        }
+        for state in [
+            "PhysicsGround",
+            "SlideGround",
+            "GrindFiftyFifty",
+            "GrindBoardslide",
+            "WipeoutGround",
+            "BipedGround",
+            "OffBoardPushing",
+            "LandingOnDeck",
+            "HandPlant",
+            "",
+        ] {
+            assert!(!airborne(state), "{state}");
+        }
     }
 
     #[test]

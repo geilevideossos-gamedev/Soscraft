@@ -99,10 +99,41 @@ Commit: the one after `1daef351` (group 2).
   3. `/gamemode creative`, double-tap Space to fly and press J: nothing happens. `/gamemode spectator` and J: nothing. `/gamemode survival`.
 - **Kit:** `minecraft:water_bucket`, `minecraft:ender_pearl*16`.
 
+## Group 3b. On the board, items are put away and the player rides like a vehicle
+
+Commit: the one after `ffe7dd74` (group 3a).
+
+- **Changed:**
+  - `frame/src/skate.rs`: `SkateMode.airborne` (per viewer).
+  - `render_anim/src/skate.rs`: `present` sets `airborne` from the pure `airborne(state)`: true for `PhysicsAir`, `KnownAir`, `PhysicsAirSecondary` and `BipedAir` (the engine's `PhysicalStateId` names); grinds, wipeouts and ground states are not airborne. `stop` clears it.
+  - `render_anim/src/minecraft_world.rs`, while `skate.active`:
+    - `on_ground` comes from the pure `skate_on_ground(skating, airborne, ground_entity)` = not airborne, instead of the ground entity PMove left frozen when the board went down. The fall peak then builds in the air and the existing landing code deals the damage (hay, water, slime, feather falling and the wind charge grace as before); `crouching` is false on the board (the crouch bit PMove left frozen is ignored), so a slime block still cancels the fall damage.
+    - No footsteps: the step sound block is skipped.
+    - The mouse buttons and the pad triggers are not read for Minecraft actions (`use_held`, `attack_held`, both just-pressed clicks, the offhand key): no mining, punching, placing, eating, blocking, bow drawing or offhand use. Eating and blocking in progress stop; a charged trident is dropped without being thrown or launching a riptide (`trident::released` sees `alive && !skate.active`).
+    - The local `BodyGear` goes through the pure `board_gear`, which clears `main` and `off` and keeps the armour, so no Minecraft item is drawn in the skater's hands. The MW2 gun was already left off the skating body (`remote_body.rs`, not edited).
+    - `Motion.riding = skate.active`.
+  - `minecraft_survival/src/survival.rs`: `Motion.riding`. `Survival::tick` skips the walk, sprint, swim and jump exhaustion while it is set (vanilla `ServerPlayer.checkMovementStatistics` returns for a passenger before the swim branch). Air, drowning, effects, regeneration and damage are unchanged.
+  - `docs/MINECRAFT-SURVIVAL.md`: the Skating bullet says how the rider is treated.
+- **Tests:**
+  - `render_anim`: `airborne_states_are_the_air_states` (`skate.rs`); `a_landing_skater_takes_vanilla_fall_damage` (`skate_on_ground`, and `Survival::fall(8.0, ..)` deals 5) and `a_skater_holds_no_minecraft_item` (`board_gear`: main and offhand cleared, armour and `hides_gun` kept, unchanged off the board) in `minecraft_world.rs`.
+  - `minecraft_survival`: `a_rider_spends_no_food_on_movement` (sprinting, jumping and swimming with `riding` set) and `a_rider_still_loses_air_under_water`.
+- **Decisions:**
+  - Guns while skating stay as the brief decided (see the top of this log): MW2 already zeroes every button on the board (`net/src/client/runtime.rs`), and now the Minecraft side ignores the mouse buttons and triggers too.
+  - A trident being charged when the board goes down is dropped, not thrown: in vanilla a released charge throws, but here the release is caused by putting the board down, not by letting go of the button.
+  - The other `on_ground` readers (the digger speed, critical hits, trident riptide, thrown items) see the board's grounding too; they can't act on the board anyway.
+  - The sprint and jump bits stay frozen while skating; `riding` makes them cost nothing, which fixes the frozen sprint bit the brief noted (a player who pressed J while sprinting used to pay sprint exhaustion for the whole ride).
+- **Owner's test steps** (brief section 5, steps 4, 5, 14, 16 and 17):
+  1. In the Overworld, on flat ground, hold a cobblestone in the hotbar and press J: the board goes down and neither the gun nor the block is in the skater's hands (screenshot; armour you wear still shows). J again: you stand where the skater was, with the same hotbar slot. Do the same with a gun selected: the same gun is raised after pick-up.
+  2. On the board, look at a block and pull RT and LT (or click both mouse buttons): no block is mined or placed and nothing is shot.
+  3. Build a tower 8 blocks high on flat stone ground, with a 6-block runway on top and no kicker. Roll off the edge without ollieing, so the drop is exactly 8 blocks: you lose 2.5 hearts (5 points). Dig out the stone where you landed and set hay bales into the holes, flush with the ground, and roll off again: half a heart (1 point). An ollie or a kicker adds height and more damage.
+  4. Note the hunger bar, then ride around for a minute (no eating): it doesn't go down from riding. Walk and sprint the same minute: it does.
+  5. On the board, press E: the inventory opens and the skater coasts. Close it and press Q: the selected item drops. Rolling makes no footstep sounds.
+- **Kit:** `minecraft:cobblestone*64` (twice, for the tower), `minecraft:hay_block*16`, `minecraft:iron_helmet`.
+
 ## The whole track's owner test, one kit
 
-Steps in order: group 1 steps 1-4, group 2 steps 1-4, group 3a steps 1-3. Groups 1 and 2 need no items; 3a needs the water bucket and the ender pearls.
+Steps in order: group 1 steps 1-4, group 2 steps 1-4, group 3a steps 1-3, group 3b steps 1-5. Groups 1 and 2 need no items; 3a needs the water bucket and the ender pearls; 3b the cobblestone, hay bales and helmet.
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:water_bucket,minecraft:ender_pearl*16
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:hay_block*16,minecraft:iron_helmet,minecraft:water_bucket,minecraft:ender_pearl*16
 ```

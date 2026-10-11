@@ -394,6 +394,14 @@ fn pad_trigger(pad: Option<&bevy::input::gamepad::Gamepad>, button: GamepadButto
     pad.is_some_and(|pad| if just { pad.just_pressed(button) } else { pad.pressed(button) })
 }
 
+fn skate_on_ground(skating: bool, airborne: bool, ground_entity: i32) -> bool {
+    if skating { !airborne } else { ground_entity != playerstate_iw4::ENTITYNUM_NONE }
+}
+
+fn board_gear(gear: minecraft_terrain::body_gear::BodyGear, skating: bool) -> minecraft_terrain::body_gear::BodyGear {
+    if skating { minecraft_terrain::body_gear::BodyGear { main: None, off: None, ..gear } } else { gear }
+}
+
 fn board_allowed(alive: bool, spectator: bool, pm_flags: u32, eye_in_water: bool) -> bool {
     alive && !spectator && pm_flags & (playerstate_iw4::pm_flags::MC_FLYING | playerstate_iw4::pm_flags::MC_GLIDING) == 0 && !eye_in_water
 }
@@ -838,7 +846,7 @@ fn update(
     // the next step the block under the feet sounds its step at 0.15 of its
     // volume. A fall of more than three blocks lands with the block's fall
     // sound and the player's (`LivingEntity.causeFallDamage`).
-    let on_ground = alive && ps.ground_entity_num != playerstate_iw4::ENTITYNUM_NONE;
+    let on_ground = alive && skate_on_ground(skate.active, skate.airborne, ps.ground_entity_num);
     let (hull_mins, hull_maxs) = sim::voxel::player_hull(ps);
     let water = sim::voxel::water(ps.origin, hull_mins, hull_maxs, ps.view_height_current);
     if water.wet() {
@@ -858,7 +866,7 @@ fn update(
         let centre = |pos: (i32, i32, i32)| {
             Vec3::from_array(sim::voxel::to_map(origin, [pos.0 as f64 + 0.5, pos.1 as f64 + 1.0, pos.2 as f64 + 0.5]))
         };
-        if (on_ground || climbing) && horizontal < 2.0 {
+        if (on_ground || climbing) && horizontal < 2.0 && !skate.active {
             steps.move_dist += horizontal;
             if steps.move_dist > steps.next_step
                 && let Some((pos, block)) = under.as_ref()
@@ -887,7 +895,7 @@ fn update(
             if let Some(peak) = steps.air_peak.take().filter(|_| !caught) {
                 let fall = survival.impulse_fall(peak - feet[1], feet[1]);
                 let landed_on = under.as_ref().map(|(_, b)| b.id.key());
-                let crouching = ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
+                let crouching = !skate.active && ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
                 let damage = survival.fall(fall, landed_on.as_deref(), crouching);
                 if damage > 0
                     && let Some(sounds) = sounds.as_mut()
@@ -953,6 +961,7 @@ fn update(
             in_rain: entities.as_ref().is_some_and(|e| e.weather.player_in_rain),
             crouching: ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0,
             height: hull_maxs[2] / sim::voxel::BLOCK,
+            riding: skate.active,
         };
         let armor = entities.as_ref().map_or_else(minecraftoss_player::survival::Armor::default, |_| minecraft_survival::survival::armor(inventory));
         survival.wear(minecraft_terrain::protection::Protection::worn(globals.data.protection.clone(), inventory));
@@ -1004,8 +1013,8 @@ fn update(
     }
     let game_mode = *player_mode;
     let menu_captured = ui.chat.open || hud_input.as_deref().is_some_and(|input| input.console_open || input.script_menu_open);
-    let use_held = buttons.pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, false);
-    let offhand_key = alive && !holding && ui.offhand_key == Some(true);
+    let use_held = !skate.active && (buttons.pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, false));
+    let offhand_key = alive && !holding && !skate.active && ui.offhand_key == Some(true);
     let use_live = !ui.inventory_open && !menu_captured && if hand.use_by_key { offhand_key } else { use_held && ui.holding_item };
     if survival.eating().is_some() && !use_live {
         survival.stop_eating();
@@ -1014,7 +1023,7 @@ fn update(
     if !use_live || !shield_held {
         hand.blocking = None;
     }
-    let (charging, released) = minecraft_survival::trident::released(hand.charging, use_live, alive, inventory, *selected);
+    let (charging, released) = minecraft_survival::trident::released(hand.charging, use_live, alive && !skate.active, inventory, *selected);
     hand.charging = charging;
     if let (Some(released), Some(entities)) = (released, entities.as_mut()) {
         let wet = water.wet() || entities.weather.player_in_rain;
@@ -1055,7 +1064,7 @@ fn update(
             let (yaw, pitch) = (f64::from(mc_yaw).to_radians(), f64::from(ps.viewangles[0]).to_radians());
             glam::DVec3::new(-yaw.sin() * pitch.cos(), -pitch.sin(), yaw.cos() * pitch.cos())
         };
-        let attack_held = buttons.pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, false);
+        let attack_held = !skate.active && (buttons.pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, false));
         if !attack_held {
             hand.miss_time = 0;
         }
@@ -1063,7 +1072,7 @@ fn update(
         let busy = survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some() || hand.miss_time > 0 || mw2_offhand;
         let mut block_press = false;
         let mut punched = false;
-        if ui.holding_item && (buttons.just_pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, true)) && !busy {
+        if ui.holding_item && !skate.active && (buttons.just_pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, true)) && !busy {
             hand.swing = Some(0.0);
             hand.swing_offhand = false;
             let held = inventory.slots[*selected].clone();
@@ -1207,7 +1216,7 @@ fn update(
         hand.place_delay = hand.place_delay.saturating_sub(hand_ticks);
         let idle = survival.eating().is_none() && hand.blocking.is_none() && hand.charging.is_none() && !mw2_offhand;
         let (use_pressed, use_down) = if ui.holding_item {
-            (buttons.just_pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, true), use_held)
+            (!skate.active && (buttons.just_pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, true)), use_held)
         } else {
             (offhand_key && !hand.offhand_key_was, offhand_key)
         };
@@ -2292,7 +2301,7 @@ fn update(
     }
     if alive {
         match minecraft_survival::gear::body_gear(inventory, *selected, player_mode) {
-            Some(gear) => body_gear.set(local.0.0, gear),
+            Some(gear) => body_gear.set(local.0.0, board_gear(gear, skate.active)),
             None => body_gear.remove(local.0.0),
         }
     } else if dead {
@@ -3003,8 +3012,42 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
 
 #[cfg(test)]
 mod skate_tests {
-    use super::board_allowed;
+    use super::{board_allowed, board_gear, skate_on_ground};
+    use minecraft_terrain::body_gear::{BodyGear, GearItem};
+    use playerstate_iw4::ENTITYNUM_NONE;
     use playerstate_iw4::pm_flags::{CROUCH, MC_FLYING, MC_GLIDING, SPRINTING};
+
+    fn item(id: &str) -> Option<GearItem> {
+        Some(GearItem { id: id.to_owned(), glint: false, dye: None })
+    }
+
+    #[test]
+    fn a_skater_holds_no_minecraft_item() {
+        let gear = BodyGear {
+            main: item("minecraft:cobblestone"),
+            off: item("minecraft:shield"),
+            armor: [item("minecraft:iron_helmet"), None, item("minecraft:iron_leggings"), None],
+            hides_gun: true,
+        };
+        let riding = board_gear(gear.clone(), true);
+        assert_eq!(riding.main, None);
+        assert_eq!(riding.off, None);
+        assert_eq!(riding.armor, gear.armor);
+        assert_eq!(riding.hides_gun, gear.hides_gun);
+        assert_eq!(board_gear(gear.clone(), false), gear);
+    }
+
+    #[test]
+    fn a_landing_skater_takes_vanilla_fall_damage() {
+        assert!(skate_on_ground(true, false, ENTITYNUM_NONE), "rolling on the board is on the ground whatever the frozen PMove says");
+        assert!(!skate_on_ground(true, true, 0), "in the air off a kicker");
+        assert!(skate_on_ground(false, true, 0));
+        assert!(!skate_on_ground(false, false, ENTITYNUM_NONE));
+        let mut survival = minecraft_survival::survival::Survival::default();
+        survival.observe(100, 100);
+        assert_eq!(survival.fall(8.0, None, false), 5);
+        assert_eq!(survival.status.health, 15.0);
+    }
 
     #[test]
     fn the_board_is_refused_flying_gliding_dead_spectating_or_under_water() {

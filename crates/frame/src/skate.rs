@@ -4,6 +4,7 @@ use bevy::prelude::*;
 #[derive(Resource, Default)]
 pub struct SkateMode {
     pub active: bool,
+    pub airborne: bool,
     pub entering: bool,
     pub preloaded: bool,
     pub preload_pending: bool,
