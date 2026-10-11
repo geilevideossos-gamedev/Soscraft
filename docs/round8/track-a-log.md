@@ -311,7 +311,7 @@ Commit: 201eca45
 
 ### 4. Minecraft hand mining follows vanilla's dig loop: instant breaks, the 5-tick delay, cracks, hit sounds and particles
 
-Commit: (see the next entry, or `git log` under this subject)
+Commit: 68ddafb0
 
 - **Changed:**
   - New `minecraft_survival/src/digging.rs` (registered in `lib.rs`): `Dig`, the per-player dig state (`Hand.dig` in `player.rs`, so it lives on the `Player` of each UUID): the block being destroyed with its face and the item that started it, the `f32` progress, the dig ticks, the destroy delay and a click waiting for the next tick. `Dig::tick(DigInput)` follows `MultiPlayerGameMode` and `Minecraft.continueAttack` (brief section 3.5): a click starts (`startDestroyBlock`: abort a running dig, attack the block, break at once when one tick's progress reaches 1 with no crack and no delay, else start at 0 and record the item), and then, unless the start broke the block or the button is up, the tick continues (`continueDestroyBlock`: the delay first, then progress on the same block and the same item, `isSameItemSameComponents`, so a changed count doesn't restart; a break sets the delay to 5; another block or item starts again with no progress that tick). A target that turned to air ends the dig quietly; no target or a released button stops it (`stopDestroyBlock`) and says so, so the adapter resets the attack strength. `Dig::crack()` gives the stage `(int)(progress x 10)` only while progress is above 0. `digger(...)` builds the `mining_speed::Digger` from the player's inventory (held, offhand, armour 36-39), the Haste, Conduit Power and Mining Fatigue amplifiers, the eye in water and the ground.
@@ -341,4 +341,33 @@ Commit: (see the next entry, or `git log` under this subject)
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_pickaxe,minecraft:golden_pickaxe,minecraft:wooden_pickaxe,minecraft:stone_pickaxe,minecraft:netherrack*64,minecraft:stone*64,minecraft:obsidian*16,minecraft:iron_ore*8,minecraft:diamond_shovel+efficiency=5,minecraft:dirt*64,minecraft:shears,minecraft:white_wool*16,minecraft:cobweb*8,minecraft:diamond_sword,minecraft:bamboo*16,minecraft:diamond_helmet+aqua_affinity,minecraft:water_bucket,minecraft:ladder*8,minecraft:milk_bucket,minecraft:oak_log*16,minecraft:iron_axe
+```
+
+### 5. Minecraft blocks mined with the wrong tool drop nothing, and mining wears the tool, like vanilla
+
+Commit: (see the next entry, or `git log` under this subject)
+
+- **Changed:**
+  - `minecraft_survival/src/digging.rs`: `wrong_tool(book, facts, broken, held)` lists the hand-broken blocks the held stack isn't correct for (`Player.hasCorrectToolForDrops`: the block needs the right tool and the tool's rules don't say yes). `wear_after_break(inventory, selected, hardness, random)` is `Item.mineBlock`: when the block's hardness isn't 0 and the held stack has a tool (`mining_speed::tool_of`, so a `minecraft:tool` component wins), it costs the tool's `damage_per_block`, each point spared with chance `unbreaking / (unbreaking + 1)` as the elytra does; it gives the item id back when the tool broke.
+  - `render_anim/src/minecraft_world.rs`: the dig's breaks go through `break_now` on their own, so the frame knows which blocks the hand broke. Before anything changes the held stack, the wrong-tool ones are found; they are left out of the drops and the block experience and cost no exhaustion (`Block.playerDestroy` isn't reached). The server still hears every break (`player_mines`), containers still spill. After the drops each dug block wears the held tool, wrong tool or not, as vanilla's `mineBlock` runs before the correct-tool check; a tool that breaks plays the item break sound and its crumbs (`broken_items`), as a worn-out flint and steel does. Creative breaks never reach this path.
+  - `minecraft_survival/src/entities.rs`: hand loot rolls with the real held stack (none for an empty hand) instead of an enchanted diamond pickaxe, so shears on leaves or grass drop the block and a sword on cobweb drops string. Bullets and blasts keep the diamond pickaxe (`LOOT_TOOL`). `hand_tool` and `loot_tool_with` are gone; their test now checks silk touch on the held stack.
+- **Tests:** `minecraft_survival` (`digging.rs`): `a_wrong_tool_or_a_bare_hand_breaks_without_drops` (a fake tag table: a bare hand on stone and cobweb and a wooden pickaxe on iron ore are wrong; a stone pickaxe on iron ore, a wooden pickaxe on stone, a sword or shears on cobweb and a hand on dirt are right; without a mining book nothing is wrong), `mining_wears_a_tool_by_its_damage_per_block` (a pickaxe 1 a block, a sword and a trident 2, a torch nothing, a stick nothing, an empty hand nothing), `unbreaking_three_spares_about_three_points_in_four` (4000 blocks with a seeded random cost 850-1150), `the_last_point_breaks_the_tool` (the slot empties and the id comes back), and with the game data `the_real_tool_rolls_the_loot` (the jar's loot and tool rules: no drop by hand on stone or cobweb or with a wooden pickaxe on iron ore; raw iron with a stone pickaxe, string with a sword, a cobweb with shears, dirt by hand, cobblestone with a diamond pickaxe). `entities.rs`: `silk_touch_is_read_from_the_held_enchantments` replaces `the_hand_loot_tool_carries_the_held_enchantments`.
+- **Decisions:**
+  - The wear runs after the drops and the experience, so the loot and the correct-tool check see the stack the block was mined with, as `destroyBlock` takes `hasCorrectToolForDrops` and a copy of the main hand before `mineBlock`.
+  - A creative player's hand loot (only shulker boxes with contents drop in creative) also rolls with the held stack; the shulker box table has no tool condition, so nothing changes there.
+  - Hand drops still come from the local adapter's `drop_blocks`, per player through the held stack; the server never sees the tool (track E's action move).
+- **Test steps** (brief section 5, steps 3, 7, 8, 9 and 11, plus wear):
+  1. A bare hand (an empty hotbar slot) on netherrack: about 2 s and nothing drops. On stone: 7.5 s and nothing drops. Dirt by hand still drops dirt.
+  2. Obsidian with the Efficiency V pickaxe: about 2.3 s and it drops.
+  3. Iron ore with the wooden pickaxe: about 7.5 s and nothing drops. With the stone pickaxe: about 1.2 s and raw iron drops. **Screenshot 1** of the raw iron on the ground.
+  4. Cobweb: by hand about 20 s, no drop; with the sword 0.4 s and string drops; with the shears 0.4 s and the cobweb itself drops. **Screenshot 2** of the string and the cobweb on the ground.
+  5. Break a few oak leaves with the shears: the leaves themselves drop.
+  6. Mine 10 stone with the plain diamond pickaxe and hover over it in the inventory: the durability bar shows a little wear (10 of 1561). Break a torch with it: no wear. Mine 2 blocks with the diamond sword: it loses 4.
+  7. Select the worn wooden pickaxe from the kit (1 use left) and mine one stone: the pickaxe breaks with the item break sound and crumbs.
+  8. In 26.3 iron doors, bells, lanterns, ender chests, brewing stands, copper doors, stone pressure plates and stone buttons drop even when broken by hand (slowly); this is vanilla, not a bug.
+  9. `/gamemode creative`, break blocks with the pickaxe: no wear. `/gamemode survival` afterwards.
+- **Kit** (13 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_pickaxe,minecraft:wooden_pickaxe,minecraft:wooden_pickaxe+damage=58,minecraft:stone_pickaxe,minecraft:netherrack*64,minecraft:stone*64,minecraft:obsidian*16,minecraft:iron_ore*8,minecraft:shears,minecraft:cobweb*8,minecraft:diamond_sword,minecraft:oak_leaves*16
 ```

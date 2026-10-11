@@ -363,14 +363,13 @@ impl Entities {
             return;
         }
         let tool = ItemStack::new(LOOT_TOOL, 1);
-        let hand_tool = Self::hand_tool(held);
         for (pos, block, blast) in broken {
             let block = minecraftoss_player::Block { id: block.id.key(), properties: block.properties.clone() };
-            let tool = if blast.is_none() && by_hand.contains(pos) { &hand_tool } else { &tool };
+            let tool = if blast.is_none() && by_hand.contains(pos) { held } else { Some(&tool) };
             let drops = self
                 .loot
                 .as_ref()
-                .and_then(|loot| loot.roll_drops_named(&block, Some(tool), self.seed as u64, &mut self.loot_sequences));
+                .and_then(|loot| loot.roll_drops_named(&block, tool, self.seed as u64, &mut self.loot_sequences));
             let survives_blast = minecraft_terrain::containers::is_shulker_box(&block.id);
             for mut drop in drops.into_iter().flatten() {
                 if let Some(power) = *blast
@@ -761,10 +760,6 @@ impl Entities {
 
     fn hand_has_silk_touch(held: Option<&ItemStack>) -> bool {
         has_silk_touch(Self::hand_enchantments(held).as_ref())
-    }
-
-    fn hand_tool(held: Option<&ItemStack>) -> ItemStack {
-        loot_tool_with(Self::hand_enchantments(held))
     }
 
     /// A bullet on a mob: an attack with the bullet's damage from where it
@@ -1373,12 +1368,6 @@ fn has_silk_touch(enchantments: Option<&serde_json::Value>) -> bool {
     enchantments.and_then(|enchantments| enchantments.get(SILK_TOUCH)).and_then(serde_json::Value::as_i64).is_some_and(|level| level > 0)
 }
 
-fn loot_tool_with(enchantments: Option<serde_json::Value>) -> ItemStack {
-    let mut tool = ItemStack::new(LOOT_TOOL, 1);
-    tool.components = enchantments.map(|enchantments| serde_json::json!({ "minecraft:enchantments": enchantments }));
-    tool
-}
-
 /// The viewer's `server_bob_offset`: a server item's bob phase from its id.
 fn bob_offset(id: i32) -> f32 {
     let hash = (id as u32).wrapping_mul(0x9e37_79b9).rotate_left(13).wrapping_mul(0x85eb_ca6b);
@@ -1606,15 +1595,15 @@ mod tests {
     }
 
     #[test]
-    fn the_hand_loot_tool_carries_the_held_enchantments() {
+    fn silk_touch_is_read_from_the_held_enchantments() {
         let silk = serde_json::json!({ "minecraft:silk_touch": 1 });
         assert!(has_silk_touch(Some(&silk)));
         assert!(!has_silk_touch(Some(&serde_json::json!({ "minecraft:efficiency": 5 }))));
         assert!(!has_silk_touch(None));
-        let tool = loot_tool_with(Some(silk));
-        assert_eq!(tool.id, LOOT_TOOL);
-        assert_eq!(tool.components, Some(serde_json::json!({ "minecraft:enchantments": { "minecraft:silk_touch": 1 } })));
-        assert_eq!(loot_tool_with(None).components, None);
+        let mut pick = ItemStack::new("minecraft:diamond_pickaxe", 1);
+        pick.components = Some(serde_json::json!({ "minecraft:enchantments": silk }));
+        assert!(Entities::hand_has_silk_touch(Some(&pick)));
+        assert!(!Entities::hand_has_silk_touch(None));
     }
 
     #[test]

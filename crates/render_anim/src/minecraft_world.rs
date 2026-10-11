@@ -1661,7 +1661,11 @@ fn update(
     };
     let mut broken = mining.apply(events, &mut refs, time.elapsed_secs_f64());
     broken.extend(mining.break_now(&creative_broken, &mut refs));
-    broken.extend(mining.break_now(&hand_broken, &mut refs));
+    let dug = mining.break_now(&hand_broken, &mut refs);
+    let dug_blocks: Vec<_> = dug.iter().map(|(pos, block, _)| (*pos, minecraftoss_player::Block { id: block.id.key(), properties: block.properties.clone() })).collect();
+    let wrong_tool = minecraft_survival::digging::wrong_tool(globals.data.mining.as_deref(), &*terrain.stream.states, &dug_blocks, inventory.slots[*selected].as_ref());
+    let worn: Vec<f32> = dug.iter().map(|(_, block, _)| terrain.stream.states.state_of(block).map_or(-1.0, |state| globals.registries.blocks.state(state).destroy_speed)).collect();
+    broken.extend(dug);
     if let Some(sounds) = sounds.as_mut() {
         for (pos, block, blast) in &broken {
             if blast.is_some() {
@@ -1673,7 +1677,7 @@ fn update(
             }
         }
     }
-    survival.exhaust(minecraft_survival::survival::MINE_EXHAUSTION * broken.iter().filter(|(.., blast)| blast.is_none()).count() as f32);
+    survival.exhaust(minecraft_survival::survival::MINE_EXHAUSTION * broken.iter().filter(|(pos, _, blast)| blast.is_none() && !wrong_tool.contains(pos)).count() as f32);
     if let Some(entities) = entities.as_mut() {
         let positions: Vec<_> = broken.iter().map(|(pos, ..)| *pos).collect();
         entities.mined(inventory.slots[*selected].as_ref(), &broken, &hand_mined, !player_mode.drops_from_breaking());
@@ -1685,6 +1689,7 @@ fn update(
         let dropping: Vec<_> = broken
             .iter()
             .filter(|(pos, _, blast)| player_mode.drops_from_breaking() || blast.is_some() || kept.get(pos).is_some_and(|components| components.get(minecraft_terrain::containers::CONTAINER).is_some()))
+            .filter(|(pos, ..)| !wrong_tool.contains(pos))
             .cloned()
             .collect();
         entities.award_block_experience(inventory.slots[*selected].as_ref(), &dropping, &hand_mined);
@@ -1692,6 +1697,15 @@ fn update(
         for &pos in &positions {
             openers.removed(pos);
             minecraft_survival::level::spill(containers, entities, pos);
+        }
+        for hardness in worn {
+            if let Some(item) = minecraft_survival::digging::wear_after_break(inventory, *selected, hardness, || entities.random_float()) {
+                entities.broken_items.push(item);
+                let sound = minecraft_terrain::flint::break_sound(entities.random_float());
+                if let Some(sounds) = sounds.as_mut() {
+                    sounds.play(&world.packs, sound.event, None, sound.volume, sound.pitch);
+                }
+            }
         }
     }
 

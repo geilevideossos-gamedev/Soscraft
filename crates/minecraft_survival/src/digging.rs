@@ -1,4 +1,5 @@
-use minecraft_terrain::mining_speed::Digger;
+use minecraft_terrain::mining_speed::{self, Digger, MiningBook};
+use minecraft_terrain::transform::BlockFacts;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::survival::{EffectKind, SurvivalStatus};
 use minecraftoss_player::{Block, Face, Pos};
@@ -7,6 +8,7 @@ pub const DESTROY_DELAY: u32 = 5;
 pub const HIT_SOUND_TICKS: u32 = 4;
 pub const HEAD: usize = 39;
 pub const FEET: usize = 36;
+const UNBREAKING: &str = "minecraft:unbreaking";
 const AIR: [&str; 3] = ["minecraft:air", "minecraft:cave_air", "minecraft:void_air"];
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -176,6 +178,38 @@ pub fn digger<'a>(
         eye_in_water,
         on_ground,
     }
+}
+
+pub fn wrong_tool(
+    book: Option<&MiningBook>,
+    facts: &impl BlockFacts,
+    broken: &[(Pos, Block)],
+    held: Option<&ItemStack>,
+) -> Vec<Pos> {
+    broken
+        .iter()
+        .filter(|(_, block)| !mining_speed::correct_for_drops(book, facts, block, held))
+        .map(|(pos, _)| *pos)
+        .collect()
+}
+
+pub fn wear_after_break(
+    inventory: &mut Inventory,
+    selected: usize,
+    hardness: f32,
+    mut random: impl FnMut() -> f32,
+) -> Option<String> {
+    if hardness == 0.0 {
+        return None;
+    }
+    let stack = inventory.slots.get(selected)?.clone()?;
+    let per_block = mining_speed::tool_of(Some(&stack))?.damage_per_block;
+    let unbreaking = minecraft_terrain::trident::enchantment(&stack, UNBREAKING);
+    let spared = unbreaking as f32 / (unbreaking + 1) as f32;
+    let amount = (0..per_block)
+        .filter(|_| !(unbreaking > 0 && random() < spared))
+        .count() as u32;
+    inventory.wear_tool(selected, amount).then_some(stack.id)
 }
 
 #[cfg(test)]
@@ -559,6 +593,210 @@ mod tests {
             super::digger(&inventory, 5, &status, false, true)
                 .held
                 .is_none()
+        );
+    }
+
+    struct Tags;
+
+    impl BlockFacts for Tags {
+        fn in_tag(&self, block: Option<&Block>, tag: &str) -> bool {
+            let members: &[&str] = match tag {
+                "minecraft:mineable/pickaxe" => &["minecraft:stone", "minecraft:iron_ore"],
+                "minecraft:incorrect_for_wooden_tool" => &["minecraft:iron_ore"],
+                _ => &[],
+            };
+            block.is_some_and(|block| members.contains(&block.id.as_str()))
+        }
+
+        fn has_property(&self, _block: &Block, _name: &str) -> bool {
+            false
+        }
+    }
+
+    fn tool(id: &str) -> ItemStack {
+        let mut stack = ItemStack::new(id, 1);
+        stack.components = Some(serde_json::json!({"minecraft:max_damage": 100000}));
+        stack
+    }
+
+    #[test]
+    fn a_wrong_tool_or_a_bare_hand_breaks_without_drops() {
+        let book = MiningBook::with_tool_blocks([
+            "minecraft:stone",
+            "minecraft:iron_ore",
+            "minecraft:cobweb",
+        ]);
+        let wrong = |block: &str, held: Option<&ItemStack>| {
+            !wrong_tool(Some(&book), &Tags, &[((0, 0, 0), Block::new(block))], held).is_empty()
+        };
+        assert!(wrong("minecraft:stone", None));
+        assert!(!wrong("minecraft:dirt", None));
+        assert!(wrong(
+            "minecraft:iron_ore",
+            Some(&tool("minecraft:wooden_pickaxe"))
+        ));
+        assert!(!wrong(
+            "minecraft:iron_ore",
+            Some(&tool("minecraft:stone_pickaxe"))
+        ));
+        assert!(!wrong(
+            "minecraft:stone",
+            Some(&tool("minecraft:wooden_pickaxe"))
+        ));
+        assert!(!wrong(
+            "minecraft:cobweb",
+            Some(&tool("minecraft:diamond_sword"))
+        ));
+        assert!(!wrong("minecraft:cobweb", Some(&tool("minecraft:shears"))));
+        assert!(wrong("minecraft:cobweb", None));
+        assert!(wrong(
+            "minecraft:stone",
+            Some(&tool("minecraft:diamond_shovel"))
+        ));
+        let broken = [
+            ((1, 0, 0), Block::new("minecraft:stone")),
+            ((2, 0, 0), Block::new("minecraft:dirt")),
+            ((3, 0, 0), Block::new("minecraft:iron_ore")),
+        ];
+        assert_eq!(
+            wrong_tool(Some(&book), &Tags, &broken, None),
+            vec![(1, 0, 0), (3, 0, 0)]
+        );
+        assert!(wrong_tool(None, &Tags, &broken, None).is_empty());
+    }
+
+    fn holding(stack: ItemStack) -> Inventory {
+        let mut inventory = Inventory::default();
+        inventory.slots[0] = Some(stack);
+        inventory
+    }
+
+    fn damage(inventory: &Inventory) -> Option<u64> {
+        inventory.slots[0].as_ref().map(|stack| {
+            stack
+                .components
+                .as_ref()
+                .and_then(|components| components.get("minecraft:damage"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+        })
+    }
+
+    #[test]
+    fn mining_wears_a_tool_by_its_damage_per_block() {
+        let mut pick = holding(tool("minecraft:diamond_pickaxe"));
+        assert_eq!(wear_after_break(&mut pick, 0, 1.5, || 0.0), None);
+        assert_eq!(damage(&pick), Some(1));
+        assert_eq!(wear_after_break(&mut pick, 0, 50.0, || 0.0), None);
+        assert_eq!(damage(&pick), Some(2));
+        assert_eq!(wear_after_break(&mut pick, 0, 0.0, || 0.0), None);
+        assert_eq!(damage(&pick), Some(2), "a torch costs nothing");
+        let mut sword = holding(tool("minecraft:iron_sword"));
+        wear_after_break(&mut sword, 0, 1.5, || 0.0);
+        assert_eq!(damage(&sword), Some(2));
+        let mut trident = holding(tool("minecraft:trident"));
+        wear_after_break(&mut trident, 0, 0.5, || 0.0);
+        assert_eq!(damage(&trident), Some(2));
+        let mut stick = holding(tool("minecraft:stick"));
+        wear_after_break(&mut stick, 0, 1.5, || 0.0);
+        assert_eq!(damage(&stick), Some(0), "no tool, no wear");
+        let mut hand = Inventory::default();
+        assert_eq!(wear_after_break(&mut hand, 0, 1.5, || 0.0), None);
+    }
+
+    #[test]
+    fn unbreaking_three_spares_about_three_points_in_four() {
+        let mut stack = tool("minecraft:diamond_pickaxe");
+        stack.components = Some(serde_json::json!({
+            "minecraft:max_damage": 100000,
+            "minecraft:enchantments": {"minecraft:unbreaking": 3}
+        }));
+        let mut inventory = holding(stack);
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(8);
+        for _ in 0..4000 {
+            wear_after_break(&mut inventory, 0, 1.5, || random.next_float());
+        }
+        let worn = damage(&inventory).unwrap();
+        assert!((850..=1150).contains(&worn), "{worn}");
+    }
+
+    #[test]
+    fn the_last_point_breaks_the_tool() {
+        let mut stack = ItemStack::new("minecraft:diamond_pickaxe", 1);
+        stack.components = Some(serde_json::json!({
+            "minecraft:max_damage": 100,
+            "minecraft:damage": 99
+        }));
+        let mut inventory = holding(stack);
+        assert_eq!(
+            wear_after_break(&mut inventory, 0, 1.5, || 0.0),
+            Some("minecraft:diamond_pickaxe".to_owned())
+        );
+        assert!(inventory.slots[0].is_none());
+    }
+
+    #[test]
+    fn the_real_tool_rolls_the_loot() {
+        use minecraftoss_core::registries::{DataPaths, Registries};
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.is_file() {
+            return;
+        }
+        let Ok(paths) = DataPaths::discover() else {
+            return;
+        };
+        let Ok(registries) = Registries::load(&paths) else {
+            return;
+        };
+        let states = minecraft_terrain::terrain::BlockStates::new(
+            std::sync::Arc::new(registries),
+            0,
+            -64,
+            384,
+        )
+        .unwrap();
+        let book = MiningBook::from_jar(&jar).unwrap();
+        let loot = minecraftoss_player::loot::LootBook::from_jar(&jar).unwrap();
+        let mut sequences = std::collections::HashMap::new();
+        let mut drops = |block: &str, held: Option<&str>| -> Option<Vec<String>> {
+            let held = held.map(|id| ItemStack::new(id, 1));
+            let broken = [((0, 64, 0), Block::new(block))];
+            if !wrong_tool(Some(&book), &states, &broken, held.as_ref()).is_empty() {
+                return None;
+            }
+            let rolled = loot
+                .roll_drops_named(&broken[0].1, held.as_ref(), 1, &mut sequences)
+                .unwrap_or_default();
+            Some(rolled.into_iter().map(|stack| stack.id).collect())
+        };
+        assert_eq!(drops("minecraft:stone", None), None);
+        assert_eq!(
+            drops("minecraft:iron_ore", Some("minecraft:wooden_pickaxe")),
+            None
+        );
+        assert_eq!(
+            drops("minecraft:iron_ore", Some("minecraft:stone_pickaxe")),
+            Some(vec!["minecraft:raw_iron".to_owned()])
+        );
+        assert_eq!(
+            drops("minecraft:cobweb", Some("minecraft:diamond_sword")),
+            Some(vec!["minecraft:string".to_owned()])
+        );
+        assert_eq!(
+            drops("minecraft:cobweb", Some("minecraft:shears")),
+            Some(vec!["minecraft:cobweb".to_owned()])
+        );
+        assert_eq!(drops("minecraft:cobweb", None), None);
+        assert_eq!(
+            drops("minecraft:dirt", None),
+            Some(vec!["minecraft:dirt".to_owned()])
+        );
+        assert_eq!(
+            drops("minecraft:stone", Some("minecraft:diamond_pickaxe")),
+            Some(vec!["minecraft:cobblestone".to_owned()])
         );
     }
 }
