@@ -777,3 +777,16 @@ After 2ce84f2e.
 ```
 IW4L_MINECRAFT_KIT=minecraft:piglin_spawn_egg*16,minecraft:piglin_brute_spawn_egg*2,minecraft:hoglin_spawn_egg*16,minecraft:golden_boots,minecraft:diamond_sword,minecraft:netherrack*64,minecraft:cooked_beef*32
 ```
+
+### b1.9. Docs: Minecraft piglins, brutes and bartering
+
+After 5ebaca7c.
+
+- **Changed:** `docs/MINECRAFT-SURVIVAL.md`: a "Piglins, piglin brutes and bartering" part under the Nether (the brains, gold armour, fighting and the axe on shields, fleeing, admiring and bartering, guarding gold and containers, hunting hoglins, zombification, spawning and saving); handing a piglin a gold ingot in the right-click list; the bastion's piglins and brutes live; piglins leave N6 and the dormant list; the shield limitation now says a brute's axe disables a raised shield for 5 seconds; the riding gap (no piglins on hoglins) and the piglin gaps (spears, crossbow wear and model, the door check, the zombified piglin's offhand, old bastion brutes, chest vehicles) are listed; the hoglin line no longer waits for piglins. `docs/NETHER-END.md`: the piglin and piglin brute rows are present.
+- **Decision:** as in entries 10 and b2.9, the vendored MinecraftOSS file count in CLAUDE.md is left for the round's hand-over.
+- **Test steps:** none (docs only).
+- **Combined kit for b1.6 to b1.8** (20 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:piglin_spawn_egg*16,minecraft:piglin_brute_spawn_egg*2,minecraft:hoglin_spawn_egg*16,minecraft:gold_block*8,minecraft:raw_gold_block*4,minecraft:gilded_blackstone*4,minecraft:nether_gold_ore*4,minecraft:iron_block*4,minecraft:chest*4,minecraft:barrel*2,minecraft:gold_ingot*16,minecraft:gold_nugget*32,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:golden_boots,minecraft:diamond_pickaxe,minecraft:diamond_sword,minecraft:netherrack*64,minecraft:cooked_beef*32,minecraft:golden_apple*8
+```
