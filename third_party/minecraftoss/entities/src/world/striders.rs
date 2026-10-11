@@ -1,5 +1,7 @@
 use super::emissions::{MovementSounds, base_tick_fluid, play_movement};
+use super::riding::Rider;
 use super::*;
+use crate::goals::Control;
 use crate::strider::{self, Strider};
 use crate::strider_ai::{
     GoToLavaState, LookAtState, LookTarget, StriderGoalContext, StriderGoalEffect,
@@ -36,6 +38,8 @@ pub struct StriderEntity {
     pub look_at_player: LookAtState,
     pub look_at_strider: LookAtState,
     goals: GoalSelector<StriderGoalContext>,
+    steering_vehicle: Option<bool>,
+    vehicle_orders: Vec<StriderGoalEffect>,
 }
 
 pub(super) struct StriderSurroundings {
@@ -111,7 +115,9 @@ impl StriderEntity {
             look_at_strider: std::mem::take(&mut self.look_at_strider),
             last_damage_panic,
             no_action_time: self.no_action_time,
-            navigation_done: self.strider.navigation.is_done(),
+            navigation_done: self
+                .steering_vehicle
+                .unwrap_or_else(|| self.strider.navigation.is_done()),
             in_lava,
             eye_height: self.strider.eye_height(),
             players: players.to_vec(),
@@ -141,6 +147,17 @@ impl StriderEntity {
         let mut partner = None;
         for effect in context.effects {
             let fluid = self.fluid;
+            if self.steering_vehicle.is_some()
+                && matches!(
+                    effect,
+                    StriderGoalEffect::Navigate { .. }
+                        | StriderGoalEffect::NavigateToEntity { .. }
+                        | StriderGoalEffect::StopNavigation
+                )
+            {
+                self.vehicle_orders.push(effect);
+                continue;
+            }
             match effect {
                 StriderGoalEffect::Navigate { target, speed } => {
                     let _ = self.strider.navigate_to(world, fluid, target, speed);
@@ -497,6 +514,8 @@ impl EntityWorld {
             look_at_player: LookAtState::default(),
             look_at_strider: LookAtState::default(),
             goals: registered_strider_goals(),
+            steering_vehicle: None,
+            vehicle_orders: Vec::new(),
         });
         self.order.push(EntityKey::Strider(id));
         self.file_in_section(EntityKey::Strider(id));
@@ -520,10 +539,28 @@ impl EntityWorld {
     ) {
         let game_time = self.game_time;
         let surroundings = self.strider_surroundings(players);
+        let vehicle = self
+            .vehicle_of(Rider::Mob(id))
+            .and_then(|vehicle| self.striders.iter().find(|e| e.id == vehicle));
+        let carried_warm = vehicle.is_some_and(|e| !e.strider.suffocating);
+        let steering = vehicle
+            .filter(|e| self.controlling_mob(e.id) == Some(id))
+            .map(|e| (e.id, e.strider.navigation.is_done()));
+        let controlled = self.controlling_mob(id).is_some();
         let Some(entity) = self.striders.iter_mut().find(|e| e.id == id) else {
             return;
         };
-        let (stepped, partner) = entity.tick_body(world, players, game_time, false, surroundings);
+        for control in [Control::Move, Control::Jump, Control::Look] {
+            entity.goals.set_enabled(control, !controlled);
+        }
+        entity.steering_vehicle = steering.map(|(_, done)| done);
+        let (stepped, partner) =
+            entity.tick_body(world, players, game_time, carried_warm, surroundings);
+        entity.steering_vehicle = None;
+        let orders = std::mem::take(&mut entity.vehicle_orders);
+        if let Some((vehicle, _)) = steering {
+            self.order_vehicle(vehicle, &orders, world);
+        }
         if !stepped {
             return;
         }

@@ -542,12 +542,11 @@ impl ServerSim {
         if self.crystals.add(&tag).is_some() || self.dragons.add(&tag).is_some() {
             return;
         }
-        match crate::server_mobs::spawn_saved(&mut self.mobs, &tag) {
-            Some(id) => {
-                self.mob_tags.insert(id, tag);
-            }
-            None => self.dormant.push((minecraftoss_world::natural_spawner::tick::census_of(&tag), tag)),
+        let spawned = crate::server_mobs::spawn_saved_all(&mut self.mobs, &tag);
+        if spawned.is_empty() {
+            self.dormant.push((minecraftoss_world::natural_spawner::tick::census_of(&tag), tag));
         }
+        self.mob_tags.extend(spawned);
     }
 
     /// Saves a chunk's entities: its mobs (from the tag each came from,
@@ -611,7 +610,7 @@ impl ServerSim {
                     pos: p.to_array(),
                     bb: [p.x - half, p.y, p.z - half, p.x + half, p.y + f64::from(m.height), p.z + half],
                     persistent: m.persistent,
-                    riding: false,
+                    riding: m.riding,
                 }
             })
             .collect();
@@ -759,8 +758,11 @@ impl ServerSim {
     pub fn hatch_egg(&mut self, kind: &str, position: [f64; 3], y_rot: f32) -> Result<(), String> {
         let tag = self.level.summon_mob(kind, position, None, y_rot)?;
         self.mobs.set_day_time(self.level.overworld_clock());
-        let id = crate::server_mobs::spawn_saved(&mut self.mobs, &tag).ok_or_else(|| format!("{kind} is not simulated"))?;
-        self.mob_tags.insert(id, tag);
+        let spawned = crate::server_mobs::spawn_saved_all(&mut self.mobs, &tag);
+        if spawned.is_empty() {
+            return Err(format!("{kind} is not simulated"));
+        }
+        self.mob_tags.extend(spawned);
         Ok(())
     }
 

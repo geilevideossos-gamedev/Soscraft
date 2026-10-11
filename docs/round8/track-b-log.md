@@ -126,3 +126,37 @@ After 0eead303.
 ```
 IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*8,minecraft:warped_fungus*64,minecraft:saddle,minecraft:saddle,minecraft:diamond_sword,minecraft:netherrack*64
 ```
+
+## Group b3-striders-2
+
+### 5. Minecraft mobs ride striders
+
+After c32a75e5.
+
+- **Changed:**
+  - New vendored `entities/src/world/riding.rs`: `Rider::Mob | Rider::Player`, `EntityWorld.passengers` (vehicle to riders), `passengers_of`, `vehicle_of`, `riding_mobs`, `rides_together`, `controlling_mob`, `seat` and `seat_offset`, `start_riding` (`canAddPassenger`: nobody on it yet, its eyes not in lava, no riding in circles), `force_riding` (loading, as `startRiding(force)`), and `stop_riding` with `Strider.getDismountLocationForPassenger` (the rider's yaw, then -22.5, +22.5, -45 and +45; each column from the strider's top down to half a block under its feet; lava skipped; a floor below 1 and a free box; on top of the strider as the last resort).
+  - The seat is the strider's passenger attachment (its height, 1.7, or 0.65625 for a baby) less the rider's vehicle attachment (`ridingOffset`: 0.7 for the zombie family, skeletons and piglins, half for babies; 0.875 for wither skeletons; -0.5 for ghasts; 0.6 for players; 0 otherwise). A zombified piglin sits at +1.0, a baby strider at +1.7.
+  - The tick (`tickNonPassenger`, then `tickPassenger`): riders tick right after their vehicle with their motion zeroed first (`rideTick`), then sit at the seat with their fall distance reset. A strider controlled by a mob turns off its own move, jump and look goals (`updateControlFlags`). A baby strider on top steers: its goals' navigation orders go to the strider under it, and they read that strider's navigation (`Mob.getNavigation`). A zombified piglin steers when its own navigation picks a new target: the strider paths there with its own walk profile. A strider carried by a warm strider is warm.
+  - Riders and their vehicle don't push each other. Riders never despawn and count as persistent; vehicles and riders count as riding in the census (`requiresCustomPersistence`).
+  - A removed vehicle (dead for 20 ticks, despawned or unloaded) lets its riders go where they sat.
+  - `minecraft_terrain/src/server_mobs.rs`: `spawn_saved_all` loads a strider with its `Passengers`, recursively, each rider with its own saved tag. Any other jockey, or a strider with a rider the entity world doesn't simulate, still waits dormant as a whole. `mob_tags` saves riders inside their vehicle's `Passengers` and never on their own. `server.rs`: chunk loading, `/summon` and spawn eggs go through it, and the census passes the riding flag on.
+  - Client: `ServerMob.vehicle` (the vehicle and the seat height). `ClientMobs` puts a rider on its vehicle's position every client tick, so it never lags behind. A rider's pose has no walk swing and takes its body yaw from the vehicle (`solveBodyRot`, within 85 degrees of the head). `MobPose.riding`; zombies and zombified piglins sit with their legs forward (`HumanoidModel`: -1.4137167, yaw ±0.31415927, roll ±0.07853982); their arms stay held out, as `animateZombieArms` overrides the riding arm offset.
+- **Tests:** `riding`: `a_baby_rides_an_adult_at_1_7_and_stays_warm_while_it_does`, `a_zombified_piglin_sits_at_1_0_and_steers_its_strider`, `a_strider_carries_one_passenger_and_none_with_its_eyes_in_lava`, `the_dismount_spot_is_forward_never_lava_and_on_top_as_a_last_resort`, `killing_the_strider_lets_its_rider_down_where_it_sat`. `server_mobs`: `a_strider_jockey_round_trips_with_its_passenger`, `a_spider_jockey_still_waits_dormant` (they replace entry 2's `a_strider_with_a_rider_waits_dormant`). `client_mobs`: `a_rider_sits_on_its_vehicle_every_tick_without_walking`. `zombie_render`: `a_riding_zombie_lifts_its_legs_by_1_4137`. `piglin_render`: `a_riding_zombified_piglin_bends_its_legs_forward`.
+- **Decisions:**
+  - Javap of `LivingEntity.dismountVehicle`: a rider whose vehicle was removed stays at its own x and z, at the higher of both heights. So the brief's `killing_the_strider_drops_its_rider_beside_it` became `killing_the_strider_lets_its_rider_down_where_it_sat`: it rides the dying strider for its 20 death ticks, then falls from the seat.
+  - Only riders that can drive a navigation steer a strider: zombies with their goals, and striders. Vanilla lets any mob rider steer (`Mob.getControllingPassenger`); here a skeleton or ghast on a strider rides along while the strider walks on its own, rather than freezing it.
+  - A zombified piglin's goals keep reading its own navigation; only the targets it picks are handed to the strider. Vanilla gives the rider the strider's navigation object directly.
+  - A mob-controlled strider runs none of its own goals: all of them use move, look or jump except `FollowParentGoal`, which never starts for an adult.
+  - A rider counts as standing on the ground at its seat, so its goals can plan paths (planning needs ground or liquid).
+  - Players as riders exist in the relation, but nothing mounts them yet (entry 7b).
+- **Test steps (Nether, survival; `IW4L_MINECRAFT_DIMENSION=the_nether`):** stand on netherrack by the lava sea.
+  1. `/summon minecraft:strider ~ ~1 ~ {Passengers:[{id:"minecraft:zombified_piglin",equipment:{mainhand:{id:"minecraft:warped_fungus_on_a_stick",count:1}}}],equipment:{saddle:{id:"minecraft:saddle",count:1}}}`: the zombified piglin sits on the saddled strider with its legs forward and the stick in its hand, and moves with it without lagging behind (**9**).
+  2. Watch it for a minute: the strider walks where the piglin wanders. Hit the piglin: it turns on you and the strider carries it towards you.
+  3. `/summon minecraft:strider ~ ~1 ~ {Passengers:[{id:"minecraft:strider",Age:-24000}]}`: a baby strider rides the adult, red while the adult is warm, pale and shaking together with it on land (**10**).
+  4. Kill a strider that carries a rider with the sword: the rider stays on top while the strider dies, then drops down where it sat.
+  5. Save and exit next to a jockey, restart: the jockey is still one strider with its rider (**12**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*8,minecraft:diamond_sword,minecraft:netherrack*64
+```

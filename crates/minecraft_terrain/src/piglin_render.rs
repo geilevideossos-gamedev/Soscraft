@@ -178,7 +178,8 @@ pub fn pose(baby: bool, aggressive: bool, pose: &MobPose) -> Posed {
         pose.swing,
         if baby { 0.5 } else { 1.0 },
         rest,
-    );
+    )
+    .seated(pose.riding);
     let body = Quat::from_rotation_y(limbs.body_yaw);
     let arms = [0, 1].map(|arm| {
         let (x, z) = limbs.arm_pivots[arm];
@@ -349,6 +350,7 @@ mod tests {
             swing: None,
             red_overlay: false,
             death_time: 0.0,
+            riding: false,
         }
     }
 
@@ -407,5 +409,17 @@ mod tests {
         let ears = pose(false, false, &standing());
         assert_eq!(ears.cubes[4].pivot, [-4.5, -6.0, 0.0]);
         assert_eq!(ears.cubes[5].pivot, [4.5, -6.0, 0.0]);
+    }
+
+    #[test]
+    fn a_riding_zombified_piglin_bends_its_legs_forward() {
+        let upright = pose(false, false, &standing());
+        let mut riding = standing();
+        riding.riding = true;
+        let seated = pose(false, false, &riding);
+        let (_, _, x) = seated.legs[0].1.to_euler(EulerRot::ZYX);
+        assert!((x + 1.413_716_7).abs() < 1.0e-5, "{x}");
+        assert_eq!(seated.arms[0].1, upright.arms[0].1);
+        assert_ne!(seated.legs[1].1, upright.legs[1].1);
     }
 }

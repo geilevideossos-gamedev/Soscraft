@@ -17,7 +17,7 @@ use minecraftoss_entities::mooshroom::{MushroomCow, MushroomVariant};
 use minecraftoss_entities::pig::{Pig, PigSoundVariant, PigVariant};
 use minecraftoss_entities::sheep::Sheep;
 use minecraftoss_entities::villager::Villager;
-use minecraftoss_entities::world::EntityWorld;
+use minecraftoss_entities::world::{EntityWorld, Rider};
 use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_core::block::{flags, FluidKind};
 use minecraftoss_core::tags::TagId;
@@ -419,6 +419,67 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:zombie_villager",
     "minecraft:zombified_piglin",
 ];
+
+fn carries(tag: &Tag) -> bool {
+    text(tag, "id") == Some("minecraft:strider")
+        && tag.get("Passengers").and_then(Tag::as_list).is_some_and(|riders| {
+            riders.iter().all(|rider| {
+                let kind = text(rider, "id").unwrap_or_default();
+                SIMULATED_KINDS.contains(&kind) && !matches!(kind, "minecraft:end_crystal" | "minecraft:ender_dragon") && (rider.get("Passengers").is_none() || carries(rider))
+            })
+        })
+}
+
+pub fn spawn_saved_all(world: &mut EntityWorld, tag: &Tag) -> Vec<(u64, Tag)> {
+    let (Tag::Compound(map), true) = (tag, carries(tag)) else {
+        return spawn_saved(world, tag).map(|id| vec![(id, tag.clone())]).unwrap_or_default();
+    };
+    let mut bare = map.clone();
+    let riders = bare.remove("Passengers").and_then(|riders| riders.as_list().map(<[Tag]>::to_vec)).unwrap_or_default();
+    let Some(id) = spawn_saved(world, &Tag::Compound(bare)) else { return Vec::new() };
+    let mut out = vec![(id, tag.clone())];
+    for rider in &riders {
+        let spawned = spawn_saved_all(world, rider);
+        if let Some(&(rider_id, _)) = spawned.first() {
+            world.force_riding(Rider::Mob(rider_id), id);
+        }
+        out.extend(spawned);
+    }
+    out
+}
+
+fn nest_passengers(world: &EntityWorld, out: &mut Vec<(u64, Tag)>) {
+    fn build(world: &EntityWorld, tags: &mut std::collections::HashMap<u64, Tag>, id: u64) -> Option<Tag> {
+        let mut tag = tags.remove(&id)?;
+        let riders: Vec<Tag> = world
+            .passengers_of(id)
+            .iter()
+            .filter_map(|rider| match rider {
+                Rider::Mob(rider) => build(world, tags, *rider),
+                Rider::Player(_) => None,
+            })
+            .collect();
+        if let Tag::Compound(map) = &mut tag {
+            if riders.is_empty() {
+                map.remove("Passengers");
+            } else {
+                map.insert("Passengers".to_owned(), Tag::List(riders));
+            }
+        }
+        Some(tag)
+    }
+    let order: Vec<u64> = out.iter().map(|(id, _)| *id).collect();
+    let present: std::collections::HashSet<u64> = order.iter().copied().collect();
+    let mut tags: std::collections::HashMap<u64, Tag> = std::mem::take(out).into_iter().collect();
+    for id in order {
+        if world.vehicle_of(Rider::Mob(id)).is_some_and(|vehicle| present.contains(&vehicle)) {
+            continue;
+        }
+        if let Some(tag) = build(world, &mut tags, id) {
+            out.push((id, tag));
+        }
+    }
+}
 
 /// Adds a saved entity the entity world simulates; its ID, or none for a
 /// type it does not simulate yet.
@@ -1331,6 +1392,7 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
             }
         }
     }
+    nest_passengers(world, &mut out);
     for f in world.fireballs() {
         let fireball = &f.fireball;
         if !keep(fireball.position) || !fireball.alive {
@@ -1557,9 +1619,41 @@ mod tests {
     }
 
     #[test]
-    fn a_strider_with_a_rider_waits_dormant() {
-        let tag = strider_tag("Passengers:[{id:\"minecraft:zombified_piglin\"}]");
-        assert_eq!(spawn_saved(&mut EntityWorld::default(), &tag), None);
-        assert!(SIMULATED_KINDS.contains(&"minecraft:strider"));
+    fn a_strider_jockey_round_trips_with_its_passenger() {
+        let tag = strider_tag("UUID:[I;1,2,3,4],equipment:{saddle:{id:\"minecraft:saddle\",count:1}},Passengers:[{id:\"minecraft:zombified_piglin\",Pos:[1.5d,65.5d,2.5d],UUID:[I;5,6,7,8],equipment:{mainhand:{id:\"minecraft:warped_fungus_on_a_stick\",count:1}}},{id:\"minecraft:ghast\",Pos:[9.0d,70.0d,9.0d]}]");
+        assert_eq!(spawn_saved(&mut EntityWorld::default(), &tag), None, "the strider alone refuses its riders");
+        let mut world = EntityWorld::default();
+        let spawned = spawn_saved_all(&mut world, &tag);
+        assert_eq!(spawned.len(), 3);
+        let (strider, rider, ghast) = (spawned[0].0, spawned[1].0, spawned[2].0);
+        assert_eq!(world.passengers_of(strider), &[Rider::Mob(rider), Rider::Mob(ghast)]);
+        assert_eq!(world.zombies().iter().find(|e| e.id == rider).unwrap().zombie.main_hand.as_deref(), Some("minecraft:warped_fungus_on_a_stick"));
+        let seat = world.seat(Rider::Mob(rider)).unwrap();
+        assert!((seat.y - 65.5).abs() < 1.0e-6, "{seat}");
+        assert_eq!(world.body_mut(rider).unwrap().position, seat);
+        let originals: std::collections::HashMap<u64, Tag> = spawned.into_iter().collect();
+        let saved = mob_tags(&world, |_| true, &originals);
+        assert_eq!(saved.len(), 1, "riders save inside their vehicle");
+        let back = &saved[0].1;
+        assert_eq!(text(back, "id"), Some("minecraft:strider"));
+        let riders = back.get("Passengers").and_then(Tag::as_list).expect("its passengers");
+        assert_eq!(riders.len(), 2);
+        assert_eq!(text(&riders[0], "id"), Some("minecraft:zombified_piglin"));
+        assert_eq!(riders[0].get("UUID").and_then(Tag::as_ints).map(|ints| ints.iter().copied().collect::<Vec<i32>>()), Some(vec![5, 6, 7, 8]));
+        assert!(riders[0].get("Passengers").is_none());
+        assert_eq!(riders[0].get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| i.get("id")).and_then(Tag::as_str), Some("minecraft:warped_fungus_on_a_stick"));
+        let mut again = EntityWorld::default();
+        let reloaded = spawn_saved_all(&mut again, back);
+        assert_eq!(reloaded.len(), 3);
+        assert_eq!(again.vehicle_of(Rider::Mob(reloaded[1].0)), Some(reloaded[0].0));
+        assert!(again.census().iter().all(|entry| entry.riding));
+    }
+
+    #[test]
+    fn a_spider_jockey_still_waits_dormant() {
+        let spider = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:spider\",Pos:[1.5d,64.0d,2.5d],Passengers:[{id:\"minecraft:skeleton\"}]}").unwrap();
+        assert!(spawn_saved_all(&mut EntityWorld::default(), &spider).is_empty());
+        let strider = strider_tag("Passengers:[{id:\"minecraft:camel\"}]");
+        assert!(spawn_saved_all(&mut EntityWorld::default(), &strider).is_empty(), "a rider it does not simulate keeps the whole group dormant");
     }
 }

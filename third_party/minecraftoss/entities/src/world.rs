@@ -36,6 +36,8 @@ mod fireballs;
 mod blazes;
 mod striders;
 pub use striders::StriderEntity;
+mod riding;
+pub use riding::Rider;
 pub use ghasts::GhastEntity;
 pub use blazes::BlazeEntity;
 pub use fireballs::{FireballBlast, FireballEntity};
@@ -2266,6 +2268,7 @@ pub struct CensusEntry {
     pub width: f32,
     pub height: f32,
     pub persistent: bool,
+    pub riding: bool,
 }
 
 #[derive(Clone)]
@@ -2373,6 +2376,7 @@ pub struct EntityWorld {
     /// `broadcastEntityEvent` since last taken: entity, event (12 hearts,
     /// 13 anger, 14 happiness).
     entity_events: Vec<(u64, u8)>,
+    passengers: std::collections::BTreeMap<u64, Vec<Rider>>,
 }
 
 impl Default for EntityWorld {
@@ -2445,6 +2449,7 @@ impl Default for EntityWorld {
             trade_experience: Vec::new(),
             player_main_hands: HashMap::new(),
             entity_events: Vec::new(),
+            passengers: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -4696,10 +4701,12 @@ impl EntityWorld {
             trade_experience: Vec::new(),
             player_main_hands: self.player_main_hands.clone(),
             entity_events: Vec::new(),
+            passengers: self.passengers.clone(),
         };
         let kept: HashSet<u64> = copy.positions().map(|(id, _)| id).collect();
         copy.order = self.order.iter().copied().filter(|key| kept.contains(&key.id())).collect();
         copy.sections.retain_mobs(|id| kept.contains(&id));
+        copy.prune_riding();
         copy
     }
 
@@ -4716,39 +4723,43 @@ impl EntityWorld {
     /// (`isPersistenceRequired`), for natural spawning's mob caps and
     /// obstruction test.
     pub fn census(&self) -> Vec<CensusEntry> {
-        let entry = |kind: &'static str, body: &crate::movement::Body, persistent: bool| CensusEntry {
-            kind,
-            position: body.position,
-            width: body.width,
-            height: body.height,
-            persistent,
+        let entry = |id: u64, kind: &'static str, body: &crate::movement::Body, persistent: bool| {
+            let passenger = self.vehicle_of(Rider::Mob(id)).is_some();
+            CensusEntry {
+                kind,
+                position: body.position,
+                width: body.width,
+                height: body.height,
+                persistent: persistent || passenger,
+                riding: passenger || self.passengers.contains_key(&id),
+            }
         };
         let mut out = Vec::with_capacity(self.order.len());
-        out.extend(self.bats.iter().map(|e| entry("minecraft:bat", &e.bat.body, e.bat.persistence_required)));
+        out.extend(self.bats.iter().map(|e| entry(e.id, "minecraft:bat", &e.bat.body, e.bat.persistence_required)));
         out.extend(self.zombies.iter().map(|e| {
             let kind = e.zombie.kind.type_id();
-            entry(kind, &e.zombie.body, e.zombie.persistence_required)
+            entry(e.id, kind, &e.zombie.body, e.zombie.persistence_required)
         }));
-        out.extend(self.skeletons.iter().map(|e| entry(e.skeleton.kind.type_id(), &e.skeleton.body, e.skeleton.persistence_required)));
-        out.extend(self.creepers.iter().map(|e| entry("minecraft:creeper", &e.creeper.body, e.creeper.persistence_required)));
-        out.extend(self.spiders.iter().map(|e| entry("minecraft:spider", &e.spider.body, e.spider.persistence_required)));
-        out.extend(self.slimes.iter().map(|e| entry(e.slime.type_id(), &e.slime.body, e.slime.persistence_required)));
+        out.extend(self.skeletons.iter().map(|e| entry(e.id, e.skeleton.kind.type_id(), &e.skeleton.body, e.skeleton.persistence_required)));
+        out.extend(self.creepers.iter().map(|e| entry(e.id, "minecraft:creeper", &e.creeper.body, e.creeper.persistence_required)));
+        out.extend(self.spiders.iter().map(|e| entry(e.id, "minecraft:spider", &e.spider.body, e.spider.persistence_required)));
+        out.extend(self.slimes.iter().map(|e| entry(e.id, e.slime.type_id(), &e.slime.body, e.slime.persistence_required)));
         // `requiresCustomPersistence`: carrying a block keeps it.
-        out.extend(self.endermen.iter().map(|e| entry("minecraft:enderman", &e.enderman.body, e.enderman.persistence_required || e.carried().is_some())));
-        out.extend(self.witches.iter().map(|e| entry("minecraft:witch", &e.witch.body, e.witch.persistence_required)));
-        out.extend(self.iron_golems.iter().map(|e| entry("minecraft:iron_golem", &e.golem.body, e.golem.persistence_required)));
-        out.extend(self.wolves.iter().map(|e| entry("minecraft:wolf", &e.wolf.body, e.wolf.persistence_required || e.wolf.tame)));
-        out.extend(self.villagers.iter().map(|e| entry("minecraft:villager", &e.villager.body, e.villager.persistence_required)));
+        out.extend(self.endermen.iter().map(|e| entry(e.id, "minecraft:enderman", &e.enderman.body, e.enderman.persistence_required || e.carried().is_some())));
+        out.extend(self.witches.iter().map(|e| entry(e.id, "minecraft:witch", &e.witch.body, e.witch.persistence_required)));
+        out.extend(self.iron_golems.iter().map(|e| entry(e.id, "minecraft:iron_golem", &e.golem.body, e.golem.persistence_required)));
+        out.extend(self.wolves.iter().map(|e| entry(e.id, "minecraft:wolf", &e.wolf.body, e.wolf.persistence_required || e.wolf.tame)));
+        out.extend(self.villagers.iter().map(|e| entry(e.id, "minecraft:villager", &e.villager.body, e.villager.persistence_required)));
         out.extend(self.cows.iter().map(|e| {
             let kind = if e.mooshroom.is_some() { "minecraft:mooshroom" } else { "minecraft:cow" };
-            entry(kind, &e.cow.body, e.cow.persistence_required)
+            entry(e.id, kind, &e.cow.body, e.cow.persistence_required)
         }));
-        out.extend(self.sheep.iter().map(|e| entry("minecraft:sheep", &e.body, e.sheep.persistence_required)));
-        out.extend(self.pigs.iter().map(|e| entry("minecraft:pig", &e.pig.body, e.pig.persistence_required)));
-        out.extend(self.chickens.iter().map(|e| entry("minecraft:chicken", &e.chicken.body, e.chicken.persistence_required)));
-        out.extend(self.ghasts.iter().map(|e| entry("minecraft:ghast", &e.ghast.body, e.ghast.persistence_required)));
-        out.extend(self.blazes.iter().map(|e| entry("minecraft:blaze", &e.blaze.body, e.blaze.persistence_required)));
-        out.extend(self.striders.iter().map(|e| entry("minecraft:strider", &e.strider.body, e.strider.persistence_required)));
+        out.extend(self.sheep.iter().map(|e| entry(e.id, "minecraft:sheep", &e.body, e.sheep.persistence_required)));
+        out.extend(self.pigs.iter().map(|e| entry(e.id, "minecraft:pig", &e.pig.body, e.pig.persistence_required)));
+        out.extend(self.chickens.iter().map(|e| entry(e.id, "minecraft:chicken", &e.chicken.body, e.chicken.persistence_required)));
+        out.extend(self.ghasts.iter().map(|e| entry(e.id, "minecraft:ghast", &e.ghast.body, e.ghast.persistence_required)));
+        out.extend(self.blazes.iter().map(|e| entry(e.id, "minecraft:blaze", &e.blaze.body, e.blaze.persistence_required)));
+        out.extend(self.striders.iter().map(|e| entry(e.id, "minecraft:strider", &e.strider.body, e.strider.persistence_required)));
         out
     }
 
@@ -4767,7 +4778,9 @@ impl EntityWorld {
         const CREATURE: (f64, bool, bool) = (128.0, false, true);
         const AMBIENT: (f64, bool, bool) = (128.0, true, true);
         const VILLAGER: (f64, bool, bool) = (128.0, false, true);
-        let check = |position: DVec3, persistent: bool, rule: (f64, bool, bool), no_action_time: &mut i32, random: &mut LegacyRandom| -> bool {
+        let riders: HashSet<u64> = self.riding_mobs().map(|(rider, _)| rider).collect();
+        let check = |id: u64, position: DVec3, persistent: bool, rule: (f64, bool, bool), no_action_time: &mut i32, random: &mut LegacyRandom| -> bool {
+            let persistent = persistent || riders.contains(&id);
             if !listed(position) {
                 return false;
             }
@@ -4785,31 +4798,32 @@ impl EntityWorld {
             far
         };
         let before = self.order.len();
-        self.bats.retain_mut(|e| !check(e.bat.body.position, e.bat.persistence_required, AMBIENT, &mut e.no_action_time, &mut e.random));
-        self.zombies.retain_mut(|e| !check(e.zombie.body.position, e.zombie.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
-        self.skeletons.retain_mut(|e| !check(e.skeleton.body.position, e.skeleton.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
-        self.creepers.retain_mut(|e| !check(e.creeper.body.position, e.creeper.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
-        self.spiders.retain_mut(|e| !check(e.spider.body.position, e.spider.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
-        self.slimes.retain_mut(|e| !check(e.slime.body.position, e.slime.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
+        self.bats.retain_mut(|e| !check(e.id, e.bat.body.position, e.bat.persistence_required, AMBIENT, &mut e.no_action_time, &mut e.random));
+        self.zombies.retain_mut(|e| !check(e.id, e.zombie.body.position, e.zombie.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
+        self.skeletons.retain_mut(|e| !check(e.id, e.skeleton.body.position, e.skeleton.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
+        self.creepers.retain_mut(|e| !check(e.id, e.creeper.body.position, e.creeper.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
+        self.spiders.retain_mut(|e| !check(e.id, e.spider.body.position, e.spider.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
+        self.slimes.retain_mut(|e| !check(e.id, e.slime.body.position, e.slime.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
         self.endermen.retain_mut(|e| {
             let persistent = e.enderman.persistence_required || e.ai.state.enderman.carried.is_some();
-            !check(e.enderman.body.position, persistent, MONSTER, &mut e.no_action_time, &mut e.random)
+            !check(e.id, e.enderman.body.position, persistent, MONSTER, &mut e.no_action_time, &mut e.random)
         });
-        self.witches.retain_mut(|e| !check(e.witch.body.position, e.witch.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
+        self.witches.retain_mut(|e| !check(e.id, e.witch.body.position, e.witch.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
         // `AbstractGolem.removeWhenFarAway` is false, yet the idle roll draws.
-        self.iron_golems.retain_mut(|e| !check(e.golem.body.position, e.golem.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
+        self.iron_golems.retain_mut(|e| !check(e.id, e.golem.body.position, e.golem.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
         // `TamableAnimal`: a tame wolf never goes.
-        self.wolves.retain_mut(|e| !check(e.wolf.body.position, e.wolf.persistence_required || e.wolf.tame, CREATURE, &mut e.no_action_time, &mut e.random));
-        self.villagers.retain_mut(|e| !check(e.villager.body.position, e.villager.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
-        self.cows.retain_mut(|e| !check(e.cow.body.position, e.cow.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
-        self.sheep.retain_mut(|e| !check(e.body.position, e.sheep.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
-        self.pigs.retain_mut(|e| !check(e.pig.body.position, e.pig.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
-        self.chickens.retain_mut(|e| !check(e.chicken.body.position, e.chicken.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
-        self.ghasts.retain_mut(|e| !check(e.ghast.body.position, e.ghast.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
-        self.blazes.retain_mut(|e| !check(e.blaze.body.position, e.blaze.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
-        self.striders.retain_mut(|e| !check(e.strider.body.position, e.strider.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
+        self.wolves.retain_mut(|e| !check(e.id, e.wolf.body.position, e.wolf.persistence_required || e.wolf.tame, CREATURE, &mut e.no_action_time, &mut e.random));
+        self.villagers.retain_mut(|e| !check(e.id, e.villager.body.position, e.villager.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
+        self.cows.retain_mut(|e| !check(e.id, e.cow.body.position, e.cow.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
+        self.sheep.retain_mut(|e| !check(e.id, e.body.position, e.sheep.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
+        self.pigs.retain_mut(|e| !check(e.id, e.pig.body.position, e.pig.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
+        self.chickens.retain_mut(|e| !check(e.id, e.chicken.body.position, e.chicken.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
+        self.ghasts.retain_mut(|e| !check(e.id, e.ghast.body.position, e.ghast.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
+        self.blazes.retain_mut(|e| !check(e.id, e.blaze.body.position, e.blaze.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
+        self.striders.retain_mut(|e| !check(e.id, e.strider.body.position, e.strider.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
         let alive: HashSet<u64> = self.positions().map(|(id, _)| id).collect();
         self.order.retain(|key| alive.contains(&key.id()));
+        self.prune_riding();
         before - self.order.len()
     }
 
@@ -4840,6 +4854,7 @@ impl EntityWorld {
         self.striders.retain(|e| !remove(e.strider.body.position));
         let alive: HashSet<u64> = self.positions().map(|(id, _)| id).collect();
         self.order.retain(|key| alive.contains(&key.id()));
+        self.prune_riding();
         before - self.order.len()
     }
 
@@ -4860,6 +4875,8 @@ impl EntityWorld {
         // ticking on the next game tick, in global insertion order.
         let mut order = self.order.clone();
         order.retain(|key| ticking.contains(&key.id()));
+        let order = self.ride_order(order);
+        let mut riding = None;
         let cow_indices: HashMap<_, _> = self
             .cows
             .iter()
@@ -4885,6 +4902,10 @@ impl EntityWorld {
             .map(|(index, entity)| (entity.id, index))
             .collect();
         for key in order {
+            if let Some(tick) = riding.take() {
+                self.end_ride_tick(tick, &*world);
+            }
+            riding = self.begin_ride_tick(key.id());
             let index = match key {
                 EntityKey::Bat(id) => {
                     let entity = self.bat_mut(id).unwrap();
@@ -6780,6 +6801,9 @@ impl EntityWorld {
                 horse.tick_animation();
             }
         }
+        if let Some(tick) = riding.take() {
+            self.end_ride_tick(tick, &*world);
+        }
         self.bats
             .retain(|entity| entity.bat.damage.death_ticks < 20);
         self.zombies
@@ -6859,6 +6883,7 @@ impl EntityWorld {
             | EntityKey::Blaze(id)
             | EntityKey::Strider(id) => alive_ids.contains(id),
         });
+        self.prune_riding();
     }
 
     /// Returns the nearest entity AABB hit in front of the eye, using the

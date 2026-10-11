@@ -390,7 +390,7 @@ impl EntityWorld {
             // `other.push(pusher)`: a player's own motion is its client's,
             // and a sleeper pushes back nothing (`LivingEntity.push`).
             if let SectionEntry::Mob(other) = other {
-                if self.sleeping(other) {
+                if self.sleeping(other) || self.rides_together(key.id(), other.id()) {
                     continue;
                 }
             }
