@@ -6916,6 +6916,13 @@ mod tests {
     }
 
     #[test]
+    fn soul_lights_repel_piglins_through_the_registry_tags() {
+        let blocks = [("minecraft:soul_torch", ""), ("minecraft:soul_wall_torch", "facing=north"), ("minecraft:soul_lantern", ""), ("minecraft:soul_campfire", "lit=true"), ("minecraft:torch", ""), ("minecraft:lantern", "")];
+        let Some(answers) = mob_tag_answers(&blocks, "minecraft:piglin_repellents") else { return };
+        assert_eq!(answers, vec![true, true, true, true, false, false]);
+    }
+
+    #[test]
     fn enderman_holdable_still_matches_through_the_registry_tags() {
         let blocks = [("minecraft:grass_block", ""), ("minecraft:crimson_nylium", ""), ("minecraft:stone", ""), ("minecraft:obsidian", "")];
         let Some(answers) = mob_tag_answers(&blocks, "minecraft:enderman_holdable") else { return };

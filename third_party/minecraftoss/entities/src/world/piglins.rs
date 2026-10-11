@@ -1605,6 +1605,139 @@ mod tests {
         assert!(piglin_hurt);
     }
 
+    fn repelled_by(block: Block) -> (bool, bool) {
+        let mut blocks = floor(16);
+        blocks.blocks.insert((3, 64, 0), block);
+        let mut world = EntityWorld::default();
+        let id = spawn(&mut world, PiglinKind::Piglin, 0.5, 0.5);
+        world.piglin_mut(id).unwrap().set_random_seed(8);
+        let (mut remembered, mut fled) = (false, false);
+        for _ in 0..200 {
+            world.tick_with_players(&mut blocks, &[]);
+            let memories = &world.piglin_mut(id).unwrap().brain.memories;
+            remembered |= memories.nearest_repellent.get() == Some(&(3, 64, 0));
+            fled |= memories
+                .walk_target
+                .get()
+                .is_some_and(|goal| goal.speed == 1.0);
+        }
+        (remembered, fled)
+    }
+
+    #[test]
+    fn a_piglin_walks_away_from_a_soul_torch_within_eight_and_ignores_a_normal_torch() {
+        assert_eq!(
+            repelled_by(Block::new("minecraft:soul_torch")),
+            (true, true)
+        );
+        assert_eq!(repelled_by(Block::new("minecraft:torch")), (false, false));
+        let mut blocks = floor(16);
+        blocks
+            .blocks
+            .insert((3, 64, 0), Block::new("minecraft:soul_lantern"));
+        let mut world = EntityWorld::default();
+        let id = spawn(&mut world, PiglinKind::Piglin, 0.5, 0.5);
+        for _ in 0..25 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        let brain = &world.piglin_mut(id).unwrap().brain;
+        assert!(brain.near_repellent());
+        assert_eq!(
+            brain.activity_sound(DVec3::ZERO, &[], false),
+            "entity.piglin.retreat"
+        );
+    }
+
+    #[test]
+    fn an_unlit_soul_campfire_repels_nobody() {
+        let campfire = Block::new("minecraft:soul_campfire");
+        assert_eq!(
+            repelled_by(campfire.clone().with("lit", "false")),
+            (false, false)
+        );
+        assert_eq!(repelled_by(campfire.with("lit", "true")), (true, true));
+    }
+
+    #[test]
+    fn a_piglin_runs_from_a_zombified_piglin_within_six_and_drops_its_target() {
+        let mut blocks = floor(20);
+        let mut world = EntityWorld::default();
+        world.set_recipe_book(piglin_book());
+        let id = armed(
+            &mut world,
+            PiglinKind::Piglin,
+            DVec3::new(0.5, 64.0, 0.5),
+            "minecraft:golden_sword",
+        );
+        slowed(&mut world, id);
+        let players = [player(7, DVec3::new(0.5, 64.0, 5.5))];
+        for _ in 0..45 {
+            world.tick_with_players(&mut blocks, &players);
+        }
+        let memories = &world.piglin_mut(id).unwrap().brain.memories;
+        assert_eq!(memories.attack_target.get(), Some(&Target::Player(7)));
+        let mut zombified = crate::zombie::Zombie::new(DVec3::new(-3.5, 64.0, 0.5));
+        zombified.kind = crate::zombie::ZombieKind::ZombifiedPiglin;
+        let zombified = world.spawn_zombie(zombified, true);
+        world.piglin_mut(id).unwrap().effects = Default::default();
+        let mut avoided = None;
+        for _ in 0..25 {
+            world.tick_with_players(&mut blocks, &players);
+            let brain = &world.piglin_mut(id).unwrap().brain;
+            if brain.memories.avoid_target.get() == Some(&Target::Mob(zombified)) {
+                avoided = brain.memories.avoid_target.ttl();
+                assert!(!brain.memories.attack_target.present());
+                break;
+            }
+        }
+        let ttl = avoided.expect("it avoids the zombified piglin");
+        assert!((98..=140).contains(&ttl), "{ttl}");
+        let from = DVec3::new(-3.5, 64.0, 0.5);
+        let start = world.piglin_mut(id).unwrap().position().distance(from);
+        for _ in 0..60 {
+            world.tick_with_players(&mut blocks, &players);
+        }
+        let entity = &world.piglins()[0];
+        let after = entity.position().distance(from);
+        assert!(after > start + 2.0, "{start} {after}");
+        assert!(!entity.brain.memories.attack_target.present());
+    }
+
+    #[test]
+    fn a_baby_runs_from_a_wither_skeleton_and_an_adult_attacks_it() {
+        let mut blocks = floor(16);
+        let mut world = EntityWorld::default();
+        let baby = spawn(&mut world, PiglinKind::Piglin, 0.5, 0.5);
+        world.piglin_mut(baby).unwrap().piglin.set_baby(true);
+        let adult = armed(
+            &mut world,
+            PiglinKind::Piglin,
+            DVec3::new(0.5, 64.0, -3.5),
+            "minecraft:golden_sword",
+        );
+        let skeleton = crate::skeleton::Skeleton::of_kind(
+            crate::skeleton::SkeletonKind::WitherSkeleton,
+            DVec3::new(6.5, 64.0, 0.5),
+        );
+        let skeleton = world.spawn_skeleton(skeleton, true);
+        for _ in 0..45 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        let brain = &world.piglin_mut(baby).unwrap().brain;
+        assert_eq!(
+            brain.memories.avoid_target.get(),
+            Some(&Target::Mob(skeleton))
+        );
+        assert!((55..=140).contains(&brain.memories.avoid_target.ttl().unwrap()));
+        assert_eq!(brain.activity, crate::piglin_brain::Activity::Avoid);
+        let brain = &world.piglin_mut(adult).unwrap().brain;
+        assert_eq!(
+            brain.memories.attack_target.get(),
+            Some(&Target::Mob(skeleton))
+        );
+        assert!(!brain.memories.avoid_target.present());
+    }
+
     #[test]
     fn iron_golems_attack_piglins() {
         let mut blocks = floor(12);

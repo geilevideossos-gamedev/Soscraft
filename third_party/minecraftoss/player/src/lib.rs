@@ -1020,6 +1020,10 @@ pub fn authored_block_in_tag(block: &Block, tag: &str, collision: &[[f64; 6]]) -
             id,
             "minecraft:warped_fungus" | "minecraft:potted_warped_fungus" | "minecraft:nether_portal" | "minecraft:respawn_anchor"
         ),
+        "minecraft:piglin_repellents" => matches!(
+            id,
+            "minecraft:soul_fire" | "minecraft:soul_torch" | "minecraft:soul_lantern" | "minecraft:soul_wall_torch" | "minecraft:soul_campfire"
+        ),
         "minecraft:enderman_holdable" => matches!(
             id,
             // `#small_flowers`

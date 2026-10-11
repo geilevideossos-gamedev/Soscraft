@@ -149,18 +149,24 @@ impl PiglinBrain {
         );
         self.interact_with_doors(ctx);
         if ctx.kind == PiglinKind::Piglin {
+            self.baby_avoid_nemesis(ctx);
+            self.avoid_zombified(ctx);
             self.start_celebrating_if_target_dead(ctx);
         }
         self.stop_being_angry_if_target_dead(ctx);
         match self.activity {
             Activity::Idle => {
                 self.start_attacking(ctx);
+                if ctx.kind == PiglinKind::Piglin {
+                    self.avoid_repellent(ctx);
+                }
                 self.idle_look(ctx);
                 self.idle_movement(ctx);
                 self.set_look_and_interact(ctx);
             }
             Activity::Fight => self.fight(ctx),
             Activity::Celebrate => {
+                self.avoid_repellent(ctx);
                 self.start_attacking(ctx);
                 self.go_to_celebrate_location(ctx);
                 self.celebrate_movement(ctx);
@@ -169,6 +175,7 @@ impl PiglinBrain {
                 self.walk_away_from_avoid_target(ctx);
                 self.idle_look(ctx);
                 self.idle_movement(ctx);
+                self.stop_fleeing_if_safe(ctx);
             }
             _ => {}
         }
@@ -245,14 +252,8 @@ impl PiglinBrain {
             .is_some_and(|other| other.position.distance_squared(position) < 12.0 * 12.0)
     }
 
-    pub fn near_repellent(&self, position: DVec3) -> bool {
-        self.memories
-            .nearest_repellent
-            .get()
-            .is_some_and(|&(x, y, z)| {
-                let center = DVec3::new(f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5);
-                center.distance_squared(position) < 8.0 * 8.0
-            })
+    pub fn near_repellent(&self) -> bool {
+        self.memories.nearest_repellent.present()
     }
 
     pub fn activity_sound(
@@ -270,7 +271,7 @@ impl PiglinBrain {
             _ if self.memories.nearest_player_holding_wanted_item.present() => {
                 "entity.piglin.jealous"
             }
-            _ if self.near_repellent(position) => "entity.piglin.retreat",
+            _ if self.near_repellent() => "entity.piglin.retreat",
             _ => "entity.piglin.ambient",
         }
     }

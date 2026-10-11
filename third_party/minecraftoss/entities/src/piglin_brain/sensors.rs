@@ -1,5 +1,5 @@
 use super::{PiglinBrain, PiglinCtx};
-use crate::brain_behaviors::{Living, find, set_list, targetable_within};
+use crate::brain_behaviors::{Living, block_of, find, nearest_block, set_list, targetable_within};
 use crate::monster_ai::Target;
 use crate::piglin::PiglinKind;
 use glam::DVec3;
@@ -11,6 +11,14 @@ pub const NEAREST_PLAYERS: usize = 1;
 pub const SPECIFIC: usize = 4;
 pub const NEMESES: [&str; 2] = ["minecraft:wither_skeleton", "minecraft:wither"];
 pub const ZOMBIFIED: [&str; 2] = ["minecraft:zombified_piglin", "minecraft:zoglin"];
+pub const REPELLENTS: &str = "minecraft:piglin_repellents";
+
+pub fn repellent(world: &dyn minecraftoss_player::World, pos: crate::brain_behaviors::Pos) -> bool {
+    world.block_in_tag(pos, REPELLENTS)
+        && world.block(pos).is_none_or(|block| {
+            block.id != "minecraft:soul_campfire" || block.property("lit") == Some("true")
+        })
+}
 
 pub fn adult_piglin(other: &Living) -> bool {
     match other.kind {
@@ -80,9 +88,14 @@ impl PiglinBrain {
         let mut ungilded = None;
         let mut holding = None;
         let mut adults = Vec::new();
+        let mut hoglins = 0;
         for other in visible {
             match other.kind {
-                "minecraft:hoglin" => {}
+                "minecraft:hoglin" => {
+                    if !other.baby {
+                        hoglins += 1;
+                    }
+                }
                 "minecraft:piglin" | "minecraft:piglin_brute" => {
                     if adult_piglin(other) {
                         adults.push(other.target);
@@ -118,8 +131,11 @@ impl PiglinBrain {
             .nearest_player_holding_wanted_item
             .set_or_erase(holding);
         memories.visible_adult_piglin_count.set(adults.len());
+        memories.visible_adult_hoglin_count.set(hoglins);
         set_list(&mut memories.nearest_visible_adult_piglins, adults);
         set_list(&mut memories.nearby_adult_piglins, nearby);
+        let repellent = nearest_block(ctx.world, block_of(ctx.position()), repellent);
+        memories.nearest_repellent.set_or_erase(repellent);
     }
 
     fn sense_living(&mut self, ctx: &PiglinCtx) {

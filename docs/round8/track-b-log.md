@@ -635,3 +635,26 @@ After 6920d28f.
 ```
 IW4L_MINECRAFT_KIT=minecraft:piglin_spawn_egg*16,minecraft:piglin_brute_spawn_egg*4,minecraft:wither_skeleton_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:golden_boots,minecraft:diamond_sword,minecraft:shield,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:netherrack*64
 ```
+
+### b1.4. Minecraft piglins avoid soul fire, zombified piglins and wither skeletons
+
+After 0967e73a.
+
+- **Changed:**
+  - Vendored `piglin_brain/sensors.rs`: the piglin sensor finds `NEAREST_REPELLENT`, the first block of `#minecraft:piglin_repellents` in vanilla's Manhattan order within 8 across and 4 up or down (b2's shared scan), where a soul campfire counts only while lit; it also counts the visible adult hoglins (`VISIBLE_ADULT_HOGLIN_COUNT`) for `wantsToStopFleeing`.
+  - Vendored `piglin_brain/fight.rs` and `mod.rs`: CORE `babyAvoidNemesis` and `avoidZombified` (`CopyMemoryWithExpiry` into `AVOID_TARGET` for 5 to 7 seconds from the level random; the zombified one only within 6 blocks), IDLE and CELEBRATE `avoidRepellent` (`SetWalkTargetAwayFrom.pos` at 1.0 until 8 blocks off), AVOID's `EraseMemoryIf(wantsToStopFleeing)` (stop when the avoided hoglins no longer outnumber, or the avoided zombified mob is no longer the nearest visible one; a player or nemesis runs out its time), and FIGHT's `EraseMemoryIf(isNearZombified, ATTACK_TARGET)`. `isNearRepellent` is now "remembers a repellent", as vanilla's, so a piglin near soul fire says `entity.piglin.retreat`.
+  - Vendored `player`: `#piglin_repellents` among the authored block tags, for worlds without the registries; the server answers it from the 26.3 tags (b2.5's `MobWorld::block_in_tag`).
+- **Tests:** `world::piglins`: `a_piglin_walks_away_from_a_soul_torch_within_eight_and_ignores_a_normal_torch` (also the retreat sound near a soul lantern), `an_unlit_soul_campfire_repels_nobody`, `a_piglin_runs_from_a_zombified_piglin_within_six_and_drops_its_target`, `a_baby_runs_from_a_wither_skeleton_and_an_adult_attacks_it`. `server` (with the game data): `soul_lights_repel_piglins_through_the_registry_tags`.
+- **Decisions:**
+  - An avoided mob that is gone from the level ends the flight at once; vanilla keeps fleeing from its last spot until the memory runs out.
+  - Hunting, the hoglin retreat and the baby hoglin memories stay with group 8; only the adult hoglin count is sensed now, because `wantsToStopFleeing` needs it.
+- **Test steps (Nether, survival, `/difficulty normal`, golden boots on so the piglins stay calm):**
+  1. Use 3 piglin eggs, then place a soul torch next to them: they walk away from it until about 8 blocks off and grunt the retreat sound (**6**). A normal torch does nothing. A soul campfire repels them only while lit (put it out with a shovel).
+  2. Use a zombified piglin egg next to them: the ones within 6 blocks run from it for 5 to 7 seconds, then come back (**7**).
+  3. Take the boots off so they attack you, then use a zombified piglin egg right next to them: they stop attacking and run.
+  4. Use a wither skeleton egg near piglins and a baby piglin (`/summon minecraft:piglin ~ ~ ~ {IsBaby:1b}`): the adults attack it, the baby runs away (**8**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:piglin_spawn_egg*16,minecraft:zombified_piglin_spawn_egg*4,minecraft:wither_skeleton_spawn_egg*2,minecraft:soul_torch*16,minecraft:torch*16,minecraft:soul_campfire*2,minecraft:iron_shovel,minecraft:golden_boots,minecraft:diamond_sword,minecraft:cooked_beef*32,minecraft:netherrack*64
+```

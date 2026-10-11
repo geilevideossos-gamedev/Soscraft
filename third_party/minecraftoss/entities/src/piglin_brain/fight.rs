@@ -1,3 +1,4 @@
+use super::sensors::ZOMBIFIED;
 use super::{Activity, PiglinBrain, PiglinCtx};
 use crate::brain_behaviors::{Living, Track, WalkGoal, block_of, within_melee_range};
 use crate::monster_ai::Target;
@@ -21,6 +22,10 @@ pub const AVOID_SPEED: f32 = 1.0;
 pub const AVOID_DISTANCE: f64 = 12.0;
 pub const CELEBRATE_SPEED: f32 = 1.0;
 pub const DANCE_SPEED: f32 = 0.6;
+pub const AVOID_MIN_TICKS: i64 = 100;
+pub const AVOID_MAX_TICKS: i64 = 140;
+pub const REPELLENT_SPEED: f32 = 1.0;
+pub const REPELLENT_DISTANCE: f64 = 8.0;
 pub const BABY_FLEE_TICKS: i64 = 100;
 pub const ADMIRING_DISABLED_TICKS: i64 = 400;
 
@@ -199,6 +204,9 @@ impl PiglinBrain {
         self.walk_to_attack_target(ctx);
         self.melee_attack(ctx);
         self.start_crossbow(ctx);
+        if self.near_zombified(ctx) {
+            self.memories.attack_target.erase();
+        }
     }
 
     fn stop_attacking_if_invalid(&mut self, ctx: &PiglinCtx) {
@@ -397,6 +405,71 @@ impl PiglinBrain {
             if started {
                 return;
             }
+        }
+    }
+
+    fn avoid_for(&mut self, target: Target, ctx: &mut PiglinCtx) {
+        let spread = (AVOID_MAX_TICKS - AVOID_MIN_TICKS + 1) as u32;
+        let ticks = AVOID_MIN_TICKS + i64::from(ctx.level_random.next_int(spread));
+        self.memories.avoid_target.set_for(target, ticks);
+    }
+
+    pub(super) fn baby_avoid_nemesis(&mut self, ctx: &mut PiglinCtx) {
+        if !ctx.baby || self.memories.avoid_target.present() {
+            return;
+        }
+        if let Some(&nemesis) = self.memories.nearest_visible_nemesis.get() {
+            self.avoid_for(nemesis, ctx);
+        }
+    }
+
+    pub(super) fn avoid_zombified(&mut self, ctx: &mut PiglinCtx) {
+        if self.memories.avoid_target.present() || !self.near_zombified(ctx) {
+            return;
+        }
+        if let Some(&zombified) = self.memories.nearest_visible_zombified.get() {
+            self.avoid_for(zombified, ctx);
+        }
+    }
+
+    pub(super) fn avoid_repellent(&mut self, ctx: &mut PiglinCtx) {
+        let Some(&(x, y, z)) = self.memories.nearest_repellent.get() else {
+            return;
+        };
+        let from = DVec3::new(f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5);
+        crate::brain_behaviors::walk_away(
+            &mut self.memories.walk_target,
+            &mut ctx.walker(),
+            from,
+            REPELLENT_SPEED,
+            REPELLENT_DISTANCE,
+            false,
+        );
+    }
+
+    pub fn hoglins_outnumber_piglins(&self) -> bool {
+        let piglins = self.memories.visible_adult_piglin_count.get().copied();
+        let hoglins = self.memories.visible_adult_hoglin_count.get().copied();
+        hoglins.unwrap_or(0) > piglins.unwrap_or(0) + 1
+    }
+
+    fn wants_to_stop_fleeing(&self, ctx: &PiglinCtx) -> bool {
+        let Some(&avoided) = self.memories.avoid_target.get() else {
+            return true;
+        };
+        match ctx.living(avoided).map(|other| other.kind) {
+            None => true,
+            Some("minecraft:hoglin") => !self.hoglins_outnumber_piglins(),
+            Some(kind) if ZOMBIFIED.contains(&kind) => {
+                self.memories.nearest_visible_zombified.get() != Some(&avoided)
+            }
+            Some(_) => false,
+        }
+    }
+
+    pub(super) fn stop_fleeing_if_safe(&mut self, ctx: &PiglinCtx) {
+        if self.wants_to_stop_fleeing(ctx) {
+            self.memories.avoid_target.erase();
         }
     }
 

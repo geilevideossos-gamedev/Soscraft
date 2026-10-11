@@ -35,6 +35,7 @@ pub struct Memories {
     pub nearest_targetable_player_not_wearing_gold: Slot<Target>,
     pub nearest_visible_adult_piglins: Slot<Vec<Target>>,
     pub visible_adult_piglin_count: Slot<usize>,
+    pub visible_adult_hoglin_count: Slot<usize>,
     pub nearby_adult_piglins: Slot<Vec<Target>>,
     pub nearest_visible_zombified: Slot<Target>,
     pub attack_cooling_down: Slot<()>,
@@ -67,6 +68,7 @@ impl Memories {
         self.nearest_targetable_player_not_wearing_gold.tick();
         self.nearest_visible_adult_piglins.tick();
         self.visible_adult_piglin_count.tick();
+        self.visible_adult_hoglin_count.tick();
         self.nearby_adult_piglins.tick();
         self.nearest_visible_zombified.tick();
         self.attack_cooling_down.tick();
