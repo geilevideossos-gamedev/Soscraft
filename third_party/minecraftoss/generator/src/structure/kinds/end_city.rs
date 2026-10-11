@@ -66,8 +66,12 @@ impl EndCityPiece {
         self.t.base.gen_depth = depth;
     }
 
-    fn rotation(&self) -> Rotation {
+    pub fn rotation(&self) -> Rotation {
         self.t.settings.rotation
+    }
+
+    pub fn template_name(&self) -> &str {
+        &self.t.template_name
     }
 }
 
@@ -297,7 +301,7 @@ impl Piece for EndCityPiece {
                         ctx.region.set_loot_table(chest.x, chest.y, chest.z, "minecraft:chests/end_city_treasure", seed);
                     }
                 }
-            } else if bb.is_inside(pos) {
+            } else if bb.is_inside(pos) && in_spawnable_bounds(pos) {
                 if marker.starts_with("Sentry") {
                     // `Shulker.setPos`: its yaw comes from its own unseeded random.
                     let at = [f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5];
@@ -316,6 +320,21 @@ impl Piece for EndCityPiece {
 /// (`EndCityPiece.handleDataMarker`, "Elytra").
 fn elytra_frame(ctx: &mut Ctx, pos: BlockPos, rotation: Rotation) {
     use minecraftoss_core::nbt::Tag;
+    let (at, y_rot, facing) = elytra_frame_placement(pos, rotation);
+    let Some(mut frame) = crate::feature::entities::create(ctx, "minecraft:item_frame", at, y_rot, 0.0) else { return };
+    let item = crate::feature::entities::compound([("id", Tag::String("minecraft:elytra".into())), ("count", Tag::Int(1))]);
+    crate::feature::entities::set(
+        &mut frame,
+        [("Facing", Tag::Byte(facing)), ("block_pos", Tag::IntArray(vec![pos.x, pos.y, pos.z])), ("Item", item)],
+    );
+    ctx.region.add_entity(frame);
+}
+
+fn in_spawnable_bounds(pos: BlockPos) -> bool {
+    (-20_000_000..20_000_000).contains(&pos.y) && (-30_000_000..30_000_000).contains(&pos.x) && (-30_000_000..30_000_000).contains(&pos.z)
+}
+
+fn elytra_frame_placement(pos: BlockPos, rotation: Rotation) -> ([f64; 3], f32, i8) {
     // The facing's 2D data value (S 0, W 1, N 2, E 3), legacy 3D id and step.
     let (data_2d, facing, (sx, sz)) = match rotation {
         Rotation::None => (0, 3, (0.0, 1.0)),
@@ -325,11 +344,49 @@ fn elytra_frame(ctx: &mut Ctx, pos: BlockPos, rotation: Rotation) {
     };
     // `createBoundingBox`: the block center moved 0.46875 against the facing.
     let at = [f64::from(pos.x) + 0.5 - 0.46875 * sx, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5 - 0.46875 * sz];
-    let Some(mut frame) = crate::feature::entities::create(ctx, "minecraft:item_frame", at, (data_2d * 90) as f32, 0.0) else { return };
-    let item = crate::feature::entities::compound([("id", Tag::String("minecraft:elytra".into())), ("count", Tag::Int(1))]);
-    crate::feature::entities::set(
-        &mut frame,
-        [("Facing", Tag::Byte(facing)), ("block_pos", Tag::IntArray(vec![pos.x, pos.y, pos.z])), ("Item", item)],
-    );
-    ctx.region.add_entity(frame);
+    (at, (data_2d * 90) as f32, facing)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minecraftoss_core::pos::Direction;
+
+    #[test]
+    fn end_city_markers_follow_the_piece_rotation() {
+        let pos = BlockPos::new(1203, 74, -388);
+        let data_2d = |d: Direction| match d {
+            Direction::South => 0,
+            Direction::West => 1,
+            Direction::North => 2,
+            Direction::East => 3,
+            other => panic!("{other:?} is not horizontal"),
+        };
+        let expected = [(Rotation::None, 3, 0.0), (Rotation::Clockwise90, 4, 90.0), (Rotation::Clockwise180, 2, 180.0), (Rotation::Counterclockwise90, 5, 270.0)];
+        for (rotation, saved_facing, yaw) in expected {
+            let facing = rotation.rotate(Direction::South);
+            let (at, y_rot, saved) = elytra_frame_placement(pos, rotation);
+            assert_eq!(i32::from(saved), saved_facing, "{rotation:?}");
+            assert_eq!(saved as usize, facing.index(), "{rotation:?}");
+            assert_eq!(y_rot, yaw, "{rotation:?}");
+            assert_eq!(y_rot, (data_2d(facing) * 90) as f32, "{rotation:?}");
+            let (sx, sy, sz) = facing.offset();
+            let centre = [f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5];
+            let step = [f64::from(sx), f64::from(sy), f64::from(sz)];
+            for axis in 0..3 {
+                assert_eq!(at[axis], centre[axis] - 0.46875 * step[axis], "{rotation:?} axis {axis}");
+            }
+            assert_eq!([at[0].floor() as i32, at[1].floor() as i32, at[2].floor() as i32], [pos.x, pos.y, pos.z], "{rotation:?} stays in the marker's cell");
+        }
+    }
+
+    #[test]
+    fn markers_outside_the_spawnable_bounds_add_nothing() {
+        assert!(in_spawnable_bounds(BlockPos::new(1203, 74, -388)));
+        assert!(in_spawnable_bounds(BlockPos::new(-30_000_000, -20_000_000, 29_999_999)));
+        assert!(!in_spawnable_bounds(BlockPos::new(30_000_000, 74, 0)));
+        assert!(!in_spawnable_bounds(BlockPos::new(0, 74, -30_000_001)));
+        assert!(!in_spawnable_bounds(BlockPos::new(0, 20_000_000, 0)));
+        assert!(!in_spawnable_bounds(BlockPos::new(0, -20_000_001, 0)));
+    }
 }

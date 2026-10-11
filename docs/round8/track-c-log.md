@@ -398,3 +398,28 @@ Previous commit: 69bf8539
 ```
 IW4L_MINECRAFT_KIT=minecraft:shulker_spawn_egg*16,minecraft:zombie_spawn_egg*4,minecraft:shield,minecraft:end_stone*64,minecraft:purpur_block*64,minecraft:cooked_beef*32,minecraft:milk_bucket,minecraft:potion@slow_falling,minecraft:elytra,minecraft:firework_rocket*64,minecraft:ladder*16,minecraft:water_bucket
 ```
+
+## Group c2-cities: End cities that generate and fill their chests (c2 group A)
+
+### 15. Minecraft End cities generate on the outer islands
+
+Previous commit: 51ec3c0c
+
+- **Changed:**
+  - Vendored `generator/src/structure/kinds/end_city.rs` (MinecraftOSS patch): the "Sentry" and "Elytra" data markers now also need vanilla's `Level.isInSpawnableBounds` (Y in -20,000,000 to 20,000,000, X and Z in -30,000,000 to 30,000,000), as `EndCityPiece.handleDataMarker` checks (javap). The elytra frame's position, yaw and facing moved into a pure `elytra_frame_placement` so they can be tested. `EndCityPiece::template_name` and `rotation` are public, so tests can tell which city has a ship and how the ship is turned.
+  - Nothing else needed fixing: the port's start rule, pieces, chests, sentries and ship frame came out as vanilla describes on the first run.
+- **Tests:**
+  - generator `end_city`: `end_city_markers_follow_the_piece_rotation` (all four rotations: the frame's `Facing` is `rotation.rotate(SOUTH)`'s 3D value, its yaw the 2D value × 90, and its position the marker's centre moved 0.46875 against the facing, inside the marker's cell), `markers_outside_the_spawnable_bounds_add_nothing`.
+  - `minecraft_terrain` `terrain`:
+    - `end_cities_generate_on_the_outer_islands_with_their_chests_sentries_and_ship` (seed 77): `/locate`'s nearest city from (1000, 0, 0) (at 720, 1024) starts at Y 60 or more with a base floor; its chunks (the start's whole box) hold purpur, end stone bricks, end rods and magenta stained glass, no structure blocks, every chest has `LootTable` `minecraft:chests/end_city_treasure` and a non-zero `LootTableSeed`, and at least two shulkers stand at block centres on a whole Y. Then the structure chunks of the `end_cities` set within 100 chunks are walked by distance until a city has a ship (chunk 65, 66 for seed 77): one `minecraft:item_frame` holding one elytra, its `Facing` and yaw from the ship's rotation, `Pos` against its wall, its own cell air and its support solid, an `end_city_treasure` chest one block down on either side, and one `dragon_wall_head` with its `minecraft:skull` block entity.
+    - `the_outer_end_islands_generate_beyond_the_main_island`: chunks at x 1100 to 1300 hold highlands or midlands columns and end stone, and no end spikes.
+- **Decisions:**
+  - The ship is found by walking the set's structure chunks (`is_structure_chunk`, then `starts_in`) rather than by repeated `/locate`, so the test reads the ship piece's own rotation; the ship's frame turns with the ship piece (its bridge's rotation), not with the city's first piece.
+  - `/locate` returns the city at (720, 1024) although the city at chunk (65, 66) is a little nearer to (1000, 0): the search stops at the first ring that has a city, as vanilla's `findNearestMapStructure` does. Not changed.
+  - The elytra frame is still saved as a dormant entity in this commit: it is kept and saved, but not drawn or hit (item frames come in c2 group B). The chests are tagged, but about nine in ten still open empty until the next commit (enchanted loot).
+- **Test steps:** (a new world `c2test` with `IW4L_MINECRAFT_DIMENSION=the_end` in the `.env`, or travel to the End; seed doesn't matter)
+  1. On the End platform type `/locate structure minecraft:end_city`. The chat names a spot more than 1000 blocks out. Type `/gamemode creative`, then `/tp <x> 120 <z>` with its x and z, and look down. A purple city of towers and bridges stands on an outer island; the banners on the tower tops are plain magenta (known) (**1**).
+  2. Fly through the city: shulkers sit in the rooms and on the towers (they are live from c1, and shoot in survival).
+  3. If no ship floats beside the city (a long purple boat with a black dragon head on its bow), fly about 300 blocks further out and `/locate` again. **2:** the ship with the dragon head.
+  4. Inside the ship's lower deck there are two chests side by side with an empty spot on the wall between them (the elytra's frame is there but isn't drawn until item frames come).
+- **Kit:** none needed (creative).
