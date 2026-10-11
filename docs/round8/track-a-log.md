@@ -647,3 +647,24 @@ Commit: the one after de5bcda4 (entry 5).
   4. Wait 2 minutes near a gateway: it flashes its purple beam by itself.
 - **Test runs:** `minecraft_survival` 400, `render_anim` 75, and `minecraft_terrain` 902 passed with 3 ignored, run with the 14 load-sensitive eye of ender tests skipped (they pass on their own, entry 5).
 - **Kit:** see the combined line at the end of item a1.
+
+### 7. Docs: Minecraft end gateways
+
+Commit: the one after 7aae6815 (entry 6).
+
+- **Changed:** `docs/MINECRAFT-SURVIVAL.md`: an end gateway entry under The End (travel, the exit search and return gateway, exact and loose exits, pearls, the cooldown, the flash, the beam and particles, `Age` saved); the X6 line keeps only item frames, shulkers, levitation and the sky flashes; a new "End gateways" limitation (only players and pearls go through, the pearl landing worked out at once and for the host only, the standing box in every pose, the first trip's generation on the main thread, no advancement).
+- **Tests:** none (docs only).
+- **Item a1, the owner's test** (`.env`: the round 7 End test world with the dragon already killed, `IW4L_MINECRAFT_WORLD=endtest`, as in screenshot 1 of e231362):
+  1. Fly or bridge to the gateway of the kill: a starfield cube in a bedrock frame at height 75, about 96 blocks from the centre. Purple portal particles drift from its open sides. From a few blocks away, throw a pearl into its side gap. The gateway flashes a short purple beam (about 2 s); you land on end stone on an outer island well over 900 blocks from the centre (the ground may take a moment to stream in); a new gateway in a bedrock frame floats 10 blocks above the highest block nearby, flashing purple; the log has `Minecraft ender pearl through the end gateway at ... lands at ...`. **Screenshot 1.**
+  2. Build up with end stone next to the new gateway and go prone in its side gap (crawl in). You come back to the main island next to the first gateway, standing on the highest end stone within 5 blocks, or on the frame's top bedrock if there is none; the log has `Minecraft end gateway at ... leads to ...`. **Screenshot 2.**
+  3. Put on the elytra, glide off the island's edge with a rocket, and fly into the first gateway's side gap. You come out at the same outer island still gliding, at the same speed and facing the same way. **Screenshot 3.**
+  4. Right after a trip, while the purple beam still shows, throw a pearl through the gateway you came out of. The pearl flies straight through without teleporting you through the gateway, and lands behind it as a normal pearl.
+  5. On the main island, about 20 blocks east of 0, 0, type `/setblock ~2 ~ ~ minecraft:end_gateway`. A gateway appears with a tall magenta beam that grows up to the sky and shrinks again over 10 seconds. **Screenshot 4.** Walk into it (it has no frame): you go to the outer islands east of the centre, and a return gateway is built there (the log line ends in `, built`).
+  6. Wait 2 minutes near a gateway: it flashes its purple beam by itself.
+  7. Quit to the menu and start again. Use the first gateway again: you arrive at the same island under the same return gateway, and no second return gateway is built (no `, built` in the log).
+  8. Optional, with vanilla 26.3 Java: make a world with the same seed (`/seed`), `/setblock` a gateway at the same block as in step 5, and walk in. Your position (F3) matches the `leads to` coordinates the log printed for step 5, to the block.
+- **Kit for item a1** (9 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:elytra,minecraft:firework_rocket*64,minecraft:end_stone*64,minecraft:cobblestone*64,minecraft:diamond_pickaxe+efficiency=5,minecraft:golden_apple*16,minecraft:diamond_boots+feather_falling=4
+```
