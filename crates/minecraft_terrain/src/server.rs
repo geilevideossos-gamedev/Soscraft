@@ -1063,9 +1063,11 @@ impl ServerSim {
     }
 
     pub fn throw_eye(&mut self, owner: u64, throw: &crate::ender_eye::EyeThrow) -> bool {
-        let Some(found) = self.eyes.locate(self.worldgen, throw.feet) else { return false };
-        self.eyes.launch(&mut self.level, owner, throw, found);
-        true
+        self.eyes.throw(self.worldgen, &mut self.level, owner, throw)
+    }
+
+    pub fn take_eye_answers(&mut self) -> Vec<crate::eye_of_ender::EyeAnswer> {
+        self.eyes.take_answers()
     }
 
     pub fn bottle_breath(&mut self, feet: glam::DVec3, height: f64) -> bool {
@@ -2404,6 +2406,7 @@ pub struct Output {
     pub dragons_killed: Vec<[i32; 4]>,
     pub fight_reports: Vec<FightReport>,
     pub tick_nanos: Vec<u64>,
+    pub eye_answers: Vec<crate::eye_of_ender::EyeAnswer>,
 }
 
 /// The integrated server on its own thread, as vanilla runs it: the client
@@ -2757,7 +2760,10 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::Throw(thrown) => sim.throw(*thrown),
                 Command::ThrowTrident(trident) => sim.throw_trident(*trident),
-                Command::ThrowEye { owner, throw } => out.item_uses.push(sim.throw_eye(owner, &throw)),
+                Command::ThrowEye { owner, throw } => {
+                    out.item_uses.push(sim.throw_eye(owner, &throw));
+                    out.eye_answers.extend(sim.take_eye_answers());
+                }
                 Command::BottleBreath { feet, height } => out.item_uses.push(sim.bottle_breath(feet, height)),
                 Command::SetWeather { weather, duration } => {
                     sim.set_weather_for(weather, duration);

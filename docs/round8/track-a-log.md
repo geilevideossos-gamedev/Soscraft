@@ -159,7 +159,7 @@ IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:oak_sapling*16,minecraft:c
 
 ### 6. The Minecraft state doc describes overload, /tick and the server's ticks
 
-Commit: (see the next entry, or `git log` under this subject)
+Commit: 1decd828
 
 - **Changed:** `docs/MINECRAFT-SURVIVAL.md` only.
   - World simulation: a paragraph on the server tick (vanilla's schedule in `TickRate`, one batch per frame to each ticking level, back-pressure, the 50 ms batch budget, the `Can't keep up!` warning and skip with its thresholds, the tick time, what moves by server ticks, the autosave interval, the tick state not being saved), frozen ticks, and the client's vanilla tick timing.
@@ -169,4 +169,32 @@ Commit: (see the next entry, or `git log` under this subject)
   - Limitations (commands): the player's own timers stay at 20 a second at any rate and while frozen (brief decision 7), MW2, the sky and the animation clock never freeze, remote friends have no tick state yet, one huge tick can't be cut short, and main-thread stalls count as falling behind.
 - **Tests:** none (documentation).
 - **Test steps:** none on their own; the a5 owner steps are in entries 2b, 3 and 5b.
+- **Kit:** none needed.
+
+## Item a2: eyes of ender that fly
+
+### Root cause
+
+No hop of the throw is broken. The tests of entry 1 drive a throw on the owner's seed (4986579828511054607) from `ender_eye::eye_use` with an eye in the hand, through `Entities::throw_eye`, the level thread, the answer, `level::finish_item_use` and the snapshot: the server answers yes, the stack goes from 16 to 15, the launch sound plays once and the eye flies north-west toward the owner's `/locate` answer (-496, -1936), 12 out and 8 up. The click side in `minecraft_world.rs` is the same chain that filled frames in the same session, and reads correct.
+
+The real fault is the time a throw took, which hid the throw:
+- Every throw ran the full stronghold search on the level thread, and that search resolved all 128 ring slots again each time (`placement.rs` `ring_chunks`, about 416,000 biome samples). It took 3.6 s in the test build (2.9 s for `/locate` from the same spot). Nothing shows before the answer: the swing, the launch sound, the lost eye and the eye itself all come with it.
+- In build e231362 (before item a5), the level thread then answered only once it had worked through every tick queued during the search, while new ticks kept arriving, and the client saw one snapshot for that whole backlog. So the answer came well after the click, and the eye first showed already tens of ticks into its 80-tick flight: high up, several blocks out, and above the top of the view when looking level or down (it climbs 8 over 12 blocks). The frame fills of the same session answer at once, which is why only the eye looked broken.
+- Item a5 (entries 1 and 2b) already answers each tick on its own and sends no new tick while one is in flight, so the eye now shows from its first tick. What stays is the search itself, which entry 2 moves off the tick: the rings are worked out once per world on a background thread, as vanilla does at world load.
+- The brief's other two suspects are ruled out: the server never answers no on that seed (the tag `#minecraft:eye_of_ender_located` holds the stronghold, and `/locate` and the eye agree from three points), and a stuck `awaits_item_use` would also have blocked the frames, which were filled.
+- The owner's log can't confirm this (nothing was logged per throw); the new log line will, with its milliseconds.
+
+### 1. Minecraft eye of ender throws are logged and tested from the click to the flying eye
+
+Commit: (see the next entry, or `git log` under this subject)
+
+- **Changed:**
+  - `minecraft_terrain/src/eye_of_ender.rs`: `Eyes::locate` returns `EyeSearch` (`Found`, `NotFound`, `TimedOut`) and the time it took; an empty tag counts as `NotFound`. New `Eyes::throw` searches, launches and records an `EyeAnswer` (owner, feet, found, target, outcome "flew", "no structure" or "timed out", milliseconds), kept until `take_answers()`. `EyeAnswer::line()` writes the log line.
+  - `minecraft_terrain/src/server.rs`: `ServerSim::throw_eye` goes through `Eyes::throw` and still answers the `bool` in `item_uses`; `Output` gains `eye_answers`, filled at the `ThrowEye` command.
+  - `minecraft_survival/src/entities.rs`: each answer for the player is logged: `Minecraft eye of ender: flew from {feet} toward {x} {z}, target {target} ({ms} ms)` at INFO, or `Minecraft eye of ender: {outcome} from {feet} ({ms} ms), the eye stays in the hand` at WARN. New `eye_views()`.
+- **Tests:**
+  - `minecraft_terrain` (`eye_of_ender.rs`, they skip without the game data): `a_thrown_eye_goes_through_the_server_thread_and_flies_toward_the_stronghold` (a `ServerHandle` on the owner's seed: `item_uses == [true]`, the answer for owner 7 is "flew" to (-496, 0, -1936) under 20 s with the target 12 out and 8 up to the north-west, one launch sound, and after 20 ticks the snapshot has the eye, 20 ticks old, risen and moved that way), `the_eye_search_and_locate_agree` (three points, the same corner as `locate::nearest_structure`), `a_throw_with_no_stronghold_answers_no_with_a_reason` (the Nether: `[false]`, "no structure", the warning line, no eye in the snapshot). The two older tests read the new `locate` result.
+  - `minecraft_survival` (`level.rs`): `an_eye_thrown_from_the_hand_leaves_the_stack_and_flies` (owner's seed, a `Player` at (-300.5, 80, -1700.5) looking up with 16 eyes: `eye_use` gives `ThrowEye`, `Entities::throw_eye` waits, `Entities::tick` brings the answer into `item_uses_done`, `finish_item_use` leaves 15, and `eye_views()` shows the eye rising toward the north-west).
+- **Decision:** the log line also names the thrower's feet, and a no names them too, so a later log shows where a throw found nothing.
+- **Test steps:** none on their own; brief section 6 step 12 (every throw has a line starting "Minecraft eye of ender:") checks this once entry 3 lands.
 - **Kit:** none needed.

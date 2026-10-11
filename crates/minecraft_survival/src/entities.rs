@@ -975,6 +975,13 @@ impl Entities {
                 self.weather_data = Some(weather);
             }
             self.server_picked.extend(output.picked);
+            for answer in output.eye_answers.iter().filter(|answer| answer.owner == PLAYER) {
+                if answer.flew() {
+                    diag::info!(World, "{}", answer.line());
+                } else {
+                    diag::warn!(World, "{}", answer.line());
+                }
+            }
             for used in output.item_uses {
                 if let Some(sent) = self.item_use_waiting.take().filter(|_| used) {
                     self.item_uses_done.push(sent);
@@ -1069,6 +1076,10 @@ impl Entities {
 
     pub fn dragons(&self) -> &[minecraft_terrain::ender_dragon::DragonView] {
         &self.dragons
+    }
+
+    pub fn eye_views(&self) -> &[minecraft_terrain::eye_of_ender::EyeView] {
+        self.eyes.views()
     }
 
     pub fn take_dragons_killed(&mut self) -> Vec<[i32; 4]> {
