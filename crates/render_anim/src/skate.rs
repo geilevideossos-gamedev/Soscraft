@@ -109,7 +109,7 @@ fn block_collision(
     builder: &CollisionBuilder,
     centre: Vec3,
 ) -> Result<(PreparedCollision, usize), String> {
-    let map_triangles: Vec<[Vec3; 3]> =
+    let mut map_triangles: Vec<[Vec3; 3]> =
         sim::voxel::collision_triangles(centre.to_array(), BLOCK_RADIUS, BLOCK_DEPTH)
             .into_iter()
             .map(|t| t.map(Vec3::from_array))
@@ -117,6 +117,15 @@ fn block_collision(
     if map_triangles.is_empty() {
         return Err("no blocks around the skater yet".into());
     }
+    let started = std::time::Instant::now();
+    let ramps = sim::voxel::skate_ramps(centre.to_array(), BLOCK_RADIUS, BLOCK_DEPTH);
+    diag::debug!(
+        World,
+        "Skate block ramps: {} triangles in {} ms",
+        ramps.len(),
+        started.elapsed().as_millis(),
+    );
+    map_triangles.extend(ramps.into_iter().map(|t| t.map(Vec3::from_array)));
     let (found, census) = rails::find(&map_triangles);
     diag::debug!(
         World,
@@ -656,5 +665,78 @@ mod tests {
         assert!(!teleported(Some(2), 2));
         assert!(teleported(Some(0), 2));
         assert!(teleported(Some(2), 0));
+    }
+
+    fn to_map(p: [f64; 3]) -> Vec3 {
+        Vec3::from_array(sim::voxel::to_map([0.0; 3], p))
+    }
+
+    fn box_triangles(b: [f32; 6]) -> Vec<[Vec3; 3]> {
+        let b = b.map(f64::from);
+        let mut tris = Vec::new();
+        for axis in 0..3 {
+            let (u, v) = [(1, 2), (2, 0), (0, 1)][axis];
+            for high in [false, true] {
+                let corner = |a: usize, c: usize| {
+                    let mut p = [0.0; 3];
+                    p[axis] = if high { b[axis + 3] } else { b[axis] };
+                    p[u] = b[u + 3 * a];
+                    p[v] = b[v + 3 * c];
+                    to_map(p)
+                };
+                let mut quad = [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)];
+                if !high {
+                    quad.reverse();
+                }
+                tris.push([quad[0], quad[1], quad[2]]);
+                tris.push([quad[0], quad[2], quad[3]]);
+            }
+        }
+        tris
+    }
+
+    fn rails_near_the_block(block: [f32; 6], with_fillets: bool) -> usize {
+        let full = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let mut world: std::collections::HashMap<[i32; 3], Vec<[f32; 6]>> =
+            std::collections::HashMap::new();
+        for x in -4..=4 {
+            for z in -4..=4 {
+                world.insert([x, -1, z], vec![full]);
+            }
+        }
+        world.insert([0, 0, 0], vec![block]);
+        let ground = [
+            Vec3::new(-200., -200., 0.),
+            Vec3::new(200., -200., 0.),
+            Vec3::new(200., 200., 0.),
+            Vec3::new(-200., 200., 0.),
+        ];
+        let mut tris = vec![
+            [ground[0], ground[1], ground[2]],
+            [ground[0], ground[2], ground[3]],
+        ];
+        tris.extend(box_triangles(block));
+        if with_fillets {
+            let fillets = sim::voxel::riser_fillets(
+                |x, y, z| world.get(&[x, y, z]).map_or(&[][..], Vec::as_slice),
+                [-2, -1, -2],
+                [2, 2, 2],
+            );
+            tris.extend(fillets.into_iter().map(|t| t.map(to_map)));
+        }
+        let (found, _) = rails::find(&tris);
+        found
+            .iter()
+            .filter(|rail| rail.iter().any(|p| p.x.abs() < 80. && p.y.abs() < 80.))
+            .count()
+    }
+
+    #[test]
+    fn a_slab_on_the_ground_is_no_longer_a_lip() {
+        let slab = [0.0, 0.0, 0.0, 1.0, 0.5, 1.0];
+        let full = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        assert!(rails_near_the_block(slab, false) > 0, "a bare slab edge is a lip");
+        assert_eq!(rails_near_the_block(slab, true), 0);
+        assert!(rails_near_the_block(full, true) > 0, "a full block keeps its lips");
     }
 }

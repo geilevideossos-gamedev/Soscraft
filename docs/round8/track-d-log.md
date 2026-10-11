@@ -130,10 +130,54 @@ Commit: the one after `ffe7dd74` (group 3a).
   5. On the board, press E: the inventory opens and the skater coasts. Close it and press Q: the selected item drops. Rolling makes no footstep sounds.
 - **Kit:** `minecraft:cobblestone*64` (twice, for the tower), `minecraft:hay_block*16`, `minecraft:iron_helmet`.
 
+## Group 4. Stairs, slabs, carpets and snow layers become ramps for the skateboard
+
+Commit: the one after `006d0a4c` (group 3b).
+
+- **Changed:**
+  - `sim/src/voxel.rs`:
+    - The pure `riser_fillets(shape_at, lo, hi)` (block space) finds every riser of at most half a block between two walkable surfaces and builds a 45-degree wedge in front of it, whose run equals its height: a slope quad from the face's top edge down to the floor, plus the two side triangles, all wound counterclockwise from outside.
+    - A face gets a wedge only when:
+      - its top is uncovered just inside the face;
+      - the floor 1/64 outside, at a quarter and three quarters of its width, is the same and 0 to 0.5 blocks below its top;
+      - the floor is still the same at half and 0.95 of the run;
+      - no collision box reaches into the wedge's box (this catches a fence post between the samples).
+    - Faces are cut at the block's middle, so the uncovered half of a stair's slab side gets its own wedge, whichever way the stair's boxes are split. Wedges on the same plane that touch are merged, so a row of slabs or a wide staircase has one long ramp per side and no inner walls.
+    - `skate_ramps(centre, radius, depth)` runs it under the `WORLD` read lock and maps it to map units, as `collision_triangles` does.
+  - `render_anim/src/skate.rs`: `block_collision` appends `skate_ramps` to the block triangles before `rails::find`, and logs the triangle count and build time at debug ("Skate block ramps: N triangles in M ms").
+  - `render_anim/src/skate/rails.rs`: the lip probe now looks out horizontally (`with_z(0.)`). It used to look out along the face. On a sloped walkable face that pointed down at the slope's foot, so the drop probe started under the floor and every ramp's toe on the ground counted as a lip, which included the new wedges. Flat faces and the side edges of slopes probe exactly as before.
+  - `docs/MINECRAFT-SURVIVAL.md`: the Skating bullet describes the ramps.
+- **Tests:**
+  - `sim` (`voxel.rs`, on a hand-built `shape_at` with a ground of full blocks):
+    - `a_bottom_stair_on_the_ground_is_a_45_degree_ramp_from_half_a_block_in_front` (both fillets on `y = z + 0.5`, from z -0.5 to 0.5, total slope area sqrt 2)
+    - `a_staircase_of_stairs_is_one_plane` (three stairs on cobblestone columns: one plane from z -0.5 to 2.5, area 3 sqrt 2)
+    - `a_slab_on_the_ground_gets_a_half_block_toe` (one wedge per side, plus a full block behind a slab: toe, flat slab top, toe)
+    - `a_full_block_and_a_fence_get_no_fillet`
+    - `a_carpet_gets_a_one_sixteenth_fillet` (and none between carpets in a row)
+    - `one_snow_layer_gets_none_and_three_get_a_quarter_block_one` (layer 1 is the zero-height box the catalog gives, layer 3 is 4/16)
+    - `a_fillet_is_never_built_into_another_block` (a stair facing a wall, a slab with a block in front, and a slab with a fence post in front)
+    - `fillet_triangles_face_outward` (every triangle faces away from its wedge's inside, none faces down)
+  - `render_anim` (`skate.rs`): `a_slab_on_the_ground_is_no_longer_a_lip`. `rails::find` over a slab and the ground finds lips without the fillets and none with them, and a full block keeps its lips.
+- **Decisions:**
+  - `riser_fillets` is `pub` (the brief had a private `fn`), so the rails test in `render_anim` can build a slab's fillets without touching the global block world.
+  - The lip probe fix in `rails.rs` also applies to MW2 maps. There it only stops counting the foot of a ramp as a lip, and an edge whose ground is less than 3 units lower: the probe now matches its documented intent ("the ground must drop at least 3 units just past the edge"). Ledges and kickers with a real drop are found as before.
+  - The fillets of a stair are its slab front and its step front. The front half of a bottom stair's slab side also gets a small sideways wedge, because it is a half-block riser too. The step's sides stay vertical, so the hubba edge of group 5a keeps its drop.
+  - A half-block slot between a wall and a stair step (a stair placed against a wall) gets a wedge from each side; they cross in the slot. That is harmless and rare, so it is left.
+  - Build time: in an unoptimised test build, a whole 81 x 81 x 41 region took 81 ms for flat terrain, and 262 ms for a pathological one with a slab on every other block and stairs in between (52,332 wedge triangles). The release build is many times faster, so the 24-nearest-blocks cap from the brief's risks was not needed. The debug log line reports the real time.
+  - Brief step 8's cobblestone-slab-cobblestone staircase rises half a block per block, so every riser gets a fillet, and the slab tops stay flat between them.
+- **Owner's test steps** (brief section 5, steps 6 to 10):
+  1. On flat ground, build a 5-block-high staircase of oak stairs, each stair one block higher than the last and standing on a cobblestone column, all facing the same way. Push into it from the ground: the board rolls up without a bump at the bottom and rides down again (screenshot halfway, wheels on the step edges).
+  2. Place a single oak stair on flat ground and ride over it fast: you get air off it like a kicker.
+  3. Ride up a stone slab placed on the ground. Then build a staircase that rises half a block per block (cobblestone slab, cobblestone, cobblestone with a slab on top, and so on) and ride up it.
+  4. Ride across a row of white carpet, then a patch of snow three layers deep (right-click snow onto the same spot three times; a single layer has no collision in vanilla either): no bumps.
+  5. A one-block cobblestone ledge stops the board (you have to ollie). Grind along its edge (screenshot). A slab on the ground is now a small ramp, not a ledge: its edge no longer grinds.
+  6. Optional: add `IW4L_LOG_LEVEL=debug` to the `.env` next to the exe and skate near a village or a snowy forest. Every skate collision rebuild writes "Skate block ramps: N triangles in M ms" to the newest log in `iw4l-artifacts\logs`. Send the largest M, then remove the line again.
+- **Kit:** `minecraft:cobblestone*64` (twice), `minecraft:oak_stairs*64`, `minecraft:stone_slab*64`, `minecraft:cobblestone_slab*64`, `minecraft:white_carpet*64`, `minecraft:snow*64`.
+
 ## The whole track's owner test, one kit
 
-Steps in order: group 1 steps 1-4, group 2 steps 1-4, group 3a steps 1-3, group 3b steps 1-5. Groups 1 and 2 need no items; 3a needs the water bucket and the ender pearls; 3b the cobblestone, hay bales and helmet.
+Steps in order: group 1 steps 1-4, group 2 steps 1-4, group 3a steps 1-3, group 3b steps 1-5, group 4 steps 1-6. Groups 1 and 2 need no items. 3a needs the water bucket and the ender pearls, 3b the cobblestone, hay bales and helmet, and 4 the cobblestone, stairs, slabs, carpet and snow.
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:hay_block*16,minecraft:iron_helmet,minecraft:water_bucket,minecraft:ender_pearl*16
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:hay_block*16,minecraft:iron_helmet,minecraft:water_bucket,minecraft:ender_pearl*16,minecraft:oak_stairs*64,minecraft:stone_slab*64,minecraft:cobblestone_slab*64,minecraft:white_carpet*64,minecraft:snow*64
 ```

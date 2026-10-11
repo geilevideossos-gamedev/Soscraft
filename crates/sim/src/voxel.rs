@@ -673,6 +673,195 @@ pub fn collision_triangles(centre: [f32; 3], radius: i32, depth: i32) -> Vec<[[f
     out
 }
 
+const FILLET_RISE: f64 = 0.5;
+const FILLET_EPSILON: f64 = 1e-4;
+const FILLET_PROBE: f64 = 1.0 / 64.0;
+const FULL_BOX: [f32; 6] = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+
+pub fn skate_ramps(centre: [f32; 3], radius: i32, depth: i32) -> Vec<[[f32; 3]; 3]> {
+    let Ok(world) = WORLD.read() else {
+        return Vec::new();
+    };
+    let Some(world) = world.as_ref() else {
+        return Vec::new();
+    };
+    let c = to_block(world.origin, centre).map(|v| v.floor() as i32);
+    let lo = [c[0] - radius, c[1] - depth, c[2] - radius];
+    let hi = [c[0] + radius, c[1] + depth, c[2] + radius];
+    riser_fillets(|x, y, z| world.shape_at(x, y, z), lo, hi)
+        .into_iter()
+        .map(|t| t.map(|p| to_map(world.origin, p)))
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+struct Fillet {
+    axis: usize,
+    sign: f64,
+    face: f64,
+    from: f64,
+    to: f64,
+    top: f64,
+    floor: f64,
+}
+
+impl Fillet {
+    fn key(&self) -> (usize, bool, [i64; 3]) {
+        (self.axis, self.sign > 0.0, [self.face, self.top, self.floor].map(|v| (v * 1024.0).round() as i64))
+    }
+}
+
+fn at(axis: usize, along: f64, across: f64, y: f64) -> [f64; 3] {
+    let mut p = [0.0; 3];
+    p[axis] = along;
+    p[2 - axis] = across;
+    p[1] = y;
+    p
+}
+
+pub fn riser_fillets<'a>(shape_at: impl Fn(i32, i32, i32) -> &'a [[f32; 6]], lo: [i32; 3], hi: [i32; 3]) -> Vec<[[f64; 3]; 3]> {
+    let is_full = |x: i32, y: i32, z: i32| matches!(shape_at(x, y, z), [b] if *b == FULL_BOX);
+    let mut fillets = Vec::new();
+    for x in lo[0]..=hi[0] {
+        for z in lo[2]..=hi[2] {
+            for y in lo[1]..=hi[1] {
+                let boxes = shape_at(x, y, z);
+                if boxes.is_empty() || (is_full(x, y, z) && is_full(x, y + 1, z)) {
+                    continue;
+                }
+                let base = [f64::from(x), f64::from(y), f64::from(z)];
+                for b in boxes {
+                    if b[4] <= b[1] {
+                        continue;
+                    }
+                    let top = base[1] + f64::from(b[4]);
+                    for (axis, sign) in [(0, -1.0), (0, 1.0), (2, -1.0), (2, 1.0)] {
+                        let across = 2 - axis;
+                        let local = if sign > 0.0 { b[axis + 3] } else { b[axis] };
+                        let on_edge = if sign > 0.0 { local >= 1.0 } else { local <= 0.0 };
+                        let mut next = [x, y, z];
+                        next[axis] += sign as i32;
+                        if on_edge && is_full(next[0], next[1], next[2]) {
+                            continue;
+                        }
+                        let face = base[axis] + f64::from(local);
+                        let (from, to) = (base[across] + f64::from(b[across]), base[across] + f64::from(b[across + 3]));
+                        let middle = base[across] + 0.5;
+                        let pieces = if from < middle - FILLET_EPSILON && to > middle + FILLET_EPSILON {
+                            [(from, middle), (middle, to)]
+                        } else {
+                            [(from, to), (to, to)]
+                        };
+                        for (from, to) in pieces {
+                            if to - from < FILLET_EPSILON {
+                                continue;
+                            }
+                            if let Some(floor) = fillet_floor(&shape_at, axis, sign, face, from, to, top) {
+                                fillets.push(Fillet { axis, sign, face, from, to, top, floor });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fillets.sort_by(|a, b| a.key().cmp(&b.key()).then(a.from.total_cmp(&b.from)));
+    let mut merged: Vec<Fillet> = Vec::new();
+    for f in fillets {
+        match merged.last_mut() {
+            Some(last) if last.key() == f.key() && f.from <= last.to + FILLET_EPSILON => last.to = last.to.max(f.to),
+            _ => merged.push(f),
+        }
+    }
+    let mut out = Vec::with_capacity(merged.len() * 4);
+    for f in merged {
+        let toe = f.face + f.sign * (f.top - f.floor);
+        let (a0, a1) = (at(f.axis, f.face, f.from, f.top), at(f.axis, f.face, f.to, f.top));
+        let (b0, b1) = (at(f.axis, toe, f.from, f.floor), at(f.axis, toe, f.to, f.floor));
+        let (c0, c1) = (at(f.axis, f.face, f.from, f.floor), at(f.axis, f.face, f.to, f.floor));
+        let slope = at(f.axis, f.sign, 0.0, 1.0);
+        let (low, high) = (at(f.axis, 0.0, -1.0, 0.0), at(f.axis, 0.0, 1.0, 0.0));
+        for (tri, outward) in [([a0, a1, b1], slope), ([a0, b1, b0], slope), ([a0, b0, c0], low), ([a1, c1, b1], high)] {
+            out.push(facing(tri, outward));
+        }
+    }
+    out
+}
+
+fn facing(tri: [[f64; 3]; 3], outward: [f64; 3]) -> [[f64; 3]; 3] {
+    let e1 = [0, 1, 2].map(|k| tri[1][k] - tri[0][k]);
+    let e2 = [0, 1, 2].map(|k| tri[2][k] - tri[0][k]);
+    let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+    if n[0] * outward[0] + n[1] * outward[1] + n[2] * outward[2] < 0.0 {
+        [tri[0], tri[2], tri[1]]
+    } else {
+        tri
+    }
+}
+
+fn fillet_floor<'a>(shape_at: &impl Fn(i32, i32, i32) -> &'a [[f32; 6]], axis: usize, sign: f64, face: f64, from: f64, to: f64, top: f64) -> Option<f64> {
+    let samples = [from + (to - from) * 0.25, from + (to - from) * 0.75];
+    if samples.iter().any(|&s| occupied(shape_at, at(axis, face - sign * FILLET_PROBE, s, top + FILLET_PROBE))) {
+        return None;
+    }
+    let floor = column_floor(shape_at, at(axis, face + sign * FILLET_PROBE, samples[0], top), top)?;
+    let rise = top - floor;
+    if rise > FILLET_RISE + FILLET_EPSILON {
+        return None;
+    }
+    let level = |out: f64, s: f64| column_floor(shape_at, at(axis, face + sign * out, s, top), top).is_some_and(|f| (f - floor).abs() < FILLET_EPSILON);
+    if !samples.iter().all(|&s| [FILLET_PROBE, rise * 0.5, rise * 0.95].iter().all(|&out| level(out, s))) {
+        return None;
+    }
+    let (a, b) = (at(axis, face, from, floor), at(axis, face + sign * rise, to, top));
+    let min = [0, 1, 2].map(|k| a[k].min(b[k]) + FILLET_EPSILON);
+    let max = [0, 1, 2].map(|k| a[k].max(b[k]) - FILLET_EPSILON);
+    (!overlaps(shape_at, min, max)).then_some(floor)
+}
+
+fn column_floor<'a>(shape_at: &impl Fn(i32, i32, i32) -> &'a [[f32; 6]], p: [f64; 3], top: f64) -> Option<f64> {
+    let (x, z) = (p[0].floor() as i32, p[2].floor() as i32);
+    let (lx, lz) = (p[0] - f64::from(x), p[2] - f64::from(z));
+    let roof = (top - FILLET_EPSILON).floor() as i32;
+    let mut floor: Option<f64> = None;
+    for y in roof - 1..=roof {
+        for b in shape_at(x, y, z) {
+            if !(f64::from(b[0]) < lx && lx < f64::from(b[3]) && f64::from(b[2]) < lz && lz < f64::from(b[5])) {
+                continue;
+            }
+            let (bottom, height) = (f64::from(y) + f64::from(b[1]), f64::from(y) + f64::from(b[4]));
+            if height > top - FILLET_EPSILON {
+                if bottom < top - FILLET_EPSILON {
+                    return None;
+                }
+            } else {
+                floor = Some(floor.map_or(height, |f| f.max(height)));
+            }
+        }
+    }
+    floor
+}
+
+fn occupied<'a>(shape_at: &impl Fn(i32, i32, i32) -> &'a [[f32; 6]], p: [f64; 3]) -> bool {
+    let block = p.map(|v| v.floor() as i32);
+    (block[1] - 1..=block[1]).any(|y| {
+        let local = [p[0] - f64::from(block[0]), p[1] - f64::from(y), p[2] - f64::from(block[2])];
+        shape_at(block[0], y, block[2]).iter().any(|b| (0..3).all(|k| f64::from(b[k]) < local[k] && local[k] < f64::from(b[k + 3])))
+    })
+}
+
+fn overlaps<'a>(shape_at: &impl Fn(i32, i32, i32) -> &'a [[f32; 6]], min: [f64; 3], max: [f64; 3]) -> bool {
+    let (lo, hi) = (min.map(|v| v.floor() as i32), max.map(|v| v.floor() as i32));
+    (lo[0]..=hi[0]).any(|x| {
+        (lo[2]..=hi[2]).any(|z| {
+            (lo[1] - 1..=hi[1]).any(|y| {
+                let base = [f64::from(x), f64::from(y), f64::from(z)];
+                shape_at(x, y, z).iter().any(|b| (0..3).all(|k| base[k] + f64::from(b[k]) < max[k] && min[k] < base[k] + f64::from(b[k + 3])))
+            })
+        })
+    })
+}
+
 /// Whether traces against `brushes` go to the block world.
 pub(crate) fn active_for(brushes: &[SimBrush]) -> bool {
     WORLD
@@ -2191,6 +2380,171 @@ mod tests {
             let path = drive(&ground, &mut ps, 0, 0, 50, 4);
             assert_eq!(ps.pm_flags & playerstate_iw4::pm_flags::MC_FLYING != 0, flies);
             assert_eq!(path[path.len() - 1][1] > 1.4, flies, "{:?}", path.last());
+        }
+    }
+
+    const STAIR: [[f32; 6]; 2] = [[0.0, 0.0, 0.0, 1.0, 0.5, 1.0], [0.0, 0.5, 0.5, 1.0, 1.0, 1.0]];
+    const SLAB: [f32; 6] = [0.0, 0.0, 0.0, 1.0, 0.5, 1.0];
+
+    fn fillets_on_ground(blocks: &[([i32; 3], &[[f32; 6]])]) -> Vec<[[f64; 3]; 3]> {
+        let mut map: HashMap<[i32; 3], Vec<[f32; 6]>> = HashMap::new();
+        for x in -4..=4 {
+            for z in -4..=4 {
+                map.insert([x, -1, z], vec![FULL]);
+            }
+        }
+        for &(at, boxes) in blocks {
+            map.insert(at, boxes.to_vec());
+        }
+        riser_fillets(|x, y, z| map.get(&[x, y, z]).map_or(&[][..], Vec::as_slice), [-3, -1, -3], [3, 4, 3])
+    }
+
+    fn normal_of(t: &[[f64; 3]; 3]) -> [f64; 3] {
+        let e1 = [0, 1, 2].map(|k| t[1][k] - t[0][k]);
+        let e2 = [0, 1, 2].map(|k| t[2][k] - t[0][k]);
+        let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        n.map(|v| v / len)
+    }
+
+    fn area_of(t: &[[f64; 3]; 3]) -> f64 {
+        let e1 = [0, 1, 2].map(|k| t[1][k] - t[0][k]);
+        let e2 = [0, 1, 2].map(|k| t[2][k] - t[0][k]);
+        let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+        (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() / 2.0
+    }
+
+    fn slopes_towards_minus_z(tris: &[[[f64; 3]; 3]]) -> Vec<[[f64; 3]; 3]> {
+        tris.iter().filter(|t| {
+            let n = normal_of(t);
+            n[1] > 0.1 && n[2] < -0.1
+        }).copied().collect()
+    }
+
+    fn extent(tris: &[[[f64; 3]; 3]], axis: usize) -> (f64, f64) {
+        let values = tris.iter().flat_map(|t| t.iter().map(move |p| p[axis]));
+        (values.clone().fold(f64::MAX, f64::min), values.fold(f64::MIN, f64::max))
+    }
+
+    fn assert_near(a: f64, b: f64) {
+        assert!((a - b).abs() < 1e-6, "{a} != {b}");
+    }
+
+    #[test]
+    fn a_bottom_stair_on_the_ground_is_a_45_degree_ramp_from_half_a_block_in_front() {
+        let tris = fillets_on_ground(&[([0, 0, 0], &STAIR)]);
+        let slopes = slopes_towards_minus_z(&tris);
+        assert_eq!(slopes.len(), 4, "{slopes:?}");
+        for p in slopes.iter().flatten() {
+            assert_near(p[1], p[2] + 0.5);
+        }
+        assert_eq!(extent(&slopes, 2), (-0.5, 0.5));
+        assert_eq!(extent(&slopes, 1), (0.0, 1.0));
+        assert_eq!(extent(&slopes, 0), (0.0, 1.0));
+        assert_near(slopes.iter().map(area_of).sum(), 2f64.sqrt());
+    }
+
+    #[test]
+    fn a_staircase_of_stairs_is_one_plane() {
+        let tris = fillets_on_ground(&[
+            ([0, 0, 0], &STAIR),
+            ([0, 0, 1], &[FULL]),
+            ([0, 1, 1], &STAIR),
+            ([0, 0, 2], &[FULL]),
+            ([0, 1, 2], &[FULL]),
+            ([0, 2, 2], &STAIR),
+        ]);
+        let slopes = slopes_towards_minus_z(&tris);
+        for p in slopes.iter().flatten() {
+            assert_near(p[1], p[2] + 0.5);
+        }
+        assert_eq!(extent(&slopes, 2), (-0.5, 2.5));
+        assert_eq!(extent(&slopes, 1), (0.0, 3.0));
+        assert_near(slopes.iter().map(area_of).sum(), 3.0 * 2f64.sqrt());
+    }
+
+    #[test]
+    fn a_slab_on_the_ground_gets_a_half_block_toe() {
+        let tris = fillets_on_ground(&[([0, 0, 0], &[SLAB])]);
+        assert_eq!(tris.len(), 16, "one wedge on each side");
+        assert_eq!(extent(&tris, 0), (-0.5, 1.5));
+        assert_eq!(extent(&tris, 2), (-0.5, 1.5));
+        assert_eq!(extent(&tris, 1), (0.0, 0.5));
+        let slope: f64 = tris.iter().filter(|t| normal_of(t)[1] > 0.1).map(area_of).sum();
+        assert_near(slope, 4.0 * 0.5 * 2f64.sqrt());
+
+        let behind = fillets_on_ground(&[([0, 0, 0], &[SLAB]), ([0, 0, 1], &[FULL])]);
+        let slopes = slopes_towards_minus_z(&behind);
+        assert_eq!(extent(&slopes, 2), (-0.5, 1.0));
+        assert_eq!(extent(&slopes, 1), (0.0, 1.0));
+        assert_near(slopes.iter().map(area_of).sum(), 2f64.sqrt());
+        assert!(slopes.iter().flatten().all(|p| p[2] <= 0.0 || p[2] >= 0.5), "the slab top stays flat between the toes");
+    }
+
+    #[test]
+    fn a_full_block_and_a_fence_get_no_fillet() {
+        assert!(fillets_on_ground(&[([0, 0, 0], &[FULL])]).is_empty());
+        assert!(fillets_on_ground(&[([0, 0, 0], &[FENCE])]).is_empty());
+        assert!(fillets_on_ground(&[([0, 0, 0], &[FULL]), ([0, 1, 0], &[FULL]), ([1, 0, 0], &[FENCE])]).is_empty());
+    }
+
+    #[test]
+    fn a_carpet_gets_a_one_sixteenth_fillet() {
+        let carpet = [0.0, 0.0, 0.0, 1.0, 1.0 / 16.0, 1.0];
+        let tris = fillets_on_ground(&[([0, 0, 0], &[carpet])]);
+        assert_eq!(tris.len(), 16);
+        assert_eq!(extent(&tris, 1), (0.0, 1.0 / 16.0));
+        assert_eq!(extent(&tris, 0), (-1.0 / 16.0, 1.0 + 1.0 / 16.0));
+        assert!(fillets_on_ground(&[([0, 0, 0], &[carpet]), ([1, 0, 0], &[carpet]), ([-1, 0, 0], &[carpet])])
+            .iter()
+            .flatten()
+            .all(|p| p[0] <= -1.0 || p[0] >= 2.0 || p[2] <= 0.0 || p[2] >= 1.0), "no fillet between carpets in a row");
+    }
+
+    #[test]
+    fn one_snow_layer_gets_none_and_three_get_a_quarter_block_one() {
+        assert!(fillets_on_ground(&[([0, 0, 0], &[[0.0, 0.0, 0.0, 1.0, 0.0, 1.0]])]).is_empty());
+        let tris = fillets_on_ground(&[([0, 0, 0], &[[0.0, 0.0, 0.0, 1.0, 0.25, 1.0]])]);
+        assert_eq!(tris.len(), 16);
+        assert_eq!(extent(&tris, 1), (0.0, 0.25));
+        assert_eq!(extent(&tris, 2), (-0.25, 1.25));
+    }
+
+    #[test]
+    fn a_fillet_is_never_built_into_another_block() {
+        let inside = |p: &[f64; 3], b: [f64; 6]| (0..3).all(|k| b[k] + 1e-6 < p[k] && p[k] < b[k + 3] - 1e-6);
+        let walled = fillets_on_ground(&[([0, 0, 0], &STAIR), ([0, 0, -1], &[FULL])]);
+        assert!(!walled.is_empty(), "the step still meets the slab");
+        assert!(walled.iter().flatten().all(|p| !inside(p, [0.0, 0.0, -1.0, 1.0, 1.0, 0.0]) && p[2] >= 0.0));
+
+        let blocked = fillets_on_ground(&[([0, 0, 0], &[SLAB]), ([0, 0, -1], &[FULL])]);
+        assert!(blocked.iter().flatten().all(|p| p[2] >= 0.0));
+        assert!(slopes_towards_minus_z(&blocked).is_empty());
+
+        let post = fillets_on_ground(&[([0, 0, 0], &[SLAB]), ([0, 0, -1], &[FENCE])]);
+        assert!(slopes_towards_minus_z(&post).is_empty(), "the fence post stands where the toe would be");
+        assert_eq!(post.len(), 12);
+    }
+
+    #[test]
+    fn fillet_triangles_face_outward() {
+        for blocks in [
+            vec![([0, 0, 0], &[SLAB][..])],
+            vec![([0, 0, 0], &STAIR[..])],
+            vec![([0, 0, 0], &[[0.0, 0.0, 0.0, 1.0, 0.0625, 1.0]][..])],
+        ] {
+            let tris = fillets_on_ground(&blocks);
+            assert!(!tris.is_empty());
+            assert_eq!(tris.len() % 4, 0);
+            for wedge in tris.chunks(4) {
+                let inner = [0, 1, 2].map(|k| wedge.iter().flatten().map(|p| p[k]).sum::<f64>() / 12.0);
+                for t in wedge {
+                    let n = normal_of(t);
+                    let mid = [0, 1, 2].map(|k| (t[0][k] + t[1][k] + t[2][k]) / 3.0 - inner[k]);
+                    assert!(n[0] * mid[0] + n[1] * mid[1] + n[2] * mid[2] > 0.0, "{t:?}");
+                    assert!(n[1] >= -1e-9, "no fillet faces down: {t:?}");
+                }
+            }
         }
     }
 }

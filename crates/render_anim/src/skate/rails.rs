@@ -76,7 +76,7 @@ pub fn find(tris: &[[Vec3; 3]]) -> (Vec<Vec<Vec3>>, RailCensus) {
             continue;
         }
         let mid = (a + b) * 0.5;
-        let mut out = along.cross(normal).normalize_or_zero();
+        let mut out = along.cross(normal).with_z(0.).normalize_or_zero();
         if out.dot(centroid - mid) > 0. {
             out = -out;
         }
