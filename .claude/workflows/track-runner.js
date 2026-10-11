@@ -1,7 +1,7 @@
 export const meta = {
   name: 'track-runner',
   description: 'Run one round track in its own worktree: commit groups in order, adversarial review, clippy and tests of touched crates',
-  whenToUse: 'args: {track, worktree, branch, target, base, briefs, groups:[{key,prompt}], avoid?, notes?, skipReview?}. See docs/PROGRESS.md "How to continue".',
+  whenToUse: 'args: {track, worktree, branch, target, base, briefs, groups:[{key,prompt}], round?, avoid?, notes?, skipReview?}. See docs/PROGRESS.md "How to continue".',
   phases: [
     { title: 'Build', detail: 'one agent per commit group, in order' },
     { title: 'Review', detail: 'adversarial review of the whole track, then fixes' },
@@ -10,7 +10,7 @@ export const meta = {
 }
 
 const A = args
-const LOG = `${A.worktree}\\docs\\round7\\track-${A.track}-log.md`
+const LOG = `${A.worktree}\\docs\\round${A.round || 8}\\track-${A.track}-log.md`
 const RULES = `You work on track ${String(A.track).toUpperCase()} of the fork described in CLAUDE.md (already in your context; follow it strictly).
 WORKTREE: ${A.worktree} (git worktree on branch ${A.branch}). Do ALL file edits and git commands inside this worktree only, using absolute paths under it. Never write into C:\\Dev\\mashup-crafting or another worktree, not even a scratch file. Never push, merge or rebase.
 CARGO: only through the wrapper, from PowerShell, with this track's own target dir, from the worktree: \`Set-Location ${A.worktree}; & .\\scripts\\cargo-slot.ps1 +target=${A.target} <subcommand> <args>\`. It adds -j 8 and waits for one of two machine-wide build slots (other tracks share them, so waiting minutes is normal). Use the PowerShell tool with timeout 600000; if the call times out, run the same command again (cargo resumes). PowerShell drops a bare -- when calling a script, so write it quoted: '--'. Never call cargo directly, never pass --workspace, --release or --profile, never run two cargo commands at once. While implementing use \`check -p <crate> --locked\` and \`test -p <crate> --locked\` on only the crates you changed, and \`check -p launcher --locked\` before each commit that touches game code.
