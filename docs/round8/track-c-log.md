@@ -494,3 +494,27 @@ Previous commit: fb61cbc8
   4. `/summon minecraft:item_frame ~ ~ ~ {Facing:1b,Item:{id:"minecraft:diamond_sword",count:1,components:{"minecraft:enchantments":{"minecraft:sharpness":5}}}}`: a frame lies on the floor under you with a glinting sword (**3**).
   5. Fly to an End city ship: the elytra hangs in its frame on the wall between the two chests in the lower deck (**4**).
 - **Kit:** none needed (creative and commands).
+
+### 19. Minecraft item frames hang on block faces
+
+Previous commit: a3e242ed
+
+- **Changed:**
+  - `minecraft_terrain` `item_frame.rs`: `frame_use` for `minecraft:item_frame` and `minecraft:glow_item_frame` aims at the block within 4.5 blocks and asks the server to hang a frame on the clicked face (`ItemOnBlock::HangFrame { face, glow }`, spent only when the server says yes); `hung_at` is the cell in front of the face.
+  - `server.rs`: `HangFrame` builds the frame as `HangingEntityItem.useOn` does: in front of the clicked face, facing out of it, inside the build height, and only if it `survives` (support, nothing in the cell, no other frame on that face); then the place sound and the frame joins the level. A refused frame keeps the item (`item_uses` answers false).
+  - `render_anim` `minecraft_world.rs`: one more use in the item-use chain, after end crystals.
+- **Tests:** `item_frame`: `frames_hang_on_all_six_faces_with_vanilla_rotations` (the use asks for the clicked face, glow by the item; each of the six faces gives the vanilla yaw and pitch and hangs on the clicked block). `server`: `a_frame_is_refused_without_support_on_a_taken_face_or_inside_a_block` (and above the build height), `a_repeater_holds_a_wall_frame_but_not_a_floor_frame` (and keeps it through two checks), `two_frames_on_one_face_never_overlap`, `a_frame_and_a_floor_frame_share_a_cell`, `the_place_sound_is_the_glow_one_for_glow_frames`.
+- **Decisions:**
+  - The server decides, as for end crystals; the client never shows a frame before the server has it (one tick later).
+  - The item stack's custom name and `entity_data` are not copied onto the new frame (`createDefaultStackConfig`): the server's use carries no stack. Adventure mode's `can_place_on` is not checked (the fork's game mode gate `may_build` already keeps adventure players from using it).
+- **Test steps:** (a new world, survival, daytime)
+  1. Place an oak planks block and right-click each of its four sides, its top and (from below) its bottom with item frames: each frame lies flat on its face with the place sound, and one frame goes per click (**1**).
+  2. Right-click a side that already has a frame: no second frame, and the item stays in your hand.
+  3. Place a repeater on the ground and right-click its side with a frame: it hangs. Right-click its top: nothing is placed.
+  4. Right-click the ground with a glow item frame: it lies on the floor with the glow sound (a higher chime).
+  5. Mine the planks block from step 1: within 5 seconds all six frames drop as items with break sounds.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:item_frame*16,minecraft:glow_item_frame*16,minecraft:oak_planks*64,minecraft:repeater*2,minecraft:diamond_pickaxe
+```

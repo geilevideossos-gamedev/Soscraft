@@ -1361,6 +1361,7 @@ fn update(
                         .or_else(|| globals.data.transforms.as_ref()?.transform_use(|tag| entities.recipes.item_in_tag(tag, &stack.id), &player, &outlined, &*terrain.stream.states, main && !player.crouching && inventory.slots[minecraft_survival::offhand::OFFHAND].as_ref().is_some_and(|shield| shield.id == minecraft_survival::offhand::SHIELD)))
                         .or_else(|| minecraft_terrain::ender_eye::eye_use(&player, &outlined, stack))
                         .or_else(|| minecraft_terrain::end_crystal::crystal_use(&player, &outlined, stack))
+                        .or_else(|| minecraft_terrain::item_frame::frame_use(&player, &outlined, stack))
                         .or_else(|| minecraft_terrain::firework::rocket_use(stack, ps.pm_flags & playerstate_iw4::pm_flags::MC_GLIDING != 0, || entities.random_float()))
                 }
             {

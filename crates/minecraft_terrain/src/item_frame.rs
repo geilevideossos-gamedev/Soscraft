@@ -26,6 +26,7 @@ const MODEL_Z_OFFSET: f32 = 1.0 / 512.0;
 const BLOCK_POS_RANGE: i64 = 16;
 const BELOW_WORLD: f64 = 64.0;
 const BORDER: f64 = 29_999_984.0;
+const USE_REACH: f64 = 4.5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameSound {
@@ -504,6 +505,37 @@ pub fn light(view: &FrameView, sky: f32, block: f32) -> ((f32, f32), (f32, f32))
 pub fn tracked(view: &FrameView, camera: DVec3) -> bool {
     let (dx, dz) = (view.position.x - camera.x, view.position.z - camera.z);
     dx * dx + dz * dz <= TRACKING_RANGE * TRACKING_RANGE
+}
+
+pub fn hung_at(clicked: BlockPos, face: Direction) -> BlockPos {
+    let (x, y, z) = face.offset();
+    (clicked.0 + x, clicked.1 + y, clicked.2 + z)
+}
+
+pub fn frame_use(
+    player: &minecraftoss_player::Player,
+    world: &impl minecraftoss_player::World,
+    held: &ItemStack,
+) -> Option<crate::bucket::ItemUse> {
+    let glow = match held.id.as_str() {
+        ITEM_FRAME => false,
+        GLOW_ITEM_FRAME => true,
+        _ => return None,
+    };
+    let hit = player.target(world, USE_REACH)?;
+    Some(crate::bucket::ItemUse {
+        change: crate::bucket::Change::Server(
+            hit.pos,
+            crate::server::ItemOnBlock::HangFrame {
+                face: Direction::ALL[hit.face as usize],
+                glow,
+            },
+        ),
+        result: None,
+        wear: 0,
+        consumed: true,
+        sounds: Vec::new(),
+    })
 }
 
 #[cfg(test)]
@@ -1037,5 +1069,72 @@ mod tests {
             .append_frames(&mut shiny, &[invisible], &packs, &atlas, &light)
             .unwrap();
         assert_eq!(shiny.glint, vec![0..shiny.vertices.len() as u32]);
+    }
+
+    struct One(BlockPos, minecraftoss_player::Block);
+
+    impl minecraftoss_player::World for One {
+        fn block(&self, pos: minecraftoss_player::Pos) -> Option<minecraftoss_player::Block> {
+            (pos == self.0).then(|| self.1.clone())
+        }
+
+        fn set_block(
+            &mut self,
+            _: minecraftoss_player::Pos,
+            _: Option<minecraftoss_player::Block>,
+        ) {
+        }
+    }
+
+    #[test]
+    fn frames_hang_on_all_six_faces_with_vanilla_rotations() {
+        let stone = minecraftoss_player::Block::new("minecraft:stone");
+        let mut player = minecraftoss_player::Player::new(DVec3::new(0.5, 3.0, 0.5));
+        player.pitch = 90.0;
+        let floor = One((0, 1, 0), stone.clone());
+        let used =
+            frame_use(&player, &floor, &ItemStack::new(ITEM_FRAME, 4)).expect("aimed at the floor");
+        let up = crate::server::ItemOnBlock::HangFrame {
+            face: Direction::Up,
+            glow: false,
+        };
+        assert_eq!(used.change, crate::bucket::Change::Server((0, 1, 0), up));
+        assert!(used.consumed && used.result.is_none() && used.sounds.is_empty());
+        let mut facing_north = minecraftoss_player::Player::new(DVec3::new(0.5, 0.0, 2.5));
+        facing_north.yaw = 180.0;
+        let wall = One((0, 1, 0), stone);
+        let used = frame_use(&facing_north, &wall, &ItemStack::new(GLOW_ITEM_FRAME, 1))
+            .expect("aimed at the wall");
+        let south = crate::server::ItemOnBlock::HangFrame {
+            face: Direction::South,
+            glow: true,
+        };
+        assert_eq!(used.change, crate::bucket::Change::Server((0, 1, 0), south));
+        assert_eq!(
+            frame_use(
+                &facing_north,
+                &wall,
+                &ItemStack::new("minecraft:painting", 1)
+            ),
+            None
+        );
+        let expected = [
+            (Direction::Down, (0.0, 90.0)),
+            (Direction::Up, (0.0, -90.0)),
+            (Direction::North, (180.0, 0.0)),
+            (Direction::South, (0.0, 0.0)),
+            (Direction::West, (90.0, 0.0)),
+            (Direction::East, (270.0, 0.0)),
+        ];
+        for (face, rotation) in expected {
+            let pos = hung_at((5, 64, 5), face);
+            let frame = ItemFrame::from_tag(&frame_tag(false, pos, face), 1).unwrap();
+            assert_eq!(
+                frame.support(),
+                (5, 64, 5),
+                "{face:?} hangs on the clicked block"
+            );
+            assert_eq!(frame.yaw_pitch(), rotation, "{face:?}");
+        }
     }
 }

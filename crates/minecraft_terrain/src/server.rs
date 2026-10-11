@@ -36,6 +36,7 @@ pub enum ItemOnBlock {
     BoneMeal { face: &'static str },
     EnderEye,
     EndCrystal,
+    HangFrame { face: minecraftoss_core::pos::Direction, glow: bool },
 }
 
 pub struct ServerSim {
@@ -1453,7 +1454,25 @@ impl ServerSim {
                 }
                 placed
             }
+            ItemOnBlock::HangFrame { face, glow } => self.hang_frame(pos, face, glow),
         }
+    }
+
+    pub fn hang_frame(&mut self, clicked: BlockPos, face: minecraftoss_core::pos::Direction, glow: bool) -> bool {
+        let pos = crate::item_frame::hung_at(clicked, face);
+        if pos.1 < self.level.min_y() || pos.1 > self.level.max_y() {
+            return false;
+        }
+        let tag = self.frames.fresh_tag(glow, pos, face);
+        let Some(frame) = crate::item_frame::ItemFrame::from_tag(&tag, 0) else {
+            return false;
+        };
+        if !self.frames.survives(&frame, &FrameLevel(&self.level)) {
+            return false;
+        }
+        self.frames.add(&tag);
+        self.frame_sound(&frame, crate::item_frame::FrameSound::Place);
+        true
     }
 
     pub fn place_end_crystal(&mut self, base: BlockPos) -> bool {
@@ -7983,5 +8002,66 @@ mod tests {
         let after: Vec<_> = server.frame_views().into_iter().map(|view| (view.glow, view.pos, view.facing, view.item, view.rotation)).collect();
         assert_eq!(after, before);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn hung(server: &mut ServerSim, clicked: BlockPos, face: minecraftoss_core::pos::Direction, glow: bool) -> bool {
+        server.item_on_block(clicked, ItemOnBlock::HangFrame { face, glow })
+    }
+
+    #[test]
+    fn a_frame_is_refused_without_support_on_a_taken_face_or_inside_a_block() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        assert!(hung(&mut server, (8, 199, 8), Direction::South, false), "on the stone");
+        assert_eq!(server.frame_views()[0].pos, (8, 199, 9));
+        assert!(!hung(&mut server, (8, 199, 12), Direction::Up, false), "on air");
+        place(&mut server, &mut scene, (7, 199, 8), Block::new("minecraft:stone"));
+        assert!(!hung(&mut server, (8, 199, 8), Direction::West, false), "inside a block");
+        assert!(!hung(&mut server, (8, 319, 8), Direction::Up, false), "above the build height");
+        assert_eq!(server.frame_views().len(), 1);
+    }
+
+    #[test]
+    fn a_repeater_holds_a_wall_frame_but_not_a_floor_frame() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:repeater").with("facing", "north").with("delay", "1").with("locked", "false").with("powered", "false"));
+        assert!(hung(&mut server, (8, 200, 8), Direction::East, false));
+        assert!(!hung(&mut server, (8, 200, 8), Direction::Up, false));
+        for _ in 0..202 {
+            server.tick();
+        }
+        assert_eq!(server.frame_views().len(), 1, "the wall frame stays on the repeater");
+    }
+
+    #[test]
+    fn two_frames_on_one_face_never_overlap() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, _)) = door_world() else { return };
+        assert!(hung(&mut server, (8, 199, 8), Direction::North, false));
+        assert!(!hung(&mut server, (8, 199, 8), Direction::North, true));
+        assert_eq!(server.frame_views().len(), 1);
+    }
+
+    #[test]
+    fn a_frame_and_a_floor_frame_share_a_cell() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 198, 9), Block::new("minecraft:stone"));
+        assert!(hung(&mut server, (8, 199, 8), Direction::South, false));
+        assert!(hung(&mut server, (8, 198, 9), Direction::Up, false));
+        let cells: Vec<_> = server.frame_views().iter().map(|view| (view.pos, view.facing)).collect();
+        assert_eq!(cells, [((8, 199, 9), Direction::South), ((8, 199, 9), Direction::Up)]);
+    }
+
+    #[test]
+    fn the_place_sound_is_the_glow_one_for_glow_frames() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, _)) = door_world() else { return };
+        assert!(hung(&mut server, (8, 199, 8), Direction::East, true));
+        assert!(hung(&mut server, (8, 199, 8), Direction::West, false));
+        assert!(!hung(&mut server, (8, 199, 8), Direction::West, false));
+        let sounds: Vec<_> = server.take_frame_sounds().into_iter().map(|sound| (sound.event, sound.position)).collect();
+        assert_eq!(sounds, [("minecraft:entity.glow_item_frame.place".to_owned(), glam::DVec3::new(9.03125, 199.5, 8.5)), ("minecraft:entity.item_frame.place".to_owned(), glam::DVec3::new(7.96875, 199.5, 8.5))]);
     }
 }
