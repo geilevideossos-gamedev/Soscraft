@@ -1623,6 +1623,7 @@ fn update(
     if let Some(entities) = entities.as_mut() {
         let positions: Vec<_> = broken.iter().map(|(pos, ..)| *pos).collect();
         entities.mined(inventory.slots[*selected].as_ref(), &broken, &hand_mined, !player_mode.drops_from_breaking());
+        entities.guard_mined(&terrain.stream.states, &broken, feet);
         let kept: HashMap<_, _> = broken
             .iter()
             .filter(|(_, block, _)| minecraft_terrain::containers::Station::of(block) == Some(minecraft_terrain::containers::Station::Shulker))
@@ -2066,6 +2067,9 @@ fn update(
         let mut opener_events = Vec::new();
         for (opened, open) in [(was_open.clone().filter(|o| now_open.as_ref() != Some(o)), false), (now_open.filter(|o| was_open.as_ref() != Some(o)), true)] {
             let Some(opened) = opened else { continue };
+            if open && opened.cells.iter().any(|&pos| minecraft_terrain::scene::Scene::block(&terrain.scene, pos).is_some_and(minecraft_terrain::openers::Openers::counted)) {
+                entities.anger_piglins(feet, true);
+            }
             opener_events.extend(minecraft_survival::level::toggle_openers(openers, &terrain.scene, &opened.cells, local_uuid, open, spectator));
         }
         if entities.ticks() % minecraft_terrain::openers::RECHECK_TICKS == 0 {

@@ -2335,6 +2335,7 @@ pub enum Command {
     GameRules(Box<crate::game_rules::GameRules>),
     PlayerUuid { player: u64, uuid: u128 },
     Dismount { player: u64 },
+    AngerPiglins { player: u64, feet: [f64; 3], sight: bool },
     Boost { player: u64 },
     RootVehicle { player: u64, remove: bool },
     Reattach { player: u64, root: Box<minecraftoss_core::nbt::Tag> },
@@ -2682,6 +2683,10 @@ impl ServerHandle {
         self.send(Command::Dismount { player });
     }
 
+    pub fn anger_piglins(&mut self, player: u64, feet: [f64; 3], sight: bool) {
+        self.send(Command::AngerPiglins { player, feet, sight });
+    }
+
     pub fn boost(&mut self, player: u64) {
         self.send(Command::Boost { player });
     }
@@ -2866,6 +2871,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::PlayerUuid { player, uuid } => sim.set_player_uuid(player, uuid),
                 Command::Dismount { player } => sim.dismount(player),
+                Command::AngerPiglins { player, feet, sight } => sim.mobs.anger_nearby_piglins(player, glam::DVec3::from_array(feet), sight),
                 Command::Boost { player } => out.boosts.push((player, sim.mobs.boost_ride(player))),
                 Command::RootVehicle { player, remove } => out.root_vehicles.push((player, sim.root_vehicle(player, remove))),
                 Command::Reattach { player, root } => out.mounts.extend(sim.reattach(player, &root).map(|vehicle| (player, vehicle))),

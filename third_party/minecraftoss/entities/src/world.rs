@@ -2344,6 +2344,7 @@ pub struct EntityWorld {
     piglins_zombify: bool,
     piglin_rules: piglins::PiglinRules,
     barter_throws: Vec<piglins::BarterThrow>,
+    piglin_angers: Vec<piglins::PiglinAnger>,
     /// `Difficulty.getId`: 0 peaceful to 3 hard.
     difficulty: i32,
     /// Sounds not tied to a living mob (a creeper's blast, gone with it).
@@ -2450,6 +2451,7 @@ impl Default for EntityWorld {
             piglins_zombify: false,
             piglin_rules: Default::default(),
             barter_throws: Vec::new(),
+            piglin_angers: Vec::new(),
             difficulty: 2,
             sounds: Vec::new(),
             mob_drops: true,
@@ -4821,6 +4823,7 @@ impl EntityWorld {
             piglins_zombify: false,
             piglin_rules: self.piglin_rules,
             barter_throws: Vec::new(),
+            piglin_angers: Vec::new(),
             difficulty: 2,
             sounds: Vec::new(),
             mob_drops: self.mob_drops,
@@ -5021,6 +5024,7 @@ impl EntityWorld {
         self.game_time += 1;
         let game_time = self.game_time;
         self.set_pushing_players(players);
+        self.resolve_piglin_angers(players);
         let ticking: HashSet<u64> = self.positions().filter(|&(_, position)| ticks(position)).map(|(id, _)| id).collect();
         // Snapshot membership: newborns join the world immediately but start
         // ticking on the next game tick, in global insertion order.

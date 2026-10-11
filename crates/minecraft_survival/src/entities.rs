@@ -12,7 +12,7 @@ use minecraft_terrain::lighting::SkyLight;
 use minecraft_terrain::mesh::{Atlas, ChunkMesh};
 use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
 use minecraft_terrain::server::{HowBroken, PlayerEdit, ServerHandle, ServerSim, TickInput};
-use minecraft_terrain::terrain::TerrainStream;
+use minecraft_terrain::terrain::{BlockStates, TerrainStream};
 use minecraft_terrain::client_mobs::{ClientMobs, server_mobs};
 use minecraft_terrain::mesh::ItemVisuals;
 use minecraft_terrain::server::{EntitySnapshot, ServerItem, ServerOrb};
@@ -37,6 +37,7 @@ const PLAYER: u64 = 0;
 /// `Player.getEyeHeight` standing.
 const EYE_HEIGHT: f32 = 1.62;
 const SERVER_ITEM: u32 = 1 << 31;
+const GUARDED_BY_PIGLINS: &str = "minecraft:guarded_by_piglins";
 type Hits = Vec<(f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause, crate::impulse::MeleePush)>;
 type Changes = Vec<((i32, i32, i32), Option<Block>)>;
 type Picked = (i32, [f64; 3], String, i32, Option<String>);
@@ -849,6 +850,16 @@ impl Entities {
         self.server.player_mines(&how);
     }
 
+    pub fn anger_piglins(&mut self, feet: [f64; 3], sight: bool) {
+        self.server.anger_piglins(PLAYER, feet, sight);
+    }
+
+    pub fn guard_mined(&mut self, states: &BlockStates, broken: &[BrokenBlock], feet: [f64; 3]) {
+        if mining_angers_piglins(states, broken) {
+            self.anger_piglins(feet, false);
+        }
+    }
+
     fn hand_enchantments(held: Option<&ItemStack>) -> Option<serde_json::Value> {
         held?.components.as_ref()?.get("minecraft:enchantments").cloned()
     }
@@ -1493,6 +1504,18 @@ fn how_broken(pos: (i32, i32, i32), blast: Option<f32>, by_hand: &[(i32, i32, i3
     }
 }
 
+pub fn guarded_by_piglins(states: &BlockStates, block: &Block) -> bool {
+    let registries = states.registries();
+    match (states.state_of(block), registries.block_tags.id(GUARDED_BY_PIGLINS)) {
+        (Some(state), Some(tag)) => registries.block_in_tag(state, tag),
+        _ => false,
+    }
+}
+
+fn mining_angers_piglins(states: &BlockStates, broken: &[BrokenBlock]) -> bool {
+    broken.iter().any(|(_, block, blast)| blast.is_none() && guarded_by_piglins(states, block))
+}
+
 fn has_silk_touch(enchantments: Option<&serde_json::Value>) -> bool {
     enchantments.and_then(|enchantments| enchantments.get(SILK_TOUCH)).and_then(serde_json::Value::as_i64).is_some_and(|level| level > 0)
 }
@@ -1910,5 +1933,33 @@ mod tests {
         assert_eq!(rests.len(), 1, "the part that did not fit is not lost");
         assert_eq!((rests[0].id.as_str(), rests[0].count), ("minecraft:dirt", 10));
         assert_eq!(rests[0].components, Some(serde_json::json!({ "minecraft:custom_name": "x" })));
+    }
+
+    #[test]
+    fn only_guarded_blocks_send_anger() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else {
+            return;
+        };
+        let Ok(registries) = minecraftoss_core::Registries::load(&paths) else {
+            return;
+        };
+        let Ok(states) = BlockStates::new(std::sync::Arc::new(registries), 0, -64, 384) else {
+            return;
+        };
+        let guarded = [
+            "gold_block", "raw_gold_block", "gilded_blackstone", "gold_ore", "deepslate_gold_ore", "nether_gold_ore",
+            "chest", "trapped_chest", "copper_chest", "barrel", "ender_chest", "shulker_box", "red_shulker_box",
+        ];
+        for id in guarded {
+            let block = Block::new(&format!("minecraft:{id}"));
+            assert!(guarded_by_piglins(&states, &block), "{id}");
+            assert!(mining_angers_piglins(&states, &[((0, 64, 0), block.clone(), None)]), "{id}");
+            assert!(!mining_angers_piglins(&states, &[((0, 64, 0), block, Some(4.0))]), "a blast angers nobody: {id}");
+        }
+        for id in ["stone", "iron_block", "netherrack", "furnace"] {
+            let block = Block::new(&format!("minecraft:{id}"));
+            assert!(!guarded_by_piglins(&states, &block), "{id}");
+            assert!(!mining_angers_piglins(&states, &[((0, 64, 0), block, None)]), "{id}");
+        }
     }
 }

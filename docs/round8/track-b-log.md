@@ -694,3 +694,33 @@ IW4L_MINECRAFT_KIT=minecraft:piglin_spawn_egg*16,minecraft:piglin_brute_spawn_eg
 ```
 IW4L_MINECRAFT_KIT=minecraft:piglin_spawn_egg*16,minecraft:piglin_brute_spawn_egg*4,minecraft:zombified_piglin_spawn_egg*2,minecraft:wither_skeleton_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:gold_ingot*64,minecraft:gold_ingot*64,minecraft:gold_nugget*32,minecraft:golden_carrot*4,minecraft:porkchop*8,minecraft:leather*8,minecraft:golden_boots,minecraft:diamond_sword,minecraft:shield,minecraft:soul_torch*16,minecraft:torch*16,minecraft:soul_campfire*2,minecraft:iron_shovel,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:netherrack*64
 ```
+
+## Group b1-piglins-3
+
+Brief `b1-piglins.md`, groups 6, 7, 8 and 9.
+
+### b1.6. Minecraft piglins guard gold blocks and chests
+
+After 6c7ceb71.
+
+- **Changed:**
+  - Vendored `world/piglins.rs`: `EntityWorld::anger_nearby_piglins(player, feet, require_sight)` (`PiglinAi.angerNearbyPiglins`). It is queued and resolved at the start of the next entity tick, when the players are known: every `Piglin` (not brutes) whose box meets the player's box (0.6 x 1.8 at the feet) grown by 16, that is in IDLE and, when sight is required, has the player among its visible living entities (`BehaviorUtils.canSee`), gets `setAngerTarget(player)` (600 ticks, only while the player is attackable ignoring sight, so creative and spectating players anger nobody), or under `universal_anger` the nearest visible attackable player it knows (else this one). There is no broadcast.
+  - `minecraft_terrain::server`: `Command::AngerPiglins { player, feet, sight }` and `ServerHandle::anger_piglins`.
+  - `minecraft_survival::entities`: `anger_piglins(feet, sight)` for the local player, `guard_mined` (any hand-broken block, not a blasted one, in `#minecraft:guarded_by_piglins` from the 26.3 block tags angers without sight, as `Block.playerWillDestroy` does) and `guarded_by_piglins`.
+  - `render_anim::minecraft_world`: one call after `entities.mined` (`guard_mined`), and one when a chest, trapped chest, copper chest, barrel, shulker box or ender chest opens (`anger_piglins(feet, true)`, as the containers' `useWithoutItem` does on each open).
+- **Tests:** `world::piglins`: `mining_a_gold_block_angers_idle_piglins_within_16_even_unseen` (one behind a wall joins, one 20 blocks away does not, and the angry one then attacks), `opening_a_chest_angers_only_the_piglins_that_see_it`, `brutes_and_busy_piglins_are_not_angered_by_a_chest` (an admiring piglin and a brute stay unangered), `universal_anger_turns_a_chest_s_piglins_on_the_nearest_player`. `minecraft_survival::entities` (with the game data): `only_guarded_blocks_send_anger` (gold block, raw gold block, gilded blackstone, the three gold ores, chests, copper chest, barrel, ender chest and shulker boxes yes, also not when blasted; stone, iron block, netherrack and furnace no).
+- **Decisions:**
+  - The anger lands at the start of the next entity tick (at most one tick late) rather than inside the command, because only the tick knows the players' positions and game modes. The IDLE and sight checks use the brain as the last tick left it.
+  - The player's box is taken standing (1.8 high); a crouching player's is 1.5, which only moves the top of the 16-block reach by 0.3.
+  - Chest vehicles do not exist in the game, so `chestVehicleDestroyed` has no caller.
+- **Test steps (Nether, survival, `/difficulty normal`, golden boots on so the piglins stay calm, on a netherrack floor):**
+  1. Use 4 piglin eggs around you. Place a gold block and mine it: every piglin within about 16 blocks attacks you, also one behind you or behind a wall (**11**). Back off for 30 seconds or kill them.
+  2. Use 4 more piglin eggs. Place a chest behind a 3-high netherrack wall so that the piglins can't see you, stand behind the wall and open it: nothing happens. Walk around the wall into their sight and open it again: the ones that see you attack (**12**).
+  3. Use 2 brute eggs and a piglin egg, give that piglin a gold ingot (right-click), and open a chest in sight of all of them while it admires: the admiring piglin keeps admiring (the brutes attack you anyway, as brutes do).
+  4. Mine a block of iron, stone and netherrack near calm piglins: nothing happens. Mine raw gold, gilded blackstone and nether gold ore: they attack.
+  5. `/gamemode creative`, mine a gold block next to calm piglins: nothing happens. `/gamemode survival`.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:piglin_spawn_egg*16,minecraft:piglin_brute_spawn_egg*2,minecraft:gold_block*8,minecraft:raw_gold_block*4,minecraft:gilded_blackstone*4,minecraft:nether_gold_ore*4,minecraft:iron_block*4,minecraft:chest*4,minecraft:barrel*2,minecraft:gold_ingot*16,minecraft:golden_boots,minecraft:diamond_pickaxe,minecraft:diamond_sword,minecraft:netherrack*64,minecraft:cooked_beef*32
+```

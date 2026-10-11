@@ -13,12 +13,22 @@ pub const IGNORED_BY_BABIES_TAG: &str = "minecraft:ignored_by_piglin_babies";
 pub const PREFERRED_WEAPONS_TAG: &str = "minecraft:piglin_preferred_weapons";
 pub const THROW_SPEED: f64 = 0.3;
 pub const PICKUP_DELAY: i32 = 10;
+pub const ANGER_RANGE: f64 = 16.0;
+const ANGER_PLAYER_WIDTH: f64 = 0.6;
+const ANGER_PLAYER_HEIGHT: f64 = 1.8;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BarterThrow {
     pub piglin: u64,
     pub from: DVec3,
     pub velocity: DVec3,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PiglinAnger {
+    pub player: u64,
+    pub feet: DVec3,
+    pub require_sight: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1346,6 +1356,60 @@ impl EntityWorld {
             return;
         }
         self.piglin_maybe_retaliate(id, attacker, others, uuids);
+    }
+
+    pub fn anger_nearby_piglins(&mut self, player: u64, feet: DVec3, require_sight: bool) {
+        self.piglin_angers.push(PiglinAnger {
+            player,
+            feet,
+            require_sight,
+        });
+    }
+
+    pub(super) fn resolve_piglin_angers(&mut self, players: &[PlayerCandidate]) {
+        let angers = std::mem::take(&mut self.piglin_angers);
+        if angers.is_empty() {
+            return;
+        }
+        let others: Vec<Living> = self
+            .hoglin_living(u64::MAX, players)
+            .into_iter()
+            .filter(Living::is_player)
+            .collect();
+        for anger in angers {
+            let half = ANGER_PLAYER_WIDTH / 2.0 + ANGER_RANGE;
+            let min = anger.feet - DVec3::new(half, ANGER_RANGE, half);
+            let max = anger.feet + DVec3::new(half, ANGER_PLAYER_HEIGHT + ANGER_RANGE, half);
+            let player = Target::Player(anger.player);
+            let angered: Vec<(u64, Option<Target>)> = self
+                .piglins
+                .iter()
+                .filter(|e| e.piglin.kind == PiglinKind::Piglin)
+                .filter(|e| {
+                    let body = &e.piglin.body;
+                    let w = f64::from(body.width) / 2.0;
+                    let (low, high) = (
+                        body.position - DVec3::new(w, 0.0, w),
+                        body.position + DVec3::new(w, f64::from(body.height), w),
+                    );
+                    low.cmplt(max).all() && high.cmpgt(min).all()
+                })
+                .filter(|e| e.brain.active(Activity::Idle))
+                .filter(|e| !anger.require_sight || e.brain.memories.sees(player))
+                .map(|e| {
+                    let nearest = e.brain.memories.nearest_visible_attackable_player.get();
+                    (e.id, nearest.copied())
+                })
+                .collect();
+            for (id, nearest) in angered {
+                let target = if self.piglin_rules.universal_anger {
+                    nearest.unwrap_or(player)
+                } else {
+                    player
+                };
+                self.set_piglin_anger(id, target, &others);
+            }
+        }
     }
 
     pub fn note_piglin_hurt(&mut self, id: u64, attacker: Target) {
@@ -2693,5 +2757,141 @@ mod tests {
         assert!(hurt(&world, piglin) || hurt(&world, brute));
         assert!(crate::monster_ai::is_enemy("minecraft:piglin"));
         assert!(crate::monster_ai::is_enemy("minecraft:piglin_brute"));
+    }
+
+    fn guarded_scene(world: &mut EntityWorld) -> (Blocks, [PlayerCandidate; 1], [u64; 3]) {
+        let mut blocks = floor(24);
+        for y in 64..67 {
+            for z in -3..=3 {
+                blocks
+                    .blocks
+                    .insert((-3, y, z), Block::new("minecraft:stone"));
+            }
+        }
+        world.set_recipe_book(piglin_book());
+        let players = calm_player(world, DVec3::new(0.5, 64.0, 0.5));
+        let ids = [6.5, -8.5, 20.5].map(|x| {
+            let id = armed(
+                world,
+                PiglinKind::Piglin,
+                DVec3::new(x, 64.0, 0.5),
+                "minecraft:golden_sword",
+            );
+            slowed(world, id);
+            id
+        });
+        (blocks, players, ids)
+    }
+
+    fn angry_at(world: &mut EntityWorld, id: u64) -> Option<(u128, i64)> {
+        let memories = &world.piglin_mut(id).unwrap().brain.memories;
+        Some((*memories.angry_at.get()?, memories.angry_at.ttl()?))
+    }
+
+    #[test]
+    fn mining_a_gold_block_angers_idle_piglins_within_16_even_unseen() {
+        let mut world = EntityWorld::default();
+        let (mut blocks, players, [seen, unseen, far]) = guarded_scene(&mut world);
+        for _ in 0..45 {
+            world.tick_with_players(&mut blocks, &players);
+        }
+        for id in [seen, unseen, far] {
+            let entity = world.piglin_mut(id).unwrap();
+            assert_eq!(entity.brain.activity, Activity::Idle, "{id}");
+            assert!(!entity.brain.memories.angry_at.present(), "{id}");
+        }
+        let memories = &world.piglin_mut(unseen).unwrap().brain.memories;
+        assert!(!memories.sees(Target::Player(7)), "the wall hides the player");
+        world.anger_nearby_piglins(7, players[0].position, false);
+        world.tick_with_players(&mut blocks, &players);
+        let uuid = world.uuid_of(PLAYER_TARGET + 7);
+        for id in [seen, unseen] {
+            let (angry, ttl) = angry_at(&mut world, id).expect("angry");
+            assert_eq!(angry, uuid);
+            assert!((598..=600).contains(&ttl), "{ttl}");
+        }
+        assert!(angry_at(&mut world, far).is_none(), "20 blocks away stays calm");
+        for _ in 0..20 {
+            world.tick_with_players(&mut blocks, &players);
+        }
+        let brain = &world.piglin_mut(seen).unwrap().brain;
+        assert_eq!(brain.memories.attack_target.get(), Some(&Target::Player(7)));
+    }
+
+    #[test]
+    fn opening_a_chest_angers_only_the_piglins_that_see_it() {
+        let mut world = EntityWorld::default();
+        let (mut blocks, players, [seen, unseen, far]) = guarded_scene(&mut world);
+        for _ in 0..45 {
+            world.tick_with_players(&mut blocks, &players);
+        }
+        world.anger_nearby_piglins(7, players[0].position, true);
+        world.tick_with_players(&mut blocks, &players);
+        let uuid = world.uuid_of(PLAYER_TARGET + 7);
+        assert_eq!(angry_at(&mut world, seen).map(|(at, _)| at), Some(uuid));
+        assert!(angry_at(&mut world, unseen).is_none());
+        assert!(angry_at(&mut world, far).is_none());
+    }
+
+    #[test]
+    fn brutes_and_busy_piglins_are_not_angered_by_a_chest() {
+        let mut world = EntityWorld::default();
+        let (mut blocks, players, [idle, _, _]) = guarded_scene(&mut world);
+        let busy = armed(
+            &mut world,
+            PiglinKind::Piglin,
+            DVec3::new(4.5, 64.0, 4.5),
+            "minecraft:golden_sword",
+        );
+        slowed(&mut world, busy);
+        let brute = armed(
+            &mut world,
+            PiglinKind::Brute,
+            DVec3::new(4.5, 64.0, -4.5),
+            "minecraft:golden_axe",
+        );
+        slowed(&mut world, brute);
+        for _ in 0..45 {
+            world.tick_with_players(&mut blocks, &players);
+        }
+        let entity = world.piglin_mut(busy).unwrap();
+        entity.piglin.offhand = Some(ItemStack::new(piglin::BARTERING_ITEM, 1));
+        entity
+            .brain
+            .admire_for(crate::piglin_brain::ADMIRE_TICKS);
+        world.tick_with_players(&mut blocks, &players);
+        let brain = &world.piglin_mut(busy).unwrap().brain;
+        assert_eq!(brain.activity, Activity::AdmireItem);
+        for id in [busy, brute, idle] {
+            let memories = &world.piglin_mut(id).unwrap().brain.memories;
+            assert!(memories.sees(Target::Player(7)), "{id}");
+        }
+        world.anger_nearby_piglins(7, players[0].position, true);
+        world.tick_with_players(&mut blocks, &players);
+        assert!(angry_at(&mut world, idle).is_some());
+        assert!(angry_at(&mut world, busy).is_none(), "admiring");
+        assert!(angry_at(&mut world, brute).is_none(), "brutes are not piglins");
+    }
+
+    #[test]
+    fn universal_anger_turns_a_chest_s_piglins_on_the_nearest_player() {
+        let mut world = EntityWorld::default();
+        let (mut blocks, players, [seen, _, _]) = guarded_scene(&mut world);
+        world.set_universal_anger(true);
+        let near = player(8, DVec3::new(8.5, 64.0, 0.5));
+        world.set_player_controls(&[
+            wearing(7, [Some("minecraft:golden_boots"), None, None, None]),
+            wearing(8, [Some("minecraft:golden_boots"), None, None, None]),
+        ]);
+        let players = [players[0], near];
+        for _ in 0..45 {
+            world.tick_with_players(&mut blocks, &players);
+        }
+        world.anger_nearby_piglins(7, players[0].position, true);
+        world.tick_with_players(&mut blocks, &players);
+        let uuid = world.uuid_of(PLAYER_TARGET + 8);
+        assert_eq!(angry_at(&mut world, seen).map(|(at, _)| at), Some(uuid));
+        let memories = &world.piglin_mut(seen).unwrap().brain.memories;
+        assert!(memories.universal_anger.present());
     }
 }
