@@ -459,3 +459,17 @@ After dbb52c23.
 ```
 IW4L_MINECRAFT_KIT=minecraft:hoglin_spawn_egg*16,minecraft:crimson_fungus*64,minecraft:warped_fungus*16,minecraft:crimson_nylium*16,minecraft:respawn_anchor*2,minecraft:diamond_sword,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:netherite_helmet,minecraft:netherite_chestplate,minecraft:netherite_leggings,minecraft:netherite_boots,minecraft:iron_golem_spawn_egg*2,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:cooked_beef*32,minecraft:netherrack*64
 ```
+
+### b2.7. Minecraft hoglins turn into zoglins outside the Nether
+
+After 5ff86a48.
+
+- **Changed:**
+  - Vendored `world/src/level/time.rs`: `Level::piglins_zombify`, the `gameplay/piglins_zombify` attribute (true in the Overworld and the End, false in the Nether; no 26.3 biome changes it), next to `monsters_burn`.
+  - `ServerSim::tick_mobs` hands it to its entity world each tick (`EntityWorld::set_piglins_zombify`), so every level decides for its own hoglins, and a level that doesn't tick doesn't move their clocks.
+  - `world/hoglins.rs`: `Hoglin.customServerAiStep`'s clock after the brain: a hoglin that is not immune, has AI and stands where hoglins zombify is converting (the renderer's shake and the `retreat` sounds); `TimeInOverworld` counts up and, past 300 (the 301st tick, 15 seconds), the hoglin plays `entity.hoglin.converted_to_zombified` and becomes a zoglin; anywhere else the clock goes back to 0. `convert_hoglin_to_zoglin` (`ConversionType.SINGLE`): a new entity with its own id and UUID that keeps the position, yaw, motion, ground, fall, fire, hurt cooldown, baby, persistence, NoAI and effects, starts at 40 health and gets nausea for 200 ticks; the hoglin is gone.
+- **Tests:** `world::hoglins`: `a_hoglin_in_the_overworld_becomes_a_zoglin_on_tick_301_and_one_in_the_nether_never_does`, `going_back_to_the_nether_resets_the_clock`, `an_immune_or_no_ai_hoglin_stays`, `a_piglet_becomes_a_baby_zoglin_and_keeps_its_persistence`. `server_mobs`: `the_clock_survives_a_save` (saved at 200, it converts on the 101st tick after loading). `server` (with the game data): `the_end_converts_hoglins_too`.
+- **Decisions:**
+  - The flag is read per level, not sampled at each hoglin's position (decision 5 of the brief): no 26.3 biome overrides it.
+  - A custom name and a lead are not carried over: neither exists on mobs here yet.
+- **Test steps:** together with b2.8.

@@ -1752,4 +1752,36 @@ mod tests {
         assert!(saved[0].1.get("Age").is_none() && saved[0].1.get("TimeInOverworld").is_none());
         assert!(SIMULATED_KINDS.contains(&"minecraft:hoglin") && SIMULATED_KINDS.contains(&"minecraft:zoglin"));
     }
+
+    #[test]
+    fn the_clock_survives_a_save() {
+        struct Floor;
+        impl PlayerWorld for Floor {
+            fn block(&self, pos: (i32, i32, i32)) -> Option<PlayerBlock> {
+                (pos.1 < 64).then(|| PlayerBlock::new("minecraft:netherrack"))
+            }
+            fn set_block(&mut self, _pos: (i32, i32, i32), _block: Option<PlayerBlock>) {}
+        }
+        let mut world = EntityWorld::default();
+        world.set_piglins_zombify(true);
+        let hoglin = minecraftoss_entities::hoglin::Hoglin::new(minecraftoss_entities::hoglin::HoglinKind::Hoglin, DVec3::new(0.5, 64.0, 0.5));
+        let id = world.spawn_hoglin(hoglin, false);
+        for _ in 0..200 {
+            world.tick_with_players(&mut Floor, &[]);
+        }
+        let saved = mob_tags(&world, |_| true, &std::collections::HashMap::new());
+        let (_, tag) = saved.iter().find(|(saved_id, _)| *saved_id == id).expect("the hoglin is saved");
+        assert_eq!(int(tag, "TimeInOverworld"), Some(200));
+        let mut again = EntityWorld::default();
+        again.set_piglins_zombify(true);
+        let id = spawn_saved(&mut again, tag).expect("it loads again");
+        for _ in 0..100 {
+            again.tick_with_players(&mut Floor, &[]);
+        }
+        assert!(again.hoglin_mut(id).is_some());
+        again.tick_with_players(&mut Floor, &[]);
+        assert!(again.hoglin_mut(id).is_none());
+        assert_eq!(again.hoglins().len(), 1);
+        assert_eq!(again.entity_type(again.hoglins()[0].id), Some("minecraft:zoglin"));
+    }
 }

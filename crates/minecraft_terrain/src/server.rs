@@ -731,6 +731,7 @@ impl ServerSim {
         let ticking: std::collections::HashSet<ChunkPos> = self.level.ticking_chunks.iter().flatten().copied().collect();
         self.mobs.set_bright_outside(bright_outside);
         self.mobs.set_monsters_burn(self.level.monsters_burn());
+        self.mobs.set_piglins_zombify(self.level.piglins_zombify());
         let Self { level, states, mobs, mob_tables, .. } = self;
         let mut world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
         let ticks = |p: glam::DVec3| ticking.contains(&ChunkPos::new((p.x.floor() as i32) >> 4, (p.z.floor() as i32) >> 4));
@@ -7282,6 +7283,29 @@ mod tests {
         assert_eq!(kept, Some(20), "and its first wait does not run down");
         let (_, off, _) = run(3.0, false, 60);
         assert!(off.is_empty(), "spawner_blocks_work off: nothing");
+    }
+
+    #[test]
+    fn the_end_converts_hoglins_too() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let level_of = |terrain: TerrainGenerator, dimension_type: &str| {
+            let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(terrain), dimension_type).unwrap());
+            let states = Arc::new(BlockStates::new(registries.clone(), 0, 0, 256).unwrap());
+            ServerSim::new(worldgen, states, dimension_type)
+        };
+        let nether = level_of(TerrainGenerator::nether(registries.clone(), 0).unwrap(), "minecraft:the_nether");
+        let mut end = level_of(TerrainGenerator::end(registries.clone(), 0).unwrap(), "minecraft:the_end");
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let overworld = ServerSim::new(worldgen, states, "minecraft:overworld");
+        assert!(overworld.level.piglins_zombify());
+        assert!(!nether.level.piglins_zombify());
+        assert!(end.level.piglins_zombify());
+        assert!(!end.mobs.piglins_zombify());
+        end.tick_mobs(&[], false);
+        assert!(end.mobs.piglins_zombify(), "each level hands its own flag to its mobs");
     }
 
     #[test]

@@ -2333,6 +2333,7 @@ pub struct EntityWorld {
     players_pickable: bool,
     /// The `gameplay/monsters_burn` attribute (daytime in the Overworld).
     monsters_burn: bool,
+    piglins_zombify: bool,
     /// `Difficulty.getId`: 0 peaceful to 3 hard.
     difficulty: i32,
     /// Sounds not tied to a living mob (a creeper's blast, gone with it).
@@ -2434,6 +2435,7 @@ impl Default for EntityWorld {
             player_fights: HashMap::new(),
             players_pickable: false,
             monsters_burn: false,
+            piglins_zombify: false,
             difficulty: 2,
             sounds: Vec::new(),
             mob_drops: true,
@@ -3032,6 +3034,14 @@ impl EntityWorld {
     /// Whether monsters that burn in daylight burn now.
     pub fn set_monsters_burn(&mut self, burn: bool) {
         self.monsters_burn = burn;
+    }
+
+    pub fn set_piglins_zombify(&mut self, zombify: bool) {
+        self.piglins_zombify = zombify;
+    }
+
+    pub fn piglins_zombify(&self) -> bool {
+        self.piglins_zombify
     }
 
     /// Lets arrows hit the players (the players are real entities).
@@ -4741,6 +4751,7 @@ impl EntityWorld {
             player_fights: HashMap::new(),
             players_pickable: false,
             monsters_burn: false,
+            piglins_zombify: false,
             difficulty: 2,
             sounds: Vec::new(),
             mob_drops: self.mob_drops,

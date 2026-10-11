@@ -43,6 +43,7 @@ pub(super) struct Thought {
     attack: Option<Target>,
     courting: Option<Target>,
     birth: Option<Target>,
+    convert: bool,
 }
 
 fn attacker_of(owner: u64) -> Target {
@@ -163,6 +164,7 @@ impl HoglinEntity {
             attack,
             courting,
             birth,
+            convert: false,
         }
     }
 
@@ -226,8 +228,11 @@ impl HoglinEntity {
         others: &[Living],
         lovers: &[Target],
         game_time: i64,
+        zombify: bool,
     ) -> (bool, Thought) {
         self.previous_position = self.hoglin.body.position;
+        self.hoglin.converting =
+            self.thinks() && !self.no_ai && !self.hoglin.immune_to_zombification && zombify;
         self.tick_count += 1;
         let sounds = hoglin_sounds(self.hoglin.kind);
         self.fluid = base_tick_fluid(
@@ -313,6 +318,15 @@ impl HoglinEntity {
             self.no_action_time += 1;
             if self.thinks() {
                 thought = self.think(world, others, lovers, game_time);
+                if self.hoglin.converting {
+                    self.hoglin.time_in_overworld += 1;
+                    if self.hoglin.time_in_overworld > hoglin::CONVERSION_TIME {
+                        self.make_sound("entity.hoglin.converted_to_zombified");
+                        thought.convert = true;
+                    }
+                } else {
+                    self.hoglin.time_in_overworld = 0;
+                }
                 self.steer(world);
             }
             if self.no_jump_delay > 0 {
@@ -557,6 +571,34 @@ impl EntityWorld {
         }
     }
 
+    pub fn convert_hoglin_to_zoglin(&mut self, old_id: u64) -> Option<u64> {
+        let index = self.hoglins.iter().position(|e| e.id == old_id)?;
+        let old = self.hoglins.remove(index);
+        self.order
+            .retain(|key| !matches!(key, EntityKey::Hoglin(id) if *id == old_id));
+        let mut zoglin = Hoglin::new(HoglinKind::Zoglin, old.hoglin.body.position);
+        zoglin.yaw = old.hoglin.yaw;
+        zoglin.set_baby(old.hoglin.is_baby());
+        zoglin.body.velocity = old.hoglin.body.velocity;
+        zoglin.body.on_ground = old.hoglin.body.on_ground;
+        zoglin.body.fall_distance = old.hoglin.body.fall_distance;
+        zoglin.body.fire_ticks = old.hoglin.body.fire_ticks;
+        zoglin.damage.cooldown_ticks = old.hoglin.damage.cooldown_ticks;
+        zoglin.persistence_required = old.hoglin.persistence_required;
+        let id = self.spawn_hoglin(zoglin, old.no_ai);
+        let entity = self.hoglins.iter_mut().find(|e| e.id == id)?;
+        entity.effects = old.effects;
+        entity.voices = old.voices;
+        entity.effects.add(crate::effects::EffectInstance::new(
+            MobEffect::Nausea,
+            200,
+            0,
+        ));
+        entity.look_control = old.look_control;
+        entity.body_rotation = old.body_rotation;
+        Some(id)
+    }
+
     fn breed_hoglins(&mut self, id: u64, partner: u64) {
         let Some(index) = self.hoglins.iter().position(|e| e.id == id) else {
             return;
@@ -679,10 +721,12 @@ impl EntityWorld {
         for attacker in hurts {
             self.hoglin_was_hurt_by(id, attacker, &others, world);
         }
+        let zombify = self.piglins_zombify;
         let Some(entity) = self.hoglins.iter_mut().find(|e| e.id == id) else {
             return;
         };
-        let (stepped, thought) = entity.tick_body(world, players, &others, &lovers, game_time);
+        let (stepped, thought) =
+            entity.tick_body(world, players, &others, &lovers, game_time, zombify);
         if !stepped {
             return;
         }
@@ -696,6 +740,10 @@ impl EntityWorld {
         }
         if let Some(target) = thought.attack {
             self.hoglin_hits(id, target, &others);
+        }
+        if thought.convert {
+            self.convert_hoglin_to_zoglin(id);
+            return;
         }
         self.push_entities(EntityKey::Hoglin(id), world, game_time, ticks);
         let Some(entity) = self.hoglins.iter_mut().find(|e| e.id == id) else {
@@ -1339,5 +1387,104 @@ mod tests {
         }
         assert!(!hits.is_empty());
         assert!(hits.iter().all(|hit| (3.0..=8.0).contains(&hit.damage)), "{hits:?}");
+    }
+
+    fn lone(baby: bool) -> (Blocks, EntityWorld, u64) {
+        let blocks = wide_floor(10);
+        let mut world = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let id = seeded(&mut world, HoglinKind::Hoglin, baby, at, 3);
+        (blocks, world, id)
+    }
+
+    fn zoglins(world: &EntityWorld) -> Vec<&HoglinEntity> {
+        world
+            .hoglins()
+            .iter()
+            .filter(|e| e.hoglin.kind == HoglinKind::Zoglin)
+            .collect()
+    }
+
+    #[test]
+    fn a_hoglin_in_the_overworld_becomes_a_zoglin_on_tick_301_and_one_in_the_nether_never_does() {
+        let (mut blocks, mut world, id) = lone(false);
+        world.set_piglins_zombify(true);
+        world.hoglin_mut(id).unwrap().hoglin.health = 25.0;
+        for _ in 0..300 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        let hoglin = &world.hoglin_mut(id).unwrap().hoglin;
+        assert!(hoglin.converting && hoglin.time_in_overworld == 300);
+        world.take_sounds();
+        world.tick_with_players(&mut blocks, &[]);
+        assert!(world.hoglin_mut(id).is_none());
+        let zoglins = zoglins(&world);
+        assert_eq!(zoglins.len(), 1);
+        let zoglin = zoglins[0];
+        assert_ne!(zoglin.id, id);
+        assert_eq!(zoglin.hoglin.health, 40.0);
+        assert!(!zoglin.hoglin.converting && !zoglin.hoglin.is_baby());
+        assert!(zoglin.effects.has(MobEffect::Nausea));
+        assert_eq!(world.entity_type(zoglin.id), Some("minecraft:zoglin"));
+        let sounds = world.take_sounds();
+        assert!(sounds.iter().any(|s| s.event == "entity.hoglin.converted_to_zombified"));
+        let (mut blocks, mut world, id) = lone(false);
+        world.set_piglins_zombify(false);
+        for _ in 0..400 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        let hoglin = &world.hoglin_mut(id).unwrap().hoglin;
+        assert!(!hoglin.converting && hoglin.time_in_overworld == 0);
+    }
+
+    #[test]
+    fn going_back_to_the_nether_resets_the_clock() {
+        let (mut blocks, mut world, id) = lone(false);
+        world.set_piglins_zombify(true);
+        for _ in 0..200 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        world.set_piglins_zombify(false);
+        world.tick_with_players(&mut blocks, &[]);
+        assert_eq!(world.hoglin_mut(id).unwrap().hoglin.time_in_overworld, 0);
+        world.set_piglins_zombify(true);
+        for _ in 0..300 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        assert!(world.hoglin_mut(id).is_some());
+        world.tick_with_players(&mut blocks, &[]);
+        assert!(world.hoglin_mut(id).is_none());
+    }
+
+    #[test]
+    fn an_immune_or_no_ai_hoglin_stays() {
+        let (mut blocks, mut world, immune) = lone(false);
+        world.hoglin_mut(immune).unwrap().hoglin.immune_to_zombification = true;
+        let still = world.spawn_hoglin(Hoglin::new(HoglinKind::Hoglin, DVec3::new(4.5, 64.0, 0.5)), true);
+        world.set_piglins_zombify(true);
+        for _ in 0..400 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        for id in [immune, still] {
+            let hoglin = &world.hoglin_mut(id).unwrap().hoglin;
+            assert!(!hoglin.converting && hoglin.time_in_overworld == 0, "{id}");
+        }
+        assert!(zoglins(&world).is_empty());
+    }
+
+    #[test]
+    fn a_piglet_becomes_a_baby_zoglin_and_keeps_its_persistence() {
+        let (mut blocks, mut world, id) = lone(true);
+        world.hoglin_mut(id).unwrap().hoglin.persistence_required = true;
+        world.set_piglins_zombify(true);
+        for _ in 0..301 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        let zoglins = zoglins(&world);
+        assert_eq!(zoglins.len(), 1);
+        let zoglin = &zoglins[0].hoglin;
+        assert!(zoglin.is_baby() && zoglin.baby && zoglin.persistence_required);
+        assert_eq!((zoglin.body.width, zoglin.body.height), (0.75, 0.85));
+        assert_eq!(zoglin.attack_damage(), 0.5);
     }
 }
