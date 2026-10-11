@@ -38,6 +38,7 @@ pub const LOVE_TICKS: i64 = 110;
 pub const FOLLOW_SPEED: f32 = 0.6;
 pub const FOLLOW_MIN: f64 = 5.0;
 pub const FOLLOW_MAX: f64 = 16.0;
+pub const ZOGLIN: &str = "minecraft:zoglin";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Living {
@@ -475,10 +476,12 @@ impl HoglinBrain {
         self.sense(ctx);
         self.start_look(ctx);
         self.walk.try_start(&mut self.memories, ctx);
-        match self.activity {
-            Activity::Idle => self.start_idle(ctx),
-            Activity::Fight => self.start_fight(ctx),
-            Activity::Avoid => self.start_avoid(ctx),
+        match (self.activity, ctx.kind == ZOGLIN) {
+            (Activity::Fight, true) => self.fight(ctx),
+            (_, true) => self.start_zoglin_idle(ctx),
+            (Activity::Idle, false) => self.start_idle(ctx),
+            (Activity::Fight, false) => self.start_fight(ctx),
+            (Activity::Avoid, false) => self.start_avoid(ctx),
         }
         self.tick_look(ctx);
         self.walk.tick(&mut self.memories, ctx);
@@ -561,7 +564,7 @@ impl HoglinBrain {
                 .nearest_visible_attackable_player
                 .set_or_erase(attackable);
         }
-        if fired[2] {
+        if fired[2] && ctx.kind != ZOGLIN {
             let kind = ctx.kind;
             let adult = self
                 .visible(ctx)
@@ -571,7 +574,7 @@ impl HoglinBrain {
                 .nearest_visible_adult
                 .set_or_erase(adult.map(|other| other.target));
         }
-        if fired[3] {
+        if fired[3] && ctx.kind != ZOGLIN {
             let repellent = nearest_block_in_tag(ctx.world, block_of(position), REPELLENTS);
             self.memories.nearest_repellent.set_or_erase(repellent);
             let mut piglin = None;
@@ -651,6 +654,44 @@ impl HoglinBrain {
         }
     }
 
+    fn start_zoglin_idle(&mut self, ctx: &mut Ctx) {
+        if !self.memories.attack_target.present() {
+            let target = self
+                .visible(ctx)
+                .into_iter()
+                .find(|other| {
+                    other.kind != ZOGLIN
+                        && other.kind != "minecraft:creeper"
+                        && other.alive
+                        && other.attackable
+                        && !other.spectator
+                })
+                .map(|other| other.target);
+            if let Some(target) = target {
+                self.memories.attack_target.set(target);
+                self.memories.cant_reach_walk_target_since.erase();
+            }
+        }
+        self.look_sometimes(ctx, false);
+        self.idle_movement(ctx, false);
+    }
+
+    pub fn update_zoglin_activity(&mut self, ctx: &mut Ctx) {
+        let after = if self.memories.attack_target.present() {
+            Activity::Fight
+        } else {
+            Activity::Idle
+        };
+        if self.activity != after {
+            if after == Activity::Fight {
+                ctx.sounds.push("entity.zoglin.angry");
+            } else {
+                self.memories.attack_target.erase();
+            }
+            self.activity = after;
+        }
+    }
+
     fn start_attacking(&mut self, ctx: &mut Ctx) {
         if self.memories.attack_target.present() {
             return;
@@ -718,7 +759,9 @@ impl HoglinBrain {
                     }
                     let repellent = self.memories.nearest_repellent.get().copied();
                     let mut profile = ctx.profile.clone();
-                    profile.walk_target = crate::walk_path::WalkTarget::Hoglin { repellent };
+                    if ctx.kind != ZOGLIN {
+                        profile.walk_target = crate::walk_path::WalkTarget::Hoglin { repellent };
+                    }
                     let Some(spot) = crate::stroll::land_random_position(
                         ctx.world,
                         &profile,

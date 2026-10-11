@@ -473,3 +473,30 @@ After 5ff86a48.
   - The flag is read per level, not sampled at each hoglin's position (decision 5 of the brief): no 26.3 biome overrides it.
   - A custom name and a lead are not carried over: neither exists on mobs here yet.
 - **Test steps:** together with b2.8.
+
+### b2.8. Minecraft zoglins attack every mob but creepers and other zoglins
+
+After d5c603a5.
+
+- **Changed:**
+  - `hoglin_brain.rs`: the zoglin's `Brain` on the same pieces: the nearest-living and nearest-player sensors only; IDLE `StartAttacking` takes the nearest visible living entity that is not a zoglin or a creeper and is attackable (players not in creative or spectating; cows, villagers, golems, hoglins and the rest), then the look and the idle `RunOne`; FIGHT walks to the target at 1.0 and hits with `MeleeAttack(40)` (15 for a baby) until the target is invalid or out of reach for 200 ticks. `update_zoglin_activity`: FIGHT or IDLE; entering FIGHT plays `entity.zoglin.angry`. Strolls weigh spots by darkness (`Monster.getWalkTargetValue`), and its paths have no fire maluses.
+  - `world/hoglins.rs`: zoglins think, steer and walk. Their ambient sound is `angry` while they have a target. `Zoglin.hurtServer`: a living attacker it can attack becomes its target for 200 ticks unless it is more than 4 blocks further than the current one. Its headbutt (`HoglinBase`) deals 3 to 8 and throws mobs (scaled by their knockback resistance, never an iron golem) and players like the hoglin's, without the hoglin's rallying.
+- **Tests:** `world::hoglins`: `a_zoglin_goes_for_the_nearest_cow_villager_or_player_but_never_a_creeper_or_zoglin`, `a_zoglin_switches_to_a_closer_attacker_but_not_a_far_one`, `a_zoglin_kills_a_hoglin_which_fights_back`, `a_zoglin_throws_its_victims_but_not_an_iron_golem`.
+- **Decisions:**
+  - The zoglin shares the hoglin's brain type with its own activity table (decision 1 of the brief), so b1's piglin brain has one set of pieces to reuse.
+  - A zoglin keeps no `TimeInOverworld` and never converts (the clock stays 0).
+- **Test steps (b2.7 and b2.8; `/difficulty normal`, survival):**
+  1. In the Overworld (`/execute in minecraft:overworld run tp @s ~ ~ ~` from the Nether), use a hoglin egg: it shakes and snorts for 15 seconds, then turns into a grey, rotting zoglin with a groan (**6** shaking, **7** zoglin). It has nausea (it may wobble).
+  2. `/summon minecraft:hoglin ~ ~ ~ {IsImmuneToZombification:1b}`: it stays a hoglin and never shakes (**8**).
+  3. Use a hoglin egg in the Overworld, wait about 10 seconds, save and quit, rejoin: it is still shaking and converts about 5 seconds later.
+  4. Use a piglet (a hoglin egg until a small one hatches) in the Overworld: it becomes a baby zoglin.
+  5. Use 4 cow eggs, 2 creeper eggs and a zoglin egg: the zoglin kills the cows (throwing them), ignores the creepers, then comes for you and throws you (**9**). Its kill drops rotten flesh; in lava it doesn't burn.
+  6. Use an iron golem egg next to a zoglin: they fight; the golem is never thrown.
+  7. Use a hoglin egg and a zoglin egg side by side in the Nether: the zoglin attacks the hoglin and the hoglin fights back.
+  8. Hit a zoglin that is chasing a cow from close by: it turns on you. Shoot it from far away while it chases: it keeps after the cow.
+  9. Go to the End (`/execute in minecraft:the_end run tp @s 0 70 0` on the platform) and use a hoglin egg: it converts there too. In the Nether no hoglin ever shakes.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:hoglin_spawn_egg*16,minecraft:zoglin_spawn_egg*4,minecraft:cow_spawn_egg*4,minecraft:creeper_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:lava_bucket,minecraft:diamond_sword,minecraft:bow,minecraft:arrow*32,minecraft:shield,minecraft:diamond_chestplate,minecraft:cooked_beef*32,minecraft:netherrack*64,minecraft:cobblestone*64
+```
