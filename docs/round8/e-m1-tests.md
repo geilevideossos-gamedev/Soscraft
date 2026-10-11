@@ -76,7 +76,7 @@ Only the window in front gets your keys, so each step says which window to use. 
 4. **Joining.**
    1. Host window: the world loads as usual. Spawn.
    2. Friend window: the loading screen stays until the host's chunks have arrived (a few seconds), then class select shows.
-   3. Friend window: the chat shows "Friend joined the game" in yellow.
+   3. Friend window: the chat shows "Friend joined the game" in yellow. Chat lines fade after 10 seconds, so if the loading took longer, press **T** to see it, then Escape.
    4. Host window: its chat shows the same line.
 
    Screenshot both windows.
@@ -132,9 +132,10 @@ Only the window in front gets your keys, so each step says which window to use. 
     5. Friend window: run `/time set noon`. It still works, because the op is kept in the world's `ops.json`.
 
     Screenshot the friend window.
-13. **Closing.**
-    1. In the first PowerShell window (the script's console), type `quit`. Both windows close and the relay stops.
-    2. The script prints `peak working sets: ... host=... friend=... relay=...`. Send that line.
+13. **Closing.** The friend window now belongs to the second PowerShell window from step 12, so each script closes its own window.
+    1. In the second PowerShell window, type `quit`. The friend window closes and that script ends.
+    2. In the first PowerShell window (the script's console), type `quit`. The host window closes and the relay stops.
+    3. Each script prints a `peak working sets: ...` line: the first for the host, the first friend window and the relay, the second for the friend window of step 12. Send both lines.
 
 **Kit:** none needed. Any `IW4L_MINECRAFT_KIT` in your `.env` is given to both players on their first join to `mp-m1`. The friend's items do not show until M2.
 

@@ -447,3 +447,13 @@ Commit: see `git log` ("A friend waits for a host that is still loading its worl
   2. Friend window: it stays on the loading screen while the host window still shows its world loading, however long that takes, and never shows "The host's Minecraft world does not answer".
   3. Friend window: once the host's world is in, class select shows and the friend spawns on the host's terrain without falling.
 - **Kit:** none needed.
+
+### Review fix: the M1 owner test closes both scripts' windows
+
+Commit: see `git log` ("The M1 owner test closes the rejoined friend window from its own script"). The previous commit is `1ef41e28`.
+
+- **Defect:** step 13 of `docs/round8/e-m1-tests.md` said that `quit` in the first PowerShell window closes both windows. After step 12 the friend window was started by the second (`-FriendOnly`) script, and `quit` only reaches the windows a script started itself, so the friend window stayed open and its script kept running.
+- **Changed:** `docs/round8/e-m1-tests.md` step 13 types `quit` in the second window first, then in the first, and asks for both peak-memory lines. Step 4.3 adds that chat lines fade after 10 seconds (vanilla's 200 ticks), so the join line may need T to be seen after a long load.
+- **Tests:** none (a document).
+- **Test steps:** `docs/round8/e-m1-tests.md`.
+- **Kit:** none needed.
