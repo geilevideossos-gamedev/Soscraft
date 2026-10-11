@@ -32,6 +32,12 @@ pub const REPELLENT_SPEED: f32 = 1.0;
 pub const REPELLENT_DISTANCE: f64 = 8.0;
 pub const PIGLIN_SPEED: f32 = 0.4;
 pub const PIGLIN_DISTANCE: f64 = 8.0;
+pub const LOVE_SPEED: f32 = 0.6;
+pub const LOVE_CLOSE_ENOUGH: i32 = 2;
+pub const LOVE_TICKS: i64 = 110;
+pub const FOLLOW_SPEED: f32 = 0.6;
+pub const FOLLOW_MIN: f64 = 5.0;
+pub const FOLLOW_MAX: f64 = 16.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Living {
@@ -270,6 +276,10 @@ pub struct Ctx<'a> {
     pub look_at: Option<DVec3>,
     pub attack: Option<Target>,
     pub sounds: Vec<&'static str>,
+    pub in_love: bool,
+    pub lovers: &'a [Target],
+    pub courting: Option<Target>,
+    pub birth: Option<Target>,
 }
 
 impl Ctx<'_> {
@@ -431,6 +441,13 @@ impl MoveSink {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Love {
+    partner: Target,
+    child_at: i64,
+    until: i64,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct HoglinBrain {
     pub memories: Memories,
@@ -443,6 +460,7 @@ pub struct HoglinBrain {
     avoid_wait: Option<i64>,
     idle_look: Ticker,
     avoid_look: Ticker,
+    love: Option<Love>,
 }
 
 impl HoglinBrain {
@@ -464,6 +482,7 @@ impl HoglinBrain {
         }
         self.tick_look(ctx);
         self.walk.tick(&mut self.memories, ctx);
+        self.tick_love(ctx);
         for wait in [&mut self.idle_wait, &mut self.avoid_wait] {
             if wait.is_some_and(|end| ctx.time > end) {
                 *wait = None;
@@ -791,6 +810,7 @@ impl HoglinBrain {
 
     fn start_idle(&mut self, ctx: &mut Ctx) {
         self.become_passive();
+        self.start_love(ctx);
         if let Some(&(x, y, z)) = self.memories.nearest_repellent.get() {
             let from = DVec3::new(f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5);
             self.walk_away(ctx, from, REPELLENT_SPEED, REPELLENT_DISTANCE, true);
@@ -808,11 +828,118 @@ impl HoglinBrain {
             }
         }
         self.look_sometimes(ctx, false);
+        self.follow_adult(ctx);
         self.idle_movement(ctx, false);
     }
 
     fn start_fight(&mut self, ctx: &mut Ctx) {
         self.become_passive();
+        self.start_love(ctx);
+        self.fight(ctx);
+        if self.memories.breed_target.present() {
+            self.memories.attack_target.erase();
+        }
+    }
+
+    fn lock_gaze(&mut self, partner: Target) {
+        self.memories.look_target.set(Track::Entity {
+            target: partner,
+            eyes: true,
+        });
+        self.memories.walk_target.set(WalkGoal {
+            target: Track::Entity {
+                target: partner,
+                eyes: false,
+            },
+            speed: LOVE_SPEED,
+            close_enough: LOVE_CLOSE_ENOUGH,
+        });
+    }
+
+    fn start_love(&mut self, ctx: &mut Ctx) {
+        if self.love.is_some()
+            || !ctx.in_love
+            || self.memories.breed_target.present()
+            || !self.memories.visible_living.present()
+        {
+            return;
+        }
+        let (kind, lovers) = (ctx.kind, ctx.lovers);
+        let Some(partner) = self
+            .visible(ctx)
+            .into_iter()
+            .find(|other| other.kind == kind && lovers.contains(&other.target))
+            .map(|other| other.target)
+        else {
+            return;
+        };
+        let until = ctx.time + LOVE_TICKS + i64::from(ctx.random.next_int(1));
+        self.memories.breed_target.set(partner);
+        self.lock_gaze(partner);
+        ctx.courting = Some(partner);
+        let child_at = ctx.time + 60 + i64::from(ctx.random.next_int(50));
+        self.love = Some(Love {
+            partner,
+            child_at,
+            until,
+        });
+    }
+
+    fn tick_love(&mut self, ctx: &mut Ctx) {
+        let Some(love) = self.love else {
+            return;
+        };
+        let partner = find(ctx.others, love.partner).copied();
+        let usable = self.memories.breed_target.get() == Some(&love.partner)
+            && partner.is_some_and(|other| other.alive)
+            && ctx.in_love
+            && ctx.lovers.contains(&love.partner)
+            && self.memories.sees(love.partner)
+            && ctx.time <= love.child_at;
+        let Some(partner) = partner.filter(|_| usable && ctx.time <= love.until) else {
+            self.memories.breed_target.erase();
+            self.memories.walk_target.erase();
+            self.memories.look_target.erase();
+            self.love = None;
+            return;
+        };
+        self.lock_gaze(love.partner);
+        ctx.courting = Some(love.partner);
+        let close = partner.position.distance_squared(ctx.position()) < 9.0;
+        if close && ctx.time >= love.child_at {
+            ctx.birth = Some(love.partner);
+            self.memories.breed_target.erase();
+        }
+    }
+
+    fn follow_adult(&mut self, ctx: &mut Ctx) {
+        if !ctx.baby || self.memories.walk_target.present() {
+            return;
+        }
+        let Some(adult) = self.memories.nearest_visible_adult.get().copied() else {
+            return;
+        };
+        let Some(living) = find(ctx.others, adult) else {
+            return;
+        };
+        let distance = living.position.distance_squared(ctx.position());
+        if distance < (FOLLOW_MAX + 1.0).powi(2) && distance >= FOLLOW_MIN * FOLLOW_MIN {
+            self.memories.look_target.set(Track::Entity {
+                target: adult,
+                eyes: true,
+            });
+            self.memories.walk_target.set(WalkGoal {
+                target: Track::Entity {
+                    target: adult,
+                    eyes: false,
+                },
+                speed: FOLLOW_SPEED,
+                close_enough: FOLLOW_MIN as i32 - 1,
+            });
+        }
+    }
+
+    fn fight(&mut self, ctx: &mut Ctx) {
         let Some(target) = self.memories.attack_target.get().copied() else {
             return;
         };
@@ -918,6 +1045,11 @@ impl HoglinBrain {
             .nearest_repellent
             .get()
             .is_some_and(|&repellent| closer_than(repellent, at, 8.0))
+    }
+
+    pub fn court(&mut self, partner: Target) {
+        self.memories.breed_target.set(partner);
+        self.lock_gaze(partner);
     }
 
     pub fn set_attack_target(&mut self, target: Target) {

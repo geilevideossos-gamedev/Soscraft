@@ -429,3 +429,33 @@ After c638f7df.
   - The tag cache is a mutex-guarded map in `MobTables` rather than a fixed list of tags, so any tag a later mob asks for (b1's `#piglin_repellents`) comes from the data without new code.
   - The calm lasts 200 ticks from when it was set, renewed only once it ran out while a repellent is still remembered: after the repellent goes, a hoglin stays calm for what is left of those ten seconds, as in vanilla.
 - **Test steps:** together with b2.6.
+
+### b2.6. Minecraft hoglins breed with crimson fungus and their piglets grow up
+
+After dbb52c23.
+
+- **Changed:**
+  - Vendored `hoglin.rs`: `Hoglin::interact_food` (`Animal.mobInteract` with `#hoglin_food`): an adult falls in love for 600 ticks unless pacified (`canFallInLove`), a piglet grows by a tenth of what it has left, the golden dandelion locks its age; a used item makes it persistent (`Hoglin.mobInteract`). A zoglin takes nothing.
+  - `minecraft_terrain/src/mob_actions.rs`: the hoglin arm through the recipe book's `#hoglin_food`; `would_interact` follows it (it runs `interact` on a copy).
+  - `hoglin_brain.rs`: `AnimalMakeLove(HOGLIN, 0.6, 2)` in IDLE and FIGHT: a hoglin in love picks the nearest visible hoglin in love, both remember each other as `breed_target`, look at and walk to each other (0.6, within 2), and the child is due 60 to 109 ticks after the start; it comes only if they are within 3 blocks at that tick, while both are still in love and in sight (at most 110 ticks). `BabyFollowAdult(5-16, 0.6)`: a piglet whose nearest visible adult hoglin is 5 to 17 blocks off walks to within 4. FIGHT ends with `EraseMemoryIf(isBreeding, ATTACK_TARGET)`.
+  - `world/hoglins.rs`: the partner's brain takes the courting; a birth makes a persistent piglet (age -24000) where the first parent stands, both parents get age 6000 and no love, and one experience orb of 1 to 7 drops there (with `mob_drops` on).
+- **Tests:** `mob_actions`: `two_fed_hoglins_make_a_persistent_piglet_within_110_ticks`, `a_pacified_hoglin_will_not_eat`, `feeding_a_piglet_ages_it_by_a_tenth`, and five hoglin and zoglin rows in `would_interact_agrees_with_interact`. `world::hoglins`: `a_piglet_follows_an_adult_from_six_to_sixteen_blocks`, `a_grown_piglet_hits_for_three_to_eight`.
+- **Decisions:**
+  - The breeding orb goes out through the same per-tick orb list as trade experience (`take_trade_experience`), whole, as vanilla's single `ExperienceOrb` of 1 to 7.
+  - `ageBoundaryReached` needs no state of its own here: damage and experience are read from the age every time, so a grown piglet hits for 3 to 8 and gives 5 experience at once.
+  - No eating sound: `Animal.playEatingSound` is silent for hoglins.
+- **Test steps (b2.4 to b2.6; start in the Nether, `IW4L_MINECRAFT_DIMENSION=the_nether`, survival, `/difficulty normal`, on a 20 x 20 netherrack floor):**
+  1. Put on the armour and use one hoglin egg in front of you, then back off about 10 blocks. It grunts angrily, charges and headbutts: each hit takes 1.5 to 4 hearts and throws you up and away (**1**, mid-air). It hits about every two seconds.
+  2. Raise the shield as it hits: no damage, but you are still thrown.
+  3. Use two more eggs close together and hit one with the sword: all three come for you (**2**).
+  4. Place a respawn anchor next to them: within a second they snort, stop attacking and walk away from it. Break it: they stay calm for up to ten seconds, then charge again (**3**). Do the same with warped fungus on crimson nylium, and with a lit nether portal (obsidian and flint and steel).
+  5. `/gamemode creative`: the hoglins stop attacking. Right-click two adults with crimson fungus: hearts, they walk to each other, and a piglet appears between them within about five seconds (**4**). Feed the piglet: it grows a little. Right-click a calmed hoglin next to the anchor with crimson fungus: it doesn't eat. `/gamemode survival`.
+  6. The piglet nibbles you (half a heart, quickly) and never throws you. Hit it: it runs away for 5 to 20 seconds, then comes back.
+  7. Stand 17 blocks or more from a hoglin, or in creative: it ignores you.
+  8. Use an iron golem egg next to a hoglin: they fight; the golem is never thrown, the hoglin is lifted a little by the golem's blows.
+  9. Wear four pieces of netherite armour (if you have them) and let a hoglin hit you: the throw is clearly smaller.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:hoglin_spawn_egg*16,minecraft:crimson_fungus*64,minecraft:warped_fungus*16,minecraft:crimson_nylium*16,minecraft:respawn_anchor*2,minecraft:diamond_sword,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:netherite_helmet,minecraft:netherite_chestplate,minecraft:netherite_leggings,minecraft:netherite_boots,minecraft:iron_golem_spawn_egg*2,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:cooked_beef*32,minecraft:netherrack*64
+```

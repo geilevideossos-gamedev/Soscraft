@@ -24,6 +24,7 @@ pub const ATTACK_ANIMATION_DURATION: i32 = 10;
 pub const BABY_CHANCE: f32 = 0.2;
 pub const AMBIENT_INTERVAL: i32 = 80;
 pub const STEP_VOLUME: f32 = 0.15;
+pub const FOOD_TAG: &str = "minecraft:hoglin_food";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HoglinKind {
@@ -155,6 +156,46 @@ impl Hoglin {
     pub fn hurt_generic(&mut self, amount: f32) -> DamageResult {
         self.damage
             .hurt_generic(&mut self.health, MAX_HEALTH, amount)
+    }
+
+    pub fn interact_food(
+        &mut self,
+        inventory: &mut minecraftoss_player::inventory::Inventory,
+        hand: usize,
+        infinite_materials: bool,
+        is_food: impl Fn(&str) -> bool,
+        pacified: bool,
+    ) -> (
+        crate::cow::InteractionResult,
+        Vec<crate::animal::AnimalEvent>,
+    ) {
+        let pass = (crate::cow::InteractionResult::Pass, Vec::new());
+        if self.kind != HoglinKind::Hoglin {
+            return pass;
+        }
+        let food = inventory
+            .slots
+            .get(hand)
+            .and_then(Option::as_ref)
+            .is_some_and(|stack| is_food(&stack.id));
+        if food && pacified && self.age.ticks == 0 {
+            return pass;
+        }
+        let result = crate::animal::interact(
+            &mut self.age,
+            &mut self.in_love,
+            &mut self.persistence_required,
+            inventory,
+            hand,
+            infinite_materials,
+            is_food,
+            false,
+        );
+        if result.0 != crate::cow::InteractionResult::Pass {
+            self.persistence_required = true;
+        }
+        self.sync_dimensions();
+        result
     }
 
     pub fn tick_attack_animation(&mut self) {

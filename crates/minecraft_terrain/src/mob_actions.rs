@@ -214,6 +214,16 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
                 return outcome;
             }
         }
+        MobHit::Hoglin(id) => {
+            let Some(entity) = world.hoglin_mut(id) else { return outcome };
+            let pacified = entity.brain.memories.pacified.present();
+            let (result, events) = entity.hoglin.interact_food(actor.inventory, selected, infinite, |item| recipes.item_in_tag(minecraftoss_entities::hoglin::FOOD_TAG, item), pacified);
+            let position = entity.position();
+            if result == InteractionResult::Pass {
+                return outcome;
+            }
+            age_lock_sound(&mut outcome, animal_lock(&events), position);
+        }
         MobHit::Chicken(id) => {
             let Some(entity) = world.chicken_mut(id) else { return outcome };
             let (result, events) = entity.chicken.interact_food(actor.inventory, selected, infinite, |item| recipes.item_in_tag("minecraft:chicken_food", item), false);
@@ -304,6 +314,7 @@ mod tests {
     use super::*;
     use minecraftoss_entities::age::Age;
     use minecraftoss_entities::cow::Cow;
+    use minecraftoss_entities::hoglin::{Hoglin, HoglinKind};
     use minecraftoss_entities::iron_golem::IronGolem;
     use minecraftoss_entities::mooshroom::{MushroomCow, MushroomVariant};
     use minecraftoss_entities::pig::Pig;
@@ -326,7 +337,7 @@ mod tests {
     }
 
     fn holding(item: Option<&str>) -> Inventory {
-        let book = tagged_book(&[("cow_food", &["minecraft:wheat"]), ("sheep_food", &["minecraft:wheat"]), ("pig_food", &["minecraft:carrot"]), ("chicken_food", &["minecraft:wheat_seeds"]), ("strider_food", &["minecraft:warped_fungus"])]);
+        let book = tagged_book(&[("cow_food", &["minecraft:wheat"]), ("sheep_food", &["minecraft:wheat"]), ("pig_food", &["minecraft:carrot"]), ("chicken_food", &["minecraft:wheat_seeds"]), ("strider_food", &["minecraft:warped_fungus"]), ("hoglin_food", &["minecraft:crimson_fungus"])]);
         let mut inventory = Inventory::default().with_recipes(book);
         inventory.slots[0] = item.map(|id| ItemStack::new(id, 4));
         inventory
@@ -361,6 +372,13 @@ mod tests {
         let villager = world.spawn_villager(Villager::new(at), true);
         let wolf = world.spawn_wolf(Wolf::new(at), true);
         let chicken = world.spawn_chicken(minecraftoss_entities::chicken::Chicken::new(at), true);
+        let hoglin = world.spawn_hoglin(Hoglin::new(HoglinKind::Hoglin, at), true);
+        let mut young = Hoglin::new(HoglinKind::Hoglin, at);
+        young.set_baby(true);
+        let hoglet = world.spawn_hoglin(young, true);
+        let calm = world.spawn_hoglin(Hoglin::new(HoglinKind::Hoglin, at), true);
+        world.hoglin_mut(calm).unwrap().brain.memories.pacified.set_for((), 200);
+        let zoglin = world.spawn_hoglin(Hoglin::new(HoglinKind::Zoglin, at), true);
         let cases: &[(MobHit, Option<&str>, bool)] = &[
             (MobHit::Cow(cow), Some("minecraft:wheat"), true),
             (MobHit::Cow(cow), Some("minecraft:bucket"), true),
@@ -387,6 +405,11 @@ mod tests {
             (MobHit::Wolf(wolf), Some("minecraft:stick"), false),
             (MobHit::Villager(villager), Some("minecraft:emerald"), false),
             (MobHit::Villager(villager), None, false),
+            (MobHit::Hoglin(hoglin), Some("minecraft:crimson_fungus"), true),
+            (MobHit::Hoglin(hoglin), Some("minecraft:warped_fungus"), false),
+            (MobHit::Hoglin(hoglet), Some("minecraft:crimson_fungus"), true),
+            (MobHit::Hoglin(calm), Some("minecraft:crimson_fungus"), false),
+            (MobHit::Hoglin(zoglin), Some("minecraft:crimson_fungus"), false),
         ];
         for &(hit, held, expected) in cases {
             for infinite in [false, true] {
@@ -477,6 +500,68 @@ mod tests {
         let babies = world.striders().iter().filter(|e| e.strider.age.baby()).count();
         assert_eq!((world.striders().len(), babies), (3, 1));
         assert!(world.striders().iter().filter(|e| !e.strider.age.baby()).all(|e| e.strider.age.ticks > 0 && e.strider.in_love == 0));
+    }
+
+    fn hoglin(world: &mut EntityWorld, x: f64, baby: bool) -> u64 {
+        let mut hoglin = Hoglin::new(HoglinKind::Hoglin, DVec3::new(x, 64.0, 0.5));
+        hoglin.set_baby(baby);
+        let id = world.spawn_hoglin(hoglin, false);
+        world.hoglin_mut(id).unwrap().set_random_seed(id);
+        id
+    }
+
+    #[test]
+    fn two_fed_hoglins_make_a_persistent_piglet_within_110_ticks() {
+        let mut world = EntityWorld::default();
+        let first = hoglin(&mut world, 0.5, false);
+        let second = hoglin(&mut world, 3.5, false);
+        for id in [first, second] {
+            let (outcome, inventory) = use_on(&mut world, MobHit::Hoglin(id), "minecraft:crimson_fungus");
+            assert!(outcome.handled);
+            assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(3));
+            let entity = world.hoglin_mut(id).unwrap();
+            assert!(entity.hoglin.in_love > 0 && entity.hoglin.persistence_required);
+        }
+        let mut born = None;
+        for tick in 0..140 {
+            world.tick_with_players(&mut Floor, &[]);
+            if born.is_none() && world.hoglins().len() == 3 {
+                born = Some(tick);
+            }
+        }
+        assert!(born.is_some_and(|tick| tick <= 130), "{born:?}");
+        let piglet = world.hoglins().iter().find(|e| e.hoglin.is_baby()).unwrap();
+        assert!(piglet.hoglin.persistence_required && piglet.hoglin.age.ticks < -23000);
+        for id in [first, second] {
+            let entity = world.hoglin_mut(id).unwrap();
+            assert!(entity.hoglin.age.ticks > 5800 && entity.hoglin.in_love == 0);
+            assert!(!entity.brain.memories.breed_target.present());
+        }
+        let orbs = world.take_trade_experience();
+        assert_eq!(orbs.len(), 1);
+        assert!((1..=7).contains(&orbs[0].1));
+    }
+
+    #[test]
+    fn a_pacified_hoglin_will_not_eat() {
+        let mut world = EntityWorld::default();
+        let calm = hoglin(&mut world, 0.5, false);
+        world.hoglin_mut(calm).unwrap().brain.memories.pacified.set_for((), 200);
+        let (outcome, inventory) = use_on(&mut world, MobHit::Hoglin(calm), "minecraft:crimson_fungus");
+        assert!(!outcome.handled);
+        assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(4));
+        assert_eq!(world.hoglin_mut(calm).unwrap().hoglin.in_love, 0);
+    }
+
+    #[test]
+    fn feeding_a_piglet_ages_it_by_a_tenth() {
+        let mut world = EntityWorld::default();
+        let piglet = hoglin(&mut world, 0.5, true);
+        let (outcome, _) = use_on(&mut world, MobHit::Hoglin(piglet), "minecraft:crimson_fungus");
+        assert!(outcome.handled);
+        let entity = world.hoglin_mut(piglet).unwrap();
+        assert_eq!(entity.hoglin.age.ticks, -24000 + 2400);
+        assert!(entity.hoglin.persistence_required);
     }
 
     #[test]

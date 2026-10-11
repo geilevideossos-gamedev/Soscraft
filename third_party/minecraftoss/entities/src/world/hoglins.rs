@@ -38,6 +38,13 @@ pub(super) fn hoglin_sounds(kind: HoglinKind) -> MovementSounds {
     .with_step_volume(hoglin::STEP_VOLUME)
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Thought {
+    attack: Option<Target>,
+    courting: Option<Target>,
+    birth: Option<Target>,
+}
+
 fn attacker_of(owner: u64) -> Target {
     if owner >= PLAYER_TARGET {
         Target::Player(owner - PLAYER_TARGET)
@@ -104,7 +111,13 @@ impl HoglinEntity {
         }
     }
 
-    fn think(&mut self, world: &impl World, others: &[Living], game_time: i64) -> Option<Target> {
+    fn think(
+        &mut self,
+        world: &impl World,
+        others: &[Living],
+        lovers: &[Target],
+        game_time: i64,
+    ) -> Thought {
         let profile = self.walk_profile();
         let mut ctx = Ctx {
             id: self.id,
@@ -122,11 +135,16 @@ impl HoglinEntity {
             look_at: None,
             attack: None,
             sounds: Vec::new(),
+            in_love: self.hoglin.in_love > 0,
+            lovers,
+            courting: None,
+            birth: None,
         };
         self.brain.tick(&mut ctx);
         let converting = self.hoglin.converting;
         self.brain.update_activity(&mut ctx, converting);
         let (look_at, attack, sounds) = (ctx.look_at, ctx.attack, ctx.sounds);
+        let (courting, birth) = (ctx.courting, ctx.birth);
         if let Some(at) = look_at {
             self.look_control.set_look_at(at);
         }
@@ -141,7 +159,11 @@ impl HoglinEntity {
             };
             self.make_sound(event);
         }
-        attack
+        Thought {
+            attack,
+            courting,
+            birth,
+        }
     }
 
     fn steer(&mut self, world: &impl World) {
@@ -202,8 +224,9 @@ impl HoglinEntity {
         world: &impl World,
         players: &[PlayerCandidate],
         others: &[Living],
+        lovers: &[Target],
         game_time: i64,
-    ) -> (bool, Option<Target>) {
+    ) -> (bool, Thought) {
         self.previous_position = self.hoglin.body.position;
         self.tick_count += 1;
         let sounds = hoglin_sounds(self.hoglin.kind);
@@ -245,7 +268,7 @@ impl HoglinEntity {
             }
         }
         if removed {
-            return (false, None);
+            return (false, Thought::default());
         }
         let old = self.previous_position;
         if self.hoglin.health <= 0.0 {
@@ -264,11 +287,11 @@ impl HoglinEntity {
                 );
             }
             hazards::blocks_act(self, world, old, game_time);
-            return (true, None);
+            return (true, Thought::default());
         }
         self.hoglin.tick_attack_animation();
         let position = self.hoglin.body.position;
-        let mut attack = None;
+        let mut thought = Thought::default();
         if self.no_ai {
             self.hoglin.body.trim_small_velocity();
             if self.hostile() {
@@ -289,7 +312,7 @@ impl HoglinEntity {
             }
             self.no_action_time += 1;
             if self.thinks() {
-                attack = self.think(world, others, game_time);
+                thought = self.think(world, others, lovers, game_time);
                 self.steer(world);
             }
             if self.no_jump_delay > 0 {
@@ -327,7 +350,7 @@ impl HoglinEntity {
             }
         }
         hazards::blocks_act(self, world, old, game_time);
-        (true, attack)
+        (true, thought)
     }
 
     pub(super) fn tick_age(&mut self) {
@@ -534,6 +557,29 @@ impl EntityWorld {
         }
     }
 
+    fn breed_hoglins(&mut self, id: u64, partner: u64) {
+        let Some(index) = self.hoglins.iter().position(|e| e.id == id) else {
+            return;
+        };
+        let Some(partner_index) = self.hoglins.iter().position(|e| e.id == partner) else {
+            return;
+        };
+        let position = self.hoglins[index].position();
+        for i in [index, partner_index] {
+            self.hoglins[i].hoglin.age.set(6000);
+            self.hoglins[i].hoglin.in_love = 0;
+        }
+        self.hoglins[partner_index].brain.memories.breed_target.erase();
+        let experience = 1 + self.hoglins[index].random.next_int(7) as i32;
+        if self.mob_drops {
+            self.trade_experience.push((position, experience));
+        }
+        let mut child = Hoglin::new(HoglinKind::Hoglin, position);
+        child.set_baby(true);
+        child.persistence_required = true;
+        self.spawn_hoglin(child, false);
+    }
+
     fn knockback_resistance(&self, id: u64) -> f64 {
         if self.iron_golems.iter().any(|e| e.id == id) {
             1.0
@@ -615,6 +661,17 @@ impl EntityWorld {
     ) {
         let game_time = self.game_time;
         let others = self.hoglin_living(id, players);
+        let lovers: Vec<Target> = self
+            .hoglins
+            .iter()
+            .filter(|e| {
+                e.id != id
+                    && e.hoglin.kind == HoglinKind::Hoglin
+                    && e.hoglin.health > 0.0
+                    && e.hoglin.in_love > 0
+            })
+            .map(|e| Target::Mob(e.id))
+            .collect();
         let hurts = match self.hoglins.iter_mut().find(|e| e.id == id) {
             Some(entity) => std::mem::take(&mut entity.hurt_by),
             None => return,
@@ -625,11 +682,19 @@ impl EntityWorld {
         let Some(entity) = self.hoglins.iter_mut().find(|e| e.id == id) else {
             return;
         };
-        let (stepped, attack) = entity.tick_body(world, players, &others, game_time);
+        let (stepped, thought) = entity.tick_body(world, players, &others, &lovers, game_time);
         if !stepped {
             return;
         }
-        if let Some(target) = attack {
+        if let Some(Target::Mob(partner)) = thought.courting {
+            if let Some(e) = self.hoglins.iter_mut().find(|e| e.id == partner) {
+                e.brain.court(Target::Mob(id));
+            }
+        }
+        if let Some(Target::Mob(partner)) = thought.birth {
+            self.breed_hoglins(id, partner);
+        }
+        if let Some(target) = thought.attack {
             self.hoglin_hits(id, target, &others);
         }
         self.push_entities(EntityKey::Hoglin(id), world, game_time, ticks);
@@ -1216,5 +1281,63 @@ mod tests {
             let friend = &world.hoglin_mut(friend).unwrap().brain.memories;
             assert_eq!(friend.attack_target.present(), !retreats);
         }
+    }
+
+    #[test]
+    fn a_piglet_follows_an_adult_from_six_to_sixteen_blocks() {
+        let mut blocks = wide_floor(24);
+        let mut world = EntityWorld::default();
+        let adult = seeded(&mut world, HoglinKind::Hoglin, false, DVec3::new(0.5, 64.0, 0.5), 1);
+        slowed(&mut world, adult);
+        let piglet = seeded(&mut world, HoglinKind::Hoglin, true, DVec3::new(10.5, 64.0, 0.5), 2);
+        for _ in 0..30 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        let memories = &world.hoglin_mut(piglet).unwrap().brain.memories;
+        assert_eq!(memories.nearest_visible_adult.get(), Some(&Target::Mob(adult)));
+        let mut nearest = f64::MAX;
+        for _ in 0..200 {
+            world.tick_with_players(&mut blocks, &[]);
+            let at = world.hoglin_mut(adult).unwrap().position();
+            let distance = world.hoglin_mut(piglet).unwrap().position().distance(at);
+            nearest = nearest.min(distance);
+        }
+        assert!(nearest < 6.5, "{nearest}");
+        let mut world = EntityWorld::default();
+        let adult = seeded(&mut world, HoglinKind::Hoglin, false, DVec3::new(0.5, 64.0, 0.5), 1);
+        slowed(&mut world, adult);
+        let far = seeded(&mut world, HoglinKind::Hoglin, true, DVec3::new(20.5, 64.0, 0.5), 2);
+        for _ in 0..30 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        let memories = &world.hoglin_mut(far).unwrap().brain.memories;
+        assert!(!memories.nearest_visible_adult.present());
+        let towards = memories.walk_target.get().map(|goal| goal.target);
+        let adult_track = crate::hoglin_brain::Track::Entity { target: Target::Mob(adult), eyes: false };
+        assert_ne!(towards, Some(adult_track));
+    }
+
+    #[test]
+    fn a_grown_piglet_hits_for_three_to_eight() {
+        let mut blocks = wide_floor(12);
+        let mut world = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let piglet = seeded(&mut world, HoglinKind::Hoglin, true, at, 4);
+        world.hoglin_mut(piglet).unwrap().hoglin.age.ticks = -3;
+        let players = [player(1, DVec3::new(0.5, 64.0, 2.3))];
+        for _ in 0..5 {
+            world.tick_with_players(&mut blocks, &players);
+        }
+        let grown = &world.hoglin_mut(piglet).unwrap().hoglin;
+        assert!(!grown.is_baby());
+        assert_eq!((grown.body.width, grown.body.height), (1.3964844, 1.4));
+        assert_eq!(grown.experience(), 5);
+        let mut hits = world.take_player_hits();
+        for _ in 0..200 {
+            world.tick_with_players(&mut blocks, &players);
+            hits.extend(world.take_player_hits());
+        }
+        assert!(!hits.is_empty());
+        assert!(hits.iter().all(|hit| (3.0..=8.0).contains(&hit.damage)), "{hits:?}");
     }
 }
