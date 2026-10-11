@@ -30,6 +30,7 @@ pub const CLIMB_RISE: f32 = (CLIMB_BOOST - GRAVITY) * VERTICAL_DRAG * PER_TICK;
 pub struct ClimbSample {
     pub on: bool,
     pub scaffolding: bool,
+    pub powder: bool,
 }
 
 #[must_use]
@@ -108,7 +109,9 @@ pub fn climb_move<C: CollisionBackend>(
     }
     let rise = ground_jump(ps, pml, cmd, walk);
     let descending = sneaking(ps, cmd);
-    hold(&mut ps.velocity, climb.scaffolding, descending);
+    if !climb.powder {
+        hold(&mut ps.velocity, climb.scaffolding, descending);
+    }
     if pml.walking != 0 {
         crate::back_off_from_edge(ps, cmd, pml.frametime, bounds, collision);
     }
@@ -278,6 +281,7 @@ mod tests {
             ClimbSample {
                 on: origin[2] < self.climbable_below,
                 scaffolding: false,
+                powder: false,
             }
         }
     }
@@ -561,6 +565,7 @@ mod tests {
     const LADDER: ClimbSample = ClimbSample {
         on: true,
         scaffolding: false,
+        powder: false,
     };
 
     fn at_the_foot() -> PlayerState {
@@ -645,6 +650,7 @@ mod tests {
         let on = ClimbSample {
             on: true,
             scaffolding: true,
+            powder: false,
         };
         assert_eq!(mantle_buttons(&ps, on, buttons::JUMP | 1), 1);
         assert_eq!(

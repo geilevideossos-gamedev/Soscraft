@@ -295,6 +295,10 @@ impl SimWorld {
         self.frame().set_may_glide(id, may)
     }
 
+    pub fn set_powder_snow_walker(&mut self, id: ClientId, walker: bool) -> bool {
+        self.frame().set_powder_snow_walker(id, walker)
+    }
+
     pub fn launch_rocket(&mut self, id: ClientId, boost_ticks: i32) -> bool {
         self.frame().launch_rocket(id, boost_ticks)
     }

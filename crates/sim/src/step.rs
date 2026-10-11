@@ -1899,7 +1899,7 @@ impl CollisionBackend for ClipBackend<'_> {
 
     fn climb(&self, origin: [f32; 3]) -> movement_iw4::ClimbSample {
         if crate::voxel::active_for(self.brushes) {
-            crate::voxel::climb(origin)
+            crate::voxel::climb_as(origin, self.mover)
         } else {
             movement_iw4::ClimbSample::default()
         }

@@ -1002,6 +1002,49 @@ pub fn breaks_fall(block: &str) -> bool {
     )
 }
 
+pub fn walks_on_powder_snow(inventory: &Inventory) -> bool {
+    inventory
+        .slots
+        .get(36)
+        .and_then(Option::as_ref)
+        .is_some_and(|stack| stack.id == "minecraft:leather_boots")
+}
+
+pub fn powder_snow_flakes(world: &impl World, feet: [f64; 3], height: f32) -> Vec<i32> {
+    let is_snow = |pos: (i32, i32, i32)| world.block(pos).is_some_and(|b| b.id == "minecraft:powder_snow");
+    let cell = |v: f64| v.floor() as i32;
+    if !is_snow((cell(feet[0]), cell(feet[1]), cell(feet[2]))) {
+        return Vec::new();
+    }
+    let half = f64::from(BODY_WIDTH / 2.0);
+    let inset = f64::from(1.0e-5_f32);
+    let (lo, hi) = (
+        [feet[0] - half + inset, feet[1] + inset, feet[2] - half + inset],
+        [feet[0] + half - inset, feet[1] + f64::from(height) - inset, feet[2] + half - inset],
+    );
+    let mut flakes = Vec::new();
+    for z in cell(lo[2])..=cell(hi[2]) {
+        for y in cell(lo[1])..=cell(hi[1]) {
+            for x in cell(lo[0])..=cell(hi[0]) {
+                if is_snow((x, y, z)) {
+                    flakes.push(y);
+                }
+            }
+        }
+    }
+    flakes
+}
+
+pub fn powder_snow_landing(distance: f64) -> Option<&'static str> {
+    if distance < 4.0 {
+        None
+    } else if distance < 7.0 {
+        Some("minecraft:entity.player.small_fall")
+    } else {
+        Some("minecraft:entity.player.big_fall")
+    }
+}
+
 pub fn fall_sound(damage: i32) -> &'static str {
     if damage > 4 {
         "minecraft:entity.player.big_fall"
@@ -2910,5 +2953,36 @@ mod tests {
                 "Zombie"
             )
         );
+    }
+
+    #[test]
+    fn leather_boots_walk_on_powder_snow_and_landing_in_it_sounds_from_four_blocks() {
+        let mut inventory = Inventory::default();
+        assert!(!walks_on_powder_snow(&inventory));
+        inventory.slots[36] = Some(ItemStack::new("minecraft:iron_boots", 1));
+        assert!(!walks_on_powder_snow(&inventory));
+        inventory.slots[36] = Some(ItemStack::new("minecraft:leather_boots", 1));
+        assert!(walks_on_powder_snow(&inventory));
+        inventory.slots[36] = None;
+        inventory.slots[37] = Some(ItemStack::new("minecraft:leather_boots", 1));
+        assert!(!walks_on_powder_snow(&inventory));
+        assert_eq!(powder_snow_landing(3.9), None);
+        assert_eq!(powder_snow_landing(4.0), Some("minecraft:entity.player.small_fall"));
+        assert_eq!(powder_snow_landing(6.9), Some("minecraft:entity.player.small_fall"));
+        assert_eq!(powder_snow_landing(7.0), Some("minecraft:entity.player.big_fall"));
+        assert_eq!(landing_damage(12.0, Some("minecraft:powder_snow"), false), 0);
+    }
+
+    #[test]
+    fn snowflakes_come_from_each_snow_block_the_body_is_in_while_the_feet_are() {
+        let snow = || minecraftoss_player::Block::new("minecraft:powder_snow");
+        let mut world = Blocks::default();
+        world.set_block((0, 1, 0), Some(snow()));
+        world.set_block((0, 2, 0), Some(snow()));
+        world.set_block((1, 1, 0), Some(snow()));
+        assert_eq!(powder_snow_flakes(&world, [0.5, 1.2, 0.5], 1.8), vec![1, 2]);
+        assert_eq!(powder_snow_flakes(&world, [0.8, 1.2, 0.5], 1.8), vec![1, 1, 2]);
+        assert!(powder_snow_flakes(&world, [0.5, 0.5, 0.5], 1.8).is_empty(), "the feet must be in the snow");
+        assert!(powder_snow_flakes(&world, [0.5, 3.0, 0.5], 1.8).is_empty());
     }
 }

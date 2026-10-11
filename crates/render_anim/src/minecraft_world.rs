@@ -703,6 +703,7 @@ fn update(
     }
     crate::minecraft_end::step(player, levels);
     crate::minecraft_elytra::step(player, &mut authority.0, local.0, origin, time.delta_secs_f64(), sounds.as_mut(), &world.packs);
+    authority.0.set_powder_snow_walker(local.0, minecraft_survival::survival::walks_on_powder_snow(&player.inventory));
     let arriving_at = player.arrival.map(|place| place.feet);
     let host_alive = presented.player(local.0).is_some_and(|ps| ps.pm_type == 0);
     let host_pose = presented
@@ -875,6 +876,14 @@ fn update(
         let caught = [-0.01, -1.0]
             .into_iter()
             .any(|dy| block_at(dy).is_some_and(|(_, b)| minecraft_survival::survival::breaks_fall(&b.id.key())));
+        let powder_snow = |found: Option<&((i32, i32, i32), minecraft_terrain::scene::Block)>| found.is_some_and(|(_, b)| b.id.key() == "minecraft:powder_snow");
+        if (powder_snow(block_at(-0.01).as_ref()) || (on_ground && powder_snow(under.as_ref())))
+            && let Some(peak) = steps.air_peak
+            && let Some(sound) = minecraft_survival::survival::powder_snow_landing(peak - feet[1])
+            && let Some(sounds) = sounds.as_mut()
+        {
+            sounds.play(&world.packs, sound, None, 1.0, 1.0);
+        }
         if on_ground {
             if let Some(peak) = steps.air_peak.take().filter(|_| !caught) {
                 let fall = survival.impulse_fall(peak - feet[1], feet[1]);
@@ -964,6 +973,15 @@ fn update(
                 steps.air_peak = steps.air_peak.map(|peak| feet[1] + (peak - feet[1]) * 0.5);
             }
             let heard = survival.hazards(&terrain.scene, &motion, from, armor, || entities.as_mut().map_or(0.5, |e| e.random_float()));
+            if (feet[0] != from[0] || feet[2] != from[2])
+                && let Some(entities) = entities.as_mut()
+            {
+                for block_y in minecraft_survival::survival::powder_snow_flakes(&terrain.scene, feet, motion.height) {
+                    if entities.random_float() < 0.5 {
+                        entities.powder_snow_flake(feet, block_y);
+                    }
+                }
+            }
             let bodies = entities.as_ref().map_or_else(Vec::new, |e| obstacles(ps, &authority.0, local.0, e));
             let frozen = survival.location_changed(motion.feet, motion.on_ground, &minecraft_terrain::doors::Outlined(&terrain.scene), &*terrain.stream.states, &|pos| !minecraft_terrain::placing::obstructed(pos, &[[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]], &bodies));
             if let Some(entities) = entities.as_mut().filter(|_| !frozen.is_empty()) {
@@ -2516,6 +2534,7 @@ fn shape_id(
         }) | match blocks.block(blocks.block_of(state)).name.as_str() {
             "minecraft:sweet_berry_bush" => sim::voxel::STUCK_BERRY_BUSH,
             "minecraft:cobweb" => sim::voxel::STUCK_COBWEB,
+            "minecraft:powder_snow" => sim::voxel::POWDER_SNOW,
             _ => 0,
         };
         let scaffolding = blocks.block(blocks.block_of(state)).name.as_str() == minecraft_terrain::scaffolding::SCAFFOLDING;

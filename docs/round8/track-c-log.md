@@ -118,3 +118,37 @@ Previous commit: e1ab7780
 ```
 IW4L_MINECRAFT_KIT=minecraft:ladder*32,minecraft:oak_planks*64
 ```
+
+### 5. Minecraft powder snow holds, sinks and slows players, and leather boots walk on it
+
+Previous commit: 5de91941
+
+- **Changed:**
+  - `sim` `voxel.rs`: a new shape flag `POWDER_SNOW` (`0x8000`, the last free bit; track D takes `0x7800`), set by `render_anim`'s `shape_id` for `minecraft:powder_snow`. Its shape depends on the body moving (`Mover`), as vanilla's `getCollisionShape` does for an entity: a box 0.9 high while falling faster than a 2.5-block free fall under the pmove's gravity (`Mover.falling`), a full block for a powder snow walker whose feet are above the block and who isn't sneaking, else nothing. Bullets, projectiles and other traces without a mover pass through. `stuck_in` holds a body whose feet cell is powder snow with vanilla's `(0.9, 1.5, 0.9)` multipliers, after cobwebs and berry bushes.
+  - `playerstate_iw4`: `pm_flags::MC_POWDER_WALKER` (`0x0080_0000`, free in the whole workspace; B3's `MC_RIDING` is `0x0100_0000`). `sim` `set_powder_snow_walker` on the frame and the carrier; `render_anim` sets it every frame from the boots slot (`walks_on_powder_snow`: `minecraft:leather_boots` in slot 36, from that player's own inventory).
+  - Climbing out: `ClimbSample.powder`, set when the feet cell is powder snow and the mover is a walker (`voxel::climb_as` with the pmove's mover; `voxel::climb` without one stays for the footsteps). It counts as climbing, so a walker rises 0.2 a tick (scaled by the stuck 1.5) on jump or when pushing into a wall, as vanilla's `handleRelativeFrictionAndCalculateMovement` does, and the ladder clamp (`hold`) is skipped, so sneaking doesn't hold a walker in place.
+  - Vendored `inside_blocks.rs`: powder snow gives `Stuck((0.9F, 1.5, 0.9F))` only when it is the body's feet block (`getInBlockState`), then the extinguish as before. Mobs now sink slowly in powder snow too (they had no collision with it already).
+  - Landing: a fall of 4 blocks or more into powder snow, or onto it in leather boots, plays `entity.player.small_fall` (under 7) or `big_fall`, with no damage (`powder_snow_landing`).
+  - Snowflakes: `ambient_particles::Kind::Snowflake` (gravity 0.225, friction 1, motion jitter ±0.05, size 0.1 × (1 + r²), lifetime 16 / (0.2 + 0.8 r) + 2, `generic_7` to `generic_0` by age, opaque, motion × (0.95, 0.9, 0.95) each tick). Each tick the player moved sideways with the feet in powder snow, every powder snow block the body is in (`powder_snow_flakes`) gets a coin flip for one flake at its top, with motion (±1/12 r, 0.05, ±1/12 r) (`Entities::powder_snow_flake`).
+- **Tests:**
+  - `sim` `voxel`: `powder_snow_catches_a_fall_at_nine_tenths`, `leather_boots_stand_on_powder_snow_until_sneaking`, `powder_snow_holds_only_through_the_feet_cell`, `powder_snow_needs_no_collision_without_a_mover`; `frame`: `leather_boots_mark_a_powder_snow_walker`.
+  - `movement_iw4` `stuck`: `powder_snow_sinks_at_the_vanilla_rate` (0.1176 a tick at 20, 40 and 100 frames a second, sideways × 0.9), `a_walker_climbs_out_of_powder_snow_at_two_tenths` (0.1764 a tick with the stuck scale, also when pushing into a wall; a sneaking walker sinks).
+  - Vendored `inside_blocks`: `powder_snow_sticks_only_by_the_feet`.
+  - `minecraft_terrain` `ambient_particles`: `snowflakes_live_and_slow_like_vanilla`.
+  - `minecraft_survival` `survival`: `leather_boots_walk_on_powder_snow_and_landing_in_it_sounds_from_four_blocks`, `snowflakes_come_from_each_snow_block_the_body_is_in_while_the_feet_are`.
+- **Decisions:**
+  - The falling shape uses the fall speed (faster than a 2.5-block drop from rest), not vanilla's fall distance; a fall slowed by water or webs just before won't be caught.
+  - The walker bit is a `pm_flags` bit so the client's prediction sees it; friends will need the same build.
+  - Snowflakes are made on the player's own client from its own movement; vanilla sends them from the server to everyone near **[E]**.
+- **Test steps:** (survival, flat ground)
+  1. Dig a pit 1 × 1 and 3 deep and fill it with the three powder snow buckets. Scoop the top block back up with an empty bucket and pour it back in.
+  2. Walk into the pit: you sink slowly, about 2 blocks a second, and moving is a little slower. Small white flakes rise when you move inside (**2**, inside looking out).
+  3. Without boots, jump: you can't climb out of 3 deep. Get out by scooping the blocks up and pillaring with cobblestone, then pour them back.
+  4. Put on the leather boots: walk over the powder snow as if it were solid (**4**). Crouch: you sink in. Inside with boots, hold jump or walk into the pit wall: you climb out at a steady pace.
+  5. Take the boots off, `/tp ~ ~12 ~` above the pit: you land on the snow surface with a fall sound and no damage, then sink in.
+  6. Shoot an MW2 gun through powder snow: the bullets pass through it.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket,minecraft:powder_snow_bucket,minecraft:powder_snow_bucket,minecraft:bucket,minecraft:leather_boots,minecraft:cobblestone*64
+```

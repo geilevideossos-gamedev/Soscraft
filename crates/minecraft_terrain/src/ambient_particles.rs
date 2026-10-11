@@ -36,6 +36,7 @@ pub enum Kind {
     ExplosionEmitter,
     HappyVillager,
     Rain,
+    Snowflake,
 }
 
 #[derive(Clone, Debug)]
@@ -189,6 +190,21 @@ impl Particle {
         particle
     }
 
+    fn snowflake(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::Snowflake, at, DVec3::ZERO, random);
+        particle.gravity = 0.225;
+        particle.friction = 1.0;
+        let mut jitter = || f64::from((random.next_float() * 2.0 - 1.0) * 0.05);
+        particle.velocity = DVec3::new(
+            motion.x + jitter(),
+            motion.y + jitter(),
+            motion.z + jitter(),
+        );
+        particle.quad_size = 0.1 * (random.next_float() * random.next_float() + 1.0);
+        particle.lifetime = (16.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32 + 2;
+        particle
+    }
+
     fn drip<S: Scene + ?Sized>(
         &mut self,
         scene: &S,
@@ -243,7 +259,7 @@ impl Particle {
 
     fn sprite(&self) -> Option<ResourceId> {
         let name = match self.kind {
-            Kind::Smoke | Kind::LargeSmoke | Kind::Poof => {
+            Kind::Smoke | Kind::LargeSmoke | Kind::Poof | Kind::Snowflake => {
                 let step = self.age * (GENERIC_SPRITES - 1) / self.lifetime.max(1);
                 format!(
                     "generic_{}",
@@ -274,7 +290,8 @@ impl Particle {
             | Kind::Explosion
             | Kind::ExplosionEmitter
             | Kind::HappyVillager
-            | Kind::Rain => self.quad_size,
+            | Kind::Rain
+            | Kind::Snowflake => self.quad_size,
         }
     }
 
@@ -686,6 +703,7 @@ impl AmbientParticles {
             Kind::ExplosionEmitter => Particle::emitter(at, random),
             Kind::HappyVillager => Particle::happy_villager(at, motion, random),
             Kind::Rain => Particle::rain(at, random),
+            Kind::Snowflake => Particle::snowflake(at, motion, random),
         };
         self.particles.push(particle);
         if self.particles.len() > CAP {
@@ -712,6 +730,12 @@ impl AmbientParticles {
             Kind::Explosion => particle.hold(),
             Kind::HappyVillager => particle.linger(),
             Kind::Rain => particle.drip(scene, &mut cache, random),
+            Kind::Snowflake => {
+                let alive = particle.tick(scene, &mut cache);
+                let (side, down) = (f64::from(0.95_f32), f64::from(0.9_f32));
+                particle.velocity *= DVec3::new(side, down, side);
+                alive
+            }
             Kind::CosySmoke | Kind::SignalSmoke => particle.drift(scene, &mut cache, random),
             _ => {
                 let alive = particle.tick(scene, &mut cache);
@@ -1263,5 +1287,43 @@ mod tests {
             .find(|p| p.kind == Kind::Lava)
             .unwrap();
         assert!(lava.position.y >= 11.0 - 1e-9);
+    }
+
+    #[test]
+    fn snowflakes_live_and_slow_like_vanilla() {
+        let mut particles = AmbientParticles::new(19);
+        let motion = DVec3::new(0.08, 0.05, -0.04);
+        particles.add(Kind::Snowflake, DVec3::new(0.5, 65.0, 0.5), motion);
+        let flake = particles.particles[0].clone();
+        assert!((18..=82).contains(&flake.lifetime), "{}", flake.lifetime);
+        assert!(flake.quad_size >= 0.1 && flake.quad_size <= 0.2);
+        assert!((flake.velocity - motion).abs().max_element() <= 0.05 + 1e-9);
+        assert_eq!(
+            flake.sprite().map(|id| id.key()).as_deref(),
+            Some("minecraft:particle/generic_7")
+        );
+        let scene = Blocks(HashMap::new());
+        particles.tick(&scene);
+        let ticked = &particles.particles[0];
+        let fall = f64::from(0.04_f32 * 0.225);
+        let expected = DVec3::new(
+            flake.velocity.x * f64::from(0.95_f32),
+            (flake.velocity.y - fall) * f64::from(0.9_f32),
+            flake.velocity.z * f64::from(0.95_f32),
+        );
+        assert!((ticked.velocity - expected).abs().max_element() < 1e-6, "{:?}", ticked.velocity);
+        let moved = flake.velocity - DVec3::new(0.0, f64::from(0.04 * 0.225_f32), 0.0);
+        assert!((ticked.position - flake.position - moved).abs().max_element() < 1e-6);
+        for _ in 0..flake.lifetime {
+            particles.tick(&scene);
+        }
+        assert!(particles.is_empty());
+        assert!(!particles_translucent(Kind::Snowflake));
+    }
+
+    fn particles_translucent(kind: Kind) -> bool {
+        let mut particles = AmbientParticles::new(1);
+        particles.add(kind, DVec3::ZERO, DVec3::ZERO);
+        particles.particles[0].translucent()
     }
 }

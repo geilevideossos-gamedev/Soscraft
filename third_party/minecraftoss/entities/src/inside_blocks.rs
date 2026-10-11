@@ -380,6 +380,7 @@ pub fn block_effects(world: &impl World, body: &Body, old_position: DVec3, moves
     }
     let mut collector = Collector::default();
     let mut visited: HashSet<Pos> = HashSet::new();
+    let feet = (body.position.x.floor() as i32, body.position.y.floor() as i32, body.position.z.floor() as i32);
     let moved_horizontally = {
         // `oldPosition().subtract(position())` (sweet berry bushes).
         let m = old_position - body.position;
@@ -410,7 +411,7 @@ pub fn block_effects(world: &impl World, body: &Body, old_position: DVec3, moves
                     return true;
                 }
                 collector.advance(step);
-                inside_block(&block, collector, now, moved_horizontally);
+                inside_block(&block, pos == feet, collector, now, moved_horizontally);
                 if let Some((lava, _, _)) = fluid {
                     collector.advance(step);
                     if lava {
@@ -452,7 +453,7 @@ pub fn block_effects(world: &impl World, body: &Body, old_position: DVec3, moves
 }
 
 /// A block's `entityInside` for a living mob.
-fn inside_block(block: &minecraftoss_player::Block, collector: &mut Collector, now: &mut Vec<BlockEffect>, moved: Option<DVec3>) {
+fn inside_block(block: &minecraftoss_player::Block, at_feet: bool, collector: &mut Collector, now: &mut Vec<BlockEffect>, moved: Option<DVec3>) {
     match block.id.as_str() {
         "minecraft:fire" | "minecraft:soul_fire" => {
             let damage = if block.id == "minecraft:soul_fire" { 2.0 } else { 1.0 };
@@ -474,7 +475,12 @@ fn inside_block(block: &minecraftoss_player::Block, collector: &mut Collector, n
             }
         }
         "minecraft:cobweb" => now.push(BlockEffect::Stuck(DVec3::new(0.25, f64::from(0.05_f32), 0.25))),
-        "minecraft:powder_snow" => collector.apply(Kind::Extinguish),
+        "minecraft:powder_snow" => {
+            if at_feet {
+                now.push(BlockEffect::Stuck(DVec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32))));
+            }
+            collector.apply(Kind::Extinguish);
+        }
         _ => {}
     }
 }
@@ -521,5 +527,22 @@ mod tests {
             true
         });
         assert_eq!(met, vec![((0, 0, 0), 0), ((0, 1, 0), 0)]);
+    }
+
+    #[test]
+    fn powder_snow_sticks_only_by_the_feet() {
+        let snow = minecraftoss_player::Block::new("minecraft:powder_snow");
+        let mut collector = Collector::default();
+        let mut now = Vec::new();
+        inside_block(&snow, true, &mut collector, &mut now, None);
+        assert_eq!(now, vec![BlockEffect::Stuck(DVec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32)))]);
+        collector.flush();
+        assert_eq!(collector.out, vec![BlockEffect::Extinguish]);
+        let mut collector = Collector::default();
+        let mut now = Vec::new();
+        inside_block(&snow, false, &mut collector, &mut now, None);
+        assert!(now.is_empty());
+        collector.flush();
+        assert_eq!(collector.out, vec![BlockEffect::Extinguish]);
     }
 }

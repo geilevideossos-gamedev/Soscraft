@@ -555,16 +555,29 @@ pub const STUCK_BERRY_BUSH: u16 = 0x200;
 pub const STUCK_COBWEB: u16 = 0x400;
 const BERRY_BUSH_SLOWDOWN: [f32; 3] = [0.8, 0.8, 0.75];
 const COBWEB_SLOWDOWN: [f32; 3] = [0.25, 0.25, 0.05];
+pub const POWDER_SNOW: u16 = 0x8000;
+const POWDER_SNOW_SLOWDOWN: [f32; 3] = [0.9, 0.9, 1.5];
+const POWDER_SNOW_FALLING: [[f32; 6]; 1] = [[0.0, 0.0, 0.0, 1.0, 0.9, 1.0]];
+const FULL_BLOCK: [[f32; 6]; 1] = [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
+const POWDER_SNOW_FALL: f32 = 2.5;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mover {
     pub feet: f32,
     pub descending: bool,
+    pub powder_walker: bool,
+    pub falling: bool,
 }
 
 impl Mover {
     pub fn of(ps: &playerstate_iw4::PlayerState, cmd: &playerstate_iw4::UserCmd) -> Self {
-        Self { feet: ps.origin[2], descending: movement_iw4::sneaking(ps, cmd) }
+        let fall_speed = (2.0 * ps.gravity.max(0) as f32 * POWDER_SNOW_FALL * BLOCK).sqrt();
+        Self {
+            feet: ps.origin[2],
+            descending: movement_iw4::sneaking(ps, cmd),
+            powder_walker: ps.pm_flags & playerstate_iw4::pm_flags::MC_POWDER_WALKER != 0,
+            falling: -ps.velocity[2] > fall_speed,
+        }
     }
 }
 
@@ -789,10 +802,19 @@ impl VoxelWorld {
             return boxes;
         };
         let flags = self.fluid_at(x, y, z);
+        let bottom = self.origin[1] + f64::from(mover.feet) / f64::from(BLOCK);
+        if flags & POWDER_SNOW != 0 {
+            return if mover.falling {
+                &POWDER_SNOW_FALLING
+            } else if mover.powder_walker && bottom > f64::from(y) + 1.0 - ABOVE_EPSILON && !mover.descending {
+                &FULL_BLOCK
+            } else {
+                &[]
+            };
+        }
         if flags & SCAFFOLDING == 0 {
             return boxes;
         }
-        let bottom = self.origin[1] + f64::from(mover.feet) / f64::from(BLOCK);
         if bottom > f64::from(y) + 1.0 - ABOVE_EPSILON && !mover.descending {
             boxes
         } else if flags & SCAFFOLDING_BOTTOM != 0 && bottom > f64::from(y) - ABOVE_EPSILON {
@@ -802,9 +824,11 @@ impl VoxelWorld {
         }
     }
 
-    fn climb_sample(&self, feet: [f64; 3]) -> movement_iw4::ClimbSample {
+    fn climb_sample(&self, feet: [f64; 3], mover: Option<Mover>) -> movement_iw4::ClimbSample {
         let flags = self.fluid_at(feet[0].floor() as i32, feet[1].floor() as i32, feet[2].floor() as i32);
-        movement_iw4::ClimbSample { on: flags & CLIMBABLE != 0, scaffolding: flags & SCAFFOLDING != 0 }
+        let climbable = flags & CLIMBABLE != 0;
+        let powder = !climbable && flags & POWDER_SNOW != 0 && mover.is_some_and(|m| m.powder_walker);
+        movement_iw4::ClimbSample { on: climbable || powder, scaffolding: flags & SCAFFOLDING != 0, powder }
     }
 }
 
@@ -1256,10 +1280,13 @@ impl VoxelWorld {
                 }
             }
         }
+        let feet = self.fluid_at(at[0].floor() as i32, at[1].floor() as i32, at[2].floor() as i32);
         if touched & STUCK_COBWEB != 0 {
             Some(COBWEB_SLOWDOWN)
         } else if touched & STUCK_BERRY_BUSH != 0 {
             Some(BERRY_BUSH_SLOWDOWN)
+        } else if feet & POWDER_SNOW != 0 {
+            Some(POWDER_SNOW_SLOWDOWN)
         } else {
             None
         }
@@ -1289,10 +1316,14 @@ pub fn lava(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> f32 {
 }
 
 pub fn climb(origin: [f32; 3]) -> movement_iw4::ClimbSample {
+    climb_as(origin, None)
+}
+
+pub(crate) fn climb_as(origin: [f32; 3], mover: Option<Mover>) -> movement_iw4::ClimbSample {
     let Ok(guard) = WORLD.read() else {
         return movement_iw4::ClimbSample::default();
     };
-    guard.as_ref().map_or_else(movement_iw4::ClimbSample::default, |world| world.climb_sample(to_block(world.origin, origin)))
+    guard.as_ref().map_or_else(movement_iw4::ClimbSample::default, |world| world.climb_sample(to_block(world.origin, origin), mover))
 }
 
 pub fn eye_in_lava(origin: [f32; 3], view_height: f32) -> bool {
@@ -1768,7 +1799,7 @@ mod tests {
     }
 
     fn mover(feet: f64, descending: bool) -> Option<Mover> {
-        Some(Mover { feet: (feet * 36.0) as f32, descending })
+        Some(Mover { feet: (feet * 36.0) as f32, descending, powder_walker: false, falling: false })
     }
 
     const HULL: ([f32; 3], [f32; 3]) = ([-10.8, -10.8, 0.0], [10.8, 10.8, 64.8]);
@@ -1817,12 +1848,80 @@ mod tests {
     #[test]
     fn the_block_at_the_feet_decides_climbing() {
         let w = scaffolding(&[([4, 1, 4], TOWER), ([6, 1, 6], LADDER)]);
-        let tower = w.climb_sample([4.5, 1.2, 4.5]);
+        let tower = w.climb_sample([4.5, 1.2, 4.5], None);
         assert_eq!((tower.on, tower.scaffolding), (true, true));
-        let ladder = w.climb_sample([6.5, 1.0, 6.5]);
+        let ladder = w.climb_sample([6.5, 1.0, 6.5], None);
         assert_eq!((ladder.on, ladder.scaffolding), (true, false));
-        assert_eq!(w.climb_sample([4.5, 2.0 + 1e-3, 4.5]), movement_iw4::ClimbSample::default());
+        assert_eq!(w.climb_sample([4.5, 2.0 + 1e-3, 4.5], None), movement_iw4::ClimbSample::default());
         assert_eq!(w.fluid_depth([4.5, 1.0, 4.5], [-0.3, 0.0, -0.3], [0.3, 1.8, 0.3], WATER), 0.0);
+    }
+
+    const SNOW: u16 = 5;
+
+    fn powder_snow(blocks: &[([i32; 3], u16)]) -> VoxelWorld {
+        let mut w = world(blocks);
+        w.shapes.push(Vec::new());
+        w.fluids.push(POWDER_SNOW);
+        w
+    }
+
+    fn snow_mover(feet: f64, descending: bool, powder_walker: bool, falling: bool) -> Option<Mover> {
+        Some(Mover { feet: (feet * 36.0) as f32, descending, powder_walker, falling })
+    }
+
+    #[test]
+    fn powder_snow_catches_a_fall_at_nine_tenths() {
+        let w = powder_snow(&[([4, 0, 4], 1), ([4, 1, 4], SNOW)]);
+        let caught = drop_onto(&w, 3.0, 1.0, snow_mover(3.0, false, false, true));
+        assert!((caught - 0.55).abs() < 0.01, "{caught}");
+        assert!((drop_onto(&w, 3.0, 1.0, snow_mover(3.0, true, true, true)) - 0.55).abs() < 0.01);
+        assert!((drop_onto(&w, 3.0, 0.5, snow_mover(3.0, false, false, false)) - 0.8).abs() < 0.01, "only the floor below stops a slow body");
+        let mut ps = playerstate_iw4::PlayerState::ZERO;
+        ps.gravity = 800;
+        ps.velocity[2] = -370.0;
+        assert!(!Mover::of(&ps, &playerstate_iw4::UserCmd::default()).falling);
+        ps.velocity[2] = -390.0;
+        assert!(Mover::of(&ps, &playerstate_iw4::UserCmd::default()).falling);
+    }
+
+    #[test]
+    fn leather_boots_stand_on_powder_snow_until_sneaking() {
+        let w = powder_snow(&[([4, 0, 4], 1), ([4, 1, 4], SNOW)]);
+        let above = 2.0 + 0.25 / 36.0;
+        assert!((drop_onto(&w, above, 1.5, snow_mover(above, false, true, false)) - ((0.25 / 36.0) / (above - 1.5)) as f32).abs() < 0.01);
+        assert_eq!(drop_onto(&w, above, 1.5, snow_mover(above, true, true, false)), 1.0);
+        assert_eq!(drop_onto(&w, above, 1.5, snow_mover(above, false, false, false)), 1.0);
+        let inside = 1.5;
+        assert_eq!(drop_onto(&w, inside, 1.2, snow_mover(inside, false, true, false)), 1.0);
+        let mut ps = playerstate_iw4::PlayerState::ZERO;
+        assert!(!Mover::of(&ps, &playerstate_iw4::UserCmd::default()).powder_walker);
+        ps.pm_flags |= playerstate_iw4::pm_flags::MC_POWDER_WALKER;
+        assert!(Mover::of(&ps, &playerstate_iw4::UserCmd::default()).powder_walker);
+        let climb = w.climb_sample([4.5, 1.2, 4.5], snow_mover(1.2, false, true, false));
+        assert_eq!((climb.on, climb.powder, climb.scaffolding), (true, true, false));
+        assert_eq!(w.climb_sample([4.5, 1.2, 4.5], snow_mover(1.2, false, false, false)), movement_iw4::ClimbSample::default());
+        assert_eq!(w.climb_sample([4.5, 1.2, 4.5], None), movement_iw4::ClimbSample::default());
+    }
+
+    #[test]
+    fn powder_snow_holds_only_through_the_feet_cell() {
+        let w = powder_snow(&[([4, 0, 4], 1), ([4, 1, 4], SNOW), ([8, 2, 8], SNOW)]);
+        let half = f64::from(HULL_HALF_WIDTH / BLOCK);
+        let (lo, hi) = ([-half, 0.0, -half], [half, 1.8, half]);
+        assert_eq!(w.stuck_in([4.5, 1.0, 4.5], lo, hi), Some(POWDER_SNOW_SLOWDOWN));
+        assert_eq!(w.stuck_in([4.5, 1.95, 4.5], lo, hi), Some(POWDER_SNOW_SLOWDOWN));
+        assert_eq!(w.stuck_in([8.5, 1.0, 8.5], lo, hi), None, "snow at the head only does not hold");
+        assert_eq!(w.stuck_in([5.2, 1.0, 4.5], lo, hi), None, "the feet must be in the block");
+        assert_eq!(w.stuck_in([4.5, 2.0, 4.5], lo, hi), None);
+    }
+
+    #[test]
+    fn powder_snow_needs_no_collision_without_a_mover() {
+        let w = powder_snow(&[([4, 1, 4], SNOW)]);
+        assert_eq!(drop_onto(&w, 3.0, 0.5, None), 1.0);
+        let (from, to) = (to_map([0.0; 3], [2.5, 1.5, 4.5]), to_map([0.0; 3], [6.5, 1.5, 4.5]));
+        assert_eq!(trace_in(&w, from, to, [0.0; 3], [0.0; 3], None).fraction, 1.0);
+        assert_eq!(w.shape_at(4, 1, 4), &[] as &[[f32; 6]]);
     }
 
     #[test]
