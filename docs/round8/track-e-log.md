@@ -457,3 +457,26 @@ Commit: see `git log` ("The M1 owner test closes the rejoined friend window from
 - **Tests:** none (a document).
 - **Test steps:** `docs/round8/e-m1-tests.md`.
 - **Kit:** none needed.
+
+### Final verification: clippy on the track's own lines
+
+Commit: see `git log` ("Multiplayer M1 code passes clippy"). The previous commit is `ccece5de`.
+
+- **Not track work:** `7f64c38d` is the same `cargo-slot.ps1` change as `39407502` on `minecraft-survival`, taken early so the track could build gently. It has no game code and no in-game test.
+- **Clippy** on the crates the track touched (`console`, `frame`, `hud`, `iw4l-master`, `minecraft_commands`, `minecraft_net`, `minecraft_survival`, `minecraft_terrain`, `net`, `render_anim`, `sim`, `minecraftoss-core`) with `--all-targets -A clippy::approx_constant`. Every warning on a line the track added is fixed; older warnings stay.
+- **Changed (no behaviour change):**
+  - `unwrap_or_default()` (refused by the workspace `clippy.toml`) became an explicit fallback: `map_or_else(Vec::new, ...)` in `minecraft_survival::remote` and `render_anim::minecraft_host`, `unwrap_or_else(|_| ...)` in `minecraft_survival::session` and `render_anim::minecraft_remote`, `map_or_else(ChunkMapStats::default, ChunkMap::stats)` in `minecraft_terrain::terrain`. The friend-change drain in `session` takes the list with `let ... else`, which skips a level with no list exactly as the empty list did.
+  - `net::minecraft_wire::MinecraftWire::drop_peer`: the friend's `if` became a match guard.
+  - `render_anim`: `type ColumnLights` for `terrain_frame`'s result, and `clippy::type_complexity` allowed on the `friend` system next to its `too_many_arguments` (Bevy system parameters).
+  - `sim::damage::height_bands`: the `drop(frame)` calls on a type with no `Drop` are gone; the borrow ends at its last use.
+- **Tests:** none new. `test -p` of each touched crate is green: `minecraft_survival` 369 + 1, `minecraft_terrain` 849 (4 ignored), `net` 14, `render_anim` 74, `sim` 78, `minecraft_net` 15, `minecraft_commands` 117, `hud` 138, `console` 36, `frame` 23, `minecraftoss-core` 23, `iw4l-master` 1. `check -p launcher` is green.
+- **Test steps:** none new; the M1 owner test in `docs/round8/e-m1-tests.md` covers these lines.
+- **Kit:** none needed.
+
+## Combined kit for every test in this track
+
+`minecraft:obsidian` x10, `minecraft:flint_and_steel` x1, `minecraft:chest` x1, `minecraft:cobblestone` x32, `minecraft:lava_bucket` x1, `minecraft:torch` x16 (6 stacks).
+
+```
+IW4L_MINECRAFT_KIT=obsidian*10,flint_and_steel,chest,cobblestone*32,lava_bucket,torch*16
+```

@@ -353,7 +353,7 @@ pub fn cut_batch<T>(
             }
             .encode()
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|_| Vec::new());
     EncodedBatch { blob, rest }
 }
 
@@ -636,11 +636,9 @@ impl Sessions {
                 level.terrain.friend_changes = None;
                 continue;
             }
-            let changed = level
-                .terrain
-                .friend_changes
-                .replace(Vec::new())
-                .unwrap_or_default();
+            let Some(changed) = level.terrain.friend_changes.replace(Vec::new()) else {
+                continue;
+            };
             if changed.is_empty() {
                 continue;
             }

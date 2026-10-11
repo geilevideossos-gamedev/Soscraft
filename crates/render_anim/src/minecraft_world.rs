@@ -2444,7 +2444,9 @@ pub(crate) fn cull_camera(drawn_from: Option<&Transform>, origin: [f64; 3], eye:
     }
 }
 
-pub(crate) fn terrain_frame(terrain: &mut minecraft_survival::level::Terrain, world: &Loaded, view: &mut MinecraftWorldView, camera: &CullCamera) -> Vec<((i32, i32), Option<Arc<SkyLight>>)> {
+type ColumnLights = Vec<((i32, i32), Option<Arc<SkyLight>>)>;
+
+pub(crate) fn terrain_frame(terrain: &mut minecraft_survival::level::Terrain, world: &Loaded, view: &mut MinecraftWorldView, camera: &CullCamera) -> ColumnLights {
     let update = terrain
         .stream
         .frame(&terrain.scene, camera, FADE_MILLIS, &world.atlas, &world.packs);

@@ -1726,7 +1726,7 @@ impl TerrainStream {
             .iter()
             .filter(|&&pos| self.sections.section(pos).is_some_and(|s| matches!(s.mesh, crate::sections::MeshState::Compiled(_))))
             .count();
-        let stats = self.server.as_ref().map(ChunkMap::stats).unwrap_or_default();
+        let stats = self.server.as_ref().map_or_else(minecraftoss_world::ChunkMapStats::default, ChunkMap::stats);
         let queue = self.work.0.lock().expect("terrain work queue");
         LoadMetrics {
             columns,
@@ -1765,7 +1765,7 @@ impl TerrainStream {
 
     /// The F3 chunk lines: server and client progress.
     pub fn debug_line(&self) -> String {
-        let stats = self.server.as_ref().map(ChunkMap::stats).unwrap_or_default();
+        let stats = self.server.as_ref().map_or_else(minecraftoss_world::ChunkMapStats::default, ChunkMap::stats);
         let queue = self.work.0.lock().expect("terrain work queue");
         format!(
             "Chunks: {} loaded, {} queued, {} generating ({} us/chunk); light {} queued ({} us); sections {} visible, {} queued, {} building ({} us/section)",

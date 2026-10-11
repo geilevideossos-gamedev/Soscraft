@@ -36,7 +36,8 @@ fn prepare() -> Result<Prepared, String> {
     let registries = Arc::new(Registries::load(&paths)?);
     let packs = PackStack::open(vec![root.join("resourcepacks/local/minecraft-26.3")])
         .map_err(|error| error.to_string())?;
-    let language = minecraft_terrain::item_icons::language(&packs).unwrap_or_default();
+    let language =
+        minecraft_terrain::item_icons::language(&packs).unwrap_or_else(|_| HashMap::new());
     let look = crate::minecraft_world::load_look(packs)?;
     let registry = minecraft_survival::session::registry_fingerprint(&registries);
     Ok(Prepared {
@@ -252,7 +253,7 @@ fn exchange(
     lines
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn friend(
     time: Res<Time>,
     real_time: Res<Time<Real>>,

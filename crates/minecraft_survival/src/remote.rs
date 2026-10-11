@@ -448,7 +448,7 @@ impl RemoteWorld {
             return false;
         };
         self.held = self.held.saturating_sub(held.blob.len());
-        let chunks = held.chunks.map(|(_, chunks)| chunks).unwrap_or_default();
+        let chunks = held.chunks.map_or_else(Vec::new, |(_, chunks)| chunks);
         let terrain = &mut level.terrain;
         let (loaded, forgotten) = terrain
             .stream

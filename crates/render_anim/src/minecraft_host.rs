@@ -158,7 +158,7 @@ fn run_friend_commands(
         .map(|session| (session.client, session.uuid.clone()))
         .collect();
     for (client, uuid) in friends {
-        let lines = chat.get(&client).cloned().unwrap_or_default();
+        let lines = chat.get(&client).map_or_else(Vec::new, Vec::clone);
         let mut presence =
             crate::minecraft_world::friends_presence(&server.players, authority, origins, local);
         if let Some(player) = server.players.get(local)

@@ -776,13 +776,11 @@ impl MinecraftWire {
                 self.left.push(peer);
                 self.drops.push((peer, reason.to_owned()));
             }
-            Some(WireRole::Friend) => {
-                if self.failed.is_none() {
-                    diag::warn!(Net, "minecraft link to the host failed: {reason}");
-                    self.failed = Some(reason.to_owned());
-                }
+            Some(WireRole::Friend) if self.failed.is_none() => {
+                diag::warn!(Net, "minecraft link to the host failed: {reason}");
+                self.failed = Some(reason.to_owned());
             }
-            None => {}
+            Some(WireRole::Friend) | None => {}
         }
     }
 

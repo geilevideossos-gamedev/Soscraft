@@ -115,7 +115,6 @@ impl Band {
             .player(id)
             .expect("a spawned player has a state")
             .origin;
-        drop(frame);
         let place = self.at(x, z);
         assert!(self.sim.teleport_facing(id, place, [0.0; 3]));
         spawned
@@ -274,7 +273,6 @@ fn a_bullet_hits_a_block_and_a_player_at_the_height_of_every_band() {
         band.settle(&[A, B]);
         let mut frame = band.sim.frame();
         frame.record_collision_history(Tick(band.tick), 0, None);
-        drop(frame);
         let target = band.ps(B).origin;
         match band.shoot(A, [target[0], target[1], target[2] + 40.0]) {
             TraceOutcome::Hit {
@@ -324,14 +322,12 @@ fn a_grenade_blast_hurts_a_player_and_a_wall_shields_one_at_the_height_of_every_
         let blast = band.frag(band.at(8.5, 0.5)[0]);
         let frame = band.sim.frame();
         let attempts = radius_player_attempts(&frame, &blast);
-        drop(frame);
         let targets: Vec<ClientId> = attempts.iter().map(|attempt| attempt.target).collect();
         assert_eq!(targets, [B], "band {feet}: {attempts:?}");
         let amount = attempts[0].amount;
         assert!(amount > 55 && amount < 130, "band {feet}: {amount}");
         let mut frame = band.sim.frame();
         let finish = crate::script_player::finish_damage(&mut frame, B, amount, None);
-        drop(frame);
         assert_eq!(finish, crate::script_player::Finish::Hurt, "band {feet}");
         assert_eq!(band.ps(B).health, 100 - amount, "band {feet}");
         hurt.push(amount);
@@ -357,7 +353,6 @@ fn a_killed_player_gets_an_obituary_and_respawns_into_its_band() {
         assert_eq!(finish, crate::script_player::Finish::Killed, "band {feet}");
         crate::script_player::kill(&mut frame, tick, B, Some(A), None);
         crate::script_player::obituary(&mut frame, tick, B, Some(A), 0, "MOD_GRENADE_SPLASH");
-        drop(frame);
         assert_eq!(
             band.sim.client_meta(B).map(|meta| meta.lifecycle),
             Some(ClientLifecycle::Dead),
@@ -436,7 +431,6 @@ fn a_player_stays_where_it_stands_for_two_minutes_at_the_height_of_every_band() 
             let frame = band.sim.frame();
             let near = radius_player_candidates(&frame, ps.origin, 64.0);
             let linked = frame.player_area_bounds(A).map(|bounds| bounds.mid()[2]);
-            drop(frame);
             assert!(near.contains(&A), "band {feet}: {near:?}");
             assert!(
                 linked.is_some_and(|z| (z - feet - 35.0).abs() < 1.0),
