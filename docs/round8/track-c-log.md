@@ -708,3 +708,26 @@ IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:
 ```
 IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:diamond_sword+sharpness=5,minecraft:lingering_potion@regeneration*2
 ```
+
+## Group c3-sky-dragon-2: the dragon's death particles, its knockback, the End music, docs (c3 groups 5-8 and 10)
+
+### 28. Minecraft ender dragon bursts into explosions while it dies and where it breaks blocks
+
+Previous commit: ef543055
+
+- **Changed:**
+  - `minecraft_terrain` `ender_dragon.rs`: `DragonEvents.explosions: Vec<(DVec3, bool)>` (`true` for an `explosion_emitter`). `tick_death` draws three offsets from the dragon's own random on death ticks 180 to 200 (`(f - 0.5)·8`, `(f - 0.5)·4`, `(f - 0.5)·8`) and pushes an emitter at the position plus `(a, 2 + b, c)`, before the tick's rise; the dying branch of `ai_step` draws the same three and pushes a plain `explosion` (`EnderDragon.aiStep`). These are vanilla's server draws, so the dragon's random stays in step with vanilla's. `tick` no longer runs `ai_step` once the dragon is removed (`LivingEntity.tick` checks `isRemoved` before `aiStep`).
+  - `server.rs`: the dragons' explosions and their wall bursts (level event 2008, one `explosion` at the broken cell's centre) gather in the server and go to the client in the new `EntitySnapshot.dragon_explosions` (appended at the end of the struct and of its literal).
+  - `minecraft_survival` `entities.rs`: each one is an ambient `explosion` (size 0, the 2.0 quad) or `explosion_emitter`.
+- **Tests:**
+  - `ender_dragon`: `a_dying_dragon_explodes_every_tick_and_bursts_from_tick_180_to_200` (199 plain, 21 emitters, offsets within ±4 and 2 ± 2), `the_dying_dragon_s_random_draws_three_floats_a_tick` (every explosion against a mirror of the dragon's random, and the random after the death).
+  - `server`: `the_dragon_breaks_cobblestone_it_flies_through_but_not_end_stone` also sees plain explosions at the centres of cells inside the dragon's parts, and none where end stone holds it; `the_first_dragon_drops_12000_experience_and_a_later_one_500` sees 21 emitters and at least 199 plain explosions.
+- **Decisions:** 199 plain explosions, not the brief's 200: on death tick 200 the dragon is removed in `tickDeath`, and vanilla skips `aiStep` for a removed entity.
+- **Test steps:** (the End, a new world, `/difficulty normal`, diamond armour on)
+  1. Build a wall of cobblestone and oak planks about 6 wide and 20 high under the dragon's circle (about 40 blocks from the centre, top at about 80 to 90). Where it tears through, small explosion flashes pop at the broken blocks (**1**).
+  2. Kill the dragon. While it rises under the white rays, explosion flashes flicker around its body every tick, and in its last second big clusters of explosions burst (**2**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:diamond_sword+sharpness=5,minecraft:cobblestone*128,minecraft:oak_planks*64
+```

@@ -732,6 +732,7 @@ pub struct DragonEvents {
     pub fireballs: Vec<(DVec3, DVec3)>,
     pub clouds: Vec<EffectCloud>,
     pub breath: Vec<DragonBreath>,
+    pub explosions: Vec<(DVec3, bool)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1210,12 +1211,25 @@ impl EnderDragon {
                     .push((AMBIENT_SOUND, self.position, SOUND_VOLUME, pitch));
             }
         }
-        self.ai_step(env, &mut events);
+        if !self.removed {
+            self.ai_step(env, &mut events);
+        }
         events
+    }
+
+    fn death_burst(&mut self) -> DVec3 {
+        let a = (self.random.next_float() - 0.5) * 8.0;
+        let b = (self.random.next_float() - 0.5) * 4.0;
+        let c = (self.random.next_float() - 0.5) * 8.0;
+        self.position + DVec3::new(f64::from(a), 2.0 + f64::from(b), f64::from(c))
     }
 
     fn tick_death(&mut self, env: &DragonEnv, events: &mut DragonEvents) {
         self.death_time += 1;
+        if (180..=200).contains(&self.death_time) {
+            let at = self.death_burst();
+            events.explosions.push((at, true));
+        }
         if let Some(total) = env
             .death_experience
             .filter(|_| self.death_time > 150 && self.death_time % 5 == 0)
@@ -1247,6 +1261,8 @@ impl EnderDragon {
     fn ai_step(&mut self, env: &DragonEnv, events: &mut DragonEvents) {
         self.o_flap_time = self.flap_time;
         if self.dead_or_dying() {
+            let at = self.death_burst();
+            events.explosions.push((at, false));
             return;
         }
         self.check_crystals(env.crystals);
@@ -2388,6 +2404,79 @@ mod tests {
             (last.y - 90.0).abs() < 1e-6,
             "the last share comes after the last rise"
         );
+    }
+
+    #[test]
+    fn a_dying_dragon_explodes_every_tick_and_bursts_from_tick_180_to_200() {
+        let (ticks, dragon) = die(None);
+        assert_eq!(ticks.len(), 200);
+        for (tick, events) in ticks.iter().enumerate() {
+            let death_time = tick as i32 + 1;
+            let emitters: Vec<DVec3> = events
+                .explosions
+                .iter()
+                .filter(|(_, emitter)| *emitter)
+                .map(|(at, _)| *at)
+                .collect();
+            let plain: Vec<DVec3> = events
+                .explosions
+                .iter()
+                .filter(|(_, emitter)| !*emitter)
+                .map(|(at, _)| *at)
+                .collect();
+            assert_eq!(
+                emitters.len(),
+                usize::from((180..=200).contains(&death_time)),
+                "{death_time}"
+            );
+            assert_eq!(
+                plain.len(),
+                usize::from(death_time < DEATH_TICKS),
+                "aiStep does not run once it is removed, {death_time}"
+            );
+            let near = |at: DVec3, feet_y: f64| {
+                at.x.abs() <= 4.0 && at.z.abs() <= 4.0 && (at.y - feet_y - 2.0).abs() <= 2.0 + 1e-9
+            };
+            for at in emitters {
+                assert!(near(at, 70.0 + 0.1 * f64::from(death_time - 1)), "{at:?}");
+            }
+            for at in plain {
+                assert!(near(at, 70.0 + 0.1 * f64::from(death_time)), "{at:?}");
+            }
+        }
+        let all: Vec<&(DVec3, bool)> = ticks.iter().flat_map(|events| &events.explosions).collect();
+        assert_eq!(all.iter().filter(|(_, emitter)| !*emitter).count(), 199);
+        assert_eq!(all.iter().filter(|(_, emitter)| *emitter).count(), 21);
+        assert!(dragon.removed);
+    }
+
+    #[test]
+    fn the_dying_dragon_s_random_draws_three_floats_a_tick() {
+        let mut dragon = dragon_at(DVec3::new(0.0, 70.0, 0.0), 0.0);
+        dragon.health = 0.0;
+        let mut mirror = dragon.random.clone();
+        let height = flat;
+        let top = || 64;
+        let env = env(&height, &top, None);
+        let mut burst = |at: DVec3| {
+            let a = (mirror.next_float() - 0.5) * 8.0;
+            let b = (mirror.next_float() - 0.5) * 4.0;
+            let c = (mirror.next_float() - 0.5) * 8.0;
+            at + DVec3::new(f64::from(a), 2.0 + f64::from(b), f64::from(c))
+        };
+        while !dragon.removed {
+            let before = dragon.position;
+            let events = dragon.tick(&env);
+            let mut expected = Vec::new();
+            if (180..=200).contains(&dragon.death_time) {
+                expected.push((burst(before), true));
+            }
+            if !dragon.removed {
+                expected.push((burst(dragon.position), false));
+            }
+            assert_eq!(events.explosions, expected, "{}", dragon.death_time);
+        }
+        assert_eq!(dragon.random.next_int(1 << 30), mirror.next_int(1 << 30));
     }
 
     #[test]

@@ -988,6 +988,10 @@ impl Entities {
                 for breath in std::mem::take(&mut snapshot.dragon_breath) {
                     self.ambient.mouth_breath(&breath);
                 }
+                for (at, emitter) in std::mem::take(&mut snapshot.dragon_explosions) {
+                    let kind = if emitter { minecraft_terrain::ambient_particles::Kind::ExplosionEmitter } else { minecraft_terrain::ambient_particles::Kind::Explosion };
+                    self.ambient.add(kind, at, DVec3::ZERO);
+                }
                 self.dragon_voices();
                 self.orbs = snapshot.orbs.clone();
                 self.falling.receive(std::mem::take(&mut snapshot.falling), std::mem::take(&mut snapshot.tnt), &output.changes, self.ticks);

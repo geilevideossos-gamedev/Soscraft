@@ -98,6 +98,7 @@ pub struct ServerSim {
     fight_reports: Vec<FightReport>,
     dragon_fireballs: crate::dragon_fireball::DragonFireballs,
     dragon_breath: Vec<crate::ender_dragon::DragonBreath>,
+    dragon_explosions: Vec<(glam::DVec3, bool)>,
     end_players: Vec<crate::ender_dragon::PlayerBody>,
     frames: crate::item_frame::Frames,
     frame_sounds: Vec<minecraftoss_entities::world::MobSound>,
@@ -227,6 +228,7 @@ pub struct EntitySnapshot {
     pub breath_bursts: Vec<glam::DVec3>,
     pub frames: Vec<crate::item_frame::FrameView>,
     pub dragon_breath: Vec<crate::ender_dragon::DragonBreath>,
+    pub dragon_explosions: Vec<(glam::DVec3, bool)>,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -329,6 +331,7 @@ impl ServerSim {
             fight_reports: Vec::new(),
             dragon_fireballs: crate::dragon_fireball::DragonFireballs::default(),
             dragon_breath: Vec::new(),
+            dragon_explosions: Vec::new(),
             end_players: Vec::new(),
             frames: crate::item_frame::Frames::default(),
             frame_sounds: Vec::new(),
@@ -1579,7 +1582,7 @@ impl ServerSim {
         let griefing = self.mobs.mob_griefing();
         let peaceful = self.level.difficulty == 0;
         {
-            let Self { level, states, mob_tables, dragons, fight_dragon, alive_crystals, end_sounds, end_hits, dragons_killed, crystals: self_crystals, fight, dragon_drops, dragon_fireballs, clouds, players_pushed, dragon_breath, .. } = self;
+            let Self { level, states, mob_tables, dragons, fight_dragon, alive_crystals, end_sounds, end_hits, dragons_killed, crystals: self_crystals, fight, dragon_drops, dragon_fireballs, clouds, players_pushed, dragon_breath, dragon_explosions, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
             let height = |x: i32, z: i32| world.level.borrow().height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlockingNoLeaves, x, z);
             let sees = |from: glam::DVec3, to: glam::DVec3| minecraftoss_entities::sight::line_of_sight(&world, from, to);
@@ -1627,6 +1630,8 @@ impl ServerSim {
                 }
                 clouds.extend(events.clouds);
                 dragon_breath.extend(events.breath);
+                dragon_explosions.extend(events.wall_bursts.iter().map(|&(x, y, z)| (glam::DVec3::new(f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5), false)));
+                dragon_explosions.extend(events.explosions);
             }
             for dragon in dragons.list.iter_mut().filter(|dragon| dragon.flame_out) {
                 dragon.flame_out = false;
@@ -3001,7 +3006,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     }
                     // After the items, one experience orb.
                     out.orbs_taken.extend(sim.take_experience(pickup_feet));
-                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath) });
+                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions) });
                     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
                     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), started.elapsed().as_secs_f64() * 1000.0));
                 }
@@ -7722,6 +7727,9 @@ mod tests {
         let Some(mut server) = end_world((-5..=4).flat_map(|x| (-5..=4).map(move |z| (x, z)))) else { return };
         let first = kill_dragon(&mut server, FightLink::default());
         assert_eq!(server.take_dragons_killed(), vec![first]);
+        let explosions = std::mem::take(&mut server.dragon_explosions);
+        assert_eq!(explosions.iter().filter(|(_, emitter)| *emitter).count(), 21, "explosion emitters on death ticks 180 to 200");
+        assert!(explosions.iter().filter(|(_, emitter)| !*emitter).count() >= 199, "an explosion every tick it lies dying");
         assert_eq!(orb_experience(&server), 12000);
         let sounds = server.take_end_sounds();
         assert_eq!(sounds.iter().filter(|sound| sound.event == crate::ender_dragon::DRAGON_DEATH_SOUND).count(), 1);
@@ -7931,9 +7939,16 @@ mod tests {
         assert!(broken.len() > 50, "{}", broken.len());
         assert!(broken.iter().all(|&pos| inside(pos) && block_name(&server, pos) == "minecraft:air"));
         assert!(!server.dragons.list[0].in_wall, "cobblestone does not hold it");
+        let bursts = std::mem::take(&mut server.dragon_explosions);
+        assert!(!bursts.is_empty());
+        for (at, emitter) in bursts {
+            assert!(!emitter && at.x.rem_euclid(1.0) == 0.5 && at.y.rem_euclid(1.0) == 0.5 && at.z.rem_euclid(1.0) == 0.5, "{at:?}");
+            assert!(inside((at.x.floor() as i32, at.y.floor() as i32, at.z.floor() as i32)), "{at:?}");
+        }
         fill(&mut server, "minecraft:end_stone");
         server.take_changes();
         server.tick_end(&[away]);
+        assert!(server.dragon_explosions.is_empty(), "no burst where nothing broke");
         let near = |&(pos, _): &(BlockPos, Option<Block>)| (-12..=12).contains(&pos.0) && (100..=120).contains(&pos.1) && (-12..=12).contains(&pos.2);
         assert!(!server.take_changes().iter().any(near), "end stone is dragon immune");
         assert!(server.dragons.list[0].in_wall);
