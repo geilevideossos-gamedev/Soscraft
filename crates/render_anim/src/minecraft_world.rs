@@ -1413,8 +1413,15 @@ fn update(
                 && game_mode.may_build()
                 && let Some(egg) = minecraft_terrain::spawn_egg::egg_use(&player, &minecraft_terrain::doors::Outlined(&terrain.scene), &stack.id)
             {
-                if let minecraft_terrain::spawn_egg::EggUse::Spawn { kind, position } = egg {
-                    entities.hatch_egg(inventory, slot, kind, position, game_mode.consumes_items());
+                match egg {
+                    minecraft_terrain::spawn_egg::EggUse::Spawn { kind, position } => {
+                        entities.hatch_egg(inventory, slot, kind, position, game_mode.consumes_items());
+                    }
+                    minecraft_terrain::spawn_egg::EggUse::Spawner(pos) => {
+                        if let Some(kind) = minecraft_terrain::spawn_egg::spawned_kind(&stack.id) {
+                            entities.egg_on_spawner(inventory, slot, kind, pos, game_mode.consumes_items());
+                        }
+                    }
                 }
                 hand.swing = Some(0.0);
                 HandUse::Consumed

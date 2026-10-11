@@ -103,7 +103,7 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
 - Snowballs, eggs, ender pearls, bottles o' enchanting, splash and lingering potions and wind charges are thrown with right-click and drawn in flight; potions splash their effects on mobs and players, and a wind charge burst launches the player without the fall damage of the jump. Tridents charge while right-click is held, are thrown on release, drawn in 3D in flight and in the hands, and come back with Loyalty; a Riptide one launches the player in water or rain. Sweet and glow berries.
 - Campfire cooking: 4 slots, 30 s per item, nothing cooks while unlit. A placed campfire faces the way the player looks, is lit unless placed in water and is a signal fire over a hay bale, as vanilla places it. A shovel (`#douses_campfires`) puts a lit campfire out with a hiss (`block.fire.extinguish`) and loses 1 durability, unless the player sneaks (`CampfireBlock.useItemOn`); a water bucket waterlogs and douses it.
 - Lit campfires send up their smoke (`campfire_cosy_smoke`, or the taller `campfire_signal_smoke` over hay: big translucent puffs that drift up for 4 to 6 or 14 to 16 seconds and fade out over the last 3), and food on them smokes from its corner. Every lit campfire in the loaded chunks smokes, as vanilla ticks all their block entities.
-- Spawn eggs for every simulated mob.
+- Spawn eggs for every simulated mob. An egg used on a monster spawner sets its mob like vanilla (`SpawnEggItem.useOn`), for any mob kind and in any game mode that may build, and is spent only when the server accepts: never while `spawner_blocks_work` is off, and not for a monster in peaceful. Trial spawners refuse eggs.
 - Dropped items burn up in fire, soul fire and lava, and lava sizzles. Netherite gear and ancient debris never burn and float on lava. Lit campfires leave items alone, as in vanilla.
 
 ### World simulation (integrated server thread)
@@ -344,7 +344,7 @@ One list of what is open after round 7. Multiplayer is the next roadmap step; N6
 - Trapped chests give no redstone signal.
 - The client judges mushroom and crop light from its own light; where the server disagrees it refuses the block and drops it as an item. Falling stalactites hurt nobody.
 - Redstone covers only levers, buttons and the powered sounds of doors, trapdoors and gates.
-- Spawn eggs for unsimulated mobs (fox, rabbit, goat and others) spawn nothing, and the egg is kept. Clicking a spawner with an egg doesn't change its mob.
+- Spawn eggs for unsimulated mobs (fox, rabbit, goat and others) spawn nothing, and the egg is kept. An egg refused by a spawner because `spawner_blocks_work` is off gives no chat message (vanilla says `advMode.notEnabled.spawner`); it is only logged.
 - The fire charge uses flint and steel's block-update flags.
 - Tool transformations left out: a hoe on rooted dirt (it drops hanging roots from a loot table) and an axe on copper doors and copper chests (both halves change together); the axe's scrape and wax-off particles are not drawn, and the new block skips `updateFromNeighbourShapes`.
 - A shovel douses a campfire only where the player may build: adventure players, whom vanilla lets douse, can't.

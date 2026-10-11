@@ -421,7 +421,7 @@ IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_swor
 
 ### 2. Minecraft spawners give off flames and smoke like vanilla
 
-Commit: (see the next entry, or `git log` under this subject)
+Commit: 05d56a4b
 
 - **Changed:**
   - `minecraft_terrain/src/ambient_particles.rs`: `Kind::Flame` (vanilla `FlameParticle`, a `RisingParticle`, checked with javap): the usual `Particle` start with zero motion, its velocity times `0.01f` plus the given motion, the position (not the previous one) jittered by `(nextFloat - nextFloat) * 0.05f` on each axis, friction 0.96, no gravity, lifetime `(int)(8 / (nextFloat * 0.8 + 0.2)) + 4` (12 to 44). It moves its box with no collision, so it passes into blocks. Size `quadSize * (1 - t^2 * 0.5)`; block light `LightCoordsUtil.addSmoothBlockEmission`: the cell's block light in sixteenths plus `(int)(t * 240)`, capped at full, so it glows to 15 as it ages. Opaque, sprite `particle/flame` (added to `textures()`). `kinds_at()` lists the particles' kinds and positions.
@@ -438,4 +438,33 @@ Commit: (see the next entry, or `git log` under this subject)
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:spyglass,minecraft:cooked_beef*32,minecraft:cobblestone*64
+```
+
+### 3. Minecraft spawn eggs change a spawner's mob like vanilla
+
+Commit: (see the next entry, or `git log` under this subject)
+
+- **Changed:**
+  - `minecraft_terrain/src/server.rs`: `Command::SpawnerEgg { pos, kind }` and `ServerHandle::spawner_egg`; the answer goes into `Output::summoned` like a hatched egg's, so `EggsWaiting` spends the egg only on `Ok`. `ServerSim::spawner_egg` is `SpawnEggItem.useOn` on a spawner: a monster in peaceful fails first with no change (the same rule `/summon` and hatched eggs use, our `EntityType.canSpawn`), then `spawner_blocks_work` off fails with `advMode.notEnabled.spawner`, then anything but a `minecraft:mob_spawner` block entity fails (trial spawners are left out), else `World::set_spawner_entity` sets `SpawnData.entity.id`, keeps the compound's other keys and marks the tag changed, so the client's display (entry 1) rebuilds with the tag's `Delay`.
+  - `minecraft_survival/src/entities.rs`: `Entities::egg_on_spawner`, through `eggs_waiting` like `hatch_egg`.
+  - `render_anim/src/minecraft_world.rs`: `EggUse::Spawner(pos)` sends the egg's kind (`spawn_egg::spawned_kind`) to `egg_on_spawner` instead of being ignored; the swing is unchanged (vanilla's client swings on any spawn egg use).
+  - `docs/MINECRAFT-SURVIVAL.md`: the egg on a spawner under Items; the limitation now only says the refusal has no chat message.
+- **Tests:** `minecraft_terrain` (`server.rs`, these skip without the game data like their neighbours): `an_egg_on_a_placed_spawner_sets_its_mob_and_keeps_it` (a placed spawner has no mob; a zombie egg sets it and reports the change, a ghast egg replaces it, no spawner one block up is an error; with a player 3 blocks away the spawner makes ghasts and still holds the ghast after its round, with `Delay` reset into 100..800, as a placed spawner's `SpawnPotentials` is empty), `an_egg_does_nothing_when_spawner_blocks_do_not_work` (`Err("advMode.notEnabled.spawner")`, no mob, no change), `a_monster_egg_does_nothing_to_a_spawner_in_peaceful` (a zombie egg fails with no change, a pig egg works, and through `ServerHandle` a creeper egg answers `Err` and a cow egg `Ok` with the cow in the block entity change).
+- **Decisions:**
+  - The brief's spawn round test used a zombie; at y 205 in daylight no zombie (or blaze, whose spawn rules also need darkness through `getWalkTargetValue`) can spawn, so the round is run with a ghast, which spawns in any light.
+  - The refusal with `spawner_blocks_work` off is only logged (`Minecraft <egg> hatched nothing: advMode.notEnabled.spawner`); our egg answers have no chat path yet. Recorded as a limitation.
+  - Trial spawners refuse eggs here; vanilla lets an egg set a trial spawner's mob, which needs the trial spawner simulation.
+- **Test steps** (brief section 5, steps 1-3, 6, 7, 9):
+  1. Use a new world `IW4L_MINECRAFT_WORLD=spawner8`, `/difficulty normal`. Place a spawner on the ground: an empty cage, no flames (**screenshot 1**).
+  2. Use the zombie egg on it: a small zombie appears in the middle of the cage, leaning forward, and turns fast, with flames and smoke inside the cage (**screenshot 2**). In survival the egg is used up (4 -> 3).
+  3. Place a row of spawners and give each a different egg: skeleton, spider, blaze, creeper, slime, enderman, ghast, wither skeleton, pig and husk (**screenshots 3-5**, several per screenshot). Each mob fits the cage: the tall enderman and the wide spider are shrunk, the ghast is tiny, the pig and slime keep the plain size. Spider legs may poke out a little; vanilla does the same.
+  4. Silverfish and cave spider eggs: flames and smoke but no mob yet (the cave spider comes with the next commit).
+  5. Stand near the zombie spawner at night or under a roof: when zombies come out, the turn slows right after the spawn, then speeds up again.
+  6. Break a spawner with the pickaxe: the mob disappears with the cage. Quit and load again: every spawner still shows its mob.
+  7. `/gamerule spawner_blocks_work false`, then use an egg on an empty spawner: nothing changes and the egg is kept. `/gamerule spawner_blocks_work true`.
+  8. `/difficulty peaceful`, then use the creeper egg on an empty spawner: nothing changes and the egg is kept. The pig egg still works. The mobs already in the cages keep showing and turning. `/difficulty normal` afterwards.
+- **Kit** (21 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:spawner*16,minecraft:zombie_spawn_egg*4,minecraft:skeleton_spawn_egg*4,minecraft:spider_spawn_egg*4,minecraft:blaze_spawn_egg*4,minecraft:creeper_spawn_egg*4,minecraft:slime_spawn_egg*4,minecraft:enderman_spawn_egg*4,minecraft:ghast_spawn_egg*4,minecraft:wither_skeleton_spawn_egg*4,minecraft:pig_spawn_egg*4,minecraft:husk_spawn_egg*4,minecraft:cave_spider_spawn_egg*4,minecraft:silverfish_spawn_egg*4,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:torch*64,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:spyglass
 ```

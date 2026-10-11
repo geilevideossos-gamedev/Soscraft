@@ -629,6 +629,12 @@ impl Entities {
         }
     }
 
+    pub fn egg_on_spawner(&mut self, inventory: &Inventory, slot: usize, kind: String, pos: (i32, i32, i32), spends: bool) {
+        if self.eggs_waiting.send_from(inventory, slot, spends) {
+            self.server.spawner_egg(pos, kind);
+        }
+    }
+
     pub fn take_block_entity_changes(&mut self) -> Vec<((i32, i32, i32), Option<minecraftoss_core::nbt::Tag>)> {
         std::mem::take(&mut self.block_entity_changes)
     }

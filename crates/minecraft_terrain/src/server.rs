@@ -762,6 +762,23 @@ impl ServerSim {
         Ok(())
     }
 
+    pub fn spawner_egg(&mut self, pos: BlockPos, kind: &str) -> Result<(), String> {
+        use minecraftoss_world::natural_spawner::spawning::MobCategory;
+        if self.level.difficulty == 0 && MobCategory::of_type(kind) == Some(MobCategory::Monster) {
+            return Err(format!("{kind} may not spawn in peaceful"));
+        }
+        if !self.level.natural_spawning.as_ref().is_none_or(|natural| natural.spawner_blocks_work) {
+            return Err("advMode.notEnabled.spawner".to_owned());
+        }
+        let chunk = self.level.chunk(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2).chunk());
+        let tag = chunk.and_then(|chunk| chunk.block_entities.entities.get(&pos));
+        if tag.and_then(|tag| tag.get("id")).and_then(minecraftoss_core::nbt::Tag::as_str) != Some("minecraft:mob_spawner") {
+            return Err(format!("no monster spawner at {pos:?}"));
+        }
+        minecraftoss_generator::feature::World::set_spawner_entity(&mut self.level, pos.0, pos.1, pos.2, kind);
+        Ok(())
+    }
+
     /// Creeper blasts reach the level (`ServerLevel.explode` with
     /// `ExplosionInteraction.MOB`): blocks break when mobs may grief, with
     /// the drops decaying (`mob_explosion_drop_decay`), and items, TNT and
@@ -2212,6 +2229,7 @@ pub enum Command {
     /// random yaw.
     Summon { kind: String, position: [f64; 3], nbt: Option<minecraftoss_core::nbt::Tag>, y_rot: f32 },
     HatchEgg { kind: String, position: [f64; 3], y_rot: f32 },
+    SpawnerEgg { pos: BlockPos, kind: String },
     /// A player's hit (`attack`) or item use on a mob, with a copy of its
     /// inventory.
     MobAction { hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, infinite: bool },
@@ -2589,6 +2607,10 @@ impl ServerHandle {
         self.send(Command::HatchEgg { kind, position, y_rot });
     }
 
+    pub fn spawner_egg(&mut self, pos: BlockPos, kind: String) {
+        self.send(Command::SpawnerEgg { pos, kind });
+    }
+
     /// Hands a player's hit or use on a mob to the server; its result
     /// arrives in an output.
     pub fn mob_action(&mut self, hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, inventory: &minecraftoss_player::inventory::Inventory, selected: usize, infinite: bool) {
@@ -2741,6 +2763,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::HatchEgg { kind, position, y_rot } => {
                     out.summoned.push(sim.hatch_egg(&kind, position, y_rot).map(|()| kind));
+                }
+                Command::SpawnerEgg { pos, kind } => {
+                    out.summoned.push(sim.spawner_egg(pos, &kind).map(|()| kind));
                 }
                 Command::MobAction { hit, attack, inventory, selected, infinite } => {
                     out.mob_results.push(sim.mob_action(hit, attack, *inventory, selected, infinite));
@@ -5673,6 +5698,98 @@ mod tests {
         assert_eq!(answers[0].as_deref(), Ok("minecraft:cow"));
         assert!(answers[1].is_err());
         assert!(answers[2].is_err());
+    }
+
+    fn spawner_with_egg(difficulty: i32, rule: bool) -> Option<ServerSim> {
+        let (mut server, _) = door_world()?;
+        server.set_players(&[[4.5, 205.0, 7.5]], difficulty);
+        let mut rules = crate::game_rules::GameRules::default();
+        rules.set("spawner_blocks_work", if rule { "true" } else { "false" }).unwrap();
+        server.apply_game_rules(&rules);
+        server.player_edit_block((4, 205, 4), Some(&Block::new("minecraft:spawner")), PlayerEdit::Place);
+        server.take_block_entity_changes();
+        Some(server)
+    }
+
+    fn spawner_mob(server: &ServerSim) -> Option<String> {
+        let tag = server.level.chunk(ChunkPos::new(0, 0))?.block_entities.entities.get(&(4, 205, 4))?;
+        Some(tag.get("SpawnData")?.get("entity")?.get("id")?.as_str()?.to_owned())
+    }
+
+    #[test]
+    fn an_egg_on_a_placed_spawner_sets_its_mob_and_keeps_it() {
+        let Some(mut server) = spawner_with_egg(2, true) else { return };
+        assert_eq!(spawner_mob(&server), None);
+        server.spawner_egg((4, 205, 4), "minecraft:zombie").unwrap();
+        assert_eq!(spawner_mob(&server).as_deref(), Some("minecraft:zombie"));
+        let changes = server.take_block_entity_changes();
+        assert!(changes.iter().any(|(pos, tag)| *pos == (4, 205, 4) && tag.is_some()), "{changes:?}");
+        server.spawner_egg((4, 205, 4), "minecraft:ghast").unwrap();
+        assert_eq!(spawner_mob(&server).as_deref(), Some("minecraft:ghast"));
+        assert!(server.spawner_egg((4, 206, 4), "minecraft:ghast").is_err(), "no spawner there");
+        server.level.natural_spawning.as_mut().unwrap().spawn_mobs = false;
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: glam::DVec3::new(4.5, 205.0, 7.5),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        };
+        let mut ghasts = 0;
+        for _ in 0..80 {
+            server.set_players(&[[4.5, 205.0, 7.5]], 2);
+            server.set_simulation_area((0, 0), 1);
+            server.prepare_spawning(&[player]);
+            server.tick();
+            ghasts += server.level.spawned.iter().filter(|tag| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) == Some("minecraft:ghast")).count();
+            server.take_spawned();
+        }
+        assert!(ghasts > 0, "the spawner made ghasts");
+        assert_eq!(spawner_mob(&server).as_deref(), Some("minecraft:ghast"), "a placed spawner has no potentials to pick another mob from");
+        let delay = server.level.chunk(ChunkPos::new(0, 0)).and_then(|c| c.block_entities.entities.get(&(4, 205, 4))).and_then(|t| t.get("Delay")).and_then(minecraftoss_core::nbt::Tag::as_i64);
+        assert!(delay.is_some_and(|d| (100..800).contains(&d)), "{delay:?}");
+    }
+
+    #[test]
+    fn an_egg_does_nothing_when_spawner_blocks_do_not_work() {
+        let Some(mut server) = spawner_with_egg(2, false) else { return };
+        assert_eq!(server.spawner_egg((4, 205, 4), "minecraft:pig"), Err("advMode.notEnabled.spawner".to_owned()));
+        assert_eq!(spawner_mob(&server), None);
+        assert!(server.take_block_entity_changes().is_empty());
+    }
+
+    #[test]
+    fn a_monster_egg_does_nothing_to_a_spawner_in_peaceful() {
+        let Some(mut server) = spawner_with_egg(0, true) else { return };
+        assert!(server.spawner_egg((4, 205, 4), "minecraft:zombie").is_err());
+        assert_eq!(spawner_mob(&server), None);
+        assert!(server.take_block_entity_changes().is_empty());
+        server.spawner_egg((4, 205, 4), "minecraft:pig").unwrap();
+        assert_eq!(spawner_mob(&server).as_deref(), Some("minecraft:pig"));
+        let mut handle = ServerHandle::spawn(server);
+        handle.spawner_egg((4, 205, 4), "minecraft:creeper".to_owned());
+        handle.spawner_egg((4, 205, 4), "minecraft:cow".to_owned());
+        handle.wait_idle();
+        let outputs = handle.poll();
+        let answers: Vec<_> = outputs.iter().flat_map(|out| out.summoned.clone()).collect();
+        assert_eq!(answers.len(), 2);
+        assert!(answers[0].is_err());
+        assert_eq!(answers[1].as_deref(), Ok("minecraft:cow"));
+        let changed: Vec<_> = outputs.iter().flat_map(|out| out.block_entities.clone()).collect();
+        assert!(changed.iter().any(|(pos, tag)| *pos == (4, 205, 4) && tag.as_ref().and_then(|t| t.get("SpawnData")?.get("entity")?.get("id")?.as_str().map(str::to_owned)).as_deref() == Some("minecraft:cow")), "{changed:?}");
     }
 
     #[test]
