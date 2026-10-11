@@ -681,6 +681,12 @@ impl MinecraftWire {
         self.peers.get(&peer).map(|peer| peer.out.len())
     }
 
+    pub fn heard_from(&self, peer: u32) -> bool {
+        self.peers
+            .get(&peer)
+            .is_some_and(|peer| peer.acked > 0 || peer.received > 0)
+    }
+
     pub fn take_inbox(&mut self) -> Vec<(u32, Vec<u8>)> {
         std::mem::take(&mut self.inbox)
     }
@@ -1398,6 +1404,31 @@ mod tests {
         friend.connected = true;
         friend.pump(Instant::now(), &mut link);
         assert_eq!(link.reliable.len(), 1);
+    }
+
+    #[test]
+    fn a_host_that_holds_the_hello_is_still_heard() {
+        let start = Instant::now();
+        let mut friend = friend_wire();
+        let mut host = host_with(&[], RELIABLE_BUDGET, start);
+        assert!(!friend.heard_from(HOST));
+        assert!(friend.send(HOST, b"hello"));
+        let mut to_host = TestLink::default();
+        friend.pump(start, &mut to_host);
+        assert!(!friend.heard_from(HOST), "a frame sent is not an answer");
+        for (_, frame) in to_host.reliable.drain(..) {
+            host.receive(1, MinecraftLane::Reliable, frame, start);
+        }
+        assert_eq!(host.take_inbox(), vec![(1, b"hello".to_vec())]);
+        let mut to_friend = TestLink::default();
+        host.pump(start, &mut to_friend);
+        assert_eq!(to_friend.reliable.len(), 1, "only an acknowledgement");
+        for (_, frame) in to_friend.reliable.drain(..) {
+            friend.receive(HOST, MinecraftLane::Reliable, frame, start);
+        }
+        assert!(friend.take_inbox().is_empty());
+        assert!(friend.heard_from(HOST));
+        assert_eq!(friend.unacked(HOST), Some(0));
     }
 
     #[test]

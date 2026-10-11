@@ -102,6 +102,7 @@ pub(crate) struct Friend {
     remote: Option<RemoteWorld>,
     worker: Option<ReadWorker>,
     ready_at: Option<u64>,
+    host_heard: bool,
     hello_at: Option<Instant>,
     told: Told,
     light: Option<SkyLight>,
@@ -119,11 +120,13 @@ pub(crate) struct Friend {
     gui: Option<crate::minecraft_gui::GuiAssets>,
 }
 
+fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
+    !heard && ready_at.is_some_and(|ready| now_ms.saturating_sub(ready) >= CLIENT_WAIT_TIMEOUT_MS)
+}
+
 impl Friend {
     fn holding(&self, now_ms: u64) -> bool {
-        let silent = self
-            .ready_at
-            .is_some_and(|ready| now_ms.saturating_sub(ready) >= CLIENT_WAIT_TIMEOUT_MS);
+        let silent = host_silent(self.ready_at, now_ms, self.host_heard);
         match self.remote.as_ref() {
             Some(remote) if remote.level.is_some() => self.spawn_gate.holding(now_ms),
             Some(remote) => remote.failed.is_none() && !silent,
@@ -170,6 +173,7 @@ fn exchange(
         worker,
         hello_at,
         ready_at,
+        host_heard,
         told,
         ..
     } = friend
@@ -238,8 +242,8 @@ fn exchange(
         diag::warn!(World, "Minecraft stream from the host failed: {reason}");
         lines.push(line(&reason));
     }
-    let waited =
-        ready_at.is_some_and(|ready| now_ms.saturating_sub(ready) >= CLIENT_WAIT_TIMEOUT_MS);
+    *host_heard |= wire.heard_from(HOST);
+    let waited = host_silent(*ready_at, now_ms, *host_heard);
     if asking && waited && !told.silent {
         told.silent = true;
         diag::warn!(World, "Minecraft host never answered the hello");
@@ -570,4 +574,22 @@ fn present(
         light_volume_at,
         light_volume_age,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_host_that_never_answers_lets_the_friend_in_without_a_world() {
+        let ready = Some(1_000);
+        let late = 1_000 + CLIENT_WAIT_TIMEOUT_MS;
+        assert!(!host_silent(None, late, false), "nothing to wait for yet");
+        assert!(!host_silent(ready, late - 1, false));
+        assert!(host_silent(ready, late, false));
+        assert!(
+            !host_silent(ready, late * 10, true),
+            "a host that acknowledges the hello is loading its world"
+        );
+    }
 }

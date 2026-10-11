@@ -431,3 +431,19 @@ Commit: see `git log` ("The owner's two-window test for multiplayer M1")
 - **Tests:** none (a document).
 - **Test steps:** `docs/round8/e-m1-tests.md`.
 - **Kit:** none needed.
+
+### Review fix: a host that is still loading its world is not taken for a different build
+
+Commit: see `git log` ("A friend waits for a host that is still loading its world"). The previous commit is `ab7db8ea`.
+
+- **Defect (found in the adversarial review of M1):** the friend's game let itself into the MW2 match with the line "The host's Minecraft world does not answer: the host may run a different build" whenever no `Login` came 30 s after its look loaded. The host holds a `Hello` until its own world has loaded, so a host still generating a fresh world (`mp-local.ps1 -Fresh`, two windows sharing the CPU) was taken for an incompatible build. The friend then entered the match with no Minecraft collision and fell through the world, and when `Login` came later its spawn gate held again in the middle of the match.
+- **Changed:**
+  - `crates/net/src/minecraft_wire.rs`: `MinecraftWire::heard_from(peer)`, true once that peer has acknowledged one of our frames or sent one. A host on this build acknowledges each resent `Hello` while it holds it; a host on an older build drops the unknown packets and never does.
+  - `crates/render_anim/src/minecraft_remote.rs`: `host_silent(ready_at, now, heard)`. The 30 s fallback and its chat line apply only while the host has never been heard. A host that answers on the wire keeps the loading screen up until its `Login` and chunks arrive, like a vanilla client on "Loading terrain" while the connection is alive.
+- **Tests:** `net`: `minecraft_wire::a_host_that_holds_the_hello_is_still_heard` (a friend's `Hello` reaches the host, the host answers with an acknowledgement only, and the friend counts it as heard). `render_anim`: `minecraft_remote::only_a_host_that_never_answers_lets_the_friend_in_without_a_world`. `test -p net --lib minecraft_wire` 14 passed, `test -p render_anim --lib` 74 passed, `check -p launcher` green.
+- **Decision:** no upper limit while the host answers. The MW2 connection's own timeouts end a dead host; a live host whose world failed to load ends the match on its side.
+- **Test steps** (with the M1 play build, before the owner test of `docs/round8/e-m1-tests.md`):
+  1. `& scripts\mp-local.ps1 -World mp-slow -Fresh`.
+  2. Friend window: it stays on the loading screen while the host window still shows its world loading, however long that takes, and never shows "The host's Minecraft world does not answer".
+  3. Friend window: once the host's world is in, class select shows and the friend spawns on the host's terrain without falling.
+- **Kit:** none needed.
