@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use glam::DVec3;
+use glam::{DVec3, Mat4, Vec3};
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_core::pos::Direction;
 use minecraftoss_player::inventory::ItemStack;
@@ -17,6 +17,12 @@ pub const HANG_OFFSET: f64 = 0.46875;
 pub const CHECK_INTERVAL: i32 = 100;
 pub const TRACKING_RANGE: f64 = 160.0;
 pub const DROP_STEP: f32 = 0.15;
+pub const GLOW_FRAME_BRIGHTNESS: f32 = 5.0;
+pub const FULL_BRIGHT: f32 = 15.0;
+const ITEM_DEPTH: f32 = 0.4375;
+const INVISIBLE_ITEM_DEPTH: f32 = 0.5;
+const ITEM_SCALE: f32 = 0.5;
+const MODEL_Z_OFFSET: f32 = 1.0 / 512.0;
 const BLOCK_POS_RANGE: i64 = 16;
 const BELOW_WORLD: f64 = 64.0;
 const BORDER: f64 = 29_999_984.0;
@@ -450,6 +456,56 @@ impl Frames {
     }
 }
 
+pub fn frame_pose(view: &FrameView) -> Mat4 {
+    let centre = Vec3::new(
+        view.pos.0 as f32 + 0.5,
+        view.pos.1 as f32 + 0.5,
+        view.pos.2 as f32 + 0.5,
+    );
+    let (x_rot, y_rot) = match data_2d(view.facing) {
+        Some(data) => (0.0, 180.0 - (data * 90) as f32),
+        None => (-90.0 * view.facing.offset().1 as f32, 180.0),
+    };
+    Mat4::from_translation(centre)
+        * Mat4::from_rotation_x(x_rot.to_radians())
+        * Mat4::from_rotation_y(y_rot.to_radians())
+}
+
+pub fn model_pose(view: &FrameView) -> Mat4 {
+    frame_pose(view)
+        * Mat4::from_translation(Vec3::new(0.0, 0.0, -MODEL_Z_OFFSET))
+        * Mat4::from_translation(Vec3::splat(-0.5))
+}
+
+pub fn item_pose(view: &FrameView) -> Mat4 {
+    let depth = if view.invisible {
+        INVISIBLE_ITEM_DEPTH
+    } else {
+        ITEM_DEPTH
+    };
+    let turn = view.rotation as f32 * 360.0 / NUM_ROTATIONS as f32;
+    frame_pose(view)
+        * Mat4::from_translation(Vec3::new(0.0, 0.0, depth))
+        * Mat4::from_rotation_z(turn.to_radians())
+        * Mat4::from_scale(Vec3::splat(ITEM_SCALE))
+}
+
+pub fn light(view: &FrameView, sky: f32, block: f32) -> ((f32, f32), (f32, f32)) {
+    if view.glow {
+        (
+            (sky, block.max(GLOW_FRAME_BRIGHTNESS)),
+            (FULL_BRIGHT, FULL_BRIGHT),
+        )
+    } else {
+        ((sky, block), (sky, block))
+    }
+}
+
+pub fn tracked(view: &FrameView, camera: DVec3) -> bool {
+    let (dx, dz) = (view.position.x - camera.x, view.position.z - camera.z);
+    dx * dx + dz * dz <= TRACKING_RANGE * TRACKING_RANGE
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -815,5 +871,171 @@ mod tests {
             ids(frames.drops(&never, true, true, false)),
             [GLOW_ITEM_FRAME]
         );
+    }
+
+    fn view_of(facing: Direction, rotation: i32, invisible: bool, glow: bool) -> FrameView {
+        let mut frame = ItemFrame::from_tag(&frame_tag(glow, (4, 70, -9), facing), 1).unwrap();
+        frame.rotation = rotation;
+        frame.invisible = invisible;
+        frame.item = Some(ItemStack::new("minecraft:elytra", 1));
+        frame.view()
+    }
+
+    #[test]
+    fn frame_pose_puts_the_back_against_the_wall_for_all_six_facings() {
+        for facing in Direction::ALL {
+            let view = view_of(facing, 0, false, false);
+            let pose = model_pose(&view);
+            let back = pose.transform_point3(Vec3::new(0.5, 0.5, 15.75 / 16.0));
+            let along = step(facing).as_vec3();
+            let support_face = Vec3::new(4.5, 70.5, -8.5) - along * 0.5;
+            let expected = support_face + along * (DEPTH as f32 / 4.0 + MODEL_Z_OFFSET);
+            assert!(
+                back.abs_diff_eq(expected, 1e-5),
+                "{facing:?}: {back} vs {expected}"
+            );
+            let outward = pose.transform_vector3(-Vec3::Z).normalize();
+            assert!(
+                outward.abs_diff_eq(along, 1e-5),
+                "{facing:?} faces out: {outward}"
+            );
+            let item = item_pose(&view).transform_point3(Vec3::ZERO);
+            let expected = Vec3::new(4.5, 70.5, -8.5) - along * ITEM_DEPTH;
+            assert!(
+                item.abs_diff_eq(expected, 1e-5),
+                "{facing:?}: the item lies on the back"
+            );
+        }
+    }
+
+    #[test]
+    fn the_item_turns_45_degrees_per_rotation_about_the_facing() {
+        for facing in Direction::ALL {
+            let along = step(facing).as_vec3();
+            let start = item_pose(&view_of(facing, 0, false, false));
+            let first = start.transform_vector3(Vec3::X).normalize();
+            for rotation in 1..NUM_ROTATIONS {
+                let turned = item_pose(&view_of(facing, rotation, false, false));
+                let now = turned.transform_vector3(Vec3::X).normalize();
+                let angle = first.angle_between(now).to_degrees();
+                let expected = 45.0 * rotation.min(NUM_ROTATIONS - rotation) as f32;
+                assert!(
+                    (angle - expected).abs() < 1e-3,
+                    "{facing:?} {rotation}: {angle}"
+                );
+                assert!(
+                    now.dot(along).abs() < 1e-5,
+                    "it turns in the plane of the frame"
+                );
+                let scale = turned.transform_vector3(Vec3::X).length();
+                assert!((scale - 0.5).abs() < 1e-5);
+            }
+        }
+    }
+
+    #[test]
+    fn an_invisible_frame_moves_the_item_to_the_wall() {
+        let view = view_of(Direction::North, 0, true, false);
+        let item = item_pose(&view).transform_point3(Vec3::ZERO);
+        assert!(item.abs_diff_eq(Vec3::new(4.5, 70.5, -8.0), 1e-5), "{item}");
+    }
+
+    #[test]
+    fn a_glow_frame_raises_its_block_light_to_five_and_lights_its_item_fully() {
+        let glow = view_of(Direction::North, 0, false, true);
+        assert_eq!(light(&glow, 3.0, 2.0), ((3.0, 5.0), (15.0, 15.0)));
+        assert_eq!(light(&glow, 3.0, 9.0), ((3.0, 9.0), (15.0, 15.0)));
+        let plain = view_of(Direction::North, 0, false, false);
+        assert_eq!(light(&plain, 3.0, 2.0), ((3.0, 2.0), (3.0, 2.0)));
+    }
+
+    #[test]
+    fn frames_are_drawn_within_ten_chunks() {
+        let view = view_of(Direction::North, 0, false, false);
+        assert!(tracked(&view, view.position + DVec3::new(159.0, 80.0, 0.0)));
+        assert!(!tracked(
+            &view,
+            view.position + DVec3::new(120.0, 0.0, 120.0)
+        ));
+    }
+
+    #[test]
+    fn frames_mesh_the_pack_model_and_their_item() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = crate::pack::PackStack::open(vec![pack]).unwrap();
+        let textures = [
+            "block/item_frame",
+            "block/glow_item_frame",
+            "block/birch_planks",
+            "item/elytra",
+        ]
+        .map(|path| crate::pack::ResourceId::parse(&format!("minecraft:{path}")).unwrap());
+        let atlas = crate::mesh::make_atlas(&packs, textures.to_vec()).unwrap();
+        let light = crate::lighting::SkyLight::build(&crate::scene::HandcraftedScene::default());
+        let mut visuals = crate::mesh::ItemVisuals::default();
+        let mut empty = view_of(Direction::North, 0, false, false);
+        empty.item = None;
+        let mut frame = crate::mesh::ChunkMesh::default();
+        visuals
+            .append_frames(&mut frame, &[empty.clone()], &packs, &atlas, &light)
+            .unwrap();
+        assert!(frame.faces > 0, "the frame model");
+        let uv_in = |mesh: &crate::mesh::ChunkMesh, texture: &crate::pack::ResourceId| {
+            let [u0, v0, u1, v1] = atlas.region(texture);
+            mesh.vertices
+                .iter()
+                .any(|v| (u0..=u1).contains(&v.uv[0]) && (v0..=v1).contains(&v.uv[1]))
+        };
+        assert!(uv_in(&frame, &textures[0]) && uv_in(&frame, &textures[2]));
+        assert!(!uv_in(&frame, &textures[1]));
+        let mut full = crate::mesh::ChunkMesh::default();
+        visuals
+            .append_frames(
+                &mut full,
+                &[view_of(Direction::North, 0, false, false)],
+                &packs,
+                &atlas,
+                &light,
+            )
+            .unwrap();
+        assert!(full.faces > frame.faces, "the elytra adds its own faces");
+        assert!(uv_in(&full, &textures[3]));
+        let mut glowing = crate::mesh::ChunkMesh::default();
+        visuals
+            .append_frames(
+                &mut glowing,
+                &[view_of(Direction::Up, 0, false, true)],
+                &packs,
+                &atlas,
+                &light,
+            )
+            .unwrap();
+        assert!(uv_in(&glowing, &textures[1]));
+        assert!(
+            glowing.vertices.iter().any(|v| v.block_light == 15.0),
+            "the item of a glow frame is full bright"
+        );
+        let mut hidden = crate::mesh::ChunkMesh::default();
+        let mut invisible = view_of(Direction::North, 0, true, false);
+        visuals
+            .append_frames(&mut hidden, &[invisible.clone()], &packs, &atlas, &light)
+            .unwrap();
+        assert_eq!(
+            hidden.faces,
+            full.faces - frame.faces,
+            "an invisible frame shows only its item"
+        );
+        invisible.glint = true;
+        let mut shiny = crate::mesh::ChunkMesh::default();
+        visuals
+            .append_frames(&mut shiny, &[invisible], &packs, &atlas, &light)
+            .unwrap();
+        assert_eq!(shiny.glint, vec![0..shiny.vertices.len() as u32]);
     }
 }

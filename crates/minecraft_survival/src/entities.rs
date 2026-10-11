@@ -98,6 +98,7 @@ pub struct Entities {
     crystals: Vec<minecraft_terrain::end_crystal::CrystalView>,
     dragons: Vec<minecraft_terrain::ender_dragon::DragonView>,
     dragon_fireballs: Vec<minecraft_terrain::dragon_fireball::FireballView>,
+    frames: Vec<minecraft_terrain::item_frame::FrameView>,
     growls: HashMap<u64, i32>,
     dragons_killed: Vec<[i32; 4]>,
     fight_reports: Vec<minecraft_terrain::server::FightReport>,
@@ -240,6 +241,7 @@ impl Entities {
             clouds: Vec::new(),
             tridents: Vec::new(),
             crystals: Vec::new(),
+            frames: Vec::new(),
             dragons: Vec::new(),
             dragon_fireballs: Vec::new(),
             growls: HashMap::new(),
@@ -931,6 +933,7 @@ impl Entities {
                 self.crystals = std::mem::take(&mut snapshot.crystals);
                 self.dragons = std::mem::take(&mut snapshot.dragons);
                 self.dragon_fireballs = std::mem::take(&mut snapshot.dragon_fireballs);
+                self.frames = std::mem::take(&mut snapshot.frames);
                 for at in std::mem::take(&mut snapshot.breath_bursts) {
                     self.spell.burst(at, minecraft_terrain::effect_cloud::BREATH_COLOR, false);
                 }
@@ -1291,6 +1294,8 @@ impl Entities {
         self.lids.settle(scene, cell_settled);
         let lids = self.lids.posed(scene, partial);
         let _ = self.items.append_open_lids(&mut out.items, &lids, scene, packs, atlas, light);
+        let frames: Vec<_> = self.frames.iter().filter(|frame| minecraft_terrain::item_frame::tracked(frame, camera)).cloned().collect();
+        let _ = self.items.append_frames(&mut out.items, &frames, packs, atlas, light);
         let _ = self.items.append_primed_tnt(&mut out.items, &self.falling.primed_tnt(partial), packs, atlas, light);
         minecraft_terrain::thrown::append_views(&mut out.items, &self.thrown, partial, camera, atlas, forward, light);
         minecraft_terrain::eye_of_ender::append_eyes(&mut out.items, self.eyes.views(), partial, camera, atlas, forward);

@@ -1168,7 +1168,7 @@ impl ItemVisuals {
                 }
             }
             let hand = matches!(item.display, HeldDisplay::RightHand | HeldDisplay::LeftHand);
-            self.append_model(mesh, &item.id, item.light, item.pose * display, 1.0, Some(&tints), hand, packs, atlas, sky_light)?;
+            self.append_model(mesh, &item.id, item.light, item.pose * display, 1.0, Some(&tints), hand, packs, atlas, sky_light, None)?;
         }
         Ok(())
     }
@@ -1187,7 +1187,7 @@ impl ItemVisuals {
                 }
                 _ => Vec::new(),
             };
-            self.append_model(mesh, id, *light, *pose, 1.0, Some(&tints), false, packs, atlas, sky_light)?;
+            self.append_model(mesh, id, *light, *pose, 1.0, Some(&tints), false, packs, atlas, sky_light, None)?;
         }
         Ok(())
     }
@@ -1197,7 +1197,34 @@ impl ItemVisuals {
             let Some(tints) = self.model(id, packs)?.map(|visual| visual.tints.clone()) else {
                 continue;
             };
-            self.append_model(mesh, id, *light, *pose, 1.0, Some(&tints), true, packs, atlas, sky_light)?;
+            self.append_model(mesh, id, *light, *pose, 1.0, Some(&tints), true, packs, atlas, sky_light, None)?;
+        }
+        Ok(())
+    }
+
+    pub fn append_frames(&mut self, mesh: &mut ChunkMesh, frames: &[crate::item_frame::FrameView], packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
+        for view in frames {
+            let (frame_light, item_light) = crate::item_frame::light(view, sky_light.get(view.pos) as f32, sky_light.get_block(view.pos) as f32);
+            if !view.invisible {
+                let key = format!("{}[map=false]", crate::item_frame::frame_item_id(view.glow));
+                if !self.models.contains_key(&key) {
+                    let block = Block { id: ResourceId::parse(crate::item_frame::frame_item_id(view.glow))?, properties: BTreeMap::from([("map".to_owned(), "false".to_owned())]) };
+                    let model = resolve_block_variants(packs, &block).ok().and_then(|variants| variants.into_iter().next()).map_or_else(|| ResolvedModel { elements: Vec::new() }, |(model, _)| model);
+                    self.models.insert(key.clone(), ItemVisual { model, hand: None, ground: Mat4::IDENTITY, right_hand: Mat4::IDENTITY, left_hand: Mat4::IDENTITY, fixed: Mat4::IDENTITY, min_y: 0.0, tints: Vec::new(), flat: false });
+                }
+                self.append_model(mesh, &key, Vec3::ZERO, crate::item_frame::model_pose(view), 1.0, None, false, packs, atlas, sky_light, Some(frame_light))?;
+            }
+            let Some(id) = view.item.as_deref() else {
+                continue;
+            };
+            let Some((fixed, tints)) = self.model(id, packs)?.map(|visual| (visual.fixed, visual.tints.clone())) else {
+                continue;
+            };
+            let start = mesh.vertices.len() as u32;
+            self.append_model(mesh, id, Vec3::ZERO, crate::item_frame::item_pose(view) * fixed, 1.0, Some(&tints), false, packs, atlas, sky_light, Some(item_light))?;
+            if view.glint {
+                mesh.glint.push(start..mesh.vertices.len() as u32);
+            }
         }
         Ok(())
     }
@@ -1205,21 +1232,20 @@ impl ItemVisuals {
     /// One item model placed with a pose, lit at `pos`, untinted.
     #[allow(clippy::too_many_arguments)]
     fn append_block_model(&mut self, mesh: &mut ChunkMesh, id: &str, pos: Vec3, pose: Mat4, brightness: f32, packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
-        self.append_model(mesh, id, pos, pose, brightness, None, false, packs, atlas, sky_light)
+        self.append_model(mesh, id, pos, pose, brightness, None, false, packs, atlas, sky_light, None)
     }
 
     /// One item model placed with a pose, lit at `pos`, its faces with a
     /// tint index coloured from `tints` when given.
     #[allow(clippy::too_many_arguments)]
-    fn append_model(&mut self, mesh: &mut ChunkMesh, id: &str, pos: Vec3, pose: Mat4, brightness: f32, tints: Option<&[[f32; 3]]>, hand: bool, packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
+    fn append_model(&mut self, mesh: &mut ChunkMesh, id: &str, pos: Vec3, pose: Mat4, brightness: f32, tints: Option<&[[f32; 3]]>, hand: bool, packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight, light: Option<(f32, f32)>) -> Result<()> {
         let Some(visual) = self.model(id, packs)? else {
             return Ok(());
         };
         {
             let white = brightness > 1.0;
             let light_pos = (pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32);
-            let sky = sky_light.get(light_pos) as f32;
-            let block = sky_light.get_block(light_pos) as f32;
+            let (sky, block) = light.unwrap_or((sky_light.get(light_pos) as f32, sky_light.get_block(light_pos) as f32));
             let model = if hand { visual.hand.as_ref().unwrap_or(&visual.model) } else { &visual.model };
             for element in &model.elements {
                 for face in &element.faces {

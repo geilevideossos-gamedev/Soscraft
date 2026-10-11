@@ -474,3 +474,23 @@ Previous commit: 612cbb19
   3. Type `/gamerule entity_drops false` and repeat steps 1 and 2: the break sound, nothing drops. `/gamerule entity_drops true`.
   4. Fly to an End city ship (see commit 15): quit and start again near it. The elytra frame stays (it no longer goes dormant), and the ship's chests are still there.
 - **Kit:** none needed (creative and commands).
+
+### 18. Minecraft item frames are drawn with their item
+
+Previous commit: fb61cbc8
+
+- **Changed:**
+  - `minecraft_terrain` `item_frame.rs`: `frame_pose` (`ItemFrameRenderer.submit`: the render offset undone, back to the cell's centre, X turned by 0 for a wall frame or `-90 × step` for a floor or ceiling frame, Y turned by `180 - toYRot` or 180), `model_pose` (then `-0.5` for the block model), `item_pose` (then 0.4375 out, or 0.5 for an invisible frame, turned about Z by `rotation × 45°`, half size), `light` (the frame's own cell; a glow frame's block light at least 5, `GLOW_FRAME_BRIGHTNESS`, and its item at full bright, `0xF000F0`) and `tracked` (drawn within 10 chunks, the frame's client tracking range).
+  - `mesh.rs`: `ItemVisuals::append_frames` meshes the pack's `item_frame` or `glow_item_frame` blockstate model (`map=false`: the `template_item_frame` back and birch rim) under `model_pose` with entity shading, unless the frame is invisible, then the item through its `fixed` display transform under `item_pose`; an enchanted item gets the glint. `append_model` takes an optional light, so frames are lit at their own cell and a glow frame's item at full bright (every other caller passes none and is unchanged).
+  - `minecraft_survival` `entities.rs`: keeps the snapshot's frames and draws those within range with the other entity items, after the open lids.
+- **Tests:** `item_frame`: `frame_pose_puts_the_back_against_the_wall_for_all_six_facings` (the back's centre 1/64 off the support's face plus the 1/512 offset, the front facing out, the item 0.4375 out), `the_item_turns_45_degrees_per_rotation_about_the_facing`, `an_invisible_frame_moves_the_item_to_the_wall`, `a_glow_frame_raises_its_block_light_to_five_and_lights_its_item_fully`, `frames_are_drawn_within_ten_chunks`, `frames_mesh_the_pack_model_and_their_item` (with the 26.3 pack: the frame uses `block/item_frame` and birch planks, a glow frame `block/glow_item_frame`, the elytra adds its own faces, an invisible frame draws only its item, a glinting item is one glint range).
+- **Decisions:**
+  - The frame's block model is drawn with the entity shading the other entity items use. Vanilla draws it with a depth bias (`submitWithZOffset`) because its back and rim end exactly on the wall's face; here the model is moved 1/512 of a block out from the wall instead, which keeps the wall from showing through.
+  - Maps in frames (the map model and `item_frame_map`) are not ported (the fork has no maps). The name tag of a framed item with a custom name is not drawn.
+- **Test steps:** (a new world, creative; frames cannot be hung by hand until the next commit, so they are summoned)
+  1. Stand on a flat floor facing north and type `/setblock ~ ~1 ~-2 minecraft:oak_planks`, then `/summon minecraft:item_frame ~ ~1 ~-1 {Facing:3b,Item:{id:"minecraft:elytra",count:1}}`. The frame lies flat on the south face of the planks with a birch rim and a leather back, and the elytra sits in it (**1**).
+  2. `/summon minecraft:glow_item_frame ~1 ~1 ~-1 {Facing:3b,Item:{id:"minecraft:carrot",count:1},ItemRotation:2b}` beside a second planks block (`/setblock ~1 ~1 ~-2 minecraft:oak_planks`): a glow frame (cyan back) with the carrot turned 90 degrees.
+  3. `/time set midnight` and cover the spot with a roof: the glow frame's carrot stays bright, the plain frame and its elytra go dark (**2**).
+  4. `/summon minecraft:item_frame ~ ~ ~ {Facing:1b,Item:{id:"minecraft:diamond_sword",count:1,components:{"minecraft:enchantments":{"minecraft:sharpness":5}}}}`: a frame lies on the floor under you with a glinting sword (**3**).
+  5. Fly to an End city ship: the elytra hangs in its frame on the wall between the two chests in the lower deck (**4**).
+- **Kit:** none needed (creative and commands).
