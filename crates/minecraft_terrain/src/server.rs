@@ -2403,6 +2403,7 @@ pub struct Output {
     pub jobs: Vec<Box<dyn std::any::Any + Send>>,
     pub dragons_killed: Vec<[i32; 4]>,
     pub fight_reports: Vec<FightReport>,
+    pub tick_nanos: Vec<u64>,
 }
 
 /// The integrated server on its own thread, as vanilla runs it: the client
@@ -2418,6 +2419,8 @@ pub struct ServerHandle {
     /// Outputs [`Self::wait_idle`] received ahead of the next poll.
     waited: Vec<Output>,
     thread: Option<std::thread::JoinHandle<()>>,
+    ticks_sent: u64,
+    ticks_answered: u64,
 }
 
 impl ServerHandle {
@@ -2435,7 +2438,7 @@ impl ServerHandle {
             .name("Server thread".into())
             .spawn(move || server_loop(sim, receiver, sender))
             .expect("server thread starts");
-        Self { commands: Some(commands), outputs, states, uses: Arc::new(uses), attacks: Arc::new(attacks), sent: 0, waited: Vec::new(), thread: Some(thread) }
+        Self { commands: Some(commands), outputs, states, uses: Arc::new(uses), attacks: Arc::new(attacks), sent: 0, waited: Vec::new(), thread: Some(thread), ticks_sent: 0, ticks_answered: 0 }
     }
 
     fn send(&mut self, command: Command) {
@@ -2517,7 +2520,12 @@ impl ServerHandle {
     }
 
     pub fn tick(&mut self, input: TickInput) {
+        self.ticks_sent += 1;
         self.send(Command::Tick(Box::new(input)));
+    }
+
+    pub fn ticks_in_flight(&self) -> u64 {
+        self.ticks_sent - self.ticks_answered
     }
 
     pub fn set_recipe_book(&mut self, recipes: Arc<minecraftoss_player::crafting::RecipeBook>) {
@@ -2637,6 +2645,7 @@ impl ServerHandle {
     pub fn poll(&mut self) -> Vec<Output> {
         let mut outputs = std::mem::take(&mut self.waited);
         outputs.extend(self.outputs.try_iter());
+        self.ticks_answered += outputs.iter().map(|out| out.tick_nanos.len() as u64).sum::<u64>();
         outputs
     }
 
@@ -2676,7 +2685,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
         let mut out = Output::default();
         // Everything already queued is handled before answering.
         let mut next = Some(first);
-        while let Some(command) = next.take().or_else(|| commands.try_recv().ok()) {
+        while let Some(command) = next.take().or_else(|| if out.tick_nanos.is_empty() { commands.try_recv().ok() } else { None }) {
             handled += 1;
             match command {
                 Command::LoadChunk(chunk) => sim.load_chunk(&chunk),
@@ -2837,6 +2846,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts() });
                     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
                     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), started.elapsed().as_secs_f64() * 1000.0));
+                    out.tick_nanos.push(started.elapsed().as_nanos() as u64);
                 }
             }
         }
@@ -7728,5 +7738,68 @@ mod tests {
         assert_eq!(server.dragons.list[0].phase, Phase::Takeoff, "past 50 damage it takes off");
         server.tick_end(&[player]);
         assert!(server.clouds.iter().all(|cloud| cloud.breath != Some(flame)), "and its flame goes out");
+    }
+
+    fn idle_handle() -> Option<ServerHandle> {
+        let paths = DataPaths::discover().ok()?;
+        let registries = Arc::new(Registries::load(&paths).ok()?);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries, 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut sim = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for x in -1..=1 {
+            for z in -1..=1 {
+                sim.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        Some(ServerHandle::spawn(sim))
+    }
+
+    fn idle_input() -> TickInput {
+        TickInput {
+            clocks: ClockTicks::default(),
+            players: vec![[8.5, 120.0, 8.5]],
+            difficulty: 2,
+            simulation_center: (0, 0),
+            simulation_distance: 2,
+            pickup: None,
+            mob_players: Vec::new(),
+            mob_views: Vec::new(),
+            mob_vitals: Vec::new(),
+            bright_outside: true,
+            tracking: ([8.5, 120.0, 8.5], 64.0),
+            player_hurts: Vec::new(),
+            spawn_mobs: false,
+        }
+    }
+
+    #[test]
+    fn each_tick_gets_its_own_output() {
+        let Some(mut handle) = idle_handle() else { return };
+        for _ in 0..3 {
+            handle.tick(idle_input());
+        }
+        assert_eq!(handle.ticks_in_flight(), 3);
+        handle.wait_idle();
+        let outputs = handle.poll();
+        assert_eq!(outputs.len(), 3);
+        assert!(outputs.iter().all(|out| out.tick_nanos.len() == 1), "{:?}", outputs.iter().map(|out| out.tick_nanos.len()).collect::<Vec<_>>());
+        assert_eq!(handle.ticks_in_flight(), 0);
+    }
+
+    #[test]
+    fn commands_after_a_tick_do_not_hold_its_output() {
+        let Some(mut handle) = idle_handle() else { return };
+        handle.tick(idle_input());
+        for i in 0..200 {
+            handle.summon_orb([8.5 + f64::from(i % 10), 120.0, 8.5], 1);
+        }
+        handle.wait_idle();
+        let outputs = handle.poll();
+        assert_eq!(outputs[0].tick_nanos.len(), 1);
+        assert_eq!(outputs[0].handled, 1);
+        assert!(outputs[1..].iter().all(|out| out.tick_nanos.is_empty()));
+        assert_eq!(outputs.last().map(|out| out.handled), Some(201));
+        assert_eq!(handle.ticks_in_flight(), 0);
     }
 }
