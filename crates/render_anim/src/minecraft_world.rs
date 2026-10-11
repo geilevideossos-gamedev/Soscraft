@@ -1061,6 +1061,7 @@ fn update(
             hand.swing_offhand = false;
             let held = inventory.slots[*selected].clone();
             let (damage, speed) = entities.recipes.attack_attributes(held.as_ref());
+            let speed = (speed * survival.status.attack_speed_multiplier()).clamp(0.0, 1024.0);
             let damage = (damage + survival.status.attack_damage_modifier()).max(0.0);
             let strength = minecraft_survival::survival::attack_strength(hand.attack_ticks, speed);
             let sprinting = ps.pm_flags & playerstate_iw4::pm_flags::SPRINTING != 0;

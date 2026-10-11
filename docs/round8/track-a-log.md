@@ -218,7 +218,7 @@ Commit: 7375ca79
 
 ### 3. Minecraft eyes of ender are thrown once per click, and in adventure mode, like vanilla
 
-Commit: (see the next entry, or `git log` under this subject)
+Commit: eed77a31
 
 - **Changed:**
   - `minecraft_terrain/src/ender_eye.rs`: `eye_use` is split like vanilla's `useOn` and `use`. `frame_use` fills an empty frame and stays in the build chain. `throw_use` passes (`None`) when aiming at any end portal frame, filled or not, and otherwise gives `Change::ThrowEye`.
@@ -248,4 +248,29 @@ Commit: (see the next entry, or `git log` under this subject)
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:ender_eye*48,minecraft:end_portal_frame*2,minecraft:cobblestone*64
+```
+
+## Item a3: vanilla mining speed
+
+### 1. Minecraft haste, mining fatigue and conduit power are real effects
+
+Commit: (see the next entry, or `git log` under this subject)
+
+- **Changed:**
+  - `third_party/minecraftoss/player/src/survival.rs` (a MinecraftOSS patch; the file was already on the patched list): `EffectKind` gains `Haste`, `MiningFatigue` and `ConduitPower` at the end, and `EffectKind::ALL` lists every kind in order. The effect array is sized from it and `tick_effects` walks it, so a later kind (track C's levitation and slow falling) is added in the enum and `ALL` only. New `SurvivalStatus::attack_speed_multiplier()`: `(1 + 0.1 (haste + 1)) x (1 - 0.1 (fatigue + 1))` with vanilla's `0.1F` widened to a double, 1 for a missing effect.
+  - `minecraft_survival/src/player_nbt.rs`: the three ids in `EFFECTS` (sized from `EffectKind::ALL`), and the `minecraft:effect.haste` and `minecraft:effect.mining_fatigue` modifiers on `minecraft:attack_speed` (base 4.0, `add_multiplied_total`, +/-0.10000000149011612 a level), as `MobEffects` adds them.
+  - `minecraft_survival/src/commands.rs`: `effect_kind` knows `haste`, `mining_fatigue` and `conduit_power`; `/effect clear` with no effect checks `EffectKind::ALL`. `minecraft_survival/src/survival.rs`: `clear_effects` (milk, death, `/effect clear`) walks `EffectKind::ALL`.
+  - `minecraft_terrain/src/potions.rs`: custom potion contents with the three ids reach the player.
+  - `render_anim/src/minecraft_world.rs`: the attack's speed is the item's attack speed times `attack_speed_multiplier`, clamped to the attribute's 0 to 1024, before `attack_strength`.
+- **Tests:** `minecraftoss-player` (`survival.rs`): `every_effect_kind_is_listed_once_at_its_own_index` (each kind at its own index, all 13 can be added and run out), `haste_and_mining_fatigue_scale_the_attack_speed` (1.1 for Haste I, 1.2 for Haste II, 0.8 for Mining Fatigue II, 1.1 x 0.9 for both at I, conduit power 1). `minecraft_survival`: `commands.rs` `haste_mining_fatigue_and_conduit_power_are_given_and_cleared_one_by_one` (`/effect give @s minecraft:haste 60 1` gives amplifier 1 for 1200 ticks, `/effect clear @s minecraft:mining_fatigue` removes only that one, a bare clear the rest); `player_nbt.rs` `haste_mining_fatigue_and_conduit_power_are_saved_with_their_attack_speed_modifiers` (the three round-trip, the haste modifier is 0.2 for amplifier 1 and fatigue's -0.1, both go once the effects end and the attribute keeps its base); `survival.rs`'s milk test also clears the three. `minecraft_terrain` (`potions.rs`): the three ids map to the player's kinds.
+- **Decision:** the multiplier clamps at the attack speed (0 to 1024, the attribute's range), so Mining Fatigue X or more gives speed 0 as vanilla's clamped attribute does. The item tooltip's attack speed stays the item's own, as vanilla's tooltip shows it without effects.
+- **Test steps** (the mining side comes with groups 3 and 4):
+  1. Type `/effect give @s minecraft:haste 60 1`. The chat answers `Applied effect Haste to ...` (before this build: red `Unable to apply this effect ...`). Do the same with `minecraft:mining_fatigue 60 2` and `minecraft:conduit_power 60 0`. **Screenshot 1** of the three answers.
+  2. Type `/effect clear @s minecraft:mining_fatigue`: `Removed effect Mining Fatigue from ...`. Type it again: red `Target doesn't have the requested effect`.
+  3. Quit to the menu and load the world again within the minute. Type `/effect clear @s minecraft:haste`: `Removed effect Haste ...`, so the effect was saved.
+  4. Type `/effect give @s minecraft:haste 60 1` again, drink the milk bucket, then type `/effect clear @s minecraft:haste`: red `Target doesn't have the requested effect`, the milk cleared it.
+- **Kit** (1 stack):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:milk_bucket
 ```

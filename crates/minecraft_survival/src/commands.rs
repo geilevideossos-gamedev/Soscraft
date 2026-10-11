@@ -162,6 +162,9 @@ pub fn effect_kind(effect: &str) -> Option<EffectKind> {
         "slowness" => EffectKind::Slowness,
         "weakness" => EffectKind::Weakness,
         "wither" => EffectKind::Wither,
+        "haste" => EffectKind::Haste,
+        "mining_fatigue" => EffectKind::MiningFatigue,
+        "conduit_power" => EffectKind::ConduitPower,
         _ => return None,
     })
 }
@@ -469,19 +472,9 @@ impl CommandWorld for Host<'_> {
                 None => false,
             },
             None => {
-                let kinds = [
-                    EffectKind::Hunger,
-                    EffectKind::Poison,
-                    EffectKind::Regeneration,
-                    EffectKind::Absorption,
-                    EffectKind::Resistance,
-                    EffectKind::FireResistance,
-                    EffectKind::Nausea,
-                    EffectKind::Slowness,
-                    EffectKind::Weakness,
-                    EffectKind::Wither,
-                ];
-                let any = kinds.iter().any(|kind| status.effect(*kind).is_some());
+                let any = EffectKind::ALL
+                    .iter()
+                    .any(|kind| status.effect(*kind).is_some());
                 survival.clear_effects();
                 any
             }
@@ -2319,6 +2312,48 @@ pub(crate) mod tests {
         assert!(host.effect_clear(HOST, Some("minecraft:regeneration")));
         assert!(!host.effect_clear(HOST, None));
         assert!(!host.effect_give(PlayerId(1), "minecraft:regeneration", Some(20), 0));
+    }
+
+    #[test]
+    fn haste_mining_fatigue_and_conduit_power_are_given_and_cleared_one_by_one() {
+        let mut parts = Parts::new();
+        parts.server.registries_mut().effects = [
+            "minecraft:haste",
+            "minecraft:mining_fatigue",
+            "minecraft:conduit_power",
+        ]
+        .map(String::from)
+        .to_vec();
+        let (delivered, _) = parts.send(
+            HOST,
+            &[
+                "/effect give @s minecraft:haste 60 1",
+                "/effect give @s minecraft:mining_fatigue 60 2",
+                "/effect give @s minecraft:conduit_power 60 0",
+            ],
+        );
+        assert_eq!(delivered.len(), 3);
+        let status = &parts.player(HOST).survival.status;
+        let haste = status.effect(EffectKind::Haste).unwrap();
+        assert_eq!((haste.amplifier, haste.duration), (1, 1200));
+        assert_eq!(
+            status.effect(EffectKind::MiningFatigue).map(|e| e.amplifier),
+            Some(2)
+        );
+        assert_eq!(
+            status.effect(EffectKind::ConduitPower).map(|e| e.duration),
+            Some(1200)
+        );
+        parts.send(HOST, &["/effect clear @s minecraft:mining_fatigue"]);
+        let status = &parts.player(HOST).survival.status;
+        assert_eq!(status.effect(EffectKind::MiningFatigue), None);
+        assert!(status.effect(EffectKind::Haste).is_some());
+        assert!(status.effect(EffectKind::ConduitPower).is_some());
+        let mut host = parts.host();
+        assert!(host.effect_clear(HOST, None));
+        let status = &parts.player(HOST).survival.status;
+        assert_eq!(status.effect(EffectKind::Haste), None);
+        assert_eq!(status.effect(EffectKind::ConduitPower), None);
     }
 
     #[test]
