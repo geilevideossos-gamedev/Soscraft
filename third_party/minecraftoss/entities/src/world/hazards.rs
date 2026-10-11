@@ -230,6 +230,7 @@ exposed!(super::ghasts::GhastEntity, ghast, |e, h, a, w, t| e.hurt(a).applied, |
 exposed!(super::blazes::BlazeEntity, blaze, |e, h, a, w, t| e.hurt(a).applied, |_s| true);
 exposed!(super::striders::StriderEntity, strider, |e, h, a, w, t| e.hurt(a, animal_source(h)).applied, |_s| true);
 exposed!(super::hoglins::HoglinEntity, hoglin, |e, h, a, w, t| e.hurt(a).applied, |s| s.hoglin.fire_immune());
+exposed!(super::piglins::PiglinEntity, piglin, |e, h, a, w, t| if h.bypasses_armor() { e.hurt(a).applied } else { e.hurt_armored(a).applied });
 
 impl Exposed for SheepEntity {
     fn body(&mut self) -> &mut Body {

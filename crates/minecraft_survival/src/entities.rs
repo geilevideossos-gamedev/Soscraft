@@ -1279,6 +1279,9 @@ impl Entities {
         for e in w.hoglins().iter().filter(|e| e.hoglin.health > 0.0) {
             add(MobHit::Hoglin(e.id), &e.hoglin.body);
         }
+        for e in w.piglins().iter().filter(|e| e.piglin.health > 0.0) {
+            add(MobHit::Piglin(e.id), &e.piglin.body);
+        }
         for crystal in &self.crystals {
             let (low, high) = minecraft_terrain::end_crystal::pick_box(crystal.position);
             out.push((CRYSTAL_KEY | (crystal.id & ((1 << 56) - 1)), [low.x, low.y, low.z, high.x, high.y, high.z]));
@@ -1372,6 +1375,7 @@ impl Entities {
         blaze_render::append_blazes(&mut out.models, w.blazes().iter(), poses, atlas, light, partial);
         strider_render::append_striders(&mut out.models, w.striders().iter(), poses, atlas, light, partial);
         hoglin_render::append_hoglins(&mut out.models, w.hoglins().iter(), poses, atlas, light, partial);
+        let piglin_items = piglin_render::append_piglins(&mut out.models, w.piglins().iter(), poses, atlas, light, partial);
         let poppies = golem_render::append_iron_golems(&mut out.models, w.iron_golems().iter(), poses, atlas, light, partial);
         wolf_render::append_wolves(&mut out.models, w.wolves().iter(), poses, atlas, light, partial, w.game_time());
         flame_render::append_flames(
@@ -1422,7 +1426,7 @@ impl Entities {
         self.portal.append_mesh(&mut out.items, atlas, forward, partial, light);
         self.spell.append_mesh(&mut out.translucent, atlas, forward, partial, light);
         let held: Vec<_> =
-            skeleton_items.into_iter().chain(zombie_items).chain(villager_items).chain(witch_items).chain(placed_items.iter().cloned()).collect();
+            skeleton_items.into_iter().chain(zombie_items).chain(villager_items).chain(witch_items).chain(piglin_items).chain(placed_items.iter().cloned()).collect();
         let _ = self.items.append_held_items(&mut out.items, &held, packs, atlas, light);
         let carried: Vec<_> = carried.into_iter().chain(poppies).collect();
         let _ = self.items.append_posed_blocks(&mut out.items, &carried, packs, atlas, light);
@@ -1527,6 +1531,7 @@ fn encode(hit: MobHit) -> u64 {
         MobHit::Blaze(_) => 18,
         MobHit::Strider(_) => STRIDER_KEY,
         MobHit::Hoglin(_) => HOGLIN_KEY,
+        MobHit::Piglin(_) => PIGLIN_KEY,
     };
     (kind << 56) | (hit.id() & ((1 << 56) - 1))
 }
@@ -1554,6 +1559,7 @@ fn decode(key: u64) -> Option<MobHit> {
         18 => MobHit::Blaze(id),
         STRIDER_KEY => MobHit::Strider(id),
         HOGLIN_KEY => MobHit::Hoglin(id),
+        PIGLIN_KEY => MobHit::Piglin(id),
         _ => return None,
     })
 }
@@ -1563,6 +1569,7 @@ const CRYSTAL_KEY: u64 = 19 << 56;
 const DRAGON_KEY: u64 = 20 << 56;
 const STRIDER_KEY: u64 = 23;
 const HOGLIN_KEY: u64 = 22;
+const PIGLIN_KEY: u64 = 21;
 pub const FLAT_HIT: u64 = 1 << 55;
 
 fn dragon_part_key(id: u64, part: usize) -> u64 {
@@ -1743,6 +1750,16 @@ mod tests {
         }
         assert_eq!(end_target_of(CRYSTAL_KEY | 9), Some(EndTarget::Crystal(9)));
         assert_eq!(end_target_of(encode(MobHit::Zombie(9))), None);
+    }
+
+    #[test]
+    fn piglin_keys_round_trip() {
+        let key = encode(MobHit::Piglin(77));
+        assert_eq!(key >> 56, 21);
+        assert_eq!(decode(key), Some(MobHit::Piglin(77)));
+        assert_eq!(fireball_of(key), None);
+        assert_eq!(crystal_of(key), None);
+        assert_eq!(end_target_of(key), None);
     }
 
     #[test]

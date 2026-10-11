@@ -5,7 +5,8 @@ use crate::{
     pack::ResourceId,
 };
 use glam::{EulerRot, Quat, Vec3};
-use minecraftoss_entities::world::ZombieEntity;
+use minecraftoss_entities::piglin::{ArmPose, PiglinKind};
+use minecraftoss_entities::world::{PiglinEntity, ZombieEntity};
 
 type Part = ([f32; 3], [f32; 3], [f32; 2], Option<[f32; 3]>);
 
@@ -158,18 +159,24 @@ pub fn ear_rolls(baby: bool, age: f32, walk_position: f32, walk_speed: f32) -> [
     [right, left]
 }
 
-pub fn pose(baby: bool, aggressive: bool, pose: &MobPose) -> Posed {
-    let model = if baby { &BABY } else { &ADULT };
-    let head = Quat::from_euler(
+fn head_of(pose: &MobPose) -> Quat {
+    Quat::from_euler(
         EulerRot::ZYX,
         0.0,
         pose.head_yaw.to_radians(),
         pose.head_pitch.to_radians(),
-    );
-    let rest = [
+    )
+}
+
+fn rest_of(baby: bool) -> [(f32, f32); 2] {
+    let model = if baby { &BABY } else { &ADULT };
+    [
         (model.arm_pivots[0][0], model.arm_pivots[0][2]),
         (model.arm_pivots[1][0], model.arm_pivots[1][2]),
-    ];
+    ]
+}
+
+pub fn pose(baby: bool, aggressive: bool, pose: &MobPose) -> Posed {
     let limbs = crate::zombie_render::limb_rotations(
         pose.walk_position,
         pose.walk_speed,
@@ -177,9 +184,19 @@ pub fn pose(baby: bool, aggressive: bool, pose: &MobPose) -> Posed {
         aggressive,
         pose.swing,
         if baby { 0.5 } else { 1.0 },
-        rest,
+        rest_of(baby),
     )
     .seated(pose.riding);
+    assemble(baby, head_of(pose), limbs, pose)
+}
+
+fn assemble(
+    baby: bool,
+    head: Quat,
+    limbs: crate::zombie_render::ZombieLimbs,
+    pose: &MobPose,
+) -> Posed {
+    let model = if baby { &BABY } else { &ADULT };
     let body = Quat::from_rotation_y(limbs.body_yaw);
     let arms = [0, 1].map(|arm| {
         let (x, z) = limbs.arm_pivots[arm];
@@ -328,6 +345,203 @@ pub fn append_zombified_piglin(
     })
 }
 
+pub const PIGLIN_TEXTURE: &str = "minecraft:entity/piglin/piglin";
+pub const PIGLIN_BABY_TEXTURE: &str = "minecraft:entity/piglin/piglin_baby";
+pub const BRUTE_TEXTURE: &str = "minecraft:entity/piglin/piglin_brute";
+pub const TEXTURES: [&str; 3] = [PIGLIN_TEXTURE, PIGLIN_BABY_TEXTURE, BRUTE_TEXTURE];
+
+pub fn texture(kind: PiglinKind, baby: bool) -> &'static str {
+    match (kind, baby) {
+        (PiglinKind::Brute, _) => BRUTE_TEXTURE,
+        (PiglinKind::Piglin, true) => PIGLIN_BABY_TEXTURE,
+        (PiglinKind::Piglin, false) => PIGLIN_TEXTURE,
+    }
+}
+
+pub struct Hands {
+    pub main: bool,
+    pub off: bool,
+    pub left_handed: bool,
+}
+
+pub fn humanoid_limbs(
+    pose: &MobPose,
+    hands: &Hands,
+    arm_pose: ArmPose,
+    baby: bool,
+) -> crate::zombie_render::ZombieLimbs {
+    use crate::client_mobs::mth_cos;
+    let pi = std::f32::consts::PI;
+    let walk = pose.walk_position * 0.6662;
+    let speed = pose.walk_speed;
+    let mut right_arm = Vec3::new(mth_cos(walk + pi) * 2.0 * speed * 0.5, 0.0, 0.0);
+    let mut left_arm = Vec3::new(mth_cos(walk) * 2.0 * speed * 0.5, 0.0, 0.0);
+    let right_leg = Vec3::new(mth_cos(walk) * 1.4 * speed, 0.005, 0.005);
+    let left_leg = Vec3::new(mth_cos(walk + pi) * 1.4 * speed, -0.005, -0.005);
+    if pose.riding {
+        right_arm.x += -pi / 5.0;
+        left_arm.x += -pi / 5.0;
+    }
+    let (right_item, left_item) = if hands.left_handed {
+        (hands.off, hands.main)
+    } else {
+        (hands.main, hands.off)
+    };
+    for (arm, held) in [(&mut right_arm, right_item), (&mut left_arm, left_item)] {
+        if held {
+            arm.x = arm.x * 0.5 - pi / 10.0;
+            arm.y = 0.0;
+        }
+    }
+    let bob_z = mth_cos(pose.age_in_ticks * 0.09) * 0.05 + 0.05;
+    let bob_x = minecraftoss_player::mth::sin(f64::from(pose.age_in_ticks * 0.067)) * 0.05;
+    right_arm.z += bob_z;
+    right_arm.x += bob_x;
+    left_arm.z -= bob_z;
+    left_arm.x -= bob_x;
+    if arm_pose == ArmPose::AdmiringItem {
+        if hands.left_handed {
+            right_arm.y = -0.5;
+            right_arm.x = -0.9;
+        } else {
+            left_arm.y = 0.5;
+            left_arm.x = -0.9;
+        }
+    }
+    let part = |r: Vec3| Quat::from_euler(EulerRot::ZYX, r.z, r.y, r.x);
+    crate::zombie_render::ZombieLimbs {
+        body_yaw: 0.0,
+        arm_pivots: rest_of(baby),
+        limbs: [
+            part(right_arm),
+            part(left_arm),
+            part(right_leg),
+            part(left_leg),
+        ],
+    }
+    .seated(pose.riding)
+}
+
+pub fn living_pose(baby: bool, hands: &Hands, arm_pose: ArmPose, pose: &MobPose) -> Posed {
+    let head = if arm_pose == ArmPose::AdmiringItem {
+        Quat::from_rotation_x(0.5)
+    } else {
+        head_of(pose)
+    };
+    let limbs = humanoid_limbs(pose, hands, arm_pose, baby);
+    assemble(baby, head, limbs, pose)
+}
+
+pub fn append_piglins<'a>(
+    mesh: &mut ChunkMesh,
+    piglins: impl IntoIterator<Item = &'a PiglinEntity>,
+    poses: &crate::client_mobs::ClientMobs,
+    atlas: &Atlas,
+    light: &SkyLight,
+    partial: f32,
+) -> Vec<HeldItem> {
+    let mut held = Vec::new();
+    let mut marks = Vec::new();
+    for entity in piglins {
+        let piglin = &entity.piglin;
+        let Some(mob) = poses.pose(entity.id, partial) else {
+            continue;
+        };
+        marks.push((mesh.vertices.len(), mob.overlay(0.0)));
+        let baby = piglin.is_baby();
+        let Ok(id) = ResourceId::parse(texture(piglin.kind, baby)) else {
+            continue;
+        };
+        let region = atlas.entity_region(&id);
+        let sample = mob.light_block();
+        let (sky, block) = (light.get(sample) as f32, light.get_block(sample) as f32);
+        let rotation = mob.body_rotation(90.0);
+        let hands = Hands {
+            main: piglin.main_hand.is_some(),
+            off: piglin.offhand.is_some(),
+            left_handed: piglin.left_handed,
+        };
+        let posed = living_pose(baby, &hands, entity.arm_pose, &mob);
+        for cube in &posed.cubes {
+            let (from, to, uv, dims) = cube.part;
+            crate::cow_render::cube_scaled(
+                mesh,
+                mob.feet,
+                rotation,
+                Vec3::ONE,
+                region,
+                sky,
+                block,
+                from,
+                to,
+                uv,
+                cube.pivot,
+                cube.rotation,
+                [1.0; 3],
+                [64., 64.],
+                dims,
+                false,
+            );
+        }
+        if !baby && piglin.armor.iter().any(Option::is_some) {
+            marks.push((mesh.vertices.len(), 1.0));
+            let armor_parts = crate::armor_render::HumanoidParts {
+                head: (Vec3::ZERO, posed.head),
+                body: (Vec3::ZERO, posed.body),
+                arms: posed
+                    .arms
+                    .map(|(pivot, rotation)| (Vec3::from_array(pivot), rotation)),
+                legs: posed
+                    .legs
+                    .map(|(pivot, rotation)| (Vec3::from_array(pivot), rotation)),
+            };
+            crate::armor_render::append_humanoid_armor(
+                mesh,
+                atlas,
+                mob.feet,
+                rotation,
+                1.0,
+                &armor_parts,
+                &piglin.armor_ids(),
+                sky,
+                block,
+            );
+        }
+        let (right, left) = if piglin.left_handed {
+            (&piglin.offhand, &piglin.main_hand)
+        } else {
+            (&piglin.main_hand, &piglin.offhand)
+        };
+        for (arm, stack) in [(0, right), (1, left)] {
+            let Some(stack) = stack else {
+                continue;
+            };
+            let (pivot, quat) = posed.arms[arm];
+            let pivot = Vec3::from_array(pivot);
+            let (pose, display) = if arm == 0 {
+                (
+                    crate::cow_render::right_hand_pose(mob.feet, rotation, pivot, quat, baby),
+                    crate::mesh::HeldDisplay::RightHand,
+                )
+            } else {
+                (
+                    crate::cow_render::left_hand_pose(mob.feet, rotation, pivot, quat, baby),
+                    crate::mesh::HeldDisplay::LeftHand,
+                )
+            };
+            held.push(HeldItem {
+                pose,
+                light: mob.light_probe.as_vec3(),
+                id: stack.id.clone(),
+                display,
+                first_tint: None,
+            });
+        }
+    }
+    crate::cow_render::apply_overlays(mesh, &marks);
+    held
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,5 +635,94 @@ mod tests {
         assert!((x + 1.413_716_7).abs() < 1.0e-5, "{x}");
         assert_eq!(seated.arms[0].1, upright.arms[0].1);
         assert_ne!(seated.legs[1].1, upright.legs[1].1);
+    }
+
+    #[test]
+    fn a_piglin_and_a_brute_use_their_textures_and_the_piglin_mesh() {
+        assert_eq!(texture(PiglinKind::Piglin, false), "minecraft:entity/piglin/piglin");
+        assert_eq!(
+            texture(PiglinKind::Piglin, true),
+            "minecraft:entity/piglin/piglin_baby"
+        );
+        assert_eq!(
+            texture(PiglinKind::Brute, false),
+            "minecraft:entity/piglin/piglin_brute"
+        );
+        let hands = Hands {
+            main: true,
+            off: false,
+            left_handed: false,
+        };
+        let adult = living_pose(false, &hands, ArmPose::Default, &standing());
+        assert_eq!(adult.cubes.len(), 4 + 2 + 2 + 4 + 4);
+        let baby = living_pose(true, &hands, ArmPose::Default, &standing());
+        assert_eq!(baby.cubes.len(), 2 + 2 + 1 + 2 + 2);
+        let mut mesh = ChunkMesh::default();
+        for cube in &adult.cubes {
+            let (from, to, uv, dims) = cube.part;
+            crate::cow_render::cube_scaled(
+                &mut mesh,
+                glam::DVec3::ZERO,
+                Quat::IDENTITY,
+                Vec3::ONE,
+                [0.0, 0.0, 1.0, 1.0],
+                15.0,
+                0.0,
+                from,
+                to,
+                uv,
+                cube.pivot,
+                cube.rotation,
+                [1.0; 3],
+                [64., 64.],
+                dims,
+                false,
+            );
+        }
+        assert_eq!(mesh.vertices.len(), 16 * 24);
+        let (_, _, held_x) = adult.arms[0].1.to_euler(EulerRot::ZYX);
+        let empty = Hands {
+            main: false,
+            off: false,
+            left_handed: false,
+        };
+        let bare = living_pose(false, &empty, ArmPose::Default, &standing());
+        let (_, _, bare_x) = bare.arms[0].1.to_euler(EulerRot::ZYX);
+        assert!(
+            (held_x - (bare_x - std::f32::consts::PI / 10.0)).abs() < 1.0e-4,
+            "{held_x} {bare_x}"
+        );
+    }
+
+    #[test]
+    fn an_admiring_piglin_holds_its_item_in_the_left_hand() {
+        let hands = Hands {
+            main: false,
+            off: true,
+            left_handed: false,
+        };
+        let admiring = living_pose(false, &hands, ArmPose::AdmiringItem, &standing());
+        let (_, y, x) = admiring.arms[1].1.to_euler(EulerRot::ZYX);
+        assert!((x + 0.9).abs() < 1.0e-5 && (y - 0.5).abs() < 1.0e-5, "{x} {y}");
+        let (_, _, head_x) = admiring.head.to_euler(EulerRot::ZYX);
+        assert!((head_x - 0.5).abs() < 1.0e-5);
+        let right = crate::cow_render::right_hand_pose(
+            glam::DVec3::ZERO,
+            Quat::IDENTITY,
+            Vec3::new(-5.0, 2.0, 0.0),
+            Quat::IDENTITY,
+            false,
+        );
+        let left = crate::cow_render::left_hand_pose(
+            glam::DVec3::ZERO,
+            Quat::IDENTITY,
+            Vec3::new(5.0, 2.0, 0.0),
+            Quat::IDENTITY,
+            false,
+        );
+        let r = right.transform_point3(Vec3::ZERO);
+        let l = left.transform_point3(Vec3::ZERO);
+        assert!((r.x + l.x).abs() < 1.0e-5, "{r} {l}");
+        assert!((r.y - l.y).abs() < 1.0e-5 && (r.z - l.z).abs() < 1.0e-5);
     }
 }

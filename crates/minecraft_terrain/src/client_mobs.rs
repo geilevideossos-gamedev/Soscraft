@@ -1202,6 +1202,9 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
     for e in world.hoglins() {
         push(e.id, e.hoglin.yaw, &e.look_control, &e.hoglin.body, e.hoglin.is_baby(), e.hoglin.eye_height());
     }
+    for e in world.piglins() {
+        push(e.id, e.piglin.yaw, &e.look_control, &e.piglin.body, e.piglin.is_baby(), e.piglin.eye_height());
+    }
     for mob in &mut out {
         mob.vehicle = world.seat_offset(minecraftoss_entities::world::Rider::Mob(mob.id));
         mob.resting = resting_bats.contains(&mob.id);
@@ -1241,6 +1244,7 @@ pub fn shadow_casters(world: &minecraftoss_entities::world::EntityWorld, mobs: &
     kinds.extend(world.blazes().iter().map(|e| (e.id, 0.5)));
     kinds.extend(world.striders().iter().map(|e| (e.id, crate::strider_render::shadow_radius(e.strider.age.baby()))));
     kinds.extend(world.hoglins().iter().map(|e| (e.id, crate::hoglin_render::shadow_radius(e.hoglin.is_baby()))));
+    kinds.extend(world.piglins().iter().map(|e| (e.id, 0.5 * age(e.piglin.is_baby()))));
     kinds
         .into_iter()
         .filter_map(|(id, radius)| {

@@ -188,6 +188,9 @@ impl EntityWorld {
         if let Some(e) = self.hoglins.iter().find(|e| e.id == id) {
             return Some((e.hoglin.body.clone(), e.hoglin.health));
         }
+        if let Some(e) = self.piglins.iter().find(|e| e.id == id) {
+            return Some((e.piglin.body.clone(), e.piglin.health));
+        }
         None
     }
 
@@ -233,6 +236,8 @@ impl EntityWorld {
             (&mut e.strider.body, &mut e.random)
         } else if let Some(e) = self.hoglins.iter_mut().find(|e| e.id == id) {
             (&mut e.hoglin.body, &mut e.random)
+        } else if let Some(e) = self.piglins.iter_mut().find(|e| e.id == id) {
+            (&mut e.piglin.body, &mut e.random)
         } else {
             return;
         };
@@ -332,6 +337,8 @@ impl EntityWorld {
             e.hurt(amount, source)
         } else if let Some(e) = self.hoglins.iter_mut().find(|e| e.id == id) {
             e.hurt(amount)
+        } else if let Some(e) = self.piglins.iter_mut().find(|e| e.id == id) {
+            e.hurt_armored(amount)
         } else {
             let e = self.blazes.iter_mut().find(|e| e.id == id)?;
             let hit = e.hurt(amount);

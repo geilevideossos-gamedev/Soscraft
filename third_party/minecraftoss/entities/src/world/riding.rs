@@ -549,6 +549,7 @@ impl EntityWorld {
         self.blazes.retain(|e| !gone(e.id));
         self.striders.retain(|e| !gone(e.id));
         self.hoglins.retain(|e| !gone(e.id));
+        self.piglins.retain(|e| !gone(e.id));
         self.order.retain(|key| !gone(key.id()));
         self.sections.retain_mobs(|id| !gone(id));
         self.passengers.retain(|vehicle, riders| {

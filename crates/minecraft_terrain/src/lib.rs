@@ -60,6 +60,7 @@ pub mod chicken_render;
 pub mod bat_render;
 pub mod zombie_render;
 pub mod piglin_render;
+pub mod piglin_save;
 pub mod creeper_render;
 pub mod spider_render;
 pub mod skeleton_render;

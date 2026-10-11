@@ -274,6 +274,7 @@ impl ServerSim {
         // The players are real entities: arrows hit them.
         let mut mobs = minecraftoss_entities::world::EntityWorld::default();
         mobs.set_players_pickable(true);
+        mobs.set_dimension(dimension_type);
         // New mobs' UUIDs differ from session to session, as vanilla's
         // random ones do.
         mobs.set_uuid_salt(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64));

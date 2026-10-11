@@ -503,6 +503,9 @@ impl EntityWorld {
             let undead = e.hoglin.kind == crate::hoglin::HoglinKind::Zoglin;
             return Some((&mut e.effects, undead, false));
         }
+        if let Some(e) = self.piglins.iter_mut().find(|e| e.id == id) {
+            return Some((&mut e.effects, false, false));
+        }
         None
     }
 
@@ -527,6 +530,7 @@ impl EntityWorld {
             .or_else(|| self.chickens.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.striders.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.hoglins.iter().find(|e| e.id == id).map(|e| &e.effects))
+            .or_else(|| self.piglins.iter().find(|e| e.id == id).map(|e| &e.effects))
     }
 
     /// `HealOrHarmMobEffect.applyInstantaneousEffect` on a mob: the heal,
@@ -601,6 +605,9 @@ impl EntityWorld {
             (&mut e.strider.health, crate::strider::MAX_HEALTH)
         } else if let Some(e) = self.hoglins.iter_mut().find(|e| e.id == id) {
             (&mut e.hoglin.health, crate::hoglin::MAX_HEALTH)
+        } else if let Some(e) = self.piglins.iter_mut().find(|e| e.id == id) {
+            let max = e.piglin.max_health();
+            (&mut e.piglin.health, max)
         } else {
             return;
         };
@@ -650,6 +657,8 @@ impl EntityWorld {
         } else if let Some(e) = self.striders.iter_mut().find(|e| e.id == id) {
             e.hurt(amount, source)
         } else if let Some(e) = self.hoglins.iter_mut().find(|e| e.id == id) {
+            e.hurt(amount)
+        } else if let Some(e) = self.piglins.iter_mut().find(|e| e.id == id) {
             e.hurt(amount)
         } else {
             return None;

@@ -1,14 +1,19 @@
+pub use crate::brain_behaviors::{
+    MoveSink, Pos, REPELLENT_HORIZONTAL, REPELLENT_VERTICAL, Ticker, Track, WalkGoal, Walker,
+    block_of, closer_than, find, nearer, nearest_block_in_tag, shuffled, within_manhattan,
+    within_melee_range,
+};
+pub use crate::brain_behaviors::Living;
+use crate::brain_behaviors::set_list;
 use crate::fluid::FluidFrame;
 use crate::monster_ai::Target;
 use crate::movement::Body;
-use crate::navigation::{GroundNavigation, PlannedPath, plan_walk_path};
+use crate::navigation::GroundNavigation;
 use crate::villager_brain::Slot;
 use crate::walk_path::WalkProfile;
 use glam::DVec3;
 use minecraftoss_player::World;
 use minecraftoss_player::rng::LegacyRandom;
-
-pub type Pos = (i32, i32, i32);
 
 pub const SCAN_RATE: i32 = 20;
 pub const FOLLOW_RANGE: f64 = 16.0;
@@ -26,8 +31,6 @@ pub const FLEE_SPEED: f32 = 1.3;
 pub const FLEE_DISTANCE: f64 = 15.0;
 pub const MUCH_FURTHER: f64 = 4.0;
 pub const REPELLENTS: &str = "minecraft:hoglin_repellents";
-pub const REPELLENT_HORIZONTAL: i32 = 8;
-pub const REPELLENT_VERTICAL: i32 = 4;
 pub const REPELLENT_SPEED: f32 = 1.0;
 pub const REPELLENT_DISTANCE: f64 = 8.0;
 pub const PIGLIN_SPEED: f32 = 0.4;
@@ -40,85 +43,12 @@ pub const FOLLOW_MIN: f64 = 5.0;
 pub const FOLLOW_MAX: f64 = 16.0;
 pub const ZOGLIN: &str = "minecraft:zoglin";
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Living {
-    pub target: Target,
-    pub kind: &'static str,
-    pub position: DVec3,
-    pub eye_height: f32,
-    pub width: f32,
-    pub height: f32,
-    pub alive: bool,
-    pub baby: bool,
-    pub attackable: bool,
-    pub spectator: bool,
-}
-
-impl Living {
-    pub fn eye(&self) -> DVec3 {
-        self.position + DVec3::Y * f64::from(self.eye_height)
-    }
-
-    pub fn is_player(&self) -> bool {
-        matches!(self.target, Target::Player(_))
-    }
-}
-
-pub fn block_of(position: DVec3) -> Pos {
-    (
-        position.x.floor() as i32,
-        position.y.floor() as i32,
-        position.z.floor() as i32,
-    )
-}
-
-pub fn find(others: &[Living], target: Target) -> Option<&Living> {
-    others.iter().find(|other| other.target == target)
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Activity {
     #[default]
     Idle,
     Fight,
     Avoid,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Track {
-    Entity { target: Target, eyes: bool },
-    Block(Pos),
-}
-
-impl Track {
-    pub fn position(self, others: &[Living]) -> Option<DVec3> {
-        match self {
-            Self::Entity { target, eyes } => {
-                find(others, target).map(|other| if eyes { other.eye() } else { other.position })
-            }
-            Self::Block((x, y, z)) => Some(DVec3::new(
-                f64::from(x) + 0.5,
-                f64::from(y) + 0.5,
-                f64::from(z) + 0.5,
-            )),
-        }
-    }
-
-    pub fn block(self, others: &[Living]) -> Option<Pos> {
-        match self {
-            Self::Entity { target, .. } => {
-                find(others, target).map(|other| block_of(other.position))
-            }
-            Self::Block(pos) => Some(pos),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct WalkGoal {
-    pub target: Track,
-    pub speed: f32,
-    pub close_enough: i32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -186,81 +116,6 @@ impl Memories {
     }
 }
 
-pub fn targetable(
-    world: &dyn World,
-    eye: DVec3,
-    position: DVec3,
-    other: &Living,
-    combat: bool,
-) -> bool {
-    if !other.alive || other.spectator || (combat && !other.attackable) {
-        return false;
-    }
-    if position.distance_squared(other.position) > FOLLOW_RANGE * FOLLOW_RANGE {
-        return false;
-    }
-    crate::sight::line_of_sight(world, eye, other.eye())
-}
-
-pub fn within_melee_range(body: &Body, target: &Living) -> bool {
-    let reach = f64::from(2.04_f32).sqrt() - f64::from(0.6_f32);
-    let half = f64::from(body.width / 2.0);
-    let p = body.position;
-    let t = target.position;
-    let target_half = f64::from(target.width / 2.0);
-    p.x - half - reach < t.x + target_half
-        && p.x + half + reach > t.x - target_half
-        && p.y < t.y + f64::from(target.height)
-        && p.y + f64::from(body.height) > t.y
-        && p.z - half - reach < t.z + target_half
-        && p.z + half + reach > t.z - target_half
-}
-
-pub fn nearer(
-    position: DVec3,
-    others: &[Living],
-    current: Option<Target>,
-    other: Target,
-) -> Target {
-    let Some(current) = current else {
-        return other;
-    };
-    let distance =
-        |target| find(others, target).map_or(f64::MAX, |l| l.position.distance_squared(position));
-    if distance(current) < distance(other) {
-        current
-    } else {
-        other
-    }
-}
-
-pub fn shuffled(random: &mut LegacyRandom, weights: &[u32]) -> Vec<usize> {
-    let mut scored: Vec<(f32, usize)> = weights
-        .iter()
-        .enumerate()
-        .map(|(index, &weight)| (-random.next_float().powf(1.0 / weight as f32), index))
-        .collect();
-    scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    scored.into_iter().map(|(_, index)| index).collect()
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Ticker {
-    until_next: i32,
-}
-
-impl Ticker {
-    pub fn tick_down_and_check(&mut self, random: &mut LegacyRandom, min: i32, max: i32) -> bool {
-        if self.until_next == 0 {
-            self.until_next = min + random.next_int((max - min + 1) as u32) as i32 - 1;
-            false
-        } else {
-            self.until_next -= 1;
-            self.until_next == 0
-        }
-    }
-}
-
 pub struct Ctx<'a> {
     pub id: u64,
     pub kind: &'static str,
@@ -295,151 +150,29 @@ impl Ctx<'_> {
     pub fn attackable(&self, other: &Living) -> bool {
         targetable(self.world, self.eye(), self.position(), other, true)
     }
+
+    pub fn walker(&mut self) -> Walker<'_> {
+        Walker {
+            body: self.body,
+            others: self.others,
+            world: self.world,
+            time: self.time,
+            random: self.random,
+            navigation: self.navigation,
+            profile: self.profile,
+            fluid: self.fluid,
+        }
+    }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct MoveSink {
-    until: Option<i64>,
-    cooldown: i32,
-    last_target: Option<Pos>,
-    path: Option<PlannedPath>,
-    speed: f32,
-}
-
-impl MoveSink {
-    pub fn running(&self) -> bool {
-        self.until.is_some()
-    }
-
-    fn reached(goal: &WalkGoal, ctx: &Ctx) -> bool {
-        let at = block_of(ctx.position());
-        goal.target.block(ctx.others).is_none_or(|(x, y, z)| {
-            (x - at.0).abs() + (y - at.1).abs() + (z - at.2).abs() <= goal.close_enough
-        })
-    }
-
-    fn compute(&mut self, mem: &mut Memories, ctx: &mut Ctx, goal: &WalkGoal) -> bool {
-        let Some(pos) = goal.target.block(ctx.others) else {
-            return false;
-        };
-        let at = DVec3::new(f64::from(pos.0), f64::from(pos.1), f64::from(pos.2));
-        self.path = plan_walk_path(
-            ctx.body,
-            ctx.navigation,
-            ctx.world,
-            ctx.profile,
-            ctx.fluid,
-            at,
-            0,
-        );
-        self.speed = goal.speed;
-        if Self::reached(goal, ctx) {
-            mem.cant_reach_walk_target_since.erase();
-            return false;
-        }
-        if self.path.as_ref().is_some_and(PlannedPath::reached) {
-            mem.cant_reach_walk_target_since.erase();
-        } else if !mem.cant_reach_walk_target_since.present() {
-            mem.cant_reach_walk_target_since.set(ctx.time);
-        }
-        if self.path.is_some() {
-            return true;
-        }
-        let towards = DVec3::new(
-            f64::from(pos.0) + 0.5,
-            f64::from(pos.1),
-            f64::from(pos.2) + 0.5,
-        );
-        let Some(spot) = crate::stroll::default_random_position_towards(
-            ctx.world,
-            ctx.profile,
-            ctx.position(),
-            10,
-            7,
-            towards,
-            std::f32::consts::FRAC_PI_2,
-            ctx.random,
-        ) else {
-            return false;
-        };
-        self.path = plan_walk_path(
-            ctx.body,
-            ctx.navigation,
-            ctx.world,
-            ctx.profile,
-            ctx.fluid,
-            spot,
-            0,
-        );
-        self.path.is_some()
-    }
-
-    fn try_start(&mut self, mem: &mut Memories, ctx: &mut Ctx) {
-        let Some(goal) = mem.walk_target.get().copied() else {
-            return;
-        };
-        if self.cooldown > 0 {
-            self.cooldown -= 1;
-            return;
-        }
-        let reached = Self::reached(&goal, ctx);
-        if !reached && self.compute(mem, ctx, &goal) {
-            self.last_target = goal.target.block(ctx.others);
-            self.until = Some(ctx.time + 150 + i64::from(ctx.random.next_int(101)));
-            let path = self.path.clone();
-            ctx.navigation
-                .move_to_in(ctx.world, path, f64::from(self.speed), ctx.position());
-            return;
-        }
-        mem.walk_target.erase();
-        if reached {
-            mem.cant_reach_walk_target_since.erase();
-        }
-    }
-
-    fn tick(&mut self, mem: &mut Memories, ctx: &mut Ctx) {
-        let Some(until) = self.until else {
-            return;
-        };
-        let goal = mem.walk_target.get().copied();
-        let usable = self.path.is_some()
-            && self.last_target.is_some()
-            && !ctx.navigation.is_done()
-            && goal.is_some_and(|goal| !Self::reached(&goal, ctx));
-        if ctx.time > until || !usable {
-            if goal.is_some_and(|goal| !Self::reached(&goal, ctx)) && ctx.navigation.is_stuck() {
-                self.cooldown = ctx.random.next_int(40) as i32;
-            }
-            ctx.navigation.stop();
-            mem.walk_target.erase();
-            self.path = None;
-            self.until = None;
-            return;
-        }
-        let Some(goal) = goal else {
-            return;
-        };
-        let Some(now) = goal.target.block(ctx.others) else {
-            return;
-        };
-        let moved = self.last_target.is_some_and(|(x, y, z)| {
-            let (dx, dy, dz) = (now.0 - x, now.1 - y, now.2 - z);
-            dx * dx + dy * dy + dz * dz > 4
-        });
-        if moved && self.compute(mem, ctx, &goal) {
-            self.last_target = Some(now);
-            let path = self.path.clone();
-            ctx.navigation
-                .move_to_in(ctx.world, path, f64::from(self.speed), ctx.position());
-        }
-    }
-
-    pub fn stop(&mut self, navigation: &mut GroundNavigation) {
-        if self.until.take().is_some() {
-            navigation.stop();
-        }
-        self.path = None;
-    }
+pub fn targetable(
+    world: &dyn World,
+    eye: DVec3,
+    position: DVec3,
+    other: &Living,
+    combat: bool,
+) -> bool {
+    crate::brain_behaviors::targetable_within(world, eye, position, other, combat, FOLLOW_RANGE)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -475,7 +208,11 @@ impl HoglinBrain {
         self.memories.tick();
         self.sense(ctx);
         self.start_look(ctx);
-        self.walk.try_start(&mut self.memories, ctx);
+        self.walk.try_start(
+            &mut self.memories.walk_target,
+            &mut self.memories.cant_reach_walk_target_since,
+            &mut ctx.walker(),
+        );
         match (self.activity, ctx.kind == ZOGLIN) {
             (Activity::Fight, true) => self.fight(ctx),
             (_, true) => self.start_zoglin_idle(ctx),
@@ -484,7 +221,11 @@ impl HoglinBrain {
             (Activity::Avoid, false) => self.start_avoid(ctx),
         }
         self.tick_look(ctx);
-        self.walk.tick(&mut self.memories, ctx);
+        self.walk.tick(
+            &mut self.memories.walk_target,
+            &mut self.memories.cant_reach_walk_target_since,
+            &mut ctx.walker(),
+        );
         self.tick_love(ctx);
         for wait in [&mut self.idle_wait, &mut self.avoid_wait] {
             if wait.is_some_and(|end| ctx.time > end) {
@@ -1160,52 +901,6 @@ impl HoglinBrain {
             target,
         );
         self.set_attack_target(nearest);
-    }
-}
-
-pub fn within_manhattan(horizontal: i32, vertical: i32) -> Vec<Pos> {
-    let mut out = Vec::new();
-    for depth in 0..=horizontal * 2 + vertical {
-        let max_x = horizontal.min(depth);
-        for x in -max_x..=max_x {
-            let max_y = vertical.min(depth - x.abs());
-            for y in -max_y..=max_y {
-                let z = depth - x.abs() - y.abs();
-                if z <= horizontal {
-                    out.push((x, y, z));
-                    if z != 0 {
-                        out.push((x, y, -z));
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
-pub fn nearest_block_in_tag(world: &dyn World, at: Pos, tag: &str) -> Option<Pos> {
-    static OFFSETS: std::sync::OnceLock<Vec<Pos>> = std::sync::OnceLock::new();
-    OFFSETS
-        .get_or_init(|| within_manhattan(REPELLENT_HORIZONTAL, REPELLENT_VERTICAL))
-        .iter()
-        .map(|&(x, y, z)| (at.0 + x, at.1 + y, at.2 + z))
-        .find(|&pos| world.block_in_tag(pos, tag))
-}
-
-pub fn closer_than(a: Pos, b: Pos, distance: f64) -> bool {
-    let (dx, dy, dz) = (
-        f64::from(a.0 - b.0),
-        f64::from(a.1 - b.1),
-        f64::from(a.2 - b.2),
-    );
-    dx * dx + dy * dy + dz * dz < distance * distance
-}
-
-fn set_list<T>(slot: &mut Slot<Vec<T>>, list: Vec<T>) {
-    if list.is_empty() {
-        slot.erase();
-    } else {
-        slot.set(list);
     }
 }
 

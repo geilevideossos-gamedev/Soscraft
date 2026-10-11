@@ -426,6 +426,8 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:mooshroom",
     "minecraft:parched",
     "minecraft:pig",
+    "minecraft:piglin",
+    "minecraft:piglin_brute",
     "minecraft:sheep",
     "minecraft:skeleton",
     "minecraft:slime",
@@ -614,6 +616,11 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             entity.look_control.head_yaw = yaw;
             entity.body_rotation.body_yaw = yaw;
             id
+        }
+        "minecraft:piglin" | "minecraft:piglin_brute" if tag.get("Passengers").is_none() => {
+            let kind = minecraftoss_entities::piglin::PiglinKind::from_type(kind)?;
+            let saved = crate::piglin_save::Saved { pos, yaw, health, persistent, no_ai, random };
+            crate::piglin_save::spawn(world, tag, kind, saved)?
         }
         "minecraft:hoglin" | "minecraft:zoglin" => {
             use minecraftoss_entities::hoglin::{Hoglin, HoglinKind};
@@ -1393,6 +1400,10 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         };
         add(e.id, hoglin.kind.type_id(), &hoglin.body, hoglin.yaw, hoglin.health, hoglin.persistence_required, fields);
     }
+    for e in world.piglins() {
+        let piglin = &e.piglin;
+        add(e.id, piglin.kind.type_id(), &piglin.body, piglin.yaw, piglin.health, piglin.persistence_required, crate::piglin_save::fields(e));
+    }
     for e in world.chickens() {
         let chicken = &e.chicken;
         let mut fields = age(&chicken.age);
@@ -1720,6 +1731,61 @@ mod tests {
         assert!(spawn_saved_all(&mut EntityWorld::default(), &spider).is_empty());
         let strider = strider_tag("Passengers:[{id:\"minecraft:camel\"}]");
         assert!(spawn_saved_all(&mut EntityWorld::default(), &strider).is_empty(), "a rider it does not simulate keeps the whole group dormant");
+    }
+
+    #[test]
+    fn piglins_and_brutes_load_live_and_save_every_field() {
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:piglin\",Pos:[1.5d,64.0d,2.5d],Rotation:[45.0f,0.0f],IsBaby:1b,CannotHunt:1b,IsImmuneToZombification:1b,TimeInOverworld:120,CanPickUpLoot:0b,LeftHanded:1b,PersistenceRequired:1b,Health:12.0f,Inventory:[{id:\"minecraft:gold_nugget\",count:7}],equipment:{mainhand:{id:\"minecraft:crossbow\",count:1},offhand:{id:\"minecraft:gold_ingot\",count:1},head:{id:\"minecraft:golden_helmet\",count:1,components:{\"minecraft:damage\":5}}},drop_chances:{offhand:2.0f},Brain:{memories:{\"minecraft:hunted_recently\":{value:1b,ttl:1200L},\"minecraft:admiring_item\":{value:1b,ttl:90L},\"minecraft:admiring_disabled\":{value:1b,ttl:300L},\"minecraft:universal_anger\":{value:1b,ttl:500L},\"minecraft:angry_at\":{value:[I;1,2,3,4],ttl:550L}}},attributes:[{id:\"minecraft:max_health\",base:16.0d}]}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("piglins load");
+        let entity = world.piglin_mut(id).unwrap();
+        let piglin = &entity.piglin;
+        assert!(piglin.is_baby() && piglin.cannot_hunt && piglin.immune_to_zombification && piglin.left_handed && piglin.persistence_required);
+        assert!(!piglin.can_pick_up_loot);
+        assert_eq!((piglin.time_in_overworld, piglin.health, piglin.yaw), (120, 12.0, 45.0));
+        assert_eq!((piglin.body.width, piglin.body.height), (0.49, 0.98));
+        assert_eq!(piglin.inventory[0].as_ref().map(|s| (s.id.as_str(), s.count)), Some(("minecraft:gold_nugget", 7)));
+        assert_eq!(piglin.main_hand.as_ref().map(|s| s.id.as_str()), Some("minecraft:crossbow"));
+        assert_eq!(piglin.offhand.as_ref().map(|s| s.id.as_str()), Some("minecraft:gold_ingot"));
+        assert_eq!(piglin.armor[0].as_ref().and_then(|s| s.components.clone()), Some(serde_json::json!({"minecraft:damage": 5})));
+        assert_eq!(piglin.drop_chances[minecraftoss_entities::piglin::OFFHAND], 2.0);
+        let memories = &entity.brain.memories;
+        assert_eq!(memories.hunted_recently.ttl(), Some(1200));
+        assert_eq!(memories.admiring_item.ttl(), Some(90));
+        assert_eq!(memories.admiring_disabled.ttl(), Some(300));
+        assert_eq!(memories.universal_anger.ttl(), Some(500));
+        assert_eq!((memories.angry_at.get().copied(), memories.angry_at.ttl()), (Some(minecraftoss_entities::gossip::uuid_from_ints([1, 2, 3, 4])), Some(550)));
+        let originals: std::collections::HashMap<u64, Tag> = [(id, tag.clone())].into_iter().collect();
+        let saved = mob_tags(&world, |_| true, &originals);
+        let (_, back) = saved.iter().find(|(saved_id, _)| *saved_id == id).expect("the piglin is saved");
+        assert_eq!(text(back, "id"), Some("minecraft:piglin"));
+        assert_eq!((int(back, "IsBaby"), int(back, "CannotHunt"), int(back, "IsImmuneToZombification"), int(back, "TimeInOverworld"), int(back, "CanPickUpLoot")), (Some(1), Some(1), Some(1), Some(120), Some(0)));
+        assert!(back.get("attributes").is_some(), "unknown keys stay as loaded");
+        let memory = |key: &str| back.get("Brain").and_then(|b| b.get("memories")).and_then(|m| m.get(key)).and_then(|m| m.get("ttl")).and_then(Tag::as_i64);
+        assert_eq!((memory("minecraft:hunted_recently"), memory("minecraft:angry_at")), (Some(1200), Some(550)));
+        let mut again = EntityWorld::default();
+        let id_again = spawn_saved(&mut again, back).expect("it loads again");
+        let entity = again.piglin_mut(id_again).unwrap();
+        assert_eq!(entity.piglin.inventory[0].as_ref().map(|s| s.count), Some(7));
+        assert_eq!(entity.piglin.armor[0].as_ref().map(|s| s.id.as_str()), Some("minecraft:golden_helmet"));
+        assert_eq!(entity.piglin.drop_chances[minecraftoss_entities::piglin::OFFHAND], 2.0);
+        assert_eq!(entity.brain.memories.angry_at.ttl(), Some(550));
+        assert_eq!(entity.brain.memories.admiring_item.ttl(), Some(90));
+        let brute = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:piglin_brute\",Pos:[1.5d,64.0d,2.5d],equipment:{mainhand:{id:\"minecraft:golden_axe\",count:1}},Brain:{memories:{\"minecraft:home\":{value:{dimension:\"minecraft:the_nether\",pos:[I;3,64,5]}}}}}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &brute).expect("brutes load");
+        let entity = world.piglin_mut(id).unwrap();
+        assert_eq!(entity.piglin.kind, minecraftoss_entities::piglin::PiglinKind::Brute);
+        assert_eq!(entity.piglin.health, 50.0);
+        let home = entity.brain.memories.home.get().cloned().expect("its home");
+        assert_eq!((home.dimension.as_str(), home.pos), ("minecraft:the_nether", (3, 64, 5)));
+        let saved = mob_tags(&world, |_| true, &std::collections::HashMap::new());
+        assert_eq!(text(&saved[0].1, "id"), Some("minecraft:piglin_brute"));
+        assert!(saved[0].1.get("IsBaby").is_none() && saved[0].1.get("Inventory").is_none());
+        let home = saved[0].1.get("Brain").and_then(|b| b.get("memories")).and_then(|m| m.get("minecraft:home")).and_then(|h| h.get("value")).expect("the home is saved");
+        assert_eq!(home.get("pos").and_then(Tag::as_ints), Some(vec![3, 64, 5]));
+        assert_eq!(saved[0].1.get("equipment").and_then(|e| e.get("mainhand")).and_then(|m| m.get("id")).and_then(Tag::as_str), Some("minecraft:golden_axe"));
+        assert!(SIMULATED_KINDS.contains(&"minecraft:piglin") && SIMULATED_KINDS.contains(&"minecraft:piglin_brute"));
     }
 
     #[test]

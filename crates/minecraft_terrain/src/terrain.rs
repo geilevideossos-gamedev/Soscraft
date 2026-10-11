@@ -2483,6 +2483,40 @@ mod tests {
     }
 
     #[test]
+    fn a_bastion_s_piglins_wake_up() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let dir = crate::test_dir::tempdir().unwrap();
+        let level = crate::level_storage::LevelStorage::open(dir.path()).unwrap();
+        let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::Nether, Some(level.root()), Some((0, 64, 0))).unwrap();
+        let gen = stream.world_gen();
+        let deadline = Instant::now() + std::time::Duration::from_secs(300);
+        let mut sim = crate::server::ServerSim::new(gen.clone(), stream.states.clone(), "minecraft:the_nether");
+        let at = match crate::locate::nearest_structure(&gen, &["minecraft:bastion_remnant".to_owned()], [0, 64, 0], crate::locate::STRUCTURE_RADIUS, deadline) {
+            crate::locate::Search::Found(at, _) => at,
+            other => panic!("no bastion near the origin of seed 77: {other:?}"),
+        };
+        let (cx, cz) = (at[0] >> 4, at[2] >> 4);
+        let mut piglins = Vec::new();
+        for x in cx - 3..=cx + 3 {
+            for z in cz - 3..=cz + 3 {
+                let chunk = stream.server.load_now(minecraftoss_core::ChunkPos::new(x, z));
+                piglins.extend(chunk.generation.entities.iter().flat_map(minecraftoss_world::natural_spawner::tick::census_of).filter(|mob| matches!(mob.kind.as_str(), "minecraft:piglin" | "minecraft:piglin_brute")));
+                sim.load_chunk(&chunk);
+            }
+        }
+        assert!(!piglins.is_empty(), "the bastion holds piglins");
+        let alive = sim.tracked_mobs([f64::from(at[0]), f64::from(at[1]), f64::from(at[2])], 112.0);
+        assert_eq!(alive.piglins().len(), piglins.len(), "every bastion piglin and brute comes alive");
+        assert!(alive.piglins().iter().all(|e| e.piglin.persistence_required));
+        assert!(alive.piglins().iter().any(|e| e.piglin.kind == minecraftoss_entities::piglin::PiglinKind::Brute));
+        for _ in 0..20 {
+            sim.tick();
+        }
+    }
+
+    #[test]
     fn bastion_hoglins_come_alive_and_stay_persistent() {
         let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
         let Ok(registries) = Registries::load(&paths) else { return };

@@ -455,7 +455,7 @@ impl EntityWorld {
         self.note_hoglin_hurt(id, attacker_of(owner));
     }
 
-    fn hoglin_living(&self, id: u64, players: &[PlayerCandidate]) -> Vec<Living> {
+    pub(super) fn hoglin_living(&self, id: u64, players: &[PlayerCandidate]) -> Vec<Living> {
         let mut out: Vec<Living> = players
             .iter()
             .map(|p| Living {

@@ -981,7 +981,7 @@ fn refresh_brain<W: World>(entity: &mut VillagerEntity, world: &W, seen: &[Seen]
 /// `DoorBlock.setOpen` on a door's lower half: both halves (the upper
 /// copies the lower in `updateShape`), and the open or close sound of its
 /// wood (`BlockSetType`). None when there is no such door or it already is.
-fn set_door_open(world: &mut impl World, pos: (i32, i32, i32), open: bool) -> Option<&'static str> {
+pub(super) fn set_door_open(world: &mut impl World, pos: (i32, i32, i32), open: bool) -> Option<&'static str> {
     let door = world.block(pos).filter(|b| b.id.ends_with("_door"))?;
     let value = if open { "true" } else { "false" };
     if door.property("open").unwrap_or("false") == value {
