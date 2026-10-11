@@ -31,6 +31,8 @@ const BREATH_FIRST_SPRITE: i32 = 5;
 const WAITING_CLOUD_PUFFS: usize = 2;
 const WAITING_CLOUD_RADIUS: f32 = 0.2;
 const BURST_PARTICLES: usize = 200;
+const MOUTH_POINTS: usize = 8;
+const FLAME_SPEEDS: usize = 6;
 
 type Boxes = Vec<([f64; 3], [f64; 3])>;
 
@@ -870,6 +872,38 @@ impl AmbientParticles {
             let z = f64::from(mth::sin(f64::from(angle)) * power);
             let start = DVec3::new(block.x + x * 0.1, block.y + 0.3, block.z + z * 0.1);
             self.add_breath(start, DVec3::new(x, y, z), power);
+        }
+    }
+
+    pub fn mouth_breath(&mut self, breath: &crate::ender_dragon::DragonBreath) {
+        let look = breath.look;
+        let sideways = f64::from(0.08_f32);
+        for _ in 0..MOUTH_POINTS {
+            let x = breath.head.x + self.random.next_gaussian() / 2.0;
+            let y = breath.head.y + self.random.next_gaussian() / 2.0;
+            let z = breath.head.z + self.random.next_gaussian() / 2.0;
+            let at = DVec3::new(x, y, z);
+            match breath.kind {
+                crate::ender_dragon::BreathKind::Landing => {
+                    let motion = DVec3::new(
+                        -look.x * sideways + breath.motion.x,
+                        -look.y * f64::from(0.3_f32) + breath.motion.y,
+                        -look.z * sideways + breath.motion.z,
+                    );
+                    self.add_breath(at, motion, 1.0);
+                }
+                crate::ender_dragon::BreathKind::Flame => {
+                    for speed in 0..FLAME_SPEEDS {
+                        let speed = speed as f64;
+                        let motion = DVec3::new(
+                            -look.x * sideways * speed,
+                            -look.y * f64::from(0.6_f32),
+                            -look.z * sideways * speed,
+                        );
+                        self.add_breath(at, motion, 1.0);
+                    }
+                }
+            }
         }
     }
 
@@ -1716,6 +1750,65 @@ mod tests {
         trail.breath_trail(DVec3::new(1.0, 80.0, 2.0));
         assert_eq!(trail.particles[0].position, DVec3::new(1.0, 80.5, 2.0));
         assert_eq!(trail.particles[0].velocity, DVec3::ZERO);
+    }
+
+    fn breath_of(kind: crate::ender_dragon::BreathKind, motion: DVec3) -> crate::ender_dragon::DragonBreath {
+        crate::ender_dragon::DragonBreath {
+            head: DVec3::new(3.0, 70.5, -2.0),
+            look: DVec3::new(0.6, 0.8, 0.0),
+            motion,
+            kind,
+        }
+    }
+
+    #[test]
+    fn landing_breath_streams_eight_particles_back_along_the_look() {
+        let motion = DVec3::new(0.1, -0.2, 0.05);
+        let breath = breath_of(crate::ender_dragon::BreathKind::Landing, motion);
+        let mut particles = AmbientParticles::new(21);
+        particles.mouth_breath(&breath);
+        assert_eq!(particles.len(), 8);
+        let mut random = LegacyRandom::new(21);
+        let tenth = f64::from(0.1_f32);
+        let expected_motion = DVec3::new(
+            -0.6 * f64::from(0.08_f32) + 0.1,
+            (-0.8 * f64::from(0.3_f32) - 0.2 - tenth) + tenth,
+            0.05,
+        );
+        for particle in &particles.particles {
+            let x = 3.0 + random.next_gaussian() / 2.0;
+            let y = 70.5 + random.next_gaussian() / 2.0;
+            let z = -2.0 + random.next_gaussian() / 2.0;
+            for _ in 0..5 {
+                random.next_float();
+            }
+            assert_eq!(particle.position, DVec3::new(x, y, z));
+            assert!((particle.velocity - expected_motion).length() < 1e-12, "{:?}", particle.velocity);
+            assert_eq!(particle.kind, Kind::DragonBreath);
+        }
+    }
+
+    #[test]
+    fn flame_breath_fans_six_speeds_at_eight_points() {
+        let breath = breath_of(crate::ender_dragon::BreathKind::Flame, DVec3::new(5.0, 5.0, 5.0));
+        let mut particles = AmbientParticles::new(22);
+        particles.mouth_breath(&breath);
+        assert_eq!(particles.len(), 48);
+        let tenth = f64::from(0.1_f32);
+        for (point, fan) in particles.particles.chunks(6).enumerate() {
+            for (speed, particle) in fan.iter().enumerate() {
+                assert_eq!(particle.position, fan[0].position, "point {point}");
+                let expected = DVec3::new(
+                    -0.6 * f64::from(0.08_f32) * speed as f64,
+                    (-0.8 * f64::from(0.6_f32) - tenth) + tenth,
+                    0.0,
+                );
+                assert!((particle.velocity - expected).length() < 1e-12, "point {point} speed {speed}: {:?}", particle.velocity);
+            }
+            assert!((fan[0].position - breath.head).length() < 4.0);
+        }
+        let points: Vec<DVec3> = particles.particles.chunks(6).map(|fan| fan[0].position).collect();
+        assert!(points.windows(2).all(|pair| pair[0] != pair[1]));
     }
 
     fn particles_translucent(kind: Kind) -> bool {

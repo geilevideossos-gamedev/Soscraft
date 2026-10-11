@@ -670,9 +670,41 @@ Previous commit: d964b0ef
 - **Test steps:** (the End, a new world, `/difficulty normal`, diamond armour on)
   1. Walk onto the island and let the dragon fly over you: when it spits a fireball, the fireball leaves a trail of purple puffs behind it (**1**).
   2. Where the fireball bursts, purple puffs spray out low around the spot, and the cloud left on the ground is made of slowly drifting purple puffs, with no round sparkles (**2**).
-  3. Drink or throw a lingering potion of any kind: its cloud still uses the old round sparkles in the potion's colour.
+  3. Throw a lingering potion of any kind: its cloud still uses the old round sparkles in the potion's colour.
 - **Kit:**
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:lingering_potion@regeneration*2
+```
+
+### 27. Minecraft ender dragon breathes purple from its mouth while it lands and flames
+
+Previous commit: 94e6ed43
+
+- **Changed:**
+  - `minecraft_terrain` `ender_dragon.rs`: `DragonEvents.breath` with `DragonBreath { head, look, motion, kind }` and `BreathKind::{Landing, Flame}`. Every tick the dragon ends its phase step in `Landing` it breathes from its head (the head part's centre before the parts move, as `doClientTick` runs before them) along `head_look_vector` normalized, with its own motion (`DragonLandingPhase.doClientTick`). A flame breathes on flame ticks 2, 4, 6 and 8 (`DragonSittingFlamingPhase.doClientTick`). As in vanilla the look is never turned (the two `yRot` results are thrown away).
+  - `server.rs`: the dragons' breath gathers in the server and goes to the client in the new `EntitySnapshot.dragon_breath` (appended at the end of the struct and of its literal), taken each snapshot like `breath_bursts`.
+  - `ambient_particles.rs`: `mouth_breath`: a landing breath is 8 particles at the head plus `gaussian/2` on each axis, moving `(-look.x·0.08 + motion.x, -look.y·0.3 + motion.y, -look.z·0.08 + motion.z)`; a flame breath is 8 such points with 6 particles each, `(-look.x·0.08·j, -look.y·0.6, -look.z·0.08·j)` for `j` 0 to 5 (192 particles a flame).
+  - `minecraft_survival` `entities.rs`: each snapshot's breath goes to `mouth_breath`.
+  - Entry 26's step 3 said a lingering potion can be drunk; it can only be thrown.
+- **Tests:**
+  - `ender_dragon`: `a_landing_dragon_breathes_every_tick_from_its_head` (one landing breath on each landing tick and none outside, from the head's centre, a unit look pointing up so the breath falls), `a_flaming_dragon_breathes_on_its_second_to_eighth_flame_tick` (four flames, each with breath 1, 3, 5 and 7 ticks after it starts, the sitting look `view_vector(-45, yaw)`, no motion).
+  - `ambient_particles`: `landing_breath_streams_eight_particles_back_along_the_look` (positions against a mirror random: three gaussians, then the particle's five floats), `flame_breath_fans_six_speeds_at_eight_points`.
+  - `server`: `a_landing_dragon_perches_on_the_podium_breathes_flame_and_the_flame_goes_out_when_it_takes_off` also counts one landing breath per landing tick and four flame puffs before the flame lands.
+- **Decisions:**
+  - The breath is a server event drawn on the client, like the fireball bursts, so a friend's client (track E) gets the same puffs from the snapshot; the gaussians come from the client's particle random, not the dragon's, as the client's dragon random is not synced in vanilla either.
+  - The phase that breathes is the dragon's phase after its phase step in that tick; vanilla's client runs the synced phase, which can lag a tick.
+- **Test steps:** (the End, a new world, `/difficulty normal`, diamond armour on, golden apples at hand)
+  1. Shoot all ten end crystals off the pillars with the MW2 gun. When the dragon comes in to land on the portal in the middle, purple breath streams from its mouth all the way down (**1**).
+  2. When it sits and flames, four quick purple bursts pour from its mouth toward the ground at the start of each flame, before the purple cloud spreads on the ground (**2**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:diamond_sword+sharpness=5
+```
+
+### Group c3-sky-dragon-1, combined kit
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:diamond_sword+sharpness=5,minecraft:lingering_potion@regeneration*2
 ```

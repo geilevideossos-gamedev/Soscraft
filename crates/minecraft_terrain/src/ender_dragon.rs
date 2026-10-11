@@ -30,6 +30,7 @@ pub const PART_SIZES: [(f64, f64); 8] = [
 pub const HISTORY_SENT: usize = 26;
 pub const CONTACT_DAMAGE: f32 = 10.0;
 pub const SOUND_VOLUME: f32 = 5.0;
+pub const FLAME_BREATH_TICKS: i32 = 10;
 pub const AMBIENT_SOUND: &str = "minecraft:entity.ender_dragon.ambient";
 pub const HURT_SOUND: &str = "minecraft:entity.ender_dragon.hurt";
 pub const DEATH_SOUND: &str = "minecraft:entity.generic.death";
@@ -730,6 +731,21 @@ pub struct DragonEvents {
     pub experience: Vec<(DVec3, i32)>,
     pub fireballs: Vec<(DVec3, DVec3)>,
     pub clouds: Vec<EffectCloud>,
+    pub breath: Vec<DragonBreath>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BreathKind {
+    Landing,
+    Flame,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DragonBreath {
+    pub head: DVec3,
+    pub look: DVec3,
+    pub motion: DVec3,
+    pub kind: BreathKind,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -1263,6 +1279,10 @@ impl EnderDragon {
         if self.phase != before {
             self.phase_tick(env, events);
         }
+        if self.phase == Phase::Landing {
+            let breath = self.breath(env, BreathKind::Landing, self.velocity);
+            events.breath.push(breath);
+        }
         let target = match self.phase {
             Phase::HoldingPattern => self.holding.target,
             Phase::StrafePlayer => self.strafe.target,
@@ -1586,8 +1606,21 @@ impl EnderDragon {
         }
     }
 
+    fn breath(&self, env: &DragonEnv, kind: BreathKind, motion: DVec3) -> DragonBreath {
+        DragonBreath {
+            head: self.parts[HEAD] + DVec3::new(0.0, PART_SIZES[HEAD].1 * 0.5, 0.0),
+            look: self.head_look_vector(env).normalize_or_zero(),
+            motion,
+            kind,
+        }
+    }
+
     fn flaming_tick(&mut self, env: &DragonEnv, events: &mut DragonEvents) {
         self.flame.ticks += 1;
+        if self.flame.ticks % 2 == 0 && self.flame.ticks < FLAME_BREATH_TICKS {
+            let breath = self.breath(env, BreathKind::Flame, DVec3::ZERO);
+            events.breath.push(breath);
+        }
         if self.flame.ticks >= FLAME_TICKS {
             if self.flame.count >= FLAME_ATTACKS {
                 self.set_phase(Phase::Takeoff);
@@ -3081,6 +3114,67 @@ mod tests {
             distance_to_center_sqr((0, 62, 0), dragon.position) >= 100.0,
             "it leaves the podium before circling"
         );
+    }
+
+    #[test]
+    fn a_landing_dragon_breathes_every_tick_from_its_head() {
+        let sees = |_: DVec3, _: DVec3| true;
+        let env = podium_env(&[], &sees, Some(0));
+        let mut dragon = dragon_at(DVec3::new(0.5, 110.0, 60.5), 0.0);
+        dragon.set_phase(Phase::LandingApproach);
+        let mut landing_ticks = 0;
+        for _ in 1..=4000 {
+            let head = dragon.parts[HEAD];
+            let events = dragon.tick(&env);
+            if dragon.phase == Phase::Landing {
+                landing_ticks += 1;
+                assert_eq!(events.breath.len(), 1);
+                let breath = events.breath[0];
+                assert_eq!(breath.kind, BreathKind::Landing);
+                assert_eq!(breath.head, head + DVec3::new(0.0, 0.5, 0.0));
+                assert!((breath.look.length() - 1.0).abs() < 1e-9);
+                assert!(breath.look.y > 0.0, "the landing head looks up, so its breath falls");
+            } else {
+                assert!(events.breath.is_empty(), "{:?}", dragon.phase);
+            }
+            if dragon.phase == Phase::SittingScanning {
+                break;
+            }
+        }
+        assert!(landing_ticks > 5, "{landing_ticks}");
+    }
+
+    #[test]
+    fn a_flaming_dragon_breathes_on_its_second_to_eighth_flame_tick() {
+        let sees = |_: DVec3, _: DVec3| true;
+        let players = [player(4, DVec3::new(8.0, 63.0, 0.5), true)];
+        let env = podium_env(&players, &sees, Some(0));
+        let mut dragon = perched();
+        let mut flame_started = None;
+        let mut puffs: Vec<Vec<usize>> = Vec::new();
+        for tick in 1..=1400 {
+            let head = dragon.parts[HEAD];
+            let before = dragon.phase;
+            let events = dragon.tick(&env);
+            if dragon.phase == Phase::SittingFlaming && before != Phase::SittingFlaming {
+                flame_started = Some(tick);
+                puffs.push(Vec::new());
+            }
+            for breath in &events.breath {
+                assert_eq!(breath.kind, BreathKind::Flame);
+                assert_eq!(breath.motion, DVec3::ZERO);
+                assert_eq!(breath.head, head + DVec3::new(0.0, 0.5, 0.0));
+                assert!((breath.look - view_vector(-45.0, dragon.y_rot).normalize()).length() < 1e-9);
+                puffs.last_mut().unwrap().push(tick - flame_started.unwrap());
+            }
+            if dragon.phase == Phase::Takeoff {
+                break;
+            }
+        }
+        assert_eq!(puffs.len(), 4);
+        for flame in puffs {
+            assert_eq!(flame, [1, 3, 5, 7]);
+        }
     }
 
     fn perched() -> EnderDragon {

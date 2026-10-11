@@ -97,6 +97,7 @@ pub struct ServerSim {
     respawn: Option<crate::dragon_respawn::Respawn>,
     fight_reports: Vec<FightReport>,
     dragon_fireballs: crate::dragon_fireball::DragonFireballs,
+    dragon_breath: Vec<crate::ender_dragon::DragonBreath>,
     end_players: Vec<crate::ender_dragon::PlayerBody>,
     frames: crate::item_frame::Frames,
     frame_sounds: Vec<minecraftoss_entities::world::MobSound>,
@@ -225,6 +226,7 @@ pub struct EntitySnapshot {
     pub dragon_fireballs: Vec<crate::dragon_fireball::FireballView>,
     pub breath_bursts: Vec<glam::DVec3>,
     pub frames: Vec<crate::item_frame::FrameView>,
+    pub dragon_breath: Vec<crate::ender_dragon::DragonBreath>,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -326,6 +328,7 @@ impl ServerSim {
             respawn: None,
             fight_reports: Vec::new(),
             dragon_fireballs: crate::dragon_fireball::DragonFireballs::default(),
+            dragon_breath: Vec::new(),
             end_players: Vec::new(),
             frames: crate::item_frame::Frames::default(),
             frame_sounds: Vec::new(),
@@ -1576,7 +1579,7 @@ impl ServerSim {
         let griefing = self.mobs.mob_griefing();
         let peaceful = self.level.difficulty == 0;
         {
-            let Self { level, states, mob_tables, dragons, fight_dragon, alive_crystals, end_sounds, end_hits, dragons_killed, crystals: self_crystals, fight, dragon_drops, dragon_fireballs, clouds, players_pushed, .. } = self;
+            let Self { level, states, mob_tables, dragons, fight_dragon, alive_crystals, end_sounds, end_hits, dragons_killed, crystals: self_crystals, fight, dragon_drops, dragon_fireballs, clouds, players_pushed, dragon_breath, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
             let height = |x: i32, z: i32| world.level.borrow().height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlockingNoLeaves, x, z);
             let sees = |from: glam::DVec3, to: glam::DVec3| minecraftoss_entities::sight::line_of_sight(&world, from, to);
@@ -1623,6 +1626,7 @@ impl ServerSim {
                     dragon_fireballs.shoot(dragon.id, from, direction);
                 }
                 clouds.extend(events.clouds);
+                dragon_breath.extend(events.breath);
             }
             for dragon in dragons.list.iter_mut().filter(|dragon| dragon.flame_out) {
                 dragon.flame_out = false;
@@ -2997,7 +3001,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     }
                     // After the items, one experience orb.
                     out.orbs_taken.extend(sim.take_experience(pickup_feet));
-                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), frames: sim.frame_views() });
+                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath) });
                     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
                     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), started.elapsed().as_secs_f64() * 1000.0));
                 }
@@ -7957,12 +7961,16 @@ mod tests {
         let flame = crate::effect_cloud::Breath::Flame(id);
         let mut sat = None;
         let mut phases = vec![Phase::LandingApproach];
+        let mut landing_ticks = 0;
         for _ in 0..4000 {
             server.tick_clouds(&bodies);
             server.tick_end(&[player]);
             let dragon = &server.dragons.list[0];
             if phases.last() != Some(&dragon.phase) {
                 phases.push(dragon.phase);
+            }
+            if dragon.phase == Phase::Landing {
+                landing_ticks += 1;
             }
             if dragon.phase.is_sitting() && sat.is_none() {
                 sat = Some(dragon.position);
@@ -7976,6 +7984,10 @@ mod tests {
         assert!(sat.distance_squared(glam::DVec3::new(0.5, f64::from(top), 0.5)) < 1.0, "on the podium's pillar at {top}: {sat:?}");
         let cloud = server.clouds.iter().find(|cloud| cloud.breath == Some(flame)).expect("the flame");
         assert_eq!(cloud.radius, crate::ender_dragon::FLAME_RADIUS);
+        let breathed = |kind| server.dragon_breath.iter().filter(|breath| breath.kind == kind).count();
+        assert!(landing_ticks > 0);
+        assert_eq!(breathed(crate::ender_dragon::BreathKind::Landing), landing_ticks, "a mouthful each landing tick");
+        assert_eq!(breathed(crate::ender_dragon::BreathKind::Flame), 4, "four puffs before the flame lands");
         assert!(cloud.position.distance(sat) < 10.5, "{:?}", cloud.position);
         for _ in 0..2 {
             server.dragons.list[0].damage_cooldown = 0;

@@ -985,6 +985,9 @@ impl Entities {
                 for at in std::mem::take(&mut snapshot.breath_bursts) {
                     self.ambient.breath_burst(at);
                 }
+                for breath in std::mem::take(&mut snapshot.dragon_breath) {
+                    self.ambient.mouth_breath(&breath);
+                }
                 self.dragon_voices();
                 self.orbs = snapshot.orbs.clone();
                 self.falling.receive(std::mem::take(&mut snapshot.falling), std::mem::take(&mut snapshot.tnt), &output.changes, self.ticks);
