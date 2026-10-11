@@ -28,6 +28,7 @@ use minecraft_terrain::portal_particles::PortalParticles;
 use minecraftoss_entities::tempt::PlayerCandidate;
 use minecraftoss_entities::world::{EntityWorld, MobHit, PlayerHitKind};
 use minecraft_terrain::end_crystal::{EndDamage, EndTarget};
+use minecraft_terrain::item_frame::FrameAction;
 
 const TICK_SECONDS: f64 = 1.0 / 20.0;
 /// Minecraft health per MW2 health.
@@ -47,6 +48,8 @@ pub struct Blow {
     pub can_critical: bool,
     pub can_sweep: bool,
     pub reach: f64,
+    pub block: Option<f64>,
+    pub creative: bool,
 }
 
 pub struct SentItemUse {
@@ -514,6 +517,10 @@ impl Entities {
 
     #[allow(clippy::too_many_arguments)]
     pub fn punch(&mut self, inventory: &Inventory, selected: usize, eye: DVec3, look: DVec3, yaw: f32, attack_damage: f64, strength: f32, blow: Blow) -> bool {
+        if let Some(frame) = frame_target(&self.frames, eye, look, blow.reach, blow.block, self.entity_distance(eye, look, blow.reach)) {
+            self.server.frame_action(frame, FrameAction::Attack { infinite: blow.creative });
+            return true;
+        }
         let mob = self.world.mob_on_ray(eye, look, blow.reach);
         if let Some((target, distance)) = self.end_on_ray(eye, look, blow.reach)
             && mob.is_none_or(|(_, nearest)| distance < nearest)
@@ -554,11 +561,37 @@ impl Entities {
     }
 
     pub fn mob_distance(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
+        let frame = minecraft_terrain::item_frame::on_ray(&self.frames, eye, look, reach).map(|(_, distance)| distance);
+        self.entity_distance(eye, look, reach).into_iter().chain(frame).min_by(f64::total_cmp)
+    }
+
+    fn entity_distance(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
         let mob = self.world.mob_on_ray(eye, look, reach).map(|(_, distance)| distance);
         let fireball = self.world.fireball_on_ray(eye, look, reach).map(|(_, distance)| distance);
         let bullet = self.world.shulker_bullet_on_ray(eye, look, reach).map(|(_, distance)| distance);
         let end = self.end_on_ray(eye, look, reach).map(|(_, distance)| distance);
         [mob, fireball, bullet, end].into_iter().flatten().min_by(f64::total_cmp)
+    }
+
+    pub fn frame_on_ray(&self, eye: DVec3, look: DVec3, reach: f64, block: Option<f64>) -> Option<u64> {
+        frame_target(&self.frames, eye, look, reach, block, self.entity_distance(eye, look, reach))
+    }
+
+    pub fn use_frame(&mut self, id: u64, held: Option<&ItemStack>, infinite: bool, sent: Option<SentItemUse>) -> bool {
+        let Some(view) = self.frames.iter().find(|view| view.id == id) else {
+            return false;
+        };
+        if minecraft_terrain::item_frame::use_passes(view, held.is_some()) {
+            return false;
+        }
+        if held.is_some() && self.item_use_waiting.is_some() {
+            return true;
+        }
+        self.server.frame_action(id, FrameAction::Use { held: held.cloned(), infinite });
+        if held.is_some() {
+            self.item_use_waiting = sent;
+        }
+        true
     }
 
     fn end_on_ray(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<(EndTarget, f64)> {
@@ -765,7 +798,11 @@ impl Entities {
 
     /// A bullet on a mob: an attack with the bullet's damage from where it
     /// was fired.
-    pub fn shoot(&mut self, key: u64, damage: f32, from: [f64; 3], yaw: f32) {
+    pub fn shoot(&mut self, key: u64, damage: f32, from: [f64; 3], yaw: f32, creative: bool) {
+        if let Some(id) = frame_of(key) {
+            self.server.frame_action(id, FrameAction::Shot { infinite: creative });
+            return;
+        }
         if let Some(target) = end_target_of(key) {
             self.server.end_hit(target, EndDamage::attack(damage * HEALTH_SCALE, PLAYER));
             return;
@@ -799,7 +836,11 @@ impl Entities {
             .mob_action(hit, Some(attack), &minecraftoss_player::inventory::Inventory::default(), 0, false);
     }
 
-    pub fn blast(&mut self, key: u64, damage: f32, center: [f64; 3], impact: f32, by_player: bool, slow_ticks: i32) {
+    pub fn blast(&mut self, key: u64, damage: f32, center: [f64; 3], impact: f32, by_player: bool, slow_ticks: i32, creative: bool) {
+        if let Some(id) = frame_of(key) {
+            self.server.frame_action(id, FrameAction::Blast { infinite: by_player && creative });
+            return;
+        }
         if let Some(target) = end_target_of(key) {
             self.server.end_hit(target, EndDamage::explosion(damage * BLAST_HEALTH_SCALE, by_player.then_some(PLAYER)));
             return;
@@ -1177,6 +1218,10 @@ impl Entities {
                 out.push((dragon_part_key(dragon.id, part), [low.x, low.y, low.z, high.x, high.y, high.z]));
             }
         }
+        for frame in &self.frames {
+            let (low, high) = minecraft_terrain::item_frame::hanging_box(frame.position, frame.facing);
+            out.push((FRAME_KEY | (frame.id & ((1 << 56) - 1)), [low.x, low.y, low.z, high.x, high.y, high.z]));
+        }
         out
     }
 
@@ -1467,6 +1512,7 @@ const FIREBALL_KEY: u64 = 17 << 56;
 const SHULKER_BULLET_KEY: u64 = 27 << 56;
 const CRYSTAL_KEY: u64 = 19 << 56;
 const DRAGON_KEY: u64 = 20 << 56;
+const FRAME_KEY: u64 = 28 << 56;
 pub const FLAT_HIT: u64 = 1 << 55;
 
 fn dragon_part_key(id: u64, part: usize) -> u64 {
@@ -1495,6 +1541,15 @@ fn crystal_of(key: u64) -> Option<u64> {
 
 fn fireball_of(key: u64) -> Option<u64> {
     (key >> 56 == FIREBALL_KEY >> 56).then_some(key & ((1 << 56) - 1))
+}
+
+fn frame_of(key: u64) -> Option<u64> {
+    (key >> 56 == FRAME_KEY >> 56).then_some(key & ((1 << 56) - 1))
+}
+
+fn frame_target(frames: &[minecraft_terrain::item_frame::FrameView], eye: DVec3, look: DVec3, reach: f64, block: Option<f64>, others: Option<f64>) -> Option<u64> {
+    let (id, distance) = minecraft_terrain::item_frame::on_ray(frames, eye, look, reach)?;
+    (block.is_none_or(|block| distance < block) && others.is_none_or(|other| distance < other)).then_some(id)
 }
 
 fn shulker_bullet_of(key: u64) -> Option<u64> {
@@ -1593,6 +1648,31 @@ mod tests {
         assert_eq!(key >> 56, 26);
         assert_eq!(decode(key), Some(MobHit::Shulker(42)));
         assert_eq!((crystal_of(key), fireball_of(key), end_target_of(key)), (None, None, None));
+    }
+
+    #[test]
+    fn the_frame_key_round_trips() {
+        let key = FRAME_KEY | 42;
+        assert_eq!(frame_of(key), Some(42));
+        assert_eq!((decode(key), crystal_of(key), fireball_of(key), shulker_bullet_of(key), end_target_of(key)), (None, None, None, None, None));
+        assert_eq!(frame_of(SHULKER_BULLET_KEY | 42), None);
+        assert_eq!(frame_of(encode(MobHit::Shulker(42))), None);
+    }
+
+    #[test]
+    fn a_frame_behind_a_wall_is_not_hit() {
+        let mut frames = minecraft_terrain::item_frame::Frames::default();
+        let tag = frames.fresh_tag(false, (0, 64, 3), minecraftoss_core::pos::Direction::North);
+        let id = frames.add(&tag).unwrap();
+        let views = frames.views();
+        let eye = DVec3::new(0.5, 64.5, 0.5);
+        assert_eq!(frame_target(&views, eye, DVec3::Z, 4.5, None, None), Some(id));
+        assert_eq!(frame_target(&views, eye, DVec3::Z, 4.5, Some(2.0), None), None, "a block nearer than the frame");
+        assert_eq!(frame_target(&views, eye, DVec3::Z, 4.5, Some(3.5), Some(1.0)), None, "a mob nearer than the frame");
+        assert_eq!(frame_target(&views, eye, DVec3::Z, 2.0, None, None), None, "out of reach");
+        let (low, high) = minecraft_terrain::item_frame::hanging_box(views[0].position, views[0].facing);
+        assert!((high - low - DVec3::new(0.75, 0.75, 0.0625)).length() < 1e-12);
+        assert!((low.z - 3.9375).abs() < 1e-12);
     }
 
     #[test]

@@ -85,6 +85,12 @@ pub fn frame_item_id(glow: bool) -> &'static str {
     if glow { GLOW_ITEM_FRAME } else { ITEM_FRAME }
 }
 
+pub fn hanging_box(centre: DVec3, facing: Direction) -> (DVec3, DVec3) {
+    let along = step(facing).abs();
+    let size = DVec3::splat(WIDTH) + along * (DEPTH - WIDTH);
+    (centre - size / 2.0, centre + size / 2.0)
+}
+
 pub trait FrameWorld {
     fn legacy_solid(&self, pos: BlockPos) -> bool;
     fn is_diode(&self, pos: BlockPos) -> bool;
@@ -111,6 +117,32 @@ pub struct ItemFrame {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub enum FrameAction {
+    Use {
+        held: Option<ItemStack>,
+        infinite: bool,
+    },
+    Attack {
+        infinite: bool,
+    },
+    Shot {
+        infinite: bool,
+    },
+    Blast {
+        infinite: bool,
+    },
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FrameOutcome {
+    pub handled: bool,
+    pub consumed: bool,
+    pub sounds: Vec<FrameSound>,
+    pub drops: Vec<ItemStack>,
+    pub removed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct FrameView {
     pub id: u64,
     pub glow: bool,
@@ -121,6 +153,7 @@ pub struct FrameView {
     pub glint: bool,
     pub rotation: i32,
     pub invisible: bool,
+    pub fixed: bool,
 }
 
 fn doubles(tag: &Tag, key: &str) -> Option<DVec3> {
@@ -254,10 +287,7 @@ impl ItemFrame {
     }
 
     pub fn bounding_box(&self) -> (DVec3, DVec3) {
-        let along = step(self.facing).abs();
-        let size = DVec3::splat(WIDTH) + along * (DEPTH - WIDTH);
-        let centre = self.position();
-        (centre - size / 2.0, centre + size / 2.0)
+        hanging_box(self.position(), self.facing)
     }
 
     pub fn pop_box(&self) -> (DVec3, DVec3) {
@@ -322,6 +352,7 @@ impl ItemFrame {
             glint: self.item.as_ref().is_some_and(crate::glint::has_glint),
             rotation: self.rotation,
             invisible: self.invisible,
+            fixed: self.fixed,
         }
     }
 }
@@ -440,6 +471,55 @@ impl Frames {
         drops
     }
 
+    pub fn act(
+        &mut self,
+        id: u64,
+        action: &FrameAction,
+        entity_drops: bool,
+    ) -> Option<(ItemFrame, FrameOutcome)> {
+        let index = self.list.iter().position(|frame| frame.id == id)?;
+        let mut outcome = FrameOutcome::default();
+        let (infinite, explosion) = match action {
+            FrameAction::Use { held, infinite } => {
+                let frame = &mut self.list[index];
+                if frame.fixed {
+                    return Some((frame.clone(), outcome));
+                }
+                if frame.item.is_some() {
+                    frame.rotation = (frame.rotation + 1) % NUM_ROTATIONS;
+                    outcome.sounds.push(FrameSound::RotateItem);
+                    outcome.handled = true;
+                } else if let Some(held) = held.as_ref().filter(|stack| stack.count > 0) {
+                    let mut one = held.clone();
+                    one.count = 1;
+                    frame.item = Some(one);
+                    outcome.sounds.push(FrameSound::AddItem);
+                    outcome.consumed = !infinite;
+                    outcome.handled = true;
+                }
+                return Some((frame.clone(), outcome));
+            }
+            FrameAction::Attack { infinite } | FrameAction::Shot { infinite } => (*infinite, false),
+            FrameAction::Blast { infinite } => (*infinite, true),
+        };
+        let frame = self.list[index].clone();
+        if (frame.fixed || frame.invulnerable) && !infinite {
+            return Some((frame, outcome));
+        }
+        outcome.handled = true;
+        if !frame.fixed && !explosion && frame.item.is_some() {
+            outcome.drops = self.drops(&frame, false, entity_drops, infinite);
+            outcome.sounds.push(FrameSound::RemoveItem);
+            self.list[index].item = None;
+            return Some((self.list[index].clone(), outcome));
+        }
+        outcome.sounds.push(FrameSound::Break);
+        outcome.drops = self.drops(&frame, true, entity_drops, infinite);
+        outcome.removed = true;
+        self.list.remove(index);
+        Some((frame, outcome))
+    }
+
     pub fn tags_where(&self, keep: impl Fn(DVec3) -> bool) -> Vec<Tag> {
         self.list
             .iter()
@@ -505,6 +585,35 @@ pub fn light(view: &FrameView, sky: f32, block: f32) -> ((f32, f32), (f32, f32))
 pub fn tracked(view: &FrameView, camera: DVec3) -> bool {
     let (dx, dz) = (view.position.x - camera.x, view.position.z - camera.z);
     dx * dx + dz * dz <= TRACKING_RANGE * TRACKING_RANGE
+}
+
+pub fn use_passes(view: &FrameView, holding: bool) -> bool {
+    view.fixed || (view.item.is_none() && !holding)
+}
+
+pub fn on_ray<'a>(
+    frames: impl IntoIterator<Item = &'a FrameView>,
+    eye: DVec3,
+    look: DVec3,
+    reach: f64,
+) -> Option<(u64, f64)> {
+    frames
+        .into_iter()
+        .filter_map(|view| {
+            crate::end_crystal::ray_box(eye, look, reach, hanging_box(view.position, view.facing))
+                .map(|distance| (view.id, distance))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+}
+
+pub fn frame_item_use(id: u64) -> crate::bucket::ItemUse {
+    crate::bucket::ItemUse {
+        change: crate::bucket::Change::Frame(id),
+        result: None,
+        wear: 0,
+        consumed: true,
+        sounds: Vec::new(),
+    }
 }
 
 pub fn hung_at(clicked: BlockPos, face: Direction) -> BlockPos {
@@ -1136,5 +1245,267 @@ mod tests {
             );
             assert_eq!(frame.yaw_pitch(), rotation, "{face:?}");
         }
+    }
+
+    fn filled(glow: bool, item_id: Option<&str>) -> (Frames, u64) {
+        let mut frames = Frames::default();
+        let mut tag = frame_tag(glow, (0, 64, 0), Direction::North);
+        if let Some(item_id) = item_id {
+            tag = with(tag, &[("Item", item(item_id))]);
+        }
+        let id = frames.add(&tag).unwrap();
+        (frames, id)
+    }
+
+    fn held(id: &str, count: u8) -> FrameAction {
+        FrameAction::Use {
+            held: Some(ItemStack::new(id, count)),
+            infinite: false,
+        }
+    }
+
+    #[test]
+    fn an_empty_frame_takes_one_item_and_a_full_frame_turns_it() {
+        let (mut frames, id) = filled(false, None);
+        let empty_hand = FrameAction::Use {
+            held: None,
+            infinite: false,
+        };
+        let (_, passed) = frames.act(id, &empty_hand, true).unwrap();
+        assert_eq!(passed, FrameOutcome::default(), "an empty hand passes");
+        let (frame, took) = frames.act(id, &held("minecraft:compass", 5), true).unwrap();
+        assert!(took.handled && took.consumed && !took.removed);
+        assert_eq!(took.sounds, [FrameSound::AddItem]);
+        assert_eq!(
+            frame.item.as_ref().map(|s| (s.id.as_str(), s.count)),
+            Some(("minecraft:compass", 1))
+        );
+        let (frame, turned) = frames.act(id, &held("minecraft:stick", 1), true).unwrap();
+        assert!(turned.handled && !turned.consumed);
+        assert_eq!(turned.sounds, [FrameSound::RotateItem]);
+        assert_eq!(
+            (frame.rotation, frame.item.unwrap().id.as_str()),
+            (1, "minecraft:compass")
+        );
+        let (_, turned) = frames.act(id, &empty_hand, true).unwrap();
+        assert!(turned.handled, "an empty hand turns a full frame too");
+        let (mut creative, id) = filled(false, None);
+        let infinite = FrameAction::Use {
+            held: Some(ItemStack::new("minecraft:compass", 1)),
+            infinite: true,
+        };
+        let (frame, took) = creative.act(id, &infinite, true).unwrap();
+        assert!(
+            took.handled && !took.consumed && frame.item.is_some(),
+            "creative keeps its stack"
+        );
+        assert_eq!(Frames::default().act(9, &empty_hand, true), None);
+    }
+
+    #[test]
+    fn eight_turns_bring_the_item_back() {
+        let (mut frames, id) = filled(false, Some("minecraft:arrow"));
+        let rotations: Vec<i32> = (0..8)
+            .map(|_| {
+                frames
+                    .act(id, &held("minecraft:stick", 1), true)
+                    .unwrap()
+                    .0
+                    .rotation
+            })
+            .collect();
+        assert_eq!(rotations, [1, 2, 3, 4, 5, 6, 7, 0]);
+    }
+
+    #[test]
+    fn a_fixed_frame_ignores_use_and_survival_hits_but_not_creative() {
+        let (mut frames, id) = filled(false, Some("minecraft:elytra"));
+        frames.list[0].fixed = true;
+        for action in [
+            held("minecraft:stick", 1),
+            FrameAction::Attack { infinite: false },
+            FrameAction::Shot { infinite: false },
+            FrameAction::Blast { infinite: false },
+        ] {
+            let (frame, outcome) = frames.act(id, &action, true).unwrap();
+            assert_eq!(outcome, FrameOutcome::default(), "{action:?}");
+            assert_eq!((frame.rotation, frame.item.is_some()), (0, true));
+        }
+        let (_, outcome) = frames
+            .act(id, &FrameAction::Attack { infinite: true }, true)
+            .unwrap();
+        assert!(
+            outcome.removed && outcome.drops.is_empty(),
+            "creative breaks it outright, with nothing dropped"
+        );
+        assert_eq!(outcome.sounds, [FrameSound::Break]);
+        let (mut guarded, id) = filled(false, Some("minecraft:elytra"));
+        guarded.list[0].invulnerable = true;
+        let (_, outcome) = guarded
+            .act(id, &FrameAction::Attack { infinite: false }, true)
+            .unwrap();
+        assert_eq!(
+            outcome,
+            FrameOutcome::default(),
+            "an invulnerable frame ignores survival hits"
+        );
+        let (_, outcome) = guarded
+            .act(id, &FrameAction::Attack { infinite: true }, true)
+            .unwrap();
+        assert_eq!(outcome.sounds, [FrameSound::RemoveItem]);
+    }
+
+    #[test]
+    fn a_hit_takes_the_item_out_and_a_second_hit_breaks_the_frame() {
+        for hit in [
+            FrameAction::Attack { infinite: false },
+            FrameAction::Shot { infinite: false },
+        ] {
+            let (mut frames, id) = filled(false, Some("minecraft:elytra"));
+            let (frame, first) = frames.act(id, &hit, true).unwrap();
+            assert!(first.handled && !first.removed && frame.item.is_none());
+            assert_eq!(first.sounds, [FrameSound::RemoveItem]);
+            assert_eq!(
+                first
+                    .drops
+                    .iter()
+                    .map(|s| s.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["minecraft:elytra"]
+            );
+            let (_, second) = frames.act(id, &hit, true).unwrap();
+            assert!(second.removed);
+            assert_eq!(second.sounds, [FrameSound::Break]);
+            assert_eq!(
+                second
+                    .drops
+                    .iter()
+                    .map(|s| s.id.as_str())
+                    .collect::<Vec<_>>(),
+                [ITEM_FRAME]
+            );
+            assert!(frames.list.is_empty());
+        }
+    }
+
+    #[test]
+    fn creative_hits_drop_nothing() {
+        let (mut frames, id) = filled(false, Some("minecraft:elytra"));
+        let creative = FrameAction::Attack { infinite: true };
+        let (frame, first) = frames.act(id, &creative, true).unwrap();
+        assert!(
+            frame.item.is_none() && first.drops.is_empty(),
+            "the item vanishes"
+        );
+        let (_, second) = frames.act(id, &creative, true).unwrap();
+        assert!(
+            second.removed && second.drops.is_empty(),
+            "and so does the frame"
+        );
+    }
+
+    #[test]
+    fn entity_drops_off_drops_nothing() {
+        let (mut frames, id) = filled(false, Some("minecraft:elytra"));
+        let hit = FrameAction::Attack { infinite: false };
+        let (frame, first) = frames.act(id, &hit, false).unwrap();
+        assert!(
+            frame.item.is_none()
+                && first.drops.is_empty()
+                && first.sounds == [FrameSound::RemoveItem]
+        );
+        let (_, second) = frames.act(id, &hit, false).unwrap();
+        assert!(second.removed && second.drops.is_empty());
+    }
+
+    #[test]
+    fn drop_chance_zero_keeps_the_item_from_dropping() {
+        let (mut frames, id) = filled(false, Some("minecraft:elytra"));
+        frames.list[0].drop_chance = 0.0;
+        let (frame, first) = frames
+            .act(id, &FrameAction::Attack { infinite: false }, true)
+            .unwrap();
+        assert!(
+            frame.item.is_none() && first.drops.is_empty(),
+            "the item is gone, not dropped"
+        );
+    }
+
+    #[test]
+    fn a_blast_breaks_a_full_frame_with_both_drops() {
+        let (mut frames, id) = filled(true, Some("minecraft:elytra"));
+        let (_, outcome) = frames
+            .act(id, &FrameAction::Blast { infinite: false }, true)
+            .unwrap();
+        assert!(outcome.removed);
+        assert_eq!(outcome.sounds, [FrameSound::Break]);
+        assert_eq!(
+            outcome
+                .drops
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            [GLOW_ITEM_FRAME, "minecraft:elytra"]
+        );
+    }
+
+    #[test]
+    fn drops_appear_a_step_out_from_the_wall() {
+        for facing in Direction::ALL {
+            let frame = ItemFrame::from_tag(&frame_tag(false, (0, 64, 0), facing), 1).unwrap();
+            let out = frame.drop_point() - DVec3::new(0.5, 64.5, 0.5);
+            let along = step(facing);
+            let expected =
+                along * -HANG_OFFSET + DVec3::new(along.x, 0.0, along.z) * f64::from(DROP_STEP);
+            assert!(out.abs_diff_eq(expected, 1e-6), "{facing:?}: {out}");
+        }
+    }
+
+    #[test]
+    fn glow_frames_use_their_own_sounds() {
+        let sounds = [
+            FrameSound::Place,
+            FrameSound::AddItem,
+            FrameSound::RotateItem,
+            FrameSound::RemoveItem,
+            FrameSound::Break,
+        ];
+        for sound in sounds {
+            let plain = sound.event(false);
+            let glow = sound.event(true);
+            assert!(plain.starts_with("minecraft:entity.item_frame."));
+            assert_eq!(glow, plain.replace("item_frame", "glow_item_frame"));
+        }
+        let (mut frames, id) = filled(true, None);
+        let (frame, outcome) = frames.act(id, &held("minecraft:carrot", 1), true).unwrap();
+        assert!(frame.glow);
+        assert_eq!(
+            outcome.sounds[0].event(frame.glow),
+            "minecraft:entity.glow_item_frame.add_item"
+        );
+    }
+
+    #[test]
+    fn the_crosshair_picks_the_nearest_frame_box_and_a_use_passes_only_on_an_empty_hand_and_frame()
+    {
+        let (frames, _) = filled(false, None);
+        let views = frames.views();
+        let eye = DVec3::new(0.5, 64.5, -3.0);
+        let (id, distance) = on_ray(&views, eye, DVec3::Z, 5.0).unwrap();
+        assert_eq!(id, views[0].id);
+        assert!((distance - (3.0 + 0.9375)).abs() < 1e-9, "{distance}");
+        assert_eq!(on_ray(&views, eye, DVec3::Z, 3.5), None);
+        assert_eq!(
+            on_ray(&views, eye + DVec3::X * 0.4, DVec3::Z, 5.0),
+            None,
+            "the rim ends 0.125 in"
+        );
+        assert!(use_passes(&views[0], false) && !use_passes(&views[0], true));
+        let mut full = views[0].clone();
+        full.item = Some("minecraft:carrot".to_owned());
+        assert!(!use_passes(&full, false));
+        full.fixed = true;
+        assert!(use_passes(&full, true));
+        assert_eq!(frame_item_use(7).change, crate::bucket::Change::Frame(7));
     }
 }

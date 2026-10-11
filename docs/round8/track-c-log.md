@@ -518,3 +518,37 @@ Previous commit: a3e242ed
 ```
 IW4L_MINECRAFT_KIT=minecraft:item_frame*16,minecraft:glow_item_frame*16,minecraft:oak_planks*64,minecraft:repeater*2,minecraft:diamond_pickaxe
 ```
+
+### 20. Minecraft item frames take, turn and give back items
+
+Previous commit: a87f9958
+
+- **Changed:**
+  - `minecraft_terrain` `item_frame.rs`: `FrameAction` (`Use` with the held stack, `Attack`, `Shot` for an MW2 bullet, `Blast`, each with whether the player has infinite materials) and `Frames::act`, vanilla's rules: `interact` (a fixed frame passes; a framed item turns one step with the rotate sound; an empty frame takes one of the held stack with the add sound, spent unless creative; an empty hand on an empty frame passes), `hurtServer` (a fixed or invulnerable frame ignores everything but a creative player, which breaks it outright with nothing dropped; a non-explosion hit on a framed item takes the item out with the remove sound, `dropItem` without the frame; anything else breaks the frame with the break sound and both drops) and `dropItem`. `FrameView` gets `fixed`; `use_passes` tells the client whether a use passes to the other hand, `on_ray` picks the nearest frame box along a look (frames have pick radius 0), `hanging_box` is the box shared by server and client, and `frame_item_use` is the pending use the client waits on (`Change::Frame` in `bucket.rs`).
+  - `server.rs`: `Command::FrameAction` and `ServerSim::frame_action` play the outcome's sounds at the frame and drop its drops 0.15 out from the wall; a use with something in hand answers on `item_uses` (true only when the frame took the item), so the client spends it. `break_blasted_frames` runs before each tick's explosions leave the server: every blast that touches blocks (`ExplosionEffect.interacts`: vanilla's `shouldAffectBlocklikeEntities`) breaks the frames whose position lies within twice its power, with both drops.
+  - `minecraft_survival` `entities.rs`: `punch` hits a frame first when it is nearer than both the block under the crosshair (`Blow.block`) and every other entity on the ray (vanilla's pick); `mob_distance` counts frames, so a creative click on a frame does not also break the block behind it. `use_frame` sends a use to the frame the player aims at and waits for the answer when an item was held. MW2 bullets and blasts hit frame boxes under the new bullet key 28 (`FRAME_KEY`), as `Shot` and `Blast` (`shoot` and `blast` take whether the player is creative).
+  - `render_anim` `minecraft_world.rs`: right-click goes to the aimed frame before tables, containers and block uses (main hand, then the off hand when the main hand passes), swinging the hand; left-click passes the block distance and creative to `punch`; MW2 hits pass creative.
+- **Tests:**
+  - `item_frame`: `an_empty_frame_takes_one_item_and_a_full_frame_turns_it` (and creative keeps its stack), `eight_turns_bring_the_item_back`, `a_fixed_frame_ignores_use_and_survival_hits_but_not_creative` (and an invulnerable one), `a_hit_takes_the_item_out_and_a_second_hit_breaks_the_frame` (a punch and an MW2 bullet), `creative_hits_drop_nothing`, `entity_drops_off_drops_nothing`, `drop_chance_zero_keeps_the_item_from_dropping`, `a_blast_breaks_a_full_frame_with_both_drops`, `drops_appear_a_step_out_from_the_wall`, `glow_frames_use_their_own_sounds`, `the_crosshair_picks_the_nearest_frame_box_and_a_use_passes_only_on_an_empty_hand_and_frame`.
+  - `server`: `a_bullet_pops_the_elytra_out_of_the_ship_frame` (the item 0.15 out with a 10-tick pickup delay, the empty frame stays, a second bullet breaks it), `tnt_beside_a_frame_breaks_it` (a blast that keeps blocks, as a creeper's with `mob_griefing` off, and one more than twice its power away leave it), `a_frame_use_answers_on_the_item_uses_only_when_an_item_was_held`.
+  - `minecraft_survival` `entities`: `the_frame_key_round_trips`, `a_frame_behind_a_wall_is_not_hit` (and behind a nearer mob, and out of reach).
+- **Decisions:**
+  - MW2 bullets count as projectile hurts (the item comes out first, then the frame breaks); MW2 grenades and every level explosion count as explosions (the frame breaks with both drops). A creative player's bullets and grenades drop nothing, as a creative player's hits.
+  - `Command::FrameAction` carries no player id: like `ItemOnBlock` and `MobAction`, its answer goes to the one local player on `item_uses`; track E adds player ids to all of these together. The frame state itself is per level, nothing reads player 0.
+  - A frame hit still counts as an attack for the hand (the attack timer resets and the swing costs the usual 0.1 exhaustion); vanilla skips the exhaustion (`skipAttackInteraction`). Minor, left as is.
+  - A level explosion whose direct source is in water still breaks frames (vanilla's `ignoreExplosion` checks the TNT's water); the level's explosion record does not carry its source.
+  - While a held-item use is still waiting for the server, a second click on a frame does nothing.
+- **Test steps:** (survival, a new world; armour off)
+  1. Hang a frame on a wall and right-click it with a compass: the compass goes in with a sound and one leaves your hand. Right-click it 8 times: it turns 45 degrees each time with a click and comes back to where it started (**1**).
+  2. Left-click the frame: the compass pops out with a sound and drops in front of it; the empty frame stays. Left-click again: the frame breaks and drops. Pick both up.
+  3. Hang a frame, put a carrot in and shoot it once with the MW2 gun: the carrot pops out. Shoot again: the frame breaks and drops (**2**).
+  4. Hang three filled frames on a wall around a TNT block 2 blocks away and light it: all three break and drop the frame and the item (**3**).
+  5. `/gamerule mob_griefing false`, hang a filled frame and let a creeper blow up beside it: the frame stays. `/gamerule mob_griefing true`.
+  6. `/gamemode creative` and left-click a filled frame: the item vanishes and nothing drops. Hit again: the frame vanishes, no drop. Right-click an empty frame with a stack: the item goes in and the stack keeps its count.
+  7. Right-click an empty frame with an empty main hand and a torch in the off hand: the torch goes in.
+  8. End city ship: in survival, right-click the elytra frame once (the elytra turns), then left-click it: the elytra pops out; pick it up (**4**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:item_frame*16,minecraft:glow_item_frame*8,minecraft:compass,minecraft:carrot*16,minecraft:torch*8,minecraft:tnt*4,minecraft:flint_and_steel,minecraft:creeper_spawn_egg*2,minecraft:oak_planks*64,minecraft:diamond_pickaxe
+```

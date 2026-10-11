@@ -1102,6 +1102,8 @@ fn update(
                 can_critical: falling && !on_ground && !water.wet() && !sprinting,
                 can_sweep: on_ground && !sprinting && held.as_ref().is_some_and(|s| s.id.ends_with("_sword")),
                 reach: game_mode.entity_reach(),
+                block: player.target(&minecraft_terrain::doors::Outlined(&terrain.scene), game_mode.block_reach()).map(|hit| hit.distance),
+                creative: !game_mode.consumes_items(),
             };
             if entities.punch(inventory, *selected, eye_block, look, mc_yaw, damage, strength, blow) {
                 punched = true;
@@ -1203,11 +1205,20 @@ fn update(
             Vec::new()
         };
         let has_item = inventory.slots[*selected].is_some() || inventory.slots[minecraft_survival::offhand::OFFHAND].is_some();
+        let framed = entities.frame_on_ray(eye_block, look, game_mode.entity_reach(), player.target(&minecraft_terrain::doors::Outlined(&terrain.scene), game_mode.block_reach()).map(|hit| hit.distance));
         let used = minecraft_survival::offhand::use_hands(&hands, |slot| {
             use minecraft_survival::offhand::HandUse;
             let main = slot != minecraft_survival::offhand::OFFHAND;
             player.selected = slot;
             let held = inventory.slots[slot].clone();
+            if let Some(frame) = framed {
+                let sent = held.as_ref().map(|stack| minecraft_survival::entities::SentItemUse { slot, held: stack.id.clone(), eye: eye_block, yaw: mc_yaw, pitch: ps.viewangles[0], outcome: minecraft_terrain::item_frame::frame_item_use(frame) });
+                if !entities.use_frame(frame, held.as_ref(), !game_mode.consumes_items(), sent) {
+                    return HandUse::Passed;
+                }
+                hand.swing = Some(0.0);
+                return HandUse::Consumed;
+            }
             let table = player
                 .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
                 .map(|hit| hit.pos)
@@ -1382,6 +1393,7 @@ fn update(
                     minecraft_terrain::bucket::Change::ThrowEye(throw) => entities.throw_eye(throw, sent),
                     minecraft_terrain::bucket::Change::Rocket(boost_ticks) => crate::minecraft_elytra::launch_rocket(&mut authority.0, local.0, boost_ticks, &mut hand.swing, || finish_item_use(entities, inventory, sounds.as_mut(), &world.packs, origin, sent, game_mode.consumes_items())),
                     minecraft_terrain::bucket::Change::Breath => entities.bottle_breath(player.pos, if player.crouching { 1.5 } else { 1.8 }, sent),
+                    minecraft_terrain::bucket::Change::Frame(_) => {}
                 }
                 HandUse::Consumed
             } else if let Some(stack) = held.as_ref()
@@ -1584,9 +1596,9 @@ fn update(
     if let Some(entities) = entities.as_mut() {
         for shot in mob_shots {
             match shot {
-                sim::voxel::VoxelEvent::MobShot { key, damage, from } => entities.shoot(key, damage, from, mc_yaw),
+                sim::voxel::VoxelEvent::MobShot { key, damage, from } => entities.shoot(key, damage, from, mc_yaw, !player_mode.consumes_items()),
                 sim::voxel::VoxelEvent::MobBlast { key, damage, center, impact, attacker, slow_ticks } => {
-                    entities.blast(key, damage, center, impact, attacker == Some(local.0.0), slow_ticks);
+                    entities.blast(key, damage, center, impact, attacker == Some(local.0.0), slow_ticks, !player_mode.consumes_items());
                 }
                 _ => {}
             }

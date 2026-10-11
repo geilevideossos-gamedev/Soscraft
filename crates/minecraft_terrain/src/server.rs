@@ -2107,6 +2107,27 @@ impl ServerSim {
         }
     }
 
+    pub fn frame_action(&mut self, id: u64, action: crate::item_frame::FrameAction) -> crate::item_frame::FrameOutcome {
+        let Some((frame, outcome)) = self.frames.act(id, &action, self.level.entity_drops) else {
+            return crate::item_frame::FrameOutcome::default();
+        };
+        for &sound in &outcome.sounds {
+            self.frame_sound(&frame, sound);
+        }
+        self.drop_from_frame(&frame, outcome.drops.clone());
+        outcome
+    }
+
+    pub fn break_blasted_frames(&mut self) {
+        let blasts: Vec<(glam::DVec3, f32)> = self.level.explosion_effects.iter().filter(|effect| effect.interacts).map(|effect| (glam::DVec3::from_array(effect.center), effect.radius)).collect();
+        for (center, radius) in blasts {
+            let reached: Vec<u64> = self.frames.list.iter().filter(|frame| crate::end_crystal::in_blast(frame.position(), center, radius)).map(|frame| frame.id).collect();
+            for id in reached {
+                self.frame_action(id, crate::item_frame::FrameAction::Blast { infinite: false });
+            }
+        }
+    }
+
     pub fn frame_views(&self) -> Vec<crate::item_frame::FrameView> {
         self.frames.views()
     }
@@ -2315,6 +2336,7 @@ pub enum Command {
     PlayerUuid { player: u64, uuid: u128 },
     Job(Job),
     EndHit { target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage },
+    FrameAction { id: u64, action: crate::item_frame::FrameAction },
 }
 
 pub type Job = Box<dyn FnOnce(&mut ServerSim) -> Box<dyn std::any::Any + Send> + Send>;
@@ -2711,6 +2733,10 @@ impl ServerHandle {
         self.send(Command::EndHit { target, damage });
     }
 
+    pub fn frame_action(&mut self, id: u64, action: crate::item_frame::FrameAction) {
+        self.send(Command::FrameAction { id, action });
+    }
+
     pub fn save(&mut self) {
         self.send(Command::Save);
     }
@@ -2831,6 +2857,13 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::GameRules(rules) => sim.apply_game_rules(&rules),
                 Command::Job(job) => out.jobs.push(job(&mut sim)),
                 Command::EndHit { target, damage } => sim.end_hit(target, damage),
+                Command::FrameAction { id, action } => {
+                    let answers = matches!(action, crate::item_frame::FrameAction::Use { held: Some(_), .. });
+                    let outcome = sim.frame_action(id, action);
+                    if answers {
+                        out.item_uses.push(outcome.consumed);
+                    }
+                }
                 Command::Save => {
                     sim.ticks_since_save = 0;
                     sim.save_all_entities();
@@ -2894,6 +2927,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.players_pushed.extend(sim.take_players_pushed());
                     out.potion_breaks.extend(sim.take_potion_breaks());
                     out.explosions.extend(sim.take_explosions());
+                    sim.break_blasted_frames();
                     out.explosion_effects.extend(sim.take_explosion_effects());
                     out.level_events.extend(sim.level.level_events.drain(..).map(|(id, pos, data)| (id, (pos.x, pos.y, pos.z), data)));
                     out.mob_sounds.extend(sim.mobs.take_sounds());
@@ -8063,5 +8097,60 @@ mod tests {
         assert!(!hung(&mut server, (8, 199, 8), Direction::West, false));
         let sounds: Vec<_> = server.take_frame_sounds().into_iter().map(|sound| (sound.event, sound.position)).collect();
         assert_eq!(sounds, [("minecraft:entity.glow_item_frame.place".to_owned(), glam::DVec3::new(9.03125, 199.5, 8.5)), ("minecraft:entity.item_frame.place".to_owned(), glam::DVec3::new(7.96875, 199.5, 8.5))]);
+    }
+
+    #[test]
+    fn a_bullet_pops_the_elytra_out_of_the_ship_frame() {
+        use crate::item_frame::FrameAction;
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, _)) = door_world() else { return };
+        let id = framed(&mut server, false, (8, 199, 9), Direction::South, Some("minecraft:elytra"));
+        let outcome = server.frame_action(id, FrameAction::Shot { infinite: false });
+        assert!(outcome.handled && !outcome.removed);
+        assert_eq!(item_ids(&server), ["minecraft:elytra"]);
+        let dropped = server.items()[0].position;
+        assert!((dropped[2] - (9.03125 + f64::from(0.15f32))).abs() < 1e-9, "a step out from the wall: {dropped:?}");
+        assert_eq!(server.items()[0].pickup_delay, 10);
+        assert_eq!(server.frame_views()[0].item, None, "the empty frame stays");
+        assert_eq!(server.take_frame_sounds()[0].event, "minecraft:entity.item_frame.remove_item");
+        server.frame_action(id, FrameAction::Shot { infinite: false });
+        assert!(server.frame_views().is_empty());
+        assert_eq!(item_ids(&server), ["minecraft:elytra", "minecraft:item_frame"]);
+    }
+
+    #[test]
+    fn tnt_beside_a_frame_breaks_it() {
+        use minecraftoss_core::pos::Direction;
+        use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
+        let Some((mut server, _)) = door_world() else { return };
+        framed(&mut server, false, (8, 199, 9), Direction::South, Some("minecraft:carrot"));
+        server.level.explode(Explosion { center: [8.5, 199.0, 12.5], radius: 3.0, fire: false, interaction: BlockInteraction::Keep, source: None });
+        server.break_blasted_frames();
+        assert_eq!(server.frame_views().len(), 1, "a creeper that may not grief leaves frames alone");
+        server.take_explosion_effects();
+        server.level.explode(Explosion { center: [8.5, 199.5, 17.5], radius: 4.0, fire: false, interaction: BlockInteraction::DestroyWithDecay, source: None });
+        server.break_blasted_frames();
+        assert_eq!(server.frame_views().len(), 1, "out of reach: more than twice the power away");
+        server.take_explosion_effects();
+        server.level.explode(Explosion { center: [8.5, 199.5, 13.5], radius: 4.0, fire: false, interaction: BlockInteraction::DestroyWithDecay, source: None });
+        server.break_blasted_frames();
+        assert!(server.frame_views().is_empty(), "TNT breaks it");
+        let dropped = item_ids(&server);
+        assert!(["minecraft:carrot", "minecraft:item_frame"].iter().all(|id| dropped.iter().any(|d| d == id)), "{dropped:?}");
+    }
+
+    #[test]
+    fn a_frame_use_answers_on_the_item_uses_only_when_an_item_was_held() {
+        use crate::item_frame::FrameAction;
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, _)) = door_world() else { return };
+        let id = framed(&mut server, false, (8, 199, 9), Direction::South, None);
+        let mut handle = ServerHandle::spawn(server);
+        handle.frame_action(id, FrameAction::Use { held: None, infinite: false });
+        handle.frame_action(id, FrameAction::Use { held: Some(minecraftoss_player::inventory::ItemStack::new("minecraft:compass", 3)), infinite: false });
+        handle.frame_action(id, FrameAction::Use { held: Some(minecraftoss_player::inventory::ItemStack::new("minecraft:compass", 2)), infinite: false });
+        handle.wait_idle();
+        let uses: Vec<bool> = handle.poll().into_iter().flat_map(|out| out.item_uses).collect();
+        assert_eq!(uses, [true, false], "the first took the compass, the second turned it");
     }
 }
