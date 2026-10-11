@@ -108,6 +108,47 @@ public static class CargoSlotJob {
 }
 if (-not [CargoSlotJob]::KillTreeOnExit()) { Write-Host "cargo-slot: warning: cargo will outlive this shell if it is killed" }
 
+if (-not ('CargoSlotQos' -as [type])) {
+Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Threading;
+public static class CargoSlotQos {
+    [StructLayout(LayoutKind.Sequential)]
+    struct PowerThrottling { public uint Version; public uint ControlMask; public uint StateMask; }
+    [DllImport("kernel32.dll")] static extern bool SetProcessInformation(IntPtr process, int infoClass, ref PowerThrottling info, uint size);
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    static readonly string[] Names = { "cargo", "rustc", "rust-lld", "lld-link", "link", "clippy-driver", "build-script-build" };
+    static readonly HashSet<int> Done = new HashSet<int>();
+    static Timer timer;
+    public static int Freed = 0;
+    static bool Free(IntPtr handle) {
+        PowerThrottling p = new PowerThrottling();
+        p.Version = 1; p.ControlMask = 5; p.StateMask = 0;
+        return SetProcessInformation(handle, 4, ref p, 12);
+    }
+    static void Sweep(object state) {
+        foreach (string name in Names) {
+            foreach (Process proc in Process.GetProcessesByName(name)) {
+                try {
+                    lock (Done) { if (Done.Contains(proc.Id)) continue; }
+                    if (Free(proc.Handle)) { Freed++; lock (Done) { Done.Add(proc.Id); } }
+                } catch { } finally { proc.Dispose(); }
+            }
+        }
+    }
+    public static bool Start() {
+        bool self = Free(GetCurrentProcess());
+        if (timer == null) { timer = new Timer(Sweep, null, 0, 1000); }
+        return self;
+    }
+}
+"@
+}
+if (-not [CargoSlotQos]::Start()) { Write-Host "cargo-slot: warning: could not opt this shell out of Windows power throttling" }
+
 $m0 = New-Object System.Threading.Mutex($false, "Local\iw4l-cargo-slot-0")
 $m1 = New-Object System.Threading.Mutex($false, "Local\iw4l-cargo-slot-1")
 $held = @()
@@ -157,5 +198,5 @@ try {
     foreach ($h in $held) { $h.ReleaseMutex() }
 }
 $sw.Stop()
-Write-Host ("cargo-slot: exit {0} after {1:N0}s" -f $code, $sw.Elapsed.TotalSeconds)
+Write-Host ("cargo-slot: exit {0} after {1:N0}s ({2} processes kept off power throttling)" -f $code, $sw.Elapsed.TotalSeconds, [CargoSlotQos]::Freed)
 exit $code
