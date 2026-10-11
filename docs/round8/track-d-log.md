@@ -76,10 +76,33 @@ Commit: the one after `ac3479e4` (group 1).
   4. Options > Controls > Minecraft: rebind "Skateboard Down/Up" to K and restart. K puts the board down and J does nothing; the overlay names K. Set it back to J.
 - **Kit:** none needed.
 
+## Group 3a. The skateboard is picked up by teleports, deep water, flying, gliding, mounts and spectator mode
+
+Commit: the one after `1daef351` (group 2).
+
+- **Changed:**
+  - `frame/src/minecraft_ui.rs`: `MinecraftUi.board_allowed` (per viewer, computed from that viewer's player).
+  - `render_anim/src/minecraft_world.rs`: the pure `board_allowed(alive, spectator, pm_flags, eye_in_water)` sets it every frame next to `ui.active`: alive, not in spectator mode, neither `MC_FLYING` nor `MC_GLIDING`, and the eyes not under water (`water.eye`, vanilla's `isEyeInFluid(WATER)` dismount).
+  - `render_anim/src/skate.rs`:
+    - On the Minecraft map (`MinecraftUi.active`), the skate key does nothing while `board_allowed` is false (no notice, as vanilla does nothing either), and a board that is down, or going down, is picked up as soon as it turns false. `minecraft_world::update` runs after `skate::update`, so skating sees the previous frame's value; one frame late is fine. MW2 maps are unchanged.
+    - Teleports: at the top of `update`, before the worker's replies are drained, the `eflags::TELEPORT` bit of the local player in `AuthorityWorld` is compared with the bit kept in `Host.teleport_bit` (refreshed every frame, also while not skating). A flip while riding, entering or activating calls `stop`, whose epoch bump makes the queued pose stale, so the old place is never written back over the new one. `/tp`, ender pearls, chorus fruit, end gateways and dimension changes all go through `SimWorld::teleport`, so the player stands at the new place with the board picked up. Respawn was already covered by the `alive` check.
+  - `docs/MINECRAFT-SURVIVAL.md`: the Skating bullet says when the board can't go down and what picks it up.
+- **Tests:**
+  - `render_anim`: `the_board_is_refused_flying_gliding_dead_spectating_or_under_water` (`minecraft_world.rs`) and `a_teleport_flip_picks_the_board_up` (`skate.rs`, the pure `teleported(last, now)`, false on the first frame).
+- **Decisions:**
+  - Mounts and sleeping: track B (strider riding with `pm_flags::MC_RIDING`, and sleeping) is not merged into this track's base, so `board_allowed` has no "riding" or "asleep" condition yet. Whichever of B and D merges second adds them to `board_allowed` (one more flag test and one more argument).
+  - A refused board makes no notice: in vanilla a blocked mount just does nothing, and the brief's step 21 expects "nothing happens".
+  - Gliding is the `MC_GLIDING` flag alone (the elytra code also checks it may glide, but the flag is only set while gliding is allowed).
+- **Owner's test steps** (brief section 5, steps 15, 18 and 21):
+  1. In creative, dig a 3 by 3 pool 2 blocks deep and fill every block of it with the water bucket, then `/gamemode survival`. Put the board down and ride into it: the board is picked up once your eyes go under, and you swim.
+  2. On the board, open chat and run `/tp ~ ~ ~20`: you arrive standing, with the board picked up. Throw an ender pearl high into the air and press J while it flies: you land standing where it hits.
+  3. `/gamemode creative`, double-tap Space to fly and press J: nothing happens. `/gamemode spectator` and J: nothing. `/gamemode survival`.
+- **Kit:** `minecraft:water_bucket`, `minecraft:ender_pearl*16`.
+
 ## The whole track's owner test, one kit
 
-Groups 1 and 2 need no items. Their steps: group 1 steps 1-4, group 2 steps 1-4.
+Steps in order: group 1 steps 1-4, group 2 steps 1-4, group 3a steps 1-3. Groups 1 and 2 need no items; 3a needs the water bucket and the ender pearls.
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:cobblestone*64
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:water_bucket,minecraft:ender_pearl*16
 ```

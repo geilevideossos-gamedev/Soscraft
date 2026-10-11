@@ -33,6 +33,7 @@ struct Host {
     logged_tick: u64,
     preloaded_banks: bool,
     notice_at: Option<f64>,
+    teleport_bit: Option<u32>,
 }
 
 const SKATING_OFF: &str = "Skating is off (Options > Controls > Minecraft)";
@@ -47,6 +48,10 @@ fn refused_toggle(skating: bool, assets: bool) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+fn teleported(last: Option<u32>, now: u32) -> bool {
+    last.is_some_and(|last| last != now)
 }
 
 pub fn register(app: &mut App) {
@@ -355,6 +360,12 @@ fn update(
     let Some(authority) = authority.as_deref_mut() else {
         return;
     };
+    if let Some(bit) = authority.0.player(local.0).map(|ps| ps.e_flags & playerstate_iw4::eflags::TELEPORT)
+        && teleported(host.teleport_bit.replace(bit), bit)
+        && (mode.active || host.enter_requested || host.activating)
+    {
+        stop(&mut host, &mut mode, authority);
+    }
     let enabled = settings.is_some_and(|settings| settings.skating);
     let assets = std::env::var_os("IW4L_SKATE_ASSETS").is_some();
     let now = time.elapsed_secs_f64();
@@ -376,7 +387,8 @@ fn update(
         .clip
         .as_ref()
         .is_none_or(|a| clip.0.as_ref().is_some_and(|b| Arc::ptr_eq(a, b)));
-    if (mode.active || host.enter_requested || host.activating) && (!alive || !same_map) {
+    let board_ok = minecraft.as_deref().is_none_or(|ui| !ui.active || ui.board_allowed);
+    if (mode.active || host.enter_requested || host.activating) && (!alive || !same_map || !board_ok) {
         stop(&mut host, &mut mode, authority);
     }
     if !same_map {
@@ -501,6 +513,9 @@ fn update(
             host.notice_at = Some(now);
             return;
         }
+        if !board_ok {
+            return;
+        }
         if host.send.is_none() {
             diag::warn!(World, "Skate session unavailable: {}", mode.status);
             return;
@@ -604,5 +619,15 @@ mod tests {
         assert_eq!(refused_toggle(false, false), Some(SKATING_OFF));
         assert_eq!(refused_toggle(true, false), Some(NO_SKATE_DATA));
         assert_eq!(refused_toggle(true, true), None);
+    }
+
+    #[test]
+    fn a_teleport_flip_picks_the_board_up() {
+        assert!(!teleported(None, 0));
+        assert!(!teleported(None, 2));
+        assert!(!teleported(Some(0), 0));
+        assert!(!teleported(Some(2), 2));
+        assert!(teleported(Some(0), 2));
+        assert!(teleported(Some(2), 0));
     }
 }

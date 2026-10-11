@@ -394,6 +394,10 @@ fn pad_trigger(pad: Option<&bevy::input::gamepad::Gamepad>, button: GamepadButto
     pad.is_some_and(|pad| if just { pad.just_pressed(button) } else { pad.pressed(button) })
 }
 
+fn board_allowed(alive: bool, spectator: bool, pm_flags: u32, eye_in_water: bool) -> bool {
+    alive && !spectator && pm_flags & (playerstate_iw4::pm_flags::MC_FLYING | playerstate_iw4::pm_flags::MC_GLIDING) == 0 && !eye_in_water
+}
+
 #[allow(clippy::too_many_arguments)]
 fn update(
     time: Res<Time>,
@@ -1993,6 +1997,7 @@ fn update(
             .filter(|&w| authority.0.weapon_combat_row(w).is_some_and(|facts| facts.inventory_type == 0))
             .collect();
         ui.active = alive;
+        ui.board_allowed = board_allowed(alive, player_mode.mode == minecraftoss_player::GameMode::Spectator, ps.pm_flags, water.eye);
         if !alive {
             ui.inventory_open = false;
             ui.chat.close();
@@ -2993,6 +2998,23 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
         view.clouds = None;
         view.light_volume = None;
         view.generation += 1;
+    }
+}
+
+#[cfg(test)]
+mod skate_tests {
+    use super::board_allowed;
+    use playerstate_iw4::pm_flags::{CROUCH, MC_FLYING, MC_GLIDING, SPRINTING};
+
+    #[test]
+    fn the_board_is_refused_flying_gliding_dead_spectating_or_under_water() {
+        assert!(board_allowed(true, false, 0, false));
+        assert!(board_allowed(true, false, SPRINTING | CROUCH, false));
+        assert!(!board_allowed(false, false, 0, false));
+        assert!(!board_allowed(true, true, 0, false));
+        assert!(!board_allowed(true, false, MC_FLYING, false));
+        assert!(!board_allowed(true, false, MC_GLIDING, false));
+        assert!(!board_allowed(true, false, 0, true));
     }
 }
 
