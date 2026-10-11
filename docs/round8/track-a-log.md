@@ -109,7 +109,7 @@ Commit: 93d48f00
 
 ### 5a. Minecraft commands take decimal arguments and fixed suggestions like brigadier
 
-Commit: (see the next entry, or `git log` under this subject)
+Commit: 7af8c86f
 
 - **Changed:** `minecraft_commands`, command-tree plumbing only; nothing uses it yet (`/tick` comes in 5b).
   - `args.rs`: `ArgKind::Float { min, max }` and `Arg::Float`, parsed like brigadier's `FloatArgumentType`: `read_float`, then `argument.float.low` or `argument.float.big` with the bound and the number written as Java's `Float.toString` writes them (`1.0`, `0.5`, `10000.0`), with the cursor put back at the argument's start. `ArgKind` and `NodeKind` lose `Eq` (a float bound has none); nothing needed it.
@@ -118,3 +118,41 @@ Commit: (see the next entry, or `git log` under this subject)
 - **Tests:** `args.rs`: `decimal_arguments_report_bounds_like_brigadier` (`0.5` against 1-10000 gives `argument.float.low` with `1.0` and `0.5` at the argument's start, `20000` the `big` error with `10000.0` and `20000.0`, `40` parses as 40.0). `suggest.rs`: `fixed_suggestions_replace_the_argument_kinds_own` (on a test tree, a float with `suggests(["20"])` offers `20`, a float without offers nothing, and a time argument with `["1t", "1s"]` offers those instead of its units after `1`).
 - **Test steps:** none in game on their own; `/tick` (5b) uses this.
 - **Kit:** none needed.
+
+### 5b. Minecraft /tick query, rate, freeze, unfreeze, step and sprint like vanilla
+
+Commit: (see the next entry, or `git log` under this subject)
+
+- **Changed:**
+  - New `minecraft_commands/src/tick.rs`: the `/tick` node (permission level 3) with `query`, `rate <rate>` (a float from 1 to 10000, suggesting `20`), `step`, `step stop`, `step <time>` (at least 1 tick, suggesting `1t` and `1s`), `sprint stop`, `sprint <time>` (suggesting `60s`, `1d` and `3d`), `freeze` and `unfreeze`. Each one follows `TickCommand` (javap): message keys and order, which lines go to other ops, and the return values (`query` and `rate` the rate as an int, `freeze` 1, `unfreeze` 0, the rest 1). Registered in `commands.rs`'s tree.
+  - Numbers are written like Java's `String.format(Locale.ROOT, "%.1f")` and `"%.2f"`: `java_fixed` rounds half up on the shortest decimal form of the double, so 2.25 ms shows as `2.3` as in vanilla, where Rust's `{:.1}` would give `2.2`. Times go through vanilla's `nanosToMilisString` (a float division by 1e6).
+  - `minecraft_commands/src/server.rs`: `TickQuery` (rate, frozen, sprinting, nanoseconds per tick, the average, the 100-tick ring) and `SprintReport` (ticks per second, ms per tick). `CommandWorld` gains `tick_query`, `set_tick_rate`, `set_tick_frozen`, `step_ticks`, `stop_stepping`, `sprint_ticks` and `stop_sprinting`, with defaults; a world without `tick_query` answers `/tick` as an unknown command. `CommandServer::server_feedback` sends a line from the server's own command source: `[Server: ...]` in grey italic to every op, only while `send_command_feedback` is on (vanilla's `broadcastToAdmins` for the server source). The test lang table has the 15 `commands.tick.*` keys and the float bound errors, and `FakeWorld` a small fake of the tick state.
+  - `minecraft_survival/src/tick_rate.rs`: vanilla's `stepGameIfPaused`, `stopStepping`, `requestGameToSprint` (it keeps the frozen state to give back, and a second sprint takes the then unfrozen state, as vanilla does), `stopSprinting` and `finishTickSprint`, which now builds the report (`(int)(1000 * done / max(1, spent ns) / 1e6)` ticks per second, and the ms per tick, or the target ms when no tick ran), logs it at INFO as the server console would, and puts back the frozen state. A sprint that ends by itself during `plan` leaves its report in `take_reports()`; a sprint stopped by a command gives the report to the command. `query()` fills `TickQuery`.
+  - `minecraft_survival/src/commands.rs`: `Host` holds `&mut TickRate` (built in `run` from `globals.tick_rate`) and implements the new methods on it. `run` takes the reports of sprints that ended by themselves and sends each as a server line to the ops (`report_sprints`), in the same frame they ended (`plan_ticks` runs before `run`).
+  - `render_anim/src/minecraft_chat.rs`: its test `Host` gets a tick rate.
+- **Tests:**
+  - `minecraft_commands` (`tick.rs`): `numbers_round_half_up_like_java_format`, `query_shows_the_status_the_rates_and_the_percentiles` (running, lagging, frozen and sprinting lines, with P50/P95/P99 from a known ring and the return value 20), `the_percentiles_read_the_whole_ring_with_its_zeros`, `rate_sets_the_target_and_reports_float_bounds` (`40.0`, the ops broadcast, return 12 for 12.5, `Float must not be less than 1.0: found 0.5` with its context line, the `big` error for 20000), `steps_need_a_frozen_game_and_stop_once`, `a_second_sprint_interrupts_the_first_without_a_report`, `stopping_a_sprint_reports_it_from_the_server_first`, `freezing_stops_a_sprint_with_its_report_and_any_steps`, `server_reports_stay_silent_without_command_feedback`, `tick_needs_level_three_and_a_world_that_ticks` (level 2 gets an unknown command, level 3 the answer), `tick_suggests_its_subcommands_rates_and_times`. `/tick` added to the existing `/help` and root-suggestion lists.
+  - `minecraft_survival` (`tick_rate.rs`): `the_rate_is_at_least_one_tick_a_second` (1, 3 and 10000 per second, and 0.5 clamps to 1), `steps_run_while_frozen_and_then_freeze_again`, `sprint_ticks_plan_without_waiting_and_record_their_time`, `a_sprint_reports_its_ticks_per_second_and_time_per_tick` (1200 ticks in 600 ms give 2000 and 0.50; a sprint stopped before its first tick gives 0 and 50.00), `a_sprint_gives_back_the_frozen_state_it_found`, `freezing_while_sprinting_reports_once`. (`commands.rs`): `tick_drives_the_server_tick_rate` and `a_finished_sprint_is_reported_to_the_operators_from_the_server`.
+- **Decisions:**
+  - A batch ends before the tick that finishes a sprint, so that sprint's last ticks are recorded before the report is made; vanilla records each tick's time right after it. Without this, a sprint that ends inside a batch would leave its last batch out of its ticks per second.
+  - The report carries numbers, and the command crate writes them (`commands.tick.sprint.report` with `%.2f`), so the formatting lives in one place; the brief had `(i32, String)`.
+  - The server console copy of a sprint report is a `diag::info!` line from `TickRate` (it reaches `latest.log` for both ends of a sprint), rather than a line pushed into the command server's warnings, which are logged at WARN.
+  - `freeze` stops any sprint and steps by calling `stop_sprinting` and `stop_stepping` outright: they do nothing when nothing runs, which is the same as vanilla's `isSprinting`/`isSteppingForward` checks first.
+  - Player lines (`Set the target tick rate ...` to other ops) keep the existing `feedback`, gated by `log_admin_commands` as before (brief section 6, left to track E).
+- **Test steps** (brief section 5, steps 3 and 6-13):
+  1. Start in survival on grass in daylight. Place 4 saplings, spawn 2 cows, and drop a few cobblestone (Q).
+  2. Type `/gamerule random_tick_speed 20000`, wait 5 s, then type `/tick query`. It shows `The game is running, but can't keep up with the target tick rate`, then `Target tick rate: 20.0 per second.` with an average time per tick above 50 ms on the next line, then a percentile line ending in `Sample: 100`. **Screenshot 1.** Type `/gamerule random_tick_speed 3`; after about 10 s `/tick query` shows `The game is running normally`.
+  3. Type `/tick freeze`. You get `The game is frozen`. Drop cobblestone: it hangs in the air where it left your hand. The cows stand still. Light a TNT block: it flashes but doesn't explode. Place sand in the air: it stays there. Pour water: it doesn't spread. The sun stops. You can still walk, jump and shoot, and walking over a cobblestone lying on the ground picks it up. **Screenshot 2.**
+  4. Type `/tick step`: `Stepping 1 tick(s)`, and things move a tiny bit. Then `/tick step 5s`: `Stepping 100 tick(s)`; the TNT explodes (its fuse is 80 ticks), the hanging items fall and the water spreads, then everything stops again. Then type `/tick step stop`: red `No tick step in progress`. **Screenshot 3.**
+  5. Type `/tick unfreeze`: `The game is running normally`. Then type `/tick step`: red `Unable to step the game - the game must be frozen first`.
+  6. Place the furnace with coal and raw iron. Type `/tick rate 5`: `Set the target tick rate to 5.0 per second`. Mobs, items and the furnace's arrow run at a quarter speed, while MW2 movement stays normal. `/tick query` shows `(Target: 200.0ms)`. **Screenshot 4.** Then type `/tick rate 20`.
+  7. Type `/tick rate 0`: red `Float must not be less than 1.0: found 0.0`, then the grey `tick rate 0<--[HERE]` line with the `0` in red.
+  8. Type `/tick sprint 1d`: `The game is sprinting`. A day and night pass much faster than normal: about one to three minutes, depending on the PC (the furnace finishes, saplings grow). MW2 stays smooth. Then a grey italic line appears: `[Server: Sprint completed with ... ticks per second, or ... ms per tick]`. **Screenshot 5.**
+  9. Type `/tick sprint 3d`, and after a second `/tick sprint stop`. The grey `[Server: Sprint completed ...]` report appears, then `Interrupted the current tick sprint`. Another `/tick sprint stop` gives red `No tick sprint in progress`.
+  10. Press Tab after `/tick `, `/tick sprint ` and `/tick step `. The lists are `freeze query rate sprint step unfreeze`, `1d 3d 60s stop` and `1s 1t stop`. **Screenshot 6.**
+  11. Quit to the menu. `iw4l-artifacts\logs\latest.log` has the two `Sprint completed with ...` lines. Send them.
+- **Kit** (11 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:oak_sapling*16,minecraft:cow_spawn_egg*4,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:sand*16,minecraft:water_bucket,minecraft:furnace,minecraft:coal*16,minecraft:raw_iron*16,minecraft:dirt*32
+```

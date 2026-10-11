@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use minecraft_commands::{
     Answer, BlockEdit, Clientbound, Clock, CommandData, CommandHints, CommandRegistries,
     CommandServer, CommandWorld, Enchanted, EnchantmentInfo, Experience, ItemArg, ItemFilter,
-    Loaded, LocateKind, LocateRequest, Located, PlayerId, Pose, Serverbound, Text, Weather,
+    Loaded, LocateKind, LocateRequest, Located, PlayerId, Pose, Serverbound, SprintReport, Text,
+    TickQuery, Weather,
 };
 use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_terrain::day_cycle::DayCycle;
@@ -23,6 +24,7 @@ use crate::entities::Entities;
 use crate::level::Level;
 use crate::player::Player;
 use crate::server::Globals;
+use crate::tick_rate::TickRate;
 
 pub const HOST: PlayerId = PlayerId(0);
 pub const LEVEL_UP_SOUND: &str = "minecraft:entity.player.levelup";
@@ -52,6 +54,7 @@ pub struct Host<'a> {
     pub mode_changed: Vec<PlayerId>,
     pub respawn_changed: Vec<PlayerId>,
     pub teleports: Vec<(PlayerId, [f64; 3])>,
+    pub tick_rate: &'a mut TickRate,
 }
 
 pub fn env_file() -> Option<PathBuf> {
@@ -704,6 +707,34 @@ impl CommandWorld for Host<'_> {
             .collect()
     }
 
+    fn tick_query(&self) -> Option<TickQuery> {
+        Some(self.tick_rate.query())
+    }
+
+    fn set_tick_rate(&mut self, rate: f32) {
+        self.tick_rate.set_rate(rate);
+    }
+
+    fn set_tick_frozen(&mut self, frozen: bool) {
+        self.tick_rate.set_frozen(frozen);
+    }
+
+    fn step_ticks(&mut self, ticks: i32) -> bool {
+        self.tick_rate.step(ticks)
+    }
+
+    fn stop_stepping(&mut self) -> bool {
+        self.tick_rate.stop_stepping()
+    }
+
+    fn sprint_ticks(&mut self, ticks: i32) -> bool {
+        self.tick_rate.request_sprint(ticks)
+    }
+
+    fn stop_sprinting(&mut self) -> Option<SprintReport> {
+        self.tick_rate.stop_sprinting()
+    }
+
     fn level_up(&mut self, player: PlayerId) {
         let feet = self.presence(player).pose.map(|pose| pose.feet);
         let Some((player, entities)) = self.player_in_level(player) else {
@@ -968,6 +999,23 @@ pub fn answer_jobs(
     delivered
 }
 
+pub fn report_sprints(
+    chat: &CommandServer,
+    rules: &GameRules,
+    to: PlayerId,
+    reports: Vec<SprintReport>,
+) -> Vec<Clientbound> {
+    let level = chat.level(to);
+    reports
+        .into_iter()
+        .flat_map(|report| {
+            chat.server_feedback(minecraft_commands::tick::sprint_report(report), rules)
+        })
+        .filter(|out| out.to.reaches(to, level))
+        .map(|out| out.message)
+        .collect()
+}
+
 #[derive(Default)]
 pub struct Handled {
     pub delivered: Vec<Clientbound>,
@@ -1003,6 +1051,7 @@ pub fn run(
         mode_changed: Vec::new(),
         respawn_changed: Vec::new(),
         teleports: Vec::new(),
+        tick_rate: &mut globals.tick_rate,
     };
     let mut delivered = pump(id, sent, &mut globals.chat, &mut host);
     let rules_changed = host.rules_changed;
@@ -1016,6 +1065,8 @@ pub fn run(
         finished.extend(take_jobs_of(&mut entities.command_jobs, id));
     }
     delivered.extend(answer_jobs(&globals.chat, &globals.game_rules, id, finished));
+    let reports = globals.tick_rate.take_reports();
+    delivered.extend(report_sprints(&globals.chat, &globals.game_rules, id, reports));
     if rules_changed {
         for entities in levels.values_mut().filter_map(|level| level.entities.as_mut()) {
             entities.set_game_rules(&globals.game_rules);
@@ -1071,6 +1122,7 @@ pub(crate) mod tests {
         pub(crate) presence: Vec<(PlayerUuid, Presence)>,
         pub(crate) server: CommandServer,
         pub(crate) env_file: Option<PathBuf>,
+        pub(crate) tick_rate: TickRate,
     }
 
     impl Parts {
@@ -1088,6 +1140,7 @@ pub(crate) mod tests {
                 presence: Vec::new(),
                 server: CommandServer::new(HOST),
                 env_file: None,
+                tick_rate: TickRate::default(),
             };
             parts.join(HOST, "Steve", [4.5, 70.0, -2.5]);
             parts
@@ -1146,6 +1199,7 @@ pub(crate) mod tests {
                 mode_changed: Vec::new(),
                 respawn_changed: Vec::new(),
                 teleports: Vec::new(),
+                tick_rate: &mut self.tick_rate,
             }
         }
 
@@ -1229,6 +1283,20 @@ pub(crate) mod tests {
             }
             "commands.locate.poi.not_found" => {
                 "Could not find a point of interest of type \"%s\" within a reasonable distance"
+            }
+            "commands.tick.rate.success" => "Set the target tick rate to %s per second",
+            "commands.tick.status.frozen" => "The game is frozen",
+            "commands.tick.status.running" => "The game is running normally",
+            "commands.tick.status.sprinting" => "The game is sprinting",
+            "commands.tick.step.success" => "Stepping %s tick(s)",
+            "commands.tick.sprint.report" => {
+                "Sprint completed with %s ticks per second, or %s ms per tick"
+            }
+            "commands.tick.query.percentiles" => {
+                "Percentiles: P50: %sms P95: %sms P99: %sms. Sample: %s"
+            }
+            "commands.tick.query.rate.running" => {
+                "Target tick rate: %s per second.\nAverage time per tick: %sms (Target: %sms)"
             }
             _ => return None,
         };
@@ -2251,5 +2319,53 @@ pub(crate) mod tests {
         assert!(host.effect_clear(HOST, Some("minecraft:regeneration")));
         assert!(!host.effect_clear(HOST, None));
         assert!(!host.effect_give(PlayerId(1), "minecraft:regeneration", Some(20), 0));
+    }
+
+    #[test]
+    fn tick_drives_the_server_tick_rate() {
+        let mut parts = Parts::new();
+        let (lines, _) = parts.send(HOST, &["/tick rate 5", "/tick freeze", "/tick step 1s"]);
+        assert_eq!(
+            lines,
+            [
+                "Set the target tick rate to 5.0 per second",
+                "The game is frozen",
+                "Stepping 20 tick(s)"
+            ]
+        );
+        assert_eq!(parts.tick_rate.rate(), 5.0);
+        assert!(parts.tick_rate.is_frozen());
+        assert!(parts.tick_rate.is_stepping());
+        let (lines, _) = parts.send(HOST, &["/tick query", "/tick unfreeze"]);
+        assert_eq!(
+            lines,
+            [
+                "The game is frozen",
+                "Target tick rate: 5.0 per second.\nAverage time per tick: 0.0ms (Target: 200.0ms)",
+                "Percentiles: P50: 0.0ms P95: 0.0ms P99: 0.0ms. Sample: 100",
+                "The game is running normally"
+            ]
+        );
+        assert!(!parts.tick_rate.is_frozen());
+        let (lines, _) = parts.send(HOST, &["/tick sprint 1d"]);
+        assert_eq!(lines, ["The game is sprinting"]);
+        assert!(parts.tick_rate.is_sprinting());
+    }
+
+    #[test]
+    fn a_finished_sprint_is_reported_to_the_operators_from_the_server() {
+        let mut parts = Parts::new();
+        parts.join(FRIEND, "Alex", [0.0, 70.0, 0.0]);
+        let report = SprintReport {
+            ticks_per_second: 2000,
+            ms_per_tick: 0.5,
+        };
+        let lines = report_sprints(&parts.server, &parts.rules, HOST, vec![report]);
+        assert_eq!(
+            lines.iter().map(line).collect::<Vec<_>>(),
+            ["[Server: Sprint completed with 2000 ticks per second, or 0.50 ms per tick]"]
+        );
+        assert!(report_sprints(&parts.server, &parts.rules, FRIEND, vec![report]).is_empty());
+        assert!(report_sprints(&parts.server, &parts.rules, HOST, Vec::new()).is_empty());
     }
 }

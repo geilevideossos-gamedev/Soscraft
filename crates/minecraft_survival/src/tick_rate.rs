@@ -1,5 +1,7 @@
 use std::time::{Duration, Instant};
 
+use minecraft_commands::{SprintReport, TickQuery};
+
 pub const SAMPLES: usize = 100;
 pub const DEFAULT_RATE: f32 = 20.0;
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
@@ -67,6 +69,7 @@ pub struct TickRate {
     aggregated: u64,
     last_batch_nanos: u64,
     ticks_until_autosave: i32,
+    reports: Vec<SprintReport>,
 }
 
 impl Default for TickRate {
@@ -89,6 +92,7 @@ impl Default for TickRate {
             aggregated: 0,
             last_batch_nanos: 1,
             ticks_until_autosave: AUTOSAVE_INTERVAL,
+            reports: Vec::new(),
         }
     }
 }
@@ -142,6 +146,55 @@ impl TickRate {
         self.frozen
     }
 
+    pub fn is_stepping(&self) -> bool {
+        self.frozen_ticks_to_run > 0
+    }
+
+    pub fn step(&mut self, ticks: i32) -> bool {
+        if !self.frozen {
+            return false;
+        }
+        self.frozen_ticks_to_run = ticks;
+        true
+    }
+
+    pub fn stop_stepping(&mut self) -> bool {
+        if self.frozen_ticks_to_run <= 0 {
+            return false;
+        }
+        self.frozen_ticks_to_run = 0;
+        true
+    }
+
+    pub fn request_sprint(&mut self, ticks: i32) -> bool {
+        let was_sprinting = self.remaining_sprint_ticks > 0;
+        self.sprint_time_spent_nanos = 0;
+        self.scheduled_sprint_ticks = i64::from(ticks);
+        self.remaining_sprint_ticks = i64::from(ticks);
+        self.previous_frozen = self.frozen;
+        self.frozen = false;
+        was_sprinting
+    }
+
+    pub fn stop_sprinting(&mut self) -> Option<SprintReport> {
+        (self.remaining_sprint_ticks > 0).then(|| self.finish_sprint())
+    }
+
+    pub fn take_reports(&mut self) -> Vec<SprintReport> {
+        std::mem::take(&mut self.reports)
+    }
+
+    pub fn query(&self) -> TickQuery {
+        TickQuery {
+            rate: self.rate,
+            frozen: self.frozen,
+            sprinting: self.is_sprinting(),
+            nanos_per_tick: self.nanos_per_tick,
+            average_nanos: self.average_nanos(),
+            samples: self.samples,
+        }
+    }
+
     pub fn autosave_interval(&self) -> i32 {
         let rate = if self.is_sprinting() {
             NANOS_PER_SECOND as f32 / (self.average_nanos() + 1) as f32
@@ -179,6 +232,9 @@ impl TickRate {
         }
         let limit = self.max_batch();
         while batch.len() < limit {
+            if self.sprint_finishes_next() && !batch.is_empty() {
+                break;
+            }
             let nanos_per_tick = if self.is_sprinting() && self.check_should_sprint_this_tick() {
                 self.next_tick = Some(now);
                 self.last_overload_warning = Some(now);
@@ -237,6 +293,10 @@ impl TickRate {
         }
     }
 
+    fn sprint_finishes_next(&self) -> bool {
+        self.is_sprinting() && self.run_game_elements && self.remaining_sprint_ticks <= 0
+    }
+
     fn check_should_sprint_this_tick(&mut self) -> bool {
         if !self.run_game_elements {
             return false;
@@ -245,16 +305,35 @@ impl TickRate {
             self.remaining_sprint_ticks -= 1;
             return true;
         }
-        self.finish_sprint();
+        let report = self.finish_sprint();
+        self.reports.push(report);
         false
     }
 
-    fn finish_sprint(&mut self) {
+    fn finish_sprint(&mut self) -> SprintReport {
+        let done = self.scheduled_sprint_ticks - self.remaining_sprint_ticks;
+        let ms = (self.sprint_time_spent_nanos as f64).max(1.0) / NANOS_PER_MILLISECOND as f64;
+        let ticks_per_second = ((1000 * done) as f64 / ms) as i32;
+        let ms_per_tick = if done == 0 {
+            f64::from(self.nanos_per_tick as f32 / NANOS_PER_MILLISECOND as f32)
+        } else {
+            ms / done as f64
+        };
+        diag::info!(
+            World,
+            "Sprint completed with {} ticks per second, or {} ms per tick",
+            ticks_per_second,
+            minecraft_commands::tick::java_fixed(ms_per_tick, 2)
+        );
         self.scheduled_sprint_ticks = 0;
         self.sprint_time_spent_nanos = 0;
         self.remaining_sprint_ticks = 0;
         self.frozen = self.previous_frozen;
         self.on_rate_changed();
+        SprintReport {
+            ticks_per_second,
+            ms_per_tick,
+        }
     }
 
     pub fn record(&mut self, nanos: &[u64]) {
@@ -471,6 +550,142 @@ mod tests {
         rate.set_frozen(false);
         assert_eq!(rate.plan(base + ms(400), true).normal, [true]);
         assert_eq!(rate.client_timing().tick_seconds, 0.2);
+    }
+
+    #[test]
+    fn the_rate_is_at_least_one_tick_a_second() {
+        let mut rate = TickRate::default();
+        assert_eq!(rate.nanos_per_tick(), 50_000_000);
+        rate.set_rate(1.0);
+        assert_eq!(rate.nanos_per_tick(), 1_000_000_000);
+        rate.set_rate(3.0);
+        assert_eq!(rate.nanos_per_tick(), 333_333_333);
+        rate.set_rate(10000.0);
+        assert_eq!(rate.nanos_per_tick(), 100_000);
+        rate.set_rate(0.5);
+        assert_eq!((rate.rate(), rate.nanos_per_tick()), (1.0, 1_000_000_000));
+        assert_eq!(rate.query().rate, 1.0);
+        assert_eq!(rate.query().nanos_per_tick, 1_000_000_000);
+    }
+
+    #[test]
+    fn steps_run_while_frozen_and_then_freeze_again() {
+        let mut rate = TickRate::default();
+        let base = Instant::now();
+        assert!(!rate.step(3), "only a frozen game steps");
+        rate.set_frozen(true);
+        assert!(rate.step(3));
+        assert!(rate.is_stepping());
+        let mut flags = Vec::new();
+        for i in 0..5 {
+            flags.extend(rate.plan(base + ms(50 * i), true).normal);
+            rate.record(&[MS]);
+        }
+        assert_eq!(flags, [true, true, true, false, false]);
+        assert!(!rate.is_stepping());
+        assert!(!rate.stop_stepping());
+        assert!(rate.step(100));
+        assert!(rate.stop_stepping());
+        assert!(!rate.stop_stepping());
+        assert_eq!(rate.plan(base + ms(250), true).normal, [false]);
+    }
+
+    #[test]
+    fn sprint_ticks_plan_without_waiting_and_record_their_time() {
+        let mut rate = TickRate::default();
+        let base = Instant::now();
+        assert!(!rate.request_sprint(10));
+        assert!(rate.is_sprinting());
+        assert!(rate.query().sprinting);
+        let batch = rate.plan(base, true);
+        assert_eq!(batch.normal, [true; 10]);
+        assert!(
+            rate.take_reports().is_empty(),
+            "the last batch is still out"
+        );
+        rate.record(&[MS; 10]);
+        assert_eq!(rate.plan(base, true).len(), 1);
+        assert_eq!(
+            rate.take_reports(),
+            [SprintReport {
+                ticks_per_second: 1000,
+                ms_per_tick: 1.0
+            }]
+        );
+        assert!(!rate.is_sprinting());
+        assert!(rate.take_reports().is_empty());
+    }
+
+    #[test]
+    fn a_sprint_reports_its_ticks_per_second_and_time_per_tick() {
+        let mut rate = TickRate::default();
+        let base = Instant::now();
+        rate.request_sprint(1200);
+        let mut planned = 0;
+        for frame in 0..100 {
+            let batch = rate.plan(base + ms(frame), true);
+            rate.record(&vec![MS / 2; batch.len()]);
+            planned += batch.len();
+            if !rate.is_sprinting() {
+                break;
+            }
+        }
+        assert_eq!(planned, 1201, "the sprint and one normal tick after it");
+        assert_eq!(
+            rate.take_reports(),
+            [SprintReport {
+                ticks_per_second: 2000,
+                ms_per_tick: 0.5
+            }]
+        );
+        rate.request_sprint(5);
+        assert_eq!(
+            rate.stop_sprinting(),
+            Some(SprintReport {
+                ticks_per_second: 0,
+                ms_per_tick: 50.0
+            })
+        );
+        assert!(
+            rate.take_reports().is_empty(),
+            "a stopped sprint answers the command"
+        );
+        assert_eq!(rate.stop_sprinting(), None);
+    }
+
+    #[test]
+    fn a_sprint_gives_back_the_frozen_state_it_found() {
+        let mut rate = TickRate::default();
+        let base = Instant::now();
+        rate.set_frozen(true);
+        assert_eq!(rate.plan(base, true).normal, [false]);
+        assert!(!rate.request_sprint(3));
+        assert!(!rate.is_frozen());
+        let mut flags = Vec::new();
+        for frame in 1..5 {
+            let batch = rate.plan(base + ms(50 * frame), true);
+            rate.record(&vec![MS; batch.len()]);
+            flags.extend(batch.normal);
+        }
+        assert!(rate.is_frozen());
+        assert_eq!(rate.take_reports().len(), 1);
+        assert_eq!(flags.iter().filter(|&&normal| normal).count(), 4);
+        assert_eq!(flags.last(), Some(&false));
+    }
+
+    #[test]
+    fn freezing_while_sprinting_reports_once() {
+        let mut rate = TickRate::default();
+        let base = Instant::now();
+        rate.request_sprint(200);
+        assert_eq!(rate.plan(base, true).len(), 100);
+        rate.record(&[MS; 100]);
+        assert!(rate.stop_sprinting().is_some());
+        rate.set_frozen(true);
+        assert_eq!(rate.stop_sprinting(), None);
+        rate.plan(base + ms(50), true);
+        assert!(rate.take_reports().is_empty());
+        assert!(rate.is_frozen());
     }
 
     #[test]

@@ -840,6 +840,7 @@ mod tests {
                 "spawnpoint",
                 "summon",
                 "teleport",
+                "tick",
                 "time",
                 "tp",
                 "weather",
@@ -1086,7 +1087,7 @@ mod tests {
             vec![(0..4, GRAY), (4..6, AQUA), (6..7, GRAY), (7..12, YELLOW)]
         );
         assert_eq!(texts(&at_end("/tp", OWNERS)), Vec::<&str>::new());
-        assert_eq!(texts(&at_end("/t", OWNERS)), vec!["teleport", "time", "tp"]);
+        assert_eq!(texts(&at_end("/t", OWNERS)), vec!["teleport", "tick", "time", "tp"]);
         assert_eq!(texts(&at_end("/xp ", OWNERS)), vec!["add", "query", "set"]);
         assert_eq!(
             texts(&at_end("/xp add @s 5 ", OWNERS)),
