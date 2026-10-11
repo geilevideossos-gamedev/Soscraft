@@ -2,6 +2,18 @@ $exclusive = $false
 $targetDir = ""
 $waitMinutes = 0
 $cargoArgs = @()
+$slots = 2
+$jobs = 8
+$low = $false
+$cfg = Join-Path $env:LOCALAPPDATA "iw4l-cargo-slot.txt"
+if (Test-Path $cfg) {
+    foreach ($line in Get-Content $cfg) {
+        if ($line -match '^\s*slots\s*=\s*([12])\s*$') { $slots = [int]$Matches[1] }
+        if ($line -match '^\s*jobs\s*=\s*([1-8])\s*$') { $jobs = [int]$Matches[1] }
+        if ($line -match '^\s*priority\s*=\s*low\s*$') { $low = $true }
+    }
+}
+if ($slots -eq 1) { $exclusive = $true }
 foreach ($a in $args) {
     $s = [string]$a
     if ($cargoArgs.Count -eq 0 -and $s -eq "+exclusive") { $exclusive = $true; continue }
@@ -43,11 +55,18 @@ if ($jobsSubs -contains $sub) {
             Write-Host "cargo-slot: only -j 8 is allowed"
             exit 2
         }
-        $cmdArgs += $userArgs
-    } else {
-        $cmdArgs += @("-j", "8")
-        $cmdArgs += $userArgs
+        $kept = @()
+        $skipNext = $false
+        foreach ($a in $userArgs) {
+            if ($skipNext) { $skipNext = $false; continue }
+            if ($a -eq "-j" -or $a -eq "--jobs") { $skipNext = $true; continue }
+            if ($a -like "-j*" -or $a -like "--jobs=*") { continue }
+            $kept += $a
+        }
+        $userArgs = $kept
     }
+    $cmdArgs += @("-j", [string]$jobs)
+    $cmdArgs += $userArgs
     if ($afterDashes) { $cmdArgs += "--"; $cmdArgs += $passThrough }
     foreach ($a in $userArgs) {
         if ($a -eq "--release" -or $a -eq "--workspace" -or $a -eq "--all" -or $a -like "--profile*") { $exclusive = $true }
@@ -108,14 +127,14 @@ public static class CargoSlotJob {
 }
 if (-not [CargoSlotJob]::KillTreeOnExit()) { Write-Host "cargo-slot: warning: cargo will outlive this shell if it is killed" }
 
-if (-not ('CargoSlotQos' -as [type])) {
+if (-not ('CargoSlotQos2' -as [type])) {
 Add-Type -TypeDefinition @"
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
-public static class CargoSlotQos {
+public static class CargoSlotQos2 {
     [StructLayout(LayoutKind.Sequential)]
     struct PowerThrottling { public uint Version; public uint ControlMask; public uint StateMask; }
     [DllImport("kernel32.dll")] static extern bool SetProcessInformation(IntPtr process, int infoClass, ref PowerThrottling info, uint size);
@@ -123,6 +142,7 @@ public static class CargoSlotQos {
     static readonly string[] Names = { "cargo", "rustc", "rust-lld", "lld-link", "link", "clippy-driver", "build-script-build" };
     static readonly HashSet<int> Done = new HashSet<int>();
     static Timer timer;
+    public static bool Low = false;
     public static int Freed = 0;
     static bool Free(IntPtr handle) {
         PowerThrottling p = new PowerThrottling();
@@ -134,6 +154,7 @@ public static class CargoSlotQos {
             foreach (Process proc in Process.GetProcessesByName(name)) {
                 try {
                     lock (Done) { if (Done.Contains(proc.Id)) continue; }
+                    if (Low) { proc.PriorityClass = ProcessPriorityClass.BelowNormal; }
                     if (Free(proc.Handle)) { Freed++; lock (Done) { Done.Add(proc.Id); } }
                 } catch { } finally { proc.Dispose(); }
             }
@@ -147,7 +168,8 @@ public static class CargoSlotQos {
 }
 "@
 }
-if (-not [CargoSlotQos]::Start()) { Write-Host "cargo-slot: warning: could not opt this shell out of Windows power throttling" }
+[CargoSlotQos2]::Low = $low
+if (-not [CargoSlotQos2]::Start()) { Write-Host "cargo-slot: warning: could not opt this shell out of Windows power throttling" }
 
 $m0 = New-Object System.Threading.Mutex($false, "Local\iw4l-cargo-slot-0")
 $m1 = New-Object System.Threading.Mutex($false, "Local\iw4l-cargo-slot-1")
@@ -198,5 +220,5 @@ try {
     foreach ($h in $held) { $h.ReleaseMutex() }
 }
 $sw.Stop()
-Write-Host ("cargo-slot: exit {0} after {1:N0}s ({2} processes kept off power throttling)" -f $code, $sw.Elapsed.TotalSeconds, [CargoSlotQos]::Freed)
+Write-Host ("cargo-slot: exit {0} after {1:N0}s ({2} processes kept off power throttling)" -f $code, $sw.Elapsed.TotalSeconds, [CargoSlotQos2]::Freed)
 exit $code
