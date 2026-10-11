@@ -81,8 +81,9 @@ pub fn root() -> Option<std::path::PathBuf> {
 
 /// Starts fetching Minecraft's files from Mojang when nothing supplies them.
 pub fn prepare() {
-    if root().is_none() {
-        crate::minecraft_setup::begin();
+    match root() {
+        Some(root) => crate::minecraft_setup::begin_end_music(&root),
+        None => crate::minecraft_setup::begin(),
     }
 }
 

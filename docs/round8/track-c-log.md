@@ -754,3 +754,17 @@ Previous commit: 8b6c9f09
 ```
 IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:diamond_sword+sharpness=5
 ```
+
+### 30. Minecraft fetches the End's three music tracks from Mojang
+
+Previous commit: 429b4266
+
+- **Changed:**
+  - `assets` `minecraft_setup.rs`: `END_MUSIC` names `music/game/end/boss.ogg`, `the_end.ogg` and `alpha.ogg`; `wanted_asset(key)` is the first fetch's filter (`sounds.json`, English text and every sound but music and records) plus these three, so a first-time fetch already brings them. `begin_end_music(root)` runs once per process on a `minecraft-music` thread: it reads `root/asset-index.json` and, for each of the three tracks missing from the resource pack or with the wrong SHA-1, fetches `resources.download.minecraft.net/<hash[0..2]>/<hash>` with the existing `fetch` (curl, hash checked) into an `.ogg.partial` file and renames it into place. It logs `Minecraft End music ready`, or a warning; the game never waits for it or fails on it.
+  - `minecraft_map.rs` `prepare`: with the files in place it starts `begin_end_music`; without them it starts the full fetch as before.
+- **Tests:** `minecraft_setup`: `only_the_end_music_is_fetched_of_mojangs_music` (the three tracks, sounds and English text yes; menu music, records and other languages no), `the_end_music_lands_in_the_resource_pack_path`, `missing_end_music_is_fetched_by_hash_and_music_already_here_is_kept` (a stand-in index and fetcher: only the two missing tracks are asked for, by their object URL, through a `.partial` file; a second run fetches nothing; no index is an error).
+- **Decisions:** only these three tracks (22 MB) are fetched. The rest of Mojang's music (259 MB) stays on their servers, so the overworld and the Nether stay silent. Nothing is committed: the files come from Mojang's servers at run time like every other asset. A fetch that fails offline is tried again on the next start.
+- **Test steps:**
+  1. Start the game once with an internet connection and open the Minecraft map. In `C:\Games\Mashup0-Rust-Rewrite-Mashup\iw4l-artifacts\minecraft-26.3esourcepacks\local\minecraft-26.3ssets\minecraft\sounds\music\game\end\` there are now `alpha.ogg`, `boss.ogg` and `the_end.ogg` (about 7, 4 and 11 MB), and the game log says `Minecraft End music ready` (**1**, the folder).
+  2. Start the game again: the log says `Minecraft End music ready` again at once, and the files' dates do not change.
+- **Kit:** none.
