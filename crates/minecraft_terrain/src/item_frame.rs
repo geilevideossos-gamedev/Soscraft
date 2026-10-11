@@ -17,6 +17,7 @@ pub const HANG_OFFSET: f64 = 0.46875;
 pub const CHECK_INTERVAL: i32 = 100;
 pub const TRACKING_RANGE: f64 = 160.0;
 pub const DROP_STEP: f32 = 0.15;
+pub const FRAME_TARGET: u64 = u64::MAX / 4;
 pub const GLOW_FRAME_BRIGHTNESS: f32 = 5.0;
 pub const FULL_BRIGHT: f32 = 15.0;
 const ITEM_DEPTH: f32 = 0.4375;
@@ -540,6 +541,21 @@ impl Frames {
         self.list.retain(|frame| !remove(frame.position()));
     }
 
+    pub fn targets(&self) -> Vec<minecraftoss_entities::potion::PotionTarget> {
+        self.list
+            .iter()
+            .map(|frame| {
+                let (min, max) = frame.bounding_box();
+                minecraftoss_entities::potion::PotionTarget {
+                    id: FRAME_TARGET + frame.id,
+                    min,
+                    max,
+                    owner: false,
+                }
+            })
+            .collect()
+    }
+
     pub fn views(&self) -> Vec<FrameView> {
         self.list.iter().map(ItemFrame::view).collect()
     }
@@ -593,6 +609,12 @@ pub fn light(view: &FrameView, sky: f32, block: f32) -> ((f32, f32), (f32, f32))
 pub fn tracked(view: &FrameView, camera: DVec3) -> bool {
     let (dx, dz) = (view.position.x - camera.x, view.position.z - camera.z);
     dx * dx + dz * dz <= TRACKING_RANGE * TRACKING_RANGE
+}
+
+pub fn struck_frame(target: u64) -> Option<u64> {
+    (FRAME_TARGET..crate::thrown::PLAYER_TARGET)
+        .contains(&target)
+        .then(|| target - FRAME_TARGET)
 }
 
 pub fn use_passes(view: &FrameView, holding: bool) -> bool {

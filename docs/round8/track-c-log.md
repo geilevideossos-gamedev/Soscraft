@@ -573,3 +573,23 @@ Previous commit: 88038810
 ```
 IW4L_MINECRAFT_KIT=minecraft:item_frame*4,minecraft:arrow*4,minecraft:comparator*2,minecraft:redstone*16,minecraft:oak_planks*16
 ```
+
+### 22. Minecraft thrown items and tridents knock items out of frames
+
+Previous commit: 3219fc47
+
+- **Changed:**
+  - `minecraft_terrain` `item_frame.rs`: `Frames::targets` gives every frame's box as a projectile target under its own id range (`FRAME_TARGET`, below the players' `PLAYER_TARGET`), and `struck_frame` reads a struck target back.
+  - `server.rs`: snowballs, eggs, ender pearls and wind charges that strike a frame hurt it (`onHitEntity` with their 0 or 1 damage): the item comes out, or an empty frame breaks, as an MW2 bullet does. Splash and lingering potions and experience bottles break on a frame without hurting it, as in vanilla. Tridents strike frames the same way and bounce off. A frame is never hurt as a mob (no knockback, no mob hit).
+- **Tests:** `server`: `a_snowball_pops_a_framed_item_and_a_trident_breaks_the_empty_frame` (and a splash potion leaves the frame alone; the id ranges round-trip).
+- **Decisions:** the brief's list said potions hurt frames; vanilla's `AbstractThrownPotion` does not hurt what it hits, so potions only break there. A frame struck by a creative player's snowball still drops (the server does not know the thrower's game mode yet; with track E's player state it can pass `infinite`).
+- **Test steps:** (survival, a new world)
+  1. Hang a frame on a wall, put a carrot in and throw a snowball at it: the carrot pops out and the frame stays (**1**).
+  2. Throw a second snowball: the empty frame breaks and drops.
+  3. Fill a frame again and throw a trident at it: the item pops out and the trident bounces off. Throw again: the frame breaks.
+  4. Throw a splash potion of water at a filled frame: it splashes; the item stays.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:item_frame*8,minecraft:carrot*8,minecraft:snowball*16,minecraft:trident,minecraft:splash_potion@water*2,minecraft:oak_planks*16
+```

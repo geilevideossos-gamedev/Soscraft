@@ -975,6 +975,7 @@ impl ServerSim {
             }
             let mut targets = mob_targets.clone();
             targets.extend(crate::thrown::player_targets(players, trident.owner));
+            targets.extend(self.frames.targets());
             let owner = players.iter().find(|p| p.id == trident.owner).map(crate::trident::TridentOwner::of);
             let events = {
                 let Self { level, states, mob_tables, .. } = self;
@@ -983,6 +984,11 @@ impl ServerSim {
             };
             for event in events {
                 match event {
+                    TridentEvent::Struck { target, .. } if crate::item_frame::struck_frame(target).is_some() => {
+                        if let Some(frame) = crate::item_frame::struck_frame(target) {
+                            self.frame_action(frame, crate::item_frame::FrameAction::Shot { infinite: false });
+                        }
+                    }
                     TridentEvent::Struck { target, velocity } => match crate::thrown::struck_player(target) {
                         Some(player) => self.players_struck.push(crate::thrown::PlayerStruck { player, by: trident.owner, damage: crate::trident::DAMAGE, kind: crate::trident::DAMAGE_TYPE, velocity }),
                         None => {
@@ -1108,6 +1114,8 @@ impl ServerSim {
             return;
         }
         let mob_targets = crate::thrown::targets(&self.mobs);
+        let frame_targets = self.frames.targets();
+        let mut frame_hits = Vec::new();
         let mut struck = Vec::new();
         let mut hatched = Vec::new();
         let mut awards = Vec::new();
@@ -1120,9 +1128,12 @@ impl ServerSim {
             for t in thrown.iter_mut() {
                 let mut targets = mob_targets.clone();
                 targets.extend(crate::thrown::player_targets(players, t.owner));
+                targets.extend(frame_targets.iter().cloned());
                 let Some(landed) = t.tick(&world, &targets, crate::thrown::owner_box(players, t.owner)) else { continue };
                 let hurts = matches!(t.kind, Throwable::Snowball | Throwable::Egg | Throwable::EnderPearl);
-                if let Some(mob) = landed.mob.filter(|&id| hurts && crate::thrown::struck_player(id).is_none()) {
+                let frame = landed.mob.and_then(crate::item_frame::struck_frame);
+                frame_hits.extend(frame.filter(|_| hurts || t.kind == Throwable::WindCharge));
+                if let Some(mob) = landed.mob.filter(|&id| hurts && crate::thrown::struck_player(id).is_none() && frame.is_none()) {
                     struck.push((mob, landed.velocity, t.owner, t.random().next_long()));
                 }
                 if hurts {
@@ -1146,7 +1157,7 @@ impl ServerSim {
                     }
                     Throwable::WindCharge => {
                         let center = if landed.mob.is_some() { t.position() } else { crate::wind::burst_point(landed.at, landed.face) };
-                        bursts.push((landed.mob, landed.velocity, t.owner, t.random().next_long(), center));
+                        bursts.push((landed.mob.filter(|_| frame.is_none()), landed.velocity, t.owner, t.random().next_long(), center));
                     }
                     Throwable::SplashPotion | Throwable::LingeringPotion => {
                         let contents = t.contents();
@@ -1174,6 +1185,9 @@ impl ServerSim {
                 }
             }
             thrown.retain(crate::thrown::Thrown::alive);
+        }
+        for id in frame_hits {
+            self.frame_action(id, crate::item_frame::FrameAction::Shot { infinite: false });
         }
         for (cell, pitch, hit, direction, amount) in awards {
             self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::thrown::BREAK_SOUND, pos: cell, volume: 1.0, pitch });
@@ -8205,5 +8219,34 @@ mod tests {
         server.frame_action(side, FrameAction::Attack { infinite: true });
         server.frame_action(id, FrameAction::Attack { infinite: false });
         assert_eq!(output(&mut server), 0, "and nothing once it is empty");
+    }
+
+    #[test]
+    fn a_snowball_pops_a_framed_item_and_a_trident_breaks_the_empty_frame() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, _)) = door_world() else { return };
+        framed(&mut server, false, (8, 200, 8), Direction::Up, Some("minecraft:carrot"));
+        server.throw(thrown_down("minecraft:snowball", 1));
+        let away = [player_at(0, [40.0, 250.0, 40.0], true)];
+        for _ in 0..20 {
+            server.tick_thrown(&away);
+        }
+        assert_eq!(item_ids(&server), ["minecraft:carrot"]);
+        assert_eq!(server.frame_views().len(), 1, "the frame stays");
+        assert_eq!(server.frame_views()[0].item, None);
+        server.throw(thrown_down("minecraft:splash_potion", 2));
+        for _ in 0..20 {
+            server.tick_thrown(&away);
+        }
+        assert_eq!(server.frame_views().len(), 1, "a potion only breaks on it");
+        server.throw_trident(trident_down(0, None, 5));
+        for _ in 0..30 {
+            server.tick_tridents(&away);
+        }
+        assert!(server.frame_views().is_empty(), "the trident breaks the empty frame");
+        assert!(item_ids(&server).contains(&"minecraft:item_frame".to_owned()));
+        assert!(crate::item_frame::struck_frame(crate::thrown::PLAYER_TARGET).is_none());
+        assert_eq!(crate::item_frame::struck_frame(crate::item_frame::FRAME_TARGET + 3), Some(3));
+        assert_eq!(crate::item_frame::struck_frame(3), None);
     }
 }
