@@ -379,6 +379,7 @@ fn serialize_settings(settings: &frame::GameSettings, binds: &KeyBinds) -> Strin
         format!("minecraft_minimap={}", settings.minecraft_minimap),
         format!("minecraft_operator_items={}", settings.minecraft_operator_items),
         format!("show_blood={}", settings.show_blood),
+        format!("skating={}", settings.skating),
         "unbindall".to_owned(),
     ];
     lines.extend(binds.list_lines());
@@ -483,6 +484,7 @@ fn parse_settings(source: &str, settings: &mut frame::GameSettings, binds: &mut 
             "minecraft_minimap" => parse_into(value, &mut settings.minecraft_minimap),
             "minecraft_operator_items" => parse_into(value, &mut settings.minecraft_operator_items),
             "show_blood" => parse_into(value, &mut settings.show_blood),
+            "skating" => parse_into(value, &mut settings.skating),
             _ => warn!("ignored unknown setting `{key}`"),
         }
     }
@@ -593,6 +595,7 @@ pub(crate) fn native_menu_settings(
             "ui_pad_deadzone_right" => parse_into(value, &mut settings.pad_deadzone_right),
             "ui_mc_minimap" => settings.minecraft_minimap = value == "1",
             "ui_show_blood" => settings.show_blood = value == "1",
+            "ui_skating" => settings.skating = value == "1",
             _ => continue,
         }
         settings.sanitize();
@@ -652,6 +655,7 @@ pub(crate) fn native_menu_settings(
     );
     dvars.set("ui_mc_minimap", if settings.minecraft_minimap { "1" } else { "0" });
     dvars.set("ui_show_blood", if settings.show_blood { "1" } else { "0" });
+    dvars.set("ui_skating", if settings.skating { "1" } else { "0" });
 }
 
 #[cfg(test)]
@@ -948,5 +952,48 @@ mod blood_tests {
         menu_set(&mut app, "set ui_show_blood 1");
         assert!(app.world().resource::<frame::GameSettings>().show_blood);
         assert_eq!(shown_blood_dvar(&app), Some("1"));
+    }
+
+    #[test]
+    fn skating_is_off_until_chosen_and_survives_a_restart() {
+        let mut settings = frame::GameSettings::default();
+        assert!(!settings.skating);
+        let saved = serialize_settings(&settings, &KeyBinds::default());
+        assert!(saved.lines().any(|line| line == "skating=false"));
+        settings.skating = true;
+        let saved = serialize_settings(&settings, &KeyBinds::default());
+        assert!(saved.lines().any(|line| line == "skating=true"));
+        let mut loaded = frame::GameSettings::default();
+        parse_settings(&saved, &mut loaded, &mut KeyBinds::default());
+        assert!(loaded.skating);
+        let mut older = frame::GameSettings::default();
+        parse_settings(
+            "// IW4L user settings v4\nshow_blood=true\nunbindall\n",
+            &mut older,
+            &mut KeyBinds::default(),
+        );
+        assert!(!older.skating);
+    }
+
+    #[test]
+    fn the_skating_menu_row_switches_the_setting_and_mirrors_it() {
+        let mut app = menu_app();
+        app.update();
+        let shown = |app: &App| {
+            app.world()
+                .resource::<frame::UiMenuDvars>()
+                .get("ui_skating")
+                .map(str::to_owned)
+        };
+        assert_eq!(shown(&app).as_deref(), Some("0"));
+        let revision = app.world().resource::<frame::GameSettings>().revision;
+        menu_set(&mut app, "set ui_skating 1");
+        let settings = app.world().resource::<frame::GameSettings>();
+        assert!(settings.skating);
+        assert_ne!(settings.revision, revision);
+        assert_eq!(shown(&app).as_deref(), Some("1"));
+        menu_set(&mut app, "set ui_skating 0");
+        assert!(!app.world().resource::<frame::GameSettings>().skating);
+        assert_eq!(shown(&app).as_deref(), Some("0"));
     }
 }

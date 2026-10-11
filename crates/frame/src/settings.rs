@@ -54,6 +54,7 @@ pub struct GameSettings {
     pub minecraft_minimap: bool,
     pub minecraft_operator_items: bool,
     pub show_blood: bool,
+    pub skating: bool,
 
     pub revision: u64,
 }
@@ -89,6 +90,7 @@ impl Default for GameSettings {
             minecraft_minimap: false,
             minecraft_operator_items: false,
             show_blood: true,
+            skating: false,
             revision: 0,
         }
     }

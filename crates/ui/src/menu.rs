@@ -373,6 +373,34 @@ mod settings_menu_tests {
     }
 
     #[test]
+    fn the_minecraft_page_offers_a_skating_switch() {
+        let catalog = settings_catalog();
+        let page = catalog.get("pc_options_minecraft").expect("minecraft page");
+        let row = named(page, "ui_skating");
+        assert_eq!(row.dvar, "ui_skating");
+        assert_eq!(row.item_type, 12);
+        assert_eq!(row.vis_exp, "1");
+        assert_eq!(row.disabled_exp, "0");
+        assert_eq!(row.rect.y, 148.0);
+        assert_eq!(
+            row.choices,
+            vec![
+                ("@MENU_DISABLED".to_owned(), "0".to_owned()),
+                ("@MENU_ENABLED".to_owned(), "1".to_owned())
+            ]
+        );
+        let labels: Vec<&MenuItem> = page
+            .items
+            .iter()
+            .filter(|item| item.vis_exp != "0" && item.rect.y == row.rect.y)
+            .filter(|item| item.name != row.name)
+            .collect();
+        assert_eq!(labels.len(), 1, "the Skating line is shared");
+        assert_eq!(labels[0].text_key, "Skating");
+        assert_eq!(labels[0].item_type, 0);
+    }
+
+    #[test]
     fn esc_and_back_on_the_minecraft_page_return_to_the_controls_page() {
         let catalog = settings_catalog();
         let page = catalog.get("pc_options_minecraft").expect("minecraft page");

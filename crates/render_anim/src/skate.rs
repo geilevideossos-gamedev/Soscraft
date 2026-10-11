@@ -31,12 +31,27 @@ struct Host {
     previous_buttons: u16,
     input_suspended: bool,
     logged_tick: u64,
+    preloaded_banks: bool,
+    notice_at: Option<f64>,
+}
+
+const SKATING_OFF: &str = "Skating is off (Options > Controls > Minecraft)";
+const NO_SKATE_DATA: &str = "Skate 3 data is not set up: restart to select your default.xex";
+const NOTICE_SECONDS: f64 = 3.0;
+
+fn refused_toggle(skating: bool, assets: bool) -> Option<&'static str> {
+    if !skating {
+        Some(SKATING_OFF)
+    } else if !assets {
+        Some(NO_SKATE_DATA)
+    } else {
+        None
+    }
 }
 
 pub fn register(app: &mut App) {
     app.init_resource::<SkateMode>()
         .init_resource::<Host>()
-        .add_systems(Startup, preload_assets)
         .add_systems(
             Update,
             update
@@ -47,7 +62,7 @@ pub fn register(app: &mut App) {
         );
 }
 
-fn preload_assets(mut mode: ResMut<SkateMode>) {
+fn preload_assets(mode: &mut SkateMode) {
     let Some(root) = std::env::var_os("IW4L_SKATE_ASSETS") else {
         return;
     };
@@ -335,10 +350,22 @@ fn update(
     mut host: ResMut<Host>,
     (gamepads, active): (Query<&bevy::input::gamepad::Gamepad>, Option<Res<frame::ActivePad>>),
     minecraft: Option<Res<frame::MinecraftUi>>,
+    settings: Option<Res<frame::GameSettings>>,
 ) {
     let Some(authority) = authority.as_deref_mut() else {
         return;
     };
+    let enabled = settings.is_some_and(|settings| settings.skating);
+    let assets = std::env::var_os("IW4L_SKATE_ASSETS").is_some();
+    let now = time.elapsed_secs_f64();
+    if host.notice_at.is_some_and(|at| now - at >= NOTICE_SECONDS) {
+        host.notice_at = None;
+        mode.status.clear();
+    }
+    if enabled && !host.preloaded_banks {
+        host.preloaded_banks = true;
+        preload_assets(&mut mode);
+    }
     let aspect_ratio = windows
         .single()
         .map(|w| w.width() / w.height().max(1.))
@@ -358,11 +385,27 @@ fn update(
         host.clip = None;
         host.ready = false;
         mode.preloaded = false;
-        mode.preload_pending = std::env::var_os("IW4L_SKATE_ASSETS").is_some();
+        mode.preload_pending = enabled && assets;
+    }
+    if !enabled && (host.send.is_some() || host.clip.is_some() || mode.preloaded || mode.preload_pending) {
+        if mode.active || host.enter_requested || host.activating {
+            stop(&mut host, &mut mode, authority);
+        }
+        let had_session = host.send.is_some();
+        host.send = None;
+        host.receive = None;
+        host.clip = None;
+        host.ready = false;
+        mode.preloaded = false;
+        mode.preload_pending = false;
+        if had_session {
+            diag::info!(World, "Skating turned off: map session dropped; decoded animation banks stay cached until exit");
+        }
     }
     // This runs during map preparation/class selection, without waiting for J.
     if host.clip.is_none()
-        && std::env::var_os("IW4L_SKATE_ASSETS").is_some()
+        && enabled
+        && assets
         && let Some(geometry) = clip.0.clone()
     {
         mode.preload_pending = true;
@@ -370,6 +413,7 @@ fn update(
         if let Err(e) = preload_map(&mut host, geometry) {
             diag::warn!(World, "Skate map preload: {e}");
             mode.preload_pending = false;
+            host.notice_at = None;
             mode.status = e;
         }
     }
@@ -440,6 +484,7 @@ fn update(
                 // the match being left without one.
                 host.clip = None;
                 diag::warn!(World, "Skate stopped: {e}; preparing a new session");
+                host.notice_at = None;
                 mode.status = e;
                 return;
             }
@@ -449,6 +494,11 @@ fn update(
     if std::mem::take(&mut mode.toggle_requested) && alive {
         if mode.active || host.enter_requested || host.activating {
             stop(&mut host, &mut mode, authority);
+            return;
+        }
+        if let Some(notice) = refused_toggle(enabled, assets) {
+            mode.status = notice.to_owned();
+            host.notice_at = Some(now);
             return;
         }
         if host.send.is_none() {
@@ -542,4 +592,17 @@ fn pad_frame(pad: &bevy::input::gamepad::Gamepad, packet: u32) -> InputFrame {
         [axis(right.x), axis(right.y)],
         packet,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_toggle_is_refused_while_skating_is_off_or_its_data_is_missing() {
+        assert_eq!(refused_toggle(false, true), Some(SKATING_OFF));
+        assert_eq!(refused_toggle(false, false), Some(SKATING_OFF));
+        assert_eq!(refused_toggle(true, false), Some(NO_SKATE_DATA));
+        assert_eq!(refused_toggle(true, true), None);
+    }
 }
