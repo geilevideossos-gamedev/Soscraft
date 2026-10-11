@@ -72,6 +72,7 @@ pub struct Entities {
     pub broken_items: Vec<String>,
     items: ItemVisuals,
     clock: f64,
+    tick_seconds: f64,
     ticks: u64,
     /// Item entities as the client shows them: the server's, and drops the
     /// client spawned that the server has not taken yet.
@@ -223,6 +224,7 @@ impl Entities {
             broken_items: Vec::new(),
             items: ItemVisuals::default(),
             clock: 0.0,
+            tick_seconds: TICK_SECONDS,
             ticks: 0,
             world_items: WorldItems::default(),
             server_handed: HashMap::new(),
@@ -836,15 +838,19 @@ impl Entities {
         selected: usize,
         dt: f64,
         batch: &crate::tick_rate::TickBatch,
+        client: crate::tick_rate::ClientTiming,
         clocks: minecraft_terrain::server::ClockTicks,
         bright_outside: bool,
         player: &PlayerView,
     ) -> (Changes, Hits) {
-        self.clock += dt;
+        self.tick_seconds = client.tick_seconds;
+        if client.runs_normally {
+            self.clock += dt;
+        }
         let orb_pickup_target = DVec3::from_array(player.feet) + DVec3::Y * f64::from(EYE_HEIGHT / 2.0);
-        let ticked = self.clock >= TICK_SECONDS;
+        let ticked = client.runs_normally && self.clock >= self.tick_seconds;
         if ticked {
-            self.clock = (self.clock - TICK_SECONDS).min(TICK_SECONDS);
+            self.clock = (self.clock - self.tick_seconds).min(self.tick_seconds);
             self.ticks += 1;
             self.falling.tick_sent();
             for tnt in self.falling.primed.iter().filter(|tnt| tnt.fuse > 0) {
@@ -1215,7 +1221,7 @@ impl Entities {
         self.client.spawn_missing(&server_mobs(&self.world));
         let w = &self.world;
         let poses = &self.client;
-        let partial = (self.clock / TICK_SECONDS).clamp(0.0, 1.0) as f32;
+        let partial = (self.clock / self.tick_seconds).clamp(0.0, 1.0) as f32;
         let mut out = MobMeshes::default();
         cow_render::append_cows(&mut out.models, w.cows().iter(), poses, atlas, light, partial);
         sheep_render::append_sheep(&mut out.models, w.sheep().iter(), poses, atlas, light, partial);

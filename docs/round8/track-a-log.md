@@ -62,7 +62,7 @@ IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:oak_sapling*16,minecraft:c
 
 ### 3. Minecraft clocks, weather, autosaves, containers and the dragon fight follow the server's ticks
 
-Commit: (see the next entry, or `git log` under this subject)
+Commit: 8913015c
 
 - **Changed:**
   - `minecraft_survival/src/server.rs`: `Server::plan_ticks` applies each planned batch to the server-wide state itself: the Overworld and End clocks move by the batch's normal ticks (`Globals::advance_clocks` takes ticks now, and the paused-day branch shifts the game time by the same ticks), the weather of a server with no weather level ticking moves by the normal ticks, `level_ticks` (the empty-level timer) by every tick, and the autosave countdown by every tick. Each ticking level that holds the batch gets its normal ticks added to its new `Level.container_ticks`. `Globals.autosave_ticks` is replaced by `autosave_due`.
@@ -89,3 +89,20 @@ Commit: (see the next entry, or `git log` under this subject)
 ```
 IW4L_MINECRAFT_KIT=minecraft:furnace,minecraft:coal*16,minecraft:raw_iron*16,minecraft:obsidian*14
 ```
+
+### 4. A frozen Minecraft tick only moves the players
+
+Commit: (see the next entry, or `git log` under this subject)
+
+- **Changed:**
+  - `minecraft_terrain/src/server.rs`: `run_tick` takes the tick's flag. A frozen tick keeps the player's part (clocks, players, the simulation area, `mobs.tick_player` with the hurts, views, vitals and main hand, `check_merchant`, item, trident and orb pickup, the entity autosave count and the snapshot after the batch) and skips the level's: `prepare_spawning` and `sim.tick()` (block, fluid and random ticks, block events, level entities, block entities, spawners), `take_spawned`, `despawn_mobs`, `tick_mobs`, `tick_clouds`, `tick_thrown`, `tick_tridents`, `tick_eyes`, `tick_end` and `spawn_trade_experience`. Commands still run between ticks, so hits on frozen mobs land.
+  - `minecraft_survival/src/tick_rate.rs`: `ClientTiming { tick_seconds, runs_normally }` and `TickRate::client_timing()`: vanilla's `getTickTargetMillis`, `max(50 ms, ms per tick)` while the last planned tick ran normally, and 50 ms with `runs_normally` false otherwise. It reads the flag of the last planned tick, which stays until the next batch.
+  - `minecraft_survival/src/entities.rs`: `Entities::tick` takes the client timing. The client clock runs at its tick length, and while the level is frozen the clock stops (the partial tick holds, so frozen mobs don't jitter) and the client tick (falling blocks, TNT smoke, lids, client mobs, portal and spell particles, eyes, blaze sounds, orb pickups) doesn't run. `client_ticks()` stops with it, so rain, display ticks, campfire smoke and `tick_scene` pause like vanilla's frozen client. The render's partial tick divides by the client tick length.
+  - `render_anim/src/minecraft_world.rs`: passes `globals.tick_rate.client_timing()`. `the_end/dragon_fight.rs`: its test passes the default timing.
+- **Tests:** `minecraft_terrain` (need the game data like their neighbours): `a_frozen_tick_holds_items_and_falling_blocks` (an item at y=210 and falling sand keep their positions over 20 frozen ticks and fall over 20 normal ones), `a_frozen_tick_still_picks_up` (an item with pickup delay 0 at the player's feet is picked up on a frozen tick), `primed_tnt_waits_while_frozen` (the fuse is unchanged after 10 frozen ticks and drops by 10 over 10 normal ones), `random_ticks_skip_frozen_ticks` (`game_time` stands still over 5 frozen ticks and moves by 5 over 5 normal ones). `minecraft_survival` (`tick_rate.rs`): `the_client_ticks_at_the_rate_but_never_faster_than_20_a_second` (0.05 at 20, 0.2 at 5, 0.05 at 40) and `a_frozen_client_ticks_50_ms_and_holds_the_level_until_a_tick_runs_normally` (frozen gives 0.05 with `runs_normally` false from the first frozen tick planned, kept on a frame that plans nothing).
+- **Decisions:**
+  - `prepare_spawning` is skipped with `sim.tick()`, because it only feeds the natural spawning inside it (vanilla's frozen `tickChunks` skips the spawn census too).
+  - The client's orb pickup animations pause while frozen, as vanilla's particle engine does.
+  - At a rate above 20 the client mirror still ticks every 50 ms and only sees the batches' snapshots, as a vanilla client does.
+- **Test steps:** none in game on their own: nothing can freeze the game or change the rate until `/tick` lands (group 5b), whose steps 6-9 in brief section 5 test this commit. At the normal rate the game must play as before: mobs, dropped items, falling sand and primed TNT move smoothly, rain and campfire smoke show.
+- **Kit:** none needed.

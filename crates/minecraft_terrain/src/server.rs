@@ -2694,8 +2694,8 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 let Some((input, flags)) = batch.as_mut() else {
                     break;
                 };
-                flags.pop_front();
-                run_tick(&mut sim, input, &mut out);
+                let normal = flags.pop_front().unwrap_or(true);
+                run_tick(&mut sim, input, normal, &mut out);
                 if flags.is_empty() {
                     finish_batch(&mut sim, input, &mut out);
                     batch = None;
@@ -2779,7 +2779,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     }
                     None => {
                         let mut input = *input;
-                        run_tick(&mut sim, &mut input, &mut out);
+                        run_tick(&mut sim, &mut input, normal[0], &mut out);
                         let flags: std::collections::VecDeque<bool> = normal.into_iter().skip(1).collect();
                         if flags.is_empty() {
                             finish_batch(&mut sim, &input, &mut out);
@@ -2802,7 +2802,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
     sim.save_all_entities();
 }
 
-fn run_tick(sim: &mut ServerSim, input: &mut TickInput, out: &mut Output) {
+fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut Output) {
     let started = std::time::Instant::now();
     sim.ticks_since_save += 1;
     if sim.ticks_since_save >= 6000 {
@@ -2816,11 +2816,15 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, out: &mut Output) {
     if let Some(natural) = &mut sim.level.natural_spawning {
         natural.spawn_mobs = input.spawn_mobs;
     }
-    sim.prepare_spawning(&input.mob_players);
-    sim.tick();
+    if normal {
+        sim.prepare_spawning(&input.mob_players);
+        sim.tick();
+    }
     let mobs_started = std::time::Instant::now();
-    sim.take_spawned();
-    sim.despawn_mobs(&input.mob_players, input.difficulty);
+    if normal {
+        sim.take_spawned();
+        sim.despawn_mobs(&input.mob_players, input.difficulty);
+    }
     sim.mobs.tick_player(0);
     for (source, kind) in std::mem::take(&mut input.player_hurts) {
         sim.mobs.player_hurt(0, source, kind);
@@ -2829,20 +2833,24 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, out: &mut Output) {
     sim.mobs.set_player_vitals(input.mob_vitals.clone());
     let held = input.pickup.as_ref().and_then(|(_, inventory, selected)| inventory.slots.get(*selected).and_then(Option::as_ref).map(|s| s.id.clone()));
     sim.mobs.set_player_main_hand(0, held.as_deref());
-    sim.tick_mobs(&input.mob_players, input.bright_outside);
     let bodies: Vec<_> = input.mob_players.iter().map(crate::thrown::PlayerBody::of).collect();
-    sim.tick_clouds(&bodies);
-    sim.tick_thrown(&bodies);
-    sim.tick_tridents(&bodies);
-    sim.tick_eyes();
-    sim.tick_end(&input.mob_players);
+    if normal {
+        sim.tick_mobs(&input.mob_players, input.bright_outside);
+        sim.tick_clouds(&bodies);
+        sim.tick_thrown(&bodies);
+        sim.tick_tridents(&bodies);
+        sim.tick_eyes();
+        sim.tick_end(&input.mob_players);
+    }
     out.player_hits.extend(sim.take_end_hits());
     out.mob_sounds.extend(sim.take_end_sounds());
     out.dragons_killed.extend(sim.take_dragons_killed());
     out.fight_reports.extend(sim.take_fight_reports());
     out.pearl_teleports.extend(sim.take_pearl_teleports());
     out.thrown_hits.extend(sim.take_thrown_hits());
-    sim.spawn_trade_experience();
+    if normal {
+        sim.spawn_trade_experience();
+    }
     out.merchant.extend(sim.check_merchant(&input.mob_players));
     out.player_hits.extend(sim.mobs.take_player_hits());
     let witch_splashes = sim.mobs.take_player_splashes();
@@ -7870,5 +7878,92 @@ mod tests {
         let speeds: Vec<i32> = outputs.into_iter().flat_map(|out| out.jobs).map(|job| *job.downcast::<i32>().unwrap()).collect();
         assert_eq!(speeds, [0]);
         assert_eq!(handle.ticks_in_flight(), 0);
+    }
+
+    fn frozen_sim() -> Option<(ServerSim, HandcraftedScene)> {
+        let paths = DataPaths::discover().ok()?;
+        let registries = Arc::new(Registries::load(&paths).ok()?);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries, 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut sim = ServerSim::new(worldgen, states.clone(), "minecraft:overworld");
+        let mut scene = HandcraftedScene::streamed(states);
+        for x in -1..=1 {
+            for z in -1..=1 {
+                let chunk = map.load_now(ChunkPos::new(x, z));
+                sim.load_chunk(&chunk);
+                scene.insert_chunk(chunk);
+            }
+        }
+        Some((sim, scene))
+    }
+
+    fn run_ticks(sim: &mut ServerSim, input: &mut TickInput, normal: bool, count: usize) -> Output {
+        let mut out = Output::default();
+        for _ in 0..count {
+            run_tick(sim, input, normal, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn a_frozen_tick_holds_items_and_falling_blocks() {
+        let Some((mut sim, mut scene)) = frozen_sim() else { return };
+        let item = sim.spawn_item("minecraft:cobblestone", 1, None, [11.5, 210.0, 11.5], [0.0; 3], 40, 0);
+        scene.set((8, 200, 8), Some(Block::new("minecraft:stone")));
+        sim.player_edit(&scene, (8, 200, 8), PlayerEdit::Place);
+        scene.set((8, 205, 8), Some(Block::new("minecraft:sand")));
+        sim.player_edit(&scene, (8, 205, 8), PlayerEdit::Place);
+        let mut input = idle_input();
+        run_ticks(&mut sim, &mut input, true, 3);
+        let item_at = |sim: &ServerSim| sim.items().into_iter().find(|i| i.id == item).map(|i| i.position);
+        let sand_at = |sim: &ServerSim| sim.falling_blocks().first().map(|f| f.position);
+        let (held_item, held_sand) = (item_at(&sim).expect("the item"), sand_at(&sim).expect("the sand falls"));
+        run_ticks(&mut sim, &mut input, false, 20);
+        assert_eq!((item_at(&sim), sand_at(&sim)), (Some(held_item), Some(held_sand)));
+        run_ticks(&mut sim, &mut input, true, 20);
+        assert!(item_at(&sim).expect("the item")[1] < held_item[1] - 1.0);
+        assert!(sand_at(&sim).is_none_or(|at| at[1] < held_sand[1] - 1.0));
+    }
+
+    #[test]
+    fn a_frozen_tick_still_picks_up() {
+        let Some((mut sim, _)) = frozen_sim() else { return };
+        let feet = [11.5, 210.0, 11.5];
+        let item = sim.spawn_item("minecraft:cobblestone", 3, None, feet, [0.0; 3], 0, 0);
+        let mut input = TickInput { pickup: Some((feet, Box::default(), 0)), ..idle_input() };
+        let out = run_ticks(&mut sim, &mut input, false, 1);
+        assert_eq!(out.picked.iter().map(|picked| (picked.0, picked.3)).collect::<Vec<_>>(), [(item, 3)]);
+        assert!(sim.items().iter().all(|i| i.id != item));
+    }
+
+    #[test]
+    fn primed_tnt_waits_while_frozen() {
+        let Some((mut sim, mut scene)) = frozen_sim() else { return };
+        scene.set((8, 200, 8), Some(Block::new("minecraft:stone")));
+        sim.player_edit(&scene, (8, 200, 8), PlayerEdit::Place);
+        scene.set((8, 201, 8), Some(Block::new("minecraft:tnt")));
+        sim.player_edit(&scene, (8, 201, 8), PlayerEdit::Place);
+        scene.set((9, 201, 8), Some(Block::new("minecraft:redstone_block")));
+        sim.player_edit(&scene, (9, 201, 8), PlayerEdit::Place);
+        let fuse = |sim: &ServerSim| sim.primed_tnt().first().map(|tnt| tnt.fuse);
+        let primed = fuse(&sim).expect("the TNT primes");
+        let mut input = idle_input();
+        run_ticks(&mut sim, &mut input, false, 10);
+        assert_eq!(fuse(&sim), Some(primed));
+        run_ticks(&mut sim, &mut input, true, 10);
+        assert_eq!(fuse(&sim), Some(primed - 10));
+    }
+
+    #[test]
+    fn random_ticks_skip_frozen_ticks() {
+        let Some((mut sim, _)) = frozen_sim() else { return };
+        let mut input = idle_input();
+        let before = sim.level.game_time;
+        let out = run_ticks(&mut sim, &mut input, false, 5);
+        assert_eq!(out.tick_nanos.len(), 5);
+        assert_eq!(sim.level.game_time, before);
+        run_ticks(&mut sim, &mut input, true, 5);
+        assert_eq!(sim.level.game_time, before + 5);
     }
 }

@@ -8,6 +8,7 @@ const OVERLOADED_THRESHOLD_NANOS: u64 = 20 * NANOS_PER_SECOND / 20;
 const OVERLOADED_WARNING_INTERVAL_NANOS: u64 = 10 * NANOS_PER_SECOND;
 const BATCH_BUDGET_NANOS: u64 = 50_000_000;
 const MAX_BATCH: u64 = 100;
+const CLIENT_TICK_SECONDS: f64 = 0.05;
 pub const MIN_RATE: f32 = 1.0;
 pub const AUTOSAVE_INTERVAL: i32 = 6000;
 const MIN_AUTOSAVE_TICKS: i32 = 100;
@@ -30,6 +31,21 @@ impl TickBatch {
 
     pub fn normal_count(&self) -> u32 {
         self.normal.iter().filter(|&&normal| normal).count() as u32
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClientTiming {
+    pub tick_seconds: f64,
+    pub runs_normally: bool,
+}
+
+impl Default for ClientTiming {
+    fn default() -> Self {
+        Self {
+            tick_seconds: CLIENT_TICK_SECONDS,
+            runs_normally: true,
+        }
     }
 }
 
@@ -102,6 +118,20 @@ impl TickRate {
         self.rate = rate.max(MIN_RATE);
         self.nanos_per_tick = (NANOS_PER_SECOND as f64 / f64::from(self.rate)) as u64;
         self.on_rate_changed();
+    }
+
+    pub fn client_timing(&self) -> ClientTiming {
+        if !self.run_game_elements {
+            return ClientTiming {
+                tick_seconds: CLIENT_TICK_SECONDS,
+                runs_normally: false,
+            };
+        }
+        ClientTiming {
+            tick_seconds: (self.nanos_per_tick as f64 / NANOS_PER_SECOND as f64)
+                .max(CLIENT_TICK_SECONDS),
+            runs_normally: true,
+        }
     }
 
     pub fn set_frozen(&mut self, frozen: bool) {
@@ -402,6 +432,45 @@ mod tests {
         assert!(!rate.count_autosave(5999));
         assert!(rate.count_autosave(100));
         assert_eq!(rate.ticks_until_autosave(), 6000);
+    }
+
+    #[test]
+    fn the_client_ticks_at_the_rate_but_never_faster_than_20_a_second() {
+        let mut rate = TickRate::default();
+        assert_eq!(rate.client_timing(), ClientTiming::default());
+        assert_eq!(rate.client_timing().tick_seconds, 0.05);
+        rate.set_rate(5.0);
+        assert_eq!(rate.client_timing().tick_seconds, 0.2);
+        rate.set_rate(40.0);
+        assert_eq!(rate.client_timing().tick_seconds, 0.05);
+    }
+
+    #[test]
+    fn a_frozen_client_ticks_50_ms_and_holds_the_level_until_a_tick_runs_normally() {
+        let mut rate = TickRate::default();
+        rate.set_rate(5.0);
+        let base = Instant::now();
+        assert_eq!(rate.plan(base, true).normal, [true]);
+        rate.set_frozen(true);
+        assert!(
+            rate.client_timing().runs_normally,
+            "until a frozen tick is planned"
+        );
+        assert_eq!(rate.plan(base + ms(200), true).normal, [false]);
+        let frozen = ClientTiming {
+            tick_seconds: 0.05,
+            runs_normally: false,
+        };
+        assert_eq!(rate.client_timing(), frozen);
+        assert!(rate.plan(base + ms(300), true).is_empty());
+        assert_eq!(
+            rate.client_timing(),
+            frozen,
+            "a frame without ticks keeps it"
+        );
+        rate.set_frozen(false);
+        assert_eq!(rate.plan(base + ms(400), true).normal, [true]);
+        assert_eq!(rate.client_timing().tick_seconds, 0.2);
     }
 
     #[test]

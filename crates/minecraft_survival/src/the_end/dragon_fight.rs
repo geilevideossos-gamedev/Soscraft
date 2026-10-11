@@ -1128,6 +1128,7 @@ mod tests {
                     0,
                     0.05,
                     &batch,
+                    crate::tick_rate::ClientTiming::default(),
                     minecraft_terrain::server::ClockTicks::default(),
                     false,
                     &crate::entities::PlayerView {
