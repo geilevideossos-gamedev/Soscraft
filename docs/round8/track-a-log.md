@@ -668,3 +668,17 @@ Commit: the one after 7aae6815 (entry 6).
 ```
 IW4L_MINECRAFT_KIT=minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:elytra,minecraft:firework_rocket*64,minecraft:end_stone*64,minecraft:cobblestone*64,minecraft:diamond_pickaxe+efficiency=5,minecraft:golden_apple*16,minecraft:diamond_boots+feather_falling=4
 ```
+
+## Adversarial review of the whole track
+
+Base `0bcbfb17`, reviewed up to `1f6cbfe2` (entry a1-7). Checked against 26.3 with javap: the haste and mining fatigue attack speed modifiers (`ADD_MULTIPLIED_TOTAL`, 0.1 a level), `Player.getDestroySpeed` (mining fatigue is `0.3^(amplifier+1)` in 26.3), the dig loop in `MultiPlayerGameMode` and `ServerPlayerGameMode.tick` (hit sound on the start and every 4th tick through level event 2020, chips through 2019), `SpawnEggItem.useOn` and the spawner renderer's spin times 10. They match. No comments in added code, the new files pass the rustfmt check, and no Mojang files are committed.
+
+### R1. Minecraft eye of ender tests no longer time out while the machine is busy
+
+Commit: the one after 1f6cbfe2 (entry a1-7).
+
+- **Defect:** four tests let the timed stronghold search resolve all 128 ring slots on the spot: `an_overworld_eye_finds_a_stronghold_ring_chunk_corner`, `the_eye_search_and_locate_agree` and `a_thrown_eye_goes_through_the_server_thread_and_flies_toward_the_stronghold` (`minecraft_terrain`), and `an_eye_thrown_from_the_hand_leaves_the_stack_and_flies` (`minecraft_survival`). That takes about 3.6 s in the debug build and more than `SEARCH_CAP` (20 s) under load, so the search answered "timed out" and the tests failed, as in entries a1-3 and a1-5. The full suite after the merge would fail the same way. The last test waits up to 300 s for an answer before failing.
+- **Fix:** each of these tests now resolves the rings with `locate::resolve_rings` before the timed search. In the game, `start_level` does the same on the "Stronghold rings" thread. The ring work itself stays covered by `locate.rs`'s `rings_are_worked_out_once_and_agree_with_the_placement_check` and `server.rs`'s `the_stronghold_rings_are_worked_out_on_their_own_thread`.
+- **Tests:** the 14 eye of ender tests in `minecraft_terrain` pass in 2.95 s, and `an_eye_thrown_from_the_hand_leaves_the_stack_and_flies` passes in 2.98 s.
+- **Test steps:** none in game (tests only).
+- **Kit:** none.

@@ -755,6 +755,7 @@ mod tests {
         let Some(overworld) = worldgen(&registries, "minecraft:overworld") else {
             return;
         };
+        crate::locate::resolve_rings(&overworld);
         let started = Instant::now();
         let (found, _) = Eyes::seeded(0).locate(&overworld, DVec3::new(0.5, 64.0, 0.5));
         let EyeSearch::Found(found) = found else {
@@ -861,6 +862,7 @@ mod tests {
         else {
             return;
         };
+        crate::locate::resolve_rings(&overworld);
         let mut eyes = Eyes::seeded(0);
         let stronghold = vec!["minecraft:stronghold".to_owned()];
         for feet in [
@@ -897,6 +899,7 @@ mod tests {
         ) else {
             return;
         };
+        crate::locate::resolve_rings(&overworld);
         let mut server = crate::server::ServerHandle::spawn(crate::server::ServerSim::new(
             Arc::new(overworld),
             states,

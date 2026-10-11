@@ -565,6 +565,7 @@ mod tests {
         ) else {
             return;
         };
+        minecraft_terrain::locate::resolve_rings(&stream.world_gen());
         let mut entities = Entities::new(
             &stream,
             Dimension::Overworld,
