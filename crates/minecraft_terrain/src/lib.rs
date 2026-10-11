@@ -26,6 +26,7 @@ pub mod dragon_respawn;
 pub mod end_crystal;
 pub mod end_crystal_render;
 pub mod end_gateway;
+pub mod end_gateway_render;
 pub mod end_portal_look;
 pub mod ender_dragon;
 pub mod ender_eye;

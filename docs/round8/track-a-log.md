@@ -625,3 +625,25 @@ Commit: the one after a8171da7 (entry 4).
   2. Right after a trip, while the gateway you came out of still cools down (2 seconds), throw a pearl through it. The pearl flies straight through and lands behind it like a normal pearl.
 - **Test runs:** `minecraft_survival` 400 passed; `minecraft_terrain` 908 passed and 3 ignored on the full run, with the same three load-sensitive eye of ender timing tests as in entry 3 failing while another build ran; all 22 eye tests pass on their own.
 - **Kit:** see the combined line at the end of item a1.
+
+### 6. Minecraft end gateways shine their beam and give off portal particles
+
+Commit: the one after de5bcda4 (entry 5).
+
+- **Changed:**
+  - New `minecraft_terrain/src/end_gateway_render.rs` (`pub mod end_gateway_render;` in `lib.rs`): `beam(view, max_y, game_time, partial)` is `TheEndGatewayRenderer.extractRenderState`: only while spawning or cooling, `scale = Mth.sin(pi * percent)` with `getSpawnPercent` (`(age + p) / 200`) or `getCooldownPercent` (`1 - (cooldown - p) / 40`), height `floor(scale * (spawning ? maxY : 50))`, magenta (13061821) while spawning, else purple (8991416), and the animation time `floorMod(gameTime, 40) + p`. `append_beam` is `BeaconRenderer.submitBeaconBeam` with the gateway's arguments: centred on the block, from `y - height` to `y + height`; the opaque core (radius 0.15, corners (0, r), (r, 0), (-r, 0), (0, -r), turned by `animationTime * 2.25 - 45` degrees, V from `-1 + frac(t * 0.2 - floor(t * 0.1))` with `t = -animationTime`, over `2 * height * scale * (0.5 / 0.15)`) goes to the entity models, the glow (an unturned square of 0.175, alpha 32, V over `2 * height * scale`) to the translucent mesh, both full bright, with vanilla's four quads per part and their U and V corners. V is split at the texture's repeats with `end_crystal_render::beam_spans`, as the atlas does not wrap. `append_beams` skips gateways more than 256 blocks from the camera (`getViewDistance`).
+  - `minecraft_terrain/src/mesh.rs`: `minecraft:entity/end_portal/end_gateway_beam` is an entity texture. `minecraft_survival/src/entities.rs`: `meshes` draws the beams of the level's gateway views, with the scene's top block as `maxY` and the world's game time.
+  - `minecraft_terrain/src/display_ticks.rs`: an `end_gateway` arm (`EndGatewayBlock.animateTick`): one `portal` particle per face that a solid neighbour does not hide (`getParticleAmount`), each at a random point of the block with velocity `(nextDouble - 0.5) * 0.5` on each axis, then moved to 0.25 off the centre on x or z (`nextInt(2)`, `nextBoolean`) with `nextFloat * 2` outward, in vanilla's draw order (checked with javap: the velocities are doubles, not floats as for nether portals).
+- **Tests:**
+  - `minecraft_terrain` `end_gateway_render`: `the_spawn_beam_rises_to_the_build_height_and_falls_over_ten_seconds` (heights 0, 255 and 4 at ages 0, 100 and 199, the partial tick counted, magenta, none from age 200), `the_cooldown_beam_is_purple_and_fifty_high_at_its_peak` (50 at cooldown 20, 0 at 40, spawning wins over cooling), `the_beam_scrolls_and_turns_with_game_time`, `the_beam_is_an_opaque_turned_core_inside_a_faint_glow` (heights, radii, alpha, full bright, V inside the texture, nothing at height 0).
+  - `minecraft_terrain` `display_ticks`: `a_gateway_in_its_frame_gives_four_particles_and_a_lone_one_six`.
+- **Decisions:**
+  - The beam uses the server's age and cooldown from each snapshot with the frame's partial tick; vanilla's client ages its own copy and learns of a trigger through block event 1, which the views replace (brief decision 7).
+  - A face counts as hidden when its neighbour is solid to render (the scene's `solid_render_at`), the rule the mesher's culling of the cube follows. In a frame, bedrock above and below hides two faces.
+- **Test steps:**
+  1. Stand a few blocks from the gateway of the dragon kill: purple portal particles drift from its four open sides.
+  2. Go through it (entry 4) and look back at the gateway you came out of: a short purple beam rises and falls through it for about 2 seconds. The gateway you entered flashes the same way.
+  3. On the main island, about 20 blocks east of 0, 0, type `/setblock ~2 ~ ~ minecraft:end_gateway`. A tall magenta beam grows up to the sky and shrinks again over 10 seconds, and six faces' worth of particles come off it. **Screenshot 4.**
+  4. Wait 2 minutes near a gateway: it flashes its purple beam by itself.
+- **Test runs:** `minecraft_survival` 400, `render_anim` 75, and `minecraft_terrain` 902 passed with 3 ignored, run with the 14 load-sensitive eye of ender tests skipped (they pass on their own, entry 5).
+- **Kit:** see the combined line at the end of item a1.
