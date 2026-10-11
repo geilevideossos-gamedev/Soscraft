@@ -101,6 +101,7 @@ pub struct MinecraftWorldFrame {
     pub end_portal_texture: Option<Arc<MinecraftAtlasImage>>,
     pub end_portal_colors: [[f32; 4]; 16],
     pub end_portal_time: f32,
+    pub end_flash: [f32; 3],
 }
 
 #[repr(C)]
@@ -599,7 +600,7 @@ fn prepare_terrain(
         hand_clip: frame.hand_clip,
         glint: [shift[0], shift[1], frame::minecraft_ui::GLINT_STRENGTH, 0.0],
         end_portal_colors: frame.end_portal_colors,
-        end_portal: [frame.end_portal_time, 0.0, 0.0, 0.0],
+        end_portal: [frame.end_portal_time, frame.end_flash[0], frame.end_flash[1], frame.end_flash[2]],
         ..TerrainView::default()
     };
     if let Some(exec) = published.as_ref().map(|p| &p.exec_frame)
@@ -1047,6 +1048,10 @@ struct SkyOut {
 const SKYBOX_NONE_ABOVE: f32 = 1.5;
 const SKYBOX_END_ABOVE: f32 = 0.5;
 const END_SKY_SHADE: f32 = 40.0 / 255.0;
+const CELESTIAL_SLOTS: f32 = 10.0;
+const END_FLASH_SLOT: f32 = 9.0;
+const END_FLASH_HALF_SIZE: f32 = 0.6;
+const END_FLASH_SHOWN_ABOVE: f32 = 0.00001;
 
 fn end_sky_uv(ray: vec3<f32>) -> vec2<f32> {
     let size = abs(ray);
@@ -1064,6 +1069,25 @@ fn end_sky_uv(ray: vec3<f32>) -> vec2<f32> {
 fn end_sky(ray: vec3<f32>) -> vec3<f32> {
     let texel = textureSampleLevel(end_sky_texture, repeat_sampler, end_sky_uv(ray), 0.0);
     return mix(view.environment.fog.rgb, texel.rgb * END_SKY_SHADE, texel.a);
+}
+
+fn end_flash(ray: vec3<f32>, color: vec3<f32>) -> vec3<f32> {
+    let intensity = view.end_portal.y;
+    if intensity <= END_FLASH_SHOWN_ABOVE { return color; }
+    let x = radians(view.end_portal.z);
+    let y = radians(view.end_portal.w);
+    let direction = vec3<f32>(-sin(y) * cos(x), -sin(x), cos(y) * cos(x));
+    let facing = dot(ray, direction);
+    if facing <= 0.0 { return color; }
+    let axis_x = vec3<f32>(-cos(y), 0.0, -sin(y));
+    let axis_z = vec3<f32>(-sin(x) * sin(y), cos(x), sin(x) * cos(y));
+    let projected = ray / facing;
+    let quad = vec2<f32>(dot(projected, axis_x), dot(projected, axis_z)) / END_FLASH_HALF_SIZE;
+    if any(abs(quad) > vec2<f32>(1.0)) { return color; }
+    let uv = (quad + 1.0) * 0.5;
+    let texel = textureSampleLevel(celestials, atlas_sampler, vec2<f32>((END_FLASH_SLOT + uv.x) / CELESTIAL_SLOTS, uv.y), 0.0);
+    if texel.a <= 0.0 { return color; }
+    return min(color + texel.rgb * texel.a * intensity * intensity, vec3<f32>(1.0));
 }
 
 @vertex
@@ -1088,7 +1112,7 @@ fn celestial(ray: vec3<f32>, direction: vec3<f32>, half_size: f32, slot: f32, mo
     if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) { return vec4<f32>(0.0); }
     // The moon phase quad reverses both texture axes in buildMoonPhases.
     if moon { uv = vec2<f32>(1.0) - uv; }
-    let atlas_uv = vec2<f32>((slot + uv.x) / 9.0, uv.y);
+    let atlas_uv = vec2<f32>((slot + uv.x) / CELESTIAL_SLOTS, uv.y);
     return textureSampleLevel(celestials, atlas_sampler, atlas_uv, 0.0);
 }
 
@@ -1122,7 +1146,7 @@ fn sky_fragment(in: SkyOut) -> @location(0) vec4<f32> {
     let map_ray = far.xyz / far.w;
     let ray = normalize(vec3<f32>(map_ray.x, map_ray.z, -map_ray.y));
     if environment.ambient.w > SKYBOX_END_ABOVE {
-        return vec4<f32>(end_sky(ray), 1.0);
+        return vec4<f32>(end_flash(ray, end_sky(ray)), 1.0);
     }
     // SkyRenderer's 16-block-high fan has a 512-block radius. Its fog value
     // interpolates between the center and rim vertex distances.
@@ -1747,6 +1771,62 @@ mod tests {
         ] {
             assert!(source.contains(line), "{line}");
         }
+    }
+
+    fn end_flash_uv(ray: bevy::math::Vec3, x_angle: f32, y_angle: f32) -> Option<bevy::math::Vec2> {
+        let (x, y) = (x_angle.to_radians(), y_angle.to_radians());
+        let direction = bevy::math::Vec3::new(-y.sin() * x.cos(), -x.sin(), y.cos() * x.cos());
+        let facing = ray.dot(direction);
+        if facing <= 0.0 {
+            return None;
+        }
+        let axis_x = bevy::math::Vec3::new(-y.cos(), 0.0, -y.sin());
+        let axis_z = bevy::math::Vec3::new(-x.sin() * y.sin(), x.cos(), x.sin() * y.cos());
+        let projected = ray / facing;
+        let quad = bevy::math::Vec2::new(projected.dot(axis_x), projected.dot(axis_z)) / wgsl_float("END_FLASH_HALF_SIZE");
+        (quad.abs().max_element() <= 1.0).then(|| (quad + 1.0) * 0.5)
+    }
+
+    #[test]
+    fn the_end_flash_quad_centres_on_its_direction_and_spans_point_six() {
+        assert_eq!(wgsl_float("END_FLASH_HALF_SIZE"), 0.6);
+        for (x_angle, y_angle) in [(-90.0f32, 0.0f32), (-31.479216, -105.22267), (-59.709076, -1.1438904), (10.0, 170.0), (-5.0, -180.0)] {
+            let pose = bevy::math::Mat3::from_rotation_y((180.0 - y_angle).to_radians()) * bevy::math::Mat3::from_rotation_x((-90.0 - x_angle).to_radians());
+            let corner = |lx: f32, lz: f32| (pose * bevy::math::Vec3::new(lx * 60.0, 100.0, lz * 60.0)).normalize();
+            let centre = end_flash_uv(corner(0.0, 0.0), x_angle, y_angle).unwrap();
+            assert!((centre - bevy::math::Vec2::splat(0.5)).abs().max_element() < 1e-4, "{x_angle},{y_angle}: {centre}");
+            for lx in [-0.99, -0.6, 0.0, 0.35, 0.99] {
+                for lz in [-0.99, -0.2, 0.0, 0.7, 0.99] {
+                    let uv = end_flash_uv(corner(lx, lz), x_angle, y_angle).unwrap();
+                    let expected = bevy::math::Vec2::new((lx + 1.0) / 2.0, (lz + 1.0) / 2.0);
+                    assert!((uv - expected).abs().max_element() < 1e-4, "{x_angle},{y_angle} at {lx},{lz}: {uv} against {expected}");
+                }
+            }
+            for (lx, lz) in [(1.02, 0.0), (0.0, -1.02), (-1.5, 1.5)] {
+                assert_eq!(end_flash_uv(corner(lx, lz), x_angle, y_angle), None);
+            }
+            assert_eq!(end_flash_uv(-corner(0.0, 0.0), x_angle, y_angle), None);
+        }
+        let source = super::TERRAIN_WGSL;
+        for line in [
+            "let direction = vec3<f32>(-sin(y) * cos(x), -sin(x), cos(y) * cos(x));",
+            "let axis_x = vec3<f32>(-cos(y), 0.0, -sin(y));",
+            "let axis_z = vec3<f32>(-sin(x) * sin(y), cos(x), sin(x) * cos(y));",
+            "let quad = vec2<f32>(dot(projected, axis_x), dot(projected, axis_z)) / END_FLASH_HALF_SIZE;",
+            "return min(color + texel.rgb * texel.a * intensity * intensity, vec3<f32>(1.0));",
+            "return vec4<f32>(end_flash(ray, end_sky(ray)), 1.0);",
+        ] {
+            assert!(source.contains(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn the_celestial_atlas_has_ten_slots() {
+        assert_eq!(wgsl_float("CELESTIAL_SLOTS"), 10.0);
+        assert_eq!(wgsl_float("END_FLASH_SLOT"), 9.0);
+        let source = super::TERRAIN_WGSL;
+        assert!(source.contains("let atlas_uv = vec2<f32>((slot + uv.x) / CELESTIAL_SLOTS, uv.y);"));
+        assert!(source.contains("vec2<f32>((END_FLASH_SLOT + uv.x) / CELESTIAL_SLOTS, uv.y)"));
     }
 
     #[test]

@@ -42,6 +42,7 @@ pub struct SkyState {
     pub sky_fog_end: f32,
     pub cloud_fog_end: f32,
     pub skybox: Skybox,
+    pub end_flash: [f32; 3],
 }
 
 /// Overworld dimension constants for the authored scene's clock.
@@ -243,6 +244,7 @@ impl DayCycle {
             sky_fog_end: 512.0,
             cloud_fog_end: 2048.0,
             skybox: Skybox::Overworld,
+            end_flash: [0.0; 3],
         }
     }
 }

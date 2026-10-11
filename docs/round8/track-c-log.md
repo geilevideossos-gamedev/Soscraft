@@ -609,3 +609,35 @@ Previous commit: 1680fa64
 ```
 IW4L_MINECRAFT_KIT=minecraft:item_frame*16,minecraft:glow_item_frame*16,minecraft:compass,minecraft:carrot*16,minecraft:torch*8,minecraft:oak_planks*64,minecraft:repeater*2,minecraft:comparator*2,minecraft:redstone*16,minecraft:arrow*4,minecraft:tnt*4,minecraft:flint_and_steel,minecraft:creeper_spawn_egg*2,minecraft:snowball*16,minecraft:trident,minecraft:splash_potion@water,minecraft:diamond_sword+sharpness=5,minecraft:diamond_pickaxe
 ```
+
+## Group c3-sky-dragon-1: End flashes, the flash sound, dragon's breath particles (c3 groups 1-4)
+
+### 24. The Minecraft End sky flashes like vanilla
+
+Previous commit: 8ff863be
+
+- **Changed:**
+  - New `minecraft_terrain` `end_flash.rs`: `EndFlash`, vanilla's `EndFlashState`. Each 600-tick window of the End clock draws, from `LegacyRandom::new(window)` (the same LCG as `RandomSource.createThreadLocalInstance`), one thrown-away float, the offset (0-200), the duration (100 to `min(380, 600 - offset)`) and the two angles (x -60 to 10, y -180 to 180). The intensity is the table sine of `(t - offset)·π/duration` inside the flash, lerped by the partial tick. `direction_from_rotation` is `Vec3.directionFromRotation` with the table sine; `light_boost` adds the intensity, or a third of it under boss fog, to the sky light factor.
+  - `environment.rs`: an End `DimensionEnvironment` holds an `EndFlash`; it is made fresh on the first tick after a load or a dimension switch (as vanilla makes a new `ClientLevel`) and ticked with the dimension's clock. `SkyState.end_flash` is `[intensity, x angle, y angle]` (zero outside the End).
+  - `render_anim`: the celestial atlas has 10 slots of 64 px (sun and moons scaled up with nearest, which keeps their pixels), `environment/celestial/end_flash` in slot 9; the uniform's sky light factor gains `light_boost`; `EndFrame.end_flash` carries the flash to `render`, which copies it into the frame.
+  - `render_gpu`: `end_portal` in the view uniform is now `[time, intensity, x angle, y angle]`; the celestial divisor is `CELESTIAL_SLOTS` (10); `end_flash` in the sky shader draws vanilla's quad (100 blocks out along the direction, half size 60, axes from the `YP(180 - y)·XP(-90 - x)` pose) over the End sky with the `OVERLAY` blend, `texel.rgb·texel.a·i²`.
+- **Tests:**
+  - `end_flash`: `window_zero_never_flashes`, `a_window_draws_its_flash_like_java_random` (windows 1, 2 and 7), `one_flash_every_600_ticks_rising_and_falling_as_a_sine`, `a_paused_clock_holds_the_flash`, `the_flash_lights_the_world_a_third_as_much_in_boss_fog`, `the_flash_points_where_direction_from_rotation_points`.
+  - `environment`: `only_the_end_flashes` (and a first tick gives the same flash as a fresh `EndFlash`).
+  - `render_gpu`: `the_end_flash_quad_centres_on_its_direction_and_spans_point_six` (the WGSL ported to a Rust helper, checked against the vanilla pose built with matrices on a grid of quad points and outside it), `the_celestial_atlas_has_ten_slots`.
+  - `render_anim`: `celestial_tests::the_celestial_atlas_has_ten_slots` (with `MINECRAFTOSS_ROOT`: 640x64, the sun and the flash slots have pixels).
+- **The jshell lines for the window values** (`jshell -q`):
+
+```
+for (long w : new long[]{1, 2, 7}) { java.util.Random r = new java.util.Random(w); r.nextFloat(); int off = r.nextInt(201); int dur = 100 + r.nextInt(Math.min(380, 600 - off) - 100 + 1); float xa = r.nextFloat() * 70.0f + -60.0f; float ya = r.nextFloat() * 360.0f + -180.0f; System.out.println(w + " " + off + " " + dur + " " + xa + " " + ya); }
+```
+
+  It printed `1 133 311 -31.479216 -105.22267`, `2 138 296 -59.709076 -1.1438904` and `7 29 334 -59.325974 -54.608513`.
+- **Decisions:**
+  - The window and the time in it use Java's truncating `/` and `%` (`ldiv`, `lrem`), not floor division as the brief said: that is vanilla, and a negative clock simply never flashes instead of panicking.
+  - The flash lives in the level's `DimensionEnvironment`, beside the other presentation state the client camera ticks; it is never saved or sent. A friend's client recomputes it from the End clock (track E's per-level clock).
+  - As in vanilla, the sky quad is part of the sky pass, so it is hidden while the dragon's boss bar makes world fog; the light still comes (a third of it).
+- **Test steps:** (a new world; the End clock's first 30 seconds never flash, as in vanilla)
+  1. In the `.env`: `IW4L_MINECRAFT_WORLD=c3fx`, `IW4L_MINECRAFT_DIMENSION=the_end`. Start on the obsidian platform and stand still for a minute and a half: about every 30 seconds the end stone turns faintly purple for 5 to 19 seconds, rising and fading. The sky stays the dark fog colour while the dragon's bar shows.
+  2. `/gamemode creative`, `/tp @s 0 90 250` and fly there (more than 192 blocks from the island, so the bar goes and the End sky shows). Look around the sky for a minute: about every 30 seconds a soft purple glow appears somewhere between straight up and just below the horizon, swells and fades; the island and your blocks glow purple with it, three times as strongly as on the island during the fight (**1**, with the glow in view).
+- **Kit:** none.

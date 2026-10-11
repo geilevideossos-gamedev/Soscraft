@@ -1099,6 +1099,7 @@ pub fn extract_minecraft_world(
     frame.end_portal_texture = end_portal;
     frame.end_portal_colors = view.end_look.look.as_ref().map_or([[0.0; 4]; 16], |look| look.portal_colors);
     frame.end_portal_time = view.end_look.portal_time;
+    frame.end_flash = view.end_look.end_flash;
     frame.clouds = view.clouds.as_ref().map(|clouds| {
         let key = std::sync::Arc::as_ptr(clouds) as usize;
         if let Some((held, converted)) = clouds_of.as_ref()

@@ -329,9 +329,12 @@ pub(crate) fn data_jar() -> Option<std::path::PathBuf> {
     None
 }
 
+const CELESTIAL_TILE: u32 = 64;
+const CELESTIAL_SLOTS: u32 = 10;
+
 /// The sky's sun and moon phases, laid out as MinecraftOSS lays them out.
 fn celestial_image(packs: &PackStack) -> anyhow::Result<image::RgbaImage> {
-    let mut celestial = image::RgbaImage::new(32 * 9, 32);
+    let mut celestial = image::RgbaImage::new(CELESTIAL_TILE * CELESTIAL_SLOTS, CELESTIAL_TILE);
     let names = [
         "environment/celestial/sun",
         "environment/celestial/moon/full_moon",
@@ -342,6 +345,7 @@ fn celestial_image(packs: &PackStack) -> anyhow::Result<image::RgbaImage> {
         "environment/celestial/moon/waxing_crescent",
         "environment/celestial/moon/first_quarter",
         "environment/celestial/moon/waxing_gibbous",
+        "environment/celestial/end_flash",
     ];
     for (index, path) in names.iter().enumerate() {
         let id = minecraft_terrain::pack::ResourceId::parse(&format!("minecraft:{path}"))?;
@@ -349,8 +353,8 @@ fn celestial_image(packs: &PackStack) -> anyhow::Result<image::RgbaImage> {
             let img =
                 image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)?.to_rgba8();
             let tile =
-                image::imageops::resize(&img, 32, 32, image::imageops::FilterType::Nearest);
-            image::imageops::replace(&mut celestial, &tile, (index as i64) * 32, 0);
+                image::imageops::resize(&img, CELESTIAL_TILE, CELESTIAL_TILE, image::imageops::FilterType::Nearest);
+            image::imageops::replace(&mut celestial, &tile, (index as i64) * i64::from(CELESTIAL_TILE), 0);
         }
     }
     Ok(celestial)
@@ -2304,6 +2308,7 @@ fn update(
     let up = right.cross(forward).normalize_or(glam::Vec3::Y);
     let put = |v: glam::Vec3| [v.x, v.y, v.z, 0.0];
     let game_time = globals.day.ticks;
+    let world_fog = ui.boss_bars.iter().any(|bar| bar.world_fog);
     view.environment = [
         put(forward),
         put(right),
@@ -2315,7 +2320,7 @@ fn update(
             sky.sky_light_color.x,
             sky.sky_light_color.y,
             sky.sky_light_color.z,
-            sky.sky_light_factor,
+            sky.sky_light_factor + minecraft_terrain::end_flash::light_boost(sky.end_flash[0], world_fog),
         ],
         sky.sunset,
         [sky.sun_direction.x, sky.sun_direction.y, sky.sun_direction.z, sky.rain_brightness],
@@ -2335,7 +2340,7 @@ fn update(
             sky.ambient.y,
             sky.ambient.z,
             match sky.skybox {
-                _ if ui.boss_bars.iter().any(|bar| bar.world_fog) => 2.0,
+                _ if world_fog => 2.0,
                 Skybox::Overworld => 0.0,
                 Skybox::End => 1.0,
                 _ => 2.0,
@@ -2349,6 +2354,7 @@ fn update(
         ],
     ];
     view.end_look.portal_time = crate::minecraft_end_look::portal_time(game_time);
+    view.end_look.end_flash = sky.end_flash;
 
     // Clouds, rebuilt when the camera crosses a cloud cell.
     if let Some(mask) = &world.cloud_mask {
@@ -2947,6 +2953,26 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
         view.clouds = None;
         view.light_volume = None;
         view.generation += 1;
+    }
+}
+
+#[cfg(test)]
+mod celestial_tests {
+    #[test]
+    fn the_celestial_atlas_has_ten_slots() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = minecraft_terrain::pack::PackStack::open(vec![pack]).unwrap();
+        let atlas = super::celestial_image(&packs).unwrap();
+        assert_eq!(atlas.dimensions(), (640, 64));
+        let lit = |slot: u32| (0..64).flat_map(|y| (0..64).map(move |x| (x, y))).filter(|&(x, y)| atlas.get_pixel(slot * 64 + x, y)[3] > 0).count();
+        assert!(lit(0) > 0, "the sun");
+        assert!(lit(9) > 0, "the end flash");
     }
 }
 
