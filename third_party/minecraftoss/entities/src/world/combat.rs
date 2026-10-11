@@ -182,6 +182,9 @@ impl EntityWorld {
         if let Some(e) = self.blazes.iter().find(|e| e.id == id) {
             return Some((e.blaze.body.clone(), e.blaze.health));
         }
+        if let Some(e) = self.striders.iter().find(|e| e.id == id) {
+            return Some((e.strider.body.clone(), e.strider.health));
+        }
         None
     }
 
@@ -222,6 +225,8 @@ impl EntityWorld {
             (&mut e.ghast.body, &mut e.random)
         } else if let Some(e) = self.blazes.iter_mut().find(|e| e.id == id) {
             (&mut e.blaze.body, &mut e.random)
+        } else if let Some(e) = self.striders.iter_mut().find(|e| e.id == id) {
+            (&mut e.strider.body, &mut e.random)
         } else {
             return;
         };
@@ -317,6 +322,8 @@ impl EntityWorld {
                 e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
             }
             hit
+        } else if let Some(e) = self.striders.iter_mut().find(|e| e.id == id) {
+            e.hurt(amount, source)
         } else {
             let e = self.blazes.iter_mut().find(|e| e.id == id)?;
             let hit = e.hurt(amount);

@@ -19,6 +19,15 @@ fn walk_target_value(world: &dyn World, profile: &WalkProfile, (x, y, z): BlockP
         }
         WalkTarget::Monster => f64::from(-world.light_path_cost((x, y, z))),
         WalkTarget::Zero => 0.0,
+        WalkTarget::Strider { in_lava } => {
+            if world.fluid_is_lava((x, y, z)) {
+                10.0
+            } else if in_lava {
+                f64::NEG_INFINITY
+            } else {
+                0.0
+            }
+        }
     }
 }
 

@@ -45,3 +45,33 @@ After c8ccb784.
 - **Changed:** `mob_actions::would_interact_agrees_with_interact` no longer compares `would_interact` with `interact` for villagers. `interact` handles a villager click (it would open trading), while `would_interact` turns it away on purpose (entry 1's decision), so only the expected answer (false) is checked for them.
 - **Tests:** the same test, now green.
 - **Test steps:** none (test only).
+
+### 2. Minecraft striders stand on lava, warm up in it and shiver out of it
+
+After 28e87e7c.
+
+- **Changed:**
+  - Vendored `entities`: new `strider.rs` (`Strider`: body 0.9 x 1.7, baby 0.45 x 0.85 with eye 0.4375, health 20, `movement_speed` 0.175 or 0.1155 while suffocating, `riding_attachment` 1.7 or 0.65625, the warmth test and `float_in_lava`) and `world/striders.rs` (`StriderEntity`, `spawn_strider`, `striders`, `strider_mut`, `tick_strider`). The tick: warmth (lava at the feet, under them or overlapping, or `#strider_warm_blocks`) sets `suffocating` unless it has no AI; fluid, fire (immune), wall and air checks; effects; ambient, hurt and death sounds (`entity.strider.*`, neutral volume, interval 120); travel (in water `travel_water`, in lava whose block is not at its feet `travel_lava`, otherwise ground travel with the lava floor); `entity.strider.step` or `step_lava` at volume 1 every 0.6 walked; fall damage except in lava; water and rain hurt 1 (`isSensitiveToWater`); age and love; then `floatStrider` (on the lava surface it is on the ground, otherwise its motion becomes `motion * 0.5 + 0.05` up). A saddled strider drops its saddle on death, besides its loot table (2 to 5 string).
+  - `steering.rs`: `SteeringState::boost_factor` (`1 + 1.15 * sin(time / total * pi)` while boosting).
+  - `movement.rs`: `Body.lava_floor` (ground travel stands on lava sources) and `Body.step_after` (the strider's `nextStep` of 0.6).
+  - Vendored `player`: `collision::move_body_on_fluid`: with `lava_floor`, a lava source (level 0) with no lava above collides as a half slab (0 to 0.5) when the body's bottom is above `y + 0.5 - 1e-5` (`LiquidBlock.getCollisionShape` with `isAbove`). `move_body` is that without the floor, so nothing else changes. `World::fluid_is_lava`, and `#strider_warm_blocks` (lava) in the authored block tags.
+  - `walk_path.rs`: the path start climbs lava rather than water for a mob that stands on fluid; `WalkProfile::strider` (water -1, lava 0, fire 0, no float) and `WalkTarget::Strider` (10 at lava, minus infinity elsewhere while in lava, else 0) for the AI of entry 3.
+  - Wiring: `EntityKey::Strider`, `MobHit::Strider` and every per-kind list in `world.rs`, `combat.rs`, `pushing.rs`, `hazards.rs` and `witches.rs` (effects, healing, magic); the census counts striders as creatures.
+  - `minecraft_terrain/src/server_mobs.rs`: `minecraft:strider` is simulated; `spawn_saved` reads `Age`, `InLove`, `Health`, `PersistenceRequired`, `NoAI` and `equipment.saddle`; `mob_tags` saves `Age`, `ForcedAge`, `InLove` and the saddle slot, keeping the other equipment slots as loaded. A strider with `Passengers` (a jockey) still waits dormant until entry 5.
+  - `minecraft_survival/src/entities.rs`: MW2 hit key 23 for striders (`STRIDER_KEY`); the hit box comes with entry 4.
+- **Tests:** `strider`: `a_strider_on_a_lava_source_stands_half_a_block_up`, `only_striders_stand_on_lava`, `out_of_lava_it_suffocates_and_slows_to_0_1155`, `water_and_rain_hurt_it`, `a_baby_is_0_45_by_0_85`, `the_boost_factor_peaks_at_2_15_halfway`, `striders_ignore_lava_and_fire`. `server_mobs`: `a_strider_round_trips_with_its_saddle_age_and_love`, `a_strider_with_a_rider_waits_dormant`.
+- **Decisions:**
+  - Strider movement uses ground travel even inside lava, as vanilla's `shouldTravelInFluid` does for a mob that can stand on the fluid at its block; only a strider whose block is not lava while it overlaps lava swims with `travel_lava`.
+  - The suffocating speed modifier (-0.34 of the base) is applied before the potion effects' speed changes, a close match to vanilla's attribute order for the effects a strider can get.
+  - Sounds use the neutral volume slider (`Entity.getSoundSource` is `NEUTRAL`; striders don't override it).
+- **Test steps:** striders are drawn from entry 4 on; until then these steps show only sounds. Start in the Nether (`IW4L_MINECRAFT_DIMENSION=the_nether`), survival:
+  1. Use a strider egg on the lava sea: the strider stands on the surface, half a block up (**1**).
+  2. Use an egg on netherrack 5 blocks from the lava: it stands there, and turns pale and shivers (entry 4) (**2**).
+  3. Pour a water bucket next to a strider on land so the water reaches it: it takes damage every half second.
+  4. Kill a strider with the sword: 2 to 5 string drop.
+  5. Save and exit with a strider on lava and one on land; restart: both are where they were.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*8,minecraft:water_bucket,minecraft:diamond_sword,minecraft:netherrack*64
+```

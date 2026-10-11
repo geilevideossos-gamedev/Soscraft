@@ -496,6 +496,9 @@ impl EntityWorld {
         if let Some(e) = self.chickens.iter_mut().find(|e| e.id == id) {
             return Some((&mut e.effects, false, false));
         }
+        if let Some(e) = self.striders.iter_mut().find(|e| e.id == id) {
+            return Some((&mut e.effects, false, false));
+        }
         None
     }
 
@@ -518,6 +521,7 @@ impl EntityWorld {
             .or_else(|| self.sheep.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.pigs.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.chickens.iter().find(|e| e.id == id).map(|e| &e.effects))
+            .or_else(|| self.striders.iter().find(|e| e.id == id).map(|e| &e.effects))
     }
 
     /// `HealOrHarmMobEffect.applyInstantaneousEffect` on a mob: the heal,
@@ -588,6 +592,8 @@ impl EntityWorld {
             (&mut e.pig.health, 10.0)
         } else if let Some(e) = self.chickens.iter_mut().find(|e| e.id == id) {
             (&mut e.chicken.health, 4.0)
+        } else if let Some(e) = self.striders.iter_mut().find(|e| e.id == id) {
+            (&mut e.strider.health, crate::strider::MAX_HEALTH)
         } else {
             return;
         };
@@ -634,6 +640,8 @@ impl EntityWorld {
             e.hurt(amount, source)
         } else if let Some(e) = self.chickens.iter_mut().find(|e| e.id == id) {
             e.hurt_with_source(amount, source)
+        } else if let Some(e) = self.striders.iter_mut().find(|e| e.id == id) {
+            e.hurt(amount, source)
         } else {
             return None;
         };

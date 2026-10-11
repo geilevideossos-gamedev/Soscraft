@@ -43,13 +43,20 @@ fn resolve(b: Box3, shapes: &[Box3], delta: DVec3) -> DVec3 {
 /// Resolve one displacement against the same block shapes used by player/items.
 /// `step_height` is a float attribute; candidate heights also round to floats.
 pub fn move_body(world: &impl World, bounds: Bounds, delta: DVec3, on_ground: bool, step_height: f32) -> DVec3 {
+    move_body_on_fluid(world, bounds, delta, on_ground, step_height, false)
+}
+
+pub fn move_body_on_fluid(world: &impl World, bounds: Bounds, delta: DVec3, on_ground: bool, step_height: f32, lava_floor: bool) -> DVec3 {
     if delta.length_squared() == 0.0 {
         return delta;
     }
     let body = Box3::new(bounds.min, bounds.max);
     let swept = sweep(body, delta);
     // Padding finds shapes that extend outside their owner block (e.g. fences).
-    let shapes = shapes_near(world, swept, 1.0);
+    let mut shapes = shapes_near(world, swept, 1.0);
+    if lava_floor {
+        shapes.extend(lava_floors(world, swept, bounds.min.y));
+    }
     let normal: Vec<_> = shapes.iter().copied().filter(|s| s.intersects(swept)).collect();
     let clipped = resolve(body, &normal, delta);
     let landed = delta.y != clipped.y && delta.y < 0.0;
@@ -61,7 +68,11 @@ pub fn move_body(world: &impl World, bounds: Bounds, delta: DVec3, on_ground: bo
     if !landed {
         area.min.y -= 1.0e-5_f32 as f64;
     }
-    let colliders: Vec<_> = shapes_near(world, area, 1.0).into_iter().filter(|s| s.intersects(area)).collect();
+    let mut near = shapes_near(world, area, 1.0);
+    if lava_floor {
+        near.extend(lava_floors(world, area, bounds.min.y));
+    }
+    let colliders: Vec<_> = near.into_iter().filter(|s| s.intersects(area)).collect();
     let mut heights = Vec::new();
     for s in &colliders {
         for y in [s.min.y, s.max.y] {
@@ -80,6 +91,29 @@ pub fn move_body(world: &impl World, bounds: Bounds, delta: DVec3, on_ground: bo
         }
     }
     clipped
+}
+
+pub fn lava_floor_at(world: &(impl World + ?Sized), pos: Pos, bottom: f64) -> bool {
+    let source = world.block(pos).is_some_and(|b| b.id == "minecraft:lava" && b.property("level").is_none_or(|level| level == "0"));
+    let lava_above = world.block((pos.0, pos.1 + 1, pos.2)).is_some_and(|b| b.id == "minecraft:lava");
+    source && !lava_above && bottom > f64::from(pos.1) + 0.5 - f64::from(1.0e-5_f32)
+}
+
+fn lava_floors(world: &impl World, area: Box3, bottom: f64) -> Vec<Box3> {
+    let min = (area.min - DVec3::ONE).floor();
+    let max = (area.max + DVec3::ONE).ceil();
+    let mut out = Vec::new();
+    for x in min.x as i32..max.x as i32 {
+        for y in min.y as i32..max.y as i32 {
+            for z in min.z as i32..max.z as i32 {
+                if lava_floor_at(world, (x, y, z), bottom) {
+                    let low = DVec3::new(f64::from(x), f64::from(y), f64::from(z));
+                    out.push(Box3::new(low, low + DVec3::new(1.0, 0.5, 1.0)));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// `BlockCollisions`: the blocks whose collision shapes meet the box from

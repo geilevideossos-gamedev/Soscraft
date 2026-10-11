@@ -1399,6 +1399,7 @@ fn encode(hit: MobHit) -> u64 {
         MobHit::Chicken(_) => 15,
         MobHit::Ghast(_) => 16,
         MobHit::Blaze(_) => 18,
+        MobHit::Strider(_) => STRIDER_KEY,
     };
     (kind << 56) | (hit.id() & ((1 << 56) - 1))
 }
@@ -1424,6 +1425,7 @@ fn decode(key: u64) -> Option<MobHit> {
         15 => MobHit::Chicken(id),
         16 => MobHit::Ghast(id),
         18 => MobHit::Blaze(id),
+        STRIDER_KEY => MobHit::Strider(id),
         _ => return None,
     })
 }
@@ -1431,6 +1433,7 @@ fn decode(key: u64) -> Option<MobHit> {
 const FIREBALL_KEY: u64 = 17 << 56;
 const CRYSTAL_KEY: u64 = 19 << 56;
 const DRAGON_KEY: u64 = 20 << 56;
+const STRIDER_KEY: u64 = 23;
 pub const FLAT_HIT: u64 = 1 << 55;
 
 fn dragon_part_key(id: u64, part: usize) -> u64 {

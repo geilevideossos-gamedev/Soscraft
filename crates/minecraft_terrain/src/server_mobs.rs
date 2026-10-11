@@ -410,6 +410,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:slime",
     "minecraft:spider",
     "minecraft:stray",
+    "minecraft:strider",
     "minecraft:villager",
     "minecraft:witch",
     "minecraft:wither_skeleton",
@@ -512,6 +513,23 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             pig.saddled = tag.get("equipment").and_then(|e| e.get("saddle")).and_then(|s| s.get("id")).and_then(Tag::as_str) == Some("minecraft:saddle");
             let id = world.spawn_pig(pig, no_ai);
             world.pig_mut(id)?.random = random;
+            id
+        }
+        "minecraft:strider" if tag.get("Passengers").is_none() => {
+            let mut strider = minecraftoss_entities::strider::Strider::new(pos);
+            strider.yaw = yaw;
+            strider.age.set(age);
+            strider.in_love = int(tag, "InLove").unwrap_or(0);
+            strider.persistence_required = persistent;
+            if let Some(health) = health {
+                strider.health = health;
+            }
+            strider.saddled = tag.get("equipment").and_then(|e| e.get("saddle")).and_then(|s| s.get("id")).and_then(Tag::as_str) == Some("minecraft:saddle");
+            let id = world.spawn_strider(strider, no_ai);
+            let entity = world.strider_mut(id)?;
+            entity.random = random;
+            entity.look_control.head_yaw = yaw;
+            entity.body_rotation.body_yaw = yaw;
             id
         }
         "minecraft:chicken" => {
@@ -1040,6 +1058,22 @@ fn fresh_uuid(id: u64, position: DVec3) -> Tag {
     Tag::IntArray(vec![(a >> 32) as i32, a as i32, (b >> 32) as i32, b as i32])
 }
 
+fn saddle_equipment(original: Option<&Tag>, saddled: bool) -> Option<Tag> {
+    let mut slots = match original.and_then(|tag| tag.get("equipment")) {
+        Some(Tag::Compound(slots)) => slots.clone(),
+        _ if !saddled => return None,
+        _ => std::collections::BTreeMap::new(),
+    };
+    if saddled {
+        let saddle = slots.remove("saddle").filter(|s| s.get("id").and_then(Tag::as_str) == Some("minecraft:saddle"));
+        let saddle = saddle.unwrap_or_else(|| Tag::Compound([("id".to_owned(), Tag::String("minecraft:saddle".to_owned())), ("count".to_owned(), Tag::Int(1))].into_iter().collect()));
+        slots.insert("saddle".to_owned(), saddle);
+    } else {
+        slots.remove("saddle");
+    }
+    Some(Tag::Compound(slots))
+}
+
 /// The live mobs whose feet `keep` accepts, as saved entity tags
 /// (`Entity.saveWithoutId` with the type's fields), each from the tag it
 /// came from when it has one: what the entity world simulates overwrites
@@ -1223,6 +1257,15 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
             fields.push(("equipment", Tag::Compound([("saddle".to_owned(), saddle)].into_iter().collect())));
         }
         add(e.id, "minecraft:pig", &pig.body, pig.yaw, pig.health, pig.persistence_required, fields);
+    }
+    for e in world.striders() {
+        let strider = &e.strider;
+        let mut fields = age(&strider.age);
+        fields.push(("InLove", Tag::Int(strider.in_love)));
+        if let Some(equipment) = saddle_equipment(originals.get(&e.id), strider.saddled) {
+            fields.push(("equipment", equipment));
+        }
+        add(e.id, "minecraft:strider", &strider.body, strider.yaw, strider.health, strider.persistence_required, fields);
     }
     for e in world.chickens() {
         let chicken = &e.chicken;
@@ -1466,4 +1509,57 @@ fn head_item(tag: &Tag) -> Option<bool> {
 /// Whether a position lies in a chunk.
 pub fn in_chunk(position: DVec3, chunk: ChunkPos) -> bool {
     (position.x.floor() as i32) >> 4 == chunk.x && (position.z.floor() as i32) >> 4 == chunk.z
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strider_tag(fields: &str) -> Tag {
+        minecraftoss_core::snbt::parse_compound(&format!("{{id:\"minecraft:strider\",Pos:[1.5d,64.5d,2.5d],Rotation:[90.0f,0.0f],{fields}}}")).unwrap()
+    }
+
+    #[test]
+    fn a_strider_round_trips_with_its_saddle_age_and_love() {
+        let tag = strider_tag("InLove:300,Health:13.0f,PersistenceRequired:1b,equipment:{saddle:{id:\"minecraft:saddle\",count:1},head:{id:\"minecraft:carved_pumpkin\",count:1}}");
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("striders load");
+        let strider = &world.strider_mut(id).unwrap().strider;
+        assert!(strider.saddled && strider.persistence_required);
+        assert_eq!((strider.in_love, strider.health, strider.yaw), (300, 13.0, 90.0));
+        assert_eq!(strider.body.position, DVec3::new(1.5, 64.5, 2.5));
+        let originals: std::collections::HashMap<u64, Tag> = [(id, tag.clone())].into_iter().collect();
+        let saved = mob_tags(&world, |_| true, &originals);
+        let (_, back) = saved.iter().find(|(saved_id, _)| *saved_id == id).expect("the strider is saved");
+        let equipment = back.get("equipment").expect("its equipment");
+        assert_eq!(equipment.get("saddle").and_then(|s| s.get("id")).and_then(Tag::as_str), Some("minecraft:saddle"));
+        assert_eq!(equipment.get("head").and_then(|s| s.get("id")).and_then(Tag::as_str), Some("minecraft:carved_pumpkin"), "other slots stay as loaded");
+        assert_eq!(int(back, "InLove"), Some(300));
+        let mut again = EntityWorld::default();
+        let id_again = spawn_saved(&mut again, back).expect("it loads again");
+        let strider = &again.strider_mut(id_again).unwrap().strider;
+        assert!(strider.saddled);
+        assert_eq!((strider.in_love, strider.health), (300, 13.0));
+        world.strider_mut(id).unwrap().strider.saddled = false;
+        let saved = mob_tags(&world, |_| true, &originals);
+        let (_, back) = saved.iter().find(|(saved_id, _)| *saved_id == id).unwrap();
+        assert!(back.get("equipment").and_then(|e| e.get("saddle")).is_none());
+        assert!(back.get("equipment").and_then(|e| e.get("head")).is_some());
+        let baby = strider_tag("Age:-1200");
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &baby).unwrap();
+        let strider = &world.strider_mut(id).unwrap().strider;
+        assert!(strider.age.baby() && !strider.saddled);
+        assert_eq!((strider.body.width, strider.body.height), (0.45, 0.85));
+        let saved = mob_tags(&world, |_| true, &std::collections::HashMap::new());
+        assert_eq!(int(&saved[0].1, "Age"), Some(-1200));
+        assert!(saved[0].1.get("equipment").is_none());
+    }
+
+    #[test]
+    fn a_strider_with_a_rider_waits_dormant() {
+        let tag = strider_tag("Passengers:[{id:\"minecraft:zombified_piglin\"}]");
+        assert_eq!(spawn_saved(&mut EntityWorld::default(), &tag), None);
+        assert!(SIMULATED_KINDS.contains(&"minecraft:strider"));
+    }
 }

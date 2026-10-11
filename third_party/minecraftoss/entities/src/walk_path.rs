@@ -51,6 +51,9 @@ pub enum WalkTarget {
     Monster,
     /// `Enderman.getWalkTargetValue`: every spot alike.
     Zero,
+    Strider {
+        in_lava: bool,
+    },
 }
 
 impl WalkProfile {
@@ -75,6 +78,18 @@ impl WalkProfile {
         };
         profile.set_malus(PathType::FireInNeighbor, 16.0);
         profile.set_malus(PathType::Fire, -1.0);
+        profile
+    }
+
+    pub fn strider(width: f32, height: f32, in_lava: bool) -> Self {
+        let mut profile = Self::animal(width, height);
+        profile.can_float = false;
+        profile.can_stand_on_fluid = true;
+        profile.set_malus(PathType::Water, -1.0);
+        profile.set_malus(PathType::Lava, 0.0);
+        profile.set_malus(PathType::FireInNeighbor, 0.0);
+        profile.set_malus(PathType::Fire, 0.0);
+        profile.walk_target = WalkTarget::Strider { in_lava };
         profile
     }
 
@@ -308,7 +323,7 @@ impl<'a, W: World + ?Sized> Evaluator<'a, W> {
         let (bx, _, bz) = self.block_pos();
         let mut start_y = p.y.floor() as i32;
         let at = |y: i32| (p.x.floor() as i32, y, p.z.floor() as i32);
-        if !(self.profile.can_stand_on_fluid && self.world.floatable_fluid(at(start_y))) {
+        if !(self.profile.can_stand_on_fluid && self.world.fluid_is_lava(at(start_y))) {
             if self.profile.can_float && self.walker.in_floatable_fluid {
                 while self.world.floatable_fluid(at(start_y)) {
                     start_y += 1;
@@ -329,7 +344,7 @@ impl<'a, W: World + ?Sized> Evaluator<'a, W> {
                 }
             }
         } else {
-            while self.world.floatable_fluid(at(start_y)) {
+            while self.world.fluid_is_lava(at(start_y)) {
                 start_y += 1;
             }
             start_y -= 1;

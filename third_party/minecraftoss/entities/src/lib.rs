@@ -54,6 +54,7 @@ pub mod skeleton_bow;
 pub mod slime;
 pub mod spider;
 pub mod steering;
+pub mod strider;
 pub mod stroll;
 pub mod tempt;
 pub mod trading;
