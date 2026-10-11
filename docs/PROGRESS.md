@@ -37,6 +37,7 @@ Briefs: `docs/round8/<item>.md`, the multiplayer design `docs/MULTIPLAYER.md`.
 | 2 | end of round | - | - |
 
 ## Decisions
+- Gentle builds (2026-10-11, the owner's PC was at 100 % CPU with 2 GB of commit left while gaming): `%LOCALAPPDATA%\iw4l-cargo-slot.txt` holds `slots=1`, `jobs=4`, `priority=low`, so one cargo runs at a time with 4 jobs below normal priority. Delete the file (or set `slots=2`, `jobs=8`) for full speed, e.g. for a release build when the owner is away. The wrapper change is committed on every track branch too.
 - Release builds use ThinLTO (faster, robust while the PC is in use); `--profile fat` keeps the old fat-LTO build for an A/B if the owner sees lower frame rates.
 - Hit keys: 20 is the dragon; track B uses 21-25, track C 26-28.
 - Track D starts after the first merge: four debug target dirs fit on D:, five do not.
