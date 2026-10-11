@@ -186,7 +186,7 @@ The real fault is the time a throw took, which hid the throw:
 
 ### 1. Minecraft eye of ender throws are logged and tested from the click to the flying eye
 
-Commit: (see the next entry, or `git log` under this subject)
+Commit: e7db22ac
 
 - **Changed:**
   - `minecraft_terrain/src/eye_of_ender.rs`: `Eyes::locate` returns `EyeSearch` (`Found`, `NotFound`, `TimedOut`) and the time it took; an empty tag counts as `NotFound`. New `Eyes::throw` searches, launches and records an `EyeAnswer` (owner, feet, found, target, outcome "flew", "no structure" or "timed out", milliseconds), kept until `take_answers()`. `EyeAnswer::line()` writes the log line.
@@ -197,4 +197,21 @@ Commit: (see the next entry, or `git log` under this subject)
   - `minecraft_survival` (`level.rs`): `an_eye_thrown_from_the_hand_leaves_the_stack_and_flies` (owner's seed, a `Player` at (-300.5, 80, -1700.5) looking up with 16 eyes: `eye_use` gives `ThrowEye`, `Entities::throw_eye` waits, `Entities::tick` brings the answer into `item_uses_done`, `finish_item_use` leaves 15, and `eye_views()` shows the eye rising toward the north-west).
 - **Decision:** the log line also names the thrower's feet, and a no names them too, so a later log shows where a throw found nothing.
 - **Test steps:** none on their own; brief section 6 step 12 (every throw has a line starting "Minecraft eye of ender:") checks this once entry 3 lands.
+- **Kit:** none needed.
+
+### 2. Minecraft stronghold rings are worked out once per world, away from the server tick
+
+Commit: (see the next entry, or `git log` under this subject)
+
+- **Changed:**
+  - `third_party/minecraftoss/generator/src/structure/placement.rs` (a MinecraftOSS patch, new to the patched list): `ring_chunks` takes each slot through its `resolved` cache, the one `ring_contains` already used. `/locate`, the eye and chunk generation now share one resolution per `WorldGen`.
+  - `minecraft_terrain/src/locate.rs`: `has_rings` (structures on, and a concentric-ring set with a structure whose biomes the dimension can make, as vanilla's `ChunkGeneratorStructureState` keeps only those sets) and `resolve_rings` (works out every ring position of those sets, giving how many).
+  - `minecraft_survival/src/server.rs`: `start_level` starts `resolve_rings_in_background`, a thread named "Stronghold rings" that works the rings out and logs `Minecraft stronghold rings: 128 worked out in {ms} ms`. This is vanilla's `ensureStructuresGenerated` at world load. A throw or `/locate` that comes first waits on the same cache; the thread holds the `Arc<WorldGen>`, so a level closed early just lets it finish. Only the overworld has rings; elsewhere the thread ends at once.
+- **Measured** (test build, owner's seed): the rings take 2.5 s on their own thread; with them worked out, a second stronghold search from the same spot takes under a quarter of the first, so a throw now answers in a fraction of the earlier 3.6 s, and nothing of that runs on a tick.
+- **Tests:**
+  - `minecraft_terrain` (`locate.rs`): `rings_are_worked_out_once_and_agree_with_the_placement_check` (128 rings, the second call under a quarter of the first, `is_structure_chunk` true at each ring chunk and, around each, exactly where another ring chunk is), `a_second_stronghold_search_reuses_the_rings` (both find (-496, 0, -1936), the second under a quarter of the time), `only_the_overworld_has_rings` (the Nether and the End have none and resolve 0).
+  - `minecraft_terrain` (`eye_of_ender.rs`): `an_overworld_eye_finds_a_stronghold_ring_chunk_corner` is no longer ignored.
+  - `minecraft_survival` (`server.rs`): `the_stronghold_rings_are_worked_out_on_their_own_thread` (the thread's name, 128 rings, and a later `resolve_rings` takes under 200 ms).
+- **Decision:** one background thread for all rings, not one task per ring as vanilla's `supplyAsync` per position; the result is the same and a single named thread is easy to find in a profile.
+- **Test steps:** none on their own; brief section 6 steps 1-5 (entry 3) cover it. In `latest.log`, a `Minecraft stronghold rings: 128 worked out in ... ms` line follows each overworld load.
 - **Kit:** none needed.

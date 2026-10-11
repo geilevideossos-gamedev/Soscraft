@@ -748,7 +748,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "resolves all 128 stronghold rings"]
     fn an_overworld_eye_finds_a_stronghold_ring_chunk_corner() {
         let Some(registries) = registries() else {
             return;

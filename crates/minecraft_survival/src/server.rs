@@ -272,7 +272,30 @@ impl Drop for LevelLoader {
     }
 }
 
+pub fn resolve_rings_in_background(
+    stream: &minecraft_terrain::terrain::TerrainStream,
+) -> Option<JoinHandle<usize>> {
+    let world = stream.world_gen();
+    std::thread::Builder::new()
+        .name("Stronghold rings".to_owned())
+        .spawn(move || {
+            if !minecraft_terrain::locate::has_rings(&world) {
+                return 0;
+            }
+            let started = Instant::now();
+            let rings = minecraft_terrain::locate::resolve_rings(&world);
+            diag::info!(
+                World,
+                "Minecraft stronghold rings: {rings} worked out in {} ms",
+                started.elapsed().as_millis()
+            );
+            rings
+        })
+        .ok()
+}
+
 pub fn start_level(globals: &mut Globals, level: &mut Level) {
+    let _ = resolve_rings_in_background(&level.terrain.stream);
     let forced_weather = if has_weather(level.dimension) {
         globals.forced_weather.take()
     } else {
@@ -2293,6 +2316,26 @@ mod tests {
         let start = crate::portal_forcer::travel_into(&mut players, Dimension::Nether, &server.globals.registries).expect("a debug start comes through a portal");
         assert_eq!((start.target, start.entry_axis, start.relative), ((-5, 64, 10), PortalAxis::X, [0.5, 0.0, 0.0]));
         assert!(crate::portal_forcer::travel_into(&mut players, Dimension::End, &server.globals.registries).is_none());
+    }
+
+    #[test]
+    fn the_stronghold_rings_are_worked_out_on_their_own_thread() {
+        let Some(stream) = crate::commands::tests::test_stream() else {
+            return;
+        };
+        let handle = resolve_rings_in_background(&stream).expect("a thread");
+        assert_eq!(handle.thread().name(), Some("Stronghold rings"));
+        assert_eq!(handle.join().ok(), Some(128));
+        let started = Instant::now();
+        assert_eq!(
+            minecraft_terrain::locate::resolve_rings(&stream.world_gen()),
+            128
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(200),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
