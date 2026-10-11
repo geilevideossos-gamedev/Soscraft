@@ -66,7 +66,7 @@ impl VoxelQueues {
     }
 
     pub(crate) fn take_deaths(&mut self, client: u32) -> Vec<String> {
-        self.deaths.remove(&client).unwrap_or_default()
+        self.deaths.remove(&client).into_iter().flatten().collect()
     }
 
     pub(crate) fn take_totem(&mut self, client: u32) -> bool {
@@ -180,15 +180,7 @@ pub(crate) fn begin(
             }
         }
         if ps.pm_type == 0 {
-            place(
-                player,
-                authority,
-                client,
-                ps,
-                origin,
-                gate.as_deref_mut(),
-                now_ms,
-            );
+            place(player, authority, client, ps, origin, gate, now_ms);
         }
     }
     crate::minecraft_end::step(player, levels);

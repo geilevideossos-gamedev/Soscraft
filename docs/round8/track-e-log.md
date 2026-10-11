@@ -557,6 +557,18 @@ Commit: see `git log` ("Every player has their own hearts, hunger, XP and respaw
 - **Test steps:** `docs/round8/e-m2-tests.md`, section E10b (two windows).
 - **Kit:** `minecraft:cooked_beef` x8, `minecraft:cobblestone` x32, `minecraft:white_bed` x1, `minecraft:torch` x16.
 
+### Final verification of E9, E10a and E10b: clippy on the track's own lines
+
+Commit: see `git log` ("Multiplayer M2 per-player step passes clippy"). The previous commit is `4a6c0dc7`.
+
+- **Clippy** on the crates touched since `79ba1549` (`minecraft_survival`, `minecraft_terrain`, `render_anim`, `sim`, `minecraftoss-world`) with `--all-targets -A clippy::approx_constant`. Two warnings were on lines the track added, both in `render_anim::minecraft_players`; older warnings stay.
+- **Changed (no behaviour change):**
+  - `VoxelQueues::take_deaths`: `unwrap_or_default()` (refused by the workspace `clippy.toml`) became `into_iter().flatten().collect()`, which returns the same empty list for a client with no queued death; `unwrap_or(Vec::new())` and `unwrap_or_else(Vec::new)` are refused by `clippy::unwrap_or_default`.
+  - `begin`: the last use of the spawn gate passes `gate` instead of `gate.as_deref_mut()` (`needless_option_as_deref`), and the call fits on one line as rustfmt wants for the new file.
+- **Tests:** none new. `test -p` of each touched crate is green: `minecraft_survival` 380 + 1, `minecraft_terrain` 850 (4 ignored), `render_anim` 76, `sim` 79, `minecraftoss-world` 66. `check -p launcher` is green.
+- **Test steps:** none new; sections E10a and E10b of `docs/round8/e-m2-tests.md` cover these lines (E10a step 8 and E10b step 9: a death message in both windows and each player's respawn at their own point).
+- **Kit:** none needed.
+
 ## Combined kit for every test in this track
 
 `minecraft:obsidian` x10, `minecraft:flint_and_steel` x1, `minecraft:chest` x1, `minecraft:cobblestone` x32, `minecraft:lava_bucket` x1, `minecraft:torch` x16, `minecraft:cooked_beef` x8, `minecraft:crafting_table` x1, `minecraft:shield` x1, `minecraft:skeleton_spawn_egg` x1, `minecraft:ender_pearl` x4, `minecraft:totem_of_undying` x1, `minecraft:white_bed` x1, `minecraft:elytra` x1, `minecraft:firework_rocket` x8 (15 stacks).
