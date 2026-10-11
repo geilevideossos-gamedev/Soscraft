@@ -42,6 +42,8 @@ pub struct Player {
     pub remote: bool,
     pub held: Option<Switch>,
     pub portal: crate::portal::Portal,
+    pub travel_locked: bool,
+    pub travel_refused: bool,
 }
 
 #[derive(Default)]
@@ -105,7 +107,32 @@ impl Player {
             remote: false,
             held: None,
             portal: crate::portal::Portal::default(),
+            travel_locked: false,
+            travel_refused: false,
         }
+    }
+
+    pub fn refuse_travel(&mut self) -> bool {
+        if self.travel_locked {
+            self.travel_refused = true;
+        }
+        self.travel_locked
+    }
+
+    pub fn close_menu(&mut self) -> Vec<ItemStack> {
+        let inventory = &mut self.inventory;
+        let loose: Vec<ItemStack> = inventory
+            .crafting
+            .iter_mut()
+            .chain(inventory.workbench.iter_mut())
+            .chain(std::iter::once(&mut inventory.cursor))
+            .filter_map(Option::take)
+            .collect();
+        let selected = self.selected;
+        loose
+            .into_iter()
+            .filter_map(|stack| self.inventory.add_item(stack, selected))
+            .collect()
     }
 
     pub fn arrive(&mut self, place: Place) {

@@ -55,6 +55,10 @@ pub(crate) fn step(
     let Some(due) = stepped.due else {
         return;
     };
+    if player.refuse_travel() {
+        ui.portal_overlay = None;
+        return;
+    }
     if due.kind == portal::PortalKind::End {
         crate::minecraft_end::travel(player, level, globals, due.entry);
         ui.portal_overlay = None;

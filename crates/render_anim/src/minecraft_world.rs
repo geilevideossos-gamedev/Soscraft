@@ -19,7 +19,7 @@ use minecraft_terrain::terrain::Dimension;
 use minecraftoss_core::BlockStateId;
 use minecraftoss_core::registries::{DataPaths, Registries};
 
-const VIEW_DISTANCE: i32 = 8;
+pub(crate) const VIEW_DISTANCE: i32 = 8;
 const TICK_SECONDS: f64 = 1.0 / 20.0;
 const CRAWLING_BELOW_VIEW_HEIGHT: f32 = 30.0;
 const RECENT_PLACE_SECONDS: f64 = 1.0;
@@ -85,7 +85,7 @@ struct Loaded {
 }
 
 #[derive(Default)]
-struct Runtime {
+pub(crate) struct Runtime {
     loading: Option<mpsc::Receiver<Result<(Loaded, minecraft_survival::server::Server), String>>>,
     world: Option<Loaded>,
     server: Option<minecraft_survival::server::Server>,
@@ -200,10 +200,17 @@ pub(crate) fn register(app: &mut App) {
         .init_resource::<frame::MinecraftUi>()
         .init_resource::<frame::InventoryPuppet>()
         .insert_non_send(Runtime::default())
+        .insert_non_send(crate::minecraft_host::HostSessions::default())
         .add_systems(
             Update,
             update
                 .after(frame::PresentedPublished)
+                .in_set(frame::ClientSet::Present),
+        )
+        .add_systems(
+            Update,
+            crate::minecraft_host::host
+                .after(update)
                 .in_set(frame::ClientSet::Present),
         )
         .add_systems(
@@ -299,7 +306,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         forced_weather: std::env::var("IW4L_MINECRAFT_WEATHER").ok(),
         chat,
         data: Default::default(),
-        level_writer: None,
+        writer: Default::default(),
         autosave_ticks: 0,
         level_ticks: 0,
         closing: Vec::new(),
@@ -2450,6 +2457,34 @@ fn stream_around_spawn(
         }
     }
     observe_spawn(terrain, gate, at, camera.position, now_ms);
+}
+
+pub(crate) struct HostView<'a> {
+    pub(crate) server: &'a mut minecraft_survival::server::Server,
+    pub(crate) local: &'a minecraft_net::PlayerUuid,
+    pub(crate) origins: &'a HashMap<Dimension, [f64; 3]>,
+    pub(crate) shown: Option<Dimension>,
+}
+
+pub(crate) fn host_view(runtime: &mut Runtime) -> Option<HostView<'_>> {
+    let Runtime { server, local, origins, shown, .. } = runtime;
+    Some(HostView { server: server.as_mut()?, local: local.as_ref()?, origins, shown: *shown })
+}
+
+pub(crate) fn show_lines(runtime: &Runtime, chat: &mut frame::McChat, lines: &[minecraft_commands::Clientbound]) {
+    if let Some(world) = runtime.world.as_ref().filter(|_| !lines.is_empty()) {
+        show_chat(chat, &runtime.inventory_ui, &world.packs, lines);
+    }
+}
+
+pub(crate) fn place_friend(player: &mut minecraft_survival::player::Player, authority: &mut sim::SimWorld, id: sim::ClientId, ps: &playerstate_iw4::PlayerState, origin: [f64; 3]) {
+    let chunk = |block: f64| (block.floor() as i32) >> 4;
+    if let Some(place) = player.arrival
+        && !sim::voxel::chunks_ready_around(chunk(place.feet[0]), chunk(place.feet[2]), crate::minecraft_spawn_gate::SPAWN_CHUNK_RADIUS)
+    {
+        return;
+    }
+    place_player(player, authority, id, ps, origin, &mut crate::minecraft_spawn_gate::SpawnGate::default(), 0);
 }
 
 fn place_player(

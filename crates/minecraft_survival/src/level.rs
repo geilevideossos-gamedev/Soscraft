@@ -31,6 +31,7 @@ pub struct Terrain {
     pub scene: HandcraftedScene,
     pub environment: DimensionEnvironment,
     pub rules: DimensionRules,
+    pub friend_changes: Option<Vec<(i32, i32, i32)>>,
 }
 
 impl Level {
@@ -76,6 +77,7 @@ impl Terrain {
             scene,
             environment,
             rules,
+            friend_changes: None,
         })
     }
 }
@@ -190,6 +192,9 @@ pub fn stream_tick(
 ) -> (Vec<Arc<Chunk>>, Vec<ChunkPos>) {
     let changed = terrain.scene.take_changed();
     terrain.stream.record_edits(&terrain.scene, &changed);
+    if let Some(friend_changes) = terrain.friend_changes.as_mut() {
+        friend_changes.extend_from_slice(&changed);
+    }
     save_block_entities(containers, terrain);
     if let Some(entities) = entities.as_mut() {
         save_server_block_entities(entities, terrain, false);

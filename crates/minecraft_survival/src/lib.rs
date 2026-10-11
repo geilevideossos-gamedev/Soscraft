@@ -20,6 +20,7 @@ pub mod respawn;
 pub mod respawn_block;
 pub mod save;
 pub mod server;
+pub mod session;
 pub mod survival;
 pub mod switch;
 pub mod the_end;

@@ -128,7 +128,7 @@ Commit: ec064dc1
 
 ### E5. A client terrain stream builds the world from chunks the host sends
 
-Commit: see `git log` ("A client terrain stream builds the world from chunks the host sends")
+Commit: 3a98934f
 
 - **Changed:**
   - `crates/minecraft_terrain/src/terrain.rs`:
@@ -151,3 +151,103 @@ Commit: see `git log` ("A client terrain stream builds the world from chunks the
   - The remote stream's spawn fields start at 0, 0, 0, as a vanilla client's level does before the spawn packet; E7b sets them from `Login`.
 - **Test steps:** none in game yet; the game still runs the host path only. `check -p launcher` is green. The single-player world must load, stream and save exactly as before; the owner's M1 test covers it once E7c shows chunks on a friend's game.
 - **Kit:** none.
+
+### E6. The host streams its world to each friend
+
+Commit: see `git log` ("The host streams its world to each friend")
+
+- **Changed:**
+  - `crates/minecraft_survival/src/session.rs` (new):
+    - `ChunkSender`, a simple form of vanilla's `PlayerChunkSender`: the friend's level, their `TrackingView` (vanilla's `ChunkTrackingView`, now re-exported as `minecraft_terrain::view`), `sent` and `pending`. A chunk entering the view becomes pending; one leaving it is dropped from `pending`, or gets a `ChunkForget` if it was sent. Batches hold up to 9 loaded chunks, nearest first. One batch is in flight until two have been acknowledged, then two. A new level starts the stream again.
+    - The `ChunkBatch { seq }` marker goes into the friend's reliable stream when the chunks are taken from the chunk map, and the chunks count as sent from then on.
+    - `cut_batch` / `encode_batch` build the `"MC"` blob on the `minecraft-chunk-send` worker. A batch is cut at 128 KiB (at least one chunk stays). Chunks that did not fit go back to pending. A single chunk over the 256 KiB bulk limit is skipped with a warning. Every batch gets a blob, even an empty one, so the friend never waits on a marker forever.
+    - `Updates` / `block_updates`: each tick's changed positions in a level with friends in it become one `BlockUpdates` (state ids), plus a `BlockEntity` where the chunk map holds a block entity at a changed position. Each friend gets only the changes in chunks it was sent, and only for its own level.
+    - `Sessions`:
+      - `hello`: the protocol and registry check, then "A player with that name is already in the world". Then `Server::join_friend`, `Login` first, the full `PlayerList` to the newcomer, the newcomer to everyone else, and "multiplayer.player.joined" in yellow to everyone including the host.
+      - `leave`: `Server::leave`, `PlayerList.removed` and "multiplayer.player.left".
+      - `take_retiring`: a refused friend's MW2 client is retired 1 s after its `Rejected`.
+      - `lock_travel`, `fan_out`, `select_batches` and `take_outgoing`.
+    - `registry_fingerprint`: FNV-1a 64 over the block state count and every state's name with its properties. `rules_of` fills `Rules` from the game rules.
+  - `crates/minecraft_survival/src/server.rs`:
+    - **One writer thread with a queue** (`SaveWriter`, thread `minecraft-world-save`): `save_player`, `autosave` and the leave save are sends on a channel, written in order. The main thread never joins a writer any more. `save_and_close` waits for it (`finish`).
+    - **`recently_left`** lives in the writer: a leaving player's `PlayerData` stays there until the writer reports their file written.
+    - `join` is split into `join` (reads the file) and `join_from` (builds the player from `PlayerData`).
+    - `Server::join_friend(id, name, kit, host_dimension)`:
+      - It takes the profile from the MW2 name (`chat.join`).
+      - It reads `recently_left` first, else the player file, else it makes a new player with the kit.
+      - A friend saved in another dimension than the host's is placed at the spawn of the host's level (section 5.3).
+      - The first placement is always set as an arrival, so the host teleports the friend's body there.
+    - `Server::leave(uuid)`, in this order:
+      - it settles the level thread for that player;
+      - it folds the crafting grid, workbench and carried stack back into the inventory and drops what does not fit at their feet;
+      - it removes them as an opener and calls `chat.leave`;
+      - it saves them through the queue and removes them.
+
+      It returns `Left { player, dropped }`.
+  - `player.rs`: `Player::close_menu` (returns the overflow instead of losing it), `travel_locked`, `travel_refused` and `refuse_travel`.
+  - `entities.rs`: `settle_player(id, ..)` waits for the level thread, takes the picks of outputs not yet read (`take_late`), drops that player's pearl landings, pushes and potions, then runs `leave`. The level thread serves only player 0 until M2, so it does nothing for a friend yet.
+  - `level.rs`: `Terrain.friend_changes`. While a friend is in the level, `stream_tick` copies the drained change log into it for the fan-out.
+  - `commands.rs`: `/execute in <other dimension> run tp` is refused while travel is locked.
+  - `crates/render_anim/src/minecraft_host.rs` (new): the host system, run after `minecraft_world::update`. Each frame it:
+    - reads `MinecraftWire`: `Hello` and `ChunkBatchReceived`, and counts broken messages;
+    - holds a `Hello` until the world is ready and the MW2 name is known, then runs the sessions;
+    - drops refused friends through the wire;
+    - places friends' bodies;
+    - runs the encode worker and hands the blobs to `send_batch`;
+    - fans out block updates;
+    - sends every queued message, and shows host chat lines in the host's own chat.
+  - `minecraft_world.rs`:
+    - `place_friend` puts a friend's body at their arrival once the host's collision has the chunks around it (the per-player form of the spawn gate). After that it follows their MW2 state into `player.place` with `place_player`, as for the host.
+    - After an MW2 death the friend comes back at the level's spawn.
+    - `Runtime` is `pub(crate)`, with `host_view` and `show_lines` for the host system.
+  - `minecraft_portal.rs`: a due portal (Nether portal, End portal, exit portal) is refused while travel is locked.
+  - `crates/minecraft_terrain/src/lib.rs`: re-exports `minecraftoss_world::view`.
+- **Tests:**
+  - `minecraft_survival`, `session`:
+    - `one_batch_flies_until_two_are_acknowledged_then_two`
+    - `an_unacknowledged_batch_holds_the_stream_and_stray_acks_do_not_open_it`
+    - `only_loaded_chunks_are_sent_and_a_cut_chunk_is_sent_again`
+    - `a_forget_after_a_load_stays_behind_the_marker`
+    - `another_level_starts_the_chunk_stream_again`
+    - `block_updates_reach_only_friends_in_that_level_with_that_chunk`
+    - `a_batch_is_cut_at_its_size_limit_and_keeps_at_least_one_chunk`
+    - `a_friend_respawns_only_after_a_life_has_been_seen`
+    - `a_hello_joins_the_friend_with_login_first`
+    - `a_second_hello_with_a_name_in_the_world_is_refused_and_retired` (also the protocol and registry refusals)
+    - `a_leaving_friend_is_listed_out_and_their_session_ends`
+    - `travel_is_refused_while_a_friend_is_online`
+    - `the_registry_fingerprint_is_stable_and_sees_every_state`
+  - `minecraft_survival`, `server`:
+    - `a_leaving_friend_folds_their_menu_back_drops_the_rest_and_saves_off_the_main_thread`: a job waiting on a gate holds the writer. `leave` still returns at once and the file is not there yet; it is there after the gate opens.
+    - `a_quick_rejoin_reads_the_player_the_writer_has_not_written_yet`
+    - `a_friend_saved_in_another_dimension_joins_the_hosts`
+  - `minecraft_survival`, `entities`: `a_leaving_player_gets_the_late_picks_and_loses_their_pearls_and_pushes`.
+  - `minecraft_survival`, `commands`: `execute_in_is_refused_while_friends_are_online`.
+  - Whole lib suites: `minecraft_survival` 355 passed, `render_anim` 73, `minecraft_terrain` 849 (4 ignored as before). `check -p launcher` is green.
+- **Decisions:**
+  - **Pacing is the session's, the resend is the wire's.** The session keeps a batch in flight until `ChunkBatchReceived`. The wire (E3) keeps the blob and sends it again with the same `seq`. A stray or repeated acknowledgement does not open the window.
+  - **`recently_left` is a field of the writer** (`Globals.writer`), not its own `Globals` field. An entry goes away exactly when the writer reports the file written, and each `Globals` constructor changes by one line.
+  - **A temporary world** (`IW4L_MINECRAFT_WORLD=temp`) has no writer, so a leaving friend's state stays in `recently_left` until the host closes the world. A friend who rejoins gets it back, and it goes away with the world.
+  - **A refused friend gets `Rejected`, and 1 s later its MW2 client is retired** through the wire's `drop_peer` (`retire_client_with_reason`, with the refusal in English). The friend then sees the reason on the MW2 disconnect line even if `Rejected` has not arrived.
+  - **Names are compared ignoring case**, like vanilla's `PlayerList.getPlayerByName`. Offline UUIDs differ by case, so "steve" and "Steve" would otherwise be two players with two files.
+  - **A new friend joins in the world's default game mode**, not in `IW4L_MINECRAFT_GAMEMODE`, which is the host's own choice. A friend with no player file gets the host's `IW4L_MINECRAFT_KIT`.
+  - **Travel lock:**
+    - `Player.travel_locked` is set for every player each frame while any session is open.
+    - A portal is refused when it becomes due. That gives one chat line per entry, because the portal cooldown keeps the player from re-entering at once.
+    - Respawning into another dimension is not locked. The design does not list it, and while travel is locked everyone is in one dimension, so only a death with a respawn point in another dimension can split the players.
+    - End gateways are not built yet (X6).
+  - **The first teleport of a friend waits until the host's collision has the chunks around the target** (3 chunks). Until E9 loads chunks around every player, a friend whose saved spot is outside the host's loaded area waits at the MW2 spawn. The M1 owner test keeps both players together.
+  - **After an MW2 death, a friend in M1 comes back at the level's spawn.** Beds and anchors for friends come with the per-player step in M2.
+  - **Block entities follow block updates** only where the block changed. Chest contents that change without a block change reach a friend only in later chunk sends (menus come in M2).
+  - Friends have no MW2 body gear or credits hold yet, so the leave flow has nothing of those to clear.
+- **Test steps:** a friend's game starts sending `Hello` only with E7c, so nothing new shows in a two-window test yet. The saving changes run in every single-player game, so check them with the M1 build:
+  1. Start the Minecraft world as usual. Put the kit's chest down and put some items in it. Break and place a few blocks.
+  2. Play past an autosave (5 minutes; the log says `Minecraft autosave: N chunks queued`). The game must not hitch at the autosave.
+  3. Run `/gamemode creative`, then `/gamemode survival` (each saves the player file through the new queue). Then quit through the menu.
+  4. Start again. The chest, its items, the blocks, your inventory and your position are as you left them.
+  5. Build a Nether portal with the obsidian and light it. Walk in: you still travel to the Nether when you play alone.
+- **Kit:** `minecraft:obsidian` x10, `minecraft:flint_and_steel` x1, `minecraft:chest` x1, `minecraft:cobblestone` x32.
+
+```
+IW4L_MINECRAFT_KIT=obsidian*10,flint_and_steel,chest,cobblestone*32
+```

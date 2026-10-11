@@ -615,6 +615,17 @@ impl Entities {
         self.player_pushes.clear();
     }
 
+    pub fn settle_player(&mut self, id: u64, inventory: &mut Inventory, selected: usize, feet: Option<[f64; 3]>) {
+        if id != PLAYER {
+            return;
+        }
+        self.server.wait_idle();
+        self.poll_jobs();
+        let late = take_late(&mut self.unread, id);
+        self.server_picked.extend(late);
+        self.leave(inventory, selected, feet);
+    }
+
     pub fn hatch_egg(&mut self, inventory: &Inventory, slot: usize, kind: String, position: [f64; 3], spends: bool) {
         if self.eggs_waiting.send_from(inventory, slot, spends) {
             let y_rot = minecraftoss_core::entity_data::wrap_degrees(self.random.next_float() * 360.0);
@@ -1429,6 +1440,17 @@ fn fireball_of(key: u64) -> Option<u64> {
     (key >> 56 == FIREBALL_KEY >> 56).then_some(key & ((1 << 56) - 1))
 }
 
+fn take_late(outputs: &mut [minecraft_terrain::server::Output], player: u64) -> Vec<Picked> {
+    let mut picked = Vec::new();
+    for output in outputs {
+        picked.append(&mut output.picked);
+        output.pearl_teleports.retain(|(id, _)| *id != player);
+        output.player_potions.retain(|hit| hit.player != player);
+        output.players_pushed.retain(|(id, _)| *id != player);
+    }
+    picked
+}
+
 fn take_picked(inventory: &mut Inventory, selected: usize, picked: Vec<Picked>) -> Vec<ItemStack> {
     let mut rests = Vec::new();
     for (_, _, item, count, components) in picked {
@@ -1451,6 +1473,24 @@ fn weather_name(weather: &WeatherData) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_leaving_player_gets_the_late_picks_and_loses_their_pearls_and_pushes() {
+        let mut outputs = vec![minecraft_terrain::server::Output::default(), minecraft_terrain::server::Output::default()];
+        outputs[0].picked.push((7, [1.0, 64.0, 2.0], "minecraft:dirt".to_owned(), 3, None));
+        outputs[0].pearl_teleports = vec![(PLAYER, [0.0; 3]), (5, [1.0; 3])];
+        outputs[1].picked.push((8, [1.0, 64.0, 2.0], "minecraft:cobblestone".to_owned(), 1, None));
+        outputs[1].players_pushed = vec![(PLAYER, DVec3::X), (5, DVec3::Y)];
+        let late = take_late(&mut outputs, PLAYER);
+        assert_eq!(late.iter().map(|picked| picked.0).collect::<Vec<_>>(), vec![7, 8]);
+        assert!(outputs.iter().all(|output| output.picked.is_empty()));
+        assert_eq!(outputs[0].pearl_teleports, vec![(5, [1.0; 3])]);
+        assert_eq!(outputs[1].players_pushed, vec![(5, DVec3::Y)]);
+        let mut inventory = Inventory::default();
+        assert!(take_picked(&mut inventory, 0, late).is_empty());
+        let held: Vec<_> = inventory.slots.iter().flatten().map(|stack| (stack.id.as_str(), stack.count)).collect();
+        assert_eq!(held, vec![("minecraft:dirt", 3), ("minecraft:cobblestone", 1)]);
+    }
 
     #[test]
     fn saved_weather_is_named_like_the_weather_command() {

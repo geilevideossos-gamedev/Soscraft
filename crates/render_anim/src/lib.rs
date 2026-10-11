@@ -46,6 +46,7 @@ mod minecraft_end;
 pub mod minecraft_end_look;
 mod minecraft_gui;
 mod minecraft_hand;
+mod minecraft_host;
 mod minecraft_inventory;
 mod minecraft_loading;
 mod minecraft_mining;
