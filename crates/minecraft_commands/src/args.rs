@@ -2,6 +2,7 @@ use minecraftoss_player::GameMode;
 use minecraftoss_world::game_rules::{self, Rule, Value};
 
 use crate::reader::{CommandError, StringReader, literal};
+use crate::spawnpoint::java_float;
 
 pub const TICKS_PER_DAY: i32 = 24_000;
 pub const TIME_MARKERS: [(&str, i32); 6] = [
@@ -24,7 +25,7 @@ pub enum Registry {
     Dimension,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ArgKind {
     Players { single: bool },
     Time { min: i32 },
@@ -45,6 +46,7 @@ pub enum ArgKind {
     BlockPredicate,
     Rotation,
     ResourceOrTag(Registry),
+    Float { min: f32, max: f32 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -108,6 +110,7 @@ pub enum Arg {
         at: usize,
         end: usize,
     },
+    Float(f32),
 }
 
 impl ArgKind {
@@ -215,8 +218,30 @@ impl ArgKind {
                     end: reader.cursor,
                 })
             }
+            Self::Float { min, max } => bounded_float(reader, min, max).map(Arg::Float),
         }
     }
+}
+
+fn bounded_float(reader: &mut StringReader, min: f32, max: f32) -> Result<f32, CommandError> {
+    let start = reader.cursor;
+    let value = reader.read_float()?;
+    let bound = if value < min {
+        Some(("argument.float.low", min))
+    } else if value > max {
+        Some(("argument.float.big", max))
+    } else {
+        None
+    };
+    if let Some((key, bound)) = bound {
+        reader.cursor = start;
+        return Err(CommandError::new(
+            key,
+            vec![literal(java_float(bound)), literal(java_float(value))],
+        )
+        .at(start));
+    }
+    Ok(value)
 }
 
 pub fn marker_ticks(id: &str) -> Option<i32> {
@@ -1056,5 +1081,43 @@ mod tests {
         );
         assert_eq!(key(&parse("{NoAI:{}").unwrap_err()), "parsing.expected");
         assert_eq!(parse("{}"), Ok(Arg::Nbt("{}".into())));
+    }
+
+    #[test]
+    fn decimal_arguments_report_bounds_like_brigadier() {
+        let rate = ArgKind::Float {
+            min: 1.0,
+            max: 10000.0,
+        };
+        let mut reader = StringReader::at("rate 0.5", 5);
+        let low = rate.parse(&mut reader, &[]).unwrap_err();
+        assert_eq!(
+            low.text,
+            crate::text::Text::translate(
+                "argument.float.low",
+                vec![literal("1.0"), literal("0.5")]
+            )
+        );
+        assert_eq!((low.cursor, reader.cursor), (Some(5), 5));
+        let mut reader = StringReader::at("rate 20000", 5);
+        let big = rate.parse(&mut reader, &[]).unwrap_err();
+        assert_eq!(
+            big.text,
+            crate::text::Text::translate(
+                "argument.float.big",
+                vec![literal("10000.0"), literal("20000.0")]
+            )
+        );
+        assert_eq!(big.cursor, Some(5));
+        let mut reader = StringReader::new("40");
+        assert_eq!(rate.parse(&mut reader, &[]), Ok(Arg::Float(40.0)));
+        assert_eq!(
+            rate.parse(&mut StringReader::new("1"), &[]),
+            Ok(Arg::Float(1.0))
+        );
+        assert_eq!(
+            key(&rate.parse(&mut StringReader::new("x"), &[]).unwrap_err()),
+            "parsing.float.expected"
+        );
     }
 }

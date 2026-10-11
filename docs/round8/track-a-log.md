@@ -92,7 +92,7 @@ IW4L_MINECRAFT_KIT=minecraft:furnace,minecraft:coal*16,minecraft:raw_iron*16,min
 
 ### 4. A frozen Minecraft tick only moves the players
 
-Commit: (see the next entry, or `git log` under this subject)
+Commit: 93d48f00
 
 - **Changed:**
   - `minecraft_terrain/src/server.rs`: `run_tick` takes the tick's flag. A frozen tick keeps the player's part (clocks, players, the simulation area, `mobs.tick_player` with the hurts, views, vitals and main hand, `check_merchant`, item, trident and orb pickup, the entity autosave count and the snapshot after the batch) and skips the level's: `prepare_spawning` and `sim.tick()` (block, fluid and random ticks, block events, level entities, block entities, spawners), `take_spawned`, `despawn_mobs`, `tick_mobs`, `tick_clouds`, `tick_thrown`, `tick_tridents`, `tick_eyes`, `tick_end` and `spawn_trade_experience`. Commands still run between ticks, so hits on frozen mobs land.
@@ -105,4 +105,16 @@ Commit: (see the next entry, or `git log` under this subject)
   - The client's orb pickup animations pause while frozen, as vanilla's particle engine does.
   - At a rate above 20 the client mirror still ticks every 50 ms and only sees the batches' snapshots, as a vanilla client does.
 - **Test steps:** none in game on their own: nothing can freeze the game or change the rate until `/tick` lands (group 5b), whose steps 6-9 in brief section 5 test this commit. At the normal rate the game must play as before: mobs, dropped items, falling sand and primed TNT move smoothly, rain and campfire smoke show.
+- **Kit:** none needed.
+
+### 5a. Minecraft commands take decimal arguments and fixed suggestions like brigadier
+
+Commit: (see the next entry, or `git log` under this subject)
+
+- **Changed:** `minecraft_commands`, command-tree plumbing only; nothing uses it yet (`/tick` comes in 5b).
+  - `args.rs`: `ArgKind::Float { min, max }` and `Arg::Float`, parsed like brigadier's `FloatArgumentType`: `read_float`, then `argument.float.low` or `argument.float.big` with the bound and the number written as Java's `Float.toString` writes them (`1.0`, `0.5`, `10000.0`), with the cursor put back at the argument's start. `ArgKind` and `NodeKind` lose `Eq` (a float bound has none); nothing needed it.
+  - `tree.rs`: `Node::suggests(&'static [&'static str])`, like a brigadier `SuggestionProvider` built from a fixed list.
+  - `suggest.rs`: an argument node with a fixed list offers it, filtered by the typed text as `SharedSuggestionProvider.suggest` does, instead of its kind's own suggestions. `Float` suggests nothing of its own. `complete` runs on the game's tree through a new `complete_in(roots, ...)`, so a test can complete on a tree of its own.
+- **Tests:** `args.rs`: `decimal_arguments_report_bounds_like_brigadier` (`0.5` against 1-10000 gives `argument.float.low` with `1.0` and `0.5` at the argument's start, `20000` the `big` error with `10000.0` and `20000.0`, `40` parses as 40.0). `suggest.rs`: `fixed_suggestions_replace_the_argument_kinds_own` (on a test tree, a float with `suggests(["20"])` offers `20`, a float without offers nothing, and a time argument with `["1t", "1s"]` offers those instead of its units after `1`).
+- **Test steps:** none in game on their own; `/tick` (5b) uses this.
 - **Kit:** none needed.
