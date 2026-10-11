@@ -543,7 +543,11 @@ impl ServerSim {
         if crate::server_mobs::load_level_entity(&mut self.level, &tag) {
             return;
         }
-        if self.crystals.add(&tag).is_some() || self.dragons.add(&tag).is_some() || self.frames.add(&tag).is_some() {
+        if self.frames.add(&tag).is_some() {
+            self.sync_frame_outputs(false);
+            return;
+        }
+        if self.crystals.add(&tag).is_some() || self.dragons.add(&tag).is_some() {
             return;
         }
         match crate::server_mobs::spawn_saved(&mut self.mobs, &tag) {
@@ -571,6 +575,7 @@ impl ServerSim {
             self.crystals.remove_where(inside);
             self.dragons.remove_where(inside);
             self.frames.remove_where(inside);
+            self.sync_frame_outputs(false);
             self.mobs.remove_where(inside);
             self.dormant.retain(|(group, _)| !inside(glam::DVec3::from_array(group[0].pos)));
             self.level.entities.retain(|e| !(inside(glam::DVec3::from_array(e.pos)) && (e.item_data().is_some() || e.orb_data().is_some())));
@@ -1471,6 +1476,7 @@ impl ServerSim {
             return false;
         }
         self.frames.add(&tag);
+        self.sync_frame_outputs(true);
         self.frame_sound(&frame, crate::item_frame::FrameSound::Place);
         true
     }
@@ -2088,6 +2094,22 @@ impl ServerSim {
         for frame in popped {
             self.frame_broken(&frame, false);
         }
+        self.sync_frame_outputs(true);
+    }
+
+    fn sync_frame_outputs(&mut self, notify: bool) {
+        let mut wanted: std::collections::HashMap<minecraftoss_core::BlockPos, Vec<(minecraftoss_core::pos::Direction, i32)>> = std::collections::HashMap::new();
+        for frame in &self.frames.list {
+            wanted.entry(minecraftoss_core::BlockPos::new(frame.pos.0, frame.pos.1, frame.pos.2)).or_default().push((frame.facing, frame.analog_output()));
+        }
+        let cells: std::collections::BTreeSet<minecraftoss_core::BlockPos> = wanted.keys().chain(self.level.frame_outputs.keys()).copied().collect();
+        for cell in cells {
+            let now = wanted.remove(&cell).unwrap_or_default();
+            if self.level.frame_outputs.get(&cell).map_or(now.is_empty(), |old| *old == now) {
+                continue;
+            }
+            self.level.set_frame_outputs(cell, now, notify);
+        }
     }
 
     fn frame_sound(&mut self, frame: &crate::item_frame::ItemFrame, sound: crate::item_frame::FrameSound) {
@@ -2115,6 +2137,7 @@ impl ServerSim {
             self.frame_sound(&frame, sound);
         }
         self.drop_from_frame(&frame, outcome.drops.clone());
+        self.sync_frame_outputs(true);
         outcome
     }
 
@@ -8152,5 +8175,35 @@ mod tests {
         handle.wait_idle();
         let uses: Vec<bool> = handle.poll().into_iter().flat_map(|out| out.item_uses).collect();
         assert_eq!(uses, [true, false], "the first took the compass, the second turned it");
+    }
+
+    #[test]
+    fn a_comparator_reads_the_frame_rotation_through_a_block() {
+        use crate::item_frame::FrameAction;
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 198, 7), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (8, 199, 7), Block::new("minecraft:comparator").with("facing", "south").with("mode", "compare").with("powered", "false"));
+        let id = framed(&mut server, false, (8, 199, 9), Direction::South, None);
+        let output = |server: &mut ServerSim| {
+            for _ in 0..4 {
+                server.tick();
+            }
+            server.level.comparator_output_at(minecraftoss_core::BlockPos::new(8, 199, 7))
+        };
+        assert_eq!(output(&mut server), 0, "an empty frame gives nothing");
+        server.frame_action(id, FrameAction::Use { held: Some(minecraftoss_player::inventory::ItemStack::new("minecraft:arrow", 1)), infinite: false });
+        let mut outputs = vec![output(&mut server)];
+        for _ in 0..8 {
+            server.frame_action(id, FrameAction::Use { held: None, infinite: false });
+            outputs.push(output(&mut server));
+        }
+        assert_eq!(outputs, [1, 2, 3, 4, 5, 6, 7, 8, 1]);
+        let side = framed(&mut server, false, (8, 199, 9), Direction::Up, Some("minecraft:arrow"));
+        assert_eq!(output(&mut server), 1, "a frame facing another way is not read");
+        server.frame_action(side, FrameAction::Attack { infinite: true });
+        server.frame_action(side, FrameAction::Attack { infinite: true });
+        server.frame_action(id, FrameAction::Attack { infinite: false });
+        assert_eq!(output(&mut server), 0, "and nothing once it is empty");
     }
 }

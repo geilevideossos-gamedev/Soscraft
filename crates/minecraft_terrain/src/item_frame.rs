@@ -322,6 +322,14 @@ impl ItemFrame {
         world.legacy_solid(support) || (horizontal(self.facing) && world.is_diode(support))
     }
 
+    pub fn analog_output(&self) -> i32 {
+        if self.item.is_some() {
+            self.rotation % NUM_ROTATIONS + 1
+        } else {
+            0
+        }
+    }
+
     pub fn drop_point(&self) -> DVec3 {
         let (x, _, z) = self.facing.offset();
         let along = |step: i32| f64::from(step as f32 * DROP_STEP);

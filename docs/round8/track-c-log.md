@@ -552,3 +552,24 @@ Previous commit: a87f9958
 ```
 IW4L_MINECRAFT_KIT=minecraft:item_frame*16,minecraft:glow_item_frame*8,minecraft:compass,minecraft:carrot*16,minecraft:torch*8,minecraft:tnt*4,minecraft:flint_and_steel,minecraft:creeper_spawn_egg*2,minecraft:oak_planks*64,minecraft:diamond_pickaxe
 ```
+
+### 21. Minecraft comparators read item frames
+
+Previous commit: 88038810
+
+- **Changed:**
+  - Vendored `world/src/level/mod.rs` and `redstone.rs` (MinecraftOSS patch): `Level.frame_outputs` holds, per block, the item frames in it with their facing and analog output. The comparator's input (`ComparatorBlock.getInputSignal`): when the block behind is a redstone conductor and the signal is below 15, it now reads the block two behind and the item frame there facing the comparator's way, used only when exactly one such frame is in that block (`getItemFrame`), taking the larger of the frame's and the block's output. `set_frame_outputs` updates the map and, when asked, runs `updateNeighbourForOutputSignal` from the frame's block (as `ItemFrame.setItem` and `setRotation` do).
+  - `minecraft_terrain` `item_frame.rs`: `analog_output` (`rotation % 8 + 1` with an item, 0 when empty).
+  - `server.rs`: `sync_frame_outputs` keeps the level's map in step with the frames after every use, hit, hang and survival check (with the comparator update) and after chunk loads and unloads (without it, as vanilla does not update on load).
+- **Tests:** `server`: `a_comparator_reads_the_frame_rotation_through_a_block` (a comparator behind a stone with a frame on the far side: 0 empty, then 1 to 8 as the arrow turns and 1 again; a second frame in the same block facing up is not read; 0 once the frame is empty).
+- **Decisions:** the frames' outputs live in the level as plain data (block, facing, output), so the vendored redstone code needs no entity access; the server is the only writer.
+- **Test steps:** (survival, a new world, daytime)
+  1. Place a row on the ground, west to east: an oak planks block, then a comparator facing away from it (place it while looking east, away from the planks), then 8 redstone dust.
+  2. Hang an item frame on the west side of the planks (the side away from the comparator) and put an arrow in: one dust lights.
+  3. Right-click the frame 7 times: one more dust lights at each turn, 8 in all (**1**). One more turn: back to one.
+  4. Left-click the arrow out: all the dust goes dark.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:item_frame*4,minecraft:arrow*4,minecraft:comparator*2,minecraft:redstone*16,minecraft:oak_planks*16
+```

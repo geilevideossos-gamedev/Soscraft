@@ -521,6 +521,24 @@ impl Level<'_> {
         }
     }
 
+    fn frame_output(&self, pos: BlockPos, direction: Direction) -> Option<i32> {
+        let mut facing = self.frame_outputs.get(&pos)?.iter().filter(|(facing, _)| *facing == direction);
+        let (_, output) = facing.next()?;
+        facing.next().is_none().then_some(*output)
+    }
+
+    pub fn set_frame_outputs(&mut self, pos: BlockPos, outputs: Vec<(Direction, i32)>, notify: bool) {
+        if outputs.is_empty() {
+            self.frame_outputs.remove(&pos);
+        } else {
+            self.frame_outputs.insert(pos, outputs);
+        }
+        if notify {
+            let air = self.registries().blocks.block_of(BlockStateId::AIR);
+            self.update_neighbour_for_output_signal(pos, air);
+        }
+    }
+
     pub(super) fn has_analog_output(&self, state: BlockStateId) -> bool {
         self.store_of(state).is_some() || self.state_analog_output(state).is_some()
     }
@@ -1104,9 +1122,8 @@ impl Level<'_> {
         if let Some(analog) = self.analog_output(target_state, target) {
             analog
         } else if input < 15 && self.is_conductor(target_state) {
-            // Item frames are not simulated yet.
             let behind = target.relative(direction, 1);
-            self.analog_output(self.block(behind), behind).unwrap_or(input)
+            self.frame_output(behind, direction).into_iter().chain(self.analog_output(self.block(behind), behind)).max().unwrap_or(input)
         } else {
             input
         }
