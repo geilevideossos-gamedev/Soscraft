@@ -299,3 +299,17 @@ After 75e8b766.
 - **Tests:** `server`: `a_rider_whose_strider_loaded_with_its_chunk_first_sits_on_that_one`; `a_chunk_copy_with_the_ridden_uuid_is_dropped` no longer expects a second reattach to fail.
 - **Decision:** loading the vehicle twice still makes one strider; only which copy the player sits on depends on the order, and both are the same saved strider.
 - **Test steps:** entry 9's step 2 covers it: after the forced close the player rides the one strider whichever loads first.
+
+### 9b. Minecraft riders don't travel through portals
+
+After d0871eb2.
+
+- **Changed:** `minecraft_survival/src/portal.rs`: `may_use_portals` (`Player.canUsePortal(false)`: alive, not a passenger), used by the portal step. A player riding a strider never counts as inside a Nether or End portal: no swirl, no trip. Section 6 of the brief listed it with 7b; it was left out there.
+- **Tests:** `player`: `a_rider_never_uses_a_portal`.
+- **Test steps (Nether, survival):**
+  1. Build a Nether portal frame next to the lava sea and light it. Ride a strider (with the stick) into the portal: nothing happens, no purple swirl. Crouch to get off inside the portal: the swirl starts and you travel after 4 seconds.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*2,minecraft:saddle,minecraft:warped_fungus_on_a_stick,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:netherrack*64
+```

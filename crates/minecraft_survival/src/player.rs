@@ -433,6 +433,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_rider_never_uses_a_portal() {
+        let mut player = steve();
+        assert!(crate::portal::may_use_portals(&player));
+        player.riding = Some(crate::riding::Riding {
+            vehicle: 3,
+            uuid: 7,
+        });
+        assert!(!crate::portal::may_use_portals(&player));
+        player.riding = None;
+        player.dead = true;
+        assert!(!crate::portal::may_use_portals(&player));
+    }
+
     fn steve() -> Player {
         let mut chat = CommandServer::new(HOST);
         chat.join(HOST, "Steve");
