@@ -1,3 +1,9 @@
+pub mod codec;
+pub mod messages;
+
+pub use codec::{ChunkBatchBlob, CodecError, Lane, decode, encode};
+pub use messages::{PROTOCOL, StateFrame, ToClient, ToClientFrame, ToServer, ToServerFrame};
+
 use serde::{Deserialize, Serialize};
 
 #[derive(
