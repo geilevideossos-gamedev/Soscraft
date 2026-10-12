@@ -223,6 +223,22 @@ impl McBodyGear {
         self.corpses.clear();
     }
 
+    pub fn follow(&mut self, client: u32, pm_type: Option<i32>, gear: Option<BodyGear>) {
+        match pm_type {
+            Some(0) => match gear {
+                Some(gear) => self.set(client, gear),
+                None => self.remove(client),
+            },
+            Some(
+                playerstate_iw4::PM_TYPE_SPECTATOR
+                | playerstate_iw4::PM_TYPE_INTERMISSION
+                | playerstate_iw4::PM_TYPE_DEAD
+                | playerstate_iw4::PM_TYPE_DEAD_LINKED,
+            ) => self.died(client),
+            _ => self.remove(client),
+        }
+    }
+
     pub fn get(&self, client: u32) -> Option<&BodyGear> {
         self.by_client.get(&client)
     }
@@ -801,6 +817,39 @@ mod tests {
         gear.died(2);
         gear.clear();
         assert_eq!(gear.shown_weapon(Some(2), true, 7), 7);
+    }
+
+    #[test]
+    fn the_corpse_rule_follows_each_client_on_its_own() {
+        let mut gear = McBodyGear::default();
+        let holding = |hides_gun| {
+            Some(BodyGear {
+                hides_gun,
+                ..BodyGear::default()
+            })
+        };
+        let dead = Some(playerstate_iw4::PM_TYPE_DEAD);
+        gear.follow(1, Some(0), holding(true));
+        gear.follow(2, Some(0), holding(false));
+        gear.follow(1, dead, holding(true));
+        gear.follow(2, Some(0), holding(false));
+        assert_eq!(gear.shown_weapon(Some(1), true, 7), 0);
+        assert_eq!(gear.shown_weapon(Some(2), false, 7), 7);
+        assert!(gear.get(1).is_none() && gear.get(2).is_some());
+        gear.follow(1, dead, holding(false));
+        assert_eq!(
+            gear.shown_weapon(Some(1), true, 7),
+            0,
+            "the gear at the death decides"
+        );
+        gear.follow(2, dead, holding(false));
+        assert_eq!(gear.shown_weapon(Some(2), true, 7), 7);
+        assert_eq!(gear.shown_weapon(Some(1), true, 7), 0);
+        gear.follow(1, Some(0), holding(false));
+        assert_eq!(gear.shown_weapon(Some(1), false, 7), 7);
+        gear.follow(3, Some(0), None);
+        gear.follow(3, None, holding(true));
+        assert!(gear.get(3).is_none(), "no body, no gear");
     }
 
     #[test]

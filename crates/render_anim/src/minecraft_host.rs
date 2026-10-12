@@ -241,6 +241,7 @@ pub(crate) fn host(
     mut runtime: NonSendMut<Runtime>,
     mut host: NonSendMut<HostSessions>,
     mut ui: ResMut<frame::MinecraftUi>,
+    mut body_gear: ResMut<crate::anim::minecraft_gear::McBodyGear>,
 ) {
     let relayed = std::mem::take(&mut runtime.relayed);
     let Some(mut wire) = wire.filter(|wire| wire.role() == Some(net::WireRole::Host)) else {
@@ -256,6 +257,7 @@ pub(crate) fn host(
         host.waiting.remove(client);
         host.chat.remove(client);
         host.selects.remove(client);
+        body_gear.remove(*client);
         sim::voxel::set_death_protected(*client, false);
     }
     read_inbox(&mut host, &mut wire, now);
@@ -374,6 +376,22 @@ pub(crate) fn host(
             }));
         }
         host.sessions.deliver(&server.globals.chat, &told, true);
+        for player in server.players.values() {
+            if player.uuid == *view.local {
+                continue;
+            }
+            let pm_type = authority
+                .0
+                .player(sim::ClientId(player.id.0))
+                .map(|ps| ps.pm_type)
+                .filter(|_| view.shown == Some(player.dimension));
+            let worn = minecraft_survival::gear::body_gear(
+                &player.inventory,
+                player.selected,
+                &player.mode,
+            );
+            body_gear.follow(player.id.0, pm_type, worn);
+        }
         run_friend_commands(
             host,
             server,
@@ -388,6 +406,19 @@ pub(crate) fn host(
         host.chat.clear();
     }
     host.sessions.send_views(&server.players);
+    let gears: Vec<_> = server
+        .players
+        .values()
+        .map(|player| {
+            let client = if player.uuid == *view.local {
+                local.0.0
+            } else {
+                player.id.0
+            };
+            (client, minecraft_survival::gear::player_gear(player))
+        })
+        .collect();
+    host.sessions.send_gear(&gears);
     let books = Books::of(&server.globals.data);
     host.sessions
         .send_menus(&mut server.players, &mut server.levels, books);

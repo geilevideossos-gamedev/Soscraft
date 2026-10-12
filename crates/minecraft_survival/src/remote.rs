@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 use minecraft_commands::{Clientbound, Text};
-use minecraft_net::messages::{Login, MenuView, Nbt, PlayerView, Rules};
+use minecraft_net::messages::{GearView, Login, MenuView, Nbt, PlayerView, Rules};
 use minecraft_net::{ChunkBatchBlob, Dimension, Lane, PlayerUuid, StateFrame, ToClient};
 use minecraft_terrain::ChunkEvent;
 use minecraft_terrain::server::{OVERWORLD_CLOCK, THE_END_CLOCK};
@@ -110,6 +110,7 @@ pub struct RemoteWorld {
     pub player: Option<PlayerView>,
     pub menu: Option<MenuView>,
     pub inventory_menu: Option<MenuView>,
+    pub gear: BTreeMap<u32, GearView>,
     pub rules: Rules,
     pub game_time: i64,
     pub clocks: Clocks,
@@ -138,6 +139,7 @@ impl RemoteWorld {
             player: None,
             menu: None,
             inventory_menu: None,
+            gear: BTreeMap::new(),
             rules: Rules::default(),
             game_time: 0,
             clocks: Clocks::default(),
@@ -363,6 +365,9 @@ impl RemoteWorld {
                 if let Some(view) = view {
                     crate::menus::apply_slots(view, state, slots, carried, data);
                 }
+            }
+            ToClient::Equipment { client, gear } => {
+                self.gear.insert(client, gear);
             }
             ToClient::MenuClose { menu } => {
                 if self.menu.as_ref().is_some_and(|view| view.menu == menu) {
@@ -758,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn menus_open_change_and_close_on_the_friend() {
+    fn menus_and_gear_reach_the_friend() {
         let Some(registries) = registries() else {
             return;
         };
@@ -811,6 +816,29 @@ mod tests {
         friend.apply(ToClient::MenuClose { menu: 5 });
         assert!(friend.menu.is_none());
         assert!(friend.inventory_menu.is_some());
+        let helmet = GearView {
+            armor: [
+                Some(minecraft_net::messages::GearItem {
+                    id: "minecraft:iron_helmet".to_owned(),
+                    glint: false,
+                    dye: None,
+                }),
+                None,
+                None,
+                None,
+            ],
+            ..GearView::default()
+        };
+        friend.apply(ToClient::Equipment {
+            client: 3,
+            gear: GearView::default(),
+        });
+        friend.apply(ToClient::Equipment {
+            client: 3,
+            gear: helmet.clone(),
+        });
+        assert_eq!(friend.gear.get(&3), Some(&helmet));
+        assert!(friend.take_effects().is_empty());
     }
 
     #[test]

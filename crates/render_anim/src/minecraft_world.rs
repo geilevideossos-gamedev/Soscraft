@@ -225,6 +225,7 @@ pub(crate) fn register(app: &mut App) {
             Update,
             draw_body_gear
                 .after(update)
+                .after(crate::minecraft_remote::friend)
                 .after(frame::WorkerCmdSet::SkinModel)
                 .in_set(frame::ClientSet::Present),
         )
@@ -1871,15 +1872,20 @@ pub(crate) fn mc_vitals(vitals: minecraft_survival::survival::Vitals) -> frame::
 fn draw_body_gear(
     mut view: ResMut<MinecraftWorldView>,
     mut runtime: NonSendMut<Runtime>,
+    mut friend: NonSendMut<crate::minecraft_remote::Friend>,
     posed: Res<crate::anim::minecraft_gear::PosedGearFrame>,
     gear: Res<crate::anim::minecraft_gear::McBodyGear>,
     puppet: Res<frame::InventoryPuppet>,
 ) {
     view.puppet_gear = Default::default();
-    let Runtime { world: Some(world), light: Some(light), gear_items, .. } = &mut *runtime else {
+    let puppet_client = puppet.active.then_some(puppet.client);
+    let meshes = if let Runtime { world: Some(world), light: Some(light), gear_items, .. } = &mut *runtime {
+        crate::anim::minecraft_gear::gear_meshes(&posed, &gear, view.origin, puppet_client, gear_items, &world.packs, &world.atlas, light)
+    } else if let Some((look, light, gear_items)) = friend.gear_look() {
+        crate::anim::minecraft_gear::gear_meshes(&posed, &gear, view.origin, puppet_client, gear_items, &look.packs, &look.atlas, light)
+    } else {
         return;
     };
-    let meshes = crate::anim::minecraft_gear::gear_meshes(&posed, &gear, view.origin, puppet.active.then_some(puppet.client), gear_items, &world.packs, &world.atlas, light);
     let (bytes, indices) = &mut view.particles;
     let base = (bytes.len() / std::mem::size_of::<minecraft_terrain::mesh::SectionVertex>()) as u32;
     bytes.extend_from_slice(bytemuck::cast_slice(&minecraft_terrain::mesh::section_vertices(&meshes.world)));

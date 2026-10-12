@@ -6,8 +6,8 @@ use minecraft_commands::text::YELLOW;
 use minecraft_commands::{Clientbound, CommandServer, Outgoing, PlayerId, Text};
 use minecraft_net::codec::{BATCH_CUT, BULK_LIMIT};
 use minecraft_net::messages::{
-    ChunkBlob, HandEvent, HandEventKind, HandState, HelloRefusal, Login, Nbt, PlayerView, Rules,
-    Target, check_hello,
+    ChunkBlob, GearView, HandEvent, HandEventKind, HandState, HelloRefusal, Login, Nbt, PlayerView,
+    Rules, Target, check_hello,
 };
 use minecraft_net::{ChunkBatchBlob, Dimension, PROTOCOL, PlayerUuid, ToClient};
 use minecraft_terrain::game_rules::GameRules;
@@ -160,6 +160,7 @@ pub struct Session {
     pub outbox: Vec<ToClient>,
     pub hands: HandQueue,
     pub menu_inputs: Vec<crate::menus::MenuInput>,
+    gear: BTreeMap<u32, GearView>,
     command_level: Option<u8>,
     view: Option<PlayerView>,
     cracks: BTreeMap<(u32, BlockPos), u8>,
@@ -175,6 +176,7 @@ impl Session {
             outbox: Vec::new(),
             hands: HandQueue::default(),
             menu_inputs: Vec::new(),
+            gear: BTreeMap::new(),
             command_level: None,
             view: None,
             cracks: BTreeMap::new(),
@@ -233,6 +235,20 @@ impl Session {
         }
         self.view = Some(key);
         self.outbox.push(ToClient::Player(Box::new(view)));
+    }
+
+    pub fn send_gear(&mut self, gears: &[(u32, GearView)]) {
+        self.gear
+            .retain(|client, _| gears.iter().any(|(known, _)| known == client));
+        for (client, gear) in gears {
+            if self.gear.get(client) != Some(gear) {
+                self.gear.insert(*client, gear.clone());
+                self.outbox.push(ToClient::Equipment {
+                    client: *client,
+                    gear: gear.clone(),
+                });
+            }
+        }
     }
 
     pub fn send_updates(&mut self, updates: &Updates) {
@@ -929,6 +945,12 @@ impl Sessions {
         }
     }
 
+    pub fn send_gear(&mut self, gears: &[(u32, GearView)]) {
+        for session in self.sessions.values_mut() {
+            session.send_gear(gears);
+        }
+    }
+
     pub fn send_menus(
         &mut self,
         players: &mut BTreeMap<PlayerUuid, Player>,
@@ -1213,6 +1235,57 @@ mod tests {
         assert!(
             views(&mut session).is_empty(),
             "a running effect is not sent again"
+        );
+    }
+
+    #[test]
+    fn gear_is_sent_once_for_each_change() {
+        let mut sessions = Sessions::default();
+        for (client, name) in [(1, "Alex"), (2, "Bo")] {
+            let uuid = PlayerUuid(name.to_owned());
+            sessions
+                .sessions
+                .insert(client, Session::new(client, uuid, name, 2));
+        }
+        let sword = GearView {
+            main: Some(minecraft_net::messages::GearItem {
+                id: "minecraft:iron_sword".to_owned(),
+                glint: false,
+                dye: None,
+            }),
+            hides_gun: true,
+            ..GearView::default()
+        };
+        let sent = |sessions: &mut Sessions| {
+            let mut sent: Vec<(u32, u32, bool)> = sessions
+                .take_outgoing()
+                .into_iter()
+                .filter_map(|(to, message)| match message {
+                    ToClient::Equipment { client, gear } => Some((to, client, gear.hides_gun)),
+                    _ => None,
+                })
+                .collect();
+            sent.sort_unstable();
+            sent
+        };
+        let mut gears = vec![(0, GearView::default()), (2, sword.clone())];
+        sessions.send_gear(&gears);
+        assert_eq!(
+            sent(&mut sessions),
+            vec![(1, 0, false), (1, 2, true), (2, 0, false), (2, 2, true)]
+        );
+        sessions.send_gear(&gears);
+        assert!(sent(&mut sessions).is_empty(), "nothing changed");
+        gears[0].1 = sword.clone();
+        sessions.send_gear(&gears);
+        assert_eq!(sent(&mut sessions), vec![(1, 0, true), (2, 0, true)]);
+        sessions.send_gear(&gears[..1]);
+        assert!(sent(&mut sessions).is_empty(), "a player who left");
+        sessions.send_gear(&gears);
+        assert_eq!(
+            sent(&mut sessions),
+            vec![(1, 2, true), (2, 2, true)],
+            "a player who came back is sent again"
         );
     }
 

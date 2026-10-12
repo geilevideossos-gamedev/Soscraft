@@ -1027,6 +1027,7 @@ pub(crate) fn step_friend(
     let Level {
         entities, terrain, ..
     } = level;
+    let broken_before = entities.as_ref().map_or(0, |e| e.broken_items.len());
     let life = life(
         player,
         world.globals,
@@ -1121,6 +1122,21 @@ pub(crate) fn step_friend(
         effects,
         &mut stepped.lines,
     );
+    if let Some(entities) = world
+        .levels
+        .get_mut(&player.dimension)
+        .and_then(|level| level.entities.as_mut())
+    {
+        let from = broken_before.min(entities.broken_items.len());
+        let at = glam::DVec3::from_array(eye).as_vec3();
+        let yaw = minecraft_yaw(ps.viewangles[1]);
+        for item in entities.broken_items.split_off(from) {
+            let (packs, atlas) = (world.packs, world.atlas);
+            world
+                .mining
+                .break_burst(packs, atlas, at, yaw, ps.viewangles[0], &item);
+        }
+    }
     let owned = owned_weapons(&ps, world.authority);
     let Player {
         survival,
@@ -1233,6 +1249,9 @@ fn friend_hand(
         &acted.hand_mined,
     );
     effects.extend(harvest.effects);
+    if let Some(entities) = level.entities.as_mut() {
+        entities.broken_items.extend(harvest.worn_out);
+    }
     (
         effects,
         (acted.open_table, acted.open_block, acted.open_bench),

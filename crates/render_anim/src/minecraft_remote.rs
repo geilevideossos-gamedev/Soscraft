@@ -16,7 +16,7 @@ use minecraft_survival::session::BREAK_EVENT;
 use minecraft_survival::views::{HudClock, Selection, view_stack};
 use minecraft_terrain::containers::Containers;
 use minecraft_terrain::lighting::SkyLight;
-use minecraft_terrain::mesh::AtlasAnimation;
+use minecraft_terrain::mesh::{AtlasAnimation, ItemVisuals};
 use minecraft_terrain::pack::PackStack;
 use minecraft_terrain::stations::StationBook;
 use minecraftoss_core::registries::{DataPaths, Registries};
@@ -147,6 +147,7 @@ pub(crate) struct Friend {
     hand: crate::minecraft_input::HandSampler,
     shown_menu: Option<u8>,
     screen_open: bool,
+    gear_items: ItemVisuals,
 }
 
 fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
@@ -154,6 +155,21 @@ fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
 }
 
 impl Friend {
+    pub(crate) fn gear_look(&mut self) -> Option<(&Loaded, &SkyLight, &mut ItemVisuals)> {
+        let Friend {
+            prepared: Some(prepared),
+            remote: Some(remote),
+            light: Some(light),
+            gear_items,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        remote.level.as_ref()?;
+        Some((&prepared.look, light, gear_items))
+    }
+
     fn holding(&self, now_ms: u64) -> bool {
         let silent = host_silent(self.ready_at, now_ms, self.host_heard);
         match self.remote.as_ref() {
@@ -306,6 +322,7 @@ pub(crate) fn friend(
         Option<Res<frame::ActivePad>>,
         Option<Res<frame::HudInputView>>,
     ),
+    mut body_gear: ResMut<crate::anim::minecraft_gear::McBodyGear>,
 ) {
     if *role != frame::RuntimeRole::Client {
         if ui.chat_only {
@@ -388,6 +405,16 @@ pub(crate) fn friend(
                 send(wire, &ToServer::Chat(message));
             }
         }
+    }
+    match friend.remote.as_ref() {
+        Some(remote) => {
+            for (&client, gear) in &remote.gear {
+                let pm_type = presented.player(sim::ClientId(client)).map(|ps| ps.pm_type);
+                let worn = minecraft_survival::gear::gear_of(gear);
+                body_gear.follow(client, pm_type, Some(worn));
+            }
+        }
+        None => body_gear.clear(),
     }
     ui.chat_only = friend
         .remote

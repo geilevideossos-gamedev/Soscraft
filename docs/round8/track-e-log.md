@@ -797,6 +797,32 @@ Commit: see `git log` ("Each player has their own inventory screens, and chests 
 - **Test steps:** `docs/round8/e-m2-tests.md`, section E14 (two windows, with a single-player check of the host's screens first).
 - **Kit:** `minecraft:oak_log` x4, `minecraft:chest` x1, `minecraft:furnace` x1, `minecraft:raw_iron` x3, `minecraft:coal` x6, `minecraft:cobblestone` x32, `minecraft:anvil` x1, `minecraft:iron_sword` x1.
 
+### E15. Players see each other's armour, held items and elytra
+
+Commit: see `git log` ("Players see each other's armour, held items and elytra"). The previous commit is `192bd9ab` (E14).
+
+- **Changed:**
+  - `crates/minecraft_survival/src/gear.rs`: `gear_view` and `gear_of` turn a `BodyGear` into the wire's `GearView` and back; `player_gear(player)` is the view of a player's selected item, offhand and armour (an empty view for a spectator, as the host draws none).
+  - `crates/minecraft_survival/src/session.rs`: `Session::send_gear` and `Sessions::send_gear` send `Equipment { client, gear }` for each player only when that player's gear changed since the last one this friend got, including the friend's own entry; a player who left is forgotten, so their gear is sent again when they come back.
+  - `crates/minecraft_survival/src/remote.rs`: `RemoteWorld.gear`, the last `Equipment` for each client.
+  - `crates/render_anim/src/anim/minecraft_gear.rs`: `McBodyGear::follow(client, pm_type, gear)` is the host's rule for its own body, for any client: alive shows the gear, dead keeps the corpse rule (the gun stays away on the corpse of a player who died holding a Minecraft item), otherwise nothing.
+  - `crates/render_anim/src/minecraft_host.rs`: every friend's gear is followed from their inventory and their MW2 state each frame (only in the level the host shows), a leaving friend's gear is removed, and every player's gear is sent after the player views. The host's own MW2 client number is used for the host's entry.
+  - `crates/render_anim/src/minecraft_remote.rs`: the friend's game follows every client's gear from `RemoteWorld.gear` and that client's MW2 state in its own snapshot, and keeps the gear items' meshes (`gear_look`).
+  - `crates/render_anim/src/minecraft_world.rs`: `draw_body_gear` also draws on the friend's game, with the friend's look and light, after the friend's frame.
+  - `crates/render_anim/src/minecraft_players.rs`: a friend's broken shield (in `struck`) and worn-out tools (in `harvest`) burst at the friend's eye on the host, instead of at the host's own eye on the next frame (the known limitation from E13c).
+- **Tests:**
+  - `minecraft_survival`: `session::tests::gear_is_sent_once_for_each_change` (two friends, each player's gear once, nothing again unchanged, one message for a change, a player who left and came back is sent again), `gear::tests::the_gear_sent_to_friends_comes_back_the_same_and_carries_the_elytra`, and `remote::tests::menus_and_gear_reach_the_friend` (renamed from E14's test, now also with `Equipment`).
+  - `render_anim`: `anim::minecraft_gear::tests::the_corpse_rule_follows_each_client_on_its_own` (one client dies holding an item and its corpse hides the gun while the other stays alive; the gear at the death decides; another client's corpse keeps its gun; no body, no gear).
+  - `test -p minecraft_survival` 469 + 1, `test -p render_anim --lib` 81, `check -p launcher` green.
+- **Decisions:**
+  - **`Equipment` carries the whole gear of a player** (vanilla's `ClientboundSetEquipmentPacket` lists the changed slots); a change in any slot sends the player's gear again. It is small, and a friend never has to merge slots.
+  - **The corpse rule runs on each game from the MW2 state of each client.** Every client's `PlayerState` (with `pm_type`) already reaches every game, so no death message is needed: each game keeps the gear it last saw while that player was alive and turns it into the corpse rule when the player dies.
+  - **The friend's game now draws gear** (it drew none before): the same `gear_meshes` as the host, with the friend's own look and light.
+  - **The elytra is sent as the chest item and drawn nowhere yet.** Track C's c4 is not merged into `minecraft-survival`; its wings and glide pose for every body will draw it from the same `McBodyGear` entries. The owner step for the wings waits for c4.
+  - **The host's own entry keeps its own code path** in the host frame (the same rule as `follow`), so the host's single-player drawing is unchanged.
+- **Test steps:** `docs/round8/e-m2-tests.md`, section E15 (two windows; step 6 shows the wings only once c4 is merged).
+- **Kit:** `minecraft:iron_helmet` x1, `minecraft:iron_chestplate` x1, `minecraft:iron_leggings` x1, `minecraft:iron_boots` x1, `minecraft:iron_sword` x1, `minecraft:elytra` x1, `minecraft:firework_rocket` x8.
+
 ## Combined kit for every test in this track
 
 27 stacks no longer hold every test's kit. This line covers E11 to E15 and the M2 owner test; the earlier sections keep their own kit lines in `docs/round8/e-m1-tests.md` and `docs/round8/e-m2-tests.md`.

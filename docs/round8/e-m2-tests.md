@@ -203,3 +203,20 @@ Put the kit below in the `.env` next to the exe before the first start: both pla
 ```
 IW4L_MINECRAFT_KIT=minecraft:oak_log*4,minecraft:chest,minecraft:furnace,minecraft:raw_iron*3,minecraft:coal*6,minecraft:cobblestone*32,minecraft:anvil,minecraft:iron_sword
 ```
+
+## E15. Players see each other's armour, held items and elytra
+
+Each window now draws the other player's Minecraft armour and held item on their MW2 soldier, and puts the MW2 gun away while a Minecraft item is held. The elytra is sent too, but its wings are drawn only once track C's c4 (wings and glide pose) is merged; until then nothing shows where it is worn.
+
+1. Start both windows: `& scripts\mp-local.ps1 -World mp-m2-e15 -Fresh`. Spawn in both. Host window: `/time set day`, then `/op Friend`. Stand the two players about 4 blocks apart, facing each other.
+2. Friend window: press E and put on the iron helmet, chestplate, leggings and boots. Host window: the friend's soldier wears the iron armour. Screenshot the host window. **S20**
+3. Friend window: select the iron sword. Host window: the friend holds the sword and the MW2 gun is gone from their hands. Friend window: select a gun: the host window shows the gun again.
+4. Host window: put on the host's own iron armour and select the iron sword. Friend window: the host's soldier wears it and holds the sword. Screenshot the friend window. **S21**
+5. Friend window: press F5: the friend's own body shows its armour too. Press F5 until back in first person.
+6. Friend window: take off the chestplate and put on the elytra. Host window: the chestplate is gone from the friend's soldier. With c4 merged, the wings show on the friend's back and the glide pose shows while the friend glides (jump off a high place, press jump again and use a firework rocket); without c4 nothing shows there yet.
+7. Friend window: select the iron sword. Host window: `/kill Friend`. Host window: the friend's body lies without the MW2 gun in its hand. After the friend respawns, select a gun in the friend window, then host window: `/kill Friend` again: this time the body holds the gun. Screenshot the host window. **S22**
+8. Close both windows (type `quit` in the script's console).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:iron_sword,minecraft:elytra,minecraft:firework_rocket*8
+```
