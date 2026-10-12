@@ -348,6 +348,21 @@ pub fn wake_saved_sleeper(
     true
 }
 
+pub fn wake_for_teleport(
+    room: &mut impl Bedroom,
+    registries: &Registries,
+    player: &mut Player,
+) -> bool {
+    if player.sleeping.is_none() {
+        return false;
+    }
+    let (place, arrival) = (player.place, player.arrival);
+    get_up(room, registries, player, true);
+    player.place = place;
+    player.arrival = arrival;
+    true
+}
+
 pub fn cleared_weather(data: WeatherData) -> WeatherData {
     WeatherData {
         rain_time: 0,
@@ -600,6 +615,44 @@ pub fn stop(
     get_up(&mut room, &globals.registries, player, wake_at_once);
     let sleepers = in_level(players, *dimension);
     update_status(sleep_status, &sleepers, percentage, published, &mut events);
+    events
+}
+
+pub fn wake_teleported(
+    globals: &Globals,
+    levels: &mut BTreeMap<Dimension, Level>,
+    players: &mut BTreeMap<PlayerUuid, Player>,
+    teleported: &[PlayerUuid],
+    published: bool,
+) -> SleepEvents {
+    let mut events = SleepEvents::default();
+    let percentage = globals.game_rules.int("players_sleeping_percentage");
+    for uuid in teleported {
+        let Some(player) = players
+            .get_mut(uuid)
+            .filter(|player| player.sleeping.is_some())
+        else {
+            continue;
+        };
+        let dimension = player.dimension;
+        let Some(Level {
+            terrain,
+            entities,
+            sleep_status,
+            ..
+        }) = levels.get_mut(&dimension)
+        else {
+            continue;
+        };
+        let mut room = LevelRoom {
+            terrain,
+            entities: entities.as_mut(),
+            written: &mut events.written,
+        };
+        wake_for_teleport(&mut room, &globals.registries, player);
+        let sleepers = in_level(players, dimension);
+        update_status(sleep_status, &sleepers, percentage, published, &mut events);
+    }
     events
 }
 
@@ -1333,6 +1386,40 @@ mod night_tests {
         assert!(!room.placed.contains_key(&(0, 64, 0)));
         assert!(!room.placed.contains_key(&(0, 64, 1)));
         assert_eq!(room.sounds, vec![(STRAW_BED_BREAK_SOUND, [0.5, 64.5, 1.5])]);
+    }
+
+    #[test]
+    fn a_teleport_wakes_the_sleeper_at_once_and_leaves_it_where_it_went() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let mut room = Room::new(&registries);
+        let bed = room.bed("minecraft:red_bed", (0, 64, 0), "south");
+        let mut steve = player(0, [0.5, 64.0, 3.5]);
+        assert!(!wake_for_teleport(&mut room, &registries, &mut steve));
+        assert!(lie_down(&mut room, &registries, &mut steve, &bed));
+        let mut status = SleepStatus::default();
+        for _ in 0..30 {
+            tick(&mut room, &mut status, &mut [&mut steve], &night(100));
+        }
+        assert_eq!(steve.sleep_timer, 30);
+        let gone = Place::standing(Dimension::Overworld, [40.5, 70.0, -9.5], 90.0, 0.0);
+        steve.place = Some(gone);
+        steve.arrival = None;
+        assert!(wake_for_teleport(&mut room, &registries, &mut steve));
+        assert!(steve.sleeping.is_none());
+        assert_eq!(steve.sleep_timer, 0, "no wake-up fade");
+        assert_eq!((steve.place, steve.arrival), (Some(gone), None));
+        assert_eq!(room.occupied((0, 64, 1)), Some("false"));
+        assert_eq!(room.occupied((0, 64, 0)), Some("false"));
+        let straw = room.bed("minecraft:straw_bed", (3, 64, 0), "east");
+        let mut alex = player(1, [3.5, 64.0, 2.5]);
+        assert!(lie_down(&mut room, &registries, &mut alex, &straw));
+        assert!(wake_for_teleport(&mut room, &registries, &mut alex));
+        assert!(
+            !room.placed.contains_key(&straw.head),
+            "a left straw bed breaks"
+        );
     }
 
     #[test]

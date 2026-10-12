@@ -974,3 +974,24 @@ After d8e4c095.
 - **Changed:** those three files are now exactly rustfmt's output for their edition (run from the repository root, so `rustfmt.toml` applies). Formatting only: no code changed.
 - **Tests:** none new; the lib tests of `minecraft_survival` and `minecraftoss-entities` still pass.
 - **Test steps:** none (formatting only).
+
+### R2. Teleporting a sleeping Minecraft player wakes it where it went
+
+After fc64a1fb.
+
+- **Defect:** the bed screen is a chat, so a sleeping player can type `/tp` (and in multiplayer another player can teleport it). The teleport moved the MW2 body, but the player stayed asleep: the next frame pinned it back onto the bed, the sleep timer ran on and the bed stayed occupied. Vanilla `ServerPlayer.teleportTo` first calls `stopSleepInBed(true, true)` when the player is sleeping (checked with javap), so the player wakes at once, the bed is freed and the teleport wins.
+- **Changed:**
+  - `sleep.rs`: `wake_for_teleport` gets the player up at once (timer 0, no wake-up fade, bed freed, a straw bed with `destroy_on_leave` breaks) but keeps its place and pending arrival, so the stand-up spot never overrides the teleport. `wake_teleported` does this for every teleported sleeper in its own level and updates that level's sleep count, as `updateLevelList` does.
+  - `minecraft_world.rs`: the command teleports go through `wake_teleported` right after the commands run; the bed's collision shapes are refreshed and the local player's sleep messages shown.
+- **Tests:** `sleep::night_tests::a_teleport_wakes_the_sleeper_at_once_and_leaves_it_where_it_went`.
+- **Decision:** every teleported UUID is checked, not only the local one, so it already works for the friends once track E routes their teleports here.
+- **Test steps (Overworld, survival):**
+  1. `/gamerule players_sleeping_percentage 101`, `/time set 13000`, place the red bed and lie down in it.
+  2. In the bed chat type `/tp ~ ~ ~10`: the dark overlay and the Leave Bed button go at once (no fade), you stand 10 blocks away and can walk (**R2.1**).
+  3. Right-click the red bed again: you lie down (it was not left occupied). Leave the bed.
+  4. Place the straw bed, lie down, `/tp ~ ~ ~10`: the straw bed breaks behind you (**R2.2**). `/gamerule players_sleeping_percentage 100`.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:red_bed,minecraft:straw_bed
+```

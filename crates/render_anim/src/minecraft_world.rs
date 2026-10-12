@@ -756,6 +756,13 @@ fn update(
         .or_else(|| player.survival.last_feet().map(|feet| minecraft_commands::Pose { feet, yaw: 0.0, pitch: 0.0 }));
     let presence = vec![(local_uuid.clone(), minecraft_survival::commands::Presence { pose: host_pose, alive: host_alive })];
     let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, levels, players, local_uuid, &mut ui.chat.sent, presence);
+    let teleported: Vec<_> = teleports.iter().map(|(uuid, _)| uuid.clone()).collect();
+    let woke = minecraft_survival::sleep::wake_teleported(globals, levels, players, &teleported, *published);
+    if let Some(level) = players.get(local_uuid).and_then(|player| levels.get(&player.dimension)) {
+        refresh_shapes(&level.terrain, &globals.registries, shapes, shape_ids, &woke.written);
+    }
+    let woke_messages: Vec<_> = woke.messages.into_iter().filter(|(uuid, _)| uuid == local_uuid).map(|(_, message)| message).collect();
+    crate::minecraft_respawn::show_messages(&mut ui, inventory_ui, &world.packs, &woke_messages);
     ui.chat.command_level = players.get(local_uuid).map_or(0, |player| globals.chat.level(player.id));
     crate::minecraft_end::tick_fight(levels, players, globals, time.delta_secs_f64(), local_uuid, &mut ui);
     let Some(player) = players.get_mut(local_uuid) else {
