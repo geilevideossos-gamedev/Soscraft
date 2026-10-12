@@ -26,14 +26,14 @@ Briefs: `docs/round8/<item>.md`, the multiplayer design `docs/MULTIPLAYER.md`.
 |---|---|---|
 | A. Fixes from the test (gateway, eye of ender, mining speed, spawner mob, overload and /tick) | track-a | **merged** 080b5c1e (full suite green, 8.5 min); review fixed 1 defect (eye of ender tests timing out under load); trial spawner mob left for "Finish survival"; owner steps and kit in `docs/round8/track-a-log.md` |
 | B. Nether and overworld leftovers (piglins, brutes, bartering, hoglins, striders, sleeping) | track-b | **merged** 75dd9d5e (25 conflict hunks with A and D resolved; full suite green, 7.6 min), plus 6ae244dc (no board while riding or asleep, D's open item) and 23798eab (B's mobs spin in spawners); review fixed 3 defects (rustfmt on new files, teleport wakes a sleeper, the ridden strider can't be hit or fed); owner steps and kit in `docs/round8/track-b-log.md` |
-| C. End and visual leftovers (shulkers, end cities, item frames, End sky, dragon effects, elytra body, limitations) | track-c | running from 0bcbfb17 (order c1 G1-3, c5 G1-4, c1 G4-8, c2, c3, c5 G5-11, c4) |
+| C. End and visual leftovers (shulkers, end cities, item frames, End sky, dragon effects, elytra body, limitations) | track-c | **merged** f294bfe5 (about 124 conflict hunks with A, B and D resolved), plus a1e689b5 (B's mobs float with levitation), 4392dc37 (shulkers in spawners), 57b42ea1 (no board in powder snow), d87b9def (rail and powder snow bits checked); full suite green apart from the known flaky `background_full_update_matches_the_synchronous_one`, which passed alone; review fixed 2 defects (rustfmt on a new file, levitation in powder snow and cobwebs); owner steps and kit in `docs/round8/track-c-log.md` |
 | D. Skating in Minecraft worlds | track-d | **merged** 9d4fbe3a (full suite green, 9.9 min); review fixed 1 defect (a bail in the air counted as a landing); guns while skating: put away, as the brief decides; the board is refused while riding or asleep since the B merge (6ae244dc); owner steps and kit in `docs/round8/track-d-log.md` |
-| E. Multiplayer, first playable | track-e | M1 (E1-E8) done 42262ec2..79ba1549 (review fixed 2 defects, clippy clean; owner steps `docs/round8/e-m1-tests.md`); M2 part 1 (E9 da5b8685, E10a cb4251e9, E10b 4a6c0dc7) done, verified (owner steps `docs/round8/e-m2-tests.md`); M2 done (track A merged into track-e as 8230328a; E11 3caf3ef0, E12-E15 up to 6457abca; review fixed 2 defects: furnace progress made friends' clicks stale, a friend leaving left a chest lid open; clippy clean 03f1bc8d; owner steps `docs/round8/e-m2-tests.md`). Next: merge minecraft-survival (B, C, D) into track-e, then M3 (E16-E17) |
+| E. Multiplayer, first playable | track-e | M1 (E1-E8) done 42262ec2..79ba1549 (review fixed 2 defects, clippy clean; owner steps `docs/round8/e-m1-tests.md`); M2 part 1 (E9 da5b8685, E10a cb4251e9, E10b 4a6c0dc7) done, verified (owner steps `docs/round8/e-m2-tests.md`); M2 done (track A merged into track-e as 8230328a; E11 3caf3ef0, E12-E15 up to 6457abca; review fixed 2 defects: furnace progress made friends' clicks stale, a friend leaving left a chest lid open; clippy clean 03f1bc8d; owner steps `docs/round8/e-m2-tests.md`). Running: the merge of minecraft-survival (B, C, D; 72 conflict hunks) into track-e, then M3 (E16-E17) and M4 (E18), from 03f1bc8d |
 
 ## Release builds
 | # | When | Commit | State |
 |---|---|---|---|
-| 1 | tracks A-D merged | - | - |
+| 1 | tracks A-D merged | 4d45e4fe | done 2026-10-12: 16.4 min clean in gentle mode; copied in as `iw4l-survival.exe`, old one kept as `iw4l-survival-e231362.exe`; test steps `docs/round8/release-1-tests.md` |
 | 2 | end of round | - | - |
 
 ## Decisions
@@ -45,6 +45,7 @@ Briefs: `docs/round8/<item>.md`, the multiplayer design `docs/MULTIPLAYER.md`.
 - Open, not vanilla: under `/tick freeze` a strider carrying a player stands still; vanilla 26.3 (`TickRateManager.isEntityFrozen`) keeps an entity carrying a player ticking. The mob tick runs for all mobs or none on both sides, so matching needs a filtered tick. Left for "Finish survival".
 
 ## Log
+- 2026-10-12: track C merged (4d45e4fe); release build 1 done; M3 and M4 started.
 - 2026-10-12: track C finished, its merge (about 124 conflict hunks with A, B and D) is being resolved in `C:\Dev\mc-wt\track-c`; multiplayer M2 finished.
 - 2026-10-12: track B merged (23798eab).
 - 2026-10-12: track D merged (9d4fbe3a).
