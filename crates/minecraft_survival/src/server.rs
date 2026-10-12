@@ -653,6 +653,9 @@ pub fn join(
     player.portal_cooldown = saved.portal_cooldown.unwrap_or(0);
     player.seen_credits = saved.seen_credits.unwrap_or(false);
     player.reattach = saved.root_vehicle.filter(|_| !dead);
+    player.sleep_timer = saved.sleep_timer.unwrap_or(0);
+    player.time_since_rest = saved.time_since_rest.unwrap_or(0);
+    player.saved_in_bed = saved.sleeping_pos;
     player.dead = dead;
     player.place = Some(Place::standing(Dimension::Overworld, spawn, 0.0, 0.0));
     match saved.place {
@@ -931,6 +934,24 @@ mod tests {
         );
         assert_eq!(alex.mode.mode, GameMode::Adventure);
         assert!(alex.inventory.slots.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn a_saved_sleeper_joins_with_its_bed_timer_and_time_since_rest() {
+        let (_dir, save) = world("sleeper");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let steve = profile("Steve");
+        let mut player = join(Some(&save), &recipes, &rules, joining(&steve));
+        assert_eq!((player.sleep_timer, player.time_since_rest, player.saved_in_bed), (0, 0, None));
+        player.saved_in_bed = Some((4, 70, -9));
+        player.sleep_timer = 100;
+        player.time_since_rest = 72_001;
+        save.write_player(&steve.uuid, &player.data()).unwrap();
+        let again = join(Some(&save), &recipes, &rules, joining(&steve));
+        assert_eq!(again.saved_in_bed, Some((4, 70, -9)));
+        assert!(again.sleeping.is_none(), "it stands up once its bed's chunk is in");
+        assert_eq!((again.sleep_timer, again.time_since_rest), (100, 72_001));
     }
 
     #[test]

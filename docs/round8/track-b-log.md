@@ -926,3 +926,28 @@ After f6235ce0.
 ```
 IW4L_MINECRAFT_KIT=minecraft:red_bed*4,minecraft:straw_bed,minecraft:diamond_sword,minecraft:clock
 ```
+
+### b4.5. Minecraft players keep their sleep timer, bed and time since rest in the world save
+
+After 72476392.
+
+- **Changed:**
+  - `player_nbt.rs`: `SleepTimer` (a short, as `Player.addAdditionalSaveData`) and `sleeping_pos` (an int array `[x, y, z]`, the bed head, only while in bed, as `LivingEntity`) are written and read. Both are fork-owned keys, so a woken player's file loses the old `sleeping_pos`. `PlayerData` gains `sleep_timer`, `sleeping_pos` and `time_since_rest`.
+  - `save.rs`: `WorldSave::read_stats` / `write_stats` for `players/stats/<uuid>.json`. Only `stats."minecraft:custom"."minecraft:time_since_rest"` is ours: every other stat and the `DataVersion` of an existing (vanilla) file are kept, and a new file gets the fork's data version. `read_player` fills `time_since_rest` from it and `write_player` writes it, so `save_player`, the autosave and the save on close all keep it.
+  - `player.rs` / `server.rs`: `Player.saved_in_bed`; `Player::data` saves the timer, the bed and the time since rest; `join` restores them.
+  - `sleep.rs`: `wake_saved_sleeper`: in the first sleep tick after the bed head's chunk is loaded, a player saved asleep gets up as `stopSleeping` does (`stop(true, true)`): `occupied` is cleared on both halves, a straw bed with `destroy_on_leave` breaks, and the player stands beside the bed facing it. A bed that is gone just drops the record. New `Bedroom::loaded` (true by default; the level checks its generated chunks).
+- **Tests:** `player_nbt`: `sleep_timer_and_sleeping_pos_round_trip` (also the short clamp and a bad array). `save`: `the_stats_file_keeps_unknown_stats_and_updates_time_since_rest` (a vanilla stats file with `DataVersion` 4000 keeps its other stats and version; a new file is exactly `{"stats":{"minecraft:custom":{"minecraft:time_since_rest":N}},"DataVersion":5023}`; no stat means no file; a broken file is replaced). `sleep`: `a_player_saved_in_bed_wakes_beside_it_on_join` (waits for the chunk, frees the bed, stands beside it facing it, breaks a straw bed, ignores a missing bed). `server`: `a_saved_sleeper_joins_with_its_bed_timer_and_time_since_rest`.
+- **Decisions:**
+  - As the brief's decision 5: a player saved asleep stands up beside the bed on join (vanilla puts them back in bed). Until the bed's chunk is loaded the record is kept, and saved again, so a quick quit doesn't lose it.
+  - The stats file is written whole through a temporary file and a rename, without the `_old` copy the NBT files keep (vanilla writes it in place and keeps no copy either).
+  - An unreadable stats file reads as no stats (time since rest 0) and is replaced on the next save, keeping only our stat.
+- **Test steps (Overworld, survival):**
+  1. `/gamerule players_sleeping_percentage 101` (so the night is not skipped), `/time set 12600`, place the red bed and lie down in it. Stay in bed for more than five minutes (an autosave passes; Escape would leave the bed, so the pause menu can't be used), then close the game from the task manager.
+  2. Start the world again: you stand beside the bed facing it, not on it (**10**). Right-click the bed (it is still night): you lie down again, so the bed was not left occupied. Click "Leave Bed".
+  3. In `iw4l-artifacts\saves\world\players\stats\` there is a `<uuid>.json` with `"minecraft:time_since_rest"`.
+  4. Repeat step 1 with the straw bed: after the restart you stand beside where it was, and the straw bed is gone. `/gamerule players_sleeping_percentage 100`.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:red_bed,minecraft:straw_bed,minecraft:clock
+```

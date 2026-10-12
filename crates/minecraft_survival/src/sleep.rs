@@ -166,6 +166,9 @@ pub trait Bedroom: BlockView {
     fn rules(&self) -> &DimensionRules;
     fn write(&mut self, writes: Vec<(Pos, Option<BlockStateId>)>);
     fn sound(&mut self, event: &'static str, at: [f64; 3]);
+    fn loaded(&self, _pos: Pos) -> bool {
+        true
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -309,6 +312,42 @@ pub fn get_up(
     player.sleep_timer = if wake_at_once { 0 } else { DEEP_SLEEP_TICKS };
 }
 
+pub fn wake_saved_sleeper(
+    room: &mut impl Bedroom,
+    registries: &Registries,
+    player: &mut Player,
+) -> bool {
+    let Some(head) = player.saved_in_bed.filter(|head| room.loaded(*head)) else {
+        return false;
+    };
+    player.saved_in_bed = None;
+    let state = room.state_at(head);
+    if player.sleeping.is_some() || !is_bed(registries, state) {
+        return false;
+    }
+    let blocks = &registries.blocks;
+    let Some(facing) = blocks.property(state, "facing").and_then(horizontal) else {
+        return false;
+    };
+    let straw = blocks.block(blocks.block_of(state)).is_a("StrawBedBlock");
+    let bed = Bed {
+        head,
+        facing,
+        occupied: true,
+        straw,
+    };
+    let height = sleep_height(room, registries, &bed).unwrap_or(0.0);
+    player.sleeping = Some(Sleeping {
+        head,
+        facing,
+        straw,
+        hurts: player.survival.hurts(),
+        height,
+    });
+    get_up(room, registries, player, true);
+    true
+}
+
 pub fn cleared_weather(data: WeatherData) -> WeatherData {
     WeatherData {
         rain_time: 0,
@@ -389,6 +428,7 @@ pub fn tick_sleepers(
     }
     let mut woke = false;
     for player in sleepers.iter_mut() {
+        woke |= wake_saved_sleeper(room, registries, player);
         if player.sleeping.is_some() {
             player.sleep_timer = (player.sleep_timer + 1).min(DEEP_SLEEP_TICKS);
             if !room.rules().bed_rule.can_sleep.holds(night.dark) {
@@ -460,6 +500,10 @@ impl Bedroom for LevelRoom<'_> {
                 terrain.stream.mark_edited(&terrain.scene, &positions);
             }
         }
+    }
+
+    fn loaded(&self, (x, _, z): Pos) -> bool {
+        self.terrain.scene.generated_chunk((x >> 4, z >> 4)).is_some()
     }
 
     fn sound(&mut self, event: &'static str, at: [f64; 3]) {
@@ -832,6 +876,7 @@ mod night_tests {
         placed: HashMap<Pos, BlockStateId>,
         rules: DimensionRules,
         sounds: Vec<(&'static str, [f64; 3])>,
+        unloaded: bool,
     }
 
     impl<'a> Room<'a> {
@@ -841,6 +886,7 @@ mod night_tests {
                 placed: HashMap::new(),
                 rules: DimensionRules::load(registries, Dimension::Overworld).unwrap(),
                 sounds: Vec::new(),
+                unloaded: false,
             };
             for x in -6..=6 {
                 for z in -6..=6 {
@@ -902,6 +948,10 @@ mod night_tests {
 
         fn sound(&mut self, event: &'static str, at: [f64; 3]) {
             self.sounds.push((event, at));
+        }
+
+        fn loaded(&self, _pos: Pos) -> bool {
+            !self.unloaded
         }
     }
 
@@ -1368,5 +1418,49 @@ mod night_tests {
         assert!(!crate::entities::villager_asleep_in(&world, (3, 64, 1)));
         assert!(world.wake_villager_in((0, 64, 1)));
         assert!(world.villagers()[0].wake_pending);
+    }
+
+    #[test]
+    fn a_player_saved_in_bed_wakes_beside_it_on_join() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let mut room = Room::new(&registries);
+        let bed = room.bed("minecraft:red_bed", (0, 64, 0), "south");
+        let mut steve = player(0, [0.5, 64.6875, 1.5]);
+        assert!(lie_down(&mut room, &registries, &mut steve, &bed));
+        let saved = steve.data();
+        assert_eq!(saved.sleeping_pos, Some((0, 64, 1)));
+        let mut joined = player(0, [0.5, 64.6875, 1.5]);
+        joined.saved_in_bed = saved.sleeping_pos;
+        joined.sleep_timer = 40;
+        let mut status = SleepStatus::default();
+        room.unloaded = true;
+        tick(&mut room, &mut status, &mut [&mut joined], &night(100));
+        assert_eq!(joined.saved_in_bed, Some((0, 64, 1)), "it waits for the bed's chunk");
+        assert_eq!(joined.data().sleeping_pos, Some((0, 64, 1)), "and is saved again meanwhile");
+        assert_eq!(room.occupied((0, 64, 1)), Some("true"));
+        room.unloaded = false;
+        joined.arrival = None;
+        let (_, events) = tick(&mut room, &mut status, &mut [&mut joined], &night(100));
+        assert!(events.messages.is_empty());
+        assert_eq!((joined.saved_in_bed, joined.sleeping), (None, None));
+        assert_eq!(joined.sleep_timer, 0);
+        assert_eq!(room.occupied((0, 64, 1)), Some("false"));
+        assert_eq!(room.occupied((0, 64, 0)), Some("false"));
+        let place = joined.arrival.unwrap();
+        assert_eq!(place.feet[1], 64.0);
+        assert!((place.feet[0] - 0.5).abs() >= 1.0 || (place.feet[2] - 1.0).abs() > 1.0, "{:?}", place.feet);
+        assert_eq!(place.yaw, crate::respawn_block::look_at_yaw(place.feet, (0, 64, 1)));
+        assert_eq!(joined.data().sleeping_pos, None);
+        let straw = room.bed("minecraft:straw_bed", (3, 64, 0), "east");
+        let mut alex = player(1, [4.5, 64.375, 0.5]);
+        alex.saved_in_bed = Some(straw.head);
+        tick(&mut room, &mut status, &mut [&mut alex], &night(100));
+        assert_eq!(room.state_at(straw.head), BlockStateId::AIR, "a left straw bed breaks");
+        let mut gone = player(2, [9.5, 64.0, 9.5]);
+        gone.saved_in_bed = Some((9, 64, 9));
+        tick(&mut room, &mut status, &mut [&mut gone], &night(100));
+        assert_eq!((gone.saved_in_bed, gone.arrival), (None, None), "no bed: nobody moves");
     }
 }

@@ -48,6 +48,7 @@ pub struct Player {
     pub sleeping: Option<crate::sleep::Sleeping>,
     pub sleep_timer: i32,
     pub time_since_rest: i32,
+    pub saved_in_bed: Option<(i32, i32, i32)>,
 }
 
 #[derive(Default)]
@@ -117,6 +118,7 @@ impl Player {
             sleeping: None,
             sleep_timer: 0,
             time_since_rest: 0,
+            saved_in_bed: None,
         }
     }
 
@@ -246,6 +248,12 @@ impl Player {
                 self.saved_vehicle.as_ref(),
                 self.reattach.as_ref(),
             ),
+            sleep_timer: Some(self.sleep_timer),
+            sleeping_pos: self
+                .sleeping
+                .map(|sleeping| sleeping.head)
+                .or(self.saved_in_bed),
+            time_since_rest: Some(self.time_since_rest),
         }
     }
 }
