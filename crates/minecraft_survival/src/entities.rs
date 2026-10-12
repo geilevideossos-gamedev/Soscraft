@@ -795,6 +795,29 @@ impl Entities {
         self.ambient.rain_tick(scene, DVec3::from_array(camera), self.weather.rain_level)
     }
 
+    pub fn partial_tick(&self) -> f32 {
+        (self.clock / TICK_SECONDS).clamp(0.0, 1.0) as f32
+    }
+
+    pub fn weather_mesh(&self, scene: &HandcraftedScene, camera: [f64; 3], light: &minecraft_terrain::lighting::SkyLight) -> (Vec<minecraft_terrain::weather::WeatherVertex>, Vec<u32>) {
+        let rain_level = self.weather.rain_level;
+        if rain_level <= 0.0 {
+            return Default::default();
+        }
+        let camera = DVec3::from_array(camera);
+        let radius = minecraft_terrain::rain::WEATHER_RADIUS;
+        let columns = minecraft_terrain::weather::columns(
+            camera,
+            radius,
+            self.ticks as i64,
+            self.partial_tick(),
+            |x, z| minecraft_terrain::rain::motion_blocking_height(scene, x, z),
+            |pos| self.ambient.precipitation_at(scene, pos),
+            |pos| (light.get(pos), light.get_block(pos)),
+        );
+        minecraft_terrain::weather::mesh(&columns, camera, radius, rain_level)
+    }
+
     pub fn campfire_tick(&mut self, scene: &HandcraftedScene, food: impl Fn((i32, i32, i32)) -> [bool; 4]) {
         self.ambient.campfire_tick(scene, food);
     }

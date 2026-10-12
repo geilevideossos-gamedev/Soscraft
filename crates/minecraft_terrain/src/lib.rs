@@ -97,6 +97,7 @@ pub mod splash;
 pub mod effect_cloud;
 pub mod trident;
 pub mod wind;
+pub mod weather;
 pub mod bottle;
 pub mod bucket;
 pub mod flint;

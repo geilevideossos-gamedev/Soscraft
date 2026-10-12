@@ -151,27 +151,57 @@ pub fn motion_blocking_height(scene: &HandcraftedScene, x: i32, z: i32) -> i32 {
         .map_or(scene.vertical_range().start, |y| y + 1)
 }
 
-pub fn rains_at(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Precipitation {
+    None,
+    Rain,
+    Snow,
+}
+
+pub fn precipitation_of(has_precipitation: bool, temperature: f32) -> Precipitation {
+    if !has_precipitation {
+        Precipitation::None
+    } else if temperature < WARM_ENOUGH_TO_RAIN {
+        Precipitation::Snow
+    } else {
+        Precipitation::Rain
+    }
+}
+
+pub fn precipitation_at(
     scene: &HandcraftedScene,
     temperature: &BiomeTemperature,
     (x, y, z): BlockPos,
-) -> bool {
+) -> Precipitation {
     let Some(states) = scene.states() else {
-        return false;
+        return Precipitation::None;
     };
     let Some(biome) = scene.noise_biome((x >> 2, y >> 2, z >> 2)) else {
-        return false;
+        return Precipitation::None;
     };
     let info = states.registries().biomes.get(biome);
-    info.has_precipitation
-        && temperature.at(
+    if !info.has_precipitation {
+        return Precipitation::None;
+    }
+    precipitation_of(
+        true,
+        temperature.at(
             info.temperature,
             info.frozen_temperature_modifier,
             x,
             y,
             z,
             OVERWORLD_SEA_LEVEL,
-        ) >= WARM_ENOUGH_TO_RAIN
+        ),
+    )
+}
+
+pub fn rains_at(
+    scene: &HandcraftedScene,
+    temperature: &BiomeTemperature,
+    pos: BlockPos,
+) -> bool {
+    precipitation_at(scene, temperature, pos) == Precipitation::Rain
 }
 
 #[cfg(test)]

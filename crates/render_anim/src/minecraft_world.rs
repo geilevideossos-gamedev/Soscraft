@@ -74,6 +74,8 @@ pub struct MinecraftWorldView {
     pub hand: (Vec<u8>, Vec<u32>),
     pub hand_clip: [f32; 16],
     pub end_look: crate::minecraft_end_look::EndFrame,
+    pub weather: (Vec<minecraft_terrain::weather::WeatherVertex>, Vec<u32>),
+    pub weather_texture: Option<Arc<image::RgbaImage>>,
 }
 
 struct Loaded {
@@ -85,6 +87,7 @@ struct Loaded {
     glint_texture: Option<Arc<image::RgbaImage>>,
     armor_glint_texture: Option<Arc<image::RgbaImage>>,
     end_look: Arc<crate::minecraft_end_look::EndLook>,
+    weather_texture: Option<Arc<image::RgbaImage>>,
 }
 
 #[derive(Default)]
@@ -275,6 +278,10 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
     let glint_texture = minecraft_terrain::glint::glint_texture(&packs).ok().flatten().map(Arc::new);
     let armor_glint_texture = minecraft_terrain::glint::armor_glint_texture(&packs).ok().flatten().map(Arc::new);
     let end_look = Arc::new(crate::minecraft_end_look::EndLook::load(&packs));
+    let weather_texture = minecraft_terrain::weather::weather_texture(&packs).unwrap_or_else(|error| {
+        diag::warn!(World, "Minecraft rain and snow textures unavailable: {error:#}");
+        None
+    }).map(Arc::new);
     let loaded = Loaded {
         packs,
         atlas: build.atlas,
@@ -284,6 +291,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         glint_texture,
         armor_glint_texture,
         end_look,
+        weather_texture,
     };
     let mut day = DayCycle::default();
     if let Some(ticks) = opened.day_ticks {
@@ -508,6 +516,7 @@ fn update(
                 view.glint_texture = world.glint_texture.clone();
                 view.armor_glint_texture = world.armor_glint_texture.clone();
                 view.end_look.look = Some(world.end_look.clone());
+                view.weather_texture = world.weather_texture.clone();
                 runtime.mining = Default::default();
                 runtime.minimap = Default::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
@@ -2350,6 +2359,10 @@ fn update(
         f32::from(light.get_block(eye_block)),
     ];
     let weather = entities.as_ref().map_or_else(minecraft_terrain::server::WeatherView::default, |e| e.weather);
+    view.weather = match entities.as_ref() {
+        Some(entities) if world.weather_texture.is_some() => entities.weather_mesh(&terrain.scene, eye, light),
+        _ => Default::default(),
+    };
     let rains_here = terrain
         .scene
         .noise_biome((eye_block.0 >> 2, eye_block.1 >> 2, eye_block.2 >> 2))
@@ -2966,6 +2979,7 @@ fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u
     view.particles = Default::default();
     view.entity_meshes = Default::default();
     view.cracks = Default::default();
+    view.weather = Default::default();
     view.clouds = None;
     view.light_volume = None;
     runtime.shapes.clear();
@@ -3055,6 +3069,8 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
         view.glint_texture = None;
         view.armor_glint_texture = None;
         view.end_look = Default::default();
+        view.weather = Default::default();
+        view.weather_texture = None;
         view.particles = Default::default();
         view.puppet_gear = Default::default();
         view.entity_meshes = Default::default();

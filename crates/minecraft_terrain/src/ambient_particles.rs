@@ -734,6 +734,14 @@ impl AmbientParticles {
         }
     }
 
+    pub fn precipitation_at(
+        &self,
+        scene: &HandcraftedScene,
+        pos: crate::scene::BlockPos,
+    ) -> crate::rain::Precipitation {
+        crate::rain::precipitation_at(scene, &self.temperature, pos)
+    }
+
     pub fn rain_tick(
         &mut self,
         scene: &HandcraftedScene,

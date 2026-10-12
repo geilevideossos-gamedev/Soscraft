@@ -972,6 +972,7 @@ pub fn extract_minecraft_world(
     mut glint_of: Local<Option<(usize, std::sync::Arc<render_gpu::MinecraftAtlasImage>)>>,
     mut armor_glint_of: Local<Option<(usize, std::sync::Arc<render_gpu::MinecraftAtlasImage>)>>,
     mut end_look_of: Local<Option<(usize, EndLookImages)>>,
+    mut weather_of: Local<Option<(usize, std::sync::Arc<render_gpu::MinecraftAtlasImage>)>>,
 ) {
     let throwing = main_world
         .get_resource::<net::LocalPresentClient>()
@@ -1026,6 +1027,29 @@ pub fn extract_minecraft_world(
     frame.light_volume = view.light_volume.clone();
     frame.particles = std::mem::take(&mut view.particles);
     frame.cracks = std::mem::take(&mut view.cracks);
+    let (weather_vertices, weather_indices) = std::mem::take(&mut view.weather);
+    frame.weather = (
+        weather_vertices
+            .iter()
+            .map(|v| [v.position[0], v.position[1], v.position[2], v.uv[0], v.uv[1], v.alpha, v.sky, v.block, v.snow])
+            .collect(),
+        weather_indices,
+    );
+    frame.weather_texture = view.weather_texture.as_ref().map(|image| {
+        let key = std::sync::Arc::as_ptr(image) as usize;
+        if let Some((held, converted)) = weather_of.as_ref()
+            && *held == key
+        {
+            return converted.clone();
+        }
+        let converted = std::sync::Arc::new(render_gpu::MinecraftAtlasImage {
+            width: image.width(),
+            height: image.height(),
+            levels: vec![image.as_raw().clone()],
+        });
+        *weather_of = Some((key, converted.clone()));
+        converted
+    });
     frame.entity_meshes = std::mem::take(&mut view.entity_meshes);
     frame.backdrop = view.backdrop;
     frame.puppet_gear = std::mem::take(&mut view.puppet_gear);

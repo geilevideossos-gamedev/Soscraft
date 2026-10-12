@@ -978,3 +978,34 @@ Previous commit: 268fac68
 ```
 IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}],minecraft:writable_book,minecraft:lectern*2,minecraft:comparator*2,minecraft:redstone*32,minecraft:redstone_lamp*2
 ```
+
+### 39. Rain and snow fall around the camera like vanilla's weather renderer
+
+Previous commit: c597fe17
+
+- **Changed:**
+  - `minecraft_terrain` `rain.rs`: `Precipitation { None, Rain, Snow }`, `precipitation_of` and `precipitation_at` (vanilla `Biome.getPrecipitationAt`: none without precipitation, snow below temperature 0.15, else rain); `rains_at` is now `precipitation_at == Rain`, so splashes and the rain sound are unchanged.
+  - New `minecraft_terrain` `weather.rs`, vanilla `WeatherEffectRenderer` (javap of 26.3): `columns` walks the square of radius 10 around the camera block, z then x; the column runs from max(camera y − 10, height) to max(camera y + 10, height) of the `MOTION_BLOCKING` heightmap and is skipped when they are equal (a roof above the camera's reach) or the biome at the camera's height has no precipitation; each column seeds a legacy random with (x²·3121 + x·45238971) ^ (z²·418711 + z·13761) and takes its light at (x, max(camera y, height), z). Rain: speed 3 + `nextFloat`, v offset (−((time & 131071) + ((x²·3121 + x·45238971 + z²·418711 + z·13761) & 255) + partial)/32·speed) mod 32. Snow: u = `nextDouble` + t·0.01·`nextGaussian`, v = −((time & 511) + partial)/512 + `nextDouble` + t·`nextGaussian`·0.001, light (l·3 + 15)/4 per channel. `mesh` builds one camera-facing quad a column from vanilla's 32 x 32 size table (half widths −dz/len/2 and dx/len/2, none for the camera's own column, where vanilla's table is 0/0), v = y·0.25 + offset with the bottom height on the top edge, alpha lerp(min(dist²/r², 1), 1.0 rain or 0.8 snow, 0.5) times the rain level; rain columns first, then snow. `weather_texture` puts `environment/rain.png` and `environment/snow.png` side by side (128 x 256).
+  - `minecraft_terrain` `ambient_particles.rs`: `precipitation_at` with the particles' biome temperature. `minecraft_survival` `entities.rs`: `partial_tick` and `weather_mesh` (the level's ticks and partial tick, the weather's rain level, the motion-blocking height, the level's light) **[E: per client camera and its level's weather]**.
+  - `render_anim` `minecraft_world.rs`: the rain and snow texture loads with the world; `MinecraftWorldView.weather` is rebuilt each frame. `render` `extract.rs` copies the mesh and the texture (converted once). `render_gpu` `minecraft_world.rs`: `MinecraftWorldFrame.weather` (36-byte vertices) and `weather_texture` at binding 11, a 13th `weather` pipeline (no culling, depth test without depth write, alpha blend) whose fragment samples rain or snow by the vertex flag with the wrap done in the shader, multiplies by the lightmap and the alpha, discards below 0.1 (vanilla `particle.fsh`) and applies the terrain fog; it draws after the cracks and before the hand.
+- **Tests:**
+  - `weather`: `rain_columns_scroll_at_their_seeded_speed` and `snow_columns_drift_by_gaussians` (seeds, offsets, speed and u and v checked against jshell's `java.util.Random`, below), `quads_face_the_camera_and_fade_to_half_at_the_edge`, `roofed_columns_draw_nothing`, `only_cold_biomes_snow`, `the_texture_puts_snow_to_the_right_of_rain`, `the_vanilla_rain_and_snow_make_one_128_by_256_texture` (real 26.3 pack).
+  - `render_gpu`: `weather_vertex_stride_matches_the_frame` (also the binding and the entry points); `terrain_shader_validates` covers the new WGSL.
+  - jshell, with vanilla's formulas: rain (5, −3) at time 1000, partial 0.25: seed 222591356, offset 124, speed 3.7006378, v −2.0138092; rain (−12, 7) at 200000: v −29.427246; snow (−7, 12) at 123456, partial 0.5: u −1068.1278, v −250.92334; snow (3, 3) at 40: u 0.6006236, v 0.68376994.
+- **Decisions:**
+  - One draw with a per-vertex snow flag instead of two index ranges, and one 128 x 256 texture (rain left, snow right) wrapped in the shader instead of two bindings, which keeps the bind group to one new entry.
+  - The weather clock is the level's tick count with the level's partial tick (`Entities::ticks`, `partial_tick`), as vanilla uses the level's game time.
+  - The camera position is the player's eye; in third person vanilla centres on the detached camera, which is at most a few blocks away.
+  - The radius is vanilla's default 10 (there is no weather radius option yet).
+- **Test steps:** (survival; no kit needed beyond the blocks)
+  1. In a plains or forest biome, `/weather rain`: rain streaks fall all around you up to about 10 blocks, fainter towards the edge (**1**). Look straight up: the streaks lean towards you from every side.
+  2. Build a 5 x 5 roof 4 blocks above you and stand under it: no streaks fall inside, they still fall outside the roof's edge.
+  3. `/time set midnight`: the streaks turn dark; place a torch next to you: the streaks near it are brighter.
+  4. `/locate biome minecraft:snowy_plains` and `/tp` there (still `/weather rain`): slow white flakes drift down instead of streaks, without splashes (**2**).
+  5. `/weather clear`: the streaks fade out with the rain over a few seconds.
+  6. In the Nether and the End nothing falls.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:oak_planks*64,minecraft:torch*16
+```
