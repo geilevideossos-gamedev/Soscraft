@@ -1018,7 +1018,7 @@ mod night_tests {
 
     fn player(id: u32, feet: [f64; 3]) -> Player {
         let mut chat = CommandServer::new(HOST);
-        chat.join(PlayerId(id), &format!("Steve{id}"));
+        chat.join(PlayerId(id), format!("Steve{id}"));
         let mut player = Player::new(
             chat.profile(PlayerId(id)).unwrap(),
             PlayerMode::new(GameMode::Survival),

@@ -20,7 +20,7 @@ pub(crate) fn overlay_color(timer: i32) -> Option<u32> {
         amount = 1.0 - (timer - 100) as f32 / 10.0;
     }
     let alpha = (220.0 * amount) as i32;
-    (alpha > 0).then(|| ((alpha as u32) << 24) | SLEEP_COLOR)
+    (alpha > 0).then_some(((alpha as u32) << 24) | SLEEP_COLOR)
 }
 
 pub(crate) fn button_rect(width: i32, height: i32) -> [i32; 4] {
@@ -147,8 +147,10 @@ mod tests {
         press(&mut chat, Key::Enter);
         assert_eq!(chat.sent, vec!["hello".to_owned()]);
         assert!(chat.open && chat.input.is_empty() && chat.cursor == 0);
-        let mut awake = McChat::default();
-        awake.open = true;
+        let mut awake = McChat {
+            open: true,
+            ..McChat::default()
+        };
         press(&mut awake, Key::Escape);
         assert!(!awake.open && !awake.leave_bed);
     }

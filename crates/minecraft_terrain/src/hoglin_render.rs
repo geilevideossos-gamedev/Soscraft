@@ -34,7 +34,8 @@ const FRONT_LEG_FROM: [f32; 3] = [-3.0, 0.0, -3.0];
 const FRONT_LEG_SIZE: [f32; 3] = [6.0, 14.0, 6.0];
 const HIND_LEG_FROM: [f32; 3] = [-2.5, 0.0, -2.5];
 const HIND_LEG_SIZE: [f32; 3] = [5.0, 11.0, 5.0];
-const ADULT_LEGS: [([f32; 3], [f32; 3], [f32; 2], [f32; 3]); 4] = [
+type Leg = ([f32; 3], [f32; 3], [f32; 2], [f32; 3]);
+const ADULT_LEGS: [Leg; 4] = [
     (
         FRONT_LEG_FROM,
         FRONT_LEG_SIZE,

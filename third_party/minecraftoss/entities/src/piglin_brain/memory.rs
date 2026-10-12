@@ -88,7 +88,12 @@ impl Memories {
     }
 
     pub fn nearby_adult_piglins(&self) -> Vec<Target> {
-        self.nearby_adult_piglins.get().cloned().unwrap_or_default()
+        self.nearby_adult_piglins
+            .get()
+            .into_iter()
+            .flatten()
+            .copied()
+            .collect()
     }
 
     pub fn sees(&self, target: Target) -> bool {

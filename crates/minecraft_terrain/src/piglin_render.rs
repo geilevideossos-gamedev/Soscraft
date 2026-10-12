@@ -201,7 +201,7 @@ fn assemble(
 ) -> Posed {
     let model = if baby { &BABY } else { &ADULT };
     let body = Quat::from_rotation_y(limbs.body_yaw);
-    let lift = dance.unwrap_or_default();
+    let lift = dance.unwrap_or(STILL);
     let arms = [0, 1].map(|arm| {
         let (x, z) = limbs.arm_pivots[arm];
         let y = model.arm_pivots[arm][1] + lift.arms_y[arm];
@@ -527,6 +527,14 @@ pub struct Dance {
     pub arms_z: f32,
     pub body_y: f32,
 }
+
+const STILL: Dance = Dance {
+    ears: [0.0; 2],
+    head: [0.0; 2],
+    arms_y: [0.0; 2],
+    arms_z: 0.0,
+    body_y: 0.0,
+};
 
 pub fn dance(age_in_ticks: f32) -> Dance {
     let f = age_in_ticks / 60.0;

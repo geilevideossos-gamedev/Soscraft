@@ -400,14 +400,16 @@ fn fpv_occupy_submission(
     }
 }
 
+type McViews<'w> = (
+    Option<Res<'w, frame::MinecraftUi>>,
+    Option<Res<'w, frame::McCamera>>,
+    Option<Res<'w, frame::McSleepers>>,
+);
+
 pub fn occupy_fpv_scene(
     skate: Res<frame::SkateMode>,
     puppet: Option<Res<frame::InventoryPuppet>>,
-    (minecraft, mc_camera, sleepers): (
-        Option<Res<frame::MinecraftUi>>,
-        Option<Res<frame::McCamera>>,
-        Option<Res<frame::McSleepers>>,
-    ),
+    (minecraft, mc_camera, sleepers): McViews,
     mut submissions: MessageWriter<AnimDObjSceneSubmission>,
     presented: Res<PresentedSnapshot>,
     local: Res<LocalPresentClient>,

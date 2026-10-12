@@ -137,13 +137,14 @@ pub fn finalize_spawn(ctx: &mut Ctx, tag: &mut Tag, black_cat_structure: bool) {
     if let (true, Some(pos)) = (kind == "minecraft:piglin_brute", pos) {
         minecraftoss_core::entity_data::finalize_piglin_brute(tag, &ctx.lib.dimension, [pos.x, pos.y, pos.z]);
     }
-    if matches!(kind.as_str(), "minecraft:hoglin" | "minecraft:zoglin") && ctx.region.level_random().next_f32() < 0.2 {
-        if let Tag::Compound(map) = tag {
-            if kind == "minecraft:hoglin" {
-                map.insert("Age".to_owned(), Tag::Int(-24000));
-            } else {
-                map.insert("IsBaby".to_owned(), Tag::Byte(1));
-            }
+    if matches!(kind.as_str(), "minecraft:hoglin" | "minecraft:zoglin")
+        && ctx.region.level_random().next_f32() < 0.2
+        && let Tag::Compound(map) = tag
+    {
+        if kind == "minecraft:hoglin" {
+            map.insert("Age".to_owned(), Tag::Int(-24000));
+        } else {
+            map.insert("IsBaby".to_owned(), Tag::Byte(1));
         }
     }
     // `AgeableMob.finalizeSpawn` draws nothing for the first of a group.

@@ -448,7 +448,7 @@ fn carries(tag: &Tag) -> bool {
     text(tag, "id") == Some("minecraft:strider")
         && tag.get("Passengers").and_then(Tag::as_list).is_some_and(|riders| {
             riders.iter().all(|rider| {
-                let kind = text(rider, "id").unwrap_or_default();
+                let kind = text(rider, "id").unwrap_or("");
                 SIMULATED_KINDS.contains(&kind) && !matches!(kind, "minecraft:end_crystal" | "minecraft:ender_dragon") && (rider.get("Passengers").is_none() || carries(rider))
             })
         })
@@ -456,10 +456,10 @@ fn carries(tag: &Tag) -> bool {
 
 pub fn spawn_saved_all(world: &mut EntityWorld, tag: &Tag) -> Vec<(u64, Tag)> {
     let (Tag::Compound(map), true) = (tag, carries(tag)) else {
-        return spawn_saved(world, tag).map(|id| vec![(id, tag.clone())]).unwrap_or_default();
+        return spawn_saved(world, tag).into_iter().map(|id| (id, tag.clone())).collect();
     };
     let mut bare = map.clone();
-    let riders = bare.remove("Passengers").and_then(|riders| riders.as_list().map(<[Tag]>::to_vec)).unwrap_or_default();
+    let riders = bare.remove("Passengers").and_then(|riders| riders.as_list().map(<[Tag]>::to_vec)).unwrap_or_else(Vec::new);
     let Some(id) = spawn_saved(world, &Tag::Compound(bare)) else { return Vec::new() };
     let mut out = vec![(id, tag.clone())];
     for rider in &riders {
@@ -1715,7 +1715,7 @@ mod tests {
         let riders = back.get("Passengers").and_then(Tag::as_list).expect("its passengers");
         assert_eq!(riders.len(), 2);
         assert_eq!(text(&riders[0], "id"), Some("minecraft:zombified_piglin"));
-        assert_eq!(riders[0].get("UUID").and_then(Tag::as_ints).map(|ints| ints.iter().copied().collect::<Vec<i32>>()), Some(vec![5, 6, 7, 8]));
+        assert_eq!(riders[0].get("UUID").and_then(Tag::as_ints).map(|ints| ints.to_vec()), Some(vec![5, 6, 7, 8]));
         assert!(riders[0].get("Passengers").is_none());
         assert_eq!(riders[0].get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| i.get("id")).and_then(Tag::as_str), Some("minecraft:warped_fungus_on_a_stick"));
         let mut again = EntityWorld::default();

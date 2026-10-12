@@ -658,10 +658,8 @@ impl EntityWorld {
             e.hurt(amount, source)
         } else if let Some(e) = self.hoglins.iter_mut().find(|e| e.id == id) {
             e.hurt(amount)
-        } else if let Some(e) = self.piglins.iter_mut().find(|e| e.id == id) {
-            e.hurt(amount)
         } else {
-            return None;
+            self.piglins.iter_mut().find(|e| e.id == id)?.hurt(amount)
         };
         if let (true, Some(owner)) = (result.applied, owner) {
             self.villager_hurt_by(id, owner);

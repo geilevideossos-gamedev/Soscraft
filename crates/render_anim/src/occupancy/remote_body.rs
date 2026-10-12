@@ -323,13 +323,15 @@ fn occupy_remote_scene_ents(
     }
 }
 
+type McViews<'w> = (
+    Option<Res<'w, frame::InventoryPuppet>>,
+    Option<Res<'w, frame::McCamera>>,
+    Option<Res<'w, frame::McSleepers>>,
+);
+
 fn sync_remote_bodies(
     skate: Res<frame::SkateMode>,
-    (puppet, mc_camera, sleepers): (
-        Option<Res<frame::InventoryPuppet>>,
-        Option<Res<frame::McCamera>>,
-        Option<Res<frame::McSleepers>>,
-    ),
+    (puppet, mc_camera, sleepers): McViews,
     mut commands: Commands,
     local: Res<LocalPresentClient>,
     presented: Res<PresentedSnapshot>,

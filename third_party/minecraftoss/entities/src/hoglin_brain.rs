@@ -102,8 +102,10 @@ impl Memories {
     pub fn visible_adult_hoglins(&self) -> Vec<Target> {
         self.nearest_visible_adult_hoglins
             .get()
-            .cloned()
-            .unwrap_or_default()
+            .into_iter()
+            .flatten()
+            .copied()
+            .collect()
     }
 
     pub fn piglins_outnumber_hoglins(&self, baby: bool) -> bool {
@@ -343,13 +345,10 @@ impl HoglinBrain {
         self.memories
             .visible_living
             .get()
-            .map(|visible| {
-                visible
-                    .iter()
-                    .filter_map(|&target| find(others, target))
-                    .collect()
-            })
-            .unwrap_or_default()
+            .into_iter()
+            .flatten()
+            .filter_map(|&target| find(others, target))
+            .collect()
     }
 
     fn sees(&self, track: Track, ctx: &Ctx) -> bool {

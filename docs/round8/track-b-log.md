@@ -1025,3 +1025,20 @@ After 5344cdfc.
 - **Changed:** the test expects `("SleepTimer", "short")` in the player file.
 - **Tests:** the vanilla world test passes again.
 - **Test steps:** none (test only).
+
+### R5. Track B code passes clippy without new warnings
+
+After 0da763d1.
+
+- **Defect:** clippy found warnings on lines this track added. In the workspace crates (`clippy -p frame -p hud -p minecraft_survival -p minecraft_terrain -p movement_iw4 -p playerstate_iw4 -p render_anim -p sim --locked --all-targets -- -A clippy::approx_constant`, with the full suite's stand-in scenario files): `then` with a closure and a field set after `Default::default()` in `hud/minecraft_sleep.rs`, a needless `&format!` in a `sleep.rs` test, the disallowed `unwrap_or_default` in `durability.rs`, `piglin_render.rs` and `server_mobs.rs`, a slice copied by `iter().copied().collect()` in a `server_mobs.rs` test, and three complex types (`hoglin_render.rs`'s leg table and the `McSleepers` system parameters of `fpv_present.rs` and `remote_body.rs`). The vendored crates are not workspace members, so they were linted as their own workspaces (`clippy --manifest-path third_party\minecraftoss\<crate>\Cargo.toml --offline --all-targets`, the `Cargo.lock` this makes deleted afterwards): `unwrap_or_default` in `hoglin_brain.rs` (twice) and `piglin_brain/memory.rs`, a `?` that could replace the last branch of `witches.rs`'s hurt dispatch, and two collapsible `if`s (`generator/feature/entities.rs`'s baby hoglin roll and `world/natural_spawner/spawning.rs`'s baby strider rider).
+- **Changed:** each one rewritten the way clippy asks, with the same behaviour: `then_some`; a struct literal; `format!` passed by value; `expect("an object")` in the durability test helper (every caller passes an object); a `STILL` dance pose for a piglin that isn't dancing; `unwrap_or("")`, `into_iter().map().collect()` and `unwrap_or_else(Vec::new)` in `server_mobs.rs`; `to_vec()`; a `Leg` and a `McViews` type alias; `into_iter().flatten()` for the hoglin and piglin memories; `?` in `witches.rs`; `&& let` chains in the two vendored edition 2024 crates (the random draws stay in the same order).
+- **Tests:** none new. `test -p` of every crate the track touched passes (`frame` 24, `hud` 142, `minecraft_survival` 379 and the vanilla world test, `minecraft_terrain` 905 with 4 ignored as before, `movement_iw4` 50, `render_anim` 77, `sim` 76, `minecraftoss-core` 24, `minecraftoss-entities` 189, `minecraftoss-generator` 28, `minecraftoss-player` 187, `minecraftoss-world` 66), and `check -p launcher` is green. Clippy, run again as above, reports no warning on a line the track added or changed (every location checked against `git diff -U0 0bcbfb17`); the rest are older. The new files still pass `rustfmt --check`.
+- **Test steps:** none (no behaviour change).
+
+## Combined kit for the whole track
+
+27 stacks for the main checks of b3 (striders and riding), b2 (hoglins and zoglins), b1 (piglins, brutes, bartering and gold) and b4 (sleeping). Each entry above keeps its own kit for the rest (spawn eggs of other mobs, respawn anchors, soul fire, more beds).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*8,minecraft:saddle,minecraft:saddle,minecraft:warped_fungus_on_a_stick,minecraft:warped_fungus*32,minecraft:hoglin_spawn_egg*16,minecraft:zoglin_spawn_egg*4,minecraft:crimson_fungus*64,minecraft:piglin_spawn_egg*16,minecraft:piglin_brute_spawn_egg*4,minecraft:zombified_piglin_spawn_egg*4,minecraft:gold_ingot*64,minecraft:gold_nugget*32,minecraft:golden_boots,minecraft:gold_block*8,minecraft:chest*2,minecraft:diamond_sword,minecraft:shield,minecraft:diamond_chestplate,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:lava_bucket,minecraft:red_bed,minecraft:straw_bed,minecraft:clock,minecraft:cooked_beef*32,minecraft:netherrack*64
+```

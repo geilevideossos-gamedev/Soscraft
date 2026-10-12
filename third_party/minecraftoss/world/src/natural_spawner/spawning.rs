@@ -1251,14 +1251,14 @@ impl CreatureSpawns {
                     set(&mut tag, "drop_chances", Tag::Compound(chances));
                     rider = Some(piglin);
                 }
-            } else if level.random().next_i32_bound(10) == 0 {
-                if let Some(mut child) = catalog.and_then(|c| c.default_tag("minecraft:strider")) {
-                    let uuid = level.next_uuid();
-                    set(&mut child, "Age", Tag::Int(-24000));
-                    place(&mut child, Self::position(&tag), Self::y_rot(&tag), 0.0, uuid);
-                    self.finalize_spawn(level, "minecraft:strider", &mut child, pos, &mut Group::None);
-                    rider = Some(child);
-                }
+            } else if level.random().next_i32_bound(10) == 0
+                && let Some(mut child) = catalog.and_then(|c| c.default_tag("minecraft:strider"))
+            {
+                let uuid = level.next_uuid();
+                set(&mut child, "Age", Tag::Int(-24000));
+                place(&mut child, Self::position(&tag), Self::y_rot(&tag), 0.0, uuid);
+                self.finalize_spawn(level, "minecraft:strider", &mut child, pos, &mut Group::None);
+                rider = Some(child);
             }
         }
         self.finalize_spawn(level, "minecraft:strider", &mut tag, pos, &mut Group::None);

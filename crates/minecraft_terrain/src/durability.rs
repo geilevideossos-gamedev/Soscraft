@@ -64,7 +64,7 @@ mod tests {
 
     fn stick(components: serde_json::Value) -> Inventory {
         let mut stack = ItemStack::new(STEERING_ITEM, 1);
-        let mut map = components.as_object().cloned().unwrap_or_default();
+        let mut map = components.as_object().cloned().expect("an object");
         map.insert("minecraft:max_damage".to_owned(), 100.into());
         stack.components = Some(serde_json::Value::Object(map));
         let mut inventory = Inventory::default();
