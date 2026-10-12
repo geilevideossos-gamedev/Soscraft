@@ -1009,3 +1009,22 @@ Previous commit: c597fe17
 ```
 IW4L_MINECRAFT_KIT=minecraft:oak_planks*64,minecraft:torch*16
 ```
+
+### 40. The Minecraft state doc covers powder snow, lecterns, trapped chests, totems, ladder jumps and weather streaks
+
+Previous commit: fa1af90e
+
+- **Changed:** `docs/MINECRAFT-SURVIVAL.md`:
+  - Implemented: the rain and snow streaks and the powder snow fog (World and rendering); the ladder ground jump and powder snow movement (Movement); freezing and the totem activation (Survival and combat); trapped chest signals and lecterns with the book screen (Crafting, inventory, containers); book components on `/give` and in the kit format.
+  - Saving: `freeze_damage` among the rules with an effect, `TicksFrozen` in the player file, lecterns' `Book` and `Page`, and "lectern books" dropped from what isn't simulated.
+  - Limitations: the rain streaks, powder snow, ladder jump, totem, lectern and trapped chest lines are rewritten or removed; new ones for the fall-speed powder snow catch, mobs that don't freeze, the MW2 jump gate at ladders, books that can't be written and show plain text, the fixed weather radius, and the per-player state track E must still send (frost slowdown, other players' totem pops and snowflakes, lectern viewers).
+- **Tests:** none (docs only).
+- **Decisions:** the vendored-code count in CLAUDE.md (patched and added MinecraftOSS files) is left for the end of the track, as the c5 brief says.
+- **Test steps:** none; read the changed sections.
+- **Kit:** none.
+
+### Group c5-rest-2, combined kit
+
+```
+IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}],minecraft:writable_book,minecraft:lectern*2,minecraft:comparator*2,minecraft:redstone*32,minecraft:redstone_lamp*2,minecraft:oak_planks*64,minecraft:torch*16
+```
