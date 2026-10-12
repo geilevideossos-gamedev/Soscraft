@@ -105,7 +105,10 @@ impl Sounds {
     }
 
     pub(crate) fn take_recorded(&mut self) -> Vec<Played> {
-        self.recording.take().unwrap_or_default()
+        let Some(played) = self.recording.take() else {
+            return Vec::new();
+        };
+        played
     }
 
     pub(crate) fn play_local(&mut self, packs: &PackStack, event: &str, position: Option<Vec3>, volume: f32, pitch: f32) {

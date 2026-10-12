@@ -513,7 +513,7 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
         e.arm_pose = ARM_POSES
             .get(usize::from(show.arm_pose))
             .copied()
-            .unwrap_or_default();
+            .unwrap_or(ArmPose::Default);
         e.using_item = show.using_item;
     }
     if let Some(e) = world.shulker_mut(id) {

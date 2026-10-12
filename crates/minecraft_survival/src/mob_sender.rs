@@ -129,10 +129,13 @@ impl MobSender {
             .copied()
             .collect();
         let mobs = minecraft_net::encode(Lane::State, &mobs).ok()?;
-        let entities = snapshot
+        let mut entities = Vec::new();
+        if let Some(bytes) = snapshot
             .map(|snapshot| near(snapshot, around, has_chunk))
             .and_then(|near| minecraft_net::encode(Lane::State, &near).ok())
-            .unwrap_or_default();
+        {
+            entities = bytes;
+        }
         self.tick = self.tick.wrapping_add(1);
         Some(StateFrame {
             tick: self.tick,

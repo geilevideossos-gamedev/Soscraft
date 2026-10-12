@@ -167,7 +167,7 @@ impl HeardLog {
 
     pub fn listen(&mut self, on: bool) -> Vec<Said> {
         let next = on.then(Vec::new);
-        std::mem::replace(&mut self.said, next).unwrap_or_default()
+        std::mem::replace(&mut self.said, next).unwrap_or_else(Vec::new)
     }
 }
 

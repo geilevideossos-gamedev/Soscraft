@@ -7,7 +7,7 @@ use minecraft_terrain::mesh::{Atlas, ItemVisuals};
 use minecraft_terrain::pack::PackStack;
 use minecraft_terrain::poof_particles::PoofParticles;
 use minecraft_terrain::portal_particles::PortalParticles;
-use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
+use minecraft_terrain::scene::{Block, BlockPos, HandcraftedScene, Scene};
 use minecraft_terrain::server::{EntitySnapshot, ServerItem, ServerOrb};
 use minecraftoss_entities::world::{EntityWorld, MobHit};
 use minecraftoss_player::crafting::RecipeBook;
@@ -161,7 +161,7 @@ impl EntityView {
             }
             self.spell.tick();
             minecraft_terrain::orb_render::tick_pickups(&mut self.orb_pickups, orb_target);
-            if self.ticks % 600 == 0 {
+            if self.ticks.is_multiple_of(600) {
                 diag::info!(World, "Minecraft mobs: {} tracked", self.boxes().len());
             }
         }
@@ -172,7 +172,7 @@ impl EntityView {
     pub fn receive(
         &mut self,
         snapshot: &mut EntitySnapshot,
-        changes: &[((i32, i32, i32), Option<Block>)],
+        changes: &[(BlockPos, Option<Block>)],
     ) {
         self.thrown = std::mem::take(&mut snapshot.thrown_views);
         self.eyes.receive(
