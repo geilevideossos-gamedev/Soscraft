@@ -549,7 +549,7 @@ impl Entities {
 
     #[allow(clippy::too_many_arguments)]
     pub fn punch(&mut self, inventory: &Inventory, selected: usize, eye: DVec3, look: DVec3, yaw: f32, attack_damage: f64, strength: f32, blow: Blow) -> bool {
-        let mob = self.world.mob_on_ray(eye, look, blow.reach);
+        let mob = mob_on_ray(&self.world, eye, look, blow.reach);
         if let Some((target, distance)) = self.end_on_ray(eye, look, blow.reach)
             && mob.is_none_or(|(_, nearest)| distance < nearest)
         {
@@ -583,7 +583,7 @@ impl Entities {
     }
 
     pub fn mob_distance(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
-        let mob = self.world.mob_on_ray(eye, look, reach).map(|(_, distance)| distance);
+        let mob = mob_on_ray(&self.world, eye, look, reach).map(|(_, distance)| distance);
         let fireball = self.world.fireball_on_ray(eye, look, reach).map(|(_, distance)| distance);
         let end = self.end_on_ray(eye, look, reach).map(|(_, distance)| distance);
         [mob, fireball, end].into_iter().flatten().min_by(f64::total_cmp)
@@ -1523,8 +1523,12 @@ fn resting_monsters(w: &EntityWorld, sleeper: u64) -> Vec<(&'static str, bool, [
     out
 }
 
+fn mob_on_ray(world: &EntityWorld, eye: DVec3, look: DVec3, reach: f64) -> Option<(MobHit, f64)> {
+    world.mob_on_ray_except(eye, look, reach, world.vehicle_of(minecraftoss_entities::world::Rider::Player(PLAYER)))
+}
+
 fn mob_to_use(world: &EntityWorld, eye: DVec3, look: DVec3, reach: f64, block: Option<f64>, others: Option<f64>) -> Option<MobHit> {
-    let (hit, distance) = world.mob_on_ray(eye, look, reach)?;
+    let (hit, distance) = mob_on_ray(world, eye, look, reach)?;
     (block.is_none_or(|block| distance < block) && others.is_none_or(|other| distance <= other)).then_some(hit)
 }
 
@@ -1798,6 +1802,24 @@ mod tests {
         assert_eq!(mob_to_use(&world, EYE, DVec3::Z, 3.0, None, None), Some(MobHit::Pig(pig)));
         assert_eq!(mob_to_use(&world, EYE, DVec3::Z, 3.0, None, Some(1.0)), None, "a fireball or crystal in front takes the click");
         assert_eq!(mob_to_use(&world, EYE, -DVec3::Z, 3.0, None, None), None);
+    }
+
+    #[test]
+    fn the_players_own_strider_is_never_picked_but_a_mob_behind_it_is() {
+        use minecraftoss_entities::world::Rider;
+        let (mut world, pig) = pig_ahead(2.0);
+        let strider = world.spawn_strider(minecraftoss_entities::strider::Strider::new(DVec3::new(0.5, 64.0, 1.0)), true);
+        let eye = DVec3::new(0.5, 64.5, -0.5);
+        assert_eq!(mob_to_use(&world, eye, DVec3::Z, 5.0, None, None), Some(MobHit::Strider(strider)));
+        assert!(world.force_riding(Rider::Player(PLAYER + 1), strider));
+        assert_eq!(mob_on_ray(&world, eye, DVec3::Z, 5.0).map(|(hit, _)| hit), Some(MobHit::Strider(strider)), "someone else's strider");
+        world.drop_player(PLAYER + 1);
+        assert!(world.force_riding(Rider::Player(PLAYER), strider));
+        assert_eq!(mob_to_use(&world, eye, DVec3::Z, 5.0, None, None), Some(MobHit::Pig(pig)));
+        assert_eq!(mob_on_ray(&world, eye, DVec3::Z, 5.0).map(|(hit, _)| hit), Some(MobHit::Pig(pig)));
+        let seat_eye = DVec3::new(0.5, 66.72, 1.0);
+        assert_eq!(world.mob_on_ray(seat_eye, -DVec3::Y, 3.0).map(|(hit, _)| hit), Some(MobHit::Strider(strider)));
+        assert_eq!(mob_on_ray(&world, seat_eye, -DVec3::Y, 3.0), None, "looking down at it");
     }
 
     #[test]

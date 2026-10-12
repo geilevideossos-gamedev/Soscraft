@@ -7082,8 +7082,15 @@ impl EntityWorld {
 
     /// The nearest living mob AABB across species, with spawn order for ties.
     pub fn mob_on_ray(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<(MobHit, f64)> {
+        self.mob_on_ray_except(eye, look, reach, None)
+    }
+
+    pub fn mob_on_ray_except(&self, eye: DVec3, look: DVec3, reach: f64, except: Option<u64>) -> Option<(MobHit, f64)> {
         let mut nearest = None;
         for key in &self.order {
+            if Some(key.id()) == except {
+                continue;
+            }
             let (hit, body) = match *key {
                 EntityKey::Bat(id) => {
                     let Some(entity) = self.bats.iter().find(|entity| entity.id == id) else {

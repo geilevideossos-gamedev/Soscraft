@@ -995,3 +995,22 @@ After fc64a1fb.
 ```
 IW4L_MINECRAFT_KIT=minecraft:red_bed,minecraft:straw_bed
 ```
+
+### R3. A Minecraft player can't hit or feed the strider it rides
+
+After c5af8882.
+
+- **Defect:** the crosshair pick for hits and right-clicks took every mob, the player's own strider included. Sitting 1.1 above it, a player who looked down and left-clicked hurt its own mount, and a right-click with warped fungus fed it. Vanilla's pick (`ProjectileUtil.getEntityHitResult`, checked with javap) skips an entity with the same root vehicle as the player, so the mob or block behind it is taken instead.
+- **Changed:**
+  - `minecraftoss/entities/src/world.rs`: `mob_on_ray_except` is `mob_on_ray` with one mob left out; `mob_on_ray` calls it with none.
+  - `minecraft_survival/src/entities.rs`: the punch, the mob-or-block distance and the right-click on mobs leave out the player's own vehicle.
+- **Tests:** `entities::the_players_own_strider_is_never_picked_but_a_mob_behind_it_is` (a pig behind the ridden strider is picked; someone else's ridden strider still is; looking straight down from the seat picks nothing).
+- **Test steps (Nether, survival):**
+  1. Put a saddle on a strider on lava, ride it, hold a diamond sword and look straight down at it while left-clicking: the strider is not hurt (no red flash, no hurt sound) (**R3.1**).
+  2. Hold warped fungus and right-click while looking down: nothing is eaten (**R3.2**).
+  3. Ride next to a second strider and hit it: that one is hurt (**R3.3**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*2,minecraft:saddle,minecraft:diamond_sword,minecraft:warped_fungus*8,minecraft:lava_bucket*4
+```
