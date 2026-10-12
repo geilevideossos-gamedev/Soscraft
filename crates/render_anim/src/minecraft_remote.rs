@@ -941,14 +941,13 @@ fn present(
     let Some(level) = remote.level.as_mut() else {
         return;
     };
+    let band = minecraft_survival::bands::level(level.dimension);
     if shown.level {
         match prediction {
             Some(prediction) => {
-                sim::voxel::activate(
-                    prediction.0.world().clip_brushes(),
-                    level.origin,
-                    vec![Vec::new()],
-                );
+                sim::voxel::activate(prediction.0.world().clip_brushes(), vec![Vec::new()]);
+                let (min_y, height) = minecraft_survival::bands::heights(level.dimension);
+                sim::voxel::set_level(band, level.origin, min_y, height);
             }
             None => diag::warn!(
                 World,
@@ -980,14 +979,13 @@ fn present(
     }
     crate::minecraft_world::apply_streamed(
         &prepared.registries,
-        shapes,
-        shape_ids,
+        (shapes, shape_ids, band),
         (shown.loaded, shown.forgotten),
     );
     for ((x, y, z), state) in shown.blocks {
         let shape =
             crate::minecraft_world::shape_id(shapes, shape_ids, &prepared.registries, state);
-        sim::voxel::set_block_shape(x, y, z, shape);
+        sim::voxel::set_block_shape(band, x, y, z, shape);
     }
     crate::minecraft_world::animate_atlas(
         view,
@@ -1033,7 +1031,7 @@ fn present(
     crate::minecraft_world::observe_spawn(
         &level.terrain,
         spawn_gate,
-        level.feet,
+        (band, level.feet),
         camera.position,
         now_ms,
     );

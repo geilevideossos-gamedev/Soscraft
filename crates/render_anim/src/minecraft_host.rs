@@ -170,6 +170,7 @@ fn teleport(
     origin: [f64; 3],
     to: [f64; 3],
 ) {
+    let to = minecraft_survival::bands::kept_in_walls(player.dimension, to);
     authority.teleport(client, sim::voxel::to_map(origin, to));
     player.steps.air_peak = None;
 }

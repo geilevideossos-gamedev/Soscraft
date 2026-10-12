@@ -1090,6 +1090,58 @@ Commit: see `git log` ("Multiplayer M3 and M4 pass clippy"). The previous commit
 - **Test steps:** none new; `docs/round8/e-m3-tests.md` (E16 for the mob view and the mob sender, E17 for the heard log and the recorded sounds) covers these lines.
 - **Kit:** none needed.
 
+## Milestone M5: different dimensions
+
+This run builds E19, E20 and E21 (M5). The owner's two-window steps are collected in `docs/round8/e-m5-tests.md`.
+
+### E19. Each dimension has its own collision, so players can be in different dimensions
+
+Commit: see `git log` ("Each Minecraft dimension has its own collision band"). The previous commit is `38c7339b` (M3 and M4 pass clippy).
+
+- **Changed:**
+  - `crates/sim/src/voxel.rs`, section 8.3 of the design:
+    - `VoxelWorld { brushes, levels: [Option<VoxelLevel>; 3], spawn, shapes, fluids }` with `VoxelLevel { origin, chunks, min_y, height }`. The shape table stays one table for every level, so `runtime.shapes` and `shape_ids` are no longer cleared on a switch.
+    - `BANDS` (overworld `[-20,000, 20,000)`, Nether `[-60,000, -20,000)`, End `[20,000, 60,000)` in map z) and `band_of(z)`. Every query picks its level from the band of its point: traces and `trace_as` from the start, `ground_within`, `water`, `lava`, `climb`, `eye_in_lava`, `stuck`, `touches_wall`, `push_out`, `body_box`, `camera_reach`, `awaiting_ground` (a point in a band with no level waits for ground), the skate meshes (`collision_triangles`, `skate_ramps`, `track_rails`, `missing_chunk_walls`) and `changed_near` (the change log now records the level of each change).
+    - The collision methods moved from `VoxelWorld` to `Level<'_>`, a view of one level with the shared shape table and its wall range; their bodies are unchanged.
+    - **Walls:** `shape_at` answers a full block below `min_y - 128` and from `max_y + 256` up (`WALL_BELOW`, `WALL_ABOVE`), whether or not a chunk is loaded there, so nothing crosses into the next band.
+    - `activate(brushes, shapes)`, `set_level(level, origin, min_y, height)` (a new, empty level), `drop_level(level)` and `has_level(level)` replace `switch_level`. `set_chunk`, `remove_chunk`, `set_block_shape` and `chunks_ready_around` take the level.
+    - Events: `Shot`, `Explosion`, `Ray`, `MobShot` and `MobBlast` carry the level of the band they happened in (`ONLY_LEVEL` is gone).
+    - `MOB_BOXES` is one list per level: `set_mob_boxes(level, boxes)`; `mob_on_segment` uses the level of the segment's start, `mob_targets` returns every level's boxes in map space.
+    - `set_spawn` / `spawn_point`: the world spawn in map space. `spawn_origin`, `spawn_clear_of` (and its free spot search) and `spawn::ground_spawn` use it instead of map origin, because the overworld origin's y is now clamped.
+    - `kept_in_walls`: a player without collision (`MC_NOCLIP`, a spectator) is held between its band's walls after each move (`step.rs`).
+    - `mark_level_switch` keeps `LEVEL_SWITCH` for the friend's prediction world (E20 stamps it when the friend's own dimension changes); the host never marks it now, since old ordnance stays in its own band.
+  - `crates/minecraft_survival/src/bands.rs` (new): `level(dimension)` (0, 1, 2), `band`, `heights` (vanilla 26.3: the overworld from -64 with 384 blocks, the Nether and the End from 0 with 256), `wall_range`, `origin(dimension, world_spawn)` (the overworld at the spawn with its y clamped to 32..=320, the Nether at spawn x / 8, 1314, spawn z / 8, the End at 0, -1140, 0), `origins`, `check(world_spawn)` (every wall range inside its band, no bands overlapping), `at_bottom_wall` and `kept_in_walls` (a teleport's feet clamped into the wall range).
+  - `crates/minecraft_survival/src/survival.rs`: `hazards` kills a player whose feet reach the bottom wall with `DamageCause::OutOfWorld` ("fell out of the world"), in any game mode, as the void would have done a little lower.
+  - `crates/render_anim/src/minecraft_world.rs`:
+    - At load the three origins are computed once from the world spawn (`bands::origins`) and kept in `runtime.origins` for the whole session, so `Login.origins` now carries all three. `bands::check` runs and warns if it fails. The overworld level is set right after `activate`, with the spawn point.
+    - `follow_levels` sets a level's collision when the level opens (`finish_opening`) and drops it when the level closes (`close_empty_levels`). Showing a level no longer wipes the collision or the shape table; it only applies the stream's chunks to that level again.
+    - Leaving a level (`Begun::Left`) clears that level's mob boxes instead of switching the whole block world.
+    - The host frame takes only the voxel events of its own level (`event_level`). `apply_streamed`, `write_blocks`, `refresh_shapes`, `observe_spawn`, `stream_around_spawn`, `place_player`, `place_friend`, `MwBody` and the mining `WorldRefs` carry the level index.
+    - `place_player` keeps the arrival's feet inside the walls.
+  - `crates/render_anim/src/minecraft_players.rs`: a landing on the bottom wall takes no fall damage; command teleports are kept inside the walls (`minecraft_host.rs` too, for friends).
+  - `crates/render_anim/src/minecraft_remote.rs`: the friend's game holds only its own level: `activate`, then `set_level` with the friend's dimension and its origin from the host.
+  - `crates/sim/src/damage/height_bands.rs` (E4's spike): sets the level of the band it tests.
+- **Tests:**
+  - `sim` `voxel::tests`: `the_three_bands_cover_their_own_heights_and_nothing_past_them` (`band_of` for the three bands and their edges), `a_trace_in_one_band_never_hits_another_bands_blocks`, `the_wall_stops_a_trace_past_its_levels_range` (a trace down in the Nether stops at y -128 and one up at y 512, both inside the band), `a_flier_without_collision_stays_between_the_walls`, `every_dimension_keeps_its_own_level_and_dropping_one_leaves_the_others`; `a_voxel_shot_carries_its_attacker_and_every_event_its_level` now also checks that every event in the End's band carries level 2. The test level of the other voxel tests has the overworld's heights. `a_level_switch_drops_the_old_level_and_waits_for_ground_at_the_new_origin` is replaced by the level test above.
+  - `minecraft_survival` `bands::tests`: `the_bands_hold_for_a_superflat_a_normal_and_the_highest_spawn` (`check` for a spawn at y -60, 64 and 320), `the_origins_are_fixed_by_the_world_spawn`, `the_design_numbers_for_every_wall`, `a_teleport_past_a_wall_stops_at_it`, `only_feet_on_the_bottom_wall_count_as_on_it`; `survival::tests::a_player_who_reaches_the_bottom_wall_falls_out_of_the_world_at_once` (survival and creative, through resistance, with the vanilla line).
+  - `render_anim` `minecraft_world::band_tests`: `the_collision_bands_are_the_ones_each_dimension_is_given` (sim's `BANDS`, walls and block size match `bands`, and a point at each origin lies in its own band), `the_host_reads_each_events_level`.
+  - Results on the real 26.3 data: `test -p sim` 115, `minecraft_survival` 570 + 1, `render_anim --lib` 137; `check -p launcher` green.
+- **Decisions:**
+  - **The band table is written twice**, in `sim::voxel::BANDS` and `minecraft_survival::bands::band`, because `minecraft_survival` does not depend on `sim`. A `render_anim` test pins them together.
+  - **The walls use vanilla 26.3's dimension heights** (`bands::heights`), not the level's registries, so the origins, the walls and `check` are fixed per world and the same on the host and the friend.
+  - **A new player and a respawn at the world spawn land on the spawn, not at map origin.** With the overworld origin's y clamped, a superflat spawn at y -60 is 92 blocks below map origin; the sim's spawn point (`set_spawn`) is the real spawn, so nobody falls from y 32.
+  - **The bottom wall kills in every game mode.** The game already lets the void kill creative and spectator players (`creative_and_spectator_players_fall_out_of_the_world_past_a_totem`); that test now falls at y -191, above the overworld's wall at -192, since no player can be below it. A spectator is held between the walls by the step, so the top wall stops them too.
+  - **Teleports are kept inside the walls** (vanilla allows any y): `/tp @s ~ 700 ~` in the overworld lands just under the top wall instead of in the End's band.
+  - **The host frame drops the voxel events of other levels.** Only the host's level ticks until E20, which runs every occupied level and takes each level's events.
+  - **The friend still re-activates its block world for every level it is shown**, as before; E20 makes the friend's dimension change drop the old level, set the new one and stamp the level switch.
+- **Nothing from the B/C/D lists belongs to E19.** Friends sleeping goes with E20 (every occupied level ticking, the vanilla percentage rule per level); other players' snowflakes and the friend's own totem animation go with E21 or M6; the frost slowdown and powder snow walker for friends, frozen hearts in `PlayerView`, skating for friends, the lectern book screen and the merchant screen stay for M6 or later.
+- **Test steps:** `docs/round8/e-m5-tests.md`, section E19.
+- **Kit:** `minecraft:obsidian` x10, `minecraft:flint_and_steel` x1, `minecraft:iron_pickaxe` x1, `minecraft:cobblestone` x32, `minecraft:cow_spawn_egg` x2, `minecraft:cooked_beef` x8.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:iron_pickaxe,minecraft:cobblestone*32,minecraft:cow_spawn_egg*2,minecraft:cooked_beef*8
+```
+
 ## Combined kit for every test in this track
 
 27 stacks no longer hold every test's kit. This line covers the M3 and M4 owner tests: the merge of tracks B, C and D, E16, E17 and the review fixes in `docs/round8/e-m3-tests.md`, and E18 in `docs/round8/e-m4-tests.md`. It leaves out six items of the merge section's steps 7 to 9 (lectern, trapped chest and piglins); give them from the host window before those steps: `/give @a minecraft:lectern`, `/give @a minecraft:writable_book`, `/give @a minecraft:trapped_chest`, `/give @a minecraft:redstone_lamp`, `/give @a minecraft:gold_block 4`, `/give @a minecraft:stone_pickaxe`. The M1 and M2 tests keep their own kit lines in `docs/round8/e-m1-tests.md` and `docs/round8/e-m2-tests.md`; the M2 combined line (E11 to E15) is in the git history of this file at `bf0a3a47`.

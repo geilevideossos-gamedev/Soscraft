@@ -26,16 +26,65 @@ pub struct VoxelChunk {
     pub shapes: Vec<u16>,
 }
 
+pub const LEVELS: usize = 3;
+pub const BANDS: [[f32; 2]; LEVELS] = [[-20_000.0, 20_000.0], [-60_000.0, -20_000.0], [20_000.0, 60_000.0]];
+pub const WALL_BELOW: i32 = 128;
+pub const WALL_ABOVE: i32 = 256;
+
+struct VoxelLevel {
+    origin: [f64; 3],
+    chunks: HashMap<(i32, i32), VoxelChunk>,
+    min_y: i32,
+    height: i32,
+}
+
 /// The block world traces run against, and where it sits in map space.
 #[derive(Default)]
 pub struct VoxelWorld {
     brushes: usize,
-    origin: [f64; 3],
-    chunks: HashMap<(i32, i32), VoxelChunk>,
+    levels: [Option<VoxelLevel>; LEVELS],
+    spawn: [f32; 3],
     /// Collision boxes of each shape id, in block space `[min, max]`; id 0 is
     /// empty.
     shapes: Vec<Vec<[f32; 6]>>,
     fluids: Vec<u16>,
+}
+
+#[derive(Clone, Copy)]
+struct Level<'a> {
+    index: u8,
+    origin: [f64; 3],
+    chunks: &'a HashMap<(i32, i32), VoxelChunk>,
+    shapes: &'a [Vec<[f32; 6]>],
+    fluids: &'a [u16],
+    wall: [i32; 2],
+}
+
+pub fn band_of(z: f32) -> Option<usize> {
+    BANDS.iter().position(|band| z >= band[0] && z < band[1])
+}
+
+impl VoxelWorld {
+    fn level(&self, index: usize) -> Option<Level<'_>> {
+        let level = self.levels.get(index)?.as_ref()?;
+        Some(Level {
+            index: index as u8,
+            origin: level.origin,
+            chunks: &level.chunks,
+            shapes: &self.shapes,
+            fluids: &self.fluids,
+            wall: [level.min_y - WALL_BELOW, level.min_y + level.height + WALL_ABOVE],
+        })
+    }
+
+    fn at(&self, p: [f32; 3]) -> Option<Level<'_>> {
+        self.level(band_of(p[2])?)
+    }
+}
+
+fn level_at<T>(p: [f32; 3], read: impl FnOnce(Level<'_>) -> T) -> Option<T> {
+    let world = WORLD.read().ok()?;
+    world.as_ref()?.at(p).map(read)
 }
 
 static WORLD: RwLock<Option<VoxelWorld>> = RwLock::new(None);
@@ -44,22 +93,22 @@ static REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::ne
 
 /// The block box each recent revision touched, oldest first, so a reader
 /// can tell whether the changes since its own revision reach a region.
-static CHANGES: std::sync::Mutex<std::collections::VecDeque<(u64, [i32; 3], [i32; 3])>> =
-    std::sync::Mutex::new(std::collections::VecDeque::new());
+type Change = (u64, Option<u8>, [i32; 3], [i32; 3]);
+static CHANGES: std::sync::Mutex<std::collections::VecDeque<Change>> = std::sync::Mutex::new(std::collections::VecDeque::new());
 const CHANGE_LOG: usize = 256;
 const EVERYWHERE: ([i32; 3], [i32; 3]) = ([i32::MIN; 3], [i32::MAX; 3]);
 
 fn bump() {
-    bump_region(EVERYWHERE.0, EVERYWHERE.1);
+    bump_region(None, EVERYWHERE.0, EVERYWHERE.1);
 }
 
-fn bump_region(min: [i32; 3], max: [i32; 3]) {
+fn bump_region(level: Option<u8>, min: [i32; 3], max: [i32; 3]) {
     let Ok(mut log) = CHANGES.lock() else {
         REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return;
     };
     let revision = REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    log.push_back((revision, min, max));
+    log.push_back((revision, level, min, max));
     while log.len() > CHANGE_LOG {
         log.pop_front();
     }
@@ -78,12 +127,8 @@ pub fn changed_near(since: u64, centre: [f32; 3], radius: i32, depth: i32) -> bo
     if revision() <= since {
         return false;
     }
-    let origin = match WORLD.read() {
-        Ok(world) => match world.as_ref() {
-            Some(world) => world.origin,
-            None => return true,
-        },
-        Err(_) => return true,
+    let Some((index, origin)) = level_at(centre, |level| (level.index, level.origin)) else {
+        return true;
     };
     let Ok(log) = CHANGES.lock() else {
         return true;
@@ -96,8 +141,8 @@ pub fn changed_near(since: u64, centre: [f32; 3], radius: i32, depth: i32) -> bo
     let lo = [cx - radius - 1, cy - depth - 1, cz - radius - 1];
     let hi = [cx + radius + 1, cy + depth + 1, cz + radius + 1];
     log.iter()
-        .filter(|(revision, ..)| *revision > since)
-        .any(|(_, min, max)| (0..3).all(|i| min[i] <= hi[i] && max[i] >= lo[i]))
+        .filter(|(revision, level, ..)| *revision > since && level.is_none_or(|level| level == index))
+        .any(|(_, _, min, max)| (0..3).all(|i| min[i] <= hi[i] && max[i] >= lo[i]))
 }
 
 /// Changes with every change to the block world's collision.
@@ -123,20 +168,14 @@ pub enum VoxelEvent {
     Ray { level: u8, from: [f64; 3], to: [f64; 3], damage: f32, attacker: Option<u32> },
 }
 
-pub const ONLY_LEVEL: u8 = 0;
-
 static EVENTS: std::sync::Mutex<Vec<VoxelEvent>> = std::sync::Mutex::new(Vec::new());
 
 /// A bullet impact at map point `end` on a surface facing `normal`: the
 /// block behind the surface.
 pub fn push_shot(end: [f32; 3], normal: [f32; 3], damage: f32, attacker: Option<u32>) {
-    let Ok(world) = WORLD.read() else {
+    let Some(event) = level_at(end, |level| level.shot(end, normal, damage, attacker)) else {
         return;
     };
-    let Some(world) = world.as_ref() else {
-        return;
-    };
-    let event = world.shot(end, normal, damage, attacker);
     if let Ok(mut events) = EVENTS.lock() {
         events.push(event);
     }
@@ -144,13 +183,9 @@ pub fn push_shot(end: [f32; 3], normal: [f32; 3], damage: f32, attacker: Option<
 
 /// An explosion at map point `origin`.
 pub fn push_explosion(origin: [f32; 3], power: f32) {
-    let Ok(world) = WORLD.read() else {
+    let Some(event) = level_at(origin, |level| level.explosion(origin, power)) else {
         return;
     };
-    let Some(world) = world.as_ref() else {
-        return;
-    };
-    let event = world.explosion(origin, power);
     if let Ok(mut events) = EVENTS.lock() {
         events.push(event);
     }
@@ -158,10 +193,12 @@ pub fn push_explosion(origin: [f32; 3], power: f32) {
 
 /// The world's mobs as bullets see them: a key and a block-space box
 /// `[min, max]` each.
-static MOB_BOXES: RwLock<Vec<(u64, [f64; 6])>> = RwLock::new(Vec::new());
+static MOB_BOXES: RwLock<[Vec<(u64, [f64; 6])>; LEVELS]> = RwLock::new([Vec::new(), Vec::new(), Vec::new()]);
 
-pub fn set_mob_boxes(boxes: Vec<(u64, [f64; 6])>) {
-    if let Ok(mut held) = MOB_BOXES.write() {
+pub fn set_mob_boxes(level: u8, boxes: Vec<(u64, [f64; 6])>) {
+    if let Ok(mut held) = MOB_BOXES.write()
+        && let Some(held) = held.get_mut(usize::from(level))
+    {
         *held = boxes;
     }
 }
@@ -170,14 +207,13 @@ pub fn set_mob_boxes(boxes: Vec<(u64, [f64; 6])>) {
 /// distance to it in map units and how far up its box the bullet struck
 /// (0 at the feet, 1 at the top).
 pub(crate) fn mob_on_segment(start: [f32; 3], end: [f32; 3]) -> Option<(u64, f32, f32)> {
-    let world = WORLD.read().ok()?;
-    let origin = world.as_ref()?.origin;
+    let (index, origin) = level_at(start, |level| (usize::from(level.index), level.origin))?;
     let a = to_block(origin, start);
     let b = to_block(origin, end);
     let d: [f64; 3] = std::array::from_fn(|k| b[k] - a[k]);
     let boxes = MOB_BOXES.read().ok()?;
     let mut best: Option<(u64, f64, f64)> = None;
-    for &(key, bb) in boxes.iter() {
+    for &(key, bb) in boxes[index].iter() {
         let (mut t0, mut t1) = (0.0f64, 1.0f64);
         let mut hit = true;
         for k in 0..3 {
@@ -217,13 +253,9 @@ pub(crate) fn hit_height(key: u64, up: f32) -> f32 {
 
 /// A bullet's path from map point `start` to `end`.
 pub(crate) fn push_ray(start: [f32; 3], end: [f32; 3], damage: f32, attacker: Option<u32>) {
-    let Ok(world) = WORLD.read() else {
+    let Some(event) = level_at(start, |level| level.ray(start, end, damage, attacker)) else {
         return;
     };
-    let Some(world) = world.as_ref() else {
-        return;
-    };
-    let event = world.ray(start, end, damage, attacker);
     if let Ok(mut events) = EVENTS.lock() {
         events.push(event);
     }
@@ -249,15 +281,16 @@ pub fn mob_targets() -> Vec<(u64, [f32; 3], [f32; 3])> {
     let Ok(world) = WORLD.read() else {
         return Vec::new();
     };
-    let Some(origin) = world.as_ref().map(|w| w.origin) else {
+    let Some(world) = world.as_ref() else {
         return Vec::new();
     };
     let Ok(boxes) = MOB_BOXES.read() else {
         return Vec::new();
     };
-    boxes
-        .iter()
-        .map(|(key, b)| {
+    (0..LEVELS)
+        .filter_map(|index| Some((world.level(index)?.origin, &boxes[index])))
+        .flat_map(|(origin, boxes)| boxes.iter().map(move |(key, b)| (origin, key, b)))
+        .map(|(origin, key, b)| {
             let a = to_map(origin, [b[0], b[1], b[2]]);
             let c = to_map(origin, [b[3], b[4], b[5]]);
             let mins = [a[0].min(c[0]), a[1].min(c[1]), a[2].min(c[2])];
@@ -268,53 +301,45 @@ pub fn mob_targets() -> Vec<(u64, [f32; 3], [f32; 3])> {
 }
 
 pub(crate) fn push_mob_shot(key: u64, damage: f32, from: [f32; 3], attacker: Option<u32>) {
-    let Ok(world) = WORLD.read() else {
+    let Some(event) = level_at(from, |level| level.mob_shot(key, damage, from, attacker)) else {
         return;
     };
-    let Some(world) = world.as_ref() else {
-        return;
-    };
-    let event = world.mob_shot(key, damage, from, attacker);
     if let Ok(mut events) = EVENTS.lock() {
         events.push(event);
     }
 }
 
-impl VoxelWorld {
+impl Level<'_> {
     fn shot(&self, end: [f32; 3], normal: [f32; 3], damage: f32, attacker: Option<u32>) -> VoxelEvent {
         let p = to_block(self.origin, end);
         let n = [f64::from(normal[0]), f64::from(normal[2]), -f64::from(normal[1])];
         let block = std::array::from_fn(|k| (p[k] - n[k] * 0.05).floor() as i32);
-        VoxelEvent::Shot { level: ONLY_LEVEL, block, damage, attacker }
+        VoxelEvent::Shot { level: self.index, block, damage, attacker }
     }
 
     fn explosion(&self, origin: [f32; 3], power: f32) -> VoxelEvent {
-        VoxelEvent::Explosion { level: ONLY_LEVEL, center: to_block(self.origin, origin), power }
+        VoxelEvent::Explosion { level: self.index, center: to_block(self.origin, origin), power }
     }
 
     fn ray(&self, start: [f32; 3], end: [f32; 3], damage: f32, attacker: Option<u32>) -> VoxelEvent {
         let (from, to) = (to_block(self.origin, start), to_block(self.origin, end));
-        VoxelEvent::Ray { level: ONLY_LEVEL, from, to, damage, attacker }
+        VoxelEvent::Ray { level: self.index, from, to, damage, attacker }
     }
 
     fn mob_shot(&self, key: u64, damage: f32, from: [f32; 3], attacker: Option<u32>) -> VoxelEvent {
-        VoxelEvent::MobShot { level: ONLY_LEVEL, key, damage, from: to_block(self.origin, from), attacker }
+        VoxelEvent::MobShot { level: self.index, key, damage, from: to_block(self.origin, from), attacker }
     }
 
     fn mob_blast(&self, key: u64, damage: f32, origin: [f32; 3], impact: f32, attacker: Option<u32>, slow_ticks: i32) -> VoxelEvent {
         let center = to_block(self.origin, origin);
-        VoxelEvent::MobBlast { level: ONLY_LEVEL, key, damage, center, impact, attacker, slow_ticks }
+        VoxelEvent::MobBlast { level: self.index, key, damage, center, impact, attacker, slow_ticks }
     }
 }
 
 pub(crate) fn push_mob_blast(key: u64, damage: f32, origin: [f32; 3], impact: f32, attacker: Option<u32>, slow_ticks: i32) {
-    let Ok(world) = WORLD.read() else {
+    let Some(event) = level_at(origin, |level| level.mob_blast(key, damage, origin, impact, attacker, slow_ticks)) else {
         return;
     };
-    let Some(world) = world.as_ref() else {
-        return;
-    };
-    let event = world.mob_blast(key, damage, origin, impact, attacker, slow_ticks);
     if let Ok(mut events) = EVENTS.lock() {
         events.push(event);
     }
@@ -448,17 +473,18 @@ pub fn take_events() -> Vec<VoxelEvent> {
 }
 
 /// Sets one block's collision shape id, as `set_chunk` lays them out.
-pub fn set_block_shape(x: i32, y: i32, z: i32, shape: u16) {
+pub fn set_block_shape(level: u8, x: i32, y: i32, z: i32, shape: u16) {
     if let Ok(mut world) = WORLD.write()
         && let Some(world) = world.as_mut()
-        && let Some(chunk) = world.chunks.get_mut(&(x >> 4, z >> 4))
+        && let Some(Some(held)) = world.levels.get_mut(usize::from(level))
+        && let Some(chunk) = held.chunks.get_mut(&(x >> 4, z >> 4))
     {
         let ly = y - chunk.min_y;
         if ly >= 0 && ly < chunk.height {
             let index = ((ly * 16 + (z & 15)) * 16 + (x & 15)) as usize;
             if let Some(slot) = chunk.shapes.get_mut(index) {
                 *slot = shape;
-                bump_region([x, y, z], [x, y, z]);
+                bump_region(Some(level), [x, y, z], [x, y, z]);
             }
         }
     }
@@ -466,30 +492,71 @@ pub fn set_block_shape(x: i32, y: i32, z: i32, shape: u16) {
 
 /// Starts replacing world collision for the map whose brush table is
 /// `brushes`, with the block world's `origin` block at map origin.
-pub fn activate(brushes: &[SimBrush], origin: [f64; 3], shapes: Vec<Vec<[f32; 6]>>) {
+pub fn activate(brushes: &[SimBrush], shapes: Vec<Vec<[f32; 6]>>) {
     if let Ok(mut world) = WORLD.write() {
         *world = Some(VoxelWorld {
             brushes: brushes.as_ptr() as usize,
-            origin,
-            chunks: HashMap::new(),
             fluids: vec![0; shapes.len()],
             shapes,
+            ..VoxelWorld::default()
         });
+    }
+    if let Ok(mut boxes) = MOB_BOXES.write() {
+        boxes.iter_mut().for_each(Vec::clear);
     }
     set_level_switch(LevelSwitch::Never);
     bump();
 }
 
-pub fn switch_level(origin: [f64; 3]) {
+pub fn set_level(level: u8, origin: [f64; 3], min_y: i32, height: i32) {
     if let Ok(mut world) = WORLD.write()
         && let Some(world) = world.as_mut()
     {
-        world.switch(origin);
+        world.set_level(level, origin, min_y, height);
     }
+    set_mob_boxes(level, Vec::new());
+    bump_region(Some(level), EVERYWHERE.0, EVERYWHERE.1);
+}
+
+pub fn drop_level(level: u8) {
+    if let Ok(mut world) = WORLD.write()
+        && let Some(world) = world.as_mut()
+        && let Some(slot) = world.levels.get_mut(usize::from(level))
+    {
+        *slot = None;
+    }
+    set_mob_boxes(level, Vec::new());
+    bump_region(Some(level), EVERYWHERE.0, EVERYWHERE.1);
+}
+
+pub fn has_level(level: u8) -> bool {
+    WORLD.read().ok().is_some_and(|world| world.as_ref().is_some_and(|world| world.level(usize::from(level)).is_some()))
+}
+
+pub fn set_spawn(spawn: [f32; 3]) {
+    if let Ok(mut world) = WORLD.write()
+        && let Some(world) = world.as_mut()
+    {
+        world.spawn = spawn;
+    }
+}
+
+pub fn spawn_point() -> [f32; 3] {
+    WORLD.read().ok().and_then(|world| world.as_ref().map(|world| world.spawn)).unwrap_or([0.0; 3])
+}
+
+pub fn mark_level_switch() {
     let _ = take_events();
-    set_mob_boxes(Vec::new());
     set_level_switch(LevelSwitch::Pending);
     bump();
+}
+
+impl VoxelWorld {
+    fn set_level(&mut self, level: u8, origin: [f64; 3], min_y: i32, height: i32) {
+        if let Some(slot) = self.levels.get_mut(usize::from(level)) {
+            *slot = Some(VoxelLevel { origin, chunks: HashMap::new(), min_y, height });
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -591,7 +658,9 @@ pub fn deactivate() {
     if let Ok(mut clients) = DEATH_PROTECTED.lock() {
         clients.clear();
     }
-    set_mob_boxes(Vec::new());
+    if let Ok(mut boxes) = MOB_BOXES.write() {
+        boxes.iter_mut().for_each(Vec::clear);
+    }
 }
 
 /// Adds shape ids to the table and returns the first new id.
@@ -673,24 +742,26 @@ pub fn add_fluid_shape(boxes: Vec<[f32; 6]>, fluid: u16) -> Option<u16> {
     Some(id)
 }
 
-pub fn set_chunk(x: i32, z: i32, chunk: VoxelChunk) {
+pub fn set_chunk(level: u8, x: i32, z: i32, chunk: VoxelChunk) {
     if let Ok(mut world) = WORLD.write()
         && let Some(world) = world.as_mut()
+        && let Some(Some(held)) = world.levels.get_mut(usize::from(level))
     {
-        world.chunks.insert((x, z), chunk);
+        held.chunks.insert((x, z), chunk);
     }
     let (min, max) = chunk_region(x, z);
-    bump_region(min, max);
+    bump_region(Some(level), min, max);
 }
 
-pub fn remove_chunk(x: i32, z: i32) {
+pub fn remove_chunk(level: u8, x: i32, z: i32) {
     if let Ok(mut world) = WORLD.write()
         && let Some(world) = world.as_mut()
+        && let Some(Some(held)) = world.levels.get_mut(usize::from(level))
     {
-        world.chunks.remove(&(x, z));
+        held.chunks.remove(&(x, z));
     }
     let (min, max) = chunk_region(x, z);
-    bump_region(min, max);
+    bump_region(Some(level), min, max);
 }
 
 /// The faces of the block world's collision boxes within `radius` blocks
@@ -702,7 +773,7 @@ pub fn collision_triangles(centre: [f32; 3], radius: i32, depth: i32) -> Vec<[[f
     let Ok(world) = WORLD.read() else {
         return Vec::new();
     };
-    let Some(world) = world.as_ref() else {
+    let Some(world) = world.as_ref().and_then(|world| world.at(centre)) else {
         return Vec::new();
     };
     let full: Vec<bool> = world.shapes.iter().map(|b| b.len() == 1 && b[0] == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]).collect();
@@ -778,7 +849,7 @@ pub fn skate_ramps(centre: [f32; 3], radius: i32, depth: i32) -> Vec<[[f32; 3]; 
     let Ok(world) = WORLD.read() else {
         return Vec::new();
     };
-    let Some(world) = world.as_ref() else {
+    let Some(world) = world.as_ref().and_then(|world| world.at(centre)) else {
         return Vec::new();
     };
     let c = to_block(world.origin, centre).map(|v| v.floor() as i32);
@@ -966,7 +1037,7 @@ pub fn track_rails(centre: [f32; 3], radius: i32, depth: i32) -> Vec<Vec<[f32; 3
     let Ok(world) = WORLD.read() else {
         return Vec::new();
     };
-    let Some(world) = world.as_ref() else {
+    let Some(world) = world.as_ref().and_then(|world| world.at(centre)) else {
         return Vec::new();
     };
     let c = to_block(world.origin, centre).map(|v| v.floor() as i32);
@@ -1068,7 +1139,7 @@ pub fn missing_chunk_walls(centre: [f32; 3], radius: i32, depth: i32) -> Vec<[[f
     let Ok(world) = WORLD.read() else {
         return Vec::new();
     };
-    let Some(world) = world.as_ref() else {
+    let Some(world) = world.as_ref().and_then(|world| world.at(centre)) else {
         return Vec::new();
     };
     let c = to_block(world.origin, centre).map(|v| v.floor() as i32);
@@ -1133,8 +1204,8 @@ pub fn active() -> bool {
     WORLD.read().ok().is_some_and(|world| world.is_some())
 }
 
-pub fn chunks_ready_around(cx: i32, cz: i32, radius: i32) -> bool {
-    WORLD.read().ok().is_some_and(|world| world.as_ref().is_some_and(|w| w.has_chunks_around(cx, cz, radius)))
+pub fn chunks_ready_around(level: u8, cx: i32, cz: i32, radius: i32) -> bool {
+    WORLD.read().ok().is_some_and(|world| world.as_ref().and_then(|w| w.level(usize::from(level))).is_some_and(|w| w.has_chunks_around(cx, cz, radius)))
 }
 
 pub const RESPAWN_RADIUS: i32 = 10;
@@ -1142,19 +1213,19 @@ const SPAWN_SEARCH_UP: i32 = 8;
 const SPAWN_SEARCH_DOWN: i32 = 16;
 
 pub fn awaiting_ground(origin: [f32; 3]) -> bool {
-    WORLD.read().ok().is_some_and(|world| world.as_ref().is_some_and(|w| w.awaits_ground(origin)))
+    WORLD.read().ok().is_some_and(|world| world.as_ref().is_some_and(|w| w.at(origin).is_none_or(|level| level.awaits_ground(origin))))
 }
 
 pub(crate) fn spawn_clear_of(taken: impl Fn([f32; 3]) -> bool) -> [f32; 3] {
-    let spawn = [0.0; 3];
+    let spawn = spawn_point();
     if !taken(spawn) {
         return spawn;
     }
-    WORLD.read().ok().and_then(|world| world.as_ref().and_then(|w| w.free_spawn_spot(&taken))).unwrap_or(spawn)
+    level_at(spawn, |level| level.free_spawn_spot(spawn, &taken)).flatten().unwrap_or(spawn)
 }
 
 pub fn spawn_origin(sessionstate: &str) -> Option<[f32; 3]> {
-    spawn_origin_for(active(), sessionstate)
+    spawn_origin_for(active(), sessionstate).map(|_| spawn_point())
 }
 
 fn spawn_origin_for(active: bool, sessionstate: &str) -> Option<[f32; 3]> {
@@ -1181,16 +1252,9 @@ pub fn to_map(origin: [f64; 3], b: [f64; 3]) -> [f32; 3] {
     ]
 }
 
-impl VoxelWorld {
+impl Level<'_> {
     fn has_chunks_around(&self, cx: i32, cz: i32, radius: i32) -> bool {
         (cx - radius..=cx + radius).all(|x| (cz - radius..=cz + radius).all(|z| self.chunks.contains_key(&(x, z))))
-    }
-
-    fn switch(&mut self, origin: [f64; 3]) {
-        self.origin = origin;
-        self.chunks.clear();
-        self.shapes = vec![Vec::new()];
-        self.fluids = vec![0];
     }
 
     fn awaits_ground(&self, origin: [f32; 3]) -> bool {
@@ -1198,10 +1262,10 @@ impl VoxelWorld {
         !self.has_chunks_around(feet[0] >> 4, feet[2] >> 4, 0)
     }
 
-    fn free_spawn_spot(&self, taken: &impl Fn([f32; 3]) -> bool) -> Option<[f32; 3]> {
+    fn free_spawn_spot(&self, spawn: [f32; 3], taken: &impl Fn([f32; 3]) -> bool) -> Option<[f32; 3]> {
         let mins = [-HULL_HALF_WIDTH, -HULL_HALF_WIDTH, 0.0];
         let maxs = [HULL_HALF_WIDTH, HULL_HALF_WIDTH, STANCE_HEIGHTS[0]];
-        let spawn = self.origin.map(|c| c.floor() as i32);
+        let spawn = to_block(self.origin, spawn).map(|c| c.floor() as i32);
         (1..=RESPAWN_RADIUS)
             .flat_map(|r| (-r..=r).flat_map(move |dx| (-r..=r).map(move |dz| (dx, dz))).filter(move |&(dx, dz)| dx.abs().max(dz.abs()) == r))
             .find_map(|(dx, dz)| {
@@ -1218,6 +1282,9 @@ impl VoxelWorld {
     }
 
     fn shape_at(&self, x: i32, y: i32, z: i32) -> &[[f32; 6]] {
+        if y < self.wall[0] || y >= self.wall[1] {
+            return &FULL_BLOCK;
+        }
         let Some(chunk) = self.chunks.get(&(x >> 4, z >> 4)) else {
             return &[];
         };
@@ -1272,7 +1339,7 @@ struct Sweep {
     end_solid: bool,
 }
 
-impl VoxelWorld {
+impl Level<'_> {
     /// A block-space box `[lo, hi]` about `a` moved to `b`: the first hit as
     /// a fraction of the move and its normal, or whether it starts inside.
     fn sweep(&self, a: [f64; 3], b: [f64; 3], lo: [f64; 3], hi: [f64; 3], test_start: bool, mover: Option<Mover>) -> Sweep {
@@ -1366,26 +1433,14 @@ pub(crate) fn trace_as(start: [f32; 3], end: [f32; 3], mins: [f32; 3], maxs: [f3
         endpos: end,
         ..trace_iw4::Trace::default()
     };
-    let Ok(guard) = WORLD.read() else {
-        return open;
-    };
-    let Some(world) = guard.as_ref() else {
-        return open;
-    };
-    trace_in(world, start, end, mins, maxs, mover)
+    level_at(start, |world| trace_in(&world, start, end, mins, maxs, mover)).unwrap_or(open)
 }
 
 pub fn camera_reach(eye: [f32; 3], back: [f32; 3], distance: f32) -> f32 {
-    let Ok(guard) = WORLD.read() else {
-        return distance;
-    };
-    match guard.as_ref() {
-        Some(world) => camera_reach_in(world, eye, back, distance),
-        None => distance,
-    }
+    level_at(eye, |world| camera_reach_in(&world, eye, back, distance)).unwrap_or(distance)
 }
 
-fn camera_reach_in(world: &VoxelWorld, eye: [f32; 3], back: [f32; 3], distance: f32) -> f32 {
+fn camera_reach_in(world: &Level<'_>, eye: [f32; 3], back: [f32; 3], distance: f32) -> f32 {
     let mut reach = distance;
     for corner in 0..8 {
         let offset = [corner & 1, (corner >> 1) & 1, (corner >> 2) & 1].map(|bit| (bit * 2 - 1) as f32 * 0.1 * BLOCK);
@@ -1405,16 +1460,16 @@ fn camera_reach_in(world: &VoxelWorld, eye: [f32; 3], back: [f32; 3], distance: 
 }
 
 pub(crate) fn ground_within(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], drop: f32, mover: Option<Mover>) -> bool {
-    WORLD.read().ok().is_some_and(|guard| guard.as_ref().is_some_and(|world| ground_in(world, origin, mins, maxs, drop, mover)))
+    level_at(origin, |world| ground_in(&world, origin, mins, maxs, drop, mover)).unwrap_or(false)
 }
 
-fn ground_in(world: &VoxelWorld, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], drop: f32, mover: Option<Mover>) -> bool {
+fn ground_in(world: &Level<'_>, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], drop: f32, mover: Option<Mover>) -> bool {
     let below = [mins[0], mins[1], mins[2] - drop];
     let feet = [maxs[0], maxs[1], mins[2]];
     trace_in(world, origin, origin, below, feet, mover).startsolid != 0
 }
 
-fn trace_in(world: &VoxelWorld, start: [f32; 3], end: [f32; 3], mins: [f32; 3], maxs: [f32; 3], mover: Option<Mover>) -> trace_iw4::Trace {
+fn trace_in(world: &Level<'_>, start: [f32; 3], end: [f32; 3], mins: [f32; 3], maxs: [f32; 3], mover: Option<Mover>) -> trace_iw4::Trace {
     let open = trace_iw4::Trace {
         fraction: 1.0,
         endpos: end,
@@ -1552,8 +1607,7 @@ fn block_bounds(mins: [f32; 3], maxs: [f32; 3]) -> ([f64; 3], [f64; 3]) {
 }
 
 pub fn body_box(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> Option<[f64; 6]> {
-    let world = WORLD.read().ok()?;
-    let at = to_block(world.as_ref()?.origin, origin);
+    let at = to_block(level_at(origin, |level| level.origin)?, origin);
     let (lo, hi) = block_bounds(mins, maxs);
     Some([at[0] + lo[0], at[1] + lo[1], at[2] + lo[2], at[0] + hi[0], at[1] + hi[1], at[2] + hi[2]])
 }
@@ -1564,7 +1618,7 @@ pub fn boxes_meet(a: [f64; 6], b: [f64; 6]) -> bool {
 
 pub(crate) fn push_out(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], mover: Option<Mover>) -> Option<[f32; 3]> {
     let guard = WORLD.read().ok()?;
-    let world = guard.as_ref()?;
+    let world = guard.as_ref()?.at(origin)?;
     let at = to_block(world.origin, origin);
     let (lo, hi) = block_bounds(mins, maxs);
     let body_lo = std::array::from_fn(|k| at[k] + lo[k]);
@@ -1573,7 +1627,7 @@ pub(crate) fn push_out(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], mover: 
     Some(to_map(world.origin, std::array::from_fn(|k| at[k] + d[k])))
 }
 
-impl VoxelWorld {
+impl Level<'_> {
     fn overlapping(&self, lo: [f64; 3], hi: [f64; 3], mover: Option<Mover>) -> Vec<[f64; 6]> {
         const INSIDE: f64 = 1e-4;
         let mut out = Vec::new();
@@ -1731,7 +1785,7 @@ pub fn water(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], view_height: f32)
     let Ok(guard) = WORLD.read() else {
         return movement_iw4::WaterSample::default();
     };
-    let Some(world) = guard.as_ref() else {
+    let Some(world) = guard.as_ref().and_then(|world| world.at(origin)) else {
         return movement_iw4::WaterSample::default();
     };
     let (lo, hi) = block_bounds(mins, maxs);
@@ -1742,7 +1796,7 @@ pub fn lava(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> f32 {
     let Ok(guard) = WORLD.read() else {
         return 0.0;
     };
-    let Some(world) = guard.as_ref() else {
+    let Some(world) = guard.as_ref().and_then(|world| world.at(origin)) else {
         return 0.0;
     };
     let (lo, hi) = block_bounds(mins, maxs);
@@ -1757,14 +1811,14 @@ pub(crate) fn climb_as(origin: [f32; 3], mover: Option<Mover>) -> movement_iw4::
     let Ok(guard) = WORLD.read() else {
         return movement_iw4::ClimbSample::default();
     };
-    guard.as_ref().map_or_else(movement_iw4::ClimbSample::default, |world| world.climb_sample(to_block(world.origin, origin), mover))
+    guard.as_ref().and_then(|world| world.at(origin)).map_or_else(movement_iw4::ClimbSample::default, |world| world.climb_sample(to_block(world.origin, origin), mover))
 }
 
 pub fn eye_in_lava(origin: [f32; 3], view_height: f32) -> bool {
     let Ok(guard) = WORLD.read() else {
         return false;
     };
-    let Some(world) = guard.as_ref() else {
+    let Some(world) = guard.as_ref().and_then(|world| world.at(origin)) else {
         return false;
     };
     let mut eye = to_block(world.origin, origin);
@@ -1774,7 +1828,7 @@ pub fn eye_in_lava(origin: [f32; 3], view_height: f32) -> bool {
 
 pub fn stuck(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> Option<[f32; 3]> {
     let guard = WORLD.read().ok()?;
-    let world = guard.as_ref()?;
+    let world = guard.as_ref()?.at(origin)?;
     let (lo, hi) = block_bounds(mins, maxs);
     world.stuck_in(to_block(world.origin, origin), lo, hi)
 }
@@ -1783,14 +1837,32 @@ pub fn touches_wall(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> bool {
     let Ok(guard) = WORLD.read() else {
         return false;
     };
-    guard.as_ref().is_some_and(|world| touches_wall_in(world, origin, mins, maxs))
+    guard.as_ref().and_then(|world| world.at(origin)).is_some_and(|world| touches_wall_in(&world, origin, mins, maxs))
 }
 
-fn touches_wall_in(world: &VoxelWorld, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> bool {
+fn touches_wall_in(world: &Level<'_>, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> bool {
     let reach = WALL_REACH * BLOCK;
     let wide = [mins[0] - reach, mins[1] - reach, mins[2] + reach];
     let tall = [maxs[0] + reach, maxs[1] + reach, maxs[2] - reach];
     trace_in(world, origin, origin, wide, tall, None).startsolid != 0
+}
+
+pub(crate) fn kept_in_walls(from: [f32; 3], z: f32, height: f32) -> Option<f32> {
+    level_at(from, |level| level.kept_in_walls(z, height)).flatten()
+}
+
+impl Level<'_> {
+    fn kept_in_walls(&self, z: f32, height: f32) -> Option<f32> {
+        let at = |y: i32| ((f64::from(y) - self.origin[1]) * f64::from(BLOCK)) as f32;
+        let (floor, ceiling) = (at(self.wall[0]), at(self.wall[1]) - height);
+        if z < floor {
+            Some(floor)
+        } else if z > ceiling {
+            Some(ceiling)
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1813,14 +1885,23 @@ mod tests {
         for &([x, y, z], shape) in blocks {
             chunk.shapes[(((y + 16) * 16 + z) * 16 + x) as usize] = shape;
         }
-        let mut chunks = HashMap::new();
-        chunks.insert((0, 0), chunk);
-        VoxelWorld {
-            brushes: 0,
-            origin: [0.0; 3],
-            chunks,
+        let mut w = VoxelWorld {
             shapes: vec![Vec::new(), vec![FULL], vec![FENCE], Vec::new(), Vec::new()],
             fluids: vec![0, 0, 0, WATER | 8, WATER | 4],
+            ..VoxelWorld::default()
+        };
+        w.set_level(0, [0.0; 3], -64, 384);
+        w.only_mut().chunks.insert((0, 0), chunk);
+        w
+    }
+
+    impl VoxelWorld {
+        fn only(&self) -> Level<'_> {
+            self.level(0).expect("the test level")
+        }
+
+        fn only_mut(&mut self) -> &mut VoxelLevel {
+            self.levels[0].as_mut().expect("the test level")
         }
     }
 
@@ -1830,17 +1911,16 @@ mod tests {
     #[test]
     fn a_voxel_shot_carries_its_attacker_and_every_event_its_level() {
         let mut w = world(&[]);
-        w.origin = [0.5, 64.0, 0.5];
+        w.only_mut().origin = [0.5, 64.0, 0.5];
         let end = [54.0, -18.0, 72.0];
-        let shot = w.shot(end, [-1.0, 0.0, 0.0], 30.0, Some(3));
+        let shot = w.only().shot(end, [-1.0, 0.0, 0.0], 30.0, Some(3));
         assert!(matches!(shot, VoxelEvent::Shot { level: 0, block: [2, 66, 1], attacker: Some(3), .. }), "{shot:?}");
-        let melee = w.shot(end, [-1.0, 0.0, 0.0], 50.0, None);
+        let melee = w.only().shot(end, [-1.0, 0.0, 0.0], 50.0, None);
         assert!(matches!(melee, VoxelEvent::Shot { level: 0, attacker: None, .. }), "{melee:?}");
-        let mob = w.mob_shot(9, 12.0, [0.0; 3], Some(1));
+        let mob = w.only().mob_shot(9, 12.0, [0.0; 3], Some(1));
         assert!(matches!(mob, VoxelEvent::MobShot { level: 0, key: 9, attacker: Some(1), .. }), "{mob:?}");
-        let ray = w.ray([0.0; 3], end, 20.0, Some(2));
+        let ray = w.only().ray([0.0; 3], end, 20.0, Some(2));
         assert!(matches!(ray, VoxelEvent::Ray { level: 0, attacker: Some(2), .. }), "{ray:?}");
-        let events = [shot, melee, mob, ray, w.explosion(end, 4.0), w.mob_blast(9, 40.0, end, 1.0, Some(1), 0)];
         let level = |event: &VoxelEvent| match *event {
             VoxelEvent::Shot { level, .. }
             | VoxelEvent::Explosion { level, .. }
@@ -1848,22 +1928,103 @@ mod tests {
             | VoxelEvent::MobBlast { level, .. }
             | VoxelEvent::Ray { level, .. } => level,
         };
-        assert!(events.iter().all(|event| level(event) == ONLY_LEVEL), "{events:?}");
+        let events = [shot, melee, mob, ray, w.only().explosion(end, 4.0), w.only().mob_blast(9, 40.0, end, 1.0, Some(1), 0)];
+        assert!(events.iter().all(|event| level(event) == 0), "{events:?}");
+        w.set_level(2, [0.5, -1140.0, 0.5], 0, 256);
+        let up = [54.0, -18.0, 45_000.0];
+        let end = w.at(up).expect("the End's band");
+        let shot = end.shot(up, [-1.0, 0.0, 0.0], 30.0, Some(3));
+        assert!(matches!(shot, VoxelEvent::Shot { level: 2, block: [2, 110, 1], .. }), "{shot:?}");
+        let events = [shot, end.mob_shot(9, 12.0, up, Some(1)), end.ray(up, up, 20.0, None), end.explosion(up, 4.0), end.mob_blast(9, 40.0, up, 1.0, None, 0)];
+        assert!(events.iter().all(|event| level(event) == 2), "{events:?}");
+        assert!(w.at([0.0, 0.0, -45_000.0]).is_none(), "no Nether level, so nothing happens in its band");
     }
 
     #[test]
-    fn a_level_switch_drops_the_old_level_and_waits_for_ground_at_the_new_origin() {
+    fn every_dimension_keeps_its_own_level_and_dropping_one_leaves_the_others() {
         let mut w = world(&[([1, 0, 1], 1)]);
         w.brushes = 7;
-        assert!(!w.awaits_ground([0.0; 3]));
-        w.switch([100.5, 49.0, 0.5]);
-        assert!(w.chunks.is_empty());
-        assert_eq!(w.origin, [100.5, 49.0, 0.5]);
-        assert_eq!((w.shapes.len(), w.fluids.len()), (1, 1));
-        assert!(w.shapes[0].is_empty());
-        assert!(w.awaits_ground([0.0; 3]));
-        assert_eq!(to_block(w.origin, [36.0, 0.0, 0.0]), [101.5, 49.0, 0.5]);
+        w.set_level(1, [0.5, 1314.0, 0.5], 0, 256);
+        assert!(!w.only().awaits_ground([0.0; 3]));
+        let nether = w.at([0.0, 0.0, -50_000.0]).expect("the Nether's band");
+        assert_eq!((nether.index, nether.origin, nether.wall), (1, [0.5, 1314.0, 0.5], [-128, 512]));
+        assert!(nether.awaits_ground([0.0, 0.0, -50_000.0]), "its chunks have not come yet");
+        assert_eq!(w.only().wall, [-192, 576]);
+        w.levels[0] = None;
+        assert!(w.at([0.0; 3]).is_none());
+        assert!(w.at([0.0, 0.0, -50_000.0]).is_some(), "the Nether stays");
+        assert_eq!((w.shapes.len(), w.fluids.len()), (5, 5), "one shape table for every level");
         assert_eq!(w.brushes, 7, "the map's brushes stay");
+    }
+
+    #[test]
+    fn the_three_bands_cover_their_own_heights_and_nothing_past_them() {
+        assert_eq!(band_of(0.0), Some(0));
+        assert_eq!(band_of(-20_000.0), Some(0));
+        assert_eq!(band_of(-20_000.5), Some(1));
+        assert_eq!(band_of(19_999.0), Some(0));
+        assert_eq!(band_of(20_000.0), Some(2));
+        assert_eq!(band_of(-60_000.0), Some(1));
+        assert_eq!(band_of(59_999.0), Some(2));
+        assert_eq!(band_of(60_000.0), None);
+        assert_eq!(band_of(-60_001.0), None);
+        for (index, band) in BANDS.iter().enumerate() {
+            assert_eq!(band_of(band[0]), Some(index));
+            assert_eq!(band_of((band[0] + band[1]) / 2.0), Some(index));
+        }
+    }
+
+    #[test]
+    fn a_trace_in_one_band_never_hits_another_bands_blocks() {
+        let mut w = world(&[]);
+        w.set_level(1, [0.5, 1314.0, 0.5], 0, 256);
+        let mut chunk = VoxelChunk { min_y: 0, height: 256, shapes: vec![0; 256 * 256] };
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.shapes[((10 * 16 + z) * 16 + x) as usize] = 1;
+            }
+        }
+        w.levels[1].as_mut().expect("the Nether").chunks.insert((0, 0), chunk);
+        let nether = w.at([0.0, 0.0, -50_000.0]).expect("the Nether's band");
+        let above = to_map(nether.origin, [4.5, 20.0, 4.5]);
+        let below = to_map(nether.origin, [4.5, 0.0, 4.5]);
+        let hit = trace_in(&nether, above, below, [0.0; 3], [0.0; 3], None);
+        assert!(hit.fraction < 1.0 && (to_block(nether.origin, hit.endpos)[1] - 11.0).abs() < 0.01, "{hit:?}");
+        let over = to_map(w.only().origin, [4.5, 20.0, 4.5]);
+        let under = to_map(w.only().origin, [4.5, 0.0, 4.5]);
+        assert_eq!(trace_in(&w.only(), over, under, [0.0; 3], [0.0; 3], None).fraction, 1.0, "the Nether's floor is not in the overworld");
+    }
+
+    #[test]
+    fn the_wall_stops_a_trace_past_its_levels_range() {
+        let mut w = world(&[]);
+        w.set_level(1, [0.5, 1314.0, 0.5], 0, 256);
+        let nether = w.at([0.0, 0.0, -50_000.0]).expect("the Nether's band");
+        let start = to_map(nether.origin, [4.5, 64.0, 4.5]);
+        let down = trace_in(&nether, start, [start[0], start[1], -60_000.0], [0.0; 3], [0.0; 3], None);
+        assert!(down.fraction < 1.0, "{down:?}");
+        assert!((to_block(nether.origin, down.endpos)[1] + 128.0).abs() < 0.01, "the top of the wall at y -128: {down:?}");
+        assert!(down.endpos[2] > BANDS[1][0]);
+        let up = trace_in(&nether, start, [start[0], start[1], -20_001.0], [0.0; 3], [0.0; 3], None);
+        assert!((to_block(nether.origin, up.endpos)[1] - 512.0).abs() < 0.01, "the underside of the wall at y 512: {up:?}");
+        assert_eq!(nether.shape_at(4, -129, 4), &FULL_BLOCK);
+        assert_eq!(nether.shape_at(4, 512, 4), &FULL_BLOCK);
+        assert!(nether.shape_at(4, -128, 4).is_empty() && nether.shape_at(4, 511, 4).is_empty());
+        let open = to_map(w.only().origin, [4.5, 20.0, 4.5]);
+        assert_eq!(trace_in(&w.only(), open, [open[0], open[1], open[2] - 3000.0], [0.0; 3], [0.0; 3], None).fraction, 1.0, "the overworld's own wall is further down");
+    }
+
+    #[test]
+    fn a_flier_without_collision_stays_between_the_walls() {
+        let mut w = world(&[]);
+        w.set_level(2, [0.5, -1140.0, 0.5], 0, 256);
+        let end = w.at([0.0, 0.0, 45_000.0]).expect("the End's band");
+        let floor = to_map(end.origin, [0.0, -128.0, 0.0])[2];
+        let ceiling = to_map(end.origin, [0.0, 512.0, 0.0])[2];
+        assert_eq!(end.kept_in_walls(floor - 5.0, 64.8), Some(floor));
+        assert_eq!(end.kept_in_walls(ceiling - 10.0, 64.8), Some(ceiling - 64.8));
+        assert_eq!(end.kept_in_walls(45_000.0, 64.8), None);
+        assert_eq!(end.kept_in_walls(floor, 64.8), None);
     }
 
     #[test]
@@ -1931,7 +2092,7 @@ mod tests {
 
     fn sample(w: &VoxelWorld, feet: [f64; 3], eye: f64) -> movement_iw4::WaterSample {
         let half = f64::from(HULL_HALF_WIDTH / BLOCK);
-        w.water_sample(feet, [-half, 0.0, -half], [half, 70.0 / 36.0, half], eye)
+        w.only().water_sample(feet, [-half, 0.0, -half], [half, 70.0 / 36.0, half], eye)
     }
 
     #[test]
@@ -1962,38 +2123,39 @@ mod tests {
     #[test]
     fn chunks_ready_around_needs_every_column() {
         let mut w = VoxelWorld::default();
+        w.set_level(0, [0.0; 3], 0, 1);
         let column = || VoxelChunk { min_y: 0, height: 1, shapes: vec![0; 256] };
         for x in -3..=3 {
             for z in -3..=3 {
                 if (x, z) != (2, -3) {
-                    w.chunks.insert((x, z), column());
+                    w.only_mut().chunks.insert((x, z), column());
                 }
             }
         }
-        assert!(!w.has_chunks_around(0, 0, 3));
-        assert!(w.has_chunks_around(0, 0, 2));
-        assert!(w.has_chunks_around(-1, 1, 0));
-        assert!(!w.has_chunks_around(2, -3, 0));
-        w.chunks.insert((2, -3), column());
-        assert!(w.has_chunks_around(0, 0, 3));
-        assert!(!w.has_chunks_around(1, 0, 3));
+        assert!(!w.only().has_chunks_around(0, 0, 3));
+        assert!(w.only().has_chunks_around(0, 0, 2));
+        assert!(w.only().has_chunks_around(-1, 1, 0));
+        assert!(!w.only().has_chunks_around(2, -3, 0));
+        w.only_mut().chunks.insert((2, -3), column());
+        assert!(w.only().has_chunks_around(0, 0, 3));
+        assert!(!w.only().has_chunks_around(1, 0, 3));
     }
 
     #[test]
     fn a_player_waits_for_ground_wherever_its_chunk_is_missing() {
         let mut w = world(&[]);
-        w.origin = [7.5, 64.0, 3.5];
-        assert!(!w.awaits_ground([0.0; 3]));
-        assert!(!w.awaits_ground(to_map(w.origin, [15.9, -200.0, 0.1])));
-        assert!(!w.awaits_ground(to_map(w.origin, [7.5, 64.0, 13.9])));
-        assert!(w.awaits_ground(to_map(w.origin, [-0.5, 64.0, 8.0])));
-        assert!(w.awaits_ground(to_map(w.origin, [7.5, 64.0, -7.0])));
-        assert!(w.awaits_ground(to_map(w.origin, [8.0, 64.0, 16.5])));
-        assert!(w.awaits_ground(to_map(w.origin, [40.0, 64.0, 3.5])));
-        assert!(w.awaits_ground(to_map(w.origin, [2000.5, 120.0, 2000.5])));
-        w.chunks.insert((125, 125), VoxelChunk { min_y: 0, height: 1, shapes: vec![0; 256] });
-        assert!(!w.awaits_ground(to_map(w.origin, [2000.5, 120.0, 2000.5])));
-        assert!(w.awaits_ground(to_map(w.origin, [2016.5, 120.0, 2000.5])));
+        w.only_mut().origin = [7.5, 64.0, 3.5];
+        assert!(!w.only().awaits_ground([0.0; 3]));
+        assert!(!w.only().awaits_ground(to_map(w.only().origin, [15.9, -200.0, 0.1])));
+        assert!(!w.only().awaits_ground(to_map(w.only().origin, [7.5, 64.0, 13.9])));
+        assert!(w.only().awaits_ground(to_map(w.only().origin, [-0.5, 64.0, 8.0])));
+        assert!(w.only().awaits_ground(to_map(w.only().origin, [7.5, 64.0, -7.0])));
+        assert!(w.only().awaits_ground(to_map(w.only().origin, [8.0, 64.0, 16.5])));
+        assert!(w.only().awaits_ground(to_map(w.only().origin, [40.0, 64.0, 3.5])));
+        assert!(w.only().awaits_ground(to_map(w.only().origin, [2000.5, 120.0, 2000.5])));
+        w.only_mut().chunks.insert((125, 125), VoxelChunk { min_y: 0, height: 1, shapes: vec![0; 256] });
+        assert!(!w.only().awaits_ground(to_map(w.only().origin, [2000.5, 120.0, 2000.5])));
+        assert!(w.only().awaits_ground(to_map(w.only().origin, [2016.5, 120.0, 2000.5])));
     }
 
     #[test]
@@ -2006,13 +2168,13 @@ mod tests {
         }
         blocks.push(([6, 11, 6], SOURCE));
         let mut w = world(&blocks);
-        w.origin = [7.5, 11.0, 7.5];
+        w.only_mut().origin = [7.5, 11.0, 7.5];
         let nobody = |_: [f32; 3]| false;
-        let spot = w.free_spawn_spot(&nobody).unwrap();
+        let spot = w.only().free_spawn_spot([0.0; 3], &nobody).unwrap();
         assert_eq!([spot[0], spot[1]], [-36.0, 0.0]);
         assert!(spot[2].abs() < 0.2, "{spot:?}");
         let crowded = |spot: [f32; 3]| crate::spawn::occupied(&[[-36.0, 0.0, 0.0], [-36.0, -36.0, 0.0]], spot);
-        assert_eq!(w.free_spawn_spot(&crowded).map(|s| [s[0], s[1]]), Some([0.0, 36.0]));
+        assert_eq!(w.only().free_spawn_spot([0.0; 3], &crowded).map(|s| [s[0], s[1]]), Some([0.0, 36.0]));
     }
 
     #[test]
@@ -2039,15 +2201,15 @@ mod tests {
         w.fluids.extend([LAVA | 8, LAVA | 2]);
         let half = f64::from(HULL_HALF_WIDTH / BLOCK);
         let (lo, hi) = ([-half, 0.0, -half], [half, 1.8, half]);
-        let deep = w.fluid_depth([4.5, 1.0, 4.5], lo, hi, LAVA);
+        let deep = w.only().fluid_depth([4.5, 1.0, 4.5], lo, hi, LAVA);
         assert!((deep - (1.0 + 8.0 / 9.0 - 0.001)).abs() < 1e-9, "{deep}");
         assert_eq!(sample(&w, [4.5, 1.0, 4.5], 60.0 / 36.0), movement_iw4::WaterSample::default());
-        let shallow = w.fluid_depth([8.5, 1.0, 8.5], lo, hi, LAVA);
+        let shallow = w.only().fluid_depth([8.5, 1.0, 8.5], lo, hi, LAVA);
         assert!((shallow - (2.0 / 9.0 - 0.001)).abs() < 1e-9, "{shallow}");
         assert!(shallow <= 0.4);
-        assert!(w.fluid_covers([4.5, 2.85, 4.5], LAVA) && !w.fluid_covers([4.5, 2.95, 4.5], LAVA));
-        assert!(!w.fluid_covers([4.5, 1.5, 4.5], WATER) && !w.fluid_covers([8.5, 1.5, 8.5], LAVA));
-        assert_eq!(pool(2).fluid_depth([8.5, 1.0, 8.5], lo, hi, LAVA), 0.0);
+        assert!(w.only().fluid_covers([4.5, 2.85, 4.5], LAVA) && !w.only().fluid_covers([4.5, 2.95, 4.5], LAVA));
+        assert!(!w.only().fluid_covers([4.5, 1.5, 4.5], WATER) && !w.only().fluid_covers([8.5, 1.5, 8.5], LAVA));
+        assert_eq!(pool(2).only().fluid_depth([8.5, 1.0, 8.5], lo, hi, LAVA), 0.0);
     }
 
     #[test]
@@ -2059,13 +2221,13 @@ mod tests {
         w.fluids.extend([STUCK_BERRY_BUSH, STUCK_COBWEB]);
         let half = f64::from(HULL_HALF_WIDTH / BLOCK);
         let (lo, hi) = ([-half, 0.0, -half], [half, 1.8, half]);
-        assert_eq!(w.stuck_in([4.5, 1.0, 4.5], lo, hi), Some(BERRY_BUSH_SLOWDOWN));
-        assert_eq!(w.stuck_in([4.5, 2.0, 4.5], lo, hi), None, "standing over a bush is not in it");
-        assert_eq!(w.stuck_in([5.3, 1.0, 4.5], lo, hi), None, "touching a bush is not being in it");
-        assert_eq!(w.stuck_in([5.29, 1.0, 4.5], lo, hi), Some(BERRY_BUSH_SLOWDOWN));
-        assert_eq!(w.stuck_in([4.5, -0.7, 4.5], lo, hi), Some(BERRY_BUSH_SLOWDOWN), "the head counts too");
-        assert_eq!(w.stuck_in([8.5, 1.5, 8.9], lo, hi), Some(COBWEB_SLOWDOWN), "a web holds tighter than a bush");
-        assert_eq!(w.stuck_in([12.5, 1.0, 12.5], lo, hi), None);
+        assert_eq!(w.only().stuck_in([4.5, 1.0, 4.5], lo, hi), Some(BERRY_BUSH_SLOWDOWN));
+        assert_eq!(w.only().stuck_in([4.5, 2.0, 4.5], lo, hi), None, "standing over a bush is not in it");
+        assert_eq!(w.only().stuck_in([5.3, 1.0, 4.5], lo, hi), None, "touching a bush is not being in it");
+        assert_eq!(w.only().stuck_in([5.29, 1.0, 4.5], lo, hi), Some(BERRY_BUSH_SLOWDOWN));
+        assert_eq!(w.only().stuck_in([4.5, -0.7, 4.5], lo, hi), Some(BERRY_BUSH_SLOWDOWN), "the head counts too");
+        assert_eq!(w.only().stuck_in([8.5, 1.5, 8.9], lo, hi), Some(COBWEB_SLOWDOWN), "a web holds tighter than a bush");
+        assert_eq!(w.only().stuck_in([12.5, 1.0, 12.5], lo, hi), None);
     }
 
     #[test]
@@ -2088,16 +2250,16 @@ mod tests {
         let (mins, maxs) = ([-15.0, -15.0, 0.0], [15.0, 15.0, 70.0]);
         let above = to_map([0.0; 3], [4.5, 1.0 + 0.25 / 36.0, 4.5]);
         let below = to_map([0.0; 3], [4.5, 1.0 - 0.25 / 36.0, 4.5]);
-        let ground = trace_in(&w, above, below, mins, maxs, None);
+        let ground = trace_in(&w.only(), above, below, mins, maxs, None);
         assert!(ground.fraction < 1.0);
         assert_eq!(ground.walkable, 1);
         assert_eq!((ground.hit_type, ground.hit_id), (trace_iw4::HITTYPE_ENTITY, trace_iw4::ENTITYNUM_WORLD));
         let sunk = to_map([0.0; 3], [4.5, 0.5, 4.5]);
-        let inside = trace_in(&w, sunk, sunk, mins, maxs, None);
+        let inside = trace_in(&w.only(), sunk, sunk, mins, maxs, None);
         assert_eq!(inside.startsolid, 1);
         assert_eq!((inside.hit_type, inside.hit_id), (trace_iw4::HITTYPE_ENTITY, trace_iw4::ENTITYNUM_WORLD));
         let (high, low) = (to_map([0.0; 3], [10.5, 5.0, 10.5]), to_map([0.0; 3], [10.5, 4.0, 10.5]));
-        let air = trace_in(&w, high, low, mins, maxs, None);
+        let air = trace_in(&w.only(), high, low, mins, maxs, None);
         assert_eq!((air.fraction, air.hit_type), (1.0, 0));
     }
 
@@ -2127,13 +2289,13 @@ mod tests {
         assert!((vanilla.heights[1] - 54.0).abs() < 1e-4);
         let drop = |b: movement_iw4::MoveBounds| {
             let (high, low) = (to_map([0.0; 3], [4.6, 6.0, 4.5]), to_map([0.0; 3], [4.6, 2.0, 4.5]));
-            trace_in(&w, high, low, b.mins, b.maxs, None).fraction
+            trace_in(&w.only(), high, low, b.mins, b.maxs, None).fraction
         };
         assert_eq!(drop(vanilla), 1.0);
         assert!(drop(mw2) < 1.0);
         let stand = |b: movement_iw4::MoveBounds| {
             let at = to_map([0.0; 3], [10.5, 1.01, 10.5]);
-            trace_in(&w, at, at, b.mins, b.maxs, None).startsolid
+            trace_in(&w.only(), at, at, b.mins, b.maxs, None).startsolid
         };
         assert_eq!(stand(vanilla), 0);
         assert_eq!(stand(mw2), 1);
@@ -2146,14 +2308,14 @@ mod tests {
     fn a_body_clear_of_blocks_is_left_alone() {
         let w = world(&[([4, 0, 4], 1)]);
         let (lo, hi) = body([4.5, 1.0 + 1e-3, 4.5], 70.0 / 36.0);
-        assert_eq!(w.way_out(lo, hi, None), None);
+        assert_eq!(w.only().way_out(lo, hi, None), None);
     }
 
     #[test]
     fn a_body_sunk_into_a_block_below_is_lifted_onto_it() {
         let w = world(&[([4, 0, 4], 1)]);
         let (lo, hi) = body([4.5, 0.9, 4.5], 70.0 / 36.0);
-        let d = w.way_out(lo, hi, None).expect("a way out");
+        let d = w.only().way_out(lo, hi, None).expect("a way out");
         assert_eq!((d[0], d[2]), (0.0, 0.0));
         assert!((0.9 + d[1] - (1.0 + PUSH_GAP)).abs() < 1e-9);
     }
@@ -2162,17 +2324,17 @@ mod tests {
     fn a_lift_blocked_overhead_goes_sideways_instead() {
         let w = world(&[([4, 0, 4], 1), ([4, 2, 4], 1), ([4, 3, 4], 1)]);
         let (lo, hi) = body([4.3, 0.95, 4.5], 1.2);
-        let d = w.way_out(lo, hi, None).expect("a way out");
+        let d = w.only().way_out(lo, hi, None).expect("a way out");
         assert_eq!(d[1], 0.0);
         assert!(d[0] < 0.0);
-        assert!(w.overlapping(std::array::from_fn(|k| lo[k] + d[k]), std::array::from_fn(|k| hi[k] + d[k]), None).is_empty());
+        assert!(w.only().overlapping(std::array::from_fn(|k| lo[k] + d[k]), std::array::from_fn(|k| hi[k] + d[k]), None).is_empty());
     }
 
     #[test]
     fn the_shortest_way_out_wins() {
         let w = world(&[([5, 1, 4], 1), ([5, 2, 4], 1)]);
         let (lo, hi) = body([4.75, 1.0, 4.5], 70.0 / 36.0);
-        let d = w.way_out(lo, hi, None).expect("a way out");
+        let d = w.only().way_out(lo, hi, None).expect("a way out");
         assert!(d[0] < 0.0 && d[0] > -0.1);
         assert_eq!((d[1], d[2]), (0.0, 0.0));
     }
@@ -2181,8 +2343,8 @@ mod tests {
     fn a_fence_taller_than_its_cell_still_counts() {
         let w = world(&[([4, 0, 4], 2)]);
         let (lo, hi) = body([4.5, 1.2, 4.5], 70.0 / 36.0);
-        assert_eq!(w.overlapping(lo, hi, None).len(), 1);
-        let d = w.way_out(lo, hi, None).expect("a way out");
+        assert_eq!(w.only().overlapping(lo, hi, None).len(), 1);
+        let d = w.only().way_out(lo, hi, None).expect("a way out");
         assert!((1.2 + d[1] - (1.5 + PUSH_GAP)).abs() < 1e-9);
     }
 
@@ -2198,14 +2360,14 @@ mod tests {
         }
         let w = world(&blocks);
         let (lo, hi) = body([4.5, 1.0, 4.5], 70.0 / 36.0);
-        assert_eq!(w.way_out(lo, hi, None), None);
+        assert_eq!(w.only().way_out(lo, hi, None), None);
     }
 
     #[test]
     fn a_head_in_the_ceiling_goes_down_not_through_it() {
         let w = world(&[([4, 0, 4], 1), ([4, 3, 4], 1)]);
         let (lo, hi) = body([4.5, 1.2, 4.5], 70.0 / 36.0);
-        let d = w.way_out(lo, hi, None).expect("a way out");
+        let d = w.only().way_out(lo, hi, None).expect("a way out");
         assert!(d[1] < 0.0 && d[1] > -0.2, "{d:?}");
         let mut tunnel = Vec::new();
         for z in 0..9 {
@@ -2218,7 +2380,7 @@ mod tests {
         }
         let w = world(&tunnel);
         let (lo, hi) = body([4.5, 0.0, 4.5], 50.0 / 36.0);
-        assert_eq!(w.way_out(lo, hi, None), None);
+        assert_eq!(w.only().way_out(lo, hi, None), None);
     }
 
     #[test]
@@ -2226,10 +2388,10 @@ mod tests {
         let w = world(&[([4, 0, 4], 1), ([5, 1, 4], 1), ([5, 2, 4], 1)]);
         let (mins, maxs) = player_hull(&playerstate_iw4::PlayerState::ZERO);
         let at = |x: f64| to_map([0.0; 3], [x, 1.0 + 1e-3, 4.5]);
-        assert!(touches_wall_in(&w, at(4.7 - 0.125 / 36.0), mins, maxs));
-        assert!(!touches_wall_in(&w, at(4.5), mins, maxs));
-        assert!(!touches_wall_in(&w, to_map([0.0; 3], [4.5, 1.0, 4.5]), mins, maxs));
-        assert!(!touches_wall_in(&w, to_map([0.0; 3], [10.5, 5.0, 10.5]), mins, maxs));
+        assert!(touches_wall_in(&w.only(), at(4.7 - 0.125 / 36.0), mins, maxs));
+        assert!(!touches_wall_in(&w.only(), at(4.5), mins, maxs));
+        assert!(!touches_wall_in(&w.only(), to_map([0.0; 3], [4.5, 1.0, 4.5]), mins, maxs));
+        assert!(!touches_wall_in(&w.only(), to_map([0.0; 3], [10.5, 5.0, 10.5]), mins, maxs));
     }
 
     #[test]
@@ -2264,7 +2426,7 @@ mod tests {
 
     fn drop_onto(w: &VoxelWorld, from: f64, to: f64, who: Option<Mover>) -> f32 {
         let (high, low) = (to_map([0.0; 3], [4.5, from, 4.5]), to_map([0.0; 3], [4.5, to, 4.5]));
-        trace_in(w, high, low, HULL.0, HULL.1, who).fraction
+        trace_in(&w.only(), high, low, HULL.0, HULL.1, who).fraction
     }
 
     #[test]
@@ -2285,11 +2447,11 @@ mod tests {
         let w = scaffolding(&[([4, 0, 4], 1), ([5, 1, 4], TOWER), ([5, 2, 4], TOWER)]);
         let feet = 1.0 + 0.25 / 36.0;
         let (from, to) = (to_map([0.0; 3], [4.5, feet, 4.5]), to_map([0.0; 3], [5.5, feet, 4.5]));
-        assert_eq!(trace_in(&w, from, to, HULL.0, HULL.1, mover(feet, false)).fraction, 1.0);
-        assert!(trace_in(&w, from, to, HULL.0, HULL.1, None).fraction < 1.0);
+        assert_eq!(trace_in(&w.only(), from, to, HULL.0, HULL.1, mover(feet, false)).fraction, 1.0);
+        assert!(trace_in(&w.only(), from, to, HULL.0, HULL.1, None).fraction < 1.0);
         let (lo, hi) = body([5.5, feet, 4.5], 1.8);
-        assert_eq!(w.way_out(lo, hi, mover(feet, false)), None);
-        assert!(w.way_out(lo, hi, None).is_some());
+        assert_eq!(w.only().way_out(lo, hi, mover(feet, false)), None);
+        assert!(w.only().way_out(lo, hi, None).is_some());
     }
 
     #[test]
@@ -2298,7 +2460,7 @@ mod tests {
         assert!((drop_onto(&w, 3.5, 3.0, mover(3.5, false)) - 0.75).abs() < 0.01);
         assert!(drop_onto(&w, 4.5, 3.0, mover(4.5, true)) < 1.0);
         let rising = (to_map([0.0; 3], [4.5, 1.0, 4.5]), to_map([0.0; 3], [4.5, 3.5, 4.5]));
-        assert_eq!(trace_in(&w, rising.0, rising.1, HULL.0, HULL.1, mover(1.0, false)).fraction, 1.0);
+        assert_eq!(trace_in(&w.only(), rising.0, rising.1, HULL.0, HULL.1, mover(1.0, false)).fraction, 1.0);
         let tower = scaffolding(&[([4, 3, 4], TOWER)]);
         assert_eq!(drop_onto(&tower, 3.5, 3.0, mover(3.5, false)), 1.0);
     }
@@ -2306,12 +2468,12 @@ mod tests {
     #[test]
     fn the_block_at_the_feet_decides_climbing() {
         let w = scaffolding(&[([4, 1, 4], TOWER), ([6, 1, 6], LADDER)]);
-        let tower = w.climb_sample([4.5, 1.2, 4.5], None);
+        let tower = w.only().climb_sample([4.5, 1.2, 4.5], None);
         assert_eq!((tower.on, tower.scaffolding), (true, true));
-        let ladder = w.climb_sample([6.5, 1.0, 6.5], None);
+        let ladder = w.only().climb_sample([6.5, 1.0, 6.5], None);
         assert_eq!((ladder.on, ladder.scaffolding), (true, false));
-        assert_eq!(w.climb_sample([4.5, 2.0 + 1e-3, 4.5], None), movement_iw4::ClimbSample::default());
-        assert_eq!(w.fluid_depth([4.5, 1.0, 4.5], [-0.3, 0.0, -0.3], [0.3, 1.8, 0.3], WATER), 0.0);
+        assert_eq!(w.only().climb_sample([4.5, 2.0 + 1e-3, 4.5], None), movement_iw4::ClimbSample::default());
+        assert_eq!(w.only().fluid_depth([4.5, 1.0, 4.5], [-0.3, 0.0, -0.3], [0.3, 1.8, 0.3], WATER), 0.0);
     }
 
     const SNOW: u16 = 5;
@@ -2355,10 +2517,10 @@ mod tests {
         assert!(!Mover::of(&ps, &playerstate_iw4::UserCmd::default()).powder_walker);
         ps.pm_flags |= playerstate_iw4::pm_flags::MC_POWDER_WALKER;
         assert!(Mover::of(&ps, &playerstate_iw4::UserCmd::default()).powder_walker);
-        let climb = w.climb_sample([4.5, 1.2, 4.5], snow_mover(1.2, false, true, false));
+        let climb = w.only().climb_sample([4.5, 1.2, 4.5], snow_mover(1.2, false, true, false));
         assert_eq!((climb.on, climb.powder, climb.scaffolding), (true, true, false));
-        assert_eq!(w.climb_sample([4.5, 1.2, 4.5], snow_mover(1.2, false, false, false)), movement_iw4::ClimbSample::default());
-        assert_eq!(w.climb_sample([4.5, 1.2, 4.5], None), movement_iw4::ClimbSample::default());
+        assert_eq!(w.only().climb_sample([4.5, 1.2, 4.5], snow_mover(1.2, false, false, false)), movement_iw4::ClimbSample::default());
+        assert_eq!(w.only().climb_sample([4.5, 1.2, 4.5], None), movement_iw4::ClimbSample::default());
     }
 
     #[test]
@@ -2366,11 +2528,11 @@ mod tests {
         let w = powder_snow(&[([4, 0, 4], 1), ([4, 1, 4], SNOW), ([8, 2, 8], SNOW)]);
         let half = f64::from(HULL_HALF_WIDTH / BLOCK);
         let (lo, hi) = ([-half, 0.0, -half], [half, 1.8, half]);
-        assert_eq!(w.stuck_in([4.5, 1.0, 4.5], lo, hi), Some(POWDER_SNOW_SLOWDOWN));
-        assert_eq!(w.stuck_in([4.5, 1.95, 4.5], lo, hi), Some(POWDER_SNOW_SLOWDOWN));
-        assert_eq!(w.stuck_in([8.5, 1.0, 8.5], lo, hi), None, "snow at the head only does not hold");
-        assert_eq!(w.stuck_in([5.2, 1.0, 4.5], lo, hi), None, "the feet must be in the block");
-        assert_eq!(w.stuck_in([4.5, 2.0, 4.5], lo, hi), None);
+        assert_eq!(w.only().stuck_in([4.5, 1.0, 4.5], lo, hi), Some(POWDER_SNOW_SLOWDOWN));
+        assert_eq!(w.only().stuck_in([4.5, 1.95, 4.5], lo, hi), Some(POWDER_SNOW_SLOWDOWN));
+        assert_eq!(w.only().stuck_in([8.5, 1.0, 8.5], lo, hi), None, "snow at the head only does not hold");
+        assert_eq!(w.only().stuck_in([5.2, 1.0, 4.5], lo, hi), None, "the feet must be in the block");
+        assert_eq!(w.only().stuck_in([4.5, 2.0, 4.5], lo, hi), None);
     }
 
     #[test]
@@ -2378,8 +2540,8 @@ mod tests {
         let w = powder_snow(&[([4, 1, 4], SNOW)]);
         assert_eq!(drop_onto(&w, 3.0, 0.5, None), 1.0);
         let (from, to) = (to_map([0.0; 3], [2.5, 1.5, 4.5]), to_map([0.0; 3], [6.5, 1.5, 4.5]));
-        assert_eq!(trace_in(&w, from, to, [0.0; 3], [0.0; 3], None).fraction, 1.0);
-        assert_eq!(w.shape_at(4, 1, 4), &[] as &[[f32; 6]]);
+        assert_eq!(trace_in(&w.only(), from, to, [0.0; 3], [0.0; 3], None).fraction, 1.0);
+        assert_eq!(w.only().shape_at(4, 1, 4), &[] as &[[f32; 6]]);
     }
 
     #[test]
@@ -2398,21 +2560,21 @@ mod tests {
 
     impl movement_iw4::CollisionBackend for Pond {
         fn trace(&self, input: movement_iw4::GroundTraceInput) -> trace_iw4::Trace {
-            trace_in(&self.0, input.start, input.end, input.mins, input.maxs, None)
+            trace_in(&self.0.only(), input.start, input.end, input.mins, input.maxs, None)
         }
 
         fn water(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], view_height: f32) -> movement_iw4::WaterSample {
             let (lo, hi) = block_bounds(mins, maxs);
-            self.0.water_sample(to_block(self.0.origin, origin), lo, hi, f64::from(view_height / BLOCK))
+            self.0.only().water_sample(to_block(self.0.only().origin, origin), lo, hi, f64::from(view_height / BLOCK))
         }
 
         fn lava(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> f32 {
             let (lo, hi) = block_bounds(mins, maxs);
-            (self.0.fluid_depth(to_block(self.0.origin, origin), lo, hi, LAVA) * f64::from(BLOCK)) as f32
+            (self.0.only().fluid_depth(to_block(self.0.only().origin, origin), lo, hi, LAVA) * f64::from(BLOCK)) as f32
         }
 
         fn ground_within(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], drop: f32) -> Option<bool> {
-            Some(ground_in(&self.0, origin, mins, maxs, drop, None))
+            Some(ground_in(&self.0.only(), origin, mins, maxs, drop, None))
         }
     }
 
@@ -2589,7 +2751,7 @@ mod tests {
                 let Pond(mut w) = ledge(None);
                 w.shapes.push(Vec::new());
                 w.fluids.push(LAVA | 8);
-                let chunk = w.chunks.get_mut(&(0, 0)).unwrap();
+                let chunk = w.only_mut().chunks.get_mut(&(0, 0)).unwrap();
                 for x in 0..LEDGE_EDGE {
                     for z in 0..16 {
                         chunk.shapes[(((1 + 16) * 16 + z) * 16 + x) as usize] = fluid;
@@ -2681,14 +2843,14 @@ mod tests {
     fn the_camera_keeps_its_full_distance_in_the_open() {
         let w = world(&[]);
         let eye = to_map([0.0; 3], [8.5, 5.5, 8.5]);
-        assert_eq!(camera_reach_in(&w, eye, BACK_X, 4.0 * BLOCK), 4.0 * BLOCK);
+        assert_eq!(camera_reach_in(&w.only(), eye, BACK_X, 4.0 * BLOCK), 4.0 * BLOCK);
     }
 
     #[test]
     fn the_camera_stops_at_a_wall_behind_the_eye() {
         let w = wall(5);
         let eye = to_map([0.0; 3], [8.5, 5.5, 8.5]);
-        let reach = camera_reach_in(&w, eye, BACK_X, 4.0 * BLOCK);
+        let reach = camera_reach_in(&w.only(), eye, BACK_X, 4.0 * BLOCK);
         assert!((reach - 2.5 * BLOCK).abs() < 0.2 * BLOCK, "{reach}");
     }
 
@@ -2696,7 +2858,7 @@ mod tests {
     fn the_camera_never_goes_through_a_wall_right_behind_the_eye() {
         let w = wall(5);
         let eye = to_map([0.0; 3], [6.05, 5.5, 8.5]);
-        let reach = camera_reach_in(&w, eye, BACK_X, 4.0 * BLOCK);
+        let reach = camera_reach_in(&w.only(), eye, BACK_X, 4.0 * BLOCK);
         assert!(reach > 0.14 * BLOCK && reach < 0.18 * BLOCK, "{reach}");
     }
 
@@ -2705,8 +2867,8 @@ mod tests {
         let w = world(&[([6, 5, 9], 1)]);
         let eye = to_map([0.0; 3], [8.5, 5.5, 8.95]);
         let end: [f32; 3] = std::array::from_fn(|k| eye[k] + BACK_X[k] * 4.0 * BLOCK);
-        assert_eq!(trace_in(&w, eye, end, [0.0; 3], [0.0; 3], None).fraction, 1.0);
-        let reach = camera_reach_in(&w, eye, BACK_X, 4.0 * BLOCK);
+        assert_eq!(trace_in(&w.only(), eye, end, [0.0; 3], [0.0; 3], None).fraction, 1.0);
+        let reach = camera_reach_in(&w.only(), eye, BACK_X, 4.0 * BLOCK);
         assert!((reach - 1.5 * BLOCK).abs() < 0.1 * BLOCK, "{reach}");
     }
 
@@ -3077,8 +3239,8 @@ mod tests {
         let mut w = world(&blocks);
         w.shapes.push(Vec::new());
         w.fluids.push(rail_flags("minecraft:rail", Some("north_south")));
-        w.origin = [7.5, 11.0, 7.5];
-        let spot = w.free_spawn_spot(&|_: [f32; 3]| false).unwrap();
+        w.only_mut().origin = [7.5, 11.0, 7.5];
+        let spot = w.only().free_spawn_spot([0.0; 3], &|_: [f32; 3]| false).unwrap();
         assert_eq!([spot[0], spot[1]], [-36.0, 36.0]);
     }
 
@@ -3216,16 +3378,16 @@ mod tests {
 
     impl movement_iw4::CollisionBackend for Snowed {
         fn trace(&self, input: movement_iw4::GroundTraceInput) -> trace_iw4::Trace {
-            trace_in(&self.0, input.start, input.end, input.mins, input.maxs, None)
+            trace_in(&self.0.only(), input.start, input.end, input.mins, input.maxs, None)
         }
 
         fn stuck(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> Option<[f32; 3]> {
             let (lo, hi) = block_bounds(mins, maxs);
-            self.0.stuck_in(to_block(self.0.origin, origin), lo, hi)
+            self.0.only().stuck_in(to_block(self.0.only().origin, origin), lo, hi)
         }
 
         fn ground_within(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], drop: f32) -> Option<bool> {
-            Some(ground_in(&self.0, origin, mins, maxs, drop, None))
+            Some(ground_in(&self.0.only(), origin, mins, maxs, drop, None))
         }
     }
 

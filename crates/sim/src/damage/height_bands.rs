@@ -63,9 +63,10 @@ impl Band {
         ];
         crate::voxel::activate(
             sim.content().clip_brushes(),
-            origin,
             vec![Vec::new(), vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]],
         );
+        let level = crate::voxel::band_of(feet).expect("a band") as u8;
+        crate::voxel::set_level(level, origin, FLOOR_Y - 16, 32);
         for cx in -2..2 {
             for cz in -2..2 {
                 let (min_y, height) = (FLOOR_Y - 16, 32);
@@ -84,6 +85,7 @@ impl Band {
                     }
                 }
                 crate::voxel::set_chunk(
+                    level,
                     cx,
                     cz,
                     VoxelChunk {

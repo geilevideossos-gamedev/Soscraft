@@ -537,6 +537,9 @@ impl Survival {
         if motion.feet[1] < f64::from(world.min_y() - OUT_OF_WORLD_DEPTH) {
             self.fall_out_of_world(&mut random, &mut heard);
         }
+        if crate::bands::at_bottom_wall(world.min_y(), motion.feet[1]) && !self.killed {
+            self.kill(DamageCause::OutOfWorld);
+        }
         let stride = (0..3)
             .map(|k| (motion.feet[k] - from[k]).powi(2))
             .sum::<f64>()
@@ -3224,7 +3227,7 @@ mod tests {
             survival.set_game_mode(&PlayerMode::new(mode));
             let mut inventory = Inventory::default();
             inventory.slots[40] = Some(ItemStack::new("minecraft:totem_of_undying", 1));
-            let heard = falling(&mut survival, &Floor(-64), -200.0, Armor::default(), 41);
+            let heard = falling(&mut survival, &Floor(-64), -191.0, Armor::default(), 41);
             assert_eq!(survival.status.health, 0.0, "{mode:?}");
             assert_eq!(count(&heard, "minecraft:entity.player.hurt"), 4);
             assert!(survival.killed());
@@ -3235,6 +3238,27 @@ mod tests {
                 said("%1$s fell out of the world", "fell out of the world")
             );
             assert_eq!(survival.settle(100, 100).damage, Some((100, None)));
+        }
+    }
+
+    #[test]
+    fn a_player_who_reaches_the_bottom_wall_falls_out_of_the_world_at_once() {
+        use minecraft_terrain::game_mode::PlayerMode;
+        for mode in [GameMode::Survival, GameMode::Creative] {
+            let mut survival = unfed();
+            survival.set_game_mode(&PlayerMode::new(mode));
+            survival.status.add_effect(EffectKind::Resistance, 400, 4);
+            falling(&mut survival, &Floor(0), -128.0, Armor::default(), 1);
+            assert!(survival.killed(), "{mode:?}");
+            assert_eq!(survival.status.health, 0.0, "{mode:?}");
+            assert_eq!(
+                death(&survival),
+                said("%1$s fell out of the world", "fell out of the world")
+            );
+            let mut above = unfed();
+            above.set_game_mode(&PlayerMode::new(mode));
+            falling(&mut above, &Floor(0), -127.0, Armor::default(), 1);
+            assert!(!above.killed(), "{mode:?}");
         }
     }
 

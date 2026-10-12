@@ -304,6 +304,7 @@ pub(crate) fn movement(
     sounds: &mut Option<Sounds>,
     packs: &PackStack,
 ) -> Moved {
+    let level = minecraft_survival::bands::level(player.dimension);
     let Player {
         uuid,
         survival,
@@ -407,7 +408,11 @@ pub(crate) fn movement(
             sounds.play(packs, sound, None, 1.0, 1.0);
         }
         if on_ground {
-            if let Some(peak) = steps.air_peak.take().filter(|_| !caught) {
+            let on_wall = minecraft_survival::bands::at_bottom_wall(
+                minecraftoss_player::World::min_y(&terrain.scene),
+                feet[1],
+            );
+            if let Some(peak) = steps.air_peak.take().filter(|_| !caught && !on_wall) {
                 let fall = survival.impulse_fall(peak - feet[1], feet[1]);
                 let landed_on = under.as_ref().map(|(_, b)| b.id.key());
                 let crouching = !skate.active
@@ -567,8 +572,7 @@ pub(crate) fn movement(
                 write_blocks(
                     terrain,
                     &globals.registries,
-                    shapes,
-                    shape_ids,
+                    (shapes, shape_ids, level),
                     entities,
                     frozen
                         .into_iter()
@@ -591,8 +595,7 @@ pub(crate) fn movement(
                 write_blocks(
                     terrain,
                     &globals.registries,
-                    shapes,
-                    shape_ids,
+                    (shapes, shape_ids, level),
                     entities,
                     writes,
                 );
@@ -674,6 +677,7 @@ pub(crate) struct MwBody<'a> {
     pub(crate) registries: &'a Registries,
     pub(crate) shapes: &'a mut Shapes,
     pub(crate) shape_ids: &'a mut ShapeIds,
+    pub(crate) level: u8,
 }
 
 impl Body for MwBody<'_> {
@@ -686,8 +690,7 @@ impl Body for MwBody<'_> {
         write_blocks(
             terrain,
             self.registries,
-            self.shapes,
-            self.shape_ids,
+            (self.shapes, self.shape_ids, self.level),
             entities,
             writes,
         );
@@ -724,6 +727,7 @@ pub(crate) fn struck(
     packs: &PackStack,
 ) {
     let player_id = u64::from(player.id.0);
+    let dimension = player.dimension;
     let outputs = entities.take_player_outputs(player_id);
     let rider = (client, player_id);
     let Player {
@@ -844,7 +848,8 @@ pub(crate) fn struck(
         .map(|(_, to)| to)
     {
         crate::minecraft_riding::dismount(riding, Some(&mut *entities), authority, rider);
-        authority.teleport(client, sim::voxel::to_map(origin, *to));
+        let to = minecraft_survival::bands::kept_in_walls(dimension, *to);
+        authority.teleport(client, sim::voxel::to_map(origin, to));
         steps.air_peak = None;
     }
     for landing in outputs.pearl_landings {
@@ -1489,6 +1494,7 @@ fn friend_hand(
         registries: &world.globals.registries,
         shapes: &mut *world.shapes,
         shape_ids: &mut *world.shape_ids,
+        level: minecraft_survival::bands::level(player.dimension),
     };
     let acted = minecraft_survival::actions::act(
         player,
@@ -1508,6 +1514,7 @@ fn friend_hand(
         packs: world.packs,
         atlas: world.atlas,
         registries: &world.globals.registries,
+        level: minecraft_survival::bands::level(level.dimension),
     };
     let broken = world
         .mining
@@ -1682,6 +1689,7 @@ pub(crate) fn friend_menus(
         registries: &world.globals.registries,
         shapes: &mut *world.shapes,
         shape_ids: &mut *world.shape_ids,
+        level: minecraft_survival::bands::level(player.dimension),
     };
     let mut effects = minecraft_survival::menus::finish(
         entities,

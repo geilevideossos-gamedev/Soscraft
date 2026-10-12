@@ -49,6 +49,7 @@ pub(crate) struct WorldRefs<'a> {
     pub packs: &'a PackStack,
     pub atlas: &'a Atlas,
     pub registries: &'a Registries,
+    pub level: u8,
 }
 
 impl Mining {
@@ -273,7 +274,7 @@ fn remove_broken(mut broken: Vec<(BlockPos, Option<f32>)>, world: &mut WorldRefs
             out.push((pos, block, blast));
         }
         world.scene.set(pos, None);
-        sim::voxel::set_block_shape(pos.0, pos.1, pos.2, 0);
+        sim::voxel::set_block_shape(world.level, pos.0, pos.1, pos.2, 0);
     }
     let positions: Vec<BlockPos> = broken.iter().map(|(pos, _)| *pos).collect();
     world.stream.record_edits(world.scene, &positions);

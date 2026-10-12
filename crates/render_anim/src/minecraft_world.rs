@@ -556,7 +556,12 @@ fn update(
                     return;
                 };
                 let (x, y, z) = level.terrain.stream.player_spawn;
-                view.origin = [x, y, z];
+                let spawn = [x, y, z];
+                if let Err(error) = minecraft_survival::bands::check(spawn) {
+                    diag::warn!(World, "{error}");
+                }
+                let origins: HashMap<Dimension, [f64; 3]> = minecraft_survival::bands::origins(spawn).into_iter().collect();
+                view.origin = minecraft_survival::bands::origin(Dimension::Overworld, spawn);
                 show_look(&mut view, &world);
                 runtime.atlas_animation = AtlasAnimation::new(&world.atlas);
                 runtime.animation_clock = 0.0;
@@ -583,11 +588,11 @@ fn update(
                 }
                 let chosen_mode = std::env::var("IW4L_MINECRAFT_GAMEMODE").ok();
                 let kit = std::env::var("IW4L_MINECRAFT_KIT").ok();
-                let joining = minecraft_survival::server::Joining { profile: &profile, spawn: view.origin, chosen_mode: chosen_mode.as_deref(), kit: kit.as_deref(), carried: runtime.carried_survival.take() };
+                let joining = minecraft_survival::server::Joining { profile: &profile, spawn, chosen_mode: chosen_mode.as_deref(), kit: kit.as_deref(), carried: runtime.carried_survival.take() };
                 let mut player = minecraft_survival::server::join(globals.save.as_ref(), &globals.data.recipes, &globals.game_rules, joining);
                 match minecraft_survival::server::debug_dimension(std::env::var("IW4L_MINECRAFT_DIMENSION").as_deref().unwrap_or("")) {
                     Ok(Some(dimension)) => {
-                        minecraft_survival::server::start_in(&mut player, dimension, view.origin);
+                        minecraft_survival::server::start_in(&mut player, dimension, spawn);
                         diag::info!(World, "Minecraft player starts in {} from IW4L_MINECRAFT_DIMENSION", dimension.dimension_type());
                     }
                     Ok(None) => {}
@@ -604,11 +609,9 @@ fn update(
                 runtime.light_volume_at = None;
                 runtime.cloud_center = None;
                 view.generation += 1;
-                sim::voxel::activate(
-                    authority.0.content().clip_brushes(),
-                    view.origin,
-                    vec![Vec::new()],
-                );
+                sim::voxel::activate(authority.0.content().clip_brushes(), vec![Vec::new()]);
+                set_collision_level(Dimension::Overworld, view.origin);
+                sim::voxel::set_spawn(sim::voxel::to_map(view.origin, spawn));
                 diag::info!(
                     World,
                     "Minecraft world ready: seed {} spawn {:?}",
@@ -626,7 +629,7 @@ fn update(
                 runtime.shape_ids.clear();
                 runtime.spawn_gate.start(now_ms);
                 runtime.shown = Some(Dimension::Overworld);
-                runtime.origins = HashMap::from([(Dimension::Overworld, view.origin)]);
+                runtime.origins = origins;
             }
             Err(error) => {
                 diag::warn!(World, "Minecraft world failed to load: {error}");
@@ -705,7 +708,7 @@ fn update(
     let bed_action = bed_request.take().map(minecraft_survival::sleep::BedAction::Lie).or(leave_bed.then_some(minecraft_survival::sleep::BedAction::Leave));
     let slept = minecraft_survival::sleep::serve(globals, levels, players, local_uuid, bed_action, planned.len() as u32, *published);
     if let Some(level) = players.get(local_uuid).and_then(|player| levels.get(&player.dimension)) {
-        refresh_shapes(&level.terrain, &globals.registries, shapes, shape_ids, &slept.written);
+        refresh_shapes(&level.terrain, &globals.registries, (shapes, shape_ids, minecraft_survival::bands::level(level.dimension)), &slept.written);
     }
     let local_messages = relay_messages(players, local_uuid, slept.messages, relayed);
     crate::minecraft_respawn::show_messages(&mut ui, inventory_ui, &world.packs, &local_messages);
@@ -758,7 +761,7 @@ fn update(
             if let Some(level) = levels.get_mut(&switch.from) {
                 leave_level(level, player, &mut ui, inventory_ui, minecraft_survival::menus::Books::of(&globals.data));
             }
-            sim::voxel::switch_level(origin);
+            sim::voxel::set_mob_boxes(minecraft_survival::bands::level(switch.from), Vec::new());
             *shown = None;
             ui.active = false;
             ui.inventory_open = false;
@@ -768,7 +771,7 @@ fn update(
         crate::minecraft_players::Begun::Arriving { at, standing } => {
             if let Some(level) = levels.get_mut(&player.dimension) {
                 let minecraft_survival::level::Level { entities, containers, terrain, dimension, .. } = level;
-                stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, at, &minecraft_survival::level::blocks_in(&others, *dimension), aspect, now_ms);
+                stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, (*dimension, at), &minecraft_survival::level::blocks_in(&others, *dimension), aspect, now_ms);
             }
             if standing && player.arrival.is_none() && !spawn_gate.waiting() && !minecraft_survival::the_end::holding_for_credits(player) {
                 player.switching = None;
@@ -805,7 +808,7 @@ fn update(
     let teleported: Vec<_> = teleports.iter().map(|(uuid, _)| uuid.clone()).collect();
     let woke = minecraft_survival::sleep::wake_teleported(globals, levels, players, &teleported, *published);
     if let Some(level) = players.get(local_uuid).and_then(|player| levels.get(&player.dimension)) {
-        refresh_shapes(&level.terrain, &globals.registries, shapes, shape_ids, &woke.written);
+        refresh_shapes(&level.terrain, &globals.registries, (shapes, shape_ids, minecraft_survival::bands::level(level.dimension)), &woke.written);
     }
     let woke_messages = relay_messages(players, local_uuid, woke.messages, relayed);
     crate::minecraft_respawn::show_messages(&mut ui, inventory_ui, &world.packs, &woke_messages);
@@ -846,6 +849,7 @@ fn update(
         puppet.active = false;
         return;
     };
+    let band = minecraft_survival::bands::level(player.dimension);
     let asleep = player.sleeping.is_some();
     let minecraft_survival::level::Level { entities, containers, terrain, dimension, container_ticks, .. } = &mut *level;
     minecraft_terrain::cow_render::set_nether_entity_lighting(terrain.rules.nether_cardinal_light);
@@ -861,7 +865,7 @@ fn update(
     let Some(ps) = presented.player(local.0) else {
         ui.active = false;
         puppet.active = false;
-        stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, arriving_at.unwrap_or(origin), &minecraft_survival::level::blocks_in(&others, *dimension), aspect, now_ms);
+        stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, (*dimension, arriving_at.unwrap_or(origin)), &minecraft_survival::level::blocks_in(&others, *dimension), aspect, now_ms);
         return;
     };
 
@@ -880,7 +884,7 @@ fn update(
     );
     let here: Vec<(i32, i32, i32)> = std::iter::once(block).chain(minecraft_survival::level::blocks_in(&others, *dimension)).collect();
     let streamed = minecraft_survival::level::stream_tick(terrain, entities, containers, &here, Some(block));
-    apply_streamed(&globals.registries, shapes, shape_ids, streamed);
+    apply_streamed(&globals.registries, (shapes, shape_ids, band), streamed);
 
     // Minecraft's yaw: 0 facing +Z (map -Y), turning towards -X.
     let mc_yaw = minecraft_yaw(ps.viewangles[1]);
@@ -896,7 +900,7 @@ fn update(
     if ui.chat.language.is_empty() && let Some(language) = inventory_ui.language() {
         ui.chat.language = std::sync::Arc::new(language.clone());
     }
-    let all_events = sim::voxel::take_events();
+    let all_events: Vec<_> = sim::voxel::take_events().into_iter().filter(|event| event_level(event) == band).collect();
     let mut moved = crate::minecraft_players::movement(player, globals, terrain, entities, (shapes, shape_ids), &authority.0, local.0, origin, ps, (alive, crate::minecraft_players::Skating { active: skate.active, airborne: skate.airborne }), time.delta_secs_f64(), sounds, &world.packs);
     ui.holding_item = moved.holding_item;
     ui.empty_hand = moved.empty_hand;
@@ -920,13 +924,13 @@ fn update(
             }
         }
         if !writes.is_empty() {
-            write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, writes);
+            write_blocks(terrain, &globals.registries, (shapes, shape_ids, band), entities, writes);
         }
     }
     let hands = crate::minecraft_input::host_hands(&ui, hud_input.as_deref(), &buttons, pad);
     let mut actor = crate::minecraft_players::actor(ps, origin, alive);
     actor.skating = skate.active;
-    let mut body = crate::minecraft_players::MwBody { authority: &mut authority.0, client: local.0, ps, registries: &globals.registries, shapes: &mut *shapes, shape_ids: &mut *shape_ids };
+    let mut body = crate::minecraft_players::MwBody { authority: &mut authority.0, client: local.0, ps, registries: &globals.registries, shapes: &mut *shapes, shape_ids: &mut *shape_ids, level: band };
     let minecraft_survival::actions::Acted { open_table, mut open_block, mut open_bench, hand_mined, creative_broken, hand_broken, effects, bed } = minecraft_survival::actions::act(player, level, globals, &mut body, &actor, hands, &moved, light.as_ref(), time.elapsed_secs_f64());
     if bed.is_some() {
         *bed_request = bed;
@@ -1013,6 +1017,7 @@ fn update(
         packs: &world.packs,
         atlas: &world.atlas,
         registries: &globals.registries,
+        level: band,
     };
     let mut broken = Vec::new();
     let mut friends_broken: Vec<(u64, Vec<crate::minecraft_mining::Mined>)> = Vec::new();
@@ -1059,7 +1064,7 @@ fn update(
     let drawn_from = cameras.iter().next().filter(|_| skate.active || mc_detached || sleepers.camera.is_some());
     let camera = cull_camera(drawn_from, origin, eye, forward, aspect);
     let lights = terrain_frame(terrain, world, &mut view, &camera);
-    observe_spawn(terrain, spawn_gate, feet, camera.position, now_ms);
+    observe_spawn(terrain, spawn_gate, (band, feet), camera.position, now_ms);
     let Some(light) = light.as_mut() else {
         return;
     };
@@ -1150,7 +1155,7 @@ fn update(
             for (pos, block) in changes {
                 let state = block.as_ref().and_then(|b| terrain.stream.states.state_of(b));
                 let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, registries, state));
-                sim::voxel::set_block_shape(pos.0, pos.1, pos.2, shape);
+                sim::voxel::set_block_shape(band, pos.0, pos.1, pos.2, shape);
                 let before = minecraftoss_player::World::block(&terrain.scene, pos);
                 let shulker_before = minecraft_terrain::scene::Scene::block(&terrain.scene, pos)
                     .filter(|b| minecraft_terrain::containers::Station::of(b) == Some(minecraft_terrain::containers::Station::Shulker))
@@ -1279,7 +1284,7 @@ fn update(
             .chain(friends.iter().map(|friend| &**friend).filter(|friend| friend.dimension == *dimension))
             .map(|each| (minecraft_survival::level::opener_key(&each.uuid), each.menus.block().map_or_else(Vec::new, |opened| opened.cells.clone())))
             .collect();
-        let mut body = crate::minecraft_players::MwBody { authority: &mut authority.0, client: local.0, ps, registries: &globals.registries, shapes: &mut *shapes, shape_ids: &mut *shape_ids };
+        let mut body = crate::minecraft_players::MwBody { authority: &mut authority.0, client: local.0, ps, registries: &globals.registries, shapes: &mut *shapes, shape_ids: &mut *shape_ids, level: band };
         let mut menu_effects = minecraft_survival::menus::finish(entities, terrain, &mut body, clicked.used, clicked.anvil);
         menu_effects.extend(minecraft_survival::menus::lids(minecraft_survival::menus::Lids { entities, terrain, openers, body: &mut body }, (local_uuid, host_id, feet), was_open.as_ref(), now_open.as_ref(), spectator));
         menu_effects.extend(minecraft_survival::menus::recheck_lids(minecraft_survival::menus::Lids { entities, terrain, openers, body: &mut body }, |key| open_cells.iter().find(|(each, _)| *each == key).map(|(_, cells)| cells.clone())));
@@ -1425,7 +1430,7 @@ fn update(
             .to_cols_array();
         }
 
-        sim::voxel::set_mob_boxes(entities.shot_boxes(player.riding.map(|ride| ride.vehicle)));
+        sim::voxel::set_mob_boxes(band, entities.shot_boxes(player.riding.map(|ride| ride.vehicle)));
         crate::minecraft_players::track_body(entities, local_uuid, ps, origin);
         entities.view.tick_scene(&terrain.scene, mob_ticks);
         let sky_darken = (15.0 - terrain.environment.sky_light_level()).clamp(0.0, 15.0) as u8;
@@ -1791,8 +1796,7 @@ pub(crate) fn animate_atlas(view: &mut MinecraftWorldView, animation: &mut Atlas
 
 pub(crate) fn apply_streamed(
     registries: &Registries,
-    shapes: &mut HashMap<BlockStateId, u16>,
-    shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
+    (shapes, shape_ids, level): (&mut HashMap<BlockStateId, u16>, &mut HashMap<(Vec<[u32; 6]>, u16), u16>, u8),
     (loaded, forgotten): (Vec<Arc<minecraftoss_core::Chunk>>, Vec<minecraftoss_core::ChunkPos>),
 ) {
     for chunk in loaded {
@@ -1816,6 +1820,7 @@ pub(crate) fn apply_streamed(
             }
         }
         sim::voxel::set_chunk(
+            level,
             chunk.pos.x,
             chunk.pos.z,
             sim::voxel::VoxelChunk {
@@ -1826,7 +1831,7 @@ pub(crate) fn apply_streamed(
         );
     }
     for pos in forgotten {
-        sim::voxel::remove_chunk(pos.x, pos.z);
+        sim::voxel::remove_chunk(level, pos.x, pos.z);
     }
 }
 
@@ -1842,7 +1847,7 @@ fn stream_around_spawn(
     light: &mut Option<SkyLight>,
     gate: &mut crate::minecraft_spawn_gate::SpawnGate,
     view: &mut MinecraftWorldView,
-    at: [f64; 3],
+    (dimension, at): (Dimension, [f64; 3]),
     others: &[(i32, i32, i32)],
     aspect: f32,
     now_ms: u64,
@@ -1851,7 +1856,8 @@ fn stream_around_spawn(
     let spawn_block = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
     let here: Vec<(i32, i32, i32)> = std::iter::once(spawn_block).chain(others.iter().copied()).collect();
     let streamed = minecraft_survival::level::stream_tick(terrain, entities, containers, &here, Some(spawn_block));
-    apply_streamed(registries, shapes, shape_ids, streamed);
+    let level = minecraft_survival::bands::level(dimension);
+    apply_streamed(registries, (shapes, shape_ids, level), streamed);
     let camera = CullCamera {
         position: glam::DVec3::new(x, y + crate::minecraft_spawn_gate::SPAWN_EYE_HEIGHT, z),
         forward: glam::Vec3::Z,
@@ -1869,7 +1875,7 @@ fn stream_around_spawn(
             light.set_chunk_column(chunk, column);
         }
     }
-    observe_spawn(terrain, gate, at, camera.position, now_ms);
+    observe_spawn(terrain, gate, (level, at), camera.position, now_ms);
 }
 
 pub(crate) struct HostView<'a> {
@@ -1923,7 +1929,7 @@ pub(crate) fn friends_presence(players: &std::collections::BTreeMap<minecraft_ne
 pub(crate) fn place_friend(player: &mut minecraft_survival::player::Player, authority: &mut sim::SimWorld, id: sim::ClientId, ps: &playerstate_iw4::PlayerState, origin: [f64; 3]) {
     let chunk = |block: f64| (block.floor() as i32) >> 4;
     if let Some(place) = player.arrival
-        && !sim::voxel::chunks_ready_around(chunk(place.feet[0]), chunk(place.feet[2]), crate::minecraft_spawn_gate::SPAWN_CHUNK_RADIUS)
+        && !sim::voxel::chunks_ready_around(minecraft_survival::bands::level(place.dimension), chunk(place.feet[0]), chunk(place.feet[2]), crate::minecraft_spawn_gate::SPAWN_CHUNK_RADIUS)
     {
         return;
     }
@@ -1952,7 +1958,8 @@ pub(crate) fn place_player(
         });
         return;
     };
-    authority.teleport_facing(id, sim::voxel::to_map(origin, place.feet), [place.pitch, minecraft_yaw(place.yaw), 0.0]);
+    let feet = minecraft_survival::bands::kept_in_walls(place.dimension, place.feet);
+    authority.teleport_facing(id, sim::voxel::to_map(origin, feet), [place.pitch, minecraft_yaw(place.yaw), 0.0]);
     authority.push_velocity(id, arrival_velocity(place.motion));
     if player.mode.abilities.flying {
         authority.set_minecraft_abilities(id, ability_bits(&player.mode) | playerstate_iw4::pm_flags::MC_FLYING);
@@ -1961,7 +1968,7 @@ pub(crate) fn place_player(
     player.portal.last_feet = None;
     player.steps.air_peak = (place.fall_distance > 0.0).then_some(place.feet[1] + place.fall_distance);
     let chunk = |block: f64| (block.floor() as i32) >> 4;
-    if !gate.waiting() && !sim::voxel::chunks_ready_around(chunk(place.feet[0]), chunk(place.feet[2]), crate::minecraft_spawn_gate::SPAWN_CHUNK_RADIUS) {
+    if !gate.waiting() && !sim::voxel::chunks_ready_around(minecraft_survival::bands::level(place.dimension), chunk(place.feet[0]), chunk(place.feet[2]), crate::minecraft_spawn_gate::SPAWN_CHUNK_RADIUS) {
         gate.start(now_ms);
     }
     player.place = Some(place);
@@ -1975,12 +1982,12 @@ fn arrival_velocity(motion: [f64; 3]) -> [f32; 3] {
     sim::voxel::to_map([0.0; 3], motion.map(|v| v / TICK_SECONDS))
 }
 
-pub(crate) fn observe_spawn(terrain: &minecraft_survival::level::Terrain, gate: &mut crate::minecraft_spawn_gate::SpawnGate, origin: [f64; 3], eye: glam::DVec3, now_ms: u64) {
+pub(crate) fn observe_spawn(terrain: &minecraft_survival::level::Terrain, gate: &mut crate::minecraft_spawn_gate::SpawnGate, (level, origin): (u8, [f64; 3]), eye: glam::DVec3, now_ms: u64) {
     if !gate.waiting() {
         return;
     }
     let spawn_chunk = ((origin[0].floor() as i32) >> 4, (origin[2].floor() as i32) >> 4);
-    let chunks_ready = sim::voxel::chunks_ready_around(spawn_chunk.0, spawn_chunk.1, crate::minecraft_spawn_gate::SPAWN_CHUNK_RADIUS);
+    let chunks_ready = sim::voxel::chunks_ready_around(level, spawn_chunk.0, spawn_chunk.1, crate::minecraft_spawn_gate::SPAWN_CHUNK_RADIUS);
     let eye = eye.floor();
     let section_visible = terrain.stream.section_compiled_and_visible((eye.x as i32, eye.y as i32, eye.z as i32), FADE_MILLIS);
     gate.observe(now_ms, chunks_ready, section_visible);
@@ -2031,15 +2038,14 @@ pub(crate) fn shape_id(
 pub(crate) fn write_blocks(
     terrain: &mut minecraft_survival::level::Terrain,
     registries: &Registries,
-    shapes: &mut HashMap<BlockStateId, u16>,
-    shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
+    (shapes, shape_ids, level): (&mut HashMap<BlockStateId, u16>, &mut HashMap<(Vec<[u32; 6]>, u16), u16>, u8),
     entities: &mut minecraft_survival::entities::Entities,
     writes: Vec<((i32, i32, i32), Option<minecraft_terrain::scene::Block>)>,
 ) {
     for (at, block) in &writes {
         let state = block.as_ref().and_then(|b| terrain.stream.states.state_of(b));
         let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, registries, state));
-        sim::voxel::set_block_shape(at.0, at.1, at.2, shape);
+        sim::voxel::set_block_shape(level, at.0, at.1, at.2, shape);
     }
     minecraft_survival::level::write_blocks(terrain, entities, writes);
 }
@@ -2047,14 +2053,13 @@ pub(crate) fn write_blocks(
 fn refresh_shapes(
     terrain: &minecraft_survival::level::Terrain,
     registries: &Registries,
-    shapes: &mut HashMap<BlockStateId, u16>,
-    shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
+    (shapes, shape_ids, level): (&mut HashMap<BlockStateId, u16>, &mut HashMap<(Vec<[u32; 6]>, u16), u16>, u8),
     written: &[(i32, i32, i32)],
 ) {
     for &(x, y, z) in written {
         let state = minecraft_terrain::scene::Scene::block(&terrain.scene, (x, y, z)).and_then(|b| terrain.stream.states.state_of(b));
         let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, registries, state));
-        sim::voxel::set_block_shape(x, y, z, shape);
+        sim::voxel::set_block_shape(level, x, y, z, shape);
     }
 }
 
@@ -2068,6 +2073,16 @@ pub(crate) fn ability_bits(mode: &minecraft_terrain::game_mode::PlayerMode) -> u
 
 pub(crate) fn sky_bits(environment: &minecraft_terrain::environment::DimensionEnvironment) -> u32 {
     if environment.presentation.has_ceiling { playerstate_iw4::pm_flags::MC_NO_SKY } else { 0 }
+}
+
+pub(crate) fn event_level(event: &sim::voxel::VoxelEvent) -> u8 {
+    match *event {
+        sim::voxel::VoxelEvent::Shot { level, .. }
+        | sim::voxel::VoxelEvent::Explosion { level, .. }
+        | sim::voxel::VoxelEvent::MobShot { level, .. }
+        | sim::voxel::VoxelEvent::MobBlast { level, .. }
+        | sim::voxel::VoxelEvent::Ray { level, .. } => level,
+    }
 }
 
 fn in_remote_killstreak(presented: &net::PresentedSnapshot, local: sim::ClientId) -> bool {
@@ -2231,11 +2246,21 @@ fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u
     let ticks = std::mem::take(&mut server.globals.level_ticks);
     server.follow_weather_commands();
     for closed in server.close_empty_levels(ticks) {
-        runtime.origins.remove(&closed);
+        sim::voxel::drop_level(minecraft_survival::bands::level(closed));
     }
     server.prepare_respawns();
     server.open_levels(VIEW_DISTANCE);
-    let failed: Vec<(Dimension, String)> = server.finish_opening().into_iter().filter_map(|(dimension, opened)| opened.err().map(|error| (dimension, error))).collect();
+    let mut failed = Vec::new();
+    for (dimension, opened) in server.finish_opening() {
+        match opened {
+            Ok(()) => {
+                if let Some(&origin) = runtime.origins.get(&dimension) {
+                    set_collision_level(dimension, origin);
+                }
+            }
+            Err(error) => failed.push((dimension, error)),
+        }
+    }
     minecraft_survival::portal_forcer::arrive_through_portals(server);
     let Some(player) = server.players.get(local) else {
         return failed;
@@ -2244,16 +2269,16 @@ fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u
     let Some(level) = server.levels.get_mut(&dimension).filter(|_| runtime.shown != Some(dimension)) else {
         return failed;
     };
-    let (x, y, z) = level.terrain.stream.player_spawn;
-    let arrived = player.arrival.or(player.place).filter(|place| place.dimension == dimension).map(|place| place.feet);
-    let origin = *runtime.origins.entry(dimension).or_insert_with(|| match dimension {
-        Dimension::Overworld => [x, y, z],
-        _ => arrived.unwrap_or([x, y, z]),
-    });
+    let Some(&origin) = runtime.origins.get(&dimension) else {
+        return failed;
+    };
     if let Some(entities) = level.entities.as_mut() {
         entities.set_players(&[(u64::from(player.id.0), local.clone())]);
     }
-    sim::voxel::switch_level(origin);
+    let band = minecraft_survival::bands::level(dimension);
+    if !sim::voxel::has_level(band) {
+        set_collision_level(dimension, origin);
+    }
     view.origin = origin;
     view.generation += 1;
     view.uploads.clear();
@@ -2265,10 +2290,8 @@ fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u
     view.weather = Default::default();
     view.clouds = None;
     view.light_volume = None;
-    runtime.shapes.clear();
-    runtime.shape_ids.clear();
     let chunks = level.terrain.stream.reshow(&level.terrain.scene);
-    apply_streamed(&server.globals.registries, &mut runtime.shapes, &mut runtime.shape_ids, (chunks, Vec::new()));
+    apply_streamed(&server.globals.registries, (&mut runtime.shapes, &mut runtime.shape_ids, band), (chunks, Vec::new()));
     runtime.light = Some(SkyLight::streamed());
     runtime.light_volume_at = None;
     runtime.cloud_center = None;
@@ -2280,6 +2303,11 @@ fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u
     runtime.shown = Some(dimension);
     diag::info!(World, "Minecraft level shown: {} with {:?} at map origin", dimension.dimension_type(), origin);
     failed
+}
+
+fn set_collision_level(dimension: Dimension, origin: [f64; 3]) {
+    let (min_y, height) = minecraft_survival::bands::heights(dimension);
+    sim::voxel::set_level(minecraft_survival::bands::level(dimension), origin, min_y, height);
 }
 
 fn relay_messages(
@@ -2521,5 +2549,33 @@ mod arrival_tests {
     fn no_motion_leaves_the_player_still() {
         assert_eq!(arrival_velocity([0.0; 3]), [0.0; 3]);
         assert_eq!(player_motion([0.0; 3]), [0.0; 3]);
+    }
+}
+
+#[cfg(test)]
+mod band_tests {
+    use super::event_level;
+    use minecraft_net::Dimension;
+    use minecraft_survival::bands;
+    use sim::voxel::VoxelEvent;
+
+    #[test]
+    fn the_collision_bands_are_the_ones_each_dimension_is_given() {
+        for dimension in bands::DIMENSIONS {
+            let index = usize::from(bands::level(dimension));
+            assert_eq!(sim::voxel::BANDS[index].map(f64::from), bands::band(dimension), "{dimension:?}");
+            let origin = bands::origin(dimension, [8.5, 64.0, 8.5]);
+            let middle = sim::voxel::to_map(origin, [8.5, 64.0, 8.5]);
+            assert_eq!(sim::voxel::band_of(middle[2]), Some(index), "{dimension:?}");
+        }
+        assert_eq!((sim::voxel::WALL_BELOW, sim::voxel::WALL_ABOVE), (bands::WALL_BELOW, bands::WALL_ABOVE));
+        assert_eq!(f64::from(sim::voxel::BLOCK), bands::BLOCK);
+    }
+
+    #[test]
+    fn the_host_reads_each_events_level() {
+        let shot = VoxelEvent::Shot { level: 1, block: [0; 3], damage: 1.0, attacker: None };
+        let blast = VoxelEvent::MobBlast { level: 2, key: 0, damage: 1.0, center: [0.0; 3], impact: 0.0, attacker: None, slow_ticks: 0 };
+        assert_eq!((event_level(&shot), event_level(&blast)), (bands::level(Dimension::Nether), bands::level(Dimension::End)));
     }
 }
