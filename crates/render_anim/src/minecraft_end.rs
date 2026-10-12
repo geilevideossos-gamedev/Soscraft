@@ -68,7 +68,9 @@ pub(crate) fn pearls_through(player: &Player, levels: &mut BTreeMap<Dimension, L
     let Some(level) = levels.get_mut(&player.dimension) else {
         return;
     };
-    for (gateway, landing) in minecraft_survival::the_end::gateway::pearls_through(level) {
+    for (gateway, landing) in
+        minecraft_survival::the_end::gateway::pearls_through(level, u64::from(player.id.0))
+    {
         match landing {
             Some(landing) => diag::info!(
                 World,

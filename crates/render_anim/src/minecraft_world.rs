@@ -553,7 +553,7 @@ fn update(
                 }
                 let uuid = player.uuid.clone();
                 if let Some(entities) = level.entities.as_mut() {
-                    entities.set_player_uuid(&uuid);
+                    entities.set_players(&[(u64::from(player.id.0), uuid.clone())]);
                 }
                 players.insert(uuid.clone(), player);
                 runtime.environment_accumulator = 0.0;
@@ -709,14 +709,26 @@ fn update(
     let delivered = delivered_here;
     ui.chat.command_level = players.get(local_uuid).map_or(0, |player| globals.chat.level(player.id));
     crate::minecraft_end::tick_fight(levels, players, globals, f64::from(planned.normal_count()) * minecraft_survival::the_end::dragon_fight::TICK_SECONDS, local_uuid, &mut ui);
-    let Some(player) = players.get_mut(local_uuid) else {
+    let mut friends = Vec::new();
+    let mut host = None;
+    for (uuid, each) in players.iter_mut() {
+        if uuid == local_uuid {
+            host = Some(each);
+        } else {
+            friends.push(each);
+        }
+    }
+    let Some(player) = host else {
         ui.active = false;
         ui.inventory_open = false;
         puppet.active = false;
         return;
     };
+    let host_id = u64::from(player.id.0);
+    let friend_ids: Vec<u64> = friends.iter().filter(|friend| friend.dimension == player.dimension).map(|friend| u64::from(friend.id.0)).collect();
     crate::minecraft_portal::step(player, levels, globals, presented.player(local.0).filter(|ps| ps.pm_type == 0).map(|ps| sim::voxel::to_block(origin, ps.origin)), time.delta_secs_f64(), sounds.as_mut(), &world.packs, &mut ui);
     crate::minecraft_end::pearls_through(player, levels);
+    let credit = |attacker: Option<u32>| attacker.and_then(|client| if client == local.0.0 { Some(host_id) } else { friend_ids.contains(&u64::from(client)).then_some(u64::from(client)) });
     if player.switching.is_some_and(|switch| !switch.left) {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
         ui.active = false;
@@ -824,9 +836,9 @@ fn update(
     if let Some(entities) = entities.as_mut() {
         for shot in mob_shots {
             match shot {
-                sim::voxel::VoxelEvent::MobShot { key, damage, from } => entities.shoot(key, damage, from, mc_yaw),
+                sim::voxel::VoxelEvent::MobShot { key, damage, from } => entities.shoot(host_id, key, damage, from, mc_yaw),
                 sim::voxel::VoxelEvent::MobBlast { key, damage, center, impact, attacker, slow_ticks } => {
-                    entities.blast(key, damage, center, impact, attacker == Some(local.0.0), slow_ticks);
+                    entities.blast(key, damage, center, impact, credit(attacker), slow_ticks);
                 }
                 _ => {}
             }
@@ -970,7 +982,17 @@ fn update(
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
         let ticks_before = entities.client_ticks();
         let batch = pending_batch.take().unwrap_or(minecraft_survival::tick_rate::TickBatch { normal: Vec::new(), overload: None });
-        let (changes, hits) = entities.tick(inventory, *selected, dt, &batch, globals.tick_rate.client_timing(), globals.clock_ticks(), bright_outside, &viewer);
+        let mut present = vec![(host_id, local_uuid.clone())];
+        let mut actors = vec![minecraft_survival::entities::TickActor { id: host_id, view: viewer, inventory: &mut *inventory, selected: *selected }];
+        for friend in friends.iter_mut().filter(|friend| friend.dimension == *dimension) {
+            if let Some((actor, uuid)) = crate::minecraft_players::tick_actor(friend, &authority.0, origin) {
+                present.push((actor.id, uuid));
+                actors.push(actor);
+            }
+        }
+        entities.set_players(&present);
+        let changes = entities.tick(&mut actors, dt, &batch, globals.tick_rate.client_timing(), globals.clock_ticks(), bright_outside);
+        drop(actors);
         entities.present_level_events(&terrain.scene);
         globals.weather = entities.weather_data.or(globals.weather);
         let summoned = std::mem::take(&mut entities.command_summons);
@@ -1063,7 +1085,7 @@ fn update(
                 sounds.play(&world.packs, &kind.break_sound, Some(at(centre)), (kind.volume + 1.0) / 2.0, kind.pitch * 0.8);
             }
         }
-        crate::minecraft_players::struck(player, entities, &mut authority.0, local.0, origin, ps, alive, hits, &teleports, sounds, &world.packs);
+        crate::minecraft_players::struck(player, entities, &mut authority.0, local.0, origin, ps, alive, &teleports, sounds, &world.packs);
         for item in std::mem::take(&mut entities.broken_items) {
             mining.break_burst(&world.packs, &world.atlas, glam::DVec3::from_array(eye).as_vec3(), mc_yaw, ps.viewangles[0], &item);
         }
@@ -1216,8 +1238,7 @@ fn update(
                 write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, vec![(cell, Some(state))]);
             }
         }
-        entities.experience_found += inventory_ui.take_experience() as f32;
-        let found = std::mem::take(&mut entities.experience_found);
+        let found = entities.take_experience(host_id).saturating_add(inventory_ui.take_experience()) as f32;
         let points = found.floor() as u32 + u32::from(found.fract() > 0.0 && entities.random_float() < found.fract());
         if points > 0 {
             let (r1, r2) = (entities.random_float(), entities.random_float());
@@ -2053,7 +2074,7 @@ fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u
         _ => arrived.unwrap_or([x, y, z]),
     });
     if let Some(entities) = level.entities.as_mut() {
-        entities.set_player_uuid(local);
+        entities.set_players(&[(u64::from(player.id.0), local.clone())]);
     }
     sim::voxel::switch_level(origin);
     view.origin = origin;
@@ -2096,10 +2117,11 @@ fn leave_level(
     ui: &mut frame::MinecraftUi,
     inventory_ui: &mut crate::minecraft_inventory::InventoryUi,
 ) {
-    let minecraft_survival::player::Player { uuid, inventory, selected, ender, survival, hand, steps, place, .. } = player;
+    let minecraft_survival::player::Player { id, uuid, inventory, selected, ender, survival, hand, steps, place, .. } = player;
     ui.inventory_open = false;
     if let Some(entities) = level.entities.as_mut() {
-        entities.leave(inventory, *selected, place.map(|place| place.feet));
+        let experience = entities.leave(u64::from(id.0), inventory, *selected, place.map(|place| place.feet));
+        let _ = survival.gain_experience(experience);
         let roll = entities.random_float();
         let thrown = level.containers.with_ender(ender, |containers| inventory_ui.apply_input(ui, inventory, selected, containers, &mut || roll));
         if let Some(place) = place.as_ref() {

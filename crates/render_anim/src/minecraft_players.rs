@@ -4,7 +4,7 @@ use bevy::input::gamepad::GamepadButton;
 use bevy::prelude::*;
 use minecraft_commands::Clientbound;
 use minecraft_net::{Dimension, PlayerUuid};
-use minecraft_survival::entities::Entities;
+use minecraft_survival::entities::{Entities, TickActor};
 use minecraft_survival::level::{Level, Terrain};
 use minecraft_survival::player::Player;
 use minecraft_survival::server::Globals;
@@ -24,12 +24,6 @@ use crate::minecraft_world::{
 
 type Shapes = HashMap<BlockStateId, u16>;
 type ShapeIds = HashMap<(Vec<[u32; 6]>, u16), u16>;
-type Hits = Vec<(
-    f32,
-    Option<[f64; 3]>,
-    Option<[f64; 2]>,
-    minecraft_survival::death::DamageCause,
-)>;
 
 #[derive(Default)]
 pub(crate) struct VoxelQueues {
@@ -618,6 +612,7 @@ pub(crate) fn act(
         now,
     } = host;
     let Player {
+        id: player_id,
         survival,
         mode: player_mode,
         inventory,
@@ -627,6 +622,7 @@ pub(crate) fn act(
         respawn,
         ..
     } = player;
+    let actor = u64::from(player_id.0);
     let Level {
         entities,
         containers,
@@ -684,6 +680,7 @@ pub(crate) fn act(
             -f64::from(ps.velocity[1]),
         ) / (f64::from(sim::voxel::BLOCK) * 20.0);
         let release = entities.release_trident(
+            actor,
             inventory,
             released,
             !game_mode.consumes_items(),
@@ -787,7 +784,7 @@ pub(crate) fn act(
                 reach: game_mode.entity_reach(),
             };
             if entities.punch(
-                inventory, *selected, eye_block, look, mc_yaw, damage, strength, blow,
+                actor, inventory, *selected, eye_block, look, mc_yaw, damage, strength, blow,
             ) {
                 punched = true;
                 hand.attack_ticks = 0;
@@ -1268,7 +1265,7 @@ pub(crate) fn act(
                     &player,
                     &terrain.scene,
                     stack,
-                    !entities.awaits_item_use()
+                    !entities.awaits_item_use(actor)
                         && entities.dragon_breath_near(
                             player.pos,
                             if player.crouching { 1.5 } else { 1.8 },
@@ -1312,6 +1309,7 @@ pub(crate) fn act(
                             outcome,
                         };
                         entities.bottle_breath(
+                            actor,
                             player.pos,
                             if player.crouching { 1.5 } else { 1.8 },
                             sent,
@@ -1344,7 +1342,7 @@ pub(crate) fn act(
                 }
                 HandUse::Consumed
             } else if let Some(stack) = held.as_ref()
-                && !entities.awaits_item_use()
+                && !entities.awaits_item_use(actor)
                 && game_mode.may_build()
                 && let Some(outcome) = {
                     let catalog = minecraft_terrain::bucket::Catalog {
@@ -1458,10 +1456,10 @@ pub(crate) fn act(
                         );
                     }
                     minecraft_terrain::bucket::Change::Server(pos, action) => {
-                        entities.item_on_block(pos, action, sent)
+                        entities.item_on_block(actor, pos, action, sent)
                     }
                     minecraft_terrain::bucket::Change::ThrowEye(throw) => {
-                        entities.throw_eye(throw, sent)
+                        entities.throw_eye(actor, throw, sent)
                     }
                     minecraft_terrain::bucket::Change::Rocket(boost_ticks) => {
                         crate::minecraft_elytra::launch_rocket(
@@ -1483,6 +1481,7 @@ pub(crate) fn act(
                         )
                     }
                     minecraft_terrain::bucket::Change::Breath => entities.bottle_breath(
+                        actor,
                         player.pos,
                         if player.crouching { 1.5 } else { 1.8 },
                         sent,
@@ -1490,7 +1489,7 @@ pub(crate) fn act(
                 }
                 HandUse::Consumed
             } else if let Some(stack) = held.as_ref()
-                && !entities.awaits_item_use()
+                && !entities.awaits_item_use(actor)
                 && game_mode.interacts()
                 && let Some(outcome) = minecraft_terrain::ender_eye::throw_use(
                     &player,
@@ -1508,7 +1507,7 @@ pub(crate) fn act(
                     pitch: ps.viewangles[0],
                     outcome,
                 };
-                entities.throw_eye(throw, sent);
+                entities.throw_eye(actor, throw, sent);
                 HandUse::Consumed
             } else if let Some(stack) = held.as_ref()
                 && game_mode.may_build()
@@ -1521,6 +1520,7 @@ pub(crate) fn act(
                 match egg {
                     minecraft_terrain::spawn_egg::EggUse::Spawn { kind, position } => {
                         entities.hatch_egg(
+                            actor,
                             inventory,
                             slot,
                             kind,
@@ -1531,6 +1531,7 @@ pub(crate) fn act(
                     minecraft_terrain::spawn_egg::EggUse::Spawner(pos) => {
                         if let Some(kind) = minecraft_terrain::spawn_egg::spawned_kind(&stack.id) {
                             entities.egg_on_spawner(
+                                actor,
                                 inventory,
                                 slot,
                                 kind,
@@ -1576,6 +1577,7 @@ pub(crate) fn act(
                 ) / (f64::from(sim::voxel::BLOCK) * 20.0);
                 if !hand.cooldowns.active(&stack.id)
                     && entities.throw(
+                        actor,
                         stack,
                         glam::DVec3::from_array(eye),
                         mc_yaw,
@@ -1892,11 +1894,11 @@ pub(crate) fn struck(
     origin: [f64; 3],
     ps: &PlayerState,
     alive: bool,
-    hits: Hits,
     teleports: &[(PlayerUuid, [f64; 3])],
     sounds: &mut Option<Sounds>,
     packs: &PackStack,
 ) {
+    let outputs = entities.take_player_outputs(u64::from(player.id.0));
     let Player {
         uuid,
         survival,
@@ -1911,7 +1913,11 @@ pub(crate) fn struck(
     let mc_yaw = minecraft_yaw(ps.viewangles[1]);
     let at = |b: [f64; 3]| Vec3::from_array(sim::voxel::to_map(origin, b));
     let armor = minecraft_survival::survival::armor(inventory);
-    for (amount, from, toward, cause) in hits.into_iter().filter(|_| !player_mode.invulnerable()) {
+    for (amount, from, toward, cause) in outputs
+        .hits
+        .into_iter()
+        .filter(|_| !player_mode.invulnerable())
+    {
         let blocked = hand
             .blocking
             .filter(|blocking| blocking.raised())
@@ -1955,7 +1961,7 @@ pub(crate) fn struck(
             survival.hurt_blocked(cause);
         }
     }
-    for used in std::mem::take(&mut entities.item_uses_done) {
+    for used in outputs.item_uses_done {
         if used.outcome.consumed {
             hand.swing = Some(0.0);
             hand.swing_offhand = used.slot == minecraft_survival::offhand::OFFHAND;
@@ -1978,7 +1984,7 @@ pub(crate) fn struck(
         authority.teleport(client, sim::voxel::to_map(origin, *to));
         steps.air_peak = None;
     }
-    for landing in std::mem::take(&mut entities.pearl_landings) {
+    for landing in outputs.pearl_landings {
         if !alive {
             continue;
         }
@@ -2003,10 +2009,7 @@ pub(crate) fn struck(
     let pushed = alive
         && player_mode.mode != minecraftoss_player::GameMode::Spectator
         && ps.pm_flags & playerstate_iw4::pm_flags::MC_FLYING == 0;
-    for push in std::mem::take(&mut entities.player_pushes)
-        .into_iter()
-        .filter(|_| pushed)
-    {
+    for push in outputs.pushes.into_iter().filter(|_| pushed) {
         let launch = minecraft_survival::impulse::launch_velocity(
             push,
             f64::from(ps.gravity) / f64::from(sim::voxel::BLOCK),
@@ -2014,10 +2017,7 @@ pub(crate) fn struck(
         authority.push_velocity(client, [launch.x as f32, -launch.z as f32, launch.y as f32]);
         survival.start_impulse(feet[1]);
     }
-    for hit in std::mem::take(&mut entities.player_potions)
-        .into_iter()
-        .filter(|_| alive)
-    {
+    for hit in outputs.potions.into_iter().filter(|_| alive) {
         if let Some(sound) = survival.take_potion(&hit.potion, Some(hit.at.to_array()), || {
             entities.random_float()
         }) && let Some(sounds) = sounds.as_mut()
@@ -2158,6 +2158,35 @@ pub(crate) fn owned_weapons(ps: &PlayerState, authority: &sim::SimWorld) -> Vec<
         .collect()
 }
 
+pub(crate) fn tick_actor<'a>(
+    player: &'a mut Player,
+    authority: &sim::SimWorld,
+    origin: [f64; 3],
+) -> Option<(TickActor<'a>, PlayerUuid)> {
+    if player.switching.is_some() || player.arrival.is_some() {
+        return None;
+    }
+    let ps = authority.player(sim::ClientId(player.id.0))?;
+    let alive = ps.pm_type == 0;
+    let view = minecraft_survival::entities::PlayerView {
+        feet: sim::voxel::to_block(origin, ps.origin),
+        alive,
+        attackable: alive && player.mode.attackable_by_mobs(),
+        spectator: !alive || player.mode.mode == minecraftoss_player::GameMode::Spectator,
+        picks_up: alive && player.mode.picks_up(),
+        health: player.survival.status.health,
+        yaw: minecraft_yaw(ps.viewangles[1]),
+        pitch: ps.viewangles[0],
+    };
+    let actor = TickActor {
+        id: u64::from(player.id.0),
+        view,
+        inventory: &mut player.inventory,
+        selected: player.selected,
+    };
+    Some((actor, player.uuid.clone()))
+}
+
 #[derive(Default)]
 pub(crate) struct Stepped {
     pub(crate) lines: Vec<Clientbound>,
@@ -2214,6 +2243,7 @@ pub(crate) fn step_friend(
     if !matches!(begun, Begun::Live) {
         return stepped;
     }
+    crate::minecraft_end::pearls_through(player, world.levels);
     let Some(level) = world.levels.get_mut(&player.dimension) else {
         return stepped;
     };
@@ -2257,6 +2287,20 @@ pub(crate) fn step_friend(
         .death_watch
         .stood(minecraft_survival::death::DeathSpot { feet, eye });
     if let Some(entities) = entities.as_mut() {
+        struck(
+            player,
+            entities,
+            world.authority,
+            client,
+            origin,
+            &ps,
+            life.alive,
+            &[],
+            &mut sounds,
+            world.packs,
+        );
+        let found = entities.take_experience(u64::from(player.id.0));
+        let _ = player.survival.gain_experience(found);
         stepped.told = settle(
             player,
             entities,

@@ -695,12 +695,13 @@ impl Server {
         let dropped = match level {
             Some(level) => {
                 if let Some(entities) = level.entities.as_mut() {
-                    entities.settle_player(
+                    let experience = entities.leave(
                         u64::from(player.id.0),
                         &mut player.inventory,
                         player.selected,
                         feet,
                     );
+                    let _ = player.survival.gain_experience(experience);
                 }
                 let dropped = player.close_menu();
                 if let (Some(entities), Some(feet)) = (level.entities.as_mut(), feet) {

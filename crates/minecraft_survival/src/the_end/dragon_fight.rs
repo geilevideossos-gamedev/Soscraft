@@ -1130,23 +1130,26 @@ mod tests {
                     overload: None,
                 };
                 let _ = entities.tick(
-                    &mut minecraftoss_player::inventory::Inventory::default(),
-                    0,
+                    &mut [crate::entities::TickActor {
+                        id: 0,
+                        view: crate::entities::PlayerView {
+                            feet: [100.5, 49.0, 0.5],
+                            alive: true,
+                            attackable: true,
+                            spectator: false,
+                            picks_up: false,
+                            health: 20.0,
+                            yaw: 0.0,
+                            pitch: 0.0,
+                        },
+                        inventory: &mut minecraftoss_player::inventory::Inventory::default(),
+                        selected: 0,
+                    }],
                     0.05,
                     &batch,
                     crate::tick_rate::ClientTiming::default(),
                     minecraft_terrain::server::ClockTicks::default(),
                     false,
-                    &crate::entities::PlayerView {
-                        feet: [100.5, 49.0, 0.5],
-                        alive: true,
-                        attackable: true,
-                        spectator: false,
-                        picks_up: false,
-                        health: 20.0,
-                        yaw: 0.0,
-                        pitch: 0.0,
-                    },
                 );
             }
             if level

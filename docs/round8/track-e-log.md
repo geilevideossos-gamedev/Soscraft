@@ -629,6 +629,51 @@ Commit: see `git log` ("The level thread serves every player, not player 0"). Th
 - **Test steps:** `docs/round8/e-m2-tests.md`, section E11 (the host's pickups, orbs, tame wolf and crops as before, and a friend leaving).
 - **Kit:** `minecraft:stone_pickaxe` x1, `minecraft:cobblestone` x32, `minecraft:experience_bottle` x8, `minecraft:wolf_spawn_egg` x1, `minecraft:bone` x8, `minecraft:dirt` x4, `minecraft:wooden_hoe` x1, `minecraft:wheat_seeds` x4.
 
+### E12. Mobs, items and XP treat every player alike
+
+Commit: see `git log` ("Mobs, items and XP treat every player alike"). The previous commit is `3caf3ef0` (E11).
+
+- **Changed:**
+  - `crates/minecraft_survival/src/entities.rs`:
+    - `const PLAYER` is gone. Throws, tridents, punches, end hits, fireball deflects, bullets (`shoot`), blasts, item uses on blocks, eyes of ender, dragon's breath bottles and spawn eggs all take the acting player's id. `blast` takes the credited player as an `Option<u64>`.
+    - `set_player_uuid` became `set_players(&[(u64, PlayerUuid)])`. It sends a player's UUID to the level thread only when it is new or changed, so the host frame can call it every frame.
+    - `Entities::tick` takes `&mut [TickActor { id, view, inventory, selected }]`, one per player in the level. Every actor becomes a `TickPlayer`, a mob candidate, a mob view, a mob vitals entry and a simulation centre. Each actor's picked stacks go into that actor's own inventory, and egg answers spend that actor's egg. The first actor is the one this game shows: its pickups animate, the pop and the mob sounds are heard from its feet, and the mob mirror is tracked around it. `tick` returns only the block changes now.
+    - The per-player queues live in `PlayerQueues`, a map of `PlayerQueue` by id: the picks still to go into the inventory, the end gateway pearls, the orb XP, the item use waiting for its answer, the eggs waiting and their answers, the feet the last tick saw, and `PlayerOutputs` (hits, pearl landings, potions, pushes and finished item uses). `PlayerQueues::route` sorts each level output by player: picks, orbs, pearls, gateways, potions, pushes, item use answers, egg answers, trident strikes and mob hits (with the direction worked out from that player's feet). Outputs for an id with no queue, such as a player who has left, are handled safely: picked stacks are spawned again where they were picked up, taken orbs are given back to the world as orbs at the same place, and everything else is dropped.
+    - New accessors take the place of the old public fields: `take_player_outputs(id)`, `player_outputs(id)`, `take_experience(id)`, `take_pearl_gateways(id)`, `land_pearl(id, landing)` and `awaits_item_use(id)`.
+    - `leave(id, inventory, selected, feet)` replaces both `leave` and `settle_player`, for any player. It sends `PlayerLeft`, waits for the level to go idle, takes that player's late picks and orbs from the outputs not yet read, applies their egg answers, puts the picks into the inventory (what does not fit drops at their feet), removes their queue and returns the XP they still had coming. Other players' queues are untouched.
+  - `crates/minecraft_survival/src/level.rs`: `spill` gives a broken furnace's stored XP back as orbs at the block's centre. Before, it went straight to the host's XP bar.
+  - `crates/minecraft_survival/src/server.rs`: a leaving friend gets the XP that `leave` returns before their file is saved.
+  - `crates/minecraft_survival/src/the_end/gateway.rs`: `pearls_through(level, player)` works on one player's pearls.
+  - `crates/render_anim/src/minecraft_world.rs`:
+    - The host frame splits the players into the host and the friends, so the host's step and the friends' inventories can both be borrowed.
+    - The entity tick gets the host and every friend in the level (`tick_actor`: friends who are not travelling or arriving and have an MW2 body), and `set_players` with all of them.
+    - A `MobBlast` credits the player behind the attacker's client: the host, or a friend in this level, and nobody otherwise. A `MobShot` still credits the host until E13a gives it an attacker.
+    - The host's XP comes from `take_experience` plus the furnace output. Leaving a level for travel uses `leave` and keeps the XP returned.
+  - `crates/render_anim/src/minecraft_players.rs`:
+    - `act` passes the player's id to every entity call.
+    - `struck` takes that player's `PlayerOutputs` itself. The hits are no longer a parameter.
+    - `tick_actor` builds a friend's actor from their MW2 state: feet, look, alive, game mode and health.
+    - `step_friend` now runs the friend's gateway pearls, `struck` (mob hits with shield and armour, pearls, pushes, potions and item uses) and the friend's orb XP.
+  - `crates/render_anim/src/minecraft_end.rs`: `pearls_through` passes the player's id.
+- **Tests:**
+  - `minecraft_survival` `entities::tests`:
+    - `a_skeleton_arrow_hurts_the_friend_it_hit_and_not_the_host`: the arrow lands in the friend's hits with its direction and the skeleton as the cause. The host's hits stay empty.
+    - `a_friends_picks_orbs_pearls_pushes_and_item_uses_reach_only_the_friend`: every kind of output reaches only the friend, the trident's direction comes from the friend's feet, and the host's own item use keeps waiting.
+    - `outputs_for_a_player_no_longer_in_the_level_go_back_to_the_world`: a late pick and a late orb of a player who left come back as unclaimed at the place they were taken, and the rest is dropped.
+    - `a_friends_kill_gives_the_friend_the_experience` (real 26.3 data): a cow is summoned at the friend's feet on a stone floor, the friend shoots it, and the friend takes 1 to 3 points while the host, 35 blocks away, takes none. It also checks that `set_players` sends each UUID once.
+    - `a_host_drop_reaches_the_level_and_the_friend_picks_it_up` (real 26.3 data): a drop the host's game spawned goes to the level thread and lands in the friend's inventory, not the host's. Then `leave(FRIEND)` removes only the friend's queues.
+  - Existing tests follow the new shapes. `a_leaving_player_gets_the_late_picks_and_loses_their_pearls_and_pushes` also checks the late orbs. `mobs_leave_creative_and_spectator_players_alone` checks the candidate ids. The eye of ender, end gateway pearl and dragon fight tests use the per-player accessors and actors.
+  - Results: `test -p minecraft_survival` 449 + 1, `test -p render_anim --lib` 78, `check -p launcher` green.
+- **Decisions:**
+  - **A friend's picks go straight into the friend's inventory during the host's entity tick,** like the host's. The host frame borrows the friends' players next to the host's for that. Hits, pearls, pushes, potions, item uses and XP wait in the friend's `PlayerOutputs` until the friend's own step, which applies them with the friend's shield, armour and MW2 body.
+  - **Only the host's own pickups show the pickup animation and the pop on the host's screen.** A friend's pickup makes the item vanish there. The flying item and the sound for other players come with the item tracking and sounds of M3 (E16, E17).
+  - **Taken orbs of a player who has left are dropped as orbs again** where they were taken, as their picked stacks are. This keeps the XP in the world rather than losing it.
+  - **A broken furnace's XP is dropped as orbs at the block's centre.** This is vanilla's `AbstractFurnaceBlockEntity.preRemoveSideEffects` (`getRecipesToAwardAndPopExperience` at `Vec3.atCenterOf`, checked with javap). Before, the level handed it to the host, which would be wrong once anyone can break the furnace.
+  - **Leaving a level for travel now waits for the level to go idle,** as a friend's leave does. Late picks and orbs that were still in flight are no longer lost on a trip.
+  - **Bullets still credit the host** until E13a adds the attacker to `MobShot`. Kill XP drops for any player's kill, so it already goes to whoever picks it up.
+- **Test steps:** `docs/round8/e-m2-tests.md`, section E12 (two windows: the friend picks up a block the host broke, takes the orbs of thrown bottles, gets a grenade kill's loot and XP, and is shot by a skeleton while the host stays unhurt).
+- **Kit:** `minecraft:stone_pickaxe` x1, `minecraft:cobblestone` x32, `minecraft:experience_bottle` x8.
+
 ## Combined kit for every test in this track
 
 `minecraft:obsidian` x10, `minecraft:flint_and_steel` x1, `minecraft:chest` x1, `minecraft:cobblestone` x32, `minecraft:lava_bucket` x1, `minecraft:torch` x16, `minecraft:cooked_beef` x8, `minecraft:crafting_table` x1, `minecraft:shield` x1, `minecraft:skeleton_spawn_egg` x1, `minecraft:ender_pearl` x4, `minecraft:totem_of_undying` x1, `minecraft:white_bed` x1, `minecraft:elytra` x1, `minecraft:firework_rocket` x8, `minecraft:stone_pickaxe` x1, `minecraft:ender_eye` x4, `minecraft:experience_bottle` x8, `minecraft:wolf_spawn_egg` x1, `minecraft:bone` x8, `minecraft:dirt` x4, `minecraft:wooden_hoe` x1, `minecraft:wheat_seeds` x4 (23 stacks).

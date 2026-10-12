@@ -126,7 +126,18 @@ pub fn spill(containers: &mut Containers, entities: &mut Entities, pos: (i32, i3
     for stack in items {
         entities.world_items.drop_item_stack(stack, pos);
     }
-    entities.experience_found += experience;
+    let mut points = experience.floor() as i32;
+    if experience.fract() > 0.0 && entities.random_float() < experience.fract() {
+        points += 1;
+    }
+    if points > 0 {
+        let centre = [
+            f64::from(pos.0) + 0.5,
+            f64::from(pos.1) + 0.5,
+            f64::from(pos.2) + 0.5,
+        ];
+        entities.award_experience(centre, points);
+    }
 }
 
 pub fn write_blocks(terrain: &mut Terrain, entities: &mut Entities, writes: Writes) {
@@ -758,23 +769,26 @@ mod tests {
                 overload: None,
             };
             let _ = entities.tick(
-                inventory,
-                0,
+                &mut [crate::entities::TickActor {
+                    id: 0,
+                    view: crate::entities::PlayerView {
+                        feet: feet.to_array(),
+                        alive: true,
+                        attackable: true,
+                        spectator: false,
+                        picks_up: false,
+                        health: 20.0,
+                        yaw: 0.0,
+                        pitch: -90.0,
+                    },
+                    inventory: &mut *inventory,
+                    selected: 0,
+                }],
                 0.05,
                 &batch,
                 crate::tick_rate::ClientTiming::default(),
                 minecraft_terrain::server::ClockTicks::default(),
                 true,
-                &crate::entities::PlayerView {
-                    feet: feet.to_array(),
-                    alive: true,
-                    attackable: true,
-                    spectator: false,
-                    picks_up: false,
-                    health: 20.0,
-                    yaw: 0.0,
-                    pitch: -90.0,
-                },
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -830,13 +844,15 @@ mod tests {
             pitch: -90.0,
             outcome: used,
         };
-        entities.throw_eye(throw, sent);
-        assert!(entities.awaits_item_use());
+        entities.throw_eye(0, throw, sent);
+        assert!(entities.awaits_item_use(0));
         tick_until(&mut entities, &mut inventory, feet, |entities| {
-            !entities.item_uses_done.is_empty()
+            entities
+                .player_outputs(0)
+                .is_some_and(|outputs| !outputs.item_uses_done.is_empty())
         });
-        assert!(!entities.awaits_item_use());
-        let done = std::mem::take(&mut entities.item_uses_done);
+        assert!(!entities.awaits_item_use(0));
+        let done = entities.take_player_outputs(0).item_uses_done;
         assert_eq!(done.len(), 1);
         for used in done {
             let heard = finish_item_use(&mut entities, &mut inventory, used, true);

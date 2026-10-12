@@ -110,3 +110,22 @@ Put the kit below in the `.env` next to the exe before the first start.
 ```
 IW4L_MINECRAFT_KIT=minecraft:stone_pickaxe,minecraft:cobblestone*32,minecraft:experience_bottle*8,minecraft:wolf_spawn_egg,minecraft:bone*8,minecraft:dirt*4,minecraft:wooden_hoe,minecraft:wheat_seeds*4
 ```
+
+## E12. Mobs, items and XP treat every player alike
+
+The friend now ticks in the level together with the host. Items and XP orbs the friend touches go into the friend's own hotbar and XP bar, mobs see and target the friend, and mob hits, arrows, ender pearls and splash potions land on whoever they hit. A grenade kill counts for the player who threw it. Bullets still count as the host's until E13a, but the loot and orbs go to whoever picks them up. The friend cannot break, place or use items yet (E13c).
+
+Put the kit below in the `.env` next to the exe before the first start: both players get it on their first join.
+
+1. Start both windows: `& scripts\mp-local.ps1 -World mp-m2-e12 -Fresh`. Spawn in both. Host window: `/time set day`, then `/op Friend`.
+2. Host window: place a cobblestone on the ground and step back 4 blocks from it. Friend window: walk up right next to the cobblestone. Host window: break it with the stone pickaxe from where you stand. Friend window: the cobblestone flies to the friend and the friend's stack goes from 32 to 33. Host window: the host's stack stays at 31.
+3. Host window: walk about 6 blocks away from the friend and throw the 8 bottles o' enchanting so they land at the friend's feet. Friend window: the orbs are taken one at a time and the friend's XP bar fills. Host window: the host's XP bar stays empty. Screenshot the friend window. **S11**
+4. Friend window: `/summon minecraft:cow ~4 ~ ~`. Select a gun and throw a frag grenade at the cow. When it dies, walk over the spot: the beef or leather goes into the friend's hotbar and the orbs into the friend's XP bar.
+5. Host window: `/time set night`, then walk about 15 blocks away from the friend. Friend window: `/summon minecraft:skeleton ~6 ~ ~`. The skeleton shoots at the friend, the nearer player: the friend's hearts drop with each arrow while the host's hearts stay full. Screenshot the friend window as an arrow hits. **S12** Then shoot the skeleton.
+6. Friend window: `/summon minecraft:zombie ~4 ~ ~`. It walks up to the friend and hits them, and the friend's hearts drop. Shoot it.
+7. Host window: break another cobblestone and walk over it: it goes into the host's hotbar with the pickup pop, as before.
+8. Close both windows (type `quit` in the script's console).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:stone_pickaxe,minecraft:cobblestone*32,minecraft:experience_bottle*8
+```
