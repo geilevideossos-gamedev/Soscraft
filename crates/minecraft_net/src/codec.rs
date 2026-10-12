@@ -298,6 +298,7 @@ mod tests {
             saturation: 2.5,
             air: -20,
             fire_ticks: 80,
+            frozen: 140,
             armor: 15,
             xp_level: 30,
             xp_progress: 0.75,

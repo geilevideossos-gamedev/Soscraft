@@ -1302,12 +1302,38 @@ Commit: see `git log` ("The Minecraft dragon fight and the credits work for ever
 IW4L_MINECRAFT_KIT=minecraft:bow,minecraft:arrow*64,minecraft:diamond_sword,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:ender_pearl*16,minecraft:eye_of_ender*12,minecraft:water_bucket
 ```
 
-## Combined kit for every test in this track
+### Leftover: friends freeze in powder snow like the host
 
-This line covers the M6 owner tests in `docs/round8/e-m6-tests.md` (E22 so far). The M1 to M5 tests keep their own kit lines in `docs/round8/e-m1-tests.md` to `docs/round8/e-m5-tests.md`; the M5 combined line is in the git history of this file at `beb54197`, the M3 and M4 line at `6571e5db`, and the M2 line (E11 to E15) at `bf0a3a47`.
+Commit: see `git log` ("Friends freeze in powder snow like the host"). The previous commit is `4221598e` (E22).
 
-`minecraft:bow` x1, `minecraft:arrow` x64, `minecraft:diamond_sword` x1, `minecraft:diamond_helmet` x1, `minecraft:diamond_chestplate` x1, `minecraft:diamond_leggings` x1, `minecraft:diamond_boots` x1, `minecraft:golden_apple` x8, `minecraft:cooked_beef` x32, `minecraft:cobblestone` x64, `minecraft:snowball` x16, `minecraft:ender_pearl` x16, `minecraft:eye_of_ender` x12, `minecraft:water_bucket` x1 (14 stacks).
+- **Changed:**
+  - `crates/minecraft_net`: `PlayerView.frozen`, the player's ticks frozen (vanilla syncs `TICKS_FROZEN` as entity data to every client). `docs/MULTIPLAYER.md` section 4 follows. The protocol stays 3: E22 raised it in this same run, and no build with protocol 3 has been released yet.
+  - `minecraft_survival/src/views.rs`: `player_view` fills it; `HudClock::vitals` turns it into the frost outline's strength and the fully frozen hearts (140 ticks), as the host's `Survival::vitals` does.
+  - `minecraft_survival/src/survival.rs`: `percent_frozen(ticks)` and `frost_scale(ticks, on_block)`, vanilla's `LivingEntity.tryAddFrost` slowdown (up to half the walk speed while frozen with a block under the feet), readable from the ticks alone, so the friend's game can compute it.
+  - `render_anim/src/minecraft_players.rs`: `frost_scale(scene, feet, ticks, alive)` (the block 0.2 under the feet, as before) for every game. `step_friend` now sets a friend's powder snow walker (leather boots) and frost slowdown in the host's MW2 world for that friend's client, as the host frame does for the host.
+  - `render_anim/src/minecraft_world.rs`: the host's own slowdown uses the same `frost_scale`.
+  - `crates/net`: `ClientPrediction::set_minecraft_move_scale`, so a friend's game slows its own predicted walk.
+  - `render_anim/src/minecraft_remote.rs`: the friend's game sets that scale each frame from its `PlayerView.frozen` and the block under its predicted feet. The powder snow walker needs nothing on the friend's side: it is a `pm_flags` bit of the friend's own `PlayerState`, which the host's snapshot carries.
+- **Tests:**
+  - `minecraft_survival` `survival::tests::the_frost_slows_only_a_player_standing_on_a_block_and_any_game_reads_it_from_the_ticks`, `views::tests::a_friends_frost_reaches_their_hearts_and_outline`.
+  - `sim` `frame::tests::a_predicting_game_keeps_its_own_frost_through_the_hosts_snapshots` (the slowdown is client meta that no snapshot carries, so the friend's own value survives each adoption).
+  - `minecraft_net` `codec::tests` carry a frozen view.
+- **Decisions:**
+  - **The friend computes its own slowdown** from the synced ticks and its predicted feet, as vanilla's client applies the frost modifier itself from `TICKS_FROZEN`; the host computes the same from its authoritative feet. A difference of one round trip at the edge of the snow is corrected by the next snapshot like any other prediction error.
+  - **The ticks ride in `PlayerView`**, which is sent again whenever it changes: while a player freezes or thaws that is once a tick (as vanilla's entity data), and nothing while it stays the same.
+- **Test steps:** `docs/round8/e-m6-tests.md`, section "Friends freeze in powder snow like the host".
+- **Kit:** `minecraft:powder_snow_bucket` x1, `minecraft:leather_boots` x1, `minecraft:cobblestone` x64.
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:bow,minecraft:arrow*64,minecraft:diamond_sword,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:ender_pearl*16,minecraft:eye_of_ender*12,minecraft:water_bucket
+IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket,minecraft:leather_boots,minecraft:cobblestone*64
+```
+
+## Combined kit for every test in this track
+
+This line covers the M6 owner tests in `docs/round8/e-m6-tests.md`. The M1 to M5 tests keep their own kit lines in `docs/round8/e-m1-tests.md` to `docs/round8/e-m5-tests.md`; the M5 combined line is in the git history of this file at `beb54197`, the M3 and M4 line at `6571e5db`, and the M2 line (E11 to E15) at `bf0a3a47`.
+
+`minecraft:bow` x1, `minecraft:arrow` x64, `minecraft:diamond_sword` x1, `minecraft:diamond_helmet` x1, `minecraft:diamond_chestplate` x1, `minecraft:diamond_leggings` x1, `minecraft:diamond_boots` x1, `minecraft:golden_apple` x8, `minecraft:cooked_beef` x32, `minecraft:cobblestone` x64, `minecraft:snowball` x16, `minecraft:ender_pearl` x16, `minecraft:eye_of_ender` x12, `minecraft:water_bucket` x1, `minecraft:powder_snow_bucket` x1, `minecraft:leather_boots` x1 (16 stacks).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:bow,minecraft:arrow*64,minecraft:diamond_sword,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:ender_pearl*16,minecraft:eye_of_ender*12,minecraft:water_bucket,minecraft:powder_snow_bucket,minecraft:leather_boots
 ```

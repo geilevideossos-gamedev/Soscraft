@@ -230,7 +230,7 @@ pub struct StateFrame { pub tick: u32, pub epoch: u32, pub mobs: Blob, pub entit
 - **The held state is `HandState`,** sent every tick on the friend-to-host datagram lane while anything is held, newest wins. The host reads it for mining progress and for holding use (eating, drawing a bow, blocking with a shield). A `HandState` older than the last one is ignored. If none has arrived for 500 ms, the host treats the buttons as released.
 
 **`PlayerView`** holds what the HUD and hand need:
-- health, max health, absorption, food, saturation, air, fire ticks, armour points;
+- health, max health, absorption, food, saturation, air, fire ticks, ticks frozen (vanilla's synced `TICKS_FROZEN`: the frozen hearts, the frost outline and the friend's own frost slowdown), armour points;
 - XP level, progress and total;
 - game mode and abilities;
 - active effects (kind, amplifier, duration, ambient);

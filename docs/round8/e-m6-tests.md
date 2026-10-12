@@ -28,3 +28,17 @@ Put the kit below in the `.env` next to the exe before the first start: both pla
 ```
 IW4L_MINECRAFT_KIT=minecraft:bow,minecraft:arrow*64,minecraft:diamond_sword,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:ender_pearl*16,minecraft:eye_of_ender*12,minecraft:water_bucket
 ```
+
+## Friends freeze in powder snow like the host
+
+A friend in powder snow now freezes on their own screen as the host does: the white frost outline grows over about 7 seconds, the hearts turn to the frozen sprites when fully frozen, and walking slows by up to half while frozen with ground under the feet. With leather boots a friend walks on top of powder snow without sinking, and the host sees them do it.
+
+1. Start both windows: `& scripts\mp-local.ps1 -World mp-m6 -Fresh`. Spawn in both. Host window: `/time set day`.
+2. **Sinking and freezing.** Friend window: dig a hole one block wide and one deep and pour the powder snow bucket into it (look at the hole and right click). Step in and stay there: the friend sinks to the bottom of the snow. Over about 7 seconds the white frost outline covers the screen; then the hearts turn light blue (frozen), and one heart is lost every 2 seconds with the hurt sound. Screenshot the friend window with frozen hearts. **S8**
+3. **Slowed while frozen.** Friend window: jump out and walk away on flat ground at once. For a few seconds the friend walks clearly slower, and the outline fades; the walk speed comes back as it fades. The friend's view does not jump or stutter while slowed.
+4. **The host sees it.** Host window: do steps 2 and 3 yourself in the same hole: same outline, hearts and slowdown as before this change.
+5. **Leather boots.** Friend window: put on the leather boots (E, drag them to the feet slot) and walk onto the powder snow: the friend stands and walks on top of it without sinking. Hold Shift: the friend sinks in. Host window: watch the friend's soldier walk on the snow and sink on Shift. Screenshot the friend standing on the snow in the host window. **S9**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket,minecraft:leather_boots,minecraft:cobblestone*64
+```

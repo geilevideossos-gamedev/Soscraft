@@ -1089,6 +1089,18 @@ pub fn frost_move_scale(percent_frozen: f32) -> f32 {
     1.0 - 0.5 * percent_frozen.clamp(0.0, 1.0)
 }
 
+pub fn percent_frozen(ticks_frozen: i32) -> f32 {
+    ticks_frozen.clamp(0, TICKS_TO_FREEZE) as f32 / TICKS_TO_FREEZE as f32
+}
+
+pub fn frost_scale(ticks_frozen: i32, on_block: bool) -> f32 {
+    if ticks_frozen > 0 && on_block {
+        frost_move_scale(percent_frozen(ticks_frozen))
+    } else {
+        1.0
+    }
+}
+
 pub fn freeze_immune(inventory: &Inventory) -> bool {
     [36, 37, 38, 39, 41].into_iter().any(|slot| {
         inventory.slots.get(slot).and_then(Option::as_ref).is_some_and(|stack| {
@@ -2378,6 +2390,19 @@ mod tests {
             on_ground: false,
             ..standing_in([0.5, 1.0, 0.5])
         }
+    }
+
+    #[test]
+    fn the_frost_slows_only_a_player_standing_on_a_block_and_any_game_reads_it_from_the_ticks() {
+        assert_eq!(frost_scale(0, true), 1.0);
+        assert_eq!(frost_scale(TICKS_TO_FREEZE, false), 1.0, "in the air the frost does not slow");
+        assert!((frost_scale(TICKS_TO_FREEZE, true) - 0.5).abs() < 1e-6);
+        assert!((frost_scale(70, true) - 0.75).abs() < 1e-6);
+        assert!((frost_scale(1000, true) - 0.5).abs() < 1e-6);
+        assert_eq!(percent_frozen(-5), 0.0);
+        let mut survival = unfed();
+        live(&mut survival, &snow_pit(), &in_snow(), Armor::default(), 50);
+        assert_eq!(percent_frozen(survival.ticks_frozen()), survival.percent_frozen());
     }
 
     #[test]

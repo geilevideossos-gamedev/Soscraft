@@ -918,9 +918,7 @@ fn update(
     {
         item_activation.activate(|| entities.random_float());
     }
-    let on_block = minecraft_terrain::scene::Scene::block(&terrain.scene, (feet[0].floor() as i32, (feet[1] - 0.2).floor() as i32, feet[2].floor() as i32))
-        .is_some_and(|b| !(b.id.namespace == "minecraft" && matches!(b.id.path.as_str(), "air" | "cave_air" | "void_air")));
-    let frost = if alive && player.survival.ticks_frozen() > 0 && on_block { minecraft_survival::survival::frost_move_scale(player.survival.percent_frozen()) } else { 1.0 };
+    let frost = crate::minecraft_players::frost_scale(&terrain.scene, feet, player.survival.ticks_frozen(), alive);
     authority.0.set_minecraft_move_scale(local.0, frost);
     if let Some(entities) = entities.as_mut() {
         let (writes, brewed) = minecraft_survival::level::tick_containers(containers, entities, terrain, std::mem::take(container_ticks));

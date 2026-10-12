@@ -11,7 +11,7 @@ use crate::guns::{HOTBAR, WEAPON_PREFIX, weapon_item, weapon_of};
 use crate::offhand::OFFHAND;
 use crate::player::Player;
 use crate::player_nbt::EFFECTS;
-use crate::survival::{DAMAGE_BLINK, SETTLE_DISPLAY, Vitals};
+use crate::survival::{DAMAGE_BLINK, SETTLE_DISPLAY, TICKS_TO_FREEZE, Vitals, percent_frozen};
 
 const MAX_AIR: i32 = 300;
 const POISON: &str = "minecraft:poison";
@@ -48,6 +48,7 @@ pub fn player_view(player: &Player) -> PlayerView {
         saturation: status.food.saturation,
         air: status.air,
         fire_ticks: survival.fire_ticks(),
+        frozen: survival.ticks_frozen(),
         armor,
         xp_level: count(status.experience_level),
         xp_progress: status.experience_progress,
@@ -219,8 +220,8 @@ impl HudClock {
             experience_progress: view.xp_progress,
             on_fire: view.fire_ticks > 0,
             eye_in_lava,
-            frozen: 0.0,
-            fully_frozen: false,
+            frozen: percent_frozen(view.frozen),
+            fully_frozen: view.frozen >= TICKS_TO_FREEZE,
         }
     }
 
@@ -397,6 +398,26 @@ mod tests {
         assert_eq!(settled.display_health, 14);
         assert!(!settled.blink);
         assert_eq!(settled.food, 20);
+    }
+
+    #[test]
+    fn a_friends_frost_reaches_their_hearts_and_outline() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut alex = player(&mut chat, 1, "Alex");
+        let mut clock = HudClock::default();
+        let mut view = player_view(&alex);
+        assert_eq!(view.frozen, 0);
+        let status = alex.survival.status.clone();
+        alex.survival.restore(status, 0, 90, 0);
+        assert_eq!(player_view(&alex).frozen, 90);
+        let thawed = clock.vitals(&view, 0.05, false, false);
+        assert_eq!((thawed.frozen, thawed.fully_frozen), (0.0, false));
+        view.frozen = 70;
+        let half = clock.vitals(&view, 0.05, false, false);
+        assert_eq!((half.frozen, half.fully_frozen), (0.5, false));
+        view.frozen = TICKS_TO_FREEZE;
+        let full = clock.vitals(&view, 0.05, false, false);
+        assert_eq!((full.frozen, full.fully_frozen), (1.0, true));
     }
 
     #[test]

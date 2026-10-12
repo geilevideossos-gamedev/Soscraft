@@ -316,7 +316,7 @@ pub(crate) fn friend(
     mut installed: MessageReader<frame::MatchInstalled>,
     mut torn_down: MessageReader<frame::MatchTornDown>,
     wire: Option<ResMut<net::MinecraftWire>>,
-    prediction: Option<Res<net::ClientPredictionState>>,
+    mut prediction: Option<ResMut<net::ClientPredictionState>>,
     (local, presented): (Res<net::LocalPresentClient>, Res<net::PresentedSnapshot>),
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     (skate, cameras, mc_camera): (
@@ -486,6 +486,11 @@ pub(crate) fn friend(
         (dt, shown_ui),
         now_ms,
     );
+    if let Some(prediction) = prediction.as_deref_mut() {
+        prediction
+            .0
+            .set_minecraft_move_scale(frost(friend, player.as_ref()));
+    }
     let seconds = real_time.elapsed_secs_f64();
     let shown = (dt, seconds, now_ms);
     let swap = std::mem::take(&mut ui.swap_hands);
@@ -797,6 +802,19 @@ fn aim(friend: &Friend, ps: Option<&playerstate_iw4::PlayerState>) -> Target {
         face: minecraft_survival::actions::face_index(hit.face),
         hit: hit.point.as_vec3().to_array(),
     })
+}
+
+fn frost(friend: &Friend, ps: Option<&playerstate_iw4::PlayerState>) -> f32 {
+    let Some(remote) = friend.remote.as_ref() else {
+        return 1.0;
+    };
+    let (Some(level), Some(view), Some(ps)) = (remote.level.as_ref(), remote.player.as_ref(), ps)
+    else {
+        return 1.0;
+    };
+    let feet = sim::voxel::to_block(level.origin, ps.origin);
+    let alive = ps.pm_type == 0;
+    crate::minecraft_players::frost_scale(&level.terrain.scene, feet, view.frozen, alive)
 }
 
 fn mc_game_mode(mode: GameMode) -> frame::McGameMode {

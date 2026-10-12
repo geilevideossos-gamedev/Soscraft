@@ -638,6 +638,24 @@ pub(crate) fn movement(
     }
 }
 
+pub(crate) fn frost_scale(
+    scene: &minecraft_terrain::scene::HandcraftedScene,
+    feet: [f64; 3],
+    ticks_frozen: i32,
+    alive: bool,
+) -> f32 {
+    let under = (
+        feet[0].floor() as i32,
+        (feet[1] - 0.2).floor() as i32,
+        feet[2].floor() as i32,
+    );
+    let on_block = minecraft_terrain::scene::Scene::block(scene, under).is_some_and(|b| {
+        !(b.id.namespace == "minecraft"
+            && matches!(b.id.path.as_str(), "air" | "cave_air" | "void_air"))
+    });
+    minecraft_survival::survival::frost_scale(ticks_frozen, alive && on_block)
+}
+
 pub(crate) fn actor(ps: &PlayerState, origin: [f64; 3], alive: bool) -> Actor {
     let crouch = playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE;
     let offhand =
@@ -1377,6 +1395,11 @@ pub(crate) fn step_friend(
         world.packs,
     );
     let feet = sim::voxel::to_block(origin, ps.origin);
+    let walker = minecraft_survival::survival::walks_on_powder_snow(&player.inventory);
+    world.authority.set_powder_snow_walker(client, walker);
+    let frozen = player.survival.ticks_frozen();
+    let frost = frost_scale(&terrain.scene, feet, frozen, life.alive);
+    world.authority.set_minecraft_move_scale(client, frost);
     player
         .death_watch
         .stood(minecraft_survival::death::DeathSpot { feet, eye });
