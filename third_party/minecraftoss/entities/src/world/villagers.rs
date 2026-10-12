@@ -298,7 +298,7 @@ impl EntityWorld {
             out.push(seen_of("minecraft:creeper", "monster", &e.creeper.body, e.creeper.body.height * 0.85, e.creeper.health > 0.0, false, e.id));
         }
         for e in &self.spiders {
-            out.push(seen_of("minecraft:spider", "monster", &e.spider.body, e.spider.eye_height(), e.spider.health > 0.0, false, e.id));
+            out.push(seen_of(e.spider.type_id(), "monster", &e.spider.body, e.spider.eye_height(), e.spider.health > 0.0, false, e.id));
         }
         for e in &self.slimes {
             out.push(seen_of("minecraft:slime", "monster", &e.slime.body, e.slime.eye_height(), e.slime.health > 0.0, false, e.id));

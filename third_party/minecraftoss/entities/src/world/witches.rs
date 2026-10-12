@@ -585,7 +585,8 @@ impl EntityWorld {
         } else if let Some(e) = self.creepers.iter_mut().find(|e| e.id == id) {
             (&mut e.creeper.health, 20.0)
         } else if let Some(e) = self.spiders.iter_mut().find(|e| e.id == id) {
-            (&mut e.spider.health, crate::spider::MAX_HEALTH)
+            let max = e.spider.max_health();
+            (&mut e.spider.health, max)
         } else if let Some(e) = self.slimes.iter_mut().find(|e| e.id == id) {
             let max = e.slime.max_health();
             (&mut e.slime.health, max)

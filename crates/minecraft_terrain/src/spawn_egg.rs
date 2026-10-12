@@ -115,6 +115,13 @@ fn mob_width(kind: &str) -> f64 {
         .or_else(|| {
             (kind == "minecraft:iron_golem").then_some(minecraftoss_entities::iron_golem::WIDTH)
         })
+        .or_else(|| {
+            (kind == "minecraft:cave_spider").then(|| {
+                minecraftoss_entities::spider::Spider::cave(glam::DVec3::ZERO)
+                    .body
+                    .width
+            })
+        })
         .map_or(FALLBACK_WIDTH, f64::from)
 }
 
@@ -421,6 +428,7 @@ mod tests {
     fn an_iron_golem_is_as_wide_as_its_body() {
         assert!((mob_width("minecraft:iron_golem") - 1.4).abs() < 1.0e-6);
         assert!((mob_width("minecraft:cow") - 0.9).abs() < 1.0e-6);
+        assert!((mob_width("minecraft:cave_spider") - 0.7).abs() < 1.0e-6);
         assert_eq!(mob_width("minecraft:villager"), FALLBACK_WIDTH);
     }
 

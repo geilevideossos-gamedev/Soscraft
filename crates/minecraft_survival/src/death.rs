@@ -215,13 +215,20 @@ impl DamageCause {
         }
     }
 
-    pub fn melee_effect(self) -> Option<(minecraftoss_player::survival::EffectKind, u32)> {
+    pub fn melee_effect(self, difficulty: minecraftoss_player::survival::Difficulty) -> Option<(minecraftoss_player::survival::EffectKind, u32)> {
         match self {
             Self::Mob {
                 type_id: "minecraft:wither_skeleton",
                 attack: MobAttack::Melee,
                 ..
             } => Some((minecraftoss_player::survival::EffectKind::Wither, 200)),
+            Self::Mob {
+                type_id: "minecraft:cave_spider",
+                attack: MobAttack::Melee,
+                ..
+            } => minecraftoss_entities::spider::Spider::cave(glam::DVec3::ZERO)
+                .poison_ticks(difficulty as i32)
+                .map(|ticks| (minecraftoss_player::survival::EffectKind::Poison, ticks)),
             _ => None,
         }
     }
@@ -730,12 +737,23 @@ mod tests {
         tracker.record(1, DamageCause::Wither, 1.0, None, 0.0);
         assert_eq!(line(&tracker), says("%1$s withered away", "withered away"));
         let blow = DamageCause::mob(MobAttack::Melee, Some(4), Some("minecraft:wither_skeleton"));
+        let normal = minecraftoss_player::survival::Difficulty::Normal;
         assert_eq!(
-            blow.melee_effect(),
+            blow.melee_effect(normal),
             Some((minecraftoss_player::survival::EffectKind::Wither, 200))
         );
-        assert_eq!(zombie_bite().melee_effect(), None);
-        assert_eq!(skeleton_arrow().melee_effect(), None);
+        assert_eq!(zombie_bite().melee_effect(normal), None);
+        assert_eq!(skeleton_arrow().melee_effect(normal), None);
+    }
+
+    #[test]
+    fn a_cave_spider_bite_poisons_for_seven_seconds_on_normal_and_fifteen_on_hard() {
+        use minecraftoss_player::survival::{Difficulty, EffectKind};
+        let bite = DamageCause::mob(MobAttack::Melee, Some(4), Some("minecraft:cave_spider"));
+        let poison = [Difficulty::Peaceful, Difficulty::Easy, Difficulty::Normal, Difficulty::Hard].map(|difficulty| bite.melee_effect(difficulty));
+        assert_eq!(poison, [None, None, Some((EffectKind::Poison, 140)), Some((EffectKind::Poison, 300))]);
+        let spider = DamageCause::mob(MobAttack::Melee, Some(4), Some("minecraft:spider"));
+        assert_eq!(spider.melee_effect(Difficulty::Hard), None);
     }
 
     #[test]

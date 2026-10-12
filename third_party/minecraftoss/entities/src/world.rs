@@ -400,7 +400,8 @@ impl SpiderEntity {
         if self.spider.health > 0.0 && !self.spider.damage.dead {
             self.no_action_time = 0;
         }
-        let result = self.spider.damage.hurt_generic(&mut self.spider.health, crate::spider::MAX_HEALTH, amount);
+        let max_health = self.spider.max_health();
+        let result = self.spider.damage.hurt_generic(&mut self.spider.health, max_health, amount);
         let position = self.position();
         self.spider.damage.place_death(result, position, self.spider.body.fire_ticks > 0);
         // Only a full hit plays the hurt or death sound (`tookFullDamage`).
@@ -2612,7 +2613,7 @@ impl EntityWorld {
         let id = self.next_id;
         let mut ai = MonsterAi::of_kind(crate::monster_ai::MonsterKind::Spider, &spider.body, spider.yaw);
         ai.state.eye_height = spider.eye_height();
-        ai.state.max_health = crate::spider::MAX_HEALTH;
+        ai.state.max_health = spider.max_health();
         self.spiders.push(SpiderEntity {
             effects: Default::default(),
             id,
@@ -3625,7 +3626,7 @@ impl EntityWorld {
             add(e.id, "minecraft:creeper", &e.creeper.body, e.creeper.body.height * 0.85, e.creeper.health > 0.0, false);
         }
         for e in &self.spiders {
-            add(e.id, "minecraft:spider", &e.spider.body, e.spider.eye_height(), e.spider.health > 0.0, false);
+            add(e.id, e.spider.type_id(), &e.spider.body, e.spider.eye_height(), e.spider.health > 0.0, false);
         }
         for e in &self.slimes {
             add(e.id, e.slime.type_id(), &e.slime.body, e.slime.eye_height(), e.slime.health > 0.0, false);
@@ -4042,7 +4043,8 @@ impl EntityWorld {
             deaths.push((order, death));
         }
         for e in &mut self.spiders {
-            let Some((order, mut death)) = death_of(e.id, &mut e.spider.damage, "minecraft:spider", Some("minecraft:spider"), plain) else { continue };
+            let kind = e.spider.type_id();
+            let Some((order, mut death)) = death_of(e.id, &mut e.spider.damage, kind, Some(kind), plain) else { continue };
             if earns(&death, true) {
                 death.experience = 5;
             }
@@ -4179,8 +4181,8 @@ impl EntityWorld {
         if self.potions.iter().any(|e| e.id == id) {
             return Some("minecraft:splash_potion");
         }
-        if self.spiders.iter().any(|e| e.id == id) {
-            return Some("minecraft:spider");
+        if let Some(e) = self.spiders.iter().find(|e| e.id == id) {
+            return Some(e.spider.type_id());
         }
         if self.arrows.iter().any(|e| e.id == id) {
             return Some("minecraft:arrow");
@@ -4189,6 +4191,9 @@ impl EntityWorld {
             return Some("minecraft:villager");
         }
         if let Some(e) = self.cows.iter().find(|e| e.id == id) {
+            if let Some(horse) = &e.horse {
+                return Some(horse.kind.type_id());
+            }
             return Some(if e.mooshroom.is_some() { "minecraft:mooshroom" } else { "minecraft:cow" });
         }
         if self.sheep.iter().any(|e| e.id == id) {
@@ -4981,7 +4986,7 @@ impl EntityWorld {
         }));
         out.extend(self.skeletons.iter().map(|e| entry(e.id, e.skeleton.kind.type_id(), &e.skeleton.body, e.skeleton.persistence_required)));
         out.extend(self.creepers.iter().map(|e| entry(e.id, "minecraft:creeper", &e.creeper.body, e.creeper.persistence_required)));
-        out.extend(self.spiders.iter().map(|e| entry(e.id, "minecraft:spider", &e.spider.body, e.spider.persistence_required)));
+        out.extend(self.spiders.iter().map(|e| entry(e.id, e.spider.type_id(), &e.spider.body, e.spider.persistence_required)));
         out.extend(self.slimes.iter().map(|e| entry(e.id, e.slime.type_id(), &e.slime.body, e.slime.persistence_required)));
         // `requiresCustomPersistence`: carrying a block keeps it.
         out.extend(self.endermen.iter().map(|e| entry(e.id, "minecraft:enderman", &e.enderman.body, e.enderman.persistence_required || e.carried().is_some())));
@@ -5641,9 +5646,10 @@ impl EntityWorld {
                             entity.ai.state.hurt_by = None;
                         }
                         // `tickEffects`, after the hurt and death clocks.
+                        let max_health = entity.spider.max_health();
                         for work in entity.effects.tick(false) {
-                            match work.resolve(entity.spider.health, crate::spider::MAX_HEALTH) {
-                                Some(EffectWork::Heal(amount)) => heal(&mut entity.spider.health, crate::spider::MAX_HEALTH, amount),
+                            match work.resolve(entity.spider.health, max_health) {
+                                Some(EffectWork::Heal(amount)) => heal(&mut entity.spider.health, max_health, amount),
                                 Some(EffectWork::HurtMagic(amount)) => {
                                     entity.hurt(amount);
                                 }
@@ -5683,14 +5689,18 @@ impl EntityWorld {
                     }
                     // `Spider.tick`: after moving (and pushing), it climbs if
                     // it met a wall.
+                    let difficulty = self.difficulty;
                     let entity = self.spider_mut(id).unwrap();
                     entity.spider.body.climbing = entity.spider.body.horizontal_collision;
+                    let poison = entity.spider.poison_ticks(difficulty);
                     if let Some((crate::monster_ai::Target::Player(player_id), attacker)) = hit {
                         self.player_hits.push(PlayerHit { player_id, damage: crate::spider::ATTACK_DAMAGE, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0, throw: glam::DVec3::ZERO, disable_shield_seconds: 0.0 }, source: Some(id) });
                     }
                     // A bite on a mob (an iron golem, or whatever hurt it).
                     if let Some((crate::monster_ai::Target::Mob(victim), attacker)) = hit {
-                        self.mob_hits_mob(id, victim, crate::spider::ATTACK_DAMAGE, attacker, 0.0);
+                        if let (Some(ticks), true) = (poison, self.mob_hits_mob(id, victim, crate::spider::ATTACK_DAMAGE, attacker, 0.0).is_some_and(|hit| hit.applied)) {
+                            self.add_mob_effect(victim, crate::effects::EffectInstance::new(MobEffect::Poison, ticks as i32, 0));
+                        }
                     }
                     continue;
                 }
@@ -7719,6 +7729,32 @@ mod tests {
         }
         assert!(world.slimes().len() >= 2);
         assert!(world.slimes().iter().all(|e| e.slime.magma && e.slime.size == 1), "the halves are magma cubes too");
+    }
+
+    #[test]
+    fn a_cave_spider_is_a_small_spider_with_its_own_kind_loot_and_poison() {
+        let mut world = EntityWorld::default();
+        let id = world.spawn_spider(Spider::cave(DVec3::new(0.5, 1.0, 0.5)), true);
+        let plain = world.spawn_spider(Spider::new(DVec3::new(8.5, 1.0, 0.5)), true);
+        assert_eq!(world.entity_type(id), Some("minecraft:cave_spider"));
+        assert_eq!(world.entity_type(plain), Some("minecraft:spider"));
+        let cave = world.spiders().iter().find(|e| e.id == id).unwrap();
+        assert_eq!((cave.spider.body.width, cave.spider.body.height, cave.spider.eye_height()), (0.7, 0.5, 0.45));
+        assert_eq!((cave.spider.health, cave.ai.state.max_health), (12.0, 12.0));
+        assert_eq!([0, 1, 2, 3].map(|difficulty| cave.spider.poison_ticks(difficulty)), [None, None, Some(140), Some(300)]);
+        assert_eq!(world.spiders().iter().find(|e| e.id == plain).unwrap().spider.poison_ticks(3), None);
+        world.spider_mut(id).unwrap().hurt(5.0);
+        let regeneration = crate::effects::EffectInstance::new(MobEffect::Regeneration, 400, 4);
+        world.add_mob_effect(id, regeneration);
+        for _ in 0..40 {
+            world.tick(&mut Floor);
+        }
+        assert_eq!(world.spiders().iter().find(|e| e.id == id).unwrap().spider.health, 12.0, "it heals up to 12");
+        world.spider_mut(id).unwrap().hurt(100.0);
+        world.tick(&mut Floor);
+        let deaths = world.take_deaths();
+        assert_eq!(deaths.len(), 1);
+        assert_eq!((deaths[0].table, deaths[0].context.this_type), (Some("minecraft:cave_spider"), Some("minecraft:cave_spider")));
     }
 
     #[test]

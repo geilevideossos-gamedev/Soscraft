@@ -7,6 +7,7 @@ use glam::DVec3;
 
 /// `Spider.createAttributes`: `MAX_HEALTH`.
 pub const MAX_HEALTH: f32 = 16.0;
+pub const CAVE_MAX_HEALTH: f32 = 12.0;
 /// `Monster.createMonsterAttributes`: `ATTACK_DAMAGE`.
 pub const ATTACK_DAMAGE: f32 = 2.0;
 
@@ -22,6 +23,7 @@ pub struct Spider {
     pub damage: DamageState,
     pub persistence_required: bool,
     pub yaw: f32,
+    pub cave: bool,
 }
 
 impl Spider {
@@ -32,10 +34,36 @@ impl Spider {
             damage: DamageState::default(),
             persistence_required: false,
             yaw: 0.0,
+            cave: false,
+        }
+    }
+
+    pub fn cave(position: DVec3) -> Self {
+        Self {
+            body: Body::new(position, 0.7, 0.5),
+            health: CAVE_MAX_HEALTH,
+            cave: true,
+            ..Self::new(position)
         }
     }
 
     pub fn eye_height(&self) -> f32 {
-        0.65
+        if self.cave { 0.45 } else { 0.65 }
+    }
+
+    pub fn max_health(&self) -> f32 {
+        if self.cave { CAVE_MAX_HEALTH } else { MAX_HEALTH }
+    }
+
+    pub fn type_id(&self) -> &'static str {
+        if self.cave { "minecraft:cave_spider" } else { "minecraft:spider" }
+    }
+
+    pub fn poison_ticks(&self, difficulty: i32) -> Option<u32> {
+        match (self.cave, difficulty) {
+            (true, 2) => Some(7 * 20),
+            (true, 3) => Some(15 * 20),
+            _ => None,
+        }
     }
 }

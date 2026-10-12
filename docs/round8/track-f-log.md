@@ -75,3 +75,61 @@ Commit: the one after `0d6f48be` (whose log entry said "six spears": there are s
 ```
 IW4L_MINECRAFT_KIT=minecraft:spyglass,minecraft:spyglass
 ```
+
+## F3. Every spawn egg of a mob the game has hatches it
+
+Commit: the one after `d17eaf15`.
+
+- **Cause:** the cave spider was not simulated at all. An egg asks the server to summon its mob, and the server answers "not simulated" for a kind it has no entity for, so the egg does nothing and is kept. The zombie egg worked because zombies are simulated. Mineshaft spawners only showed a cave spider in the cage.
+- **Survey:** a new test uses every one of the 88 `*_spawn_egg` items of the 26.3 pack on a block and checks what appears. Before this commit, 34 eggs hatched their mob. The others found:
+  - **Cave spider:** did nothing (above).
+  - **Ender dragon:** did nothing. The egg went to the mob world, which has no dragon, though `/summon minecraft:ender_dragon` worked.
+  - **Horse and donkey:** they hatched, but the entity world named them cows. That name could reach kill messages and fireball blame.
+  - **Jockeys:** a spider egg rolls a skeleton jockey one time in 100, and a baby zombie can roll a chicken jockey. The spider jockey left nothing (the egg was kept), and the chicken jockey hatched only the chicken.
+- **Changed:**
+  - `minecraftoss-entities` `spider.rs`: `Spider::cave` (`EntityTypes.CAVE_SPIDER`: 0.7 by 0.5, eyes at 0.45; `CaveSpider.createCaveSpider`: 12 health), with `max_health`, `type_id` and `poison_ticks` (`CaveSpider.doHurtTarget`: poison for 7 seconds on normal and 15 on hard, none on easy). `world.rs`, `villagers.rs`, `witches.rs`: the spider's own kind, health cap, loot table (`minecraft:cave_spider`) and census name. A cave spider's bite on a mob poisons it. `entity_type` names horses and donkeys by their kind. `monster_ai.rs`: iron golems hunt cave spiders (`Enemy`).
+  - `minecraft_terrain`:
+    - `server_mobs.rs` loads and saves `minecraft:cave_spider` and lists it as simulated, so `/summon` and spawners make it too.
+    - `spawn_unmounted` hatches an egg's jockey as its two mobs side by side.
+    - `server.rs` `hatch_egg` hands a dragon to the dragons, like `/summon`, and uses `spawn_unmounted`.
+    - `spider_render.rs` draws a cave spider as the spider model scaled by 0.7 about the feet with `entity/spider/cave_spider` (`LayerDefinitions`: `MeshTransformer.scaling(0.7)`). `client_mobs.rs` gives it a 0.56 shadow (`CaveSpiderRenderer`).
+    - `spawn_egg.rs` uses its 0.7 width for the spawn height.
+  - `minecraft_survival`:
+    - `death.rs`: `melee_effect` takes the difficulty and gives poison for a cave spider's bite.
+    - `survival.rs` passes the difficulty.
+    - `entities.rs`: cave spiders count as monsters near a bed under their own name.
+  - `docs/MINECRAFT-SURVIVAL.md`: cave spiders in the simulated list, and the egg notes.
+- **Tests:**
+  - `minecraft_terrain`:
+    - `server::tests::every_spawn_egg_of_a_mob_the_game_has_hatches_that_mob` (with the 26.3 pack): all 88 eggs are aimed and hatched. Exactly the 36 listed below hatch a mob of their own kind, and every other egg leaves no mob, no dormant entry and no dragon behind.
+    - `server_mobs::tests::a_hatched_jockey_stands_its_rider_beside_its_mount`: spider and chicken jockeys come out as two mobs. A strider still carries its rider. A zombie horse's rider does not come without its horse. A cave spider saves as a cave spider with its health.
+    - `spider_render::tests::a_cave_spider_is_the_spider_model_at_seven_tenths_with_its_own_skin`.
+    - `spawn_egg::tests::an_iron_golem_is_as_wide_as_its_body` now also checks the cave spider's width.
+  - `minecraftoss-entities` `world::tests::a_cave_spider_is_a_small_spider_with_its_own_kind_loot_and_poison`.
+  - `minecraft_survival` `death::tests::a_cave_spider_bite_poisons_for_seven_seconds_on_normal_and_fifteen_on_hard`.
+- **Eggs that hatch their mob (36):** bat, blaze, bogged, cave spider, chicken, cow, creeper, donkey, ender dragon, enderman, ghast, hoglin, horse, husk, iron golem, magma cube, mooshroom, parched, pig, piglin, piglin brute, sheep, shulker, skeleton, slime, spider, stray, strider, villager, witch, wither skeleton, wolf, zoglin, zombie, zombie villager, zombified piglin.
+- **Eggs of mobs the game doesn't have yet (52):** each one does nothing and is kept, as before. They are allay, armadillo, axolotl, bee, breeze, camel, camel husk, cat, cod, copper golem, creaking, dolphin, drowned, elder guardian, endermite, evoker, fox, frog, glow squid, goat, guardian, happy ghast, llama, mule, nautilus, ocelot, panda, parrot, phantom, pillager, polar bear, pufferfish, rabbit, ravager, salmon, silverfish, skeleton horse, sniffer, snow golem, squid, sulfur cube, tadpole, trader llama, tropical fish, turtle, vex, vindicator, wandering trader, warden, wither, zombie horse and zombie nautilus. None is faked with another mob's model.
+- **Decisions:**
+  - **Cave spiders are real cave spiders,** built on the spider, because vanilla's `CaveSpider` is a `Spider` with these differences only:
+    - its size, eye height and 12 health;
+    - its `doHurtTarget` poison;
+    - a `finalizeSpawn` that skips `Mob.finalizeSpawn`, so it gets no jockey, no spider effect and no follow-range bonus (the summon path already returns the plain fresh tag for it);
+    - its renderer's scale, skin and shadow.
+    - It keeps the spider's sounds, speed, attack and climbing, as in vanilla.
+  - **Jockeys rolled by an egg** hatch both mobs side by side, the rider at the mount's spot. Only striders carry riders here, and a kept egg that does nothing would be worse. Naturally spawned spider and chicken jockeys still wait dormant as before. A zombie horse egg makes nothing, rider included, because the horse is not simulated.
+  - **The dragon egg** goes the way of `/summon minecraft:ender_dragon` (its saved tag through the dragon list), so the dragon is the same as a summoned one.
+- **Owner's test steps** (survival, normal difficulty, kit below):
+  1. In a cave or at night, use a cave spider egg on the floor and a spider egg next to it. The cave spider is a small dark-blue spider about two thirds the spider's size, with red eyes. One egg is used each time. **Screenshot 1.**
+  2. Let a cave spider bite you: the hearts turn green and you lose health for about 7 seconds, never below half a heart. Drink the milk to clear it. Switch to hard (`/difficulty hard`) and let it bite again: the poison lasts about 15 seconds. **Screenshot 2** (green hearts).
+  3. Kill a cave spider with the sword: it drops string and sometimes a spider eye. Press F5: it is drawn small in third person too.
+  4. Place the spawner in a dark spot with no torches and use a cave spider egg on it. The cage shows the small cave spider turning. Wait nearby: cave spiders come out of the spawner. **Screenshot 3.**
+  5. Use each of the other eggs in the kit: a horse, a donkey, an iron golem, a villager, a wolf, a ghast, a shulker, a witch, a hoglin, a piglin, a strider, a mooshroom, a bat and a magma cube appear, each from its own egg.
+  6. Use a zombie egg several times: a zombie comes out each time. Once in a while a baby zombie comes with a chicken next to it.
+  7. Use the fox egg and the wither egg: nothing happens and they stay in the hotbar (those mobs are not in the game yet).
+  8. Away from your base, high up in open air: use the ender dragon egg on a block. An ender dragon appears there, as with `/summon minecraft:ender_dragon`. **Screenshot 4.**
+  9. Optional, creative (`/gamemode creative`): open the spawn eggs tab and try any egg from the list of 36 above. Each one hatches its mob.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cave_spider_spawn_egg*16,minecraft:spider_spawn_egg*4,minecraft:zombie_spawn_egg*8,minecraft:horse_spawn_egg,minecraft:donkey_spawn_egg,minecraft:iron_golem_spawn_egg,minecraft:villager_spawn_egg,minecraft:wolf_spawn_egg,minecraft:ghast_spawn_egg,minecraft:shulker_spawn_egg,minecraft:witch_spawn_egg,minecraft:hoglin_spawn_egg,minecraft:piglin_spawn_egg,minecraft:strider_spawn_egg,minecraft:mooshroom_spawn_egg,minecraft:bat_spawn_egg,minecraft:magma_cube_spawn_egg,minecraft:ender_dragon_spawn_egg,minecraft:fox_spawn_egg,minecraft:wither_spawn_egg,minecraft:spawner,minecraft:milk_bucket,minecraft:iron_sword
+```

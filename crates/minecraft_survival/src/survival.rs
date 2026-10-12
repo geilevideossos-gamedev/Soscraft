@@ -717,7 +717,7 @@ impl Survival {
         if landed {
             self.combat.hurt_by(self.tick, cause);
             self.record(before, cause, 0.0);
-            if let Some((kind, ticks)) = cause.melee_effect() {
+            if let Some((kind, ticks)) = cause.melee_effect(self.rules.difficulty) {
                 self.status.add_effect(kind, ticks, 0);
             }
             if let Some(ticks) = cause.ignites() {

@@ -898,7 +898,10 @@ impl ServerSim {
     pub fn hatch_egg(&mut self, kind: &str, position: [f64; 3], y_rot: f32) -> Result<(), String> {
         let tag = self.level.summon_mob(kind, position, None, y_rot)?;
         self.mobs.set_day_time(self.level.overworld_clock());
-        let spawned = crate::server_mobs::spawn_saved_all(&mut self.mobs, &tag);
+        if self.dragons.add(&tag).is_some() {
+            return Ok(());
+        }
+        let spawned = crate::server_mobs::spawn_unmounted(&mut self.mobs, &tag);
         if spawned.is_empty() {
             return Err(format!("{kind} is not simulated"));
         }
@@ -6269,6 +6272,44 @@ mod tests {
         assert_eq!(answers[0].as_deref(), Ok("minecraft:cow"));
         assert!(answers[1].is_err());
         assert!(answers[2].is_err());
+    }
+
+    const HATCHING_EGGS: [&str; 36] = [
+        "bat", "blaze", "bogged", "cave_spider", "chicken", "cow", "creeper", "donkey", "ender_dragon", "enderman", "ghast", "hoglin", "horse", "husk", "iron_golem", "magma_cube", "mooshroom", "parched", "pig", "piglin", "piglin_brute", "sheep", "shulker", "skeleton", "slime", "spider", "stray", "strider",
+        "villager", "witch", "wither_skeleton", "wolf", "zoglin", "zombie", "zombie_villager", "zombified_piglin",
+    ];
+
+    #[test]
+    fn every_spawn_egg_of_a_mob_the_game_has_hatches_that_mob() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else { return };
+        let items = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3/assets/minecraft/items");
+        let Ok(entries) = std::fs::read_dir(&items) else { return };
+        let mut eggs: Vec<String> = entries.filter_map(|entry| entry.ok()?.file_name().to_str()?.strip_suffix("_spawn_egg.json").map(str::to_owned)).collect();
+        eggs.sort();
+        let Some((mut server, scene)) = door_world() else { return };
+        server.set_players(&[[8.5, 200.0, 11.5]], 2);
+        let mut player = minecraftoss_player::Player::new(glam::DVec3::new(8.5, 202.0 - 1.62, 8.5));
+        player.pitch = 90.0;
+        let mut hatched = Vec::new();
+        for name in &eggs {
+            let egg = format!("minecraft:{name}_spawn_egg");
+            let aimed = crate::spawn_egg::egg_use(&player, &crate::doors::Outlined(&scene), &egg);
+            let Some(crate::spawn_egg::EggUse::Spawn { kind, position }) = aimed else { panic!("{egg}: {aimed:?}") };
+            assert_eq!(kind, format!("minecraft:{name}"));
+            let before: std::collections::HashSet<u64> = server.mobs.mob_ids().collect();
+            let (dormant, dragons) = (server.dormant.len(), server.dragons.list.len());
+            match server.hatch_egg(&kind, position, 0.0) {
+                Ok(()) => {
+                    let new: Vec<_> = server.mobs.mob_ids().filter(|id| !before.contains(id)).filter_map(|id| server.mobs.entity_type(id)).collect();
+                    let dragon = server.dragons.list.len() == dragons + 1;
+                    assert!(new.contains(&kind.as_str()) || (dragon && kind == ENDER_DRAGON), "{egg} hatched {new:?}");
+                    hatched.push(name.as_str());
+                }
+                Err(_) => assert_eq!((server.dormant.len(), server.dragons.list.len(), server.mobs.mob_ids().count()), (dormant, dragons, before.len()), "{egg} left nothing behind"),
+            }
+        }
+        assert_eq!(eggs.len(), 88);
+        assert_eq!(hatched, HATCHING_EGGS);
     }
 
     fn spawner_with_egg(difficulty: i32, rule: bool) -> Option<ServerSim> {

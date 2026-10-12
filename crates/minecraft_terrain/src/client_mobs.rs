@@ -1266,7 +1266,7 @@ pub fn shadow_casters(world: &minecraftoss_entities::world::EntityWorld, mobs: &
     kinds.extend(world.bats().iter().map(|e| (e.id, 0.25)));
     kinds.extend(world.zombies().iter().map(|e| (e.id, 0.5 * age(e.zombie.baby))));
     kinds.extend(world.skeletons().iter().map(|e| (e.id, 0.5)));
-    kinds.extend(world.spiders().iter().map(|e| (e.id, 0.8)));
+    kinds.extend(world.spiders().iter().map(|e| (e.id, if e.spider.cave { 0.56 } else { 0.8 })));
     kinds.extend(world.creepers().iter().map(|e| (e.id, 0.5)));
     kinds.extend(world.villagers().iter().map(|e| (e.id, if e.villager.age.baby() { 0.5 * 0.5 * 0.5 } else { 0.5 })));
     kinds.extend(world.endermen().iter().map(|e| (e.id, 0.5)));
