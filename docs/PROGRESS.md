@@ -28,7 +28,7 @@ Briefs: `docs/round8/<item>.md`, the multiplayer design `docs/MULTIPLAYER.md`.
 | B. Nether and overworld leftovers (piglins, brutes, bartering, hoglins, striders, sleeping) | track-b | **merged** 75dd9d5e (25 conflict hunks with A and D resolved; full suite green, 7.6 min), plus 6ae244dc (no board while riding or asleep, D's open item) and 23798eab (B's mobs spin in spawners); review fixed 3 defects (rustfmt on new files, teleport wakes a sleeper, the ridden strider can't be hit or fed); owner steps and kit in `docs/round8/track-b-log.md` |
 | C. End and visual leftovers (shulkers, end cities, item frames, End sky, dragon effects, elytra body, limitations) | track-c | running from 0bcbfb17 (order c1 G1-3, c5 G1-4, c1 G4-8, c2, c3, c5 G5-11, c4) |
 | D. Skating in Minecraft worlds | track-d | **merged** 9d4fbe3a (full suite green, 9.9 min); review fixed 1 defect (a bail in the air counted as a landing); guns while skating: put away, as the brief decides; the board is refused while riding or asleep since the B merge (6ae244dc); owner steps and kit in `docs/round8/track-d-log.md` |
-| E. Multiplayer, first playable | track-e | M1 (E1-E8) done 42262ec2..79ba1549 (review fixed 2 defects, clippy clean; owner steps `docs/round8/e-m1-tests.md`); M2 part 1 (E9 da5b8685, E10a cb4251e9, E10b 4a6c0dc7) done, verified (owner steps `docs/round8/e-m2-tests.md`); M2 part 2 running: the merge of minecraft-survival (track A) into track-e had 17 conflict hunks in 6 files, resolved by the run's first group; then E11-E15 and the review of all of M2 from 79ba1549 |
+| E. Multiplayer, first playable | track-e | M1 (E1-E8) done 42262ec2..79ba1549 (review fixed 2 defects, clippy clean; owner steps `docs/round8/e-m1-tests.md`); M2 part 1 (E9 da5b8685, E10a cb4251e9, E10b 4a6c0dc7) done, verified (owner steps `docs/round8/e-m2-tests.md`); M2 done (track A merged into track-e as 8230328a; E11 3caf3ef0, E12-E15 up to 6457abca; review fixed 2 defects: furnace progress made friends' clicks stale, a friend leaving left a chest lid open; clippy clean 03f1bc8d; owner steps `docs/round8/e-m2-tests.md`). Next: merge minecraft-survival (B, C, D) into track-e, then M3 (E16-E17) |
 
 ## Release builds
 | # | When | Commit | State |
@@ -45,6 +45,7 @@ Briefs: `docs/round8/<item>.md`, the multiplayer design `docs/MULTIPLAYER.md`.
 - Open, not vanilla: under `/tick freeze` a strider carrying a player stands still; vanilla 26.3 (`TickRateManager.isEntityFrozen`) keeps an entity carrying a player ticking. The mob tick runs for all mobs or none on both sides, so matching needs a filtered tick. Left for "Finish survival".
 
 ## Log
+- 2026-10-12: track C finished, its merge (about 124 conflict hunks with A, B and D) is being resolved in `C:\Dev\mc-wt\track-c`; multiplayer M2 finished.
 - 2026-10-12: track B merged (23798eab).
 - 2026-10-12: track D merged (9d4fbe3a).
 - 2026-10-12: track A merged (080b5c1e); track D and M2 part 2 started.
