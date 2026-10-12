@@ -238,3 +238,52 @@ pub fn finalize_mob(tag: &mut Tag, random: &mut impl crate::random::RandomSource
     }
     map.insert("LeftHanded".to_owned(), Tag::Byte(i8::from(random.next_f32() < 0.05)));
 }
+
+pub fn set_brain_memory(tag: &mut Tag, key: &str, value: Tag, ttl: Option<i64>) {
+    let Tag::Compound(map) = tag else { return };
+    let Tag::Compound(brain) = map.entry("Brain".to_owned()).or_insert_with(|| Tag::Compound(BTreeMap::new())) else { return };
+    let Tag::Compound(memories) = brain.entry("memories".to_owned()).or_insert_with(|| Tag::Compound(BTreeMap::new())) else { return };
+    let mut memory = BTreeMap::new();
+    memory.insert("value".to_owned(), value);
+    if let Some(ttl) = ttl {
+        memory.insert("ttl".to_owned(), Tag::Long(ttl));
+    }
+    memories.insert(key.to_owned(), Tag::Compound(memory));
+}
+
+pub fn finalize_piglin_brute(tag: &mut Tag, dimension: &str, pos: [i32; 3]) {
+    let mut home = BTreeMap::new();
+    home.insert("dimension".to_owned(), Tag::String(dimension.to_owned()));
+    home.insert("pos".to_owned(), Tag::IntArray(pos.to_vec()));
+    set_brain_memory(tag, "minecraft:home", Tag::Compound(home), None);
+    let Tag::Compound(map) = tag else { return };
+    let Tag::Compound(equipment) = map.entry("equipment".to_owned()).or_insert_with(|| Tag::Compound(BTreeMap::new())) else { return };
+    let mut axe = BTreeMap::new();
+    axe.insert("id".to_owned(), Tag::String("minecraft:golden_axe".to_owned()));
+    axe.insert("count".to_owned(), Tag::Int(1));
+    equipment.insert("mainhand".to_owned(), Tag::Compound(axe));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bastion_brute_gets_a_golden_axe_and_its_home() {
+        let mut tag = crate::snbt::parse_compound("{id:\"minecraft:piglin_brute\",Brain:{memories:{\"minecraft:hunted_recently\":{value:1b,ttl:5L}}},equipment:{head:{id:\"minecraft:golden_helmet\",count:1}}}").unwrap();
+        finalize_piglin_brute(&mut tag, "minecraft:the_nether", [4, 70, -9]);
+        let memories = tag.get("Brain").and_then(|b| b.get("memories")).unwrap();
+        let home = memories.get("minecraft:home").and_then(|h| h.get("value")).unwrap();
+        assert_eq!(home.get("dimension").and_then(Tag::as_str), Some("minecraft:the_nether"));
+        assert_eq!(home.get("pos").and_then(Tag::as_ints), Some(vec![4, 70, -9]));
+        assert!(memories.get("minecraft:home").and_then(|h| h.get("ttl")).is_none());
+        assert!(memories.get("minecraft:hunted_recently").is_some(), "other memories stay");
+        let equipment = tag.get("equipment").unwrap();
+        assert_eq!(equipment.get("mainhand").and_then(|m| m.get("id")).and_then(Tag::as_str), Some("minecraft:golden_axe"));
+        assert!(equipment.get("head").is_some(), "other slots stay");
+        let mut bare = crate::snbt::parse_compound("{id:\"minecraft:piglin\"}").unwrap();
+        set_brain_memory(&mut bare, "minecraft:hunted_recently", Tag::Byte(1), Some(700));
+        let memory = bare.get("Brain").and_then(|b| b.get("memories")).and_then(|m| m.get("minecraft:hunted_recently")).unwrap();
+        assert_eq!((memory.get("value").and_then(Tag::as_i64), memory.get("ttl").and_then(Tag::as_i64)), (Some(1), Some(700)));
+    }
+}

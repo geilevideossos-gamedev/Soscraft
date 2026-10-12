@@ -250,8 +250,9 @@ impl BlockEntities {
             "minecraft:comparator" => put("OutputSignal", Tag::Int(int("OutputSignal", 0))),
             "minecraft:lectern" => {
                 if let Some(book) = get("Book").and_then(item_stack) {
+                    let last = (lectern_book_pages(&book) - 1).max(0);
                     put("Book", book);
-                    put("Page", Tag::Int(int("Page", 0).max(0)));
+                    put("Page", Tag::Int(int("Page", 0).clamp(0, last)));
                 }
             }
             "minecraft:skull" => {
@@ -450,6 +451,24 @@ fn item_stack(tag: &Tag) -> Option<Tag> {
     Some(Tag::Compound(out))
 }
 
+pub fn lectern_book_pages(book: &Tag) -> i32 {
+    let components = book.get("components");
+    ["minecraft:written_book_content", "minecraft:writable_book_content"]
+        .iter()
+        .find_map(|key| components.and_then(|c| c.get(key)))
+        .and_then(|content| match content.get("pages") {
+            Some(Tag::List(pages)) => Some(pages.len() as i32),
+            _ => Some(0),
+        })
+        .unwrap_or(0)
+}
+
+pub fn lectern_book_has_content(book: &Tag) -> bool {
+    let components = book.get("components");
+    book.get("id").and_then(Tag::as_str) == Some("minecraft:writable_book")
+        || ["minecraft:written_book_content", "minecraft:writable_book_content"].iter().any(|key| components.and_then(|c| c.get(key)).is_some())
+}
+
 /// `AbstractFurnaceBlockEntity.RECIPES_USED_CODEC`: recipe ids to counts.
 fn recipes_used(tag: Option<&Tag>) -> Tag {
     let mut out = BTreeMap::new();
@@ -549,6 +568,45 @@ pub fn decode(text: &str) -> Result<Tag, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lectern_entities() -> BlockEntities {
+        let defaults = HashMap::from([("minecraft:lectern".to_owned(), ("minecraft:lectern".to_owned(), Tag::Compound(BTreeMap::new())))]);
+        BlockEntities { defaults }
+    }
+
+    fn book(id: &str, pages: usize) -> Tag {
+        let pages = Tag::List((0..pages).map(|n| Tag::Compound(BTreeMap::from([("raw".to_owned(), Tag::String(format!("page {n}")))]))).collect());
+        let content = BTreeMap::from([("pages".to_owned(), pages)]);
+        let key = if id == "minecraft:written_book" { "minecraft:written_book_content" } else { "minecraft:writable_book_content" };
+        Tag::Compound(BTreeMap::from([
+            ("id".to_owned(), Tag::String(id.to_owned())),
+            ("count".to_owned(), Tag::Int(1)),
+            ("components".to_owned(), Tag::Compound(BTreeMap::from([(key.to_owned(), Tag::Compound(content))]))),
+        ]))
+    }
+
+    #[test]
+    fn page_is_clamped_on_load() {
+        let entities = lectern_entities();
+        let load = |book: Tag, page: i32| {
+            let input = Tag::Compound(BTreeMap::from([("Book".to_owned(), book), ("Page".to_owned(), Tag::Int(page))]));
+            let saved = entities.load_and_save("minecraft:lectern", (1, 2, 3), &input).unwrap();
+            saved.get("Page").and_then(Tag::as_i64)
+        };
+        assert_eq!(load(book("minecraft:written_book", 3), 7), Some(2));
+        assert_eq!(load(book("minecraft:written_book", 3), -4), Some(0));
+        assert_eq!(load(book("minecraft:written_book", 3), 1), Some(1));
+        assert_eq!(load(book("minecraft:writable_book", 0), 5), Some(0));
+        let empty = Tag::Compound(BTreeMap::new());
+        let saved = entities.load_and_save("minecraft:lectern", (1, 2, 3), &empty).unwrap();
+        assert!(saved.get("Book").is_none() && saved.get("Page").is_none());
+        assert_eq!(lectern_book_pages(&book("minecraft:writable_book", 4)), 4);
+        let bare = Tag::Compound(BTreeMap::from([("id".to_owned(), Tag::String("minecraft:written_book".to_owned()))]));
+        assert!(!lectern_book_has_content(&bare));
+        assert!(lectern_book_has_content(&book("minecraft:written_book", 0)));
+        let quill = Tag::Compound(BTreeMap::from([("id".to_owned(), Tag::String("minecraft:writable_book".to_owned()))]));
+        assert!(lectern_book_has_content(&quill));
+    }
 
     #[test]
     fn base64_round_trip_of_a_compound() {

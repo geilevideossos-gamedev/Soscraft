@@ -305,6 +305,7 @@ impl EntityWorld {
                 _ => {}
             }
         }
+        entity.enderman.body.float_from(&entity.effects);
 
         if entity.enderman.health > 0.0 {
             if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
@@ -345,7 +346,7 @@ impl EntityWorld {
             self.file_in_section(EntityKey::Enderman(id));
         }
         if let Some((crate::monster_ai::Target::Player(player_id), attacker)) = hit {
-            self.player_hits.push(PlayerHit { player_id, damage: crate::enderman::ATTACK_DAMAGE, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0 }, source: Some(id) });
+            self.player_hits.push(PlayerHit { player_id, damage: crate::enderman::ATTACK_DAMAGE, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0, throw: glam::DVec3::ZERO, disable_shield_seconds: 0.0 }, source: Some(id) });
         }
         if let Some((crate::monster_ai::Target::Mob(victim), attacker)) = hit {
             self.mob_hits_mob(id, victim, crate::enderman::ATTACK_DAMAGE, attacker, 0.0);

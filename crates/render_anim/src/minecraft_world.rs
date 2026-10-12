@@ -26,6 +26,8 @@ pub(crate) const RECENT_PLACE_SECONDS: f64 = minecraft_survival::actions::RECENT
 pub const LIGHT_VOLUME: i32 = 64;
 /// Chunk sections fade in over this long, as the viewer's default option.
 const FADE_MILLIS: u64 = 750;
+const TOTEM: &str = "minecraft:totem_of_undying";
+const FULL_BRIGHT: f32 = 15.0;
 
 /// What the renderer takes from the world each frame.
 #[derive(Resource, Default)]
@@ -70,6 +72,8 @@ pub struct MinecraftWorldView {
     pub hand: (Vec<u8>, Vec<u32>),
     pub hand_clip: [f32; 16],
     pub end_look: crate::minecraft_end_look::EndFrame,
+    pub weather: (Vec<minecraft_terrain::weather::WeatherVertex>, Vec<u32>),
+    pub weather_texture: Option<Arc<image::RgbaImage>>,
 }
 
 pub(crate) struct Loaded {
@@ -81,6 +85,7 @@ pub(crate) struct Loaded {
     glint_texture: Option<Arc<image::RgbaImage>>,
     armor_glint_texture: Option<Arc<image::RgbaImage>>,
     end_look: Arc<crate::minecraft_end_look::EndLook>,
+    weather_texture: Option<Arc<image::RgbaImage>>,
 }
 
 #[derive(Default)]
@@ -118,6 +123,10 @@ pub(crate) struct Runtime {
     refused_air: Option<u32>,
     queues: crate::minecraft_players::VoxelQueues,
     pub(crate) relayed: minecraft_survival::commands::Handled,
+    bed_request: Option<minecraft_survival::respawn_block::Bed>,
+    in_bed: bool,
+    music: crate::minecraft_music::MusicManager,
+    item_activation: crate::minecraft_hand::ItemActivation,
 }
 
 impl Drop for Runtime {
@@ -200,6 +209,7 @@ pub(crate) fn register(app: &mut App) {
     app.init_resource::<MinecraftWorldView>()
         .init_resource::<frame::MinecraftUi>()
         .init_resource::<frame::InventoryPuppet>()
+        .init_resource::<frame::McSleepers>()
         .insert_non_send(Runtime::default())
         .insert_non_send(crate::minecraft_host::HostSessions::default())
         .insert_non_send(crate::minecraft_remote::Friend::default())
@@ -306,7 +316,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         tick_rate: Default::default(),
     };
     let level = minecraft_survival::level::Level::new(Dimension::Overworld, terrain);
-    Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), opening: Default::default(), players: std::collections::BTreeMap::new(), pending_batch: None }))
+    Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), opening: Default::default(), players: std::collections::BTreeMap::new(), pending_batch: None, published: false }))
 }
 
 pub(crate) fn load_look(packs: PackStack) -> Result<Loaded, String> {
@@ -318,6 +328,10 @@ pub(crate) fn load_look(packs: PackStack) -> Result<Loaded, String> {
     let glint_texture = minecraft_terrain::glint::glint_texture(&packs).ok().flatten().map(Arc::new);
     let armor_glint_texture = minecraft_terrain::glint::armor_glint_texture(&packs).ok().flatten().map(Arc::new);
     let end_look = Arc::new(crate::minecraft_end_look::EndLook::load(&packs));
+    let weather_texture = minecraft_terrain::weather::weather_texture(&packs).unwrap_or_else(|error| {
+        diag::warn!(World, "Minecraft rain and snow textures unavailable: {error:#}");
+        None
+    }).map(Arc::new);
     Ok(Loaded {
         packs,
         atlas: build.atlas,
@@ -327,6 +341,7 @@ pub(crate) fn load_look(packs: PackStack) -> Result<Loaded, String> {
         glint_texture,
         armor_glint_texture,
         end_look,
+        weather_texture,
     })
 }
 
@@ -350,6 +365,9 @@ pub(crate) fn data_jar() -> Option<std::path::PathBuf> {
     None
 }
 
+const CELESTIAL_TILE: u32 = 64;
+const CELESTIAL_SLOTS: u32 = 10;
+
 /// The sky's sun and moon phases, laid out as MinecraftOSS lays them out.
 pub(crate) fn show_look(view: &mut MinecraftWorldView, world: &Loaded) {
     view.atlas = Some(world.atlas.clone());
@@ -359,10 +377,11 @@ pub(crate) fn show_look(view: &mut MinecraftWorldView, world: &Loaded) {
     view.glint_texture = world.glint_texture.clone();
     view.armor_glint_texture = world.armor_glint_texture.clone();
     view.end_look.look = Some(world.end_look.clone());
+    view.weather_texture = world.weather_texture.clone();
 }
 
 fn celestial_image(packs: &PackStack) -> anyhow::Result<image::RgbaImage> {
-    let mut celestial = image::RgbaImage::new(32 * 9, 32);
+    let mut celestial = image::RgbaImage::new(CELESTIAL_TILE * CELESTIAL_SLOTS, CELESTIAL_TILE);
     let names = [
         "environment/celestial/sun",
         "environment/celestial/moon/full_moon",
@@ -373,6 +392,7 @@ fn celestial_image(packs: &PackStack) -> anyhow::Result<image::RgbaImage> {
         "environment/celestial/moon/waxing_crescent",
         "environment/celestial/moon/first_quarter",
         "environment/celestial/moon/waxing_gibbous",
+        "environment/celestial/end_flash",
     ];
     for (index, path) in names.iter().enumerate() {
         let id = minecraft_terrain::pack::ResourceId::parse(&format!("minecraft:{path}"))?;
@@ -380,8 +400,8 @@ fn celestial_image(packs: &PackStack) -> anyhow::Result<image::RgbaImage> {
             let img =
                 image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)?.to_rgba8();
             let tile =
-                image::imageops::resize(&img, 32, 32, image::imageops::FilterType::Nearest);
-            image::imageops::replace(&mut celestial, &tile, (index as i64) * 32, 0);
+                image::imageops::resize(&img, CELESTIAL_TILE, CELESTIAL_TILE, image::imageops::FilterType::Nearest);
+            image::imageops::replace(&mut celestial, &tile, (index as i64) * i64::from(CELESTIAL_TILE), 0);
         }
     }
     Ok(celestial)
@@ -418,7 +438,19 @@ fn show_chat(chat: &mut frame::McChat, inventory_ui: &crate::minecraft_inventory
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(crate) fn skate_on_ground(skating: bool, airborne: bool, ground_entity: i32) -> bool {
+    if skating { !airborne } else { ground_entity != playerstate_iw4::ENTITYNUM_NONE }
+}
+
+fn board_gear(gear: minecraft_terrain::body_gear::BodyGear, skating: bool) -> minecraft_terrain::body_gear::BodyGear {
+    if skating { minecraft_terrain::body_gear::BodyGear { main: None, off: None, ..gear } } else { gear }
+}
+
+fn board_allowed(alive: bool, spectator: bool, pm_flags: u32, eye_in_water: bool, asleep: bool, in_powder_snow: bool) -> bool {
+    alive && !spectator && pm_flags & (playerstate_iw4::pm_flags::MC_FLYING | playerstate_iw4::pm_flags::MC_GLIDING | playerstate_iw4::pm_flags::MC_RIDING) == 0 && !eye_in_water && !asleep && !in_powder_snow
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn update(
     time: Res<Time>,
     mut installed: MessageReader<frame::MatchInstalled>,
@@ -427,12 +459,13 @@ fn update(
     presented: Res<net::PresentedSnapshot>,
     authority: Option<ResMut<net::AuthorityWorld>>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
-    (mut ui, mut puppet, mut images, mut sound_queue, buttons): (
+    (mut ui, mut puppet, mut images, mut sound_queue, buttons, mut mc_music): (
         ResMut<frame::MinecraftUi>,
         ResMut<frame::InventoryPuppet>,
         ResMut<Assets<Image>>,
         ResMut<audio::McSoundQueue>,
         Res<ButtonInput<MouseButton>>,
+        ResMut<audio::McMusic>,
     ),
     mut view: ResMut<MinecraftWorldView>,
     mut runtime: NonSendMut<Runtime>,
@@ -442,10 +475,10 @@ fn update(
         Query<&bevy::input::gamepad::Gamepad>,
         Option<Res<frame::ActivePad>>,
     ),
-    (hud_input, settings, role): (Option<Res<frame::HudInputView>>, Option<Res<frame::GameSettings>>, Res<frame::RuntimeRole>),
+    (hud_input, settings, role, mut sleepers, ui_draw): (Option<Res<frame::HudInputView>>, Option<Res<frame::GameSettings>>, Res<frame::RuntimeRole>, ResMut<frame::McSleepers>, Option<Res<frame::UiDraw>>),
     real_time: Res<Time<Real>>,
     mc_camera: Option<Res<frame::McCamera>>,
-    mut body_gear: ResMut<crate::anim::minecraft_gear::McBodyGear>,
+    (mut body_gear, mut body_glide): (ResMut<crate::anim::minecraft_gear::McBodyGear>, ResMut<crate::anim::minecraft_glide::McGlide>),
 ) {
     if *role == frame::RuntimeRole::Client {
         for _ in installed.read() {}
@@ -453,6 +486,9 @@ fn update(
         return;
     }
     let pad = active_pad.and_then(|active| active.0).and_then(|entity| gamepads.get(entity).ok());
+    if *sleepers != frame::McSleepers::default() {
+        *sleepers = frame::McSleepers::default();
+    }
     for _ in torn_down.read() {
         stop(&mut runtime, &mut view);
         ui.chat.clear_messages();
@@ -479,9 +515,13 @@ fn update(
             view.active = true;
         }
     }
+    if !view.active {
+        mc_music.wanted = None;
+    }
     ui.loading_world = runtime.loading.is_some() || (runtime.world.is_some() && (runtime.spawn_gate.holding(now_ms) || awaiting_level(&runtime)));
     if runtime.server.is_none() {
         body_gear.clear();
+        body_glide.clear();
     }
     if runtime.switch_screen.is_some() && !local_switching(&runtime) && !runtime.spawn_gate.holding(now_ms) {
         runtime.switch_screen = None;
@@ -576,6 +616,7 @@ fn update(
                 );
                 runtime.fire_frames = fire_frames(&world.packs).map(|(image, frames)| (images.add(image), frames));
                 ui.portal_frames = crate::minecraft_portal::frames(&world.packs, &mut images);
+                ui.freeze_outline = crate::minecraft_portal::strip(&world.packs, &mut images, crate::minecraft_portal::FREEZE_OUTLINE).map(|(image, _)| image);
                 runtime.loading_backgrounds = Some(crate::minecraft_loading::LoadingBackgrounds::load(&world.packs, &mut images));
                 runtime.server = Some(server);
                 runtime.local = Some(uuid);
@@ -621,6 +662,10 @@ fn update(
         origins,
         relayed,
         queues,
+        bed_request,
+        in_bed,
+        music,
+        item_activation,
         ..
     } = &mut *runtime;
     let (Some(world), Some(server), Some(local_uuid)) = (world.as_mut(), server.as_mut(), local_uuid.as_ref()) else {
@@ -631,13 +676,47 @@ fn update(
     };
     let ticking: Vec<Dimension> = server.players.get(local_uuid).filter(|player| player.switching.is_none()).map(|player| player.dimension).into_iter().collect();
     let planned = server.plan_ticks(std::time::Instant::now(), &ticking);
-    let minecraft_survival::server::Server { globals, levels, players, pending_batch, .. } = server;
+    let minecraft_survival::server::Server { globals, levels, players, pending_batch, published, .. } = server;
     if std::mem::take(&mut globals.autosave_due) {
         minecraft_survival::server::autosave(globals, levels, players);
     }
     let others = minecraft_survival::level::player_blocks(players.iter().filter(|(uuid, _)| *uuid != local_uuid).map(|(_, player)| player));
     let clients: Vec<u32> = players.values().filter(|player| &player.uuid != local_uuid).map(|player| player.id.0).chain([local.0.0]).collect();
     queues.drain(|client| clients.contains(&client));
+    if bed_request.is_some()
+        && let Some(player) = players.get_mut(local_uuid)
+        && player.riding.is_some()
+    {
+        let rider = (local.0, u64::from(player.id.0));
+        crate::minecraft_riding::dismount(&mut player.riding, levels.get_mut(&player.dimension).and_then(|level| level.entities.as_mut()), &mut authority.0, rider);
+    }
+    let leave_bed = std::mem::take(&mut ui.chat.leave_bed);
+    let bed_action = bed_request.take().map(minecraft_survival::sleep::BedAction::Lie).or(leave_bed.then_some(minecraft_survival::sleep::BedAction::Leave));
+    let slept = minecraft_survival::sleep::serve(globals, levels, players, local_uuid, bed_action, planned.len() as u32, *published);
+    if let Some(level) = players.get(local_uuid).and_then(|player| levels.get(&player.dimension)) {
+        refresh_shapes(&level.terrain, &globals.registries, shapes, shape_ids, &slept.written);
+    }
+    let local_messages = relay_messages(players, local_uuid, slept.messages, relayed);
+    crate::minecraft_respawn::show_messages(&mut ui, inventory_ui, &world.packs, &local_messages);
+    if let Some(player) = players.get(local_uuid) {
+        let lying = player.sleeping.filter(|_| !player.dead);
+        if let Some(sleeping) = lying {
+            let feet = sleeping.feet();
+            authority.0.ride(local.0, Some(sim::voxel::to_map(origin, feet)));
+            sleepers.bodies.push((local.0.0, crate::minecraft_sleep::lying_root(origin, feet, sleeping.facing)));
+            sleepers.camera = Some(crate::minecraft_sleep::sleep_camera(origin, feet, sleeping.facing));
+        } else if *in_bed && player.riding.is_none() {
+            authority.0.ride(local.0, None);
+        }
+        *in_bed = lying.is_some();
+        ui.sleep = (player.sleep_timer > 0).then_some(frame::minecraft_ui::McSleep { timer: player.sleep_timer });
+        let blocked = ui.inventory_open || hud_input.as_deref().is_some_and(|input| input.console_open || input.script_menu_open);
+        if player.sleeping.is_none() {
+            ui.chat.wake_up();
+        } else if !blocked {
+            ui.chat.lie_in_bed();
+        }
+    }
     let Some(player) = players.get_mut(local_uuid) else {
         ui.active = false;
         ui.inventory_open = false;
@@ -693,6 +772,7 @@ fn update(
             return;
         }
     }
+    authority.0.set_powder_snow_walker(local.0, minecraft_survival::survival::walks_on_powder_snow(&player.inventory));
     let arriving_at = player.arrival.map(|place| place.feet);
     let host_alive = presented.player(local.0).is_some_and(|ps| ps.pm_type == 0);
     let host_pose = presented
@@ -708,6 +788,13 @@ fn update(
     relayed.delivered.extend(delivered);
     relayed.teleports.extend(teleports.iter().filter(|(uuid, _)| uuid != local_uuid).cloned());
     let delivered = delivered_here;
+    let teleported: Vec<_> = teleports.iter().map(|(uuid, _)| uuid.clone()).collect();
+    let woke = minecraft_survival::sleep::wake_teleported(globals, levels, players, &teleported, *published);
+    if let Some(level) = players.get(local_uuid).and_then(|player| levels.get(&player.dimension)) {
+        refresh_shapes(&level.terrain, &globals.registries, shapes, shape_ids, &woke.written);
+    }
+    let woke_messages = relay_messages(players, local_uuid, woke.messages, relayed);
+    crate::minecraft_respawn::show_messages(&mut ui, inventory_ui, &world.packs, &woke_messages);
     ui.chat.command_level = players.get(local_uuid).map_or(0, |player| globals.chat.level(player.id));
     crate::minecraft_end::tick_fight(levels, players, globals, f64::from(planned.normal_count()) * minecraft_survival::the_end::dragon_fight::TICK_SECONDS, local_uuid, &mut ui);
     let mut friends = Vec::new();
@@ -728,6 +815,7 @@ fn update(
     let host_id = u64::from(player.id.0);
     let friend_ids: Vec<u64> = friends.iter().filter(|friend| friend.dimension == player.dimension).map(|friend| u64::from(friend.id.0)).collect();
     let friend_builds: Vec<u64> = friends.iter().filter(|friend| friend.dimension == player.dimension && friend.mode.may_build()).map(|friend| u64::from(friend.id.0)).collect();
+    let infinite: Vec<u64> = friends.iter().filter(|friend| friend.dimension == player.dimension && !friend.mode.consumes_items()).map(|friend| u64::from(friend.id.0)).chain((!player.mode.consumes_items()).then_some(host_id)).collect();
     crate::minecraft_portal::step(player, levels, globals, presented.player(local.0).filter(|ps| ps.pm_type == 0).map(|ps| sim::voxel::to_block(origin, ps.origin)), time.delta_secs_f64(), sounds.as_mut(), &world.packs, &mut ui);
     crate::minecraft_end::pearls_through(player, levels);
     let credit = |attacker: Option<u32>| attacker.and_then(|client| if client == local.0.0 { Some(host_id) } else { friend_ids.contains(&u64::from(client)).then_some(u64::from(client)) });
@@ -744,6 +832,7 @@ fn update(
         puppet.active = false;
         return;
     };
+    let asleep = player.sleeping.is_some();
     let minecraft_survival::level::Level { entities, containers, terrain, dimension, container_ticks, .. } = &mut *level;
     minecraft_terrain::cow_render::set_nether_entity_lighting(terrain.rules.nether_cardinal_light);
     if !delivered.is_empty() {
@@ -794,10 +883,20 @@ fn update(
         ui.chat.language = std::sync::Arc::new(language.clone());
     }
     let all_events = sim::voxel::take_events();
-    let mut moved = crate::minecraft_players::movement(player, globals, terrain, entities, (shapes, shape_ids), &authority.0, local.0, origin, ps, alive, time.delta_secs_f64(), sounds, &world.packs);
+    let mut moved = crate::minecraft_players::movement(player, globals, terrain, entities, (shapes, shape_ids), &authority.0, local.0, origin, ps, (alive, crate::minecraft_players::Skating { active: skate.active, airborne: skate.airborne }), time.delta_secs_f64(), sounds, &world.packs);
     ui.holding_item = moved.holding_item;
     ui.empty_hand = moved.empty_hand;
     ui.cooldowns = std::mem::take(&mut moved.cooldowns);
+    item_activation.tick(moved.hand_ticks);
+    if moved.totem_popped
+        && let Some(entities) = entities.as_mut()
+    {
+        item_activation.activate(|| entities.random_float());
+    }
+    let on_block = minecraft_terrain::scene::Scene::block(&terrain.scene, (feet[0].floor() as i32, (feet[1] - 0.2).floor() as i32, feet[2].floor() as i32))
+        .is_some_and(|b| !(b.id.namespace == "minecraft" && matches!(b.id.path.as_str(), "air" | "cave_air" | "void_air")));
+    let frost = if alive && player.survival.ticks_frozen() > 0 && on_block { minecraft_survival::survival::frost_move_scale(player.survival.percent_frozen()) } else { 1.0 };
+    authority.0.set_minecraft_move_scale(local.0, frost);
     if let Some(entities) = entities.as_mut() {
         let (writes, brewed) = minecraft_survival::level::tick_containers(containers, entities, terrain, std::mem::take(container_ticks));
         if let Some(sounds) = sounds.as_mut() {
@@ -811,9 +910,13 @@ fn update(
         }
     }
     let hands = crate::minecraft_input::host_hands(&ui, hud_input.as_deref(), &buttons, pad);
-    let actor = crate::minecraft_players::actor(ps, origin, alive);
+    let mut actor = crate::minecraft_players::actor(ps, origin, alive);
+    actor.skating = skate.active;
     let mut body = crate::minecraft_players::MwBody { authority: &mut authority.0, client: local.0, ps, registries: &globals.registries, shapes: &mut *shapes, shape_ids: &mut *shape_ids };
-    let minecraft_survival::actions::Acted { open_table, mut open_block, mut open_bench, hand_mined, creative_broken, hand_broken, effects } = minecraft_survival::actions::act(player, level, globals, &mut body, &actor, hands, &moved, light.as_ref(), time.elapsed_secs_f64());
+    let minecraft_survival::actions::Acted { open_table, mut open_block, mut open_bench, hand_mined, creative_broken, hand_broken, effects, bed } = minecraft_survival::actions::act(player, level, globals, &mut body, &actor, hands, &moved, light.as_ref(), time.elapsed_secs_f64());
+    if bed.is_some() {
+        *bed_request = bed;
+    }
     let player_mode = player.mode;
     let minecraft_survival::level::Level { entities, terrain, shots, .. } = &mut *level;
     crate::minecraft_input::play(effects, &mut crate::minecraft_input::Presenter { sounds: sounds.as_mut(), packs: &world.packs, atlas: &world.atlas, mining: &mut *mining, scene: &terrain.scene, origin, ui: &mut ui, inventory_ui: &*inventory_ui });
@@ -851,11 +954,11 @@ fn update(
                 sim::voxel::VoxelEvent::MobShot { key, damage, from, attacker, .. } => {
                     if let (Some(id), Some(client)) = (credit(attacker), attacker) {
                         let yaw = if id == host_id { mc_yaw } else { authority.0.player(sim::ClientId(client)).map_or(mc_yaw, |ps| minecraft_yaw(ps.viewangles[1])) };
-                        entities.shoot(id, key, damage, from, yaw);
+                        entities.shoot(id, key, damage, from, yaw, infinite.contains(&id));
                     }
                 }
                 sim::voxel::VoxelEvent::MobBlast { key, damage, center, impact, attacker, slow_ticks, .. } => {
-                    entities.blast(key, damage, center, impact, credit(attacker), slow_ticks);
+                    entities.blast(key, damage, center, impact, credit(attacker), slow_ticks, credit(attacker).is_some_and(|id| infinite.contains(&id)));
                 }
                 _ => {}
             }
@@ -921,10 +1024,11 @@ fn update(
             }
         }
     }
-    let harvest = minecraft_survival::actions::harvest(player, level, globals, broken, dug, &hand_mined);
+    let harvest = minecraft_survival::actions::harvest(player, level, globals, (broken, dug), &hand_mined, feet);
     for (id, mined) in friends_broken {
         if let Some(friend) = friends.iter_mut().find(|friend| u64::from(friend.id.0) == id) {
-            let _ = minecraft_survival::actions::harvest(friend, level, globals, mined, Vec::new(), &[]);
+            let at = authority.0.player(sim::ClientId(friend.id.0)).map_or(feet, |ps| sim::voxel::to_block(origin, ps.origin));
+            let _ = minecraft_survival::actions::harvest(friend, level, globals, (mined, Vec::new()), &[], at);
         }
     }
     let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, .. } = &mut *player;
@@ -938,7 +1042,7 @@ fn update(
     death_watch.stood(minecraft_survival::death::DeathSpot { feet, eye });
     let forward = view_forward(ps.viewangles);
     let mc_detached = mc_camera.as_ref().is_some_and(|c| c.detached);
-    let drawn_from = cameras.iter().next().filter(|_| skate.active || mc_detached);
+    let drawn_from = cameras.iter().next().filter(|_| skate.active || mc_detached || sleepers.camera.is_some());
     let camera = cull_camera(drawn_from, origin, eye, forward, aspect);
     let lights = terrain_frame(terrain, world, &mut view, &camera);
     observe_spawn(terrain, spawn_gate, feet, camera.position, now_ms);
@@ -981,6 +1085,9 @@ fn update(
             health: survival.status.health,
             yaw: mc_yaw,
             pitch: ps.viewangles[0],
+            main_hand: inventory.slots[*selected].as_ref().filter(|_| ui.holding_item).map(|stack| stack.id.clone()),
+            offhand: inventory.slots[minecraft_survival::offhand::OFFHAND].as_ref().map(|stack| stack.id.clone()),
+            sneaking: ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0,
         };
         let bright_outside = terrain.environment.sky_light_level() > 11.0;
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
@@ -1093,7 +1200,11 @@ fn update(
         for item in std::mem::take(&mut entities.broken_items) {
             mining.break_burst(&world.packs, &world.atlas, glam::DVec3::from_array(eye).as_vec3(), mc_yaw, ps.viewangles[0], &item);
         }
-        if let Some(told) = crate::minecraft_players::settle(player, entities, globals, &mut authority.0, local.0, origin, alive, totem_popped, inventory_ui.language(), sounds, &world.packs) {
+        let settled = crate::minecraft_players::settle(player, entities, globals, &mut authority.0, local.0, origin, alive, totem_popped, inventory_ui.language(), sounds, &world.packs);
+        if settled.popped {
+            item_activation.activate(|| entities.random_float());
+        }
+        if let Some(told) = settled.told {
             crate::minecraft_chat::show(&mut ui.chat, std::slice::from_ref(&told), &HashMap::new());
             relayed.delivered.push(minecraft_commands::Outgoing { to: minecraft_commands::Recipient::All, message: told });
         }
@@ -1104,6 +1215,7 @@ fn update(
         // gun, and what the HUD shows.
         let owned = crate::minecraft_players::owned_weapons(ps, &authority.0);
         ui.active = alive;
+        ui.board_allowed = board_allowed(alive, player_mode.mode == minecraftoss_player::GameMode::Spectator, ps.pm_flags, moved.eye_in_water, asleep, survival.in_powder_snow());
         if !alive {
             ui.inventory_open = false;
             ui.chat.close();
@@ -1115,6 +1227,12 @@ fn update(
             ui.swap_hands = false;
         }
         if menus.open.as_ref().is_some_and(|menu| !minecraft_survival::menus::still_valid(menu, &terrain.scene, eye)) {
+            ui.inventory_open = false;
+        }
+        if inventory_ui.lectern().is_some_and(|pos| {
+            !minecraft_terrain::crafting::within_table_reach(eye, pos)
+                || !minecraft_terrain::scene::Scene::block(&terrain.scene, pos).is_some_and(|block| minecraft_terrain::lectern::is_lectern(block) && minecraft_terrain::lectern::has_book(block))
+        }) {
             ui.inventory_open = false;
         }
         inventory_ui.sync_weapons(inventory, &owned);
@@ -1133,6 +1251,14 @@ fn update(
         let player_mode = *player_mode;
         let books = minecraft_survival::menus::Books::of(&globals.data);
         let clicked = inventory_ui.apply_input(&mut ui, player, containers, books, roll);
+        for (pos, action) in inventory_ui.take_lectern_actions() {
+            entities.lectern(host_id, pos, action, None);
+        }
+        for event in std::mem::take(&mut ui.ui_sounds) {
+            if let Some(sounds) = sounds.as_mut() {
+                sounds.play(&world.packs, event, None, 1.0, 1.0);
+            }
+        }
         let thrown: Vec<_> = creative_thrown.into_iter().chain(clicked.thrown).collect();
         if !ui.inventory_open
             && minecraft_survival::menus::open_station(player, containers, terrain, globals, &entities.recipes, open_table, open_block.take(), open_bench.take())
@@ -1148,11 +1274,29 @@ fn update(
             .collect();
         let mut body = crate::minecraft_players::MwBody { authority: &mut authority.0, client: local.0, ps, registries: &globals.registries, shapes: &mut *shapes, shape_ids: &mut *shape_ids };
         let mut menu_effects = minecraft_survival::menus::finish(entities, terrain, &mut body, clicked.used, clicked.anvil);
-        menu_effects.extend(minecraft_survival::menus::lids(minecraft_survival::menus::Lids { entities, terrain, openers, body: &mut body }, local_uuid, was_open.as_ref(), now_open.as_ref(), spectator));
+        menu_effects.extend(minecraft_survival::menus::lids(minecraft_survival::menus::Lids { entities, terrain, openers, body: &mut body }, (local_uuid, host_id, feet), was_open.as_ref(), now_open.as_ref(), spectator));
         menu_effects.extend(minecraft_survival::menus::recheck_lids(minecraft_survival::menus::Lids { entities, terrain, openers, body: &mut body }, |key| open_cells.iter().find(|(each, _)| *each == key).map(|(_, cells)| cells.clone())));
         crate::minecraft_input::play(menu_effects, &mut crate::minecraft_input::Presenter { sounds: sounds.as_mut(), packs: &world.packs, atlas: &world.atlas, mining: &mut *mining, scene: &terrain.scene, origin, ui: &mut ui, inventory_ui: &*inventory_ui });
         let screen = minecraft_survival::menus::screen(player, containers);
         let minecraft_survival::player::Player { survival, death_watch, inventory, selected, hand, .. } = &mut *player;
+        for view in entities.take_lecterns(host_id) {
+            if let Some(book) = view.taken {
+                let stack = entities.book_stack(&book);
+                let (dropped, _) = minecraft_survival::commands::give_stacks(inventory, *selected, &stack, 1);
+                for stack in &dropped {
+                    entities.drop_given(stack, feet);
+                }
+            }
+            if view.closed {
+                inventory_ui.lectern_closed(&mut ui, view.pos);
+            } else if let Some(book) = view.book.as_ref() {
+                let components = book.components.as_deref().and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok());
+                let shown = frame::McBook { pages: minecraft_terrain::lectern::pages_text(components.as_ref()), page: view.page.max(0) as usize, take: player_mode.may_build() };
+                if !inventory_ui.show_lectern(&mut ui, view.pos, shown) {
+                    entities.lectern(host_id, view.pos, minecraft_terrain::lectern::LecternAction::Close, None);
+                }
+            }
+        }
         let found = entities.take_experience(host_id).saturating_add(clicked.experience) as f32;
         let points = found.floor() as u32 + u32::from(found.fract() > 0.0 && entities.random_float() < found.fract());
         if points > 0 {
@@ -1216,7 +1360,10 @@ fn update(
         ui.hand_swing = if hand.swing_offhand { 0.0 } else { swing };
         let main_stack = inventory.slots[*selected].clone().filter(|_| ui.holding_item);
         let offhand_stack = offhand_stack.filter(|_| ui.holding_item || ui.offhand_busy);
-        if !puppet.active && !mc_detached && (main_stack.is_some() || offhand_stack.is_some()) {
+        let activation = item_activation.pose((hand.clock / TICK_SECONDS) as f32, aspect).filter(|_| ui_draw.as_ref().is_none_or(|draw| draw.0));
+        let main_stack = main_stack.filter(|_| !mc_detached);
+        let offhand_stack = offhand_stack.filter(|_| !mc_detached);
+        if !puppet.active && sleepers.camera.is_none() && (activation.is_some() || main_stack.is_some() || offhand_stack.is_some()) {
             let eye_light_at = glam::Vec3::new(eye[0] as f32, eye[1] as f32, eye[2] as f32);
             let mut posed = Vec::new();
             for (slot, stack, arm) in [(*selected, main_stack, 1.0), (minecraft_survival::offhand::OFFHAND, offhand_stack, -1.0)] {
@@ -1241,7 +1388,18 @@ fn update(
                 let glint = minecraft_terrain::glint::has_glint(&stack);
                 posed.push((eat.unwrap_or(glam::Mat4::IDENTITY) * crate::minecraft_hand::item_pose(display, swung, 0.0, arm), inventory_ui.dials.key(&stack.id).to_owned(), glint));
             }
-            let mesh = entities.held_item_mesh(&posed, eye_light_at, &world.packs, &world.atlas, light);
+            let mut mesh = entities.held_item_mesh(&posed, eye_light_at, &world.packs, &world.atlas, light);
+            if let Some(pose) = activation {
+                let display = minecraft_terrain::pack::ResourceId::parse(TOTEM)
+                    .ok()
+                    .and_then(|id| minecraft_terrain::model::item_display_transform(&world.packs, &id, "fixed").ok())
+                    .unwrap_or(glam::Mat4::IDENTITY);
+                let start = mesh.vertices.len() as u32;
+                let totem = entities.held_item_mesh(&[(pose * display, TOTEM.to_owned(), false)], eye_light_at, &world.packs, &world.atlas, light);
+                mesh.vertices.extend(totem.vertices.into_iter().map(|vertex| minecraft_terrain::mesh::Vertex { sky_light: FULL_BRIGHT, block_light: FULL_BRIGHT, ..vertex }));
+                mesh.indices.extend(totem.indices.into_iter().map(|index| index + start));
+                mesh.faces += totem.faces;
+            }
             let vertices = minecraft_terrain::mesh::section_vertices(&mesh);
             view.hand = (bytemuck::cast_slice(&vertices).to_vec(), mesh.indices);
             // Reverse-Z with no far plane, as the scene's; 70 degrees up.
@@ -1256,7 +1414,8 @@ fn update(
             .to_cols_array();
         }
 
-        sim::voxel::set_mob_boxes(entities.shot_boxes());
+        sim::voxel::set_mob_boxes(entities.shot_boxes(player.riding.map(|ride| ride.vehicle)));
+        crate::minecraft_players::track_body(entities, local_uuid, ps, origin);
         entities.tick_scene(&terrain.scene, mob_ticks);
         let sky_darken = (15.0 - terrain.environment.sky_light_level()).clamp(0.0, 15.0) as u8;
         let campfire_items: Vec<_> = containers
@@ -1301,7 +1460,7 @@ fn update(
     let minecraft_survival::player::Player { survival, mode: player_mode, inventory, selected, hand, .. } = &mut *player;
     if alive {
         match minecraft_survival::gear::body_gear(inventory, *selected, player_mode) {
-            Some(gear) => body_gear.set(local.0.0, gear),
+            Some(gear) => body_gear.set(local.0.0, board_gear(gear, skate.active)),
             None => body_gear.remove(local.0.0),
         }
     } else if dead {
@@ -1318,6 +1477,12 @@ fn update(
         (player_mode.mode == minecraftoss_player::GameMode::Spectator, fire_resistant)
     });
     let weather = entities.as_ref().map_or_else(minecraft_terrain::server::WeatherView::default, |e| e.weather);
+    view.weather = match entities.as_ref() {
+        Some(entities) if world.weather_texture.is_some() => entities.weather_mesh(&terrain.scene, eye, light),
+        _ => Default::default(),
+    };
+    let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
+    let powder_snow = (alive && lava.is_none() && minecraft_terrain::scene::Scene::block(&terrain.scene, eye_block).is_some_and(|b| b.id.key() == "minecraft:powder_snow")).then_some(player_mode.mode == minecraftoss_player::GameMode::Spectator);
     let inputs = SkyInputs {
         eye,
         forward,
@@ -1328,9 +1493,22 @@ fn update(
         rain_level: weather.rain_level,
         thunder_level: weather.thunder_level,
         lava,
+        powder_snow,
         world_fog: ui.boss_bars.iter().any(|bar| bar.world_fog),
+        credits: ui.credits.is_some(),
     };
-    present_sky(&mut view, terrain, &globals.registries, light, (environment_accumulator, environment_primed), &inputs);
+    let sky_ticked = present_sky(&mut view, terrain, &globals.registries, light, (environment_accumulator, environment_primed), &inputs);
+    if let (Some((x_angle, y_angle)), Some(sounds)) = (sky_ticked.flash, sounds.as_mut()) {
+        let toward = minecraft_terrain::end_flash::direction_from_rotation(x_angle, y_angle) * 10.0;
+        let source = [eye[0] + toward.x, eye[1] + toward.y, eye[2] + toward.z];
+        sounds.play_without_falloff(&world.packs, "minecraft:weather.end_flash", Some(at(source)), 1.0, 1.0);
+    }
+    if sky_ticked.ticked {
+        let music_input = crate::minecraft_music::MusicInput { dimension: *dimension, credits_open: ui.credits.is_some(), boss_music: ui.boss_bars.iter().any(|bar| bar.music), finished: mc_music.finished.as_deref(), loading: ui.loading_world };
+        if let Some(action) = music.update(music_input) {
+            crate::minecraft_music::apply(action, sounds.as_mut(), &world.packs, &mut mc_music);
+        }
+    }
     present_clouds(&mut view, world, cloud_center, eye, globals.day.ticks);
     present_light_volume(&mut view, light, block, light_volume_at, light_volume_age);
 }
@@ -1346,11 +1524,20 @@ pub(crate) struct SkyInputs {
     pub(crate) rain_level: f32,
     pub(crate) thunder_level: f32,
     pub(crate) lava: Option<(bool, bool)>,
+    pub(crate) powder_snow: Option<bool>,
     pub(crate) world_fog: bool,
+    pub(crate) credits: bool,
 }
 
-pub(crate) fn present_sky(view: &mut MinecraftWorldView, terrain: &mut minecraft_survival::level::Terrain, registries: &Registries, light: &SkyLight, (accumulator, primed): (&mut f64, &mut bool), inputs: &SkyInputs) {
-    let SkyInputs { eye, forward, aspect, dt, clock_ticks, game_time, rain_level, thunder_level, lava, world_fog } = *inputs;
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SkyTicked {
+    pub(crate) ticked: bool,
+    pub(crate) flash: Option<(f32, f32)>,
+}
+
+pub(crate) fn present_sky(view: &mut MinecraftWorldView, terrain: &mut minecraft_survival::level::Terrain, registries: &Registries, light: &SkyLight, (accumulator, primed): (&mut f64, &mut bool), inputs: &SkyInputs) -> SkyTicked {
+    let SkyInputs { eye, forward, aspect, dt, clock_ticks, game_time, rain_level, thunder_level, lava, powder_snow, world_fog, credits } = *inputs;
+    let mut ticked = SkyTicked::default();
     let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
     view.eye_light = [
         f32::from(light.get(eye_block)),
@@ -1367,15 +1554,17 @@ pub(crate) fn present_sky(view: &mut MinecraftWorldView, terrain: &mut minecraft
     if !*primed || *accumulator >= TICK_SECONDS {
         *accumulator = (*accumulator % TICK_SECONDS).min(TICK_SECONDS);
         let scene = &terrain.scene;
-        terrain.environment.tick(
+        let flash = terrain.environment.tick(
             clock_ticks,
             rain_level,
             thunder_level,
             eye,
             |x, y, z| scene.noise_biome((x, y, z)).map_or(0, |id| id.0),
             !*primed,
+            credits,
         );
         *primed = true;
+        ticked = SkyTicked { ticked: true, flash };
     }
     let partial_tick = (*accumulator / TICK_SECONDS).clamp(0.0, 1.0) as f32;
     let sky = terrain.environment.sky_state(&View {
@@ -1387,9 +1576,10 @@ pub(crate) fn present_sky(view: &mut MinecraftWorldView, terrain: &mut minecraft
         thunder_level,
     });
     let render_distance = VIEW_DISTANCE as f32 * 16.0;
-    let sky = match lava {
-        Some((spectator, fire_resistant)) => minecraft_terrain::lava_fog::in_lava(sky, spectator, fire_resistant, render_distance),
-        None => sky,
+    let sky = match (lava, powder_snow) {
+        (Some((spectator, fire_resistant)), _) => minecraft_terrain::lava_fog::in_lava(sky, spectator, fire_resistant, render_distance),
+        (None, Some(spectator)) => minecraft_terrain::lava_fog::in_powder_snow(sky, spectator, render_distance),
+        (None, None) => sky,
     };
     let right = forward.cross(glam::Vec3::Y).normalize_or(glam::Vec3::X);
     let up = right.cross(forward).normalize_or(glam::Vec3::Y);
@@ -1405,7 +1595,7 @@ pub(crate) fn present_sky(view: &mut MinecraftWorldView, terrain: &mut minecraft
             sky.sky_light_color.x,
             sky.sky_light_color.y,
             sky.sky_light_color.z,
-            sky.sky_light_factor,
+            sky.sky_light_factor + minecraft_terrain::end_flash::light_boost(sky.end_flash[0], world_fog),
         ],
         sky.sunset,
         [sky.sun_direction.x, sky.sun_direction.y, sky.sun_direction.z, sky.rain_brightness],
@@ -1439,6 +1629,8 @@ pub(crate) fn present_sky(view: &mut MinecraftWorldView, terrain: &mut minecraft
         ],
     ];
     view.end_look.portal_time = crate::minecraft_end_look::portal_time(game_time);
+    view.end_look.end_flash = sky.end_flash;
+    ticked
 }
 
 pub(crate) fn present_clouds(view: &mut MinecraftWorldView, world: &Loaded, cloud_center: &mut Option<(i32, i32)>, eye: [f64; 3], game_time: f64) {
@@ -1778,7 +1970,8 @@ pub(crate) fn shape_id(
         }) | match blocks.block(blocks.block_of(state)).name.as_str() {
             "minecraft:sweet_berry_bush" => sim::voxel::STUCK_BERRY_BUSH,
             "minecraft:cobweb" => sim::voxel::STUCK_COBWEB,
-            _ => 0,
+            "minecraft:powder_snow" => sim::voxel::POWDER_SNOW,
+            name => sim::voxel::rail_flags(name, blocks.property(state, "shape")),
         };
         let scaffolding = blocks.block(blocks.block_of(state)).name.as_str() == minecraft_terrain::scaffolding::SCAFFOLDING;
         let climbable = registries.block_tags.id("minecraft:climbable").is_some_and(|tag| registries.block_in_tag(state, tag));
@@ -1815,6 +2008,20 @@ pub(crate) fn write_blocks(
         sim::voxel::set_block_shape(at.0, at.1, at.2, shape);
     }
     minecraft_survival::level::write_blocks(terrain, entities, writes);
+}
+
+fn refresh_shapes(
+    terrain: &minecraft_survival::level::Terrain,
+    registries: &Registries,
+    shapes: &mut HashMap<BlockStateId, u16>,
+    shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
+    written: &[(i32, i32, i32)],
+) {
+    for &(x, y, z) in written {
+        let state = minecraft_terrain::scene::Scene::block(&terrain.scene, (x, y, z)).and_then(|b| terrain.stream.states.state_of(b));
+        let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, registries, state));
+        sim::voxel::set_block_shape(x, y, z, shape);
+    }
 }
 
 pub(crate) fn ability_bits(mode: &minecraft_terrain::game_mode::PlayerMode) -> u32 {
@@ -1868,6 +2075,8 @@ pub(crate) fn mc_vitals(vitals: minecraft_survival::survival::Vitals) -> frame::
         on_fire: vitals.on_fire,
         eye_in_lava: vitals.eye_in_lava,
         withered: vitals.withered,
+        frozen: vitals.frozen,
+        fully_frozen: vitals.fully_frozen,
     }
 }
 
@@ -1877,14 +2086,15 @@ fn draw_body_gear(
     mut friend: NonSendMut<crate::minecraft_remote::Friend>,
     posed: Res<crate::anim::minecraft_gear::PosedGearFrame>,
     gear: Res<crate::anim::minecraft_gear::McBodyGear>,
+    glide: Res<crate::anim::minecraft_glide::McGlide>,
     puppet: Res<frame::InventoryPuppet>,
 ) {
     view.puppet_gear = Default::default();
     let puppet_client = puppet.active.then_some(puppet.client);
     let meshes = if let Runtime { world: Some(world), light: Some(light), gear_items, .. } = &mut *runtime {
-        crate::anim::minecraft_gear::gear_meshes(&posed, &gear, view.origin, puppet_client, gear_items, &world.packs, &world.atlas, light)
+        crate::anim::minecraft_gear::gear_meshes(&posed, &gear, &glide, view.origin, puppet_client, gear_items, &world.packs, &world.atlas, light)
     } else if let Some((look, light, gear_items)) = friend.gear_look() {
-        crate::anim::minecraft_gear::gear_meshes(&posed, &gear, view.origin, puppet_client, gear_items, &look.packs, &look.atlas, light)
+        crate::anim::minecraft_gear::gear_meshes(&posed, &gear, &glide, view.origin, puppet_client, gear_items, &look.packs, &look.atlas, light)
     } else {
         return;
     };
@@ -1953,6 +2163,9 @@ fn save_and_close(
     loader: Option<std::thread::JoinHandle<()>>,
 ) {
     let started = std::time::Instant::now();
+    if let Some(server) = server.as_mut() {
+        server.take_vehicles();
+    }
     for level in server.iter_mut().flat_map(|server| server.levels.values_mut()) {
         if let Some(entities) = level.entities.as_mut() {
             minecraft_survival::level::save_server_block_entities(entities, &mut level.terrain, true);
@@ -2015,6 +2228,7 @@ fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u
     view.particles = Default::default();
     view.entity_meshes = Default::default();
     view.cracks = Default::default();
+    view.weather = Default::default();
     view.clouds = None;
     view.light_volume = None;
     runtime.shapes.clear();
@@ -2032,6 +2246,23 @@ fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u
     runtime.shown = Some(dimension);
     diag::info!(World, "Minecraft level shown: {} with {:?} at map origin", dimension.dimension_type(), origin);
     failed
+}
+
+fn relay_messages(
+    players: &std::collections::BTreeMap<minecraft_net::PlayerUuid, minecraft_survival::player::Player>,
+    local: &minecraft_net::PlayerUuid,
+    messages: Vec<(minecraft_net::PlayerUuid, minecraft_commands::Clientbound)>,
+    relayed: &mut minecraft_survival::commands::Handled,
+) -> Vec<minecraft_commands::Clientbound> {
+    let mut here = Vec::new();
+    for (uuid, message) in messages {
+        if &uuid == local {
+            here.push(message);
+        } else if let Some(player) = players.get(&uuid) {
+            relayed.delivered.push(minecraft_commands::Outgoing { to: minecraft_commands::Recipient::Player(player.id), message });
+        }
+    }
+    here
 }
 
 fn local_switching(runtime: &Runtime) -> bool {
@@ -2057,6 +2288,9 @@ fn leave_level(
         let _ = player.survival.gain_experience(clicked.experience);
         let thrown = clicked.thrown;
         let minecraft_survival::player::Player { uuid, place, .. } = &*player;
+        for (pos, action) in inventory_ui.take_lectern_actions() {
+            entities.lectern(u64::from(player.id.0), pos, action, None);
+        }
         if let Some(place) = place.as_ref() {
             let thrower = crate::minecraft_inventory::Thrower {
                 eye: glam::DVec3::new(place.feet[0], place.feet[1] + crate::minecraft_spawn_gate::SPAWN_EYE_HEIGHT, place.feet[2]),
@@ -2070,6 +2304,9 @@ fn leave_level(
             let outcome = minecraft_survival::level::opener_outcome(&level.terrain.scene, &event);
             let (cell, id, count) = outcome.block_event;
             entities.lids.block_event(&level.terrain.scene, cell, id, count);
+            if let Some((pos, viewers)) = outcome.trapped {
+                entities.chest_openers(pos, viewers);
+            }
             writes.extend(outcome.state.map(|(cell, state)| (cell, Some(state))));
         }
         if !writes.is_empty() {
@@ -2087,6 +2324,8 @@ fn leave_level(
 }
 
 fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
+    runtime.music = Default::default();
+    runtime.item_activation = Default::default();
     if close_world(runtime, false) || view.active {
         sim::voxel::deactivate();
         runtime.spawn_gate = Default::default();
@@ -2106,6 +2345,8 @@ pub(crate) fn clear_view(view: &mut MinecraftWorldView) {
     view.glint_texture = None;
     view.armor_glint_texture = None;
     view.end_look = Default::default();
+    view.weather = Default::default();
+    view.weather_texture = None;
     view.particles = Default::default();
     view.puppet_gear = Default::default();
     view.entity_meshes = Default::default();
@@ -2114,6 +2355,81 @@ pub(crate) fn clear_view(view: &mut MinecraftWorldView) {
     view.clouds = None;
     view.light_volume = None;
     view.generation += 1;
+}
+
+#[cfg(test)]
+mod skate_tests {
+    use super::{board_allowed, board_gear, skate_on_ground};
+    use minecraft_terrain::body_gear::{BodyGear, GearItem};
+    use playerstate_iw4::ENTITYNUM_NONE;
+    use playerstate_iw4::pm_flags::{CROUCH, MC_FLYING, MC_GLIDING, MC_RIDING, SPRINTING};
+
+    fn item(id: &str) -> Option<GearItem> {
+        Some(GearItem { id: id.to_owned(), glint: false, dye: None })
+    }
+
+    #[test]
+    fn a_skater_holds_no_minecraft_item() {
+        let gear = BodyGear {
+            main: item("minecraft:cobblestone"),
+            off: item("minecraft:shield"),
+            armor: [item("minecraft:iron_helmet"), None, item("minecraft:iron_leggings"), None],
+            hides_gun: true,
+        };
+        let riding = board_gear(gear.clone(), true);
+        assert_eq!(riding.main, None);
+        assert_eq!(riding.off, None);
+        assert_eq!(riding.armor, gear.armor);
+        assert_eq!(riding.hides_gun, gear.hides_gun);
+        assert_eq!(board_gear(gear.clone(), false), gear);
+    }
+
+    #[test]
+    fn a_landing_skater_takes_vanilla_fall_damage() {
+        assert!(skate_on_ground(true, false, ENTITYNUM_NONE), "rolling on the board is on the ground whatever the frozen PMove says");
+        assert!(!skate_on_ground(true, true, 0), "in the air off a kicker");
+        assert!(skate_on_ground(false, true, 0));
+        assert!(!skate_on_ground(false, false, ENTITYNUM_NONE));
+        let mut survival = minecraft_survival::survival::Survival::default();
+        survival.observe(100, 100);
+        assert_eq!(survival.fall(8.0, None, false), 5);
+        assert_eq!(survival.status.health, 15.0);
+    }
+
+    #[test]
+    fn the_board_is_refused_flying_gliding_dead_spectating_under_water_riding_asleep_or_in_powder_snow() {
+        assert!(board_allowed(true, false, 0, false, false, false));
+        assert!(board_allowed(true, false, SPRINTING | CROUCH, false, false, false));
+        assert!(!board_allowed(false, false, 0, false, false, false));
+        assert!(!board_allowed(true, true, 0, false, false, false));
+        assert!(!board_allowed(true, false, MC_FLYING, false, false, false));
+        assert!(!board_allowed(true, false, MC_GLIDING, false, false, false));
+        assert!(!board_allowed(true, false, 0, true, false, false));
+        assert!(!board_allowed(true, false, MC_RIDING, false, false, false), "on a strider");
+        assert!(!board_allowed(true, false, MC_RIDING | CROUCH, false, false, false));
+        assert!(!board_allowed(true, false, 0, false, true, false), "in a bed");
+        assert!(!board_allowed(true, false, 0, false, false, true), "held in powder snow");
+    }
+}
+
+#[cfg(test)]
+mod celestial_tests {
+    #[test]
+    fn the_celestial_atlas_has_ten_slots() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = minecraft_terrain::pack::PackStack::open(vec![pack]).unwrap();
+        let atlas = super::celestial_image(&packs).unwrap();
+        assert_eq!(atlas.dimensions(), (640, 64));
+        let lit = |slot: u32| (0..64).flat_map(|y| (0..64).map(move |x| (x, y))).filter(|&(x, y)| atlas.get_pixel(slot * 64 + x, y)[3] > 0).count();
+        assert!(lit(0) > 0, "the sun");
+        assert!(lit(9) > 0, "the end flash");
+    }
 }
 
 #[cfg(test)]

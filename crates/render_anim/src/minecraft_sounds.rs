@@ -89,6 +89,29 @@ impl Sounds {
         self.play_depth(packs, event, position, volume, pitch, 0);
     }
 
+    pub(crate) fn play_without_falloff(&mut self, packs: &PackStack, event: &str, position: Option<Vec3>, volume: f32, pitch: f32) {
+        let queued = self.queued.len();
+        self.play(packs, event, position, volume, pitch);
+        for request in &mut self.queued[queued..] {
+            request.attenuation = f32::INFINITY;
+        }
+    }
+
+    pub(crate) fn music_file(&mut self, packs: &PackStack, event: &str) -> Option<(String, Arc<[u8]>, f32)> {
+        let key = event.strip_prefix("minecraft:").unwrap_or(event);
+        let entry = self.events.get(key)?.iter().find(|entry| !entry.event)?;
+        let (name, volume) = (entry.name.clone(), entry.volume);
+        let (namespace, path) = name.split_once(':').unwrap_or(("minecraft", &name));
+        let bytes = ResourceId::parse(&format!("{namespace}:{path}")).ok().and_then(|id| packs.get(&id, &format!("sounds/{path}.ogg")).ok().flatten());
+        let Some(bytes) = bytes else {
+            if self.unresolved.insert(name.clone()) {
+                diag::info!(World, "Minecraft music `{name}` is not in the pack");
+            }
+            return None;
+        };
+        Some((name, Arc::from(bytes), volume))
+    }
+
     fn play_depth(&mut self, packs: &PackStack, event: &str, position: Option<Vec3>, volume: f32, pitch: f32, depth: u8) {
         let key = event.strip_prefix("minecraft:").unwrap_or(event);
         let total: u32 = self.events.get(key).map_or(0, |e| e.iter().map(|x| x.weight).sum());
@@ -161,5 +184,53 @@ mod tests {
         sounds.play(&packs, "minecraft:block.stone.break", Some(Vec3::ZERO), 1.0, 1.0);
         let reach: Vec<f32> = sounds.queued.iter().map(|request| request.attenuation).collect();
         assert_eq!(reach, [10.0, 16.0]);
+    }
+
+    #[test]
+    fn a_sound_without_falloff_keeps_its_volume_far_away() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let mut sounds = Sounds::load(&packs);
+        sounds.play(&packs, "minecraft:block.stone.break", Some(Vec3::ZERO), 1.0, 1.0);
+        sounds.play_without_falloff(&packs, "minecraft:weather.end_flash", Some(Vec3::new(5000.0, 0.0, 0.0)), 1.0, 1.0);
+        assert_eq!(sounds.queued.len(), 2);
+        assert_eq!(sounds.queued[0].attenuation, 16.0);
+        let flash = &sounds.queued[1];
+        assert!(flash.key.starts_with("ambient/weather/end_flash"), "{}", flash.key);
+        assert_eq!((flash.volume, flash.pitch), (1.0, 1.0));
+        assert_eq!(flash.attenuation, f32::INFINITY);
+        let reach = flash.attenuation * flash.volume.max(1.0) * flash.block;
+        assert_eq!((1.0 - 5000.0 / reach).clamp(0.0, 1.0), 1.0);
+    }
+
+    #[test]
+    fn the_end_music_events_resolve_to_their_files_when_fetched() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = PackStack::open(vec![pack.clone()]).unwrap();
+        let mut sounds = Sounds::load(&packs);
+        for (event, name) in [("minecraft:music.dragon", "music/game/end/boss"), ("minecraft:music.end", "music/game/end/the_end"), ("minecraft:music.credits", "music/game/end/alpha")] {
+            let file = pack.join(format!("assets/minecraft/sounds/{name}.ogg"));
+            match std::fs::read(&file) {
+                Ok(bytes) => {
+                    let (found, music, volume) = sounds.music_file(&packs, event).unwrap();
+                    assert_eq!((found.as_str(), volume), (name, 1.0));
+                    assert_eq!(music.len(), bytes.len());
+                }
+                Err(_) => assert!(sounds.music_file(&packs, event).is_none(), "{event}"),
+            }
+        }
+        assert!(sounds.music_file(&packs, "minecraft:music.nothing").is_none());
     }
 }

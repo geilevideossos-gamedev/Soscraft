@@ -107,11 +107,21 @@ pub(crate) fn arriving(player: &mut Player, sounds: Option<&mut Sounds>, packs: 
     }
 }
 
+pub(crate) const FREEZE_OUTLINE: &str = "minecraft:misc/powder_snow_outline";
+
 pub(crate) fn frames(
     packs: &PackStack,
     images: &mut Assets<Image>,
 ) -> Option<(Handle<Image>, u32)> {
-    let id = ResourceId::parse(PORTAL_SPRITE).ok()?;
+    strip(packs, images, PORTAL_SPRITE)
+}
+
+pub(crate) fn strip(
+    packs: &PackStack,
+    images: &mut Assets<Image>,
+    sprite: &str,
+) -> Option<(Handle<Image>, u32)> {
+    let id = ResourceId::parse(sprite).ok()?;
     let bytes = packs.texture(&id).ok()??;
     let strip = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
         .ok()?

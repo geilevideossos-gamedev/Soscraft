@@ -4,10 +4,12 @@ use bevy::prelude::*;
 #[derive(Resource, Default)]
 pub struct SkateMode {
     pub active: bool,
+    pub airborne: bool,
     pub entering: bool,
     pub preloaded: bool,
     pub preload_pending: bool,
     pub controller: Option<usize>,
+    pub keyboard: bool,
     pub toggle_requested: bool,
     pub input_blocked: bool,
     pub client: u32,

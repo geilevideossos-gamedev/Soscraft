@@ -670,6 +670,7 @@ pub fn structure_loot(
     pos: BlockPos,
     world_seed: i64,
     recipes: &RecipeBook,
+    enchanting: Option<Arc<minecraftoss_entities::enchant::Enchantments>>,
 ) -> Option<(Vec<ItemStack>, u64)> {
     let table = entity.get("LootTable")?.as_str()?;
     let seed = entity
@@ -688,13 +689,16 @@ pub fn structure_loot(
             f64::from(pos.1) + 0.5,
             f64::from(pos.2) + 0.5,
         ]),
+        enchanting: enchanting.map(|book| {
+            Arc::new(LootEnchanting(book)) as Arc<dyn minecraftoss_core::loot::Enchanting>
+        }),
         ..Default::default()
     };
     let mut sequences = minecraftoss_core::loot::RandomSequences::new(world_seed);
     let mut random = minecraftoss_core::random::LegacyRandom::new(seed);
     let stacks = registries
         .loot
-        .roll(registries, table, &params, &mut sequences, &mut random)
+        .roll_seeded(registries, table, &params, seed, &mut sequences, &mut random)
         .ok()?;
     let items = stacks
         .into_iter()
@@ -707,6 +711,45 @@ pub fn structure_loot(
         })
         .collect();
     Some((items, seed as u64))
+}
+
+#[derive(Debug)]
+struct LootEnchanting(Arc<minecraftoss_entities::enchant::Enchantments>);
+
+struct LootRandomOf<'a>(&'a mut dyn minecraftoss_core::random::RandomSource);
+
+impl minecraftoss_player::rng::LootRandom for LootRandomOf<'_> {
+    fn next_float(&mut self) -> f32 {
+        self.0.next_f32()
+    }
+
+    fn next_int(&mut self, bound: u32) -> u32 {
+        self.0.next_i32_bound(bound as i32) as u32
+    }
+}
+
+impl minecraftoss_core::loot::Enchanting for LootEnchanting {
+    fn enchant_with_levels(
+        &self,
+        random: &mut dyn minecraftoss_core::random::RandomSource,
+        item: &str,
+        cost: i32,
+        options: Option<&Value>,
+    ) -> Vec<(String, i32)> {
+        self.0
+            .enchant_with_levels(&mut LootRandomOf(random), item, cost, options)
+    }
+
+    fn enchant_randomly(
+        &self,
+        random: &mut dyn minecraftoss_core::random::RandomSource,
+        item: &str,
+        options: Option<&Value>,
+        only_compatible: bool,
+    ) -> Option<(String, i32)> {
+        self.0
+            .enchant_randomly(&mut LootRandomOf(random), item, options, only_compatible)
+    }
 }
 
 impl Containers {
@@ -1738,11 +1781,127 @@ mod tests {
         );
         let entity = minecraftoss_core::nbt::Tag::Compound(map);
         let recipes = book();
-        let (items, seed) = structure_loot(&registries, &entity, (5, 30, 5), 7, &recipes).unwrap();
+        let (items, seed) = structure_loot(&registries, &entity, (5, 30, 5), 7, &recipes, None).unwrap();
         assert_eq!(seed, 12345);
         assert!(!items.is_empty(), "a dungeon chest has loot");
         let plain = minecraftoss_core::nbt::Tag::Compound(std::collections::BTreeMap::new());
-        assert!(structure_loot(&registries, &plain, (5, 30, 5), 7, &recipes).is_none());
+        assert!(structure_loot(&registries, &plain, (5, 30, 5), 7, &recipes, None).is_none());
+    }
+
+    fn loot_data() -> Option<(
+        minecraftoss_core::Registries,
+        Arc<minecraftoss_entities::enchant::Enchantments>,
+    )> {
+        let paths = minecraftoss_core::registries::DataPaths::discover().ok()?;
+        let registries = minecraftoss_core::Registries::load(&paths).ok()?;
+        let root = std::env::var_os("MINECRAFTOSS_ROOT")?;
+        let jar = std::path::Path::new(&root).join("client.jar");
+        let trades =
+            minecraftoss_entities::trading::TradeBook::from_jar(&jar, &paths.item_catalog).ok()?;
+        Some((registries, Arc::new(trades.enchantments)))
+    }
+
+    fn loot_chest(table: &str, seed: i64) -> Tag {
+        Tag::Compound(BTreeMap::from([
+            ("LootTable".to_owned(), Tag::String(table.to_owned())),
+            ("LootTableSeed".to_owned(), Tag::Long(seed)),
+        ]))
+    }
+
+    fn enchantments_of<'a>(item: &'a ItemStack, key: &str) -> Option<&'a serde_json::Map<String, Value>> {
+        item.components.as_ref()?.get(key)?.as_object()
+    }
+
+    fn is_gear(id: &str) -> bool {
+        (id.starts_with("minecraft:diamond_") || id.starts_with("minecraft:iron_"))
+            && !id.ends_with("_horse_armor")
+            && id != "minecraft:iron_ingot"
+    }
+
+    #[test]
+    fn an_end_city_chest_always_rolls_items() {
+        let Some((registries, enchantments)) = loot_data() else {
+            return;
+        };
+        let recipes = book();
+        let mut enchanted = 0;
+        let mut chests = BTreeSet::new();
+        for seed in 1..=200 {
+            let chest = loot_chest("minecraft:chests/end_city_treasure", seed);
+            let (items, _) = structure_loot(&registries, &chest, (5, 70, 5), 7, &recipes, Some(enchantments.clone())).unwrap();
+            assert!(!items.is_empty(), "seed {seed} gives an empty chest");
+            chests.insert(format!("{:?}", items.iter().map(|item| (&item.id, item.count, &item.components)).collect::<Vec<_>>()));
+            for item in items.iter().filter(|item| is_gear(&item.id)) {
+                let map = enchantments_of(item, "minecraft:enchantments").unwrap_or_else(|| panic!("seed {seed}: {} is not enchanted", item.id));
+                assert!(!map.is_empty(), "seed {seed}: {}", item.id);
+                assert_eq!(item.count, 1);
+                for (id, level) in map {
+                    let enchantment = &enchantments.list[enchantments.index(id).unwrap()];
+                    assert!(enchantments.tag_contains("minecraft:on_random_loot", id), "seed {seed}: {id} is a random loot enchantment");
+                    assert!(enchantment.can_enchant(&item.id), "seed {seed}: {id} fits {}", item.id);
+                    let level = level.as_i64().unwrap() as i32;
+                    assert!((1..=enchantment.max_level).contains(&level), "seed {seed}: {id} {level}");
+                }
+                enchanted += 1;
+            }
+        }
+        assert!(enchanted > 20, "about one roll in six is enchanted gear: {enchanted}");
+        assert!(chests.len() > 190, "each seed gives its own chest: {}", chests.len());
+    }
+
+    fn dungeon_book_seed(registries: &minecraftoss_core::Registries, recipes: &RecipeBook, enchantments: &Arc<minecraftoss_entities::enchant::Enchantments>) -> i64 {
+        (1..=400)
+            .find(|&seed| {
+                let chest = loot_chest("minecraft:chests/simple_dungeon", seed);
+                let (items, _) = structure_loot(registries, &chest, (5, 30, 5), 7, recipes, Some(enchantments.clone())).unwrap();
+                items.iter().any(|item| item.id == "minecraft:enchanted_book")
+            })
+            .expect("a dungeon chest with a book within 400 seeds")
+    }
+
+    #[test]
+    fn a_dungeon_book_becomes_an_enchanted_book() {
+        let Some((registries, enchantments)) = loot_data() else {
+            return;
+        };
+        let recipes = book();
+        let seed = dungeon_book_seed(&registries, &recipes, &enchantments);
+        let chest = loot_chest("minecraft:chests/simple_dungeon", seed);
+        let (items, _) = structure_loot(&registries, &chest, (5, 30, 5), 7, &recipes, Some(enchantments.clone())).unwrap();
+        assert!(items.iter().all(|item| item.id != "minecraft:book"), "no plain book is left: {items:?}");
+        for book in items.iter().filter(|item| item.id == "minecraft:enchanted_book") {
+            assert_eq!(book.count, 1);
+            let stored = enchantments_of(book, "minecraft:stored_enchantments").expect("the book stores its enchantment");
+            assert_eq!(stored.len(), 1, "enchant_randomly picks one: {stored:?}");
+            assert!(enchantments_of(book, "minecraft:enchantments").is_none());
+            let (id, level) = stored.iter().next().unwrap();
+            let enchantment = &enchantments.list[enchantments.index(id).unwrap()];
+            assert!(enchantments.tag_contains("minecraft:on_random_loot", id));
+            assert!((1..=i64::from(enchantment.max_level)).contains(&level.as_i64().unwrap()));
+        }
+    }
+
+    #[test]
+    fn the_enchanting_functions_pass_through_without_an_engine() {
+        let Some((registries, enchantments)) = loot_data() else {
+            return;
+        };
+        let recipes = book();
+        let mut plain_gear = 0;
+        for seed in 1..=50 {
+            let chest = loot_chest("minecraft:chests/end_city_treasure", seed);
+            let (items, _) = structure_loot(&registries, &chest, (5, 70, 5), 7, &recipes, None).unwrap();
+            assert!(!items.is_empty(), "seed {seed} gives an empty chest");
+            for item in items.iter().filter(|item| is_gear(&item.id)) {
+                assert!(item.components.is_none(), "seed {seed}: {item:?}");
+                plain_gear += 1;
+            }
+        }
+        assert!(plain_gear > 0);
+        let seed = dungeon_book_seed(&registries, &recipes, &enchantments);
+        let chest = loot_chest("minecraft:chests/simple_dungeon", seed);
+        let (items, _) = structure_loot(&registries, &chest, (5, 30, 5), 7, &recipes, None).unwrap();
+        assert!(items.iter().any(|item| item.id == "minecraft:book" && item.components.is_none()), "{items:?}");
     }
 
     #[test]

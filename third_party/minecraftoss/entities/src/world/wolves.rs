@@ -495,6 +495,7 @@ impl EntityWorld {
                 _ => {}
             }
         }
+        entity.wolf.body.float_from(&entity.effects);
         if entity.wolf.health > 0.0 {
             entity.ambient(game_time);
         }
@@ -546,7 +547,7 @@ impl EntityWorld {
                     self.mob_hits_mob(id, victim, wolf::ATTACK_DAMAGE, from, 0.0);
                 }
                 Target::Player(player_id) => {
-                    self.player_hits.push(PlayerHit { player_id, damage: wolf::ATTACK_DAMAGE, kind: PlayerHitKind::Melee { attacker: from, hunger_ticks: 0, lift: 0.0 }, source: Some(id) });
+                    self.player_hits.push(PlayerHit { player_id, damage: wolf::ATTACK_DAMAGE, kind: PlayerHitKind::Melee { attacker: from, hunger_ticks: 0, lift: 0.0, throw: glam::DVec3::ZERO, disable_shield_seconds: 0.0 }, source: Some(id) });
                 }
             }
         }

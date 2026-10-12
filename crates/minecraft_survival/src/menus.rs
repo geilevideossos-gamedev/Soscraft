@@ -261,6 +261,7 @@ pub fn open_station(
                     pos,
                     globals.seed,
                     recipes,
+                    globals.data.enchantments.clone(),
                 )
             {
                 containers.fill(pos, items, seed);
@@ -1155,7 +1156,7 @@ pub struct Lids<'a> {
 
 pub fn lids(
     lids: Lids<'_>,
-    uuid: &PlayerUuid,
+    (uuid, player, feet): (&PlayerUuid, u64, [f64; 3]),
     was: Option<&Opened>,
     now: Option<&Opened>,
     spectator: bool,
@@ -1166,6 +1167,13 @@ pub fn lids(
         (now.filter(|now| was != Some(*now)), true),
     ] {
         let Some(opened) = opened else { continue };
+        let counted = opened.cells.iter().any(|&pos| {
+            Scene::block(&lids.terrain.scene, pos)
+                .is_some_and(minecraft_terrain::openers::Openers::counted)
+        });
+        if open && counted {
+            lids.entities.anger_piglins(player, feet, true);
+        }
         events.extend(crate::level::toggle_openers(
             lids.openers,
             &lids.terrain.scene,
@@ -1202,6 +1210,9 @@ fn lid_effects(
         let outcome = crate::level::opener_outcome(&terrain.scene, &event);
         let (cell, id, count) = outcome.block_event;
         entities.lids.block_event(&terrain.scene, cell, id, count);
+        if let Some((pos, viewers)) = outcome.trapped {
+            entities.chest_openers(pos, viewers);
+        }
         if let Some(sound) = outcome.sound {
             let pitch = minecraft_terrain::openers::pitch(entities.random_float());
             effects.push(Effect::Sound {

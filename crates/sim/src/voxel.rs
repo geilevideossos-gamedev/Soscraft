@@ -585,16 +585,51 @@ pub const STUCK_BERRY_BUSH: u16 = 0x200;
 pub const STUCK_COBWEB: u16 = 0x400;
 const BERRY_BUSH_SLOWDOWN: [f32; 3] = [0.8, 0.8, 0.75];
 const COBWEB_SLOWDOWN: [f32; 3] = [0.25, 0.25, 0.05];
+pub const RAIL_SHAPE: u16 = 0x7800;
+const RAIL_SHAPE_SHIFT: u32 = 11;
+const RAIL_SHAPES: [&str; 10] = [
+    "north_south",
+    "east_west",
+    "ascending_east",
+    "ascending_west",
+    "ascending_north",
+    "ascending_south",
+    "south_east",
+    "south_west",
+    "north_west",
+    "north_east",
+];
+const RAIL_BLOCKS: [&str; 4] = ["minecraft:rail", "minecraft:powered_rail", "minecraft:detector_rail", "minecraft:activator_rail"];
+
+pub fn rail_flags(block: &str, shape: Option<&str>) -> u16 {
+    if !RAIL_BLOCKS.contains(&block) {
+        return 0;
+    }
+    shape.and_then(|shape| RAIL_SHAPES.iter().position(|s| *s == shape)).map_or(0, |i| (i as u16 + 1) << RAIL_SHAPE_SHIFT)
+}
+pub const POWDER_SNOW: u16 = 0x8000;
+const POWDER_SNOW_SLOWDOWN: [f32; 3] = [0.9, 0.9, 1.5];
+const POWDER_SNOW_FALLING: [[f32; 6]; 1] = [[0.0, 0.0, 0.0, 1.0, 0.9, 1.0]];
+const FULL_BLOCK: [[f32; 6]; 1] = [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
+const POWDER_SNOW_FALL: f32 = 2.5;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mover {
     pub feet: f32,
     pub descending: bool,
+    pub powder_walker: bool,
+    pub falling: bool,
 }
 
 impl Mover {
     pub fn of(ps: &playerstate_iw4::PlayerState, cmd: &playerstate_iw4::UserCmd) -> Self {
-        Self { feet: ps.origin[2], descending: movement_iw4::sneaking(ps, cmd) }
+        let fall_speed = (2.0 * ps.gravity.max(0) as f32 * POWDER_SNOW_FALL * BLOCK).sqrt();
+        Self {
+            feet: ps.origin[2],
+            descending: movement_iw4::sneaking(ps, cmd),
+            powder_walker: ps.pm_flags & playerstate_iw4::pm_flags::MC_POWDER_WALKER != 0,
+            falling: -ps.velocity[2] > fall_speed,
+        }
     }
 }
 
@@ -703,6 +738,357 @@ pub fn collision_triangles(centre: [f32; 3], radius: i32, depth: i32) -> Vec<[[f
     out
 }
 
+const FILLET_RISE: f64 = 0.5;
+const FILLET_EPSILON: f64 = 1e-4;
+const FILLET_PROBE: f64 = 1.0 / 64.0;
+const FULL_BOX: [f32; 6] = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+
+pub fn skate_ramps(centre: [f32; 3], radius: i32, depth: i32) -> Vec<[[f32; 3]; 3]> {
+    let Ok(world) = WORLD.read() else {
+        return Vec::new();
+    };
+    let Some(world) = world.as_ref() else {
+        return Vec::new();
+    };
+    let c = to_block(world.origin, centre).map(|v| v.floor() as i32);
+    let lo = [c[0] - radius, c[1] - depth, c[2] - radius];
+    let hi = [c[0] + radius, c[1] + depth, c[2] + radius];
+    riser_fillets(|x, y, z| world.shape_at(x, y, z), lo, hi)
+        .into_iter()
+        .map(|t| t.map(|p| to_map(world.origin, p)))
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+struct Fillet {
+    axis: usize,
+    sign: f64,
+    face: f64,
+    from: f64,
+    to: f64,
+    top: f64,
+    floor: f64,
+}
+
+impl Fillet {
+    fn key(&self) -> (usize, bool, [i64; 3]) {
+        (self.axis, self.sign > 0.0, [self.face, self.top, self.floor].map(|v| (v * 1024.0).round() as i64))
+    }
+}
+
+fn at(axis: usize, along: f64, across: f64, y: f64) -> [f64; 3] {
+    let mut p = [0.0; 3];
+    p[axis] = along;
+    p[2 - axis] = across;
+    p[1] = y;
+    p
+}
+
+pub fn riser_fillets<'a>(shape_at: impl Fn(i32, i32, i32) -> &'a [[f32; 6]], lo: [i32; 3], hi: [i32; 3]) -> Vec<[[f64; 3]; 3]> {
+    let is_full = |x: i32, y: i32, z: i32| matches!(shape_at(x, y, z), [b] if *b == FULL_BOX);
+    let mut fillets = Vec::new();
+    for x in lo[0]..=hi[0] {
+        for z in lo[2]..=hi[2] {
+            for y in lo[1]..=hi[1] {
+                let boxes = shape_at(x, y, z);
+                if boxes.is_empty() || (is_full(x, y, z) && is_full(x, y + 1, z)) {
+                    continue;
+                }
+                let base = [f64::from(x), f64::from(y), f64::from(z)];
+                for b in boxes {
+                    if b[4] <= b[1] {
+                        continue;
+                    }
+                    let top = base[1] + f64::from(b[4]);
+                    for (axis, sign) in [(0, -1.0), (0, 1.0), (2, -1.0), (2, 1.0)] {
+                        let across = 2 - axis;
+                        let local = if sign > 0.0 { b[axis + 3] } else { b[axis] };
+                        let on_edge = if sign > 0.0 { local >= 1.0 } else { local <= 0.0 };
+                        let mut next = [x, y, z];
+                        next[axis] += sign as i32;
+                        if on_edge && is_full(next[0], next[1], next[2]) {
+                            continue;
+                        }
+                        let face = base[axis] + f64::from(local);
+                        let (from, to) = (base[across] + f64::from(b[across]), base[across] + f64::from(b[across + 3]));
+                        let middle = base[across] + 0.5;
+                        let pieces = if from < middle - FILLET_EPSILON && to > middle + FILLET_EPSILON {
+                            [(from, middle), (middle, to)]
+                        } else {
+                            [(from, to), (to, to)]
+                        };
+                        for (from, to) in pieces {
+                            if to - from < FILLET_EPSILON {
+                                continue;
+                            }
+                            if let Some(floor) = fillet_floor(&shape_at, axis, sign, face, from, to, top) {
+                                fillets.push(Fillet { axis, sign, face, from, to, top, floor });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fillets.sort_by(|a, b| a.key().cmp(&b.key()).then(a.from.total_cmp(&b.from)));
+    let mut merged: Vec<Fillet> = Vec::new();
+    for f in fillets {
+        match merged.last_mut() {
+            Some(last) if last.key() == f.key() && f.from <= last.to + FILLET_EPSILON => last.to = last.to.max(f.to),
+            _ => merged.push(f),
+        }
+    }
+    let mut out = Vec::with_capacity(merged.len() * 4);
+    for f in merged {
+        let toe = f.face + f.sign * (f.top - f.floor);
+        let (a0, a1) = (at(f.axis, f.face, f.from, f.top), at(f.axis, f.face, f.to, f.top));
+        let (b0, b1) = (at(f.axis, toe, f.from, f.floor), at(f.axis, toe, f.to, f.floor));
+        let (c0, c1) = (at(f.axis, f.face, f.from, f.floor), at(f.axis, f.face, f.to, f.floor));
+        let slope = at(f.axis, f.sign, 0.0, 1.0);
+        let (low, high) = (at(f.axis, 0.0, -1.0, 0.0), at(f.axis, 0.0, 1.0, 0.0));
+        for (tri, outward) in [([a0, a1, b1], slope), ([a0, b1, b0], slope), ([a0, b0, c0], low), ([a1, c1, b1], high)] {
+            out.push(facing(tri, outward));
+        }
+    }
+    out
+}
+
+fn facing(tri: [[f64; 3]; 3], outward: [f64; 3]) -> [[f64; 3]; 3] {
+    let e1 = [0, 1, 2].map(|k| tri[1][k] - tri[0][k]);
+    let e2 = [0, 1, 2].map(|k| tri[2][k] - tri[0][k]);
+    let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+    if n[0] * outward[0] + n[1] * outward[1] + n[2] * outward[2] < 0.0 {
+        [tri[0], tri[2], tri[1]]
+    } else {
+        tri
+    }
+}
+
+fn fillet_floor<'a>(shape_at: &impl Fn(i32, i32, i32) -> &'a [[f32; 6]], axis: usize, sign: f64, face: f64, from: f64, to: f64, top: f64) -> Option<f64> {
+    let samples = [from + (to - from) * 0.25, from + (to - from) * 0.75];
+    if samples.iter().any(|&s| occupied(shape_at, at(axis, face - sign * FILLET_PROBE, s, top + FILLET_PROBE))) {
+        return None;
+    }
+    let floor = column_floor(shape_at, at(axis, face + sign * FILLET_PROBE, samples[0], top), top)?;
+    let rise = top - floor;
+    if rise > FILLET_RISE + FILLET_EPSILON {
+        return None;
+    }
+    let level = |out: f64, s: f64| column_floor(shape_at, at(axis, face + sign * out, s, top), top).is_some_and(|f| (f - floor).abs() < FILLET_EPSILON);
+    if !samples.iter().all(|&s| [FILLET_PROBE, rise * 0.5, rise * 0.95].iter().all(|&out| level(out, s))) {
+        return None;
+    }
+    let (a, b) = (at(axis, face, from, floor), at(axis, face + sign * rise, to, top));
+    let min = [0, 1, 2].map(|k| a[k].min(b[k]) + FILLET_EPSILON);
+    let max = [0, 1, 2].map(|k| a[k].max(b[k]) - FILLET_EPSILON);
+    (!overlaps(shape_at, min, max)).then_some(floor)
+}
+
+fn column_floor<'a>(shape_at: &impl Fn(i32, i32, i32) -> &'a [[f32; 6]], p: [f64; 3], top: f64) -> Option<f64> {
+    let (x, z) = (p[0].floor() as i32, p[2].floor() as i32);
+    let (lx, lz) = (p[0] - f64::from(x), p[2] - f64::from(z));
+    let roof = (top - FILLET_EPSILON).floor() as i32;
+    let mut floor: Option<f64> = None;
+    for y in roof - 1..=roof {
+        for b in shape_at(x, y, z) {
+            if !(f64::from(b[0]) < lx && lx < f64::from(b[3]) && f64::from(b[2]) < lz && lz < f64::from(b[5])) {
+                continue;
+            }
+            let (bottom, height) = (f64::from(y) + f64::from(b[1]), f64::from(y) + f64::from(b[4]));
+            if height > top - FILLET_EPSILON {
+                if bottom < top - FILLET_EPSILON {
+                    return None;
+                }
+            } else {
+                floor = Some(floor.map_or(height, |f| f.max(height)));
+            }
+        }
+    }
+    floor
+}
+
+fn occupied<'a>(shape_at: &impl Fn(i32, i32, i32) -> &'a [[f32; 6]], p: [f64; 3]) -> bool {
+    let block = p.map(|v| v.floor() as i32);
+    (block[1] - 1..=block[1]).any(|y| {
+        let local = [p[0] - f64::from(block[0]), p[1] - f64::from(y), p[2] - f64::from(block[2])];
+        shape_at(block[0], y, block[2]).iter().any(|b| (0..3).all(|k| f64::from(b[k]) < local[k] && local[k] < f64::from(b[k + 3])))
+    })
+}
+
+fn overlaps<'a>(shape_at: &impl Fn(i32, i32, i32) -> &'a [[f32; 6]], min: [f64; 3], max: [f64; 3]) -> bool {
+    let (lo, hi) = (min.map(|v| v.floor() as i32), max.map(|v| v.floor() as i32));
+    (lo[0]..=hi[0]).any(|x| {
+        (lo[2]..=hi[2]).any(|z| {
+            (lo[1] - 1..=hi[1]).any(|y| {
+                let base = [f64::from(x), f64::from(y), f64::from(z)];
+                shape_at(x, y, z).iter().any(|b| (0..3).all(|k| base[k] + f64::from(b[k]) < max[k] && min[k] < base[k] + f64::from(b[k + 3])))
+            })
+        })
+    })
+}
+
+const RAIL_HEIGHT: f64 = 2.0 / 16.0;
+const RAIL_JOIN: f64 = 32.0;
+const RAIL_ARC_STEPS: usize = 4;
+
+pub fn track_rails(centre: [f32; 3], radius: i32, depth: i32) -> Vec<Vec<[f32; 3]>> {
+    let Ok(world) = WORLD.read() else {
+        return Vec::new();
+    };
+    let Some(world) = world.as_ref() else {
+        return Vec::new();
+    };
+    let c = to_block(world.origin, centre).map(|v| v.floor() as i32);
+    let lo = [c[0] - radius, c[1] - depth, c[2] - radius];
+    let hi = [c[0] + radius, c[1] + depth, c[2] + radius];
+    rail_polylines(|x, y, z| world.fluid_at(x, y, z), lo, hi)
+        .into_iter()
+        .map(|line| line.into_iter().map(|p| to_map(world.origin, p)).collect())
+        .collect()
+}
+
+pub fn rail_polylines(flags_at: impl Fn(i32, i32, i32) -> u16, lo: [i32; 3], hi: [i32; 3]) -> Vec<Vec<[f64; 3]>> {
+    let mut pieces = Vec::new();
+    for x in lo[0]..=hi[0] {
+        for z in lo[2]..=hi[2] {
+            for y in lo[1]..=hi[1] {
+                let shape = (flags_at(x, y, z) & RAIL_SHAPE) >> RAIL_SHAPE_SHIFT;
+                if let Some(piece) = rail_piece(shape, [f64::from(x), f64::from(y), f64::from(z)]) {
+                    pieces.push(piece);
+                }
+            }
+        }
+    }
+    chain_rails(pieces)
+}
+
+fn rail_piece(shape: u16, base: [f64; 3]) -> Option<Vec<[f64; 3]>> {
+    let at = |x: f64, up: f64, z: f64| [base[0] + x, base[1] + RAIL_HEIGHT + up, base[2] + z];
+    let line = |from: [f64; 3], to: [f64; 3]| Some(vec![from, to]);
+    let curve = |corner: [f64; 2], from: [f64; 2], to: [f64; 2]| {
+        let (a, b) = ([from[0] - corner[0], from[1] - corner[1]], [to[0] - corner[0], to[1] - corner[1]]);
+        Some(
+            (0..=RAIL_ARC_STEPS)
+                .map(|step| {
+                    let angle = std::f64::consts::FRAC_PI_2 * step as f64 / RAIL_ARC_STEPS as f64;
+                    let (cos, sin) = match step {
+                        0 => (1.0, 0.0),
+                        RAIL_ARC_STEPS => (0.0, 1.0),
+                        _ => (angle.cos(), angle.sin()),
+                    };
+                    at(corner[0] + a[0] * cos + b[0] * sin, 0.0, corner[1] + a[1] * cos + b[1] * sin)
+                })
+                .collect(),
+        )
+    };
+    match shape {
+        1 => line(at(0.5, 0.0, 0.0), at(0.5, 0.0, 1.0)),
+        2 => line(at(0.0, 0.0, 0.5), at(1.0, 0.0, 0.5)),
+        3 => line(at(0.0, 0.0, 0.5), at(1.0, 1.0, 0.5)),
+        4 => line(at(1.0, 0.0, 0.5), at(0.0, 1.0, 0.5)),
+        5 => line(at(0.5, 0.0, 1.0), at(0.5, 1.0, 0.0)),
+        6 => line(at(0.5, 0.0, 0.0), at(0.5, 1.0, 1.0)),
+        7 => curve([1.0, 1.0], [0.5, 1.0], [1.0, 0.5]),
+        8 => curve([0.0, 1.0], [0.5, 1.0], [0.0, 0.5]),
+        9 => curve([0.0, 0.0], [0.5, 0.0], [0.0, 0.5]),
+        10 => curve([1.0, 0.0], [0.5, 0.0], [1.0, 0.5]),
+        _ => None,
+    }
+}
+
+fn chain_rails(pieces: Vec<Vec<[f64; 3]>>) -> Vec<Vec<[f64; 3]>> {
+    let key = |p: [f64; 3]| p.map(|v| (v * RAIL_JOIN).round() as i64);
+    let mut ends: HashMap<[i64; 3], Vec<usize>> = HashMap::new();
+    for (index, piece) in pieces.iter().enumerate() {
+        ends.entry(key(piece[0])).or_default().push(index);
+        ends.entry(key(piece[piece.len() - 1])).or_default().push(index);
+    }
+    let mut used = vec![false; pieces.len()];
+    let next = |tip: [f64; 3], used: &mut [bool]| -> Option<Vec<[f64; 3]>> {
+        let index = ends.get(&key(tip))?.iter().copied().find(|&i| !used[i])?;
+        used[index] = true;
+        let mut piece = pieces[index].clone();
+        if key(piece[0]) != key(tip) {
+            piece.reverse();
+        }
+        Some(piece)
+    };
+    let mut rails = Vec::new();
+    for start in 0..pieces.len() {
+        if used[start] {
+            continue;
+        }
+        used[start] = true;
+        let mut line = std::collections::VecDeque::from(pieces[start].clone());
+        while let Some(piece) = next(line[line.len() - 1], &mut used) {
+            line.extend(piece.into_iter().skip(1));
+        }
+        while let Some(piece) = next(line[0], &mut used) {
+            for p in piece.into_iter().skip(1) {
+                line.push_front(p);
+            }
+        }
+        rails.push(line.into_iter().collect());
+    }
+    rails
+}
+
+pub fn missing_chunk_walls(centre: [f32; 3], radius: i32, depth: i32) -> Vec<[[f32; 3]; 3]> {
+    let Ok(world) = WORLD.read() else {
+        return Vec::new();
+    };
+    let Some(world) = world.as_ref() else {
+        return Vec::new();
+    };
+    let c = to_block(world.origin, centre).map(|v| v.floor() as i32);
+    let lo = [c[0] - radius, c[1] - depth, c[2] - radius];
+    let hi = [c[0] + radius, c[1] + depth, c[2] + radius];
+    chunk_walls(|x, z| world.chunks.contains_key(&(x, z)), lo, hi)
+        .into_iter()
+        .map(|t| t.map(|p| to_map(world.origin, p)))
+        .collect()
+}
+
+pub fn chunk_walls(loaded: impl Fn(i32, i32) -> bool, lo: [i32; 3], hi: [i32; 3]) -> Vec<[[f64; 3]; 3]> {
+    let (bottom, top) = (f64::from(lo[1]), f64::from(hi[1] + 1));
+    let mut walls = Vec::new();
+    for cx in (lo[0] >> 4) - 1..=(hi[0] >> 4) + 1 {
+        for cz in (lo[2] >> 4) - 1..=(hi[2] >> 4) + 1 {
+            if !loaded(cx, cz) {
+                continue;
+            }
+            for (axis, step) in [(0, -1), (0, 1), (2, -1), (2, 1)] {
+                let (own, other, missing) = if axis == 0 {
+                    (cx, cz, !loaded(cx + step, cz))
+                } else {
+                    (cz, cx, !loaded(cx, cz + step))
+                };
+                let plane = own * 16 + if step > 0 { 16 } else { 0 };
+                let across = 2 - axis;
+                let from = (other * 16).max(lo[across]);
+                let to = (other * 16 + 16).min(hi[across] + 1);
+                if !missing || plane < lo[axis] || plane > hi[axis] + 1 || from >= to {
+                    continue;
+                }
+                let corner = |t: i32, y: f64| {
+                    let mut p = [0.0; 3];
+                    p[axis] = f64::from(plane);
+                    p[across] = f64::from(t);
+                    p[1] = y;
+                    p
+                };
+                let mut quad = [corner(from, bottom), corner(to, bottom), corner(to, top), corner(from, top)];
+                if (axis == 0) == (step < 0) {
+                    quad.reverse();
+                }
+                walls.push([quad[0], quad[1], quad[2]]);
+                walls.push([quad[0], quad[2], quad[3]]);
+            }
+        }
+    }
+    walls
+}
+
 /// Whether traces against `brushes` go to the block world.
 pub(crate) fn active_for(brushes: &[SimBrush]) -> bool {
     WORLD
@@ -795,7 +1181,7 @@ impl VoxelWorld {
                 let feet = [f64::from(x) + 0.5, f64::from(y) + f64::from(top), f64::from(z) + 0.5];
                 let spot = to_map(self.origin, feet);
                 let clear = trace_in(self, spot, spot, mins, maxs, None).startsolid == 0;
-                let wet = (0..2).any(|up| self.fluid_at(x, feet[1].floor() as i32 + up, z) != 0);
+                let wet = (0..2).any(|up| self.fluid_at(x, feet[1].floor() as i32 + up, z) & !RAIL_SHAPE != 0);
                 (clear && !wet && !taken(spot)).then_some(spot)
             })
     }
@@ -819,10 +1205,19 @@ impl VoxelWorld {
             return boxes;
         };
         let flags = self.fluid_at(x, y, z);
+        let bottom = self.origin[1] + f64::from(mover.feet) / f64::from(BLOCK);
+        if flags & POWDER_SNOW != 0 {
+            return if mover.falling {
+                &POWDER_SNOW_FALLING
+            } else if mover.powder_walker && bottom > f64::from(y) + 1.0 - ABOVE_EPSILON && !mover.descending {
+                &FULL_BLOCK
+            } else {
+                &[]
+            };
+        }
         if flags & SCAFFOLDING == 0 {
             return boxes;
         }
-        let bottom = self.origin[1] + f64::from(mover.feet) / f64::from(BLOCK);
         if bottom > f64::from(y) + 1.0 - ABOVE_EPSILON && !mover.descending {
             boxes
         } else if flags & SCAFFOLDING_BOTTOM != 0 && bottom > f64::from(y) - ABOVE_EPSILON {
@@ -832,9 +1227,11 @@ impl VoxelWorld {
         }
     }
 
-    fn climb_sample(&self, feet: [f64; 3]) -> movement_iw4::ClimbSample {
+    fn climb_sample(&self, feet: [f64; 3], mover: Option<Mover>) -> movement_iw4::ClimbSample {
         let flags = self.fluid_at(feet[0].floor() as i32, feet[1].floor() as i32, feet[2].floor() as i32);
-        movement_iw4::ClimbSample { on: flags & CLIMBABLE != 0, scaffolding: flags & SCAFFOLDING != 0 }
+        let climbable = flags & CLIMBABLE != 0;
+        let powder = !climbable && flags & POWDER_SNOW != 0 && mover.is_some_and(|m| m.powder_walker);
+        movement_iw4::ClimbSample { on: climbable || powder, scaffolding: flags & SCAFFOLDING != 0, powder }
     }
 }
 
@@ -1286,10 +1683,13 @@ impl VoxelWorld {
                 }
             }
         }
+        let feet = self.fluid_at(at[0].floor() as i32, at[1].floor() as i32, at[2].floor() as i32);
         if touched & STUCK_COBWEB != 0 {
             Some(COBWEB_SLOWDOWN)
         } else if touched & STUCK_BERRY_BUSH != 0 {
             Some(BERRY_BUSH_SLOWDOWN)
+        } else if feet & POWDER_SNOW != 0 {
+            Some(POWDER_SNOW_SLOWDOWN)
         } else {
             None
         }
@@ -1319,10 +1719,14 @@ pub fn lava(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> f32 {
 }
 
 pub fn climb(origin: [f32; 3]) -> movement_iw4::ClimbSample {
+    climb_as(origin, None)
+}
+
+pub(crate) fn climb_as(origin: [f32; 3], mover: Option<Mover>) -> movement_iw4::ClimbSample {
     let Ok(guard) = WORLD.read() else {
         return movement_iw4::ClimbSample::default();
     };
-    guard.as_ref().map_or_else(movement_iw4::ClimbSample::default, |world| world.climb_sample(to_block(world.origin, origin)))
+    guard.as_ref().map_or_else(movement_iw4::ClimbSample::default, |world| world.climb_sample(to_block(world.origin, origin), mover))
 }
 
 pub fn eye_in_lava(origin: [f32; 3], view_height: f32) -> bool {
@@ -1822,7 +2226,7 @@ mod tests {
     }
 
     fn mover(feet: f64, descending: bool) -> Option<Mover> {
-        Some(Mover { feet: (feet * 36.0) as f32, descending })
+        Some(Mover { feet: (feet * 36.0) as f32, descending, powder_walker: false, falling: false })
     }
 
     const HULL: ([f32; 3], [f32; 3]) = ([-10.8, -10.8, 0.0], [10.8, 10.8, 64.8]);
@@ -1871,12 +2275,80 @@ mod tests {
     #[test]
     fn the_block_at_the_feet_decides_climbing() {
         let w = scaffolding(&[([4, 1, 4], TOWER), ([6, 1, 6], LADDER)]);
-        let tower = w.climb_sample([4.5, 1.2, 4.5]);
+        let tower = w.climb_sample([4.5, 1.2, 4.5], None);
         assert_eq!((tower.on, tower.scaffolding), (true, true));
-        let ladder = w.climb_sample([6.5, 1.0, 6.5]);
+        let ladder = w.climb_sample([6.5, 1.0, 6.5], None);
         assert_eq!((ladder.on, ladder.scaffolding), (true, false));
-        assert_eq!(w.climb_sample([4.5, 2.0 + 1e-3, 4.5]), movement_iw4::ClimbSample::default());
+        assert_eq!(w.climb_sample([4.5, 2.0 + 1e-3, 4.5], None), movement_iw4::ClimbSample::default());
         assert_eq!(w.fluid_depth([4.5, 1.0, 4.5], [-0.3, 0.0, -0.3], [0.3, 1.8, 0.3], WATER), 0.0);
+    }
+
+    const SNOW: u16 = 5;
+
+    fn powder_snow(blocks: &[([i32; 3], u16)]) -> VoxelWorld {
+        let mut w = world(blocks);
+        w.shapes.push(Vec::new());
+        w.fluids.push(POWDER_SNOW);
+        w
+    }
+
+    fn snow_mover(feet: f64, descending: bool, powder_walker: bool, falling: bool) -> Option<Mover> {
+        Some(Mover { feet: (feet * 36.0) as f32, descending, powder_walker, falling })
+    }
+
+    #[test]
+    fn powder_snow_catches_a_fall_at_nine_tenths() {
+        let w = powder_snow(&[([4, 0, 4], 1), ([4, 1, 4], SNOW)]);
+        let caught = drop_onto(&w, 3.0, 1.0, snow_mover(3.0, false, false, true));
+        assert!((caught - 0.55).abs() < 0.01, "{caught}");
+        assert!((drop_onto(&w, 3.0, 1.0, snow_mover(3.0, true, true, true)) - 0.55).abs() < 0.01);
+        assert!((drop_onto(&w, 3.0, 0.5, snow_mover(3.0, false, false, false)) - 0.8).abs() < 0.01, "only the floor below stops a slow body");
+        let mut ps = playerstate_iw4::PlayerState::ZERO;
+        ps.gravity = 800;
+        ps.velocity[2] = -370.0;
+        assert!(!Mover::of(&ps, &playerstate_iw4::UserCmd::default()).falling);
+        ps.velocity[2] = -390.0;
+        assert!(Mover::of(&ps, &playerstate_iw4::UserCmd::default()).falling);
+    }
+
+    #[test]
+    fn leather_boots_stand_on_powder_snow_until_sneaking() {
+        let w = powder_snow(&[([4, 0, 4], 1), ([4, 1, 4], SNOW)]);
+        let above = 2.0 + 0.25 / 36.0;
+        assert!((drop_onto(&w, above, 1.5, snow_mover(above, false, true, false)) - ((0.25 / 36.0) / (above - 1.5)) as f32).abs() < 0.01);
+        assert_eq!(drop_onto(&w, above, 1.5, snow_mover(above, true, true, false)), 1.0);
+        assert_eq!(drop_onto(&w, above, 1.5, snow_mover(above, false, false, false)), 1.0);
+        let inside = 1.5;
+        assert_eq!(drop_onto(&w, inside, 1.2, snow_mover(inside, false, true, false)), 1.0);
+        let mut ps = playerstate_iw4::PlayerState::ZERO;
+        assert!(!Mover::of(&ps, &playerstate_iw4::UserCmd::default()).powder_walker);
+        ps.pm_flags |= playerstate_iw4::pm_flags::MC_POWDER_WALKER;
+        assert!(Mover::of(&ps, &playerstate_iw4::UserCmd::default()).powder_walker);
+        let climb = w.climb_sample([4.5, 1.2, 4.5], snow_mover(1.2, false, true, false));
+        assert_eq!((climb.on, climb.powder, climb.scaffolding), (true, true, false));
+        assert_eq!(w.climb_sample([4.5, 1.2, 4.5], snow_mover(1.2, false, false, false)), movement_iw4::ClimbSample::default());
+        assert_eq!(w.climb_sample([4.5, 1.2, 4.5], None), movement_iw4::ClimbSample::default());
+    }
+
+    #[test]
+    fn powder_snow_holds_only_through_the_feet_cell() {
+        let w = powder_snow(&[([4, 0, 4], 1), ([4, 1, 4], SNOW), ([8, 2, 8], SNOW)]);
+        let half = f64::from(HULL_HALF_WIDTH / BLOCK);
+        let (lo, hi) = ([-half, 0.0, -half], [half, 1.8, half]);
+        assert_eq!(w.stuck_in([4.5, 1.0, 4.5], lo, hi), Some(POWDER_SNOW_SLOWDOWN));
+        assert_eq!(w.stuck_in([4.5, 1.95, 4.5], lo, hi), Some(POWDER_SNOW_SLOWDOWN));
+        assert_eq!(w.stuck_in([8.5, 1.0, 8.5], lo, hi), None, "snow at the head only does not hold");
+        assert_eq!(w.stuck_in([5.2, 1.0, 4.5], lo, hi), None, "the feet must be in the block");
+        assert_eq!(w.stuck_in([4.5, 2.0, 4.5], lo, hi), None);
+    }
+
+    #[test]
+    fn powder_snow_needs_no_collision_without_a_mover() {
+        let w = powder_snow(&[([4, 1, 4], SNOW)]);
+        assert_eq!(drop_onto(&w, 3.0, 0.5, None), 1.0);
+        let (from, to) = (to_map([0.0; 3], [2.5, 1.5, 4.5]), to_map([0.0; 3], [6.5, 1.5, 4.5]));
+        assert_eq!(trace_in(&w, from, to, [0.0; 3], [0.0; 3], None).fraction, 1.0);
+        assert_eq!(w.shape_at(4, 1, 4), &[] as &[[f32; 6]]);
     }
 
     #[test]
@@ -1954,6 +2426,56 @@ mod tests {
             path.push(to_block([0.0; 3], ps.origin));
         }
         path
+    }
+
+    fn ride_frame(pond: &Pond, ps: &mut playerstate_iw4::PlayerState, buttons: u32, forwardmove: i8, yaw: i32, old_buttons: u32) {
+        let context = crate::step::pmove_context(old_buttons, (1.0, 1.0, 1.0), false, false, 0.005, 0.005, 0, false, true, false, 0, 0, 0, false, false);
+        let context = movement_iw4::PmoveSingleContext { bounds: move_bounds(context.bounds), ..context };
+        let mut cmd = playerstate_iw4::UserCmd { server_time: ps.command_time + 50, buttons, forwardmove, angles: [0, yaw, 0], ..playerstate_iw4::UserCmd::default() };
+        movement_iw4::pmove(ps, &mut cmd, context, pond, &movement_iw4::FlatMantleAnimLength::default(), &movement_iw4::ZeroMantleRootDelta);
+    }
+
+    #[test]
+    fn a_riding_player_turns_but_never_moves_jumps_or_sprints() {
+        use playerstate_iw4::{buttons, pm_flags};
+        let pond = pond(SOURCE, 1, 1);
+        let mut ps = swimmer([14.5, 4.0, 8.5]);
+        ps.pm_flags |= pm_flags::MC_RIDING;
+        let seat = ps.origin;
+        let held = buttons::JUMP | buttons::SPRINT;
+        for frame in 0..40 {
+            ride_frame(&pond, &mut ps, held, 127, frame * 400, if frame == 0 { 0 } else { held });
+            assert_eq!(ps.origin, seat, "frame {frame}");
+            assert_eq!(ps.velocity, [0.0; 3]);
+            assert_eq!(ps.pm_flags & (pm_flags::SPRINTING | pm_flags::JUMPING | pm_flags::PRONE | pm_flags::CROUCH), 0);
+        }
+        assert!(ps.viewangles[1].abs() > 1.0, "the view still turns: {:?}", ps.viewangles);
+    }
+
+    #[test]
+    fn the_next_pmove_after_riding_is_normal() {
+        use playerstate_iw4::{buttons, pm_flags};
+        let pond = pond(SOURCE, 1, 1);
+        let mut ps = swimmer([14.5, 4.0, 8.5]);
+        ps.pm_flags |= pm_flags::MC_RIDING;
+        for _ in 0..10 {
+            ride_frame(&pond, &mut ps, buttons::CROUCH, 0, 0, buttons::CROUCH);
+        }
+        assert_ne!(ps.pm_flags & pm_flags::CROUCH, 0, "the sneak shows in the crouch flag");
+        ps.pm_flags &= !pm_flags::MC_RIDING;
+        let mut path = Vec::new();
+        for _ in 0..40 {
+            ride_frame(&pond, &mut ps, 0, 0, 0, 0);
+            path.push(to_block([0.0; 3], ps.origin));
+        }
+        let landed = path.last().unwrap();
+        assert!((landed[1] - 1.0).abs() < 0.01, "it falls to the floor: {landed:?}");
+        assert_eq!(ps.pm_flags & (pm_flags::CROUCH | pm_flags::PRONE), 0, "and stands up");
+        for _ in 0..40 {
+            ride_frame(&pond, &mut ps, 0, 127, 0, 0);
+        }
+        let walked = to_block([0.0; 3], ps.origin);
+        assert!((walked[0] - landed[0]).hypot(walked[2] - landed[2]) > 1.0, "and walks again: {walked:?}");
     }
 
     #[test]
@@ -2255,5 +2777,456 @@ mod tests {
             assert_eq!(ps.pm_flags & playerstate_iw4::pm_flags::MC_FLYING != 0, flies);
             assert_eq!(path[path.len() - 1][1] > 1.4, flies, "{:?}", path.last());
         }
+    }
+
+    const STAIR: [[f32; 6]; 2] = [[0.0, 0.0, 0.0, 1.0, 0.5, 1.0], [0.0, 0.5, 0.5, 1.0, 1.0, 1.0]];
+    const SLAB: [f32; 6] = [0.0, 0.0, 0.0, 1.0, 0.5, 1.0];
+
+    fn fillets_on_ground(blocks: &[([i32; 3], &[[f32; 6]])]) -> Vec<[[f64; 3]; 3]> {
+        let mut map: HashMap<[i32; 3], Vec<[f32; 6]>> = HashMap::new();
+        for x in -4..=4 {
+            for z in -4..=4 {
+                map.insert([x, -1, z], vec![FULL]);
+            }
+        }
+        for &(at, boxes) in blocks {
+            map.insert(at, boxes.to_vec());
+        }
+        riser_fillets(|x, y, z| map.get(&[x, y, z]).map_or(&[][..], Vec::as_slice), [-3, -1, -3], [3, 4, 3])
+    }
+
+    fn normal_of(t: &[[f64; 3]; 3]) -> [f64; 3] {
+        let e1 = [0, 1, 2].map(|k| t[1][k] - t[0][k]);
+        let e2 = [0, 1, 2].map(|k| t[2][k] - t[0][k]);
+        let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        n.map(|v| v / len)
+    }
+
+    fn area_of(t: &[[f64; 3]; 3]) -> f64 {
+        let e1 = [0, 1, 2].map(|k| t[1][k] - t[0][k]);
+        let e2 = [0, 1, 2].map(|k| t[2][k] - t[0][k]);
+        let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+        (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() / 2.0
+    }
+
+    fn slopes_towards_minus_z(tris: &[[[f64; 3]; 3]]) -> Vec<[[f64; 3]; 3]> {
+        tris.iter().filter(|t| {
+            let n = normal_of(t);
+            n[1] > 0.1 && n[2] < -0.1
+        }).copied().collect()
+    }
+
+    fn extent(tris: &[[[f64; 3]; 3]], axis: usize) -> (f64, f64) {
+        let values = tris.iter().flat_map(|t| t.iter().map(move |p| p[axis]));
+        (values.clone().fold(f64::MAX, f64::min), values.fold(f64::MIN, f64::max))
+    }
+
+    fn assert_near(a: f64, b: f64) {
+        assert!((a - b).abs() < 1e-6, "{a} != {b}");
+    }
+
+    #[test]
+    fn a_bottom_stair_on_the_ground_is_a_45_degree_ramp_from_half_a_block_in_front() {
+        let tris = fillets_on_ground(&[([0, 0, 0], &STAIR)]);
+        let slopes = slopes_towards_minus_z(&tris);
+        assert_eq!(slopes.len(), 4, "{slopes:?}");
+        for p in slopes.iter().flatten() {
+            assert_near(p[1], p[2] + 0.5);
+        }
+        assert_eq!(extent(&slopes, 2), (-0.5, 0.5));
+        assert_eq!(extent(&slopes, 1), (0.0, 1.0));
+        assert_eq!(extent(&slopes, 0), (0.0, 1.0));
+        assert_near(slopes.iter().map(area_of).sum(), 2f64.sqrt());
+    }
+
+    #[test]
+    fn a_staircase_of_stairs_is_one_plane() {
+        let tris = fillets_on_ground(&[
+            ([0, 0, 0], &STAIR),
+            ([0, 0, 1], &[FULL]),
+            ([0, 1, 1], &STAIR),
+            ([0, 0, 2], &[FULL]),
+            ([0, 1, 2], &[FULL]),
+            ([0, 2, 2], &STAIR),
+        ]);
+        let slopes = slopes_towards_minus_z(&tris);
+        for p in slopes.iter().flatten() {
+            assert_near(p[1], p[2] + 0.5);
+        }
+        assert_eq!(extent(&slopes, 2), (-0.5, 2.5));
+        assert_eq!(extent(&slopes, 1), (0.0, 3.0));
+        assert_near(slopes.iter().map(area_of).sum(), 3.0 * 2f64.sqrt());
+    }
+
+    #[test]
+    fn a_slab_on_the_ground_gets_a_half_block_toe() {
+        let tris = fillets_on_ground(&[([0, 0, 0], &[SLAB])]);
+        assert_eq!(tris.len(), 16, "one wedge on each side");
+        assert_eq!(extent(&tris, 0), (-0.5, 1.5));
+        assert_eq!(extent(&tris, 2), (-0.5, 1.5));
+        assert_eq!(extent(&tris, 1), (0.0, 0.5));
+        let slope: f64 = tris.iter().filter(|t| normal_of(t)[1] > 0.1).map(area_of).sum();
+        assert_near(slope, 4.0 * 0.5 * 2f64.sqrt());
+
+        let behind = fillets_on_ground(&[([0, 0, 0], &[SLAB]), ([0, 0, 1], &[FULL])]);
+        let slopes = slopes_towards_minus_z(&behind);
+        assert_eq!(extent(&slopes, 2), (-0.5, 1.0));
+        assert_eq!(extent(&slopes, 1), (0.0, 1.0));
+        assert_near(slopes.iter().map(area_of).sum(), 2f64.sqrt());
+        assert!(slopes.iter().flatten().all(|p| p[2] <= 0.0 || p[2] >= 0.5), "the slab top stays flat between the toes");
+    }
+
+    #[test]
+    fn a_full_block_and_a_fence_get_no_fillet() {
+        assert!(fillets_on_ground(&[([0, 0, 0], &[FULL])]).is_empty());
+        assert!(fillets_on_ground(&[([0, 0, 0], &[FENCE])]).is_empty());
+        assert!(fillets_on_ground(&[([0, 0, 0], &[FULL]), ([0, 1, 0], &[FULL]), ([1, 0, 0], &[FENCE])]).is_empty());
+    }
+
+    #[test]
+    fn a_carpet_gets_a_one_sixteenth_fillet() {
+        let carpet = [0.0, 0.0, 0.0, 1.0, 1.0 / 16.0, 1.0];
+        let tris = fillets_on_ground(&[([0, 0, 0], &[carpet])]);
+        assert_eq!(tris.len(), 16);
+        assert_eq!(extent(&tris, 1), (0.0, 1.0 / 16.0));
+        assert_eq!(extent(&tris, 0), (-1.0 / 16.0, 1.0 + 1.0 / 16.0));
+        assert!(fillets_on_ground(&[([0, 0, 0], &[carpet]), ([1, 0, 0], &[carpet]), ([-1, 0, 0], &[carpet])])
+            .iter()
+            .flatten()
+            .all(|p| p[0] <= -1.0 || p[0] >= 2.0 || p[2] <= 0.0 || p[2] >= 1.0), "no fillet between carpets in a row");
+    }
+
+    #[test]
+    fn one_snow_layer_gets_none_and_three_get_a_quarter_block_one() {
+        assert!(fillets_on_ground(&[([0, 0, 0], &[[0.0, 0.0, 0.0, 1.0, 0.0, 1.0]])]).is_empty());
+        let tris = fillets_on_ground(&[([0, 0, 0], &[[0.0, 0.0, 0.0, 1.0, 0.25, 1.0]])]);
+        assert_eq!(tris.len(), 16);
+        assert_eq!(extent(&tris, 1), (0.0, 0.25));
+        assert_eq!(extent(&tris, 2), (-0.25, 1.25));
+    }
+
+    #[test]
+    fn a_fillet_is_never_built_into_another_block() {
+        let inside = |p: &[f64; 3], b: [f64; 6]| (0..3).all(|k| b[k] + 1e-6 < p[k] && p[k] < b[k + 3] - 1e-6);
+        let walled = fillets_on_ground(&[([0, 0, 0], &STAIR), ([0, 0, -1], &[FULL])]);
+        assert!(!walled.is_empty(), "the step still meets the slab");
+        assert!(walled.iter().flatten().all(|p| !inside(p, [0.0, 0.0, -1.0, 1.0, 1.0, 0.0]) && p[2] >= 0.0));
+
+        let blocked = fillets_on_ground(&[([0, 0, 0], &[SLAB]), ([0, 0, -1], &[FULL])]);
+        assert!(blocked.iter().flatten().all(|p| p[2] >= 0.0));
+        assert!(slopes_towards_minus_z(&blocked).is_empty());
+
+        let post = fillets_on_ground(&[([0, 0, 0], &[SLAB]), ([0, 0, -1], &[FENCE])]);
+        assert!(slopes_towards_minus_z(&post).is_empty(), "the fence post stands where the toe would be");
+        assert_eq!(post.len(), 12);
+    }
+
+    #[test]
+    fn fillet_triangles_face_outward() {
+        for blocks in [
+            vec![([0, 0, 0], &[SLAB][..])],
+            vec![([0, 0, 0], &STAIR[..])],
+            vec![([0, 0, 0], &[[0.0, 0.0, 0.0, 1.0, 0.0625, 1.0]][..])],
+        ] {
+            let tris = fillets_on_ground(&blocks);
+            assert!(!tris.is_empty());
+            assert_eq!(tris.len() % 4, 0);
+            for wedge in tris.chunks(4) {
+                let inner = [0, 1, 2].map(|k| wedge.iter().flatten().map(|p| p[k]).sum::<f64>() / 12.0);
+                for t in wedge {
+                    let n = normal_of(t);
+                    let mid = [0, 1, 2].map(|k| (t[0][k] + t[1][k] + t[2][k]) / 3.0 - inner[k]);
+                    assert!(n[0] * mid[0] + n[1] * mid[1] + n[2] * mid[2] > 0.0, "{t:?}");
+                    assert!(n[1] >= -1e-9, "no fillet faces down: {t:?}");
+                }
+            }
+        }
+    }
+
+    fn rails_of(blocks: &[([i32; 3], &str)]) -> Vec<Vec<[f64; 3]>> {
+        let flags: HashMap<[i32; 3], u16> = blocks.iter().map(|&(at, shape)| (at, rail_flags("minecraft:rail", Some(shape)))).collect();
+        rail_polylines(|x, y, z| flags.get(&[x, y, z]).copied().unwrap_or(0), [-4, -2, -4], [4, 4, 4])
+    }
+
+    fn near(a: [f64; 3], b: [f64; 3]) -> bool {
+        (0..3).all(|k| (a[k] - b[k]).abs() < 1e-9)
+    }
+
+    fn ends_are(line: &[[f64; 3]], a: [f64; 3], b: [f64; 3]) -> bool {
+        let (first, last) = (line[0], line[line.len() - 1]);
+        (near(first, a) && near(last, b)) || (near(first, b) && near(last, a))
+    }
+
+    #[test]
+    fn track_rails_follow_straight_ascending_and_curved_shapes() {
+        let h = 0.125;
+        for (shape, a, b) in [
+            ("north_south", [0.5, h, 0.0], [0.5, h, 1.0]),
+            ("east_west", [0.0, h, 0.5], [1.0, h, 0.5]),
+            ("ascending_east", [0.0, h, 0.5], [1.0, 1.0 + h, 0.5]),
+            ("ascending_west", [1.0, h, 0.5], [0.0, 1.0 + h, 0.5]),
+            ("ascending_north", [0.5, h, 1.0], [0.5, 1.0 + h, 0.0]),
+            ("ascending_south", [0.5, h, 0.0], [0.5, 1.0 + h, 1.0]),
+        ] {
+            let rails = rails_of(&[([0, 0, 0], shape)]);
+            assert_eq!(rails.len(), 1, "{shape}");
+            assert_eq!(rails[0].len(), 2, "{shape}");
+            assert!(ends_are(&rails[0], a, b), "{shape}: {:?}", rails[0]);
+        }
+        for (shape, corner, a, b) in [
+            ("south_east", [1.0, 1.0], [0.5, h, 1.0], [1.0, h, 0.5]),
+            ("south_west", [0.0, 1.0], [0.5, h, 1.0], [0.0, h, 0.5]),
+            ("north_west", [0.0, 0.0], [0.5, h, 0.0], [0.0, h, 0.5]),
+            ("north_east", [1.0, 0.0], [0.5, h, 0.0], [1.0, h, 0.5]),
+        ] {
+            let rails = rails_of(&[([2, 1, -3], shape)]);
+            assert_eq!(rails.len(), 1, "{shape}");
+            let line: Vec<[f64; 3]> = rails[0].iter().map(|p| [p[0] - 2.0, p[1] - 1.0, p[2] + 3.0]).collect();
+            assert_eq!(line.len(), 5, "{shape}");
+            assert!(ends_are(&line, a, b), "{shape}: {line:?}");
+            for p in &line {
+                let r = ((p[0] - corner[0]).powi(2) + (p[2] - corner[1]).powi(2)).sqrt();
+                assert!((r - 0.5).abs() < 1e-9 && (p[1] - h).abs() < 1e-9, "{shape}: {p:?}");
+            }
+        }
+        assert!(rails_of(&[]).is_empty());
+    }
+
+    #[test]
+    fn three_straight_rails_chain_into_one() {
+        let rails = rails_of(&[([0, 0, 0], "north_south"), ([0, 0, 2], "north_south"), ([0, 0, 1], "north_south")]);
+        assert_eq!(rails.len(), 1, "{rails:?}");
+        assert_eq!(rails[0].len(), 4);
+        assert!(ends_are(&rails[0], [0.5, 0.125, 0.0], [0.5, 0.125, 3.0]));
+
+        let track = rails_of(&[
+            ([0, 0, 0], "north_south"),
+            ([0, 0, 1], "ascending_south"),
+            ([0, 1, 2], "north_south"),
+            ([0, 1, 3], "north_east"),
+            ([1, 1, 3], "east_west"),
+        ]);
+        assert_eq!(track.len(), 1, "{track:?}");
+        assert!(ends_are(&track[0], [0.5, 0.125, 0.0], [2.0, 1.125, 3.5]), "{track:?}");
+        assert_eq!(track[0].len(), 2 + 1 + 1 + 4 + 1);
+
+        let apart = rails_of(&[([0, 0, 0], "north_south"), ([1, 0, 0], "north_south"), ([0, 1, 1], "north_south")]);
+        assert_eq!(apart.len(), 3, "side by side or a block higher, rails don't join");
+    }
+
+    #[test]
+    fn rail_shapes_get_their_own_shape_ids() {
+        let flags: Vec<u16> = RAIL_SHAPES.iter().map(|shape| rail_flags("minecraft:rail", Some(shape))).collect();
+        for (i, f) in flags.iter().enumerate() {
+            assert_ne!(*f, 0);
+            assert_eq!(f & !RAIL_SHAPE, 0);
+            assert!(!flags[..i].contains(f), "{}", RAIL_SHAPES[i]);
+        }
+        for block in ["minecraft:powered_rail", "minecraft:detector_rail", "minecraft:activator_rail"] {
+            assert_eq!(rail_flags(block, Some("ascending_west")), flags[3], "{block}");
+        }
+        assert_eq!(rail_flags("minecraft:oak_stairs", Some("straight")), 0);
+        assert_eq!(rail_flags("minecraft:stone", None), 0);
+        assert_eq!(rail_flags("minecraft:rail", None), 0);
+        assert_eq!(rail_flags("minecraft:rail", Some("sideways")), 0);
+        let others = WATER | LAVA | FLUID_AMOUNT | CLIMBABLE | SCAFFOLDING | SCAFFOLDING_BOTTOM | STUCK_BERRY_BUSH | STUCK_COBWEB | POWDER_SNOW;
+        assert_eq!(RAIL_SHAPE & others, 0);
+    }
+
+    #[test]
+    fn a_rail_does_not_make_a_respawn_spot_wet() {
+        let mut blocks = Vec::new();
+        for x in 0..16 {
+            for z in 0..16 {
+                blocks.push(([x, 10, z], 1));
+            }
+        }
+        blocks.push(([6, 11, 6], 5));
+        let mut w = world(&blocks);
+        w.shapes.push(Vec::new());
+        w.fluids.push(rail_flags("minecraft:rail", Some("north_south")));
+        w.origin = [7.5, 11.0, 7.5];
+        let spot = w.free_spawn_spot(&|_: [f32; 3]| false).unwrap();
+        assert_eq!([spot[0], spot[1]], [-36.0, 36.0]);
+    }
+
+    #[test]
+    fn walls_stand_only_between_loaded_and_missing_chunks() {
+        let loaded = |x: i32, z: i32| matches!((x, z), (0, 0) | (1, 0) | (0, 1));
+        let walls = chunk_walls(loaded, [-16, 60, -16], [31, 63, 31]);
+        assert_eq!(walls.len(), 16, "eight edges between a loaded and a missing chunk");
+        for t in &walls {
+            let n = normal_of(t);
+            assert_near(n[1], 0.0);
+            assert!(t.iter().all(|p| p[1] == 60.0 || p[1] == 64.0), "{t:?}");
+            let mid = [0, 1, 2].map(|k| (t[0][k] + t[1][k] + t[2][k]) / 3.0);
+            let chunk = |s: f64| {
+                let p = [0, 1, 2].map(|k| mid[k] + n[k] * s);
+                ((p[0].floor() as i32) >> 4, (p[2].floor() as i32) >> 4)
+            };
+            let (inside, outside) = (chunk(0.5), chunk(-0.5));
+            assert!(loaded(inside.0, inside.1), "faces into a loaded chunk: {t:?}");
+            assert!(!loaded(outside.0, outside.1), "backs onto a missing chunk: {t:?}");
+        }
+        assert!(
+            !walls.iter().any(|t| t.iter().all(|p| p[0] == 16.0 && p[2] <= 16.0)),
+            "no wall between two loaded chunks"
+        );
+
+        let cut = chunk_walls(|x, z| (x, z) == (0, 0), [-4, 0, -4], [20, 1, 4]);
+        assert_eq!(cut.len(), 6, "the far side of the chunk lies outside the region");
+        assert_eq!(extent(&cut, 2), (0.0, 5.0));
+        assert_eq!(extent(&cut, 0), (0.0, 16.0));
+        assert_eq!(extent(&cut, 1), (0.0, 2.0));
+    }
+
+    #[test]
+    fn a_fully_loaded_region_has_no_walls() {
+        assert!(chunk_walls(|_, _| true, [-40, -20, -40], [40, 20, 40]).is_empty());
+        let near = |x: i32, z: i32| x.abs() <= 1 && z.abs() <= 1;
+        assert!(chunk_walls(near, [2, 0, 2], [13, 5, 13]).is_empty());
+        assert!(chunk_walls(|_, _| false, [-40, -20, -40], [40, 20, 40]).is_empty());
+    }
+
+    fn floater(feet: [f64; 3], levitation: Option<u8>, slow_falling: bool) -> playerstate_iw4::PlayerState {
+        let mut ps = swimmer(feet);
+        ps.mc_float = movement_iw4::encode_float(levitation, slow_falling);
+        ps
+    }
+
+    fn roofed(roof: i32) -> Pond {
+        let mut blocks = Vec::new();
+        for x in 0..16 {
+            for z in 0..16 {
+                blocks.push(([x, 0, z], 1));
+                blocks.push(([x, roof, z], 1));
+            }
+        }
+        Pond(world(&blocks))
+    }
+
+    #[test]
+    fn levitation_lifts_a_player_off_the_floor_like_vanilla_at_any_frame_rate() {
+        for (amplifier, rise, slack) in [(0, 8.864, 0.01), (4, 44.32, 0.05)] {
+            for (msec, tolerance) in [(50, slack), (16, 0.1)] {
+                let mut ps = floater([8.5, 1.0, 8.5], Some(amplifier), false);
+                let path = drive(&floor(), &mut ps, 0, 0, msec, 10_000 / msec);
+                let risen = path[path.len() - 1][1] - 1.0;
+                assert!((risen - rise).abs() < tolerance, "amplifier {amplifier} msec {msec}: {risen}");
+            }
+        }
+        let mut ps = floater([8.5, 1.0, 8.5], Some(0), false);
+        drive(&floor(), &mut ps, 0, 0, 50, 400);
+        let steady = ps.velocity[2];
+        assert!((steady - 32.67).abs() < 0.01, "{steady}");
+    }
+
+    #[test]
+    fn a_levitating_player_leaves_the_floor_at_once_and_a_ceiling_stops_the_rise() {
+        let mut ps = floater([8.5, 1.0, 8.5], Some(0), false);
+        drive(&floor(), &mut ps, 0, 0, 50, 1);
+        assert!((ps.velocity[2] - 0.0098 * 720.0).abs() < 0.01, "{:?}", ps.velocity);
+        let path = drive(&floor(), &mut ps, 0, 0, 50, 1);
+        assert!((path[0][1] - 1.0098).abs() < 1e-3, "{:?}", path);
+        assert_eq!(ps.ground_entity_num, playerstate_iw4::ENTITYNUM_NONE);
+        for msec in [50, 16] {
+            let mut ps = floater([8.5, 1.0, 8.5], Some(1), false);
+            let path = drive(&roofed(4), &mut ps, 0, 0, msec, 5000 / msec);
+            let top = 4.0 - 64.8 / 36.0;
+            assert!(path.iter().all(|p| p[1] <= top + 1e-3), "msec {msec}: {:?}", path.last());
+            assert!((path[path.len() - 1][1] - top).abs() < 0.05, "msec {msec}: {:?}", path.last());
+        }
+    }
+
+    #[test]
+    fn slow_falling_sinks_at_most_ten_blocks_a_second_and_leaves_a_jump_alone() {
+        let mut ps = floater([8.5, 400.0, 8.5], None, true);
+        let path = drive(&floor(), &mut ps, 0, 0, 50, 20);
+        let fallen = 400.0 - path[19][1];
+        assert!((fallen - 1.656).abs() < 0.01, "{fallen}");
+        drive(&floor(), &mut ps, 0, 0, 50, 400);
+        assert!((ps.velocity[2] + 352.8).abs() < 1.0, "{:?}", ps.velocity);
+        let mut ps = floater([8.5, 400.0, 8.5], None, true);
+        let path = drive(&floor(), &mut ps, 0, 0, 16, 1250);
+        let fallen = 400.0 - path[path.len() - 1][1];
+        let mut vanilla = floater([8.5, 400.0, 8.5], None, true);
+        let ticks = drive(&floor(), &mut vanilla, 0, 0, 50, 400);
+        assert!((fallen - (400.0 - ticks[399][1])).abs() < 0.1, "{fallen}");
+        let peak = |slow: bool| {
+            let mut ps = floater([8.5, 1.0, 8.5], None, slow);
+            drive(&floor(), &mut ps, 0, 0, 16, 40);
+            let path = drive(&floor(), &mut ps, playerstate_iw4::buttons::JUMP, 0, 16, 60);
+            path.iter().map(|p| p[1]).fold(f64::MIN, f64::max)
+        };
+        let (plain, slow) = (peak(false), peak(true));
+        assert!(plain > 1.5, "{plain}");
+        assert!((plain - slow).abs() < 1e-4, "{plain} {slow}");
+    }
+
+    #[test]
+    fn levitation_wins_over_slow_falling_and_does_nothing_in_water_or_flight() {
+        let mut both = floater([8.5, 1.0, 8.5], Some(0), true);
+        let mut alone = floater([8.5, 1.0, 8.5], Some(0), false);
+        let a = drive(&floor(), &mut both, 0, 0, 50, 100);
+        let b = drive(&floor(), &mut alone, 0, 0, 50, 100);
+        assert_eq!(a, b);
+        let mut wet = floater([6.5, 1.0, 8.5], Some(0), false);
+        let mut dry = floater([6.5, 1.0, 8.5], None, false);
+        let pond = pond(SOURCE, 2, 1);
+        assert_eq!(swim(&pond, &mut wet, 0, 0, 50, 3), swim(&pond, &mut dry, 0, 0, 50, 3));
+        let mut ps = flier([8.5, 1.5, 8.5], FLYING);
+        ps.mc_float = movement_iw4::encode_float(Some(4), false);
+        let path = drive(&floor(), &mut ps, 0, 0, 16, 120);
+        assert!(path.iter().all(|p| (p[1] - 1.5).abs() < 1e-3), "{:?}", path.last());
+    }
+
+    struct Snowed(VoxelWorld);
+
+    impl movement_iw4::CollisionBackend for Snowed {
+        fn trace(&self, input: movement_iw4::GroundTraceInput) -> trace_iw4::Trace {
+            trace_in(&self.0, input.start, input.end, input.mins, input.maxs, None)
+        }
+
+        fn stuck(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> Option<[f32; 3]> {
+            let (lo, hi) = block_bounds(mins, maxs);
+            self.0.stuck_in(to_block(self.0.origin, origin), lo, hi)
+        }
+
+        fn ground_within(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], drop: f32) -> Option<bool> {
+            Some(ground_in(&self.0, origin, mins, maxs, drop, None))
+        }
+    }
+
+    #[test]
+    fn levitation_lifts_and_slow_falling_sinks_slowly_through_powder_snow() {
+        let mut blocks = Vec::new();
+        for x in 0..16 {
+            for z in 0..16 {
+                blocks.push(([x, 0, z], 1));
+                for y in 1..=5 {
+                    blocks.push(([x, y, z], SNOW));
+                }
+            }
+        }
+        let snow = Snowed(powder_snow(&blocks));
+        let run = |feet: f64, levitation: Option<u8>, slow_falling: bool| {
+            let mut ps = floater([8.5, feet, 8.5], levitation, slow_falling);
+            ps.jump_time = -10_000;
+            for _ in 0..20 {
+                let context = crate::step::pmove_context(0, (1.0, 1.0, 1.0), false, false, 0.005, 0.005, 0, false, true, false, 0, 0, 0, false, false);
+                let context = movement_iw4::PmoveSingleContext { bounds: move_bounds(context.bounds), ..context };
+                let mut cmd = playerstate_iw4::UserCmd { server_time: ps.command_time + 50, ..playerstate_iw4::UserCmd::default() };
+                movement_iw4::pmove(&mut ps, &mut cmd, context, &snow, &movement_iw4::FlatMantleAnimLength::default(), &movement_iw4::ZeroMantleRootDelta);
+            }
+            to_block([0.0; 3], ps.origin)[1]
+        };
+        let rise = 0.0098 * 1.5 * 20.0;
+        let lifted = run(1.0, Some(0), false);
+        assert!((lifted - (1.0 + rise)).abs() < 0.02, "{lifted}");
+        assert!((run(1.0, None, false) - 1.0).abs() < 1e-3);
+        let floated = run(4.0, None, true);
+        assert!((floated - (4.0 - rise)).abs() < 0.02, "{floated}");
+        assert!(run(4.0, None, false) < 4.0 - 4.0 * rise);
     }
 }

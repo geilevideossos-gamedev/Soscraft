@@ -1,6 +1,6 @@
 use playerstate_iw4::{PlayerState, UserCmd, pm_flags};
 
-use crate::{CollisionBackend, MoveBounds, Pml, accelerate, friction, step_slide_move};
+use crate::{CollisionBackend, MoveBounds, Pml, accelerate, friction};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AirMoveContext {
@@ -19,6 +19,7 @@ pub fn air_move<C: CollisionBackend>(
     bounds: MoveBounds,
     collision: &C,
 ) {
+    let vertical = ps.velocity[2];
     friction(ps, pml);
 
     let command_scale = cmd_scale(ps, cmd, context.player_spectate_speed_scale);
@@ -51,15 +52,7 @@ pub fn air_move<C: CollisionBackend>(
     }
 
     let effective_gravity = adjusted_gravity(ps, context);
-    step_slide_move(
-        ps,
-        pml,
-        collision,
-        bounds.mins,
-        bounds.maxs,
-        bounds.tracemask,
-        Some(effective_gravity),
-    );
+    crate::float::air_slide(ps, pml, collision, bounds, effective_gravity, vertical);
 }
 
 fn cmd_scale(ps: &PlayerState, cmd: &UserCmd, spectate_speed_scale: f32) -> f32 {

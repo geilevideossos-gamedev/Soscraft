@@ -989,6 +989,7 @@ mod tests {
             opening: BTreeMap::new(),
             players: BTreeMap::new(),
             pending_batch: None,
+            published: false,
         };
         let terrain = Terrain::open(
             registries.clone(),

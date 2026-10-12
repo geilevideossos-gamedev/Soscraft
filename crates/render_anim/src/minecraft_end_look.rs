@@ -16,6 +16,7 @@ pub struct EndLook {
 pub struct EndFrame {
     pub look: Option<Arc<EndLook>>,
     pub portal_time: f32,
+    pub end_flash: [f32; 3],
 }
 
 impl EndLook {

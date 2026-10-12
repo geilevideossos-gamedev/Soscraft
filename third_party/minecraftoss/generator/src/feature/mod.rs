@@ -130,6 +130,7 @@ pub struct Library {
     pub blocks: CommonBlocks,
     /// Generation bounds of the dimension these features decorate.
     pub generation: GenContext,
+    pub dimension: String,
     features: Vec<Feature>,
     feature_names: HashMap<String, FeatureId>,
     placed: Vec<Placed>,
@@ -174,6 +175,7 @@ impl Library {
             peaceful: false,
             cats: entities::CatVariants::load(&registries.datapack)?,
             survival: Survival::load(&registries)?,
+            dimension: "minecraft:overworld".to_owned(),
             update_rules: update::UpdateRules::load(&registries)?,
             fire_tag: Some(tags.fire),
             tags,
@@ -239,6 +241,7 @@ impl Library {
         let json = self.registries.datapack.read_json("dimension_type", &Identifier::parse(name)?)?;
         let sky = json["has_skylight"].as_bool().ok_or_else(|| format!("dimension type {name} lacks has_skylight"))?;
         self.survival.unlit_raw_brightness = if sky { 15 } else { 0 };
+        self.dimension = name.to_owned();
         Ok(())
     }
 

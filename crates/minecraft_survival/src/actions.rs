@@ -13,15 +13,14 @@ use crate::level::{Level, Terrain};
 use crate::player::Player;
 use crate::player_nbt::Respawn;
 use crate::respawn_block::{
-    self, ANCHOR_CHARGE_SOUND, ANCHOR_SET_SPAWN_SOUND, AnchorUse, BAD_RESPAWN_POINT_POWER, BedUse,
-    BlockView, Fuel, GLOWSTONE, OCCUPIED, Pos, SPAWN_SET, Sleeper,
+    self, ANCHOR_CHARGE_SOUND, ANCHOR_SET_SPAWN_SOUND, AnchorUse, BAD_RESPAWN_POINT_POWER, Bed,
+    BedUse, BlockView, Fuel, GLOWSTONE, OCCUPIED, Outcome, Pos, SPAWN_SET, Sleeper,
 };
 use crate::server::Globals;
 
 pub const SWING_TICKS: f32 = 6.0;
 pub const RECENT_PLACE_SECONDS: f64 = 1.0;
 const RESPAWN_BLOCK_REACH: f64 = 5.0;
-const DARK_SKY_LIGHT: f32 = 11.0;
 const BLOCK_RANGE_BUFFER: f64 = 1.0;
 const ENTITY_RANGE_BUFFER: f64 = 3.0;
 const HIT_SLACK: f64 = 1.0000001;
@@ -50,6 +49,7 @@ pub struct Actor {
     pub sprinting: bool,
     pub gliding: bool,
     pub mw2_offhand: bool,
+    pub skating: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -62,6 +62,7 @@ pub struct Moved {
     pub holding_item: bool,
     pub empty_hand: bool,
     pub cooldowns: Vec<(String, f32)>,
+    pub totem_popped: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -121,6 +122,7 @@ pub struct Acted {
     pub creative_broken: Vec<BlockPos>,
     pub hand_broken: Vec<BlockPos>,
     pub effects: Vec<Effect>,
+    pub bed: Option<Bed>,
 }
 
 pub fn reaches_block(eye: [f64; 3], pos: BlockPos, range: f64) -> bool {
@@ -224,9 +226,11 @@ pub fn act(
         hand,
         steps,
         respawn,
+        riding,
         ..
     } = player;
     let player_id = u64::from(player_id.0);
+    let dark_outside = level.dark_outside(globals);
     let Level {
         entities,
         containers,
@@ -245,10 +249,12 @@ pub fn act(
     let mut creative_broken = Vec::new();
     let mut hand_broken = Vec::new();
     let mut digging = false;
+    let mut bed = None;
     let game_mode = *player_mode;
     let captured = input.captured;
-    let use_held = input.use_held;
-    let offhand_key = alive && !holding && input.offhand_key;
+    let skating = actor.skating;
+    let use_held = !skating && input.use_held;
+    let offhand_key = alive && !holding && !skating && input.offhand_key;
     let use_live = !captured
         && if hand.use_by_key {
             offhand_key
@@ -265,8 +271,13 @@ pub fn act(
     if !use_live || !shield_held {
         hand.blocking = None;
     }
-    let (charging, released) =
-        crate::trident::released(hand.charging, use_live, alive, inventory, *selected);
+    let (charging, released) = crate::trident::released(
+        hand.charging,
+        use_live,
+        alive && !skating,
+        inventory,
+        *selected,
+    );
     hand.charging = charging;
     if let (Some(released), Some(entities)) = (released, entities.as_mut()) {
         let wet = wet || entities.weather.player_in_rain;
@@ -331,7 +342,7 @@ pub fn act(
                 yaw.cos() * pitch.cos(),
             )
         };
-        let attack_held = input.attack_held;
+        let attack_held = !skating && input.attack_held;
         if !attack_held {
             hand.miss_time = 0;
         }
@@ -343,7 +354,7 @@ pub fn act(
             || mw2_offhand;
         let mut block_press = false;
         let mut punched = false;
-        if holding_item && input.attack_pressed && !busy {
+        if holding_item && !skating && input.attack_pressed && !busy {
             hand.swing = Some(0.0);
             hand.swing_offhand = false;
             let held = inventory.slots[*selected].clone();
@@ -360,6 +371,13 @@ pub fn act(
                     && !sprinting
                     && held.as_ref().is_some_and(|s| s.id.ends_with("_sword")),
                 reach: game_mode.entity_reach(),
+                block: player
+                    .target(
+                        &minecraft_terrain::doors::Outlined(&terrain.scene),
+                        game_mode.block_reach(),
+                    )
+                    .map(|hit| hit.distance),
+                creative: !game_mode.consumes_items(),
             };
             if entities.punch(
                 player_id, inventory, *selected, eye_block, look, mc_yaw, damage, strength, blow,
@@ -447,7 +465,7 @@ pub fn act(
                 game_mode.block_reach(),
             ) && !punched
                 && entities
-                    .mob_distance(eye_block, look, game_mode.entity_reach())
+                    .mob_distance(player_id, eye_block, look, game_mode.entity_reach())
                     .is_none_or(|distance| distance > hit.distance)
                 && minecraft_terrain::game_mode::can_destroy_in_creative(held)
                 && minecraft_terrain::game_mode::creative_breaks(
@@ -472,7 +490,7 @@ pub fn act(
             digging = true;
             let outlined = minecraft_terrain::doors::Outlined(&terrain.scene);
             let mut staged = minecraft_terrain::placing::Staged::new(&outlined);
-            let mob = entities.mob_distance(eye_block, look, game_mode.entity_reach());
+            let mob = entities.mob_distance(player_id, eye_block, look, game_mode.entity_reach());
             let digger = crate::digging::digger(
                 inventory,
                 *selected,
@@ -570,7 +588,7 @@ pub fn act(
             && hand.charging.is_none()
             && !mw2_offhand;
         let (use_pressed, use_down) = if holding_item {
-            (input.use_pressed, use_held)
+            (!skating && input.use_pressed, use_held)
         } else {
             (offhand_key && !hand.offhand_key_was, offhand_key)
         };
@@ -589,11 +607,53 @@ pub fn act(
         };
         let has_item = inventory.slots[*selected].is_some()
             || inventory.slots[crate::offhand::OFFHAND].is_some();
+        let block_distance = player
+            .target(
+                &minecraft_terrain::doors::Outlined(&terrain.scene),
+                game_mode.block_reach(),
+            )
+            .map(|hit| hit.distance);
+        let framed = entities.frame_on_ray(
+            player_id,
+            eye_block,
+            look,
+            game_mode.entity_reach(),
+            block_distance,
+        );
         let used = crate::offhand::use_hands(&hands, |slot| {
             use crate::offhand::HandUse;
             let main = slot != crate::offhand::OFFHAND;
             player.selected = slot;
             let held = inventory.slots[slot].clone();
+            if let Some(frame) = framed {
+                let sent = held.as_ref().map(|stack| SentItemUse {
+                    slot,
+                    held: stack.id.clone(),
+                    eye: eye_block,
+                    yaw: mc_yaw,
+                    pitch,
+                    outcome: minecraft_terrain::item_frame::frame_item_use(frame),
+                });
+                let infinite = !game_mode.consumes_items();
+                if !entities.use_frame(player_id, frame, held.as_ref(), infinite, sent) {
+                    return HandUse::Passed;
+                }
+                hand.swing = Some(0.0);
+                return HandUse::Consumed;
+            }
+            if entities.use_on_mob(
+                player_id,
+                eye_block,
+                look,
+                game_mode.entity_reach(),
+                block_distance,
+                inventory,
+                slot,
+                !game_mode.consumes_items(),
+            ) {
+                hand.swing = Some(0.0);
+                return HandUse::Consumed;
+            }
             let table = player
                 .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
                 .map(|hit| hit.pos)
@@ -638,6 +698,24 @@ pub fn act(
                         .is_some_and(minecraft_terrain::campfire::is_campfire)
                 })
                 .filter(|_| !(player.crouching && has_item));
+            let lectern = player
+                .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
+                .map(|hit| hit.pos)
+                .filter(|_| !(player.crouching && has_item))
+                .and_then(|pos| {
+                    Scene::block(&terrain.scene, pos)
+                        .filter(|block| minecraft_terrain::lectern::is_lectern(block))
+                        .map(|block| (pos, minecraft_terrain::lectern::has_book(block)))
+                })
+                .filter(|&(_, has_book)| {
+                    if has_book {
+                        main
+                    } else {
+                        held.as_ref().is_some_and(|stack| {
+                            minecraft_terrain::lectern::is_lectern_book(&stack.id)
+                        })
+                    }
+                });
             let placeable = held.as_ref().is_some_and(|stack| {
                 let id = if stack.id == "minecraft:redstone" {
                     "minecraft:redstone_wire"
@@ -729,6 +807,36 @@ pub fn act(
                     hand.swing = Some(0.0);
                 }
                 HandUse::Consumed
+            } else if let Some((pos, has_book)) = lectern {
+                if has_book {
+                    if use_pressed {
+                        let open = minecraft_terrain::lectern::LecternAction::Open;
+                        entities.lectern(player_id, pos, open, None);
+                        hand.swing = Some(0.0);
+                    }
+                } else if let Some(stack) = held.as_ref()
+                    && !entities.awaits_item_use(player_id)
+                {
+                    let book = minecraft_terrain::lectern::BookStack {
+                        id: stack.id.clone(),
+                        components: stack
+                            .components
+                            .as_ref()
+                            .map(|components| components.to_string()),
+                    };
+                    let sent = SentItemUse {
+                        slot,
+                        held: stack.id.clone(),
+                        eye: eye_block,
+                        yaw: mc_yaw,
+                        pitch,
+                        outcome: minecraft_terrain::lectern::book_item_use(pos),
+                    };
+                    let place = minecraft_terrain::lectern::LecternAction::PlaceBook(book);
+                    entities.lectern(player_id, pos, place, Some(sent));
+                    hand.swing = Some(0.0);
+                }
+                HandUse::Consumed
             } else if let Some(pos) = campfire
                 && let Some(stack) = held.as_ref()
                 && let Some(placed) = containers.place_food(pos, stack, &entities.recipes)
@@ -746,6 +854,7 @@ pub fn act(
                 HandUse::Consumed
             } else if let Some(respawn_use) = (!(player.crouching && has_item))
                 .then(|| {
+                    let monsters = |area| entities.monster_near(area, player_id);
                     use_respawn_block(
                         &player,
                         terrain,
@@ -758,12 +867,18 @@ pub fn act(
                                 .as_ref()
                                 .map(|stack| stack.id.as_str()),
                         },
+                        Night {
+                            dark: dark_outside,
+                            creative: game_mode.mode
+                                == minecraft_terrain::game_mode::GameMode::Creative,
+                            monsters: &monsters,
+                        },
                     )
                 })
                 .flatten()
             {
                 body.write_blocks(terrain, entities, respawn_use.writes.clone());
-                finish_respawn_use(
+                bed = finish_respawn_use(
                     respawn_use,
                     entities,
                     respawn,
@@ -771,7 +886,8 @@ pub fn act(
                     slot,
                     game_mode.consumes_items(),
                     &mut effects,
-                );
+                )
+                .or(bed);
                 hand.swing = Some(0.0);
                 HandUse::Consumed
             } else if let Some(pos) = used {
@@ -796,6 +912,14 @@ pub fn act(
                         spread: toggled.pitch_spread,
                     });
                 }
+                HandUse::Consumed
+            } else if let Some(stack) = held
+                .as_ref()
+                .filter(|stack| stack.id == minecraft_terrain::durability::STEERING_ITEM)
+                && let Some(vehicle) = riding.as_ref().map(|ride| ride.vehicle)
+                && entities.can_boost(player_id, vehicle)
+            {
+                entities.boost(player_id, slot, stack.id.clone());
                 HandUse::Consumed
             } else if let Some(stack) = held.as_ref()
                 && let Some(outcome) = minecraft_terrain::bottle::bottle_use(
@@ -929,6 +1053,7 @@ pub fn act(
                     .or_else(|| {
                         minecraft_terrain::end_crystal::crystal_use(&player, &outlined, stack)
                     })
+                    .or_else(|| minecraft_terrain::item_frame::frame_use(&player, &outlined, stack))
                     .or_else(|| {
                         minecraft_terrain::firework::rocket_use(stack, actor.gliding, || {
                             entities.random_float()
@@ -990,6 +1115,8 @@ pub fn act(
                         if player.crouching { 1.5 } else { 1.8 },
                         sent,
                     ),
+                    minecraft_terrain::bucket::Change::Frame(_)
+                    | minecraft_terrain::bucket::Change::Lectern(_) => {}
                 }
                 HandUse::Consumed
             } else if let Some(stack) = held.as_ref()
@@ -1157,6 +1284,7 @@ pub fn act(
             } else if held
                 .as_ref()
                 .is_some_and(|stack| stack.id == crate::offhand::SHIELD)
+                && !hand.cooldowns.active(crate::offhand::SHIELD)
             {
                 hand.blocking = Some(crate::offhand::Blocking::start(slot));
                 HandUse::Consumed
@@ -1344,6 +1472,7 @@ pub fn act(
         creative_broken,
         hand_broken,
         effects,
+        bed,
     }
 }
 
@@ -1359,10 +1488,11 @@ pub fn harvest(
     player: &mut Player,
     level: &mut Level,
     globals: &Globals,
-    mut broken: Vec<Broken>,
-    dug: Vec<Broken>,
+    (mut broken, dug): (Vec<Broken>, Vec<Broken>),
     hand_mined: &[BlockPos],
+    feet: [f64; 3],
 ) -> Harvest {
+    let player_id = u64::from(player.id.0);
     let mut harvest = Harvest::default();
     let Player {
         survival,
@@ -1430,6 +1560,7 @@ pub fn harvest(
         hand_mined,
         !player_mode.drops_from_breaking(),
     );
+    entities.guard_mined(player_id, &terrain.stream.states, &broken, feet);
     let kept: std::collections::HashMap<_, _> = broken
         .iter()
         .filter(|(_, block, _)| {
@@ -1493,6 +1624,12 @@ struct RespawnHand<'a> {
     offhand: Option<&'a str>,
 }
 
+struct Night<'a> {
+    dark: bool,
+    creative: bool,
+    monsters: &'a dyn Fn([f64; 6]) -> bool,
+}
+
 #[derive(Default)]
 struct RespawnBlockUse {
     writes: Vec<(Pos, Option<Block>)>,
@@ -1501,6 +1638,8 @@ struct RespawnBlockUse {
     respawn: Option<(Respawn, Option<[f64; 3]>)>,
     overlay: Option<String>,
     spends: bool,
+    occupied: Option<Pos>,
+    sleep: Option<Bed>,
 }
 
 fn bad_respawn_point(center: [f64; 3]) -> Blast {
@@ -1517,6 +1656,7 @@ fn use_respawn_block(
     registries: &Registries,
     dimension: Dimension,
     hand: RespawnHand,
+    night: Night,
 ) -> Option<RespawnBlockUse> {
     let pos = aim
         .target(
@@ -1552,22 +1692,28 @@ fn use_respawn_block(
             used.sounds.extend(sound.map(|event| (event, head)));
             used.overlay = message;
         }
-        BedUse::Occupied => used.overlay = Some(OCCUPIED.to_owned()),
+        BedUse::Occupied(head) => used.occupied = Some(head),
         BedUse::Sleep(bed) => {
             let sleeper = Sleeper {
                 feet: aim.pos.to_array(),
                 yaw: aim.yaw as f32,
                 pitch: aim.pitch as f32,
                 dimension,
-                dark: terrain.environment.sky_light_level() <= DARK_SKY_LIGHT,
+                dark: night.dark,
+                creative: night.creative,
             };
-            match respawn_block::rest_in_bed(&mut view, registries, &terrain.rules, &bed, &sleeper)
-            {
-                Ok(rest) => {
-                    used.respawn = rest.respawn.map(|point| (point, None));
-                    used.overlay = rest.problem;
-                }
-                Err(problem) => used.overlay = Some(problem.to_owned()),
+            let rest = respawn_block::rest_in_bed(
+                &mut view,
+                registries,
+                &terrain.rules,
+                &bed,
+                &sleeper,
+                night.monsters,
+            );
+            used.respawn = rest.respawn.map(|point| (point, None));
+            match rest.outcome {
+                Outcome::Problem(problem) => used.overlay = problem,
+                Outcome::Sleep => used.sleep = Some(bed),
             }
         }
         BedUse::Incomplete => {}
@@ -1606,7 +1752,7 @@ fn finish_respawn_use(
     slot: usize,
     consumes: bool,
     effects: &mut Vec<Effect>,
-) {
+) -> Option<Bed> {
     if let Some((blast, shield)) = used.blast {
         entities.explode_respawn_point(blast, shield);
     }
@@ -1633,11 +1779,17 @@ fn finish_respawn_use(
     if let Some(key) = used.overlay {
         effects.push(Effect::Overlay(key));
     }
+    if let Some(head) = used.occupied
+        && !entities.wake_villager_in(head)
+    {
+        effects.push(Effect::Overlay(OCCUPIED.to_owned()));
+    }
     effects.extend(
         heard
             .into_iter()
             .map(|(event, at)| sound(event, Some(at), 1.0, 1.0)),
     );
+    used.sleep
 }
 
 #[cfg(test)]
@@ -1785,6 +1937,7 @@ pub(crate) mod tests {
             sprinting: false,
             gliding: false,
             mw2_offhand: false,
+            skating: false,
         }
     }
 
@@ -1929,6 +2082,9 @@ pub(crate) mod tests {
                 health: 20.0,
                 yaw: -90.0,
                 pitch: 0.0,
+                main_hand: None,
+                offhand: None,
+                sneaking: false,
             };
             let mut actors = [TickActor {
                 id: 0,

@@ -10,6 +10,8 @@ use bevy::prelude::Resource;
 
 pub const DEFAULT_CONTROLS: &str = include_str!("../assets/default_controls.cfg");
 
+pub const SKATE_COMMAND: &str = "mc_skate";
+
 mod key_names;
 
 pub use key_names::{
@@ -329,10 +331,47 @@ impl KeyBinds {
     pub fn apply_minecraft_defaults(&mut self) {
         let mut defaults = KeyBinds::default();
         let _ = defaults.apply_config_script(DEFAULT_CONTROLS);
+        let skate = command_id_lookup(SKATE_COMMAND);
         for (button, id) in defaults.minecraft {
-            if !self.minecraft.values().any(|bound| *bound == id) {
+            if Some(id) != skate && !self.minecraft.values().any(|bound| *bound == id) {
                 self.minecraft.entry(button).or_insert(id);
             }
+        }
+    }
+
+    pub fn add_skate_key(&mut self) {
+        let Some(skate) = command_id_lookup(SKATE_COMMAND) else {
+            return;
+        };
+        let j = BindButton::Key(KeyCode::KeyJ);
+        if self.minecraft.values().any(|bound| *bound == skate)
+            || self.map.contains_key(&j)
+            || self.minecraft.contains_key(&j)
+        {
+            return;
+        }
+        self.minecraft.insert(j, skate);
+    }
+
+    pub fn minecraft_buttons_for(&self, id: u32) -> impl Iterator<Item = BindButton> + '_ {
+        self.minecraft
+            .iter()
+            .filter(move |(_, bound)| **bound == id)
+            .map(|(button, _)| *button)
+    }
+
+    pub fn skate_key_label(&self) -> String {
+        let mut names: Vec<String> = command_id_lookup(SKATE_COMMAND)
+            .into_iter()
+            .flat_map(|id| self.minecraft_buttons_for(id))
+            .filter(|button| !button.is_pad())
+            .map(|button| display_button(button).to_uppercase())
+            .collect();
+        names.sort();
+        if names.is_empty() {
+            "L3+R3".to_owned()
+        } else {
+            names.join(" OR ")
         }
     }
 
@@ -599,6 +638,19 @@ pub(crate) fn minecraft_presses(
     (suppressed, presses)
 }
 
+pub(crate) fn skate_toggle_pressed(
+    binds: &KeyBinds,
+    mc_keys: &frame::McActionInput,
+    minecraft_map: bool,
+    just_pressed: impl Fn(BindButton) -> bool,
+) -> bool {
+    if minecraft_map {
+        return mc_keys.just_pressed(frame::McAction::Skate);
+    }
+    command_id_lookup(SKATE_COMMAND)
+        .is_some_and(|id| binds.minecraft_buttons_for(id).any(just_pressed))
+}
+
 pub(crate) fn pulse_wheel_binding(
     binds: &KeyBinds,
     client: &mut ClientInput,
@@ -733,6 +785,7 @@ mod minecraft_bind_tests {
             (KeyCode::KeyT, "mc_chat"),
             (KeyCode::Slash, "mc_command"),
             (KeyCode::F5, "mc_perspective"),
+            (KeyCode::KeyJ, "mc_skate"),
         ];
         for (key, command) in expected {
             assert_eq!(binds.minecraft_binding(BindButton::Key(key)), Some(command));
@@ -976,7 +1029,7 @@ mod minecraft_bind_tests {
     fn only_just_pressed_keys_fire_their_action() {
         let binds = defaults();
         let (suppressed, presses) = minecraft_presses(&binds, state(false, false), |_| false, |_| false);
-        assert_eq!(suppressed.len(), 6);
+        assert_eq!(suppressed.len(), 7);
         assert!(suppressed.contains(&F) && !suppressed.contains(&G) && !suppressed.contains(&B));
         assert!(McAction::ALL.iter().all(|a| !presses.just_pressed(*a)));
         let q = BindButton::Key(KeyCode::KeyQ);
@@ -1057,5 +1110,57 @@ mod minecraft_bind_tests {
         assert!(presses.is_bound(McAction::Chat));
         let (_, presses) = press(&binds, MinecraftKeyState::default(), E);
         assert!(!presses.is_bound(McAction::Chat));
+    }
+
+    #[test]
+    fn the_skate_key_works_on_mw2_maps_through_its_minecraft_binding() {
+        const J: BindButton = BindButton::Key(KeyCode::KeyJ);
+        const K: BindButton = BindButton::Key(KeyCode::KeyK);
+        let mut binds = defaults();
+        let none = McActionInput::default();
+        assert!(skate_toggle_pressed(&binds, &none, false, |button| button == J));
+        assert!(!skate_toggle_pressed(&binds, &none, false, |button| button == K));
+        assert!(!skate_toggle_pressed(&binds, &none, false, |_| false));
+        let (_, presses) = press(&binds, state(false, false), J);
+        assert!(presses.just_pressed(McAction::Skate));
+        assert!(skate_toggle_pressed(&binds, &presses, true, |_| false));
+        assert!(!skate_toggle_pressed(&binds, &none, true, |button| button == J));
+        binds.clear_command_on(id("mc_skate"), false);
+        binds.set(K, id("mc_skate"));
+        assert!(skate_toggle_pressed(&binds, &none, false, |button| button == K));
+        assert!(!skate_toggle_pressed(&binds, &none, false, |button| button == J));
+        let (_, presses) = press(&binds, state(false, false), J);
+        assert!(!presses.just_pressed(McAction::Skate));
+    }
+
+    #[test]
+    fn the_overlay_names_the_bound_skate_key() {
+        let mut binds = defaults();
+        assert_eq!(binds.skate_key_label(), "J");
+        binds.set(BindButton::Key(KeyCode::KeyK), id("mc_skate"));
+        assert_eq!(binds.skate_key_label(), "J OR K");
+        binds.clear_command(id("mc_skate"));
+        assert_eq!(binds.skate_key_label(), "L3+R3");
+    }
+
+    #[test]
+    fn the_skate_key_is_added_only_on_a_free_j() {
+        let mut binds = KeyBinds::default();
+        binds.add_skate_key();
+        assert_eq!(binds.minecraft_binding(BindButton::Key(KeyCode::KeyJ)), Some("mc_skate"));
+        binds.add_skate_key();
+        assert_eq!(binds.iter_minecraft().count(), 1);
+        let mut binds = KeyBinds::default();
+        binds.set(BindButton::Key(KeyCode::KeyJ), id("+frag"));
+        binds.add_skate_key();
+        assert_eq!(binds.iter_minecraft().count(), 0);
+        let mut binds = KeyBinds::default();
+        binds.set(BindButton::Key(KeyCode::KeyJ), id("mc_drop"));
+        binds.add_skate_key();
+        assert_eq!(binds.minecraft_binding(BindButton::Key(KeyCode::KeyJ)), Some("mc_drop"));
+        let mut binds = KeyBinds::default();
+        binds.set(BindButton::Key(KeyCode::KeyK), id("mc_skate"));
+        binds.add_skate_key();
+        assert_eq!(binds.minecraft_binding(BindButton::Key(KeyCode::KeyJ)), None);
     }
 }

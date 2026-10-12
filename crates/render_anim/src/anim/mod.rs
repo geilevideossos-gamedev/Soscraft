@@ -6,6 +6,7 @@ pub mod fpv_pose;
 pub mod fpv_prepared;
 pub mod fpv_rig;
 pub mod minecraft_gear;
+pub mod minecraft_glide;
 pub mod model_materials;
 pub mod pose_types;
 pub mod remote_body;

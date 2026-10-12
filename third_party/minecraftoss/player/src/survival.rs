@@ -49,10 +49,12 @@ pub enum EffectKind {
     Haste,
     MiningFatigue,
     ConduitPower,
+    Levitation,
+    SlowFalling,
 }
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 13] = [
+    pub const ALL: [EffectKind; 15] = [
         EffectKind::Hunger,
         EffectKind::Poison,
         EffectKind::Regeneration,
@@ -66,6 +68,8 @@ impl EffectKind {
         EffectKind::Haste,
         EffectKind::MiningFatigue,
         EffectKind::ConduitPower,
+        EffectKind::Levitation,
+        EffectKind::SlowFalling,
     ];
 }
 

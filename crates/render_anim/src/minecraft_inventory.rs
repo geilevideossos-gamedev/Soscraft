@@ -19,6 +19,7 @@ use minecraft_terrain::containers::{Containers, Opened, Station};
 use minecraft_terrain::stations::{Bench, Context, StationBook, Workshop};
 use minecraft_terrain::crafting::{self, Grid};
 use minecraft_terrain::pack::PackStack;
+use minecraft_terrain::scene::BlockPos;
 use minecraftoss_player::crafting::CookingKind;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 
@@ -45,6 +46,8 @@ pub(crate) struct InventoryUi {
     animated: AnimatedIcons,
     pub(crate) creative: crate::minecraft_creative::CreativeUi,
     pub(crate) dials: minecraft_terrain::dials::Dials,
+    lectern: Option<BlockPos>,
+    lectern_actions: Vec<(BlockPos, minecraft_terrain::lectern::LecternAction)>,
 }
 
 #[derive(Default)]
@@ -159,6 +162,36 @@ impl InventoryUi {
         text.resolve(&lang).text
     }
 
+    pub(crate) fn lectern(&self) -> Option<BlockPos> {
+        self.lectern
+    }
+
+    pub(crate) fn show_lectern(&mut self, ui: &mut MinecraftUi, pos: BlockPos, book: frame::McBook) -> bool {
+        if self.lectern != Some(pos) {
+            if ui.inventory_open {
+                return false;
+            }
+            self.lectern = Some(pos);
+            ui.screen = McScreen::Lectern;
+            ui.inventory_open = true;
+            ui.screen_opened = true;
+        }
+        ui.book = Some(book);
+        true
+    }
+
+    pub(crate) fn lectern_closed(&mut self, ui: &mut MinecraftUi, pos: BlockPos) {
+        if self.lectern == Some(pos) {
+            self.lectern = None;
+            ui.book = None;
+            ui.inventory_open = false;
+        }
+    }
+
+    pub(crate) fn take_lectern_actions(&mut self) -> Vec<(BlockPos, minecraft_terrain::lectern::LecternAction)> {
+        std::mem::take(&mut self.lectern_actions)
+    }
+
     pub(crate) fn language(&self) -> Option<&HashMap<String, String>> {
         self.language.as_ref()
     }
@@ -182,6 +215,20 @@ impl InventoryUi {
     ) -> Clicked {
         let mut clicked = Clicked::default();
         for click in std::mem::take(&mut ui.clicks) {
+            if let Some(pos) = self.lectern {
+                match &click {
+                    McClick::Choose(button) => {
+                        self.lectern_actions.push((pos, minecraft_terrain::lectern::LecternAction::Button(*button as i32)));
+                        continue;
+                    }
+                    McClick::Close => {
+                        self.lectern = None;
+                        ui.book = None;
+                        self.lectern_actions.push((pos, minecraft_terrain::lectern::LecternAction::Close));
+                    }
+                    _ => continue,
+                }
+            }
             match click {
                 McClick::Close => clicked.thrown.extend(minecraft_survival::menus::close(player)),
                 McClick::Rename(name) => minecraft_survival::menus::rename(player, &name, self.language.as_ref()),
@@ -194,8 +241,15 @@ impl InventoryUi {
         }
         if !ui.inventory_open {
             clicked.thrown.extend(minecraft_survival::menus::close(player));
+            if let Some(pos) = self.lectern.take() {
+                ui.book = None;
+                self.lectern_actions.push((pos, minecraft_terrain::lectern::LecternAction::Close));
+            }
         }
         ui.screen = screen_for(player.menus.open.as_ref().map(|menu| &menu.open));
+        if self.lectern.is_some() {
+            ui.screen = McScreen::Lectern;
+        }
         let Player { inventory, selected, .. } = player;
         clicked.thrown.extend(inventory.take_pending_drops());
         let _ = inventory.take_stat_events();
@@ -716,5 +770,45 @@ mod tests {
         let empty = ItemStack::new("minecraft:shulker_box", 1);
         assert!(contents_lines(&language, &empty).is_empty());
         assert_eq!(more_line(&language, &empty), None);
+    }
+
+    #[test]
+    fn a_lectern_screen_sends_its_buttons_and_closes_once() {
+        use minecraft_terrain::lectern::LecternAction;
+        let mut inventory_ui = InventoryUi::default();
+        let mut ui = MinecraftUi::default();
+        let profile = minecraft_commands::server::Profile { id: minecraft_commands::PlayerId(0), name: "Steve".to_owned(), uuid: "00000000-0000-0000-0000-000000000001".to_owned() };
+        let mut player = Player::new(&profile, Default::default(), Default::default(), Inventory::default());
+        let mut containers = Containers::default();
+        let data = minecraft_survival::data::GameData::default();
+        let pos = (4, 64, -2);
+        let book = |page: usize| frame::McBook { pages: vec!["one".to_owned(), "two".to_owned()], page, take: true };
+        assert!(inventory_ui.show_lectern(&mut ui, pos, book(0)));
+        assert!(ui.inventory_open && ui.screen_opened);
+        assert_eq!(ui.screen, McScreen::Lectern);
+        ui.clicks = vec![McClick::Choose(2), McClick::Slot { slot: McSlot::Inventory(0), right: false, shift: false }, McClick::Choose(3)];
+        let _ = inventory_ui.apply_input(&mut ui, &mut player, &mut containers, Books::of(&data), 0.5);
+        assert_eq!(ui.screen, McScreen::Lectern);
+        assert_eq!(inventory_ui.take_lectern_actions(), [(pos, LecternAction::Button(2)), (pos, LecternAction::Button(3))]);
+        ui.screen_opened = false;
+        assert!(inventory_ui.show_lectern(&mut ui, pos, book(1)));
+        assert!(!ui.screen_opened);
+        assert_eq!(ui.book.as_ref().map(|book| book.page), Some(1));
+        assert!(!inventory_ui.show_lectern(&mut ui, (0, 0, 0), book(0)));
+        ui.inventory_open = false;
+        ui.clicks = vec![McClick::Close];
+        let _ = inventory_ui.apply_input(&mut ui, &mut player, &mut containers, Books::of(&data), 0.5);
+        assert_eq!(inventory_ui.take_lectern_actions(), [(pos, LecternAction::Close)]);
+        assert_eq!(ui.screen, McScreen::Inventory);
+        assert!(ui.book.is_none() && inventory_ui.lectern().is_none());
+        assert!(inventory_ui.show_lectern(&mut ui, pos, book(0)));
+        inventory_ui.lectern_closed(&mut ui, pos);
+        assert!(!ui.inventory_open && ui.book.is_none());
+        let _ = inventory_ui.apply_input(&mut ui, &mut player, &mut containers, Books::of(&data), 0.5);
+        assert!(inventory_ui.take_lectern_actions().is_empty());
+        assert!(inventory_ui.show_lectern(&mut ui, pos, book(0)));
+        ui.inventory_open = false;
+        let _ = inventory_ui.apply_input(&mut ui, &mut player, &mut containers, Books::of(&data), 0.5);
+        assert_eq!(inventory_ui.take_lectern_actions(), [(pos, LecternAction::Close)]);
     }
 }

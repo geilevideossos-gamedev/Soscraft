@@ -31,12 +31,43 @@ struct Host {
     previous_buttons: u16,
     input_suspended: bool,
     logged_tick: u64,
+    preloaded_banks: bool,
+    notice_at: Option<f64>,
+    teleport_bit: Option<u32>,
+    flick: FlickState,
+}
+
+const SKATING_OFF: &str = "Skating is off (Options > Controls > Minecraft)";
+const NO_SKATE_DATA: &str = "Skate 3 data is not set up: restart to select your default.xex";
+const NOTICE_SECONDS: f64 = 3.0;
+
+fn refused_toggle(skating: bool, assets: bool) -> Option<&'static str> {
+    if !skating {
+        Some(SKATING_OFF)
+    } else if !assets {
+        Some(NO_SKATE_DATA)
+    } else {
+        None
+    }
+}
+
+const WIPEOUT_FALL: f32 = 0.05;
+
+fn airborne(state: &str, was_airborne: bool, drop: f32) -> bool {
+    match state {
+        "PhysicsAir" | "KnownAir" | "PhysicsAirSecondary" | "BipedAir" => true,
+        "WipeoutGround" => was_airborne && drop > WIPEOUT_FALL,
+        _ => false,
+    }
+}
+
+fn teleported(last: Option<u32>, now: u32) -> bool {
+    last.is_some_and(|last| last != now)
 }
 
 pub fn register(app: &mut App) {
     app.init_resource::<SkateMode>()
         .init_resource::<Host>()
-        .add_systems(Startup, preload_assets)
         .add_systems(
             Update,
             update
@@ -47,7 +78,7 @@ pub fn register(app: &mut App) {
         );
 }
 
-fn preload_assets(mut mode: ResMut<SkateMode>) {
+fn preload_assets(mode: &mut SkateMode) {
     let Some(root) = std::env::var_os("IW4L_SKATE_ASSETS") else {
         return;
     };
@@ -85,7 +116,7 @@ fn block_collision(
     builder: &CollisionBuilder,
     centre: Vec3,
 ) -> Result<(PreparedCollision, usize), String> {
-    let map_triangles: Vec<[Vec3; 3]> =
+    let mut map_triangles: Vec<[Vec3; 3]> =
         sim::voxel::collision_triangles(centre.to_array(), BLOCK_RADIUS, BLOCK_DEPTH)
             .into_iter()
             .map(|t| t.map(Vec3::from_array))
@@ -93,15 +124,40 @@ fn block_collision(
     if map_triangles.is_empty() {
         return Err("no blocks around the skater yet".into());
     }
-    let (found, census) = rails::find(&map_triangles);
+    let started = std::time::Instant::now();
+    let ramps = sim::voxel::skate_ramps(centre.to_array(), BLOCK_RADIUS, BLOCK_DEPTH);
     diag::debug!(
         World,
-        "Skate block rails: {} walkable edges, {} lips, {} runs, {} rails",
+        "Skate block ramps: {} triangles in {} ms",
+        ramps.len(),
+        started.elapsed().as_millis(),
+    );
+    map_triangles.extend(ramps.into_iter().map(|t| t.map(Vec3::from_array)));
+    let (mut found, census) = rails::find(&map_triangles, rails::Limits::BLOCKS);
+    let track = sim::voxel::track_rails(centre.to_array(), BLOCK_RADIUS, BLOCK_DEPTH);
+    diag::debug!(
+        World,
+        "Skate block rails: {} walkable edges, {} lips, {} runs, {} rails, {} track rails",
         census.candidates,
         census.lips,
         census.runs,
         census.rails,
+        track.len(),
     );
+    found.extend(
+        track
+            .into_iter()
+            .map(|rail| rail.into_iter().map(Vec3::from_array).collect()),
+    );
+    let walls = sim::voxel::missing_chunk_walls(centre.to_array(), BLOCK_RADIUS, BLOCK_DEPTH);
+    if !walls.is_empty() {
+        diag::debug!(
+            World,
+            "Skate chunk walls: {} triangles at chunks not loaded yet",
+            walls.len(),
+        );
+    }
+    map_triangles.extend(walls.into_iter().map(|t| t.map(Vec3::from_array)));
     let triangles: Vec<[[f32; 3]; 3]> = map_triangles
         .iter()
         .map(|t| t.map(|p| collision::to_skate(p).to_array()))
@@ -292,6 +348,7 @@ fn stop(host: &mut Host, mode: &mut SkateMode, authority: &mut net::AuthorityWor
         let _ = send.send(Job::Suspend);
     }
     mode.active = false;
+    mode.airborne = false;
     mode.entering = false;
     mode.camera = None;
     mode.bones.clear();
@@ -303,10 +360,12 @@ fn present(mode: &mut SkateMode, p: Pose, authority: &mut net::AuthorityWorld) {
     let b = collision::basis();
     let mut root = b * p.root * b.inverse();
     root.w_axis = collision::from_skate(p.root.w_axis.truncate()).extend(1.);
+    let drop = mode.root.w_axis.z - root.w_axis.z;
     mode.root = root;
     mode.bones = p.bones;
     mode.names = p.names;
     mode.tick = p.tick;
+    mode.airborne = airborne(&p.state, mode.airborne, drop);
     mode.status = p.state;
     mode.camera = p.camera.map(|(position, basis, fov)| {
         (
@@ -335,10 +394,29 @@ fn update(
     mut host: ResMut<Host>,
     (gamepads, active): (Query<&bevy::input::gamepad::Gamepad>, Option<Res<frame::ActivePad>>),
     minecraft: Option<Res<frame::MinecraftUi>>,
+    settings: Option<Res<frame::GameSettings>>,
+    (keys, mouse_buttons, motion, devices): KeyboardInput<'_>,
 ) {
     let Some(authority) = authority.as_deref_mut() else {
         return;
     };
+    if let Some(bit) = authority.0.player(local.0).map(|ps| ps.e_flags & playerstate_iw4::eflags::TELEPORT)
+        && teleported(host.teleport_bit.replace(bit), bit)
+        && (mode.active || host.enter_requested || host.activating)
+    {
+        stop(&mut host, &mut mode, authority);
+    }
+    let enabled = settings.is_some_and(|settings| settings.skating);
+    let assets = std::env::var_os("IW4L_SKATE_ASSETS").is_some();
+    let now = time.elapsed_secs_f64();
+    if host.notice_at.is_some_and(|at| now - at >= NOTICE_SECONDS) {
+        host.notice_at = None;
+        mode.status.clear();
+    }
+    if enabled && !host.preloaded_banks {
+        host.preloaded_banks = true;
+        preload_assets(&mut mode);
+    }
     let aspect_ratio = windows
         .single()
         .map(|w| w.width() / w.height().max(1.))
@@ -349,7 +427,8 @@ fn update(
         .clip
         .as_ref()
         .is_none_or(|a| clip.0.as_ref().is_some_and(|b| Arc::ptr_eq(a, b)));
-    if (mode.active || host.enter_requested || host.activating) && (!alive || !same_map) {
+    let board_ok = minecraft.as_deref().is_none_or(|ui| !ui.active || ui.board_allowed);
+    if (mode.active || host.enter_requested || host.activating) && (!alive || !same_map || !board_ok) {
         stop(&mut host, &mut mode, authority);
     }
     if !same_map {
@@ -358,11 +437,27 @@ fn update(
         host.clip = None;
         host.ready = false;
         mode.preloaded = false;
-        mode.preload_pending = std::env::var_os("IW4L_SKATE_ASSETS").is_some();
+        mode.preload_pending = enabled && assets;
+    }
+    if !enabled && (host.send.is_some() || host.clip.is_some() || mode.preloaded || mode.preload_pending) {
+        if mode.active || host.enter_requested || host.activating {
+            stop(&mut host, &mut mode, authority);
+        }
+        let had_session = host.send.is_some();
+        host.send = None;
+        host.receive = None;
+        host.clip = None;
+        host.ready = false;
+        mode.preloaded = false;
+        mode.preload_pending = false;
+        if had_session {
+            diag::info!(World, "Skating turned off: map session dropped; decoded animation banks stay cached until exit");
+        }
     }
     // This runs during map preparation/class selection, without waiting for J.
     if host.clip.is_none()
-        && std::env::var_os("IW4L_SKATE_ASSETS").is_some()
+        && enabled
+        && assets
         && let Some(geometry) = clip.0.clone()
     {
         mode.preload_pending = true;
@@ -370,6 +465,7 @@ fn update(
         if let Err(e) = preload_map(&mut host, geometry) {
             diag::warn!(World, "Skate map preload: {e}");
             mode.preload_pending = false;
+            host.notice_at = None;
             mode.status = e;
         }
     }
@@ -378,9 +474,29 @@ fn update(
     let pad = active.and_then(|active| active.0).and_then(|entity| gamepads.get(entity).ok());
     host.pad_packet = host.pad_packet.wrapping_add(1);
     let screen_open = minecraft.as_deref().is_some_and(|ui| (ui.active && ui.inventory_open) || ui.typing());
-    let input = pad.map_or_else(InputFrame::neutral, |pad| {
-        if screen_open { InputFrame::from_pad(0, [0; 2], [0; 2], [0; 2], host.pad_packet) } else { pad_frame(pad, host.pad_packet) }
-    });
+    let packet = host.pad_packet;
+    let typing = screen_open || devices.as_deref().is_some_and(|devices| !devices.focused);
+    let input = match (pad, keys.as_deref(), mouse_buttons.as_deref()) {
+        (Some(_), ..) if screen_open => InputFrame::from_pad(0, [0; 2], [0; 2], [0; 2], packet),
+        (Some(pad), ..) => pad_frame(pad, packet),
+        (None, Some(keys), Some(mouse)) if !typing => {
+            let delta = motion
+                .as_deref()
+                .map_or([0.0; 2], |motion| motion.delta.to_array());
+            keyboard_frame(
+                key_sample(keys, mouse),
+                delta,
+                &mut host.flick,
+                time.delta_secs(),
+            )
+            .frame(packet)
+        }
+        (None, ..) => {
+            host.flick = FlickState::default();
+            InputFrame::from_pad(0, [0; 2], [0; 2], [0; 2], packet)
+        }
+    };
+    mode.keyboard = pad.is_none();
     mode.controller = input.controller();
     host.previous_buttons = input.buttons();
 
@@ -440,6 +556,7 @@ fn update(
                 // the match being left without one.
                 host.clip = None;
                 diag::warn!(World, "Skate stopped: {e}; preparing a new session");
+                host.notice_at = None;
                 mode.status = e;
                 return;
             }
@@ -449,6 +566,14 @@ fn update(
     if std::mem::take(&mut mode.toggle_requested) && alive {
         if mode.active || host.enter_requested || host.activating {
             stop(&mut host, &mut mode, authority);
+            return;
+        }
+        if let Some(notice) = refused_toggle(enabled, assets) {
+            mode.status = notice.to_owned();
+            host.notice_at = Some(now);
+            return;
+        }
+        if !board_ok {
             return;
         }
         if host.send.is_none() {
@@ -542,4 +667,418 @@ fn pad_frame(pad: &bevy::input::gamepad::Gamepad, packet: u32) -> InputFrame {
         [axis(right.x), axis(right.y)],
         packet,
     )
+}
+
+const STICK: f32 = 32767.0;
+const FLICK_PER_PIXEL: f32 = 600.0;
+const FLICK_SETTLE: f32 = 0.1;
+
+#[derive(Clone, Copy, Default)]
+struct KeySample {
+    w: bool,
+    a: bool,
+    s: bool,
+    d: bool,
+    space: bool,
+    shift: bool,
+    ctrl: bool,
+    tab: bool,
+    z: bool,
+    v: bool,
+    left_mouse: bool,
+    right_mouse: bool,
+}
+
+type KeyboardInput<'w> = (
+    Option<Res<'w, ButtonInput<KeyCode>>>,
+    Option<Res<'w, ButtonInput<MouseButton>>>,
+    Option<Res<'w, bevy::input::mouse::AccumulatedMouseMotion>>,
+    Option<Res<'w, frame::InputDevices>>,
+);
+
+#[derive(Default)]
+struct FlickState {
+    stick: [f32; 2],
+}
+
+#[derive(Debug, PartialEq)]
+struct PadState {
+    buttons: u16,
+    triggers: [u8; 2],
+    left: [i16; 2],
+    right: [i16; 2],
+}
+
+impl PadState {
+    fn frame(&self, packet: u32) -> InputFrame {
+        InputFrame::from_pad(self.buttons, self.triggers, self.left, self.right, packet)
+    }
+}
+
+fn key_sample(keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<MouseButton>) -> KeySample {
+    KeySample {
+        w: keys.pressed(KeyCode::KeyW),
+        a: keys.pressed(KeyCode::KeyA),
+        s: keys.pressed(KeyCode::KeyS),
+        d: keys.pressed(KeyCode::KeyD),
+        space: keys.pressed(KeyCode::Space),
+        shift: keys.pressed(KeyCode::ShiftLeft),
+        ctrl: keys.pressed(KeyCode::ControlLeft),
+        tab: keys.pressed(KeyCode::Tab),
+        z: keys.pressed(KeyCode::KeyZ),
+        v: keys.pressed(KeyCode::KeyV),
+        left_mouse: mouse.pressed(MouseButton::Left),
+        right_mouse: mouse.pressed(MouseButton::Right),
+    }
+}
+
+fn keyboard_frame(keys: KeySample, mouse: [f32; 2], state: &mut FlickState, dt: f32) -> PadState {
+    let settle = STICK * dt / FLICK_SETTLE;
+    for (stick, moved) in state.stick.iter_mut().zip([mouse[0], -mouse[1]]) {
+        let eased = stick.signum() * (stick.abs() - settle).max(0.0);
+        let push = moved * FLICK_PER_PIXEL;
+        let base = if eased * push < 0.0 { 0.0 } else { eased };
+        *stick = (base + push).clamp(-STICK, STICK);
+    }
+    let buttons = [
+        (keys.space, 0x1000),
+        (keys.ctrl, 0x2000),
+        (keys.shift, 0x4000),
+        (keys.tab, 0x8000),
+        (keys.z, 0x0100),
+        (keys.v, 0x0200),
+    ]
+    .iter()
+    .filter(|(held, _)| *held)
+    .fold(0, |bits, (_, bit)| bits | bit);
+    let axis = |plus: bool, minus: bool| (i16::from(plus) - i16::from(minus)) * 32767;
+    let trigger = |held: bool| if held { 255 } else { 0 };
+    PadState {
+        buttons,
+        triggers: [trigger(keys.right_mouse), trigger(keys.left_mouse)],
+        left: [axis(keys.d, keys.a), axis(keys.w, keys.s)],
+        right: state.stick.map(|v| v.round() as i16),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_toggle_is_refused_while_skating_is_off_or_its_data_is_missing() {
+        assert_eq!(refused_toggle(false, true), Some(SKATING_OFF));
+        assert_eq!(refused_toggle(false, false), Some(SKATING_OFF));
+        assert_eq!(refused_toggle(true, false), Some(NO_SKATE_DATA));
+        assert_eq!(refused_toggle(true, true), None);
+    }
+
+    #[test]
+    fn airborne_states_are_the_air_states() {
+        for state in ["PhysicsAir", "KnownAir", "PhysicsAirSecondary", "BipedAir"] {
+            assert!(airborne(state, false, 0.0), "{state}");
+        }
+        for state in [
+            "PhysicsGround",
+            "SlideGround",
+            "GrindFiftyFifty",
+            "GrindBoardslide",
+            "WipeoutGround",
+            "BipedGround",
+            "OffBoardPushing",
+            "LandingOnDeck",
+            "HandPlant",
+            "",
+        ] {
+            assert!(!airborne(state, false, 10.0), "{state}");
+        }
+    }
+
+    #[test]
+    fn a_wipeout_in_the_air_falls_until_it_lands() {
+        assert!(airborne("WipeoutGround", true, 6.0), "a bail in the air keeps falling");
+        assert!(!airborne("WipeoutGround", true, 0.0), "the ragdoll has hit the ground");
+        assert!(!airborne("WipeoutGround", true, -2.0), "it bounced up off the ground");
+        assert!(!airborne("WipeoutGround", false, 6.0), "a bail on the ground tumbling downhill is no fall");
+        assert!(!airborne("PhysicsGround", true, 6.0));
+        let mut was = true;
+        for drop in [9.0, 12.0, 15.0, 0.0, 3.0, 4.0] {
+            was = airborne("WipeoutGround", was, drop);
+        }
+        assert!(!was, "once landed, a wipeout stays on the ground");
+    }
+
+    #[test]
+    fn a_teleport_flip_picks_the_board_up() {
+        assert!(!teleported(None, 0));
+        assert!(!teleported(None, 2));
+        assert!(!teleported(Some(0), 0));
+        assert!(!teleported(Some(2), 2));
+        assert!(teleported(Some(0), 2));
+        assert!(teleported(Some(2), 0));
+    }
+
+    fn keyboard(keys: KeySample) -> PadState {
+        keyboard_frame(keys, [0.0; 2], &mut FlickState::default(), 1.0 / 60.0)
+    }
+
+    #[test]
+    fn w_pushes_the_left_stick_forward() {
+        let w = KeySample { w: true, ..KeySample::default() };
+        assert_eq!(keyboard(w).left, [0, 32767]);
+        assert_eq!(keyboard(KeySample { s: true, ..w }).left, [0, 0]);
+        assert_eq!(keyboard(KeySample { s: true, ..KeySample::default() }).left, [0, -32767]);
+        assert_eq!(keyboard(KeySample { d: true, ..w }).left, [32767, 32767]);
+        assert_eq!(keyboard(KeySample { a: true, ..KeySample::default() }).left, [-32767, 0]);
+        let pad = keyboard(w);
+        assert_eq!((pad.buttons, pad.triggers, pad.right), (0, [0; 2], [0; 2]));
+    }
+
+    #[test]
+    fn a_mouse_flick_reaches_the_right_stick_and_settles() {
+        let mut flick = FlickState::default();
+        let none = KeySample::default();
+        let down = keyboard_frame(none, [0.0, 60.0], &mut flick, 1.0 / 60.0);
+        assert_eq!(down.right, [0, -32767], "a quick move down pulls the stick down");
+        let up = keyboard_frame(none, [0.0, -60.0], &mut flick, 1.0 / 60.0);
+        assert_eq!(up.right, [0, 32767], "flicking back up goes straight up");
+        let right = keyboard_frame(none, [20.0, 0.0], &mut flick, 0.01);
+        assert_eq!(right.right[0], 12000);
+        let mut last = right.right;
+        for _ in 0..5 {
+            last = keyboard_frame(none, [0.0; 2], &mut flick, 0.01).right;
+        }
+        assert_eq!(last[0], 0, "the sideways nudge is gone");
+        assert!((13000..=13200).contains(&last[1]), "four tenths of the way up 0.06 s after the flick: {last:?}");
+        for _ in 0..5 {
+            last = keyboard_frame(none, [0.0; 2], &mut flick, 0.01).right;
+        }
+        assert_eq!(last, [0, 0], "centred 0.1 s after the mouse stops");
+
+        let mut slow = FlickState::default();
+        for _ in 0..200 {
+            last = keyboard_frame(none, [1.0, 1.0], &mut slow, 1.0 / 144.0).right;
+        }
+        assert!(last.iter().all(|v| v.unsigned_abs() < 8192), "a slow drift stays inside the dead zone: {last:?}");
+    }
+
+    #[test]
+    fn space_presses_a_and_the_mouse_buttons_pull_the_triggers() {
+        let none = KeySample::default();
+        assert_eq!(keyboard(KeySample { space: true, ..none }).buttons, 0x1000);
+        assert_eq!(keyboard(KeySample { ctrl: true, ..none }).buttons, 0x2000);
+        assert_eq!(keyboard(KeySample { shift: true, ..none }).buttons, 0x4000);
+        assert_eq!(keyboard(KeySample { tab: true, ..none }).buttons, 0x8000);
+        assert_eq!(keyboard(KeySample { z: true, ..none }).buttons, 0x0100);
+        assert_eq!(keyboard(KeySample { v: true, ..none }).buttons, 0x0200);
+        assert_eq!(keyboard(KeySample { left_mouse: true, ..none }).triggers, [0, 255]);
+        assert_eq!(keyboard(KeySample { right_mouse: true, ..none }).triggers, [255, 0]);
+        let all = KeySample {
+            w: true,
+            a: true,
+            s: true,
+            d: true,
+            space: true,
+            shift: true,
+            ctrl: true,
+            tab: true,
+            z: true,
+            v: true,
+            left_mouse: true,
+            right_mouse: true,
+        };
+        assert_eq!(keyboard(all).buttons & 0x00ff, 0, "no Start, Back, d-pad or stick click");
+    }
+
+    #[test]
+    fn no_key_gives_a_centred_frame() {
+        let pad = keyboard(KeySample::default());
+        assert_eq!(pad, PadState { buttons: 0, triggers: [0; 2], left: [0; 2], right: [0; 2] });
+        let frame = pad.frame(7);
+        assert_eq!(frame.controller(), Some(0), "a keyboard frame is a connected controller");
+        assert_eq!(frame.buttons(), 0);
+    }
+
+    fn to_map(p: [f64; 3]) -> Vec3 {
+        Vec3::from_array(sim::voxel::to_map([0.0; 3], p))
+    }
+
+    fn box_triangles(b: [f32; 6]) -> Vec<[Vec3; 3]> {
+        let b = b.map(f64::from);
+        let mut tris = Vec::new();
+        for axis in 0..3 {
+            let (u, v) = [(1, 2), (2, 0), (0, 1)][axis];
+            for high in [false, true] {
+                let corner = |a: usize, c: usize| {
+                    let mut p = [0.0; 3];
+                    p[axis] = if high { b[axis + 3] } else { b[axis] };
+                    p[u] = b[u + 3 * a];
+                    p[v] = b[v + 3 * c];
+                    to_map(p)
+                };
+                let mut quad = [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)];
+                if !high {
+                    quad.reverse();
+                }
+                tris.push([quad[0], quad[1], quad[2]]);
+                tris.push([quad[0], quad[2], quad[3]]);
+            }
+        }
+        tris
+    }
+
+    fn rails_near_the_block(block: [f32; 6], with_fillets: bool) -> usize {
+        let full = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let mut world: std::collections::HashMap<[i32; 3], Vec<[f32; 6]>> =
+            std::collections::HashMap::new();
+        for x in -4..=4 {
+            for z in -4..=4 {
+                world.insert([x, -1, z], vec![full]);
+            }
+        }
+        world.insert([0, 0, 0], vec![block]);
+        let ground = [
+            Vec3::new(-200., -200., 0.),
+            Vec3::new(200., -200., 0.),
+            Vec3::new(200., 200., 0.),
+            Vec3::new(-200., 200., 0.),
+        ];
+        let mut tris = vec![
+            [ground[0], ground[1], ground[2]],
+            [ground[0], ground[2], ground[3]],
+        ];
+        tris.extend(box_triangles(block));
+        if with_fillets {
+            let fillets = sim::voxel::riser_fillets(
+                |x, y, z| world.get(&[x, y, z]).map_or(&[][..], Vec::as_slice),
+                [-2, -1, -2],
+                [2, 2, 2],
+            );
+            tris.extend(fillets.into_iter().map(|t| t.map(to_map)));
+        }
+        let (found, _) = rails::find(&tris, rails::Limits::BLOCKS);
+        found
+            .iter()
+            .filter(|rail| rail.iter().any(|p| p.x.abs() < 80. && p.y.abs() < 80.))
+            .count()
+    }
+
+    fn rails_over(blocks: &[([i32; 3], &[[f32; 6]])], limits: rails::Limits) -> Vec<Vec<Vec3>> {
+        let full = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let mut world: std::collections::HashMap<[i32; 3], Vec<[f32; 6]>> =
+            std::collections::HashMap::new();
+        for x in -4..=4 {
+            for z in -4..=6 {
+                world.insert([x, -1, z], vec![full]);
+            }
+        }
+        let ground = [
+            Vec3::new(-300., -300., 0.),
+            Vec3::new(300., -300., 0.),
+            Vec3::new(300., 300., 0.),
+            Vec3::new(-300., 300., 0.),
+        ];
+        let mut tris = vec![
+            [ground[0], ground[1], ground[2]],
+            [ground[0], ground[2], ground[3]],
+        ];
+        for &(at, boxes) in blocks {
+            world.insert(at, boxes.to_vec());
+            for b in boxes {
+                let [x, y, z] = at.map(|v| v as f32);
+                tris.extend(box_triangles([
+                    b[0] + x,
+                    b[1] + y,
+                    b[2] + z,
+                    b[3] + x,
+                    b[4] + y,
+                    b[5] + z,
+                ]));
+            }
+        }
+        let fillets = sim::voxel::riser_fillets(
+            |x, y, z| world.get(&[x, y, z]).map_or(&[][..], Vec::as_slice),
+            [-3, -1, -3],
+            [3, 4, 5],
+        );
+        tris.extend(fillets.into_iter().map(|t| t.map(to_map)));
+        rails::find(&tris, limits)
+            .0
+            .into_iter()
+            .filter(|rail| rail.iter().all(|p| p.x.abs() < 250. && p.y.abs() < 250.))
+            .collect()
+    }
+
+    fn turned(blocks: &[([i32; 3], Vec<[f32; 6]>)]) -> Vec<([i32; 3], Vec<[f32; 6]>)> {
+        blocks
+            .iter()
+            .map(|([x, y, z], boxes)| {
+                let boxes = boxes
+                    .iter()
+                    .map(|b| [1.0 - b[5], b[1], b[0], 1.0 - b[2], b[4], b[3]])
+                    .collect();
+                ([-z - 1, *y, *x], boxes)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_sides_of_a_stair_ramp_grind_like_a_hubba() {
+        let full = vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
+        let stair = vec![[0.0, 0.0, 0.0, 1.0, 0.5, 1.0], [0.0, 0.5, 0.5, 1.0, 1.0, 1.0]];
+        let mut staircase = vec![
+            ([0, 0, 0], stair.clone()),
+            ([0, 0, 1], full.clone()),
+            ([0, 1, 1], stair.clone()),
+            ([0, 0, 2], full.clone()),
+            ([0, 1, 2], full.clone()),
+            ([0, 2, 2], stair),
+        ];
+        for facing in 0..4 {
+            let blocks: Vec<([i32; 3], &[[f32; 6]])> =
+                staircase.iter().map(|(at, b)| (*at, b.as_slice())).collect();
+            let sloped = |limits: rails::Limits| -> Vec<Vec<Vec3>> {
+                rails_over(&blocks, limits)
+                    .into_iter()
+                    .filter(|rail| (rail[0].z - rail[rail.len() - 1].z).abs() > 9.)
+                    .collect()
+            };
+            assert!(sloped(rails::Limits::MW2).is_empty(), "{facing}");
+            let hubbas = sloped(rails::Limits::BLOCKS);
+            assert_eq!(hubbas.len(), 2, "{facing}: {hubbas:?}");
+            for rail in &hubbas {
+                let side = |k: usize| rail.iter().all(|p| (p[k] - rail[0][k]).abs() < 0.01);
+                assert!(side(0) || side(1), "{facing}: {rail:?}");
+                let len = rail.windows(2).map(|w| w[0].distance(w[1])).sum::<f32>();
+                assert!(len > 2.5 * 36. * std::f32::consts::SQRT_2, "{facing}: {len}");
+            }
+            if facing == 0 {
+                let mut sides: Vec<f32> = hubbas.iter().map(|rail| rail[0].x).collect();
+                sides.sort_by(f32::total_cmp);
+                assert!(sides[0].abs() < 0.01 && (sides[1] - 36.).abs() < 0.01, "{sides:?}");
+            }
+            staircase = turned(&staircase);
+        }
+    }
+
+    #[test]
+    fn a_fence_line_is_one_rail_down_its_middle() {
+        let fence = [[0.375, 0.0, 0.375, 0.625, 1.5, 0.625], [0.0, 0.0, 0.375, 1.0, 1.5, 0.625]];
+        let line: Vec<([i32; 3], &[[f32; 6]])> = (0..6).map(|x| ([x, 0, 0], &fence[..])).collect();
+        let rails: Vec<Vec<Vec3>> = rails_over(&line, rails::Limits::BLOCKS)
+            .into_iter()
+            .filter(|rail| rail.iter().all(|p| (p.z - 54.).abs() < 0.01))
+            .collect();
+        assert_eq!(rails.len(), 1, "{rails:?}");
+        assert!(rails[0].iter().all(|p| (p.y + 18.).abs() < 0.01), "{rails:?}");
+    }
+
+    #[test]
+    fn a_slab_on_the_ground_is_no_longer_a_lip() {
+        let slab = [0.0, 0.0, 0.0, 1.0, 0.5, 1.0];
+        let full = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        assert!(rails_near_the_block(slab, false) > 0, "a bare slab edge is a lip");
+        assert_eq!(rails_near_the_block(slab, true), 0);
+        assert!(rails_near_the_block(full, true) > 0, "a full block keeps its lips");
+    }
 }

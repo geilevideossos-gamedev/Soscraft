@@ -26,6 +26,7 @@ pub struct Level {
     pub dragon_fight: Option<crate::the_end::dragon_fight::DragonFight>,
     pub container_ticks: u32,
     pub shots: Shots,
+    pub sleep_status: crate::sleep::SleepStatus,
 }
 
 pub type Shots = std::collections::HashMap<(i32, i32, i32), (f32, f64)>;
@@ -60,7 +61,17 @@ impl Level {
             dragon_fight: None,
             container_ticks: 0,
             shots: Shots::new(),
+            sleep_status: crate::sleep::SleepStatus::default(),
         }
+    }
+
+    pub fn dark_outside(&self, globals: &crate::server::Globals) -> bool {
+        let (rain, thunder) = self.entities.as_ref().map_or((0.0, 0.0), |entities| {
+            (entities.weather.rain_level, entities.weather.thunder_level)
+        });
+        let ticks = globals.default_clock_ticks(self.dimension);
+        let light = self.terrain.environment.level_sky_light(ticks, rain, thunder);
+        crate::sleep::dark_outside(light, self.terrain.rules.has_fixed_time)
     }
 }
 
@@ -354,6 +365,7 @@ pub struct OpenerOutcome {
     pub block_event: ((i32, i32, i32), u8, u32),
     pub sound: Option<OpenerSound>,
     pub state: Option<((i32, i32, i32), Block)>,
+    pub trapped: Option<((i32, i32, i32), u32)>,
 }
 
 pub fn opener_outcome(scene: &HandcraftedScene, event: &OpenerEvent) -> OpenerOutcome {
@@ -366,6 +378,9 @@ pub fn opener_outcome(scene: &HandcraftedScene, event: &OpenerEvent) -> OpenerOu
         state: changed
             .and_then(|(block, change)| minecraft_terrain::openers::opened_state(block, change))
             .map(|state| (event.pos, state)),
+        trapped: Scene::block(scene, event.pos)
+            .filter(|block| block.id.key() == "minecraft:trapped_chest")
+            .map(|_| (event.pos, event.count)),
     }
 }
 
@@ -392,6 +407,9 @@ pub fn leave(level: &mut Level, player: &PlayerUuid) {
             entities
                 .lids
                 .block_event(&level.terrain.scene, cell, id, count);
+            if let Some((pos, viewers)) = outcome.trapped {
+                entities.chest_openers(pos, viewers);
+            }
             if let Some(sound) = outcome.sound {
                 let pitch = minecraft_terrain::openers::pitch(entities.random_float());
                 let at = glam::DVec3::from_array(sound.position);
@@ -607,6 +625,38 @@ mod tests {
         let last = toggle_openers(&mut openers, &scene, &cells, &friend(), false, false);
         let sound = opener_outcome(&scene, &last[0]).sound.map(|s| s.event);
         assert_eq!(sound, Some("minecraft:block.shulker_box.close"));
+    }
+
+    #[test]
+    fn a_double_trapped_chest_counts_on_both_halves() {
+        let mut scene = HandcraftedScene::default();
+        let half = |kind: &str| {
+            Block::new("minecraft:trapped_chest")
+                .with("facing", "north")
+                .with("type", kind)
+                .with("waterlogged", "false")
+        };
+        scene.set((0, 64, 0), Some(half("left")));
+        scene.set((1, 64, 0), Some(half("right")));
+        scene.set((5, 64, 0), Some(Block::new("minecraft:chest").with("facing", "north")));
+        let mut openers = Openers::default();
+        let cells = [(0, 64, 0), (1, 64, 0)];
+        let trapped = |events: &[OpenerEvent]| -> Vec<_> {
+            events
+                .iter()
+                .map(|event| opener_outcome(&scene, event).trapped)
+                .collect()
+        };
+        let opened = toggle_openers(&mut openers, &scene, &cells, &host(), true, false);
+        assert_eq!(trapped(&opened), [Some(((0, 64, 0), 1)), Some(((1, 64, 0), 1))]);
+        let joined = toggle_openers(&mut openers, &scene, &cells, &friend(), true, false);
+        assert_eq!(trapped(&joined), [Some(((0, 64, 0), 2)), Some(((1, 64, 0), 2))]);
+        let left = openers.leave(opener_key(&host()));
+        assert_eq!(trapped(&left), [Some(((0, 64, 0), 1)), Some(((1, 64, 0), 1))]);
+        let closed = toggle_openers(&mut openers, &scene, &cells, &friend(), false, false);
+        assert_eq!(trapped(&closed), [Some(((0, 64, 0), 0)), Some(((1, 64, 0), 0))]);
+        let plain = toggle_openers(&mut openers, &scene, &[(5, 64, 0)], &host(), true, false);
+        assert_eq!(trapped(&plain), [None]);
     }
 
     #[test]
@@ -877,6 +927,9 @@ mod tests {
                         health: 20.0,
                         yaw: 0.0,
                         pitch: -90.0,
+                        main_hand: None,
+                        offhand: None,
+                        sneaking: false,
                     },
                     inventory: &mut *inventory,
                     selected: 0,

@@ -101,6 +101,9 @@ pub struct MinecraftWorldFrame {
     pub end_portal_texture: Option<Arc<MinecraftAtlasImage>>,
     pub end_portal_colors: [[f32; 4]; 16],
     pub end_portal_time: f32,
+    pub end_flash: [f32; 3],
+    pub weather: (Vec<[f32; 9]>, Vec<u32>),
+    pub weather_texture: Option<Arc<MinecraftAtlasImage>>,
 }
 
 #[repr(C)]
@@ -122,6 +125,7 @@ struct TerrainView {
 const VIEW_SIZE: u64 = std::mem::size_of::<TerrainView>() as u64;
 const CLOUD_VERTEX_BYTES: u64 = 28;
 const CRACK_VERTEX_BYTES: u64 = 24;
+const WEATHER_VERTEX_BYTES: u64 = 36;
 /// MinecraftOSS's full `Vertex`: position, uv, colour, sky and block light.
 const ENTITY_VERTEX_BYTES: u64 = 44;
 
@@ -158,11 +162,13 @@ struct TerrainGpu {
     backdrop: Option<Buffer>,
     puppet_gear: Option<(Buffer, Buffer, u32)>,
     hand: Option<(Buffer, Buffer, u32)>,
+    weather: Option<(Buffer, Buffer, u32)>,
+    weather_texture: Option<(Arc<MinecraftAtlasImage>, TextureView)>,
     sampler: Option<Sampler>,
     bind: Option<BindGroup>,
     sections: HashMap<[i32; 3], SectionGpu>,
     visible: Vec<[i32; 3]>,
-    pipelines: HashMap<(TextureFormat, u32), [RenderPipeline; 12]>,
+    pipelines: HashMap<(TextureFormat, u32), [RenderPipeline; 13]>,
 }
 
 pub(super) fn register(app: &mut App) {
@@ -218,6 +224,9 @@ fn layout() -> BindGroupLayoutDescriptor {
             sampler(SamplerBindingType::Filtering)
                 .visibility(ShaderStages::FRAGMENT)
                 .build(10, ShaderStages::FRAGMENT),
+            texture_2d(TextureSampleType::Float { filterable: true })
+                .visibility(ShaderStages::FRAGMENT)
+                .build(11, ShaderStages::FRAGMENT),
         ],
     )
 }
@@ -332,9 +341,27 @@ fn prepare_terrain(
     let end_portal = frame.end_portal_texture.clone();
     let sky_changed = upload_or_blank(&device, &queue, &mut gpu.end_sky, end_sky);
     let portal_changed = upload_or_blank(&device, &queue, &mut gpu.end_portal, end_portal);
-    if sky_changed || portal_changed {
+    let weather_texture = frame.weather_texture.clone();
+    let weather_changed = upload_or_blank(&device, &queue, &mut gpu.weather_texture, weather_texture);
+    if sky_changed || portal_changed || weather_changed {
         gpu.bind = None;
     }
+    let (weather_vertices, weather_indices) = std::mem::take(&mut frame.weather);
+    gpu.weather = (!weather_indices.is_empty()).then(|| {
+        (
+            device.create_buffer_with_data(&BufferInitDescriptor {
+                label: Some("iw4l_minecraft_weather_vertices"),
+                contents: bytemuck::cast_slice(&weather_vertices),
+                usage: BufferUsages::VERTEX,
+            }),
+            device.create_buffer_with_data(&BufferInitDescriptor {
+                label: Some("iw4l_minecraft_weather_indices"),
+                contents: bytemuck::cast_slice(&weather_indices),
+                usage: BufferUsages::INDEX,
+            }),
+            weather_indices.len() as u32,
+        )
+    });
     let (particle_vertices, particle_indices) = std::mem::take(&mut frame.particles);
     gpu.particles = (!particle_indices.is_empty()).then(|| {
         (
@@ -494,6 +521,7 @@ fn prepare_terrain(
             gpu.glint_sampler.as_ref(),
         )
         && let (Some((_, end_sky)), Some((_, end_portal)), Some(repeat_sampler)) = (gpu.end_sky.as_ref(), gpu.end_portal.as_ref(), gpu.repeat_sampler.as_ref())
+        && let Some((_, weather_texture)) = gpu.weather_texture.as_ref()
     {
         let armor_glint = gpu.armor_glint.as_ref().map_or(glint, |(_, view)| view);
         let layout = registry.bind_group_layout(&device, &layout());
@@ -549,6 +577,10 @@ fn prepare_terrain(
                     binding: 10,
                     resource: BindingResource::Sampler(repeat_sampler),
                 },
+                BindGroupEntry {
+                    binding: 11,
+                    resource: BindingResource::TextureView(weather_texture),
+                },
             ],
         );
         gpu.bind = Some(bind);
@@ -599,7 +631,7 @@ fn prepare_terrain(
         hand_clip: frame.hand_clip,
         glint: [shift[0], shift[1], frame::minecraft_ui::GLINT_STRENGTH, 0.0],
         end_portal_colors: frame.end_portal_colors,
-        end_portal: [frame.end_portal_time, 0.0, 0.0, 0.0],
+        end_portal: [frame.end_portal_time, frame.end_flash[0], frame.end_flash[1], frame.end_flash[2]],
         ..TerrainView::default()
     };
     if let Some(exec) = published.as_ref().map(|p| &p.exec_frame)
@@ -733,7 +765,7 @@ fn draw_terrain(
     let (target, depth, extracted_view, msaa) = view.into_inner();
     let format = target.main_texture_format();
     let samples = msaa.map_or(1, Msaa::samples);
-    let [sky, opaque, translucent, clouds, crack, entity, entity_culled, entity_translucent, shadow, backdrop, hand, sections] = gpu
+    let [sky, opaque, translucent, clouds, crack, entity, entity_culled, entity_translucent, shadow, backdrop, hand, sections, weather] = gpu
         .pipelines
         .entry((format, samples))
         .or_insert_with(|| pipelines(&device, &registry, format, samples))
@@ -836,6 +868,12 @@ fn draw_terrain(
         pass.set_index_buffer(indices.slice(..), IndexFormat::Uint32);
         pass.draw_indexed(0..*count, 0, 0..1);
     }
+    if let Some((vertices, indices, count)) = gpu.weather.as_ref() {
+        pass.set_render_pipeline(&weather);
+        pass.set_vertex_buffer(0, vertices.slice(..));
+        pass.set_index_buffer(indices.slice(..), IndexFormat::Uint32);
+        pass.draw_indexed(0..*count, 0, 0..1);
+    }
     // The hand in front of everything, as the view model is.
     if let Some((vertices, indices, count)) = gpu.hand.as_ref() {
         let (band_min, band_max) = reverse_z_viewport_depth(super::depth_range::GFX_DEPTH_RANGE_VIEWMODEL);
@@ -890,6 +928,7 @@ struct TerrainView {
 @group(0) @binding(8) var end_sky_texture: texture_2d<f32>;
 @group(0) @binding(9) var end_portal_texture: texture_2d<f32>;
 @group(0) @binding(10) var repeat_sampler: sampler;
+@group(0) @binding(11) var weather_texture: texture_2d<f32>;
 
 // Map units per block, as `sim::voxel::BLOCK`.
 const BLOCK: f32 = 36.0;
@@ -1047,6 +1086,10 @@ struct SkyOut {
 const SKYBOX_NONE_ABOVE: f32 = 1.5;
 const SKYBOX_END_ABOVE: f32 = 0.5;
 const END_SKY_SHADE: f32 = 40.0 / 255.0;
+const CELESTIAL_SLOTS: f32 = 10.0;
+const END_FLASH_SLOT: f32 = 9.0;
+const END_FLASH_HALF_SIZE: f32 = 0.6;
+const END_FLASH_SHOWN_ABOVE: f32 = 0.00001;
 
 fn end_sky_uv(ray: vec3<f32>) -> vec2<f32> {
     let size = abs(ray);
@@ -1064,6 +1107,25 @@ fn end_sky_uv(ray: vec3<f32>) -> vec2<f32> {
 fn end_sky(ray: vec3<f32>) -> vec3<f32> {
     let texel = textureSampleLevel(end_sky_texture, repeat_sampler, end_sky_uv(ray), 0.0);
     return mix(view.environment.fog.rgb, texel.rgb * END_SKY_SHADE, texel.a);
+}
+
+fn end_flash(ray: vec3<f32>, color: vec3<f32>) -> vec3<f32> {
+    let intensity = view.end_portal.y;
+    if intensity <= END_FLASH_SHOWN_ABOVE { return color; }
+    let x = radians(view.end_portal.z);
+    let y = radians(view.end_portal.w);
+    let direction = vec3<f32>(-sin(y) * cos(x), -sin(x), cos(y) * cos(x));
+    let facing = dot(ray, direction);
+    if facing <= 0.0 { return color; }
+    let axis_x = vec3<f32>(-cos(y), 0.0, -sin(y));
+    let axis_z = vec3<f32>(-sin(x) * sin(y), cos(x), sin(x) * cos(y));
+    let projected = ray / facing;
+    let quad = vec2<f32>(dot(projected, axis_x), dot(projected, axis_z)) / END_FLASH_HALF_SIZE;
+    if any(abs(quad) > vec2<f32>(1.0)) { return color; }
+    let uv = (quad + 1.0) * 0.5;
+    let texel = textureSampleLevel(celestials, atlas_sampler, vec2<f32>((END_FLASH_SLOT + uv.x) / CELESTIAL_SLOTS, uv.y), 0.0);
+    if texel.a <= 0.0 { return color; }
+    return min(color + texel.rgb * texel.a * intensity * intensity, vec3<f32>(1.0));
 }
 
 @vertex
@@ -1088,7 +1150,7 @@ fn celestial(ray: vec3<f32>, direction: vec3<f32>, half_size: f32, slot: f32, mo
     if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) { return vec4<f32>(0.0); }
     // The moon phase quad reverses both texture axes in buildMoonPhases.
     if moon { uv = vec2<f32>(1.0) - uv; }
-    let atlas_uv = vec2<f32>((slot + uv.x) / 9.0, uv.y);
+    let atlas_uv = vec2<f32>((slot + uv.x) / CELESTIAL_SLOTS, uv.y);
     return textureSampleLevel(celestials, atlas_sampler, atlas_uv, 0.0);
 }
 
@@ -1122,7 +1184,7 @@ fn sky_fragment(in: SkyOut) -> @location(0) vec4<f32> {
     let map_ray = far.xyz / far.w;
     let ray = normalize(vec3<f32>(map_ray.x, map_ray.z, -map_ray.y));
     if environment.ambient.w > SKYBOX_END_ABOVE {
-        return vec4<f32>(end_sky(ray), 1.0);
+        return vec4<f32>(end_flash(ray, end_sky(ray)), 1.0);
     }
     // SkyRenderer's 16-block-high fan has a 512-block radius. Its fog value
     // interpolates between the center and rim vertex distances.
@@ -1301,6 +1363,41 @@ fn crack_fragment(in: CrackOut) -> @location(0) vec4<f32> {
     }
     return colour;
 }
+
+struct WeatherOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) colour: vec4<f32>,
+    @location(2) world_pos: vec3<f32>,
+    @location(3) @interpolate(flat) snow: f32,
+}
+
+@vertex
+fn weather_vertex(
+    @location(0) position: vec3<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) alpha: f32,
+    @location(3) light: vec2<f32>,
+    @location(4) snow: f32,
+) -> WeatherOut {
+    var out: WeatherOut;
+    out.clip = view.clip_from_rel * vec4<f32>(rel_from_block(position), 1.0);
+    out.uv = uv;
+    out.colour = vec4<f32>(lightmap(light.x, light.y), alpha);
+    out.world_pos = position;
+    out.snow = snow;
+    return out;
+}
+
+@fragment
+fn weather_fragment(in: WeatherOut) -> @location(0) vec4<f32> {
+    let cell = vec2<f32>((fract(in.uv.x) + in.snow) * 0.5, fract(in.uv.y));
+    let colour = textureSampleLevel(weather_texture, atlas_sampler, cell, 0.0) * in.colour;
+    if colour.a < 0.1 {
+        discard;
+    }
+    return vec4<f32>(mix(colour.rgb, view.environment.fog.rgb, fog_value(in.world_pos)), colour.a);
+}
 "#;
 
 fn pipelines(
@@ -1308,7 +1405,7 @@ fn pipelines(
     registry: &ExactPipelineRegistry,
     format: TextureFormat,
     samples: u32,
-) -> [RenderPipeline; 12] {
+) -> [RenderPipeline; 13] {
     let shader = unsafe {
         device.create_shader_module(ShaderModuleDescriptor {
             label: Some("iw4l_minecraft_terrain"),
@@ -1438,6 +1535,38 @@ fn pipelines(
         step_mode: VertexStepMode::Vertex,
         attributes: &backdrop_attributes,
     }];
+    let weather_attributes = [
+        VertexAttribute {
+            format: VertexFormat::Float32x3,
+            offset: 0,
+            shader_location: 0,
+        },
+        VertexAttribute {
+            format: VertexFormat::Float32x2,
+            offset: 12,
+            shader_location: 1,
+        },
+        VertexAttribute {
+            format: VertexFormat::Float32,
+            offset: 20,
+            shader_location: 2,
+        },
+        VertexAttribute {
+            format: VertexFormat::Float32x2,
+            offset: 24,
+            shader_location: 3,
+        },
+        VertexAttribute {
+            format: VertexFormat::Float32,
+            offset: 32,
+            shader_location: 4,
+        },
+    ];
+    let weather_buffers = [RawVertexBufferLayout {
+        array_stride: WEATHER_VERTEX_BYTES,
+        step_mode: VertexStepMode::Vertex,
+        attributes: &weather_attributes,
+    }];
     let crumbling = BlendState {
         color: bevy::render::render_resource::BlendComponent {
             src_factor: bevy::render::render_resource::BlendFactor::Dst,
@@ -1558,6 +1687,15 @@ fn pipelines(
         make("backdrop_vertex", "backdrop_fragment", &backdrop_buffers, true, CompareFunction::GreaterEqual, None, None),
         make("hand_vertex", "hand_fragment", &buffers, true, CompareFunction::GreaterEqual, None, None),
         make("vertex", "opaque", &buffers, true, CompareFunction::GreaterEqual, None, Some(bevy::render::render_resource::Face::Back)),
+        make(
+            "weather_vertex",
+            "weather_fragment",
+            &weather_buffers,
+            false,
+            CompareFunction::GreaterEqual,
+            Some(BlendState::ALPHA_BLENDING),
+            None,
+        ),
     ]
 }
 
@@ -1616,6 +1754,23 @@ mod tests {
         }
         assert_eq!(super::CRACK_VERTEX_BYTES, vertex_bytes(|frame| &frame.cracks));
         assert_eq!(super::CRACK_VERTEX_BYTES, std::mem::size_of::<[f32; 6]>() as u64);
+    }
+
+    #[test]
+    fn weather_vertex_stride_matches_the_frame() {
+        fn vertex_bytes<T>(_: fn(&super::MinecraftWorldFrame) -> &(Vec<T>, Vec<u32>)) -> u64 {
+            std::mem::size_of::<T>() as u64
+        }
+        assert_eq!(super::WEATHER_VERTEX_BYTES, vertex_bytes(|frame| &frame.weather));
+        let module = naga::front::wgsl::parse_str(super::TERRAIN_WGSL).unwrap();
+        let bindings: Vec<(u32, String)> = module
+            .global_variables
+            .iter()
+            .filter_map(|(_, var)| Some((var.binding.as_ref()?.binding, var.name.clone()?)))
+            .collect();
+        assert!(bindings.contains(&(11, "weather_texture".to_owned())));
+        let entry = |name: &str| module.entry_points.iter().any(|entry| entry.name == name);
+        assert!(entry("weather_vertex") && entry("weather_fragment"));
     }
 
     #[test]
@@ -1747,6 +1902,62 @@ mod tests {
         ] {
             assert!(source.contains(line), "{line}");
         }
+    }
+
+    fn end_flash_uv(ray: bevy::math::Vec3, x_angle: f32, y_angle: f32) -> Option<bevy::math::Vec2> {
+        let (x, y) = (x_angle.to_radians(), y_angle.to_radians());
+        let direction = bevy::math::Vec3::new(-y.sin() * x.cos(), -x.sin(), y.cos() * x.cos());
+        let facing = ray.dot(direction);
+        if facing <= 0.0 {
+            return None;
+        }
+        let axis_x = bevy::math::Vec3::new(-y.cos(), 0.0, -y.sin());
+        let axis_z = bevy::math::Vec3::new(-x.sin() * y.sin(), x.cos(), x.sin() * y.cos());
+        let projected = ray / facing;
+        let quad = bevy::math::Vec2::new(projected.dot(axis_x), projected.dot(axis_z)) / wgsl_float("END_FLASH_HALF_SIZE");
+        (quad.abs().max_element() <= 1.0).then(|| (quad + 1.0) * 0.5)
+    }
+
+    #[test]
+    fn the_end_flash_quad_centres_on_its_direction_and_spans_point_six() {
+        assert_eq!(wgsl_float("END_FLASH_HALF_SIZE"), 0.6);
+        for (x_angle, y_angle) in [(-90.0f32, 0.0f32), (-31.479216, -105.22267), (-59.709076, -1.1438904), (10.0, 170.0), (-5.0, -180.0)] {
+            let pose = bevy::math::Mat3::from_rotation_y((180.0 - y_angle).to_radians()) * bevy::math::Mat3::from_rotation_x((-90.0 - x_angle).to_radians());
+            let corner = |lx: f32, lz: f32| (pose * bevy::math::Vec3::new(lx * 60.0, 100.0, lz * 60.0)).normalize();
+            let centre = end_flash_uv(corner(0.0, 0.0), x_angle, y_angle).unwrap();
+            assert!((centre - bevy::math::Vec2::splat(0.5)).abs().max_element() < 1e-4, "{x_angle},{y_angle}: {centre}");
+            for lx in [-0.99, -0.6, 0.0, 0.35, 0.99] {
+                for lz in [-0.99, -0.2, 0.0, 0.7, 0.99] {
+                    let uv = end_flash_uv(corner(lx, lz), x_angle, y_angle).unwrap();
+                    let expected = bevy::math::Vec2::new((lx + 1.0) / 2.0, (lz + 1.0) / 2.0);
+                    assert!((uv - expected).abs().max_element() < 1e-4, "{x_angle},{y_angle} at {lx},{lz}: {uv} against {expected}");
+                }
+            }
+            for (lx, lz) in [(1.02, 0.0), (0.0, -1.02), (-1.5, 1.5)] {
+                assert_eq!(end_flash_uv(corner(lx, lz), x_angle, y_angle), None);
+            }
+            assert_eq!(end_flash_uv(-corner(0.0, 0.0), x_angle, y_angle), None);
+        }
+        let source = super::TERRAIN_WGSL;
+        for line in [
+            "let direction = vec3<f32>(-sin(y) * cos(x), -sin(x), cos(y) * cos(x));",
+            "let axis_x = vec3<f32>(-cos(y), 0.0, -sin(y));",
+            "let axis_z = vec3<f32>(-sin(x) * sin(y), cos(x), sin(x) * cos(y));",
+            "let quad = vec2<f32>(dot(projected, axis_x), dot(projected, axis_z)) / END_FLASH_HALF_SIZE;",
+            "return min(color + texel.rgb * texel.a * intensity * intensity, vec3<f32>(1.0));",
+            "return vec4<f32>(end_flash(ray, end_sky(ray)), 1.0);",
+        ] {
+            assert!(source.contains(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn the_celestial_atlas_has_ten_slots() {
+        assert_eq!(wgsl_float("CELESTIAL_SLOTS"), 10.0);
+        assert_eq!(wgsl_float("END_FLASH_SLOT"), 9.0);
+        let source = super::TERRAIN_WGSL;
+        assert!(source.contains("let atlas_uv = vec2<f32>((slot + uv.x) / CELESTIAL_SLOTS, uv.y);"));
+        assert!(source.contains("vec2<f32>((END_FLASH_SLOT + uv.x) / CELESTIAL_SLOTS, uv.y)"));
     }
 
     #[test]

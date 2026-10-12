@@ -125,6 +125,7 @@ impl Level<'_> {
             Some(super::container::Store::ShulkerBox) => Vec::new(),
             // Every slot, empty ones included: each draws a position.
             Some(_) => self.block_container_items(pos).unwrap_or_default(),
+            None if self.pop_lectern_book(pos, old) => Vec::new(),
             None => {
                 let holds_items = self.block_entity(pos).is_some_and(|t| t.get("Items").is_some() || t.get("item").is_some() || t.get("RecordItem").is_some() || t.get("Book").is_some());
                 if holds_items {

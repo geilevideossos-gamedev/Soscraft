@@ -2532,6 +2532,179 @@ mod tests {
         assert_eq!(far.player_spawn, (1200.5, 60.0, 0.5));
     }
 
+    fn end_city_start(gen: &WorldGen, chunk: minecraftoss_core::ChunkPos) -> Option<Arc<minecraftoss_generator::structure::StructureStart>> {
+        let city = gen.structures.id("minecraft:end_city")?;
+        gen.structures.starts_in(&gen.library, &gen.terrain, chunk).iter().find(|start| start.structure == city).cloned()
+    }
+
+    fn end_city_pieces(start: &minecraftoss_generator::structure::StructureStart) -> Vec<(String, minecraftoss_generator::feature::template::Rotation)> {
+        use minecraftoss_generator::structure::kinds::end_city::EndCityPiece;
+        let pieces = start.pieces.lock().unwrap();
+        pieces.iter().filter_map(|piece| piece.as_any().downcast_ref::<EndCityPiece>()).map(|piece| (piece.template_name().to_owned(), piece.rotation())).collect()
+    }
+
+    fn end_city_chunks(stream: &mut TerrainStream, start: &minecraftoss_generator::structure::StructureStart) -> Vec<Arc<Chunk>> {
+        let bbox = start.bounding_box();
+        let mut chunks = Vec::new();
+        for cx in (bbox.min_x >> 4)..=(bbox.max_x >> 4) {
+            for cz in (bbox.min_z >> 4)..=(bbox.max_z >> 4) {
+                chunks.push(stream.load_chunk_now(minecraftoss_core::ChunkPos::new(cx, cz)));
+            }
+        }
+        chunks
+    }
+
+    fn block_entity_tags(chunks: &[Arc<Chunk>]) -> Vec<((i32, i32, i32), minecraftoss_core::nbt::Tag)> {
+        chunks.iter().flat_map(|chunk| chunk.block_entities.pending.iter().chain(chunk.block_entities.entities.iter()).map(|(pos, tag)| (*pos, tag.clone()))).collect()
+    }
+
+    fn block_name(registries: &Registries, chunks: &[Arc<Chunk>], (x, y, z): (i32, i32, i32)) -> String {
+        let chunk = chunks.iter().find(|chunk| chunk.pos.x == x >> 4 && chunk.pos.z == z >> 4).expect("the block's chunk is loaded");
+        let blocks = &registries.blocks;
+        blocks.block(blocks.block_of(chunk.block((x & 15) as usize, y, (z & 15) as usize))).name.to_string()
+    }
+
+    fn entity_pos(tag: &minecraftoss_core::nbt::Tag) -> Vec<f64> {
+        use minecraftoss_core::nbt::Tag;
+        tag.get("Pos").and_then(Tag::as_list).unwrap().iter().map(|v| v.as_f64().unwrap()).collect()
+    }
+
+    fn assert_end_city_chunks(registries: &Registries, chunks: &[Arc<Chunk>]) {
+        use minecraftoss_core::nbt::Tag;
+        let mut counts = HashMap::new();
+        for chunk in chunks {
+            count_blocks(registries, chunk, &mut counts);
+        }
+        for name in ["minecraft:purpur_block", "minecraft:end_stone_bricks", "minecraft:end_rod", "minecraft:magenta_stained_glass"] {
+            assert!(count(&counts, name) > 0, "no {name} in the city: {counts:?}");
+        }
+        assert_eq!(count(&counts, "minecraft:structure_block"), 0, "the data markers are removed");
+        for (pos, tag) in block_entity_tags(chunks) {
+            if tag.get("id").and_then(Tag::as_str) != Some("minecraft:chest") {
+                continue;
+            }
+            assert_eq!(tag.get("LootTable").and_then(Tag::as_str), Some("minecraft:chests/end_city_treasure"), "the chest at {pos:?}: {tag:?}");
+            assert!(tag.get("LootTableSeed").and_then(Tag::as_i64).is_some_and(|seed| seed != 0), "the chest at {pos:?} has a seed: {tag:?}");
+        }
+        let shulkers: Vec<Vec<f64>> = chunks.iter().flat_map(|chunk| chunk.generation.entities.iter()).filter(|tag| tag.get("id").and_then(Tag::as_str) == Some("minecraft:shulker")).map(entity_pos).collect();
+        assert!(shulkers.len() >= 2, "the base floor's two sentries: {shulkers:?}");
+        for pos in &shulkers {
+            assert!(pos[0].rem_euclid(1.0) == 0.5 && pos[2].rem_euclid(1.0) == 0.5 && pos[1].fract() == 0.0, "a sentry stands at a block centre: {pos:?}");
+        }
+    }
+
+    #[test]
+    fn end_cities_generate_on_the_outer_islands_with_their_chests_sentries_and_ship() {
+        use minecraftoss_core::nbt::Tag;
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let dir = crate::test_dir::tempdir().unwrap();
+        let level = crate::level_storage::LevelStorage::open(dir.path()).unwrap();
+        let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::End, Some(level.root()), None).unwrap();
+        let gen = stream.world_gen();
+        let deadline = Instant::now() + std::time::Duration::from_secs(120);
+        let origin = [1000, 0, 0];
+        let at = match crate::locate::nearest_structure(&gen, &["minecraft:end_city".to_owned()], origin, crate::locate::STRUCTURE_RADIUS, deadline) {
+            crate::locate::Search::Found(at, _) => at,
+            other => panic!("no end city near 1000, 0 of seed 77: {other:?}"),
+        };
+        let start = end_city_start(&gen, minecraftoss_core::ChunkPos::new(at[0] >> 4, at[2] >> 4)).expect("the located chunk starts a city");
+        let pieces = end_city_pieces(&start);
+        assert_eq!(pieces.len(), start.piece_count(), "every piece is an end city piece");
+        assert_eq!(pieces[0].0, "minecraft:end_city/base_floor");
+        let first = start.pieces.lock().unwrap()[0].base().bbox;
+        assert!(first.min_y >= 60, "the city starts at Y 60 or more: {first:?}");
+        let chunks = end_city_chunks(&mut stream, &start);
+        assert_end_city_chunks(&registries, &chunks);
+        let set = gen.structures.sets().iter().position(|set| set.name == "minecraft:end_cities").expect("the end_cities set");
+        let (ox, oz) = (origin[0] >> 4, origin[2] >> 4);
+        let mut candidates = Vec::new();
+        for cx in ox - 100..=ox + 100 {
+            for cz in oz - 100..=oz + 100 {
+                let chunk = minecraftoss_core::ChunkPos::new(cx, cz);
+                if gen.structures.is_structure_chunk(&gen.terrain, set, chunk) {
+                    candidates.push(chunk);
+                }
+            }
+        }
+        candidates.sort_by_key(|chunk| (chunk.x - ox).pow(2) + (chunk.z - oz).pow(2));
+        let ship = candidates.iter().find_map(|&chunk| {
+            let start = end_city_start(&gen, chunk)?;
+            let ship = end_city_pieces(&start).into_iter().find(|(name, _)| name == "minecraft:end_city/ship")?;
+            Some((start, ship.1))
+        });
+        let (start, rotation) = ship.expect("a city with a ship within 100 chunks");
+        let chunks = end_city_chunks(&mut stream, &start);
+        assert_end_city_chunks(&registries, &chunks);
+        let frames: Vec<Tag> = chunks.iter().flat_map(|chunk| chunk.generation.entities.iter()).filter(|tag| tag.get("id").and_then(Tag::as_str) == Some("minecraft:item_frame")).cloned().collect();
+        assert_eq!(frames.len(), 1, "one elytra frame per ship: {frames:?}");
+        let frame = &frames[0];
+        let item = frame.get("Item").expect("the frame holds an item");
+        assert_eq!(item.get("id").and_then(Tag::as_str), Some("minecraft:elytra"));
+        assert_eq!(item.get("count").and_then(Tag::as_i64), Some(1));
+        let facing = rotation.rotate(Direction::South);
+        assert_eq!(frame.get("Facing").and_then(Tag::as_i64), Some(facing.index() as i64), "{rotation:?}");
+        let yaw = frame.get("Rotation").and_then(Tag::as_list).unwrap()[0].as_f64().unwrap();
+        let expected_yaw = match facing {
+            Direction::South => 0.0,
+            Direction::West => 90.0,
+            Direction::North => 180.0,
+            _ => 270.0,
+        };
+        assert_eq!(yaw, expected_yaw, "{rotation:?}");
+        let block_pos = frame.get("block_pos").and_then(Tag::as_ints).expect("the frame's block");
+        let (sx, sy, sz) = facing.offset();
+        let pos = entity_pos(frame);
+        let step = [sx, sy, sz];
+        for axis in 0..3 {
+            assert_eq!(pos[axis], f64::from(block_pos[axis]) + 0.5 - 0.46875 * f64::from(step[axis]), "the frame hangs against its wall on axis {axis}");
+        }
+        let cell = (block_pos[0], block_pos[1], block_pos[2]);
+        assert_eq!(block_name(&registries, &chunks, cell), "minecraft:air", "the frame's own cell is open");
+        let support = (cell.0 - sx, cell.1 - sy, cell.2 - sz);
+        assert_ne!(block_name(&registries, &chunks, support), "minecraft:air", "the frame hangs on a block");
+        let (lx, _, lz) = facing.clockwise().offset();
+        let tags = block_entity_tags(&chunks);
+        for side in [-1, 1] {
+            let chest = (cell.0 + side * lx, cell.1 - 1, cell.2 + side * lz);
+            let tag = tags.iter().find(|(pos, _)| *pos == chest).map(|(_, tag)| tag).unwrap_or_else(|| panic!("a chest at {chest:?} beside the frame at {cell:?}"));
+            assert_eq!(tag.get("LootTable").and_then(Tag::as_str), Some("minecraft:chests/end_city_treasure"));
+        }
+        let heads = tags.iter().filter(|(pos, tag)| tag.get("id").and_then(Tag::as_str) == Some("minecraft:skull") && block_name(&registries, &chunks, *pos) == "minecraft:dragon_wall_head").count();
+        assert_eq!(heads, 1, "the dragon head on the bow");
+    }
+
+    #[test]
+    fn the_outer_end_islands_generate_beyond_the_main_island() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::End, None, None).unwrap();
+        let outer: Vec<BiomeId> = ["minecraft:end_highlands", "minecraft:end_midlands"].iter().map(|name| registries.biomes.id(name).unwrap()).collect();
+        let mut counts = HashMap::new();
+        let mut outer_columns = 0;
+        for cx in 1100 >> 4..=1300 >> 4 {
+            for cz in -2..=2 {
+                let chunk = stream.load_chunk_now(minecraftoss_core::ChunkPos::new(cx, cz));
+                count_blocks(&registries, &chunk, &mut counts);
+                for qx in 0..4 {
+                    for qz in 0..4 {
+                        if (0..64).any(|qy| outer.contains(&chunk.biome(qx, qy, qz))) {
+                            outer_columns += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(outer_columns > 0, "highlands or midlands between x 1100 and 1300");
+        assert!(count(&counts, "minecraft:end_stone") > 1000, "outer islands of end stone: {counts:?}");
+        assert_eq!(count(&counts, "minecraft:obsidian"), 0, "no end spikes out here: {counts:?}");
+    }
+
     #[test]
     fn the_outer_end_islands_generate_past_the_void() {
         let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
@@ -2707,7 +2880,7 @@ mod tests {
             if structure == "minecraft:bastion_remnant" {
                 assert!(kinds.contains(&("minecraft:piglin", true)) && kinds.contains(&("minecraft:piglin_brute", true)), "a bastion holds piglins and brutes: {kinds:?}");
             }
-            assert!(kinds.iter().all(|(_, persistent)| *persistent), "the {structure}'s mobs never despawn: {kinds:?}");
+            assert!(kinds.iter().filter(|(kind, _)| *kind != "minecraft:strider").all(|(_, persistent)| *persistent), "the {structure}'s mobs never despawn: {kinds:?}");
             found.push((structure, at));
         }
         sim.set_clocks(crate::server::ClockTicks { overworld: 6000, the_end: 0 });
@@ -2715,6 +2888,89 @@ mod tests {
             sim.tick();
         }
         assert_eq!(found.len(), 2, "{found:?}");
+    }
+
+    #[test]
+    fn a_bastion_s_piglins_wake_up() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let dir = crate::test_dir::tempdir().unwrap();
+        let level = crate::level_storage::LevelStorage::open(dir.path()).unwrap();
+        let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::Nether, Some(level.root()), Some((0, 64, 0))).unwrap();
+        let gen = stream.world_gen();
+        let deadline = Instant::now() + std::time::Duration::from_secs(300);
+        let mut sim = crate::server::ServerSim::new(gen.clone(), stream.states.clone(), "minecraft:the_nether");
+        let at = match crate::locate::nearest_structure(&gen, &["minecraft:bastion_remnant".to_owned()], [0, 64, 0], crate::locate::STRUCTURE_RADIUS, deadline) {
+            crate::locate::Search::Found(at, _) => at,
+            other => panic!("no bastion near the origin of seed 77: {other:?}"),
+        };
+        let (cx, cz) = (at[0] >> 4, at[2] >> 4);
+        let mut piglins = Vec::new();
+        for x in cx - 3..=cx + 3 {
+            for z in cz - 3..=cz + 3 {
+                let chunk = stream.load_chunk_now(minecraftoss_core::ChunkPos::new(x, z));
+                piglins.extend(chunk.generation.entities.iter().flat_map(minecraftoss_world::natural_spawner::tick::census_of).filter(|mob| matches!(mob.kind.as_str(), "minecraft:piglin" | "minecraft:piglin_brute")));
+                sim.load_chunk(&chunk);
+            }
+        }
+        assert!(!piglins.is_empty(), "the bastion holds piglins");
+        let alive = sim.tracked_mobs([f64::from(at[0]), f64::from(at[1]), f64::from(at[2])], 112.0);
+        assert_eq!(alive.piglins().len(), piglins.len(), "every bastion piglin and brute comes alive");
+        assert!(alive.piglins().iter().all(|e| e.piglin.persistence_required));
+        assert!(alive.piglins().iter().any(|e| e.piglin.kind == minecraftoss_entities::piglin::PiglinKind::Brute));
+        for brute in alive.piglins().iter().filter(|e| e.piglin.is_brute()) {
+            assert_eq!(brute.piglin.main_hand.as_ref().map(|s| s.id.as_str()), Some("minecraft:golden_axe"));
+            let home = brute.brain.memories.home.get().expect("a bastion brute has a home");
+            assert_eq!(home.dimension, "minecraft:the_nether");
+            let (x, y, z) = home.pos;
+            assert!(brute.position().distance(glam::DVec3::new(f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5)) < 2.0);
+        }
+        for _ in 0..20 {
+            sim.tick();
+        }
+    }
+
+    #[test]
+    fn bastion_hoglins_come_alive_and_stay_persistent() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let dir = crate::test_dir::tempdir().unwrap();
+        let level = crate::level_storage::LevelStorage::open(dir.path()).unwrap();
+        let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::Nether, Some(level.root()), Some((0, 64, 0))).unwrap();
+        let gen = stream.world_gen();
+        let deadline = Instant::now() + std::time::Duration::from_secs(300);
+        let mut sim = crate::server::ServerSim::new(gen.clone(), stream.states.clone(), "minecraft:the_nether");
+        let mut seen = Vec::new();
+        for (ox, oz) in [(0, 0), (1500, 0), (0, 1500), (-1500, 0), (0, -1500), (1500, 1500), (-1500, -1500), (1500, -1500), (-1500, 1500)] {
+            let at = match crate::locate::nearest_structure(&gen, &["minecraft:bastion_remnant".to_owned()], [ox, 64, oz], crate::locate::STRUCTURE_RADIUS, deadline) {
+                crate::locate::Search::Found(at, _) => at,
+                _ => continue,
+            };
+            if seen.contains(&at) {
+                continue;
+            }
+            seen.push(at);
+            let (cx, cz) = (at[0] >> 4, at[2] >> 4);
+            let mut hoglins = Vec::new();
+            for x in cx - 3..=cx + 3 {
+                for z in cz - 3..=cz + 3 {
+                    let chunk = stream.load_chunk_now(minecraftoss_core::ChunkPos::new(x, z));
+                    hoglins.extend(chunk.generation.entities.iter().flat_map(minecraftoss_world::natural_spawner::tick::census_of).filter(|mob| mob.kind == "minecraft:hoglin"));
+                    sim.load_chunk(&chunk);
+                }
+            }
+            if hoglins.is_empty() {
+                continue;
+            }
+            assert!(hoglins.iter().all(|mob| mob.persistent), "{hoglins:?}");
+            let alive = sim.tracked_mobs([f64::from(at[0]), f64::from(at[1]), f64::from(at[2])], 96.0);
+            assert_eq!(alive.hoglins().len(), hoglins.len(), "every stable hoglin comes alive");
+            assert!(alive.hoglins().iter().all(|e| e.hoglin.persistence_required && e.hoglin.kind == minecraftoss_entities::hoglin::HoglinKind::Hoglin));
+            return;
+        }
+        panic!("no hoglin stables among the bastions of seed 77 at {seen:?}");
     }
 
     #[test]

@@ -219,6 +219,8 @@ impl HudClock {
             experience_progress: view.xp_progress,
             on_fire: view.fire_ticks > 0,
             eye_in_lava,
+            frozen: 0.0,
+            fully_frozen: false,
         }
     }
 
@@ -306,6 +308,7 @@ mod tests {
             in_rain: false,
             crouching: false,
             height: 1.8,
+            riding: false,
         }
     }
 

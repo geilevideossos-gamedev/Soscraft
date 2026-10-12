@@ -295,8 +295,24 @@ impl SimWorld {
         self.frame().set_may_glide(id, may)
     }
 
+    pub fn set_minecraft_move_scale(&mut self, id: ClientId, scale: f32) -> bool {
+        self.frame().set_minecraft_move_scale(id, scale)
+    }
+
+    pub fn set_powder_snow_walker(&mut self, id: ClientId, walker: bool) -> bool {
+        self.frame().set_powder_snow_walker(id, walker)
+    }
+
     pub fn launch_rocket(&mut self, id: ClientId, boost_ticks: i32) -> bool {
         self.frame().launch_rocket(id, boost_ticks)
+    }
+
+    pub fn ride(&mut self, id: ClientId, seat: Option<[f32; 3]>) -> bool {
+        self.frame().ride(id, seat)
+    }
+
+    pub fn set_float(&mut self, id: ClientId, levitation: Option<u8>, slow_falling: bool) -> bool {
+        self.frame().set_float(id, levitation, slow_falling)
     }
 
     pub fn set_sprint_blocked(&mut self, id: ClientId, blocked: bool) -> bool {

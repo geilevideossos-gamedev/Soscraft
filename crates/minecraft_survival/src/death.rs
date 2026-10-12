@@ -65,6 +65,7 @@ pub enum MobAttack {
     Explosion,
     Fireball,
     SmallFireball,
+    MobProjectile,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,7 +98,7 @@ impl DamageCause {
         let type_id = type_id.or(match attack {
             MobAttack::Explosion => Some("minecraft:creeper"),
             MobAttack::Arrow => Some(OWNERLESS_ARROW),
-            MobAttack::Melee | MobAttack::Fireball | MobAttack::SmallFireball => None,
+            MobAttack::Melee | MobAttack::Fireball | MobAttack::SmallFireball | MobAttack::MobProjectile => None,
         });
         match (source, type_id) {
             (Some(id), Some(type_id)) => Self::Mob {
@@ -133,6 +134,7 @@ impl DamageCause {
             Self::Hazard(Hazard::OnFire) => "minecraft:on_fire",
             Self::Hazard(Hazard::InWall) => "minecraft:in_wall",
             Self::Hazard(Hazard::Cramming) => "minecraft:cramming",
+            Self::Hazard(Hazard::Freeze) => "minecraft:freeze",
             Self::Fall => "minecraft:fall",
             Self::EnderPearl => "minecraft:ender_pearl",
             Self::FlyIntoWall => "minecraft:fly_into_wall",
@@ -148,6 +150,7 @@ impl DamageCause {
                 MobAttack::Arrow => "minecraft:arrow",
                 MobAttack::Explosion => "minecraft:explosion",
                 MobAttack::Fireball | MobAttack::SmallFireball => "minecraft:fireball",
+                MobAttack::MobProjectile => "minecraft:mob_projectile",
             },
         }
     }
@@ -163,6 +166,7 @@ impl DamageCause {
             Self::Hazard(Hazard::OnFire) => "onFire",
             Self::Hazard(Hazard::InWall) => "inWall",
             Self::Hazard(Hazard::Cramming) => "cramming",
+            Self::Hazard(Hazard::Freeze) => "freeze",
             Self::Fall | Self::EnderPearl => "fall",
             Self::FlyIntoWall => "flyIntoWall",
             Self::Drown => "drown",
@@ -173,7 +177,7 @@ impl DamageCause {
             Self::OutOfWorld => "outOfWorld",
             Self::BadRespawnPoint => "badRespawnPoint",
             Self::Mob {
-                attack: MobAttack::Melee,
+                attack: MobAttack::Melee | MobAttack::MobProjectile,
                 ..
             } => "mob",
             Self::Mob {
@@ -639,6 +643,8 @@ mod tests {
             ),
             ("death.attack.magic", "%1$s was killed by magic"),
             ("death.attack.wither", "%1$s withered away"),
+            ("death.attack.freeze", "%1$s froze to death"),
+            ("death.attack.freeze.player", "%1$s was frozen to death by %2$s"),
             ("death.attack.outOfWorld", "%1$s fell out of the world"),
             ("death.attack.flyIntoWall", "%1$s experienced kinetic energy"),
             (
@@ -658,6 +664,9 @@ mod tests {
             ("entity.minecraft.creeper", "Creeper"),
             ("entity.minecraft.ghast", "Ghast"),
             ("entity.minecraft.blaze", "Blaze"),
+            ("entity.minecraft.piglin", "Piglin"),
+            ("entity.minecraft.piglin_brute", "Piglin Brute"),
+            ("entity.minecraft.shulker", "Shulker"),
             ("death.attack.fireball", "%1$s was fireballed by %2$s"),
             ("entity.minecraft.arrow", "Arrow"),
             ("block.minecraft.magma_block", "Magma Block"),
@@ -730,6 +739,20 @@ mod tests {
     }
 
     #[test]
+    fn freezing_to_death_has_the_vanilla_message() {
+        let mut tracker = CombatTracker::default();
+        tracker.record(1, DamageCause::Hazard(Hazard::Freeze), 1.0, None, 0.0);
+        assert_eq!(line(&tracker), says("%1$s froze to death", "froze to death"));
+        assert_eq!(DamageCause::Hazard(Hazard::Freeze).damage_type(), "minecraft:freeze");
+        tracker.hurt_by(2, zombie_bite());
+        tracker.record(2, DamageCause::Hazard(Hazard::Freeze), 1.0, None, 0.0);
+        assert_eq!(
+            line(&tracker),
+            says("%1$s was frozen to death by Zombie", "Zombie")
+        );
+    }
+
+    #[test]
     fn burning_burns_to_death() {
         let mut tracker = CombatTracker::default();
         tracker.record(1, DamageCause::Hazard(Hazard::OnFire), 1.0, None, 0.0);
@@ -784,6 +807,21 @@ mod tests {
     }
 
     #[test]
+    fn a_piglin_shoots_and_a_brute_slays_by_name() {
+        let mut tracker = CombatTracker::default();
+        let bolt = DamageCause::mob(MobAttack::Arrow, Some(3), Some("minecraft:piglin"));
+        tracker.record(1, bolt, 4.0, None, 0.0);
+        assert_eq!(line(&tracker), says("%1$s was shot by Piglin", "Piglin"));
+        let mut tracker = CombatTracker::default();
+        let axe = DamageCause::mob(MobAttack::Melee, Some(4), Some("minecraft:piglin_brute"));
+        tracker.record(1, axe, 13.0, None, 0.0);
+        assert_eq!(
+            line(&tracker),
+            says("%1$s was slain by Piglin Brute", "Piglin Brute")
+        );
+    }
+
+    #[test]
     fn an_arrow_whose_shooter_is_gone_shoots_by_arrow_without_kill_credit() {
         let mut tracker = CombatTracker::default();
         let arrow = DamageCause::mob(MobAttack::Arrow, Some(7), None);
@@ -811,6 +849,17 @@ mod tests {
         assert_eq!((small.burns(), small.ignites()), (true, Some(100)));
         tracker.record(1, small, 5.0, None, 0.0);
         assert_eq!(line(&tracker), says("%1$s was fireballed by Blaze", "Blaze"));
+    }
+
+    #[test]
+    fn a_shulker_bullet_slays_the_player_by_the_shulker() {
+        let mut tracker = CombatTracker::default();
+        let bullet = DamageCause::mob(MobAttack::MobProjectile, Some(4), Some("minecraft:shulker"));
+        assert_eq!(bullet.damage_type(), "minecraft:mob_projectile");
+        assert!(!bullet.burns());
+        tracker.record(1, bullet, 4.0, None, 0.0);
+        assert_eq!(line(&tracker), says("%1$s was slain by Shulker", "Shulker"));
+        assert_eq!(DamageCause::mob(MobAttack::MobProjectile, None, None), DamageCause::Generic);
     }
 
     #[test]

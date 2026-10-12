@@ -105,6 +105,17 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
 
     mantle::clear_hint(ps);
 
+    if crate::ride::riding(ps) {
+        crate::ride::seat(ps, cmd);
+        drop_timers(ps, &pml);
+        return PmoveResult {
+            pml,
+            bounds: context.bounds,
+            stance_event: None,
+            reset_torso: false,
+        };
+    }
+
     let _ads = update_ads_intent(ps, cmd, context.old_buttons, context.ads_intent);
     let water = collision.water(
         ps.origin,
@@ -263,6 +274,7 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
 
     drop_timers(ps, &pml);
     let mut swam = false;
+    let levitating = crate::float::levitation(ps).is_some();
 
     {
         let mut ladder_backend = CollisionLadderBackend { collision, bounds };
@@ -306,6 +318,9 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
             );
         } else if let Some(multiplier) = stuck {
             let stuck = crate::Stuck { multiplier, fluid_sink: crate::swim::fluid_sink(ps, water, lava), climb: crate::climb::climbing(ps, climb).then_some(climb) };
+            if levitating && stuck.fluid_sink.is_none() {
+                crate::float::leave_ground(ps, &mut pml);
+            }
             crate::stuck_move(ps, &mut pml, cmd, stuck, context.walk, bounds, collision);
             swam = true;
         } else if water.wet() {
@@ -315,9 +330,16 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
             crate::lava_move(ps, &mut pml, cmd, lava, bounds, collision);
             swam = true;
         } else if crate::climb::climbing(ps, climb) {
+            if levitating {
+                crate::float::leave_ground(ps, &mut pml);
+            }
             crate::climb_move(ps, &mut pml, cmd, context.walk, climb, bounds, collision);
             swam = true;
-        } else if pml.walking == 0 {
+        } else if pml.walking == 0 || levitating {
+            if levitating {
+                crate::float::leave_ground(ps, &mut pml);
+            }
+            swam = crate::float::owns_vertical(ps);
             air_move(ps, &pml, cmd, context.air, bounds, collision);
         } else {
             walk_move(ps, &mut pml, cmd, context.walk, bounds, collision);

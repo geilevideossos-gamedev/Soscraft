@@ -165,6 +165,8 @@ pub fn effect_kind(effect: &str) -> Option<EffectKind> {
         "haste" => EffectKind::Haste,
         "mining_fatigue" => EffectKind::MiningFatigue,
         "conduit_power" => EffectKind::ConduitPower,
+        "levitation" => EffectKind::Levitation,
+        "slow_falling" => EffectKind::SlowFalling,
         _ => return None,
     })
 }
@@ -284,15 +286,13 @@ impl CommandWorld for Host<'_> {
     }
 
     fn set_time(&mut self, clock: &str, total: i64) {
-        if clock == THE_END_CLOCK {
-            self.end_clock.set(total as f64);
-            return;
-        }
-        let ticks = total as f64;
-        if let Some(save) = self.save.as_mut() {
-            save.shift_day(ticks - self.day.ticks);
-        }
-        self.day.set(ticks);
+        crate::server::set_clock(
+            self.day,
+            self.end_clock,
+            self.save.as_deref_mut(),
+            clock,
+            total,
+        );
     }
 
     fn set_time_paused(&mut self, clock: &str, paused: bool) {
@@ -362,12 +362,15 @@ impl CommandWorld for Host<'_> {
 
     fn give(&mut self, player: PlayerId, item: &ItemArg, count: u32) -> bool {
         let feet = self.presence(player).pose.map(|pose| pose.feet);
-        let stack = minecraft_terrain::crafting::kit_potion_stack(
-            &self.data.recipes,
-            &item.id,
-            1,
-            &item.enchantments,
-            item.potion.as_deref(),
+        let stack = minecraft_terrain::crafting::with_components(
+            minecraft_terrain::crafting::kit_potion_stack(
+                &self.data.recipes,
+                &item.id,
+                1,
+                &item.enchantments,
+                item.potion.as_deref(),
+            ),
+            item.components.as_ref(),
         );
         let Some((player, entities)) = self.player_in_level(player) else {
             return false;
@@ -687,13 +690,15 @@ impl CommandWorld for Host<'_> {
         minecraft_terrain::crafting::kit(line)
             .into_iter()
             .map(|(entry, count)| {
-                let (id, enchantments) = minecraft_terrain::crafting::kit_enchantments(&entry);
+                let (entry, components) = minecraft_terrain::crafting::kit_components(&entry);
+                let (id, enchantments) = minecraft_terrain::crafting::kit_enchantments(entry);
                 let (id, potion) = minecraft_terrain::crafting::kit_potion(id);
                 let item = ItemArg {
                     id: id.to_owned(),
                     enchantments,
                     potion,
                     at: 0,
+                    components,
                 };
                 (item, count)
             })
@@ -1758,6 +1763,7 @@ pub(crate) mod tests {
             dragon_fight: None,
             container_ticks: 0,
             shots: Default::default(),
+            sleep_status: Default::default(),
         })
     }
 
@@ -2462,5 +2468,83 @@ pub(crate) mod tests {
         );
         assert!(report_sprints(&parts.server, &parts.rules, FRIEND, vec![report]).is_empty());
         assert!(report_sprints(&parts.server, &parts.rules, HOST, Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn give_puts_book_pages_on_the_stack() {
+        let mut parts = Parts::new();
+        parts.server.registries_mut().items = ["minecraft:written_book", "minecraft:writable_book"]
+            .map(String::from)
+            .to_vec();
+        parts.send(
+            HOST,
+            &[
+                r#"/give @s minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one, text.","Page two text."]}]"#,
+                r#"/give @s writable_book[writable_book_content={pages:["draft"]}]"#,
+                r#"/give @s written_book[written_book_content={author:"Owner"}]"#,
+            ],
+        );
+        let books: Vec<_> = parts
+            .player(HOST)
+            .inventory
+            .slots
+            .iter()
+            .flatten()
+            .map(|stack| (stack.id.clone(), stack.count, stack.components.clone()))
+            .collect();
+        assert_eq!(
+            books,
+            vec![
+                (
+                    "minecraft:written_book".to_owned(),
+                    1,
+                    Some(serde_json::json!({"minecraft:written_book_content": {
+                        "title": {"raw": "Test"},
+                        "author": "Owner",
+                        "pages": [{"raw": "Page one, text."}, {"raw": "Page two text."}]
+                    }}))
+                ),
+                (
+                    "minecraft:writable_book".to_owned(),
+                    1,
+                    Some(serde_json::json!({"minecraft:writable_book_content": {"pages": [{"raw": "draft"}]}}))
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn levitation_and_slow_falling_are_given_and_cleared_by_command() {
+        let mut parts = Parts::new();
+        parts.server.registries_mut().effects = ["minecraft:levitation", "minecraft:slow_falling"]
+            .map(String::from)
+            .to_vec();
+        let (delivered, _) = parts.send(
+            HOST,
+            &[
+                "/effect give @s minecraft:levitation 10 1",
+                "/effect give @s minecraft:slow_falling 30",
+            ],
+        );
+        assert_eq!(delivered.len(), 2);
+        let status = &parts.player(HOST).survival.status;
+        assert_eq!(
+            status
+                .effect(EffectKind::Levitation)
+                .map(|e| (e.duration, e.amplifier)),
+            Some((200, 1))
+        );
+        assert_eq!(
+            status
+                .effect(EffectKind::SlowFalling)
+                .map(|e| (e.duration, e.amplifier)),
+            Some((600, 0))
+        );
+        parts.send(HOST, &["/effect clear @s"]);
+        let status = &parts.player(HOST).survival.status;
+        assert!(status.effect(EffectKind::Levitation).is_none());
+        assert!(status.effect(EffectKind::SlowFalling).is_none());
+        assert_eq!(effect_kind("minecraft:levitation"), Some(EffectKind::Levitation));
+        assert_eq!(effect_kind("minecraft:slow_falling"), Some(EffectKind::SlowFalling));
     }
 }

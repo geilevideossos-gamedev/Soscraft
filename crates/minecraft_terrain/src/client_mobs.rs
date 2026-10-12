@@ -55,6 +55,7 @@ pub struct ServerMob {
     pub swings: u32,
     /// Its bounding box's width and height.
     pub size: (f32, f32),
+    pub vehicle: Option<(u64, f64)>,
 }
 
 /// The entity flags `ServerEntity.sendChanges` reads besides its interval.
@@ -412,6 +413,8 @@ pub struct ClientMob {
     eye_height: f32,
     max_head_y_rot: f32,
     seen: bool,
+    vehicle: Option<(u64, f64)>,
+    direct: Option<DVec3>,
 }
 
 impl ClientMob {
@@ -466,6 +469,8 @@ impl ClientMob {
             eye_height: mob.eye_height,
             max_head_y_rot: mob.max_head_y_rot,
             seen: true,
+            vehicle: mob.vehicle,
+            direct: None,
         }
     }
 
@@ -645,6 +650,9 @@ impl ClientMob {
         self.y_rot_o = self.y_rot;
         self.x_rot_o = self.x_rot;
         self.interpolate();
+        if let Some(at) = self.direct {
+            self.position = at;
+        }
         self.tick_count += 1;
         // LivingEntity.baseTick: the swing runs on, the hurt flash wears
         // off, and a dead mob ticks its death (`tickDeath`).
@@ -753,6 +761,7 @@ impl ClientMob {
             red_overlay: self.hurt_time > 0 || self.death_time > 0,
             death_time: if self.death_time > 0 { self.death_time as f32 + partial } else { 0.0 },
             turn: glam::Quat::IDENTITY,
+            riding: self.vehicle.is_some(),
         }
     }
 }
@@ -786,6 +795,7 @@ pub struct MobPose {
     pub red_overlay: bool,
     pub death_time: f32,
     pub turn: glam::Quat,
+    pub riding: bool,
 }
 
 /// `LivingEntity.SwingState`: an arm swing's ticks and animation.
@@ -889,6 +899,7 @@ impl MobPose {
 pub struct ClientMobs {
     mobs: HashMap<u64, ClientMob>,
     displays: HashMap<u64, (glam::Quat, DVec3)>,
+    own_vehicle: Option<u64>,
 }
 
 impl ClientMobs {
@@ -910,6 +921,8 @@ impl ClientMobs {
             mob.size = server.size;
             mob.resting = server.resting;
             mob.dead = server.dead;
+            mob.vehicle = server.vehicle;
+            mob.direct = (self.own_vehicle == Some(server.id)).then_some(server.position);
             if server.hurts != mob.hurts_seen {
                 mob.hurts_seen = server.hurts;
                 mob.damage_event();
@@ -938,6 +951,16 @@ impl ClientMobs {
         }
     }
 
+    pub fn set_own_vehicle(&mut self, vehicle: Option<u64>) {
+        if self.own_vehicle == vehicle {
+            return;
+        }
+        if let Some(mob) = self.own_vehicle.and_then(|old| self.mobs.get_mut(&old)) {
+            mob.direct = None;
+        }
+        self.own_vehicle = vehicle;
+    }
+
     /// Forget every mob (a new world).
     pub fn clear(&mut self) {
         self.mobs.clear();
@@ -948,6 +971,15 @@ impl ClientMobs {
     pub fn tick(&mut self) {
         for mob in self.mobs.values_mut() {
             mob.tick();
+        }
+        let riders: Vec<(u64, u64, f64)> = self.mobs.iter().filter_map(|(&id, mob)| mob.vehicle.map(|(vehicle, offset)| (id, vehicle, offset))).collect();
+        for (id, vehicle, offset) in riders {
+            let Some((position, old_position)) = self.mobs.get(&vehicle).map(|v| (v.position, v.old_position)) else { continue };
+            if let Some(mob) = self.mobs.get_mut(&id) {
+                let lift = DVec3::new(0.0, offset, 0.0);
+                mob.position = position + lift;
+                mob.old_position = old_position + lift;
+            }
         }
     }
 
@@ -962,14 +994,27 @@ impl ClientMobs {
     }
 
     pub fn pose(&self, id: u64, partial: f32) -> Option<MobPose> {
-        self.mobs.get(&id).map(|mob| {
-            let mut pose = mob.pose(partial.clamp(0.0, 1.0));
-            if let Some(&(turn, light_probe)) = self.displays.get(&id) {
-                pose.turn = turn;
-                pose.light_probe = light_probe;
+        let partial = partial.clamp(0.0, 1.0);
+        let mob = self.mobs.get(&id)?;
+        let mut pose = mob.pose(partial);
+        if let Some(vehicle) = mob.vehicle.and_then(|(vehicle, _)| self.mobs.get(&vehicle)) {
+            pose.walk_position = 0.0;
+            pose.walk_speed = 0.0;
+            let head = rot_lerp(partial, mob.y_head_rot_o, mob.y_head_rot);
+            let under = rot_lerp(partial, vehicle.y_body_rot_o, vehicle.y_body_rot);
+            let turn = wrap_degrees(head - under).clamp(-85.0, 85.0);
+            let mut body = head - turn;
+            if turn.abs() > 50.0 {
+                body += turn * 0.2;
             }
-            pose
-        })
+            pose.body_rot = body;
+            pose.head_yaw = wrap_degrees(head - body);
+        }
+        if let Some(&(turn, light_probe)) = self.displays.get(&id) {
+            pose.turn = turn;
+            pose.light_probe = light_probe;
+        }
+        Some(pose)
     }
 
     pub fn show_in_spawner(&mut self, id: u64, turn: glam::Quat, light_probe: DVec3) {
@@ -982,7 +1027,7 @@ mod tests {
     use super::*;
 
     fn mob(id: u64, x: f64, yaw: f32) -> ServerMob {
-        ServerMob { id, position: DVec3::new(x, 64.0, 0.0), y_rot: yaw, x_rot: 0.0, y_head_rot: yaw, on_ground: true, baby: false, eye_height: 1.74, max_head_y_rot: 75.0, update_interval: 3, sync: SyncFlags::default(), resting: false, hurts: 0, dead: false, swings: 0, size: (0.6, 1.8) }
+        ServerMob { id, position: DVec3::new(x, 64.0, 0.0), y_rot: yaw, x_rot: 0.0, y_head_rot: yaw, on_ground: true, baby: false, eye_height: 1.74, max_head_y_rot: 75.0, update_interval: 3, sync: SyncFlags::default(), resting: false, hurts: 0, dead: false, swings: 0, size: (0.6, 1.8), vehicle: None }
     }
 
     #[test]
@@ -1047,6 +1092,51 @@ mod tests {
         assert_eq!(other.turn, glam::Quat::IDENTITY);
         assert!(other.body_rotation(90.0).abs_diff_eq(glam::Quat::from_rotation_y(std::f32::consts::PI), 1e-6));
     }
+
+    #[test]
+    fn a_rider_sits_on_its_vehicle_every_tick_without_walking() {
+        let mut mobs = ClientMobs::default();
+        let mut x = 0.0;
+        for _ in 0..30 {
+            x += 0.2;
+            let vehicle = mob(1, x, -90.0);
+            let mut rider = mob(2, x, 0.0);
+            rider.position.y += 1.0;
+            rider.vehicle = Some((1, 1.0));
+            mobs.receive(vec![vehicle, rider]);
+            mobs.tick();
+            let (under, seat) = (mobs.get(1).unwrap(), mobs.get(2).unwrap());
+            assert_eq!(seat.position, under.position + DVec3::Y);
+            assert_eq!(seat.old_position, under.old_position + DVec3::Y);
+        }
+        let pose = mobs.pose(2, 0.5).unwrap();
+        assert!(pose.riding);
+        assert_eq!((pose.walk_position, pose.walk_speed), (0.0, 0.0));
+        assert!(pose.head_yaw.abs() <= 85.0, "{}", pose.head_yaw);
+        assert!(!mobs.pose(1, 0.5).unwrap().riding);
+    }
+
+    #[test]
+    fn the_players_own_vehicle_moves_with_each_server_tick() {
+        let mut mobs = ClientMobs::default();
+        mobs.set_own_vehicle(Some(1));
+        let mut x = 0.0;
+        mobs.receive(vec![mob(1, x, -90.0), mob(2, x, -90.0)]);
+        mobs.tick();
+        for _ in 0..10 {
+            x += 0.2;
+            mobs.receive(vec![mob(1, x, -90.0), mob(2, x, -90.0)]);
+            mobs.tick();
+            let own = mobs.get(1).unwrap();
+            assert_eq!(own.position.x, x);
+            assert!((own.position.x - own.old_position.x - 0.2).abs() < 1e-9);
+        }
+        assert!(mobs.get(2).unwrap().position.x < x - 0.1, "other mobs keep their interpolation");
+        mobs.set_own_vehicle(None);
+        assert!(mobs.get(1).unwrap().direct.is_none());
+        mobs.receive(vec![mob(1, x + 0.2, -90.0)]);
+        assert!(mobs.get(1).unwrap().direct.is_none());
+    }
 }
 
 /// Every living mob of a server entity world, as trackers see it.
@@ -1057,7 +1147,7 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
     let mut out = Vec::new();
     let mut push = |id: u64, y_rot: f32, look: &minecraftoss_entities::look::LookControl, body: &minecraftoss_entities::movement::Body, baby: bool, eye_height: f32| {
         let sync = SyncFlags { needs_sync: body.needs_sync, ..SyncFlags::default() };
-        out.push(ServerMob { id, position: body.position, y_rot, x_rot: look.pitch, y_head_rot: look.head_yaw, on_ground: body.on_ground, baby, eye_height, max_head_y_rot: 75.0, update_interval: 3, sync, resting: false, hurts: 0, dead: false, swings: 0, size: (body.width, body.height) });
+        out.push(ServerMob { id, position: body.position, y_rot, x_rot: look.pitch, y_head_rot: look.head_yaw, on_ground: body.on_ground, baby, eye_height, max_head_y_rot: 75.0, update_interval: 3, sync, resting: false, hurts: 0, dead: false, swings: 0, size: (body.width, body.height), vehicle: None });
     };
     for e in world.cows() {
         let baby = e.cow.age.baby();
@@ -1090,6 +1180,7 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
         .filter_map(|e| Some((e.id, e.ai.as_deref()?.state.melee.swings)))
         .chain(world.skeletons().iter().filter_map(|e| Some((e.id, e.ai.as_deref()?.state.melee.swings))))
         .chain(world.endermen().iter().map(|e| (e.id, e.ai.state.melee.swings)))
+        .chain(world.piglins().iter().map(|e| (e.id, e.swings)))
         .collect();
     for e in world.zombies() {
         push(e.id, e.yaw, &e.look_control, &e.zombie.body, e.zombie.baby, e.zombie.eye_height());
@@ -1132,7 +1223,24 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
     for e in world.blazes() {
         push(e.id, e.blaze.yaw, &e.ai.state.look_control, &e.blaze.body, false, minecraftoss_entities::blaze::EYE_HEIGHT);
     }
+    for e in world.striders() {
+        push(e.id, e.strider.yaw, &e.look_control, &e.strider.body, e.strider.age.baby(), e.strider.eye_height());
+    }
+    for e in world.hoglins() {
+        push(e.id, e.hoglin.yaw, &e.look_control, &e.hoglin.body, e.hoglin.is_baby(), e.hoglin.eye_height());
+    }
+    for e in world.piglins() {
+        push(e.id, e.piglin.yaw, &e.look_control, &e.piglin.body, e.piglin.is_baby(), e.piglin.eye_height());
+    }
+    for e in world.shulkers() {
+        push(e.id, 0.0, &e.ai.state.look_control, &e.shulker.body, false, e.shulker.eye_height());
+    }
+    let shulkers: std::collections::HashSet<u64> = world.shulkers().iter().map(|e| e.id).collect();
     for mob in &mut out {
+        mob.vehicle = world.seat_offset(minecraftoss_entities::world::Rider::Mob(mob.id));
+        if shulkers.contains(&mob.id) {
+            mob.max_head_y_rot = 180.0;
+        }
         mob.resting = resting_bats.contains(&mob.id);
         if let Some(damage) = world.damage_state(mob.id) {
             mob.hurts = damage.hurts;
@@ -1168,6 +1276,9 @@ pub fn shadow_casters(world: &minecraftoss_entities::world::EntityWorld, mobs: &
     kinds.extend(world.wolves().iter().map(|e| (e.id, 0.5 * age(e.wolf.baby()))));
     kinds.extend(world.ghasts().iter().map(|e| (e.id, 1.5)));
     kinds.extend(world.blazes().iter().map(|e| (e.id, 0.5)));
+    kinds.extend(world.striders().iter().map(|e| (e.id, crate::strider_render::shadow_radius(e.strider.age.baby()))));
+    kinds.extend(world.hoglins().iter().map(|e| (e.id, crate::hoglin_render::shadow_radius(e.hoglin.is_baby()))));
+    kinds.extend(world.piglins().iter().map(|e| (e.id, 0.5 * age(e.piglin.is_baby()))));
     kinds
         .into_iter()
         .filter_map(|(id, radius)| {
@@ -1224,7 +1335,7 @@ impl ClientMob {
     /// A client mob made from a traced `ClientboundAddEntityPacket`.
     #[allow(clippy::too_many_arguments)]
     pub fn from_add_packet(position: DVec3, y_rot: f32, x_rot: f32, y_head_rot: f32, baby: bool, eye_height: f32, max_head_y_rot: f32, update_interval: i32) -> Self {
-        let server = ServerMob { id: 0, position, y_rot, x_rot, y_head_rot, on_ground: false, baby, eye_height, max_head_y_rot, update_interval, sync: SyncFlags::default(), resting: false, hurts: 0, dead: false, swings: 0, size: (0.6, 1.8) };
+        let server = ServerMob { id: 0, position, y_rot, x_rot, y_head_rot, on_ground: false, baby, eye_height, max_head_y_rot, update_interval, sync: SyncFlags::default(), resting: false, hurts: 0, dead: false, swings: 0, size: (0.6, 1.8), vehicle: None };
         let mut mob = Self::spawn(&server);
         mob.y_rot = y_rot;
         mob.y_rot_o = y_rot;
@@ -1300,7 +1411,7 @@ impl TraceTracker {
     }
 
     fn mob(position: DVec3, y_rot: f32, x_rot: f32, y_head_rot: f32, on_ground: bool, sync: SyncFlags) -> ServerMob {
-        ServerMob { id: 0, position, y_rot, x_rot, y_head_rot, on_ground, baby: false, eye_height: 1.0, max_head_y_rot: 75.0, update_interval: 3, sync, resting: false, hurts: 0, dead: false, swings: 0, size: (0.6, 1.8) }
+        ServerMob { id: 0, position, y_rot, x_rot, y_head_rot, on_ground, baby: false, eye_height: 1.0, max_head_y_rot: 75.0, update_interval: 3, sync, resting: false, hurts: 0, dead: false, swings: 0, size: (0.6, 1.8), vehicle: None }
     }
 
     /// One `sendChanges` with the mob in this state: the packets, as the

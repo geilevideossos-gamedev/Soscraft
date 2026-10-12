@@ -332,7 +332,16 @@ pub(crate) fn apply_typed(chat: &mut McChat, typed: &Typed, clipboard: &mut dyn 
     }
     let before = chat.input.clone();
     match typed.key {
+        Key::Escape if chat.in_bed => chat.leave_bed = true,
         Key::Escape => chat.close(),
+        Key::Enter if chat.in_bed => {
+            send(chat);
+            chat.input.clear();
+            chat.cursor = 0;
+            chat.highlight = 0;
+            chat.history_pos = chat.history.len();
+            scroll_chat(chat, -(chat.scroll as i32));
+        }
         Key::Enter => {
             send(chat);
             chat.close();

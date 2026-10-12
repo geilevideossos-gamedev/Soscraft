@@ -182,11 +182,24 @@ impl EntityWorld {
         if let Some(e) = self.blazes.iter().find(|e| e.id == id) {
             return Some((e.blaze.body.clone(), e.blaze.health));
         }
+        if let Some(e) = self.striders.iter().find(|e| e.id == id) {
+            return Some((e.strider.body.clone(), e.strider.health));
+        }
+        if let Some(e) = self.hoglins.iter().find(|e| e.id == id) {
+            return Some((e.hoglin.body.clone(), e.hoglin.health));
+        }
+        if let Some(e) = self.piglins.iter().find(|e| e.id == id) {
+            return Some((e.piglin.body.clone(), e.piglin.health));
+        }
+        if let Some(e) = self.shulkers.iter().find(|e| e.id == id) {
+            return Some((e.shulker.body.clone(), e.shulker.health));
+        }
         None
     }
 
     /// `LivingEntity.knockback` on a mob, by ID.
     pub(super) fn knock_back(&mut self, id: u64, power: f64, xd: f64, zd: f64) {
+        let power = if self.hoglins.iter().any(|e| e.id == id) { power * (1.0 - crate::hoglin::KNOCKBACK_RESISTANCE) } else { power };
         let (body, random) = if let Some(e) = self.witches.iter_mut().find(|e| e.id == id) {
             (&mut e.witch.body, &mut e.random)
         } else if let Some(e) = self.bats.iter_mut().find(|e| e.id == id) {
@@ -205,7 +218,7 @@ impl EntityWorld {
             (&mut e.enderman.body, &mut e.random)
         } else if let Some(e) = self.villagers.iter_mut().find(|e| e.id == id) {
             (&mut e.villager.body, &mut e.random)
-        } else if self.iron_golems.iter().any(|e| e.id == id) {
+        } else if self.iron_golems.iter().any(|e| e.id == id) || self.shulkers.iter().any(|e| e.id == id) {
             // `KNOCKBACK_RESISTANCE` 1: knockback has no power left.
             return;
         } else if let Some(e) = self.wolves.iter_mut().find(|e| e.id == id) {
@@ -222,6 +235,12 @@ impl EntityWorld {
             (&mut e.ghast.body, &mut e.random)
         } else if let Some(e) = self.blazes.iter_mut().find(|e| e.id == id) {
             (&mut e.blaze.body, &mut e.random)
+        } else if let Some(e) = self.striders.iter_mut().find(|e| e.id == id) {
+            (&mut e.strider.body, &mut e.random)
+        } else if let Some(e) = self.hoglins.iter_mut().find(|e| e.id == id) {
+            (&mut e.hoglin.body, &mut e.random)
+        } else if let Some(e) = self.piglins.iter_mut().find(|e| e.id == id) {
+            (&mut e.piglin.body, &mut e.random)
         } else {
             return;
         };
@@ -317,6 +336,18 @@ impl EntityWorld {
                 e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
             }
             hit
+        } else if let Some(e) = self.striders.iter_mut().find(|e| e.id == id) {
+            e.hurt(amount, source)
+        } else if let Some(e) = self.hoglins.iter_mut().find(|e| e.id == id) {
+            e.hurt(amount)
+        } else if let Some(e) = self.piglins.iter_mut().find(|e| e.id == id) {
+            e.hurt_armored(amount)
+        } else if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == id) {
+            let hit = e.hurt_armored(amount);
+            if hit.applied {
+                e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
+            }
+            hit
         } else {
             let e = self.blazes.iter_mut().find(|e| e.id == id)?;
             let hit = e.hurt(amount);
@@ -329,6 +360,7 @@ impl EntityWorld {
         self.credit(id, hit, "minecraft:player", true);
         if hit.applied {
             self.villager_hurt_by(id, PLAYER_TARGET + player);
+            self.note_hoglin_hurt(id, crate::monster_ai::Target::Player(player));
         }
         if hit.applied && hit.full {
             if let Some((body, _)) = self.mob_body(id) {

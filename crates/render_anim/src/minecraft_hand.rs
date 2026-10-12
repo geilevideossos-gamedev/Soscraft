@@ -52,9 +52,93 @@ pub(crate) fn trident_charge_transform(used: f32, arm: f32) -> Mat4 {
         * Mat4::from_rotation_y((arm * -45.0).to_radians())
 }
 
+pub(crate) const ACTIVATION_TICKS: u32 = 40;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct ItemActivation {
+    pub(crate) ticks: u32,
+    pub(crate) off: [f32; 2],
+}
+
+impl ItemActivation {
+    pub(crate) fn activate(&mut self, mut random: impl FnMut() -> f32) {
+        self.ticks = ACTIVATION_TICKS;
+        let x = random() * 2.0 - 1.0;
+        let y = random() * 2.0 - 1.0;
+        self.off = [x, y];
+    }
+
+    pub(crate) fn tick(&mut self, ticks: u32) {
+        self.ticks = self.ticks.saturating_sub(ticks);
+    }
+
+    pub(crate) fn pose(&self, partial: f32, aspect: f32) -> Option<Mat4> {
+        activation_pose(self.ticks, partial, self.off, aspect)
+    }
+}
+
+pub(crate) fn activation_pose(ticks: u32, partial: f32, off: [f32; 2], aspect: f32) -> Option<Mat4> {
+    if ticks == 0 {
+        return None;
+    }
+    let t = ((ACTIVATION_TICKS - ticks.min(ACTIVATION_TICKS)) as f32 + partial) / ACTIVATION_TICKS as f32;
+    let t2 = t * t;
+    let t3 = t * t2;
+    let curve = 10.25 * t3 * t2 - 24.95 * t2 * t2 + 25.5 * t3 - 13.8 * t2 + 4.0 * t;
+    let angle = curve * std::f32::consts::PI;
+    let sway = (angle * 2.0).sin().abs();
+    let tilt = (6.0 * (t * 8.0).cos()).to_radians();
+    Some(
+        Mat4::from_translation(Vec3::new(off[0] * 0.3 * aspect * sway, off[1] * 0.3 * sway, -10.0 + 9.0 * angle.sin()))
+            * Mat4::from_scale(Vec3::splat(0.8))
+            * Mat4::from_rotation_y((900.0 * angle.sin().abs()).to_radians())
+            * Mat4::from_rotation_x(tilt)
+            * Mat4::from_rotation_z(tilt),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_activation_rises_spins_and_returns_like_vanilla() {
+        let off = [0.7, -0.4];
+        assert!(activation_pose(0, 0.5, off, 1.5).is_none());
+        let at = |ticks: u32, partial: f32| activation_pose(ticks, partial, off, 1.5).unwrap();
+        let centre = |pose: Mat4| pose.transform_point3(Vec3::ZERO);
+        let start = at(40, 0.0);
+        assert!((centre(start) - Vec3::new(0.0, 0.0, -10.0)).length() < 1e-4, "{}", centre(start));
+        let tilt = 6.0f32.to_radians();
+        let expected = Mat4::from_translation(Vec3::new(0.0, 0.0, -10.0)) * Mat4::from_scale(Vec3::splat(0.8)) * Mat4::from_rotation_x(tilt) * Mat4::from_rotation_z(tilt);
+        assert!(start.abs_diff_eq(expected, 1e-4));
+        let end = at(1, 1.0);
+        assert!((centre(end) - Vec3::new(0.0, 0.0, -10.0)).length() < 1e-3, "{}", centre(end));
+        for (ticks, partial, t) in [(30, 0.0, 0.25f32), (20, 0.0, 0.5), (10, 0.0, 0.75), (21, 0.5, 0.4875)] {
+            let curve = 10.25 * t.powi(5) - 24.95 * t.powi(4) + 25.5 * t.powi(3) - 13.8 * t * t + 4.0 * t;
+            let a = curve * std::f32::consts::PI;
+            let sway = (2.0 * a).sin().abs();
+            let point = centre(at(ticks, partial));
+            let wanted = Vec3::new(0.7 * 0.3 * 1.5 * sway, -0.4 * 0.3 * sway, -10.0 + 9.0 * a.sin());
+            assert!((point - wanted).length() < 1e-4, "t {t}: {point} vs {wanted}");
+            let spun = at(ticks, partial) * Mat4::from_rotation_z(-(6.0 * (8.0 * t).cos()).to_radians()) * Mat4::from_rotation_x(-(6.0 * (8.0 * t).cos()).to_radians());
+            let facing = spun.transform_vector3(Vec3::X) / 0.8;
+            let spin = (900.0 * a.sin().abs()).to_radians();
+            assert!((facing - Vec3::new(spin.cos(), 0.0, -spin.sin())).length() < 1e-4, "t {t}");
+        }
+        let half = 0.5f32;
+        let curve = 10.25 * half.powi(5) - 24.95 * half.powi(4) + 25.5 * half.powi(3) - 13.8 * half * half + 4.0 * half;
+        assert!((curve - 0.4984375).abs() < 1e-5);
+        assert!(centre(at(20, 0.0)).z > -1.9);
+        let mut activation = ItemActivation::default();
+        let mut draws = [0.25f32, 0.75].into_iter();
+        activation.activate(|| draws.next().unwrap());
+        assert_eq!(activation, ItemActivation { ticks: 40, off: [-0.5, 0.5] });
+        activation.tick(39);
+        assert!(activation.pose(0.0, 1.0).is_some());
+        activation.tick(2);
+        assert!(activation.pose(0.0, 1.0).is_none());
+    }
 
     #[test]
     fn the_left_arm_mirrors_the_right_through_a_swing() {

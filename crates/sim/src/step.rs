@@ -356,6 +356,7 @@ fn run_players_system(ecs: &mut World) {
             if crate::voxel::active() {
                 context.bounds = crate::voxel::move_bounds(context.bounds);
             }
+            context.walk.weapon_move_scale = world.client_meta(*id).map_or(1.0, |meta| 1.0 - meta.minecraft_slowdown);
             let untouchable = crate::script_player::untouchable_buttons(&world, *id);
             crate::script::player_commands(world.ecs(), id.0, cmd.buttons & !untouchable, old_buttons & !untouchable);
             let mut cmd = *cmd;
@@ -1899,7 +1900,7 @@ impl CollisionBackend for ClipBackend<'_> {
 
     fn climb(&self, origin: [f32; 3]) -> movement_iw4::ClimbSample {
         if crate::voxel::active_for(self.brushes) {
-            crate::voxel::climb(origin)
+            crate::voxel::climb_as(origin, self.mover)
         } else {
             movement_iw4::ClimbSample::default()
         }

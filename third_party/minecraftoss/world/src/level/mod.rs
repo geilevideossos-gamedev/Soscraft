@@ -19,6 +19,7 @@ pub mod falling;
 pub mod fire;
 pub mod grow;
 pub mod ice;
+pub mod lectern;
 pub mod plants;
 pub mod bonemeal;
 pub mod fluid;
@@ -197,6 +198,8 @@ pub struct Level<'a> {
     pub tnt_explodes: bool,
     pub tnt_explosion_drop_decay: bool,
     pub explosion_effects: Vec<explosion::ExplosionEffect>,
+    pub frame_outputs: HashMap<BlockPos, Vec<(Direction, i32)>>,
+    pub chest_openers: HashMap<BlockPos, i32>,
     pub level_events: Vec<(i32, BlockPos, i32)>,
     /// Entity-ticking chunks in vanilla's iteration order, when known.
     pub ticking_chunks: Option<Vec<ChunkPos>>,
@@ -288,6 +291,8 @@ impl<'a> Level<'a> {
             tnt_explodes: true,
             tnt_explosion_drop_decay: false,
             explosion_effects: Vec::new(),
+            frame_outputs: HashMap::new(),
+            chest_openers: HashMap::new(),
             level_events: Vec::new(),
             ticking_chunks: None,
             random_counts: Default::default(),
@@ -410,6 +415,7 @@ impl<'a> Level<'a> {
             chunk.block_entities.entities.remove(&(pos.x, pos.y, pos.z));
             chunk.block_entities.pending.remove(&(pos.x, pos.y, pos.z));
             self.changed_block_entities.insert((pos.x, pos.y, pos.z));
+            self.chest_openers.remove(&pos);
         }
         self.changed.insert((pos.x, pos.y, pos.z));
         self.block_log.push((pos.x, pos.y, pos.z));

@@ -16,6 +16,7 @@ mod dmgtimer;
 mod drop_timers;
 mod edge;
 mod events;
+mod float;
 mod fly;
 mod footstep;
 mod friction;
@@ -29,6 +30,7 @@ pub mod mantle;
 mod melee_charge;
 mod pml;
 mod pmove;
+mod ride;
 mod single;
 mod slide;
 mod snap;
@@ -57,6 +59,7 @@ pub use dmgtimer::{
 pub use drop_timers::drop_timers;
 pub use edge::{MAX_UP_STEP, back_off_from_edge};
 pub use events::{SequencedPlayerEvent, add_event, add_predictable_event, consume_player_events};
+pub use float::{SLOW_FALLING, encode as encode_float, levitation, rise, slow_fall, slow_falling};
 pub use fly::{Flight, FlyTap, fly_move, prepare as prepare_flight};
 pub use footstep::{
     LADDER_SURFACE_FLAGS, LADDER_SURFACE_TYPE, SURFACE_TYPE_NAMES, bob_cycle_wrapped,

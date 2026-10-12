@@ -78,6 +78,7 @@ pub enum McScreen {
     Anvil,
     Enchanting,
     Creative(crate::McTabKind),
+    Lectern,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -86,6 +87,13 @@ pub enum McOven {
     Furnace,
     Smoker,
     BlastFurnace,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct McBook {
+    pub pages: Vec<String>,
+    pub page: usize,
+    pub take: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -123,6 +131,7 @@ pub enum McClick {
 pub struct MinecraftUi {
     /// A Minecraft world is in play and the player is alive.
     pub active: bool,
+    pub board_allowed: bool,
     /// The match's Minecraft world is still being generated; the loading
     /// screen holds until it is in, so its setup never lands mid-match.
     pub loading_world: bool,
@@ -197,9 +206,13 @@ pub struct MinecraftUi {
     pub level_loading: Option<McLevelLoading>,
     pub portal_frames: Option<(Handle<Image>, u32)>,
     pub portal_overlay: Option<McPortalOverlay>,
+    pub freeze_outline: Option<Handle<Image>>,
     pub overlay_message: Option<McOverlayMessage>,
+    pub sleep: Option<McSleep>,
     pub boss_bars: Vec<McBossBar>,
     pub credits: Option<crate::minecraft_credits::McCredits>,
+    pub book: Option<McBook>,
+    pub ui_sounds: Vec<&'static str>,
 }
 
 impl MinecraftUi {
@@ -219,18 +232,20 @@ pub struct McBossBar {
     pub target: f32,
     pub elapsed: f32,
     pub world_fog: bool,
+    pub music: bool,
 }
 
 impl McBossBar {
     pub const LERP_SECONDS: f32 = 0.1;
 
-    pub fn new(name: String, progress: f32, world_fog: bool) -> Self {
+    pub fn new(name: String, progress: f32, world_fog: bool, music: bool) -> Self {
         Self {
             name,
             from: progress,
             target: progress,
             elapsed: Self::LERP_SECONDS,
             world_fog,
+            music,
         }
     }
 
@@ -256,6 +271,24 @@ impl McBossBar {
 pub struct McPortalOverlay {
     pub alpha: f32,
     pub frame: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct McSleep {
+    pub timer: i32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct McSleepCamera {
+    pub eye: [f32; 3],
+    pub origin: [f32; 3],
+    pub angles: [f32; 3],
+}
+
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct McSleepers {
+    pub bodies: Vec<(u32, Mat4)>,
+    pub camera: Option<McSleepCamera>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -328,6 +361,8 @@ pub struct McVitals {
     pub on_fire: bool,
     pub eye_in_lava: bool,
     pub withered: bool,
+    pub frozen: f32,
+    pub fully_frozen: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -338,16 +373,18 @@ pub enum McAction {
     Chat,
     Command,
     Perspective,
+    Skate,
 }
 
 impl McAction {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Inventory,
         Self::Drop,
         Self::SwapHands,
         Self::Chat,
         Self::Command,
         Self::Perspective,
+        Self::Skate,
     ];
 
     pub const fn command(self) -> &'static str {
@@ -358,6 +395,7 @@ impl McAction {
             Self::Chat => "mc_chat",
             Self::Command => "mc_command",
             Self::Perspective => "mc_perspective",
+            Self::Skate => "mc_skate",
         }
     }
 
@@ -470,6 +508,7 @@ mod tests {
         for action in McAction::ALL {
             assert_eq!(McAction::from_command(action.command()), Some(action));
         }
+        assert_eq!(McAction::from_command("mc_skate"), Some(McAction::Skate));
         assert_eq!(McAction::from_command("+frag"), None);
         assert_eq!(McAction::from_command(""), None);
     }
@@ -566,7 +605,8 @@ mod tests {
 
     #[test]
     fn a_boss_bar_slides_to_its_new_progress_over_a_tenth_of_a_second() {
-        let mut bar = McBossBar::new("Ender Dragon".to_owned(), 1.0, true);
+        let mut bar = McBossBar::new("Ender Dragon".to_owned(), 1.0, true, true);
+        assert!(bar.world_fog && bar.music);
         assert_eq!(bar.progress(), 1.0);
         bar.set_progress(0.5);
         assert_eq!(bar.progress(), 1.0);

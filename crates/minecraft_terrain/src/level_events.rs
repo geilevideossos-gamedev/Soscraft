@@ -7,6 +7,7 @@ use minecraftoss_player::rng::LegacyRandom;
 pub const LAVA_FIZZ: i32 = 1501;
 pub const BONE_MEAL_USE: i32 = 1505;
 pub const BONE_MEAL_PARTICLES: i32 = 15;
+pub const LECTERN_PAGE_TURN: i32 = 1043;
 pub const LAVA_EXTINGUISH: &str = "minecraft:block.lava.extinguish";
 const FIZZ_SMOKE: usize = 8;
 const EVAPORATION_SMOKE: usize = 8;
@@ -103,6 +104,14 @@ pub fn level_event<S: Scene + ?Sized>(
                 let at = DVec3::new(x, base.y + 1.2, z);
                 out.particles.push((Kind::LargeSmoke, at, DVec3::ZERO));
             }
+        }
+        LECTERN_PAGE_TURN => {
+            out.sounds.push(AmbientSound {
+                event: crate::lectern::PAGE_TURN_SOUND,
+                at: (base + DVec3::splat(0.5)).to_array(),
+                volume: 1.0,
+                pitch: random.next_float() * 0.1 + 0.9,
+            });
         }
         BONE_MEAL_USE => {
             growth_particles(scene, pos, data, is_a, random, &mut out);
@@ -313,6 +322,26 @@ mod tests {
             assert_eq!(at.y, 11.2);
             assert!((3.0..4.0).contains(&at.x) && (-2.0..-1.0).contains(&at.z));
         }
+    }
+
+    #[test]
+    fn a_lectern_page_turn_rustles_at_the_lectern() {
+        let mut random = LegacyRandom::new(4);
+        let mut mirror = LegacyRandom::new(4);
+        let event = level_event(
+            LECTERN_PAGE_TURN,
+            (2, 70, -5),
+            0,
+            &no_scene(),
+            &classes,
+            &mut random,
+        );
+        assert_eq!(event.sounds.len(), 1);
+        let sound = &event.sounds[0];
+        assert_eq!(sound.event, "minecraft:item.book.page_turn");
+        assert_eq!(sound.at, [2.5, 70.5, -4.5]);
+        assert_eq!((sound.volume, sound.pitch), (1.0, mirror.next_float() * 0.1 + 0.9));
+        assert!(event.particles.is_empty());
     }
 
     #[test]

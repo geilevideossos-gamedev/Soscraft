@@ -17,6 +17,7 @@ pub const STRAW_BED_BREAK_SOUND: &str = "minecraft:block.straw_bed.break_leave";
 pub const TOO_FAR_AWAY: &str = "block.minecraft.bed.too_far_away";
 pub const OBSTRUCTED: &str = "block.minecraft.bed.obstructed";
 pub const OCCUPIED: &str = "block.minecraft.bed.occupied";
+pub const NOT_SAFE: &str = "block.minecraft.bed.not_safe";
 pub const SPAWN_SET: &str = "block.minecraft.set_spawn";
 pub const GLOWSTONE: &str = "minecraft:glowstone";
 pub const MAX_CHARGES: u8 = 4;
@@ -38,7 +39,6 @@ const ANCHOR_SIDES: [(i32, i32); 8] = [
 const PLAYER_HALF_WIDTH: f64 = 0.3;
 const PLAYER_HEIGHT: f64 = 1.8;
 const COLLISION_EPSILON: f64 = 1.0e-7;
-const DARK_SKY_LIGHT: f32 = 11.0;
 const DANGEROUS: [&str; 7] = [
     "minecraft:lava",
     "minecraft:magma_block",
@@ -84,7 +84,7 @@ pub enum BedUse {
         sound: Option<&'static str>,
         message: Option<String>,
     },
-    Occupied,
+    Occupied(Pos),
     Sleep(Bed),
 }
 
@@ -95,12 +95,28 @@ pub struct Sleeper {
     pub pitch: f32,
     pub dimension: Dimension,
     pub dark: bool,
+    pub creative: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Outcome {
+    Sleep,
+    Problem(Option<String>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Rest {
     pub respawn: Option<Respawn>,
-    pub problem: Option<String>,
+    pub outcome: Outcome,
+}
+
+impl Rest {
+    fn problem(key: &str) -> Self {
+        Self {
+            respawn: None,
+            outcome: Outcome::Problem(Some(key.to_owned())),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -194,7 +210,7 @@ pub fn use_bed(
         });
     }
     if bed.occupied {
-        return Some(BedUse::Occupied);
+        return Some(BedUse::Occupied(head));
     }
     Some(BedUse::Sleep(bed))
 }
@@ -215,32 +231,34 @@ pub fn rest_in_bed(
     rules: &DimensionRules,
     bed: &Bed,
     sleeper: &Sleeper,
-) -> Result<Rest, &'static str> {
+    monsters: impl FnOnce([f64; 6]) -> bool,
+) -> Rest {
     if !reachable(sleeper.feet, bed.head) && !reachable(sleeper.feet, bed.foot()) {
-        return Err(TOO_FAR_AWAY);
+        return Rest::problem(TOO_FAR_AWAY);
     }
     let above = (bed.head.0, bed.head.1 + 1, bed.head.2);
     let beside = step(above, (-bed.facing.0, -bed.facing.1));
     if suffocates(world, registries, above) || suffocates(world, registries, beside) {
-        return Err(OBSTRUCTED);
+        return Rest::problem(OBSTRUCTED);
     }
     let rule = bed.rule(rules);
-    Ok(Rest {
-        respawn: rule.can_set_spawn.holds(sleeper.dark).then_some(Respawn {
-            at: GlobalPos {
-                dimension: sleeper.dimension,
-                pos: bed.head,
-            },
-            yaw: sleeper.yaw,
-            pitch: sleeper.pitch,
-            forced: false,
-        }),
-        problem: if rule.can_sleep.holds(sleeper.dark) {
-            None
-        } else {
-            rule.error_message.clone()
+    let respawn = rule.can_set_spawn.holds(sleeper.dark).then_some(Respawn {
+        at: GlobalPos {
+            dimension: sleeper.dimension,
+            pos: bed.head,
         },
-    })
+        yaw: sleeper.yaw,
+        pitch: sleeper.pitch,
+        forced: false,
+    });
+    let outcome = if !rule.can_sleep.holds(sleeper.dark) {
+        Outcome::Problem(rule.error_message.clone())
+    } else if !sleeper.creative && monsters(crate::sleep::monster_box(bed.head)) {
+        Outcome::Problem(Some(NOT_SAFE.to_owned()))
+    } else {
+        Outcome::Sleep
+    };
+    Rest { respawn, outcome }
 }
 
 pub fn set_respawn(point: &mut Option<Respawn>, respawn: Respawn) -> bool {
@@ -332,8 +350,8 @@ mod tests {
         );
         bed(&mut world, "minecraft:blue_bed", (5, 70, 5), "north", true);
         assert_eq!(
-            use_bed(&mut world, &registries, &overworld, (5, 70, 4)),
-            Some(BedUse::Occupied)
+            use_bed(&mut world, &registries, &overworld, (5, 70, 5)),
+            Some(BedUse::Occupied((5, 70, 4)))
         );
     }
 
@@ -392,7 +410,23 @@ mod rest_tests {
             pitch: 10.0,
             dimension: Dimension::Overworld,
             dark,
+            creative: false,
         }
+    }
+
+    fn rest(
+        world: &mut Blocks,
+        rules: &DimensionRules,
+        bed: &Bed,
+        sleeper: &Sleeper,
+        monsters: bool,
+    ) -> Rest {
+        let registries = world.registries;
+        rest_in_bed(world, registries, rules, bed, sleeper, |_| monsters)
+    }
+
+    fn problem(key: &str) -> Outcome {
+        Outcome::Problem(Some(key.to_owned()))
     }
 
     #[test]
@@ -418,75 +452,150 @@ mod rest_tests {
             forced: false,
         };
         assert_eq!(
-            rest_in_bed(
+            rest(
                 &mut world,
-                &registries,
                 &rules,
                 &bed,
-                &sleeper([0.5, 64.0, -2.0], false)
+                &sleeper([0.5, 64.0, -2.0], false),
+                false
             ),
-            Ok(Rest {
+            Rest {
                 respawn: Some(point),
-                problem: Some("block.minecraft.bed.no_sleep".to_owned()),
-            }),
+                outcome: problem("block.minecraft.bed.no_sleep"),
+            },
             "three blocks from the foot is in reach"
         );
         assert_eq!(
-            rest_in_bed(
+            rest(
                 &mut world,
-                &registries,
                 &rules,
                 &bed,
-                &sleeper([0.5, 64.0, 1.5], true)
+                &sleeper([0.5, 64.0, 1.5], true),
+                false
             ),
-            Ok(Rest {
+            Rest {
                 respawn: Some(point),
-                problem: None,
-            })
+                outcome: Outcome::Sleep,
+            }
         );
         for far in [[0.5, 64.0, -2.6], [4.6, 64.0, 1.5], [0.5, 66.5, 1.5]] {
             assert_eq!(
-                rest_in_bed(&mut world, &registries, &rules, &bed, &sleeper(far, true)),
-                Err(TOO_FAR_AWAY),
+                rest(&mut world, &rules, &bed, &sleeper(far, true), false),
+                Rest::problem(TOO_FAR_AWAY),
                 "{far:?}"
             );
         }
         world.set((0, 65, 0), "minecraft:stone");
         assert_eq!(
-            rest_in_bed(
+            rest(
                 &mut world,
-                &registries,
                 &rules,
                 &bed,
-                &sleeper([0.5, 64.0, 2.5], true)
+                &sleeper([0.5, 64.0, 2.5], true),
+                false
             ),
-            Err(OBSTRUCTED)
+            Rest::problem(OBSTRUCTED)
         );
         world.set((0, 65, 0), "minecraft:glass");
-        assert!(
-            rest_in_bed(
+        assert_eq!(
+            rest(
                 &mut world,
-                &registries,
                 &rules,
                 &bed,
-                &sleeper([0.5, 64.0, 2.5], true)
+                &sleeper([0.5, 64.0, 2.5], true),
+                false
             )
-            .is_ok(),
+            .outcome,
+            Outcome::Sleep,
             "glass does not suffocate"
         );
         let straw = Bed { straw: true, ..bed };
         assert_eq!(
-            rest_in_bed(
+            rest(
                 &mut world,
-                &registries,
                 &rules,
                 &straw,
-                &sleeper([0.5, 64.0, 2.5], true)
+                &sleeper([0.5, 64.0, 2.5], true),
+                false
             )
-            .map(|rest| rest.respawn),
-            Ok(None),
+            .respawn,
+            None,
             "a straw bed never sets the spawn"
         );
+    }
+
+    #[test]
+    fn the_rest_checks_run_in_vanilla_order() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let rules = DimensionRules::load(&registries, Dimension::Overworld).unwrap();
+        let mut world = Blocks::new(&registries);
+        let bed = Bed {
+            head: (0, 64, 1),
+            facing: (0, 1),
+            occupied: false,
+            straw: false,
+        };
+        world.set((0, 65, 1), "minecraft:stone");
+        assert_eq!(
+            rest(
+                &mut world,
+                &rules,
+                &bed,
+                &sleeper([0.5, 64.0, 9.5], true),
+                true
+            ),
+            Rest::problem(TOO_FAR_AWAY),
+            "too far beats obstructed"
+        );
+        world.placed.remove(&(0, 65, 1));
+        let night = rest(
+            &mut world,
+            &rules,
+            &bed,
+            &sleeper([0.5, 64.0, 2.5], true),
+            true,
+        );
+        assert!(night.respawn.is_some(), "the spawn is set with monsters near");
+        assert_eq!(night.outcome, problem(NOT_SAFE));
+        let day = rest(
+            &mut world,
+            &rules,
+            &bed,
+            &sleeper([0.5, 64.0, 2.5], false),
+            true,
+        );
+        assert!(day.respawn.is_some(), "the spawn is set by day");
+        assert_eq!(
+            day.outcome,
+            problem("block.minecraft.bed.no_sleep"),
+            "the night comes before the monsters"
+        );
+        let creative = Sleeper {
+            creative: true,
+            ..sleeper([0.5, 64.0, 2.5], true)
+        };
+        let mut asked = false;
+        let rested = rest_in_bed(&mut world, &registries, &rules, &bed, &creative, |_| {
+            asked = true;
+            true
+        });
+        assert_eq!(rested.outcome, Outcome::Sleep, "creative ignores monsters");
+        assert!(!asked);
+        let mut area = None;
+        rest_in_bed(
+            &mut world,
+            &registries,
+            &rules,
+            &bed,
+            &sleeper([0.5, 64.0, 2.5], true),
+            |seen| {
+                area = Some(seen);
+                false
+            },
+        );
+        assert_eq!(area, Some([-7.5, 59.0, -6.5, 8.5, 69.0, 9.5]));
     }
 
     #[test]
@@ -1076,7 +1185,7 @@ pub fn return_to_block(
     player: &mut Player,
     consume: bool,
 ) -> bool {
-    let dark = level.terrain.environment.sky_light_level() <= DARK_SKY_LIGHT;
+    let dark = level.dark_outside(globals);
     let found = crate::respawn::respawn_point(player)
         .filter(|point| point.at.dimension == level.dimension)
         .and_then(|point| {

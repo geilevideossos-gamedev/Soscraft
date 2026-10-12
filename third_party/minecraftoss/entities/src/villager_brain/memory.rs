@@ -64,7 +64,7 @@ impl<T> Slot<T> {
     }
 
     /// `MemorySlot.tick`.
-    fn tick(&mut self) {
+    pub(crate) fn tick(&mut self) {
         if self.value.is_some() && self.ttl != i64::MAX {
             if self.ttl <= 0 {
                 self.erase();

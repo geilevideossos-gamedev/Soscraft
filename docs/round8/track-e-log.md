@@ -865,6 +865,58 @@ Commit: see `git log` ("Multiplayer M2 passes clippy"). The previous commit is `
 - **Test steps:** none new; the sections of `docs/round8/e-m2-tests.md` cover these lines (E12 for the mob hits and throws, E13c for the cracks and break events, E14 for the chest lids).
 - **Kit:** none needed.
 
+## Milestone M3: friends see and hear the world
+
+This run builds E16 and E17 (M3) and E18 (M4) on top of tracks B, C and D, merged first. The owner's two-window steps for M3 are collected in `docs/round8/e-m3-tests.md`, those for M4 in `docs/round8/e-m4-tests.md`.
+
+### Merge of minecraft-survival (tracks B, C and D) into track E
+
+Commit: the merge commit "Merge minecraft-survival (tracks B, C and D) into track E". Its first parent is `03f1bc8d` (M2 passes clippy), its second `4d45e4fe` (tracks B, C and D merged into `minecraft-survival`).
+
+- **Conflicts and how they were resolved** (72 hunks in 11 files; every side's behaviour kept):
+  - `minecraft_survival/src/{lib,player,level,commands}.rs`: both sides' modules and fields (E's `session`, `menus`, `shots`; B's `sleep`, `riding`, `saved_vehicle`, `reattach`, the sleep timer and `sleep_status`). The tests that built B/C's `PlayerView` use E's `TickActor` list.
+  - `minecraft_terrain/src/server.rs`: E's per-player `TickInput.players` and outputs, with B/C's commands added beside them (`Dismount`, `WakeVillagerIn`, `AngerPiglins`, `Boost`, `RootVehicle`, `Reattach`, `HurtShulkerBullet`) and B/C's outputs (`dismounts`, `boosts`, `mounts`, `root_vehicles`). `mob_action` keeps E's argument order. The tick sets every player's main hand (E) and B's player controls and seat checks. Both sides' tests are kept.
+  - `minecraft_survival/src/entities.rs`: E's `PlayerQueues` with B/C's new per-player state moved into each player's queue (see below); C's item frames, shulker bullets, End hit positions and particles, B's piglin anger, strider riding, mob uses and the bed's monster check are kept for every player.
+  - `render_anim/src/minecraft_world.rs`: the host frame keeps E's calls (`begin`, `life`, `movement`, `actions::act`, `harvest`, `struck`, `settle`, `menus`) and takes B/C/D's new frame code: sleeping and the bed screen, music and the End flash sound, the rain and snow mesh, the powder snow fog, the totem's first-person animation, skating (board gear, `board_allowed`, the Skate camera), lectern screens and the frost move scale. `load_look` loads the weather texture, and `present_sky` takes powder snow and the credits and returns whether the environment ticked and an End flash, so the host plays the flash sound and steps the music; the friend's game passes the same inputs.
+  - `render_anim/src/minecraft_inventory.rs`: E's `menus` clicks with C's lectern screen in front (its buttons and close go to the lectern, other clicks are ignored while it is open). The lectern test uses E's `apply_input`.
+  - `render_anim/src/minecraft_respawn.rs`: E moved the bed and anchor rules to `actions.rs`; B's `show_messages` stays here, B's bed changes went into `actions.rs`.
+  - `render_anim/src/skate.rs`: D's keyboard skating with E's `typing()` gate.
+  - `the_end/dragon_fight.rs`: E's tick call.
+- **B/C/D changes carried into the code E moved:**
+  - `minecraft_players::movement` (every player): D's skate ground and step rules, B's riding (no steps while riding), C's powder snow landing sound, levitation and slow falling resetting the fall peak, freeze immunity from leather, snowflakes, melting powder snow when burning, and the totem pop's particles on the player's body (`Moved.totem_popped`; the host also plays the first-person totem).
+  - `minecraft_players::struck` (every player): B/C's hit tuple (melee throw, shield disable with its cooldown and break sound, the arrow and shulker bullet effects via `survival.struck`, the landing push), strider boosts, and the riding step with dismounts on teleports and pearls.
+  - `minecraft_players::begin`: leaving a level dismounts the player (host and friends). `settle` returns `Settled { told, popped }` and shows the totem pop on the body.
+  - `actions::act` (every player): D's skating stops the hand (`Actor.skating`, the host's only), C's item frames (place, use, punch), B's mob uses (saddles, feeding, mounting, steering boost), C's lecterns (place a book, open), B's bed rules (night by sky light, monsters nearby, villagers asleep in it, creative, returning the bed to sleep in as `Acted.bed`), C's shield cooldown, C's frame placement, and the reach of the punch past blocks. `harvest` angers piglins guarding the mined block for the player who mined it. `menus::lids` angers piglins when a player opens a guarded container and sends trapped chest viewer counts; `level::leave` and the host's `leave_level` do too.
+  - `minecraft_riding`, `Entities` and the vendored `ServerSim` take the player for every riding call (`take_mounts`, `take_dismounts`, `ride_seat`, `dismount`, `reattach`, `root_vehicle`, `leave_seat`, `can_boost`, `boost`, `take_boosts`, `take_lecterns`, `use_frame`, `use_on_mob`, `frame_on_ray`, `mob_distance`, `lectern`, `anger_piglins`, `guard_mined`); the host's client mirror only follows its own seat.
+- **What the merge broke without a conflict, fixed here:** B and E both added `player` to `mob_actions::Actor` (one kept); C's tests used `stream.server.load_now` (now `load_chunk_now`); C's frame and lectern item-use answers carry their player (`Command::FrameAction` gains `player`, answers are `(player, bool)`); `refresh_vehicles`, the dismount in `sleep::start` and C's structure loot use the new signatures; the friend's `Vitals` and the test `Motion`s gain C's fields; the test `Server`s gain B's `published`.
+- **Per player now (server-owned, keyed by player id and UUID):** riding (mounts, dismounts, seat, boosts, reattach, the saved vehicle), mob use results (the used item comes out of that player's inventory), lecterns (viewers and views), item frame answers, piglin anger, player controls (look, held items, armour, sneaking) for every player in the level, levitation and slow falling (C's `set_float`, already per client), freezing and frost damage, totem pops, trapped chest viewers.
+- **Also changed:**
+  - `Server::leave` saves a leaving friend's vehicle with them (`root_vehicle(player, true)`), as B's log asked.
+  - `ServerSim::player_left` drops the player's lectern view and seat; `TickInput::remove_player` drops their controls.
+  - The host's game sets `Server.published` while it hosts, so B's "players sleeping" lines go to everyone in the level, as on a vanilla LAN world.
+  - Sleep and wake messages for other players (`sleep::serve`, `wake_teleported`) go to them through the sessions; a teleport from a friend's command wakes a sleeping player and dismounts a rider.
+  - E15's elytra for friends: `draw_body_gear` passes C's glide state on the host and on the friend's game, so each game draws every player's wings and glide pose from the gear E15 sends.
+- **Tests added:**
+  - `minecraft_survival` `entities::tests::rides_boosts_lecterns_and_mob_uses_reach_only_their_player` (mob use slots, broken shears, mounts, dismounts, boosts and lectern views reach only their player; a refused boost is let go).
+  - `minecraft_terrain` `server::tests::a_player_who_leaves_stops_reading_and_turns_no_more_pages` (a friend who left turns no page and the host still reads; a leaving rider's controls are dropped).
+  - Existing tests follow the per-player shapes: the item frame and lectern answers carry their player, the saddle, strider and piglin tests pass the player.
+  - Results on the real 26.3 data: `test -p minecraft_net` 15, `minecraft_commands` 134, `minecraft_survival` 543 + 1, `minecraft_terrain` 1103 (3 ignored), `render_anim` 133, `sim` 109, `movement_iw4` 61, `hud` 148; the vendored `minecraftoss-core`, `-world`, `-generator`, `-player` and `-entities` the way `scripts\full-suite.ps1` runs them (with the stand-in files, removed afterwards), all green. `check -p launcher` is green.
+- **Decisions:**
+  - **Friends do not sleep yet.** A friend's bed sets their respawn point and the night rules apply, but they do not lie down (`Acted.bed` is used for the host only): lying down needs the sleep screen, the Leave Bed button and the lying body on the friend's game, which need new messages. With a friend online the night passes only by the sleep percentage, as in vanilla when someone stays up.
+  - **The lectern screen opens for the host only.** A friend can place a book; a friend's Open is answered and closed again at once on the host, so no viewer is left behind.
+  - **Frost slowdown and the powder snow walker are set for the host only.** They live in the host's `sim` per client and are not replicated, so setting them for a friend would make the friend's prediction and the host disagree. A friend freezes and takes frost damage like the host.
+  - **Skating stays per viewer** (track D): only the host's own board stops its hand.
+  - **A friend's broken shears from a mob use** are not shown as a burst on the host (they are for the host's own).
+- **Left for later (from the B/C/D logs and this merge):**
+  - E16/E17 (this milestone): other players' totem pops, snowflakes, rain streaks, item frames, shulker bullets, striders and piglins drawn on the friend's game; the friend's own sounds of riding, frames, lecterns, freezing and totems.
+  - M5/M6: friends sleeping (lying body for every player in `McSleepers.bodies`, sleep screen, Leave Bed message), the lectern book screen for friends (and the Take Book `mayBuild` check from the player's mode on the host), the frost move scale and the powder snow walker replicated to the friend, the friend's frozen hearts in `PlayerView`, skating for friends, the creative-mode check for a frame struck by a snowball (C's log), the merchant screen for friends.
+- **Test steps:** `docs/round8/e-m3-tests.md`, section "Merge of tracks B, C and D" (two windows).
+- **Kit:** `minecraft:elytra` x1, `minecraft:firework_rocket` x8, `minecraft:saddle` x1, `minecraft:warped_fungus_on_a_stick` x1, `minecraft:strider_spawn_egg` x1, `minecraft:shulker_spawn_egg` x1, `minecraft:powder_snow_bucket` x1, `minecraft:item_frame` x2, `minecraft:iron_sword` x1, `minecraft:cobblestone` x32, `minecraft:lectern` x1, `minecraft:writable_book` x1, `minecraft:trapped_chest` x1, `minecraft:redstone_lamp` x1, `minecraft:gold_block` x4, `minecraft:stone_pickaxe` x1, `minecraft:golden_helmet` x1, `minecraft:totem_of_undying` x1, `minecraft:white_bed` x1.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:firework_rocket*8,minecraft:saddle,minecraft:warped_fungus_on_a_stick,minecraft:strider_spawn_egg,minecraft:shulker_spawn_egg,minecraft:powder_snow_bucket,minecraft:item_frame*2,minecraft:iron_sword,minecraft:cobblestone*32,minecraft:lectern,minecraft:writable_book,minecraft:trapped_chest,minecraft:redstone_lamp,minecraft:gold_block*4,minecraft:stone_pickaxe,minecraft:golden_helmet,minecraft:totem_of_undying,minecraft:white_bed
+```
+
 ## Combined kit for every test in this track
 
 27 stacks no longer hold every test's kit. This line covers E11 to E15 and the M2 owner test; the earlier sections keep their own kit lines in `docs/round8/e-m1-tests.md` and `docs/round8/e-m2-tests.md`.

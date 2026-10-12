@@ -53,6 +53,8 @@ pub struct McChat {
     pub command_level: u8,
     pub suggestions: McSuggestions,
     pub language: Arc<HashMap<String, String>>,
+    pub in_bed: bool,
+    pub leave_bed: bool,
 }
 
 impl McChat {
@@ -74,6 +76,29 @@ impl McChat {
         self.sent.clear();
         self.hints = minecraft_commands::CommandHints::default();
         self.command_level = 0;
+        self.in_bed = false;
+        self.leave_bed = false;
+    }
+
+    pub fn lie_in_bed(&mut self) {
+        self.in_bed = true;
+        if self.open {
+            return;
+        }
+        self.close();
+        self.open = true;
+        self.history_pos = self.history.len();
+    }
+
+    pub fn wake_up(&mut self) {
+        if !self.in_bed {
+            return;
+        }
+        self.in_bed = false;
+        self.leave_bed = false;
+        if self.input.is_empty() {
+            self.close();
+        }
     }
 }
 
@@ -110,5 +135,25 @@ mod tests {
         assert_eq!(chat.command_level, 0);
         assert!(chat.suggestions.inline.is_none() && !chat.suggestions.allow);
         assert_eq!(chat.language.len(), 1);
+    }
+
+    #[test]
+    fn the_bed_screen_opens_empty_and_keeps_typed_text_when_the_sleeper_wakes() {
+        let mut chat = McChat {
+            history: vec!["hello".into()],
+            ..McChat::default()
+        };
+        chat.lie_in_bed();
+        assert!(chat.open && chat.in_bed && chat.input.is_empty());
+        assert_eq!(chat.history_pos, 1);
+        chat.leave_bed = true;
+        chat.wake_up();
+        assert!(!chat.open && !chat.in_bed && !chat.leave_bed);
+        chat.lie_in_bed();
+        chat.input = "good night".into();
+        chat.wake_up();
+        assert!(chat.open && !chat.in_bed, "typed text stays in the chat");
+        chat.wake_up();
+        assert!(chat.open, "waking twice changes nothing");
     }
 }

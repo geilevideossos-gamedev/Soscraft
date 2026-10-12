@@ -73,6 +73,14 @@ impl VoxelQueues {
     }
 }
 
+const PLAYER_WIDTH: f64 = 0.6;
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Skating {
+    pub(crate) active: bool,
+    pub(crate) airborne: bool,
+}
+
 pub(crate) enum Begun {
     Hidden,
     Left(Switch),
@@ -101,6 +109,15 @@ pub(crate) fn begin(
     if let Some(switch) = player.switching.filter(|switch| !switch.left) {
         if let Some(switching) = player.switching.as_mut() {
             switching.left = true;
+        }
+        if let Some(level) = levels.get_mut(&switch.from) {
+            let rider = (client, u64::from(player.id.0));
+            crate::minecraft_riding::dismount(
+                &mut player.riding,
+                level.entities.as_mut(),
+                authority,
+                rider,
+            );
         }
         let bits = ability_bits(&player.mode) | playerstate_iw4::pm_flags::MC_INVULNERABLE;
         authority.set_minecraft_abilities(client, bits);
@@ -281,28 +298,37 @@ pub(crate) fn movement(
     client: sim::ClientId,
     origin: [f64; 3],
     ps: &PlayerState,
-    alive: bool,
+    (alive, skate): (bool, Skating),
     dt: f64,
     sounds: &mut Option<Sounds>,
     packs: &PackStack,
 ) -> Moved {
     let Player {
+        uuid,
         survival,
         mode: player_mode,
         inventory,
         selected,
         hand,
         steps,
+        riding,
         ..
     } = player;
     let feet = sim::voxel::to_block(origin, ps.origin);
-    let on_ground = alive && ps.ground_entity_num != playerstate_iw4::ENTITYNUM_NONE;
+    let on_ground = alive
+        && crate::minecraft_world::skate_on_ground(
+            skate.active,
+            skate.airborne,
+            ps.ground_entity_num,
+        );
     let (hull_mins, hull_maxs) = sim::voxel::player_hull(ps);
     let water = sim::voxel::water(ps.origin, hull_mins, hull_maxs, ps.view_height_current);
     if water.wet() {
         steps.air_peak = None;
     }
-    if let Some(last) = steps.last.filter(|_| alive && !player_mode.noclip()) {
+    let counts =
+        crate::minecraft_riding::counts_steps(alive, player_mode.noclip(), riding.is_some());
+    if let Some(last) = steps.last.filter(|_| counts) {
         let climbing = sim::voxel::climb(ps.origin).on;
         let horizontal = ((feet[0] - last[0])
             .hypot(feet[2] - last[2])
@@ -331,7 +357,7 @@ pub(crate) fn movement(
                 [pos.0 as f64 + 0.5, pos.1 as f64 + 1.0, pos.2 as f64 + 0.5],
             ))
         };
-        if (on_ground || climbing) && horizontal < 2.0 {
+        if (on_ground || climbing) && horizontal < 2.0 && !skate.active {
             steps.move_dist += horizontal;
             if steps.move_dist > steps.next_step
                 && let Some((pos, block)) = under.as_ref()
@@ -369,13 +395,24 @@ pub(crate) fn movement(
             block_at(dy)
                 .is_some_and(|(_, b)| minecraft_survival::survival::breaks_fall(&b.id.key()))
         });
+        let powder_snow = |found: Option<&(BlockPos, minecraft_terrain::scene::Block)>| {
+            found.is_some_and(|(_, b)| b.id.key() == "minecraft:powder_snow")
+        };
+        if (powder_snow(block_at(-0.01).as_ref()) || (on_ground && powder_snow(under.as_ref())))
+            && let Some(peak) = steps.air_peak
+            && let Some(sound) = minecraft_survival::survival::powder_snow_landing(peak - feet[1])
+            && let Some(sounds) = sounds.as_mut()
+        {
+            sounds.play(packs, sound, None, 1.0, 1.0);
+        }
         if on_ground {
             if let Some(peak) = steps.air_peak.take().filter(|_| !caught) {
                 let fall = survival.impulse_fall(peak - feet[1], feet[1]);
                 let landed_on = under.as_ref().map(|(_, b)| b.id.key());
-                let crouching = ps.pm_flags
-                    & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE)
-                    != 0;
+                let crouching = !skate.active
+                    && ps.pm_flags
+                        & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE)
+                        != 0;
                 let damage = survival.fall(fall, landed_on.as_deref(), crouching);
                 if damage > 0
                     && let Some(sounds) = sounds.as_mut()
@@ -407,6 +444,7 @@ pub(crate) fn movement(
             survival.set_climbable(None);
         } else if caught
             || ps.pm_flags & playerstate_iw4::pm_flags::MC_FLYING != 0
+            || minecraft_survival::elytra::floating(&survival.status)
             || (climbing && sim::voxel::lava(ps.origin, hull_mins, hull_maxs) <= 0.0)
         {
             steps.air_peak = Some(feet[1]);
@@ -445,6 +483,7 @@ pub(crate) fn movement(
     let main_hand = entities
         .as_ref()
         .and_then(|_| inventory.slots[*selected].as_ref().map(|s| s.id.clone()));
+    let mut totem_popped = false;
     if hand.attack_item != main_hand {
         hand.attack_item = main_hand;
         hand.attack_ticks = 0;
@@ -464,6 +503,7 @@ pub(crate) fn movement(
                 & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE)
                 != 0,
             height: hull_maxs[2] / sim::voxel::BLOCK,
+            riding: skate.active,
         };
         let armor = entities
             .as_ref()
@@ -474,6 +514,7 @@ pub(crate) fn movement(
             globals.data.protection.clone(),
             inventory,
         ));
+        survival.set_freeze_immune(minecraft_survival::survival::freeze_immune(inventory));
         for _ in 0..hand_ticks {
             let from = survival.last_feet().unwrap_or(feet);
             let breath = survival.tick(&motion);
@@ -492,6 +533,19 @@ pub(crate) fn movement(
             let heard = survival.hazards(&terrain.scene, &motion, from, armor, || {
                 entities.as_mut().map_or(0.5, |e| e.random_float())
             });
+            if (feet[0] != from[0] || feet[2] != from[2])
+                && let Some(entities) = entities.as_mut()
+            {
+                for block_y in minecraft_survival::survival::powder_snow_flakes(
+                    &terrain.scene,
+                    feet,
+                    motion.height,
+                ) {
+                    if entities.random_float() < 0.5 {
+                        entities.powder_snow_flake(feet, block_y);
+                    }
+                }
+            }
             let bodies = entities
                 .as_ref()
                 .map_or_else(Vec::new, |e| obstacles(ps, authority, client, e));
@@ -521,15 +575,41 @@ pub(crate) fn movement(
                         .collect(),
                 );
             }
-            if entities.is_some() {
-                hold_off_death(
+            let melted = survival.take_melted();
+            if let Some(entities) = entities.as_mut().filter(|_| !melted.is_empty()) {
+                let gone: Vec<_> = melted
+                    .into_iter()
+                    .filter_map(|pos| {
+                        minecraft_terrain::scene::Scene::block(&terrain.scene, pos)
+                            .filter(|b| b.id.key() == "minecraft:powder_snow")
+                            .cloned()
+                            .map(|b| (pos, b))
+                    })
+                    .collect();
+                let writes = gone.iter().map(|(pos, _)| (*pos, None)).collect();
+                write_blocks(
+                    terrain,
+                    &globals.registries,
+                    shapes,
+                    shape_ids,
+                    entities,
+                    writes,
+                );
+                entities.destroyed.extend(gone);
+            }
+            if let Some(entities) = entities.as_mut()
+                && hold_off_death(
                     survival,
                     inventory,
                     *selected,
                     sounds.as_mut(),
                     packs,
                     false,
-                );
+                )
+            {
+                let height = f64::from(motion.height);
+                pop_totem(entities, uuid, feet, height);
+                totem_popped = true;
             }
             if survival.stuck() {
                 steps.air_peak = steps.air_peak.map(|_| feet[1]);
@@ -550,6 +630,7 @@ pub(crate) fn movement(
         holding_item,
         empty_hand,
         cooldowns,
+        totem_popped,
     }
 }
 
@@ -581,6 +662,7 @@ pub(crate) fn actor(ps: &PlayerState, origin: [f64; 3], alive: bool) -> Actor {
         sprinting: ps.pm_flags & playerstate_iw4::pm_flags::SPRINTING != 0,
         gliding: ps.pm_flags & playerstate_iw4::pm_flags::MC_GLIDING != 0,
         mw2_offhand: offhand.contains(&ps.weaponstate_primary),
+        skating: false,
     }
 }
 
@@ -640,7 +722,9 @@ pub(crate) fn struck(
     sounds: &mut Option<Sounds>,
     packs: &PackStack,
 ) {
-    let outputs = entities.take_player_outputs(u64::from(player.id.0));
+    let player_id = u64::from(player.id.0);
+    let outputs = entities.take_player_outputs(player_id);
+    let rider = (client, player_id);
     let Player {
         uuid,
         survival,
@@ -648,6 +732,8 @@ pub(crate) fn struck(
         inventory,
         hand,
         steps,
+        riding,
+        reattach,
         ..
     } = player;
     let local_uuid = &*uuid;
@@ -655,7 +741,9 @@ pub(crate) fn struck(
     let mc_yaw = minecraft_yaw(ps.viewangles[1]);
     let at = |b: [f64; 3]| Vec3::from_array(sim::voxel::to_map(origin, b));
     let armor = minecraft_survival::survival::armor(inventory);
-    for (amount, from, toward, cause) in outputs
+    let knockback_resistance = inventory.armor_toughness().1;
+    let mut landed = Vec::new();
+    for (amount, from, toward, cause, push, effect) in outputs
         .hits
         .into_iter()
         .filter(|_| !player_mode.invulnerable())
@@ -696,11 +784,38 @@ pub(crate) fn struck(
                     pitch,
                 );
             }
+            if push.disable_shield_ticks > 0 {
+                hand.cooldowns.start(
+                    minecraft_survival::offhand::SHIELD,
+                    push.disable_shield_ticks,
+                );
+                hand.blocking = None;
+                let pitch = 0.8 + entities.random_float() * 0.4;
+                if let Some(sounds) = sounds.as_mut() {
+                    sounds.play(
+                        packs,
+                        minecraft_survival::offhand::BREAK_SOUND,
+                        None,
+                        0.8,
+                        pitch,
+                    );
+                }
+            }
         }
-        if amount > blocked {
-            survival.hurt(amount - blocked, armor, from, cause);
-        } else {
-            survival.hurt_blocked(cause);
+        let hurt = survival.struck(amount, blocked, armor, from, cause, effect);
+        landed.extend(push.landing(hurt, blocked > 0.0, knockback_resistance));
+    }
+    for (slot, held) in entities.take_boosts(player_id) {
+        hand.swing = Some(0.0);
+        hand.swing_offhand = slot == minecraft_survival::offhand::OFFHAND;
+        if inventory.slots[slot]
+            .as_ref()
+            .is_some_and(|stack| stack.id == held)
+            && let Some(sound) =
+                entities.spend_boost(inventory, slot, !player_mode.consumes_items())
+            && let Some(sounds) = sounds.as_mut()
+        {
+            sounds.play(packs, sound.event, None, sound.volume, sound.pitch);
         }
     }
     for used in outputs.item_uses_done {
@@ -718,11 +833,16 @@ pub(crate) fn struck(
             player_mode.consumes_items(),
         );
     }
+    let present = alive && player_mode.mode != minecraftoss_player::GameMode::Spectator;
+    crate::minecraft_riding::step(
+        riding, reattach, steps, entities, authority, rider, origin, present,
+    );
     for to in teleports
         .iter()
         .filter(|(uuid, _)| alive && uuid == local_uuid)
         .map(|(_, to)| to)
     {
+        crate::minecraft_riding::dismount(riding, Some(&mut *entities), authority, rider);
         authority.teleport(client, sim::voxel::to_map(origin, *to));
         steps.air_peak = None;
     }
@@ -730,6 +850,7 @@ pub(crate) fn struck(
         if !alive {
             continue;
         }
+        crate::minecraft_riding::dismount(riding, Some(&mut *entities), authority, rider);
         authority.teleport(client, sim::voxel::to_map(origin, landing.to_array()));
         survival.hurt(
             minecraft_terrain::thrown::PEARL_DAMAGE,
@@ -751,7 +872,7 @@ pub(crate) fn struck(
     let pushed = alive
         && player_mode.mode != minecraftoss_player::GameMode::Spectator
         && ps.pm_flags & playerstate_iw4::pm_flags::MC_FLYING == 0;
-    for push in outputs.pushes.into_iter().filter(|_| pushed) {
+    for push in outputs.pushes.into_iter().chain(landed).filter(|_| pushed) {
         let launch = minecraft_survival::impulse::launch_velocity(
             push,
             f64::from(ps.gravity) / f64::from(sim::voxel::BLOCK),
@@ -782,16 +903,17 @@ pub(crate) fn settle(
     language: Option<&HashMap<String, String>>,
     sounds: &mut Option<Sounds>,
     packs: &PackStack,
-) -> Option<Clientbound> {
+) -> Settled {
     let Player {
         id,
+        uuid,
         survival,
         inventory,
         selected,
         ..
     } = player;
     let mut told = None;
-    hold_off_death(
+    let popped = hold_off_death(
         survival,
         inventory,
         *selected,
@@ -799,6 +921,11 @@ pub(crate) fn settle(
         packs,
         totem_popped,
     );
+    if popped && let Some(ps) = authority.player(client) {
+        let (_, maxs) = sim::voxel::player_hull(ps);
+        let feet = sim::voxel::to_block(origin, ps.origin);
+        pop_totem(entities, uuid, feet, f64::from(maxs[2] / sim::voxel::BLOCK));
+    }
     if alive
         && !sim::voxel::player_damage_pending(client.0)
         && let Some(player) = authority.player(client).copied()
@@ -849,7 +976,34 @@ pub(crate) fn settle(
             authority.set_sprint_blocked(client, blocked);
         }
     }
-    told
+    Settled { told, popped }
+}
+
+pub(crate) struct Settled {
+    pub(crate) told: Option<Clientbound>,
+    pub(crate) popped: bool,
+}
+
+pub(crate) fn pop_totem(entities: &mut Entities, uuid: &PlayerUuid, feet: [f64; 3], height: f64) {
+    let key = minecraft_survival::level::opener_key(uuid);
+    entities.totem_pop(key, feet, PLAYER_WIDTH, height);
+}
+
+pub(crate) fn track_body(
+    entities: &mut Entities,
+    uuid: &PlayerUuid,
+    ps: &PlayerState,
+    origin: [f64; 3],
+) {
+    let (_, maxs) = sim::voxel::player_hull(ps);
+    let feet = sim::voxel::to_block(origin, ps.origin);
+    let key = minecraft_survival::level::opener_key(uuid);
+    entities.track_body(
+        key,
+        feet,
+        PLAYER_WIDTH,
+        f64::from(maxs[2] / sim::voxel::BLOCK),
+    );
 }
 
 fn place(
@@ -919,6 +1073,20 @@ pub(crate) fn tick_actor<'a>(
         health: player.survival.status.health,
         yaw: minecraft_yaw(ps.viewangles[1]),
         pitch: ps.viewangles[0],
+        main_hand: player.inventory.slots[player.selected]
+            .as_ref()
+            .filter(|stack| {
+                alive
+                    && player.mode.interacts()
+                    && minecraft_survival::guns::weapon_of(stack).is_none()
+            })
+            .map(|stack| stack.id.clone()),
+        offhand: player.inventory.slots[minecraft_survival::offhand::OFFHAND]
+            .as_ref()
+            .map(|stack| stack.id.clone()),
+        sneaking: ps.pm_flags
+            & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE)
+            != 0,
     };
     let actor = TickActor {
         id: u64::from(player.id.0),
@@ -1047,7 +1215,7 @@ pub(crate) fn step_friend(
         client,
         origin,
         &ps,
-        life.alive,
+        (life.alive, Skating::default()),
         world.dt,
         &mut sounds,
         world.packs,
@@ -1071,6 +1239,7 @@ pub(crate) fn step_friend(
         );
         let found = entities.take_experience(u64::from(player.id.0));
         let _ = player.survival.gain_experience(found);
+        track_body(entities, &player.uuid, &ps, origin);
         stepped.told = settle(
             player,
             entities,
@@ -1083,7 +1252,26 @@ pub(crate) fn step_friend(
             world.language,
             &mut sounds,
             world.packs,
-        );
+        )
+        .told;
+        for view in entities.take_lecterns(u64::from(player.id.0)) {
+            if let Some(book) = view.taken {
+                let stack = entities.book_stack(&book);
+                let (dropped, _) = minecraft_survival::commands::give_stacks(
+                    &mut player.inventory,
+                    player.selected,
+                    &stack,
+                    1,
+                );
+                for stack in &dropped {
+                    entities.drop_given(stack, feet);
+                }
+            }
+            if !view.closed {
+                let close = minecraft_terrain::lectern::LecternAction::Close;
+                entities.lectern(u64::from(player.id.0), view.pos, close, None);
+            }
+        }
         if !life.alive {
             let yaw = minecraft_yaw(ps.viewangles[1]);
             for stack in minecraft_survival::menus::close(player) {
@@ -1244,9 +1432,9 @@ fn friend_hand(
         player,
         level,
         world.globals,
-        broken,
-        dug,
+        (broken, dug),
         &acted.hand_mined,
+        actor.feet,
     );
     effects.extend(harvest.effects);
     if let Some(entities) = level.entities.as_mut() {
@@ -1387,9 +1575,10 @@ pub(crate) fn friend_menus(
         openers,
         body: &mut body,
     };
+    let feet = sim::voxel::to_block(origin, ps.origin);
     effects.extend(minecraft_survival::menus::lids(
         lids,
-        &player.uuid,
+        (&player.uuid, u64::from(player.id.0), feet),
         was.as_ref(),
         now.as_ref(),
         spectator,
@@ -1431,10 +1620,9 @@ fn hold_off_death(
     sounds: Option<&mut Sounds>,
     packs: &PackStack,
     struck: bool,
-) {
-    if minecraft_survival::player::hold_off_death(survival, inventory, selected, struck)
-        && let Some(sounds) = sounds
-    {
+) -> bool {
+    let popped = minecraft_survival::player::hold_off_death(survival, inventory, selected, struck);
+    if popped && let Some(sounds) = sounds {
         sounds.play(
             packs,
             minecraft_survival::offhand::TOTEM_SOUND,
@@ -1443,6 +1631,7 @@ fn hold_off_death(
             1.0,
         );
     }
+    popped
 }
 
 fn scene_block(block: &minecraftoss_player::Block) -> Option<minecraft_terrain::scene::Block> {

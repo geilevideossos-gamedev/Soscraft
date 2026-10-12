@@ -216,8 +216,32 @@ fn run_friend_commands(
             .deliver(&globals.chat, &handled.delivered, true);
         teleports.extend(handled.teleports);
     }
+    let teleported: Vec<PlayerUuid> = teleports.iter().map(|(uuid, _)| uuid.clone()).collect();
+    let minecraft_survival::server::Server {
+        globals,
+        levels,
+        players,
+        published,
+        ..
+    } = server;
+    let woke = minecraft_survival::sleep::wake_teleported(
+        globals,
+        levels,
+        players,
+        &teleported,
+        *published,
+    );
+    let woke_lines: Vec<Outgoing> = woke
+        .messages
+        .into_iter()
+        .filter_map(|(uuid, message)| {
+            let to = Recipient::Player(players.get(&uuid)?.id);
+            Some(Outgoing { to, message })
+        })
+        .collect();
+    host.sessions.deliver(&globals.chat, &woke_lines, true);
     for (uuid, to) in teleports {
-        let Some(player) = server.players.get_mut(&uuid) else {
+        let Some(player) = players.get_mut(&uuid) else {
             continue;
         };
         let Some(&origin) = origins.get(&player.dimension) else {
@@ -228,6 +252,11 @@ fn run_friend_commands(
         } else {
             sim::ClientId(player.id.0)
         };
+        let entities = levels
+            .get_mut(&player.dimension)
+            .and_then(|level| level.entities.as_mut());
+        let rider = (client, u64::from(player.id.0));
+        crate::minecraft_riding::dismount(&mut player.riding, entities, authority, rider);
         teleport(player, authority, client, origin, to);
     }
 }
@@ -269,6 +298,7 @@ pub(crate) fn host(
         return;
     };
     let server = view.server;
+    server.published = true;
     for client in left {
         host.sessions.leave(server, client);
     }

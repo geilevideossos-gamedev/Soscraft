@@ -29,6 +29,8 @@ pub const EFFECTS: [(EffectKind, &str); EffectKind::ALL.len()] = [
     (EffectKind::Haste, "minecraft:haste"),
     (EffectKind::MiningFatigue, "minecraft:mining_fatigue"),
     (EffectKind::ConduitPower, "minecraft:conduit_power"),
+    (EffectKind::Levitation, "minecraft:levitation"),
+    (EffectKind::SlowFalling, "minecraft:slow_falling"),
 ];
 
 struct EffectModifier {
@@ -88,6 +90,7 @@ pub struct Stats {
     pub status: SurvivalStatus,
     pub fire: i32,
     pub score: i32,
+    pub frozen: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -138,7 +141,7 @@ pub const EQUIPMENT: [(usize, &str); 7] = [
     (41, "body"),
     (42, "saddle"),
 ];
-const OWNED: [&str; 21] = [
+const OWNED: [&str; 25] = [
     "playerGameType",
     "previousPlayerGameType",
     "abilities",
@@ -158,8 +161,12 @@ const OWNED: [&str; 21] = [
     "Score",
     "Air",
     "Fire",
+    "TicksFrozen",
     "respawn",
     "LastDeathLocation",
+    "RootVehicle",
+    "SleepTimer",
+    "sleeping_pos",
 ];
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -175,6 +182,10 @@ pub struct PlayerData {
     pub last_death: Option<GlobalPos>,
     pub portal_cooldown: Option<i32>,
     pub seen_credits: Option<bool>,
+    pub root_vehicle: Option<Tag>,
+    pub sleep_timer: Option<i32>,
+    pub sleeping_pos: Option<(i32, i32, i32)>,
+    pub time_since_rest: Option<i32>,
 }
 
 impl PlayerData {
@@ -218,6 +229,22 @@ impl PlayerData {
                 .get("seenCredits")
                 .and_then(Tag::as_i64)
                 .map(|seen| seen != 0),
+            root_vehicle: tag
+                .get("RootVehicle")
+                .filter(|root| root.get("Entity").is_some())
+                .cloned(),
+            sleep_timer: tag
+                .get("SleepTimer")
+                .and_then(Tag::as_i64)
+                .map(|ticks| ticks.clamp(i16::MIN.into(), i16::MAX.into()) as i32),
+            sleeping_pos: tag
+                .get("sleeping_pos")
+                .and_then(Tag::as_ints)
+                .and_then(|ints| match ints[..] {
+                    [x, y, z] => Some((x, y, z)),
+                    _ => None,
+                }),
+            time_since_rest: None,
         }
     }
 
@@ -276,6 +303,16 @@ impl PlayerData {
         }
         if let Some(seen) = self.seen_credits {
             entries.insert("seenCredits".to_owned(), Tag::Byte(i8::from(seen)));
+        }
+        if let Some(root) = &self.root_vehicle {
+            entries.insert("RootVehicle".to_owned(), root.clone());
+        }
+        if let Some(ticks) = self.sleep_timer {
+            let ticks = ticks.clamp(i16::MIN.into(), i16::MAX.into()) as i16;
+            entries.insert("SleepTimer".to_owned(), Tag::Short(ticks));
+        }
+        if let Some((x, y, z)) = self.sleeping_pos {
+            entries.insert("sleeping_pos".to_owned(), Tag::IntArray(vec![x, y, z]));
         }
         entries
     }
@@ -349,6 +386,9 @@ fn stats_entries(stats: &Stats, entries: &mut BTreeMap<String, Tag>) {
     ];
     for (key, value) in values {
         entries.insert(key.to_owned(), value);
+    }
+    if stats.frozen > 0 {
+        entries.insert("TicksFrozen".to_owned(), Tag::Int(stats.frozen));
     }
 }
 
@@ -493,6 +533,7 @@ fn read_stats(tag: &Tag) -> Option<Stats> {
         status,
         fire: int("Fire", 0) as i32,
         score: int("Score", 0) as i32,
+        frozen: int("TicksFrozen", 0).clamp(0, i64::from(i32::MAX)) as i32,
     })
 }
 
@@ -820,7 +861,26 @@ mod tests {
             status,
             fire: 35,
             score: 120,
+            frozen: 0,
         }
+    }
+
+    #[test]
+    fn ticks_frozen_round_trips_and_is_left_out_at_zero() {
+        let thawed = with_stats(hurt_and_fed()).entries();
+        assert!(!thawed.contains_key("TicksFrozen"));
+        let frozen = Stats {
+            frozen: 97,
+            ..hurt_and_fed()
+        };
+        let entries = with_stats(frozen).entries();
+        assert_eq!(entries.get("TicksFrozen"), Some(&Tag::Int(97)));
+        let tag = Tag::Compound(entries);
+        assert_eq!(read_stats(&tag).map(|stats| stats.frozen), Some(97));
+        let old = with_stats(frozen).merged(None);
+        let merged = with_stats(hurt_and_fed()).merged(Some(old));
+        assert!(merged.get("TicksFrozen").is_none(), "a thawed player drops the saved frost");
+        assert_eq!(read_stats(&merged).map(|stats| stats.frozen), Some(0));
     }
 
     fn with_stats(stats: Stats) -> PlayerData {
@@ -906,6 +966,34 @@ mod tests {
             Some(&Tag::String("minecraft:weakness".to_owned()))
         );
         assert_eq!(effects[1].get("duration"), Some(&Tag::Int(600)));
+    }
+
+    #[test]
+    fn levitation_and_slow_falling_are_saved_and_read_back() {
+        let mut stats = hurt_and_fed();
+        stats.status.add_effect(EffectKind::Levitation, 200, 1);
+        stats.status.add_effect(EffectKind::SlowFalling, 4800, 0);
+        let data = with_stats(stats);
+        let entries = data.entries();
+        let ids: Vec<&str> = entries["active_effects"]
+            .as_list()
+            .unwrap()
+            .iter()
+            .filter_map(|e| e.get("id").and_then(Tag::as_str))
+            .collect();
+        assert_eq!(ids, vec!["minecraft:levitation", "minecraft:slow_falling"]);
+        let read = PlayerData::read(&data.merged(None), &RecipeBook::default());
+        let status = read.stats.unwrap().status;
+        assert_eq!(
+            status
+                .effect(EffectKind::Levitation)
+                .map(|e| (e.duration, e.amplifier)),
+            Some((200, 1))
+        );
+        assert_eq!(
+            status.effect(EffectKind::SlowFalling).map(|e| e.duration),
+            Some(4800)
+        );
     }
 
     #[test]
@@ -1340,6 +1428,73 @@ mod tests {
     }
 
     #[test]
+    fn a_rider_saves_root_vehicle_with_attach_and_entity() {
+        let root = compound(vec![
+            ("Attach", Tag::IntArray(vec![1, 2, 3, 4])),
+            (
+                "Entity",
+                compound(vec![
+                    ("id", Tag::String("minecraft:strider".to_owned())),
+                    ("UUID", Tag::IntArray(vec![1, 2, 3, 4])),
+                ]),
+            ),
+        ]);
+        let pending = compound(vec![("Entity", compound(Vec::new()))]);
+        let saved = crate::riding::root_vehicle(true, Some(&root), Some(&pending));
+        assert_eq!(saved.as_ref(), Some(&root));
+        assert_eq!(
+            crate::riding::root_vehicle(false, Some(&root), Some(&pending)),
+            Some(pending.clone()),
+            "a vehicle not reattached yet is kept"
+        );
+        assert_eq!(crate::riding::root_vehicle(false, Some(&root), None), None);
+        let entries = PlayerData {
+            root_vehicle: saved,
+            ..PlayerData::default()
+        }
+        .entries();
+        assert_eq!(entries.get("RootVehicle"), Some(&root));
+        let walking = PlayerData::default().merged(Some(Tag::Compound(entries)));
+        assert_eq!(
+            walking.get("RootVehicle"),
+            None,
+            "a player who got off saves no vehicle"
+        );
+    }
+
+    #[test]
+    fn a_vanilla_root_vehicle_reads_back() {
+        let file = minecraftoss_core::snbt::parse_compound(
+            "{RootVehicle:{Attach:[I;7,8,9,10],Entity:{id:\"minecraft:strider\",UUID:[I;7,8,9,10],Pos:[1.5d,64.5d,2.5d],equipment:{saddle:{id:\"minecraft:saddle\",count:1}}}}}",
+        )
+        .unwrap();
+        let read = PlayerData::read(&file, &RecipeBook::default());
+        let root = read.root_vehicle.clone().expect("the vehicle");
+        assert_eq!(
+            root.get("Attach").and_then(Tag::as_ints),
+            Some(vec![7, 8, 9, 10])
+        );
+        assert_eq!(
+            root.get("Entity")
+                .and_then(|entity| entity.get("id"))
+                .and_then(Tag::as_str),
+            Some("minecraft:strider")
+        );
+        assert_eq!(
+            read.merged(None).get("RootVehicle"),
+            file.get("RootVehicle")
+        );
+        let broken = compound(vec![(
+            "RootVehicle",
+            compound(vec![("Attach", Tag::IntArray(vec![1, 2, 3, 4]))]),
+        )]);
+        assert_eq!(
+            PlayerData::read(&broken, &RecipeBook::default()).root_vehicle,
+            None
+        );
+    }
+
+    #[test]
     fn the_portal_cooldown_and_seen_credits_are_an_int_and_a_byte_like_vanilla() {
         let entries = PlayerData {
             portal_cooldown: Some(300),
@@ -1386,5 +1541,32 @@ mod tests {
         assert_eq!(PlayerData::read(&tag, &RecipeBook::default()).selected, 0);
         let tag = compound(vec![("SelectedItemSlot", Tag::Int(-2))]);
         assert_eq!(PlayerData::read(&tag, &RecipeBook::default()).selected, 0);
+    }
+
+    #[test]
+    fn sleep_timer_and_sleeping_pos_round_trip() {
+        let asleep = PlayerData {
+            sleep_timer: Some(57),
+            sleeping_pos: Some((3, 64, -2)),
+            time_since_rest: Some(900),
+            ..PlayerData::default()
+        };
+        let tag = asleep.merged(None);
+        assert_eq!(tag.get("SleepTimer"), Some(&Tag::Short(57)));
+        assert_eq!(tag.get("sleeping_pos"), Some(&Tag::IntArray(vec![3, 64, -2])));
+        assert!(tag.get("time_since_rest").is_none(), "it lives in the stats file");
+        let read = PlayerData::read(&tag, &RecipeBook::default());
+        assert_eq!((read.sleep_timer, read.sleeping_pos), (Some(57), Some((3, 64, -2))));
+        assert_eq!(read.time_since_rest, None);
+        let awake = PlayerData {
+            sleep_timer: Some(0),
+            ..PlayerData::default()
+        };
+        let tag = awake.merged(Some(tag));
+        assert_eq!(tag.get("SleepTimer"), Some(&Tag::Short(0)));
+        assert!(tag.get("sleeping_pos").is_none(), "a woken player leaves no bed behind");
+        let long = compound(vec![("SleepTimer", Tag::Int(40_000)), ("sleeping_pos", Tag::IntArray(vec![1, 2]))]);
+        let read = PlayerData::read(&long, &RecipeBook::default());
+        assert_eq!((read.sleep_timer, read.sleeping_pos), (Some(32_767), None));
     }
 }

@@ -79,6 +79,7 @@ pub struct DimensionRules {
     pub logical_height: i32,
     pub has_skylight: bool,
     pub has_ceiling: bool,
+    pub has_fixed_time: bool,
     pub nether_cardinal_light: bool,
     pub bed_rule: BedRule,
     pub straw_bed_rule: BedRule,
@@ -123,6 +124,7 @@ impl DimensionRules {
             logical_height: int("logical_height", i64::from(height)),
             has_skylight: flag("has_skylight"),
             has_ceiling: flag("has_ceiling"),
+            has_fixed_time: flag("has_fixed_time"),
             nether_cardinal_light: json.get("cardinal_light").and_then(Json::as_str)
                 == Some("nether"),
             bed_rule: bed_rule("gameplay/bed_rule"),
@@ -159,6 +161,7 @@ mod tests {
             "cardinal_light": "nether",
             "coordinate_scale": 8.0,
             "has_ceiling": true,
+            "has_fixed_time": true,
             "has_skylight": false,
             "height": 256,
             "logical_height": 128,
@@ -171,6 +174,7 @@ mod tests {
             (0, 256, 128)
         );
         assert!(rules.has_ceiling && !rules.has_skylight && rules.nether_cardinal_light);
+        assert!(rules.has_fixed_time);
         assert!(rules.fast_lava && rules.water_evaporates && rules.respawn_anchor_works);
         assert!(!rules.nether_portal_spawns_piglin);
         assert_eq!(
@@ -193,7 +197,7 @@ mod tests {
         assert_eq!(rules.bed_rule, BedRule::can_sleep_when_dark());
         assert_eq!(rules.logical_height, 384);
         assert_eq!(rules.coordinate_scale, 1.0);
-        assert!(!rules.nether_cardinal_light && !rules.fast_lava);
+        assert!(!rules.nether_cardinal_light && !rules.fast_lava && !rules.has_fixed_time);
         assert!(rules.bed_rule.can_set_spawn.holds(false));
         assert!(rules.bed_rule.can_sleep.holds(true) && !rules.bed_rule.can_sleep.holds(false));
         assert!(!BedRuleTest::Never.holds(true));

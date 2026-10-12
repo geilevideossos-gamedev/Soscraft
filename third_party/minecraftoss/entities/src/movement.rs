@@ -5,7 +5,7 @@
 use crate::fluid::FluidFrame;
 use glam::DVec3;
 use minecraftoss_player::{
-    collision::{find_supporting_block, move_body, Bounds},
+    collision::{find_supporting_block, move_body, move_body_on_fluid, Bounds},
     minecraft_sin_cos, Block, Pos, World,
 };
 
@@ -72,6 +72,10 @@ pub struct Body {
     /// `Entity.stuckSpeedMultiplier`: a cobweb's or bush's hold on the
     /// next move.
     pub stuck: Option<DVec3>,
+    pub lava_floor: bool,
+    pub step_after: Option<f32>,
+    pub levitation: Option<u8>,
+    pub slow_falling: bool,
 }
 
 impl Body {
@@ -103,7 +107,17 @@ impl Body {
             fire_ticks: 0,
             moves: Vec::new(),
             stuck: None,
+            lava_floor: false,
+            step_after: None,
+            levitation: None,
+            slow_falling: false,
         }
+    }
+
+    pub fn float_from(&mut self, effects: &crate::effects::MobEffects) {
+        use crate::effects::MobEffect;
+        self.levitation = effects.get(MobEffect::Levitation).map(|e| e.amplifier.clamp(0, 255) as u8);
+        self.slow_falling = effects.has(MobEffect::SlowFalling);
     }
 
     /// `Entity.updateFluidInteraction`'s water state: in water the body
@@ -187,7 +201,7 @@ impl Body {
         let stands_on = |block: Option<&Block>| !is_air(block) && (self.on_ground || climbable(block)) && !self.swimming;
         let sounds = stands_on(effect.as_ref());
         if sounds || supporting_pos != effect_pos && stands_on(supporting.as_ref()) {
-            self.next_step = self.move_dist as i32 as f32 + 1.0;
+            self.next_step = self.next_step_from_here();
             if !sounds {
                 return None;
             }
@@ -198,7 +212,7 @@ impl Body {
         if !in_water {
             return None;
         }
-        self.next_step = self.move_dist as i32 as f32 + 1.0;
+        self.next_step = self.next_step_from_here();
         // `waterSwimSound` for a mob nothing rides.
         Some(Emission::Swim((motion_speed(self.velocity) * 0.35).min(1.0)))
     }
@@ -484,6 +498,9 @@ impl Body {
         yaw: f32,
         jumping: bool,
     ) -> Option<f64> {
+        if self.levitation.is_some() || self.slow_falling {
+            self.fall_distance = 0.0;
+        }
         let friction = if self.on_ground {
             ground_friction(world, self.on_pos(world, 0.500001))
         } else {
@@ -524,12 +541,13 @@ impl Body {
             self.velocity.y = self.velocity.y.max(-max);
         }
         let requested = self.requested_move();
-        let displacement = move_body(
+        let displacement = move_body_on_fluid(
             world,
             Bounds::standing(self.position, self.width, self.height),
             requested,
             self.on_ground,
             self.step_height,
+            self.lava_floor,
         );
         let length = displacement.length_squared();
         if length > 1.0e-7 || requested.length_squared() - length < 1.0e-7 {
@@ -565,12 +583,26 @@ impl Body {
             self.velocity.y = 0.2;
         }
         let horizontal_drag = (friction * 0.91_f32) as f64;
+        let vertical = match self.levitation {
+            Some(amplifier) => self.velocity.y + (0.05 * (f64::from(amplifier) + 1.0) - self.velocity.y) * 0.2,
+            None if self.slow_falling && self.velocity.y <= 0.0 => self.velocity.y - self.gravity.min(0.01),
+            None => self.velocity.y - self.gravity,
+        };
         self.velocity = DVec3::new(
             self.velocity.x * horizontal_drag,
-            (self.velocity.y - self.gravity) * 0.98_f32 as f64,
+            vertical * 0.98_f32 as f64,
             self.velocity.z * horizontal_drag,
         );
         landed
+    }
+}
+
+impl Body {
+    fn next_step_from_here(&self) -> f32 {
+        match self.step_after {
+            Some(after) => self.move_dist + after,
+            None => self.move_dist as i32 as f32 + 1.0,
+        }
     }
 }
 

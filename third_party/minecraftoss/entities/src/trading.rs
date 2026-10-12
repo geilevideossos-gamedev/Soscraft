@@ -468,19 +468,12 @@ impl TradeBook {
                 }
             }
             "enchant_randomly" => {
-                let book = item.id == "minecraft:book";
-                let check = !book && function["only_compatible"].as_bool().unwrap_or(true);
-                let candidates: Vec<usize> = self.enchantments.source(function.get("options")).into_iter().filter(|&e| !check || self.enchantments.list[e].can_enchant(&item.id)).collect();
-                if candidates.is_empty() {
-                    return Some(item);
-                }
-                let chosen = candidates[ctx.random.next_int(candidates.len() as u32) as usize];
-                let e = &self.enchantments.list[chosen];
-                let level = if 1 >= e.max_level { 1 } else { ctx.random.next_int(e.max_level as u32) as i32 + 1 };
-                if book {
+                let only_compatible = function["only_compatible"].as_bool().unwrap_or(true);
+                let Some((id, level)) = self.enchantments.enchant_randomly(ctx.random, &item.id, function.get("options"), only_compatible) else { return Some(item) };
+                if item.id == "minecraft:book" {
                     item = TradeItem { id: "minecraft:enchanted_book".into(), count: 1, components: Map::new() };
                 }
-                add_enchantment(&item.id, &mut item.components, &e.id, level);
+                add_enchantment(&item.id, &mut item.components, &id, level);
                 if function["include_additional_cost_component"].as_bool().unwrap_or(false) {
                     let cost = 2 + ctx.random.next_int((5 + level * 10) as u32) as i32 + 3 * level;
                     item.components.insert("minecraft:additional_trade_cost".into(), cost.into());
@@ -488,13 +481,11 @@ impl TradeBook {
             }
             "enchant_with_levels" => {
                 let cost = self.int(&function["levels"], ctx);
-                let source = self.enchantments.source(function.get("options"));
-                let chosen = self.enchantments.select(ctx.random, &item.id, cost, &source);
+                let chosen = self.enchantments.enchant_with_levels(ctx.random, &item.id, cost, function.get("options"));
                 if item.id == "minecraft:book" {
                     item = TradeItem { id: "minecraft:enchanted_book".into(), count: 1, components: Map::new() };
                 }
-                for (e, level) in chosen {
-                    let id = self.enchantments.list[e].id.clone();
+                for (id, level) in chosen {
                     add_enchantment(&item.id, &mut item.components, &id, level);
                 }
                 if function["include_additional_cost_component"].as_bool().unwrap_or(false) && cost > 0 {

@@ -239,6 +239,22 @@ impl Enchantments {
         }
         results
     }
+
+    pub fn enchant_with_levels(&self, random: &mut dyn LootRandom, item: &str, cost: i32, options: Option<&Value>) -> Vec<(String, i32)> {
+        let source = self.source(options);
+        self.select(random, item, cost, &source).into_iter().map(|(e, level)| (self.list[e].id.clone(), level)).collect()
+    }
+
+    pub fn enchant_randomly(&self, random: &mut dyn LootRandom, item: &str, options: Option<&Value>, only_compatible: bool) -> Option<(String, i32)> {
+        let check = item != "minecraft:book" && only_compatible;
+        let candidates: Vec<usize> = self.source(options).into_iter().filter(|&e| !check || self.list[e].can_enchant(item)).collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        let e = &self.list[candidates[random.next_int(candidates.len() as u32) as usize]];
+        let level = if 1 >= e.max_level { 1 } else { random.next_int(e.max_level as u32) as i32 + 1 };
+        Some((e.id.clone(), level))
+    }
 }
 
 /// An item's enchantments as its component holds them (`minecraft:enchantments`,

@@ -357,20 +357,6 @@ fn publish_client_action_input(
     let chat_only = minecraft.as_ref().is_some_and(|ui| !ui.active && ui.chat_only);
     let inventory_open = minecraft.is_some_and(|ui| ui.active && ui.inventory_open);
     skate.input_blocked = console.open || script_menu;
-    // J, or clicking both sticks in together, toggles skating.
-    let sticks_clicked = pad.is_some_and(|pad| {
-        use bevy::input::gamepad::GamepadButton::{LeftThumb, RightThumb};
-        pad.pressed(LeftThumb)
-            && pad.pressed(RightThumb)
-            && (pad.just_pressed(LeftThumb) || pad.just_pressed(RightThumb))
-    });
-    if !skate.input_blocked
-        && !inventory_open
-        && !chat_open
-        && (keys.just_pressed(KeyCode::KeyJ) || sticks_clicked)
-    {
-        skate.toggle_requested = true;
-    }
     let modal_captured = console.open
         || script_menu
         || inventory_open
@@ -399,6 +385,18 @@ fn publish_client_action_input(
         |button| !gated && inputs.pressed(button),
     );
     *mc_keys = presses;
+    let sticks_clicked = pad.is_some_and(|pad| {
+        use bevy::input::gamepad::GamepadButton::{LeftThumb, RightThumb};
+        pad.pressed(LeftThumb)
+            && pad.pressed(RightThumb)
+            && (pad.just_pressed(LeftThumb) || pad.just_pressed(RightThumb))
+    });
+    let skate_key = crate::binds::skate_toggle_pressed(&binds, &mc_keys, minecraft_map, |button| {
+        inputs.just_pressed(button)
+    });
+    if !skate.input_blocked && !inventory_open && !chat_open && (skate_key || sticks_clicked) {
+        skate.toggle_requested = true;
+    }
     let mut current = [0; input_iw4::KEY_COUNT];
     for (button, id) in binds.iter() {
         let id = if suppressed.contains(&button) {

@@ -20,6 +20,14 @@ impl SteeringState {
         true
     }
 
+    pub fn boost_factor(&self) -> f32 {
+        if !self.boosting {
+            return 1.0;
+        }
+        let phase = self.boost_time as f32 / self.boost_time_total as f32 * std::f32::consts::PI;
+        1.0 + 1.15 * minecraftoss_player::mth::sin(f64::from(phase))
+    }
+
     /// Called by Pig.tickRidden, not by its ordinary AI tick.
     pub fn tick_boost(&mut self) {
         if self.boosting {

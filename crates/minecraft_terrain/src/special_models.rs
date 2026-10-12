@@ -16,7 +16,7 @@ const SHULKER_LID_HEIGHT: f32 = 0.5;
 const SHULKER_LID_TURN: f32 = 270.0;
 const BANNER_SCALE: f32 = 2.0 / 3.0;
 const BANNER_FLAG_ANGLE: f32 = (-0.0125 + 0.01) * PI;
-const DYES: [(&str, u32); 16] = [
+pub(crate) const DYES: [(&str, u32); 16] = [
     ("white", 16383998),
     ("orange", 16351261),
     ("magenta", 13061821),

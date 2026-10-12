@@ -304,6 +304,7 @@ impl EntityWorld {
                 _ => {}
             }
         }
+        entity.slime.body.float_from(&entity.effects);
         // No ambient sound, but `Mob.baseTick` still rolls for one.
         if entity.slime.health > 0.0 {
             if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
@@ -350,7 +351,7 @@ impl EntityWorld {
             }
             let Some(info) = entity.ai.state.info(crate::monster_ai::Target::Player(player.id)) else { continue };
             if entity.ai.state.within_melee_range(info) && entity.ai.state.sees(world, info) {
-                hits.push(PlayerHit { player_id: player.id, damage, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0 }, source: Some(id) });
+                hits.push(PlayerHit { player_id: player.id, damage, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0, throw: glam::DVec3::ZERO, disable_shield_seconds: 0.0 }, source: Some(id) });
             }
         }
         self.player_hits.extend(hits);

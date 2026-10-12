@@ -316,6 +316,20 @@ pub fn right_hand_pose(feet: DVec3, rotation: Quat, arm_pivot: Vec3, arm: Quat, 
         * Mat4::from_translation(offset)
 }
 
+pub fn left_hand_pose(feet: DVec3, rotation: Quat, arm_pivot: Vec3, arm: Quat, baby: bool) -> glam::Mat4 {
+    use glam::Mat4;
+    let offset = if baby { Vec3::new(0.0, 1.0, -4.5) } else { Vec3::new(-1.0, 2.0, -10.0) } / 16.0;
+    Mat4::from_translation(feet.as_vec3())
+        * Mat4::from_quat(rotation)
+        * Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0))
+        * Mat4::from_translation(Vec3::new(0.0, -1.501, 0.0))
+        * Mat4::from_translation(arm_pivot / 16.0)
+        * Mat4::from_quat(arm)
+        * Mat4::from_rotation_x((-90.0f32).to_radians())
+        * Mat4::from_rotation_y(180.0f32.to_radians())
+        * Mat4::from_translation(offset)
+}
+
 /// Marks each mob's vertices, from its first to the next mob's, with its
 /// overlay ([`crate::client_mobs::MobPose::overlay`]), which `fs_entity`
 /// reads from their alpha.

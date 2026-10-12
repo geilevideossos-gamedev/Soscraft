@@ -400,10 +400,16 @@ fn fpv_occupy_submission(
     }
 }
 
+type McViews<'w> = (
+    Option<Res<'w, frame::MinecraftUi>>,
+    Option<Res<'w, frame::McCamera>>,
+    Option<Res<'w, frame::McSleepers>>,
+);
+
 pub fn occupy_fpv_scene(
     skate: Res<frame::SkateMode>,
     puppet: Option<Res<frame::InventoryPuppet>>,
-    (minecraft, mc_camera): (Option<Res<frame::MinecraftUi>>, Option<Res<frame::McCamera>>),
+    (minecraft, mc_camera, sleepers): McViews,
     mut submissions: MessageWriter<AnimDObjSceneSubmission>,
     presented: Res<PresentedSnapshot>,
     local: Res<LocalPresentClient>,
@@ -423,6 +429,7 @@ pub fn occupy_fpv_scene(
         || presented.viewweapon_player(local.0).is_none()
         || presented_is_third_person(&presented, local.0, view.in_killcam())
         || mc_camera.as_ref().is_some_and(|c| c.detached)
+        || sleepers.as_ref().is_some_and(|s| s.camera.is_some())
     {
         return;
     }

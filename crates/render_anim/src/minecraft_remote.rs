@@ -953,9 +953,27 @@ fn present(
         rain_level: weather[0],
         thunder_level: weather[1],
         lava,
+        powder_snow: standing
+            .filter(|ps| ps.pm_type == 0)
+            .filter(|_| {
+                let at = (
+                    eye[0].floor() as i32,
+                    eye[1].floor() as i32,
+                    eye[2].floor() as i32,
+                );
+                minecraft_terrain::scene::Scene::block(&level.terrain.scene, at)
+                    .is_some_and(|b| b.id.key() == "minecraft:powder_snow")
+            })
+            .map(|_| {
+                remote
+                    .player
+                    .as_ref()
+                    .is_some_and(|view| view.game_mode == GameMode::Spectator)
+            }),
         world_fog: false,
+        credits: false,
     };
-    crate::minecraft_world::present_sky(
+    let _ = crate::minecraft_world::present_sky(
         view,
         &mut level.terrain,
         &prepared.registries,
