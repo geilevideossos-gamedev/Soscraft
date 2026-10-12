@@ -80,6 +80,13 @@ pub fn register_remote_body_systems(app: &mut App) {
         .init_resource::<crate::anim::dobj_pose::PosedPlayerFrame>()
         .init_resource::<crate::anim::minecraft_gear::PosedGearFrame>()
         .init_resource::<crate::anim::minecraft_gear::McBodyGear>()
+        .init_resource::<crate::anim::minecraft_glide::McGlide>()
+        .add_systems(
+            Update,
+            crate::anim::minecraft_glide::step_body_glides
+                .after(PresentedPublished)
+                .before(pose_remote_bodies),
+        )
         .add_systems(
             Update,
             sync_remote_bodies

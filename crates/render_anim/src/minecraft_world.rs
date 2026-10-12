@@ -438,7 +438,7 @@ fn update(
     (hud_input, settings, ui_draw): (Option<Res<frame::HudInputView>>, Option<Res<frame::GameSettings>>, Option<Res<frame::UiDraw>>),
     real_time: Res<Time<Real>>,
     mc_camera: Option<Res<frame::McCamera>>,
-    mut body_gear: ResMut<crate::anim::minecraft_gear::McBodyGear>,
+    (mut body_gear, mut body_glide): (ResMut<crate::anim::minecraft_gear::McBodyGear>, ResMut<crate::anim::minecraft_glide::McGlide>),
 ) {
     let pad = active_pad.and_then(|active| active.0).and_then(|entity| gamepads.get(entity).ok());
     for _ in torn_down.read() {
@@ -473,6 +473,7 @@ fn update(
     ui.loading_world = runtime.loading.is_some() || (runtime.world.is_some() && (runtime.spawn_gate.holding(now_ms) || awaiting_level(&runtime)));
     if runtime.server.is_none() {
         body_gear.clear();
+        body_glide.clear();
     }
     if runtime.switch_screen.is_some() && !local_switching(&runtime) && !runtime.spawn_gate.holding(now_ms) {
         runtime.switch_screen = None;
@@ -2847,13 +2848,14 @@ fn draw_body_gear(
     mut runtime: NonSendMut<Runtime>,
     posed: Res<crate::anim::minecraft_gear::PosedGearFrame>,
     gear: Res<crate::anim::minecraft_gear::McBodyGear>,
+    glide: Res<crate::anim::minecraft_glide::McGlide>,
     puppet: Res<frame::InventoryPuppet>,
 ) {
     view.puppet_gear = Default::default();
     let Runtime { world: Some(world), light: Some(light), gear_items, .. } = &mut *runtime else {
         return;
     };
-    let meshes = crate::anim::minecraft_gear::gear_meshes(&posed, &gear, view.origin, puppet.active.then_some(puppet.client), gear_items, &world.packs, &world.atlas, light);
+    let meshes = crate::anim::minecraft_gear::gear_meshes(&posed, &gear, &glide, view.origin, puppet.active.then_some(puppet.client), gear_items, &world.packs, &world.atlas, light);
     let (bytes, indices) = &mut view.particles;
     let base = (bytes.len() / std::mem::size_of::<minecraft_terrain::mesh::SectionVertex>()) as u32;
     bytes.extend_from_slice(bytemuck::cast_slice(&minecraft_terrain::mesh::section_vertices(&meshes.world)));

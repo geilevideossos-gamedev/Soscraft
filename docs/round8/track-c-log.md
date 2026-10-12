@@ -1072,3 +1072,29 @@ Previous commit: 05b42261
 ```
 IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:elytra+unbreaking=3,minecraft:diamond_chestplate
 ```
+
+### 43. Each MW2 body keeps its Minecraft glide and wing state from its player's replicated state
+
+Previous commit: f20e9e91
+
+- **Changed:**
+  - New `render_anim` `anim/minecraft_glide.rs`:
+    - `glide_input(&PlayerState)`: gliding is `MC_GLIDING` in `pm_flags` on a living player (`pm_type` below `PM_TYPE_DEAD`), crouching is `eflags::DUCK`, the motion is the velocity in blocks per tick (720 map units a second = 1), the look and pitch come from `viewangles`.
+    - `McGlide` (a resource, keyed by MW2 client number): each client's `BodyGlide` (its `ElytraAnim` and last input). `step` advances every client in the presented snapshot by the frame time and drops the ones that are gone; `pose(client)` gives a `GlidePose` (fall-flying scale, the roll while gliding, the view pitch, the eased wing angles, crouching).
+    - `step_body_glides` runs after the snapshot is published and before the bodies are posed. It reads `PresentedSnapshot::player` for every client (predicted for the local one, interpolated for the others), so the wings of every body, ours and later our friends', come from replicated state only; it uses the cgame frame time like the body poses.
+  - `occupancy/remote_body.rs`: registers `McGlide` and the system.
+  - `anim/minecraft_gear.rs`: `gear_rigs` and `gear_meshes` take `&McGlide` and give each rig its client's wing angles (`None`, folded at rest, for a client with no glide state). `minecraft_world.rs`: `draw_body_gear` passes it, and the world teardown clears it next to the body gear.
+- **Tests:** `minecraft_glide`: `a_glider_is_read_from_its_pm_flags_and_a_dead_one_is_not` (also `DUCK` is crouching), `velocity_becomes_blocks_per_tick` (also the look vector at pitch 30, yaw 90), `each_client_keeps_its_own_glide_and_gone_clients_are_dropped`, `the_wings_spread_over_frames_while_gliding_and_fold_after_landing` (60 Hz frames: spread to -90 degrees, scale 1, no roll flying straight; landing drops the scale and the roll at once and folds the wings back to rest; crouching opens them to the crouch angles). `minecraft_gear`: `gear_rigs_take_each_clients_wing_angles_and_rest_without_one`.
+- **Decisions:**
+  - The glide state is client-side presentation per client number, ticked at 20 Hz from the replicated `PlayerState` (`pm_flags`, `velocity`, `viewangles`, `e_flags`), as every vanilla client ticks `fallFlyTicks` and `ElytraAnimationState` for every entity it sees. No server state, no new net field and nothing keyed to player 0 **[E: friends' bodies need their `PlayerState` relayed as today]**.
+  - With no snapshot (no match running) the glide state is cleared.
+  - The roll uses the current interpolated velocity and view, where vanilla lerps the motion from the previous tick; the difference is under a tick.
+- **Test steps:** (survival; kit below)
+  1. Put the plain elytra in the chest slot and press F5 (back view). Crouch: the wings open a little wider and tilt back. Stand up: they fold back over about a quarter second (**1**).
+  2. `/tp ~ ~40 ~`, then press jump in the air: the wings spread wide over about a quarter second. Look down to dive: they fold back narrower as the dive steepens (**2**). The body is still upright in this commit.
+  3. Land: the wings fold back within about a quarter second.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:firework_rocket*64,minecraft:cobblestone*64
+```
