@@ -1,6 +1,6 @@
 # Multiplayer: the first playable version
 
-Round 8, track E. This is the design and the build plan. Nothing in it is built yet. Every file and line reference was read at `e2313625`. Line numbers move as other tracks land, so check each one before relying on it.
+Round 8, track E. This is the design and the build plan. All of it was built in round 8 (milestones M1 to M6, `docs/round8/track-e-log.md`); section 23 lists what was built differently from this design, section 20 what was left for later, and `docs/round8/track-e-tests.md` is the owner's test. Every file and line reference was read at `e2313625`. Line numbers move as other tracks land, so check each one before relying on it.
 
 This version was revised after three reviews. Every point the reviews raised was checked against the code; section 22 lists what changed.
 
@@ -159,7 +159,7 @@ It still has no transport and no game logic.
 Some types are owned by `minecraft_terrain`: `ServerMob`, `EntitySnapshot`, `MobLook` and the view structs. Those travel as `Blob(Vec<u8>)` fields, encoded by `minecraft_survival::wire`, so `minecraft_net` does not depend on `minecraft_terrain`. The same goes for vanilla NBT: `Nbt(Vec<u8>)` holds uncompressed binary NBT, and `ChunkBlob` holds a region-format compressed chunk.
 
 ```rust
-pub const PROTOCOL: u16 = 1;
+pub const PROTOCOL: u16 = 3;
 
 pub struct ToServerFrame { pub frame: u32, pub ack: u32, pub messages: Vec<ToServer> }
 pub struct ToClientFrame { pub frame: u32, pub ack: u32, pub messages: Vec<ToClient> }
@@ -906,6 +906,8 @@ The steps:
 
 The internet path is checked in M1 with plain MW2 (`-Map iw4:mp_rust`), because it does not depend on any Minecraft code.
 
+**As built:** the steps for the host and the friend, checked against the launcher, relay and setup code, with a troubleshooting table, are `docs/round8/friend-install.md`. It replaces this section where they differ.
+
 ### 18.1 The host (the owner) once
 
 1. **Build and copy the relay:** `iw4l-master.exe` (section 17.2).
@@ -946,14 +948,13 @@ The internet path is checked in M1 with plain MW2 (`-Map iw4:mp_rust`), because 
 ### 18.3 Joining
 
 - Run `Join Minecraft World.bat`. It checks for `iw4l-artifacts\minecraft-26.3\.complete` first (`minecraft_setup.rs:77`) and, if it is missing, says to start the game once to the menu. Then it asks for the code and starts the game with `IW4L_MASTER_JOIN=<code>` and `map minecraft:overworld`.
-- Or start normally, open the server browser and pick the host's room.
-- Or type `ui_join_lobby_id <code>` in the console.
-- Joining in the middle of a match is allowed while the room is open.
+- The master lets a friend join in the middle of a match while the room is open.
+- **As built, the `.bat` (or `IW4L_MASTER_JOIN`) is the only way in.** The server browser refuses a room that is already in a match ("Match already in progress", `console/src/frontend.rs`), and a hosted Minecraft world always is. `ui_join_lobby_id <code>` joins with the map picked in the Create Game menu and an empty password, so it fails on a room with a password. Both are recorded in section 20.
 
 ## 19. Implementation plan
 
 **How to run it:**
-- Each milestone is one `track-runner` run on branch `track-e8`, with worktree `C:\Dev\mc-wt\track-e8` and target `D:\iw4l-wt\track-e8`. Each run continues from the previous one's commits.
+- Each milestone is one `track-runner` run on branch `track-e8`, with worktree `C:\Dev\mc-wt\track-e8` and target `D:\iw4l-wt\track-e8`. Each run continues from the previous one's commits. **As built:** the branch was `track-e` (worktree `C:\Dev\mc-wt\track-e`, target `D:\iw4l-wt\track-e`), the steps of each milestone went to `docs/round8/e-m<N>-tests.md`, and E24 put them together in `docs/round8/track-e-tests.md`.
 - The owner tests after each milestone with a `--profile play` build, output `D:\iw4l-wt\track-e8\play\iw4l.exe`. **The last step of each milestone copies it to `C:\Games\Mashup\2010-Rust-Rewrite-Mashup\iw4l-mp-m<N>.exe`**, which the script uses by default. `iw4l-survival.exe` is never overwritten by this track. Steps and kit lines go to `docs/round8/track-e8-tests.md`.
 - Each group is one commit with a plain-English subject. Where a group moves code, the move is its own group (marked "pure move"): host only, no behaviour change, with the single-player tests and `check -p launcher` as the gate. Friend support follows in the next group.
 - Every group follows the fork rules: no comments, no rustfmt on existing files, new files `rustfmt --check` clean, and cargo only through `scripts\cargo-slot.ps1`. It runs `check -p` and `test -p` on the crates it changed, and `check -p launcher` before a commit that touches game code.
@@ -1283,6 +1284,7 @@ The internet path is checked in M1 with plain MW2 (`-Map iw4:mp_rust`), because 
   - `CLAUDE.md` (roadmap 1.4 status);
   - this doc (anything built differently);
   - `docs/round8/track-e8-tests.md` (all milestone steps and one kit line).
+  - **As built:** `docs/round8/track-e-tests.md` (all milestone steps in one two-window run, then the internet test, with one kit line) and `docs/round8/friend-install.md` (what a friend installs and runs, and the host's preparation).
 - **Owner test M6** (`-World mp-m6 -Fresh`):
   1. Host window: `/op Friend`, then `/execute in minecraft:the_end run tp @a 0 70 0`.
   2. Both fight the dragon, alternating windows. Both see the boss bar, crystals and breath.
@@ -1305,7 +1307,7 @@ Skating for friends, the friend's first-person hand, trading screens and Minecra
 Both players get it on their first join to a fresh world:
 
 ```
-IW4L_MINECRAFT_KIT=diamond_sword,diamond_pickaxe,shield,bow,arrow*64,cooked_beef*32,snowball*16,oak_planks*64,crafting_table,chest*2,furnace,coal*16,raw_iron*16,iron_helmet,iron_chestplate,iron_leggings,iron_boots,elytra,flint_and_steel,obsidian*14,ender_pearl*16,eye_of_ender*12,zombie_spawn_egg*2,cow_spawn_egg*2,water_bucket,tnt*4,white_bed
+IW4L_MINECRAFT_KIT=diamond_sword,diamond_pickaxe,shield,bow,arrow*64,cooked_beef*32,snowball*16,oak_planks*64,crafting_table,chest*2,furnace,coal*16,raw_iron*16,iron_helmet,iron_chestplate,iron_leggings,iron_boots,elytra,flint_and_steel,obsidian*14,ender_pearl*16,ender_eye*12,zombie_spawn_egg*2,cow_spawn_egg*2,water_bucket,tnt*4,white_bed
 ```
 
 M4 also needs a creeper spawn egg; the friend gets it with `/give Friend creeper_spawn_egg` after `/op Friend`.
@@ -1339,9 +1341,16 @@ M4 also needs a creeper spawn egg; the friend gets it with `/give Friend creeper
   - a dedicated headless host;
   - automatic reconnect.
 - **Joining:** Discord join (skycraft's precedent), NAT traversal without a forwarded port.
+  - **Found in E23 and E24:** the server browser refuses a room in a match, and a hosted Minecraft world always is in its match; `ui_join_lobby_id` joins with the menu's selected map and no password; a code still wrong after `net::join_code` makes `MasterLaunchIntent::from_env_for_map` fail, and the game then starts the map without the relay, as a world of the friend's own. All three are MW2 launch and menu code older than track E. The join code `.bat` works around them.
+  - **A friend is not told why the world closed** when the host quits (section 15 planned "The host closed the world"): the friend's game goes back to the menu like after any ended MW2 match.
 - **Missing visuals and sounds:**
   - mob flags that neither the NBT, `MobLook` nor the extra `ServerMob` fields carry (each one found goes into the limitations list);
-  - sounds that only the host's local presentation makes and that E17 did not classify.
+  - sounds that only the host's local presentation makes and that E17 did not classify;
+  - on the friend's game (E16, E17, E20): the item flying into the player who picks it up (only its sound is sent; vanilla's `ClientboundTakeItemEntityPacket`), particles that are neither level events nor explosions (snowball and egg crumbs, the ender pearl's particles, the dragon egg's teleport trail, MW2 bullet puffs on mobs, the friend's own dig-hit, eating and broken-tool particles), lightning and thunder, campfire smoke, and the purple portal overlay (vanilla computes it on the client; the friend hears the trigger sound).
+- **The tick state for friends:** vanilla's `ClientboundTickingStatePacket` and step packet. Under `/tick freeze` or `/tick rate` a friend's clocks run at 20 ticks a second and are corrected by the host's `Time` once a second.
+- **Death lines after a gun hit:** MW2 damage never enters the Minecraft combat tracker (E18), so a gun hit followed by a fall or lava is told as a plain fall or lava death, not vanilla's "doomed to fall by <player>".
+- **The enchanting seed** is per player since E14 but not saved (vanilla's `XpSeed`), so a table offers new enchantments after a restart.
+- **Friends' own view distance:** every player gets the server's view distance of 8 chunks (E9); a friend has no setting of their own that the host would clamp, as vanilla does.
 
 ## 21. Risks and what to check first
 
@@ -1395,3 +1404,30 @@ M4 also needs a creeper spawn egg; the friend gets it with `/give Friend creeper
 - "Put Minecraft deaths in the MW2 kill feed": the owner asked in round 7 for the opposite (`docs/round7/a2-chat.md`). Recorded in section 1 for the owner to overrule.
 - "Move the End origin to −1200 or lower": that pushes the top wall further past the band. Fixed with −1140 instead.
 - "Send `MobData` on known changes instead of hashing": the cost came from hashing the whole tag. Comparing a small `MobLook` every 10 ticks is cheap and needs no hooks.
+
+## 23. What was built differently
+
+Round 8 built this design in track E. Where the build differs from the sections above, the build is right; the track log (`docs/round8/track-e-log.md`) has the reason for each under the step named.
+
+**Transport and messages**
+- The frame number and acknowledgement live in `net::minecraft_wire`, which treats every Minecraft message as opaque bytes; `ToServerFrame`, `ToClientFrame` and `ToServer::Ack` stay in `minecraft_net` unused (E3). Minecraft packets carry no MW2 `PacketHeader`: the host knows the sender by the relay's `MemberId` of an enrolled peer (E3).
+- A chunk batch is sent again 3 s after the egress reported the last copy written or failed, not 3 s after the send, so one copy per batch is in flight (E3). A gap in frame numbers drops the friend with "Lost the world stream" (E3).
+- Nothing in a relay match compares `net::PROTOCOL_VERSION`; `minecraft_net::PROTOCOL` in `Hello` is the check that counts, and it is 3 (E3, E14, E22). A friend's game that hears nothing from the host for 30 s says the host may run a different build, but waits as long as the host answers on the wire (E7c and its review fix).
+- Chunks travel as the region file's zlib body of vanilla's chunk NBT, light included (E5).
+- `Click` carries the HUD's own menu actions, not vanilla's slot number, button and mode; the `state` check is vanilla's (E14). The friend works out station outputs itself from the cells the host sends; taking an output always runs on the host (E14).
+- `Equipment` carries a player's whole gear (E15).
+- `MobLook` carries the mob's whole tag (without the values that change all the time), and the friend spawns it again in place, instead of a small look struct (E16). Moves go every tick (E16).
+- `Explosion` carries the radius, a block count and `interacts` like the 26.x packet, not block positions; `PlayerEvent` is new (E17). The dragon's one-shot effects go as `Bursts` on the reliable lane (E22). Lecterns, sleeping and the frozen ticks have their own messages (M6 leftovers).
+
+**The host**
+- The host's own HUD keeps its direct path (`survival.vitals()` and `InventoryUi`) instead of being built from its own `PlayerView`; only the friends' HUDs are built from views (E10b).
+- Friends' commands run in the host system after the bodies are placed, not in `minecraft_world::update`; `/msg`, `/tell` and `/w` were added; the command level is sent like vanilla's permission level (E8).
+- Names are compared ignoring capitals; a new friend joins in the world's default game mode with the host's kit (E6).
+- Sounds are recorded where the host plays them instead of every rule returning its sounds; a friend hears their own place and break sounds after one round trip (E17). Nothing heard crosses levels, so the dragon's death sound reaches the End only (E17).
+- There is no `DamageCause::Player`: a gun kill's line is built from the sim's death, with the MW2 gun's name in brackets (E18). The friend's sim is not told the `pvp` rule (E18).
+- The band table is written twice, in `sim::voxel::BANDS` and `minecraft_survival::bands`, pinned together by a `render_anim` test; teleports are kept inside the walls; the bottom wall kills in every game mode (E19).
+- The host's own level keeps its frame code; every other occupied level runs in `minecraft_levels::tick_levels` (E20). `Dimension` is sent once the friend's place in the new level is known (E20).
+- A friend's credits hold keeps their body at the arrival, hidden by the trip, until `CreditsDone`; the boss bar's id is the constant 1 (E22).
+- The join code is the 32-character hex `AdvertId` in a literal English line; it cannot be clicked to copy (E23).
+
+**Not built as planned** (also in section 20): "The host closed the world" on the friend's game (section 15), the server browser and `ui_join_lobby_id` as ways into a running Minecraft world (section 18.3), and music on the friend's game.

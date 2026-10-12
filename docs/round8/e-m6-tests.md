@@ -4,7 +4,7 @@ This collects the owner's two-window steps for milestone M6 of track E (`docs/MU
 
 The friend window is called **Friend**. The host window uses your own player name, written `<you>` below.
 
-Each section ends with its own kit line; the track log's "Combined kit for every test in this track" (`docs/round8/track-e-log.md`) has one line for all of them, for a fresh world.
+Each section ends with its own kit line. All of these steps, with those of M1 to M5, are in one run with one kit line in `docs/round8/track-e-tests.md`.
 
 ## E22. The dragon fight and the credits work for every player
 
@@ -28,7 +28,7 @@ Put the kit below in the `.env` next to the exe before the first start: both pla
 12. Close the windows (type `quit` in the script's console).
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:bow,minecraft:arrow*64,minecraft:diamond_sword,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:ender_pearl*16,minecraft:eye_of_ender*12,minecraft:water_bucket
+IW4L_MINECRAFT_KIT=minecraft:bow,minecraft:arrow*64,minecraft:diamond_sword,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:ender_pearl*16,minecraft:ender_eye*12,minecraft:water_bucket
 ```
 
 ## Friends freeze in powder snow like the host

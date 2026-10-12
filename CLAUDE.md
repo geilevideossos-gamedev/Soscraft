@@ -8,15 +8,15 @@ Play online with 2-4 friends in one persistent Minecraft world, with MW2 weapons
 
 ## Roadmap
 
-The Minecraft side for one player is done (round 7). **Multiplayer (1.4) is the next step.**
+The Minecraft side for one player is done (round 7). **Multiplayer (1.4) is built (round 8, track E); the owner's first session is next.**
 
 1. **Multiplayer, saving and dimensions**
    1. Persistent world: **done.** Everything vanilla saves is saved in the vanilla 26.3 format: the world, all three dimensions, block entities and one player file per UUID.
    2. Crate split: **done.** `minecraft_survival` holds `Server` (world-wide state), a `Level` per dimension and a `Player` per UUID; `minecraft_net` holds the shared ids.
    3. Dimension switch and the Nether: **done.** Left for "Finish survival": N6 (piglin and hoglin brains, piglin brutes, zoglins, striders, bartering, lodestones).
-   4. **Next: multiplayer with 2-4 friends.** The host owns the world and the friends join through our MW2 relay. Still to build: a server tick with several players (the level thread still talks to player `0`), every occupied level ticking, chunk streaming per player, an MW2 collision world per dimension, the network messages in `minecraft_net`, and the player actions and menus moved out of `render_anim` (`docs/CRATE-SPLIT.md` section 6).
+   4. Multiplayer with 2-4 friends: **built, waiting for the owner's test.** The host owns the world and the friends join through our MW2 relay with a join code. Every player, every occupied level and the dragon fight run on the host, and each dimension has its own MW2 collision band. Design and what was left: `docs/MULTIPLAYER.md` (section 20). Owner's test: `docs/round8/track-e-tests.md`. Friend's install: `docs/round8/friend-install.md`.
    5. The End: **done apart from X6** (gateway travel to the outer islands, item frames, shulkers, levitation), which is left for "Finish survival". It was built before multiplayer, with all state per player and per level.
-2. Finish survival: N6, X6 and the open limitations in the state doc
+2. Finish survival: N6, X6, the open limitations in the state doc and the multiplayer leftovers (`docs/MULTIPLAYER.md` section 20)
 3. One Elden Ring boss as a proof of concept
 4. Skate 3
 
@@ -102,6 +102,6 @@ AGENT.md, CONTEXT.md, README.md, CONTRIBUTING.md and docs/ come from upstream an
 - **README.md**
   - The README was already edited by the fork up to ac0c791. It has no feature notes from round 4 onward, and none of the fork goal.
   - Its "Minecraft World.bat" starts upstream's `iw4l.exe`, not `iw4l-survival.exe`.
-- **Multiplayer is MW2 only:** the MW2 "multiplayer", `docs/DUO.md` and `docs/MASTER.md` cover MW2 matches only. The Minecraft world is saved (all three dimensions, vanilla 26.3 format) but not shared yet (see the state doc).
+- **Upstream's multiplayer docs are MW2 only:** `docs/DUO.md` and `docs/MASTER.md` cover MW2 matches only. The fork's Minecraft multiplayer, through the same relay, is `docs/MULTIPLAYER.md`, and two games on one PC run with `scripts\mp-local.ps1`.
 - **Build docs:** `docs/BUILD.md` is Linux-first. This fork builds natively on Windows with MSVC.
 - **Vendored code:** `third_party/minecraftoss` is MinecraftOSS `4013a68`, and the fork has patched 53 of its files and added 14 (as of round 7). If upstream ever re-vendors a newer MinecraftOSS, diff our patches first.
