@@ -1,10 +1,10 @@
+pub use crate::brain_behaviors::Living;
+use crate::brain_behaviors::set_list;
 pub use crate::brain_behaviors::{
     MoveSink, Pos, REPELLENT_HORIZONTAL, REPELLENT_VERTICAL, Ticker, Track, WalkGoal, Walker,
     block_of, closer_than, find, nearer, nearest_block_in_tag, shuffled, within_manhattan,
     within_melee_range,
 };
-pub use crate::brain_behaviors::Living;
-use crate::brain_behaviors::set_list;
 use crate::fluid::FluidFrame;
 use crate::monster_ai::Target;
 use crate::movement::Body;

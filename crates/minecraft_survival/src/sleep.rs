@@ -503,7 +503,10 @@ impl Bedroom for LevelRoom<'_> {
     }
 
     fn loaded(&self, (x, _, z): Pos) -> bool {
-        self.terrain.scene.generated_chunk((x >> 4, z >> 4)).is_some()
+        self.terrain
+            .scene
+            .generated_chunk((x >> 4, z >> 4))
+            .is_some()
     }
 
     fn sound(&mut self, event: &'static str, at: [f64; 3]) {
@@ -1437,8 +1440,16 @@ mod night_tests {
         let mut status = SleepStatus::default();
         room.unloaded = true;
         tick(&mut room, &mut status, &mut [&mut joined], &night(100));
-        assert_eq!(joined.saved_in_bed, Some((0, 64, 1)), "it waits for the bed's chunk");
-        assert_eq!(joined.data().sleeping_pos, Some((0, 64, 1)), "and is saved again meanwhile");
+        assert_eq!(
+            joined.saved_in_bed,
+            Some((0, 64, 1)),
+            "it waits for the bed's chunk"
+        );
+        assert_eq!(
+            joined.data().sleeping_pos,
+            Some((0, 64, 1)),
+            "and is saved again meanwhile"
+        );
         assert_eq!(room.occupied((0, 64, 1)), Some("true"));
         room.unloaded = false;
         joined.arrival = None;
@@ -1450,17 +1461,32 @@ mod night_tests {
         assert_eq!(room.occupied((0, 64, 0)), Some("false"));
         let place = joined.arrival.unwrap();
         assert_eq!(place.feet[1], 64.0);
-        assert!((place.feet[0] - 0.5).abs() >= 1.0 || (place.feet[2] - 1.0).abs() > 1.0, "{:?}", place.feet);
-        assert_eq!(place.yaw, crate::respawn_block::look_at_yaw(place.feet, (0, 64, 1)));
+        assert!(
+            (place.feet[0] - 0.5).abs() >= 1.0 || (place.feet[2] - 1.0).abs() > 1.0,
+            "{:?}",
+            place.feet
+        );
+        assert_eq!(
+            place.yaw,
+            crate::respawn_block::look_at_yaw(place.feet, (0, 64, 1))
+        );
         assert_eq!(joined.data().sleeping_pos, None);
         let straw = room.bed("minecraft:straw_bed", (3, 64, 0), "east");
         let mut alex = player(1, [4.5, 64.375, 0.5]);
         alex.saved_in_bed = Some(straw.head);
         tick(&mut room, &mut status, &mut [&mut alex], &night(100));
-        assert_eq!(room.state_at(straw.head), BlockStateId::AIR, "a left straw bed breaks");
+        assert_eq!(
+            room.state_at(straw.head),
+            BlockStateId::AIR,
+            "a left straw bed breaks"
+        );
         let mut gone = player(2, [9.5, 64.0, 9.5]);
         gone.saved_in_bed = Some((9, 64, 9));
         tick(&mut room, &mut status, &mut [&mut gone], &night(100));
-        assert_eq!((gone.saved_in_bed, gone.arrival), (None, None), "no bed: nobody moves");
+        assert_eq!(
+            (gone.saved_in_bed, gone.arrival),
+            (None, None),
+            "no bed: nobody moves"
+        );
     }
 }

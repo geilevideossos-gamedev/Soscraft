@@ -963,3 +963,14 @@ After 8313e07b.
 ```
 IW4L_MINECRAFT_KIT=minecraft:red_bed*4,minecraft:blue_bed,minecraft:straw_bed*2,minecraft:zombie_spawn_egg*8,minecraft:slime_spawn_egg*4,minecraft:zombified_piglin_spawn_egg*2,minecraft:villager_spawn_egg*2,minecraft:cobblestone*64,minecraft:diamond_sword,minecraft:clock
 ```
+
+## Adversarial review
+
+### R1. Track B's new files pass rustfmt
+
+After d8e4c095.
+
+- **Defect:** three files this track added did not pass `rustfmt --check` on their committed content: `minecraft_survival/src/sleep.rs` (edition 2024), `minecraftoss/entities/src/hoglin_brain.rs` and `minecraftoss/entities/src/world/hoglins.rs` (edition 2021). The rule is that every new file passes.
+- **Changed:** those three files are now exactly rustfmt's output for their edition (run from the repository root, so `rustfmt.toml` applies). Formatting only: no code changed.
+- **Tests:** none new; the lib tests of `minecraft_survival` and `minecraftoss-entities` still pass.
+- **Test steps:** none (formatting only).
