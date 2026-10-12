@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use anim_iw4::Local;
 use bevy::prelude::*;
 use minecraft_terrain::elytra_render::{ElytraAnim, WingAngles, flying_roll};
 use net::{FrameClock, PresentedSnapshot};
@@ -123,6 +124,54 @@ pub fn step_body_glides(
     glide.step(seconds, clients);
 }
 
+impl GlidePose {
+    pub fn tilts(&self) -> bool {
+        self.scale > 0.0 || self.roll.is_some()
+    }
+}
+
+pub fn body_pose(
+    glide: &McGlide,
+    puppet: Option<&frame::InventoryPuppet>,
+    client: u32,
+    corpse: bool,
+) -> Option<GlidePose> {
+    if corpse {
+        return None;
+    }
+    let pose = glide.pose(client)?;
+    match puppet {
+        Some(puppet) if puppet.active && puppet.client == client => Some(GlidePose {
+            pitch_deg: puppet.pitch,
+            roll: None,
+            ..pose
+        }),
+        _ => Some(pose),
+    }
+}
+
+pub fn glide_root(scale: f32, pitch_deg: f32, roll: Option<f32>) -> Quat {
+    Quat::from_rotation_y((scale * (90.0 + pitch_deg)).to_radians())
+        * Quat::from_rotation_z(roll.unwrap_or(0.0))
+}
+
+pub fn aim_pitch(pose: Option<GlidePose>, view_pitch_deg: f32) -> f32 {
+    pose.map_or(view_pitch_deg, |pose| view_pitch_deg * (1.0 - pose.scale))
+}
+
+pub fn apply_glide_root(locals: &mut [Local], pose: GlidePose) {
+    let Some(root) = locals.first_mut().filter(|_| pose.tilts()) else {
+        return;
+    };
+    let [x, y, z, w] = root.rotation;
+    let turned = glide_root(pose.scale, pose.pitch_deg, pose.roll) * Quat::from_xyzw(x, y, z, w);
+    root.rotation = turned.normalize().to_array();
+}
+
+pub fn apply_glide(_dobj: &xmodel_runtime::DObj, locals: &mut [Local], pose: GlidePose) {
+    apply_glide_root(locals, pose);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +287,166 @@ mod tests {
         let pose = glide.pose(1).unwrap();
         assert!(pose.crouching);
         assert!((pose.wings.x - WingAngles::CROUCH.x).abs() < 0.01);
+    }
+
+    fn flying(scale: f32, pitch_deg: f32, roll: Option<f32>) -> GlidePose {
+        GlidePose {
+            scale,
+            roll,
+            pitch_deg,
+            wings: WingAngles::SPREAD,
+            crouching: false,
+        }
+    }
+
+    #[test]
+    fn the_body_lies_along_the_look_at_full_scale() {
+        let up = glide_root(1.0, 30.0, None) * Vec3::Z;
+        let look = Vec3::new(30f32.to_radians().cos(), 0.0, -30f32.to_radians().sin());
+        assert!(up.abs_diff_eq(look, 1e-5), "{up}");
+        let level = glide_root(1.0, 0.0, None);
+        assert!((level * Vec3::Z).abs_diff_eq(Vec3::X, 1e-5));
+        assert!(
+            (level * Vec3::X).abs_diff_eq(Vec3::NEG_Z, 1e-5),
+            "the chest faces the ground"
+        );
+        let climb = glide_root(1.0, -40.0, None) * Vec3::Z;
+        assert!(climb.z > 0.6 && climb.x > 0.7, "{climb}");
+        assert!(glide_root(0.0, 30.0, None).abs_diff_eq(Quat::IDENTITY, 1e-6));
+        let half = glide_root(0.5, 30.0, None) * Vec3::Z;
+        assert!((half.angle_between(Vec3::Z).to_degrees() - 60.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_roll_turns_about_the_long_axis() {
+        let still = glide_root(1.0, 10.0, None);
+        let rolled = glide_root(1.0, 10.0, Some(0.5));
+        assert!((rolled * Vec3::Z).abs_diff_eq(still * Vec3::Z, 1e-5));
+        let (left, turned) = (still * Vec3::Y, rolled * Vec3::Y);
+        assert!((left.angle_between(turned) - 0.5).abs() < 1e-4);
+        let upright = glide_root(0.0, 10.0, Some(0.5));
+        assert!(
+            (upright * Vec3::X).abs_diff_eq(Vec3::new(0.5f32.cos(), 0.5f32.sin(), 0.0), 1e-5),
+            "a positive roll turns the chest to the left like vanilla's YP"
+        );
+    }
+
+    #[test]
+    fn the_aim_pitch_fades_as_the_body_tips() {
+        assert_eq!(aim_pitch(None, 40.0), 40.0);
+        assert_eq!(aim_pitch(Some(flying(0.0, 40.0, None)), 40.0), 40.0);
+        assert_eq!(aim_pitch(Some(flying(0.25, 40.0, None)), 40.0), 30.0);
+        assert_eq!(aim_pitch(Some(flying(1.0, 40.0, None)), 40.0), 0.0);
+    }
+
+    #[test]
+    fn the_puppet_tilts_by_its_own_pitch_without_a_roll_and_corpses_never_tilt() {
+        let mut glide = McGlide::default();
+        let input = GlideInput {
+            gliding: true,
+            motion: [1.0, 0.5, 0.0],
+            look: [1.0, 0.0, 0.0],
+            pitch_deg: 20.0,
+            ..Default::default()
+        };
+        glide.step(0.05, [(4, input)]);
+        let world = body_pose(&glide, None, 4, false).unwrap();
+        assert_eq!(world.pitch_deg, 20.0);
+        assert!(world.roll.is_some_and(|roll| roll > 0.4));
+        let puppet = frame::InventoryPuppet {
+            active: true,
+            client: 4,
+            root: Mat4::IDENTITY,
+            pitch: -5.0,
+        };
+        let boxed = body_pose(&glide, Some(&puppet), 4, false).unwrap();
+        assert_eq!((boxed.pitch_deg, boxed.roll), (-5.0, None));
+        assert_eq!(boxed.scale, world.scale);
+        let closed = frame::InventoryPuppet {
+            active: false,
+            ..puppet
+        };
+        assert_eq!(body_pose(&glide, Some(&closed), 4, false), Some(world));
+        assert_eq!(body_pose(&glide, None, 4, true), None);
+        assert_eq!(body_pose(&glide, None, 7, false), None);
+    }
+
+    fn skeleton(joints: &[(&str, usize, Vec3)]) -> xmodel_runtime::DObj {
+        let mut world: Vec<Vec3> = Vec::new();
+        for (index, (_, parent, offset)) in joints.iter().enumerate() {
+            let base = if index == 0 {
+                Vec3::ZERO
+            } else {
+                world[*parent]
+            };
+            world.push(base + *offset);
+        }
+        let model = xmodel_runtime::ModelPoseSrc {
+            name: "body".to_owned(),
+            num_bones: joints.len(),
+            num_root_bones: 1,
+            scale: 1.0,
+            no_scale_part_bits: [0; 6],
+            bone_names: joints
+                .iter()
+                .map(|(name, _, _)| (*name).to_owned())
+                .collect(),
+            parent_list: joints[1..]
+                .iter()
+                .enumerate()
+                .map(|(at, (_, parent, _))| (at + 1 - parent) as _)
+                .collect(),
+            quats: vec![[0, 0, 0, 32767]; joints.len() - 1],
+            trans: joints[1..]
+                .iter()
+                .map(|(_, _, offset)| offset.to_array())
+                .collect(),
+            base_mat: world.iter().map(|at| (Quat::IDENTITY, *at)).collect(),
+        };
+        xmodel_runtime::DObj::build(&[(&model, None)]).unwrap()
+    }
+
+    fn body() -> xmodel_runtime::DObj {
+        skeleton(&[
+            ("tag_origin", 0, Vec3::ZERO),
+            ("j_mainroot", 0, Vec3::new(0.0, 0.0, 40.0)),
+            ("j_spinelower", 1, Vec3::new(0.0, 0.0, 4.0)),
+            ("j_spine4", 2, Vec3::new(0.0, 0.0, 16.0)),
+            ("j_neck", 3, Vec3::new(0.0, 0.0, 6.0)),
+            ("j_head", 4, Vec3::new(1.0, 0.0, 5.0)),
+            ("j_hip_ri", 1, Vec3::new(0.0, -4.0, -2.0)),
+            ("j_knee_ri", 6, Vec3::new(4.0, 0.0, -17.0)),
+            ("j_ankle_ri", 7, Vec3::new(-5.0, 0.0, -16.0)),
+            ("j_hip_le", 1, Vec3::new(0.0, 4.0, -2.0)),
+            ("j_knee_le", 9, Vec3::new(3.0, 1.0, -17.0)),
+            ("j_ankle_le", 10, Vec3::new(-4.0, 0.0, -16.0)),
+        ])
+    }
+
+    fn at(world: &[Mat4], dobj: &xmodel_runtime::DObj, name: &str) -> Vec3 {
+        world[dobj.find(name).unwrap()].w_axis.truncate()
+    }
+
+    #[test]
+    fn the_root_turns_every_bone_about_the_feet() {
+        let dobj = body();
+        let mut locals = dobj.bind_locals();
+        apply_glide(&dobj, &mut locals, flying(1.0, 0.0, None));
+        let world = dobj.compose(&locals, Mat4::IDENTITY);
+        assert!(at(&world, &dobj, "tag_origin").abs_diff_eq(Vec3::ZERO, 1e-4));
+        let spine = at(&world, &dobj, "j_spine4");
+        assert!(
+            spine.abs_diff_eq(Vec3::new(60.0, 0.0, 0.0), 1e-3),
+            "{spine}"
+        );
+        let mut still = dobj.bind_locals();
+        apply_glide(&dobj, &mut still, flying(0.0, 30.0, None));
+        assert_eq!(still, dobj.bind_locals());
+        let mut half = dobj.bind_locals();
+        apply_glide(&dobj, &mut half, flying(0.5, 0.0, None));
+        let world = dobj.compose(&half, Mat4::IDENTITY);
+        let spine = at(&world, &dobj, "j_spine4");
+        let want = Vec3::new(45f32.to_radians().sin(), 0.0, 45f32.to_radians().cos()) * 60.0;
+        assert!(spine.abs_diff_eq(want, 1e-3), "{spine}");
     }
 }

@@ -1098,3 +1098,34 @@ Previous commit: f20e9e91
 ```
 IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:firework_rocket*64,minecraft:cobblestone*64
 ```
+
+### 44. Gliding MW2 bodies lie along their flight and roll into turns like vanilla
+
+Previous commit: 76c4be1a
+
+- **Changed:**
+  - `render_anim` `anim/minecraft_glide.rs`:
+    - `glide_root(scale, pitch, roll)`: in the MW2 body frame (X forward, Y left, Z up), `Ry(scale · (90 + pitch))` then the roll about the body's own long axis (`Rz`, post-multiplied). This is vanilla `AvatarRenderer.setupRotations` while fall flying, `XP(scale · (-90 - xRot))` then `YP(flyingYRot)`, mapped through the vanilla-to-MW2 body axes (a proper rotation, so `XP(θ)` is `Ry(-θ)` and `YP` is `Rz`); MW2 and vanilla pitch are both positive downward.
+    - `apply_glide_root`: turns bone 0 (`tag_origin`, at the feet) by it after the aim controller has written it, so the body pivots at the feet as vanilla's does, and every posed bone follows: the skin, the gun, the fx bolts, the posed head and the gear frames, so armour, held items and wings ride along.
+    - `aim_pitch`: the controller's view pitch fades by `1 - scale`, so the spine does not bend on top of the tilt.
+    - `body_pose(glide, puppet, client, corpse)`: a corpse never tilts; the open inventory puppet tilts by the puppet's own pitch and without a roll, as vanilla's inventory figure lies down too.
+  - `anim/remote_body.rs` `pose_remote_dobj` takes the glide pose and applies it after the controller (3 lines). `occupancy/remote_body.rs`: `RemotePoseFrame` carries `McGlide`; `pose_one_remote` gives the controller the faded pitch and passes the pose. A skating body is posed by the skate rig and gets none.
+- **Tests:** `minecraft_glide`: `the_body_lies_along_the_look_at_full_scale` (looking 30 degrees down the long axis points along the look; level flight lies flat chest down; scale 0 is no turn; scale 0.5 tilts 60 degrees), `the_roll_turns_about_the_long_axis` (the long axis stays, the sides turn by the roll; a positive roll turns the chest to the left), `the_aim_pitch_fades_as_the_body_tips`, `the_puppet_tilts_by_its_own_pitch_without_a_roll_and_corpses_never_tilt`, `the_root_turns_every_bone_about_the_feet` (on a synthetic skeleton with `tag_origin`: the feet stay, `j_spine4` swings from 60 units up to 60 units forward at full scale and to 45 degrees at half).
+- **Decisions:**
+  - No MW2 animation is used for the glide (IW4 has none; prone was rejected in the brief): the MW2 tree keeps playing its in-air anim and the glide is a pose override after it.
+  - The tilt goes on bone 0, not on the entity `Transform`, so `sync_remote_bodies` is unchanged and everything posed from the bones follows from one place.
+  - The pivot is at the feet as in vanilla, while the MW2 hull and eye stay standing (round 7 decision), so in F5 the lying body sits lower in view than vanilla's 0.4-block eye would show it.
+  - The roll is applied whenever the body glides, even while the tilt is still growing, as vanilla applies `flyingYRot` unscaled. The tilt goes at once on landing (no ease), as vanilla.
+  - Bullets still hit the upright in-air pose the authority poses (`sim/src/bullet_collision.rs`) **[E: in PvP, shots at a gliding body can miss]**. Culling still assumes an upright body, so a lying body may pop at the screen edge.
+- **Test steps:** (survival; kit below)
+  1. Put the plain elytra in the chest slot, press F5 for the back view, `/tp ~ ~40 ~` and press jump in the air. Over half a second the body tips forward until it lies along where you look, and the wings spread wide. Look level: the body lies flat (**1**). Look down to dive: the body points head first down (**2**). Look up: the body angles up.
+  2. While gliding, flick the mouse sharply left, then right: the body rolls into each turn for a moment and levels out as the flight follows the look (**3**, mid-roll).
+  3. Select the sword, put the torch in the offhand (F) and glide: both stay in the hands and tip with the body. Select an MW2 gun: it still fires while gliding, and the body stays tipped. Right-click a rocket: the body stays along the faster flight.
+  4. Land: the body is upright at once and the wings fold within about a quarter second.
+  5. Open the inventory mid-glide: the character in the box lies tipped like the body (vanilla does the same). Say if it leaves the box (**4**).
+  6. Say if the body floats off the ground line, sinks, or turns the wrong way, and by about how much.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:firework_rocket*64,minecraft:cobblestone*64,minecraft:diamond_sword,minecraft:torch*64
+```

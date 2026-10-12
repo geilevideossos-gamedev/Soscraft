@@ -1051,11 +1051,15 @@ pub fn pose_remote_dobj(
     dobj: &xmodel_runtime::DObj,
     runtime: xmodel_runtime::XAnimTreeRuntime,
     controller: Option<xmodel_runtime::PlayerControllerInput>,
+    glide: Option<crate::anim::minecraft_glide::GlidePose>,
 ) -> Result<Vec<Mat4>, String> {
     let request = xmodel_runtime::DObjPoseRequest::with_tree(runtime);
     xmodel_runtime::pose_dobj_with_controller(dobj, &request, Mat4::IDENTITY, |dobj, _, locals| {
         if let Some(input) = controller {
             xmodel_runtime::apply_player_controller(dobj, locals, input);
+        }
+        if let Some(glide) = glide {
+            crate::anim::minecraft_glide::apply_glide(dobj, locals, glide);
         }
     })
     .map_err(|error| format!("{error:?}"))

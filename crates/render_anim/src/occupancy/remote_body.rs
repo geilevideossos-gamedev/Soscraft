@@ -510,6 +510,7 @@ struct RemotePoseFrame<'a> {
     posed_players: &'a mut crate::anim::dobj_pose::PosedPlayerFrame,
     posed_gear: &'a mut crate::anim::minecraft_gear::PosedGearFrame,
     body_gear: &'a crate::anim::minecraft_gear::McBodyGear,
+    glide: &'a crate::anim::minecraft_glide::McGlide,
     scene: &'a render_scene::GfxScene,
     last_cache_hits: &'a HashSet<u32>,
     pending: Vec<PendingBodySkin<'a>>,
@@ -565,6 +566,7 @@ fn pose_remote_bodies(
         Option<Res<FrameClock>>,
         ResMut<crate::anim::minecraft_gear::PosedGearFrame>,
         Res<crate::anim::minecraft_gear::McBodyGear>,
+        Res<crate::anim::minecraft_glide::McGlide>,
     ),
     mut roots: Query<
         (
@@ -591,6 +593,7 @@ fn pose_remote_bodies(
         cg_clock,
         mut posed_gear,
         body_gear,
+        glide,
     ) = dpvs;
     submit.clear();
     for (_, _, _, mut bolts, _) in &mut roots {
@@ -704,6 +707,7 @@ fn pose_remote_bodies(
         posed_players: &mut posed_players,
         posed_gear: &mut posed_gear,
         body_gear: &body_gear,
+        glide: &glide,
         scene: &gfx.scene,
         last_cache_hits: &last_cache_hits,
         pending: Vec::new(),
@@ -835,6 +839,13 @@ impl<'a> RemotePoseFrame<'a> {
             Some(puppet) if puppet.active && persist_key == puppet.client => puppet.pitch,
             _ => sample.view_pitch_deg,
         };
+        let glide = crate::anim::minecraft_glide::body_pose(
+            self.glide,
+            self.puppet,
+            persist_key,
+            is_corpse,
+        );
+        let view_pitch_deg = crate::anim::minecraft_glide::aim_pitch(glide, view_pitch_deg);
         let prone = sample.prone;
         let crouch = sample.crouch;
         let dt = self.dt;
@@ -922,6 +933,7 @@ impl<'a> RemotePoseFrame<'a> {
                     dobj,
                     anim_runtime,
                     remote_player_controller(is_corpse, view_pitch_deg, prone, crouch),
+                    glide,
                 )?
             };
             let skin = publish_remote_dobj(
