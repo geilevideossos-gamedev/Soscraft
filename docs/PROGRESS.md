@@ -18,7 +18,7 @@ Started 2026-10-10 on `minecraft-survival` at e2313625. The owner's brief is the
 - 2026-10-12: the owner's interim test of release 1 (section A, kit A) gave four fixes, run as track F beside track E: worktree `C:\Dev\mc-wt\track-f`, branch `track-f`, target `D:\iw4l-wt\track-f`, base aaf968e1, brief `docs/round8/track-f.md`, groups `f1-black-body`, `f2-spyglass`, `f3-spawn-eggs`, `f4-grenade-keys`. Track F merges before track E and before release 2; the owner's findings from sections B, C and D will be added to track F.
 - If the session stopped mid-run: in the track-e worktree read `docs/round8/track-e-log.md` and `git status`. Commit or discard a half-done group (`git diff` shows it; a group is one commit per item, so redo an unfinished item rather than committing half of it), then start the track-runner again with the same args and only the groups not yet committed (base stays 03f1bc8d so the review covers all of M3 and M4).
 - After M3 + M4: M5 (E19-E21, dimensions) and M6 (E22-E24, dragon, join code, friend install docs), one run each; then merge track E (full suite), release build 2 with `docs/round8/release-2-tests.md` and the two-window multiplayer steps, then update CLAUDE.md and `docs/MINECRAFT-SURVIVAL.md` and list the round's decisions for the owner.
-- Gentle cargo mode is still on (`%LOCALAPPDATA%\iw4l-cargo-slot.txt`).
+- Full speed since 2026-10-12 evening (the owner is not gaming): `%LOCALAPPDATA%\iw4l-cargo-slot.txt` holds `slots=2`, `jobs=8`. Set it back to `slots=1`, `jobs=4`, `priority=low` when the owner plays again.
 
 ## Owner's test of e231362
 Working: everything in `docs/round7/release-2-tests.md` up to and including the dragon kill.
