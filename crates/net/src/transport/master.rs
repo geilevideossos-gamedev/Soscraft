@@ -362,7 +362,7 @@ impl MasterLaunchIntent {
             (None, Some(advert_id)) => Ok(Self(MasterLaunchMode::Join(JoinConfig {
                 password: std::env::var("IW4L_MASTER_PASSWORD").unwrap_or_default(),
                 target,
-                advert_id: advert_id.parse()?,
+                advert_id: join_code(&advert_id).parse()?,
                 map: map.to_owned(),
                 mode: std::env::var("IW4L_GAMETYPE").unwrap_or_else(|_| "dm".into()),
                 have,
@@ -389,6 +389,13 @@ impl MasterLaunchIntent {
     pub const fn configured(&self) -> bool {
         !matches!(self.0, MasterLaunchMode::Disabled)
     }
+}
+
+pub fn join_code(typed: &str) -> String {
+    typed
+        .chars()
+        .filter(|c| !c.is_whitespace() && !matches!(c, '[' | ']' | '-'))
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3314,4 +3321,24 @@ fn refresh_relay_authority_hello(
         );
     }
     hub.hello.content = content;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_join_code_typed_with_brackets_spaces_or_capitals_still_names_the_room() {
+        let room: AdvertId = "00ff00ff00ff00ff00ff00ff00ff00ff".parse().unwrap();
+        for typed in [
+            "00ff00ff00ff00ff00ff00ff00ff00ff",
+            "[00ff00ff00ff00ff00ff00ff00ff00ff]",
+            " 00FF00FF00FF00FF00FF00FF00FF00FF ",
+            "00ff 00ff-00ff 00ff 00ff 00ff 00ff 00ff",
+        ] {
+            assert_eq!(join_code(typed).parse::<AdvertId>().unwrap(), room, "{typed}");
+        }
+        assert!(join_code("00ff00ff").parse::<AdvertId>().is_err());
+        assert!(join_code("zzff00ff00ff00ff00ff00ff00ff00ff").parse::<AdvertId>().is_err());
+    }
 }

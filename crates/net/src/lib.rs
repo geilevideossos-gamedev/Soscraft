@@ -146,7 +146,7 @@ pub use transport::master::{
     CONTENT_IW4, CONTENT_IW5, CONTENT_T5, MasterAdvert, MasterBridge, MasterBridgeState,
     MasterBrowser, MasterBrowserSnapshot, MasterLaunchIntent, MasterLifecycleFact,
     MasterMatchOffer, MasterMatchStart, MasterMenuAction, PendingMasterMenuAction, SessionIdentity,
-    TransportFault, content_inventory, content_names, content_required_by_map,
+    TransportFault, content_inventory, content_names, content_required_by_map, join_code,
 };
 pub use transport::meta_wire::{
     SnapshotMetaSectionBytes, WORLD_SYNC_PERIOD_TICKS, WorldObjectSyncDecoder,

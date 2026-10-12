@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use minecraft_commands::text::YELLOW;
+use minecraft_commands::text::{GREEN, YELLOW};
 use minecraft_commands::{Clientbound, CommandServer, Outgoing, PlayerId, Text};
 use minecraft_net::codec::{BATCH_CUT, BULK_LIMIT};
 use minecraft_net::messages::{
@@ -762,6 +762,14 @@ pub fn left_line(name: &str) -> Clientbound {
     system_line(Text::translate("multiplayer.player.left", vec![Text::literal(name)]).color(YELLOW))
 }
 
+pub fn join_code_line(code: &str) -> Clientbound {
+    let bracketed = Text::translate(
+        "chat.square_brackets",
+        vec![Text::literal(code).color(GREEN)],
+    );
+    system_line(Text::literal("Friends join with the code ").append(bracketed))
+}
+
 pub fn dragon_bar(progress: f32) -> BossBarOperation {
     BossBarOperation::Add {
         name: Text::translate(DRAGON_NAME, Vec::new()),
@@ -1360,6 +1368,24 @@ mod tests {
     use super::*;
     use crate::commands::HOST;
     use crate::server::tests::{TestDir, registries, test_globals, world};
+
+    #[test]
+    fn the_join_code_line_shows_the_code_in_green_brackets_like_the_seed() {
+        let Clientbound::System { text, overlay } =
+            join_code_line("00ff00ff00ff00ff00ff00ff00ff00ff")
+        else {
+            panic!("the join code is a system line");
+        };
+        assert!(!overlay);
+        let lang = |key: &str| (key == "chat.square_brackets").then(|| "[%s]".to_owned());
+        let resolved = text.resolve(&lang);
+        assert_eq!(
+            resolved.text,
+            "Friends join with the code [00ff00ff00ff00ff00ff00ff00ff00ff]"
+        );
+        let start = resolved.text.find('[').unwrap() + 1;
+        assert_eq!(resolved.spans, vec![(start..start + 32, GREEN)]);
+    }
 
     fn all(_: ChunkXz) -> bool {
         true

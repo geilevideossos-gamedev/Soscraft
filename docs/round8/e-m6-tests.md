@@ -127,3 +127,16 @@ With the `pvp` game rule off, a splash potion of harming thrown by a player no l
 ```
 IW4L_MINECRAFT_KIT=minecraft:splash_potion@harming,minecraft:splash_potion@poison
 ```
+
+## E23. The host shows a join code
+
+When the host's room is created, the host's Minecraft chat shows "Friends join with the code [<code>]", the 32-character room code in green brackets (like `/seed` in vanilla). It shows once per room, as soon as the host's world is on screen, and only on the host. The friend types that code into `Join Minecraft World.bat` (or `IW4L_MASTER_JOIN`, or the console's `ui_join_lobby_id`); the brackets, spaces, dashes and capitals may be typed or left out. `mp-local.ps1 -FriendOnly` takes a typed code with `-Join`.
+
+1. Start both windows: `& scripts\mp-local.ps1 -World mp-m6 -Fresh`. Spawn in both.
+2. **The line.** Host window: as soon as the world shows, the chat reads "Friends join with the code [...]" with the code in green. Press T to see it again if it faded. Open `C:\Games\Mashup\2010-Rust-Rewrite-Mashup\iw4l-artifacts\mp-local\host\master.status` in Notepad: its `room=` value is the same code. Screenshot the host window with the line. **S19**
+3. **Only the host.** Friend window: press T. No join code line is in the friend's chat.
+4. **Typing the code.** Close the friend window (Alt+F4); the host's chat says "Friend left the game". In a second PowerShell window, start the friend again with the code typed by hand from the host's chat, brackets included: `& scripts\mp-local.ps1 -World mp-m6 -FriendOnly -Join "[<code>]"`. The script says "starting the friend window (Friend) for room [<code>]"; the friend joins the host's world and spawns where they left. Screenshot the friend window back in the world. **S20**
+5. **Capitals and spaces.** Close the friend window again and repeat step 4 with the code in capitals and a space after every 8 characters, for example `-Join "0123ABCD 4567EF01 ..."`: the friend joins again.
+6. **Over the internet** (when the friend's PC is ready, section 18 of `docs/MULTIPLAYER.md`): start `Host Minecraft World.bat`; the line shows in the host's chat. Read the code to the friend; on their PC they run `Join Minecraft World.bat` and type it at the prompt, with or without the brackets, and join.
+
+No kit item is needed for this test; the combined kit line in the track log stays as it is.

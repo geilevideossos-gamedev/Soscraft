@@ -622,3 +622,67 @@ pub(crate) fn host(
     let lines = std::mem::take(&mut host.sessions.host_lines);
     crate::minecraft_world::show_lines(&runtime, &mut ui.chat, &lines);
 }
+
+fn room_code(state: &net::MasterBridgeState) -> Option<String> {
+    match state {
+        net::MasterBridgeState::Hosting { identity, .. } => Some(identity.room_id.to_string()),
+        _ => None,
+    }
+}
+
+pub(crate) fn show_join_code(
+    bridge: Option<Res<net::MasterBridge>>,
+    runtime: NonSend<Runtime>,
+    mut ui: ResMut<frame::MinecraftUi>,
+    mut shown: Local<Option<String>>,
+) {
+    let Some(code) = bridge.and_then(|bridge| room_code(&bridge.state())) else {
+        return;
+    };
+    if shown.as_ref() == Some(&code) {
+        return;
+    }
+    let line = minecraft_survival::session::join_code_line(&code);
+    if crate::minecraft_world::show_lines(&runtime, &mut ui.chat, &[line]) {
+        *shown = Some(code);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hosting(room: &str) -> net::MasterBridgeState {
+        net::MasterBridgeState::Hosting {
+            identity: net::SessionIdentity {
+                room_id: room.parse().unwrap(),
+                ..net::SessionIdentity::unassigned(1)
+            },
+            name: "Minecraft world".to_owned(),
+            map: "minecraft:overworld".to_owned(),
+            mode: "dm".to_owned(),
+            members: Vec::new(),
+            member_names: Default::default(),
+            max_players: 4,
+            skip_votes: 0,
+            in_match: true,
+        }
+    }
+
+    #[test]
+    fn only_a_hosting_bridge_gives_the_room_code_in_hex() {
+        let room = "0123456789abcdef0123456789abcdef";
+        assert_eq!(room_code(&hosting(room)).as_deref(), Some(room));
+        let joined = net::MasterBridgeState::Joining {
+            identity: net::SessionIdentity {
+                room_id: room.parse().unwrap(),
+                ..net::SessionIdentity::unassigned(1)
+            },
+        };
+        assert_eq!(room_code(&joined), None);
+        let connecting = net::MasterBridgeState::Connecting {
+            identity: net::SessionIdentity::unassigned(1),
+        };
+        assert_eq!(room_code(&connecting), None);
+    }
+}

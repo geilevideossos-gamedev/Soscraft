@@ -2,6 +2,7 @@ param(
     [string]$Exe = "",
     [string]$Map = "minecraft:overworld",
     [string]$Friend = "Friend",
+    [string]$Join = "",
     [string]$World = "mp-test",
     [string]$Resolution = "",
     [string]$GameDir = "C:\Games\Mashup\2010-Rust-Rewrite-Mashup",
@@ -428,7 +429,9 @@ try {
         $status = Read-Status $hostDir
         if ($status["state"] -ne "hosting" -or -not $status["room"]) { Fail "the host window is not hosting; run the script without -FriendOnly first" }
         if (-not (Get-Process -Name "iw4l-master" -ErrorAction SilentlyContinue)) { Say "warning: no iw4l-master is running" }
-        $friendRunner = Start-Friend $exePath $status["room"] $resolution
+        $room = $status["room"]
+        if ($Join -ne "") { $room = $Join }
+        $friendRunner = Start-Friend $exePath $room $resolution
     } else {
         Ensure-Certs
         $relayExe = $Relay

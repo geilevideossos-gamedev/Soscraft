@@ -1485,6 +1485,30 @@ Commit: see `git log` ("The Minecraft multiplayer leftovers pass clippy"). The p
 - **Test steps:** none new.
 - **Kit:** none.
 
+### E23. The host shows a join code
+
+Commit: see `git log` ("The Minecraft host sees the join code in chat"). The previous commit is `8bd171af` (the M6 leftovers pass clippy).
+
+- **Changed:**
+  - `minecraft_survival/src/session.rs`: `join_code_line(code)`, the system line "Friends join with the code [<code>]" with the code green in vanilla's `chat.square_brackets`, the same look as vanilla's `/seed` (`ComponentUtils.copyOnClickText`).
+  - `render_anim/src/minecraft_host.rs`: `show_join_code`, a system after `update`, reads `net::MasterBridge`'s state; while it is `Hosting`, the room's `AdvertId` in hex (`room_code`) goes once into the host's own Minecraft chat. It waits until the host's world is loaded (`show_lines` now says whether a world was there to show the line in), so a room made during the loading screen still shows its code, and a new room (after the relay connection is made again) shows its new code.
+  - `render_anim/src/minecraft_world.rs`: registers `show_join_code`; `show_lines` returns whether the world is loaded.
+  - `crates/net/src/transport/master.rs`: `join_code(typed)` drops spaces, dashes and the chat's brackets from a typed code; `IW4L_MASTER_JOIN` (what `Join Minecraft World.bat` asks for) reads it that way. `crates/console/src/frontend.rs`: `ui_join_lobby_id` too. Capitals were already accepted.
+  - `scripts/mp-local.ps1`: `-FriendOnly -Join <code>` starts the friend window with a code typed by hand instead of the host's `master.status`, so the owner can test the friend's way of entering it.
+  - `docs/MULTIPLAYER.md` section 5.1 steps 1 and 2 describe the line and the typed code.
+- **Tests:**
+  - `minecraft_survival` `session::tests::the_join_code_line_shows_the_code_in_green_brackets_like_the_seed`.
+  - `render_anim` `minecraft_host::tests::only_a_hosting_bridge_gives_the_room_code_in_hex`.
+  - `net` `transport::master::tests::a_join_code_typed_with_brackets_spaces_or_capitals_still_names_the_room`.
+  - Results on the real 26.3 data: `test -p minecraft_survival` 586 + 1, `net` 16, `console` 45, `render_anim --lib` 146; `check -p launcher` green. No new `.rs` file.
+- **Decisions:**
+  - **Only the host sees the line, once per room,** as vanilla's "Open to LAN" message (`commands.publish.started`) goes only to the player who opened the world. The friends got here with the code already.
+  - **No vanilla key fits** (vanilla's LAN line names a port), so the sentence is a literal English text; the brackets and the green code are vanilla's `chat.square_brackets` look for a value to copy. Our chat has no click events, so the code cannot be clicked to copy as in vanilla; the host reads it out or takes it from `master.status`.
+  - **The code stays one 32-character hex string,** the same as `master.status`'s `room=` and the server browser's id; typing it with spaces is accepted instead of showing it grouped.
+- **Found, not changed:** a code that is still wrong after the cleanup (wrong length, a letter past `f`) makes `MasterLaunchIntent::from_env_for_map` fail, and `bootstrap` then starts the map without the relay, so the friend's `Join Minecraft World.bat` opens a world of their own instead of saying the code is wrong. That is MW2 launch code older than this track; recorded for E24's limitations.
+- **Test steps:** `docs/round8/e-m6-tests.md`, section E23.
+- **Kit:** none needed; the combined kit line below is unchanged.
+
 ## Combined kit for every test in this track
 
 This line covers the M6 owner tests in `docs/round8/e-m6-tests.md`. The M1 to M5 tests keep their own kit lines in `docs/round8/e-m1-tests.md` to `docs/round8/e-m5-tests.md`; the M5 combined line is in the git history of this file at `beb54197`, the M3 and M4 line at `6571e5db`, and the M2 line (E11 to E15) at `bf0a3a47`.

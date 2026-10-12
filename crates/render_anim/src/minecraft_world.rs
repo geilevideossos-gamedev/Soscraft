@@ -236,6 +236,12 @@ pub(crate) fn register(app: &mut App) {
         )
         .add_systems(
             Update,
+            crate::minecraft_host::show_join_code
+                .after(update)
+                .in_set(frame::ClientSet::Present),
+        )
+        .add_systems(
+            Update,
             draw_body_gear
                 .after(update)
                 .after(crate::minecraft_remote::friend)
@@ -1899,10 +1905,11 @@ pub(crate) fn host_view(runtime: &mut Runtime) -> Option<HostView<'_>> {
     Some(HostView { server: server.as_mut()?, local: local.as_ref()?, origins, shown: *shown, queues, shapes, shape_ids, packs: &world.packs, atlas: &world.atlas, language: inventory_ui.language(), mining, sounds: sounds.as_mut(), light: light.as_ref(), ticked: *ticked, events, minings })
 }
 
-pub(crate) fn show_lines(runtime: &Runtime, chat: &mut frame::McChat, lines: &[minecraft_commands::Clientbound]) {
+pub(crate) fn show_lines(runtime: &Runtime, chat: &mut frame::McChat, lines: &[minecraft_commands::Clientbound]) -> bool {
     if let Some(world) = runtime.world.as_ref().filter(|_| !lines.is_empty()) {
         show_chat(chat, &runtime.inventory_ui, &world.packs, lines);
     }
+    runtime.world.is_some()
 }
 
 pub(crate) fn presence_of(player: &minecraft_survival::player::Player, ps: Option<&playerstate_iw4::PlayerState>, origin: [f64; 3]) -> minecraft_survival::commands::Presence {
