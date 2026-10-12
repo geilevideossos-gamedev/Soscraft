@@ -1476,6 +1476,15 @@ Commit: see `git log` ("The multiplayer leftovers that stay for later are writte
 - **Test steps:** the fixes above in `docs/round8/e-m6-tests.md`.
 - **Kit:** none new.
 
+### The M6 leftovers pass clippy
+
+Commit: see `git log` ("The Minecraft multiplayer leftovers pass clippy"). The previous commit is `69343e48` (the leftovers that stay for later).
+
+- **Changed:** clippy (`clippy -p minecraft_net -p minecraft_survival -p render_anim -p net -p sim -p minecraft_terrain --all-targets`, `approx_constant` allowed as for every track) on the lines of this group's commits: `minecraft_host.rs` names the friends' lectern clicks (`LecternClicks`, a complex type) and builds them without `unwrap_or_default` (disallowed in `clippy.toml`); a test in `views.rs` copies `SurvivalStatus` instead of cloning it. No other finding on the group's lines.
+- **Tests:** the touched crates on the real 26.3 data: `minecraft_net` 15, `minecraft_survival` 585 + 1, `render_anim --lib` 145, `sim --lib` 117, `net --lib` 15, `minecraft_terrain --lib` 1111 (3 ignored); `check -p launcher` green. No new `.rs` file in this group.
+- **Test steps:** none new.
+- **Kit:** none.
+
 ## Combined kit for every test in this track
 
 This line covers the M6 owner tests in `docs/round8/e-m6-tests.md`. The M1 to M5 tests keep their own kit lines in `docs/round8/e-m1-tests.md` to `docs/round8/e-m5-tests.md`; the M5 combined line is in the git history of this file at `beb54197`, the M3 and M4 line at `6571e5db`, and the M2 line (E11 to E15) at `bf0a3a47`.

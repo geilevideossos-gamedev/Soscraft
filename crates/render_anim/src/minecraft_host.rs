@@ -66,6 +66,8 @@ impl Drop for ChunkWorker {
     }
 }
 
+type LecternClicks = Vec<([i32; 3], Option<i32>)>;
+
 fn encode(job: &BatchJob, registries: &Registries) -> EncodedBatch {
     minecraft_survival::session::encode_batch(job.seq, &job.chunks, registries)
 }
@@ -81,7 +83,7 @@ pub(crate) struct HostSessions {
     chat: BTreeMap<u32, Vec<Serverbound>>,
     selects: BTreeMap<u32, u8>,
     credits_done: Vec<u32>,
-    lecterns: BTreeMap<u32, Vec<([i32; 3], Option<i32>)>>,
+    lecterns: BTreeMap<u32, LecternClicks>,
     leave_beds: Vec<u32>,
 }
 
@@ -406,7 +408,12 @@ pub(crate) fn host(
                 continue;
             };
             let selected = host.selects.remove(&session.client);
-            let clicks = host.lecterns.remove(&session.client).unwrap_or_default();
+            let clicks = host
+                .lecterns
+                .remove(&session.client)
+                .into_iter()
+                .flatten()
+                .collect();
             let id = sim::ClientId(session.client);
             let was = player.menus.block().cloned();
             let stepped = crate::minecraft_players::step_friend(

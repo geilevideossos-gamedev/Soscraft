@@ -407,7 +407,7 @@ mod tests {
         let mut clock = HudClock::default();
         let mut view = player_view(&alex);
         assert_eq!(view.frozen, 0);
-        let status = alex.survival.status.clone();
+        let status = alex.survival.status;
         alex.survival.restore(status, 0, 90, 0);
         assert_eq!(player_view(&alex).frozen, 90);
         let thawed = clock.vitals(&view, 0.05, false, false);
