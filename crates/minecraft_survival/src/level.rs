@@ -25,6 +25,7 @@ pub struct Level {
     pub empty_ticks: u32,
     pub dragon_fight: Option<crate::the_end::dragon_fight::DragonFight>,
     pub container_ticks: u32,
+    pub pending_batch: Option<crate::tick_rate::TickBatch>,
     pub shots: Shots,
     pub sleep_status: crate::sleep::SleepStatus,
 }
@@ -60,6 +61,7 @@ impl Level {
             empty_ticks: 0,
             dragon_fight: None,
             container_ticks: 0,
+            pending_batch: None,
             shots: Shots::new(),
             sleep_status: crate::sleep::SleepStatus::default(),
         }

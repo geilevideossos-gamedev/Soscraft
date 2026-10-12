@@ -30,10 +30,12 @@ pub(crate) fn step(
     seconds: f64,
     sounds: Option<&mut Sounds>,
     packs: &PackStack,
-    ui: &mut MinecraftUi,
+    mut ui: Option<&mut MinecraftUi>,
 ) {
     let Some(level) = levels.get_mut(&player.dimension) else {
-        ui.portal_overlay = None;
+        if let Some(ui) = ui {
+            ui.portal_overlay = None;
+        }
         return;
     };
     let stepped = portal::step(
@@ -44,7 +46,9 @@ pub(crate) fn step(
         seconds,
         |pos| minecraft_survival::the_end::gateway::enter(level.entities.as_mut(), pos),
     );
-    if stepped.inside {
+    if stepped.inside
+        && let Some(ui) = ui.as_deref_mut()
+    {
         ui.inventory_open = false;
     }
     if stepped.triggered
@@ -55,20 +59,20 @@ pub(crate) fn step(
     }
     let partial = (player.portal.clock / portal::TICK_SECONDS) as f32;
     let shown = player.portal.effect.shown(partial);
-    ui.portal_overlay = (shown > 0.0).then(|| McPortalOverlay {
-        alpha: portal::overlay_alpha(shown),
-        frame: player.portal.age,
-    });
+    if let Some(ui) = ui.as_deref_mut() {
+        ui.portal_overlay = (shown > 0.0).then(|| McPortalOverlay {
+            alpha: portal::overlay_alpha(shown),
+            frame: player.portal.age,
+        });
+    }
     let Some(due) = stepped.due else {
         return;
     };
-    if player.refuse_travel() {
-        ui.portal_overlay = None;
-        return;
-    }
     if due.kind == portal::PortalKind::End {
         crate::minecraft_end::travel(player, level, globals, due.entry);
-        ui.portal_overlay = None;
+        if let Some(ui) = ui {
+            ui.portal_overlay = None;
+        }
         return;
     }
     if due.kind == portal::PortalKind::Gateway {
@@ -90,7 +94,9 @@ pub(crate) fn step(
         travel.target
     );
     portal::set_off(player, travel);
-    ui.portal_overlay = None;
+    if let Some(ui) = ui {
+        ui.portal_overlay = None;
+    }
 }
 
 pub(crate) fn arriving(player: &mut Player, sounds: Option<&mut Sounds>, packs: &PackStack) {

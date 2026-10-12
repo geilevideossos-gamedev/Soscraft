@@ -127,6 +127,9 @@ pub(crate) struct Runtime {
     in_bed: bool,
     music: crate::minecraft_music::MusicManager,
     item_activation: crate::minecraft_hand::ItemActivation,
+    ticked: Option<Dimension>,
+    events: Vec<sim::voxel::VoxelEvent>,
+    minings: HashMap<Dimension, crate::minecraft_mining::Mining>,
 }
 
 impl Drop for Runtime {
@@ -316,7 +319,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         tick_rate: Default::default(),
     };
     let level = minecraft_survival::level::Level::new(Dimension::Overworld, terrain);
-    Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), opening: Default::default(), players: std::collections::BTreeMap::new(), pending_batch: None, published: false }))
+    Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), opening: Default::default(), players: std::collections::BTreeMap::new(), published: false }))
 }
 
 pub(crate) fn load_look(packs: PackStack) -> Result<Loaded, String> {
@@ -487,6 +490,7 @@ fn update(
         return;
     }
     let pad = active_pad.and_then(|active| active.0).and_then(|entity| gamepads.get(entity).ok());
+    runtime.ticked = None;
     if *sleepers != frame::McSleepers::default() {
         *sleepers = frame::McSleepers::default();
     }
@@ -670,6 +674,8 @@ fn update(
         in_bed,
         music,
         item_activation,
+        ticked,
+        events: stashed_events,
         ..
     } = &mut *runtime;
     let (Some(world), Some(server), Some(local_uuid)) = (world.as_mut(), server.as_mut(), local_uuid.as_ref()) else {
@@ -678,9 +684,9 @@ fn update(
         puppet.active = false;
         return;
     };
-    let ticking: Vec<Dimension> = server.players.get(local_uuid).filter(|player| player.switching.is_none()).map(|player| player.dimension).into_iter().collect();
+    let ticking: Vec<Dimension> = server.players.values().filter(|player| player.switching.is_none()).map(|player| player.dimension).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
     let planned = server.plan_ticks(std::time::Instant::now(), &ticking);
-    let minecraft_survival::server::Server { globals, levels, players, pending_batch, published, .. } = server;
+    let minecraft_survival::server::Server { globals, levels, players, published, .. } = server;
     if std::mem::take(&mut globals.autosave_due) {
         minecraft_survival::server::autosave(globals, levels, players);
     }
@@ -712,6 +718,7 @@ fn update(
     }
     let local_messages = relay_messages(players, local_uuid, slept.messages, relayed);
     crate::minecraft_respawn::show_messages(&mut ui, inventory_ui, &world.packs, &local_messages);
+    crate::minecraft_end::tick_fight(levels, players, globals, f64::from(planned.normal_count()) * minecraft_survival::the_end::dragon_fight::TICK_SECONDS, local_uuid, &mut ui);
     if let Some(player) = players.get(local_uuid) {
         let lying = player.sleeping.filter(|_| !player.dead);
         if let Some(sleeping) = lying {
@@ -813,7 +820,6 @@ fn update(
     let woke_messages = relay_messages(players, local_uuid, woke.messages, relayed);
     crate::minecraft_respawn::show_messages(&mut ui, inventory_ui, &world.packs, &woke_messages);
     ui.chat.command_level = players.get(local_uuid).map_or(0, |player| globals.chat.level(player.id));
-    crate::minecraft_end::tick_fight(levels, players, globals, f64::from(planned.normal_count()) * minecraft_survival::the_end::dragon_fight::TICK_SECONDS, local_uuid, &mut ui);
     let mut friends = Vec::new();
     let mut host = None;
     for (uuid, each) in players.iter_mut() {
@@ -833,7 +839,7 @@ fn update(
     let friend_ids: Vec<u64> = friends.iter().filter(|friend| friend.dimension == player.dimension).map(|friend| u64::from(friend.id.0)).collect();
     let friend_builds: Vec<u64> = friends.iter().filter(|friend| friend.dimension == player.dimension && friend.mode.may_build()).map(|friend| u64::from(friend.id.0)).collect();
     let infinite: Vec<u64> = friends.iter().filter(|friend| friend.dimension == player.dimension && !friend.mode.consumes_items()).map(|friend| u64::from(friend.id.0)).chain((!player.mode.consumes_items()).then_some(host_id)).collect();
-    crate::minecraft_portal::step(player, levels, globals, presented.player(local.0).filter(|ps| ps.pm_type == 0).map(|ps| sim::voxel::to_block(origin, ps.origin)), time.delta_secs_f64(), sounds.as_mut(), &world.packs, &mut ui);
+    crate::minecraft_portal::step(player, levels, globals, presented.player(local.0).filter(|ps| ps.pm_type == 0).map(|ps| sim::voxel::to_block(origin, ps.origin)), time.delta_secs_f64(), sounds.as_mut(), &world.packs, Some(&mut ui));
     crate::minecraft_end::pearls_through(player, levels);
     let credit = |attacker: Option<u32>| attacker.and_then(|client| if client == local.0.0 { Some(host_id) } else { friend_ids.contains(&u64::from(client)).then_some(u64::from(client)) });
     if player.switching.is_some_and(|switch| !switch.left) {
@@ -900,7 +906,8 @@ fn update(
     if ui.chat.language.is_empty() && let Some(language) = inventory_ui.language() {
         ui.chat.language = std::sync::Arc::new(language.clone());
     }
-    let all_events: Vec<_> = sim::voxel::take_events().into_iter().filter(|event| event_level(event) == band).collect();
+    let (all_events, elsewhere): (Vec<_>, Vec<_>) = sim::voxel::take_events().into_iter().partition(|event| event_level(event) == band);
+    *stashed_events = elsewhere;
     let mut moved = crate::minecraft_players::movement(player, globals, terrain, entities, (shapes, shape_ids), &authority.0, local.0, origin, ps, (alive, crate::minecraft_players::Skating { active: skate.active, airborne: skate.airborne }), time.delta_secs_f64(), sounds, &world.packs);
     ui.holding_item = moved.holding_item;
     ui.empty_hand = moved.empty_hand;
@@ -1051,7 +1058,7 @@ fn update(
         }
     }
     let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, .. } = &mut *player;
-    let minecraft_survival::level::Level { entities, containers, terrain, openers, dimension, shots, .. } = &mut *level;
+    let minecraft_survival::level::Level { entities, containers, terrain, openers, dimension, shots, pending_batch, .. } = &mut *level;
     if let Some(entities) = entities.as_mut() {
         entities.broken_items.extend(harvest.worn_out);
     }
@@ -1112,6 +1119,7 @@ fn update(
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
         let ticks_before = entities.client_ticks();
         let batch = pending_batch.take().unwrap_or(minecraft_survival::tick_rate::TickBatch { normal: Vec::new(), overload: None });
+        *ticked = Some(*dimension);
         let mut present = vec![(host_id, local_uuid.clone())];
         let mut actors = vec![minecraft_survival::entities::TickActor { id: host_id, view: viewer, inventory: &mut *inventory, selected: *selected }];
         let watchers = friends
@@ -1892,12 +1900,15 @@ pub(crate) struct HostView<'a> {
     pub(crate) mining: &'a mut crate::minecraft_mining::Mining,
     pub(crate) sounds: Option<&'a mut crate::minecraft_sounds::Sounds>,
     pub(crate) light: Option<&'a SkyLight>,
+    pub(crate) ticked: Option<Dimension>,
+    pub(crate) events: &'a mut Vec<sim::voxel::VoxelEvent>,
+    pub(crate) minings: &'a mut HashMap<Dimension, crate::minecraft_mining::Mining>,
 }
 
 pub(crate) fn host_view(runtime: &mut Runtime) -> Option<HostView<'_>> {
-    let Runtime { server, local, origins, shown, queues, shapes, shape_ids, world, inventory_ui, mining, sounds, light, .. } = runtime;
+    let Runtime { server, local, origins, shown, queues, shapes, shape_ids, world, inventory_ui, mining, sounds, light, ticked, events, minings, .. } = runtime;
     let world = world.as_ref()?;
-    Some(HostView { server: server.as_mut()?, local: local.as_ref()?, origins, shown: *shown, queues, shapes, shape_ids, packs: &world.packs, atlas: &world.atlas, language: inventory_ui.language(), mining, sounds: sounds.as_mut(), light: light.as_ref() })
+    Some(HostView { server: server.as_mut()?, local: local.as_ref()?, origins, shown: *shown, queues, shapes, shape_ids, packs: &world.packs, atlas: &world.atlas, language: inventory_ui.language(), mining, sounds: sounds.as_mut(), light: light.as_ref(), ticked: *ticked, events, minings })
 }
 
 pub(crate) fn show_lines(runtime: &Runtime, chat: &mut frame::McChat, lines: &[minecraft_commands::Clientbound]) {
@@ -2050,7 +2061,7 @@ pub(crate) fn write_blocks(
     minecraft_survival::level::write_blocks(terrain, entities, writes);
 }
 
-fn refresh_shapes(
+pub(crate) fn refresh_shapes(
     terrain: &minecraft_survival::level::Terrain,
     registries: &Registries,
     (shapes, shape_ids, level): (&mut HashMap<BlockStateId, u16>, &mut HashMap<(Vec<[u32; 6]>, u16), u16>, u8),
@@ -2175,6 +2186,9 @@ fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
     runtime.refused_air = None;
     runtime.queues = Default::default();
     runtime.relayed = Default::default();
+    runtime.ticked = None;
+    runtime.events.clear();
+    runtime.minings.clear();
     if let (Some(server), Some(local)) = (server.as_mut(), local.as_ref())
         && server.globals.save.is_none()
         && let Some(player) = server.players.get_mut(local)

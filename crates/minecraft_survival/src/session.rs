@@ -26,7 +26,6 @@ type BlockPos = (i32, i32, i32);
 pub const BATCH_CHUNKS: usize = 9;
 pub const RETIRE_AFTER: Duration = Duration::from_secs(1);
 pub const NAME_TAKEN: &str = "A player with that name is already in the world";
-pub const TRAVEL_OFF: &str = "Dimension travel is off while friends are online (not built yet)";
 pub const TIME_EVERY: Duration = Duration::from_secs(1);
 pub const HELD_FOR: Duration = Duration::from_millis(500);
 pub const HAND_EVENTS: usize = 256;
@@ -156,6 +155,8 @@ pub struct Session {
     pub client: u32,
     pub uuid: PlayerUuid,
     pub name: String,
+    pub dimension: Dimension,
+    pub epoch: u32,
     pub chunks: ChunkSender,
     pub outbox: Vec<ToClient>,
     pub hands: HandQueue,
@@ -173,6 +174,8 @@ impl Session {
             client,
             uuid,
             name: name.to_owned(),
+            dimension: Dimension::Overworld,
+            epoch: 0,
             chunks: ChunkSender::new(view_distance),
             outbox: Vec::new(),
             hands: HandQueue::default(),
@@ -491,7 +494,6 @@ pub fn check_join(
 
 pub struct JoinContext<'a> {
     pub registry: u64,
-    pub dimension: Dimension,
     pub origins: &'a [(Dimension, [f64; 3])],
     pub view_distance: i32,
     pub kit: Option<&'a str>,
@@ -627,10 +629,6 @@ pub fn left_line(name: &str) -> Clientbound {
     system_line(Text::translate("multiplayer.player.left", vec![Text::literal(name)]).color(YELLOW))
 }
 
-pub fn travel_off_line() -> Clientbound {
-    system_line(Text::literal(TRAVEL_OFF))
-}
-
 fn listed(player: &Player) -> (u32, String, PlayerUuid) {
     (player.id.0, player.name.clone(), player.uuid.clone())
 }
@@ -672,8 +670,7 @@ impl Sessions {
             );
             return Answer::Refused(refusal);
         }
-        let Some(uuid) = server.join_friend(PlayerId(client), name, context.kit, context.dimension)
-        else {
+        let Some(uuid) = server.join_friend(PlayerId(client), name, context.kit) else {
             return Answer::Ignored;
         };
         let Some(player) = server.players.get(&uuid) else {
@@ -700,6 +697,7 @@ impl Sessions {
         };
         let newcomer = listed(player);
         let mut session = Session::new(client, uuid.clone(), name, view_distance);
+        session.dimension = player.dimension;
         session.outbox.push(ToClient::Login(login));
         session.outbox.push(ToClient::PlayerList {
             added: server.players.values().map(listed).collect(),
@@ -791,17 +789,55 @@ impl Sessions {
         }
     }
 
-    pub fn lock_travel(&mut self, players: &mut BTreeMap<PlayerUuid, Player>) {
-        let locked = !self.sessions.is_empty();
-        for player in players.values_mut() {
-            player.travel_locked = locked;
-            if !std::mem::take(&mut player.travel_refused) {
+    pub fn follow_levels(
+        &mut self,
+        players: &BTreeMap<PlayerUuid, Player>,
+        origins: &[(Dimension, [f64; 3])],
+    ) {
+        for session in self.sessions.values_mut() {
+            let Some(player) = players
+                .get(&session.uuid)
+                .filter(|player| player.dimension != session.dimension)
+            else {
                 continue;
-            }
-            match self.sessions.get_mut(&player.id.0) {
-                Some(session) => session.outbox.push(ToClient::Chat(travel_off_line())),
-                None => self.host_lines.push(travel_off_line()),
-            }
+            };
+            let dimension = player.dimension;
+            let Some(feet) = player
+                .arrival
+                .or(player.place)
+                .filter(|place| place.dimension == dimension)
+                .map(|place| place.feet)
+            else {
+                continue;
+            };
+            let Some(origin) = origins
+                .iter()
+                .find(|(known, _)| *known == dimension)
+                .map(|(_, origin)| *origin)
+            else {
+                continue;
+            };
+            session.dimension = dimension;
+            session.epoch = session.epoch.wrapping_add(1);
+            session.outbox.push(ToClient::Dimension {
+                epoch: session.epoch,
+                dimension,
+                origin,
+                feet,
+            });
+            let center = ((feet[0].floor() as i32) >> 4, (feet[2].floor() as i32) >> 4);
+            session
+                .chunks
+                .follow(dimension, center, &mut session.outbox);
+            session.mobs.follow(Some(dimension));
+            session.cracks.clear();
+            diag::info!(
+                World,
+                "Minecraft {} (client {}) goes to {} at {feet:?}",
+                session.name,
+                session.client,
+                dimension.dimension_type()
+            );
         }
     }
 
@@ -1009,7 +1045,8 @@ impl Sessions {
                     continue;
                 };
                 let (around, has) = ((feet, view_distance), |pos| chunks.has(pos));
-                let frame = session.mobs.frame(0, moves, snapshot.as_ref(), around, has);
+                let epoch = session.epoch;
+                let frame = session.mobs.frame(epoch, moves, snapshot.as_ref(), around, has);
                 if let Some(frame) = frame {
                     frames.push((session.client, frame));
                 }
@@ -1200,6 +1237,7 @@ mod tests {
 
     fn session_with(client: u32, level: Dimension) -> Session {
         let mut session = Session::new(client, PlayerUuid(format!("friend-{client}")), "Alex", 2);
+        session.dimension = level;
         session.chunks.follow(level, (0, 0), &mut session.outbox);
         session
             .chunks
@@ -1440,12 +1478,9 @@ mod tests {
             levels: BTreeMap::new(),
             opening: BTreeMap::new(),
             players: BTreeMap::new(),
-            pending_batch: None,
             published: false,
         };
-        let uuid = server
-            .join_friend(HOST, "Steve", None, Dimension::Overworld)
-            .unwrap();
+        let uuid = server.join_friend(HOST, "Steve", None).unwrap();
         server.players.get_mut(&uuid).unwrap().arrival = None;
         Some((dir, server))
     }
@@ -1453,7 +1488,6 @@ mod tests {
     fn context(origins: &[(Dimension, [f64; 3])]) -> JoinContext<'_> {
         JoinContext {
             registry: 42,
-            dimension: Dimension::Overworld,
             origins,
             view_distance: 8,
             kit: Some("dirt*3"),
@@ -1805,14 +1839,15 @@ mod tests {
     }
 
     #[test]
-    fn travel_is_refused_while_a_friend_is_online() {
+    fn a_friends_portal_arrival_sends_dimension_with_the_next_epoch_and_starts_the_chunks_again() {
         let Some((_dir, mut server)) = host_server("session-travel") else {
             return;
         };
-        let origins = [];
+        let origins = [
+            (Dimension::Overworld, [0.5, 64.0, 0.5]),
+            (Dimension::Nether, [0.0, 1314.0, 0.0]),
+        ];
         let mut sessions = Sessions::default();
-        sessions.lock_travel(&mut server.players);
-        assert!(server.players.values().all(|player| !player.travel_locked));
         sessions.hello(
             &mut server,
             1,
@@ -1822,22 +1857,17 @@ mod tests {
             Instant::now(),
         );
         sessions.take_outgoing();
-        sessions.host_lines.clear();
-        sessions.lock_travel(&mut server.players);
-        for player in server.players.values_mut() {
-            assert!(player.refuse_travel());
-        }
-        sessions.lock_travel(&mut server.players);
-        assert_eq!(sessions.host_lines, vec![travel_off_line()]);
-        assert_eq!(
-            sessions.take_outgoing(),
-            vec![(1, ToClient::Chat(travel_off_line()))]
-        );
-        let steve = server
-            .players
-            .values_mut()
-            .find(|player| player.id == HOST)
+        let session = sessions.sessions.get_mut(&1).unwrap();
+        assert_eq!((session.dimension, session.epoch), (Dimension::Overworld, 0));
+        session
+            .chunks
+            .follow(Dimension::Overworld, (0, 0), &mut session.outbox);
+        session
+            .chunks
+            .next_batch(|pos| pos == (0, 0), &mut session.outbox)
             .unwrap();
+        session.outbox.clear();
+        let uuid = session.uuid.clone();
         let travel = crate::portal::PortalTravel {
             kind: crate::portal::PortalKind::Nether,
             to: Dimension::Nether,
@@ -1849,15 +1879,55 @@ mod tests {
             motion: [0.0; 3],
             creates: true,
         };
-        if !steve.refuse_travel() {
-            crate::portal::set_off(steve, travel);
+        for player in server.players.values_mut() {
+            crate::portal::set_off(player, travel);
         }
-        assert_eq!(steve.dimension, Dimension::Overworld);
-        assert!(steve.switching.is_none());
-        sessions.leave(&mut server, 1);
-        sessions.lock_travel(&mut server.players);
-        let steve = server.players.values_mut().next().unwrap();
-        assert!(!steve.refuse_travel());
+        assert!(
+            server
+                .players
+                .values()
+                .all(|player| player.dimension == Dimension::Nether && player.switching.is_some()),
+            "travel is no longer refused while a friend is online"
+        );
+        sessions.follow_levels(&server.players, &origins);
+        assert!(
+            sessions.take_outgoing().is_empty(),
+            "nothing until the arrival is known"
+        );
+        let arrival = crate::player_nbt::Place::standing(Dimension::Nether, [3.5, 70.0, -20.5], 0.0, 0.0);
+        server.players.get_mut(&uuid).unwrap().arrival = Some(arrival);
+        sessions.follow_levels(&server.players, &origins);
+        let sent = sessions.take_outgoing();
+        assert_eq!(
+            sent.first(),
+            Some(&(
+                1,
+                ToClient::Dimension {
+                    epoch: 1,
+                    dimension: Dimension::Nether,
+                    origin: [0.0, 1314.0, 0.0],
+                    feet: [3.5, 70.0, -20.5],
+                }
+            ))
+        );
+        assert!(
+            sent.iter().all(|(_, message)| !matches!(message, ToClient::ChunkForget { .. })),
+            "the new level needs no forgets"
+        );
+        let session = &sessions.sessions[&1];
+        assert_eq!((session.dimension, session.epoch), (Dimension::Nether, 1));
+        assert_eq!(session.chunks.level, Some(Dimension::Nether));
+        assert!(!session.chunks.has((0, 0)), "the sent set starts again");
+        assert_eq!(session.chunks.in_flight(), 0);
+        sessions.follow_levels(&server.players, &origins);
+        assert!(sessions.take_outgoing().is_empty(), "told once");
+        let alex = server.players.get_mut(&uuid).unwrap();
+        alex.arrive(crate::player_nbt::Place::standing(Dimension::Overworld, [8.5, 64.0, 8.5], 0.0, 0.0));
+        sessions.follow_levels(&server.players, &origins);
+        assert!(matches!(
+            sessions.take_outgoing().first(),
+            Some((1, ToClient::Dimension { epoch: 2, dimension: Dimension::Overworld, .. }))
+        ));
         server.globals.writer.finish();
     }
 

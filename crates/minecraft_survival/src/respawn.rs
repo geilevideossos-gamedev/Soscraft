@@ -92,10 +92,6 @@ pub fn respawn(globals: &Globals, level: &mut Level, player: &mut Player) -> boo
     if target == level.dimension {
         return crate::respawn_block::respawn_at_block(globals, level, player);
     }
-    if player.refuse_travel() {
-        player.arrival = Some(level_spawn(&globals.spawn, level));
-        return false;
-    }
     player.switch_to(
         target,
         None,
@@ -211,20 +207,16 @@ mod tests {
     }
 
     #[test]
-    fn a_respawn_in_another_dimension_stays_in_this_level_while_travel_is_off() {
+    fn a_friends_respawn_in_another_dimension_sets_off_their_own_switch() {
         let Some((mut level, globals)) = level_and_globals() else {
             return;
         };
         let mut chat = minecraft_commands::CommandServer::new(crate::commands::HOST);
+        let mut host = player(&mut chat, 0, "Steve");
         let mut friend = player(&mut chat, 1, "Alex");
         friend.respawn = Some(point(Dimension::Nether, (10, 70, 10), true));
-        friend.travel_locked = true;
-        assert!(!respawn(&globals, &mut level, &mut friend));
-        assert!(friend.switching.is_none());
-        assert!(friend.travel_refused, "the player is told travel is off");
-        assert_eq!(friend.arrival, Some(level_spawn(&globals.spawn, &level)));
-        assert!(friend.respawn.is_some(), "the point is kept for later");
-        friend.travel_locked = false;
+        assert!(!respawn(&globals, &mut level, &mut host));
+        assert!(host.switching.is_none(), "the host respawns in this level");
         assert!(!respawn(&globals, &mut level, &mut friend));
         assert_eq!(
             friend.switching.map(|switch| (switch.to, switch.respawn)),

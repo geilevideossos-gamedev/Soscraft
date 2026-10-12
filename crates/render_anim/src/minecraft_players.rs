@@ -1180,11 +1180,57 @@ pub(crate) struct FriendWorld<'a> {
     pub(crate) packs: &'a PackStack,
     pub(crate) atlas: &'a minecraft_terrain::mesh::Atlas,
     pub(crate) mining: &'a mut crate::minecraft_mining::Mining,
+    pub(crate) minings: &'a mut HashMap<Dimension, crate::minecraft_mining::Mining>,
+    pub(crate) shown: Option<Dimension>,
     pub(crate) sounds: Option<&'a mut Sounds>,
     pub(crate) light: Option<&'a minecraft_terrain::lighting::SkyLight>,
     pub(crate) dt: f64,
     pub(crate) now: f64,
     pub(crate) instant: std::time::Instant,
+}
+
+pub(crate) fn mining_in<'m>(
+    shown: (&'m mut crate::minecraft_mining::Mining, Option<Dimension>),
+    others: &'m mut HashMap<Dimension, crate::minecraft_mining::Mining>,
+    dimension: Dimension,
+) -> &'m mut crate::minecraft_mining::Mining {
+    match shown {
+        (mining, Some(here)) if here == dimension => mining,
+        _ => others.entry(dimension).or_default(),
+    }
+}
+
+fn leave_level(player: &mut Player, level: &mut Level) {
+    let feet = player
+        .place
+        .filter(|place| place.dimension == level.dimension)
+        .map(|place| place.feet);
+    let thrown = minecraft_survival::menus::close(player);
+    if let Some(entities) = level.entities.as_mut() {
+        let id = u64::from(player.id.0);
+        let selected = player.selected;
+        let experience = entities.leave(id, &mut player.inventory, selected, feet);
+        let _ = player.survival.gain_experience(experience);
+        if let Some(feet) = feet {
+            for stack in &thrown {
+                entities.drop_given(stack, feet);
+            }
+        }
+    }
+    minecraft_survival::level::leave(level, &player.uuid);
+    let Player {
+        survival,
+        hand,
+        steps,
+        ..
+    } = player;
+    survival.stop_eating();
+    hand.blocking = None;
+    hand.charging = None;
+    hand.swing = None;
+    hand.recent.clear();
+    steps.air_peak = None;
+    steps.last = None;
 }
 
 pub(crate) fn step_friend(
@@ -1224,6 +1270,10 @@ pub(crate) fn step_friend(
     if player.dead {
         player.held = None;
     }
+    if minecraft_survival::the_end::holding_for_credits(player) {
+        minecraft_survival::the_end::credits_done(player);
+        player.seen_credits = false;
+    }
     let mut sounds = Some(Sounds::recorder());
     let remote = crate::minecraft_world::remote_view(ps.pm_type, ps.other_flags);
     let begun = begin(
@@ -1242,25 +1292,59 @@ pub(crate) fn step_friend(
         world.packs,
         &mut stepped.lines,
     );
-    if let Begun::Left(switch) = &begun {
-        let thrown = minecraft_survival::menus::close(player);
-        let feet = player.place.map(|place| place.feet);
-        if let (Some(entities), Some(feet)) = (
-            world
-                .levels
-                .get_mut(&switch.from)
-                .and_then(|level| level.entities.as_mut()),
-            feet,
-        ) {
-            for stack in &thrown {
-                entities.drop_given(stack, feet);
+    match begun {
+        Begun::Left(switch) => {
+            if let Some(level) = world.levels.get_mut(&switch.from) {
+                leave_level(player, level);
             }
         }
+        Begun::Arriving { standing: true, .. } if player.arrival.is_none() => {
+            player.switching = None;
+            diag::info!(
+                World,
+                "Minecraft {} arrived in {}",
+                player.name,
+                player.dimension.dimension_type()
+            );
+        }
+        _ => {}
     }
     if !matches!(begun, Begun::Live) {
+        let recorded = sounds.as_mut().map_or_else(Vec::new, Sounds::take_recorded);
+        let arrived = player
+            .arrival
+            .or(player.place)
+            .filter(|place| place.dimension == player.dimension)
+            .map(|place| {
+                let [x, y, z] = place.feet;
+                [x, y + crate::minecraft_spawn_gate::SPAWN_EYE_HEIGHT, z]
+            });
+        if let (Some(entities), Some(eye)) = (
+            world
+                .levels
+                .get_mut(&player.dimension)
+                .and_then(|level| level.entities.as_mut()),
+            arrived,
+        ) {
+            retell(recorded, None, world.packs, entities, (client.0, origin, eye));
+        }
         return stepped;
     }
+    let feet = (ps.pm_type == 0).then(|| sim::voxel::to_block(origin, ps.origin));
+    crate::minecraft_portal::step(
+        player,
+        world.levels,
+        world.globals,
+        feet,
+        world.dt,
+        sounds.as_mut(),
+        world.packs,
+        None,
+    );
     crate::minecraft_end::pearls_through(player, world.levels);
+    if player.switching.is_some() {
+        return stepped;
+    }
     let Some(level) = world.levels.get_mut(&player.dimension) else {
         return stepped;
     };
@@ -1398,8 +1482,9 @@ pub(crate) fn step_friend(
             entities.hear(said);
         }
     }
+    let here = world.shown == Some(player.dimension);
     hear(
-        world.sounds.as_deref_mut(),
+        world.sounds.as_deref_mut().filter(|_| here),
         world.packs,
         (origin, Some(eye)),
         effects,
@@ -1411,7 +1496,7 @@ pub(crate) fn step_friend(
         .and_then(|level| level.entities.as_mut())
     {
         let recorded = sounds.as_mut().map_or_else(Vec::new, Sounds::take_recorded);
-        let host = world.sounds.as_deref_mut();
+        let host = world.sounds.as_deref_mut().filter(|_| here);
         retell(
             recorded,
             host,
@@ -1422,11 +1507,11 @@ pub(crate) fn step_friend(
         let from = broken_before.min(entities.broken_items.len());
         let at = glam::DVec3::from_array(eye).as_vec3();
         let yaw = minecraft_yaw(ps.viewangles[1]);
+        let shown = (&mut *world.mining, world.shown);
+        let mining = mining_in(shown, &mut *world.minings, player.dimension);
         for item in entities.broken_items.split_off(from) {
             let (packs, atlas) = (world.packs, world.atlas);
-            world
-                .mining
-                .break_burst(packs, atlas, at, yaw, ps.viewangles[0], &item);
+            mining.break_burst(packs, atlas, at, yaw, ps.viewangles[0], &item);
         }
     }
     let owned = owned_weapons(&ps, world.authority);
@@ -1496,6 +1581,7 @@ fn friend_hand(
         shape_ids: &mut *world.shape_ids,
         level: minecraft_survival::bands::level(player.dimension),
     };
+    let light = world.light.filter(|_| world.shown == Some(level.dimension));
     let acted = minecraft_survival::actions::act(
         player,
         level,
@@ -1504,7 +1590,7 @@ fn friend_hand(
         &actor,
         taken.hands,
         moved,
-        world.light,
+        light,
         world.now,
     );
     let mut effects = acted.effects;
@@ -1516,12 +1602,10 @@ fn friend_hand(
         registries: &world.globals.registries,
         level: minecraft_survival::bands::level(level.dimension),
     };
-    let broken = world
-        .mining
-        .break_now(&acted.creative_broken, &mut level.shots, &mut refs);
-    let dug = world
-        .mining
-        .break_now(&acted.hand_broken, &mut level.shots, &mut refs);
+    let shown = (&mut *world.mining, world.shown);
+    let mining = mining_in(shown, &mut *world.minings, level.dimension);
+    let broken = mining.break_now(&acted.creative_broken, &mut level.shots, &mut refs);
+    let dug = mining.break_now(&acted.hand_broken, &mut level.shots, &mut refs);
     for (pos, block, _) in broken.iter().chain(&dug) {
         if let Some(kind) = level.terrain.scene.sound_type(block) {
             let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
@@ -1718,8 +1802,9 @@ pub(crate) fn friend_menus(
     for said in minecraft_survival::heard::of_effects(&effects, client.0, eye, random) {
         entities.hear(said);
     }
+    let here = world.shown == Some(player.dimension);
     hear(
-        world.sounds.as_deref_mut(),
+        world.sounds.as_deref_mut().filter(|_| here),
         world.packs,
         (origin, Some(eye)),
         effects,

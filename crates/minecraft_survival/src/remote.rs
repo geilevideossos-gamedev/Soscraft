@@ -1131,7 +1131,6 @@ mod tests {
             levels: BTreeMap::new(),
             opening: BTreeMap::new(),
             players: BTreeMap::new(),
-            pending_batch: None,
             published: false,
         };
         let terrain = Terrain::open(
@@ -1149,9 +1148,20 @@ mod tests {
             .levels
             .insert(Dimension::End, Level::new(Dimension::End, terrain));
         let origins = [(Dimension::End, origin)];
+        server.globals.chat.join(minecraft_commands::PlayerId(1), "Alex");
+        let profile = server.globals.chat.profile(minecraft_commands::PlayerId(1)).unwrap().clone();
+        let in_the_end = crate::player_nbt::PlayerData {
+            place: Some(crate::player_nbt::Place::standing(
+                Dimension::End,
+                origin,
+                0.0,
+                0.0,
+            )),
+            ..crate::player_nbt::PlayerData::default()
+        };
+        save.write_player(&profile.uuid, &in_the_end).unwrap();
         let context = JoinContext {
             registry: 42,
-            dimension: Dimension::End,
             origins: &origins,
             view_distance: 2,
             kit: None,

@@ -596,9 +596,6 @@ impl CommandWorld for Host<'_> {
             return false;
         };
         let place = crate::player_nbt::Place::standing(dimension, position, pose.yaw, pose.pitch);
-        if place.dimension != known.dimension && known.refuse_travel() {
-            return false;
-        }
         if !known.teleport_into(place) {
             return false;
         }
@@ -1766,6 +1763,7 @@ pub(crate) mod tests {
             empty_ticks: 0,
             dragon_fight: None,
             container_ticks: 0,
+            pending_batch: None,
             shots: Default::default(),
             sleep_status: Default::default(),
         })
@@ -1823,34 +1821,6 @@ pub(crate) mod tests {
             host.loaded("minecraft:overworld", [0, 64, 0]),
             Loaded::Unloaded
         );
-    }
-
-    #[test]
-    fn execute_in_is_refused_while_friends_are_online() {
-        let mut parts = Parts::new();
-        parts.registries = minecraftoss_core::registries::DataPaths::discover()
-            .ok()
-            .and_then(|paths| minecraftoss_core::Registries::load(&paths).ok())
-            .map(std::sync::Arc::new);
-        if parts.registries.is_none() {
-            return;
-        }
-        parts.player(HOST).travel_locked = true;
-        let (lines, teleports) =
-            parts.send(HOST, &["/execute in minecraft:the_nether run tp ~ 128 ~"]);
-        assert!(lines.iter().all(|line| !line.starts_with("Teleported")), "{lines:?}");
-        assert!(teleports.is_empty());
-        let steve = parts.player(HOST);
-        assert_eq!(steve.dimension, Dimension::Overworld);
-        assert!(steve.switching.is_none() && steve.arrival.is_none());
-        assert!(steve.travel_refused);
-        steve.travel_refused = false;
-        let (lines, _) = parts.send(HOST, &["/execute in minecraft:overworld run tp ~ 90 ~"]);
-        assert_eq!(lines.len(), 1, "a teleport inside the level still works");
-        assert!(!parts.player(HOST).travel_refused);
-        parts.player(HOST).travel_locked = false;
-        parts.send(HOST, &["/execute in minecraft:the_nether run tp ~ 128 ~"]);
-        assert_eq!(parts.player(HOST).dimension, Dimension::Nether);
     }
 
     #[test]

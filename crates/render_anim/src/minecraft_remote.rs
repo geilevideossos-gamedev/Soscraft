@@ -14,6 +14,7 @@ use minecraft_survival::heard::TOTEM_EVENT;
 use minecraft_survival::menus::Open;
 use minecraft_survival::remote::{DecodeJob, RemoteWorld};
 use minecraft_survival::session::BREAK_EVENT;
+use minecraft_survival::switch::LoadingReason;
 use minecraft_survival::views::{HudClock, Selection, view_stack};
 use minecraft_terrain::containers::Containers;
 use minecraft_terrain::lighting::SkyLight;
@@ -151,6 +152,9 @@ pub(crate) struct Friend {
     screen_open: bool,
     gear_items: ItemVisuals,
     sounds: Option<Sounds>,
+    dimension: Option<minecraft_net::Dimension>,
+    switch_screen: Option<LoadingReason>,
+    loading_backgrounds: Option<crate::minecraft_loading::LoadingBackgrounds>,
 }
 
 fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
@@ -190,6 +194,7 @@ fn stop(friend: &mut Friend, view: &mut MinecraftWorldView, ui: &mut frame::Mine
     }
     *friend = Friend::default();
     ui.loading_world = false;
+    ui.level_loading = None;
     ui.chat_only = false;
 }
 
@@ -385,6 +390,12 @@ pub(crate) fn friend(
                     .inventory_ui
                     .set_station_data(prepared.stations.clone(), prepared.enchantments.clone());
                 friend.sounds = Some(Sounds::load(&prepared.look.packs));
+                friend.loading_backgrounds = Some(
+                    crate::minecraft_loading::LoadingBackgrounds::load(
+                        &prepared.look.packs,
+                        &mut images,
+                    ),
+                );
                 friend.prepared = Some(prepared);
                 diag::info!(World, "Minecraft look loaded: waiting for the host's world");
             }
@@ -501,6 +512,18 @@ pub(crate) fn friend(
         }
     }
     ui.loading_world = friend.holding(now_ms);
+    if friend.switch_screen.is_some() && !friend.spawn_gate.holding(now_ms) {
+        friend.switch_screen = None;
+    }
+    let game_time = friend
+        .remote
+        .as_ref()
+        .map_or(0.0, |remote| remote.clocks.overworld.ticks);
+    let reason = friend.switch_screen;
+    ui.level_loading = friend
+        .loading_backgrounds
+        .as_mut()
+        .and_then(|backgrounds| backgrounds.frame(reason, game_time, dt, aspect, &mut images));
 }
 
 fn show_overlays(
@@ -931,6 +954,8 @@ fn present(
         mining,
         cracks,
         sounds,
+        dimension,
+        switch_screen,
         ..
     } = friend
     else {
@@ -945,9 +970,23 @@ fn present(
     if shown.level {
         match prediction {
             Some(prediction) => {
-                sim::voxel::activate(prediction.0.world().clip_brushes(), vec![Vec::new()]);
                 let (min_y, height) = minecraft_survival::bands::heights(level.dimension);
-                sim::voxel::set_level(band, level.origin, min_y, height);
+                let dead = player.is_some_and(|ps| ps.pm_type != 0);
+                let previous = dimension.replace(level.dimension);
+                match level_switch(previous, level.dimension, dead) {
+                    Some((old, reason)) => {
+                        *switch_screen = Some(reason);
+                        sim::voxel::drop_level(old);
+                        sim::voxel::set_level(band, level.origin, min_y, height);
+                        sim::voxel::mark_level_switch();
+                    }
+                    None => {
+                        sim::voxel::activate(prediction.0.world().clip_brushes(), vec![Vec::new()]);
+                        shapes.clear();
+                        shape_ids.clear();
+                        sim::voxel::set_level(band, level.origin, min_y, height);
+                    }
+                }
             }
             None => diag::warn!(
                 World,
@@ -965,8 +1004,6 @@ fn present(
         view.cracks = Default::default();
         view.clouds = None;
         view.light_volume = None;
-        shapes.clear();
-        shape_ids.clear();
         *light = Some(SkyLight::streamed());
         *light_volume_at = None;
         *cloud_center = None;
@@ -1156,6 +1193,16 @@ fn present(
     );
 }
 
+fn level_switch(
+    previous: Option<minecraft_net::Dimension>,
+    next: minecraft_net::Dimension,
+    dead: bool,
+) -> Option<(u8, LoadingReason)> {
+    let previous = previous?;
+    let reason = minecraft_survival::switch::loading_reason(dead, previous, next);
+    Some((minecraft_survival::bands::level(previous), reason))
+}
+
 fn present_entities(
     level: &mut minecraft_survival::remote::RemoteLevel,
     prepared: &Prepared,
@@ -1238,6 +1285,29 @@ fn present_entities(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dimension_change_drops_only_the_old_level_behind_its_loading_screen() {
+        use minecraft_net::Dimension::{End, Nether, Overworld};
+        assert_eq!(level_switch(None, Nether, false), None, "the first level activates the world");
+        assert_eq!(
+            level_switch(Some(Overworld), Nether, false),
+            Some((0, LoadingReason::NetherPortal))
+        );
+        assert_eq!(
+            level_switch(Some(Nether), Overworld, true),
+            Some((1, LoadingReason::Other)),
+            "a respawn shows the plain screen"
+        );
+        assert_eq!(
+            level_switch(Some(Overworld), End, false),
+            Some((0, LoadingReason::EndPortal))
+        );
+        assert_eq!(
+            level_switch(Some(End), Overworld, false),
+            Some((2, LoadingReason::EndPortal))
+        );
+    }
 
     #[test]
     fn only_a_host_that_never_answers_lets_the_friend_in_without_a_world() {

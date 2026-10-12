@@ -27,3 +27,27 @@ Put the kit below in the `.env` next to the exe before the first start: both pla
 ```
 IW4L_MINECRAFT_KIT=minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:iron_pickaxe,minecraft:cobblestone*32,minecraft:cow_spawn_egg*2,minecraft:cooked_beef*8
 ```
+
+## E20. Every dimension with a player in it keeps running
+
+Travel is no longer refused while a friend is online, and a friend who joins comes back in the dimension they left. Every dimension that has a player in it now loads its chunks around that player and ticks its mobs, containers and sleepers on the one server clock, whether or not the host is in it. A friend who goes through a portal sees the vanilla loading screen (the purple swirl for the Nether, the dark one for the End) and then the new dimension.
+
+Until E21, a friend in another dimension may still be drawn in the host's window somewhere far off, and the host may be drawn in the friend's window. Ignore that here; E21 hides them.
+
+Put the kit below in the `.env` next to the exe before the first start: both players get it on their first join.
+
+1. Start both windows: `& scripts\mp-local.ps1 -World mp-m5 -Fresh`. Spawn in both. Host window: `/time set day`, `/op Friend`, `/gamerule players_sleeping_percentage 100`. Stand next to each other on flat ground.
+2. **A friend travels while the host stays.** Friend window: build a nether portal with the 10 obsidian (4 wide, 5 tall, no corners) and light it with the flint and steel. Walk in and wait. The purple loading screen shows, then the Nether: the friend stands on netherrack and can walk, jump and mine it with the pickaxe. Screenshot the loading screen and the Nether. **S5**
+3. **The host's dimension keeps running.** Alt-Tab to the host window: the host walks, mines and places blocks as usual, mobs move and the time of day goes on. Alt-Tab back: nothing in the Nether froze while you were away.
+4. **The friend's dimension keeps running without the host.** Friend window (in the Nether): use a cow spawn egg next to you. The cow walks around. Kill it with the sword: it drops beef and XP, and the friend gets them. Place cobblestone and mine it again: both work. Screenshot. **S6**
+5. **Leaving and joining in another dimension.** Friend window: close it (Alt+F4) while in the Nether. Start it again with `& scripts\mp-local.ps1 -World mp-m5 -FriendOnly`. The friend comes back in the Nether where they left (not next to the host in the overworld), standing on netherrack. Screenshot. **S7**
+6. **Back through the portal.** Friend window: walk back into the nether portal. The loading screen shows, then the overworld next to the portal the friend built. The friend is not stuck in a block and does not fall through the ground.
+7. **The host travels while the friend stays.** Host window: walk through the same nether portal. The host gets the purple loading screen and the Nether. Friend window (still in the overworld): mobs keep moving, a block placed and mined still works, the time of day goes on. Host window: walk back through the portal.
+8. **Sleeping counts the players in the host's level only.** Host window: `/time set 13000` (dusk). Both players stand in the overworld. Host window: place the bed and sleep in it. The message "1/2 players sleeping" shows and the night does not pass while the friend stays awake. Screenshot. **S8** Leave the bed. Friend window: go through the portal into the Nether. Host window: sleep in the bed again: the night now passes, because the friend is in another dimension.
+9. **A respawn in another dimension.** Friend window, in the Nether: `/kill`. Respawn: the friend gets the loading screen and comes back at the world spawn in the overworld.
+10. **A command into another dimension.** Friend window: `/execute in minecraft:the_nether run tp @s ~ 100 ~`. The friend goes to the Nether with the loading screen. `/execute in minecraft:overworld run tp @s ~ 100 ~` brings them back.
+11. Close the windows (type `quit` in the script's console).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:iron_pickaxe,minecraft:iron_sword,minecraft:cobblestone*32,minecraft:cow_spawn_egg*2,minecraft:white_bed,minecraft:cooked_beef*8
+```

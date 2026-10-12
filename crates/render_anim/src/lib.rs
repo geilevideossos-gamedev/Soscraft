@@ -49,6 +49,7 @@ mod minecraft_hand;
 mod minecraft_host;
 mod minecraft_input;
 mod minecraft_inventory;
+mod minecraft_levels;
 mod minecraft_loading;
 mod minecraft_mining;
 mod minecraft_music;

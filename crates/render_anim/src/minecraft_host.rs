@@ -292,7 +292,7 @@ pub(crate) fn host(
     }
     read_inbox(&mut host, &mut wire, now);
     let host = &mut *host;
-    let Some(view) = crate::minecraft_world::host_view(&mut runtime) else {
+    let Some(mut view) = crate::minecraft_world::host_view(&mut runtime) else {
         if !host.sessions.is_empty() {
             host.sessions = Sessions::default();
         }
@@ -300,14 +300,14 @@ pub(crate) fn host(
     };
     let server = view.server;
     server.published = true;
+    if let Some(sounds) = view.sounds.as_deref_mut() {
+        let _ = sounds.take_recorded();
+    }
     for client in left {
         host.sessions.leave(server, client);
     }
-    let host_dimension = server
-        .players
-        .get(view.local)
-        .map(|player| player.dimension);
-    if let (Some(dimension), Some(authority)) = (host_dimension, authority.as_ref())
+    let host_here = server.players.contains_key(view.local);
+    if let Some(authority) = authority.as_ref().filter(|_| host_here)
         && !host.waiting.is_empty()
     {
         let registry = *host.registry.get_or_insert_with(|| {
@@ -321,7 +321,6 @@ pub(crate) fn host(
         let kit = std::env::var("IW4L_MINECRAFT_KIT").ok();
         let context = JoinContext {
             registry,
-            dimension,
             origins: &origins,
             view_distance: crate::minecraft_world::VIEW_DISTANCE,
             kit: kit.as_deref(),
@@ -339,7 +338,6 @@ pub(crate) fn host(
     for (client, reason) in host.sessions.take_retiring(now) {
         wire.drop_peer(client, &reason);
     }
-    host.sessions.lock_travel(&mut server.players);
     if let Some(authority) = authority.as_mut() {
         let minecraft_survival::server::Server {
             globals,
@@ -351,14 +349,16 @@ pub(crate) fn host(
             levels,
             globals,
             authority: &mut authority.0,
-            queues: view.queues,
-            shapes: view.shapes,
-            shape_ids: view.shape_ids,
+            queues: &mut *view.queues,
+            shapes: &mut *view.shapes,
+            shape_ids: &mut *view.shape_ids,
             language: view.language,
             packs: view.packs,
             atlas: view.atlas,
-            mining: view.mining,
-            sounds: view.sounds,
+            mining: &mut *view.mining,
+            minings: &mut *view.minings,
+            shown: view.shown,
+            sounds: view.sounds.as_deref_mut(),
             light: view.light,
             dt: time.delta_secs_f64(),
             now: time.elapsed_secs_f64(),
@@ -375,10 +375,6 @@ pub(crate) fn host(
                 session.hands.take(now, |_| false);
                 continue;
             };
-            if view.shown != Some(player.dimension) {
-                session.hands.take(now, |_| false);
-                continue;
-            }
             let selected = host.selects.remove(&session.client);
             let id = sim::ClientId(session.client);
             let was = player.menus.block().cloned();
@@ -438,10 +434,34 @@ pub(crate) fn host(
             local.0,
             relayed,
         );
+        let mut events = std::mem::take(view.events);
+        events.extend(sim::voxel::take_events());
+        let background = crate::minecraft_levels::Background {
+            origins: view.origins,
+            host: (view.local, view.shown),
+            ticked: view.ticked,
+            mining: &mut *view.mining,
+            minings: &mut *view.minings,
+            shapes: &mut *view.shapes,
+            shape_ids: &mut *view.shape_ids,
+            packs: view.packs,
+            atlas: view.atlas,
+            dt: time.delta_secs_f64(),
+            now: time.elapsed_secs_f64(),
+        };
+        let ticked =
+            crate::minecraft_levels::tick_levels(server, &mut authority.0, background, events);
+        host.sessions.deliver(&server.globals.chat, &ticked, true);
         host.sessions.send_levels(&server.globals.chat);
     } else {
         host.chat.clear();
     }
+    let origins: Vec<_> = view
+        .origins
+        .iter()
+        .map(|(dimension, origin)| (*dimension, *origin))
+        .collect();
+    host.sessions.follow_levels(&server.players, &origins);
     host.sessions.send_views(&server.players);
     let gears: Vec<_> = server
         .players

@@ -42,8 +42,6 @@ pub struct Player {
     pub remote: bool,
     pub held: Option<Switch>,
     pub portal: crate::portal::Portal,
-    pub travel_locked: bool,
-    pub travel_refused: bool,
     pub follow: crate::guns::Follow,
     pub menus: crate::menus::Menus,
     pub enchantment_seed: i32,
@@ -119,8 +117,6 @@ impl Player {
             remote: false,
             held: None,
             portal: crate::portal::Portal::default(),
-            travel_locked: false,
-            travel_refused: false,
             follow: crate::guns::Follow::default(),
             menus: crate::menus::Menus::default(),
             enchantment_seed: crate::level::opener_key(&PlayerUuid(profile.uuid.clone())) as i32,
@@ -132,13 +128,6 @@ impl Player {
             time_since_rest: 0,
             saved_in_bed: None,
         }
-    }
-
-    pub fn refuse_travel(&mut self) -> bool {
-        if self.travel_locked {
-            self.travel_refused = true;
-        }
-        self.travel_locked
     }
 
     pub fn close_menu(&mut self) -> Vec<ItemStack> {

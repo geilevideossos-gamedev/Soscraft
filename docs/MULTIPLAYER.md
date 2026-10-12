@@ -321,6 +321,8 @@ Until bands (E19) and per-player levels (E20) land, the host's collision holds o
 - **A joining friend is placed in the host's dimension**, at that level's spawn if they were saved elsewhere.
 - E20 removes both rules.
 
+**E20 result (round 8):** both rules are gone. A friend travels through every portal and by `/execute in` while others stay, and joins in the dimension their file has. Every dimension with a player in it streams and ticks on the one server clock (`minecraft_levels::tick_levels` for every level the host's own frame does not tick), and a friend's trip sends `Dimension` once their place in the new level is known.
+
 ## 6. The host: one server tick for every player
 
 ### 6.1 The frame on the host after this track
