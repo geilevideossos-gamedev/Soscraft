@@ -527,7 +527,7 @@ impl Bedroom for LevelRoom<'_> {
     fn sound(&mut self, event: &'static str, at: [f64; 3]) {
         if let Some(entities) = self.entities.as_deref_mut() {
             entities
-                .sounds
+                .view.sounds
                 .push((event.to_owned(), glam::DVec3::from_array(at), 1.0, 1.0));
         }
     }

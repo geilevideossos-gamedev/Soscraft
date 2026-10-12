@@ -9,7 +9,7 @@ use minecraft_net::messages::{
     ChunkBlob, GearView, HandEvent, HandEventKind, HandState, HelloRefusal, Login, Nbt, PlayerView,
     Rules, Target, check_hello,
 };
-use minecraft_net::{ChunkBatchBlob, Dimension, PROTOCOL, PlayerUuid, ToClient};
+use minecraft_net::{ChunkBatchBlob, Dimension, PROTOCOL, PlayerUuid, StateFrame, ToClient};
 use minecraft_terrain::game_rules::GameRules;
 use minecraft_terrain::server::{OVERWORLD_CLOCK, THE_END_CLOCK};
 use minecraft_terrain::view::{MIN_VIEW_DISTANCE, TrackingView};
@@ -160,6 +160,7 @@ pub struct Session {
     pub outbox: Vec<ToClient>,
     pub hands: HandQueue,
     pub menu_inputs: Vec<crate::menus::MenuInput>,
+    pub mobs: crate::mob_sender::MobSender,
     gear: BTreeMap<u32, GearView>,
     command_level: Option<u8>,
     view: Option<PlayerView>,
@@ -176,6 +177,7 @@ impl Session {
             outbox: Vec::new(),
             hands: HandQueue::default(),
             menu_inputs: Vec::new(),
+            mobs: crate::mob_sender::MobSender::default(),
             gear: BTreeMap::new(),
             command_level: None,
             view: None,
@@ -966,6 +968,54 @@ impl Sessions {
             let changes = crate::menus::changes(player, &mut level.containers, books);
             session.outbox.extend(changes);
         }
+    }
+
+    pub fn send_mobs(
+        &mut self,
+        players: &BTreeMap<PlayerUuid, Player>,
+        levels: &mut BTreeMap<Dimension, Level>,
+        view_distance: i32,
+    ) -> Vec<(u32, StateFrame)> {
+        let mut frames = Vec::new();
+        for (&dimension, level) in levels.iter_mut() {
+            let Some(entities) = level.entities.as_mut() else {
+                continue;
+            };
+            let tracked = entities.take_tracked();
+            let snapshot = entities.take_friend_snapshot();
+            for session in self.sessions.values_mut() {
+                session.mobs.follow(session.chunks.level);
+                if session.chunks.level != Some(dimension) {
+                    continue;
+                }
+                let Some(player) = players.get(&session.uuid) else {
+                    continue;
+                };
+                let id = u64::from(player.id.0);
+                let moves = tracked.moves_of(id);
+                let chunks = &session.chunks;
+                session.mobs.events(
+                    tracked.events_of(id),
+                    moves,
+                    |pos| chunks.has(pos),
+                    &mut session.outbox,
+                );
+                let Some(feet) = player
+                    .arrival
+                    .or(player.place)
+                    .filter(|place| place.dimension == dimension)
+                    .map(|place| glam::DVec3::from_array(place.feet))
+                else {
+                    continue;
+                };
+                let (around, has) = ((feet, view_distance), |pos| chunks.has(pos));
+                let frame = session.mobs.frame(0, moves, snapshot.as_ref(), around, has);
+                if let Some(frame) = frame {
+                    frames.push((session.client, frame));
+                }
+            }
+        }
+        frames
     }
 
     pub fn take_outgoing(&mut self) -> Vec<(u32, ToClient)> {

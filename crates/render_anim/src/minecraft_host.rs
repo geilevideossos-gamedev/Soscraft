@@ -452,6 +452,30 @@ pub(crate) fn host(
     let books = Books::of(&server.globals.data);
     host.sessions
         .send_menus(&mut server.players, &mut server.levels, books);
+    let frames = host.sessions.send_mobs(
+        &server.players,
+        &mut server.levels,
+        crate::minecraft_world::VIEW_DISTANCE,
+    );
+    for (client, frame) in frames {
+        match minecraft_net::encode(Lane::State, &frame) {
+            Ok(bytes) => {
+                if !wire.send_state(client, &bytes) {
+                    diag::warn!(
+                        World,
+                        "Minecraft state of {} bytes to client {client} not sent",
+                        bytes.len()
+                    );
+                }
+            }
+            Err(error) => {
+                diag::warn!(
+                    World,
+                    "Minecraft state to client {client} not sent: {error}"
+                );
+            }
+        }
+    }
     if host.worker.is_none() && !host.sessions.is_empty() {
         host.worker = ChunkWorker::start();
     }

@@ -31,7 +31,7 @@ pub struct Visitor {
     pub affected: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CloudView {
     pub position: DVec3,
     pub radius: f32,

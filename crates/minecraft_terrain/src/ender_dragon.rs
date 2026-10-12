@@ -64,7 +64,7 @@ const NODE_ADJACENCY: [u32; NODE_COUNT] = [
     8257536,
 ];
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Sample {
     pub y: f64,
     pub y_rot: f32,
@@ -735,13 +735,13 @@ pub struct DragonEvents {
     pub explosions: Vec<(DVec3, bool)>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BreathKind {
     Landing,
     Flame,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DragonBreath {
     pub head: DVec3,
     pub look: DVec3,
@@ -828,7 +828,7 @@ pub struct EnderDragon {
     tag: Tag,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DragonView {
     pub id: u64,
     pub uuid: [i32; 4],

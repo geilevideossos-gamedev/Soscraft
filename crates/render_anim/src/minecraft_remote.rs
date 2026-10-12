@@ -362,7 +362,9 @@ pub(crate) fn friend(
             Ok(prepared) => {
                 crate::minecraft_world::show_look(&mut view, &prepared.look);
                 friend.atlas_animation = AtlasAnimation::new(&prepared.look.atlas);
-                friend.remote = Some(RemoteWorld::new(prepared.registries.clone()));
+                let mut remote = RemoteWorld::new(prepared.registries.clone());
+                remote.recipes = prepared.recipes.clone();
+                friend.remote = Some(remote);
                 friend.worker = ReadWorker::start();
                 friend.ready_at = Some(now_ms);
                 friend.gui = crate::minecraft_gui::GuiAssets::load(
@@ -576,12 +578,23 @@ fn aim(friend: &Friend, ps: Option<&playerstate_iw4::PlayerState>) -> Target {
         minecraft_terrain::game_mode::BLOCK_REACH
     };
     let outlined = minecraft_terrain::doors::Outlined(&level.terrain.scene);
-    aim.target(&outlined, reach)
-        .map_or(Target::Miss, |hit| Target::Block {
-            pos: [hit.pos.0, hit.pos.1, hit.pos.2],
-            face: minecraft_survival::actions::face_index(hit.face),
-            hit: hit.point.as_vec3().to_array(),
-        })
+    let block = aim.target(&outlined, reach);
+    let entity_reach = if view.game_mode == GameMode::Creative {
+        minecraft_terrain::game_mode::CREATIVE_ENTITY_REACH
+    } else {
+        minecraft_terrain::game_mode::ENTITY_REACH
+    };
+    let block_distance = block.as_ref().map(|hit| hit.point.distance(aim.eye()));
+    if let Some((id, distance)) = level.view.mob_on_ray(aim.eye(), aim.look(), entity_reach)
+        && block_distance.is_none_or(|block| distance < block)
+    {
+        return Target::Mob { id };
+    }
+    block.map_or(Target::Miss, |hit| Target::Block {
+        pos: [hit.pos.0, hit.pos.1, hit.pos.2],
+        face: minecraft_survival::actions::face_index(hit.face),
+        hit: hit.point.as_vec3().to_array(),
+    })
 }
 
 fn mc_game_mode(mode: GameMode) -> frame::McGameMode {
@@ -1000,6 +1013,72 @@ fn present(
         light_volume_at,
         light_volume_age,
     );
+    present_entities(
+        level,
+        prepared,
+        view,
+        light,
+        (feet, eye, forward),
+        (
+            dt,
+            remote.game_time,
+            standing.is_some_and(|ps| ps.pm_type == 0),
+        ),
+    );
+}
+
+fn present_entities(
+    level: &mut minecraft_survival::remote::RemoteLevel,
+    prepared: &Prepared,
+    view: &mut MinecraftWorldView,
+    light: &SkyLight,
+    (feet, eye, forward): ([f64; 3], [f64; 3], glam::Vec3),
+    (dt, game_time, alive): (f64, i64, bool),
+) {
+    let feet = glam::DVec3::from_array(feet);
+    let near: Vec<glam::DVec3> = alive.then_some(feet).into_iter().collect();
+    let entities = &mut level.view;
+    entities.world.set_game_time(game_time);
+    let before = entities.ticks();
+    let timing = minecraft_survival::tick_rate::ClientTiming::default();
+    entities.advance(dt, timing, &near, feet + glam::DVec3::Y * 0.81);
+    let ticks = u32::try_from(entities.ticks() - before).unwrap_or(u32::MAX);
+    entities.tick_scene(&level.terrain.scene, ticks);
+    entities.sounds.clear();
+    entities.item_crumbs.clear();
+    entities.potion_crumbs.clear();
+    let sky_light = level.terrain.environment.sky_light_level();
+    let sky_darken = (15.0 - sky_light).clamp(0.0, 15.0) as u8;
+    let stream = &level.terrain.stream;
+    let meshes = entities.meshes(
+        &level.terrain.scene,
+        &prepared.look.packs,
+        &prepared.look.atlas,
+        light,
+        forward,
+        glam::DVec3::from_array(eye),
+        sky_darken,
+        &|pos| stream.cell_settled(pos),
+        &[],
+    );
+    let raw = |mesh: &minecraft_terrain::mesh::ChunkMesh| {
+        (
+            bytemuck::cast_slice::<_, u8>(&mesh.vertices).to_vec(),
+            mesh.indices.clone(),
+        )
+    };
+    view.entity_meshes = [
+        raw(&meshes.models),
+        raw(&meshes.culled),
+        raw(&meshes.translucent),
+        raw(&meshes.shadows),
+    ];
+    let (bytes, indices) = &mut view.particles;
+    let vertex = std::mem::size_of::<minecraft_terrain::mesh::SectionVertex>();
+    let base = (bytes.len() / vertex) as u32;
+    let vertices = minecraft_terrain::mesh::section_vertices(&meshes.items);
+    bytes.extend_from_slice(bytemuck::cast_slice(&vertices));
+    indices.extend(meshes.items.indices.iter().map(|i| i + base));
 }
 
 #[cfg(test)]

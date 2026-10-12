@@ -1236,10 +1236,14 @@ fn saddle_equipment(original: Option<&Tag>, saddled: bool) -> Option<Tag> {
 /// it; the rest (equipment, attributes, UUID, villager data) stays as
 /// loaded. `spawn_saved` reads them back.
 pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &std::collections::HashMap<u64, Tag>) -> Vec<(u64, Tag)> {
+    mob_tags_where(world, |_, at| keep(at), originals, true)
+}
+
+pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, originals: &std::collections::HashMap<u64, Tag>, nest: bool) -> Vec<(u64, Tag)> {
     use minecraftoss_entities::movement::Body;
     let mut out = Vec::new();
     let mut add = |id: u64, kind: &str, body: &Body, yaw: f32, health: f32, persistent: bool, fields: Vec<(&str, Tag)>| {
-        if !keep(body.position) || health <= 0.0 {
+        if !keep(id, body.position) || health <= 0.0 {
             return;
         }
         let mut map = match originals.get(&id) {
@@ -1517,10 +1521,12 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
             }
         }
     }
-    nest_passengers(world, &mut out);
+    if nest {
+        nest_passengers(world, &mut out);
+    }
     for f in world.fireballs() {
         let fireball = &f.fireball;
-        if !keep(fireball.position) || !fireball.alive {
+        if !keep(f.id, fireball.position) || !fireball.alive {
             continue;
         }
         let mut map = std::collections::BTreeMap::new();
@@ -1538,7 +1544,7 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
     }
     for b in world.shulker_bullets() {
         let bullet = &b.bullet;
-        if !keep(bullet.position) || !bullet.alive {
+        if !keep(b.id, bullet.position) || !bullet.alive {
             continue;
         }
         let uuid = |uuid: u128| Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(uuid).to_vec());
@@ -1566,7 +1572,7 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
     // Splash potions in flight (`ThrowableItemProjectile`).
     for p in world.potions() {
         let potion = &p.potion;
-        if !keep(potion.position) || !potion.alive {
+        if !keep(p.id, potion.position) || !potion.alive {
             continue;
         }
         let mut map = std::collections::BTreeMap::new();

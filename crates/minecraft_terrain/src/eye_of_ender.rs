@@ -131,7 +131,7 @@ impl EyeOfEnder {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EyeView {
     pub owner: u64,
     pub previous: DVec3,
@@ -190,7 +190,7 @@ impl EyeAnswer {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EyeSnapshot {
     pub views: Vec<EyeView>,
     pub shattered: Vec<[i32; 3]>,
@@ -678,6 +678,7 @@ mod tests {
             mob_vitals: Vec::new(),
             bright_outside: true,
             tracking: (feet.to_array(), 64.0),
+            watchers: Vec::new(),
             player_hurts: Vec::new(),
             spawn_mobs: false,
             controls: Vec::new(),

@@ -447,7 +447,7 @@ pub fn act(
                     ));
                 }
                 if let Some(stack) = overflow {
-                    entities.world_items.toss(stack, eye_block, mc_yaw, pitch);
+                    entities.view.world_items.toss(stack, eye_block, mc_yaw, pitch);
                 }
             }
         }
@@ -787,7 +787,7 @@ pub fn act(
                             let facing = Scene::block(&terrain.scene, opened.cells[0])
                                 .and_then(|b| b.properties.get("facing").cloned())
                                 .unwrap_or_else(|| "up".to_owned());
-                            entities.lids.lid_closed(opened.cells[0])
+                            entities.view.lids.lid_closed(opened.cells[0])
                                 && minecraft_terrain::containers::lid_obstructed(
                                     opened.cells[0],
                                     &facing,
@@ -983,7 +983,7 @@ pub fn act(
                 if let Some(result) = result
                     && let Some(rest) = bottle::filled_result(inventory, slot, result)
                 {
-                    entities.world_items.toss(rest, eye_block, mc_yaw, pitch);
+                    entities.view.world_items.toss(rest, eye_block, mc_yaw, pitch);
                 }
                 for (event, at) in heard {
                     effects.push(sound(event, at, 1.0, 1.0));

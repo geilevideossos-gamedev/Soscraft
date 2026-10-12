@@ -24,7 +24,7 @@ pub struct DragonFireball {
     pub previous_position: DVec3,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FireballView {
     pub id: u64,
     pub position: DVec3,

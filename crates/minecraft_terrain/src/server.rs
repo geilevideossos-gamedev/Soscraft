@@ -107,6 +107,7 @@ pub struct ServerSim {
     frame_sounds: Vec<minecraftoss_entities::world::MobSound>,
     lectern_viewers: std::collections::HashMap<u64, BlockPos>,
     lecterns: Vec<crate::lectern::LecternView>,
+    trackers: crate::mob_tracking::Trackers,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -182,7 +183,7 @@ pub struct MerchantUpdate {
 
 /// An item entity on the server, as the client shows it. Components travel
 /// as their JSON text.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ServerItem {
     pub id: i32,
     pub item: String,
@@ -198,7 +199,7 @@ pub struct ServerItem {
 }
 
 /// A falling block entity as the client shows it.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ServerFallingBlock {
     pub id: i32,
     pub position: [f64; 3],
@@ -208,7 +209,7 @@ pub struct ServerFallingBlock {
 }
 
 /// An experience orb as the client shows it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ServerOrb {
     pub id: i32,
     pub position: [f64; 3],
@@ -219,7 +220,7 @@ pub struct ServerOrb {
 }
 
 /// The level's entities as the client shows them after a tick.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct EntitySnapshot {
     pub items: Vec<ServerItem>,
     pub tnt: Vec<ServerTnt>,
@@ -240,7 +241,7 @@ pub struct EntitySnapshot {
 }
 
 /// A primed TNT entity as the client shows it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ServerTnt {
     pub position: [f64; 3],
     pub previous_position: [f64; 3],
@@ -370,6 +371,7 @@ impl ServerSim {
             frame_sounds: Vec::new(),
             lectern_viewers: std::collections::HashMap::new(),
             lecterns: Vec::new(),
+            trackers: Default::default(),
         }
     }
 
@@ -595,6 +597,7 @@ impl ServerSim {
         }
         self.spawn_trade_experience();
         self.lectern_viewers.remove(&player);
+        self.trackers.forget(player);
         self.mobs.drop_player(player);
         self.mobs.forget_player(player);
     }
@@ -1525,6 +1528,11 @@ impl ServerSim {
             let (dx, dz) = (p.x - position[0], p.z - position[2]);
             dx * dx + dz * dz <= range_sq
         })
+    }
+
+    pub fn tracked_mobs_around(&self, centres: &[[f64; 3]], range: f64) -> minecraftoss_entities::world::EntityWorld {
+        let range_sq = range * range;
+        self.mobs.clone_where(|p| centres.iter().any(|centre| (p.x - centre[0]).powi(2) + (p.z - centre[2]).powi(2) <= range_sq))
     }
 
     /// A chunk leaves the level; its entities are saved and taken out.
@@ -2824,6 +2832,7 @@ pub struct TickInput {
     pub bright_outside: bool,
     /// The player's position and how far away it tracks mobs.
     pub tracking: ([f64; 3], f64),
+    pub watchers: Vec<crate::mob_tracking::Watcher>,
     /// The hurts that landed on the player since the last tick: the mob
     /// behind each and the damage type (its tame wolves avenge it).
     pub player_hurts: Vec<(u64, Option<u64>, &'static str)>,
@@ -2917,6 +2926,7 @@ pub struct Output {
     pub tick_nanos: Vec<u64>,
     pub eye_answers: Vec<crate::eye_of_ender::EyeAnswer>,
     pub lecterns: Vec<crate::lectern::LecternView>,
+    pub tracked: crate::mob_tracking::Tracked,
 }
 
 /// The integrated server on its own thread, as vanilla runs it: the client
@@ -3403,6 +3413,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
         sim.save_all_entities();
     }
     sim.set_clocks(input.clocks);
+    sim.trackers.tick();
     sim.player_feet.extend(input.players.iter().map(|p| (p.id, p.feet)));
     let alive: Vec<[f64; 3]> = input.players.iter().filter(|p| p.alive).map(|p| p.feet).collect();
     sim.set_players(&alive, input.difficulty);
@@ -3509,7 +3520,11 @@ fn player_left(sim: &mut ServerSim, running: Option<&mut TickInput>, player: u64
 }
 
 fn finish_batch(sim: &mut ServerSim, input: &TickInput, out: &mut Output) {
-    out.mobs = Some(Box::new(sim.tracked_mobs(input.tracking.0, input.tracking.1)));
+    let (centre, range) = input.tracking;
+    let centres: Vec<[f64; 3]> = std::iter::once(centre).chain(input.watchers.iter().map(|watcher| watcher.feet)).collect();
+    out.mobs = Some(Box::new(sim.tracked_mobs_around(&centres, range)));
+    let tracked = sim.trackers.update(&sim.mobs, &sim.mob_tags, &input.watchers);
+    out.tracked.merge(tracked);
     out.weather = Some(sim.weather(input.players.first().filter(|p| p.alive).map(|p| p.feet)));
     out.weather_data = sim.weather_data();
     out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions) });
@@ -9289,6 +9304,7 @@ mod tests {
             mob_vitals: Vec::new(),
             bright_outside: true,
             tracking: ([8.5, 120.0, 8.5], 64.0),
+            watchers: Vec::new(),
             player_hurts: Vec::new(),
             spawn_mobs: false,
             controls: Vec::new(),

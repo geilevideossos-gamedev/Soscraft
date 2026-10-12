@@ -1035,7 +1035,7 @@ pub(crate) fn drop_on_death(
     };
     let eye = glam::DVec3::from_array(death.spot.eye);
     for stack in minecraft_survival::death::death_drops(inventory, guns) {
-        entities.world_items.drop_on_death(stack, eye);
+        entities.view.world_items.drop_on_death(stack, eye);
     }
     entities.award_experience(death.spot.feet, death.experience);
     hand.blocking = None;
@@ -1143,8 +1143,14 @@ pub(crate) fn step_friend(
         ],
     );
     let mode = player.mode;
+    let entities = world
+        .levels
+        .get(&player.dimension)
+        .and_then(|level| level.entities.as_ref());
     let taken = hands.take(world.instant, |target| {
-        minecraft_survival::actions::allows(target, eye, &mode, |_| None)
+        minecraft_survival::actions::allows(target, eye, &mode, |id| {
+            entities.and_then(|entities| entities.mob_box(id))
+        })
     });
     if let Some(slot) = selected {
         player.selected = usize::from(slot).min(minecraft_survival::guns::HOTBAR - 1);
@@ -1276,7 +1282,7 @@ pub(crate) fn step_friend(
             let yaw = minecraft_yaw(ps.viewangles[1]);
             for stack in minecraft_survival::menus::close(player) {
                 let eye = glam::DVec3::from_array(eye);
-                entities.world_items.toss(stack, eye, yaw, ps.viewangles[0]);
+                entities.view.world_items.toss(stack, eye, yaw, ps.viewangles[0]);
             }
         }
         let Player {
@@ -1378,7 +1384,7 @@ fn friend_hand(
             } else {
                 let eye = glam::DVec3::from_array(actor.eye);
                 entities
-                    .world_items
+                    .view.world_items
                     .toss(stack, eye, actor.yaw, actor.pitch);
             }
         }
@@ -1549,7 +1555,7 @@ pub(crate) fn friend_menus(
     let yaw = minecraft_yaw(ps.viewangles[1]);
     for stack in clicked.thrown {
         let at = glam::DVec3::from_array(eye);
-        entities.world_items.toss(stack, at, yaw, ps.viewangles[0]);
+        entities.view.world_items.toss(stack, at, yaw, ps.viewangles[0]);
     }
     let _ = player.survival.gain_experience(clicked.experience);
     let mut body = MwBody {

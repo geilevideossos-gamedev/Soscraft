@@ -775,7 +775,7 @@ pub const MODEL: [ModelCube; 5] = [
     },
 ];
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TridentView {
     pub previous: DVec3,
     pub position: DVec3,

@@ -1,0 +1,896 @@
+use std::collections::{HashMap, HashSet};
+
+use glam::{DVec3, Vec3};
+use minecraft_terrain::client_mobs::{ClientMobs, ServerMob, server_mobs};
+use minecraft_terrain::lighting::SkyLight;
+use minecraft_terrain::mesh::{Atlas, ItemVisuals};
+use minecraft_terrain::pack::PackStack;
+use minecraft_terrain::poof_particles::PoofParticles;
+use minecraft_terrain::portal_particles::PortalParticles;
+use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
+use minecraft_terrain::server::{EntitySnapshot, ServerItem, ServerOrb};
+use minecraftoss_entities::world::{EntityWorld, MobHit};
+use minecraftoss_player::crafting::RecipeBook;
+use minecraftoss_player::inventory::ItemStack;
+use minecraftoss_player::items::{ItemEntity, WorldItems};
+
+use crate::entities::{
+    CRYSTAL_KEY, FIREBALL_KEY, FRAME_KEY, MobMeshes, SHULKER_BULLET_KEY, TICK_SECONDS, bob_offset,
+    decode, dragon_flapping, dragon_part_key, encode, mirrored,
+};
+
+const FLAME_RANGE: f64 = 160.0;
+
+pub struct EntityView {
+    pub world: EntityWorld,
+    pub client: ClientMobs,
+    pub(crate) poof: PoofParticles,
+    pub(crate) portal: PortalParticles,
+    pub(crate) eyes: minecraft_terrain::eye_of_ender::EyeTrails,
+    pub(crate) spell: minecraft_terrain::spell_particles::SpellParticles,
+    pub(crate) ambient: minecraft_terrain::ambient_particles::AmbientParticles,
+    pub(crate) bodies: HashMap<u128, minecraft_terrain::ambient_particles::Body>,
+    pub(crate) items: ItemVisuals,
+    pub(crate) clock: f64,
+    pub(crate) tick_seconds: f64,
+    pub(crate) ticks: u64,
+    pub world_items: WorldItems,
+    pub(crate) burning_items: Vec<u32>,
+    pub(crate) thrown: Vec<minecraft_terrain::thrown::ThrownView>,
+    pub(crate) clouds: Vec<minecraft_terrain::effect_cloud::CloudView>,
+    pub(crate) tridents: Vec<minecraft_terrain::trident::TridentView>,
+    pub(crate) crystals: Vec<minecraft_terrain::end_crystal::CrystalView>,
+    pub(crate) gateways: minecraft_terrain::end_gateway::ClientGateways,
+    pub(crate) dragons: Vec<minecraft_terrain::ender_dragon::DragonView>,
+    pub(crate) dragon_fireballs: Vec<minecraft_terrain::dragon_fireball::FireballView>,
+    pub(crate) frames: Vec<minecraft_terrain::item_frame::FrameView>,
+    pub(crate) growls: HashMap<u64, i32>,
+    pub(crate) orbs: Vec<ServerOrb>,
+    pub(crate) falling: minecraft_terrain::falling_render::FallingBlocks,
+    pub lids: minecraft_terrain::lids::Lids,
+    pub(crate) spawners: minecraft_terrain::spawner_display::SpawnerDisplays,
+    pub(crate) orb_pickups: Vec<minecraft_terrain::orb_render::OrbPickup>,
+    pub item_crumbs: Vec<(String, DVec3, Vec<Vec3>)>,
+    pub potion_crumbs: Vec<DVec3>,
+    pub sounds: Vec<(String, DVec3, f32, f32)>,
+    pub(crate) random: minecraftoss_player::rng::LegacyRandom,
+    shown: HashSet<u64>,
+}
+
+impl EntityView {
+    pub fn new(seed: i64) -> Self {
+        Self {
+            world: EntityWorld::default(),
+            client: ClientMobs::default(),
+            poof: PoofParticles::default(),
+            portal: PortalParticles::default(),
+            eyes: minecraft_terrain::eye_of_ender::EyeTrails::default(),
+            spell: minecraft_terrain::spell_particles::SpellParticles::new((seed ^ 0x5be1) as u64),
+            ambient: minecraft_terrain::ambient_particles::AmbientParticles::new(
+                (seed ^ 0xa3b1) as u64,
+            ),
+            bodies: HashMap::new(),
+            items: ItemVisuals::default(),
+            clock: 0.0,
+            tick_seconds: TICK_SECONDS,
+            ticks: 0,
+            world_items: WorldItems::default(),
+            burning_items: Vec::new(),
+            thrown: Vec::new(),
+            clouds: Vec::new(),
+            tridents: Vec::new(),
+            crystals: Vec::new(),
+            gateways: Default::default(),
+            dragons: Vec::new(),
+            dragon_fireballs: Vec::new(),
+            frames: Vec::new(),
+            growls: HashMap::new(),
+            orbs: Vec::new(),
+            falling: Default::default(),
+            lids: Default::default(),
+            spawners: minecraft_terrain::spawner_display::SpawnerDisplays::new(
+                (seed ^ 0x5b3d) as u64,
+            ),
+            orb_pickups: Vec::new(),
+            item_crumbs: Vec::new(),
+            potion_crumbs: Vec::new(),
+            sounds: Vec::new(),
+            random: minecraftoss_player::rng::LegacyRandom::new((seed ^ 0x1735) as u64),
+            shown: HashSet::new(),
+        }
+    }
+
+    pub fn advance(
+        &mut self,
+        dt: f64,
+        client: crate::tick_rate::ClientTiming,
+        near: &[DVec3],
+        orb_target: DVec3,
+    ) -> bool {
+        self.tick_seconds = client.tick_seconds;
+        if client.runs_normally {
+            self.clock += dt;
+        }
+        let ticked = client.runs_normally && self.clock >= self.tick_seconds;
+        if ticked {
+            self.clock = (self.clock - self.tick_seconds).min(self.tick_seconds);
+            self.ticks += 1;
+            self.falling.tick_sent();
+            for tnt in self.falling.primed.iter().filter(|tnt| tnt.fuse > 0) {
+                let smoke = DVec3::from_array(tnt.position) + DVec3::Y * 0.5;
+                self.ambient.add(
+                    minecraft_terrain::ambient_particles::Kind::Smoke,
+                    smoke,
+                    DVec3::ZERO,
+                );
+            }
+            self.lids.tick();
+            self.spawners.tick(near, &mut self.ambient);
+            self.client.tick();
+            for enderman in self.world.endermen() {
+                if let Some(mob) = self.client.get(enderman.id) {
+                    self.portal.emit_enderman(mob.position, 0.6, 2.9);
+                }
+            }
+            self.eyes.tick(&mut self.portal);
+            for blaze in self.world.blazes() {
+                if let Some(mob) = self
+                    .client
+                    .get(blaze.id)
+                    .filter(|_| self.random.next_int(24) == 0)
+                {
+                    let volume = 1.0 + self.random.next_float();
+                    let pitch = self.random.next_float() * 0.7 + 0.3;
+                    self.sounds.push((
+                        "minecraft:entity.blaze.burn".to_owned(),
+                        mob.position + DVec3::splat(0.5),
+                        volume,
+                        pitch,
+                    ));
+                }
+            }
+            self.portal.tick();
+            for cloud in &self.clouds {
+                if cloud.breath {
+                    self.ambient
+                        .breath_cloud(cloud.position, cloud.radius, cloud.waiting);
+                } else {
+                    self.spell
+                        .cloud(cloud.position, cloud.radius, cloud.color, cloud.waiting);
+                }
+            }
+            self.spell.tick();
+            minecraft_terrain::orb_render::tick_pickups(&mut self.orb_pickups, orb_target);
+            if self.ticks % 600 == 0 {
+                diag::info!(World, "Minecraft mobs: {} tracked", self.boxes().len());
+            }
+        }
+
+        ticked
+    }
+
+    pub fn receive(
+        &mut self,
+        snapshot: &mut EntitySnapshot,
+        changes: &[((i32, i32, i32), Option<Block>)],
+    ) {
+        self.thrown = std::mem::take(&mut snapshot.thrown_views);
+        self.eyes.receive(
+            std::mem::take(&mut snapshot.eyes),
+            &mut self.portal,
+            &mut self.item_crumbs,
+        );
+        self.clouds = std::mem::take(&mut snapshot.clouds);
+        self.tridents = std::mem::take(&mut snapshot.tridents);
+        self.crystals = std::mem::take(&mut snapshot.crystals);
+        self.gateways
+            .receive(std::mem::take(&mut snapshot.gateways), self.ticks);
+        self.dragons = std::mem::take(&mut snapshot.dragons);
+        self.dragon_fireballs = std::mem::take(&mut snapshot.dragon_fireballs);
+        for fireball in &self.dragon_fireballs {
+            self.ambient.breath_trail(fireball.position);
+        }
+        self.frames = std::mem::take(&mut snapshot.frames);
+        for at in std::mem::take(&mut snapshot.breath_bursts) {
+            self.ambient.breath_burst(at);
+        }
+        for breath in std::mem::take(&mut snapshot.dragon_breath) {
+            self.ambient.mouth_breath(&breath);
+        }
+        for (at, emitter) in std::mem::take(&mut snapshot.dragon_explosions) {
+            let kind = if emitter {
+                minecraft_terrain::ambient_particles::Kind::ExplosionEmitter
+            } else {
+                minecraft_terrain::ambient_particles::Kind::Explosion
+            };
+            self.ambient.add(kind, at, DVec3::ZERO);
+        }
+        self.dragon_voices();
+        self.orbs = snapshot.orbs.clone();
+        self.falling.receive(
+            std::mem::take(&mut snapshot.falling),
+            std::mem::take(&mut snapshot.tnt),
+            changes,
+            self.ticks,
+        );
+    }
+
+    pub fn show_items(&mut self, items: Vec<ServerItem>, recipes: &RecipeBook) {
+        self.burning_items = items
+            .iter()
+            .filter(|item| item.on_fire)
+            .map(|item| mirrored(item.id))
+            .collect();
+        self.world_items.entities = items
+            .into_iter()
+            .map(|item: ServerItem| {
+                let mut stack = ItemStack::new(&item.item, item.count.clamp(0, 255) as u8);
+                stack.components = item
+                    .components
+                    .as_deref()
+                    .and_then(|c| serde_json::from_str(c).ok());
+                stack.max = stack.max.min(recipes.max_stack(&item.item));
+                ItemEntity {
+                    entity_id: mirrored(item.id),
+                    stack,
+                    position: DVec3::from_array(item.position),
+                    previous_position: DVec3::from_array(item.previous_position),
+                    velocity: DVec3::from_array(item.velocity),
+                    age: item.age.max(0) as u32,
+                    bob_offset: bob_offset(item.id),
+                    pickup_delay: item.pickup_delay.clamp(0, i32::from(u16::MAX)) as u16,
+                    on_ground: item.on_ground,
+                }
+            })
+            .collect();
+    }
+
+    pub fn show_mobs(&mut self, shown: Vec<ServerMob>) {
+        self.shown = shown.iter().map(|mob| mob.id).collect();
+        for (feet, width, height) in self.client.receive(shown) {
+            self.poof.spawn(feet, width, height);
+        }
+    }
+
+    pub fn ticks(&self) -> u64 {
+        self.ticks
+    }
+
+    pub fn mob_on_ray(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<(u64, f64)> {
+        self.world
+            .mob_on_ray_except(eye, look, reach, None)
+            .map(|(hit, distance)| (hit.id(), distance))
+    }
+
+    pub fn partial(&self) -> f32 {
+        (self.clock / self.tick_seconds).clamp(0.0, 1.0) as f32
+    }
+
+    fn dragon_voices(&mut self) {
+        use minecraft_terrain::ender_dragon::{FLAP_SOUND, GROWL_SOUND, SOUND_VOLUME};
+        self.growls
+            .retain(|id, _| self.dragons.iter().any(|dragon| dragon.id == *id));
+        for dragon in &self.dragons {
+            if dragon_flapping(dragon.o_flap_time, dragon.flap_time) {
+                let pitch = 0.8 + self.random.next_float() * 0.3;
+                self.sounds
+                    .push((FLAP_SOUND.to_owned(), dragon.position, SOUND_VOLUME, pitch));
+            }
+            if dragon.phase == minecraft_terrain::ender_dragon::Phase::SittingAttacking.id() {
+                let pitch = 0.8 + self.random.next_float() * 0.3;
+                self.sounds
+                    .push((GROWL_SOUND.to_owned(), dragon.position, 2.5, pitch));
+            }
+            if dragon.sitting {
+                continue;
+            }
+            let growl = self.growls.entry(dragon.id).or_insert(100);
+            *growl -= 1;
+            if *growl < 0 {
+                let pitch = 0.8 + self.random.next_float() * 0.3;
+                self.sounds
+                    .push((GROWL_SOUND.to_owned(), dragon.position, 2.5, pitch));
+                *growl = 200 + self.random.next_int(200) as i32;
+            }
+        }
+    }
+
+    pub fn boxes(&self) -> Vec<(u64, [f64; 6])> {
+        let w = &self.world;
+        let mut out = Vec::new();
+        let mut add = |hit: MobHit, body: &minecraftoss_entities::movement::Body| {
+            let p = body.position;
+            let half = f64::from(body.width) * 0.5;
+            out.push((
+                encode(hit),
+                [
+                    p.x - half,
+                    p.y,
+                    p.z - half,
+                    p.x + half,
+                    p.y + f64::from(body.height),
+                    p.z + half,
+                ],
+            ));
+        };
+        for e in w.bats().iter().filter(|e| e.bat.health > 0.0) {
+            add(MobHit::Bat(e.id), &e.bat.body);
+        }
+        for e in w.zombies().iter().filter(|e| e.zombie.health > 0.0) {
+            add(MobHit::Zombie(e.id), &e.zombie.body);
+        }
+        for e in w.skeletons().iter().filter(|e| e.skeleton.health > 0.0) {
+            add(MobHit::Skeleton(e.id), &e.skeleton.body);
+        }
+        for e in w
+            .creepers()
+            .iter()
+            .filter(|e| e.creeper.health > 0.0 && !e.creeper.exploded)
+        {
+            add(MobHit::Creeper(e.id), &e.creeper.body);
+        }
+        for e in w.spiders().iter().filter(|e| e.spider.health > 0.0) {
+            add(MobHit::Spider(e.id), &e.spider.body);
+        }
+        for e in w.slimes().iter().filter(|e| e.slime.health > 0.0) {
+            add(MobHit::Slime(e.id), &e.slime.body);
+        }
+        for e in w.endermen().iter().filter(|e| e.enderman.health > 0.0) {
+            add(MobHit::Enderman(e.id), &e.enderman.body);
+        }
+        for e in w.witches().iter().filter(|e| e.witch.health > 0.0) {
+            add(MobHit::Witch(e.id), &e.witch.body);
+        }
+        for e in w.iron_golems().iter().filter(|e| e.golem.health > 0.0) {
+            add(MobHit::IronGolem(e.id), &e.golem.body);
+        }
+        for e in w.wolves().iter().filter(|e| e.wolf.health > 0.0) {
+            add(MobHit::Wolf(e.id), &e.wolf.body);
+        }
+        for e in w.villagers().iter().filter(|e| e.villager.health > 0.0) {
+            add(MobHit::Villager(e.id), &e.villager.body);
+        }
+        for e in w.cows().iter().filter(|e| e.cow.health > 0.0) {
+            let hit = if e.mooshroom.is_some() {
+                MobHit::Mooshroom(e.id)
+            } else {
+                MobHit::Cow(e.id)
+            };
+            add(hit, &e.cow.body);
+        }
+        for e in w.sheep().iter().filter(|e| e.health > 0.0) {
+            add(MobHit::Sheep(e.id), &e.body);
+        }
+        for e in w.pigs().iter().filter(|e| e.pig.health > 0.0) {
+            add(MobHit::Pig(e.id), &e.pig.body);
+        }
+        for e in w.chickens().iter().filter(|e| e.chicken.health > 0.0) {
+            add(MobHit::Chicken(e.id), &e.chicken.body);
+        }
+        for e in w.ghasts().iter().filter(|e| e.ghast.health > 0.0) {
+            add(MobHit::Ghast(e.id), &e.ghast.body);
+        }
+        for e in w.blazes().iter().filter(|e| e.blaze.health > 0.0) {
+            add(MobHit::Blaze(e.id), &e.blaze.body);
+        }
+        for e in w.striders().iter().filter(|e| e.strider.health > 0.0) {
+            add(MobHit::Strider(e.id), &e.strider.body);
+        }
+        for e in w.hoglins().iter().filter(|e| e.hoglin.health > 0.0) {
+            add(MobHit::Hoglin(e.id), &e.hoglin.body);
+        }
+        for e in w.piglins().iter().filter(|e| e.piglin.health > 0.0) {
+            add(MobHit::Piglin(e.id), &e.piglin.body);
+        }
+        for e in w.shulkers().iter().filter(|e| e.shulker.health > 0.0) {
+            let (low, high) = e.shulker.bounding_box();
+            out.push((
+                encode(MobHit::Shulker(e.id)),
+                [low.x, low.y, low.z, high.x, high.y, high.z],
+            ));
+        }
+        for crystal in &self.crystals {
+            let (low, high) = minecraft_terrain::end_crystal::pick_box(crystal.position);
+            out.push((
+                CRYSTAL_KEY | (crystal.id & ((1 << 56) - 1)),
+                [low.x, low.y, low.z, high.x, high.y, high.z],
+            ));
+        }
+        out
+    }
+
+    pub fn shot_boxes(&self, riding: Option<u64>) -> Vec<(u64, [f64; 6])> {
+        let mut out = self.boxes();
+        out.retain(|(key, _)| riding.is_none() || decode(*key).map(|hit| hit.id()) != riding);
+        for e in self
+            .world
+            .fireballs()
+            .iter()
+            .filter(|e| e.fireball.alive && e.fireball.kind.redirectable())
+        {
+            let (min, max) =
+                minecraftoss_entities::fireball::pick_box(e.fireball.kind, e.fireball.position);
+            out.push((
+                FIREBALL_KEY | (e.id & ((1 << 56) - 1)),
+                [min.x, min.y, min.z, max.x, max.y, max.z],
+            ));
+        }
+        for e in self
+            .world
+            .shulker_bullets()
+            .iter()
+            .filter(|e| e.bullet.alive)
+        {
+            let (min, max) = e.bullet.bounds();
+            out.push((
+                SHULKER_BULLET_KEY | (e.id & ((1 << 56) - 1)),
+                [min.x, min.y, min.z, max.x, max.y, max.z],
+            ));
+        }
+        for dragon in self.dragons.iter().filter(|dragon| dragon.health > 0.0) {
+            for (part, &feet) in dragon.parts.iter().enumerate() {
+                let (low, high) = minecraft_terrain::ender_dragon::part_box(feet, part);
+                out.push((
+                    dragon_part_key(dragon.id, part),
+                    [low.x, low.y, low.z, high.x, high.y, high.z],
+                ));
+            }
+        }
+        for frame in &self.frames {
+            let (low, high) =
+                minecraft_terrain::item_frame::hanging_box(frame.position, frame.facing);
+            out.push((
+                FRAME_KEY | (frame.id & ((1 << 56) - 1)),
+                [low.x, low.y, low.z, high.x, high.y, high.z],
+            ));
+        }
+        out
+    }
+
+    pub fn tick_scene(&mut self, scene: &HandcraftedScene, ticks: u32) {
+        for _ in 0..ticks {
+            self.poof.tick(scene);
+            let bodies = &self.bodies;
+            self.ambient.tick_emitters(|key| bodies.get(&key).copied());
+            self.ambient.tick(scene);
+            for entity in self
+                .world
+                .shulker_bullets()
+                .iter()
+                .filter(|e| e.bullet.alive)
+            {
+                self.ambient.add(
+                    minecraft_terrain::ambient_particles::Kind::EndRod,
+                    entity.bullet.trail(),
+                    DVec3::ZERO,
+                );
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn meshes(
+        &mut self,
+        scene: &HandcraftedScene,
+        packs: &PackStack,
+        atlas: &Atlas,
+        light: &SkyLight,
+        forward: Vec3,
+        camera: DVec3,
+        sky_darken: u8,
+        cell_settled: &dyn Fn((i32, i32, i32)) -> bool,
+        placed_items: &[minecraft_terrain::mesh::HeldItem],
+    ) -> MobMeshes {
+        use minecraft_terrain::*;
+        let missing: Vec<ServerMob> = server_mobs(&self.world)
+            .into_iter()
+            .filter(|mob| self.shown.contains(&mob.id))
+            .collect();
+        self.client.spawn_missing(&missing);
+        let w = &self.world;
+        let poses = &self.client;
+        let partial = (self.clock / self.tick_seconds).clamp(0.0, 1.0) as f32;
+        let mut out = MobMeshes::default();
+        cow_render::append_cows(
+            &mut out.models,
+            w.cows().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        sheep_render::append_sheep(
+            &mut out.models,
+            w.sheep().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        pig_render::append_pigs(
+            &mut out.models,
+            w.pigs().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        chicken_render::append_chickens(
+            &mut out.models,
+            w.chickens().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        bat_render::append_bats(
+            &mut out.culled,
+            w.bats().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        let zombie_items = zombie_render::append_zombies(
+            &mut out.models,
+            w.zombies().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        creeper_render::append_creepers(
+            &mut out.models,
+            w.creepers().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        spider_render::append_spiders(
+            &mut out.models,
+            w.spiders().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        let skeleton_items = skeleton_render::append_skeletons(
+            &mut out.models,
+            w.skeletons().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        let villager_items = villager_render::append_villagers(
+            &mut out.models,
+            w.villagers().iter(),
+            poses,
+            &|pos| Scene::block(scene, pos).and_then(|b| b.properties.get("facing").cloned()),
+            atlas,
+            light,
+            partial,
+        );
+        horse_render::append_horses(
+            &mut out.models,
+            &mut out.translucent,
+            w.cows().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        slime_render::append_slimes(
+            &mut out.models,
+            &mut out.translucent,
+            w.slimes().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        magma_cube_render::append_magma_cubes(
+            &mut out.models,
+            w.slimes().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        orb_render::append_orbs(
+            &mut out.translucent,
+            &self.orbs,
+            &self.orb_pickups,
+            partial,
+            atlas,
+            forward,
+            light,
+        );
+        let carried = enderman_render::append_endermen(
+            &mut out.models,
+            w.endermen().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+            self.ticks.rotate_left(32) ^ (partial.to_bits() as u64),
+        );
+        let witch_items = witch_render::append_witches(
+            &mut out.models,
+            w.witches().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        ghast_render::append_ghasts(
+            &mut out.models,
+            w.ghasts().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        end_crystal_render::append_crystals(&mut out.models, &self.crystals, atlas, light, partial);
+        dragon_render::append_dragons(&mut out.models, &self.dragons, atlas, light, partial);
+        dragon_render::append_beams(
+            &mut out.models,
+            &self.dragons,
+            &self.crystals,
+            atlas,
+            light,
+            partial,
+        );
+        dragon_render::append_rays(&mut out.translucent, &self.dragons, atlas, partial);
+        end_gateway_render::append_beams(
+            &mut out.models,
+            &mut out.translucent,
+            self.gateways.views(),
+            atlas,
+            camera,
+            scene.vertical_range().end - 1,
+            w.game_time(),
+            partial,
+        );
+        blaze_render::append_blazes(
+            &mut out.models,
+            w.blazes().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        self.spawners.append(
+            &mut out.models,
+            &mut out.culled,
+            &mut out.translucent,
+            scene,
+            atlas,
+            light,
+            camera,
+            partial,
+        );
+        strider_render::append_striders(
+            &mut out.models,
+            w.striders().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        hoglin_render::append_hoglins(
+            &mut out.models,
+            w.hoglins().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        let piglin_items = piglin_render::append_piglins(
+            &mut out.models,
+            w.piglins().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        shulker_render::append_shulkers(
+            &mut out.models,
+            w.shulkers().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        let near = |at: DVec3| (at.x - camera.x).hypot(at.z - camera.z) <= FLAME_RANGE;
+        shulker_render::append_bullets(
+            &mut out.models,
+            &mut out.translucent,
+            w.shulker_bullets()
+                .iter()
+                .filter(|e| near(e.bullet.position)),
+            atlas,
+            partial,
+        );
+        let poppies = golem_render::append_iron_golems(
+            &mut out.models,
+            w.iron_golems().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        wolf_render::append_wolves(
+            &mut out.models,
+            w.wolves().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+            w.game_time(),
+        );
+        flame_render::append_flames(
+            &mut out.items,
+            w.burning()
+                .into_iter()
+                .filter(|(_, now, _, _)| near(*now))
+                .chain(
+                    self.world_items
+                        .entities
+                        .iter()
+                        .filter(|e| self.burning_items.contains(&e.entity_id))
+                        .map(|e| (e.previous_position, e.position, 0.25, 0.25)),
+                )
+                .map(|(previous, now, width, height)| {
+                    (previous.lerp(now, f64::from(partial)), width, height)
+                }),
+            atlas,
+            forward,
+            light,
+        );
+        witch_render::append_potions(
+            &mut out.items,
+            w.potions()
+                .iter()
+                .filter(|p| p.potion.alive && near(p.potion.position))
+                .map(|p| {
+                    (
+                        p,
+                        p.previous_position
+                            .lerp(p.potion.position, f64::from(partial)),
+                    )
+                }),
+            atlas,
+            forward,
+            light,
+        );
+        minecraft_terrain::dragon_fireball::append_fireballs(
+            &mut out.items,
+            &self.dragon_fireballs,
+            atlas,
+            forward,
+            partial,
+        );
+        ghast_render::append_fireballs(
+            &mut out.items,
+            w.fireballs()
+                .iter()
+                .filter(|f| f.fireball.alive && near(f.fireball.position))
+                .map(|f| {
+                    (
+                        f,
+                        f.previous_position
+                            .lerp(f.fireball.position, f64::from(partial)),
+                    )
+                }),
+            atlas,
+            forward,
+        );
+        if let Ok(items) = self
+            .items
+            .mesh(&self.world_items, packs, atlas, light, partial)
+        {
+            let base = out.items.vertices.len() as u32;
+            out.items.vertices.extend(items.vertices);
+            out.items
+                .indices
+                .extend(items.indices.iter().map(|i| i + base));
+            out.items
+                .glint
+                .extend(items.glint.iter().map(|r| r.start + base..r.end + base));
+        }
+        self.falling.settle(scene, cell_settled, self.ticks);
+        let moving = self.falling.moving_blocks(scene, partial);
+        let _ =
+            self.items
+                .append_moving_blocks(&mut out.items, &moving, scene, packs, atlas, light);
+        self.lids.settle(scene, cell_settled);
+        let lids = self.lids.posed(scene, partial);
+        let _ = self
+            .items
+            .append_open_lids(&mut out.items, &lids, scene, packs, atlas, light);
+        let frames: Vec<_> = self
+            .frames
+            .iter()
+            .filter(|frame| minecraft_terrain::item_frame::tracked(frame, camera))
+            .cloned()
+            .collect();
+        let _ = self
+            .items
+            .append_frames(&mut out.items, &frames, packs, atlas, light);
+        let _ = self.items.append_primed_tnt(
+            &mut out.items,
+            &self.falling.primed_tnt(partial),
+            packs,
+            atlas,
+            light,
+        );
+        minecraft_terrain::thrown::append_views(
+            &mut out.items,
+            &self.thrown,
+            partial,
+            camera,
+            atlas,
+            forward,
+            light,
+        );
+        minecraft_terrain::eye_of_ender::append_eyes(
+            &mut out.items,
+            self.eyes.views(),
+            partial,
+            camera,
+            atlas,
+            forward,
+        );
+        minecraft_terrain::trident::append_tridents(
+            &mut out.items,
+            &self.tridents,
+            partial,
+            atlas,
+            light,
+        );
+        self.poof
+            .append_mesh(&mut out.items, atlas, forward, partial, light);
+        self.ambient.append_mesh(
+            &mut out.items,
+            &mut out.translucent,
+            atlas,
+            forward,
+            partial,
+            light,
+        );
+        self.portal
+            .append_mesh(&mut out.items, atlas, forward, partial, light);
+        self.spell
+            .append_mesh(&mut out.translucent, atlas, forward, partial, light);
+        let held: Vec<_> = skeleton_items
+            .into_iter()
+            .chain(zombie_items)
+            .chain(villager_items)
+            .chain(witch_items)
+            .chain(piglin_items)
+            .chain(placed_items.iter().cloned())
+            .collect();
+        let _ = self
+            .items
+            .append_held_items(&mut out.items, &held, packs, atlas, light);
+        let carried: Vec<_> = carried.into_iter().chain(poppies).collect();
+        let _ = self
+            .items
+            .append_posed_blocks(&mut out.items, &carried, packs, atlas, light);
+        let mut casters = client_mobs::shadow_casters(w, poses, camera, partial);
+        casters.extend(orb_render::shadow_casters(&self.orbs, camera, partial));
+        casters.extend(self.falling.shadow_casters(scene, camera, partial));
+        let raw = |pos: (i32, i32, i32)| {
+            light
+                .get(pos)
+                .saturating_sub(sky_darken)
+                .max(light.get_block(pos))
+        };
+        if let Ok(shadows) = mesh::entity_shadows(&casters, scene, atlas, &raw, 0.0) {
+            out.shadows = shadows;
+        }
+        out
+    }
+}

@@ -151,7 +151,7 @@ pub fn open_for_respawn(
 pub fn spill(containers: &mut Containers, entities: &mut Entities, pos: (i32, i32, i32)) {
     let (items, experience) = containers.remove(pos, &entities.recipes);
     for stack in items {
-        entities.world_items.drop_item_stack(stack, pos);
+        entities.view.world_items.drop_item_stack(stack, pos);
     }
     let mut points = experience.floor() as i32;
     if experience.fract() > 0.0 && entities.random_float() < experience.fract() {
@@ -215,7 +215,7 @@ pub fn finish_item_use(
                 minecraft_terrain::bottle::filled_result(inventory, used.slot, result)
         {
             entities
-                .world_items
+                .view.world_items
                 .toss(rest, used.eye, used.yaw, used.pitch);
         }
         if spends && inventory.wear_tool(used.slot, used.outcome.wear) {
@@ -318,11 +318,11 @@ pub fn tick_containers(
         props.extend(ticked.props);
         brewed.extend(ticked.brewed);
         for (pos, stack) in ticked.drops {
-            entities.world_items.spawn_block_drop(stack, pos);
+            entities.view.world_items.spawn_block_drop(stack, pos);
         }
         let lit = |pos| Scene::block(&terrain.scene, pos).map(minecraft_terrain::campfire::is_lit);
         for (pos, stack) in containers.cook(lit, &entities.recipes) {
-            entities.world_items.drop_item_stack(stack, pos);
+            entities.view.world_items.drop_item_stack(stack, pos);
         }
     }
     (prop_writes(&terrain.scene, props), brewed)
@@ -405,7 +405,7 @@ pub fn leave(level: &mut Level, player: &PlayerUuid) {
         if let Some(entities) = level.entities.as_mut() {
             let (cell, id, count) = outcome.block_event;
             entities
-                .lids
+                .view.lids
                 .block_event(&level.terrain.scene, cell, id, count);
             if let Some((pos, viewers)) = outcome.trapped {
                 entities.chest_openers(pos, viewers);
@@ -414,7 +414,7 @@ pub fn leave(level: &mut Level, player: &PlayerUuid) {
                 let pitch = minecraft_terrain::openers::pitch(entities.random_float());
                 let at = glam::DVec3::from_array(sound.position);
                 entities
-                    .sounds
+                    .view.sounds
                     .push((sound.event.to_owned(), at, sound.volume, pitch));
             }
         }
@@ -729,18 +729,18 @@ mod tests {
             for event in opened {
                 let (cell, id, count) = event.block_event();
                 entities
-                    .lids
+                    .view.lids
                     .block_event(&level.terrain.scene, cell, id, count);
             }
         }
         let settle = |level: &mut Level| {
             let entities = level.entities.as_mut().unwrap();
             for _ in 0..20 {
-                let _ = entities.lids.take_apart_changes();
-                entities.lids.settle(&level.terrain.scene, |_| true);
-                entities.lids.tick();
+                let _ = entities.view.lids.take_apart_changes();
+                entities.view.lids.settle(&level.terrain.scene, |_| true);
+                entities.view.lids.tick();
             }
-            entities.lids.lid_closed(chest)
+            entities.view.lids.lid_closed(chest)
         };
         assert!(!settle(&mut level), "both players opened it");
         leave(&mut level, &friend());
@@ -751,7 +751,7 @@ mod tests {
             .entities
             .as_ref()
             .unwrap()
-            .sounds
+            .view.sounds
             .iter()
             .map(|sound| sound.0.as_str())
             .collect();

@@ -1095,6 +1095,14 @@ fn update(
         let batch = pending_batch.take().unwrap_or(minecraft_survival::tick_rate::TickBatch { normal: Vec::new(), overload: None });
         let mut present = vec![(host_id, local_uuid.clone())];
         let mut actors = vec![minecraft_survival::entities::TickActor { id: host_id, view: viewer, inventory: &mut *inventory, selected: *selected }];
+        let watchers = friends
+            .iter()
+            .filter_map(|friend| {
+                let place = friend.arrival.or(friend.place).filter(|place| friend.dimension == *dimension && place.dimension == *dimension)?;
+                Some(minecraft_terrain::mob_tracking::Watcher { id: u64::from(friend.id.0), feet: place.feet, view_distance: VIEW_DISTANCE })
+            })
+            .collect();
+        entities.set_watchers(watchers, VIEW_DISTANCE);
         for friend in friends.iter_mut().filter(|friend| friend.dimension == *dimension) {
             if let Some((actor, uuid)) = crate::minecraft_players::tick_actor(friend, &authority.0, origin) {
                 present.push((actor.id, uuid));
@@ -1169,7 +1177,7 @@ fn update(
             terrain.stream.record_edits(&terrain.scene, &positions);
             terrain.stream.mark_edited(&terrain.scene, &positions);
         }
-        for (item, at, velocities) in std::mem::take(&mut entities.item_crumbs) {
+        for (item, at, velocities) in std::mem::take(&mut entities.view.item_crumbs) {
             if let Some(texture) = minecraft_terrain::pack::ResourceId::parse(&item)
                 .ok()
                 .and_then(|id| minecraft_terrain::model::item_particle_texture(&world.packs, &id).ok().flatten())
@@ -1178,7 +1186,7 @@ fn update(
                 mining.item_crumbs(&world.packs, at.as_vec3(), &velocities, &texture);
             }
         }
-        let potion_crumbs = std::mem::take(&mut entities.potion_crumbs);
+        let potion_crumbs = std::mem::take(&mut entities.view.potion_crumbs);
         if !potion_crumbs.is_empty()
             && let Some(texture) = minecraft_terrain::pack::ResourceId::parse(minecraft_terrain::thrown::SPLASH_POTION)
                 .ok()
@@ -1315,7 +1323,7 @@ fn update(
             pitch: ps.viewangles[0],
         };
         crate::minecraft_players::drop_on_death(death_watch, inventory, hand, entities);
-        crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
+        crate::minecraft_inventory::throw(&mut entities.view.world_items, thrown, &thrower);
         ui.weapon_request = inventory_ui.weapon_request(inventory, selected, ps.weapon).filter(|_| player_mode.interacts());
         let refused = ui.weapon_request.filter(|&weapon| sky_bits(&terrain.environment) != 0 && sim::voxel::needs_sky(authority.0.weapon_script_name(weapon)));
         if refused.is_some() && *refused_air != refused {
@@ -1329,7 +1337,7 @@ fn update(
         inventory_ui.publish(&mut ui, inventory, *selected, &world.packs, &mut images, (&screen, survival.status.experience_level, containers));
 
         if let Some(sounds) = sounds.as_mut() {
-            for (event, position, volume, pitch) in std::mem::take(&mut entities.sounds) {
+            for (event, position, volume, pitch) in std::mem::take(&mut entities.view.sounds) {
                 sounds.play(&world.packs, &event, Some(at(position.to_array())), volume, pitch);
             }
         }
@@ -1416,7 +1424,7 @@ fn update(
 
         sim::voxel::set_mob_boxes(entities.shot_boxes(player.riding.map(|ride| ride.vehicle)));
         crate::minecraft_players::track_body(entities, local_uuid, ps, origin);
-        entities.tick_scene(&terrain.scene, mob_ticks);
+        entities.view.tick_scene(&terrain.scene, mob_ticks);
         let sky_darken = (15.0 - terrain.environment.sky_light_level()).clamp(0.0, 15.0) as u8;
         let campfire_items: Vec<_> = containers
             .campfires()
@@ -1427,7 +1435,7 @@ fn update(
             })
             .flatten()
             .collect();
-        let meshes = entities.meshes(
+        let meshes = entities.view.meshes(
             &terrain.scene,
             &world.packs,
             &world.atlas,
@@ -1438,7 +1446,7 @@ fn update(
             &|pos| terrain.stream.cell_settled(pos),
             &campfire_items,
         );
-        for (pos, apart) in entities.lids.take_apart_changes() {
+        for (pos, apart) in entities.view.lids.take_apart_changes() {
             terrain.stream.draw_apart(pos, apart);
         }
         let raw = |mesh: &minecraft_terrain::mesh::ChunkMesh| {
@@ -2297,13 +2305,13 @@ fn leave_level(
                 yaw: place.yaw,
                 pitch: place.pitch,
             };
-            crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
+            crate::minecraft_inventory::throw(&mut entities.view.world_items, thrown, &thrower);
         }
         let mut writes = Vec::new();
         for event in level.openers.leave(minecraft_survival::level::opener_key(uuid)) {
             let outcome = minecraft_survival::level::opener_outcome(&level.terrain.scene, &event);
             let (cell, id, count) = outcome.block_event;
-            entities.lids.block_event(&level.terrain.scene, cell, id, count);
+            entities.view.lids.block_event(&level.terrain.scene, cell, id, count);
             if let Some((pos, viewers)) = outcome.trapped {
                 entities.chest_openers(pos, viewers);
             }

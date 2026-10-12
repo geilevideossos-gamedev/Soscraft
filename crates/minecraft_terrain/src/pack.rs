@@ -15,7 +15,7 @@ const FORMAT: (u32, u32) = (97, 1);
 const MAX_ENTRY: u64 = 64 * 1024 * 1024;
 const MAX_ARCHIVE: u64 = 2 * 1024 * 1024 * 1024;
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub struct ResourceId {
     pub namespace: String,
     pub path: String,

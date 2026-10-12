@@ -40,3 +40,33 @@ Put the kit below in the `.env` next to the exe before the first start: both pla
 ```
 IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:firework_rocket*8,minecraft:saddle,minecraft:warped_fungus_on_a_stick,minecraft:strider_spawn_egg,minecraft:shulker_spawn_egg,minecraft:powder_snow_bucket,minecraft:item_frame*2,minecraft:iron_sword,minecraft:cobblestone*32,minecraft:lectern,minecraft:writable_book,minecraft:trapped_chest,minecraft:redstone_lamp,minecraft:gold_block*4,minecraft:stone_pickaxe,minecraft:golden_helmet,minecraft:totem_of_undying,minecraft:white_bed
 ```
+
+## E16. Friends see the mobs, items and projectiles the host sees
+
+The friend's window now draws the mobs around the friend (walking, turning their heads, raising their arms, swelling, dying), with their armour, held items, saddles and villager clothes, and the dropped items, XP orbs, primed TNT, falling blocks, item frames, thrown snowballs and pearls, tridents, ghast and blaze fireballs, shulker bullets and witch potions in flight. Sounds, explosion particles, the item pickup animation and chest lids on the friend's side come with E17; spawner cages are not drawn on the friend's side yet.
+
+Put the kit below in the `.env` next to the exe before the first start (with `-Fresh` both players get it on their first join).
+
+1. Start both windows: `& scripts\mp-local.ps1 -World mp-m3-e16 -Fresh`. Spawn in both. Host window: `/time set day`, `/op Friend`, `/difficulty normal`. Stand next to each other on flat ground.
+2. **Mobs walk the same way.** Friend window: use the cow spawn egg three times on the ground about 5 blocks in front of the friend.
+   1. Friend window: the three cows appear where the egg was used, walk around and turn their heads. Host window: they stand and walk in the same places. Screenshot both windows from about the same spot. **S1**
+   2. Friend window: walk 30 blocks away and back: the cows are still there and still move.
+3. **Equipment and professions.** Host window: run
+   `/summon minecraft:zombie ~3 ~ ~ {equipment:{mainhand:{id:"minecraft:iron_sword",count:1},head:{id:"minecraft:iron_helmet",count:1}}}`
+   and `/summon minecraft:villager ~ ~ ~3 {VillagerData:{type:"minecraft:desert",profession:"minecraft:farmer",level:3}}`.
+   1. Friend window: the zombie holds the iron sword and wears the helmet; the villager is a desert farmer with the straw hat. Screenshot. **S2**
+   2. Friend window: walk away from the zombie. It follows the friend with its arms raised. Host window: it is seen chasing the friend.
+   3. Friend window: shoot the zombie until it dies. It turns red, falls over and disappears in a puff in the friend's window. Its drops and XP orbs lie on the ground in both windows; walk over them: they vanish in both windows and the friend's XP bar fills.
+4. **Saddles.** Friend window: use the pig spawn egg, then right click the pig with the saddle. Friend window: the pig wears the saddle a moment later. Screenshot. **S3**
+5. **Projectiles.** Friend window: throw snowballs at the cows and throw one ender pearl. Both windows: the snowballs and the pearl fly the same arc, and the friend lands where the pearl hit.
+6. **Fireballs, bullets and potions.** Friend window: stand 10 blocks from the others, then the host runs `/summon minecraft:blaze ~ ~2 ~8`, `/summon minecraft:witch ~8 ~ ~` and uses the shulker spawn egg on the ground about 6 blocks from the friend.
+   1. Friend window: the blaze's fireballs fly at the friend, the witch throws potions that fly and break, and the shulker opens its lid and shoots spinning bullets that follow the friend. Screenshot a fireball or a bullet in the air. **S4**
+   2. Kill the blaze, the witch and the shulker with guns (either window).
+7. **Creeper.** Host window: `/summon minecraft:creeper ~6 ~ ~`. Friend window: walk up to it: it swells and flashes white before it explodes (stand back after it starts to flash). Both windows: the crater is the same.
+8. **Items and frames.** Friend window: put the item frame on a cobblestone wall and right click it with the iron sword; drop the cobblestone stack with Q. Friend window: the frame holds the sword, and the dropped cobblestone lies bobbing on the ground. Pick it up again.
+9. **Range.** Friend window: `/tp Friend ~200 ~ ~`, wait until the ground has loaded, then use the cow spawn egg twice. Friend window: the two cows walk around. Host window: no cows are drawn out there (the host is too far). Friend window: `/tp Friend <you>`: the friend is back with the host and the first three cows.
+10. Close both windows (type `quit` in the script's console).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cow_spawn_egg*5,minecraft:pig_spawn_egg,minecraft:saddle,minecraft:snowball*16,minecraft:ender_pearl*4,minecraft:shulker_spawn_egg,minecraft:item_frame,minecraft:iron_sword,minecraft:cobblestone*32
+```

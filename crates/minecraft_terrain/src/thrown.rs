@@ -724,7 +724,7 @@ pub fn texture(item: &str) -> Option<ResourceId> {
     ResourceId::parse(&format!("minecraft:item/{path}")).ok()
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ThrownView {
     pub item: String,
     pub owner: u64,

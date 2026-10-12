@@ -8,7 +8,7 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Block {
     pub id: ResourceId,
     pub properties: BTreeMap<String, String>,

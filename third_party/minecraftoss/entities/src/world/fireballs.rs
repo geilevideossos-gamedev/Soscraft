@@ -33,6 +33,10 @@ impl EntityWorld {
         &self.fireballs
     }
 
+    pub fn fireball_mut(&mut self, id: u64) -> Option<&mut FireballEntity> {
+        self.fireballs.iter_mut().find(|e| e.id == id)
+    }
+
     pub fn take_fireball_blasts(&mut self) -> Vec<FireballBlast> {
         std::mem::take(&mut self.fireball_blasts)
     }

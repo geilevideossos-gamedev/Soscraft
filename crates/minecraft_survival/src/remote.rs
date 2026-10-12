@@ -5,9 +5,12 @@ use minecraft_commands::{Clientbound, Text};
 use minecraft_net::messages::{GearView, Login, MenuView, Nbt, PlayerView, Rules};
 use minecraft_net::{ChunkBatchBlob, Dimension, Lane, PlayerUuid, StateFrame, ToClient};
 use minecraft_terrain::ChunkEvent;
+use minecraft_terrain::client_mobs::ServerMob;
+use minecraft_terrain::server::EntitySnapshot;
 use minecraft_terrain::server::{OVERWORLD_CLOCK, THE_END_CLOCK};
 use minecraft_terrain::terrain::BlockStates;
 use minecraftoss_core::{BlockStateId, Chunk, ChunkPos, Registries};
+use minecraftoss_player::crafting::RecipeBook;
 
 use crate::level::Terrain;
 
@@ -24,6 +27,44 @@ pub struct RemoteLevel {
     pub terrain: Terrain,
     pub block_entities: BTreeMap<BlockPos, Nbt>,
     pub mobs: BTreeMap<u64, Nbt>,
+    pub view: crate::entity_view::EntityView,
+}
+
+impl RemoteLevel {
+    fn add_mob(&mut self, id: u64, tag: Nbt) {
+        let world = &mut self.view.world;
+        let spawned = minecraftoss_core::nbt::parse(&tag.0)
+            .is_ok_and(|parsed| minecraft_terrain::mob_tracking::spawn_tracked(world, id, &parsed));
+        if !spawned {
+            diag::warn!(World, "Minecraft mob {id} from the host not shown");
+        }
+        self.mobs.insert(id, tag);
+    }
+
+    fn show_state(&mut self, frame: &StateFrame, recipes: &RecipeBook) {
+        if let Ok(mobs) = minecraft_net::decode::<Vec<ServerMob>>(Lane::State, &frame.mobs.0) {
+            let mobs: Vec<ServerMob> = mobs
+                .into_iter()
+                .filter(|mob| self.mobs.contains_key(&mob.id))
+                .collect();
+            for mob in &mobs {
+                minecraft_terrain::mob_tracking::show_on(&mut self.view.world, mob);
+            }
+            let world = &self.view.world;
+            let mobs: Vec<ServerMob> = mobs
+                .into_iter()
+                .filter(|mob| !minecraft_terrain::mob_tracking::is_projectile(world, mob.id))
+                .collect();
+            self.view.show_mobs(mobs);
+        }
+        if let Ok(mut snapshot) =
+            minecraft_net::decode::<EntitySnapshot>(Lane::State, &frame.entities.0)
+        {
+            self.view.receive(&mut snapshot, &[]);
+            self.view
+                .show_items(std::mem::take(&mut snapshot.items), recipes);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -117,6 +158,7 @@ pub struct RemoteWorld {
     pub weather: [f32; 2],
     pub effects: Vec<ToClient>,
     pub state: Option<StateFrame>,
+    pub recipes: Arc<RecipeBook>,
     shown: Shown,
     reliable: VecDeque<(ToClient, usize)>,
     batches: BTreeMap<u32, HeldBatch>,
@@ -146,6 +188,7 @@ impl RemoteWorld {
             weather: [0.0; 2],
             effects: Vec::new(),
             state: None,
+            recipes: Arc::new(RecipeBook::default()),
             shown: Shown::default(),
             reliable: VecDeque::new(),
             batches: BTreeMap::new(),
@@ -208,6 +251,9 @@ impl RemoteWorld {
             .is_some_and(|last| frame.tick <= last.tick);
         if frame.epoch != level.epoch || older {
             return false;
+        }
+        if let Some(level) = self.level.as_mut() {
+            level.show_state(&frame, &self.recipes);
         }
         self.state = Some(frame);
         true
@@ -335,14 +381,22 @@ impl RemoteWorld {
             }
             ToClient::MobAdd { id, tag } => {
                 if let Some(level) = self.level.as_mut() {
-                    level.mobs.insert(id, tag);
+                    level.add_mob(id, tag);
+                }
+            }
+            ToClient::MobLook { id, look } => {
+                if let Some(level) = self.level.as_mut()
+                    && level.mobs.contains_key(&id)
+                {
+                    level.add_mob(id, Nbt(look.0));
                 }
             }
             ToClient::MobRemove { ids } => {
                 if let Some(level) = self.level.as_mut() {
-                    for id in ids {
-                        level.mobs.remove(&id);
+                    for id in &ids {
+                        level.mobs.remove(id);
                     }
+                    level.view.world.remove_mobs(&ids);
                 }
             }
             ToClient::Player(view) => self.player = Some(*view),
@@ -445,6 +499,7 @@ impl RemoteWorld {
                     terrain,
                     block_entities: BTreeMap::new(),
                     mobs: BTreeMap::new(),
+                    view: crate::entity_view::EntityView::new(login.seed),
                 });
                 diag::info!(
                     World,
@@ -684,6 +739,94 @@ mod tests {
         assert!(shown.level);
         assert!(shown.loaded.is_empty());
         assert_eq!(friend.take_acks(), vec![1]);
+    }
+
+    fn cow_at(id: u64, x: f64) -> ServerMob {
+        ServerMob {
+            id,
+            position: glam::DVec3::new(x, 64.0, 8.5),
+            y_rot: 0.0,
+            x_rot: 0.0,
+            y_head_rot: 0.0,
+            on_ground: true,
+            baby: false,
+            eye_height: 1.3,
+            max_head_y_rot: 75.0,
+            update_interval: 3,
+            sync: Default::default(),
+            resting: false,
+            hurts: 0,
+            dead: false,
+            swings: 0,
+            size: (0.9, 1.4),
+            vehicle: None,
+            show: Default::default(),
+        }
+    }
+
+    fn mobs_frame(tick: u32, mobs: &[ServerMob]) -> StateFrame {
+        StateFrame {
+            tick,
+            epoch: 0,
+            mobs: minecraft_net::messages::Blob(
+                minecraft_net::encode(Lane::State, &mobs.to_vec()).unwrap(),
+            ),
+            entities: minecraft_net::messages::Blob(Vec::new()),
+        }
+    }
+
+    #[test]
+    fn a_mob_is_added_moved_and_removed_and_moves_without_an_add_are_dropped() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let mut friend = RemoteWorld::new(registries);
+        friend.apply(ToClient::Login(login(Dimension::Overworld)));
+        let tag = minecraftoss_core::snbt::parse_compound(
+            "{id:\"minecraft:cow\",Pos:[8.5d,64.0d,8.5d],NoAI:1b}",
+        )
+        .unwrap();
+        friend.apply(ToClient::MobAdd {
+            id: 40,
+            tag: Nbt(minecraftoss_core::nbt::write(&tag, "")),
+        });
+        let level = friend.level.as_ref().unwrap();
+        assert_eq!(level.view.world.entity_type(40), Some("minecraft:cow"));
+        let moved = [cow_at(40, 9.5), cow_at(41, 10.5)];
+        assert!(friend.apply_state(mobs_frame(1, &moved)));
+        let level = friend.level.as_ref().unwrap();
+        assert!(level.view.client.get(40).is_some());
+        assert!(
+            level.view.client.get(41).is_none(),
+            "a mob the friend was never told about is not drawn"
+        );
+        assert_eq!(level.view.world.cows()[0].cow.body.position.x, 9.5);
+        let mut changed = tag.clone();
+        if let minecraftoss_core::nbt::Tag::Compound(map) = &mut changed {
+            map.insert(
+                "id".to_owned(),
+                minecraftoss_core::nbt::Tag::String("minecraft:pig".to_owned()),
+            );
+        }
+        friend.apply(ToClient::MobLook {
+            id: 40,
+            look: minecraft_net::messages::Blob(minecraftoss_core::nbt::write(&changed, "")),
+        });
+        let level = friend.level.as_ref().unwrap();
+        assert_eq!(level.view.world.entity_type(40), Some("minecraft:pig"));
+        assert!(
+            level.view.world.cows().is_empty(),
+            "the look replaced the mob"
+        );
+        friend.apply(ToClient::MobRemove { ids: vec![40] });
+        let level = friend.level.as_ref().unwrap();
+        assert!(level.view.world.entity_type(40).is_none());
+        assert!(level.mobs.is_empty());
+        assert!(friend.apply_state(mobs_frame(2, &[cow_at(40, 9.5)])));
+        assert!(
+            friend.level.as_ref().unwrap().view.client.get(40).is_none(),
+            "moves after the remove are dropped"
+        );
     }
 
     #[test]
@@ -1139,6 +1282,114 @@ mod tests {
         );
         assert_eq!(state(&friend, broken), Some(BlockStateId::AIR));
         assert_eq!(state(&friend, placed), Some(BlockStateId::AIR));
+        let level = server.levels.get_mut(&Dimension::End).unwrap();
+        let mut entities = crate::entities::Entities::new(
+            &level.terrain.stream,
+            Dimension::End,
+            server.globals.seed,
+            &crate::data::GameData::default(),
+            None,
+            None,
+        );
+        for &(x, z) in &around {
+            if let Some(chunk) = level.terrain.stream.loaded_chunk(ChunkPos::new(x, z)) {
+                entities.load_chunk(&chunk);
+            }
+        }
+        let still = minecraftoss_core::snbt::parse_compound("{NoAI:1b}").unwrap();
+        let cow_feet = [feet[0] + 1.0, feet[1], feet[2]];
+        entities.summon(
+            minecraft_commands::PlayerId(1),
+            "minecraft:cow".to_owned(),
+            cow_feet,
+            Some(still),
+        );
+        level.entities = Some(entities);
+        let watcher = minecraft_terrain::mob_tracking::Watcher {
+            id: 1,
+            feet,
+            view_distance: 2,
+        };
+        let started = Instant::now();
+        let mut frames = 0;
+        let cow = loop {
+            assert!(
+                started.elapsed() < Duration::from_secs(300),
+                "the friend never saw the cow"
+            );
+            let player = server.players.get_mut(&uuid).unwrap();
+            let entities = server
+                .levels
+                .get_mut(&Dimension::End)
+                .unwrap()
+                .entities
+                .as_mut()
+                .unwrap();
+            entities.set_watchers(vec![watcher], 2);
+            let batch = crate::tick_rate::TickBatch {
+                normal: if entities.ready_for_ticks() {
+                    vec![true]
+                } else {
+                    Vec::new()
+                },
+                overload: None,
+            };
+            let view = crate::entities::PlayerView {
+                feet,
+                alive: true,
+                attackable: true,
+                spectator: false,
+                picks_up: false,
+                health: 20.0,
+                yaw: 0.0,
+                pitch: 0.0,
+                main_hand: None,
+                offhand: None,
+                sneaking: false,
+            };
+            let mut actors = [crate::entities::TickActor {
+                id: 1,
+                view,
+                inventory: &mut player.inventory,
+                selected: 0,
+            }];
+            entities.tick(
+                &mut actors,
+                0.05,
+                &batch,
+                crate::tick_rate::ClientTiming::default(),
+                minecraft_terrain::server::ClockTicks::default(),
+                true,
+            );
+            for (client, frame) in sessions.send_mobs(&server.players, &mut server.levels, 2) {
+                assert_eq!(client, 1);
+                let bytes = minecraft_net::encode(Lane::State, &frame).unwrap();
+                let frame = minecraft_net::decode(Lane::State, &bytes).unwrap();
+                frames += usize::from(friend.apply_state(frame));
+            }
+            exchange(&mut server, &mut sessions, &mut friend);
+            let level = friend.level.as_ref().unwrap();
+            if let Some(cow) = level.view.world.cows().first().map(|cow| cow.id)
+                && level.view.client.get(cow).is_some()
+            {
+                break cow;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(frames > 0);
+        let host = server.levels[&Dimension::End].entities.as_ref().unwrap();
+        let host_cow = host
+            .view
+            .world
+            .cows()
+            .iter()
+            .find(|each| each.id == cow)
+            .expect("the friend's cow has the host's id");
+        let seen = &friend.level.as_ref().unwrap().view.world.cows()[0];
+        assert!(
+            host_cow.cow.body.position.distance(seen.cow.body.position) < 0.5,
+            "the friend's cow stands where the host's does"
+        );
         let left = sessions
             .leave(&mut server, 1)
             .expect("Alex was in the world");

@@ -84,6 +84,7 @@ pub mod golem_render;
 pub mod wolf_render;
 pub mod flame_render;
 pub mod client_mobs;
+pub mod mob_tracking;
 pub mod armor_render;
 pub mod horse_render;
 pub mod poof_particles;
