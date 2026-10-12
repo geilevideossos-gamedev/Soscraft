@@ -990,6 +990,62 @@ fn chain_rails(pieces: Vec<Vec<[f64; 3]>>) -> Vec<Vec<[f64; 3]>> {
     rails
 }
 
+pub fn missing_chunk_walls(centre: [f32; 3], radius: i32, depth: i32) -> Vec<[[f32; 3]; 3]> {
+    let Ok(world) = WORLD.read() else {
+        return Vec::new();
+    };
+    let Some(world) = world.as_ref() else {
+        return Vec::new();
+    };
+    let c = to_block(world.origin, centre).map(|v| v.floor() as i32);
+    let lo = [c[0] - radius, c[1] - depth, c[2] - radius];
+    let hi = [c[0] + radius, c[1] + depth, c[2] + radius];
+    chunk_walls(|x, z| world.chunks.contains_key(&(x, z)), lo, hi)
+        .into_iter()
+        .map(|t| t.map(|p| to_map(world.origin, p)))
+        .collect()
+}
+
+pub fn chunk_walls(loaded: impl Fn(i32, i32) -> bool, lo: [i32; 3], hi: [i32; 3]) -> Vec<[[f64; 3]; 3]> {
+    let (bottom, top) = (f64::from(lo[1]), f64::from(hi[1] + 1));
+    let mut walls = Vec::new();
+    for cx in (lo[0] >> 4) - 1..=(hi[0] >> 4) + 1 {
+        for cz in (lo[2] >> 4) - 1..=(hi[2] >> 4) + 1 {
+            if !loaded(cx, cz) {
+                continue;
+            }
+            for (axis, step) in [(0, -1), (0, 1), (2, -1), (2, 1)] {
+                let (own, other, missing) = if axis == 0 {
+                    (cx, cz, !loaded(cx + step, cz))
+                } else {
+                    (cz, cx, !loaded(cx, cz + step))
+                };
+                let plane = own * 16 + if step > 0 { 16 } else { 0 };
+                let across = 2 - axis;
+                let from = (other * 16).max(lo[across]);
+                let to = (other * 16 + 16).min(hi[across] + 1);
+                if !missing || plane < lo[axis] || plane > hi[axis] + 1 || from >= to {
+                    continue;
+                }
+                let corner = |t: i32, y: f64| {
+                    let mut p = [0.0; 3];
+                    p[axis] = f64::from(plane);
+                    p[across] = f64::from(t);
+                    p[1] = y;
+                    p
+                };
+                let mut quad = [corner(from, bottom), corner(to, bottom), corner(to, top), corner(from, top)];
+                if (axis == 0) == (step < 0) {
+                    quad.reverse();
+                }
+                walls.push([quad[0], quad[1], quad[2]]);
+                walls.push([quad[0], quad[2], quad[3]]);
+            }
+        }
+    }
+    walls
+}
+
 /// Whether traces against `brushes` go to the block world.
 pub(crate) fn active_for(brushes: &[SimBrush]) -> bool {
     WORLD
@@ -2781,5 +2837,43 @@ mod tests {
         w.origin = [7.5, 11.0, 7.5];
         let spot = w.free_spawn_spot(&|_: [f32; 3]| false).unwrap();
         assert_eq!([spot[0], spot[1]], [-36.0, 36.0]);
+    }
+
+    #[test]
+    fn walls_stand_only_between_loaded_and_missing_chunks() {
+        let loaded = |x: i32, z: i32| matches!((x, z), (0, 0) | (1, 0) | (0, 1));
+        let walls = chunk_walls(loaded, [-16, 60, -16], [31, 63, 31]);
+        assert_eq!(walls.len(), 16, "eight edges between a loaded and a missing chunk");
+        for t in &walls {
+            let n = normal_of(t);
+            assert_near(n[1], 0.0);
+            assert!(t.iter().all(|p| p[1] == 60.0 || p[1] == 64.0), "{t:?}");
+            let mid = [0, 1, 2].map(|k| (t[0][k] + t[1][k] + t[2][k]) / 3.0);
+            let chunk = |s: f64| {
+                let p = [0, 1, 2].map(|k| mid[k] + n[k] * s);
+                ((p[0].floor() as i32) >> 4, (p[2].floor() as i32) >> 4)
+            };
+            let (inside, outside) = (chunk(0.5), chunk(-0.5));
+            assert!(loaded(inside.0, inside.1), "faces into a loaded chunk: {t:?}");
+            assert!(!loaded(outside.0, outside.1), "backs onto a missing chunk: {t:?}");
+        }
+        assert!(
+            !walls.iter().any(|t| t.iter().all(|p| p[0] == 16.0 && p[2] <= 16.0)),
+            "no wall between two loaded chunks"
+        );
+
+        let cut = chunk_walls(|x, z| (x, z) == (0, 0), [-4, 0, -4], [20, 1, 4]);
+        assert_eq!(cut.len(), 6, "the far side of the chunk lies outside the region");
+        assert_eq!(extent(&cut, 2), (0.0, 5.0));
+        assert_eq!(extent(&cut, 0), (0.0, 16.0));
+        assert_eq!(extent(&cut, 1), (0.0, 2.0));
+    }
+
+    #[test]
+    fn a_fully_loaded_region_has_no_walls() {
+        assert!(chunk_walls(|_, _| true, [-40, -20, -40], [40, 20, 40]).is_empty());
+        let near = |x: i32, z: i32| x.abs() <= 1 && z.abs() <= 1;
+        assert!(chunk_walls(near, [2, 0, 2], [13, 5, 13]).is_empty());
+        assert!(chunk_walls(|_, _| false, [-40, -20, -40], [40, 20, 40]).is_empty());
     }
 }

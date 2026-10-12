@@ -142,6 +142,15 @@ fn block_collision(
             .into_iter()
             .map(|rail| rail.into_iter().map(Vec3::from_array).collect()),
     );
+    let walls = sim::voxel::missing_chunk_walls(centre.to_array(), BLOCK_RADIUS, BLOCK_DEPTH);
+    if !walls.is_empty() {
+        diag::debug!(
+            World,
+            "Skate chunk walls: {} triangles at chunks not loaded yet",
+            walls.len(),
+        );
+    }
+    map_triangles.extend(walls.into_iter().map(|t| t.map(Vec3::from_array)));
     let triangles: Vec<[[f32; 3]; 3]> = map_triangles
         .iter()
         .map(|t| t.map(|p| collision::to_skate(p).to_array()))

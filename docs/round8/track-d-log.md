@@ -241,9 +241,27 @@ Commit: the one after `09e57cea` (group 5b).
 - **Tests:** none new; `render_anim` passes (91).
 - **Owner's test steps:** none. **Kit:** none.
 
+## Group 6. The skateboard stops at chunks that have not loaded yet
+
+Commit: the one after `095c7a40` (the clippy cleanup).
+
+- **Changed:**
+  - `sim/src/voxel.rs`:
+    - The pure `chunk_walls(loaded, lo, hi)` (block space): for every loaded chunk column next to one that is not loaded, a vertical quad on their shared edge. It spans the region's full height and faces into the loaded chunk, wound counterclockwise from that side like `collision_triangles`. Only edges inside the region get a wall, cut to the region's width along the edge, so a newly loaded chunk always reaches the region (`changed_near`) and the skate collision is rebuilt without the wall.
+    - `missing_chunk_walls(centre, radius, depth)` runs it on the live block world under the `WORLD` read lock and maps it to map units.
+  - `render_anim/src/skate.rs`: `block_collision` adds the walls after `rails::find` has run on the blocks and ramps, so the lip probe never sees them, and logs "Skate chunk walls: N triangles at chunks not loaded yet" at debug when there are any.
+  - `docs/MINECRAFT-SURVIVAL.md`: the Skating bullet says the board stops at chunks that have not loaded yet.
+- **Tests:** `sim` (`voxel.rs`): `walls_stand_only_between_loaded_and_missing_chunks` (three loaded chunks in an L: eight walls, all vertical, full region height, each facing into a loaded chunk with a missing one behind it, none between the loaded chunks; a region cutting one chunk gets only the walls inside it, cut to its width) and `a_fully_loaded_region_has_no_walls` (everything loaded, loaded neighbours with the missing chunks beyond the region, and nothing loaded).
+- **Decisions:**
+  - The walls keep the skater in step with a walking player, whom the fork already holds still in a chunk that has not loaded (`awaiting_ground`, `sim/src/step.rs`). Chunks stream 8 chunks around the player and the skate region is 40 blocks, so a wall only shows when the skater outruns the streaming, for example in fresh terrain.
+  - The walls are one-sided, facing the loaded side the skater rides in, as the brief says. A region with no loaded chunk at all already gets no collision ("no blocks around the skater yet").
+- **Owner's test steps** (new; not in the brief's section 5):
+  1. Optional: add `IW4L_LOG_LEVEL=debug` to the `.env` next to the exe. Far from spawn, in land you have never visited, put the board down and push in a straight line at full speed for a minute. If the world can't generate as fast as you ride, the board bumps to a stop at an invisible wall at a chunk edge instead of falling into the void, and rolls on once the land appears. The newest log in `iw4l-artifacts\logs` then has "Skate chunk walls: N triangles at chunks not loaded yet". If the land always keeps up, no wall ever shows, which is also right. Remove the log line again afterwards.
+- **Kit:** none.
+
 ## The whole track's owner test, one kit
 
-Steps in order: group 1 steps 1-4, group 2 steps 1-4, group 3a steps 1-3, group 3b steps 1-5, group 4 steps 1-6, group 5a steps 1-4, group 5b steps 1-3. Groups 1 and 2 need no items. 3a needs the water bucket and the ender pearls, 3b the cobblestone, hay bales and helmet, 4 the cobblestone, stairs, slabs, carpet and snow, 5a the fence, wall and iron bars, and 5b the rails.
+Steps in order: group 1 steps 1-4, group 2 steps 1-4, group 3a steps 1-3, group 3b steps 1-5, group 4 steps 1-6, group 5a steps 1-4, group 5b steps 1-3, group 6 step 1. Groups 1, 2 and 6 need no items. 3a needs the water bucket and the ender pearls, 3b the cobblestone, hay bales and helmet, 4 the cobblestone, stairs, slabs, carpet and snow, 5a the fence, wall and iron bars, and 5b the rails.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:hay_block*16,minecraft:iron_helmet,minecraft:water_bucket,minecraft:ender_pearl*16,minecraft:oak_stairs*64,minecraft:stone_slab*64,minecraft:cobblestone_slab*64,minecraft:white_carpet*64,minecraft:snow*64,minecraft:oak_fence*64,minecraft:cobblestone_wall*64,minecraft:iron_bars*64,minecraft:rail*64,minecraft:powered_rail*16
