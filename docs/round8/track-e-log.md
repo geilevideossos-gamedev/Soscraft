@@ -693,6 +693,35 @@ Commit: see `git log` ("Voxel events say which level and which player they belon
 - **Test steps:** `docs/round8/e-m2-tests.md`, section E13a.
 - **Kit:** none needed.
 
+### E13b. The action rules live in minecraft_survival (pure move)
+
+Commit: see `git log` ("The action rules live in minecraft_survival"). The previous commit is `e84116e7` (E13a).
+
+- **Changed (no behaviour change for the host):**
+  - `crates/minecraft_survival/src/actions.rs` (new): the hand's rules, moved from `render_anim::minecraft_players::act` (which E10a had moved out of `minecraft_world`). `act(player, level, globals, body, actor, hands, moved, light, now)` punches, eats, digs (A's digging), breaks in creative, opens tables, stations and benches, uses blocks and doors, campfire food, beds and respawn anchors, bottles, buckets and the other item uses, eyes of ender, spawn eggs, tridents, throws, planting and placement (doors, scaffolding, shulker boxes), exactly as before. What it read from Bevy, MW2 or the host's screens now comes in as plain values, and what it played comes back:
+    - `Hands`: the held buttons, their presses this frame, the offhand key and whether a screen has the input (`captured`).
+    - `Actor`: the MW2 state as Minecraft values (feet, MW2 eye, yaw, pitch, velocity per tick, gravity, crouching, swimming, sprinting, gliding, MW2 offhand busy).
+    - `Moved` (moved here from `render_anim`): what the step's movement found.
+    - `Body`: the MW2 side, which `render_anim` implements (`MwBody`): block writes with their collision shapes, the bodies that block a placement, the Riptide push and the rocket launch.
+    - `Acted.effects`: `Effect::Sound` (block space, with the door's pitch spread), `Crumbs`, `HitParticle`, `Chat` and `Overlay`, in the order they happened.
+    - The respawn block use (`use_block`, `use_anchor` and the game half of `finish`) moved here from `render_anim::minecraft_respawn`, which keeps the overlay.
+    - `SWING_TICKS` and `RECENT_PLACE_SECONDS` live here; `render_anim` uses them.
+    - New for E13c: `reaches_block`, `reaches_box`, `hit_on_block` and `allows(target, eye, mode, mob_box)`, vanilla's checks on a client's target: a block within the interaction range + 1 of the eye (`Player.isWithinBlockInteractionRange`, the distance to the block's box), a hit point within 1.0000001 of the block's centre on every axis (`ServerGamePacketListenerImpl.handleUseItemOn`, both checked with javap), a mob within the entity range + 3. A player target is refused (Minecraft melee on players is deferred).
+  - `crates/render_anim/src/minecraft_input.rs` (new): `host_hands` samples the mouse and the gamepad triggers into `Hands` (the `pad_trigger` helper moved here), and `play` presents `Effect`s: sounds through `Sounds`, crumbs and hit particles through `Mining`, chat lines and the overlay through the host's chat with its language.
+  - `crates/render_anim/src/minecraft_players.rs`: `act`, `HostHand`, `Acted` and `Moved` are gone; `actor(ps, origin, alive)` and `MwBody` are new.
+  - `crates/render_anim/src/minecraft_world.rs`: the frame calls `host_hands`, `actions::act` and `play` where it called `act`.
+  - `crates/render_anim/src/minecraft_elytra.rs`: `launch_rocket` is gone (`Body::launch_rocket` does it).
+- **Tests** (`minecraft_survival` `actions::tests`):
+  - `reach_is_refused_beyond_five_and_a_half_blocks`: survival reaches a block 4.5 away and not 5.5; creative reaches 5.5 and not 6.5; a mob 5.2 away is reached and one 9.2 away is not; an unknown mob and a player are refused.
+  - `a_hit_point_off_the_face_is_refused`: hit points within 1 of the centre pass, 1.1 and 1.6 away fail.
+  - On real 26.3 data (checked to run on it): `a_held_block_is_placed_on_the_face_the_player_looks_at` (the cobblestone lands, the stack drops to 31, the swing starts, the place sound is at the block; a second frame without a press places nothing), `a_door_opens_when_used` (the stack is untouched, the wooden door's open sound has its spread, and the level thread opens the door), `held_food_is_eaten_while_use_is_held` (chewing is heard, one beef is eaten and the food bar rises, holding on starts the next one; letting go stops eating).
+  - `test -p minecraft_survival` 454 + 1, `test -p render_anim --lib` 78, `check -p launcher` green.
+- **Decisions:**
+  - **The effects are played right after `act` returns,** before the frame's bullet mining, so the hit particles still read the block they hit and the sounds keep their order.
+  - **The debug line for chest placement** (`MINECRAFTOSS_DEBUG_SERVER`) prints the actor's crouching and swimming instead of the raw MW2 flags, which the rules no longer see.
+- **Test steps:** `docs/round8/e-m2-tests.md`, section E13b (one window, the host's own hand as before).
+- **Kit:** `minecraft:cobblestone` x32, `minecraft:oak_door` x2, `minecraft:cooked_beef` x8, `minecraft:water_bucket` x1, `minecraft:white_bed` x1, `minecraft:snowball` x16, `minecraft:stone_pickaxe` x1.
+
 ## Combined kit for every test in this track
 
 `minecraft:obsidian` x10, `minecraft:flint_and_steel` x1, `minecraft:chest` x1, `minecraft:cobblestone` x32, `minecraft:lava_bucket` x1, `minecraft:torch` x16, `minecraft:cooked_beef` x8, `minecraft:crafting_table` x1, `minecraft:shield` x1, `minecraft:skeleton_spawn_egg` x1, `minecraft:ender_pearl` x4, `minecraft:totem_of_undying` x1, `minecraft:white_bed` x1, `minecraft:elytra` x1, `minecraft:firework_rocket` x8, `minecraft:stone_pickaxe` x1, `minecraft:ender_eye` x4, `minecraft:experience_bottle` x8, `minecraft:wolf_spawn_egg` x1, `minecraft:bone` x8, `minecraft:dirt` x4, `minecraft:wooden_hoe` x1, `minecraft:wheat_seeds` x4 (23 stacks).

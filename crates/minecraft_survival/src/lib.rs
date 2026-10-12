@@ -1,3 +1,4 @@
+pub mod actions;
 pub mod command_blocks;
 pub mod commands;
 pub mod cooldowns;

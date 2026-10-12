@@ -141,3 +141,20 @@ A bullet now names its shooter. A mob shot by the friend counts the friend as it
 5. Friend window: shoot the ground in front of the friend until a block breaks. Host window: the block is gone there too. Host window: `/gamemode survival`.
 6. Close both windows (type `quit` in the script's console).
 
+## E13b. The action rules live in minecraft_survival
+
+The host's own hand runs through the moved rules. Nothing should look or sound different from before; this is a single-player check in the host window.
+
+1. Start both windows: `& scripts\mp-local.ps1 -World mp-m2-e13b -Fresh`. Spawn in both. Use only the host window.
+2. Place cobblestone on the ground and on a wall: each one appears where you look, with the stone place sound. Hold the right button: blocks keep coming about five a second.
+3. Break one with the stone pickaxe: the cracks grow, the hit sounds and particles show, and the block drops.
+4. Place the oak door, then right click it: it opens with the wooden door sound; right click again: it closes.
+5. Type `/effect give @s minecraft:hunger 10 10`, wait until the food bar is down by three drumsticks, then hold the right button with cooked beef: crumbs fly, the chewing sound plays and the bar refills.
+6. Use the water bucket on the ground: water flows, the bucket is empty. Use it on the water source: it fills again.
+7. Throw a few snowballs: the throw sound plays and they fly.
+8. Place the white bed and right click it during the day: the message "You can sleep only at night or during thunderstorms" shows above the hotbar. Screenshot. **S14**
+9. Close both windows (type `quit` in the script's console).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*32,minecraft:oak_door*2,minecraft:cooked_beef*8,minecraft:water_bucket,minecraft:white_bed,minecraft:snowball*16,minecraft:stone_pickaxe
+```

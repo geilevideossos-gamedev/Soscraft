@@ -5,7 +5,7 @@
 use glam::{Mat4, Vec3};
 
 /// Ticks of a swing (`LivingEntity.getCurrentSwingDuration`).
-pub(crate) const SWING_TICKS: f32 = 6.0;
+pub(crate) const SWING_TICKS: f32 = minecraft_survival::actions::SWING_TICKS;
 
 /// The item's view-space pose (`applyItemArmTransform` then its display).
 pub(crate) fn item_pose(display: Mat4, swing: f32, inverse_height: f32, arm: f32) -> Mat4 {

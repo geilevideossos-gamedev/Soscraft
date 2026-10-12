@@ -21,7 +21,7 @@ use minecraftoss_core::registries::{DataPaths, Registries};
 pub(crate) const VIEW_DISTANCE: i32 = 8;
 pub(crate) const TICK_SECONDS: f64 = 1.0 / 20.0;
 pub(crate) const CRAWLING_BELOW_VIEW_HEIGHT: f32 = 30.0;
-pub(crate) const RECENT_PLACE_SECONDS: f64 = 1.0;
+pub(crate) const RECENT_PLACE_SECONDS: f64 = minecraft_survival::actions::RECENT_PLACE_SECONDS;
 /// Blocks on a side of the light volume MW2 models are lit from.
 pub const LIGHT_VOLUME: i32 = 64;
 /// Chunk sections fade in over this long, as the viewer's default option.
@@ -809,10 +809,13 @@ fn update(
             write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, writes);
         }
     }
-    let host_hand = crate::minecraft_players::HostHand { ui: &mut ui, inventory_ui, hud_input: hud_input.as_deref(), buttons: &buttons, pad, mining, atlas: &world.atlas, light: light.as_ref(), now: time.elapsed_secs_f64() };
-    let crate::minecraft_players::Acted { open_table, mut open_block, mut open_bench, hand_mined, creative_broken, hand_broken } = crate::minecraft_players::act(host_hand, player, globals, level, (shapes, shape_ids), &mut authority.0, local.0, origin, ps, alive, &moved, sounds, &world.packs);
+    let hands = crate::minecraft_input::host_hands(&ui, hud_input.as_deref(), &buttons, pad);
+    let actor = crate::minecraft_players::actor(ps, origin, alive);
+    let mut body = crate::minecraft_players::MwBody { authority: &mut authority.0, client: local.0, ps, registries: &globals.registries, shapes: &mut *shapes, shape_ids: &mut *shape_ids };
+    let minecraft_survival::actions::Acted { open_table, mut open_block, mut open_bench, hand_mined, creative_broken, hand_broken, effects } = minecraft_survival::actions::act(player, level, globals, &mut body, &actor, hands, &moved, light.as_ref(), time.elapsed_secs_f64());
     let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, .. } = &mut *player;
     let minecraft_survival::level::Level { entities, containers, terrain, openers, dimension, .. } = &mut *level;
+    crate::minecraft_input::play(effects, &mut crate::minecraft_input::Presenter { sounds: sounds.as_mut(), packs: &world.packs, atlas: &world.atlas, mining: &mut *mining, scene: &terrain.scene, origin, ui: &mut ui, inventory_ui: &*inventory_ui });
 
     // Shots and explosions from the authoritative game: bullets that met a
     // mob hurt it, the rest mine.
