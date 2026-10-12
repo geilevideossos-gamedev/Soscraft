@@ -951,3 +951,15 @@ After 72476392.
 ```
 IW4L_MINECRAFT_KIT=minecraft:red_bed,minecraft:straw_bed,minecraft:clock
 ```
+
+### b4.6. The Minecraft state doc describes sleeping
+
+After 8313e07b.
+
+- **Changed:** `docs/MINECRAFT-SURVIVAL.md`: a **Sleeping** part under Survival and combat (when a bed lets you sleep and the order of its checks, lying down, the camera and body, the sleep screen, the night skip with `players_sleeping_percentage`, `advance_time` and `advance_weather`, waking, and what is saved); the overworld bed rule line no longer says sleeping is not done, and N6 no longer lists it; `sleep.rs` and `minecraft_sleep.rs` join the crate layout; the player file lists `SleepTimer` and `sleeping_pos` and the per-player files `players/stats/<uuid>.json`; statistics other than `time_since_rest` stay in the not-saved list. New limitations: no phantoms (`time_since_rest` is only counted and saved), no sleeping animation on the MW2 body, a player saved asleep stands up on join, no `sleep_in_bed` statistic or advancement, and the friends' sleep state and messages wait for multiplayer.
+- **Test steps:** none (docs only).
+- **Combined kit for b4.1 to b4.5** (14 stacks; each bed is its own stack):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:red_bed*4,minecraft:blue_bed,minecraft:straw_bed*2,minecraft:zombie_spawn_egg*8,minecraft:slime_spawn_egg*4,minecraft:zombified_piglin_spawn_egg*2,minecraft:villager_spawn_egg*2,minecraft:cobblestone*64,minecraft:diamond_sword,minecraft:clock
+```
