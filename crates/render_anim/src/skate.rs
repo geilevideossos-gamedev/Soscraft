@@ -51,8 +51,14 @@ fn refused_toggle(skating: bool, assets: bool) -> Option<&'static str> {
     }
 }
 
-fn airborne(state: &str) -> bool {
-    matches!(state, "PhysicsAir" | "KnownAir" | "PhysicsAirSecondary" | "BipedAir")
+const WIPEOUT_FALL: f32 = 0.05;
+
+fn airborne(state: &str, was_airborne: bool, drop: f32) -> bool {
+    match state {
+        "PhysicsAir" | "KnownAir" | "PhysicsAirSecondary" | "BipedAir" => true,
+        "WipeoutGround" => was_airborne && drop > WIPEOUT_FALL,
+        _ => false,
+    }
 }
 
 fn teleported(last: Option<u32>, now: u32) -> bool {
@@ -354,11 +360,12 @@ fn present(mode: &mut SkateMode, p: Pose, authority: &mut net::AuthorityWorld) {
     let b = collision::basis();
     let mut root = b * p.root * b.inverse();
     root.w_axis = collision::from_skate(p.root.w_axis.truncate()).extend(1.);
+    let drop = mode.root.w_axis.z - root.w_axis.z;
     mode.root = root;
     mode.bones = p.bones;
     mode.names = p.names;
     mode.tick = p.tick;
-    mode.airborne = airborne(&p.state);
+    mode.airborne = airborne(&p.state, mode.airborne, drop);
     mode.status = p.state;
     mode.camera = p.camera.map(|(position, basis, fov)| {
         (
@@ -769,7 +776,7 @@ mod tests {
     #[test]
     fn airborne_states_are_the_air_states() {
         for state in ["PhysicsAir", "KnownAir", "PhysicsAirSecondary", "BipedAir"] {
-            assert!(airborne(state), "{state}");
+            assert!(airborne(state, false, 0.0), "{state}");
         }
         for state in [
             "PhysicsGround",
@@ -783,8 +790,22 @@ mod tests {
             "HandPlant",
             "",
         ] {
-            assert!(!airborne(state), "{state}");
+            assert!(!airborne(state, false, 10.0), "{state}");
         }
+    }
+
+    #[test]
+    fn a_wipeout_in_the_air_falls_until_it_lands() {
+        assert!(airborne("WipeoutGround", true, 6.0), "a bail in the air keeps falling");
+        assert!(!airborne("WipeoutGround", true, 0.0), "the ragdoll has hit the ground");
+        assert!(!airborne("WipeoutGround", true, -2.0), "it bounced up off the ground");
+        assert!(!airborne("WipeoutGround", false, 6.0), "a bail on the ground tumbling downhill is no fall");
+        assert!(!airborne("PhysicsGround", true, 6.0));
+        let mut was = true;
+        for drop in [9.0, 12.0, 15.0, 0.0, 3.0, 4.0] {
+            was = airborne("WipeoutGround", was, drop);
+        }
+        assert!(!was, "once landed, a wipeout stays on the ground");
     }
 
     #[test]

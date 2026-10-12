@@ -293,9 +293,21 @@ Commit: the one after `37cc3663` (group 6).
   8. Plug the controller back in: the overlay switches to "Original controller controls" and the pad steers again.
 - **Kit:** `minecraft:oak_stairs*64` (already in the combined kit).
 
+## Review fix 1. A skater who bails in the air takes the fall damage of the whole drop
+
+Commit: the one after `d6553124` (group 7). Found by the track's adversarial review.
+
+- **Defect:** group 3b counted every state but the four air states as standing on the ground, `WipeoutGround` included. The engine switches to `WipeoutGround` in the air: on a bail, and 0.05 s before a predicted impact (`skate-core` `select_physics_air`/`select_known_air`). So a bail in the air landed at once, at the height of the bail, and the rest of the drop was never counted: a bail high up dealt almost nothing, and a rough landing off an 8-block tower dealt 4 instead of 5.
+- **Changed:** `render_anim/src/skate.rs`: `airborne(state, was_airborne, drop)`. A wipeout that starts in the air stays in the air while the skater's root still falls (more than 0.05 map units since the last pose); once it stops falling it has landed, and the existing landing code deals the damage of the whole drop. A wipeout that starts on the ground stays on the ground, so a ragdoll tumbling down a slope is no fall. `present` passes the root's drop since the previous pose.
+- **Tests:** `render_anim`: `a_wipeout_in_the_air_falls_until_it_lands`; `airborne_states_are_the_air_states` uses the new arguments.
+- **Decisions:** in a wipeout the engine puts the root 0.8 m under the ragdoll's centre of mass (`wipeout_state/skeleton.rs`), so a bail can count up to about half a block more than the drop; vanilla rounds the fall down, so an 8-block drop still deals 5. A bail that starts on the ground and then goes over an edge takes no fall damage (the ragdoll can't be told apart from one rolling down a slope).
+- **Owner's test steps:**
+  1. From the 8-block tower of group 3b step 3, ride off the edge badly (turn the board sideways or lean back hard) so the skater bails in the air: you lose 2.5 hearts (5 points), the same as a clean landing, not less.
+- **Kit:** none beyond group 3b.
+
 ## The whole track's owner test, one kit
 
-Steps in order: group 1 steps 1-4, group 2 steps 1-4, group 3a steps 1-3, group 3b steps 1-5, group 4 steps 1-6, group 5a steps 1-4, group 5b steps 1-3, group 6 step 1, group 7 steps 1-8. Groups 1, 2 and 6 need no items, and group 7 only the oak stairs. 3a needs the water bucket and the ender pearls, 3b the cobblestone, hay bales and helmet, 4 the cobblestone, stairs, slabs, carpet and snow, 5a the fence, wall and iron bars, and 5b the rails.
+Steps in order: group 1 steps 1-4, group 2 steps 1-4, group 3a steps 1-3, group 3b steps 1-5, group 4 steps 1-6, group 5a steps 1-4, group 5b steps 1-3, group 6 step 1, group 7 steps 1-8, review fix 1 step 1. Groups 1, 2 and 6 need no items, and group 7 only the oak stairs. 3a needs the water bucket and the ender pearls, 3b the cobblestone, hay bales and helmet, 4 the cobblestone, stairs, slabs, carpet and snow, 5a the fence, wall and iron bars, and 5b the rails.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:hay_block*16,minecraft:iron_helmet,minecraft:water_bucket,minecraft:ender_pearl*16,minecraft:oak_stairs*64,minecraft:stone_slab*64,minecraft:cobblestone_slab*64,minecraft:white_carpet*64,minecraft:snow*64,minecraft:oak_fence*64,minecraft:cobblestone_wall*64,minecraft:iron_bars*64,minecraft:rail*64,minecraft:powered_rail*16
