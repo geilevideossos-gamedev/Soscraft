@@ -25,3 +25,21 @@ Commit: the one after `aaf968e1`.
 ```
 IW4L_MINECRAFT_KIT=minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:torch*64,minecraft:elytra,minecraft:iron_chestplate
 ```
+
+## F2a. The spyglass and the spears show their inventory sprite as icon
+
+Commit: the one after `456bef90`.
+
+- **Cause:** the inventory icon took its model from `item_model_reference`, which follows a `minecraft:select`'s `fallback` first. The 26.3 spyglass definition is a `minecraft:display_context` select whose `gui`, `ground`, `fixed` and `on_shelf` case is `item/spyglass` (the flat sprite) and whose fallback is `item/spyglass_in_hand` (the small 3D tube with `item/spyglass_model`). So the hotbar and inventory drew the in-hand texture strip (screenshot 2). The six spears (`*_spear` with `*_spear_in_hand`) have the same definition and showed their in-hand sprite too. The bundles and the trident were not affected (same model in both cases, or the trident's special path).
+- **Changed:** `minecraft_terrain` `interface.rs`: `item_gui_model_reference` picks the first `display_context` case whose `when` holds `gui`, else falls back to `item_model_reference`. `item_icons.rs` uses it for the icon. The held, dropped and framed models are unchanged (they keep `item_model_reference` and their own display contexts).
+- **Tests:** `interface::tests::the_inventory_icon_takes_the_gui_case_of_a_display_context_select` (spyglass, bundle, a select with no `gui` case, a select on another property) and, with the 26.3 pack, `item_icons::tests::vanilla_spyglass_and_spear_icons_are_their_inventory_sprites` (the 32 px icon equals `item/spyglass` and `item/iron_spear` scaled with nearest).
+- **Decisions:** the fix follows vanilla's `ItemModelResolver` for the GUI context instead of special-casing the spyglass, so every item with a GUI case (today the spyglass and the spears) is right.
+- **Owner's test steps** (survival or creative, kit below):
+  1. Open the inventory: the spyglass is the brass-and-glass sprite lying diagonally, like in vanilla, not a thin vertical strip. **Screenshot 1.**
+  2. Put it on the hotbar: the same sprite there. Hold it: in hand it is still the small 3D spyglass.
+  3. The iron spear in the inventory is the diagonal spear sprite. **Screenshot 2.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:spyglass,minecraft:iron_spear
+```
