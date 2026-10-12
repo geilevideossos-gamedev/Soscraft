@@ -210,6 +210,8 @@ fn stop(friend: &mut Friend, view: &mut MinecraftWorldView, ui: &mut frame::Mine
     ui.chat_only = false;
     ui.credits = None;
     ui.boss_bars.clear();
+    ui.sleep = None;
+    ui.chat.wake_up();
 }
 
 fn send(wire: &mut net::MinecraftWire, message: &ToServer) {
@@ -345,9 +347,10 @@ pub(crate) fn friend(
         Option<Res<frame::ActivePad>>,
         Option<Res<frame::HudInputView>>,
     ),
-    (mut body_gear, mut sound_queue): (
+    (mut body_gear, mut sound_queue, mut sleepers): (
         ResMut<crate::anim::minecraft_gear::McBodyGear>,
         ResMut<audio::McSoundQueue>,
+        ResMut<frame::McSleepers>,
     ),
 ) {
     if *role != frame::RuntimeRole::Client {
@@ -357,6 +360,9 @@ pub(crate) fn friend(
         return;
     }
     let friend = &mut *friend;
+    if *sleepers != frame::McSleepers::default() {
+        *sleepers = frame::McSleepers::default();
+    }
     for _ in torn_down.read() {
         stop(friend, &mut view, &mut ui);
     }
@@ -473,10 +479,15 @@ pub(crate) fn friend(
     let dt = time.delta_secs_f64();
     let mc_detached = mc_camera.as_ref().is_some_and(|c| c.detached);
     let player = presented.player(local.0).copied();
+    let blocked = ui.inventory_open
+        || hud_input
+            .as_deref()
+            .is_some_and(|input| input.console_open || input.script_menu_open);
+    let leave_bed = show_sleep(friend, &mut ui, &mut sleepers, blocked);
     let drawn_from = cameras
         .iter()
         .next()
-        .filter(|_| skate.active || mc_detached);
+        .filter(|_| skate.active || mc_detached || sleepers.camera.is_some());
     if let (Some(prepared), Some(remote)) = (friend.prepared.as_ref(), friend.remote.as_ref()) {
         let lang = |key: &str| prepared.language.get(key).cloned();
         let name = |text: &Text| text.resolve(&lang).text;
@@ -508,7 +519,10 @@ pub(crate) fn friend(
     let shown = (dt, seconds, now_ms);
     let swap = std::mem::take(&mut ui.swap_hands);
     let drop = ui.drop_selected.take();
-    let messages = show_player(friend, &mut ui, player.as_ref(), &mut images, shown);
+    let mut messages = show_player(friend, &mut ui, player.as_ref(), &mut images, shown);
+    if leave_bed {
+        messages.push(ToServer::LeaveBed);
+    }
     if let (Some(sounds), Some(prepared)) = (friend.sounds.as_mut(), friend.prepared.as_ref()) {
         for event in std::mem::take(&mut ui.ui_sounds) {
             sounds.play(&prepared.look.packs, event, None, 1.0, 1.0);
@@ -648,6 +662,39 @@ fn show_effects(
             }
         }
     }
+}
+
+fn show_sleep(
+    friend: &Friend,
+    ui: &mut frame::MinecraftUi,
+    sleepers: &mut frame::McSleepers,
+    blocked: bool,
+) -> bool {
+    let Some(remote) = friend.remote.as_ref() else {
+        return false;
+    };
+    let Some(level) = remote.level.as_ref() else {
+        return false;
+    };
+    for (&client, lying) in &remote.sleepers {
+        let facing = (lying.facing[0], lying.facing[1]);
+        let root = crate::minecraft_sleep::lying_root(level.origin, lying.feet, facing);
+        sleepers.bodies.push((client, root));
+    }
+    let own = remote.lying();
+    if let Some(lying) = own {
+        let facing = (lying.facing[0], lying.facing[1]);
+        let camera = crate::minecraft_sleep::sleep_camera(level.origin, lying.feet, facing);
+        sleepers.camera = Some(camera);
+    }
+    let timer = remote.sleep_timer;
+    ui.sleep = (timer > 0).then_some(frame::minecraft_ui::McSleep { timer });
+    if own.is_none() {
+        ui.chat.wake_up();
+    } else if !blocked {
+        ui.chat.lie_in_bed();
+    }
+    std::mem::take(&mut ui.chat.leave_bed)
 }
 
 fn own_totem(effect: &ToClient, own: Option<u32>) -> bool {

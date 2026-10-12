@@ -53,6 +53,7 @@ pub enum ToServer {
         pos: [i32; 3],
         button: Option<i32>,
     },
+    LeaveBed,
 }
 
 impl ToServer {
@@ -261,6 +262,17 @@ pub enum ToClient {
         entities: Blob,
     },
     Lectern(Option<BookView>),
+    Sleeping {
+        client: u32,
+        bed: Option<Lying>,
+        timer: i32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Lying {
+    pub feet: [f64; 3],
+    pub facing: [i32; 2],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -1178,6 +1178,84 @@ pub(crate) struct Stepped {
     pub(crate) told: Option<Clientbound>,
     pub(crate) killers: Vec<String>,
     pub(crate) books: Vec<Option<minecraft_net::messages::BookView>>,
+    pub(crate) bed: Option<Bed>,
+}
+
+type Bed = minecraft_survival::respawn_block::Bed;
+
+pub(crate) fn friend_beds(
+    (globals, levels, players): (
+        &Globals,
+        &mut BTreeMap<Dimension, Level>,
+        &mut BTreeMap<PlayerUuid, Player>,
+    ),
+    published: bool,
+    authority: &mut sim::SimWorld,
+    beds: Vec<(PlayerUuid, minecraft_survival::sleep::BedAction)>,
+    (shapes, shape_ids): (&mut Shapes, &mut ShapeIds),
+) -> Vec<(PlayerUuid, Clientbound)> {
+    use minecraft_survival::sleep::BedAction;
+    let mut messages = Vec::new();
+    for (uuid, action) in beds {
+        let Some(player) = players
+            .get_mut(&uuid)
+            .filter(|player| player.switching.is_none())
+        else {
+            continue;
+        };
+        let dimension = player.dimension;
+        let Some(level) = levels.get_mut(&dimension) else {
+            continue;
+        };
+        if matches!(action, BedAction::Lie(_)) {
+            let rider = (sim::ClientId(player.id.0), u64::from(player.id.0));
+            let entities = level.entities.as_mut();
+            crate::minecraft_riding::dismount(&mut player.riding, entities, authority, rider);
+        }
+        let events = match action {
+            BedAction::Lie(bed) => {
+                minecraft_survival::sleep::start(globals, level, players, &uuid, &bed, published)
+            }
+            BedAction::Leave => {
+                minecraft_survival::sleep::stop(globals, level, players, &uuid, false, published)
+            }
+        };
+        let band = minecraft_survival::bands::level(dimension);
+        let tables = (&mut *shapes, &mut *shape_ids, band);
+        let registries = &globals.registries;
+        crate::minecraft_world::refresh_shapes(&level.terrain, registries, tables, &events.written);
+        messages.extend(events.messages);
+    }
+    messages
+}
+
+pub(crate) fn lay_friends(
+    players: &BTreeMap<PlayerUuid, Player>,
+    (host, shown): (&PlayerUuid, Option<Dimension>),
+    authority: &mut sim::SimWorld,
+    origins: &HashMap<Dimension, [f64; 3]>,
+    in_bed: &mut BTreeSet<u32>,
+    bodies: &mut Vec<(u32, Mat4)>,
+) {
+    let mut lying = BTreeSet::new();
+    for player in players.values().filter(|player| &player.uuid != host) {
+        let client = player.id.0;
+        let sleeping = player.sleeping.filter(|_| !player.dead);
+        let (Some(sleeping), Some(&origin)) = (sleeping, origins.get(&player.dimension)) else {
+            if in_bed.contains(&client) && player.riding.is_none() {
+                authority.ride(sim::ClientId(client), None);
+            }
+            continue;
+        };
+        let feet = sleeping.feet();
+        authority.ride(sim::ClientId(client), Some(sim::voxel::to_map(origin, feet)));
+        lying.insert(client);
+        if shown == Some(player.dimension) {
+            let root = crate::minecraft_sleep::lying_root(origin, feet, sleeping.facing);
+            bodies.push((client, root));
+        }
+    }
+    *in_bed = lying;
 }
 
 pub(crate) type LecternClicks<'a> = (&'a mut Option<BlockPos>, Vec<([i32; 3], Option<i32>)>);
@@ -1484,9 +1562,10 @@ pub(crate) fn step_friend(
         } = player;
         drop_on_death(death_watch, inventory, hand, entities);
     }
-    let (effects, (table, block, bench)) = friend_hand(
+    let (effects, (table, block, bench), bed) = friend_hand(
         player, world, client, origin, &ps, &moved, taken, life.alive,
     );
+    stepped.bed = bed;
     if let Some(level) = world.levels.get_mut(&player.dimension) {
         let recipes = player.inventory.recipes.clone();
         minecraft_survival::menus::open_station(
@@ -1569,9 +1648,9 @@ fn friend_hand(
     moved: &Moved,
     taken: HandTake,
     alive: bool,
-) -> (Vec<Effect>, Opens) {
+) -> (Vec<Effect>, Opens, Option<Bed>) {
     let Some(level) = world.levels.get_mut(&player.dimension) else {
-        return (Vec::new(), (None, None, None));
+        return (Vec::new(), (None, None, None), None);
     };
     let interacts = alive && player.mode.interacts();
     if interacts
@@ -1661,6 +1740,7 @@ fn friend_hand(
     (
         effects,
         (acted.open_table, acted.open_block, acted.open_bench),
+        acted.bed,
     )
 }
 
@@ -1951,6 +2031,57 @@ mod tests {
         assert!(!queues.take_totem(2));
         assert!(!queues.take_switch(2));
         assert_eq!(queues.take_deaths(0), ["Fall"]);
+    }
+
+    #[test]
+    fn friends_in_bed_lie_in_the_hosts_level_and_are_let_go_when_they_wake() {
+        use minecraft_commands::PlayerId;
+        use minecraft_survival::commands::HOST;
+        let mut chat = CommandServer::new(HOST);
+        chat.join(HOST, "Steve");
+        chat.join(PlayerId(1), "Alex");
+        chat.join(PlayerId(2), "Bob");
+        let player = |id| {
+            Player::new(
+                chat.profile(id).unwrap(),
+                minecraft_terrain::game_mode::PlayerMode::default(),
+                minecraft_survival::survival::Survival::default(),
+                minecraftoss_player::inventory::Inventory::default(),
+            )
+        };
+        let sleeping = minecraft_survival::sleep::Sleeping {
+            head: (0, 64, 0),
+            facing: (0, 1),
+            straw: false,
+            hurts: 0,
+            height: 0.5625,
+        };
+        let (mut host, mut alex, mut bob) = (player(HOST), player(PlayerId(1)), player(PlayerId(2)));
+        host.sleeping = Some(sleeping);
+        alex.sleeping = Some(sleeping);
+        bob.sleeping = Some(sleeping);
+        bob.dimension = Dimension::Nether;
+        let host_uuid = host.uuid.clone();
+        let mut players = BTreeMap::new();
+        for each in [host, alex, bob] {
+            players.insert(each.uuid.clone(), each);
+        }
+        let origins = HashMap::from([
+            (Dimension::Overworld, [0.0, 0.0, 0.0]),
+            (Dimension::Nether, [0.0, 0.0, -45000.0]),
+        ]);
+        let mut authority = sim::SimWorld::default();
+        let (mut in_bed, mut bodies) = (BTreeSet::new(), Vec::new());
+        let shown = (&host_uuid, Some(Dimension::Overworld));
+        lay_friends(&players, shown, &mut authority, &origins, &mut in_bed, &mut bodies);
+        assert_eq!(in_bed, BTreeSet::from([1, 2]), "the host lies by its own rule");
+        assert_eq!(bodies.iter().map(|(client, _)| *client).collect::<Vec<_>>(), [1]);
+        for each in players.values_mut() {
+            each.sleeping = None;
+        }
+        bodies.clear();
+        lay_friends(&players, shown, &mut authority, &origins, &mut in_bed, &mut bodies);
+        assert!(in_bed.is_empty() && bodies.is_empty());
     }
 
     #[test]

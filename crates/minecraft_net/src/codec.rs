@@ -213,6 +213,7 @@ mod tests {
             ToServer::Chat(_) => 8,
             ToServer::CreditsDone => 9,
             ToServer::Lectern { .. } => 10,
+            ToServer::LeaveBed => 11,
         }
     }
 
@@ -248,6 +249,7 @@ mod tests {
             ToClient::PlayerEvent { .. } => 27,
             ToClient::Bursts { .. } => 28,
             ToClient::Lectern(_) => 29,
+            ToClient::Sleeping { .. } => 30,
         }
     }
 
@@ -297,6 +299,7 @@ mod tests {
                 pos: [4, 70, -9],
                 button: None,
             },
+            ToServer::LeaveBed,
         ]
     }
 
@@ -555,6 +558,19 @@ mod tests {
                 take: true,
             })),
             ToClient::Lectern(None),
+            ToClient::Sleeping {
+                client: 2,
+                bed: Some(Lying {
+                    feet: [10.5, 64.6875, -3.5],
+                    facing: [0, -1],
+                }),
+                timer: 0,
+            },
+            ToClient::Sleeping {
+                client: 2,
+                bed: None,
+                timer: 100,
+            },
         ]
     }
 
@@ -569,7 +585,7 @@ mod tests {
     #[test]
     fn every_message_to_the_server_round_trips() {
         let messages = to_server();
-        let mut seen = [false; 11];
+        let mut seen = [false; 12];
         for message in &messages {
             seen[server_index(message)] = true;
             round_trip(Lane::Reliable, message);
@@ -588,7 +604,7 @@ mod tests {
     #[test]
     fn every_message_to_the_client_round_trips() {
         let messages = to_client();
-        let mut seen = [false; 30];
+        let mut seen = [false; 31];
         for message in &messages {
             seen[client_index(message)] = true;
             round_trip(Lane::Reliable, message);

@@ -123,6 +123,8 @@ pub(crate) struct Runtime {
     pub(crate) relayed: minecraft_survival::commands::Handled,
     bed_request: Option<minecraft_survival::respawn_block::Bed>,
     in_bed: bool,
+    pub(crate) friend_beds: Vec<(minecraft_net::PlayerUuid, minecraft_survival::sleep::BedAction)>,
+    friends_in_bed: std::collections::BTreeSet<u32>,
     music: crate::minecraft_music::MusicManager,
     item_activation: crate::minecraft_hand::ItemActivation,
     ticked: Option<Dimension>,
@@ -670,6 +672,8 @@ fn update(
         queues,
         bed_request,
         in_bed,
+        friend_beds,
+        friends_in_bed,
         music,
         item_activation,
         ticked,
@@ -710,11 +714,13 @@ fn update(
     }
     let leave_bed = std::mem::take(&mut ui.chat.leave_bed);
     let bed_action = bed_request.take().map(minecraft_survival::sleep::BedAction::Lie).or(leave_bed.then_some(minecraft_survival::sleep::BedAction::Leave));
+    let mut bed_messages = crate::minecraft_players::friend_beds((globals, levels, players), *published, &mut authority.0, std::mem::take(friend_beds), (shapes, shape_ids));
     let slept = minecraft_survival::sleep::serve(globals, levels, players, local_uuid, bed_action, planned.len() as u32, *published);
     if let Some(level) = players.get(local_uuid).and_then(|player| levels.get(&player.dimension)) {
         refresh_shapes(&level.terrain, &globals.registries, (shapes, shape_ids, minecraft_survival::bands::level(level.dimension)), &slept.written);
     }
-    let local_messages = relay_messages(players, local_uuid, slept.messages, relayed);
+    bed_messages.extend(slept.messages);
+    let local_messages = relay_messages(players, local_uuid, bed_messages, relayed);
     crate::minecraft_respawn::show_messages(&mut ui, inventory_ui, &world.packs, &local_messages);
     crate::minecraft_end::tick_fight(levels, players, globals, f64::from(planned.normal_count()) * minecraft_survival::the_end::dragon_fight::TICK_SECONDS, local_uuid, &mut ui);
     if let Some(player) = players.get(local_uuid) {
@@ -728,6 +734,7 @@ fn update(
             authority.0.ride(local.0, None);
         }
         *in_bed = lying.is_some();
+        crate::minecraft_players::lay_friends(players, (local_uuid, Some(player.dimension)), &mut authority.0, origins, friends_in_bed, &mut sleepers.bodies);
         ui.sleep = (player.sleep_timer > 0).then_some(frame::minecraft_ui::McSleep { timer: player.sleep_timer });
         let blocked = ui.inventory_open || hud_input.as_deref().is_some_and(|input| input.console_open || input.script_menu_open);
         if player.sleeping.is_none() {

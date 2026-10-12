@@ -98,3 +98,18 @@ A friend can now open the book on a lectern, turn its pages and take it, like th
 ```
 IW4L_MINECRAFT_KIT=minecraft:lectern,minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}]
 ```
+
+## Friends lie down in beds and count for the night
+
+A friend can now sleep: their view goes to the pillow, the screen darkens, the chat bar shows the Leave Bed button, and everyone sees them lying on the bed. They count for the night like the host: with both asleep the night passes.
+
+1. Host window: `/op Friend`, `/time set 13000`. Both place their bed on flat ground, side by side.
+2. **Lying down.** Friend window: right click the bed. The friend's view moves to the pillow looking down the bed, the screen slowly darkens, and the chat bar opens with a "Leave Bed" button. Both windows show "1/2 players sleeping" above the hotbar. Host window: the friend's soldier lies on its back on the bed, head on the pillow. Screenshot both windows. **S16**
+3. **Leave Bed.** Friend window: click Leave Bed. The friend stands up beside the bed, the dark fades out, and the soldier stands in the host window too.
+4. **The night passes.** Friend window: lie down again. Host window: lie down too. After about 5 seconds of both in bed the night skips to morning: both wake up beside their beds and the sky is bright in both windows. Screenshot the friend window just after. **S17**
+5. **Only one asleep.** Host window: `/time set 13000`. Friend window: lie down and stay; the host stays up. The night does not pass (the default `players_sleeping_percentage` is 100). Friend window: press Escape: the friend gets up as with the button.
+6. **Hit in bed.** Friend window: lie down. Host window: shoot the friend once (pvp is on): the friend wakes and stands up at once.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:white_bed
+```

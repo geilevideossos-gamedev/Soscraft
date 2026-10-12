@@ -4,7 +4,7 @@ use std::sync::Arc;
 use minecraft_commands::{Clientbound, Text};
 use minecraft_net::messages::{
     BookView, BossBarColor, BossBarFlags, BossBarOperation, BossBarOverlay, BossBarUpdate, GearView,
-    Login, MenuView, Nbt, PlayerView, Rules,
+    Login, Lying, MenuView, Nbt, PlayerView, Rules,
 };
 use minecraft_net::{ChunkBatchBlob, Dimension, Lane, PlayerUuid, StateFrame, ToClient};
 use minecraft_terrain::ChunkEvent;
@@ -171,6 +171,9 @@ pub struct RemoteWorld {
     pub weather: [f32; 2],
     pub boss_bars: BTreeMap<u64, BossBar>,
     pub lecterns: Vec<Option<BookView>>,
+    pub sleepers: BTreeMap<u32, Lying>,
+    pub sleep_timer: i32,
+    sleep_clock: f64,
     pub effects: Vec<ToClient>,
     pub state: Option<StateFrame>,
     pub recipes: Arc<RecipeBook>,
@@ -203,6 +206,9 @@ impl RemoteWorld {
             weather: [0.0; 2],
             boss_bars: BTreeMap::new(),
             lecterns: Vec::new(),
+            sleepers: BTreeMap::new(),
+            sleep_timer: 0,
+            sleep_clock: 0.0,
             effects: Vec::new(),
             state: None,
             recipes: Arc::new(RecipeBook::default()),
@@ -353,6 +359,17 @@ impl RemoteWorld {
 
     pub fn advance_clocks(&mut self, seconds: f64) {
         self.clocks.advance(seconds);
+        self.sleep_clock = (self.sleep_clock + seconds.max(0.0) * 20.0).min(20.0);
+        let sleeping = self.lying().is_some();
+        while self.sleep_clock >= 1.0 {
+            self.sleep_clock -= 1.0;
+            self.sleep_timer = crate::sleep::next_sleep_timer(self.sleep_timer, sleeping);
+        }
+    }
+
+    pub fn lying(&self) -> Option<Lying> {
+        let client = self.login.as_ref()?.client;
+        self.sleepers.get(&client).copied()
     }
 
     fn check_limit(&mut self) {
@@ -474,6 +491,19 @@ impl RemoteWorld {
             } => self.open_level(dimension, epoch, origin, feet),
             ToClient::BossBar(update) => self.boss_bar(update),
             ToClient::Lectern(book) => self.lecterns.push(book),
+            ToClient::Sleeping { client, bed, timer } => {
+                if self.login.as_ref().is_some_and(|login| login.client == client) {
+                    self.sleep_timer = timer;
+                }
+                match bed {
+                    Some(lying) => {
+                        self.sleepers.insert(client, lying);
+                    }
+                    None => {
+                        self.sleepers.remove(&client);
+                    }
+                }
+            }
             ToClient::Bursts { entities } => {
                 let bursts = minecraft_net::decode::<EntitySnapshot>(Lane::Reliable, &entities.0);
                 if let (Some(level), Ok(mut bursts)) = (self.level.as_mut(), bursts) {
@@ -549,6 +579,7 @@ impl RemoteWorld {
         let view_distance = i32::from(login.view_distance);
         self.level = None;
         self.state = None;
+        self.sleepers.clear();
         self.shown = Shown {
             level: true,
             ..Shown::default()
@@ -797,6 +828,43 @@ mod tests {
         assert_eq!(shown.loaded.len(), 1);
         assert_eq!(shown.blocks, vec![((3, -64, 3), BlockStateId::AIR)]);
         assert_eq!(friend.held_bytes(), 0);
+    }
+
+    #[test]
+    fn the_friend_sees_who_lies_in_a_bed_and_wakes_with_the_hosts_fade() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let mut friend = RemoteWorld::new(registries);
+        friend.apply(ToClient::Login(login(Dimension::Overworld)));
+        let lying = Lying {
+            feet: [8.5, 64.6875, 8.5],
+            facing: [1, 0],
+        };
+        let sleeping = |client, bed, timer| ToClient::Sleeping { client, bed, timer };
+        friend.apply(sleeping(5, Some(lying), 0));
+        assert_eq!((friend.lying(), friend.sleepers.len()), (None, 1));
+        friend.apply(sleeping(1, Some(lying), 0));
+        assert_eq!(friend.lying(), Some(lying));
+        for _ in 0..120 {
+            friend.advance_clocks(0.05);
+        }
+        assert_eq!(friend.sleep_timer, crate::sleep::DEEP_SLEEP_TICKS);
+        friend.apply(sleeping(1, None, crate::sleep::DEEP_SLEEP_TICKS));
+        assert_eq!(friend.lying(), None);
+        for _ in 0..9 {
+            friend.advance_clocks(0.05);
+        }
+        assert_eq!(friend.sleep_timer, crate::sleep::WAKE_UP_TICKS - 1);
+        friend.advance_clocks(0.05);
+        assert_eq!(friend.sleep_timer, 0, "the wake-up fade is over");
+        friend.apply(ToClient::Dimension {
+            epoch: 1,
+            dimension: Dimension::Nether,
+            origin: [8.5, 64.0, 8.5],
+            feet: [8.5, 64.0, 8.5],
+        });
+        assert!(friend.sleepers.is_empty(), "a new level has its own sleepers");
     }
 
     #[test]

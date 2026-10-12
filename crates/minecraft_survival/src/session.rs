@@ -6,7 +6,7 @@ use minecraft_commands::text::YELLOW;
 use minecraft_commands::{Clientbound, CommandServer, Outgoing, PlayerId, Text};
 use minecraft_net::codec::{BATCH_CUT, BULK_LIMIT};
 use minecraft_net::messages::{
-    BookView, BossBarColor, BossBarFlags, BossBarOperation, BossBarOverlay, BossBarUpdate, ChunkBlob,
+    BookView, BossBarColor, Lying, BossBarFlags, BossBarOperation, BossBarOverlay, BossBarUpdate, ChunkBlob,
     GearView, HandEvent, HandEventKind, HandState, HelloRefusal, Login, Nbt, PlayerView, Rules,
     Target, check_hello,
 };
@@ -174,6 +174,7 @@ pub struct Session {
     cracks: BTreeMap<(u32, BlockPos), u8>,
     boss_bar: Option<f32>,
     credits: bool,
+    sleepers: BTreeMap<u32, Lying>,
 }
 
 impl Session {
@@ -196,7 +197,38 @@ impl Session {
             cracks: BTreeMap::new(),
             boss_bar: None,
             credits: false,
+            sleepers: BTreeMap::new(),
         }
+    }
+
+    pub fn send_sleepers(&mut self, now: BTreeMap<u32, Lying>, timer: i32) {
+        let me = self.client;
+        let own = |client: u32| if client == me { timer } else { 0 };
+        let gone: Vec<u32> = self
+            .sleepers
+            .keys()
+            .filter(|client| !now.contains_key(client))
+            .copied()
+            .collect();
+        for client in gone {
+            let timer = own(client);
+            self.outbox.push(ToClient::Sleeping {
+                client,
+                bed: None,
+                timer,
+            });
+        }
+        for (&client, &lying) in &now {
+            if self.sleepers.get(&client) != Some(&lying) {
+                let timer = own(client);
+                self.outbox.push(ToClient::Sleeping {
+                    client,
+                    bed: Some(lying),
+                    timer,
+                });
+            }
+        }
+        self.sleepers = now;
     }
 
     pub fn send_boss_bar(&mut self, bar: Option<f32>) {
@@ -946,6 +978,7 @@ impl Sessions {
                 .follow(dimension, center, &mut session.outbox);
             session.mobs.follow(Some(dimension));
             session.cracks.clear();
+            session.sleepers.clear();
             diag::info!(
                 World,
                 "Minecraft {} (client {}) goes to {} at {feet:?}",
@@ -1100,6 +1133,32 @@ impl Sessions {
     pub fn send_gear(&mut self, gears: &[(u32, GearView)]) {
         for session in self.sessions.values_mut() {
             session.send_gear(gears);
+        }
+    }
+
+    pub fn send_sleepers(
+        &mut self,
+        players: &BTreeMap<PlayerUuid, Player>,
+        (host, host_client): (&PlayerUuid, u32),
+    ) {
+        for session in self.sessions.values_mut() {
+            let Some(me) = players.get(&session.uuid) else {
+                continue;
+            };
+            let now = players
+                .iter()
+                .filter(|(_, player)| player.dimension == session.dimension)
+                .filter(|(_, player)| player.switching.is_none() && !player.dead)
+                .filter_map(|(uuid, player)| {
+                    let sleeping = player.sleeping?;
+                    let client = if uuid == host { host_client } else { player.id.0 };
+                    let (x, z) = sleeping.facing;
+                    let feet = sleeping.feet();
+                    let facing = [x, z];
+                    Some((client, Lying { feet, facing }))
+                })
+                .collect();
+            session.send_sleepers(now, me.sleep_timer);
         }
     }
 
@@ -1540,6 +1599,36 @@ mod tests {
             "the spawner in a chunk the friend has, not the one outside"
         );
         assert!(sessions.sessions[&2].outbox.is_empty());
+    }
+
+    #[test]
+    fn friends_learn_who_lies_in_a_bed_and_their_own_wake_up_timer() {
+        let mut session = session_with(1, Dimension::Overworld);
+        let lying = Lying {
+            feet: [0.5, 64.6875, 0.5],
+            facing: [0, 1],
+        };
+        let sleeping = |client, bed, timer| ToClient::Sleeping { client, bed, timer };
+        let both = BTreeMap::from([(1, lying), (5, lying)]);
+        session.send_sleepers(both.clone(), 0);
+        assert_eq!(
+            std::mem::take(&mut session.outbox),
+            vec![sleeping(1, Some(lying), 0), sleeping(5, Some(lying), 0)]
+        );
+        session.send_sleepers(both, 40);
+        assert!(session.outbox.is_empty(), "nothing changed");
+        session.send_sleepers(BTreeMap::from([(5, lying)]), 100);
+        assert_eq!(
+            std::mem::take(&mut session.outbox),
+            vec![sleeping(1, None, 100)],
+            "the friend's own wake-up fades from deep sleep"
+        );
+        session.send_sleepers(BTreeMap::new(), 7);
+        assert_eq!(
+            std::mem::take(&mut session.outbox),
+            vec![sleeping(5, None, 0)],
+            "another player's timer is not theirs"
+        );
     }
 
     #[test]

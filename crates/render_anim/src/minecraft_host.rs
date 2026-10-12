@@ -9,6 +9,7 @@ use minecraft_net::messages::HandState;
 use minecraft_net::{Lane, PlayerUuid, ToClient, ToServer};
 use minecraft_survival::menus::{Books, MenuInput};
 use minecraft_survival::session::{BatchJob, EncodedBatch, Hello, JoinContext, Sessions};
+use minecraft_survival::sleep::BedAction;
 use minecraftoss_core::Registries;
 
 use crate::minecraft_world::Runtime;
@@ -81,6 +82,7 @@ pub(crate) struct HostSessions {
     selects: BTreeMap<u32, u8>,
     credits_done: Vec<u32>,
     lecterns: BTreeMap<u32, Vec<([i32; 3], Option<i32>)>>,
+    leave_beds: Vec<u32>,
 }
 
 impl HostSessions {
@@ -92,6 +94,7 @@ impl HostSessions {
             && self.selects.is_empty()
             && self.credits_done.is_empty()
             && self.lecterns.is_empty()
+            && self.leave_beds.is_empty()
     }
 }
 
@@ -156,6 +159,11 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
             Ok(ToServer::Lectern { pos, button }) => {
                 if host.sessions.sessions.contains_key(&client) {
                     host.lecterns.entry(client).or_default().push((pos, button));
+                }
+            }
+            Ok(ToServer::LeaveBed) => {
+                if host.sessions.sessions.contains_key(&client) {
+                    host.leave_beds.push(client);
                 }
             }
             Ok(_) => {}
@@ -303,6 +311,7 @@ pub(crate) fn host(
         host.selects.remove(client);
         host.credits_done.retain(|done| done != client);
         host.lecterns.remove(client);
+        host.leave_beds.retain(|leaving| leaving != client);
         body_gear.remove(*client);
         sim::voxel::set_death_protected(*client, false);
     }
@@ -357,6 +366,7 @@ pub(crate) fn host(
     for (client, reason) in host.sessions.take_retiring(now) {
         wire.drop_peer(client, &reason);
     }
+    let mut beds = Vec::new();
     if let Some(authority) = authority.as_mut() {
         let minecraft_survival::server::Server {
             globals,
@@ -384,6 +394,7 @@ pub(crate) fn host(
             instant: now,
         };
         let mut told = Vec::new();
+        let leaving = std::mem::take(&mut host.leave_beds);
         for session in host.sessions.sessions.values_mut() {
             let inputs = std::mem::take(&mut session.menu_inputs);
             let Some(player) = players.get_mut(&session.uuid) else {
@@ -410,6 +421,12 @@ pub(crate) fn host(
             session
                 .outbox
                 .extend(stepped.books.into_iter().map(ToClient::Lectern));
+            if let Some(bed) = stepped.bed {
+                beds.push((session.uuid.clone(), BedAction::Lie(bed)));
+            }
+            if leaving.contains(&session.client) {
+                beds.push((session.uuid.clone(), BedAction::Leave));
+            }
             session
                 .outbox
                 .extend(stepped.lines.into_iter().map(ToClient::Chat));
@@ -487,6 +504,8 @@ pub(crate) fn host(
         .collect();
     host.sessions.follow_levels(&server.players, &origins);
     host.sessions.send_credits(&server.players);
+    host.sessions
+        .send_sleepers(&server.players, (view.local, local.0.0));
     let fight = server
         .levels
         .get(&minecraft_net::Dimension::End)
@@ -592,6 +611,7 @@ pub(crate) fn host(
             }
         }
     }
+    runtime.friend_beds.extend(beds);
     let lines = std::mem::take(&mut host.sessions.host_lines);
     crate::minecraft_world::show_lines(&runtime, &mut ui.chat, &lines);
 }

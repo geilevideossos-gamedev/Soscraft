@@ -176,6 +176,7 @@ pub enum ToServer {
     Chat(minecraft_commands::protocol::Serverbound),
     CreditsDone,
     Lectern { pos: [i32; 3], button: Option<i32> },
+    LeaveBed,
 }
 
 pub struct HandState { pub tick: u32, pub attack: bool, pub use_item: bool, pub target: Target }
@@ -216,9 +217,11 @@ pub enum ToClient {
     PlayerEvent { client: u32, event: u8 },
     Bursts { entities: Blob },
     Lectern(Option<BookView>),
+    Sleeping { client: u32, bed: Option<Lying>, timer: i32 },
 }
 
 pub struct BookView { pub pos: [i32; 3], pub pages: Vec<String>, pub page: u32, pub take: bool }
+pub struct Lying { pub feet: [f64; 3], pub facing: [i32; 2] }
 
 pub struct Login {
     pub client: u32, pub uuid: PlayerUuid, pub seed: i64, pub dimension: Dimension,
@@ -246,6 +249,8 @@ pub struct StateFrame { pub tick: u32, pub epoch: u32, pub mobs: Blob, pub entit
 - `title: Text`, `state: u16`, `slots`, `carried`, `data`, and kind-specific extras (enchant seeds and costs, anvil cost and name).
 
 **The lectern's book screen** is vanilla's `LecternMenu` cut to what the screen shows. `Lectern(Some(BookView))` opens the screen or shows a turned page (the pages as plain text, the page, and whether the Take Book button shows: the player may build); `Lectern(None)` closes it. The friend's `Lectern { pos, button }` is a button (1 previous page, 2 next page, 3 take the book, 100 + n go to page n; vanilla's `ServerboundContainerButtonClickPacket`) or, with no button, the screen closing (`ServerboundContainerClosePacket`). The host keeps which lectern each friend has open, drops buttons for any other one, refuses Take Book to a player who may not build (vanilla `LecternMenu.clickMenuButton`), and closes the screen when the friend is out of reach (vanilla `stillValid`) or leaves the level.
+
+**Sleeping** follows vanilla's synced `SLEEPING_POS` and pose: `Sleeping { client, bed: Some(Lying) }` tells every friend in that level that a player lies in a bed (the feet on the pillow and the bed's facing, from which each game draws the body lying and, for its own player, the camera on the pillow); `bed: None` that they got up. `timer` is the friend's own sleep timer when the message is about them (0 when lying down, 100 or 0 when getting up); the friend's game counts it on by itself, as vanilla's client counts `sleepCounter`, for the darkening and the wake-up fade. `LeaveBed` is vanilla's `ServerboundPlayerCommandPacket` `STOP_SLEEPING`, from the Leave Bed button. A friend's bed use goes through the same rules as the host's; the host lies them down, pins their MW2 player on the pillow until they get up, and counts them for the night.
 
 **`RenameItem`** is vanilla's `ServerboundRenameItemPacket`: the anvil's name field (`Bench`'s name, `minecraft_terrain/src/stations.rs:472`), at most 50 characters, accepted only while an anvil menu is open.
 

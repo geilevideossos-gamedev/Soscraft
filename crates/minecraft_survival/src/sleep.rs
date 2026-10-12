@@ -149,6 +149,16 @@ pub fn bed_feet((x, y, z): Pos, height: f64) -> [f64; 3] {
     ]
 }
 
+pub fn next_sleep_timer(timer: i32, sleeping: bool) -> i32 {
+    if sleeping {
+        (timer + 1).min(DEEP_SLEEP_TICKS)
+    } else if timer > 0 && timer + 1 < WAKE_UP_TICKS {
+        timer + 1
+    } else {
+        0
+    }
+}
+
 #[derive(Debug, Default, PartialEq)]
 pub struct SleepEvents {
     pub messages: Vec<(PlayerUuid, Clientbound)>,
@@ -763,6 +773,16 @@ mod tests {
     fn registries() -> Option<Registries> {
         let paths = minecraftoss_core::registries::DataPaths::discover().ok()?;
         Registries::load(&paths).ok()
+    }
+
+    #[test]
+    fn the_sleep_timer_deepens_to_a_hundred_and_the_wake_up_fades_out_by_a_hundred_and_ten() {
+        assert_eq!(next_sleep_timer(0, true), 1);
+        assert_eq!(next_sleep_timer(DEEP_SLEEP_TICKS, true), DEEP_SLEEP_TICKS);
+        assert_eq!(next_sleep_timer(DEEP_SLEEP_TICKS, false), DEEP_SLEEP_TICKS + 1);
+        assert_eq!(next_sleep_timer(WAKE_UP_TICKS - 2, false), WAKE_UP_TICKS - 1);
+        assert_eq!(next_sleep_timer(WAKE_UP_TICKS - 1, false), 0);
+        assert_eq!(next_sleep_timer(0, false), 0);
     }
 
     #[test]

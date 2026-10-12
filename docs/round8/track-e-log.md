@@ -1412,12 +1412,40 @@ Commit: see `git log` ("Friends read books on lecterns"). The previous commit is
 IW4L_MINECRAFT_KIT=minecraft:lectern,minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}]
 ```
 
+### Leftover: friends lie down in beds and count for the night
+
+Commit: see `git log` ("Friends lie down in beds and count for the night"). The previous commit is `79ca1533` (lecterns).
+
+- **Changed:**
+  - `crates/minecraft_net`: `ToClient::Sleeping { client, bed: Option<Lying>, timer }`, `Lying { feet, facing }` and `ToServer::LeaveBed`. Design section 4 follows. The protocol stays 3.
+  - `minecraft_survival/src/sleep.rs`: `next_sleep_timer`, one client tick of vanilla's `sleepCounter` (up to 100 while asleep, then on to 110 and back to 0 after getting up), as `tick_sleepers` counts it on the host.
+  - `minecraft_survival/src/session.rs`: `Sessions::send_sleepers(players, host)` and `Session::send_sleepers`: each friend learns who lies in a bed in the level their game shows (the host by its MW2 client), when it changes, with their own timer on their own entries; a new level forgets what was sent.
+  - `minecraft_survival/src/remote.rs`: `RemoteWorld.sleepers`, `sleep_timer` (counted on with the client clock) and `lying()`; a new level clears the sleepers.
+  - `render_anim/src/minecraft_players.rs`: a friend's bed use (`Acted.bed`, already ruled by night, monsters and the rest) comes back from `step_friend`. `friend_beds` lies them down (after a dismount) or gets them up with `sleep::start` / `stop` in their own level and refreshes the bed's collision; `lay_friends` pins every sleeping friend's MW2 player on the pillow with `ride`, lets it go once when they get up, and adds the lying body of each friend in the host's level to `McSleepers.bodies`.
+  - `render_anim/src/minecraft_host.rs`: reads `LeaveBed`, hands the bed actions to the host frame (`Runtime.friend_beds`) and sends the sleepers each frame.
+  - `render_anim/src/minecraft_world.rs`: the host frame runs the friends' bed actions before its own sleep step, so their overlay lines ("1/2 players sleeping") go to everyone through the same relay, and lays the friends after the host.
+  - `render_anim/src/minecraft_remote.rs`: the friend's game draws every lying player (`McSleepers.bodies`), puts its own camera on the pillow, darkens with its own timer (`ui.sleep`), opens the chat with the Leave Bed button while asleep, sends `LeaveBed` from it, and closes it when it wakes.
+- **Tests:**
+  - `minecraft_survival` `sleep::tests::the_sleep_timer_deepens_to_a_hundred_and_the_wake_up_fades_out_by_a_hundred_and_ten`, `session::tests::friends_learn_who_lies_in_a_bed_and_their_own_wake_up_timer`, `remote::tests::the_friend_sees_who_lies_in_a_bed_and_wakes_with_the_hosts_fade`.
+  - `render_anim` `minecraft_players::tests::friends_in_bed_lie_in_the_hosts_level_and_are_let_go_when_they_wake`.
+  - `minecraft_net` `codec::tests` cover the new messages.
+- **Decisions:**
+  - **Lying is sent as the feet and the bed's facing,** what vanilla syncs as the sleeping position; each game builds the lying body and the pillow camera from them with the host's own functions (`minecraft_sleep`).
+  - **The timer runs on each game,** as vanilla's client counts its own `sleepCounter`; the host sends it only when lying down and getting up (0 or 100), so a morning wake-up fades and a Leave Bed does too, as on the host.
+  - **A friend's bed actions run in the host frame,** next to the host's own, one frame after they arrive, so the overlay lines and the sleep status go through the one path that already handles them.
+- **Test steps:** `docs/round8/e-m6-tests.md`, section "Friends lie down in beds and count for the night".
+- **Kit:** `minecraft:white_bed` x1.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:white_bed
+```
+
 ## Combined kit for every test in this track
 
 This line covers the M6 owner tests in `docs/round8/e-m6-tests.md`. The M1 to M5 tests keep their own kit lines in `docs/round8/e-m1-tests.md` to `docs/round8/e-m5-tests.md`; the M5 combined line is in the git history of this file at `beb54197`, the M3 and M4 line at `6571e5db`, and the M2 line (E11 to E15) at `bf0a3a47`.
 
-`minecraft:bow` x1, `minecraft:arrow` x64, `minecraft:diamond_sword` x1, `minecraft:diamond_helmet` x1, `minecraft:diamond_chestplate` x1, `minecraft:diamond_leggings` x1, `minecraft:diamond_boots` x1, `minecraft:golden_apple` x8, `minecraft:cooked_beef` x32, `minecraft:cobblestone` x64, `minecraft:snowball` x16, `minecraft:ender_pearl` x16, `minecraft:eye_of_ender` x12, `minecraft:water_bucket` x1, `minecraft:powder_snow_bucket` x1, `minecraft:leather_boots` x1, `minecraft:totem_of_undying` x1, `minecraft:spawner` x1, `minecraft:zombie_spawn_egg` x1, `minecraft:lectern` x1, `minecraft:written_book` x1 with three pages (21 stacks).
+`minecraft:bow` x1, `minecraft:arrow` x64, `minecraft:diamond_sword` x1, `minecraft:diamond_helmet` x1, `minecraft:diamond_chestplate` x1, `minecraft:diamond_leggings` x1, `minecraft:diamond_boots` x1, `minecraft:golden_apple` x8, `minecraft:cooked_beef` x32, `minecraft:cobblestone` x64, `minecraft:snowball` x16, `minecraft:ender_pearl` x16, `minecraft:eye_of_ender` x12, `minecraft:water_bucket` x1, `minecraft:powder_snow_bucket` x1, `minecraft:leather_boots` x1, `minecraft:totem_of_undying` x1, `minecraft:spawner` x1, `minecraft:zombie_spawn_egg` x1, `minecraft:lectern` x1, `minecraft:written_book` x1 with three pages, `minecraft:white_bed` x1 (22 stacks).
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:bow,minecraft:arrow*64,minecraft:diamond_sword,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:ender_pearl*16,minecraft:eye_of_ender*12,minecraft:water_bucket,minecraft:powder_snow_bucket,minecraft:leather_boots,minecraft:totem_of_undying,minecraft:spawner,minecraft:zombie_spawn_egg,minecraft:lectern,minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}]
+IW4L_MINECRAFT_KIT=minecraft:bow,minecraft:arrow*64,minecraft:diamond_sword,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:ender_pearl*16,minecraft:eye_of_ender*12,minecraft:water_bucket,minecraft:powder_snow_bucket,minecraft:leather_boots,minecraft:totem_of_undying,minecraft:spawner,minecraft:zombie_spawn_egg,minecraft:lectern,minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}],minecraft:white_bed
 ```
