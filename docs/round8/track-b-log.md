@@ -1035,6 +1035,28 @@ After 0da763d1.
 - **Tests:** none new. `test -p` of every crate the track touched passes (`frame` 24, `hud` 142, `minecraft_survival` 379 and the vanilla world test, `minecraft_terrain` 905 with 4 ignored as before, `movement_iw4` 50, `render_anim` 77, `sim` 76, `minecraftoss-core` 24, `minecraftoss-entities` 189, `minecraftoss-generator` 28, `minecraftoss-player` 187, `minecraftoss-world` 66), and `check -p launcher` is green. Clippy, run again as above, reports no warning on a line the track added or changed (every location checked against `git diff -U0 0bcbfb17`); the rest are older. The new files still pass `rustfmt --check`.
 - **Test steps:** none (no behaviour change).
 
+## Merge into minecraft-survival (after tracks A and D)
+
+### M0. The merge
+
+Merge commit 75dd9d5e (`minecraft-survival` at 08de9c28, with tracks A and D, and `track-b` at 0cae79c2).
+
+- **Server tick:** track A moved the per-tick body of the server loop into `run_tick`, which runs once for every tick of a batch. B's riding work moved there too: `set_player_controls` and `ride_tick` (crouching gets off) run on every tick, frozen or not, because they are the player's part; `tick_mobs` only runs on normal ticks, as A has it, so a frozen game holds the strider and its rider still; `take_vehicle_losses` follows the mob tick. `TickInput.controls` reaches the server beside A's tick flags.
+- **Frozen riding differs from vanilla:** `TickRateManager.isEntityFrozen` (checked with javap in 26.3) does not freeze an entity that carries a player (`countPlayerPassengers() > 0`), so in vanilla a ridden strider keeps walking under `/tick freeze`. Here it stands still, because the server's mob tick and the client's mob tick run for every mob or for none. Left open.
+- **Sleep:** B counted sleep ticks from the client ticks. It now gets the ticks A plans for the frame (`plan_ticks`, frozen ones included): vanilla's `ServerLevel.tick` checks the night skip and `Player.tick` counts the sleep timer on frozen ticks too (javap). `Runtime.sleep_ticks` is gone.
+- **Smaller joins:** `Server` has both `pending_batch` and `published`, `Level` both `container_ticks` and `sleep_status`, `Globals::set_clock` sits beside A's `advance_clocks(ticks)`, a rider's pose and the spawner turn both apply to a client mob, `Command::SpawnerEgg` sits beside the `MobAction` that now names its player, the strider seat's partial tick divides by A's client tick length, and the state doc keeps both tracks' lines (spawners are simulated now; N6 is only lodestones; A's X6 line without the gateway gap).
+- **Tests:** test literals got the new fields (`controls`, `published`, the player view's hands and sneaking), and B's saddle test drives `Entities::tick` with A's batch.
+
+### M1. The skateboard can't go down while riding a strider or asleep in a bed
+
+- **Changed:** `board_allowed` in `render_anim/src/minecraft_world.rs` also refuses `pm_flags::MC_RIDING` (a strider seat; a bed pins the player with the same flag) and takes `asleep` (`Player.sleeping`), as vanilla refuses to mount a player who rides or sleeps. Getting on a strider or into a bed from the board can't happen: on the board every use of the right button or the use key is put away (track D, group 3b), so the board has to be picked up first. If a seat or a bed ever comes while on the board, `skate.rs` already picks the board up the frame `board_allowed` turns false. The state doc's skating line says so.
+- **Tests:** `the_board_is_refused_flying_gliding_dead_spectating_under_water_riding_or_asleep` (D's test, renamed, with `MC_RIDING`, `MC_RIDING | CROUCH` and asleep).
+- **Test steps:** (Skating on, Skate 3 data converted.) 1. Hatch a strider on lava, saddle it and right-click it to ride; press J: the board does not go down (**M1a**). Crouch to get off, press J: the board goes down. 2. While on the board, right-click the strider: nothing happens; press J to pick the board up, then right-click: you ride. 3. At night lie in a bed and press J: the board does not go down (**M1b**).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*2,minecraft:saddle,minecraft:warped_fungus_on_a_stick,minecraft:lava_bucket*4,minecraft:red_bed
+```
+
 ## Combined kit for the whole track
 
 27 stacks for the main checks of b3 (striders and riding), b2 (hoglins and zoglins), b1 (piglins, brutes, bartering and gold) and b4 (sleeping). Each entry above keeps its own kit for the rest (spawn eggs of other mobs, respawn anchors, soul fire, more beds).
