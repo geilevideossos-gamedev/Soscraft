@@ -2148,13 +2148,16 @@ fn draw_body_gear(
     gear: Res<crate::anim::minecraft_gear::McBodyGear>,
     glide: Res<crate::anim::minecraft_glide::McGlide>,
     puppet: Res<frame::InventoryPuppet>,
+    local: Res<net::LocalPresentClient>,
+    presented: Res<net::PresentedSnapshot>,
 ) {
     view.puppet_gear = Default::default();
     let puppet_client = puppet.active.then_some(puppet.client);
+    let viewer = sim::voxel::viewer_z(presented.player(local.0).map(|ps| ps.origin[2]));
     let meshes = if let Runtime { world: Some(world), light: Some(light), gear_items, .. } = &mut *runtime {
-        crate::anim::minecraft_gear::gear_meshes(&posed, &gear, &glide, view.origin, puppet_client, gear_items, &world.packs, &world.atlas, light)
+        crate::anim::minecraft_gear::gear_meshes(&posed, &gear, &glide, view.origin, puppet_client, viewer, gear_items, &world.packs, &world.atlas, light)
     } else if let Some((look, light, gear_items)) = friend.gear_look() {
-        crate::anim::minecraft_gear::gear_meshes(&posed, &gear, &glide, view.origin, puppet_client, gear_items, &look.packs, &look.atlas, light)
+        crate::anim::minecraft_gear::gear_meshes(&posed, &gear, &glide, view.origin, puppet_client, viewer, gear_items, &look.packs, &look.atlas, light)
     } else {
         return;
     };

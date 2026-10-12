@@ -1190,6 +1190,34 @@ Commit: see `git log` ("Every Minecraft dimension with a player in it keeps runn
 IW4L_MINECRAFT_KIT=minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:iron_pickaxe,minecraft:iron_sword,minecraft:cobblestone*32,minecraft:cow_spawn_egg*2,minecraft:white_bed,minecraft:cooked_beef*8
 ```
 
+### E21. Players in another dimension are not drawn
+
+Commit: see `git log` ("Players in another Minecraft dimension are not drawn"). The previous commit is `87eecc0e` (E20).
+
+- **Changed:**
+  - `crates/sim/src/voxel.rs`: the band gate, pure: `shown_to(viewer_z, z)` is true when there is no viewer or both map heights fall in the same band (`band_of`); `viewer_z(local_z)` gives the viewer's height only while a block world stands in for the map, so MW2 matches without Minecraft are never gated.
+  - `crates/render_anim/src/occupancy/remote_body.rs`: `occupy_remote_scene_ents` and `sync_remote_bodies` skip a body (and a corpse) whose presented origin is in another band than the local player's. `sync_remote_bodies` removes its `RemotePlayer` like any other body that is not submitted, so it is not posed either and publishes no head for the names and no posed gear.
+  - `crates/render_anim/src/anim/minecraft_gear.rs`: `gear_rigs` and `gear_meshes` take the viewer's height and leave out a posed body whose joints are in another band. The posed gear frame keeps a client's last pose until it is posed again, so without this a friend's armour and held item would have stayed at the last place they were posed in the old dimension.
+  - `crates/render_anim/src/minecraft_world.rs`: `draw_body_gear` passes the local player's height.
+  - `crates/hud/src/overhead_names.rs`: a player in another band is not a name candidate (checked before the posed head, so no head gap is raised for them).
+  - `crates/render_anim/src/minecraft_players.rs`: `obstacles` keeps only other MW2 players in the band of the player whose obstacles they are. Before, a friend in the Nether or the End counted as a body in the host's level at the same block coordinates of their own level, and could refuse a block placed there.
+- **Tests:**
+  - `sim` `voxel::tests::only_bodies_in_the_viewers_band_are_shown_to_them` (the pure gate for the three bands, past every band, and without a viewer).
+  - `render_anim` `minecraft_gear::tests::gear_is_drawn_only_on_bodies_in_the_viewers_band` (three posed bodies, one per band: each viewer gets only its own band's rig, and no viewer gets all three); the two older `gear_rigs` tests pass no viewer.
+  - Results on the real 26.3 data: `test -p sim` 116, `render_anim --lib` 140, `hud --lib` 148; `check -p launcher` green.
+- **Decisions:**
+  - **The viewer is the local player's presented origin**, not the camera: every gate in a frame reads the same height, so the body, its gear and its name come and go together. A frame with no local player state gates nothing.
+  - **The gate only runs while a block world is active** (`viewer_z`), so MW2 maps keep drawing every player as before.
+  - **Gear is gated by its own posed joints** rather than by the client, so it is hidden exactly where the body that carried it is drawn, including a pose left over from the old dimension.
+  - **The thermal-sight markers are not gated**: they are MW2 only and need the thermal scope, which a Minecraft world does not give.
+  - **Other players' snowflakes and the friend's own first-person totem animation are not part of E21**: they are about sending per-player effects, not about dimensions. They go to M6 or later with the frost slowdown and powder snow walker for friends, frozen hearts in `PlayerView`, skating for friends, friends lying down in beds, and the lectern and merchant screens.
+- **Test steps:** `docs/round8/e-m5-tests.md`, section E21, which ends with the design's Owner test M5.
+- **Kit:** `minecraft:obsidian` x10, `minecraft:flint_and_steel` x1, `minecraft:iron_pickaxe` x1, `minecraft:cobblestone` x32, `minecraft:iron_helmet` x1, `minecraft:iron_chestplate` x1, `minecraft:torch` x16, `minecraft:cooked_beef` x8.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:iron_pickaxe,minecraft:cobblestone*32,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:torch*16,minecraft:cooked_beef*8
+```
+
 ## Combined kit for every test in this track
 
 27 stacks no longer hold every test's kit. This line covers the M3 and M4 owner tests: the merge of tracks B, C and D, E16, E17 and the review fixes in `docs/round8/e-m3-tests.md`, and E18 in `docs/round8/e-m4-tests.md`. It leaves out six items of the merge section's steps 7 to 9 (lectern, trapped chest and piglins); give them from the host window before those steps: `/give @a minecraft:lectern`, `/give @a minecraft:writable_book`, `/give @a minecraft:trapped_chest`, `/give @a minecraft:redstone_lamp`, `/give @a minecraft:gold_block 4`, `/give @a minecraft:stone_pickaxe`. The M1 and M2 tests keep their own kit lines in `docs/round8/e-m1-tests.md` and `docs/round8/e-m2-tests.md`; the M2 combined line (E11 to E15) is in the git history of this file at `bf0a3a47`.

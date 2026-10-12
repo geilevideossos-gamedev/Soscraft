@@ -245,8 +245,11 @@ fn occupy_remote_scene_ents(
                 &presented, local.0, in_killcam,
             ),
     };
+    let viewer = sim::voxel::viewer_z(presented.player(local.0).map(|ps| ps.origin[2]));
     for (identity, runtime, transform) in &remotes {
-        if !remote_body_submits(identity.number(), runtime, gate) {
+        if !remote_body_submits(identity.number(), runtime, gate)
+            || !sim::voxel::shown_to(viewer, runtime.origin[2])
+        {
             continue;
         }
         let Some(client) = identity.client() else {
@@ -375,6 +378,7 @@ fn sync_remote_bodies(
                 &presented, local.0, in_killcam,
             ),
     };
+    let viewer = sim::voxel::viewer_z(presented.player(local.0).map(|ps| ps.origin[2]));
 
     for (entity, identity, runtime, remote) in &existing {
         let Some(client) = identity.client() else {
@@ -385,7 +389,9 @@ fn sync_remote_bodies(
             }
             continue;
         };
-        if !remote_body_submits(identity.number(), runtime, gate) {
+        if !remote_body_submits(identity.number(), runtime, gate)
+            || !sim::voxel::shown_to(viewer, runtime.origin[2])
+        {
             if remote.is_some() {
                 commands
                     .entity(entity)

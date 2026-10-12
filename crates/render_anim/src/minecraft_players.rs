@@ -1876,12 +1876,13 @@ fn obstacles(
         .map_or_else(|| hull(predicted), hull)
         .into_iter()
         .collect();
+    let own = authority.player(local).map_or(predicted.origin[2], |ps| ps.origin[2]);
     authority.visit_players(|id, ps| {
         let standing = matches!(
             ps.pm_type,
             0 | playerstate_iw4::PM_TYPE_NORMAL_LINKED | playerstate_iw4::PM_TYPE_LAST_STAND
         );
-        if id != local && standing {
+        if id != local && standing && sim::voxel::shown_to(Some(own), ps.origin[2]) {
             out.extend(hull(ps));
         }
     });

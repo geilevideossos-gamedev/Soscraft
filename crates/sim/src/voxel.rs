@@ -64,6 +64,14 @@ pub fn band_of(z: f32) -> Option<usize> {
     BANDS.iter().position(|band| z >= band[0] && z < band[1])
 }
 
+pub fn shown_to(viewer_z: Option<f32>, z: f32) -> bool {
+    viewer_z.is_none_or(|viewer| band_of(viewer) == band_of(z))
+}
+
+pub fn viewer_z(local_z: Option<f32>) -> Option<f32> {
+    local_z.filter(|_| active())
+}
+
 impl VoxelWorld {
     fn level(&self, index: usize) -> Option<Level<'_>> {
         let level = self.levels.get(index)?.as_ref()?;
@@ -1972,6 +1980,26 @@ mod tests {
             assert_eq!(band_of(band[0]), Some(index));
             assert_eq!(band_of((band[0] + band[1]) / 2.0), Some(index));
         }
+    }
+
+    #[test]
+    fn only_bodies_in_the_viewers_band_are_shown_to_them() {
+        let overworld = Some(64.0 * 36.0);
+        let nether = -47_000.0;
+        let end = 40_000.0;
+        assert!(shown_to(overworld, 0.0));
+        assert!(shown_to(overworld, 19_999.0));
+        assert!(!shown_to(overworld, nether));
+        assert!(!shown_to(overworld, end));
+        assert!(shown_to(Some(nether), -21_000.0));
+        assert!(!shown_to(Some(nether), 0.0));
+        assert!(shown_to(Some(end), 59_000.0));
+        assert!(!shown_to(Some(end), -20_000.0));
+        assert!(!shown_to(Some(70_000.0), 0.0));
+        for z in [nether, 0.0, end, 70_000.0] {
+            assert!(shown_to(None, z), "without a viewer nothing is held back");
+        }
+        assert_eq!(viewer_z(None), None);
     }
 
     #[test]

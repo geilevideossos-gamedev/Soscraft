@@ -505,9 +505,17 @@ pub fn gear_rigs<'a>(
     glide: &McGlide,
     origin: [f64; 3],
     puppet: Option<u32>,
+    viewer: Option<f32>,
 ) -> Vec<GearRig<'a>> {
     posed
         .iter()
+        .filter(|body| {
+            body.joints
+                .iter()
+                .flatten()
+                .next()
+                .is_none_or(|joint| sim::voxel::shown_to(viewer, joint.posed.w_axis.z))
+        })
         .filter_map(|body| {
             let worn = gear.get(body.client).filter(|worn| !worn.is_bare())?;
             Some(GearRig {
@@ -536,13 +544,14 @@ pub fn gear_meshes(
     glide: &McGlide,
     origin: [f64; 3],
     puppet: Option<u32>,
+    viewer: Option<f32>,
     items: &mut ItemVisuals,
     packs: &PackStack,
     atlas: &Atlas,
     light: &SkyLight,
 ) -> GearMeshes {
     let mut meshes = GearMeshes::default();
-    for body in gear_rigs(posed, gear, glide, origin, puppet) {
+    for body in gear_rigs(posed, gear, glide, origin, puppet, viewer) {
         let mesh = if body.puppet {
             &mut meshes.puppet
         } else {
@@ -881,7 +890,7 @@ mod tests {
         gear.set(1, torch.clone());
         gear.set(2, torch);
         gear.set(3, BodyGear::default());
-        let rigs = gear_rigs(&posed, &gear, &McGlide::default(), [0.0; 3], Some(2));
+        let rigs = gear_rigs(&posed, &gear, &McGlide::default(), [0.0; 3], Some(2), None);
         assert_eq!(
             rigs.iter()
                 .map(|rig| (rig.client, rig.puppet))
@@ -923,7 +932,7 @@ mod tests {
         for _ in 0..3 {
             glide.step(0.05, [(1, flying)]);
         }
-        let rigs = gear_rigs(&posed, &gear, &glide, [0.0; 3], None);
+        let rigs = gear_rigs(&posed, &gear, &glide, [0.0; 3], None, None);
         let wings = |client: u32| {
             rigs.iter()
                 .find(|rig| rig.client == client)
@@ -933,6 +942,45 @@ mod tests {
         assert_eq!(wings(1), Some(glide.pose(1).unwrap().wings));
         assert!(wings(1).unwrap().z < -0.3);
         assert_eq!(wings(2), None);
+    }
+
+    #[test]
+    fn gear_is_drawn_only_on_bodies_in_the_viewers_band() {
+        let mut posed = PosedGearFrame::default();
+        let mut gear = McBodyGear::default();
+        let torch = BodyGear {
+            off: Some(minecraft_terrain::body_gear::GearItem {
+                id: "minecraft:torch".to_owned(),
+                glint: false,
+                dye: None,
+            }),
+            ..BodyGear::default()
+        };
+        let moved = |z: f32| {
+            standing().map(|joint| {
+                joint.map(|joint| PosedJoint {
+                    posed: Mat4::from_translation(Vec3::new(0.0, 0.0, z)) * joint.posed,
+                    bind: joint.bind,
+                })
+            })
+        };
+        for (client, z) in [(1, 2_000.0), (2, -47_000.0), (3, 40_000.0)] {
+            posed.publish(PosedGear {
+                client,
+                joints: moved(z),
+            });
+            gear.set(client, torch.clone());
+        }
+        let shown = |viewer: Option<f32>| {
+            gear_rigs(&posed, &gear, &McGlide::default(), [0.0; 3], None, viewer)
+                .iter()
+                .map(|rig| rig.client)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shown(Some(1_000.0)), [1]);
+        assert_eq!(shown(Some(-50_000.0)), [2]);
+        assert_eq!(shown(Some(30_000.0)), [3]);
+        assert_eq!(shown(None), [1, 2, 3]);
     }
 
     fn standing() -> [Option<PosedJoint>; JOINTS] {

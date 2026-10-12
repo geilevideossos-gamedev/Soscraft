@@ -51,3 +51,26 @@ Put the kit below in the `.env` next to the exe before the first start: both pla
 ```
 IW4L_MINECRAFT_KIT=minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:iron_pickaxe,minecraft:iron_sword,minecraft:cobblestone*32,minecraft:cow_spawn_egg*2,minecraft:white_bed,minecraft:cooked_beef*8
 ```
+
+## E21. Players in another dimension are not drawn
+
+A player in another dimension is no longer drawn anywhere: not their MW2 body or corpse, not their armour, held item or elytra, and not their name over the head. A friend in another dimension also no longer counts as standing in the way when you place a block, which before this change could refuse a block at the spot whose coordinates matched where the friend stood in their own dimension.
+
+Put the kit below in the `.env` next to the exe before the first start: both players get it on their first join.
+
+1. Start both windows: `& scripts\mp-local.ps1 -World mp-m5 -Fresh`. Spawn in both. Host window: `/time set day`, `/op Friend`. Both windows: put on the iron helmet and chestplate and hold a torch. Stand a few blocks apart on flat ground.
+2. **Seen in the same dimension.** Host window: the friend's body wears the helmet and chestplate and holds the torch; aim at the friend and their name shows over the head. Friend window: the same for the host. Screenshot both. **S9**
+3. **Not seen from another dimension.** Friend window: `/execute in minecraft:the_nether run tp @s ~ ~ ~`. The Nether loads (if the friend lands inside netherrack, mine out with the pickaxe). Host window: look all around, straight down and straight up, and walk to where the friend stood: no body, no floating helmet, chestplate or torch, and no name anywhere. Screenshot looking down where the friend stood. **S10** Friend window: look around the same way: the host is not drawn anywhere either.
+4. **Back in the same dimension.** Friend window: `/execute in minecraft:overworld run tp @s ~ ~ ~`, which brings the friend back to where they stood in the overworld (vanilla divides x and z by 8 into the Nether and multiplies them back). Both windows: each sees the other again with the armour, the torch and the name.
+5. **A friend in another dimension does not block a block.** Friend window: `/gamemode spectator`. Host window: stand still on flat ground and type `/execute in minecraft:the_end run tp Friend ~ ~ ~`, which puts the friend in the End at your exact coordinates (the End, because the Nether would divide x and z by 8); as a spectator the friend floats there. Step one block back and place cobblestone on the ground where you stood, then a second one on top of it: both are placed. Screenshot. **S11** Friend window: `/execute in minecraft:overworld run tp @s ~ ~3 ~`, which puts the friend just above the two cobblestones, then `/gamemode survival`.
+6. **Owner test M5 of the design** (a fresh world: close the windows by typing `quit` in the script's console, then `& scripts\mp-local.ps1 -World mp-m5b -Fresh`; spawn in both):
+   1. Host window: `/op Friend`. Friend window: `/execute in minecraft:the_nether run tp @s 0 70 0`.
+   2. Friend window: the Nether loads and the friend walks (mine out first if they landed in netherrack). Alt-Tab to the host: the host keeps walking in the overworld, and the friend is not seen anywhere. **S12**
+   3. Friend window: mobs move in the Nether (zombified piglins or other Nether mobs nearby; walk a little if none are in sight). Host window: mobs move in the overworld.
+   4. Host window: fire your MW2 gun at where the friend was: nothing reaches them. Friend window: the friend's health is untouched.
+   5. Friend window: build a nether portal with the 10 obsidian (4 wide, 5 tall, no corners) and light it with the flint and steel, and walk through. The loading screen shows, then the overworld. Host window: `/tp @s Friend` if the friend came out far away. Both windows: the friend is back and seen again, with the armour and the name. **S13**
+7. Close the windows (type `quit` in the script's console).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:iron_pickaxe,minecraft:cobblestone*32,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:torch*16,minecraft:cooked_beef*8
+```
